@@ -18,6 +18,7 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Fixed
 
+- A look picked on one photo could end up on, or be shown wrongly for, another open photo when you moved to the next photo before the app had finished: the Look tab could keep showing the old look for a photo that had been given the new one, two picks made in turn on different photos could leave every photo with the first look, and the rest of a slider, wheel, curve or colour-warp drag could be sent to the next photo. Each pick and each drag now belongs to the photo it was made on, and the photo you are looking at shows the look it really has.
 - Colour warp: Range now limits how far a pin's change reaches, even after a long drag; before, a long drag widened it so far that most of the picture moved. Colours that lie in the way of a long drag still move with it. Short moves look as they did (pipeline 0.4.4).
 
 ## [0.1.10] - 2026-10-17

@@ -75,7 +75,7 @@ export const RawTab = memo(function RawTab({ store, photo, rs }: TabProps) {
           step={0.01}
           defaultValue={1}
           format={formats.fixed2}
-          onChange={(highlights, final) => void store.update({ rolloff: { ...rolloff, highlights } }, final)}
+          onChange={(highlights, final) => void store.update({ rolloff: { ...rolloff, highlights } }, final, rs.photo_id)}
         />
         <Slider
           label="Low light"
@@ -85,7 +85,7 @@ export const RawTab = memo(function RawTab({ store, photo, rs }: TabProps) {
           step={0.01}
           defaultValue={0.5}
           format={formats.fixed2}
-          onChange={(low_light, final) => void store.update({ rolloff: { ...rolloff, low_light } }, final)}
+          onChange={(low_light, final) => void store.update({ rolloff: { ...rolloff, low_light } }, final, rs.photo_id)}
         />
         <RowNote>{RANGE_NOTE}</RowNote>
       </Card>

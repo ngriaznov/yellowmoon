@@ -351,6 +351,18 @@ export class AppStore {
   private readonly gestures = new Map<PhotoId, { base: DevelopSettings }>();
   private readonly senders = new Map<PhotoId, Sender>();
   private readonly settingsRequests = new Map<PhotoId, Promise<void>>();
+  /**
+   * Counts the times the core changed photos behind the mirror's back ("Apply to" copies, pastes). A read of a photo's settings that
+   * began before the latest one may carry the old settings, so it is asked again instead of being kept.
+   */
+  private bulkEpoch = 0;
+  /**
+   * Counts the patches made for each photo and the replies that came back, so that a read of the photo's settings that began before one
+   * of them is not allowed to put older settings over what it brought.
+   */
+  private readonly writes = new Map<PhotoId, number>();
+  /** The end of the "Apply to" copies asked for so far: the next one waits for it, so they reach the core in the order they were made. */
+  private applyTail: Promise<void> = Promise.resolve();
   /** The number of the newest `viewport_frame` heard, whether it showed a picture or took it away; null before the first. */
   private newestFrame: number | null = null;
   /** Photos with a Pick white click on its way to the core: their settings are read when the click is answered. */
@@ -1391,27 +1403,52 @@ export class AppStore {
     if (this.state.settings[id]) return Promise.resolve();
     const existing = this.settingsRequests.get(id);
     if (existing) return existing;
-    const request = this.api
-      .getSettings(id)
-      .then((rs) => {
-        if (!this.state.settings[id]) this.set({ settings: { ...this.state.settings, [id]: rs } });
-      })
-      .catch((error) => this.fail(error))
-      .finally(() => {
-        this.settingsRequests.delete(id);
-      });
+    const request = this.readSettings(id).finally(() => {
+      this.settingsRequests.delete(id);
+    });
     this.settingsRequests.set(id, request);
     return request;
   }
 
-  /** Throws away what is known about a photo's settings and asks again. */
-  private async resyncSettings(id: PhotoId): Promise<void> {
-    try {
-      const rs = await this.api.getSettings(id);
-      this.set({ settings: { ...this.state.settings, [id]: rs } });
-    } catch (error) {
-      this.fail(error);
+  /** Reads a photo's settings into the mirror unless it already holds them; asks again when a copy to other photos landed meanwhile. */
+  private async readSettings(id: PhotoId): Promise<void> {
+    for (;;) {
+      const epoch = this.bulkEpoch;
+      try {
+        const rs = await this.api.getSettings(id);
+        if (epoch !== this.bulkEpoch) continue;
+        if (!this.state.settings[id]) this.set({ settings: { ...this.state.settings, [id]: rs } });
+        return;
+      } catch (error) {
+        this.fail(error);
+        return;
+      }
     }
+  }
+
+  /**
+   * Throws away what is known about a photo's settings and asks again. What comes back is dropped when a patch was made for the photo
+   * or answered (or a copy to other photos landed) while the question was on its way: the answer may be older than that, and the
+   * patch's own reply puts the settings right.
+   */
+  private async resyncSettings(id: PhotoId): Promise<void> {
+    for (;;) {
+      const epoch = this.bulkEpoch;
+      const written = this.writes.get(id) ?? 0;
+      try {
+        const rs = await this.api.getSettings(id);
+        if (epoch !== this.bulkEpoch) continue;
+        if ((this.writes.get(id) ?? 0) === written) this.set({ settings: { ...this.state.settings, [id]: rs } });
+        return;
+      } catch (error) {
+        this.fail(error);
+        return;
+      }
+    }
+  }
+
+  private wrote(id: PhotoId): void {
+    this.writes.set(id, (this.writes.get(id) ?? 0) + 1);
   }
 
   private setSettings(id: PhotoId, rs: ResolvedSettings): void {
@@ -1419,13 +1456,17 @@ export class AppStore {
   }
 
   /**
-   * Sends a patch for the current photo. While a drag is on, call it with `final = false` (at
-   * most once per frame, which the controls do); the release, a key, a typed value or a reset
-   * calls it with `final = true`, which also records one undo step for the whole gesture.
+   * Sends a patch for a photo. While a drag is on, call it with `final = false` (at most once per frame, which the controls do); the
+   * release, a key, a typed value or a reset calls it with `final = true`, which also records one undo step for the whole gesture.
    * Resolves when the core has answered.
+   *
+   * A patch belongs to the photo the person made the input on. Without `photoId` that is the photo on screen when this is called,
+   * which is right for an input that is handled at once (a key, a click, a typed value). A control that collects its input and sends it
+   * later (a drag, one patch per frame) must name the photo it began on, so that moving to another photo before the frame or the release
+   * cannot send it there: the controls pass the `photo_id` of the settings they were drawn from.
    */
-  update(patch: SettingsPatch, final = true): Promise<void> {
-    const id = this.currentId();
+  update(patch: SettingsPatch, final = true, photoId: PhotoId | null = this.currentId()): Promise<void> {
+    const id = photoId;
     if (id === null) return Promise.resolve();
     const rs = this.state.settings[id];
     if (!rs) return Promise.resolve();
@@ -1450,6 +1491,7 @@ export class AppStore {
   }
 
   private enqueue(id: PhotoId, patch: SettingsPatch, record: Queued["record"]): Promise<void> {
+    this.wrote(id);
     const sender = this.senderFor(id);
     return new Promise<void>((resolve) => {
       const last = sender.queue[sender.queue.length - 1];
@@ -1477,7 +1519,10 @@ export class AppStore {
             if (entry) this.historyOf(id).push(entry);
           }
           // A newer patch is waiting: its reply will carry everything, so this one is skipped.
-          if (sender.queue.length === 0 && this.state.settings[id]) this.setSettings(id, reply);
+          if (sender.queue.length === 0 && this.state.settings[id]) {
+            this.wrote(id);
+            this.setSettings(id, reply);
+          }
         } catch (error) {
           for (const waiting of sender.queue.splice(0)) for (const done of waiting.done) done();
           this.fail(error);
@@ -1557,11 +1602,12 @@ export class AppStore {
       this.showNotice("Copy the settings of a photo first.");
       return;
     }
-    const own = scope === "picked" ? await this.pickedWhiteSource(this.state.copied) : null;
+    // The photos the paste is for are the ones the person has now, picked or on screen: fixed before anything is waited for.
     const { session, copied } = this.state;
-    if (!session || !copied) return;
     const current = this.currentPhoto();
     const chosen = scope === "this" ? (current ? [current] : []) : session.photos.filter((p) => p.picked);
+    const own = scope === "picked" ? await this.pickedWhiteSource(copied) : null;
+    if (!this.state.session) return;
     if (chosen.length === 0) {
       this.showNotice(scope === "this" ? "There is no photo to paste onto." : "No photos are picked.");
       return;
@@ -1579,6 +1625,8 @@ export class AppStore {
       for (const id of ids) this.pasting.add(id);
       try {
         report = await this.api.pasteSettings(ids, copied.patch);
+        // Reads of settings that were on their way when the paste landed may hold the old ones.
+        this.bulkEpoch += 1;
       } catch (error) {
         this.fail(error);
         return;
@@ -1635,44 +1683,96 @@ export class AppStore {
   // --- Looks --------------------------------------------------------------------------------
 
   /**
-   * Picks a look for the current photo and, when "Apply to" is Picked or All, for those photos
-   * too. The current photo goes first through `update_settings`, so the change is one undo step
-   * and the viewport answers at once; the others follow through `apply_look`.
+   * Picks a look for a photo (the one on screen unless `photoId` names another) and, when "Apply to" is Picked or All, for those photos
+   * too. The photo goes first through `update_settings`, so the change is one undo step and the viewport answers at once; the others
+   * follow through `apply_look`.
+   *
+   * Everything the pick means is fixed when it is made: the photo, the scope, the look and its strength. The person may move to
+   * another photo, or pick again there, before the core has answered; this pick still goes to the photo it was made on, and its copy
+   * to the others reaches the core before the copy of any pick made after it ({@link applyAfter}).
    */
-  async chooseLook(lookId: LookId, intensity?: number): Promise<void> {
-    const rs = this.currentSettings();
+  async chooseLook(lookId: LookId, intensity?: number, photoId: PhotoId | null = this.currentId()): Promise<void> {
+    if (photoId === null) return;
+    const rs = this.state.settings[photoId];
     const look = this.state.looks?.find((l) => l.id === lookId);
     if (!rs || !look || look.missing) return;
     const level = intensity ?? rs.values.look_intensity;
-    const failed = this.failures;
-    await this.update({ look: lookId, look_intensity: level }, true);
-    // If the current photo could not take the look, the others must not get it either.
-    if (this.failures === failed) await this.copyLook(lookId, level);
+    await this.changeLook(photoId, this.state.applyScope, { look: lookId, look_intensity: level }, true, lookId, level);
   }
 
-  /** Sets the look strength; the other photos of the scope get it when the drag ends. */
-  async setLookIntensity(level: number, final: boolean): Promise<void> {
-    const rs = this.currentSettings();
+  /**
+   * Sets the look strength of a photo (the one on screen unless `photoId` names another); the other photos of the scope get it, with
+   * the look the photo has, when the drag ends. A drag names the photo it began on, as {@link update} asks of every control.
+   */
+  async setLookIntensity(level: number, final: boolean, photoId: PhotoId | null = this.currentId()): Promise<void> {
+    if (photoId === null) return;
+    const rs = this.state.settings[photoId];
     if (!rs) return;
-    const failed = this.failures;
-    await this.update({ look_intensity: level }, final);
-    if (final && this.failures === failed) await this.copyLook(rs.values.look, level);
+    await this.changeLook(photoId, this.state.applyScope, { look_intensity: level }, final, rs.values.look, level);
   }
 
-  private async copyLook(lookId: LookId, level: number): Promise<void> {
-    const scope = this.state.applyScope;
+  /** The patch of one photo's look, then (at the end of a gesture) the copy to the photos of the scope. */
+  private async changeLook(id: PhotoId, scope: ApplyScope, patch: SettingsPatch, final: boolean, lookId: LookId, level: number): Promise<void> {
+    const failed = this.failures;
+    const sent = this.update(patch, final, id);
+    if (!final || scope === "this") {
+      await sent;
+      return;
+    }
+    await this.applyAfter(sent, async () => {
+      // If the photo could not take the look, the others must not get it either.
+      if (this.failures === failed) await this.copyLook(id, scope, lookId, level);
+    });
+  }
+
+  /**
+   * Runs a copy to other photos once the photo's own patch has been answered and every copy asked for before it has finished. Each
+   * photo's patch is answered when it is (a photo's patches go one at a time, different photos' at once), and the core takes commands
+   * as they come: left alone, a pick on photo 1 that is slow would have its copy land after the copy of a pick made on photo 2
+   * afterwards, and leave every photo with the older look. The copies go in the order of the picks.
+   */
+  private async applyAfter(own: Promise<void>, copy: () => Promise<void>): Promise<void> {
+    const before = this.applyTail;
+    const turn = (async () => {
+      await own;
+      await before;
+      await copy();
+    })();
+    this.applyTail = turn.catch(() => {});
+    await turn;
+  }
+
+  /**
+   * Copies a look and its strength to the photos of `scope`, which the person chose when they picked it. The photo they picked it on
+   * (`source`) already has them, from its own reply. The other photos' look changed in the core behind the mirror's back: what the
+   * mirror holds for them is dropped, and asked for again when they are shown. The photo on screen now (the person may have moved
+   * since the pick) is asked for at once, so it is never left showing the look it had.
+   */
+  private async copyLook(source: PhotoId, scope: ApplyScope, lookId: LookId, level: number): Promise<void> {
     if (scope === "this") return;
-    const current = this.currentId();
     try {
       await this.api.applyLook(scope, lookId, level);
     } catch (error) {
       this.fail(error);
       return;
     }
-    // The other photos' looks changed behind the mirror's back.
+    await this.forgetOthers(source);
+  }
+
+  /**
+   * The core changed photos other than `keep` without the mirror knowing: forgets their settings, and reads the settings of the photo
+   * on screen again if it is one of them. Its old settings stay in the meantime (a control being dragged there has to find them) and are
+   * replaced when the answer comes. Reads that were already on their way are asked again when they arrive (`bulkEpoch`).
+   */
+  private async forgetOthers(keep: PhotoId | null): Promise<void> {
+    this.bulkEpoch += 1;
+    const shown = this.currentPhoto();
     const kept: Record<PhotoId, ResolvedSettings> = {};
-    for (const [key, value] of Object.entries(this.state.settings)) if (Number(key) === current) kept[Number(key)] = value;
+    for (const [key, value] of Object.entries(this.state.settings)) if (Number(key) === keep || Number(key) === shown?.id) kept[Number(key)] = value;
     this.set({ settings: kept });
+    if (!shown || shown.id === keep || !isReady(shown)) return;
+    if (kept[shown.id]) await this.resyncSettings(shown.id);
+    else await this.ensureSettings(shown.id);
   }
 
   /** "Make default": the look every new photo opens with (a preference). */

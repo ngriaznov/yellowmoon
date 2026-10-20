@@ -38,7 +38,7 @@ export function whiteBalanceToAuto(store: AppStore): void {
  */
 export function setWhiteBalance(store: AppStore, rs: ResolvedSettings, kelvin: number, tint: number, final: boolean): void {
   const { estimates } = rs;
-  void store.update({ white_balance: manualOrAuto({ kelvin, tint }, { kelvin: estimates.kelvin, tint: estimates.tint }) }, final);
+  void store.update({ white_balance: manualOrAuto({ kelvin, tint }, { kelvin: estimates.kelvin, tint: estimates.tint }) }, final, rs.photo_id);
 }
 
 interface ControlProps {
@@ -84,7 +84,7 @@ export function ContrastSlider({ store, rs }: ControlProps) {
       max={100}
       defaultValue={0}
       format={formats.signed}
-      onChange={(contrast, final) => void store.update({ contrast }, final)}
+      onChange={(contrast, final) => void store.update({ contrast }, final, rs.photo_id)}
     />
   );
 }
@@ -99,7 +99,7 @@ export function SaturationSlider({ store, rs }: ControlProps) {
       max={100}
       defaultValue={0}
       format={formats.signed}
-      onChange={(saturation, final) => void store.update({ saturation }, final)}
+      onChange={(saturation, final) => void store.update({ saturation }, final, rs.photo_id)}
     />
   );
 }

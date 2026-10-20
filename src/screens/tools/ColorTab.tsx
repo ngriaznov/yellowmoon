@@ -78,7 +78,7 @@ export const ColorTab = memo(function ColorTab({ store, photo, rs, pickingColor,
               label={label}
               value={settings.color_balance[key]}
               onChange={(point: ColorBalancePoint, final: boolean) =>
-                void store.update({ color_balance: { ...settings.color_balance, [key]: point } }, final)
+                void store.update({ color_balance: { ...settings.color_balance, [key]: point } }, final, rs.photo_id)
               }
             />
           ))}

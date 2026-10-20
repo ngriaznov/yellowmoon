@@ -14,9 +14,9 @@ export const DetailTab = memo(function DetailTab({ store, rs }: TabProps) {
   const sharp = values.sharpen;
   const nr = values.noise_reduction;
   const setSharpen = (amount: number, radius_px: number, final: boolean): void =>
-    void store.update({ sharpen: manualOrAuto({ amount, radius_px }, estimates.sharpen) }, final);
+    void store.update({ sharpen: manualOrAuto({ amount, radius_px }, estimates.sharpen) }, final, rs.photo_id);
   const setNoise = (luminance: number, color: number, detail: number, final: boolean): void =>
-    void store.update({ noise_reduction: manualOrAuto({ luminance, color, detail }, estimates.noise_reduction) }, final);
+    void store.update({ noise_reduction: manualOrAuto({ luminance, color, detail }, estimates.noise_reduction) }, final, rs.photo_id);
 
   return (
     <>
@@ -58,7 +58,7 @@ export const DetailTab = memo(function DetailTab({ store, rs }: TabProps) {
           step={5}
           defaultValue={OUTPUT_SHARPENING_DEFAULT}
           format={formats.percent}
-          onChange={(output_sharpening, final) => void store.update({ output_sharpening }, final)}
+          onChange={(output_sharpening, final) => void store.update({ output_sharpening }, final, rs.photo_id)}
         />
       </Card>
       <Card
