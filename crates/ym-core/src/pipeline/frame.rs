@@ -44,8 +44,13 @@
 //! boundary; a device error makes the whole frame again on the CPU with a note; a view too big for
 //! one storage binding is cut into bands with the same pixels (`banded`). The display-linear frame
 //! under the stage stays resident on the device, so a move of the Output slider is one small job.
-//! The CPU stage, where it runs, is cut into strips that each look at the cancel token
-//! (`sharpen_photo`).
+//! A view magnified above 100 % is a device job too: the device sharpens the 100 % picture under the
+//! view and the magnification kernel (`ym_gpu::kernels::magnify`, the CPU reference's taps and sums
+//! bit for bit, C13 fused) makes the RGBA8 frame; a magnified view whose 100 % picture or RGBA8 frame
+//! does not fit one binding is cut into bands of rows like any other view (each band reads the 100 %
+//! picture under its rows). Where the device does not run the tail the CPU sharpens and magnifies
+//! ([`magnify_and_encode`]). The CPU stage, where it runs, is cut into strips that each look at the
+//! cancel token (`sharpen_photo`).
 //!
 //! # The device frame
 //!
@@ -53,8 +58,8 @@
 //! ([`Renderer::viewport_frame_to`]): a frame the device makes is then not read back but handed over
 //! as a [`DeviceFrame`] (the pool buffer the kernels wrote), which the viewport draws straight into
 //! its surface on the same queue (`docs/17-gpu.md` section 16). The bytes are those of the readback.
-//! A frame the CPU makes (no device, a device error, a view magnified above 100 %) is a host frame
-//! whatever was asked; every other request reads back as before.
+//! A frame the CPU makes (no device, a device error, a stage that is off) is a host frame whatever was
+//! asked; every other request reads back as before.
 
 mod device;
 mod export_tail;
@@ -726,7 +731,8 @@ impl ViewSharpening {
     ///   on the 100 % picture (`s = 1`, the pixels an export holds) over the part of the final image
     ///   the view covers, with a margin of the halo and the 2 px of the magnifying filter, clipped
     ///   to the final image (where the photo ends the stage mirrors, as it does in an export); the
-    ///   sharpened picture is magnified to the view afterwards ([`magnify_and_encode`]).
+    ///   sharpened picture is magnified to the view afterwards (on the device by the magnification
+    ///   kernel, on the CPU by [`magnify_and_encode`]).
     fn frame_geometry(
         &self,
         view_to_final: &Affine,
@@ -962,20 +968,21 @@ fn sharpen_photo(
 }
 
 /// C13 and the letterbox: encodes a display-linear `w x h` view to RGBA8 (the dither at the pixel's
-/// place in the view) and paints the paper where `letterbox` is 1.
+/// place in the view, counted from `origin`: (0, 0) for a whole view, `(0, row)` for a band of one)
+/// and paints the paper where `letterbox` is 1.
 fn encode_view(
     job: &mut Job<'_>,
     view: &[f32],
     (w, h): (usize, usize),
     letterbox: Option<&[u8]>,
     grade: &GradePlan,
-    background: [u8; 3],
+    (background, origin): ([u8; 3], (usize, usize)),
 ) -> Result<Vec<u8>, RenderError> {
     let frame = Frame::interleaved(w, h, view).map_err(|e| RenderError::Color(e.to_string()))?;
     let mut rgb8 = vec![0u8; 3 * w * h];
     grade
         .chain
-        .encode_display_linear_u8(&frame, (0, 0), &mut rgb8, job.r.options().threads)
+        .encode_display_linear_u8(&frame, origin, &mut rgb8, job.r.options().threads)
         .map_err(|e| RenderError::Color(e.to_string()))?;
     let mut rgba = vec![255u8; 4 * w * h];
     rgba.par_chunks_mut(4)
@@ -1002,7 +1009,7 @@ fn sharpen_and_encode(
     sharpening: &ViewSharpening,
     grade: &GradePlan,
     (w, h): (usize, usize),
-    background: [u8; 3],
+    (background, origin): ([u8; 3], (usize, usize)),
 ) -> Result<Vec<u8>, RenderError> {
     job.check()?;
     let started = std::time::Instant::now();
@@ -1047,7 +1054,14 @@ fn sharpen_and_encode(
             .for_each(|(y, row)| row.copy_from_slice(&outside[(y + halo) * ew + halo..][..w]));
         mask
     });
-    let rgba = encode_view(job, &view, (w, h), letterbox.as_deref(), grade, background)?;
+    let rgba = encode_view(
+        job,
+        &view,
+        (w, h),
+        letterbox.as_deref(),
+        grade,
+        (background, origin),
+    )?;
     job.runs.output_passes += 1;
     job.timings.output_ms += started.elapsed().as_secs_f64() * 1000.0;
     Ok(rgba)
@@ -1110,7 +1124,14 @@ fn magnify_and_encode(
     )
     .map_err(|e| RenderError::Image(format!("This view can't be magnified: {e}.")))?;
     job.check()?;
-    let rgba = encode_view(job, &view, (w, h), Some(&letterbox), grade, spec.background)?;
+    let rgba = encode_view(
+        job,
+        &view,
+        (w, h),
+        Some(&letterbox),
+        grade,
+        (spec.background, spec.dither_origin),
+    )?;
     job.runs.output_passes += 1;
     job.timings.output_ms += started.elapsed().as_secs_f64() * 1000.0;
     Ok(rgba)
@@ -1500,7 +1521,8 @@ fn tail_work(
 /// and for a magnified view the device leaves to the CPU): the map is a scale and a translation, the
 /// 100 % picture under the view fits one storage binding as four planes, and so does the RGBA8 view
 /// (both against the renderer's constant, [`ViewRoute::band_bytes`], so the choice is the same on
-/// every machine). A magnified view is never cut into bands ([`band_split`]).
+/// every machine). A view that does not fit is cut into bands first ([`band_split`]), and this is
+/// asked again for each band.
 fn device_magnify(
     route: &ViewRoute,
     spec: &ViewSpec,
@@ -1648,7 +1670,7 @@ fn sharpened_pass(
                         sharpening,
                         grade,
                         (spec.out_w, spec.out_h),
-                        spec.background,
+                        (spec.background, spec.dither_origin),
                     )?,
                     Some(origin) => {
                         magnify_and_encode(job, &host, origin, sharpening, grade, spec, image)?
@@ -1723,10 +1745,33 @@ fn band_window(whole: Option<Bounds>, row: usize, rows: usize, halo: usize) -> O
     (top < bottom).then(|| (x0, top - row, x1, bottom - row))
 }
 
+/// The window the stage works on in the frame a band of a magnified view reads (the 100 % picture
+/// under the band's rows, `band`), from `whole`, the box in the frame of the view in one piece, which
+/// starts at pixel `origin` of the final image: the same pixels of the final image, cut to the band's
+/// frame. A band's own box would end where its frame ends, and the stage would mirror there; with the
+/// whole view's box it mirrors only at the photo's edge, as the view in one piece does, and the rows
+/// a band's taps read are at least the stage's receptive field away from the frame's cut
+/// (`ViewSharpening::frame_geometry`'s margin), so they are the whole view's sharpened rows.
+fn magnified_band_window(
+    whole: Option<Bounds>,
+    origin: (usize, usize),
+    band: Option<&FrameGeometry>,
+) -> Option<Bounds> {
+    let (x0, y0, x1, y1) = whole?;
+    let g = band?;
+    let (bx, by) = g.origin?;
+    let (left, top) = ((x0 + origin.0).max(bx), (y0 + origin.1).max(by));
+    let (right, bottom) = (
+        (x1 + origin.0).min(bx + g.width),
+        (y1 + origin.1).min(by + g.height),
+    );
+    (left < right && top < bottom).then(|| (left - bx, top - by, right - bx, bottom - by))
+}
+
 /// The bounding box of the pixels inside the photo in the frame the stage reads for the whole of
-/// `spec` (the view grown by the stage's receptive field), found from the geometry alone: no tile is
-/// assembled and no pixel is sampled. `None` when nothing of the photo is in the frame. For a view
-/// the stage works on in one piece: not for a magnified view, whose frame is the 100 % picture.
+/// `spec` (the view grown by the stage's receptive field, or the 100 % picture under a magnified
+/// view), found from the geometry alone: no tile is assembled and no pixel is sampled. `None` when
+/// nothing of the photo is in the frame.
 fn whole_window(
     job: &mut Job<'_>,
     spec: &ViewSpec,
@@ -1770,6 +1815,13 @@ fn banded(
         .map(|sh| whole_window(job, spec, sh))
         .transpose()?;
     let halo = sharpening.map_or(0, |s| s.halo);
+    // A band of a magnified view reads the 100 % picture under its own rows: its window is the
+    // whole view's box moved to where that picture starts (`magnified_band_window`).
+    let image = job.final_size()?;
+    let frame_of = |v: &ViewSpec| {
+        sharpening.and_then(|sh| sh.frame_geometry(&v.view_to_final, (v.out_w, v.out_h), image))
+    };
+    let whole_origin = frame_of(spec).and_then(|g| g.origin);
     // The bands of a frame that stays on the device are gathered there, into one buffer the device
     // can bind whole; a frame larger than that is read back band by band, as every frame is.
     let frame_bytes = 4 * spec.out_w as u64 * spec.out_h as u64;
@@ -1788,9 +1840,12 @@ fn banded(
     let mut row = 0;
     for band in device::bands_of(spec, rows) {
         job.check()?;
-        let window = match whole_box {
-            Some(b) => StageWindow::Of(band_window(b, row, band.out_h, halo)),
-            None => StageWindow::Own,
+        let window = match (whole_box, whole_origin) {
+            (Some(b), Some(origin)) => {
+                StageWindow::Of(magnified_band_window(b, origin, frame_of(&band).as_ref()))
+            }
+            (Some(b), None) => StageWindow::Of(band_window(b, row, band.out_h, halo)),
+            (None, _) => StageWindow::Own,
         };
         row += band.out_h;
         match whole(job, &band, grade, sharpening, Some(route), window)? {
@@ -1837,8 +1892,11 @@ fn banded(
 /// whole, from the sampler to the RGBA8 frame, is cut, and only when its frame (four planes of f32
 /// over the view grown by the stage's receptive field) or the camera RGB it reads does not fit one
 /// storage binding of [`RenderOptions::view_band_bytes`] ([`device::band_rows`]; a constant of the
-/// renderer, so the cut is the same on every machine). A magnified view reads the 100 % picture
-/// around it and is not cut.
+/// renderer, so the cut is the same on every machine). A sharpened view magnified above 100 % reads
+/// the 100 % picture under it: it is cut when that picture (four planes of f32) or its RGBA8 frame
+/// does not fit, each band reading the 100 % picture under its own rows (`device_magnify`), and the
+/// bands give the view in one piece bit for bit (the stage's window is the whole view's, the taps
+/// of a row do not depend on the band, and the dither counts from the band's row).
 ///
 /// The camera RGB a view reads can be larger than its frame (the whole group at 1/2 is 150 MB for a
 /// 50 MP photo; full-resolution tiles under a view between 50 and 100 % hold up to four pixels per
@@ -1860,24 +1918,35 @@ fn band_split(
         return Ok(None);
     }
     let step = spec.view_to_final.m[0][0];
-    if sharpening.is_some() && step.is_finite() && step < 1.0 - 1e-9 {
-        return Ok(None);
-    }
+    let magnified = sharpening.is_some() && step.is_finite() && step < 1.0 - 1e-9;
     let halo = sharpening.map_or(0, |s| s.halo);
-    let by_frame = device::band_rows(spec.out_w, spec.out_h, halo, route.band_bytes, 1);
+    // A magnified view's bands are sized by the loop below, from the pictures each one reads.
+    let by_frame = if magnified {
+        None
+    } else {
+        device::band_rows(spec.out_w, spec.out_h, halo, route.band_bytes, 1)
+    };
     let plan = job.plan()?;
     let image = job.final_size()?;
     let geometry = job.geometry().at_full_resolution();
     // The camera RGB one band reads: the view's own rows, or with output sharpening the band grown
-    // by the stage's receptive field (the frame the band's colour pass makes).
+    // by the stage's receptive field (the frame the band's colour pass makes), or the 100 % picture
+    // under a magnified band, which must fit one binding itself, with the band's RGBA8.
     let source_fits = |job: &mut Job<'_>, band: &ViewSpec| -> Result<bool, RenderError> {
+        let frame = sharpening
+            .and_then(|sh| sh.frame_geometry(&band.view_to_final, (band.out_w, band.out_h), image));
+        if magnified && let Some(g) = &frame {
+            let planes = 16 * g.width.next_multiple_of(2) as u64 * g.height as u64;
+            let rgba8 = 4 * band.out_w as u64 * band.out_h as u64;
+            if planes > route.band_bytes || rgba8 > route.band_bytes {
+                return Ok(false);
+            }
+        }
         // The CPU samples: what goes up is the band's frame, which the cut already holds.
         if !stages.sampler {
             return Ok(true);
         }
-        let read = match sharpening
-            .and_then(|sh| sh.frame_geometry(&band.view_to_final, (band.out_w, band.out_h), image))
-        {
+        let read = match frame {
             Some(g) => ViewSpec {
                 out_w: g.width,
                 out_h: g.height,

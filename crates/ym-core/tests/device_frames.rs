@@ -9,10 +9,11 @@
 //! on the device, paper bands included) and views magnified above 100 % (200 %, 400 %, 800 % and
 //! odd zooms, panned, retina, a tilted crop, paper around the photo, the Before view, no and 200 %
 //! sharpening, the slider over the resident 100 % picture; the device sharpens the 100 % picture
-//! and the magnification kernel makes the frame, `docs/17-gpu.md` section 16). A magnified view is
-//! never cut into bands: one whose 100 % picture does not fit one binding has that picture coloured
-//! in bands by the device and is sharpened and magnified by the CPU, a host frame whatever was asked,
-//! the same bytes. The magnified frames are also held to the frames of the CPU's
+//! and the magnification kernel makes the frame, `docs/17-gpu.md` section 16). A magnified view
+//! whose 100 % picture or RGBA8 frame does not fit one binding is cut into bands, each reading the
+//! 100 % picture under its rows, and the bands are the view in one piece bit for bit (a tilted
+//! crop's slanted edge across the cut included). The magnified frames are also held to the frames of
+//! the CPU's
 //! stage and magnification over the same display-linear frame, within the bound stated there. They
 //! also check that the frame counts against the device's pool while it is held and goes back when it
 //! is dropped, and that the frame cache serves a device frame again.
@@ -105,6 +106,22 @@ fn tilted(src: &PhotoSource) -> PhotoSource {
                 height: 0.84,
             },
             angle_deg: 5.0,
+            aspect: CropAspect::Free,
+        });
+    })
+}
+
+/// The whole photo straightened by `angle_deg`: the final image has empty corners, outside the photo.
+fn straightened(src: &PhotoSource, angle_deg: f64) -> PhotoSource {
+    edit(src, |s| {
+        s.crop = Some(Crop {
+            rect: NormRect {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            },
+            angle_deg,
             aspect: CropAspect::Free,
         });
     })
@@ -317,11 +334,18 @@ fn a_device_frame_has_the_bytes_of_the_frame_read_back() {
             zoomed(300.0, (400.0, 300.0, 1.0), [0.02, 0.03], image),
             true,
         ),
+        // The empty corner of a straightened photo: paper inside the 100 % picture (its mask).
+        (
+            "250 %, straightened 8 degrees, a corner",
+            straightened(&src, 8.0),
+            zoomed(250.0, (400.0, 300.0, 1.0), [0.03, 0.04], image),
+            true,
+        ),
         // A cell wider and taller than the photo at 200 %: paper around it.
         (
             "200 %, paper around",
             src.clone(),
-            zoomed(200.0, (1000.0, 700.0, 1.0), [0.5, 0.5], image),
+            zoomed(200.0, (1900.0, 1300.0, 1.0), [0.5, 0.5], image),
             true,
         ),
         (
@@ -436,33 +460,77 @@ fn a_move_of_the_output_slider_keeps_its_frame_on_the_device() {
 }
 
 #[test]
-fn a_magnified_view_stays_on_the_device_when_its_pictures_fit_one_binding() {
+fn a_magnified_view_too_big_for_one_binding_is_cut_into_bands_with_the_pixels_of_the_whole_view() {
     let Some(gpu) = gpu() else { return };
     let photo = picture(900, 600);
     let src = photo.source();
-    // The renderer of the banded views above (about 1.4 MB a binding).
-    let r = renderer(Some(&gpu), Some(1_400_000));
-    let image = r.final_size(&src, &CancelToken::new()).expect("size");
-    // (name, state, kept on the device): a 400 x 300 view at 200 % reads about 240 x 190 pixels at
-    // 100 % (16 bytes each) and is 480 kB of RGBA8, which fits: one colour pass and the device's
-    // tail. A 760 x 560 view at 150 % reads about 550 x 410 pixels (3.6 MB), which does not: the
-    // device colours that picture in bands of rows and the CPU sharpens and magnifies it whole.
-    for (name, st, kept) in [
-        ("200 %, fits", at(200.0, 400.0, 300.0, image), true),
+    // The renderer of the banded views above (about 1.4 MB a binding) and one with the default
+    // binding, which makes the same views in one piece.
+    let banded = renderer(Some(&gpu), Some(1_400_000));
+    let whole = renderer(Some(&gpu), None);
+    let image = banded.final_size(&src, &CancelToken::new()).expect("size");
+    // (name, photo, state, cut): a 400 x 300 view at 200 % reads about 240 x 190 pixels at 100 %
+    // (16 bytes each) and is 480 kB of RGBA8, which fits one binding; a 760 x 560 view at 150 %
+    // reads about 550 x 410 pixels (3.6 MB), and a 1001 x 703 view at 333 % is 2.8 MB of RGBA8,
+    // so those are cut into bands, each reading the 100 % picture under its own rows. The
+    // straightened photos put the slanted edge of an empty corner across the cuts: there a band's
+    // own box of the photo's pixels is narrower than the view's, and the stage must still mirror
+    // where the view in one piece does.
+    for (name, photo, st, cut) in [
         (
-            "150 %, over the binding",
-            at(150.0, 760.0, 560.0, image),
+            "200 %, fits",
+            src.clone(),
+            at(200.0, 400.0, 300.0, image),
             false,
         ),
+        (
+            "150 %, over the binding",
+            src.clone(),
+            at(150.0, 760.0, 560.0, image),
+            true,
+        ),
+        (
+            "120 %, tilted crop, its corner",
+            tilted(&src),
+            zoomed(120.0, (900.0, 640.0, 1.0), [0.1, 0.9], image),
+            true,
+        ),
+        (
+            "150 %, straightened 8 degrees, a corner",
+            straightened(&src, 8.0),
+            zoomed(150.0, (760.0, 560.0, 1.0), [0.12, 0.15], image),
+            true,
+        ),
+        (
+            "180 %, straightened -6 degrees, a corner",
+            straightened(&src, -6.0),
+            zoomed(180.0, (760.0, 560.0, 1.0), [0.85, 0.9], image),
+            true,
+        ),
+        (
+            "333 %, the frame over the binding",
+            src.clone(),
+            zoomed(333.0, (1001.0, 703.0, 1.0), [0.4, 0.6], image),
+            true,
+        ),
     ] {
-        let host = fresh(&r, &src, &st, FrameOutput::Host);
-        // The 100 % picture coloured in one piece, or in bands (one colour pass a band).
+        let host = fresh(&banded, &photo, &st, FrameOutput::Host);
+        // One colour pass a band.
         let passes = host.report.runs.color_passes;
-        assert_eq!(passes == 1, kept, "{name}: {passes} colour passes");
-        let device = fresh(&r, &src, &st, FrameOutput::Device);
-        assert_eq!(assert_same_pixels(name, &host, &device), kept, "{name}");
-        // The colour pass ran on the device either way.
-        assert_eq!(device.report.device, ComputeDevice::Gpu, "{name}");
+        assert_eq!(passes > 1, cut, "{name}: {passes} colour passes");
+        let device = fresh(&banded, &photo, &st, FrameOutput::Device);
+        assert!(
+            assert_same_pixels(name, &host, &device),
+            "{name}: kept on the device"
+        );
+        // The bands are the view in one piece, bit for bit.
+        let one = fresh(&whole, &photo, &st, FrameOutput::Host);
+        assert_eq!(one.report.runs.color_passes, 1, "{name}: in one piece");
+        assert!(
+            one.rgba == host.rgba,
+            "{name}: the bands are not the view in one piece ({})",
+            first_difference(&host.rgba, &one.rgba, host.width)
+        );
     }
 }
 
@@ -514,7 +582,12 @@ fn a_magnified_device_frame_is_the_cpu_magnification_of_the_same_picture_within_
         (
             "200 %, paper around",
             src.clone(),
-            zoomed(200.0, (1000.0, 700.0, 1.0), [0.5, 0.5], image),
+            zoomed(200.0, (1900.0, 1300.0, 1.0), [0.5, 0.5], image),
+        ),
+        (
+            "250 %, straightened 8 degrees, a corner",
+            straightened(&src, 8.0),
+            zoomed(250.0, (400.0, 300.0, 1.0), [0.03, 0.04], image),
         ),
         (
             "800 %, 200 % sharpening",
@@ -527,6 +600,16 @@ fn a_magnified_device_frame_is_the_cpu_magnification_of_the_same_picture_within_
         let cpu = fresh(&cpu_tail, &photo, &st, FrameOutput::Host);
         assert_eq!(cpu.report.runs.output_passes, 1, "{name}");
         let bytes = device.host_rgba().expect("read back");
+        // The views at a corner or larger than the photo show paper, inside the 100 % picture (the
+        // straightened photo's empty corner) or around it.
+        let background = RenderOptions::default().background;
+        let paper = bytes
+            .chunks_exact(4)
+            .filter(|p| p[..3] == background)
+            .count();
+        if name.contains("paper") || name.contains("straightened") {
+            assert!(paper > 100, "{name}: {paper} pixels of paper");
+        }
         let (mut worst, mut over) = (0u8, 0usize);
         for (i, (a, b)) in bytes.iter().zip(&cpu.rgba).enumerate() {
             let d = a.abs_diff(*b);

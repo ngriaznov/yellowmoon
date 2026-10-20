@@ -19,9 +19,10 @@
 //! ([`FrameSink::takes_device_frames`]): the view job's RGBA8 buffer ([`DeviceFrame`]) is bound
 //! as a read-only storage buffer of a full-screen triangle that writes it texel for texel into the
 //! surface's texture, on the core's queue, so the pass runs after the job that wrote the buffer
-//! (submission order) and the frame never goes through the processor ("zero-copy"). A frame the
-//! CPU made (no usable device for a request, a view magnified above 100 %) arrives as host bytes
-//! and is uploaded to a texture and drawn the same way, as before. Without a device in the core
+//! (submission order) and the frame never goes through the processor ("zero-copy"), at every zoom
+//! (a view magnified above 100 % is magnified on the device since 2026-10-20). A frame the CPU made
+//! (no usable device for a request, a device error, a stage that is off) arrives as host bytes and is
+//! uploaded to a texture and drawn the same way, as before. Without a device in the core
 //! (policy `off`, no adapter, a software adapter under `auto`, a device that is lost) the sink
 //! opens a device of its own and draws host frames only, as it always did; a core device that is
 //! lost later is replaced by one of the sink's own at the next frame. The log says which at start:

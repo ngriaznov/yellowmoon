@@ -24,7 +24,10 @@
 //! waits for them as before, but reads nothing back, and hands back the pool buffer itself
 //! ([`Rgba8::Device`]). The viewport draws that buffer into its surface on the same queue
 //! (`docs/17-gpu.md` section 16). The bands of a view cut into bands are gathered into one buffer on
-//! the device ([`gather_job`]); every other request reads back as before.
+//! the device ([`gather_job`]); every other request reads back as before. A view magnified above
+//! 100 % has its tail on the device as well: the display-linear frame is then the 100 % picture under
+//! the view, which the tail sharpens and the magnification kernel makes bigger, with C13 fused
+//! ([`record_magnified_tail`]), so the native viewport gets device frames at every zoom.
 //!
 //! # Which stage runs where
 //!
