@@ -329,28 +329,29 @@ dB, 10 px border excluded; "today" is the bilateral denoise with a σ map and R7
 3.5, 3, 3.5, 4, 4 and the best `kC` 16, 8, 8, 6, 6 (ISO 100 to 12800); `kL = 3.5`, `kC = 8` is within 0.12 dB of the
 best luma setting and 0.2 dB of the best chroma setting at every level. The noise measured after the demosaic is 1.5
 to 3.9 times the model's (the demosaic's error dominates at low ISO and the demosaic correlates the noise); the
-constants are fitted against the model's noise, which is what a render knows. Appendix D's estimate reads 0.92 to
-1.04 of that measured σY and about half of its σC.
+constants are fitted against the model's noise, which is what a render knows. Appendix D's estimate reads 0.69 to
+0.96 of that measured σY (lower as the noise grows) and 0.53 to 0.63 of its σC.
 
-*Comparison* (R 1; A and C with blend 15, B without; working encoding, dB):
+*Comparison* (R 1, blend 15, the render's settings; working encoding, dB; in brackets C without the blend):
 
 | set | ISO-like | none | today | A | B (L 30) | C (L 80, C 90) |
 |---|---|---|---|---|---|---|
-| Kodak | 100 | 36.89 | 35.27 | **37.14** | 36.79 | 37.20 |
-| Kodak | 800 | 34.54 | 34.19 | **35.80** | 35.24 | 35.74 |
-| Kodak | 1600 | 32.78 | 33.35 | **34.64** | 33.93 | 34.51 |
-| Kodak | 6400 | 27.61 | 30.61 | **31.07** | 29.75 | 30.69 |
-| Kodak | 12800 | 25.05 | 29.10 | **29.06** | 27.45 | 28.50 |
-| McMaster | 100 | 34.07 | 31.62 | **34.28** | 34.22 | 34.47 |
-| McMaster | 800 | 32.01 | 30.91 | **33.01** | 32.84 | 33.24 |
-| McMaster | 1600 | 30.69 | 30.35 | **32.10** | 31.82 | 32.32 |
-| McMaster | 6400 | 26.82 | 28.42 | **29.60** | 28.80 | 29.53 |
-| McMaster | 12800 | 24.73 | 27.19 | **28.11** | 26.88 | 27.87 |
+| Kodak | 100 | 36.89 | 35.27 | **37.14** | 36.79 | 37.20 (37.17) |
+| Kodak | 800 | 34.54 | 34.19 | **35.84** | 35.24 | 35.74 (35.77) |
+| Kodak | 1600 | 32.78 | 33.35 | **34.72** | 33.93 | 34.51 (34.61) |
+| Kodak | 6400 | 27.61 | 30.61 | **31.31** | 29.75 | 30.69 (31.00) |
+| Kodak | 12800 | 25.05 | 29.10 | **29.44** | 27.45 | 28.50 (28.91) |
+| McMaster | 100 | 34.07 | 31.62 | **34.30** | 34.22 | 34.47 (34.43) |
+| McMaster | 800 | 32.01 | 30.91 | **33.13** | 32.84 | 33.24 (33.31) |
+| McMaster | 1600 | 30.69 | 30.35 | **32.27** | 31.82 | 32.32 (32.45) |
+| McMaster | 6400 | 26.82 | 28.42 | **29.90** | 28.80 | 29.53 (29.84) |
+| McMaster | 12800 | 24.73 | 27.19 | **28.49** | 26.88 | 27.87 (28.27) |
 
-(The C column above is C with blend 15; without the blend C is 0.1 to 0.4 dB higher at ISO 6400 and 12800.) Method A
-is 0.5 to 1.9 dB above today's path from ISO 100 to 6400 and level with it at 12800; **today's path is below no
-denoise at all at ISO 100 and 800** (it smooths detail that the noise did not hide). C is within ±0.2 dB of A on
-Kodak and 0.1 to 0.4 dB above it on McMaster, at two to three times its time and with the whole frame to read; B is
-below both. `R = 2` adds 0.05 to 0.1 dB to A at 1.6 times its time; `R = 0` loses 0.1 to 0.4 dB. Seconds per
-megapixel on the CPU (wall, 3 threads): today 0.2 to 0.4, A 0.5 to 0.85, B 0.9 to 1.7, C 1.2 to 1.9. The full
+Method A is above today's path at every level of both sets: +1.9, +1.7, +1.4, +0.7 and +0.3 dB on Kodak and +2.7,
++2.2, +1.9, +1.5 and +1.3 on McMaster from ISO 100 to 12800. **Today's path is below no denoise at all at ISO 100 and
+800** (it smooths detail that the noise did not hide); A is above no denoise everywhere, so it does not soften a
+clean photo. C is 0.1 to 0.2 dB above A at ISO 100 and 800 and below it from 1600 up (0.05 to 0.6 dB with the blend,
+up to 0.5 dB without), at twice A's time and with the whole frame to read; B is below both. `R = 2` adds 0.02 to
+0.07 dB to A (without the blend) at 1.5 times its time; `R = 0` loses 0.05 to 0.4 dB. Seconds per megapixel on the
+CPU (wall, 3 threads): today 0.2 to 0.3, A 0.5, B 0.9, C 1.0. The full
 tables: `testdata/denoise_gate/numbers.md` after a run.
