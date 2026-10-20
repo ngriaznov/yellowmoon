@@ -29,6 +29,12 @@ const SLOPE: f64 = 12.919_990_891_366_469;
 /// The knee on the encoded side.
 const KNEE_Y: f64 = SLOPE * KNEE_X;
 
+/// The knee on the linear side, the slope of the linear segment and the knee on the encoded side, for the
+/// device kernel (`kernels::bm_dct`), which writes them into its shader.
+pub(crate) const fn knee_and_slope() -> (f64, f64, f64) {
+    (KNEE_X, SLOPE, KNEE_Y)
+}
+
 /// The sRGB transfer function on the whole line (see the module documentation).
 #[must_use]
 pub fn srgb_encode(v: f64) -> f64 {

@@ -50,6 +50,7 @@ use ym_gpu::cpu::demosaic::adaptive_ratio::Params;
 use ym_gpu::cpu::demosaic::{CaCurves, DemosaicInputs, Method};
 use ym_gpu::cpu::denoise::BilateralParams;
 use ym_gpu::cpu::detail::NoiseReduction;
+use ym_gpu::cpu::frame_denoise::{DenoiseMethod, FrameDenoise};
 use ym_gpu::cpu::lens::{LensGeometry, LensSwitches, LensTags};
 use ym_gpu::cpu::normalize::Levels;
 use ym_gpu::cpu::sharpen::SharpenParams;
@@ -62,6 +63,7 @@ use ym_gpu::kernels::adaptive_ratio::{self, Balance, PreparedDemosaic};
 use ym_gpu::kernels::bilateral::SigmaHalf;
 use ym_gpu::kernels::prep::DeviceRaw;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
+use ym_noise::model::NoiseModel;
 
 /// The device with `f32` storage (the automatic one, since the device foundation).
 fn f32_device_or_skip() -> Option<&'static TestGpu> {
@@ -2831,4 +2833,334 @@ fn a_fuzz_of_the_front_chain_keeps_tiles_exact_and_the_front_on_the_cpus_values(
         cases as u64 * 6 >= total * 5,
         "only {cases} of {total} cases ran"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// R6's single-frame denoise by method A in place of the bilateral denoise and R7
+// ---------------------------------------------------------------------------------------------
+
+/// The chain with method A in place of the bilateral denoise and R7, as the render builds it
+/// (`FrameDenoise::resolve`: the radius and the blend of the Detail control), with the luma and chroma
+/// strengths that `resolve` gives this noise model and these controls at `kL = 3.5` and `kC = 8` (6.59 and
+/// 31.0) written out, so that the measured bounds below do not move when those constants are tuned. R6..R8 is
+/// then the demosaic, method A and Richardson-Lucy.
+fn with_method_a(mut chain: Chain) -> Chain {
+    let model = NoiseModel::new(2e-4, 3e-7);
+    let fd = FrameDenoise::resolve(
+        DenoiseMethod::BmDct,
+        &chain.noise_reduction,
+        chain.iso,
+        &model,
+        chain.gains,
+    )
+    .expect("method A");
+    assert!(fd.blend > 0.0, "{fd:?}");
+    chain.frame_denoise = Some(FrameDenoise {
+        luma: 6.59,
+        chroma: 31.0,
+        ..fd
+    });
+    chain
+}
+
+/// [`setup_for`] with method A.
+fn method_a_setup(scene: Scene, lens: Lens, noise: NoiseDn, variant: Variant) -> Setup {
+    let chain = with_method_a(chain_of(&scene, lens, noise));
+    let (w, h) = (scene.width, scene.height);
+    match variant {
+        Variant::Scalar => Setup::new(scene, chain).raw_group(),
+        Variant::Half => Setup::with_half(scene, chain, HalfSigma::new(w, h, 0.01, false, 5)),
+        Variant::HalfWithGains => {
+            Setup::with_half(scene, chain, HalfSigma::new(w, h, 0.008, true, 6))
+        }
+    }
+}
+
+/// The same setup on R6..R6: the device demosaic, then the CPU's method A and R8 (the CPU chain needs the
+/// sigma map, which `with_half` made).
+fn on_r6(setup: &Setup) -> Setup {
+    let mut raw6 = setup.clone();
+    raw6.range = StageRange::DEMOSAIC;
+    raw6.gpu_chain = Arc::clone(&raw6.chain);
+    raw6.half = None;
+    raw6
+}
+
+/// One case of a chain with method A against the CPU chain. Method A spreads a demosaic decision that went
+/// the other way (a few pixels, `ONE_CHAIN_CASE`) over the 24 x 24 footprints of the references that read it
+/// (their groups and thresholds see other values), so a small tile on such a pixel differs in more of its
+/// samples than with the bilateral denoise (measured: 44 % of a 33 x 21 tile over 1e-4 against 5 % with the
+/// bilateral, where method A on the same planes agrees with the CPU's to 1.7e-6). The worst case's share and
+/// largest difference, twice the first measured values (0.439 and 0.295).
+const ONE_METHOD_A_CASE: Limits = Limits {
+    over: 0.88,
+    fine: 1.0,
+    largest: 0.59,
+};
+
+/// R6..R8 with method A on tie-free content against the CPU chain, all cases together. First measured on
+/// lavapipe (Mesa 25.2, LLVM 20.1): 3317 of 1 228 536 samples over 1e-4 (2.70e-3), 4866 over 2e-5 (3.96e-3),
+/// largest 7.15e-3 (the bilateral chain's R6..R8: 1.74e-4, 9.1e-4, 2.9e-3: the same demosaic flips, spread);
+/// the limits are twice that. R1..R9 measured the same to the sample but one.
+const METHOD_A_TIE_FREE: Limits = Limits {
+    over: 5.4e-3,
+    fine: 7.92e-3,
+    largest: 1.43e-2,
+};
+
+/// The same on tie-prone content (the bare grid: the demosaic's decisions tie, and the clipped plateaus are
+/// exactly flat, so method A's mirror-image candidates tie too). First measured: 25 921 of 638 232 over 1e-4
+/// (4.06e-2), 35 242 over 2e-5 (5.52e-2), largest 0.295, for R6..R8 and R1..R9 alike.
+const METHOD_A_TIE_PRONE: Limits = Limits {
+    over: 8.12e-2,
+    fine: 0.11,
+    largest: 0.59,
+};
+
+/// Method A and R8 on the very planes the device demosaic made, on tie-free content: R6..R8 against R6..R6
+/// (the CPU runs method A and R8 after the same device demosaic), so only the method A and Richardson-Lucy
+/// kernels differ. Largest difference over all cases, twice the first measured value (3.8e-6: no decision
+/// went the other way).
+const METHOD_A_POST_TIE_FREE: f64 = 7.6e-6;
+
+/// The same on tie-prone content: twice the first measured value (1.70e-2; 4004 samples over 1e-4, all on
+/// the bare grid, `tests/gpu_bm_dct.rs` measures the kind on its own).
+const METHOD_A_POST_TIE_PRONE: f64 = 3.4e-2;
+
+/// R1..R9 with method A against R6..R8 behind the CPU's front, largest difference over the tie-free cases:
+/// R5b and R9 in f32 against the CPU's f64 positions (`FRONT_AGAINST_HANDOFF`), carried through method A.
+/// Twice the first measured value (1.67e-6).
+const METHOD_A_FRONT_AGAINST_HANDOFF: f64 = 3.4e-6;
+
+/// The four outputs of a case: the whole, two frame-edge tiles and one in the middle.
+fn outputs_of(ow: usize, oh: usize) -> [Rect; 4] {
+    [
+        Rect::whole(ow, oh),
+        Rect::new(0, 0, 40.min(ow), 31.min(oh)),
+        Rect::new(
+            ow.saturating_sub(37),
+            oh.saturating_sub(29),
+            37.min(ow),
+            29.min(oh),
+        ),
+        Rect::new(ow / 3, oh / 3, 33.min(ow - ow / 3), 21.min(oh - oh / 3)),
+    ]
+}
+
+/// Runs the sweep with method A on `setup_of`'s range and compares it with the CPU chain and, on the same
+/// device demosaic, with the CPU's method A (R6..R6 or, for `front`, R6..R8 behind the CPU's front).
+fn method_a_sweep(dev: &TestGpu, front: bool) -> (Stats, Stats, f64, f64, f64) {
+    let (mut free, mut prone) = (Stats::default(), Stats::default());
+    let (mut post_free, mut post_prone, mut worst_case) = (0.0f64, 0.0f64, 0.0f64);
+    let range = if front { "R1..R9" } else { "R6..R8" };
+    for (n, (cfa, w, h, lens, nname, noise, seed)) in sweep().into_iter().enumerate() {
+        let variant = [Variant::Scalar, Variant::Half, Variant::HalfWithGains][n % 3];
+        let handoff = method_a_setup(Scene::new(w, h, cfa, seed), lens, noise, variant);
+        let (setup, same_planes) = if front {
+            (handoff.clone().front(), handoff)
+        } else {
+            let raw6 = on_r6(&handoff);
+            (handoff, raw6)
+        };
+        let (ow, oh) = setup.output_size();
+        for out in outputs_of(ow, oh) {
+            let got = setup.gpu(dev, out);
+            let s = compare(&got, &setup.cpu(out));
+            let label = format!(
+                "{range} method A {} {w}x{h} lens {lens:?} noise {nname} {variant:?} {out:?}",
+                cfa.name()
+            );
+            assert_within(&label, &s, ONE_METHOD_A_CASE);
+            worst_case = worst_case.max(s.over as f64 / s.n as f64);
+            let p = compare(&got, &same_planes.gpu(dev, out));
+            if p.over > 0 {
+                eprintln!("{label}: against the same planes {p:?}");
+            }
+            if lens.tie_prone() {
+                prone.add(&s);
+                post_prone = post_prone.max(p.max_abs);
+            } else {
+                free.add(&s);
+                post_free = post_free.max(p.max_abs);
+            }
+        }
+    }
+    free.print(&format!("{range} chain with method A, tie-free content"));
+    prone.print(&format!("{range} chain with method A, tie-prone content"));
+    note!(
+        "[{range}] method A against the CPU's on the same planes: largest {post_free:.3e} tie-free, {post_prone:.3e} tie-prone; worst single case {worst_case:.3e} over 1e-4"
+    );
+    (free, prone, post_free, post_prone, worst_case)
+}
+
+#[test]
+fn r6_to_r8_with_method_a_matches_the_cpu_chain() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let (free, prone, post_free, post_prone, _) = method_a_sweep(dev, false);
+    assert_within(
+        "R6..R8 chain with method A, tie-free content",
+        &free,
+        METHOD_A_TIE_FREE,
+    );
+    assert_within(
+        "R6..R8 chain with method A, tie-prone content",
+        &prone,
+        METHOD_A_TIE_PRONE,
+    );
+    assert!(post_free <= METHOD_A_POST_TIE_FREE, "{post_free:e}");
+    assert!(post_prone <= METHOD_A_POST_TIE_PRONE, "{post_prone:e}");
+}
+
+/// R1..R9 with method A: the front is the CPU's to the bit on content without R5b, so against R6..R8 behind
+/// the CPU's front only R5b and R9 differ ([`METHOD_A_FRONT_AGAINST_HANDOFF`]); against the CPU chain the
+/// R6..R8 limits hold.
+#[test]
+fn r1_to_r9_with_method_a_matches_the_cpu_chain() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let (free, prone, post_free, _, _) = method_a_sweep(dev, true);
+    assert_within(
+        "R1..R9 chain with method A, tie-free content",
+        &free,
+        METHOD_A_TIE_FREE,
+    );
+    assert_within(
+        "R1..R9 chain with method A, tie-prone content",
+        &prone,
+        METHOD_A_TIE_PRONE,
+    );
+    assert!(post_free <= METHOD_A_FRONT_AGAINST_HANDOFF, "{post_free:e}");
+}
+
+#[test]
+fn tiles_of_the_chain_with_method_a_equal_the_whole_chain_bit_for_bit() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let mut seed = 3100;
+    for (cfa, lens, noise, variant) in [
+        (Cfa::RGGB, Lens::Full, high_noise(), Variant::HalfWithGains),
+        (Cfa::GRBG, Lens::Bare, low_noise(), Variant::Scalar),
+        (Cfa::BGGR, Lens::Vignette, high_noise(), Variant::Half),
+    ] {
+        seed += 1;
+        let (w, h) = (171usize, 133usize);
+        let setup = method_a_setup(Scene::new(w, h, cfa, seed), lens, noise, variant);
+        for s in [setup.clone(), setup.front()] {
+            let (ow, oh) = s.output_size();
+            assert_tiles_equal_whole(
+                &format!(
+                    "method A {} {} lens {lens:?} {variant:?}",
+                    s.range.label(),
+                    cfa.name()
+                ),
+                ow,
+                oh,
+                3,
+                &[64, 100],
+                |rect| s.gpu(dev, rect).data,
+            );
+        }
+    }
+}
+
+/// A runner that notes the dispatches a piece of work announces, then runs it.
+struct Announced<'a> {
+    ctx: &'a GpuContext,
+    max: std::cell::Cell<usize>,
+}
+
+impl DeviceRunner for Announced<'_> {
+    fn run_device(&self, work: DeviceWork, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
+        if let DeviceWork::Raw(w) = &work {
+            self.max.set(w.max_dispatches());
+        }
+        work.run(self.ctx, cancel)
+    }
+}
+
+#[test]
+fn the_chain_with_method_a_is_poison_neutral_and_counts_its_dispatches() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let scene = Scene::new(150, 110, Cfa::RGGB, 77);
+    let chain = with_method_a(chain_of(&scene, Lens::Full, high_noise()));
+    let setup = Setup::with_half(scene, chain, HalfSigma::new(150, 110, 0.01, true, 3));
+    let (ow, oh) = setup.output_size();
+    let out = Rect::new(7, 5, ow - 9, oh - 8);
+    let got = assert_poison_neutral("the device chain with method A", |gpu| {
+        let s = setup.clone();
+        gpu.run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+            s.device_chain()?.run_tile(ctx, &s.scene.raw(), out, cancel)
+        })
+        .expect("chain")
+        .data
+    });
+    assert!(got.is_some(), "a plain device is available");
+    let s = setup.clone();
+    let (ran, announced) = dev
+        .gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+            let runner = Announced {
+                ctx,
+                max: std::cell::Cell::new(0),
+            };
+            let before = ctx.counters();
+            s.device_chain()?
+                .run_tile(&runner, &s.scene.raw(), out, cancel)?;
+            Ok((ctx.counters().since(before), runner.max.get()))
+        })
+        .expect("job");
+    note!(
+        "[R6..R8] one tile with method A: {} dispatches (announced at most {announced}), {} submission",
+        ran.dispatches,
+        ran.submissions
+    );
+    assert_eq!((ran.submissions, ran.readbacks), (1, 1));
+    assert!(
+        ran.dispatches as usize <= announced,
+        "{ran:?} against {announced}"
+    );
+    // The demosaic, the sigma plane, method A's prep, its passes (R 1: 16 regular ones at least) and its
+    // output, and Richardson-Lucy.
+    assert!(ran.dispatches >= 2 + 16 + 2, "{ran:?}");
+}
+
+#[test]
+fn the_device_chain_refuses_methods_b_and_c_and_leaves_them_to_the_cpu() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let model = NoiseModel::new(2e-4, 3e-7);
+    for method in [DenoiseMethod::NlBayesRgb, DenoiseMethod::NlBayesYcc] {
+        let scene = Scene::new(64, 48, Cfa::RGGB, 9);
+        let mut chain = chain_of(&scene, Lens::Bare, low_noise());
+        chain.frame_denoise = FrameDenoise::resolve(
+            method,
+            &chain.noise_reduction,
+            chain.iso,
+            &model,
+            chain.gains,
+        );
+        assert_eq!(chain.frame_denoise.and_then(|fd| fd.halo_px()), None);
+        let setup = Setup::new(scene, chain);
+        let out = Rect::whole(64, 48);
+        for s in [setup.clone().raw_group(), setup.clone().front()] {
+            let err = s
+                .try_gpu(dev, out)
+                .expect_err("a whole-frame method on the device");
+            assert!(
+                matches!(err, GpuError::InvalidInput(_)),
+                "{method:?} {}: {err}",
+                s.range.label()
+            );
+        }
+        // R6 alone hands the planes back: the CPU stepper runs the method after the device demosaic.
+        let s = compare(&setup.gpu(dev, out), &setup.cpu(out));
+        assert_within(&format!("{method:?} on R6..R6"), &s, ONE_CHAIN_CASE);
+    }
 }

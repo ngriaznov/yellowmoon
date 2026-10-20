@@ -7,6 +7,9 @@
 //!   noise-regularised ratio, green refinement with the optional CA weighting, chroma, shadow
 //!   sharpening and shadow colour matching), eleven pipelines of `adaptive_ratio.wgsl`, f32 planes in
 //!   every storage mode, GPU against `cpu::demosaic::adaptive_ratio`.
+//! * [`bm_dct`]: R6's single-frame denoise by method A (block matching and 3D DCT hard
+//!   thresholding, `docs/algorithms/05`): a prep pass, one dispatch per pass of A.5 in the CPU's
+//!   order and an output pass, GPU against `cpu::frame_denoise::FrameDenoise::apply`.
 //! * [`color`]: the whole per-pixel colour chain C1 to C13 as one compute pass (fused matrix, C7
 //!   highlight range and toe, C8 LogC4, C9 grade, C10 CDL and tetrahedral LUT, C11 curves, C12 ACES 2
 //!   or an ARRI display LUT, C13 encode and dither), mirroring `ym_color::display::ColorChain` stage
@@ -36,6 +39,7 @@
 pub mod adaptive_ratio;
 pub mod bilateral;
 pub mod bin;
+pub mod bm_dct;
 pub mod color;
 pub mod copy;
 pub mod detail;

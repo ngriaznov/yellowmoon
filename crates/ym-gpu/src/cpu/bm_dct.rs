@@ -601,6 +601,55 @@ impl Ctx {
     }
 }
 
+/// What the device kernel (`kernels::bm_dct`) takes from this reference for one buffer, so that its
+/// schedule is this file's: the passes in order (each the frame rows and columns of its references, as
+/// [`Ctx::passes`] makes them for the buffer), the filtered channels and the thresholds.
+#[derive(Clone, Debug)]
+pub(crate) struct DevicePlan {
+    /// The passes in order, each `(rows, columns)` in frame coordinates.
+    pub(crate) passes: Vec<(Vec<usize>, Vec<usize>)>,
+    /// Whether Y, Cb and Cr are filtered.
+    pub(crate) active: [bool; 3],
+    /// The hard threshold of each channel.
+    pub(crate) tau: [f64; 3],
+    /// The block-distance threshold.
+    pub(crate) theta: f64,
+}
+
+/// The [`DevicePlan`] of a `width` × `height` buffer at `place`, or `None` when the method changes
+/// nothing there (a frame under 8 px, or no channel to filter: `denoise` returns its input).
+pub(crate) fn device_plan(
+    width: usize,
+    height: usize,
+    place: Placement,
+    p: &BmDctParams,
+) -> Option<DevicePlan> {
+    if !Ctx::runs(&place, p) {
+        return None;
+    }
+    let ctx = Ctx::new(
+        [Vec::new(), Vec::new(), Vec::new()],
+        width,
+        height,
+        place,
+        p,
+    );
+    Some(DevicePlan {
+        passes: ctx.passes(),
+        active: ctx.active,
+        tau: ctx.tau,
+        theta: ctx.theta,
+    })
+}
+
+/// The constants of this reference the device kernel writes into its shader and uniform block, so
+/// that they are never typed twice: `K(i, j)`, the rows `2m` and `2m + 1` of the DCT matrix (columns 0
+/// to 3, [`Dct8`]) and the gain of a forward and inverse 3D transform (512).
+pub(crate) fn device_constants() -> (Block, [[f64; 4]; 4], [[f64; 4]; 4], f64) {
+    let dct = Dct8::new();
+    (window_2d(), dct.even, dct.odd, ROUND_TRIP_GAIN)
+}
+
 /// Denoises `img` with method A.
 ///
 /// `img` is the whole frame, or a window of it (`img.place`) with at least [`HALO_PX`] px of context

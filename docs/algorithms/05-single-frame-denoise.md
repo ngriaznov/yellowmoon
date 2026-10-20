@@ -314,6 +314,16 @@ How the methods enter the raw chain (`docs/05-raw-processing.md` R6 and R7). The
 - **Tiles.** Method A asks for its 23 px halo and a tile equals the whole frame bit for bit (tested through the
   chain). Methods B and C read the whole frame (pyramid and measurement), so a tile of them asks for the whole
   raw frame: correct and exact, and slow; they are for evaluation.
+- **On the device.** Method A runs on the graphics card like every other raw stage (`ym_gpu::kernels::bm_dct`,
+  `shaders/bm_dct*.wgsl`, `docs/17-gpu.md`): the device chain records it as R6's step after the demosaic, with the
+  CPU stepper's rectangles, in one job with the stages around it. A prep pass makes the encoding, Y/Cb/Cr and four
+  zeroed accumulators; one dispatch per pass of A.5, in the order of A-c, has one workgroup per reference whose
+  read span lies inside the buffer (A-d); an output pass divides, converts back, blends and decodes. Every pixel's
+  sums are added in the CPU's order, so a tile with the 23 px halo equals the whole frame bit for bit on the device
+  too. The device works in `f32` against the reference's `f64`: away from a decision the output is within about
+  2e-6 of the CPU's; a coefficient within rounding of `τ`, or two candidates within rounding of each other, can go
+  the other way (measured in `tests/gpu_bm_dct.rs` and `tests/gpu_chain.rs`). Methods B and C stay on the CPU: the
+  device chain refuses a whole-frame method, and the photo's raw chain then runs on the CPU.
 
 ## Measurement
 

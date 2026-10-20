@@ -125,6 +125,14 @@ pub enum KernelId {
     SigmaExpand,
     /// The 5 x 5 opponent bilateral denoise of R6.
     Bilateral,
+    /// R6's single-frame denoise by method A, pass 1: the working encoding, Y/Cb/Cr and the zeroed
+    /// accumulators of the buffer.
+    BmDctPrep,
+    /// R6's single-frame denoise by method A: one pass of A.5 (block matching, the 3D transform, the hard
+    /// threshold and the aggregation of every reference of the pass).
+    BmDct,
+    /// R6's single-frame denoise by method A, the last pass: `acc / w`, RGB, the blend and the decoding.
+    BmDctOutput,
     /// The R7 chroma guided filter, pass 1: horizontal window means of the six quantities.
     Guided,
     /// The R7 chroma guided filter, pass 2: vertical means and the coefficients a and b.
@@ -165,11 +173,11 @@ impl KernelId {
     /// view of a mosaic photo (the reduced group: R1 to R5, the binning, the sigma, the light
     /// denoise, R9), the copy that puts the pieces of an image together, the view stages (the
     /// sampler, the colour chain, output sharpening, C13), the full-resolution raw chain (the
-    /// demosaic, the denoise, R7, capture sharpening, diffraction), the export tail's resize, and
-    /// last the spikes and the probe, which no render uses. [`KernelSet::kernels`] and `warm_up`
+    /// demosaic, the single-frame denoise of method A, R7, capture sharpening, diffraction), the
+    /// export tail's resize, and last the spikes and the probe, which no render uses. [`KernelSet::kernels`] and `warm_up`
     /// compile in this order, so that what the first frame of the first photo waits for is compiled
     /// before what only a zoomed view or an export needs.
-    pub const ALL: [KernelId; 63] = [
+    pub const ALL: [KernelId; 66] = [
         // The fit view of a mosaic photo.
         KernelId::Prep,
         KernelId::PrepMask,
@@ -211,6 +219,9 @@ impl KernelId {
         KernelId::AdaptiveRatioMatch,
         KernelId::AdaptiveRatioExit,
         KernelId::LogGuided,
+        KernelId::BmDctPrep,
+        KernelId::BmDct,
+        KernelId::BmDctOutput,
         KernelId::Guided,
         KernelId::GuidedCols,
         KernelId::GuidedSmoothRows,
@@ -292,6 +303,9 @@ impl KernelId {
             KernelId::ReduceFold => "reduce_fold",
             KernelId::SigmaExpand => "sigma_expand",
             KernelId::Bilateral => "bilateral",
+            KernelId::BmDctPrep => "bm_dct_prep",
+            KernelId::BmDct => "bm_dct",
+            KernelId::BmDctOutput => "bm_dct_output",
             KernelId::Guided => "guided",
             KernelId::GuidedCols => "guided_cols",
             KernelId::GuidedSmoothRows => "guided_smooth_rows",
@@ -389,6 +403,9 @@ impl KernelId {
             KernelId::Encode => super::encode::body(),
             KernelId::Magnify => super::magnify::body(),
             KernelId::SigmaExpand | KernelId::Bilateral => super::bilateral::body(self),
+            KernelId::BmDctPrep | KernelId::BmDct | KernelId::BmDctOutput => {
+                super::bm_dct::body(self)
+            }
             KernelId::Guided
             | KernelId::GuidedCols
             | KernelId::GuidedSmoothRows

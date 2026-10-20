@@ -12,8 +12,9 @@
 //!   the CPU continues with R6's bilateral denoise, R7, R8 and R9.
 //! * R6 to R8 ([`StageRange::DEMOSAIC_TO_SHARPEN`]): the same hand-off, and the planes stay on
 //!   the device through the bilateral denoise, the R7 colour guided filter and detail re-injection
-//!   and R8 (Richardson-Lucy, or diffraction deconvolution) as one job with one readback; the CPU
-//!   runs R9 on what comes back. The noise sigma of the stages is expanded on the device from the
+//!   (or, in their place, the single-frame denoise of method A, `kernels::bm_dct`; methods B and C
+//!   read the whole frame and are refused) and R8 (Richardson-Lucy, or diffraction deconvolution) as
+//!   one job with one readback; the CPU runs R9 on what comes back. The noise sigma of the stages is expanded on the device from the
 //!   photo's half-resolution plane ([`GpuChain::with_sigma`]), so the 200 MB full-resolution map of the
 //!   CPU chain is never built for this range.
 //!
@@ -55,16 +56,18 @@ use crate::cpu::demosaic::Method;
 use crate::cpu::demosaic::adaptive_ratio::Params;
 use crate::cpu::denoise::BilateralParams;
 use crate::cpu::detail::network_sigma_scale;
+use crate::cpu::frame_denoise::FrameDenoise;
 use crate::cpu::normalize::Levels;
 use crate::cpu::sharpen::CaptureSharpen;
 use crate::cpu::sharpen::diffraction::{DiffractionPlan, SPEC_LUMA};
 use crate::cpu::tiling::{Halo, Rect, Stage};
-use crate::cpu::{Mosaic, RgbImage};
+use crate::cpu::{Mosaic, Placement, RgbImage};
 use crate::device::{GpuContext, GpuError};
 use crate::image::{GpuImage, RowBands};
 use crate::kernels::adaptive_ratio::{self, Balance, PreparedDemosaic};
 use crate::kernels::bilateral::{self, SigmaHalf, SigmaInput, SigmaTile};
 use crate::kernels::bin::{self, BinParams};
+use crate::kernels::bm_dct::{self, encode_frame_denoise};
 use crate::kernels::copy::{encode_copy_rect, encode_crop};
 use crate::kernels::detail::{encode_classical_luma, encode_inject_detail};
 use crate::kernels::diffraction::{PreparedDiffraction, encode_sharpen};
@@ -136,7 +139,8 @@ impl RawStage {
             Stage::Highlights => RawStage::Highlights,
             Stage::MosaicCa { .. } => RawStage::MosaicCa,
             Stage::Demosaic(_) => RawStage::Demosaic,
-            // The single-frame methods take the bilateral's place (and R7's); no device runs them.
+            // The single-frame methods take the bilateral's place (and R7's); the device runs method A
+            // (`PostStep::FrameDenoise`), methods B and C read the whole frame and stay on the CPU.
             Stage::Denoise { .. } | Stage::FrameDenoise { .. } => RawStage::Denoise,
             Stage::Detail { .. } => RawStage::Detail,
             Stage::Sharpen(_) => RawStage::Sharpen,
@@ -743,6 +747,13 @@ enum PostStep {
     },
     /// R8.
     Sharpen { out: Rect, kind: SharpenKind },
+    /// R6's single-frame denoise by method A in place of the bilateral denoise and R7
+    /// (`kernels::bm_dct`), with the dispatches it records for its input rectangle.
+    FrameDenoise {
+        out: Rect,
+        fd: FrameDenoise,
+        dispatches: usize,
+    },
 }
 
 impl PostStep {
@@ -750,7 +761,8 @@ impl PostStep {
         match self {
             PostStep::Denoise { out, .. }
             | PostStep::Detail { out, .. }
-            | PostStep::Sharpen { out, .. } => *out,
+            | PostStep::Sharpen { out, .. }
+            | PostStep::FrameDenoise { out, .. } => *out,
         }
     }
 }
@@ -777,7 +789,8 @@ pub struct RawWork {
 
 impl RawWork {
     /// The dispatches the work records at most (informational: the demosaic's up to 14, the sigma
-    /// plane, the denoise, the guided filter's 4 and 2 for the injection, Richardson-Lucy's `2 + 4 n`).
+    /// plane, the denoise, the guided filter's 4 and 2 for the injection, method A's `2 + passes`,
+    /// Richardson-Lucy's `2 + 4 n`).
     #[must_use]
     pub fn max_dispatches(&self) -> usize {
         let mut n = match &self.input {
@@ -796,6 +809,7 @@ impl RawWork {
                     SharpenKind::RichardsonLucy(p) => p.dispatches(),
                     SharpenKind::Diffraction(_) => 11,
                 },
+                PostStep::FrameDenoise { dispatches, .. } => *dispatches,
             };
         }
         n
@@ -1041,6 +1055,13 @@ impl RawWork {
                         keep.push(std::mem::replace(&mut cur, next));
                         cur_rect = out;
                     }
+                }
+                PostStep::FrameDenoise { fd, .. } => {
+                    // The method reads no sigma: the image it gets is the buffer the CPU stepper gives
+                    // `FrameDenoise::apply`, placed in the frame, and it leaves the core.
+                    let next = encode_frame_denoise(&mut passes, &cur, core, fd)?;
+                    keep.push(std::mem::replace(&mut cur, next));
+                    cur_rect = out;
                 }
                 PostStep::Sharpen { kind, .. } => {
                     let next = match kind {
@@ -1360,7 +1381,8 @@ impl<'a> GpuChain<'a> {
         // The stages after the demosaic, up to R9: each with the rectangle the CPU stepper cuts for
         // it (`post_steps`).
         let needs: Vec<Rect> = (0..=stages_len).map(|i| run.need(i)).collect();
-        let (steps, lens) = self.post_steps(run.stages(), &needs, first)?;
+        let frame = Rect::whole(raw.width, raw.height);
+        let (steps, lens) = self.post_steps(run.stages(), &needs, first, frame)?;
         let end = run.need(lens.unwrap_or(stages_len));
         let sigma = self.sigma_work(raw.width, start, chain)?;
         let work = DeviceWork::Raw(Box::new(RawWork {
@@ -1394,6 +1416,7 @@ impl<'a> GpuChain<'a> {
         stages: &[Stage<'_>],
         needs: &[Rect],
         first: usize,
+        frame: Rect,
     ) -> Result<(Vec<PostStep>, Option<usize>), GpuError> {
         let chain = self.chain;
         let nr = &chain.noise_reduction;
@@ -1440,6 +1463,30 @@ impl<'a> GpuChain<'a> {
                         steps.push(PostStep::Sharpen {
                             out,
                             kind: SharpenKind::Diffraction(plan),
+                        });
+                    }
+                }
+                Stage::FrameDenoise { halo_px: None } => {
+                    return Err(GpuError::InvalidInput(
+                        "the single-frame denoise of methods B and C reads the whole frame: the device runs method A only"
+                            .into(),
+                    ));
+                }
+                Stage::FrameDenoise { halo_px: Some(_) } => {
+                    // The stage is on the list only when the chain has the method (the CPU stepper reads a
+                    // missing one as an identity, and so does the device).
+                    if let Some(fd) = chain.frame_denoise {
+                        let input = needs[i];
+                        let place = Placement {
+                            x0: input.x,
+                            y0: input.y,
+                            frame_width: frame.w,
+                            frame_height: frame.h,
+                        };
+                        steps.push(PostStep::FrameDenoise {
+                            out,
+                            fd,
+                            dispatches: bm_dct::dispatches(input.w, input.h, place, &fd),
                         });
                     }
                 }
@@ -1601,7 +1648,7 @@ impl<'a> GpuChain<'a> {
             frame: frame_demosaic,
         }));
         let start = needs[d + 1];
-        let (steps, lens_at) = self.post_steps(&stages, &needs, d)?;
+        let (steps, lens_at) = self.post_steps(&stages, &needs, d, frame)?;
         let lens = match lens_at {
             Some(i) => {
                 let Stage::Lens(geo) = stages[i] else {
