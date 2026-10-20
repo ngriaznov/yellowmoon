@@ -107,7 +107,9 @@
   outline-offset: -3px;
 }
 .ym-pick-layer__mark { position: absolute; width: 28px; height: 28px; margin: -14px 0 0 -14px; pointer-events: none; }
-.ym-crop { position: absolute; inset: 0; overflow: hidden; }
+/* --crop-handle is the handle's size. A handle on a frame edge that sits on the edge of the cell is drawn just inside it (CropOverlay), and
+   that offset is this size, so a skin that changes the size changes the offset with it. */
+.ym-crop { --crop-handle: 10px; position: absolute; inset: 0; overflow: hidden; }
 .ym-crop__image { position: absolute; user-select: none; touch-action: none; }
 .ym-crop__frame {
   position: absolute;
@@ -124,9 +126,9 @@
 .ym-crop__handle {
   position: absolute;
   box-sizing: border-box;
-  width: 10px;
-  height: 10px;
-  margin: -5px 0 0 -5px;
+  width: var(--crop-handle);
+  height: var(--crop-handle);
+  margin: calc(var(--crop-handle) / -2) 0 0 calc(var(--crop-handle) / -2);
   padding: 0;
   border: 2px solid var(--ink);
   border-radius: 0;

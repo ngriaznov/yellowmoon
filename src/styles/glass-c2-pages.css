@@ -627,14 +627,20 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   outline: 0;
   box-shadow: 0 0 0 4000px rgb(8 8 12 / 0.55);
 }
+/* The cell clips what the crop draws (it has to: the dimming around the frame is 4000 px wide), and a frame that is the whole photo, as it is
+   when Crop opens, stands on the cell's edge. So the frame's focus ring is drawn inside the frame, just under its border, and a handle on the
+   cell's edge draws its own inside the handle, not outside where the cell would cut it. */
 .ym-crop__frame:focus-visible {
   outline: var(--glass-ring-width) solid var(--ring);
-  outline-offset: 2px;
+  outline-offset: calc(-2px - var(--glass-ring-width));
+}
+.ym-crop__handle[data-at-cell-edge]:focus-visible {
+  outline-offset: calc(var(--glass-ring-width) * -1);
+}
+.ym-crop {
+  --crop-handle: 14px;
 }
 .ym-crop__handle {
-  width: 14px;
-  height: 14px;
-  margin: -7px 0 0 -7px;
   border: 2px solid var(--brand);
   border-radius: 50%;
   background: oklch(0.2 0 0);

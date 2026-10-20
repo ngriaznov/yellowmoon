@@ -18,6 +18,8 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Fixed
 
+- The ring around the look in use is no longer cut off. A tile in the first row, the first column or the last column of a section of the Look tab lost the 4 px of its ring that stood outside the grid; the ring is whole now, and so is the focus ring when you Tab to a tile.
+- Crop: the handles on the right and bottom edges of the frame were cut off by up to 4 px when the frame is the whole photo, as it is when Crop opens. They are drawn just inside the photo, and the focus rings of the frame and of the handles on the edge are drawn inside them too.
 - Colour warp: Range now limits how far a pin's change reaches, even after a long drag; before, a long drag widened it so far that most of the picture moved. Colours that lie in the way of a long drag still move with it. Short moves look as they did (pipeline 0.4.4).
 
 ## [0.1.10] - 2026-10-17
