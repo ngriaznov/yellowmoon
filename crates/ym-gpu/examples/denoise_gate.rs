@@ -23,8 +23,8 @@
 //!   0.1` puts the hard threshold at `kL` orthonormal standard deviations (the same for C with 0.06). A sweep of
 //!   `kL` and `kC` on the first `--limit` Kodak images (default 8); also appendix D's estimate against the
 //!   oracle, and methods B and C at a few strengths around their "measured noise" settings.
-//! * `compare`: every variant on both sets at every level: A at the calibrated `kL`, `kC` (from `calibrate` in
-//!   the same run, or the defaults below), B at L 50, C at L 80 and C 50; R 1; without blend (Detail 0) and
+//! * `compare`: every variant on both sets at every level, each method at its calibrated settings (from
+//!   `calibrate` in the same run; without it A at the defaults below, B at L 50, C at L 80 and C 50); R 1; without blend (Detail 0) and
 //!   with today's Auto detail (blend 15); also R 0 and 2 for each method; seconds per megapixel.
 //!
 //! The output folder (default `testdata/denoise_gate`, git-ignored) gets `numbers.md` and `gate.json`.
@@ -115,9 +115,9 @@ const LEVELS: [Level; 5] = [
     },
 ];
 
-/// The default thresholds of method A, in orthonormal noise standard deviations, until `calibrate` runs.
-const DEFAULT_KL: f64 = 2.7;
-const DEFAULT_KC: f64 = 2.7;
+/// The thresholds of method A that the render uses (`frame_denoise`), for a `compare` without `calibrate`.
+const DEFAULT_KL: f64 = ym_gpu::cpu::frame_denoise::BM_DCT_KL;
+const DEFAULT_KC: f64 = ym_gpu::cpu::frame_denoise::BM_DCT_KC;
 
 /// One test image: the clean image on the raw scale, the noisy demosaiced one, both in the working encoding,
 /// the oracle noise and the level.
@@ -285,15 +285,47 @@ fn cases_for(images: &[(String, RgbImage)], level: &Level) -> Vec<Case> {
         .collect()
 }
 
-fn calibrate(report: &mut Report, kodak: &[(String, RgbImage)], limit: usize) -> (f64, f64, Value) {
+/// The settings `compare` uses: method A's thresholds, B's L, C's L and C.
+#[derive(Clone, Copy, Debug)]
+struct Tuned {
+    kl: f64,
+    kc: f64,
+    b_l: f64,
+    c_l: f64,
+    c_c: f64,
+}
+
+impl Default for Tuned {
+    /// Before `calibrate` runs: the settings the render uses (`frame_denoise`).
+    fn default() -> Self {
+        Tuned {
+            kl: DEFAULT_KL,
+            kc: DEFAULT_KC,
+            b_l: ym_gpu::cpu::frame_denoise::NL_BAYES_RGB_L,
+            c_l: ym_gpu::cpu::frame_denoise::NL_BAYES_YCC_L,
+            c_c: ym_gpu::cpu::frame_denoise::NL_BAYES_YCC_C,
+        }
+    }
+}
+
+/// The median of `v` (the upper one of an even count).
+fn median(mut v: Vec<f64>) -> f64 {
+    v.sort_by(f64::total_cmp);
+    v[v.len() / 2]
+}
+
+fn calibrate(report: &mut Report, kodak: &[(String, RgbImage)], limit: usize) -> (Tuned, Value) {
     let images = &kodak[..limit.min(kodak.len())];
     report.line(format!(
         "## Calibration (first {} Kodak images; PSNR in the working encoding, dB)\n",
         images.len()
     ));
-    let ks = [1.5, 2.0, 2.5, 2.7, 3.0, 3.5];
+    let ks_l = [2.5, 3.0, 3.5, 4.0, 5.0];
+    let ks_c = [6.0, 8.0, 10.0, 12.0, 16.0];
     let mut json_rows = Vec::new();
     let mut votes = Vec::new();
+    let mut b_votes = Vec::new();
+    let mut c_votes: Vec<(f64, f64)> = Vec::new();
     for level in &LEVELS {
         let cases = cases_for(images, level);
         let sy = cases.iter().map(|c| c.sigma_y).sum::<f64>() / cases.len() as f64;
@@ -317,12 +349,12 @@ fn calibrate(report: &mut Report, kodak: &[(String, RgbImage)], limit: usize) ->
             level.name, my, my * 255.0, mc, sy, sc, sy / my, sc / mc, ey, ec, est.len(), cases.len()
         ));
         let mut header = vec!["kL \\ kC".to_owned()];
-        header.extend(ks.iter().map(|k| format!("{k}")));
+        header.extend(ks_c.iter().map(|k| format!("{k}")));
         let mut rows = Vec::new();
         let mut best = (f64::NEG_INFINITY, 0.0, 0.0);
-        for &kl in &ks {
+        for &kl in &ks_l {
             let mut row = vec![format!("{kl}")];
-            for &kc in &ks {
+            for &kc in &ks_c {
                 let (pw, _, _) = run(&cases, &|c| method_a(c, kl, kc, 1, 0.0));
                 if pw > best.0 {
                     best = (pw, kl, kc);
@@ -340,43 +372,59 @@ fn calibrate(report: &mut Report, kodak: &[(String, RgbImage)], limit: usize) ->
         votes.push((best.1, best.2));
         // B and C around their measured-noise settings.
         let mut rows = Vec::new();
-        for l in [30.0, 40.0, 50.0, 60.0, 70.0] {
+        let mut best_b = (f64::NEG_INFINITY, 0.0);
+        let mut best_c = (f64::NEG_INFINITY, 0.0, 0.0);
+        for l in [10.0, 20.0, 30.0, 40.0, 50.0] {
             let (pw, _, _) = run(&cases, &|c| method_bc(c, NlVariant::B, l, 0.0, 1, 0.0));
+            if pw > best_b.0 {
+                best_b = (pw, l);
+            }
             rows.push(vec![format!("B L {l}"), format!("{pw:.2}")]);
             json_rows.push(json!({"level": level.name, "method": "B", "L": l, "psnr_w": pw}));
         }
         for (l, c) in [
-            (60.0, 50.0),
-            (80.0, 30.0),
+            (40.0, 70.0),
+            (60.0, 70.0),
+            (60.0, 90.0),
             (80.0, 50.0),
             (80.0, 70.0),
-            (100.0, 50.0),
+            (80.0, 90.0),
         ] {
             let (pw, _, _) = run(&cases, &|cs| method_bc(cs, NlVariant::C, l, c, 1, 0.0));
+            if pw > best_c.0 {
+                best_c = (pw, l, c);
+            }
             rows.push(vec![format!("C L {l} C {c}"), format!("{pw:.2}")]);
             json_rows
                 .push(json!({"level": level.name, "method": "C", "L": l, "C": c, "psnr_w": pw}));
         }
         report.table(&["setting".to_owned(), "PSNR W (dB)".to_owned()], &rows);
+        b_votes.push(best_b.1);
+        c_votes.push((best_c.1, best_c.2));
     }
-    // The constants: the median over the levels of the best kL and kC.
-    let mut kl: Vec<f64> = votes.iter().map(|v| v.0).collect();
-    let mut kc: Vec<f64> = votes.iter().map(|v| v.1).collect();
-    kl.sort_by(f64::total_cmp);
-    kc.sort_by(f64::total_cmp);
-    let (kl, kc) = (kl[kl.len() / 2], kc[kc.len() / 2]);
+    // The constants: the median over the levels of each best.
+    let tuned = Tuned {
+        kl: median(votes.iter().map(|v| v.0).collect()),
+        kc: median(votes.iter().map(|v| v.1).collect()),
+        b_l: median(b_votes),
+        c_l: median(c_votes.iter().map(|v| v.0).collect()),
+        c_c: median(c_votes.iter().map(|v| v.1).collect()),
+    };
     report.line(format!(
-        "**Method A's thresholds: kL {kl}, kC {kc} (median of the levels' best).**\n"
+        "**Calibrated (median of the levels' best): A kL {}, kC {}; B L {}; C L {}, C {}.**\n",
+        tuned.kl, tuned.kc, tuned.b_l, tuned.c_l, tuned.c_c
     ));
-    (kl, kc, Value::Array(json_rows))
+    (tuned, Value::Array(json_rows))
 }
 
-fn compare(
-    report: &mut Report,
-    sets: &[(&str, Vec<(String, RgbImage)>)],
-    kl: f64,
-    kc: f64,
-) -> Value {
+fn compare(report: &mut Report, sets: &[(&str, Vec<(String, RgbImage)>)], t: Tuned) -> Value {
+    let Tuned {
+        kl,
+        kc,
+        b_l,
+        c_l,
+        c_c,
+    } = t;
     let mut json_rows = Vec::new();
     for (name, images) in sets {
         report.line(format!(
@@ -411,16 +459,16 @@ fn compare(
                     Box::new(move |c: &Case| method_a(c, kl, kc, r, blend)),
                 ));
                 variants.push((
-                    "B L 50".into(),
+                    format!("B L {b_l}"),
                     r,
                     blend,
-                    Box::new(move |c: &Case| method_bc(c, NlVariant::B, 50.0, 0.0, r, blend)),
+                    Box::new(move |c: &Case| method_bc(c, NlVariant::B, b_l, 0.0, r, blend)),
                 ));
                 variants.push((
-                    "C L 80 C 50".into(),
+                    format!("C L {c_l} C {c_c}"),
                     r,
                     blend,
-                    Box::new(move |c: &Case| method_bc(c, NlVariant::C, 80.0, 50.0, r, blend)),
+                    Box::new(move |c: &Case| method_bc(c, NlVariant::C, c_l, c_c, r, blend)),
                 ));
             }
         }
@@ -476,18 +524,17 @@ fn main() {
         "Threads: {threads}. Seconds are wall time of this process on a shared machine.\n"
     ));
     let mut json_out = json!({});
-    let (mut kl, mut kc) = (DEFAULT_KL, DEFAULT_KC);
+    let mut tuned = Tuned::default();
     if mode == "calibrate" || mode == "all" {
-        let (a, b, j) = calibrate(&mut report, &kodak, limit);
-        (kl, kc) = (a, b);
+        let (t, j) = calibrate(&mut report, &kodak, limit);
+        tuned = t;
         json_out["calibration"] = j;
     }
     if mode == "compare" || mode == "all" {
         let sets = vec![("Kodak", kodak), ("McMaster", mcmaster)];
-        json_out["compare"] = compare(&mut report, &sets, kl, kc);
+        json_out["compare"] = compare(&mut report, &sets, tuned);
     }
-    json_out["kL"] = json!(kl);
-    json_out["kC"] = json!(kc);
+    json_out["tuned"] = json!({"kL": tuned.kl, "kC": tuned.kc, "B_L": tuned.b_l, "C_L": tuned.c_l, "C_C": tuned.c_c});
     std::fs::create_dir_all(&out_dir).expect("output folder");
     std::fs::write(out_dir.join("numbers.md"), report.lines.join("\n")).expect("numbers.md");
     std::fs::write(

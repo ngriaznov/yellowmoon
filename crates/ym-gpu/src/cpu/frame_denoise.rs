@@ -10,8 +10,8 @@
 //!   are the photo's luma and chroma noise in the working encoding at middle grey, from its noise model and
 //!   gains ([`working_noise`]); `kL` and `kC` put the hard thresholds at that many standard deviations of the
 //!   noise (calibrated by `examples/denoise_gate.rs`);
-//! * method B: `L_B = 50 r` (50: remove the measured noise);
-//! * method C: `L_C = 80 r` and `C_C = 50 c`;
+//! * method B: `L_B = 30 r` and method C: `L_C = 80 r`, `C_C = 90 c`, the settings measured best by the same
+//!   tool (the text's "measured noise" settings are B's 50 and C's 80 and 50);
 //! * every method: the blend of the spec is today's detail re-injection weight, `B = 100 · 0.15 (D / 50)^2`
 //!   (15 % at Auto), and the radius `R` is 1.
 //!
@@ -73,10 +73,20 @@ impl DenoiseMethod {
     }
 }
 
-/// Method A's luma threshold in orthonormal standard deviations of the noise (`kL`).
-pub const BM_DCT_KL: f64 = 2.7;
-/// Method A's chroma threshold in orthonormal standard deviations of the noise (`kC`).
-pub const BM_DCT_KC: f64 = 2.7;
+/// Method A's luma threshold in standard deviations of the photo's luma noise (`kL`), measured by
+/// `examples/denoise_gate.rs` (the median of the five ISO-like levels' best on Kodak; within 0.12 dB of the best
+/// at every level). The noise is the model's per photosite; the demosaic correlates it, which the constant absorbs.
+pub const BM_DCT_KL: f64 = 3.5;
+/// Method A's chroma threshold in standard deviations of the photo's chroma noise (`kC`), measured the same way
+/// (the levels' best are 16, 8, 8, 6 and 6 from ISO 100 to 12800; 8 is within 0.2 dB of each).
+pub const BM_DCT_KC: f64 = 8.0;
+/// Method B's `L` at Auto: the measured best (30), below the text's "measured noise" 50, because method B's
+/// measurement reads high on detail (reading BC-i).
+pub const NL_BAYES_RGB_L: f64 = 30.0;
+/// Method C's `L` at Auto (the measured best, the text's 80).
+pub const NL_BAYES_YCC_L: f64 = 80.0;
+/// Method C's `C` at Auto (the measured best).
+pub const NL_BAYES_YCC_C: f64 = 90.0;
 /// `L` of method A per standard deviation of luma noise: `tau = 0.1 L` on the scale `8^1.5` times the
 /// orthonormal one.
 pub const L_PER_SIGMA: f64 = 22.627_416_997_969_52 / 0.1;
@@ -152,8 +162,8 @@ impl FrameDenoise {
                     c * BM_DCT_KC * sc * C_PER_SIGMA,
                 )
             }
-            DenoiseMethod::NlBayesRgb => (50.0 * r, 0.0),
-            DenoiseMethod::NlBayesYcc => (80.0 * r, 50.0 * c),
+            DenoiseMethod::NlBayesRgb => (NL_BAYES_RGB_L * r, 0.0),
+            DenoiseMethod::NlBayesYcc => (NL_BAYES_YCC_L * r, NL_BAYES_YCC_C * c),
         };
         Some(FrameDenoise {
             method,
@@ -239,12 +249,12 @@ mod tests {
         );
         let b = FrameDenoise::resolve(DenoiseMethod::NlBayesRgb, &auto(1600.0), 1600.0, &model, g0)
             .expect("B");
-        assert_eq!((b.luma, b.chroma, b.radius), (50.0, 0.0, RADIUS));
+        assert_eq!((b.luma, b.chroma, b.radius), (NL_BAYES_RGB_L, 0.0, RADIUS));
         // Detail 50 is today's re-injection weight 0.15: a blend of 15 %.
         assert!((b.blend - 15.0).abs() < 1e-5);
         let c = FrameDenoise::resolve(DenoiseMethod::NlBayesYcc, &auto(1600.0), 1600.0, &model, g0)
             .expect("C");
-        assert_eq!((c.luma, c.chroma), (80.0, 50.0));
+        assert_eq!((c.luma, c.chroma), (NL_BAYES_YCC_L, NL_BAYES_YCC_C));
         let a = FrameDenoise::resolve(DenoiseMethod::BmDct, &auto(1600.0), 1600.0, &model, g0)
             .expect("A");
         let (sy, sc) = working_noise(&model, g0);
@@ -268,16 +278,16 @@ mod tests {
         let auto_l = l_auto(1600.0);
         assert_eq!(
             at(2.0 * auto_l, 50.0, 50.0, DenoiseMethod::NlBayesRgb).luma,
-            100.0
+            2.0 * NL_BAYES_RGB_L
         );
         assert_eq!(at(auto_l, 0.0, 50.0, DenoiseMethod::NlBayesYcc).chroma, 0.0);
         assert_eq!(at(0.0, 50.0, 50.0, DenoiseMethod::BmDct).luma, 0.0);
         // Detail 0 is no blend, 100 the 60 % of today's rule.
         assert_eq!(at(auto_l, 50.0, 0.0, DenoiseMethod::BmDct).blend, 0.0);
         assert!((at(auto_l, 50.0, 100.0, DenoiseMethod::BmDct).blend - 60.0).abs() < 1e-4);
-        // Strengths stay in the spec's range.
+        // Strengths stay in the spec's range (C's 80 twice over is 160).
         assert_eq!(
-            at(100.0, 100.0, 50.0, DenoiseMethod::NlBayesRgb).luma,
+            at(100.0, 100.0, 50.0, DenoiseMethod::NlBayesYcc).luma,
             100.0
         );
     }

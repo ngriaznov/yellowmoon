@@ -286,3 +286,71 @@ item is pinned by a test in `crates/ym-gpu/src/cpu/` (named in brackets).
 - *D-c Statistics.* Standard deviations are of the population (divided by N); σC is one standard deviation of
   the Cb and Cr samples together. The detector picks the flattest cell, so on a frame whose short side is under
   512 px (read at full resolution) σY reads about 8 % low; with one pyramid step it is within 3 %.
+
+## Integration
+
+How the methods enter the raw chain (`docs/05-raw-processing.md` R6 and R7). The code: `ym_gpu::cpu::frame_denoise`
+(the stage), `ym_gpu::cpu::denoise_space` (the encoding), `Chain::frame_denoise` (`cpu/chain.rs`).
+
+- **Where.** R6, after the demosaic, in place of the light bilateral denoise and R7 (the colour guided filter and
+  the detail re-injection): the stage `Stage::FrameDenoise`. The fit view and the thumbnails, which bin the mosaic
+  and never demosaic, keep the bilateral denoise of the binned image.
+- **Working encoding.** The raw chain holds balanced linear camera RGB, white 1.0 at the clip before the gains. The
+  methods are made for the encoded image the viewer sees, so the stage encodes with `W(x) = srgb(2^CAMERA_GAIN_EV x)`
+  (the sRGB curve on the whole line, its linear slope made exact at the knee), runs the method, and decodes. Middle
+  grey of a photo at the camera's exposure lands at 0.46, as in an sRGB picture, and the 1/2.4 power nearly evens
+  out shot noise, so one threshold suits the shadows and the lights. The encoding depends on nothing that changes
+  after R6 (exposure, look and curves are colour stages), so a slider there never re-runs the raw chain.
+- **Controls.** The Detail tab's controls keep their Auto values and their meaning relative to Auto (`docs/05` R7):
+  with `r = L / L_auto(ISO)` and `c = C / 50`, method A gets `L_A = r · kL · σY · 22.627 / 0.1` and
+  `C_A = c · kC · σC · 22.627 / 0.06`, where `σY` and `σC` are the photo's luma and chroma noise in the working
+  encoding at middle grey from its noise model and R4 gains (`working_noise`), and `kL = 3.5`, `kC = 8`
+  (*Measurement*); method B `L_B = 30 r`; method C `L_C = 80 r`, `C_C = 90 c`. Detail sets the blend to today's
+  re-injection weight, `B = 100 · 0.15 (D / 50)²` (15 % at Auto, 60 % at 100). `R` is 1 for every method. The
+  strengths are clamped to [0, 100].
+- **The default is method A** (the owner, 2026-10-20: "I don't need A/B test, I think this is good"; the choice by
+  the measurement below). B and C stay behind the renderer's internal switch (`DenoiseMethod`), like the demosaic
+  methods of R6.
+- **Tiles.** Method A asks for its 23 px halo and a tile equals the whole frame bit for bit (tested through the
+  chain). Methods B and C read the whole frame (pyramid and measurement), so a tile of them asks for the whole
+  raw frame: correct and exact, and slow; they are for evaluation.
+
+## Measurement
+
+`crates/ym-gpu/examples/denoise_gate.rs` (`cargo run -p ym-gpu --release --example denoise_gate -- all`), 2026-10-20,
+Linux x86_64, 3 threads of a shared 4-core machine. Kodak (24 images) and McMaster (18) from `testdata/demosaic`
+in linear light, placed where a photo at the camera's exposure sits on the raw scale (middle grey 0.083), mosaicked
+as RGGB, Gaussian noise of variance `a x + b` per photosite at five ISO-like levels (the demosaic gate's stand-ins
+for 100, 800, 1600 and 6400, and 12800 by the same scaling; not measurements, no row noise), the adaptive ratio
+demosaic with the matching model. PSNR against the clean image in the working encoding (peak 1), mean of per-image
+dB, 10 px border excluded; "today" is the bilateral denoise with a σ map and R7 at Auto.
+
+*Calibration of method A* (first 8 Kodak images, `kL` 2.5 to 5 against `kC` 6 to 16): the best `kL` per level is
+3.5, 3, 3.5, 4, 4 and the best `kC` 16, 8, 8, 6, 6 (ISO 100 to 12800); `kL = 3.5`, `kC = 8` is within 0.12 dB of the
+best luma setting and 0.2 dB of the best chroma setting at every level. The noise measured after the demosaic is 1.5
+to 3.9 times the model's (the demosaic's error dominates at low ISO and the demosaic correlates the noise); the
+constants are fitted against the model's noise, which is what a render knows. Appendix D's estimate reads 0.92 to
+1.04 of that measured σY and about half of its σC.
+
+*Comparison* (R 1; A and C with blend 15, B without; working encoding, dB):
+
+| set | ISO-like | none | today | A | B (L 30) | C (L 80, C 90) |
+|---|---|---|---|---|---|---|
+| Kodak | 100 | 36.89 | 35.27 | **37.14** | 36.79 | 37.20 |
+| Kodak | 800 | 34.54 | 34.19 | **35.80** | 35.24 | 35.74 |
+| Kodak | 1600 | 32.78 | 33.35 | **34.64** | 33.93 | 34.51 |
+| Kodak | 6400 | 27.61 | 30.61 | **31.07** | 29.75 | 30.69 |
+| Kodak | 12800 | 25.05 | 29.10 | **29.06** | 27.45 | 28.50 |
+| McMaster | 100 | 34.07 | 31.62 | **34.28** | 34.22 | 34.47 |
+| McMaster | 800 | 32.01 | 30.91 | **33.01** | 32.84 | 33.24 |
+| McMaster | 1600 | 30.69 | 30.35 | **32.10** | 31.82 | 32.32 |
+| McMaster | 6400 | 26.82 | 28.42 | **29.60** | 28.80 | 29.53 |
+| McMaster | 12800 | 24.73 | 27.19 | **28.11** | 26.88 | 27.87 |
+
+(The C column above is C with blend 15; without the blend C is 0.1 to 0.4 dB higher at ISO 6400 and 12800.) Method A
+is 0.5 to 1.9 dB above today's path from ISO 100 to 6400 and level with it at 12800; **today's path is below no
+denoise at all at ISO 100 and 800** (it smooths detail that the noise did not hide). C is within ±0.2 dB of A on
+Kodak and 0.1 to 0.4 dB above it on McMaster, at two to three times its time and with the whole frame to read; B is
+below both. `R = 2` adds 0.05 to 0.1 dB to A at 1.6 times its time; `R = 0` loses 0.1 to 0.4 dB. Seconds per
+megapixel on the CPU (wall, 3 threads): today 0.2 to 0.4, A 0.5 to 0.85, B 0.9 to 1.7, C 1.2 to 1.9. The full
+tables: `testdata/denoise_gate/numbers.md` after a run.
