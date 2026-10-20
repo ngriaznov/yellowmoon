@@ -1742,7 +1742,7 @@ fn a_warp_pin_may_leave_out_everything_but_its_source_and_is_written_whole() {
             source: [0.12, 0.03],
             target: [0.12, 0.03],
             locked: false,
-            range: 0.04,
+            range: 0.02,
             shadows: 1.0,
             highlights: 1.0,
             pivot_ev: 0.0,

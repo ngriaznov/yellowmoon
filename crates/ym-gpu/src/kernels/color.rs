@@ -1731,15 +1731,18 @@ mod tests {
         let pins: Vec<WarpPin> = (0..20)
             .map(|i| {
                 let a = f64::from(i) * 0.3;
-                WarpPin::moving(
-                    [0.1 * a.cos(), 0.1 * a.sin()],
-                    [0.12 * a.cos(), 0.1 * a.sin()],
-                )
+                WarpPin {
+                    range: 0.04,
+                    ..WarpPin::moving(
+                        [0.1 * a.cos(), 0.1 * a.sin()],
+                        [0.12 * a.cos(), 0.1 * a.sin()],
+                    )
+                }
             })
             .collect();
         let mut u = ChainU::default();
         warp_uniform(&mut u, &WarpParams { pins });
-        // Sixteen moves of 0.02 |cos a| at the default range: ceil(3.98) = 4 steps.
+        // Sixteen moves of 0.02 |cos a| at range 0.04: ceil(3.98) = 4 steps.
         assert_eq!(u.warp_n, [16, 0, 4, 0]);
         assert!(
             u.warp_mv

@@ -290,7 +290,7 @@
         "source": { "$ref": "#/$defs/chroma_point" },
         "target": { "$ref": "#/$defs/chroma_point" },
         "locked": { "type": "boolean", "default": false },
-        "range": { "type": "number", "minimum": 0.01, "maximum": 0.25, "default": 0.04 },
+        "range": { "type": "number", "minimum": 0.01, "maximum": 0.25, "default": 0.02 },
         "shadows": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 },
         "highlights": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 },
         "pivot_ev": { "type": "number", "minimum": -6, "maximum": 6, "default": 0 },
