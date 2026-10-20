@@ -1342,3 +1342,69 @@ fn the_estimate_takes_the_detail_of_each_photos_thumbnail_and_a_typical_picture_
     assert_eq!(ctx.renderer().thumbnail_detail(f.ids[0]), None);
     assert_eq!(queue.estimate(&f.session, &jpeg).bytes, typical);
 }
+
+#[test]
+fn photos_removed_from_the_filmstrip_while_a_job_waits_are_still_exported_as_queued() {
+    // Remove from filmstrip takes photos out of the session; an export that was queued before keeps the photos it was
+    // started with (their snapshots) and writes the files it would have written.
+    let f = folder(3, 300, 200);
+    f.session
+        .update_settings(f.ids[1], &SettingsPatch::exposure_ev(0.6))
+        .expect("edit");
+    let (home, reference, out) = (
+        tempfile::tempdir().expect("h"),
+        tempfile::tempdir().expect("r"),
+        tempfile::tempdir().expect("o"),
+    );
+    let (ctx, queue, rx) = neutral_queue(home.path());
+    queue
+        .start(&f.session, &job(ApplyScope::All, reference.path()), false)
+        .expect("queued");
+    until_idle(&rx);
+    assert_eq!(names_in(reference.path()).len(), 3);
+
+    // Hold the render worker: the job below is queued, its snapshots taken, and nothing has rendered yet.
+    let (open, parked) = std::sync::mpsc::channel::<()>();
+    let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+    let gate = ctx.renderer().scheduler().submit(
+        ym_core::scheduler::Priority::Viewport,
+        None,
+        move |_| {
+            started_tx.send(()).expect("started");
+            let _ = parked.recv();
+        },
+    );
+    started_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("gate");
+    queue
+        .start(&f.session, &job(ApplyScope::All, out.path()), false)
+        .expect("queued");
+
+    // The person removes two of the photos, and edits the one that stays.
+    f.session.remove(&[f.ids[1], f.ids[2]]);
+    ctx.renderer().retire_photos(&[f.ids[1], f.ids[2]]);
+    f.session
+        .update_settings(f.ids[0], &SettingsPatch::exposure_ev(-1.0))
+        .expect("edit after the queueing");
+    assert_eq!(f.session.photo_ids(), vec![f.ids[0]]);
+
+    open.send(()).expect("open");
+    gate.wait().expect("gate");
+    let events = until_idle(&rx);
+    assert_eq!(files_done(&events).len(), 3);
+    assert!(files_done(&events).iter().all(|d| d.outcome.is_ok()));
+    // The same three files, byte for byte, as when nothing was removed or edited.
+    let written = names_in(out.path());
+    assert_eq!(written, names_in(reference.path()));
+    for name in &written {
+        assert_eq!(
+            read(&out.path().join(name)),
+            read(&reference.path().join(name)),
+            "{name}"
+        );
+    }
+    // The photos that had left stay out of the renderer's caches.
+    assert_eq!(ctx.renderer().counters(f.ids[1]), Default::default());
+    assert_eq!(ctx.renderer().counters(f.ids[2]), Default::default());
+}

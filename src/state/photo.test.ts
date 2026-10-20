@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PhotoStatus, PhotoSummary, SessionState } from "../api/types";
-import { bytesToUrl, cameraLine, captureDate, developFraction, folderSubline, mergeSession, photoName, shutterLabel } from "./photo";
+import { bytesToUrl, cameraLine, captureDate, developFraction, folderSubline, mergeSession, photoName, shutterLabel, withoutPhotos, withRestoredPhotos } from "./photo";
 
 const photo = (over: Partial<PhotoSummary> = {}): PhotoSummary => ({
   id: 4,
@@ -105,5 +105,55 @@ describe("mergeSession", () => {
     expect(mergeSession(page, snapshot).current_index).toBe(0);
     const same = mergeSession(snapshot, snapshot);
     expect(same.photos).toHaveLength(1);
+  });
+});
+
+describe("the session after photos left the filmstrip and came back", () => {
+  const four = (): SessionState => ({
+    folder_name: "Lisbon",
+    photos: [1, 2, 3, 4].map((id) => photo({ id, file_name: `DSC0420${id}.ARW`, picked: id === 2 || id === 4 })),
+    current_index: 1,
+    picked: [2, 4],
+    default_export_folder: "~/Lisbon export",
+  });
+
+  it("drops the removed photos, keeps the page's own entries and puts the photo on screen where it is now", () => {
+    const old = four();
+    // The page has heard that photo 3 is developing since the shell answered.
+    old.photos[2] = { ...old.photos[2], status: { kind: "developing", stage: "estimate" } } as PhotoSummary;
+    const after = withoutPhotos(old, new Set([1, 2]), 3);
+    expect(after.photos.map((p) => p.id)).toEqual([3, 4]);
+    expect(after.photos[0]?.status).toEqual({ kind: "developing", stage: "estimate" });
+    expect(after.current_index).toBe(0);
+    expect(after.picked).toEqual([4]);
+    expect(after.folder_name).toBe("Lisbon");
+  });
+
+  it("leaves no photo and no current index when every photo left", () => {
+    const after = withoutPhotos(four(), new Set([1, 2, 3, 4]), null);
+    expect(after.photos).toEqual([]);
+    expect(after.current_index).toBeNull();
+    expect(after.picked).toEqual([]);
+  });
+
+  it("takes the photos back in the shell's order, with the shell's entries for them and the page's for the rest", () => {
+    const page = withoutPhotos(four(), new Set([2, 3]), 4);
+    page.photos[1] = { ...page.photos[1], picked: false } as PhotoSummary; // the page unpicked photo 4 meanwhile
+    const snapshot = four();
+    snapshot.current_index = 3;
+    const after = withRestoredPhotos(page, snapshot, new Set([2, 3]), 4);
+    expect(after.photos.map((p) => p.id)).toEqual([1, 2, 3, 4]);
+    expect(after.photos[1]?.picked).toBe(true);
+    expect(after.photos[3]?.picked).toBe(false);
+    expect(after.picked).toEqual([2]);
+    expect(after.current_index).toBe(3);
+    expect(after.opened).toBeUndefined();
+  });
+
+  it("keeps a photo the page has and the snapshot has not", () => {
+    const page = four();
+    const snapshot = { ...four(), photos: four().photos.slice(0, 3) };
+    const after = withRestoredPhotos(page, snapshot, new Set([3]), 1);
+    expect(after.photos.map((p) => p.id)).toEqual([1, 2, 3, 4]);
   });
 });

@@ -48,6 +48,11 @@ function GlobalShortcuts() {
           if (!store.getState().session) return false;
           void store.requestCloseSession();
           return true;
+        case "undo":
+          // After the last photo was removed the Start screen shows, and ⌘Z puts the photos back.
+          if (!store.hasRemovalToUndo()) return false;
+          void store.undo();
+          return true;
         default:
           return false;
       }

@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Added
+
+- **Remove from filmstrip.** Right-click a photo in the filmstrip and choose "Remove from filmstrip" (or "Remove picked photos" while some are picked), or press Delete or Backspace to remove the photo on screen. The photo leaves the strip and its edits go with it; the file on disk is never touched, and the notice says so ("Removed 3 photos. The files are still on disk."). If the photo on screen was removed the next one is shown (the previous one when it was the last); with no photo left the start screen shows. The notice has an Undo button, and ⌘Z does the same while nothing was changed after the removal: the photos come back where they were, with their settings. Only the last removal can be undone, until the next removal or until the session is closed. An export that is already running finishes the photos it was started with. Burst frames that stay share the median exposure of the frames that are left.
+
 ### Changed
 
 - Choosing a look now changes only the photo on screen; use Apply to › Picked or All to copy it.

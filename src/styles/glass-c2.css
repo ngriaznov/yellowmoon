@@ -617,6 +617,11 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   outline: var(--glass-ring-width) solid var(--ring);
   outline-offset: 3px;
 }
+/* The thumbnail a right-click menu is about is ringed while the menu is open, so it is clear which photo "Remove from filmstrip" takes out. */
+.ym-filmstrip__thumb[data-menu="open"] {
+  outline: var(--glass-ring-width) solid var(--ring);
+  outline-offset: 3px;
+}
 .ym-filmstrip__thumb[data-status="developing"],
 .ym-filmstrip__thumb[data-status="failed"] {
   background: repeating-linear-gradient(135deg, var(--code-bg) 0 6px, transparent 6px 12px);

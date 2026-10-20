@@ -239,6 +239,23 @@ export function Photos() {
     [store, cropSession],
   );
   const togglePickOf = useCallback((id: number | string) => void store.togglePick(Number(id)), [store]);
+  /**
+   * Remove from filmstrip (the thumbnail's menu, Delete): a crop or a Pick white in progress ends first, as when another photo is chosen,
+   * so nothing is left of a mode on a photo that is gone.
+   */
+  const removePhoto = useCallback(
+    (id: number | string) => {
+      cropSession.current?.cancel();
+      setPicking(null);
+      void store.removePhotos([Number(id)]);
+    },
+    [store, cropSession],
+  );
+  const removePicked = useCallback(() => {
+    cropSession.current?.cancel();
+    setPicking(null);
+    void store.removePickedPhotos();
+  }, [store, cropSession]);
 
   /** ← and →. A crop in progress stays: leaving it is a click on another photo or on Cancel. */
   const stepPhoto = (direction: -1 | 1): void => {
@@ -329,6 +346,11 @@ export function Photos() {
           return true;
         case "toggle-pick":
           void store.togglePick();
+          return true;
+        case "remove-photo":
+          // The Export panel works on the photos as they are; Back to photos, then remove.
+          if (panel === "export") return false;
+          void store.removeCurrentPhoto();
           return true;
         case "pick-all":
           void store.pickAll();
@@ -489,6 +511,8 @@ export function Photos() {
         tab={exporting ? undefined : tab}
         onSelect={select}
         onTogglePick={togglePickOf}
+        onRemove={exporting ? undefined : removePhoto}
+        onRemovePicked={exporting ? undefined : removePicked}
       />
 
       {panelNode}

@@ -37,6 +37,13 @@ export const commands = {
 	setCurrent: (photoId: PhotoId) => __TAURI_INVOKE<null>("set_current", { photoId }),
 	/**  `set_picked(photo_id, picked)`. */
 	setPicked: (photoId: PhotoId, picked: boolean) => __TAURI_INVOKE<null>("set_picked", { photoId, picked }),
+	/**
+	 *  `remove_photos(photo_ids)`: takes photos out of the filmstrip. The files on disk are not touched; the photos' edits go with
+	 *  them, in memory only. The last removal can be undone with `restore_photos`.
+	 */
+	removePhotos: (photoIds: PhotoId[]) => __TAURI_INVOKE<SessionChange>("remove_photos", { photoIds }),
+	/**  `restore_photos()`: puts back the photos of the last `remove_photos`, where they were, with their settings. */
+	restorePhotos: () => __TAURI_INVOKE<SessionChange>("restore_photos"),
 	/**  `get_settings(photo_id)`: the resolved settings with the Auto flags. */
 	getSettings: (photoId: PhotoId) => __TAURI_INVOKE<ResolvedSettings>("get_settings", { photoId }),
 	/**  `update_settings(photo_id, patch)`: any control change; returns the settings resolved. */
@@ -1321,6 +1328,28 @@ export type RolloffPatch = {
 	highlights?: number | null,
 	/**  New low-light toe. */
 	low_light?: number | null,
+};
+
+/**
+ *  The answer of `remove_photos` and `restore_photos`: the photos that were taken out of the filmstrip or put back, and the
+ *  session as it is now.
+ */
+export type SessionChange = {
+	/**
+	 *  The photos taken out (`remove_photos`: those of the ids that were in the session) or put back (`restore_photos`), in
+	 *  filmstrip order.
+	 */
+	photo_ids: PhotoId[],
+	/**
+	 *  `restore_photos` only: photos of the removal that stayed out because their file had been added to the session again
+	 *  meanwhile. 0 for `remove_photos`.
+	 */
+	already_open: number,
+	/**
+	 *  The session afterwards. A snapshot, as every answer with a session is: about the photos that were open already it is a
+	 *  little older than the page's own state, which events and clicks have moved on since.
+	 */
+	session: SessionState,
 };
 
 /**  The session as the webview mirrors it (`session_state`). */

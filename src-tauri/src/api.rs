@@ -34,9 +34,9 @@ use crate::wire::{
     AppError, AppInfo, ApplyScope, ChromaSample, ChromaScatter, CliLinkResult, CliLinkStatus,
     DisplayLut, ErrorScope, ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId,
     LookInput, LooksImportProgress, LooksImportResult, OpenSummary, PasteReport, PhotoId,
-    PhotoProgress, PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionState,
-    SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode,
-    ViewportRect, WatchStatus, convert,
+    PhotoProgress, PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionChange,
+    SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput,
+    ViewportMode, ViewportRect, WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -393,6 +393,69 @@ impl AppApi {
             .session
             .set_picked(core_id(id), picked)
             .map_err(session_error)
+    }
+
+    /// `remove_photos`: takes photos out of the filmstrip ([`ym_core::app::Core::remove_photos`]). The files on disk are not
+    /// touched. The photo on screen hands over to the next one (the previous one when the last was removed) or, with no photo
+    /// left, the viewport shows nothing. The photos' thumbnails are set aside for Undo ([`AppApi::restore_photos`]), the burst
+    /// frames that stay get new estimates, a `settings_changed` event and a new thumbnail. An id that is not in the session is
+    /// ignored; the answer lists the photos that were removed. Exports that were queued keep going with their snapshots.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] only if the shapes of the core and of the bridge disagree (a bug).
+    pub fn remove_photos(&self, ids: &[PhotoId]) -> Result<SessionChange, AppError> {
+        let core_ids: Vec<CorePhotoId> = ids.iter().map(|id| core_id(*id)).collect();
+        let outcome = self.core.remove_photos(&core_ids);
+        if !outcome.removed.is_empty() {
+            self.thumbs.forget(&outcome.removed);
+            let gone: Vec<u32> = outcome.removed.iter().map(|id| id.0).collect();
+            self.frames.set_aside_photos(&gone);
+            self.sync_current();
+            self.estimates_moved(&outcome.estimates_changed);
+        }
+        Ok(SessionChange {
+            photo_ids: outcome.removed.iter().map(|id| PhotoId(id.0)).collect(),
+            already_open: 0,
+            session: self.session_state()?,
+        })
+    }
+
+    /// `restore_photos`: Undo of the last `remove_photos` ([`ym_core::app::Core::restore_photos`]): the photos come back where
+    /// they were with their settings, their thumbnails are announced again at once, and the photo on screen is the one that was
+    /// on screen when the removal took it away, unless the person has moved on. Answers an empty change when there is nothing
+    /// to put back.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] only if the shapes of the core and of the bridge disagree (a bug).
+    pub fn restore_photos(&self) -> Result<SessionChange, AppError> {
+        let outcome = self.core.restore_photos();
+        if !outcome.restored.is_empty() {
+            let back: Vec<u32> = outcome.restored.iter().map(|id| id.0).collect();
+            for (id, url) in self.frames.bring_back_photos(&back) {
+                self.emitter.emit(AppEvent::ThumbnailReady(ThumbnailReady {
+                    id: PhotoId(id),
+                    url,
+                }));
+            }
+            self.sync_current();
+            self.estimates_moved(&outcome.estimates_changed);
+        }
+        Ok(SessionChange {
+            photo_ids: outcome.restored.iter().map(|id| PhotoId(id.0)).collect(),
+            already_open: u32::try_from(outcome.already_open).unwrap_or(u32::MAX),
+            session: self.session_state()?,
+        })
+    }
+
+    /// Photos that stay in the session had their shared estimates made again (a burst lost or regained a frame): they get a new
+    /// thumbnail, and the webview is told to read their settings again, which show the exposure the burst now shares.
+    fn estimates_moved(&self, ids: &[CorePhotoId]) {
+        self.thumbs.refresh(ids.iter().copied());
+        for id in ids {
+            self.emitter.emit(AppEvent::SettingsChanged(PhotoId(id.0)));
+        }
     }
 
     /// Tells the renderer and the viewport which photo is current.

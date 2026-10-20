@@ -19,7 +19,7 @@ use crate::wire::{
     self, AppError, AppInfo, ApplyScope, ChromaSample, ChromaScatter, CliLinkResult, CliLinkStatus,
     DisplayLut, ErrorScope, ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId,
     LookInput, LooksImportResult, MenuState, Num, OpenKind, PasteReport, PhotoId, PixelSample,
-    Preferences, PreferencesPatch, ResolvedSettings, SessionState, SettingsPatch,
+    Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
     SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
     WatchStatus,
 };
@@ -144,6 +144,24 @@ pub async fn close_session(state: State<'_, AppState>) -> Result<(), AppError> {
 #[specta::specta]
 pub async fn set_current(state: State<'_, AppState>, photo_id: PhotoId) -> Result<(), AppError> {
     run(&state, move |api| api.set_current(photo_id)).await
+}
+
+/// `remove_photos(photo_ids)`: takes photos out of the filmstrip. The files on disk are not touched; the photos' edits go with
+/// them, in memory only. The last removal can be undone with `restore_photos`.
+#[tauri::command]
+#[specta::specta]
+pub async fn remove_photos(
+    state: State<'_, AppState>,
+    photo_ids: Vec<PhotoId>,
+) -> Result<SessionChange, AppError> {
+    run(&state, move |api| api.remove_photos(&photo_ids)).await
+}
+
+/// `restore_photos()`: puts back the photos of the last `remove_photos`, where they were, with their settings.
+#[tauri::command]
+#[specta::specta]
+pub async fn restore_photos(state: State<'_, AppState>) -> Result<SessionChange, AppError> {
+    run(&state, |api| api.restore_photos()).await
 }
 
 /// `set_picked(photo_id, picked)`.
@@ -627,6 +645,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             close_session,
             set_current,
             set_picked,
+            remove_photos,
+            restore_photos,
             get_settings,
             update_settings,
             apply_look,

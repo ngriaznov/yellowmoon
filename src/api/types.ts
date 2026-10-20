@@ -125,6 +125,19 @@ export interface SessionState {
   opened?: OpenSummary | null;
 }
 
+/**
+ * The answer of `remove_photos` and `restore_photos` (addition, the owner's request "I also want to remove photos from the film
+ * strip"): the photos that were taken out of the filmstrip or put back, and the session afterwards.
+ */
+export interface SessionChange {
+  /** The photos taken out (those of the ids that were in the session) or put back, in filmstrip order. */
+  photo_ids: PhotoId[];
+  /** `restore_photos` only: photos of the removal that stayed out because their file had been added again meanwhile. 0 otherwise. */
+  already_open: number;
+  /** The session afterwards. A snapshot, as every answer with a session is (see `mergeSession`). */
+  session: SessionState;
+}
+
 /** What one `open_paths` or `open_dialog` call did to the session. */
 export interface OpenSummary {
   /** ARW files added to the filmstrip. */

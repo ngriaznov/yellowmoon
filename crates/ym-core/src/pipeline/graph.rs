@@ -23,7 +23,7 @@
 //! keys hold the numbers the group reads, so a burst median that moves only the exposure recomputes
 //! the colour group and leaves the raw group alone.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use std::time::Instant;
@@ -583,6 +583,9 @@ struct Inner {
     thumbnail_details: Mutex<HashMap<PhotoId, DetailStat>>,
     /// Photos with an id up to this one belong to a session that was closed (0: none).
     retired_through: AtomicU32,
+    /// Photos taken out of the filmstrip while the session goes on ([`Renderer::retire_photos`]); a photo
+    /// put back ([`Renderer::unretire_photos`]) leaves the set.
+    removed: Mutex<HashSet<PhotoId>>,
     scheduler: JobScheduler,
     ledger: Arc<MemoryLedger>,
     /// A shader of the raw chain failed to compile on this machine: the device does not run the raw
@@ -643,6 +646,7 @@ impl Renderer {
                 graphs: Mutex::new(Vec::new()),
                 thumbnail_details: Mutex::new(HashMap::new()),
                 retired_through: AtomicU32::new(0),
+                removed: Mutex::new(HashSet::new()),
                 scheduler,
                 ledger,
                 raw_gpu_disabled: AtomicBool::new(false),
@@ -1019,13 +1023,51 @@ impl Renderer {
         self.inner
             .retired_through
             .fetch_max(last.0, Ordering::SeqCst);
+        // Every id up to `last` is refused now; the single ones set aside by a removal are included.
+        lock(&self.inner.removed).clear();
         self.forget_all();
     }
 
-    /// Whether a photo belongs to a session that was closed ([`Renderer::retire_through`]).
+    /// Photos were taken out of the session while it goes on (Remove from filmstrip): refuses viewport, tile, thumbnail,
+    /// histogram and readout requests for them from now on ([`Renderer::is_retired`]), cancels the ones queued or running
+    /// (device jobs included), forgets what the renderer cached for them and lets go of the photo being looked at when it is
+    /// one of them. A request that was still on its way (a command that read its photo before the removal and queues its
+    /// job after the cancel) is refused as cancelled, so nothing is cached for a photo that is gone. **Full-resolution
+    /// renders for exports are not touched**: they hold their own snapshots and finish the photos the export was started
+    /// with ([`Renderer::retire_through`] does the same for a closed session). [`Renderer::unretire_photos`] undoes it.
+    pub fn retire_photos(&self, ids: &[PhotoId]) {
+        if ids.is_empty() {
+            return;
+        }
+        lock(&self.inner.removed).extend(ids.iter().copied());
+        // Marked first, cancelled after: a request that gets past the cancel meets the mark.
+        self.scheduler().cancel_photos(ids);
+        if let Some(gpu) = self.options().gpu.clone() {
+            let owners: Vec<u64> = ids.iter().map(|id| u64::from(id.0)).collect();
+            gpu.scheduler().cancel_owners(&owners);
+        }
+        for id in ids {
+            self.forget(*id);
+        }
+        for slot in [&self.inner.current, &self.inner.previous] {
+            let mut slot = lock(slot);
+            if slot.is_some_and(|p| ids.contains(&p)) {
+                *slot = None;
+            }
+        }
+    }
+
+    /// Photos put back into the session (Undo of a removal): requests for them are served again.
+    pub fn unretire_photos(&self, ids: &[PhotoId]) {
+        lock(&self.inner.removed).retain(|id| !ids.contains(id));
+    }
+
+    /// Whether a photo belongs to a session that was closed ([`Renderer::retire_through`]) or was taken out of the
+    /// filmstrip ([`Renderer::retire_photos`]).
     #[must_use]
     pub fn is_retired(&self, id: PhotoId) -> bool {
         id.0 <= self.inner.retired_through.load(Ordering::SeqCst)
+            || lock(&self.inner.removed).contains(&id)
     }
 
     /// The runs of a photo's graph so far (zero for a photo with no graph).
@@ -1294,6 +1336,11 @@ impl Drop for Job<'_> {
             && *lock(&self.r.inner.current) != Some(self.src.id)
         {
             self.g.drop_resident();
+        }
+        // An export that rendered a photo no one can look at any more (it was taken out of the filmstrip, or its session
+        // was closed) leaves no cache behind: the graph it made is of no use to anything else.
+        if was_export && self.g.pins.load(Ordering::SeqCst) == 0 && self.r.is_retired(self.src.id) {
+            self.r.forget(self.src.id);
         }
     }
 }

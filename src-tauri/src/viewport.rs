@@ -181,6 +181,9 @@ struct Thumbnails {
     version: u32,
     /// Per photo, the newest versions (see [`THUMBNAIL_VERSIONS_KEPT`]), oldest first.
     by_photo: BTreeMap<u32, Vec<(u32, Png)>>,
+    /// The thumbnails of the photos the last removal took out of the filmstrip, kept for the Undo of that removal
+    /// ([`FrameStore::set_aside_photos`]) and nowhere else: they are not served.
+    set_aside: BTreeMap<u32, Vec<(u32, Png)>>,
 }
 
 /// The look tiles the store holds: a photo through one look, at most 240 px.
@@ -417,8 +420,45 @@ impl FrameStore {
     /// Forgets every thumbnail and look tile (the session closed). Addresses that were handed out
     /// answer 404 from now on; new ones count on from where the old ones stopped.
     pub fn clear_thumbnails(&self) {
-        lock(&self.thumbnails).by_photo.clear();
+        {
+            let mut thumbs = lock(&self.thumbnails);
+            thumbs.by_photo.clear();
+            thumbs.set_aside.clear();
+        }
         lock(&self.look_tiles).clear();
+    }
+
+    /// Photos were taken out of the filmstrip (Remove from filmstrip): their look tiles are forgotten, and their
+    /// thumbnails are set aside instead of served, so that Undo can bring them back at once
+    /// ([`FrameStore::bring_back_photos`]). What an earlier removal set aside is dropped: it can no longer be undone.
+    /// Addresses handed out for these photos answer 404 meanwhile.
+    pub fn set_aside_photos(&self, photos: &[u32]) {
+        let mut thumbs = lock(&self.thumbnails);
+        thumbs.set_aside.clear();
+        let mut tiles = lock(&self.look_tiles);
+        for photo in photos {
+            if let Some(versions) = thumbs.by_photo.remove(photo) {
+                thumbs.set_aside.insert(*photo, versions);
+            }
+            tiles.forget_photo(*photo);
+        }
+    }
+
+    /// The removal was undone: the thumbnails set aside for these photos are served again, at the addresses they had.
+    /// Returns the address of the newest thumbnail of each photo that had one, in photo order.
+    pub fn bring_back_photos(&self, photos: &[u32]) -> Vec<(u32, String)> {
+        let mut thumbs = lock(&self.thumbnails);
+        let mut back = Vec::new();
+        for photo in photos {
+            if let Some(versions) = thumbs.set_aside.remove(photo) {
+                if let Some((version, _)) = versions.last() {
+                    back.push((*photo, self.thumbnail_url(*photo, *version)));
+                }
+                thumbs.by_photo.insert(*photo, versions);
+            }
+        }
+        back.sort_by_key(|(photo, _)| *photo);
+        back
     }
 
     /// The look tile at `photo` and `version`, if it is still kept. Serving a tile counts as using
@@ -1430,6 +1470,43 @@ mod tests {
         let fresh = store.put_look_tile(3, "user:warm", vec![6]);
         assert_ne!(fresh, warm);
         assert_eq!(status(&fresh), 200);
+    }
+
+    #[test]
+    fn the_thumbnails_of_removed_photos_are_set_aside_for_undo_and_the_next_removal_drops_them() {
+        let store = FrameStore::new();
+        let path = |url: &str| path_of_url(url).to_owned();
+        let status = |url: &str| store.respond(&path(url)).0;
+        let one = store.put_thumbnail(1, vec![1]);
+        let two = store.put_thumbnail(2, vec![2]);
+        let three = store.put_thumbnail(3, vec![3]);
+        let tile = store.put_look_tile(2, "builtin:neutral", vec![9]);
+        // Photos 1 and 2 leave: their pictures are not served, the look tile is gone, photo 3 is as it was.
+        store.set_aside_photos(&[1, 2]);
+        assert_eq!((status(&one), status(&two), status(&tile)), (404, 404, 404));
+        assert_eq!(status(&three), 200);
+        assert_eq!(store.thumbnail_urls(), vec![(3, three.clone())]);
+        // Undo: the same addresses serve the same pictures again, and the answer lists them in photo order.
+        assert_eq!(
+            store.bring_back_photos(&[2, 1, 7]),
+            vec![(1, one.clone()), (2, two.clone())]
+        );
+        assert_eq!((status(&one), status(&two)), (200, 200));
+        assert_eq!(&*store.respond(&path(&two)).2, &[2]);
+        // Nothing is left to bring back, and a second removal replaces what the first set aside.
+        assert!(store.bring_back_photos(&[1, 2]).is_empty());
+        store.set_aside_photos(&[1]);
+        store.set_aside_photos(&[3]);
+        assert!(
+            store.bring_back_photos(&[1]).is_empty(),
+            "the first removal can no longer be undone"
+        );
+        assert_eq!(store.bring_back_photos(&[3]), vec![(3, three)]);
+        // The end of the session drops what was set aside too.
+        store.set_aside_photos(&[2]);
+        store.clear_thumbnails();
+        assert!(store.bring_back_photos(&[2]).is_empty());
+        assert_eq!(status(&one), 404);
     }
 
     #[test]

@@ -68,6 +68,7 @@ import type {
   RenderStats,
   ResolvedSettings,
   ResolvedValues,
+  SessionChange,
   SessionState,
   SettingsPatch,
   SourceKind,
@@ -956,6 +957,14 @@ interface PhotoRecord {
   skipReason: string | null;
 }
 
+/** The photos the last removal took out, with their places, for Undo. */
+interface MockRemoval {
+  taken: Array<{ place: number; rec: PhotoRecord }>;
+  /** The current photo before the removal, and the one it handed over to. */
+  wasCurrent: PhotoId | null;
+  successor: PhotoId | null;
+}
+
 interface ExportRun {
   id: ExportJobId;
   files: string[];
@@ -1028,6 +1037,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
 
   let photos: PhotoRecord[] = [];
   let current = 0;
+  /** The highest photo id handed out in this session: ids are never used twice, also not by a photo that was removed. */
+  let highestId = 0;
+  /** The last removal, kept for `restorePhotos` until the next one or the end of the session (the core's `Removal`). */
+  let removal: MockRemoval | null = null;
   let developProgress = 0;
   let developTimer: ReturnType<typeof setInterval> | null = null;
   const thumbTimers = new Map<PhotoId, ReturnType<typeof setTimeout>>();
@@ -1265,6 +1278,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const pickedSet = new Set(options.picked);
     photos = Array.from({ length: Math.max(1, Math.floor(options.photoCount)) }, (_, index) => makePhoto(index, index + 1, undefined, pickedSet.has(index)));
     current = clamp(options.current, 0, photos.length - 1);
+    highestId = photos.length;
+    removal = null;
     developProgress = 0;
     startDevelopment();
   }
@@ -1298,8 +1313,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     }
     fresh.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
     const before = photos.length;
-    let nextId = photos.reduce((most, p) => Math.max(most, p.summary.id), 0) + 1;
-    for (const name of fresh) photos.push(makePhoto(photos.length, nextId++, name));
+    for (const name of fresh) photos.push(makePhoto(photos.length, ++highestId, name));
     if (fresh.length > 0) {
       // Only the new photos are left to develop; the others keep what they have.
       developProgress = Math.min(developProgress, before);
@@ -1409,6 +1423,105 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       applyDevelopProgress();
       if (developProgress >= limit) stopDevelopment();
     }, DEV_TICK_MS / options.speed);
+  }
+
+  /**
+   * Development goes through the photos in order, one `developProgress` step per photo. After photos left or came back, the progress is
+   * set to where the first photo that is not finished stands, so that every photo goes on from the phase it has.
+   */
+  function resumeDevelopment(): void {
+    const first = photos.findIndex((p) => p.phase < 3);
+    if (first < 0) {
+      developProgress = photos.length;
+      stopDevelopment();
+      return;
+    }
+    const rec = photos[first] as PhotoRecord;
+    developProgress = first + (rec.phase >= 2 ? DECODE_SHARE : 0);
+    startDevelopment();
+  }
+
+  /** The current photo after `doomed` leave: itself, else the next photo that stays, else the previous one (the core's rule). */
+  function successorAfter(doomed: ReadonlySet<PhotoId>): PhotoId | null {
+    const here = photos[current];
+    if (!here) return null;
+    if (!doomed.has(here.summary.id)) return here.summary.id;
+    const stays = (rec: PhotoRecord): boolean => !doomed.has(rec.summary.id);
+    return (photos.slice(current + 1).find(stays) ?? photos.slice(0, current).reverse().find(stays))?.summary.id ?? null;
+  }
+
+  /** The viewport shows the photo now current from the start: Fit, the camera view off. */
+  function showCurrent(): void {
+    viewport.mode = { kind: "fit" };
+    viewport.before = false;
+    emitSoon("render_stats", RENDER_STATS);
+    sendFrame();
+  }
+
+  /** `remove_photos`: the photos leave the filmstrip, their settings go with them, and the last removal is kept for Undo. */
+  function removeNow(ids: readonly PhotoId[]): SessionChange {
+    const doomed = new Set(ids);
+    const taken = photos.map((rec, place) => ({ rec, place })).filter(({ rec }) => doomed.has(rec.summary.id));
+    if (taken.length === 0) return { photo_ids: [], already_open: 0, session: snapshot() };
+    const left = new Set(taken.map(({ rec }) => rec.summary.id));
+    const wasCurrent = photos[current]?.summary.id ?? null;
+    const successor = successorAfter(left);
+    removal = { taken, wasCurrent, successor };
+    photos = photos.filter((rec) => !left.has(rec.summary.id));
+    for (const id of left) {
+      const timer = thumbTimers.get(id);
+      if (timer !== undefined) clearTimeout(timer);
+      thumbTimers.delete(id);
+      thumbnailUrls.delete(id);
+    }
+    current = Math.max(0, photos.findIndex((rec) => rec.summary.id === successor));
+    if (photos.length === 0) {
+      stopDevelopment();
+      developProgress = 0;
+      showCurrent();
+    } else {
+      resumeDevelopment();
+      if (successor !== wasCurrent) showCurrent();
+    }
+    return { photo_ids: taken.map(({ rec }) => rec.summary.id), already_open: 0, session: snapshot() };
+  }
+
+  /** `restore_photos`: the photos of the last removal come back where they were, the one on screen on screen again. */
+  function restoreNow(): SessionChange {
+    const last = removal;
+    removal = null;
+    if (!last) return { photo_ids: [], already_open: 0, session: snapshot() };
+    const wasEmpty = photos.length === 0;
+    const here = photos[current]?.summary.id ?? null;
+    const known = new Set(photos.map((p) => p.scene.name.toLowerCase()));
+    const restored: PhotoRecord[] = [];
+    let alreadyOpen = 0;
+    for (const { place, rec } of last.taken) {
+      // The same file was added again meanwhile: the photo in the session is the one.
+      if (known.has(rec.scene.name.toLowerCase())) {
+        alreadyOpen += 1;
+        continue;
+      }
+      known.add(rec.scene.name.toLowerCase());
+      // Its development was cut short: it starts again.
+      if (rec.phase < 3 && !rec.skipReason) {
+        rec.phase = 0;
+        setStatus(rec, { kind: "waiting" });
+      }
+      photos.splice(Math.min(place, photos.length), 0, rec);
+      restored.push(rec);
+    }
+    const ids = restored.map((rec) => rec.summary.id);
+    // The photo on screen stays, unless the removal had taken it away and the person has not moved since.
+    current = Math.max(0, photos.findIndex((rec) => rec.summary.id === here));
+    const back = last.wasCurrent !== null && ids.includes(last.wasCurrent) && here === last.successor ? last.wasCurrent : null;
+    if (back !== null) current = photos.findIndex((rec) => rec.summary.id === back);
+    if (photos.length > 0 && restored.length > 0) {
+      resumeDevelopment();
+      for (const rec of restored) if (rec.phase === 3 && !rec.skipReason) emitThumbnail(rec);
+      if (wasEmpty || photos[current]?.summary.id !== here) showCurrent();
+    }
+    return { photo_ids: ids, already_open: alreadyOpen, session: snapshot() };
   }
 
   function isArwPath(path: string): boolean {
@@ -1672,6 +1785,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     stopAll();
     photos = [];
     current = 0;
+    highestId = 0;
+    removal = null;
     developProgress = 0;
     const stored = options.persistPreferences ? readStored() : null;
     preferences = stored ? { ...defaultPreferences(), ...stored.preferences } : defaultPreferences();
@@ -1770,6 +1885,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         thumbnailUrls.clear();
         photos = [];
         current = 0;
+        highestId = 0;
+        removal = null;
         developProgress = 0;
         viewport.mode = { kind: "fit" };
         viewport.before = false;
@@ -1789,6 +1906,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       run("setPicked", () => {
         photo(photoId).summary.picked = picked;
       }),
+    removePhotos: (photoIds) => run("removePhotos", () => removeNow(photoIds)),
+    restorePhotos: () => run("restorePhotos", restoreNow),
 
     getSettings: (photoId) =>
       run("getSettings", () => resolveSettings(photoId, photo(photoId).settings, MOCK_ESTIMATES)),
