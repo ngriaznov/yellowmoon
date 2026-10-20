@@ -247,6 +247,8 @@ impl Renderer {
             background: self.options().background,
             gpu_priority: Priority::Thumbnail,
             dither_origin: (0, 0),
+            // The model gets bytes in memory; this renderer has no device anyway.
+            output: FrameOutput::Host,
         };
         let frame = render_view(job, &spec)?;
         let mut rgb = vec![0u8; 3 * width * height];
