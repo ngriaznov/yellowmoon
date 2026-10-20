@@ -55,8 +55,8 @@ pub mod viewport;
 
 pub use color::{DisplayChoice, LookProblem, LookProvider, NeutralOnly, PhotoSource, ResolvedLook};
 pub use frame::{
-    ChromaSample, FitFrame, FrameOptions, FullImage, FullRequest, FullTarget, PixelSample,
-    PixelWindow, RenderedFrame, ViewportFrame,
+    ChromaSample, DeviceFrame, FitFrame, FrameOptions, FrameOutput, FullImage, FullRequest,
+    FullTarget, PixelSample, PixelWindow, RenderedFrame, ViewportFrame,
 };
 pub use graph::{
     ComputeDevice, PhotoGraph, RawPrefetch, RenderOptions, RenderReport, Renderer, StageCounters,

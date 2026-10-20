@@ -56,6 +56,7 @@ pub mod filters;
 pub mod gains;
 pub mod highlights;
 pub mod lens;
+pub mod magnify;
 pub mod metrics;
 pub mod noise;
 pub mod normalize;

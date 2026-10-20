@@ -44,12 +44,27 @@
 //! boundary; a device error makes the whole frame again on the CPU with a note; a view too big for
 //! one storage binding is cut into bands with the same pixels (`banded`). The display-linear frame
 //! under the stage stays resident on the device, so a move of the Output slider is one small job.
-//! The CPU stage, where it runs, is cut into strips that each look at the cancel token
-//! (`sharpen_photo`).
+//! A view magnified above 100 % is a device job too: the device sharpens the 100 % picture under the
+//! view and the magnification kernel (`ym_gpu::kernels::magnify`, the CPU reference's taps and sums
+//! bit for bit, C13 fused) makes the RGBA8 frame; a magnified view whose 100 % picture or RGBA8 frame
+//! does not fit one binding is cut into bands of rows like any other view (each band reads the 100 %
+//! picture under its rows). Where the device does not run the tail the CPU sharpens and magnifies
+//! (`magnify_and_encode`). The CPU stage, where it runs, is cut into strips that each look at the
+//! cancel token (`sharpen_photo`).
+//!
+//! # The device frame
+//!
+//! The native viewport asks for its frames with [`FrameOutput::Device`]
+//! ([`Renderer::viewport_frame_to`]): a frame the device makes is then not read back but handed over
+//! as a [`DeviceFrame`] (the pool buffer the kernels wrote), which the viewport draws straight into
+//! its surface on the same queue (`docs/17-gpu.md` section 16). The bytes are those of the readback.
+//! A frame the CPU makes (no device, a device error, a stage that is off) is a host frame whatever was
+//! asked; every other request reads back as before.
 
 mod device;
 mod export_tail;
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 
@@ -57,17 +72,18 @@ use rayon::prelude::*;
 use ym_color::consts::Vec3;
 use ym_color::display::{ColorChain, Frame, Layout, OutputTarget, View};
 use ym_color::warp::chroma_of;
+use ym_gpu::cpu::magnify::{MagnifyMap, magnify_with};
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
-use ym_gpu::cpu::resample::sample_catmull_rom;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError};
 use ym_gpu::kernels::copy::Piece;
+use ym_gpu::pool::PooledBuffer;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::tail::{TailRoute, colour_device_tile_to_host, colour_tile_to_host};
 
 use self::device::{
-    Bounds, CameraSource, DeviceDisplay, DeviceInput, DisplayJob, PlainJob, TailWork, Upload,
-    ViewRoute,
+    Bounds, CameraSource, DeviceDisplay, DeviceInput, DisplayJob, GatherJob, PlainJob, Rgba8,
+    TailJob, TailWork, Upload, ViewRoute,
 };
 pub use self::export_tail::{BAND_DEPTH, GpuBands, TailRequest};
 use super::color::{GradePlan, PhotoSource};
@@ -87,12 +103,152 @@ pub struct RenderedFrame {
     /// Height in pixels.
     pub height: usize,
     /// `4 * width * height` bytes, row-major. Alpha is 255 everywhere (the letterbox is painted).
+    /// Empty when the frame stayed on the device ([`RenderedFrame::on_device`]).
     pub rgba: Vec<u8>,
+    /// The frame on the device, for a request that asked for one ([`FrameOutput::Device`]) and
+    /// that the device made; [`RenderedFrame::rgba`] is then empty. `None` for every other frame.
+    pub on_device: Option<DeviceFrame>,
     /// False when the frame was made from a coarser image than the zoom asks for because the
     /// full-resolution tiles were not ready ([`FrameOptions::coarse_only`]).
     pub sharp: bool,
     /// What the request did.
     pub report: RenderReport,
+}
+
+impl RenderedFrame {
+    /// The bytes the frame holds, on the host or on the device (what a cache of frames keeps
+    /// alive; the device pool's ledger counts the device's).
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        self.rgba.len()
+            + self
+                .on_device
+                .as_ref()
+                .map_or(0, |d| usize::try_from(d.byte_len()).unwrap_or(usize::MAX))
+    }
+
+    /// The RGBA8 bytes on the host: [`RenderedFrame::rgba`], or the device frame read back (one
+    /// device job; tests, and a viewport that cannot draw the device's buffer).
+    ///
+    /// # Errors
+    ///
+    /// The device's error when the frame is on a device that is gone or fails.
+    pub fn host_rgba(&self) -> Result<Cow<'_, [u8]>, GpuError> {
+        match &self.on_device {
+            Some(frame) => frame.read().map(Cow::Owned),
+            None => Ok(Cow::Borrowed(&self.rgba)),
+        }
+    }
+}
+
+/// Where a finished frame's bytes go (`docs/17-gpu.md` section 16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FrameOutput {
+    /// Read back into [`RenderedFrame::rgba`]: every consumer but the native viewport.
+    #[default]
+    Host,
+    /// Kept on the device when the device makes the frame ([`RenderedFrame::on_device`]): the
+    /// native viewport, which draws it from there. A frame the CPU makes is a host frame anyway.
+    Device,
+}
+
+/// A finished RGBA8 frame that stayed on the device: the pool buffer the view job's kernels wrote,
+/// not read back (`docs/17-gpu.md` section 16). Its bytes are those [`RenderedFrame::rgba`] would
+/// hold: `4 * width * height` of them from offset 0, row-major, R, G, B, A per pixel (a
+/// little-endian `u32` per pixel with R in the low byte), Display P3 sRGB-encoded for a viewport.
+///
+/// The buffer is on loan from the device's pool: it counts against the device's memory budget while
+/// any clone of the frame lives, and goes back to the pool when the last one is dropped. Work that
+/// reads it (a present on the same queue) is submitted before the frame is dropped, and the queue
+/// runs it before any later job that is given the same buffer.
+#[derive(Clone)]
+pub struct DeviceFrame {
+    buffer: Arc<PooledBuffer>,
+    width: usize,
+    height: usize,
+    gpu: Weak<Gpu>,
+}
+
+impl std::fmt::Debug for DeviceFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceFrame")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("buffer", &*self.buffer)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for DeviceFrame {
+    /// The same buffer (a frame served again from the cache is the same frame).
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.buffer, &other.buffer)
+            && (self.width, self.height) == (other.width, other.height)
+    }
+}
+
+impl DeviceFrame {
+    /// Width in pixels.
+    #[must_use]
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Height in pixels.
+    #[must_use]
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    /// The size of the frame in bytes: `4 * width * height`.
+    #[must_use]
+    pub fn byte_len(&self) -> u64 {
+        4 * self.width as u64 * self.height as u64
+    }
+
+    /// The storage buffer that holds the frame: [`DeviceFrame::byte_len`] bytes from offset 0
+    /// (the wgpu buffer may be longer, its pool size class). [`PooledBuffer::binding`] binds exactly
+    /// the frame's bytes.
+    #[must_use]
+    pub fn buffer(&self) -> &PooledBuffer {
+        &self.buffer
+    }
+
+    /// Whether the frame lives on `gpu` (a [`Weak`] of the device handle: two handles are the same
+    /// device exactly when they point to the same allocation, which a live `Weak` keeps from being
+    /// reused).
+    #[must_use]
+    pub fn is_on(&self, gpu: &Weak<Gpu>) -> bool {
+        Weak::ptr_eq(&self.gpu, gpu)
+    }
+
+    /// The device the frame lives on, while it is there.
+    #[must_use]
+    pub fn device(&self) -> Option<Arc<Gpu>> {
+        self.gpu.upgrade()
+    }
+
+    /// Whether a request on `gpu` (the renderer's device now) may serve this frame from a cache:
+    /// the same device, and not lost.
+    fn usable_with(&self, gpu: Option<&Arc<Gpu>>) -> bool {
+        gpu.is_some_and(|g| self.is_on(&Arc::downgrade(g)) && !g.is_lost())
+    }
+
+    /// Reads the frame back to the host: one job of viewport priority on its device.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::Shutdown`] when the device is gone, else the job's error.
+    pub fn read(&self) -> Result<Vec<u8>, GpuError> {
+        let gpu = self.device().ok_or(GpuError::Shutdown)?;
+        let buffer = Arc::clone(&self.buffer);
+        let bytes = usize::try_from(self.byte_len()).unwrap_or(usize::MAX);
+        let mut rgba = gpu.run(JobSpec::new(Priority::Viewport), move |ctx, token| {
+            device::read_job(ctx, token, &buffer)
+        })?;
+        rgba.truncate(bytes);
+        Ok(rgba)
+    }
 }
 
 /// The frame of a viewport state (an alias that names the use).
@@ -575,7 +731,8 @@ impl ViewSharpening {
     ///   on the 100 % picture (`s = 1`, the pixels an export holds) over the part of the final image
     ///   the view covers, with a margin of the halo and the 2 px of the magnifying filter, clipped
     ///   to the final image (where the photo ends the stage mirrors, as it does in an export); the
-    ///   sharpened picture is magnified to the view afterwards ([`magnify_and_encode`]).
+    ///   sharpened picture is magnified to the view afterwards (on the device by the magnification
+    ///   kernel, on the CPU by [`magnify_and_encode`]).
     fn frame_geometry(
         &self,
         view_to_final: &Affine,
@@ -811,20 +968,21 @@ fn sharpen_photo(
 }
 
 /// C13 and the letterbox: encodes a display-linear `w x h` view to RGBA8 (the dither at the pixel's
-/// place in the view) and paints the paper where `letterbox` is 1.
+/// place in the view, counted from `origin`: (0, 0) for a whole view, `(0, row)` for a band of one)
+/// and paints the paper where `letterbox` is 1.
 fn encode_view(
     job: &mut Job<'_>,
     view: &[f32],
     (w, h): (usize, usize),
     letterbox: Option<&[u8]>,
     grade: &GradePlan,
-    background: [u8; 3],
+    (background, origin): ([u8; 3], (usize, usize)),
 ) -> Result<Vec<u8>, RenderError> {
     let frame = Frame::interleaved(w, h, view).map_err(|e| RenderError::Color(e.to_string()))?;
     let mut rgb8 = vec![0u8; 3 * w * h];
     grade
         .chain
-        .encode_display_linear_u8(&frame, (0, 0), &mut rgb8, job.r.options().threads)
+        .encode_display_linear_u8(&frame, origin, &mut rgb8, job.r.options().threads)
         .map_err(|e| RenderError::Color(e.to_string()))?;
     let mut rgba = vec![255u8; 4 * w * h];
     rgba.par_chunks_mut(4)
@@ -851,7 +1009,7 @@ fn sharpen_and_encode(
     sharpening: &ViewSharpening,
     grade: &GradePlan,
     (w, h): (usize, usize),
-    background: [u8; 3],
+    (background, origin): ([u8; 3], (usize, usize)),
 ) -> Result<Vec<u8>, RenderError> {
     job.check()?;
     let started = std::time::Instant::now();
@@ -896,7 +1054,14 @@ fn sharpen_and_encode(
             .for_each(|(y, row)| row.copy_from_slice(&outside[(y + halo) * ew + halo..][..w]));
         mask
     });
-    let rgba = encode_view(job, &view, (w, h), letterbox.as_deref(), grade, background)?;
+    let rgba = encode_view(
+        job,
+        &view,
+        (w, h),
+        letterbox.as_deref(),
+        grade,
+        (background, origin),
+    )?;
     job.runs.output_passes += 1;
     job.timings.output_ms += started.elapsed().as_secs_f64() * 1000.0;
     Ok(rgba)
@@ -905,7 +1070,10 @@ fn sharpen_and_encode(
 /// A view magnified above 100 %: the stage has run on the 100 % picture `display` (the final
 /// image's pixels from `origin`, `s = 1`), and that sharpened picture is magnified to the view with
 /// the Catmull-Rom filter every magnified view uses, then encoded. Device pixels that fall outside
-/// the final image, or on pixels of it that are outside the straightened photo, are the paper.
+/// the final image, or on pixels of it that are outside the straightened photo, are the paper. The
+/// magnification is the CPU reference of the device's (`ym_gpu::cpu::magnify`, the taps made per
+/// pixel from this view's map); the device runs it from the same taps ([`magnify_map`],
+/// `frame::device`'s magnified tail).
 fn magnify_and_encode(
     job: &mut Job<'_>,
     display: &HostDisplay<'_>,
@@ -930,9 +1098,9 @@ fn magnify_and_encode(
             native[dst..dst + 3 * s.w].copy_from_slice(&s.rgb[y * s.w * 3..(y + 1) * s.w * 3]);
         }
     }
-    let mut planes = vec![0.0f32; 3 * n];
+    let mut planes = RgbImage::new(nw, nh);
     {
-        let (r, rest) = planes.split_at_mut(n);
+        let (r, rest) = planes.data.split_at_mut(n);
         let (g, b) = rest.split_at_mut(n);
         r.par_iter_mut()
             .zip(g.par_iter_mut())
@@ -945,44 +1113,53 @@ fn magnify_and_encode(
             });
     }
     drop(native);
-    let mut view = vec![0.0f32; 3 * w * h];
-    let mut letterbox = vec![0u8; w * h];
-    let (ox, oy) = (origin.0 as f64, origin.1 as f64);
-    let token = job.cancel.clone();
-    view.par_chunks_mut(3 * w.max(1))
-        .zip(letterbox.par_chunks_mut(w.max(1)))
-        .enumerate()
-        .for_each(|(y, (row, mask))| {
-            if token.is_cancelled() {
-                return;
-            }
-            for x in 0..w {
-                let (fx, fy) = spec.view_to_final.apply(x as f64 + 0.5, y as f64 + 0.5);
-                let inside = fx >= 0.0 && fy >= 0.0 && fx < fw as f64 && fy < fh as f64;
-                let (px, py) = (fx - ox, fy - oy);
-                let empty = !inside
-                    || display.outside.is_some_and(|o| {
-                        let (ix, iy) = (
-                            (px.max(0.0) as usize).min(nw - 1),
-                            (py.max(0.0) as usize).min(nh - 1),
-                        );
-                        o[iy * nw + ix] != 0
-                    });
-                if empty {
-                    mask[x] = 1;
-                    continue;
-                }
-                for c in 0..3 {
-                    row[3 * x + c] =
-                        sample_catmull_rom(&planes[c * n..(c + 1) * n], nw, nh, px, py);
-                }
-            }
-        });
+    let (view, letterbox) = magnify_with(
+        &planes,
+        display.outside,
+        (w, h),
+        (fw, fh),
+        origin,
+        Some(job.cancel),
+        |x, y| spec.view_to_final.apply(x as f64 + 0.5, y as f64 + 0.5),
+    )
+    .map_err(|e| RenderError::Image(format!("This view can't be magnified: {e}.")))?;
     job.check()?;
-    let rgba = encode_view(job, &view, (w, h), Some(&letterbox), grade, spec.background)?;
+    let rgba = encode_view(
+        job,
+        &view,
+        (w, h),
+        Some(&letterbox),
+        grade,
+        (spec.background, spec.dither_origin),
+    )?;
     job.runs.output_passes += 1;
     job.timings.output_ms += started.elapsed().as_secs_f64() * 1000.0;
     Ok(rgba)
+}
+
+/// The taps of a view magnified above 100 % ([`MagnifyMap`]: one per column and one per row) over
+/// the `src` pixels of the final image (`image` at full resolution) from `origin`, the 100 % picture
+/// the stage reads ([`ViewSharpening::frame_geometry`]). `None` when the view's map is not a scale and
+/// a translation (no viewport makes one: the straightening and the crop are in the sampler's grid):
+/// the CPU then magnifies the view. For a map with no cross terms a column's centre is the same at
+/// every row, so these taps are the ones [`magnify_and_encode`] makes per pixel, bit for bit.
+fn magnify_map(
+    spec: &ViewSpec,
+    origin: (usize, usize),
+    image: (usize, usize),
+    src: (usize, usize),
+) -> Option<MagnifyMap> {
+    let m = &spec.view_to_final.m;
+    if m[0][1] != 0.0 || m[1][0] != 0.0 {
+        return None;
+    }
+    let cols: Vec<f64> = (0..spec.out_w)
+        .map(|x| spec.view_to_final.apply(x as f64 + 0.5, 0.5).0)
+        .collect();
+    let rows: Vec<f64> = (0..spec.out_h)
+        .map(|y| spec.view_to_final.apply(0.5, y as f64 + 0.5).1)
+        .collect();
+    MagnifyMap::new(&cols, &rows, image, origin, src).ok()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -991,7 +1168,7 @@ fn magnify_and_encode(
 
 /// A finished frame and where it came from.
 struct Done {
-    rgba: Vec<u8>,
+    rgba: Rgba8,
     /// Where the colour chain ran.
     device: ComputeDevice,
     /// The reduction of the raw group.
@@ -1076,6 +1253,7 @@ fn plain_pass(
                 before: spec.before,
                 background: spec.background,
                 origin: spec.dither_origin,
+                output: spec.output,
             };
             let Some(rgba) = attempt(job, r.run(data, device::plain_job))? else {
                 return Ok(Flow::Cpu);
@@ -1097,7 +1275,7 @@ fn plain_pass(
     job.runs.color_passes += 1;
     job.timings.pass_ms += millis(started);
     Ok(Flow::Done(Done {
-        rgba,
+        rgba: Rgba8::Host(rgba),
         device: ComputeDevice::Cpu,
         scale,
         sharp,
@@ -1133,7 +1311,7 @@ impl StageWindow {
 /// RGBA8 frame when the tail ran in the same job, and where things ran.
 struct Built {
     display: Option<DisplayFrame>,
-    rgba: Option<Vec<u8>>,
+    rgba: Option<Rgba8>,
     scale: usize,
     sharp: bool,
     device: ComputeDevice,
@@ -1176,6 +1354,7 @@ fn build_display(
                 tail: plan.work.cloned(),
                 keep: plan.keep && plan.work.is_some(),
                 gpu: r.gpu_ref(),
+                output: read.output,
             };
             let Some(out) = attempt(job, r.run(data, device::display_job))? else {
                 return Ok(None);
@@ -1272,6 +1451,8 @@ fn build_display_in_bands(
             tail: None,
             keep: false,
             gpu: route.gpu_ref(),
+            // No tail: the job reads the display-linear frame back for the CPU, and makes no RGBA8.
+            output: FrameOutput::Host,
         };
         let Some(out) = attempt(job, route.run(data, device::display_job))? else {
             return Ok(None);
@@ -1315,8 +1496,14 @@ fn build_display_in_bands(
     }))
 }
 
-/// The tail of a view as the device runs it: the stage's inputs and the encode's.
-fn tail_work(grade: &GradePlan, sharpening: &ViewSharpening, spec: &ViewSpec) -> TailWork {
+/// The tail of a view as the device runs it: the stage's inputs and the encode's, and for a view
+/// magnified above 100 % the taps of its magnification.
+fn tail_work(
+    grade: &GradePlan,
+    sharpening: &ViewSharpening,
+    spec: &ViewSpec,
+    magnify: Option<Arc<MagnifyMap>>,
+) -> TailWork {
     TailWork {
         sharpen: sharpening.stage.clone(),
         scale: sharpening.scale,
@@ -1326,7 +1513,29 @@ fn tail_work(grade: &GradePlan, sharpening: &ViewSharpening, spec: &ViewSpec) ->
         dither: grade.chain.dither(),
         background: spec.background,
         origin: spec.dither_origin,
+        magnify,
     }
+}
+
+/// The taps of a magnified view whose tail the device can run (`None` for a view at 100 % or below,
+/// and for a magnified view the device leaves to the CPU): the map is a scale and a translation, the
+/// 100 % picture under the view fits one storage binding as four planes, and so does the RGBA8 view
+/// (both against the renderer's constant, [`ViewRoute::band_bytes`], so the choice is the same on
+/// every machine). A view that does not fit is cut into bands first ([`band_split`]), and this is
+/// asked again for each band.
+fn device_magnify(
+    route: &ViewRoute,
+    spec: &ViewSpec,
+    geometry: &FrameGeometry,
+    image: (usize, usize),
+) -> Option<Arc<MagnifyMap>> {
+    let origin = geometry.origin?;
+    let frame = 16 * geometry.width.next_multiple_of(2) as u64 * geometry.height as u64;
+    let view = 4 * spec.out_w as u64 * spec.out_h as u64;
+    if frame > route.band_bytes || view > route.band_bytes {
+        return None;
+    }
+    magnify_map(spec, origin, image, (geometry.width, geometry.height)).map(Arc::new)
 }
 
 /// The road of a view with output sharpening (see the module documentation): the display-linear
@@ -1351,7 +1560,7 @@ fn sharpened_pass(
         rgba.par_chunks_mut(4)
             .for_each(|d| d[..3].copy_from_slice(&spec.background));
         return Ok(Flow::Done(Done {
-            rgba,
+            rgba: Rgba8::Host(rgba),
             device: ComputeDevice::Cpu,
             scale: 1,
             sharp: true,
@@ -1368,12 +1577,16 @@ fn sharpened_pass(
         .cache
         .then(|| display_key(job, &read, grade, sharpening, window))
         .transpose()?;
-    // The tail runs on the device when the route has it and the frame is the view grown by the halo
-    // (a magnified view keeps the host road: the stage runs on the 100 % picture and the sharpened
-    // picture is magnified on the CPU).
+    // The tail runs on the device when the route has it: over the view grown by the halo, or, for a
+    // view magnified above 100 %, over the 100 % picture under it, which the device sharpens and
+    // magnifies to the view (`device_magnify`; a magnified view the device cannot take keeps the host
+    // road, the stage and the magnification on the CPU).
+    let magnify = route
+        .filter(|r| r.stages.tail)
+        .and_then(|r| device_magnify(r, spec, &geometry, image));
     let tail = route
-        .filter(|r| r.stages.tail && geometry.origin.is_none())
-        .map(|_| tail_work(grade, sharpening, spec));
+        .filter(|r| r.stages.tail && (geometry.origin.is_none() || magnify.is_some()))
+        .map(|_| tail_work(grade, sharpening, spec, magnify));
     let tail_gpu = tail.as_ref().and(route).map(ViewRoute::gpu_ref);
     let cached = key
         .as_ref()
@@ -1383,7 +1596,7 @@ fn sharpened_pass(
         .filter(|d| !(spec.coarse_only && !d.sharp))
         .filter(|d| d.usable(tail_gpu.as_ref()));
     let (scale, sharp, device);
-    let mut rgba: Option<Vec<u8>> = None;
+    let mut rgba: Option<Rgba8> = None;
     let display: Option<Arc<DisplayFrame>>;
     match cached {
         Some(d) => {
@@ -1434,8 +1647,12 @@ fn sharpened_pass(
                     return Ok(Flow::Cpu);
                 };
                 let started = std::time::Instant::now();
-                let Some(rgba) = attempt(job, r.run((Arc::clone(d), tail), device::tail_job))?
-                else {
+                let data = TailJob {
+                    display: Arc::clone(d),
+                    tail,
+                    output: spec.output,
+                };
+                let Some(rgba) = attempt(job, r.run(data, device::tail_job))? else {
                     return Ok(Flow::Cpu);
                 };
                 job.runs.output_passes += 1;
@@ -1446,19 +1663,19 @@ fn sharpened_pass(
                 let Some(host) = display.host() else {
                     return Ok(Flow::Cpu);
                 };
-                match geometry.origin {
+                Rgba8::Host(match geometry.origin {
                     None => sharpen_and_encode(
                         job,
                         &host,
                         sharpening,
                         grade,
                         (spec.out_w, spec.out_h),
-                        spec.background,
+                        (spec.background, spec.dither_origin),
                     )?,
                     Some(origin) => {
                         magnify_and_encode(job, &host, origin, sharpening, grade, spec, image)?
                     }
-                }
+                })
             }
         },
         // A pass that made neither a frame nor a display has nothing to finish: the CPU road.
@@ -1528,10 +1745,33 @@ fn band_window(whole: Option<Bounds>, row: usize, rows: usize, halo: usize) -> O
     (top < bottom).then(|| (x0, top - row, x1, bottom - row))
 }
 
+/// The window the stage works on in the frame a band of a magnified view reads (the 100 % picture
+/// under the band's rows, `band`), from `whole`, the box in the frame of the view in one piece, which
+/// starts at pixel `origin` of the final image: the same pixels of the final image, cut to the band's
+/// frame. A band's own box would end where its frame ends, and the stage would mirror there; with the
+/// whole view's box it mirrors only at the photo's edge, as the view in one piece does, and the rows
+/// a band's taps read are at least the stage's receptive field away from the frame's cut
+/// (`ViewSharpening::frame_geometry`'s margin), so they are the whole view's sharpened rows.
+fn magnified_band_window(
+    whole: Option<Bounds>,
+    origin: (usize, usize),
+    band: Option<&FrameGeometry>,
+) -> Option<Bounds> {
+    let (x0, y0, x1, y1) = whole?;
+    let g = band?;
+    let (bx, by) = g.origin?;
+    let (left, top) = ((x0 + origin.0).max(bx), (y0 + origin.1).max(by));
+    let (right, bottom) = (
+        (x1 + origin.0).min(bx + g.width),
+        (y1 + origin.1).min(by + g.height),
+    );
+    (left < right && top < bottom).then(|| (left - bx, top - by, right - bx, bottom - by))
+}
+
 /// The bounding box of the pixels inside the photo in the frame the stage reads for the whole of
-/// `spec` (the view grown by the stage's receptive field), found from the geometry alone: no tile is
-/// assembled and no pixel is sampled. `None` when nothing of the photo is in the frame. For a view
-/// the stage works on in one piece: not for a magnified view, whose frame is the 100 % picture.
+/// `spec` (the view grown by the stage's receptive field, or the 100 % picture under a magnified
+/// view), found from the geometry alone: no tile is assembled and no pixel is sampled. `None` when
+/// nothing of the photo is in the frame.
 fn whole_window(
     job: &mut Job<'_>,
     spec: &ViewSpec,
@@ -1575,19 +1815,42 @@ fn banded(
         .map(|sh| whole_window(job, spec, sh))
         .transpose()?;
     let halo = sharpening.map_or(0, |s| s.halo);
-    let mut rgba = Vec::with_capacity(4 * spec.out_w * spec.out_h);
+    // A band of a magnified view reads the 100 % picture under its own rows: its window is the
+    // whole view's box moved to where that picture starts (`magnified_band_window`).
+    let image = job.final_size()?;
+    let frame_of = |v: &ViewSpec| {
+        sharpening.and_then(|sh| sh.frame_geometry(&v.view_to_final, (v.out_w, v.out_h), image))
+    };
+    let whole_origin = frame_of(spec).and_then(|g| g.origin);
+    // The bands of a frame that stays on the device are gathered there, into one buffer the device
+    // can bind whole; a frame larger than that is read back band by band, as every frame is.
+    let frame_bytes = 4 * spec.out_w as u64 * spec.out_h as u64;
+    let host_bands;
+    let spec = if spec.output == FrameOutput::Device && frame_bytes > route.frame_bytes {
+        host_bands = ViewSpec {
+            output: FrameOutput::Host,
+            ..spec.clone()
+        };
+        &host_bands
+    } else {
+        spec
+    };
+    let mut parts = Vec::new();
     let (mut scale, mut sharp) = (1, true);
     let mut row = 0;
     for band in device::bands_of(spec, rows) {
         job.check()?;
-        let window = match whole_box {
-            Some(b) => StageWindow::Of(band_window(b, row, band.out_h, halo)),
-            None => StageWindow::Own,
+        let window = match (whole_box, whole_origin) {
+            (Some(b), Some(origin)) => {
+                StageWindow::Of(magnified_band_window(b, origin, frame_of(&band).as_ref()))
+            }
+            (Some(b), None) => StageWindow::Of(band_window(b, row, band.out_h, halo)),
+            (None, _) => StageWindow::Own,
         };
         row += band.out_h;
         match whole(job, &band, grade, sharpening, Some(route), window)? {
             Flow::Done(done) if done.device == ComputeDevice::Gpu || done.paper => {
-                rgba.extend_from_slice(&done.rgba);
+                parts.push(done.rgba);
                 // A band of paper says nothing of the raw group; of the others the coarsest counts,
                 // as `sharp` says that one of them was made from less than the zoom asks for.
                 if !done.paper {
@@ -1598,6 +1861,24 @@ fn banded(
             Flow::Done(_) | Flow::Cpu => return Ok(Flow::Cpu),
         }
     }
+    let rgba = if parts.iter().any(|p| matches!(p, Rgba8::Device(_))) {
+        let data = GatherJob {
+            parts,
+            bytes: frame_bytes,
+        };
+        let Some(rgba) = attempt(job, route.run(data, device::gather_job))? else {
+            return Ok(Flow::Cpu);
+        };
+        rgba
+    } else {
+        let mut rgba = Vec::with_capacity(4 * spec.out_w * spec.out_h);
+        for part in parts {
+            if let Rgba8::Host(bytes) = part {
+                rgba.extend_from_slice(&bytes);
+            }
+        }
+        Rgba8::Host(rgba)
+    };
     Ok(Flow::Done(Done {
         rgba,
         device: ComputeDevice::Gpu,
@@ -1611,8 +1892,13 @@ fn banded(
 /// whole, from the sampler to the RGBA8 frame, is cut, and only when its frame (four planes of f32
 /// over the view grown by the stage's receptive field) or the camera RGB it reads does not fit one
 /// storage binding of [`RenderOptions::view_band_bytes`] ([`device::band_rows`]; a constant of the
-/// renderer, so the cut is the same on every machine). A magnified view reads the 100 % picture
-/// around it and is not cut.
+/// renderer, so the cut is the same on every machine). A sharpened view magnified above 100 % reads
+/// the 100 % picture under it: it is cut when that picture (four planes of f32) or its RGBA8 frame
+/// does not fit, each band reading the 100 % picture under its own rows (`device_magnify`). The
+/// bands give the view in one piece: the stage's window is the whole view's, the dither counts from
+/// the band's row, and a row's taps come from the band's map, which is the view's with the band's
+/// offset folded in (one `f64` rounding, as for the sampler's bands; the tests find the bands
+/// identical to the view in one piece).
 ///
 /// The camera RGB a view reads can be larger than its frame (the whole group at 1/2 is 150 MB for a
 /// 50 MP photo; full-resolution tiles under a view between 50 and 100 % hold up to four pixels per
@@ -1634,24 +1920,35 @@ fn band_split(
         return Ok(None);
     }
     let step = spec.view_to_final.m[0][0];
-    if sharpening.is_some() && step.is_finite() && step < 1.0 - 1e-9 {
-        return Ok(None);
-    }
+    let magnified = sharpening.is_some() && step.is_finite() && step < 1.0 - 1e-9;
     let halo = sharpening.map_or(0, |s| s.halo);
-    let by_frame = device::band_rows(spec.out_w, spec.out_h, halo, route.band_bytes, 1);
+    // A magnified view's bands are sized by the loop below, from the pictures each one reads.
+    let by_frame = if magnified {
+        None
+    } else {
+        device::band_rows(spec.out_w, spec.out_h, halo, route.band_bytes, 1)
+    };
     let plan = job.plan()?;
     let image = job.final_size()?;
     let geometry = job.geometry().at_full_resolution();
     // The camera RGB one band reads: the view's own rows, or with output sharpening the band grown
-    // by the stage's receptive field (the frame the band's colour pass makes).
+    // by the stage's receptive field (the frame the band's colour pass makes), or the 100 % picture
+    // under a magnified band, which must fit one binding itself, with the band's RGBA8.
     let source_fits = |job: &mut Job<'_>, band: &ViewSpec| -> Result<bool, RenderError> {
+        let frame = sharpening
+            .and_then(|sh| sh.frame_geometry(&band.view_to_final, (band.out_w, band.out_h), image));
+        if magnified && let Some(g) = &frame {
+            let planes = 16 * g.width.next_multiple_of(2) as u64 * g.height as u64;
+            let rgba8 = 4 * band.out_w as u64 * band.out_h as u64;
+            if planes > route.band_bytes || rgba8 > route.band_bytes {
+                return Ok(false);
+            }
+        }
         // The CPU samples: what goes up is the band's frame, which the cut already holds.
         if !stages.sampler {
             return Ok(true);
         }
-        let read = match sharpening
-            .and_then(|sh| sh.frame_geometry(&band.view_to_final, (band.out_w, band.out_h), image))
-        {
+        let read = match frame {
             Some(g) => ViewSpec {
                 out_w: g.width,
                 out_h: g.height,
@@ -1764,6 +2061,9 @@ pub(crate) struct ViewSpec {
     /// for a whole view, `(0, row)` for a band of one ([`device::bands_of`]), so that a band
     /// dithers as the same rows of the whole view do.
     pub dither_origin: (usize, usize),
+    /// Where the finished frame goes: [`FrameOutput::Device`] for the native viewport's frames
+    /// only.
+    pub output: FrameOutput,
 }
 
 /// The sampled camera RGB of a view and how it was found.
@@ -1936,6 +2236,11 @@ pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedF
     if let Some(key) = &cache_key
         && let Some(hit) = job.g.cached_frame(key)
         && !(spec.coarse_only && !hit.sharp)
+        // A frame kept on the device serves a request on that device only, while it works.
+        && hit
+            .on_device
+            .as_ref()
+            .is_none_or(|d| d.usable_with(job.options().gpu.as_ref()))
     {
         job.runs.frame_hits += 1;
         let (scale, device) = (hit.report.scale, hit.report.device);
@@ -1946,13 +2251,34 @@ pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedF
     let route = job
         .view_gpu()?
         .map(|gpu| ViewRoute::new(&job, gpu, spec.gpu_priority));
+    let gpu = route.as_ref().map(ViewRoute::gpu_ref);
     let done = render_pass(&mut job, spec, &grade, sharpening.as_ref(), route)?;
+    let (rgba, on_device) = match (done.rgba, gpu) {
+        (Rgba8::Host(rgba), _) => (rgba, None),
+        (Rgba8::Device(buffer), Some(gpu)) => (
+            Vec::new(),
+            Some(DeviceFrame {
+                buffer,
+                width: spec.out_w,
+                height: spec.out_h,
+                gpu,
+            }),
+        ),
+        // Only a device job keeps a frame on the device, and a request without a route runs none.
+        (Rgba8::Device(_), None) => {
+            return Err(RenderError::Image(
+                "This frame can't be shown: it was made on a graphics card the request did not use."
+                    .to_owned(),
+            ));
+        }
+    };
     let graph = Arc::clone(&job.g);
     let report = job.finish(done.scale, done.device, spec.target);
     let frame = RenderedFrame {
         width: spec.out_w,
         height: spec.out_h,
-        rgba: done.rgba,
+        rgba,
+        on_device,
         sharp: done.sharp,
         report,
     };
@@ -1998,6 +2324,11 @@ fn frame_key(
     if sharpening.is_some() {
         key.push_str(&format!("|os{:?}", job.src.settings.output_sharpening));
     }
+    // A frame kept on the device and one read back are the same pixels in different places; each
+    // request is served the kind it asked for.
+    if spec.output == FrameOutput::Device {
+        key.push_str("|device");
+    }
     Ok(key)
 }
 
@@ -2033,6 +2364,25 @@ impl Renderer {
         options: &FrameOptions,
         cancel: &CancelToken,
     ) -> Result<RenderedFrame, RenderError> {
+        self.viewport_frame_to(src, state, options, FrameOutput::Host, cancel)
+    }
+
+    /// [`Renderer::viewport_frame`] with the place the frame's bytes go: with
+    /// [`FrameOutput::Device`] a frame the device makes stays there ([`RenderedFrame::on_device`],
+    /// the same bytes the readback gives), for the native viewport to draw straight from the
+    /// device's memory (`docs/17-gpu.md` section 16).
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    pub fn viewport_frame_to(
+        &self,
+        src: &PhotoSource,
+        state: &ViewportState,
+        options: &FrameOptions,
+        output: FrameOutput,
+        cancel: &CancelToken,
+    ) -> Result<RenderedFrame, RenderError> {
         let before_src;
         let src = if state.before {
             before_src = src.for_before_view();
@@ -2056,6 +2406,7 @@ impl Renderer {
             background: self.options().background,
             gpu_priority: Priority::Viewport,
             dither_origin: (0, 0),
+            output,
         };
         let mut frame = render_view(job, &spec)?;
         // The zoom belongs to the request, not to the pixels (a cached frame is served for the
@@ -2157,6 +2508,7 @@ impl Renderer {
             background: self.options().background,
             gpu_priority: Priority::Viewport,
             dither_origin: (0, 0),
+            output: FrameOutput::Host,
         };
         let grade = job.grade(OutputTarget::Viewport, false)?;
         let view = sample_view_in_place(&mut job, &spec)?;

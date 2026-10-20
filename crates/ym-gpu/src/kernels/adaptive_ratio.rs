@@ -1018,6 +1018,7 @@ mod tests {
                         "lens",
                         "sigma",
                         "bin",
+                        "magnify",
                     ]
                     .into_iter()
                     .find(|f| name.starts_with(f))
@@ -1040,6 +1041,7 @@ mod tests {
                 "highlights",
                 "lens",
                 "log_guided",
+                "magnify",
                 "mosaic_ca",
                 "output_sharpen",
                 "prep",

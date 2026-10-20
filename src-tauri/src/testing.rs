@@ -66,7 +66,8 @@ impl Harness {
         let events = Arc::new(Recorder::new());
         let frames = Arc::new(FrameStore::new());
         let emitter: Arc<dyn Emitter> = events.clone();
-        let sink = Arc::new(FallbackSink::new(Arc::clone(&frames), Arc::clone(&emitter)));
+        let sink: Arc<dyn crate::viewport::FrameSink> =
+            Arc::new(FallbackSink::new(Arc::clone(&frames), Arc::clone(&emitter)));
         let tool = home.path().join("app").join("ym");
         std::fs::create_dir_all(tool.parent().expect("parent")).expect("mkdir");
         std::fs::write(&tool, b"#!/bin/sh\n").expect("write the tool");
@@ -88,7 +89,7 @@ impl Harness {
         let api = AppApi::start(
             config,
             emitter,
-            sink,
+            move |_| sink,
             Arc::clone(&frames),
             Box::new(NoElevation),
             Some(cli),

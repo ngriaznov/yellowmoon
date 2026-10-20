@@ -31,8 +31,8 @@ use ym_looks::library::LookId;
 use super::RenderError;
 use super::color::{PhotoSource, with_look};
 use super::frame::{
-    FrameOptions, FullImage, FullRequest, RenderedFrame, Sampled, ViewSpec, render_view,
-    sample_view_routed,
+    FrameOptions, FrameOutput, FullImage, FullRequest, RenderedFrame, Sampled, ViewSpec,
+    render_view, sample_view_routed,
 };
 use super::geometry::Affine;
 use super::graph::{Job, Renderer};
@@ -160,6 +160,7 @@ impl Renderer {
             background: self.options().background,
             gpu_priority: Priority::Thumbnail,
             dither_origin: (0, 0),
+            output: FrameOutput::Host,
         };
         Ok((spec, (tw, th)))
     }
@@ -253,6 +254,7 @@ impl Renderer {
             background: self.options().background,
             gpu_priority: Priority::Thumbnail,
             dither_origin: (0, 0),
+            output: FrameOutput::Host,
         };
         let grade = job.grade(OutputTarget::Viewport, false)?;
         // The sample comes from the device group when the sampler is there; the reading stays on
@@ -383,11 +385,24 @@ impl Renderer {
         state: ViewportState,
         options: FrameOptions,
     ) -> JobHandle<Result<RenderedFrame, RenderError>> {
+        self.spawn_viewport_frame_to(src, state, options, FrameOutput::Host)
+    }
+
+    /// [`Renderer::spawn_viewport_frame`] with the place the frame's bytes go
+    /// ([`Renderer::viewport_frame_to`]): the native viewport asks for [`FrameOutput::Device`].
+    #[must_use]
+    pub fn spawn_viewport_frame_to(
+        &self,
+        src: PhotoSource,
+        state: ViewportState,
+        options: FrameOptions,
+        output: FrameOutput,
+    ) -> JobHandle<Result<RenderedFrame, RenderError>> {
         let r = self.clone();
         let id = src.id;
         self.scheduler()
             .submit(Priority::Viewport, Some(id), move |token| {
-                r.viewport_frame(&src, &state, &options, token)
+                r.viewport_frame_to(&src, &state, &options, output, token)
             })
     }
 

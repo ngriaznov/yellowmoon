@@ -520,9 +520,9 @@ impl PhotoGraph {
         st.frames.as_mut()?.get(&key.to_owned()).cloned()
     }
 
-    /// Keeps a finished frame.
+    /// Keeps a finished frame (on the host, or kept on the device: either way the bytes count).
     pub(crate) fn store_frame(&self, key: String, frame: Arc<super::frame::RenderedFrame>) {
-        let bytes = frame.rgba.len();
+        let bytes = frame.bytes();
         let budget = (self.budget.cpu_bytes / 32) as usize;
         lock(&self.state)
             .frames

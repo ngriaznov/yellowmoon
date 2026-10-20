@@ -9,6 +9,7 @@ use tauri::menu::MenuEvent;
 use tauri::{App, AppHandle, Manager, RunEvent, Runtime, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_specta::Event;
+use ym_gpu::device::Gpu;
 
 use crate::api::{AppApi, AppConfig};
 use crate::cli_link::{CliLink, Elevate};
@@ -97,11 +98,19 @@ fn start(app: &mut App, frames: &Arc<FrameStore>) -> AppState {
         perf::watch_main_thread(app.handle().clone());
     }
     let emitter: Arc<dyn Emitter> = Arc::new(TauriEmitter::new(app.handle().clone()));
-    let sink = make_sink(app, frames, &emitter);
     let cli = CliLink::locate()
         .map_err(|e| tracing::warn!(error = %e, "no command-line tool next to the app"))
         .ok();
-    match AppApi::start(config, emitter, sink, Arc::clone(frames), elevator(), cli) {
+    // The sink is made once the graphics device is open: the native viewport draws with it.
+    let make = {
+        let (handle, frames, emitter) = (
+            app.handle().clone(),
+            Arc::clone(frames),
+            Arc::clone(&emitter),
+        );
+        move |gpu: Option<&Arc<Gpu>>| make_sink(&handle, &frames, &emitter, gpu)
+    };
+    match AppApi::start(config, emitter, make, Arc::clone(frames), elevator(), cli) {
         Ok(api) => {
             #[cfg(debug_assertions)]
             smoke_test(app.handle().clone(), Arc::clone(&api));
@@ -115,29 +124,28 @@ fn start(app: &mut App, frames: &Arc<FrameStore>) -> AppState {
 }
 
 /// The viewport backend: the native layer on macOS, frames sent to the webview elsewhere (and
-/// whenever the native layer cannot be made).
+/// whenever the native layer cannot be made). `gpu` is the device the core renders with, if any:
+/// the native layer draws with it (`crate::native`).
 fn make_sink(
-    app: &App,
+    app: &AppHandle,
     frames: &Arc<FrameStore>,
     emitter: &Arc<dyn Emitter>,
+    gpu: Option<&Arc<Gpu>>,
 ) -> Arc<dyn FrameSink> {
     // `YELLOWMOON_VIEWPORT=fallback` asks for the frames-to-webview path even on a Mac, to compare
     // the two backends (docs/11).
     let forced_fallback = std::env::var("YELLOWMOON_VIEWPORT").is_ok_and(|v| v == "fallback");
     #[cfg(target_os = "macos")]
     if !forced_fallback {
-        match crate::native::NativeSink::create(app.handle(), "main") {
-            Ok(sink) => {
-                tracing::info!("native viewport");
-                return Arc::new(sink);
-            }
+        match crate::native::NativeSink::create(app, "main", gpu) {
+            Ok(sink) => return Arc::new(sink),
             Err(e) => {
                 tracing::warn!(error = %e, "no native viewport; sending frames to the webview");
             }
         }
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = app;
+    let _ = (app, gpu);
     tracing::info!(forced = forced_fallback, "fallback viewport");
     Arc::new(FallbackSink::new(Arc::clone(frames), Arc::clone(emitter)))
 }

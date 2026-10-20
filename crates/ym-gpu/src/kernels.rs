@@ -45,6 +45,7 @@ pub mod guided;
 pub mod highlights;
 pub mod lens;
 pub mod log_guided;
+pub mod magnify;
 pub mod mosaic_ca;
 pub mod output_sharpen;
 pub mod prep;
