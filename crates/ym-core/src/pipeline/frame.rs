@@ -49,7 +49,7 @@
 //! bit for bit, C13 fused) makes the RGBA8 frame; a magnified view whose 100 % picture or RGBA8 frame
 //! does not fit one binding is cut into bands of rows like any other view (each band reads the 100 %
 //! picture under its rows). Where the device does not run the tail the CPU sharpens and magnifies
-//! ([`magnify_and_encode`]). The CPU stage, where it runs, is cut into strips that each look at the
+//! (`magnify_and_encode`). The CPU stage, where it runs, is cut into strips that each look at the
 //! cancel token (`sharpen_photo`).
 //!
 //! # The device frame
