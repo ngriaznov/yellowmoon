@@ -55,6 +55,7 @@ use std::time::Duration;
 use rayon::prelude::*;
 use ym_color::display::ColorChain;
 use ym_color::encode::OutputSpace;
+use ym_gpu::cpu::magnify::MagnifyMap;
 use ym_gpu::cpu::output_sharpen::OutputSharpen;
 use ym_gpu::cpu::sampler::{Sampled, SamplerGrid};
 use ym_gpu::cpu::tiling::Rect;
@@ -64,6 +65,7 @@ use ym_gpu::image::{GpuImage, IMAGE_USAGE};
 use ym_gpu::kernels::color::{PreparedChain, Stop, release_tables};
 use ym_gpu::kernels::copy::{Piece, encode_gather};
 use ym_gpu::kernels::encode::{C13, Encoding, encode_c13};
+use ym_gpu::kernels::magnify::{MagnifyTarget, encode_magnify};
 use ym_gpu::kernels::output_sharpen::{FusedC13, PreparedSharpen};
 use ym_gpu::kernels::sampler::encode_sample;
 use ym_gpu::pool::PooledBuffer;
@@ -330,6 +332,10 @@ pub(super) struct TailWork {
     /// The place of the view's pixel (0, 0) in the picture the dither texels are counted in: (0, 0)
     /// for a whole view, `(0, row)` for a band of one.
     pub origin: (usize, usize),
+    /// A view magnified above 100 %: the taps of its magnification. The display-linear frame is
+    /// then the 100 % picture under the view (not the view grown by the halo); the tail sharpens it
+    /// and magnifies it to the view with C13 fused ([`record_magnified_tail`]).
+    pub magnify: Option<Arc<MagnifyMap>>,
 }
 
 /// A display-linear frame (C12) of a view on the device, before output sharpening: four planes (the
@@ -452,7 +458,8 @@ fn input_image(
 /// Records the tail over a resident display: C13 of the whole view first when the photo does not fill
 /// it (the pixels outside the stage's window are the letterbox, which the mask paints), then output
 /// sharpening fused with C13 over the photo's bounding box, writing its core into the same RGBA8
-/// buffer. Returns the buffer and, when `read`, the readback of it.
+/// buffer. A magnified view takes [`record_magnified_tail`] instead. Returns the buffer and, when
+/// `read`, the readback of it.
 fn record_tail(
     ctx: &GpuContext,
     passes: &mut PassList<'_>,
@@ -461,6 +468,9 @@ fn record_tail(
     tail: &TailWork,
     read: bool,
 ) -> Result<(Arc<PooledBuffer>, Option<ReadId>), GpuError> {
+    if let Some(map) = &tail.magnify {
+        return record_magnified_tail(ctx, passes, display, bounds, tail, map, read);
+    }
     let (w, h) = tail.view;
     let halo = tail.halo;
     let view_rect = Rect::new(halo, halo, w, h);
@@ -507,6 +517,63 @@ fn record_tail(
             },
         )?;
     }
+    let read = read.then(|| passes.read(&dst, 0, bytes)).transpose()?;
+    Ok((dst, read))
+}
+
+/// Records the tail of a view magnified above 100 % (`docs/17-gpu.md` section 16): the display is
+/// the 100 % picture under the view; output sharpening runs over the photo's bounding box in it at
+/// `s = 1` into a copy of it (the pixels outside the box stay as they are, as on the CPU), and the
+/// magnification kernel samples that sharpened picture for every device pixel of the view, paints the
+/// paper and encodes (C13 fused) into the RGBA8 buffer. The bytes `frame::magnify_and_encode` makes
+/// from the same display-linear frame, but for C13's own rounding (`ym_gpu::kernels::magnify`).
+#[allow(clippy::too_many_arguments)] // the tail's own inputs and the magnification
+fn record_magnified_tail(
+    ctx: &GpuContext,
+    passes: &mut PassList<'_>,
+    display: &GpuImage,
+    bounds: Option<Bounds>,
+    tail: &TailWork,
+    map: &MagnifyMap,
+    read: bool,
+) -> Result<(Arc<PooledBuffer>, Option<ReadId>), GpuError> {
+    let (w, h) = (map.width(), map.height());
+    let bytes = (w * h * 4) as u64;
+    let dst = passes.keep(ctx.pool().acquire("view rgba8", bytes, IMAGE_USAGE)?);
+    // The sharpened 100 % picture: a copy of the display (its mask plane included), the stage's
+    // result written over the photo's bounding box.
+    let sharp = GpuImage::alloc(
+        ctx,
+        "view magnified source",
+        display.width,
+        display.height,
+        display.planes,
+        display.place,
+    )?;
+    passes
+        .encoder()
+        .copy_buffer_to_buffer(&display.buf, 0, &sharp.buf, 0, display.byte_len());
+    if let Some((x0, y0, x1, y1)) = bounds {
+        let window = Rect::new(x0, y0, x1 - x0, y1 - y0);
+        let sharpen = PreparedSharpen::new(ctx, &tail.sharpen, tail.scale)?;
+        sharpen.encode(passes, display, window, window, &sharp, (x0, y0))?;
+    }
+    encode_magnify(
+        passes,
+        &sharp,
+        map,
+        MagnifyTarget::Rgba8 {
+            dst: &dst,
+            c13: C13 {
+                space: tail.space,
+                dither: tail.dither,
+                origin: tail.origin,
+            },
+            background: tail.background,
+        },
+    )?;
+    // The copy must outlive the submission.
+    let _ = passes.keep(sharp.buf);
     let read = read.then(|| passes.read(&dst, 0, bytes)).transpose()?;
     Ok((dst, read))
 }

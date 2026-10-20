@@ -6,9 +6,16 @@
 //! renderer reads back for [`FrameOutput::Host`], **bit for bit**: the same cells, zooms, the Before
 //! view, a frame without output sharpening, a tilted crop with paper in its corners, a move of the
 //! Output slider (the tail over the resident display-linear frame), a view cut into bands (gathered
-//! on the device, paper bands included) and a magnified view (made on the CPU, so a host frame
-//! whatever was asked). They also check that the frame counts against the device's pool while it is
-//! held and goes back when it is dropped, and that the frame cache serves a device frame again.
+//! on the device, paper bands included) and views magnified above 100 % (200 %, 400 %, 800 % and
+//! odd zooms, panned, retina, a tilted crop, paper around the photo, the Before view, no and 200 %
+//! sharpening, the slider over the resident 100 % picture; the device sharpens the 100 % picture
+//! and the magnification kernel makes the frame, `docs/17-gpu.md` section 16). A magnified view is
+//! never cut into bands: one whose 100 % picture does not fit one binding has that picture coloured
+//! in bands by the device and is sharpened and magnified by the CPU, a host frame whatever was asked,
+//! the same bytes. The magnified frames are also held to the frames of the CPU's
+//! stage and magnification over the same display-linear frame, within the bound stated there. They
+//! also check that the frame counts against the device's pool while it is held and goes back when it
+//! is dropped, and that the frame cache serves a device frame again.
 //!
 //! On Mesa lavapipe in CI (`gpu-lavapipe`, `YM_REQUIRE_GPU=1`) and on Metal (`mac-gpu.yml` runs every
 //! test of `ym-core`). Skipped, loudly, when no adapter opens, unless `YM_REQUIRE_GPU=1`.
@@ -115,6 +122,20 @@ fn at(percent: f64, w: f64, h: f64, image: (usize, usize)) -> ViewportState {
 
 fn before(mut st: ViewportState) -> ViewportState {
     st.before = true;
+    st
+}
+
+/// A view at `percent` of a `w x h` cell at `scale` device pixels per point, centred at `centre`
+/// (fractions of the final image).
+fn zoomed(
+    percent: f64,
+    (w, h, scale): (f64, f64, f64),
+    centre: [f64; 2],
+    image: (usize, usize),
+) -> ViewportState {
+    let mut st = cell(w, h, scale);
+    st.set_mode(ViewportMode::Percent { value: percent }, image);
+    st.centre = centre;
     st
 }
 
@@ -257,9 +278,70 @@ fn a_device_frame_has_the_bytes_of_the_frame_read_back() {
             true,
         ),
         ("tilted crop", tilted(&src), cell(576.0, 384.0, 1.0), true),
-        // Above 100 % the stage runs on the 100 % picture and the CPU magnifies it: a host frame
-        // whatever was asked, the same bytes.
-        ("200 %", src.clone(), at(200.0, 400.0, 300.0, image), false),
+        // Above 100 % the device sharpens the 100 % picture under the view and the magnification
+        // kernel makes the frame: kept on the device too.
+        ("200 %", src.clone(), at(200.0, 400.0, 300.0, image), true),
+        (
+            "400 %, panned",
+            src.clone(),
+            zoomed(400.0, (400.0, 300.0, 1.0), [0.3, 0.7], image),
+            true,
+        ),
+        (
+            "800 %",
+            src.clone(),
+            zoomed(800.0, (400.0, 300.0, 1.0), [0.6, 0.4], image),
+            true,
+        ),
+        (
+            "odd zoom 137 %",
+            src.clone(),
+            zoomed(137.0, (401.0, 299.0, 1.0), [0.45, 0.55], image),
+            true,
+        ),
+        (
+            "odd zoom 333 %",
+            src.clone(),
+            zoomed(333.0, (377.0, 251.0, 1.0), [0.71, 0.29], image),
+            true,
+        ),
+        (
+            "200 %, retina",
+            src.clone(),
+            zoomed(200.0, (300.0, 200.0, 2.0), [0.5, 0.5], image),
+            true,
+        ),
+        (
+            "300 %, tilted crop, its corner",
+            tilted(&src),
+            zoomed(300.0, (400.0, 300.0, 1.0), [0.02, 0.03], image),
+            true,
+        ),
+        // A cell wider and taller than the photo at 200 %: paper around it.
+        (
+            "200 %, paper around",
+            src.clone(),
+            zoomed(200.0, (1000.0, 700.0, 1.0), [0.5, 0.5], image),
+            true,
+        ),
+        (
+            "300 %, 200 % sharpening",
+            with_amount(&src, 200.0),
+            zoomed(300.0, (400.0, 300.0, 1.0), [0.5, 0.5], image),
+            true,
+        ),
+        (
+            "200 %, no sharpening",
+            with_amount(&src, 0.0),
+            at(200.0, 400.0, 300.0, image),
+            true,
+        ),
+        (
+            "before at 200 %",
+            src.clone(),
+            before(at(200.0, 400.0, 300.0, image)),
+            true,
+        ),
     ];
     for (name, photo, st, on_device) in cases {
         let host = fresh(&r, &photo, &st, FrameOutput::Host);
@@ -315,33 +397,160 @@ fn a_move_of_the_output_slider_keeps_its_frame_on_the_device() {
     let Some(gpu) = gpu() else { return };
     let photo = picture(900, 600);
     let src = photo.source();
-    let st = cell(576.0, 384.0, 1.0);
-    // Two renderers that see the same requests through their caches: the first frame makes the
-    // display-linear frame resident, the moves of the slider run the tail over it.
-    let (on_host, on_device) = (renderer(Some(&gpu), None), renderer(Some(&gpu), None));
-    // (amount, what serves the frame): the first makes the display-linear frame, the next two run
-    // the tail over it, no sharpening is a plain pass, and the first amount again is a frame the
-    // cache kept.
-    for (amount, served) in [
-        (100.0, "made"),
-        (40.0, "tail"),
-        (160.0, "tail"),
-        (0.0, "plain"),
-        (100.0, "cache"),
+    let image = renderer(Some(&gpu), None)
+        .final_size(&src, &CancelToken::new())
+        .expect("size");
+    // At Fit the tail runs over the view grown by the halo; at 300 % over the 100 % picture under
+    // the view, which the magnification kernel then makes bigger.
+    for (view, st) in [
+        ("fit", cell(576.0, 384.0, 1.0)),
+        ("300 %", at(300.0, 400.0, 300.0, image)),
     ] {
-        let name = format!("slider at {amount} ({served})");
-        let photo = with_amount(&src, amount);
-        let host = cached(&on_host, &photo, &st, FrameOutput::Host);
-        let device = cached(&on_device, &photo, &st, FrameOutput::Device);
-        assert_eq!(host.report.runs, device.report.runs, "{name}");
-        let runs = device.report.runs;
-        match served {
-            "tail" => assert_eq!(runs.display_hits, 1, "{name}: {runs:?}"),
-            "cache" => assert_eq!(runs.frame_hits, 1, "{name}: {runs:?}"),
-            _ => assert_eq!((runs.display_hits, runs.frame_hits), (0, 0), "{name}"),
+        // Two renderers that see the same requests through their caches: the first frame makes the
+        // display-linear frame resident, the moves of the slider run the tail over it.
+        let (on_host, on_device) = (renderer(Some(&gpu), None), renderer(Some(&gpu), None));
+        // (amount, what serves the frame): the first makes the display-linear frame, the next two
+        // run the tail over it, no sharpening is a plain pass, and the first amount again is a frame
+        // the cache kept.
+        for (amount, served) in [
+            (100.0, "made"),
+            (40.0, "tail"),
+            (160.0, "tail"),
+            (0.0, "plain"),
+            (100.0, "cache"),
+        ] {
+            let name = format!("{view}: slider at {amount} ({served})");
+            let photo = with_amount(&src, amount);
+            let host = cached(&on_host, &photo, &st, FrameOutput::Host);
+            let device = cached(&on_device, &photo, &st, FrameOutput::Device);
+            assert_eq!(host.report.runs, device.report.runs, "{name}");
+            let runs = device.report.runs;
+            match served {
+                "tail" => assert_eq!(runs.display_hits, 1, "{name}: {runs:?}"),
+                "cache" => assert_eq!(runs.frame_hits, 1, "{name}: {runs:?}"),
+                _ => assert_eq!((runs.display_hits, runs.frame_hits), (0, 0), "{name}"),
+            }
+            assert!(assert_same_pixels(&name, &host, &device), "{name}");
         }
-        assert!(assert_same_pixels(&name, &host, &device), "{name}");
     }
+}
+
+#[test]
+fn a_magnified_view_stays_on_the_device_when_its_pictures_fit_one_binding() {
+    let Some(gpu) = gpu() else { return };
+    let photo = picture(900, 600);
+    let src = photo.source();
+    // The renderer of the banded views above (about 1.4 MB a binding).
+    let r = renderer(Some(&gpu), Some(1_400_000));
+    let image = r.final_size(&src, &CancelToken::new()).expect("size");
+    // (name, state, kept on the device): a 400 x 300 view at 200 % reads about 240 x 190 pixels at
+    // 100 % (16 bytes each) and is 480 kB of RGBA8, which fits: one colour pass and the device's
+    // tail. A 760 x 560 view at 150 % reads about 550 x 410 pixels (3.6 MB), which does not: the
+    // device colours that picture in bands of rows and the CPU sharpens and magnifies it whole.
+    for (name, st, kept) in [
+        ("200 %, fits", at(200.0, 400.0, 300.0, image), true),
+        (
+            "150 %, over the binding",
+            at(150.0, 760.0, 560.0, image),
+            false,
+        ),
+    ] {
+        let host = fresh(&r, &src, &st, FrameOutput::Host);
+        // The 100 % picture coloured in one piece, or in bands (one colour pass a band).
+        let passes = host.report.runs.color_passes;
+        assert_eq!(passes == 1, kept, "{name}: {passes} colour passes");
+        let device = fresh(&r, &src, &st, FrameOutput::Device);
+        assert_eq!(assert_same_pixels(name, &host, &device), kept, "{name}");
+        // The colour pass ran on the device either way.
+        assert_eq!(device.report.device, ComputeDevice::Gpu, "{name}");
+    }
+}
+
+/// The largest difference in codes between a magnified frame the device makes and the frame of the
+/// CPU's stage and magnification over the same display-linear frame (the colour pass on the device in
+/// both): twice the first measured value. What differs is output sharpening's accumulation (f32 on
+/// the device, f64 on the CPU, `docs/17-gpu.md` section 12: 4.3e-5) and C13's rounding (one code);
+/// the magnification itself is the CPU's bit for bit (`ym-gpu`'s `tests/gpu_magnify.rs`).
+const MAGNIFIED_CODE_BOUND: u8 = 2;
+
+/// The share of samples more than one code apart in the same comparison: none measured; the bound of
+/// the other device frames (`render_gpu.rs`, 1e-5).
+const MAGNIFIED_OVER_BOUND: f64 = 1e-5;
+
+#[test]
+fn a_magnified_device_frame_is_the_cpu_magnification_of_the_same_picture_within_a_code() {
+    let Some(gpu) = gpu() else { return };
+    let photo = picture(900, 600);
+    let src = photo.source();
+    let on_device = renderer(Some(&gpu), None);
+    // The tail off: the device makes the same display-linear frame (the sampler and the colour pass),
+    // the CPU sharpens and magnifies it.
+    let cpu_tail = Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            gpu: Some(Arc::clone(&gpu)),
+            gpu_stages: GpuStages::SAMPLER.union(GpuStages::COLOR),
+            full_tile_px: 512,
+            ..RenderOptions::default()
+        },
+    )
+    .expect("render thread");
+    let image = on_device
+        .final_size(&src, &CancelToken::new())
+        .expect("size");
+    let (mut worst_all, mut over_all) = (0u8, 0.0f64);
+    for (name, photo, st) in [
+        ("200 %", src.clone(), at(200.0, 400.0, 300.0, image)),
+        (
+            "odd zoom 333 %, panned",
+            src.clone(),
+            zoomed(333.0, (377.0, 251.0, 1.0), [0.71, 0.29], image),
+        ),
+        (
+            "300 %, tilted crop, its corner",
+            tilted(&src),
+            zoomed(300.0, (400.0, 300.0, 1.0), [0.02, 0.03], image),
+        ),
+        (
+            "200 %, paper around",
+            src.clone(),
+            zoomed(200.0, (1000.0, 700.0, 1.0), [0.5, 0.5], image),
+        ),
+        (
+            "800 %, 200 % sharpening",
+            with_amount(&src, 200.0),
+            zoomed(800.0, (400.0, 300.0, 1.0), [0.4, 0.6], image),
+        ),
+    ] {
+        let device = fresh(&on_device, &photo, &st, FrameOutput::Device);
+        assert!(device.on_device.is_some(), "{name}: kept on the device");
+        let cpu = fresh(&cpu_tail, &photo, &st, FrameOutput::Host);
+        assert_eq!(cpu.report.runs.output_passes, 1, "{name}");
+        let bytes = device.host_rgba().expect("read back");
+        let (mut worst, mut over) = (0u8, 0usize);
+        for (i, (a, b)) in bytes.iter().zip(&cpu.rgba).enumerate() {
+            let d = a.abs_diff(*b);
+            if d > 0 && i % 4 == 3 {
+                panic!("{name}: alpha at byte {i}");
+            }
+            worst = worst.max(d);
+            over += usize::from(d > 1);
+        }
+        let share = over as f64 / bytes.len() as f64;
+        eprintln!(
+            "{name}: the device's magnified frame against the CPU's: worst {worst} codes, over 1 code {share:e}"
+        );
+        assert!(
+            worst <= MAGNIFIED_CODE_BOUND && share <= MAGNIFIED_OVER_BOUND,
+            "{name}: {worst} codes, {share:e} over one code"
+        );
+        worst_all = worst_all.max(worst);
+        over_all = over_all.max(share);
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "[device_frames] magnified frames against the CPU's stage and magnification: worst {worst_all} codes, over 1 code {over_all:e}"
+    );
 }
 
 #[test]

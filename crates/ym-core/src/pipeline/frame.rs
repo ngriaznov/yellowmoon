@@ -67,8 +67,8 @@ use rayon::prelude::*;
 use ym_color::consts::Vec3;
 use ym_color::display::{ColorChain, Frame, Layout, OutputTarget, View};
 use ym_color::warp::chroma_of;
+use ym_gpu::cpu::magnify::{MagnifyMap, magnify_with};
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
-use ym_gpu::cpu::resample::sample_catmull_rom;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError};
 use ym_gpu::kernels::copy::Piece;
@@ -1056,7 +1056,10 @@ fn sharpen_and_encode(
 /// A view magnified above 100 %: the stage has run on the 100 % picture `display` (the final
 /// image's pixels from `origin`, `s = 1`), and that sharpened picture is magnified to the view with
 /// the Catmull-Rom filter every magnified view uses, then encoded. Device pixels that fall outside
-/// the final image, or on pixels of it that are outside the straightened photo, are the paper.
+/// the final image, or on pixels of it that are outside the straightened photo, are the paper. The
+/// magnification is the CPU reference of the device's (`ym_gpu::cpu::magnify`, the taps made per
+/// pixel from this view's map); the device runs it from the same taps ([`magnify_map`],
+/// `frame::device`'s magnified tail).
 fn magnify_and_encode(
     job: &mut Job<'_>,
     display: &HostDisplay<'_>,
@@ -1081,9 +1084,9 @@ fn magnify_and_encode(
             native[dst..dst + 3 * s.w].copy_from_slice(&s.rgb[y * s.w * 3..(y + 1) * s.w * 3]);
         }
     }
-    let mut planes = vec![0.0f32; 3 * n];
+    let mut planes = RgbImage::new(nw, nh);
     {
-        let (r, rest) = planes.split_at_mut(n);
+        let (r, rest) = planes.data.split_at_mut(n);
         let (g, b) = rest.split_at_mut(n);
         r.par_iter_mut()
             .zip(g.par_iter_mut())
@@ -1096,44 +1099,46 @@ fn magnify_and_encode(
             });
     }
     drop(native);
-    let mut view = vec![0.0f32; 3 * w * h];
-    let mut letterbox = vec![0u8; w * h];
-    let (ox, oy) = (origin.0 as f64, origin.1 as f64);
-    let token = job.cancel.clone();
-    view.par_chunks_mut(3 * w.max(1))
-        .zip(letterbox.par_chunks_mut(w.max(1)))
-        .enumerate()
-        .for_each(|(y, (row, mask))| {
-            if token.is_cancelled() {
-                return;
-            }
-            for x in 0..w {
-                let (fx, fy) = spec.view_to_final.apply(x as f64 + 0.5, y as f64 + 0.5);
-                let inside = fx >= 0.0 && fy >= 0.0 && fx < fw as f64 && fy < fh as f64;
-                let (px, py) = (fx - ox, fy - oy);
-                let empty = !inside
-                    || display.outside.is_some_and(|o| {
-                        let (ix, iy) = (
-                            (px.max(0.0) as usize).min(nw - 1),
-                            (py.max(0.0) as usize).min(nh - 1),
-                        );
-                        o[iy * nw + ix] != 0
-                    });
-                if empty {
-                    mask[x] = 1;
-                    continue;
-                }
-                for c in 0..3 {
-                    row[3 * x + c] =
-                        sample_catmull_rom(&planes[c * n..(c + 1) * n], nw, nh, px, py);
-                }
-            }
-        });
+    let (view, letterbox) = magnify_with(
+        &planes,
+        display.outside,
+        (w, h),
+        (fw, fh),
+        origin,
+        Some(job.cancel),
+        |x, y| spec.view_to_final.apply(x as f64 + 0.5, y as f64 + 0.5),
+    )
+    .map_err(|e| RenderError::Image(format!("This view can't be magnified: {e}.")))?;
     job.check()?;
     let rgba = encode_view(job, &view, (w, h), Some(&letterbox), grade, spec.background)?;
     job.runs.output_passes += 1;
     job.timings.output_ms += started.elapsed().as_secs_f64() * 1000.0;
     Ok(rgba)
+}
+
+/// The taps of a view magnified above 100 % ([`MagnifyMap`]: one per column and one per row) over
+/// the `src` pixels of the final image (`image` at full resolution) from `origin`, the 100 % picture
+/// the stage reads ([`ViewSharpening::frame_geometry`]). `None` when the view's map is not a scale and
+/// a translation (no viewport makes one: the straightening and the crop are in the sampler's grid):
+/// the CPU then magnifies the view. For a map with no cross terms a column's centre is the same at
+/// every row, so these taps are the ones [`magnify_and_encode`] makes per pixel, bit for bit.
+fn magnify_map(
+    spec: &ViewSpec,
+    origin: (usize, usize),
+    image: (usize, usize),
+    src: (usize, usize),
+) -> Option<MagnifyMap> {
+    let m = &spec.view_to_final.m;
+    if m[0][1] != 0.0 || m[1][0] != 0.0 {
+        return None;
+    }
+    let cols: Vec<f64> = (0..spec.out_w)
+        .map(|x| spec.view_to_final.apply(x as f64 + 0.5, 0.5).0)
+        .collect();
+    let rows: Vec<f64> = (0..spec.out_h)
+        .map(|y| spec.view_to_final.apply(0.5, y as f64 + 0.5).1)
+        .collect();
+    MagnifyMap::new(&cols, &rows, image, origin, src).ok()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1470,8 +1475,14 @@ fn build_display_in_bands(
     }))
 }
 
-/// The tail of a view as the device runs it: the stage's inputs and the encode's.
-fn tail_work(grade: &GradePlan, sharpening: &ViewSharpening, spec: &ViewSpec) -> TailWork {
+/// The tail of a view as the device runs it: the stage's inputs and the encode's, and for a view
+/// magnified above 100 % the taps of its magnification.
+fn tail_work(
+    grade: &GradePlan,
+    sharpening: &ViewSharpening,
+    spec: &ViewSpec,
+    magnify: Option<Arc<MagnifyMap>>,
+) -> TailWork {
     TailWork {
         sharpen: sharpening.stage.clone(),
         scale: sharpening.scale,
@@ -1481,7 +1492,28 @@ fn tail_work(grade: &GradePlan, sharpening: &ViewSharpening, spec: &ViewSpec) ->
         dither: grade.chain.dither(),
         background: spec.background,
         origin: spec.dither_origin,
+        magnify,
     }
+}
+
+/// The taps of a magnified view whose tail the device can run (`None` for a view at 100 % or below,
+/// and for a magnified view the device leaves to the CPU): the map is a scale and a translation, the
+/// 100 % picture under the view fits one storage binding as four planes, and so does the RGBA8 view
+/// (both against the renderer's constant, [`ViewRoute::band_bytes`], so the choice is the same on
+/// every machine). A magnified view is never cut into bands ([`band_split`]).
+fn device_magnify(
+    route: &ViewRoute,
+    spec: &ViewSpec,
+    geometry: &FrameGeometry,
+    image: (usize, usize),
+) -> Option<Arc<MagnifyMap>> {
+    let origin = geometry.origin?;
+    let frame = 16 * geometry.width.next_multiple_of(2) as u64 * geometry.height as u64;
+    let view = 4 * spec.out_w as u64 * spec.out_h as u64;
+    if frame > route.band_bytes || view > route.band_bytes {
+        return None;
+    }
+    magnify_map(spec, origin, image, (geometry.width, geometry.height)).map(Arc::new)
 }
 
 /// The road of a view with output sharpening (see the module documentation): the display-linear
@@ -1523,12 +1555,16 @@ fn sharpened_pass(
         .cache
         .then(|| display_key(job, &read, grade, sharpening, window))
         .transpose()?;
-    // The tail runs on the device when the route has it and the frame is the view grown by the halo
-    // (a magnified view keeps the host road: the stage runs on the 100 % picture and the sharpened
-    // picture is magnified on the CPU).
+    // The tail runs on the device when the route has it: over the view grown by the halo, or, for a
+    // view magnified above 100 %, over the 100 % picture under it, which the device sharpens and
+    // magnifies to the view (`device_magnify`; a magnified view the device cannot take keeps the host
+    // road, the stage and the magnification on the CPU).
+    let magnify = route
+        .filter(|r| r.stages.tail)
+        .and_then(|r| device_magnify(r, spec, &geometry, image));
     let tail = route
-        .filter(|r| r.stages.tail && geometry.origin.is_none())
-        .map(|_| tail_work(grade, sharpening, spec));
+        .filter(|r| r.stages.tail && (geometry.origin.is_none() || magnify.is_some()))
+        .map(|_| tail_work(grade, sharpening, spec, magnify));
     let tail_gpu = tail.as_ref().and(route).map(ViewRoute::gpu_ref);
     let cached = key
         .as_ref()

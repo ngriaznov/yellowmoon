@@ -97,6 +97,8 @@ pub enum KernelId {
     Sampler,
     /// C13 with dither and the letterbox to RGBA8 or 8 / 16-bit interleaved bands.
     Encode,
+    /// The Catmull-Rom magnification of a view above 100 % with the paper, C13 fused.
+    Magnify,
     /// R1 normalise, R3 vignetting and R4 gains of a rectangle, from the resident raw words.
     Prep,
     /// The R1 clip bits of a rectangle (one bit per photosite) from the words and the steps.
@@ -167,7 +169,7 @@ impl KernelId {
     /// last the spikes and the probe, which no render uses. [`KernelSet::kernels`] and `warm_up`
     /// compile in this order, so that what the first frame of the first photo waits for is compiled
     /// before what only a zoomed view or an export needs.
-    pub const ALL: [KernelId; 62] = [
+    pub const ALL: [KernelId; 63] = [
         // The fit view of a mosaic photo.
         KernelId::Prep,
         KernelId::PrepMask,
@@ -195,6 +197,7 @@ impl KernelId {
         KernelId::OutputSharpenWindow,
         KernelId::OutputSharpenTransfer,
         KernelId::Encode,
+        KernelId::Magnify,
         // The full-resolution raw chain (the 100 % view and the exports).
         KernelId::AdaptiveRatioPrepare,
         KernelId::AdaptiveRatioGreen,
@@ -275,6 +278,7 @@ impl KernelId {
             KernelId::AdaptiveRatioExit => "adaptive_ratio_exit",
             KernelId::Sampler => "sampler",
             KernelId::Encode => "encode",
+            KernelId::Magnify => "magnify",
             KernelId::Prep => "prep",
             KernelId::PrepMask => "prep_mask",
             KernelId::HighlightsSuper => "highlights_super",
@@ -339,7 +343,8 @@ impl KernelId {
             | KernelId::OutputSharpenWindow
             | KernelId::OutputSharpenTransfer
             | KernelId::Sampler
-            | KernelId::Encode => KernelSet::View,
+            | KernelId::Encode
+            | KernelId::Magnify => KernelSet::View,
             KernelId::Resize => KernelSet::Tail,
             _ => KernelSet::Raw,
         }
@@ -382,6 +387,7 @@ impl KernelId {
             | KernelId::AdaptiveRatioExit => super::adaptive_ratio::body(self),
             KernelId::Sampler => super::sampler::body(),
             KernelId::Encode => super::encode::body(),
+            KernelId::Magnify => super::magnify::body(),
             KernelId::SigmaExpand | KernelId::Bilateral => super::bilateral::body(self),
             KernelId::Guided
             | KernelId::GuidedCols
