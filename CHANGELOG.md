@@ -13,6 +13,14 @@ moves the entries below from Unreleased into a dated section for that version.
 
 - While the CPU renders the photo (when the graphics card can't), the photo shows "Rendering on the CPU" with a spinner at the top, so a frame that takes a few seconds no longer looks stuck.
 
+### Changed
+
+- **New noise reduction.** The 100 % view and every export now remove noise by matching similar small blocks across the photo and filtering them together, in place of the light smoothing and detail re-injection used until now. Grain and colour blotches go further while fine texture stays, colours keep crisp edges instead of bleeding into their neighbours, and a clean low-ISO photo is no longer softened. Fine stripes (blinds, fabric) stay free of false colour, as before. On public test pictures with simulated sensor noise the result is closer to the clean picture at every ISO (by 0.3 to 2.5 dB). Luminance, Colour and Detail keep their Auto values and their meaning: Luminance and Colour set how much noise is removed, Detail how much of the original grain is mixed back. The fit view and the thumbnails are unchanged. Every export's pixels change (pipeline 0.5.0).
+
+### Security
+
+- The updater's TLS libraries are updated (rustls-webpki 0.103.16, webpki-root-certs 1.0.10) for RUSTSEC-2026-0382 and RUSTSEC-2026-0383, which let certificate checks accept distrusted intermediates.
+
 ## [0.1.11] - 2026-10-20
 
 Auto with Apple Intelligence grades each photo on the Mac, Contrast and Saturation are redesigned, the Signature look is richer, and there is a full-screen view (F) and Remove from filmstrip.
