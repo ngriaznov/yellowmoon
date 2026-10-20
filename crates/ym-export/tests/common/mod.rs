@@ -127,6 +127,9 @@ pub fn metadata() -> Metadata {
                 look_intensity_pct: Some(100),
                 display_transform: Some("aces2-sdr100-p3lim".into()),
                 models: Some("jdd 1.2.0 (sha256:abc)".into()),
+                // Left out, so the golden files keep their bytes; `src/xmp.rs` tests them.
+                auto: None,
+                apple_auto: None,
                 settings: Some(serde_json::json!({"exposure": "auto", "contrast": 0})),
             },
         },

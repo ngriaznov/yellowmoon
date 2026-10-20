@@ -149,7 +149,7 @@ describe("Delete and Backspace", () => {
 describe("Undo", () => {
   it("is a button of the notice and puts the photos back with their settings", async () => {
     await setup();
-    await h!.store.update({ contrast: 30 }, true);
+    await h!.store.update({ contrast: { kind: "manual", value: 30 } }, true);
     await h!.user.keyboard("{Delete}");
     await waitFor(() => expect(count()).toBe(11));
     await h!.user.click(within(notice()).getByRole("button", { name: "Undo" }));
@@ -158,7 +158,7 @@ describe("Undo", () => {
     expect(within(strip()).getByText("4 of 12 · 3 picked")).toBeInTheDocument();
     expect(notice()).toHaveTextContent("Put back DSC04204.");
     expect(within(notice()).queryByRole("button", { name: "Undo" })).toBeNull();
-    await waitFor(() => expect(h!.store.currentSettings()?.settings.contrast).toBe(30));
+    await waitFor(() => expect(h!.store.currentSettings()?.settings.contrast).toEqual({ kind: "manual", value: 30 }));
   });
 
   it("is ⌘Z while nothing changed since", async () => {

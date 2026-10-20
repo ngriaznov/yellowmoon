@@ -78,6 +78,8 @@ use ym_profiles::profile::Profile;
 use ym_profiles::registry::ProfileStore;
 use ym_raw::decode::RawImage;
 use ym_raw::layout::{CfaColor, DecodeKind, Layout, Rect};
+
+use crate::apple_auto::{AppleAuto, AppleValues, AutoSteps};
 use ym_raw::metadata::RawMetadata;
 
 use crate::settings::{DevelopSettings, NoiseReductionValue, Rolloff, SharpenValue};
@@ -1160,22 +1162,85 @@ pub struct AutoEstimates {
     pub sharpen: SharpenValue,
     /// What `noise_reduction: Auto` resolves to.
     pub noise_reduction: NoiseReductionValue,
-    /// The Auto white-balance readout (Kelvin rounded to 50 K, tint) of the all-Auto chain.
+    /// The Auto white-balance readout (Kelvin rounded to 50 K, tint) of the all-Auto chain (with Apple
+    /// Auto's nudge of the white, when there is one).
     pub readout: WbReadout,
+    /// What `contrast: Auto` resolves to: 0, or Apple Auto's contrast (`docs/19` section 5).
+    pub contrast: f64,
+    /// What `saturation: Auto` resolves to: 0, or Apple Auto's saturation.
+    pub saturation: f64,
+    /// What `highlights: Auto` resolves to: 0, or Apple Auto's highlights.
+    pub highlights: f64,
+    /// What `shadows: Auto` resolves to: 0, or Apple Auto's shadows.
+    pub shadows: f64,
+    /// What `black: Auto` resolves to: 0, or Apple Auto's black level.
+    pub black: f64,
+    /// What the shadows wheel's Auto resolves to: `[0, 0]`, or Apple Auto's shadow colour.
+    pub balance_shadows: [f64; 2],
+    /// What the highlights wheel's Auto resolves to: `[0, 0]`, or Apple Auto's highlight colour.
+    pub balance_highlights: [f64; 2],
+    /// Where the photo stands with Apple Auto (`docs/19` section 12): [`AppleAuto::Off`] for the
+    /// estimates of the photo alone and wherever Apple Auto is off.
+    pub apple: AppleAuto,
+    /// The Apple Auto steps in effect: the photo's answer, or its burst's shared steps (`docs/19`
+    /// section 5). `None` when Auto is the rule.
+    pub apple_steps: Option<AutoSteps>,
+}
+
+/// Which Auto made a photo's automatic values (`docs/19` sections 8 and 9: `ym:Auto`, `auto.source`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoSource {
+    /// Yellowmoon's own Auto.
+    Rule,
+    /// Apple Auto's answer (the photo's own or its burst's).
+    Apple,
+}
+
+impl AutoSource {
+    /// The wire name: `rule` or `apple`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Rule => "rule",
+            Self::Apple => "apple",
+        }
+    }
 }
 
 /// The `auto` object of `src/api/types.ts` (`AutoEstimates` there) and of `ym render --json`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AutoSummary {
-    /// `EV_auto`.
+    /// `EV_auto` (with Apple Auto's change, when there is one).
     pub exposure_ev: f64,
     /// The automatic white lift in stops (0 for a photo with nothing above +1 stop to lift): the
     /// Automatic card's White row. The lift in effect is this plus `white_offset_ev`.
     pub white_ev: f64,
-    /// The Auto Kelvin (a multiple of 50).
+    /// The Auto Kelvin (a multiple of 50; with Apple Auto's nudge, when there is one).
     pub kelvin: f64,
     /// The Auto tint.
     pub tint: f64,
+    /// What `contrast: Auto` resolves to: 0, or Apple Auto's contrast.
+    pub contrast: f64,
+    /// What `saturation: Auto` resolves to: 0, or Apple Auto's saturation.
+    pub saturation: f64,
+    /// What `highlights: Auto` resolves to: 0, or Apple Auto's highlights.
+    pub highlights: f64,
+    /// What `shadows: Auto` resolves to: 0, or Apple Auto's shadows.
+    pub shadows: f64,
+    /// What `black: Auto` resolves to: 0, or Apple Auto's black level.
+    pub black: f64,
+    /// What the shadows wheel's Auto resolves to: `[0, 0]`, or Apple Auto's shadow colour.
+    pub balance_shadows: [f64; 2],
+    /// What the highlights wheel's Auto resolves to: `[0, 0]`, or Apple Auto's highlight colour.
+    pub balance_highlights: [f64; 2],
+    /// Which Auto made these values: `rule` or `apple`.
+    pub source: AutoSource,
+    /// Where the photo stands with Apple Auto (`docs/19` section 12).
+    pub apple: AppleAuto,
+    /// Apple Auto's steps in effect (the photo's answer, or its burst's shared steps), `None` when
+    /// Auto is the rule. A step the model left empty is `null`: nothing was set for that control.
+    pub apple_steps: Option<AutoSteps>,
     /// The most probable light class.
     pub light_class: LightClass,
     /// Confidence of the light estimate, 0 to 1.
@@ -1293,6 +1358,8 @@ impl AutoEstimates {
             w_scene_initial,
             white_scale,
             ev_auto: 0.0,
+            white_shift_mired: 0.0,
+            tint_shift: 0.0,
         };
         let tables = tables_of(inputs.profile);
         let metering = color.metering_chain(tables)?;
@@ -1323,6 +1390,15 @@ impl AutoEstimates {
             sharpen,
             noise_reduction,
             readout: metering.readout(),
+            contrast: 0.0,
+            saturation: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
+            black: 0.0,
+            balance_shadows: [0.0, 0.0],
+            balance_highlights: [0.0, 0.0],
+            apple: AppleAuto::Off,
+            apple_steps: None,
         })
     }
 
@@ -1341,6 +1417,78 @@ impl AutoEstimates {
         let mut s = self.clone();
         s.noise = noise;
         s
+    }
+
+    /// The same estimates with Apple Auto's state and steps applied (`docs/19` section 5), on top of
+    /// the rule's exposure as it stands (after the burst median): the exposure gains the table's EV
+    /// (`exposure.ev` and `color.ev_auto` together, as [`AutoEstimates::with_shared_ev`] moves them),
+    /// the white its nudges of warmth and tint (and the readout follows them), and highlights,
+    /// shadows, black, contrast, saturation and the shadows and highlights wheels their values. A
+    /// step the model left empty keeps the value without Apple Auto.
+    /// The highlight guard is not applied again and the white lift is not sized again. `steps` of
+    /// `None` (no answer, a failure, Apple Auto off) leave every value at the rule's, bit for bit; only
+    /// `apple` records the state. A step out of its range counts as no answer.
+    #[must_use]
+    pub fn with_apple(
+        &self,
+        steps: Option<AutoSteps>,
+        state: AppleAuto,
+        tables: ProfileTables<'_>,
+    ) -> Self {
+        let mut s = self.clone();
+        s.apple = state;
+        let Some((steps, values)) = steps.and_then(|st| st.values().map(|v| (st, v))) else {
+            s.apple_steps = None;
+            return s;
+        };
+        s.apple_steps = Some(steps);
+        let AppleValues {
+            exposure_ev,
+            highlights,
+            shadows,
+            black,
+            contrast,
+            white_shift_mired,
+            tint_shift,
+            saturation,
+            balance_shadows,
+            balance_highlights,
+        } = values;
+        if exposure_ev != 0.0 {
+            s.exposure.ev = self.exposure.ev + exposure_ev;
+            s.color.ev_auto = self.color.ev_auto + exposure_ev;
+        }
+        s.contrast = contrast;
+        s.saturation = saturation;
+        s.highlights = highlights;
+        s.shadows = shadows;
+        s.black = black;
+        s.balance_shadows = balance_shadows;
+        s.balance_highlights = balance_highlights;
+        if white_shift_mired != 0.0 || tint_shift != 0.0 {
+            s.color.white_shift_mired = white_shift_mired;
+            s.color.tint_shift = tint_shift;
+            // The metering chain is the all-Auto chain; its readout is what the White balance rows
+            // show. It cannot fail for estimates whose rule chain was built (the nudge moves a white
+            // inside the tables), but if it did the rule's readout is kept rather than the photo lost.
+            match s.color.metering_chain(tables) {
+                Ok(chain) => s.readout = chain.readout(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "the nudged white could not be read out");
+                }
+            }
+        }
+        s
+    }
+
+    /// Which Auto made the values: Apple Auto's when steps are in effect, else the rule.
+    #[must_use]
+    pub fn source(&self) -> AutoSource {
+        if self.apple_steps.is_some() {
+            AutoSource::Apple
+        } else {
+            AutoSource::Rule
+        }
     }
 
     /// The initial gains `g0` of the raw stages, `white_scale / w_scene_initial` with green = 1
@@ -1391,6 +1539,16 @@ impl AutoEstimates {
             white_ev: self.white.amount_ev,
             kelvin: self.readout.kelvin_k,
             tint: self.readout.tint,
+            contrast: self.contrast,
+            saturation: self.saturation,
+            highlights: self.highlights,
+            shadows: self.shadows,
+            black: self.black,
+            balance_shadows: self.balance_shadows,
+            balance_highlights: self.balance_highlights,
+            source: self.source(),
+            apple: self.apple.clone(),
+            apple_steps: self.apple_steps,
             light_class,
             light_confidence: self.illuminant.scene.confidence,
             noise: NoiseAb {

@@ -14,10 +14,10 @@
     },
     "look_intensity": { "type": "number", "minimum": 0, "maximum": 100, "default": 100 },
     "exposure": { "$ref": "#/$defs/exposure" },
-    "contrast": { "$ref": "#/$defs/percent" },
+    "contrast": { "$ref": "#/$defs/auto_percent" },
     "brightness": { "$ref": "#/$defs/percent" },
-    "highlights": { "$ref": "#/$defs/percent" },
-    "shadows": { "$ref": "#/$defs/percent" },
+    "highlights": { "$ref": "#/$defs/auto_percent" },
+    "shadows": { "$ref": "#/$defs/auto_percent" },
     "white": { "$ref": "#/$defs/percent" },
     "white_offset_ev": {
       "description": "Light > White lift: stops added to the automatic white lift, the per-photo gain on the tones above +1 stop over middle grey (docs/02 C12 step 1b), after and alongside the highlight range of rolloff.highlights (C7). 0 is the automatic amount; a negative offset of the automatic amount, or more, gives no lift. A plain number, not Auto; the UI steps by 0.05. A document without it reads as 0.",
@@ -26,7 +26,7 @@
       "maximum": 3,
       "default": 0
     },
-    "black": { "$ref": "#/$defs/percent" },
+    "black": { "$ref": "#/$defs/auto_percent" },
     "light_source": {
       "description": "Colour > White balance presets.",
       "enum": ["auto", "day", "shade", "tungsten", "led", "fluorescent"],
@@ -34,16 +34,16 @@
     },
     "white_balance": { "$ref": "#/$defs/white_balance" },
     "color_balance": {
-      "description": "Three wheels, each a point [a, b] in the unit disc.",
+      "description": "Three wheels. Shadows and highlights are Auto ([0, 0], or the colour Apple Auto gave that zone, docs/19 section 5) or a manual point; midtones is a point [a, b] in the unit disc.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "shadows": { "$ref": "#/$defs/disc_point" },
+        "shadows": { "$ref": "#/$defs/auto_disc_point" },
         "midtones": { "$ref": "#/$defs/disc_point" },
-        "highlights": { "$ref": "#/$defs/disc_point" }
+        "highlights": { "$ref": "#/$defs/auto_disc_point" }
       }
     },
-    "saturation": { "$ref": "#/$defs/percent" },
+    "saturation": { "$ref": "#/$defs/auto_percent" },
     "color_warp": {
       "description": "Colour > Colour warp (docs/02 C9b): pins that move chosen colours across the chroma plane, in order. At most 16 (the core cuts the rest). No pins by default, which skips the stage. A patch replaces the whole list.",
       "type": "object",
@@ -162,6 +162,23 @@
   },
   "$defs": {
     "percent": { "type": "number", "minimum": -100, "maximum": 100, "default": 0 },
+    "auto_percent": {
+      "description": "contrast, highlights, shadows, black and saturation: Auto (0, or Apple Auto's value for the photo, docs/19 section 5), or a manual value from -100 to 100 (the UI steps by 1). A plain number is an older document: it reads as Manual with that value, and 0 as Auto.",
+      "oneOf": [
+        { "$ref": "#/$defs/auto" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "manual" },
+            "value": { "type": "number", "minimum": -100, "maximum": 100 }
+          }
+        },
+        { "type": "number", "minimum": -100, "maximum": 100 }
+      ],
+      "default": { "kind": "auto" }
+    },
     "exposure": {
       "description": "Auto, or an absolute exposure in stops (the UI steps by 0.01).",
       "oneOf": [
@@ -235,6 +252,23 @@
       "additionalProperties": false,
       "required": ["kind"],
       "properties": { "kind": { "const": "auto" } }
+    },
+    "auto_disc_point": {
+      "description": "The shadows or highlights wheel: Auto ([0, 0], or Apple Auto's colour for that zone, docs/19 section 5), or a manual point. A plain point is an older document: it reads as Manual at that point, and [0, 0] as Auto.",
+      "oneOf": [
+        { "$ref": "#/$defs/auto" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "point"],
+          "properties": {
+            "kind": { "const": "manual" },
+            "point": { "$ref": "#/$defs/disc_point" }
+          }
+        },
+        { "$ref": "#/$defs/disc_point" }
+      ],
+      "default": { "kind": "auto" }
     },
     "disc_point": {
       "description": "[a, b] with a^2 + b^2 <= 1 (the core scales a longer vector back to the circle).",

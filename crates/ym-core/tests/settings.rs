@@ -46,24 +46,24 @@ fn rich() -> DevelopSettings {
     let mut s = DevelopSettings::with_look(LookId::parse("arri:3000:film-warm").unwrap());
     s.look_intensity = 62.5;
     s.exposure = AutoOr::Manual(ym_core::settings::ExposureValue { ev: -1.25 });
-    s.contrast = 12.0;
+    s.contrast = ym_core::settings::PercentSetting::manual_value(12.0);
     s.brightness = -7.5;
-    s.highlights = -30.0;
-    s.shadows = 25.0;
+    s.highlights = ym_core::settings::PercentSetting::manual_value(-30.0);
+    s.shadows = ym_core::settings::PercentSetting::manual_value(25.0);
     s.white = 4.0;
     s.white_offset_ev = 0.4;
-    s.black = -9.0;
+    s.black = ym_core::settings::PercentSetting::manual_value(-9.0);
     s.light_source = LightSource::Tungsten;
     s.white_balance = AutoOr::Manual(ym_core::settings::WhiteBalanceValue {
         kelvin: 3250.0,
         tint: -4.5,
     });
     s.color_balance = ColorBalance {
-        shadows: [0.2, -0.3],
+        shadows: ym_core::settings::BalanceSetting::manual_point([0.2, -0.3]),
         midtones: [0.0, 0.0],
-        highlights: [-0.5, 0.5],
+        highlights: ym_core::settings::BalanceSetting::manual_point([-0.5, 0.5]),
     };
-    s.saturation = 15.0;
+    s.saturation = ym_core::settings::PercentSetting::manual_value(15.0);
     s.color_warp = ColorWarp {
         pins: vec![
             ColorWarpPin {
@@ -120,18 +120,29 @@ fn rich() -> DevelopSettings {
 // JSON shape
 // ---------------------------------------------------------------------------------------------
 
-/// What `defaultSettings()` in `src/api.mock.ts` produces: the frontend's idea of the defaults.
+/// What `defaultSettings()` in `src/api.mock.ts` produces: the frontend's idea of the defaults (with
+/// Auto contrast, highlights, shadows, black, saturation and the shadows and highlights wheels,
+/// `docs/19` section 5).
 fn typescript_defaults() -> Value {
     json!({
         "look": "builtin:neutral",
         "look_intensity": 100,
         "exposure": { "kind": "auto" },
-        "contrast": 0, "brightness": 0, "highlights": 0, "shadows": 0, "white": 0, "black": 0,
+        "contrast": { "kind": "auto" },
+        "brightness": 0,
+        "highlights": { "kind": "auto" },
+        "shadows": { "kind": "auto" },
+        "white": 0,
+        "black": { "kind": "auto" },
         "white_offset_ev": 0,
         "light_source": "auto",
         "white_balance": { "kind": "auto" },
-        "color_balance": { "shadows": [0, 0], "midtones": [0, 0], "highlights": [0, 0] },
-        "saturation": 0,
+        "color_balance": {
+            "shadows": { "kind": "auto" },
+            "midtones": [0, 0],
+            "highlights": { "kind": "auto" }
+        },
+        "saturation": { "kind": "auto" },
         "color_warp": { "pins": [] },
         "sharpen": { "kind": "auto" },
         "output_sharpening": 100,
@@ -344,19 +355,52 @@ fn resolved_settings_have_the_shape_of_the_typescript_type() {
     .unwrap();
     let v = serde_json::to_value(&resolved).unwrap();
     assert_eq!(ts_interface_keys(&source, "ResolvedSettings"), keys(&v));
+    // Apple Auto (`docs/19` sections 10 and 12): the flags of contrast and saturation, and the Auto values,
+    // the source and the photo's state with Apple Auto, in the core and in `types.ts` alike.
     assert_eq!(ts_interface_keys(&source, "AutoFlags"), keys(&v["auto"]));
     assert_eq!(
         ts_interface_keys(&source, "AutoEstimates"),
         keys(&v["estimates"])
     );
-    // ResolvedValues = DevelopSettings without the four automatic fields, plus their numbers.
+    for key in ["contrast", "saturation"] {
+        assert!(
+            ts_interface_keys(&source, "AutoFlags").contains(key),
+            "{key}"
+        );
+    }
+    for key in ["contrast", "saturation", "source", "apple"] {
+        assert!(
+            ts_interface_keys(&source, "AutoEstimates").contains(key),
+            "{key}"
+        );
+    }
+    assert_eq!(v["auto"]["contrast"], json!(true));
+    assert_eq!(v["estimates"]["source"], json!("rule"));
+    assert_eq!(v["estimates"]["apple"], json!({ "state": "off" }));
+    assert_eq!(
+        (
+            v["estimates"]["contrast"].clone(),
+            v["estimates"]["saturation"].clone()
+        ),
+        (json!(0.0), json!(0.0))
+    );
+    // ResolvedValues = DevelopSettings without the six automatic fields, plus their numbers.
     let mut want = ts_interface_keys(&source, "DevelopSettings");
-    for gone in ["exposure", "white_balance", "sharpen", "noise_reduction"] {
+    for gone in [
+        "exposure",
+        "contrast",
+        "white_balance",
+        "saturation",
+        "sharpen",
+        "noise_reduction",
+    ] {
         want.remove(gone);
     }
     want.extend(
         [
             "exposure_ev",
+            "contrast",
+            "saturation",
             "white_ev",
             "kelvin",
             "tint",
@@ -418,7 +462,10 @@ fn unknown_fields_and_malformed_values_are_refused() {
     // A partial document is fine.
     let partial: DevelopSettings =
         serde_json::from_str(r#"{"contrast": 10, "decode": {"lens_corrections": false}}"#).unwrap();
-    assert_eq!(partial.contrast, 10.0);
+    assert_eq!(
+        partial.contrast,
+        ym_core::settings::PercentSetting::manual_value(10.0)
+    );
     assert!(!partial.decode.lens_corrections && partial.decode.neural_demosaic);
 }
 
@@ -534,6 +581,18 @@ fn the_schema_refuses_what_the_core_refuses() {
             json!({ "noise_reduction": { "kind": "manual", "luminance": 101, "color": 0, "detail": 0 } }),
         ),
         ("contrast above range", json!({ "contrast": 101 })),
+        (
+            "manual contrast above range",
+            json!({ "contrast": { "kind": "manual", "value": 101 } }),
+        ),
+        (
+            "manual saturation without a value",
+            json!({ "saturation": { "kind": "manual" } }),
+        ),
+        (
+            "manual saturation with an unknown field",
+            json!({ "saturation": { "kind": "manual", "value": 1, "ev": 2 } }),
+        ),
         ("intensity above range", json!({ "look_intensity": 120 })),
         (
             "output sharpening above range",
@@ -653,6 +712,8 @@ fn the_schema_ranges_are_the_ranges_the_core_clamps_to() {
     );
     assert_eq!(range(&defs["percent"]), PERCENT_RANGE);
     let manual = |def: &str, field: &str| range(&defs[def]["oneOf"][1]["properties"][field]);
+    assert_eq!(manual("auto_percent", "value"), PERCENT_RANGE);
+    assert_eq!(range(&defs["auto_percent"]["oneOf"][2]), PERCENT_RANGE);
     assert_eq!(manual("exposure", "ev"), EXPOSURE_RANGE_EV);
     assert_eq!(manual("white_balance", "kelvin"), KELVIN_RANGE_K);
     assert_eq!(manual("white_balance", "tint"), TINT_RANGE);
@@ -793,7 +854,10 @@ fn values_out_of_range_are_clamped_and_reported() {
         s.exposure,
         ym_core::settings::ExposureSetting::manual_ev(4.0)
     );
-    assert_eq!(s.contrast, -100.0);
+    assert_eq!(
+        s.contrast,
+        ym_core::settings::PercentSetting::manual_value(-100.0)
+    );
     assert_eq!(s.look_intensity, 100.0);
     assert_eq!(
         s.rolloff,
@@ -846,8 +910,8 @@ fn a_patch_that_cannot_be_applied_changes_nothing() {
     let before = s.clone();
     // A valid change next to a value that is not a number.
     let patch = SettingsPatch {
-        contrast: Some(10.0),
-        saturation: Some(f64::NAN),
+        contrast: Some(ym_core::settings::PercentSetting::manual_value(10.0)),
+        saturation: Some(ym_core::settings::PercentSetting::manual_value(f64::NAN)),
         ..SettingsPatch::default()
     };
     let err = s.apply_patch(&patch, None).unwrap_err();
@@ -863,7 +927,10 @@ fn a_patch_that_cannot_be_applied_changes_nothing() {
             "NaN colour balance",
             SettingsPatch {
                 color_balance: Some(ym_core::settings::ColorBalancePatch {
-                    shadows: Some([f64::NAN, 0.0]),
+                    shadows: Some(ym_core::settings::BalanceSetting::manual_point([
+                        f64::NAN,
+                        0.0,
+                    ])),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -882,10 +949,11 @@ fn color_balance_points_are_scaled_back_into_the_unit_disc() {
         &mut s,
         parse_patch(r#"{"color_balance": {"shadows": [3, 4], "highlights": [0.6, 0.8]}}"#),
     );
-    assert!((s.color_balance.shadows[0] - 0.6).abs() < 1e-12);
-    assert!((s.color_balance.shadows[1] - 0.8).abs() < 1e-12);
+    let point = |w: &ym_core::settings::BalanceSetting| w.manual().expect("manual").point;
+    assert!((point(&s.color_balance.shadows)[0] - 0.6).abs() < 1e-12);
+    assert!((point(&s.color_balance.shadows)[1] - 0.8).abs() < 1e-12);
     // Exactly on the circle stays as it is; the untouched wheel stays zero.
-    assert_eq!(s.color_balance.highlights, [0.6, 0.8]);
+    assert_eq!(point(&s.color_balance.highlights), [0.6, 0.8]);
     assert_eq!(s.color_balance.midtones, [0.0, 0.0]);
     assert!(report.clamped.contains(&SettingsField::ColorBalance));
 }
@@ -1187,7 +1255,7 @@ fn reset_restores_every_field_to_its_default() {
     }
     // Re-run resets exposure, white balance (with preset and pick) and noise reduction only.
     let mut s = rich();
-    s.reset_automatic();
+    s.reset_automatic(false);
     assert!(s.exposure.is_auto() && s.white_balance.is_auto() && s.noise_reduction.is_auto());
     assert_eq!(s.light_source, LightSource::Auto);
     assert!(s.white_pick.is_none());
@@ -1201,7 +1269,154 @@ fn reset_restores_every_field_to_its_default() {
         "the highlight range is not part of Re-run"
     );
     assert!(!s.sharpen.is_auto(), "sharpening is not part of Re-run");
-    assert_eq!(s.contrast, 12.0);
+    // Without Apple Auto acting on the photo, contrast and saturation are not part of Re-run.
+    assert_eq!(s.contrast, rich().contrast);
+    assert_eq!(s.saturation, rich().saturation);
+    assert!(!rich().contrast.is_auto(), "the test edits contrast");
+    // While Apple Auto acts on it they are on the Automatic card, and Re-run returns them to Auto
+    // too (`docs/19` section 5).
+    let mut s = rich();
+    s.reset_automatic(true);
+    assert_eq!(s.contrast, AutoOr::Auto);
+    assert_eq!(s.saturation, AutoOr::Auto);
+    // So do the other values Apple Auto sets (`docs/19` prompt version 2).
+    assert_eq!(
+        (s.highlights, s.shadows, s.black),
+        (AutoOr::Auto, AutoOr::Auto, AutoOr::Auto)
+    );
+    assert!(s.color_balance.shadows.is_auto() && s.color_balance.highlights.is_auto());
+    assert!(s.exposure.is_auto() && s.white_balance.is_auto() && s.noise_reduction.is_auto());
+    assert!(!s.sharpen.is_auto(), "sharpening is not part of Re-run");
+    // Without Apple Auto acting, they stay as they were.
+    let mut s = rich();
+    s.reset_automatic(false);
+    assert_eq!(
+        (s.highlights, s.shadows, s.black, s.color_balance),
+        (
+            rich().highlights,
+            rich().shadows,
+            rich().black,
+            rich().color_balance
+        )
+    );
+}
+
+#[test]
+fn highlights_shadows_black_and_the_wheels_are_auto_or_manual_and_read_old_values() {
+    use ym_core::settings::{BalanceSetting, PercentSetting};
+    let neutral = LookId::builtin("neutral");
+    // The defaults are Auto, written in the tagged form.
+    let d = DevelopSettings::default();
+    let v = serde_json::to_value(&d).unwrap();
+    for key in ["highlights", "shadows", "black"] {
+        assert_eq!(v[key], json!({ "kind": "auto" }), "{key}");
+    }
+    assert_eq!(v["color_balance"]["shadows"], json!({ "kind": "auto" }));
+    assert_eq!(v["color_balance"]["midtones"], json!([0.0, 0.0]));
+    assert_eq!(v["color_balance"]["highlights"], json!({ "kind": "auto" }));
+    // Old documents: a number is Manual, 0 is Auto; a point is Manual, [0, 0] is Auto; clamped.
+    let (s, clamped) = DevelopSettings::from_json(
+        r#"{ "highlights": -30, "shadows": 0, "black": 250,
+             "color_balance": { "shadows": [0.2, -0.1], "highlights": [0, 0], "midtones": [0.1, 0] } }"#,
+        &neutral,
+    )
+    .unwrap();
+    assert_eq!(s.highlights, PercentSetting::manual_value(-30.0));
+    assert_eq!(s.shadows, AutoOr::Auto);
+    assert_eq!(s.black, PercentSetting::manual_value(100.0));
+    assert!(clamped.contains(&SettingsField::Black));
+    assert_eq!(
+        s.color_balance.shadows,
+        BalanceSetting::manual_point([0.2, -0.1])
+    );
+    assert_eq!(s.color_balance.highlights, AutoOr::Auto);
+    assert_eq!(s.color_balance.midtones, [0.1, 0.0]);
+    // The new forms.
+    let (s, _) = DevelopSettings::from_json(
+        r#"{ "highlights": { "kind": "manual", "value": 12 },
+             "color_balance": { "highlights": { "kind": "manual", "point": [3, 4] } } }"#,
+        &neutral,
+    )
+    .unwrap();
+    assert_eq!(s.highlights, PercentSetting::manual_value(12.0));
+    let p = s.color_balance.highlights.manual().unwrap().point;
+    assert!((p[0] - 0.6).abs() < 1e-12 && (p[1] - 0.8).abs() < 1e-12);
+    assert_eq!(
+        s.color_balance.shadows,
+        AutoOr::Auto,
+        "a wheel left out is Auto"
+    );
+    assert_eq!(
+        serde_json::to_value(BalanceSetting::manual_point([0.1, 0.2])).unwrap(),
+        json!({ "kind": "manual", "point": [0.1, 0.2] })
+    );
+    // Wrong shapes are refused.
+    for bad in [
+        r#"{ "black": "deep" }"#,
+        r#"{ "color_balance": { "shadows": { "kind": "manual" } } }"#,
+        r#"{ "color_balance": { "shadows": { "kind": "manual", "value": 1 } } }"#,
+        r#"{ "color_balance": { "shadows": [1, 2, 3] } }"#,
+    ] {
+        assert!(DevelopSettings::from_json(bad, &neutral).is_err(), "{bad}");
+    }
+    // Patches take either form; Auto is Reset.
+    let mut s = DevelopSettings::default();
+    for (text, highlights, wheel) in [
+        (
+            r#"{ "highlights": 20, "color_balance": { "shadows": [0.3, 0.1] } }"#,
+            PercentSetting::manual_value(20.0),
+            BalanceSetting::manual_point([0.3, 0.1]),
+        ),
+        (
+            r#"{ "highlights": { "kind": "auto" } }"#,
+            AutoOr::Auto,
+            BalanceSetting::manual_point([0.3, 0.1]),
+        ),
+        (
+            r#"{ "color_balance": { "shadows": { "kind": "auto" } } }"#,
+            AutoOr::Auto,
+            AutoOr::Auto,
+        ),
+        (
+            r#"{ "color_balance": { "shadows": { "kind": "manual", "point": [0, -0.5] } } }"#,
+            AutoOr::Auto,
+            BalanceSetting::manual_point([0.0, -0.5]),
+        ),
+        (
+            r#"{ "color_balance": { "shadows": [0, 0] } }"#,
+            AutoOr::Auto,
+            AutoOr::Auto,
+        ),
+    ] {
+        s.apply_patch(&parse_patch(text), None).unwrap();
+        assert_eq!(
+            (s.highlights, s.color_balance.shadows),
+            (highlights, wheel),
+            "{text}"
+        );
+    }
+    // Copy and paste carries Auto as Auto, and a manual value as it is.
+    let mut from = DevelopSettings::default();
+    from.shadows = PercentSetting::manual_value(-15.0);
+    let copied = SettingsPatch::of_fields(
+        &from,
+        &[
+            SettingsField::Highlights,
+            SettingsField::Shadows,
+            SettingsField::ColorBalance,
+        ],
+    );
+    let v = serde_json::to_value(&copied).unwrap();
+    assert_eq!(v["highlights"], json!({ "kind": "auto" }));
+    assert_eq!(v["shadows"], json!({ "kind": "manual", "value": -15.0 }));
+    assert_eq!(v["color_balance"]["shadows"], json!({ "kind": "auto" }));
+    let mut onto = DevelopSettings::default();
+    onto.highlights = PercentSetting::manual_value(30.0);
+    onto.apply_patch(&copied, None).unwrap();
+    assert_eq!(
+        (onto.highlights, onto.shadows),
+        (AutoOr::Auto, from.shadows)
+    );
 }
 
 #[test]
@@ -1261,7 +1476,7 @@ fn output_sharpening_is_a_plain_number_in_a_patch_with_its_own_stage_group() {
         SettingsPatch::of_field(&s, SettingsField::OutputSharpening),
     );
     assert_eq!(other.output_sharpening, 50.0);
-    assert_eq!(other.contrast, 0.0);
+    assert_eq!(other.contrast, AutoOr::Auto);
 }
 
 #[test]
@@ -1281,11 +1496,14 @@ fn an_older_document_without_output_sharpening_reads_as_100() {
 #[test]
 fn settings_read_from_a_file_are_clamped_and_checked() {
     let mut s = rich();
-    s.contrast = 400.0;
+    s.contrast = ym_core::settings::PercentSetting::manual_value(400.0);
     s.rolloff.highlights = -3.0;
     s.curve.red = vec![[0.9, 0.1], [0.1, 0.9]];
     let (clean, clamped) = s.validated().unwrap();
-    assert_eq!(clean.contrast, 100.0);
+    assert_eq!(
+        clean.contrast,
+        ym_core::settings::PercentSetting::manual_value(100.0)
+    );
     assert_eq!(clean.rolloff.highlights, 0.0);
     assert_eq!(clean.curve.red, vec![[0.1, 0.9], [0.9, 0.1]]);
     for f in [

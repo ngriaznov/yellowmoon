@@ -308,13 +308,18 @@ describe("applyDirect", () => {
     const { store } = await opened();
     const rs = settingsOf(store);
     const next = applyDirect(rs, {
-      contrast: 12,
+      white: 12,
+      contrast: { kind: "manual", value: 20 },
       output_sharpening: 35,
       light_source: "tungsten",
       exposure: { kind: "manual", ev: 1 },
     });
-    expect(next.settings.contrast).toBe(12);
-    expect(next.values.contrast).toBe(12);
+    expect(next.settings.white).toBe(12);
+    expect(next.values.white).toBe(12);
+    // Contrast and saturation are Auto or a value (`docs/19`): the value shows at once, and so does the AUTO tag going.
+    expect(next.settings.contrast).toEqual({ kind: "manual", value: 20 });
+    expect(next.values.contrast).toBe(20);
+    expect(next.auto.contrast).toBe(false);
     // The output sharpening is a plain number: the slider shows it at once, without waiting for the
     // core (whose answer comes after the stage has run on the new amount).
     expect(next.settings.output_sharpening).toBe(35);
@@ -360,7 +365,7 @@ describe("changing settings", () => {
   it("does nothing before the settings have arrived", async () => {
     const { api, store } = await connected();
     const spy = vi.spyOn(api, "updateSettings");
-    await store.update({ contrast: 4 });
+    await store.update({ white: 4 });
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -375,15 +380,15 @@ describe("changing settings", () => {
       if (calls.length === 1) await gate;
       return real(id, patch);
     });
-    const first = store.update({ contrast: 10 }, false);
-    const second = store.update({ contrast: 20 }, false);
-    const third = store.update({ contrast: 30, brightness: 5 }, false);
-    const last = store.update({ contrast: 40 }, true);
+    const first = store.update({ white: 10 }, false);
+    const second = store.update({ white: 20 }, false);
+    const third = store.update({ white: 30, brightness: 5 }, false);
+    const last = store.update({ white: 40 }, true);
     release();
     await Promise.all([first, second, third, last]);
     // One in flight, then everything that came after it, as one patch.
-    expect(calls).toEqual([{ contrast: 10 }, { contrast: 40, brightness: 5 }]);
-    expect(settingsOf(store).values.contrast).toBe(40);
+    expect(calls).toEqual([{ white: 10 }, { white: 40, brightness: 5 }]);
+    expect(settingsOf(store).values.white).toBe(40);
     expect(settingsOf(store).values.brightness).toBe(5);
   });
 
@@ -398,47 +403,47 @@ describe("changing settings", () => {
       if (calls.length === 1) await gate;
       return real(id, patch);
     });
-    const a = store.update({ contrast: 10 }, true);
-    const b = store.update({ contrast: 20 }, true);
+    const a = store.update({ white: 10 }, true);
+    const b = store.update({ white: 20 }, true);
     const c = store.update({ brightness: 7 }, false);
     release();
     await Promise.all([a, b, c]);
-    expect(calls).toEqual([{ contrast: 10 }, { contrast: 20 }, { brightness: 7 }]);
+    expect(calls).toEqual([{ white: 10 }, { white: 20 }, { brightness: 7 }]);
   });
 
   it("shows the error and asks the core again when a patch fails", async () => {
     const { api, store } = await opened();
     api.failNext("updateSettings", { scope: "render", message: "The photo couldn't be drawn. Try the change again." });
-    await store.update({ contrast: 33 });
+    await store.update({ white: 33 });
     expect(store.getState().error?.message).toBe("The photo couldn't be drawn. Try the change again.");
     // The optimistic value was taken back by asking the core.
-    await vi.waitFor(() => expect(settingsOf(store).values.contrast).toBe(0));
+    await vi.waitFor(() => expect(settingsOf(store).values.white).toBe(0));
   });
 
   it("keeps each photo's settings apart", async () => {
     const { store } = await opened();
-    await store.update({ contrast: 9 });
+    await store.update({ white: 9 });
     await store.step(1);
     await vi.waitFor(() => expect(settingsOf(store).photo_id).toBe(2));
-    expect(settingsOf(store).values.contrast).toBe(0);
+    expect(settingsOf(store).values.white).toBe(0);
     await store.step(-1);
-    expect(settingsOf(store).values.contrast).toBe(9);
+    expect(settingsOf(store).values.white).toBe(9);
   });
 });
 
 describe("undo and redo", () => {
   it("takes back a change and puts it back, for the current photo", async () => {
     const { api, store } = await opened();
-    await store.update({ contrast: 25 });
+    await store.update({ white: 25 });
     expect(store.getState().canUndo).toBe(true);
     const spy = vi.spyOn(api, "updateSettings");
     await store.undo();
-    expect(spy).toHaveBeenLastCalledWith(1, { contrast: 0 });
-    expect(settingsOf(store).values.contrast).toBe(0);
+    expect(spy).toHaveBeenLastCalledWith(1, { white: 0 });
+    expect(settingsOf(store).values.white).toBe(0);
     expect(store.getState().canRedo).toBe(true);
     await store.redo();
-    expect(spy).toHaveBeenLastCalledWith(1, { contrast: 25 });
-    expect(settingsOf(store).values.contrast).toBe(25);
+    expect(spy).toHaveBeenLastCalledWith(1, { white: 25 });
+    expect(settingsOf(store).values.white).toBe(25);
     expect(store.getState().canRedo).toBe(false);
   });
 
@@ -463,11 +468,11 @@ describe("undo and redo", () => {
 
   it("records a whole drag as one step", async () => {
     const { store } = await opened();
-    await store.update({ highlights: -5 }, false);
-    await store.update({ highlights: -12 }, false);
-    await store.update({ highlights: -18 }, true);
+    await store.update({ white: -5 }, false);
+    await store.update({ white: -12 }, false);
+    await store.update({ white: -18 }, true);
     await store.undo();
-    expect(settingsOf(store).values.highlights).toBe(0);
+    expect(settingsOf(store).values.white).toBe(0);
     expect(store.getState().canUndo).toBe(false);
   });
 
@@ -481,19 +486,19 @@ describe("undo and redo", () => {
 
   it("has a history for each photo", async () => {
     const { store } = await opened();
-    await store.update({ contrast: 25 });
+    await store.update({ white: 25 });
     await store.step(1);
     await vi.waitFor(() => expect(settingsOf(store).photo_id).toBe(2));
     expect(store.getState().canUndo).toBe(false);
     await store.undo();
     await store.step(-1);
-    expect(settingsOf(store).values.contrast).toBe(25);
+    expect(settingsOf(store).values.white).toBe(25);
     expect(store.getState().canUndo).toBe(true);
   });
 
   it("a new change ends the redo chain", async () => {
     const { store } = await opened();
-    await store.update({ contrast: 5 });
+    await store.update({ white: 5 });
     await store.undo();
     await store.update({ brightness: 6 });
     expect(store.getState().canRedo).toBe(false);
@@ -511,10 +516,10 @@ describe("undo and redo", () => {
     const { store } = await opened();
     // Values cycle between 2 and 90, so every change differs from the one before.
     const value = (i: number): number => (i % 90) + 1;
-    for (let i = 1; i <= 105; i++) await store.update({ contrast: value(i) });
+    for (let i = 1; i <= 105; i++) await store.update({ white: value(i) });
     for (let i = 0; i < 120; i++) await store.undo();
-    // 105 changes, the oldest five forgotten: the oldest step left takes contrast back to what change 5 made it.
-    expect(settingsOf(store).values.contrast).toBe(value(5));
+    // 105 changes, the oldest five forgotten: the oldest step left takes white back to what change 5 made it.
+    expect(settingsOf(store).values.white).toBe(value(5));
   });
 
   it("undoes Re-run", async () => {
@@ -530,9 +535,9 @@ describe("undo and redo", () => {
 
   it("waits for a patch in flight before it undoes", async () => {
     const { store } = await opened();
-    void store.update({ contrast: 14 }, true);
+    void store.update({ white: 14 }, true);
     await store.undo();
-    expect(settingsOf(store).values.contrast).toBe(0);
+    expect(settingsOf(store).values.white).toBe(0);
   });
 });
 
@@ -800,7 +805,7 @@ describe("the viewport", () => {
 
   it("updates the status line from render_stats", async () => {
     const { store } = await opened();
-    await store.update({ contrast: 3 });
+    await store.update({ white: 3 });
     await vi.waitFor(() => expect(store.getState().stats).toEqual({ ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null }));
   });
 
@@ -816,7 +821,7 @@ describe("the viewport", () => {
 describe("closing the session", () => {
   it("returns to a clean Start and keeps the looks", async () => {
     const { api, store } = await opened({ picked: [1] });
-    await store.update({ contrast: 4 });
+    await store.update({ white: 4 });
     await store.setZoom({ kind: "percent", value: 100 });
     await store.toggleBefore();
     await store.closeSession();
@@ -830,12 +835,119 @@ describe("closing the session", () => {
 
   it("can open again afterwards, with fresh history", async () => {
     const { api, store } = await opened();
-    await store.update({ contrast: 4 });
+    await store.update({ white: 4 });
     await store.closeSession();
     await store.openDialog("files");
     api.flush();
     await vi.waitFor(() => expect(store.currentSettings()).not.toBeNull());
     expect(store.getState().canUndo).toBe(false);
+    expect(settingsOf(store).values.white).toBe(0);
+  });
+});
+
+describe("Apple Auto (docs/19)", () => {
+  it("asks whether Apple Auto is available each time Preferences opens", async () => {
+    const { api, store } = await connected({ appleAuto: "answered" });
+    expect(store.getState().appleAuto).toBeNull();
+    const spy = vi.spyOn(api, "appleAutoStatus");
+    store.openOverlay("preferences");
+    await vi.waitFor(() => expect(store.getState().appleAuto?.available).toBe(true));
+    expect(store.getState().appleAuto).toMatchObject({ preference: true, active: true, reason: null });
+    store.closeOverlay();
+    store.openOverlay("preferences");
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
+  });
+
+  it("is not available in the browser build's mock", async () => {
+    const { store } = await connected();
+    store.openOverlay("preferences");
+    await vi.waitFor(() => expect(store.getState().appleAuto).not.toBeNull());
+    expect(store.getState().appleAuto).toMatchObject({ available: false, reason: null, active: false });
+  });
+
+  it("reads the photo's settings again when the answer arrives, so the Auto values follow", async () => {
+    const { api, store } = await opened({ appleAuto: "pending" });
+    expect(settingsOf(store).estimates.apple).toEqual({ state: "pending" });
     expect(settingsOf(store).values.contrast).toBe(0);
+    api.setAppleAuto("answered");
+    await vi.waitFor(() => expect(settingsOf(store).estimates.apple.state).toBe("answered"));
+    const rs = settingsOf(store);
+    expect([rs.estimates.contrast, rs.estimates.saturation, rs.values.contrast, rs.values.saturation]).toEqual([15, -15, 15, -15]);
+    expect(rs.estimates.source).toBe("apple");
+    expect(rs.auto.contrast && rs.auto.saturation).toBe(true);
+    // Nothing the person did: no undo step.
+    expect(store.getState().canUndo).toBe(false);
+  });
+
+  it("does not let a re-read that a drag overtook move the slider back", async () => {
+    // The core's news (an answer, `settings_changed`) makes the store ask for the photo's settings; a drag's patch is sent and
+    // answered while that request is still out, and its reply, made before the patch, arrives last.
+    const { api, store } = await opened({ appleAuto: "pending" });
+    const id = currentId(store);
+    const real = api.getSettings.bind(api);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let asked = 0;
+    let replied = 0;
+    vi.spyOn(api, "getSettings").mockImplementation(async (photoId) => {
+      if (photoId !== id) return real(photoId);
+      asked += 1;
+      // The settings as the core has them when it is asked.
+      const reply = await real(photoId);
+      if (asked === 1) await gate;
+      replied += 1;
+      return reply;
+    });
+    api.setAppleAuto("answered");
+    await vi.waitFor(() => expect(asked).toBe(1));
+    await store.update({ white: 40 }, false);
+    expect(settingsOf(store).values.white).toBe(40);
+    const shown: number[] = [];
+    const stop = store.subscribe(() => shown.push(settingsOf(store).values.white));
+    release();
+    // The late reply is not shown; the store asks again once the patch has landed, and keeps the drag's value.
+    await vi.waitFor(() => expect(replied).toBe(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    stop();
+    expect(asked).toBe(2);
+    expect(shown.filter((v) => v !== 40)).toEqual([]);
+    expect(settingsOf(store).estimates.apple.state).toBe("answered");
+    expect(settingsOf(store).values.white).toBe(40);
+    expect(settingsOf(store).values.contrast).toBe(15);
+  });
+
+  it("follows the preference: off puts every photo back to the rule, on brings the answers back", async () => {
+    const { store } = await opened({ appleAuto: "answered" });
+    expect(settingsOf(store).values.contrast).toBe(15);
+    await store.setPreferences({ apple_auto: false });
+    await vi.waitFor(() => expect(settingsOf(store).estimates.apple).toEqual({ state: "off" }));
+    expect(settingsOf(store).values.contrast).toBe(0);
+    await vi.waitFor(() => expect(store.getState().appleAuto?.active).toBe(false));
+    await store.setPreferences({ apple_auto: true });
+    await vi.waitFor(() => expect(settingsOf(store).values.contrast).toBe(15));
+    await vi.waitFor(() => expect(store.getState().appleAuto?.active).toBe(true));
+  });
+
+  it("sends a value equal to the Auto value as Auto, and undoes a manual contrast back to Auto", async () => {
+    const { api, store } = await opened({ appleAuto: "answered" });
+    const spy = vi.spyOn(api, "updateSettings");
+    await store.update({ contrast: { kind: "manual", value: -20 } });
+    expect(settingsOf(store).values.contrast).toBe(-20);
+    expect(settingsOf(store).auto.contrast).toBe(false);
+    await store.undo();
+    expect(spy).toHaveBeenLastCalledWith(1, { contrast: { kind: "auto" } });
+    expect(settingsOf(store).values.contrast).toBe(15);
+    expect(settingsOf(store).auto.contrast).toBe(true);
+    await store.redo();
+    expect(spy).toHaveBeenLastCalledWith(1, { contrast: { kind: "manual", value: -20 } });
+  });
+
+  it("Re-run puts contrast and saturation back to Auto", async () => {
+    const { store } = await opened({ appleAuto: "answered" });
+    await store.update({ contrast: { kind: "manual", value: 40 }, saturation: { kind: "manual", value: -40 } });
+    await store.rerunAuto();
+    const rs = settingsOf(store);
+    expect([rs.settings.contrast, rs.settings.saturation]).toEqual([{ kind: "auto" }, { kind: "auto" }]);
+    expect([rs.values.contrast, rs.values.saturation]).toEqual([15, -15]);
   });
 });

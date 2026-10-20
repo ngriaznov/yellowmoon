@@ -1,12 +1,14 @@
 //! What every command that develops photos needs: the core with the CLI's options, the Ctrl-C
-//! flag and the graphics device, opened by `ym_core::app::gpu::open_gpu` like the app's.
+//! flag, the graphics device, opened by `ym_core::app::gpu::open_gpu` like the app's, and Apple
+//! Auto's advisor (`ym_apple::system_advisor`, the app's too, `docs/19`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
 use ym_core::app::gpu::{GpuPolicy, GpuSlot, open_gpu};
 use ym_core::app::{Core, CoreError, CoreOptions};
+use ym_core::apple_auto::{AppleAutoMode, UnavailableReason};
 use ym_core::export_queue::{ExportEvent, ExportSink};
 use ym_core::scheduler::MemoryBudget;
 use ym_core::session::SessionError;
@@ -66,6 +68,38 @@ pub struct CoreSettings {
     pub jobs: Option<u32>,
     /// A camera profile that replaces the detected one (`--profile`).
     pub forced_profile: Option<String>,
+    /// Apple Auto (`docs/19`): `Some(mode)` hands the core this computer's advisor, as the app does,
+    /// with the mode of `--apple-auto` ([`AppleAutoMode::FromPreference`] without it); `None` hands it
+    /// none, which is Apple Auto off (`doctor --bench`, which times the render path only).
+    pub apple_auto: Option<AppleAutoMode>,
+    /// Instructions for Apple Auto's model for this run instead of the `apple_auto_instructions`
+    /// preference (`--apple-auto-instructions FILE`, read by [`read_instructions`]).
+    pub apple_auto_instructions: Option<String>,
+}
+
+/// Reads `--apple-auto-instructions FILE` (`docs/19` section 8): the file's text as UTF-8, at most
+/// 2000 characters (`ym_core::apple_auto::INSTRUCTIONS_MAX_CHARS`). The file's final line break
+/// (`\n` or `\r\n`, which text editors add) is not part of the instructions, so a file holding the
+/// default text is the default. An empty file is the default instructions.
+///
+/// # Errors
+///
+/// A usage [`Failure`] (exit code 2) when the file cannot be read or is too long.
+pub fn read_instructions(path: &std::path::Path) -> Result<String, Failure> {
+    let mut text = std::fs::read_to_string(path).map_err(|e| {
+        Failure::usage(format!(
+            "Can't read the instructions for Apple Intelligence from {}: {e}.",
+            path.display()
+        ))
+    })?;
+    if text.ends_with('\n') {
+        text.pop();
+        if text.ends_with('\r') {
+            text.pop();
+        }
+    }
+    ym_core::apple_auto::check_instructions(&text).map_err(Failure::usage)?;
+    Ok(text)
 }
 
 /// The core and the channel its export queue reports on.
@@ -74,6 +108,20 @@ pub struct Runtime {
     pub core: Core,
     /// The export queue's events.
     pub events: mpsc::Receiver<ExportEvent>,
+    /// What the run knows about Apple Auto for its notice ([`Runtime::apple_auto_notice`]).
+    apple_watch: Mutex<AppleAutoWatch>,
+}
+
+/// What a run knows about Apple Auto for its notice, which it prints once at most (`docs/19`
+/// section 8).
+#[derive(Debug, Clone, Copy, Default)]
+struct AppleAutoWatch {
+    /// The run wants Apple Auto: `--apple-auto on`, or no option and the preference on.
+    wanted: bool,
+    /// Apple Auto was available when it was last read.
+    available: bool,
+    /// The notice has been printed.
+    noticed: bool,
 }
 
 impl Runtime {
@@ -95,13 +143,84 @@ impl Runtime {
             options.decode_threads = jobs.max(1) as usize;
         }
         options.forced_profile.clone_from(&settings.forced_profile);
+        if let Some(mode) = settings.apple_auto {
+            // The app's advisor: Apple's model where it can look at photos, the reason it cannot
+            // everywhere else, the test advisor with `YELLOWMOON_TEST_APPLE_AUTO=fake`.
+            options.advisor = Some(ym_apple::system_advisor());
+            options.apple_auto = mode;
+        }
+        options
+            .apple_auto_instructions
+            .clone_from(&settings.apple_auto_instructions);
         let core = Core::open(options).map_err(|e| core_failure(&e))?;
-        Ok(Self { core, events })
+        Ok(Self::over(core, events))
     }
 
-    /// Waits until the session has developed every photo, calling `tick(photos_ready, photos)`
-    /// about every tenth of a second. Returns false when Ctrl-C came first.
-    pub fn wait_developed(&self, mut tick: impl FnMut(usize, usize)) -> bool {
+    /// A runtime over a core that is already open.
+    fn over(core: Core, events: mpsc::Receiver<ExportEvent>) -> Self {
+        Self {
+            core,
+            events,
+            apple_watch: Mutex::new(AppleAutoWatch::default()),
+        }
+    }
+
+    /// What `--apple-auto on` says where Apple Auto is not available (`docs/19` section 8): one
+    /// warning per run, and the run goes on with Yellowmoon's own Auto and the same exit code.
+    /// `None` when the run did not ask for it or it is available (the availability is read again).
+    /// Call it once, after the core opens: it also notes whether the run wants Apple Auto and
+    /// whether it is available, for [`Runtime::apple_auto_notice_before_export`].
+    #[must_use]
+    pub fn apple_auto_notice(&self, mode: AppleAutoMode) -> Option<String> {
+        let status = self.core.apple_auto_status();
+        let mut watch = self.watch();
+        watch.wanted = match mode {
+            AppleAutoMode::On => true,
+            AppleAutoMode::FromPreference => status.preference,
+            AppleAutoMode::Off => false,
+        };
+        watch.available = status.available;
+        if mode != AppleAutoMode::On || status.available {
+            return None;
+        }
+        watch.noticed = true;
+        Some(unavailable_notice(
+            status.reason.unwrap_or(UnavailableReason::Unavailable),
+        ))
+    }
+
+    /// Reads Apple Auto's availability again just before the export starts (`docs/19` section 1),
+    /// with the same refresh the app's `Core::export_start` makes, so the export's photos wait for
+    /// the answers of an Apple Auto that is available now and use the rule where it no longer is.
+    /// Returns the notice of [`Runtime::apple_auto_notice`] when the run wanted Apple Auto (`--apple-auto
+    /// on`, or the preference on), it was available and is not any more, and the run has not said
+    /// so yet: once per run.
+    #[must_use]
+    pub fn apple_auto_notice_before_export(&self) -> Option<String> {
+        let status = self.core.apple_auto_status();
+        let mut watch = self.watch();
+        let lost = watch.wanted && watch.available && !status.available && !watch.noticed;
+        watch.available = status.available;
+        if !lost {
+            return None;
+        }
+        watch.noticed = true;
+        Some(unavailable_notice(
+            status.reason.unwrap_or(UnavailableReason::Unavailable),
+        ))
+    }
+
+    fn watch(&self) -> std::sync::MutexGuard<'_, AppleAutoWatch> {
+        self.apple_watch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Waits until the session has developed every photo and, when Apple Auto acts, until every
+    /// developed photo has its answer or its failure (`docs/19` section 6), calling `tick` about
+    /// every tenth of a second. Returns false when Ctrl-C came first.
+    pub fn wait_developed(&self, mut tick: impl FnMut(Waiting)) -> bool {
+        use ym_core::session::PhotoStatus;
         handle_interrupts();
         loop {
             if self.core.session.wait_idle(Duration::from_millis(100)) {
@@ -112,20 +231,56 @@ impl Runtime {
             }
             let state = self.core.session.state();
             let total = state.photos.len();
-            let ready = state
-                .photos
-                .iter()
-                .filter(|p| {
-                    matches!(
-                        p.status,
-                        ym_core::session::PhotoStatus::Ready
-                            | ym_core::session::PhotoStatus::Skipped { .. }
-                    )
-                })
-                .count();
-            tick(ready, total);
+            let done = |p: &&ym_core::session::PhotoSummary| {
+                matches!(p.status, PhotoStatus::Ready | PhotoStatus::Skipped { .. })
+            };
+            let ready = state.photos.iter().filter(done).count();
+            // Every photo developed and the session still busy: Apple Auto's answers, when it acts.
+            let answers = (ready == total && self.core.session.apple_auto_active()).then(|| {
+                let developed: Vec<_> = state
+                    .photos
+                    .iter()
+                    .filter(|p| matches!(p.status, PhotoStatus::Ready))
+                    .collect();
+                let settled = developed
+                    .iter()
+                    .filter(|p| {
+                        self.core
+                            .session
+                            .estimates(p.id)
+                            .is_some_and(|e| e.apple.is_settled())
+                    })
+                    .count();
+                (settled, developed.len())
+            });
+            tick(Waiting {
+                ready,
+                total,
+                answers,
+            });
         }
     }
+}
+
+/// How far [`Runtime::wait_developed`] has got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Waiting {
+    /// Photos developed (or that cannot be developed).
+    pub ready: usize,
+    /// Photos open.
+    pub total: usize,
+    /// While every photo is developed and Apple Auto acts: the photos that have Apple's answer (or a
+    /// failure) and the photos developed.
+    pub answers: Option<(usize, usize)>,
+}
+
+/// The sentence `--apple-auto on` prints where Apple Auto is not available.
+#[must_use]
+pub fn unavailable_notice(reason: UnavailableReason) -> String {
+    format!(
+        "Apple Auto is not available on this computer ({}). Auto uses Yellowmoon's own settings.",
+        reason.words()
+    )
 }
 
 /// The graphics device being opened on another thread, so that the answer is ready by the time the
@@ -193,6 +348,107 @@ mod tests {
             failure.message,
             "Yellowmoon's data folder is missing. Reinstall the app."
         );
+    }
+
+    #[test]
+    fn the_apple_auto_notice_names_the_reason_in_words() {
+        assert_eq!(
+            unavailable_notice(UnavailableReason::AppleIntelligenceOff),
+            "Apple Auto is not available on this computer (Apple Intelligence is off in System Settings). Auto uses Yellowmoon's own settings."
+        );
+    }
+
+    /// An advisor whose availability the test switches.
+    struct Switch(AtomicBool);
+
+    impl ym_core::apple_auto::AutoAdvisor for Switch {
+        fn availability(&self) -> ym_core::apple_auto::Availability {
+            if self.0.load(Ordering::SeqCst) {
+                ym_core::apple_auto::Availability::Available(ym_core::apple_auto::AdvisorInfo::new(
+                    "Switch", "test",
+                ))
+            } else {
+                ym_core::apple_auto::Availability::Unavailable(
+                    UnavailableReason::AppleIntelligenceOff,
+                )
+            }
+        }
+
+        fn ask(
+            &self,
+            _picture: &ym_core::apple_auto::AdvisorPicture,
+            _instructions: &str,
+        ) -> Result<ym_core::apple_auto::AdvisorAnswer, ym_core::apple_auto::AdvisorError> {
+            Ok(ym_core::apple_auto::AdvisorAnswer {
+                steps: ym_core::apple_auto::AutoSteps::keep(),
+                scene: String::new(),
+                plan: String::new(),
+            })
+        }
+    }
+
+    /// A runtime over a core with the switchable advisor, in a new app folder (the preference on),
+    /// as `Runtime::open` makes it for `ym render` with `mode`.
+    fn runtime_with(
+        advisor: &std::sync::Arc<Switch>,
+        mode: AppleAutoMode,
+        app: &std::path::Path,
+    ) -> Runtime {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        let (sink, events) = ExportSink::channel();
+        let mut options = CoreOptions::new(data, app.to_path_buf());
+        options.thumbnails = false;
+        options.export_events = sink;
+        options.decode_threads = 1;
+        options.advisor = Some(advisor.clone());
+        options.apple_auto = mode;
+        Runtime::over(Core::open(options).expect("core"), events)
+    }
+
+    #[test]
+    fn apple_auto_is_read_again_before_the_export_and_its_loss_is_said_once() {
+        let words = unavailable_notice(UnavailableReason::AppleIntelligenceOff);
+        let app = tempfile::tempdir().expect("app folder");
+        let advisor = std::sync::Arc::new(Switch(AtomicBool::new(true)));
+        // The preference on (a new app folder), no option: available at the start, then gone
+        // before the export. The export's re-read sees it (the session now uses the rule) and the
+        // run says so, once.
+        let rt = runtime_with(&advisor, AppleAutoMode::FromPreference, app.path());
+        assert_eq!(rt.apple_auto_notice(AppleAutoMode::FromPreference), None);
+        assert!(rt.core.session.apple_auto_active());
+        advisor.0.store(false, Ordering::SeqCst);
+        assert_eq!(rt.apple_auto_notice_before_export(), Some(words.clone()));
+        assert!(!rt.core.session.apple_auto_active(), "the session was told");
+        assert_eq!(rt.apple_auto_notice_before_export(), None, "once per run");
+        // `--apple-auto on` where it is not available: said after the core opens, not again.
+        let rt = runtime_with(&advisor, AppleAutoMode::On, app.path());
+        assert_eq!(rt.apple_auto_notice(AppleAutoMode::On), Some(words.clone()));
+        assert_eq!(rt.apple_auto_notice_before_export(), None);
+        // `--apple-auto on`, available at the start and gone before the export.
+        advisor.0.store(true, Ordering::SeqCst);
+        let rt = runtime_with(&advisor, AppleAutoMode::On, app.path());
+        assert_eq!(rt.apple_auto_notice(AppleAutoMode::On), None);
+        advisor.0.store(false, Ordering::SeqCst);
+        assert_eq!(rt.apple_auto_notice_before_export(), Some(words));
+        // Available again before the export: nothing to say, and the session uses it again.
+        advisor.0.store(true, Ordering::SeqCst);
+        let rt = runtime_with(&advisor, AppleAutoMode::FromPreference, app.path());
+        assert_eq!(rt.apple_auto_notice(AppleAutoMode::FromPreference), None);
+        advisor.0.store(false, Ordering::SeqCst);
+        rt.core.session.refresh_apple_auto();
+        advisor.0.store(true, Ordering::SeqCst);
+        assert_eq!(rt.apple_auto_notice_before_export(), None);
+        assert!(rt.core.session.apple_auto_active());
+        // Never available without the option, or off for the run: nothing is said.
+        advisor.0.store(false, Ordering::SeqCst);
+        let rt = runtime_with(&advisor, AppleAutoMode::FromPreference, app.path());
+        assert_eq!(rt.apple_auto_notice(AppleAutoMode::FromPreference), None);
+        assert_eq!(rt.apple_auto_notice_before_export(), None);
+        advisor.0.store(true, Ordering::SeqCst);
+        let rt = runtime_with(&advisor, AppleAutoMode::Off, app.path());
+        assert_eq!(rt.apple_auto_notice(AppleAutoMode::Off), None);
+        advisor.0.store(false, Ordering::SeqCst);
+        assert_eq!(rt.apple_auto_notice_before_export(), None);
     }
 
     #[test]

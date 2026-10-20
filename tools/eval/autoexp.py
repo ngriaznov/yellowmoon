@@ -34,7 +34,9 @@ the EV scale is exact because C7 is the identity below the ALEXA's clip with the
 white lift (`--look builtin:neutral --rolloff 0,0.5 --white-offset -3`: the highlight range at 0, the low-light toe at
 its default, the lift off): the study measures the exposure, and the default look (Signature) and the automatic white
 lift (both since pipeline 0.3.0) and the default highlight range (1, since pipeline 0.4.0) change the contrast and the
-highlights on purpose, and the DNG carries all three, which would move the quantile match of G3. The photos are never modified: renders go to `--out`, big files are deleted after reduction unless
+highlights on purpose, and the DNG carries all three, which would move the quantile match of G3. Every call passes
+`--apple-auto off`: the study measures Yellowmoon's own Auto, the same on every machine, and Apple's answers never tune
+anything of ours (`docs/19` section 7). The photos are never modified: renders go to `--out`, big files are deleted after reduction unless
 `--keep-renders`, and a small cache (`<out>/cache/`) lets `--reuse` redo the arithmetic without rendering again.
 
 `--gate` turns the run into the M1-08 gate (docs/13, docs/15; Mykyta's decision of 2026-10-13): the metric is G3, a file passes
@@ -103,9 +105,9 @@ EXIT_GATE_NOT_MET = 3
 
 #: The three `ym` calls made for each photo (what a report built from the cache shows instead of recorded commands).
 COMMAND_TEMPLATES = [
-    "ym info <file> --json --quiet",
-    "ym render <file> --json --quiet --overwrite --out <work>/renders --format dng --name {name}_eval_dng_ev0 --exposure 0 --look builtin:neutral --rolloff 0,0.5 --white-offset -3",
-    "ym render <file> --json --quiet --overwrite --out <work>/renders --format tiff --name {name}_eval_tiff --bits 16 --compression none --colour-space srgb --look builtin:neutral --rolloff 0,0.5 --white-offset -3",
+    "ym info <file> --json --quiet --apple-auto off",
+    "ym render <file> --json --quiet --overwrite --out <work>/renders --format dng --name {name}_eval_dng_ev0 --look builtin:neutral --rolloff 0,0.5 --white-offset -3 --apple-auto off --exposure 0",
+    "ym render <file> --json --quiet --overwrite --out <work>/renders --format tiff --name {name}_eval_tiff --bits 16 --compression none --colour-space srgb --look builtin:neutral --rolloff 0,0.5 --white-offset -3 --apple-auto off",
 ]
 
 
@@ -205,7 +207,7 @@ class Ym:
         return self.run(["--version"], record=False).stdout.strip()
 
     def info(self, path: Path) -> dict[str, Any]:
-        proc = self.run(["info", str(path), "--json", "--quiet"])
+        proc = self.run(["info", str(path), "--json", "--quiet", "--apple-auto", "off"])
         doc = _last_json(proc.stdout)
         if doc is None or doc.get("status") != "ok":
             raise StudyError(f"ym info failed: {_why(doc, proc)}")
@@ -219,6 +221,8 @@ class Ym:
         # look, the default highlight range and the automatic lift change the picture on purpose, and the DNG carries
         # all three).
         args += ["--look", "builtin:neutral", "--rolloff", "0,0.5", "--white-offset", "-3"]
+        # Yellowmoon's own Auto: Apple's answers would differ between Macs and never tune anything of ours (docs/19).
+        args += ["--apple-auto", "off"]
         if exposure is not None:
             args += ["--exposure", exposure]
         if self.display != "aces2":

@@ -102,10 +102,11 @@ fn gpu_and_cpu_frames_agree_within_the_parity_tolerance() {
         (
             "graded",
             edit(&src, |s| {
-                s.contrast = 30.0;
+                s.contrast = ym_core::settings::PercentSetting::manual_value(30.0);
                 s.brightness = 10.0;
-                s.saturation = 20.0;
-                s.color_balance.highlights = [0.4, -0.3];
+                s.saturation = ym_core::settings::PercentSetting::manual_value(20.0);
+                s.color_balance.highlights =
+                    ym_core::settings::BalanceSetting::manual_point([0.4, -0.3]);
                 s.curve.luma = vec![[0.0, 0.0], [0.4, 0.5], [1.0, 1.0]];
                 s.curve.blue = vec![[0.0, 0.05], [1.0, 0.95]];
                 s.crop = Some(ym_core::settings::Crop {
@@ -1151,8 +1152,14 @@ mod view {
         // Edits of the grade: a control, a curve, the look's intensity, white balance.
         type Edit = Box<dyn Fn(&mut DevelopSettings)>;
         let edits: Vec<(&str, Edit)> = vec![
-            ("contrast", Box::new(|s| s.contrast = 30.0)),
-            ("saturation", Box::new(|s| s.saturation = -25.0)),
+            (
+                "contrast",
+                Box::new(|s| s.contrast = ym_core::settings::PercentSetting::manual_value(30.0)),
+            ),
+            (
+                "saturation",
+                Box::new(|s| s.saturation = ym_core::settings::PercentSetting::manual_value(-25.0)),
+            ),
             (
                 "curve",
                 Box::new(|s| s.curve.luma = vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]),

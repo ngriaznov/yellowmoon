@@ -73,7 +73,7 @@ describe("removePhotos", () => {
 
 describe("restorePhotos", () => {
   it("puts the photos back where they were, with their settings and picks", async () => {
-    await api.updateSettings(3, { contrast: 22 });
+    await api.updateSettings(3, { contrast: { kind: "manual", value: 22 } });
     await api.setPicked(3, true);
     await api.setCurrent(3);
     await api.removePhotos([3, 7]);
@@ -82,7 +82,7 @@ describe("restorePhotos", () => {
     expect(ids(back.session)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     expect(currentId(back.session)).toBe(3);
     expect(back.session.picked).toEqual([3]);
-    expect((await api.getSettings(3)).settings.contrast).toBe(22);
+    expect((await api.getSettings(3)).settings.contrast).toEqual({ kind: "manual", value: 22 });
   });
 
   it("announces the thumbnails of the photos again", async () => {

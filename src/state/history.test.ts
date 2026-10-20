@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { defaultSettings } from "../api.mock";
 import { diffSettings, HISTORY_LIMIT, PhotoHistory } from "./history";
 
+/** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
+const manual = (value: number) => ({ kind: "manual", value }) as const;
+
 describe("diffSettings", () => {
   it("is null when nothing changed", () => {
     expect(diffSettings(defaultSettings(), defaultSettings())).toBeNull();
@@ -9,31 +12,31 @@ describe("diffSettings", () => {
 
   it("lists only the fields that changed, with their old and new values", () => {
     const before = defaultSettings();
-    const after = { ...before, contrast: 12, exposure: { kind: "manual" as const, ev: 0.7 } };
+    const after = { ...before, contrast: manual(12), exposure: { kind: "manual" as const, ev: 0.7 } };
     expect(diffSettings(before, after)).toEqual({
-      before: { contrast: 0, exposure: { kind: "auto" } },
-      after: { contrast: 12, exposure: { kind: "manual", ev: 0.7 } },
+      before: { contrast: { kind: "auto" }, exposure: { kind: "auto" } },
+      after: { contrast: manual(12), exposure: { kind: "manual", ev: 0.7 } },
     });
   });
 
   it("compares nested values as a whole, so a wheel moving is one change", () => {
     const before = defaultSettings();
-    const after = { ...before, color_balance: { ...before.color_balance, shadows: [0.2, -0.1] as [number, number] } };
+    const after = { ...before, color_balance: { ...before.color_balance, midtones: [0.2, -0.1] as [number, number] } };
     const entry = diffSettings(before, after);
     expect(Object.keys(entry?.after ?? {})).toEqual(["color_balance"]);
   });
 
   it("copies what it keeps, so later changes to the settings don't rewrite history", () => {
     const before = defaultSettings();
-    const after = { ...before, color_balance: { ...before.color_balance, shadows: [0.2, 0] as [number, number] } };
+    const after = { ...before, color_balance: { ...before.color_balance, midtones: [0.2, 0] as [number, number] } };
     const entry = diffSettings(before, after);
-    after.color_balance.shadows[0] = 0.9;
-    expect(entry?.after.color_balance?.shadows).toEqual([0.2, 0]);
+    after.color_balance.midtones[0] = 0.9;
+    expect(entry?.after.color_balance?.midtones).toEqual([0.2, 0]);
   });
 });
 
 describe("PhotoHistory", () => {
-  const entry = (n: number) => ({ before: { contrast: n - 1 }, after: { contrast: n } });
+  const entry = (n: number) => ({ before: { brightness: n - 1 }, after: { brightness: n } });
 
   it("undoes and redoes in order", () => {
     const history = new PhotoHistory();

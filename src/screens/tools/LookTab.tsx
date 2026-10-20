@@ -2,9 +2,9 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/glass/collapsible";
 import type { ReactNode } from "react";
-import { AutoRow, AutoToggle, Button, Card, Field, formats, LinkButton, LookTile, ResetLink, Rows, SearchField, Segmented, Slider, Tag } from "../../components";
+import { AutoRow, AutoToggle, Button, Card, Field, formats, LinkButton, LookTile, ResetLink, RowNote, Rows, SearchField, Segmented, Slider, Tag } from "../../components";
 import type { TabId } from "../../components";
-import type { ApplyScope, Look, LookId, LookLibrary, ResolvedSettings } from "../../api/types";
+import type { AppleAuto, AppleAutoSteps, ApplyScope, Look, LookId, LookLibrary, ResolvedSettings } from "../../api/types";
 import { perfCount } from "../../perf";
 import { useAppState, useStore } from "../../state/context";
 import { isArriLook, LOOK_LIBRARIES, looksInDisplayOrder, lookTooltip } from "../../state/looks";
@@ -18,6 +18,83 @@ import type { TabProps } from "./shared";
 
 /** Said on a tile whose look file is gone or changed (`docs/08-looks.md` §Missing looks). */
 export const MISSING_LOOK_NOTE = "File missing or changed. Import again.";
+
+/** The Automatic card's line under its rows while Apple Auto is on for the session (`docs/19` section 10), by the photo's state. */
+export const APPLE_AUTO_LINES = {
+  answered: "Set with Apple Intelligence.",
+  pending: "Apple Intelligence is looking at this photo…",
+  failed: "Apple Intelligence couldn't look at this photo, so Auto uses Yellowmoon's own settings.",
+} as const;
+
+/**
+ * The Automatic card's line for a photo's Apple Auto state, or null while Apple Auto is off or not available: then the card has none
+ * of Apple Auto's rows and no line, and is the card it was before Apple Auto.
+ */
+export function appleAutoLine(apple: AppleAuto): string | null {
+  return apple.state === "answered" || apple.state === "pending" || apple.state === "failed" ? APPLE_AUTO_LINES[apple.state] : null;
+}
+
+/** The model's plan for the photo, shown under the card's line (`docs/19` section 10); null without an answer or with no words. */
+export function appleAutoPlan(apple: AppleAuto): string | null {
+  if (apple.state !== "answered") return null;
+  const plan = apple.answer.plan.trim();
+  return plan === "" ? null : plan;
+}
+
+const STRENGTH_WORDS: Readonly<Record<number, string>> = { 1: "subtle", 2: "medium", 3: "strong" };
+
+/**
+ * A colour Apple Auto set for the shadows or the highlights, in words: "None", or "Teal · medium"; null when the answer set nothing
+ * for that wheel (no colour, or a colour without a strength, `docs/19` section 5).
+ */
+export function appleColorText(color: string | null, strength: number | null): string | null {
+  if (color === null) return null;
+  if (color === "none") return "None";
+  if (strength === null) return null;
+  const name = color.charAt(0).toUpperCase() + color.slice(1);
+  return `${name} · ${STRENGTH_WORDS[strength] ?? strength}`;
+}
+
+/** Which of Apple Auto's rows the Automatic card lists: the values the answer in effect set (`docs/19` section 10), in the table's order. */
+export function appleRows(steps: AppleAutoSteps | null): {
+  highlights: boolean;
+  shadows: boolean;
+  black: boolean;
+  contrast: boolean;
+  saturation: boolean;
+  shadowColor: string | null;
+  highlightColor: string | null;
+} {
+  return {
+    highlights: steps?.highlights != null,
+    shadows: steps?.shadows != null,
+    black: steps?.blacks != null,
+    contrast: steps?.contrast != null,
+    saturation: steps?.saturation != null,
+    shadowColor: steps ? appleColorText(steps.shadow_color, steps.shadow_color_strength) : null,
+    highlightColor: steps ? appleColorText(steps.highlight_color, steps.highlight_color_strength) : null,
+  };
+}
+
+/**
+ * Brings the Tone card into view in the panel that scrolls it and puts the focus on its slider called `label` (the Automatic card's
+ * Contrast and Saturation rows: "the arrow opens the Look tab's Tone card", `docs/19` section 10). Only the panel scrolls:
+ * `scrollIntoView` would also move the locked page.
+ */
+function revealToneSlider(card: HTMLElement | null, label: string): void {
+  if (!card) return;
+  let scroller = card.parentElement;
+  while (scroller && !(scroller.scrollHeight > scroller.clientHeight && /(auto|scroll)/.test(getComputedStyle(scroller).overflowY))) {
+    scroller = scroller.parentElement;
+  }
+  if (scroller) scroller.scrollTop += card.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  const nameOf = (el: HTMLElement): string | null => {
+    const ids = el.getAttribute("aria-labelledby");
+    return ids ? ids.split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" ") : el.getAttribute("aria-label");
+  };
+  const slider = [...card.querySelectorAll<HTMLElement>('[role="slider"]')].find((el) => nameOf(el) === label);
+  slider?.focus({ preventScroll: true });
+}
 
 /**
  * How long the photo's settings must rest before the tiles are made again: a person moving a slider on this tab (the Tone card is
@@ -206,12 +283,13 @@ function LookSection({ library, total, shown, searching, collapsed, holdsCurrent
  * moving it makes the white balance Manual at that Kelvin with the Auto tint, and its Reset goes
  * back to Auto. As on the Exposure card, the AUTO button speaks for the white balance only. Tint
  * stays on the Colour tab. The card's Reset sends Auto for the white balance (a picked white and a
- * light preset go with it, as on the Colour tab) and puts Contrast and Saturation at 0.
+ * light preset go with it, as on the Colour tab) and puts Contrast and Saturation back to Auto (0, or Apple Auto's answer, `docs/19`).
  */
 export function ToneCard({ store, rs }: { store: AppStore; rs: ResolvedSettings }) {
   const { picked, isAuto } = whiteBalanceState(rs);
   return (
     <Card
+      className="ym-tone-card"
       title="Tone"
       tag={
         <>
@@ -219,7 +297,7 @@ export function ToneCard({ store, rs }: { store: AppStore; rs: ResolvedSettings 
           <AutoToggle isAuto={isAuto} onAuto={() => whiteBalanceToAuto(store)} aria-label="Auto temperature" />
         </>
       }
-      action={<ResetLink size="card" onClick={() => void store.update({ white_balance: AUTO, light_source: "auto", white_pick: null, contrast: 0, saturation: 0 })} />}
+      action={<ResetLink size="card" onClick={() => void store.update({ white_balance: AUTO, light_source: "auto", white_pick: null, contrast: AUTO, saturation: AUTO }, true, rs.photo_id)} />}
     >
       <KelvinSlider store={store} rs={rs} label="Temperature" />
       <ContrastSlider store={store} rs={rs} />
@@ -254,11 +332,37 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
   const defaultLook = ordered.find((l) => l.is_default);
   const q = query.trim().toLowerCase();
 
-  // Thumbnails show the photo as it is developed now, so they follow every change except the look itself.
+  // Thumbnails show the photo as it is developed now, so they follow every change except the look itself, and the Auto values the
+  // settings resolve to: Apple Auto's answer (`docs/19`) or a burst's median moves them without a change of the settings.
+  const { estimates } = rs;
   const rawKey = useMemo(() => {
     const { look: _look, look_intensity: _intensity, ...rest } = settings;
-    return JSON.stringify(rest);
-  }, [settings]);
+    return JSON.stringify([
+      rest,
+      estimates.exposure_ev,
+      estimates.kelvin,
+      estimates.tint,
+      estimates.contrast,
+      estimates.saturation,
+      estimates.highlights,
+      estimates.shadows,
+      estimates.black,
+      estimates.balance_shadows,
+      estimates.balance_highlights,
+    ]);
+  }, [
+    settings,
+    estimates.exposure_ev,
+    estimates.kelvin,
+    estimates.tint,
+    estimates.contrast,
+    estimates.saturation,
+    estimates.highlights,
+    estimates.shadows,
+    estimates.black,
+    estimates.balance_shadows,
+    estimates.balance_highlights,
+  ]);
   const thumbKey = useSettled(rawKey, THUMBNAIL_SETTLE_MS);
 
   // One observer and one select function for every tile, so a tile's props change only when the tile does.
@@ -291,6 +395,14 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
   ];
 
   const noiseValue = `Luminance ${Math.round(values.noise_reduction.luminance)}`;
+  // Apple Auto on for the session: the photo is waiting for its answer, has it, or failed (`docs/19` section 10). Its rows are the
+  // values the answer in effect set, in the order of the table; a value the model left empty has no row.
+  const appleLine = appleAutoLine(rs.estimates.apple);
+  const applePlan = appleAutoPlan(rs.estimates.apple);
+  const rows = appleRows(appleLine !== null ? rs.estimates.apple_steps : null);
+  const openLight = (): void => onOpenTab("light");
+  const openColor = (): void => onOpenTab("color");
+  const openTone = (label: string): void => revealToneSlider(document.querySelector<HTMLElement>(".ym-tone-card"), label);
   const whiteAuto = auto.white_balance && auto.light_source && settings.white_pick === null;
   const profileText =
     photo.camera.match_kind.kind === "exact" ? `${shortBody(photo.camera.body)} · measured profile` : `${shortBody(photo.camera.body)} · ${photo.camera.profile} profile`;
@@ -320,9 +432,56 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
             tabLabel="Colour"
             onOpen={() => onOpenTab("color")}
           />
+          {rows.highlights ? (
+            <AutoRow label="Highlights" value={formats.signed(values.highlights)} isAuto={auto.highlights} tabLabel="Light" onOpen={openLight} />
+          ) : null}
+          {rows.shadows ? (
+            <AutoRow label="Shadows" value={formats.signed(values.shadows)} isAuto={auto.shadows} tabLabel="Light" onOpen={openLight} />
+          ) : null}
+          {rows.black ? (
+            <AutoRow label="Black" value={formats.signed(values.black)} isAuto={auto.black} tabLabel="Light" onOpen={openLight} />
+          ) : null}
+          {rows.contrast ? (
+            <AutoRow
+              label="Contrast"
+              value={formats.signed(values.contrast)}
+              isAuto={auto.contrast}
+              tabLabel="Tone"
+              onOpen={() => openTone("Contrast")}
+            />
+          ) : null}
+          {rows.saturation ? (
+            <AutoRow
+              label="Saturation"
+              value={formats.signed(values.saturation)}
+              isAuto={auto.saturation}
+              tabLabel="Tone"
+              onOpen={() => openTone("Saturation")}
+            />
+          ) : null}
+          {rows.shadowColor !== null ? (
+            <AutoRow
+              label="Shadows colour"
+              value={auto.balance_shadows ? rows.shadowColor : "Custom"}
+              isAuto={auto.balance_shadows}
+              tabLabel="Colour"
+              onOpen={openColor}
+            />
+          ) : null}
+          {rows.highlightColor !== null ? (
+            <AutoRow
+              label="Highlights colour"
+              value={auto.balance_highlights ? rows.highlightColor : "Custom"}
+              isAuto={auto.balance_highlights}
+              tabLabel="Colour"
+              onOpen={openColor}
+            />
+          ) : null}
           <AutoRow label="Noise" value={noiseValue} isAuto={auto.noise_reduction} tabLabel="Detail" onOpen={() => onOpenTab("detail")} />
           <AutoRow label="Camera" value={profileText} isAuto tabLabel="RAW" onOpen={() => onOpenTab("raw")} />
         </Rows>
+        {appleLine !== null ? <RowNote>{appleLine}</RowNote> : null}
+        {applePlan !== null ? <RowNote>{`\u201c${applePlan}\u201d`}</RowNote> : null}
       </Card>
       <Card
         title="Look"

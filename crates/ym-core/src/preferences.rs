@@ -31,6 +31,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use crate::apple_auto::{DEFAULT_INSTRUCTIONS, check_instructions};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -95,6 +96,14 @@ pub struct Preferences {
     pub watch_downloads_during_import: bool,
     /// The folders used last.
     pub last_used_folders: LastUsedFolders,
+    /// "Auto with Apple Intelligence" (`docs/19` section 2): on by default, and a file without the
+    /// field reads as on. Read on every platform; it acts only where Apple Auto is available.
+    pub apple_auto: bool,
+    /// "Instructions for Apple Intelligence" (`docs/19` section 2): the person's own instructions for
+    /// Apple Auto's model, at most [`crate::apple_auto::INSTRUCTIONS_MAX_CHARS`] characters; `""` (absent, empty or only
+    /// white space) is the default, [`crate::apple_auto::DEFAULT_INSTRUCTIONS`]. Saved as `""` when
+    /// it equals the default.
+    pub apple_auto_instructions: String,
 }
 
 impl Default for Preferences {
@@ -107,6 +116,8 @@ impl Default for Preferences {
             check_for_updates_automatically: true,
             watch_downloads_during_import: false,
             last_used_folders: LastUsedFolders::default(),
+            apple_auto: true,
+            apple_auto_instructions: String::new(),
         }
     }
 }
@@ -138,6 +149,13 @@ pub struct PreferencesPatch {
     /// Replaces `last_used_folders`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_used_folders: Option<LastUsedFolders>,
+    /// Replaces `apple_auto`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apple_auto: Option<bool>,
+    /// Replaces `apple_auto_instructions` (`""` or the default text: the default). Checked by
+    /// [`PreferencesPatch::check`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apple_auto_instructions: Option<String>,
 }
 
 impl PreferencesPatch {
@@ -165,7 +183,26 @@ impl PreferencesPatch {
         if let Some(v) = &self.last_used_folders {
             prefs.last_used_folders = v.clone();
         }
+        if let Some(v) = self.apple_auto {
+            prefs.apple_auto = v;
+        }
+        if let Some(v) = &self.apple_auto_instructions {
+            prefs.apple_auto_instructions = own_instructions(v);
+        }
         *prefs != before
+    }
+
+    /// Checks the values the core refuses rather than saves: instructions for Apple Intelligence
+    /// longer than [`crate::apple_auto::INSTRUCTIONS_MAX_CHARS`] characters.
+    ///
+    /// # Errors
+    ///
+    /// [`PreferencesError::Invalid`] with the message to show.
+    pub fn check(&self) -> Result<(), PreferencesError> {
+        if let Some(text) = &self.apple_auto_instructions {
+            check_instructions(text).map_err(PreferencesError::Invalid)?;
+        }
+        Ok(())
     }
 
     /// A patch that sets only the default look.
@@ -175,6 +212,17 @@ impl PreferencesPatch {
             default_look: Some(id),
             ..Self::default()
         }
+    }
+}
+
+/// The person's own instructions as they are saved: `""` for text that is empty, only white space or
+/// the default, else the text as given.
+#[must_use]
+pub fn own_instructions(text: &str) -> String {
+    if text.trim().is_empty() || text == DEFAULT_INSTRUCTIONS {
+        String::new()
+    } else {
+        text.to_owned()
     }
 }
 
@@ -326,6 +374,18 @@ pub fn parse(text: &str) -> ParsedPreferences {
     if let Some(v) = take(&mut map, "watch_downloads_during_import", &mut warnings) {
         p.watch_downloads_during_import = v;
     }
+    if let Some(v) = take(&mut map, "apple_auto", &mut warnings) {
+        p.apple_auto = v;
+    }
+    if let Some(v) = take::<String>(&mut map, "apple_auto_instructions", &mut warnings) {
+        // Longer than the model takes (a file edited by hand): the default, with a warning.
+        match check_instructions(&v) {
+            Ok(()) => p.apple_auto_instructions = own_instructions(&v),
+            Err(e) => warnings.push(format!(
+                "Preference \"apple_auto_instructions\" can't be used ({e}), so the default instructions are used."
+            )),
+        }
+    }
     if let Some(v) = take_struct(&mut map, "last_used_folders", &mut warnings) {
         p.last_used_folders = v;
     }
@@ -464,6 +524,7 @@ impl PreferencesStore {
     /// [`PreferencesError::Write`] or [`PreferencesError::Encode`] when the file cannot be saved.
     /// Nothing changes on an error.
     pub fn update(&self, patch: &PreferencesPatch) -> Result<Preferences, PreferencesError> {
+        patch.check()?;
         self.modify(|prefs| {
             patch.apply(prefs);
             Ok(())
@@ -540,6 +601,121 @@ mod tests {
         assert!(p.check_for_updates_automatically);
         assert!(!p.watch_downloads_during_import);
         assert_eq!(p.last_used_folders, LastUsedFolders::default());
+        assert!(
+            p.apple_auto,
+            "Apple Auto is on by default (docs/19 section 2)"
+        );
+    }
+
+    #[test]
+    fn apple_auto_is_on_unless_the_file_says_off() {
+        // A file from before Apple Auto has no field: on. A value that is not a switch costs only
+        // that value. A patch turns it off and on.
+        assert!(
+            parse(r#"{ "remove_location_from_exports": true }"#)
+                .preferences
+                .apple_auto
+        );
+        assert!(!parse(r#"{ "apple_auto": false }"#).preferences.apple_auto);
+        let bad = parse(r#"{ "apple_auto": "yes", "remove_location_from_exports": true }"#);
+        assert!(bad.preferences.apple_auto && bad.preferences.remove_location_from_exports);
+        assert_eq!(bad.warnings.len(), 1);
+        let mut p = Preferences::default();
+        let off = PreferencesPatch {
+            apple_auto: Some(false),
+            ..PreferencesPatch::default()
+        };
+        assert!(off.apply(&mut p) && !p.apple_auto);
+        assert!(!off.apply(&mut p));
+        let patch: PreferencesPatch = serde_json::from_str(r#"{ "apple_auto": true }"#).unwrap();
+        assert!(patch.apply(&mut p) && p.apple_auto);
+    }
+
+    #[test]
+    fn apple_auto_instructions_are_the_default_unless_the_person_wrote_their_own() {
+        use crate::apple_auto::DEFAULT_INSTRUCTIONS;
+        // Absent, empty or white space: the default, saved as "".
+        for text in [
+            r#"{}"#,
+            r#"{ "apple_auto_instructions": "" }"#,
+            r#"{ "apple_auto_instructions": "  \n" }"#,
+        ] {
+            let parsed = parse(text);
+            assert_eq!(parsed.preferences.apple_auto_instructions, "", "{text}");
+            assert!(parsed.warnings.is_empty(), "{text}");
+        }
+        // Edited: kept as written.
+        let edited = parse(r#"{ "apple_auto_instructions": "Moody and cool." }"#);
+        assert_eq!(
+            edited.preferences.apple_auto_instructions,
+            "Moody and cool."
+        );
+        // The default text itself reads as the default.
+        let same = serde_json::json!({ "apple_auto_instructions": DEFAULT_INSTRUCTIONS });
+        assert_eq!(
+            parse(&same.to_string()).preferences.apple_auto_instructions,
+            ""
+        );
+        // Too long (a file edited by hand), or not text: the default, with a warning; the rest is kept.
+        let long = serde_json::json!({
+            "apple_auto_instructions": "x".repeat(2001),
+            "apple_auto": false,
+        });
+        let parsed = parse(&long.to_string());
+        assert_eq!(parsed.preferences.apple_auto_instructions, "");
+        assert!(!parsed.preferences.apple_auto);
+        assert_eq!(parsed.warnings.len(), 1);
+        assert!(
+            parsed.warnings[0].contains("At most 2000"),
+            "{:?}",
+            parsed.warnings
+        );
+        let wrong = parse(r#"{ "apple_auto_instructions": 7 }"#);
+        assert_eq!(wrong.preferences.apple_auto_instructions, "");
+        assert_eq!(wrong.warnings.len(), 1);
+        // A patch sets them, the default text clears them, and one that is too long is refused.
+        let mut p = Preferences::default();
+        let set = PreferencesPatch {
+            apple_auto_instructions: Some("Warm and soft.".to_owned()),
+            ..PreferencesPatch::default()
+        };
+        assert!(set.check().is_ok());
+        assert!(set.apply(&mut p));
+        assert_eq!(p.apple_auto_instructions, "Warm and soft.");
+        let clear = PreferencesPatch {
+            apple_auto_instructions: Some(DEFAULT_INSTRUCTIONS.to_owned()),
+            ..PreferencesPatch::default()
+        };
+        assert!(clear.apply(&mut p));
+        assert_eq!(p.apple_auto_instructions, "");
+        let too_long = PreferencesPatch {
+            apple_auto_instructions: Some("é".repeat(2001)),
+            ..PreferencesPatch::default()
+        };
+        assert!(matches!(
+            too_long.check(),
+            Err(PreferencesError::Invalid(m)) if m.contains("2001 characters")
+        ));
+        let just = PreferencesPatch {
+            apple_auto_instructions: Some("é".repeat(2000)),
+            ..PreferencesPatch::default()
+        };
+        assert!(just.check().is_ok());
+        // The store refuses it and saves nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let store = PreferencesStore::open(dir.path());
+        assert!(store.update(&too_long).is_err());
+        assert!(!dir.path().join(FILE_NAME).exists());
+        assert_eq!(
+            store.update(&set).unwrap().apple_auto_instructions,
+            "Warm and soft."
+        );
+        assert_eq!(
+            PreferencesStore::open(dir.path())
+                .get()
+                .apple_auto_instructions,
+            "Warm and soft."
+        );
     }
 
     #[test]
@@ -558,7 +734,9 @@ mod tests {
                 "remove_location_from_exports": false,
                 "check_for_updates_automatically": true,
                 "watch_downloads_during_import": false,
-                "last_used_folders": { "open": null, "export": null, "looks_import": null }
+                "last_used_folders": { "open": null, "export": null, "looks_import": null },
+                "apple_auto": true,
+                "apple_auto_instructions": ""
             })
         );
         let arri = DisplayRendering::ArriDisplay {

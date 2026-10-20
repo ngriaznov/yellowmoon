@@ -3,8 +3,33 @@ source: crates/ym-cli/tests/info.rs
 expression: v
 ---
 {
+  "apple_auto": {
+    "instructions": null,
+    "instructions_sha256": null,
+    "model": null,
+    "os": null,
+    "prompt": 2,
+    "reason": null,
+    "state": "off",
+    "table": 2
+  },
   "auto": {
+    "apple": {
+      "state": "off"
+    },
+    "apple_steps": null,
+    "balance_highlights": [
+      0.0,
+      0.0
+    ],
+    "balance_shadows": [
+      0.0,
+      0.0
+    ],
+    "black": 0.0,
+    "contrast": 0.0,
     "exposure_ev": 1.11,
+    "highlights": 0.0,
     "kelvin": 3450.0,
     "light_class": "daylight",
     "light_confidence": 0.2839,
@@ -17,13 +42,17 @@ expression: v
       "detail": 50.0,
       "luminance": 30.0
     },
+    "saturation": 0.0,
+    "shadows": 0.0,
     "sharpen": {
       "amount": 102.9,
       "radius_px": 0.8
     },
+    "source": "rule",
     "tint": -24.96,
     "white_ev": 0.4827
   },
+  "auto_source": "rule",
   "black": [
     512.0,
     512.0,
@@ -94,26 +123,38 @@ expression: v
     "supported": true
   },
   "settings": {
-    "black": 0.0,
+    "black": {
+      "kind": "manual",
+      "value": 0.0
+    },
     "brightness": 0.0,
     "color_balance": {
-      "highlights": [
-        0.0,
-        0.0
-      ],
+      "highlights": {
+        "kind": "manual",
+        "point": [
+          0.0,
+          0.0
+        ]
+      },
       "midtones": [
         0.0,
         0.0
       ],
-      "shadows": [
-        0.0,
-        0.0
-      ]
+      "shadows": {
+        "kind": "manual",
+        "point": [
+          0.0,
+          0.0
+        ]
+      }
     },
     "color_warp": {
       "pins": []
     },
-    "contrast": 0.0,
+    "contrast": {
+      "kind": "manual",
+      "value": 0.0
+    },
     "crop": null,
     "curve": {
       "blue": [
@@ -167,7 +208,10 @@ expression: v
       "ev": 1.11,
       "kind": "manual"
     },
-    "highlights": 0.0,
+    "highlights": {
+      "kind": "manual",
+      "value": 0.0
+    },
     "light_source": "auto",
     "look": "builtin:signature",
     "look_intensity": 100.0,
@@ -183,8 +227,14 @@ expression: v
       "highlights": 1.0,
       "low_light": 0.5
     },
-    "saturation": 0.0,
-    "shadows": 0.0,
+    "saturation": {
+      "kind": "manual",
+      "value": 0.0
+    },
+    "shadows": {
+      "kind": "manual",
+      "value": 0.0
+    },
     "sharpen": {
       "amount": 102.9,
       "kind": "manual",

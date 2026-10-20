@@ -20,6 +20,9 @@ tauri-build.workspace = true
 
 [dependencies]
 ym-core.workspace = true
+# Apple Auto's bridge to Apple's on-device model (docs/19 section 11; Apache-2.0, ours). Off Apple
+# silicon or without the macOS 27 SDK it builds a stub that reports why it is not available.
+ym-apple.workspace = true
 ym-color.workspace = true
 ym-export.workspace = true
 ym-gpu.workspace = true

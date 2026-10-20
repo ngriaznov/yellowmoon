@@ -271,6 +271,8 @@ fn a_scaled_chain_still_lands_the_scene_white_on_neutral() {
             w_scene_initial: scene.w_scene,
             white_scale: SCALE,
             ev_auto: 0.6,
+            white_shift_mired: 0.0,
+            tint_shift: 0.0,
         };
         let chain = estimates
             .chain(

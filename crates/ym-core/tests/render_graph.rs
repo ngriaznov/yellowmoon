@@ -216,16 +216,34 @@ fn every_grade_control_and_the_look_only_rebuild_the_grade_group_with(rig: Rig) 
     let src = rig.source();
     rig.runs(&src);
     let edits: Vec<(&str, Edit)> = vec![
-        ("contrast", Box::new(|s| s.contrast = 20.0)),
+        (
+            "contrast",
+            Box::new(|s| s.contrast = ym_core::settings::PercentSetting::manual_value(20.0)),
+        ),
         ("brightness", Box::new(|s| s.brightness = -20.0)),
-        ("highlights", Box::new(|s| s.highlights = 30.0)),
-        ("shadows", Box::new(|s| s.shadows = 30.0)),
+        (
+            "highlights",
+            Box::new(|s| s.highlights = ym_core::settings::PercentSetting::manual_value(30.0)),
+        ),
+        (
+            "shadows",
+            Box::new(|s| s.shadows = ym_core::settings::PercentSetting::manual_value(30.0)),
+        ),
         ("white", Box::new(|s| s.white = 10.0)),
-        ("black", Box::new(|s| s.black = 10.0)),
-        ("saturation", Box::new(|s| s.saturation = 25.0)),
+        (
+            "black",
+            Box::new(|s| s.black = ym_core::settings::PercentSetting::manual_value(10.0)),
+        ),
+        (
+            "saturation",
+            Box::new(|s| s.saturation = ym_core::settings::PercentSetting::manual_value(25.0)),
+        ),
         (
             "color_balance",
-            Box::new(|s| s.color_balance.shadows = [0.3, -0.2]),
+            Box::new(|s| {
+                s.color_balance.shadows =
+                    ym_core::settings::BalanceSetting::manual_point([0.3, -0.2])
+            }),
         ),
         (
             "color_warp",
@@ -559,7 +577,9 @@ fn at_100_percent_tiles_are_cached_across_pans_and_color_edits_with(rig: Rig) {
     assert!(first.tiles >= 4, "{first:?}");
     assert_eq!((first.full_chains, first.raw_groups), (1, 0), "{first:?}");
     // A colour-only edit finds every tile, and the full chain, cached.
-    let edited = edit(&src, |s| s.contrast = 15.0);
+    let edited = edit(&src, |s| {
+        s.contrast = ym_core::settings::PercentSetting::manual_value(15.0)
+    });
     let r = rig.runs_with(&edited, &state, FrameOptions::default());
     assert_eq!((r.tiles, r.full_chains, r.raw_work()), (0, 0, 0), "{r:?}");
     // A small pan inside the same tiles computes nothing new either.

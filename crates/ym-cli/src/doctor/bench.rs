@@ -192,9 +192,13 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
             ),
         ));
     }
+    // No advisor: the bench times the render path, and a call to Apple's model is not part of it
+    // (Apple Auto off, `docs/19`).
     let rt = Runtime::open(&CoreSettings {
         jobs: Some(1),
         forced_profile: None,
+        apple_auto: None,
+        apple_auto_instructions: None,
     })?;
     rt.core.attach_gpu(&slot);
     let gpu = slot.gpu().cloned();
@@ -226,7 +230,7 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
             "That file is not a photo Yellowmoon can open. Try an ARW file.".to_owned(),
         ));
     };
-    if !rt.wait_developed(|_, _| {}) {
+    if !rt.wait_developed(|_| {}) {
         return Err(Failure::new(exit::INTERRUPTED, "Interrupted.".to_owned()));
     }
     let decode_ms = ms(started.elapsed());
@@ -304,11 +308,12 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
         let st = ViewportState::new(ViewportRect::cell(1440.0, 960.0, 1.0));
         let base = frame(&src, &st)?;
         let mut s = src.settings.clone();
-        s.contrast = if s.contrast > 50.0 {
+        let contrast = s.contrast.resolve(0.0);
+        s.contrast = ym_core::settings::PercentSetting::manual_value(if contrast > 50.0 {
             5.0
         } else {
-            s.contrast + 20.0
-        };
+            contrast + 20.0
+        });
         let edited = frame(&src.with_settings(s), &st)?;
         let mut v = phase.frame(
             "colour-only edit, 1440 x 960 cell",

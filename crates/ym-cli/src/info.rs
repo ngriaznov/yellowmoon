@@ -5,8 +5,9 @@
 //! exposure, lens, dimensions, the raw layout and levels, which lens-correction tables it carries,
 //! where its preview is) and, when the file can be developed, the estimates the app shows on the
 //! Automatic card: the camera profile and why it was chosen, the exposure, white balance and light
-//! class, the noise model, the Auto sharpening and noise reduction, and the look and settings a
-//! `render` would start from. A file that has metadata but cannot be developed yet (ARW 6.0, a
+//! class, what Apple Auto did (`docs/19` section 8), the noise model, the Auto sharpening and noise
+//! reduction, and the look and settings a `render` would start from (it waits for Apple Auto's
+//! answers when Apple Auto acts, as `render` does). A file that has metadata but cannot be developed yet (ARW 6.0, a
 //! layout without a decoder) still prints its metadata and says why the rest is missing.
 //!
 //! Text output goes to stdout, one block per file. In `--json` mode every file produces one JSON
@@ -30,11 +31,13 @@ use ym_raw::error::RawError;
 use ym_raw::layout::{DecodeKind, Rect};
 use ym_raw::metadata::{LensTags, LevelSource, RawMetadata, probe};
 
-use crate::cli::InfoArgs;
+use crate::cli::{AppleAutoArg, InfoArgs};
 use crate::console::Console;
 use crate::exit::{self, Failure};
-use crate::report::{Object, camera_json, develop_fields, error_value, match_word};
-use crate::runtime::{CoreSettings, Runtime, interrupted};
+use crate::report::{
+    AppleAutoField, Object, apple_auto_text, camera_json, develop_fields, error_value, match_word,
+};
+use crate::runtime::{CoreSettings, Runtime, interrupted, read_instructions};
 use crate::text::{lossy, path_text};
 
 /// Why `run_to` stopped early.
@@ -99,15 +102,26 @@ fn run_to(args: &InfoArgs, console: &mut Console, out: &mut dyn Write) -> Result
         .collect();
 
     // The estimates need the core; files that cannot even be read do not.
+    let apple_auto = AppleAutoArg::mode(args.apple_auto);
+    let apple_auto_instructions = args
+        .apple_auto_instructions
+        .as_deref()
+        .map(read_instructions)
+        .transpose()?;
     let runtime = if entries.iter().any(|e| e.probe.is_ok()) {
         Some(Runtime::open(&CoreSettings {
             jobs: None,
             forced_profile: args.profile.clone(),
+            apple_auto: Some(apple_auto),
+            apple_auto_instructions,
         })?)
     } else {
         None
     };
     if let Some(rt) = &runtime {
+        if let Some(notice) = rt.apple_auto_notice(apple_auto) {
+            console.warn(&notice);
+        }
         let mut opened: HashMap<PathBuf, Option<PhotoId>> = HashMap::new();
         for e in entries.iter_mut().filter(|e| e.probe.is_ok()) {
             let key = std::fs::canonicalize(&e.path).unwrap_or_else(|_| e.path.clone());
@@ -124,8 +138,11 @@ fn run_to(args: &InfoArgs, console: &mut Console, out: &mut dyn Write) -> Result
                     .flatten()
             });
         }
-        let finished = rt.wait_developed(|ready, total| {
-            console.progress(format!("Reading {ready}/{total}"));
+        let finished = rt.wait_developed(|w| {
+            console.progress(match w.answers {
+                Some((answered, n)) => format!("Asking Apple Intelligence {answered}/{n}"),
+                None => format!("Reading {}/{}", w.ready, w.total),
+            });
         });
         console.finish_progress();
         if !finished {
@@ -245,13 +262,15 @@ pub fn json_ok(
     obj.insert("status", json!("ok"));
     match developed {
         Ok((view, resolved)) => {
-            obj.extend(develop_fields(view, resolved));
+            obj.extend(develop_fields(view, resolved, AppleAutoField::Always));
             obj.insert("notes", json!([]));
         }
         Err(reason) => {
             obj.insert("camera", camera_json(camera, meta));
             obj.insert("look", Value::Null);
             obj.insert("auto", Value::Null);
+            obj.insert("auto_source", Value::Null);
+            obj.insert("apple_auto", Value::Null);
             obj.insert("settings", Value::Null);
             obj.insert("notes", json!([reason]));
         }
@@ -386,6 +405,11 @@ fn develop_rows(view: &PhotoView, resolved: &ResolvedSettings) -> Vec<(&'static 
                 trim_number(e.kelvin, 0),
                 trim_number(e.tint, 1)
             ),
+        ),
+        // What Apple Auto did to the values above (`docs/19` section 8).
+        (
+            "Apple Auto",
+            apple_auto_text(&e.apple, view.estimates.apple_steps),
         ),
         (
             "Noise model",
@@ -748,6 +772,8 @@ mod tests {
                 files: vec![path.clone()],
                 json,
                 profile: None,
+                apple_auto: None,
+                apple_auto_instructions: None,
             };
             let mut console = Console::new(true, false, true);
             let result = run_to(&args, &mut console, &mut Closed);
@@ -768,6 +794,8 @@ mod tests {
             files: vec![bad, good.clone()],
             json: false,
             profile: None,
+            apple_auto: None,
+            apple_auto_instructions: None,
         };
         let mut out = Vec::new();
         let mut console = Console::new(true, false, true);

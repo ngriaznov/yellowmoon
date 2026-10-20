@@ -173,8 +173,8 @@ fn a_fit_frame_from_a_resident_group_is_the_host_round_trip_bit_for_bit() {
         (
             "graded and straightened",
             edit(&src, |s| {
-                s.contrast = 30.0;
-                s.saturation = 20.0;
+                s.contrast = ym_core::settings::PercentSetting::manual_value(30.0);
+                s.saturation = ym_core::settings::PercentSetting::manual_value(20.0);
                 s.crop = Some(ym_core::settings::Crop {
                     rect: ym_core::settings::NormRect {
                         x: 0.05,
@@ -245,7 +245,9 @@ fn a_resident_fit_frame_reads_back_the_frame_and_nothing_else() {
     // The group stayed on the device: the second frame of another grade reads back the frame only.
     let r = renderer(Some(&gpu), true);
     let _ = fresh(&r, &src, &st);
-    let graded = edit(&src, |s| s.contrast = 25.0);
+    let graded = edit(&src, |s| {
+        s.contrast = ym_core::settings::PercentSetting::manual_value(25.0)
+    });
     let before = gpu.counters();
     let again = fresh(&r, &graded, &st);
     let after = gpu.counters();
@@ -651,11 +653,15 @@ mod faults {
         let (_d, src) = photo(20);
         let st = cell(300.0, 200.0);
         let r = renderer(Some(&gpu), true);
-        let graded = edit(&src, |s| s.contrast = 30.0);
+        let graded = edit(&src, |s| {
+            s.contrast = ym_core::settings::PercentSetting::manual_value(30.0)
+        });
         let resident_frame = fresh(&r, &graded, &st);
         assert_eq!(resident_frame.report.device, ComputeDevice::Gpu);
         // The group is resident now; another grade hits it.
-        let other = edit(&src, |s| s.contrast = 31.0);
+        let other = edit(&src, |s| {
+            s.contrast = ym_core::settings::PercentSetting::manual_value(31.0)
+        });
         let _ = fresh(&r, &src, &st);
         gpu.set_fault(Some(fault));
         let failed = fresh(&r, &other, &st);

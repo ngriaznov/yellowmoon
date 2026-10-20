@@ -17,12 +17,24 @@ use std::path::Path;
 use serde_json::Value;
 use ym_color::wb::LightSource;
 use ym_core::settings::{
-    AutoOr, DecodePatch, DevelopSettings, ExposureSetting, NoiseReductionManualPatch, RolloffPatch,
-    SettingsField, SettingsPatch, SharpenManualPatch, WhiteBalanceManualPatch,
+    AutoOr, DecodePatch, DevelopSettings, ExposureSetting, NoiseReductionManualPatch,
+    PercentSetting, RolloffPatch, SettingsField, SettingsPatch, SharpenManualPatch,
+    WhiteBalanceManualPatch,
 };
 use ym_looks::library::LookId;
 
-use crate::cli::{ExposureArg, LightArg, NrArg, RenderArgs, RolloffArg, SharpenArg, WbArg};
+use crate::cli::{
+    ExposureArg, LightArg, NrArg, PercentArg, RenderArgs, RolloffArg, SharpenArg, WbArg,
+};
+
+/// `--contrast`, `--saturation`, `--highlights`, `--shadows` or `--black` as a setting: `auto` is
+/// Auto (0, or Apple Auto's value for the photo, `docs/19` section 5), a number is a manual value.
+fn percent_setting(arg: PercentArg) -> PercentSetting {
+    match arg {
+        PercentArg::Auto => AutoOr::Auto,
+        PercentArg::Value(value) => PercentSetting::manual_value(value),
+    }
+}
 
 /// The options of `ym render` that change a photo's settings.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -36,21 +48,21 @@ pub struct Overrides {
     /// `--exposure-offset`.
     pub exposure_offset: Option<f64>,
     /// `--contrast`.
-    pub contrast: Option<f64>,
+    pub contrast: Option<PercentArg>,
     /// `--brightness`.
     pub brightness: Option<f64>,
     /// `--highlights`.
-    pub highlights: Option<f64>,
+    pub highlights: Option<PercentArg>,
     /// `--shadows`.
-    pub shadows: Option<f64>,
+    pub shadows: Option<PercentArg>,
     /// `--white`.
     pub white: Option<f64>,
     /// `--white-offset`.
     pub white_offset: Option<f64>,
     /// `--black`.
-    pub black: Option<f64>,
+    pub black: Option<PercentArg>,
     /// `--saturation`.
-    pub saturation: Option<f64>,
+    pub saturation: Option<PercentArg>,
     /// `--wb`.
     pub wb: Option<WbArg>,
     /// `--light`.
@@ -108,14 +120,15 @@ impl Overrides {
         let mut p = SettingsPatch {
             look: self.look.clone(),
             look_intensity: self.intensity,
-            contrast: self.contrast,
+            // `auto` is Auto, a number a manual value (`docs/19` section 8).
+            contrast: self.contrast.map(percent_setting),
             brightness: self.brightness,
-            highlights: self.highlights,
-            shadows: self.shadows,
+            highlights: self.highlights.map(percent_setting),
+            shadows: self.shadows.map(percent_setting),
             white: self.white,
             white_offset_ev: self.white_offset,
-            black: self.black,
-            saturation: self.saturation,
+            black: self.black.map(percent_setting),
+            saturation: self.saturation.map(percent_setting),
             output_sharpening: self.output_sharpening,
             ..SettingsPatch::default()
         };
@@ -352,7 +365,7 @@ mod tests {
         let SettingsFile::Global(s) = &loaded.file else {
             panic!("global");
         };
-        assert_eq!(s.contrast, 20.0);
+        assert_eq!(s.contrast, PercentSetting::manual_value(20.0));
         assert_eq!(s.exposure, ExposureSetting::manual_ev(0.5));
         assert!(s.sharpen.is_auto());
         assert_eq!(s.look, neutral());
@@ -381,9 +394,9 @@ mod tests {
         let loaded = SettingsFile::parse(text, &neutral()).expect("parses");
         let file = &loaded.file;
         let one = file.for_file(Path::new("/x/DSC00001.ARW")).expect("entry");
-        assert_eq!(one.contrast, 10.0);
+        assert_eq!(one.contrast, PercentSetting::manual_value(10.0));
         let two = file.for_file(Path::new("/x/DSC00002.ARW")).expect("entry");
-        assert_eq!(two.saturation, -5.0);
+        assert_eq!(two.saturation, PercentSetting::manual_value(-5.0));
         assert!(file.for_file(Path::new("/x/DSC00003.ARW")).is_none());
         let unused = file.unused_entries(&[Path::new("/x/DSC00001.ARW").to_path_buf()]);
         assert_eq!(unused, ["dsc00002.arw"]);
@@ -441,7 +454,7 @@ mod tests {
         let SettingsFile::Global(s) = &loaded.file else {
             panic!("global");
         };
-        assert_eq!(s.contrast, 100.0);
+        assert_eq!(s.contrast, PercentSetting::manual_value(100.0));
         assert_eq!(loaded.clamped, [(String::new(), vec!["contrast"])]);
     }
 
@@ -498,11 +511,11 @@ mod tests {
             (
                 "--contrast",
                 Overrides {
-                    contrast: Some(21.0),
+                    contrast: Some(PercentArg::Value(21.0)),
                     ..Overrides::default()
                 },
                 SettingsPatch {
-                    contrast: Some(21.0),
+                    contrast: Some(PercentSetting::manual_value(21.0)),
                     ..SettingsPatch::default()
                 },
             ),
@@ -520,22 +533,22 @@ mod tests {
             (
                 "--highlights",
                 Overrides {
-                    highlights: Some(-12.0),
+                    highlights: Some(PercentArg::Value(-12.0)),
                     ..Overrides::default()
                 },
                 SettingsPatch {
-                    highlights: Some(-12.0),
+                    highlights: Some(PercentSetting::manual_value(-12.0)),
                     ..SettingsPatch::default()
                 },
             ),
             (
                 "--shadows",
                 Overrides {
-                    shadows: Some(22.0),
+                    shadows: Some(PercentArg::Value(22.0)),
                     ..Overrides::default()
                 },
                 SettingsPatch {
-                    shadows: Some(22.0),
+                    shadows: Some(PercentSetting::manual_value(22.0)),
                     ..SettingsPatch::default()
                 },
             ),
@@ -553,22 +566,22 @@ mod tests {
             (
                 "--black",
                 Overrides {
-                    black: Some(-44.0),
+                    black: Some(PercentArg::Auto),
                     ..Overrides::default()
                 },
                 SettingsPatch {
-                    black: Some(-44.0),
+                    black: Some(AutoOr::Auto),
                     ..SettingsPatch::default()
                 },
             ),
             (
                 "--saturation",
                 Overrides {
-                    saturation: Some(-15.0),
+                    saturation: Some(PercentArg::Value(-15.0)),
                     ..Overrides::default()
                 },
                 SettingsPatch {
-                    saturation: Some(-15.0),
+                    saturation: Some(PercentSetting::manual_value(-15.0)),
                     ..SettingsPatch::default()
                 },
             ),
@@ -623,7 +636,7 @@ mod tests {
         // Together they add up, field by field.
         let all = Overrides {
             brightness: Some(11.0),
-            shadows: Some(22.0),
+            shadows: Some(PercentArg::Value(22.0)),
             white: Some(33.0),
             no_neural: true,
             no_highlight_recovery: true,
@@ -633,7 +646,11 @@ mod tests {
         let p = all.patch(0.0);
         assert_eq!(
             (p.brightness, p.shadows, p.white),
-            (Some(11.0), Some(22.0), Some(33.0))
+            (
+                Some(11.0),
+                Some(PercentSetting::manual_value(22.0)),
+                Some(33.0)
+            )
         );
         assert_eq!(
             p.decode,
@@ -644,6 +661,26 @@ mod tests {
                 chromatic_aberration: None,
             })
         );
+    }
+
+    #[test]
+    fn auto_contrast_and_saturation_are_auto_in_the_patch_and_win_over_a_file() {
+        let o = Overrides {
+            contrast: Some(PercentArg::Auto),
+            saturation: Some(PercentArg::Auto),
+            ..Overrides::default()
+        };
+        let p = o.patch(0.0);
+        assert_eq!(p.contrast, Some(AutoOr::Auto));
+        assert_eq!(p.saturation, Some(AutoOr::Auto));
+        let loaded =
+            SettingsFile::parse(r#"{"contrast": 20, "saturation": -5}"#, &neutral()).expect("file");
+        let SettingsFile::Global(mut s) = loaded.file else {
+            panic!("global");
+        };
+        assert_eq!(s.contrast, PercentSetting::manual_value(20.0));
+        s.apply_patch(&p, None).expect("applies");
+        assert!(s.contrast.is_auto() && s.saturation.is_auto());
     }
 
     #[test]

@@ -11099,6 +11099,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wgpu",
+ "ym-apple",
  "ym-color",
  "ym-core",
  "ym-export",
@@ -11106,6 +11107,13 @@ dependencies = [
  "ym-looks",
  "ym-raw",
  "zip 9.0.4",
+]
+
+[[package]]
+name = "ym-apple"
+version = "0.1.10"
+dependencies = [
+ "ym-core",
 ]
 
 [[package]]
@@ -11123,6 +11131,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "tracing-subscriber",
+ "ym-apple",
  "ym-color",
  "ym-core",
  "ym-export",
@@ -11154,6 +11163,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",

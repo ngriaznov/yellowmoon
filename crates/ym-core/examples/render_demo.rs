@@ -78,7 +78,7 @@ fn main() {
 
     // A colour-only edit: another look intensity changes only the grade group.
     let mut edited = src.clone();
-    edited.settings.contrast = 25.0;
+    edited.settings.contrast = ym_core::settings::PercentSetting::manual_value(25.0);
     let t = Instant::now();
     let f2 = renderer
         .viewport_frame(&edited, &state, &FrameOptions::default(), &cancel)

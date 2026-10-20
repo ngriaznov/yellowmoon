@@ -123,7 +123,7 @@ fn run(src: &PhotoSource, threads: usize) -> Outputs {
             angle_deg: 7.5,
             aspect: CropAspect::Free,
         });
-        s.contrast = 20.0;
+        s.contrast = ym_core::settings::PercentSetting::manual_value(20.0);
         let tilted = frame(&src.with_settings(s), &cell(300.0, 450.0));
         Outputs {
             fit,

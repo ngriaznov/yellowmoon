@@ -4,7 +4,20 @@ expression: shape(&v)
 ---
 {
   "auto": {
+    "apple": {
+      "state": "string"
+    },
+    "apple_steps": "null",
+    "balance_highlights": [
+      "number"
+    ],
+    "balance_shadows": [
+      "number"
+    ],
+    "black": "number",
+    "contrast": "number",
     "exposure_ev": "number",
+    "highlights": "number",
     "kelvin": "number",
     "light_class": "string",
     "light_confidence": "number",
@@ -17,13 +30,17 @@ expression: shape(&v)
       "detail": "number",
       "luminance": "number"
     },
+    "saturation": "number",
+    "shadows": "number",
     "sharpen": {
       "amount": "number",
       "radius_px": "number"
     },
+    "source": "string",
     "tint": "number",
     "white_ev": "number"
   },
+  "auto_source": "string",
   "camera": {
     "arw_version": "string",
     "body": "string",
@@ -51,23 +68,35 @@ expression: shape(&v)
   "output": "string",
   "pipeline_version": "string",
   "settings": {
-    "black": "number",
+    "black": {
+      "kind": "string",
+      "value": "number"
+    },
     "brightness": "number",
     "color_balance": {
-      "highlights": [
-        "number"
-      ],
+      "highlights": {
+        "kind": "string",
+        "point": [
+          "number"
+        ]
+      },
       "midtones": [
         "number"
       ],
-      "shadows": [
-        "number"
-      ]
+      "shadows": {
+        "kind": "string",
+        "point": [
+          "number"
+        ]
+      }
     },
     "color_warp": {
       "pins": []
     },
-    "contrast": "number",
+    "contrast": {
+      "kind": "string",
+      "value": "number"
+    },
     "crop": "null",
     "curve": {
       "blue": [
@@ -101,7 +130,10 @@ expression: shape(&v)
       "ev": "number",
       "kind": "string"
     },
-    "highlights": "number",
+    "highlights": {
+      "kind": "string",
+      "value": "number"
+    },
     "light_source": "string",
     "look": "string",
     "look_intensity": "number",
@@ -117,8 +149,14 @@ expression: shape(&v)
       "highlights": "number",
       "low_light": "number"
     },
-    "saturation": "number",
-    "shadows": "number",
+    "saturation": {
+      "kind": "string",
+      "value": "number"
+    },
+    "shadows": {
+      "kind": "string",
+      "value": "number"
+    },
     "sharpen": {
       "amount": "number",
       "kind": "string",

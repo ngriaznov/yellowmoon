@@ -1,0 +1,18 @@
+[package]
+name = "ym-apple"
+description = "Apple Auto's bridge to Apple's on-device model (Foundation Models, macOS 27 on Apple silicon); a stub everywhere else."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false
+# The Swift static library that build.rs compiles. Declaring it lets the build scripts of the binaries that
+# depend on this crate (ym-cli, the app) read `DEP_YM_APPLE_AUTO_BRIDGE` ("1" when the Swift bridge was
+# compiled) and link FoundationModels weakly only then (docs/19 section 11; build.rs explains why).
+links = "ym_apple_auto"
+build = "build.rs"
+
+[dependencies]
+ym-core.workspace = true

@@ -1,0 +1,107 @@
+---
+source: crates/ym-cli/tests/apple_auto.rs
+expression: "Value::Object(picked)"
+---
+{
+  "apple_auto": {
+    "instructions": "string",
+    "instructions_sha256": "string",
+    "model": "string",
+    "os": "string",
+    "plan": "string",
+    "prompt": "number",
+    "reason": "null",
+    "scene": "string",
+    "state": "string",
+    "steps": {
+      "blacks": "null",
+      "contrast": "number",
+      "exposure": "number",
+      "highlight_color": "null",
+      "highlight_color_strength": "null",
+      "highlights": "number",
+      "saturation": "number",
+      "shadow_color": "string",
+      "shadow_color_strength": "number",
+      "shadows": "number",
+      "tint": "null",
+      "white": "number"
+    },
+    "table": "number"
+  },
+  "auto": {
+    "apple": {
+      "answer": {
+        "plan": "string",
+        "scene": "string",
+        "steps": {
+          "blacks": "null",
+          "contrast": "number",
+          "exposure": "number",
+          "highlight_color": "null",
+          "highlight_color_strength": "null",
+          "highlights": "number",
+          "saturation": "number",
+          "shadow_color": "string",
+          "shadow_color_strength": "number",
+          "shadows": "number",
+          "tint": "null",
+          "white": "number"
+        }
+      },
+      "info": {
+        "instructions": "string",
+        "instructions_sha256": "string",
+        "model": "string",
+        "os": "string"
+      },
+      "state": "string"
+    },
+    "apple_steps": {
+      "blacks": "null",
+      "contrast": "number",
+      "exposure": "number",
+      "highlight_color": "null",
+      "highlight_color_strength": "null",
+      "highlights": "number",
+      "saturation": "number",
+      "shadow_color": "string",
+      "shadow_color_strength": "number",
+      "shadows": "number",
+      "tint": "null",
+      "white": "number"
+    },
+    "balance_highlights": [
+      "number"
+    ],
+    "balance_shadows": [
+      "number"
+    ],
+    "black": "number",
+    "contrast": "number",
+    "exposure_ev": "number",
+    "highlights": "number",
+    "kelvin": "number",
+    "light_class": "string",
+    "light_confidence": "number",
+    "noise": {
+      "a": "number",
+      "b": "number"
+    },
+    "noise_reduction": {
+      "color": "number",
+      "detail": "number",
+      "luminance": "number"
+    },
+    "saturation": "number",
+    "shadows": "number",
+    "sharpen": {
+      "amount": "number",
+      "radius_px": "number"
+    },
+    "source": "string",
+    "tint": "number",
+    "white_ev": "number"
+  },
+  "auto_source": "string"
+}

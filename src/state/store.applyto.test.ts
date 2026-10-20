@@ -170,11 +170,11 @@ describe("a patch that names its photo", () => {
     const first = currentId(store);
     const second = first + 1;
     await visit(store, second);
-    await store.update({ contrast: 25 }, false, first);
-    await store.update({ contrast: 30 }, true, first);
-    expect((await api.getSettings(first)).settings.contrast).toBe(30);
-    expect((await api.getSettings(second)).settings.contrast).toBe(0);
-    expect(store.getState().settings[second]?.settings.contrast).toBe(0);
+    await store.update({ contrast: { kind: "manual", value: 25 } }, false, first);
+    await store.update({ contrast: { kind: "manual", value: 30 } }, true, first);
+    expect((await api.getSettings(first)).settings.contrast).toEqual({ kind: "manual", value: 30 });
+    expect((await api.getSettings(second)).settings.contrast).toEqual({ kind: "auto" });
+    expect(store.getState().settings[second]?.settings.contrast).toEqual({ kind: "auto" });
     // The drag is one undo step of the photo it was made on.
     await store.setCurrent(first);
     expect(store.getState().canUndo).toBe(true);

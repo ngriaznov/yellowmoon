@@ -16,6 +16,9 @@
 //!   [`CHROMA_SCATTER_MAX_POINTS`] of them.
 //! * **Scheduled calls**: `spawn_*` put a request on the render queue at the priority `docs/01`
 //!   gives it and return a handle.
+//! * **Apple Auto's picture** (`docs/19` section 3): the photo at its default settings through the
+//!   Signature look at 100 % and ACES 2, at 768 px on the long edge, 8-bit sRGB, on the CPU reference
+//!   path ([`AdvisorPictures`], the session's [`PictureRenderer`] hook).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,15 +32,21 @@ use ym_gpu::queue::{CancelToken, JobError, JobHandle, Priority};
 use ym_looks::library::LookId;
 
 use super::RenderError;
-use super::color::{PhotoSource, with_look};
+use super::color::{
+    LookProblem, LookProvider, PhotoSource, ResolvedLook, raw_fingerprint, with_look,
+};
 use super::frame::{
     FrameOptions, FrameOutput, FullImage, FullRequest, RenderedFrame, Sampled, ViewSpec,
     render_view, sample_view_routed,
 };
 use super::geometry::Affine;
-use super::graph::{Job, Renderer};
+use super::graph::{Job, RenderOptions, Renderer};
 use super::viewport::ViewportState;
-use crate::session::{PhotoId, ThumbnailInput, ThumbnailRenderer};
+use crate::apple_auto::{AdvisorPicture, PICTURE_LONG_EDGE_PX};
+use crate::session::{PhotoId, PictureInput, PictureRenderer, ThumbnailInput, ThumbnailRenderer};
+use crate::settings::DevelopSettings;
+use ym_color::display::DisplayTransform;
+use ym_color::look::LookTransform;
 
 /// Bins of the histogram.
 pub const HISTOGRAM_BINS: usize = 64;
@@ -202,6 +211,51 @@ impl Renderer {
         let (tw, th, rgb) = self.thumbnail_rgb(src, cancel)?;
         self.note_thumbnail_detail(src.id, DetailStat::measure_rgb8(tw as u32, th as u32, &rgb));
         encode_png_rgb8(tw, th, &rgb)
+    }
+
+    /// Apple Auto's picture of a photo (`docs/19` section 3): `src` as it is (its settings, look and
+    /// estimates), whole, at [`PICTURE_LONG_EDGE_PX`] on the long edge (a smaller photo is not
+    /// enlarged), from the reduced raw group as a thumbnail is, in sRGB, 8 bits, `width * height * 3`
+    /// bytes, rows top to bottom. It runs on the calling thread on whatever device this renderer has;
+    /// [`AdvisorPictures`] keeps one without a device, so the picture is the CPU reference path's.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    pub fn advisor_picture(
+        &self,
+        src: &PhotoSource,
+        cancel: &CancelToken,
+    ) -> Result<AdvisorPicture, RenderError> {
+        let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::Thumbnail);
+        let image = job.final_size()?;
+        let (width, height) = thumbnail_size(image, PICTURE_LONG_EDGE_PX);
+        let spec = ViewSpec {
+            out_w: width,
+            out_h: height,
+            view_to_final: Affine::scale_translate(
+                image.0 as f64 / width as f64,
+                image.1 as f64 / height as f64,
+                0.0,
+                0.0,
+            ),
+            k: thumbnail_scale(image, PICTURE_LONG_EDGE_PX),
+            target: OutputTarget::Srgb,
+            before: false,
+            coarse_only: false,
+            cache: false,
+            background: self.options().background,
+            gpu_priority: Priority::Thumbnail,
+            dither_origin: (0, 0),
+        };
+        let frame = render_view(job, &spec)?;
+        let mut rgb = vec![0u8; 3 * width * height];
+        rgb.par_chunks_mut(3)
+            .zip(frame.rgba.par_chunks(4))
+            .for_each(|(d, s)| {
+                d.copy_from_slice(&s[..3]);
+            });
+        Ok(AdvisorPicture { width, height, rgb })
     }
 
     /// The photo as it is developed now, through one look at 100 % (the Look tab's tiles). It does
@@ -534,6 +588,113 @@ impl Renderer {
         Arc::new(PhotoThumbnails {
             renderer: self.clone(),
         })
+    }
+}
+
+/// The looks Apple Auto's picture is rendered with: the Signature look the white lift is sized for
+/// (`<data>/looks/builtin/signature.json`, `SessionEnv::reference_look`), and Neutral. No display LUT:
+/// the picture's display rendering is ours, ACES 2.
+struct PictureLooks {
+    signature: Option<Arc<LookTransform>>,
+}
+
+impl LookProvider for PictureLooks {
+    fn look(&self, id: &LookId) -> Result<ResolvedLook, LookProblem> {
+        match (id.as_str(), &self.signature) {
+            ("builtin:signature", Some(signature)) => Ok(ResolvedLook {
+                transform: Arc::clone(signature),
+                fingerprint: "builtin:signature".to_owned(),
+            }),
+            ("builtin:neutral", _) => Ok(ResolvedLook {
+                transform: Arc::new(LookTransform::neutral()),
+                fingerprint: "builtin:neutral".to_owned(),
+            }),
+            _ => Err(LookProblem(format!("The look {id} is not in the library."))),
+        }
+    }
+
+    fn display_transform(&self, id: &LookId) -> Result<(DisplayTransform, String), LookProblem> {
+        Err(LookProblem(format!(
+            "The display LUT {id} is not in the library."
+        )))
+    }
+}
+
+/// The session's [`PictureRenderer`] hook: Apple Auto's pictures (`docs/19` section 3), made by a
+/// renderer of their own that has no graphics device, no display LUT and only the Signature and
+/// Neutral looks, so the app and `ym` give the model the same bytes on every Mac whatever the GPU
+/// policy, the display rendering and the look library say. Each picture is the photo at its default
+/// settings (every Auto the rule's: the photo's own estimates), no crop, no straightening, no turn by
+/// the user and the camera's orientation applied, through the Signature look at 100 % (Neutral when
+/// the data folder has none) and ACES 2. Its caches are dropped after each picture.
+pub struct AdvisorPictures {
+    renderer: Renderer,
+    look: LookId,
+}
+
+impl std::fmt::Debug for AdvisorPictures {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdvisorPictures")
+            .field("look", &self.look)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AdvisorPictures {
+    /// A picture renderer with the Signature look `signature` (`None`: Neutral) and the options of
+    /// the app's renderer without its device (`options.gpu` is ignored).
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Thread`] when the operating system cannot start the renderer's thread.
+    pub fn new(
+        signature: Option<Arc<LookTransform>>,
+        options: &RenderOptions,
+    ) -> Result<Self, RenderError> {
+        let look = if signature.is_some() {
+            LookId::builtin("signature")
+        } else {
+            LookId::neutral()
+        };
+        let options = RenderOptions {
+            gpu: None,
+            ..options.clone()
+        };
+        let renderer = Renderer::new(Arc::new(PictureLooks { signature }), options)?;
+        Ok(Self { renderer, look })
+    }
+
+    /// The picture of a photo (see the type's documentation).
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    pub fn picture(&self, input: &PictureInput<'_>) -> Result<AdvisorPicture, RenderError> {
+        if (input.cancelled)() {
+            return Err(RenderError::Cancelled);
+        }
+        let src = PhotoSource {
+            id: input.id,
+            raw: Arc::clone(input.raw),
+            profile: Arc::clone(input.profile),
+            estimates: Arc::clone(input.estimates),
+            settings: DevelopSettings::with_look(self.look.clone()),
+            pick: None,
+            fingerprint: raw_fingerprint(input.raw),
+            sensor: input.camera.matched.sensor,
+            capture_method: super::raw::DEFAULT_CAPTURE_METHOD,
+            before_view: false,
+        };
+        let picture = self.renderer.advisor_picture(&src, &CancelToken::new());
+        // One picture per photo: nothing of it is worth keeping.
+        self.renderer.forget(input.id);
+        picture
+    }
+}
+
+impl PictureRenderer for AdvisorPictures {
+    fn render(&self, input: &PictureInput<'_>) -> Result<AdvisorPicture, String> {
+        self.picture(input).map_err(|e| e.to_string())
     }
 }
 

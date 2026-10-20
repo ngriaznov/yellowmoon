@@ -6,6 +6,11 @@
 //! only code that makes a file). Results arrive as the queue finishes each photo; the command
 //! prints them in that order.
 //!
+//! Apple Auto (`docs/19`) is the app's too: the core gets this computer's advisor and the
+//! `apple_auto` preference decides unless `--apple-auto on|off` says otherwise. When it acts, the
+//! photos are developed and answered before their settings are applied (`Session::wait_idle` waits
+//! for the answers), so the JSON and the files carry Apple's values.
+//!
 //! stdout carries data only: the path of every file written, or one JSON object per photo with
 //! `--json`. Everything for a person (progress, warnings, the summary) goes to stderr.
 
@@ -28,13 +33,15 @@ use ym_looks::library::LookId;
 use ym_looks::library::ResolveError;
 use ym_raw::layout::DecodeKind;
 
-use crate::cli::RenderArgs;
+use crate::cli::{AppleAutoArg, RenderArgs};
 use crate::console::{Console, bar, duration_text, photos, shorten};
 use crate::develop::{LoadedSettings, Overrides, SettingsFile};
 use crate::exit::{self, Failure};
 use crate::inputs::{self, Expanded, Problem};
-use crate::report::{Object, develop_fields, render_error, render_ok};
-use crate::runtime::{BackgroundGpu, CoreSettings, Runtime, gpu_line, interrupted};
+use crate::report::{AppleAutoField, Object, develop_fields, render_error, render_ok};
+use crate::runtime::{
+    BackgroundGpu, CoreSettings, Runtime, gpu_line, interrupted, read_instructions,
+};
 use crate::text::{data_path, line_text, lossy, path_text};
 
 /// The longest file name the progress line shows. With the bar and the counts the line is then
@@ -337,12 +344,23 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         args.inputs.clone()
     };
 
-    // The data folder, the preferences and the look library.
+    // The data folder, the preferences, the look library and Apple Auto's advisor.
+    let apple_auto = AppleAutoArg::mode(args.apple_auto);
+    let apple_auto_instructions = args
+        .apple_auto_instructions
+        .as_deref()
+        .map(read_instructions)
+        .transpose()?;
     let rt = Runtime::open(&CoreSettings {
         jobs: args.jobs,
         forced_profile: args.profile.clone(),
+        apple_auto: Some(apple_auto),
+        apple_auto_instructions,
     })?;
     let core = &rt.core;
+    if let Some(notice) = rt.apple_auto_notice(apple_auto) {
+        console.warn(&notice);
+    }
 
     // The graphics policy: `--cpu` or `--require-gpu`, else `YELLOWMOON_GPU`, else Auto, the same
     // choice the app makes (`ym_core::app::gpu`). A policy that needs a device is checked first: a
@@ -470,10 +488,15 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         });
     }
     let total = plans.len();
-    let developed = rt.wait_developed(|ready, n| {
+    let developed = rt.wait_developed(|w| {
+        // Apple Auto's answers come after the photos are developed (`docs/19` section 6).
+        let (label, done, n) = match w.answers {
+            Some((answered, n)) => ("Asking Apple Intelligence", answered, n),
+            None => ("Developing", w.ready, w.total),
+        };
         console.progress(format!(
-            "Developing {} {ready}/{n}",
-            bar(ready as f64 / n.max(1) as f64, 20)
+            "{label} {} {done}/{n}",
+            bar(done as f64 / n.max(1) as f64, 20)
         ));
     });
     console.finish_progress();
@@ -570,6 +593,12 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         scope: ApplyScope::Picked,
         options: options.clone(),
     };
+    // Apple Auto's availability is read again before the export starts, as the app's
+    // `Core::export_start` does (`docs/19` section 1); an Apple Auto the run wanted that has gone
+    // meanwhile is said once.
+    if let Some(notice) = rt.apple_auto_notice_before_export() {
+        console.warn(&notice);
+    }
     let started = Instant::now();
     if let Err(error) = core.exports.start(&core.session, &job, remove_location) {
         return Err(match error {
@@ -701,7 +730,10 @@ fn apply_settings(
         }
     }
     let view = session.view(id).map_err(|e| e.to_string())?;
-    Ok((develop_fields(&view, &resolved), warning))
+    Ok((
+        develop_fields(&view, &resolved, AppleAutoField::WhenActive),
+        warning,
+    ))
 }
 
 #[derive(Debug, Default)]

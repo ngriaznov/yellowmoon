@@ -10,6 +10,9 @@ import type { ViewportFrame } from "../api/types";
 import { createStore } from "./store";
 import type { AppStore } from "./store";
 
+/** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
+const manual = (value: number) => ({ kind: "manual", value }) as const;
+
 const stops: Array<() => void> = [];
 afterEach(() => {
   for (const stop of stops.splice(0)) stop();
@@ -200,13 +203,13 @@ describe("Pick white", () => {
 
   it("waits for the patches in flight, so the undo step starts from the settings the core has", async () => {
     const { store } = await opened();
-    const done = store.update({ contrast: 10 }, true);
+    const done = store.update({ contrast: manual(10) }, true);
     const pick = store.pickWhite(450, 300);
     await Promise.all([done, pick]);
     await store.undo();
     // The pick is undone; the contrast change before it is still there.
     expect(store.currentSettings()!.settings.white_pick).toBeNull();
-    expect(store.currentSettings()!.settings.contrast).toBe(10);
+    expect(store.currentSettings()!.settings.contrast).toEqual(manual(10));
   });
 });
 
@@ -215,7 +218,7 @@ describe("settings_changed", () => {
     const { api, store } = await opened();
     const id = store.currentPhoto()!.id;
     // The core sets the pick on its own (another window, a menu): the mirror asks.
-    await api.updateSettings(id, { contrast: 25 });
+    await api.updateSettings(id, { contrast: manual(25) });
     expect(store.currentSettings()!.values.contrast).toBe(0);
     api.emitEvent("settings_changed", { photo_id: id });
     await vi.waitFor(() => expect(store.currentSettings()!.values.contrast).toBe(25));

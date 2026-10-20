@@ -9,8 +9,12 @@ use common::{Sandbox, shape};
 use predicates::prelude::*;
 use serde_json::Value;
 
+/// The binary as it is, but with Apple Auto not available, as for every test of this crate
+/// (`common`).
 fn ym() -> Command {
-    cargo_bin_cmd!("ym")
+    let mut cmd = cargo_bin_cmd!("ym");
+    cmd.env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1);
+    cmd
 }
 
 #[test]
@@ -173,10 +177,11 @@ fn doctor_json_has_the_same_parts() {
 
 #[test]
 fn doctor_json_shape_snapshot_on_a_machine_with_no_adapter() {
-    // No Direct3D 12 here whatever the machine is, so the GPU section is the same everywhere.
+    // No Direct3D 12 here whatever the machine is, so the GPU section is the same everywhere; the
+    // test advisor of Apple Auto makes its section the same everywhere too.
     let sb = Sandbox::new();
     let out = sb
-        .ym()
+        .ym_fake()
         .env("WGPU_BACKEND", "dx12")
         .env_remove("YELLOWMOON_GPU")
         .args(["doctor", "--json"])

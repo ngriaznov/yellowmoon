@@ -2,7 +2,7 @@
 
 **Cinema colour for Sony raw files.**
 
-Yellowmoon is a free, open-source raw processor for macOS. Drop in ARW files from any Sony camera and every photo comes out developed, with the colour of a cinema camera: exposure, white balance, noise and colour are handled automatically. Pick a look, adjust a little if you want, export. Done. It's fast: everything after decoding runs on the Mac's graphics card through Metal, in the app and in the `ym` command-line tool, exports included.
+Yellowmoon is a free, open-source raw processor for macOS. Drop in ARW files from any Sony camera and every photo comes out developed, with the colour of a cinema camera: exposure, white balance, noise and colour are handled automatically. Pick a look, adjust a little if you want, export. Done. It's fast: everything after decoding runs on the Mac's graphics card, in the app and in the `ym` command-line tool, exports included. The GPU code is written for [wgpu](https://wgpu.rs), which runs it on Metal, not in Metal directly.
 
 ## Screenshots
 
@@ -15,7 +15,7 @@ Yellowmoon is a free, open-source raw processor for macOS. Drop in ARW files fro
 
 ![Export panel](docs/images/readme/photo-export.png)
 
-The screenshots are of the development build on Linux (`tools/readme`), in the dark glass interface; on a Mac the photo is drawn by a native Metal view.
+The screenshots are of the development build on Linux (`tools/readme`), in the dark glass interface; on a Mac the photo is drawn by a native view, a Metal layer that wgpu draws into.
 
 ## Sony's colour and Yellowmoon's
 
@@ -46,6 +46,7 @@ I don't intend to compete with existing raw processors or to replace any of them
 - Built-in looks, and a guided import of ARRI's free Look Library.
 - Exports JPEG, TIFF, PNG, and DNG with your look baked in.
 - A command-line tool, `ym`, with the same results as the app, for scripts and batch jobs.
+- On macOS 27 with Apple Intelligence, Auto can ask Apple's on-device model to fine-tune each photo (below).
 
 ## How the colour works
 
@@ -60,6 +61,26 @@ In short: estimate the light, translate what the Sony sensor recorded into what 
 
 The details, with every constant and gate, are in `docs/02-colour-pipeline.md`.
 
+## Auto with Apple Intelligence (macOS 27)
+
+On a Mac with Apple silicon, macOS 27 and Apple Intelligence turned on, Yellowmoon can ask Apple's on-device model to look at each photo and fine-tune four of Auto's values:
+
+- **Exposure:** a little brighter or darker than Yellowmoon's own Auto, by up to one stop.
+- **White:** the estimated white made a little warmer or cooler. The model never picks the Kelvin itself.
+- **Contrast** and **saturation**.
+
+How it behaves:
+
+- It is on by default where it is available: **Preferences › Auto with Apple Intelligence**. Turn it off to use Yellowmoon's own Auto, the same on every computer.
+- It runs on your Mac and sends nothing anywhere. Yellowmoon uses only the on-device model, never Apple's cloud models, and never uses its answers to train anything.
+- A photo appears at once with Yellowmoon's own Auto. When the answer arrives, a second or a few later, its Auto values and the picture update, and the Automatic card on the Look tab says what Apple Intelligence did. Exports wait for the answers.
+- Only values you leave on Auto change. Anything you set by hand stays as you set it.
+- Answers can differ between Macs and after macOS updates. Every export records which Auto made it and, for Apple's, the model and the macOS version that answered (`ym:Auto` and `ym:AppleAuto` in its metadata).
+- On other Macs (Intel, macOS 14 to 26, or Apple Intelligence off or still downloading its model) the setting is not shown and Auto works as before.
+- `ym` follows the same setting. `ym render --apple-auto off` (or `on`) overrides it for one run, and `ym doctor` says whether it is available on this Mac and, if not, why.
+
+This is a first version: how much each answer moves a photo is still being tuned. The details are in `docs/19-apple-auto.md`.
+
 ## Install
 
 Download the latest `.dmg` from [GitHub Releases](https://github.com/ngriaznov/yellowmoon/releases/latest), or use Homebrew:
@@ -69,7 +90,7 @@ brew tap ngriaznov/yellowmoon https://github.com/ngriaznov/yellowmoon
 brew install --cask yellowmoon
 ```
 
-Yellowmoon needs macOS 14 Sonoma or later, on Apple silicon or Intel.
+Yellowmoon needs macOS 14 Sonoma or later, on Apple silicon or Intel. Auto with Apple Intelligence needs macOS 27 on Apple silicon, with Apple Intelligence turned on in System Settings.
 
 Open the `.dmg` and drag Yellowmoon to Applications. The app updates itself: it checks for a new version every hour and installs it in the background; click **Update ready** at the top right to restart into it now, or it runs the next time you open Yellowmoon (Yellowmoon › Check for Updates… checks at once). Versions 0.1.x are test releases.
 
@@ -92,6 +113,7 @@ You only do this once. After that Yellowmoon opens like any other app, and the u
 ```
 ym render ~/Pictures/2026-10-04 --look neutral --format jpeg --long-edge 3000
 ym info DSC04204.ARW --json
+ym render DSC04204.ARW --apple-auto off      # Yellowmoon's own Auto, the same on every computer
 ym looks import ~/Downloads/<ARRI look package>.zip
 ```
 

@@ -62,7 +62,7 @@ pub use graph::{
     ComputeDevice, PhotoGraph, RawPrefetch, RenderOptions, RenderReport, Renderer, StageCounters,
     StageRuns, StageTimings,
 };
-pub use thumbs::{ChromaScatter, HistogramData, PhotoThumbnails};
+pub use thumbs::{AdvisorPictures, ChromaScatter, HistogramData, PhotoThumbnails};
 pub use viewport::{ViewportInput, ViewportMode, ViewportRect, ViewportState};
 
 /// Why a render failed. The text is for the person using the app: what went wrong and what to do.

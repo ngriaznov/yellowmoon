@@ -23,10 +23,19 @@ concurrency:
 
 jobs:
   app:
-    runs-on: macos-15
+    # The macOS 27 SDK, which Apple Auto's Swift bridge needs (docs/19 section 11), is only on GitHub's xcode-27 image
+    # (macOS 27, Apple silicon). The x86_64 half of a universal build gets the bridge's stub.
+    runs-on: xcode-27
     timeout-minutes: 120
     env:
       TARGET: ${{ inputs.target || 'universal' }}
+      # macOS 27's dyld refuses the proc-macro dylibs that Rust 1.97 builds in release with Cargo's default strip
+      # ("mis-aligned LINKEDIT string pool"; apple-bridge.yml shows it at every run), so nothing is stripped on this image.
+      CARGO_PROFILE_RELEASE_STRIP: "none"
+      CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP: "none"
+      # The app's minimumSystemVersion, for every binary: the sidecar ym is built by cargo, which would otherwise
+      # link it for rustc's default macOS 11.0 (docs/19 section 11, "The weak link").
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - uses: actions/checkout@v4
 

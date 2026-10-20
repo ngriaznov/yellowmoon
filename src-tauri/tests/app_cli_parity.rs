@@ -10,6 +10,9 @@
 //!   (the way `tools/dev/prepare-sidecar.sh` builds the app's sidecar), in a cargo invocation that shares nothing with this
 //!   one. `crates/ym-cli/tests/parity.rs` is the same comparison in one invocation, where both sides get the same features.
 //!
+//! Apple Auto (`docs/19`) is off on both sides: the app's core has no advisor and its mode is off, and `ym` runs with
+//! `--apple-auto off`, so the bytes are today's on every machine, a Mac with Apple Intelligence included.
+//!
 //! Headless: nothing here opens a window (no webview, no display; the Tauri runtime is not started). Without `YM_BIN` the
 //! test says so and passes, unless `YM_REQUIRE_PARITY_BIN` is set (the CI job sets it).
 //!
@@ -36,6 +39,7 @@ use std::time::Duration;
 
 use ym_core::app::gpu::{GpuPolicy, GpuSlot, open_gpu};
 use ym_core::app::{Core, CoreOptions};
+use ym_core::apple_auto::AppleAutoMode;
 use ym_core::export_queue::ExportJob;
 use ym_core::scheduler::MemoryBudget;
 use ym_core::session::{ApplyScope, OpenOptions};
@@ -212,6 +216,9 @@ fn export_both(
         .arg("render")
         .arg(arw)
         .args(case.flags)
+        // Apple Auto off on both sides (`docs/19` section 7): today's bytes on every machine, a Mac
+        // with Apple Intelligence included.
+        .args(["--apple-auto", "off"])
         // The CPU reference unless the leg says otherwise (`env` comes after and wins).
         .env("YELLOWMOON_GPU", "off")
         .envs(env.iter().copied())
@@ -263,6 +270,10 @@ fn open_core_on(arw: &Path, method: Method, slot: Option<&GpuSlot>) -> (Core, te
     let mut options = CoreOptions::new(data_dir(), app_home.path().to_path_buf());
     options.thumbnails = false;
     options.render.demosaic = method;
+    // Apple Auto off, as `ym --apple-auto off` (`docs/19` section 7): no advisor, and the mode off
+    // should one ever be given here.
+    options.advisor = None;
+    options.apple_auto = AppleAutoMode::Off;
     let core = Core::open(options).expect("core");
     if let Some(slot) = slot {
         core.attach_gpu(slot);
@@ -382,6 +393,7 @@ fn every_format_is_byte_identical_with_menon_forced_and_the_default_is_the_adapt
         let output = Command::new(&ym)
             .args(["render"])
             .arg(&arw)
+            .args(["--apple-auto", "off"])
             .args(["--format", "png", "--bits", "16", "--out"])
             .arg(&out)
             .env("YELLOWMOON_GPU", "off")

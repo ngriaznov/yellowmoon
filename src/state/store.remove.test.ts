@@ -169,7 +169,7 @@ describe("removing photos", () => {
 
   it("waits for the patches on their way to a photo before it takes the photo out, and shows no error", async () => {
     const { store } = await onPhotos();
-    const sent = store.update({ contrast: 25 }, false);
+    const sent = store.update({ contrast: { kind: "manual", value: 25 } }, false);
     const gone = store.removeCurrentPhoto();
     await Promise.all([sent, gone]);
     expect(store.getState().error).toBeNull();
@@ -240,7 +240,7 @@ describe("Undo", () => {
   it("brings the settings back exactly, and the undo steps with them", async () => {
     const { store } = await onPhotos();
     const edited = idOf(store);
-    await store.update({ exposure: { kind: "manual", ev: 0.8 }, contrast: 20 }, true);
+    await store.update({ exposure: { kind: "manual", ev: 0.8 }, contrast: { kind: "manual", value: 20 } }, true);
     const before = store.currentSettings();
     await store.removeCurrentPhoto();
     expect(store.getState().settings[edited]).toBeUndefined();
@@ -252,7 +252,7 @@ describe("Undo", () => {
     // The change made before the photo left can still be undone (⌘Z on the photo).
     expect(store.getState().canUndo).toBe(true);
     await store.undo();
-    expect(store.currentSettings()?.settings.contrast).toBe(0);
+    expect(store.currentSettings()?.settings.contrast).toEqual({ kind: "auto" });
     expect(store.currentSettings()?.auto.exposure).toBe(true);
   });
 
@@ -340,7 +340,7 @@ describe("⌘Z after a removal", () => {
   it("takes the removal back while nothing was changed since, and the photo's edits after that", async () => {
     const { store } = await onPhotos();
     const all = names(store);
-    await store.update({ contrast: 30 }, true);
+    await store.update({ contrast: { kind: "manual", value: 30 } }, true);
     expect(store.getState().canUndo).toBe(true);
     await store.setCurrent(ids(store)[1] as number);
     await store.removePhotos([ids(store)[1] as number]);
@@ -354,7 +354,7 @@ describe("⌘Z after a removal", () => {
     await store.setCurrent(ids(store)[0] as number);
     expect(store.getState().canUndo).toBe(true);
     await store.undo();
-    await vi.waitFor(() => expect(store.currentSettings()?.settings.contrast).toBe(0));
+    await vi.waitFor(() => expect(store.currentSettings()?.settings.contrast).toEqual({ kind: "auto" }));
   });
 
   it("undoes a change made after the removal first, then the removal", async () => {
@@ -364,15 +364,81 @@ describe("⌘Z after a removal", () => {
     await store.removePhotos([list[0] as number]);
     // A change on the photo now on screen, once its settings have arrived.
     await vi.waitFor(() => expect(store.currentSettings()).not.toBeNull());
-    await store.update({ contrast: 40 }, true);
-    expect(store.currentSettings()?.settings.contrast).toBe(40);
+    await store.update({ contrast: { kind: "manual", value: 40 } }, true);
+    expect(store.currentSettings()?.settings.contrast).toEqual({ kind: "manual", value: 40 });
     await store.undo();
-    expect(store.currentSettings()?.settings.contrast).toBe(0);
+    expect(store.currentSettings()?.settings.contrast).toEqual({ kind: "auto" });
     expect(names(store)).toHaveLength(11);
     expect(store.hasRemovalToUndo()).toBe(true);
     // Nothing is left to undo but the removal.
     expect(store.getState().canUndo).toBe(true);
     await store.undo();
     expect(names(store)).toEqual(all);
+  });
+});
+
+describe("the core's news about a photo that is being removed (Apple Auto's answers arrive all the time)", () => {
+  /** Holds every read of one photo's settings until the test lets it go; the others go through. */
+  function holdReadsOf(api: MockApi, photo: number): { held: () => number; resolve: (rs: unknown) => void; reject: (error: unknown) => void } {
+    const real = api.getSettings.bind(api);
+    const waiting: Array<{ resolve: (rs: unknown) => void; reject: (error: unknown) => void }> = [];
+    vi.spyOn(api, "getSettings").mockImplementation((id) =>
+      id === photo ? new Promise((resolve, reject) => waiting.push({ resolve: resolve as (rs: unknown) => void, reject })) : real(id),
+    );
+    return {
+      held: () => waiting.length,
+      resolve: (rs) => waiting.splice(0).forEach((w) => w.resolve(rs)),
+      reject: (error) => waiting.splice(0).forEach((w) => w.reject(error)),
+    };
+  }
+
+  it("a read of the settings that was on its way when the person removed the photo fails quietly", async () => {
+    const { api, store } = await onPhotos({ appleAuto: "answered" });
+    const victim = idOf(store);
+    const read = holdReadsOf(api, victim);
+    api.emitEvent("settings_changed", { photo_id: victim });
+    await vi.waitFor(() => expect(read.held()).toBe(1));
+
+    const removal = store.removePhotos([victim]);
+    // The core has removed the photo by the time it hears the question.
+    read.reject({ scope: "app", message: "That photo isn't open." });
+    await removal;
+    await vi.waitFor(() => expect(ids(store)).not.toContain(victim));
+    expect(store.getState().error).toBeNull();
+    expect(store.getState().settings[victim]).toBeUndefined();
+  });
+
+  it("a read that answers after the photo left is not put back into the mirror", async () => {
+    const { api, store } = await onPhotos({ appleAuto: "answered" });
+    const victim = idOf(store);
+    const rs = await api.getSettings(victim);
+    const read = holdReadsOf(api, victim);
+    api.emitEvent("settings_changed", { photo_id: victim });
+    await vi.waitFor(() => expect(read.held()).toBe(1));
+
+    await store.removePhotos([victim]);
+    read.resolve(rs);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(store.getState().settings[victim]).toBeUndefined();
+    expect(store.getState().error).toBeNull();
+  });
+
+  it("news that arrives while the removal is on its way is not read at all, and a removal the core refused reads again", async () => {
+    const { api, store } = await onPhotos({ appleAuto: "answered" });
+    const victim = idOf(store);
+    const spy = vi.spyOn(api, "getSettings");
+    // The core refuses the removal.
+    let refuse: (error: unknown) => void = () => {};
+    vi.spyOn(api, "removePhotos").mockImplementation(() => new Promise((_, reject) => (refuse = reject)));
+    const removal = store.removePhotos([victim]);
+    await vi.waitFor(() => expect(api.removePhotos).toHaveBeenCalled());
+    api.emitEvent("settings_changed", { photo_id: victim });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(spy).not.toHaveBeenCalledWith(victim);
+    refuse({ scope: "app", message: "Yellowmoon could not remove that photo." });
+    await removal;
+    // The photo is still here, and the news it missed is read now.
+    expect(ids(store)).toContain(victim);
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledWith(victim));
   });
 });

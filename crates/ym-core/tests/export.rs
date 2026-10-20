@@ -350,7 +350,7 @@ fn the_xmp_records_how_the_file_was_made() {
         &d.session,
         d.id,
         SettingsPatch {
-            saturation: Some(15.0),
+            saturation: Some(ym_core::settings::PercentSetting::manual_value(15.0)),
             ..SettingsPatch::exposure_ev(0.5)
         },
     );
@@ -414,8 +414,14 @@ fn the_xmp_records_how_the_file_was_made() {
             value,
             serde_json::to_value(photo.resolved.pinned_settings()).expect("json")
         );
-        assert_eq!(value["saturation"], 15.0);
+        assert_eq!(
+            value["saturation"],
+            serde_json::json!({ "kind": "manual", "value": 15.0 })
+        );
         assert_eq!(value["exposure"]["kind"], "manual");
+        // Which Auto made it (docs/19 section 9): the rule, and no Apple Auto property.
+        assert_eq!(xmp_property(&xmp, "ym:Auto").as_deref(), Some("rule"));
+        assert_eq!(xmp_property(&xmp, "ym:AppleAuto"), None);
     }
 }
 
@@ -492,7 +498,7 @@ fn exports_are_byte_identical_across_threads_contexts_and_processes() {
         &d.session,
         d.id,
         SettingsPatch {
-            contrast: Some(12.0),
+            contrast: Some(ym_core::settings::PercentSetting::manual_value(12.0)),
             ..crop_of(0.1, 0.1, 0.7, 0.6)
         },
     );

@@ -12,7 +12,8 @@ use ym_raw::layout::ChromaSubsampling;
 use ym_raw::testgen::{ArwBuilder, ContainerOnly, GpsSpec, Sr2Variant, gradient_mosaic, tiny_jpeg};
 
 /// The binary with the shipped data folder and an app folder that does not exist (`info` reads
-/// the preferences for the default look and writes nothing).
+/// the preferences for the default look and writes nothing), and Apple Auto not available, as for
+/// every test of this crate (`common`).
 fn ym() -> Command {
     let mut cmd = cargo_bin_cmd!("ym");
     cmd.env("YELLOWMOON_DATA", common::data_dir())
@@ -20,7 +21,8 @@ fn ym() -> Command {
             "YELLOWMOON_HOME",
             std::env::temp_dir().join("ym-cli-info-tests-no-such-home"),
         )
-        .env_remove("RUST_LOG");
+        .env_remove("RUST_LOG")
+        .env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1);
     cmd
 }
 
@@ -138,7 +140,13 @@ fn round_floats(v: &mut Value) {
 fn json_snapshot_of_a_synthetic_a7r_iv() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = a7r4(dir.path());
-    let assert = ym().args(["info", "--json"]).arg(&path).assert().success();
+    // Apple Auto off: the same object on every machine (where it is not available the reason
+    // differs between Linux, an Intel Mac and an Apple silicon Mac; `tests/apple_auto.rs`).
+    let assert = ym()
+        .args(["info", "--json", "--apple-auto", "off"])
+        .arg(&path)
+        .assert()
+        .success();
     let mut v = json_lines(&assert.get_output().stdout).remove(0);
     // The path differs per run and the JPEG encoder's output size may change with its version.
     v["input"] = Value::from("[path]");
@@ -576,6 +584,7 @@ fn a_reader_that_goes_away_ends_the_run_quietly() {
     let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin!("ym"))
         .args(["info", "--json"])
         .args(&files)
+        .env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

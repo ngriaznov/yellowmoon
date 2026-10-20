@@ -1,20 +1,23 @@
 //! Removing photos from the session (Remove from filmstrip) and putting them back (Undo): the filmstrip, the current
 //! photo, the jobs and events of the photos that left, the caches, the picks and settings that come back exactly, the
-//! estimates the remaining photos share, and the files on disk, which are never touched.
+//! estimates the remaining photos share, Apple Auto's answers (kept with a removed photo, not asked for while it is out),
+//! and the files on disk, which are never touched.
 
 mod common;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, SystemTime};
 
 use common::{GateThumbnails, Layout, Scene, base_env, light, session_with_events, settle};
+use ym_core::apple_auto::{AdvisorPicture, AppleAuto, AppleAutoMode, FakeAdvisor};
 use ym_core::auto::NoiseSource;
 use ym_core::session::{
-    EventSink, OpenOptions, PhotoId, PhotoStatus, Session, SessionError, SessionEvent,
+    AppleAutoEnv, EventSink, OpenOptions, PhotoId, PhotoStatus, PictureInput, PictureRenderer,
+    Session, SessionError, SessionEvent,
 };
-use ym_core::settings::SettingsPatch;
+use ym_core::settings::{PercentSetting, SettingsPatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -192,7 +195,7 @@ fn undo_puts_the_photos_back_where_they_were_with_their_settings_picks_and_estim
         .update_settings(
             ids[3],
             &SettingsPatch {
-                contrast: Some(25.0),
+                contrast: Some(PercentSetting::manual_value(25.0)),
                 look_intensity: Some(60.0),
                 ..Default::default()
             },
@@ -543,4 +546,115 @@ fn the_pooled_noise_of_the_photos_that_stay_is_that_of_a_session_without_the_oth
             "{id}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Apple Auto (`docs/19`), with the deterministic fake advisor
+// ---------------------------------------------------------------------------------------------
+
+/// A picture for every photo: flat mid grey, which the fake advisor answers (highlights -1, contrast +1, subtle teal shadows).
+struct GreyPictures;
+
+impl PictureRenderer for GreyPictures {
+    fn render(&self, _input: &PictureInput<'_>) -> Result<AdvisorPicture, String> {
+        Ok(AdvisorPicture {
+            width: 2,
+            height: 1,
+            rgb: vec![128; 6],
+        })
+    }
+}
+
+/// `n` photos `p0.ARW`, … opened into a session with the fake advisor, in `mode`, and developed.
+fn developed_with_apple(
+    n: usize,
+    mode: AppleAutoMode,
+) -> (tempfile::TempDir, Session, Vec<PhotoId>) {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..n {
+        write_plain(dir.path(), &format!("p{i}.ARW"), 0.2 + 0.05 * i as f64);
+    }
+    let (sink, _rx) = EventSink::channel();
+    let session = Session::new(base_env().with_events(sink).with_apple_auto(AppleAutoEnv {
+        mode,
+        ..AppleAutoEnv::new(Arc::new(FakeAdvisor), Arc::new(GreyPictures))
+    }));
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    settle(&session);
+    let ids = session.photo_ids();
+    assert_eq!(ids.len(), n);
+    (dir, session, ids)
+}
+
+fn answered(session: &Session, id: PhotoId) -> bool {
+    matches!(
+        session.estimates(id).map(|e| e.apple.clone()),
+        Some(AppleAuto::Answered { .. })
+    )
+}
+
+#[test]
+fn a_removed_photo_keeps_its_answer_for_undo_and_nobody_is_asked_again() {
+    let (_dir, session, ids) = developed_with_apple(3, AppleAutoMode::On);
+    assert_eq!(session.apple_auto_asks(), 3);
+    let before: Vec<_> = ids
+        .iter()
+        .map(|&id| {
+            (
+                session.estimates(id).unwrap(),
+                serde_json::to_value(session.settings(id).unwrap()).unwrap(),
+            )
+        })
+        .collect();
+    assert!(before.iter().all(|(e, _)| e.apple_steps.is_some()));
+
+    session.remove(&[ids[0], ids[2]]);
+    assert!(session.estimates(ids[0]).is_none() && session.estimates(ids[2]).is_none());
+    // Turning Apple Auto off and on while they are out asks only about the photos that are in the session.
+    session.set_apple_auto_mode(AppleAutoMode::Off);
+    session.set_apple_auto_mode(AppleAutoMode::On);
+    settle(&session);
+    assert_eq!(session.apple_auto_asks(), 3);
+
+    session.restore_removed();
+    settle(&session);
+    assert_eq!(
+        session.apple_auto_asks(),
+        3,
+        "the answers came back with the photos"
+    );
+    for (i, &id) in ids.iter().enumerate() {
+        assert_eq!(
+            session.estimates(id).unwrap().apple,
+            before[i].0.apple,
+            "{id}"
+        );
+        assert_eq!(
+            serde_json::to_value(session.settings(id).unwrap()).unwrap(),
+            before[i].1,
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn a_photo_removed_before_it_was_asked_is_asked_once_it_is_back() {
+    // Apple Auto is off while the photos develop: nobody has an answer, and the question waits for it to be on.
+    let (_dir, session, ids) = developed_with_apple(3, AppleAutoMode::Off);
+    assert_eq!(session.apple_auto_asks(), 0);
+    session.remove(&[ids[1]]);
+
+    session.set_apple_auto_mode(AppleAutoMode::On);
+    settle(&session);
+    assert_eq!(
+        session.apple_auto_asks(),
+        2,
+        "the photo that is out is not asked about"
+    );
+    assert!(answered(&session, ids[0]) && answered(&session, ids[2]));
+
+    session.restore_removed();
+    settle(&session);
+    assert_eq!(session.apple_auto_asks(), 3, "back in the queue, and asked");
+    assert!(answered(&session, ids[1]));
 }

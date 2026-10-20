@@ -19,9 +19,13 @@
 //!
 //! # Auto and Manual
 //!
-//! `exposure`, `white_balance`, `sharpen` and `noise_reduction` are [`AutoOr`]: `Auto` resolves
-//! against [`AutoEstimates`] when the photo is rendered, `Manual` is the user's value. A patch that
-//! carries a `Manual` value is what "moving a slider" sends; a patch that carries `Auto` is Reset.
+//! `exposure`, `contrast`, `highlights`, `shadows`, `black`, `white_balance`, `saturation`, the
+//! shadows and highlights colour-balance wheels, `sharpen` and `noise_reduction` are [`AutoOr`]:
+//! `Auto` resolves against [`AutoEstimates`] when the photo is rendered, `Manual` is the user's
+//! value. Auto contrast, highlights, shadows, black and saturation are 0, and the wheels `[0, 0]`,
+//! unless Apple Auto answered for the photo (`docs/19` section 5); a plain number (or point) in an
+//! older document reads as Manual, and 0 (or `[0, 0]`) as Auto. A patch that carries a `Manual`
+//! value is what "moving a slider" sends; a patch that carries `Auto` is Reset.
 //! [`ResolvedSettings`] answers what the panel shows: every `Auto` replaced by the number it
 //! resolves to, and which fields are still automatic (the AUTO and EDITED tags).
 //!
@@ -339,6 +343,75 @@ pub struct ExposureValue {
     pub ev: f64,
 }
 
+/// A manual contrast, highlights, shadows, black or saturation.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PercentValue {
+    /// -100 to 100.
+    pub value: f64,
+}
+
+/// `contrast`, `highlights`, `shadows`, `black` or `saturation`: Auto (0, or Apple Auto's value for
+/// the photo, `docs/19` section 5) or a manual value from -100 to 100. JSON: `{ "kind": "auto" }` or
+/// `{ "kind": "manual", "value": 12 }`; an older document may give a plain number, which reads as
+/// Manual with that value, except 0, which reads as Auto (0 was the default).
+pub type PercentSetting = AutoOr<PercentValue>;
+/// `contrast`: Auto or a manual value ([`PercentSetting`]).
+pub type ContrastSetting = PercentSetting;
+/// `saturation`: Auto or a manual value ([`PercentSetting`]).
+pub type SaturationSetting = PercentSetting;
+
+impl PercentSetting {
+    /// A manual value.
+    #[must_use]
+    pub fn manual_value(value: f64) -> Self {
+        Self::Manual(PercentValue { value })
+    }
+
+    /// The value in effect: the manual value, or `auto` (the photo's Auto value) while the setting is
+    /// Auto.
+    #[must_use]
+    pub fn resolve(&self, auto: f64) -> f64 {
+        match self {
+            Self::Auto => auto,
+            Self::Manual(m) => m.value,
+        }
+    }
+}
+
+/// Reads `contrast`, `highlights`, `shadows`, `black` or `saturation` from a settings document, the
+/// `ym:Settings` of a file or a golden manifest: the `AutoOr` form, or a plain number from a document
+/// written before Apple Auto (or, for highlights, shadows and black, before its prompt version 2),
+/// which reads as Manual with that value, except 0, which reads as Auto ([`percent_from_value`]).
+fn percent_document<'de, D>(d: D) -> Result<PercentSetting, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(d)?;
+    percent_from_value(value).map_err(serde::de::Error::custom)
+}
+
+/// As [`percent_document`] for a patch: a field that is absent or `null` is no change (`None`).
+fn percent_patch<'de, D>(d: D) -> Result<Option<PercentSetting>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<serde_json::Value>::deserialize(d)?
+        .map(|value| percent_from_value(value).map_err(serde::de::Error::custom))
+        .transpose()
+}
+
+/// The setting of one JSON value: a number is the old form (0 is Auto, any other number Manual; one
+/// out of range is clamped later like any manual value), an object the `AutoOr` form (`{ "kind": ...
+/// }`, unknown fields refused).
+fn percent_from_value(value: serde_json::Value) -> Result<PercentSetting, String> {
+    match value.as_f64() {
+        Some(0.0) => Ok(AutoOr::Auto),
+        Some(v) => Ok(PercentSetting::manual_value(v)),
+        None => serde_json::from_value(value).map_err(|e| e.to_string()),
+    }
+}
+
 /// A manual white balance.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -440,10 +513,100 @@ impl NoiseReductionSetting {
 /// A point in the colour-balance disc: `[a, b]`, each within the unit disc.
 pub type ColorBalancePoint = [f64; 2];
 
-/// Colour balance wheels (shadows, midtones, highlights); each point is `[0, 0]` by default.
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+/// A manual shadows or highlights wheel.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BalanceValue {
+    /// The point `[a, b]` in the unit disc.
+    pub point: ColorBalancePoint,
+}
+
+/// The shadows or highlights colour-balance wheel: Auto (`[0, 0]`, or the colour Apple Auto gave
+/// that zone, `docs/19` section 5) or a manual point. JSON: `{ "kind": "auto" }` or
+/// `{ "kind": "manual", "point": [0.1, -0.2] }`; an older document may give a plain point, which
+/// reads as Manual at that point, except `[0, 0]`, which reads as Auto (the centre was the default).
+pub type BalanceSetting = AutoOr<BalanceValue>;
+
+impl BalanceSetting {
+    /// A manual point.
+    #[must_use]
+    pub fn manual_point(point: ColorBalancePoint) -> Self {
+        Self::Manual(BalanceValue { point })
+    }
+
+    /// The point in effect: the manual point, or `auto` (the photo's Auto point) while Auto.
+    #[must_use]
+    pub fn resolve(&self, auto: ColorBalancePoint) -> ColorBalancePoint {
+        match self {
+            Self::Auto => auto,
+            Self::Manual(m) => m.point,
+        }
+    }
+}
+
+/// Reads a shadows or highlights wheel from a settings document: the `AutoOr` form, or a plain
+/// point from a document written before Apple Auto's prompt version 2 ([`balance_from_value`]).
+fn balance_document<'de, D>(d: D) -> Result<BalanceSetting, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(d)?;
+    balance_from_value(value).map_err(serde::de::Error::custom)
+}
+
+/// As [`balance_document`] for a patch: a field that is absent or `null` is no change (`None`).
+fn balance_patch<'de, D>(d: D) -> Result<Option<BalanceSetting>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<serde_json::Value>::deserialize(d)?
+        .map(|value| balance_from_value(value).map_err(serde::de::Error::custom))
+        .transpose()
+}
+
+/// The wheel of one JSON value: an array is the old form (`[0, 0]` is Auto, any other point Manual;
+/// one outside the disc is scaled back later like any manual point), an object the `AutoOr` form.
+fn balance_from_value(value: serde_json::Value) -> Result<BalanceSetting, String> {
+    if value.is_array() {
+        let point: ColorBalancePoint = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        return Ok(if point == [0.0, 0.0] {
+            AutoOr::Auto
+        } else {
+            BalanceSetting::manual_point(point)
+        });
+    }
+    serde_json::from_value(value).map_err(|e| e.to_string())
+}
+
+/// Colour balance wheels (shadows, midtones, highlights). The shadows and highlights wheels are
+/// Auto or a manual point ([`BalanceSetting`], Auto by default); the midtones wheel is a plain point,
+/// `[0, 0]` by default.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ColorBalance {
+    /// The shadows wheel: Auto or a point.
+    #[serde(deserialize_with = "balance_document")]
+    pub shadows: BalanceSetting,
+    /// The midtones wheel.
+    pub midtones: ColorBalancePoint,
+    /// The highlights wheel: Auto or a point.
+    #[serde(deserialize_with = "balance_document")]
+    pub highlights: BalanceSetting,
+}
+
+impl Default for ColorBalance {
+    fn default() -> Self {
+        Self {
+            shadows: AutoOr::Auto,
+            midtones: [0.0, 0.0],
+            highlights: AutoOr::Auto,
+        }
+    }
+}
+
+/// The three wheels' points in effect ([`ResolvedValues::color_balance`]).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct ColorBalancePoints {
     /// The shadows wheel.
     pub shadows: ColorBalancePoint,
     /// The midtones wheel.
@@ -802,15 +965,21 @@ pub struct DevelopSettings {
     pub look_intensity: f64,
     /// Light › Exposure: Auto or an absolute value, -4 to +4 EV.
     pub exposure: ExposureSetting,
-    /// Light › Exposure and Look › Tone, -100 to 100: a tone curve on the luma about mid grey that
-    /// keeps black and the top code value (docs/02 C9).
-    pub contrast: f64,
+    /// Light › Exposure and Look › Tone: Auto (0, or Apple Auto's contrast, `docs/19` section 5) or a
+    /// manual value, -100 to 100: a tone curve on the luma about mid grey that keeps black and the top
+    /// code value (docs/02 C9). Auto is the default; a plain number in an older document reads as
+    /// Manual with that value, and 0 as Auto.
+    #[serde(deserialize_with = "percent_document")]
+    pub contrast: ContrastSetting,
     /// -100 to 100.
     pub brightness: f64,
-    /// Light › High dynamic range, -100 to 100.
-    pub highlights: f64,
-    /// -100 to 100.
-    pub shadows: f64,
+    /// Light › High dynamic range: Auto (0, or Apple Auto's highlights, `docs/19` section 5) or a
+    /// manual value, -100 to 100. Read like `contrast`.
+    #[serde(deserialize_with = "percent_document")]
+    pub highlights: PercentSetting,
+    /// Auto (0, or Apple Auto's shadows) or a manual value, -100 to 100. Read like `contrast`.
+    #[serde(deserialize_with = "percent_document")]
+    pub shadows: PercentSetting,
     /// -100 to 100.
     pub white: f64,
     /// Light › White lift: stops added to the automatic white lift (`docs/02` C12 step 1b), -3 to +3,
@@ -818,17 +987,21 @@ pub struct DevelopSettings {
     /// lift. A plain number, not Auto; a settings document without the field reads as 0. The lift
     /// works alongside RAW › Range ([`DevelopSettings::rolloff`], C7), after it in the chain.
     pub white_offset_ev: f64,
-    /// -100 to 100.
-    pub black: f64,
+    /// Auto (0, or Apple Auto's black level) or a manual value, -100 to 100. Read like `contrast`.
+    #[serde(deserialize_with = "percent_document")]
+    pub black: PercentSetting,
     /// Colour › White balance, the light presets.
     pub light_source: LightSource,
     /// Colour › White balance: Auto or Kelvin and tint (the Kelvin also as Look › Tone › Temperature).
     pub white_balance: WhiteBalanceSetting,
-    /// The three colour-balance wheels.
+    /// The three colour-balance wheels; the shadows and highlights wheels are Auto (`[0, 0]`, or the
+    /// colour Apple Auto gave that zone) or a point.
     pub color_balance: ColorBalance,
-    /// Colour › Colour balance and Look › Tone, -100 to 100; the chroma scaled about the luminance,
-    /// which stays (docs/02 C9).
-    pub saturation: f64,
+    /// Colour › Colour balance and Look › Tone: Auto (0, or Apple Auto's saturation, `docs/19` section
+    /// 5) or a manual value, -100 to 100; the chroma scaled about the luminance, which stays (docs/02
+    /// C9). Read like `contrast`.
+    #[serde(deserialize_with = "percent_document")]
+    pub saturation: SaturationSetting,
     /// Colour › Colour warp: the pins of stage C9b (docs/02); none by default.
     pub color_warp: ColorWarp,
     /// Detail › Sharpening: Auto or amount and radius.
@@ -875,17 +1048,17 @@ impl DevelopSettings {
             look,
             look_intensity: 100.0,
             exposure: AutoOr::Auto,
-            contrast: 0.0,
+            contrast: AutoOr::Auto,
             brightness: 0.0,
-            highlights: 0.0,
-            shadows: 0.0,
+            highlights: AutoOr::Auto,
+            shadows: AutoOr::Auto,
             white: 0.0,
             white_offset_ev: 0.0,
-            black: 0.0,
+            black: AutoOr::Auto,
             light_source: LightSource::Auto,
             white_balance: AutoOr::Auto,
             color_balance: ColorBalance::default(),
-            saturation: 0.0,
+            saturation: AutoOr::Auto,
             color_warp: ColorWarp::default(),
             sharpen: AutoOr::Auto,
             output_sharpening: OUTPUT_SHARPENING_DEFAULT,
@@ -971,9 +1144,25 @@ impl DevelopSettings {
 
     /// What "Re-run" on the Automatic card resets: exposure, white balance (the light preset, the
     /// Kelvin and tint and a picked white) and noise reduction go back to Auto, and the white lift's
-    /// offset (the Automatic card's White row) back to 0, the automatic amount.
-    pub fn reset_automatic(&mut self) {
+    /// offset (the Automatic card's White row) back to 0, the automatic amount. The values Apple
+    /// Auto sets besides those (highlights, shadows, black, contrast, saturation and the shadows and
+    /// highlights wheels) go back to Auto only when `apple_auto` says Apple Auto acts on the photo
+    /// (its state is pending, answered or failed: the card then shows their rows,
+    /// [`AppleAuto::acts`]); otherwise they stay as they are, as before Apple Auto (`docs/19`
+    /// section 5).
+    ///
+    /// [`AppleAuto::acts`]: crate::apple_auto::AppleAuto::acts
+    pub fn reset_automatic(&mut self, apple_auto: bool) {
         self.exposure = AutoOr::Auto;
+        if apple_auto {
+            self.contrast = AutoOr::Auto;
+            self.saturation = AutoOr::Auto;
+            self.highlights = AutoOr::Auto;
+            self.shadows = AutoOr::Auto;
+            self.black = AutoOr::Auto;
+            self.color_balance.shadows = AutoOr::Auto;
+            self.color_balance.highlights = AutoOr::Auto;
+        }
         self.light_source = LightSource::Auto;
         self.white_balance = AutoOr::Auto;
         self.white_pick = None;
@@ -1044,12 +1233,12 @@ impl DevelopSettings {
         let (v, c) = clamp_to("look_intensity", self.look_intensity, LOOK_INTENSITY_RANGE)?;
         self.look_intensity = v;
         note(SettingsField::LookIntensity, c);
-        for (name, field, value) in [
+        for (name, field, setting) in [
             ("contrast", SettingsField::Contrast, &mut self.contrast),
             (
-                "brightness",
-                SettingsField::Brightness,
-                &mut self.brightness,
+                "saturation",
+                SettingsField::Saturation,
+                &mut self.saturation,
             ),
             (
                 "highlights",
@@ -1057,13 +1246,21 @@ impl DevelopSettings {
                 &mut self.highlights,
             ),
             ("shadows", SettingsField::Shadows, &mut self.shadows),
-            ("white", SettingsField::White, &mut self.white),
             ("black", SettingsField::Black, &mut self.black),
+        ] {
+            if let AutoOr::Manual(m) = setting {
+                let (v, c) = clamp_to(name, m.value, PERCENT_RANGE)?;
+                m.value = v;
+                note(field, c);
+            }
+        }
+        for (name, field, value) in [
             (
-                "saturation",
-                SettingsField::Saturation,
-                &mut self.saturation,
+                "brightness",
+                SettingsField::Brightness,
+                &mut self.brightness,
             ),
+            ("white", SettingsField::White, &mut self.white),
         ] {
             let (v, c) = clamp_to(name, *value, PERCENT_RANGE)?;
             *value = v;
@@ -1114,14 +1311,16 @@ impl DevelopSettings {
             note(SettingsField::NoiseReduction, changed);
         }
         let mut changed = false;
-        for (name, point) in [
-            ("color_balance.shadows", &mut self.color_balance.shadows),
-            ("color_balance.midtones", &mut self.color_balance.midtones),
-            (
-                "color_balance.highlights",
-                &mut self.color_balance.highlights,
-            ),
-        ] {
+        let cb = &mut self.color_balance;
+        let mut points: Vec<(&'static str, &mut ColorBalancePoint)> =
+            vec![("color_balance.midtones", &mut cb.midtones)];
+        if let AutoOr::Manual(m) = &mut cb.shadows {
+            points.push(("color_balance.shadows", &mut m.point));
+        }
+        if let AutoOr::Manual(m) = &mut cb.highlights {
+            points.push(("color_balance.highlights", &mut m.point));
+        }
+        for (name, point) in points {
             let (p, c) = clamp_to_disc(name, *point)?;
             *point = p;
             changed |= c;
@@ -1386,19 +1585,28 @@ pub struct RolloffPatch {
     pub low_light: Option<f64>,
 }
 
-/// Colour-balance wheels to change.
+/// Colour-balance wheels to change. The shadows and highlights wheels take Auto (Reset) or Manual
+/// with a point; a plain point reads as Manual at that point, and `[0, 0]` as Auto.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ColorBalancePatch {
     /// New shadows wheel.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shadows: Option<ColorBalancePoint>,
+    #[serde(
+        default,
+        deserialize_with = "balance_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub shadows: Option<BalanceSetting>,
     /// New midtones wheel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub midtones: Option<ColorBalancePoint>,
     /// New highlights wheel.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub highlights: Option<ColorBalancePoint>,
+    #[serde(
+        default,
+        deserialize_with = "balance_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub highlights: Option<BalanceSetting>,
 }
 
 /// Curves to replace; the others stay as they are.
@@ -1439,27 +1647,45 @@ pub struct SettingsPatch {
     /// New exposure (Manual to set it, Auto to reset it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exposure: Option<ExposureSetting>,
-    /// New contrast.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contrast: Option<f64>,
+    /// New contrast: Auto (Reset), or Manual with its value. A plain number reads as Manual with that
+    /// value, and 0 as Auto.
+    #[serde(
+        default,
+        deserialize_with = "percent_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub contrast: Option<ContrastSetting>,
     /// New brightness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brightness: Option<f64>,
-    /// New highlights.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub highlights: Option<f64>,
-    /// New shadows.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shadows: Option<f64>,
+    /// New highlights: Auto (Reset), or Manual with its value. A plain number reads as Manual with
+    /// that value, and 0 as Auto.
+    #[serde(
+        default,
+        deserialize_with = "percent_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub highlights: Option<PercentSetting>,
+    /// New shadows, read like `highlights`.
+    #[serde(
+        default,
+        deserialize_with = "percent_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub shadows: Option<PercentSetting>,
     /// New white.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub white: Option<f64>,
     /// New white lift offset, stops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub white_offset_ev: Option<f64>,
-    /// New black.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub black: Option<f64>,
+    /// New black, read like `highlights`.
+    #[serde(
+        default,
+        deserialize_with = "percent_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub black: Option<PercentSetting>,
     /// New light preset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub light_source: Option<LightSource>,
@@ -1469,9 +1695,14 @@ pub struct SettingsPatch {
     /// Colour-balance wheels to change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_balance: Option<ColorBalancePatch>,
-    /// New saturation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub saturation: Option<f64>,
+    /// New saturation: Auto (Reset), or Manual with its value. A plain number reads as Manual with
+    /// that value, and 0 as Auto.
+    #[serde(
+        default,
+        deserialize_with = "percent_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub saturation: Option<SaturationSetting>,
     /// New colour warp: the whole list of pins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_warp: Option<ColorWarp>,
@@ -1751,8 +1982,9 @@ impl SettingsPatch {
     /// settings): every field of the photo's settings but [`COPY_LEAVES_OUT`], which belong to
     /// the photo's own geometry and pixels (the crop and the turn, and the point of Pick white).
     ///
-    /// * Auto stays Auto (exposure, light preset, white balance, sharpening, noise reduction): each
-    ///   photo gets its own automatic values. Manual values are taken as they are, and so is the
+    /// * Auto stays Auto (exposure, contrast, highlights, shadows, black, light preset, white balance,
+    ///   the shadows and highlights wheels, saturation, sharpening, noise reduction): each photo gets
+    ///   its own automatic values (with Apple Auto, its own answer). Manual values are taken as they are, and so is the
     ///   white lift's offset (a number of stops added to each photo's own automatic amount).
     /// * A white balance that came from a picked white (a white picked, the light preset and the
     ///   white balance both Auto) becomes a manual white balance at the Kelvin and tint the pick
@@ -2038,6 +2270,20 @@ fn patch_touches(p: &SettingsPatch, field: SettingsField) -> bool {
 pub struct AutoFlags {
     /// `exposure` is Auto.
     pub exposure: bool,
+    /// `contrast` is Auto.
+    pub contrast: bool,
+    /// `highlights` is Auto.
+    pub highlights: bool,
+    /// `shadows` is Auto.
+    pub shadows: bool,
+    /// `black` is Auto.
+    pub black: bool,
+    /// The shadows colour-balance wheel is Auto.
+    pub balance_shadows: bool,
+    /// The highlights colour-balance wheel is Auto.
+    pub balance_highlights: bool,
+    /// `saturation` is Auto.
+    pub saturation: bool,
     /// `light_source` is Auto.
     pub light_source: bool,
     /// `white_balance` is Auto.
@@ -2057,13 +2303,14 @@ pub struct ResolvedValues {
     pub look_intensity: f64,
     /// The exposure in stops (`EV_auto` while `exposure` is Auto).
     pub exposure_ev: f64,
-    /// `contrast`.
+    /// The contrast in effect: the manual value, or the photo's Auto contrast while `contrast` is Auto
+    /// (0 without Apple Auto, `docs/19` section 5).
     pub contrast: f64,
     /// `brightness`.
     pub brightness: f64,
-    /// `highlights`.
+    /// The highlights in effect: the manual value, or the photo's Auto value (0 without Apple Auto).
     pub highlights: f64,
-    /// `shadows`.
+    /// The shadows in effect, as `highlights`.
     pub shadows: f64,
     /// `white`.
     pub white: f64,
@@ -2072,7 +2319,7 @@ pub struct ResolvedValues {
     /// The white lift in effect in stops: the automatic amount plus `white_offset_ev`, never below 0
     /// (`docs/02` C12 step 1b).
     pub white_ev: f64,
-    /// `black`.
+    /// The black in effect, as `highlights`.
     pub black: f64,
     /// `light_source`.
     pub light_source: LightSource,
@@ -2081,9 +2328,11 @@ pub struct ResolvedValues {
     pub kelvin: f64,
     /// The tint the White balance row shows.
     pub tint: f64,
-    /// `color_balance`.
-    pub color_balance: ColorBalance,
-    /// `saturation`.
+    /// The wheels' points in effect: the manual points, or the photo's Auto points (`[0, 0]` without
+    /// Apple Auto) for the shadows and highlights wheels while they are Auto.
+    pub color_balance: ColorBalancePoints,
+    /// The saturation in effect: the manual value, or the photo's Auto saturation while `saturation` is
+    /// Auto (0 without Apple Auto).
     pub saturation: f64,
     /// `color_warp`.
     pub color_warp: ColorWarp,
@@ -2153,19 +2402,29 @@ impl ResolvedSettings {
             look: settings.look.clone(),
             look_intensity: settings.look_intensity,
             exposure_ev: chain.exposure_ev(),
-            contrast: settings.contrast,
+            contrast: settings.contrast.resolve(estimates.contrast),
             brightness: settings.brightness,
-            highlights: settings.highlights,
-            shadows: settings.shadows,
+            highlights: settings.highlights.resolve(estimates.highlights),
+            shadows: settings.shadows.resolve(estimates.shadows),
             white: settings.white,
             white_offset_ev: settings.white_offset_ev,
             white_ev: estimates.white.lift(settings.white_offset_ev).amount_ev(),
-            black: settings.black,
+            black: settings.black.resolve(estimates.black),
             light_source: settings.light_source,
             kelvin: kelvin_k,
             tint,
-            color_balance: settings.color_balance,
-            saturation: settings.saturation,
+            color_balance: ColorBalancePoints {
+                shadows: settings
+                    .color_balance
+                    .shadows
+                    .resolve(estimates.balance_shadows),
+                midtones: settings.color_balance.midtones,
+                highlights: settings
+                    .color_balance
+                    .highlights
+                    .resolve(estimates.balance_highlights),
+            },
+            saturation: settings.saturation.resolve(estimates.saturation),
             color_warp: settings.color_warp.clone(),
             sharpen: settings.sharpen.manual().copied().unwrap_or(auto_sharpen),
             output_sharpening: settings.output_sharpening,
@@ -2187,6 +2446,13 @@ impl ResolvedSettings {
             values,
             auto: AutoFlags {
                 exposure: settings.exposure.is_auto(),
+                contrast: settings.contrast.is_auto(),
+                highlights: settings.highlights.is_auto(),
+                shadows: settings.shadows.is_auto(),
+                black: settings.black.is_auto(),
+                balance_shadows: settings.color_balance.shadows.is_auto(),
+                balance_highlights: settings.color_balance.highlights.is_auto(),
+                saturation: settings.saturation.is_auto(),
                 light_source: settings.light_source == LightSource::Auto,
                 white_balance: settings.white_balance.is_auto(),
                 sharpen: settings.sharpen.is_auto(),
@@ -2210,9 +2476,10 @@ impl ResolvedSettings {
 
     /// The settings as an export records them (`ym:Settings`, the CLI's `settings` object).
     ///
-    /// Exposure, sharpening and noise reduction that are Auto are written as the manual values
-    /// they resolved to: a Manual value renders exactly like the Auto it came from, and the file
-    /// then says which numbers were used. White balance is left as it is: a manual white balance
+    /// Exposure, contrast, highlights, shadows, black, saturation, the shadows and highlights wheels,
+    /// sharpening and noise reduction that are Auto are written as the manual values they resolved to: a Manual value renders exactly like the Auto it came from, and
+    /// the file then says which numbers were used (which Auto chose them is in `ym:Auto` and
+    /// `ym:AppleAuto`, `docs/19` section 9). White balance is left as it is: a manual white balance
     /// at the Kelvin and tint shown does *not* render like Auto (the tint scales the green gain,
     /// and Kelvin is rounded to 50 K), so an Auto white balance stays Auto here and the numbers it
     /// resolved to are in the `auto` object of the CLI output.
@@ -2221,6 +2488,35 @@ impl ResolvedSettings {
         let mut s = self.settings.clone();
         if s.exposure.is_auto() {
             s.exposure = ExposureSetting::manual_ev(self.values.exposure_ev);
+        }
+        if s.contrast.is_auto() {
+            s.contrast = PercentSetting::manual_value(self.values.contrast);
+        }
+        if s.saturation.is_auto() {
+            s.saturation = PercentSetting::manual_value(self.values.saturation);
+        }
+        for (setting, value) in [
+            (&mut s.highlights, self.values.highlights),
+            (&mut s.shadows, self.values.shadows),
+            (&mut s.black, self.values.black),
+        ] {
+            if setting.is_auto() {
+                *setting = PercentSetting::manual_value(value);
+            }
+        }
+        for (setting, point) in [
+            (
+                &mut s.color_balance.shadows,
+                self.values.color_balance.shadows,
+            ),
+            (
+                &mut s.color_balance.highlights,
+                self.values.color_balance.highlights,
+            ),
+        ] {
+            if setting.is_auto() {
+                *setting = BalanceSetting::manual_point(point);
+            }
         }
         if s.sharpen.is_auto() {
             s.sharpen = AutoOr::Manual(self.values.sharpen);

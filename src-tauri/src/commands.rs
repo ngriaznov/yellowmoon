@@ -16,12 +16,12 @@ use tauri_specta::{Builder, collect_commands, collect_events};
 use crate::api::AppApi;
 use crate::system;
 use crate::wire::{
-    self, AppError, AppInfo, ApplyScope, ChromaSample, ChromaScatter, CliLinkResult, CliLinkStatus,
-    DisplayLut, ErrorScope, ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId,
-    LookInput, LooksImportResult, MenuState, Num, OpenKind, PasteReport, PhotoId, PixelSample,
-    Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
-    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
-    WatchStatus,
+    self, AppError, AppInfo, AppleAutoStatus, ApplyScope, ChromaSample, ChromaScatter,
+    CliLinkResult, CliLinkStatus, DisplayLut, ErrorScope, ExportEstimate, ExportJob, ExportJobId,
+    HistogramData, Look, LookId, LookInput, LooksImportResult, MenuState, Num, OpenKind,
+    PasteReport, PhotoId, PixelSample, Preferences, PreferencesPatch, ResolvedSettings,
+    SessionChange, SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo,
+    ViewportInput, ViewportMode, ViewportRect, WatchStatus,
 };
 
 /// The managed state: the command handlers, or why the application could not start.
@@ -605,6 +605,14 @@ pub async fn preferences_set(
     run(&state, move |api| api.preferences_set(&patch)).await
 }
 
+/// `apple_auto_status()`: whether Apple Auto is available on this computer (read again now) and
+/// whether it acts; Preferences asks when it opens (`docs/19` sections 1 and 2).
+#[tauri::command]
+#[specta::specta]
+pub async fn apple_auto_status(state: State<'_, AppState>) -> Result<AppleAutoStatus, AppError> {
+    run(&state, |api| api.apple_auto_status()).await
+}
+
 /// `install_cli_link()`: the "Install Command-Line Tool…" menu item.
 #[tauri::command]
 #[specta::specta]
@@ -685,6 +693,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             trash_path,
             preferences_get,
             preferences_set,
+            apple_auto_status,
             install_cli_link,
             cli_link_status,
             app_info,
@@ -740,6 +749,7 @@ mod tests {
                 export_busy,
                 looks_recognise,
                 preferences_get,
+                apple_auto_status,
                 app_info,
             ])
             .manage(state)
@@ -858,16 +868,54 @@ mod tests {
             assert!(copied.get(left_out).is_none(), "{left_out} is not copied");
         }
         assert_eq!(copied["white_balance"], json!({ "kind": "auto" }));
+        // Contrast is Auto or a manual value (`docs/19` section 5); the step says which.
         let pasted = call(
             &window,
             "paste_settings",
-            json!({ "photoIds": [id, 9999], "patch": { "contrast": 33 } }),
+            json!({ "photoIds": [id, 9999], "patch": { "contrast": { "kind": "manual", "value": 33 } } }),
         )
         .expect("paste_settings");
         assert_eq!(pasted["skipped"], json!([9999]));
         assert_eq!(pasted["pasted"][0]["id"], json!(id));
-        assert_eq!(pasted["pasted"][0]["before"], json!({ "contrast": 0.0 }));
-        assert_eq!(pasted["pasted"][0]["after"], json!({ "contrast": 33.0 }));
+        assert_eq!(
+            pasted["pasted"][0]["before"],
+            json!({ "contrast": { "kind": "auto" } })
+        );
+        assert_eq!(
+            pasted["pasted"][0]["after"],
+            json!({ "contrast": { "kind": "manual", "value": 33.0 } })
+        );
+        // The older plain number still reads: 0 is Auto, any other number Manual.
+        let plain = call(
+            &window,
+            "update_settings",
+            json!({ "photoId": id, "patch": { "contrast": 0, "saturation": -12 } }),
+        )
+        .expect("a plain number");
+        assert_eq!(plain["settings"]["contrast"], json!({ "kind": "auto" }));
+        assert_eq!(
+            plain["settings"]["saturation"],
+            json!({ "kind": "manual", "value": -12.0 })
+        );
+        assert_eq!(plain["auto"]["contrast"], json!(true));
+        assert_eq!(plain["auto"]["saturation"], json!(false));
+        assert_eq!(plain["values"]["saturation"], json!(-12.0));
+        // Without an advisor Apple Auto is off: the rule's 0, and the photo says so.
+        assert_eq!(plain["estimates"]["contrast"], json!(0.0));
+        assert_eq!(plain["estimates"]["source"], json!("rule"));
+        assert_eq!(plain["estimates"]["apple"], json!({ "state": "off" }));
+        assert_eq!(
+            call(&window, "apple_auto_status", json!({})).expect("apple_auto_status"),
+            json!({
+                "available": false, "reason": null, "info": null, "preference": true,
+                "mode": "from_preference", "active": false, "prompt": 2, "table": 2,
+                "instructions": "default",
+                "instructions_sha256": ym_core::apple_auto::InstructionsId::default().instructions_sha256,
+                "own_instructions": "",
+                "default_instructions": ym_core::apple_auto::DEFAULT_INSTRUCTIONS,
+                "instructions_max_chars": 2000
+            })
+        );
         let err = call(&window, "copy_settings", json!({ "photoId": 9999 })).expect_err("unknown");
         assert_eq!(err["scope"], json!("open"));
         assert!(
@@ -926,6 +974,7 @@ mod tests {
         for cmd in [
             "session_state",
             "preferences_get",
+            "apple_auto_status",
             "app_info",
             "export_busy",
         ] {

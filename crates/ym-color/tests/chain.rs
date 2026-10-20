@@ -243,6 +243,8 @@ fn the_matrix_is_the_documented_product_for_random_pixels() {
                 exposure_ev: 0.0,
                 picked_white: None,
                 white_scale: [1.0; 3],
+                white_shift_mired: 0.0,
+                tint_shift: 0.0,
             },
         ] {
             let chain = FusedChain::build(p.tables(), &estimate, w_init, &settings).unwrap();
@@ -627,6 +629,8 @@ fn a_pick_is_replaced_by_day_shade_and_tungsten_but_kept_by_led_and_fluorescent(
                     exposure_ev: 0.0,
                     picked_white: Some(sample),
                     white_scale: [1.0; 3],
+                    white_shift_mired: 0.0,
+                    tint_shift: 0.0,
                 },
             )
             .unwrap()
@@ -927,6 +931,8 @@ fn color_estimates_resolve_exposure_and_build_the_metering_chain() {
         w_scene_initial: scene.w_scene,
         white_scale: [1.0; 3],
         ev_auto: 0.75,
+        white_shift_mired: 0.0,
+        tint_shift: 0.0,
     };
     let auto = estimates
         .chain(

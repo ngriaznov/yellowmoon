@@ -51,6 +51,8 @@ Embed an ICC profile in every JPEG, TIFF and PNG: sRGB IEC61966-2.1, Display P3,
 | `ym:Look`, `ym:LookSHA256`, `ym:LookIntensity` | `arri:3000:…`, `…`, `100` |
 | `ym:DisplayTransform` | `aces2-sdr100-p3lim` or `arri-display:…` |
 | `ym:Models` | `jdd 1.2.0 (sha256…)` |
+| `ym:Auto` | `rule` or `apple`: which Auto made the photo's automatic values (`docs/19` section 9; `apple` when they came from an Apple Auto answer, the photo's or its burst's, even if the user then set all four by hand) |
+| `ym:AppleAuto` | only when Apple Auto was on for the photo: compact JSON, keys sorted, `{"model":"AFM 3 Core","os":"27.0.1 (27A404)","prompt":1,"result":"answered","scene":"…","steps":{"contrast":1,"exposure":1,"saturation":0,"white":-1},"table":1}`, or `"result":"failed"` with `"reason"` (`timeout`, `rate_limited`, …) and no steps |
 | `ym:Settings` | compact JSON of the resolved DevelopSettings |
 
 - No sidecars. Nothing is written anywhere except the exported file.
@@ -189,7 +191,7 @@ Crate `ym-export`. It depends on `ym-color` only (not on `ym-raw` or `ym-core`):
 
 **EXIF (`exif.rs`).** Built from `ExifInfo` (make, model, lens make and model, exposure time, f-number, ISO, focal length and 35 mm equivalent, exposure compensation, capture time with sub-seconds and UTC offset, optional GPS), never copied from the source: orientation 1, no thumbnail, no maker note, no serial numbers, text reduced to ASCII. `ComponentsConfiguration` is Y, Cb, Cr plus `YCbCrPositioning` for JPEG and R, G, B for TIFF and PNG; `ColorSpace` is 1 for sRGB and 0xFFFF for the others. ISO above 65,535 uses `ISOSpeed` with `SensitivityType` 3. With "Remove location" on, the GPS directory is not written (the output is byte-identical to one made without a position; tested). `DateTime` (IFD0) is the capture time.
 
-**XMP (`xmp.rs`).** `xmp:CreatorTool`, `xmp:CreateDate`, `xmp:ModifyDate` and `xmp:MetadataDate` (all the capture time), `dc:format`, then the ten `ym:` properties in the order of the table above; `ym:Settings` is the compact JSON of a `serde_json::Value` (keys sorted). Fixed property order, no padding.
+**XMP (`xmp.rs`).** `xmp:CreatorTool`, `xmp:CreateDate`, `xmp:ModifyDate` and `xmp:MetadataDate` (all the capture time), `dc:format`, then the twelve `ym:` properties in the order of the table above (`ym:Auto` and `ym:AppleAuto` after `ym:Models`, added with Apple Auto, `docs/19` section 9; `ym:AppleAuto` is written only when Apple Auto was on for the photo, so with Apple Auto off an export carries today's properties plus `ym:Auto` = `rule`); `ym:Settings` is the compact JSON of a `serde_json::Value` (keys sorted), in which Auto contrast and saturation are pinned to the numbers they resolved to, as Auto exposure is. Fixed property order, no padding.
 
 **Resize (`resize.rs`).** Lanczos-3, separable, support scaled by the reduction factor, taps outside the image dropped and weights renormalised: the same convolution as Pillow's `LANCZOS`, to which it is compared on float images (worst difference 0, six size pairs). Accumulation in f64, so a flat field is exact. Step-edge overshoot stays under 10 %; the zone-plate test bounds the output to [-0.10, 1.10] for shrink factors 2, 3 and 5. The long edge never upscales; the short edge is rounded half up. The UI grid (1000 px up in 20 px steps, then the full size) is `Size::ui_long_edge_choices`; the library accepts any long edge from 16 to 65,535 px.
 

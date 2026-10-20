@@ -10,7 +10,7 @@
 //! | `diag(g_res)` | C1 | [`wb::residual_gains`]: scene light against the light the mosaic was balanced for |
 //! | `M_map(scene)` | C2 | [`SensorMapTables::blend`] at the scene light's class probabilities and mired |
 //! | `diag(w_A(E_scene))` | C3 | [`wb::scene_alexa_white`]: [`AlexaWhite::scene_white`] (blackbody below 4000 K, CIE daylight from there, the fluorescent and LED lists for those classes, blended by probability) with the scene's own tint |
-//! | `diag(g_user)` | C4 | Auto: `1 / w_A(E_scene)`; Manual: `1 / w_A(E_user)` with the tint on the green gain |
+//! | `diag(g_user)` | C4 | Auto: `1 / w_A(E_scene)` (with Apple Auto's nudge, `1 / w_A(E_user)` at the nudged CCT); Manual: `1 / w_A(E_user)` with the tint on the green gain |
 //! | `M_arri(CCT_user)` | C5 | [`ArriTable::native_to_awg3`]: 17 CCTs, linear in mired, clamped to 2000 to 11000 K |
 //! | `M_awg3->awg4` | C6 | [`gamut::matrices`] |
 //! | `2^EV` | C6 | the resolved exposure |
@@ -25,6 +25,14 @@
 //! matrices are balanced (rows sum to 1) and AWG3 to AWG4 keeps the white. `g_user` is `1 / w_A(E_scene)`
 //! with the class-blended `w_A`, not the blackbody/daylight model at the CCT, so an LED or fluorescent
 //! scene is neutralised too (`docs/03-camera-profiles.md`).
+//!
+//! **Apple Auto's nudge** (`docs/19` section 5) moves the user's white of an Auto white balance (light
+//! source Auto, no picked white) by [`ChainSettings::white_shift_mired`] along the locus and its tint
+//! by [`ChainSettings::tint_shift`]: `g_user` is `1 / w_A(E_user)`, the scene's tinted, class-blended
+//! white moved as the locus moves from `CCT_scene` to `CCT_user = 1e6 / (1e6 / CCT_scene + m)` and
+//! given the scene's tint plus the tint nudge ([`wb::nudged_alexa_white`]), the ARRI matrix takes
+//! `CCT_user` and the readout is [`wb::nudged_readout`]. With `m = 0` and a tint nudge of 0 none of
+//! this runs and the chain is the Auto chain bit for bit.
 //!
 //! **Manual white balance** leaves the scene light alone and puts the user's `E_user` (blackbody below
 //! 4000 K, CIE daylight from there, at the user's Kelvin, then the tint) in C4 and the user's Kelvin in
@@ -95,6 +103,14 @@ pub struct ChainSettings {
     /// to its profile's, `[1, 1, 1]` for a body whose profile was measured on it. Only Pick white needs it (the
     /// clip level of the sample); the rest of the chain works on the profile's scale already.
     pub white_scale: Vec3,
+    /// Apple Auto's nudge of the white in mired (`docs/19` section 5; negative makes the picture
+    /// warmer). It acts only while the white balance and the light source are Auto and no white is
+    /// picked; 0, the default, is the chain without Apple Auto, bit for bit.
+    pub white_shift_mired: f64,
+    /// Apple Auto's nudge of the white's tint, in tint units (`docs/19` section 5; positive is more
+    /// magenta, as a manual tint is), added to the scene's own tint and held in -50 to 50. It acts
+    /// when the white shift does; 0, the default, is the chain without Apple Auto, bit for bit.
+    pub tint_shift: f64,
 }
 
 impl Default for ChainSettings {
@@ -105,6 +121,8 @@ impl Default for ChainSettings {
             exposure_ev: 0.0,
             picked_white: None,
             white_scale: wb::IDENTITY_WHITE_SCALE,
+            white_shift_mired: 0.0,
+            tint_shift: 0.0,
         }
     }
 }
@@ -169,9 +187,11 @@ pub struct ChainStages {
     pub w_a_scene: Vec3,
     /// C4: the user's gains (tint included).
     pub g_user: Vec3,
-    /// The product of the C3 and C4 diagonals as used in the matrix: exactly `[1, 1, 1]` for Auto.
+    /// The product of the C3 and C4 diagonals as used in the matrix: exactly `[1, 1, 1]` for Auto
+    /// without Apple Auto's nudge.
     pub c3_c4: Vec3,
-    /// The CCT that picks the ARRI matrix (the scene CCT for Auto, the user's Kelvin for Manual).
+    /// The CCT that picks the ARRI matrix (the scene CCT for Auto, the nudged CCT for a nudged Auto,
+    /// the user's Kelvin for Manual).
     pub user_cct_k: f64,
     /// C5: ARRI native to AWG3 at `user_cct_k`.
     pub arri_native_to_awg3: Mat3,
@@ -258,7 +278,40 @@ impl FusedChain {
 
         // C3 and C4.
         let w_a_scene = wb::scene_alexa_white(tables.alexa_white, tables.locus, &scene);
+        let nudged = (settings.white_shift_mired != 0.0 || settings.tint_shift != 0.0)
+            && settings.light_source == LightSource::Auto
+            && settings.picked_white.is_none();
         let (g_user, c3_c4, user_cct_k, readout) = match settings.white_balance {
+            // Apple Auto's nudge (`docs/19` section 5): the user's white is the scene's white moved
+            // along the locus to the nudged CCT, keeping the scene's classes, with the scene's tint
+            // plus the tint nudge, and the ARRI matrix takes that CCT, as for a manual Kelvin.
+            WhiteBalance::Auto if nudged => {
+                let (cct_k, w_a_user) = wb::nudged_alexa_white(
+                    tables.alexa_white,
+                    tables.locus,
+                    &scene,
+                    settings.white_shift_mired,
+                    settings.tint_shift,
+                );
+                let g = w_a_user.map(|w| 1.0 / w);
+                let product = [
+                    g[0] * w_a_scene[0],
+                    g[1] * w_a_scene[1],
+                    g[2] * w_a_scene[2],
+                ];
+                (
+                    g,
+                    product,
+                    cct_k.clamp(KELVIN_MIN_K, KELVIN_MAX_K),
+                    wb::nudged_readout(
+                        tables.alexa_white,
+                        tables.locus,
+                        &scene,
+                        settings.white_shift_mired,
+                        settings.tint_shift,
+                    ),
+                )
+            }
             WhiteBalance::Auto => (
                 w_a_scene.map(|w| 1.0 / w),
                 [1.0; 3],
@@ -377,6 +430,12 @@ pub struct ColorEstimates {
     pub white_scale: Vec3,
     /// The automatic exposure in stops (`crate::exposure`).
     pub ev_auto: f64,
+    /// Apple Auto's nudge of the Auto white in mired (`docs/19` section 5), 0 without an answer: what
+    /// [`ChainSettings::white_shift_mired`] gets.
+    pub white_shift_mired: f64,
+    /// Apple Auto's nudge of the Auto white's tint (`docs/19` section 5), 0 without an answer: what
+    /// [`ChainSettings::tint_shift`] gets.
+    pub tint_shift: f64,
 }
 
 impl ColorEstimates {
@@ -404,6 +463,8 @@ impl ColorEstimates {
                 exposure_ev: exposure.resolve(self.ev_auto),
                 picked_white,
                 white_scale: self.white_scale,
+                white_shift_mired: self.white_shift_mired,
+                tint_shift: self.tint_shift,
             },
         )
     }
@@ -419,7 +480,8 @@ impl ColorEstimates {
     }
 
     /// The chain with every colour setting on Auto and the exposure at 0 EV: the chain that the auto
-    /// exposure meters through.
+    /// exposure meters through (with Apple Auto's nudge of the white, when there is one: its readout
+    /// is the Auto white balance the rows show).
     ///
     /// # Errors
     ///
@@ -431,6 +493,8 @@ impl ColorEstimates {
             self.w_scene_initial,
             &ChainSettings {
                 white_scale: self.white_scale,
+                white_shift_mired: self.white_shift_mired,
+                tint_shift: self.tint_shift,
                 ..ChainSettings::default()
             },
         )

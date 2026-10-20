@@ -397,6 +397,35 @@ pub enum NoiseReductionSetting {
     },
 }
 
+/// `contrast`, `highlights`, `shadows`, `black` and `saturation`: Auto (0, or Apple Auto's value for
+/// the photo, `docs/19` section 5) or a manual value. The JSON is `{ "kind": "auto" }` or
+/// `{ "kind": "manual", "value": 12 }`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PercentSetting {
+    /// Resolve from the photo's automatic estimates.
+    Auto,
+    /// The user's value.
+    Manual {
+        /// -100 to 100.
+        value: Num,
+    },
+}
+
+/// `contrast`, `highlights`, `shadows`, `black` or `saturation` in a patch: either form of
+/// [`PercentSetting`], or a plain number,
+/// which the core reads as Manual with that value, except 0, which it reads as Auto (the form of a
+/// settings document written before Apple Auto, `docs/19` section 5). The webview sends the tagged
+/// form.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(untagged)]
+pub enum PercentPatch {
+    /// `{ "kind": "auto" }` or `{ "kind": "manual", "value": 12 }`.
+    Setting(PercentSetting),
+    /// A plain number: Manual, or Auto for 0.
+    Number(Num),
+}
+
 /// The sharpening in effect.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
 pub struct SharpenValue {
@@ -435,9 +464,49 @@ pub enum LightSource {
     Fluorescent,
 }
 
-/// Colour balance wheels; each point is `[a, b]` within the unit disc and `[0, 0]` by default.
+/// The shadows or highlights colour-balance wheel: Auto (`[0, 0]`, or the colour Apple Auto gave
+/// that zone, `docs/19` section 5) or a manual point. The JSON is `{ "kind": "auto" }` or
+/// `{ "kind": "manual", "point": [a, b] }`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BalanceSetting {
+    /// Resolve from the photo's automatic estimates.
+    Auto,
+    /// The user's point.
+    Manual {
+        /// `[a, b]` within the unit disc.
+        point: [Num; 2],
+    },
+}
+
+/// A shadows or highlights wheel in a patch: either form of [`BalanceSetting`], or a plain point,
+/// which the core reads as Manual at that point, except `[0, 0]`, which it reads as Auto (the form
+/// of a settings document written before Apple Auto's prompt version 2). The webview sends the
+/// tagged form.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(untagged)]
+pub enum BalancePatch {
+    /// `{ "kind": "auto" }` or `{ "kind": "manual", "point": [a, b] }`.
+    Setting(BalanceSetting),
+    /// A plain point: Manual, or Auto for `[0, 0]`.
+    Point([Num; 2]),
+}
+
+/// Colour balance wheels: the shadows and highlights wheels are Auto or a point, the midtones wheel
+/// a point `[a, b]` within the unit disc, `[0, 0]` by default.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
 pub struct ColorBalance {
+    /// The shadows wheel.
+    pub shadows: BalanceSetting,
+    /// The midtones wheel.
+    pub midtones: [Num; 2],
+    /// The highlights wheel.
+    pub highlights: BalanceSetting,
+}
+
+/// The three wheels' points in effect (`ResolvedValues.color_balance`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct ColorBalancePoints {
     /// The shadows wheel.
     pub shadows: [Num; 2],
     /// The midtones wheel.
@@ -573,29 +642,29 @@ pub struct DevelopSettings {
     pub look_intensity: Num,
     /// Light › Exposure: Auto or an absolute value, -4 to +4 EV.
     pub exposure: ExposureSetting,
-    /// -100 to 100.
-    pub contrast: Num,
+    /// Light › Exposure › Contrast: Auto or a value, -100 to 100.
+    pub contrast: PercentSetting,
     /// -100 to 100.
     pub brightness: Num,
-    /// Light › High dynamic range, -100 to 100.
-    pub highlights: Num,
-    /// -100 to 100.
-    pub shadows: Num,
+    /// Light › High dynamic range › Highlights: Auto or a value, -100 to 100.
+    pub highlights: PercentSetting,
+    /// Light › High dynamic range › Shadows: Auto or a value, -100 to 100.
+    pub shadows: PercentSetting,
     /// -100 to 100.
     pub white: Num,
     /// Light › White › Offset: stops added to the automatic white lift, -3 to +3, default 0 (the
     /// automatic amount; a plain number, not Auto).
     pub white_offset_ev: Num,
-    /// -100 to 100.
-    pub black: Num,
+    /// Light › High dynamic range › Black: Auto or a value, -100 to 100.
+    pub black: PercentSetting,
     /// Colour › White balance, the light presets.
     pub light_source: LightSource,
     /// Colour › White balance: Auto or Kelvin and tint.
     pub white_balance: WhiteBalanceSetting,
     /// The three colour-balance wheels.
     pub color_balance: ColorBalance,
-    /// Colour › Colour balance, -100 to 100.
-    pub saturation: Num,
+    /// Colour › Colour balance › Saturation: Auto or a value, -100 to 100.
+    pub saturation: PercentSetting,
     /// Colour › Colour warp: its pins.
     pub color_warp: ColorWarp,
     /// Detail › Sharpening: Auto or amount and radius.
@@ -718,15 +787,15 @@ pub struct RolloffPatch {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
 pub struct ColorBalancePatch {
-    /// New shadows wheel.
+    /// New shadows wheel: Auto, a manual point, or a plain point (`[0, 0]` is Auto).
     #[serde(default)]
-    pub shadows: Option<[Num; 2]>,
+    pub shadows: Option<BalancePatch>,
     /// New midtones wheel.
     #[serde(default)]
     pub midtones: Option<[Num; 2]>,
-    /// New highlights wheel.
+    /// New highlights wheel: Auto, a manual point, or a plain point (`[0, 0]` is Auto).
     #[serde(default)]
-    pub highlights: Option<[Num; 2]>,
+    pub highlights: Option<BalancePatch>,
 }
 
 /// Curves to replace.
@@ -764,27 +833,27 @@ pub struct SettingsPatch {
     /// New exposure (Manual to set it, Auto to reset it).
     #[serde(default)]
     pub exposure: Option<ExposureSetting>,
-    /// New contrast.
+    /// New contrast: Auto, a manual value, or a plain number (0 is Auto).
     #[serde(default)]
-    pub contrast: Option<Num>,
+    pub contrast: Option<PercentPatch>,
     /// New brightness.
     #[serde(default)]
     pub brightness: Option<Num>,
-    /// New highlights.
+    /// New highlights: Auto, a manual value, or a plain number (0 is Auto).
     #[serde(default)]
-    pub highlights: Option<Num>,
-    /// New shadows.
+    pub highlights: Option<PercentPatch>,
+    /// New shadows: Auto, a manual value, or a plain number (0 is Auto).
     #[serde(default)]
-    pub shadows: Option<Num>,
+    pub shadows: Option<PercentPatch>,
     /// New white.
     #[serde(default)]
     pub white: Option<Num>,
     /// New white lift offset, in stops.
     #[serde(default)]
     pub white_offset_ev: Option<Num>,
-    /// New black.
+    /// New black: Auto, a manual value, or a plain number (0 is Auto).
     #[serde(default)]
-    pub black: Option<Num>,
+    pub black: Option<PercentPatch>,
     /// New light preset.
     #[serde(default)]
     pub light_source: Option<LightSource>,
@@ -794,9 +863,9 @@ pub struct SettingsPatch {
     /// Colour-balance wheels to change.
     #[serde(default)]
     pub color_balance: Option<ColorBalancePatch>,
-    /// New saturation.
+    /// New saturation: Auto, a manual value, or a plain number (0 is Auto).
     #[serde(default)]
-    pub saturation: Option<Num>,
+    pub saturation: Option<PercentPatch>,
     /// New colour warp: the whole list of pins (`{ pins: [] }` removes them all).
     #[serde(default)]
     pub color_warp: Option<ColorWarp>,
@@ -880,6 +949,20 @@ impl Serialize for SettingsPatch {
 pub struct AutoFlags {
     /// `exposure` is Auto.
     pub exposure: bool,
+    /// `contrast` is Auto.
+    pub contrast: bool,
+    /// `highlights` is Auto.
+    pub highlights: bool,
+    /// `shadows` is Auto.
+    pub shadows: bool,
+    /// `black` is Auto.
+    pub black: bool,
+    /// The shadows colour-balance wheel is Auto.
+    pub balance_shadows: bool,
+    /// The highlights colour-balance wheel is Auto.
+    pub balance_highlights: bool,
+    /// `saturation` is Auto.
+    pub saturation: bool,
     /// `light_source` is Auto.
     pub light_source: bool,
     /// `white_balance` is Auto.
@@ -913,17 +996,281 @@ pub struct NoiseModel {
     pub b: Num,
 }
 
-/// Per-photo automatic estimates (`AutoEstimates` in `types.ts`).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+// ---------------------------------------------------------------------------------------------
+// Apple Auto (`docs/19`)
+// ---------------------------------------------------------------------------------------------
+
+/// Which Auto made a photo's automatic values: Yellowmoon's own (`rule`) or Apple Auto's answer
+/// (`apple`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoSource {
+    /// Yellowmoon's own Auto.
+    Rule,
+    /// Apple Auto's answer (the photo's own or its burst's).
+    Apple,
+}
+
+/// Why Apple Auto is not available on this computer (`docs/19` section 1; the core's
+/// `UnavailableReason`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AppleAutoReason {
+    /// Not a Mac.
+    NotAMac,
+    /// A Mac with an Intel processor.
+    IntelMac,
+    /// This build has no bridge to Apple's model.
+    BuiltWithoutSupport,
+    /// macOS older than 27.
+    MacosTooOld,
+    /// The Mac cannot run Apple Intelligence.
+    DeviceNotEligible,
+    /// Apple Intelligence is off in System Settings.
+    AppleIntelligenceOff,
+    /// The model is still downloading.
+    ModelNotReady,
+    /// Any other unavailability Apple reports.
+    Unavailable,
+    /// The model on this Mac cannot take pictures.
+    NoImageInput,
+}
+
+/// Why one request to Apple's model failed (`docs/19` sections 6 and 8; the core's `FailureKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AppleAutoFailure {
+    /// Apple Auto stopped being available.
+    Unavailable,
+    /// macOS asked the app to wait.
+    RateLimited,
+    /// No answer within 30 seconds.
+    Timeout,
+    /// The model refused.
+    Refused,
+    /// Apple's safety check stopped the request.
+    Guardrail,
+    /// The model does not support the language.
+    UnsupportedLanguage,
+    /// The request did not fit the model's context.
+    ContextTooLarge,
+    /// The model's assets were not there.
+    AssetsUnavailable,
+    /// Another request was running.
+    ConcurrentRequests,
+    /// The answer could not be read.
+    BadAnswer,
+    /// Anything else; the message says what.
+    Other,
+}
+
+/// Whether Apple's model read the default instructions or the person's own (`docs/19` section 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AppleAutoInstructions {
+    /// The default instructions.
+    Default,
+    /// The person's own.
+    Edited,
+}
+
+/// Which model answers, and with which instructions (the core's `AdvisorInfo`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AppleAutoInfo {
+    /// The model variant's display name: "AFM 3 Core".
+    pub model: String,
+    /// The macOS version and build: "27.0.1 (27A404)".
+    pub os: String,
+    /// The default instructions or the person's own.
+    pub instructions: AppleAutoInstructions,
+    /// The first 12 hex digits of the SHA-256 of the instructions.
+    pub instructions_sha256: String,
+}
+
+/// The colour Apple Auto gives the shadows (the core's `ShadowColor`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AppleShadowColor {
+    /// A neutral grade.
+    None,
+    /// Teal.
+    Teal,
+    /// Blue.
+    Blue,
+    /// Green.
+    Green,
+    /// Amber.
+    Amber,
+    /// Magenta.
+    Magenta,
+}
+
+/// The colour Apple Auto gives the highlights (the core's `HighlightColor`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AppleHighlightColor {
+    /// A neutral grade.
+    None,
+    /// Warm.
+    Warm,
+    /// Gold.
+    Gold,
+    /// Cool.
+    Cool,
+    /// Pink.
+    Pink,
+}
+
+/// The steps of an answer (the core's `AutoSteps`), each null when the model left the field empty:
+/// exposure -3 to +3, the other numbers -2 to +2 (0 for keep), the colours of the shadows and the
+/// highlights with their strengths 1 to 3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AppleAutoSteps {
+    /// Darker (negative) or brighter.
+    pub exposure: Option<i8>,
+    /// Darker (negative) or brighter highlights.
+    pub highlights: Option<i8>,
+    /// Darker (negative) or brighter shadows.
+    pub shadows: Option<i8>,
+    /// Deeper (negative) or lifted blacks.
+    pub blacks: Option<i8>,
+    /// Less (negative) or more contrast.
+    pub contrast: Option<i8>,
+    /// The model's warmth: cooler (negative) or warmer.
+    pub white: Option<i8>,
+    /// Greener (negative) or more magenta.
+    pub tint: Option<i8>,
+    /// Less (negative) or more saturation.
+    pub saturation: Option<i8>,
+    /// The colour of the shadows.
+    pub shadow_color: Option<AppleShadowColor>,
+    /// Its strength, 1 (subtle) to 3 (strong).
+    pub shadow_color_strength: Option<i8>,
+    /// The colour of the highlights.
+    pub highlight_color: Option<AppleHighlightColor>,
+    /// Its strength, 1 (subtle) to 3 (strong).
+    pub highlight_color_strength: Option<i8>,
+}
+
+/// One answer of Apple's model (the core's `AdvisorAnswer`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AppleAutoAnswer {
+    /// The steps.
+    pub steps: AppleAutoSteps,
+    /// What the photo shows, in a few words (for reports only).
+    pub scene: String,
+    /// The look the model gives the photo, in a few words (the Automatic card shows it).
+    pub plan: String,
+}
+
+/// Where a photo stands with Apple Auto (the core's `AppleAuto`), tagged by `state`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AppleAuto {
+    /// The preference is off, or the app has no advisor: Auto is the rule.
+    Off,
+    /// Apple Auto is not available on this computer: Auto is the rule.
+    Unavailable {
+        /// Why.
+        reason: AppleAutoReason,
+    },
+    /// Asked, or waiting for its turn: Auto is the rule until the answer.
+    Pending,
+    /// Answered: Auto takes the answer's values.
+    Answered {
+        /// The answer.
+        answer: AppleAutoAnswer,
+        /// Which model answered.
+        info: AppleAutoInfo,
+    },
+    /// The request failed: Auto is the rule.
+    Failed {
+        /// Why.
+        kind: AppleAutoFailure,
+        /// Apple's message, when there is one.
+        message: String,
+        /// Which model was asked.
+        info: AppleAutoInfo,
+    },
+}
+
+/// How a run decides whether Apple Auto is used (the core's `AppleAutoMode`); the app always
+/// follows the preference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AppleAutoMode {
+    /// The `apple_auto` preference decides.
+    FromPreference,
+    /// On for this run.
+    On,
+    /// Off for this run.
+    Off,
+}
+
+/// `apple_auto_status()`: whether Apple Auto is available on this computer (read again for the
+/// answer), and whether it acts (`docs/19` sections 1 and 2; the core's `AppleAutoStatus`).
+/// Preferences shows its row only while `available`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AppleAutoStatus {
+    /// Apple Auto is available on this computer now.
+    pub available: bool,
+    /// Why it is not; null when it is, and when the app has no advisor.
+    pub reason: Option<AppleAutoReason>,
+    /// Which model answers, when it is available.
+    pub info: Option<AppleAutoInfo>,
+    /// The `apple_auto` preference.
+    pub preference: bool,
+    /// How the run decides (always `from_preference` in the app).
+    pub mode: AppleAutoMode,
+    /// Apple Auto acts for the session now.
+    pub active: bool,
+    /// The prompt's version.
+    pub prompt: u32,
+    /// The table's version.
+    pub table: u32,
+    /// The default instructions or the person's own.
+    pub instructions: AppleAutoInstructions,
+    /// The first 12 hex digits of the SHA-256 of the instructions.
+    pub instructions_sha256: String,
+    /// The person's own instructions, `""` for the default.
+    pub own_instructions: String,
+    /// The default instructions, for Preferences' text field and its Reset to default.
+    pub default_instructions: String,
+    /// The longest instructions the model is given, in characters.
+    pub instructions_max_chars: u32,
+}
+
+/// Per-photo automatic estimates (`AutoEstimates` in `types.ts`; the core's `AutoSummary`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct AutoEstimates {
-    /// `EV_auto`.
+    /// `EV_auto` (with Apple Auto's change, when there is one).
     pub exposure_ev: Num,
     /// The automatic white lift in stops (0 when nothing is above +1 stop).
     pub white_ev: Num,
-    /// The Auto Kelvin.
+    /// The Auto Kelvin (with Apple Auto's nudge, when there is one).
     pub kelvin: Num,
     /// The Auto tint.
     pub tint: Num,
+    /// What `contrast: Auto` resolves to: 0, or Apple Auto's contrast.
+    pub contrast: Num,
+    /// What `saturation: Auto` resolves to: 0, or Apple Auto's saturation.
+    pub saturation: Num,
+    /// What `highlights: Auto` resolves to: 0, or Apple Auto's highlights.
+    pub highlights: Num,
+    /// What `shadows: Auto` resolves to: 0, or Apple Auto's shadows.
+    pub shadows: Num,
+    /// What `black: Auto` resolves to: 0, or Apple Auto's black level.
+    pub black: Num,
+    /// What the shadows wheel's Auto resolves to: `[0, 0]`, or Apple Auto's shadow colour.
+    pub balance_shadows: [Num; 2],
+    /// What the highlights wheel's Auto resolves to: `[0, 0]`, or Apple Auto's highlight colour.
+    pub balance_highlights: [Num; 2],
+    /// Which Auto made these values.
+    pub source: AutoSource,
+    /// Where the photo stands with Apple Auto.
+    pub apple: AppleAuto,
+    /// Apple Auto's steps in effect (the photo's answer, or its burst's), null when Auto is the rule.
+    pub apple_steps: Option<AppleAutoSteps>,
     /// The most probable light class.
     pub light_class: LightClass,
     /// Confidence of the light estimate, 0 to 1.
@@ -945,13 +1292,13 @@ pub struct ResolvedValues {
     pub look_intensity: Num,
     /// The exposure in stops.
     pub exposure_ev: Num,
-    /// `contrast`.
+    /// The contrast in effect: the manual value, or the photo's Auto contrast.
     pub contrast: Num,
     /// `brightness`.
     pub brightness: Num,
-    /// `highlights`.
+    /// The highlights in effect: the manual value, or the photo's Auto value.
     pub highlights: Num,
-    /// `shadows`.
+    /// The shadows in effect.
     pub shadows: Num,
     /// `white`.
     pub white: Num,
@@ -959,7 +1306,7 @@ pub struct ResolvedValues {
     pub white_offset_ev: Num,
     /// The white lift in effect in stops: the automatic amount plus the offset, never below 0.
     pub white_ev: Num,
-    /// `black`.
+    /// The black in effect.
     pub black: Num,
     /// `light_source`.
     pub light_source: LightSource,
@@ -967,9 +1314,9 @@ pub struct ResolvedValues {
     pub kelvin: Num,
     /// The tint the White balance row shows.
     pub tint: Num,
-    /// `color_balance`.
-    pub color_balance: ColorBalance,
-    /// `saturation`.
+    /// The wheels' points in effect.
+    pub color_balance: ColorBalancePoints,
+    /// The saturation in effect: the manual value, or the photo's Auto saturation.
     pub saturation: Num,
     /// `color_warp`.
     pub color_warp: ColorWarp,
@@ -1644,6 +1991,11 @@ pub struct Preferences {
     pub watch_downloads_during_import: bool,
     /// Folders remembered between runs.
     pub last_used_folders: LastUsedFolders,
+    /// Auto with Apple Intelligence (`docs/19` section 2); acts only where Apple Auto is available.
+    pub apple_auto: bool,
+    /// Instructions for Apple Intelligence (`docs/19` section 2): the person's own, at most 2000
+    /// characters; `""` is the default.
+    pub apple_auto_instructions: String,
 }
 
 /// A partial update of the preferences.
@@ -1671,6 +2023,13 @@ pub struct PreferencesPatch {
     /// New remembered folders.
     #[serde(default)]
     pub last_used_folders: Option<LastUsedFolders>,
+    /// New value of "Auto with Apple Intelligence".
+    #[serde(default)]
+    pub apple_auto: Option<bool>,
+    /// New instructions for Apple Intelligence (`""` or the default text: the default); at most
+    /// 2000 characters, longer text is refused.
+    #[serde(default)]
+    pub apple_auto_instructions: Option<String>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1926,9 +2285,11 @@ pub struct MenuActionEvent {
 }
 
 /// `settings_changed { photo_id }` (addition): the core changed a photo's settings by itself: after
-/// a `viewport_input` Pick white click, and once for each photo a `paste_settings` changed. Ask
-/// `get_settings` again (the webview skips the photos it is pasting onto: the paste's answer says
-/// what changed).
+/// a `viewport_input` Pick white click, once for each photo a `paste_settings` changed, and when the
+/// estimates its Auto values resolve against changed (the core's `estimates_changed`: a burst's
+/// median moved, Apple Auto answered or failed, or the `apple_auto` preference changed, `docs/19`
+/// section 6). Ask `get_settings` again (the webview skips the photos it is pasting onto: the
+/// paste's answer says what changed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
 #[tauri_specta(event_name = "settings_changed")]
 pub struct SettingsChanged {

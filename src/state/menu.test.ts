@@ -3,6 +3,9 @@ import { createMockApi } from "../api.mock";
 import { checkNotice, runMenuAction } from "./menu";
 import { createStore } from "./store";
 
+/** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
+const manual = (value: number) => ({ kind: "manual", value }) as const;
+
 describe("checkNotice (Check for Updates…)", () => {
   it("says an update that was just found downloads when the cell is pressed", () => {
     expect(checkNotice({ kind: "available", version: "0.2.0" }, { phase: "available", version: "0.2.0" })).toBe(
@@ -43,7 +46,7 @@ describe("the Edit menu's settings items", () => {
     await vi.waitFor(() => expect(store.getState().session?.photos.every((p) => p.status.kind === "ready")).toBe(true));
     await store.openPhotos();
     await vi.waitFor(() => expect(store.currentSettings()).not.toBeNull());
-    await store.update({ contrast: 30 });
+    await store.update({ contrast: manual(30) });
     const copy = vi.spyOn(store, "copySettings");
     const paste = vi.spyOn(store, "pasteSettings");
 

@@ -582,7 +582,10 @@ fn the_output_sharpening_crosses_the_bridge_as_a_plain_number() {
         serde_json::from_value(json!({ "output_sharpening": 60, "contrast": 5 })).expect("patch");
     let after = h.api.update_settings(id, &patch).expect("update");
     assert_eq!(after.settings.output_sharpening, Num(60.0));
-    assert!((after.settings.contrast.0 - 5.0).abs() < 1e-9);
+    assert_eq!(
+        after.settings.contrast,
+        PercentSetting::Manual { value: Num(5.0) }
+    );
 }
 
 #[test]
@@ -612,8 +615,16 @@ fn settings_round_trip_with_the_json_the_frontend_sends() {
     let after = h.api.update_settings(id, &patch).expect("update");
     assert!((after.values.exposure_ev.0 - 0.5).abs() < 1e-9);
     assert!(!after.auto.exposure);
-    assert!((after.settings.contrast.0 - 20.0).abs() < 1e-9);
-    assert_eq!(after.settings.color_balance.shadows, [Num(0.2), Num(-0.1)]);
+    assert_eq!(
+        after.settings.contrast,
+        PercentSetting::Manual { value: Num(20.0) }
+    );
+    assert_eq!(
+        after.settings.color_balance.shadows,
+        crate::wire::BalanceSetting::Manual {
+            point: [Num(0.2), Num(-0.1)]
+        }
+    );
     assert_eq!(after.settings.color_balance.midtones, [Num(0.0), Num(0.0)]);
     assert_eq!(after.settings.curve.luma.len(), 3);
     assert_eq!(after.settings.orientation, crate::wire::Orientation(90));
@@ -632,7 +643,10 @@ fn settings_round_trip_with_the_json_the_frontend_sends() {
     let cleared = h.api.update_settings(id, &clear).expect("clear");
     assert!(cleared.auto.exposure);
     assert!(cleared.settings.crop.is_none() && cleared.settings.white_pick.is_none());
-    assert!((cleared.settings.contrast.0 - 20.0).abs() < 1e-9);
+    assert_eq!(
+        cleared.settings.contrast,
+        PercentSetting::Manual { value: Num(20.0) }
+    );
 
     // A patch without the key leaves the crop alone.
     let set: SettingsPatch = serde_json::from_value(json!({
@@ -664,15 +678,9 @@ fn settings_errors_are_plain_sentences_and_change_nothing() {
     let err = h.api.update_settings(id, &bad).expect_err("refused");
     assert_eq!(err.scope, ErrorScope::Render);
     assert!(!err.message.is_empty());
-    assert!(
-        (h.api
-            .get_settings(id)
-            .expect("settings")
-            .settings
-            .contrast
-            .0)
-            .abs()
-            < 1e-9
+    assert_eq!(
+        h.api.get_settings(id).expect("settings").settings.contrast,
+        PercentSetting::Auto
     );
     // A misspelt field is an error, not a patch that silently does nothing (`docs/01`
     // DevelopSettings), also inside the nested objects and in the preferences.
@@ -809,7 +817,12 @@ fn copy_and_paste_settings_move_a_photos_settings_onto_others() {
 
     let copied = h.api.copy_settings(ids[0]).expect("copy");
     assert!(copied.crop.is_none() && copied.orientation.is_none() && copied.white_pick.is_none());
-    assert_eq!(copied.contrast, Some(Num(25.0)));
+    assert_eq!(
+        copied.contrast,
+        Some(PercentPatch::Setting(PercentSetting::Manual {
+            value: Num(25.0)
+        }))
+    );
     let before_events = h.events.events().len();
 
     let report = h
@@ -1953,6 +1966,293 @@ fn preferences_round_trip_and_nothing_else_is_written() {
     );
 }
 
+/// An advisor that is always available and gives the same answer, or the same failure, for every
+/// picture (`docs/19` section 12).
+struct Scripted(Result<ym_core::apple_auto::AdvisorAnswer, ym_core::apple_auto::AdvisorError>);
+
+impl ym_core::apple_auto::AutoAdvisor for Scripted {
+    fn availability(&self) -> ym_core::apple_auto::Availability {
+        ym_core::apple_auto::Availability::Available(ym_core::apple_auto::AdvisorInfo::new(
+            "Scripted", "test",
+        ))
+    }
+
+    fn ask(
+        &self,
+        _: &ym_core::apple_auto::AdvisorPicture,
+        _: &str,
+    ) -> Result<ym_core::apple_auto::AdvisorAnswer, ym_core::apple_auto::AdvisorError> {
+        self.0.clone()
+    }
+}
+
+fn apple_state(h: &Harness, id: PhotoId) -> AppleAuto {
+    h.api.get_settings(id).expect("settings").estimates.apple
+}
+
+fn prefs_patch(value: serde_json::Value) -> PreferencesPatch {
+    serde_json::from_value(value).expect("preferences patch")
+}
+
+#[test]
+fn apple_auto_reaches_the_webview_through_the_settings_the_status_and_settings_changed() {
+    use ym_core::apple_auto::{AdvisorAnswer, AutoSteps, ShadowColor};
+    let answer = AdvisorAnswer {
+        steps: AutoSteps {
+            exposure: Some(0),
+            white: Some(0),
+            contrast: Some(2),
+            saturation: Some(-1),
+            highlights: Some(-1),
+            shadow_color: Some(ShadowColor::Teal),
+            shadow_color_strength: Some(2),
+            ..AutoSteps::default()
+        },
+        scene: "A grey gradient".into(),
+        plan: "Teal shadows, more contrast".into(),
+    };
+    let h = Harness::with_advisor(Arc::new(Scripted(Ok(answer))));
+    let status = h.api.apple_auto_status().expect("status");
+    assert!(status.available && status.active && status.preference);
+    assert_eq!(status.reason, None);
+    let sha = ym_core::apple_auto::InstructionsId::default().instructions_sha256;
+    assert_eq!(
+        status.info,
+        Some(AppleAutoInfo {
+            model: "Scripted".into(),
+            os: "test".into(),
+            instructions: crate::wire::AppleAutoInstructions::Default,
+            instructions_sha256: sha.clone(),
+        })
+    );
+    assert_eq!(status.mode, AppleAutoMode::FromPreference);
+    assert_eq!((status.prompt, status.table), (2, 2));
+    assert_eq!(status.own_instructions, "");
+    assert_eq!(
+        status.default_instructions,
+        ym_core::apple_auto::DEFAULT_INSTRUCTIONS
+    );
+    assert_eq!(status.instructions_max_chars, 2000);
+
+    h.open(1);
+    h.develop();
+    let id = h.first();
+    // The viewer does not wait for the answer; when it arrives the webview is told to read the
+    // photo's settings again.
+    wait_until("the answer", || {
+        matches!(apple_state(&h, id), AppleAuto::Answered { .. })
+    });
+    wait_until("settings_changed for the answer", || {
+        h.events.events().contains(&AppEvent::SettingsChanged(id))
+    });
+    let rs = h.api.get_settings(id).expect("settings");
+    let AppleAuto::Answered { answer, info } = &rs.estimates.apple else {
+        panic!("answered: {:?}", rs.estimates.apple);
+    };
+    assert_eq!(
+        answer.steps,
+        AppleAutoSteps {
+            exposure: Some(0),
+            highlights: Some(-1),
+            shadows: None,
+            blacks: None,
+            contrast: Some(2),
+            white: Some(0),
+            tint: None,
+            saturation: Some(-1),
+            shadow_color: Some(crate::wire::AppleShadowColor::Teal),
+            shadow_color_strength: Some(2),
+            highlight_color: None,
+            highlight_color_strength: None,
+        }
+    );
+    assert_eq!(answer.scene, "A grey gradient");
+    assert_eq!(answer.plan, "Teal shadows, more contrast");
+    assert_eq!(rs.estimates.apple_steps, Some(answer.steps));
+    assert_eq!(rs.estimates.highlights, Num(-20.0));
+    assert_eq!(rs.values.highlights, Num(-20.0));
+    assert_eq!(rs.settings.highlights, PercentSetting::Auto);
+    assert!(rs.auto.highlights && rs.auto.balance_shadows);
+    assert_eq!(
+        rs.values.color_balance.shadows,
+        [Num(-0.866 * 0.55), Num(-0.5 * 0.55)]
+    );
+    assert_eq!(info.model, "Scripted");
+    assert_eq!(rs.estimates.source, AutoSource::Apple);
+    assert_eq!(
+        (rs.estimates.contrast, rs.estimates.saturation),
+        (Num(30.0), Num(-15.0))
+    );
+    assert_eq!(rs.settings.contrast, PercentSetting::Auto);
+    assert!(rs.auto.contrast && rs.auto.saturation);
+    assert_eq!(
+        (rs.values.contrast, rs.values.saturation),
+        (Num(30.0), Num(-15.0))
+    );
+
+    // A manual value wins over the answer; Re-run puts contrast and saturation back to Auto.
+    let manual: SettingsPatch = serde_json::from_value(json!({
+        "contrast": { "kind": "manual", "value": -10 },
+        "saturation": { "kind": "manual", "value": 5 }
+    }))
+    .expect("patch");
+    let edited = h.api.update_settings(id, &manual).expect("update");
+    assert!(!edited.auto.contrast && !edited.auto.saturation);
+    assert_eq!(
+        (edited.values.contrast, edited.values.saturation),
+        (Num(-10.0), Num(5.0))
+    );
+    assert_eq!(edited.estimates.contrast, Num(30.0), "the Auto value stays");
+    let rerun = h.api.rerun_auto(id).expect("rerun");
+    assert!(rerun.auto.contrast && rerun.auto.saturation);
+    assert_eq!(rerun.settings.saturation, PercentSetting::Auto);
+    wait_until("the answer after Re-run", || {
+        matches!(apple_state(&h, id), AppleAuto::Answered { .. })
+    });
+
+    // The preference off: every photo back to the rule at once, and the webview is told.
+    let asks = h.api.core().session.apple_auto_asks();
+    let before = h.events.events().len();
+    let prefs = h
+        .api
+        .preferences_set(&prefs_patch(json!({ "apple_auto": false })))
+        .expect("off");
+    assert!(!prefs.apple_auto);
+    let off = h.api.get_settings(id).expect("settings");
+    assert_eq!(off.estimates.apple, AppleAuto::Off);
+    assert_eq!(off.estimates.source, AutoSource::Rule);
+    assert_eq!(
+        (off.values.contrast, off.values.saturation),
+        (Num(0.0), Num(0.0))
+    );
+    wait_until("settings_changed for the preference", || {
+        h.events.events()[before..].contains(&AppEvent::SettingsChanged(id))
+    });
+    let status = h.api.apple_auto_status().expect("status");
+    assert!(status.available && !status.active && !status.preference);
+
+    // On again: the answer was kept, so nothing is asked again.
+    h.api
+        .preferences_set(&prefs_patch(json!({ "apple_auto": true })))
+        .expect("on");
+    assert!(matches!(apple_state(&h, id), AppleAuto::Answered { .. }));
+    assert_eq!(h.api.core().session.apple_auto_asks(), asks);
+    assert!(h.api.preferences_get().expect("prefs").apple_auto);
+
+    // New instructions: saved, every photo asked again; too long: refused with a plain message.
+    let asks = h.api.core().session.apple_auto_asks();
+    let err = h
+        .api
+        .preferences_set(&prefs_patch(
+            json!({ "apple_auto_instructions": "x".repeat(2001) }),
+        ))
+        .expect_err("too long");
+    assert!(format!("{err:?}").contains("At most 2000"), "{err:?}");
+    let prefs = h
+        .api
+        .preferences_set(&prefs_patch(
+            json!({ "apple_auto_instructions": "Moody and cool." }),
+        ))
+        .expect("instructions");
+    assert_eq!(prefs.apple_auto_instructions, "Moody and cool.");
+    wait_until("the answer to the new instructions", || {
+        h.api.core().session.apple_auto_asks() > asks
+            && matches!(apple_state(&h, id), AppleAuto::Answered { .. })
+    });
+    let status = h.api.apple_auto_status().expect("status");
+    assert_eq!(
+        status.instructions,
+        crate::wire::AppleAutoInstructions::Edited
+    );
+    assert_eq!(status.own_instructions, "Moody and cool.");
+    let AppleAuto::Answered { info, .. } = apple_state(&h, id) else {
+        panic!("answered");
+    };
+    assert_eq!(
+        info.instructions,
+        crate::wire::AppleAutoInstructions::Edited
+    );
+    // Back to the default: the preference is cleared.
+    let prefs = h
+        .api
+        .preferences_set(&prefs_patch(json!({ "apple_auto_instructions": "" })))
+        .expect("default");
+    assert_eq!(prefs.apple_auto_instructions, "");
+}
+
+#[test]
+fn a_failed_question_crosses_the_bridge_and_auto_stays_the_rule() {
+    use ym_core::apple_auto::{AdvisorError, FailureKind};
+    let h = Harness::with_advisor(Arc::new(Scripted(Err(AdvisorError::new(
+        FailureKind::Refused,
+        "Not this one.",
+    )))));
+    h.open(1);
+    h.develop();
+    let id = h.first();
+    wait_until("the failure", || {
+        matches!(apple_state(&h, id), AppleAuto::Failed { .. })
+    });
+    let rs = h.api.get_settings(id).expect("settings");
+    assert_eq!(
+        rs.estimates.apple,
+        AppleAuto::Failed {
+            kind: AppleAutoFailure::Refused,
+            message: "Not this one.".into(),
+            info: AppleAutoInfo {
+                model: "Scripted".into(),
+                os: "test".into(),
+                instructions: crate::wire::AppleAutoInstructions::Default,
+                instructions_sha256: ym_core::apple_auto::InstructionsId::default()
+                    .instructions_sha256,
+            }
+        }
+    );
+    assert_eq!(rs.estimates.source, AutoSource::Rule);
+    assert_eq!(
+        (rs.estimates.contrast, rs.estimates.saturation),
+        (Num(0.0), Num(0.0))
+    );
+}
+
+#[test]
+fn without_an_advisor_apple_auto_is_off_and_its_row_stays_hidden() {
+    let h = Harness::new();
+    let status = h.api.apple_auto_status().expect("status");
+    assert!(!status.available && !status.active);
+    assert_eq!(status.reason, None);
+    assert_eq!(status.info, None);
+    h.open(1);
+    h.develop();
+    let rs = h.api.get_settings(h.first()).expect("settings");
+    assert_eq!(rs.estimates.apple, AppleAuto::Off);
+    assert_eq!(rs.estimates.source, AutoSource::Rule);
+    assert_eq!(rs.settings.contrast, PercentSetting::Auto);
+    assert!(rs.auto.contrast && rs.auto.saturation);
+}
+
+#[test]
+fn the_system_advisor_off_apple_silicon_says_why_it_is_not_available() {
+    // What `AppConfig::from_environment` gives the app. Off Apple silicon the reason is the first
+    // of `docs/19` section 1; on Apple silicon the answer depends on the Mac and the SDK.
+    if std::env::var_os("YELLOWMOON_TEST_APPLE_AUTO").is_some()
+        || cfg!(all(target_os = "macos", target_arch = "aarch64"))
+    {
+        return;
+    }
+    let h = Harness::with_advisor(ym_apple::system_advisor());
+    let status = h.api.apple_auto_status().expect("status");
+    assert!(!status.available && !status.active);
+    assert!(
+        matches!(
+            status.reason,
+            Some(AppleAutoReason::NotAMac | AppleAutoReason::IntelMac)
+        ),
+        "{:?}",
+        status.reason
+    );
+}
+
 #[test]
 fn opening_remembers_the_folder() {
     let h = Harness::new();
@@ -2109,6 +2409,9 @@ fn assert_app_and_command_line_agree(h: &Harness, ym: &Path, files: &[PathBuf]) 
     let output = std::process::Command::new(ym)
         .arg("render")
         .args(files)
+        // The app under test has no advisor, so Apple Auto is off there; off for `ym` too, which
+        // would otherwise follow the preference on a Mac with Apple Intelligence (`docs/19` section 7).
+        .args(["--apple-auto", "off"])
         .arg("--out")
         .arg(by_cli.path())
         .arg("--quiet")
@@ -2898,4 +3201,101 @@ fn a_patch_survives_the_bridge_and_a_missing_key_stays_missing() {
             .expect("patch");
     let core: ym_core::settings::SettingsPatch = convert(&part).expect("core");
     assert!(core.white_balance.is_some());
+}
+
+/// An advisor whose exposure answers go +1, +3, +3 in the order it is asked about the photos (the rest keep).
+struct Sequence(std::sync::atomic::AtomicUsize);
+
+impl ym_core::apple_auto::AutoAdvisor for Sequence {
+    fn availability(&self) -> ym_core::apple_auto::Availability {
+        ym_core::apple_auto::Availability::Available(ym_core::apple_auto::AdvisorInfo::new(
+            "Sequence", "test",
+        ))
+    }
+
+    fn ask(
+        &self,
+        _: &ym_core::apple_auto::AdvisorPicture,
+        _: &str,
+    ) -> Result<ym_core::apple_auto::AdvisorAnswer, ym_core::apple_auto::AdvisorError> {
+        let n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(ym_core::apple_auto::AdvisorAnswer {
+            steps: ym_core::apple_auto::AutoSteps {
+                exposure: Some([1, 3, 3][n % 3]),
+                ..ym_core::apple_auto::AutoSteps::keep()
+            },
+            scene: format!("Photo {n}"),
+            plan: String::new(),
+        })
+    }
+}
+
+#[test]
+fn removing_a_frame_with_apple_auto_makes_the_burst_steps_again_tells_the_webview_once_and_undo_keeps_the_answers()
+ {
+    // The three photos have one capture time, so they are one burst; the answers are +1, +3 and +3 EV steps, whose middle is +3.
+    let h = Harness::with_advisor(Arc::new(Sequence(std::sync::atomic::AtomicUsize::new(0))));
+    h.open(3);
+    let ids: Vec<PhotoId> = h.develop().photos.iter().map(|p| p.id).collect();
+    wait_until("the three answers", || {
+        ids.iter()
+            .all(|id| matches!(apple_state(&h, *id), AppleAuto::Answered { .. }))
+    });
+    let step = |id: PhotoId| {
+        h.api
+            .get_settings(id)
+            .expect("settings")
+            .estimates
+            .apple_steps
+            .and_then(|s| s.exposure)
+    };
+    assert!(
+        ids.iter().all(|id| step(*id) == Some(3)),
+        "the burst's middle"
+    );
+    let own: Vec<PhotoId> = ids
+        .iter()
+        .copied()
+        .filter(|id| match apple_state(&h, *id) {
+            AppleAuto::Answered { answer, .. } => answer.steps.exposure == Some(3),
+            _ => false,
+        })
+        .collect();
+    assert_eq!(own.len(), 2, "two frames were answered +3");
+    let victim = own[0];
+    let stays: Vec<PhotoId> = ids.iter().copied().filter(|id| *id != victim).collect();
+    let asks = h.api.core().session.apple_auto_asks();
+    let before = h.events.events().len();
+
+    let change = h.api.remove_photos(&[victim]).expect("remove");
+    assert_eq!(change.photo_ids, vec![victim]);
+    // The frames that stay share what is left: +1 and +3, whose lower middle is +1.
+    assert!(stays.iter().all(|id| step(*id) == Some(1)));
+    assert!(h.api.get_settings(victim).is_err());
+    // Each is told once: the core's event reaches the webview as `settings_changed` and the command does not say it again.
+    let told = |id: PhotoId, from: usize| {
+        h.events.events()[from..]
+            .iter()
+            .filter(|e| **e == AppEvent::SettingsChanged(id))
+            .count()
+    };
+    for id in &stays {
+        assert_eq!(told(*id, before), 1, "{id:?}");
+    }
+    assert_eq!(told(victim, before), 0);
+
+    // Undo: the photo is back with its answer and nobody is asked again; the burst's middle is +3 again.
+    let before = h.events.events().len();
+    let back = h.api.restore_photos().expect("restore");
+    assert_eq!(back.photo_ids, vec![victim]);
+    assert!(h.api.core().session.wait_idle(WAIT));
+    assert!(matches!(
+        apple_state(&h, victim),
+        AppleAuto::Answered { .. }
+    ));
+    assert_eq!(h.api.core().session.apple_auto_asks(), asks);
+    assert!(ids.iter().all(|id| step(*id) == Some(3)));
+    for id in &stays {
+        assert_eq!(told(*id, before), 1, "{id:?}");
+    }
 }

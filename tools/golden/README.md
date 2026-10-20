@@ -34,7 +34,7 @@ cargo run -p golden --release -- update --note "why the pictures changed"
 `--testdata DIR` (else `$YM_TESTDATA`, else `testdata/`), `--refs DIR`, `--expected FILE`, `--jobs N`, `--report FILE`
 (everything as JSON), `--quiet`.
 
-**What a render is.** One `ym render --cpu --json --quiet --settings <the entry's settings> --format png --bits 16 --colour-space srgb` (with `YELLOWMOON_GPU=off`: golden hashes pin the CPU reference, `docs/17-gpu.md` section 12)
+**What a render is.** One `ym render --cpu --apple-auto off --json --quiet --settings <the entry's settings> --format png --bits 16 --colour-space srgb` (with `YELLOWMOON_GPU=off`: golden hashes pin the CPU reference, `docs/17-gpu.md` section 12; Apple Auto off: the golden pictures are Yellowmoon's own Auto on every machine, also on a Mac where Apple Intelligence could answer, `docs/19` section 7)
 process per file, in an empty `YELLOWMOON_HOME` (so the user's default look, display rendering and imported looks cannot
 change it). One process per file because a photo's automatic exposure and pooled noise model depend on the other photos
 of the same run (`docs/01`, Session): the same file rendered in other company would give other pixels. A render that takes
@@ -93,7 +93,7 @@ golden check --device gpu --reference render --subset ...               # a Mac:
 golden device-check --long-edge 1500 testdata/readme-photos/src/A1M01749.ARW   # one real photo, CPU against device
 ```
 
-**What a GPU render is.** `ym render --require-gpu --json` with `YELLOWMOON_GPU=require`, one process per file as for the CPU. Strict means no silent
+**What a GPU render is.** `ym render --require-gpu --apple-auto off --json` with `YELLOWMOON_GPU=require`, one process per file as for the CPU. Strict means no silent
 fallback: no adapter is exit 4 (and `golden` stops with exit 2 before it renders anything, after asking `ym doctor --json` for the adapter), a device
 error fails the photo (`error.kind` `gpu`, status `RENDER FAILED`). On top of that the JSON must say `"device": "gpu"` (it is `ExportReport.device`, the
 path the photo took) and carry no note that mentions the graphics card ("The graphics card could not render this photo, so the CPU did: ..."): a

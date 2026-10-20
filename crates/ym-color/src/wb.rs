@@ -41,6 +41,13 @@
 //! readout then inverts the user's side exactly ([`auto_readout`]), so `Manual { kelvin, tint }` at the
 //! values Auto shows renders the same picture as Auto, up to the rounding of Kelvin to 50 K and an
 //! overall brightness factor `2^(-t/100)` (the tint scales the green gain, not the red and blue gains).
+//!
+//! # Apple Auto's nudge
+//!
+//! Apple Auto may move the user's white of an Auto white balance along the locus by a few mired and
+//! its tint by a few tint units (`docs/19` section 5): [`nudged_alexa_white`] is the scene's white at
+//! the nudged CCT ([`nudged_cct`]) with the scene's classes and its tint plus the tint nudge
+//! ([`nudged_tint`]), and [`nudged_readout`] what the rows then show.
 
 use serde::{Deserialize, Serialize};
 
@@ -587,6 +594,86 @@ pub fn scene_alexa_white(white: &AlexaWhite, locus: &Locus, scene: &SceneLight) 
     )
 }
 
+/// The lowest CCT a nudged white can reach (kelvin): the warm end of the ALEXA white tables.
+pub const NUDGE_MIN_K: f64 = 1500.0;
+/// The highest CCT a nudged white can reach (kelvin): the cool end of the ALEXA white tables.
+pub const NUDGE_MAX_K: f64 = 25000.0;
+
+/// The CCT of the user's white after Apple Auto's nudge (`docs/19` section 5): the scene CCT moved by
+/// `shift_mired` on the mired scale, `1e6 / (1e6 / cct_scene_k + shift_mired)`, held in
+/// [`NUDGE_MIN_K`] to [`NUDGE_MAX_K`] (the range of the white tables; a nudge of at most 20 mired never
+/// reaches either end from a scene the estimator reports). A negative shift is a higher Kelvin: the
+/// camera is balanced for a bluer light and the picture comes out warmer.
+#[must_use]
+pub fn nudged_cct(cct_scene_k: f64, shift_mired: f64) -> f64 {
+    let mired = 1e6 / cct_scene_k + shift_mired;
+    if !(mired.is_finite() && mired > 0.0) {
+        return if mired > 0.0 {
+            NUDGE_MIN_K
+        } else {
+            NUDGE_MAX_K
+        };
+    }
+    (1e6 / mired).clamp(NUDGE_MIN_K, NUDGE_MAX_K)
+}
+
+/// The tint nudge that applies to a scene (`docs/19` section 5): `tint_shift` added to the scene's
+/// own tint ([`scene_tint`]) and the sum held in [`TINT_MIN`] to [`TINT_MAX`], returned as the change
+/// of the tint. A positive shift is more magenta (it removes a green cast), as a manual tint is.
+#[must_use]
+pub fn nudged_tint(locus: &Locus, scene: &SceneLight, tint_shift: f64) -> f64 {
+    if tint_shift == 0.0 || !tint_shift.is_finite() {
+        return 0.0;
+    }
+    let tint = scene_tint(locus, scene);
+    // `+ 0.0` turns a negative zero into 0.
+    (tint + tint_shift).clamp(TINT_MIN, TINT_MAX) - tint + 0.0
+}
+
+/// The user's white of a nudged Auto white balance (`docs/19` section 5): the scene's class-blended,
+/// tinted ALEXA white `w_A(E_scene)` ([`scene_alexa_white`]) moved along the locus to the nudged CCT
+/// ([`nudged_cct`]), channel by channel `w_A(E_scene) * w_locus(CCT_user) / w_locus(CCT_scene)`
+/// ([`AlexaWhite::locus_white`]), so the scene's class mix and tint are kept, then given the tint
+/// nudge ([`nudged_tint`]) as a tint is given to a white ([`tinted_white`]: red and blue times
+/// `2^(-dt/100)`). Returns the nudged CCT and `w_A(E_user)`, green = 1. A shift of 0 mired keeps the
+/// scene's CCT exactly and a tint shift of 0 leaves the white as the locus move made it.
+///
+/// For daylight and tungsten light, whose class whites are the locus model, the move along the locus
+/// is the class-blended white evaluated at the nudged CCT. The fluorescent and LED class whites are
+/// lists of real lights (not ordered in colour, and constant beyond their ends), so evaluating them
+/// at another CCT can move the white the wrong way or not at all; moving the scene's own white as the
+/// locus moves gives every light the same, monotonic nudge (`docs/02` C3–C4, Apple Auto's nudge).
+#[must_use]
+pub fn nudged_alexa_white(
+    white: &AlexaWhite,
+    locus: &Locus,
+    scene: &SceneLight,
+    shift_mired: f64,
+    tint_shift: f64,
+) -> (f64, Vec3) {
+    let w_scene = scene_alexa_white(white, locus, scene);
+    let (cct_k, mut w) = if shift_mired == 0.0 {
+        (scene.cct_k, w_scene)
+    } else {
+        let cct_k = nudged_cct(scene.cct_k, shift_mired);
+        let from = white.locus_white(scene.cct_k);
+        let to = white.locus_white(cct_k);
+        (
+            cct_k,
+            [
+                w_scene[0] * (to[0] / from[0]),
+                1.0,
+                w_scene[2] * (to[2] / from[2]),
+            ],
+        )
+    };
+    let dt = nudged_tint(locus, scene, tint_shift);
+    if dt != 0.0 {
+        w = tinted_white(w, dt);
+    }
+    (cct_k, w)
+}
+
 /// The values the White balance rows show: Kelvin and tint.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WbReadout {
@@ -613,9 +700,32 @@ pub struct WbReadout {
 /// The tint is computed for the rounded Kelvin that is shown, so the pair is self consistent.
 #[must_use]
 pub fn auto_readout(white: &AlexaWhite, locus: &Locus, scene: &SceneLight) -> WbReadout {
+    readout_of_white(white, scene.cct_k, scene_alexa_white(white, locus, scene))
+}
+
+/// The readout of an Auto white balance whose user white Apple Auto nudged (`docs/19` section 5):
+/// [`auto_readout`] of the nudged white `w_A(E_user)` ([`nudged_alexa_white`]) at its CCT. The Kelvin
+/// is the nudged CCT rounded to 50 K and held in 2000 to 11000 K, and the tint is the one that makes
+/// `Manual { kelvin, tint }` reproduce the nudged white (the scene's own tint plus the tint nudge, up
+/// to the rounding of the Kelvin, for daylight and tungsten light), so the Automatic card and the
+/// Kelvin and Tint sliders' detents show the white in effect.
+#[must_use]
+pub fn nudged_readout(
+    white: &AlexaWhite,
+    locus: &Locus,
+    scene: &SceneLight,
+    shift_mired: f64,
+    tint_shift: f64,
+) -> WbReadout {
+    let (cct_k, w) = nudged_alexa_white(white, locus, scene, shift_mired, tint_shift);
+    readout_of_white(white, cct_k, w)
+}
+
+/// The Kelvin (`cct_k` rounded to 50 K, held in 2000 to 11000 K) and the tint that come closest to
+/// neutralising the ALEXA white `w_s` with `Manual { kelvin, tint }` (see [`auto_readout`]).
+fn readout_of_white(white: &AlexaWhite, cct_k: f64, w_s: Vec3) -> WbReadout {
     let kelvin_k =
-        ((scene.cct_k / KELVIN_STEP_K).round() * KELVIN_STEP_K).clamp(KELVIN_MIN_K, KELVIN_MAX_K);
-    let w_s = scene_alexa_white(white, locus, scene);
+        ((cct_k / KELVIN_STEP_K).round() * KELVIN_STEP_K).clamp(KELVIN_MIN_K, KELVIN_MAX_K);
     let w_u = white.locus_white(kelvin_k);
     let product = (w_s[0] / w_u[0]) * (w_s[2] / w_u[2]);
     // `+ 0.0` turns a negative zero into 0.

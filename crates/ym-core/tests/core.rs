@@ -177,7 +177,7 @@ fn a_whole_open_edit_export_cycle_writes_only_the_export_file() {
         .update_settings(
             ids[0],
             &SettingsPatch {
-                saturation: Some(25.0),
+                saturation: Some(ym_core::settings::PercentSetting::manual_value(25.0)),
                 ..SettingsPatch::exposure_ev(0.4)
             },
         )
@@ -255,6 +255,10 @@ fn choosing_a_destination_remembers_the_folder_in_the_preferences_and_nothing_el
         "check_for_updates_automatically",
         "watch_downloads_during_import",
         "last_used_folders",
+        // "Auto with Apple Intelligence", the eighth (the owner's agreement of 2026-10-19, docs/19).
+        "apple_auto",
+        // "Instructions for Apple Intelligence", the ninth (the owner's request of 2026-10-19).
+        "apple_auto_instructions",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -644,7 +648,7 @@ fn the_cli_preview_of_a_real_session() {
         .update_settings(
             ids[0],
             &SettingsPatch {
-                contrast: Some(20.0),
+                contrast: Some(ym_core::settings::PercentSetting::manual_value(20.0)),
                 ..SettingsPatch::default()
             },
         )
@@ -819,6 +823,8 @@ fn the_export_preferences_and_looks_types_have_the_fields_of_the_typescript_inte
         .expect("json"),
     );
     let prefs = Preferences::default();
+    // `apple_auto` (docs/19 section 2) is a field on both sides.
+    assert!(ts_interface_keys(&source, "Preferences").contains("apple_auto"));
     check("Preferences", serde_json::to_value(&prefs).expect("json"));
     check(
         "LastUsedFolders",
@@ -866,6 +872,55 @@ fn the_export_preferences_and_looks_types_have_the_fields_of_the_typescript_inte
         serde_json::to_value(DisplayRendering::Aces2).expect("json"),
         serde_json::json!({ "kind": "aces2" })
     );
+}
+
+#[test]
+fn the_apple_auto_types_have_the_fields_of_the_typescript_interfaces() {
+    // `apple_auto_status` and the photo's Apple Auto state (`docs/19` sections 10 and 12) as the
+    // webview reads them.
+    use ym_core::apple_auto::{AdvisorAnswer, AdvisorInfo, AppleAuto, AutoSteps};
+    let path = repo_root().join("src/api/types.ts");
+    let Ok(source) = std::fs::read_to_string(&path) else {
+        eprintln!("{} is not there; skipping", path.display());
+        return;
+    };
+    let check = |name: &str, value: Value| {
+        assert_eq!(
+            ts_interface_keys(&source, name),
+            keys(&value),
+            "interface {name} against its Rust type"
+        );
+    };
+    let r = rig();
+    let status = r.core.apple_auto_status();
+    check(
+        "AppleAutoStatus",
+        serde_json::to_value(&status).expect("json"),
+    );
+    let info = AdvisorInfo::new("AFM 3 Core", "27.0.1 (27A404)");
+    check("AppleAutoInfo", serde_json::to_value(&info).expect("json"));
+    let answer = AdvisorAnswer {
+        steps: AutoSteps::keep(),
+        scene: "A street".into(),
+        plan: "Soft and warm".into(),
+    };
+    check(
+        "AppleAutoAnswer",
+        serde_json::to_value(&answer).expect("json"),
+    );
+    check(
+        "AppleAutoSteps",
+        serde_json::to_value(answer.steps).expect("json"),
+    );
+    // The union is tagged by `state`, with the variants `types.ts` lists.
+    let answered = serde_json::to_value(AppleAuto::Answered { answer, info }).expect("json");
+    assert_eq!(answered["state"], serde_json::json!("answered"));
+    for state in ["off", "unavailable", "pending", "answered", "failed"] {
+        assert!(
+            source.contains(&format!("{{ state: \"{state}\"")),
+            "AppleAuto's {state} in types.ts"
+        );
+    }
 }
 
 #[test]

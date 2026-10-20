@@ -428,8 +428,9 @@ fn flags_become_settings_and_the_exposure_offset_is_relative_to_each_photos_auto
             (ev - (auto_ev - 0.5)).abs() < 1e-9,
             "{ev} vs {auto_ev} - 0.5"
         );
-        assert_eq!(s["contrast"], 20.0);
-        assert_eq!(s["saturation"], -15.0);
+        // Contrast and saturation are Auto or manual (docs/19 section 5): a number is manual.
+        assert_eq!(s["contrast"], json!({ "kind": "manual", "value": 20.0 }));
+        assert_eq!(s["saturation"], json!({ "kind": "manual", "value": -15.0 }));
         assert_eq!(
             s["white_balance"],
             json!({ "kind": "manual", "kelvin": 5200.0, "tint": 3.0 })
@@ -489,7 +490,8 @@ fn the_remaining_flags_of_docs_10_reach_the_settings_of_the_file() {
     assert_eq!(objects.len(), 1);
     let s = &objects[0]["settings"];
     assert_eq!(s["brightness"], 11.0);
-    assert_eq!(s["shadows"], 22.0);
+    // Shadows is Auto or a manual value (`docs/19` section 5): a number is Manual.
+    assert_eq!(s["shadows"], json!({ "kind": "manual", "value": 22.0 }));
     assert_eq!(s["white"], 33.0);
     assert_eq!(s["white_offset_ev"], -0.5);
     assert_eq!(
@@ -501,9 +503,18 @@ fn the_remaining_flags_of_docs_10_reach_the_settings_of_the_file() {
             "chromatic_aberration": true
         })
     );
-    // Untouched, they are what the photo opens with.
-    for key in ["contrast", "highlights", "black", "saturation"] {
-        assert_eq!(s[key], 0.0, "{key}");
+    // Untouched, they are what the photo opens with: Auto highlights, black, contrast and
+    // saturation are pinned to the 0 they resolve to without Apple Auto, and the shadows and
+    // highlights wheels to the centre (docs/19 section 5).
+    for key in ["highlights", "black", "contrast", "saturation"] {
+        assert_eq!(s[key], json!({ "kind": "manual", "value": 0.0 }), "{key}");
+    }
+    for key in ["shadows", "highlights"] {
+        assert_eq!(
+            s["color_balance"][key],
+            json!({ "kind": "manual", "point": [0.0, 0.0] }),
+            "{key}"
+        );
     }
 }
 
@@ -549,8 +560,8 @@ fn a_settings_file_applies_to_every_photo_and_flags_override_it() {
         .assert()
         .success();
     for o in json_lines(&out.get_output().stdout) {
-        assert_eq!(o["settings"]["contrast"], 30.0);
-        assert_eq!(o["settings"]["saturation"], -20.0, "the flag wins");
+        assert_eq!(o["settings"]["contrast"]["value"], 30.0);
+        assert_eq!(o["settings"]["saturation"]["value"], -20.0, "the flag wins");
         assert_eq!(o["settings"]["exposure"]["ev"], 0.25);
     }
 }
@@ -582,7 +593,11 @@ fn a_settings_object_keyed_by_file_name_gives_each_photo_its_own() {
         objects
             .iter()
             .find(|o| o["input"].as_str().is_some_and(|i| i.ends_with(name)))
-            .map(|o| o["settings"]["contrast"].as_f64().expect("contrast"))
+            .map(|o| {
+                o["settings"]["contrast"]["value"]
+                    .as_f64()
+                    .expect("contrast")
+            })
             .expect(name)
     };
     assert_eq!(contrast("a.ARW"), 40.0);
@@ -611,7 +626,7 @@ fn settings_can_come_from_stdin_and_values_out_of_range_are_limited_with_a_warni
         .success()
         .stderr(predicate::str::contains("out-of-range values for contrast"));
     assert_eq!(
-        json_lines(&out.get_output().stdout)[0]["settings"]["contrast"],
+        json_lines(&out.get_output().stdout)[0]["settings"]["contrast"]["value"],
         100.0
     );
 }
@@ -1124,13 +1139,21 @@ fn a_setting_that_is_not_a_policy_is_a_warning_and_the_default() {
 
 #[test]
 fn the_json_of_a_file_has_this_shape() {
-    // The additive `device` key is in the snapshot, between `settings` and `timings_ms`.
+    // The additive `device` key is in the snapshot, between `settings` and `timings_ms`. Apple Auto
+    // is off so that the shape is the same on every machine (with Apple Auto: `tests/apple_auto.rs`).
     let sb = Sandbox::new();
     let arw = sb.arw("a.ARW");
     let out = sb
         .ym()
         .env_remove("YELLOWMOON_GPU")
-        .args(["render", "--json", "--quiet", "--cpu"])
+        .args([
+            "render",
+            "--json",
+            "--quiet",
+            "--cpu",
+            "--apple-auto",
+            "off",
+        ])
         .arg(&arw)
         .assert()
         .success();
@@ -1317,6 +1340,7 @@ fn a_reader_that_goes_away_does_not_stop_the_export() {
         .arg(sb.photos())
         .env("YELLOWMOON_HOME", sb.home())
         .env("YELLOWMOON_DATA", common::data_dir())
+        .env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1343,6 +1367,7 @@ fn ctrl_c_ends_the_run_with_130_and_deletes_the_partial_file() {
         .arg(&arw)
         .env("YELLOWMOON_HOME", sb.home())
         .env("YELLOWMOON_DATA", common::data_dir())
+        .env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1449,6 +1474,7 @@ fn the_first_ctrl_c_ends_a_run_that_is_waiting_for_stdin() {
         .args(["render", "-"])
         .env("YELLOWMOON_HOME", sb.home())
         .env("YELLOWMOON_DATA", common::data_dir())
+        .env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -37,6 +37,12 @@ pub struct YmInfo {
     pub display_transform: Option<String>,
     /// `ym:Models`, the networks used (`jdd 1.2.0 (sha256…)`).
     pub models: Option<String>,
+    /// `ym:Auto`, which Auto made the photo's automatic values: `rule` or `apple` (`docs/19`
+    /// section 9).
+    pub auto: Option<String>,
+    /// `ym:AppleAuto`, what Apple Auto said about the photo: compact JSON with sorted keys, only when
+    /// Apple Auto was on for it (`docs/19` section 9).
+    pub apple_auto: Option<String>,
     /// `ym:Settings`, the resolved develop settings; written as compact JSON.
     pub settings: Option<serde_json::Value>,
 }
@@ -117,7 +123,7 @@ pub fn build_xmp(info: &XmpInfo, mime: &str) -> Result<Vec<u8>, ExportError> {
     let ym = &info.ym;
     let intensity = ym.look_intensity_pct.map(|pct| pct.to_string());
     // Fixed order, as in docs/09.
-    let fields: [(&str, Option<&str>); 9] = [
+    let fields: [(&str, Option<&str>); 11] = [
         ("ym:PipelineVersion", ym.pipeline_version.as_deref()),
         ("ym:Profile", ym.profile.as_deref()),
         ("ym:ProfileVersion", ym.profile_version.as_deref()),
@@ -127,6 +133,8 @@ pub fn build_xmp(info: &XmpInfo, mime: &str) -> Result<Vec<u8>, ExportError> {
         ("ym:LookIntensity", intensity.as_deref()),
         ("ym:DisplayTransform", ym.display_transform.as_deref()),
         ("ym:Models", ym.models.as_deref()),
+        ("ym:Auto", ym.auto.as_deref()),
+        ("ym:AppleAuto", ym.apple_auto.as_deref()),
     ];
     for (name, value) in fields {
         if let Some(v) = value {
@@ -173,6 +181,8 @@ mod tests {
                 look_intensity_pct: Some(100),
                 display_transform: Some("aces2-sdr100-p3lim".into()),
                 models: Some("jdd 1.2.0 (sha256:ff)".into()),
+                auto: Some("apple".into()),
+                apple_auto: Some(r#"{"model":"AFM 3 Core","result":"answered"}"#.into()),
                 settings: Some(
                     serde_json::json!({ "exposure": { "manual_ev": 0.3 }, "look": "x" }),
                 ),
@@ -197,10 +207,20 @@ mod tests {
             "LookIntensity",
             "DisplayTransform",
             "Models",
+            "Auto",
+            "AppleAuto",
             "Settings",
         ] {
             assert!(xmp.contains(&format!("<ym:{name}>")), "{name}");
         }
+        // In the order of docs/09: ym:Auto and ym:AppleAuto after ym:Models, ym:Settings last.
+        let at = |name: &str| xmp.find(&format!("<ym:{name}>")).unwrap();
+        assert!(at("Models") < at("Auto") && at("Auto") < at("AppleAuto"));
+        assert!(at("AppleAuto") < at("Settings"));
+        assert!(xmp.contains("<ym:Auto>apple</ym:Auto>"));
+        assert!(xmp.contains(
+            "<ym:AppleAuto>{&quot;model&quot;:&quot;AFM 3 Core&quot;,&quot;result&quot;:&quot;answered&quot;}</ym:AppleAuto>"
+        ));
         assert!(xmp.contains("<ym:LookIntensity>100</ym:LookIntensity>"));
         // Compact JSON with sorted keys, escaped for XML.
         assert!(xmp.contains(

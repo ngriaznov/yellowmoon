@@ -6,7 +6,8 @@ import { AUTO, manualOrAuto } from "./shared";
 /**
  * Controls that live on two tabs. Colour › White balance › Kelvin, Light › Exposure › Contrast and
  * Colour › Colour balance › Saturation are also the Temperature, Contrast and Saturation rows of
- * the Look tab's Tone card (owner's decision of 2026-10-13, `docs/16`). They are one setting each:
+ * the Look tab's Tone card (owner's decision of 2026-10-13, `docs/16`). All three are Auto or a
+ * value; contrast and saturation since Apple Auto (`docs/19` section 5). They are one setting each:
  * both copies are built from the code below, read the same resolved value and send the same patch
  * through `store.update`, so moving one moves the other, and undo, redo and Reset treat them as
  * any other field.
@@ -74,32 +75,37 @@ export function KelvinSlider({ store, rs, label = "Kelvin" }: ControlProps & { l
   );
 }
 
-/** Contrast, -100 to 100, default 0 (Light › Exposure and Look › Tone). A tone curve about mid grey that keeps black and the top code value (`docs/02` C9). */
-export function ContrastSlider({ store, rs }: ControlProps) {
+/** The settings that are Auto or a value from −100 to 100 (`PercentSetting`, `docs/19` section 5). */
+export type PercentField = "contrast" | "saturation" | "highlights" | "shadows" | "black";
+
+/**
+ * Contrast, Saturation, Highlights, Shadows or Black: −100 to 100, Auto or a value (`docs/19` section 10). They behave like the
+ * Exposure slider: the detent and Reset are at the photo's Auto value (0, or Apple Auto's answer, `AutoEstimates.contrast`, …), a
+ * value equal to it is sent as Auto (`manualOrAuto`) and any other value as Manual, and Reset sends Auto, not a manual copy of the
+ * Auto value.
+ */
+export function PercentSlider({ store, rs, field, label }: ControlProps & { field: PercentField; label: string }) {
+  const auto = rs.estimates[field];
   return (
     <Slider
-      label="Contrast"
-      value={rs.values.contrast}
+      label={label}
+      value={rs.values[field]}
       min={-100}
       max={100}
-      defaultValue={0}
+      defaultValue={auto}
       format={formats.signed}
-      onChange={(contrast, final) => void store.update({ contrast }, final, rs.photo_id)}
+      onChange={(value, final) => void store.update({ [field]: manualOrAuto({ value }, { value: auto }) }, final, rs.photo_id)}
+      onReset={() => void store.update({ [field]: AUTO }, true, rs.photo_id)}
     />
   );
 }
 
-/** Saturation, -100 to 100, default 0 (Colour › Colour balance and Look › Tone). It keeps the luminance (`docs/02` C9). */
+/** Contrast (Light › Exposure and Look › Tone): Auto or −100…100, the detent at the Auto value. */
+export function ContrastSlider({ store, rs }: ControlProps) {
+  return <PercentSlider store={store} rs={rs} field="contrast" label="Contrast" />;
+}
+
+/** Saturation (Colour › Colour balance and Look › Tone): Auto or −100…100, the detent at the Auto value. It keeps the luminance (`docs/02` C9). */
 export function SaturationSlider({ store, rs }: ControlProps) {
-  return (
-    <Slider
-      label="Saturation"
-      value={rs.values.saturation}
-      min={-100}
-      max={100}
-      defaultValue={0}
-      format={formats.signed}
-      onChange={(saturation, final) => void store.update({ saturation }, final, rs.photo_id)}
-    />
-  );
+  return <PercentSlider store={store} rs={rs} field="saturation" label="Saturation" />;
 }

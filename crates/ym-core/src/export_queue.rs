@@ -537,6 +537,14 @@ impl ExportQueue {
         if developing > 0 {
             return Err(QueueError::Developing(developing));
         }
+        // Apple Auto asks about these photos first, after the one on screen, each with the frames of
+        // its burst that its export also waits for (`docs/19` section 6).
+        let waiting: Vec<PhotoId> = items
+            .iter()
+            .filter(|item| !item.settled)
+            .map(|item| item.snapshot.view.id)
+            .collect();
+        session.prioritise_apple_auto(&waiting);
         let mut st = lock(&self.shared.state);
         if st.shutdown {
             return Err(QueueError::Shutdown);

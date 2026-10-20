@@ -4,6 +4,7 @@ import type { ColorBalance, ColorBalancePoint, LightSource } from "../../api/typ
 import { ColorWarpCard } from "./ColorWarpCard";
 import type { ColorWarpCardProps } from "./ColorWarpCard";
 import { KelvinSlider, SaturationSlider, setWhiteBalance, whiteBalanceState, whiteBalanceToAuto } from "./controls";
+import { AUTO, pointOrAuto } from "./shared";
 
 /** The light presets, in the order of the mockup. */
 export const LIGHT_OPTIONS: ReadonlyArray<{ value: LightSource; label: string; ariaLabel: string }> = [
@@ -21,7 +22,8 @@ const WHEELS = [
   ["highlights", "Highlights"],
 ] as const;
 
-const ZERO_BALANCE: ColorBalance = { shadows: [0, 0], midtones: [0, 0], highlights: [0, 0] };
+/** The Colour balance card's Reset: the shadows and highlights wheels back to Auto, the midtones wheel to the centre. */
+const RESET_BALANCE: ColorBalance = { shadows: AUTO, midtones: [0, 0], highlights: AUTO };
 
 /** The Colour tab's props: those of every tab, and Pick colour's state, which the Photos screen keeps (it owns the crosshair layer). */
 export type ColorTabProps = ColorWarpCardProps;
@@ -69,19 +71,29 @@ export const ColorTab = memo(function ColorTab({ store, photo, rs, pickingColor,
       </Card>
       <Card
         title="Colour balance"
-        action={<ResetLink size="card" onClick={() => void store.update({ color_balance: ZERO_BALANCE, saturation: 0 })} />}
+        action={<ResetLink size="card" onClick={() => void store.update({ color_balance: RESET_BALANCE, saturation: AUTO }, true, rs.photo_id)} />}
       >
         <WheelGroup>
-          {WHEELS.map(([key, label]) => (
-            <Wheel
-              key={key}
-              label={label}
-              value={settings.color_balance[key]}
-              onChange={(point: ColorBalancePoint, final: boolean) =>
-                void store.update({ color_balance: { ...settings.color_balance, [key]: point } }, final, rs.photo_id)
-              }
-            />
-          ))}
+          {WHEELS.map(([key, label]) => {
+            // The shadows and highlights wheels are Auto or a point (`docs/19` section 5): the puck shows the point in effect, a point
+            // dropped on the Auto point is sent as Auto, and Reset (double-click, Home) sends Auto. The midtones wheel is a point.
+            const auto: ColorBalancePoint = key === "shadows" ? estimates.balance_shadows : key === "highlights" ? estimates.balance_highlights : [0, 0];
+            const send = (point: ColorBalancePoint, final: boolean): void => {
+              const next: ColorBalance =
+                key === "midtones" ? { ...settings.color_balance, midtones: point } : { ...settings.color_balance, [key]: pointOrAuto(point, auto) };
+              void store.update({ color_balance: next }, final, rs.photo_id);
+            };
+            return (
+              <Wheel
+                key={key}
+                label={label}
+                value={values.color_balance[key]}
+                defaultValue={auto}
+                onChange={send}
+                onReset={key === "midtones" ? undefined : () => void store.update({ color_balance: { ...settings.color_balance, [key]: AUTO } }, true, rs.photo_id)}
+              />
+            );
+          })}
         </WheelGroup>
         <SaturationSlider store={store} rs={rs} />
       </Card>

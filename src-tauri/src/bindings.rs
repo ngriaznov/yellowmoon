@@ -127,18 +127,22 @@ mod tests {
             .collect()
     }
 
-    /// The tags (`kind: "x"`, `phase: "x"`) of a union, or its string literals, by type name.
+    /// The tags (`kind: "x"`, `phase: "x"`, `state: "x"`) of a union, or its string literals, by
+    /// type name.
     fn tags(text: &str) -> BTreeMap<String, BTreeSet<String>> {
         let comments = Regex::new(r"(?s)/\*.*?\*/").expect("regex");
         let text = comments.replace_all(text, "");
         let alias = Regex::new(r"(?ms)^export type (\w+) =(.*?);\n(?:\n|\z)").expect("regex");
-        let tag = Regex::new(r#"(?:kind|phase): "(\w+)""#).expect("regex");
+        let tag = Regex::new(r#"(?:kind|phase|state): "(\w+)""#).expect("regex");
         let literal = Regex::new(r#""(\w+)""#).expect("regex");
         let only_literals = Regex::new(r#"^\s*(?:"\w+"\s*\|?\s*)+$"#).expect("regex");
         let mut out = BTreeMap::new();
         for c in alias.captures_iter(&text) {
             let body = &c[2];
-            let set: BTreeSet<String> = if body.contains("kind:") || body.contains("phase:") {
+            let set: BTreeSet<String> = if ["kind:", "phase:", "state:"]
+                .iter()
+                .any(|t| body.contains(t))
+            {
                 tag.captures_iter(body).map(|t| t[1].to_owned()).collect()
             } else if only_literals.is_match(body) {
                 literal
@@ -217,6 +221,9 @@ mod tests {
             "MenuAction",
             "UpdateState",
             "ErrorScope",
+            "AppleAuto",
+            "AppleAutoReason",
+            "PercentSetting",
         ] {
             assert!(generated.contains_key(name), "{name} is not on the bridge");
         }

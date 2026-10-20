@@ -28,6 +28,9 @@ rayon.workspace = true
 tracing.workspace = true
 # PNG bytes of the thumbnails and look tiles (MIT OR Apache-2.0, already in the workspace).
 png.workspace = true
+# The short digest of Apple Auto's instructions in reports and `ym:AppleAuto` (`docs/19` section 7;
+# MIT OR Apache-2.0, already in the workspace).
+sha2.workspace = true
 
 [features]
 # TEST-ONLY. Lets the environment variable `YM_FORCE_DEMOSAIC=<method name>` choose the R6 demosaic

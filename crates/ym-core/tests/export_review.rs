@@ -457,8 +457,8 @@ fn export_bytes_do_not_depend_on_the_number_of_threads() {
         .update_settings(
             out.added[0],
             &SettingsPatch {
-                contrast: Some(15.0),
-                saturation: Some(10.0),
+                contrast: Some(ym_core::settings::PercentSetting::manual_value(15.0)),
+                saturation: Some(ym_core::settings::PercentSetting::manual_value(10.0)),
                 ..SettingsPatch::default()
             },
         )

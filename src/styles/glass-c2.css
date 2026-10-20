@@ -720,6 +720,26 @@ span.ym-filmstrip__thumb {
   padding: 4px 0 0;
   border-bottom: 1px solid var(--rim);
 }
+/* The instructions for Apple Intelligence under the Apple Auto row (docs/19 section 2): a label, the text area, then the hint and the
+   count beside the Reset to default button. */
+.ym-pref__instructions {
+  display: grid;
+  gap: 8px;
+  padding: 4px 0 14px;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-pref__instructions-foot {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ym-pref__instructions-foot [data-slot="button"] {
+  flex: none;
+}
+.ym-pref__count {
+  white-space: nowrap;
+}
 .ym-pref__defaults .ym-card {
   padding-inline: 0;
 }
