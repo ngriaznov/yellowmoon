@@ -256,6 +256,7 @@ fn the_rust_types_have_the_fields_of_the_typescript_interfaces() {
         status: PhotoStatus::Waiting,
         picked: false,
         reduced: false,
+        apple_pending: false,
     };
     check("PhotoSummary", serde_json::to_value(&summary).unwrap());
     check(

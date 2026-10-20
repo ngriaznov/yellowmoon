@@ -28,8 +28,8 @@ use ym_core::export_queue::{ExportEvent, ExportJob, ExportQueue, ExportSink};
 use ym_core::pipeline::{AdvisorPictures, PhotoSource, RenderOptions, Renderer};
 use ym_core::preferences::PreferencesPatch;
 use ym_core::session::{
-    AppleAutoEnv, ApplyScope, EventSink, OpenOptions, PhotoId, PictureInput, PictureRenderer,
-    Session, SessionEvent, ThumbnailInput, ThumbnailRenderer,
+    AppleAutoEnv, ApplyScope, EventSink, OpenOptions, PhotoId, PhotoStage, PictureInput,
+    PictureRenderer, Session, SessionEvent, ThumbnailInput, ThumbnailRenderer,
 };
 use ym_core::settings::{AutoOr, DevelopSettings, PercentSetting, SettingsPatch};
 use ym_export::ExportOptions;
@@ -2250,5 +2250,102 @@ fn an_export_after_a_removal_and_its_undo_is_the_same_bytes_with_the_same_answer
     for (_, bytes) in &after {
         let xmp = xmp_of(bytes).unwrap();
         assert_eq!(xmp_property(&xmp, "ym:Auto").as_deref(), Some("apple"));
+    }
+}
+
+/// The `apple` stage of each photo's progress, in the order it was sent: `false` for started (the
+/// photo waits for Apple Auto's answer), `true` for done.
+fn apple_stages(events: &[SessionEvent], id: PhotoId) -> Vec<bool> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::PhotoProgress(p) if p.id == id && p.stage == PhotoStage::Apple => {
+                Some(p.done)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn pending(rig: &Rig, id: PhotoId) -> bool {
+    rig.session.summary(id).expect("summary").apple_pending
+}
+
+/// What the Start screen waits for (`docs/19` section 6, the owner's report of 2026-10-20): the
+/// summary's `apple_pending` and the `apple` stage of `photo_progress` say which photos still wait for
+/// Apple Auto's answer, and say it once per change: when Apple Auto starts acting every photo
+/// without an answer waits, each answer ends that photo's wait, new instructions make every photo
+/// wait again, and switching Apple Auto off ends the wait of the photos it had not answered.
+#[test]
+fn the_apple_stage_says_which_photos_wait_for_an_answer() {
+    let (advisor, rig, ids) = held_rig(Ok(steps(1, 0, 0, 0)), 3);
+    // Developed while unavailable: nothing was sent then. Made available with the first request
+    // held at the advisor: every photo waits.
+    let events = rig.drain();
+    for &id in &ids {
+        assert_eq!(apple_stages(&events, id), vec![false], "photo {}", id.0);
+        assert!(pending(&rig, id));
+    }
+    advisor.gate.open();
+    rig.settle();
+    let events = rig.drain();
+    for &id in &ids {
+        assert_eq!(apple_stages(&events, id), vec![true], "photo {}", id.0);
+        assert!(!pending(&rig, id));
+        assert!(matches!(rig.state(id), AppleAuto::Answered { .. }));
+    }
+
+    // New instructions: every answer is dropped and every photo waits again, then is answered.
+    advisor.gate.close(None);
+    rig.session.set_apple_auto_instructions("Make it moody.");
+    advisor.gate.wait_parked();
+    let events = rig.drain();
+    for &id in &ids {
+        assert_eq!(apple_stages(&events, id), vec![false], "photo {}", id.0);
+        assert!(pending(&rig, id));
+    }
+    advisor.gate.open();
+    rig.settle();
+    let events = rig.drain();
+    for &id in &ids {
+        assert_eq!(apple_stages(&events, id), vec![true], "photo {}", id.0);
+    }
+
+    // Switched off while the photos wait: their wait ends at once, and nothing more is said.
+    advisor.gate.close(None);
+    rig.session.set_apple_auto_instructions("");
+    advisor.gate.wait_parked();
+    let _ = rig.drain();
+    rig.session.set_apple_auto_preference(false);
+    let events = rig.drain();
+    for &id in &ids {
+        assert_eq!(apple_stages(&events, id), vec![true], "photo {}", id.0);
+        assert!(!pending(&rig, id));
+    }
+    advisor.gate.open();
+    rig.settle();
+    let events = rig.drain();
+    for &id in &ids {
+        assert!(apple_stages(&events, id).is_empty(), "photo {}", id.0);
+        assert!(!pending(&rig, id));
+    }
+}
+
+/// A session without an Apple Auto advisor (`ym --apple-auto off`, Linux) never sends the stage, and
+/// no photo waits.
+#[test]
+fn without_an_advisor_no_photo_waits_and_no_apple_stage_is_sent() {
+    let dir = tempfile::tempdir().expect("dir");
+    write_photos(dir.path(), 2);
+    let (sink, events) = EventSink::channel();
+    let session = Session::new(base_env().with_events(sink));
+    let ids = session
+        .open(&[dir.path().to_path_buf()], OpenOptions::default())
+        .added;
+    assert!(session.wait_idle(Duration::from_secs(120)));
+    let events: Vec<SessionEvent> = events.try_iter().collect();
+    for &id in &ids {
+        assert!(apple_stages(&events, id).is_empty());
+        assert!(!session.summary(id).unwrap().apple_pending);
     }
 }

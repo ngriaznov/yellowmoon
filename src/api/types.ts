@@ -81,8 +81,12 @@ export type PhotoStatus =
   /** A file that can't be developed stays in the filmstrip with this plain-words reason. */
   | { kind: "skipped"; reason: string };
 
-/** Stages of the background job that develops a freshly opened photo (`docs/01` §Session). */
-export type PhotoStage = "probe" | "decode" | "estimate" | "thumbnail";
+/**
+ * Stages of the background job that develops a freshly opened photo (`docs/01` §Session), and `apple`: Apple Auto's answer (`docs/19`
+ * section 6), started while the photo waits for it and done when it arrived, failed or Apple Auto stopped acting on the photo. The
+ * photo is ready (it can be edited) before `apple` is done; that stage changes `PhotoSummary.apple_pending`, never the status.
+ */
+export type PhotoStage = "probe" | "decode" | "estimate" | "thumbnail" | "apple";
 
 /** What the UI needs to know about one photo without asking for its settings. */
 export interface PhotoSummary {
@@ -105,6 +109,8 @@ export interface PhotoSummary {
   picked: boolean;
   /** Lossless M or S: the camera already processed it, so colour emulation is approximate. */
   reduced: boolean;
+  /** Apple Auto acts on the photo and has not answered for it yet: its Auto values are Yellowmoon's own until the answer. */
+  apple_pending: boolean;
 }
 
 /** The session as the webview mirrors it (`session_state`). */

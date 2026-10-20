@@ -234,6 +234,10 @@ pub enum PhotoStage {
     Estimate,
     /// The thumbnail render.
     Thumbnail,
+    /// Apple Auto's answer (`docs/19` section 6): started while the photo waits for it, done when it
+    /// arrived, failed, or Apple Auto stopped acting on the photo. Only while Apple Auto acts; the
+    /// photo is ready before this stage is done.
+    Apple,
 }
 
 /// A photo's place in the development pipeline.
@@ -283,6 +287,10 @@ pub struct PhotoSummary {
     pub picked: bool,
     /// Lossless M or S: the camera already processed it, so colour emulation is approximate.
     pub reduced: bool,
+    /// Apple Auto acts on the photo and has not answered for it yet: its Auto values are Yellowmoon's
+    /// own until the answer (`docs/19` section 6). The `apple` stage of `photo_progress` reports each
+    /// change.
+    pub apple_pending: bool,
 }
 
 /// The session as the webview mirrors it (`session_state`).

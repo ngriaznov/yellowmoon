@@ -781,6 +781,10 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   right: calc(var(--panel-w) + 24px);
   bottom: max(24px, calc(100vh - var(--cell-y, 100vh) - var(--cell-h, 0px) + 12px));
 }
+/* In full screen (F) there is no panel: the bar spans the window like everywhere else. */
+.ym-screen[data-screen="photos"][data-fullscreen="true"] ~ .ym-error-bar {
+  right: 24px;
+}
 
 /* ---- Dialogs ----------------------------------------------------------------------------------------------------------------------- */
 .ym-about-dialog__adobe {

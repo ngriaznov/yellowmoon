@@ -84,7 +84,7 @@ describe("the Colour warp card", () => {
       .filter((s) => s.getAttribute("aria-labelledby"))
       .map((s) => sliderName(s));
     expect(labels).toEqual(["Range", "Shadows", "Highlights", "Pivot", "Exposure"]);
-    expect([valueOf("Range"), valueOf("Shadows"), valueOf("Highlights"), valueOf("Pivot"), valueOf("Exposure")]).toEqual(["4", "100%", "100%", "0.0 EV", "0.00 EV"]);
+    expect([valueOf("Range"), valueOf("Shadows"), valueOf("Highlights"), valueOf("Pivot"), valueOf("Exposure")]).toEqual(["2", "100%", "100%", "0.0 EV", "0.00 EV"]);
     expect(card().getByRole("slider", { name: "Pin 1" })).toHaveAttribute("aria-valuetext", "moves red toward orange");
     expect(card().getByRole("button", { name: "Delete pin" })).not.toHaveAttribute("aria-disabled");
     // One step: undo takes the pin away.
@@ -111,7 +111,7 @@ describe("the Colour warp card", () => {
     await h.user.click(card().getByRole("button", { name: "Reset Pivot" }));
     await waitFor(() => expect(pins()[1]?.pivot_ev).toBe(0));
     await h.user.click(card().getByRole("button", { name: "Reset Range" }));
-    await waitFor(() => expect(pins()[1]?.range).toBe(0.04));
+    await waitFor(() => expect(pins()[1]?.range).toBe(0.02));
   });
 
   it("with Lock a click adds a locked pin, which shows Range only", async () => {

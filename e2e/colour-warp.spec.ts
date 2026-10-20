@@ -48,7 +48,7 @@ test("a drag on the plane adds a pin, the photo follows it, and undo takes it ba
   await expect.poll(() => pinsOf(page, 4).then((p) => p.length)).toBe(1);
   await expect.poll(() => photoSrc(page)).not.toBe(before);
   // The pin's own sliders, at their defaults.
-  for (const [label, value] of [["Range", "4"], ["Shadows", "100%"], ["Highlights", "100%"], ["Pivot", "0.0 EV"], ["Exposure", "0.00 EV"]] as const) {
+  for (const [label, value] of [["Range", "2"], ["Shadows", "100%"], ["Highlights", "100%"], ["Pivot", "0.0 EV"], ["Exposure", "0.00 EV"]] as const) {
     await expect(card(page).getByRole("textbox", { name: `${label} value` })).toHaveValue(value);
   }
   // One step back is the whole drag.

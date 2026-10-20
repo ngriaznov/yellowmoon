@@ -1380,7 +1380,13 @@ export type PhotoStage =
 /**  The automatic estimates. */
 "estimate" | 
 /**  The thumbnail render. */
-"thumbnail";
+"thumbnail" | 
+/**
+ *  Apple Auto's answer (`docs/19` section 6): started while the photo waits for it, done when it
+ *  arrived, failed, or Apple Auto stopped acting on the photo. Only while Apple Auto acts; the
+ *  photo is ready before this stage is done.
+ */
+"apple";
 
 /**  A photo's place in the development pipeline. */
 export type PhotoStatus = 
@@ -1423,6 +1429,12 @@ export type PhotoSummary = {
 	picked: boolean,
 	/**  Lossless M or S: the camera already processed it, so colour emulation is approximate. */
 	reduced: boolean,
+	/**
+	 *  Apple Auto acts on the photo and has not answered for it yet: its Auto values are Yellowmoon's
+	 *  own until the answer (`docs/19` section 6). The `apple` stage of `photo_progress` reports each
+	 *  change.
+	 */
+	apple_pending: boolean,
 };
 
 /**  Display values under the pointer, 0 to 255 per channel. */

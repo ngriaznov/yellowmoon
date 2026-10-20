@@ -59,7 +59,8 @@ export async function showUpdateReady(page: Page): Promise<void> {
  */
 export async function openPhotos(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Open files…" }).click();
-  await expect(page.getByRole("heading", { level: 2, name: /^\d+ photos? ready$/ })).toBeVisible();
+  // Developed; with the mock's Apple Auto `pending` the photos stay "Grading N photos with Apple Intelligence" (`docs/11` §Start).
+  await expect(page.getByRole("heading", { level: 2, name: /^(\d+ photos? ready|Grading \d+ photos? with Apple Intelligence)$/ })).toBeVisible();
   await page.getByRole("button", { name: /Open photos/ }).click();
   await expect(page.getByRole("tab", { name: "Look" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Automatic" })).toBeVisible();

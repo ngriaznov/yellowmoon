@@ -29,7 +29,7 @@ export const WARP_RANGE_MIN = 0.01;
 /** The largest range of a pin. */
 export const WARP_RANGE_MAX = 0.25;
 /** The range of a new pin. */
-export const WARP_RANGE_DEFAULT = 0.04;
+export const WARP_RANGE_DEFAULT = 0.02;
 /** The safety factor of the flow's steps: `N = ceil(WARP_STEP_SAFETY · Σ|δ| / (ρ√e))`, so no step can fold the plane for one pin. */
 export const WARP_STEP_SAFETY = 1.25;
 /** The most flow steps a frame takes (one pin never needs more than 61). */

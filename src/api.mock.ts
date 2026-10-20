@@ -1394,6 +1394,14 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     return mockEstimates(options.appleAuto, preferences.apple_auto, preferences.apple_auto_instructions);
   }
 
+  /**
+   * Whether the photo waits for Apple Intelligence's answer (the summary's `apple_pending`): the mock's Apple Auto is one state for
+   * every photo, so a photo waits exactly while that state is `pending` (a file that can't be opened never does).
+   */
+  function applePending(rec: PhotoRecord): boolean {
+    return !rec.skipReason && mockAppleState(options.appleAuto, preferences.apple_auto, preferences.apple_auto_instructions).state === "pending";
+  }
+
   /** The core's `apple_auto_status`. */
   function appleAutoStatus(): AppleAutoStatus {
     const mode = options.appleAuto;
@@ -1420,7 +1428,13 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
    */
   function changingEstimates(change: () => void): void {
     const before = JSON.stringify(estimates());
+    const waited = photos.map(applePending);
     change();
+    // The `apple` stage of the photos that started or stopped waiting for Apple Intelligence, as the core sends it.
+    photos.forEach((rec, i) => {
+      const waits = applePending(rec);
+      if (waits !== waited[i]) progress(rec, "apple", !waits);
+    });
     if (JSON.stringify(estimates()) === before) return;
     for (const rec of photos) {
       if (rec.phase < 3 || rec.skipReason) continue;
@@ -1446,7 +1460,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     }
     return {
       folder_name: options.folderName,
-      photos: photos.map((p) => p.summary),
+      photos: photos.map((p) => ({ ...p.summary, apple_pending: applePending(p) })),
       current_index: current,
       picked: photos.filter((p) => p.summary.picked).map((p) => p.summary.id),
       default_export_folder: `${folderPath()} export`,
@@ -1492,6 +1506,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       status: { kind: "waiting" },
       picked,
       reduced: false,
+      apple_pending: false,
     };
     const initial = options.initialSettings[`${scene.name}.ARW`] ?? options.initialSettings[scene.name] ?? {};
     const override = options.photoOverrides[`${scene.name}.ARW`] ?? options.photoOverrides[scene.name];

@@ -21,6 +21,7 @@ import { Menu } from "./Menu";
 import type { PickMode } from "./PickLayer";
 import { PhotoView } from "./PhotoView";
 import { lookSlugOf } from "./preview";
+import { useFullScreen } from "./useFullScreen";
 import { ColorTab } from "./tools/ColorTab";
 import { CurveTab } from "./tools/CurveTab";
 import { DetailTab } from "./tools/DetailTab";
@@ -96,7 +97,7 @@ const ZoomMenu = memo(function ZoomMenu({ store, photo, rs, cell }: ZoomMenuProp
         if (z) void store.setZoom(z.mode);
       }}
       trigger={({ ref, ...props }) => (
-        <Button variant="header" className="ym-fit" ref={ref} title="Zoom (Z toggles Fit and 100%)" {...props}>
+        <Button variant="header" className="ym-fit" ref={ref} title="Zoom (Z toggles Fit and 100%, F full screen)" {...props}>
           {label}
           <ChevronDownIcon data-icon="inline-end" aria-hidden="true" />
         </Button>
@@ -163,7 +164,8 @@ function ExportCellContainer({ store }: { store: AppStore }) {
 /**
  * The Photos screen (`design/mockups/photos.html`, `docs/11-ui.md` §Photos): the header with
  * Before, Crop, Pick white, Add photos and the zoom menu, the photo, the filmstrip and the tool panel with its
- * six tabs. The Crop panel and the Export panel replace the tool panel.
+ * six tabs. The Crop panel and the Export panel replace the tool panel. F shows the photo alone, filling the window
+ * (`docs/11` §Full screen).
  */
 export function Photos() {
   perfCount("Photos");
@@ -205,6 +207,8 @@ export function Photos() {
 
   const photos = session?.photos ?? [];
   const cropping = crop.active;
+  // Full screen (F): the photo alone. The Export panel and Crop need the panel, so neither shares the window with it.
+  const fullScreen = useFullScreen(!cropping && panel !== "export");
 
   // In the Export panel the filmstrip dims the photos that won't be exported.
   const included = useMemo(
@@ -265,6 +269,7 @@ export function Photos() {
   };
 
   const showTab = (next: TabId): void => {
+    fullScreen.leave();
     store.setPanel("tools");
     setTab(next);
   };
@@ -327,6 +332,7 @@ export function Photos() {
           void store.openDialog("folder");
           return true;
         case "export":
+          fullScreen.leave();
           store.openExport();
           return true;
         case "close-session":
@@ -372,11 +378,19 @@ export function Photos() {
         case "zoom-out":
           zoomBy(-1);
           return true;
+        // Crop and Pick white need the panel and the header (the hint, the result on the Colour tab): full screen ends first.
         case "crop":
+          fullScreen.leave();
           if (!cropping) startCrop();
           return true;
         case "pick-white":
+          fullScreen.leave();
           togglePicking();
+          return true;
+        case "full-screen":
+          // Not from the Export panel or Crop, which are the panel.
+          if (cropping || panel === "export") return false;
+          fullScreen.toggle();
           return true;
         case "copy-settings":
           void store.copySettings();
@@ -391,6 +405,7 @@ export function Photos() {
           if (picking) setPicking(null);
           else if (crop.session) crop.session.cancel();
           else if (panel === "export") store.closeExport();
+          else if (fullScreen.on) fullScreen.leave();
           else return false;
           return true;
         case "confirm":
@@ -411,7 +426,7 @@ export function Photos() {
     panelNode = <ExportPanel store={store} />;
   } else {
     panelNode = (
-      <aside aria-label="Tools" className="ym-tools">
+      <aside aria-label="Tools" className="ym-tools" hidden={fullScreen.on || undefined}>
         <TabBar value={tab} onChange={setTab} />
         <div className="ym-tools__scroll" {...tabPanelProps(tab)}>
           <TitleBlock tab={tab} />
@@ -445,9 +460,22 @@ export function Photos() {
   const exporting = panel === "export";
 
   return (
-    <div className="ym-screen" data-screen="photos" data-panel={panel} data-count={COUNT_IN_HEADER ? "header" : undefined} data-dragging={dragging || undefined}>
+    <div
+      className="ym-screen"
+      data-screen="photos"
+      data-panel={panel}
+      data-count={COUNT_IN_HEADER ? "header" : undefined}
+      data-dragging={dragging || undefined}
+      data-fullscreen={fullScreen.on || undefined}
+    >
       <Aurora className="ym-aurora" animate={false} />
-      <Header titleAs="h1" title={session?.folder_name ?? "Yellowmoon"} subline={session ? folderSubline(session) : ""} export={<ExportCellContainer store={store} />}>
+      <Header
+        titleAs="h1"
+        title={session?.folder_name ?? "Yellowmoon"}
+        subline={session ? folderSubline(session) : ""}
+        export={<ExportCellContainer store={store} />}
+        hidden={fullScreen.on}
+      >
         {exporting ? (
           <>
             <Button variant="header" onClick={() => store.closeExport()}>
@@ -513,9 +541,14 @@ export function Photos() {
         onTogglePick={togglePickOf}
         onRemove={exporting ? undefined : removePhoto}
         onRemovePicked={exporting ? undefined : removePicked}
+        hidden={fullScreen.on}
       />
 
       {panelNode}
+      {/* Said once on entering; the hidden header and panel are gone for a screen reader too. */}
+      <div className="sr-only" aria-live="polite">
+        {fullScreen.on ? "Full screen. Press F or Esc to leave." : ""}
+      </div>
     </div>
   );
 }

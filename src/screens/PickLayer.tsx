@@ -41,7 +41,6 @@ export function PickLayer({ mode = "white", displayAspect, letterboxed = true, o
   const layer = useRef<HTMLDivElement>(null);
   // The crosshair position as a share of the cell; null until the pointer or a key puts it somewhere.
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
-  const picture = fitInCell(1.5, displayAspect);
 
   useEffect(() => {
     layer.current?.focus({ preventScroll: true });
@@ -62,6 +61,9 @@ export function PickLayer({ mode = "white", displayAspect, letterboxed = true, o
   /** Reports a point of the cell, unless it is on the paper around the picture. `share` is the point as a share of the cell. */
   const pick = (share: { x: number; y: number }, px: { x: number; y: number }): void => {
     if (letterboxed) {
+      // The cell is 3:2, or the whole window in full screen (F): where the picture sits depends on the cell's own shape.
+      const box = measure();
+      const picture = fitInCell(box ? box.width / box.height : 1.5, displayAspect);
       const u = (share.x - picture.x) / picture.width;
       const v = (share.y - picture.y) / picture.height;
       if (u < 0 || u > 1 || v < 0 || v > 1) return;

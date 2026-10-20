@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderApp } from "../test/harness";
 import type { Harness } from "../test/harness";
+import { APPLE_GRADING_HINT, APPLE_GRADING_NOTE } from "./Start";
 
 let h: Harness | undefined;
 afterEach(() => {
@@ -190,6 +191,39 @@ describe("Start, developing", () => {
     expect(await screen.findByRole("heading", { level: 2, name: "12 photos ready" })).toBeInTheDocument();
     expect(screen.getByText("Everything is developed and ready to export.")).toBeInTheDocument();
     expect(screen.getByRole("progressbar", { name: "Developing photos" })).toHaveAttribute("aria-valuenow", "100");
+  });
+
+  it("with Apple Auto on, waits for Apple Intelligence before it says the photos are ready (the owner's report of 2026-10-20)", async () => {
+    h = renderApp({ appleAuto: "pending" });
+    await h.user.click(await screen.findByRole("button", { name: "Open files…" }));
+    h.api.flush();
+    // Developed, but Apple Intelligence has not answered: not ready yet, and the list says why.
+    expect(await screen.findByRole("heading", { level: 2, name: "Grading 12 photos with Apple Intelligence" })).toBeInTheDocument();
+    expect(screen.getByText(APPLE_GRADING_HINT)).toBeInTheDocument();
+    expect(screen.queryByText("Everything is developed and ready to export.")).not.toBeInTheDocument();
+    const list = within(screen.getByRole("list", { name: "Photos being developed" }));
+    expect(list.getAllByText("Developing")).toHaveLength(12);
+    expect(list.getAllByText(APPLE_GRADING_NOTE)).toHaveLength(12);
+    expect(screen.getByRole("progressbar", { name: "Developing photos" })).toHaveAttribute("aria-valuenow", "50");
+    // The photos can be opened meanwhile, as while they develop.
+    expect(screen.getByRole("button", { name: /Open photos/ })).not.toHaveAttribute("aria-disabled");
+    // The answers arrive (the core's `apple` stage, done): now they are ready.
+    act(() => h!.api.setAppleAuto("answered"));
+    expect(await screen.findByRole("heading", { level: 2, name: "12 photos ready" })).toBeInTheDocument();
+    expect(screen.getByText("Everything is developed and ready to export.")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Developing photos" })).toHaveAttribute("aria-valuenow", "100");
+    expect(within(screen.getByRole("list", { name: "Photos being developed" })).getAllByText("Ready")).toHaveLength(12);
+  });
+
+  it("with Apple Auto switched off while photos wait, stops waiting for it", async () => {
+    h = renderApp({ appleAuto: "pending" });
+    await h.user.click(await screen.findByRole("button", { name: "Open files…" }));
+    h.api.flush();
+    expect(await screen.findByRole("heading", { level: 2, name: "Grading 12 photos with Apple Intelligence" })).toBeInTheDocument();
+    await act(async () => {
+      await h!.api.preferencesSet({ apple_auto: false });
+    });
+    expect(await screen.findByRole("heading", { level: 2, name: "12 photos ready" })).toBeInTheDocument();
   });
 
   it("lists a file that can't be developed as Skipped, with its reason, and says how many", async () => {

@@ -1,11 +1,12 @@
 /**
  * The keyboard shortcuts of `docs/11-ui.md` §Keyboard shortcuts, as one pure function from a
  * key event to an action name, so the table is tested without a screen. ⌘ is the Meta key; the
- * app is macOS only. Keys that type (P, Z, C, W, 1–9, the arrows) are ignored while a text box
+ * app is macOS only. Keys that type (P, Z, C, W, F, 1–9, the arrows) are ignored while a text box
  * has focus, and so are ⇧⌘C, ⇧⌘V and ⌥⇧⌘V (copy and paste settings; plain ⌘C and ⌘V never reach this
  * table: they stay the system's Copy and Paste). The arrows are left to the control that has focus when
  * it uses them (a slider, the filmstrip, the tabs). Delete and Backspace remove the photo on screen from the filmstrip, except where a
- * control uses them itself (a text box, a slider with its knob, a menu, a dialog) or a mode (crop, pick white) is on.
+ * control uses them itself (a text box, a slider with its knob, a menu, a dialog) or a mode (crop, pick white) is on. F (full screen)
+ * is not a key held down, and not a letter typed into a menu or a list (their type-ahead), or pressed while cropping.
  */
 import type { TabId } from "../components/tabs";
 
@@ -29,6 +30,7 @@ export type ShortcutAction =
   | "zoom-out"
   | "crop"
   | "pick-white"
+  | "full-screen"
   | "copy-settings"
   | "paste-settings"
   | "paste-settings-picked"
@@ -86,6 +88,13 @@ function pressesItself(target: EventTarget | null): boolean {
   if (tag === "button" || tag === "summary" || (tag === "a" && el.hasAttribute("href"))) return true;
   const role = el.getAttribute("role");
   return role !== null && ["button", "radio", "tab", "switch", "menuitem", "menuitemradio", "slider"].includes(role);
+}
+
+/** True when the target is in a menu, a list or a dialog, which take typed letters themselves (a menu's type-ahead). */
+function inMenuOrDialog(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.closest !== "function") return false;
+  return el.closest('[role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"]') !== null;
 }
 
 /** True when the target uses the left and right arrows itself. */
@@ -185,6 +194,10 @@ export function shortcutFor(event: KeyLike, context: ShortcutContext = {}): Shor
       return { action: "crop" };
     case "w":
       return { action: "pick-white" };
+    case "f":
+      // Full screen: one press, one change (a key held down would flicker the window in and out of full screen). Crop needs its panel.
+      if (event.repeat || context.mode === "crop" || inMenuOrDialog(event.target)) return null;
+      return { action: "full-screen" };
     default:
       break;
   }

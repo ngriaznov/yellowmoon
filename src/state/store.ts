@@ -661,6 +661,12 @@ export class AppStore {
   // --- Events -------------------------------------------------------------------------------
 
   private onProgress(e: PhotoProgress): void {
+    // Apple Auto's answer is not a development stage the status shows: the photo is ready before it (`docs/19` section 6).
+    if (e.stage === "apple") {
+      const pending = !e.done;
+      this.later((s) => this.withApplePending(s, e.id, pending));
+      return;
+    }
     let status: PhotoStatus | null = null;
     if (e.error) status = { kind: "skipped", reason: e.error };
     else if (e.stage === "thumbnail" && e.done) status = { kind: "ready" };
@@ -681,6 +687,15 @@ export class AppStore {
     if (status.kind === "ready" && photos[session.current_index ?? -1]?.id === id) {
       queueMicrotask(() => void this.ensureSettings(id));
     }
+    return { ...s, session: { ...session, photos } };
+  }
+
+  /** The state with one photo's `apple_pending` changed. A photo not in the session yet is left alone: its summary will say. */
+  private withApplePending(s: AppState, id: PhotoId, pending: boolean): AppState {
+    const session = s.session;
+    const photo = session?.photos.find((p) => p.id === id);
+    if (!session || !photo || photo.apple_pending === pending) return s;
+    const photos = session.photos.map((p) => (p.id === id ? { ...p, apple_pending: pending } : p));
     return { ...s, session: { ...session, photos } };
   }
 

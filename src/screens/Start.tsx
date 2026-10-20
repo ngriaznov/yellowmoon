@@ -17,6 +17,11 @@ const STEPS = [
 
 const plural = (n: number, one: string, many: string): string => (n === 1 ? one : many);
 
+/** The note of a developed photo that Apple Intelligence has not graded yet (`docs/11` §Start). */
+export const APPLE_GRADING_NOTE = "Graded by Apple Intelligence…";
+/** The hint while every photo is developed and Apple Intelligence still grades some (`docs/11` §Start). */
+export const APPLE_GRADING_HINT = "Apple Intelligence is looking at each photo. You can start looking while it finishes.";
+
 /**
  * The Start screen (`design/mockups/start.html`, `docs/11-ui.md` §Start): a yellow block that
  * says what the app does, the drop zone, and three steps. Files dropped anywhere in the window
@@ -36,29 +41,45 @@ export function Start() {
   const total = photos.length;
   const ready = photos.filter(isReady).length;
   const skipped = photos.filter((p) => p.status.kind === "skipped").length;
-  const finished = busy && ready + skipped === total;
-  const progress = total === 0 ? 0 : Math.round((photos.reduce((sum, p) => sum + developFraction(p.status), 0) / total) * 100);
+  // With Apple Auto on, Apple Intelligence grades each photo after it is developed; its values are only final then (`docs/19`
+  // section 6), so the screen waits for it too. A photo counts half when it is developed and whole when it is graded.
+  const grading = photos.filter((p) => p.apple_pending && p.status.kind !== "skipped").length;
+  const appleActs = grading > 0;
+  const developed = ready + skipped === total;
+  const finished = busy && developed && !appleActs;
+  const fraction = (p: (typeof photos)[number]): number => {
+    const f = developFraction(p.status);
+    return appleActs && p.status.kind !== "skipped" ? f / 2 + (p.apple_pending ? 0 : 0.5) : f;
+  };
+  const progress = total === 0 ? 0 : Math.round((photos.reduce((sum, p) => sum + fraction(p), 0) / total) * 100);
 
   const items: DevelopItem[] = useMemo(
     () =>
-      photos.map((p) => ({
-        id: p.id,
-        name: photoName(p.file_name),
-        state: p.status.kind,
-        note: p.status.kind === "skipped" ? p.status.reason : undefined,
-      })),
+      photos.map((p) => {
+        const waitsForApple = p.status.kind === "ready" && p.apple_pending;
+        return {
+          id: p.id,
+          name: photoName(p.file_name),
+          state: waitsForApple ? "developing" : p.status.kind,
+          note: p.status.kind === "skipped" ? p.status.reason : waitsForApple ? APPLE_GRADING_NOTE : undefined,
+        };
+      }),
     [photos],
   );
 
   const title = !busy
     ? "Drop files or a folder"
-    : !finished
+    : !developed
       ? `Developing ${total} ${plural(total, "photo", "photos")}`
-      : ready === 0
-        ? "No photos ready"
-        : `${ready} ${plural(ready, "photo", "photos")} ready`;
+      : appleActs
+        ? `Grading ${grading} ${plural(grading, "photo", "photos")} with Apple Intelligence`
+        : ready === 0
+          ? "No photos ready"
+          : `${ready} ${plural(ready, "photo", "photos")} ready`;
   const hint = !finished
-    ? "You can start looking while the rest finishes."
+    ? developed
+      ? APPLE_GRADING_HINT
+      : "You can start looking while the rest finishes."
     : ready === 0
       ? `${skipped} ${plural(skipped, "file", "files")} skipped. Start over and open other files.`
       : skipped > 0

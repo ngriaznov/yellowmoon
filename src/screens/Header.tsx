@@ -14,6 +14,8 @@ export interface HeaderProps {
   children?: ReactNode;
   /** The export cell. */
   export: ReactNode;
+  /** Hidden, for the eyes and for assistive technology alike (the Photos screen's full screen, F). */
+  hidden?: boolean;
 }
 
 /**
@@ -22,7 +24,7 @@ export interface HeaderProps {
  * The folder cell keeps 84 px of left padding for the traffic lights; the window is dragged by it and by the gaps between the
  * cells (`data-tauri-drag-region`; a button never drags). Without a title bar (`titleBarStyle: Overlay`) there is no other handle.
  */
-export function Header({ title, subline, titleAs: Title = "span", children, export: exportCell }: HeaderProps) {
+export function Header({ title, subline, titleAs: Title = "span", children, export: exportCell, hidden = false }: HeaderProps) {
   const store = useStore();
   // "Update ready" can't restart the app while an export is running (`docs/12` §In the app): one this window started, or one the
   // core says is busy (`export_busy`: after a reload, or from another window).
@@ -40,7 +42,7 @@ export function Header({ title, subline, titleAs: Title = "span", children, expo
     });
   };
   return (
-    <header className="ym-header" data-tauri-drag-region="">
+    <header className="ym-header" data-tauri-drag-region="" hidden={hidden || undefined}>
       <div className="ym-brand" data-tauri-drag-region="deep">
         <Title className="ym-brand-title">
           <MoonMark />

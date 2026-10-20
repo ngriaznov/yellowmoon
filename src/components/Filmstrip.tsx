@@ -51,6 +51,8 @@ export interface FilmstripProps {
   tab?: TabId;
   /** Accessible name of the strip. Defaults to "Photos" (browse) or "Photos to export". */
   label?: string;
+  /** Hidden (the Photos screen's full screen, F). The strip still follows the photo on screen and shows it when it is back. */
+  hidden?: boolean;
   className?: string;
 }
 
@@ -135,6 +137,7 @@ export function Filmstrip({
   caption,
   tab,
   label,
+  hidden = false,
   className,
 }: FilmstripProps) {
   const captionId = useId();
@@ -172,15 +175,16 @@ export function Filmstrip({
   }, [photos, currentId]);
 
   // Keep the current photo in view, and keep focus on it after keyboard navigation. Only the strip
-  // scrolls, sideways: `scrollIntoView` would also move the page.
+  // scrolls, sideways: `scrollIntoView` would also move the page. A hidden strip has no boxes to measure; it reveals the photo on
+  // screen when it shows again (the arrows moved through the photos in full screen).
   useEffect(() => {
-    const el = currentId === null ? undefined : refs.current.get(currentId);
+    const el = currentId === null || hidden ? undefined : refs.current.get(currentId);
     if (!el) return;
     const strip = scroller.current;
     if (strip) strip.scrollLeft += scrollOffsetToReveal(strip.getBoundingClientRect(), el.getBoundingClientRect());
     if (focusAfter.current === currentId) el.focus({ preventScroll: true });
     focusAfter.current = null;
-  }, [currentId]);
+  }, [currentId, hidden]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
     if (mode !== "browse" || event.metaKey || event.ctrlKey || event.altKey) return;
@@ -232,6 +236,7 @@ export function Filmstrip({
       aria-label={label ?? (mode === "export" ? "Photos to export" : "Photos")}
       aria-describedby={captionId}
       className={cx("ym-filmstrip", className)}
+      hidden={hidden || undefined}
       data-tab={tab}
       onKeyDown={onKeyDown}
       onFocus={onFocusIn}

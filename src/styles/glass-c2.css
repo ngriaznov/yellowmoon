@@ -90,6 +90,25 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   mask-composite: exclude;
 }
 
+/* Full screen (F, docs/11 §Full screen): the photo alone. The header, the filmstrip and the panel are `hidden` (Photos.tsx); the grid is
+   one cell and the photo cell, 3:2 everywhere else, takes all of it. Its rectangle is then the window's: PhotoCell reports it (a
+   ResizeObserver), the native viewport and the aurora's cut-out follow, and Fit fits the new cell as after a window resize. The camera
+   line under the photo goes too; the chips that answer a key (the look, Before, the ⌥ readout) stay. */
+.ym-screen[data-screen="photos"][data-fullscreen="true"] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.ym-screen[data-screen="photos"][data-fullscreen="true"] .ym-photo-cell {
+  grid-column: 1;
+  grid-row: 1;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+}
+.ym-screen[data-screen="photos"][data-fullscreen="true"] .ym-photo-cell__camera {
+  display: none;
+}
+
 /* The header: the same row of cells (folder, actions, update, Export), one glass surface, a rim under it and between the cells. */
 .ym-screen[data-screen="photos"] .ym-header {
   @apply glass rounded-none;

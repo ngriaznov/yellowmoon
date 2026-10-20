@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ColorWarpPin } from "../api/types";
+import type { ChromaPoint, ColorWarpPin } from "../api/types";
 import {
   applyWarp,
   chromaOf,
@@ -13,8 +13,8 @@ import {
   logc4AtStops,
   logc4Decode,
   logc4Encode,
-  lockedPin,
-  movingPin,
+  lockedPin as newLockedPin,
+  movingPin as newMovingPin,
   pinValueText,
   pixelAt,
   planeHex,
@@ -30,6 +30,11 @@ import {
   warpDisplacement,
   warpIsIdentity,
 } from "./warpMath";
+
+// The maths below were worked out at range 0.04, the range of a new pin until the owner's decision of 2026-10-20 (now 0.02); the
+// pins here keep it, so the numbers still say what each test checks. Pins that set a range of their own override it.
+const movingPin = (source: ChromaPoint, target?: ChromaPoint): ColorWarpPin => ({ ...newMovingPin(source, target), range: 0.04 });
+const lockedPin = (at: ChromaPoint): ColorWarpPin => ({ ...newLockedPin(at), range: 0.04 });
 
 // The values below are worked out by hand from the formulas of docs/02 C9b (the CPU reference is crates/ym-color/src/warp.rs):
 //   δ = t − s, φ = exp(−|c − s|²/(2ρ²)), n = max(1, Σφ), λ = Π(1 − exp(−|c − l|²/(2ρ²))), g = smoothstep(0, 0.02, |c|), γ = g·λ,

@@ -115,7 +115,8 @@ export function developFraction(status: PhotoStatus): number {
     case "waiting":
       return 0;
     case "developing":
-      return { probe: 0.1, decode: 0.2, estimate: 0.4, thumbnail: 0.8 }[status.stage];
+      // `apple` never becomes a status (the store keeps it in `apple_pending`); it is listed for the type.
+      return { probe: 0.1, decode: 0.2, estimate: 0.4, thumbnail: 0.8, apple: 1 }[status.stage];
     case "ready":
     case "skipped":
       return 1;

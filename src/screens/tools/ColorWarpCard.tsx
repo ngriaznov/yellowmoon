@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/glass/toggle-group";
-import { Button, Card, formats, MINUS, ResetLink, RowNote, Slider, WarpPlane, WARP_MAX_PINS } from "../../components";
+import { Button, Card, formats, MINUS, ResetLink, RowNote, Slider, WarpPlane, WARP_MAX_PINS, WARP_RANGE_DEFAULT } from "../../components";
 import type { WarpTool } from "../../components";
 import type { ColorWarpPin } from "../../api/types";
 import { useAppState } from "../../state/context";
@@ -111,7 +111,7 @@ export function ColorWarpCard({ store, photo, rs, pickingColor = false, onPickCo
             value={Math.round(pin.range * 100)}
             min={1}
             max={25}
-            defaultValue={4}
+            defaultValue={Math.round(WARP_RANGE_DEFAULT * 100)}
             format={formats.integer}
             onChange={(v, final) => setPin({ range: v / 100 }, final)}
           />

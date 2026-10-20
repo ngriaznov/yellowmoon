@@ -17,6 +17,7 @@ function photo(id: number, patch: Partial<PhotoSummary> = {}): PhotoSummary {
     status: { kind: "ready" },
     picked: false,
     reduced: false,
+    apple_pending: false,
     ...patch,
   };
 }

@@ -268,6 +268,12 @@ pub enum PhotoStage {
     Estimate,
     /// The thumbnail render.
     Thumbnail,
+    /// Apple Auto's answer (`docs/19` section 6): started while Apple Auto acts on the photo and has
+    /// not answered for it, done when the answer or a failure arrived or Apple Auto stopped acting on
+    /// it. Sent only by a session with an Apple Auto advisor, after the photo's other stages or when
+    /// its state changes later (new instructions, Re-run, the preference); the photo is ready, and
+    /// can be edited, before this stage is done.
+    Apple,
 }
 
 /// A photo's place in the development pipeline.
@@ -412,6 +418,11 @@ pub struct PhotoSummary {
     pub picked: bool,
     /// Lossless M or S: the camera already processed it, so colour emulation is approximate.
     pub reduced: bool,
+    /// Apple Auto acts on the photo and has not answered for it yet (`docs/19` section 6): its Auto
+    /// values are Yellowmoon's own until the answer. The `apple` stage of [`PhotoProgress`] reports
+    /// each change.
+    #[serde(default)]
+    pub apple_pending: bool,
 }
 
 /// The session as the webview mirrors it (`session_state`).
@@ -1013,6 +1024,9 @@ struct Photo {
     apple_result: Option<AppleAuto>,
     /// The picture Apple Auto's model will see.
     apple_picture: PictureSlot,
+    /// What the listeners were last told of the photo's `apple` stage: true while it waits for
+    /// Apple Auto's answer ([`Inner::sync_apple_stage`]).
+    apple_pending_sent: bool,
     /// What `effective` was made from (see [`Served`]).
     served: Option<Served>,
     /// Apple Auto moved the photo's values before its first thumbnail was out: the development job
@@ -1469,6 +1483,14 @@ impl State {
             .filter(|&(_, &g)| Some(g) == mine)
             .map(|(&j, _)| j)
             .collect()
+    }
+
+    /// Whether Apple Auto acts on the photo and has not answered for it yet: what the summary's
+    /// `apple_pending` and the `apple` stage say. A photo still developing counts: it will be asked.
+    fn apple_pending(&self, p: &Photo) -> bool {
+        self.apple.activity().is_active()
+            && p.apple_result.is_none()
+            && !matches!(p.summary.status, PhotoStatus::Skipped { .. })
     }
 
     /// Whether Apple Auto still has to ask about the photo: it has its own estimates, is not
@@ -2034,7 +2056,10 @@ impl Session {
                 }
                 let id = PhotoId(st.next_id);
                 st.next_id += 1;
-                let photo = inner.new_photo(id, path, canon.clone(), &st.default_look, probe);
+                let mut photo = inner.new_photo(id, path, canon.clone(), &st.default_look, probe);
+                // The summary read after `open` says whether the photo waits for Apple Auto; the `apple`
+                // stage reports only the changes after that.
+                photo.apple_pending_sent = st.apple_pending(&photo);
                 events.push(PhotoProgress {
                     id,
                     stage: PhotoStage::Probe,
@@ -2089,6 +2114,7 @@ impl Session {
             .map(|p| {
                 let mut s = p.summary.clone();
                 s.picked = st.picked.contains(&p.id);
+                s.apple_pending = st.apple_pending(p);
                 s
             })
             .collect();
@@ -2136,6 +2162,7 @@ impl Session {
         st.photo(id).map(|p| {
             let mut s = p.summary.clone();
             s.picked = st.picked.contains(&id);
+            s.apple_pending = st.apple_pending(p);
             s
         })
     }
@@ -2371,6 +2398,7 @@ impl Session {
         drop(emit);
         // Photos that came back without an answer are work for the worker again.
         inner.apple_wake.notify_all();
+        inner.sync_apple_stage(epoch);
         inner.repaint(epoch, repaint);
         inner.enqueue(epoch, &redevelop, JobKind::Develop);
         inner.enqueue(epoch, &prefetch, JobKind::Prefetch);
@@ -2777,6 +2805,7 @@ impl Session {
                 repaint: repaint.into_iter().filter(|c| *c != id).collect(),
             },
         );
+        self.inner.sync_apple_stage(epoch);
         self.settings(id)
     }
 
@@ -2983,6 +3012,7 @@ impl Session {
         };
         self.inner.apple_wake.notify_all();
         self.inner.after_refresh(epoch, refresh);
+        self.inner.sync_apple_stage(epoch);
     }
 
     /// The person's own instructions for the model, `""` for the default.
@@ -3187,6 +3217,7 @@ impl Inner {
                     status: PhotoStatus::Waiting,
                     picked: false,
                     reduced: camera.reduced,
+                    apple_pending: false,
                 };
                 Photo {
                     id,
@@ -3210,6 +3241,7 @@ impl Inner {
                     version: 0,
                     apple_result: None,
                     apple_picture: PictureSlot::Empty,
+                    apple_pending_sent: false,
                     served: None,
                     repaint: false,
                 }
@@ -3234,6 +3266,7 @@ impl Inner {
                     },
                     picked: false,
                     reduced: false,
+                    apple_pending: false,
                 },
                 meta: None,
                 camera: None,
@@ -3249,6 +3282,7 @@ impl Inner {
                 version: 0,
                 apple_result: None,
                 apple_picture: PictureSlot::Empty,
+                apple_pending_sent: false,
                 served: None,
                 repaint: false,
             },
@@ -3674,6 +3708,45 @@ impl Inner {
         };
         self.apple_wake.notify_all();
         self.after_refresh(epoch, refresh);
+        self.sync_apple_stage(epoch);
+    }
+
+    /// Tells the listeners which photos started or stopped waiting for Apple Auto's answer since
+    /// they were last told: the `apple` stage of [`PhotoProgress`] (`docs/19` section 6), started
+    /// when a photo waits, done when its answer or failure was stored or Apple Auto stopped acting
+    /// on it. Called after every change of an answer or of what Apple Auto does (a result stored,
+    /// the preference, the availability, new instructions, Re-run, photos put back). Nothing is sent
+    /// by a session without an Apple Auto advisor. The flags are compared and the events sent under
+    /// the emit lock, so two calls cannot deliver a photo's changes out of order.
+    fn sync_apple_stage(&self, epoch: u64) {
+        if self.env.apple_auto.is_none() {
+            return;
+        }
+        let _guard = lock(&self.emit_lock);
+        if !self.live(epoch) {
+            return;
+        }
+        let changes: Vec<PhotoProgress> = {
+            let mut st = lock(&self.state);
+            let now: Vec<bool> = st.photos.iter().map(|p| st.apple_pending(p)).collect();
+            st.photos
+                .iter_mut()
+                .zip(now)
+                .filter(|(p, pending)| p.apple_pending_sent != *pending)
+                .map(|(p, pending)| {
+                    p.apple_pending_sent = pending;
+                    PhotoProgress {
+                        id: p.id,
+                        stage: PhotoStage::Apple,
+                        done: !pending,
+                        error: None,
+                    }
+                })
+                .collect()
+        };
+        for e in changes {
+            self.env.events.send(SessionEvent::PhotoProgress(e));
+        }
     }
 
     /// The body of the Apple Auto worker (see the module documentation). A request is panic-safe as
@@ -3786,6 +3859,9 @@ impl Inner {
                 st.apple.in_flight = None;
             }
         }
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.sync_apple_stage(task.epoch);
+        }));
         self.apple_wake.notify_all();
     }
 
@@ -3961,6 +4037,7 @@ impl Inner {
                 st.apple.in_flight = None;
             }
         }
+        self.sync_apple_stage(task.epoch);
         self.apple_wake.notify_all();
     }
 

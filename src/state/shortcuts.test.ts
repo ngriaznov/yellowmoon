@@ -115,7 +115,7 @@ describe("the shortcut table of docs/11", () => {
   it("types normally in a text box", () => {
     const input = document.createElement("input");
     input.type = "search";
-    for (const letter of ["p", "z", "c", "w", "1", "\\"]) expect(act(key(letter, {}, input), { tab: "look" })).toBeNull();
+    for (const letter of ["p", "z", "c", "w", "f", "1", "\\"]) expect(act(key(letter, {}, input), { tab: "look" })).toBeNull();
   });
 
   it("1 to 9 pick looks only on the Look tab", () => {
@@ -216,6 +216,48 @@ describe("the shortcut table of docs/11", () => {
     expect(act({ ...key("Delete"), repeat: false })).toBe("remove-photo");
     expect(act({ ...key("Delete"), repeat: true })).toBeNull();
     expect(act({ ...key("Backspace"), repeat: true })).toBeNull();
+  });
+
+  it("F toggles full screen, with or without Shift (or Caps Lock), as the other letters do", () => {
+    expect(act(key("f"))).toBe("full-screen");
+    expect(act(key("F", { shiftKey: true }))).toBe("full-screen");
+    expect(act(key("F"))).toBe("full-screen");
+    // On the Look tab and while picking white or a colour it is still F: the mode stays on in full screen.
+    expect(act(key("f"), { tab: "look" })).toBe("full-screen");
+    expect(act(key("f"), { mode: "pick-white" })).toBe("full-screen");
+    expect(act(key("f"), { mode: "pick-color" })).toBe("full-screen");
+  });
+
+  it("F is not full screen with ⌘, ⌃ or ⌥ (⌃⌘F is the system's), in a text box, on a key held down, while cropping, or in a menu", () => {
+    expect(act(cmd("f"))).toBeNull();
+    expect(act(key("f", { metaKey: true, ctrlKey: true }))).toBeNull();
+    expect(act(key("f", { ctrlKey: true }))).toBeNull();
+    expect(act(key("ƒ", { altKey: true, code: "KeyF" }))).toBeNull();
+    for (const type of ["text", "search"]) {
+      const input = document.createElement("input");
+      input.type = type;
+      expect(act(key("f", {}, input))).toBeNull();
+    }
+    const area = document.createElement("textarea");
+    expect(act(key("f", {}, area))).toBeNull();
+    expect(act({ ...key("f"), repeat: true })).toBeNull();
+    expect(act({ ...key("f"), repeat: false })).toBe("full-screen");
+    expect(act(key("f"), { mode: "crop" })).toBeNull();
+    expect(act({ ...key("f"), defaultPrevented: true })).toBeNull();
+    // A letter typed in an open menu or list is its type-ahead.
+    for (const role of ["menu", "listbox", "dialog"]) {
+      const box = document.createElement("div");
+      box.setAttribute("role", role);
+      const item = document.createElement("div");
+      item.setAttribute("role", role === "menu" ? "menuitem" : "option");
+      box.append(item);
+      expect(act(key("f", {}, item))).toBeNull();
+    }
+    // A slider or a button with focus does not use F: it is still full screen.
+    const slider = document.createElement("input");
+    slider.type = "range";
+    expect(act(key("f", {}, slider))).toBe("full-screen");
+    expect(act(key("f", {}, document.createElement("button")))).toBe("full-screen");
   });
 
   it("ignores a key a control already used", () => {
