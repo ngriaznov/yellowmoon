@@ -58,6 +58,7 @@ export type FromCore = AllTrue<{
   cliLinkStatus: Assignable<B.CliLinkStatus, T.CliLinkStatus>;
   appInfo: Assignable<B.AppInfo, T.AppInfo>;
   viewportInfo: Assignable<B.ViewportInfo, T.ViewportInfo>;
+  viewportBusy: Assignable<B.ViewportBusy, T.ViewportBusy>;
   appError: Assignable<B.AppError, T.AppError>;
   menuAction: Assignable<B.MenuAction, T.MenuAction>;
   openSummary: Assignable<B.OpenSummary, T.OpenSummary>;

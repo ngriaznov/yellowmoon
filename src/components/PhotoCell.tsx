@@ -43,6 +43,11 @@ export interface PhotoCellProps extends Omit<HTMLAttributes<HTMLElement>, "child
   /** Pixel readout shown at the top right while ⌥ is held ("R 182 G 164 B 140"). */
   pixelReadout?: string | null;
   /**
+   * A note at the top centre, over everything else in the cell ("Rendering on the CPU"). It sits outside the picture's `role="img"`,
+   * so a screen reader hears a status in it, and it should take no pointer events.
+   */
+  notice?: ReactNode;
+  /**
    * True when a native layer draws the photo behind a transparent cell (the app on a Mac): no `<img>` is made. Defaults to
    * `isTauri()`; the Photos screen sets it from `viewport_info`, since the fallback viewport draws in the webview.
    */
@@ -80,7 +85,7 @@ const sameRect = (a: ViewportRect, b: ViewportRect): boolean =>
  * which is what the native viewport follows (`docs/01` §Native viewport). In the browser and the
  * mock it draws the photo as an `<img>` letterboxed on paper; with the native viewport the cell is
  * transparent; with the fallback viewport it shows the shell's picture of the cell (`frame`).
- * Overlays: look chip, camera line, the Before label and the ⌥ pixel readout.
+ * Overlays: look chip, camera line, the Before label, the ⌥ pixel readout and a notice at the top centre.
  */
 export function PhotoCell({
   imageSrc,
@@ -91,6 +96,7 @@ export function PhotoCell({
   before = false,
   beforeLabel = "Before · camera default",
   pixelReadout,
+  notice,
   native = isTauri(),
   onRect,
   onPixelProbe,
@@ -246,6 +252,7 @@ export function PhotoCell({
         ) : null}
       </div>
       {children ? <div className="ym-photo-cell__overlay">{children}</div> : null}
+      {notice}
     </main>
   );
 }

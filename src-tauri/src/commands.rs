@@ -711,6 +711,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             wire::MenuActionEvent,
             wire::SettingsChanged,
             wire::ExportBusy,
+            wire::ViewportBusy,
             wire::ViewportFrame,
         ])
         .typ::<ErrorScope>()

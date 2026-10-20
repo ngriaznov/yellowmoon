@@ -843,6 +843,20 @@ export interface ExportBusy {
 }
 
 /**
+ * `viewport_busy` (addition): whether the viewport is working on a frame of the photo on screen, or on the full-resolution tiles a
+ * frame needs, and whether the raw stages of that photo run on the CPU (no usable graphics card, a device error ended the route, the
+ * device is lost, or a method the device does not run), which can take seconds. Sent when it changes (at most about 30 times a
+ * second); `busy` goes false when the work is done or stopped, and when the cell shows no photo. The photo cell shows "Rendering on
+ * the CPU" while both have held for 250 ms.
+ */
+export interface ViewportBusy {
+  /** A frame, or the tiles a frame needs, is being made. */
+  busy: boolean;
+  /** The raw stages of the photo run on the CPU. */
+  cpu: boolean;
+}
+
+/**
  * Per-channel histogram of the current render, for the Light tab and the Curve plot
  * (addition: `docs/01` lists no command for it; see `Api.histogram`). Each array holds the
  * same number of bins from black (first) to white (last), normalised so the tallest bin of
@@ -1145,6 +1159,8 @@ export interface ApiEvents {
   settings_changed: SettingsChanged;
   /** An export is queued or running, or the queue has just gone quiet. */
   export_busy: ExportBusy;
+  /** The viewport is working on a frame (and whether on the CPU), or has stopped. */
+  viewport_busy: ViewportBusy;
 }
 
 /** Names of the events the core emits. */

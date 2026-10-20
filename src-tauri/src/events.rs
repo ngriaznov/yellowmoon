@@ -8,13 +8,17 @@
 //! # Coalescing
 //!
 //! Each event [`TauriEmitter`] sends costs the main thread a message that runs a script in the
-//! webview (`evaluateJavaScript`). Two kinds come in bursts the page cannot use: `render_stats`
-//! (one per presented frame, up to the display rate while a slider moves) and `photo_progress`
-//! (four or five per photo, thousands when a folder of hundreds of photos opens). They go through
-//! [`Throttle`], which sends at most one `render_stats` and one batch of `photo_progress` per
-//! [`COALESCE_PERIOD`] (about 30 Hz), from one thread of its own:
+//! webview (`evaluateJavaScript`). Three kinds come in bursts the page cannot use: `render_stats`
+//! (one per presented frame, up to the display rate while a slider moves), `viewport_busy` (two per
+//! round of the viewport) and `photo_progress` (four or five per photo, thousands when a folder of
+//! hundreds of photos opens). They go through [`Throttle`], which sends at most one `render_stats`,
+//! one `viewport_busy` and one batch of `photo_progress` per [`COALESCE_PERIOD`] (about 30 Hz), from
+//! one thread of its own:
 //!
 //! * `render_stats` is latest-wins: the page only shows the last frame's numbers.
+//! * `viewport_busy` is latest-wins too, and one that says what the page was told last is not sent
+//!   again: a round that starts and ends within one period sends nothing new, and a slider drag (one
+//!   round after the other) does not flood the page.
 //! * `photo_progress` is latest per photo while the pending event of the photo is only "a stage
 //!   started" (the next event of the photo replaces it); an event that says a stage finished
 //!   (`done`) or failed (`error`) is never dropped, nor moved past a later event of its photo, so
@@ -35,11 +39,11 @@ use tauri_specta::Event;
 use crate::wire::{
     AppError, DownloadFound, ErrorEvent, ExportBusy, ExportProgress, LooksChanged,
     LooksImportProgress, PhotoId, PhotoProgress, RenderStats, SettingsChanged, ThumbnailReady,
-    ViewportFrame,
+    ViewportBusy, ViewportFrame,
 };
 
-/// The least time between two `render_stats` events, and between two batches of `photo_progress`:
-/// 30 a second.
+/// The least time between two `render_stats` events, between two `viewport_busy` events, and between
+/// two batches of `photo_progress`: 30 a second.
 pub const COALESCE_PERIOD: Duration = Duration::from_millis(33);
 
 /// An event for the webview.
@@ -65,6 +69,8 @@ pub enum AppEvent {
     SettingsChanged(PhotoId),
     /// `export_busy` (addition).
     ExportBusy(bool),
+    /// `viewport_busy` (addition): the viewport is making a frame or its tiles, and whether on the CPU.
+    ViewportBusy(ViewportBusy),
     /// `viewport_frame` (addition, fallback viewport).
     ViewportFrame(ViewportFrame),
 }
@@ -84,6 +90,7 @@ impl AppEvent {
             Self::DownloadFound(_) => "download_found",
             Self::SettingsChanged(_) => "settings_changed",
             Self::ExportBusy(_) => "export_busy",
+            Self::ViewportBusy(_) => "viewport_busy",
             Self::ViewportFrame(_) => "viewport_frame",
         }
     }
@@ -99,8 +106,8 @@ pub trait Emitter: Send + Sync + 'static {
 /// Sends events to the app's windows.
 pub struct TauriEmitter<R: Runtime> {
     app: tauri::AppHandle<R>,
-    /// Where `render_stats` and `photo_progress` go (see the module documentation); `None` if its
-    /// thread did not start, and then they are sent as they come.
+    /// Where `render_stats`, `viewport_busy` and `photo_progress` go (see the module documentation);
+    /// `None` if its thread did not start, and then they are sent as they come.
     throttle: Option<Throttle>,
 }
 
@@ -130,6 +137,7 @@ fn send<R: Runtime>(app: &tauri::AppHandle<R>, event: AppEvent) {
         AppEvent::DownloadFound(e) => e.emit(app),
         AppEvent::SettingsChanged(photo_id) => SettingsChanged { photo_id }.emit(app),
         AppEvent::ExportBusy(busy) => ExportBusy { busy }.emit(app),
+        AppEvent::ViewportBusy(e) => e.emit(app),
         AppEvent::ViewportFrame(e) => e.emit(app),
     };
     if let Err(e) = sent {
@@ -141,6 +149,7 @@ impl<R: Runtime> Emitter for TauriEmitter<R> {
     fn emit(&self, event: AppEvent) {
         match (&self.throttle, event) {
             (Some(throttle), AppEvent::RenderStats(stats)) => throttle.stats(stats),
+            (Some(throttle), AppEvent::ViewportBusy(busy)) => throttle.busy(busy),
             (Some(throttle), AppEvent::PhotoProgress(progress)) => throttle.progress(progress),
             (_, event) => send(&self.app, event),
         }
@@ -163,6 +172,11 @@ struct Merger {
     period: Duration,
     stats: Option<RenderStats>,
     stats_sent: Option<Instant>,
+    /// The `viewport_busy` waiting, when it differs from the last one sent.
+    busy: Option<ViewportBusy>,
+    busy_sent: Option<Instant>,
+    /// The last `viewport_busy` sent: what the page was told.
+    busy_told: Option<ViewportBusy>,
     /// In the order the events arrived; at most one event of a photo that is not terminal, and it is
     /// the last of the photo.
     progress: VecDeque<PhotoProgress>,
@@ -175,6 +189,9 @@ impl Merger {
             period,
             stats: None,
             stats_sent: None,
+            busy: None,
+            busy_sent: None,
+            busy_told: None,
             progress: VecDeque::new(),
             progress_sent: None,
         }
@@ -183,6 +200,16 @@ impl Merger {
     /// Keeps `stats` in place of the one waiting; true if none was waiting.
     fn push_stats(&mut self, stats: RenderStats) -> bool {
         self.stats.replace(stats).is_none()
+    }
+
+    /// Keeps `busy` in place of the one waiting; true if none was waiting. A `busy` that says what the
+    /// page was told last leaves nothing waiting (a round that started and ended since: nothing new).
+    fn push_busy(&mut self, busy: ViewportBusy) -> bool {
+        if self.busy_told == Some(busy) {
+            self.busy = None;
+            return false;
+        }
+        self.busy.replace(busy).is_none()
     }
 
     /// Keeps `event`; true if no event was waiting. The last event of the photo that is waiting
@@ -208,6 +235,13 @@ impl Merger {
             due.extend(self.stats.take().map(AppEvent::RenderStats));
             self.stats_sent = Some(now);
         }
+        if self.busy.is_some() && self.ready(self.busy_sent, now) {
+            if let Some(busy) = self.busy.take() {
+                self.busy_told = Some(busy);
+                due.push(AppEvent::ViewportBusy(busy));
+            }
+            self.busy_sent = Some(now);
+        }
         if !self.progress.is_empty() && self.ready(self.progress_sent, now) {
             due.extend(self.progress.drain(..).map(AppEvent::PhotoProgress));
             self.progress_sent = Some(now);
@@ -222,9 +256,13 @@ impl Merger {
             .stats
             .is_some()
             .then(|| self.stats_sent.map_or(now, |at| at + self.period));
+        let busy = self
+            .busy
+            .is_some()
+            .then(|| self.busy_sent.map_or(now, |at| at + self.period));
         let progress = (!self.progress.is_empty())
             .then(|| self.progress_sent.map_or(now, |at| at + self.period));
-        stats.into_iter().chain(progress).min()
+        stats.into_iter().chain(busy).chain(progress).min()
     }
 
     /// Everything that waits, due or not (the app is ending).
@@ -235,6 +273,7 @@ impl Merger {
             .map(AppEvent::RenderStats)
             .into_iter()
             .collect();
+        all.extend(self.busy.take().map(AppEvent::ViewportBusy));
         all.extend(self.progress.drain(..).map(AppEvent::PhotoProgress));
         all
     }
@@ -252,9 +291,9 @@ impl ThrottleShared {
     }
 }
 
-/// Sends `render_stats` and `photo_progress` at most once per period from a thread of its own (see
-/// the module documentation). Pushing never waits for a send: it takes a lock for the time of a
-/// copy, and wakes the thread only when nothing was waiting.
+/// Sends `render_stats`, `viewport_busy` and `photo_progress` at most once per period from a thread
+/// of its own (see the module documentation). Pushing never waits for a send: it takes a lock for
+/// the time of a copy, and wakes the thread only when nothing was waiting.
 pub struct Throttle {
     shared: Arc<ThrottleShared>,
 }
@@ -285,6 +324,14 @@ impl Throttle {
     /// `render_stats`: the newest one waiting goes out when its turn comes.
     pub fn stats(&self, stats: RenderStats) {
         if self.shared.merger().push_stats(stats) {
+            self.shared.wake.notify_one();
+        }
+    }
+
+    /// `viewport_busy`: the newest one waiting goes out when its turn comes, unless it says what was
+    /// sent last.
+    pub fn busy(&self, busy: ViewportBusy) {
+        if self.shared.merger().push_busy(busy) {
             self.shared.wake.notify_one();
         }
     }
@@ -507,6 +554,104 @@ mod tests {
             sent.last().map(|s| s.1),
             Some(999.0),
             "the last value arrives"
+        );
+    }
+
+    fn busy(busy: bool, cpu: bool) -> ViewportBusy {
+        ViewportBusy { busy, cpu }
+    }
+
+    fn busy_of(events: Vec<AppEvent>) -> Vec<ViewportBusy> {
+        events
+            .into_iter()
+            .map(|e| match e {
+                AppEvent::ViewportBusy(b) => b,
+                other => panic!("not viewport_busy: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn viewport_busy_is_latest_wins_and_a_round_within_one_period_sends_nothing_new() {
+        let t0 = Instant::now();
+        let mut m = Merger::new(PERIOD);
+        // After a quiet period a round's start goes out at once.
+        assert!(m.push_busy(busy(true, true)), "the first wakes the thread");
+        assert_eq!(busy_of(m.take_due(t0)), [busy(true, true)]);
+        // The round ends and the next one starts within the period: the page was told "busy" last,
+        // so nothing waits and the thread is not woken.
+        assert!(m.push_busy(busy(false, true)));
+        assert!(m.take_due(t0 + ms(5)).is_empty(), "held for the period");
+        assert!(!m.push_busy(busy(true, true)));
+        assert_eq!(m.next_due(t0 + ms(6)), None, "nothing new waits");
+        assert!(m.take_due(t0 + ms(40)).is_empty());
+        // The last round ends after the period: that goes out at once.
+        assert!(m.push_busy(busy(false, true)));
+        assert_eq!(busy_of(m.take_due(t0 + ms(50))), [busy(false, true)]);
+        // A quick round right after: true at once would be held for the period, then the false that
+        // follows within it leaves nothing new to say.
+        assert!(m.push_busy(busy(true, true)));
+        assert!(m.take_due(t0 + ms(60)).is_empty());
+        assert!(!m.push_busy(busy(false, true)));
+        assert_eq!(m.next_due(t0 + ms(61)), None);
+        assert!(
+            m.take_due(t0 + ms(200)).is_empty(),
+            "the round sent nothing"
+        );
+        // The CPU flag is part of what was told: busy on another device is news.
+        assert!(m.push_busy(busy(false, false)));
+        assert_eq!(busy_of(m.take_due(t0 + ms(201))), [busy(false, false)]);
+        // What waits is sent when the app ends.
+        m.push_busy(busy(true, false));
+        assert_eq!(busy_of(m.take_all()), [busy(true, false)]);
+    }
+
+    #[test]
+    fn a_slider_drag_of_back_to_back_rounds_sends_a_few_busy_events_and_ends_not_busy() {
+        // A round of 3 ms, one after the other for two seconds (a drag), taken whenever the thread
+        // looks (every 5 ms), then the hand stops.
+        let t0 = Instant::now();
+        let mut m = Merger::new(PERIOD);
+        let mut sent: Vec<(Duration, ViewportBusy)> = Vec::new();
+        for step in 0..2000_u64 {
+            match step % 3 {
+                0 => {
+                    m.push_busy(busy(true, true));
+                }
+                2 => {
+                    m.push_busy(busy(false, true));
+                }
+                _ => {}
+            }
+            if step % 5 == 0 {
+                for b in busy_of(m.take_due(t0 + ms(step))) {
+                    sent.push((ms(step), b));
+                }
+            }
+        }
+        // The hand stops: the round under way ends.
+        m.push_busy(busy(false, true));
+        for b in busy_of(m.take_due(t0 + ms(3000))) {
+            sent.push((ms(3000), b));
+        }
+        assert!(
+            sent.len() <= 2000 / 33 + 2,
+            "{} sends for 667 rounds",
+            sent.len()
+        );
+        assert!(
+            sent.windows(2).all(|w| w[1].0 >= w[0].0 + PERIOD),
+            "two sends closer than the period: {sent:?}"
+        );
+        assert!(
+            sent.windows(2).all(|w| w[1].1 != w[0].1),
+            "the same news twice in a row: {sent:?}"
+        );
+        assert_eq!(sent.first().map(|s| s.1), Some(busy(true, true)));
+        assert_eq!(
+            sent.last().map(|s| s.1),
+            Some(busy(false, true)),
+            "the page ends up told the viewport is not busy"
         );
     }
 
@@ -755,12 +900,14 @@ mod tests {
         let (throttle, rx) = recording(Duration::from_secs(60));
         // The first of each kind goes out at once; the second waits for a minute.
         throttle.stats(stats(1.0));
+        throttle.busy(busy(true, true));
         throttle.progress(progress(1, PhotoStage::Decode, false));
-        for _ in 0..2 {
+        for _ in 0..3 {
             rx.recv_timeout(Duration::from_secs(5))
                 .expect("the first of each");
         }
         throttle.stats(stats(2.0));
+        throttle.busy(busy(false, true));
         throttle.progress(progress(1, PhotoStage::Thumbnail, true));
         assert!(rx.recv_timeout(ms(100)).is_err(), "still waiting");
         drop(throttle);
@@ -768,7 +915,8 @@ mod tests {
         while let Ok((_, e)) = rx.recv_timeout(Duration::from_secs(5)) {
             rest.push(e);
         }
-        assert_eq!(rest.len(), 2, "{rest:?}");
+        assert_eq!(rest.len(), 3, "{rest:?}");
+        assert!(rest.contains(&AppEvent::ViewportBusy(busy(false, true))));
         assert!(
             rest.iter()
                 .any(|e| matches!(e, AppEvent::RenderStats(s) if s.ms.0 == 2.0))

@@ -2314,6 +2314,22 @@ pub struct ExportBusy {
     pub busy: bool,
 }
 
+/// `viewport_busy { busy, cpu }` (addition): the viewport is working on a frame of the photo on
+/// screen, or on the full-resolution tiles a frame needs; `cpu`: the raw stages of that photo run on
+/// the CPU, which can take seconds. Sent when it changes, at most about 30 times a second (a round
+/// that starts and ends within that time sends nothing new); `busy: false` when the work is done or
+/// was stopped, and when the cell shows no photo. The photo cell says "Rendering on the CPU" once
+/// both have held for a moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "viewport_busy")]
+pub struct ViewportBusy {
+    /// A frame, or the tiles a frame needs, is being made.
+    pub busy: bool,
+    /// The raw stages of the photo run on the CPU (no usable graphics card, a device error ended the
+    /// route, the device is lost, or a method the device does not run).
+    pub cpu: bool,
+}
+
 /// `viewport_frame` (addition, fallback viewport only): a new frame of the photo cell is ready.
 /// Show `url` in an `<img>` laid over the cell (the cell's rectangle, `width` and `height` are its
 /// size in device pixels).

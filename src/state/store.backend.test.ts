@@ -1,12 +1,12 @@
 /**
  * The store against the real core's behaviour (M3-02, M3-03 frontend side): the viewport backend and its frames, Pick white through the
- * core, `settings_changed`, `export_busy`, and a new photo opening at Fit with Before off. The mock stands in for the core and sends
- * the same events.
+ * core, `settings_changed`, `export_busy`, `viewport_busy`, and a new photo opening at Fit with Before off. The mock stands in for the
+ * core and sends the same events.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMockApi } from "../api.mock";
 import type { MockApi, MockOptions } from "../api.mock";
-import type { ViewportFrame } from "../api/types";
+import type { ViewportBusy, ViewportFrame } from "../api/types";
 import { createStore } from "./store";
 import type { AppStore } from "./store";
 
@@ -276,5 +276,62 @@ describe("export_busy", () => {
     api.emitEvent("export_busy", { busy: true });
     await store.closeSession();
     expect(store.getState().exportBusy).toBe(true);
+  });
+});
+
+describe("viewport_busy", () => {
+  it("starts not busy and follows the event, the CPU flag included", async () => {
+    const { api, store } = await connected();
+    expect(store.getState().viewportBusy).toEqual({ busy: false, cpu: false });
+    api.emitEvent("viewport_busy", { busy: true, cpu: true });
+    expect(store.getState().viewportBusy).toEqual({ busy: true, cpu: true });
+    api.emitEvent("viewport_busy", { busy: false, cpu: true });
+    expect(store.getState().viewportBusy).toEqual({ busy: false, cpu: true });
+    api.emitEvent("viewport_busy", { busy: true, cpu: false });
+    expect(store.getState().viewportBusy).toEqual({ busy: true, cpu: false });
+  });
+
+  it("does not tell the screens again when the core repeats itself", async () => {
+    const { api, store } = await connected();
+    api.emitEvent("viewport_busy", { busy: true, cpu: true });
+    const before = store.getState();
+    const listener = vi.fn();
+    stops.push(store.subscribe(listener));
+    api.emitEvent("viewport_busy", { busy: true, cpu: true });
+    expect(listener).not.toHaveBeenCalled();
+    expect(store.getState()).toBe(before);
+  });
+
+  it("is not busy once the session closes, as the core says when it stops drawing", async () => {
+    const { api, store } = await opened();
+    api.emitEvent("viewport_busy", { busy: true, cpu: true });
+    await store.closeSession();
+    expect(store.getState().viewportBusy.busy).toBe(false);
+  });
+
+  it("is sent by the mock with mockCpu around each frame, and never without it", async () => {
+    // Speed 10: a frame "rendered" on the CPU takes 60 ms.
+    const cpu = await opened({ cpu: true, speed: 10 });
+    // The frames of opening the photo are done first.
+    await vi.waitFor(() => expect(cpu.store.getState().viewportBusy.busy).toBe(false));
+    const heard: ViewportBusy[] = [];
+    stops.push(cpu.api.on("viewport_busy", (e) => heard.push(e)));
+    await cpu.store.update({ brightness: 12 });
+    await vi.waitFor(() =>
+      expect(heard).toEqual([
+        { busy: true, cpu: true },
+        { busy: false, cpu: true },
+      ]),
+    );
+    expect(cpu.store.getState().viewportBusy).toEqual({ busy: false, cpu: true });
+
+    // Without the option the mock is a graphics card: nothing is said.
+    const gpu = await opened({ speed: 10 });
+    const none = vi.fn();
+    stops.push(gpu.api.on("viewport_busy", none));
+    await gpu.store.update({ brightness: 12 });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(none).not.toHaveBeenCalled();
+    expect(gpu.store.getState().viewportBusy).toEqual({ busy: false, cpu: false });
   });
 });

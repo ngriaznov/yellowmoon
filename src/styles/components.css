@@ -256,6 +256,20 @@
   font-variant-numeric: tabular-nums;
 }
 .ym-photo-cell__overlay { position: absolute; inset: 0; }
+/* "Rendering on the CPU": top centre, over the crop and pick layers, and never in the pointer's way. */
+.ym-photo-cell__busy {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  gap: 8px;
+  padding: 8px 12px;
+  background: #000000;
+  color: #ffffff;
+  font-size: var(--fs-small);
+  font-weight: var(--fw-heavy);
+  pointer-events: none;
+}
 
 /* ---- UpdatePill --------------------------------------------------------------------------- */
 .ym-update-pill {

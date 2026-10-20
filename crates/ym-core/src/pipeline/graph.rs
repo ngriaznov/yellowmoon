@@ -611,6 +611,54 @@ struct Inner {
     tail_gpu_disabled: AtomicBool,
 }
 
+/// Whether the device runs the raw stages that a stage of [`GpuStages`] lets it run, for one photo:
+/// the checks [`Job::raw_device`] makes and [`Renderer::raw_on_cpu`] reports, in one place so that
+/// the two cannot drift.
+enum RawDevice {
+    /// The device runs them.
+    On(Arc<Gpu>),
+    /// There is no device, or the stage is not on.
+    Off,
+    /// A device error ended the route, for the photo or for the process.
+    Ended,
+    /// The device is lost.
+    Lost(Arc<Gpu>),
+}
+
+impl RawDevice {
+    /// The checks, in this order, for the options `opts` and the photo's graph (`None` when the photo
+    /// has none yet: no device error can have ended its route then).
+    fn of(
+        opts: &RenderOptions,
+        inner: &Inner,
+        graph: Option<&PhotoGraph>,
+        stage: GpuStages,
+    ) -> Self {
+        let Some(gpu) = opts.gpu.clone() else {
+            return Self::Off;
+        };
+        if !opts.gpu_stages.contains(stage) {
+            return Self::Off;
+        }
+        if graph.is_some_and(|g| g.raw_gpu_failed.load(Ordering::SeqCst))
+            || inner.raw_gpu_disabled.load(Ordering::SeqCst)
+        {
+            return Self::Ended;
+        }
+        if gpu.is_lost() {
+            return Self::Lost(gpu);
+        }
+        Self::On(gpu)
+    }
+}
+
+/// Whether the device runs the demosaic method of `opts`: it runs the adaptive ratio demosaic only
+/// (any other is the test switch of [`RenderOptions::demosaic`]), and the CPU runs the raw chain of a
+/// render with another.
+fn device_runs_demosaic(opts: &RenderOptions) -> bool {
+    opts.demosaic == Method::AdaptiveRatio
+}
+
 /// The render engine (see the module documentation of [`crate::pipeline`]). Cheap to clone.
 #[derive(Clone)]
 pub struct Renderer {
@@ -777,6 +825,23 @@ impl Renderer {
     #[must_use]
     pub fn gpu_info(&self) -> Option<GpuInfo> {
         self.options().gpu.as_ref().map(|g| g.info().clone())
+    }
+
+    /// Whether a render of the photo runs its raw chain on the CPU: no device, `GpuStages::RAW_CHAIN`
+    /// off, a device error ended the route for the photo or for the process, the device is lost, or
+    /// the demosaic method is not the one the device runs. The same checks as the route of a render
+    /// that starts now (a render already running keeps the options it began with); asking makes no
+    /// graph for the photo and changes nothing. The app's viewport says "Rendering on the CPU" from it,
+    /// since such a frame, or the full-resolution tiles a zoom needs, can take seconds.
+    #[must_use]
+    pub fn raw_on_cpu(&self, id: PhotoId) -> bool {
+        let opts = self.options();
+        let graph = self.existing_graph(id);
+        let on_device = matches!(
+            RawDevice::of(&opts, &self.inner, graph.as_deref(), GpuStages::RAW_CHAIN),
+            RawDevice::On(_)
+        );
+        !on_device || !device_runs_demosaic(&opts)
     }
 
     /// The graph of a photo, made on first use. The least recently used graphs beyond
@@ -2192,38 +2257,33 @@ impl<'a> Job<'a> {
     /// [`RenderError::Gpu`] when the device is lost, or an earlier device error ended the route, and
     /// the policy is strict.
     fn raw_device(&mut self, stage: GpuStages) -> Result<Option<Arc<Gpu>>, RenderError> {
-        let Some(gpu) = self.opts.gpu.clone() else {
-            return Ok(None);
-        };
-        if !self.opts.gpu_stages.contains(stage) {
-            return Ok(None);
-        }
-        if self.g.raw_gpu_failed.load(Ordering::SeqCst)
-            || self.r.inner.raw_gpu_disabled.load(Ordering::SeqCst)
-        {
-            // An earlier device error ended the route. A strict policy (`Require`) must not turn
-            // that into a quiet CPU render of the next photo: it fails that photo too.
-            if self.opts.gpu_strict {
-                return Err(RenderError::Gpu(
-                    "an earlier error ended the use of the graphics card, and the strict setting does not let the CPU take over"
-                        .to_owned(),
+        match RawDevice::of(&self.opts, &self.r.inner, Some(&self.g), stage) {
+            RawDevice::On(gpu) => Ok(Some(gpu)),
+            RawDevice::Off => Ok(None),
+            RawDevice::Ended => {
+                // An earlier device error ended the route. A strict policy (`Require`) must not turn
+                // that into a quiet CPU render of the next photo: it fails that photo too.
+                if self.opts.gpu_strict {
+                    return Err(RenderError::Gpu(
+                        "an earlier error ended the use of the graphics card, and the strict setting does not let the CPU take over"
+                            .to_owned(),
+                    ));
+                }
+                Ok(None)
+            }
+            RawDevice::Lost(gpu) => {
+                let why = gpu
+                    .lost_reason()
+                    .unwrap_or_else(|| "the device was lost".to_owned());
+                if self.opts.gpu_strict {
+                    return Err(RenderError::Gpu(why));
+                }
+                self.note(&format!(
+                    "The graphics card stopped working, so the CPU did: {why}."
                 ));
+                Ok(None)
             }
-            return Ok(None);
         }
-        if gpu.is_lost() {
-            let why = gpu
-                .lost_reason()
-                .unwrap_or_else(|| "the device was lost".to_owned());
-            if self.opts.gpu_strict {
-                return Err(RenderError::Gpu(why));
-            }
-            self.note(&format!(
-                "The graphics card stopped working, so the CPU did: {why}."
-            ));
-            return Ok(None);
-        }
-        Ok(Some(gpu))
     }
 
     /// The route to the device for the raw chain of this request, or `None` when the CPU runs it:
@@ -2244,7 +2304,7 @@ impl<'a> Job<'a> {
         let Some(gpu) = self.raw_device(GpuStages::RAW_CHAIN)? else {
             return Ok(None);
         };
-        if self.opts.demosaic != Method::AdaptiveRatio {
+        if !device_runs_demosaic(&self.opts) {
             self.note(METHOD_NOT_ON_DEVICE_NOTE);
             return Ok(None);
         }
@@ -2674,6 +2734,36 @@ pub(crate) fn color_space_of(target: OutputTarget) -> ColorSpace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A renderer with no device renders every photo's raw chain on the CPU, whether or not the photo
+    /// has a graph or a device error ended its route, and asking makes no graph. (The cases with a
+    /// device are in `tests/render_gpu.rs`, which opens one.)
+    #[test]
+    fn without_a_device_the_raw_chain_is_on_the_cpu_and_asking_changes_nothing() {
+        let r = Renderer::neutral_only().expect("the render thread");
+        let photo = PhotoId(7);
+        assert!(r.raw_on_cpu(photo));
+        assert!(r.existing_graph(photo).is_none(), "asking made a graph");
+        // The photo has a graph whose route a device error ended, and the process's route is off too.
+        r.graph(photo).raw_gpu_failed.store(true, Ordering::SeqCst);
+        r.inner.raw_gpu_disabled.store(true, Ordering::SeqCst);
+        assert!(r.raw_on_cpu(photo));
+        assert!(r.raw_on_cpu(PhotoId(8)));
+        // The checks the route makes say the same: no device, the CPU.
+        let opts = r.options();
+        assert!(matches!(
+            RawDevice::of(&opts, &r.inner, None, GpuStages::RAW_CHAIN),
+            RawDevice::Off
+        ));
+        assert!(device_runs_demosaic(&RenderOptions {
+            demosaic: Method::AdaptiveRatio,
+            ..RenderOptions::default()
+        }));
+        assert!(!device_runs_demosaic(&RenderOptions {
+            demosaic: Method::Menon,
+            ..RenderOptions::default()
+        }));
+    }
 
     /// A build without the `force-demosaic` feature has no switch: nothing reads the environment
     /// and a renderer made from the default options demosaics with the default method.

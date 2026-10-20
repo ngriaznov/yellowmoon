@@ -126,6 +126,9 @@ const EXPORT_STEP = 0.08;
 /** Fraction of a photo's development spent decoding before the estimates start. */
 const DECODE_SHARE = 0.4;
 
+/** How long a frame takes the mock with `cpu` (divided by `speed`): long enough for "Rendering on the CPU" to show. */
+const CPU_FRAME_MS = 600;
+
 // The mock has no zoom of its own to report: the screen estimates it (`fit_percent: null`).
 const RENDER_STATS: RenderStats = { ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null };
 
@@ -401,6 +404,14 @@ export interface MockOptions {
    * Mac. `fallback`: the mock sends `viewport_frame` events with a picture of the cell's size, which the screen shows.
    */
   viewport?: ViewportBackendKind | null;
+  /**
+   * Render like a core whose raw stages run on the CPU (`?mockCpu=1`): every frame the mock "renders" (a photo shown, its settings,
+   * a look, the zoom, the cell, Before) is preceded by `viewport_busy { busy: true, cpu: true }` and followed, `CPU_FRAME_MS` (600 ms)
+   * divided by `speed` later, by `viewport_busy { busy: false, cpu: true }`; a frame asked for meanwhile makes the wait start again, as
+   * back-to-back rounds of the core do. Default false: no `viewport_busy` at all, as on a graphics card, where a frame takes
+   * milliseconds.
+   */
+  cpu?: boolean;
 }
 
 /** What the viewport commands have recorded, for tests. */
@@ -755,6 +766,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   persistPreferences: false,
   appleAuto: "none",
   viewport: null,
+  cpu: false,
 };
 
 /** Fills in defaults, ignoring `undefined` values and a speed that isn't a positive number. */
@@ -776,9 +788,10 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
  * looks), `mockLibraries=all` (looks in every section of the Look tab), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
  * land in Downloads while the wizard watches), `mockDownloadsDenied=1`, `mockExisting=DSC04204_neutral.jpg`,
  * `mockExportFails=DSC04204:reason`, `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
- * (preferences survive a reload), `mockViewport=native` or `fallback` (the mock behaves like that viewport backend of the app) and
+ * (preferences survive a reload), `mockViewport=native` or `fallback` (the mock behaves like that viewport backend of the app),
  * `mockAppleAuto=unavailable|pending|answered|failed` (Apple Auto as on a Mac where it is not available, or where every photo is waiting
- * for its answer, has it, or failed; `MockAppleAuto`).
+ * for its answer, has it, or failed; `MockAppleAuto`) and `mockCpu=1` (frames render on the CPU and take 600 ms divided by
+ * `mockSpeed`, with `viewport_busy` around them: the photo cell says "Rendering on the CPU"; `MockOptions.cpu`).
  */
 export function optionsFromLocation(search: string | undefined = typeof location === "undefined" ? undefined : location.search): MockOptions {
   if (search === undefined) return {};
@@ -835,6 +848,7 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (params.get("mockPersist") === "1") out.persistPreferences = true;
   const viewportBackend = params.get("mockViewport");
   if (viewportBackend === "native" || viewportBackend === "fallback") out.viewport = viewportBackend;
+  if (params.get("mockCpu") === "1") out.cpu = true;
   const appleAuto = params.get("mockAppleAuto");
   if (appleAuto !== null && (APPLE_AUTO_MODES as readonly string[]).includes(appleAuto)) out.appleAuto = appleAuto as MockAppleAuto;
   return out;
@@ -1256,6 +1270,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   let frameShown = false;
   /** Whether an `export_busy` event has said the queue is busy. */
   let busyAnnounced = false;
+  /** With `cpu`, the end of the frame being "rendered" on the CPU (`viewport_busy` false); null while none is. */
+  let cpuFrameTimer: ReturnType<typeof setTimeout> | null = null;
 
   // --- Events ---------------------------------------------------------------
 
@@ -1332,10 +1348,28 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   }
 
   /**
-   * With `viewport: "fallback"`, tells the page what the cell shows now, as the shell does after every change: a frame of the current
-   * photo, or no picture while it is not ready or the session is closed.
+   * With `cpu`, a frame of the photo on screen is "rendered" on the CPU, as the core says around a round of its viewport: `viewport_busy`
+   * true now (unless a frame is still under way, which this one follows) and false `CPU_FRAME_MS / speed` later. Nothing without a
+   * developed photo on screen, which the core does not render either.
+   */
+  function renderOnCpu(): void {
+    if (!options.cpu) return;
+    const rec = photos[current];
+    if (!rec || rec.phase < 3 || rec.skipReason) return;
+    if (cpuFrameTimer === null) emitSoon("viewport_busy", { busy: true, cpu: true });
+    else clearTimeout(cpuFrameTimer);
+    cpuFrameTimer = setTimeout(() => {
+      cpuFrameTimer = null;
+      emit("viewport_busy", { busy: false, cpu: true });
+    }, CPU_FRAME_MS / options.speed);
+  }
+
+  /**
+   * Tells the page what the cell shows now, as the shell does after every change: with `viewport: "fallback"`, a frame of the current
+   * photo, or no picture while it is not ready or the session is closed; with `cpu`, the frame is first "rendered" on the CPU.
    */
   function sendFrame(): void {
+    renderOnCpu();
     if (options.viewport !== "fallback") return;
     const rec = photos[current];
     if (!rec || rec.phase < 3 || rec.skipReason || viewport.rect === null) {
@@ -2013,6 +2047,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
 
   function stopAll(): void {
     stopDevelopment();
+    if (cpuFrameTimer !== null) clearTimeout(cpuFrameTimer);
+    cpuFrameTimer = null;
     for (const timer of thumbTimers.values()) clearTimeout(timer);
     thumbTimers.clear();
     for (const run of exportRuns.values()) stopExport(run);
@@ -2288,6 +2324,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       run("viewportInput", () => {
         viewport.inputs.push(event);
         const rec = photos[current];
+        // The core draws a frame for every zoom and pan (the mock's own picture does not move).
+        if (event.kind !== "pick_white") renderOnCpu();
         if (event.kind === "toggle_zoom") {
           viewport.mode = viewport.mode.kind === "fit" ? { kind: "percent", value: 100 } : { kind: "fit" };
         } else if (event.kind === "pick_white" && rec) {

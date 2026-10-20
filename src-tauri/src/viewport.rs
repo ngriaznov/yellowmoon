@@ -40,6 +40,13 @@
 //! pass that computes sharp tiles ([`Flight::Tiles`]), and, for a request that makes the frame
 //! being drawn wrong rather than old (another photo, a cell of another size: [`Shared::request_now`]),
 //! the frame itself.
+//!
+//! **Busy.** From just before a round asks for its frame until the round is over (the pass that makes
+//! the sharp tiles included, and whichever way it ends: shown, stopped, failed), the worker holds a
+//! [`BusyGuard`], which tells the webview `viewport_busy { busy: true, cpu }`, where `cpu` says that
+//! the renderer runs the photo's raw stages on the CPU (`Renderer::raw_on_cpu`, asked as the round
+//! starts), and `busy: false` when it is dropped. Only a change is sent, and the shell's throttle
+//! merges what a stream of rounds sends. The photo cell shows "Rendering on the CPU" from it.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, VecDeque};
@@ -59,8 +66,8 @@ use ym_gpu::queue::{CancelToken, JobError};
 use crate::events::{AppEvent, Emitter};
 use crate::perf;
 use crate::wire::{
-    AppError, ErrorScope, PhotoId, ViewportBackendKind, ViewportFrame, ViewportInput, ViewportMode,
-    ViewportRect, convert,
+    AppError, ErrorScope, PhotoId, ViewportBackendKind, ViewportBusy, ViewportFrame, ViewportInput,
+    ViewportMode, ViewportRect, convert,
 };
 
 /// The URI scheme the fallback viewport serves frames on.
@@ -733,9 +740,57 @@ pub struct Shared {
     sink: Arc<dyn FrameSink>,
     core: OnceLock<Weak<Core>>,
     shutdown: AtomicBool,
+    /// What the webview was last told with `viewport_busy` (not busy, not on the CPU, before anything
+    /// was sent). Held while a change is sent, so that the worker and a clear on another thread tell
+    /// the webview in the order they made the changes.
+    busy_told: Mutex<ViewportBusy>,
+}
+
+/// Holds `viewport_busy` true while a round renders, and sends it false when the round lets go of it,
+/// whichever way the round ends (a cancel, an error, the tile pass, a panic that unwinds).
+struct BusyGuard<'a> {
+    shared: &'a Shared,
+    cpu: bool,
+}
+
+impl<'a> BusyGuard<'a> {
+    /// Tells the webview the viewport is busy; `cpu`: the photo's raw stages run on the CPU.
+    fn new(shared: &'a Shared, cpu: bool) -> Self {
+        shared.tell_busy(ViewportBusy { busy: true, cpu });
+        Self { shared, cpu }
+    }
+}
+
+impl Drop for BusyGuard<'_> {
+    fn drop(&mut self) {
+        self.shared.tell_busy(ViewportBusy {
+            busy: false,
+            cpu: self.cpu,
+        });
+    }
 }
 
 impl Shared {
+    /// Sends `viewport_busy` when it says something the webview was not told last.
+    fn tell_busy(&self, busy: ViewportBusy) {
+        let mut told = lock(&self.busy_told);
+        if *told == busy {
+            return;
+        }
+        *told = busy;
+        self.emitter.emit(AppEvent::ViewportBusy(busy));
+    }
+
+    /// The viewport is not busy (the cell shows no photo): `viewport_busy` false, if it was true.
+    fn tell_idle(&self) {
+        let mut told = lock(&self.busy_told);
+        if !told.busy {
+            return;
+        }
+        told.busy = false;
+        self.emitter.emit(AppEvent::ViewportBusy(*told));
+    }
+
     /// A new frame is wanted: an input, a settings patch, a look, a cell that moved or kept its
     /// size, Before, a mode. The frame being drawn finishes and is shown and the next round starts
     /// at once from the newest state; only the pass that makes sharp tiles is stopped, because the
@@ -897,8 +952,10 @@ impl Shared {
         self.settled.notify_all();
     }
 
-    /// Tells the sink that nothing is shown (not twice in a row).
+    /// Tells the sink that nothing is shown (not twice in a row), and the webview that nothing is
+    /// being drawn.
     fn clear_sink(&self) {
+        self.tell_idle();
         let seq = {
             let mut st = lock(&self.state);
             if st.cleared {
@@ -1022,6 +1079,8 @@ impl Shared {
         } else {
             FrameOutput::Host
         };
+        // Busy from here until the round returns, the tile pass included.
+        let _busy = BusyGuard::new(self, core.renderer.raw_on_cpu(photo));
         let handle =
             core.renderer
                 .spawn_viewport_frame_to(src.clone(), vp.clone(), options, output);
@@ -1149,6 +1208,10 @@ impl Viewport {
                 sink,
                 core: OnceLock::new(),
                 shutdown: AtomicBool::new(false),
+                busy_told: Mutex::new(ViewportBusy {
+                    busy: false,
+                    cpu: false,
+                }),
             }),
             worker: Mutex::new(None),
         }
@@ -1368,6 +1431,7 @@ pub fn core_id(id: PhotoId) -> CorePhotoId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::busy_events;
 
     /// The path of an address of the scheme: `/<launch>/<file>`.
     pub(crate) fn path_of_url(url: &str) -> &str {
@@ -1736,6 +1800,45 @@ mod tests {
         shared.present(&frame(8, 6), CorePhotoId(1), None);
         shared.clear_sink();
         assert_eq!(clears().len(), 2);
+    }
+
+    const fn busy(busy: bool, cpu: bool) -> ViewportBusy {
+        ViewportBusy { busy, cpu }
+    }
+
+    #[test]
+    fn busy_is_told_when_it_changes_and_ends_with_the_round_or_a_clear() {
+        let (vp, events) = controller();
+        let shared = vp.shared();
+        // Nothing was busy: a clear says nothing.
+        shared.clear_sink();
+        assert!(busy_events(&events).is_empty());
+        // A round on the CPU: busy, then not, whichever way it ends.
+        drop(BusyGuard::new(&shared, true));
+        assert_eq!(busy_events(&events), [busy(true, true), busy(false, true)]);
+        // The same state again is not news: a round's end, and a clear while nothing is busy.
+        shared.tell_busy(busy(false, true));
+        shared.clear_sink();
+        assert_eq!(busy_events(&events).len(), 2);
+        // A round that a clear overtakes (the session closed while it drew): the clear ends it and the
+        // round's own end has nothing new to say.
+        let round = BusyGuard::new(&shared, false);
+        shared.clear_sink();
+        drop(round);
+        assert_eq!(
+            busy_events(&events)[2..],
+            [busy(true, false), busy(false, false)]
+        );
+        // A panic in a round unwinds through the guard.
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _busy = BusyGuard::new(&shared, true);
+            panic!("a render panicked");
+        }));
+        assert!(caught.is_err());
+        assert_eq!(
+            busy_events(&events)[4..],
+            [busy(true, true), busy(false, true)]
+        );
     }
 
     #[test]

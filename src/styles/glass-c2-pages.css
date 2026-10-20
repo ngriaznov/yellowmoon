@@ -581,12 +581,13 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   font-weight: var(--fw-heavy);
 }
 
-/* ---- On the photo: Before, the look, the pixel readout ---------------------------------------------------------------------------- */
+/* ---- On the photo: Before, the look, the pixel readout, Rendering on the CPU ------------------------------------------------------ */
 /* Chips are glasscn's Badge. The photo is a native layer under the page (nothing here can frost it), so they are a dark tint with a rim
    that reads on any picture, and they sit a little in from the corner. */
 .ym-photo-cell__before,
 .ym-photo-cell__chip,
-.ym-photo-cell__readout {
+.ym-photo-cell__readout,
+.ym-photo-cell__busy {
   position: absolute;
   height: 26px;
   padding: 0 12px;
@@ -602,7 +603,8 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 }
 .ym-photo-cell__before,
 .ym-photo-cell__chip,
-.ym-photo-cell__readout {
+.ym-photo-cell__readout,
+.ym-photo-cell__busy {
   border: 1px solid rgb(255 255 255 / 0.2);
   background: rgb(14 14 18 / 0.74);
   color: #fff;
@@ -615,6 +617,15 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 .ym-photo-cell__readout {
   top: 12px;
   right: 12px;
+}
+/* The status of the render, at the top centre between Before and the readout. Its words are a sentence, so no capitals. */
+.ym-photo-cell__busy {
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  gap: 8px;
+  letter-spacing: normal;
+  pointer-events: none;
 }
 .ym-photo-cell__camera {
   right: 16px;

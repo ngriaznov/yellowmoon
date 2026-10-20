@@ -1244,6 +1244,54 @@ fn the_render_stats_of_a_frame_carry_its_zoom_and_the_fit_zoom() {
 }
 
 #[test]
+fn a_round_on_a_renderer_without_a_device_says_it_is_busy_on_the_cpu_and_then_that_it_is_done() {
+    // The harness's app has no graphics device: every photo's raw stages run on the CPU.
+    let h = Harness::new();
+    let busy_events = || crate::testing::busy_events(&h.events);
+    let on = ViewportBusy {
+        busy: true,
+        cpu: true,
+    };
+    let off = ViewportBusy {
+        busy: false,
+        cpu: true,
+    };
+    h.open(1);
+    h.develop();
+    assert!(
+        busy_events().is_empty(),
+        "nothing is drawn before the cell is placed"
+    );
+    h.rect(100.0, 100.0);
+    h.frame_of_size(100, 100);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let first = busy_events();
+    assert_eq!(first.first(), Some(&on), "{first:?}");
+    assert_eq!(first.last(), Some(&off), "{first:?}");
+    assert!(
+        first.windows(2).all(|w| w[0] != w[1]),
+        "only changes are sent: {first:?}"
+    );
+    // A zoom to 100 %: a coarse frame, the full-resolution tiles, the sharp frame. Busy as it starts,
+    // and not busy once it is over.
+    let n = h.api.viewport().frames_presented();
+    h.api
+        .viewport_set_mode(&ViewportMode::Percent { value: Num(100.0) })
+        .expect("100 %");
+    h.frame_after(n);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let zoomed = busy_events();
+    assert!(zoomed.len() > first.len(), "{zoomed:?}");
+    assert_eq!(zoomed[first.len()], on);
+    assert_eq!(zoomed.last(), Some(&off));
+    assert!(zoomed.iter().all(|b| b.cpu), "{zoomed:?}");
+    // Closing the session leaves it not busy.
+    h.api.close_session();
+    assert!(h.api.viewport().wait_idle(WAIT));
+    assert_eq!(busy_events().last(), Some(&off));
+}
+
+#[test]
 fn the_pixel_readout_finds_the_photo_and_not_the_paper() {
     let h = Harness::new();
     h.open(1);

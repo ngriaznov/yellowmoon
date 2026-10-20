@@ -58,6 +58,7 @@ import type {
   SourceRecognition,
   ThumbnailReady,
   ViewportBackendKind,
+  ViewportBusy,
   ViewportFrame,
   ViewportInput,
   ViewportMode,
@@ -233,6 +234,11 @@ export interface AppState {
   viewportFrame: ViewportFrame | null;
   /** An export is queued or running in the core (`export_busy`), also one this window did not start. */
   exportBusy: boolean;
+  /**
+   * The viewport is working on a frame of the photo on screen or on its full-resolution tiles (`busy`), and the raw stages of that
+   * photo run on the CPU (`cpu`), as the core last said (`viewport_busy`). The photo cell says "Rendering on the CPU" from it.
+   */
+  viewportBusy: ViewportBusy;
   /** The settings Copy settings took, or null before the first copy; it outlives a session and is never saved. */
   copied: CopiedSettings | null;
 }
@@ -276,6 +282,7 @@ export function initialState(): AppState {
     viewportBackend: null,
     viewportFrame: null,
     exportBusy: false,
+    viewportBusy: { busy: false, cpu: false },
     copied: null,
   };
 }
@@ -573,6 +580,7 @@ export class AppStore {
       api.on("viewport_frame", (frame) => this.onFrame(frame)),
       api.on("settings_changed", (e) => void this.onSettingsChanged(e.photo_id)),
       api.on("export_busy", (e) => this.set({ exportBusy: e.busy })),
+      api.on("viewport_busy", (e) => this.onViewportBusy(e)),
     ];
     void this.load();
     return () => this.disconnect();
@@ -730,6 +738,13 @@ export class AppStore {
    * A frame of the fallback viewport, or (an empty address) the news that the picture is gone. Drawn at once, never batched. The shell
    * can draw a frame before the webview has said where the cell is (it uses a 1 × 1 cell then); a frame that small is no picture.
    */
+  /** `viewport_busy`: kept as the core said it (a repeat changes nothing). */
+  private onViewportBusy(e: ViewportBusy): void {
+    const now = this.state.viewportBusy;
+    if (now.busy === e.busy && now.cpu === e.cpu) return;
+    this.set({ viewportBusy: { busy: e.busy, cpu: e.cpu } });
+  }
+
   private onFrame(frame: ViewportFrame): void {
     // Frames can arrive out of order (the shell numbers a frame before it encodes it, and the news that the picture is gone is sent from
     // another thread): an older one never replaces a newer one, and never brings back a picture that was taken away.

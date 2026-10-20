@@ -178,6 +178,18 @@ impl Harness {
     }
 }
 
+/// The `viewport_busy` events `events` has, in order.
+pub(crate) fn busy_events(events: &Recorder) -> Vec<ViewportBusy> {
+    events
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            AppEvent::ViewportBusy(b) => Some(b),
+            _ => None,
+        })
+        .collect()
+}
+
 pub(crate) fn png_size(png: &[u8]) -> (u32, u32) {
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "not a PNG");
     let w = u32::from_be_bytes(png[16..20].try_into().expect("width"));

@@ -1264,6 +1264,8 @@ describe("optionsFromLocation", () => {
     expect(optionsFromLocation("?mockViewport=fallback")).toEqual({ viewport: "fallback" });
     expect(optionsFromLocation("?mockViewport=native")).toEqual({ viewport: "native" });
     expect(optionsFromLocation("?mockViewport=metal")).toEqual({});
+    expect(optionsFromLocation("?mockCpu=1")).toEqual({ cpu: true });
+    expect(optionsFromLocation("?mockCpu=0")).toEqual({});
     expect(optionsFromLocation("?mockPhotos=0")).toEqual({});
     expect(optionsFromLocation("")).toEqual({});
     expect(optionsFromLocation("?mockSpeed=-3&mockHold=x")).toEqual({});

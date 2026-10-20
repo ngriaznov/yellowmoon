@@ -500,6 +500,44 @@ fn the_device_runs_the_raw_chain_only_when_the_stage_and_the_method_allow_it() {
     assert_eq!(StageRange::DEMOSAIC.label(), "R6");
 }
 
+/// `Renderer::raw_on_cpu` (what makes the app say "Rendering on the CPU") says where the route of a
+/// render puts the raw chain: on the device with the stage on and the method the device runs; on the
+/// CPU without a device, with the stage off and with a forced method. A device that is lost and a
+/// photo whose route a device error ended are in `faults` below (they need the fault injection).
+#[test]
+fn the_raw_chain_is_said_to_be_on_the_cpu_exactly_where_the_route_puts_it() {
+    let Some(gpu) = gpu() else { return };
+    let src = scene();
+    let id = src.id;
+    let dev = on_device(&gpu);
+    assert!(!dev.raw_on_cpu(id));
+    let a = render_full(&dev, &src).expect("render");
+    assert_eq!(
+        device_of(&a.report),
+        vec![("R1..R9".to_owned(), ComputeDevice::Gpu)]
+    );
+    assert!(
+        !dev.raw_on_cpu(id),
+        "a render on the device leaves it there"
+    );
+    assert!(on_cpu().raw_on_cpu(id));
+    let off = renderer_with(
+        Some(Arc::clone(&gpu)),
+        GpuStages::COLOR,
+        false,
+        Method::AdaptiveRatio,
+    );
+    assert!(off.raw_on_cpu(id), "the raw chain is off");
+    let forced = renderer_with(Some(Arc::clone(&gpu)), GpuStages::ALL, false, Method::Menon);
+    assert!(forced.raw_on_cpu(id), "a method the device does not run");
+    // A device attached later and taken away again.
+    let late = on_cpu();
+    late.set_gpu(Some(Arc::clone(&gpu)), GpuStages::ALL);
+    assert!(!late.raw_on_cpu(id));
+    late.set_gpu(None, GpuStages::NONE);
+    assert!(late.raw_on_cpu(id));
+}
+
 /// Small and odd photos through the whole render: a frame below one export tile, odd sides (a device
 /// image pads its rows to an even stride), a strip, and the smallest the synthetic writer makes. The
 /// device must neither panic nor refuse them, and must agree with the CPU render (the content is
@@ -2092,6 +2130,50 @@ mod faults {
         assert_eq!(f.rgba, baseline.rgba);
         assert_eq!(
             device_of(&f.report),
+            vec![("R1..R9".to_owned(), ComputeDevice::Cpu)]
+        );
+    }
+
+    /// After a device error ended the photo's route, `Renderer::raw_on_cpu` says the CPU for that
+    /// photo and the device for another; once the device is lost, the CPU for every photo.
+    #[test]
+    fn the_raw_chain_is_said_to_be_on_the_cpu_once_an_error_ended_the_route() {
+        let Some(gpu) = gpu() else { return };
+        let src = scene();
+        let other = PhotoId(src.id.0 + 1);
+        let dev = on_device(&gpu);
+        let mut st = ViewportState::new(ViewportRect::cell(700.0, 500.0, 1.0));
+        st.set_mode(ViewportMode::Percent { value: 100.0 }, (1300, 900));
+        assert!(!dev.raw_on_cpu(src.id));
+        gpu.set_fault(Some(GpuFault::FailTile(1)));
+        let f = dev
+            .viewport_frame(&src, &st, &FrameOptions::default(), &CancelToken::new())
+            .expect("the frame is made");
+        gpu.set_fault(None);
+        assert_eq!(
+            device_of(&f.report),
+            vec![("R1..R9".to_owned(), ComputeDevice::Cpu)]
+        );
+        assert!(dev.raw_on_cpu(src.id), "the photo's route was ended");
+        assert!(!dev.raw_on_cpu(other), "another photo's route is open");
+        // The device is lost: every photo, and the next frame of the other photo is the CPU's too.
+        gpu.set_fault(Some(GpuFault::Lost));
+        let _ = gpu.run(
+            ym_gpu::queue::JobSpec::new(ym_gpu::queue::Priority::Viewport),
+            |_, _| Ok(()),
+        );
+        assert!(gpu.is_lost(), "the fault lost the device");
+        assert!(dev.raw_on_cpu(src.id));
+        assert!(dev.raw_on_cpu(other));
+        let moved = PhotoSource {
+            id: other,
+            ..src.clone()
+        };
+        let g = dev
+            .viewport_frame(&moved, &st, &FrameOptions::default(), &CancelToken::new())
+            .expect("the frame is made");
+        assert_eq!(
+            device_of(&g.report),
             vec![("R1..R9".to_owned(), ComputeDevice::Cpu)]
         );
     }
