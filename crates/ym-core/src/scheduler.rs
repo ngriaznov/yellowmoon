@@ -623,6 +623,19 @@ impl JobScheduler {
         self.supersede(old) + self.foreground.cancel_navigation(Some(old))
     }
 
+    /// Photos left the session (removed from the filmstrip): cancels every viewport, tile, thumbnail, histogram, readout
+    /// and look-tile job of theirs, queued or running, and the panel requests waiting to be superseded, so that nothing
+    /// is rendered for them and no queued job keeps their decoded mosaic alive. **Export jobs are left alone**: an export
+    /// holds its own snapshot of each photo and finishes the photos it was started with. Returns how many jobs were
+    /// cancelled.
+    pub fn cancel_photos(&self, photos: &[PhotoId]) -> usize {
+        let owners: Vec<u64> = photos.iter().map(|p| u64::from(p.0).max(1)).collect();
+        // The queue first: a look tile or histogram request that has not started is dropped there with its closure
+        // (and the mosaic it holds), so the registry of superseded-able requests finds it finished and does not count it again.
+        let queued = self.foreground.cancel_owners(&owners);
+        queued + owners.iter().map(|&o| self.supersede(o)).sum::<usize>()
+    }
+
     /// Cancels every pending job and sets the token of the running ones (the session closed).
     pub fn cancel_all(&self) -> usize {
         self.foreground.cancel_all() + self.background.cancel_all()
@@ -745,6 +758,50 @@ mod tests {
         let ran = ran.lock().expect("ran").clone();
         assert!(ran.contains(&"export-1") && ran.contains(&"thumbnail-1"));
         assert!(!ran.contains(&"viewport-1") && !ran.contains(&"tile-1"));
+    }
+
+    #[test]
+    fn cancelling_photos_takes_every_foreground_job_of_theirs_but_no_export() {
+        let s = JobScheduler::new("test-gone").expect("scheduler");
+        let (gate, gate_job) = block(&s);
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let mut handles = Vec::new();
+        for (name, p, owner) in [
+            ("viewport-1", Priority::Viewport, 1),
+            ("thumbnail-1", Priority::Thumbnail, 1),
+            ("thumbnail-2", Priority::Thumbnail, 2),
+            ("export-1", Priority::Export, 1),
+            ("thumbnail-3", Priority::Thumbnail, 3),
+        ] {
+            let ran = Arc::clone(&ran);
+            handles.push((
+                name,
+                s.submit(p, Some(PhotoId(owner)), move |_| {
+                    ran.lock().expect("ran").push(name);
+                }),
+            ));
+        }
+        // A panel request that waits to be superseded (a look tile) goes too, and lets go of what it holds.
+        let tile = s.submit_superseded(Priority::Thumbnail, PhotoId(2), |_| "ran", || "superseded");
+        let cancelled = s.cancel_photos(&[PhotoId(1), PhotoId(2)]);
+        assert_eq!(
+            cancelled, 4,
+            "viewport-1, thumbnail-1, thumbnail-2 and the look tile of photo 2"
+        );
+        gate.send(()).expect("open the gate");
+        gate_job.wait().expect("gate job");
+        for (name, h) in handles {
+            let r = h.wait();
+            match name {
+                "viewport-1" | "thumbnail-1" | "thumbnail-2" => {
+                    assert_eq!(r, Err(JobError::Cancelled), "{name}");
+                }
+                _ => assert!(r.is_ok(), "{name} must still run: {r:?}"),
+            }
+        }
+        assert_eq!(tile.wait(), Err(JobError::Cancelled));
+        assert_eq!(*ran.lock().expect("ran"), vec!["thumbnail-3", "export-1"]);
+        assert_eq!(s.cancel_photos(&[]), 0);
     }
 
     #[test]

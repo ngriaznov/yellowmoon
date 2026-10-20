@@ -35,6 +35,7 @@ type AllTrue<Checks extends Record<string, true>> = Checks;
 /** Answers and events: what the core sends has to fit the type the screens read. */
 export type FromCore = AllTrue<{
   sessionState: Assignable<B.SessionState, T.SessionState>;
+  sessionChange: Assignable<B.SessionChange, T.SessionChange>;
   photoSummary: Assignable<B.PhotoSummary, T.PhotoSummary>;
   photoStatus: Assignable<B.PhotoStatus, T.PhotoStatus>;
   cameraInfo: Assignable<B.CameraInfo, T.CameraInfo>;

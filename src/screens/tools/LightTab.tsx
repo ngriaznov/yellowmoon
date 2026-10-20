@@ -28,8 +28,10 @@ export const LightTab = memo(function LightTab({ store, photo, rs }: TabProps) {
   // (`store.watchHistogram`). Nothing is asked for per frame: every request is a job in the queue that also draws the viewport.
   useEffect(() => store.watchHistogram({ readout: true }), [store, photo.id]);
 
-  const send = (patch: SettingsPatch) => (final: boolean) => void store.update(patch, final);
-  const exposure = (ev: number, final: boolean): void => void store.update({ exposure: manualOrAuto({ ev }, { ev: estimates.exposure_ev }) }, final);
+  // A drag names the photo it began on (`store.update`), so moving to another photo before its frame or its release cannot send it there.
+  const send = (patch: SettingsPatch) => (final: boolean) => void store.update(patch, final, rs.photo_id);
+  const exposure = (ev: number, final: boolean): void =>
+    void store.update({ exposure: manualOrAuto({ ev }, { ev: estimates.exposure_ev }) }, final, rs.photo_id);
 
   return (
     <>
@@ -42,7 +44,7 @@ export const LightTab = memo(function LightTab({ store, photo, rs }: TabProps) {
         title="Exposure"
         tag={<AutoToggle isAuto={auto.exposure} onAuto={() => void store.update({ exposure: AUTO })} />}
         action={
-          <ResetLink size="card" onClick={() => void store.update({ exposure: AUTO, contrast: AUTO, brightness: 0 })} />
+          <ResetLink size="card" onClick={() => void store.update({ exposure: AUTO, contrast: AUTO, brightness: 0 }, true, rs.photo_id)} />
         }
       >
         <Slider
@@ -91,7 +93,7 @@ export const LightTab = memo(function LightTab({ store, photo, rs }: TabProps) {
       </Card>
       <Card
         title="High dynamic range"
-        action={<ResetLink size="card" onClick={() => void store.update({ highlights: AUTO, shadows: AUTO, white: 0, black: AUTO })} />}
+        action={<ResetLink size="card" onClick={() => void store.update({ highlights: AUTO, shadows: AUTO, white: 0, black: AUTO }, true, rs.photo_id)} />}
       >
         <PercentSlider store={store} rs={rs} field="highlights" label="Highlights" />
         <PercentSlider store={store} rs={rs} field="shadows" label="Shadows" />

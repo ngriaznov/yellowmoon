@@ -117,17 +117,19 @@ test.describe("the flow", () => {
     }
   });
 
-  test("a look picked with Apply to = All reaches every photo's thumbnail; This photo keeps the others", async ({ page }) => {
+  test("a look picked keeps the other photos' thumbnails (Apply to starts on This photo); All reaches every photo's thumbnail", async ({ page }) => {
     await photos(page);
-    const before = await page.locator(".ym-filmstrip__thumb img").first().getAttribute("src");
-    await page.getByRole("button", { name: "Night blue look, key 8" }).click();
-    await expect.poll(async () => page.locator(".ym-filmstrip__thumb img").first().getAttribute("src")).not.toBe(before);
-    await page.getByRole("radio", { name: "This photo" }).click();
-    const second = await page.locator(".ym-filmstrip__thumb img").nth(1).getAttribute("src");
+    const thumb = (n: number) => page.locator(".ym-filmstrip__thumb img").nth(n);
+    await expect(page.getByRole("radio", { name: "This photo" })).toHaveAttribute("aria-checked", "true");
+    const second = await thumb(1).getAttribute("src");
     await page.getByRole("button", { name: "Film warm look, key 3" }).click();
     await expect(page.getByRole("img", { name: /Film warm/ })).toBeVisible();
     await page.waitForTimeout(150);
-    expect(await page.locator(".ym-filmstrip__thumb img").nth(1).getAttribute("src")).toBe(second);
+    expect(await thumb(1).getAttribute("src")).toBe(second);
+    await page.getByRole("radio", { name: /^All/ }).click();
+    const before = await thumb(0).getAttribute("src");
+    await page.getByRole("button", { name: "Night blue look, key 8" }).click();
+    await expect.poll(async () => thumb(0).getAttribute("src")).not.toBe(before);
   });
 
   test("look thumbnails load lazily: the tiles in view first, the rest as they scroll into view, all decodable", async ({ page }) => {

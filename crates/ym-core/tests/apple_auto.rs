@@ -274,6 +274,13 @@ impl Rig {
     /// A session with the scripted advisor (retries 5 ms apart) and `n` photos written but not
     /// opened yet.
     fn new(advisor: Arc<Scripted>, n: usize, thumbnails: bool) -> Self {
+        let dir = tempfile::tempdir().expect("dir");
+        write_photos(dir.path(), n);
+        Self::in_dir(advisor, dir, thumbnails)
+    }
+
+    /// A session with the scripted advisor over the photos already in `dir`.
+    fn in_dir(advisor: Arc<Scripted>, dir: tempfile::TempDir, thumbnails: bool) -> Self {
         let pictures = Arc::new(StubPictures::default());
         let (sink, events) = EventSink::channel();
         let mut env = base_env().with_events(sink).with_apple_auto(AppleAutoEnv {
@@ -283,8 +290,6 @@ impl Rig {
         if thumbnails {
             env = env.with_thumbnails(Arc::new(CountingThumbnails::default()));
         }
-        let dir = tempfile::tempdir().expect("dir");
-        write_photos(dir.path(), n);
         Self {
             session: Session::new(env),
             events,
@@ -1764,4 +1769,486 @@ fn a_panic_after_the_answer_fails_that_photo_and_the_worker_goes_on() {
     // The viewers were told about the failure.
     let changed = changed_ids(&events.try_iter().collect::<Vec<_>>());
     assert!(changed.contains(&broken));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Removing photos from the filmstrip, and Undo (`docs/01` Session, `docs/19` section 6)
+// ---------------------------------------------------------------------------------------------
+
+/// Waits until the decode pool has nothing queued or running (the worker may still be asking).
+fn wait_developed(session: &Session) {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while session.pending_jobs() > 0 {
+        assert!(Instant::now() < deadline, "the photos were developed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// `a.ARW`, `b.ARW` and `c.ARW` one burst (a second apart), `d.ARW` alone a half minute later.
+fn write_burst_of_three_and_one(dir: &Path) {
+    let frame = |name: &str, sec: &str, level: f64| {
+        let s = scene(level);
+        s.builder(MODEL)
+            .capture_time(&format!("2026:10:04 12:03:{sec}"), "00", None)
+            .write_to(&dir.join(name), &s.mosaic())
+            .unwrap();
+    };
+    frame("a.ARW", "10", 0.10);
+    frame("b.ARW", "10", 0.20);
+    frame("c.ARW", "11", 0.40);
+    frame("d.ARW", "40", 0.10);
+}
+
+impl Rig {
+    /// Develops the photos while Apple Auto is not available, so that nobody is asked yet and the order of the
+    /// questions is the documented one (the photo on screen, then the others in filmstrip order); then makes it
+    /// available with the advisor's gate closed to `only` (every photo, or the one), and waits until a request is
+    /// held there.
+    fn hold_the_first_request(&self, advisor: &Scripted, only: Option<u8>) {
+        self.settle();
+        assert!(
+            advisor.calls().is_empty(),
+            "nobody was asked while it was unavailable"
+        );
+        advisor.gate.close(only);
+        advisor.set_available(true);
+        self.session.refresh_apple_auto();
+        advisor.gate.wait_parked();
+    }
+}
+
+/// A rig over `n` photos (no bursts) that is held at the first request, with `fallback` as the model's answer.
+fn held_rig(fallback: Reply, n: usize) -> (Arc<Scripted>, Rig, Vec<PhotoId>) {
+    let advisor = Scripted::new(fallback);
+    advisor.set_available(false);
+    let rig = Rig::new(advisor.clone(), n, false);
+    let ids = rig.open();
+    rig.hold_the_first_request(&advisor, None);
+    (advisor, rig, ids)
+}
+
+#[test]
+fn a_removed_photo_leaves_the_queue_and_its_answer_is_dropped_when_it_arrives() {
+    let (advisor, rig, ids) = held_rig(Ok(steps(1, 0, 0, 0)), 4);
+    let (a, b, c, d) = (ids[0], ids[1], ids[2], ids[3]);
+    // The photo on screen is held at the advisor; c is the photo an export waits for (next in the order).
+    assert_eq!(advisor.calls(), vec![a.0 as u8]);
+    rig.session.prioritise_apple_auto(&[c]);
+    rig.drain();
+
+    let out = rig.session.remove(&[a, c]);
+    assert_eq!(out.removed, vec![a, c]);
+    assert_eq!(rig.session.restorable(), vec![a, c]);
+    assert!(rig.session.estimates(a).is_none() && rig.session.estimates(c).is_none());
+    // Nothing is told about the photos that left.
+    let told = changed_ids(&rig.drain());
+    assert!(!told.contains(&a) && !told.contains(&c), "{told:?}");
+
+    // The held request returns: its answer belongs to a photo that is not in the session, and is dropped.
+    advisor.gate.open();
+    rig.settle();
+    // b and d are asked, in filmstrip order; c never is, and a only the once, before it left.
+    assert_eq!(advisor.calls(), vec![a.0 as u8, b.0 as u8, d.0 as u8]);
+    assert!(matches!(rig.state(b), AppleAuto::Answered { .. }));
+    assert!(matches!(rig.state(d), AppleAuto::Answered { .. }));
+    assert!(
+        rig.session.estimates(a).is_none(),
+        "the answer found no place to go"
+    );
+    assert_eq!(
+        rig.session.restorable(),
+        vec![a, c],
+        "the removal is still there"
+    );
+
+    // Undo: both come back without an answer (the late one was dropped; c was never asked) and go back to the queue,
+    // the photo that was on screen first.
+    advisor.gate.close(None);
+    let back = rig.session.restore_removed();
+    assert_eq!(back.restored, vec![a, c]);
+    advisor.gate.wait_parked();
+    assert_eq!(rig.state(a), AppleAuto::Pending);
+    assert_eq!(rig.state(c), AppleAuto::Pending);
+    assert!(
+        !rig.session.estimates_final(c).unwrap(),
+        "an export of c waits again"
+    );
+    advisor.gate.open();
+    rig.settle();
+    assert_eq!(advisor.calls_about(a), 2);
+    assert_eq!(advisor.calls_about(c), 1);
+    for id in [a, c] {
+        assert!(matches!(rig.state(id), AppleAuto::Answered { .. }), "{id}");
+        assert!(rig.session.estimates_final(id).unwrap());
+    }
+}
+
+#[test]
+fn a_removed_photo_drops_its_picture_and_renders_it_again_when_it_is_asked() {
+    // Both photos are developed with Apple Auto on: the development jobs render the pictures (hard rule 4: in memory only).
+    let advisor = Scripted::new(Ok(steps(1, 0, 0, 0)));
+    advisor.gate.close(None);
+    let rig = Rig::new(advisor.clone(), 2, false);
+    let ids = rig.open();
+    advisor.gate.wait_parked();
+    wait_developed(&rig.session);
+    assert_eq!(rig.pictures.renders.load(Ordering::SeqCst), 2);
+    // One photo is held at the advisor; the other waits behind it with its picture ready.
+    let asked = advisor.calls()[0];
+    let waiting = *ids.iter().find(|id| id.0 as u8 != asked).unwrap();
+
+    rig.session.remove(&[waiting]);
+    assert_eq!(rig.session.restore_removed().restored, vec![waiting]);
+    advisor.gate.open();
+    rig.settle();
+    // The picture was dropped with the photo, so the worker made it again for the question.
+    assert_eq!(rig.pictures.renders.load(Ordering::SeqCst), 3);
+    assert!(matches!(rig.state(waiting), AppleAuto::Answered { .. }));
+}
+
+#[test]
+fn an_answer_that_arrives_after_a_removal_and_its_undo_is_dropped_too() {
+    let (advisor, rig, ids) = held_rig(Ok(steps(1, 0, 0, 0)), 2);
+    let a = ids[0];
+    // The first request about a is answered with exposure +3, the second with +1.
+    advisor.answer(a, [Ok(steps(3, 0, 0, 0)), Ok(steps(1, 0, 0, 0))]);
+    assert_eq!(advisor.calls(), vec![a.0 as u8]);
+
+    // a leaves and comes back while the model is still working on it: a new incarnation, without an answer.
+    rig.session.remove(&[a]);
+    assert_eq!(rig.session.restore_removed().restored, vec![a]);
+    assert_eq!(rig.state(a), AppleAuto::Pending);
+    advisor.gate.open();
+    rig.settle();
+
+    // The first answer was about the photo before it left and is not used; the photo was asked again.
+    assert_eq!(advisor.calls_about(a), 2);
+    assert_eq!(
+        rig.session.estimates(a).unwrap().apple_steps,
+        Some(steps(1, 0, 0, 0))
+    );
+}
+
+#[test]
+fn a_photo_comes_back_with_its_answer_or_its_failure_and_is_not_asked_again() {
+    let advisor = Scripted::new(Ok(steps(1, 1, 0, 0)));
+    let rig = Rig::new(advisor.clone(), 3, false);
+    let ids = rig.open();
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    advisor.answer(b, [Err(FailureKind::Refused)]);
+    rig.session.refresh_apple_auto();
+    rig.settle();
+    assert_eq!(advisor.calls().len(), 3);
+    let before: Vec<_> = ids
+        .iter()
+        .map(|id| rig.session.estimates(*id).unwrap())
+        .collect();
+    assert!(matches!(before[0].apple, AppleAuto::Answered { .. }));
+    assert!(matches!(
+        before[1].apple,
+        AppleAuto::Failed {
+            kind: FailureKind::Refused,
+            ..
+        }
+    ));
+    let served: Vec<_> = ids
+        .iter()
+        .map(|id| serde_json::to_value(rig.session.settings(*id).unwrap()).unwrap())
+        .collect();
+
+    rig.session.remove(&[a, b]);
+    // An export of the photo that stays does not wait for photos that are gone.
+    assert!(rig.session.estimates_final(c).unwrap());
+    let back = rig.session.restore_removed();
+    assert_eq!(back.restored, vec![a, b]);
+    for (i, id) in ids.iter().enumerate() {
+        let now = rig.session.estimates(*id).unwrap();
+        assert_eq!(now.apple, before[i].apple, "{id}");
+        assert_eq!(now.apple_steps, before[i].apple_steps, "{id}");
+        assert_eq!(now.exposure.ev, before[i].exposure.ev, "{id}");
+        assert_eq!(
+            serde_json::to_value(rig.session.settings(*id).unwrap()).unwrap(),
+            served[i],
+            "{id}"
+        );
+        assert!(rig.session.estimates_final(*id).unwrap());
+    }
+    rig.settle();
+    assert_eq!(advisor.calls().len(), 3, "nobody was asked again");
+    assert_eq!(rig.session.apple_auto_asks(), 3);
+}
+
+#[test]
+fn removing_a_frame_of_a_burst_makes_the_steps_of_the_frames_left_again_and_tells_them() {
+    let dir = tempfile::tempdir().unwrap();
+    write_burst_of_three_and_one(dir.path());
+    let advisor = Scripted::new(Ok(AutoSteps::keep()));
+    let rig = Rig::in_dir(advisor.clone(), dir, true);
+    let ids = rig.open();
+    let (a, b, c, d) = (ids[0], ids[1], ids[2], ids[3]);
+    // Exposure steps +1, +3, +3 in the burst: the middle one is +3; without c, the lower middle of +1 and +3 is +1.
+    advisor.answer(a, [Ok(steps(1, 0, 0, 0))]);
+    advisor.answer(b, [Ok(steps(3, 0, 0, 0))]);
+    advisor.answer(c, [Ok(steps(3, 0, 0, 0))]);
+    advisor.answer(d, [Ok(steps(-2, 0, 0, 0))]);
+    rig.settle();
+    let exposure_step = |id: PhotoId| {
+        rig.session
+            .estimates(id)
+            .unwrap()
+            .apple_steps
+            .unwrap()
+            .exposure
+    };
+    for id in [a, b, c] {
+        assert_eq!(exposure_step(id), Some(3), "{id}");
+    }
+    let ev_added = |id: PhotoId| {
+        let e = rig.session.estimates(id).unwrap();
+        e.exposure.ev - e.exposure.own_ev
+    };
+    assert!((ev_added(a) - 1.0).abs() < 1e-12);
+    rig.drain();
+
+    let out = rig.session.remove(&[c]);
+    // The frames left share what is left: +1, the way the burst median exposure is made again (`docs/19` section 5).
+    assert_eq!(exposure_step(a), Some(1));
+    assert_eq!(exposure_step(b), Some(1));
+    assert!((ev_added(a) - 0.3).abs() < 1e-12 && (ev_added(b) - 0.3).abs() < 1e-12);
+    assert_eq!(
+        out.estimates_changed,
+        vec![a, b],
+        "d is alone and did not move"
+    );
+    assert_eq!(exposure_step(d), Some(-2));
+    rig.settle();
+    let events = rig.drain();
+    let mut told = changed_ids(&events);
+    told.sort();
+    assert_eq!(told, vec![a, b], "each once, and not c or d");
+    // Their pictures changed, so their thumbnails are made again (and none is made for the photo that left).
+    assert_eq!(thumbnails_of(&events, a), 1, "{events:?}");
+    assert_eq!(thumbnails_of(&events, b), 1);
+    assert_eq!(thumbnails_of(&events, c) + thumbnails_of(&events, d), 0);
+
+    // Undo: c joins the burst again with its own answer, and the median is +3 for the three.
+    let back = rig.session.restore_removed();
+    assert_eq!(back.restored, vec![c]);
+    assert_eq!(
+        back.estimates_changed,
+        vec![a, b],
+        "the restored photo is not in it"
+    );
+    for id in [a, b, c] {
+        assert_eq!(exposure_step(id), Some(3), "{id}");
+    }
+    assert!((ev_added(c) - 1.0).abs() < 1e-12);
+    rig.settle();
+    assert_eq!(advisor.calls().len(), 4, "nobody was asked again");
+}
+
+#[test]
+fn a_burst_waiting_for_a_frame_that_is_removed_is_complete_without_it() {
+    let dir = tempfile::tempdir().unwrap();
+    write_burst_of_three_and_one(dir.path());
+    let advisor = Scripted::new(Ok(steps(1, 0, 0, 0)));
+    advisor.set_available(false);
+    let rig = Rig::in_dir(advisor.clone(), dir, false);
+    let ids = rig.open();
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    // c is held: a and b answer first (the photo on screen, then filmstrip order), and the burst is not complete.
+    rig.hold_the_first_request(&advisor, Some(c.0 as u8));
+    assert!(matches!(rig.state(a), AppleAuto::Answered { .. }));
+    assert!(matches!(rig.state(b), AppleAuto::Answered { .. }));
+    assert!(!rig.session.estimates_final(a).unwrap(), "a waits for c");
+    rig.drain();
+
+    // c leaves while the model is working on it: a and b are final at once, and the answer for c is dropped when it comes.
+    rig.session.remove(&[c]);
+    assert!(rig.session.estimates_final(a).unwrap());
+    assert!(rig.session.estimates_final(b).unwrap());
+    advisor.gate.open();
+    rig.settle();
+    assert!(rig.session.estimates(c).is_none());
+    assert_eq!(advisor.calls_about(c), 1);
+    assert!(
+        !changed_ids(&rig.drain()).contains(&c),
+        "nothing about c is sent"
+    );
+}
+
+/// An export queue of its own over a session that is not a [`Core`], with one job queued.
+struct QueuedExport {
+    _queue: ExportQueue,
+    _home: tempfile::TempDir,
+    dest: tempfile::TempDir,
+    events: Receiver<ExportEvent>,
+}
+
+/// Queues an export of `scope` into a new folder.
+fn queue_for(session: &Arc<Session>, scope: ApplyScope) -> QueuedExport {
+    let home = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    let ctx = Arc::new(
+        ExportContext::new(Renderer::neutral_only().expect("renderer"))
+            .with_home(Some(home.path().to_path_buf())),
+    );
+    let (sink, events) = ExportSink::channel();
+    let queue = ExportQueue::new(ctx, sink);
+    queue
+        .start(
+            session,
+            &ExportJob {
+                scope,
+                options: ExportOptions {
+                    destination: Some(dest.path().to_path_buf()),
+                    ..ExportOptions::default()
+                },
+            },
+            false,
+        )
+        .expect("export queued");
+    QueuedExport {
+        _queue: queue,
+        _home: home,
+        dest,
+        events,
+    }
+}
+
+impl QueuedExport {
+    /// Whether the export has finished, looking at the events that came so far.
+    fn finished(&self) -> bool {
+        self.events
+            .try_iter()
+            .any(|e| e == ExportEvent::Busy(false))
+    }
+
+    fn wait_finished(&self, what: &str) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.events.recv_timeout(left) {
+                Ok(ExportEvent::Busy(false)) => return,
+                Ok(_) => {}
+                Err(_) => panic!("the export hung: {what}"),
+            }
+        }
+    }
+
+    fn files(&self) -> usize {
+        std::fs::read_dir(self.dest.path()).unwrap().count()
+    }
+}
+
+#[test]
+fn an_export_waiting_for_a_removed_frame_or_photo_does_not_hang() {
+    let dir = tempfile::tempdir().unwrap();
+    write_burst_of_three_and_one(dir.path());
+    let advisor = Scripted::new(Ok(steps(1, 0, 0, 0)));
+    let session = Arc::new(Session::new(base_env().with_apple_auto(AppleAutoEnv {
+        retry_pause: Duration::from_millis(5),
+        ..AppleAutoEnv::new(advisor.clone(), Arc::new(StubPictures::default()))
+    })));
+    let ids = session
+        .open(&[dir.path().to_path_buf()], OpenOptions::default())
+        .added;
+    assert!(session.wait_idle(Duration::from_secs(120)));
+    let (a, b, c, d) = (ids[0], ids[1], ids[2], ids[3]);
+    // Everything is answered once; new instructions ask every photo again, and the first request is held.
+    advisor.gate.close(None);
+    session.set_apple_auto_instructions("Moody and dark.");
+    advisor.gate.wait_parked();
+    assert_eq!(advisor.calls().last(), Some(&(a.0 as u8)));
+
+    // 1. An export of a (This photo) waits for a, b and c: the burst. Only a is let through, once the export is queued.
+    let export = queue_for(&session, ApplyScope::This);
+    advisor.gate.free(&[a]);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!export.finished(), "it waits for b and c");
+    // b and c leave (b is the request in flight): the burst is a alone, and the export goes on without them.
+    session.remove(&[b, c]);
+    export.wait_finished("a burst whose other frames were removed");
+    assert_eq!(export.files(), 1);
+
+    // 2. An export of a and d waits for d's new answer (the worker is still inside b's request); both leave meanwhile,
+    //    and the export finishes with the settings it was queued with.
+    let export = queue_for(&session, ApplyScope::All);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!export.finished(), "it waits for d");
+    session.remove(&[d, a]);
+    export.wait_finished("photos removed while their export waited");
+    assert_eq!(export.files(), 2);
+    advisor.gate.open();
+}
+
+#[test]
+fn new_instructions_while_a_photo_is_out_drop_its_answer_too() {
+    let advisor = Scripted::new(Ok(steps(1, 0, 0, 0)));
+    let rig = Rig::new(advisor.clone(), 3, false);
+    let ids = rig.open();
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    rig.settle();
+    assert_eq!(advisor.calls().len(), 3);
+
+    // b is out when the instructions change: a and c are asked again, b was not in the session to be.
+    rig.session.remove(&[b]);
+    rig.session.set_apple_auto_instructions("Bright and airy.");
+    rig.settle();
+    assert_eq!(advisor.calls_about(a), 2);
+    assert_eq!(advisor.calls_about(c), 2);
+    assert_eq!(advisor.calls_about(b), 1);
+
+    // Its answer was made under the old instructions, so it is not brought back: b is asked with the new ones.
+    assert_eq!(rig.session.restore_removed().restored, vec![b]);
+    rig.settle();
+    assert_eq!(advisor.calls_about(b), 2);
+    let seen = lock(&advisor.instructions).clone();
+    assert_eq!(seen.last().map(String::as_str), Some("Bright and airy."));
+    match rig.state(b) {
+        AppleAuto::Answered { info, .. } => assert_eq!(
+            info.instructions,
+            ym_core::apple_auto::InstructionsId::of("Bright and airy.")
+        ),
+        other => panic!("{other:?}"),
+    }
+
+    // The same instructions all along keep the answer: an undo with nothing changed in between asks nobody.
+    let asks = rig.session.apple_auto_asks();
+    rig.session.remove(&[b]);
+    rig.session.restore_removed();
+    rig.settle();
+    assert_eq!(rig.session.apple_auto_asks(), asks);
+}
+
+#[test]
+fn an_export_after_a_removal_and_its_undo_is_the_same_bytes_with_the_same_answers() {
+    let rig = core_rig(Some(Arc::new(FakeAdvisor)), 3);
+    let ids = rig.open();
+    assert!(rig.core.session.wait_idle(Duration::from_secs(120)));
+    let first = tempfile::tempdir().unwrap();
+    let before = rig.export(first.path());
+    assert_eq!(before.len(), 3);
+    let asks = rig.core.session.apple_auto_asks();
+
+    let out = rig.core.remove_photos(&[ids[1]]);
+    assert_eq!(out.removed, vec![ids[1]]);
+    // The photos that stay export alone: two files.
+    let alone = tempfile::tempdir().unwrap();
+    assert_eq!(rig.export(alone.path()).len(), 2);
+    assert_eq!(rig.core.restore_photos().restored, vec![ids[1]]);
+    assert!(rig.core.session.wait_idle(Duration::from_secs(120)));
+    assert_eq!(
+        rig.core.session.apple_auto_asks(),
+        asks,
+        "nobody was asked again"
+    );
+
+    let second = tempfile::tempdir().unwrap();
+    let after = rig.export(second.path());
+    assert_eq!(before, after, "the photo came back with its answer");
+    for (_, bytes) in &after {
+        let xmp = xmp_of(bytes).unwrap();
+        assert_eq!(xmp_property(&xmp, "ym:Auto").as_deref(), Some("apple"));
+    }
 }

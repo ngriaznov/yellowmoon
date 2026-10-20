@@ -152,6 +152,72 @@ describe("the shortcut table of docs/11", () => {
     expect(act(key("Enter", {}, handle), { mode: "crop" })).toBe("confirm");
   });
 
+  it("Delete and Backspace remove the photo from the filmstrip", () => {
+    expect(act(key("Delete"))).toBe("remove-photo");
+    expect(act(key("Backspace"))).toBe("remove-photo");
+    // Focus on a button or on a filmstrip thumbnail still counts: neither uses the keys.
+    const thumb = document.createElement("button");
+    thumb.dataset.photoId = "3";
+    expect(act(key("Delete", {}, thumb))).toBe("remove-photo");
+  });
+
+  it("leaves Delete and Backspace to a text box, a slider, a menu, a dialog and the crop frame", () => {
+    for (const k of ["Delete", "Backspace"]) {
+      for (const type of ["text", "search", "number", "email"]) {
+        const input = document.createElement("input");
+        input.type = type;
+        expect(act(key(k, {}, input)), `${k} in an input of type ${type}`).toBeNull();
+      }
+      expect(act(key(k, {}, document.createElement("textarea")))).toBeNull();
+      expect(act(key(k, {}, document.createElement("select")))).toBeNull();
+      const editable = document.createElement("div");
+      editable.contentEditable = "true";
+      // jsdom does not compute it.
+      Object.defineProperty(editable, "isContentEditable", { value: true });
+      expect(act(key(k, {}, editable))).toBeNull();
+      const range = document.createElement("input");
+      range.type = "range";
+      expect(act(key(k, {}, range))).toBeNull();
+      // Radix's slider knob, a colour-warp pin, a curve point and a wheel are role=slider.
+      const knob = document.createElement("span");
+      knob.setAttribute("role", "slider");
+      expect(act(key(k, {}, knob))).toBeNull();
+      const item = document.createElement("div");
+      item.setAttribute("role", "menuitem");
+      const menu = document.createElement("div");
+      menu.setAttribute("role", "menu");
+      menu.append(item);
+      expect(act(key(k, {}, item))).toBeNull();
+      const field = document.createElement("div");
+      const dialog = document.createElement("div");
+      dialog.setAttribute("role", "dialog");
+      dialog.append(field);
+      expect(act(key(k, {}, field))).toBeNull();
+      const crop = document.createElement("div");
+      crop.className = "ym-crop";
+      const handle = document.createElement("button");
+      crop.append(handle);
+      expect(act(key(k, {}, handle))).toBeNull();
+    }
+  });
+
+  it("does not remove a photo while cropping or picking, with a modifier, or after a control used the key", () => {
+    expect(act(key("Delete"), { mode: "crop" })).toBeNull();
+    expect(act(key("Delete"), { mode: "pick-white" })).toBeNull();
+    expect(act(key("Backspace"), { mode: "pick-color" })).toBeNull();
+    expect(act(key("Delete", { shiftKey: true }))).toBeNull();
+    expect(act(cmd("Backspace"))).toBeNull();
+    expect(act(key("Delete", { altKey: true }))).toBeNull();
+    expect(act(key("Backspace", { ctrlKey: true }))).toBeNull();
+    expect(act({ ...key("Delete"), defaultPrevented: true })).toBeNull();
+  });
+
+  it("removes one photo when Delete is held down, not one after another", () => {
+    expect(act({ ...key("Delete"), repeat: false })).toBe("remove-photo");
+    expect(act({ ...key("Delete"), repeat: true })).toBeNull();
+    expect(act({ ...key("Backspace"), repeat: true })).toBeNull();
+  });
+
   it("ignores a key a control already used", () => {
     expect(act({ ...key("ArrowLeft"), defaultPrevented: true })).toBeNull();
   });

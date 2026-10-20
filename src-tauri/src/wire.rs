@@ -305,6 +305,21 @@ pub struct SessionState {
     pub opened: Option<OpenSummary>,
 }
 
+/// The answer of `remove_photos` and `restore_photos`: the photos that were taken out of the filmstrip or put back, and the
+/// session as it is now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct SessionChange {
+    /// The photos taken out (`remove_photos`: those of the ids that were in the session) or put back (`restore_photos`), in
+    /// filmstrip order.
+    pub photo_ids: Vec<PhotoId>,
+    /// `restore_photos` only: photos of the removal that stayed out because their file had been added to the session again
+    /// meanwhile. 0 for `remove_photos`.
+    pub already_open: u32,
+    /// The session afterwards. A snapshot, as every answer with a session is: about the photos that were open already it is a
+    /// little older than the page's own state, which events and clicks have moved on since.
+    pub session: SessionState,
+}
+
 /// What one `open_paths` or `open_dialog` call did to the session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct OpenSummary {

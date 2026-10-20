@@ -2,7 +2,7 @@
  * Small hooks shared by the controls: a latest-value ref, a one-per-frame emitter for drag
  * patches, and a window-level pointer drag.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
 /** A ref that always holds the newest value, for callbacks that outlive a render. */
@@ -12,6 +12,42 @@ export function useLatest<T>(value: T): { readonly current: T } {
     ref.current = value;
   });
   return ref;
+}
+
+/** What `useGestureCallback` returns. */
+export interface GestureCallback<F> {
+  /** The callback to call now: the one the running gesture began with, else the newest. */
+  readonly current: F;
+  /** A drag, or any input collected over time, begins: it reports to the callback of the render it began in until {@link end}. */
+  begin: () => void;
+  /** The gesture is over (released, cancelled): the newest callback is the one to call again. */
+  end: () => void;
+}
+
+/**
+ * The callback a control reports its changes to. A control that collects input (a drag sends one value per frame, then a final one)
+ * calls `onChange` some time after the input that made the value; the `onChange` of the newest render may by then belong to another
+ * photo (the person moved on between the pointer going down and the frame, or the release), and the value would be sent there. So a
+ * gesture holds the callback it began with: `begin()` when it starts, `end()` when it is over, `current` in between. Outside a gesture
+ * (a key, a typed value, Reset) `current` is the newest callback, which is the one for the input being handled.
+ */
+export function useGestureCallback<F>(callback: F): GestureCallback<F> {
+  const latest = useLatest(callback);
+  const held = useRef<{ callback: F } | null>(null);
+  return useMemo(
+    () => ({
+      get current() {
+        return held.current ? held.current.callback : latest.current;
+      },
+      begin() {
+        held.current = { callback: latest.current };
+      },
+      end() {
+        held.current = null;
+      },
+    }),
+    [latest],
+  );
 }
 
 /** What `useFrameEmitter` returns. */

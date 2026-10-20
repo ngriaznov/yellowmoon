@@ -469,6 +469,39 @@ impl<C: 'static> Scheduler<C> {
         n
     }
 
+    /// Cancels the jobs of `owners` that are not export jobs, pending and running: the viewport, tile
+    /// and thumbnail jobs of photos that left the session. Pending ones resolve at once with
+    /// [`JobError::Cancelled`]; a running one only has its token set. Export jobs are left to their
+    /// own token (an export holds its own snapshots and finishes the photos it was started with).
+    /// Returns how many jobs were cancelled.
+    pub fn cancel_owners(&self, owners: &[u64]) -> usize {
+        let matches = |p: Priority, o: Option<u64>| {
+            p != Priority::Export && o.is_some_and(|o| owners.contains(&o))
+        };
+        let (cancelled, running) = {
+            let mut st = lock(&self.inner.state);
+            let entries = std::mem::take(&mut st.heap).into_vec();
+            let (hit, keep): (Vec<_>, Vec<_>) = entries
+                .into_iter()
+                .partition(|e| matches(e.priority, e.owner));
+            st.heap = keep.into_iter().collect();
+            let running = match &st.running {
+                Some(r) if matches(r.priority, r.owner) => {
+                    r.token.cancel();
+                    1
+                }
+                _ => 0,
+            };
+            (hit, running)
+        };
+        let n = cancelled.len() + running;
+        for e in cancelled {
+            e.token.cancel();
+            (e.job)(Dispatch::Cancelled, &e.token);
+        }
+        n
+    }
+
     /// Cancels every pending job of any priority (running jobs get their token set). Used when the
     /// session closes; navigation uses [`Scheduler::cancel_navigation`].
     pub fn cancel_all(&self) -> usize {
@@ -741,6 +774,65 @@ mod tests {
             h.wait().expect("kept job");
         }
         assert_eq!(*lock(&ran), ["view_b", "thumb_a", "export_a"]);
+    }
+
+    #[test]
+    fn cancelling_owners_takes_every_job_but_exports_of_those_owners_only() {
+        let s = scheduler();
+        let (open, g) = gate(&s);
+        let ran = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let mk = |name: &'static str, p: Priority, owner: Option<u64>| {
+            let ran = Arc::clone(&ran);
+            let spec = owner.map_or(JobSpec::new(p), |o| JobSpec::new(p).owned_by(o));
+            s.submit(spec, move |_, _| {
+                lock(&ran).push(name);
+            })
+        };
+        let view_a = mk("view_a", Priority::Viewport, Some(1));
+        let thumb_a = mk("thumb_a", Priority::Thumbnail, Some(1));
+        let export_a = mk("export_a", Priority::Export, Some(1));
+        let thumb_b = mk("thumb_b", Priority::Thumbnail, Some(2));
+        let thumb_c = mk("thumb_c", Priority::Thumbnail, Some(3));
+        let unowned = mk("unowned", Priority::Thumbnail, None);
+        let n = s.cancel_owners(&[1, 2]);
+        assert_eq!(n, 3, "the viewport and thumbnail jobs of photos 1 and 2");
+        for h in [view_a, thumb_a, thumb_b] {
+            assert_eq!(h.wait_timeout(WAIT), Some(Err(JobError::Cancelled)));
+        }
+        assert_eq!(
+            s.pending(),
+            3,
+            "an export, another photo's job, an unowned job"
+        );
+        open.send(()).expect("open");
+        g.wait().expect("gate");
+        for h in [export_a, thumb_c, unowned] {
+            h.wait().expect("kept job");
+        }
+        assert_eq!(*lock(&ran), ["thumb_c", "unowned", "export_a"]);
+        assert_eq!(s.cancel_owners(&[]), 0);
+    }
+
+    #[test]
+    fn cancelling_owners_sets_the_token_of_a_running_thumbnail_but_not_an_export() {
+        let s = scheduler();
+        for (priority, expect_cancelled) in [(Priority::Thumbnail, true), (Priority::Export, false)]
+        {
+            let (started_tx, started_rx) = mpsc::channel::<()>();
+            let (go_tx, go_rx) = mpsc::channel::<()>();
+            let h = s.submit(
+                JobSpec::new(priority).owned_by(7),
+                move |_, token: &CancelToken| {
+                    let _ = started_tx.send(());
+                    let _ = go_rx.recv();
+                    token.is_cancelled()
+                },
+            );
+            started_rx.recv_timeout(WAIT).expect("started");
+            s.cancel_owners(&[7]);
+            go_tx.send(()).expect("go");
+            assert_eq!(h.wait().expect("result"), expect_cancelled, "{priority:?}");
+        }
     }
 
     #[test]

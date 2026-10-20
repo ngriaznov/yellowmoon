@@ -247,7 +247,8 @@ describe("the Look tab", () => {
     expect(card.getByRole("textbox", { name: "Intensity value" })).toHaveValue("100%");
     const apply = card.getByRole("radiogroup", { name: "Apply look to" });
     expect(within(apply).getAllByRole("radio").map((r) => r.textContent)).toEqual(["This photo", "Picked · 3", "All · 12"]);
-    expect(within(apply).getByRole("radio", { name: "All · 12" })).toHaveAttribute("aria-checked", "true");
+    // The owner's decision of 2026-10-20: a look is for the photo on screen until the person says otherwise.
+    expect(within(apply).getByRole("radio", { name: "This photo" })).toHaveAttribute("aria-checked", "true");
     expect(card.getByText("Built in")).toBeInTheDocument();
     expect(card.getByText("ARRI looks · LogC4")).toBeInTheDocument();
     expect(card.getAllByRole("button", { name: / look, key \d/ })).toHaveLength(9);
@@ -312,23 +313,23 @@ describe("the Look tab", () => {
     expect(screen.getByText("No looks match “zzz”.")).toBeInTheDocument();
   });
 
-  it("picking a look changes the chip and applies it to the scope", async () => {
+  it("picking a look changes the chip and keeps the look to this photo, which is where Apply to starts", async () => {
     await setup();
     const apply = vi.spyOn(h!.api, "applyLook");
     await h!.user.click(screen.getByRole("button", { name: "Teal and orange look, key 6" }));
     await waitFor(() => expect(lookOf()).toBe("arri:3000:teal-and-orange"));
     expect(within(screen.getByRole("main", { name: "Photo" })).getByText("Teal and orange · 100%")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Teal and orange look, key 6" })).toHaveAttribute("aria-pressed", "true");
-    expect(apply).toHaveBeenCalledWith("all", "arri:3000:teal-and-orange", 100);
+    expect(apply).not.toHaveBeenCalled();
   });
 
-  it("keeps a look to this photo when Apply to says so", async () => {
+  it("copies a look to the other photos when Apply to says All", async () => {
     await setup();
-    await h!.user.click(screen.getByRole("radio", { name: "This photo" }));
+    await h!.user.click(screen.getByRole("radio", { name: "All · 12" }));
     const apply = vi.spyOn(h!.api, "applyLook");
-    await h!.user.click(screen.getByRole("button", { name: "Film cool look, key 4" }));
-    await waitFor(() => expect(lookOf()).toBe("arri:3000:film-cool"));
-    expect(apply).not.toHaveBeenCalled();
+    await h!.user.click(screen.getByRole("button", { name: "Teal and orange look, key 6" }));
+    await waitFor(() => expect(lookOf()).toBe("arri:3000:teal-and-orange"));
+    await waitFor(() => expect(apply).toHaveBeenCalledWith("all", "arri:3000:teal-and-orange", 100));
   });
 
   it("keys 1 to 9 pick the looks", async () => {

@@ -100,5 +100,5 @@ export {
   toCodeValue,
 } from "./curve";
 export { clamp, clampSnap, formats, MINUS, parseNumber, roundToStep } from "./format";
-export { SETTLE_MS, useDraft, useFrameEmitter, useLatest, usePointerDrag } from "./hooks";
+export { SETTLE_MS, useDraft, useFrameEmitter, useGestureCallback, useLatest, usePointerDrag } from "./hooks";
 export type { Draft, FrameEmitter, PointerDragHandlers } from "./hooks";

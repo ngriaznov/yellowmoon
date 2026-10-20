@@ -56,6 +56,42 @@ describe("the Crop panel", () => {
     expect([pct(frame(), "left"), pct(frame(), "top"), pct(frame(), "width"), pct(frame(), "height")]).toEqual([0, 0, 100, 100]);
   });
 
+  it("draws a handle on the cell's edge back inside it by the handle's own size, so the cell does not cut it", async () => {
+    await setup();
+    await startCrop();
+    // The frame is the whole photo and the photo fills the cell: every handle but the middle ones stands on an edge of the cell.
+    const handle = (name: RegExp): HTMLElement => screen.getByRole("button", { name });
+    const back = "calc(var(--crop-handle) * -1)";
+    // Left and top: the handle starts at the edge, so no margin pulls it back. Right and bottom: it ends at the edge.
+    expect(handle(/Crop top left corner/).style.marginLeft).toBe("0px");
+    expect(handle(/Crop top left corner/).style.marginTop).toBe("0px");
+    expect(handle(/Crop bottom right corner/).style.marginLeft).toBe(back);
+    expect(handle(/Crop bottom right corner/).style.marginTop).toBe(back);
+    expect(handle(/Crop right edge/).style.marginLeft).toBe(back);
+    expect(handle(/Crop bottom edge/).style.marginTop).toBe(back);
+    // The size is the stylesheet's (`--crop-handle`), not a number here: the offset used to be a fixed 10 px, and the glass handle is 14.
+    expect(handle(/Crop bottom right corner/).style.marginLeft).not.toBe("-10px");
+    // A handle on the cell's edge, the middle ones of the edges included, draws its focus ring inside itself, where the cell does not clip.
+    expect(handle(/Crop bottom right corner/)).toHaveAttribute("data-at-cell-edge", "true");
+    expect(handle(/Crop top edge/)).toHaveAttribute("data-at-cell-edge", "true");
+    expect(handle(/Crop left edge/)).toHaveAttribute("data-at-cell-edge", "true");
+  });
+
+  it("draws the handles as they were once the frame is smaller than the photo", async () => {
+    await setup();
+    await startCrop();
+    await h!.user.click(within(crop()).getByRole("radio", { name: "Free" }));
+    const right = screen.getByRole("button", { name: /Crop right edge/ });
+    right.focus();
+    await h!.user.keyboard("{Shift>}{ArrowLeft}{/Shift}");
+    expect(pct(frame(), "width")).toBeLessThan(100);
+    // The frame no longer reaches the right edge: its right handles sit on the border, centred, as the stylesheet draws them.
+    expect(right.style.marginLeft).toBe("");
+    expect(right).not.toHaveAttribute("data-at-cell-edge");
+    // The left edge still stands on the cell's edge.
+    expect(screen.getByRole("button", { name: /Crop left edge/ })).toHaveAttribute("data-at-cell-edge", "true");
+  });
+
   it("Return on a focused button presses that button, not Done", async () => {
     const spy = await setup();
     await startCrop();

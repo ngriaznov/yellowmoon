@@ -45,7 +45,7 @@ export const CurveTab = memo(function CurveTab({ store, photo, rs }: TabProps) {
           points={curve[channel]}
           histogram={background}
           defaultSelected={centralInnerPoint(curve[channel])}
-          onChange={(points, final) => void store.update({ curve: { ...curve, [channel]: points } }, final)}
+          onChange={(points, final) => void store.update({ curve: { ...curve, [channel]: points } }, final, rs.photo_id)}
         />
       </div>
     </Card>

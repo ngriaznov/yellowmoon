@@ -4,7 +4,8 @@
  * app is macOS only. Keys that type (P, Z, C, W, 1–9, the arrows) are ignored while a text box
  * has focus, and so are ⇧⌘C, ⇧⌘V and ⌥⇧⌘V (copy and paste settings; plain ⌘C and ⌘V never reach this
  * table: they stay the system's Copy and Paste). The arrows are left to the control that has focus when
- * it uses them (a slider, the filmstrip, the tabs).
+ * it uses them (a slider, the filmstrip, the tabs). Delete and Backspace remove the photo on screen from the filmstrip, except where a
+ * control uses them itself (a text box, a slider with its knob, a menu, a dialog) or a mode (crop, pick white) is on.
  */
 import type { TabId } from "../components/tabs";
 
@@ -19,6 +20,7 @@ export type ShortcutAction =
   | "previous-photo"
   | "next-photo"
   | "toggle-pick"
+  | "remove-photo"
   | "pick-all"
   | "pick-look"
   | "before"
@@ -49,6 +51,8 @@ export interface KeyLike {
   altKey: boolean;
   shiftKey: boolean;
   defaultPrevented?: boolean;
+  /** The key is held down and repeating. */
+  repeat?: boolean;
   target: EventTarget | null;
 }
 
@@ -95,6 +99,21 @@ function usesHorizontalArrows(target: EventTarget | null): boolean {
   if (el.closest("[data-photo-id]")) return true; // a filmstrip thumbnail
   if (el.closest(".ym-crop")) return true;
   return false;
+}
+
+/**
+ * True when the target uses Delete and Backspace itself: a text box, a slider (the colour warp's pins and the curve's points remove
+ * themselves with them, a wheel centres), a menu, a list, a dialog, or the crop frame. They are not the person's way to remove a photo
+ * then.
+ */
+function usesDeleteKey(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.tagName !== "string") return false;
+  if (isTextTarget(el)) return true;
+  if (el.tagName.toLowerCase() === "input" && (el as HTMLInputElement).type === "range") return true;
+  const role = el.getAttribute("role");
+  if (role && ["slider", "spinbutton", "textbox", "combobox", "listbox", "option", "menuitem", "menuitemradio", "menuitemcheckbox", "tree", "treeitem", "grid", "gridcell"].includes(role)) return true;
+  return el.closest('.ym-crop, [role="menu"], [role="dialog"], [role="alertdialog"], [role="listbox"]') !== null;
 }
 
 /** The shortcut a key event stands for, or null. */
@@ -150,6 +169,12 @@ export function shortcutFor(event: KeyLike, context: ShortcutContext = {}): Shor
     case "ArrowRight":
       if (usesHorizontalArrows(event.target)) return null;
       return { action: key === "ArrowLeft" ? "previous-photo" : "next-photo" };
+    case "Delete":
+    case "Backspace":
+      // A mode (crop, Pick white) has its own use of the keys; with Shift the key is not this shortcut. A key held down removes one
+      // photo, not the whole strip (only the last removal can be undone).
+      if (event.shiftKey || event.repeat || context.mode || usesDeleteKey(event.target)) return null;
+      return { action: "remove-photo" };
     case "p":
       return { action: "toggle-pick" };
     case "\\":

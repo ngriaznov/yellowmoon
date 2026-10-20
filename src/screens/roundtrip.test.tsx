@@ -74,12 +74,15 @@ describe("every control round-trips through update_settings", () => {
     await type("Intensity", "60");
     expect(await lastPatch(spy, "Intensity")).toEqual({ look_intensity: 60 });
     await waitFor(() => expect(valueOf("Intensity")).toBe("60%"));
-    expect(apply).toHaveBeenLastCalledWith("all", "builtin:neutral", 60);
+    // Apply to starts on This photo: nothing is copied to the others until the person says so.
+    expect(apply).not.toHaveBeenCalled();
     expect(within(screen.getByRole("main", { name: "Photo" })).getByText("Neutral · 60%")).toBeInTheDocument();
 
     spy.mockClear();
+    await h.user.click(screen.getByRole("radio", { name: "All · 12" }));
     await h.user.click(screen.getByRole("button", { name: "Film warm look, key 3" }));
     expect(await lastPatch(spy, "Film warm")).toEqual({ look: "arri:3000:film-warm", look_intensity: 60 });
+    await waitFor(() => expect(apply).toHaveBeenLastCalledWith("all", "arri:3000:film-warm", 60));
     expect((await h.api.getSettings(PHOTO)).settings.look).toBe("arri:3000:film-warm");
 
     // The slider is a real range input too: a key press steps it by one.

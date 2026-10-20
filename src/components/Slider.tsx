@@ -2,7 +2,7 @@ import { useEffect, useId, useRef } from "react";
 import { Slider as GlassSlider } from "@/components/glass/slider";
 import { cx } from "./cx";
 import { clampSnap, roundToStep, sameValue } from "./format";
-import { useDraft, useFrameEmitter, useLatest } from "./hooks";
+import { useDraft, useFrameEmitter, useGestureCallback } from "./hooks";
 import { ResetLink } from "./ResetLink";
 import type { TabId } from "./tabs";
 import { ValueBox } from "./ValueBox";
@@ -86,7 +86,8 @@ export function Slider({
   const hasDefault = defaultValue !== undefined;
   const changed = changedProp ?? (hasDefault && !sameValue(shown, defaultValue, step));
 
-  const onChangeRef = useLatest(onChange);
+  // A drag reports to the `onChange` it began with, so the frame and the release after it cannot reach another photo (`useGestureCallback`).
+  const onChangeRef = useGestureCallback(onChange);
   const last = useRef(value);
   const pointerDown = useRef(false);
   const moved = useRef(false);
@@ -137,6 +138,7 @@ export function Slider({
     frames.cancel();
     if (moved.current) commit(last.current);
     moved.current = false;
+    onChangeRef.end();
   };
 
   return (
@@ -174,6 +176,7 @@ export function Slider({
           pointerDown.current = true;
           moved.current = false;
           last.current = shown;
+          onChangeRef.begin();
         }}
         onPointerUp={release}
         onPointerCancel={release}

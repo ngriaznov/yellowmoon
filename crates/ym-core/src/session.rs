@@ -45,6 +45,16 @@
 //! when it runs. Callers that ask for a photo while it is being decoded wait for that decode and
 //! share its image: one decode per photo at a time.
 //!
+//! # Removing photos
+//!
+//! [`Session::remove`] takes photos out of the filmstrip (the files on disk are never touched) and [`Session::restore_removed`]
+//! puts the last removal back where it was, with the photos' settings, picks and estimates exactly as they were. The queued
+//! jobs of removed photos are dropped, a running one stops at its next stage, and no event about a removed photo is sent once
+//! `remove` returns (each photo carries an `incarnation` that jobs copy, so the job of a photo that was removed and put back
+//! cannot report as the new one). The shared estimates below follow the set of photos that is left. With Apple Auto, a
+//! removed photo keeps its answer for Undo but is no work for the worker, and an answer that arrives for it is dropped
+//! (see the Apple Auto section below).
+//!
 //! # Shared estimates
 //!
 //! Two parts of the estimates depend on the other photos: burst frames share the median exposure
@@ -451,6 +461,36 @@ pub struct PasteReport {
     pub pasted: Vec<PastedPhoto>,
     /// The photos left out: still developing, failed or not in the session.
     pub skipped: Vec<PhotoId>,
+}
+
+/// What [`Session::remove`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RemoveOutcome {
+    /// The photos taken out of the session, in filmstrip order. An id that was not in the session is not listed; when
+    /// none was, this is empty and nothing changed.
+    pub removed: Vec<PhotoId>,
+    /// The current photo afterwards: the one it was, or when that was removed the next photo that stays (the previous one
+    /// when the last was removed); `None` when no photo is left.
+    pub current: Option<PhotoId>,
+    /// Photos that stay whose served estimates moved because of the photos that left (the burst median exposure, the
+    /// steps Apple Auto's answers give the burst, and for the current photo the pooled noise). Each one was sent
+    /// [`SessionEvent::EstimatesChanged`].
+    pub estimates_changed: Vec<PhotoId>,
+}
+
+/// What [`Session::restore_removed`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RestoreOutcome {
+    /// The photos put back, in filmstrip order.
+    pub restored: Vec<PhotoId>,
+    /// Photos of the removal that stayed out because their file was added again meanwhile.
+    pub already_open: usize,
+    /// The current photo afterwards.
+    pub current: Option<PhotoId>,
+    /// Photos that were in the session whose served estimates moved because the restored photos joined their burst or
+    /// their noise pool (the median exposure, Apple Auto's steps of the burst, the pooled noise). Each one was sent
+    /// [`SessionEvent::EstimatesChanged`].
+    pub estimates_changed: Vec<PhotoId>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -945,6 +985,11 @@ const PICTURES_HELD: usize = 64;
 struct Photo {
     id: PhotoId,
     path: PathBuf,
+    /// The canonical form of `path`, the key of the set of files already open (`State::known`).
+    canon: PathBuf,
+    /// Counts the times the photo was taken out of the session ([`Session::remove`]). A job carries the number the photo
+    /// had when it was queued, so the job of a photo that was removed and put back stops: the photo has a new job.
+    incarnation: u32,
     summary: PhotoSummary,
     meta: Option<Arc<RawMetadata>>,
     camera: Option<PhotoCamera>,
@@ -1036,6 +1081,31 @@ struct MosaicCache {
     max_len: usize,
 }
 
+/// A photo taken out of the session, and what it takes to put it back.
+struct RemovedPhoto {
+    /// Its place in the filmstrip before the removal.
+    place: usize,
+    photo: Photo,
+    picked: bool,
+}
+
+/// The photos of the last removal, kept in memory for [`Session::restore_removed`] until the next removal, until the
+/// session is closed, or until files are opened into the emptied session (a new session).
+struct Removal {
+    /// In filmstrip order.
+    photos: Vec<RemovedPhoto>,
+    /// The current photo before the removal.
+    was_current: Option<PhotoId>,
+    /// The current photo after it: the one `was_current` handed over to.
+    successor: Option<PhotoId>,
+    /// The session's folder before the removal, for a session that is empty when the photos come back.
+    folder: Option<PathBuf>,
+    mixed_folders: bool,
+    /// The generation of Apple Auto's instructions when the photos left: their answers are good only while it is the
+    /// session's (new instructions drop every answer of the session, and these photos were not in it to be dropped).
+    instructions_gen: u64,
+}
+
 struct State {
     photos: Vec<Photo>,
     index: HashMap<PhotoId, usize>,
@@ -1049,6 +1119,8 @@ struct State {
     cache: MosaicCache,
     default_look: LookId,
     apple: AppleState,
+    /// What [`Session::restore_removed`] puts back.
+    removal: Option<Removal>,
 }
 
 impl State {
@@ -1066,6 +1138,7 @@ impl State {
             cache: MosaicCache::default(),
             default_look,
             apple: AppleState::default(),
+            removal: None,
         }
     }
 
@@ -1087,6 +1160,33 @@ impl State {
 
     fn photo(&self, id: PhotoId) -> Option<&Photo> {
         self.index.get(&id).map(|&i| &self.photos[i])
+    }
+
+    /// Whether the photo is in the session (and, with `incarnation`, has not been taken out and put back since).
+    fn has_photo(&self, id: PhotoId, incarnation: Option<u32>) -> bool {
+        self.photo(id)
+            .is_some_and(|p| incarnation.is_none_or(|n| p.incarnation == n))
+    }
+
+    /// Rebuilds the id-to-place map after photos came out of the list or went into it.
+    fn reindex(&mut self) {
+        self.index = self
+            .photos
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.id, i))
+            .collect();
+    }
+
+    /// The photos of the window around the current one that are developed and whose mosaic is not cached: what a
+    /// move of the current photo queues for decoding.
+    fn prefetch_candidates(&self) -> Vec<PhotoId> {
+        self.window()
+            .into_iter()
+            .map(|w| &self.photos[w])
+            .filter(|p| p.effective.is_some() && self.cache_get(p.id).is_none())
+            .map(|p| p.id)
+            .collect()
     }
 
     /// The indices of the photos whose mosaic is worth keeping: current, previous, next.
@@ -1451,6 +1551,214 @@ impl State {
             },
         );
     }
+
+    /// Takes the photos in `doomed` out of the filmstrip in one step (see [`Session::remove`]): the photos, with their
+    /// places and picks, are set aside as the session's [`Removal`] (the files on disk are not touched), the current photo hands over to the next photo that stays (the
+    /// previous one when the last was removed), their mosaics leave the cache, and the estimates the remaining photos
+    /// share (the burst median, Apple Auto's steps of the burst, the pooled noise) are made again from the photos that are left. Returns the ids taken out,
+    /// in filmstrip order, and what the refresh changed; `None` when none of the ids is in the session
+    /// (nothing changes, and a removal set aside earlier stays).
+    ///
+    /// **Apple Auto.** The photos' answers and failures stay with the photos in the [`Removal`] (a removed photo no longer
+    /// counts for its burst: its steps are not in the median any more), their pictures are dropped (hard rule 4), they leave
+    /// the order of the photos an export waits for, and nothing asks about them: the worker only looks at the photos in the
+    /// session. A request that is in flight for one is dropped when it returns ([`Inner::apple_store`]).
+    fn take_out(
+        &mut self,
+        doomed: &HashSet<PhotoId>,
+        priors: &PriorStore,
+    ) -> Option<(Vec<PhotoId>, Refresh)> {
+        if !self.photos.iter().any(|p| doomed.contains(&p.id)) {
+            return None;
+        }
+        let was_current = self.current.map(|i| self.photos[i].id);
+        let successor = match self.current {
+            Some(cur) if doomed.contains(&self.photos[cur].id) => {
+                let stays = |i: &usize| !doomed.contains(&self.photos[*i].id);
+                (cur + 1..self.photos.len())
+                    .find(stays)
+                    .or_else(|| (0..cur).rev().find(stays))
+                    .map(|i| self.photos[i].id)
+            }
+            _ => was_current,
+        };
+        let mut taken = Vec::new();
+        let mut kept = Vec::with_capacity(self.photos.len());
+        for (place, mut photo) in std::mem::take(&mut self.photos).into_iter().enumerate() {
+            if doomed.contains(&photo.id) {
+                photo.incarnation += 1;
+                // The picture is not kept: if the photo comes back unanswered, its turn renders it again.
+                photo.apple_picture = PictureSlot::Empty;
+                self.known.remove(&photo.canon);
+                let picked = self.picked.remove(&photo.id);
+                taken.push(RemovedPhoto {
+                    place,
+                    photo,
+                    picked,
+                });
+            } else {
+                kept.push(photo);
+            }
+        }
+        self.photos = kept;
+        self.reindex();
+        self.current = successor.and_then(|id| self.index.get(&id).copied());
+        self.cache.entries.retain(|(id, _)| !doomed.contains(id));
+        self.cache_trim();
+        self.apple.urgent.retain(|id| !doomed.contains(id));
+        // The burst median, Apple Auto's steps of a burst and the pooled noise are functions of the set of photos: made
+        // again from the ones left.
+        let keys: HashSet<PoolKey> = taken
+            .iter()
+            .filter_map(|t| t.photo.pool_key.clone())
+            .collect();
+        for key in &keys {
+            self.rebuild_pool(key, priors);
+        }
+        let refresh = self.refresh_effective(priors);
+        let removed = taken.iter().map(|t| t.photo.id).collect();
+        self.removal = Some(Removal {
+            photos: taken,
+            was_current,
+            successor,
+            folder: self.folder.clone(),
+            mixed_folders: self.mixed_folders,
+            instructions_gen: self.apple.instructions_gen,
+        });
+        Some((removed, refresh))
+    }
+
+    /// Puts the photos of the last removal back (see [`Session::restore_removed`]); `None` when there is none.
+    ///
+    /// **Apple Auto.** A photo comes back with its answer or its failure, unless the instructions changed while it was
+    /// out (then every answer of the session was dropped, and its answer is too); a photo without an answer is asked
+    /// again by the worker in its turn, and joins the order of the photos an export waits for when it is a frame of
+    /// the burst of one of them.
+    fn put_back(&mut self, priors: &PriorStore) -> Option<PutBack> {
+        let removal = self.removal.take()?;
+        let was_empty = self.photos.is_empty();
+        let answers_stand = removal.instructions_gen == self.apple.instructions_gen;
+        let current_id = self.current.map(|i| self.photos[i].id);
+        let mut restored = Vec::new();
+        let mut already_open = 0;
+        let mut redevelop = Vec::new();
+        for RemovedPhoto {
+            place,
+            mut photo,
+            picked,
+        } in removal.photos
+        {
+            // The same file was added again meanwhile: that photo is the one in the session.
+            if self.known.contains(&photo.canon) {
+                already_open += 1;
+                continue;
+            }
+            if !matches!(
+                photo.summary.status,
+                PhotoStatus::Ready | PhotoStatus::Skipped { .. }
+            ) {
+                // Its development was cut short: it starts again.
+                photo.summary.status = PhotoStatus::Waiting;
+                photo.own = None;
+                photo.effective = None;
+                photo.served = None;
+                redevelop.push(photo.id);
+            }
+            if !answers_stand {
+                photo.apple_result = None;
+            }
+            self.known.insert(photo.canon.clone());
+            if picked {
+                self.picked.insert(photo.id);
+            }
+            restored.push(photo.id);
+            let at = place.min(self.photos.len());
+            self.photos.insert(at, photo);
+        }
+        self.reindex();
+        // The photo on screen stays, unless the removal had taken it away and the person has not moved since: then it
+        // comes back to it.
+        self.current = current_id.and_then(|id| self.index.get(&id).copied());
+        let back_to = removal
+            .was_current
+            .filter(|c| restored.contains(c) && current_id == removal.successor);
+        if let Some(c) = back_to {
+            self.current = self.index.get(&c).copied();
+        }
+        if self.current.is_none() && !self.photos.is_empty() {
+            self.current = Some(0);
+        }
+        if !restored.is_empty() {
+            if was_empty {
+                self.folder = removal.folder;
+                self.mixed_folders = removal.mixed_folders;
+            } else {
+                let source = common_parent(self, &restored);
+                if source.is_none() || source != self.folder {
+                    self.mixed_folders = true;
+                }
+            }
+        }
+        self.cache_trim();
+        let keys: HashSet<PoolKey> = restored
+            .iter()
+            .filter_map(|id| self.photo(*id)?.pool_key.clone())
+            .collect();
+        for key in &keys {
+            self.rebuild_pool(key, priors);
+        }
+        // A restored frame without an answer is a frame an export waits for when one of its burst-mates is.
+        let waiting = self.apple.urgent.clone();
+        self.prioritise(&waiting);
+        // The photos that came back are not told (the restore hands them over); their thumbnails are still made
+        // again when Apple Auto's values for them moved while they were out.
+        let Refresh { changed, repaint } = self.refresh_effective(priors);
+        let changed = changed
+            .into_iter()
+            .filter(|c| !restored.contains(c))
+            .collect();
+        Some(PutBack {
+            restored,
+            already_open,
+            redevelop,
+            refresh: Refresh { changed, repaint },
+        })
+    }
+
+    /// Moves photos up the Apple Auto worker's order (see [`Session::prioritise_apple_auto`]).
+    fn prioritise(&mut self, ids: &[PhotoId]) {
+        let mut order: Vec<PhotoId> = Vec::with_capacity(ids.len());
+        for id in ids {
+            order.push(*id);
+            if let Some(&i) = self.index.get(id) {
+                order.extend(
+                    self.burst_of(i)
+                        .into_iter()
+                        .map(|j| &self.photos[j])
+                        .filter(|p| {
+                            p.apple_result.is_none()
+                                && !matches!(p.summary.status, PhotoStatus::Skipped { .. })
+                        })
+                        .map(|p| p.id),
+                );
+            }
+        }
+        for id in order {
+            if !self.apple.urgent.contains(&id) {
+                self.apple.urgent.push(id);
+            }
+        }
+    }
+}
+
+/// What [`State::put_back`] did.
+struct PutBack {
+    restored: Vec<PhotoId>,
+    already_open: usize,
+    /// The restored photos whose development had not finished: they need a job again.
+    redevelop: Vec<PhotoId>,
+    /// The photos to tell (`changed`; the restored ones are left out) and those to render again (`repaint`).
+    refresh: Refresh,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1485,6 +1793,8 @@ struct Job {
     epoch: u64,
     photo: PhotoId,
     kind: JobKind,
+    /// The photo's [`Photo::incarnation`] when the job was queued.
+    incarnation: u32,
 }
 
 #[derive(Default)]
@@ -1711,6 +2021,10 @@ impl Session {
                 return outcome; // closed while probing
             }
             let was_empty = st.photos.is_empty();
+            // Files opened into an emptied session start a new one: what the last removal kept is not offered any more.
+            if was_empty && !files.is_empty() {
+                st.removal = None;
+            }
             for ((path, canon), probe) in files.into_iter().zip(probed) {
                 // Another `open` of the same file (a folder dropped twice in a row) may have
                 // registered it while this one was probing.
@@ -1720,7 +2034,7 @@ impl Session {
                 }
                 let id = PhotoId(st.next_id);
                 st.next_id += 1;
-                let photo = inner.new_photo(id, path, &st.default_look, probe);
+                let photo = inner.new_photo(id, path, canon.clone(), &st.default_look, probe);
                 events.push(PhotoProgress {
                     id,
                     stage: PhotoStage::Probe,
@@ -1778,7 +2092,11 @@ impl Session {
                 s
             })
             .collect();
-        let folder = st.folder.as_ref().filter(|_| !st.mixed_folders);
+        // An emptied session (every photo was removed) names no folder; the next `open` sets it afresh.
+        let folder = st
+            .folder
+            .as_ref()
+            .filter(|_| !st.mixed_folders && !st.photos.is_empty());
         let folder_name = folder
             .and_then(|f| f.file_name())
             .map(|n| n.to_string_lossy().into_owned());
@@ -1943,6 +2261,132 @@ impl Session {
         Ok(self.view(id)?.resolved()?)
     }
 
+    // --- Removing photos ---------------------------------------------------------------------
+
+    /// Takes photos out of the session (Remove from filmstrip): they leave the filmstrip, the picks and the caches, and
+    /// their edits go with them (nothing is saved per photo, hard rule 4). **The files on disk are not touched** (hard
+    /// rule 5); the session only forgets them.
+    ///
+    /// - Queued development and prefetch jobs for these photos are dropped, and a running one stops at its next stage; no
+    ///   event about them is sent once this returns (a late `thumbnail_ready` or `photo_progress` is dropped).
+    /// - Their decoded mosaics leave the cache.
+    /// - The current photo hands over to the next photo that stays, or to the previous one when the last was removed; with
+    ///   no photo left the session is empty and the start screen shows.
+    /// - The estimates the other photos share are made again from the photos that are left: the burst median exposure of
+    ///   the remaining frames of a burst, the steps Apple Auto's answers give the burst, and the pooled noise of a noise
+    ///   group. The photos whose served estimates moved get [`SessionEvent::EstimatesChanged`] and are listed in the
+    ///   outcome; those whose picture Apple Auto's values changed have their thumbnails drawn again.
+    /// - Apple Auto: the photos' answers and failures are kept with them for Undo, but nothing asks about them while they
+    ///   are out, they leave the order of the photos an export waits for (an export stops waiting for them), their
+    ///   pictures are dropped, and an answer that arrives for one (also one that was put back meanwhile) is dropped.
+    /// - What was taken out is kept in memory for [`Session::restore_removed`] (their settings, estimates and place), until
+    ///   the next removal that takes something out, [`Session::close`], or files opened into the emptied session (a new
+    ///   session begins). Ids that are not in the session are ignored.
+    ///
+    /// The render cache of the photos is the renderer's: [`Core::remove_photos`](crate::app::Core::remove_photos) clears it
+    /// and cancels their renders. Exports queued earlier keep the photos they were started with (their snapshots).
+    pub fn remove(&self, ids: &[PhotoId]) -> RemoveOutcome {
+        let inner = &self.inner;
+        let doomed: HashSet<PhotoId> = ids.iter().copied().collect();
+        // Held for the whole removal: a job that reports after this has the lock finds its photo gone and sends nothing.
+        let emit = lock(&inner.emit_lock);
+        let epoch = inner.epoch.load(Ordering::SeqCst);
+        let (outcome, repaint, prefetch) = {
+            let mut st = lock(&inner.state);
+            let Some((removed, refresh)) = st.take_out(&doomed, &inner.env.priors) else {
+                return RemoveOutcome::default();
+            };
+            let current = st.current.map(|i| st.photos[i].id);
+            inner
+                .current_hint
+                .store(current.map_or(NO_PHOTO, |c| c.0), Ordering::SeqCst);
+            let outcome = RemoveOutcome {
+                removed,
+                current,
+                estimates_changed: refresh.changed,
+            };
+            (outcome, refresh.repaint, st.prefetch_candidates())
+        };
+        if inner.live(epoch) {
+            for &id in &outcome.estimates_changed {
+                inner.env.events.send(SessionEvent::EstimatesChanged { id });
+            }
+        }
+        drop(emit);
+        // The worker looks at the photos that are left (a removed photo is no work; a burst whose last unanswered frame
+        // left is complete), and whoever waits for it to be idle looks again.
+        inner.apple_wake.notify_all();
+        inner.repaint(epoch, repaint);
+        {
+            let mut q = lock(&inner.queue);
+            q.jobs.retain(|j| !doomed.contains(&j.photo));
+            if q.jobs.is_empty() && q.running == 0 {
+                inner.idle.notify_all();
+            }
+        }
+        inner.enqueue(epoch, &prefetch, JobKind::Prefetch);
+        outcome
+    }
+
+    /// Puts back the photos of the last [`Session::remove`], where they were in the filmstrip, with their settings, picks
+    /// and estimates exactly as they were; the photo that was current is current again when the removal took it away and
+    /// the person has not moved to another since. A photo whose development was cut short starts again. A photo whose file
+    /// was added to the session again meanwhile stays out (it is already there). Does nothing, and returns an empty
+    /// outcome, when there is nothing to put back: after [`Session::close`], after a second removal took the place of the
+    /// first, or when it was restored already.
+    ///
+    /// With Apple Auto the photos come back with their answers or failures, and are not asked again; a photo without
+    /// one is asked in its turn, and so is one whose answer was made under instructions that have changed since.
+    pub fn restore_removed(&self) -> RestoreOutcome {
+        let inner = &self.inner;
+        let emit = lock(&inner.emit_lock);
+        let epoch = inner.epoch.load(Ordering::SeqCst);
+        let (outcome, redevelop, repaint, prefetch) = {
+            let mut st = lock(&inner.state);
+            let Some(back) = st.put_back(&inner.env.priors) else {
+                return RestoreOutcome::default();
+            };
+            let current = st.current.map(|i| st.photos[i].id);
+            inner
+                .current_hint
+                .store(current.map_or(NO_PHOTO, |c| c.0), Ordering::SeqCst);
+            let outcome = RestoreOutcome {
+                restored: back.restored,
+                already_open: back.already_open,
+                current,
+                estimates_changed: back.refresh.changed,
+            };
+            (
+                outcome,
+                back.redevelop,
+                back.refresh.repaint,
+                st.prefetch_candidates(),
+            )
+        };
+        if inner.live(epoch) {
+            for &id in &outcome.estimates_changed {
+                inner.env.events.send(SessionEvent::EstimatesChanged { id });
+            }
+        }
+        drop(emit);
+        // Photos that came back without an answer are work for the worker again.
+        inner.apple_wake.notify_all();
+        inner.repaint(epoch, repaint);
+        inner.enqueue(epoch, &redevelop, JobKind::Develop);
+        inner.enqueue(epoch, &prefetch, JobKind::Prefetch);
+        outcome
+    }
+
+    /// The photos [`Session::restore_removed`] would put back, in filmstrip order of the removal.
+    #[must_use]
+    pub fn restorable(&self) -> Vec<PhotoId> {
+        lock(&self.inner.state)
+            .removal
+            .as_ref()
+            .map(|r| r.photos.iter().map(|p| p.photo.id).collect())
+            .unwrap_or_default()
+    }
+
     // --- Navigation and picking --------------------------------------------------------------
 
     /// Makes `id` the current photo. The cache keeps the mosaics of the new current photo and its
@@ -1960,12 +2404,7 @@ impl Session {
             st.current = Some(i);
             inner.current_hint.store(id.0, Ordering::SeqCst);
             st.cache_trim();
-            st.window()
-                .into_iter()
-                .map(|w| &st.photos[w])
-                .filter(|p| p.effective.is_some() && st.cache_get(p.id).is_none())
-                .map(|p| p.id)
-                .collect()
+            st.prefetch_candidates()
         };
         inner.enqueue(epoch, &prefetch, JobKind::Prefetch);
         Ok(())
@@ -2591,28 +3030,7 @@ impl Session {
     /// frames of its burst that have no answer yet (in filmstrip order): a photo's export waits for
     /// its whole burst's answers ([`Session::estimates_final`]), so they move up with it.
     pub fn prioritise_apple_auto(&self, ids: &[PhotoId]) {
-        let mut st = lock(&self.inner.state);
-        let mut order: Vec<PhotoId> = Vec::with_capacity(ids.len());
-        for id in ids {
-            order.push(*id);
-            if let Some(&i) = st.index.get(id) {
-                order.extend(
-                    st.burst_of(i)
-                        .into_iter()
-                        .map(|j| &st.photos[j])
-                        .filter(|p| {
-                            p.apple_result.is_none()
-                                && !matches!(p.summary.status, PhotoStatus::Skipped { .. })
-                        })
-                        .map(|p| p.id),
-                );
-            }
-        }
-        for id in order {
-            if !st.apple.urgent.contains(&id) {
-                st.apple.urgent.push(id);
-            }
-        }
+        lock(&self.inner.state).prioritise(ids);
     }
 
     /// Calls of the advisor's `ask` since the session was created, retries included (for tests and
@@ -2673,32 +3091,49 @@ impl Inner {
         true
     }
 
-    /// Records a stage change in the photo's status and sends the event, as one step.
-    fn progress(
+    /// Sends an event about photo `id` unless the job is cancelled or the photo is not in the session any more (it was
+    /// removed, [`Session::remove`]); with `incarnation`, also unless it was removed and put back since the job was queued.
+    /// Returns whether the job is still live for the photo.
+    fn emit_photo(
         &self,
         epoch: u64,
         id: PhotoId,
-        stage: PhotoStage,
-        done: bool,
-        error: Option<String>,
+        incarnation: Option<u32>,
+        event: SessionEvent,
     ) -> bool {
         let _guard = lock(&self.emit_lock);
-        if !self.live(epoch) {
+        if !self.live(epoch) || !lock(&self.state).has_photo(id, incarnation) {
+            return false;
+        }
+        self.env.events.send(event);
+        true
+    }
+
+    /// Records a stage change in the photo's status and sends the event, as one step. False (and nothing
+    /// sent) when the job is cancelled or its photo has left the session since the job was queued.
+    fn progress(&self, job: &Job, stage: PhotoStage, done: bool, error: Option<String>) -> bool {
+        let id = job.photo;
+        let _guard = lock(&self.emit_lock);
+        if !self.live(job.epoch) {
             return false;
         }
         {
             let mut st = lock(&self.state);
-            if let Some(&i) = st.index.get(&id) {
-                let p = &mut st.photos[i];
-                if let Some(reason) = &error {
-                    p.summary.status = PhotoStatus::Skipped {
-                        reason: reason.clone(),
-                    };
-                } else if stage == PhotoStage::Thumbnail && done {
-                    p.summary.status = PhotoStatus::Ready;
-                } else if !done {
-                    p.summary.status = PhotoStatus::Developing { stage };
-                }
+            let Some(&i) = st.index.get(&id) else {
+                return false;
+            };
+            let p = &mut st.photos[i];
+            if p.incarnation != job.incarnation {
+                return false;
+            }
+            if let Some(reason) = &error {
+                p.summary.status = PhotoStatus::Skipped {
+                    reason: reason.clone(),
+                };
+            } else if stage == PhotoStage::Thumbnail && done {
+                p.summary.status = PhotoStatus::Ready;
+            } else if !done {
+                p.summary.status = PhotoStatus::Developing { stage };
             }
         }
         self.env
@@ -2716,6 +3151,7 @@ impl Inner {
         &self,
         id: PhotoId,
         path: PathBuf,
+        canon: PathBuf,
         default_look: &LookId,
         probe: Result<RawMetadata, RawError>,
     ) -> Photo {
@@ -2755,6 +3191,8 @@ impl Inner {
                 Photo {
                     id,
                     path,
+                    canon,
+                    incarnation: 0,
                     summary,
                     burst: Some(burst_frame(&meta)),
                     // Files that do not say their ISO cannot be told apart by it: each keeps its
@@ -2779,6 +3217,8 @@ impl Inner {
             Err(error) => Photo {
                 id,
                 path,
+                canon,
+                incarnation: 0,
                 summary: PhotoSummary {
                     id,
                     file_name,
@@ -2819,11 +3259,23 @@ impl Inner {
         if ids.is_empty() {
             return;
         }
+        // A photo that has left the session since is not queued; the number a photo has now is the one its job carries.
+        let queued: Vec<(PhotoId, u32)> = {
+            let st = lock(&self.state);
+            ids.iter()
+                .filter_map(|&id| st.photo(id).map(|p| (id, p.incarnation)))
+                .collect()
+        };
         let mut q = lock(&self.queue);
-        for &photo in ids {
+        for (photo, incarnation) in queued {
             let dup = q.jobs.iter().any(|j| j.photo == photo && j.kind == kind);
             if !dup {
-                q.jobs.push_back(Job { epoch, photo, kind });
+                q.jobs.push_back(Job {
+                    epoch,
+                    photo,
+                    kind,
+                    incarnation,
+                });
             }
         }
         drop(q);
@@ -2852,7 +3304,7 @@ impl Inner {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job.kind {
                         JobKind::Develop => self.develop(&job),
                         JobKind::Prefetch => self.prefetch(job.photo),
-                        JobKind::Thumbnail => self.refresh_thumbnail(job.epoch, job.photo),
+                        JobKind::Thumbnail => self.refresh_thumbnail(&job),
                     }));
                 if let Err(payload) = run {
                     let message = payload
@@ -2868,8 +3320,7 @@ impl Inner {
                     if job.kind == JobKind::Develop {
                         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             self.progress(
-                                job.epoch,
-                                job.photo,
+                                &job,
                                 PhotoStage::Decode,
                                 true,
                                 Some(
@@ -2923,24 +3374,26 @@ impl Inner {
         let (epoch, id) = (job.epoch, job.photo);
         let snapshot = {
             let st = lock(&self.state);
-            st.photo(id).and_then(|p| {
-                Some((
-                    p.path.clone(),
-                    p.camera.clone()?,
-                    p.profile.clone()?,
-                    p.settings.clone(),
-                ))
-            })
+            st.photo(id)
+                .filter(|p| p.incarnation == job.incarnation)
+                .and_then(|p| {
+                    Some((
+                        p.path.clone(),
+                        p.camera.clone()?,
+                        p.profile.clone()?,
+                        p.settings.clone(),
+                    ))
+                })
         };
         let Some((path, camera, profile, settings)) = snapshot else {
             return;
         };
         let fail = |stage: PhotoStage, reason: String| {
-            self.progress(epoch, id, stage, true, Some(reason));
+            self.progress(job, stage, true, Some(reason));
         };
 
         // Decode.
-        if !self.progress(epoch, id, PhotoStage::Decode, false, None) {
+        if !self.progress(job, PhotoStage::Decode, false, None) {
             return;
         }
         let started = Instant::now();
@@ -2953,8 +3406,8 @@ impl Inner {
             ms = started.elapsed().as_millis() as u64,
             "decoded"
         );
-        if !self.progress(epoch, id, PhotoStage::Decode, true, None)
-            || !self.progress(epoch, id, PhotoStage::Estimate, false, None)
+        if !self.progress(job, PhotoStage::Decode, true, None)
+            || !self.progress(job, PhotoStage::Estimate, false, None)
         {
             return;
         }
@@ -2988,6 +3441,9 @@ impl Inner {
             let Some(&i) = st.index.get(&id) else {
                 return;
             };
+            if st.photos[i].incarnation != job.incarnation {
+                return;
+            }
             let key = st.photos[i].pool_key.clone();
             // Apple Auto's picture is rendered by this job, after the thumbnail, while there is room
             // for it; the worker leaves the photo until it is there.
@@ -3031,8 +3487,8 @@ impl Inner {
             },
         );
         let Some(served) = served else { return };
-        if !self.progress(epoch, id, PhotoStage::Estimate, true, None)
-            || !self.progress(epoch, id, PhotoStage::Thumbnail, false, None)
+        if !self.progress(job, PhotoStage::Estimate, true, None)
+            || !self.progress(job, PhotoStage::Thumbnail, false, None)
         {
             return;
         }
@@ -3061,8 +3517,10 @@ impl Inner {
                         ms = started.elapsed().as_millis() as u64,
                         "thumbnail"
                     );
-                    if !self.emit(
+                    if !self.emit_photo(
                         epoch,
+                        id,
+                        Some(job.incarnation),
                         SessionEvent::ThumbnailReady(ThumbnailReady { id, png_bytes }),
                     ) {
                         return;
@@ -3071,7 +3529,7 @@ impl Inner {
                 Err(reason) => return fail(PhotoStage::Thumbnail, reason),
             }
         }
-        if !self.progress(epoch, id, PhotoStage::Thumbnail, true, None) {
+        if !self.progress(job, PhotoStage::Thumbnail, true, None) {
             return;
         }
         // Apple Auto moved the photo's values while its thumbnail was being made: make it again.
@@ -3165,9 +3623,19 @@ impl Inner {
     /// still developing.
     fn after_refresh(&self, epoch: u64, refresh: Refresh) {
         for id in refresh.changed {
-            self.emit(epoch, SessionEvent::EstimatesChanged { id });
+            // Not for a photo that has left the session meanwhile ([`Session::remove`]).
+            self.emit_photo(epoch, id, None, SessionEvent::EstimatesChanged { id });
         }
-        if refresh.repaint.is_empty() || self.env.thumbnails.is_none() {
+        self.repaint(epoch, refresh.repaint);
+    }
+
+    /// Renders again the thumbnails of photos whose picture Apple Auto's values changed (when the
+    /// session renders thumbnails): now for a photo that is ready, after its first thumbnail for
+    /// one that is still developing. Sends no event itself (the part of [`Inner::after_refresh`]
+    /// that [`Session::remove`] and [`Session::restore_removed`] call after they have told the
+    /// viewers under the event lock).
+    fn repaint(&self, epoch: u64, repaint: Vec<PhotoId>) {
+        if repaint.is_empty() || self.env.thumbnails.is_none() {
             return;
         }
         let ready: Vec<PhotoId> = {
@@ -3176,7 +3644,7 @@ impl Inner {
                 return;
             }
             let mut ready = Vec::new();
-            for id in refresh.repaint {
+            for id in repaint {
                 if let Some(&i) = st.index.get(&id) {
                     let p = &mut st.photos[i];
                     match p.summary.status {
@@ -3250,6 +3718,7 @@ impl Inner {
                 let task = AppleTask {
                     epoch: self.epoch.load(Ordering::SeqCst),
                     id: p.id,
+                    incarnation: p.incarnation,
                     generation: p.own_gen,
                     picture,
                     camera: p.camera.clone(),
@@ -3289,6 +3758,7 @@ impl Inner {
                     .index
                     .get(&task.id)
                     .copied()
+                    .filter(|&i| st.photos[i].incarnation == task.incarnation)
                     .filter(|&i| st.photos[i].own_gen == task.generation)
                     .filter(|_| st.apple.instructions_gen == task.instructions_gen);
                 match (info, i) {
@@ -3363,7 +3833,10 @@ impl Inner {
         };
         let mut retries = 0;
         loop {
-            if !self.live(task.epoch) {
+            // A photo that was removed while the request waited (to be rendered, between two tries) is not asked about.
+            if !self.live(task.epoch)
+                || !lock(&self.state).has_photo(task.id, Some(task.incarnation))
+            {
                 return None;
             }
             self.apple_asks.fetch_add(1, Ordering::SeqCst);
@@ -3456,7 +3929,12 @@ impl Inner {
                 if !self.live(task.epoch) {
                     return None;
                 }
+                // A photo that was removed meanwhile has no place to put the answer (and one that was put back
+                // since is a new incarnation: it is asked again, unless it came back with an answer).
                 let i = *st.index.get(&task.id)?;
+                if st.photos[i].incarnation != task.incarnation {
+                    return None;
+                }
                 // Re-run replaced the estimates, or the instructions changed, meanwhile: the photo
                 // is asked again.
                 if st.photos[i].own_gen != task.generation
@@ -3487,14 +3965,15 @@ impl Inner {
     }
 
     /// Renders a photo's thumbnail again with its estimates now (Apple Auto moved its values).
-    fn refresh_thumbnail(&self, epoch: u64, id: PhotoId) {
+    fn refresh_thumbnail(&self, job: &Job) {
+        let (epoch, id) = (job.epoch, job.photo);
         let Some(renderer) = &self.env.thumbnails else {
             return;
         };
         let snapshot = {
             let st = lock(&self.state);
             st.photo(id).and_then(|p| {
-                if p.summary.status != PhotoStatus::Ready {
+                if p.summary.status != PhotoStatus::Ready || p.incarnation != job.incarnation {
                     return None;
                 }
                 Some((
@@ -3522,8 +4001,10 @@ impl Inner {
             cancelled: &cancelled,
         }) {
             Ok(png_bytes) => {
-                self.emit(
+                self.emit_photo(
                     epoch,
+                    id,
+                    Some(job.incarnation),
                     SessionEvent::ThumbnailReady(ThumbnailReady { id, png_bytes }),
                 );
             }
@@ -3551,6 +4032,9 @@ impl Drop for WorkerGuard<'_> {
 struct AppleTask {
     epoch: u64,
     id: PhotoId,
+    /// The photo's [`Photo::incarnation`] when the request was made: the answer for a photo that was removed
+    /// ([`Session::remove`]) while the model worked, and maybe put back since, is dropped.
+    incarnation: u32,
     /// `own_gen` when the request was made: an answer to estimates that Re-run replaced is dropped.
     generation: u64,
     picture: Option<Arc<AdvisorPicture>>,
@@ -3740,5 +4224,142 @@ mod tests {
         let value = run(&flights, 2, || Some(Arc::new("after".to_owned())));
         assert_eq!(value.as_deref().map(String::as_str), Some("after"));
         assert!(lock(&flights.flights).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod removal_tests {
+    //! The estimates a burst shares, after a frame leaves it and when it comes back. A synthetic Sony frame never makes
+    //! the highlight guard lower its exposure, so the frames of a burst all have the camera's gain and share it whatever
+    //! leaves; here the frames' own exposures are set to different numbers (as the guard would make them) to see the
+    //! median follow the set of photos.
+
+    use super::*;
+    use ym_raw::testgen::ArwBuilder;
+
+    fn write_frame(dir: &Path, name: &str, second: u32) {
+        let (w, h) = (128u32, 96u32);
+        ArwBuilder::new("ILCE-7RM4", w, h)
+            .black([512; 4])
+            .white([16300; 3])
+            .wb(Some([2048, 1024, 1024, 1536]))
+            .exposure_comp(0, 10)
+            .iso(400)
+            .capture_time(&format!("2026:10:04 12:03:{second:02}"), "00", None)
+            .write_to(&dir.join(name), &vec![4000u16; (w * h) as usize])
+            .expect("write a synthetic ARW");
+    }
+
+    /// Gives the photos (in filmstrip order) these exposures as their own, and shares them again.
+    fn set_own_evs(session: &Session, evs: &[f64]) {
+        let mut st = lock(&session.inner.state);
+        for (i, ev) in evs.iter().enumerate() {
+            let mut own = (**st.photos[i].own.as_ref().expect("estimated")).clone();
+            own.exposure.own_ev = *ev;
+            own.exposure.ev = *ev;
+            own.color.ev_auto = *ev;
+            st.photos[i].own = Some(Arc::new(own));
+            st.photos[i].own_gen += 1;
+        }
+        st.refresh_effective(&session.inner.env.priors);
+    }
+
+    #[test]
+    fn a_burst_shares_the_median_of_the_frames_that_are_left_and_gets_the_old_one_back_with_undo() {
+        let dir = tempfile::tempdir().expect("dir");
+        // Five frames a second apart: one burst.
+        for i in 0..5 {
+            write_frame(dir.path(), &format!("f{i}.ARW"), 10 + i);
+        }
+        let (sink, rx) = EventSink::channel();
+        let env = SessionEnv::load(&find_data_dir().expect("data"))
+            .expect("env")
+            .with_decode_threads(2)
+            .with_events(sink);
+        let session = Session::new(env);
+        session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+        assert!(session.wait_idle(Duration::from_secs(60)));
+        let ids = session.photo_ids();
+        assert_eq!(ids.len(), 5);
+
+        // Own exposures 0, 1, 2, 3 and 10 stops: the burst median is 2.
+        let evs = [0.0, 1.0, 2.0, 3.0, 10.0];
+        set_own_evs(&session, &evs);
+        let shared = |id: PhotoId| session.estimates(id).expect("estimates").exposure.ev;
+        let own = |id: PhotoId| session.estimates(id).expect("estimates").exposure.own_ev;
+        for id in &ids {
+            assert_eq!(shared(*id), 2.0, "{id}");
+        }
+        let _ = rx.try_iter().count();
+
+        // The two darkest frames leave: the median of 2, 3 and 10 is 3.
+        let out = session.remove(&[ids[0], ids[1]]);
+        assert_eq!(out.removed, vec![ids[0], ids[1]]);
+        for id in &ids[2..] {
+            assert_eq!(shared(*id), 3.0, "{id}");
+        }
+        assert_eq!(own(ids[4]), 10.0, "a frame keeps its own exposure");
+        // The three frames that stayed are told, and nobody else is.
+        assert_eq!(out.estimates_changed, vec![ids[2], ids[3], ids[4]]);
+        let told: Vec<PhotoId> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                SessionEvent::EstimatesChanged { id } => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(told, out.estimates_changed);
+        // What the render reads carries the shared value.
+        let est = session.estimates(ids[2]).expect("estimates");
+        assert_eq!(est.color.ev_auto, 3.0);
+
+        // A burst with one frame left is that frame's own exposure.
+        let out = session.remove(&[ids[2], ids[3]]);
+        assert_eq!(out.estimates_changed, vec![ids[4]]);
+        assert_eq!(shared(ids[4]), 10.0);
+
+        // Undo brings the frames back, and the median with them: the photo that stayed is told once more.
+        let _ = rx.try_iter().count();
+        let back = session.restore_removed();
+        assert_eq!(back.restored, vec![ids[2], ids[3]]);
+        assert_eq!(back.estimates_changed, vec![ids[4]]);
+        assert_eq!(shared(ids[4]), 3.0);
+        assert_eq!(shared(ids[2]), 3.0);
+        // The restored frames are in the burst again; none of them is "told" about its own return.
+        let told: Vec<PhotoId> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                SessionEvent::EstimatesChanged { id } => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(told, vec![ids[4]]);
+    }
+
+    #[test]
+    fn the_burst_of_two_frames_that_lost_one_is_alone_and_the_other_burst_is_not_told() {
+        let dir = tempfile::tempdir().expect("dir");
+        // A burst of three, and a lone frame half a minute later.
+        for (name, second) in [("a.ARW", 10), ("b.ARW", 11), ("c.ARW", 12), ("z.ARW", 50)] {
+            write_frame(dir.path(), name, second);
+        }
+        let env = SessionEnv::load(&find_data_dir().expect("data"))
+            .expect("env")
+            .with_decode_threads(1);
+        let session = Session::new(env);
+        session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+        assert!(session.wait_idle(Duration::from_secs(60)));
+        let ids = session.photo_ids();
+        set_own_evs(&session, &[0.0, 4.0, 8.0, 1.0]);
+        let shared = |id: PhotoId| session.estimates(id).expect("estimates").exposure.ev;
+        assert_eq!([shared(ids[0]), shared(ids[3])], [4.0, 1.0]);
+        // The lone frame leaves: the burst is as it was and nobody is told.
+        let out = session.remove(&[ids[3]]);
+        assert!(out.estimates_changed.is_empty(), "{out:?}");
+        assert_eq!(shared(ids[0]), 4.0);
+        // A frame of the burst leaves: the two left share their median.
+        let out = session.remove(&[ids[0]]);
+        assert_eq!(out.estimates_changed, vec![ids[1], ids[2]]);
+        assert_eq!(shared(ids[1]), 6.0);
     }
 }

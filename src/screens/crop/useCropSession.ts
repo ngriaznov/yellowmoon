@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import type { CropAspect, Orientation, PhotoSummary, ResolvedSettings } from "../../api/types";
+import type { CropAspect, Orientation, PhotoId, PhotoSummary, ResolvedSettings } from "../../api/types";
 import type { AppStore } from "../../state/store";
 import { fitRatio, FULL_RECT, imageAspectOf, isFullRect, presetRatio, rotateRect90 } from "./cropMath";
 import type { Rect } from "./cropMath";
@@ -51,6 +51,8 @@ export function useCropSession(
   const [draft, setDraft] = useState<CropDraft | null>(null);
   const original = useRef<{ crop: ResolvedSettings["settings"]["crop"]; orientation: Orientation } | null>(null);
   const touched = useRef(false);
+  /** The photo the crop was started on: its changes go there, wherever the person is when they are sent. */
+  const target = useRef<PhotoId | undefined>(undefined);
   const latest = useRef(draft);
   latest.current = draft;
 
@@ -58,7 +60,7 @@ export function useCropSession(
     (next: CropDraft) => {
       touched.current = true;
       // Not final: the whole session is one gesture, ended by Done or Cancel.
-      void store.update({ crop: { rect: FULL_RECT, angle_deg: next.angle_deg, aspect: next.aspect }, orientation: next.orientation }, false);
+      void store.update({ crop: { rect: FULL_RECT, angle_deg: next.angle_deg, aspect: next.aspect }, orientation: next.orientation }, false, target.current);
     },
     [store],
   );
@@ -67,6 +69,7 @@ export function useCropSession(
     if (!rs) return;
     const crop = rs.settings.crop;
     original.current = { crop, orientation: rs.settings.orientation };
+    target.current = rs.photo_id;
     touched.current = false;
     setDraft({
       rect: crop?.rect ?? FULL_RECT,
@@ -118,12 +121,12 @@ export function useCropSession(
       const current = latest.current;
       if (!current) return;
       setDraft(null);
-      void store.update({ crop: draftToCrop(current), orientation: current.orientation }, true);
+      void store.update({ crop: draftToCrop(current), orientation: current.orientation }, true, target.current);
     },
     cancel: () => {
       const before = original.current;
       setDraft(null);
-      if (before && touched.current) void store.update({ crop: before.crop, orientation: before.orientation }, true);
+      if (before && touched.current) void store.update({ crop: before.crop, orientation: before.orientation }, true, target.current);
     },
   };
   return { session, start, active: true };

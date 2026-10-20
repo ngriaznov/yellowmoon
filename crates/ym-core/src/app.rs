@@ -51,8 +51,8 @@ use crate::preferences::{
     PreferencesStore, own_instructions,
 };
 use crate::session::{
-    AppleAutoEnv, ApplyScope, EventSink, PasteReport, PhotoId, Session, SessionEnv, SessionError,
-    default_decode_threads,
+    AppleAutoEnv, ApplyScope, EventSink, PasteReport, PhotoId, RemoveOutcome, RestoreOutcome,
+    Session, SessionEnv, SessionError, default_decode_threads,
 };
 use crate::settings::SettingsPatch;
 
@@ -321,6 +321,28 @@ impl Core {
             Some(last) => self.renderer.retire_through(last),
             None => self.renderer.forget_all(),
         }
+    }
+
+    /// `remove_photos`: takes photos out of the filmstrip ([`Session::remove`]) and stops the renderer working for them:
+    /// their viewport, tile, thumbnail, histogram and look-tile renders are cancelled, queued and running, the render caches
+    /// they filled are dropped, and requests for them are refused from now on, so nothing is cached for a photo that is
+    /// gone. **The files on disk are not touched** (hard rule 5). Exports that were queued keep going with the snapshots
+    /// they hold: a photo removed while its export runs is still exported, with the settings it had when the export was
+    /// started.
+    ///
+    /// What was taken out is kept for [`Core::restore_photos`] until the next removal or the end of the session.
+    pub fn remove_photos(&self, ids: &[PhotoId]) -> RemoveOutcome {
+        let outcome = self.session.remove(ids);
+        self.renderer.retire_photos(&outcome.removed);
+        outcome
+    }
+
+    /// `restore_photos`: Undo of the last [`Core::remove_photos`] ([`Session::restore_removed`]): the photos come back
+    /// where they were, with their settings, and the renderer serves them again.
+    pub fn restore_photos(&self) -> RestoreOutcome {
+        // Served again before they are in the session, so that the first request for one is not refused.
+        self.renderer.unretire_photos(&self.session.restorable());
+        self.session.restore_removed()
     }
 
     /// Quitting: cancels exports and renders, and waits (up to [`SHUTDOWN_EXPORT_WAIT`]) for the

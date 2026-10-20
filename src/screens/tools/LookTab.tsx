@@ -267,7 +267,7 @@ function LookSection({ library, total, shown, searching, collapsed, holdsCurrent
           <span className="ym-look-group__count">{searching ? `${shown} of ${total}` : total}</span>
         </Button>
       </CollapsibleTrigger>
-      <CollapsibleContent id={bodyId}>
+      <CollapsibleContent id={bodyId} className="ym-look-group__body">
         <div className="ym-look-grid">{children}</div>
       </CollapsibleContent>
     </Collapsible>
@@ -297,7 +297,7 @@ export function ToneCard({ store, rs }: { store: AppStore; rs: ResolvedSettings 
           <AutoToggle isAuto={isAuto} onAuto={() => whiteBalanceToAuto(store)} aria-label="Auto temperature" />
         </>
       }
-      action={<ResetLink size="card" onClick={() => void store.update({ white_balance: AUTO, light_source: "auto", white_pick: null, contrast: AUTO, saturation: AUTO })} />}
+      action={<ResetLink size="card" onClick={() => void store.update({ white_balance: AUTO, light_source: "auto", white_pick: null, contrast: AUTO, saturation: AUTO }, true, rs.photo_id)} />}
     >
       <KelvinSlider store={store} rs={rs} label="Temperature" />
       <ContrastSlider store={store} rs={rs} />
@@ -368,7 +368,9 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
   // One observer and one select function for every tile, so a tile's props change only when the tile does.
   const [watch] = useState(createTileWatch);
   useEffect(() => () => watch.disconnect(), [watch]);
-  const selectLook = useCallback((id: LookId) => void store.chooseLook(id), [store]);
+  // A click names the photo the tab is drawn for, so the look goes to the photo whose tiles were clicked.
+  const photoId = photo.id;
+  const selectLook = useCallback((id: LookId) => void store.chooseLook(id, undefined, photoId), [store, photoId]);
 
   // One section per library that has looks, in display order; the search narrows what each shows.
   const sections = useMemo(() => {
@@ -492,7 +494,7 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
             ) : null}
             <ResetLink
               size="card"
-              onClick={() => (defaultLook ? void store.chooseLook(defaultLook.id, 100) : void store.setLookIntensity(100, true))}
+              onClick={() => (defaultLook ? void store.chooseLook(defaultLook.id, 100, photo.id) : void store.setLookIntensity(100, true, photo.id))}
             />
           </span>
         }
@@ -504,7 +506,7 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
           max={100}
           defaultValue={100}
           format={formats.percent}
-          onChange={(v, final) => void store.setLookIntensity(v, final)}
+          onChange={(v, final) => void store.setLookIntensity(v, final, photo.id)}
         />
         <Field label="Apply to">
           <Segmented label="Apply look to" value={scope} onChange={(next) => store.setApplyScope(next)} options={scopeOptions} />

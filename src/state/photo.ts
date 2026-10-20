@@ -1,5 +1,5 @@
 /** Small helpers that turn a photo's summary into the words and pictures the screens show. */
-import type { PhotoStatus, PhotoSummary, SessionState } from "../api/types";
+import type { PhotoId, PhotoStatus, PhotoSummary, SessionState } from "../api/types";
 
 /** "DSC04204.ARW" gives "DSC04204". */
 export const photoName = (fileName: string): string => fileName.replace(/\.[^./\\]+$/, "");
@@ -53,6 +53,53 @@ export function mergeSession(old: SessionState, snapshot: SessionState): Session
     current_index: old.current_index ?? snapshot.current_index,
     picked: photos.filter((p) => p.picked).map((p) => p.id),
   };
+}
+
+/**
+ * The session after photos were taken out of the filmstrip (`remove_photos`). The page's own photos stay as they are, entries (status,
+ * picked) included, minus the removed ones: the answer's snapshot is older than what events have told the page since, and replacing
+ * the page's entries with it would bring back a status that has changed. `current` is the photo on screen afterwards (the photo that
+ * was, unless it left; then the shell's choice, the next photo or the previous one); with none left the session is empty.
+ */
+export function withoutPhotos(old: SessionState, removed: ReadonlySet<PhotoId>, current: PhotoId | null): SessionState {
+  const photos = old.photos.filter((p) => !removed.has(p.id));
+  const index = current === null ? -1 : photos.findIndex((p) => p.id === current);
+  return {
+    ...old,
+    photos,
+    current_index: photos.length === 0 ? null : Math.max(0, index),
+    picked: photos.filter((p) => p.picked).map((p) => p.id),
+  };
+}
+
+/**
+ * The session after photos were put back (`restore_photos`). The order is the shell's (the photos have their old places again), the
+ * entries of the photos that were put back are the shell's (it knows their status and picks) and the entries of the others are the
+ * page's own, as in {@link mergeSession}. `current` is the photo on screen afterwards.
+ */
+export function withRestoredPhotos(old: SessionState, snapshot: SessionState, restored: ReadonlySet<PhotoId>, current: PhotoId | null): SessionState {
+  const mine = new Map(old.photos.map((p) => [p.id, p]));
+  const inSnapshot = new Set(snapshot.photos.map((p) => p.id));
+  const photos = [...snapshot.photos.map((p) => (restored.has(p.id) ? p : (mine.get(p.id) ?? p))), ...old.photos.filter((p) => !inSnapshot.has(p.id))];
+  const index = current === null ? -1 : photos.findIndex((p) => p.id === current);
+  return {
+    ...snapshot,
+    opened: undefined,
+    photos,
+    current_index: photos.length === 0 ? null : Math.max(0, index),
+    picked: photos.filter((p) => p.picked).map((p) => p.id),
+  };
+}
+
+/** What Photos says after a removal: "Removed DSC04204. The file is still on disk." or "Removed 3 photos. The files are still on disk." */
+export function removedNotice(names: readonly string[]): string {
+  return names.length === 1 ? `Removed ${names[0]}. The file is still on disk.` : `Removed ${names.length} photos. The files are still on disk.`;
+}
+
+/** What Photos says after Undo: "Put back DSC04204." or "Put back 3 photos.", and how many stayed out because their file was added again. */
+export function restoredNotice(names: readonly string[], alreadyOpen: number): string {
+  const put = names.length === 1 ? `Put back ${names[0]}.` : `Put back ${names.length} photos.`;
+  return alreadyOpen === 0 ? put : `${put} ${alreadyOpen} ${alreadyOpen === 1 ? "was" : "were"} already open.`;
 }
 
 /** True when a photo can be shown and edited. */

@@ -104,6 +104,14 @@ impl Thumbnails {
         self.shared.wake.notify_all();
     }
 
+    /// Forgets the requests for these photos (they left the filmstrip).
+    pub fn forget(&self, ids: &[CorePhotoId]) {
+        let mut pending = lock(&self.shared.pending);
+        for id in ids {
+            pending.ids.remove(&id.0);
+        }
+    }
+
     /// Forgets what was asked for (the session closed).
     pub fn clear(&self) {
         let mut pending = lock(&self.shared.pending);

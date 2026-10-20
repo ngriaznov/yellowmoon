@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, RefObject } from "react";
 import type { ChromaPoint, ColorWarpPin } from "../api/types";
 import { cx } from "./cx";
-import { useDraft, useFrameEmitter, useLatest, usePointerDrag } from "./hooks";
+import { useDraft, useFrameEmitter, useGestureCallback, useLatest, usePointerDrag } from "./hooks";
 import {
   clampToPlane,
   hueAngle,
@@ -137,7 +137,8 @@ export function WarpPlane({ pins, onChange, selected, onSelect, tool = "move", s
 
   const draft = useDraft<readonly ColorWarpPin[]>(pins, samePins);
   const shown = draft.shown;
-  const onChangeRef = useLatest(onChange);
+  // A drag reports to the `onChange` it began with (`useGestureCallback`).
+  const onChangeRef = useGestureCallback(onChange);
   const onSelectRef = useLatest(onSelect);
   const frames = useFrameEmitter<ColorWarpPin[]>((list) => onChangeRef.current(list, false));
   const current = selected !== null && selected >= 0 && selected < shown.length ? selected : null;
@@ -227,6 +228,7 @@ export function WarpPlane({ pins, onChange, selected, onSelect, tool = "move", s
         index = list.length - 1;
       }
       const pin = list[index] as ColorWarpPin;
+      onChangeRef.begin();
       drag.current = { index, list, grab: [pin.target[0] - at.c[0], pin.target[1] - at.c[1]], changed: added };
       focusAfter.current = index;
       onSelectRef.current(index);
@@ -256,6 +258,7 @@ export function WarpPlane({ pins, onChange, selected, onSelect, tool = "move", s
       const state = drag.current;
       drag.current = null;
       if (state?.changed) commit(state.list);
+      onChangeRef.end();
     },
   });
 

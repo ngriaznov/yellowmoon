@@ -71,7 +71,7 @@ export const ColorTab = memo(function ColorTab({ store, photo, rs, pickingColor,
       </Card>
       <Card
         title="Colour balance"
-        action={<ResetLink size="card" onClick={() => void store.update({ color_balance: RESET_BALANCE, saturation: AUTO })} />}
+        action={<ResetLink size="card" onClick={() => void store.update({ color_balance: RESET_BALANCE, saturation: AUTO }, true, rs.photo_id)} />}
       >
         <WheelGroup>
           {WHEELS.map(([key, label]) => {
@@ -81,7 +81,7 @@ export const ColorTab = memo(function ColorTab({ store, photo, rs, pickingColor,
             const send = (point: ColorBalancePoint, final: boolean): void => {
               const next: ColorBalance =
                 key === "midtones" ? { ...settings.color_balance, midtones: point } : { ...settings.color_balance, [key]: pointOrAuto(point, auto) };
-              void store.update({ color_balance: next }, final);
+              void store.update({ color_balance: next }, final, rs.photo_id);
             };
             return (
               <Wheel
@@ -90,7 +90,7 @@ export const ColorTab = memo(function ColorTab({ store, photo, rs, pickingColor,
                 value={values.color_balance[key]}
                 defaultValue={auto}
                 onChange={send}
-                onReset={key === "midtones" ? undefined : () => void store.update({ color_balance: { ...settings.color_balance, [key]: AUTO } }, true)}
+                onReset={key === "midtones" ? undefined : () => void store.update({ color_balance: { ...settings.color_balance, [key]: AUTO } }, true, rs.photo_id)}
               />
             );
           })}

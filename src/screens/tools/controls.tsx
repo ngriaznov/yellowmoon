@@ -39,7 +39,7 @@ export function whiteBalanceToAuto(store: AppStore): void {
  */
 export function setWhiteBalance(store: AppStore, rs: ResolvedSettings, kelvin: number, tint: number, final: boolean): void {
   const { estimates } = rs;
-  void store.update({ white_balance: manualOrAuto({ kelvin, tint }, { kelvin: estimates.kelvin, tint: estimates.tint }) }, final);
+  void store.update({ white_balance: manualOrAuto({ kelvin, tint }, { kelvin: estimates.kelvin, tint: estimates.tint }) }, final, rs.photo_id);
 }
 
 interface ControlProps {
@@ -94,8 +94,8 @@ export function PercentSlider({ store, rs, field, label }: ControlProps & { fiel
       max={100}
       defaultValue={auto}
       format={formats.signed}
-      onChange={(value, final) => void store.update({ [field]: manualOrAuto({ value }, { value: auto }) }, final)}
-      onReset={() => void store.update({ [field]: AUTO })}
+      onChange={(value, final) => void store.update({ [field]: manualOrAuto({ value }, { value: auto }) }, final, rs.photo_id)}
+      onReset={() => void store.update({ [field]: AUTO }, true, rs.photo_id)}
     />
   );
 }

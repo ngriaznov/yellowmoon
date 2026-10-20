@@ -152,10 +152,10 @@ test.describe("Photos", () => {
     });
     await expect.poll(async () => page.locator(".ym-look-tile img").count()).toBe(9);
     await lookTilesLoaded(page);
-    // The filmstrip follows the look, as "Apply to: All" says: every thumbnail is a new picture.
+    // Apply to starts on This photo (the owner's decision of 2026-10-20): only the photo on screen has a new thumbnail.
     await expect.poll(async () => {
       const now = await thumbs();
-      return now.length === before.length && now.every((src, i) => src !== before[i]);
+      return now.length === before.length && now.filter((src, i) => src !== before[i]).length === 1;
     }).toBe(true);
     await compareScreen(page, "photos-look-teal");
   });
