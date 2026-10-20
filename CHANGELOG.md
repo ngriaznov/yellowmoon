@@ -9,6 +9,12 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.11] - 2026-10-20
+
+Auto with Apple Intelligence grades each photo on the Mac, Contrast and Saturation are redesigned, the Signature look is richer, and there is a full-screen view (F) and Remove from filmstrip.
+
 ### Added
 
 - **Auto with Apple Intelligence** (macOS 27 on Apple silicon, with Apple Intelligence turned on). Apple's on-device model looks at each photo and grades it, as a colourist would, into the best finished photograph the scene allows while keeping its light (a night stays dark, golden hour stays warm): it sets the exposure, highlights, shadows, black level, contrast and saturation, and makes the white warmer or cooler and greener or more magenta. Its default instructions ask for this base look with no style; your own instructions can also ask it to colour the shadows and the highlights (teal shadows and warm highlights, for example). It runs on the Mac and sends nothing anywhere. It is on by default where it is available and can be turned off in Preferences; on other Macs the setting is not shown and Auto works as before. Only values left on Auto change. A photo appears at once and updates when the answer arrives; exports wait for the answers, and each export records which Auto made it. The Automatic card lists each value Apple's model set, with its short plan for the photo. `ym` follows the same setting, `--apple-auto on|off` overrides it for one run, and `ym doctor` says whether it is available.
