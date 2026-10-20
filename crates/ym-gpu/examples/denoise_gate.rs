@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! CARGO_INCREMENTAL=0 cargo run -p ym-gpu --release --example denoise_gate -- \
-//!     [calibrate|compare|all] [--limit N] [--out DIR]
+//!     [calibrate|compare|render|all] [--limit N] [--out DIR]
 //! ```
 //!
 //! Kodak and McMaster (`testdata/demosaic`, `tools/fetch/demosaic-sets.sh`) in linear light, placed where a
@@ -25,7 +25,11 @@
 //!   oracle, and methods B and C at a few strengths around their "measured noise" settings.
 //! * `compare`: every variant on both sets at every level, each method at its calibrated settings (from
 //!   `calibrate` in the same run; without it A at the defaults below, B at L 50, C at L 80 and C 50); R 1; without blend (Detail 0) and
-//!   with today's Auto detail (blend 15); also R 0 and 2 for each method; seconds per megapixel.
+//!   with today's Auto detail (blend 15); also R 0 and 2 for each method; method A followed by the
+//!   false-colour suppression (what the render does); seconds per megapixel.
+//!
+//! * `render`: only what a render does against today's path and no denoise: method A at the render's
+//!   settings, alone and followed by the false-colour suppression (`cpu::false_color`, at Auto Colour).
 //!
 //! The output folder (default `testdata/denoise_gate`, git-ignored) gets `numbers.md` and `gate.json`.
 
@@ -39,6 +43,7 @@ use ym_gpu::cpu::demosaic::{self, DemosaicInputs, Method};
 use ym_gpu::cpu::denoise::{self, BilateralParams};
 use ym_gpu::cpu::denoise_space::{decode_image, encode_image};
 use ym_gpu::cpu::detail::{self, C_AUTO, D_AUTO, NoiseReduction};
+use ym_gpu::cpu::false_color;
 use ym_gpu::cpu::frame_denoise::{C_PER_SIGMA, L_PER_SIGMA, working_noise};
 use ym_gpu::cpu::metrics::psnr;
 use ym_gpu::cpu::nl_bayes::{self, NlBayesParams, Variant as NlVariant};
@@ -417,7 +422,19 @@ fn calibrate(report: &mut Report, kodak: &[(String, RgbImage)], limit: usize) ->
     (tuned, Value::Array(json_rows))
 }
 
-fn compare(report: &mut Report, sets: &[(&str, Vec<(String, RgbImage)>)], t: Tuned) -> Value {
+/// Method A at the render's settings followed by the false-colour suppression (`cpu::false_color`) at Auto
+/// Colour: what a full-resolution render does.
+fn render_path(case: &Case, kl: f64, kc: f64) -> Output {
+    let a = method_a(case, kl, kc, 1, 15.0);
+    false_color::suppress(&a, &NoiseSigma::Plane(&case.sigma_map), C_AUTO)
+}
+
+fn compare(
+    report: &mut Report,
+    sets: &[(&str, Vec<(String, RgbImage)>)],
+    t: Tuned,
+    full: bool,
+) -> Value {
     let Tuned {
         kl,
         kc,
@@ -446,8 +463,25 @@ fn compare(report: &mut Report, sets: &[(&str, Vec<(String, RgbImage)>)], t: Tun
                 Box::new(|c: &Case| c.noisy_lin.clone()),
             ),
             ("current (bilateral + R7)".into(), 0, 0.0, Box::new(current)),
+            (
+                format!("A kL {kl} kC {kc} + false colour (the render)"),
+                1,
+                15.0,
+                Box::new(move |c: &Case| render_path(c, kl, kc)),
+            ),
         ];
+        if !full {
+            variants.push((
+                format!("A kL {kl} kC {kc}"),
+                1,
+                15.0,
+                Box::new(move |c: &Case| method_a(c, kl, kc, 1, 15.0)),
+            ));
+        }
         for r in [0usize, 1, 2] {
+            if !full {
+                break;
+            }
             for blend in [0.0, 15.0] {
                 if r != 1 && blend > 0.0 {
                     continue;
@@ -530,9 +564,9 @@ fn main() {
         tuned = t;
         json_out["calibration"] = j;
     }
-    if mode == "compare" || mode == "all" {
+    if mode == "compare" || mode == "all" || mode == "render" {
         let sets = vec![("Kodak", kodak), ("McMaster", mcmaster)];
-        json_out["compare"] = compare(&mut report, &sets, tuned);
+        json_out["compare"] = compare(&mut report, &sets, tuned, mode != "render");
     }
     json_out["tuned"] = json!({"kL": tuned.kl, "kC": tuned.kc, "B_L": tuned.b_l, "C_L": tuned.c_l, "C_C": tuned.c_c});
     std::fs::create_dir_all(&out_dir).expect("output folder");

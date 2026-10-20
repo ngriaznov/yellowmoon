@@ -293,8 +293,23 @@ How the methods enter the raw chain (`docs/05-raw-processing.md` R6 and R7). The
 (the stage), `ym_gpu::cpu::denoise_space` (the encoding), `Chain::frame_denoise` (`cpu/chain.rs`).
 
 - **Where.** R6, after the demosaic, in place of the light bilateral denoise and R7 (the colour guided filter and
-  the detail re-injection): the stage `Stage::FrameDenoise`. The fit view and the thumbnails, which bin the mosaic
-  and never demosaic, keep the bilateral denoise of the binned image.
+  the detail re-injection): the stage `Stage::FrameDenoise`. Of R7 only its colour guided filter stays, where the
+  luma alternates (*False colour*, below). The fit view and the thumbnails, which bin the mosaic and never
+  demosaic, keep the bilateral denoise of the binned image.
+- **False colour** (Yellowmoon's addition, not part of the methods above; `cpu/false_color.rs`,
+  `Stage::FalseColor`). The demosaic leaves false colour on stripes near the sensor's limit (blinds, shutters,
+  fabric; the golden chart's 2 px grating), and R7's colour guided filter used to remove it. Method A keeps it:
+  block matching groups the repeating pattern and the hard threshold keeps what the group agrees on. Running the
+  guided filter everywhere after A smears colour across every edge the luma does not share and costs 1.8 dB on
+  Kodak at ISO 100 (it is most of what put today's path below no denoise there); a 3 × 3 or 5 × 5 colour median
+  before or after A only dims the stripes. So the guided filter (at the photo's Colour and noise, as in R7) is
+  used only where the luma *alternates*: `s = max(0, −(Y(x) − Y(x−1)) (Y(x+1) − Y(x)))` along x plus along y on
+  the working encoding's luma (zero on a ramp, a step or a blurred edge), `E = sqrt(box₅ₓ₅ s)`, `M = max₅ₓ₅ E`
+  (so the ends of a striped area are covered), weight `w = smoothstep((M − 0.05) / 0.10)`, and
+  `out = x + w (G − x)`. A first gate on any luma texture (second differences) also fired on window frames and
+  cost 0.4 dB for the same effect. The step costs 0.07 to 0.21 dB against A alone (*Measurement*) and removes
+  the false colour from the Kodak blinds and shutters about as well as today's path. Colour 0 turns it off with
+  the rest of the colour noise reduction. Halo: `max(2 r, 5)` px, `r` the guided filter's radius (10 px at Auto).
 - **Working encoding.** The raw chain holds balanced linear camera RGB, white 1.0 at the clip before the gains. The
   methods are made for the encoded image the viewer sees, so the stage encodes with `W(x) = srgb(2^CAMERA_GAIN_EV x)`
   (the sRGB curve on the whole line, its linear slope made exact at the knee), runs the method, and decodes. Middle
@@ -311,8 +326,8 @@ How the methods enter the raw chain (`docs/05-raw-processing.md` R6 and R7). The
 - **The default is method A** (the owner, 2026-10-20: "I don't need A/B test, I think this is good"; the choice by
   the measurement below). B and C stay behind the renderer's internal switch (`DenoiseMethod`), like the demosaic
   methods of R6.
-- **Tiles.** Method A asks for its 23 px halo and a tile equals the whole frame bit for bit (tested through the
-  chain). Methods B and C read the whole frame (pyramid and measurement), so a tile of them asks for the whole
+- **Tiles.** Method A asks for its 23 px halo, the false-colour step for its own after it, and a tile equals the
+  whole frame bit for bit (tested through the chain). Methods B and C read the whole frame (pyramid and measurement), so a tile of them asks for the whole
   raw frame: correct and exact, and slow; they are for evaluation.
 - **On the device.** Method A runs on the graphics card like every other raw stage (`ym_gpu::kernels::bm_dct`,
   `shaders/bm_dct*.wgsl`, `docs/17-gpu.md`): the device chain records it as R6's step after the demosaic, with the
@@ -365,3 +380,30 @@ up to 0.5 dB without), at twice A's time and with the whole frame to read; B is 
 0.07 dB to A (without the blend) at 1.5 times its time; `R = 0` loses 0.05 to 0.4 dB. Seconds per megapixel on the
 CPU (wall, 3 threads): today 0.2 to 0.3, A 0.5, B 0.9, C 1.0. The full
 tables: `testdata/denoise_gate/numbers.md` after a run.
+
+*The render: method A and the false-colour step* (`denoise_gate -- render`, 2026-10-20, 2 threads; same cases,
+Colour at Auto; working encoding, dB):
+
+| set | ISO-like | none | today | A | A + false colour (the render) |
+|---|---|---|---|---|---|
+| Kodak | 100 | 36.89 | 35.27 | 37.14 | **37.00** |
+| Kodak | 800 | 34.54 | 34.19 | 35.84 | **35.60** |
+| Kodak | 1600 | 32.78 | 33.35 | 34.72 | **34.51** |
+| Kodak | 6400 | 27.61 | 30.61 | 31.31 | **31.23** |
+| Kodak | 12800 | 25.05 | 29.10 | 29.44 | **29.37** |
+| McMaster | 100 | 34.07 | 31.62 | 34.30 | **34.12** |
+| McMaster | 800 | 32.01 | 30.91 | 33.13 | **32.98** |
+| McMaster | 1600 | 30.69 | 30.35 | 32.27 | **32.15** |
+| McMaster | 6400 | 26.82 | 28.42 | 29.90 | **29.82** |
+| McMaster | 12800 | 24.73 | 27.19 | 28.49 | **28.40** |
+
+The render is above today's path at every level (+1.7, +1.4, +1.2, +0.6 and +0.3 dB on Kodak, +2.5, +2.1, +1.8,
++1.4 and +1.2 on McMaster from ISO 100 to 12800) and above no denoise at every level; the false-colour step costs
+0.07 to 0.24 dB against A alone and takes A from 0.5 to 0.7 s/MP on the CPU. What it buys is not in these numbers:
+on the Kodak blinds (kodim01) and shutters (kodim08) A alone keeps the demosaic's blue and orange bands, which
+today's path removed, and the render removes them about as well as today's path. The exploration behind it, on the
+same cases (overall / colour-only PSNR at ISO 100 on Kodak): A 37.14 / 42.63; the guided filter after A everywhere
+35.30 / 39.89; a 3 × 3 colour median after A 37.38 / 43.71 and before A 37.44 / 43.76 (better numbers, the bands
+only dimmed; on McMaster 0.1 to 0.2 dB below A at ISO 100 to 800); the guided filter gated by any luma texture,
+36.34 to 37.16 as the gate narrows, the bands gone only at the cost of 0.4 dB and more (it fires on window frames);
+gated by alternation without the dilation, 37.21, free but the ends of each striped area kept their colour.

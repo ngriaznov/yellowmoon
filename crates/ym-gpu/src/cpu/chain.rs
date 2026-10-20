@@ -21,6 +21,7 @@
 use super::demosaic::{self, CaCurves, DemosaicInputs, Method};
 use super::denoise::{self, BilateralParams};
 use super::detail::{self, NoiseReduction};
+use super::false_color;
 use super::frame_denoise::FrameDenoise;
 use super::gains;
 use super::highlights::{self, ChromaOffsets};
@@ -128,6 +129,14 @@ impl Chain {
             s.push(Stage::FrameDenoise {
                 halo_px: fd.halo_px(),
             });
+            // What is left of R7: its colour guided filter where the luma alternates (the demosaic's
+            // false colour, which the method keeps). Colour 0 turns it off with the rest of the colour
+            // noise reduction.
+            if self.noise_reduction.color > 0.0 {
+                s.push(Stage::FalseColor {
+                    halo_px: false_color::halo_px(self.noise_reduction.color),
+                });
+            }
         } else {
             if let Some(d) = &self.denoise {
                 s.push(Stage::Denoise {
@@ -591,6 +600,18 @@ impl<'c> TileRun<'c, '_> {
                     None => img,
                 });
             }
+            Stage::FalseColor { .. } => {
+                let img = take(&mut self.rgb)?;
+                let (plane, scalar) = chain.sigma_tile(raw.width, self.cur, 1.0);
+                let ns = plane
+                    .as_deref()
+                    .map_or(NoiseSigma::Scalar(scalar), NoiseSigma::Plane);
+                self.rgb = Some(false_color::suppress(
+                    &img,
+                    &ns,
+                    chain.noise_reduction.color,
+                ));
+            }
             Stage::Detail { .. } => {
                 let img = take(&mut self.rgb)?;
                 let (plane, scalar) = chain.sigma_tile(raw.width, self.cur, 1.0);
@@ -886,7 +907,24 @@ mod tests {
                 })
                 .collect();
             assert_eq!(fd, vec![halo], "{method:?}");
+            // What is left of R7 follows it: the colour guided filter where the luma alternates.
+            let fc: Vec<_> = stages
+                .iter()
+                .filter_map(|s| match s {
+                    Stage::FalseColor { halo_px } => Some(*halo_px),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(fc, vec![false_color::halo_px(60.0)], "{method:?}");
         }
+        // Colour 0 turns it off.
+        let mut off = frame_denoise_chain(64, 48, DenoiseMethod::BmDct);
+        off.noise_reduction.color = 0.0;
+        assert!(
+            !off.stages()
+                .iter()
+                .any(|s| matches!(s, Stage::FalseColor { .. }))
+        );
         // The bilateral is the chain's own stages: no frame denoise.
         assert!(
             frame_denoise_chain(64, 48, DenoiseMethod::Bilateral)
@@ -920,6 +958,42 @@ mod tests {
         .run_tile(&raw, &prepared, Rect::whole(w, h))
         .expect("bilateral");
         assert!(whole.max_abs_diff(&other) > 1e-4);
+    }
+
+    #[test]
+    fn false_colour_suppression_in_tiles_gives_the_whole_frame_bit_for_bit() {
+        // A scene with 2 px stripes on its right half, where the demosaic leaves false colour and the
+        // stage's gate opens.
+        let (w, h) = (140, 96);
+        let mut img = synth::natural(w, h, 3);
+        let n = w * h;
+        for y in 0..h {
+            for x in w / 2..w {
+                let v = if x % 2 == 0 { 0.05 } else { 0.6 };
+                for c in 0..3 {
+                    img.data[c * n + y * w + x] = v;
+                }
+            }
+        }
+        let m = synth::mosaic_from_rgb(&img, Cfa::RGGB);
+        let mut rng = synth::Rng::new(11);
+        let data: Vec<u16> = m
+            .data
+            .iter()
+            .map(|&v| (512.0 + (v + 0.003 * rng.gaussian()) * 15488.0).clamp(0.0, 16000.0) as u16)
+            .collect();
+        let raw = raw_frame(w, h, &data);
+        let chain = frame_denoise_chain(w, h, DenoiseMethod::BmDct);
+        let prepared = chain.prepare(&raw).expect("prepare");
+        let whole = chain
+            .run_tile(&raw, &prepared, Rect::whole(w, h))
+            .expect("whole");
+        let mut tiled = RgbImage::new(w, h);
+        for core in tile_grid(w, h, 37, 29, 1) {
+            let t = chain.run_tile(&raw, &prepared, core).expect("tile");
+            tiled.paste(&t, Rect::whole(core.w, core.h), core.x, core.y);
+        }
+        assert_eq!(whole.data, tiled.data);
     }
 
     #[test]

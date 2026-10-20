@@ -212,6 +212,12 @@ pub enum Stage<'a> {
         /// Context on each side of the output, in pixels; `None` when the method reads the whole frame.
         halo_px: Option<usize>,
     },
+    /// False-colour suppression after the single-frame denoise ([`super::false_color`]): R7's colour
+    /// guided filter where the luma alternates.
+    FalseColor {
+        /// Context on each side ([`super::false_color::halo_px`]).
+        halo_px: usize,
+    },
     /// R7 colour guided filter and detail re-injection.
     Detail {
         /// Box radius of the guided filter (`2 + 6 C / 100`, rounded).
@@ -250,6 +256,7 @@ impl Stage<'_> {
             Stage::Denoise { radius_px } => radius_px,
             // A method that reads the whole frame has no halo: `input_rect` asks for the frame.
             Stage::FrameDenoise { halo_px } => halo_px.unwrap_or(0),
+            Stage::FalseColor { halo_px } => halo_px,
             Stage::Detail {
                 chroma_radius_px,
                 needs_classical,

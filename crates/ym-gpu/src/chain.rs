@@ -142,7 +142,8 @@ impl RawStage {
             // The single-frame methods take the bilateral's place (and R7's); the device runs method A
             // (`PostStep::FrameDenoise`), methods B and C read the whole frame and stay on the CPU.
             Stage::Denoise { .. } | Stage::FrameDenoise { .. } => RawStage::Denoise,
-            Stage::Detail { .. } => RawStage::Detail,
+            // R7's colour guided filter where the luma alternates, after the single-frame denoise.
+            Stage::Detail { .. } | Stage::FalseColor { .. } => RawStage::Detail,
             Stage::Sharpen(_) => RawStage::Sharpen,
             Stage::Lens(_) => RawStage::Lens,
         }

@@ -54,6 +54,7 @@ pub mod demosaic;
 pub mod denoise;
 pub mod denoise_space;
 pub mod detail;
+pub mod false_color;
 pub mod filters;
 pub mod flat_regions;
 pub mod frame_denoise;
