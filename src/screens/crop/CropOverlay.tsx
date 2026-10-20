@@ -92,7 +92,9 @@ export function CropOverlay({ session, cellAspect = 1.5 }: { session: CropSessio
   };
 
   const { rect } = draft;
-  // A handle on a frame edge that sits on the edge of the cell would be half cut off; draw it just inside instead.
+  // A handle on a frame edge that sits on the edge of the cell would be half cut off; draw it just inside instead. A handle on the
+  // left or top edge starts at the edge (no margin); one on the right or bottom edge ends there, so it moves back by its own size, which
+  // the stylesheet owns (`--crop-handle`: 10 px, 14 px in the glass interface).
   const EDGE = 0.0005;
   const atCell = {
     left: picture.x <= EDGE && rect.x <= EDGE,
@@ -100,10 +102,14 @@ export function CropOverlay({ session, cellAspect = 1.5 }: { session: CropSessio
     top: picture.y <= EDGE && rect.y <= EDGE,
     bottom: picture.y + picture.height >= 1 - EDGE && rect.y + rect.height >= 1 - EDGE,
   };
-  const inset = (handle: Handle): { marginLeft?: number; marginTop?: number } => ({
-    marginLeft: handle.includes("w") && atCell.left ? 0 : handle.includes("e") && atCell.right ? -10 : undefined,
-    marginTop: handle.includes("n") && atCell.top ? 0 : handle.includes("s") && atCell.bottom ? -10 : undefined,
+  const BACK = "calc(var(--crop-handle) * -1)";
+  const inset = (handle: Handle): { marginLeft?: number | string; marginTop?: number | string } => ({
+    marginLeft: handle.includes("w") && atCell.left ? 0 : handle.includes("e") && atCell.right ? BACK : undefined,
+    marginTop: handle.includes("n") && atCell.top ? 0 : handle.includes("s") && atCell.bottom ? BACK : undefined,
   });
+  /** The handle stands on the edge of the cell, where the cell clips: its focus ring is drawn inside it (see `.ym-crop__handle[data-at-cell-edge]`). */
+  const onCellEdge = (handle: Handle): boolean =>
+    (handle.includes("w") && atCell.left) || (handle.includes("e") && atCell.right) || (handle.includes("n") && atCell.top) || (handle.includes("s") && atCell.bottom);
   return (
     <div className="ym-crop" data-dragging={dragging || undefined} onPointerDown={onPointerDown}>
       <div
@@ -136,6 +142,7 @@ export function CropOverlay({ session, cellAspect = 1.5 }: { session: CropSessio
                 type="button"
                 className="ym-crop__handle"
                 data-handle={handle}
+                data-at-cell-edge={onCellEdge(handle) || undefined}
                 aria-label={`Crop ${HANDLE_NAMES[handle]}. The arrow keys move it.`}
                 style={{ left: pct(at.x), top: pct(at.y), cursor: HANDLE_CURSORS[handle], ...inset(handle) }}
                 onKeyDown={(event) => onKey(event, handle)}

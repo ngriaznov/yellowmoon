@@ -190,7 +190,7 @@ function LookSection({ library, total, shown, searching, collapsed, holdsCurrent
           <span className="ym-look-group__count">{searching ? `${shown} of ${total}` : total}</span>
         </Button>
       </CollapsibleTrigger>
-      <CollapsibleContent id={bodyId}>
+      <CollapsibleContent id={bodyId} className="ym-look-group__body">
         <div className="ym-look-grid">{children}</div>
       </CollapsibleContent>
     </Collapsible>

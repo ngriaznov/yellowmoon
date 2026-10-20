@@ -408,6 +408,15 @@ html:has(.ym-screen[data-screen="photos"]) #root {
 .ym-look-group > [data-slot="tooltip-trigger"] {
   display: flex;
 }
+/* The body of a section is glasscn's CollapsibleContent, which clips (overflow: hidden, so that its height can animate). A tile's selection
+   ring is drawn outside its picture (a 2 px outline 2 px off: 4 px) and its focus ring further out (3 px 2 px off: 5 px), so on the edge of the
+   grid, in the first row, the first column and the last column, the body cut the ring off. The body keeps room for the ring on every side
+   and takes it back as a negative margin, so no tile moves: the picture stands where it stood, and the ring has its room. */
+.ym-look-group__body {
+  --look-ring-room: 8px;
+  padding: var(--look-ring-room);
+  margin: calc(var(--look-ring-room) * -1);
+}
 .ym-look-group__header {
   display: flex;
   align-items: center;
