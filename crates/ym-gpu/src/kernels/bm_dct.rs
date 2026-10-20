@@ -444,8 +444,10 @@ fn vec4_lit(v: [f64; 4]) -> String {
     )
 }
 
-/// The constants of the kernels, written from the CPU reference (`docs/17-gpu.md` K7).
-fn constants() -> String {
+/// The constants of the kernels, written from the CPU reference (`docs/17-gpu.md` K7): those of
+/// `working_encoding.wgsl`, which the false-colour gate (`kernels::false_color`) includes too, and the DCT
+/// matrix.
+pub(super) fn constants() -> String {
     use std::fmt::Write as _;
     let (knee_x, slope, knee_y) = knee_and_slope();
     let (_, even, odd, gain) = bm_dct::device_constants();
@@ -528,6 +530,8 @@ pub(super) fn body(id: KernelId) -> String {
     };
     let mut s = constants();
     s.push_str(include_str!("../shaders/bm_dct.wgsl"));
+    s.push('\n');
+    s.push_str(include_str!("../shaders/working_encoding.wgsl"));
     s.push('\n');
     s.push_str(section);
     s.push('\n');
@@ -687,13 +691,14 @@ mod tests {
         // compare, and the quotients, must stay behind `bm_op`. Lavapipe does not re-associate, so only the
         // text can pin it.
         let common = include_str!("../shaders/bm_dct.wgsl");
+        let encoding = include_str!("../shaders/working_encoding.wgsl");
         let pass = include_str!("../shaders/bm_dct_pass.wgsl");
         let output = include_str!("../shaders/bm_dct_output.wgsl");
         for (src, needle) in [
             (common, "return bitcast<f32>(bitcast<u32>(x) | bp.frame.w);"),
-            (common, "let s = bm_div(bm_op(m - 1.0), bm_op(m + 1.0));"),
-            (common, "return bm_op(q + bm_op(c1 + bm_op(rem2 / d)));"),
-            (common, "let v = bm_op(x * BM_GAIN);"),
+            (encoding, "let s = bm_div(bm_op(m - 1.0), bm_op(m + 1.0));"),
+            (encoding, "return bm_op(q + bm_op(c1 + bm_op(rem2 / d)));"),
+            (encoding, "let v = bm_op(x * BM_GAIN);"),
             (pass, "acc = bm_op(acc + bm_op(r.y * b));"),
             (pass, "let s0 = bm_op(x[0] + x[7]);"),
             (pass, "bm_op(e0 - o0),"),
@@ -714,14 +719,15 @@ mod tests {
         ] {
             assert!(src.contains(needle), "the shader lost `{needle}`");
         }
-        for src in [common, pass, output] {
+        for src in [common, encoding, pass, output] {
             assert!(!src.contains("fma("), "no fused multiply-add on purpose");
         }
         // The device's pow, log2 and exp2 only in the fallbacks for arguments outside the series.
         let calls = |name: &str| {
             let pattern = format!("{name}(");
-            common
-                .lines()
+            [common, encoding, pass, output]
+                .iter()
+                .flat_map(|src| src.lines())
                 .map(|l| l.split("//").next().unwrap_or(""))
                 .map(|code| {
                     code.match_indices(&pattern)

@@ -2843,7 +2843,7 @@ fn a_fuzz_of_the_front_chain_keeps_tiles_exact_and_the_front_on_the_cpus_values(
 /// (`FrameDenoise::resolve`: the radius and the blend of the Detail control), with the luma and chroma
 /// strengths that `resolve` gives this noise model and these controls at `kL = 3.5` and `kC = 8` (6.59 and
 /// 31.0) written out, so that the measured bounds below do not move when those constants are tuned. R6..R8 is
-/// then the demosaic, method A and Richardson-Lucy.
+/// then the demosaic, method A, the false-colour stage (Colour 60 of `chain_of`) and Richardson-Lucy.
 fn with_method_a(mut chain: Chain) -> Chain {
     let model = NoiseModel::new(2e-4, 3e-7);
     let fd = FrameDenoise::resolve(
@@ -2891,41 +2891,46 @@ fn on_r6(setup: &Setup) -> Setup {
 /// (their groups and thresholds see other values), so a small tile on such a pixel differs in more of its
 /// samples than with the bilateral denoise (measured: 44 % of a 33 x 21 tile over 1e-4 against 5 % with the
 /// bilateral, where method A on the same planes agrees with the CPU's to 1.7e-6). The worst case's share and
-/// largest difference, twice the first measured values (0.439 and 0.295).
+/// largest difference, twice the first measured values (0.437 and 0.239, with the false-colour stage).
+///
+/// The method A tests below run the chain as the render does at Colour 60 (`chain_of`): method A, then the
+/// false-colour stage (`Stage::FalseColor`), then R8. Their numbers were measured with the stage in; the
+/// stage's own parity is `tests/gpu_false_color.rs` and `the_false_colour_stage_on_stripes_...` below.
 const ONE_METHOD_A_CASE: Limits = Limits {
     over: 0.88,
     fine: 1.0,
-    largest: 0.59,
+    largest: 0.48,
 };
 
-/// R6..R8 with method A on tie-free content against the CPU chain, all cases together. First measured on
-/// lavapipe (Mesa 25.2, LLVM 20.1): 3317 of 1 228 536 samples over 1e-4 (2.70e-3), 4866 over 2e-5 (3.96e-3),
-/// largest 7.15e-3 (the bilateral chain's R6..R8: 1.74e-4, 9.1e-4, 2.9e-3: the same demosaic flips, spread);
-/// the limits are twice that. R1..R9 measured the same to the sample but one.
+/// R6..R8 with method A and the false-colour stage on tie-free content against the CPU chain, all cases
+/// together. First measured on lavapipe (Mesa 25.2, LLVM 20.1): 3314 of 1 228 536 samples over 1e-4
+/// (2.70e-3), 4900 over 2e-5 (3.99e-3), largest 7.10e-3 (the bilateral chain's R6..R8: 1.74e-4, 9.1e-4,
+/// 2.9e-3: the same demosaic flips, spread); the limits are twice that. R1..R9 measured the same to the sample
+/// but one.
 const METHOD_A_TIE_FREE: Limits = Limits {
     over: 5.4e-3,
-    fine: 7.92e-3,
-    largest: 1.43e-2,
+    fine: 7.98e-3,
+    largest: 1.42e-2,
 };
 
 /// The same on tie-prone content (the bare grid: the demosaic's decisions tie, and the clipped plateaus are
-/// exactly flat, so method A's mirror-image candidates tie too). First measured: 25 921 of 638 232 over 1e-4
-/// (4.06e-2), 35 242 over 2e-5 (5.52e-2), largest 0.295, for R6..R8 and R1..R9 alike.
+/// exactly flat, so method A's mirror-image candidates tie too). First measured: 27 011 of 638 232 over 1e-4
+/// (4.23e-2), 37 954 over 2e-5 (5.95e-2), largest 0.239, for R6..R8 and R1..R9 alike.
 const METHOD_A_TIE_PRONE: Limits = Limits {
-    over: 8.12e-2,
-    fine: 0.11,
-    largest: 0.59,
+    over: 8.46e-2,
+    fine: 0.119,
+    largest: 0.48,
 };
 
-/// Method A and R8 on the very planes the device demosaic made, on tie-free content: R6..R8 against R6..R6
-/// (the CPU runs method A and R8 after the same device demosaic), so only the method A and Richardson-Lucy
-/// kernels differ. Largest difference over all cases, twice the first measured value (3.8e-6: no decision
-/// went the other way).
-const METHOD_A_POST_TIE_FREE: f64 = 7.6e-6;
+/// Method A, the false-colour stage and R8 on the very planes the device demosaic made, on tie-free content:
+/// R6..R8 against R6..R6 (the CPU runs them after the same device demosaic), so only their kernels differ.
+/// Largest difference over all cases, twice the first measured value (4.05e-6: no decision went the other
+/// way).
+const METHOD_A_POST_TIE_FREE: f64 = 8.1e-6;
 
-/// The same on tie-prone content: twice the first measured value (1.70e-2; 4004 samples over 1e-4, all on
-/// the bare grid, `tests/gpu_bm_dct.rs` measures the kind on its own).
-const METHOD_A_POST_TIE_PRONE: f64 = 3.4e-2;
+/// The same on tie-prone content: twice the first measured value (1.15e-2, all on the bare grid,
+/// `tests/gpu_bm_dct.rs` measures the kind on its own).
+const METHOD_A_POST_TIE_PRONE: f64 = 2.3e-2;
 
 /// R1..R9 with method A against R6..R8 behind the CPU's front, largest difference over the tie-free cases:
 /// R5b and R9 in f32 against the CPU's f64 positions (`FRONT_AGAINST_HANDOFF`), carried through method A.
@@ -3162,5 +3167,166 @@ fn the_device_chain_refuses_methods_b_and_c_and_leaves_them_to_the_cpu() {
         // R6 alone hands the planes back: the CPU stepper runs the method after the device demosaic.
         let s = compare(&setup.gpu(dev, out), &setup.cpu(out));
         assert_within(&format!("{method:?} on R6..R6"), &s, ONE_CHAIN_CASE);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// R6's false-colour suppression after method A
+// ---------------------------------------------------------------------------------------------
+
+impl Scene {
+    /// [`Scene::new`] with 2 px neutral stripes on the right half of the frame (the CPU chain test's scene):
+    /// the demosaic leaves false colour there and the false-colour stage's gate opens.
+    fn striped(width: usize, height: usize, cfa: Cfa, seed: u64) -> Scene {
+        let mut img = synth::natural(width, height, seed);
+        let n = width * height;
+        for y in 0..height {
+            for x in width / 2..width {
+                let v = if x % 2 == 0 { 0.05 } else { 0.6 };
+                for c in 0..3 {
+                    img.data[c * n + y * width + x] = v;
+                }
+            }
+        }
+        let m = synth::mosaic_from_rgb(&img, cfa);
+        let mut rng = synth::Rng::new(seed + 7);
+        let data = m
+            .data
+            .iter()
+            .map(|&v| {
+                let x = 100.0 + (v * 0.9 + 0.003 * rng.gaussian()) * 65435.0;
+                x.clamp(0.0, 65535.0) as u16
+            })
+            .collect();
+        Scene {
+            width,
+            height,
+            cfa,
+            data,
+            qstep: None,
+        }
+    }
+}
+
+/// A striped scene's chain with method A and the false-colour stage at Colour `color` (0: no stage).
+fn striped_setup(cfa: Cfa, lens: Lens, color: f32, seed: u64) -> Setup {
+    let (w, h) = (150usize, 112usize);
+    let scene = Scene::striped(w, h, cfa, seed);
+    let mut chain = with_method_a(chain_of(&scene, lens, low_noise()));
+    chain.noise_reduction.color = color;
+    assert_eq!(
+        chain
+            .stages()
+            .iter()
+            .any(|s| matches!(s, ym_gpu::cpu::tiling::Stage::FalseColor { .. })),
+        color > 0.0
+    );
+    Setup::with_half(
+        scene,
+        chain,
+        HalfSigma::new(w, h, 0.008, lens != Lens::Bare, seed),
+    )
+}
+
+/// The striped scenes with the false-colour stage against the CPU chain (R6..R8 and R1..R9, three patterns and
+/// lens kinds, Colour 50), all cases together: twice the first measured values on lavapipe (0 of 294 912 samples
+/// over 1e-4, 4 over 2e-5 (1.36e-5), largest 3.34e-5). The stage itself moves the picture by up to 2.3 there.
+const STRIPED_CHAIN: Limits = Limits {
+    over: 0.0,
+    fine: 2.72e-5,
+    largest: 6.7e-5,
+};
+/// Method A, the false-colour stage and R8 on the very planes the device demosaic made (R6..R8 against
+/// R6..R6) on the striped scenes: twice the first measured value (8.58e-6).
+const STRIPED_POST: f64 = 1.72e-5;
+
+#[test]
+fn the_false_colour_stage_on_stripes_matches_the_cpu_chain_and_its_tiles() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let (mut all, mut post, mut effect) = (Stats::default(), 0.0f64, f64::INFINITY);
+    let mut seed = 3300;
+    for (cfa, lens) in [
+        (Cfa::RGGB, Lens::Vignette),
+        (Cfa::GBRG, Lens::Full),
+        (Cfa::BGGR, Lens::Bare),
+    ] {
+        seed += 1;
+        let raw8 = striped_setup(cfa, lens, 50.0, seed);
+        let off = striped_setup(cfa, lens, 0.0, seed);
+        for setup in [raw8.clone(), raw8.clone().front()] {
+            let (ow, oh) = setup.output_size();
+            let out = Rect::whole(ow, oh);
+            let got = setup.gpu(dev, out);
+            let s = compare(&got, &setup.cpu(out));
+            let label = format!("striped {} {lens:?} {}", cfa.name(), setup.range.label());
+            s.print(&label);
+            all.add(&s);
+            if setup.range == StageRange::DEMOSAIC_TO_SHARPEN {
+                let p = compare(&got, &on_r6(&setup).gpu(dev, out));
+                post = post.max(p.max_abs);
+                // The stage does something on the stripes: the chain without it is another picture there.
+                let without = compare(&got, &off.gpu(dev, out));
+                effect = effect.min(without.max_abs);
+            }
+            assert_tiles_equal_whole(&label, ow, oh, 3, &[48, 100], |rect| {
+                setup.gpu(dev, rect).data
+            });
+        }
+    }
+    all.print("striped scenes with false colour, R6..R8 and R1..R9");
+    note!(
+        "[R6..R8] false colour on stripes against the CPU's stages on the same planes: largest {post:.3e}; the stage moves the picture by at least {effect:.3e}"
+    );
+    assert_within("striped scenes with false colour", &all, STRIPED_CHAIN);
+    assert!(post <= STRIPED_POST, "{post:e}");
+    assert!(
+        effect > 1e-2,
+        "the false-colour stage changed nothing: {effect:e}"
+    );
+}
+
+#[test]
+fn the_false_colour_stage_adds_its_eight_dispatches_and_colour_zero_drops_it() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let mut counts = Vec::new();
+    for color in [50.0f32, 0.0] {
+        let s = striped_setup(Cfa::RGGB, Lens::Vignette, color, 3401);
+        let (ow, oh) = s.output_size();
+        let out = Rect::new(9, 7, ow - 15, oh - 12);
+        let (ran, announced) = dev
+            .gpu
+            .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+                let runner = Announced {
+                    ctx,
+                    max: std::cell::Cell::new(0),
+                };
+                let before = ctx.counters();
+                s.device_chain()?
+                    .run_tile(&runner, &s.scene.raw(), out, cancel)?;
+                Ok((ctx.counters().since(before), runner.max.get()))
+            })
+            .expect("job");
+        // The announcement counts the demosaic at its most (14; without shadow colour matching it records
+        // fewer), every later step exactly.
+        assert!(
+            ran.dispatches as usize <= announced,
+            "Colour {color}: {ran:?} against {announced}"
+        );
+        assert_eq!((ran.submissions, ran.readbacks), (1, 1));
+        counts.push((ran.dispatches as usize, announced));
+    }
+    note!(
+        "[R6..R8] one striped tile: {} dispatches with the false-colour stage ({} announced), {} without ({})",
+        counts[0].0,
+        counts[0].1,
+        counts[1].0,
+        counts[1].1
+    );
+    for (with, without) in [(counts[0].0, counts[1].0), (counts[0].1, counts[1].1)] {
+        assert_eq!(with - without, ym_gpu::kernels::false_color::DISPATCHES);
     }
 }

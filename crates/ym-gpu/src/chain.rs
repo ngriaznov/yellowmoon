@@ -12,8 +12,9 @@
 //!   the CPU continues with R6's bilateral denoise, R7, R8 and R9.
 //! * R6 to R8 ([`StageRange::DEMOSAIC_TO_SHARPEN`]): the same hand-off, and the planes stay on
 //!   the device through the bilateral denoise, the R7 colour guided filter and detail re-injection
-//!   (or, in their place, the single-frame denoise of method A, `kernels::bm_dct`; methods B and C
-//!   read the whole frame and are refused) and R8 (Richardson-Lucy, or diffraction deconvolution) as
+//!   (or, in their place, the single-frame denoise of method A, `kernels::bm_dct`, and its
+//!   false-colour suppression, `kernels::false_color`; methods B and C read the whole frame and are
+//!   refused) and R8 (Richardson-Lucy, or diffraction deconvolution) as
 //!   one job with one readback; the CPU runs R9 on what comes back. The noise sigma of the stages is expanded on the device from the
 //!   photo's half-resolution plane ([`GpuChain::with_sigma`]), so the 200 MB full-resolution map of the
 //!   CPU chain is never built for this range.
@@ -71,6 +72,7 @@ use crate::kernels::bm_dct::{self, encode_frame_denoise};
 use crate::kernels::copy::{encode_copy_rect, encode_crop};
 use crate::kernels::detail::{encode_classical_luma, encode_inject_detail};
 use crate::kernels::diffraction::{PreparedDiffraction, encode_sharpen};
+use crate::kernels::false_color::{self, encode_false_color};
 use crate::kernels::guided::encode_guided;
 use crate::kernels::highlights::{OffsetReducer, Offsets, encode_highlights};
 use crate::kernels::lens::{LensTable, encode_lens};
@@ -755,6 +757,9 @@ enum PostStep {
         fd: FrameDenoise,
         dispatches: usize,
     },
+    /// R6's false-colour suppression after method A: R7's colour guided filter at `color` where the luma
+    /// alternates (`kernels::false_color`).
+    FalseColor { out: Rect, color: f32 },
 }
 
 impl PostStep {
@@ -763,7 +768,8 @@ impl PostStep {
             PostStep::Denoise { out, .. }
             | PostStep::Detail { out, .. }
             | PostStep::Sharpen { out, .. }
-            | PostStep::FrameDenoise { out, .. } => *out,
+            | PostStep::FrameDenoise { out, .. }
+            | PostStep::FalseColor { out, .. } => *out,
         }
     }
 }
@@ -790,8 +796,8 @@ pub struct RawWork {
 
 impl RawWork {
     /// The dispatches the work records at most (informational: the demosaic's up to 14, the sigma
-    /// plane, the denoise, the guided filter's 4 and 2 for the injection, method A's `2 + passes`,
-    /// Richardson-Lucy's `2 + 4 n`).
+    /// plane, the denoise, the guided filter's 4 and 2 for the injection, method A's `2 + passes`, the
+    /// false-colour suppression's 8, Richardson-Lucy's `2 + 4 n`).
     #[must_use]
     pub fn max_dispatches(&self) -> usize {
         let mut n = match &self.input {
@@ -811,6 +817,7 @@ impl RawWork {
                     SharpenKind::Diffraction(_) => 11,
                 },
                 PostStep::FrameDenoise { dispatches, .. } => *dispatches,
+                PostStep::FalseColor { .. } => false_color::DISPATCHES,
             };
         }
         n
@@ -1061,6 +1068,13 @@ impl RawWork {
                     // The method reads no sigma: the image it gets is the buffer the CPU stepper gives
                     // `FrameDenoise::apply`, placed in the frame, and it leaves the core.
                     let next = encode_frame_denoise(&mut passes, &cur, core, fd)?;
+                    keep.push(std::mem::replace(&mut cur, next));
+                    cur_rect = out;
+                }
+                PostStep::FalseColor { color, .. } => {
+                    // The sigma of R7's colour filter (scale 1), read where the stage's input sits.
+                    let next =
+                        encode_false_color(&mut passes, &cur, core, &sigma, sigma_origin, *color)?;
                     keep.push(std::mem::replace(&mut cur, next));
                     cur_rect = out;
                 }
@@ -1488,6 +1502,15 @@ impl<'a> GpuChain<'a> {
                             out,
                             fd,
                             dispatches: bm_dct::dispatches(input.w, input.h, place, &fd),
+                        });
+                    }
+                }
+                Stage::FalseColor { .. } => {
+                    // The CPU's stage returns its input at Colour 0 (and the chain does not list it then).
+                    if nr.color > 0.0 {
+                        steps.push(PostStep::FalseColor {
+                            out,
+                            color: nr.color,
                         });
                     }
                 }

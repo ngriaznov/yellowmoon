@@ -337,8 +337,12 @@ How the methods enter the raw chain (`docs/05-raw-processing.md` R6 and R7). The
   sums are added in the CPU's order, so a tile with the 23 px halo equals the whole frame bit for bit on the device
   too. The device works in `f32` against the reference's `f64`: away from a decision the output is within about
   2e-6 of the CPU's; a coefficient within rounding of `τ`, or two candidates within rounding of each other, can go
-  the other way (measured in `tests/gpu_bm_dct.rs` and `tests/gpu_chain.rs`). Methods B and C stay on the CPU: the
-  device chain refuses a whole-frame method, and the photo's raw chain then runs on the CPU.
+  the other way (measured in `tests/gpu_bm_dct.rs` and `tests/gpu_chain.rs`). The false-colour step follows it on
+  the device (`ym_gpu::kernels::false_color`, `shaders/false_color.wgsl`): R7's guided filter kernels (the CPU's
+  bits) and a gate of four passes (the luma of the working encoding; the alternation with its row sums; the column
+  sums and the root; the 5 × 5 maximum, the weight and the blend), within an ulp of the CPU's output (1.2e-7)
+  and with tiles equal to the whole frame bit for bit. Methods B and C stay on the CPU: the device chain refuses a
+  whole-frame method, and the photo's raw chain then runs on the CPU.
 
 ## Measurement
 
