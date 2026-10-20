@@ -129,6 +129,7 @@ describe("the docs agree on the dark glass decision (owner, 2026-10-16)", () => 
 
   it("STATUS does not call PAPER_SRGB a clear colour: the native pass clears to black and the colour is the window's", () => {
     expect(read("docs/STATUS.md")).not.toMatch(/native layer's clear colour/);
-    expect(read("src-tauri/src/native.rs")).toMatch(/wgpu::Color::BLACK/);
+    // The native viewport's pass is recorded in present.rs (shared with its test since 2026-10-19).
+    expect(read("src-tauri/src/present.rs")).toMatch(/wgpu::Color::BLACK/);
   });
 });
