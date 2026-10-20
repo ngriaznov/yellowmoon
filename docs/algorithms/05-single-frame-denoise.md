@@ -223,7 +223,14 @@ item is pinned by a test in `crates/ym-gpu/src/cpu/` (named in brackets).
   of one pass are always 24 px apart: the extra column (`x = W − 8`) in passes `j` by `y = 24 n + j s`, then the
   extra row (`y = H − 8`) in passes `i` by `x = 24 m + i s`, then the corner `(W − 8, H − 8)`.
 - *A-d Halo.* A pixel depends on the references whose group can cover it (corners within 15 px to the left and
-  above, 8 px to the right and below) and those read within 8 px of their own block: 23 px on each side.
+  above, 8 px to the right and below) and those read within 8 px of their own block: 23 px on each side. A
+  buffer that is a window of the frame computes only the references whose read span `[r − 8, r + 16)`, clipped
+  to the frame, lies inside it; the others reach only the margin the caller drops (22 px fails the tile test).
+- *A-e Details of the build.* "Raster order" of the passes is the y phase `j` outer, the x phase `i` inner. `R`
+  above 3 is read as 3, so the step stays positive. A channel is filtered when its `τ > 1e-6`. Inputs must be
+  finite (a distance that is not finite is not a candidate). The cosine table comes from `libm`, not the
+  platform's library, so the bits are the same on macOS and Linux; `2n/7 − 1` is computed as `(2n − 7)/7`, so
+  the window is exactly symmetric.
 
 **Methods B and C.**
 
@@ -246,9 +253,36 @@ item is pinned by a test in `crates/ym-gpu/src/cpu/` (named in brackets).
   `i, j < P / 2`, in raster order, then the extra column, row and corner of BC-d in passes of their own as in A-c,
   and the patches of a group in slot order (the reference first).
 
+- *BC-g Details of the build.* The depth is exact: the largest `n` with `base · 2^n ≤ min(W, H)`. `up` reads
+  `u = (x + 0.5) / 2 − 0.5` (weights 3/4 and 1/4, indices clamped), and the replacement is `up(D_k − level_k)`,
+  which equals `up(D_k) − up(level_k)` up to rounding (`up` is linear). The detector's `b` and `Wv` come from the
+  width of the level it reads (the coarsest); `v = max(0, box(g²) − box(g)²)`; its box filters mirror without
+  repeating the edge sample; the inset is `floor(c / 4)`; the candidate is the first minimum in raster order;
+  the penalty is read at `origin + floor(c / 2)`; ties of a score go to the smaller cell index; the region is
+  `[m − floor(c / 2), m − floor(c / 2) + c)`, clipped. Regions map onto a level by `round(edge · size)`; `μ_r` is
+  the mean over the whole region and the patch grid uses `a = min(width, height)` on both axes; a region with
+  `a < 2` is skipped. The two median passes read the matrix before each pass; the median of an even count is the
+  mean of the two middle values; Toeplitz averaging takes both triangles of a diagonal together, so the matrix
+  stays symmetric. A pivot that is not a number counts as failed; a failure leaves that group unfiltered for that
+  channel alone. Pass 2's `Cb` is about the basic patches' own mean, its `x̂` about the noisy mean, as written. A
+  channel of σ 0, a level under 2 px, and in method B a level whose `m_flat` is not positive, pass through; with
+  no region or no σ above 0 the input comes back bit for bit. `0.6^|i−j|` is a table and the powers come from
+  `libm`, so the bits are the same on every platform.
+- *BC-h Tiles, not yet.* Level `k` of a window starts at `x0 / 2^k`; the windows are clipped to the buffer, so a
+  tile does not equal the whole frame yet (a tile would also have to start on a multiple of `2^n`, and the
+  measurement would have to come from the whole frame). In the chain the methods read the whole frame
+  (*Integration*).
+- *BC-i What the measurement does on detail.* Method B's detector reads a level where noise dominates the local
+  variance (base 128), so on detailed photos its 52 px regions catch soft edges and its σ reads about 1.5 times
+  the truth (15 against 10 in 1/255 units on a natural synthetic scene; within 6 % on a smooth one). Method C's
+  26 px regions match the analytic noise within 2 %. This follows from the text, not from the build.
+
 **Appendix D.**
 
 - *D-a Rectangle.* The best region of the detector (lowest score), run as for method C (base 256), mapped to full
   resolution.
 - *D-b Blur.* 21 × 21 taps, σ 18.9, normalised, mirrored at the edges. The network itself is not part of this
   repository: no trained network exists (`docs/07`), so method D is the estimate alone.
+- *D-c Statistics.* Standard deviations are of the population (divided by N); σC is one standard deviation of
+  the Cb and Cr samples together. The detector picks the flattest cell, so on a frame whose short side is under
+  512 px (read at full resolution) σY reads about 8 % low; with one pyramid step it is within 3 %.
