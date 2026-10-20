@@ -62,7 +62,7 @@ fn render_json_says_apple_made_the_auto_values_and_what_it_answered() {
     assert_eq!(a["reason"], Value::Null);
     assert_eq!(a["model"], "Test advisor");
     assert_eq!(a["os"], "test");
-    assert_eq!(a["prompt"], 2);
+    assert_eq!(a["prompt"], 3);
     assert_eq!(a["table"], 2);
     assert_eq!(a["scene"], "Test picture");
     assert_eq!(a["plan"], "Test plan: You");
@@ -319,7 +319,7 @@ fn info_json_has_the_apple_auto_object_and_the_auto_values_in_effect() {
     assert_eq!(
         off["apple_auto"],
         json!({ "state": "off", "reason": null, "model": null, "os": null,
-                "instructions": null, "instructions_sha256": null, "prompt": 2, "table": 2 })
+                "instructions": null, "instructions_sha256": null, "prompt": 3, "table": 2 })
     );
     assert_eq!(off["auto_source"], "rule");
     if cfg!(not(target_os = "macos")) {
@@ -333,7 +333,7 @@ fn info_json_has_the_apple_auto_object_and_the_auto_values_in_effect() {
         assert_eq!(
             here["apple_auto"],
             json!({ "state": "unavailable", "reason": "not_a_mac", "model": null, "os": null,
-                    "instructions": null, "instructions_sha256": null, "prompt": 2, "table": 2 })
+                    "instructions": null, "instructions_sha256": null, "prompt": 3, "table": 2 })
         );
         assert_eq!(
             here["auto"]["apple"],
@@ -382,7 +382,7 @@ fn doctor_reports_apple_auto_and_the_model() {
         v["apple_auto"],
         json!({
             "available": true, "reason": null, "model": "Test advisor", "os": "test",
-            "preference": true, "prompt": 2, "table": 2,
+            "preference": true, "prompt": 3, "table": 2,
             "instructions": "default",
             "instructions_sha256": ym_core::apple_auto::InstructionsId::default().instructions_sha256,
         })
@@ -391,7 +391,7 @@ fn doctor_reports_apple_auto_and_the_model() {
     let report = text(&out.get_output().stdout);
     assert!(
         report.contains(
-            "Apple Auto         available · Apple Intelligence · Test advisor · macOS test · prompt 2 · table 2\n"
+            "Apple Auto         available · Apple Intelligence · Test advisor · macOS test · prompt 3 · table 2\n"
         ),
         "{report}"
     );
@@ -406,7 +406,7 @@ fn doctor_reports_apple_auto_and_the_model() {
             v["apple_auto"],
             json!({
                 "available": false, "reason": "not_a_mac", "model": null, "os": null,
-                "preference": true, "prompt": 2, "table": 2,
+                "preference": true, "prompt": 3, "table": 2,
                 "instructions": "default",
                 "instructions_sha256": ym_core::apple_auto::InstructionsId::default().instructions_sha256,
             })
@@ -502,7 +502,7 @@ fn an_export_records_which_auto_made_it_in_its_xmp() {
     assert!(xmp.contains("<ym:Auto>apple</ym:Auto>"), "ym:Auto");
     let sha = ym_core::apple_auto::InstructionsId::default().instructions_sha256;
     let want = format!(
-        r#"{{"instructions":"default","instructions_sha256":"{sha}","model":"Test advisor","os":"test","plan":"Test plan: You","prompt":2,"result":"answered","scene":"Test picture","steps":{{"blacks":null,"contrast":1,"exposure":-1,"highlight_color":null,"highlight_color_strength":null,"highlights":-1,"saturation":0,"shadow_color":"teal","shadow_color_strength":1,"shadows":0,"tint":null,"white":0}},"table":2}}"#
+        r#"{{"instructions":"default","instructions_sha256":"{sha}","model":"Test advisor","os":"test","plan":"Test plan: You","prompt":3,"result":"answered","scene":"Test picture","steps":{{"blacks":null,"contrast":1,"exposure":-1,"highlight_color":null,"highlight_color_strength":null,"highlights":-1,"saturation":0,"shadow_color":"teal","shadow_color_strength":1,"shadows":0,"tint":null,"white":0}},"table":2}}"#
     )
     .replace('"', "&quot;");
     assert!(

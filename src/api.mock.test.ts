@@ -1371,10 +1371,10 @@ describe("Apple Auto (docs/19)", () => {
       preference: true,
       mode: "from_preference",
       active: false,
-      prompt: 2,
+      prompt: 3,
       table: 2,
       instructions: "default",
-      instructions_sha256: "6a8a034fb24b",
+      instructions_sha256: "932b96907b63",
       own_instructions: "",
       default_instructions: MOCK_DEFAULT_INSTRUCTIONS,
       instructions_max_chars: 2000,
@@ -1425,12 +1425,12 @@ describe("Apple Auto (docs/19)", () => {
     const status = await api.appleAutoStatus();
     expect(status).toMatchObject({ instructions: "edited", own_instructions: "Moody night grade." });
     expect(status.instructions_sha256).toMatch(/^[0-9a-f]{12}$/);
-    expect(status.instructions_sha256).not.toBe("6a8a034fb24b");
+    expect(status.instructions_sha256).not.toBe("932b96907b63");
     const rs = await api.getSettings(1);
     expect(rs.estimates.apple).toMatchObject({ state: "answered", info: { instructions: "edited" } });
     const saved = await api.preferencesSet({ apple_auto_instructions: MOCK_DEFAULT_INSTRUCTIONS });
     expect(saved.apple_auto_instructions).toBe("");
-    expect(await api.appleAutoStatus()).toMatchObject({ instructions: "default", instructions_sha256: "6a8a034fb24b" });
+    expect(await api.appleAutoStatus()).toMatchObject({ instructions: "default", instructions_sha256: "932b96907b63" });
   });
 
   it("follows the preference at once and tells about every developed photo with settings_changed", async () => {

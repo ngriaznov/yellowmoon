@@ -1369,7 +1369,7 @@ fn the_status_and_the_preference_reach_the_session() {
                 "instructions": "default", "instructions_sha256": sha,
             },
             "preference": true, "mode": "from_preference", "active": true,
-            "prompt": 2, "table": 2,
+            "prompt": 3, "table": 2,
             "instructions": "default", "instructions_sha256": sha,
             "own_instructions": "",
             "default_instructions": ym_core::apple_auto::DEFAULT_INSTRUCTIONS,
@@ -1446,7 +1446,7 @@ fn exports_with_the_fake_carry_its_answer_and_are_the_same_bytes_twice() {
         assert_eq!(apple["scene"], json!("Test picture"));
         assert_eq!(
             (apple["prompt"].clone(), apple["table"].clone()),
-            (json!(2), json!(2))
+            (json!(3), json!(2))
         );
         assert_eq!(apple["plan"], json!("Test plan: You"));
         assert_eq!(apple["instructions"], json!("default"));
@@ -1523,7 +1523,7 @@ fn a_failed_photo_exports_with_the_rule_and_says_why() {
     assert_eq!(
         unescape(&xmp_property(&xmp, "ym:AppleAuto").unwrap()),
         format!(
-            r#"{{"instructions":"default","instructions_sha256":"{}","model":"Scripted","os":"27.0 (27A1)","prompt":2,"reason":"guardrail","result":"failed","table":2}}"#,
+            r#"{{"instructions":"default","instructions_sha256":"{}","model":"Scripted","os":"27.0 (27A1)","prompt":3,"reason":"guardrail","result":"failed","table":2}}"#,
             ym_core::apple_auto::InstructionsId::default().instructions_sha256
         )
     );

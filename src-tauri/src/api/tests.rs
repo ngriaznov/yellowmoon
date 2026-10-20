@@ -2026,7 +2026,7 @@ fn apple_auto_reaches_the_webview_through_the_settings_the_status_and_settings_c
         })
     );
     assert_eq!(status.mode, AppleAutoMode::FromPreference);
-    assert_eq!((status.prompt, status.table), (2, 2));
+    assert_eq!((status.prompt, status.table), (3, 2));
     assert_eq!(status.own_instructions, "");
     assert_eq!(
         status.default_instructions,

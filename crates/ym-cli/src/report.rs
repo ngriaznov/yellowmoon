@@ -531,7 +531,7 @@ mod tests {
             json!({
                 "state": "answered", "reason": null, "model": "AFM 3 Core", "os": "27.0.1 (27A404)",
                 "instructions": "default", "instructions_sha256": sha,
-                "prompt": 2, "table": 2,
+                "prompt": 3, "table": 2,
                 "steps": {
                     "exposure": 1, "highlights": null, "shadows": null, "blacks": null,
                     "contrast": 1, "white": -1, "tint": null, "saturation": 0,
@@ -548,7 +548,7 @@ mod tests {
         assert_eq!(
             v,
             json!({ "state": "unavailable", "reason": "not_a_mac", "model": null, "os": null,
-                    "instructions": null, "instructions_sha256": null, "prompt": 2, "table": 2 })
+                    "instructions": null, "instructions_sha256": null, "prompt": 3, "table": 2 })
         );
         let v = apple_auto_value(&AppleAuto::Failed {
             kind: FailureKind::RateLimited,
@@ -567,7 +567,7 @@ mod tests {
         assert_eq!(
             apple_auto_value(&AppleAuto::Off),
             json!({ "state": "off", "reason": null, "model": null, "os": null,
-                    "instructions": null, "instructions_sha256": null, "prompt": 2, "table": 2 })
+                    "instructions": null, "instructions_sha256": null, "prompt": 3, "table": 2 })
         );
     }
 

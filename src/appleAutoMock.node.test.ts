@@ -8,9 +8,9 @@ import { APPLE_TABLE, MOCK_DEFAULT_INSTRUCTIONS, MOCK_DEFAULT_INSTRUCTIONS_SHA25
 
 const source = readFileSync(new URL("../crates/ym-core/src/apple_auto.rs", import.meta.url), "utf8");
 
-/** The value of `pub const NAME: type = <value>;` in the Rust source, as written. */
+/** The value of `pub const NAME: type = <value>;` in the Rust source, as written: a whole string literal (which may hold `;`), or what comes before the `;`. */
 function rustConst(name: string): string {
-  const match = new RegExp(`pub const ${name}: [\\w&' ]+ = ([^;]+);`).exec(source);
+  const match = new RegExp(`pub const ${name}: [\\w&' ]+ = ("(?:[^"\\\\]|\\\\.)*"|[^;]+);`).exec(source);
   if (!match?.[1]) throw new Error(`${name} is not a constant of apple_auto.rs`);
   return match[1].trim();
 }

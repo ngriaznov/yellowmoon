@@ -16,16 +16,17 @@ use sha2::{Digest, Sha256};
 /// The version of the prompt and the answer's schema the bridge sends (`docs/19` section 4). Part
 /// of "version" under hard rule 8: change it whenever the words or the schema change. Version 1
 /// asked for four small corrections; version 2 asks the model to grade the photo (the owner's
-/// direction of 2026-10-19, `docs/16`).
-pub const PROMPT_VERSION: u32 = 2;
+/// direction of 2026-10-19, `docs/16`); version 3 has the owner's own default instructions of
+/// 2026-10-20 (a finished base look with no style, `docs/19` section 4).
+pub const PROMPT_VERSION: u32 = 3;
 
 /// The version of [`TABLE`] (`docs/19` section 5). Change it whenever a value of the table changes.
 pub const TABLE_VERSION: u32 = 2;
 
 /// The instructions the model reads before each photo unless the person wrote their own in
-/// Preferences (`docs/19` sections 2 and 4, prompt version 2; the `apple_auto_instructions`
+/// Preferences (`docs/19` sections 2 and 4, prompt version 3; the `apple_auto_instructions`
 /// preference). A test (`crates/ym-apple/src/source_tests.rs`) checks it against `docs/19`.
-pub const DEFAULT_INSTRUCTIONS: &str = "You are a professional colourist grading raw photos. The picture you see is the camera's neutral starting point, not a finished photo. Grade it into a finished, professional photograph, and give it a cinematic look when the scene invites it: dusk and night streets, fog and rain, dramatic or directional light, people in a mood. Work like a colourist: set the brightness of the subject, shape the highlights, the shadows and the black level, set the contrast, the warmth and tint of the light and the strength of the colours, and colour the shadows and the highlights when it serves the mood. A professional grade usually changes several of these. Respect the scene: a night scene stays dark, snow stays bright, a silhouette stays dark, candlelight and golden hour stay warm, and skin stays natural.";
+pub const DEFAULT_INSTRUCTIONS: &str = "You are a master colorist grading a raw, neutral camera file inside a RAW processor built on an ARRI color pipeline. Your goal is to transform this flat starting point into the best finished, professional photograph the source, light, subject and scene allow, honoring ARRI's signature color science. This is the base look. Add no style: the shadow colour and highlight colour must be none (the light is already correct), and no mood.\n1. Analyze & Respect the Scene\nPreserve the natural logic of the light. Night scenes stay dark; snow and high-key scenes stay bright; silhouettes stay dark; candlelight and golden hour stay warm. Keep skin tones natural, organic and true to life.\n2. Execute a Comprehensive Grade\nDo not rely on a single adjustment; a finished grade usually changes several controls, each chosen for what this picture needs:\n* Exposure & Tone: set the subject's brightness to guide the eye; brighten a subject that is too dark, hold one that is well lit, never darken a dark photo, and keep night scenes and silhouettes dark. Bring bright skies and whites down for smooth ARRI-style highlight roll-off. Bright sky, clouds, white clothes or lights: highlights darker for roll-off. Shadows brighter only where dark areas hide real detail; leave them when the shadows already show detail. Blacks deeper only if the picture looks hazy or milky; if the blacks are already deep and clean, leave them.\n* Contrast: deliberate dynamic range that fits the light: more for flat or hazy light, less for harsh light, with rich midtone detail.\n* Color Balance & Density: neutral whites, accurate warmth and tint, fixing casts. Saturation true and dense, neither boosted nor washed out.";
 
 /// The longest instructions the model is given, in characters (Unicode scalar values): the
 /// on-device model's context holds the picture and the answer's form too (`docs/19` section 2).
@@ -481,7 +482,7 @@ impl AdvisorInfo {
     }
 
     /// The version string of `docs/19` section 7:
-    /// `Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 2 · table 2`, with
+    /// `Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 3 · table 2`, with
     /// ` · edited instructions (<12 hex digits>)` when the person wrote their own.
     #[must_use]
     pub fn version_string(&self) -> String {
@@ -887,8 +888,8 @@ impl AppleAuto {
     ///
     /// ```text
     /// {"instructions":"default","instructions_sha256":"…","model":"AFM 3 Core","os":"27.0.1 (27A404)",
-    ///  "plan":"…","prompt":2,"result":"answered","scene":"…","steps":{"blacks":null,"contrast":1,…},"table":2}
-    /// {"instructions":"default","instructions_sha256":"…","model":"…","os":"…","prompt":2,
+    ///  "plan":"…","prompt":3,"result":"answered","scene":"…","steps":{"blacks":null,"contrast":1,…},"table":2}
+    /// {"instructions":"default","instructions_sha256":"…","model":"…","os":"…","prompt":3,
     ///  "reason":"rate_limited","result":"failed","table":2}
     /// ```
     #[must_use]
@@ -1020,7 +1021,7 @@ impl Activity {
 
 /// What the app's Preferences and `ym doctor` show about Apple Auto (`docs/19` sections 1, 2 and 8).
 /// JSON, snake_case: `{ "available": true, "reason": null, "info": { "model": "…", "os": "…", … },
-/// "preference": true, "mode": "from_preference", "active": true, "prompt": 2, "table": 2,
+/// "preference": true, "mode": "from_preference", "active": true, "prompt": 3, "table": 2,
 /// "instructions": "default", "instructions_sha256": "…", "own_instructions": "",
 /// "default_instructions": "…", "instructions_max_chars": 2000 }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1675,14 +1676,14 @@ mod tests {
         let info = AdvisorInfo::new("AFM 3 Core", "27.0.1 (27A404)");
         assert_eq!(
             info.version_string(),
-            "Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 2 · table 2"
+            "Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 3 · table 2"
         );
         let edited = info.with_instructions("Make it moody.");
         let digest = edited.instructions.instructions_sha256.clone();
         assert_eq!(
             edited.version_string(),
             format!(
-                "Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 2 · table 2 · edited instructions ({digest})"
+                "Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 3 · table 2 · edited instructions ({digest})"
             )
         );
     }
@@ -1765,7 +1766,7 @@ mod tests {
         assert_eq!(
             answered.xmp_json().unwrap(),
             format!(
-                r#"{{"instructions":"default","instructions_sha256":"{sha}","model":"AFM 3 Core","os":"27.0.1 (27A404)","plan":"Teal shadows, warm skin","prompt":2,"result":"answered","scene":"Backlit portrait \"at\" dusk","steps":{{"blacks":null,"contrast":1,"exposure":1,"highlight_color":null,"highlight_color_strength":null,"highlights":null,"saturation":0,"shadow_color":"teal","shadow_color_strength":2,"shadows":null,"tint":null,"white":-1}},"table":2}}"#
+                r#"{{"instructions":"default","instructions_sha256":"{sha}","model":"AFM 3 Core","os":"27.0.1 (27A404)","plan":"Teal shadows, warm skin","prompt":3,"result":"answered","scene":"Backlit portrait \"at\" dusk","steps":{{"blacks":null,"contrast":1,"exposure":1,"highlight_color":null,"highlight_color_strength":null,"highlights":null,"saturation":0,"shadow_color":"teal","shadow_color_strength":2,"shadows":null,"tint":null,"white":-1}},"table":2}}"#
             )
         );
         let failed = AppleAuto::Failed {
@@ -1777,7 +1778,7 @@ mod tests {
         assert_eq!(
             failed.xmp_json().unwrap(),
             format!(
-                r#"{{"instructions":"edited","instructions_sha256":"{edited}","model":"AFM 3 Core","os":"27.0.1 (27A404)","prompt":2,"reason":"rate_limited","result":"failed","table":2}}"#
+                r#"{{"instructions":"edited","instructions_sha256":"{edited}","model":"AFM 3 Core","os":"27.0.1 (27A404)","prompt":3,"reason":"rate_limited","result":"failed","table":2}}"#
             )
         );
         for none in [

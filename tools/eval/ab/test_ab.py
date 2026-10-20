@@ -41,7 +41,7 @@ FORBIDDEN_VISIBLE_WORDS = (r"\brule\b", r"\bauto\b", r"\bwhite\b", r"\bapple\b",
 MODEL = "AFM 3 Core"
 MACOS = "27.0.1 (27A404)"
 #: The digest of the default instructions as the fake `ym` reports it.
-DEFAULT_SHA = "6a8a034fb24b"
+DEFAULT_SHA = "932b96907b63"
 
 
 def S(
@@ -85,7 +85,7 @@ args = sys.argv[1:]
 log = os.environ.get("FAKE_YM_LOG")
 MODEL = "AFM 3 Core"
 MACOS = "27.0.1 (27A404)"
-DEFAULT_SHA = "6a8a034fb24b"
+DEFAULT_SHA = "932b96907b63"
 FIELDS = ["exposure", "highlights", "shadows", "blacks", "contrast", "white", "tint", "saturation", "shadow_color",
           "shadow_color_strength", "highlight_color", "highlight_color_strength"]
 
@@ -136,10 +136,10 @@ if args[:1] == ["doctor"]:
     reason = os.environ.get("FAKE_YM_UNAVAILABLE", "")
     if reason:
         apple = {"available": False, "reason": reason, "model": None, "os": None, "preference": True,
-                 "prompt": 2, "table": 2, "instructions": "default", "instructions_sha256": DEFAULT_SHA}
+                 "prompt": 3, "table": 2, "instructions": "default", "instructions_sha256": DEFAULT_SHA}
     else:
         apple = {"available": True, "reason": None, "model": MODEL, "os": MACOS, "preference": True,
-                 "prompt": 2, "table": 2, "instructions": "default", "instructions_sha256": DEFAULT_SHA}
+                 "prompt": 3, "table": 2, "instructions": "default", "instructions_sha256": DEFAULT_SHA}
     print(json.dumps({"apple_auto": apple, "version": "9.9.9"}))
     sys.exit(0)
 if args[:1] == ["info"]:
@@ -177,11 +177,11 @@ if args[:1] == ["render"]:
         auto_apple = {"state": "off"}
     elif stem in stems("FAKE_YM_APPLE_FAIL"):
         auto_apple = {"state": "failed", "kind": "timeout", "message": "no answer", "info": info}
-        apple_auto = {"state": "failed", "reason": "timeout", "model": MODEL, "os": MACOS, "prompt": 2, "table": 2,
+        apple_auto = {"state": "failed", "reason": "timeout", "model": MODEL, "os": MACOS, "prompt": 3, "table": 2,
                       **ids}
     elif stem in stems("FAKE_YM_APPLE_OTHER"):
         auto_apple = {"state": "failed", "kind": "other", "message": "Something odd happened", "info": info}
-        apple_auto = {"state": "failed", "reason": "other", "model": MODEL, "os": MACOS, "prompt": 2, "table": 2,
+        apple_auto = {"state": "failed", "reason": "other", "model": MODEL, "os": MACOS, "prompt": 3, "table": 2,
                       **ids}
     elif stem in stems("FAKE_YM_APPLE_GONE"):
         auto_apple = {"state": "unavailable", "reason": "apple_intelligence_off"}
@@ -193,7 +193,7 @@ if args[:1] == ["render"]:
         scene = "Scene of " + stem
         plan = "Plan for " + stem
         auto_apple = {"state": "answered", "answer": {"steps": named, "scene": scene, "plan": plan}, "info": info}
-        apple_auto = {"state": "answered", "reason": None, "model": MODEL, "os": MACOS, "prompt": 2, "table": 2,
+        apple_auto = {"state": "answered", "reason": None, "model": MODEL, "os": MACOS, "prompt": 3, "table": 2,
                       **ids, "steps": named, "scene": scene, "plan": plan}
         applied = [named[name] or 0 for name in ("exposure", "white", "contrast", "saturation")]
         if named["shadow_color"] not in (None, "none") and named["shadow_color_strength"]:
@@ -889,7 +889,7 @@ class PrepareTests(PrepareHarness):
         apple = result.plan["provenance"]["apple_auto"]  # type: ignore[index]
         self.assertEqual(
             apple,
-            {"available": True, "reason": None, "model": MODEL, "os": MACOS, "prompt": 2, "table": 2,
+            {"available": True, "reason": None, "model": MODEL, "os": MACOS, "prompt": 3, "table": 2,
              "instructions": "default", "instructions_sha256": DEFAULT_SHA},
         )
         self.assertEqual(result.plan["provenance"]["ym"], "ym 9.9.9-test (pipeline 0.0.0, fake)")  # type: ignore[index]
@@ -1235,7 +1235,7 @@ class CommandLineTests(PrepareHarness):
             code, text, _ = self.run_main(self.prepare_argv())
         self.assertEqual(code, 0)
         self.assertIn(
-            f"Apple Auto: {MODEL} · macOS {MACOS} · prompt 2 · table 2 · instructions default ({DEFAULT_SHA})", text
+            f"Apple Auto: {MODEL} · macOS {MACOS} · prompt 3 · table 2 · instructions default ({DEFAULT_SHA})", text
         )
         self.assertIn("photos: 6 found, 4 in the test", text)
         self.assertIn("Apple Auto left 1 of 6 photos as they were: they give no trial.", text)

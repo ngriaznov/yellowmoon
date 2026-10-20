@@ -316,7 +316,7 @@ fn apple_auto_value(s: &AppleAutoStatus) -> Value {
 }
 
 /// The `Apple Auto` row: `available · Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) ·
-/// prompt 2 · table 2` (with `· edited instructions (<digest>)` when the person wrote their own, and
+/// prompt 3 · table 2` (with `· edited instructions (<digest>)` when the person wrote their own, and
 /// `· turned off in Preferences` when the preference is off), or `not available (this is not a
 /// Mac)`.
 fn apple_auto_text(s: &AppleAutoStatus) -> String {
@@ -633,7 +633,7 @@ mod tests {
     fn the_apple_auto_row_names_the_model_or_why_not() {
         assert_eq!(
             apple_auto_text(&status(true, true, "")),
-            "available · Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 2 · table 2"
+            "available · Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 3 · table 2"
         );
         assert!(
             apple_auto_text(&status(true, false, ""))
@@ -643,7 +643,7 @@ mod tests {
         assert_eq!(
             apple_auto_text(&status(true, true, "Moody.")),
             format!(
-                "available · Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 2 · table 2 · edited instructions ({edited})"
+                "available · Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 3 · table 2 · edited instructions ({edited})"
             )
         );
         assert_eq!(
@@ -654,13 +654,13 @@ mod tests {
         assert_eq!(
             apple_auto_value(&status(false, true, "")),
             json!({ "available": false, "reason": "macos_too_old", "model": null, "os": null,
-                    "preference": true, "prompt": 2, "table": 2,
+                    "preference": true, "prompt": 3, "table": 2,
                     "instructions": "default", "instructions_sha256": sha })
         );
         assert_eq!(
             apple_auto_value(&status(true, false, "Moody.")),
             json!({ "available": true, "reason": null, "model": "AFM 3 Core", "os": "27.0.1 (27A404)",
-                    "preference": false, "prompt": 2, "table": 2,
+                    "preference": false, "prompt": 3, "table": 2,
                     "instructions": "edited", "instructions_sha256": edited })
         );
     }

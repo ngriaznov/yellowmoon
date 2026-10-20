@@ -68,7 +68,7 @@ step 4 (for step 2: `YELLOWMOON_DATA=data target/release/ym doctor`).
 
     ~/Applications/Yellowmoon.app/Contents/MacOS/ym doctor
 
-The row **Apple Auto** should read `available · Apple Intelligence · <model> · macOS 27… · prompt 2 · table 2`, with
+The row **Apple Auto** should read `available · Apple Intelligence · <model> · macOS 27… · prompt 3 · table 2`, with
 the instructions it reads (`default`, or `edited` when you changed them in Preferences). If it
 adds "turned off in Preferences", that is fine: the test turns Apple Auto on for its own renders. If it says
 `not available (…)`, the words in brackets say what to change, for example "Apple Intelligence is off in System

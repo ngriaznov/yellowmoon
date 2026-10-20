@@ -908,7 +908,7 @@ mod tests {
             call(&window, "apple_auto_status", json!({})).expect("apple_auto_status"),
             json!({
                 "available": false, "reason": null, "info": null, "preference": true,
-                "mode": "from_preference", "active": false, "prompt": 2, "table": 2,
+                "mode": "from_preference", "active": false, "prompt": 3, "table": 2,
                 "instructions": "default",
                 "instructions_sha256": ym_core::apple_auto::InstructionsId::default().instructions_sha256,
                 "own_instructions": "",

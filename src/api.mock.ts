@@ -1405,7 +1405,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       preference: preferences.apple_auto,
       mode: "from_preference",
       active: available && preferences.apple_auto,
-      prompt: 2,
+      prompt: 3,
       table: 2,
       ...mockInstructionsId(preferences.apple_auto_instructions),
       own_instructions: preferences.apple_auto_instructions,

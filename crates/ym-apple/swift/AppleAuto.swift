@@ -25,10 +25,10 @@ import ImageIO
 
 /// The version of the prompt and the answer's schema (docs/19 section 4). It must equal
 /// `ym_core::apple_auto::PROMPT_VERSION`; a test (src/source_tests.rs) compares them. Change both whenever the
-/// prompt, the options, or the answer's types, fields, guides or cases change.
-let promptVersion = 2
+/// prompt, the options, the answer's types, fields, guides or cases, or the core's default instructions change.
+let promptVersion = 3
 
-/// The words of the prompt, followed by the picture (docs/19 section 4, prompt version 2).
+/// The words of the prompt, followed by the picture (docs/19 section 4, prompt version 3).
 let promptText = "Grade this photo."
 
 /// The codes of ym_apple_auto_availability (docs/19 section 11).

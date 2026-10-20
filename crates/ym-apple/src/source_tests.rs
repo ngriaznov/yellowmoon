@@ -123,11 +123,21 @@ fn coded_cases(cell: &str) -> Vec<(String, i32)> {
 
 fn request(spec: &str) -> Request {
     let s = section(spec, 4);
-    let instructions = s
-        .lines()
-        .find_map(|l| l.strip_prefix("> "))
-        .expect("section 4 quotes the instructions")
-        .to_owned();
+    // The default instructions run over several lines, so section 4 gives them in a ```text block,
+    // its lines joined with a line feed.
+    let mut after_fence = s.lines().skip_while(|l| l.trim() != "```text");
+    assert!(
+        after_fence.next().is_some(),
+        "section 4 gives the instructions in a ```text block"
+    );
+    let instructions = after_fence
+        .take_while(|l| l.trim() != "```")
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        s.matches("```text").count() == 1,
+        "section 4 has one ```text block, the instructions"
+    );
     let prompt = s
         .lines()
         .find_map(|l| l.strip_prefix("**Prompt:** \""))
