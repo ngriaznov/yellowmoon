@@ -372,7 +372,7 @@ pub enum UnavailableReason {
 
 impl UnavailableReason {
     /// The reason in words, for `ym` and the logs ("Apple Auto is not available on this computer
-    /// (<words>).").
+    /// (`<words>`).").
     #[must_use]
     pub fn words(self) -> &'static str {
         match self {
