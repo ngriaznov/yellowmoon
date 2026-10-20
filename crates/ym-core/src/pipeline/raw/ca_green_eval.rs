@@ -160,8 +160,16 @@ fn build(
         height: frame.height / 2,
         data: vec![0.01; (frame.width / 2) * (frame.height / 2)],
     };
-    let full = FullChain::with_method(&frame, &plan, params, &sigma, method, &CancelToken::new())
-        .expect("full chain");
+    let full = FullChain::with_method(
+        &frame,
+        &plan,
+        params,
+        &sigma,
+        method,
+        DEFAULT_DENOISE,
+        &CancelToken::new(),
+    )
+    .expect("full chain");
     (frame, plan, full)
 }
 
@@ -715,6 +723,7 @@ fn ca_green_real_files_residual() {
             &params,
             &sigma,
             Method::AdaptiveRatio,
+            DEFAULT_DENOISE,
             &cancel,
         )
         .expect("chain");

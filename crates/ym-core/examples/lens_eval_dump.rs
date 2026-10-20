@@ -199,8 +199,16 @@ fn main() {
         // same chain with the CA left in R9 (the order before R5b) and with no CA correction at all.
         let cancel = CancelToken::new();
         let sigma = sigma_plane(&frame, &plan, &params, &cancel).expect("sigma");
-        let mut full =
-            FullChain::with_method(&frame, &plan, &params, &sigma, method, &cancel).expect("chain");
+        let mut full = FullChain::with_method(
+            &frame,
+            &plan,
+            &params,
+            &sigma,
+            method,
+            ym_gpu::cpu::frame_denoise::DEFAULT_DENOISE,
+            &cancel,
+        )
+        .expect("chain");
         let whole = Rect::new(0, 0, full.out_w, full.out_h);
         let shipped = full.run_tile(&frame, whole).expect("chain");
         write_f32(

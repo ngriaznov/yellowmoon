@@ -71,7 +71,18 @@ impl DenoiseMethod {
     pub const fn needs_whole_frame(self) -> bool {
         matches!(self, DenoiseMethod::NlBayesRgb | DenoiseMethod::NlBayesYcc)
     }
+
+    /// Whether the device chain has a kernel for the method; a render with another one runs its raw chain on
+    /// the CPU (as with a demosaic method the device does not run).
+    #[must_use]
+    pub const fn runs_on_device(self) -> bool {
+        matches!(self, DenoiseMethod::Bilateral)
+    }
 }
+
+/// The denoise of every full-resolution render: method A (`docs/05` R6, `docs/algorithms/05` section
+/// *Integration*; the owner's decision of 2026-10-20 on the measurement).
+pub const DEFAULT_DENOISE: DenoiseMethod = DenoiseMethod::BmDct;
 
 /// Method A's luma threshold in standard deviations of the photo's luma noise (`kL`), measured by
 /// `examples/denoise_gate.rs` (the median of the five ISO-like levels' best on Kodak; within 0.12 dB of the best
@@ -110,11 +121,18 @@ pub fn working_noise(model: &NoiseModel, g0: [f32; 3]) -> (f64, f64) {
     // d/dx srgb(g x) at grey, numerically (the curve is smooth there).
     let h = 1e-6;
     let slope = (srgb_encode(g * (x + h)) - srgb_encode(g * (x - h))) / (2.0 * h);
+    // A model with a number that is not finite is no noise (the caller passes a usable model; this keeps the
+    // strengths finite whatever it gets).
+    let (a, b) = if model.a.is_finite() && model.b.is_finite() {
+        (model.a.max(0.0), model.b.max(0.0))
+    } else {
+        (0.0, 0.0)
+    };
     let var: Vec<f64> = g0
         .iter()
         .map(|&gc| {
-            let gc = f64::from(gc);
-            (gc * model.a * x + gc * gc * model.b).max(0.0) * slope * slope
+            let gc = if gc.is_finite() { f64::from(gc) } else { 0.0 };
+            (gc * a * x + gc * gc * b) * slope * slope
         })
         .collect();
     let weigh =
@@ -142,7 +160,9 @@ pub struct FrameDenoise {
 
 impl FrameDenoise {
     /// The stage for `method` and the photo's controls, ISO, noise model and gains (module documentation);
-    /// `None` for [`DenoiseMethod::Bilateral`].
+    /// `None` for [`DenoiseMethod::Bilateral`] and when the strengths make the method an identity (Luminance and
+    /// Colour at 0, or a photo without noise), so that the chain then has no stage, as it has no bilateral at
+    /// strength 0, and the encoding's round trip does not touch the pixels.
     #[must_use]
     pub fn resolve(
         method: DenoiseMethod,
@@ -165,13 +185,26 @@ impl FrameDenoise {
             DenoiseMethod::NlBayesRgb => (NL_BAYES_RGB_L * r, 0.0),
             DenoiseMethod::NlBayesYcc => (NL_BAYES_YCC_L * r, NL_BAYES_YCC_C * c),
         };
-        Some(FrameDenoise {
+        let fd = FrameDenoise {
             method,
             luma: luma.clamp(0.0, 100.0),
             chroma: chroma.clamp(0.0, 100.0),
             radius: RADIUS,
             blend: f64::from(nr.beta()) * 100.0,
-        })
+        };
+        (!fd.is_identity()).then_some(fd)
+    }
+
+    /// Whether the method leaves every pixel as it is at these strengths: method A filters a channel only when
+    /// its threshold is above 1e-6 (`bm_dct`), methods B and C pass a channel of σ 0 through (`nl_bayes`).
+    #[must_use]
+    pub fn is_identity(&self) -> bool {
+        match self.method {
+            DenoiseMethod::Bilateral => true,
+            DenoiseMethod::BmDct => 0.1 * self.luma <= 1e-6 && 0.06 * self.chroma <= 1e-6,
+            DenoiseMethod::NlBayesRgb => self.luma <= 0.0,
+            DenoiseMethod::NlBayesYcc => self.luma <= 0.0 && self.chroma <= 0.0,
+        }
     }
 
     /// Context on each side that a tile needs, `None` for the whole frame.
@@ -282,6 +315,33 @@ mod tests {
         );
         assert_eq!(at(auto_l, 0.0, 50.0, DenoiseMethod::NlBayesYcc).chroma, 0.0);
         assert_eq!(at(0.0, 50.0, 50.0, DenoiseMethod::BmDct).luma, 0.0);
+        // Luminance and Colour at 0 (or no noise) leave no stage at all.
+        for m in [
+            DenoiseMethod::BmDct,
+            DenoiseMethod::NlBayesRgb,
+            DenoiseMethod::NlBayesYcc,
+        ] {
+            let nr = NoiseReduction {
+                luminance: 0.0,
+                color: 0.0,
+                detail: 50.0,
+            };
+            assert_eq!(
+                FrameDenoise::resolve(m, &nr, 1600.0, &model, g0),
+                None,
+                "{m:?}"
+            );
+        }
+        assert_eq!(
+            FrameDenoise::resolve(
+                DenoiseMethod::BmDct,
+                &auto(1600.0),
+                1600.0,
+                &NoiseModel::new(0.0, 0.0),
+                g0
+            ),
+            None
+        );
         // Detail 0 is no blend, 100 the 60 % of today's rule.
         assert_eq!(at(auto_l, 50.0, 0.0, DenoiseMethod::BmDct).blend, 0.0);
         assert!((at(auto_l, 50.0, 100.0, DenoiseMethod::BmDct).blend - 60.0).abs() < 1e-4);

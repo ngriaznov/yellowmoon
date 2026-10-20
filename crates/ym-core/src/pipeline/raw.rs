@@ -42,6 +42,7 @@ use ym_gpu::cpu::chain::{Chain, Prepared, RawFrame};
 use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
 use ym_gpu::cpu::denoise::{self, BilateralParams};
 use ym_gpu::cpu::detail::{self, NoiseReduction};
+use ym_gpu::cpu::frame_denoise::{DEFAULT_DENOISE, DenoiseMethod, FrameDenoise};
 use ym_gpu::cpu::highlights::{self, OffsetAccumulator};
 use ym_gpu::cpu::lens::{LensGeometry, LensSwitches, LensTags};
 use ym_gpu::cpu::normalize::{self, Levels};
@@ -1441,10 +1442,20 @@ impl FullChain {
         sigma: impl SharedSigma,
         cancel: &CancelToken,
     ) -> Result<Self, RenderError> {
-        Self::with_method(frame, plan, params, sigma, DEFAULT_METHOD, cancel)
+        Self::with_method(
+            frame,
+            plan,
+            params,
+            sigma,
+            DEFAULT_METHOD,
+            DEFAULT_DENOISE,
+            cancel,
+        )
     }
 
-    /// [`FullChain::new`] with the R6 demosaic `method`: the renderer passes
+    /// [`FullChain::new`] with the R6 demosaic `method` and the R6 denoise `denoise` (the single-frame
+    /// method from the photo's controls, ISO, noise model and gains, [`FrameDenoise::resolve`]; the
+    /// bilateral for [`DenoiseMethod::Bilateral`]): the renderer passes
     /// [`RenderOptions::demosaic`](super::graph::RenderOptions::demosaic). The chain gets the R4
     /// gains and the noise model of `params`, which the adaptive ratio demosaic reads; it undoes R4
     /// on each tile itself (`Chain::run_tile`), so every method returns the balanced image.
@@ -1460,6 +1471,7 @@ impl FullChain {
         params: &RawParams,
         sigma: impl SharedSigma,
         method: Method,
+        denoise: DenoiseMethod,
         cancel: &CancelToken,
     ) -> Result<Self, RenderError> {
         debug_assert!(!frame.reduced);
@@ -1477,7 +1489,17 @@ impl FullChain {
             highlight_recovery: params.highlight_recovery && plan.has_clipped,
             method,
             denoise: (scale > 0.0).then(BilateralParams::default),
-            frame_denoise: None,
+            // The single-frame denoise of `docs/algorithms/05` in place of the bilateral and R7
+            // (`None` for the bilateral, which is the two stages above).
+            frame_denoise: FrameDenoise::resolve(
+                denoise,
+                &params.noise_reduction,
+                params.iso,
+                // An unusable model is zero noise here too (`usable_noise_model`), as for the
+                // sigma map and the demosaic.
+                &usable_noise_model(&params.noise),
+                params.g0,
+            ),
             noise_reduction: params.noise_reduction,
             iso: params.iso,
             sigma: 0.0,
@@ -2664,8 +2686,16 @@ mod tests {
             params.noise = model;
             let plan = RawPlan::new(&raw, &frame, &params).expect("plan");
             let build = |method: Method| {
-                FullChain::with_method(&frame, &plan, &params, &sigma, method, &CancelToken::new())
-                    .expect("chain")
+                FullChain::with_method(
+                    &frame,
+                    &plan,
+                    &params,
+                    &sigma,
+                    method,
+                    DEFAULT_DENOISE,
+                    &CancelToken::new(),
+                )
+                .expect("chain")
             };
             let full = build(Method::AdaptiveRatio);
             let c = &full.chain;
@@ -2760,6 +2790,7 @@ mod tests {
             &params,
             &sigma,
             Method::AdaptiveRatio,
+            DEFAULT_DENOISE,
             &CancelToken::new(),
         );
         assert!(matches!(refused, Err(RenderError::Image(m)) if m.contains("adaptive ratio")));
@@ -2770,6 +2801,7 @@ mod tests {
             &params,
             &sigma,
             Method::Menon,
+            DEFAULT_DENOISE,
             &CancelToken::new(),
         )
         .expect("Menon runs");
@@ -2988,8 +3020,17 @@ mod tests {
         // Odd sizes: the last photosite column and row read the last cell.
         let (w, h) = (161u32, 121u32);
         let (frame, plan, sigma, params) = full_chain_with_every_stage(w, h);
-        let full = FullChain::new(&frame, &plan, &params, &sigma, &CancelToken::new())
-            .expect("full chain");
+        // The bilateral denoise and R7 read the sigma map (method A does not): this is their chain.
+        let full = FullChain::with_method(
+            &frame,
+            &plan,
+            &params,
+            &sigma,
+            DEFAULT_METHOD,
+            DenoiseMethod::Bilateral,
+            &CancelToken::new(),
+        )
+        .expect("full chain");
         // Nothing but the half plane is held, and the chain the device walks has no map.
         assert!(!full.sigma_map_built());
         assert_eq!(full.bytes(), 0);

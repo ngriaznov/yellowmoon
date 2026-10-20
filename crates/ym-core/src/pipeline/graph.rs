@@ -33,6 +33,7 @@ use ym_export::{ColorSpace, DetailStat};
 use ym_gpu::chain::StageRange;
 use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
 use ym_gpu::cpu::detail::NoiseReduction;
+use ym_gpu::cpu::frame_denoise::{DEFAULT_DENOISE, DenoiseMethod};
 use ym_gpu::cpu::sharpen::SharpenParams;
 use ym_gpu::cpu::sharpen::diffraction::DiffractionParams;
 use ym_gpu::cpu::{Rect, RgbImage};
@@ -62,6 +63,8 @@ use ym_color::display::OutputTarget;
 /// The note of a render whose demosaic method is not the adaptive ratio (the test-only switch of
 /// `RenderOptions::demosaic`): the device runs that one only.
 const METHOD_NOT_ON_DEVICE_NOTE: &str = "The graphics card runs the adaptive ratio demosaic only, so the CPU ran the one that was asked for.";
+const DENOISE_NOT_ON_DEVICE_NOTE: &str =
+    "The graphics card does not run this denoise method, so the CPU ran the raw stages.";
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -146,6 +149,12 @@ pub struct RenderOptions {
     /// initial value from the environment variable `YM_FORCE_DEMOSAIC`
     /// ([`forced_demosaic`]); other builds always start at [`DEFAULT_METHOD`].
     pub demosaic: Method,
+    /// The R6 denoise of the full-resolution render: [`DEFAULT_DENOISE`], method A of
+    /// `docs/algorithms/05` (the owner's decision of 2026-10-20, `docs/05` R6), unless a test or an
+    /// evaluation tool sets another. An internal switch like [`demosaic`](Self::demosaic): no settings
+    /// field, no UI, not part of the cache keys. The reduced renders keep the bilateral denoise of the
+    /// binned image whatever it is.
+    pub denoise: DenoiseMethod,
 }
 
 /// The method the test-only switch asks for: the value of `YM_FORCE_DEMOSAIC` (a
@@ -192,6 +201,7 @@ impl std::fmt::Debug for RenderOptions {
             .field("budget", &self.budget)
             .field("neural", &self.neural)
             .field("demosaic", &self.demosaic)
+            .field("denoise", &self.denoise)
             .field("gpu", &self.gpu.as_ref().map(|g| g.info().name.clone()))
             .field("gpu_stages", &self.gpu_stages)
             .field("gpu_strict", &self.gpu_strict)
@@ -217,6 +227,7 @@ impl Default for RenderOptions {
             background: [255, 255, 255],
             thumbnail_px: 240,
             demosaic: forced_demosaic().unwrap_or(DEFAULT_METHOD),
+            denoise: DEFAULT_DENOISE,
         }
     }
 }
@@ -659,6 +670,11 @@ fn device_runs_demosaic(opts: &RenderOptions) -> bool {
     opts.demosaic == Method::AdaptiveRatio
 }
 
+/// Whether the device chain has a kernel for the R6 denoise of `opts` ([`DenoiseMethod::runs_on_device`]).
+fn device_runs_denoise(opts: &RenderOptions) -> bool {
+    opts.denoise.runs_on_device()
+}
+
 /// The render engine (see the module documentation of [`crate::pipeline`]). Cheap to clone.
 #[derive(Clone)]
 pub struct Renderer {
@@ -841,7 +857,7 @@ impl Renderer {
             RawDevice::of(&opts, &self.inner, graph.as_deref(), GpuStages::RAW_CHAIN),
             RawDevice::On(_)
         );
-        !on_device || !device_runs_demosaic(&opts)
+        !on_device || !device_runs_demosaic(&opts) || !device_runs_denoise(&opts)
     }
 
     /// The graph of a photo, made on first use. The least recently used graphs beyond
@@ -2032,6 +2048,7 @@ impl<'a> Job<'a> {
             &params,
             &sigma,
             self.opts.demosaic,
+            self.opts.denoise,
             self.cancel,
         )?);
         self.runs.full_chains += 1;
@@ -2306,6 +2323,10 @@ impl<'a> Job<'a> {
         };
         if !device_runs_demosaic(&self.opts) {
             self.note(METHOD_NOT_ON_DEVICE_NOTE);
+            return Ok(None);
+        }
+        if !device_runs_denoise(&self.opts) {
+            self.note(DENOISE_NOT_ON_DEVICE_NOTE);
             return Ok(None);
         }
         let mut route = GpuRoute {
