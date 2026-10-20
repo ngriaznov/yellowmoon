@@ -1048,6 +1048,7 @@ fn chain_with(sharpen: Option<CaptureSharpen>, noise: Option<NoiseDn>) -> Chain 
         highlight_recovery: true,
         method: Method::Menon,
         denoise: Some(BilateralParams::default()),
+        frame_denoise: None,
         noise_reduction: NoiseReduction {
             luminance: 40.0,
             color: 60.0,

@@ -318,6 +318,7 @@ pub fn cpu_reference(
         highlight_recovery: false,
         method: Method::Bilinear,
         denoise: None,
+        frame_denoise: None,
         noise_reduction: NoiseReduction {
             luminance: 0.0,
             color: 0.0,

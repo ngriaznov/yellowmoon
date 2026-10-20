@@ -206,6 +206,12 @@ pub enum Stage<'a> {
         /// Half-width of the bilateral window.
         radius_px: usize,
     },
+    /// R6's single-frame denoise of `docs/algorithms/05` in place of the bilateral denoise and R7
+    /// ([`super::frame_denoise::FrameDenoise`]).
+    FrameDenoise {
+        /// Context on each side of the output, in pixels; `None` when the method reads the whole frame.
+        halo_px: Option<usize>,
+    },
     /// R7 colour guided filter and detail re-injection.
     Detail {
         /// Box radius of the guided filter (`2 + 6 C / 100`, rounded).
@@ -242,6 +248,8 @@ impl Stage<'_> {
             Stage::MosaicCa { halo_px } => halo_px,
             Stage::Demosaic(m) => m.halo(),
             Stage::Denoise { radius_px } => radius_px,
+            // A method that reads the whole frame has no halo: `input_rect` asks for the frame.
+            Stage::FrameDenoise { halo_px } => halo_px.unwrap_or(0),
             Stage::Detail {
                 chroma_radius_px,
                 needs_classical,
@@ -275,6 +283,7 @@ impl Stage<'_> {
     pub fn input_rect(&self, out: Rect, frame: Rect) -> Rect {
         match self {
             Stage::Lens(geo) => geo.source_rect(out).intersect(&frame),
+            Stage::FrameDenoise { halo_px: None } => frame,
             _ => {
                 let halo = Halo::uniform(self.halo_px());
                 if self.is_mosaic_domain() {

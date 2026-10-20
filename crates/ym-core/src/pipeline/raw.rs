@@ -1477,6 +1477,7 @@ impl FullChain {
             highlight_recovery: params.highlight_recovery && plan.has_clipped,
             method,
             denoise: (scale > 0.0).then(BilateralParams::default),
+            frame_denoise: None,
             noise_reduction: params.noise_reduction,
             iso: params.iso,
             sigma: 0.0,

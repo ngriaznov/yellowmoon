@@ -1035,6 +1035,7 @@ mod mosaic_ca {
             highlight_recovery: false,
             method,
             denoise: None,
+            frame_denoise: None,
             noise_reduction: NoiseReduction {
                 luminance: 0.0,
                 color: 0.0,

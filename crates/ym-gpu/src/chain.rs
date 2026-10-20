@@ -136,7 +136,8 @@ impl RawStage {
             Stage::Highlights => RawStage::Highlights,
             Stage::MosaicCa { .. } => RawStage::MosaicCa,
             Stage::Demosaic(_) => RawStage::Demosaic,
-            Stage::Denoise { .. } => RawStage::Denoise,
+            // The single-frame methods take the bilateral's place (and R7's); no device runs them.
+            Stage::Denoise { .. } | Stage::FrameDenoise { .. } => RawStage::Denoise,
             Stage::Detail { .. } => RawStage::Detail,
             Stage::Sharpen(_) => RawStage::Sharpen,
             Stage::Lens(_) => RawStage::Lens,

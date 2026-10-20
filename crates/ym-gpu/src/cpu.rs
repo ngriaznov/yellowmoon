@@ -56,6 +56,7 @@ pub mod denoise_space;
 pub mod detail;
 pub mod filters;
 pub mod flat_regions;
+pub mod frame_denoise;
 pub mod gains;
 pub mod highlights;
 pub mod lens;

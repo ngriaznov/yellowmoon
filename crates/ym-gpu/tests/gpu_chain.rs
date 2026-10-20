@@ -204,6 +204,7 @@ fn chain_of(scene: &Scene, lens: Lens, noise: NoiseDn) -> Chain {
         highlight_recovery: true,
         method: Method::AdaptiveRatio,
         denoise: Some(BilateralParams::default()),
+        frame_denoise: None,
         noise_reduction: NoiseReduction {
             luminance: 40.0,
             color: 60.0,

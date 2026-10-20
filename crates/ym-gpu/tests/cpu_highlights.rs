@@ -444,6 +444,7 @@ mod fully_clipped {
             highlight_recovery: recovery,
             method: Method::Bilinear,
             denoise: None::<BilateralParams>,
+            frame_denoise: None,
             noise_reduction: NoiseReduction {
                 luminance: 0.0,
                 color: 0.0,

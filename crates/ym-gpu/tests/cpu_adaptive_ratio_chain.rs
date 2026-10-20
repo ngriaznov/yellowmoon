@@ -81,6 +81,7 @@ fn minimal_chain(method: Method, gains: [f32; 3], noise: Option<NoiseDn>) -> Cha
         highlight_recovery: false,
         method,
         denoise: None,
+        frame_denoise: None,
         noise_reduction: NoiseReduction {
             luminance: 0.0,
             color: 0.0,
@@ -239,6 +240,7 @@ fn full_chain(w: usize, h: usize, method: Method, noise: Option<NoiseDn>, lens: 
         highlight_recovery: true,
         method,
         denoise: Some(BilateralParams::default()),
+        frame_denoise: None,
         noise_reduction: NoiseReduction {
             luminance: 40.0,
             color: 60.0,

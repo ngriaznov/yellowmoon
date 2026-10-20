@@ -905,6 +905,7 @@ fn chain_with(method: Method, lens: Option<LensGeometry>, noise: NoiseDn) -> Cha
         highlight_recovery: false,
         method,
         denoise: None,
+        frame_denoise: None,
         noise_reduction: NoiseReduction {
             luminance: 0.0,
             color: 0.0,

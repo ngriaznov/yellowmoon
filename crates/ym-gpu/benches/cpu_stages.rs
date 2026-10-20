@@ -204,6 +204,7 @@ fn finish(
         highlight_recovery: true,
         method: DEFAULT_METHOD,
         denoise: Some(BilateralParams::default()),
+        frame_denoise: None,
         noise_reduction: NoiseReduction::auto(800.0),
         iso: 800.0,
         sigma: 0.01,

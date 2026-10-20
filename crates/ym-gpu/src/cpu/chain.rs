@@ -21,6 +21,7 @@
 use super::demosaic::{self, CaCurves, DemosaicInputs, Method};
 use super::denoise::{self, BilateralParams};
 use super::detail::{self, NoiseReduction};
+use super::frame_denoise::FrameDenoise;
 use super::gains;
 use super::highlights::{self, ChromaOffsets};
 use super::lens::{self, LensGeometry};
@@ -64,6 +65,9 @@ pub struct Chain {
     pub method: Method,
     /// R6 bilateral denoise (`None`: skipped).
     pub denoise: Option<BilateralParams>,
+    /// R6's single-frame denoise of `docs/algorithms/05` (`docs/05` R6): when set, it runs in place of
+    /// the bilateral denoise and R7, and [`denoise`](Self::denoise) is not used.
+    pub frame_denoise: Option<FrameDenoise>,
     /// R7 resolved controls.
     pub noise_reduction: NoiseReduction,
     /// ISO of the shot (sets `L_auto` for the Luminance rule).
@@ -119,16 +123,23 @@ impl Chain {
             });
         }
         s.push(Stage::Demosaic(self.method));
-        if let Some(d) = &self.denoise {
-            s.push(Stage::Denoise {
-                radius_px: d.radius_px,
+        if let Some(fd) = &self.frame_denoise {
+            // The method does what the bilateral denoise and R7 did (its blend is the Detail control).
+            s.push(Stage::FrameDenoise {
+                halo_px: fd.halo_px(),
+            });
+        } else {
+            if let Some(d) = &self.denoise {
+                s.push(Stage::Denoise {
+                    radius_px: d.radius_px,
+                });
+            }
+            // The classical image the detail term needs is kept alongside, so no extra halo.
+            s.push(Stage::Detail {
+                chroma_radius_px: self.noise_reduction.chroma_radius_px(),
+                needs_classical: false,
             });
         }
-        // The classical image the detail term needs is kept alongside, so no extra halo.
-        s.push(Stage::Detail {
-            chroma_radius_px: self.noise_reduction.chroma_radius_px(),
-            needs_classical: false,
-        });
         if let Some(method) = self.sharpen {
             s.push(Stage::Sharpen(method));
         }
@@ -572,6 +583,14 @@ impl<'c> TileRun<'c, '_> {
                 let params = chain.denoise.unwrap_or_default();
                 self.rgb = Some(denoise::bilateral_opponent(&img, &ns, &params));
             }
+            Stage::FrameDenoise { .. } => {
+                let img = take(&mut self.rgb)?;
+                // The stage is on the list only when the chain has the method.
+                self.rgb = Some(match &chain.frame_denoise {
+                    Some(fd) => fd.apply(&img),
+                    None => img,
+                });
+            }
             Stage::Detail { .. } => {
                 let img = take(&mut self.rgb)?;
                 let (plane, scalar) = chain.sigma_tile(raw.width, self.cur, 1.0);
@@ -717,6 +736,7 @@ impl<'c> TileRun<'c, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpu::frame_denoise::DenoiseMethod;
     use crate::cpu::sharpen::SharpenParams;
     use crate::cpu::synth;
     use crate::cpu::tiling::tile_grid;
@@ -746,6 +766,7 @@ mod tests {
             highlight_recovery: true,
             method: Method::Lmmse,
             denoise: Some(BilateralParams::default()),
+            frame_denoise: None,
             noise_reduction: NoiseReduction {
                 luminance: 40.0,
                 color: 60.0,
@@ -809,6 +830,120 @@ mod tests {
                 diff <= 1e-4,
                 "lens={with_lens}: tiled chain differs from whole by {diff}"
             );
+        }
+    }
+
+    /// The test chain with a single-frame denoise method, and without R8 and R9 so that the stage's own
+    /// exactness is what a test sees.
+    fn frame_denoise_chain(w: usize, h: usize, method: DenoiseMethod) -> Chain {
+        let mut chain = test_chain(w, h, false);
+        chain.sharpen = None;
+        let model = ym_noise::model::NoiseModel::new(2e-4, 3e-7);
+        chain.frame_denoise = FrameDenoise::resolve(
+            method,
+            &chain.noise_reduction,
+            chain.iso,
+            &model,
+            chain.gains,
+        );
+        chain
+    }
+
+    fn raw_frame(w: usize, h: usize, data: &[u16]) -> RawFrame<'_> {
+        RawFrame {
+            width: w,
+            height: h,
+            cfa: Cfa::RGGB,
+            data,
+            qstep: None,
+        }
+    }
+
+    #[test]
+    fn a_frame_denoise_method_takes_the_place_of_the_bilateral_and_r7() {
+        let bilateral = test_chain(64, 48, false);
+        let stages = bilateral.stages();
+        assert!(stages.iter().any(|s| matches!(s, Stage::Denoise { .. })));
+        assert!(stages.iter().any(|s| matches!(s, Stage::Detail { .. })));
+        for (method, halo) in [
+            (DenoiseMethod::BmDct, Some(crate::cpu::bm_dct::HALO_PX)),
+            (DenoiseMethod::NlBayesRgb, None),
+            (DenoiseMethod::NlBayesYcc, None),
+        ] {
+            let chain = frame_denoise_chain(64, 48, method);
+            let stages = chain.stages();
+            assert!(
+                !stages
+                    .iter()
+                    .any(|s| matches!(s, Stage::Denoise { .. } | Stage::Detail { .. })),
+                "{method:?}"
+            );
+            let fd: Vec<_> = stages
+                .iter()
+                .filter_map(|s| match s {
+                    Stage::FrameDenoise { halo_px } => Some(*halo_px),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(fd, vec![halo], "{method:?}");
+        }
+        // The bilateral is the chain's own stages: no frame denoise.
+        assert!(
+            frame_denoise_chain(64, 48, DenoiseMethod::Bilateral)
+                .frame_denoise
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn method_a_in_tiles_gives_the_whole_frame_bit_for_bit() {
+        let (w, h) = (150, 110);
+        let data = raw_of(w, h, 5);
+        let raw = raw_frame(w, h, &data);
+        let chain = frame_denoise_chain(w, h, DenoiseMethod::BmDct);
+        let prepared = chain.prepare(&raw).expect("prepare");
+        let whole = chain
+            .run_tile(&raw, &prepared, Rect::whole(w, h))
+            .expect("whole");
+        let mut tiled = RgbImage::new(w, h);
+        for core in tile_grid(w, h, 52, 46, 1) {
+            let t = chain.run_tile(&raw, &prepared, core).expect("tile");
+            tiled.paste(&t, Rect::whole(core.w, core.h), core.x, core.y);
+        }
+        assert_eq!(whole.data, tiled.data);
+        // And the method did something: the bilateral chain's picture is another one.
+        let plain = test_chain(w, h, false);
+        let other = Chain {
+            sharpen: None,
+            ..plain
+        }
+        .run_tile(&raw, &prepared, Rect::whole(w, h))
+        .expect("bilateral");
+        assert!(whole.max_abs_diff(&other) > 1e-4);
+    }
+
+    #[test]
+    fn methods_b_and_c_read_the_whole_frame_so_their_tiles_equal_it() {
+        let (w, h) = (96, 80);
+        let data = raw_of(w, h, 9);
+        let raw = raw_frame(w, h, &data);
+        for method in [DenoiseMethod::NlBayesRgb, DenoiseMethod::NlBayesYcc] {
+            let chain = frame_denoise_chain(w, h, method);
+            // Any output rectangle needs the whole raw frame.
+            assert_eq!(
+                chain.required_raw_rect(w, h, Rect::new(40, 30, 8, 8)),
+                Rect::whole(w, h)
+            );
+            let prepared = chain.prepare(&raw).expect("prepare");
+            let whole = chain
+                .run_tile(&raw, &prepared, Rect::whole(w, h))
+                .expect("whole");
+            let mut tiled = RgbImage::new(w, h);
+            for core in tile_grid(w, h, 40, 36, 1) {
+                let t = chain.run_tile(&raw, &prepared, core).expect("tile");
+                tiled.paste(&t, Rect::whole(core.w, core.h), core.x, core.y);
+            }
+            assert_eq!(whole.data, tiled.data, "{method:?}");
         }
     }
 
