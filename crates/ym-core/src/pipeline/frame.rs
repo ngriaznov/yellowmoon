@@ -1894,9 +1894,11 @@ fn banded(
 /// storage binding of [`RenderOptions::view_band_bytes`] ([`device::band_rows`]; a constant of the
 /// renderer, so the cut is the same on every machine). A sharpened view magnified above 100 % reads
 /// the 100 % picture under it: it is cut when that picture (four planes of f32) or its RGBA8 frame
-/// does not fit, each band reading the 100 % picture under its own rows (`device_magnify`), and the
-/// bands give the view in one piece bit for bit (the stage's window is the whole view's, the taps
-/// of a row do not depend on the band, and the dither counts from the band's row).
+/// does not fit, each band reading the 100 % picture under its own rows (`device_magnify`). The
+/// bands give the view in one piece: the stage's window is the whole view's, the dither counts from
+/// the band's row, and a row's taps come from the band's map, which is the view's with the band's
+/// offset folded in (one `f64` rounding, as for the sampler's bands; the tests find the bands
+/// identical to the view in one piece).
 ///
 /// The camera RGB a view reads can be larger than its frame (the whole group at 1/2 is 150 MB for a
 /// 50 MP photo; full-resolution tiles under a view between 50 and 100 % hold up to four pixels per

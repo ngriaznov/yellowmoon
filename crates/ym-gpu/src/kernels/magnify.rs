@@ -98,6 +98,19 @@ pub(super) fn body() -> String {
     s
 }
 
+/// The `src` words of the uniform block: the source's stride and plane length, whether it has a mask
+/// plane, and the fast-math barrier's zero (`opaque` ORs it into every product and partial sum). The
+/// zero must be the bits of `+0.0`: any other word would change every value, and `-0.0` would set
+/// every sign bit (`docs/17-gpu.md` K8).
+fn source_words(stride: usize, plane_len: usize, planes: usize) -> [u32; 4] {
+    [
+        stride as u32,
+        plane_len as u32,
+        u32::from(planes == 4),
+        0.0f32.to_bits(),
+    ]
+}
+
 fn background_word(bg: [u8; 3]) -> u32 {
     u32::from(bg[0]) | (u32::from(bg[1]) << 8) | (u32::from(bg[2]) << 16) | 0xff00_0000
 }
@@ -139,13 +152,7 @@ pub fn encode_magnify(
     }
     let mut u = MagnifyU {
         view: [w as u32, h as u32, 0, 0],
-        // `src[3]` is the barrier's zero: +0.0 bits, so the OR changes nothing (docs/17-gpu.md K8).
-        src: [
-            src.stride as u32,
-            src.plane_len() as u32,
-            u32::from(src.planes == 4),
-            0,
-        ],
+        src: source_words(src.stride, src.plane_len(), src.planes),
         ..MagnifyU::default()
     };
     let dst: &PooledBuffer = match &target {
@@ -389,6 +396,15 @@ mod tests {
             }
         );
         assert_eq!(background_word([1, 2, 3]), 0xff03_0201);
+    }
+
+    #[test]
+    fn the_barrier_word_is_plus_zero_with_and_without_a_mask() {
+        for planes in [3, 4] {
+            let words = source_words(100, 100 * 60, planes);
+            assert_eq!(words[3], 0, "+0.0, not -0.0 or anything else");
+            assert_eq!(words[2], u32::from(planes == 4));
+        }
     }
 
     #[test]
