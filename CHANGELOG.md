@@ -11,6 +11,7 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Changed
 
+- Choosing a look now changes only the photo on screen; use Apply to › Picked or All to copy it.
 - **Contrast** works around mid grey as before but no longer pushes the darkest and brightest tones past black and white: it bends toward them instead, so blacks stay black. Colours keep their hue as contrast changes, and more contrast adds some colour as it adds contrast (less contrast takes some away).
 - **Saturation** no longer makes colours darker. More saturation makes colours stronger at the same brightness, about as strongly as before, and less makes them greyer, down to grey at -100. Muted colours gain the most, colours that are already strong gain less, and no colour is pushed past black. The Signature look and other looks are unchanged. Photos with Contrast and Saturation at 0 render exactly as before (pipeline 0.4.3).
 - The Signature look, the default look for new photos, is richer: more contrast (a steeper curve around mid grey, darker shadows, brighter lights) and more colour (saturation 1.45, was 1.20). Mid grey stays where it was. Built-in looks are now prepared at a finer grid of 65 points, so the stronger curve stays smooth (pipeline 0.4.2).

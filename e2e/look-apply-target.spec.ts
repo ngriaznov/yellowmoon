@@ -37,7 +37,8 @@ const tile = (page: Page, name: string) => page.getByRole("button", { name: `${n
 test.describe("a look picked while the person moves to the next photo", () => {
   test("stays on the photo it was picked on when Apply to is This photo", async ({ page }) => {
     await photos(page);
-    await page.getByRole("radio", { name: "This photo" }).click();
+    // Apply to starts on This photo (the owner's decision of 2026-10-20).
+    await expect(page.getByRole("radio", { name: "This photo" })).toHaveAttribute("aria-checked", "true");
     const release = await holdUpdates(page);
     await tile(page, "Film warm").click();
     await expect(chip(page)).toHaveText("Film warm · 100%");
@@ -56,6 +57,7 @@ test.describe("a look picked while the person moves to the next photo", () => {
 
   test("shows the look the photo has been given when Apply to is All", async ({ page }) => {
     await photos(page);
+    await page.getByRole("radio", { name: /^All/ }).click();
     const release = await holdUpdates(page);
     await tile(page, "Film warm").click();
     await page.keyboard.press("ArrowRight");

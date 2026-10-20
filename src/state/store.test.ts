@@ -51,7 +51,7 @@ describe("connecting", () => {
   it("starts on the Start screen with nothing open", async () => {
     const { store } = await connected();
     const s = store.getState();
-    expect([s.screen, s.session, s.before, s.zoom, s.applyScope]).toEqual(["start", null, false, { kind: "fit" }, "all"]);
+    expect([s.screen, s.session, s.before, s.zoom, s.applyScope]).toEqual(["start", null, false, { kind: "fit" }, "this"]);
   });
 
   it("goes straight to Photos when the core already has a session (a reloaded window)", async () => {

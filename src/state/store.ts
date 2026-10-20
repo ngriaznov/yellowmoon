@@ -233,7 +233,7 @@ export function initialState(): AppState {
     stats: null,
     before: false,
     zoom: { kind: "fit" },
-    applyScope: "all",
+    applyScope: "this",
     collapsedLookLibraries: [],
     dropNotice: null,
     error: null,
