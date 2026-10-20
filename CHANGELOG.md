@@ -11,6 +11,7 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Changed
 
+- Choosing a look now changes only the photo on screen; use Apply to › Picked or All to copy it.
 - **Contrast** works around mid grey as before but no longer pushes the darkest and brightest tones past black and white: it bends toward them instead, so blacks stay black. Colours keep their hue as contrast changes, and more contrast adds some colour as it adds contrast (less contrast takes some away).
 - **Saturation** no longer makes colours darker. More saturation makes colours stronger at the same brightness, about as strongly as before, and less makes them greyer, down to grey at -100. Muted colours gain the most, colours that are already strong gain less, and no colour is pushed past black. The Signature look and other looks are unchanged. Photos with Contrast and Saturation at 0 render exactly as before (pipeline 0.4.3).
 - The Signature look, the default look for new photos, is richer: more contrast (a steeper curve around mid grey, darker shadows, brighter lights) and more colour (saturation 1.45, was 1.20). Mid grey stays where it was. Built-in looks are now prepared at a finer grid of 65 points, so the stronger curve stays smooth (pipeline 0.4.2).
@@ -20,6 +21,7 @@ moves the entries below from Unreleased into a dated section for that version.
 
 - The ring around the look in use is no longer cut off. A tile in the first row, the first column or the last column of a section of the Look tab lost the 4 px of its ring that stood outside the grid; the ring is whole now, and so is the focus ring when you Tab to a tile.
 - Crop: the handles on the right and bottom edges of the frame were cut off by up to 4 px when the frame is the whole photo, as it is when Crop opens. They are drawn just inside the photo, and the focus rings of the frame and of the handles on the edge are drawn inside them too.
+- A look picked on one photo could end up on, or be shown wrongly for, another open photo when you moved to the next photo before the app had finished: the Look tab could keep showing the old look for a photo that had been given the new one, two picks made in turn on different photos could leave every photo with the first look, and the rest of a slider, wheel, curve or colour-warp drag could be sent to the next photo. Each pick and each drag now belongs to the photo it was made on, and the photo you are looking at shows the look it really has.
 - Colour warp: Range now limits how far a pin's change reaches, even after a long drag; before, a long drag widened it so far that most of the picture moved. Colours that lie in the way of a long drag still move with it. Short moves look as they did (pipeline 0.4.4).
 
 ## [0.1.10] - 2026-10-17

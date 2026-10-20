@@ -221,8 +221,8 @@ test.describe("keyboard only", () => {
     await expect(page.locator(".ym-photo-cell__chip")).toHaveText("Film warm · 100%");
 
     // Apply to is a radio group: the arrows move and choose.
-    await page.getByRole("radiogroup", { name: "Apply look to" }).getByRole("radio", { name: /^All/ }).focus();
-    await page.keyboard.press("ArrowLeft");
+    await page.getByRole("radiogroup", { name: "Apply look to" }).getByRole("radio", { name: /^This photo/ }).focus();
+    await page.keyboard.press("ArrowRight");
     await expect(page.getByRole("radiogroup", { name: "Apply look to" }).getByRole("radio", { name: /^Picked/ })).toHaveAttribute("aria-checked", "true");
 
     // A switch toggles with Space.

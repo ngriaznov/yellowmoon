@@ -42,7 +42,7 @@ export function ColorWarpCard({ store, photo, rs, pickingColor = false, onPickCo
   // The photo's colours behind the plane follow the frames the viewport draws, at most five times a second (`store.watchChromaScatter`).
   useEffect(() => store.watchChromaScatter(), [store, photo.id]);
 
-  const send = (next: ColorWarpPin[], final: boolean): void => void store.update({ color_warp: { pins: next } }, final);
+  const send = (next: ColorWarpPin[], final: boolean): void => void store.update({ color_warp: { pins: next } }, final, rs.photo_id);
   const pin = selected === null ? undefined : pins[selected];
   /** Changes a field of the selected pin. */
   const setPin = (patch: Partial<ColorWarpPin>, final: boolean): void => {

@@ -26,8 +26,10 @@ export const LightTab = memo(function LightTab({ store, photo, rs }: TabProps) {
   // (`store.watchHistogram`). Nothing is asked for per frame: every request is a job in the queue that also draws the viewport.
   useEffect(() => store.watchHistogram({ readout: true }), [store, photo.id]);
 
-  const send = (patch: SettingsPatch) => (final: boolean) => void store.update(patch, final);
-  const exposure = (ev: number, final: boolean): void => void store.update({ exposure: manualOrAuto({ ev }, { ev: estimates.exposure_ev }) }, final);
+  // A drag names the photo it began on (`store.update`), so moving to another photo before its frame or its release cannot send it there.
+  const send = (patch: SettingsPatch) => (final: boolean) => void store.update(patch, final, rs.photo_id);
+  const exposure = (ev: number, final: boolean): void =>
+    void store.update({ exposure: manualOrAuto({ ev }, { ev: estimates.exposure_ev }) }, final, rs.photo_id);
 
   return (
     <>

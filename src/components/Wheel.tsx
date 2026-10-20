@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { cx } from "./cx";
-import { useDraft, useFrameEmitter, useLatest, usePointerDrag } from "./hooks";
+import { useDraft, useFrameEmitter, useGestureCallback, usePointerDrag } from "./hooks";
 import type { TabId } from "./tabs";
 import { angleOf, clampToDisc, isCentered, pointFromPointer, puckColor, strengthOf, WHEEL_GRADIENT } from "./wheelMath";
 import type { ColorBalancePoint } from "./wheelMath";
@@ -50,7 +50,8 @@ export function Wheel({ label, value, onChange, size = 92, disabled = false, tab
   const disc = useRef<HTMLDivElement>(null);
   const draft = useDraft<ColorBalancePoint>(value, sameSpot);
   const shown = draft.shown;
-  const onChangeRef = useLatest(onChange);
+  // A drag reports to the `onChange` it began with (`useGestureCallback`).
+  const onChangeRef = useGestureCallback(onChange);
   const last = useRef<ColorBalancePoint>(value);
   const frames = useFrameEmitter<ColorBalancePoint>((v) => onChangeRef.current(v, false));
 
@@ -73,6 +74,7 @@ export function Wheel({ label, value, onChange, size = 92, disabled = false, tab
     start: (event: ReactPointerEvent<Element>) => {
       if (disabled) return false;
       disc.current?.focus({ preventScroll: true });
+      onChangeRef.begin();
       const next = pointAt(event);
       last.current = next;
       draft.drag(next);
@@ -88,6 +90,7 @@ export function Wheel({ label, value, onChange, size = 92, disabled = false, tab
     end: () => {
       frames.cancel();
       commit(last.current);
+      onChangeRef.end();
     },
   });
 

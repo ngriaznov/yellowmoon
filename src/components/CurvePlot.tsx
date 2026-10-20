@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { cx } from "./cx";
 import { clamp } from "./format";
-import { useDraft, useFrameEmitter, useLatest, usePointerDrag } from "./hooks";
+import { useDraft, useFrameEmitter, useGestureCallback, usePointerDrag } from "./hooks";
 import {
   evaluateCurve,
   insertPoint,
@@ -105,7 +105,8 @@ export function CurvePlot({
 
   const draft = useDraft<readonly CurvePoint[]>(points, samePoints);
   const shown = draft.shown;
-  const onChangeRef = useLatest(onChange);
+  // A drag reports to the `onChange` it began with (`useGestureCallback`).
+  const onChangeRef = useGestureCallback(onChange);
   const frames = useFrameEmitter<CurvePoint[]>((list) => onChangeRef.current(list, false));
 
   const commit = (list: CurvePoint[]): void => {
@@ -155,6 +156,7 @@ export function CurvePlot({
         index = inserted.index;
       }
       svg.current?.focus({ preventScroll: true });
+      onChangeRef.begin();
       drag.current = { index, base: list, removing: false };
       setSelected(index);
       setDraggedIndex(index);
@@ -185,13 +187,13 @@ export function CurvePlot({
       drag.current = null;
       frames.cancel();
       setDraggedIndex(null);
-      if (!state) return;
-      if (state.removing) {
+      if (state?.removing) {
         setSelected(null);
         commit(removePoint(state.base, state.index));
-      } else {
+      } else if (state) {
         commit(state.base);
       }
+      onChangeRef.end();
     },
   });
 
