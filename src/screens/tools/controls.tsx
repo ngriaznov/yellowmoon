@@ -74,7 +74,7 @@ export function KelvinSlider({ store, rs, label = "Kelvin" }: ControlProps & { l
   );
 }
 
-/** Contrast, -100 to 100, default 0 (Light › Exposure and Look › Tone). */
+/** Contrast, -100 to 100, default 0 (Light › Exposure and Look › Tone). A tone curve about mid grey that keeps black and the top code value (`docs/02` C9). */
 export function ContrastSlider({ store, rs }: ControlProps) {
   return (
     <Slider
@@ -89,7 +89,7 @@ export function ContrastSlider({ store, rs }: ControlProps) {
   );
 }
 
-/** Saturation, -100 to 100, default 0 (Colour › Colour balance and Look › Tone). It is subtractive (`docs/02` C9). */
+/** Saturation, -100 to 100, default 0 (Colour › Colour balance and Look › Tone). It keeps the luminance (`docs/02` C9). */
 export function SaturationSlider({ store, rs }: ControlProps) {
   return (
     <Slider

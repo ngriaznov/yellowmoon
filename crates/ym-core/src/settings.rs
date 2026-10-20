@@ -802,7 +802,8 @@ pub struct DevelopSettings {
     pub look_intensity: f64,
     /// Light › Exposure: Auto or an absolute value, -4 to +4 EV.
     pub exposure: ExposureSetting,
-    /// Light › Exposure and Look › Tone, -100 to 100.
+    /// Light › Exposure and Look › Tone, -100 to 100: a tone curve on the luma about mid grey that
+    /// keeps black and the top code value (docs/02 C9).
     pub contrast: f64,
     /// -100 to 100.
     pub brightness: f64,
@@ -825,7 +826,8 @@ pub struct DevelopSettings {
     pub white_balance: WhiteBalanceSetting,
     /// The three colour-balance wheels.
     pub color_balance: ColorBalance,
-    /// Colour › Colour balance and Look › Tone, -100 to 100; subtractive (docs/02 C9).
+    /// Colour › Colour balance and Look › Tone, -100 to 100; the chroma scaled about the luminance,
+    /// which stays (docs/02 C9).
     pub saturation: f64,
     /// Colour › Colour warp: the pins of stage C9b (docs/02); none by default.
     pub color_warp: ColorWarp,

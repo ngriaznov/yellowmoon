@@ -48,7 +48,7 @@ struct ChainU {
     m1: vec4<f32>,
     m2: vec4<f32>,
     tone: vec4<f32>,     // C7: x the range's knee, y the Sony clip (stops over grey; 1e30: none), z the toe's tau, w the range's expansion (stops; 0: none)
-    grade0: vec4<f32>,   // contrast gain, brightness, saturation gain; w: 1 / the white lift's ramp span (1 / stops, C12 step 1b; 0 with no lift)
+    grade0: vec4<f32>,   // x: contrast slope k at grey, y: brightness, z: saturation factor (< 1 blend, > 1 boost F); w: 1 / the white lift's ramp span (1 / stops, C12 step 1b; 0 with no lift)
     zone_amt: vec4<f32>, // shadows, highlights, black, white (each / 100)
     zone_ctr: vec4<f32>, // their centres (LogC4 codes)
     bal0: vec4<f32>,     // (a, b) shadows, (a, b) midtones
@@ -146,10 +146,122 @@ fn bump(l: f32, mu: f32, sigma: f32) -> f32 {
     return exp(-0.5 * z * z);
 }
 
+// Contrast (ym_color::grade::contrast_curve, docs/02 C9): the tone curve T_k on the luma, fixed at black
+// (CONTRAST_BLACK, the code of linear 0), grey and the top code value (CONTRAST_TOP). Between them
+// h_k(t) = k t / (1 + (k - 1) t) scaled into each half, beyond them the line of slope 1 / k through the end.
+// k (CU.grade0.x) is 2^(0.6 c / 100), from 0.66 to 1.52: t stays in [0, 1] on the curved pieces, so every
+// divisor is at least 0.66 (K8: nothing rests on an infinity, and nothing on a rounding at the 2e-4 gate).
+fn contrast_h(t: f32, k: f32) -> f32 {
+    return k * t / (1.0 + (k - 1.0) * t);
+}
+
+fn contrast_curve(x: f32, k: f32) -> f32 {
+    if (x >= CONTRAST_TOP) {
+        return CONTRAST_TOP + (x - CONTRAST_TOP) / k;
+    }
+    if (x >= GRAY) {
+        return GRAY + (CONTRAST_TOP - GRAY) * contrast_h((x - GRAY) / (CONTRAST_TOP - GRAY), k);
+    }
+    if (x > CONTRAST_BLACK) {
+        return GRAY - (GRAY - CONTRAST_BLACK) * contrast_h((GRAY - x) / (GRAY - CONTRAST_BLACK), k);
+    }
+    return CONTRAST_BLACK + (x - CONTRAST_BLACK) / k;
+}
+
+// Contrast with its colour step (ym_color::grade::contrast_pixel, docs/02 C9): u = v + T(l) - l on all
+// three channels, then u's chroma c_u = (e1.u, e2.u) scaled by f = 1 + beta (|c_p| / |c_u| - 1), with
+// c_p the chroma of T on each channel of v and beta = CONTRAST_COLOR, keeping its direction:
+// u + (f - 1) (c_u.x e1 + c_u.y e2). |c_u| below CONTRAST_NEUTRAL leaves the pixel at u. As e1 and e2
+// sum to 0, c_u is the chroma of v, and it is taken from v (as on the CPU): in f32 the rounding of the
+// offset would otherwise add to it.
+//
+// Fast-math (K8). Nothing rests on a rounding at the 2e-4 gate, nor on an infinity or a NaN:
+// * an exact neutral (equal channels) returns u first, whatever a fused dot product makes of its chroma
+//   (with FMA, e1.v of three equal codes can round to a few 1e-9 instead of 0);
+// * the neutral test squares c_u only where both components are below CONTRAST_NEUTRAL (1e-9), so the
+//   square cannot overflow, and one that underflows to 0 is a neutral anyway;
+// * both chromas are divided by m = max(|c_u.x|, |c_u.y|), at least 7e-10 past the test, so their
+//   squares stay near 1 for any code (a sanitised 1e30 makes codes near 1e32, whose squares would
+//   overflow f32);
+// * the squared ratio is limited to [min(k, 1/k)^2, max(k, 1/k)^2] (k from 0.66 to 1.52), the range of
+//   T's slope, which the exact ratio never leaves: the square root never sees 0, even where f32 rounds
+//   the per-channel curve of a chroma of a few ulp to a neutral.
+// A C port of this function compiled with clang -O3 -ffast-math -ffp-contract=fast -mfma -mrecip=all
+// against -O2 -ffp-contract=off (200,000 pixels: exact neutrals, chromas of one ulp and of 1e-13, codes
+// to +-20 and garbage codes to +-1.4e32, k over its range): every output finite, exact neutrals neutral
+// in both, the two at most 3.1e-7 apart among photo codes.
+fn c9_contrast(v: vec3<f32>, l: f32, k: f32) -> vec3<f32> {
+    let u = v + vec3<f32>(contrast_curve(l, k) - l);
+    if (v.x == v.y && v.y == v.z) {
+        return u;
+    }
+    let cu = vec2<f32>(dot(E1, v), dot(E2, v));
+    let m = max(abs(cu.x), abs(cu.y));
+    if (m < CONTRAST_NEUTRAL && dot(cu, cu) < CONTRAST_NEUTRAL * CONTRAST_NEUTRAL) {
+        return u;
+    }
+    let p = vec3<f32>(contrast_curve(v.x, k), contrast_curve(v.y, k), contrast_curve(v.z, k));
+    let a = cu / m;
+    let b = vec2<f32>(dot(E1, p), dot(E2, p)) / m;
+    let lo = min(k, 1.0 / k);
+    let hi = max(k, 1.0 / k);
+    let ratio = sqrt(clamp(dot(b, b) / dot(a, a), lo * lo, hi * hi));
+    let g = CONTRAST_COLOR * (ratio - 1.0);
+    return u + g * (cu.x * E1 + cu.y * E2);
+}
+
+// Below this distance r of the darkest channel under the luminance, the boost's chroma scale is taken
+// from its series (f32 would lose the digits of 1 - q^F to cancellation; see c9_saturation).
+const SAT_SERIES_LIMIT: f32 = 0.05;
+
+// Saturation (ym_color::grade::saturate, docs/02 C9): in linear AWG4, the chroma rgb - Y scaled about the
+// luminance Y by lambda, rgb' = Y + lambda (rgb - Y), then encoded again. `f` (CU.grade0.z) below 1 is the
+// blend 1 + s / 100; above 1 it is F = 1 + SATURATION_BOOST s / 100 and lambda = (1 - q^F) / r with
+// q = min / Y and r = 1 - q (the CPU's -expm1(F ln(1 - r)) / r): F for r <= 0 (every channel at or above Y,
+// the CPU's r < 1e-9), falling to 1 as the darkest channel nears 0. A pixel with Y <= 0 or a channel at or
+// below 0 is returned as it came for F > 1, as is a pixel with a code above SAT_CODE_LIMIT (7.5) for any f.
+//
+// Fast-math (K8) and f32: the decode of a code up to 7.5 is at most 2^120 and the encode of the result at
+// most about 1e37, both finite (a code of 10, which Contrast -100 can make of a sanitised 1e30, would
+// overflow the decode). The division by Y happens only for 0 < min < Y, and q is kept at least 1e-30, so
+// pow's log2 sees a normal number. For r < SAT_SERIES_LIMIT, 1 - q^F in f32 would cancel (an ulp of q^F
+// over r is 1e-5 of lambda at r = 0.005, and lambda times a chroma that can be many times Y where the blue
+// weight of Y is negative); there lambda is the series F (1 - (F-1)/2 r (1 - (F-2)/3 r (1 - (F-3)/4 r))),
+// whose first neglected term is below 1e-7 of lambda. Above it a fast pow off by 1e-6 moves lambda by at
+// most 2e-5. The CPU reference is f64 throughout; nothing here rests on a rounding at the 2e-4 gate.
+fn c9_saturation(v: vec3<f32>, f: f32) -> vec3<f32> {
+    if (max(v.x, max(v.y, v.z)) > SAT_CODE_LIMIT) {
+        return v;
+    }
+    let rgb = logc4_decode3(v);
+    let y = dot(Y_AWG4, rgb);
+    var lambda = f;
+    if (f > 1.0) {
+        let m = min(rgb.x, min(rgb.y, rgb.z));
+        if (y <= 0.0 || m <= 0.0) {
+            return v;
+        }
+        if (m < y) {
+            let q = max(m / y, 1.0e-30);
+            let r = 1.0 - q;
+            if (r < SAT_SERIES_LIMIT) {
+                let t3 = 1.0 - 0.25 * (f - 3.0) * r;
+                let t2 = 1.0 - (f - 2.0) / 3.0 * r * t3;
+                lambda = f * (1.0 - 0.5 * (f - 1.0) * r * t2);
+            } else {
+                lambda = (1.0 - pow(q, f)) / r;
+            }
+        }
+    }
+    return logc4_encode3(vec3<f32>(y) + lambda * (rgb - vec3<f32>(y)));
+}
+
 fn c9_grade(v: vec3<f32>, l: f32) -> vec3<f32> {
     var o = v;
     if ((CU.flags.x & 1u) != 0u) {
-        o = vec3<f32>(GRAY) + (o - vec3<f32>(GRAY)) * CU.grade0.x;
+        // Contrast: one offset for all three channels, the luma's change on the curve, then part of the
+        // colour the curve on each channel would add.
+        o = c9_contrast(o, l, CU.grade0.x);
     }
     var shift = CU.grade0.y * STOP * bump(l, GRAY, BRIGHTNESS_SIGMA);
     if (CU.zone_amt.x != 0.0) {
@@ -178,9 +290,7 @@ fn c9_grade(v: vec3<f32>, l: f32) -> vec3<f32> {
         o = o + w * (CU.bal1.x * E1 + CU.bal1.y * E2);
     }
     if ((CU.flags.x & 2u) != 0u) {
-        // Saturation is subtractive: about the brightest channel M, so M and neutrals stay put.
-        let m = max(o.x, max(o.y, o.z));
-        o = vec3<f32>(m) + (o - vec3<f32>(m)) * CU.grade0.z;
+        o = c9_saturation(o, CU.grade0.z);
     }
     return o;
 }
@@ -188,33 +298,44 @@ fn c9_grade(v: vec3<f32>, l: f32) -> vec3<f32> {
 // ---- C9b: colour warp ----------------------------------------------------------------------------
 
 // The pins of ym_color::warp::Warp (docs/02 C9b), prepared on the host by `Warp::new` (clamped, still
-// pins left out, the range grown for a long move, the pivot as a LogC4 code): `CU.warp_n.x` moving pins
-// of three rows each in `CU.warp_mv`, [s.x, s.y, delta.x, delta.y], [1 / (2 rho'^2), shadows,
-// highlights, pivot code], [exposure in stops, 0, 0, 0], and `CU.warp_n.y` locked pins in `CU.warp_lk`,
-// [l.x, l.y, 1 / (2 rho^2), 0]. No moving pin skips the stage: the output is then bit for bit what it
-// was before the warp existed.
+// pins left out, the pivot as a LogC4 code, the number of flow steps): `CU.warp_n.x` moving pins of
+// three rows each in `CU.warp_mv`, [s.x, s.y, delta.x, delta.y], [1 / (2 rho^2), shadows, highlights,
+// pivot code], [exposure in stops, 0, 0, 0], `CU.warp_n.y` locked pins in `CU.warp_lk`, [l.x, l.y,
+// 1 / (2 rho^2), 0], and the flow's `CU.warp_n.z` steps. No moving pin skips the stage: the output is
+// then bit for bit what it was before the warp existed.
 //
-// Fast-math (K8). Nothing here rests on a rounding (the gate is 2e-4 in LogC4), and nothing may rest
-// on an infinity or a NaN either (Metal's fast-math may assume there are none):
+// The flow: in N steps every pin's Gaussian slides from its source by the share of its move this
+// pixel takes, to `s + gamma w delta`, and the pixel follows,
+// `c += (gamma / N) sum(w phi delta) / max(1, sum phi)` with the centres at `s + (k / N) gamma w delta`;
+// gamma (the neutral guard times the locks' hold) and the tonal weights w are the pixel's own, taken
+// once. The exposure is the one-step formula at the pixel's own chroma.
+//
+// Fast-math (K8). Nothing here rests on a rounding (the gate is 2e-4 in LogC4) except in the thin
+// sliver just behind the source of a long, narrow move, which the flow stretches along the path and
+// where it magnifies whatever rounding there is (docs/02 C9b); and nothing may rest on an infinity or
+// a NaN (Metal's fast-math may assume there are none):
 // * every Gaussian goes through `warp_gauss`, whose exponent is limited to WARP_EXP_LIMIT: an
 //   absurd chroma (a garbage pixel of 1e30) gives exp(-80), a normal number, never exp(-inf);
 // * a neutral pixel returns before any square root is taken (fast-math may compute sqrt(x) as
 //   x * rsqrt(x), a NaN at 0); the threshold, |c| < 1e-12, is far above the denormals a fast-math
 //   device flushes, and the CPU moves such a pixel by less than 1e-20;
-// * the lock product is of factors in [0, 1] and the division is by max(1, sum of reaches) >= 1;
+// * the lock product is of factors in [0, 1], every division is by max(1, sum of reaches) >= 1, and
+//   the step count is at least 1 and at most WARP_MAX_STEPS whatever the uniform holds;
 // * the tone L decodes v limited to WARP_LUMA_CEIL, so the decode's exp2 stays finite in f32 (it
 //   overflows from a code of about 8; real pixels after C9 stay below 3, and from 0.8 up the tonal
 //   weight is the highlights' already).
-// A C port of this function compiled with clang -O3 -ffast-math -ffp-contract=fast -mfma -mrecip=all
-// against -O2 -ffp-contract=off (200 random pin sets of 0 to 16 pins, 80,000 pixels among them exact
-// neutrals, |c| = 1e-13, chroma of 1e30, codes up to 40 and down to -3e31, pixels on a lock): every
-// output finite, the two at most 2.4e-7 apart, exact neutrals unchanged in both.
-const WARP_EXP_LIMIT: f32 = 80.0;
+// docs/02 C9b gives the check of a C port of this function under clang -ffast-math.
 const WARP_NEUTRAL_R2: f32 = 1.0e-24;
 const WARP_LUMA_CEIL: f32 = 7.5;
 
 fn warp_gauss(d2: f32, inv_two_sigma_sq: f32) -> f32 {
     return exp(-min(d2 * inv_two_sigma_sq, WARP_EXP_LIMIT));
+}
+
+// A moving pin's tonal weight at the tone `l`: Shadows below the pivot, Highlights above it.
+fn warp_tonal_weight(b: vec4<f32>, l: f32) -> f32 {
+    let t = smoothstep(b.w - WARP_TONE_HALF_WIDTH, b.w + WARP_TONE_HALF_WIDTH, l);
+    return b.y + (b.z - b.y) * t;
 }
 
 fn c9b_warp(v: vec3<f32>) -> vec3<f32> {
@@ -238,9 +359,10 @@ fn c9b_warp(v: vec3<f32>) -> vec3<f32> {
     if (hold <= 0.0) {
         return v;
     }
+    let gamma = guard * hold;
     let l = logc4_encode(dot(Y_AWG4, logc4_decode3(min(v, vec3<f32>(WARP_LUMA_CEIL)))));
+    // The exposure, at the pixel's own chroma with the pins at their sources.
     var reach = 0.0;
-    var shift = vec2<f32>(0.0);
     var exposure = 0.0;
     for (var i = 0u; i < moves; i++) {
         let a = CU.warp_mv[3u * i];
@@ -249,14 +371,31 @@ fn c9b_warp(v: vec3<f32>) -> vec3<f32> {
         let d = c - a.xy;
         let phi = warp_gauss(dot(d, d), b.x);
         reach = reach + phi;
-        let t = smoothstep(b.w - WARP_TONE_HALF_WIDTH, b.w + WARP_TONE_HALF_WIDTH, l);
-        let w = (b.y + (b.z - b.y) * t) * phi;
-        shift = shift + w * a.zw;
-        exposure = exposure + w * x;
+        exposure = exposure + warp_tonal_weight(b, l) * phi * x;
     }
-    let k = guard * hold / max(reach, 1.0);
-    let dd = k * shift;
-    return v + dd.x * E1 + dd.y * E2 + vec3<f32>(k * exposure * STOP);
+    let e = gamma / max(reach, 1.0) * exposure;
+    // The flow, the move gathered in `dd`.
+    let steps = clamp(CU.warp_n.z, 1u, WARP_MAX_STEPS);
+    let n = f32(steps);
+    let h = gamma / n;
+    var dd = vec2<f32>(0.0);
+    for (var k = 0u; k < steps; k++) {
+        let tau = f32(k) / n;
+        let p = c + dd;
+        var sum = 0.0;
+        var shift = vec2<f32>(0.0);
+        for (var i = 0u; i < moves; i++) {
+            let a = CU.warp_mv[3u * i];
+            let b = CU.warp_mv[3u * i + 1u];
+            let w = warp_tonal_weight(b, l);
+            let d = p - (a.xy + (tau * (gamma * w)) * a.zw);
+            let phi = warp_gauss(dot(d, d), b.x);
+            sum = sum + phi;
+            shift = shift + (w * phi) * a.zw;
+        }
+        dd = dd + (h / max(sum, 1.0)) * shift;
+    }
+    return v + dd.x * E1 + dd.y * E2 + vec3<f32>(e * STOP);
 }
 
 // ---- C10: CDL and tetrahedral 3D LUT ---------------------------------------------------------------

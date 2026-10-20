@@ -135,7 +135,7 @@ Every control in the UI and every CLI flag maps to one field. Defaults reproduce
 | `light_source` | Auto, Day, Shade, Tungsten, LED, Fluorescent | Auto | Colour › White balance (segmented) |
 | `white_balance` | `Auto` or `Manual { kelvin 2000–11000 step 50, tint −50…50 }` | Auto | Colour › White balance; Kelvin also on Look › Tone (Temperature) |
 | `color_balance` | shadows/midtones/highlights, each `(a, b)` in a unit disc | (0, 0) ×3 | Colour › Colour balance |
-| `saturation` | −100…100, subtractive (`docs/02` C9) | 0 | Colour › Colour balance; also on Look › Tone |
+| `saturation` | −100…100, keeps the luminance (`docs/02` C9) | 0 | Colour › Colour balance; also on Look › Tone |
 | `color_warp` | `{ pins: [...] }`, at most 16 pins; a pin is `{ source: [a, b], target: [a, b], locked, range 0.01–0.25, shadows 0–1, highlights 0–1, pivot_ev −6…6, exposure_ev −2…2 }`, points scaled back to `|c| ≤ 0.5` (`docs/02` C9b); every pin field but `source` has a default (`target` = `source`, `locked` false, `range` 0.04, `shadows` and `highlights` 1, `pivot_ev` and `exposure_ev` 0). A patch replaces the whole list. | no pins | Colour › Colour warp |
 | `sharpen` | `Auto` or `{ amount 0–300, radius_px 0.3–2.5 }` | Auto | Detail › Sharpening (Amount, Radius): capture sharpening, R8 |
 | `output_sharpening` | percent, 0–200, step 5; a plain number (not Auto) | 100 | Detail › Sharpening › Output: sharpening of the picture at the size it is shown and written (`docs/algorithms/04`); 0 is off |
