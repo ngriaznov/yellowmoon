@@ -144,7 +144,7 @@ struct CheckArgs {
 /// `--gpu-gates`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum GateSet {
-    /// Twice the first lavapipe run ([`GpuGate::CALIBRATED`]).
+    /// Twice the worst lavapipe run of the current pipeline ([`GpuGate::CALIBRATED`]).
     Calibrated,
     /// The first proposal ([`GpuGate::PLAN`]).
     Plan,

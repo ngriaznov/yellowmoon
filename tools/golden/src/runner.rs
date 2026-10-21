@@ -492,8 +492,9 @@ pub enum Reference {
 /// Two sets exist. [`PLAN`](Self::PLAN) is the first proposal, made before any GPU picture had been measured.
 /// [`CALIBRATED`](Self::CALIBRATED) is the default: that proposal says the gates are "calibrated on the first lavapipe run",
 /// and the project's rule for such a number is twice the first measured value (`tools/golden/README.md`, "GPU mode",
-/// has the measurements and what they mean). It is tighter than the proposal for the median and the 99th percentile and
-/// looser for the maximum and the count, which a handful of limiter flips on the charts' hard edges decide.
+/// has the measurements and what they mean). It is tighter than the proposal for the median and looser for the 99th
+/// percentile, the maximum and the count, which the decisions of R6's method A (f32 on the device, f64 on the CPU) on
+/// the charts' hard edges decide.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct GpuGate {
     /// The median ΔE00 may not exceed this.
@@ -520,14 +521,17 @@ impl GpuGate {
         codes_share: 1e-3,
     };
 
-    /// Twice the worst of the first run on Mesa lavapipe over the 61 files of the default synthetic set (2026-10-15,
-    /// commit 4c5939f plus the GPU checks): median 1.003e-4, p99 1.066e-2, maximum 1.855, share 3.66e-3.
+    /// Twice the worst of the run on Mesa lavapipe over the 61 files of the default synthetic set with R6's
+    /// single-frame denoise (pipeline 0.5.0, branch `claude/denoise`, 2026-10-21; the owner's option (a) of STATUS
+    /// question 32): median 1.052e-4, p99 3.461e-2, maximum 3.213, share 2.131e-2. Metal gives the same numbers on
+    /// the ten-file subset. The first calibration (2026-10-15, pipeline 0.1.x: median 1.003e-4, p99 1.066e-2,
+    /// maximum 1.855, share 3.66e-3) gave 2.1e-4, 2.2e-2, 3.8 and 7.4e-3.
     pub const CALIBRATED: Self = Self {
-        median: 2.1e-4,
-        p99: 2.2e-2,
-        max: 3.8,
+        median: 2.2e-4,
+        p99: 6.9e-2,
+        max: 6.5,
         codes_threshold: 8,
-        codes_share: 7.4e-3,
+        codes_share: 4.3e-2,
     };
 
     fn validate(&self) -> Result<()> {

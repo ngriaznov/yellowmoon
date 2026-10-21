@@ -111,20 +111,20 @@ proposal): the ΔE00 of the 1/4 downsample (a box filter in linear light, CIEDE2
 99th percentile and a maximum under the gates, and the share of the samples of the full-resolution picture that differ by more than 8 codes of 16 bits
 must stay under its gate. The report (`--report FILE`) has, per file, the device `ym` reported, its notes, the ΔE00 statistics and the count.
 
-| Gate | Proposed (`plan`) | Calibrated (default) | First run on lavapipe, 61 files | Ten-file subset |
-|---|---|---|---|---|
-| median ΔE00 | 0.02 | 2.1e-4 | worst 1.003e-4 | 9.8e-5 |
-| 99th percentile | 0.05 | 2.2e-2 | worst 1.066e-2 | 9.2e-3 |
-| maximum | 0.5 | 3.8 | worst 1.855 (`D6500__ILCE-7SM3__iso400__rggb__12b__packed12`), then 1.176 (`D6500__DSC-RX100M4 craw`) and four files between 0.55 and 0.57; the other 55 under 0.5 | 0.548 |
-| samples more than 8 codes off | 1e-3 | 7.4e-3 | worst 3.66e-3 (largest difference 40741 codes) | 3.34e-3 |
+| Gate | Proposed (`plan`) | Calibrated (default, pipeline 0.5.0) | Lavapipe, 61 files, pipeline 0.5.0 (2026-10-21) | Ten-file subset, lavapipe and Metal alike | First calibration (pipeline 0.1.x, 2026-10-15) |
+|---|---|---|---|---|---|
+| median ΔE00 | 0.02 | 2.2e-4 | worst 1.052e-4 (`D6500__ILCE-6400__iso400__rggb__12b__packed12`) | 1.0e-4 | 2.1e-4 (worst 1.003e-4) |
+| 99th percentile | 0.05 | 6.9e-2 | worst 3.461e-2 (the same file) | 2.61e-2 | 2.2e-2 (worst 1.066e-2) |
+| maximum | 0.5 | 6.5 | worst 3.213 (`D6500__ILCE-7RM4__iso12800__rggb__14b__lossless-l`) | 3.213 | 3.8 (worst 1.855) |
+| samples more than 8 codes off | 1e-3 | 4.3e-2 | worst 2.131e-2 (`D6500__ILCE-6400 packed12`) | 1.87e-2 | 7.4e-3 (worst 3.66e-3) |
 
 The first proposal calls its gates "proposed ... calibrated on the first lavapipe run", and the project's rule for a calibrated number is twice the first measured value, so the default is twice
-the worst of the 61 files (Mesa 25.2, LLVM 20.1, commit 4c5939f plus the GPU checks, 2026-10-15). It is **tighter than the proposal for the median and the 99th percentile
+the worst of the 61 files. **Recalibrated for pipeline 0.5.0** (2026-10-21, Mykyta's option (a) of STATUS question 32): R6's single-frame denoise (method A, `docs/algorithms/05`) makes hard decisions (a coefficient against its threshold, the order of block distances); where one lies within rounding of f32 against f64 the device and the CPU take different sides, and a flip moves the 8 blocks of a group, so on the charts' hard patch edges the count and the 99th percentile grow. The device's numbers are identical on lavapipe and on Metal (macOS 14 and 15), and on the owner's photo the device stays far inside the gates (median 1e-4, p99 4e-4, worst 0.044). The first calibration (Mesa 25.2, LLVM 20.1, commit 4c5939f plus the GPU checks, 2026-10-15) is kept in the last column. The first calibration was **tighter than the proposal for the median and the 99th percentile
 and looser for the maximum and the count**: with the proposed gates 50 of the 61 files fail, all of them on the count of samples (6 also on the maximum). What moves is not a stage but the output sharpening's halo
 limiter, which decides on a rank of luma values: the device's f32 colour chain and the CPU's f64 one differ in the last bits, and a pixel at a hard edge of the chart (the charts' patch
 borders) takes the other side of a rank (`docs/algorithms/04` section 10; the sharpening kernel alone matches the CPU to 3e-7). A median of 1e-4 and a 99th percentile of 1e-2 say that
 the rest of the picture is the CPU's to the last code or two. Metal will have its own numbers (its f32 chain differs in other last bits); the Metal CI job prints them, and the gates are
-raised there only with Mykyta's agreement, as for every gate (`AGENTS.md`). `PLAN` stays in the code so that the question is one flag away. Mykyta agreed to the calibrated defaults on 2026-10-15 (`docs/STATUS.md`, question 26).
+raised there only with Mykyta's agreement, as for every gate (`AGENTS.md`). `PLAN` stays in the code so that the question is one flag away. Mykyta agreed to the calibrated defaults on 2026-10-15 (`docs/STATUS.md`, question 26) and to their recalibration for pipeline 0.5.0 on 2026-10-21 (question 32).
 
 **Files.** `tools/golden/gpu-subset.txt` lists the ten files of a push (one id per line, `#` comments; an id that is not in the manifest, or that `--set` leaves out, is an error: a subset never shrinks without a word): the four CFA phases, cRAW,
 lossless L, 12 and 14 bit, camera-processed (Lossless M), the highest ISO, a tungsten light and a second body. Every chart scene carries blown highlights, so each file covers clipped highlights.
