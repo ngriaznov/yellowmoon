@@ -186,7 +186,7 @@ Independent readers check the set: LibRaw (rawpy) reproduces the mosaic exactly 
 | Highlights | 20 blown-highlight photos | no fringes in review; chroma within ΔE00 5 of surroundings | M1 |
 | Golden images | fixed files through the CLI | no unexplained ΔE00 > 0.5 change | from M1 |
 | App and CLI | same job through both | byte-identical | M3 |
-| DNG | `dng_validate` render vs our JPEG | passes validation; ΔE00 median ≤ 1.5 | M3 |
+| DNG | `dng_validate` render vs our JPEG | passes validation; ΔE00 median ≤ 1.5 per file (≤ 2.5 at ISO 12800 and above, `docs/09`) | M3 |
 | Performance | `docs/05` targets on M1 and M3 machines | report; regressions > 20% fail | every gate |
 | Whole app | blind A/B of 50 A1 photos vs Capture One, Lightroom, DxO exports | ours preferred or tied in ≥ 50% of pairs | M4 [HUMAN] |
 

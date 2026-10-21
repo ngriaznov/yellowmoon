@@ -454,8 +454,8 @@ jobs:
             device-check.txt
           if-no-files-found: ignore
 
-  # M3-12: every exported DNG passes Adobe's dng_validate, and its render is within a median ΔE00 of 1.5 of our JPEG (docs/09
-  # Gates). tools/dng/run_gates.sh is the same script a developer runs: it builds `ym` and `dngfit` (two cargo invocations, for
+  # M3-12: every exported DNG passes Adobe's dng_validate, and its render is within a median ΔE00 of 1.5 of our JPEG (2.5 at ISO 12800
+  # and above; docs/09 Gates). tools/dng/run_gates.sh is the same script a developer runs: it builds `ym` and `dngfit` (two cargo invocations, for
   # the reason given at the golden job), runs `dngfit eval` and `dngfit gate --require-all`. dng_validate is built from the DNG SDK
   # at a pinned commit (about 10 minutes) and the binary is cached; the key has the Ubuntu release because the binary links the
   # system libjpeg and zlib. The image is pinned to ubuntu-24.04, the one this was run on (libjpeg-turbo 2.1.5, the libjxl 0.7

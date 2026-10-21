@@ -3,7 +3,8 @@
 //! shows with the profile fitted to ACES 2? (`docs/09`, "What a DNG carries".) The look is a LogC3 to
 //! Rec.709 look of our own (`common::dng_looks`, a filmic tone curve with a little colour; never an ARRI
 //! file). The numbers are measured and printed, and the asserts are only sanity bounds: "close", not a
-//! gate (the DNG gate of `docs/09` is the median ΔE00 of 1.5 against the JPEG, `tools/dngfit`).
+//! gate (the DNG gate of `docs/09` is the median ΔE00 of 1.5 against the JPEG, 2.5 at ISO 12800 and above,
+//! `tools/dngfit`).
 //!
 //! Needs `dng_validate` (`$DNG_VALIDATE` or `testdata/dng_sdk/dng_validate`); without it the test says
 //! so and passes, unless `YM_REQUIRE_EXTERNAL_TOOLS` is set.

@@ -22,7 +22,8 @@
 #   1. `dngfit eval`: how close Adobe's renderer with the fitted profile is to ACES 2 (neutral ramp, hue and chroma
 #      sweeps, random colours, the chart patches of the synthetic scenes);
 #   2. `dngfit gate`: every DNG passes dng_validate with no warning and no error, and the picture dng_validate renders
-#      from it is within a median CIEDE2000 of 1.5 of our JPEG of the same photo (every file). Without --filter every
+#      from it is within a median CIEDE2000 of 1.5 of our JPEG of the same photo (every file; 2.5 at ISO 12800 and
+#      above). Without --filter every
 #      file of the default synthetic set has to be on disk (--require-all), so a partly generated set cannot pass.
 # Exit code 0 when both gates pass, 1 when one fails, 2 on usage or setup errors.
 set -euo pipefail
