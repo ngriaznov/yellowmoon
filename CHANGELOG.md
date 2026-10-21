@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-10-21
+
+A new noise reduction for the 100 % view and every export, and a sign when the photo is rendered on the CPU.
+
 ### Added
 
 - While the CPU renders the photo (when the graphics card can't), the photo shows "Rendering on the CPU" with a spinner at the top, so a frame that takes a few seconds no longer looks stuck.
