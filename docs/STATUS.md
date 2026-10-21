@@ -12,9 +12,7 @@ The current state of Yellowmoon: release, milestone, what is built, gate results
 
 ## Current release and milestone
 
-**Released: 0.1.11** (pipeline 0.4.4).
-
-**In testing: 0.1.12** (pipeline 0.5.1, `CHANGELOG.md` Unreleased):
+**Released: 0.1.12** (pipeline 0.5.1, 2026-10-21, the owner's "release 0.1.12"; `CHANGELOG.md`; before it 0.1.11, pipeline 0.4.4):
 
 - The single-frame denoise "method A" (block matching and 3D DCT thresholding) with its false-colour step replaces the bilateral denoise and R7 at full resolution (`docs/algorithms/05-single-frame-denoise.md`). Every full-resolution render changes; the fit view and thumbnails keep the bilateral denoise of the binned image. Pipeline 0.5.1 thresholds Cb and Cr per block from the noise model and blends Detail on luma only, which takes back most of 0.5.0's high-ISO colour grain (Known issues).
 - The "Rendering on the CPU" indicator (`docs/11-ui.md`).
