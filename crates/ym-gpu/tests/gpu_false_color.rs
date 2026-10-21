@@ -39,25 +39,16 @@ use ym_gpu::kernels::false_color::{
 use ym_gpu::queue::{JobSpec, Priority};
 use ym_gpu::stream::PassList;
 
-/// Largest `|w_gpu - w_cpu|` of the gate on a software adapter: twice the first measured value (5.07e-7 on
-/// lavapipe; 0 inside the gratings, where the weight is 1).
+/// Largest `|w_gpu - w_cpu|` of the gate: twice the first measured value (5.07e-7 on lavapipe; 0 inside the
+/// gratings, where the weight is 1). Metal gave the same numbers (macOS 14 and 15, Mac GPU run 39516017050,
+/// 2026-10-21: 5.066e-7), as the gate pins its arithmetic, so one set of bounds holds for every adapter.
 const WEIGHT_BOUND: f32 = 1.02e-6;
-/// Largest `|gpu - cpu|` of the stage (linear, white 1.0) on a software adapter: twice the first measured value
-/// (1.19e-7 on lavapipe over 957 372 samples, one ulp; the guided filter is the CPU's bits).
+/// Largest `|gpu - cpu|` of the stage (linear, white 1.0): twice the first measured value (1.19e-7 over 957 372
+/// samples, one ulp, on lavapipe and on Metal; the guided filter is the CPU's bits).
 const BOUND: f32 = 2.4e-7;
-/// The same two on a hardware adapter: starting values until the first Metal run prints its numbers
-/// (`ci_note`; the gate pins its arithmetic and the guided filter gives the CPU's bits, so Metal should give
-/// lavapipe's bits).
-const HW_WEIGHT_BOUND: f32 = 1e-4;
-/// See [`HW_WEIGHT_BOUND`].
-const HW_BOUND: f32 = 1e-5;
 
 fn f32_device() -> Option<&'static TestGpu> {
     gpus().iter().find(|d| d.mode == StorageMode::F32)
-}
-
-fn software(dev: &TestGpu) -> bool {
-    dev.gpu.info().is_software
 }
 
 /// One run on the device thread.
@@ -163,12 +154,7 @@ fn the_weights_match_the_cpu() {
             dev.gpu.info().name
         ),
     );
-    let bound = if software(dev) {
-        WEIGHT_BOUND
-    } else {
-        HW_WEIGHT_BOUND
-    };
-    assert!(worst <= bound, "{worst:e}");
+    assert!(worst <= WEIGHT_BOUND, "{worst:e}");
 }
 
 /// An owned sigma source for the device closures.
@@ -259,8 +245,7 @@ fn the_stage_matches_the_cpu() {
             dev.gpu.info().name
         ),
     );
-    let bound = if software(dev) { BOUND } else { HW_BOUND };
-    assert!(worst <= bound, "{worst:e}");
+    assert!(worst <= BOUND, "{worst:e}");
 }
 
 #[test]
@@ -358,8 +343,7 @@ fn tiles_equal_the_whole_frame_bit_for_bit() {
             "[R6] false colour tiles C {color}: whole frame against the CPU {:.3e}",
             e.max
         );
-        let bound = if software(dev) { BOUND } else { HW_BOUND };
-        assert!(e.max <= bound, "{:e}", e.max);
+        assert!(e.max <= BOUND, "{:e}", e.max);
     }
 }
 

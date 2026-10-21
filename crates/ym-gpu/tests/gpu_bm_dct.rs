@@ -39,48 +39,32 @@ use ym_gpu::kernels::bm_dct::{self, HALO_PX, frame_denoise, frame_denoise_core};
 use ym_gpu::queue::{JobSpec, Priority};
 use ym_gpu::stream::PassList;
 
-/// Largest `|gpu - cpu|` (linear, white 1.0) of the frames of `matches_the_cpu_on_every_frame` on a software
-/// adapter: twice the first measured value (2.09e-6 on lavapipe: no decision went the other way in 1.9 million
-/// samples).
+/// Largest `|gpu - cpu|` (linear, white 1.0) of the frames of `matches_the_cpu_on_every_frame`: twice the first
+/// measured value (2.09e-6 on lavapipe: no decision went the other way in 1.9 million samples). Metal gave the
+/// same numbers to the last digit (macOS 14 and 15, Mac GPU run 39516017050, 2026-10-21: 2.086e-6, 0 over
+/// 1e-4), as the kernel pins its arithmetic, so one set of bounds holds for every adapter.
 const BOUND: f32 = 4.2e-6;
-/// The share of those samples over 1e-4, on a software adapter: twice the first measured value (0).
+/// The share of those samples over 1e-4: twice the first measured value (0, on lavapipe and on Metal).
 const OVER_1E4: f64 = 0.0;
 /// A frame on which a decision went the other way (one of the frames of
-/// `tiles_equal_the_whole_frame_bit_for_bit`, luma only, R 0), on a software
-/// adapter: twice the first measured values (largest 1.68e-3, 204 of 99 381 samples over 1e-4). A flip moves
-/// the reference's 8 blocks by up to about `tau / 512` in the encoding.
+/// `tiles_equal_the_whole_frame_bit_for_bit`, luma only, R 0): twice the first measured values (largest
+/// 1.68e-3, 204 of 99 381 samples over 1e-4, on lavapipe and on Metal alike). A flip moves the reference's 8
+/// blocks by up to about `tau / 512` in the encoding.
 const FLIP_LARGEST: f32 = 3.4e-3;
 /// See [`FLIP_LARGEST`].
 const FLIP_OVER_1E4: f64 = 4.1e-3;
-/// The largest difference and the share over 1e-4 on a hardware adapter, for every frame: starting values until
-/// the first Metal run prints its numbers (`ci_note`; the kernel pins its arithmetic, so Metal should give
-/// lavapipe's bits, flips included).
-const HW_BOUND: f32 = 1e-2;
-/// See [`HW_BOUND`].
-const HW_OVER_1E4: f64 = 1e-3;
 /// Largest `|gpu - cpu|` when the method changes nothing (the input encoded and decoded): twice the first
-/// measured value (2.38e-7, two ulp of the values near 1).
+/// measured value (2.38e-7, two ulp of the values near 1; Metal the same).
 const ROUND_TRIP_BOUND: f32 = 4.8e-7;
-/// The same on a hardware adapter: the starting value of a pointwise stage (`docs/17-gpu.md` section 12) until
-/// the first Metal run prints its number.
-const HW_ROUND_TRIP_BOUND: f32 = 1e-6;
 
 /// The bounds of a frame on which a decision may go the other way: `(largest, share over 1e-4)`.
-fn flip_bounds(dev: &TestGpu) -> (f32, f64) {
-    if dev.gpu.info().is_software {
-        (FLIP_LARGEST, FLIP_OVER_1E4)
-    } else {
-        (HW_BOUND, HW_OVER_1E4)
-    }
+fn flip_bounds(_dev: &TestGpu) -> (f32, f64) {
+    (FLIP_LARGEST, FLIP_OVER_1E4)
 }
 
 /// The bounds of the adapter: `(largest, share over 1e-4)`.
-fn bounds(dev: &TestGpu) -> (f32, f64) {
-    if dev.gpu.info().is_software {
-        (BOUND, OVER_1E4)
-    } else {
-        (HW_BOUND, HW_OVER_1E4)
-    }
+fn bounds(_dev: &TestGpu) -> (f32, f64) {
+    (BOUND, OVER_1E4)
 }
 
 fn f32_device() -> Option<&'static TestGpu> {
@@ -237,12 +221,7 @@ fn strengths_that_filter_nothing_and_frames_under_8_px_give_the_cpus_round_trip(
             dev.gpu.info().name
         ),
     );
-    let bound = if dev.gpu.info().is_software {
-        ROUND_TRIP_BOUND
-    } else {
-        HW_ROUND_TRIP_BOUND
-    };
-    assert!(worst <= bound, "{worst:e}");
+    assert!(worst <= ROUND_TRIP_BOUND, "{worst:e}");
 }
 
 /// The window of the frame that carries `core` and the halo of the method, and the core inside it.
