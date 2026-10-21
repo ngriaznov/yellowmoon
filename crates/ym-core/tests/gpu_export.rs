@@ -369,12 +369,16 @@ const SOFTWARE: TailBounds = TailBounds {
 /// sharpened 16 bit 2.55e-4 over 1, 9.7e-5 over 8, at most 551; JPEG at most 5 codes, 2.12e-4 over 1
 /// (long edge 500), 0.99829 exact (straightened crop). The limiter's rank flips are the cause, not the
 /// sharpening kernel, which gives lavapipe's bits on Metal (`docs/algorithms/04` section 10).
+/// The JPEG share over 1 is twice the worst of pipeline 0.5.1 instead (the owner's agreement,
+/// 2026-10-21): the denoise's new picture put a few more 8x8 blocks of the 331 px export at a
+/// quantiser edge, 96 of 219 453 samples (4.37e-4, at most 3 codes, 0.99906 exact) on macos-14 and
+/// macos-15 alike, while the 8-bit PNG of the same case stays within one code (0 over 1).
 const HARDWARE: TailBounds = TailBounds {
     over_one_16: 5.1e-4,
     over_eight_16: 1.94e-4,
     max_16: 1102,
     jpeg_max: 10,
-    jpeg_over_one: 4.25e-4,
+    jpeg_over_one: 8.8e-4,
     jpeg_exact: 0.9965,
     sharp8_max: 4,
     sharp8_over_one: 7.4e-6,
