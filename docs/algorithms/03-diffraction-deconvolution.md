@@ -1,19 +1,18 @@
 # 03 · Diffraction deconvolution (capture sharpening)
 
-A second R8 capture-sharpening method for Yellowmoon, beside Richardson–Lucy. It computes the
-diffraction blur of the lens from the f-number and the pixel pitch, and removes it from luma in one
-noise-weighted local least-squares step.
+A second R8 capture-sharpening method beside Richardson–Lucy. It computes the diffraction blur of the lens from the f-number and the pixel pitch, and removes it from luma in one noise-weighted local least-squares step. It is selectable through an internal switch and is not the default (section 1.2).
 
-- Reference: `reference/diffraction_deconvolution.cpp` (C++17, `-DSELF_TEST`, `-DGEN_VECTORS`)
-- Vectors: `vectors/diffraction_deconvolution/*.json`
-- Suggested Rust home: `ym-gpu/src/cpu/sharpen/diffraction.rs`
+| | |
+|---|---|
+| Code | `crates/ym-gpu/src/cpu/sharpen/diffraction.rs` (planner and stage, CPU reference); `shaders/diffraction.wgsl` and `kernels/diffraction.rs` (device) |
+| Oracle | an independent C++ implementation outside the repository |
+| Vectors | `crates/ym-gpu/tests/cpu_data/diffraction_deconvolution/*.json` (23 files) |
 
 ## 1. Purpose and placement
 
 ### 1.1 What the stage does
 
-Stopping a lens down blurs the image by diffraction. That blur depends only on the f-number, the
-wavelength and the pixel pitch, so it can be computed rather than guessed. The stage:
+Stopping a lens down blurs the image by diffraction. That blur depends only on the f-number, the wavelength and the pixel pitch, so it can be computed rather than guessed. The stage:
 
 1. **Plans the PSF once per frame.** It builds a polychromatic Airy-pattern PSF from the f-number
    `N` and the pixel pitch `p`, summed over 461–619 nm with a fixed spectral weight, truncates and
@@ -37,18 +36,23 @@ residual is at the noise level, the pixel is left alone. There is no iteration.
 ### 1.2 Place in the Yellowmoon chain
 
 - **Stage R8**, after R7 (colour guided filter and detail re-injection) and before R9 (lens
-  resample). It runs wherever Richardson–Lucy runs today: the full-resolution chain, and
-  camera-processed Lossless M/S files after R7. Like RL, it does not run on the binned fit view or
-  thumbnails.
-- **Selection.** R8 becomes `CaptureSharpen::{RichardsonLucy(SharpenParams),
-  Diffraction(DiffractionParams)}` in `Chain` and `Stage::Sharpen`. Exactly one method runs
-  (either/or, §2.5). Richardson–Lucy stays the default until Mykyta decides (`docs/STATUS.md`), and the
-  selection is internal (no settings-schema change).
+  resample). It runs wherever Richardson–Lucy runs: the full-resolution chain, and
+  camera-processed Lossless M/S files after R7. Like Richardson–Lucy, it does not run on the binned fit view or thumbnails, and it does not run for a DNG (`docs/05-raw-processing.md` R8).
+- **Selection.** R8 is `CaptureSharpen::{RichardsonLucy(SharpenParams), Diffraction(DiffractionParams)}`
+  in `Chain` and `Stage::Sharpen`. Exactly one method runs (either/or, §2.5). Richardson–Lucy is the
+  default (`DEFAULT_CAPTURE_METHOD`). Diffraction is reached only through the internal
+  `PhotoSource::capture_method`, which tests and evaluation tools set: there is no settings field,
+  no UI control and no CLI flag, and default renders do not change.
 - **Fallback.** If Diffraction is selected but the stage is inactive (§3.1: no f-number, an
   f-number outside [1, 50], no usable pixel pitch), R8 runs Richardson–Lucy with its resolved
-  `SharpenParams`.
-- **Module layout.** Turn `sharpen.rs` into `sharpen/mod.rs` (RL code unchanged) and add
-  `sharpen/diffraction.rs`.
+  `SharpenParams`. A `Chain` that is given an inactive Diffraction stage directly leaves the image unchanged.
+- **Code.** `cpu/sharpen.rs` (`CaptureSharpen`, Richardson–Lucy), `cpu/sharpen/diffraction.rs`
+  (planner, stage, `DiffractionParams`, `DiffractionPlan`), `cpu/sharpen/diffraction/eval.rs` (the
+  edge, MTF and noise measures of the A/B; not used by the render path), the per-method halo in
+  `cpu/tiling.rs` and the Diffraction arm of `Chain::run_tile`. In `ym-core`:
+  `pipeline::raw::{pixel_pitch, diffraction_params, CaptureMethod, DEFAULT_CAPTURE_METHOD,
+  RawParams::{diffraction, capture_sharpen}}` and `PhotoSource::{sensor, capture_method}`.
+- **Device.** The device chain runs the stage as R8 when it is selected (§10).
 
 ### 1.3 Input and output contract
 
@@ -78,7 +82,7 @@ Everything else is scale-free: the moments `S_ij`, `T_i`, `Q` and the penalty me
 weighted by `w`, so they are dimensionless. The gate constants, the ridge, the coefficient bounds,
 the envelope constants and the ratio cap do not depend on `S`. An implementation that works in
 normalised units must convert the five rows above; the result is the same up to rounding. The
-reference works in DN.
+CPU implementation works in DN.
 
 ### 1.5 Halo
 
@@ -103,9 +107,9 @@ the layers at the output pixel need 4.
   maximum, 24, is R 7 with r_G 7 (small pitches at small apertures, from 0.8 µm at f/14 to 2.8 µm
   at f/50). Typical values at a 3.76 µm pitch: 13 at f/2.8, 15 at f/8, 17 at f/11, 18 at f/16, 19 at
   f/22, 22 at f/50.
-- Declare the per-frame value from the plan, or the constant 25. Do **not** apply Richardson–Lucy's
-  24 px cap (`SHARPEN_HALO_CAP_PX`): at the exact halo the reference's tiles equal the whole frame
-  bit for bit.
+- The scheduler uses the per-frame value from the plan (`DiffractionParams::halo_px()`), at most
+  `MAX_HALO_PX` = 25. Richardson–Lucy's 24 px cap (`SHARPEN_HALO_CAP_PX`) does **not** apply: at the
+  exact halo tiles equal the whole frame bit for bit.
 
 ## 2. Parameters
 
@@ -121,7 +125,7 @@ the layers at the output pixel need 4.
 | `noise` | `NoiseModel` | none | | `RawParams::noise`, converted per §2.3. |
 | `strength` | f32 | 1.0 | [0, 3] | Blend between input and corrected luma (§2.5). Clamped; NaN reads as 1. |
 
-Suggested Rust types:
+Rust types (`crates/ym-gpu/src/cpu/sharpen/diffraction.rs`):
 
 ```rust
 /// R8 diffraction deconvolution controls (docs/algorithms/03).
@@ -132,7 +136,7 @@ pub struct DiffractionParams {
     pub f_number: f64,
     /// Image pixels per sensor pixel, (0, 1].
     pub scale: f64,
-    /// Blend between input and corrected luma, 0..=3. 1 is the specified behaviour.
+    /// Blend between input and corrected luma, 0..=3. 1 is the base behaviour.
     pub strength: f32,
 }
 
@@ -151,13 +155,14 @@ impl DiffractionPlan {
 
 ### 2.2 Pixel pitch
 
-Yellowmoon's data had no pixel pitch when this spec was written; the registry now has it for 27 of its 28 bodies (§9). Take it from, in this order:
+The pixel pitch comes from, in this order:
 
-1. **Camera registry (preferred).** Add `sensor_width_mm` and `active_width_px` to each entry of
-   `bodies` in `data/cameras/registry.json`. Both describe the full sensor, from the maker's
-   published specification (sensor size and effective pixel count), with the source recorded in the
-   entry. Then `pitch_x = pitch_y = 1000·sensor_width_mm / active_width_px` µm. An optional
-   `pixel_pitch_um` field may override this when the maker states the pitch. A camera crop mode
+1. **Camera registry (preferred).** Each entry of `bodies` in `data/cameras/registry.json` can carry
+   `sensor_width_mm` and `active_width_px` (27 of its 28 bodies do; `SensorGeometry`). Both describe the
+   full sensor, from the maker's published specification (sensor size and effective pixel count), with
+   the source recorded in the entry (`docs/03-camera-profiles.md`). Then
+   `pitch_x = pitch_y = 1000·sensor_width_mm / active_width_px` µm. An optional
+   `pixel_pitch_um` field overrides this when the maker states the pitch. A camera crop mode
    (APS-C mode on a full-frame body) does not change the pitch. Example: a 35.7 mm wide sensor with
    9504 active columns has a 3.76 µm pitch.
 2. **EXIF crop factor (fallback).** With `crop = focal_length_35mm / focal_length_mm` from
@@ -166,8 +171,8 @@ Yellowmoon's data had no pixel pitch when this spec was written; the registry no
    - for any aspect ratio, `pitch ≈ 43266.6 / (crop · √(W² + H²))` µm (the 35 mm diagonal is
      43.2666 mm; this equals the 3:2 form for 3:2 frames).
 
-   Use both pitches equal. `focal_length_35mm` is an integer, so the pitch carries an error of up
-   to about 2 % at short focal lengths. That is small next to the kernel's radius steps.
+   Both pitches are taken equal. `focal_length_35mm` is an integer, so the pitch carries an error of up
+   to about 2 % at short focal lengths, which is small next to the kernel's radius steps.
 3. **Neither available**, or the result is outside the sanity range 0.5–20 µm: the stage is
    inactive and R8 falls back to Richardson–Lucy.
 
@@ -207,8 +212,7 @@ Example: `g0 = (2, 1, 1.5)` and the default weights give `d = 1.356`. With `a = 
 `b = 4e-8`, `σ_row = 5e-5`, `q = 0`, that is `σ0 = 18.32` DN and `σ1 = 2.222` DN (vector
 `plan_p3.76_f8`).
 
-The R3 vignetting gain multiplies signal and noise in the corners. This weight ignores it (open
-question 3).
+The R3 vignetting gain multiplies signal and noise in the corners. This weight ignores it (§7.2).
 
 ### 2.4 White level and clip penalty
 
@@ -220,18 +224,15 @@ values R5 reconstructed are not sharpened into artefacts.
 
 ### 2.5 Strength, the Sharpening Amount, and Richardson–Lucy
 
-- **Specified behaviour: `strength = 1`.** The algorithm has no amount control of its own. It
-  corrects by the fitted amount, which is 100 %.
-- **Strength.** `L_s = Y + strength·(L − Y)`, where `L` is the corrected luma (§3.11).
+- **Strength.** The algorithm has no amount control of its own. `strength = 1` corrects by the fitted
+  amount, which is 100 %. `L_s = Y + strength·(L − Y)`, where `L` is the corrected luma (§3.11).
   `strength = 0` returns the input exactly. Values above 1 extrapolate linearly, and overshoot
-  grows in proportion.
-- **Optional mapping to the Sharpening Amount** (if Mykyta wants one control for both methods):
-  `strength = A / 100`, with `A` from 0 to 300. The Auto amount for this method should then resolve
-  to `A = 100` at every ISO, because the noise gate already adapts to the noise. RL's Auto curve
-  (120 falling to 60) does not apply. `radius_px` has no meaning here: the PSF comes from the
-  optics. Default until decided: not mapped, `strength = 1`.
-- **Composition with Richardson–Lucy: either/or.** One R8 method runs per frame. Stacking the two
-  is an evaluation option (§7.1, item 8).
+  grows in proportion. Yellowmoon runs `strength = 1`.
+- **Sharpening Amount.** The Amount and Radius controls of Richardson–Lucy do not act on this method:
+  the PSF comes from the optics, and the noise gate already adapts to the noise. There is no mapping
+  from Amount to `strength`.
+- **Composition with Richardson–Lucy: either/or.** One R8 method runs per frame; the two are not
+  stacked (§7.1 item 8).
 
 ### 2.6 Fixed constants
 
@@ -477,7 +478,7 @@ All in f64, from the stored f32 moments.
     S11, S22, S33 ← max(·, 1e-15)
     λ = 0.0005 · (S11 + S22 + S33)
     solve [[S11+λ, S12, S13], [S12, S22+λ, S23], [S13, S23, S33+λ]] · (cD, cB, cH) = (T1, T2, T3)
-        (any exact method; the reference uses cofactors)
+        (any exact method; the implementation uses cofactors)
 
     if 0 ≤ cH < 1:
         keep cD, cB from the 3×3 solve;  tie = (cD > cB)
@@ -543,18 +544,19 @@ luma weights sum to 1, the output luma equals `L_s` exactly in exact arithmetic.
   rounded once to f32 when stored. The stored f32 `Y` is the one used everywhere, including §3.12.
 - **Solve and transfer:** f64 from the f32 inputs; outputs rounded to f32.
 - **Sensitivity:** an implementation that does everything in f32 (f32 accumulation, f32 Cramer
-  solve) stays within 1e-5 of the reference on the vectors and within 2e-6 on 72 further synthetic
+  solve) stays within 1e-5 of the oracle on the vectors and within 2e-6 on 72 further synthetic
   scenes (pitch 2.4–5.93 µm, f/1.4 to f/32, three noise levels). The vector tolerance is 2e-5.
-- **Bessel J1:** any implementation with absolute error below 1e-10 on [0, 120] works. The
-  reference uses the power series below 12 and the Hankel asymptotic expansion above (error below
-  1e-12). A platform `j1` is fine.
+  The GPU kernel nevertheless forms the luma exactly (§10).
+- **Bessel J1:** any implementation with absolute error below 1e-10 on [0, 120] works. Yellowmoon
+  uses the power series below 12 and the Hankel asymptotic expansion above (error below
+  1e-12). A platform `j1` gives the same vectors within tolerance.
 
 ## 4. Edge cases
 
 - **Borders.** Every window (envelopes, box means, Gaussians, PSF) reads with Yellowmoon's mirror
   rule, without repeating the edge sample (`ym_gpu::cpu::mirror`, period `2(n − 1)`). Windows wider
   than the image are mirrored repeatedly. A dimension of 1 reads its single sample.
-- **Tiny images.** Any size from 1×1 works (vector `tiny_7x5`; self-test sizes 1×1, 2×3, 1×17).
+- **Tiny images.** Any size from 1×1 works (vector `tiny_7x5`; the tests also use sizes 1×1, 2×3, 1×17).
 - **Flat fields come back bit-exact.** The envelope spacings are 0, so `D = Y` and `B = 0`. The
   residual is at most rounding, so `Q ≪ 0.5` and every pixel is gated with zero coefficients. Then
   `L = Y` exactly, `k = 1`, `off = 0`, and `out = in`. This holds for values above white and for
@@ -567,7 +569,7 @@ luma weights sum to 1, the output luma equals `L_s` exactly in exact arithmetic.
 - **Ratio cap.** Where `L_s/Y > 1.5` (dark pixels next to a brightened edge), `k = 1.5` and the
   rest is added equally to the three channels, which moves those pixels towards grey.
 - **Degenerate solve.** A non-finite coefficient leaves the pixel alone (all three coefficients 0,
-  `ω = 1`). With finite input this needs pathological moments; the self-test sweeps extreme inputs
+  `ω = 1`). With finite input this needs pathological moments; the tests sweep extreme inputs
   without hitting it.
 - **Inactive stage.** The output is a bit-exact copy (vector `disabled_no_f_number`).
 - **Strength.** Clamped to [0, 3]; NaN reads as 1; 0 is a bit-exact identity.
@@ -580,44 +582,40 @@ luma weights sum to 1, the output luma equals `L_s` exactly in exact arithmetic.
 
 - **Determinism.** No frame-level reductions. Every output pixel depends only on its
   `(2·halo + 1)²` neighbourhood and on per-frame constants, so the result does not depend on the
-  thread split. Split work by output rows, as the rest of `ym_gpu::cpu` does.
+  thread split. Work is split by output rows (128-row bands in `DiffractionPlan::apply`), as the rest of `ym_gpu::cpu` does; one thread and four give the same bits.
 - **Tiling.** With `halo = 10 + R + r_G`, a tile run with that much context, keeping the core,
-  equals the whole-frame run bit for bit in the reference (self-test, three f-numbers, five tile
-  positions including frame edges). Running window sums that restart per tile row are not bit-exact
+  equals the whole-frame run bit for bit (tests: three f-numbers, five tile
+  positions including frame edges). Running window sums that restart per tile row would not be bit-exact
   but stay far inside the 1e-4 contract. With less context the outermost taps are tiny: 1 px less
-  changed nothing on the test scenes, 4 px less up to 4e-5. Declare the full halo anyway.
+  changed nothing on the test scenes, 4 px less up to 4e-5. The full halo is declared anyway.
 - **Cost per pixel.**
   - Envelopes: 25 reads.
   - 17 box means, O(1) each with running sums: 2 for the envelopes, 11 for the moments, 4 for the
     coefficients.
   - 2 separable Gaussians, `2·(2r_G + 1)` taps each.
   - 2 PSF convolutions, `(2R+1)²` taps each (81 at R = 4, at most 225). The 8-fold symmetry folds
-    them to at most 36 distinct taps. Alternatively compute `Z = K⊗Y` once and `F2 = Z − F1`; this
+    them to at most 36 distinct taps. Alternatively `Z = K⊗Y` is computed once and `F2 = Z − F1`; this
     agrees within rounding and saves one convolution.
   - About 100 flops for the solve.
 
-  Roughly 1 kflop per pixel at R = 4 with direct separable box sums.
+  Roughly 1 kflop per pixel at R = 4 with direct separable box sums. Measured times are in §6.4.
 - **Memory.** About 25 f32 planes of the tile are live at the peak; many can be dropped early. A
   512×512 core with a 25 px halo needs about 562² × 25 × 4 B ≈ 32 MB per tile in flight.
 - **Planner.** 159 × 499 Bessel evaluations plus a few thousand trig calls, once per frame (under
-  10 ms). The kernel, R and σ_G depend only on `(p_eff, N)` and can be cached by them.
-- **GPU port.** All passes are per-pixel gathers; there are no atomics or reductions:
+  10 ms). The kernel, R and σ_G depend only on `(p_eff, N)`; the planner caches them by that key (eight entries), so the scheduler can ask for the halo per tile.
+- **GPU.** All passes are per-pixel gathers; there are no atomics or reductions. The kernel (§10) runs eleven dispatches over nine pipelines:
   1. luma, `w`, penalty;
   2. envelopes (5×5 gather);
-  3. box means, separable with workgroup shared memory. Batch the 10 products of §3.8 in one pass
-     and box all 11 planes together;
-  4. layer split;
-  5. Gaussian (separable);
-  6. PSF (2-D gather; kernel in a uniform buffer, R ≤ 7);
-  7. solve (per pixel; write the branches as selects);
-  8. coefficient box, correction and transfer.
-
-  Metal has no f64. Expect up to about 1e-5 against the CPU reference (the all-f32 measurement in
-  §3.13); a WGSL parity gate of 5e-5 absolute leaves margin.
+  3. layer split (the 5×5 means of the envelopes);
+  4. Gaussian (separable), for `Y` and then for `Z`;
+  5. PSF (2-D gather; kernel in a buffer, R ≤ 7) and the residual;
+  6. 9×9 moments (a row pass; the ten products are formed at each tap and never stored);
+  7. a column pass fused with the solve (the branches written as selects);
+  8. coefficient box, correction and transfer over the tile's core.
 
 ## 6. Test plan
 
-### 6.1 Vectors
+### 6.1 Vectors (`crates/ym-gpu/tests/cpu_data/diffraction_deconvolution/*.json`)
 
 JSON fields: `name`, `description`, `params`, `input`, `expected`, `tolerance`.
 
@@ -662,15 +660,15 @@ The blurred inputs are the sharp scene convolved with the plan's own kernel (mir
 Poisson–Gaussian noise from the model, applied independently per channel in unbalanced units. The
 generator's PRNG is splitmix64 with Irwin–Hall normals (arithmetic only).
 
-### 6.2 Property tests (the reference's self-test; port them)
+### 6.2 Property tests (`crates/ym-gpu/tests/cpu_diffraction.rs`)
 
 1. **Flat fields exact** (bit-equal): levels 0, 0.18 grey, a colour, above white (1.9, 1.3, 1.6
    and 3.5, 2.0, 2.9), slight negatives.
 2. **Identities exact:** `strength = 0`; inactive stage (f/64, f/0.99, NaN, pitch ≤ 0).
-3. **Tiling parity:** tiles with `halo` context equal the whole frame (reference: difference 0;
+3. **Tiling parity:** tiles with `halo` context equal the whole frame (measured difference 0;
    contract: ≤ 1e-4) at f/2.8, f/22 and f/45 (2.4 µm), for tiles in the interior and on the frame
    edges.
-4. **Square symmetries:** transpose, flip x and flip y commute with the stage (≤ 1e-5; reference: 0).
+4. **Square symmetries:** transpose, flip x and flip y commute with the stage (≤ 1e-5; measured 0).
 5. **Scale behaviour:** scaling the input by α together with `a → α·a`, `b → α²·b` (and `σ_row`,
    `q` by α) scales the output by α. Exact for α = 1/2 when the 1 DN floors and the clip threshold
    are not involved; ≤ 1e-5 for α = 0.7.
@@ -682,97 +680,76 @@ generator's PRNG is splitmix64 with Irwin–Hall normals (arithmetic only).
    1 DN floor); strength 3; f/1 to f/50.
 8. **Transfer:** the output luma (same weights) equals `L_s` to 2e-6 relative.
 9. **Noise:** a flat patch whose luma noise matches the model (one normal deviate shared by the
-   three channels) grows by at most 5 % at f/8 (reference: ×1.019 worst of ISO 100 and 6400).
+   three channels) grows by at most 5 % at f/8 (measured ×1.019, the worse of ISO 100 and 6400).
    Beyond about f/11 at 3.76 µm it grows (§7.1, item 1). Report the numbers; do not gate on them.
 10. **Sharpening works:** a step blurred by the PSF (f/16, 3.76 µm, ISO 100 noise) gets closer to
-    the sharp step (reference: summed squared error 5.30 → 3.31) and steeper (10–90 % rise
+    the sharp step (summed squared error 5.30 → 3.31) and steeper (10–90 % rise
     2.62 → 2.04 px).
-11. **Bessel J1** against tabulated values (≤ 1e-12 in the reference).
+11. **Bessel J1** against tabulated values (≤ 1e-12 measured).
 
 ### 6.3 Quality gate in Yellowmoon
 
-- **Synthetic.** Take sharp scenes (`synth::fine_text`, `synth::natural`, a slanted edge at 5°).
-  Blur them with the diffraction PSF of a given pitch and f-number (f/5.6, f/8, f/11, f/16, f/22).
-  Add model noise at ISO 100, 800 and 6400 with channel-correlated luma noise. Run R8 as
-  Richardson–Lucy Auto, then as Diffraction. Report:
+`cargo run -p ym-gpu --example capture_sharpen_ab` runs the synthetic comparison, and the ignored test `capture_sharpen_real_files_ab` of `ym-core` runs the real files (crops and `index.html` go to the git-ignored `testdata/capture_sharpen_ab/`).
+
+- **Synthetic.** Sharp scenes (`synth::fine_text`, `synth::natural`, a slanted edge at 5°) are blurred with the diffraction PSF of a given pitch and f-number (f/5.6, f/8, f/11, f/16, f/22). Model noise at ISO 100, 800 and 6400 is added, with channel-correlated luma noise. R8 runs as Richardson–Lucy Auto, then as Diffraction (and, from f/11, as the noise-gate variant of §7.1 item 1). The measures are:
   - MSE/PSNR against the sharp scene;
   - slanted-edge MTF50 and 10–90 % rise distance;
   - overshoot and undershoot as a percentage of the step;
   - luma noise SD in flat patches, relative to the input.
-- **Real files.** The local ARWs, and any at f/2.8, f/8 and f/16: edge profiles (10–90 % rise),
-  overshoot, and flat-patch noise. Put crops under "Waiting on Mykyta" in `docs/STATUS.md`.
-- **Suggested acceptance as a selectable method:** at f/8 and above, MTF50 at least that of RL
-  Auto, with no more overshoot and no more flat-patch noise. Below f/5.6 the two methods should be
-  close, because the diffraction PSF is then smaller than a pixel.
+- **Real files.** The local ARWs, and any at f/2.8, f/8 and f/16: edge profiles (10–90 % rise), overshoot and flat-patch noise.
+- **Acceptance criterion for making Diffraction selectable:** at f/8 and above, MTF50 at least that of Richardson–Lucy Auto, with no more overshoot and no more flat-patch noise. Below f/5.6 the two methods should be close, because the diffraction PSF is then smaller than a pixel. Neither variant meets it (§6.4).
 
-## 7. Evaluation notes and open questions
+### 6.4 Measured
 
-### 7.1 Evaluation notes (A/B candidates; none is the specified behaviour)
+Synthetic scenes at a 3.76 µm pitch, ISO 100 (MTF50 in cycles per pixel, edge rise 10 to 90 % in px, overshoot in % of the step, flat-patch luma noise after R7 relative to the input):
 
-1. **The gate opens on noise at small apertures.** The gate threshold is fixed at `0.5·P̄`, but the
-   white-noise value of `Q` (§3.8) rises with the PSF width: 0.40 at f/8, 0.58 at f/11, 0.75 at
-   f/16 and 0.85 at f/22 (3.76 µm). When the luma noise matches the model, flat-patch noise
-   therefore grows ×1.21 at f/11, ×1.56 at f/16 and ×1.79 at f/22. With uncorrelated channel noise
-   (luma variance well below the model) there is no growth. How much R7 leaves decides the real
-   effect, so measure it (§6.3). A candidate fix: scale the gate by the white-noise level. With
-   `q_w = 1 − 2·K₀ + Σ K²` from the plan and `f = max(1, 2·q_w)`, use `t = 0.5·f·P̄` and full gain
-   at `Q = f·P̄`. On the synthetic step at f/11 to f/32 this kept flat-noise growth at ×1.07 to
-   ×1.08, and the edge error improved slightly (f/16: 3.37 → 3.32; f/22: 4.86 → 4.78).
-2. **Spectral weight.** The specified weight rises towards blue (1.99 at 461 nm, flat from
-   540 nm), which makes the PSF slightly smaller than a luminance-weighted one. A/B a photopic-like
-   weight, `w(λ) = exp(−285.4·(λ/1000 − 0.559)²)` (a Gaussian fit to the photopic curve; the
-   reference implements it as `SpectralWeight::kPhotopic`). At 3.76 µm it moves r80 by about 3 %
-   (f/8: 3.71 → 3.84 µm; f/16: 7.43 → 7.67 µm), the centre tap by up to 6 % (f/8: 0.412 → 0.396;
-   f/16: 0.166 → 0.156) and σ_G by up to 5 %. R is unchanged except in a few cases (5.93 µm at
-   f/8: 2 → 3). A further option is the luma-weighted camera spectral sensitivity times a daylight
-   spectrum, from the profiled bodies' data.
-3. **Luma weights.** The specified weights are 0.299/0.587/0.114 on linear camera RGB. Yellowmoon's
-   `LUMA` (0.2126, 0.7152, 0.0722) puts more weight on green, the densest and least noisy CFA
-   channel. The weights enter `Y`, `d` (noise), the clip penalty and the transfer, so switch them
-   all together. Expect small differences on neutral edges and larger ones on saturated red and
-   blue edges.
-4. **Noise correlation.** The specified weight assumes fully correlated channels
-   (`d = Σ a_c·g0_c`). The uncorrelated form is `σ0² = r²·Σ (a_c·g0_c)²` and
-   `σ1 = g·Σ a_c²·g0_c` (neutral pixel), close to Yellowmoon's `luma_sigma_rgb`. A third option
-   is Yellowmoon's per-pixel σ map, which includes the vignetting gain: `w = 1/(S·σ_map)²`.
-   Compare at high ISO, where the gate matters.
-5. **Kernel radius.** The rule (§3.2) keeps one outer ring below 0.2 % of the peak. Using `R − 1`
-   would cut the halo by 1 px and the PSF convolutions by about a quarter. Check the effect on edge
-   profiles.
-6. **Two-luma form.** The stage can take a separate base luma `Y_b` (for example a smoother luma
-   from R7) beside the data luma `Y_d` (the luma of the RGB). Then `D`, `B`, `Hp` and `Z` come from
-   `Y_b`; `ε = Y_d − Z`, `w` and `Pc` come from `Y_d`; `L = Y_b + …`; and the transfer uses `Y_d`.
-   The layers and the high-pass are then taken from the smooth base, so the noise in `Y_d` reaches
-   the output only through the 9×9-fitted coefficients, and the output luma carries the base's
-   noise level. That is a possible answer to item 1 if R7 can provide such a luma. Default:
-   `Y_b = Y_d = Y`.
-7. **Ratio or additive transfer.** RL adds `Y' − Y` to all channels; this stage multiplies
-   (capped at 1.5). The ratio keeps hue and saturation on brightened edges but scales chroma noise
-   with the gain. Compare saturated edges (red and blue on dark) for fringes.
-8. **Stacking with RL.** Defocus and lens aberrations add blur that the Airy model does not
-   contain. Try Diffraction followed by RL at half its Auto amount, against either alone. Measure
-   MTF50, overshoot and noise.
-9. **Preview noise factor.** `s = min(2·scale, 1)` only matters for reduced images. If R8 ever runs
-   below full resolution, compare it with `binning_noise_factor(k)²`.
+| f | method | MTF50 | rise | overshoot | flat noise |
+|---|---|---|---|---|---|
+| 8 | input | 0.273 | 1.94 | 0.3 | ×1.000 |
+| 8 | Richardson–Lucy, Auto | 0.380 | 1.11 | 7.0 | ×1.255 |
+| 8 | diffraction | 0.340 | 1.26 | 1.7 | ×1.005 |
+| 16 | input | 0.184 | 2.63 | 0.3 | ×1.000 |
+| 16 | Richardson–Lucy, Auto | 0.238 | 2.17 | 1.0 | ×1.255 |
+| 16 | diffraction | 0.245 | 1.97 | 3.0 | ×1.577 |
+| 16 | diffraction with the noise gate | 0.244 | 1.97 | 3.0 | ×1.085 |
+| 22 | input | 0.152 | 3.15 | 0.3 | ×1.000 |
+| 22 | Richardson–Lucy, Auto | 0.180 | 2.68 | 0.6 | ×1.255 |
+| 22 | diffraction | 0.196 | 2.30 | 4.6 | ×1.759 |
+| 22 | diffraction with the noise gate | 0.196 | 2.30 | 4.6 | ×1.080 |
 
-### 7.2 Open questions (default in force meanwhile)
+- At ISO 100 Richardson–Lucy has the higher MTF50 at f/5.6 to f/11 (f/5.6 0.419 against 0.389, f/11 0.312 against 0.303) and Diffraction from f/16. Diffraction has less overshoot at f/5.6 and f/8 (1.1 and 1.7 % against 13.9 and 7.0 %) and more at f/16 and f/22.
+- The ISO moves the comparison, because the Auto amount of Richardson–Lucy falls as the ISO rises: at ISO 800 Diffraction has the higher MTF50 from f/11 (0.319 against 0.306), and at ISO 6400 from f/8 (0.314 against 0.299 at f/8, 0.289 against 0.264 at f/11, 0.227 against 0.201 at f/16), where at f/8 it also has less overshoot (4.7 against 5.6 %) and less flat-patch noise (×1.011 against ×1.141).
+- Flat-patch noise is ×1.00 to ×1.01 up to f/8 and ×1.20 to ×1.90 at f/11 to f/22 (above the ×1.10 bar of §7.1 item 1). The noise-gate variant brings it to ×1.08 to ×1.12 without changing the edge; five of the ISO 800 and 6400 cases at f/11 to f/22 stay marginally over (1.101 to 1.118). The overshoot criterion is met by neither variant at f/16 and f/22.
+- On the nine local real files the stage changes little, because the gate is closed on real flat areas (the R6 denoise and R7 leave less noise than the raw model says) and real edges are wider than the Airy blur alone: only four files gave a clean edge (MTF50 0.06 to 0.14). ILCE-6300 cRAW at f/8 goes from 0.141 to 0.148 with Diffraction, against 0.205 with Richardson–Lucy. Flat-patch noise on real files is ×1.000 from f/2.8 to f/8 and, for the one file at f/11 or more (ILCE-7M2 at f/22), ×1.019 on average ungated and ×1.010 gated. No real file at f/16 exists.
+- Speed: the CPU stage takes 0.5 to 1.0 s per megapixel on four loaded cores, so 30 to 60 s for a 60 MP frame. §10 has the device parity numbers; speed on a real GPU is a Mac check (M0-H4 in `docs/15-milestones.md`).
 
-1. **Fallback when inactive** (no f-number or no pitch): Richardson–Lucy with the resolved Auto
-   parameters, or no capture sharpening? *Default: RL.*
-2. **Amount mapping** (§2.5)? *Default: none, strength 1.*
-3. **Vignetting gain in the noise weight.** Corners carry `G(r)²` more variance than the model.
-   *Default: ignored, as specified.*
-4. **Pixel pitch source order.** *Default: registry, then EXIF crop factor, else inactive.*
-5. **Clip test.** R1's clip mask is not available in RGB at R8, so the stage uses the 0.8 threshold
-   on unbalanced values. In vignetting-corrected corners this can flag unclipped pixels, which only
-   means less sharpening there. *Default: threshold as specified.*
-6. **Lenses with a missing or wrong f-number** (manual lenses, adapters, teleconverters).
-   *Default: trust EXIF; a missing or zero f-number makes the stage inactive.*
-7. **Default R8 method.** *Default: Richardson–Lucy until Mykyta chooses (`docs/STATUS.md`).*
+## 7. Variants and fixed choices
 
-## 8. Reference notes
+### 7.1 Variants and known limits
 
-Choices the reference makes that an implementer might otherwise make differently:
+**Item 1 · The gate opens on noise at small apertures.** The gate threshold is fixed at `0.5·P̄`, but the white-noise value of `Q` (§3.8) rises with the PSF width: 0.40 at f/8, 0.58 at f/11, 0.75 at f/16 and 0.85 at f/22 (3.76 µm). When the luma noise matches the model, flat-patch noise therefore grows ×1.21 at f/11, ×1.56 at f/16 and ×1.79 at f/22. With uncorrelated channel noise (luma variance well below the model) there is no growth, so how much R7 leaves decides the real effect.
+
+The **noise-gate variant** `DiffractionPlan::with_noise_gate(true)` scales the gate by the white-noise level. With `q_w = 1 − 2·K₀ + Σ K²` from the plan (`white_noise_residual()`) and `f = max(1, 2·q_w)`, it uses `t = 0.5·f·P̄` and full gain at `Q = f·P̄`. It is identical to the plain stage up to f/8 at 3.76 µm (`f = 1`). A flat patch with luma noise matching the model grows by (plain against variant): f/11 ×1.208 against ×1.081, f/16 ×1.559 against ×1.075, f/22 ×1.786 against ×1.071, f/32 ×1.995 against ×1.074. On the synthetic step the edge error improves slightly (f/16 3.37 → 3.32, f/22 4.86 → 4.78). The product does not use the variant; the A/B tools do.
+
+**Item 3 · Luma weights.** The stage uses `SPEC_LUMA` = 0.299 / 0.587 / 0.114 on linear camera RGB, not Yellowmoon's `LUMA` (0.2126, 0.7152, 0.0722) of the other stages. The weights enter `Y`, `d` (noise), the clip penalty and the transfer, and `DiffractionPlan::new` takes them as one parameter so that all four change together.
+
+**Item 8 · Stacking with Richardson–Lucy.** One R8 method runs per frame. Defocus and lens aberrations add blur that the Airy model does not contain, but the two methods are not stacked.
+
+### 7.2 Fixed choices
+
+| Question | Choice |
+|---|---|
+| Fallback when inactive (no f-number or no pitch) | Richardson–Lucy with the resolved Auto parameters |
+| Mapping of the Sharpening Amount | None; `strength = 1` |
+| Vignetting gain in the noise weight | Ignored: corners carry `G(r)²` more variance than the model |
+| Pixel pitch source order | Registry, then EXIF crop factor, else inactive |
+| Clip test | R1's clip mask is not available in RGB at R8, so the stage uses the 0.8 threshold on unbalanced values. In vignetting-corrected corners this can flag unclipped pixels, which only means less sharpening there |
+| Lenses with a missing or wrong f-number (manual lenses, adapters, teleconverters) | EXIF is trusted; a missing or zero f-number makes the stage inactive |
+| Default R8 method | Richardson–Lucy; Diffraction is reachable only through the internal switch (§1.2) |
+
+## 8. Conventions of the implementation
+
+Choices that an implementer might otherwise make differently:
 
 - **Borders:** Yellowmoon's mirror rule (no repeated edge sample) for every window.
 - **Precision:** f64 accumulation for every window sum, convolution and product; an f64 solve; an
@@ -782,142 +759,37 @@ Choices the reference makes that an implementer might otherwise make differently
   weight stays positive on negative luma.
 - **Degenerate solve:** a non-finite coefficient leaves the pixel alone (all three coefficients 0,
   `ω = 1`).
-- **Single luma:** the base and data luma are the same plane `Y` (§7.1, item 6 describes the
-  two-luma form).
+- **Single luma:** the base and data luma are the same plane `Y`.
 - **Output in normalised units:** `out = in·k + off/S`, so flat fields, `strength = 0` and inactive
   plans are bit-exact identities.
-- **Strength:** an addition; `strength = 1` is the specified behaviour.
+- **Strength:** `strength = 1` is the base behaviour.
 - **Gate inputs:** `scale` outside (0, 1] reads as 1; `g0` must be positive and finite.
 - **Splat bounds:** contributions outside the 8×8 quadrant are dropped on every side (the upper
   bound never triggers).
-- **Bessel J1:** the reference's own series and asymptotic expansion (error below 1e-12); a library
+- **Bessel J1:** the implementation's own series and asymptotic expansion (§9); a library
   `j1` gives the same vectors within tolerance.
 
-## 9. Implementation notes (2026-10-13)
+## 9. The CPU implementation
 
-Where it lives: `ym-gpu/src/cpu/sharpen/diffraction.rs` (planner, stage, `DiffractionParams`, `DiffractionPlan`),
-`diffraction/eval.rs` (edge, MTF and noise measures of the A/B, not used by the render path), `CaptureSharpen` in
-`sharpen.rs`, `Stage::Sharpen(CaptureSharpen)` and the per-method halo in `tiling.rs`, the Diffraction arm of
-`Chain::run_tile`. In `ym-core`: `pipeline::raw::{pixel_pitch, diffraction_params, CaptureMethod,
-DEFAULT_CAPTURE_METHOD, RawParams::{diffraction, capture_sharpen}}` and `PhotoSource::{sensor, capture_method}`.
+Code: `crates/ym-gpu/src/cpu/sharpen/diffraction.rs` (planner, stage, `DiffractionParams`, `DiffractionPlan`), `diffraction/eval.rs` (edge, MTF and noise measures of the A/B, not used by the render path), `CaptureSharpen` in `cpu/sharpen.rs`, `Stage::Sharpen(CaptureSharpen)` and the per-method halo in `cpu/tiling.rs`, and the Diffraction arm of `Chain::run_tile`. In `ym-core`: `pipeline::raw::{pixel_pitch, diffraction_params, CaptureMethod, DEFAULT_CAPTURE_METHOD, RawParams::{diffraction, capture_sharpen}}` and `PhotoSource::{sensor, capture_method}`.
 
-- **Fidelity.** The Rust follows the reference operation by operation (planner `f64`, planes `f32`, `f64` accumulation
-  in the reference's order, no `mul_add`). All 13 image vectors agree **bit for bit** (maximum difference 0, tolerance
-  2e-5); the 10 planner vectors agree to 1.3e-8 (tolerance 1e-6); the numbers the reference's self-test prints
-  (squared error 5.30 to 3.31, rise 2.62 to 2.04 px, noise x1.019 at f/8, x1.21, x1.56, x1.79 at f/11, f/16, f/22,
-  luma of the output against `L_s` 8.1e-8, tiling parity 0, scale 1.1e-7) come out the same. The loops are organised by
-  rows so that they vectorise; each output sample sums the same terms in the same order.
-- **Bessel J1** (the one piece the spec leaves open): written here from Abramowitz and Stegun, the power series 9.1.10
-  below 12 and the Hankel expansion 9.2.5 above, terms summed until they grow. No library, so no new dependency
-  or notice. Error against Bessel's integral on `[0, 120]`: 8.6e-13.
-- **Noise.** `NoiseDn::r` that is `NaN` or infinite (a negative or infinite variance in `NoiseDn::from_model`) reads as 0,
-  so `sigma0` sits at its 1 DN floor, as the reference reads a bad variance; a negative `g` reads as 0. (For an infinite
-  variance the reference itself declares the stage inactive; the integration brief asks for 0, which is what is done.)
-- **Halo.** `DiffractionParams::halo_px()` is the plan's `10 + R + r_G` (0 when the stage is inactive), independent of the
-  gains and the noise; the planner caches kernel, `R`, `sigma_G` and halo by `(p_eff, N)` (eight entries), so the scheduler
-  can ask per tile. The 24 px cap belongs to Richardson-Lucy only. A tile with the halo equals the whole frame bit for bit,
-  and so do the 128-row bands of `DiffractionPlan::apply`, with one thread or four.
-- **Selection.** Internal: `RawParams::diffraction` is `Some` only when `PhotoSource::capture_method` asks for it
-  (`DEFAULT_CAPTURE_METHOD` is Richardson-Lucy) and the photo has an f-number from 1 to 50 and a pitch; otherwise, and
-  when the plan is inactive for the gains and the noise model, R8 is Richardson-Lucy with the resolved Auto values
-  (open question 1 stays as decided). `Chain` given an inactive Diffraction stage directly leaves the image unchanged.
-  No settings, IPC or export change; default renders are byte-identical.
-- **Pixel pitch.** `pixel_pitch` order: the registry body's `SensorGeometry` (`pitch = 1000 * sensor_width_mm /
-  active_width_px`; for a Lossless M or S file `scale = frame_width / active_width_px`), else the crop factor
-  `43266.6 / (crop * sqrt(W^2 + H^2))` with `W x H` the frame R8 receives (`scale = 1`, also for a reduced file), else
-  none; a pitch outside 0.5 to 20 um counts as not available (a registry value there is ignored, the crop factor then
-  tries). The crop factor is 2 % high on APS-C (nominal 1.5 against 1.53), as the spec says to expect. The registry
-  values are Sony's published figures, read through search excerpts of the pages (`docs/03`); 27 of 28 bodies have them.
-- **Noise-gate variant** (§7.1 item 1), `DiffractionPlan::with_noise_gate(true)`: `f = max(1, 2 q_w)` with `q_w` from
-  `white_noise_residual()`; the gate threshold and the full-gain point of `P` scale by `f`. Identical to the specified stage
-  up to f/8 at 3.76 um. Flat patch with luma noise matching the model, specified against variant: f/11 x1.208 against
-  x1.081, f/16 x1.559 against x1.075, f/22 x1.786 against x1.071, f/32 x1.995 against x1.074 (the spec quotes x1.07 to
-  x1.08). Not used by the product; for the A/B.
-- **A/B** (`cargo run -p ym-gpu --example capture_sharpen_ab`, and the ignored `capture_sharpen_real_files_ab` of `ym-core`;
-  crops and `index.html` in `testdata/capture_sharpen_ab/`, git-ignored). On synthetic scenes at 3.76 um the suggested acceptance of §6.3 is met
-  for MTF50 only from f/16 up at ISO 100 (from f/11 at ISO 800 and from f/8 at ISO 6400, where the Auto amount of
-  Richardson-Lucy is lower), and by neither variant as a whole: at f/16 and f/22 the stage has more
-  overshoot (3 to 10 % against 0.6 to 3.5 %) and, with the specified gate, more flat noise (x1.58 to x1.90 against
-  x1.14 to x1.26) than Richardson-Lucy Auto; the gate variant fixes the noise (x1.08 to x1.12) and not the overshoot.
-  *[Corrected in review: the first text said the overshoot and noise criteria were met by the gate variant;
-  the overshoot criterion is met by neither variant at f/16 and f/22.]* At f/8 it has less
-  overshoot (1.7 against 7.0 %) and no flat noise growth (x1.005 against x1.255) but a lower MTF50 (0.340 against 0.380
-  at ISO 100): Richardson-Lucy sharpens more at and below f/8, where the Airy blur is small. Details in `docs/05` R8.
-  On the real files the stage changes little, because the gate is closed on real flat areas (the R6 denoise and R7 leave
-  less noise than the raw model says) and real edges are wider than the Airy PSF alone.
+- **Fidelity.** The Rust follows the oracle operation by operation (planner f64, planes f32, f64 accumulation in the oracle's order, no `mul_add`). All 13 image vectors agree **bit for bit** (maximum difference 0, tolerance 2e-5); the 10 planner vectors agree to 1.3e-8 (tolerance 1e-6); the numbers of §6.2 come out as listed (squared error 5.30 to 3.31, rise 2.62 to 2.04 px, noise ×1.019 at f/8, ×1.21, ×1.56, ×1.79 at f/11, f/16, f/22, luma of the output against `L_s` 8.1e-8, tiling parity 0, scale 1.1e-7). The loops are organised by rows so that they vectorise; each output sample sums the same terms in the same order.
+- **Bessel J1.** Written from Abramowitz and Stegun, the power series 9.1.10 below 12 and the Hankel expansion 9.2.5 above, terms summed until they grow. No library, so no dependency or notice. Error against Bessel's integral on `[0, 120]`: 8.6e-13.
+- **Noise.** `NoiseDn::r` that is NaN or infinite (a negative or infinite variance in `NoiseDn::from_model`) reads as 0, so `sigma0` sits at its 1 DN floor; a negative `g` reads as 0.
+- **Halo.** `DiffractionParams::halo_px()` is the plan's `10 + R + r_G` (0 when the stage is inactive), independent of the gains and the noise. The 24 px cap belongs to Richardson–Lucy only. A tile with the halo equals the whole frame bit for bit, and so do the 128-row bands of `DiffractionPlan::apply`, with one thread or four.
+- **Selection.** `RawParams::diffraction` is `Some` only when `PhotoSource::capture_method` asks for the method (`DEFAULT_CAPTURE_METHOD` is Richardson–Lucy) and the photo has an f-number from 1 to 50 and a pitch. Otherwise, and when the plan is inactive for the gains and the noise model, R8 is Richardson–Lucy with the resolved Auto values. No settings, IPC or export change.
+- **Pixel pitch.** `pixel_pitch` takes, in order: the registry body's `SensorGeometry` (`pitch = 1000 · sensor_width_mm / active_width_px`; for a Lossless M or S file `scale = frame_width / active_width_px`); else the crop factor `43266.6 / (crop · √(W² + H²))` with `W × H` the frame R8 receives (`scale = 1`, also for a reduced file); else none. A pitch outside 0.5 to 20 µm counts as not available (a registry value there is ignored and the crop factor is tried). The crop factor is about 2 % high on APS-C (nominal 1.5 against 1.53). The registry values are Sony's published figures (`docs/03-camera-profiles.md`); 27 of 28 bodies have them, and the entries for the A7 III, A7 IV, A7C II, A7S III and A1 are marked `restated` (Sony's figures as restated by a retailer or reference site).
 
-Open questions raised by the work (for the owner): (1) which of the two noise gates for the Diffraction method if it ever
-becomes selectable; (2) whether to stack Diffraction and Richardson-Lucy (§7.1 item 8): on the real files Richardson-Lucy
-alone sharpens the clean f/8 edges more than the Airy model does, which suggests the real blur is wider than diffraction
-alone; (3) the pixel-width figures marked `restated` in the registry (A7 III, A7 IV, A7C II, A7S III, A1) should be read
-against Sony's own pages when a connected machine is available.
+## 10. The GPU kernel
 
+Files: `crates/ym-gpu/src/shaders/diffraction.wgsl` (the per-pixel stages as plain functions), `crates/ym-gpu/src/kernels/diffraction.rs` (`PreparedDiffraction`: upload, nine pipelines, tiling, `run_traced`; `encode_sharpen` for the device chain), `crates/ym-gpu/tests/gpu_diffraction.rs` (parity). The device chain runs the kernel as R8 when the stage is selected (`GpuChain`, `docs/17-gpu.md` section 11).
 
-## 10. As built on the GPU (2026-10-13)
-
-Where it lives: `ym-gpu/src/shaders/diffraction.wgsl` (the per-pixel stages as plain functions), `ym-gpu/src/kernels/diffraction.rs`
-(`PreparedDiffraction`: upload, nine pipelines, tiling, `run_traced`), `ym-gpu/tests/gpu_diffraction.rs` (parity). It is not
-wired into the render path: the raw stages still run the CPU reference.
-
-- **Split.** The planner stays on the CPU (it runs once per `(pitch, f-number)` and is cached there). `PreparedDiffraction::new`
-  takes the `DiffractionPlan` and uploads its `f32` kernel and the Gaussian taps (computed in `f64` with the CPU's expression,
-  rounded to `f32`); `sigma0^2`, `sigma1`, the strength, the gate factor, the gains `g0` and the luma weights all come from the
-  plan (`DiffractionPlan::g0()` and `luma()` give back the `f32` values it was made with), so the kernel cannot be run with others than the CPU's. Eleven dispatches over nine pipelines, as §5 lists them: luma, `w` and `Pc`;
-  envelopes; layers; Gaussian rows and columns (for `Y`, then for `Z = F1 + F2`); PSF convolutions and the residual; the 9 x 9 moments
-  as a row pass (the ten products `(w u) v` are formed at each tap, never stored) and a column pass fused with the solve; the 5 x 5
-  coefficient averages, the correction and the transfer over the tile's core. 124 bytes per pixel of compute rectangle, planes `f32`
-  in every storage mode (the envelope counts need exact `f32` order).
-- **Precision.** Window sums, convolutions, products and the Cramer solve are `f32`, in the CPU's order (x first, then y; PSF taps row
-  by row; Gaussian taps from the left). Measured on lavapipe: the 13 image vectors 8.9e-7 (tolerance 2e-5), random frames of 11 optics
-  x 6 scene kinds 5.1e-6, other strengths/scales/gates/luma weights/gains 3.6e-6, values from -0.05 to 4 with strength 3 4.3e-6,
-  sizes 1 x 1 to 7 x 7 9.2e-7, 2048 x 1365 through 512 px tiles 4.8e-7 (nothing above 1e-6 in 8.4 million samples). A replica of the CPU
-  port with the 9 x 9 moments summed in `f32` and the solve done in `f32` (same inputs otherwise) moved the corrected luma by at most
-  4e-4 DN on the worst pixels of the large frame and 0.011 DN (1.6e-7 normalised) on a hard noise-free edge scene; the ridge keeps the
-  3 x 3 system within a condition number of about 2000 (`(tr + lambda) / lambda` with `lambda = 0.0005 tr`).
-- **The luma has to be exact.** §3.13's "all `f32` stays within 1e-5" holds on small scenes, but on a 2048 x 1365 natural frame an
-  `f32` luma (1 to 2 ulp off the CPU's in a third of the pixels) gave 9.1e-5 at a handful of pixels, 7 of them above 5e-5: a neighbour
-  within an ulp of the centre flips the `>= 0` / `<= 0` counts of §3.5, and one count moves the pixel's envelope by up to 8 %.
-  The CPU port with only its luma replaced by the `f32` formula reproduces the GPU's worst pixels to 0.5 %. The shader forms `Y` as an
-  exact expansion (Dekker products, Knuth sums, `f32` only) and gets the CPU's bits (0 differences in 240000 pixels); the large frame
-  falls to 4.8e-7. It needs every rounded intermediate hidden from the shader compiler (an OR with a uniform that is always 0; an XOR in the first versions, replaced because an XOR applied twice cancels, `docs/17-gpu.md` K8): the
-  plain transformations returned error terms of exactly 0 on Mesa's lavapipe, and `fma` is not an alternative there (lowered to a
-  multiply and an add). Other drivers must be checked (M0-H4): `the_luma_plane_has_the_cpu_bits` fails if they fuse through the
-  barrier, and the stage then degrades to the 1e-4 level of the plain `f32` sum.
-- **Tiling.** A tile with the plan's exact halo (`10 + R + r_G`) gives exactly the bits of the whole-frame GPU run (tile sizes 32 to
-  100 over 203 x 157 at halos 13, 18 and 24); two runs are bit-identical in every storage mode. The perturbation reach found on the GPU
-  is 13 px at a 15 px halo and 17 at 19 (the outermost taps of the Gaussian and the PSF are tiny).
-- **Finding for the spec (not changed here).** On a noise-free smooth ramp every window is evenly spread, so §3.5 gives
-  `lower = upper = mid` up to rounding, `Y` sits within a rounding of both thresholds `Lm` and `Hm` of §3.6, and the dark/bright
-  split is decided by rounding. The CPU port itself moves by up to 3.5e-3 when such an input changes by 0.6 ulp, so no port can match
-  it there. §4 says flat fields come back exact, which holds; smooth noise-free gradients (a synthetic wedge without noise) are the
-  case it does not cover. Real frames and the vectors carry sensor noise (`sigma0 >= 1` DN), and the parity scenes here do too.
-
-### Independent review of the GPU kernel (2026-10-13)
-
-- **Against the C++ oracle on new scenes.** Six scenes that are not in the vectors (random discs, bars and gradients blurred by the
-  plan's PSF, with model noise; 131 x 97 at 4.3 um f/13, 64 x 73 at scale 0.5 with Rec. 709 luma and strength 1.7, 120 x 89 at 1.9 um
-  f/45, 5 x 3, a 1 x 61 strip, 160 x 110 at f/9 and low ISO): the CPU port equals the oracle bit for bit (difference 0), the GPU is
-  within 1.2e-6 of both.
-- **Luma bits.** 0 differences from the CPU's `f64` luma in 17.3 million further samples (uniform -0.05 to 4, 0 to 1, 0 to 0.05, and
-  14-bit grey, balanced and unbalanced values), in addition to the 240000 of `the_luma_plane_has_the_cpu_bits`.
-- **The ill-conditioned case is real.** On a noise-free scene quantised to 14 bits (a smooth gradient with hard-edged shapes) the GPU
-  differs from the CPU by up to 4.3e-3 in a handful of samples. Changing the last mantissa bit of every input sample moves the C++
-  oracle itself by up to 4.4e-3 on that scene (599 of 36864 samples above 1e-4, 15 above 1e-3), so no port can do better. With one
-  quantisation step of noise the GPU-CPU difference is 1.1e-6, and the oracle's own sensitivity to a one-ulp change of every sample is
-  5e-4 (which also breaks the exact ties that the GPU keeps, because its luma has the CPU's bits). Whoever wires the GPU path into
-  the viewport should keep the export on the CPU path (AGENTS.md rule 6): a preview and an export can differ in the last digits of such
-  regions, though not in the noisy frames measured here.
-- **Metal.** `wgpu-hal` 30.0.1 builds the library with `MTLCompileOptions` that set only the language version and `preserveInvariance`;
-  no math mode is chosen, so Metal's default (fast math) applies. The first Apple-silicon CI run (`docs/17-gpu.md` section 13) found
-  that the barrier (then an XOR with the runtime zero, now an OR), applied to the rounded results only, was not enough: LLVM rewrote the open error sum of `two_sum`
-  `(a - ad) + (b - bb)` into `(a + b) - (bb + ad)` = 0 and the luma was the plain f32 sum (30,304 of 60,000 off the CPU's). Every error term
-  now goes through the barrier too (the same sequence compiled with clang `-O2 -ffast-math`: 54 % of 2 million lumas off the f64 luma
-  before, none after, also with `-ffp-contract=fast`), and a **finite input sample is bounded** to `+-1e6 DN / (S max(sum |a_c|, 1))`
-  (about 15 times white) in the luma pass, so that no product of the solve can overflow f32 whatever order the compiler evaluates it in
-  (a 1e30 in one sample had left a non-finite sample on Metal). A frame within the bound is untouched; the CPU reference solves a sample
-  beyond it exactly in f64, so that is the one place where the two differ by design. The Mac run (M0-H4) confirms
-  `the_luma_plane_has_the_cpu_bits`, the large frame and `a_finite_sample_beyond_the_bound_acts_like_the_bound`.
-- **Tests added by the review.** `hostile_values_that_the_stage_acts_on_match_the_cpu` (the existing hostile test is an identity at f/1
-  and f/50, because the clip penalty gates the frame or the fit fades out, so it proved little about the solve: values -0.05 to 0.7 with
-  and without 1 % spikes up to 4, f/1 to f/8, the CPU must change the frame, |gpu - cpu| at most 1.3e-6) and
-  `a_non_finite_sample_stays_local_and_does_not_panic` (a NaN, an infinity or 1e30 changes nothing beyond the halo).
+- **Split.** The planner stays on the CPU (it runs once per `(pitch, f-number)` and is cached there). `PreparedDiffraction::new` takes the `DiffractionPlan` and uploads its f32 kernel and the Gaussian taps (computed in f64 with the CPU's expression, rounded to f32). `sigma0²`, `sigma1`, the strength, the gate factor, the gains `g0` and the luma weights all come from the plan (`DiffractionPlan::g0()` and `luma()` give back the f32 values it was made with), so the kernel cannot be run with others than the CPU's. Eleven dispatches over nine pipelines, as §5 lists them: luma, `w` and `Pc`; envelopes; layers; Gaussian rows and columns (for `Y`, then for `Z = F1 + F2`); PSF convolutions and the residual; the 9×9 moments as a row pass (the ten products `(w u) v` are formed at each tap, never stored) and a column pass fused with the solve; the 5×5 coefficient averages, the correction and the transfer over the tile's core. The kernel needs 124 bytes per pixel of compute rectangle; planes are f32 in every storage mode (the envelope counts need exact f32 order).
+- **Precision.** Window sums, convolutions, products and the Cramer solve are f32, in the CPU's order (x first, then y; PSF taps row by row; Gaussian taps from the left). Measured on lavapipe (maximum absolute difference, normalised units): the 13 image vectors 8.9e-7 (tolerance 2e-5); random frames of 11 optics × 6 scene kinds 5.1e-6; other strengths, scales, gates, luma weights and gains 3.6e-6; values from −0.05 to 4 with strength 3 4.3e-6; sizes 1×1 to 7×7 9.2e-7; 2048×1365 through 512 px tiles 4.8e-7 (nothing above 1e-6 in 8.4 million samples). A replica of the CPU port with the 9×9 moments summed in f32 and the solve done in f32 moved the corrected luma by at most 4e-4 DN on the worst pixels of the large frame and 0.011 DN (1.6e-7 normalised) on a hard noise-free edge scene; the ridge keeps the 3×3 system within a condition number of about 2000 (`(tr + λ)/λ` with `λ = 0.0005·tr`).
+- **The luma has to be exact.** The all-f32 implementation of §3.13 stays within 1e-5 on small scenes, but on a 2048×1365 natural frame an f32 luma (1 to 2 ulp off the CPU's in a third of the pixels) gave 9.1e-5 at a handful of pixels: a neighbour within an ulp of the centre flips the `≥ 0` / `≤ 0` counts of §3.5, and one count moves the pixel's envelope by up to 8 %. The shader therefore forms `Y` as an exact expansion (Dekker products, Knuth sums, f32 only; `exact_luma`) and gets the CPU's bits (0 differences in 240,000 pixels, and in 17.3 million further random, 14-bit, balanced and unbalanced lumas); the large frame falls to 4.8e-7. It needs every rounded intermediate and every error term hidden from the shader compiler (`opaque`: an OR with a uniform that is always 0; an OR because an XOR applied twice cancels, `docs/17-gpu.md` K8). `fma` is not used, because lavapipe lowers it to a multiply and an add.
+- **Fast-math (Metal).** Metal compiles with fast-math (`docs/17-gpu.md` section 13), which re-associates the open error sum of the Knuth sum `(a − ad) + (b − bb)` into `(a + b) − (bb + ad)` = 0 unless every error term goes through the barrier too (the same sequence compiled with clang `-O2 -ffast-math`: 54 % of 2 million lumas off the f64 luma without it, none with it, also under `-ffp-contract=fast`). The Dekker product needs no more than that: its partial products are exact in f32 (12-bit halves), so a contraction into fused multiply-adds cannot change a bit. A finite input sample is **bounded** to `±1e6 DN / (S·max(Σ|a_c|, 1))` (about 15 times white) in the luma pass, so that no product of the solve can overflow f32 whatever order the compiler evaluates it in (with `w ≤ 1` every moment stays below 1e12 and the determinant below 4e36). A frame within the bound is untouched; the CPU reference solves a sample beyond it exactly in f64, so that is the one place where the two differ by design. NaN and infinities are not bounded: they propagate, no further than the halo (tested). The test `the_luma_plane_has_the_cpu_bits` fails on a driver that fuses through the barrier, and the stage then degrades to the 1e-4 level of the plain f32 sum.
+- **Tiling.** A tile with the plan's exact halo (`10 + R + r_G`) gives exactly the bits of the whole-frame GPU run (tile sizes 32 to 100 over 203×157 at halos 13, 18 and 24); two runs are bit-identical in every storage mode. The perturbation reach found on the GPU is 13 px at a 15 px halo and 17 at 19 (the outermost taps of the Gaussian and the PSF are tiny).
+- **Ill-conditioned input.** On a noise-free smooth ramp every window is evenly spread, so §3.5 gives `lower = upper = mid` up to rounding, `Y` sits within a rounding of both thresholds `Lm` and `Hm` of §3.6, and the dark/bright split is decided by rounding. The CPU port itself moves by up to 3.5e-3 when such an input changes by 0.6 ulp, so no port can match it there. §4's exact flat fields hold; smooth noise-free gradients (a synthetic wedge without noise) are the case it does not cover. On a noise-free scene quantised to 14 bits (a smooth gradient with hard-edged shapes) the GPU differs from the CPU by up to 4.3e-3 in a handful of samples; changing the last mantissa bit of every input sample moves the C++ oracle itself by up to 4.4e-3 on that scene (599 of 36,864 samples above 1e-4, 15 above 1e-3). With one quantisation step of noise the GPU–CPU difference is 1.1e-6. Real frames and the vectors carry sensor noise (`sigma0 ≥ 1` DN), as do the parity scenes. A CPU render and a device render can therefore differ in the last digits of noise-free smooth regions, though not in the noisy frames measured.
+- **Against the oracle on new scenes.** Six scenes that are not in the vectors (random discs, bars and gradients blurred by the plan's PSF, with model noise; 131×97 at 4.3 µm f/13, 64×73 at scale 0.5 with Rec. 709 luma and strength 1.7, 120×89 at 1.9 µm f/45, 5×3, a 1×61 strip, 160×110 at f/9 and low ISO): the CPU port equals the oracle bit for bit, and the GPU is within 1.2e-6 of both.
+- **Tests added by the review.** `hostile_values_that_the_stage_acts_on_match_the_cpu` (values −0.05 to 0.7 with and without 1 % spikes up to 4, f/1 to f/8, the CPU must change the frame, |gpu − cpu| at most 1.3e-6) and `a_non_finite_sample_stays_local_and_does_not_panic` (a NaN, an infinity or 1e30 changes nothing beyond the halo); `a_finite_sample_beyond_the_bound_acts_like_the_bound` covers the bound.
+- **Not measured yet.** Speed on a real GPU is a Mac check (M0-H4 in `docs/15-milestones.md`). The Metal parity, tile and determinism suites run on the Apple-silicon CI runners (`docs/17-gpu.md` sections 1 and 13).

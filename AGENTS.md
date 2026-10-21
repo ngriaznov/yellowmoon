@@ -10,7 +10,7 @@ This repository starts as a specification. You turn it into the product, milesto
 
 ## Project facts given at handover
 
-The repository is `github.com/ngriaznov/yellowmoon`, on Mykyta's personal account like plugout (Yellowmoon is a personal art project, kept apart from the zerosize libraries). Mykyta gives the domain in his first message. Record both at the top of `docs/STATUS.md`.
+The repository is `github.com/ngriaznov/yellowmoon`, on the owner's personal account like plugout (Yellowmoon is a personal art project, kept apart from the zerosize libraries). The owner gives the domain in their first message. Record both at the top of `docs/STATUS.md`.
 
 ## Read first, in this order
 
@@ -25,7 +25,7 @@ The repository is `github.com/ngriaznov/yellowmoon`, on Mykyta's personal accoun
 ## Source of truth
 
 - `docs/` specs are authoritative. If a spec is ambiguous, pick the simplest reading that satisfies its acceptance criteria, write the decision into the spec in the same PR, and note it in `docs/STATUS.md`.
-- If a spec is wrong or contradicts another spec, stop work on that part, write the conflict into `docs/STATUS.md` under "Questions for Mykyta", and continue with other tasks.
+- If a spec is wrong or contradicts another spec, stop work on that part, write the conflict into `docs/STATUS.md` under "Questions for the owner", and continue with other tasks.
 - `design/mockups/*.html` define layout, copy and states. Match them, but not their colour and material: `docs/11-ui.md` wins there (dark glass, `design/screenshots-c2/`). Where a mockup is silent, follow `docs/11-ui.md`.
 
 ## Hard rules (never break these)
@@ -38,21 +38,21 @@ The repository is `github.com/ngriaznov/yellowmoon`, on Mykyta's personal accoun
 6. **One core, two front ends.** All image processing lives in Rust crates under `crates/`. The webview only displays results and sends commands. The CLI and the app must produce bit-identical exports for the same inputs and settings.
 7. **No network access from the app or CLI** except: the updater (checking `latest.json` and downloading the signed update from GitHub Releases), a first-run model download from our own releases if `docs/12` ever adopts one, and pages the user opens by clicking (ARRI's look page, GitHub help and issues), which open in the system browser. No telemetry, no analytics, no crash upload. Build and test tooling may download test data and dependencies.
 8. **Determinism.** Same input, settings and version give the same output bytes (except timestamps you are told to write). Seed anything random. Golden-image tests guard this.
-9. **[HUMAN] tasks are not yours.** Tasks marked [HUMAN] in `docs/15-milestones.md` need Mykyta (emails, legal checks, design of the Signature look, reviews and blind tests). V1 has no camera captures: don't plan work that needs them. Prepare everything around them, then list them in `docs/STATUS.md` under "Waiting on Mykyta". Never fake their outputs (no invented calibration data).
-10. **Secrets.** You generate the updater signing key yourself (M0-03, `docs/12`). The private key and its password never go into the repository, logs, PRs, issues or `STATUS.md`. Store them as GitHub repository secrets and in one local backup file outside the repository, and tell Mykyta where the backup is so he can move it to his password manager.
+9. **[HUMAN] tasks are not yours.** Tasks marked [HUMAN] in `docs/15-milestones.md` need the owner (emails, legal checks, design of the Signature look, reviews and blind tests). V1 has no camera captures: don't plan work that needs them. Prepare everything around them, then list them in `docs/STATUS.md` under "Waiting on the owner". Never fake their outputs (no invented calibration data).
+10. **Secrets.** You generate the updater signing key yourself (M0-03, `docs/12`). The private key and its password never go into the repository, logs, PRs, issues or `STATUS.md`. Store them as GitHub repository secrets and in one local backup file outside the repository, and tell the owner where the backup is so they can move it to their password manager.
 
 ## How to work
 
 - One task per branch and pull request, named `m1-07-logc4` style after the task ID. Keep PRs small enough to review.
 - Before writing code, re-read the task's acceptance criteria. Write the tests that prove them first or alongside the code.
 - A task is done when: its acceptance criteria pass in CI; `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `npm test`, `npm run build` pass; new public items have doc comments; the relevant spec and `docs/STATUS.md` are updated.
-- At a milestone gate, run the gate checks listed in `docs/15-milestones.md` and report the numbers in `docs/STATUS.md`. A failed gate is reported, never hidden or loosened. Gate thresholds change only when Mykyta agrees.
+- At a milestone gate, run the gate checks listed in `docs/15-milestones.md` and report the numbers in `docs/STATUS.md`. A failed gate is reported, never hidden or loosened. Gate thresholds change only when the owner agrees.
 - Raw files, training data and other large test data are never committed. Scripts in `tools/fetch/` download them into `testdata/` (git-ignored) with SHA-256 checks; CI caches them. Final model weights are the exception: they are small (a few MB) and are committed in `data/models/<name>/` together with their model card.
 - When you add a dependency, check its licence against `docs/14-licensing.md` and record it in the PR description.
 
 ## Environment
 
-Most crates build and test on Linux and macOS. GPU kernels are checked in CI on Mesa lavapipe (software Vulkan). The app shell, the native viewport, Metal behaviour and performance need a Mac. If you aren't on one, record that in `docs/STATUS.md` and list the Mac-only checks under "Waiting on Mykyta" (M0-H4).
+Most crates build and test on Linux and macOS. GPU kernels are checked in CI on Mesa lavapipe (software Vulkan). The app shell, the native viewport, Metal behaviour and performance need a Mac. If you aren't on one, record that in `docs/STATUS.md` and list the Mac-only checks under "Waiting on the owner" (M0-H4).
 
 ## Commands
 
@@ -73,10 +73,10 @@ tools/fetch/samples.sh                    # download CC0 sample ARWs into testda
 - Rust edition 2024, stable toolchain pinned in `rust-toolchain.toml`. `thiserror` in libraries, `anyhow` only in binaries. No `unwrap`/`expect` in library code outside tests, except on invariants with a comment.
 - Colour maths: f64 on the CPU reference path, f32 (f16 storage) on the GPU. Every GPU kernel has a CPU reference implementation and a parity test (max abs error stated in the test).
 - Identifiers use American spelling (`color`, `gray`); user-facing text uses British spelling ("Colour", "grey"), matching the mockups.
-- Frontend: React 19, TypeScript 5.8 strict, Vite 7, Vitest, Playwright, following github.com/ngriaznov/plugout. The interface uses glasscn components (MIT, a shadcn registry; source in `src/components/glass/`) on Tailwind 4 and Radix, themed by the tokens in `design/tokens.css` and `src/styles/glass-c2.css`, by the owner's decision of 2026-10-16 (`docs/16`). Our own components in `src/components/` wrap them; a control that glasscn has is never hand-written. The visual reference is `design/screenshots-c2/`; `design/mockups/` and `design/screenshots/` are the pre-glass design, kept for history.
+- Frontend: React 19, TypeScript 5.8 strict, Vite 7, Vitest, Playwright, following github.com/ngriaznov/plugout. The interface uses glasscn components (MIT, a shadcn registry; source in `src/components/glass/`) on Tailwind 4 and Radix, themed by the tokens in `design/tokens.css` and `src/styles/glass-c2.css` (`docs/16`). Our own components in `src/components/` wrap them; a control that glasscn has is never hand-written. The visual reference is `design/screenshots-c2/`; `design/mockups/` and `design/screenshots/` are the pre-glass design, kept for history.
 - UI copy: short, plain sentences. Say what happens. No exclamation marks, no "Oops", no jargon where a plain word works. Errors say what went wrong and what to do next.
 - Units in names: `_ev`, `_k` (kelvin), `_mired`, `_px`. Colour spaces in type names (`LinearAwg4`, `LogC4`, `CameraRgb`) so they can't be mixed silently.
 
 ## Status file
 
-Keep `docs/STATUS.md` current. It's how Mykyta follows progress without reading every PR: the current milestone, tasks done with links, gate numbers, "Waiting on Mykyta", "Questions for Mykyta" and known issues.
+Keep `docs/STATUS.md` current. It's how the owner follows progress without reading every PR: the current milestone, tasks done with links, gate numbers, "Waiting on the owner", "Questions for the owner" and known issues.

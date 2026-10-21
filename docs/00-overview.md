@@ -1,19 +1,21 @@
 # 00 · Overview
 
+This document says what Yellowmoon is, who it is for, what is in and out of scope, which design choices are fixed, and where to find each subject in the docs. It ends with a glossary.
+
 ## What Yellowmoon is
 
 A desktop raw processor for photos from Sony cameras. It reads ARW files, develops them automatically, and renders them with the colour of an ARRI ALEXA cinema camera (ALEV III sensor: ALEXA Classic, XT, SXT, Mini, LF and Mini LF). The user can pick a look, nudge a few controls, and export. Nothing is kept afterwards except the exported files.
 
-- Platform: macOS 14 Sonoma or later (owner's decision of 2026-10-17, `docs/16`), universal binary (Apple silicon and Intel). The photo is drawn by a native GPU view (wgpu on Metal).
-- Licence: Apache-2.0. A personal art project on Mykyta's GitHub account (`github.com/ngriaznov/yellowmoon`), set up like github.com/ngriaznov/plugout: GitHub Releases, a Homebrew cask in the same repo, and in-app auto-update.
+- Platform: macOS 14 Sonoma or later, universal binary (Apple silicon and Intel). The photo is drawn by a native GPU view (wgpu on Metal).
+- Licence: Apache-2.0. A personal art project, published at `github.com/ngriaznov/yellowmoon`. It is distributed through GitHub Releases, a Homebrew cask in the same repository, and in-app auto-update.
 - Two front ends on one Rust core: the Tauri app, and a command-line tool `ym` that gives bit-identical results.
-- Name: Yellowmoon, one word. The command is `ym` (decision 2026-10-12). Brand colour #FFC20E, the yellow moon mark.
+- Name: Yellowmoon, one word. The command is `ym`. Brand colour #FFC20E, the yellow moon mark.
 
 **Who it's for.** People who shoot Sony and want cinema-like colour without grading every photo: family, travel, everyday shooting. They expect it to "just work" and to look better than the camera JPEG and a generic LUT.
 
 **Quality bar.** Raw quality (demosaic, noise, detail, highlights) on par with Capture One at the same ISO, judged in blind A/B tests. Colour that matches what an ALEXA would have recorded of the same scene, judged against the ARRI reference pipeline and synthetic tests.
 
-**The point of the app (Mykyta, 2026-10-14).** Perfect ARRI-like colour on default settings, without fiddling with parameters, and it has to beat a camera raw processor followed by a static ARRI-like LUT (for example Resolve with a commercial emulation LUT). What a static LUT cannot do is what Yellowmoon must do well: follow each photo's light and content (today the per-photo light estimate driving the sensor map; later intelligent automatic settings). It is a photo app, not video: it may be brighter than a cinema LUT's placement of mid grey. How "beats a static LUT" is measured is being defined (STATUS, the dynamic-stage research).
+**The point of the app.** Perfect ARRI-like colour on default settings, without fiddling with parameters. It has to beat a camera raw processor followed by a static ARRI-like LUT (for example Resolve with a commercial emulation LUT). What a static LUT cannot do is what Yellowmoon must do well: follow each photo's light and content. Today that is the per-photo light estimate that drives the sensor map, the automatic exposure and white lift, and, where it is available, Apple Auto's per-photo settings (`docs/19-apple-auto.md`). It is a photo app, not video: it may be brighter than a cinema LUT's placement of mid grey. The comparison against a static LUT is a local-only study (`research/dynamic-vs-lut-*.md`); no gate threshold is set for it yet.
 
 ## Principles
 
@@ -58,16 +60,16 @@ A desktop raw processor for photos from Sony cameras. It reads ARW files, develo
 - ARQ pixel-shift files, SRF and SR2 (pre-ARW formats).
 - Non-Sony raw files.
 
-## Decisions already settled
+## Settled design choices
 
-Don't reopen these without new evidence. The reasoning is in `research/`.
+These are fixed unless new evidence turns up. The reasoning is in `research/`.
 
-| Area | Decision |
+| Area | Choice |
 |---|---|
 | Platform | macOS only for V1, universal build. |
-| Shell | Tauri 2 (React + TypeScript webview), `tauri-plugin-updater` and `-dialog`, as in plugout. The restart into an installed update is the app's own guarded `restart_app` command, not `tauri-plugin-process` (Tauri's restart cannot be vetoed while an export runs; `docs/12`, `docs/01` IPC). |
-| Viewport | The photo renders in a native wgpu surface on Metal behind a transparent webview. Fallback if compositing fails in M0: a native child view. |
-| Core | Rust workspace; image processing on the GPU (wgpu 30, WGSL compute) in f16 tiles of 1–2k px. CPU reference path for tests and machines without a usable GPU. |
+| Shell | Tauri 2 (React + TypeScript webview), `tauri-plugin-updater` and `-dialog`. The restart into an installed update is the app's own guarded `restart_app` command, not `tauri-plugin-process` (Tauri's restart cannot be vetoed while an export runs; `docs/12-distribution.md`, `docs/01-architecture.md` IPC). |
+| Viewport | The photo renders in a native wgpu surface on Metal behind a transparent webview, on the core's own graphics device. Fallback: PNG frames served on the `ym-frame` scheme, used for development on other systems and when the native surface cannot be made. |
+| Core | Rust workspace; image processing on the GPU (wgpu 30, WGSL compute) in f32 tiles of 1–2k px (`docs/17-gpu.md`). CPU reference path for tests and machines without a usable GPU. |
 | Decoder | Our own ARW decoder (Apache-2.0). rawler and LibRaw are CI oracles only. |
 | Camera profiles | V1 uses only available measurements: 11 bodies measured by Weta (rawtoaces-data, Apache-2.0). Registry keyed by Sony model ID; same-sensor siblings share; A7R IV is the default for everything else. A Sony file is never refused for lack of a profile. No measurements of our own in V1. |
 | ALEXA target | Our ALEV III spectral curve estimate (`data/alexa/`), shipped and labelled as an estimate. |
@@ -76,14 +78,15 @@ Don't reopen these without new evidence. The reasoning is in `research/`.
 | Working space | Linear AWG4 and LogC4. LogC3 looks run in LogC3 (EI 800) through an exact conversion. |
 | Display transform | ACES 2 output transform ported to WGSL as the default. ARRI's display LUTs only after the user imports them. |
 | Looks | ASC CDL then 3D LUT in LogC4, intensity 0–100%. Built-in Signature (default; a luma curve and saturation, parametric, ours) and Neutral (the identity). |
-| ML | Joint demosaic+denoise U-Net, 0.2–1 M parameters. Runtime: burn on the shared wgpu device or ort, decided by the M0 benchmark. Training in PyTorch; weights only from CC0/CC BY/Apache data (no own captures in V1). |
+| Auto | Yellowmoon's own rule-based Auto everywhere. Where Apple's on-device model is available, Apple Auto can set Auto's values per photo (`docs/19-apple-auto.md`); it is an app setting, on by default there. |
+| ML | Joint demosaic+denoise U-Net, 0.2–1 M parameters. Runtime: burn on the shared wgpu device or ort, decided by a benchmark on Apple hardware (`docs/07-ml-models.md`). Training in PyTorch; weights only from CC0/CC BY/Apache data (no own captures in V1). Until weights are trained, the classical demosaic and denoise run everywhere. |
 | Noise | Per-image Poisson–Gaussian estimate for every body, with priors fitted from public files. No calibration shoots in V1. Nothing stored. |
 | Lens | Sony's embedded correction tags (vignetting, distortion, CA). No Lensfun. |
 | Export | JPEG, TIFF, PNG; DNG as LinearRaw AWG4 with the look baked into pixels and a profile fitted to ACES 2. |
 | CLI | `ym` binary in the same workspace, shipped inside the app bundle, bit-identical to app exports. |
-| Persistence | Nothing per photo. Only imported looks and preferences (default look, display rendering choice, export defaults, watch-Downloads permission). |
-| UI | Dark glass (owner's decision, 2026-10-16): glasscn components on Tailwind 4 and Radix, Figtree, yellow `#FFC20E` only as a button accent, a still cool aurora, dark only, photo edge to edge. The visual reference is `design/screenshots-c2/`; see `docs/11` and `docs/16`. The earlier "Bold grid, white" design (`design/mockups/`, `design/screenshots/`) is kept for history. |
-| Distribution | plugout's release pipeline: version bump on main → signed updater artefacts → GitHub release → cask update. |
+| Persistence | Nothing per photo. Only imported looks and preferences (default look, display rendering choice, export defaults, watch-Downloads permission, Apple Auto switch and instructions). |
+| UI | Dark glass: glasscn components on Tailwind 4 and Radix, Figtree, yellow `#FFC20E` only as a button accent, a still cool aurora, dark only, photo edge to edge. The visual reference is `design/screenshots-c2/`; layout, size and copy come from `design/mockups/`; see `docs/11-ui.md` and `docs/16-risks-and-decisions.md`. |
+| Distribution | Version bump on main → signed updater artefacts → GitHub release → cask update (`docs/12-distribution.md`). |
 
 ## Glossary
 
@@ -105,7 +108,8 @@ Don't reopen these without new evidence. The reasoning is in `research/`.
 | ΔE00 | CIEDE2000 colour difference. Below ~1 is hard to see side by side. |
 | RFSE | Relative RMS error of a spectral curve, as a percentage of its peak. |
 | Stand-in profile | A camera profile used for a body that has none of its own (A7R IV by default). |
-| [HUMAN] | A task only Mykyta can do. |
+| Apple Auto | Optional per-photo Auto values from Apple's on-device model, on Macs where that model can look at a picture (`docs/19-apple-auto.md`). |
+| [HUMAN] | A task only the owner can do (emails, legal checks, design decisions, reviews and blind tests). |
 
 ## Where to find things
 
@@ -115,7 +119,7 @@ Don't reopen these without new evidence. The reasoning is in `research/`.
 | Colour maths and constants | `docs/02-colour-pipeline.md`, `data/` |
 | Camera detection and profiles | `docs/03-camera-profiles.md` |
 | ARW decoding | `docs/04-raw-decoding.md`, `research/notes/sony-arw-formats.md` |
-| Demosaic, highlights, lens, sharpening | `docs/05-raw-processing.md` |
+| Demosaic, highlights, lens, sharpening | `docs/05-raw-processing.md`, `docs/algorithms/` |
 | Noise | `docs/06-noise.md`, `research/notes/noise-estimation.md` |
 | Models and training | `docs/07-ml-models.md` |
 | Looks and the ARRI import wizard | `docs/08-looks.md` |
@@ -126,6 +130,7 @@ Don't reopen these without new evidence. The reasoning is in `research/`.
 | Tests and gates | `docs/13-testing.md`, `docs/test-photo-sources.md` |
 | Licences | `docs/14-licensing.md`, `NOTICE` |
 | The GPU path | `docs/17-gpu.md` |
+| Apple Auto | `docs/19-apple-auto.md` |
 | Task plan | `docs/15-milestones.md` |
 | Risks and open decisions | `docs/16-risks-and-decisions.md` |
 | Progress | `docs/STATUS.md` |

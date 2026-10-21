@@ -1,8 +1,8 @@
 # 15 · Milestones and tasks
 
-Five milestones run in sequence; each ends at a gate we can measure. Dates come after M0, once the spikes show the real effort. Work in task order within a milestone unless dependencies allow parallel work. The UI design is done (`design/`); M0 and M1 don't wait for UI work.
+Five milestones run in sequence; each ends at a gate that can be measured. Work in task order within a milestone unless dependencies allow parallel work. The UI design is in `design/`; M0 and M1 don't wait for UI work.
 
-Task format: **ID · title** (depends on) — what to build. *Done when:* acceptance criteria. [HUMAN] tasks are Mykyta's (`AGENTS.md` rule 9): prepare around them and list them in `docs/STATUS.md`.
+Task format: **ID · title** (depends on) — what to build. *Done when:* acceptance criteria. [HUMAN] tasks are the owner's (`AGENTS.md` rule 9): prepare around them and list them in `docs/STATUS.md`.
 
 **Environment note.** Most crates build and test on Linux and macOS. GPU kernels are tested on Linux CI with Mesa lavapipe (software Vulkan) for correctness. The app shell, the native viewport, Metal-specific behaviour and performance need a Mac; if you aren't running on one, say so in `STATUS.md` and leave those checks to [HUMAN M0-H4].
 
@@ -23,7 +23,7 @@ Install `templates/github/workflows/ci.yml` and `templates/deny.toml`; add `CHAN
 *Done when:* CI is green on a PR; a test PR adding a GPL crate fails `cargo deny`.
 
 **M0-03 · Release pipeline and updater** (M0-02)
-Generate the updater signing key and set the secrets (`docs/12` §Signing); install `release.yml` and `Casks/yellowmoon.rb` with the repository from the handover message; wire `updater.ts` (from plugout) and the update cell placeholder; sidecar build step with a stub `ym-cli`.
+Generate the updater signing key and set the secrets (`docs/12` §Signing); install `release.yml` and `Casks/yellowmoon.rb` for the project repository; wire `updater.ts` (from plugout) and the update cell placeholder; sidecar build step with a stub `ym-cli`.
 *Done when:* merging a version bump publishes `v0.0.1` with dmg, tarball, signature and `latest.json`, updates the cask; an installed 0.0.1 updates itself to 0.0.2 [checked on a Mac]; `brew install --cask` from the tap installs app and `ym --version`.
 
 **M0-04 · ARW container and metadata** (M0-01, M0-09)
@@ -52,9 +52,9 @@ Random-weight `jdd` of the starting architecture (`docs/07`) exported to ONNX; r
 
 **M0-10 · Validation data plan** (M0-09)
 `docs/validation-data.md`: for every gate in `docs/13`, the public dataset or oracle that replaces a test shoot (V1 has none), with licence, download script and what may be stored where.
-*Done when:* every gate has a data source; nothing in the plan needs Mykyta's camera.
+*Done when:* every gate has a data source; nothing in the plan needs a test shoot.
 
-**[HUMAN] M0-H4** Run the Mac-only checks (M0-06, M0-07 timings) if the agent isn't on a Mac. (Earlier drafts had M0-H1 to M0-H3 for the signing key, the repository name and the golden set: the agent now generates the key, the repository and domain come with the handover message, and the golden set comes from public sources.)
+**[HUMAN] M0-H4** Run the Mac-only checks (M0-06, M0-07 timings) if the agent isn't on a Mac. The agent generates the updater signing key, and the golden set comes from public sources.
 
 **Gate M0:** decoders match oracles for all V1 variants except M/S and ARW 6.0; viewport approach decided; 50 MP tiles render within memory; ML runtime chosen; a release has updated itself.
 
@@ -94,7 +94,7 @@ C1–C6 as one matrix per photo; Auto WB, Kelvin/tint, light presets, Pick white
 
 **M1-08 · Auto exposure** (M1-07)
 Algorithm in `docs/02`; burst consistency.
-*Done when:* on the golden set, auto exposure lands within ±0.5 EV of the camera's own exposure for ≥ 80% of photos, measured with G3 (decision 2026-10-13): our `EV_auto` minus the camera engine's gain, where the gain is `log2(0.18 / x)` and `x` is the scene-linear level the embedded JPEG renders as mid grey (quantile match of the JPEG against our scene-linear render at the JPEG's size; `tools/eval/autoexp.py`). This keeps the display transform and the camera's tone curve out of the exposure check. Outliers listed for Mykyta's review (M1-H5).
+*Done when:* on the golden set, auto exposure lands within ±0.5 EV of the camera's own exposure for ≥ 80% of photos, measured with G3: our `EV_auto` minus the camera engine's gain, where the gain is `log2(0.18 / x)` and `x` is the scene-linear level the embedded JPEG renders as mid grey (quantile match of the JPEG against our scene-linear render at the JPEG's size; `tools/eval/autoexp.py`). This keeps the display transform and the camera's tone curve out of the exposure check. Outliers are listed for the owner's review (M1-H5).
 
 **M1-09 · Tone stages** (M1-07, M0-07)
 C7 roll-off and toe, C8 LogC4, C9 primary grade; CPU + WGSL.
@@ -109,7 +109,7 @@ Port the output transform (CPU reference, then WGSL) for the four outputs in `do
 *Done when:* DRT gate vs OCIO vectors (≤ 1 code value at 10 bits).
 
 **M1-12 · Classical raw processing** (M0-07)
-R1 normalise and clip mask, R3 vignetting, R4 gains, R5 highlight reconstruction, R6 classical demosaic (Menon or LMMSE, pick by PSNR) + light denoise, R8 RL sharpening, R9 lens resample + auto crop; CPU + WGSL; a `lens-oracle` CI job that installs darktable on Ubuntu and compares with `darktable-cli`. *[Defaults today: M1-12 shipped Menon. The raw-algorithms package (`docs/algorithms/`) made the adaptive ratio demosaic the R6 default on 2026-10-13 (owner, `docs/16`; Menon, LMMSE, bilinear and log-guided stay selectable through a test-only switch), kept Richardson–Lucy as the R8 default (diffraction deconvolution is available; Mykyta's choice of the R8 default is open, `docs/STATUS.md`), and added output sharpening as a per-photo setting, default 100 %.]*
+R1 normalise and clip mask, R3 vignetting, R4 gains, R5 highlight reconstruction, R6 classical demosaic (Menon or LMMSE, pick by PSNR) + light denoise, R8 RL sharpening, R9 lens resample + auto crop; CPU + WGSL; a `lens-oracle` CI job that installs darktable on Ubuntu and compares with `darktable-cli`. *Current defaults (`docs/05`, `docs/algorithms/`): R6 is the adaptive ratio demosaic (Menon, LMMSE, bilinear and log-guided stay selectable through a test-only switch) followed by the single-frame denoise; R8 is Richardson–Lucy (diffraction deconvolution is available); output sharpening is a per-photo setting, default 100 %.*
 *Done when:* highlight gate; lens-correction gate against darktable-cli and the image checks (`docs/05`); demosaic PSNR reported on Kodak/McMaster.
 
 **M1-13 · Export writers** (M1-11)
@@ -124,9 +124,9 @@ Display encode with dither; JPEG/TIFF/PNG; ICC; EXIF copy; XMP `ym:` namespace; 
 `tools/golden` runner, `tools/fetch/golden.sh` (CC0 and free-licence tiers), references, CI job.
 *Done when:* CI fails on an unexplained ΔE00 > 0.5 change.
 
-**[HUMAN] M1-H3** Email HdM about a licence for the SXT curve (validation). **M1-H4** Decide on CIE-derived coefficient tables (`docs/14`). **M1-H5** Visual review of the golden set: colour, exposure, white balance. (No test shoots in V1: M1-H1 and M1-H2 moved to V2.)
+**[HUMAN] M1-H3** Email HdM about a licence for the SXT curve (validation). **M1-H4** Decide on CIE-derived coefficient tables (`docs/14`). **M1-H5** Visual review of the golden set: colour, exposure, white balance. (V1 has no test shoots; the captures are V2 work, below.)
 
-**Gate M1:** ALEXA curve, sensor map, illuminant, ARRI step, DRT, LUT, highlights and detection gates pass; the CLI renders the golden set; Mykyta's review accepts the colour direction.
+**Gate M1:** ALEXA curve, sensor map, illuminant, ARRI step, DRT, LUT, highlights and detection gates pass; the CLI renders the golden set; the owner's review accepts the colour direction.
 
 ---
 
@@ -178,7 +178,7 @@ Behind cargo feature `arw6`; lightcraft as reference/dependency; LibRaw master a
 Profile and fix against `docs/05` targets on M1 (8 GB) and an Intel Mac.
 *Done when:* targets met or the gaps documented with a plan.
 
-**[HUMAN] M2-H3** Email Sony about RDD 34-based decoding. **M2-H4** Provide GPU compute and run training. **M2-H5** Blind A/B of the A1 ISO ladder (evaluation-tier studio files) vs Capture One and DxO. (M2-H1 calibration frames and M2-H2 pixel-shift captures moved to V2.)
+**[HUMAN] M2-H3** Email Sony about RDD 34-based decoding. **M2-H4** Provide GPU compute and run training. **M2-H5** Blind A/B of the A1 ISO ladder (evaluation-tier studio files) vs Capture One and DxO. (Calibration frames and pixel-shift captures are V2 work, below.)
 
 **Gate M2:** demosaic, noise and ISO-ladder gates pass; all formats decode (ARW 6.0 pending Sony if needed).
 
@@ -221,12 +221,11 @@ Light, Colour (wheels), Detail, Curve (plot and histogram), RAW (camera card, sw
 
 **M3-09 · ARRI import wizard** (M1-10, M3-H2)
 Recogniser from `data/looks/arri-packages.json`, `tools/looks/fingerprint.py`, Downloads watcher, five-step UI, generic `.cube` question, `looks import/verify/default` CLI parity.
-*Done when:* wizard happy path and failure paths (wrong package, damaged look file, missing file) tested with synthetic packages; Mykyta imports the real packages successfully [M3-H4]. (0.1.3 reads ARRI Look Files too: `docs/08`.)
+*Done when:* wizard happy path and failure paths (wrong package, damaged look file, missing file) tested with synthetic packages; the owner imports the real packages successfully [M3-H4]. ARRI Look Files are read too (`docs/08-looks.md`).
 
 **M3-10 · Signature look** (M1-10, M3-H1)
 `looks bake` tool and contact sheets; ship `signature.json` once designed.
-*Done when:* Mykyta signs off the look.
-*Status (2026-10-14):* Signature shipped as candidate B (Mykyta's choice from the look preview) and made the default look; the name may change (M3-H1).
+*Done when:* the owner signs off the look.
 
 **M3-11 · Export panel and queue** (M1-13, M3-06)
 As mocked: options, estimate, CLI preview with Copy, queue states, cancel, Show in Finder, export-aware updater.
@@ -247,7 +246,7 @@ Every flag in `docs/10`; app/CLI byte-identical test.
 Playwright flows and screenshot comparisons for every mocked state.
 *Done when:* CI green.
 
-**M3-16 · Desktop feel** (M3-04, M3-06) *(added 2026-10-16 after the owner's report: "UI in Yellowmoon is sluggish. I can select UI text, when I pan photo with two fingers on trackpad - all app moves.")*
+**M3-16 · Desktop feel** (M3-04, M3-06)
 A two-finger pan or a pinch over the photo moves or zooms only the photo; nothing else on the page scrolls, bounces or zooms. Text is not selectable except fields, the command line, paths, errors, file names, version and legal text. Buttons have the arrow cursor and links the hand; WebKit's page menu (Reload, Back) never opens. `docs/11` §Photos input and desktop feel.
 *Done when:* `src/styles/desktop.node.test.ts`, the Vitest specs (`usePhotoGestures`, `desktopFeel`, `PhotoView`) and `e2e/desktop-feel.spec.ts` pass; on a Mac a two-finger pan at Fit and zoomed, over the header, the filmstrip, the panel's end stops and a dialog moves only the intended content, a pinch zooms the photo about the fingers, and nothing selects by drag, ⌘A, double click on the photo or triple click in the header [M0-H4].
 
@@ -269,7 +268,7 @@ The Look tab with hundreds of looks stays quick: one `IntersectionObserver` for 
 
 **[HUMAN] M3-H1** Design the Signature look and name it. **M3-H2** Download the five ARRI packages by hand and run the fingerprint script. **M3-H3** Email ARRI about in-app download (optional). **M3-H4** Review the app on a Mac against the mockups; import the real ARRI packages. **M3-H5** Use the app for one real shoot and report friction. **M3-H6** Check DNGs in Lightroom, RawTherapee, darktable, Capture One and Apple Photos.
 
-**Gate M3:** every mocked state implemented; app/CLI parity; DNG gates; Mykyta's review.
+**Gate M3:** every mocked state implemented; app/CLI parity; DNG gates; the owner's review.
 
 ---
 
@@ -277,20 +276,20 @@ The Look tab with hundreds of looks stays quick: one `IntersectionObserver` for 
 
 **M4-01 · Betas** 0.9.x releases to a small group; local panic log; triage. *Done when:* no open crash or data-loss bugs.
 **M4-02 · Hardening** 8 GB Macs, Intel Macs, 2000-file folders, corrupt files, disk-full during export. *Done when:* each case handled with a clear message.
-**M4-03 · Documentation** README (public, `README.md` draft in the package), user guide in `docs/user/`, CLI man page (`clap_mangen`), DNG notice. *Done when:* reviewed by Mykyta.
+**M4-03 · Documentation** README (public), user guide in `docs/user/`, CLI man page (`clap_mangen`), DNG notice. *Done when:* reviewed by the owner.
 **M4-04 · Accessibility** VoiceOver labels, focus order, keyboard-only use, contrast check of tab colours. *Done when:* checklist passes.
 **M4-05 · Fuzzing campaign** 8 hours per target. *Done when:* no open findings.
 **M4-06 · Release 1.0.0** *Done when:* gate passes and the release pipeline publishes it.
 
-**[HUMAN] M4-H1** Blind A/B of 50 A1 photos vs Capture One, Lightroom and DxO. **M4-H2** Decide on Apple Developer ID signing and notarisation; provide certificates if yes. *(Answered 2026-10-15: no; the app ships unsigned.)* **M4-H3** Trademark clearance (EUIPO, INPI, WIPO, UK IPO). **M4-H4** Freedom-to-operate check on US 11948279. **M4-H5** Announce.
+**[HUMAN] M4-H1** Blind A/B of 50 A1 photos vs Capture One, Lightroom and DxO. **M4-H2** Decide on Apple Developer ID signing and notarisation; provide certificates if yes. (Decided: no; the app ships unsigned.) **M4-H3** Trademark clearance (EUIPO, INPI, WIPO, UK IPO). **M4-H4** Freedom-to-operate check on US 11948279. **M4-H5** Announce.
 
-**Gate M4 (1.0):** whole-app blind A/B ≥ 50% preferred or tied; all earlier gates still pass; legal items closed or explicitly accepted by Mykyta.
+**Gate M4 (1.0):** whole-app blind A/B ≥ 50% preferred or tied; all earlier gates still pass; legal items closed or explicitly accepted by the owner.
 
 ---
 
 ## V2 backlog: controlled captures
 
-Not part of V1. When Mykyta is ready to shoot, these improve accuracy for the A1:
+Not part of V1. When the owner is ready to shoot, these improve accuracy for the A1:
 
 - Grey-card shots under daylight, shade, tungsten, LED and fluorescent (illuminant-estimator truth on the target body).
 - Flat fields and lens test shots per lens (vignetting and distortion truth).

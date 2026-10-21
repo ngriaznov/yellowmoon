@@ -1,23 +1,25 @@
-# Release signing: one-time setup [HUMAN]
+# Release signing [HUMAN]
 
-Status (2026-10-15): **the key exists; one step is Mykyta's.** At his request the agent generated the updater key pair (minisign, no password, like plugout's; public key ID `27EF00347147056C`), put the public key into `src-tauri/tauri.conf.json`, checked that the key signs and that the signature verifies against the public key, and handed the private key file to Mykyta as an attachment in the session (it is in no repository file, log or status text). The container that made it is discarded, so his copy is the only one besides the secret. Left for Mykyta: store the file in a password manager, then `gh secret set TAURI_SIGNING_PRIVATE_KEY --repo ngriaznov/yellowmoon < yellowmoon-updater.key` (the session's GitHub proxy does not allow the secrets API), and delete the download. No password secret: the key has none. Steps 1 to 4 below are the record of how such a key is made. Until you do, a version bump on `main` stops in the "Require the updater signing setup" step with an error that points here, and nothing is released: a version built without the public key could never update itself afterwards.
+How the updater signing key is created, stored, used by the release workflow and replaced. The in-app updater accepts an update only if its signature verifies against the public key built into the app, so the key is what makes every installed copy trust a release. Creating or replacing the key and setting repository secrets need admin rights on the repository, so they are the maintainer's steps. The release pipeline itself is in `docs/12-distribution.md`.
 
-## Why the agent did not do this
+## Current state
 
-`AGENTS.md` and `docs/12` say the agent creates the key and sets the secrets. In the environment that built the M0 skeleton that was not possible to do safely:
+- The updater key pair is a minisign pair. The private key has no password; its public key ID is `27EF00347147056C`.
+- The public key is in `src-tauri/tauri.conf.json` under `plugins.updater.pubkey`. It is safe to publish.
+- The private key is the repository secret `TAURI_SIGNING_PRIVATE_KEY`; its backup belongs in the maintainer's password manager (step 2 below). There is no `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secret because the key has none (GitHub cannot store an empty secret, so the release workflow uses the key without a password when the secret is absent).
+- The release workflow stops before building, with an error that points here, when the private-key secret is missing or `tauri.conf.json` still holds the `REPLACE_WITH_MINISIGN_PUBLIC_KEY …` placeholder. A version built without the public key could never update itself afterwards.
 
-- It had no authenticated `gh` with admin rights on `ngriaznov/yellowmoon`, so it could not set repository secrets. `docs/12` says to prepare the exact commands in that case. These are they.
-- The container is thrown away when the session ends. A key generated there would be lost, and the only way to hand it over would be to print it into a transcript. A leaked private key lets anyone ship an update to every installed copy, so we did not generate one.
+No key, password or secret is in this repository, and none belongs in this file, in a log, in a pull request or in `docs/STATUS.md`.
 
-No key, password or secret is in this repository, and none is in this file.
-
-## What you need
+## What the maintainer needs
 
 - Admin rights on the repository, and the GitHub CLI signed in: `gh auth login`, then `gh auth status`.
 - A checkout of the repository with `npm ci` done (the Tauri CLI is a dev dependency).
 - A password manager.
 
-## Steps
+## Creating a key pair
+
+Used for the first key and for a replacement. Never create the key in an environment that is discarded afterwards, and never print it into a transcript: a key that cannot be stored safely is lost, and a leaked one lets anyone ship an update to every installed copy.
 
 ### 1. Create the key pair
 
@@ -26,18 +28,18 @@ mkdir -p ~/.tauri && chmod 700 ~/.tauri
 npm run tauri signer generate -- -w ~/.tauri/yellowmoon.key
 ```
 
-The CLI asks for a password twice. Use a long random one from your password manager. Do not pass it with `-p` on the command line: it would end up in your shell history and in the process list.
+The CLI asks for a password twice. Use a long random one from the password manager, or an empty one for a key without a password. Do not pass the password with `-p` on the command line: it would end up in the shell history and in the process list.
 
 This writes two files:
 
 | File | What | Secret? |
 |---|---|---|
-| `~/.tauri/yellowmoon.key` | the private key (encrypted with your password) | **yes** |
+| `~/.tauri/yellowmoon.key` | the private key (encrypted with the password, if there is one) | **yes** |
 | `~/.tauri/yellowmoon.key.pub` | the public key | no, it goes into the repository |
 
-### 2. Back them up now
+### 2. Back them up
 
-Put the private key file's contents and its password in your password manager, as two entries or one entry with an attachment. **Losing the key means that installed copies of Yellowmoon can never auto-update again** (they would have to be reinstalled by hand), and leaking it lets anyone ship an update to them. Do this before step 3.
+Put the private key file's contents and its password in the password manager, as two entries or one entry with an attachment. Losing the key means that installed copies of Yellowmoon can never auto-update again (they have to be reinstalled by hand), and leaking it lets anyone ship an update to them. Do this before step 3.
 
 ### 3. Set the repository secrets
 
@@ -47,7 +49,7 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --repo ngriaznov/yellowmoon
 gh secret list --repo ngriaznov/yellowmoon
 ```
 
-The second command prompts for the value (the input is hidden); paste the password. The last command should list both names. A key without a password (plugout's has none) needs only the first secret: skip the second, since GitHub cannot store an empty one, and the release workflow then uses the key without a password. If the password is wrong the release fails at the signing step with an error about decoding the secret key.
+The second command prompts for the value (the input is hidden); paste the password. The last command lists the names that are set. A key without a password needs only the first secret: skip the second. If the password is wrong, the release fails at the signing step with an error about decoding the secret key.
 
 ### 4. Put the public key into the Tauri config
 
@@ -58,7 +60,7 @@ jq --arg k "$(cat ~/.tauri/yellowmoon.key.pub)" '.plugins.updater.pubkey = $k' \
 git diff src-tauri/tauri.conf.json
 ```
 
-The value replaces the `REPLACE_WITH_MINISIGN_PUBLIC_KEY …` placeholder in `plugins.updater.pubkey`. `jq` may re-indent the file; the diff should show the one changed value and nothing else that matters. (Editing the value by hand works just as well.) Commit it in its own pull request. The public key is safe to publish. The release workflow refuses to build while the placeholder is still there.
+The value replaces `plugins.updater.pubkey`. `jq` may re-indent the file; the diff should show the one changed value and nothing else that matters (editing the value by hand works just as well). Commit it in its own pull request.
 
 ### 5. Optional local check
 
@@ -72,28 +74,22 @@ ls /tmp/yellowmoon-signing-check.txt.sig && rm /tmp/yellowmoon-signing-check.txt
 
 The CLI asks for the password if it is not in the environment. Do not put the password in a file.
 
-### 6. First release
+## What a release needs from the key
 
-1. The first release is 0.1.0: the version and the `## [0.1.0]` section of `CHANGELOG.md` are already in place (later ones: `tools/release/bump-version.sh patch` and a new section, `docs/12`).
-2. Merge it into `main`. The Release workflow runs on macOS and:
-   - builds the two command-line binaries and merges them with `lipo`,
-   - builds the universal bundle and signs the updater tarball,
-   - publishes the GitHub release `v0.1.0` with `Yellowmoon_0.1.0_universal.dmg`, `Yellowmoon.app.tar.gz`, its `.sig` and `latest.json`,
-   - updates `Casks/yellowmoon.rb` (version and the dmg's SHA-256) and pushes it to `main`.
-3. Check the release page for the four files, and open `latest.json`: both `darwin-aarch64` and `darwin-x86_64` need a non-empty `signature`.
+A push to `main` that raises the version runs `release.yml` (`docs/12-distribution.md`, Release pipeline). With the secrets and the public key in place it builds the universal bundle, signs the updater tarball, and publishes the disk image, `Yellowmoon.app.tar.gz`, its `.sig` and `latest.json`. After a release, check the release page for the four files and open `latest.json`: both `darwin-aarch64` and `darwin-x86_64` need a non-empty `signature`.
 
-If `main` is protected, the last step (the cask commit) needs the `github-actions[bot]` to be allowed to push to it, or the step fails after the release was already published. Allow it in the branch protection rule, or tell the agent so it can switch the cask update to a pull request.
+If `main` is protected, the last step of the workflow (the cask commit) needs `github-actions[bot]` to be allowed to push to it, or the step fails after the release was published.
 
-### 7. Checks that need a Mac [M0-H4]
+## Checks that need a Mac [M0-H4]
 
 These are the M0-03 acceptance checks that no Linux container can run:
 
-1. Install 0.1.0 from the dmg, publish 0.1.1 the same way (`tools/release/bump-version.sh patch`), and confirm that the installed app finds the update, downloads it and restarts into 0.1.1. A "signature verification failed" message means the public key in the installed app does not match the secret key used in CI: redo steps 3 and 4 with one key pair.
+1. Install one release from the disk image, publish the next one (`tools/release/bump-version.sh patch`), and confirm that the installed app finds the update, downloads it and restarts into it. A "signature verification failed" message means the public key in the installed app does not match the secret key used in CI: redo steps 3 and 4 with one key pair.
 2. `brew tap ngriaznov/yellowmoon https://github.com/ngriaznov/yellowmoon && brew install --cask yellowmoon`, then `ym --version`. (Recent Homebrew may ask for `brew trust ngriaznov/yellowmoon` once.)
 
-## If something goes wrong later
+## If something goes wrong
 
 - **Lost the key or the password:** installed copies can no longer verify new updates. Generate a new pair (steps 1 to 4, with `-f` to overwrite) and publish a release that people install by hand. Say so in the release notes.
 - **Key leaked:** same as above, and delete the old secrets first (`gh secret delete TAURI_SIGNING_PRIVATE_KEY --repo ngriaznov/yellowmoon`).
-- **Apple code signing and notarisation** are not used: Yellowmoon ships without a Developer ID (Mykyta, 2026-10-15; `docs/12`, `docs/16`). The `APPLE_*` variables in `release.yml` stay commented; the README tells people how to allow the app to open.
-- **Newer Tauri CLIs** can bind a signature to the app version (`tauri signer sign --app-version`, set automatically by `tauri build`). Whether to turn on the updater's matching check is a later hardening decision; nothing here depends on it.
+- **Apple code signing and notarisation** are not used: Yellowmoon ships without a Developer ID (`docs/12-distribution.md`, Signing). The `APPLE_*` variables in `release.yml` stay commented; the README tells people how to allow the app to open.
+- **Newer Tauri CLIs** can bind a signature to the app version (`tauri signer sign --app-version`, set automatically by `tauri build`). The updater's matching check is not turned on; nothing here depends on it.
