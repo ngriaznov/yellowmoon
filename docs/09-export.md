@@ -161,7 +161,7 @@ Adobe's DNG patent licence is royalty-free and requires this notice "in a promin
 ### Gates
 
 - Every exported DNG passes `dng_validate` with no errors in CI.
-- `dng_validate` render vs our JPEG of the same photo: ΔE00 median ≤ 1.5 per file over the golden set, ≤ 2.5 for a file at ISO 12800 or above (`dngfit::check::median_limit_for`). There the denoised picture keeps a fine colour grain, and JPEG coding of that grain is most of the distance: the ISO 12800 chart measures 2.125 against the JPEG and 0.774 against the 16-bit PNG.
+- `dng_validate` render vs our JPEG of the same photo: ΔE00 median ≤ 1.5 over the golden set.
 - [HUMAN M3-H6] Opens in Lightroom Classic, RawTherapee, darktable, Capture One and Apple Photos; screenshots attached to the M3 report.
 
 ## Tests

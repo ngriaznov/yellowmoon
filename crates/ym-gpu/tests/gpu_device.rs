@@ -1238,6 +1238,7 @@ mod existing_kernels {
 
     #[test]
     fn the_method_a_denoise_kernel_reads_nothing_it_did_not_write() {
+        use ym_gpu::cpu::bm_dct::LevelNoise;
         use ym_gpu::cpu::frame_denoise::{DenoiseMethod, FrameDenoise};
         use ym_gpu::cpu::tiling::{Halo, Rect, tile_grid};
         use ym_gpu::kernels::bm_dct::{HALO_PX, frame_denoise, frame_denoise_core};
@@ -1255,6 +1256,19 @@ mod existing_kernels {
             chroma,
             radius,
             blend,
+            level: None,
+        };
+        // The chroma threshold per reference block (switch 8): the reference block's means are read from the
+        // scratch the prep wrote.
+        let level = FrameDenoise {
+            level: Some(LevelNoise {
+                a: 2e-4,
+                b: 3e-7,
+                gains: g0.map(f64::from),
+                encoding_gain: ym_gpu::cpu::denoise_space::WORKING_GAIN_EV.exp2(),
+                chroma_scale: 181.0,
+            }),
+            ..stage(10.0, 40.0, 1, 15.0)
         };
         neutral("method A", |g| {
             let images = images.clone();
@@ -1265,6 +1279,7 @@ mod existing_kernels {
                         stage(10.0, 40.0, 1, 15.0),
                         stage(10.0, 0.0, 2, 0.0),
                         stage(0.0, 40.0, 0, 15.0),
+                        level,
                     ] {
                         out.extend(frame_denoise(ctx, img, &fd)?.data);
                         // Tiles with the halo recycle the buffers of the tile before them.

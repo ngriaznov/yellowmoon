@@ -524,7 +524,8 @@ impl GpuGate {
     /// Twice the worst of the run on Mesa lavapipe over the 61 files of the default synthetic set with R6's
     /// single-frame denoise (pipeline 0.5.0, branch `claude/denoise`, 2026-10-21; the owner's option (a) of STATUS
     /// question 32): median 1.052e-4, p99 3.461e-2, maximum 3.213, share 2.131e-2. Metal gives the same numbers on
-    /// the ten-file subset. The first calibration (2026-10-15, pipeline 0.1.x: median 1.003e-4, p99 1.066e-2,
+    /// the ten-file subset. Pipeline 0.5.1 (method A's chroma threshold per block, luma-only blend) stays inside:
+    /// median 9.40e-5, p99 2.709e-2, maximum 3.890, share 2.08e-2. The first calibration (2026-10-15, pipeline 0.1.x: median 1.003e-4, p99 1.066e-2,
     /// maximum 1.855, share 3.66e-3) gave 2.1e-4, 2.2e-2, 3.8 and 7.4e-3.
     pub const CALIBRATED: Self = Self {
         median: 2.2e-4,

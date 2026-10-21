@@ -111,12 +111,12 @@ proposal): the ΔE00 of the 1/4 downsample (a box filter in linear light, CIEDE2
 99th percentile and a maximum under the gates, and the share of the samples of the full-resolution picture that differ by more than 8 codes of 16 bits
 must stay under its gate. The report (`--report FILE`) has, per file, the device `ym` reported, its notes, the ΔE00 statistics and the count.
 
-| Gate | Proposed (`plan`) | Calibrated (default, pipeline 0.5.0) | Lavapipe, 61 files, pipeline 0.5.0 (2026-10-21) | Ten-file subset, lavapipe and Metal alike | First calibration (pipeline 0.1.x, 2026-10-15) |
+| Gate | Proposed (`plan`) | Calibrated (default, pipeline 0.5.0) | Lavapipe, 61 files, pipeline 0.5.1 | Ten-file subset, lavapipe, pipeline 0.5.1 | First calibration (pipeline 0.1.x, 2026-10-15) |
 |---|---|---|---|---|---|
-| median ΔE00 | 0.02 | 2.2e-4 | worst 1.052e-4 (`D6500__ILCE-6400__iso400__rggb__12b__packed12`) | 1.0e-4 | 2.1e-4 (worst 1.003e-4) |
-| 99th percentile | 0.05 | 6.9e-2 | worst 3.461e-2 (the same file) | 2.61e-2 | 2.2e-2 (worst 1.066e-2) |
-| maximum | 0.5 | 6.5 | worst 3.213 (`D6500__ILCE-7RM4__iso12800__rggb__14b__lossless-l`) | 3.213 | 3.8 (worst 1.855) |
-| samples more than 8 codes off | 1e-3 | 4.3e-2 | worst 2.131e-2 (`D6500__ILCE-6400 packed12`) | 1.87e-2 | 7.4e-3 (worst 3.66e-3) |
+| median ΔE00 | 0.02 | 2.2e-4 | worst 9.40e-5 (`D6500__ILCE-7M3__iso400__rggb__12b__packed12`) | 8.8e-5 | 2.1e-4 (worst 1.003e-4) |
+| 99th percentile | 0.05 | 6.9e-2 | worst 2.709e-2 (`D6500__ILCE-1__iso400__rggb__12b__packed12`) | 2.39e-2 | 2.2e-2 (worst 1.066e-2) |
+| maximum | 0.5 | 6.5 | worst 3.890 (`D6500__ILCE-7RM4__iso12800__rggb__14b__lossless-l`) | 3.890 | 3.8 (worst 1.855) |
+| samples more than 8 codes off | 1e-3 | 4.3e-2 | worst 2.08e-2 (`D6500__ILCE-6400 packed12`) | 1.81e-2 | 7.4e-3 (worst 3.66e-3) |
 
 The first proposal calls its gates "proposed ... calibrated on the first lavapipe run", and the project's rule for a calibrated number is twice the first measured value, so the default is twice
 the worst of the 61 files. **Recalibrated for pipeline 0.5.0** (2026-10-21, Mykyta's option (a) of STATUS question 32): R6's single-frame denoise (method A, `docs/algorithms/05`) makes hard decisions (a coefficient against its threshold, the order of block distances); where one lies within rounding of f32 against f64 the device and the CPU take different sides, and a flip moves the 8 blocks of a group, so on the charts' hard patch edges the count and the 99th percentile grow. The device's numbers are identical on lavapipe and on Metal (macOS 14 and 15), and on the owner's photo the device stays far inside the gates (median 1e-4, p99 4e-4, worst 0.044). The first calibration (Mesa 25.2, LLVM 20.1, commit 4c5939f plus the GPU checks, 2026-10-15) is kept in the last column. The first calibration was **tighter than the proposal for the median and the 99th percentile

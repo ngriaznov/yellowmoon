@@ -3,11 +3,11 @@
 //!
 //! The WGSL port (`shaders/bm_dct*.wgsl`) of [`FrameDenoise::apply`] for [`DenoiseMethod::BmDct`]: the working
 //! encoding `srgb(2^gain x)` of [`denoise_space`](crate::cpu::denoise_space), BT.709 Y/Cb/Cr, method A
-//! ([`crate::cpu::bm_dct::denoise`]: the passes of A.5, the group, the 3D transform, the hard threshold, the
-//! aggregation), back to RGB, the blend with the encoded input, the decoding. [`encode_frame_denoise`] is the
-//! device-in, device-out entry point (`docs/17-gpu.md` section 3) the device chain records as R6's step
-//! (`chain.rs`, `PostStep::FrameDenoise`); [`frame_denoise`] and [`frame_denoise_core`] are the host wrappers the
-//! parity tests use.
+//! ([`crate::cpu::bm_dct::denoise`]: the passes of A.5, the group, the chroma threshold of each reference block,
+//! the 3D transform, the hard threshold, the aggregation, the blend of Y with the input's), back to RGB, the
+//! decoding. [`encode_frame_denoise`] is the device-in, device-out entry point (`docs/17-gpu.md` section 3) the
+//! device chain records as R6's step (`chain.rs`, `PostStep::FrameDenoise`); [`frame_denoise`] and
+//! [`frame_denoise_core`] are the host wrappers the parity tests use.
 //!
 //! # Dispatches
 //!
@@ -19,6 +19,23 @@
 //! With `R = 1` (`s = 6`) that is 16 regular passes and up to 9 extra ones, so 18 to 27 dispatches per tile. A
 //! frame under 8 px or strengths that filter no channel take one dispatch, `bm_dct_output` alone, which encodes
 //! and decodes the input as the CPU does.
+//!
+//! # The chroma threshold per reference block
+//!
+//! With the photo's noise given ([`FrameDenoise::level`], [`LevelNoise`]), Cb and Cr of a reference block take
+//! `tau_C = chroma_scale sigma_C(m)`, where `m` is the block's mean Y, Cb and Cr of the input planes. Switch 8
+//! of the uniform block turns it on (only when Cb and Cr are filtered); `a`, `b`, the encoding's gain and
+//! `chroma_scale` are in `lvl`, the gains in `gains`, all from the plan's `level` (`cpu::bm_dct::device_plan`, so
+//! the numbers are never typed twice). In the pass kernel three threads of an idle subgroup sum the block's 64
+//! samples of each channel in the CPU's raster order (`bm_block_mean`) while the distances are formed; three
+//! threads, one per subgroup, take the noise variance of R, G and B at the means (`bm_level_var`: R, G and B of
+//! the means, the decoding, the slope `G srgb'(G v)` with the kernel's own power) while the distances are
+//! summed; and one thread turns them into `tau_C` (`bm_tau_of`: the weights squared in `f64` on the host, the
+//! root correctly rounded in integers, `bm_sqrt`) while thread 0 forms the group, into workgroup memory
+//! before the transforms (`bm_chroma_tau` is the same arithmetic in one call, which a test runs). The
+//! threshold is a function of the reference block's pixels, so a tile still gives the whole frame's bits.
+//! Against the CPU's `f64` it agrees to a few `f32` ulp (`tests/gpu_bm_dct.rs` measures it); a coefficient
+//! within that of `tau_C` can go the other way, which the parity bounds count as decisions.
 //!
 //! # Exactness and order
 //!
@@ -64,7 +81,7 @@ use bytemuck::{Pod, Zeroable};
 
 use super::shader::KernelId;
 use super::util::GROUP;
-use crate::cpu::bm_dct::{self, BmDctParams, DevicePlan};
+use crate::cpu::bm_dct::{self, DevicePlan, LevelNoise};
 use crate::cpu::denoise_space::{WORKING_GAIN_EV, knee_and_slope};
 use crate::cpu::frame_denoise::{DenoiseMethod, FrameDenoise};
 use crate::cpu::tiling::Rect;
@@ -103,7 +120,8 @@ struct BmU {
     frame: [u32; 4],
     /// First reference column and row of the pass (frame coordinates), their spacings.
     refs: [u32; 4],
-    /// Switches (1 luma, 2 chroma, 4 blend), mode (output: 0 encode and decode, 1 filtered).
+    /// Switches (1 luma, 2 chroma, 4 blend, 8 the chroma threshold per reference block), mode (output: 0
+    /// encode and decode, 1 filtered).
     ctl: [u32; 4],
     /// Core `x`, `y`, width and height in the buffer.
     core: [u32; 4],
@@ -111,21 +129,17 @@ struct BmU {
     io: [u32; 4],
     /// `tau Y`, `tau C`, `theta`, the blend weight `B / 100`.
     tau: [f32; 4],
+    /// The noise of the chroma threshold per reference block (switch 8, [`LevelNoise`]): `a`, `b`, the
+    /// encoding's gain `G`, `chroma_scale`.
+    lvl: [f32; 4],
+    /// The gains `g_c` of R, G and B, 0.
+    gains: [f32; 4],
     /// `K(i, j)`, row-major.
     kwin: [[f32; 4]; 16],
 }
 
-/// The method A parameters of a stage.
-fn params_of(fd: &FrameDenoise) -> BmDctParams {
-    BmDctParams {
-        luma: fd.luma,
-        chroma: fd.chroma,
-        radius: fd.radius,
-        blend: fd.blend,
-    }
-}
-
-/// Checks the stage.
+/// Checks the stage: method A, finite strengths, and a level noise (if any) whose numbers are finite as `f32`,
+/// the precision the kernel reads them in.
 fn check(fd: &FrameDenoise) -> Result<(), GpuError> {
     if fd.method != DenoiseMethod::BmDct {
         return Err(GpuError::InvalidInput(format!(
@@ -138,12 +152,33 @@ fn check(fd: &FrameDenoise) -> Result<(), GpuError> {
             "method A: the strengths must be finite, got {fd:?}"
         )));
     }
+    if let Some(l) = &fd.level {
+        let (lvl, gains) = level_uniform(l);
+        if !lvl.iter().chain(&gains).all(|v| v.is_finite()) {
+            return Err(GpuError::InvalidInput(format!(
+                "method A: the level noise must be finite, got {l:?}"
+            )));
+        }
+    }
     Ok(())
 }
 
 /// The plan of a buffer, `None` when the method changes nothing there.
 fn plan_of(width: usize, height: usize, place: Placement, fd: &FrameDenoise) -> Option<DevicePlan> {
-    bm_dct::device_plan(width, height, place, &params_of(fd))
+    bm_dct::device_plan(width, height, place, &fd.bm_dct_params())
+}
+
+/// The uniform's `lvl` and `gains` of a level noise.
+fn level_uniform(l: &LevelNoise) -> ([f32; 4], [f32; 4]) {
+    (
+        [
+            l.a as f32,
+            l.b as f32,
+            l.encoding_gain as f32,
+            l.chroma_scale as f32,
+        ],
+        [l.gains[0] as f32, l.gains[1] as f32, l.gains[2] as f32, 0.0],
+    )
 }
 
 /// The dispatches [`encode_frame_denoise`] records for a `width` x `height` buffer at `place`: the prep, one
@@ -211,12 +246,16 @@ fn base_uniform(sh: Shapes, core: Rect, plan: Option<&DevicePlan>, fd: &FrameDen
     }
     let place = sh.place;
     let (width, height) = sh.size;
-    let (switches, tau) = match plan {
+    let (switches, tau, (lvl, gains)) = match plan {
         Some(p) => {
             let blend = fd.blend > 0.0;
+            let chroma = p.active[1] && p.active[2];
+            // The chroma threshold per reference block, when Cb and Cr are filtered at all.
+            let level = p.level.filter(|_| chroma);
             let switches = u32::from(p.active[0])
-                | (u32::from(p.active[1] && p.active[2]) << 1)
-                | (u32::from(blend) << 2);
+                | (u32::from(chroma) << 1)
+                | (u32::from(blend) << 2)
+                | (u32::from(level.is_some()) << 3);
             let t = if blend {
                 (fd.blend / 100.0).min(1.0) as f32
             } else {
@@ -225,9 +264,10 @@ fn base_uniform(sh: Shapes, core: Rect, plan: Option<&DevicePlan>, fd: &FrameDen
             (
                 switches,
                 [p.tau[0] as f32, p.tau[1] as f32, p.theta as f32, t],
+                level.as_ref().map_or(([0.0; 4], [0.0; 4]), level_uniform),
             )
         }
-        None => (0, [0.0; 4]),
+        None => (0, [0.0; 4], ([0.0; 4], [0.0; 4])),
     };
     BmU {
         buf: [
@@ -253,6 +293,8 @@ fn base_uniform(sh: Shapes, core: Rect, plan: Option<&DevicePlan>, fd: &FrameDen
             sh.output.1 as u32,
         ],
         tau,
+        lvl,
+        gains,
         kwin,
     }
 }
@@ -444,9 +486,14 @@ fn vec4_lit(v: [f64; 4]) -> String {
     )
 }
 
+fn vec3_lit(v: [f64; 3]) -> String {
+    format!("vec3<f32>({}, {}, {})", lit(v[0]), lit(v[1]), lit(v[2]))
+}
+
 /// The constants of the kernels, written from the CPU reference (`docs/17-gpu.md` K7): those of
-/// `working_encoding.wgsl`, which the false-colour gate (`kernels::false_color`) includes too, and the DCT
-/// matrix.
+/// `working_encoding.wgsl`, which the false-colour gate (`kernels::false_color`) includes too, the DCT
+/// matrix, and the squared weights of R, G and B in Cb and Cr of the chroma noise
+/// (`cpu::bm_dct::LevelNoise::chroma_sigma`, each square formed in `f64` as there).
 pub(super) fn constants() -> String {
     use std::fmt::Write as _;
     let (knee_x, slope, knee_y) = knee_and_slope();
@@ -467,10 +514,16 @@ pub(super) fn constants() -> String {
         ("BM_CR_DIV", CR_DIV),
         ("BM_INV_RT_GAIN", 1.0 / gain),
         ("BM_TWO_OVER_LN2", 2.0 / ln2),
+        // The slope of the power segment, `1.055 / 2.4 v^(1 / 2.4 - 1)` (`denoise_space::srgb_slope`).
+        ("BM_SRGB_DA", SRGB_A / SRGB_GAMMA),
     ] {
         let _ = writeln!(s, "const {name}: f32 = {};", lit(v));
     }
-    for (name, v) in [("BM_GAMMA", SRGB_GAMMA), ("BM_INV_GAMMA", 1.0 / SRGB_GAMMA)] {
+    for (name, v) in [
+        ("BM_GAMMA", SRGB_GAMMA),
+        ("BM_INV_GAMMA", 1.0 / SRGB_GAMMA),
+        ("BM_DEXP", 1.0 / SRGB_GAMMA - 1.0),
+    ] {
         let (hi, lo) = pair(v);
         let _ = writeln!(s, "const {name}_HI: f32 = {hi};");
         let _ = writeln!(s, "const {name}_LO: f32 = {lo};");
@@ -498,6 +551,17 @@ pub(super) fn constants() -> String {
         let _ = writeln!(s, "const BM_EC{n}: vec4<f32> = {};", vec4_lit(col(&even)));
         let _ = writeln!(s, "const BM_OC{n}: vec4<f32> = {};", vec4_lit(col(&odd)));
     }
+    let (wb, wr) = bm_dct::chroma_weights();
+    let _ = writeln!(
+        s,
+        "const BM_WCB2: vec3<f32> = {};",
+        vec3_lit(wb.map(|w| w * w))
+    );
+    let _ = writeln!(
+        s,
+        "const BM_WCR2: vec3<f32> = {};",
+        vec3_lit(wr.map(|w| w * w))
+    );
     s
 }
 
@@ -547,7 +611,7 @@ mod tests {
     use naga::valid::{Capabilities, ValidationFlags, Validator};
 
     use super::*;
-    use crate::cpu::denoise_space::{srgb_decode, srgb_encode};
+    use crate::cpu::denoise_space::{srgb_decode, srgb_encode, srgb_slope};
     use crate::device::StorageMode;
     use crate::kernels::shader_source;
 
@@ -612,6 +676,8 @@ mod tests {
                 ("core", offset_of!(BmU, core)),
                 ("io", offset_of!(BmU, io)),
                 ("tau", offset_of!(BmU, tau)),
+                ("lvl", offset_of!(BmU, lvl)),
+                ("gains", offset_of!(BmU, gains)),
                 ("kwin", offset_of!(BmU, kwin)),
             ];
             assert_eq!(members.len(), want.len(), "{id:?}");
@@ -623,7 +689,8 @@ mod tests {
         }
     }
 
-    /// The sRGB constants typed here, in the formula of `denoise_space`, give its curve bit for bit.
+    /// The sRGB constants typed here, in the formula of `denoise_space`, give its curve, its inverse and its
+    /// slope bit for bit.
     #[test]
     fn the_srgb_constants_are_those_of_the_working_encoding() {
         let (knee_x, slope, knee_y) = knee_and_slope();
@@ -641,10 +708,18 @@ mod tests {
                 ((y + SRGB_B) / SRGB_A).powf(SRGB_GAMMA)
             }
         };
+        let slope_of = |v: f64| {
+            if v < knee_x {
+                slope
+            } else {
+                SRGB_A / SRGB_GAMMA * v.powf(1.0 / SRGB_GAMMA - 1.0)
+            }
+        };
         for i in -200..4000 {
             let v = f64::from(i) * 1.37e-3;
             assert_eq!(enc(v).to_bits(), srgb_encode(v).to_bits(), "encode {v}");
             assert_eq!(dec(v).to_bits(), srgb_decode(v).to_bits(), "decode {v}");
+            assert_eq!(slope_of(v).to_bits(), srgb_slope(v).to_bits(), "slope {v}");
         }
     }
 
@@ -675,6 +750,19 @@ mod tests {
             constant("BM_INV_GAMMA_LO"),
             (1.0 / SRGB_GAMMA - f64::from(hi)) as f32
         );
+        let dexp = 1.0 / SRGB_GAMMA - 1.0;
+        let hi = constant("BM_DEXP_HI");
+        assert_eq!(hi, dexp as f32);
+        assert_eq!(constant("BM_DEXP_LO"), (dexp - f64::from(hi)) as f32);
+        assert_eq!(constant("BM_SRGB_DA"), (SRGB_A / SRGB_GAMMA) as f32);
+        // The squared weights of the chroma noise, as `LevelNoise::chroma_sigma` forms them.
+        let (wb, wr) = bm_dct::chroma_weights();
+        assert_eq!(wb, [-KR / CB_DIV, -KG / CB_DIV, (1.0 - KB) / CB_DIV]);
+        assert_eq!(wr, [(1.0 - KR) / CR_DIV, -KG / CR_DIV, -KB / CR_DIV]);
+        for (name, w) in [("BM_WCB2", wb), ("BM_WCR2", wr)] {
+            let line = format!("const {name}: vec3<f32> = {};", vec3_lit(w.map(|x| x * x)));
+            assert!(src.contains(&line), "{line}");
+        }
         let (_, even, odd, _) = bm_dct::device_constants();
         let line = format!("const BM_O1: vec4<f32> = {};", vec4_lit(odd[1]));
         assert!(src.contains(&line), "{line}");
@@ -709,8 +797,32 @@ mod tests {
             (pass, "d = bm_op(d + bm_part[at + i]);"),
             (pass, "if (abs(y[q]) < tau) {"),
             (pass, "bm_acc[at] = bm_op(bm_acc[at] + term);"),
-            (output, "yv = bm_div(bm_acc[i], w);"),
+            (output, "let d = bm_div(bm_acc[i], w);"),
+            (output, "yv = bm_blend(d, yv, bp.tau.w);"),
             (common, "return bm_op(d + bm_op(bm_op(e - d) * t));"),
+            (pass, "s = bm_op(s + bm_ycc[row + j]);"),
+            (pass, "return bm_op(s * 0.015625);"),
+            (
+                pass,
+                "let n = bm_op(bm_op(bm_op(g * lvl.x) * v) + bm_op(bm_op(g * g) * lvl.y));",
+            ),
+            (pass, "return bm_op(bm_op(n * s) * s);"),
+            (
+                pass,
+                "let s = bm_op(lvl.z * bm_srgb_slope(bm_op(lvl.z * v)));",
+            ),
+            (
+                pass,
+                "let vb = bm_op(bm_op(bm_op(BM_WCB2.x * v.x) + bm_op(BM_WCB2.y * v.y)) + bm_op(BM_WCB2.z * v.z));",
+            ),
+            (
+                pass,
+                "return bm_op(chroma_scale * bm_sqrt(bm_op(bm_op(vb + vr) * 0.5)));",
+            ),
+            (
+                encoding,
+                "return bm_op(BM_SRGB_DA * bm_pow(v, BM_DEXP_HI, BM_DEXP_LO));",
+            ),
             (
                 common,
                 "let g = bm_div(bm_op(bm_op(y - bm_op(BM_KR * r)) - bm_op(BM_KB * b)), BM_KG);",
@@ -741,6 +853,13 @@ mod tests {
         assert_eq!(calls("pow"), 0);
         assert_eq!(calls("log2"), 1);
         assert_eq!(calls("exp2"), 1);
+        // The device's sqrt only in the root's fallback.
+        assert_eq!(calls("sqrt"), 1);
+        // No blend of R, G and B with the input: the output blends Y alone.
+        assert!(
+            !output.contains("bm_blend(rgb"),
+            "an RGB blend in the output"
+        );
     }
 
     fn stage(luma: f64, chroma: f64, radius: usize, blend: f64) -> FrameDenoise {
@@ -750,6 +869,17 @@ mod tests {
             chroma,
             radius,
             blend,
+            level: None,
+        }
+    }
+
+    fn level(chroma_scale: f64) -> LevelNoise {
+        LevelNoise {
+            a: 2e-4,
+            b: 3e-7,
+            gains: [1.9, 1.0, 1.5],
+            encoding_gain: WORKING_GAIN_EV.exp2(),
+            chroma_scale,
         }
     }
 
@@ -770,11 +900,21 @@ mod tests {
             output: (40, 40 * 30),
         };
         let core = Rect::new(12, 9, 40, 30);
+        let with_level = |fd: FrameDenoise, scale: f64| FrameDenoise {
+            level: Some(level(scale)),
+            ..fd
+        };
         for (fd, switches, mode) in [
             (stage(30.0, 40.0, 1, 15.0), 7, 1),
             (stage(30.0, 0.0, 0, 0.0), 1, 1),
             (stage(0.0, 40.0, 3, 0.0), 2, 1),
             (stage(0.0, 0.0, 1, 15.0), 0, 0),
+            // The level's threshold: switch 8 with the chroma, whatever C says.
+            (with_level(stage(30.0, 40.0, 1, 15.0), 181.0), 15, 1),
+            (with_level(stage(0.0, 0.0, 1, 0.0), 181.0), 10, 1),
+            // A level that cannot filter (scale 0): luma alone, or nothing at all.
+            (with_level(stage(30.0, 40.0, 1, 15.0), 0.0), 5, 1),
+            (with_level(stage(0.0, 40.0, 1, 15.0), 0.0), 0, 0),
         ] {
             let plan = plan_of(64, 48, place, &fd);
             let u = base_uniform(sh, core, plan.as_ref(), &fd);
@@ -786,6 +926,21 @@ mod tests {
                 assert_eq!(u.tau[0], p.tau[0] as f32);
                 assert_eq!(u.tau[2], p.theta as f32);
             }
+            if switches & 8 != 0 {
+                let l = level(181.0);
+                assert_eq!(
+                    u.lvl,
+                    [
+                        l.a as f32,
+                        l.b as f32,
+                        l.encoding_gain as f32,
+                        l.chroma_scale as f32
+                    ]
+                );
+                assert_eq!(u.gains, [1.9, 1.0, 1.5, 0.0]);
+            } else {
+                assert_eq!((u.lvl, u.gains), ([0.0; 4], [0.0; 4]), "{fd:?}");
+            }
         }
         let fd = stage(30.0, 40.0, 1, 15.0);
         let u = base_uniform(sh, core, plan_of(64, 48, place, &fd).as_ref(), &fd);
@@ -793,6 +948,35 @@ mod tests {
         let (window, ..) = bm_dct::device_constants();
         assert_eq!(u.kwin[2][1], window[1][1] as f32);
         assert_eq!(u.kwin[15][3], window[7][7] as f32);
+    }
+
+    #[test]
+    fn a_level_noise_that_is_not_finite_in_f32_is_refused() {
+        let fd = |l: LevelNoise| FrameDenoise {
+            level: Some(l),
+            ..stage(30.0, 40.0, 1, 15.0)
+        };
+        assert!(check(&fd(level(181.0))).is_ok());
+        for bad in [
+            LevelNoise {
+                a: f64::NAN,
+                ..level(181.0)
+            },
+            LevelNoise {
+                b: 1e300,
+                ..level(181.0)
+            },
+            LevelNoise {
+                gains: [1.0, f64::INFINITY, 1.0],
+                ..level(181.0)
+            },
+            level(f64::NEG_INFINITY),
+        ] {
+            assert!(
+                matches!(check(&fd(bad)), Err(GpuError::InvalidInput(_))),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

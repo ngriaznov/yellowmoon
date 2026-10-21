@@ -8,13 +8,19 @@
 //   A  the 24 x 24 luma window of the search (the candidates' corners lie within 8 px of the reference's) into
 //      workgroup memory;
 //   B  per candidate (25) and row (8): the row's share of D = sum K(i, j) |Y_ref - Y_cand|, left to right;
+//      with switch 8, three threads of an idle subgroup: the reference block's mean Y, Cb and Cr, each summed
+//      in raster order from 0 and divided by 64 (`Ctx::filter`);
 //   C  per candidate: D, the rows in order; a block not wholly inside the frame, or a D that is not finite, is
-//      no candidate (reading A-a, A-e);
+//      no candidate (reading A-a, A-e); with switch 8, three threads of other subgroups: the noise variance of
+//      R, G and B at the block's mean (`bm_level_var`);
 //   D  thread 0: the group, as `cpu::bm_dct::select` (the 7 nearest by D, a tie to the smaller index, the
-//      reference for a slot over theta or without a candidate);
+//      reference for a slot over theta or without a candidate); with switch 8, thread 32: the block's chroma
+//      threshold tau_C = chroma_scale sigma_C from the three variances (`bm_tau_of`; `LevelNoise::chroma_sigma`
+//      in all);
 //   E  the group's 8 blocks of every filtered channel into workgroup memory;
 //   F  the 8-point transform along the rows (one line per thread), G along the columns, H across the blocks
-//      with the hard threshold |X| < tau -> 0 (the DC term included) and the inverse across in the same thread,
+//      with the hard threshold |X| < tau -> 0 (the DC term included; Cb and Cr take the block's tau_C with
+//      switch 8, the one tau C without) and the inverse across in the same thread,
 //      I the inverse along the columns, J along the rows (`Dct8::forward_3d`, `inverse_3d`: the even and odd
 //      halves, the dot products left to right);
 //   K  the aggregation, acc_ch += K(i, j) v / 512, w += K(i, j), slot by slot with a storage barrier
@@ -24,7 +30,7 @@
 //      passes are dispatches in order: every pixel's sums are added in the CPU's order, which is what makes a
 //      tile equal the whole frame bit for bit.
 //
-// Workgroup memory: 576 + 200 + 25 + 25 + 16 + 1536 words, 9.5 KiB.
+// Workgroup memory: 576 + 200 + 25 + 25 + 16 + 1536 + 3 + 3 + 1 words, 9.3 KiB.
 // Bindings: 0 uniform, 2 the Y/Cb/Cr scratch (3 planes), 3 the accumulators (4 planes).
 
 @group(0) @binding(2) var<storage, read> bm_ycc: array<f32>;
@@ -37,6 +43,110 @@ var<workgroup> bm_ok: array<u32, 25>;
 var<workgroup> bm_sx: array<u32, 8>;
 var<workgroup> bm_sy: array<u32, 8>;
 var<workgroup> bm_grp: array<f32, 1536>;
+var<workgroup> bm_mean: array<f32, 3>;
+var<workgroup> bm_var: array<f32, 3>;
+var<workgroup> bm_tauc: f32;
+
+// The correctly rounded square root of `x`, in integer arithmetic only (Metal's fast-math `sqrt` is 1 to 2 ulp
+// off): `fc_sqrt` of false_color.wgsl, the method of `sharpen_sqrt` in output_sharpen.wgsl. For a positive
+// normal x the mantissa is doubled when the exponent is odd, the integer root of N = mp 2^26 is taken digit by
+// digit, and its next bit and remainder decide the rounding to nearest, ties to even. Zero returns itself;
+// subnormals, infinities, NaN and negatives take the device's `sqrt`.
+fn bm_sqrt(x: f32) -> f32 {
+    let bits = bitcast<u32>(x);
+    if ((bits & 0x7fffffffu) == 0u) {
+        return x;
+    }
+    let e = (bits >> 23u) & 0xffu;
+    if (e == 0u || e == 0xffu || (bits >> 31u) != 0u) {
+        return sqrt(x);
+    }
+    let odd = e & 1u;
+    let mp = ((bits & 0x7fffffu) | 0x800000u) << odd;
+    var rem = 0u;
+    var root = 0u;
+    for (var k = 0u; k < 26u; k = k + 1u) {
+        var two = 0u;
+        if (k < 13u) {
+            two = (mp >> (24u - 2u * k)) & 3u;
+        }
+        rem = (rem << 2u) | two;
+        let trial = (root << 2u) | 1u;
+        if (rem >= trial) {
+            rem = rem - trial;
+            root = (root << 1u) | 1u;
+        } else {
+            root = root << 1u;
+        }
+    }
+    var q = root >> 1u;
+    var round_bit = root & 1u;
+    var sticky = u32(rem != 0u);
+    if (odd == 1u) {
+        q = root >> 2u;
+        round_bit = (root >> 1u) & 1u;
+        sticky = sticky | (root & 1u);
+    }
+    q = q + (round_bit & (sticky | (q & 1u)));
+    return bitcast<f32>(((((e + 127u) >> 1u) - 1u) << 23u) + q);
+}
+
+// The noise variance of one channel in the working encoding at its encoded value e (`cpu::bm_dct`
+// `LevelNoise::chroma_sigma`): the level v = max(srgb_decode(e) / G, 0) (NaN, tested on the bits, read as 0, as
+// `f64::max` does), the encoding's slope s = G srgb'(G v), and (g a v + g^2 b) s^2 in the CPU's order of terms.
+fn bm_channel_var(e: f32, g: f32, lvl: vec4<f32>) -> f32 {
+    let lin = bm_div(bm_srgb_decode(e), lvl.z);
+    var v = 0.0;
+    if ((bitcast<u32>(lin) & 0x7fffffffu) <= 0x7f800000u && lin > 0.0) {
+        v = lin;
+    }
+    let s = bm_op(lvl.z * bm_srgb_slope(bm_op(lvl.z * v)));
+    let n = bm_op(bm_op(bm_op(g * lvl.x) * v) + bm_op(bm_op(g * g) * lvl.y));
+    return bm_op(bm_op(n * s) * s);
+}
+
+// The variance of channel c (0 R, 1 G, 2 B) at the colour whose mean Y, Cb and Cr (working encoding) is m:
+// R, G and B of m (`bm_from_ycc`, as `LevelNoise::chroma_sigma`) and `bm_channel_var`. `lvl` is (a, b, G,
+// chroma_scale), `gains` the gains of R, G and B.
+fn bm_level_var(m: vec3<f32>, c: u32, lvl: vec4<f32>, gains: vec4<f32>) -> f32 {
+    let rgb = bm_from_ycc(m.x, m.y, m.z);
+    return bm_channel_var(rgb[c], gains[c], lvl);
+}
+
+// tau_C = chroma_scale sigma_C from the variances v of R, G and B: those of Cb and Cr with the squared weights
+// (BM_WCB2, BM_WCR2, each square formed in f64 on the host) and sigma_C = sqrt((vb + vr) / 2), the halving
+// exact and the root correctly rounded (`LevelNoise::chroma_sigma`).
+fn bm_tau_of(v: vec3<f32>, chroma_scale: f32) -> f32 {
+    let vb = bm_op(bm_op(bm_op(BM_WCB2.x * v.x) + bm_op(BM_WCB2.y * v.y)) + bm_op(BM_WCB2.z * v.z));
+    let vr = bm_op(bm_op(bm_op(BM_WCR2.x * v.x) + bm_op(BM_WCR2.y * v.y)) + bm_op(BM_WCR2.z * v.z));
+    return bm_op(chroma_scale * bm_sqrt(bm_op(bm_op(vb + vr) * 0.5)));
+}
+
+// The chroma threshold of a reference block whose mean Y, Cb and Cr is m: tau_C = chroma_scale sigma_C(m)
+// (`cpu::bm_dct` `Ctx::filter` and `LevelNoise::chroma_sigma`). The pass kernel runs it in two steps, the three
+// variances on three threads (`bm_level_var`) and their sum and root on one (`bm_tau_of`); this is the same
+// arithmetic in one call, for the tests.
+fn bm_chroma_tau(m: vec3<f32>, lvl: vec4<f32>, gains: vec4<f32>) -> f32 {
+    let v = vec3<f32>(
+        bm_level_var(m, 0u, lvl, gains),
+        bm_level_var(m, 1u, lvl, gains),
+        bm_level_var(m, 2u, lvl, gains),
+    );
+    return bm_tau_of(v, lvl.w);
+}
+
+// The mean of channel `ch` over the 8 x 8 block at buffer (bx, by): the sum in raster order from 0, then the
+// product with 1 / 64, a power of two, so the CPU's quotient (`Ctx::filter`).
+fn bm_block_mean(ch: u32, bx: u32, by: u32) -> f32 {
+    var s = 0.0;
+    for (var i = 0u; i < 8u; i++) {
+        let row = ch * bp.frame.z + (by + i) * bp.buf.x + bx;
+        for (var j = 0u; j < 8u; j++) {
+            s = bm_op(s + bm_ycc[row + j]);
+        }
+    }
+    return bm_op(s * 0.015625);
+}
 
 // K(i, j) at q = 8 i + j.
 fn bm_kwin(q: u32) -> f32 {
@@ -195,6 +305,11 @@ fn bm_pass(wid: vec3<u32>, lid: u32) {
         }
         bm_part[lid] = p;
     }
+    // With switch 8: the reference block's mean Y, Cb and Cr, one channel per thread of a subgroup that has
+    // nothing else to do here.
+    if (lid >= 224u && lid < 227u && bm_on(8u)) {
+        bm_mean[lid - 224u] = bm_block_mean(lid - 224u, bx, by);
+    }
     workgroupBarrier();
 
     // C: the distances and which blocks are candidates.
@@ -204,6 +319,12 @@ fn bm_pass(wid: vec3<u32>, lid: u32) {
         let dy = i32(lid / 5u) * 4 - 8;
         bm_dist[lid] = d;
         bm_ok[lid] = select(0u, 1u, lid != 12u && bm_inside(rx, ry, dx, dy) && bm_finite(d));
+    }
+    // With switch 8: the variance of R, G and B at the reference block's mean, one channel per thread, each in
+    // a subgroup of its own (threads 32, 64 and 96).
+    if (lid >= 32u && lid < 128u && lid % 32u == 0u && bm_on(8u)) {
+        let m = vec3<f32>(bm_mean[0], bm_mean[1], bm_mean[2]);
+        bm_var[lid / 32u - 1u] = bm_level_var(m, lid / 32u - 1u, bp.lvl, bp.gains);
     }
     workgroupBarrier();
 
@@ -252,6 +373,10 @@ fn bm_pass(wid: vec3<u32>, lid: u32) {
             bm_sy[q + 1u] = u32(i32(by) + i32(idx / 5u) * 4 - 8);
         }
     }
+    // With switch 8, while thread 0 forms the group: the reference block's chroma threshold.
+    if (lid == 32u && bm_on(8u)) {
+        bm_tauc = bm_tau_of(vec3<f32>(bm_var[0], bm_var[1], bm_var[2]), bp.lvl.w);
+    }
     workgroupBarrier();
 
     // E: the group of every filtered channel.
@@ -277,10 +402,12 @@ fn bm_pass(wid: vec3<u32>, lid: u32) {
     }
     workgroupBarrier();
 
-    // H: across the blocks at (i, j), the hard threshold and the inverse across.
+    // H: across the blocks at (i, j), the hard threshold and the inverse across. Cb and Cr take the reference
+    // block's threshold with switch 8, the one tau C without.
     if (lid < lines) {
         let ch = first + lid / 64u;
-        bm_across(ch * 512u + lid % 64u, select(bp.tau.y, bp.tau.x, ch == 0u));
+        let tau_c = select(bp.tau.y, bm_tauc, bm_on(8u));
+        bm_across(ch * 512u + lid % 64u, select(tau_c, bp.tau.x, ch == 0u));
     }
     workgroupBarrier();
 

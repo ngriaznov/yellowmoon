@@ -1,14 +1,15 @@
 // R6's single-frame denoise by method A of `docs/algorithms/05-single-frame-denoise.md` (block matching and
 // 3D DCT hard thresholding): the GPU port of `ym_gpu::cpu::frame_denoise::FrameDenoise::apply` for method A,
 // that is the working encoding (`cpu::denoise_space`), `cpu::bm_dct::denoise` (BT.709 Y/Cb/Cr, the passes of
-// A.5, the blend) and the decoding. Three pipelines (`kernels/bm_dct.rs` appends one `main` to each):
+// A.5, the blend of Y) and the decoding. Three pipelines (`kernels/bm_dct.rs` appends one `main` to each):
 //
 //   bm_dct_prep    one thread per buffer pixel: the encoding, Y/Cb/Cr into three scratch planes, the four
 //                  accumulator planes (Y, Cb, Cr, w) set to 0;
 //   bm_dct         one workgroup of 256 threads per reference block of one pass (one dispatch per pass, in
-//                  the CPU's pass order): the 25 candidate distances, the group, the 3D transform, the hard
-//                  threshold, the inverse and the aggregation, slot by slot;
-//   bm_dct_output  one thread per core pixel: acc / w, back to RGB, the blend with the encoded input, the
+//                  the CPU's pass order): the 25 candidate distances, the group, the chroma threshold of the
+//                  reference block (switch 8), the 3D transform, the hard threshold, the inverse and the
+//                  aggregation, slot by slot;
+//   bm_dct_output  one thread per core pixel: acc / w, the blend of Y with the input's Y, back to RGB, the
 //                  decoding (or, when the method changes nothing, the encoding and decoding alone, as the CPU).
 //
 // This file holds what the three share: the uniform block, the barrier and the Y/Cb/Cr conversions; the
@@ -29,10 +30,14 @@ struct BmParams {
     buf: vec4<u32>,          // buffer width, height, frame x0, y0
     frame: vec4<u32>,        // frame width, height, scratch plane length (width * height), the zero word
     refs: vec4<u32>,         // first reference column and row of the pass (frame), their spacings
-    ctl: vec4<u32>,          // switches (1 luma, 2 chroma, 4 blend), mode (output: 0 encode and decode, 1 filtered)
+    ctl: vec4<u32>,          // switches (1 luma, 2 chroma, 4 blend, 8 the chroma threshold per reference block),
+                             // mode (output: 0 encode and decode, 1 filtered)
     core: vec4<u32>,         // core x, y, width, height in the buffer
     io: vec4<u32>,           // input row stride, input plane length, output row stride, output plane length
-    tau: vec4<f32>,          // tau Y, tau C, theta, blend weight B / 100
+    tau: vec4<f32>,          // tau Y, tau C (the one chroma threshold, without switch 8), theta, blend weight B / 100
+    lvl: vec4<f32>,          // the noise of switch 8 (`cpu::bm_dct::LevelNoise`): a, b, the encoding's gain G,
+                             // chroma_scale
+    gains: vec4<f32>,        // the gains g_c of R, G and B, 0
     kwin: array<vec4<f32>, 16>,  // K(i, j), row-major
 };
 
@@ -61,12 +66,13 @@ fn bm_from_ycc(y: f32, cb: f32, cr: f32) -> vec3<f32> {
     return vec3<f32>(r, g, b);
 }
 
-// The blend `d + (e - d) t` (`cpu::ycbcr::blend`).
+// The blend `d + (e - d) t` (`cpu::bm_dct` `finish`, on Y).
 fn bm_blend(d: f32, e: f32, t: f32) -> f32 {
     return bm_op(d + bm_op(bm_op(e - d) * t));
 }
 
-// Whether the switch `bit` of `ctl.x` is on (1 luma, 2 chroma, 4 blend).
+// Whether the switch `bit` of `ctl.x` is on (1 luma, 2 chroma, 4 blend, 8 the chroma threshold per reference
+// block).
 fn bm_on(bit: u32) -> bool {
     return (bp.ctl.x & bit) != 0u;
 }

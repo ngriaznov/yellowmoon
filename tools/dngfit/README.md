@@ -8,7 +8,7 @@ Test and build tooling: never shipped. It renders with Adobe's own reference ren
 |---|---|
 | `dngfit fit` | fit the tone curve, the `BaselineExposure` offset and the look table to ACES 2 and write `data/dng/profile.json` (about 2 s) |
 | `dngfit eval` | how close Adobe's render with that profile is to ACES 2 on the test sets |
-| `dngfit gate` | the DNG gates on the golden set: `dng_validate` passes, and its render is within a median ΔE00 of 1.5 of our JPEG (2.5 at ISO 12800 and above) |
+| `dngfit gate` | the DNG gates on the golden set: `dng_validate` passes, and its render is within a median ΔE00 of 1.5 of our JPEG |
 | `dngfit validate FILE.dng...` | `dng_validate` on DNG files; prints what it complains about |
 
 ## The problem
@@ -64,8 +64,7 @@ and the next build of `ym` carries it.
 
 For each golden file the real `ym` writes the DNG and the JPEG (quality 92, sRGB) with the same settings. `dng_validate -v
 -32 -cs1 -tif` renders the DNG: the file must pass with no warning and no error, and the render (turned upright by the
-DNG's `Orientation`) must be within a median CIEDE2000 of 1.5 of our JPEG, **for every file** (2.5 for a file at ISO 12800 or above, where JPEG
-coding of the denoised picture's colour grain is most of the distance). `--png` adds the 16-bit PNG
+DNG's `Orientation`) must be within a median CIEDE2000 of 1.5 of our JPEG, **for every file**. `--png` adds the 16-bit PNG
 (no JPEG coding or dither), which shows what the profile alone costs.
 
 `ym` writes the fitted profile itself (`ym-export` embeds `data/dng/profile.json`, `ym-core` passes it with

@@ -133,13 +133,24 @@ fn bm_encode(x: f32) -> f32 {
     return bm_op(bm_op(BM_SRGB_A * bm_pow(v, BM_INV_GAMMA_HI, BM_INV_GAMMA_LO)) - BM_SRGB_B);
 }
 
+// The inverse of the sRGB curve on the whole line (`cpu::denoise_space::srgb_decode`).
+fn bm_srgb_decode(y: f32) -> f32 {
+    if (y < BM_KNEE_Y) {
+        return bm_div(y, BM_SLOPE);
+    }
+    return bm_pow(bm_div(bm_op(y + BM_SRGB_B), BM_SRGB_A), BM_GAMMA_HI, BM_GAMMA_LO);
+}
+
 // The inverse of `bm_encode` (`cpu::denoise_space::decode`).
 fn bm_decode(y: f32) -> f32 {
-    var lin: f32;
-    if (y < BM_KNEE_Y) {
-        lin = bm_div(y, BM_SLOPE);
-    } else {
-        lin = bm_pow(bm_div(bm_op(y + BM_SRGB_B), BM_SRGB_A), BM_GAMMA_HI, BM_GAMMA_LO);
+    return bm_div(bm_srgb_decode(y), BM_GAIN);
+}
+
+// The slope of the sRGB curve at v (`cpu::denoise_space::srgb_slope`): the linear segment's below the knee,
+// 1.055 / 2.4 v^(1 / 2.4 - 1) above.
+fn bm_srgb_slope(v: f32) -> f32 {
+    if (v < BM_KNEE_X) {
+        return BM_SLOPE;
     }
-    return bm_div(lin, BM_GAIN);
+    return bm_op(BM_SRGB_DA * bm_pow(v, BM_DEXP_HI, BM_DEXP_LO));
 }

@@ -38,13 +38,13 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 use ym_color::exposure::CAMERA_GAIN_EV;
-use ym_gpu::cpu::bm_dct::{self, BmDctParams};
+use ym_gpu::cpu::bm_dct::{self, BmDctParams, LevelNoise};
 use ym_gpu::cpu::demosaic::{self, DemosaicInputs, Method};
 use ym_gpu::cpu::denoise::{self, BilateralParams};
 use ym_gpu::cpu::denoise_space::{decode_image, encode_image};
 use ym_gpu::cpu::detail::{self, C_AUTO, D_AUTO, NoiseReduction};
 use ym_gpu::cpu::false_color;
-use ym_gpu::cpu::frame_denoise::{C_PER_SIGMA, L_PER_SIGMA, working_noise};
+use ym_gpu::cpu::frame_denoise::{C_PER_SIGMA, L_PER_SIGMA, TRANSFORM_SCALE, working_noise};
 use ym_gpu::cpu::metrics::psnr;
 use ym_gpu::cpu::nl_bayes::{self, NlBayesParams, Variant as NlVariant};
 use ym_gpu::cpu::{Cfa, NoiseDn, NoiseSigma, RgbImage, filters, noise_level, synth, ycbcr};
@@ -138,6 +138,9 @@ struct Case {
     model_y: f64,
     model_c: f64,
     sigma_map: Vec<f32>,
+    /// The level's noise model.
+    a: f64,
+    b: f64,
 }
 
 fn add_noise(data: &mut [f32], a: f64, b: f64, seed: u64) {
@@ -211,6 +214,8 @@ fn make_case(img_lin: &RgbImage, level: &Level, seed: u64) -> Case {
         model_y,
         model_c,
         sigma_map,
+        a: level.a,
+        b: level.b,
     }
 }
 
@@ -234,6 +239,7 @@ fn method_a(case: &Case, kl: f64, kc: f64, radius: usize, blend: f64) -> Output 
         chroma: (kc * case.model_c * C_PER_SIGMA).min(100.0),
         radius,
         blend,
+        level: None,
     };
     decode_image(&bm_dct::denoise(&case.noisy_w, &p), CAMERA_GAIN_EV)
 }
@@ -422,10 +428,28 @@ fn calibrate(report: &mut Report, kodak: &[(String, RgbImage)], limit: usize) ->
     (tuned, Value::Array(json_rows))
 }
 
+/// Method A with the chroma threshold that follows each reference block's level (`bm_dct::LevelNoise`).
+fn method_a_level(case: &Case, kl: f64, kc: f64, blend: f64) -> Output {
+    let p = BmDctParams {
+        luma: (kl * case.model_y * L_PER_SIGMA).min(100.0),
+        chroma: (kc * case.model_c * C_PER_SIGMA).min(100.0),
+        radius: 1,
+        blend,
+        level: Some(LevelNoise {
+            a: case.a,
+            b: case.b,
+            gains: [1.0; 3],
+            encoding_gain: CAMERA_GAIN_EV.exp2(),
+            chroma_scale: kc * TRANSFORM_SCALE,
+        }),
+    };
+    decode_image(&bm_dct::denoise(&case.noisy_w, &p), CAMERA_GAIN_EV)
+}
+
 /// Method A at the render's settings followed by the false-colour suppression (`cpu::false_color`) at Auto
 /// Colour: what a full-resolution render does.
 fn render_path(case: &Case, kl: f64, kc: f64) -> Output {
-    let a = method_a(case, kl, kc, 1, 15.0);
+    let a = method_a_level(case, kl, kc, 15.0);
     false_color::suppress(&a, &NoiseSigma::Plane(&case.sigma_map), C_AUTO)
 }
 

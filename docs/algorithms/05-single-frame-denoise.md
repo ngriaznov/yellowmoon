@@ -209,7 +209,7 @@ item is pinned by a test in `crates/ym-gpu/src/cpu/` (named in brackets).
 - *G4 Frame coordinates.* Every grid (A's reference blocks, B and C's reference patches, the detector's cells) is
   anchored to the frame's origin (`RgbImage::place`), never to the buffer's, so that a tile with the stated halo
   gives the whole frame's pixels (method A now; methods B and C once their tiling is built, *Integration*).
-- *G5 Blend.* `B = 0` or no blend input means no blend; the blend uses the input as given to the method (in RGB).
+- *G5 Blend.* `B = 0` or no blend input means no blend; the blend uses the input as given to the method (in RGB). Method A blends Y only, before the conversion back to RGB (`Y = d + (x − d) B/100`; Cb and Cr keep their filtered values), so the blend brings back fine luma texture and no colour noise.
 
 **Method A.**
 
@@ -320,7 +320,13 @@ How the methods enter the raw chain (`docs/05-raw-processing.md` R6 and R7). The
   with `r = L / L_auto(ISO)` and `c = C / 50`, method A gets `L_A = r · kL · σY · 22.627 / 0.1` and
   `C_A = c · kC · σC · 22.627 / 0.06`, where `σY` and `σC` are the photo's luma and chroma noise in the working
   encoding at middle grey from its noise model and R4 gains (`working_noise`), and `kL = 3.5`, `kC = 8`
-  (*Measurement*); method B `L_B = 30 r`; method C `L_C = 80 r`, `C_C = 90 c`. Detail sets the blend to today's
+  (*Measurement*). Method A's chroma threshold then follows each reference block's colour: `τC = c · kC · 22.627 ·
+  σC(m)`, where `m` is the reference block's mean Y, Cb and Cr and `σC(m)` the chroma noise of the working encoding
+  at that colour from the same model and gains (`bm_dct::LevelNoise`: per channel `v = srgb⁻¹(e)/G`, variance
+  `g a v + g² b` times the encoding's slope `G srgb'(G v)` squared, weighed into Cb and Cr). The encoding stretches
+  the shadows (its slope is 12.92 G near black), so one threshold set at middle grey left colour grain in dark
+  colours; `C_A` still sets the block-distance threshold `θ`. Method B `L_B = 30 r`; method C `L_C = 80 r`,
+  `C_C = 90 c`. Detail sets the blend to today's
   re-injection weight, `B = 100 · 0.15 (D / 50)²` (15 % at Auto, 60 % at 100). `R` is 1 for every method. The
   strengths are clamped to [0, 100].
 - **The default is method A** (the owner, 2026-10-20: "I don't need A/B test, I think this is good"; the choice by
@@ -385,24 +391,41 @@ up to 0.5 dB without), at twice A's time and with the whole frame to read; B is 
 CPU (wall, 3 threads): today 0.2 to 0.3, A 0.5, B 0.9, C 1.0. The full
 tables: `testdata/denoise_gate/numbers.md` after a run.
 
-*The render: method A and the false-colour step* (`denoise_gate -- render`, 2026-10-20, 2 threads; same cases,
-Colour at Auto; working encoding, dB):
+*The render: method A and the false-colour step* (`denoise_gate -- render`, pipeline 0.5.1: the chroma threshold
+per reference block and the luma-only blend; same cases, Colour at Auto; working encoding, dB; 0.5.0 is the first
+version, one chroma threshold and an RGB blend):
 
-| set | ISO-like | none | today | A | A + false colour (the render) |
+| set | ISO-like | none | today | the render, 0.5.0 | **the render, 0.5.1** |
 |---|---|---|---|---|---|
-| Kodak | 100 | 36.89 | 35.27 | 37.14 | **37.00** |
-| Kodak | 800 | 34.54 | 34.19 | 35.84 | **35.60** |
-| Kodak | 1600 | 32.78 | 33.35 | 34.72 | **34.51** |
-| Kodak | 6400 | 27.61 | 30.61 | 31.31 | **31.23** |
-| Kodak | 12800 | 25.05 | 29.10 | 29.44 | **29.37** |
-| McMaster | 100 | 34.07 | 31.62 | 34.30 | **34.12** |
-| McMaster | 800 | 32.01 | 30.91 | 33.13 | **32.98** |
-| McMaster | 1600 | 30.69 | 30.35 | 32.27 | **32.15** |
-| McMaster | 6400 | 26.82 | 28.42 | 29.90 | **29.82** |
-| McMaster | 12800 | 24.73 | 27.19 | 28.49 | **28.40** |
+| Kodak | 100 | 36.89 | 35.27 | 37.00 | **36.98** |
+| Kodak | 800 | 34.54 | 34.19 | 35.60 | **35.50** |
+| Kodak | 1600 | 32.78 | 33.35 | 34.51 | **34.41** |
+| Kodak | 6400 | 27.61 | 30.61 | 31.23 | **31.15** |
+| Kodak | 12800 | 25.05 | 29.10 | 29.37 | **29.29** |
+| McMaster | 100 | 34.07 | 31.62 | 34.12 | **34.07** |
+| McMaster | 800 | 32.01 | 30.91 | 32.98 | **32.79** |
+| McMaster | 1600 | 30.69 | 30.35 | 32.15 | **31.92** |
+| McMaster | 6400 | 26.82 | 28.42 | 29.82 | **29.55** |
+| McMaster | 12800 | 24.73 | 27.19 | 28.40 | **28.13** |
 
-The render is above today's path at every level (+1.7, +1.4, +1.2, +0.6 and +0.3 dB on Kodak, +2.5, +2.1, +1.8,
-+1.4 and +1.2 on McMaster from ISO 100 to 12800) and above no denoise at every level; the false-colour step costs
+*Colour grain* (the synthetic chart of the A7R IV at ISO 12800, rendered on the CPU to 16-bit PNG; the median over
+flat 8 × 8 blocks of the standard deviation of a\* and b\*, by the blocks' L\*):
+
+| L\* | 0–15 | 15–30 | 30–50 | 50–70 | 70–100 | luma grain (L\* 50–70) |
+|---|---|---|---|---|---|---|
+| today's path (bilateral + R7) | 0.45 | 4.53 | 4.01 | 2.19 | 0.95 | 3.33 |
+| the render, 0.5.0 | 1.20 | 14.11 | 11.08 | 4.95 | 1.34 | 2.38 |
+| the render, 0.5.1 | 0.00 | 4.81 | 6.47 | 0.66 | 0.51 | 2.28 |
+
+The first version kept two to three times today's colour grain at ISO 12800: the blend brought back 15 % of the
+input's colour noise, and one threshold set at middle grey was too low for dark colours, whose noise the encoding
+stretches. The luma-only blend and the threshold per block take the grain back to today's level in dark colours and
+below it elsewhere, for 0.02 to 0.27 dB of PSNR; the mean colour of the blocks moves by about 1 % from L\* 15 up.
+Smoothing in the working encoding darkens very noisy shadows a little (the mean of an encoded noisy value lies
+below the encoding of the mean): about 1 L\* below today's path at L\* 15–30 on the ISO 12800 chart.
+
+The render is above today's path at every level (+1.7, +1.3, +1.1, +0.5 and +0.2 dB on Kodak, +2.5, +1.9, +1.6,
++1.1 and +0.9 on McMaster from ISO 100 to 12800) and above no denoise at every level; the false-colour step costs
 0.07 to 0.24 dB against A alone and takes A from 0.5 to 0.7 s/MP on the CPU. What it buys is not in these numbers:
 on the Kodak blinds (kodim01) and shutters (kodim08) A alone keeps the demosaic's blue and orange bands, which
 today's path removed, and the render removes them about as well as today's path. The exploration behind it, on the

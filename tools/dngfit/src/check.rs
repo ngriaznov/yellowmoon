@@ -1,8 +1,7 @@
 //! The DNG gates (`docs/09-export.md`, section Gates; `docs/13-testing.md`):
 //!
 //! 1. every exported DNG passes Adobe's `dng_validate` with no warning and no error;
-//! 2. the picture `dng_validate` renders from the DNG, against our JPEG of the same photo: CIEDE2000 median at most 1.5,
-//!    or 2.5 for a file at ISO 12800 or above (see [`median_limit_for`]).
+//! 2. the picture `dng_validate` renders from the DNG, against our JPEG of the same photo: CIEDE2000 median at most 1.5.
 //!
 //! Both run on the golden set. For each file the real `ym` binary writes the DNG (`--format dng`) and the JPEG (quality
 //! 92, sRGB) with the same settings; `dng_validate` renders the DNG to sRGB; the two pictures are compared pixel by
@@ -45,32 +44,6 @@ use crate::profile_file::ProfileFile;
 
 /// The gate: the median ΔE00 of Adobe's render against our JPEG may not exceed this (`docs/09`).
 pub const MEDIAN_LIMIT: f64 = 1.5;
-
-/// The ISO from which a file is held to [`HIGH_ISO_MEDIAN_LIMIT`].
-pub const HIGH_ISO: u32 = 12_800;
-
-/// The gate for a file at [`HIGH_ISO`] or above. The denoised picture keeps a fine colour grain there, and JPEG coding of
-/// that grain is most of the distance to Adobe's render: at ISO 12800 the synthetic chart measures 2.125 against the JPEG
-/// and 0.774 against the 16-bit PNG.
-pub const HIGH_ISO_MEDIAN_LIMIT: f64 = 2.5;
-
-/// The ISO a golden id names (`chart__D6500__ILCE-7RM4__iso12800__…`), if it names one.
-#[must_use]
-pub fn iso_of(id: &str) -> Option<u32> {
-    id.split("__")
-        .find_map(|part| part.strip_prefix("iso")?.parse().ok())
-}
-
-/// The median limit for the file `id` when the gate's limit is `base`: [`HIGH_ISO_MEDIAN_LIMIT`] at [`HIGH_ISO`] or
-/// above (or `base`, if that is larger), else `base`.
-#[must_use]
-pub fn median_limit_for(base: f64, id: &str) -> f64 {
-    if iso_of(id).is_some_and(|iso| iso >= HIGH_ISO) {
-        base.max(HIGH_ISO_MEDIAN_LIMIT)
-    } else {
-        base
-    }
-}
 
 /// The largest number of pixels compared per file; larger pictures are sampled on a regular stride.
 const MAX_COMPARED: usize = 3_000_000;
@@ -132,7 +105,7 @@ pub struct GateOptions {
     pub jobs: usize,
     /// Also compare with the 16-bit PNG (no JPEG coding, no dither).
     pub with_png: bool,
-    /// The median ΔE00 limit ([`median_limit_for`] raises it for a file at ISO 12800 or above).
+    /// The median ΔE00 limit.
     pub median_limit: f64,
     /// No progress lines.
     pub quiet: bool,
@@ -441,11 +414,10 @@ pub fn check_file(opts: &GateOptions, entry: &Entry) -> Result<FileResult> {
         )
     };
     let vs_jpeg = compare(&adobe_rgb, &to_unit(&jpeg_px), valid.as_deref());
-    let limit = median_limit_for(opts.median_limit, &entry.id);
-    if vs_jpeg.median > limit {
+    if vs_jpeg.median > opts.median_limit {
         reasons.push(format!(
-            "the median ΔE00 against the JPEG is {:.3}, over the limit of {limit}",
-            vs_jpeg.median
+            "the median ΔE00 against the JPEG is {:.3}, over the limit of {}",
+            vs_jpeg.median, opts.median_limit
         ));
     }
     let vs_png = match &png {
@@ -565,34 +537,6 @@ mod tests {
         (0..w * h)
             .flat_map(|i| [(i % w) as f32, (i / w) as f32, 0.5])
             .collect()
-    }
-
-    #[test]
-    fn files_at_iso_12800_and_above_get_the_high_iso_limit() {
-        assert_eq!(
-            iso_of("synthetic/chart__D6500__ILCE-7RM4__iso12800__rggb__14b__lossless-l"),
-            Some(12_800)
-        );
-        assert_eq!(
-            iso_of("synthetic/chart__bb2850__ILCE-1__iso400__rggb__14b__craw"),
-            Some(400)
-        );
-        assert_eq!(iso_of("/photos/DSC01234.ARW"), None);
-        let at = |id| median_limit_for(MEDIAN_LIMIT, id);
-        assert_eq!(
-            at("synthetic/chart__D6500__ILCE-7RM4__iso12800__rggb__14b__lossless-l"),
-            2.5
-        );
-        assert_eq!(
-            at("synthetic/chart__D6500__ILCE-7RM4__iso25600__rggb__14b__lossless-l"),
-            2.5
-        );
-        assert_eq!(
-            at("synthetic/chart__D6500__ILCE-7RM4__iso3200__rggb__14b__lossless-l"),
-            1.5
-        );
-        assert_eq!(at("/photos/DSC01234.ARW"), 1.5);
-        assert_eq!(median_limit_for(3.0, "x__iso12800__y"), 3.0);
     }
 
     #[test]

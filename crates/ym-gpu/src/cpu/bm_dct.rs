@@ -10,7 +10,7 @@
 //! use ym_gpu::cpu::bm_dct::{self, BmDctParams};
 //!
 //! let img = RgbImage::new(32, 24);
-//! let p = BmDctParams { luma: 30.0, chroma: 30.0, radius: 1, blend: 0.0 };
+//! let p = BmDctParams { luma: 30.0, chroma: 30.0, radius: 1, blend: 0.0, level: None };
 //! let out = bm_dct::denoise(&img, &p);
 //! assert_eq!((out.width, out.height), (32, 24));
 //! ```
@@ -19,8 +19,9 @@
 //!
 //! The image goes to BT.709 Y/Cb/Cr ([`ycbcr::to_ycbcr`]); everything after is `f64`. From the
 //! strengths, `τY = 0.1 L`, `τC = 0.06 C`, `θ = 0.2 max(L, C)` and the reference step
-//! `s = 8 − 2R` ([`BmDctParams`]). Y is filtered when `τY > 1e-6`, Cb and Cr when `τC > 1e-6`; a
-//! plane that is not filtered is the input plane. For every reference block (8 × 8):
+//! `s = 8 − 2R` ([`BmDctParams`]). Y is filtered when `τY > 1e-6`; Cb and Cr when `τC > 1e-6`, or,
+//! with the photo's noise given ([`LevelNoise`]), when it can make a threshold above 0. A plane that
+//! is not filtered is the input plane. For every reference block (8 × 8):
 //!
 //! 1. **Candidates**: the 25 blocks at `ref + (dx, dy)`, `dx, dy ∈ {−8, −4, 0, 4, 8}`, numbered
 //!    `5 · row + column` (12 is the reference). A block not wholly inside the frame is not a candidate.
@@ -33,14 +34,19 @@
 //!    each block, then across the 8 blocks. Each 1D pass is the orthonormal DCT-II times √8, so the
 //!    DC term is the plain sum and a forward and inverse round trip gains `8³ = 512`.
 //! 5. **Hard threshold**: a coefficient with `|c| < τ` becomes 0, the DC term included. The
-//!    optional highlight tweak of the text is omitted (reading A-b).
+//!    optional highlight tweak of the text is omitted (reading A-b). With [`LevelNoise`], Cb and Cr
+//!    take the threshold of their reference block, `τC = chroma_scale · σC(m)`, where `m` is the
+//!    reference block's mean Y, Cb and Cr (each summed in raster order) and `σC` the chroma noise
+//!    of the working encoding at that colour ([`LevelNoise::chroma_sigma`]): the encoding stretches
+//!    the shadows, so one threshold set at middle grey leaves colour noise in dark colours.
 //! 6. **Inverse** 3D transform (across the blocks, then columns, then rows).
 //! 7. **Aggregation**: for every pixel of every slot, `acc_ch += K(i, j) · v / 512` and
 //!    `w += K(i, j)` (once per pixel, not per channel). The output is `acc_ch / w`.
 //!
-//! The result goes back to RGB ([`ycbcr::from_ycbcr`]) and is blended with the input,
-//! `lerp(out, input, B / 100)` for `B > 0` ([`ycbcr::blend`]). When neither channel is filtered,
-//! or the frame is narrower or lower than 8 px, the input comes back bit for bit.
+//! For `B > 0` the output's Y is blended with the input's, `d + (x − d) B / 100`; Cb and Cr keep
+//! their filtered values, so the blend brings back fine luma texture and no colour noise. The
+//! result goes back to RGB ([`ycbcr::from_ycbcr`]). When neither channel is filtered, or the frame
+//! is narrower or lower than 8 px, the input comes back bit for bit.
 //!
 //! # Grid and edges (reading A-a, G4)
 //!
@@ -82,7 +88,8 @@ use std::f64::consts::{PI, SQRT_2};
 
 use rayon::prelude::*;
 
-use super::ycbcr::{self, Planes};
+use super::denoise_space::{srgb_decode, srgb_slope};
+use super::ycbcr::{self, CB_DIV, CR_DIV, KB, KG, KR, Planes};
 use super::{Placement, RgbImage};
 
 /// The halo of method A in pixels (reading A-d): a tile needs this much context on every side
@@ -122,6 +129,68 @@ pub struct BmDctParams {
     pub radius: usize,
     /// Blend `B` with the input, in [0, 100]; 0 means no blend.
     pub blend: f64,
+    /// The photo's noise, for a chroma threshold that follows each reference block's level
+    /// ([`LevelNoise`]); `None` keeps the one threshold `τC = 0.06 C`.
+    pub level: Option<LevelNoise>,
+}
+
+/// The photo's noise in the working encoding at any level, for method A's chroma threshold: the
+/// threshold of a reference block is `τC = chroma_scale · σC`, where `σC` is the chroma noise at the
+/// block's mean colour. A balanced channel `c` at linear level `v` has the variance
+/// `g_c a v + g_c² b`; the encoding `srgb(G v)` scales its standard deviation by `G srgb'(G v)`;
+/// Cb and Cr weigh the channels (taken as independent) and `σC = √((σCb² + σCr²) / 2)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LevelNoise {
+    /// `a` of the noise model (variance `a x + b` on the normalised raw scale), at least 0.
+    pub a: f64,
+    /// `b` of the noise model, at least 0.
+    pub b: f64,
+    /// The R4 gains `g_c`.
+    pub gains: [f64; 3],
+    /// The encoding's gain `G = 2^WORKING_GAIN_EV`.
+    pub encoding_gain: f64,
+    /// `τC / σC`: the threshold in standard deviations times the transform's scale `8^1.5`.
+    pub chroma_scale: f64,
+}
+
+impl LevelNoise {
+    /// The chroma noise `σC` in the working encoding at the colour whose Y/Cb/Cr (working encoding)
+    /// is `ycc`.
+    #[must_use]
+    pub fn chroma_sigma(&self, ycc: [f64; 3]) -> f64 {
+        let [y, cb, cr] = ycc;
+        let r = y + CR_DIV * cr;
+        let b = y + CB_DIV * cb;
+        let g = (y - KR * r - KB * b) / KG;
+        let gain = self.encoding_gain;
+        let var: [f64; 3] = from_fn(|c| {
+            let e = [r, g, b][c];
+            let v = (srgb_decode(e) / gain).max(0.0);
+            let s = gain * srgb_slope(gain * v);
+            let gc = self.gains[c];
+            (gc * self.a * v + gc * gc * self.b) * s * s
+        });
+        let weigh =
+            |w: [f64; 3]| w[0] * w[0] * var[0] + w[1] * w[1] * var[1] + w[2] * w[2] * var[2];
+        let (wb, wr) = chroma_weights();
+        let vb = weigh(wb);
+        let vr = weigh(wr);
+        ((vb + vr) / 2.0).sqrt()
+    }
+
+    /// Whether the threshold can be above 0 anywhere.
+    fn filters(&self) -> bool {
+        self.chroma_scale > 0.0 && (self.a > 0.0 || self.b > 0.0)
+    }
+}
+
+/// The weights of R, G and B in Cb and in Cr (BT.709, [`ycbcr::to_ycbcr`]), for [`LevelNoise::chroma_sigma`]
+/// and the device kernel (`kernels::bm_dct`), which writes their squares into its shader.
+pub(crate) fn chroma_weights() -> ([f64; 3], [f64; 3]) {
+    (
+        [-KR / CB_DIV, -KG / CB_DIV, (1.0 - KB) / CB_DIV],
+        [(1.0 - KR) / CR_DIV, -KG / CR_DIV, -KB / CR_DIV],
+    )
 }
 
 impl BmDctParams {
@@ -361,6 +430,8 @@ struct Ctx {
     tau: [f64; 3],
     /// Whether each channel is filtered.
     active: [bool; 3],
+    /// The noise for a chroma threshold per reference block, if it follows the level.
+    level: Option<LevelNoise>,
     /// Block-distance threshold.
     theta: f64,
     /// Reference step in pixels.
@@ -370,9 +441,16 @@ struct Ctx {
 impl Ctx {
     /// Whether the method changes anything: a frame of at least 8 × 8 px and a channel to filter.
     fn runs(place: &Placement, p: &BmDctParams) -> bool {
-        place.frame_width >= B
-            && place.frame_height >= B
-            && (p.luma_threshold() > SKIP_TAU || p.chroma_threshold() > SKIP_TAU)
+        place.frame_width >= B && place.frame_height >= B && Ctx::active(p).contains(&true)
+    }
+
+    /// Whether Y, Cb and Cr are filtered.
+    fn active(p: &BmDctParams) -> [bool; 3] {
+        let chroma = match &p.level {
+            Some(l) => l.filters(),
+            None => p.chroma_threshold() > SKIP_TAU,
+        };
+        [p.luma_threshold() > SKIP_TAU, chroma, chroma]
     }
 
     /// A context for the `[Y, Cb, Cr]` planes of a `width` × `height` buffer at `place` (a frame of
@@ -391,7 +469,8 @@ impl Ctx {
             window: window_2d(),
             dct: Dct8::new(),
             tau,
-            active: tau.map(|t| t > SKIP_TAU),
+            active: Ctx::active(p),
+            level: p.level,
             theta: p.distance_threshold(),
             step: p.step_px(),
         }
@@ -543,6 +622,20 @@ impl Ctx {
         let (_, pos) = self.group(rx, ry);
         s.pos = pos;
         let w = self.width;
+        let chroma_tau = self.level.map(|l| {
+            // The reference block's mean Y, Cb and Cr, each summed in raster order.
+            let (cx, cy) = pos[0];
+            let mean: [f64; 3] = from_fn(|ch| {
+                let mut sum = 0.0;
+                for i in 0..B {
+                    for v in &self.planes[ch][(cy + i) * w + cx..][..B] {
+                        sum += v;
+                    }
+                }
+                sum / (B * B) as f64
+            });
+            l.chroma_scale * l.chroma_sigma(mean)
+        });
         for ch in 0..3 {
             if !self.active[ch] {
                 continue;
@@ -555,7 +648,10 @@ impl Ctx {
                 }
             }
             self.dct.forward_3d(g);
-            let tau = self.tau[ch];
+            let tau = match chroma_tau {
+                Some(t) if ch > 0 => t,
+                _ => self.tau[ch],
+            };
             for v in g.iter_mut().flatten().flatten() {
                 if v.abs() < tau {
                     *v = 0.0;
@@ -585,14 +681,21 @@ impl Ctx {
     }
 
     /// The output planes: `acc / w` for the filtered channels where a reference reached the pixel,
-    /// the input elsewhere.
-    fn finish(self, acc: &[[f64; 4]]) -> Planes {
+    /// the input elsewhere; then the blend of Y with the input, `d + (x − d) t` with `t = B / 100`
+    /// (Cb and Cr keep the filtered values).
+    fn finish(self, acc: &[[f64; 4]], blend: f64) -> Planes {
+        let t = (blend / 100.0).min(1.0);
         let mut out = self.planes;
         for (i, a) in acc.iter().enumerate() {
             if a[3] > 0.0 {
                 for (ch, plane) in out.iter_mut().enumerate() {
                     if self.active[ch] {
-                        plane[i] = a[ch] / a[3];
+                        let d = a[ch] / a[3];
+                        plane[i] = if ch == 0 && t > 0.0 {
+                            d + (plane[i] - d) * t
+                        } else {
+                            d
+                        };
                     }
                 }
             }
@@ -603,17 +706,21 @@ impl Ctx {
 
 /// What the device kernel (`kernels::bm_dct`) takes from this reference for one buffer, so that its
 /// schedule is this file's: the passes in order (each the frame rows and columns of its references, as
-/// [`Ctx::passes`] makes them for the buffer), the filtered channels and the thresholds.
+/// [`Ctx::passes`] makes them for the buffer), the filtered channels, the thresholds and the noise of
+/// the chroma threshold per reference block.
 #[derive(Clone, Debug)]
 pub(crate) struct DevicePlan {
     /// The passes in order, each `(rows, columns)` in frame coordinates.
     pub(crate) passes: Vec<(Vec<usize>, Vec<usize>)>,
     /// Whether Y, Cb and Cr are filtered.
     pub(crate) active: [bool; 3],
-    /// The hard threshold of each channel.
+    /// The hard threshold of each channel (Cb and Cr: the one threshold `0.06 C`, which `level`
+    /// replaces when it is `Some`).
     pub(crate) tau: [f64; 3],
     /// The block-distance threshold.
     pub(crate) theta: f64,
+    /// The noise of the chroma threshold per reference block ([`LevelNoise`]), if Cb and Cr take it.
+    pub(crate) level: Option<LevelNoise>,
 }
 
 /// The [`DevicePlan`] of a `width` × `height` buffer at `place`, or `None` when the method changes
@@ -639,6 +746,7 @@ pub(crate) fn device_plan(
         active: ctx.active,
         tau: ctx.tau,
         theta: ctx.theta,
+        level: ctx.level,
     })
 }
 
@@ -648,6 +756,12 @@ pub(crate) fn device_plan(
 pub(crate) fn device_constants() -> (Block, [[f64; 4]; 4], [[f64; 4]; 4], f64) {
     let dct = Dct8::new();
     (window_2d(), dct.even, dct.odd, ROUND_TRIP_GAIN)
+}
+
+/// Whether method A filters any channel at `p` (a frame of at least 8 × 8 px assumed).
+#[must_use]
+pub fn filters_any(p: &BmDctParams) -> bool {
+    Ctx::active(p).contains(&true)
 }
 
 /// Denoises `img` with method A.
@@ -662,8 +776,7 @@ pub fn denoise(img: &RgbImage, p: &BmDctParams) -> RgbImage {
     }
     let ctx = Ctx::new(ycbcr::to_ycbcr(img), img.width, img.height, img.place, p);
     let acc = ctx.accumulate();
-    let planes = ctx.finish(&acc);
-    ycbcr::blend(ycbcr::from_ycbcr(&planes, img), img, p.blend)
+    ycbcr::from_ycbcr(&ctx.finish(&acc, p.blend), img)
 }
 
 #[cfg(test)]
@@ -677,6 +790,7 @@ mod tests {
             chroma,
             radius,
             blend: 0.0,
+            level: None,
         }
     }
 
@@ -1100,6 +1214,119 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn level(chroma_scale: f64) -> LevelNoise {
+        LevelNoise {
+            a: 1e-4,
+            b: 1e-6,
+            gains: [1.0; 3],
+            encoding_gain: crate::cpu::denoise_space::WORKING_GAIN_EV.exp2(),
+            chroma_scale,
+        }
+    }
+
+    #[test]
+    fn the_level_noise_at_grey_is_the_working_noise_and_grows_into_the_shadows() {
+        use crate::cpu::denoise_space::{WORKING_GAIN_EV, encode};
+        use crate::cpu::frame_denoise::working_noise;
+        use ym_noise::model::NoiseModel;
+        let (a, b, gains) = (4e-4, 6e-7, [2.0_f32, 1.0, 1.5]);
+        let l = LevelNoise {
+            a,
+            b,
+            gains: gains.map(f64::from),
+            encoding_gain: WORKING_GAIN_EV.exp2(),
+            chroma_scale: 1.0,
+        };
+        let grey = 0.18 / WORKING_GAIN_EV.exp2();
+        let at = |v: f64| l.chroma_sigma([encode(v, WORKING_GAIN_EV), 0.0, 0.0]);
+        let (_, sc) = working_noise(&NoiseModel::new(a, b), gains);
+        assert!((at(grey) / sc - 1.0).abs() < 1e-6, "{} {sc}", at(grey));
+        assert!(
+            at(grey / 16.0) > 1.3 * at(grey),
+            "{} {}",
+            at(grey / 16.0),
+            at(grey)
+        );
+        assert!(at(grey * 4.0) < at(grey));
+        // A colour below black in one channel reads that channel at 0, not as a negative level.
+        assert!(at(-0.01).is_finite() && l.chroma_sigma([0.05, 0.2, -0.3]).is_finite());
+    }
+
+    #[test]
+    fn the_blend_brings_back_the_luma_and_leaves_the_colour_denoised() {
+        let img = noisy(64, 48, 0.05, 7);
+        let base = params(30.0, 30.0, 1);
+        let plain = denoise(&img, &base);
+        let blended = denoise(
+            &img,
+            &BmDctParams {
+                blend: 40.0,
+                ..base
+            },
+        );
+        let [yp, cbp, crp] = ycbcr::to_ycbcr(&plain);
+        let [yb, cbb, crb] = ycbcr::to_ycbcr(&blended);
+        let [yi, _, _] = ycbcr::to_ycbcr(&img);
+        for i in 0..yp.len() {
+            assert!(
+                (cbp[i] - cbb[i]).abs() < 1e-6 && (crp[i] - crb[i]).abs() < 1e-6,
+                "{i}"
+            );
+            let want = yp[i] + 0.4 * (yi[i] - yp[i]);
+            assert!((yb[i] - want).abs() < 1e-6, "{i}: {} {want}", yb[i]);
+        }
+    }
+
+    #[test]
+    fn a_threshold_that_follows_the_level_filters_dark_colour_noise_harder() {
+        // A dark and a light neutral half in the working encoding with the same noise in every channel.
+        let (w, h) = (96, 64);
+        let mut img = RgbImage::from_planar(
+            w,
+            h,
+            (0..3 * w * h)
+                .map(|i| if i % w < w / 2 { 0.08 } else { 0.75 })
+                .collect(),
+        )
+        .unwrap();
+        synth::add_noise(&mut img.data, 0.02, 11);
+        // The chroma noise std over the inner part of each half.
+        let residual = |out: &RgbImage| {
+            let [_, cb, cr] = ycbcr::to_ycbcr(out);
+            let side = |x0: usize| {
+                let v: Vec<f64> = (12..h - 12)
+                    .flat_map(|y| (x0 + 12..x0 + w / 2 - 12).map(move |x| y * w + x))
+                    .flat_map(|i| [cb[i], cr[i]])
+                    .collect();
+                let m = v.iter().sum::<f64>() / v.len() as f64;
+                (v.iter().map(|d| (d - m).powi(2)).sum::<f64>() / v.len() as f64).sqrt()
+            };
+            (side(0), side(w / 2))
+        };
+        let k = 3.0 * 22.627_416_997_969_52;
+        let l = level(k);
+        // One threshold, the light half's: both halves keep about as much colour noise.
+        let bright_tau = k * l.chroma_sigma([0.75, 0.0, 0.0]);
+        let one = BmDctParams {
+            luma: 0.0,
+            chroma: bright_tau / 0.06,
+            radius: 1,
+            blend: 0.0,
+            level: None,
+        };
+        let (dark, light) = residual(&denoise(&img, &one));
+        assert!(dark > 0.8 * light, "{dark} {light}");
+        // The level's threshold: the dark half, three times noisier in the model, keeps far less.
+        let (dark, light) = residual(&denoise(
+            &img,
+            &BmDctParams {
+                level: Some(l),
+                ..one
+            },
+        ));
+        assert!(dark < 0.5 * light, "{dark} {light}");
     }
 
     #[test]

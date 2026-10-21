@@ -9,17 +9,20 @@
 //! * method A: `L_A = r · kL · σY · 22.627 / 0.1` and `C_A = c · kC · σC · 22.627 / 0.06`, where `σY` and `σC`
 //!   are the photo's luma and chroma noise in the working encoding at middle grey, from its noise model and
 //!   gains ([`working_noise`]); `kL` and `kC` put the hard thresholds at that many standard deviations of the
-//!   noise (calibrated by `examples/denoise_gate.rs`);
+//!   noise (calibrated by `examples/denoise_gate.rs`). The chroma threshold itself follows each reference
+//!   block's colour: `τC = c · kC · 22.627 · σC(block)` from the same model and gains ([`LevelNoise`]), so
+//!   dark colours, whose noise the encoding stretches, are filtered as hard as their noise asks; `C_A` still
+//!   sets the block-distance threshold;
 //! * method B: `L_B = 30 r` and method C: `L_C = 80 r`, `C_C = 90 c`, the settings measured best by the same
 //!   tool (the text's "measured noise" settings are B's 50 and C's 80 and 50);
 //! * every method: the blend of the spec is today's detail re-injection weight, `B = 100 · 0.15 (D / 50)^2`
-//!   (15 % at Auto), and the radius `R` is 1.
+//!   (15 % at Auto), and the radius `R` is 1; method A blends the luma only.
 //!
 //! Receptive field: method A's 23 px ([`bm_dct::HALO_PX`]); methods B and C read the whole frame (a pyramid and a
 //! measurement of the whole image), so a tile asks for the whole frame ([`FrameDenoise::halo_px`] is `None`).
 
 use super::RgbImage;
-use super::bm_dct::{self, BmDctParams};
+use super::bm_dct::{self, BmDctParams, LevelNoise};
 use super::denoise_space::{WORKING_GAIN_EV, decode_image, encode_image, srgb_encode};
 use super::detail::{C_AUTO, NoiseReduction, l_auto};
 use super::nl_bayes::{self, NlBayesParams, Variant};
@@ -99,16 +102,29 @@ pub const NL_BAYES_RGB_L: f64 = 30.0;
 pub const NL_BAYES_YCC_L: f64 = 80.0;
 /// Method C's `C` at Auto (the measured best).
 pub const NL_BAYES_YCC_C: f64 = 90.0;
-/// `L` of method A per standard deviation of luma noise: `tau = 0.1 L` on the scale `8^1.5` times the
-/// orthonormal one.
-pub const L_PER_SIGMA: f64 = 22.627_416_997_969_52 / 0.1;
+/// The scale of method A's 3D transform against the orthonormal one, `8^1.5`: a coefficient of white noise of
+/// standard deviation `σ` has the standard deviation `8^1.5 σ`.
+pub const TRANSFORM_SCALE: f64 = 22.627_416_997_969_52;
+/// `L` of method A per standard deviation of luma noise: `tau = 0.1 L` on the scale [`TRANSFORM_SCALE`] times
+/// the orthonormal one.
+pub const L_PER_SIGMA: f64 = TRANSFORM_SCALE / 0.1;
 /// `C` of method A per standard deviation of chroma noise (`tau = 0.06 C`).
-pub const C_PER_SIGMA: f64 = 22.627_416_997_969_52 / 0.06;
+pub const C_PER_SIGMA: f64 = TRANSFORM_SCALE / 0.06;
 /// The radius `R` of every method.
 pub const RADIUS: usize = 1;
 /// Middle grey on the raw scale at the camera's exposure (`0.18 / 2^CAMERA_GAIN_EV`).
 fn grey_raw() -> f64 {
     0.18 / WORKING_GAIN_EV.exp2()
+}
+
+/// The model's `a` and `b`, at least 0. A model with a number that is not finite is no noise (the caller passes
+/// a usable model; this keeps the strengths finite whatever it gets).
+fn usable(model: &NoiseModel) -> (f64, f64) {
+    if model.a.is_finite() && model.b.is_finite() {
+        (model.a.max(0.0), model.b.max(0.0))
+    } else {
+        (0.0, 0.0)
+    }
 }
 
 /// The photo's luma and chroma noise in the working encoding at middle grey, `(σY, σC)`, from its noise model
@@ -122,13 +138,7 @@ pub fn working_noise(model: &NoiseModel, g0: [f32; 3]) -> (f64, f64) {
     // d/dx srgb(g x) at grey, numerically (the curve is smooth there).
     let h = 1e-6;
     let slope = (srgb_encode(g * (x + h)) - srgb_encode(g * (x - h))) / (2.0 * h);
-    // A model with a number that is not finite is no noise (the caller passes a usable model; this keeps the
-    // strengths finite whatever it gets).
-    let (a, b) = if model.a.is_finite() && model.b.is_finite() {
-        (model.a.max(0.0), model.b.max(0.0))
-    } else {
-        (0.0, 0.0)
-    };
+    let (a, b) = usable(model);
     let var: Vec<f64> = g0
         .iter()
         .map(|&gc| {
@@ -157,6 +167,8 @@ pub struct FrameDenoise {
     pub radius: usize,
     /// `B` (percent).
     pub blend: f64,
+    /// Method A's chroma threshold per reference block from the photo's noise ([`LevelNoise`]).
+    pub level: Option<LevelNoise>,
 }
 
 impl FrameDenoise {
@@ -174,10 +186,19 @@ impl FrameDenoise {
     ) -> Option<FrameDenoise> {
         let r = f64::from(nr.luminance / l_auto(iso));
         let c = f64::from(nr.color / C_AUTO);
+        let mut level = None;
         let (luma, chroma) = match method {
             DenoiseMethod::Bilateral => return None,
             DenoiseMethod::BmDct => {
                 let (sy, sc) = working_noise(model, g0);
+                let (a, b) = usable(model);
+                level = Some(LevelNoise {
+                    a,
+                    b,
+                    gains: g0.map(|g| if g.is_finite() { f64::from(g) } else { 0.0 }),
+                    encoding_gain: WORKING_GAIN_EV.exp2(),
+                    chroma_scale: c * BM_DCT_KC * TRANSFORM_SCALE,
+                });
                 (
                     r * BM_DCT_KL * sy * L_PER_SIGMA,
                     c * BM_DCT_KC * sc * C_PER_SIGMA,
@@ -192,6 +213,7 @@ impl FrameDenoise {
             chroma: chroma.clamp(0.0, 100.0),
             radius: RADIUS,
             blend: f64::from(nr.beta()) * 100.0,
+            level,
         };
         (!fd.is_identity()).then_some(fd)
     }
@@ -202,9 +224,21 @@ impl FrameDenoise {
     pub fn is_identity(&self) -> bool {
         match self.method {
             DenoiseMethod::Bilateral => true,
-            DenoiseMethod::BmDct => 0.1 * self.luma <= 1e-6 && 0.06 * self.chroma <= 1e-6,
+            DenoiseMethod::BmDct => !bm_dct::filters_any(&self.bm_dct_params()),
             DenoiseMethod::NlBayesRgb => self.luma <= 0.0,
             DenoiseMethod::NlBayesYcc => self.luma <= 0.0 && self.chroma <= 0.0,
+        }
+    }
+
+    /// Method A's parameters.
+    #[must_use]
+    pub fn bm_dct_params(&self) -> BmDctParams {
+        BmDctParams {
+            luma: self.luma,
+            chroma: self.chroma,
+            radius: self.radius,
+            blend: self.blend,
+            level: self.level,
         }
     }
 
@@ -224,15 +258,7 @@ impl FrameDenoise {
         let w = encode_image(img, WORKING_GAIN_EV);
         let out = match self.method {
             DenoiseMethod::Bilateral => return img.clone(),
-            DenoiseMethod::BmDct => bm_dct::denoise(
-                &w,
-                &BmDctParams {
-                    luma: self.luma,
-                    chroma: self.chroma,
-                    radius: self.radius,
-                    blend: self.blend,
-                },
-            ),
+            DenoiseMethod::BmDct => bm_dct::denoise(&w, &self.bm_dct_params()),
             DenoiseMethod::NlBayesRgb | DenoiseMethod::NlBayesYcc => nl_bayes::denoise(
                 &w,
                 &NlBayesParams {

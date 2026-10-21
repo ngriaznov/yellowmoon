@@ -7,11 +7,13 @@
 //!
 //! | Case | Asserted | Measured |
 //! |---|---|---|
-//! | 30 frames from 8 x 8 to 301 x 203, R 0 to 3, luma only, chroma only and both, blend 0 and 15, linear values from below 0 to above 1 | max `abs(gpu - cpu)` at most [`BOUND`]; at most [`OVER_1E4`] of the samples over 1e-4 | 2.09e-6, 0 over 1e-4 of 1.9 million (no decision flipped) |
-//! | the whole frames of the tile test (four settings) | at most [`FLIP_LARGEST`], at most [`FLIP_OVER_1E4`] of a frame over 1e-4 | 1.55e-6 in three; one decision of the luma channel went the other way in the fourth: 1.68e-3, 204 of 99 381 over 1e-4 |
-//! | noise-free synthetic content (a ramp, flat patches, clipped plateaus), where exact ties of mirror-image candidates are broken by each side's rounding | at most [`TIE_PRONE_LARGEST`], [`TIE_PRONE_OVER_1E4`] over 1e-4 | 7.3e-3, 5.7e-2 |
+//! | 30 frames from 8 x 8 to 301 x 203, R 0 to 3, luma only, chroma only and both, blend 0 and 15, linear values from below 0 to above 1 | max `abs(gpu - cpu)` at most [`BOUND`]; at most [`OVER_1E4`] of the samples over 1e-4 | 2.09e-6, 0 over 1e-4 of 1.9 million (no decision flipped); with the blend of Y alone (pipeline 0.5.1) 2.33e-6, 0 |
+//! | 29 frames at the render's stage (`FrameDenoise::resolve`: the chroma threshold per reference block from the noise model and gains) at five levels from ISO 100 to 12800, Colour 0 and 100, Luminance 0, Detail 0, R 0 to 3 | at most [`LEVEL_LARGEST`], at most [`LEVEL_OVER_1E4`] of the samples over 1e-4 | 1.35e-3, 971 of 1.3 million over 1e-4: two luma flips (as with one threshold) and two Cr flips at the block's `tau_C` |
+//! | the kernel's `tau_C` (`bm_chroma_tau`) against the CPU's at the same means, 245 760 colours, five levels, three sets of gains | at most [`TAU_C_ULP`] ulp | 4.65 ulp |
+//! | the whole frames of the tile test (four settings; three at the render's stage, against [`LEVEL_LARGEST`] and [`LEVEL_OVER_1E4`]) | at most [`FLIP_LARGEST`], at most [`FLIP_OVER_1E4`] of a frame over 1e-4 | 1.55e-6 in three; one decision of the luma channel went the other way in the fourth: 1.68e-3, 204 of 99 381 over 1e-4; the render's stage 5.96e-7, 0 over 1e-4 |
+//! | noise-free synthetic content (a ramp, flat patches, clipped plateaus), where exact ties of mirror-image candidates are broken by each side's rounding | at most [`TIE_PRONE_LARGEST`], [`TIE_PRONE_OVER_1E4`] over 1e-4 | 7.3e-3, 5.7e-2; with the blend of Y alone 8.0e-3, 5.8e-2 |
 //! | strengths that filter nothing, frames under 8 px | the CPU's encode and decode within [`ROUND_TRIP_BOUND`] | 2.4e-7 |
-//! | tiles (two sizes on the even grid, and windows at odd origins with the 23 px halo, one at the far edges) | bit-identical to the whole frame | 0 differing |
+//! | tiles (two sizes on the even grid, and windows at odd origins with the 23 px halo, one at the far edges), with one threshold and with the level's | bit-identical to the whole frame | 0 differing |
 //! | a poisoned device and a plain one | bit-identical, finite | 0 differing |
 //! | windows of an 8658 x 5772 frame at its origin, its middle and its far corner | within [`FLIP_LARGEST`] of the CPU at the same place | 6.6e-7 |
 //! | `LP_NUM_THREADS=1` against the default | bit-identical | |
@@ -30,19 +32,25 @@ use common::limits::assert_max_binding_bytes;
 use common::{TestGpu, gpus};
 use denoise_common::{FNV_START, compare, fnv};
 use ym_gpu::chain::MAX_PHYS_AREA;
-use ym_gpu::cpu::frame_denoise::{DenoiseMethod, FrameDenoise};
+use ym_gpu::cpu::bm_dct::LevelNoise;
+use ym_gpu::cpu::denoise_space::WORKING_GAIN_EV;
+use ym_gpu::cpu::detail::NoiseReduction;
+use ym_gpu::cpu::frame_denoise::{BM_DCT_KC, DenoiseMethod, FrameDenoise, TRANSFORM_SCALE};
 use ym_gpu::cpu::tiling::{Halo, Rect};
 use ym_gpu::cpu::{Placement, RgbImage, synth};
 use ym_gpu::device::{GpuContext, GpuError, StorageMode};
 use ym_gpu::image::GpuImage;
 use ym_gpu::kernels::bm_dct::{self, HALO_PX, frame_denoise, frame_denoise_core};
+use ym_gpu::kernels::{KernelId, shader_source};
 use ym_gpu::queue::{JobSpec, Priority};
 use ym_gpu::stream::PassList;
+use ym_noise::model::NoiseModel;
 
 /// Largest `|gpu - cpu|` (linear, white 1.0) of the frames of `matches_the_cpu_on_every_frame`: twice the first
 /// measured value (2.09e-6 on lavapipe: no decision went the other way in 1.9 million samples). Metal gave the
 /// same numbers to the last digit (macOS 14 and 15, Mac GPU run 39516017050, 2026-10-21: 2.086e-6, 0 over
-/// 1e-4), as the kernel pins its arithmetic, so one set of bounds holds for every adapter.
+/// 1e-4), as the kernel pins its arithmetic, so one set of bounds holds for every adapter. With the blend of Y
+/// alone (pipeline 0.5.1) lavapipe measures 2.33e-6, 0 over 1e-4, within the bound.
 const BOUND: f32 = 4.2e-6;
 /// The share of those samples over 1e-4: twice the first measured value (0, on lavapipe and on Metal).
 const OVER_1E4: f64 = 0.0;
@@ -88,7 +96,47 @@ fn stage(luma: f64, chroma: f64, radius: usize, blend: f64) -> FrameDenoise {
         chroma,
         radius,
         blend,
+        level: None,
     }
+}
+
+/// The white balance gains of the scenes (red and blue amplified, as R4 leaves a daylight photo).
+const GAINS: [f32; 3] = [1.9, 1.0, 1.5];
+
+/// The five noise levels of `examples/denoise_gate.rs`: the ISO each stands for, `a` and `b` of the model
+/// (variance `a x + b` on the normalised raw scale).
+const LEVELS: [(f32, f64, f64); 5] = [
+    (100.0, 2.5e-5, 4e-8),
+    (800.0, 2e-4, 3e-7),
+    (1600.0, 4e-4, 6e-7),
+    (6400.0, 2e-3, 2e-6),
+    (12800.0, 4e-3, 4e-6),
+];
+
+/// The stage a render resolves for a photo at `iso` with the noise model `(a, b)`, the gains [`GAINS`] and
+/// the controls `nr` (`FrameDenoise::resolve`): Cb and Cr take the threshold of their reference block.
+fn render_stage(nr: &NoiseReduction, iso: f32, a: f64, b: f64) -> FrameDenoise {
+    let fd = FrameDenoise::resolve(DenoiseMethod::BmDct, nr, iso, &NoiseModel::new(a, b), GAINS)
+        .expect("method A");
+    assert!(fd.level.is_some(), "{fd:?}");
+    fd
+}
+
+/// Balanced linear camera RGB with the noise of the model `(a, b)`: the scene of [`linear_scene`] with the
+/// gains [`GAINS`], each balanced sample `y = g x` of a raw value `x` with the variance `g a y + g^2 b`.
+fn model_scene(w: usize, h: usize, seed: u64, a: f64, b: f64) -> RgbImage {
+    let mut img = synth::natural(w, h, seed);
+    let n = img.plane_len();
+    let mut rng = synth::Rng::new(seed.wrapping_add(91));
+    for (c, &g) in GAINS.iter().enumerate() {
+        let g = f64::from(g);
+        for v in &mut img.data[c * n..(c + 1) * n] {
+            let y = 0.5 * f64::from(*v) * f64::from(*v) * g;
+            let sd = (g * a * y + g * g * b).max(0.0).sqrt();
+            *v = (y + sd * f64::from(rng.gaussian())) as f32;
+        }
+    }
+    img
 }
 
 /// Balanced linear camera RGB as R6 has it: a natural scene placed around middle grey of the raw scale (0.083)
@@ -187,6 +235,265 @@ fn matches_the_cpu_on_every_frame() {
     );
 }
 
+/// Largest `|gpu - cpu|` of the frames of `matches_the_cpu_with_the_level_threshold` (the render's stage with the
+/// chroma threshold per reference block, pipeline 0.5.1): twice the first measured value, 1.35e-3 on lavapipe.
+/// Four of the 29 frames have a decision that went the other way: two of the luma (as with one threshold:
+/// those frames flip the same with `level: None`), two of Cr, where a coefficient lay within rounding of the
+/// block's `tau_C` (the device's agrees with the CPU's to a few `f32` ulp,
+/// `the_kernels_chroma_threshold_is_the_cpus_to_a_few_ulp`); with `level: None` the same frames have no chroma
+/// flip. The other 25 frames are within 1.9e-6.
+const LEVEL_LARGEST: f32 = 2.7e-3;
+/// The share of those samples over 1e-4: twice the first measured value (971 of 1 299 360, 7.47e-4, 4 over 1e-3,
+/// on lavapipe).
+const LEVEL_OVER_1E4: f64 = 1.5e-3;
+
+#[test]
+fn matches_the_cpu_with_the_level_threshold() {
+    // The stage of a render (`FrameDenoise::resolve`): tau_C of each reference block from the photo's noise
+    // model and gains, the blend of Y alone, at the five levels of the measurement and with the controls moved.
+    let Some(dev) = f32_device() else { return };
+    let mut cases: Vec<(usize, usize, usize, NoiseReduction, usize)> = Vec::new();
+    for (k, &(iso, ..)) in LEVELS.iter().enumerate() {
+        for (w, h) in [(64, 48), (131, 97), (211, 157)] {
+            cases.push((w, h, k, NoiseReduction::auto(iso), 1));
+        }
+    }
+    for k in [1, 3] {
+        let auto = NoiseReduction::auto(LEVELS[k].0);
+        for nr in [
+            // Colour 0: the level cannot filter, luma alone.
+            NoiseReduction { color: 0.0, ..auto },
+            // Luminance 0: the chroma alone.
+            NoiseReduction {
+                luminance: 0.0,
+                ..auto
+            },
+            NoiseReduction {
+                color: 100.0,
+                ..auto
+            },
+            // Detail 0: no blend.
+            NoiseReduction {
+                detail: 0.0,
+                ..auto
+            },
+        ] {
+            cases.push((157, 113, k, nr, 1));
+        }
+        for radius in [0, 2, 3] {
+            cases.push((101, 77, k, auto, radius));
+        }
+    }
+    let (mut worst, mut over4, mut over3, mut total) = (0.0f32, 0usize, 0usize, 0usize);
+    for (n, (w, h, k, nr, radius)) in cases.into_iter().enumerate() {
+        let (iso, a, b) = LEVELS[k];
+        let img = model_scene(w, h, 300 + n as u64, a, b);
+        let fd = FrameDenoise {
+            radius,
+            ..render_stage(&nr, iso, a, b)
+        };
+        let want = fd.apply(&img);
+        let got = run_gpu(dev, &img, fd);
+        assert_eq!((got.width, got.height, got.place), (w, h, img.place));
+        assert_all_finite(&format!("level case {n} {w}x{h}"), &got.data);
+        let e = compare(&got.data, &want.data);
+        let o4 = denoise_common::Err::over(&got.data, &want.data, 1e-4);
+        let o3 = denoise_common::Err::over(&got.data, &want.data, 1e-3);
+        eprintln!(
+            "[R6] method A level case {n} {w}x{h} ISO {iso} L {:.2} C {:.2} R {radius} B {:.1}: max {:.3e} at {} mean {:.2e}, over 1e-4: {o4}, over 1e-3: {o3}",
+            fd.luma, fd.chroma, fd.blend, e.max, e.at, e.mean
+        );
+        worst = worst.max(e.max);
+        over4 += o4;
+        over3 += o3;
+        total += got.data.len();
+        assert!(
+            e.max <= LEVEL_LARGEST,
+            "level case {n} {w}x{h}: {:e}",
+            e.max
+        );
+    }
+    denoise_common::ci_note(
+        "method A level",
+        &format!(
+            "method A with the level threshold on {}: worst {worst:.3e} over {total} samples, {over4} over 1e-4 ({:.2e}), {over3} over 1e-3",
+            dev.gpu.info().name,
+            over4 as f64 / total as f64
+        ),
+    );
+    assert!(
+        (over4 as f64) <= LEVEL_OVER_1E4 * total as f64,
+        "{over4} of {total} samples over 1e-4"
+    );
+}
+
+/// The largest difference of the kernel's `tau_C` (`bm_chroma_tau` of `bm_dct_pass.wgsl`) from the CPU's
+/// `chroma_scale * LevelNoise::chroma_sigma` at the same means, in ulp of the CPU's value rounded to `f32`: twice
+/// the first measured value (4.65 ulp on lavapipe, at a bright grey; 46 132 of 245 760 over 1 ulp, 3 334 over 2).
+/// The kernel's power (`bm_pow`, about an ulp, in the decoding and in the slope) and the rounding of `a` and `b`
+/// to `f32` make most of it.
+const TAU_C_ULP: f64 = 9.3;
+
+/// The ulp of `x` as an `f32` (the gap to the next `f32` away from 0).
+fn ulp(x: f64) -> f64 {
+    let f = (x as f32).abs();
+    f64::from(f32::from_bits(f.to_bits() + 1) - f)
+}
+
+#[test]
+fn the_kernels_chroma_threshold_is_the_cpus_to_a_few_ulp() {
+    // `bm_chroma_tau`, the function the pass kernel runs on the reference block's means, on the device against
+    // the CPU's `f64` at the same means: every level of the measurement, three sets of gains, colours from below
+    // black to above white and saturated. The decisions `|c| < tau_C` can only flip where the two differ.
+    let Some(dev) = f32_device() else { return };
+    let module = shader_source(StorageMode::F32, KernelId::BmDct);
+    let cut = module.rfind("@compute").expect("the kernel's entry point");
+    let shader = format!(
+        "{}\n\
+         @group(0) @binding(5) var<storage, read> t_in: array<vec4<f32>>;\n\
+         @group(0) @binding(6) var<storage, read_write> t_out: array<f32>;\n\
+         @compute @workgroup_size(64)\n\
+         fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
+             let i = gid.x;\n\
+             if (i >= arrayLength(&t_out)) {{ return; }}\n\
+             t_out[i] = bm_chroma_tau(t_in[3u * i].xyz, t_in[3u * i + 1u], t_in[3u * i + 2u]);\n\
+         }}\n",
+        &module[..cut]
+    );
+    let scale = BM_DCT_KC * TRANSFORM_SCALE;
+    let mut levels = Vec::new();
+    for &(_, a, b) in &LEVELS {
+        for gains in [[1.9, 1.0, 1.5], [1.0, 1.0, 1.0], [2.6, 1.0, 1.3]] {
+            levels.push(LevelNoise {
+                a,
+                b,
+                gains,
+                encoding_gain: WORKING_GAIN_EV.exp2(),
+                chroma_scale: scale,
+            });
+        }
+    }
+    let per = 1usize << 14;
+    let mut rng = synth::Rng::new(77);
+    let mut inputs: Vec<[f32; 4]> = Vec::with_capacity(3 * per * levels.len());
+    let mut want = Vec::with_capacity(per * levels.len());
+    for l in &levels {
+        for i in 0..per {
+            // A quarter on the grey axis (Cb = Cr = 0), the rest coloured; Y from -0.05 to 1.3.
+            let unit = |r: &mut synth::Rng| (r.gaussian() * 0.5).clamp(-1.0, 1.0);
+            let y = -0.05 + 1.35 * (i as f32 + 0.5) / per as f32;
+            let (cb, cr) = if i % 4 == 0 {
+                (0.0, 0.0)
+            } else {
+                (0.3 * unit(&mut rng), 0.3 * unit(&mut rng))
+            };
+            inputs.push([y, cb, cr, 0.0]);
+            inputs.push([
+                l.a as f32,
+                l.b as f32,
+                l.encoding_gain as f32,
+                l.chroma_scale as f32,
+            ]);
+            inputs.push([l.gains[0] as f32, l.gains[1] as f32, l.gains[2] as f32, 0.0]);
+            want.push(
+                l.chroma_scale * l.chroma_sigma([f64::from(y), f64::from(cb), f64::from(cr)]),
+            );
+        }
+    }
+    let n = want.len();
+    let means: Vec<[f32; 4]> = inputs.iter().step_by(3).copied().collect();
+    let got: Vec<f32> = on_device(dev, move |ctx| {
+        use wgpu::util::DeviceExt as _;
+        let module = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("bm_chroma_tau"),
+                source: wgpu::ShaderSource::Wgsl(shader.into()),
+            });
+        let pipeline = ctx
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("bm_chroma_tau"),
+                layout: None,
+                module: &module,
+                entry_point: Some("main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
+        // The uniform block all zero: the barrier word is +0.0 and nothing else of it is read.
+        let uniform = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("bm_chroma_tau uniform"),
+                contents: &[0u8; 1024],
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let input = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("bm_chroma_tau in"),
+                contents: bytemuck::cast_slice(&inputs),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let out = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bm_chroma_tau out"),
+            size: (n * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bm_chroma_tau"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: out.as_entire_binding(),
+                },
+            ],
+        });
+        let mut passes = PassList::new(ctx, "bm_chroma_tau");
+        {
+            let mut pass = passes
+                .encoder()
+                .begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(n.div_ceil(64) as u32, 1, 1);
+        }
+        let id = passes.read(&out, 0, out.size())?;
+        let mut done = passes.submit()?.finish()?;
+        Ok(bytemuck::pod_collect_to_vec(&done.take(id)))
+    });
+    let (mut worst, mut at, mut over1, mut over2) = (0.0f64, 0usize, 0usize, 0usize);
+    for (i, (&g, &w)) in got.iter().zip(&want).enumerate() {
+        assert!(w.is_finite() && w > 0.0, "{i}: the CPU's {w}");
+        let e = (f64::from(g) - w).abs() / ulp(w);
+        if e > worst {
+            (worst, at) = (e, i);
+        }
+        over1 += usize::from(e > 1.0);
+        over2 += usize::from(e > 2.0);
+    }
+    let [y, cb, cr, _] = means[at];
+    let line = format!(
+        "tau_C of bm_chroma_tau on {}: worst {worst:.2} ulp (at Y {y} Cb {cb} Cr {cr}: {} against {:e}), {over1} over 1 ulp, {over2} over 2 ulp of {n}",
+        dev.gpu.info().name,
+        got[at],
+        want[at]
+    );
+    eprintln!("[R6] {line}");
+    denoise_common::ci_note("method A tau_C", &line);
+    assert!(worst <= TAU_C_ULP, "{line}");
+}
+
 #[test]
 fn strengths_that_filter_nothing_and_frames_under_8_px_give_the_cpus_round_trip() {
     let Some(dev) = f32_device() else { return };
@@ -231,6 +538,46 @@ fn window_of(img: &RgbImage, core: Rect) -> (RgbImage, Rect) {
     (img.extract(rect), core.relative_to(&rect))
 }
 
+/// Tiles of `img` (two sizes on the even grid, windows at odd origins with the 23 px halo, one at the far
+/// edges) are the whole frame's bits on the device; returns the whole frame against the CPU: the largest
+/// difference and the samples over 1e-4.
+fn assert_tiles_equal_whole_frame(dev: &TestGpu, img: &RgbImage, fd: FrameDenoise) -> (f32, usize) {
+    let (w, h) = (img.width, img.height);
+    let whole =
+        assert_tiles_equal_whole(&format!("method A {fd:?}"), w, h, 3, &[48, 100], |core| {
+            let (sub, rel) = window_of(img, core);
+            run_gpu_core(dev, &sub, rel, fd).data
+        });
+    // Windows at odd origins, one of them reaching the right and the bottom edge, and the whole.
+    let whole_img = RgbImage::from_planar(w, h, whole.clone()).expect("planes");
+    for core in [
+        Rect::new(23, 31, 57, 49),
+        Rect::new(61, 17, 77, 63),
+        Rect::new(131, 97, w - 131, h - 97),
+        Rect::new(3, 101, 101, h - 101),
+        Rect::new(150, 0, w - 150, 41),
+    ] {
+        let (sub, rel) = window_of(img, core);
+        let got = run_gpu_core(dev, &sub, rel, fd);
+        assert_eq!(got.place, img.place.offset(core.x, core.y));
+        assert_bit_equal(
+            &format!("method A {fd:?}: window {core:?}"),
+            &got.data,
+            &whole_img.extract(core).data,
+        );
+    }
+    let want = fd.apply(img);
+    let e = compare(&whole, &want.data);
+    let o4 = denoise_common::Err::over(&whole, &want.data, 1e-4);
+    let o5 = denoise_common::Err::over(&whole, &want.data, 1e-5);
+    eprintln!(
+        "[R6] method A tiles {fd:?}: whole frame against the CPU {:.3e}, {o5} over 1e-5, {o4} over 1e-4 of {}",
+        e.max,
+        whole.len()
+    );
+    (e.max, o4)
+}
+
 #[test]
 fn tiles_equal_the_whole_frame_bit_for_bit() {
     let Some(dev) = f32_device() else { return };
@@ -242,42 +589,37 @@ fn tiles_equal_the_whole_frame_bit_for_bit() {
         stage(0.0, 35.0, 3, 15.0),
         stage(14.0, 60.0, 2, 0.0),
     ] {
-        let whole =
-            assert_tiles_equal_whole(&format!("method A {fd:?}"), w, h, 3, &[48, 100], |core| {
-                let (sub, rel) = window_of(&img, core);
-                run_gpu_core(dev, &sub, rel, fd).data
-            });
-        // Windows at odd origins, one of them reaching the right and the bottom edge, and the whole.
-        let whole_img = RgbImage::from_planar(w, h, whole.clone()).expect("planes");
-        for core in [
-            Rect::new(23, 31, 57, 49),
-            Rect::new(61, 17, 77, 63),
-            Rect::new(131, 97, w - 131, h - 97),
-            Rect::new(3, 101, 101, h - 101),
-            Rect::new(150, 0, w - 150, 41),
-        ] {
-            let (sub, rel) = window_of(&img, core);
-            let got = run_gpu_core(dev, &sub, rel, fd);
-            assert_eq!(got.place, img.place.offset(core.x, core.y));
-            assert_bit_equal(
-                &format!("method A {fd:?}: window {core:?}"),
-                &got.data,
-                &whole_img.extract(core).data,
-            );
-        }
-        // And the whole frame is the CPU's within the bound of a decision that went the other way.
-        let want = fd.apply(&img);
-        let e = compare(&whole, &want.data);
-        let o4 = denoise_common::Err::over(&whole, &want.data, 1e-4);
-        let o5 = denoise_common::Err::over(&whole, &want.data, 1e-5);
-        eprintln!(
-            "[R6] method A tiles {fd:?}: whole frame against the CPU {:.3e}, {o5} over 1e-5, {o4} over 1e-4 of {}",
-            e.max,
-            whole.len()
-        );
-        assert!(e.max <= flip_bounds(dev).0, "{:e}", e.max);
+        // The whole frame is the CPU's within the bound of a decision that went the other way.
+        let (largest, o4) = assert_tiles_equal_whole_frame(dev, &img, fd);
+        assert!(largest <= flip_bounds(dev).0, "{largest:e}");
         assert!(
-            (o4 as f64) <= flip_bounds(dev).1 * whole.len() as f64,
+            (o4 as f64) <= flip_bounds(dev).1 * (3 * w * h) as f64,
+            "{o4} over 1e-4"
+        );
+    }
+}
+
+#[test]
+fn tiles_equal_the_whole_frame_bit_for_bit_with_the_level_threshold() {
+    // tau_C is a function of the reference block's pixels, which are positions of the frame: a tile with the
+    // halo still gives the whole frame's bits.
+    let Some(dev) = f32_device() else { return };
+    let (w, h) = (211usize, 157usize);
+    for (k, nr_of) in [
+        (1usize, NoiseReduction::auto as fn(f32) -> NoiseReduction),
+        (3, |iso| NoiseReduction {
+            luminance: 0.0,
+            ..NoiseReduction::auto(iso)
+        }),
+        (4, NoiseReduction::auto),
+    ] {
+        let (iso, a, b) = LEVELS[k];
+        let img = model_scene(w, h, 21 + k as u64, a, b);
+        let fd = render_stage(&nr_of(iso), iso, a, b);
+        let (largest, o4) = assert_tiles_equal_whole_frame(dev, &img, fd);
+        assert!(largest <= LEVEL_LARGEST, "{largest:e}");
+        assert!(
+            (o4 as f64) <= LEVEL_OVER_1E4 * (3 * w * h) as f64,
             "{o4} over 1e-4"
         );
     }
@@ -312,6 +654,8 @@ fn a_halo_one_pixel_short_changes_a_pixel() {
 fn a_poisoned_device_and_a_plain_one_give_the_same_bits() {
     let img = linear_scene(83, 67, 5, 0.005);
     let small = linear_scene(6, 9, 6, 0.005);
+    let (iso, a, b) = LEVELS[2];
+    let level_stage = render_stage(&NoiseReduction::auto(iso), iso, a, b);
     assert_poison_neutral("method A", |gpu| {
         let (img, small) = (img.clone(), small.clone());
         gpu.run(JobSpec::new(Priority::Viewport), move |ctx, _| {
@@ -321,6 +665,7 @@ fn a_poisoned_device_and_a_plain_one_give_the_same_bits() {
                 stage(10.0, 0.0, 3, 0.0),
                 stage(0.0, 40.0, 0, 15.0),
                 stage(0.0, 0.0, 1, 15.0),
+                level_stage,
             ] {
                 out.extend(frame_denoise(ctx, &img, &fd)?.data);
                 // A window's core, so the recycled buffers are read at an offset.
@@ -341,7 +686,7 @@ fn positions_are_the_frames_up_to_the_far_corner_of_a_50_mp_frame() {
     let Some(dev) = f32_device() else { return };
     let (fw, fh) = (8658usize, 5772usize);
     let (w, h) = (121usize, 93usize);
-    let fd = stage(9.0, 35.0, 1, 15.0);
+    let (iso, a, b) = LEVELS[2];
     let mut worst = 0.0f32;
     for (k, (x0, y0)) in [
         (0, 0),
@@ -352,6 +697,12 @@ fn positions_are_the_frames_up_to_the_far_corner_of_a_50_mp_frame() {
     .into_iter()
     .enumerate()
     {
+        // The plain stage at the first two places, the render's (the level threshold) at the far corner.
+        let fd = if k < 2 {
+            stage(9.0, 35.0, 1, 15.0)
+        } else {
+            render_stage(&NoiseReduction::auto(iso), iso, a, b)
+        };
         let mut img = linear_scene(w, h, 60 + k as u64, 0.004);
         img.place = Placement {
             x0,
@@ -420,9 +771,16 @@ fn thread_count_does_not_change_a_bit() {
     let Some(dev) = f32_device() else { return };
     denoise_common::assert_thread_count_independent("thread_count_does_not_change_a_bit", || {
         let mut hash = FNV_START;
+        let (iso, a, b) = LEVELS[3];
         for (w, h, seed, fd) in [
             (97usize, 61usize, 1u64, stage(9.0, 35.0, 1, 15.0)),
             (61, 97, 2, stage(14.0, 0.0, 3, 0.0)),
+            (
+                83,
+                71,
+                3,
+                render_stage(&NoiseReduction::auto(iso), iso, a, b),
+            ),
         ] {
             let img = linear_scene(w, h, seed, 0.005);
             hash = fnv(hash, &run_gpu(dev, &img, fd).data);

@@ -60,12 +60,12 @@ Inputs of the colour parity tests are f16-representable, so the CPU reference se
 
 The hashes of `expected.json` pin the **CPU** reference (the runner renders with `ym render --cpu` and `YELLOWMOON_GPU=off`, so a machine with a graphics card cannot change them). The device is held to the CPU's pictures within gates. `ym render --require-gpu --json` renders a file strictly on the device (no adapter is exit 4 and the runner stops with exit 2 before rendering; a device error fails the file), and the file must also say `"device": "gpu"` in its JSON (`ExportReport.device`, the path the photo took) and carry no note that mentions the graphics card, otherwise it is `FELL BACK` and fails whatever its pixels are. The comparison is the CPU mode's statistic (ΔE00 of the 1/4 downsample: median, 99th percentile, maximum) plus the share of samples of the full-size picture that differ by more than 8 codes of 16 bits. Options, the calibration table and the rationale are in `tools/golden/README.md` ("GPU mode").
 
-| Gate | Plan (proposed) | Default (calibrated, pipeline 0.5.0) | Worst of 61 files on lavapipe, pipeline 0.5.0 | First calibration (2026-10-15) |
+| Gate | Plan (proposed) | Default (calibrated, pipeline 0.5.0) | Worst of 61 files on lavapipe, pipeline 0.5.1 | First calibration (2026-10-15) |
 |---|---|---|---|---|
-| median ΔE00 | 0.02 | 2.2e-4 | 1.052e-4 | 2.1e-4 |
-| 99th percentile | 0.05 | 6.9e-2 | 3.461e-2 | 2.2e-2 |
-| maximum | 0.5 | 6.5 | 3.213 (`D6500__ILCE-7RM4__iso12800__rggb__14b__lossless-l`) | 3.8 |
-| samples more than 8 codes off | 1e-3 | 4.3e-2 | 2.131e-2 | 7.4e-3 |
+| median ΔE00 | 0.02 | 2.2e-4 | 9.40e-5 | 2.1e-4 |
+| 99th percentile | 0.05 | 6.9e-2 | 2.709e-2 | 2.2e-2 |
+| maximum | 0.5 | 6.5 | 3.890 (`D6500__ILCE-7RM4__iso12800__rggb__14b__lossless-l`) | 3.8 |
+| samples more than 8 codes off | 1e-3 | 4.3e-2 | 2.08e-2 | 7.4e-3 |
 
 The first proposed gates were to be "calibrated on the first lavapipe run"; with them 50 of the 61 files fail, all on the count of samples (6 also on the maximum), because the output sharpening's halo limiter decides on a rank of luma values and a pixel at a hard chart edge takes the other side of a rank when the device's f32 chain and the CPU's f64 chain differ in a last bit (`docs/algorithms/04`; the sharpening kernel alone matches the CPU to 3e-7). The defaults are twice the worst measured value, as every calibrated bound is; the first calibration was tighter than the proposal for the median and the 99th percentile and looser for the maximum and the count, and since pipeline 0.5.0 only the median is tighter than the proposal. `--gpu-gates plan` restores the proposed set. Mykyta agreed to these defaults on 2026-10-15 (STATUS question 26: keep the slight deviation; the limiter stays as it is) and to their recalibration at twice the worst of pipeline 0.5.0 on 2026-10-21 (STATUS question 32, option (a)): R6's method A decides on thresholds, and a decision within rounding of f32 against f64 goes the other way on the device and moves a group of 8 blocks, so the charts' hard edges move more; lavapipe and Metal give the same numbers. Changing them again needs his agreement.
 
@@ -186,7 +186,7 @@ Independent readers check the set: LibRaw (rawpy) reproduces the mosaic exactly 
 | Highlights | 20 blown-highlight photos | no fringes in review; chroma within ΔE00 5 of surroundings | M1 |
 | Golden images | fixed files through the CLI | no unexplained ΔE00 > 0.5 change | from M1 |
 | App and CLI | same job through both | byte-identical | M3 |
-| DNG | `dng_validate` render vs our JPEG | passes validation; ΔE00 median ≤ 1.5 per file (≤ 2.5 at ISO 12800 and above, `docs/09`) | M3 |
+| DNG | `dng_validate` render vs our JPEG | passes validation; ΔE00 median ≤ 1.5 | M3 |
 | Performance | `docs/05` targets on M1 and M3 machines | report; regressions > 20% fail | every gate |
 | Whole app | blind A/B of 50 A1 photos vs Capture One, Lightroom, DxO exports | ours preferred or tied in ≥ 50% of pairs | M4 [HUMAN] |
 

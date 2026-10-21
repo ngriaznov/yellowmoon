@@ -124,7 +124,7 @@ struct GateArgs {
     /// The data folder for `ym` ($YELLOWMOON_DATA), for a release build outside the workspace.
     #[arg(long)]
     data: Option<PathBuf>,
-    /// The limit for the median ΔE00 of every file (2.5 at ISO 12800 and above, unless this is larger).
+    /// The limit for the median ΔE00 of every file.
     #[arg(long, default_value_t = MEDIAN_LIMIT)]
     limit: f64,
     /// Also compare with the 16-bit PNG render.
@@ -378,15 +378,13 @@ fn run_gate(adobe: &Adobe, a: GateArgs) -> Result<ExitCode> {
         }
     }
     println!(
-        "{} files ({} DNGs): {} passed; median of the per-file medians {:.3}, worst file median {:.3}, limit {} ({} at ISO {} and above)",
+        "{} files ({} DNGs): {} passed; median of the per-file medians {:.3}, worst file median {:.3}, limit {}",
         report.files.len(),
         report.dng,
         report.files.iter().filter(|f| f.passed).count(),
         report.median_of_medians().unwrap_or(f64::NAN),
         report.worst_median().unwrap_or(f64::NAN),
-        report.median_limit,
-        report.median_limit.max(check::HIGH_ISO_MEDIAN_LIMIT),
-        check::HIGH_ISO
+        report.median_limit
     );
     if let Some(r) = &a.report {
         write_json(r, &report)?;

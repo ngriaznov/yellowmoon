@@ -55,6 +55,16 @@ pub fn srgb_decode(y: f64) -> f64 {
     }
 }
 
+/// The slope of [`srgb_encode`] at `v` (`v` at or below 0 takes the linear segment's).
+#[must_use]
+pub fn srgb_slope(v: f64) -> f64 {
+    if v < KNEE_X {
+        SLOPE
+    } else {
+        1.055 / 2.4 * v.powf(1.0 / 2.4 - 1.0)
+    }
+}
+
 /// The working encoding of a balanced linear sample: `srgb(2^gain_ev x)`.
 #[must_use]
 pub fn encode(x: f64, gain_ev: f64) -> f64 {
