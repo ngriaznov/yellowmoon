@@ -419,8 +419,9 @@ flat 8 × 8 blocks of the standard deviation of a\* and b\*, by the blocks' L\*)
 
 The first version kept two to three times today's colour grain at ISO 12800: the blend brought back 15 % of the
 input's colour noise, and one threshold set at middle grey was too low for dark colours, whose noise the encoding
-stretches. The luma-only blend and the threshold per block take the grain back to today's level in dark colours and
-below it elsewhere, for 0.02 to 0.27 dB of PSNR; the mean colour of the blocks moves by about 1 % from L\* 15 up.
+stretches. The luma-only blend and the threshold per block take the grain back to about today's level at L\* 15–30
+(4.8 against 4.5) and below it from L\* 50 up, for 0.02 to 0.27 dB of PSNR; at L\* 30–50 it stays 1.6 times today's
+(6.5 against 4.0, from 11.1 in 0.5.0). The mean colour of the blocks moves by about 1 % from L\* 15 up.
 Smoothing in the working encoding darkens very noisy shadows a little (the mean of an encoded noisy value lies
 below the encoding of the mean): about 1 L\* below today's path at L\* 15–30 on the ISO 12800 chart.
 
