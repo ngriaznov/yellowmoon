@@ -1,6 +1,6 @@
 cask "yellowmoon" do
-  version "0.1.12"
-  sha256 "08ce5a1711445133307f668919eec71e74afd92cd8153dd01ef9103e2ebb36af"
+  version "0.1.13"
+  sha256 "c7af4780c0fd5725104d88b8f8a94de455ebc7a214c01f953dafdc8cf45b586a"
 
   url "https://github.com/ngriaznov/yellowmoon/releases/download/v#{version}/Yellowmoon_#{version}_universal.dmg"
   name "Yellowmoon"
