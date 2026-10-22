@@ -214,15 +214,15 @@ Pipeline 0.5.0 is the first version of the render: one chroma threshold at middl
 | 0.5 | 37.03, 35.53, 34.35, 30.77, 28.77 | 34.78, 33.35, 32.40, 29.92, 28.45 |
 | 1.0 | 37.01, 35.40, 34.17, 30.53, 28.54 | 34.77, 33.24, 32.24, 29.65, 28.15 |
 
-PSNR (dB, working encoding) of the first 8 images of each set after the render. Radii 4 and 6 give the same numbers to 0.01 dB at `k = 0.2`; the cost grows with `k` because a wider weight starts to average real colour differences.
+PSNR (dB, working encoding) of the first 8 images of each set after the render. Radii 4 and 6 give the same numbers to 0.01 dB at `k = 0.2`; the cost grows with `k` because a wider weight starts to average real colour differences. The table was measured with each cell's own width; the narrower width of step 4 averages less, so it costs no more.
 
 The real photo: the A7 III at ISO 3200 (`testdata/real/files/ILCE-7M3.ARW`, a flat wall), two 800 × 800 crops of the 100 % view, the pass off (pipeline 0.5.1) and on. RMS of a\* and b\* (CIELAB of the display output) in three bands of scale, from differences of box means (finer than 4 px: `x − box₂`; 4–16 px: `box₂ − box₈`; 16–64 px: `box₈ − box₃₂`; 40 px border excluded):
 
 | crop | finer than 4 px | 4–16 px | 16–64 px |
 |---|---|---|---|
 | wall, top right | 0.283 → 0.282 | 0.138 → 0.076 | 0.331 → 0.088 |
-| wall, right | 0.288 → 0.293 | 0.153 → 0.080 | 0.352 → 0.093 |
-| skull and plastic sheet | 0.306 → 0.305 | 0.359 → 0.309 | 0.823 → 0.705 |
+| wall, right | 0.288 → 0.293 | 0.153 → 0.080 | 0.352 → 0.094 |
+| skull and plastic sheet | 0.306 → 0.305 | 0.359 → 0.309 | 0.823 → 0.706 |
 
 - The blotches of 16 to 64 px fall to about a quarter on the wall, the 4–16 px band to about a half, and the fine grain stays as method A left it. L\* moves by 0.1 RMS (the 8-bit display rounding: Y of the encoding is kept) and the mean a\* and b\* by at most 0.01.
 - On the crop with detail the colour of the scene stays (0.82 to 0.71 in the coarse band, where the blotches of the wall behind are part of it); edges and small colour detail look the same side by side.
