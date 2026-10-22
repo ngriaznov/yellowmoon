@@ -2850,7 +2850,12 @@ impl Session {
         orientation: Orientation,
     ) -> Result<CropSuggestion, SessionError> {
         let analysis = self.inner.crop_analysis(id)?;
-        Ok(suggestion(&analysis, aspect, orientation))
+        let size = {
+            let st = lock(&self.inner.state);
+            let p = st.photo(id).ok_or(SessionError::UnknownPhoto(id))?;
+            (p.summary.width_px, p.summary.height_px)
+        };
+        Ok(suggestion(&analysis, aspect, orientation, size))
     }
 
     // --- Pixels ------------------------------------------------------------------------------

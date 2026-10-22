@@ -399,6 +399,110 @@ pub fn quarter_turns_of(o: Orientation) -> u8 {
     }
 }
 
+/// How far, in canvas pixels at full resolution, a straightened frame keeps from the edge of the
+/// photo in [`fit_inside`]: the reduced views have a canvas of a slightly different shape (their
+/// sides are rounded to whole pixels), and the margin keeps their corners filled too.
+pub const FIT_MARGIN_PX: f64 = 2.0;
+
+/// `rect` (a frame normalised over a canvas of `canvas_w x canvas_h` pixels) made to lie inside the
+/// photo straightened by `angle_deg`, so that the picture has no empty corner (the owner's rule of
+/// 2026-10-22, "No border in photos"; `docs/11` section Crop, `docs/20-auto-crop.md` section 7).
+///
+/// The frame shrinks about its own centre, keeping its shape in pixels, by as little as makes its
+/// four corners sample the photo at least `margin_px` from its edge (the sampling map of
+/// [`Geometry`]: output point `q` samples `c + R(-angle)(q - c)` about the canvas centre `c`); it
+/// also stays inside the canvas. A frame whose centre samples outside that becomes the largest
+/// frame of its shape centred on the canvas. At an angle of 0 the photo fills the canvas: the frame
+/// is only clamped to `[0, 1]²`, so the whole photo stays exactly the whole photo.
+#[must_use]
+pub fn fit_inside(
+    rect: NormRect,
+    angle_deg: f64,
+    canvas_w: f64,
+    canvas_h: f64,
+    margin_px: f64,
+) -> NormRect {
+    let clamped = |r: NormRect| {
+        let x = r.x.clamp(0.0, 1.0);
+        let y = r.y.clamp(0.0, 1.0);
+        NormRect {
+            x,
+            y,
+            width: r.width.clamp(0.0, 1.0 - x),
+            height: r.height.clamp(0.0, 1.0 - y),
+        }
+    };
+    let rect = clamped(rect);
+    if angle_deg.abs() < ANGLE_EPS_DEG
+        || !(canvas_w > 0.0 && canvas_h > 0.0)
+        || rect.width <= 0.0
+        || rect.height <= 0.0
+    {
+        return rect;
+    }
+    let (w, h) = (canvas_w, canvas_h);
+    let m = margin_px.clamp(0.0, 0.25 * w.min(h));
+    // The linear part of the straighten map (`Affine::rotation_about(-angle, ..)`).
+    let (sin, cos) = angle_deg.to_radians().sin_cos();
+    let lin = |dx: f64, dy: f64| (cos * dx + sin * dy, -sin * dx + cos * dy);
+    // The largest scale (at most 1) of the frame centred at (cx, cy) with half sides (a, b), all in
+    // canvas pixels; `None` when its centre samples outside the photo. Every bound is linear in the
+    // scale, so each gives its limit directly.
+    let scale = |cx: f64, cy: f64, a: f64, b: f64| -> Option<f64> {
+        let (px, py) = lin(cx - 0.5 * w, cy - 0.5 * h);
+        let (px, py) = (px + 0.5 * w, py + 0.5 * h);
+        if px < m || px > w - m || py < m || py > h - m {
+            return None;
+        }
+        let mut s: f64 = 1.0;
+        let mut limit = |start: f64, step: f64, lo: f64, hi: f64| {
+            if step > 0.0 {
+                s = s.min((hi - start) / step);
+            } else if step < 0.0 {
+                s = s.min((lo - start) / step);
+            }
+        };
+        for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            let (dx, dy) = lin(sx * a, sy * b);
+            limit(px, dx, m, w - m);
+            limit(py, dy, m, h - m);
+            // The canvas itself, unturned.
+            limit(cx, sx * a, 0.0, w);
+            limit(cy, sy * b, 0.0, h);
+        }
+        Some(s.max(0.0))
+    };
+    let frame = |cx: f64, cy: f64, a: f64, b: f64, s: f64| NormRect {
+        x: (cx - s * a) / w,
+        y: (cy - s * b) / h,
+        width: 2.0 * s * a / w,
+        height: 2.0 * s * b / h,
+    };
+    let (a, b) = (0.5 * rect.width * w, 0.5 * rect.height * h);
+    let (cx, cy) = (
+        (rect.x + 0.5 * rect.width) * w,
+        (rect.y + 0.5 * rect.height) * h,
+    );
+    if let Some(s) = scale(cx, cy, a, b) {
+        return if s >= 1.0 {
+            rect
+        } else {
+            clamped(frame(cx, cy, a, b, s))
+        };
+    }
+    // The centre is outside: the frame of the same shape that fills the canvas, centred, fitted.
+    let ratio = a / b;
+    let (a, b) = if ratio >= w / h {
+        (0.5 * w, 0.5 * w / ratio)
+    } else {
+        (0.5 * h * ratio, 0.5 * h)
+    };
+    let (cx, cy) = (0.5 * w, 0.5 * h);
+    // The canvas centre samples itself, which `m <= min(w, h) / 4` keeps inside.
+    let s = scale(cx, cy, a, b).unwrap_or(0.0);
+    clamped(frame(cx, cy, a, b, s))
+}
+
 /// Maps output pixels to positions in a pixel buffer (see the module documentation).
 #[derive(Debug, Clone, Copy)]
 pub struct Grid {
@@ -964,5 +1068,178 @@ mod tests {
                 assert!((s[0] * w as f64 - bx).abs() < 1e-9 && (s[1] * h as f64 - by).abs() < 1e-9);
             }
         }
+    }
+
+    /// A small fixed-seed generator for the fit's property tests.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    /// Whether every pixel on the edge of the output of `geometry` on a `buf` buffer samples the
+    /// photo (no empty corner).
+    fn edge_is_filled(geometry: Geometry, buf: (usize, usize)) -> bool {
+        let out = geometry.output_size(buf.0, buf.1);
+        let grid = geometry.grid(buf, out);
+        let (ow, oh) = out;
+        (0..ow).all(|x| grid.source(x, 0).is_some() && grid.source(x, oh - 1).is_some())
+            && (0..oh).all(|y| grid.source(0, y).is_some() && grid.source(ow - 1, y).is_some())
+    }
+
+    #[test]
+    fn a_fitted_frame_has_no_empty_corner_at_any_resolution() {
+        let mut rng = Lcg(7);
+        for &(w, h) in &[
+            (6000usize, 4000usize),
+            (4024, 6048),
+            (3000, 3000),
+            (7008, 2304),
+        ] {
+            for _ in 0..40 {
+                let angle = (rng.next() * 2.0 - 1.0) * 45.0;
+                let width = 0.2 + 0.8 * rng.next();
+                let height = 0.2 + 0.8 * rng.next();
+                let rect = NormRect {
+                    x: rng.next() * (1.0 - width),
+                    y: rng.next() * (1.0 - height),
+                    width,
+                    height,
+                };
+                let fitted = fit_inside(rect, angle, w as f64, h as f64, FIT_MARGIN_PX);
+                let geometry = Geometry {
+                    exif_orientation: 1,
+                    quarter_turns: 0,
+                    angle_deg: angle,
+                    crop: fitted,
+                    pixel_exact: false,
+                };
+                assert!(
+                    edge_is_filled(geometry.at_full_resolution(), (w, h)),
+                    "{w}x{h} {angle} {rect:?} -> {fitted:?}"
+                );
+                // The reduced views: their sides are rounded to whole pixels.
+                for k in [3usize, 8, 16] {
+                    let buf = ((w + k / 2) / k, (h + k / 2) / k);
+                    assert!(
+                        edge_is_filled(geometry, buf),
+                        "{w}x{h} / {k} {angle} {rect:?} -> {fitted:?}"
+                    );
+                }
+                // Its shape in pixels is the frame's.
+                let shape = |r: NormRect| r.width * w as f64 / (r.height * h as f64);
+                assert!((shape(fitted) / shape(rect) - 1.0).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn the_fit_shrinks_no_more_than_it_must() {
+        let mut rng = Lcg(11);
+        let (w, h) = (6000.0, 4000.0);
+        for _ in 0..200 {
+            let angle = (rng.next() * 2.0 - 1.0) * 30.0;
+            let size = 0.3 + 0.7 * rng.next();
+            let rect = NormRect {
+                x: 0.5 - size / 2.0,
+                y: 0.5 - size / 2.0,
+                width: size,
+                height: size,
+            };
+            let fitted = fit_inside(rect, angle, w, h, FIT_MARGIN_PX);
+            if fitted == rect {
+                continue;
+            }
+            // 0.1 % larger about the same centre no longer fits: fitting it shrinks it again.
+            let grow = 1.001;
+            let bigger = NormRect {
+                x: 0.5 - fitted.width * grow / 2.0,
+                y: 0.5 - fitted.height * grow / 2.0,
+                width: fitted.width * grow,
+                height: fitted.height * grow,
+            };
+            assert!(fit_inside(bigger, angle, w, h, FIT_MARGIN_PX).width < bigger.width);
+        }
+    }
+
+    #[test]
+    fn the_whole_photo_fits_as_the_largest_frame_of_its_shape() {
+        let (w, h) = (6000.0, 4000.0);
+        for angle in [0.5f64, -1.4, 3.0, 10.0, -25.0] {
+            let fitted = fit_inside(NormRect::FULL, angle, w, h, 0.0);
+            // docs/20 section 7: h = min(W / (r |cos| + |sin|), H / (r |sin| + |cos|)), r = W / H.
+            let (s, c) = angle.to_radians().sin_cos();
+            let r = w / h;
+            let want = (w / (r * c.abs() + s.abs())).min(h / (r * s.abs() + c.abs()));
+            assert!(
+                (fitted.height * h - want).abs() < 1e-6,
+                "{angle}: {fitted:?}"
+            );
+            assert!((fitted.x + fitted.width / 2.0 - 0.5).abs() < 1e-12);
+            assert!((fitted.y + fitted.height / 2.0 - 0.5).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn without_an_angle_the_frame_is_only_clamped() {
+        let inside = NormRect {
+            x: 0.1,
+            y: 0.2,
+            width: 0.5,
+            height: 0.6,
+        };
+        assert_eq!(
+            fit_inside(inside, 0.0, 6000.0, 4000.0, FIT_MARGIN_PX),
+            inside
+        );
+        assert_eq!(
+            fit_inside(NormRect::FULL, 0.0, 6000.0, 4000.0, FIT_MARGIN_PX),
+            NormRect::FULL
+        );
+        let over = NormRect {
+            x: -0.1,
+            y: 0.5,
+            width: 0.5,
+            height: 0.7,
+        };
+        let c = fit_inside(over, 0.0, 6000.0, 4000.0, FIT_MARGIN_PX);
+        assert_eq!((c.x, c.y, c.width, c.height), (0.0, 0.5, 0.5, 0.5));
+        // A frame already inside the straightened photo is returned as it is.
+        let small = NormRect {
+            x: 0.4,
+            y: 0.4,
+            width: 0.2,
+            height: 0.2,
+        };
+        assert_eq!(fit_inside(small, 5.0, 6000.0, 4000.0, FIT_MARGIN_PX), small);
+    }
+
+    #[test]
+    fn a_frame_whose_centre_is_outside_becomes_the_centred_largest() {
+        // At 40 degrees the canvas's corner region is empty; a small frame there is replaced by
+        // the largest frame of its shape about the centre.
+        let corner = NormRect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.1,
+            height: 0.1,
+        };
+        let fitted = fit_inside(corner, 40.0, 6000.0, 4000.0, FIT_MARGIN_PX);
+        assert!((fitted.x + fitted.width / 2.0 - 0.5).abs() < 1e-12);
+        assert!((fitted.y + fitted.height / 2.0 - 0.5).abs() < 1e-12);
+        let geometry = Geometry {
+            exif_orientation: 1,
+            quarter_turns: 0,
+            angle_deg: 40.0,
+            crop: fitted,
+            pixel_exact: false,
+        };
+        assert!(edge_is_filled(geometry.at_full_resolution(), (6000, 4000)));
     }
 }

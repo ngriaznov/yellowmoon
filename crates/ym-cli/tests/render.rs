@@ -1577,3 +1577,96 @@ fn choices_are_accepted_in_any_case_like_looks_are() {
     assert!(o["output"].as_str().expect("output").ends_with(".tif"));
     assert_eq!(o["settings"]["light_source"], "day");
 }
+
+/// `--auto-crop` (`docs/20-auto-crop.md` section 8): the record carries the proposal, the photo's
+/// crop is its first frame and angle with `auto`, and the same crop given as settings (what the
+/// Crop panel's Done sends) writes the same bytes.
+#[test]
+fn auto_crop_applies_the_panels_answer_and_reports_it() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let by_flag = sb.root().join("by flag");
+    let out = sb
+        .ym()
+        .args(["render", "--json", "--cpu", "--auto-crop=1:1", "--out"])
+        .arg(&by_flag)
+        .arg(&arw)
+        .assert()
+        .success();
+    let record = json_lines(&out.get_output().stdout)
+        .into_iter()
+        .find(|o| o["status"] == "ok")
+        .expect("a record");
+    let proposal = &record["auto_crop"];
+    let frames = proposal["frames"].as_array().expect("frames");
+    assert!(!frames.is_empty() && frames.len() <= 3, "{proposal}");
+    // Square on a 4:3 photo is never the whole photo, so there is a crop.
+    let crop = &record["settings"]["crop"];
+    assert_eq!(crop["auto"], true, "{crop}");
+    assert_eq!(crop["aspect"], "square");
+    assert_eq!(crop["rect"], frames[0]["rect"]);
+    assert_eq!(crop["angle_deg"], proposal["angle_deg"]);
+
+    let settings = sb.root().join("crop.json");
+    std::fs::write(&settings, json!({ "crop": crop }).to_string()).expect("write");
+    let by_settings = sb.root().join("by settings");
+    sb.ym()
+        .args(["render", "--cpu", "--settings"])
+        .arg(&settings)
+        .arg("--out")
+        .arg(&by_settings)
+        .arg(&arw)
+        .assert()
+        .success();
+    let name = "a_signature.jpg";
+    assert_eq!(
+        std::fs::read(by_flag.join(name)).expect("by flag"),
+        std::fs::read(by_settings.join(name)).expect("by settings"),
+        "the same crop, the same bytes"
+    );
+}
+
+#[test]
+fn auto_crop_keeps_the_whole_photo_as_no_crop_and_replaces_a_crop_from_settings() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let settings = sb.root().join("crop.json");
+    std::fs::write(
+        &settings,
+        r#"{ "crop": { "rect": { "x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5 }, "angle_deg": 0, "aspect": "free" } }"#,
+    )
+    .expect("write");
+    let out = sb
+        .ym()
+        .args(["render", "--json", "--cpu", "--auto-crop", "--settings"])
+        .arg(&settings)
+        .arg(&arw)
+        .assert()
+        .success();
+    let record = json_lines(&out.get_output().stdout)
+        .into_iter()
+        .find(|o| o["status"] == "ok")
+        .expect("a record");
+    let proposal = &record["auto_crop"];
+    let first = &proposal["frames"][0]["rect"];
+    let whole = first["width"].as_f64() == Some(1.0)
+        && first["height"].as_f64() == Some(1.0)
+        && proposal["angle_deg"].as_f64() == Some(0.0);
+    if whole {
+        assert_eq!(record["settings"]["crop"], Value::Null, "{record}");
+    } else {
+        assert_eq!(record["settings"]["crop"]["rect"], *first);
+    }
+}
+
+#[test]
+fn auto_crop_takes_only_known_aspects() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    sb.ym()
+        .args(["render", "--auto-crop=2:3"])
+        .arg(&arw)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("2:3 is not an aspect"));
+}

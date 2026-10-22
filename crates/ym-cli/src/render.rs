@@ -28,6 +28,7 @@ use ym_core::looks::{LookService, LooksError};
 use ym_core::pipeline::{ComputeDevice, DisplayChoice};
 use ym_core::preferences::DisplayRendering;
 use ym_core::session::{ApplyScope, OpenOptions, PhotoId, PhotoStatus};
+use ym_core::settings::{Crop, CropAspect, SettingsPatch};
 use ym_export::{ExportOptions, FormatKind, IfExists, JpegQuality, Size};
 use ym_looks::library::LookId;
 use ym_looks::library::ResolveError;
@@ -534,7 +535,14 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
             report_failure(console, &mut stdout, args.json, input, None, kind, &reason);
             continue;
         }
-        match apply_settings(&rt, id, &plan.input, settings_file.as_ref(), &overrides) {
+        match apply_settings(
+            &rt,
+            id,
+            &plan.input,
+            settings_file.as_ref(),
+            &overrides,
+            args.auto_crop,
+        ) {
             Ok((known, warning)) => {
                 if let Some(warning) = warning {
                     console.warn(&format!("{}: {warning}", path_text(input)));
@@ -692,16 +700,18 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     Ok(final_code(&counts, cancelled))
 }
 
-/// Gives a photo its settings: the file's, then the options'. Returns what `--json` knows of it
-/// and, when an option asked for more than the settings allow, a sentence saying what was done
-/// instead (the options are checked against their ranges before anything runs, but
-/// `--exposure-offset` depends on the photo: its automatic exposure plus the offset can pass 4).
+/// Gives a photo its settings: the file's, then the options', then `--auto-crop`'s crop. Returns
+/// what `--json` knows of it and, when an option asked for more than the settings allow, a
+/// sentence saying what was done instead (the options are checked against their ranges before
+/// anything runs, but `--exposure-offset` depends on the photo: its automatic exposure plus the
+/// offset can pass 4; and Auto crop may have no answer for a photo).
 fn apply_settings(
     rt: &Runtime,
     id: PhotoId,
     path: &Path,
     file: Option<&SettingsFile>,
     overrides: &Overrides,
+    auto_crop: Option<CropAspect>,
 ) -> Result<(Object, Option<String>), String> {
     let session = &rt.core.session;
     let mut resolved = session.settings(id).map_err(|e| e.to_string())?;
@@ -729,11 +739,48 @@ fn apply_settings(
             }
         }
     }
+    // Auto crop, as the Crop panel's Auto gives it (`docs/20-auto-crop.md` section 8): the
+    // proposal's angle and first frame at the photo's orientation; the whole photo at 0° is no crop,
+    // as the panel's Done sends it.
+    let mut auto_crop_field = None;
+    if let Some(aspect) = auto_crop {
+        match session.suggest_crop(id, aspect, resolved.settings.orientation) {
+            Ok(suggestion) => {
+                let crop = suggestion.frames.first().and_then(|frame| {
+                    let whole = frame.rect.width > 1.0 - 1e-6 && frame.rect.height > 1.0 - 1e-6;
+                    (!(whole && suggestion.angle_deg.abs() < 1e-9)).then_some(Crop {
+                        rect: frame.rect,
+                        angle_deg: suggestion.angle_deg,
+                        aspect,
+                        auto: true,
+                    })
+                });
+                let patch = SettingsPatch {
+                    crop: Some(crop),
+                    ..SettingsPatch::default()
+                };
+                resolved = session
+                    .update_settings(id, &patch)
+                    .map_err(|e| e.to_string())?;
+                auto_crop_field =
+                    Some(serde_json::to_value(&suggestion).unwrap_or(serde_json::Value::Null));
+            }
+            Err(error) => {
+                let reason = error.to_string();
+                warning = Some(match warning {
+                    Some(w) => format!("{w} {reason} Auto crop was not applied."),
+                    None => format!("{reason} Auto crop was not applied."),
+                });
+                auto_crop_field = Some(serde_json::json!({ "error": reason }));
+            }
+        }
+    }
     let view = session.view(id).map_err(|e| e.to_string())?;
-    Ok((
-        develop_fields(&view, &resolved, AppleAutoField::WhenActive),
-        warning,
-    ))
+    let mut known = develop_fields(&view, &resolved, AppleAutoField::WhenActive);
+    if let Some(field) = auto_crop_field {
+        known.insert("auto_crop", field);
+    }
+    Ok((known, warning))
 }
 
 #[derive(Debug, Default)]

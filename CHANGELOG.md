@@ -11,7 +11,11 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Added
 
-- **Auto crop.** The Crop panel has an Auto toggle. While it is on, Yellowmoon levels a tilted horizon or tilted verticals and proposes a frame for the chosen aspect, starting from the point the camera focused on; changing the aspect or turning the photo proposes again, and moving the frame or the Straighten slider by hand turns Auto off. It answers only when it is sure: a photo without a clear horizon or straight lines is not turned, and the whole photo is kept unless a crop clearly helps. `ym info --suggest-crop` prints the same proposal. Nothing about it is saved with the photo beyond the crop itself.
+- **Auto crop.** The Crop panel has an Auto toggle. While it is on, Yellowmoon levels a tilted horizon or tilted verticals and proposes a frame for the chosen aspect, starting from the point the camera focused on; changing the aspect or turning the photo proposes again, and moving the frame or the Straighten slider by hand turns Auto off. It answers only when it is sure: a photo without a clear horizon or straight lines is not turned, and the whole photo is kept unless a crop clearly helps. `ym info --suggest-crop` prints the same proposal, and `ym render --auto-crop` exports with it. Nothing about it is saved with the photo beyond the crop itself.
+
+### Changed
+
+- **No empty corners when straightening.** Straightening a photo used to leave black corners in the export unless you shrank the frame yourself. The crop frame now always stays inside the straightened photo: moving Straighten shrinks the frame as much as the angle needs and grows it back as the angle returns, and dragging the frame stops at the photo's edge. Auto crop follows the same rule.
 
 ## [0.1.13] - 2026-10-22
 

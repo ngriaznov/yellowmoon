@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use ym_compose::{Analysis, CameraHint, FrameRequest, Ratio, Straighten};
 use ym_raw::metadata::RawMetadata;
 
-use crate::pipeline::geometry::{quarter_turns_of, sensor_to_oriented};
+use crate::pipeline::geometry::{FIT_MARGIN_PX, fit_inside, quarter_turns_of, sensor_to_oriented};
 use crate::settings::{CropAspect, NormRect, Orientation};
 
 /// The straightener's answer as the app and `ym` name it.
@@ -126,18 +126,30 @@ pub fn ratio_for(aspect: CropAspect, canvas_w: f64, canvas_h: f64) -> Ratio {
 }
 
 /// The suggestion for one aspect and orientation from a photo's analysis.
+///
+/// `photo_px` is the photo's size in pixels as the camera turned it (`PhotoSummary::width_px` and
+/// `height_px`; 0 when unknown, then the picture's size stands in). The analysis made its frames on
+/// the picture, whose sides are rounded to whole pixels; each frame is then fitted inside the photo
+/// straightened at its full size ([`fit_inside`]), so that an Auto crop never leaves an empty corner
+/// (the owner's rule of 2026-10-22, "No border in photos"; `docs/20` section 7 step 6).
 #[must_use]
 pub fn suggestion(
     analysis: &Analysis,
     aspect: CropAspect,
     orientation: Orientation,
+    photo_px: (u32, u32),
 ) -> CropSuggestion {
     let quarter_turns = quarter_turns_of(orientation);
     let (w, h) = analysis.picture_size();
-    let (cw, ch) = if quarter_turns % 2 == 1 {
-        (h as f64, w as f64)
+    let (w, h) = if photo_px.0 > 0 && photo_px.1 > 0 {
+        (f64::from(photo_px.0), f64::from(photo_px.1))
     } else {
         (w as f64, h as f64)
+    };
+    let (cw, ch) = if quarter_turns % 2 == 1 {
+        (h, w)
+    } else {
+        (w, h)
     };
     let angle_deg = analysis.angle_deg();
     let proposal = analysis.propose(&FrameRequest {
@@ -156,14 +168,17 @@ pub fn suggestion(
         frames: proposal
             .frames
             .iter()
-            .map(|f| CropFrame {
-                rect: NormRect {
+            .map(|f| {
+                let rect = NormRect {
                     x: f.rect.x,
                     y: f.rect.y,
                     width: f.rect.width,
                     height: f.rect.height,
-                },
-                score: f.score,
+                };
+                CropFrame {
+                    rect: rounded(fit_inside(rect, angle_deg, cw, ch, FIT_MARGIN_PX)),
+                    score: f.score,
+                }
             })
             .collect(),
         keep: proposal.keep,
@@ -172,6 +187,18 @@ pub fn suggestion(
         } else {
             SubjectSource::Picture
         },
+    }
+}
+
+/// A frame rounded to 6 decimals as `ym_compose` rounds its own (a millionth of the side, far
+/// inside [`FIT_MARGIN_PX`]); a frame that is already rounded keeps its bits.
+fn rounded(r: NormRect) -> NormRect {
+    let round = |v: f64| (v * 1e6).round() / 1e6;
+    NormRect {
+        x: round(r.x),
+        y: round(r.y),
+        width: round(r.width),
+        height: round(r.height),
     }
 }
 
@@ -266,6 +293,85 @@ mod tests {
             ratio_for(CropAspect::SixteenByNine, 2.0, 3.0),
             Ratio::Fixed(9.0 / 16.0)
         );
+    }
+
+    /// A 768 x 512 picture of a sky over the sea whose horizon is tilted by `roll_deg` (clockwise,
+    /// y down), 4 x 4 samples per pixel, with a little fixed texture.
+    fn tilted_sea(roll_deg: f64) -> Vec<u8> {
+        let (w, h) = (768usize, 512usize);
+        let (s, c) = roll_deg.to_radians().sin_cos();
+        let texture = |u: f64, v: f64| 0.02 * ((u * 0.37).sin() * (v * 0.53).cos());
+        let mut out = Vec::with_capacity(w * h * 3);
+        for y in 0..h {
+            for x in 0..w {
+                let mut acc = [0.0; 3];
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let qx = x as f64 + (f64::from(sx) + 0.5) / 4.0 - w as f64 / 2.0;
+                        let qy = y as f64 + (f64::from(sy) + 0.5) / 4.0 - h as f64 / 2.0;
+                        // The scene's own coordinates: the picture turned back by the roll.
+                        let (u, v) = (c * qx + s * qy, -s * qx + c * qy);
+                        let t = texture(u, v);
+                        let col = if v < 20.0 {
+                            [0.62 + t, 0.76 + t, 0.93 + t]
+                        } else {
+                            [0.10 + t, 0.27 + t, 0.42 + t]
+                        };
+                        for k in 0..3 {
+                            acc[k] += col[k] / 16.0;
+                        }
+                    }
+                }
+                out.extend(acc.map(|a| (a.clamp(0.0, 1.0) * 255.0).round() as u8));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_straightened_frame_leaves_no_empty_corner_at_the_photos_size() {
+        use crate::pipeline::geometry::Geometry;
+        let rgb = tilted_sea(3.0);
+        let picture = ym_compose::Picture::new(768, 512, &rgb).expect("picture");
+        let analysis = ym_compose::analyse(&picture, &CameraHint::default());
+        assert!(
+            matches!(analysis.straighten(), Straighten::Rotate { .. }),
+            "{:?}",
+            analysis.straighten()
+        );
+        // The photo is not quite the picture's shape (6048 x 4024 is 1.503 : 1): the frames are
+        // fitted at the photo's own size.
+        let (w, h) = (6048usize, 4024usize);
+        for orientation in [Orientation::Deg0, Orientation::Deg90] {
+            for aspect in [
+                CropAspect::Original,
+                CropAspect::Square,
+                CropAspect::SixteenByNine,
+            ] {
+                let s = suggestion(&analysis, aspect, orientation, (w as u32, h as u32));
+                assert_eq!(s.straighten, StraightenKind::Rotate);
+                assert!(s.angle_deg != 0.0);
+                for f in &s.frames {
+                    let geometry = Geometry {
+                        exif_orientation: 1,
+                        quarter_turns: quarter_turns_of(orientation),
+                        angle_deg: s.angle_deg,
+                        crop: f.rect,
+                        pixel_exact: false,
+                    }
+                    .at_full_resolution();
+                    let out = geometry.output_size(w, h);
+                    let grid = geometry.grid((w, h), out);
+                    let (ow, oh) = out;
+                    let filled = (0..ow)
+                        .all(|x| grid.source(x, 0).is_some() && grid.source(x, oh - 1).is_some())
+                        && (0..oh).all(|y| {
+                            grid.source(0, y).is_some() && grid.source(ow - 1, y).is_some()
+                        });
+                    assert!(filled, "{aspect:?} {orientation:?} {s:?}");
+                }
+            }
+        }
     }
 
     #[test]

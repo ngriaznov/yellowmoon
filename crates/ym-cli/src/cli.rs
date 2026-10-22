@@ -234,6 +234,19 @@ pub struct RenderArgs {
     /// (at most 2000 characters; an empty file is the default instructions).
     #[arg(long, value_name = "FILE", help_heading = H_RUN)]
     pub apple_auto_instructions: Option<PathBuf>,
+    /// Crop each photo as the Crop panel's Auto does: its straighten angle and its first frame for an aspect
+    /// (original, free, 1:1, 4:5 or 16:9; original when none is given), at the photo's orientation. Replaces a
+    /// crop from --settings.
+    #[arg(
+        long,
+        value_name = "ASPECT",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "original",
+        value_parser = parse_crop_aspect,
+        help_heading = H_LOOK
+    )]
+    pub auto_crop: Option<CropAspect>,
 }
 
 impl RenderArgs {
@@ -601,7 +614,8 @@ pub struct InfoArgs {
     pub suggest_crop: Option<CropAspect>,
 }
 
-/// An Auto crop aspect as `ym info --suggest-crop` takes it (`docs/20-auto-crop.md` §8).
+/// An Auto crop aspect as `ym info --suggest-crop` and `ym render --auto-crop` take it
+/// (`docs/20-auto-crop.md` §8).
 fn parse_crop_aspect(text: &str) -> Result<CropAspect, String> {
     match text.trim().to_ascii_lowercase().as_str() {
         "original" => Ok(CropAspect::Original),
