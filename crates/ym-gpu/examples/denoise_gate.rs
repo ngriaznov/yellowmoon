@@ -30,6 +30,9 @@
 //!
 //! * `render`: only what a render does against today's path and no denoise: method A at the render's
 //!   settings, alone and followed by the false-colour suppression (`cpu::false_color`, at Auto Colour).
+//! * `coarse`: the coarse colour pass (`cpu::coarse_chroma`) after the render's method A and false-colour
+//!   step, over a grid of strengths and window radii: PSNR in the working encoding and the coarse colour
+//!   error (the RMS of the Cb and Cr error against the clean image in a band of about 16 to 64 px).
 //!
 //! The output folder (default `testdata/denoise_gate`, git-ignored) gets `numbers.md` and `gate.json`.
 
@@ -39,6 +42,7 @@ use std::time::Instant;
 use serde_json::{Value, json};
 use ym_color::exposure::CAMERA_GAIN_EV;
 use ym_gpu::cpu::bm_dct::{self, BmDctParams, LevelNoise};
+use ym_gpu::cpu::coarse_chroma::{self, CoarseChroma};
 use ym_gpu::cpu::demosaic::{self, DemosaicInputs, Method};
 use ym_gpu::cpu::denoise::{self, BilateralParams};
 use ym_gpu::cpu::denoise_space::{decode_image, encode_image};
@@ -453,6 +457,111 @@ fn render_path(case: &Case, kl: f64, kc: f64) -> Output {
     false_color::suppress(&a, &NoiseSigma::Plane(&case.sigma_map), C_AUTO)
 }
 
+/// The coarse colour error of `out` against the clean image: the RMS over the interior of the Cb and Cr error in
+/// the working encoding after a band-pass (two box means of radius 4 minus two of radius 16: about 16 to 64 px).
+fn coarse_error(case: &Case, out: &Output) -> f64 {
+    let w = encode_image(out, CAMERA_GAIN_EV);
+    let [_, ob, or] = ycbcr::to_ycbcr(&w);
+    let [_, cb, cr] = ycbcr::to_ycbcr(&case.clean_w);
+    let (iw, ih) = (w.width, w.height);
+    let n = iw * ih;
+    let smooth = |src: &[f32], r: usize| -> Vec<f32> {
+        let (mut a, mut b, mut t) = (vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+        filters::box_mean(src, iw, ih, r, &mut a, &mut t);
+        filters::box_mean(&a, iw, ih, r, &mut b, &mut t);
+        b
+    };
+    let border = 40;
+    let (mut s2, mut cnt) = (0.0, 0.0);
+    for (o, c) in [(&ob, &cb), (&or, &cr)] {
+        let e: Vec<f32> = o
+            .iter()
+            .zip(c.iter())
+            .map(|(a, b)| (a - b) as f32)
+            .collect();
+        let (lo, hi) = (smooth(&e, 4), smooth(&e, 16));
+        for y in border..ih - border {
+            for x in border..iw - border {
+                let d = f64::from(lo[y * iw + x] - hi[y * iw + x]);
+                s2 += d * d;
+                cnt += 1.0;
+            }
+        }
+    }
+    (s2 / cnt).sqrt()
+}
+
+/// The coarse colour pass at `strength` (`h / σC`) and window `radius` after the render path's output.
+fn coarse_after(case: &Case, rendered: &Output, strength: f64, radius: usize) -> Output {
+    if strength <= 0.0 {
+        return rendered.clone();
+    }
+    CoarseChroma {
+        noise: LevelNoise {
+            a: case.a,
+            b: case.b,
+            gains: [1.0; 3],
+            encoding_gain: CAMERA_GAIN_EV.exp2(),
+            chroma_scale: 0.0,
+        },
+        strength,
+        radius,
+    }
+    .apply(rendered)
+}
+
+/// The `coarse` subcommand (module documentation).
+fn coarse(report: &mut Report, sets: &[(&str, Vec<(String, RgbImage)>)], limit: usize) -> Value {
+    let strengths = [0.0, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5];
+    let radii = [4usize, 6, 8];
+    let mut json_rows = Vec::new();
+    for (name, images) in sets {
+        let images = &images[..limit.min(images.len())];
+        report.line(format!(
+            "## {name} ({} images): coarse colour pass after the render, PSNR (working encoding, dB) / coarse colour error (x1000)\n",
+            images.len()
+        ));
+        let header: Vec<String> = ["strength", "radius"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .chain(LEVELS.iter().map(|l| l.name.to_owned()))
+            .collect();
+        let level_cases: Vec<Vec<Case>> = LEVELS.iter().map(|l| cases_for(images, l)).collect();
+        let rendered: Vec<Vec<Output>> = level_cases
+            .iter()
+            .map(|cs| {
+                cs.iter()
+                    .map(|c| render_path(c, DEFAULT_KL, DEFAULT_KC))
+                    .collect()
+            })
+            .collect();
+        let mut rows = Vec::new();
+        for &radius in &radii {
+            for &strength in &strengths {
+                if strength == 0.0 && radius != radii[0] {
+                    continue;
+                }
+                let mut row = vec![format!("{strength}"), radius.to_string()];
+                for ((level, cases), outs) in LEVELS.iter().zip(&level_cases).zip(&rendered) {
+                    let (mut pw, mut ce) = (0.0, 0.0);
+                    for (c, r) in cases.iter().zip(outs) {
+                        let o = coarse_after(c, r, strength, radius);
+                        pw += score(c, &o).0;
+                        ce += coarse_error(c, &o);
+                    }
+                    let k = cases.len() as f64;
+                    row.push(format!("{:.2} / {:.2}", pw / k, 1000.0 * ce / k));
+                    json_rows.push(json!({"set": name, "strength": strength, "radius": radius, "level": level.name, "psnr_w": pw / k, "coarse_error": ce / k}));
+                }
+                rows.push(row);
+            }
+        }
+        report.table(&header, &rows);
+    }
+    let _ = coarse_chroma::HALO_PX;
+    Value::Array(json_rows)
+}
+
 fn compare(
     report: &mut Report,
     sets: &[(&str, Vec<(String, RgbImage)>)],
@@ -587,6 +696,10 @@ fn main() {
         let (t, j) = calibrate(&mut report, &kodak, limit);
         tuned = t;
         json_out["calibration"] = j;
+    }
+    if mode == "coarse" {
+        let sets = vec![("Kodak", kodak.clone()), ("McMaster", mcmaster.clone())];
+        json_out["coarse"] = coarse(&mut report, &sets, limit);
     }
     if mode == "compare" || mode == "all" || mode == "render" {
         let sets = vec![("Kodak", kodak), ("McMaster", mcmaster)];

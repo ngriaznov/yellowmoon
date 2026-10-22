@@ -37,7 +37,7 @@ fn version_reports_the_workspace_and_pipeline_versions() {
         .assert()
         .success()
         .stdout(predicate::str::starts_with(format!(
-            "ym {} (pipeline 0.5.1, ",
+            "ym {} (pipeline 0.5.2, ",
             env!("CARGO_PKG_VERSION")
         )));
 }
@@ -124,7 +124,7 @@ fn doctor_says_what_it_includes_and_lists_the_parts() {
     let sb = Sandbox::new();
     let out = sb.ym().arg("doctor").assert().success();
     let text = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
-    let version_line = format!("ym {} (pipeline 0.5.1, ", env!("CARGO_PKG_VERSION"));
+    let version_line = format!("ym {} (pipeline 0.5.2, ", env!("CARGO_PKG_VERSION"));
     for needle in [
         "does not include photos, file names, locations",
         "Version",
@@ -157,7 +157,7 @@ fn doctor_json_has_the_same_parts() {
             .expect("includes")
             .contains("does not include")
     );
-    assert_eq!(v["pipeline_version"], "0.5.1");
+    assert_eq!(v["pipeline_version"], "0.5.2");
     assert!(v["gpu"]["available"].is_boolean());
     if v["gpu"]["available"] == true {
         assert!(v["gpu"]["name"].is_string() && v["gpu"]["limits"]["max_buffer_size"].is_u64());

@@ -13,6 +13,9 @@
 //! * [`false_color`]: R6's false-colour suppression after method A, R7's colour guided filter where the
 //!   luma alternates (the guided filter's four passes and a gate of four), GPU against
 //!   `cpu::false_color::suppress`.
+//! * [`coarse_chroma`]: R6's coarse colour pass after the false-colour suppression, a bilateral filter
+//!   of the colour of 4 x 4 cells within the photo's noise (three passes), GPU against
+//!   `cpu::coarse_chroma::CoarseChroma::apply`.
 //! * [`color`]: the whole per-pixel colour chain C1 to C13 as one compute pass (fused matrix, C7
 //!   highlight range and toe, C8 LogC4, C9 grade, C10 CDL and tetrahedral LUT, C11 curves, C12 ACES 2
 //!   or an ARRI display LUT, C13 encode and dither), mirroring `ym_color::display::ColorChain` stage
@@ -43,6 +46,7 @@ pub mod adaptive_ratio;
 pub mod bilateral;
 pub mod bin;
 pub mod bm_dct;
+pub mod coarse_chroma;
 pub mod color;
 pub mod copy;
 pub mod detail;

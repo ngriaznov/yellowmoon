@@ -1,6 +1,6 @@
 # Single-frame denoise (R6)
 
-This document describes the denoise that follows the demosaic in every full-resolution render (the 100 % view and every export): method A, block matching with 3D DCT hard thresholding, run in a display-like working encoding, followed by a false-colour step. It covers the method, its parameters and thresholds, how the Detail tab's controls set them, the false-colour step, halos, the device kernels and their parity, and the measured quality. The methods that exist in the code but do not run by default are described at the end.
+This document describes the denoise that follows the demosaic in every full-resolution render (the 100 % view and every export): method A, block matching with 3D DCT hard thresholding, run in a display-like working encoding, followed by a false-colour step and a coarse colour pass. It covers the method, its parameters and thresholds, how the Detail tab's controls set them, the false-colour step, the coarse colour pass, halos, the device kernels and their parity, and the measured quality. The methods that exist in the code but do not run by default are described at the end.
 
 Labels such as G1, A-a, BC-c and D-b name implementation details that the code comments cite.
 
@@ -79,7 +79,7 @@ The code: `ym_gpu::cpu::frame_denoise` (the stage), `ym_gpu::cpu::denoise_space`
 
 ### Where it runs
 
-R6, after the demosaic: `Stage::FrameDenoise`, followed by `Stage::FalseColor` when Colour is above 0. The stage replaces the light bilateral denoise and R7's detail re-injection; of R7 only the colour guided filter stays, where the luma alternates (*False colour* below). The fit view and the thumbnails bin the mosaic and never demosaic; they keep the bilateral denoise of the binned image (`docs/05-raw-processing.md` R6).
+R6, after the demosaic: `Stage::FrameDenoise`, followed by `Stage::FalseColor` and `Stage::CoarseChroma` when Colour is above 0. The stage replaces the light bilateral denoise and R7's detail re-injection; of R7 only the colour guided filter stays, where the luma alternates (*False colour* below). The fit view and the thumbnails bin the mosaic and never demosaic; they keep the bilateral denoise of the binned image (`docs/05-raw-processing.md` R6).
 
 ### Working encoding
 
@@ -124,9 +124,23 @@ The demosaic leaves false colour on stripes near the sensor's limit (blinds, shu
 
 Colour 0 turns the step off with the rest of the colour noise reduction. Buffer edges are clamped. Halo: `max(2r, 5)` px, with `r = round(2 + 6·C/100)` the guided filter's radius (10 px at Auto Colour); the gate itself reads 1 + 2 + 2 px.
 
+### Coarse colour
+
+Code: `cpu/coarse_chroma.rs`, `Stage::CoarseChroma` (pipeline 0.5.2).
+
+Method A filters 8 × 8 blocks with candidates within 8 px, so it cannot see colour noise that varies over more than about 20 px. On a flat colour the fine grain goes and smooth colour patches of 16 to 64 px stay, blotches the fine grain used to hide. The coarse colour pass after the false-colour step removes them and leaves the luma alone:
+
+1. The working encoding and its BT.709 Y/Cb/Cr, as method A uses them.
+2. Cells of 4 × 4 pixels anchored to the frame's origin: the mean Y, Cb and Cr of each cell (a cell cut by the buffer's edge is the mean of the pixels it has).
+3. The width of the colour weight at each cell, `h = k · c · σC(cell)`: `σC` is the chroma noise of the working encoding at the cell's colour from the photo's noise model and R4 gains (method A's `σC(m)`, *Controls*), `c = Colour / 50` and `k = 0.2` (`K_COARSE`).
+4. A bilateral filter of the cells' colour over a window of 17 × 17 cells (radius 8, 68 px; cut at the buffer's cells): each cell `j` weighs `exp(−d² / (2 h²))`, `d` the distance of its Cb and Cr from the cell's own and `h` the smaller of the two cells' widths, and the correction is the weighted mean of those differences. Cells within the noise of both are averaged, so a blotch goes; a cell across a colour edge, or a colour that differs by well over the noise, weighs nothing, so colour does not bleed. The smaller width matters at the edge of a dark saturated colour, whose noise in the encoding is many times that of a light neighbour: with the cell's own width alone the dark side took on the light side's colour.
+5. Every pixel takes the bilinear interpolation of the corrections of the four cells around it (cell centres at `4 k + 1.5` in frame coordinates) as a change of Cb and Cr: `ΔR = 1.5748 ΔCr`, `ΔB = 1.8556 ΔCb`, `ΔG = −(KR ΔR + KB ΔB) / KG` in the encoding, which leaves Y as it is, then decoded. A pixel whose correction is 0 keeps its input bits, so a flat colour is a fixed point.
+
+Colour 0, a photo without noise and the methods other than A leave the pass out. Halo: `4 · (8 + 1) + 4 / 2 − 1 = 37` px (a pixel interpolates between its cell and a neighbour, each of which reads its window). The synthetic sets of *Measurement* have white noise per photosite and no blotches, so they measure only what the pass costs; `k` and the radius were chosen on a real ISO 3200 photo against that cost (*Measurement*).
+
 ### Tiles and halos
 
-Method A asks for its 23 px halo, the false-colour step for its own after it, and a tile equals the whole frame bit for bit (tested through the chain). In the halo table of `docs/05-raw-processing.md` the R6 classical row is the demosaic's halo plus 23, then the false-colour step's. Methods B and C read the whole frame, so a tile of them asks for the whole raw frame: correct and exact, and slow.
+Method A asks for its 23 px halo, the false-colour step for its own after it, the coarse colour pass for 37 px after that, and a tile equals the whole frame bit for bit (tested through the chain). In the halo table of `docs/05-raw-processing.md` the R6 classical row is the demosaic's halo plus 23, then the false-colour step's, then 37. Methods B and C read the whole frame, so a tile of them asks for the whole raw frame: correct and exact, and slow.
 
 ### On the device
 
@@ -134,10 +148,11 @@ Method A runs on the graphics card like every other raw stage (`docs/17-gpu.md`)
 
 - **Method A** (`kernels::bm_dct`, `bm_dct_prep.wgsl`, `bm_dct_pass.wgsl`, `bm_dct_output.wgsl`). A prep pass makes the encoding, Y/Cb/Cr and four zeroed accumulators. One dispatch per pass of A.5, in the order of A-c, has one workgroup of 256 threads per reference whose read span lies inside the buffer (A-d). Each reference's pass also forms its block means and its `τC`. An output pass divides, blends Y, converts back and decodes. With `R = 1` that is 16 regular passes and up to 9 extra ones, so 18 to 27 dispatches per tile; strengths that filter nothing, or a frame under 8 px, take one dispatch (the output pass alone). Memory: at most 13 `f32` per pixel of the buffer; the largest binding is the accumulators', 16 bytes per pixel.
 - **False colour** (`kernels::false_color`, `false_color.wgsl`). R7's guided filter kernels (the CPU's bits, four passes) and a gate of four passes: the luma of the working encoding; the alternation with its row sums; the column sums and the root; the 5×5 maximum, the weight and the blend. Eight dispatches.
+- **Coarse colour** (`kernels::coarse_chroma`, `coarse_chroma.wgsl`). Three dispatches: one thread per cell for its means and its weight's width `1 / (2 h²)` (`σC` with method A's arithmetic); one thread per cell for the bilateral weights over the window in the CPU's order and the correction; and over the core the interpolation and the change of Cb and Cr. Scratch: six planes of the buffer's cells (3/8 of a plane).
 - **Order and exactness.** Every pixel's sums are added in the CPU's order (pass by pass, at most one reference per pixel and pass, slot by slot with a storage barrier between slots), so a tile with the 23 px halo equals the whole frame bit for bit on the device too.
-- **Precision.** The device works in `f32` against the reference's `f64`. Away from a decision the output is within a few `f32` ulp of the CPU's. The method's decisions (`|c| < τ` on 512 coefficients per channel and reference, with the reference block's `τC` for Cb and Cr, the order of the 24 candidate distances, `D > θ`) are taken on values that differ by those ulp, so a coefficient within rounding of `τ`, or two candidates within rounding of each other, can go the other way; such a flip moves the reference's 8 blocks by up to about `τ / 512` in the encoding. The false-colour gate has no decision that jumps (`w` is continuous in the energy and the blend in `w`), so it differs by rounding alone.
-- **Fast-math (Metal).** Every product, sum and difference that feeds a decision or the output is formed behind the runtime-zero OR barrier (`bm_op`), divisions are correctly rounded (`bm_div`), the power, `log2` and `exp2` of the encoding are basic operations behind the barrier (`bm_pow`, `shaders/working_encoding.wgsl`), and the false-colour root is correctly rounded in integer arithmetic (`fc_sqrt`). A reference block's `τC` is formed the same way: its means summed in the CPU's raster order behind the barrier, the decoding and the encoding's slope with the kernel's own power, the weights' squares formed in `f64` on the host and the root correctly rounded in integers (`bm_sqrt`); it has not been put through the clang model of naga's MSL yet. The arithmetic is one IEEE `f32` sequence on every backend, so Metal takes the decisions lavapipe takes (`docs/17-gpu.md` K8).
-- **Parity on lavapipe** (`tests/gpu_bm_dct.rs`, `tests/gpu_false_color.rs`; each bound is twice the first value measured):
+- **Precision.** The device works in `f32` against the reference's `f64`. Away from a decision the output is within a few `f32` ulp of the CPU's. The method's decisions (`|c| < τ` on 512 coefficients per channel and reference, with the reference block's `τC` for Cb and Cr, the order of the 24 candidate distances, `D > θ`) are taken on values that differ by those ulp, so a coefficient within rounding of `τ`, or two candidates within rounding of each other, can go the other way; such a flip moves the reference's 8 blocks by up to about `τ / 512` in the encoding. The false-colour gate has no decision that jumps (`w` is continuous in the energy and the blend in `w`), and neither has the coarse colour pass (the weights, the interpolation and the change are continuous in the input), so they differ by rounding alone.
+- **Fast-math (Metal).** Every product, sum and difference that feeds a decision or the output is formed behind the runtime-zero OR barrier (`bm_op`), divisions are correctly rounded (`bm_div`), the power, `log2` and `exp2` of the encoding are basic operations behind the barrier (`bm_pow`, `shaders/working_encoding.wgsl`), and the false-colour root is correctly rounded in integer arithmetic (`fc_sqrt`). The coarse colour pass uses the same helpers, its weight's exponential is `bm_exp2` with the exponent formed as an exact pair (`bm_two_prod` with `log2 e` split in two), and its cells' `σC` is method A's (`bm_level_var`, `bm_tau_of`); the encoding, the Y/Cb/Cr conversions and `σC` live in `working_encoding.wgsl`, shared by the three kernels. A reference block's `τC` is formed the same way: its means summed in the CPU's raster order behind the barrier, the decoding and the encoding's slope with the kernel's own power, the weights' squares formed in `f64` on the host and the root correctly rounded in integers (`bm_sqrt`); it has not been put through the clang model of naga's MSL yet. The arithmetic is one IEEE `f32` sequence on every backend, so Metal takes the decisions lavapipe takes (`docs/17-gpu.md` K8).
+- **Parity on lavapipe** (`tests/gpu_bm_dct.rs`, `tests/gpu_false_color.rs`, `tests/gpu_coarse_chroma.rs`; each bound is twice the first value measured):
 
   | Case | Result |
   |---|---|
@@ -148,13 +163,14 @@ Method A runs on the graphics card like every other raw stage (`docs/17-gpu.md`)
   | method A, windows of an 8658×5772 frame at its origin, middle and far corner | 6.6e-7 |
   | false-colour weights, noisy natural frames, 2 and 3 px gratings, stripes on half a frame | 5.07e-7 (0 in the gratings) |
   | false-colour stage, Colour 30 to 100, scalar and plane σ | 1.19e-7 over 957 372 samples |
+  | coarse colour pass, natural frames with colour blotches of 10 to 40 px from 9×7 to 211×157 (two cut out of larger frames at odd origins), four noise levels, Colour 25 to 100 | 4.77e-7 over 631 494 samples, mean 2.4e-8 (about 4 ulp of samples near 1: the encoding's round trip in `f32`); a flat colour bit for bit |
   | tiles (two sizes, windows at odd origins with the halo, one at the far edges), a poisoned device, `LP_NUM_THREADS=1` | bit-identical to the whole frame; finite |
 
 Methods B and C have no kernel: the device chain refuses a whole-frame method, and the photo's raw chain then runs on the CPU.
 
 ## Measurement
 
-`crates/ym-gpu/examples/denoise_gate.rs` (`cargo run -p ym-gpu --release --example denoise_gate -- all`; the subcommands are `calibrate`, `compare` and `render`). The numbers below are for pipeline 0.5.1 (0.5.0 alongside) on Linux x86_64, 3 threads of a shared 4-core machine.
+`crates/ym-gpu/examples/denoise_gate.rs` (`cargo run -p ym-gpu --release --example denoise_gate -- all`; the subcommands are `calibrate`, `compare`, `render` and `coarse`). The numbers below are for pipeline 0.5.1 (0.5.0 alongside) on Linux x86_64, 3 threads of a shared 4-core machine; the coarse colour pass of 0.5.2 moves them by at most 0.01 dB (*Coarse colour* below).
 
 Setup: Kodak (24 images) and McMaster (18) from `testdata/demosaic` (`tools/fetch/demosaic-sets.sh`) in linear light, placed where a photo at the camera's exposure sits on the raw scale (middle grey 0.083), mosaicked as RGGB, with Gaussian noise of variance `a x + b` per photosite at five ISO-like levels (the demosaic gate's stand-ins for 100, 800, 1600 and 6400, and 12800 by the same scaling; not measurements, no row noise), and demosaiced with the adaptive ratio demosaic and the matching model. PSNR against the clean image in the working encoding (peak 1), mean of per-image dB, 10 px border excluded. "Bilateral + R7" is the bilateral denoise with a σ map and R7 at Auto; the render is method A at the render's settings (Colour at Auto, blend 15 % on Y) followed by the false-colour step. Full tables: `testdata/denoise_gate/numbers.md` after a run.
 
@@ -188,6 +204,40 @@ Pipeline 0.5.0 is the first version of the render: one chroma threshold at middl
 - The false-colour step costs 0.07 to 0.24 dB against A alone (pipeline 0.5.0). What it buys is not in these numbers: on the Kodak blinds (kodim01) and shutters (kodim08) A alone keeps the demosaic's blue and orange bands, and the render removes them.
 - Time on the CPU, seconds per megapixel (wall, 3 threads): bilateral + R7 0.2 to 0.3, A 0.5, A with the false-colour step 0.5 to 0.7 (2 threads).
 - `R = 2` adds 0.02 to 0.07 dB to A (without the blend) at 1.5 times its time; `R = 0` loses 0.05 to 0.4 dB.
+
+**Coarse colour** (pipeline 0.5.2, `denoise_gate -- coarse`, and 100 % crops of a real photo). The synthetic sets carry white noise per photosite, so after method A they have no blotches and show only what the pass costs; the real photo shows what it buys.
+
+| `k` (radius 8) | Kodak, ISO 100 to 12800-like | McMaster, ISO 100 to 12800-like |
+|---|---|---|
+| 0 (pipeline 0.5.1) | 37.03, 35.57, 34.41, 30.87, 28.87 | 34.79, 33.39, 32.46, 30.04, 28.58 |
+| **0.2** | 37.03, 35.57, 34.41, 30.86, 28.87 | 34.79, 33.38, 32.45, 30.03, 28.57 |
+| 0.5 | 37.03, 35.53, 34.35, 30.77, 28.77 | 34.78, 33.35, 32.40, 29.92, 28.45 |
+| 1.0 | 37.01, 35.40, 34.17, 30.53, 28.54 | 34.77, 33.24, 32.24, 29.65, 28.15 |
+
+PSNR (dB, working encoding) of the first 8 images of each set after the render. Radii 4 and 6 give the same numbers to 0.01 dB at `k = 0.2`; the cost grows with `k` because a wider weight starts to average real colour differences. The table was measured with each cell's own width; the narrower width of step 4 averages less, so it costs no more.
+
+The real photo: the A7 III at ISO 3200 (`testdata/real/files/ILCE-7M3.ARW`, a flat wall), two 800 × 800 crops of the 100 % view, the pass off (pipeline 0.5.1) and on. RMS of a\* and b\* (CIELAB of the display output) in three bands of scale, from differences of box means (finer than 4 px: `x − box₂`; 4–16 px: `box₂ − box₈`; 16–64 px: `box₈ − box₃₂`; 40 px border excluded):
+
+| crop | finer than 4 px | 4–16 px | 16–64 px |
+|---|---|---|---|
+| wall, top right | 0.283 → 0.282 | 0.138 → 0.076 | 0.331 → 0.088 |
+| wall, right | 0.288 → 0.293 | 0.153 → 0.080 | 0.352 → 0.094 |
+| skull and plastic sheet | 0.306 → 0.305 | 0.359 → 0.309 | 0.823 → 0.706 |
+
+- The blotches of 16 to 64 px fall to about a quarter on the wall, the 4–16 px band to about a half, and the fine grain stays as method A left it. L\* moves by 0.1 RMS (the 8-bit display rounding: Y of the encoding is kept) and the mean a\* and b\* by at most 0.01.
+- On the crop with detail the colour of the scene stays (0.82 to 0.71 in the coarse band, where the blotches of the wall behind are part of it); edges and small colour detail look the same side by side.
+- **Colour edges** (the A7R IV chart of the golden set at ISO 400 to 12800 against its ISO 100 render with the pass off, which stands in for the truth; mean chroma error `|Δa*b*|` over 4 × 4 boxes, at colour edges and in flat areas of the truth):
+
+  | ISO | edges, off → on | flat areas, off → on |
+  |---|---|---|
+  | 400 | 1.25 → 1.15 | 0.31 → 0.28 |
+  | 800 | 1.83 → 1.70 | 0.59 → 0.55 |
+  | 3200 | 3.14 → 2.89 | 0.86 → 0.78 |
+  | 12800 | 6.57 → 6.35 | 2.23 → 2.18 |
+
+  The pass moves the picture most at edges (on the ISO 12800 chart 12 times as much as in flat areas), and on balance it moves it towards the truth there: it removes the colour fringes the noise leaves along edges. At ISO 12800, 5.8 % of the boxes at edges end up more than 2 ΔE76 further from the truth and 8.9 % that much closer. With each cell's own width instead of the narrower of the two, the dark side of a saturated edge took on its light neighbour's colour (328 boxes more than 5 ΔE76 worse against 258 with the narrower width).
+- Radius 4 (36 px) at `k = 0.2` takes the coarse band of the wall only to 0.180 and 0.189, half of what radius 8 removes, at the same cost on the synthetic sets; a larger `k` costs PSNR (the table above) for a band that radius 8 already takes to about a quarter.
+- Time: one thread of the CPU reference takes about 0.65 s per megapixel (a 2048 × 1365 frame in 1.8 s); the device kernel on lavapipe 121 ms per megapixel.
 
 **Calibration of `kL` and `kC`** (first 8 Kodak images, `kL` 2.5 to 5 against `kC` 6 to 16): the best `kL` per level is 3.5, 3, 3.5, 4, 4 and the best `kC` 16, 8, 8, 6, 6 (ISO 100 to 12800). `kL = 3.5`, `kC = 8` is within 0.12 dB of the best luma setting and 0.2 dB of the best chroma setting at every level. The noise measured after the demosaic is 1.5 to 3.9 times the model's (the demosaic's error dominates at low ISO and the demosaic correlates the noise); the constants are fitted against the model's noise, which is what a render knows. Method D's estimate reads 0.69 to 0.96 of that measured σY (lower as the noise grows) and 0.53 to 0.63 of its σC.
 
