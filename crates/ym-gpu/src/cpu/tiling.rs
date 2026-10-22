@@ -218,6 +218,13 @@ pub enum Stage<'a> {
         /// Context on each side ([`super::false_color::halo_px`]).
         halo_px: usize,
     },
+    /// The coarse colour pass after the single-frame denoise ([`super::coarse_chroma`]): a bilateral
+    /// filter of the colour of 4 × 4 cells within the photo's noise, with
+    /// [`super::coarse_chroma::CoarseChroma::halo_px`] of context.
+    CoarseChroma {
+        /// Context on each side.
+        halo_px: usize,
+    },
     /// R7 colour guided filter and detail re-injection.
     Detail {
         /// Box radius of the guided filter (`2 + 6 C / 100`, rounded).
@@ -257,6 +264,7 @@ impl Stage<'_> {
             // A method that reads the whole frame has no halo: `input_rect` asks for the frame.
             Stage::FrameDenoise { halo_px } => halo_px.unwrap_or(0),
             Stage::FalseColor { halo_px } => halo_px,
+            Stage::CoarseChroma { halo_px } => halo_px,
             Stage::Detail {
                 chroma_radius_px,
                 needs_classical,

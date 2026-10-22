@@ -12,10 +12,10 @@
 //   bm_dct_output  one thread per core pixel: acc / w, the blend of Y with the input's Y, back to RGB, the
 //                  decoding (or, when the method changes nothing, the encoding and decoding alone, as the CPU).
 //
-// This file holds what the three share: the uniform block, the barrier and the Y/Cb/Cr conversions; the
-// encoding and its exact arithmetic are `working_encoding.wgsl`. The constants (the encoding's knee, slope and
-// gain, the BT.709 weights, the series coefficients, the DCT matrix) are written in front of them from the CPU
-// reference by `kernels/bm_dct.rs`; the Kaiser window K(i, j) is in the uniform block.
+// This file holds what the three share: the uniform block and the barrier; the encoding, its exact arithmetic,
+// the Y/Cb/Cr conversions and the chroma noise are `working_encoding.wgsl`. The constants (the encoding's knee,
+// slope and gain, the BT.709 weights, the series coefficients, the DCT matrix) are written in front of them from
+// the CPU reference by `kernels/bm_dct.rs`; the Kaiser window K(i, j) is in the uniform block.
 //
 // Fast-math (Metal, docs/17-gpu.md K8 and section 13). The result depends on decisions that compare sums (the
 // hard threshold |c| < tau, the order of the candidate distances, D > theta), so every product, sum and
@@ -48,22 +48,6 @@ struct BmParams {
 // twice cancels, an OR is idempotent.
 fn bm_op(x: f32) -> f32 {
     return bitcast<f32>(bitcast<u32>(x) | bp.frame.w);
-}
-
-// BT.709 Y/Cb/Cr of encoded R, G, B (`cpu::ycbcr::to_ycbcr`): Y in the CPU's order of terms,
-// Cb = (B - Y) / 1.8556, Cr = (R - Y) / 1.5748.
-fn bm_to_ycc(r: f32, g: f32, b: f32) -> vec3<f32> {
-    let y = bm_op(bm_op(bm_op(BM_KR * r) + bm_op(BM_KG * g)) + bm_op(BM_KB * b));
-    return vec3<f32>(y, bm_div(bm_op(b - y), BM_CB_DIV), bm_div(bm_op(r - y), BM_CR_DIV));
-}
-
-// R, G, B of Y/Cb/Cr (`cpu::ycbcr::from_ycbcr`): R = Y + 1.5748 Cr, B = Y + 1.8556 Cb,
-// G = (Y - KR R - KB B) / KG.
-fn bm_from_ycc(y: f32, cb: f32, cr: f32) -> vec3<f32> {
-    let r = bm_op(y + bm_op(BM_CR_DIV * cr));
-    let b = bm_op(y + bm_op(BM_CB_DIV * cb));
-    let g = bm_div(bm_op(bm_op(y - bm_op(BM_KR * r)) - bm_op(BM_KB * b)), BM_KG);
-    return vec3<f32>(r, g, b);
 }
 
 // The blend `d + (e - d) t` (`cpu::bm_dct` `finish`, on Y).

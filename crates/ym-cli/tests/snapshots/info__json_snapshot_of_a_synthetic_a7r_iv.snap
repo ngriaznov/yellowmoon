@@ -109,7 +109,7 @@ expression: v
     "intensity": 100
   },
   "notes": [],
-  "pipeline_version": "0.5.1",
+  "pipeline_version": "0.5.2",
   "preview": "[preview location]",
   "raw": {
     "bits_per_sample": 14,

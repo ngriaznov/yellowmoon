@@ -50,6 +50,7 @@ use std::ops::Range;
 
 pub mod bm_dct;
 pub mod chain;
+pub mod coarse_chroma;
 pub mod demosaic;
 pub mod denoise;
 pub mod denoise_space;

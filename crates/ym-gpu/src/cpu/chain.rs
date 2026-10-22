@@ -18,6 +18,7 @@
 //! denoise removed. The Luminance control scales the denoise strength with the same
 //! `(L / L_auto)^1.5` rule that scales the network's σ.
 
+use super::coarse_chroma::CoarseChroma;
 use super::demosaic::{self, CaCurves, DemosaicInputs, Method};
 use super::denoise::{self, BilateralParams};
 use super::detail::{self, NoiseReduction};
@@ -108,6 +109,14 @@ pub struct Prepared {
 }
 
 impl Chain {
+    /// The coarse colour pass of method A ([`coarse_chroma`]) at the photo's noise and Colour, or `None`
+    /// (another method, Colour 0, or a photo without noise).
+    #[must_use]
+    pub fn coarse_chroma(&self) -> Option<CoarseChroma> {
+        let level = self.frame_denoise.as_ref()?.level?;
+        CoarseChroma::resolve(level, self.noise_reduction.color)
+    }
+
     /// The stages of this chain, in processing order, for halo bookkeeping.
     pub fn stages(&self) -> Vec<Stage<'_>> {
         let mut s = vec![Stage::Normalize];
@@ -135,6 +144,13 @@ impl Chain {
             if self.noise_reduction.color > 0.0 {
                 s.push(Stage::FalseColor {
                     halo_px: false_color::halo_px(self.noise_reduction.color),
+                });
+            }
+            // The coarse colour noise the method cannot reach (blotches of 16 to 64 px), at the
+            // photo's noise; also off at Colour 0.
+            if let Some(cc) = self.coarse_chroma() {
+                s.push(Stage::CoarseChroma {
+                    halo_px: cc.halo_px(),
                 });
             }
         } else {
@@ -597,6 +613,14 @@ impl<'c> TileRun<'c, '_> {
                 // The stage is on the list only when the chain has the method.
                 self.rgb = Some(match &chain.frame_denoise {
                     Some(fd) => fd.apply(&img),
+                    None => img,
+                });
+            }
+            Stage::CoarseChroma { .. } => {
+                let img = take(&mut self.rgb)?;
+                // The stage is on the list only when the chain resolves one.
+                self.rgb = Some(match chain.coarse_chroma() {
+                    Some(cc) => cc.apply(&img),
                     None => img,
                 });
             }

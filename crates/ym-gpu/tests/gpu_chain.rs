@@ -2843,7 +2843,8 @@ fn a_fuzz_of_the_front_chain_keeps_tiles_exact_and_the_front_on_the_cpus_values(
 /// (`FrameDenoise::resolve`: the radius and the blend of the Detail control), with the luma and chroma
 /// strengths that `resolve` gives this noise model and these controls at `kL = 3.5` and `kC = 8` (6.59 and
 /// 31.0) written out, so that the measured bounds below do not move when those constants are tuned. R6..R8 is
-/// then the demosaic, method A, the false-colour stage (Colour 60 of `chain_of`) and Richardson-Lucy.
+/// then the demosaic, method A, the false-colour stage and the coarse colour pass (Colour 60 of `chain_of`)
+/// and Richardson-Lucy.
 fn with_method_a(mut chain: Chain) -> Chain {
     let model = NoiseModel::new(2e-4, 3e-7);
     let fd = FrameDenoise::resolve(
@@ -2894,8 +2895,9 @@ fn on_r6(setup: &Setup) -> Setup {
 /// largest difference, twice the first measured values (0.437 and 0.239, with the false-colour stage).
 ///
 /// The method A tests below run the chain as the render does at Colour 60 (`chain_of`): method A, then the
-/// false-colour stage (`Stage::FalseColor`), then R8. Their numbers were measured with the stage in; the
-/// stage's own parity is `tests/gpu_false_color.rs` and `the_false_colour_stage_on_stripes_...` below.
+/// false-colour stage (`Stage::FalseColor`) and the coarse colour pass (`Stage::CoarseChroma`), then R8.
+/// Their numbers were measured with the false-colour stage in; the stages' own parity is
+/// `tests/gpu_false_color.rs`, `tests/gpu_coarse_chroma.rs` and `the_false_colour_stage_on_stripes_...` below.
 const ONE_METHOD_A_CASE: Limits = Limits {
     over: 0.88,
     fine: 1.0,
@@ -3214,13 +3216,16 @@ fn striped_setup(cfa: Cfa, lens: Lens, color: f32, seed: u64) -> Setup {
     let scene = Scene::striped(w, h, cfa, seed);
     let mut chain = with_method_a(chain_of(&scene, lens, low_noise()));
     chain.noise_reduction.color = color;
-    assert_eq!(
-        chain
-            .stages()
-            .iter()
-            .any(|s| matches!(s, ym_gpu::cpu::tiling::Stage::FalseColor { .. })),
-        color > 0.0
-    );
+    // The false-colour stage and the coarse colour pass come and go with Colour.
+    let stages = chain.stages();
+    let fc = stages
+        .iter()
+        .any(|s| matches!(s, ym_gpu::cpu::tiling::Stage::FalseColor { .. }));
+    let cc = stages
+        .iter()
+        .any(|s| matches!(s, ym_gpu::cpu::tiling::Stage::CoarseChroma { .. }));
+    assert_eq!((fc, cc), (color > 0.0, color > 0.0));
+    drop(stages);
     Setup::with_half(
         scene,
         chain,
@@ -3288,7 +3293,7 @@ fn the_false_colour_stage_on_stripes_matches_the_cpu_chain_and_its_tiles() {
 }
 
 #[test]
-fn the_false_colour_stage_adds_its_eight_dispatches_and_colour_zero_drops_it() {
+fn the_colour_stages_add_their_dispatches_and_colour_zero_drops_them() {
     let Some(dev) = f32_device_or_skip() else {
         return;
     };
@@ -3320,13 +3325,17 @@ fn the_false_colour_stage_adds_its_eight_dispatches_and_colour_zero_drops_it() {
         counts.push((ran.dispatches as usize, announced));
     }
     note!(
-        "[R6..R8] one striped tile: {} dispatches with the false-colour stage ({} announced), {} without ({})",
+        "[R6..R8] one striped tile: {} dispatches with the false-colour and coarse colour stages ({} announced), {} without ({})",
         counts[0].0,
         counts[0].1,
         counts[1].0,
         counts[1].1
     );
+    // Colour 0 drops the coarse colour pass with the false-colour stage.
     for (with, without) in [(counts[0].0, counts[1].0), (counts[0].1, counts[1].1)] {
-        assert_eq!(with - without, ym_gpu::kernels::false_color::DISPATCHES);
+        assert_eq!(
+            with - without,
+            ym_gpu::kernels::false_color::DISPATCHES + ym_gpu::kernels::coarse_chroma::DISPATCHES
+        );
     }
 }

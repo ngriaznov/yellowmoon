@@ -12,9 +12,9 @@
 //!   the CPU continues with R6's bilateral denoise, R7, R8 and R9.
 //! * R6 to R8 ([`StageRange::DEMOSAIC_TO_SHARPEN`]): the same hand-off, and the planes stay on
 //!   the device through the bilateral denoise, the R7 colour guided filter and detail re-injection
-//!   (or, in their place, the single-frame denoise of method A, `kernels::bm_dct`, and its
-//!   false-colour suppression, `kernels::false_color`; methods B and C read the whole frame and are
-//!   refused) and R8 (Richardson-Lucy, or diffraction deconvolution) as
+//!   (or, in their place, the single-frame denoise of method A, `kernels::bm_dct`, its
+//!   false-colour suppression, `kernels::false_color`, and its coarse colour pass,
+//!   `kernels::coarse_chroma`; methods B and C read the whole frame and are refused) and R8 (Richardson-Lucy, or diffraction deconvolution) as
 //!   one job with one readback; the CPU runs R9 on what comes back. The noise sigma of the stages is expanded on the device from the
 //!   photo's half-resolution plane ([`GpuChain::with_sigma`]), so the 200 MB full-resolution map of the
 //!   CPU chain is never built for this range.
@@ -53,6 +53,7 @@ use std::sync::Arc;
 use ym_noise::sigma_map::SigmaParams;
 
 use crate::cpu::chain::{Chain, Prepared, RawFrame};
+use crate::cpu::coarse_chroma::CoarseChroma;
 use crate::cpu::demosaic::Method;
 use crate::cpu::demosaic::adaptive_ratio::Params;
 use crate::cpu::denoise::BilateralParams;
@@ -69,6 +70,7 @@ use crate::kernels::adaptive_ratio::{self, Balance, PreparedDemosaic};
 use crate::kernels::bilateral::{self, SigmaHalf, SigmaInput, SigmaTile};
 use crate::kernels::bin::{self, BinParams};
 use crate::kernels::bm_dct::{self, encode_frame_denoise};
+use crate::kernels::coarse_chroma::{self, encode_coarse_chroma};
 use crate::kernels::copy::{encode_copy_rect, encode_crop};
 use crate::kernels::detail::{encode_classical_luma, encode_inject_detail};
 use crate::kernels::diffraction::{PreparedDiffraction, encode_sharpen};
@@ -145,7 +147,10 @@ impl RawStage {
             // (`PostStep::FrameDenoise`), methods B and C read the whole frame and stay on the CPU.
             Stage::Denoise { .. } | Stage::FrameDenoise { .. } => RawStage::Denoise,
             // R7's colour guided filter where the luma alternates, after the single-frame denoise.
-            Stage::Detail { .. } | Stage::FalseColor { .. } => RawStage::Detail,
+            // So is the coarse colour pass after it.
+            Stage::Detail { .. } | Stage::FalseColor { .. } | Stage::CoarseChroma { .. } => {
+                RawStage::Detail
+            }
             Stage::Sharpen(_) => RawStage::Sharpen,
             Stage::Lens(_) => RawStage::Lens,
         }
@@ -760,6 +765,9 @@ enum PostStep {
     /// R6's false-colour suppression after method A: R7's colour guided filter at `color` where the luma
     /// alternates (`kernels::false_color`).
     FalseColor { out: Rect, color: f32 },
+    /// R6's coarse colour pass after the false-colour suppression: a bilateral filter of the colour of
+    /// 4 x 4 cells within the photo's noise (`kernels::coarse_chroma`).
+    CoarseChroma { out: Rect, stage: CoarseChroma },
 }
 
 impl PostStep {
@@ -769,7 +777,8 @@ impl PostStep {
             | PostStep::Detail { out, .. }
             | PostStep::Sharpen { out, .. }
             | PostStep::FrameDenoise { out, .. }
-            | PostStep::FalseColor { out, .. } => *out,
+            | PostStep::FalseColor { out, .. }
+            | PostStep::CoarseChroma { out, .. } => *out,
         }
     }
 }
@@ -797,7 +806,7 @@ pub struct RawWork {
 impl RawWork {
     /// The dispatches the work records at most (informational: the demosaic's up to 14, the sigma
     /// plane, the denoise, the guided filter's 4 and 2 for the injection, method A's `2 + passes`, the
-    /// false-colour suppression's 8, Richardson-Lucy's `2 + 4 n`).
+    /// false-colour suppression's 8, the coarse colour pass's 3, Richardson-Lucy's `2 + 4 n`).
     #[must_use]
     pub fn max_dispatches(&self) -> usize {
         let mut n = match &self.input {
@@ -818,6 +827,7 @@ impl RawWork {
                 },
                 PostStep::FrameDenoise { dispatches, .. } => *dispatches,
                 PostStep::FalseColor { .. } => false_color::DISPATCHES,
+                PostStep::CoarseChroma { .. } => coarse_chroma::DISPATCHES,
             };
         }
         n
@@ -1075,6 +1085,13 @@ impl RawWork {
                     // The sigma of R7's colour filter (scale 1), read where the stage's input sits.
                     let next =
                         encode_false_color(&mut passes, &cur, core, &sigma, sigma_origin, *color)?;
+                    keep.push(std::mem::replace(&mut cur, next));
+                    cur_rect = out;
+                }
+                PostStep::CoarseChroma { stage, .. } => {
+                    // The stage reads no sigma: the photo's noise model is in `stage`, and the image it
+                    // gets is placed in the frame.
+                    let next = encode_coarse_chroma(&mut passes, &cur, core, stage)?;
                     keep.push(std::mem::replace(&mut cur, next));
                     cur_rect = out;
                 }
@@ -1512,6 +1529,13 @@ impl<'a> GpuChain<'a> {
                             out,
                             color: nr.color,
                         });
+                    }
+                }
+                Stage::CoarseChroma { .. } => {
+                    // On the list only when the chain resolves the stage (the CPU stepper reads a missing
+                    // one as an identity, and so does the device).
+                    if let Some(stage) = chain.coarse_chroma() {
+                        steps.push(PostStep::CoarseChroma { out, stage });
                     }
                 }
                 Stage::Lens(_) => {

@@ -1,8 +1,10 @@
 // The working encoding of the single-frame denoise (`cpu::denoise_space`) and the exact arithmetic it rests on,
-// shared by the kernels that read the encoded image: method A (`bm_dct*.wgsl`) and the false-colour gate
-// (`false_color.wgsl`). A module that includes this file defines `bm_op(x: f32) -> f32`, the OR with its own
-// uniform's zero word (docs/17-gpu.md K8), and the constants `kernels::bm_dct` writes from the CPU reference (the
-// knee, slope and gain of the encoding, the sRGB power segment, the series coefficients).
+// its BT.709 Y/Cb/Cr and the chroma noise of the photo in it (`cpu::bm_dct::LevelNoise::chroma_sigma`), shared
+// by the kernels that read the encoded image: method A (`bm_dct*.wgsl`), the false-colour gate
+// (`false_color.wgsl`) and the coarse colour pass (`coarse_chroma.wgsl`). A module that includes this file
+// defines `bm_op(x: f32) -> f32`, the OR with its own uniform's zero word (docs/17-gpu.md K8), and the constants
+// `kernels::bm_dct` writes from the CPU reference (the knee, slope and gain of the encoding, the sRGB power
+// segment, the series coefficients, the BT.709 weights and the squared weights of the chroma noise).
 //
 // Fast-math (Metal): every product, sum and difference is behind `bm_op`, every division is correctly rounded
 // (`bm_div`), and the power is our own (`bm_pow`: log2 and exp2 from basic operations behind the barrier) rather
@@ -153,4 +155,108 @@ fn bm_srgb_slope(v: f32) -> f32 {
         return BM_SLOPE;
     }
     return bm_op(BM_SRGB_DA * bm_pow(v, BM_DEXP_HI, BM_DEXP_LO));
+}
+
+// BT.709 Y/Cb/Cr of encoded R, G, B (`cpu::ycbcr::to_ycbcr`): Y in the CPU's order of terms,
+// Cb = (B - Y) / 1.8556, Cr = (R - Y) / 1.5748.
+fn bm_to_ycc(r: f32, g: f32, b: f32) -> vec3<f32> {
+    let y = bm_op(bm_op(bm_op(BM_KR * r) + bm_op(BM_KG * g)) + bm_op(BM_KB * b));
+    return vec3<f32>(y, bm_div(bm_op(b - y), BM_CB_DIV), bm_div(bm_op(r - y), BM_CR_DIV));
+}
+
+// R, G, B of Y/Cb/Cr (`cpu::ycbcr::from_ycbcr`): R = Y + 1.5748 Cr, B = Y + 1.8556 Cb,
+// G = (Y - KR R - KB B) / KG.
+fn bm_from_ycc(y: f32, cb: f32, cr: f32) -> vec3<f32> {
+    let r = bm_op(y + bm_op(BM_CR_DIV * cr));
+    let b = bm_op(y + bm_op(BM_CB_DIV * cb));
+    let g = bm_div(bm_op(bm_op(y - bm_op(BM_KR * r)) - bm_op(BM_KB * b)), BM_KG);
+    return vec3<f32>(r, g, b);
+}
+
+// The correctly rounded square root of `x`, in integer arithmetic only (Metal's fast-math `sqrt` is 1 to 2 ulp
+// off): `fc_sqrt` of false_color.wgsl, the method of `sharpen_sqrt` in output_sharpen.wgsl. For a positive
+// normal x the mantissa is doubled when the exponent is odd, the integer root of N = mp 2^26 is taken digit by
+// digit, and its next bit and remainder decide the rounding to nearest, ties to even. Zero returns itself;
+// subnormals, infinities, NaN and negatives take the device's `sqrt`.
+fn bm_sqrt(x: f32) -> f32 {
+    let bits = bitcast<u32>(x);
+    if ((bits & 0x7fffffffu) == 0u) {
+        return x;
+    }
+    let e = (bits >> 23u) & 0xffu;
+    if (e == 0u || e == 0xffu || (bits >> 31u) != 0u) {
+        return sqrt(x);
+    }
+    let odd = e & 1u;
+    let mp = ((bits & 0x7fffffu) | 0x800000u) << odd;
+    var rem = 0u;
+    var root = 0u;
+    for (var k = 0u; k < 26u; k = k + 1u) {
+        var two = 0u;
+        if (k < 13u) {
+            two = (mp >> (24u - 2u * k)) & 3u;
+        }
+        rem = (rem << 2u) | two;
+        let trial = (root << 2u) | 1u;
+        if (rem >= trial) {
+            rem = rem - trial;
+            root = (root << 1u) | 1u;
+        } else {
+            root = root << 1u;
+        }
+    }
+    var q = root >> 1u;
+    var round_bit = root & 1u;
+    var sticky = u32(rem != 0u);
+    if (odd == 1u) {
+        q = root >> 2u;
+        round_bit = (root >> 1u) & 1u;
+        sticky = sticky | (root & 1u);
+    }
+    q = q + (round_bit & (sticky | (q & 1u)));
+    return bitcast<f32>(((((e + 127u) >> 1u) - 1u) << 23u) + q);
+}
+
+// The noise variance of one channel in the working encoding at its encoded value e (`cpu::bm_dct`
+// `LevelNoise::chroma_sigma`): the level v = max(srgb_decode(e) / G, 0) (NaN, tested on the bits, read as 0, as
+// `f64::max` does), the encoding's slope s = G srgb'(G v), and (g a v + g^2 b) s^2 in the CPU's order of terms.
+fn bm_channel_var(e: f32, g: f32, lvl: vec4<f32>) -> f32 {
+    let lin = bm_div(bm_srgb_decode(e), lvl.z);
+    var v = 0.0;
+    if ((bitcast<u32>(lin) & 0x7fffffffu) <= 0x7f800000u && lin > 0.0) {
+        v = lin;
+    }
+    let s = bm_op(lvl.z * bm_srgb_slope(bm_op(lvl.z * v)));
+    let n = bm_op(bm_op(bm_op(g * lvl.x) * v) + bm_op(bm_op(g * g) * lvl.y));
+    return bm_op(bm_op(n * s) * s);
+}
+
+// The variance of channel c (0 R, 1 G, 2 B) at the colour whose mean Y, Cb and Cr (working encoding) is m:
+// R, G and B of m (`bm_from_ycc`, as `LevelNoise::chroma_sigma`) and `bm_channel_var`. `lvl` is (a, b, G,
+// chroma_scale), `gains` the gains of R, G and B.
+fn bm_level_var(m: vec3<f32>, c: u32, lvl: vec4<f32>, gains: vec4<f32>) -> f32 {
+    let rgb = bm_from_ycc(m.x, m.y, m.z);
+    return bm_channel_var(rgb[c], gains[c], lvl);
+}
+
+// tau_C = chroma_scale sigma_C from the variances v of R, G and B: those of Cb and Cr with the squared weights
+// (BM_WCB2, BM_WCR2, each square formed in f64 on the host) and sigma_C = sqrt((vb + vr) / 2), the halving
+// exact and the root correctly rounded (`LevelNoise::chroma_sigma`).
+fn bm_tau_of(v: vec3<f32>, chroma_scale: f32) -> f32 {
+    let vb = bm_op(bm_op(bm_op(BM_WCB2.x * v.x) + bm_op(BM_WCB2.y * v.y)) + bm_op(BM_WCB2.z * v.z));
+    let vr = bm_op(bm_op(bm_op(BM_WCR2.x * v.x) + bm_op(BM_WCR2.y * v.y)) + bm_op(BM_WCR2.z * v.z));
+    return bm_op(chroma_scale * bm_sqrt(bm_op(bm_op(vb + vr) * 0.5)));
+}
+
+// The chroma threshold of a reference block whose mean Y, Cb and Cr is m: tau_C = chroma_scale sigma_C(m)
+// (`cpu::bm_dct` `Ctx::filter` and `LevelNoise::chroma_sigma`). The pass kernel runs it in two steps, the three
+// variances on three threads (`bm_level_var`) and their sum and root on one (`bm_tau_of`); this is the same
+// arithmetic in one call, for the tests.
+fn bm_chroma_tau(m: vec3<f32>, lvl: vec4<f32>, gains: vec4<f32>) -> f32 {
+    let v = vec3<f32>(
+        bm_level_var(m, 0u, lvl, gains),
+        bm_level_var(m, 1u, lvl, gains),
+        bm_level_var(m, 2u, lvl, gains),
+    );
+    return bm_tau_of(v, lvl.w);
 }

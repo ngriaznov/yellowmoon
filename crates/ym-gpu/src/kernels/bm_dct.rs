@@ -803,20 +803,20 @@ mod tests {
             (pass, "s = bm_op(s + bm_ycc[row + j]);"),
             (pass, "return bm_op(s * 0.015625);"),
             (
-                pass,
+                encoding,
                 "let n = bm_op(bm_op(bm_op(g * lvl.x) * v) + bm_op(bm_op(g * g) * lvl.y));",
             ),
-            (pass, "return bm_op(bm_op(n * s) * s);"),
+            (encoding, "return bm_op(bm_op(n * s) * s);"),
             (
-                pass,
+                encoding,
                 "let s = bm_op(lvl.z * bm_srgb_slope(bm_op(lvl.z * v)));",
             ),
             (
-                pass,
+                encoding,
                 "let vb = bm_op(bm_op(bm_op(BM_WCB2.x * v.x) + bm_op(BM_WCB2.y * v.y)) + bm_op(BM_WCB2.z * v.z));",
             ),
             (
-                pass,
+                encoding,
                 "return bm_op(chroma_scale * bm_sqrt(bm_op(bm_op(vb + vr) * 0.5)));",
             ),
             (
@@ -824,7 +824,7 @@ mod tests {
                 "return bm_op(BM_SRGB_DA * bm_pow(v, BM_DEXP_HI, BM_DEXP_LO));",
             ),
             (
-                common,
+                encoding,
                 "let g = bm_div(bm_op(bm_op(y - bm_op(BM_KR * r)) - bm_op(BM_KB * b)), BM_KG);",
             ),
             (pass, "return bm_op(bm_op(kk * v) * BM_INV_RT_GAIN);"),

@@ -141,6 +141,12 @@ pub enum KernelId {
     FalseColorEnergy,
     /// The false-colour gate: the dilated energy, the weight and the blend with R7's colour guided filter.
     FalseColorBlend,
+    /// R6's coarse colour pass after method A: the mean Y, Cb and Cr of every 4 x 4 cell.
+    CoarseChromaCells,
+    /// The coarse colour pass: the bilateral filter of the cells' colour, the correction of every cell.
+    CoarseChromaCorrect,
+    /// The coarse colour pass: the corrections interpolated to the pixels and applied to Cb and Cr.
+    CoarseChromaApply,
     /// The R7 chroma guided filter, pass 1: horizontal window means of the six quantities.
     Guided,
     /// The R7 chroma guided filter, pass 2: vertical means and the coefficients a and b.
@@ -186,7 +192,7 @@ impl KernelId {
     /// no render uses. [`KernelSet::kernels`] and `warm_up` compile in this order, so that what the
     /// first frame of the first photo waits for is compiled before what only a zoomed view or an
     /// export needs.
-    pub const ALL: [KernelId; 70] = [
+    pub const ALL: [KernelId; 73] = [
         // The fit view of a mosaic photo.
         KernelId::Prep,
         KernelId::PrepMask,
@@ -235,6 +241,9 @@ impl KernelId {
         KernelId::FalseColorRows,
         KernelId::FalseColorEnergy,
         KernelId::FalseColorBlend,
+        KernelId::CoarseChromaCells,
+        KernelId::CoarseChromaCorrect,
+        KernelId::CoarseChromaApply,
         KernelId::Guided,
         KernelId::GuidedCols,
         KernelId::GuidedSmoothRows,
@@ -323,6 +332,9 @@ impl KernelId {
             KernelId::FalseColorRows => "false_color_rows",
             KernelId::FalseColorEnergy => "false_color_energy",
             KernelId::FalseColorBlend => "false_color_blend",
+            KernelId::CoarseChromaCells => "coarse_chroma_cells",
+            KernelId::CoarseChromaCorrect => "coarse_chroma_correct",
+            KernelId::CoarseChromaApply => "coarse_chroma_apply",
             KernelId::Guided => "guided",
             KernelId::GuidedCols => "guided_cols",
             KernelId::GuidedSmoothRows => "guided_smooth_rows",
@@ -427,6 +439,9 @@ impl KernelId {
             | KernelId::FalseColorRows
             | KernelId::FalseColorEnergy
             | KernelId::FalseColorBlend => super::false_color::body(self),
+            KernelId::CoarseChromaCells
+            | KernelId::CoarseChromaCorrect
+            | KernelId::CoarseChromaApply => super::coarse_chroma::body(self),
             KernelId::Guided
             | KernelId::GuidedCols
             | KernelId::GuidedSmoothRows
