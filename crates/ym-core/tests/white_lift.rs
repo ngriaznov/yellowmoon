@@ -269,7 +269,9 @@ fn the_dngs_pixels_are_the_apps_scene_values_before_aces_2_with_the_lift_in_them
         if a == b {
             same += 1;
         } else {
-            assert!(a[1] > b[1], "{a:?} against {b:?}");
+            // never darker; just over the knee the gain is within an ulp of 1, so one channel may
+            // round up while the others keep their bits
+            assert!((0..3).all(|k| a[k] >= b[k]), "{a:?} against {b:?}");
             // all three channels by one factor: the ratios of the pixel are kept
             let g = f64::from(a[1]) / f64::from(b[1]);
             for k in [0, 2] {
