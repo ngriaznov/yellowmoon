@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-10-22
+
+Cleaner colour in flat areas at high ISO.
+
 ### Changed
 
 - **Smoother colour in flat areas.** After the noise reduction of 0.1.12, plain surfaces such as walls, sky and skin could show soft colour blotches a few dozen pixels across, which the fine grain used to hide. A second, coarse colour pass now evens out colour that varies by less than the photo's colour noise over areas of about 4 to 70 pixels, and leaves brightness, colour edges and real colour detail alone. On a flat wall at ISO 3200 the blotches drop to about a quarter. Colour sets its strength with the rest of the colour noise reduction (0 turns it off). Every export's pixels change (pipeline 0.5.2).

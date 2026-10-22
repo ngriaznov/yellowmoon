@@ -12,14 +12,16 @@ The current state of Yellowmoon: release, milestone, what is built, gate results
 
 ## Current release and milestone
 
-**Released: 0.1.12** (pipeline 0.5.1, 2026-10-21, the owner's "release 0.1.12"; `CHANGELOG.md`; before it 0.1.11, pipeline 0.4.4):
+**Released: 0.1.13** (pipeline 0.5.2, 2026-10-22, the owner's "Merge to main and release 0.1.13" after trying the test build; `CHANGELOG.md`; before it 0.1.12, pipeline 0.5.1):
+
+- The coarse colour pass after method A (`docs/algorithms/05-single-frame-denoise.md` *Coarse colour*): a bilateral filter of the colour of 4 × 4 cells within the chroma noise of both cells removes the colour blotches of 16 to 64 px that method A leaves on flat colours (the owner's report after 0.1.12: pink blobs in grey). CPU reference and device kernel (`coarse_chroma.wgsl`), parity tests, golden set re-baselined, DNG gate and the GPU golden subset pass (Gate results); CI and Metal CI pass on 3d0efa0. The white-lift DNG test now allows a pixel just over the lift's knee to change in one channel only (its gain is within an ulp of 1 there).
+
+0.1.12 (pipeline 0.5.1, 2026-10-21):
 
 - The single-frame denoise "method A" (block matching and 3D DCT thresholding) with its false-colour step replaces the bilateral denoise and R7 at full resolution (`docs/algorithms/05-single-frame-denoise.md`). Every full-resolution render changes; the fit view and thumbnails keep the bilateral denoise of the binned image. Pipeline 0.5.1 thresholds Cb and Cr per block from the noise model and blends Detail on luma only, which takes back most of 0.5.0's high-ISO colour grain (Known issues).
 - The "Rendering on the CPU" indicator (`docs/11-ui.md`).
 - The updater's TLS libraries are updated for two advisories (rustls-webpki 0.103.16, webpki-root-certs 1.0.10).
 - The golden set is re-baselined, the DNG gate is 1.5 for every file again, the GPU golden gates are recalibrated (Gate results), and Metal CI passes.
-
-**On branch `claude/coarse-chroma`, not on main yet: pipeline 0.5.2.** The coarse colour pass after method A (`docs/algorithms/05-single-frame-denoise.md` *Coarse colour*): a bilateral filter of the colour of 4 × 4 cells within the photo's chroma noise removes the colour blotches of 16 to 64 px that method A leaves on flat colours (the owner's report after 0.1.12). CPU reference, device kernel (`coarse_chroma.wgsl`), parity tests, golden set re-baselined; a pre-release test build is for the owner to try before it goes to main.
 
 **Milestone.** M0 to M3 are built; M4 has not started. Open per gate:
 
