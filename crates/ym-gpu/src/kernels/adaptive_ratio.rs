@@ -1021,6 +1021,7 @@ mod tests {
                         "magnify",
                         "bm_dct",
                         "false_color",
+                        "coarse_chroma",
                     ]
                     .into_iter()
                     .find(|f| name.starts_with(f))
@@ -1038,6 +1039,7 @@ mod tests {
                 "adaptive_ratio",
                 "bin",
                 "bm_dct",
+                "coarse_chroma",
                 "detail",
                 "diffraction",
                 "false_color",
