@@ -109,7 +109,7 @@ pub struct Prepared {
 }
 
 impl Chain {
-    /// The coarse colour pass of method A ([`coarse_chroma`]) at the photo's noise and Colour, or `None`
+    /// The coarse colour pass of method A ([`super::coarse_chroma`]) at the photo's noise and Colour, or `None`
     /// (another method, Colour 0, or a photo without noise).
     #[must_use]
     pub fn coarse_chroma(&self) -> Option<CoarseChroma> {
