@@ -619,7 +619,10 @@ pub enum CropAspect {
 }
 
 /// The crop (per photo, in memory only): a rectangle, a straighten angle and an aspect.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+///
+/// Serialising leaves `auto` out when it is false, as the core does; the unified TypeScript export
+/// refuses `skip_serializing_if`, hence the manual `Serialize`.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Type)]
 pub struct Crop {
     /// The frame.
     pub rect: NormRect,
@@ -630,6 +633,20 @@ pub struct Crop {
     /// The rect and angle came from Auto crop (`docs/20-auto-crop.md` §2); absent is false.
     #[serde(default)]
     pub auto: bool,
+}
+
+impl Serialize for Crop {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("rect", &self.rect)?;
+        map.serialize_entry("angle_deg", &self.angle_deg)?;
+        map.serialize_entry("aspect", &self.aspect)?;
+        if self.auto {
+            map.serialize_entry("auto", &true)?;
+        }
+        map.end()
+    }
 }
 
 /// The straightener's answer (`docs/20-auto-crop.md` §3).

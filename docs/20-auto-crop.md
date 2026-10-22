@@ -35,7 +35,7 @@ The **note** is a muted `RowNote` at the bottom of the Frame card, shown while A
 
 When the panel opens on a photo whose crop has `auto: true`, the toggle is on and the panel asks for the proposal again to fill the note (the answer is the same: section 9). Auto is locked, like Crop itself, while the photo is developing. A press is never needed for anything else: Auto crop is never applied at import, on export or by Re-run.
 
-**Keyboard.** The toggle is in the tab order after the card's Reset; Space and Return press it. `A` while the Crop panel is open toggles it (no other shortcut uses A in Crop mode).
+**Keyboard.** The toggle is in the tab order before the card's Reset, where it is drawn (the header's order, as in the other cards); Space and Return press it. `A` while the Crop panel is open toggles it (no other shortcut uses A in Crop mode).
 
 ## 2. The setting
 

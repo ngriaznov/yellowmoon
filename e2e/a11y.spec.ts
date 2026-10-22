@@ -186,6 +186,38 @@ test.describe("Apple Auto (docs/19)", () => {
   });
 });
 
+test.describe("Auto crop (docs/20)", () => {
+  test("the Crop panel's Auto is named Auto crop, its note is a status, and A, Space and Return work it, with the ring", async ({ page }) => {
+    await openApp(page, MOCKUP);
+    await openPhotos(page);
+    await page.getByRole("button", { name: "Crop", exact: true }).click();
+    const panel = page.getByRole("complementary", { name: "Crop" });
+    const auto = panel.getByRole("button", { name: "Auto crop" });
+    await expect(auto).toHaveAttribute("aria-pressed", "false");
+    // A, while the panel is open.
+    await page.keyboard.press("a");
+    await expect(auto).toHaveAttribute("aria-pressed", "true");
+    await expect(panel.getByRole("status")).toContainText("Levelled by 1.4°.");
+    let snapshot = await expectNamed(page, "Crop with Auto on");
+    expect(snapshot).toMatch(/button "Auto crop" \[pressed\]/);
+    expect(snapshot).toContain("Cropped to frame the subject.");
+    // The toggle is a Tab stop of the card's header, before Reset, with the ring; Space and Return press it.
+    await tabTo(page, (el) => el.getAttribute("aria-label") === "Auto crop");
+    await expect(page.locator(":focus")).toHaveCSS("outline-width", "3px");
+    await page.keyboard.press("Tab");
+    await expect(page.locator(":focus")).toHaveText("Reset");
+    await auto.focus();
+    await page.keyboard.press("Space");
+    await expect(auto).toHaveAttribute("aria-pressed", "false");
+    await page.keyboard.press("Enter");
+    await expect(auto).toHaveAttribute("aria-pressed", "true");
+    // Return pressed the toggle and did not finish the crop.
+    await expect(panel).toBeVisible();
+    snapshot = await expectNamed(page, "Crop with Auto on again");
+    expect(count(snapshot, "main")).toBe(1);
+  });
+});
+
 /** Presses Tab until the focused element satisfies `matches` (it runs in the page, so it can't use anything outside itself), at most `limit` times. */
 async function tabTo(page: Page, matches: (el: Element) => boolean, limit = 80): Promise<void> {
   for (let i = 0; i < limit; i++) {

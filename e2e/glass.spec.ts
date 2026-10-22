@@ -130,6 +130,23 @@ test.describe("sliders and their boxes", () => {
     await auto.click();
     await expect(auto).toHaveAttribute("aria-pressed", "true");
   });
+
+  test("the Crop panel's AUTO is a glasscn Toggle that switches both ways (Auto crop, docs/20)", async ({ page }) => {
+    await photos(page);
+    await page.getByRole("button", { name: "Crop", exact: true }).click();
+    const card = page.getByRole("region", { name: "Frame" });
+    const auto = card.getByRole("button", { name: "Auto crop" });
+    await expect(auto).toHaveAttribute("data-slot", "toggle");
+    await expect(auto).toHaveText("Auto");
+    await expect(auto).toHaveAttribute("aria-pressed", "false");
+    await auto.click();
+    await expect(auto).toHaveAttribute("aria-pressed", "true");
+    await expect(card.getByText("Cropped to frame the subject.")).toBeVisible();
+    await expect(card.getByText("Levelled by 1.4°.")).toBeVisible();
+    await auto.click();
+    await expect(auto).toHaveAttribute("aria-pressed", "false");
+    await expect(card.getByText("Cropped to frame the subject.")).toHaveCount(0);
+  });
 });
 
 test.describe("the other controls", () => {

@@ -658,7 +658,12 @@ export type ColorWarpPin = {
 	exposure_ev: number,
 };
 
-/**  The crop (per photo, in memory only): a rectangle, a straighten angle and an aspect. */
+/**
+ *  The crop (per photo, in memory only): a rectangle, a straighten angle and an aspect.
+ * 
+ *  Serialising leaves `auto` out when it is false, as the core does; the unified TypeScript export
+ *  refuses `skip_serializing_if`, hence the manual `Serialize`.
+ */
 export type Crop = {
 	/**  The frame. */
 	rect: NormRect,

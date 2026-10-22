@@ -3,9 +3,10 @@ import type { Browser, BrowserContext, Page } from "@playwright/test";
 import { configureMock, dropFiles, failNext, lookTilesLoaded, openApp, openPhotos, settle, showUpdateReady } from "./app";
 
 // Every page state of the app that can be reached on the mock API: the 30 states of the dark glass interface (C2), the ones its
-// screenshots were taken of and its page audit ran over (`e2e/glass.spec.ts`), the two of Colour › Colour warp (2026-10-17) and the three of
+// screenshots were taken of and its page audit ran over (`e2e/glass.spec.ts`), the two of Colour › Colour warp (2026-10-17), the three of
 // Apple Auto (`docs/19`: the Automatic card with Apple's answer, Preferences with its row, and the instructions for Apple's model edited,
-// with Reset to default). A state is a function that leaves a page in it; the numbers in the names are only an order.
+// with Reset to default) and the one of Auto crop (`docs/20`: the Crop panel with Auto on and its note). A state is a function that
+// leaves a page in it; the numbers in the names are only an order.
 
 const MOCKUP = { mockCurrent: 3, mockPicked: "2,3,4" } as const;
 const LL4 = "ARRI_LookLibrary_LogC4.zip";
@@ -341,6 +342,18 @@ export const STATES: readonly PageState[] = [
       await expect(reset).toBeEnabled();
       await reset.scrollIntoViewIfNeeded();
       await p.waitForTimeout(400);
+    },
+  ],
+  // Auto crop (docs/20 section 1, the owner's request of 2026-10-22): the Crop panel with the Frame card's AUTO on, the photo levelled by
+  // the mock's 1.4°, its frame drawn over it, and the note under the card.
+  [
+    "36-crop-auto",
+    async (p) => {
+      await photos(p);
+      await p.getByRole("button", { name: "Crop", exact: true }).click();
+      await p.getByRole("button", { name: "Auto crop" }).click();
+      await expect(p.getByText("Levelled by 1.4°.")).toBeVisible();
+      await p.waitForTimeout(500);
     },
   ],
 ];

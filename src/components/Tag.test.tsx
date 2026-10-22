@@ -59,4 +59,18 @@ describe("AutoToggle", () => {
     await userEvent.click(button);
     expect(onAuto).toHaveBeenCalledTimes(1);
   });
+
+  it("with onOff it switches both ways: pressed while on, it calls onOff and not onAuto", async () => {
+    const onAuto = vi.fn();
+    const onOff = vi.fn();
+    const { rerender } = render(<AutoToggle isAuto onAuto={onAuto} onOff={onOff} aria-label="Auto crop" />);
+    const button = screen.getByRole("button", { name: "Auto crop" });
+    await userEvent.click(button);
+    expect(onOff).toHaveBeenCalledTimes(1);
+    expect(onAuto).not.toHaveBeenCalled();
+    rerender(<AutoToggle isAuto={false} onAuto={onAuto} onOff={onOff} aria-label="Auto crop" />);
+    await userEvent.click(button);
+    expect(onAuto).toHaveBeenCalledTimes(1);
+    expect(onOff).toHaveBeenCalledTimes(1);
+  });
 });
