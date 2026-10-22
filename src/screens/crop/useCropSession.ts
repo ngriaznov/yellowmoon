@@ -2,11 +2,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CropAspect, CropSuggestion, Orientation, PhotoId, PhotoSummary, ResolvedSettings } from "../../api/types";
 import { isReady } from "../../state/photo";
 import type { AppStore } from "../../state/store";
-import { fitRatio, FULL_RECT, imageAspectOf, isFullRect, presetRatio, rotateRect90 } from "./cropMath";
-import type { Rect } from "./cropMath";
+import { canvasOf, constrainFrame, fitInside, fitRatio, FULL_RECT, imageAspectOf, isFullRect, presetRatio, rotateRect90 } from "./cropMath";
+import type { Canvas, Rect } from "./cropMath";
 
 /** What the crop panel is editing. Nothing reaches the settings as a crop until Done. */
 export interface CropDraft {
+  /**
+   * The frame as the person set it (the base). The frame shown, drawn and sent is this one fitted inside the straightened photo
+   * ({@link shownFrame}): it shrinks as the angle grows and grows back to the base towards 0°.
+   */
   rect: Rect;
   angle_deg: number;
   aspect: CropAspect;
@@ -27,6 +31,8 @@ export const AUTO_CROP_FAILED_MS = 4000;
 /** The crop session: the draft and the actions of the panel and the frame over the photo. */
 export interface CropSession {
   draft: CropDraft;
+  /** The frame shown over the photo and sent with Done: the draft's frame fitted inside the photo straightened by its angle. */
+  frame: Rect;
   /** Width ÷ height of the whole photo as it is turned now. */
   imageAspect: number;
   /** The pixel ratio the frame is locked to, or null for Free. */
@@ -35,6 +41,10 @@ export interface CropSession {
   autoLocked: boolean;
   /** What the Frame card's note says about Auto crop. */
   autoNote: AutoCropNote;
+  /**
+   * A drag or an arrow key asks for this frame (worked out from {@link CropSession.frame}). It is kept inside the straightened photo
+   * ({@link constrainFrame}) and becomes the draft's frame.
+   */
   setRect: (rect: Rect) => void;
   setAspect: (aspect: CropAspect) => void;
   setAngle: (degrees: number) => void;
@@ -47,6 +57,17 @@ export interface CropSession {
 }
 
 const normalise = (degrees: number): Orientation => ((((Math.round(degrees / 90) * 90) % 360) + 360) % 360) as Orientation;
+
+/** The canvas of `photo` (its pixels) turned by `orientation`. */
+const canvasFor = (photo: PhotoSummary, orientation: Orientation): Canvas => canvasOf(photo.width_px, photo.height_px, orientation);
+
+/**
+ * The frame a draft shows and sends: its frame fitted inside the photo straightened by its angle, on the canvas of its orientation, so
+ * that the picture has no empty corner (`docs/11-ui.md` §Crop, the owner's decision of 2026-10-22). At 0° it is the draft's own.
+ */
+export function shownFrame(draft: CropDraft, photo: PhotoSummary): Rect {
+  return fitInside(draft.rect, draft.angle_deg, canvasFor(photo, draft.orientation));
+}
 
 /**
  * Turns a draft into the `crop` setting: nothing when it is the whole photo, straight. While Auto crop is on the crop says so
@@ -65,6 +86,12 @@ export function draftToCrop(draft: CropDraft): ResolvedSettings["settings"]["cro
  * webview. The frame itself is sent with Done, together with the angle and the orientation, as
  * one change that undo takes back in one step. Cancel puts the old crop and orientation back.
  *
+ * No border in photos (the owner's decision of 2026-10-22): the draft keeps the frame the person set (the base), and the frame shown,
+ * drawn and sent is the base fitted inside the straightened photo ({@link shownFrame}). Straighten changes only the angle, so the shown
+ * frame shrinks as the angle grows and grows back to the base towards 0°. A drag, a handle or an arrow key acts on the shown frame, is
+ * kept inside ({@link constrainFrame}) and becomes the new base; an aspect, Rotate 90° and Reset set the base as before; Auto crop's
+ * frame, inside already, is fitted all the same and becomes the base.
+ *
  * Auto crop (`docs/20-auto-crop.md` §1): while the toggle is on, the angle and the frame follow the core's proposal for the draft's
  * aspect and orientation, asked again when either changes; moving the frame, a handle or Straighten, and Reset, turn it off. Only the
  * answer to the latest request counts, and only while Auto is still on in the open panel.
@@ -82,6 +109,9 @@ export function useCropSession(
   const target = useRef<PhotoId | undefined>(undefined);
   const latest = useRef(draft);
   latest.current = draft;
+  /** The photo as it is now, for an answer that arrives later (its canvas is what the answer's frame is fitted to). */
+  const latestPhoto = useRef(photo);
+  latestPhoto.current = photo;
   /** The draft from just before Auto was turned on in this panel; null when the panel opened with Auto on. */
   const beforeAuto = useRef<CropDraft | null>(null);
   /** Counts the requests for a proposal. An answer is used only when no request, Auto off or close came after it. */
@@ -150,7 +180,11 @@ export function useCropSession(
           }, AUTO_CROP_FAILED_MS);
           return;
         }
-        const next: CropDraft = { ...current, rect: answer.frames[0]?.rect ?? current.rect, angle_deg: answer.angle_deg };
+        // The core's frame is inside already; the fit is a guard (a whole-photo frame at 0° stays the whole photo).
+        const proposed = answer.frames[0]?.rect ?? current.rect;
+        const summary = latestPhoto.current;
+        const rect = summary ? fitInside(proposed, answer.angle_deg, canvasFor(summary, current.orientation)) : proposed;
+        const next: CropDraft = { ...current, rect, angle_deg: answer.angle_deg };
         commit(next);
         if (next.angle_deg !== current.angle_deg) push(next);
         setAutoNote({ kind: "answer", suggestion: answer });
@@ -174,6 +208,8 @@ export function useCropSession(
       orientation: rs.settings.orientation,
       auto: crop?.auto === true,
     };
+    // A stored crop that pokes past the straightened photo (an older crop, or one from a settings file) is the base: the panel shows and
+    // sends its fit, and Cancel leaves the stored one as it was.
     commit(next);
     // A crop made by Auto opens with Auto on, and the proposal is asked for again to fill the note (it is the same, docs/20 §9).
     if (next.auto) ask(next.aspect, next.orientation);
@@ -182,7 +218,8 @@ export function useCropSession(
   if (!draft || !photo) return { session: null, start, active: false };
 
   const imageAspect = imageAspectOf(photo.width_px, photo.height_px, draft.orientation);
-  const lockedRatio = presetRatio(draft.aspect, imageAspect, draft.rect.width * imageAspect >= draft.rect.height);
+  const frame = shownFrame(draft, photo);
+  const lockedRatio = presetRatio(draft.aspect, imageAspect, frame.width * imageAspect >= frame.height);
   const autoLocked = !isReady(photo);
 
   const withAspect = (rect: Rect, aspect: CropAspect, orientation: Orientation): Rect => {
@@ -199,16 +236,23 @@ export function useCropSession(
 
   const session: CropSession = {
     draft,
+    frame,
     imageAspect,
     lockedRatio,
     autoLocked,
     autoNote,
     // A drag or an arrow key: what was moved stays and Auto turns off. A drag keeps the callbacks of the render it began in, so the
-    // draft is read as it is now.
+    // draft is read as it is now. The frame asked for is kept inside the straightened photo, going from the frame shown now (inside)
+    // as far towards it as it can (constrainFrame: the closed form of a bisection between the two), and becomes the base. At 0° every
+    // frame on the photo is inside, so nothing changes there.
     setRect: (rect) => {
       const current = latest.current ?? draft;
       if (current.auto) forgetAuto();
-      commit({ ...current, rect, auto: false });
+      const canvas = canvasFor(photo, current.orientation);
+      const from = fitInside(current.rect, current.angle_deg, canvas);
+      const aspectNow = imageAspectOf(photo.width_px, photo.height_px, current.orientation);
+      const locked = presetRatio(current.aspect, aspectNow, from.width * aspectNow >= from.height) !== null;
+      commit({ ...current, rect: constrainFrame(from, rect, current.angle_deg, canvas, locked), auto: false });
     },
     setAspect: (aspect) => {
       const next = { ...draft, aspect, rect: withAspect(draft.rect, aspect, draft.orientation) };
@@ -256,11 +300,13 @@ export function useCropSession(
       commit(next);
       push(next);
     },
+    // The frame sent is the one shown: the base fitted inside the straightened photo. The whole photo at 0° is still no crop.
     done: () => {
       const current = latest.current;
       if (!current) return;
       close();
-      void store.update({ crop: draftToCrop(current), orientation: current.orientation }, true, target.current);
+      const sent = { ...current, rect: shownFrame(current, photo) };
+      void store.update({ crop: draftToCrop(sent), orientation: current.orientation }, true, target.current);
     },
     cancel: () => {
       const before = original.current;

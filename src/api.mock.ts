@@ -106,7 +106,7 @@ import { hexChroma, sceneScatter } from "./fixtures/warp";
 import { sceneHistogram } from "./fixtures/histogram";
 import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
-import { fitInCell, imageAspectOf } from "./screens/crop/cropMath";
+import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
 import { diffSettings } from "./state/history";
 import { bytesToUrl } from "./state/photo";
 
@@ -1181,18 +1181,26 @@ export function mockCropSuggestion(summary: PhotoSummary, aspect: CropAspect, or
   const h = Math.min(canvas / (ratio * c + s), 1 / (ratio * s + c));
   const w = (ratio * h) / canvas;
   const round = (v: number) => Math.round(v * 1e6) / 1e6;
-  const centred = (width: number, height: number, dx: number) => ({
-    x: round(Math.min(Math.max((1 - width) / 2 + dx, 0), 1 - width)),
-    y: round((1 - height) / 2),
-    width: round(width),
-    height: round(height),
-  });
+  // Every frame is inside the straightened photo by the panel's rule (`fitInside`, the core's `fit_inside`: no empty corner, 2 px from
+  // the photo's edge), as the core's frames are. The largest frame shrinks by that margin; the 90 % frame is 90 % of it.
+  const canvasPx = canvasOf(summary.width_px, summary.height_px, orientation);
+  const centred = (width: number, height: number, dx: number) =>
+    fitInside(
+      {
+        x: round(Math.min(Math.max((1 - width) / 2 + dx, 0), 1 - width)),
+        y: round((1 - height) / 2),
+        width: round(width),
+        height: round(height),
+      },
+      angle,
+      canvasPx,
+    );
   const whole = { rect: centred(w, h, 0), score: 0 };
   if (keep) return { straighten: "level", angle_deg: 0, frames: [whole], keep: true, subject: "picture" };
   return {
     straighten: "rotate",
     angle_deg: angle,
-    frames: [{ rect: centred(0.9 * w, 0.9 * h, -0.03), score: 0.21 }, whole],
+    frames: [{ rect: centred(0.9 * whole.rect.width, 0.9 * whole.rect.height, -0.03), score: 0.21 }, whole],
     keep: false,
     subject: "camera",
   };

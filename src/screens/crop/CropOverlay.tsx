@@ -38,9 +38,12 @@ const KEY_STEP = 0.005;
  * while it is dragged. Drag a handle to resize (locked to the aspect when one is chosen), drag
  * inside to move. The arrow keys do the same from the keyboard: on a handle they move it, on the
  * frame they move the frame (Shift: ten times as far).
+ *
+ * The frame drawn and dragged is the session's `frame`: the one the person set, fitted inside the straightened photo. What a drag or a key
+ * asks for goes to `setRect`, which keeps it inside (`docs/11-ui.md` §Crop, "No border in photos").
  */
 export function CropOverlay({ session, cellAspect = 1.5 }: { session: CropSession; cellAspect?: number }) {
-  const { draft, imageAspect, lockedRatio, setRect } = session;
+  const { frame: rect, imageAspect, lockedRatio, setRect } = session;
   const picture = fitInCell(cellAspect, imageAspect);
   const image = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -58,7 +61,7 @@ export function CropOverlay({ session, cellAspect = 1.5 }: { session: CropSessio
       if (!target) return false;
       const handle = target.dataset.handle as Handle | "move";
       const at = pointInImage(event.clientX, event.clientY);
-      gesture.current = { handle, start: draft.rect, x: at.x, y: at.y };
+      gesture.current = { handle, start: rect, x: at.x, y: at.y };
       setDragging(true);
       event.preventDefault();
       return true;
@@ -84,14 +87,13 @@ export function CropOverlay({ session, cellAspect = 1.5 }: { session: CropSessio
     event.preventDefault();
     event.stopPropagation();
     if (handle === "move") {
-      setRect(moveRect(draft.rect, dx, dy));
+      setRect(moveRect(rect, dx, dy));
       return;
     }
-    const from = handlePoint(draft.rect, handle);
-    setRect(resizeRect(draft.rect, handle, { x: from.x + dx, y: from.y + dy }, lockedRatio, imageAspect));
+    const from = handlePoint(rect, handle);
+    setRect(resizeRect(rect, handle, { x: from.x + dx, y: from.y + dy }, lockedRatio, imageAspect));
   };
 
-  const { rect } = draft;
   // A handle on a frame edge that sits on the edge of the cell would be half cut off; draw it just inside instead. A handle on the
   // left or top edge starts at the edge (no margin); one on the right or bottom edge ends there, so it moves back by its own size, which
   // the stylesheet owns (`--crop-handle`: 10 px, 14 px in the glass interface).

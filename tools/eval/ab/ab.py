@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""The blind A/B kit for Apple Auto (docs/19 section 13, AA-1): `prepare` makes the test, `score` scores the answers.
+"""The blind A/B kit for Apple Auto (docs/19 section 13, AA-1) and Auto crop (docs/20 section 12): `prepare` makes the
+test, `score` scores the answers.
 
-    tools/eval/ab/ab.sh prepare PHOTOS_DIR --ym PATH [--out DIR] [--long-edge 2000] [--seed N] [--jobs N]
-                                           [--apple-jobs 1] [--with-camera] [--resume] [--data DIR]
+    tools/eval/ab/ab.sh prepare PHOTOS_DIR --ym PATH [--test apple|crop] [--out DIR] [--long-edge 2000] [--seed N]
+                                           [--jobs N] [--apple-jobs 1] [--with-camera] [--resume] [--data DIR]
                                            [--instructions FILE]
     tools/eval/ab/ab.sh score RESULTS_JSON [--plan PLAN_JSON]
+
+`--test crop` makes the blind A/B of Auto crop instead: each photo rendered with `--auto-crop=original` (`crop`) and
+without (`original`), both at the defaults with Apple Auto off, into `testdata/ab-crop` by default. A photo where Auto
+crop changed nothing kept its frame and gives no trial; a photo where it failed is left out with its reason. There is
+no camera leg, and `ym doctor` is not asked. `score` tells the two tests apart by their plan.
 
 `prepare` checks with `ym doctor` that Apple Auto is available, then renders each photo with Apple Auto on (`apple`)
 and off (`rule`, Yellowmoon's own Auto), at the defaults: the built-in default look and every setting at Auto. Apple's
@@ -40,15 +46,22 @@ sys.path.insert(0, str(HERE))
 
 from page import write_page  # noqa: E402
 from plan import (  # noqa: E402
+    CROP_ASPECT,
+    CROP_TEST,
     DEFAULT_SEED,
+    DEFAULT_TEST,
+    TESTS,
+    WELL_FRAMED_STRATUM,
     PlanPhoto,
     build_plan,
     count_plan,
     find_photos,
+    is_well_framed,
     plan_to_json,
     steps_dict,
 )
 from renders import (  # noqa: E402
+    AUTO_CROP_FLAG,
     QUALITY,
     Outcome,
     PhotoJob,
@@ -66,11 +79,17 @@ from score import LABELS, ScoreError, format_report, score_results  # noqa: E402
 
 REPO = HERE.parents[2]
 DEFAULT_OUT = REPO / "testdata" / "ab"
+#: The crop test's default folder, apart from the Apple Auto test's so that making one never replaces the other's plan.
+DEFAULT_CROP_OUT = REPO / "testdata" / "ab-crop"
+#: The default out folder of each test.
+DEFAULT_OUTS: Dict[str, Path] = {DEFAULT_TEST: DEFAULT_OUT, CROP_TEST.name: DEFAULT_CROP_OUT}
 DEFAULT_YM = REPO / "target" / "release" / "ym"
 REPO_DATA = REPO / "data"
 PLAN_FILE = "plan.json"
 TEST_ADVISOR = "Test advisor"
 DOCTOR_TIMEOUT_S = 300.0
+#: How long `ym render --help` may take (the crop test's check that `ym` has Auto crop).
+HELP_TIMEOUT_S = 120.0
 #: The longest instructions Apple's model is given, in characters (`ym_core::apple_auto::INSTRUCTIONS_MAX_CHARS`).
 INSTRUCTIONS_MAX_CHARS = 2000
 
@@ -101,6 +120,9 @@ class PrepareOptions:
     resume: bool = False
     #: Instructions for Apple's model instead of the default (`--instructions FILE`).
     instructions: Optional[Path] = None
+    #: Which test to make (`--test`): `apple` (Apple Auto against the rule) or `crop` (Auto crop against the original
+    #: framing).
+    test: str = DEFAULT_TEST
 
 
 @dataclass
@@ -191,6 +213,30 @@ def check_available(status: Dict[str, object], allow_unavailable: bool, log: Cal
     log(f"note: Apple Auto is not available ({words}); going on because of --allow-unavailable")
 
 
+def check_auto_crop(ym: Path, data: Optional[Path], scratch: Path) -> None:
+    """Stops with a usage error when this `ym` has no Auto crop: its `ym render --help` does not list `--auto-crop`
+    (docs/20 section 8). One clear message instead of a failed render for every photo."""
+    home = Path(tempfile.mkdtemp(prefix="ym-help-", dir=str(scratch)))
+    try:
+        proc = subprocess.run(
+            [str(ym), "render", "--help"],
+            env=ym_environment(data, home),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=HELP_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise UsageError(f"ym could not start ({ym}): {exc}") from None
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    if AUTO_CROP_FLAG not in proc.stdout.decode("utf-8", errors="replace"):
+        raise UsageError(
+            f"this ym has no Auto crop (ym render {AUTO_CROP_FLAG}). Pass the ym of a build of the branch auto-crop "
+            "with --ym PATH"
+        )
+
+
 def instructions_id(status: Dict[str, object], path: Optional[Path]) -> Dict[str, object]:
     """Which instructions Apple's model reads in the test and their digest (`instructions`, `instructions_sha256`, as
     `ym` reports them): the default (as `ym doctor` reports it), or the text of `path`. A file that cannot be read, is
@@ -234,13 +280,109 @@ def read_plan_id(path: Path) -> Optional[str]:
     return value if isinstance(value, str) else None
 
 
-def prepare(options: PrepareOptions, log: Callable[[str], None] = stderr_log) -> PrepareResult:
-    """Checks that Apple Auto is available, renders every photo with Apple Auto on and off, keeps the photos whose
-    answer changed the picture, and writes the test.
+def write_test(out: Path, plan: Dict[str, object], log: Callable[[str], None]) -> None:
+    """Writes `plan.json`, the page and `plan.js` into the out folder, with a note when it replaces another plan."""
+    plan_path = out / PLAN_FILE
+    previous = read_plan_id(plan_path)
+    if previous is not None and previous != plan["plan_id"]:
+        log(f"note: the folder held plan {previous}; it is replaced, so answers given to it no longer match")
+    plan_path.write_text(plan_to_json(plan), encoding="utf-8")
+    write_page(out, plan)
+
+
+def _crop_item(job: PhotoJob, outcome: Outcome) -> Dict[str, object]:
+    item: Dict[str, object] = {"number": job.number, "stem": job.stem, "stratum": job.stratum}
+    if outcome.crop is not None:
+        item["auto_crop"] = outcome.crop
+    if outcome.reason:
+        item["reason"] = outcome.reason
+    return item
+
+
+def prepare_crop(options: PrepareOptions, log: Callable[[str], None] = stderr_log) -> PrepareResult:
+    """The crop test: checks that `ym` has Auto crop, renders every photo with Auto crop (`--auto-crop=original`) and
+    without, both at the defaults with Apple Auto off, keeps the photos where Auto crop changed the picture, and writes
+    the test. A photo where it changed nothing kept its frame (`unchanged`); one where it failed is left out (`failed`).
 
     The originals are only read. Pictures go under `options.out/pictures`, `ym`'s records under `options.out/records`,
     the page and the plan next to them.
     """
+    photos = find_photos(options.photos)
+    if not photos:
+        raise UsageError(f"no ARW files in {options.photos} (folders are walked; hidden files are skipped)")
+    options.out.mkdir(parents=True, exist_ok=True)
+    parent = None if options.scratch_root is None else str(options.scratch_root)
+    scratch = Path(tempfile.mkdtemp(prefix="ab-", dir=parent))
+    try:
+        version = ym_version(options.ym, options.data, scratch)
+        check_auto_crop(options.ym, options.data, scratch)
+        provenance = {
+            "ym": version,
+            "long_edge": options.long_edge,
+            "quality": QUALITY,
+            "auto_crop": {"aspect": CROP_ASPECT, "apple_auto": "off"},
+        }
+        jobs = [
+            PhotoJob(number=number, stem=photo.stem, stratum=photo.stratum, raw=photo.path)
+            for number, photo in enumerate(photos, start=1)
+        ]
+        pictures = Pictures(
+            ym=options.ym,
+            data=options.data,
+            out=options.out,
+            scratch=scratch,
+            seed=options.seed,
+            long_edge=options.long_edge,
+            resume=options.resume,
+        )
+        log(f"Rendering {len(jobs)} photos with Auto crop and without, {options.jobs} at a time")
+        outcomes = make_pictures(pictures, jobs, options.jobs, 1, log, test=CROP_TEST.name)
+        result = PrepareResult(plan={}, found=len(jobs))
+        kept: List[PlanPhoto] = []
+        for job in jobs:
+            outcome = outcomes[job.number]
+            if outcome.status == "unchanged":
+                result.unchanged.append(_crop_item(job, outcome))
+            elif outcome.status == "failed":
+                result.failed.append(_crop_item(job, outcome))
+            elif outcome.status == "error":
+                result.errors.append(_crop_item(job, outcome))
+            else:
+                kept.append(PlanPhoto(number=job.number, stem=job.stem, stratum=job.stratum, auto_crop=outcome.crop))
+        if not kept:
+            raise PrepareFailed(
+                f"no photo is in the test: {len(result.unchanged)} of {len(jobs)} photos kept their frame, Auto crop "
+                f"failed on {len(result.failed)}, and {len(result.errors)} could not be rendered; see the lines above"
+            )
+        plan = build_plan(kept, options.seed, provenance, None, CROP_TEST)
+        plan["counts"] = {
+            "found": len(jobs),
+            "in_test": len(kept),
+            "unchanged": len(result.unchanged),
+            "failed": len(result.failed),
+            "not_rendered": len(result.errors),
+        }
+        plan["unchanged"] = result.unchanged
+        plan["left_out"] = [{**item, "why": "failed"} for item in result.failed] + [
+            {**item, "why": "not rendered"} for item in result.errors
+        ]
+        write_test(options.out, plan, log)
+        result.plan = plan
+        return result
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def prepare(options: PrepareOptions, log: Callable[[str], None] = stderr_log) -> PrepareResult:
+    """Checks that Apple Auto is available, renders every photo with Apple Auto on and off, keeps the photos whose
+    answer changed the picture, and writes the test. With `options.test` "crop" it makes the crop test instead
+    (`prepare_crop`).
+
+    The originals are only read. Pictures go under `options.out/pictures`, `ym`'s records under `options.out/records`,
+    the page and the plan next to them.
+    """
+    if options.test == CROP_TEST.name:
+        return prepare_crop(options, log)
     photos = find_photos(options.photos)
     if not photos:
         raise UsageError(f"no ARW files in {options.photos} (folders are walked; hidden files are skipped)")
@@ -343,12 +485,7 @@ def prepare(options: PrepareOptions, log: Callable[[str], None] = stderr_log) ->
             {**item, "why": "not rendered"} for item in result.errors
         ]
         plan["no_camera"] = result.no_camera
-        plan_path = options.out / PLAN_FILE
-        previous = read_plan_id(plan_path)
-        if previous is not None and previous != plan["plan_id"]:
-            log(f"note: the folder held plan {previous}; it is replaced, so answers given to it no longer match")
-        plan_path.write_text(plan_to_json(plan), encoding="utf-8")
-        write_page(options.out, plan)
+        write_test(options.out, plan, log)
         result.plan = plan
         return result
     finally:
@@ -359,10 +496,71 @@ def _photos_word(count: int) -> str:
     return "photo" if count == 1 else "photos"
 
 
+def _how_to_go_on(out: Path, ym_name: str) -> List[str]:
+    return [
+        "",
+        f"Open the page:  open {shlex.quote(str(out / 'index.html'))}",
+        "Answer every trial, then press Export results in the page.",
+        f"Score the answers with:  tools/eval/ab/ab.sh score RESULTS_JSON   (ym: {ym_name})",
+    ]
+
+
+def crop_summary_text(result: PrepareResult, out: Path, ym_name: str) -> str:
+    """The summary `prepare --test crop` prints: the aspect, the photos, how many kept their frame and how many Auto
+    crop failed on, the strata, the well-framed photos, the trials, and how to open the page."""
+    plan = result.plan
+    counts = count_plan(plan)
+    kept = len(plan["photos"])  # type: ignore[arg-type]
+    provenance = plan["provenance"]  # type: ignore[index]
+    aspect = provenance["auto_crop"]["aspect"]  # type: ignore[index]
+    found = result.found
+    unchanged = len(result.unchanged)
+    lines = [
+        f"Blind A/B of Auto crop written to {out}",
+        f"  Auto crop: aspect {aspect}, against the original framing; both pictures at the defaults with Apple Auto "
+        "off",
+        f"  ym: {provenance['ym']}",  # type: ignore[index]
+        f"  photos: {found} found, {kept} in the test",
+        f"  Auto crop changed nothing on {unchanged} of {found} {_photos_word(found)}: each kept its frame, so they "
+        "give no trial.",
+        f"  Auto crop failed on {len(result.failed)} of {found} {_photos_word(found)}: they are left out.",
+    ]
+    for item in result.failed:
+        lines.append(f"    {item['stratum']}/{item['stem']}: {item['reason']}")
+    if result.errors:
+        count = len(result.errors)
+        lines.append(f"  {count} {_photos_word(count)} could not be rendered: left out.")
+        for item in result.errors:
+            lines.append(f"    {item['stratum']}/{item['stem']}: {item['reason']}")
+    lines.append(
+        "  strata (photos in the test): "
+        + ", ".join(f"{name} {count}" for name, count in sorted(counts.by_stratum.items()))
+    )
+    framed_kept = sum(1 for item in result.unchanged if is_well_framed(str(item["stratum"])))
+    framed_in = sum(1 for photo in plan["photos"] if is_well_framed(str(photo["stratum"])))  # type: ignore[union-attr]
+    framed_out = sum(1 for item in result.failed + result.errors if is_well_framed(str(item["stratum"])))
+    if framed_kept + framed_in + framed_out:
+        lines.append(
+            f"  {WELL_FRAMED_STRATUM}: {framed_kept} kept their frame, {framed_in} in the test, {framed_out} left out"
+        )
+    else:
+        lines.append(
+            f"  note: no folder named {WELL_FRAMED_STRATUM}, so the gate's rule for well-framed photos cannot be "
+            "checked (README, the crop test)"
+        )
+    parts = ", ".join(f"{LABELS[name]} {count}" for name, count in counts.by_comparison.items())
+    trials = len(plan["trials"])  # type: ignore[arg-type]
+    lines.append(f"  trials: {trials} ({parts}); seed {plan['seed']}; plan {plan['plan_id']}")
+    lines.extend(_how_to_go_on(out, ym_name))
+    return "\n".join(lines)
+
+
 def summary_text(result: PrepareResult, out: Path, ym_name: str) -> str:
     """The summary `prepare` prints: Apple's model, the photos, how many Apple Auto left as they were and how many
-    it failed on, the strata, the trials, and how to open the page."""
+    it failed on, the strata, the trials, and how to open the page. The crop test's is `crop_summary_text`'s."""
     plan = result.plan
+    if plan.get("test") == CROP_TEST.name:
+        return crop_summary_text(result, out, ym_name)
     counts = count_plan(plan)
     kept = len(plan["photos"])  # type: ignore[arg-type]
     provenance = plan["provenance"]  # type: ignore[index]
@@ -401,10 +599,7 @@ def summary_text(result: PrepareResult, out: Path, ym_name: str) -> str:
         lines.append(
             "  note: the answers came from the test advisor (YELLOWMOON_TEST_APPLE_AUTO), not from Apple's model"
         )
-    lines.append("")
-    lines.append(f"Open the page:  open {shlex.quote(str(out / 'index.html'))}")
-    lines.append("Answer every trial, then press Export results in the page.")
-    lines.append(f"Score the answers with:  tools/eval/ab/ab.sh score RESULTS_JSON   (ym: {ym_name})")
+    lines.extend(_how_to_go_on(out, ym_name))
     return "\n".join(lines)
 
 
@@ -412,12 +607,20 @@ def build_parser() -> argparse.ArgumentParser:
     """The command line: `prepare` and `score`, with the defaults of the plan (seed, long edge, jobs, paths)."""
     parser = argparse.ArgumentParser(
         prog="ab.sh",
-        description="Blind A/B of Apple Auto (docs/19 section 13): prepare the test, then score the answers.",
+        description="Blind A/B of Apple Auto (docs/19 section 13) or of Auto crop (docs/20 section 12): prepare the "
+        "test, then score the answers.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     prep = sub.add_parser("prepare", help="render the pictures and write the blind page")
     prep.add_argument("photos", type=Path, metavar="PHOTOS_DIR", help="folder of ARW files; subfolders are strata")
+    prep.add_argument(
+        "--test",
+        choices=sorted(TESTS),
+        default=DEFAULT_TEST,
+        help="which test: apple, Apple Auto against the rule (the default), or crop, Auto crop against the original "
+        "framing",
+    )
     prep.add_argument(
         "--ym",
         type=Path,
@@ -425,7 +628,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="the ym of the test build, e.g. ~/Applications/Yellowmoon.app/Contents/MacOS/ym "
         "(default target/release/ym)",
     )
-    prep.add_argument("--out", type=Path, default=DEFAULT_OUT, help=f"output folder (default {DEFAULT_OUT})")
+    prep.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=f"output folder (default {DEFAULT_OUT}, or {DEFAULT_CROP_OUT} with --test crop)",
+    )
     prep.add_argument("--long-edge", type=int, default=2000, help="long edge of the renders in pixels (default 2000)")
     prep.add_argument("--seed", type=int, default=DEFAULT_SEED, help=f"seed of the plan (default {DEFAULT_SEED})")
     prep.add_argument("--jobs", type=int, default=default_jobs(), help="photos at the same time (default: CPUs / 2)")
@@ -438,7 +646,7 @@ def build_parser() -> argparse.ArgumentParser:
     prep.add_argument(
         "--with-camera",
         action="store_true",
-        help="also compare Apple Auto with the camera's JPEG (reported, not part of the gate)",
+        help="also compare Apple Auto with the camera's JPEG (reported, not part of the gate; not with --test crop)",
     )
     prep.add_argument(
         "--resume",
@@ -458,7 +666,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         default=None,
         help="a text file of instructions for Apple's model instead of the default (docs/19 section 2; at most 2000 "
-        "characters); the plan records which instructions were read",
+        "characters); the plan records which instructions were read (not with --test crop)",
     )
     prep.add_argument(
         "--allow-unavailable",
@@ -487,6 +695,10 @@ def run_prepare(args: argparse.Namespace) -> int:
         raise UsageError("--jobs must be at least 1")
     if args.apple_jobs < 1:
         raise UsageError("--apple-jobs must be at least 1")
+    if args.test == CROP_TEST.name and args.with_camera:
+        raise UsageError("--with-camera is for the Apple Auto test; the crop test has no comparison with the camera")
+    if args.test == CROP_TEST.name and args.instructions is not None:
+        raise UsageError("--instructions is for the Apple Auto test; the crop test does not ask Apple's model")
     ym = args.ym.expanduser()
     if not (ym.is_file() and os.access(ym, os.X_OK)):
         raise UsageError(
@@ -499,9 +711,10 @@ def run_prepare(args: argparse.Namespace) -> int:
     instructions = args.instructions.expanduser().resolve() if args.instructions is not None else None
     if instructions is not None and not instructions.is_file():
         raise UsageError(f"there is no instructions file at {instructions}")
+    out = args.out if args.out is not None else DEFAULT_OUTS[args.test]
     options = PrepareOptions(
         photos=args.photos.expanduser(),
-        out=args.out.expanduser(),
+        out=out.expanduser(),
         long_edge=args.long_edge,
         seed=args.seed,
         ym=ym,
@@ -512,6 +725,7 @@ def run_prepare(args: argparse.Namespace) -> int:
         allow_unavailable=args.allow_unavailable,
         resume=args.resume,
         instructions=instructions,
+        test=args.test,
     )
     try:
         result = prepare(options)
@@ -523,8 +737,9 @@ def run_prepare(args: argparse.Namespace) -> int:
 
 
 def run_score(args: argparse.Namespace) -> int:
-    """`ab.sh score`: scores the results, prints the table and the gate, and writes score.json."""
-    report, path = score_results(args.results.expanduser(), args.plan, DEFAULT_OUT)
+    """`ab.sh score`: scores the results, prints the table and the gate, and writes score.json. The plan is looked
+    for next to the results, then in each test's default folder."""
+    report, path = score_results(args.results.expanduser(), args.plan, (DEFAULT_OUT, DEFAULT_CROP_OUT))
     print(format_report(report))
     print(f"\nScore written to {path}")
     return 0

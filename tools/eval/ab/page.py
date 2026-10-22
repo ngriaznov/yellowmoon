@@ -1,10 +1,15 @@
-"""The blind page of the A/B of Apple Auto: `index.html` (the same file for every plan) and `plan.js` (the trials, the
-picture paths and how many quarter turns each picture is turned by).
+"""The blind page of the A/B tests: `index.html` (the same file for every plan) and `plan.js` (the trials, the picture
+paths, how many quarter turns each picture is turned by, and for the crop test the page's kind).
 
 The page is one file with inline CSS and JavaScript. It loads nothing from the network, and it never names a variant
 or what made a picture: the picture paths are folder codes (`plan.py`), and the font stack does without the CSS name
 that would put the word under test in the page. It runs from `file://`, so `plan.js` is a script, not a JSON request.
 Answers are kept in the browser's localStorage under the plan id, and exported as `results.json`.
+
+The Apple Auto test's `plan.js` has no kind, and the page shows its pictures as it always has: each in a dark box with
+a thin border. The crop test's says `"kind": "framing"`: the page then draws nothing around a picture (no border, box,
+outline or shadow: the owner asked for no border on the photos), shows two pictures of one shape at one size, so a
+cropped picture cannot stand out by its size, and says what makes a framing need a fix.
 """
 
 from __future__ import annotations
@@ -12,6 +17,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Dict, Mapping
+
+from plan import ab_test
 
 PAGE_FILE = "index.html"
 PLAN_JS_FILE = "plan.js"
@@ -85,6 +92,12 @@ kbd {
 }
 /* The script sets each picture's size and turn (fitPicture), so the picture's own box is what is measured. */
 .frame img { position: absolute; left: 50%; top: 50%; display: block; }
+/* A framing test (plan.js kind "framing"): each picture whole on the page itself, with nothing drawn around it. */
+.for-framing { display: none; }
+body.framing .for-grading { display: none; }
+body.framing .for-framing { display: inline; }
+body.framing .frame { border: 0; border-radius: 0; background: transparent; }
+body.framing .frame:focus:not(:focus-visible) { outline: none; }
 .flags { display: flex; justify-content: center; }
 .flag {
   font: inherit;
@@ -158,9 +171,10 @@ body.full #full-hint { display: block; }
   that they are about the same. The page does not say which version is which, and nothing is uploaded.</p>
   <p>Left is better: <kbd>&larr;</kbd> or <kbd>A</kbd>. Right is better: <kbd>&rarr;</kbd> or <kbd>L</kbd>.
   About the same: <kbd>&darr;</kbd> or <kbd>S</kbd>. Undo the last answer: <kbd>Z</kbd>.</p>
-  <p>Press <kbd>F</kbd> or <kbd>J</kbd> to mark the left or the right picture as needing a fix: it is more than
-  about half a stop too dark or too bright, or it has a colour cast you would correct. Click a picture to see both
-  full screen. <kbd>Esc</kbd> goes back.</p>
+  <p>Press <kbd>F</kbd> or <kbd>J</kbd> to mark the left or the right picture as needing a fix: <span
+  class="for-grading">it is more than about half a stop too dark or too bright, or it has a colour cast you would
+  correct.</span><span class="for-framing">it leans, it cuts into what the photo is of, or it keeps something at an
+  edge that you would leave out.</span> Click a picture to see both full screen. <kbd>Esc</kbd> goes back.</p>
 </header>
 <main>
   <div class="progress">
@@ -209,6 +223,9 @@ body.full #full-hint { display: block; }
   var cur = -1;
   var state = { answers: {}, order: [], draft: null };
   var storeKey = "";
+  var framing = false;
+  // Two pictures whose shapes (width over height) differ by at most this share are of one shape.
+  var SAME_SHAPE = 0.01;
 
   function $(id) { return document.getElementById(id); }
 
@@ -219,6 +236,8 @@ body.full #full-hint { display: block; }
   }
   total = plan.trials.length;
   storeKey = "ym-ab:" + plan.plan_id;
+  framing = plan.kind === "framing";
+  if (framing) { document.body.classList.add("framing"); }
   state = load();
   cur = nextOpen(0);
 
@@ -320,9 +339,27 @@ body.full #full-hint { display: block; }
     img.style.transform = "translate(-50%, -50%) rotate(" + (turns * 90) + "deg)";
   }
 
+  // In a framing test, two pictures of one shape are shown at one size, the smaller of their two fits, so neither
+  // stands out by being drawn a pixel larger or smaller than the other. Pictures of two shapes keep their own fits.
+  function matchSizes(first, second) {
+    if (turnsOf(first) !== turnsOf(second)) { return; }
+    if (!first.naturalWidth || !first.naturalHeight || !second.naturalWidth || !second.naturalHeight) { return; }
+    var one = first.naturalWidth / first.naturalHeight;
+    var two = second.naturalWidth / second.naturalHeight;
+    if (Math.abs(one - two) > SAME_SHAPE * Math.max(one, two)) { return; }
+    var width = Math.min(parseFloat(first.style.width), parseFloat(second.style.width));
+    var height = Math.min(parseFloat(first.style.height), parseFloat(second.style.height));
+    if (!(width > 0 && height > 0)) { return; }
+    first.style.width = width + "px";
+    second.style.width = width + "px";
+    first.style.height = height + "px";
+    second.style.height = height + "px";
+  }
+
   function fitAll() {
     fitPicture($("img-left"));
     fitPicture($("img-right"));
+    if (framing) { matchSizes($("img-left"), $("img-right")); }
   }
 
   function preload(path) {
@@ -492,13 +529,17 @@ def _trial_pictures(trial: Mapping[str, object]) -> Dict[str, Dict[str, object]]
 
 
 def plan_js(plan: Mapping[str, object]) -> str:
-    """The script `plan.js`: the plan id, the number of trials, and each trial's two pictures (path and turns)."""
+    """The script `plan.js`: the plan id, the number of trials, and each trial's two pictures (path and turns), then
+    the page's kind when the test has one (the crop test's "framing"; the Apple Auto test's has none)."""
     trials = plan["trials"]  # type: ignore[index]
-    payload = {
+    payload: Dict[str, object] = {
         "plan_id": plan["plan_id"],  # type: ignore[index]
         "trial_count": len(trials),  # type: ignore[arg-type]
         "trials": [{"id": t["id"], "pictures": _trial_pictures(t)} for t in trials],  # type: ignore[index]
     }
+    kind = ab_test(plan).page_kind
+    if kind is not None:
+        payload["kind"] = kind
     return "window.YM_AB_PLAN = " + json.dumps(payload, separators=(",", ":"), ensure_ascii=True) + ";\n"
 
 

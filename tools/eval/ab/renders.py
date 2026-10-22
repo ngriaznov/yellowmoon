@@ -17,6 +17,16 @@ picture), the `--cpu` renderer, the built-in default look and every setting at A
 
 The `ym` records are kept under `records/` in the out folder (part of the key, like `plan.json`) so that `--resume`
 can keep a render without asking Apple's model again. The originals are only ever read.
+
+The crop test (`prepare --test crop`, docs/20 section 12) makes two renders of each photo, both at the defaults with
+`--apple-auto off`, so that only the framing differs (`process_crop_photo`):
+
+1. the `crop` render, with `--auto-crop=original`, whose `--json` record says what Auto crop proposed (`auto_crop`:
+   the straighten kind and angle, the frames, `keep`, the subject's source, or an `error`);
+2. a photo where Auto crop failed is left out with its reason (its picture is the original framing); a photo where it
+   changed nothing (`keep` and an angle of 0: the whole photo, not turned) **kept its frame** and gives no trial;
+3. otherwise the `original` render, without the flag; when the two pictures are the same pixels after all, the photo
+   gives no trial either.
 """
 
 from __future__ import annotations
@@ -37,6 +47,8 @@ from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from plan import (
     ANSWER_FIELDS,
     COLOR_FIELDS,
+    CROP_ASPECT,
+    CROP_TEST,
     NO_STEPS,
     STEP_RANGE,
     STRENGTH_RANGE,
@@ -55,11 +67,27 @@ RECORDS_DIR = "records"
 #: caller's shell cannot change a picture; the test advisor (docs/19 section 11) passes, for tests and smoke runs, and
 #: the plan then names it as the model.
 PASS_THROUGH: Tuple[str, ...] = ("YELLOWMOON_TEST_APPLE_AUTO",)
-#: The flags each rendered variant adds to the shared render flags.
+#: The flag of `ym render` that gives each photo the crop the app's Auto would give (docs/20 section 8).
+AUTO_CROP_FLAG = "--auto-crop"
+#: The flags each rendered variant adds to the shared render flags. The crop test's two renders (`crop`, `original`)
+#: both have Apple Auto off, so only the framing differs.
 RENDER_FLAGS: Mapping[str, Tuple[str, ...]] = {
     "apple": ("--apple-auto", "on"),
     "rule": ("--apple-auto", "off"),
+    "crop": ("--apple-auto", "off", f"{AUTO_CROP_FLAG}={CROP_ASPECT}"),
+    "original": ("--apple-auto", "off"),
 }
+#: The renders made with Apple Auto off, whose record must say that Yellowmoon's own Auto made them.
+RULE_RENDERS: Tuple[str, ...] = ("rule", "crop", "original")
+#: What Auto crop's straightener answered (docs/20 section 3), and why a photo it did not turn was not turned.
+STRAIGHTEN_KINDS: Mapping[str, str] = {
+    "level": "already level",
+    "rotate": "not turned",
+    "unsure": "no horizon or straight lines found",
+}
+#: Where Auto crop's subject came from (docs/20 section 3).
+SUBJECT_SOURCES: Tuple[str, ...] = ("camera", "picture")
+RECT_FIELDS: Tuple[str, ...] = ("x", "y", "width", "height")
 #: Why Apple Auto is not available, in the words of docs/19 section 8 (`UnavailableReason::words`).
 UNAVAILABLE_WORDS: Mapping[str, str] = {
     "not_a_mac": "this is not a Mac",
@@ -169,7 +197,8 @@ class Pictures:
 @dataclass
 class Outcome:
     """What happened to one photo. `status` is `trial` (it is in the test), `unchanged` (Apple's answer changed
-    nothing: no trial), `failed` (Apple's answer failed: left out) or `error` (a render failed: left out)."""
+    nothing, or in the crop test the photo kept its frame: no trial), `failed` (Apple's answer or Auto crop failed:
+    left out) or `error` (a render failed: left out)."""
 
     status: str
     reason: str = ""
@@ -183,6 +212,8 @@ class Outcome:
     has_camera: bool = False
     #: Why the camera's JPEG could not be copied (--with-camera); the photo then gives only the trial against the rule.
     camera_problem: str = ""
+    #: In the crop test, what Auto crop proposed (the summary of `crop_answer`), when it answered.
+    crop: Optional[Dict[str, object]] = None
 
 
 def ym_environment(data: Optional[Path], home: Path, base: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
@@ -291,7 +322,8 @@ def picture_is_made(path: Path) -> bool:
 
 def kept_record(pictures: Pictures, variant: str, job: PhotoJob) -> Optional[Dict[str, object]]:
     """With --resume, the record of a render an earlier run made, when its picture is there and the record can be used
-    again: the rule's always, Apple's only when its answer arrived (a failure is asked again)."""
+    again: the rule's and the original framing's always, Apple's only when its answer arrived and Auto crop's only when
+    it answered (a failure is asked again)."""
     if not pictures.resume or not picture_is_made(picture_path(pictures, variant, job)):
         return None
     try:
@@ -309,6 +341,8 @@ def kept_record(pictures: Pictures, variant: str, job: PhotoJob) -> Optional[Dic
             return None
     elif record.get("auto_source") != "rule":
         return None
+    elif variant == "crop" and not crop_answer(record).answered:
+        return None
     return record
 
 
@@ -320,8 +354,9 @@ def instructions_flag(pictures: Pictures, variant: str) -> List[str]:
 
 
 def render_picture(pictures: Pictures, job: PhotoJob, variant: str) -> Dict[str, object]:
-    """Renders one photo with Apple Auto on (`apple`) or off (`rule`) and returns `ym`'s record of it, which is also
-    kept under `records/`. With --resume, a render an earlier run made is kept and its record returned."""
+    """Renders one photo with Apple Auto on (`apple`) or off (`rule`), or for the crop test with Auto crop (`crop`) or
+    without (`original`), and returns `ym`'s record of it, which is also kept under `records/`. With --resume, a render
+    an earlier run made is kept and its record returned."""
     kept = kept_record(pictures, variant, job)
     if kept is not None:
         return kept
@@ -350,7 +385,7 @@ def render_picture(pictures: Pictures, job: PhotoJob, variant: str) -> Dict[str,
     record = run_ym(pictures, args)
     if not target.is_file() or target.stat().st_size == 0:
         raise PictureError(f"ym wrote no picture to {target.name}")
-    if variant == "rule" and record.get("auto_source") != "rule":
+    if variant in RULE_RENDERS and record.get("auto_source") != "rule":
         raise PictureError("the render with Apple Auto off did not use Yellowmoon's own Auto")
     blob = (json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
     write_atomically(record_path(pictures, variant, job), blob)
@@ -467,6 +502,58 @@ def apple_answer(record: Mapping[str, object]) -> AppleAnswer:
         plan=plan if isinstance(plan, str) else "",
         instructions=instructions_of(apple),
     )
+
+
+@dataclass(frozen=True)
+class CropAnswer:
+    """What Auto crop did for one photo, read from the `crop` render's record (`auto_crop`, docs/20 section 3).
+
+    `answered` is False when it failed (`reason` says why; the picture is then the original framing). `kept` is True
+    when it changed nothing: the whole frame kept (`keep`) and an angle of 0. `summary` is what the plan records."""
+
+    answered: bool
+    reason: str = ""
+    kept: bool = False
+    summary: Optional[Dict[str, object]] = None
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value == value  # not NaN
+
+
+def crop_answer(record: Mapping[str, object]) -> CropAnswer:
+    """Reads Auto crop's answer from the record of a `crop` render: `{"error": "<sentence>"}` is a failure with that
+    sentence; an answer gives its straighten kind, angle, `keep`, the subject's source and the first frame (the frame
+    the photo got). An answer that is missing or cannot be read is a failure too."""
+    value = record.get("auto_crop")
+    if not isinstance(value, dict):
+        return CropAnswer(False, "Auto crop failed: ym did not report it (is this ym older than Auto crop?)")
+    if "error" in value:
+        message = value.get("error")
+        words = message.strip() if isinstance(message, str) and message.strip() else "no reason given"
+        return CropAnswer(False, f"Auto crop failed: {words}")
+    unreadable = CropAnswer(False, "Auto crop failed: its answer could not be read")
+    straighten, angle, keep = value.get("straighten"), value.get("angle_deg"), value.get("keep")
+    subject, frames = value.get("subject"), value.get("frames")
+    if straighten not in STRAIGHTEN_KINDS or not _is_number(angle) or not isinstance(keep, bool):
+        return unreadable
+    if subject not in SUBJECT_SOURCES or not isinstance(frames, list) or not frames:
+        return unreadable
+    first = frames[0]
+    rect = first.get("rect") if isinstance(first, dict) else None
+    if not isinstance(rect, dict) or not all(_is_number(rect.get(name)) for name in RECT_FIELDS):
+        return unreadable
+    if not (rect["width"] > 0 and rect["height"] > 0) or not _is_number(first.get("score")):
+        return unreadable
+    summary: Dict[str, object] = {
+        "straighten": straighten,
+        "angle_deg": angle,
+        "keep": keep,
+        "subject": subject,
+        "rect": {name: rect[name] for name in RECT_FIELDS},
+        "score": first["score"],
+    }
+    return CropAnswer(True, kept=keep and angle == 0, summary=summary)
 
 
 def jpeg_pixel_digest(path: Path) -> Optional[str]:
@@ -630,20 +717,48 @@ def process_photo(pictures: Pictures, job: PhotoJob, apple_gate: threading.Semap
     return outcome
 
 
+def process_crop_photo(pictures: Pictures, job: PhotoJob) -> Outcome:
+    """Makes the pictures of one photo for the crop test, with Auto crop and without, and says what became of it."""
+    try:
+        record = render_picture(pictures, job, "crop")
+    except (PictureError, OSError, ValueError) as exc:
+        return Outcome("error", f"with Auto crop: {_problem(exc)}")
+    answer = crop_answer(record)
+    if not answer.answered:
+        return Outcome("failed", answer.reason)
+    if answer.kept:
+        straighten = str((answer.summary or {}).get("straighten"))
+        return Outcome("unchanged", STRAIGHTEN_KINDS.get(straighten, ""), crop=answer.summary)
+    try:
+        render_picture(pictures, job, "original")
+    except (PictureError, OSError, ValueError) as exc:
+        return Outcome("error", f"without Auto crop: {_problem(exc)}", crop=answer.summary)
+    if same_pixels(picture_path(pictures, "crop", job), picture_path(pictures, "original", job)):
+        return Outcome("unchanged", "the two pictures are the same", crop=answer.summary)
+    return Outcome("trial", "", crop=answer.summary)
+
+
 def make_pictures(
     pictures: Pictures,
     jobs: Sequence[PhotoJob],
     workers: int,
     apple_workers: int,
     log: Callable[[str], None],
+    test: str = "apple",
 ) -> Dict[int, Outcome]:
     """Makes the pictures of every photo on a pool of `workers` threads (each thread waits on one `ym` process at a
-    time), with at most `apple_workers` renders waiting for Apple's model at once. Returns each photo's outcome."""
+    time), with at most `apple_workers` renders waiting for Apple's model at once. Returns each photo's outcome.
+    With `test` "crop" the pictures are the crop test's (`process_crop_photo`), which never wait for Apple's model."""
     outcomes: Dict[int, Outcome] = {}
     gate = threading.Semaphore(max(1, apple_workers))
     words = {"trial": "in the test", "unchanged": "unchanged", "failed": "left out", "error": "left out"}
+    if test == CROP_TEST.name:
+        words["unchanged"] = "kept its frame"
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        pending = {pool.submit(process_photo, pictures, job, gate): job for job in jobs}
+        if test == CROP_TEST.name:
+            pending = {pool.submit(process_crop_photo, pictures, job): job for job in jobs}
+        else:
+            pending = {pool.submit(process_photo, pictures, job, gate): job for job in jobs}
         for finished, future in enumerate(concurrent.futures.as_completed(pending), start=1):
             job = pending[future]
             outcome = future.result()

@@ -7,6 +7,7 @@ import { mockRect } from "../test/raf";
 import { openPhotos, renderApp, valueOf } from "../test/harness";
 import type { Harness, UpdateSpy } from "../test/harness";
 import { AUTO_CROP_LINES, autoCropLines, autoCropNoteLines, levelledLine } from "./crop/CropPanel";
+import { canvasOf, fitInside } from "./crop/cropMath";
 import { AUTO_CROP_FAILED_MS, draftToCrop } from "./crop/useCropSession";
 
 // Auto crop in the Crop panel (docs/20-auto-crop.md §1): the Frame card's AUTO toggle, what it does to the draft, its note, and the
@@ -235,7 +236,8 @@ describe("the Auto toggle of the Frame card", () => {
     await h!.user.click(autoToggle());
     expect(isOn()).toBe(false);
     expect(noteLines()).toEqual([]);
-    expectFrame({ x: 0, y: 0, width: 0.9, height: 1 });
+    // The frame set before (the right edge in by a tenth), shown inside the photo straightened by 2° (no empty corner, docs/11 §Crop).
+    expectFrame(fitInside({ x: 0, y: 0, width: 0.9, height: 1 }, 2, canvasOf(8640, 5760, 0)));
     expect(valueOf("Straighten")).toBe("+2.0°");
     expect(within(crop()).getByRole("radio", { name: "Free" })).toHaveAttribute("aria-checked", "true");
     // The core is told the angle from before, as Straighten would tell it.

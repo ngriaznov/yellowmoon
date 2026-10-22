@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createMockApi, mockCropSuggestion } from "./api.mock";
 import type { MockApi, MockOptions } from "./api.mock";
 import type { CropAspect, NormRect, Orientation } from "./api/types";
+import { canvasOf, isInside } from "./screens/crop/cropMath";
 
 const ARW = ["~/Pictures/Lisbon/DSC04201.ARW"];
 
@@ -22,7 +23,7 @@ async function open(options: MockOptions = {}): Promise<MockApi> {
 const inside = (r: NormRect): boolean => r.x >= 0 && r.y >= 0 && r.x + r.width <= 1 + 1e-9 && r.y + r.height <= 1 + 1e-9;
 
 describe("suggest_crop on the mock", () => {
-  it("levels by 1.4° and proposes a frame of 90 % a little left of centre, then the kept frame, all inside the canvas", async () => {
+  it("levels by 1.4° and proposes a frame of 90 % a little left of centre, then the kept frame, all inside the straightened photo", async () => {
     const mock = await open();
     for (const [aspect, orientation] of [["original", 0], ["square", 0], ["four_by_five", 90], ["sixteen_by_nine", 270], ["free", 180]] as Array<[CropAspect, Orientation]>) {
       const s = await mock.suggestCrop(1, aspect, orientation);
@@ -34,6 +35,8 @@ describe("suggest_crop on the mock", () => {
       expect(best.rect.x + best.rect.width / 2).toBeLessThan(0.5);
       expect(kept.score).toBe(0);
       expect(s.frames.every((f) => inside(f.rect))).toBe(true);
+      // No empty corner (docs/11 §Crop, "No border in photos"): every frame lies inside the photo straightened by the angle, 2 px in.
+      expect(s.frames.every((f) => isInside(f.rect, s.angle_deg, canvasOf(8640, 5760, orientation)))).toBe(true);
     }
   });
 

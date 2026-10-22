@@ -150,7 +150,7 @@ Every step is f64 on the CPU, single-threaded, with fixed iteration orders and e
 
 - `src-tauri`: the command `suggest_crop` and the wire types `CropSuggestion` and `CropFrame` (`bindings.ts` regenerated).
 - `src/api.ts` (`suggestCrop`), the mock (`src/api.mock.ts`): a fixed proposal (rotate 1.4°, a frame of 90 % centred a little to the left) after 150 ms, or `keep` for photos whose name has "keep" in it, so tests and screenshots can show both.
-- `src/screens/crop/useCropSession.ts` (the draft's `auto` and the toggle), `CropPanel.tsx` (the toggle and the note), `cropMath.ts` unchanged.
+- `src/screens/crop/useCropSession.ts` (the draft's `auto` and the toggle; Auto's frame is fitted before it becomes the base frame), `CropPanel.tsx` (the toggle and the note), `cropMath.ts` (`fitInside`, the port of `geometry::fit_inside`, and `constrainFrame` for drags: "No border in photos", `docs/11` §Crop).
 - e2e: the state `36-crop-auto` (the panel with Auto on and the note), its glass audit and a11y check.
 
 ## 11. Not in this version
