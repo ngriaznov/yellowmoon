@@ -870,6 +870,7 @@ mod tests {
                 },
                 angle_deg: 11.0,
                 aspect: crate::settings::CropAspect::Free,
+                auto: false,
             }),
             ..DevelopSettings::default()
         };
@@ -916,6 +917,7 @@ mod tests {
                             },
                             angle_deg: angle,
                             aspect: crate::settings::CropAspect::Free,
+                            auto: false,
                         }),
                         ..DevelopSettings::default()
                     };

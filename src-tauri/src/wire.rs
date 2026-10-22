@@ -116,7 +116,7 @@ impl From<ym_core::session::SessionError> for AppError {
         use ym_core::session::SessionError as E;
         let scope = match &e {
             E::Decode(_) | E::Estimate(_) => ErrorScope::Decode,
-            E::Settings(_) => ErrorScope::Render,
+            E::Settings(_) | E::AutoCrop(_) => ErrorScope::Render,
             E::Data(_) => ErrorScope::App,
             _ => ErrorScope::Open,
         };
@@ -627,6 +627,55 @@ pub struct Crop {
     pub angle_deg: Num,
     /// The aspect preset the frame follows.
     pub aspect: CropAspect,
+    /// The rect and angle came from Auto crop (`docs/20-auto-crop.md` §2); absent is false.
+    #[serde(default)]
+    pub auto: bool,
+}
+
+/// The straightener's answer (`docs/20-auto-crop.md` §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum StraightenKind {
+    /// Within 0.2° of level.
+    Level,
+    /// Levelled by the suggestion's angle.
+    Rotate,
+    /// No horizon or verticals that agree, or a tilt beyond 10°.
+    Unsure,
+}
+
+/// Where Auto crop's subject came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum SubjectSource {
+    /// The camera's focus point.
+    Camera,
+    /// The picture alone.
+    Picture,
+}
+
+/// One frame Auto crop proposes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct CropFrame {
+    /// The frame, as `Crop.rect`.
+    pub rect: NormRect,
+    /// Its score (0 for the kept frame).
+    pub score: Num,
+}
+
+/// What Auto crop proposes for a photo, an aspect and an orientation (`suggest_crop`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct CropSuggestion {
+    /// The straightener's answer.
+    pub straighten: StraightenKind,
+    /// The straighten angle the frames are made for: 0 unless `straighten` is `rotate`.
+    pub angle_deg: Num,
+    /// Best first, at most 3, never empty.
+    pub frames: Vec<CropFrame>,
+    /// The first frame is the largest frame of the aspect at that angle.
+    pub keep: bool,
+    /// Where the subject came from.
+    pub subject: SubjectSource,
 }
 
 /// Orientation applied after the camera's EXIF orientation, in degrees: `0 | 90 | 180 | 270`.

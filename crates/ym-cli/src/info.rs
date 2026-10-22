@@ -23,9 +23,10 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
+use ym_core::auto_crop::{CropSuggestion, StraightenKind, SubjectSource};
 use ym_core::camera::PhotoCamera;
 use ym_core::session::{OpenOptions, PhotoId, PhotoView};
-use ym_core::settings::ResolvedSettings;
+use ym_core::settings::{Orientation, ResolvedSettings};
 use ym_core::version::PIPELINE_VERSION;
 use ym_raw::error::RawError;
 use ym_raw::layout::{DecodeKind, Rect};
@@ -184,17 +185,32 @@ fn run_to(args: &InfoArgs, console: &mut Console, out: &mut dyn Write) -> Result
                     Ok((view, resolved)) => Ok((view, resolved)),
                     Err(reason) => Err(reason.as_str()),
                 };
+                // Auto crop only when asked: it renders the photo's picture (`docs/20` section 8).
+                let auto_crop = match (args.suggest_crop, entry.photo, &developed) {
+                    (Some(aspect), Some(id), Ok(_)) => Some(
+                        rt.core
+                            .session
+                            .suggest_crop(id, aspect, Orientation::Deg0)
+                            .map_err(|e| e.to_string()),
+                    ),
+                    (Some(_), _, Err(reason)) => Some(Err(reason.clone())),
+                    _ => None,
+                };
                 if args.json {
-                    writeln!(
-                        out,
-                        "{}",
-                        json_ok(&entry.path, meta, &camera, shown).to_line()
-                    )?;
+                    let mut obj = json_ok(&entry.path, meta, &camera, shown);
+                    if let Some(result) = &auto_crop {
+                        obj.insert("auto_crop", auto_crop_json(result));
+                    }
+                    writeln!(out, "{}", obj.to_line())?;
                 } else {
                     if printed_text {
                         writeln!(out)?;
                     }
-                    write!(out, "{}", render_text(&entry.path, meta, &camera, shown))?;
+                    write!(
+                        out,
+                        "{}",
+                        render_text(&entry.path, meta, &camera, shown, auto_crop.as_ref())
+                    )?;
                     printed_text = true;
                 }
             }
@@ -476,6 +492,7 @@ pub fn render_text(
     meta: &RawMetadata,
     camera: &PhotoCamera,
     developed: Result<Developed<'_>, &str>,
+    auto_crop: Option<&Result<CropSuggestion, String>>,
 ) -> String {
     let mut rows: Vec<(&str, String)> = Vec::new();
 
@@ -622,12 +639,53 @@ pub fn render_text(
         }
     }
 
+    if let Some(result) = auto_crop {
+        rows.push((
+            "Auto crop",
+            match result {
+                Ok(s) => auto_crop_text(s),
+                Err(reason) => format!("not available: {reason}"),
+            },
+        ));
+    }
+
     let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
     let mut text = format!("{}\n", path_text(path));
     for (label, value) in rows {
         text.push_str(&format!("  {label:<width$}  {value}\n"));
     }
     text
+}
+
+/// The Auto crop row of `ym info --suggest-crop` (`docs/20-auto-crop.md` §8): the angle, the
+/// frame (x, y, width, height of the canvas, 4 decimals) and where the subject came from.
+fn auto_crop_text(s: &CropSuggestion) -> String {
+    let angle = match s.straighten {
+        StraightenKind::Level => "Already level".to_owned(),
+        StraightenKind::Rotate => format!("Levelled by {}°", trim_number(s.angle_deg, 1)),
+        StraightenKind::Unsure => "No horizon found".to_owned(),
+    };
+    let frame = match s.frames.first() {
+        Some(f) if !s.keep => format!(
+            "frame {:.4} {:.4} {:.4} {:.4}",
+            f.rect.x, f.rect.y, f.rect.width, f.rect.height
+        ),
+        _ => "whole photo kept".to_owned(),
+    };
+    let subject = match s.subject {
+        SubjectSource::Camera => "from the camera's focus point",
+        SubjectSource::Picture => "from the picture",
+    };
+    format!("{angle} · {frame} ({subject})")
+}
+
+/// The `auto_crop` field of `ym info --suggest-crop --json`: the app's answer field for field, or
+/// `{"error": "..."}`.
+fn auto_crop_json(result: &Result<CropSuggestion, String>) -> Value {
+    match result {
+        Ok(s) => serde_json::to_value(s).unwrap_or(Value::Null),
+        Err(reason) => json!({ "error": reason }),
+    }
 }
 
 /// The shutter speed the way ExifTool prints it: `1/N s` up to a quarter of a second, one
@@ -774,6 +832,7 @@ mod tests {
                 profile: None,
                 apple_auto: None,
                 apple_auto_instructions: None,
+                suggest_crop: None,
             };
             let mut console = Console::new(true, false, true);
             let result = run_to(&args, &mut console, &mut Closed);
@@ -796,6 +855,7 @@ mod tests {
             profile: None,
             apple_auto: None,
             apple_auto_instructions: None,
+            suggest_crop: None,
         };
         let mut out = Vec::new();
         let mut console = Console::new(true, false, true);

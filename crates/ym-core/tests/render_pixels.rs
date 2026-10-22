@@ -418,6 +418,7 @@ fn straightening_rotates_about_the_centre_and_leaves_the_corners_empty() {
                 rect: NormRect::FULL,
                 angle_deg: 12.0,
                 aspect: CropAspect::Original,
+                auto: false,
             })
         }),
         &state(300.0, 200.0),
@@ -462,6 +463,7 @@ fn a_crop_renders_exactly_the_pixels_of_that_part_of_the_photo_at_100_percent() 
             },
             angle_deg: 0.0,
             aspect: CropAspect::Free,
+            auto: false,
         })
     });
     assert_eq!(

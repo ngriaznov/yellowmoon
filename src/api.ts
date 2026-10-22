@@ -29,6 +29,8 @@ import type {
   ChromaScatter,
   CliLinkResult,
   CliLinkStatus,
+  CropAspect,
+  CropSuggestion,
   DisplayLut,
   ExportEstimate,
   ExportJob,
@@ -40,6 +42,7 @@ import type {
   LooksImportResult,
   MenuState,
   OpenKind,
+  Orientation,
   PasteReport,
   PhotoId,
   PixelSample,
@@ -132,6 +135,11 @@ export interface Api {
    * most 2048 points, for the faint scatter behind Colour › Colour warp. Ask again after `render_stats`, as for the histogram.
    */
   chromaScatter(photoId: PhotoId): Promise<ChromaScatter>;
+  /**
+   * `suggest_crop` (Auto crop, 2026-10-22): the straighten angle and up to three frames for the photo at an aspect and orientation,
+   * best first (`docs/20-auto-crop.md` §3). The first call for a photo renders and analyses its picture; later ones are quick.
+   */
+  suggestCrop(photoId: PhotoId, aspect: CropAspect, orientation: Orientation): Promise<CropSuggestion>;
 
   // --- Native viewport -----------------------------------------------------
 
@@ -312,6 +320,7 @@ export const tauriApi: Api = {
   setMenuState: (state) => unit(commands.setMenuState(state)),
   histogram: (photoId) => commands.histogram(photoId),
   chromaScatter: (photoId) => commands.chromaScatter(photoId),
+  suggestCrop: (photoId, aspect, orientation) => commands.suggestCrop(photoId, aspect, orientation),
 
   viewportInfo: () => commands.viewportInfo(),
   viewportSetRect: (rect) => unit(commands.viewportSetRect(rect)),

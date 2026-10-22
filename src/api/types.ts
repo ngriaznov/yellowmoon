@@ -274,6 +274,32 @@ export interface Crop {
   /** Straighten angle, −45…45. */
   angle_deg: number;
   aspect: CropAspect;
+  /** The rect and angle came from Auto crop (`docs/20-auto-crop.md` §2); absent is false. */
+  auto?: boolean;
+}
+
+/** Auto crop's straightener: within 0.2° of level, levelled by `angle_deg`, or no answer (`docs/20-auto-crop.md` §3). */
+export type StraightenKind = "level" | "rotate" | "unsure";
+
+/** Where Auto crop's subject came from: the camera's focus point or the picture alone. */
+export type SubjectSource = "camera" | "picture";
+
+/** One frame Auto crop proposes: a rect of the canvas, as `Crop.rect`, and its score (0 for the kept frame). */
+export interface CropFrame {
+  rect: NormRect;
+  score: number;
+}
+
+/** `suggest_crop(photo_id, aspect, orientation)`: Auto crop's proposal (`docs/20-auto-crop.md` §3). */
+export interface CropSuggestion {
+  straighten: StraightenKind;
+  /** The straighten angle the frames are made for: 0 unless `straighten` is `rotate`. */
+  angle_deg: number;
+  /** Best first, at most 3, never empty. */
+  frames: CropFrame[];
+  /** The first frame is the largest frame of the aspect at that angle: the whole photo is kept. */
+  keep: boolean;
+  subject: SubjectSource;
 }
 
 /** Orientation applied after the camera's EXIF orientation, in degrees. */

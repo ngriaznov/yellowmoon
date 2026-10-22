@@ -419,6 +419,7 @@ fn crop_straighten_and_orientation_re_run_nothing_but_the_pixel_pass_with(rig: R
                     },
                     angle_deg: 0.0,
                     aspect: CropAspect::Free,
+                    auto: false,
                 })
             }),
         ),
@@ -429,6 +430,7 @@ fn crop_straighten_and_orientation_re_run_nothing_but_the_pixel_pass_with(rig: R
                     rect: NormRect::FULL,
                     angle_deg: 3.5,
                     aspect: CropAspect::Original,
+                    auto: false,
                 })
             }),
         ),
@@ -474,6 +476,7 @@ fn a_crop_that_needs_a_finer_image_runs_the_raw_group_once_at_the_new_scale_with
             },
             angle_deg: 0.0,
             aspect: CropAspect::Free,
+            auto: false,
         })
     });
     let r = rig.runs(&cropped);

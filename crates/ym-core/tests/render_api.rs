@@ -254,6 +254,7 @@ fn thumbnails_are_small_pngs_with_the_photos_shape() {
             },
             angle_deg: 0.0,
             aspect: ym_core::settings::CropAspect::Free,
+            auto: false,
         })
     });
     let (w, h, _) = decode_png(&r.thumbnail_png(&cropped, &CancelToken::new()).expect("png"));
@@ -577,6 +578,7 @@ fn full_renders_apply_crop_straighten_and_turns() {
             },
             angle_deg: 0.0,
             aspect: ym_core::settings::CropAspect::Free,
+            auto: false,
         });
     });
     let full = r
@@ -596,6 +598,7 @@ fn full_renders_apply_crop_straighten_and_turns() {
             rect: ym_core::settings::NormRect::FULL,
             angle_deg: 20.0,
             aspect: ym_core::settings::CropAspect::Original,
+            auto: false,
         });
     });
     let t = r
@@ -694,6 +697,7 @@ fn a_viewport_frame_reports_its_zoom_and_the_fit_zoom_in_the_render_stats() {
             },
             angle_deg: 0.0,
             aspect: ym_core::settings::CropAspect::Free,
+            auto: false,
         });
     });
     let st = state(300.0, 200.0);

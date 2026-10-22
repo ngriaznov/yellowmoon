@@ -315,6 +315,12 @@ pub struct RawMetadata {
     pub preview: Option<JpegRef>,
     /// GPS directory contents when the file has a GPS directory.
     pub gps: Option<GpsInfo>,
+    /// Where the camera focused (Sony maker note tags 0x204A/0x2027 and 0x2037), as stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<makernote::SonyFocus>,
+    /// Sony's `AFAreaModeSetting` (maker note tag 0x201C), as stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub af_area_setting: Option<u8>,
 }
 
 /// A readable name for the ARW version bytes of maker note tag 0xB000, for example `ARW 2.3.2`
@@ -549,6 +555,8 @@ pub fn probe_source(source: &dyn ByteSource) -> Result<RawMetadata, RawError> {
         tone_curve,
         preview: find_preview(&tiff, &nodes, maker.as_ref()),
         gps: exif.gps,
+        focus: maker.as_ref().and_then(|m| m.focus),
+        af_area_setting: maker.as_ref().and_then(|m| m.af_area_setting),
     };
     quirks::apply(&mut meta);
     Ok(meta)

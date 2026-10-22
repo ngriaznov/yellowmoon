@@ -11154,6 +11154,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ym-compose"
+version = "0.1.13"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "ym-core"
 version = "0.1.13"
 dependencies = [
@@ -11169,6 +11178,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ym-color",
+ "ym-compose",
  "ym-export",
  "ym-gpu",
  "ym-looks",

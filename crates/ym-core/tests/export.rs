@@ -161,6 +161,7 @@ fn crop_of(x: f64, y: f64, w: f64, h: f64) -> SettingsPatch {
             },
             angle_deg: 0.0,
             aspect: CropAspect::Free,
+            auto: false,
         })),
         ..SettingsPatch::default()
     }
@@ -764,6 +765,7 @@ fn a_dng_with_a_straighten_angle_bakes_the_angle_and_the_crop_into_the_pixels() 
                 },
                 angle_deg: 3.0,
                 aspect: CropAspect::Free,
+                auto: false,
             })),
             ..SettingsPatch::default()
         },

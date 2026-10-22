@@ -68,6 +68,8 @@ export const commands = {
 	histogram: (photoId: PhotoId) => __TAURI_INVOKE<HistogramData>("histogram", { photoId }),
 	/**  `chroma_scatter(photo_id)`: the photo's colours at the colour warp's input, for its plane. */
 	chromaScatter: (photoId: PhotoId) => __TAURI_INVOKE<ChromaScatter>("chroma_scatter", { photoId }),
+	/**  `suggest_crop(photo_id, aspect, orientation)`: Auto crop's proposal (`docs/20-auto-crop.md` §3). */
+	suggestCrop: (photoId: PhotoId, aspect: CropAspect, orientation: 0 | 90 | 180 | 270) => __TAURI_INVOKE<CropSuggestion>("suggest_crop", { photoId, aspect, orientation }),
 	/**  `viewport_info()` (addition): which backend draws the photo, `native` or `fallback`. */
 	viewportInfo: () => __TAURI_INVOKE<ViewportInfo>("viewport_info"),
 	/**  `viewport_set_rect(rect)`: where the photo cell is. */
@@ -664,6 +666,8 @@ export type Crop = {
 	angle_deg: number,
 	/**  The aspect preset the frame follows. */
 	aspect: CropAspect,
+	/**  The rect and angle came from Auto crop (`docs/20-auto-crop.md` §2); absent is false. */
+	auto?: boolean,
 };
 
 /**  Crop aspect presets: Free, Original, 1:1, 4:5, 16:9. */
@@ -678,6 +682,28 @@ export type CropAspect =
 "four_by_five" | 
 /**  16:9. */
 "sixteen_by_nine";
+
+/**  One frame Auto crop proposes. */
+export type CropFrame = {
+	/**  The frame, as `Crop.rect`. */
+	rect: NormRect,
+	/**  Its score (0 for the kept frame). */
+	score: number,
+};
+
+/**  What Auto crop proposes for a photo, an aspect and an orientation (`suggest_crop`). */
+export type CropSuggestion = {
+	/**  The straightener's answer. */
+	straighten: StraightenKind,
+	/**  The straighten angle the frames are made for: 0 unless `straighten` is `rotate`. */
+	angle_deg: number,
+	/**  Best first, at most 3, never empty. */
+	frames: CropFrame[],
+	/**  The first frame is the largest frame of the aspect at that angle. */
+	keep: boolean,
+	/**  Where the subject came from. */
+	subject: SubjectSource,
+};
 
 /**  Luma plus R, G and B curves, 2 to 16 control points `[x, y]` within [0, 1]² each. */
 export type Curves = {
@@ -1847,6 +1873,22 @@ export type SourceRecognition = {
 	/**  What it is. */
 	recognition: Recognition,
 };
+
+/**  The straightener's answer (`docs/20-auto-crop.md` §3). */
+export type StraightenKind = 
+/**  Within 0.2° of level. */
+"level" | 
+/**  Levelled by the suggestion's angle. */
+"rotate" | 
+/**  No horizon or verticals that agree, or a tilt beyond 10°. */
+"unsure";
+
+/**  Where Auto crop's subject came from. */
+export type SubjectSource = 
+/**  The camera's focus point. */
+"camera" | 
+/**  The picture alone. */
+"picture";
 
 /**
  *  `thumbnail_ready { id, url }`: the photo's thumbnail, a PNG of at most 240 px on its long edge,

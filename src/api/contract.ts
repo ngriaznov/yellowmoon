@@ -52,6 +52,7 @@ export type FromCore = AllTrue<{
   pixelSample: Assignable<B.PixelSample, T.PixelSample>;
   histogramData: Assignable<B.HistogramData, T.HistogramData>;
   chromaScatter: Assignable<B.ChromaScatter, T.ChromaScatter>;
+  cropSuggestion: Assignable<B.CropSuggestion, T.CropSuggestion>;
   chromaSample: Assignable<B.ChromaSample, T.ChromaSample>;
   exportEstimate: Assignable<B.ExportEstimate, T.ExportEstimate>;
   cliLinkResult: Assignable<B.CliLinkResult, T.CliLinkResult>;

@@ -131,6 +131,7 @@ These are fixed unless new evidence turns up. The reasoning is in `research/`.
 | Licences | `docs/14-licensing.md`, `NOTICE` |
 | The GPU path | `docs/17-gpu.md` |
 | Apple Auto | `docs/19-apple-auto.md` |
+| Auto crop | `docs/20-auto-crop.md` |
 | Task plan | `docs/15-milestones.md` |
 | Risks and open decisions | `docs/16-risks-and-decisions.md` |
 | Progress | `docs/STATUS.md` |

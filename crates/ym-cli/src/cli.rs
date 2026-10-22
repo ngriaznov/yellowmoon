@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use ym_core::apple_auto::AppleAutoMode;
+use ym_core::settings::CropAspect;
 use ym_core::version::{PIPELINE_VERSION, app_version};
 use ym_export::{BitDepth, ColorSpace, FormatKind, TiffCompression};
 
@@ -587,6 +588,31 @@ pub struct InfoArgs {
     /// (at most 2000 characters; an empty file is the default instructions).
     #[arg(long, value_name = "FILE")]
     pub apple_auto_instructions: Option<PathBuf>,
+    /// Also print Auto crop's proposal: the straighten angle and the frame for an aspect (original, free, 1:1,
+    /// 4:5 or 16:9; original when none is given), for the photo as the camera turned it.
+    #[arg(
+        long,
+        value_name = "ASPECT",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "original",
+        value_parser = parse_crop_aspect
+    )]
+    pub suggest_crop: Option<CropAspect>,
+}
+
+/// An Auto crop aspect as `ym info --suggest-crop` takes it (`docs/20-auto-crop.md` §8).
+fn parse_crop_aspect(text: &str) -> Result<CropAspect, String> {
+    match text.trim().to_ascii_lowercase().as_str() {
+        "original" => Ok(CropAspect::Original),
+        "free" => Ok(CropAspect::Free),
+        "1:1" | "square" => Ok(CropAspect::Square),
+        "4:5" | "5:4" => Ok(CropAspect::FourByFive),
+        "16:9" | "9:16" => Ok(CropAspect::SixteenByNine),
+        other => Err(format!(
+            "{other} is not an aspect. Use original, free, 1:1, 4:5 or 16:9."
+        )),
+    }
 }
 
 /// Arguments of `ym doctor`.

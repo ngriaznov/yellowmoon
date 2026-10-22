@@ -114,9 +114,12 @@ use crate::auto::{
     AutoError, AutoEstimates, AutoInputs, IlluminantModels, NoisePool, POOL_MAX_FILES, burst_frame,
     meta_image_size, noise_prior, pick_white_sample, pool_key, tables_of,
 };
+use crate::auto_crop::{CropSuggestion, camera_hint, suggestion};
 use crate::camera::{CameraCard, CameraInfo, PhotoCamera};
 use crate::data_dir::{DataDirError, find_data_dir};
-use crate::settings::{DevelopSettings, ResolvedSettings, SettingsError, SettingsPatch};
+use crate::settings::{
+    CropAspect, DevelopSettings, Orientation, ResolvedSettings, SettingsError, SettingsPatch,
+};
 
 /// How many decoded mosaics the session keeps: the current photo, the previous and the next
 /// (`docs/01` section Scheduling and threads).
@@ -532,6 +535,9 @@ pub enum SessionError {
     /// The data folder could not be found or read.
     #[error("{0}")]
     Data(String),
+    /// Auto crop could not look at the photo (`docs/20-auto-crop.md` §3).
+    #[error("Couldn't suggest a frame for this photo: {0}")]
+    AutoCrop(String),
 }
 
 impl From<DataDirError> for SessionError {
@@ -682,6 +688,10 @@ pub struct SessionEnv {
     /// Apple Auto, when the app or `ym` gives an advisor (`docs/19`); `None` everywhere else, which
     /// is Apple Auto off.
     pub apple_auto: Option<AppleAutoEnv>,
+    /// The renderer of the picture Auto crop looks at (`docs/20-auto-crop.md` §4), the same as
+    /// Apple Auto's. Without it Auto crop uses Apple Auto's renderer, and without either it is not
+    /// available.
+    pub pictures: Option<Arc<dyn PictureRenderer>>,
 }
 
 /// The decode pool size: `min(available_parallelism - 2, 6)`, at least one.
@@ -733,6 +743,7 @@ impl SessionEnv {
             decode_threads: default_decode_threads(),
             forced_profile: None,
             apple_auto: None,
+            pictures: None,
         })
     }
 
@@ -771,6 +782,13 @@ impl SessionEnv {
     #[must_use]
     pub fn with_apple_auto(mut self, apple: AppleAutoEnv) -> Self {
         self.apple_auto = Some(apple);
+        self
+    }
+
+    /// Gives Auto crop the renderer of its pictures (`docs/20-auto-crop.md` §4).
+    #[must_use]
+    pub fn with_pictures(mut self, pictures: Arc<dyn PictureRenderer>) -> Self {
+        self.pictures = Some(pictures);
         self
     }
 
@@ -1032,6 +1050,9 @@ struct Photo {
     /// Apple Auto moved the photo's values before its first thumbnail was out: the development job
     /// renders the thumbnail again when it is done.
     repaint: bool,
+    /// Auto crop's analysis of the photo's picture, with the `own_gen` it was made for
+    /// ([`Session::suggest_crop`]); in memory only.
+    crop_analysis: Option<(u64, Arc<ym_compose::Analysis>)>,
 }
 
 /// The session's Apple Auto switches and what the worker is doing.
@@ -2809,6 +2830,29 @@ impl Session {
         self.settings(id)
     }
 
+    // --- Auto crop ---------------------------------------------------------------------------
+
+    /// Auto crop's proposal for a photo at an aspect and the user's orientation
+    /// (`docs/20-auto-crop.md` §3). The first call for a photo renders its picture and analyses it
+    /// (the analysis is kept in memory until Re-run changes the photo's own estimates); later calls
+    /// only make the frames. The same file, settings and version give the same answer in the app and
+    /// `ym`.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::UnknownPhoto`], [`SessionError::Skipped`], [`SessionError::NotReady`] while
+    /// the photo develops, [`SessionError::Decode`], and [`SessionError::AutoCrop`] when there is
+    /// no picture renderer or the picture cannot be made.
+    pub fn suggest_crop(
+        &self,
+        id: PhotoId,
+        aspect: CropAspect,
+        orientation: Orientation,
+    ) -> Result<CropSuggestion, SessionError> {
+        let analysis = self.inner.crop_analysis(id)?;
+        Ok(suggestion(&analysis, aspect, orientation))
+    }
+
     // --- Pixels ------------------------------------------------------------------------------
 
     /// The decoded raw image of a photo: from the cache when it is there, else decoded now (and
@@ -3107,6 +3151,74 @@ impl Drop for Session {
 // ---------------------------------------------------------------------------------------------
 
 impl Inner {
+    /// Auto crop's analysis of a photo: kept from an earlier call while the photo's own estimates
+    /// are the same, else made from its picture now (`docs/20-auto-crop.md` §4).
+    fn crop_analysis(&self, id: PhotoId) -> Result<Arc<ym_compose::Analysis>, SessionError> {
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        let (camera, profile, own, generation, meta, incarnation) = {
+            let st = lock(&self.state);
+            let p = st.photo(id).ok_or(SessionError::UnknownPhoto(id))?;
+            if let PhotoStatus::Skipped { reason } = &p.summary.status {
+                return Err(SessionError::Skipped(reason.clone()));
+            }
+            if let Some((generation, analysis)) = &p.crop_analysis
+                && *generation == p.own_gen
+            {
+                return Ok(Arc::clone(analysis));
+            }
+            let (Some(camera), Some(profile), Some(own), Some(meta)) =
+                (&p.camera, &p.profile, &p.own, &p.meta)
+            else {
+                return Err(SessionError::NotReady(id));
+            };
+            (
+                camera.clone(),
+                Arc::clone(profile),
+                Arc::clone(own),
+                p.own_gen,
+                Arc::clone(meta),
+                p.incarnation,
+            )
+        };
+        let pictures = self
+            .env
+            .pictures
+            .clone()
+            .or_else(|| {
+                self.env
+                    .apple_auto
+                    .as_ref()
+                    .map(|a| Arc::clone(&a.pictures))
+            })
+            .ok_or_else(|| SessionError::AutoCrop("there is no picture renderer".to_owned()))?;
+        let raw = self.raw_image(id)?;
+        let cancelled = || !self.live(epoch);
+        let picture = catch_panic(|| {
+            pictures.render(&PictureInput {
+                id,
+                raw: &raw,
+                camera: &camera,
+                profile: &profile,
+                estimates: &own,
+                cancelled: &cancelled,
+            })
+        })
+        .map_err(SessionError::AutoCrop)?;
+        let picture = ym_compose::Picture::new(picture.width, picture.height, &picture.rgb)
+            .map_err(|e| SessionError::AutoCrop(e.to_string()))?;
+        let analysis = Arc::new(ym_compose::analyse(&picture, &camera_hint(&meta)));
+        let mut st = lock(&self.state);
+        if self.live(epoch)
+            && let Some(&i) = st.index.get(&id)
+            && let Some(p) = st.photos.get_mut(i)
+            && p.incarnation == incarnation
+            && p.own_gen == generation
+        {
+            p.crop_analysis = Some((generation, Arc::clone(&analysis)));
+        }
+        Ok(analysis)
+    }
+
     fn live(&self, epoch: u64) -> bool {
         !self.shutdown.load(Ordering::SeqCst) && self.epoch.load(Ordering::SeqCst) == epoch
     }
@@ -3244,6 +3356,7 @@ impl Inner {
                     apple_pending_sent: false,
                     served: None,
                     repaint: false,
+                    crop_analysis: None,
                 }
             }
             Err(error) => Photo {
@@ -3285,6 +3398,7 @@ impl Inner {
                 apple_pending_sent: false,
                 served: None,
                 repaint: false,
+                crop_analysis: None,
             },
         }
     }

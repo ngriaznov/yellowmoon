@@ -259,6 +259,7 @@ fn a_then_b_then_a(gpu: &Arc<Gpu>, resident: bool) {
                     },
                     angle_deg: 4.0,
                     aspect: CropAspect::Free,
+                    auto: false,
                 })),
                 ..SettingsPatch::default()
             },

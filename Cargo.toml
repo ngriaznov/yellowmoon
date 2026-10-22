@@ -15,6 +15,7 @@ members = [
     "crates/ym-export",
     "crates/ym-cli",
     "crates/ym-apple",
+    "crates/ym-compose",
     "src-tauri",
     "tools/oracle",
     "tools/golden",
@@ -42,6 +43,7 @@ ym-looks = { path = "crates/ym-looks", version = "0.1.13" }
 ym-export = { path = "crates/ym-export", version = "0.1.13" }
 ym-cli = { path = "crates/ym-cli", version = "0.1.13" }
 ym-apple = { path = "crates/ym-apple", version = "0.1.13" }
+ym-compose = { path = "crates/ym-compose", version = "0.1.13" }
 
 # Errors, serialization, numerics.
 thiserror = "2"

@@ -51,8 +51,8 @@ use crate::preferences::{
     PreferencesStore, own_instructions,
 };
 use crate::session::{
-    AppleAutoEnv, ApplyScope, EventSink, PasteReport, PhotoId, RemoveOutcome, RestoreOutcome,
-    Session, SessionEnv, SessionError, default_decode_threads,
+    AppleAutoEnv, ApplyScope, EventSink, PasteReport, PhotoId, PictureRenderer, RemoveOutcome,
+    RestoreOutcome, Session, SessionEnv, SessionError, default_decode_threads,
 };
 use crate::settings::SettingsPatch;
 
@@ -237,15 +237,20 @@ impl Core {
         if let Some(profile) = &options.forced_profile {
             env = env.with_forced_profile(profile)?;
         }
+        // The pictures Apple Auto's model and Auto crop look at come from a renderer of their own,
+        // without the device, so they are the CPU reference path's bytes whatever the GPU policy
+        // (`docs/19` section 3, `docs/20` section 4).
+        let pictures: Arc<dyn PictureRenderer> = Arc::new(AdvisorPictures::new(
+            env.reference_look.clone(),
+            &renderer.options(),
+        )?);
+        env = env.with_pictures(Arc::clone(&pictures));
         if let Some(advisor) = options.advisor {
-            // The model's pictures come from a renderer of their own, without the device, so they
-            // are the CPU reference path's bytes whatever the GPU policy (`docs/19` section 3).
-            let pictures = AdvisorPictures::new(env.reference_look.clone(), &renderer.options())?;
             env = env.with_apple_auto(AppleAutoEnv {
                 preference: preferences.get().apple_auto,
                 mode: options.apple_auto,
                 instructions: own.clone(),
-                ..AppleAutoEnv::new(advisor, Arc::new(pictures))
+                ..AppleAutoEnv::new(advisor, pictures)
             });
         }
         let session = Arc::new(Session::new(env));

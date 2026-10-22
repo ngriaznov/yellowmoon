@@ -126,6 +126,7 @@ fn every_layout_with_lens_tables_and_a_turn_renders() {
             },
             angle_deg: -13.0,
             aspect: CropAspect::Free,
+            auto: false,
         });
         exercise(&d.source().with_settings(s), &format!("exif {exif}"));
     }
@@ -180,6 +181,7 @@ fn an_extreme_straighten_and_a_sliver_of_a_crop_still_render() {
             rect,
             angle_deg: angle,
             aspect: CropAspect::Free,
+            auto: false,
         });
         let src = d.source().with_settings(s);
         let (w, h) = r.final_size(&src, &cancel).expect("size");

@@ -388,6 +388,7 @@ fn a_crop_at_a_fractional_origin_is_a_window_of_whole_pixels_in_the_export_and_a
             },
             angle_deg: 0.0,
             aspect: CropAspect::Free,
+            auto: false,
         })
     });
     let full = r
@@ -481,6 +482,7 @@ fn a_thumbnail_of_a_small_crop_is_made_from_an_image_that_has_the_detail() {
             },
             angle_deg: 0.0,
             aspect: CropAspect::Free,
+            auto: false,
         })
     });
     let r = Renderer::neutral_only().expect("render thread");
@@ -662,6 +664,7 @@ fn the_dng_raw_pixels_keep_the_cameras_orientation_and_the_crop_becomes_a_window
             },
             angle_deg: 0.0,
             aspect: CropAspect::Free,
+            auto: false,
         });
     };
     // Camera on its side (EXIF 6, a quarter turn clockwise) and the user turns it another quarter:
@@ -758,6 +761,7 @@ fn a_dng_with_a_straighten_angle_bakes_the_angle_and_the_crop_but_not_the_turns(
             },
             angle_deg: 9.0,
             aspect: CropAspect::Free,
+            auto: false,
         });
     });
     let baked = full(&r, &src, FullTarget::DisplayLinear(OutputTarget::Srgb));
@@ -794,6 +798,7 @@ fn a_dng_with_a_straighten_angle_bakes_the_angle_and_the_crop_but_not_the_turns(
             rect: NormRect::FULL,
             angle_deg: 9.0,
             aspect: CropAspect::Original,
+            auto: false,
         });
     });
     let preview = full(&r, &whole, FullTarget::DngPreview);
@@ -989,6 +994,7 @@ fn a_renderer_that_remembers_draws_the_pictures_of_one_that_does_not() {
                         20.0 * unit() - 10.0
                     },
                     aspect: CropAspect::Free,
+                    auto: false,
                 });
                 what = "crop".into();
             }
@@ -1104,6 +1110,7 @@ fn threads_asking_for_different_pictures_of_one_photo_each_get_their_own() {
                         },
                         angle_deg: i as f64,
                         aspect: CropAspect::Free,
+                        auto: false,
                     })
                 }
             }

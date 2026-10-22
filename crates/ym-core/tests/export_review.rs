@@ -640,6 +640,7 @@ fn a_dngs_window_preview_and_orientation_tag_agree_with_the_baked_export_for_eve
                             },
                             angle_deg: 0.0,
                             aspect: CropAspect::Free,
+                            auto: false,
                         })),
                         ..SettingsPatch::default()
                     },

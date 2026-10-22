@@ -883,6 +883,11 @@ pub struct Crop {
     pub angle_deg: f64,
     /// The aspect preset the frame follows.
     pub aspect: CropAspect,
+    /// The rect and angle came from Auto crop and follow it while the Crop panel is open
+    /// (`docs/20-auto-crop.md` §2). Rendering never reads it. JSON: absent is `false`, and `false`
+    /// is not written.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto: bool,
 }
 
 /// Orientation applied after the camera's EXIF orientation: a number of quarter turns, clockwise.
