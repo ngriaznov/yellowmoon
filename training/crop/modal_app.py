@@ -110,6 +110,9 @@ class Labeller:
         """FrameLite's crops for one chunk, written to `labels/<chunk>.json`. Returns the photos, how many crops are
         valid, the teacher's own seconds summed over the photos, and this call's seconds (both for the budget)."""
         t0 = time.time()
+        # Other containers' chunks are only visible after a reload: without it, a warm container labels again what
+        # another one already paid for (it did on 2026-10-23, after the orchestrator was restarted).
+        volume.reload()
         path = ROOT / "data" / name / "labels" / f"{chunk:05d}.json"
         if path.exists():
             labels = json.loads(path.read_text())
@@ -143,7 +146,7 @@ def build_arrays(name: str) -> int:
     return n
 
 
-@app.function(image=gpu_image, gpu=GPU, volumes={"/vol": volume}, **TRAIN, timeout=3 * 3600)
+@app.function(image=gpu_image, gpu=GPU, volumes={"/vol": volume}, **TRAIN, timeout=90 * 60)
 def train_student(name: str, run: str, config: dict) -> dict:
     """Trains one student on a local copy of the arrays; writes `runs/<run>/`."""
     from training.crop.train import train
@@ -182,17 +185,26 @@ def run_pilot(n: int, seed: int, subset: str, curve: str, epochs: int, budget: f
     from training.crop.train import DEFAULTS
 
     t_start = time.time()
-    ledger = Ledger(budget)
+    name = f"{subset}-{n}-s{seed}"
+    # Modal retries an input whose container is preempted; the spend so far is kept on the volume so that the retry
+    # counts it instead of starting again from zero (on 2026-10-23 a restart did, and the $20 applied twice).
+    ledger_path = ROOT / "data" / name / "ledger.json"
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    volume.reload()
+    ledger = Ledger.resume(budget, ledger_path)
+    if ledger.spent:
+        print(f"resumed: ${ledger.spent:.2f} already spent by an earlier attempt (estimate)", flush=True)
     sizes = [int(s) for s in curve.split(",")]
     reserve = training_reserve(len(sizes), max_minutes, _rate(TRAIN, gpu=True)) + 1800 * _rate(BUILD)
     print(f"budget ${budget:.2f}; training and arrays reserved ${reserve:.2f}", flush=True)
 
     def check(stage: str) -> None:
+        ledger.save(ledger_path)
+        volume.commit()
         print(f"{stage}: spent ${ledger.spent:.2f} of ${budget:.2f} (estimate)", flush=True)
         if ledger.spent > budget:
             raise BudgetExceeded(f"estimated spend ${ledger.spent:.2f} passed the budget ${budget:.2f} at {stage}")
 
-    name = f"{subset}-{n}-s{seed}"
     t = time.time()
     ids = prepare.remote(name, subset, n, seed)
     ledger.charge("prepare", time.time() - t, _rate(PREPARE))
@@ -230,6 +242,8 @@ def run_pilot(n: int, seed: int, subset: str, curve: str, epochs: int, budget: f
         labelled += got["photos"]
         ledger.charge(f"labelling chunk {k + 2}", got["call_seconds"], label_rate)
         print(f"labelled chunk {k + 2}/{1 + len(todo)}: {valid} valid crops so far", flush=True)
+        ledger.save(ledger_path)
+        volume.commit()
         if ledger.spent + reserve > budget * 1.05:
             raise BudgetExceeded(f"labelling ran over its share: ${ledger.spent:.2f} spent, ${reserve:.2f} reserved")
 
@@ -255,6 +269,42 @@ def run_pilot(n: int, seed: int, subset: str, curve: str, epochs: int, budget: f
               "seconds_per_photo": round(per_photo, 3), "spend": ledger.report()}
     print(json.dumps(report["spend"]), flush=True)
     return report
+
+
+@app.function(image=gpu_image, volumes={"/vol": volume}, **ORCHESTRATE, timeout=4 * 3600)
+def run_training(name: str, curve: str, epochs: int, budget: float, max_minutes: float, seed: int) -> dict:
+    """Builds the arrays from the labels already on the volume and trains the student at each size of `curve`
+    (0 = every labelled photo); labels nothing. Refuses to start when the most the runs can cost (each stopped at
+    `max_minutes`, the function's own timeout behind it) passes `budget`."""
+    from training.crop.train import DEFAULTS
+
+    sizes = [int(s) for s in curve.split(",")]
+    worst = training_reserve(len(sizes), max_minutes, _rate(TRAIN, gpu=True)) + 1800 * _rate(BUILD) * 1.25
+    print(f"at most ${worst:.2f} for {len(sizes)} run(s) of up to {max_minutes:.0f} minutes; budget ${budget:.2f}",
+          flush=True)
+    if worst > budget:
+        raise BudgetExceeded(f"the training could cost up to ${worst:.2f}, more than the budget ${budget:.2f}")
+    in_arrays = build_arrays.remote(name)
+    print(f"{in_arrays} labelled photos in the training arrays", flush=True)
+    runs = []
+    for size in sizes:
+        if size and size >= in_arrays:
+            continue
+        config = {**DEFAULTS, "seed": seed, "epochs": epochs, "n_train": size or None, "device": "cuda",
+                  "max_minutes": max_minutes}
+        runs.append((name, f"{name}-n{size or 'all'}-e{epochs}", config))
+    out = {}
+    for (_, run, _), metrics in zip(runs, train_student.starmap(runs)):
+        out[run] = {k: v for k, v in metrics.items() if k != "history"}
+        print(run, json.dumps(out[run]), flush=True)
+    return {"runs": out, "photos_in_arrays": in_arrays}
+
+
+@app.local_entrypoint()
+def train_labelled(name: str = "train-20000-s1", curve: str = "0", epochs: int = 40, budget: float = 3.0,
+                   max_minutes: float = 30.0, seed: int = 1) -> None:
+    """Runs `run_training` remotely: the student on the labels already paid for, nothing labelled."""
+    print(json.dumps(run_training.remote(name, curve, epochs, budget, max_minutes, seed), indent=1))
 
 
 @app.local_entrypoint()

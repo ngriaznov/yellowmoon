@@ -4,6 +4,8 @@ spent, from Modal's published prices and how long each call took, and labels onl
 leaves room for once the training is paid for. Modal's dashboard is the real bill; this keeps the run well inside it.
 """
 
+import json
+
 #: Modal's prices on 2026-10-23 (modal.com/pricing), in dollars per second.
 L4_PER_S = 0.000222
 CPU_CORE_PER_S = 0.0000131
@@ -37,6 +39,20 @@ class Ledger:
 
     def report(self) -> dict:
         return {"budget": self.budget, "spent_estimate": round(self.spent, 2), "items": self.items}
+
+    def save(self, path) -> None:
+        """Writes the spend so far, so that a restarted run (Modal retries a preempted input) carries it on."""
+        path.write_text(json.dumps({"spent": self.spent, "items": self.items}))
+
+    @classmethod
+    def resume(cls, budget: float, path) -> "Ledger":
+        """A ledger that starts from the spend a previous attempt of the same run saved at `path`, if any."""
+        ledger = cls(budget)
+        if path.exists():
+            saved = json.loads(path.read_text())
+            ledger.spent = float(saved["spent"])
+            ledger.items = [tuple(i) for i in saved["items"]]
+        return ledger
 
 
 def photos_to_label(left: float, reserve: float, seconds_per_photo: float, per_second: float, wanted: int,

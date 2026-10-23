@@ -30,7 +30,10 @@ jobs:
       # Modal's tokens never contain whitespace) and exports the clean values as MODAL_TOKEN_ID and MODAL_TOKEN_SECRET.
       SECRET_MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       SECRET_MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      PILOT_ARGS: --n 20000 --curve 5000,10000,0 --epochs 40 --budget 20 --max-minutes 40 --max-label-hours 3.5
+      # ENTRY is the modal_app entrypoint: `pilot` (label, then train) or `train_labelled` (train on the labels already
+      # on the volume, label nothing). Every change here needs the owner's yes first: their Modal limit is $30.
+      ENTRY: train_labelled
+      PILOT_ARGS: --curve 0 --epochs 40 --max-minutes 30 --budget 3
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
@@ -52,7 +55,7 @@ jobs:
       # package when an app starts and fails if a file under it changes meanwhile.
       - name: Pilot
         shell: bash
-        run: modal run -m training.crop.modal_app::pilot $PILOT_ARGS 2>&1 | tee "$RUNNER_TEMP/pilot.log"
+        run: modal run -m training.crop.modal_app::$ENTRY $PILOT_ARGS 2>&1 | tee "$RUNNER_TEMP/pilot.log"
       - name: Fetch the results from the volume
         if: always()
         run: modal run -m training.crop.modal_app::fetch --dest "$RUNNER_TEMP/runs"

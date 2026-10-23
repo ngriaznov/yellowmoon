@@ -108,3 +108,14 @@ def test_training_stops_at_max_minutes_with_the_best_epoch_saved(tmp_path):
     config = {**DEFAULTS, "epochs": 1000, "batch": 8, "device": "cpu", "max_minutes": 0.01}
     m = train(tmp_path / "arrays", tmp_path / "run", config)
     assert 1 <= m["epochs_run"] < 1000 and (tmp_path / "run" / "model.pt").exists()
+
+
+def test_a_restarted_run_keeps_counting_its_spend(tmp_path):
+    path = tmp_path / "ledger.json"
+    first = budget.Ledger.resume(20.0, path)
+    assert first.spent == 0
+    first.charge("labelling", 3600, budget.rate(True, 2, 8))
+    first.save(path)
+    again = budget.Ledger.resume(20.0, path)
+    assert again.spent == pytest.approx(first.spent) and again.items == first.items
+    assert again.left() == pytest.approx(20.0 - first.spent)
