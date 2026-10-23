@@ -5,11 +5,12 @@ import pytest
 import torch
 from PIL import Image
 
-from training.crop import budget, data, openimages
+from training.crop import boxes, budget, data, openimages, pretrain
 from training.crop.data import letterbox
-from training.crop.model import CropNet, iou, parameters
+from training.crop.model import (BINS, CropNet, bin_target, box_from_numbers, decode_bins, iou, numbers_from_box,
+                                 parameters)
 from training.crop.predict import closest, frames
-from training.crop.train import DEFAULTS, split, train
+from training.crop.train import DEFAULTS, load_backbone, split, train
 
 
 def row(i, licence=openimages.CC_BY_2, rotation="0.0"):
@@ -119,3 +120,83 @@ def test_a_restarted_run_keeps_counting_its_spend(tmp_path):
     again = budget.Ledger.resume(20.0, path)
     assert again.spent == pytest.approx(first.spent) and again.items == first.items
     assert again.left() == pytest.approx(20.0 - first.spent)
+
+
+def test_the_bins_head_gives_back_its_targets_and_picks_a_mode():
+    p = torch.tensor([[0.0, 0.37, 0.981, 1.0]])
+    soft = bin_target(p)
+    assert soft.shape == (1, 4, BINS) and torch.allclose(soft.sum(-1), torch.ones(1, 4))
+    assert torch.allclose(decode_bins(torch.log(soft + 1e-12)), p, atol=1e-5)
+    # 60 % on "no crop" (0) and 40 % on a firm crop (0.5): the answer is one of them, not the 0.2 between.
+    prob = torch.zeros(1, 4, BINS)
+    prob[..., 0], prob[..., BINS // 2] = 0.6, 0.4
+    assert torch.allclose(decode_bins(torch.log(prob + 1e-12)), torch.zeros(1, 4), atol=1e-5)
+
+
+def test_the_numbers_and_the_box_are_one_to_one():
+    box = torch.tensor([[0.1, 0.2, 0.7, 0.9], [0.0, 0.0, 1.0, 1.0]])
+    assert torch.allclose(box_from_numbers(numbers_from_box(box)), box, atol=1e-6)
+    out = CropNet(head="bins").eval()(torch.rand(2, 3, 256, 256))
+    assert torch.all(out[:, 0] <= out[:, 2]) and torch.all(out[:, 1] <= out[:, 3])
+
+
+def test_maps_cover_the_boxes_in_the_letterboxed_square():
+    content = np.array([0.0, 0.25, 1.0, 0.75])  # a 2:1 landscape photo
+    channels = {"person": {"/m/p"}, "face": set(), "animal": {"/m/a"}, "vehicle": set(), "building": set()}
+    m = boxes.box_maps([["/m/p", 0.5, 1.0, 0.0, 1.0]], content, channels, size=16)
+    assert m.shape == (len(boxes.CHANNELS), 16, 16)
+    obj, person, animal = m[0], m[boxes.CHANNELS.index("person")], m[boxes.CHANNELS.index("animal")]
+    assert np.all(obj[4:12, 8:] == 255) and obj[:4].sum() == 0 and obj[12:].sum() == 0 and obj[:, :8].sum() == 0
+    assert np.array_equal(person, obj) and animal.sum() == 0
+    half = boxes.box_maps([["/m/a", 0.0, 1 / 32, 0.0, 1.0]], content, channels, size=16)
+    assert half[0, 4, 0] == 128  # half of the cell's width
+
+
+def test_channels_follow_subcategories_not_parts():
+    names = {"/m/p": "Person", "/m/w": "Woman", "/m/f": "Human face", "/m/h": "Human head", "/m/a": "Animal",
+             "/m/d": "Dog", "/m/v": "Vehicle", "/m/b": "Building", "/m/x": "Wheel"}
+    tree = {"LabelName": "/m/root", "Subcategory": [
+        {"LabelName": "/m/p", "Subcategory": [{"LabelName": "/m/w"}], "Part": [{"LabelName": "/m/f"}]},
+        {"LabelName": "/m/f"}, {"LabelName": "/m/h"},
+        {"LabelName": "/m/a", "Subcategory": [{"LabelName": "/m/d"}]},
+        {"LabelName": "/m/v", "Part": [{"LabelName": "/m/x"}]}, {"LabelName": "/m/b"},
+    ]}
+    ch = boxes.channel_classes(tree, names)
+    assert ch["person"] == {"/m/p", "/m/w"} and ch["face"] == {"/m/f", "/m/h"}
+    assert ch["animal"] == {"/m/a", "/m/d"} and ch["vehicle"] == {"/m/v"}
+    bits = boxes.class_bits([["/m/d", 0, 1, 0, 1], ["/m/zz", 0, 1, 0, 1]], {m: i for i, m in enumerate(names)})
+    assert np.unpackbits(bits)[: len(names)].tolist() == [0, 0, 0, 0, 0, 1, 0, 0, 0]
+
+
+def test_a_pretrained_backbone_starts_the_student(tmp_path):
+    rng = np.random.default_rng(0)
+    root = tmp_path / "pre"
+    names = [f"/m/{i}" for i in range(10)]
+    (root / "arrays").mkdir(parents=True)
+    (root / "classes.json").write_text(__import__("json").dumps(names))
+    for k in range(2):
+        d = root / "arrays" / f"{k:05d}"
+        d.mkdir()
+        np.save(d / "images.npy", rng.integers(0, 255, (6, 256, 256, 3), dtype=np.uint8))
+        np.save(d / "maps.npy", rng.integers(0, 255, (6, len(boxes.CHANNELS), 16, 16), dtype=np.uint8))
+        np.save(d / "classes.npy", np.packbits(rng.integers(0, 2, (6, 10), dtype=np.uint8), axis=1))
+        (d / "ids.json").write_text(__import__("json").dumps([f"{k}{i:015x}" for i in range(6)]))
+    m = pretrain.train(root, tmp_path / "run", {**pretrain.DEFAULTS, "epochs": 1, "batch": 4, "device": "cpu"})
+    assert m["photos"]["train"] + m["photos"]["val"] == 12 and (tmp_path / "run" / "backbone.pt").exists()
+
+    student = CropNet(head="bins")
+    assert load_backbone(student, tmp_path / "run" / "backbone.pt") > 0
+    saved = torch.load(tmp_path / "run" / "backbone.pt", weights_only=True)
+    assert torch.equal(student.state_dict()["features.0.weight"], saved["features.0.weight"])
+
+    images = tmp_path / "images"
+    images.mkdir()
+    labels = {}
+    for i in range(16):
+        Image.fromarray(rng.integers(0, 255, (48, 64, 3), dtype=np.uint8)).save(images / f"p{i:02d}.jpg")
+        labels[f"p{i:02d}"] = {"crop": [0.1, 0.1, 0.9, 0.8]}
+    data.build(images, labels, tmp_path / "arrays")
+    config = {**DEFAULTS, "epochs": 2, "batch": 8, "device": "cpu", "head": "bins",
+              "init": str(tmp_path / "run" / "backbone.pt")}
+    out = train(tmp_path / "arrays", tmp_path / "student", config)
+    assert out["epochs_run"] == 2 and (tmp_path / "student" / "model.pt").exists()

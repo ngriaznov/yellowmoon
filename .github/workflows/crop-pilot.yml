@@ -30,10 +30,12 @@ jobs:
       # Modal's tokens never contain whitespace) and exports the clean values as MODAL_TOKEN_ID and MODAL_TOKEN_SECRET.
       SECRET_MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       SECRET_MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      # ENTRY is the modal_app entrypoint: `pilot` (label, then train) or `train_labelled` (train on the labels already
-      # on the volume, label nothing). Every change here needs the owner's yes first: their Modal limit is $30.
-      ENTRY: train_labelled
-      PILOT_ARGS: --curve 0 --epochs 40 --max-minutes 30 --budget 3
+      # ENTRY is the modal_app entrypoint: `pilot` (label, then train), `train_labelled` (train on the labels already
+      # on the volume, label nothing) or `improve` (stage A: pretraining on Open Images' boxes, the bins head and a
+      # learning curve; labels nothing). Every change here needs the owner's yes first: their Modal limit is $30
+      # (2026-10-23: "We can use remaining 13$ if this improves our model").
+      ENTRY: improve
+      PILOT_ARGS: --budget 6.5
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4

@@ -1,6 +1,8 @@
-"""Trains the crop student on the arrays of `data.py`: L1 on the crop's edges plus (1 - IoU), with horizontal flips
-and brightness and contrast jitter. Reports the validation IoU with the teacher next to two baselines (the whole
-photo, and the training set's mean crop) so that a student that learned only the average crop shows as such.
+"""Trains the crop student on the arrays of `data.py`: for the `box` head L1 on the crop's edges plus (1 - IoU), for
+the `bins` head the cross-entropy of each number's bins (`model.py`); horizontal flips and brightness and contrast
+jitter. `init` starts the student's features from a pretrained backbone (`pretrain.py`) instead of from scratch.
+Reports the validation IoU with the teacher next to two baselines (the whole photo, and the training set's mean crop)
+so that a student that learned only the average crop shows as such.
 
     python3 -m training.crop.train --arrays testdata/crop/smoke/arrays --out testdata/crop/runs/smoke \
         --epochs 2 --batch 8 --device cpu
@@ -16,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from training.crop.model import CropNet, iou, parameters
+from training.crop.model import CropNet, bin_target, box_from_numbers, iou, numbers_from_box, parameters
 
 
 def split(ids: list[str], val_share: float = 0.1) -> tuple[np.ndarray, np.ndarray]:
@@ -54,6 +56,28 @@ def evaluate(model, pix, target, idx, device, size: int = 256) -> np.ndarray:
     return np.concatenate(out) if out else np.zeros((0, 4), np.float32)
 
 
+def crop_loss(model: CropNet, raw: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """The loss of the head's raw output against the teacher's boxes (module docstring)."""
+    if model.kind == "box":
+        p = box_from_numbers(torch.sigmoid(raw))
+        return (p - target).abs().mean() + (1 - iou(p, target)).mean()
+    soft = bin_target(numbers_from_box(target))
+    return -(soft * torch.log_softmax(raw, dim=-1)).sum(-1).mean()
+
+
+def load_backbone(model: CropNet, path: Path) -> int:
+    """Copies the `features.*` weights of a pretrained backbone into `model`; returns how many tensors it copied."""
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    feats = {k: v for k, v in state.items() if k.startswith("features.")}
+    if not feats:
+        raise ValueError(f"{path} holds no backbone weights")
+    missing = [k for k in model.state_dict() if k.startswith("features.") and k not in feats]
+    if missing:
+        raise ValueError(f"{path} lacks {len(missing)} backbone tensors, e.g. {missing[0]}")
+    model.load_state_dict(feats, strict=False)
+    return len(feats)
+
+
 def train(arrays: Path, out: Path, config: dict) -> dict:
     """Trains one student; writes `model.pt`, `config.json` and `metrics.json` into `out` and returns the metrics."""
     torch.manual_seed(config["seed"])
@@ -65,7 +89,9 @@ def train(arrays: Path, out: Path, config: dict) -> dict:
     tr, va = split(ids)
     if config.get("n_train"):
         tr = np.sort(np.random.default_rng(config["seed"]).permutation(tr)[: config["n_train"]])
-    model = CropNet().to(device)
+    model = CropNet(head=config["head"]).to(device)
+    if config.get("init"):
+        load_backbone(model, Path(config["init"]))
     opt = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"])
     steps_per_epoch = max(1, len(tr) // config["batch"])
     # `plan` changes once, after the first epoch, if `max_minutes` leaves room for fewer epochs: the cosine then ends
@@ -96,9 +122,8 @@ def train(arrays: Path, out: Path, config: dict) -> dict:
         for s in range(steps_per_epoch):
             x, t = batch(pix, target, order[s * config["batch"]:(s + 1) * config["batch"]], rng, device)
             with torch.autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
-                p = model(x)
-            p = p.float()
-            loss = (p - t).abs().mean() + (1 - iou(p, t)).mean()
+                a = model.raw(x)
+            loss = crop_loss(model, a.float(), t)
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.step(opt)
@@ -134,10 +159,10 @@ def train(arrays: Path, out: Path, config: dict) -> dict:
 
 DEFAULTS = {
     "seed": 1, "epochs": 40, "batch": 128, "lr": 2e-3, "weight_decay": 0.05, "n_train": None, "device": "cuda",
-    "max_minutes": None,
+    "max_minutes": None, "head": "box", "init": None,
 }
 #: The command-line type of the options whose default is None.
-TYPES = {"n_train": int, "max_minutes": float}
+TYPES = {"n_train": int, "max_minutes": float, "init": str}
 
 
 def main() -> None:

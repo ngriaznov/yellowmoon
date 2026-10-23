@@ -55,7 +55,7 @@ def rect(box) -> dict:
 def predict(model_path: Path, images: list[Path]) -> dict:
     """`{"free": {stem: {"rect"}}, "1x1": ..., "16x9": ..., "4x5": ...}` for the images."""
     state = torch.load(model_path, map_location="cpu", weights_only=False)
-    model = CropNet()
+    model = CropNet(head=state.get("config", {}).get("head", "box"))
     model.load_state_dict(state["state_dict"])
     model.eval()
     out = {k: {} for k in ["free", *ASPECTS]}

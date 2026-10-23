@@ -47,6 +47,14 @@ LABEL = {"cpu": 2.0, "memory": 8192}
 BUILD = {"cpu": 4.0, "memory": 16384}
 TRAIN = {"cpu": 4.0, "memory": 16384}
 ORCHESTRATE = {"cpu": 0.25, "memory": 1024}
+PRE_INDEX = {"cpu": 2.0, "memory": 8192}
+PRE_CHUNK = {"cpu": 2.0, "memory": 4096}
+PRETRAIN = {"cpu": 4.0, "memory": 32768}
+#: Photos per pretraining download call, and how many of those calls run at once.
+PRE_CHUNK_PHOTOS = 2000
+PRE_CONTAINERS = 16
+#: The longest one pretraining download call may take (its timeout, and its worst case in the budget).
+PRE_CHUNK_SECONDS = 900
 
 
 def _rate(resources: dict, gpu: bool = False) -> float:
@@ -151,15 +159,56 @@ def train_student(name: str, run: str, config: dict) -> dict:
     """Trains one student on a local copy of the arrays; writes `runs/<run>/`."""
     from training.crop.train import train
 
+    t0 = time.time()
     volume.reload()
     out = ROOT / "runs" / run
     if (out / "metrics.json").exists():
-        return json.loads((out / "metrics.json").read_text())
+        return {**json.loads((out / "metrics.json").read_text()), "call_seconds": time.time() - t0}
     local = Path("/tmp/arrays")
     shutil.copytree(ROOT / "data" / name / "arrays", local, dirs_exist_ok=True)
     metrics = train(local, out, config)
     volume.commit()
-    return metrics
+    return {**metrics, "call_seconds": time.time() - t0}
+
+
+@app.function(image=cpu_image, volumes={"/vol": volume}, **PRE_INDEX, timeout=3600)
+def pre_index(pre: str, n: int, seed: int, crop_set: str) -> int:
+    """Selects the pretraining photos (none of the crop set's) and reads their boxes (`boxes.index`); returns the
+    number of download chunks."""
+    from training.crop import boxes
+
+    volume.reload()
+    exclude = {r["id"] for r in json.loads((ROOT / "data" / crop_set / "manifest.json").read_text())}
+    chunks = boxes.index("train", n, seed, PRE_CHUNK_PHOTOS, exclude, ROOT / "lists", ROOT / "pre" / pre)
+    volume.commit()
+    return chunks
+
+
+@app.function(image=cpu_image, volumes={"/vol": volume}, **PRE_CHUNK, timeout=PRE_CHUNK_SECONDS,
+              max_containers=PRE_CONTAINERS)
+def pre_chunk(pre: str, k: int) -> dict:
+    """Downloads one chunk of pretraining photos and writes its arrays (`boxes.build_chunk`)."""
+    from training.crop import boxes
+
+    t0 = time.time()
+    volume.reload()
+    n = boxes.build_chunk(ROOT / "pre" / pre, k, workers=48)
+    volume.commit()
+    return {"photos": n, "call_seconds": time.time() - t0}
+
+
+@app.function(image=gpu_image, gpu=GPU, volumes={"/vol": volume}, **PRETRAIN, timeout=60 * 60)
+def pretrain_backbone(pre: str, run: str, config: dict) -> dict:
+    """Pretrains the student's backbone on the boxes (`pretrain.train`); writes `runs/<run>/backbone.pt`."""
+    from training.crop import pretrain
+
+    t0 = time.time()
+    volume.reload()
+    out = ROOT / "runs" / run
+    if not (out / "metrics.json").exists():
+        pretrain.train(ROOT / "pre" / pre, out, config)
+        volume.commit()
+    return {**json.loads((out / "metrics.json").read_text()), "call_seconds": time.time() - t0}
 
 
 @app.function(image=cpu_image, volumes={"/vol": volume})
@@ -298,6 +347,135 @@ def run_training(name: str, curve: str, epochs: int, budget: float, max_minutes:
         out[run] = {k: v for k, v in metrics.items() if k != "history"}
         print(run, json.dumps(out[run]), flush=True)
     return {"runs": out, "photos_in_arrays": in_arrays}
+
+
+#: Modal charges a non-preemptible container more; this covers it (an assumption, on the safe side).
+NONPREEMPTIBLE = 3.0
+
+
+@app.function(image=gpu_image, volumes={"/vol": volume}, **ORCHESTRATE, timeout=5 * 3600, nonpreemptible=True)
+def run_improve(budget: float, crop_set: str, n_pre: int, seed: int, pre_epochs: int, pre_minutes: float,
+                epochs: int, ft_minutes: float) -> dict:
+    """Stage A of improving the student, on the labels already paid for (owner, 2026-10-23: "We can use remaining 13$
+    if this improves our model"): a learning curve from scratch, the `bins` head, and the backbone pretrained on Open
+    Images' boxes (`pretrain.py`) under both heads and at three sizes. Labels nothing. Refuses to start when the most
+    it can cost, every call at its time limit, passes `budget`; stops and cancels what is running if its own count
+    of the spend does. It is not preemptible, so it is not restarted half way (the pilot's was, 2026-10-23)."""
+    from training.crop.budget import MARGIN
+    from training.crop.train import DEFAULTS
+
+    t_start = time.time()
+    pre = f"oi-{n_pre}-s{seed}"
+    ledger_path = ROOT / "pre" / f"ledger-{pre}.json"
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    volume.reload()
+    ledger = Ledger.resume(budget, ledger_path)
+    backbone = f"pre-{pre}-e{pre_epochs}"
+    init = str(ROOT / "runs" / backbone / "backbone.pt")
+    train_rate = _rate(TRAIN, gpu=True)
+
+    def config(head: str, size: int, pretrained: bool) -> dict:
+        return {**DEFAULTS, "seed": 1, "epochs": epochs, "n_train": size or None, "device": "cuda",
+                "max_minutes": ft_minutes, "head": head, "init": init if pretrained else None,
+                "lr": 1e-3 if pretrained else DEFAULTS["lr"]}
+
+    def runs(pretrained: bool, plan) -> list[tuple[str, str, dict]]:
+        kind = "pre" if pretrained else "scratch"
+        return [(crop_set, f"ft-{kind}-{head}-n{size or 'all'}", config(head, size, pretrained)) for head, size in plan]
+
+    scratch = runs(False, [("box", 2700), ("box", 5400), ("bins", 0)])
+    pretrained = runs(True, [("box", 2700), ("box", 5400), ("box", 0), ("bins", 0)])
+    chunks_most = -(-n_pre // PRE_CHUNK_PHOTOS)
+    worst = MARGIN * (
+        3600 * _rate(PRE_INDEX)
+        + chunks_most * PRE_CHUNK_SECONDS * _rate(PRE_CHUNK)
+        + (pre_minutes * 1.1 + 10) * 60 * _rate(PRETRAIN, gpu=True)
+        + len(scratch + pretrained) * (ft_minutes * 1.1 + 5) * 60 * train_rate
+        + 5 * 3600 * _rate(ORCHESTRATE) * NONPREEMPTIBLE
+    )
+    print(f"at most ${worst:.2f} (every call at its limit); budget ${budget:.2f}", flush=True)
+    if ledger.spent:
+        print(f"resumed: ${ledger.spent:.2f} already spent by an earlier attempt (estimate)", flush=True)
+    if ledger.spent + worst > budget:
+        raise BudgetExceeded(f"stage A could cost up to ${worst:.2f}, more than the budget ${budget:.2f} allows")
+
+    out: dict[str, dict] = {}
+
+    def check(stage: str) -> None:
+        ledger.save(ledger_path)
+        volume.commit()
+        print(f"{stage}: spent ${ledger.spent:.2f} of ${budget:.2f} (estimate)", flush=True)
+        if ledger.spent > budget:
+            raise BudgetExceeded(f"estimated spend ${ledger.spent:.2f} passed the budget ${budget:.2f} at {stage}")
+
+    def record(run: str, m) -> None:
+        if isinstance(m, Exception):
+            ledger.charge(f"training {run} (failed)", (ft_minutes * 1.1 + 5) * 60, train_rate)
+            out[run] = {"error": f"{type(m).__name__}: {m}"}
+        else:
+            # A minute more than the call took, for the container's start before the call's own clock.
+            ledger.charge(f"training {run}", m["call_seconds"] + 60, train_rate)
+            out[run] = {k: v for k, v in m.items() if k not in ("history", "call_seconds")}
+        print(run, json.dumps(out[run]), flush=True)
+        check(run)
+
+    # The runs from scratch need nothing new, so they train while the pretraining photos download.
+    pending = [(args[1], train_student.spawn(*args)) for args in scratch]
+    try:
+        try:
+            t = time.time()
+            chunks = pre_index.remote(pre, n_pre, seed, crop_set)
+            ledger.charge("pretraining index", time.time() - t, _rate(PRE_INDEX))
+            check("index")
+            photos, failed = 0, 0
+            for got in pre_chunk.map([pre] * chunks, range(chunks), return_exceptions=True):
+                if isinstance(got, Exception):
+                    # A chunk that failed is left out; it is counted as if it ran to its time limit.
+                    failed += 1
+                    ledger.charge("pretraining photos (failed chunk)", PRE_CHUNK_SECONDS, _rate(PRE_CHUNK))
+                    continue
+                photos += got["photos"]
+                ledger.charge("pretraining photos", got["call_seconds"] + 30, _rate(PRE_CHUNK))
+            print(f"{photos} pretraining photos in {chunks - failed} chunks ({failed} failed)", flush=True)
+            check("pretraining photos")
+            pre_config = {"seed": seed, "epochs": pre_epochs, "batch": 128, "lr": 2e-3, "weight_decay": 0.05,
+                          "device": "cuda", "max_minutes": pre_minutes}
+            t = time.time()
+            m = pretrain_backbone.remote(pre, backbone, pre_config)
+            ledger.charge(f"pretraining {backbone}", time.time() - t + 60, _rate(PRETRAIN, gpu=True))
+            out[backbone] = {k: v for k, v in m.items() if k not in ("history", "call_seconds")}
+            out[backbone]["last_epoch"] = m["history"][-1] if m["history"] else None
+            print(backbone, json.dumps(out[backbone]), flush=True)
+            check("pretraining")
+        except BudgetExceeded:
+            raise
+        except Exception as e:  # noqa: BLE001 - without a backbone the runs from scratch are still collected
+            out[backbone] = {"error": f"{type(e).__name__}: {e}"}
+            print(backbone, json.dumps(out[backbone]), flush=True)
+            pretrained = []
+        for args, m in zip(pretrained, train_student.starmap(pretrained, return_exceptions=True)):
+            record(args[1], m)
+        while pending:
+            run, call = pending.pop(0)
+            try:
+                m = call.get()
+            except Exception as e:  # noqa: BLE001 - one failed run is reported, the others still collected
+                m = e
+            record(run, m)
+        ledger.charge("this orchestrator", time.time() - t_start, _rate(ORCHESTRATE) * NONPREEMPTIBLE)
+        check("done")
+    finally:
+        for _, call in pending:
+            call.cancel()
+    return {"runs": out, "spend": ledger.report()}
+
+
+@app.local_entrypoint()
+def improve(budget: float = 6.5, crop_set: str = "train-20000-s1", n_pre: int = 96000, seed: int = 2,
+            pre_epochs: int = 12, pre_minutes: float = 22.0, epochs: int = 40, ft_minutes: float = 12.0) -> None:
+    """Runs `run_improve` remotely (stage A: no labelling) and prints its result."""
+    print(json.dumps(run_improve.remote(budget, crop_set, n_pre, seed, pre_epochs, pre_minutes, epochs, ft_minutes),
+                     indent=1))
 
 
 @app.local_entrypoint()

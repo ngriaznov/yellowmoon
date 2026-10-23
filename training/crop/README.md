@@ -26,10 +26,31 @@ datasets without a licence, so it may teach (owner, 2026-10-23) but does not shi
 | letterbox to 256 x 256, arrays | `data.py` | Modal CPU (`build_arrays`), or locally |
 | train the student | `train.py` | Modal L4 (`train_student`), or locally on the CPU for a smoke run |
 | crops for a folder of photos | `predict.py` | locally (CPU) |
+| pretraining photos and their boxes | `boxes.py` | Modal CPU (`pre_index`, `pre_chunk`), or locally |
+| pretrain the backbone on the boxes | `pretrain.py` | Modal L4 (`pretrain_backbone`), or locally on the CPU for a smoke run |
 
 `train.py` reports the validation IoU with the teacher next to two baselines, the whole photo and the training
 set's mean crop: a student that only learned the average crop shows as one. `predict.py` writes the free crop
 and, for Square, 4:5 and 16:9, the frame of that aspect closest to it (IoU) among 6 sizes x 9 x 9 positions.
+
+## Improving the student (stage A)
+
+The pilot's student agreed with FrameLite better than the whole photo did, but was timid: it learned to trim loose
+edges, not to reframe (`docs/STATUS.md`). Two changes that need no more labels:
+
+- **Pretraining on Open Images' boxes** (`boxes.py`, `pretrain.py`). About 96,000 more photos of the boxable train set
+  (CC BY 2.0, none of the crop set's), with the boxes people drew around their objects (CC BY 4.0). The backbone
+  learns to map where objects, people, faces, animals, vehicles and buildings are (16 x 16 cells, the share of each
+  cell covered) and which of the 600 classes are present. The crop student then starts from it (`train.py --init`).
+  No model labels anything here, so nothing but the licences of the photos and boxes reaches the weights.
+- **The `bins` head** (`model.py`): each of the four numbers of the crop is a choice among 41 bins, answered by the
+  most likely bin, so a photo that could take a firm crop or none gets one of the two, not the average.
+
+`modal run -m training.crop.modal_app::improve --budget 6.5` trains, on the 11,999 labels the pilot paid for: from
+scratch at 2,700 and 5,400 photos (with the pilot's run at 10,827, a learning curve) and with the `bins` head; and from
+the pretrained backbone at 2,700, 5,400 and 10,827 photos and with the `bins` head. It refuses to start when its worst
+case (every call at its time limit) passes the budget, and its orchestrator is not preemptible, so it cannot restart
+half way as the pilot's did.
 
 ## Running it
 
