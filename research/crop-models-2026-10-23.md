@@ -27,9 +27,23 @@ Good lightweight croppers exist, and one has exactly the shape Yellowmoon needs.
 - **Cost (estimates, not measured).** FrameLite labelling on a GPU: about a second per image per aspect, so tens of GPU-hours for 100–200k images. Outpainting with a 20B editor is the expensive part, roughly 10–20 s per image, so 150–300 GPU-hours for 50k images. Training the student: a few GPU-hours. A GPU is needed; the container has none.
 - **Gate.** Blind pairs on the 150 held-out Play Raw photos (`testdata/cropeval/heldout/`), against the centred frame and against the photographer's framing, before anything ships.
 
-## Cheapest next step
+## Evaluation on 150 unseen photos (2026-10-23, evaluation only)
 
-Run FocalNet (19 MiB, ONNX, CPU) and FrameLite (offline, needs a GPU) on the 150 held-out photos for **evaluation only**, and judge them in the same blind pairs. That shows whether learned croppers fix the cutting and placement on our photos before any data or training is paid for.
+The two candidates ran on the 150 held-out Play Raw photos (`testdata/cropeval/heldout/`, the same previews the classical proposer was tested on), in the scratchpad: nothing was installed in the repository and no weights were kept. Blind pairs, judged by the agent, then unblinded; a tie counts half.
+
+| | Compared with | Pairs that differ | Won | Lost | Tied | Share | Speed (CPU, this container) |
+|---|---|---|---|---|---|---|---|
+| **FocalNet**, Square and 16:9 | the largest centred frame of the aspect | 162 of 300 | 39 (25 clearly) | 24 (10 clearly) | 99 | 55 % | 67 ms a crop, 4 threads, FP32 ONNX |
+| **FrameLite**, its own free crop | the whole photo | 134 of 150 | 50 (13 clearly) | 4 (none clearly) | 80 | 67 % | 8 s a photo, 4 threads, FP32 |
+| Classical proposer v3, Square and 16:9 (for scale) | the largest centred frame | 59 of 300 | 21 | 18 | 20 | 52 % | 20 ms |
+
+- **FocalNet** moves the frame three times as often as the classical proposer and still wins more than it loses. Its wins are the classical proposer's failures: it holds what the centred frame cuts (a car's nose and wheel, a chef's head, a moon the centred 16:9 loses). Its losses are a subject pushed against the edge (a dog's head), and twice framing sky and moon instead of the scene below (a road at dusk).
+- **FrameLite** almost never makes a photo worse. It tightens loose frames (median crop area 75 % of the photo), puts a rider on a third, and turns a night skyline into a panorama without the empty foreground water. It kept the whole photo, or nearly, on 16. Its four losses were all slight. Caveat: these pairs are only partly blind, because the uncropped photo usually keeps the camera's 3:2 shape.
+- Neither is shippable (above). But on photos neither had seen, both beat the classical proposer, and FrameLite's taste is good enough to be the teacher for our own model. 4:5 was run and not judged.
+
+## Next step
+
+The learned route is worth paying for. Distil a FocalNet-sized student (about 5M parameters, about 70 ms a crop on a CPU) from FrameLite's crops and from GenCrop-style outpainted pairs, on Open Images and Commons photos, and gate it on these held-out photos against FrameLite itself and against the photographer's framing. This waits on the owner's questions (a) and (b) in `docs/STATUS.md` (22).
 
 ## Also considered
 
