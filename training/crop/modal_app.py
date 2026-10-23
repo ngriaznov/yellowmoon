@@ -493,9 +493,10 @@ def pilot(n: int = 20000, seed: int = 1, subset: str = "train", curve: str = "50
 
 
 @app.local_entrypoint()
-def fetch(dest: str = "training/crop/runs", name: str = "train-20000-s1") -> None:
-    """Copies every run's `model.pt`, `config.json` and `metrics.json`, and the photo set's `labels.json` and
-    `manifest.json`, from the volume into `dest`."""
+def fetch(dest: str = "training/crop/runs", name: str = "train-20000-s1", pre: str = "oi-96000-s2") -> None:
+    """Copies every run's `model.pt`, `config.json` and `metrics.json`, the photo set's `labels.json` and
+    `manifest.json`, and the pretraining photos' `manifest.json` (`pre/manifest.json`, for the model card's
+    credits), from the volume into `dest`."""
     out = Path(dest)
     try:
         entries = volume.listdir("runs", recursive=True)
@@ -509,6 +510,7 @@ def fetch(dest: str = "training/crop/runs", name: str = "train-20000-s1") -> Non
         if rel.name in ("model.pt", "config.json", "metrics.json"):
             wanted.append((f"runs/{rel.as_posix()}", out / rel))
     wanted += [(f"data/{name}/{f}", out / "data" / f) for f in ("labels.json", "manifest.json")]
+    wanted.append((f"pre/{pre}/manifest.json", out / "pre" / "manifest.json"))
     for remote, local in wanted:
         local.parent.mkdir(parents=True, exist_ok=True)
         try:

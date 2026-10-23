@@ -34,8 +34,9 @@ jobs:
       # on the volume, label nothing) or `improve` (stage A: pretraining on Open Images' boxes, the bins head and a
       # learning curve; labels nothing). Every change here needs the owner's yes first: their Modal limit is $30
       # (2026-10-23: "We can use remaining 13$ if this improves our model").
-      ENTRY: improve
-      PILOT_ARGS: --budget 6.5
+      # `results` only lists the runs' metrics (one small CPU call); the fetch step below copies the files.
+      ENTRY: results
+      PILOT_ARGS: ""
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
