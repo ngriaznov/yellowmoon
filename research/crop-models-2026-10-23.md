@@ -56,6 +56,15 @@ The owner answered (a) and (b): FrameLite may label our images offline, and the 
 - **Reading.** A small clean model does learn the direction of FrameLite's taste: it trims loose edges and never makes a photo clearly worse. It does not learn FrameLite's bolder reframing, so most of its moves are too small to judge. The single learning-curve point leaves open whether more labels or a different student fix that. Regressing one box may average towards a gentle crop; FocalNet's layout (an importance map and a score per candidate crop) would not, and trains on the same labels.
 - **Cost.** About $16.5 of the $30, of which about $5 was wasted when the orchestrator restarted and labelled some chunks twice (`docs/STATUS.md`). Next choices: `docs/STATUS.md`, question 23.
 
+## Stage A: pretraining on Open Images' boxes (2026-10-23)
+
+No new labels; $2.39 on Modal. The student's backbone first learned to map where objects, people, faces, animals, vehicles and buildings are, and to name the classes present, from 96,000 more Open Images photos and the boxes people drew on them (CC BY 2.0 photos, CC BY 4.0 boxes, no model in the chain). Then it learned to crop from FrameLite's 10,827 labels.
+
+- **Agreement with FrameLite (IoU).** Held-out: 0.847, against 0.822 from scratch and 0.751 for the whole photo; validation 0.868 against 0.861. Pretrained on 2,700 labels it already beats the student from scratch on 10,827.
+- **Blind pairs** against the whole photo on the 150 held-out photos: won 56, lost 10, tied 39 of 105 (72 %), against 64 % from scratch and FrameLite's own 67 %. It now places its crop on the subject rather than trimming evenly.
+- **What did not help.** A `bins` head that picks one of 41 bins per edge instead of regressing: no change. More labels: with the pretraining, 5,400 to 10,827 photos added 0.002 IoU.
+- **Reading.** The student's limit was what it knew about the photo, not FrameLite's labels. The next step is the same kind: more pretraining, not more labels.
+
 ## Also considered
 
 Apple's Vision framework (attention saliency, subject masks, face, human and animal detection, horizon) needs no shipped weights, but only on Macs. Per the owner it waits until it is needed.
