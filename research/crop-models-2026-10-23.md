@@ -45,6 +45,17 @@ The two candidates ran on the 150 held-out Play Raw photos (`testdata/cropeval/h
 
 The learned route is worth paying for. Distil a FocalNet-sized student (about 5M parameters, about 70 ms a crop on a CPU) from FrameLite's crops and from GenCrop-style outpainted pairs, on Open Images and Commons photos, and gate it on these held-out photos against FrameLite itself and against the photographer's framing. This waits on the owner's questions (a) and (b) in `docs/STATUS.md` (22).
 
+## Pilot: a student from FrameLite's labels (2026-10-23)
+
+The owner answered (a) and (b): FrameLite may label our images offline, and the GPU is Modal, with a hard $30 limit. The pipeline is `training/crop/`, started from GitHub Actions.
+
+- **Labels.** FrameLite's free crop of 12,000 Open Images photos (CC BY 2.0; 11,999 usable). It took 2.82 s a photo on an L4, against the 1 s assumed above, so labels cost about $0.95 per 1,000 photos, and 100–200k photos would take 80–160 GPU-hours, more than guessed above. The median label keeps 84 % of the photo's area.
+- **Student.** A MobileNetV2-style network of 1.1M parameters, trained from scratch to regress the crop box from a 256 px letterboxed photo. One run: 10,827 photos to train, 1,172 to validate, 40 epochs in 10.2 minutes, about $0.3.
+- **Agreement with FrameLite (IoU).** Validation: student 0.861, whole photo 0.830, mean crop 0.796. It reached 0.856 by epoch 5; the training loss kept falling while validation stayed flat. On the 150 held-out Play Raw photos: student 0.822, whole photo 0.751, mean crop 0.755.
+- **Blind pairs** on the 150 held-out photos against the whole photo, as for FrameLite above: the student moved the frame on 100, won 31 (1 clearly), lost 4 (none clearly), tied 65. That is 64 %, against FrameLite's 67 %. Its median crop keeps 83 % of the photo, FrameLite's 75 %.
+- **Reading.** A small clean model does learn the direction of FrameLite's taste: it trims loose edges and never makes a photo clearly worse. It does not learn FrameLite's bolder reframing, so most of its moves are too small to judge. The single learning-curve point leaves open whether more labels or a different student fix that. Regressing one box may average towards a gentle crop; FocalNet's layout (an importance map and a score per candidate crop) would not, and trains on the same labels.
+- **Cost.** About $16.5 of the $30, of which about $5 was wasted when the orchestrator restarted and labelled some chunks twice (`docs/STATUS.md`). Next choices: `docs/STATUS.md`, question 23.
+
 ## Also considered
 
 Apple's Vision framework (attention saliency, subject masks, face, human and animal detection, horizon) needs no shipped weights, but only on Macs. Per the owner it waits until it is needed.
