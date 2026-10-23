@@ -71,6 +71,15 @@ jobs:
           props=(); [ -f "$D/auxiliary/train_properties.csv" ] && props=(--properties "$D/auxiliary/train_properties.csv")
           python3 -m training.illum.eval_cubepp --model data/models/illum/sony-ilce-7rm4.json --root "$D/train" $ARGS \
             "${props[@]}" --out "$OUT/train-sony-ilce-7rm4.json" || true
+      # The train split's median offset subtracted from the estimate, scored on the test split: how much of the error is
+      # a constant calibration between the synthetic training scenes and real photos.
+      - name: Calibrated on the train split, scored on the test split
+        run: |
+          off="$(python3 -c "import json; b = json.load(open('$OUT/train-sony-ilce-7rm4.json'))['bias']; print(f\"{b['du_median']},{b['dv_median']}\")")"
+          echo "offset (du, dv) from the train split: $off"
+          props=(); [ -f "$D/auxiliary/test_properties.csv" ] && props=(--properties "$D/auxiliary/test_properties.csv")
+          python3 -m training.illum.eval_cubepp --model data/models/illum/sony-ilce-7rm4.json --root "$D/test" $ARGS \
+            "${props[@]}" --uv-offset="$off" --out "$OUT/calibrated-sony-ilce-7rm4.json" || true
       - name: Report
         if: always()
         run: |
@@ -95,6 +104,10 @@ jobs:
                   print("  white check:", json.dumps(r.get("white_check")))
                   print("  classical estimators: " + ", ".join(f"{k} median={v['median']:.2f} p90={v['p90']:.2f}"
                                                                 for k, v in r.get("baselines", {}).items()))
+                  print("  bias:", json.dumps(r.get("bias")))
+                  b = r.get("blend_white_patch")
+                  if b:
+                      print(f"  blend with white patch: median={b['median']:.2f} p90={b['p90']:.2f} p95={b['p95']:.2f}")
           PY
           exit "${status:-1}"
       - uses: actions/upload-artifact@v4

@@ -190,7 +190,7 @@ def convert(img: np.ndarray, truth: np.ndarray, camera_to_xyz: np.ndarray, to_ca
 
 def evaluate(model: md.IllumModel, root: Path, to_profile: np.ndarray, split: list[str] | None,
              limit: int | None = None, black: float = 0.0, white: float | None = None, factor: int = PREVIEW_FACTOR,
-             properties: dict[str, dict[str, str]] | None = None) -> dict:
+             properties: dict[str, dict[str, str]] | None = None, uv_offset=(0.0, 0.0)) -> dict:
     """Angular errors of the histogram-only estimate over the images of ``root`` (``gt.csv`` and ``PNG/``), with
     ``to_profile`` mapping the source camera RGB to the profile's. ``white`` defaults to the PNG's full scale."""
     gt = read_ground_truth(root / "gt.csv")
@@ -199,6 +199,7 @@ def evaluate(model: md.IllumModel, root: Path, to_profile: np.ndarray, split: li
         names = names[:limit]
     errs, used = [], []
     base = {k: [] for k in bl.BASELINES}
+    uv_est, uv_true, uv_wp = [], [], []
     for name in names:
         path = next((p for p in (root / "PNG" / f"{name}.png", root / "PNG" / f"{name}.PNG") if p.exists()), None)
         if path is None or name not in gt:
@@ -215,9 +216,15 @@ def evaluate(model: md.IllumModel, root: Path, to_profile: np.ndarray, split: li
             prev, mask = img, bad
         out = model.estimate(prev.astype(np.float32), mask.astype(np.uint8), None, None)
         w_true = truth / truth[1]
-        errs.append(float(bl.angular_error_deg(np.array([np.exp(-out["uv"][0]), 1.0, np.exp(-out["uv"][1])]), w_true)))
+        uv = np.asarray(out["uv"], dtype=np.float64) - np.asarray(uv_offset, dtype=np.float64)
+        errs.append(float(bl.angular_error_deg(bl.w_from_uv(uv), w_true)))
         for k, f in bl.BASELINES.items():
-            base[k].append(float(bl.angular_error_deg(f(prev, mask.astype(np.uint8)), w_true)))
+            w_k = f(prev, mask.astype(np.uint8))
+            base[k].append(float(bl.angular_error_deg(w_k, w_true)))
+            if k == "white_patch":
+                uv_wp.append(bl.uv_from_w(w_k))
+        uv_est.append(uv)
+        uv_true.append(bl.uv_from_w(w_true))
         used.append(name)
     if not errs:
         raise SystemExit("no image of the split was found under " + str(root))
@@ -227,6 +234,18 @@ def evaluate(model: md.IllumModel, root: Path, to_profile: np.ndarray, split: li
     res["pass"] = bool(res["median"] <= GATE_MEDIAN_DEG)
     # The classical estimators on the same previews and masks, for scale (NaN where one found no pixel).
     res["baselines"] = {k: ev.summarize(np.array(v)[np.isfinite(v)]) for k, v in base.items()}
+    # Signed error in log chroma, (u, v) = (ln G/R, ln G/B): a constant offset here is a calibration, not a lack of
+    # capacity. Positive du: the estimate has less red than the truth (renders warmer); positive dv: less blue.
+    est, true, wp = np.array(uv_est), np.array(uv_true), np.array(uv_wp)
+    ok = np.isfinite(wp).all(axis=1)
+    res["bias"] = {"du_median": round(float(np.median(est[:, 0] - true[:, 0])), 4),
+                   "dv_median": round(float(np.median(est[:, 1] - true[:, 1])), 4),
+                   "white_patch_du_median": round(float(np.median(wp[ok, 0] - true[ok, 0])), 4),
+                   "white_patch_dv_median": round(float(np.median(wp[ok, 1] - true[ok, 1])), 4),
+                   "uv_offset_applied": [float(x) for x in uv_offset]}
+    # The estimate and white patch averaged in log chroma: does the steady estimator gain white patch's typical case?
+    blend = 0.5 * (est[ok] + wp[ok])
+    res["blend_white_patch"] = ev.summarize(bl.angular_error_deg(bl.w_from_uv(blend), bl.w_from_uv(true[ok])))
     if properties:
         labels = sorted({k for n in used for k in properties.get(n, {}) if k not in ("ds_version",)})
         res["by_label"] = {}
@@ -270,6 +289,7 @@ def main(argv=None) -> int:
     ap.add_argument("--preview-factor", type=int, default=PREVIEW_FACTOR)
     ap.add_argument("--properties", type=Path, help="the dataset's {test/train}_properties.csv")
     ap.add_argument("--out", type=Path, help="also write the full result (per-image errors included) as JSON")
+    ap.add_argument("--uv-offset", help="du,dv subtracted from the estimate (a calibration measured on another split)")
     args = ap.parse_args(argv)
     if not (args.root / "gt.csv").exists():
         print(f"BLOCKED: {args.root / 'gt.csv'} not found; run tools/fetch/cubepp.sh on a machine that can reach zenodo.org", file=sys.stderr)
@@ -284,7 +304,9 @@ def main(argv=None) -> int:
     white = args.white_level if args.white_level is not None else (WHITE_14BIT if args.black_level else None)
     props = read_properties(args.properties) if args.properties else None
     split = args.split.read_text().splitlines() if args.split else None
-    res = evaluate(m, args.root, to_profile, split, args.limit, args.black_level, white, args.preview_factor, props)
+    offset = tuple(float(x) for x in args.uv_offset.split(",")) if args.uv_offset else (0.0, 0.0)
+    res = evaluate(m, args.root, to_profile, split, args.limit, args.black_level, white, args.preview_factor, props,
+                   offset)
     res["profile"] = m.profile_id
     if args.src_camera and props:
         res["white_check"] = white_check(curves, read_ground_truth(args.root / "gt.csv"), props)
