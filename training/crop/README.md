@@ -22,7 +22,7 @@ datasets without a licence, so it may teach (owner, 2026-10-23) but does not shi
 | Step | Module | Where |
 |---|---|---|
 | select and download photos | `openimages.py` | Modal CPU (`prepare`), or locally |
-| label with the teacher | `teacher.py` | Modal L4 GPUs (`Labeller`, 4 at a time), or locally on the CPU (about 8 s a photo) |
+| label with the teacher | `teacher.py` | Modal L4 GPUs (`Labeller`, 6 at a time), or locally on the CPU (about 8 s a photo) |
 | letterbox to 256 x 256, arrays | `data.py` | Modal CPU (`build_arrays`), or locally |
 | train the student | `train.py` | Modal L4 (`train_student`), or locally on the CPU for a smoke run |
 | crops for a folder of photos | `predict.py` | locally (CPU) |
@@ -33,18 +33,31 @@ and, for Square, 4:5 and 16:9, the frame of that aspect closest to it (IoU) amon
 
 ## Running it
 
-On Modal (needs `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in the environment, never in the repository), from the
-repository root:
+Modal's client speaks gRPC, which the agents' cloud proxy does not carry, so the pilot runs from GitHub Actions
+(`.github/workflows/crop-pilot.yml`): a push to the branch `crop-pilot-run` starts it with the workflow's
+`PILOT_ARGS`, and the results (each run's `model.pt`, `config.json`, `metrics.json`, FrameLite's `labels.json`, the
+photos' `manifest.json` and the log) come back on the temporary branch `crop-pilot-runs`. It needs the repository
+secrets `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. From a computer with direct internet and the same two variables:
 
 ```bash
-pip install modal numpy pillow
-modal run --detach -m training.crop.modal_app::pilot --n 20000 --curve 5000,10000,0 --epochs 40
+pip install modal==1.6.2 numpy pillow
+modal run -m training.crop.modal_app::pilot --n 20000 --curve 5000,10000,0 --epochs 40 --budget 20
 modal run -m training.crop.modal_app::results
-modal volume get yellowmoon-crop runs/<run>/model.pt testdata/crop/runs/<run>/
+modal run -m training.crop.modal_app::fetch          # into training/crop/runs/ (git-ignored)
 ```
 
+**Budget.** The owner's Modal account holds $30 a month (the Starter plan's credits), and nothing may go past it
+without their permission (2026-10-23). `budget.py` keeps the run's own estimate from Modal's published prices and how
+long each call took, with a 25 % margin. The pilot labels a first chunk of 250 photos on one GPU, measures FrameLite's
+seconds per photo, reserves the cost of the arrays and of the training runs (each stopped at `--max-minutes`), and
+labels only as many more photos as the rest of `--budget` pays for (and `--max-label-hours` allows). It stops if
+fewer than 3,000 photos can be labelled, if under half the first chunk's crops are valid, or if the estimate passes
+the budget. `modal run` without `--detach` stops the app when the client stops, so cancelling the workflow stops the
+spending. Modal's own Workspace budget (Usage & Billing) is the hard cap above all this.
+
 The pilot trains at three training-set sizes (a learning curve) so the run says whether more photos would help.
-Every stage skips what the volume `yellowmoon-crop` already holds, so a failed run is resumed by running it again.
+Every stage skips what the volume `yellowmoon-crop` already holds, so a failed run is resumed by running it again;
+`--budget` is then what the new run may spend.
 
 Locally (smoke run on 16 photos, CPU; FrameLite's code checked out and its weights downloaded):
 

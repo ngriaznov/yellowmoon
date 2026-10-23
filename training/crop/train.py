@@ -68,9 +68,13 @@ def train(arrays: Path, out: Path, config: dict) -> dict:
     model = CropNet().to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"])
     steps_per_epoch = max(1, len(tr) // config["batch"])
-    total = steps_per_epoch * config["epochs"]
+    # `plan` changes once, after the first epoch, if `max_minutes` leaves room for fewer epochs: the cosine then ends
+    # at the last epoch that fits rather than being cut off at a high learning rate.
+    plan = {"epochs": config["epochs"], "total": steps_per_epoch * config["epochs"]}
     sched = torch.optim.lr_scheduler.LambdaLR(
-        opt, lambda s: min(1.0, (s + 1) / steps_per_epoch) * 0.5 * (1 + math.cos(math.pi * min(s, total) / total))
+        opt,
+        lambda s: min(1.0, (s + 1) / steps_per_epoch)
+        * 0.5 * (1 + math.cos(math.pi * min(s, plan["total"]) / plan["total"])),
     )
     use_amp = device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
@@ -83,7 +87,10 @@ def train(arrays: Path, out: Path, config: dict) -> dict:
     }
     history, best = [], -1.0
     t0 = time.time()
+    limit = config.get("max_minutes")
     for epoch in range(config["epochs"]):
+        if epoch >= plan["epochs"] or (limit and time.time() - t0 > limit * 60 * 1.1):
+            break
         order = rng.permutation(tr)
         losses = []
         for s in range(steps_per_epoch):
@@ -105,12 +112,18 @@ def train(arrays: Path, out: Path, config: dict) -> dict:
         if val_iou > best or not len(va):
             best = val_iou
             torch.save({"state_dict": model.state_dict(), "config": config}, out / "model.pt")
+        if epoch == 0 and limit:
+            fit = max(1, int(limit * 60 / (time.time() - t0)))
+            if fit < plan["epochs"]:
+                plan.update(epochs=fit, total=steps_per_epoch * fit)
+                print(f"max_minutes {limit}: {fit} epochs fit", flush=True)
     metrics = {
         "photos": {"train": int(len(tr)), "val": int(len(va))},
         "parameters": parameters(model),
         "best_val_iou": round(best, 4),
         "baselines_val_iou": {k: (round(v, 4) if v is not None else None) for k, v in baselines.items()},
         "mean_crop": [round(float(v), 4) for v in mean_crop],
+        "epochs_run": len(history),
         "minutes": round((time.time() - t0) / 60, 1),
         "history": history,
     }
@@ -119,7 +132,12 @@ def train(arrays: Path, out: Path, config: dict) -> dict:
     return metrics
 
 
-DEFAULTS = {"seed": 1, "epochs": 40, "batch": 128, "lr": 2e-3, "weight_decay": 0.05, "n_train": None, "device": "cuda"}
+DEFAULTS = {
+    "seed": 1, "epochs": 40, "batch": 128, "lr": 2e-3, "weight_decay": 0.05, "n_train": None, "device": "cuda",
+    "max_minutes": None,
+}
+#: The command-line type of the options whose default is None.
+TYPES = {"n_train": int, "max_minutes": float}
 
 
 def main() -> None:
@@ -127,7 +145,7 @@ def main() -> None:
     ap.add_argument("--arrays", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     for k, v in DEFAULTS.items():
-        ap.add_argument(f"--{k.replace('_', '-')}", type=type(v) if v is not None else int, default=v)
+        ap.add_argument(f"--{k.replace('_', '-')}", type=type(v) if v is not None else TYPES[k], default=v)
     args = ap.parse_args()
     config = {k: getattr(args, k) for k in DEFAULTS}
     m = train(args.arrays, args.out, config)

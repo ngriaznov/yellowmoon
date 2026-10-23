@@ -1,0 +1,66 @@
+# The learned Auto crop pilot on Modal (training/crop/README.md). Modal's client speaks gRPC, which the agents' cloud
+# proxy does not carry, so the pilot starts from here: a push to the branch `crop-pilot-run` runs it with PILOT_ARGS.
+# Needs the repository secrets MODAL_TOKEN_ID and MODAL_TOKEN_SECRET.
+#
+# Budget: the owner's Modal account holds $30 (2026-10-23), and nothing may go past it without their permission.
+# `--budget` caps the run's own spend estimate well below that (training/crop/budget.py); the job runs `modal run`
+# without --detach, so cancelling this job stops the app on Modal too.
+#
+# The results (student weights, metrics, FrameLite's labels, the log) go to the temporary branch `crop-pilot-runs`
+# and to an artifact; never to main.
+name: crop-pilot
+
+on:
+  push:
+    branches: [crop-pilot-run]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: crop-pilot
+  cancel-in-progress: false
+
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      PILOT_ARGS: --n 20000 --curve 5000,10000,0 --epochs 40 --budget 20 --max-minutes 40 --max-label-hours 3.5
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install modal==1.6.2 numpy==2.2.6 pillow==12.2.0
+      - name: Secrets present
+        run: test -n "$MODAL_TOKEN_ID" && test -n "$MODAL_TOKEN_SECRET"
+      - name: Pilot
+        shell: bash
+        run: |
+          mkdir -p training/crop/runs
+          modal run -m training.crop.modal_app::pilot $PILOT_ARGS 2>&1 | tee training/crop/runs/pilot.log
+      - name: Fetch the results from the volume
+        if: always()
+        run: modal run -m training.crop.modal_app::fetch
+      - name: Push the results to crop-pilot-runs
+        if: always()
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B crop-pilot-runs
+          git add -f training/crop/runs
+          git diff --cached --quiet && exit 0
+          git commit -q -m "Crop pilot results (temporary branch)" \
+            -m "From the crop-pilot workflow, run ${GITHUB_RUN_ID}."
+          git push -f origin crop-pilot-runs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crop-pilot
+          path: training/crop/runs
+          retention-days: 14

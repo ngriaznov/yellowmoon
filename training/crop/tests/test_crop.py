@@ -5,11 +5,11 @@ import pytest
 import torch
 from PIL import Image
 
-from training.crop import openimages
+from training.crop import budget, data, openimages
 from training.crop.data import letterbox
 from training.crop.model import CropNet, iou, parameters
 from training.crop.predict import closest, frames
-from training.crop.train import split
+from training.crop.train import DEFAULTS, split, train
 
 
 def row(i, licence=openimages.CC_BY_2, rotation="0.0"):
@@ -67,3 +67,44 @@ def test_the_validation_split_is_stable_and_about_a_tenth():
     assert len(tr) + len(va) == 2000 and 150 < len(va) < 250
     _, va_small = split(ids[:1000])
     assert set(va_small) == set(int(i) for i in va if i < 1000)
+
+
+def test_the_ledger_adds_the_margin_and_stops_counting_nothing():
+    ledger = budget.Ledger(20.0)
+    l4 = budget.rate(True, 2, 8)
+    assert l4 == pytest.approx(0.000222 + 2 * 0.0000131 + 8 * 0.00000222)
+    cost = ledger.charge("an hour of one L4", 3600, l4)
+    assert cost == pytest.approx(3600 * l4 * budget.MARGIN) and ledger.left() == pytest.approx(20.0 - cost)
+    assert ledger.report()["items"] == [("an hour of one L4", round(cost, 4))]
+
+
+def test_labelling_stops_where_the_money_or_the_time_runs_out():
+    l4 = budget.rate(True, 2, 8)
+    # Plenty of both: everything wanted, even when it is not a whole number of chunks.
+    assert budget.photos_to_label(20, 4, 1.0, l4, 19_750, 6, 3.5, 250) == 19_750
+    # Money: $5 left after the reserve at 4 s a photo pays for 5 / (4 * l4 * 1.25) photos, in whole chunks.
+    n = budget.photos_to_label(9, 4, 4.0, l4, 19_750, 6, 100, 250)
+    assert n % 250 == 0 and n <= 5 / (4 * l4 * budget.MARGIN) < n + 250
+    # Time: 6 GPUs for one hour at 3 s a photo.
+    assert budget.photos_to_label(1000, 0, 3.0, l4, 19_750, 6, 1, 250) == 7_000
+    # Nothing left after the reserve.
+    assert budget.photos_to_label(3, 4, 1.0, l4, 19_750, 6, 3.5, 250) == 0
+
+
+def test_the_training_reserve_covers_every_run_at_its_cap():
+    t = budget.rate(True, 4, 16)
+    assert budget.training_reserve(3, 40, t) == pytest.approx(3 * 50 * 60 * t * budget.MARGIN)
+
+
+def test_training_stops_at_max_minutes_with_the_best_epoch_saved(tmp_path):
+    rng = np.random.default_rng(0)
+    images = tmp_path / "images"
+    images.mkdir()
+    labels = {}
+    for i in range(24):
+        Image.fromarray(rng.integers(0, 255, (48, 64, 3), dtype=np.uint8)).save(images / f"p{i:02d}.jpg")
+        labels[f"p{i:02d}"] = {"crop": [0.1, 0.1, 0.9, 0.8]}
+    data.build(images, labels, tmp_path / "arrays")
+    config = {**DEFAULTS, "epochs": 1000, "batch": 8, "device": "cpu", "max_minutes": 0.01}
+    m = train(tmp_path / "arrays", tmp_path / "run", config)
+    assert 1 <= m["epochs_run"] < 1000 and (tmp_path / "run" / "model.pt").exists()
