@@ -5,7 +5,7 @@ mod common;
 
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
-use common::{Sandbox, shape};
+use common::{Sandbox, data_dir, shape};
 use predicates::prelude::*;
 use serde_json::Value;
 
@@ -165,7 +165,13 @@ fn doctor_json_has_the_same_parts() {
         assert!(v["gpu"]["reason"].is_string());
     }
     assert_eq!(v["render_path"]["demosaic"], "classical");
-    assert_eq!(v["model_weights"], serde_json::json!([]));
+    // The only weight file is Auto crop's model, with the hash its SHA256SUMS gives.
+    let sums = std::fs::read_to_string(data_dir().join("models/crop/SHA256SUMS")).expect("sums");
+    let crop_sha256 = sums.split_whitespace().next().expect("hash");
+    assert_eq!(
+        v["model_weights"],
+        serde_json::json!([{ "file": "crop/cropnet.safetensors", "sha256": crop_sha256 }])
+    );
     assert!(v["illuminant_models"].as_array().expect("models").len() >= 10);
     for model in v["illuminant_models"].as_array().expect("models") {
         assert_eq!(model["sha256"].as_str().expect("hash").len(), 64);

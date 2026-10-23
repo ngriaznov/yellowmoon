@@ -52,7 +52,12 @@ expression: shape(&v)
     "gpu_bytes": "number",
     "shared_memory": "bool"
   },
-  "model_weights": [],
+  "model_weights": [
+    {
+      "file": "string",
+      "sha256": "string"
+    }
+  ],
   "pipeline_version": "string",
   "preferences": {
     "exists": "bool",
