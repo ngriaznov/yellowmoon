@@ -18,6 +18,7 @@ ym-noise.workspace = true
 ym-ml.workspace = true
 ym-looks.workspace = true
 ym-export.workspace = true
+ym-compose.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true

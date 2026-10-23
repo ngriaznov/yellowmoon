@@ -383,6 +383,10 @@ export function Photos() {
           fullScreen.leave();
           if (!cropping) startCrop();
           return true;
+        case "auto-crop":
+          if (!crop.session) return false;
+          crop.session.toggleAuto();
+          return true;
         case "pick-white":
           fullScreen.leave();
           togglePicking();

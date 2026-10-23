@@ -70,6 +70,7 @@ These are fixed unless new evidence turns up. The reasoning is in `research/`.
 | Shell | Tauri 2 (React + TypeScript webview), `tauri-plugin-updater` and `-dialog`. The restart into an installed update is the app's own guarded `restart_app` command, not `tauri-plugin-process` (Tauri's restart cannot be vetoed while an export runs; `docs/12-distribution.md`, `docs/01-architecture.md` IPC). |
 | Viewport | The photo renders in a native wgpu surface on Metal behind a transparent webview, on the core's own graphics device. Fallback: PNG frames served on the `ym-frame` scheme, used for development on other systems and when the native surface cannot be made. |
 | Core | Rust workspace; image processing on the GPU (wgpu 30, WGSL compute) in f32 tiles of 1–2k px (`docs/17-gpu.md`). CPU reference path for tests and machines without a usable GPU. |
+| No Python at run time | The app and `ym` never run Python and never ship a Python interpreter or package (the owner, 2026-10-23). Python (`training/`, `tools/`) trains models, exports their weights and writes test fixtures; every model then runs in Rust, checked against the Python reference by a parity test (`docs/07-ml-models.md`). |
 | Decoder | Our own ARW decoder (Apache-2.0). rawler and LibRaw are CI oracles only. |
 | Camera profiles | V1 uses only available measurements: 11 bodies measured by Weta (rawtoaces-data, Apache-2.0). Registry keyed by Sony model ID; same-sensor siblings share; A7R IV is the default for everything else. A Sony file is never refused for lack of a profile. No measurements of our own in V1. |
 | ALEXA target | Our ALEV III spectral curve estimate (`data/alexa/`), shipped and labelled as an estimate. |
@@ -131,6 +132,7 @@ These are fixed unless new evidence turns up. The reasoning is in `research/`.
 | Licences | `docs/14-licensing.md`, `NOTICE` |
 | The GPU path | `docs/17-gpu.md` |
 | Apple Auto | `docs/19-apple-auto.md` |
+| Auto crop | `docs/20-auto-crop.md` |
 | Task plan | `docs/15-milestones.md` |
 | Risks and open decisions | `docs/16-risks-and-decisions.md` |
 | Progress | `docs/STATUS.md` |

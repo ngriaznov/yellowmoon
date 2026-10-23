@@ -107,6 +107,7 @@ fn tilted(src: &PhotoSource) -> PhotoSource {
             },
             angle_deg: 5.0,
             aspect: CropAspect::Free,
+            auto: false,
         });
     })
 }
@@ -123,6 +124,7 @@ fn straightened(src: &PhotoSource, angle_deg: f64) -> PhotoSource {
             },
             angle_deg,
             aspect: CropAspect::Free,
+            auto: false,
         });
     })
 }

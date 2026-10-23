@@ -28,6 +28,8 @@ import type {
   CliLinkStatus,
   ColorBalance,
   ColorBalancePoint,
+  CropAspect,
+  CropSuggestion,
   DevelopSettings,
   DisplayLut,
   ExportJob,
@@ -41,6 +43,7 @@ import type {
   MenuAction,
   MenuState,
   OpenSummary,
+  Orientation,
   PasteReport,
   PercentSetting,
   PhotoId,
@@ -1674,6 +1677,18 @@ export class AppStore {
   samplePixelAt(u: number, v: number): Promise<PixelSample | null> {
     const rect = this.rect;
     return this.samplePixel(rect ? u * rect.width : u, rect ? v * rect.height : v);
+  }
+
+  /**
+   * Auto crop (`docs/20-auto-crop.md` §1, §3): the core's proposal for a photo at the crop draft's aspect and orientation, or null when
+   * it can't make one. The Crop panel says so in its own note, so a failure does not go to the error bar.
+   */
+  async suggestCrop(photoId: PhotoId, aspect: CropAspect, orientation: Orientation): Promise<CropSuggestion | null> {
+    try {
+      return await this.api.suggestCrop(photoId, aspect, orientation);
+    } catch {
+      return null;
+    }
   }
 
   /**

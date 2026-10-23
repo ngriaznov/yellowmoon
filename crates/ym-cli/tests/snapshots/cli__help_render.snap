@@ -36,6 +36,9 @@ Look and display:
       --settings <FILE>
           A JSON file of settings (the `ym:Settings` schema), or `-` for stdin. It covers what these options can't: colour balance (`{ "kind": "auto" }` puts a shadows or highlights wheel back to Auto), curves, crop, orientation, white pick
 
+      --auto-crop[=<ASPECT>]
+          Crop each photo as the Crop panel's Auto does: its straighten angle and its first frame for an aspect (original, free, 1:1, 4:5 or 16:9; original when none is given), at the photo's orientation. Replaces a crop from --settings
+
 Light:
       --exposure <auto|EV>
           Exposure in stops (-4 to 4), or `auto`

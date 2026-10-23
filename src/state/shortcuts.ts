@@ -1,12 +1,13 @@
 /**
  * The keyboard shortcuts of `docs/11-ui.md` §Keyboard shortcuts, as one pure function from a
  * key event to an action name, so the table is tested without a screen. ⌘ is the Meta key; the
- * app is macOS only. Keys that type (P, Z, C, W, F, 1–9, the arrows) are ignored while a text box
+ * app is macOS only. Keys that type (P, Z, C, W, F, A, 1–9, the arrows) are ignored while a text box
  * has focus, and so are ⇧⌘C, ⇧⌘V and ⌥⇧⌘V (copy and paste settings; plain ⌘C and ⌘V never reach this
  * table: they stay the system's Copy and Paste). The arrows are left to the control that has focus when
  * it uses them (a slider, the filmstrip, the tabs). Delete and Backspace remove the photo on screen from the filmstrip, except where a
  * control uses them itself (a text box, a slider with its knob, a menu, a dialog) or a mode (crop, pick white) is on. F (full screen)
- * is not a key held down, and not a letter typed into a menu or a list (their type-ahead), or pressed while cropping.
+ * is not a key held down, and not a letter typed into a menu or a list (their type-ahead), or pressed while cropping. A toggles Auto crop
+ * while the Crop panel is open, and is nothing otherwise (⌘A picks all).
  */
 import type { TabId } from "../components/tabs";
 
@@ -29,6 +30,7 @@ export type ShortcutAction =
   | "zoom-in"
   | "zoom-out"
   | "crop"
+  | "auto-crop"
   | "pick-white"
   | "full-screen"
   | "copy-settings"
@@ -194,6 +196,10 @@ export function shortcutFor(event: KeyLike, context: ShortcutContext = {}): Shor
       return { action: "crop" };
     case "w":
       return { action: "pick-white" };
+    case "a":
+      // Auto crop (`docs/20-auto-crop.md` §1): only in the Crop panel, one press one change, as F.
+      if (context.mode !== "crop" || event.repeat || inMenuOrDialog(event.target)) return null;
+      return { action: "auto-crop" };
     case "f":
       // Full screen: one press, one change (a key held down would flicker the window in and out of full screen). Crop needs its panel.
       if (event.repeat || context.mode === "crop" || inMenuOrDialog(event.target)) return null;

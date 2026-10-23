@@ -184,6 +184,7 @@ fn a_fit_frame_from_a_resident_group_is_the_host_round_trip_bit_for_bit() {
                     },
                     angle_deg: 4.0,
                     aspect: ym_core::settings::CropAspect::Free,
+                    auto: false,
                 });
             }),
         ),
@@ -285,6 +286,7 @@ fn a_100_percent_frame_from_resident_tiles_is_the_host_round_trip_bit_for_bit() 
                     },
                     angle_deg: 4.0,
                     aspect: ym_core::settings::CropAspect::Free,
+                    auto: false,
                 });
             }),
             at_100(300.0, 200.0, image),

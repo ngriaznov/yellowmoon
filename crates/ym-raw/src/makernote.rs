@@ -19,6 +19,10 @@
 //! | `0x2001` | `PreviewImage`: a 32-byte proprietary header (JPEG length, width, height, ...) then a JPEG | [`SonyMakerNote::preview`] |
 //! | `0x9416` | enciphered table of the newest bodies; the 16-bit word at byte 4 is `SonyISO` | [`SonyMakerNote::iso`] |
 //! | `0x9405` | enciphered table of older E-mount bodies; same word at byte 4, valid when the first byte is one of eight known values | [`SonyMakerNote::iso`] |
+//! | `0x2027` | `FocusLocation`, int16u\[4\]: the camera's frame width and height, then the focus point (x, y), in sensor orientation | [`SonyMakerNote::focus`] |
+//! | `0x204A` | `FocusLocation2`, the same within one pixel on newer bodies; preferred when present | [`SonyMakerNote::focus`] |
+//! | `0x2037` | `FocusFrameSize`, six undefined bytes read as int16u\[3\]: the AF box's width and height, then `257` when valid (`0`: n/a) | [`SonyFocus::box_size`] |
+//! | `0x201C` | `AFAreaModeSetting`, int8u (its meaning depends on the body, `docs/20-auto-crop.md` §4) | [`SonyMakerNote::af_area_setting`] |
 //!
 //! `SonyISO` is `100 * 2^(16 - v / 256)` for the stored word `v`. The enciphered tags use a byte
 //! substitution cipher ([`decipher_byte`]); only the bytes needed are deciphered, and a tag that
@@ -36,6 +40,14 @@ pub const TAG_PREVIEW_IMAGE: u16 = 0x2001;
 pub const TAG_9405: u16 = 0x9405;
 /// Enciphered table with `SonyISO` for the newest bodies.
 pub const TAG_9416: u16 = 0x9416;
+/// `FocusLocation`.
+pub const TAG_FOCUS_LOCATION: u16 = 0x2027;
+/// `FocusLocation2`.
+pub const TAG_FOCUS_LOCATION2: u16 = 0x204A;
+/// `FocusFrameSize`.
+pub const TAG_FOCUS_FRAME_SIZE: u16 = 0x2037;
+/// `AFAreaModeSetting`.
+pub const TAG_AF_AREA_MODE_SETTING: u16 = 0x201C;
 
 /// Length of the header in front of the maker note's IFD.
 pub const HEADER_LEN: u64 = 12;
@@ -104,6 +116,25 @@ pub struct SonyMakerNote {
     /// File position and length of the JPEG in `PreviewImage` (tag 0x2001), after its 32-byte
     /// header.
     pub preview: Option<(u64, u64)>,
+    /// Where the camera focused (tags 0x204A or 0x2027, with 0x2037), as stored.
+    pub focus: Option<SonyFocus>,
+    /// `AFAreaModeSetting` (tag 0x201C), as stored.
+    pub af_area_setting: Option<u8>,
+}
+
+/// Where the camera focused, as the maker note stores it: in the units of the camera's own frame
+/// (the size of its JPEG, for example 6000 x 4000 on a 6048 x 4024 raw), in sensor orientation,
+/// origin at the top left. `docs/20-auto-crop.md` §4 says how Auto crop reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SonyFocus {
+    /// The width and height of the camera's frame.
+    pub frame: [u16; 2],
+    /// The focus point. Sony writes the frame's centre when it does not know the point, and
+    /// `0 0 0 0` for panoramas.
+    pub point: [u16; 2],
+    /// The AF box around the point (tag 0x2037), when the camera marked it valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub box_size: Option<[u16; 2]>,
 }
 
 /// True when `prefix` (the first bytes of a MakerNote value) starts with one of the Sony headers.
@@ -175,7 +206,49 @@ pub fn parse(tiff: &Tiff, entry: &Entry, sony_family: bool) -> Option<SonyMakerN
             break;
         }
     }
+    note.focus = [TAG_FOCUS_LOCATION2, TAG_FOCUS_LOCATION]
+        .into_iter()
+        .find_map(|tag| shorts::<4>(&reader, ifd.get(tag)?))
+        .map(|[w, h, x, y]| SonyFocus {
+            frame: [w, h],
+            point: [x, y],
+            box_size: ifd
+                .get(TAG_FOCUS_FRAME_SIZE)
+                .and_then(|e| shorts::<3>(&reader, e))
+                .and_then(|[w, h, valid]| (valid != 0 && w > 0 && h > 0).then_some([w, h])),
+        });
+    if let Some(e) = ifd.get(TAG_AF_AREA_MODE_SETTING)
+        && e.ty == field_type::BYTE
+        && e.count == 1
+    {
+        note.af_area_setting = e.inline_uint().and_then(|v| u8::try_from(v).ok());
+    }
     Some(note)
+}
+
+/// Exactly `N` 16-bit values: a SHORT entry of `N` values, or an UNDEFINED one of `2N` bytes read
+/// in the file's byte order (how Sony stores tag 0x2037). `None` for anything else.
+fn shorts<const N: usize>(tiff: &Tiff, entry: &Entry) -> Option<[u16; N]> {
+    let mut out = [0u16; N];
+    match entry.ty {
+        field_type::SHORT if entry.count as usize == N => {
+            let values = tiff.uints(entry, N).ok()?;
+            if values.len() != N {
+                return None;
+            }
+            for (slot, v) in out.iter_mut().zip(&values) {
+                *slot = u16::try_from(*v).ok()?;
+            }
+        }
+        field_type::UNDEFINED if entry.count as usize == 2 * N => {
+            let bytes = tiff.entry_bytes(entry).ok()?;
+            for (i, slot) in out.iter_mut().enumerate() {
+                *slot = tiff.order().u16(&bytes, 2 * i)?;
+            }
+        }
+        _ => return None,
+    }
+    Some(out)
 }
 
 fn other_order(order: ByteOrder) -> ByteOrder {

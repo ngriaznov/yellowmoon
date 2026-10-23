@@ -17,6 +17,8 @@ This file lists every input, dataset and dependency with its licence and how it 
 | HdM ALEXA SXT curve; CIC 2015 figure | no licence / © IS&T | validation only; never shipped |
 | CIE 99 CES; CIE illuminant SPDs | CC BY-SA 4.0 | test and fitting only, fetched by script. The sensor-map and white tables we ship are fitted coefficients, not the SPDs. [HUMAN M1-H4] confirm that's acceptable, or restrict fitting to blackbody/daylight formulas plus our own measured SPDs. |
 | PixelShift200 | CC BY 4.0 | training, with attribution in the model card and `NOTICE` |
+| Open Images V7 photos (listed CC BY 2.0) and boxes (CC BY 4.0) | CC BY 2.0 / CC BY 4.0 | crop model training (`data/models/crop`), every photo credited in `training/crop/CREDITS.tsv.gz`, the dataset in the model card and `NOTICE` |
+| FrameLite (crop labels) | Apache-2.0 (its own training sets have no licence) | offline teacher of the crop model only, never shipped (the owner's decision of 2026-10-23) |
 | Cube++ | CC BY 4.0 | illuminant estimator training, attribution |
 | DND, SID, ELD data, Gehler–Shi, NUS-8, INTEL-TAU | non-commercial / evaluation-only / unstated | evaluation only |
 | LED denoiser, CCMNet, vkdt-nn weights, KARWY, camspec | CC BY-NC / none / unknown / CC BY-NC-SA | avoid |

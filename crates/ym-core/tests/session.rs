@@ -1302,6 +1302,7 @@ fn edit_everything() -> SettingsPatch {
             },
             angle_deg: 3.0,
             aspect: CropAspect::Free,
+            auto: false,
         })),
         orientation: Some(Orientation::Deg90),
         white_pick: Some(Some([0.4167, 0.125])),
@@ -1326,6 +1327,7 @@ fn pasting_takes_every_setting_but_the_crop_the_turn_and_the_white_pick() {
             },
             angle_deg: -2.0,
             aspect: CropAspect::Original,
+            auto: false,
         })),
         orientation: Some(Orientation::Deg180),
         ..Default::default()

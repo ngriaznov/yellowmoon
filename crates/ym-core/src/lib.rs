@@ -27,6 +27,7 @@
 pub mod app;
 pub mod apple_auto;
 pub mod auto;
+pub mod auto_crop;
 pub mod camera;
 pub mod cli_preview;
 pub mod data_dir;

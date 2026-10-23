@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { canvasOf, fitInside } from "../src/screens/crop/cropMath";
 import { configureMock, failNext, lookTilesLoaded, openApp, openPhotos, recordCalls, setUpdateState, setValue, settle, showUpdateReady, watchErrors } from "./helpers/app";
 
 /** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
@@ -451,9 +452,14 @@ test.describe("crop and pick white by mouse", () => {
     await expect(valueBox(page, "Straighten")).toHaveValue("+2.5°");
     await panel.getByRole("button", { name: /^Done/ }).click();
     await expect(page.getByRole("complementary", { name: "Tools" })).toBeVisible();
-    // The browser build shows the cropped picture: the frame is now 0.7 × 0.6 of the photo.
+    // The browser build shows the cropped picture. The frame was 0.7 × 0.6 of the photo from its top left corner, which 2.5° of
+    // straightening leaves empty, so the frame sent is that one fitted inside the straightened photo (no border in photos, docs/11
+    // §Crop): smaller about its own centre, the same shape. The picture is 1500 × 1000 units.
     const src = await page.locator(".ym-photo-cell__image").getAttribute("src");
-    expect(decodeURIComponent(src!)).toMatch(/viewBox="0 0 1050 600"/);
+    const viewBox = /viewBox="([^"]+)"/.exec(decodeURIComponent(src!))![1]!.split(" ").map(Number);
+    const fitted = fitInside({ x: 0, y: 0, width: 0.7, height: 0.6 }, 2.5, canvasOf(8640, 5760, 0));
+    [fitted.x * 1500, fitted.y * 1000, fitted.width * 1500, fitted.height * 1000].forEach((want, i) => expect(Math.abs(viewBox[i]! - want)).toBeLessThan(0.5));
+    expect(viewBox[0]).toBeGreaterThan(0);
     await page.keyboard.press("Meta+z");
     const undone = await page.locator(".ym-photo-cell__image").getAttribute("src");
     expect(decodeURIComponent(undone!)).toMatch(/viewBox="0 0 1500 1000"/);

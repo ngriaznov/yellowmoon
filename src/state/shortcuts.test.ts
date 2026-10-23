@@ -260,6 +260,24 @@ describe("the shortcut table of docs/11", () => {
     expect(act(key("f", {}, document.createElement("button")))).toBe("full-screen");
   });
 
+  it("A toggles Auto crop while the Crop panel is open, and is nothing anywhere else", () => {
+    expect(act(key("a"), { mode: "crop" })).toBe("auto-crop");
+    expect(act(key("A", { shiftKey: true }), { mode: "crop" })).toBe("auto-crop");
+    // A slider or a button of the panel with focus does not use A.
+    const slider = document.createElement("input");
+    slider.type = "range";
+    expect(act(key("a", {}, slider), { mode: "crop" })).toBe("auto-crop");
+    expect(act(key("a", {}, document.createElement("button")), { mode: "crop" })).toBe("auto-crop");
+    // Outside the Crop panel A does nothing (⌘A picks all), and nor does a key held down, a text box or a modifier.
+    expect(act(key("a"))).toBeNull();
+    expect(act(key("a"), { tab: "look" })).toBeNull();
+    expect(act(key("a"), { mode: "pick-white" })).toBeNull();
+    expect(act(cmd("a"), { mode: "crop" })).toBe("pick-all");
+    expect(act({ ...key("a"), repeat: true }, { mode: "crop" })).toBeNull();
+    expect(act(key("a", { altKey: true }), { mode: "crop" })).toBeNull();
+    expect(act(key("a", {}, document.createElement("textarea")), { mode: "crop" })).toBeNull();
+  });
+
   it("ignores a key a control already used", () => {
     expect(act({ ...key("ArrowLeft"), defaultPrevented: true })).toBeNull();
   });

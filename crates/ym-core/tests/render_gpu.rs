@@ -118,6 +118,7 @@ fn gpu_and_cpu_frames_agree_within_the_parity_tolerance() {
                     },
                     angle_deg: 4.0,
                     aspect: ym_core::settings::CropAspect::Free,
+                    auto: false,
                 });
             }),
         ),
@@ -907,6 +908,7 @@ mod view {
             },
             angle_deg: 5.0,
             aspect: CropAspect::Free,
+            auto: false,
         });
     }
 
@@ -1588,6 +1590,7 @@ mod view {
                     },
                     angle_deg: angle,
                     aspect: CropAspect::Free,
+                    auto: false,
                 });
             });
             let cut = small_binding(&gpu, VIEW, bytes);

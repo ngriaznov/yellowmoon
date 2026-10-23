@@ -151,6 +151,7 @@ export function ComponentsPage() {
 function Foundations() {
   const [pressed, setPressed] = useState(true);
   const [auto, setAuto] = useState(true);
+  const [autoCrop, setAutoCrop] = useState(false);
   return (
     <Section id="foundations" title="Foundations" lead="MoonMark, Tag, buttons, links, key hints and the progress bar.">
       <Demo title="MoonMark" frame="free">
@@ -173,6 +174,9 @@ function Foundations() {
           Toggle
         </Button>
         <AutoToggle isAuto={false} onAuto={() => undefined} />
+      </Demo>
+      <Demo title="AutoToggle · both ways (the Crop panel's Auto crop)" frame="free">
+        <AutoToggle aria-label="Auto crop" isAuto={autoCrop} onAuto={() => setAutoCrop(true)} onOff={() => setAutoCrop(false)} />
       </Demo>
       <Demo title="Button · primary, secondary, sizes" frame="free">
         <Button>Open files…</Button>

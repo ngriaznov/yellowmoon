@@ -1,8 +1,9 @@
-"""The photos, the strata and the trial plan of the blind A/B of Apple Auto (docs/19 section 13).
+"""The photos, the strata and the trial plan of the blind A/B tests: Apple Auto against the rule (docs/19 section 13,
+the default) and Auto crop against the original framing (docs/20 section 12, `prepare --test crop`).
 
-Stdlib only. The plan is made from file names, folder names, the steps Apple's model answered and a seed; no picture
-is read here. The page sees only opaque picture paths (`page.py`). The map from a trial to its variants is in
-`plan.json`, which the page never reads.
+Stdlib only. The plan is made from file names, folder names, what Apple's model answered or what Auto crop proposed,
+and a seed; no picture is read here. The page sees only opaque picture paths (`page.py`). The map from a trial to its
+variants is in `plan.json`, which the page never reads.
 """
 
 from __future__ import annotations
@@ -75,6 +76,58 @@ NO_STEPS: Steps = (None,) * len(ANSWER_FIELDS)
 
 
 @dataclass(frozen=True)
+class AbTest:
+    """One test of the kit (`prepare --test NAME`): the picture under test, every picture the plan can show, the
+    comparisons (key -> the variant the picture under test is shown against) and those that decide the gate.
+    `page_kind` tells the page how to show the pictures (`page.py`); None is the look of the Apple Auto test."""
+
+    name: str
+    under_test: str
+    variants: Tuple[str, ...]
+    comparisons: Mapping[str, str]
+    gated: Tuple[str, ...]
+    page_kind: Optional[str] = None
+
+
+#: Apple Auto (`apple`, Apple Auto on) against the rule (`rule`, Apple Auto off, Yellowmoon's own Auto), and with
+#: --with-camera against the camera's JPEG (`camera`, reported, not gated). The default test; a plan without a `test`
+#: field is one of it.
+APPLE_TEST = AbTest(name="apple", under_test=UNDER_TEST, variants=VARIANTS, comparisons=COMPARISONS, gated=GATED)
+#: Auto crop (`crop`: `--auto-crop=original`, docs/20 section 8) against the original framing (`original`: no crop).
+#: Both pictures are made at the defaults with Apple Auto off, so only the framing differs. The page shows both
+#: pictures without a border, at one size when they have one shape (`page_kind` "framing").
+CROP_TEST = AbTest(
+    name="crop",
+    under_test="crop",
+    variants=("crop", "original"),
+    comparisons={"original": "original"},
+    gated=("original",),
+    page_kind="framing",
+)
+#: Every test, by the name `prepare --test` takes and the plan records.
+TESTS: Mapping[str, AbTest] = {test.name: test for test in (APPLE_TEST, CROP_TEST)}
+DEFAULT_TEST = APPLE_TEST.name
+#: The aspect Auto crop proposes for in the crop test (`ym render --auto-crop=ASPECT`): the photo's own shape.
+CROP_ASPECT = "original"
+#: The stratum of the photos the owner thinks need no crop (docs/20 section 12): the gate's rule for well-framed photos
+#: reads it. A folder named `well-framed`, `Well framed` or `well_framed` is this stratum (`is_well_framed`).
+WELL_FRAMED_STRATUM = "well-framed"
+
+
+def ab_test(plan: Mapping[str, object]) -> AbTest:
+    """The test a plan document is of: its `test` field, or the Apple Auto test for a plan without one. A KeyError for
+    a test this kit does not know."""
+    name = plan.get("test", APPLE_TEST.name)
+    return TESTS[str(name)]
+
+
+def is_well_framed(stratum: str) -> bool:
+    """Whether a stratum is the well-framed one: its name, in lower case with spaces and underscores as hyphens, is
+    `well-framed`."""
+    return re.sub(r"[\s_]+", "-", stratum.strip().lower()) == WELL_FRAMED_STRATUM
+
+
+@dataclass(frozen=True)
 class Photo:
     """A raw file found in the photos folder, with the stratum its folder gives it."""
 
@@ -87,7 +140,7 @@ class Photo:
 class PlanPhoto:
     """A photo that is in the test: its number (names its pictures), stem and stratum, the quarter turns that show its
     camera's JPEG upright (0 to 3, from the raw file's orientation), whether it has a camera picture (--with-camera),
-    and the steps, scene and plan of Apple's answer."""
+    and the steps, scene and plan of Apple's answer, or in the crop test what Auto crop proposed."""
 
     number: int
     stem: str
@@ -97,6 +150,9 @@ class PlanPhoto:
     steps: Steps = NO_STEPS
     scene: str = ""
     plan: str = ""
+    #: In the crop test, what Auto crop proposed (the summary of `renders.crop_answer`): the straighten kind, the angle,
+    #: whether it kept the whole frame, where the subject came from, and the first frame's rect and score.
+    auto_crop: Optional[Mapping[str, object]] = None
 
 
 def steps_dict(steps: Sequence[StepValue]) -> Dict[str, StepValue]:
@@ -185,28 +241,30 @@ def comparison_photos(photos: Sequence[PlanPhoto], comparison: str) -> List[Plan
     return list(photos)
 
 
-def build_trials(photos: Sequence[PlanPhoto], seed: int) -> List[Trial]:
-    """Every comparison of every photo (one trial against the rule, and one against the camera's JPEG when the photo
-    has one), shuffled, with the sides chosen at random.
+def build_trials(photos: Sequence[PlanPhoto], seed: int, test: AbTest = APPLE_TEST) -> List[Trial]:
+    """Every comparison of every photo, shuffled, with the sides chosen at random. In the Apple Auto test that is one
+    trial against the rule, and one against the camera's JPEG when the photo has one; in the crop test one trial
+    against the original framing.
 
-    Within each comparison the sides are balanced exactly (half the trials have `apple` on the left, to within one
-    when the count is odd) and then shuffled, so no comparison has a side bias. The trial ids are 1, 2, ... in the order
-    shown. Everything is drawn from one `random.Random(seed)`, so the same photos and seed give the same plan.
+    Within each comparison the sides are balanced exactly (half the trials have the picture under test on the left, to
+    within one when the count is odd) and then shuffled, so no comparison has a side bias. The trial ids are 1, 2, ...
+    in the order shown. Everything is drawn from one `random.Random(seed)`, so the same photos and seed give the same
+    plan.
     """
     rng = random.Random(seed)
     drafts: List[Tuple[PlanPhoto, str, str, str]] = []
-    for name, variant in COMPARISONS.items():
+    for name, variant in test.comparisons.items():
         members = comparison_photos(photos, name)
         left_count = len(members) // 2
         if len(members) % 2 and rng.random() < 0.5:
             left_count += 1  # the odd trial goes to either side, at random, so no side is favoured
-        apple_left = [True] * left_count + [False] * (len(members) - left_count)
-        rng.shuffle(apple_left)
-        for photo, left_is_apple in zip(members, apple_left):
-            if left_is_apple:
-                left, right = UNDER_TEST, variant
+        tested_left = [True] * left_count + [False] * (len(members) - left_count)
+        rng.shuffle(tested_left)
+        for photo, left_is_tested in zip(members, tested_left):
+            if left_is_tested:
+                left, right = test.under_test, variant
             else:
-                left, right = variant, UNDER_TEST
+                left, right = variant, test.under_test
             drafts.append((photo, name, left, right))
     rng.shuffle(drafts)
     return [
@@ -228,6 +286,7 @@ def build_plan(
     seed: int,
     provenance: Mapping[str, object],
     details: Optional[Mapping[int, Mapping[str, object]]] = None,
+    test: AbTest = APPLE_TEST,
 ) -> Dict[str, object]:
     """The plan document (`plan.json`): the photos, their pictures, and the trials in the order the page shows them.
 
@@ -240,7 +299,11 @@ def build_plan(
     Each photo entry and each trial records Apple's steps, scene and plan (scoring reads them for the diagnostics; a
     step the model left empty is `null`) and each
     trial side the quarter turns of its picture (`turns`; the page reads them from `plan.js`).
+
+    The crop test's plan (`test` CROP_TEST) is `build_crop_plan`'s.
     """
+    if test.name != APPLE_TEST.name:
+        return build_crop_plan(photos, seed, provenance, details)
     trials = build_trials(photos, seed)
     by_number = {photo.number: photo for photo in photos}
     extra = details or {}
@@ -306,6 +369,84 @@ def build_plan(
         "comparisons": comparisons,
         "gated": [name for name in GATED if name in comparisons],
         "variants": {variant: {"code": variant_code(seed, variant)} for variant in VARIANTS},
+        "photos": photo_entries,
+        "trials": trial_entries,
+    }
+
+
+def build_crop_plan(
+    photos: Sequence[PlanPhoto],
+    seed: int,
+    provenance: Mapping[str, object],
+    details: Optional[Mapping[int, Mapping[str, object]]] = None,
+) -> Dict[str, object]:
+    """The plan document of the crop test: Auto crop (`crop`) against the original framing (`original`), one trial
+    per photo.
+
+    It has the shape of the Apple Auto test's plan with `test: "crop"`; each photo entry and each trial records what
+    Auto crop proposed (`auto_crop`, for the diagnostics) instead of Apple's steps. Both renders are upright, so every
+    turn is 0. The plan id is a hash of the test, the design, the provenance and every photo's proposal, so it never
+    equals an Apple Auto plan's id. `details` adds fields to a photo's entry; it is not part of the id.
+    """
+    test = CROP_TEST
+    trials = build_trials(photos, seed, test)
+    by_number = {photo.number: photo for photo in photos}
+    extra = details or {}
+    photo_entries: List[Dict[str, object]] = []
+    for photo in photos:
+        entry: Dict[str, object] = {
+            "number": photo.number,
+            "stem": photo.stem,
+            "stratum": photo.stratum,
+            "auto_crop": dict(photo.auto_crop or {}),
+            "pictures": {
+                variant: picture_relpath(seed, variant, photo.number, photo.stem) for variant in test.variants
+            },
+            "turns": {variant: 0 for variant in test.variants},
+        }
+        entry.update(extra.get(photo.number, {}))
+        photo_entries.append(entry)
+    trial_entries: List[Dict[str, object]] = []
+    for trial in trials:
+        photo = by_number[trial.number]
+        trial_entries.append(
+            {
+                "id": trial.id,
+                "number": trial.number,
+                "stem": trial.stem,
+                "stratum": trial.stratum,
+                "comparison": trial.comparison,
+                "left": trial.left,
+                "right": trial.right,
+                "auto_crop": dict(photo.auto_crop or {}),
+                "pictures": {
+                    "left": picture_relpath(seed, trial.left, trial.number, trial.stem),
+                    "right": picture_relpath(seed, trial.right, trial.number, trial.stem),
+                },
+                "turns": {"left": 0, "right": 0},
+            }
+        )
+    comparisons = [name for name in test.comparisons if comparison_photos(photos, name)]
+    identity = {
+        "test": test.name,
+        "version": PLAN_VERSION,
+        "seed": seed,
+        "provenance": dict(provenance),
+        "photos": [[p.number, p.stem, p.stratum, dict(p.auto_crop or {})] for p in photos],
+        "trials": [[t.id, t.comparison, t.left, t.right] for t in trials],
+    }
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    return {
+        "format": PLAN_FORMAT,
+        "version": PLAN_VERSION,
+        "test": test.name,
+        "plan_id": digest.hexdigest()[:12],
+        "seed": seed,
+        "provenance": dict(provenance),
+        "under_test": test.under_test,
+        "comparisons": comparisons,
+        "gated": [name for name in test.gated if name in comparisons],
+        "variants": {variant: {"code": variant_code(seed, variant)} for variant in test.variants},
         "photos": photo_entries,
         "trials": trial_entries,
     }

@@ -51,6 +51,7 @@ const calls: Row[] = [
   ["setMenuState", () => tauriApi.setMenuState({ copy_settings: true, paste_settings: false, paste_settings_to_picked: false }), "set_menu_state", { state: { copy_settings: true, paste_settings: false, paste_settings_to_picked: false } }, true],
   ["histogram", () => tauriApi.histogram(3), "histogram", { photoId: 3 }],
   ["chromaScatter", () => tauriApi.chromaScatter(3), "chroma_scatter", { photoId: 3 }],
+  ["suggestCrop", () => tauriApi.suggestCrop(3, "square", 90), "suggest_crop", { photoId: 3, aspect: "square", orientation: 90 }],
   ["viewportInfo", () => tauriApi.viewportInfo(), "viewport_info", undefined],
   ["viewportSetRect", () => tauriApi.viewportSetRect(rect), "viewport_set_rect", { rect }, true],
   ["viewportInput", () => tauriApi.viewportInput({ kind: "pan", dx: 1, dy: 2 }), "viewport_input", { event: { kind: "pan", dx: 1, dy: 2 } }, true],

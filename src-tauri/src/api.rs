@@ -34,11 +34,12 @@ use crate::thumbs::Thumbnails;
 use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
     AppError, AppInfo, AppleAutoStatus, ApplyScope, ChromaSample, ChromaScatter, CliLinkResult,
-    CliLinkStatus, DisplayLut, ErrorScope, ExportEstimate, ExportJob, ExportJobId, HistogramData,
-    Look, LookId, LookInput, LooksImportProgress, LooksImportResult, OpenSummary, PasteReport,
-    PhotoId, PhotoProgress, PixelSample, Preferences, PreferencesPatch, ResolvedSettings,
-    SessionChange, SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo,
-    ViewportInput, ViewportMode, ViewportRect, WatchStatus, convert,
+    CliLinkStatus, CropAspect, CropSuggestion, DisplayLut, ErrorScope, ExportEstimate, ExportJob,
+    ExportJobId, HistogramData, Look, LookId, LookInput, LooksImportProgress, LooksImportResult,
+    OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample, Preferences,
+    PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
+    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
+    WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -687,6 +688,28 @@ impl AppApi {
             .map_err(job_error)?
             .map_err(AppError::from)?;
         convert(&scatter)
+    }
+
+    /// `suggest_crop`: Auto crop's proposal for a photo at an aspect and orientation
+    /// (`docs/20-auto-crop.md` §3). The first call for a photo renders its picture and analyses it
+    /// on the CPU; later calls only make the frames.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] for an unknown, failed or developing photo, and when the picture cannot be
+    /// made.
+    pub fn suggest_crop(
+        &self,
+        id: PhotoId,
+        aspect: CropAspect,
+        orientation: Orientation,
+    ) -> Result<CropSuggestion, AppError> {
+        let suggestion = self
+            .core
+            .session
+            .suggest_crop(core_id(id), convert(&aspect)?, convert(&orientation)?)
+            .map_err(session_error)?;
+        convert(&suggestion)
     }
 
     // --- Viewport -----------------------------------------------------------------------------

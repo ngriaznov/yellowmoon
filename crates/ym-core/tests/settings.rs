@@ -110,6 +110,7 @@ fn rich() -> DevelopSettings {
         },
         angle_deg: -2.5,
         aspect: CropAspect::FourByFive,
+        auto: false,
     });
     s.orientation = Orientation::Deg90;
     s.white_pick = Some([0.25, 0.75]);

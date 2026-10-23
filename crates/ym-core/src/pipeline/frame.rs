@@ -3488,6 +3488,7 @@ mod sampler_tests {
                             },
                             angle_deg: angle,
                             aspect: CropAspect::Free,
+                            auto: false,
                         }),
                         ..DevelopSettings::default()
                     };

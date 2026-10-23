@@ -320,6 +320,7 @@ fn apply_variant(shot: &Shot, pct: f64, straighten: bool) {
         },
         angle_deg: 5.0,
         aspect: CropAspect::Free,
+        auto: false,
     });
     shot.edit(SettingsPatch {
         output_sharpening: Some(pct),

@@ -1,0 +1,14 @@
+# Python dependencies of the learned Auto crop pilot (training/crop). Not shipped.
+#
+# Local (smoke run, tests, evaluation on the held-out previews), CPU:
+#   pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r training/crop/requirements.txt
+# The GPU stages run on Modal, which builds its own image (modal_app.py); torch 2.6.0 matches what FrameLite's
+# inference code pins.
+numpy>=2.0            # reproduced with 2.2.6
+pillow>=11            # reproduced with 12.2.0
+modal>=1.6            # reproduced with 1.6.2; only to launch the GPU stages
+pytest>=8
+# The teacher's inference code (FrameLite, Apache-2.0) and its own pins (transformers 5.16.1, peft 0.20.0,
+# accelerate 1.14.0, safetensors 0.8.0, huggingface-hub 1.29.0, einops 0.8.2) are installed only where the
+# teacher runs: the Modal labelling image, or a local venv for the smoke run (README).

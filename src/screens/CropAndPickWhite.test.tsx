@@ -4,6 +4,7 @@ import type { SettingsPatch } from "../api/types";
 import { mockRect } from "../test/raf";
 import { openPhotos, renderApp, valueOf } from "../test/harness";
 import type { Harness, UpdateSpy } from "../test/harness";
+import { canvasOf, fitInside, FULL_RECT } from "./crop/cropMath";
 
 let h: Harness | undefined;
 afterEach(() => {
@@ -141,7 +142,8 @@ describe("the Crop panel", () => {
     expect(photo().querySelector("img")?.getAttribute("src")).toContain("rotate(3.5");
     await h!.user.click(within(crop()).getByRole("button", { name: /^Done/ }));
     await screen.findByRole("complementary", { name: "Tools" });
-    expect(settings().values.crop).toEqual({ rect: { x: 0, y: 0, width: 1, height: 1 }, angle_deg: 3.5, aspect: "original" });
+    // The frame sent is the whole photo fitted inside the photo straightened by 3.5°: the largest 3:2 frame with no empty corner.
+    expect(settings().values.crop).toEqual({ rect: fitInside(FULL_RECT, 3.5, canvasOf(8640, 5760, 0)), angle_deg: 3.5, aspect: "original" });
     expect(h!.store.getState().canUndo).toBe(true);
     await h!.user.keyboard("{Meta>}z{/Meta}");
     await waitFor(() => expect(settings().values.crop).toBeNull());

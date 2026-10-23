@@ -21,7 +21,8 @@
 //!          0x2001 (32-byte header + JPEG, a generated gradient or the caller's own JPEG),
 //!          FileFormat 0xB000, SonyModelID 0xB001, enciphered table 0x9405 or 0x9416 holding
 //!          SonyISO, the exposure time (as a 1/256-stop word and as a fraction), the F-number and,
-//!          in 0x9416, the focal length
+//!          in 0x9416, the focal length; optionally FocusLocation 0x2027, FocusLocation2 0x204A,
+//!          FocusFrameSize 0x2037 and AFAreaModeSetting 0x201C
 //! SR2Private  0x7200 offset, 0x7201 length, 0x7221 key
 //! raw IFD  NewSubFileType 0, size, BitsPerSample, Compression, Photometric 32803, strips or
 //!          tiles, CFARepeatPatternDim, CFAPattern, 0x7000, 0x7010, 0x7032, 0x7035, 0x7037,
@@ -766,6 +767,10 @@ pub struct ArwBuilder {
     payload: Option<std::sync::Arc<dyn RawPayload>>,
     sony_raw_file_type: Option<u16>,
     omit_bits_per_sample: bool,
+    focus_location: Option<[u16; 4]>,
+    focus_location2: Option<[u16; 4]>,
+    focus_frame_size: Option<[u16; 3]>,
+    af_area_setting: Option<u8>,
 }
 
 impl ArwBuilder {
@@ -817,7 +822,35 @@ impl ArwBuilder {
             payload: None,
             sony_raw_file_type: None,
             omit_bits_per_sample: false,
+            focus_location: None,
+            focus_location2: None,
+            focus_frame_size: None,
+            af_area_setting: None,
         }
+    }
+
+    /// Writes maker note tag 0x2027 `FocusLocation`: frame width and height, then the point.
+    pub fn focus_location(mut self, values: [u16; 4]) -> Self {
+        self.focus_location = Some(values);
+        self
+    }
+
+    /// Writes maker note tag 0x204A `FocusLocation2`.
+    pub fn focus_location2(mut self, values: [u16; 4]) -> Self {
+        self.focus_location2 = Some(values);
+        self
+    }
+
+    /// Writes maker note tag 0x2037 `FocusFrameSize`: width, height and the valid flag (257).
+    pub fn focus_frame_size(mut self, values: [u16; 3]) -> Self {
+        self.focus_frame_size = Some(values);
+        self
+    }
+
+    /// Writes maker note tag 0x201C `AFAreaModeSetting`.
+    pub fn af_area_setting(mut self, value: u8) -> Self {
+        self.af_area_setting = Some(value);
+        self
     }
 
     /// Leaves the `BitsPerSample` tag out of the raw directory (for detection tests).
@@ -1787,6 +1820,20 @@ fn maker_note(b: &ArwBuilder, plan: &Plan) -> Vec<u8> {
         data.extend_from_slice(&[0u8; 4]);
         data.extend_from_slice(&jpeg);
         entries.push(Ent::undefined(0x2001, &data));
+    }
+    if let Some(v) = b.focus_location {
+        entries.push(Ent::short(0x2027, &v));
+    }
+    if let Some(v) = b.focus_location2 {
+        entries.push(Ent::short(0x204A, &v));
+    }
+    if let Some(v) = b.focus_frame_size {
+        // Sony stores it as six undefined bytes that ExifTool reads as int16u[3].
+        let bytes: Vec<u8> = v.iter().flat_map(|w| w.to_le_bytes()).collect();
+        entries.push(Ent::undefined(0x2037, &bytes));
+    }
+    if let Some(v) = b.af_area_setting {
+        entries.push(Ent::byte(0x201C, &[v]));
     }
     match b.resolved_iso_table() {
         SonyIsoTable::Tag9405 => entries.push(Ent::undefined(0x9405, &sony_table(b, true))),

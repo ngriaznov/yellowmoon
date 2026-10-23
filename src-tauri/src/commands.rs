@@ -17,11 +17,12 @@ use crate::api::AppApi;
 use crate::system;
 use crate::wire::{
     self, AppError, AppInfo, AppleAutoStatus, ApplyScope, ChromaSample, ChromaScatter,
-    CliLinkResult, CliLinkStatus, DisplayLut, ErrorScope, ExportEstimate, ExportJob, ExportJobId,
-    HistogramData, Look, LookId, LookInput, LooksImportResult, MenuState, Num, OpenKind,
-    PasteReport, PhotoId, PixelSample, Preferences, PreferencesPatch, ResolvedSettings,
-    SessionChange, SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo,
-    ViewportInput, ViewportMode, ViewportRect, WatchStatus,
+    CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DisplayLut, ErrorScope,
+    ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId, LookInput,
+    LooksImportResult, MenuState, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample,
+    Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
+    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
+    WatchStatus,
 };
 
 /// The managed state: the command handlers, or why the application could not start.
@@ -275,6 +276,21 @@ pub async fn chroma_scatter(
     photo_id: PhotoId,
 ) -> Result<ChromaScatter, AppError> {
     run(&state, move |api| api.chroma_scatter(photo_id)).await
+}
+
+/// `suggest_crop(photo_id, aspect, orientation)`: Auto crop's proposal (`docs/20-auto-crop.md` §3).
+#[tauri::command]
+#[specta::specta]
+pub async fn suggest_crop(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+    aspect: CropAspect,
+    orientation: Orientation,
+) -> Result<CropSuggestion, AppError> {
+    run(&state, move |api| {
+        api.suggest_crop(photo_id, aspect, orientation)
+    })
+    .await
 }
 
 // --- Viewport ---------------------------------------------------------------------------------
@@ -664,6 +680,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             set_menu_state,
             histogram,
             chroma_scatter,
+            suggest_crop,
             viewport_info,
             viewport_set_rect,
             viewport_input,

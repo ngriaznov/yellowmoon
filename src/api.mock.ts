@@ -49,6 +49,8 @@ import type {
   CliLinkResult,
   CliLinkStatus,
   ColorBalancePoint,
+  CropAspect,
+  CropSuggestion,
   DevelopSettings,
   DisplayLut,
   DownloadFound,
@@ -67,6 +69,7 @@ import type {
   LooksImportResult,
   MenuState,
   OpenKind,
+  Orientation,
   PackageId,
   PasteReport,
   PercentSetting,
@@ -103,7 +106,7 @@ import { hexChroma, sceneScatter } from "./fixtures/warp";
 import { sceneHistogram } from "./fixtures/histogram";
 import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
-import { fitInCell, imageAspectOf } from "./screens/crop/cropMath";
+import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
 import { diffSettings } from "./state/history";
 import { bytesToUrl } from "./state/photo";
 
@@ -1149,6 +1152,63 @@ const fileNameOf = (path: string): string => path.replace(/[\\/]+$/, "").split(/
 // ---------------------------------------------------------------------------
 // The mock
 // ---------------------------------------------------------------------------
+
+/**
+ * The mock's Auto crop (`docs/20-auto-crop.md` §10): a photo whose file name has "keep" in it is level and keeps the largest frame of the
+ * aspect; any other is levelled by 1.4° and cropped to 90 % of that frame, a little to the left of the centre.
+ */
+export function mockCropSuggestion(summary: PhotoSummary, aspect: CropAspect, orientation: Orientation): CropSuggestion {
+  const turned = orientation === 90 || orientation === 270;
+  const canvas = turned ? summary.height_px / summary.width_px : summary.width_px / summary.height_px;
+  const landscape = canvas >= 1;
+  const ratio =
+    aspect === "square"
+      ? 1
+      : aspect === "four_by_five"
+        ? landscape
+          ? 5 / 4
+          : 4 / 5
+        : aspect === "sixteen_by_nine"
+          ? landscape
+            ? 16 / 9
+            : 9 / 16
+          : canvas;
+  const keep = summary.file_name.toLowerCase().includes("keep");
+  const angle = keep ? 0 : 1.4;
+  const t = (angle * Math.PI) / 180;
+  const [c, s] = [Math.abs(Math.cos(t)), Math.abs(Math.sin(t))];
+  // The largest frame of the ratio with no empty corner, on a canvas `canvas` wide and 1 high.
+  const h = Math.min(canvas / (ratio * c + s), 1 / (ratio * s + c));
+  const w = (ratio * h) / canvas;
+  const round = (v: number) => Math.round(v * 1e6) / 1e6;
+  // Every frame is inside the straightened photo by the panel's rule (`fitInside`, the core's `fit_inside`: no empty corner, 2 px from
+  // the photo's edge), as the core's frames are. The largest frame shrinks by that margin; the 90 % frame is 90 % of it.
+  const canvasPx = canvasOf(summary.width_px, summary.height_px, orientation);
+  const centred = (width: number, height: number, dx: number) =>
+    fitInside(
+      {
+        x: round(Math.min(Math.max((1 - width) / 2 + dx, 0), 1 - width)),
+        y: round((1 - height) / 2),
+        width: round(width),
+        height: round(height),
+      },
+      angle,
+      canvasPx,
+    );
+  // Scores are the frames' overlap with the crop model's crop (`docs/20` §7).
+  const whole = { rect: centred(w, h, 0), score: 1 };
+  if (keep) return { straighten: "level", angle_deg: 0, frames: [whole], keep: true, subject: "picture" };
+  return {
+    straighten: "rotate",
+    angle_deg: angle,
+    frames: [
+      { rect: centred(0.9 * whole.rect.width, 0.9 * whole.rect.height, -0.03), score: 0.93 },
+      { ...whole, score: 0.78 },
+    ],
+    keep: false,
+    subject: "picture",
+  };
+}
 
 interface PhotoRecord {
   scene: Scene;
@@ -2310,6 +2370,15 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const rec = photo(photoId);
         // The photo's colours at the warp's input, seeded by the photo so the dots are the same on every run.
         return { points: sceneScatter(warpInput(rec), 7919 * photoId + 17) };
+      }),
+
+    suggestCrop: (photoId, aspect, orientation) =>
+      runAsync("suggestCrop", async (): Promise<CropSuggestion> => {
+        const rec = photo(photoId);
+        if (rec.phase < 3) fail("open", "This photo is still being developed. Try again in a moment.");
+        // The core renders and analyses the photo's picture first: answer after a moment.
+        await new Promise((resolve) => setTimeout(resolve, 150 / options.speed));
+        return mockCropSuggestion(rec.summary, aspect, orientation);
       }),
 
     viewportInfo: () => run("viewportInfo", (): ViewportInfo | null => (options.viewport === null ? null : { backend: options.viewport })),

@@ -123,7 +123,7 @@ jobs:
   # Scripts under tools/fetch: shellcheck plus the stdlib unit tests, which run against a local HTTP
   # server and never touch the network (the corpus hosts are not needed to prove the script logic). The same job runs the other
   # stdlib-only Python tool tests: tools/oracle (the metadata gate's command line), tools/looks (the ARRI package fingerprints),
-  # tools/golden (the LibRaw oracle verdicts) and tools/eval/ab (the blind A/B kit of Apple Auto, docs/19 section 13), and
+  # tools/golden (the LibRaw oracle verdicts) and tools/eval/ab (the blind A/B kit of Apple Auto and of Auto crop, docs/19 and docs/20), and
   # shellchecks the developer, oracle and A/B scripts.
   fetch-tools:
     if: github.event_name != 'schedule'
