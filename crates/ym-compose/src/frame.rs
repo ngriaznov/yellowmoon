@@ -11,18 +11,17 @@ const SIZES: [f64; 6] = [1.0, 0.94, 0.88, 0.82, 0.76, 0.70];
 const GRID: usize = 9;
 /// The band inside a frame's edges where the subject counts as cut, over the canvas's short side.
 const CUT_BAND: f64 = 0.03;
-/// Weight of the subject mass a frame loses.
+/// Weight of the subject mass a frame loses against the kept frame.
 const LOST_WEIGHT: f64 = 4.0;
+/// Weight of the subject mass a frame gains over the kept frame: less than a loss, so the
+/// photographer's framing wins unless the gain is large.
+const GAIN_WEIGHT: f64 = 1.0;
 /// Weight of the subject mass in the band inside a frame's edges.
 const CUT_WEIGHT: f64 = 2.0;
-/// Weight of the placement gain.
-const GAIN_WEIGHT: f64 = 0.6;
+/// Weight of a frame's shift from the kept frame's centre, in the kept frame's sides.
+const SHIFT_WEIGHT: f64 = 0.5;
 /// Weight of the area given up.
 const AREA_WEIGHT: f64 = 1.5;
-/// Spread of the placement around a thirds point, in the frame's fractions.
-const PLACEMENT_SIGMA: f64 = 0.1;
-/// The centre's placement relative to a thirds point's.
-const CENTRE_PLACEMENT: f64 = 0.9;
 /// The camera's AF box grows by this fraction of its size on each side before frames must hold it.
 const BOX_GROWTH: f64 = 0.1;
 /// A frame overlapping a chosen one by more than this intersection over union is dropped.
@@ -250,9 +249,6 @@ struct Canvas {
     cells_h: usize,
     subject: SummedArea,
     distraction: SummedArea,
-    /// The subject times each cell centre's x and y in canvas pixels, for its centroid.
-    subject_x: SummedArea,
-    subject_y: SummedArea,
     rho: f64,
 }
 
@@ -276,8 +272,6 @@ impl Canvas {
             cells_h,
             subject: SummedArea::new(0, 0, &[]),
             distraction: SummedArea::new(0, 0, &[]),
-            subject_x: SummedArea::new(0, 0, &[]),
-            subject_y: SummedArea::new(0, 0, &[]),
             rho: maps.rho,
         };
         if !have_maps {
@@ -313,19 +307,8 @@ impl Canvas {
                 }
             }
         }
-        let mut s_x = vec![0.0; n];
-        let mut s_y = vec![0.0; n];
-        for j in 0..cells_h {
-            for i in 0..cells_w {
-                let k = j * cells_w + i;
-                s_x[k] = s[k] * (i as f64 + 0.5) * sx;
-                s_y[k] = s[k] * (j as f64 + 0.5) * sy;
-            }
-        }
         canvas.subject = SummedArea::new(cells_w, cells_h, &s);
         canvas.distraction = SummedArea::new(cells_w, cells_h, &d);
-        canvas.subject_x = SummedArea::new(cells_w, cells_h, &s_x);
-        canvas.subject_y = SummedArea::new(cells_w, cells_h, &s_y);
         canvas
     }
 
@@ -378,32 +361,6 @@ impl Canvas {
                 self.height / self.cells_h as f64,
             )
         }
-    }
-
-    /// The placement of the subject's centroid inside `a` (0 when no subject is inside).
-    fn placement(&self, a: &Area) -> f64 {
-        let mass = self.sum(&self.subject, a);
-        if mass <= 1e-12 {
-            return 0.0;
-        }
-        let cx = self.sum(&self.subject_x, a) / mass;
-        let cy = self.sum(&self.subject_y, a) / mass;
-        let (u, v) = ((cx - a.x0) / a.width(), (cy - a.y0) / a.height());
-        let near = |px: f64, py: f64| {
-            let d2 = (u - px) * (u - px) + (v - py) * (v - py);
-            (-d2 / (2.0 * PLACEMENT_SIGMA * PLACEMENT_SIGMA)).exp()
-        };
-        let third = 1.0 / 3.0;
-        let mut best = CENTRE_PLACEMENT * near(0.5, 0.5);
-        for (px, py) in [
-            (third, third),
-            (2.0 * third, third),
-            (third, 2.0 * third),
-            (2.0 * third, 2.0 * third),
-        ] {
-            best = best.max(near(px, py));
-        }
-        best
     }
 }
 
@@ -484,15 +441,15 @@ fn camera_box(hint: &CameraHint, quarter_turns: u8, canvas: &Canvas) -> Option<[
     ])
 }
 
-/// `r` less the bands `band` px wide inside its edges that lie more than one cell inside the kept
-/// frame's: the subject between the two is what `r` cuts (`docs/20` §7 step 5).
-fn without_bands(r: &Area, kept: &Area, band: f64, (cell_x, cell_y): (f64, f64)) -> Area {
+/// `r` less the bands `band` px wide inside its edges that lie more than one cell inside `outer`'s:
+/// the subject between the two is what `r` cuts (`docs/20` §7 step 5).
+fn without_bands(r: &Area, outer: &Area, band: f64, (cell_x, cell_y): (f64, f64)) -> Area {
     let shrink = |active: bool| if active { band } else { 0.0 };
     Area {
-        x0: r.x0 + shrink(r.x0 > kept.x0 + cell_x),
-        x1: r.x1 - shrink(r.x1 < kept.x1 - cell_x),
-        y0: r.y0 + shrink(r.y0 > kept.y0 + cell_y),
-        y1: r.y1 - shrink(r.y1 < kept.y1 - cell_y),
+        x0: r.x0 + shrink(r.x0 > outer.x0 + cell_x),
+        x1: r.x1 - shrink(r.x1 < outer.x1 - cell_x),
+        y0: r.y0 + shrink(r.y0 > outer.y0 + cell_y),
+        y1: r.y1 - shrink(r.y1 < outer.y1 - cell_y),
     }
 }
 
@@ -553,10 +510,25 @@ pub(crate) fn propose(
     // What every score is measured against: the kept frame's.
     let kept_subject = canvas.sum(&canvas.subject, &kept);
     let kept_distraction = canvas.sum(&canvas.distraction, &kept);
-    let kept_placement = canvas.placement(&kept);
     let kept_area = kept.area();
     let band = CUT_BAND * cw.min(ch);
     let cell = canvas.cell_size();
+    // The subject mass a frame's edges slice through: in the bands inside its edges that lie
+    // inside the canvas (an edge on the canvas's border cuts nothing). The kept frame of an aspect
+    // other than the canvas's can slice through the subject too, and a frame that slices less
+    // gains.
+    let whole = Area {
+        x0: 0.0,
+        y0: 0.0,
+        x1: cw,
+        y1: ch,
+    };
+    let cut_of = |r: &Area| {
+        canvas.sum(&canvas.subject, r)
+            - canvas.sum(&canvas.subject, &without_bands(r, &whole, band, cell))
+    };
+    let kept_cut = cut_of(&kept);
+    let (kcx, kcy) = (0.5 * (kept.x0 + kept.x1), 0.5 * (kept.y0 + kept.y1));
 
     // With a camera box, frames that cut it are dropped, the kept frame too.
     let holds_box = |r: &Area| {
@@ -572,13 +544,17 @@ pub(crate) fn propose(
             continue;
         }
         let inside = canvas.sum(&canvas.subject, r);
-        let lost = kept_subject - inside;
-        let inner = without_bands(r, &kept, band, cell);
-        let cut = inside - canvas.sum(&canvas.subject, &inner);
+        let lost = (kept_subject - inside).max(0.0);
+        let gained = (inside - kept_subject).max(0.0);
+        let cut = cut_of(r) - kept_cut;
         let removed = canvas.rho * (kept_distraction - canvas.sum(&canvas.distraction, r));
-        let gain = canvas.placement(r) - kept_placement;
+        // How far the frame moves the photo's centre: the photographer framed it, so a frame
+        // moves only for what it holds or leaves out.
+        let shift = (0.5 * (r.x0 + r.x1) - kcx).hypot(0.5 * (r.y0 + r.y1) - kcy)
+            / (kept.x1 - kept.x0).max(kept.y1 - kept.y0);
         let a = r.area() / kept_area;
-        let score = -LOST_WEIGHT * lost - CUT_WEIGHT * cut + removed + GAIN_WEIGHT * gain
+        let score = -LOST_WEIGHT * lost + GAIN_WEIGHT * gained - CUT_WEIGHT * cut + removed
+            - SHIFT_WEIGHT * shift
             - AREA_WEIGHT * (1.0 - a);
         scored.push((i, score));
     }
@@ -672,20 +648,6 @@ mod tests {
 
     fn run(m: &SubjectMaps, hint: &CameraHint, r: FrameRequest) -> Proposal {
         propose(MW * 4, MH * 4, m, hint, &r)
-    }
-
-    /// The subject's centroid in the canvas fractions of `r` (quarter turns 0, angle 0).
-    fn centroid_in(m: &SubjectMaps, r: &Rect) -> (f64, f64) {
-        let (mut s, mut sx, mut sy) = (0.0, 0.0, 0.0);
-        for y in 0..MH {
-            for x in 0..MW {
-                let v = m.subject[y * MW + x];
-                s += v;
-                sx += v * (x as f64 + 0.5) / MW as f64;
-                sy += v * (y as f64 + 0.5) / MH as f64;
-            }
-        }
-        ((sx / s - r.x) / r.width, (sy / s - r.y) / r.height)
     }
 
     fn holds_rect(outer: &Rect, inner: (f64, f64, f64, f64)) -> bool {
@@ -857,43 +819,71 @@ mod tests {
     }
 
     #[test]
-    fn a_subject_at_the_far_left_moves_towards_a_third() {
-        // The subject at the left of the kept square of a landscape canvas, on the upper third.
+    fn a_subject_the_centred_frame_slices_is_brought_inside_and_one_inside_stays() {
+        // The kept square of a landscape canvas spans cells 32 to 160 across. A subject across its
+        // left edge: the square slides left to hold it whole.
+        let m = maps(&[(24, 36, 40, 50)], &[], 0.0);
+        let p = run(
+            &m,
+            &CameraHint::default(),
+            request(0, Ratio::Fixed(1.0), 0.0),
+        );
+        assert!(!p.keep, "{p:?}");
+        let s = (
+            24.0 / MW as f64,
+            36.0 / MH as f64,
+            40.0 / MW as f64,
+            50.0 / MH as f64,
+        );
+        assert!(holds_rect(&p.frames[0].rect, s), "{p:?}");
+        // A subject well inside the centred square, if off its centre, leaves it where the
+        // photographer put it.
         let m = maps(&[(42, 36, 54, 50)], &[], 0.0);
         let p = run(
             &m,
             &CameraHint::default(),
             request(0, Ratio::Fixed(1.0), 0.0),
         );
-        let kept = Rect {
-            x: 1.0 / 6.0,
-            y: 0.0,
-            width: 2.0 / 3.0,
-            height: 1.0,
-        };
-        let (kx, _) = centroid_in(&m, &kept);
-        let (fx, fy) = centroid_in(&m, &p.frames[0].rect);
-        assert!(!p.keep, "{p:?}");
-        assert!(
-            (fx - 1.0 / 3.0).abs() < (kx - 1.0 / 3.0).abs() - 0.1,
-            "the subject sits at {fx:.3} of the frame, {kx:.3} of the kept one"
-        );
-        assert!((fy - 1.0 / 3.0).abs() < 0.05);
-        // With Original at 0° no frame of 0.70 or more gains enough to pay for its area.
+        assert!(p.keep, "{p:?}");
+        // With Original at 0° the whole photo is kept: nothing is sliced or left out.
         let p = run(&m, &CameraHint::default(), request(0, Ratio::Canvas, 0.0));
         assert!(p.keep);
     }
 
     #[test]
+    fn a_gain_moves_the_frame_only_when_it_is_large() {
+        // A subject in the centred square, and a part of it outside the square's left edge (cells
+        // 20 to 28, the square spans 32 to 160). A small part (6 % of the mass) is not worth moving
+        // the photographer's framing for, though holding it would gain mass.
+        let square = request(0, Ratio::Fixed(1.0), 0.0);
+        let m = maps(&[(80, 48, 112, 80), (20, 60, 28, 68)], &[], 0.0);
+        let p = run(&m, &CameraHint::default(), square);
+        assert!(p.keep, "{p:?}");
+        // A large one (27 %) is: the square slides left to hold it.
+        let m = maps(&[(80, 48, 112, 80), (20, 40, 28, 88)], &[], 0.0);
+        let p = run(&m, &CameraHint::default(), square);
+        assert!(!p.keep, "{p:?}");
+        let part = (
+            20.0 / MW as f64,
+            40.0 / MH as f64,
+            28.0 / MW as f64,
+            88.0 / MH as f64,
+        );
+        assert!(holds_rect(&p.frames[0].rect, part), "{p:?}");
+    }
+
+    #[test]
     fn the_camera_box_is_never_cut() {
-        let m = maps(&[(42, 36, 54, 50)], &[], 0.0);
+        // A subject across the kept square's left edge pulls the square left ...
+        let m = maps(&[(24, 36, 40, 50)], &[], 0.0);
         // The AF box in the empty field to the right, inside the kept square.
         let hint = CameraHint {
-            point: Some([0.7, 0.5]),
+            point: Some([0.79, 0.5]),
             box_size: Some([0.04, 0.06]),
             placed: false,
         };
-        let grown = (0.7 - 0.024, 0.5 - 0.036, 0.7 + 0.024, 0.5 + 0.036);
+        // ... which would leave out the camera's box in the empty field to the right.
+        let grown = (0.79 - 0.024, 0.5 - 0.036, 0.79 + 0.024, 0.5 + 0.036);
         let free = run(
             &m,
             &CameraHint::default(),

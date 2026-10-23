@@ -195,7 +195,9 @@ fn a_rendered_distraction_at_an_edge_is_cropped_away_without_losing_the_subject(
     for ratio in [Ratio::Canvas, Ratio::Fixed(1.0)] {
         let p = a.propose(&request(0, ratio, 0.0));
         let r = p.frames[0].rect;
-        assert!(!p.keep, "{ratio:?}: {p:?}");
+        // The whole photo holds the bar, so Original crops; the centred square already leaves it
+        // out and holds the subject, so Square keeps it.
+        assert_eq!(p.keep, ratio != Ratio::Canvas, "{ratio:?}: {p:?}");
         assert!(
             r.x + r.width <= bar_left,
             "{ratio:?}: the bar is still in {r:?}"
@@ -205,33 +207,59 @@ fn a_rendered_distraction_at_an_edge_is_cropped_away_without_losing_the_subject(
 }
 
 #[test]
-fn a_rendered_subject_at_the_far_left_moves_towards_a_third() {
-    // On the upper third line, a quarter of the way across: the far left of the kept square.
+fn a_rendered_subject_the_centred_square_slices_is_brought_inside() {
+    // A disc across the left edge of the centred square (which spans 128 to 640 px across).
     let rgb = render(
         W,
         H,
         0.0,
         0.01,
         34,
-        subject_scene(-192.0, -85.0, 45.0, None),
+        subject_scene(-256.0, -40.0, 45.0, None),
     );
     let a = analyse(&Picture::new(W, H, &rgb).unwrap(), &CameraHint::default());
     let p = a.propose(&request(0, Ratio::Fixed(1.0), 0.0));
-    let r = p.frames[0].rect;
-    let at = |r: &Rect| (0.25 - r.x) / r.width;
-    let kept = Rect {
-        x: 1.0 / 6.0,
-        y: 0.0,
-        width: 2.0 / 3.0,
-        height: 1.0,
-    };
-    assert!(!p.keep);
-    assert!(
-        (at(&r) - 1.0 / 3.0).abs() < (at(&kept) - 1.0 / 3.0).abs() - 0.1,
-        "the subject sits at {:.3} of {r:?}, {:.3} of the kept square",
-        at(&r),
-        at(&kept)
+    let disc = (
+        (384.0 - 256.0 - 45.0) / 768.0,
+        (256.0 - 40.0 - 45.0) / 512.0,
+        (384.0 - 256.0 + 45.0) / 768.0,
+        (256.0 - 40.0 + 45.0) / 512.0,
     );
+    assert!(!p.keep, "{p:?}");
+    assert!(holds(&p.frames[0].rect, disc), "{p:?}");
+}
+
+/// A part of the subject the camera did not focus on is never cut away as a distraction: the
+/// skeleton's skull when the camera focused on its ribs.
+#[test]
+fn a_rendered_second_part_of_the_subject_is_kept_whole() {
+    // A large disc (the ribs, where the camera focused) and a smaller one above it (the skull),
+    // well inside a portrait picture.
+    let scene = {
+        let ribs = subject_scene(0.0, 90.0, 120.0, None);
+        move |u: f64, v: f64| in_subject(u, v, 0.0, -170.0, 70.0).unwrap_or_else(|| ribs(u, v))
+    };
+    let rgb = render(H, W, 0.0, 0.01, 36, scene);
+    let hint = CameraHint {
+        point: Some([0.5, (384.0 + 90.0) / 768.0]),
+        box_size: None,
+        placed: false,
+    };
+    let a = analyse(&Picture::new(H, W, &rgb).unwrap(), &hint);
+    let skull = (
+        (256.0 - 70.0) / 512.0,
+        (384.0 - 240.0) / 768.0,
+        (256.0 + 70.0) / 512.0,
+        (384.0 - 100.0) / 768.0,
+    );
+    for ratio in [Ratio::Canvas, Ratio::Fixed(1.0), Ratio::Fixed(0.8)] {
+        let p = a.propose(&request(0, ratio, 0.0));
+        assert!(
+            holds(&p.frames[0].rect, skull),
+            "{ratio:?}: the skull is cut by {:?}",
+            p.frames[0].rect
+        );
+    }
 }
 
 #[test]

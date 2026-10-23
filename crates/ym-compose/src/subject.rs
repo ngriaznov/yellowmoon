@@ -12,11 +12,14 @@ const POINT_SPREAD: f64 = 0.15;
 const POINT_BOX_SPREAD: f64 = 0.75;
 /// Cells with evidence at least this times its 99th percentile form components.
 const COMPONENT_LEVEL: f64 = 0.5;
-/// The component holding the camera's point is the subject when it holds at least this share of
-/// the thresholded mass.
+/// The component holding the camera's point is the core of the subject when it holds at least this
+/// share of the thresholded mass.
 const POINT_COMPONENT_SHARE: f64 = 0.1;
-/// Other components of at least this times the subject's mass join it.
-const JOIN_SHARE: f64 = 0.5;
+/// A component reaching into this band along the picture's border (a fraction of the side) may be
+/// a distraction ...
+const EDGE_BAND: f64 = 0.03;
+/// ... when its mass is under this times the core's. Every other component is part of the subject.
+const EDGE_DISTRACTION_SHARE: f64 = 0.5;
 
 /// The maps the proposer reads, at a quarter of the picture's size (`docs/20` §6 step 5).
 #[derive(Debug, Clone, Default)]
@@ -48,6 +51,10 @@ pub(crate) fn subject_maps(picture: &Picture<'_>, hint: &CameraHint) -> SubjectM
     for (i, e) in evidence.data.iter_mut().enumerate() {
         *e = (m.data[i] + f * focus.data[i]) / (1.0 + f);
     }
+    // The regions are found on the evidence alone; the camera's point only weights it, so that a
+    // part of the subject away from the point (a skull above the ribs it focused on) stays a part
+    // of the subject.
+    let regions = evidence.clone();
     // The camera's point in cells (cell i spans [i, i + 1)), if it is inside the picture.
     let point = hint.point.and_then(|[a, b]| {
         let inside = (0.0..=1.0).contains(&a) && (0.0..=1.0).contains(&b);
@@ -77,13 +84,15 @@ pub(crate) fn subject_maps(picture: &Picture<'_>, hint: &CameraHint) -> SubjectM
         let y = (py.floor().max(0.0) as usize).min(mh - 1);
         y * mw + x
     });
-    split(&evidence, point_cell)
+    split(&regions, &evidence, point_cell)
 }
 
-/// Splits the evidence into the subject and the distractions (`docs/20` §6 step 5).
-fn split(evidence: &Plane, point_cell: Option<usize>) -> SubjectMaps {
+/// Splits the evidence into the subject and the distractions (`docs/20` §6 step 5): the
+/// components of `regions` above the level, each carrying the mass of `evidence` (the same
+/// evidence weighted by the camera's point).
+fn split(regions: &Plane, evidence: &Plane, point_cell: Option<usize>) -> SubjectMaps {
     let (w, h) = (evidence.width, evidence.height);
-    let level = COMPONENT_LEVEL * percentile(&evidence.data, 0.99);
+    let level = COMPONENT_LEVEL * percentile(&regions.data, 0.99);
     let mut maps = SubjectMaps {
         width: w,
         height: h,
@@ -94,10 +103,16 @@ fn split(evidence: &Plane, point_cell: Option<usize>) -> SubjectMaps {
     if level <= 0.0 {
         return maps;
     }
-    let on = |i: usize| evidence.data[i] >= level;
-    // 4-connected components, labelled in raster order.
+    let on = |i: usize| regions.data[i] >= level;
+    // The border band in cells, at least one.
+    let (band_x, band_y) = (
+        ((EDGE_BAND * w as f64).round() as usize).max(1),
+        ((EDGE_BAND * h as f64).round() as usize).max(1),
+    );
+    // 4-connected components, labelled in raster order, with whether each reaches the band.
     let mut label = vec![usize::MAX; w * h];
     let mut masses: Vec<f64> = Vec::new();
+    let mut at_edge: Vec<bool> = Vec::new();
     let mut stack = Vec::new();
     for start in 0..w * h {
         if !on(start) || label[start] != usize::MAX {
@@ -105,11 +120,13 @@ fn split(evidence: &Plane, point_cell: Option<usize>) -> SubjectMaps {
         }
         let id = masses.len();
         let mut mass = 0.0;
+        let mut edge = false;
         label[start] = id;
         stack.push(start);
         while let Some(i) = stack.pop() {
             mass += evidence.data[i];
             let (x, y) = (i % w, i / w);
+            edge |= x < band_x || x + band_x >= w || y < band_y || y + band_y >= h;
             let mut visit = |j: usize| {
                 if on(j) && label[j] == usize::MAX {
                     label[j] = id;
@@ -130,6 +147,7 @@ fn split(evidence: &Plane, point_cell: Option<usize>) -> SubjectMaps {
             }
         }
         masses.push(mass);
+        at_edge.push(edge);
     }
     let total: f64 = masses.iter().sum();
     if masses.is_empty() || total <= 0.0 {
@@ -143,10 +161,12 @@ fn split(evidence: &Plane, point_cell: Option<usize>) -> SubjectMaps {
         .map(|c| label[c])
         .filter(|&id| id != usize::MAX && masses[id] >= POINT_COMPONENT_SHARE * total)
         .unwrap_or(heaviest);
+    // Every component is the subject but small ones at the border: a branch, a post or a bright
+    // patch the frame cuts into, which a crop may leave out (`docs/20` §6 step 5).
     let in_subject: Vec<bool> = masses
         .iter()
         .enumerate()
-        .map(|(i, &m)| i == core || m >= JOIN_SHARE * masses[core])
+        .map(|(i, &m)| i == core || !at_edge[i] || m >= EDGE_DISTRACTION_SHARE * masses[core])
         .collect();
     let subject_mass: f64 = masses
         .iter()
@@ -192,37 +212,44 @@ mod tests {
     }
 
     #[test]
-    fn the_heaviest_component_is_the_subject_and_light_ones_distract() {
-        // A big blob, a blob of 60 % of its mass (joins it) and one of 20 % (distracts).
+    fn every_component_is_the_subject_but_small_ones_at_the_border() {
+        // A big blob, a small one inside the picture (joins), and a small one at the right
+        // border (distracts): 100, 12 and 12 cells.
         let e = evidence(
             40,
             30,
             &[
                 (2, 2, 12, 12, 1.0),
-                (20, 2, 26, 12, 1.0),
-                (30, 20, 35, 24, 1.0),
+                (20, 2, 23, 6, 1.0),
+                (37, 20, 40, 24, 1.0),
             ],
         );
-        let maps = split(&e, None);
+        let maps = split(&e, &e, None);
         let sum_s: f64 = maps.subject.iter().sum();
         let sum_d: f64 = maps.distraction.iter().sum();
         assert!((sum_s - 1.0).abs() < 1e-12 && (sum_d - 1.0).abs() < 1e-12);
-        assert!(maps.subject[5 * 40 + 5] > 0.0 && maps.subject[5 * 40 + 22] > 0.0);
-        assert!(maps.distraction[22 * 40 + 32] > 0.0 && maps.subject[22 * 40 + 32] == 0.0);
-        assert!((maps.rho - 20.0 / 180.0).abs() < 1e-12, "{}", maps.rho);
+        assert!(maps.subject[5 * 40 + 5] > 0.0 && maps.subject[3 * 40 + 21] > 0.0);
+        assert!(maps.distraction[22 * 40 + 38] > 0.0 && maps.subject[22 * 40 + 38] == 0.0);
+        assert!((maps.rho - 12.0 / 124.0).abs() < 1e-12, "{}", maps.rho);
+        // At half the core's mass or more, a component at the border is part of the subject.
+        let e = evidence(40, 30, &[(2, 2, 12, 12, 1.0), (34, 10, 40, 20, 1.0)]);
+        let maps = split(&e, &e, None);
+        assert!(maps.subject[15 * 40 + 36] > 0.0);
+        assert_eq!(maps.rho, 0.0);
     }
 
     #[test]
-    fn the_camera_point_picks_its_component() {
-        let e = evidence(40, 30, &[(2, 2, 12, 12, 1.0), (30, 20, 35, 26, 1.0)]);
-        // The small blob holds 30 / 130 of the mass, at least 10 %: it is the subject, and the
-        // big one (more than half of it) joins.
-        let maps = split(&e, Some(22 * 40 + 32));
-        assert!(maps.subject[22 * 40 + 32] > 0.0 && maps.subject[5 * 40 + 5] > 0.0);
+    fn the_camera_point_picks_the_core() {
+        // A small blob at the border holding the camera's point is the core: never a
+        // distraction, however small next to the rest.
+        let e = evidence(40, 30, &[(2, 2, 12, 12, 1.0), (36, 20, 40, 26, 1.0)]);
+        let maps = split(&e, &e, Some(22 * 40 + 37));
+        assert!(maps.subject[22 * 40 + 37] > 0.0 && maps.subject[5 * 40 + 5] > 0.0);
         assert_eq!(maps.rho, 0.0);
-        // A point on the background falls back to the heaviest.
-        let maps = split(&e, Some(0));
-        assert!(maps.subject[5 * 40 + 5] > 0.0 && maps.subject[22 * 40 + 32] == 0.0);
+        // A point on the background falls back to the heaviest, and the small blob at the
+        // border distracts.
+        let maps = split(&e, &e, Some(0));
+        assert!(maps.subject[5 * 40 + 5] > 0.0 && maps.subject[22 * 40 + 37] == 0.0);
         assert!(maps.rho > 0.0);
     }
 

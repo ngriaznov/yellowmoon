@@ -20,7 +20,7 @@ const MIN_VERTICALS: usize = 3;
 /// ... of at least this total length over the picture's height ...
 const MIN_VERTICAL_LENGTH: f64 = 0.6;
 /// ... when the inliers carry at least this share of the weight ...
-const MIN_INLIER_SHARE: f64 = 0.6;
+const MIN_INLIER_SHARE: f64 = 0.75;
 /// ... and their weighted RMS residual is at most this, in degrees.
 const MAX_RMS_DEG: f64 = 1.0;
 /// Bin width of the horizontals' histogram in degrees.
