@@ -110,7 +110,8 @@ fn rich() -> DevelopSettings {
         },
         angle_deg: -2.5,
         aspect: CropAspect::FourByFive,
-        auto: false,
+        // On, so the JSON carries the field (`false` is left out).
+        auto: true,
     });
     s.orientation = Orientation::Deg90;
     s.white_pick = Some([0.25, 0.75]);

@@ -47,7 +47,7 @@ When the panel opens on a photo whose crop has `auto: true`, the toggle is on an
 auto: bool   // the rect and angle came from Auto crop and follow it while the panel is open
 ```
 
-- JSON: absent reads as `false`, and `false` is not written, so every existing settings document, `ym:Settings` packet and golden manifest is unchanged. `true` is written as `"auto": true`.
+- JSON: absent reads as `false`, and `false` is not written, so every existing settings document, `ym:Settings` packet and golden manifest is unchanged. `true` is written as `"auto": true`, which `crates/ym-core/schema/settings.schema.json` allows (a boolean, default `false`).
 - The rect and angle in the setting are always the concrete values in effect: rendering never looks at `auto`, and an export, a thumbnail and `ym render --settings` give the same pixels whatever it says. `ym:Settings` pins them as it pins every Auto value.
 - Copy settings and Paste still leave the crop out (`docs/11`), so a proposal never travels to another photo.
 - Undo takes a Done back in one step, `auto` with it.

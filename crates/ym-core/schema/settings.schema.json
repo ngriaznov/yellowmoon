@@ -131,7 +131,12 @@
               }
             },
             "angle_deg": { "type": "number", "minimum": -45, "maximum": 45 },
-            "aspect": { "enum": ["free", "original", "square", "four_by_five", "sixteen_by_nine"] }
+            "aspect": { "enum": ["free", "original", "square", "four_by_five", "sixteen_by_nine"] },
+            "auto": {
+              "description": "The crop is Auto crop's proposal (docs/20-auto-crop.md section 2); absent is false. Rendering never reads it.",
+              "type": "boolean",
+              "default": false
+            }
           }
         }
       ],
