@@ -9,6 +9,11 @@ name: cubepp
 on:
   push:
     branches: [m1-06-cubepp]
+    paths:
+      - "training/illum/**"
+      - "data/models/illum/**"
+      - "tools/fetch/cubepp.sh"
+      - ".github/workflows/cubepp.yml"
   workflow_dispatch:
 
 permissions:
