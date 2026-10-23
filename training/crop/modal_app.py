@@ -274,8 +274,12 @@ def fetch(dest: str = "training/crop/runs", name: str = "train-20000-s1") -> Non
     except Exception as e:  # noqa: BLE001 - no runs yet (the pilot stopped early): fetch the rest
         print(f"runs: {type(e).__name__}: {e}")
         entries = []
-    wanted = [(e.path, out / Path(e.path).relative_to("runs")) for e in entries
-              if Path(e.path).name in ("model.pt", "config.json", "metrics.json")]
+    wanted = []
+    for e in entries:
+        rel = Path(e.path.lstrip("/"))
+        rel = Path(*rel.parts[1:]) if rel.parts[:1] == ("runs",) else rel  # listdir may or may not keep "runs/"
+        if rel.name in ("model.pt", "config.json", "metrics.json"):
+            wanted.append((f"runs/{rel.as_posix()}", out / rel))
     wanted += [(f"data/{name}/{f}", out / "data" / f) for f in ("labels.json", "manifest.json")]
     for remote, local in wanted:
         local.parent.mkdir(parents=True, exist_ok=True)

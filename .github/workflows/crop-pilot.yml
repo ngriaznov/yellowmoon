@@ -48,20 +48,23 @@ jobs:
           echo "::add-mask::$secret"
           echo "MODAL_TOKEN_ID=$id" >> "$GITHUB_ENV"
           echo "MODAL_TOKEN_SECRET=$secret" >> "$GITHUB_ENV"
+      # The log and the results are written outside the checkout while Modal runs: Modal uploads the `training`
+      # package when an app starts and fails if a file under it changes meanwhile.
       - name: Pilot
         shell: bash
-        run: |
-          mkdir -p training/crop/runs
-          modal run -m training.crop.modal_app::pilot $PILOT_ARGS 2>&1 | tee training/crop/runs/pilot.log
+        run: modal run -m training.crop.modal_app::pilot $PILOT_ARGS 2>&1 | tee "$RUNNER_TEMP/pilot.log"
       - name: Fetch the results from the volume
         if: always()
-        run: modal run -m training.crop.modal_app::fetch
+        run: modal run -m training.crop.modal_app::fetch --dest "$RUNNER_TEMP/runs"
       - name: Push the results to crop-pilot-runs
         if: always()
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p training/crop/runs
+          cp -r "$RUNNER_TEMP/runs/." training/crop/runs/ 2>/dev/null || true
+          cp "$RUNNER_TEMP/pilot.log" training/crop/runs/ 2>/dev/null || true
           git checkout -B crop-pilot-runs
           git add -f training/crop/runs
           git diff --cached --quiet && exit 0
