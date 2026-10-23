@@ -28,8 +28,8 @@ dest="$testdata/cubepp"
 RECORD=4153431
 API="https://zenodo.org/api/records/$RECORD"
 
-# --- pins: "<sha256>  <file name on Zenodo>", one per line. Empty until someone has run --accept-new. -----------------
-PINS=""
+# --- pins: "<sha256>  <file name on Zenodo>", one per line (SimpleCube++.zip: the cubepp workflow, 2026-10-23). ------
+PINS="7a78d80830afdf4b982cf19be8b6351d4f96deda12607dfc5d4802467c30129e  SimpleCube++.zip"
 # ---------------------------------------------------------------------------------------------------------------------
 
 mode="fetch"

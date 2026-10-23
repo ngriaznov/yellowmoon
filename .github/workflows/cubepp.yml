@@ -31,10 +31,13 @@ jobs:
       - run: tools/fetch/spectral.sh
       - name: The Cube++ record
         run: tools/fetch/cubepp.sh --list
+      # Only the zip is cached (2 GB); cubepp.sh skips a file of the right size and checks its pinned SHA-256 either way.
+      - uses: actions/cache@v4
+        with:
+          path: testdata/cubepp/SimpleCube++.zip
+          key: cubepp-simplecube-7a78d808
       - name: SimpleCube++
-        run: |
-          tools/fetch/cubepp.sh --accept-new --only=SimpleCube++.zip
-          cat testdata/cubepp/SHA256SUMS
+        run: tools/fetch/cubepp.sh --only=SimpleCube++.zip
       - name: Layout
         run: |
           ls testdata/cubepp "$D" "$D/test" "$D/auxiliary"
@@ -90,6 +93,8 @@ jobs:
                       print("  " + label + ": " + ", ".join(f"{g} n={v['n']} median={v['median']:.2f} p90={v['p90']:.2f}"
                                                              for g, v in groups.items()))
                   print("  white check:", json.dumps(r.get("white_check")))
+                  print("  classical estimators: " + ", ".join(f"{k} median={v['median']:.2f} p90={v['p90']:.2f}"
+                                                                for k, v in r.get("baselines", {}).items()))
           PY
           exit "${status:-1}"
       - uses: actions/upload-artifact@v4

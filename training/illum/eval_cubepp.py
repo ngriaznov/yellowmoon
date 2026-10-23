@@ -29,7 +29,8 @@ Each image is box-averaged by ``--preview-factor`` (1 for SimpleCube++, already 
 preview pixel is masked if any pixel under it is, and the model runs without an as-shot value or a brightness (Cube++
 carries neither in SimpleCube++): the histogram-only estimate, stricter than the app's. With ``--properties`` (the
 dataset's ``auxiliary/test_properties.csv``) the errors are also broken down by its manual labels (place, daytime,
-illumination, shadows).
+illumination, shadows). The four classical estimators of :mod:`training.illum.baselines` run on the same previews and
+masks for scale.
 
     python3 -m training.illum.eval_cubepp --model data/models/illum/sony-ilce-7rm4.json \
         --root testdata/cubepp/SimpleCube++/test --src-camera Canon_EOS_600D --black-level 2048 --preview-factor 1 \
@@ -197,6 +198,7 @@ def evaluate(model: md.IllumModel, root: Path, to_profile: np.ndarray, split: li
     if limit:
         names = names[:limit]
     errs, used = [], []
+    base = {k: [] for k in bl.BASELINES}
     for name in names:
         path = next((p for p in (root / "PNG" / f"{name}.png", root / "PNG" / f"{name}.PNG") if p.exists()), None)
         if path is None or name not in gt:
@@ -214,6 +216,8 @@ def evaluate(model: md.IllumModel, root: Path, to_profile: np.ndarray, split: li
         out = model.estimate(prev.astype(np.float32), mask.astype(np.uint8), None, None)
         w_true = truth / truth[1]
         errs.append(float(bl.angular_error_deg(np.array([np.exp(-out["uv"][0]), 1.0, np.exp(-out["uv"][1])]), w_true)))
+        for k, f in bl.BASELINES.items():
+            base[k].append(float(bl.angular_error_deg(f(prev, mask.astype(np.uint8)), w_true)))
         used.append(name)
     if not errs:
         raise SystemExit("no image of the split was found under " + str(root))
@@ -221,6 +225,8 @@ def evaluate(model: md.IllumModel, root: Path, to_profile: np.ndarray, split: li
     res = ev.summarize(e)
     res["gate_median_deg"] = GATE_MEDIAN_DEG
     res["pass"] = bool(res["median"] <= GATE_MEDIAN_DEG)
+    # The classical estimators on the same previews and masks, for scale (NaN where one found no pixel).
+    res["baselines"] = {k: ev.summarize(np.array(v)[np.isfinite(v)]) for k, v in base.items()}
     if properties:
         labels = sorted({k for n in used for k in properties.get(n, {}) if k not in ("ds_version",)})
         res["by_label"] = {}
