@@ -96,6 +96,7 @@ use ym_color::consts::Vec3;
 use ym_color::exposure::{BurstFrame, burst_groups, share_burst_ev};
 use ym_color::look::{LookTransform, ParametricLook};
 use ym_looks::library::LookId;
+use ym_ml::crop_net::CropNet;
 use ym_noise::estimate::PoolKey;
 use ym_noise::priors::{NoisePrior, PriorStore};
 use ym_profiles::profile::Profile;
@@ -114,7 +115,7 @@ use crate::auto::{
     AutoError, AutoEstimates, AutoInputs, IlluminantModels, NoisePool, POOL_MAX_FILES, burst_frame,
     meta_image_size, noise_prior, pick_white_sample, pool_key, tables_of,
 };
-use crate::auto_crop::{CropSuggestion, camera_hint, suggestion};
+use crate::auto_crop::{CropSuggestion, suggestion};
 use crate::camera::{CameraCard, CameraInfo, PhotoCamera};
 use crate::data_dir::{DataDirError, find_data_dir};
 use crate::settings::{
@@ -692,6 +693,20 @@ pub struct SessionEnv {
     /// Apple Auto's. Without it Auto crop uses Apple Auto's renderer, and without either it is not
     /// available.
     pub pictures: Option<Arc<dyn PictureRenderer>>,
+    /// Auto crop's crop model (`<data_root>/models/crop`, `docs/20` §6), or why it could not be
+    /// loaded; Auto crop answers that reason as its error.
+    pub crop_model: Result<Arc<CropNet>, String>,
+}
+
+/// Auto crop's model from `<data_root>/models/crop`, checked against its `SHA256SUMS`; a missing or
+/// damaged file is the reason Auto crop gives instead of a frame.
+fn load_crop_model(data_root: &Path) -> Result<Arc<CropNet>, String> {
+    CropNet::load(&data_root.join("models").join("crop"))
+        .map(Arc::new)
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Auto crop's model is not usable");
+            format!("the crop model could not be loaded ({e})")
+        })
 }
 
 /// The decode pool size: `min(available_parallelism - 2, 6)`, at least one.
@@ -744,6 +759,7 @@ impl SessionEnv {
             forced_profile: None,
             apple_auto: None,
             pictures: None,
+            crop_model: load_crop_model(data_root),
         })
     }
 
@@ -3157,10 +3173,17 @@ impl Drop for Session {
 
 impl Inner {
     /// Auto crop's analysis of a photo: kept from an earlier call while the photo's own estimates
-    /// are the same, else made from its picture now (`docs/20-auto-crop.md` §4).
+    /// are the same, else made from its picture now, the crop model's crop with it
+    /// (`docs/20-auto-crop.md` §4 and §6).
     fn crop_analysis(&self, id: PhotoId) -> Result<Arc<ym_compose::Analysis>, SessionError> {
         let epoch = self.epoch.load(Ordering::SeqCst);
-        let (camera, profile, own, generation, meta, incarnation) = {
+        let model = self
+            .env
+            .crop_model
+            .as_ref()
+            .map(Arc::clone)
+            .map_err(|e| SessionError::AutoCrop(e.clone()))?;
+        let (camera, profile, own, generation, incarnation) = {
             let st = lock(&self.state);
             let p = st.photo(id).ok_or(SessionError::UnknownPhoto(id))?;
             if let PhotoStatus::Skipped { reason } = &p.summary.status {
@@ -3171,9 +3194,7 @@ impl Inner {
             {
                 return Ok(Arc::clone(analysis));
             }
-            let (Some(camera), Some(profile), Some(own), Some(meta)) =
-                (&p.camera, &p.profile, &p.own, &p.meta)
-            else {
+            let (Some(camera), Some(profile), Some(own)) = (&p.camera, &p.profile, &p.own) else {
                 return Err(SessionError::NotReady(id));
             };
             (
@@ -3181,7 +3202,6 @@ impl Inner {
                 Arc::clone(profile),
                 Arc::clone(own),
                 p.own_gen,
-                Arc::clone(meta),
                 p.incarnation,
             )
         };
@@ -3209,9 +3229,12 @@ impl Inner {
             })
         })
         .map_err(SessionError::AutoCrop)?;
+        let crop = model
+            .crop(&picture.rgb, picture.width, picture.height)
+            .map_err(|e| SessionError::AutoCrop(e.to_string()))?;
         let picture = ym_compose::Picture::new(picture.width, picture.height, &picture.rgb)
             .map_err(|e| SessionError::AutoCrop(e.to_string()))?;
-        let analysis = Arc::new(ym_compose::analyse(&picture, &camera_hint(&meta)));
+        let analysis = Arc::new(ym_compose::analyse(&picture, crop));
         let mut st = lock(&self.state);
         if self.live(epoch)
             && let Some(&i) = st.index.get(&id)

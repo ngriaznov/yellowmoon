@@ -1,21 +1,19 @@
-//! Auto crop (`docs/20-auto-crop.md`): the straightener, the subject map and the frame proposer.
+//! Auto crop (`docs/20-auto-crop.md`): the straightener and the frame proposer.
 //!
 //! [`analyse`] looks at one picture of a photo (Apple Auto's 768 px picture, `docs/19` §3) with the
-//! camera's hints and keeps what every later request needs: the straighten answer and the subject
-//! and distraction maps. [`Analysis::propose`] then makes the frames for one aspect, quarter turn
-//! and angle in a few milliseconds.
+//! crop model's crop of it (`ym_ml::crop_net`, `docs/20` §6) and keeps what every later request
+//! needs: the straighten answer and the crop. [`Analysis::propose`] then makes the frames for one
+//! aspect, quarter turn and angle in a few milliseconds.
 //!
 //! Everything is f64 on one thread with fixed orders and explicit tie rules, so the same picture
-//! and hints give the same answer on every platform (hard rule 8).
+//! and crop give the same answer on every platform (hard rule 8).
 
 #![warn(missing_docs)]
 
 mod frame;
 mod lines;
 mod picture;
-mod saliency;
 mod straighten;
-mod subject;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -23,8 +21,6 @@ mod testutil;
 
 pub use frame::{Frame, FrameRequest, Proposal, Ratio, Rect, largest_frame};
 pub use straighten::Straighten;
-
-use subject::SubjectMaps;
 
 /// Why a picture was refused.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -88,42 +84,26 @@ impl<'a> Picture<'a> {
     }
 }
 
-/// What the camera says about the subject, in the picture's space (`docs/20` §4).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct CameraHint {
-    /// The focus point as fractions of the picture's width and height.
-    pub point: Option<[f64; 2]>,
-    /// The AF box around the point as fractions of the picture's width and height.
-    pub box_size: Option<[f64; 2]>,
-    /// The photographer placed the AF area away from the centre (Flexible Spot, Zone, ...).
-    pub placed: bool,
-}
-
 /// What [`analyse`] found in a picture; [`Analysis::propose`] makes frames from it.
 #[derive(Debug, Clone)]
 pub struct Analysis {
     width: usize,
     height: usize,
     straighten: Straighten,
-    /// Where the horizon crosses the picture's centre column, as a fraction of its height.
-    horizon: Option<f64>,
-    maps: SubjectMaps,
-    hint: CameraHint,
+    crop: [f64; 4],
 }
 
-/// Looks at a picture with the camera's hints: the straightener (`docs/20` §5) and the subject map
-/// (§6).
+/// Looks at a picture: the straightener (`docs/20` §5), with `crop`, the crop model's crop of the
+/// same picture (`[x0, y0, x1, y1]` as fractions of its width and height, §6), for the frames.
 #[must_use]
-pub fn analyse(picture: &Picture<'_>, hint: &CameraHint) -> Analysis {
-    let (straighten, horizon) = straighten::straighten(picture);
-    let maps = subject::subject_maps(picture, hint);
+pub fn analyse(picture: &Picture<'_>, crop: [f64; 4]) -> Analysis {
+    // The horizon's height was the classical proposer's; the crop model needs no help.
+    let (straighten, _horizon) = straighten::straighten(picture);
     Analysis {
         width: picture.width,
         height: picture.height,
         straighten,
-        horizon,
-        maps,
-        hint: *hint,
+        crop,
     }
 }
 
@@ -143,10 +123,10 @@ impl Analysis {
         }
     }
 
-    /// Whether the subject came from the camera's focus point (else from the picture alone).
+    /// The crop model's crop of the picture: `[x0, y0, x1, y1]` as fractions of its sides.
     #[must_use]
-    pub fn subject_from_camera(&self) -> bool {
-        self.hint.point.is_some()
+    pub fn crop(&self) -> [f64; 4] {
+        self.crop
     }
 
     /// The picture's size in pixels.
@@ -158,13 +138,6 @@ impl Analysis {
     /// The frames for one request (`docs/20` §7): best first, at most 3, never empty.
     #[must_use]
     pub fn propose(&self, request: &FrameRequest) -> Proposal {
-        frame::propose(
-            self.width,
-            self.height,
-            &self.maps,
-            &self.hint,
-            self.horizon,
-            request,
-        )
+        frame::propose(self.width, self.height, self.crop, request)
     }
 }

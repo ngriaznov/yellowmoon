@@ -1,7 +1,7 @@
 //! Auto crop in the session (`docs/20-auto-crop.md` §3, §13): the proposal for every aspect and
-//! orientation is a set of frames inside the canvas with the aspect's ratio, the camera's focus
-//! point is used, two sessions give the same answer, and the setting's `auto` flag reads and writes
-//! as the spec says.
+//! orientation is a set of frames inside the canvas with the aspect's ratio, made from the crop
+//! model's crop of the picture, two sessions give the same answer, a missing model is the reason
+//! given, and the setting's `auto` flag reads and writes as the spec says.
 //!
 //! Synthetic scenes only.
 mod common;
@@ -74,20 +74,21 @@ fn every_aspect_and_turn_gives_frames_inside_the_canvas_with_its_ratio() {
         let turned = matches!(orientation, Orientation::Deg90 | Orientation::Deg270);
         let canvas = if turned { h / w } else { w / h };
         for (aspect, want) in [
-            (CropAspect::Original, canvas),
-            (CropAspect::Free, canvas),
-            (CropAspect::Square, 1.0),
+            (CropAspect::Original, Some(canvas)),
+            // Free is the crop model's own shape.
+            (CropAspect::Free, None),
+            (CropAspect::Square, Some(1.0)),
             (
                 CropAspect::FourByFive,
-                if canvas >= 1.0 { 5.0 / 4.0 } else { 4.0 / 5.0 },
+                Some(if canvas >= 1.0 { 5.0 / 4.0 } else { 4.0 / 5.0 }),
             ),
             (
                 CropAspect::SixteenByNine,
-                if canvas >= 1.0 {
+                Some(if canvas >= 1.0 {
                     16.0 / 9.0
                 } else {
                     9.0 / 16.0
-                },
+                }),
             ),
         ] {
             let s = session.suggest_crop(id, aspect, orientation).unwrap();
@@ -95,7 +96,8 @@ fn every_aspect_and_turn_gives_frames_inside_the_canvas_with_its_ratio() {
                 !s.frames.is_empty() && s.frames.len() <= 3,
                 "{aspect:?} {orientation:?}: {s:?}"
             );
-            assert_eq!(s.subject, SubjectSource::Camera, "{s:?}");
+            // The photo carries the camera's focus point, but the crop model reads the picture.
+            assert_eq!(s.subject, SubjectSource::Picture, "{s:?}");
             for f in &s.frames {
                 let r = f.rect;
                 assert!(
@@ -109,15 +111,20 @@ fn every_aspect_and_turn_gives_frames_inside_the_canvas_with_its_ratio() {
                 );
                 // The canvas's own shape at the photo's pixel size is exact to the rounding of the
                 // picture's size (768 px on its long edge, `docs/19` §3).
-                let ratio = pixel_ratio(&r, w, h, orientation);
-                assert!(
-                    (ratio / want - 1.0).abs() < 0.01,
-                    "{aspect:?} {orientation:?}: ratio {ratio} for {want}"
-                );
+                if let Some(want) = want {
+                    let ratio = pixel_ratio(&r, w, h, orientation);
+                    assert!(
+                        (ratio / want - 1.0).abs() < 0.01,
+                        "{aspect:?} {orientation:?}: ratio {ratio} for {want}"
+                    );
+                }
+                assert!((0.0..=1.0).contains(&f.score), "{s:?}");
             }
-            if s.keep {
-                assert_eq!(s.frames[0].score, 0.0, "{s:?}");
-            }
+            // Closest to the crop model's crop first.
+            assert!(
+                s.frames.windows(2).all(|p| p[0].score >= p[1].score),
+                "{s:?}"
+            );
         }
     }
 }
@@ -151,16 +158,23 @@ fn the_answer_is_the_same_in_another_session() {
 }
 
 #[test]
-fn a_photo_without_the_cameras_point_is_read_from_the_picture() {
+fn a_missing_crop_model_is_the_reason_given() {
     let dir = tempfile::tempdir().unwrap();
-    let scene = Scene::new(600, 400, light(PROFILE, 5200.0), Layout::Patchwork, 0.3).seed(5);
-    let path = scene.write(dir.path(), "plain.ARW", MODEL);
-    let session = session();
-    let id = open_one(&session, &path);
-    let s = session
+    let env = base_env();
+    let pictures =
+        AdvisorPictures::new(env.reference_look.clone(), &RenderOptions::default()).unwrap();
+    let mut env = env.with_pictures(Arc::new(pictures));
+    env.crop_model = Err("the crop model could not be loaded (test)".to_owned());
+    let session = Session::new(env);
+    let id = open_one(&session, &write_photo(dir.path()));
+    let err = session
         .suggest_crop(id, CropAspect::Original, Orientation::Deg0)
-        .unwrap();
-    assert_eq!(s.subject, SubjectSource::Picture);
+        .unwrap_err();
+    assert!(matches!(err, SessionError::AutoCrop(_)), "{err:?}");
+    assert!(
+        err.to_string().contains("could not be loaded (test)"),
+        "{err}"
+    );
 }
 
 #[test]

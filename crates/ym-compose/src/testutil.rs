@@ -206,23 +206,3 @@ pub(crate) fn pebbles(seed: u64) -> impl Fn(f64, f64) -> [f64; 3] {
         col
     }
 }
-
-/// A disc of the subject: orange with darker dots, `radius` px at `(x, y)` (centre-relative).
-pub(crate) fn in_subject(u: f64, v: f64, x: f64, y: f64, radius: f64) -> Option<[f64; 3]> {
-    let (du, dv) = (u - x, v - y);
-    if du * du + dv * dv > radius * radius {
-        return None;
-    }
-    let dot = (du / 9.0).rem_euclid(1.0) < 0.4 && (dv / 9.0).rem_euclid(1.0) < 0.4;
-    Some(if dot {
-        [0.60, 0.30, 0.08]
-    } else {
-        [0.95, 0.55, 0.15]
-    })
-}
-
-/// A plain grey field with faint texture.
-pub(crate) fn field(u: f64, v: f64) -> [f64; 3] {
-    let t = 0.02 * value_noise(u / 40.0, v / 40.0, 21);
-    [0.5 + t, 0.5 + t, 0.5 + t]
-}

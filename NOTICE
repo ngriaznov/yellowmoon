@@ -97,11 +97,21 @@ UNDISCLOSED.
    the repository).
 
 6. Training data for shipped model weights
-   The weights that ship (data/models/illum, the illuminant estimators) are
-   fitted on synthetic scenes only: reflectances from rawtoaces-data (see 3),
-   illuminant spectra from the CIE (CC BY-SA 4.0) and spectra we generate,
-   seen through the published camera curves. No shipped weights are trained
-   on photographs.
+   The illuminant estimators (data/models/illum) are fitted on synthetic
+   scenes only: reflectances from rawtoaces-data (see 3), illuminant spectra
+   from the CIE (CC BY-SA 4.0) and spectra we generate, seen through the
+   published camera curves.
+   Auto crop's crop model (data/models/crop) is trained on 107,999 photos of
+   the Open Images Dataset V7 (Google; https://storage.googleapis.com/
+   openimages/web/index.html), each listed by its Flickr author as licensed
+   under Creative Commons Attribution 2.0
+   (https://creativecommons.org/licenses/by/2.0/), and on Open Images' boxes
+   and class hierarchy, licensed under Creative Commons Attribution 4.0
+   (https://creativecommons.org/licenses/by/4.0/). Every photo is credited
+   with its author, title and page in training/crop/CREDITS.tsv.gz of the
+   source repository (https://github.com/ngriaznov/yellowmoon). Its crop
+   labels are the answers of FrameLite (https://huggingface.co/zlab-sjtu/
+   FrameLite, Apache-2.0), built on Qwen3.5-0.8B (Apache-2.0), run offline.
    See data/models/*/MODEL_CARD.md for per-model provenance. Datasets such as
    PixelShift200 and Cube++ (both CC BY 4.0) are credited here when weights
    trained on them ship.

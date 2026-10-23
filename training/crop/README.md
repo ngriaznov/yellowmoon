@@ -28,6 +28,7 @@ datasets without a licence, so it may teach (owner, 2026-10-23) but does not shi
 | crops for a folder of photos | `predict.py` | locally (CPU) |
 | pretraining photos and their boxes | `boxes.py` | Modal CPU (`pre_index`, `pre_chunk`), or locally |
 | pretrain the backbone on the boxes | `pretrain.py` | Modal L4 (`pretrain_backbone`), or locally on the CPU for a smoke run |
+| fold the batch norms, write the app's weights and the parity fixture | `export.py` | locally (CPU) |
 
 `train.py` reports the validation IoU with the teacher next to two baselines, the whole photo and the training
 set's mean crop: a student that only learned the average crop shows as one. `predict.py` writes the free crop
@@ -51,6 +52,23 @@ scratch at 2,700 and 5,400 photos (with the pilot's run at 10,827, a learning cu
 the pretrained backbone at 2,700, 5,400 and 10,827 photos and with the `bins` head. It refuses to start when its worst
 case (every call at its time limit) passes the budget, and its orchestrator is not preemptible, so it cannot restart
 half way as the pilot's did.
+
+**Stage A's result** (`docs/STATUS.md`): the pretraining helped (0.847 IoU with FrameLite on the 150 held-out photos,
+against 0.822 from scratch; 72 % in blind pairs against the whole photo); the `bins` head and more labels did not.
+The pretrained `box` student on all the labels (`ft-pre-box-nall`) is the one that ships.
+
+## Into the app
+
+    python3 -m training.crop.export --model <runs>/ft-pre-box-nall/model.pt --source ft-pre-box-nall \
+        --out data/models/crop/cropnet.safetensors --fixture crates/ym-ml/tests/data/cropnet_parity.json
+    (cd data/models/crop && sha256sum cropnet.safetensors > SHA256SUMS)
+
+`export.py` folds each batch norm into its convolution, renames the tensors to the layers `ym_ml::crop_net` builds,
+checks that the folded network answers as the trained one (within 1e-5), and writes the parity fixture the Rust
+tests read (`crates/ym-ml/tests/crop_net.rs`). The model card is `data/models/crop/MODEL_CARD.md`; every training
+photo is credited, with its author, title and page, in `CREDITS.tsv.gz` here (tab-separated, gzip: `image_id`,
+`use` (`crop` or `pretraining`), `author`, `author_url`, `source_url`, `title`), built from the two photo
+manifests the pilot keeps on the Modal volume (`fetch` copies them).
 
 ## Running it
 

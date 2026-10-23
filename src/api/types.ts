@@ -281,10 +281,10 @@ export interface Crop {
 /** Auto crop's straightener: within 0.2° of level, levelled by `angle_deg`, or no answer (`docs/20-auto-crop.md` §3). */
 export type StraightenKind = "level" | "rotate" | "unsure";
 
-/** Where Auto crop's subject came from: the camera's focus point or the picture alone. */
+/** Where Auto crop's subject came from: the picture alone (the crop model), or the camera's focus point (no longer answered). */
 export type SubjectSource = "camera" | "picture";
 
-/** One frame Auto crop proposes: a rect of the canvas, as `Crop.rect`, and its score (0 for the kept frame). */
+/** One frame Auto crop proposes: a rect of the canvas, as `Crop.rect`, and its score (its overlap with the crop model's crop, 0 to 1). */
 export interface CropFrame {
   rect: NormRect;
   score: number;

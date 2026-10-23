@@ -402,7 +402,7 @@ describe("the note under the Frame card", () => {
   });
 
   it("writes every line word for word", () => {
-    const rotate: CropSuggestion = { straighten: "rotate", angle_deg: -1.4, frames: [{ rect: FULL, score: 0.2 }], keep: false, subject: "camera" };
+    const rotate: CropSuggestion = { straighten: "rotate", angle_deg: -1.4, frames: [{ rect: FULL, score: 0.9 }], keep: false, subject: "picture" };
     expect(autoCropLines(rotate)).toEqual(["Cropped to frame the subject.", "Levelled by 1.4°."]);
     expect(autoCropLines({ ...rotate, angle_deg: 7.25 })[1]).toBe("Levelled by 7.3°.");
     expect(autoCropLines({ ...rotate, straighten: "level", angle_deg: 0, keep: true })).toEqual([

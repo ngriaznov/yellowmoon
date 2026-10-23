@@ -1,6 +1,6 @@
 [package]
 name = "ym-compose"
-description = "Auto crop: the straightener, the subject map and the frame proposer (docs/20-auto-crop.md)."
+description = "Auto crop: the straightener and the frame proposer (docs/20-auto-crop.md)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

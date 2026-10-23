@@ -676,7 +676,7 @@ pub enum SubjectSource {
 pub struct CropFrame {
     /// The frame, as `Crop.rect`.
     pub rect: NormRect,
-    /// Its score (0 for the kept frame).
+    /// Its overlap with the crop model's crop (intersection over union, 0 to 1).
     pub score: Num,
 }
 

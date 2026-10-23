@@ -65,6 +65,13 @@ No new labels; $2.39 on Modal. The student's backbone first learned to map where
 - **What did not help.** A `bins` head that picks one of 41 bins per edge instead of regressing: no change. More labels: with the pretraining, 5,400 to 10,827 photos added 0.002 IoU.
 - **Reading.** The student's limit was what it knew about the photo, not FrameLite's labels. The next step is the same kind: more pretraining, not more labels.
 
+## In the app (2026-10-23)
+
+The owner asked for the pretrained student in the app. It runs in Rust (`ym_ml::crop_net`, `data/models/crop/`), once a photo, about 120 ms on one CPU core; its numbers agree with PyTorch's within 2.2e-7 and its letterbox with Pillow's to the bit. Auto crop's aspects are frames chosen from the model's free crop (`docs/20` §7); the classical subject finder and saliency map are gone.
+
+- **The photo's own shape** (Original), judged blind like the free crop, on the same 150 photos: the closest frame of the photo's shape kept the whole photo on 37, and won 36, lost 15 and tied 62 of the other 113 (59 %). Lower than the free crop's 72 %: a frame held to 3:2 has to cut either more or less than the crop asked, and the losses are mostly the free crop's own losses made a little worse. Not tuned on these photos.
+- The owner's blind A/B in the app is the gate (`tools/eval/ab --test crop`).
+
 ## Also considered
 
 Apple's Vision framework (attention saliency, subject masks, face, human and animal detection, horizon) needs no shipped weights, but only on Macs. Per the owner it waits until it is needed.

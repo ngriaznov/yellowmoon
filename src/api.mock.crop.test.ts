@@ -27,13 +27,13 @@ describe("suggest_crop on the mock", () => {
     const mock = await open();
     for (const [aspect, orientation] of [["original", 0], ["square", 0], ["four_by_five", 90], ["sixteen_by_nine", 270], ["free", 180]] as Array<[CropAspect, Orientation]>) {
       const s = await mock.suggestCrop(1, aspect, orientation);
-      expect(s).toMatchObject({ straighten: "rotate", angle_deg: 1.4, keep: false, subject: "camera" });
+      expect(s).toMatchObject({ straighten: "rotate", angle_deg: 1.4, keep: false, subject: "picture" });
       expect(s.frames).toHaveLength(2);
       const [best, kept] = [s.frames[0]!, s.frames[1]!];
       expect(best.rect.width).toBeCloseTo(0.9 * kept.rect.width, 5);
       expect(best.rect.height).toBeCloseTo(0.9 * kept.rect.height, 5);
       expect(best.rect.x + best.rect.width / 2).toBeLessThan(0.5);
-      expect(kept.score).toBe(0);
+      expect(best.score).toBeGreaterThan(kept.score);
       expect(s.frames.every((f) => inside(f.rect))).toBe(true);
       // No empty corner (docs/11 §Crop, "No border in photos"): every frame lies inside the photo straightened by the angle, 2 px in.
       expect(s.frames.every((f) => isInside(f.rect, s.angle_deg, canvasOf(8640, 5760, orientation)))).toBe(true);
@@ -53,7 +53,7 @@ describe("suggest_crop on the mock", () => {
   it("keeps a photo whose name has keep in it whole and level", async () => {
     const mock = await open({ photoOverrides: { DSC04202: { file_name: "DSC04202_keep.ARW" } } });
     const s = await mock.suggestCrop(2, "original", 0);
-    expect(s).toEqual({ straighten: "level", angle_deg: 0, frames: [{ rect: { x: 0, y: 0, width: 1, height: 1 }, score: 0 }], keep: true, subject: "picture" });
+    expect(s).toEqual({ straighten: "level", angle_deg: 0, frames: [{ rect: { x: 0, y: 0, width: 1, height: 1 }, score: 1 }], keep: true, subject: "picture" });
     expect(mockCropSuggestion((await mock.sessionState())!.photos[1]!, "original", 0)).toEqual(s);
   });
 

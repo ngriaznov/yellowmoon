@@ -1195,14 +1195,18 @@ export function mockCropSuggestion(summary: PhotoSummary, aspect: CropAspect, or
       angle,
       canvasPx,
     );
-  const whole = { rect: centred(w, h, 0), score: 0 };
+  // Scores are the frames' overlap with the crop model's crop (`docs/20` §7).
+  const whole = { rect: centred(w, h, 0), score: 1 };
   if (keep) return { straighten: "level", angle_deg: 0, frames: [whole], keep: true, subject: "picture" };
   return {
     straighten: "rotate",
     angle_deg: angle,
-    frames: [{ rect: centred(0.9 * whole.rect.width, 0.9 * whole.rect.height, -0.03), score: 0.21 }, whole],
+    frames: [
+      { rect: centred(0.9 * whole.rect.width, 0.9 * whole.rect.height, -0.03), score: 0.93 },
+      { ...whole, score: 0.78 },
+    ],
     keep: false,
-    subject: "camera",
+    subject: "picture",
   };
 }
 

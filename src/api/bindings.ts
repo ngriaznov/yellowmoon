@@ -692,7 +692,7 @@ export type CropAspect =
 export type CropFrame = {
 	/**  The frame, as `Crop.rect`. */
 	rect: NormRect,
-	/**  Its score (0 for the kept frame). */
+	/**  Its overlap with the crop model's crop (intersection over union, 0 to 1). */
 	score: number,
 };
 

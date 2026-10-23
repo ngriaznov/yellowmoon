@@ -1,12 +1,13 @@
 # 07 · Learned models
 
-This file describes the learned models of Yellowmoon: the illuminant estimator that ships, and the joint demosaic and denoise network (`jdd`) whose runtime, training code, export and parity tests exist while its weights are not trained yet. Crates: `ym-ml` (runtime), `ym-gpu` (shared device). Training code: `training/` (Python, PyTorch, colour-science; not shipped). Weights: `data/models/` (small, committed with model cards).
+This file describes the learned models of Yellowmoon: the illuminant estimator and Auto crop's crop model that ship, and the joint demosaic and denoise network (`jdd`) whose runtime, training code, export and parity tests exist while its weights are not trained yet. Crates: `ym-ml` (runtime), `ym-gpu` (shared device). Training code: `training/` (Python, PyTorch, colour-science; not shipped). Weights: `data/models/` (small, committed with model cards).
 
 ## Models in V1
 
 | Model | Job | Size | Runs | State |
 |---|---|---|---|---|
 | `illum` | illuminant estimate: FFCC filter + class head | 13,199 parameters per model (limit 50 k) | once per photo, CPU (`ym_color::illum`) | ships: 11 per-profile models in `data/models/illum/` |
+| `crop` | Auto crop's free crop of a photo's picture: MobileNetV2-style, 256 px input | 1,101,852 parameters | once per photo when Auto crop is asked, CPU (`ym_ml::crop_net`) | ships: `data/models/crop/` (model card there; `docs/20-auto-crop.md` §6) |
 | `jdd` | joint demosaic + denoise (+ cRAW de-banding) | 0.2–1 M params | export, 1:1 tiles | runtime, training code, export and parity tests exist; no trained weights (needs GPU time and PixelShift200, M2-H4) |
 | `jdd-ms` | denoise only, for Lossless M/S RGB input | ≤ 0.5 M params | M/S files | not built; those files use the classical path |
 | `smap` | sensor map MLP | ≤ 5 k params | once per photo, CPU | not used: the table blend of `docs/02` C2 is the sensor map |

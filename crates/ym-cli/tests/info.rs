@@ -640,7 +640,8 @@ fn the_auto_crop_row_says_the_angle_the_frame_and_the_subject() {
         .lines()
         .find(|l| l.trim_start().starts_with("Auto crop"))
         .unwrap_or_else(|| panic!("no Auto crop row in\n{out}"));
-    assert!(row.contains("(from the camera's focus point)"), "{row}");
+    // The file carries the camera's focus point, but the crop model reads the picture alone.
+    assert!(row.contains("(from the picture)"), "{row}");
     assert!(
         ["Levelled by", "Already level", "No horizon found"]
             .iter()
@@ -679,7 +680,7 @@ fn the_json_proposal_is_the_sessions_answer() {
         .suggest_crop(id, CropAspect::FourByFive, Orientation::Deg0)
         .expect("suggestion");
     assert_eq!(from_ym, serde_json::to_value(&answer).unwrap());
-    assert_eq!(from_ym["subject"], "camera");
+    assert_eq!(from_ym["subject"], "picture");
 }
 
 #[test]

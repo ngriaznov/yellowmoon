@@ -1,3 +1,3 @@
 # data/models/
 
-Model weights shipped in the app bundle, one folder per model (`jdd/`, `illum/`, optionally `jdd-ms/`, `smap/`), each with the ONNX file, safetensors, SHA-256 and `MODEL_CARD.md`. Empty until M2-06 (and M1-06 for `illum`). See `docs/07-ml-models.md`. The folder exists from the start because `tauri.conf.json` bundles it.
+Model weights shipped in the app bundle, one folder per model (`jdd/`, `illum/`, `crop/`, optionally `jdd-ms/`, `smap/`), each with its weights, SHA-256 and `MODEL_CARD.md`. `illum/` ships since M1-06 and `crop/` (Auto crop's crop model, `docs/20-auto-crop.md` §6) since 2026-10-23; `jdd/` is empty until M2-06. See `docs/07-ml-models.md`. The folder exists from the start because `tauri.conf.json` bundles it.
