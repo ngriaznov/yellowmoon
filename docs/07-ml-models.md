@@ -1,6 +1,6 @@
 # 07 · Learned models
 
-This file describes the learned models of Yellowmoon: the illuminant estimator and Auto crop's crop model that ship, and the joint demosaic and denoise network (`jdd`) whose runtime, training code, export and parity tests exist while its weights are not trained yet. Crates: `ym-ml` (runtime), `ym-gpu` (shared device). Training code: `training/` (Python, PyTorch, colour-science; not shipped). Weights: `data/models/` (small, committed with model cards).
+This file describes the learned models of Yellowmoon: the illuminant estimator and Auto crop's crop model that ship, and the joint demosaic and denoise network (`jdd`) whose runtime, training code, export and parity tests exist while its weights are not trained yet. Crates: `ym-ml` (runtime), `ym-gpu` (shared device). Training code: `training/` (Python, PyTorch, colour-science; not shipped). Nothing runs Python at run time (`docs/00`, settled choices): each model's export writes weights for the runtime in Rust (`ym-ml`, or `ym-color` for the illuminant estimator), and a parity test checks that runtime against the training framework's answers. Weights: `data/models/` (small, committed with model cards).
 
 ## Models in V1
 
