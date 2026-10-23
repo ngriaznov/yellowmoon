@@ -280,6 +280,53 @@ class Evaluation(unittest.TestCase):
         mapped = to_cam @ xyz_w
         self.assertLess(float(bl.angular_error_deg(mapped, white_cam)), 2.5)  # least squares: not exact, close
 
+    def test_cubepp_simplecube_layout(self):
+        """SimpleCube++: Canon curves mapped to the profile, black level 2048, the cropped cube and clipped pixels
+        masked, breakdown by the dataset's labels."""
+        from unittest import mock
+
+        from training.alexa import ssf_core as s
+        from training.sensor_map import fit
+
+        src = cpp.source_curves("Canon_EOS_600D")
+        to_prof = cpp.camera_to_camera(src, PID)
+        dst = sp.camera(PID).curves
+        for cct in (2856, 4000, 6500):
+            e = s.illuminant(cct)
+            self.assertLess(float(bl.angular_error_deg(to_prof @ (src.T @ e), dst.T @ e)), 0.3)
+        # masks: a zeroed rectangle and, in an image that clips, the pixels at its clip
+        raw = np.full((4, 4, 3), 6000.0)
+        raw[0, 0] = 0.0
+        raw[3, 3] = [16000.0, 9000.0, 9000.0]
+        bad = cpp.invalid_pixels(raw, 2048.0, 16383.0)
+        self.assertTrue(bad[0, 0] and bad[3, 3] and bad.sum() == 2)
+        self.assertEqual(int(cpp.invalid_pixels(np.full((2, 2, 3), 6000.0), 2048.0, 16383.0).sum()), 0)
+        # end to end on two patch scenes, PNG reading replaced
+        refl = fit.training_reflectances()
+        rng = np.random.default_rng(1)
+        images, rows = {}, []
+        for name, cct in (("1_D", 5500), ("2_D", 3000)):
+            e = s.illuminant(cct)
+            rgb = (refl[:, rng.integers(0, refl.shape[1], 96)] * e[:, None]).T @ src
+            img = rgb.reshape(8, 12, 3).repeat(8, 0).repeat(8, 1)
+            images[name] = np.round(2048 + img / img.max() * 0.7 * (16383 - 2048)) / 65535.0
+            w = src.T @ e
+            rows.append(f"{name},{w[0] / w.sum()},{w[1] / w.sum()},{w[2] / w.sum()}")
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "PNG").mkdir()
+            for name in images:
+                (root / "PNG" / f"{name}.png").write_bytes(b"")
+            (root / "gt.csv").write_text("image,r,g,b\n" + "\n".join(rows) + "\n")
+            props = {"1_D": {"place": "outdoor", "daytime": "day"}, "2_D": {"place": "indoor", "daytime": "night"}}
+            shipped = paths.REPO_ROOT / "data" / "models" / "illum" / f"{PID}.json"
+            model = md.IllumModel.from_json(json.loads(shipped.read_text()))
+            with mock.patch.object(cpp, "read_png16", lambda path: images[Path(path).stem]):
+                res = cpp.evaluate(model, root, to_prof, None, None, 2048.0, 16383.0, 1, props)
+        self.assertEqual(res["n"], 2)
+        self.assertLess(res["max"], 3.0)
+        self.assertEqual(set(res["by_label"]["place"]), {"indoor", "outdoor"})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,7 +18,7 @@ Run from the repository root; needs `pip install -r training/illum/requirements.
 | `baselines.py` | grey world, white patch, shades of grey, grey edge; the angular error |
 | `evaluate.py`, `report.py` | metrics on held-out synthetic scenes (test, CES, gate lights, validation, cross-camera); the model report |
 | `gate_estimated.py` | the M1-05 sensor-map gate with the light taken from the estimator |
-| `eval_cubepp.py` | Cube++ evaluation (blocked: zenodo.org is unreachable here); `tools/fetch/cubepp.sh` |
+| `eval_cubepp.py` | Cube++ evaluation on SimpleCube++ (the Canon photos mapped to each profile through the rawtoaces Canon EOS 600D curves); runs on GitHub Actions (`.github/workflows/cubepp.yml`), since zenodo.org is unreachable from the agents' cloud containers; `tools/fetch/cubepp.sh --only=SimpleCube++.zip` |
 | `export_vectors.py` | test vectors for the Rust port (`crates/ym-color/tests/data/illum/`): a random-weight model with every stage, the A7R IV model, and the final outputs of all 11 shipped models |
 | `run_all.py` | train, ship and report all 11 profiles (about 15 minutes each on 4 shared cores); `model_card.py` then writes `MODEL_CARD.md` and `SHA256SUMS` from the reports |
 | `smoke_real.py` | gross-failure check on real ARW files (local only, no ground truth); passes `Bv` from the EXIF when `exiftool` is installed |
