@@ -31,10 +31,11 @@ const BOX_GROWTH: f64 = 0.1;
 const MAX_OVERLAP: f64 = 0.6;
 /// Frames in a proposal, at most.
 const MAX_FRAMES: usize = 3;
-/// The best score must exceed this for a frame to come before the kept frame ...
-const MIN_SCORE: f64 = 0.05;
+/// The best score must exceed this for a frame to come before the kept frame (`docs/20` §7 step 6:
+/// on real photos, frames that scored less lost to the centred frame more often than they won) ...
+const MIN_SCORE: f64 = 0.15;
 /// ... or this when the photographer placed the AF point on purpose.
-const MIN_SCORE_PLACED: f64 = 0.15;
+const MIN_SCORE_PLACED: f64 = 0.3;
 
 /// A rectangle of the canvas in fractions of its width and height (`Crop.rect`'s space).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -816,9 +817,10 @@ mod tests {
 
     #[test]
     fn a_distraction_at_an_edge_is_cropped_away_without_losing_the_subject() {
-        // The subject left of centre, a distraction 2 cells from the right edge.
+        // The subject left of centre, a strong distraction (40 % of the thresholded mass) 2 cells
+        // from the right edge.
         let subject = (60, 44, 96, 84);
-        let m = maps(&[subject], &[(182, 40, 190, 88)], 0.3);
+        let m = maps(&[subject], &[(182, 40, 190, 88)], 0.4);
         let p = run(&m, &CameraHint::default(), request(0, Ratio::Canvas, 0.0));
         assert!(!p.keep, "{p:?}");
         let r = p.frames[0].rect;
@@ -837,7 +839,7 @@ mod tests {
         // The kept frame is among the others, or overlaps the first too much to be listed.
         assert!(p.frames.len() <= MAX_FRAMES);
 
-        // The same proposal with the AF point placed on purpose needs a score over 0.15.
+        // The same proposal with the AF point placed on purpose needs a score over 0.3.
         let placed = CameraHint {
             point: Some([0.4, 0.5]),
             box_size: None,
@@ -917,8 +919,8 @@ mod tests {
         // With the horizon across the middle of the photo, sliding down would lift it in the frame
         // from its middle to 40 % of its height: the frame stays.
         assert!(at(&m, Some(0.5), &wide).keep);
-        // A cost, not a lock: a strip of 29 % still moves it.
-        let heavy = maps(&[(66, 44, 126, 84), (60, 112, 140, 124)], &[], 0.0);
+        // A cost, not a lock: a strip of 35 % still moves it.
+        let heavy = maps(&[(66, 44, 126, 84), (60, 112, 170, 124)], &[], 0.0);
         assert!(!at(&heavy, Some(0.5), &wide).keep);
         // A quarter turn stands the horizon up, and it holds a frame that would slide across: the
         // strip at the picture's top is at the canvas's right after one clockwise turn.

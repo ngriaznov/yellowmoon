@@ -174,15 +174,18 @@ fn a_rendered_centred_subject_is_kept() {
 }
 
 #[test]
-fn a_rendered_distraction_at_an_edge_is_cropped_away_without_losing_the_subject() {
-    // The subject left of centre; a bright bar 12 px from the right edge.
+fn a_rendered_weak_distraction_at_an_edge_moves_no_frame() {
+    // The subject left of centre; a small bright bar 12 px from the right edge. Cropping it away
+    // from the whole photo scores about 0.14, under the 0.15 a frame needs (`docs/20` §7 step 6):
+    // Original keeps the photo. The centred square already leaves the bar out and holds the
+    // subject, so Square keeps it too. (A strong distraction is cropped away: the frame tests.)
     let rgb = render(
         W,
         H,
         0.0,
         0.01,
         32,
-        subject_scene(-61.0, 0.0, 60.0, Some((344.0, -80.0, 372.0, 80.0))),
+        subject_scene(-61.0, 0.0, 60.0, Some((344.0, -120.0, 372.0, 120.0))),
     );
     let a = analyse(&Picture::new(W, H, &rgb).unwrap(), &CameraHint::default());
     let subject = (
@@ -192,18 +195,13 @@ fn a_rendered_distraction_at_an_edge_is_cropped_away_without_losing_the_subject(
         316.0 / 512.0,
     );
     let bar_left = (384.0 + 344.0) / 768.0;
-    for ratio in [Ratio::Canvas, Ratio::Fixed(1.0)] {
-        let p = a.propose(&request(0, ratio, 0.0));
-        let r = p.frames[0].rect;
-        // The whole photo holds the bar, so Original crops; the centred square already leaves it
-        // out and holds the subject, so Square keeps it.
-        assert_eq!(p.keep, ratio != Ratio::Canvas, "{ratio:?}: {p:?}");
-        assert!(
-            r.x + r.width <= bar_left,
-            "{ratio:?}: the bar is still in {r:?}"
-        );
-        assert!(holds(&r, subject), "{ratio:?}: the subject is cut by {r:?}");
-    }
+    let p = a.propose(&request(0, Ratio::Canvas, 0.0));
+    assert!(p.keep, "{p:?}");
+    let p = a.propose(&request(0, Ratio::Fixed(1.0), 0.0));
+    let r = p.frames[0].rect;
+    assert!(p.keep, "{p:?}");
+    assert!(r.x + r.width <= bar_left, "the bar is still in {r:?}");
+    assert!(holds(&r, subject), "the subject is cut by {r:?}");
 }
 
 #[test]
