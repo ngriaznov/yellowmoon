@@ -1,0 +1,10 @@
+{
+ "seed": 1,
+ "epochs": 40,
+ "batch": 128,
+ "lr": 0.002,
+ "weight_decay": 0.05,
+ "n_train": null,
+ "device": "cuda",
+ "max_minutes": 30.0
+}

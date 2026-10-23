@@ -1,0 +1,12 @@
+{
+ "seed": 1,
+ "epochs": 40,
+ "batch": 128,
+ "lr": 0.001,
+ "weight_decay": 0.05,
+ "n_train": null,
+ "device": "cuda",
+ "max_minutes": 12.0,
+ "head": "bins",
+ "init": "/vol/runs/pre-oi-96000-s2-e12/backbone.pt"
+}

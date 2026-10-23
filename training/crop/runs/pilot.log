@@ -1,0 +1,193 @@
+✓ Initialized. View run at 
+https://modal.com/apps/ngriaznov/main/ap-XxTFxpUqrku3KVqm9ho9mR
+✓ Created objects.
+├── ✓ Uploaded PythonPackage:training
+├── ✓ Uploaded PythonPackage:training
+├── ✓ Created Function prepare.
+├── ✓ Created Function build_arrays.
+├── ✓ Created Function pre_index.
+├── ✓ Created Function pre_chunk.
+├── ✓ Created Function results.
+├── ✓ Created Function fetch_teacher.
+├── ✓ Created Function Labeller.*.
+├── ✓ Created Function train_student.
+├── ✓ Created Function pretrain_backbone.
+├── ✓ Created Function run_pilot.
+├── ✓ Created Function run_training.
+└── ✓ Created Function run_improve.
+    └── ⚠ Non-preemptible functions are billed at 3.0x the list rate for CPU and
+        Memory.
+{
+ "ft-pre-bins-nall": {
+  "photos": {
+   "train": 10827,
+   "val": 1172
+  },
+  "parameters": 1149332,
+  "best_val_iou": 0.869,
+  "baselines_val_iou": {
+   "whole": 0.8299,
+   "mean_crop": 0.7961
+  },
+  "mean_crop": [
+   0.0328,
+   0.0676,
+   0.9819,
+   0.9386
+  ],
+  "epochs_run": 40,
+  "minutes": 10.7
+ },
+ "ft-pre-box-n2700": {
+  "photos": {
+   "train": 2700,
+   "val": 1172
+  },
+  "parameters": 1108212,
+  "best_val_iou": 0.8639,
+  "baselines_val_iou": {
+   "whole": 0.8299,
+   "mean_crop": 0.796
+  },
+  "mean_crop": [
+   0.0327,
+   0.0682,
+   0.9818,
+   0.9387
+  ],
+  "epochs_run": 40,
+  "minutes": 3.2
+ },
+ "ft-pre-box-n5400": {
+  "photos": {
+   "train": 5400,
+   "val": 1172
+  },
+  "parameters": 1108212,
+  "best_val_iou": 0.8661,
+  "baselines_val_iou": {
+   "whole": 0.8299,
+   "mean_crop": 0.7963
+  },
+  "mean_crop": [
+   0.0329,
+   0.0682,
+   0.9821,
+   0.9393
+  ],
+  "epochs_run": 40,
+  "minutes": 5.4
+ },
+ "ft-pre-box-nall": {
+  "photos": {
+   "train": 10827,
+   "val": 1172
+  },
+  "parameters": 1108212,
+  "best_val_iou": 0.8682,
+  "baselines_val_iou": {
+   "whole": 0.8299,
+   "mean_crop": 0.7961
+  },
+  "mean_crop": [
+   0.0328,
+   0.0676,
+   0.9819,
+   0.9386
+  ],
+  "epochs_run": 40,
+  "minutes": 10.8
+ },
+ "ft-scratch-bins-nall": {
+  "photos": {
+   "train": 10827,
+   "val": 1172
+  },
+  "parameters": 1149332,
+  "best_val_iou": 0.86,
+  "baselines_val_iou": {
+   "whole": 0.8299,
+   "mean_crop": 0.7961
+  },
+  "mean_crop": [
+   0.0328,
+   0.0676,
+   0.9819,
+   0.9386
+  ],
+  "epochs_run": 40,
+  "minutes": 10.8
+ },
+ "ft-scratch-box-n2700": {
+  "photos": {
+   "train": 2700,
+   "val": 1172
+  },
+  "parameters": 1108212,
+  "best_val_iou": 0.8528,
+  "baselines_val_iou": {
+   "whole": 0.8299,
+   "mean_crop": 0.796
+  },
+  "mean_crop": [
+   0.0327,
+   0.0682,
+   0.9818,
+   0.9387
+  ],
+  "epochs_run": 40,
+  "minutes": 3.0
+ },
+ "ft-scratch-box-n5400": {
+  "photos": {
+   "train": 5400,
+   "val": 1172
+  },
+  "parameters": 1108212,
+  "best_val_iou": 0.8574,
+  "baselines_val_iou": {
+   "whole": 0.8299,
+   "mean_crop": 0.7963
+  },
+  "mean_crop": [
+   0.0329,
+   0.0682,
+   0.9821,
+   0.9393
+  ],
+  "epochs_run": 40,
+  "minutes": 5.7
+ },
+ "pre-oi-96000-s2-e12": {
+  "photos": {
+   "train": 94135,
+   "val": 1865
+  },
+  "parameters": 1108212,
+  "epochs_run": 10,
+  "minutes": 21.3
+ },
+ "train-20000-s1-nall-e40": {
+  "photos": {
+   "train": 10827,
+   "val": 1172
+  },
+  "parameters": 1108212,
+  "best_val_iou": 0.8606,
+  "baselines_val_iou": {
+   "whole": 0.8299,
+   "mean_crop": 0.7961
+  },
+  "mean_crop": [
+   0.0328,
+   0.0676,
+   0.9819,
+   0.9386
+  ],
+  "epochs_run": 40,
+  "minutes": 10.2
+ }
+Stopping app - local entrypoint completed.
+}
+✓ App completed. View run at 
+https://modal.com/apps/ngriaznov/main/ap-XxTFxpUqrku3KVqm9ho9mR

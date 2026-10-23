@@ -1,0 +1,91 @@
+{
+ "photos": {
+  "train": 94135,
+  "val": 1865
+ },
+ "parameters": 1108212,
+ "epochs_run": 10,
+ "minutes": 21.3,
+ "history": [
+  {
+   "epoch": 1,
+   "dense": 0.20757,
+   "classes": 1.11134,
+   "val_dense": 0.17166,
+   "val_classes": 0.91187,
+   "val_top1": 0.4327
+  },
+  {
+   "epoch": 2,
+   "dense": 0.16197,
+   "classes": 0.8579,
+   "val_dense": 0.15508,
+   "val_classes": 0.83087,
+   "val_top1": 0.4729
+  },
+  {
+   "epoch": 3,
+   "dense": 0.15272,
+   "classes": 0.80847,
+   "val_dense": 0.14952,
+   "val_classes": 0.79796,
+   "val_top1": 0.4954
+  },
+  {
+   "epoch": 4,
+   "dense": 0.14667,
+   "classes": 0.77362,
+   "val_dense": 0.14379,
+   "val_classes": 0.76691,
+   "val_top1": 0.5373
+  },
+  {
+   "epoch": 5,
+   "dense": 0.1425,
+   "classes": 0.74446,
+   "val_dense": 0.14004,
+   "val_classes": 0.74315,
+   "val_top1": 0.5432
+  },
+  {
+   "epoch": 6,
+   "dense": 0.13872,
+   "classes": 0.71818,
+   "val_dense": 0.13718,
+   "val_classes": 0.72909,
+   "val_top1": 0.5651
+  },
+  {
+   "epoch": 7,
+   "dense": 0.13553,
+   "classes": 0.69254,
+   "val_dense": 0.13502,
+   "val_classes": 0.71422,
+   "val_top1": 0.5592
+  },
+  {
+   "epoch": 8,
+   "dense": 0.1329,
+   "classes": 0.67035,
+   "val_dense": 0.13278,
+   "val_classes": 0.7066,
+   "val_top1": 0.5764
+  },
+  {
+   "epoch": 9,
+   "dense": 0.13113,
+   "classes": 0.65265,
+   "val_dense": 0.1322,
+   "val_classes": 0.70165,
+   "val_top1": 0.5759
+  },
+  {
+   "epoch": 10,
+   "dense": 0.13019,
+   "classes": 0.64283,
+   "val_dense": 0.13182,
+   "val_classes": 0.7,
+   "val_top1": 0.5769
+  }
+ ]
+}
