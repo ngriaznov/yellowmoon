@@ -33,6 +33,8 @@ The current state of Yellowmoon: release, milestone, what is built, gate results
 | M3 | Every mocked state is implemented; app = CLI parity and the DNG gates pass on synthetic files. Left: the owner's review on a Mac, a real shoot, DNGs in other raw processors (M3-H4 to M3-H6), the Signature look's name (M3-H1). |
 | M4 | Not started (`docs/15-milestones.md`). |
 
+**No Python at run time** (the owner, 2026-10-23: "Yellowmoon should never rely on Python in runtime, we should be using Rust backend"). Now a rule in `AGENTS.md` (rule 6), `docs/00-overview.md` (settled choices) and `docs/07-ml-models.md`. Checked the same day: nothing in the app or `ym` starts or links Python, and the bundle holds no Python; the illuminant estimator (`ym-color`) and Auto crop's crop model (`ym_ml::crop_net`, on `auto-crop`) are computed in Rust from exported weights. Python only trains, exports and writes parity fixtures.
+
 ## What is built
 
 | Area | State | Spec |
