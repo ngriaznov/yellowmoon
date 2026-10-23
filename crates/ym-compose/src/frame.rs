@@ -22,6 +22,9 @@ const CUT_WEIGHT: f64 = 2.0;
 const SHIFT_WEIGHT: f64 = 0.5;
 /// Weight of the area given up.
 const AREA_WEIGHT: f64 = 1.5;
+/// Weight of how much further a frame moves the horizon from where the photographer put it than
+/// the kept frame does, in the frame's height (its width when a quarter turn stands it up).
+const HORIZON_WEIGHT: f64 = 2.0;
 /// The camera's AF box grows by this fraction of its size on each side before frames must hold it.
 const BOX_GROWTH: f64 = 0.1;
 /// A frame overlapping a chosen one by more than this intersection over union is dropped.
@@ -479,6 +482,7 @@ pub(crate) fn propose(
     height: usize,
     maps: &SubjectMaps,
     hint: &CameraHint,
+    horizon: Option<f64>,
     request: &FrameRequest,
 ) -> Proposal {
     let turns = request.quarter_turns % 4;
@@ -529,6 +533,26 @@ pub(crate) fn propose(
     };
     let kept_cut = cut_of(&kept);
     let (kcx, kcy) = (0.5 * (kept.x0 + kept.x1), 0.5 * (kept.y0 + kept.y1));
+    // The horizon on the canvas, along the axis across it (x when a quarter turn stood it up), in
+    // canvas pixels, and where the photographer put it: its fraction of the canvas. The straighten
+    // angle moves its crossing of the centre line by under 2 % of its distance from the centre at
+    // 10°, so it is left out. A frame's horizon offset is how far from that fraction the horizon
+    // sits in the frame.
+    let horizon = horizon.map(|h| {
+        let [u, v] = picture_to_canvas(turns, [0.5, h]);
+        if turns % 2 == 1 {
+            (true, u * cw, u)
+        } else {
+            (false, v * ch, v)
+        }
+    });
+    let horizon_offset = |r: &Area| {
+        horizon.map_or(0.0, |(across_x, at, placed)| {
+            let (lo, hi) = if across_x { (r.x0, r.x1) } else { (r.y0, r.y1) };
+            ((at - lo) / (hi - lo) - placed).abs()
+        })
+    };
+    let kept_horizon_offset = horizon_offset(&kept);
 
     // With a camera box, frames that cut it are dropped, the kept frame too.
     let holds_box = |r: &Area| {
@@ -553,9 +577,14 @@ pub(crate) fn propose(
         let shift = (0.5 * (r.x0 + r.x1) - kcx).hypot(0.5 * (r.y0 + r.y1) - kcy)
             / (kept.x1 - kept.x0).max(kept.y1 - kept.y0);
         let a = r.area() / kept_area;
+        // Only a frame that moves the horizon further than the kept frame pays: a sky or a field
+        // the kept frame's edge crosses would otherwise pull the frame to the photo's top or
+        // bottom, where an edge cuts nothing.
+        let horizon_moved = (horizon_offset(r) - kept_horizon_offset).max(0.0);
         let score = -LOST_WEIGHT * lost + GAIN_WEIGHT * gained - CUT_WEIGHT * cut + removed
             - SHIFT_WEIGHT * shift
-            - AREA_WEIGHT * (1.0 - a);
+            - AREA_WEIGHT * (1.0 - a)
+            - HORIZON_WEIGHT * horizon_moved;
         scored.push((i, score));
     }
 
@@ -647,7 +676,7 @@ mod tests {
     }
 
     fn run(m: &SubjectMaps, hint: &CameraHint, r: FrameRequest) -> Proposal {
-        propose(MW * 4, MH * 4, m, hint, &r)
+        propose(MW * 4, MH * 4, m, hint, None, &r)
     }
 
     fn holds_rect(outer: &Rect, inner: (f64, f64, f64, f64)) -> bool {
@@ -870,6 +899,41 @@ mod tests {
             88.0 / MH as f64,
         );
         assert!(holds_rect(&p.frames[0].rect, part), "{p:?}");
+    }
+
+    #[test]
+    fn a_frame_keeps_the_horizon_where_the_photographer_put_it() {
+        let none = CameraHint::default();
+        let at = |m: &SubjectMaps, horizon, r: &FrameRequest| {
+            propose(MW * 4, MH * 4, m, &none, horizon, r)
+        };
+        // A subject in the middle and a strip of it (20 % of the mass) across the kept 16:9
+        // frame's bottom edge (the frame spans cells 10 to 118 down): without a horizon the frame
+        // slides down to hold the strip.
+        let m = maps(&[(66, 44, 126, 84), (60, 112, 110, 124)], &[], 0.0);
+        let wide = request(0, Ratio::Fixed(16.0 / 9.0), 0.0);
+        let free = at(&m, None, &wide);
+        assert!(!free.keep && free.frames[0].rect.y > 0.1, "{free:?}");
+        // With the horizon across the middle of the photo, sliding down would lift it in the frame
+        // from its middle to 40 % of its height: the frame stays.
+        assert!(at(&m, Some(0.5), &wide).keep);
+        // A cost, not a lock: a strip of 29 % still moves it.
+        let heavy = maps(&[(66, 44, 126, 84), (60, 112, 140, 124)], &[], 0.0);
+        assert!(!at(&heavy, Some(0.5), &wide).keep);
+        // A quarter turn stands the horizon up, and it holds a frame that would slide across: the
+        // strip at the picture's top is at the canvas's right after one clockwise turn.
+        let m = maps(&[(66, 44, 126, 84), (60, 4, 110, 16)], &[], 0.0);
+        let tall = request(1, Ratio::Fixed(9.0 / 16.0), 0.0);
+        let free = at(&m, None, &tall);
+        assert!(!free.keep && free.frames[0].rect.x > 0.1, "{free:?}");
+        assert!(at(&m, Some(0.5), &tall).keep);
+        // A frame that leaves the horizon where it is pays nothing: Square slides sideways the
+        // same with it as without.
+        let m = maps(&[(24, 36, 40, 50)], &[], 0.0);
+        let square = request(0, Ratio::Fixed(1.0), 0.0);
+        let (with, without) = (at(&m, Some(0.5), &square), at(&m, None, &square));
+        assert!(!with.keep);
+        assert_eq!(with.frames[0], without.frames[0]);
     }
 
     #[test]

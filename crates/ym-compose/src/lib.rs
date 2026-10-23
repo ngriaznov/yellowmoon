@@ -105,6 +105,8 @@ pub struct Analysis {
     width: usize,
     height: usize,
     straighten: Straighten,
+    /// Where the horizon crosses the picture's centre column, as a fraction of its height.
+    horizon: Option<f64>,
     maps: SubjectMaps,
     hint: CameraHint,
 }
@@ -113,12 +115,13 @@ pub struct Analysis {
 /// (§6).
 #[must_use]
 pub fn analyse(picture: &Picture<'_>, hint: &CameraHint) -> Analysis {
-    let straighten = straighten::straighten(picture);
+    let (straighten, horizon) = straighten::straighten(picture);
     let maps = subject::subject_maps(picture, hint);
     Analysis {
         width: picture.width,
         height: picture.height,
         straighten,
+        horizon,
         maps,
         hint: *hint,
     }
@@ -155,6 +158,13 @@ impl Analysis {
     /// The frames for one request (`docs/20` §7): best first, at most 3, never empty.
     #[must_use]
     pub fn propose(&self, request: &FrameRequest) -> Proposal {
-        frame::propose(self.width, self.height, &self.maps, &self.hint, request)
+        frame::propose(
+            self.width,
+            self.height,
+            &self.maps,
+            &self.hint,
+            self.horizon,
+            request,
+        )
     }
 }

@@ -61,11 +61,16 @@ struct Estimate {
     length: f64,
 }
 
-/// The straightener's answer for a picture (`docs/20` §5).
-pub(crate) fn straighten(picture: &Picture<'_>) -> Straighten {
+/// The straightener's answer for a picture (`docs/20` §5), and where the horizon it found crosses
+/// the picture's centre column, as a fraction of the picture's height from the top.
+pub(crate) fn straighten(picture: &Picture<'_>) -> (Straighten, Option<f64>) {
     let segments = lines::segments(&picture::luma(picture));
     let (w, h) = (picture.width() as f64, picture.height() as f64);
-    decide(verticals(&segments, w, h), horizon(&segments, w, h))
+    let horizon = horizon(&segments, w, h);
+    (
+        decide(verticals(&segments, w, h), horizon.map(|(e, _)| e)),
+        horizon.map(|(_, at)| at / h),
+    )
 }
 
 /// The weighted median of `(value, weight)` pairs: the first value, in ascending order (ties in
@@ -162,8 +167,9 @@ fn verticals(segments: &[Segment], w: f64, h: f64) -> Option<Estimate> {
     })
 }
 
-/// `τ_h` from the collinear near-horizontal segments (`docs/20` §5 step 5).
-fn horizon(segments: &[Segment], w: f64, h: f64) -> Option<Estimate> {
+/// `τ_h` from the collinear near-horizontal segments (`docs/20` §5 step 5), and the height in pixels
+/// at which the cluster crosses the centre column (its crossings' mean, weighted as the segments).
+fn horizon(segments: &[Segment], w: f64, h: f64) -> Option<(Estimate, f64)> {
     let near: Vec<&Segment> = segments
         .iter()
         .filter(|s| s.theta_deg.abs() <= NEAR_DEG)
@@ -207,30 +213,34 @@ fn horizon(segments: &[Segment], w: f64, h: f64) -> Option<Estimate> {
     crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
 
     // Greedy clusters 2 % of H tall; the heaviest wins (the first on a tie).
-    let mut best: Option<(f64, f64, f64)> = None; // (weight, Σ weight δ, Σ length)
+    let mut best: Option<(f64, f64, f64, f64)> = None; // (weight, Σ weight δ, Σ length, Σ weight y)
     let mut i = 0;
     while i < crossings.len() {
         let top = crossings[i].0;
-        let (mut wt, mut wd, mut len) = (0.0, 0.0, 0.0);
+        let (mut wt, mut wd, mut len, mut wy) = (0.0, 0.0, 0.0, 0.0);
         while i < crossings.len() && crossings[i].0 - top <= CLUSTER_HEIGHT * h {
-            let s = crossings[i].1;
+            let (y, s) = crossings[i];
             wt += s.weight;
             wd += s.weight * s.theta_deg;
             len += s.length;
+            wy += s.weight * y;
             i += 1;
         }
         if best.is_none_or(|b| wt > b.0) {
-            best = Some((wt, wd, len));
+            best = Some((wt, wd, len, wy));
         }
     }
-    let (wt, wd, len) = best?;
+    let (wt, wd, len, wy) = best?;
     if wt <= 0.0 || len < MIN_HORIZON_LENGTH * w {
         return None;
     }
-    Some(Estimate {
-        tau_deg: wd / wt,
-        length: len,
-    })
+    Some((
+        Estimate {
+            tau_deg: wd / wt,
+            length: len,
+        },
+        wy / wt,
+    ))
 }
 
 /// The answer from the two estimates (`docs/20` §5 step 6).
@@ -332,9 +342,11 @@ mod tests {
             seg(300.0, 100.0, t, 90.0),
             seg(500.0, 400.0, t + 0.1, 90.0),
         ];
-        let h = horizon(&segs, 768.0, 512.0).unwrap();
+        let (h, at) = horizon(&segs, 768.0, 512.0).unwrap();
         assert!((h.tau_deg - t).abs() < 1e-12);
         assert!((h.length - 360.0).abs() < 1e-9);
+        // It crosses the centre column where the line does.
+        assert!((at - 300.0).abs() < 1e-9, "{at}");
         // Too short a cluster does not count.
         assert_eq!(horizon(&segs[..2], 768.0, 512.0), None);
     }
