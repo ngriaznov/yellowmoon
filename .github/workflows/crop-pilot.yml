@@ -26,8 +26,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 355
     env:
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      # Read under other names: the step "Modal tokens" strips stray whitespace (a pasted secret can end in a newline;
+      # Modal's tokens never contain whitespace) and exports the clean values as MODAL_TOKEN_ID and MODAL_TOKEN_SECRET.
+      SECRET_MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      SECRET_MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       PILOT_ARGS: --n 20000 --curve 5000,10000,0 --epochs 40 --budget 20 --max-minutes 40 --max-label-hours 3.5
       PYTHONUNBUFFERED: "1"
     steps:
@@ -36,8 +38,16 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install modal==1.6.2 numpy==2.2.6 pillow==12.2.0
-      - name: Secrets present
-        run: test -n "$MODAL_TOKEN_ID" && test -n "$MODAL_TOKEN_SECRET"
+      - name: Modal tokens
+        shell: bash
+        run: |
+          id="$(printf '%s' "$SECRET_MODAL_TOKEN_ID" | tr -d '[:space:]')"
+          secret="$(printf '%s' "$SECRET_MODAL_TOKEN_SECRET" | tr -d '[:space:]')"
+          test -n "$id" && test -n "$secret"
+          echo "::add-mask::$id"
+          echo "::add-mask::$secret"
+          echo "MODAL_TOKEN_ID=$id" >> "$GITHUB_ENV"
+          echo "MODAL_TOKEN_SECRET=$secret" >> "$GITHUB_ENV"
       - name: Pilot
         shell: bash
         run: |
