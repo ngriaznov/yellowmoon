@@ -21,6 +21,7 @@ use ym_core::app::{Core, CoreOptions};
 use ym_core::export_queue::ExportJob;
 use ym_core::scheduler::MemoryBudget;
 use ym_core::session::{ApplyScope, OpenOptions};
+use ym_core::settings::{LensKind, LensPatch, SettingsPatch};
 use ym_export::{BitDepth, ExportOptions, FormatKind};
 use ym_gpu::device::gpu_required_by_env;
 
@@ -47,6 +48,7 @@ fn device_opens() -> bool {
 /// The app's side: a core over its own app folder with the device attached.
 struct App {
     core: Core,
+    photo: ym_core::session::PhotoId,
     slot: GpuSlot,
     _home: tempfile::TempDir,
 }
@@ -72,8 +74,10 @@ impl App {
             core.session.wait_idle(Duration::from_secs(120)),
             "the photos develop"
         );
+        let photo = outcome.added[0];
         Some(Self {
             core,
+            photo,
             slot,
             _home: home,
         })
@@ -296,5 +300,84 @@ fn a_dng_and_a_tiff_exported_one_after_the_other_on_the_device_do_not_share_r8()
         &dng_after_tiff,
         &dng_alone,
         "a DNG after a TIFF and a DNG alone",
+    );
+}
+
+/// The lens on the device (`docs/21` section 9): L2 and L3 as kernels, from the raw tiles where the raw chain
+/// left them, into the export tail. The app's export and `ym render --lens vintage ...` with the device on
+/// write the same bytes (a JPEG and a 16-bit TIFF), the binary's report says the pictures were made on the
+/// device without a fall-back note, and the lens changed the file.
+#[test]
+fn a_lens_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("big.ARW", 1500, 1100, 3);
+    let Some(app) = App::open(&[&arw]) else {
+        return;
+    };
+    let plain = app.export(ExportOptions::default(), &sb.root().join("plain"));
+    app.core
+        .session
+        .update_settings(
+            app.photo,
+            &SettingsPatch {
+                lens: Some(LensPatch {
+                    kind: Some(LensKind::Vintage),
+                    flares: Some(60.0),
+                    edges: Some(50.0),
+                    anamorphic: Some(50.0),
+                }),
+                ..SettingsPatch::default()
+            },
+        )
+        .expect("patch");
+    let flags = [
+        "--lens",
+        "vintage",
+        "--flares",
+        "60",
+        "--edges",
+        "50",
+        "--anamorphic",
+        "50",
+    ];
+    let device = app.slot.gpu().expect("a device").clone();
+    let before = device.counters();
+    let from_app = app.export(ExportOptions::default(), &sb.root().join("app"));
+    assert!(device.counters().since(before).dispatches > 0);
+    let mut jpeg_flags = vec!["--format", "jpeg"];
+    jpeg_flags.extend(flags);
+    let from_cli = cli_export(&sb, &[&arw], &jpeg_flags, &sb.root().join("cli"));
+    assert_same_files(&from_app, &from_cli, "a lens on the device, jpeg");
+    assert!(
+        bytes(&from_app[0]) != bytes(&plain[0]),
+        "the lens changed nothing in the file"
+    );
+    let tiff = ExportOptions {
+        format: FormatKind::Tiff,
+        bit_depth: BitDepth::Sixteen,
+        ..ExportOptions::default()
+    };
+    let from_app = app.export(tiff, &sb.root().join("app-tiff"));
+    let mut tiff_flags = vec!["--format", "tiff", "--bits", "16", "--compression", "lzw"];
+    tiff_flags.extend(flags);
+    let from_cli = cli_export(&sb, &[&arw], &tiff_flags, &sb.root().join("cli-tiff"));
+    assert_same_files(&from_app, &from_cli, "a lens on the device, tiff-16");
+    // The binary really made the pictures on the device.
+    let out = sb
+        .ym()
+        .env("YELLOWMOON_GPU", "on")
+        .args(["render", "--json", "--quiet", "--apple-auto", "off"])
+        .arg(&arw)
+        .args(flags)
+        .arg("--out")
+        .arg(sb.root().join("json"))
+        .assert()
+        .success();
+    let text = String::from_utf8(out.get_output().stdout.clone()).expect("utf-8");
+    let v: serde_json::Value = serde_json::from_str(text.trim()).expect("one JSON object");
+    assert_eq!(v["device"], "gpu", "{text}");
+    assert!(
+        !v["notes"].to_string().contains("graphics card"),
+        "the binary fell back to the CPU: {text}"
     );
 }
