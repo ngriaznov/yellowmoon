@@ -225,14 +225,12 @@ pub enum WhiteScaleKind {
 }
 
 /// The set a file of a `presets` white scale comes from; each has a fetch script that reproduces it
-/// (`docs/03`, Provenance per body).
+/// (`docs/03`, Provenance per body). Only sets of files whose licence allows any use appear here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PhotoSet {
     /// The owner's A1 photos (`tools/fetch/owner-photos.sh`).
     OwnerPhotos,
-    /// The local-eval files (`tools/fetch/real-eval.sh`).
-    RealEval,
     /// Play Raw files of discuss.pixls.us (`tools/fetch/white-scale-photos.sh`).
     PlayRaw,
 }

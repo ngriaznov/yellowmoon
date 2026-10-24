@@ -299,7 +299,8 @@ class Pins(unittest.TestCase):
     def test_the_pin_tables_are_read(self):
         names = {p.name for p in fit_mod.owner_pins()}
         self.assertEqual(names, {"A1M01454.ARW", "A1M01739.ARW", "A1M01749.ARW"})
-        self.assertTrue({"DSLR-A300.ARW", "DSLR-A500.ARW", "ILCE-5000.ARW", "NEX-5N.ARW", "NEX-7.ARW"} <= {p.name for p in fit_mod.real_eval_pins()})
+        self.assertFalse(hasattr(fit_mod, "real_eval_pins"), "the local-eval files (unclear or non-commercial licences) are not pins")
+        self.assertEqual({p.set for p in fit_mod.all_pins()}, {"owner-photos", "play-raw"})
         play = fit_mod.play_raw_pins()
         self.assertEqual(len(play), 32)
         self.assertEqual(len({p.sha256 for p in play}), 32)
@@ -319,9 +320,9 @@ class Pins(unittest.TestCase):
                 if pin.model:
                     self.assertEqual(pin.model, b["model"], f["name"])
                 self.assertIn(f["set"], fit_mod.SETS)
-        # The A1 (3), the A7 (4), the ZV-E10 (3), the NEX-5R (2), twelve bodies with one file each, the A6000 (8: the two files
+        # The A1 (3), the A7 (4), the ZV-E10 (3), the NEX-5R (2), seven bodies with one file each, the A6000 (8: the two files
         # whose post is NonCommercial or states no licence are not pinned), the A6300 (5) and the A6500 (2).
-        self.assertEqual(used, 39, "the files named by the registry")
+        self.assertEqual(used, 34, "the files named by the registry")
 
 
 class Registry(unittest.TestCase):
@@ -374,7 +375,7 @@ class Registry(unittest.TestCase):
     def test_every_fitted_body_meets_the_rules_of_docs_03(self):
         lo, hi = fit_mod.DAYLIGHT_WINDOW_K
         fitted = [b for b in self.registry["bodies"] if b["white_scale_source"]["kind"] == "presets"]
-        self.assertEqual(sorted(b["model_id"] for b in fitted), [261, 274, 288, 289, 296, 297, 306, 308, 311, 312, 313, 318, 357, 360, 365, 374, 382, 384, 394])
+        self.assertEqual(sorted(b["model_id"] for b in fitted), [296, 297, 306, 308, 311, 312, 318, 357, 360, 365, 374, 382, 384, 394])
         for b in fitted:
             src = b["white_scale_source"]
             res = src["residual"]
@@ -391,6 +392,16 @@ class Registry(unittest.TestCase):
         self.assertFalse(named & {"12024__DSC1085.ARW", "35354_DSC00912.ARW", "48272_DSC03902.ARW"})
         pinned = {p.name for p in fit_mod.play_raw_pins()}
         self.assertFalse(pinned & {"12024__DSC1085.ARW", "35354_DSC00912.ARW", "48272_DSC03902.ARW"})
+
+    def test_the_bodies_whose_only_files_are_of_a_licence_that_does_not_allow_any_use_have_no_scale(self):
+        # The A300 (a CC BY-NC-SA file), A500, A5000, NEX-5N and NEX-7 (unclear licences) are listed, for their names, with `none`.
+        self.assertEqual(sorted(fit_mod.DROPPED_FOR_LICENCE), [261, 274, 288, 289, 313])
+        for b in self.registry["bodies"]:
+            if b["model_id"] in fit_mod.DROPPED_FOR_LICENCE:
+                self.assertEqual((b["white_scale"], b["white_scale_source"]["kind"], b["white_scale_source"]["files"]), ([1.0, 1.0, 1.0], "none", []), b["model"])
+                self.assertIn("scale dropped 2026-10-24", b["white_scale_source"]["note"])
+        sets = {f["set"] for b in self.registry["bodies"] for f in b["white_scale_source"]["files"]}
+        self.assertEqual(sets, {"owner-photos", "play-raw"})
 
     def test_the_bodies_whose_files_disagree_are_not_in_the_registry(self):
         # The A7 II (docs/03, Consistency of a body's files: 6 files up to 10.4 % in blue) and the A230 (misses the limits).

@@ -27,17 +27,18 @@ reader (``sr2.py``); the matrices are numbers in ``colour_matrices.json``.
 
 **Which files.** A file counts when it is one of the pinned files, found by its content in the folders given
 (``--photos``, default ``DEFAULT_FOLDERS``), whatever its name or folder: the owner's A1 photos
-(``tools/fetch/owner-photos.sha256``), the local-eval files (git blob ids of ``tools/fetch/real_eval.py``) and the
-Play Raw files of ``tools/fetch/white-scale-photos.json``. Each of those has a fetch script, so every shipped scale
-can be reproduced. ``--write`` and ``--check`` refuse to run when a pinned file is missing; ``--report`` reads every
-ARW of the folders, pinned or not, and says which are which.
+(``tools/fetch/owner-photos.sha256``) and the Play Raw files of ``tools/fetch/white-scale-photos.json`` whose post
+allows any use. Each has a fetch script, so every shipped scale can be reproduced. **Shipped scales rest only on files
+whose licence allows any use** (docs/03): the local-eval files (``tools/fetch/real-eval.sh``, unclear or non-commercial
+licences) and the Play Raw files whose post is NonCommercial or states none are not pinned and not used; the bodies that
+only have such files keep ``[1, 1, 1]`` (``DROPPED_FOR_LICENCE``). ``--write`` and ``--check`` refuse to run when a pinned
+file is missing; ``--report`` reads every ARW of the folders, pinned or not, and says which are which.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import sys
 from dataclasses import dataclass, field
@@ -54,20 +55,26 @@ RESULT_JSON = Path(__file__).resolve().parent / "white_scale.json"
 FETCH_DIR = paths.REPO_ROOT / "tools" / "fetch"
 OWNER_SHA256 = FETCH_DIR / "owner-photos.sha256"
 PLAY_RAW_TABLE = FETCH_DIR / "white-scale-photos.json"
-REAL_EVAL_PY = FETCH_DIR / "real_eval.py"
 
 #: The sets a file can come from (``white_scale_source.files[].set``) and the script that fetches each.
-OWNER_PHOTOS, REAL_EVAL, PLAY_RAW = "owner-photos", "real-eval", "play-raw"
+OWNER_PHOTOS, PLAY_RAW = "owner-photos", "play-raw"
 SETS = {
     OWNER_PHOTOS: "tools/fetch/owner-photos.sh",
-    REAL_EVAL: "tools/fetch/real-eval.sh",
     PLAY_RAW: "tools/fetch/white-scale-photos.sh",
 }
 #: Where the fetch scripts put the files (the fit finds them by content, so any folder with the files works).
 DEFAULT_FOLDERS = (
     paths.TESTDATA / "readme-photos" / "src",
-    paths.TESTDATA / "real" / "files",
     paths.TESTDATA / "white-scale" / "play-raw",
+)
+#: Bodies whose only files are the local-eval files (unclear or non-commercial licences, ``tools/fetch/real-eval.sh``) or Play Raw
+#: files whose post is NonCommercial or states no licence: shipped scales rest only on files whose licence allows any use (docs/03),
+#: so these bodies are listed in the registry (for their name) and keep ``[1, 1, 1]``. DSLR-A300, DSLR-A500, ILCE-5000, NEX-5N, NEX-7.
+DROPPED_FOR_LICENCE = frozenset({261, 274, 313, 288, 289})
+DROPPED_NOTE = (
+    "No file of a licence that allows any use; scale dropped 2026-10-24. The presets of the one local-eval file of this body "
+    "(tools/fetch/real-eval.sh, unclear or non-commercial licence) fitted a scale, but shipped scales rest only on files whose "
+    "licence allows any use (docs/03), so its whites are not corrected."
 )
 #: Model ID -> the stand-in body whose scale it takes when its published matrix equals that body's.
 SIBLING_OF = {400: 384}
@@ -94,8 +101,7 @@ class Pin:
 
     set: str
     name: str
-    sha256: str = ""  # empty for the local-eval set, which pins git blob ids
-    blob: str = ""
+    sha256: str = ""
     model: str = ""  # the Model string it must carry (play-raw table), or empty
 
 
@@ -118,14 +124,6 @@ def owner_pins() -> list[Pin]:
     return out
 
 
-def real_eval_pins() -> list[Pin]:
-    """The local-eval files: git blob ids and link names from ``tools/fetch/real_eval.py`` (loaded, not copied)."""
-    spec = importlib.util.spec_from_file_location("_ym_real_eval", REAL_EVAL_PY)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return [Pin(REAL_EVAL, f["name"], blob=f["blob"]) for source in module.SOURCES for f in source["files"]]
-
-
 def play_raw_pins() -> list[Pin]:
     """The Play Raw files of ``tools/fetch/white-scale-photos.json``."""
     if not PLAY_RAW_TABLE.is_file():
@@ -135,18 +133,16 @@ def play_raw_pins() -> list[Pin]:
 
 
 def all_pins() -> list[Pin]:
-    return owner_pins() + real_eval_pins() + play_raw_pins()
+    return owner_pins() + play_raw_pins()
 
 
-def digests(path: Path) -> tuple[str, str]:
-    """``(sha256, git blob id)`` of a file, in one pass."""
-    size = path.stat().st_size
-    sha, blob = hashlib.sha256(), hashlib.sha1(b"blob %d\0" % size)
+def sha256_of(path: Path) -> str:
+    """SHA-256 of a file."""
+    sha = hashlib.sha256()
     with open(path, "rb") as f:
         while chunk := f.read(1 << 20):
             sha.update(chunk)
-            blob.update(chunk)
-    return sha.hexdigest(), blob.hexdigest()
+    return sha.hexdigest()
 
 
 def arw_files(folders) -> list[Path]:
@@ -169,28 +165,20 @@ class Scan:
     wrong: list[Path] = field(default_factory=list)  # carries a pinned name, not the pinned content
 
     def missing(self) -> list[Pin]:
-        """Pinned files a fit needs and the folders do not have: every owner and Play Raw pin, and the local-eval
-        files of a body the registry lists as a stand-in."""
+        """Pinned files a fit needs and the folders do not have: every pinned file."""
         have = {(f.pin.set, f.pin.name) for f in self.found}
-        stand_ins = {b.model for b in rd.BODIES if b.match == "default"}
-        out = []
-        for p in all_pins():
-            needed = p.set != REAL_EVAL or p.name.removesuffix(".ARW").split("_")[0] in stand_ins
-            if needed and (p.set, p.name) not in have:
-                out.append(p)
-        return out
+        return [p for p in all_pins() if (p.set, p.name) not in have]
 
 
 def scan(folders) -> Scan:
-    """Finds the pinned files in the folders by their content (SHA-256, or the git blob id for the local-eval set)."""
+    """Finds the pinned files in the folders by their content (SHA-256)."""
     pins = all_pins()
-    by_sha = {p.sha256: p for p in pins if p.sha256}
-    by_blob = {p.blob: p for p in pins if p.blob}
+    by_sha = {p.sha256: p for p in pins}
     names = {p.name for p in pins}
     out, taken = Scan(), set()
     for path in arw_files(folders):
-        sha, blob = digests(path)
-        pin = by_sha.get(sha) or by_blob.get(blob)
+        sha = sha256_of(path)
+        pin = by_sha.get(sha)
         if pin is None:
             (out.wrong if path.name in names else out.unpinned).append(path)
         elif (pin.set, pin.name) not in taken:
@@ -441,10 +429,9 @@ def fit_all(folders=DEFAULT_FOLDERS) -> dict:
         model = sr2.read_model(f.path)
         if f.pin.model and f.pin.model != model:
             raise SystemExit(f"{f.pin.name}: the pin says {f.pin.model}, the file says {model}")
-        if f.pin.set != REAL_EVAL and model not in stand_ins:
+        if model not in stand_ins:
             raise SystemExit(f"{f.pin.name}: pinned file of {model}, which is not a stand-in body of the registry")
-        if model in stand_ins:  # local-eval files of measured bodies (A7 III, A7 IV) and of bodies without an entry are not used
-            by_model.setdefault(model, []).append(f)
+        by_model.setdefault(model, []).append(f)
     results = {
         b.model_id: evaluate_body(b, by_model[b.model], matrices.get(b.model_id))
         for b in rd.BODIES
@@ -483,6 +470,8 @@ def fit_all(folders=DEFAULT_FOLDERS) -> dict:
                 }
             else:
                 entry = none_entry()
+        elif b.model_id in DROPPED_FOR_LICENCE:
+            entry = none_entry(DROPPED_NOTE)
         elif b.model_id in results and results[b.model_id].problem:
             entry = none_entry(
                 "Files of this body were read but the presets were not accepted: " + results[b.model_id].problem + "; its whites are not corrected."
@@ -495,7 +484,7 @@ def fit_all(folders=DEFAULT_FOLDERS) -> dict:
         "schema_version": 2,
         "description": (
             "White scale per registry body, generated by python3 -m training.white_scale.fit --write from the white-balance "
-            "presets stored in pinned files (tools/fetch/owner-photos.sh, real-eval.sh, white-scale-photos.sh) and the published "
+            "presets stored in pinned files (tools/fetch/owner-photos.sh, white-scale-photos.sh) and the published "
             "colour matrices in colour_matrices.json. build_registry copies it into data/cameras/registry.json."
         ),
         "bodies": bodies,
@@ -595,7 +584,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     folders = args.photos or list(DEFAULT_FOLDERS)
     if not arw_files(folders):
-        print(f"cannot run: no ARW files in {', '.join(str(f) for f in folders)} (tools/fetch/owner-photos.sh, real-eval.sh, white-scale-photos.sh)", file=sys.stderr)
+        print(f"cannot run: no ARW files in {', '.join(str(f) for f in folders)} (tools/fetch/owner-photos.sh, white-scale-photos.sh)", file=sys.stderr)
         return 2
     if args.report:
         report(folders)

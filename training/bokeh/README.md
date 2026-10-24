@@ -70,6 +70,7 @@ you must fetch yourself.
 | the classical baseline, the sharpness measure | `classical.py` | numpy, in `train.py`'s evaluation and `sources.py` |
 | budget plans and the ledger | `budget.py` | everywhere |
 | local evaluation on research-only sets | `eval_real.py` | locally only |
+| models side by side on the synthetic scenes | `compare.py` | locally |
 
 **Why scenes are rendered on the GPU, not before.** A pre-rendered set of 0.5 M samples at 512 x 512 is hundreds of
 gigabytes. `train_run` copies the tiles (about 128 KB each as JPEG with a 1 KB mask: roughly 4.5 GB for 36,000 tiles) to local disk
@@ -194,6 +195,65 @@ spread, no ball search); a blurred region with no edge left has no estimate of i
 The spec's detector (LC-07) adds a joint bilateral spread, the subject anchor and the ball search and will be harder to beat: the final
 comparison is the network against that detector on the same scenes.
 
+### Real photos with human masks: bokeh-2 on CUHK (local evaluation only, 2026-10-24)
+
+`eval_real.py`, the 704 `out_of_focus` photos (the mask polarity read from the data: white = out of focus, 66.6 % of the pixels), at the photos' own
+size (500 to 640 px; the spec's threshold `2 b_min` is a disc of 2.9 px there) and, on every fifth photo, enlarged to 1024 px (the network's scale: 4.9 px). The classical
+column is `classical.py`'s stripped-down Zhuo and Sim, not the Rust detector.
+
+| rule | accuracy | precision | recall | F1 | F1 per photo (mean ± sd) |
+|---|---|---|---|---|---|
+| native size, 704 photos | | | | | |
+| network, `b >= 2 b_min` (= `P >= 0.5`) | 0.363 | 0.991 | 0.044 | 0.084 | 0.056 ± 0.160 |
+| network, `c >= 0.5` gate | 0.334 | 1.000 | 0.0007 | 0.001 | 0.001 ± 0.013 |
+| network, `P >= 0.7` | 0.356 | 0.995 | 0.033 | 0.064 | 0.044 ± 0.141 |
+| network, `P >= 0.9` (= the lower-quantile rule) | 0.344 | 0.998 | 0.015 | 0.030 | 0.020 ± 0.095 |
+| network, mirrored pass, `P >= 0.7` | 0.350 | 0.997 | 0.025 | 0.048 | 0.032 ± 0.121 |
+| classical, `b >= 2 b_min` | 0.365 | 0.971 | 0.048 | 0.091 | 0.076 ± 0.126 |
+| classical, `c >= 0.5` gate | 0.347 | 0.954 | 0.021 | 0.042 | 0.038 ± 0.057 |
+| enlarged to 1024 px, 141 photos | | | | | |
+| network, `b >= 2 b_min` | 0.387 | 0.971 | 0.054 | 0.102 | 0.080 ± 0.167 |
+| network, `c >= 0.5` gate | 0.353 | 0.000 | 0.000 | 0.000 | 0.000 |
+| network, `P >= 0.7` | 0.369 | 0.999 | 0.025 | 0.049 | 0.042 ± 0.106 |
+| network, `P >= 0.9` | 0.358 | 1.000 | 0.007 | 0.014 | 0.013 ± 0.051 |
+| network, mirrored pass, `P >= 0.7` | 0.365 | 1.000 | 0.017 | 0.034 | 0.029 ± 0.083 |
+| classical, `b >= 2 b_min` | 0.354 | 0.956 | 0.001 | 0.002 | 0.002 ± 0.004 |
+
+Read it as precision, not as segmentation. Accuracy is that of a detector that calls nothing out of focus (0.334; calling everything gives 0.666). The
+network is almost never wrong when it says "blurred" (0.97 to 1.00) and says so for 1 to 5 % of the masks' out-of-focus pixels; against the classical baseline
+that is equal at native size and 45 times more at 1024 px. Why so few, which the numbers cannot separate: CUHK's out-of-focus areas are mostly *mild* (their gradient
+energy is a fifth of the focused areas', median) and below `2 b_min`; the photos are web JPEGs, with block artefacts on top of the blur that a raw lens plane
+does not have and the synthesis does not make; and the network's own log radius is the floor (1 px) for 90 % of those pixels (AUC of `mu` as a detector: 0.64 against 0.79 for a
+smoothed gradient energy). The `c` gate is the one clear failure: no threshold on the radius's confidence keeps the blur. The runtime's domain is a raw plane at 1024 px,
+where bokeh-2's maps are good (the Sony planes), so CUHK is a check on precision and not a score to optimise; do not train toward it.
+
+### The decision: what the runtime does with the two outputs (measured on bokeh-2, 2026-10-24)
+
+`c = exp(-beta / 0.25)` says how sure the *radius* is. It is high on sharp areas (the radius is the floor) and low inside strong blur, so a
+gate on it throws the blur away: on the 28 Sony lens planes `c >= 0.5` keeps **0.1 %** of the frame where `b >= 2 b_min` holds for 19.7 % (the classical
+detector: 1.5 %); on CUHK it keeps 0.07 % of the out-of-focus pixels (recall 0.0007 against 0.044 without the gate); on synthetic scenes recall falls from 0.92 to 0.12.
+Whether a pixel is out of focus is a different question, and the network's own Laplace answers it: `encode.detection_probability(mu, s, hd)` is
+`P(b >= 2 b_min)`, a function of the two outputs and nothing else (no new output channel, the weights and the Rust parity tests stay valid).
+`P >= 0.5` is the same as `b >= 2 b_min` (the median); `P >= 0.9` is the same as the lower-quantile rule `b * exp(-1.61 beta) >= 2 b_min`.
+
+| rule (full-resolution synthetic v3 scenes, bokeh-2) | thin-structure pixels called blurred | featureless interior called blurred | precision | recall |
+|---|---|---|---|---|
+| `b >= 2 b_min` (= `P >= 0.5`) | 36.7 % | 65.9 % | 0.898 | 0.918 |
+| `c >= 0.5` gate | 0.9 % | 0.1 % | 0.979 | 0.118 |
+| `P >= 0.7` | 31.5 % | 46.7 % | 0.929 | 0.884 |
+| `P >= 0.9` | 21.6 % | 7.1 % | 0.976 | 0.716 |
+| mirrored average, `P >= 0.7` | 10.5 % | 38.3 % | 0.949 | 0.836 |
+| mirrored average, `P >= 0.9` | 4.9 % | 4.3 % | 0.991 | 0.606 |
+
+Recommended: **the map's "blurred" is `P >= 0.7`**, with `b = exp(mu) / hd` there and 0 elsewhere; a cell's weight in the bilateral spread is
+`max(P, 1 - P)` (how sure the *decision* is: a certain blur counts as much as a certain sharp), not `c`; **"this photo has bokeh"**
+(`LensPlanes::active`: 2 % of the frame) is counted with `P >= 0.9`, which turns the low-confidence blobs on a featureless sky into nothing (7 % against 47 %
+of their pixels) at a recall that does not matter for a share of the frame. The mirrored pass (the photo flipped left to right, the two outputs combined
+by the mean log radius and the scale `mean(beta) + |mu_1 - mu_2| / 2`) costs a second network run and is the cheapest thing that helps thin structures
+(31 % to 10 % at `P >= 0.7`): worth it when 1 to 2 s more is acceptable. A guided filter of the map with the photo as the guide changes nothing (31.5 % to 31.2 %): the stage's
+own bilateral upsampling already follows edges. The sharp-edge test (L1, "as built") is a real second line for thin structures (31 % to 14 %, to 4 % with the mirrored
+pass) and costs recall next to sharp edges (0.88 to 0.80 on these scenes, dilation 2 px; 0.85 with none): keep it, and do not widen it.
+
 ## Into the app (`export.py`)
 
     python -m training.bokeh.export --model <runs>/bokeh-2/model.pt --out data/models/bokeh/bokehnet.safetensors \
@@ -244,7 +304,7 @@ data. The longest single training that fits `--budget 5` is 186 minutes.
 
 **The overhead.** The time limit of a training call is `minutes + overhead`, 18 minutes by default: bokeh-2 needed 10 s to copy the tiles and
 75 s for the final evaluation of 576 samples, so 18 is generous, and it is most of a short run's worst case (a 5-minute smoke would have a worst
-case of $0.54). `--overhead-min` (never below 6) says less for a run whose final evaluation is small (`--final-val 96`); the plan, the call's time
+case of $0.57). `--overhead-min` (never below 6) says less for a run whose final evaluation is small (`--final-val 96`); the plan, the call's time
 limit and the heartbeat all use it. The programme's spend after bokeh-2 is $5.55 (ledger); v3's smoke and run reserve at most $0.33 and $2.90.
 
 ## Running it
@@ -321,3 +381,10 @@ evaluation on research-only sets (`test_eval_real.py`: the rules, the counts, th
   `modal` 1.6.2), but the calls (`map(order_outputs=False, return_exceptions=True)`, `Volume.read_only`, `spawn().get(timeout)`) are used
   as the crop pipeline used theirs and as `modal` 1.6.2's signatures say. Run `check` first.
 - The baseline is weak by design (above).
+- **Mild real blur is missed** (CUHK, above): precision is high and recall on masks of mild defocus is a few percent. Not trained against: the label of
+  a blur under `b_min` is "sharp" by construction, and natural bokeh in the sources is filtered, not removed (the self-cleaning round: run the first
+  model over the unblurred sources and give the pixels where it already predicts blur no weight as "sharp" labels; the cost is one more forward pass per batch).
+- **Thin structures and featureless regions are the weak points of bokeh-2** (v3's target): 31 % of the pixels of a sharp twig or hair over a blur are called
+  blurred, and 47 % of a sharp sky's interior (`P >= 0.7`). v3's synthesis and the sharp-wins target are the fix, unmeasured until bokeh-3 has run
+  (`compare.py` and `final.groups` say whether it worked); the synthetic structures are procedural (constant colour along a strand, no texture) and
+  real hair and branches are not, so the real photographs (the lens planes) are the test, and thin structures can still be absorbed there.

@@ -3,7 +3,7 @@
 //! developer tool for local review (never shipped).
 //!
 //! ```text
-//! cargo run -p ym-core --example bokeh_gate -- --data DIR [--ks 0,0.8,1.61,2.5] [--write-maps OUT] <dump-dir>...
+//! cargo run -p ym-core --example bokeh_gate -- --data DIR [--ks 0,0.8,1.61,2.5] [--ts 1,1.5,2] [--write-maps OUT] <dump-dir>...
 //! ```
 //!
 //! A dump folder holds `lens_plane.f32` and `lens_plane.json` as `bokeh_probe` reads them. `DIR` is a data folder
@@ -42,14 +42,14 @@ fn write_f32(path: &Path, data: &[f32]) -> Fallible<()> {
     Ok(())
 }
 
-fn input(map: &BokehMap, k: f64) -> BlurMapInput {
+fn input(map: &BokehMap, k: f64, t: f64) -> BlurMapInput {
     let b_low = map
         .b
         .iter()
         .zip(&map.c)
         .map(|(&b, &c)| {
             let beta = -0.25 * libm::log(f64::from(c).max(1e-6));
-            (f64::from(b) * libm::exp(-k * beta)) as f32
+            (f64::from(b) * libm::exp(-k * beta) * 2.0 / t) as f32
         })
         .collect();
     BlurMapInput {
@@ -78,6 +78,7 @@ fn stats(planes: &LensPlanes, ms: f64) -> serde_json::Value {
 fn main() -> Fallible<()> {
     let mut data = PathBuf::new();
     let mut ks = vec![0.0, 0.8, 1.2, 1.61, 2.0, 2.5];
+    let mut ts = vec![2.0];
     let mut write_maps: Option<PathBuf> = None;
     let mut dirs: Vec<PathBuf> = Vec::new();
     let mut it = std::env::args().skip(1);
@@ -88,6 +89,14 @@ fn main() -> Fallible<()> {
                 ks = it
                     .next()
                     .ok_or("--ks needs a list")?
+                    .split(',')
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()?;
+            }
+            "--ts" => {
+                ts = it
+                    .next()
+                    .ok_or("--ts needs a list")?
                     .split(',')
                     .map(str::parse)
                     .collect::<Result<_, _>>()?;
@@ -164,25 +173,32 @@ fn main() -> Fallible<()> {
         let planar = PlanarRgbRef::new(w, h, &plane)?;
         let (map, tm) = model.map_timed(&planar)?;
         let mut rows = Vec::new();
-        for &k in &ks {
+        for (&k, &tt) in ks.iter().flat_map(|k| ts.iter().map(move |t| (k, t))) {
             let t = Instant::now();
-            let planes =
-                LensPlanes::build_with_map(&plan, &image, focus, Some(&input(&map, k)), &|| false)?;
+            let planes = LensPlanes::build_with_map(
+                &plan,
+                &image,
+                focus,
+                Some(&input(&map, k, tt)),
+                &|| false,
+            )?;
             let ms = t.elapsed().as_secs_f64() * 1e3;
             let mut s = stats(&planes, ms);
             s["k"] = json!(k);
+            s["t"] = json!(tt);
             let valid = map
                 .b
                 .iter()
                 .zip(&map.c)
                 .filter(|&(&b, &c)| {
                     let beta = -0.25 * libm::log(f64::from(c).max(1e-6));
-                    f64::from(b) * libm::exp(-k * beta) >= 2.0 * ym_lens::consts::B_MIN
+                    f64::from(b) * libm::exp(-k * beta) >= tt * ym_lens::consts::B_MIN
                 })
                 .count();
             s["valid_cells"] = json!(valid as f64 / map.b.len().max(1) as f64);
             if let (Some(out), Some(b)) = (&write_maps, planes.bokeh())
                 && (k - 1.61).abs() < 1e-9
+                && (tt - 2.0).abs() < 1e-9
             {
                 let o = out.join(&name);
                 std::fs::create_dir_all(&o)?;

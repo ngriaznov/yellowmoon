@@ -714,20 +714,27 @@ fn white_scales_are_recorded_with_their_source() {
     }
     assert_eq!((own, same), (11, 10));
     assert_eq!(
-        none, 5,
-        "the A7R V, A7CR, A9 III, A7 V and A7R VI have no data"
+        none, 10,
+        "the A7R V, A7CR, A9 III, A7 V and A7R VI have no data; the A300, A500, A5000, NEX-5N and NEX-7 have only files of a licence that does not allow any use"
     );
-    // The A1 and the eighteen bodies of registry 1.3.0 are fitted on the presets of their own files. The A7 II
-    // (files that disagree by more than 5 %), the A230 (misses the limits) and every body without a file have no
-    // entry, or `none`.
+    // The A1 and thirteen bodies of registry 1.3.0 are fitted on the presets of their own files; the A300, A500,
+    // A5000, NEX-5N and NEX-7 are listed with `none` (their only files are local-eval files of unclear or
+    // non-commercial licence). The A7 II (files that disagree by more than 5 %), the A230 (misses the limits) and
+    // every body without a file have no entry, or `none`.
     presets.sort_unstable();
     assert_eq!(
         presets,
         [
-            261, 274, 288, 289, 296, 297, 306, 308, 311, 312, 313, 318, 357, 360, 365, 374, 382,
-            384, 394
+            296, 297, 306, 308, 311, 312, 318, 357, 360, 365, 374, 382, 384, 394
         ]
     );
+    for id in [261, 274, 313, 288, 289] {
+        let body = reg.body_by_model_id(id).unwrap();
+        let src = body.white_scale_source.as_ref().unwrap();
+        assert_eq!(src.kind, WhiteScaleKind::None, "{id}");
+        assert!(src.note.contains("scale dropped 2026-10-24"), "{id}");
+        assert_eq!(body.white_scale, IDENTITY_WHITE_SCALE, "{id}");
+    }
     for id in [340, 265] {
         assert!(
             reg.body_by_model_id(id).is_none(),
@@ -773,13 +780,6 @@ fn white_scales_are_recorded_with_their_source() {
                         && e["sha256"] == f.sha256.as_str()
                         && e["model"] == b.model.as_str()
                 }),
-                // real-eval pins git blob ids (tools/fetch/real_eval.py); the link names are the pinned names.
-                PhotoSet::RealEval => {
-                    let real_eval =
-                        std::fs::read_to_string(repo_root().join("tools/fetch/real_eval.py"))
-                            .unwrap();
-                    real_eval.contains(&format!("\"name\": \"{}\"", f.name))
-                }
             };
             assert!(
                 pinned,
@@ -1024,6 +1024,13 @@ fn the_registry_schema_and_rules_refuse_broken_white_scales() {
             a1,
             Box::new(|b| {
                 b["white_scale_source"]["files"][0]["set"] = json!("elsewhere");
+            }),
+        ),
+        (
+            "a file of the local-eval set, whose licence does not allow any use",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]["files"][0]["set"] = json!("real-eval");
             }),
         ),
         (

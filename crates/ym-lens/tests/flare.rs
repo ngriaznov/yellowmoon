@@ -356,13 +356,13 @@ fn expected_energy(plan: &LensPlan, s: &Sums, strength: f64) -> [f64; 3] {
     let mut out = [0.0; 3];
     for c in 0..3 {
         let mut e = (st.glow + st.veil) * s.r[c];
-        for g in &lens.flare.ghosts {
-            e += st.ghost_gain * g.fraction * tint(&g.coating)[c] * s.h[c];
+        for (g, fraction) in lens.flare.ghosts.iter().zip(&st.ghosts) {
+            e += fraction * tint(&g.coating)[c] * s.h[c];
         }
         e += st.burst * strength * s.h_compact[c];
         e += anam * st.streak * t_streak[c] * s.h[c];
-        for g in &att.ghosts {
-            e += anam * st.attachment_ghost_gain * g.fraction * tint(&g.coating)[c] * s.h[c];
+        for (g, fraction) in att.ghosts.iter().zip(&st.attachment_ghosts) {
+            e += anam * fraction * tint(&g.coating)[c] * s.h[c];
         }
         out[c] = e;
     }

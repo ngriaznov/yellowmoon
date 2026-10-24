@@ -85,7 +85,7 @@
                 "enum": ["own_curves", "same_sensor", "presets", "sibling", "none"]
               },
               "files": {
-                "description": "The files the presets were read from, for kind 'presets'; empty otherwise. Each is named, pinned by SHA-256 and says which set (and so which fetch script, docs/03) it comes from: 'owner-photos' (tools/fetch/owner-photos.sh), 'real-eval' (tools/fetch/real-eval.sh) or 'play-raw' (tools/fetch/white-scale-photos.sh).",
+                "description": "The files the presets were read from, for kind 'presets'; empty otherwise. Each is named, pinned by SHA-256 and says which set (and so which fetch script, docs/03) it comes from: 'owner-photos' (tools/fetch/owner-photos.sh) or 'play-raw' (tools/fetch/white-scale-photos.sh). A set of files of unclear or non-commercial licence has no place here: shipped scales rest only on files whose licence allows any use (docs/03).",
                 "type": "array",
                 "items": {
                   "type": "object",
@@ -94,7 +94,7 @@
                   "properties": {
                     "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*\\.ARW$" },
                     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-                    "set": { "enum": ["owner-photos", "real-eval", "play-raw"] }
+                    "set": { "enum": ["owner-photos", "play-raw"] }
                   }
                 }
               },

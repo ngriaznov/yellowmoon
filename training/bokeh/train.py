@@ -662,8 +662,8 @@ def _train(tiles: Path, out: Path, config: dict, heartbeat, log) -> dict:
         if config["eval_every_min"] and now - last_eval > config["eval_every_min"] * 60:
             m = evaluate(ema, tiles, config, config["val_samples"], 7, device)
             history.append({"step": step, "eval": {k: m["model"][k] for k in ("mae_b", "fp_rate", "fp_rate_gated", "ece")}})
-            history[-1]["eval"].update({k: m["groups"][k] for k in ("thin_false_blur_p70", "flat_false_blur_p70", "mid_recall_p70",
-                                                                    "precision_p70", "recall_p70")})
+            history[-1]["eval"].update({k: v for k, v in m.get("groups", {}).items() if k in (
+                "thin_false_blur_p70", "flat_false_blur_p70", "mid_recall_p70", "precision_p70", "recall_p70")})
             log(json.dumps(history[-1]))
             check_scores(history[-1]["eval"], step)
             model.train()

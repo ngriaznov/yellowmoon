@@ -468,13 +468,13 @@ impl<'a> Items<'a> {
             .fold(0.0f64, f64::max);
         let mut list = Vec::new();
         for src in sources {
-            for (g, tint) in lens.flare.ghosts.iter().zip(&lens_tints) {
+            for ((g, tint), fraction) in lens.flare.ghosts.iter().zip(&lens_tints).zip(&terms.ghosts) {
                 if let Some(it) = items.ghost(
                     src,
                     g,
                     SHAPE_APERTURE,
                     terms.stretch,
-                    g.fraction * terms.ghost_gain,
+                    *fraction,
                     *tint,
                     rim_peak,
                     &whole,
@@ -483,13 +483,13 @@ impl<'a> Items<'a> {
                 }
             }
             if terms.anam > 0.0 {
-                for (g, tint) in att.ghosts.iter().zip(&att_tints) {
+                for ((g, tint), fraction) in att.ghosts.iter().zip(&att_tints).zip(&terms.att_ghosts) {
                     if let Some(it) = items.ghost(
                         src,
                         g,
                         SHAPE_ROUND,
                         terms.stretch,
-                        g.fraction * terms.att_ghost_gain * terms.anam,
+                        *fraction * terms.anam,
                         *tint,
                         rim_peak,
                         &whole,

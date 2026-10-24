@@ -70,3 +70,25 @@ def test_the_segmentation_report_reads_the_polarity_from_the_gradients():
     rep = E.evaluate_segmentation(model, [("a", rgb, mask), ("b", rgb, mask)], 0, tta=False)
     assert rep["mask_polarity"] == "white = in focus" and rep["images"] == 2
     assert 0.45 < rep["out_of_focus_share"] < 0.55 and "P>=0.7" in rep and "classical raw" in rep
+
+
+def test_models_are_compared_side_by_side_on_v3s_scenes_and_bokeh_2s(tile_folder, tmp_path):
+    from training.bokeh import compare
+
+    torch.manual_seed(0)
+    paths = {}
+    for name in ("a", "b"):
+        paths[name] = tmp_path / f"{name}.pt"
+        torch.save({"state_dict": BokehNet().state_dict()}, paths[name])
+    config = {"sample": 64, "kernel_r": 10, "r_max_px": 7.0}
+    orig = compare.train.DEFAULTS
+    compare.train.DEFAULTS = {**orig, **config}  # the tiny tiles of the fixture
+    try:
+        res = compare.compare(tile_folder, paths, 4, batch=2, val_share=0.3)
+    finally:
+        compare.train.DEFAULTS = orig
+    assert set(res) == {"a", "b"} and set(res["a"]) == {"v3", "bokeh-2"}
+    assert {"mae_b", "thin_false_blur_p70", "flat_false_blur_p70", "mid_recall_p70", "precision_p70"} <= set(res["a"]["v3"])
+    assert all(isinstance(v, float) for v in res["a"]["v3"].values())
+    text = compare.table(res)
+    assert "on v3's scenes" in text and "on bokeh-2's scenes" in text and text.count("\n") >= 6

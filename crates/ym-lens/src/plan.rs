@@ -236,8 +236,8 @@ impl LensPlan {
         let a = &self.attachment;
         let st = self.flare_strengths();
         let anamorphic = (self.q - 1.0) / (a.q_max - 1.0);
-        let lens_part = st.lens_fraction(&self.lens);
-        let attachment_part = anamorphic * st.attachment_fraction(a);
+        let lens_part = st.lens_fraction();
+        let attachment_part = anamorphic * st.attachment_fraction();
         self.flares * (lens_part + attachment_part)
     }
 

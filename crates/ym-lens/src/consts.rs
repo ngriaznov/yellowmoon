@@ -97,7 +97,7 @@ pub const LIGHT_BOOST_NONE_HD: f64 = 0.4;
 
 /// The share of the boost, in EV, that the restored light of the glow and the veil gets (the glow's own
 /// fraction is a tuned artistic amount that already assumes a bright light).
-pub const GLOW_BOOST_SHARE: f64 = 0.4;
+pub const GLOW_BOOST_SHARE: f64 = 0.5;
 
 /// At Flares 100 the ghosts of a lens together take at least this fraction of the light of a light: a lens whose
 /// data hold less (every coated lens) has its ghosts raised, all by one factor, to this, the level of twelve
@@ -106,9 +106,6 @@ pub const GHOST_FRACTION_FLOOR: f64 = 0.01;
 
 /// The same floor for the attachment's own oval ghosts at Anamorphic 100.
 pub const ATTACHMENT_GHOST_FLOOR: f64 = 0.002;
-
-/// The largest factor the floor may raise a lens's ghost fractions by.
-pub const GHOST_GAIN_MAX: f64 = 200.0;
 
 /// At Flares 100 the glow of a lens takes at least this fraction of the light (a veiling glare that the
 /// literature rates "usually good", 1.5 to 3 %); a lens whose data hold less has its glow raised to it.
