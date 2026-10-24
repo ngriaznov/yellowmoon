@@ -89,7 +89,7 @@ Why there:
 
 **Planes and lists, once per photo.** Some parts of the lens see the whole frame (a ghost lies across the centre from its light; glow reaches far), while tiles must equal the whole frame bit for bit (`docs/17` D5). Those parts are therefore made once per photo, on the CPU, from small whole-frame images, and shared by every tile and every scale:
 
-- the **lens plane**: the raw group's image at `k_L`, the smallest power of two that gives a long edge of at most 1024 px;
+- the **lens plane**: the raw group's image at `k_L`, the largest power of two (at least 2) that keeps the frame's long edge at or above 1024 px, so the plane is 1024 to 2047 px long (a 6000 px frame gives `k_L` = 4, an 8640 px frame 8; frames under 2048 px use 2, and test frames under 1024 px may use 1);
 - the **tail plane**: the lens plane halved again until its long edge is at most 512 px;
 - the **source list** (L3) and the **ball list** and **blur map** (L1).
 
