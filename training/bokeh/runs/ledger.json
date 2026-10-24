@@ -1,0 +1,345 @@
+{
+ "cap": 10.0,
+ "entries": {
+  "check-1792835273": {
+   "actual": 0.002872,
+   "budget": 0.5,
+   "deadline": 1792836176.860576,
+   "done": [
+    "probe"
+   ],
+   "entry": "check",
+   "inflight": 0.051516,
+   "items": [
+    [
+     "probe",
+     0.00192
+    ],
+    [
+     "orchestrator",
+     0.00095
+    ]
+   ],
+   "reserved": 0.051516,
+   "slack": 0.0,
+   "started": 1792835276.860576,
+   "state": "settled"
+  },
+  "prepare-1792835911": {
+   "actual": 0.26502,
+   "budget": 1.5,
+   "deadline": 1792841314.8059824,
+   "done": [
+    "index",
+    "masks-0",
+    "masks-7",
+    "masks-3",
+    "masks-2",
+    "masks-5",
+    "masks-1",
+    "masks-9",
+    "masks-6",
+    "masks-a",
+    "masks-4",
+    "masks-c",
+    "masks-b",
+    "masks-e",
+    "masks-8",
+    "masks-d",
+    "masks-f",
+    "tiles-2",
+    "tiles-1",
+    "tiles-0",
+    "tiles-11",
+    "tiles-10",
+    "tiles-3",
+    "tiles-9",
+    "tiles-7",
+    "tiles-4",
+    "tiles-5",
+    "tiles-6",
+    "tiles-12",
+    "tiles-15",
+    "tiles-13",
+    "tiles-16",
+    "tiles-17",
+    "tiles-8",
+    "tiles-18",
+    "tiles-14",
+    "tiles-19"
+   ],
+   "entry": "prepare",
+   "inflight": 1.257574,
+   "items": [
+    [
+     "index",
+     0.0022
+    ],
+    [
+     "masks-0",
+     0.00155
+    ],
+    [
+     "masks-7",
+     0.0015
+    ],
+    [
+     "masks-3",
+     0.00153
+    ],
+    [
+     "masks-2",
+     0.00158
+    ],
+    [
+     "masks-5",
+     0.00155
+    ],
+    [
+     "masks-1",
+     0.00165
+    ],
+    [
+     "masks-9",
+     0.00155
+    ],
+    [
+     "masks-6",
+     0.00159
+    ],
+    [
+     "masks-a",
+     0.00156
+    ],
+    [
+     "masks-4",
+     0.00162
+    ],
+    [
+     "masks-c",
+     0.00161
+    ],
+    [
+     "masks-b",
+     0.00165
+    ],
+    [
+     "masks-e",
+     0.00178
+    ],
+    [
+     "masks-8",
+     0.00192
+    ],
+    [
+     "masks-d",
+     0.00264
+    ],
+    [
+     "masks-f",
+     0.00262
+    ],
+    [
+     "tiles-2",
+     0.00602
+    ],
+    [
+     "tiles-1",
+     0.00642
+    ],
+    [
+     "tiles-0",
+     0.0065
+    ],
+    [
+     "tiles-11",
+     0.00688
+    ],
+    [
+     "tiles-10",
+     0.00746
+    ],
+    [
+     "tiles-3",
+     0.00801
+    ],
+    [
+     "tiles-9",
+     0.00921
+    ],
+    [
+     "tiles-7",
+     0.00623
+    ],
+    [
+     "tiles-4",
+     0.01233
+    ],
+    [
+     "tiles-5",
+     0.01263
+    ],
+    [
+     "tiles-6",
+     0.0129
+    ],
+    [
+     "tiles-12",
+     0.01524
+    ],
+    [
+     "tiles-15",
+     0.01574
+    ],
+    [
+     "tiles-13",
+     0.0159
+    ],
+    [
+     "tiles-16",
+     0.01334
+    ],
+    [
+     "tiles-17",
+     0.0122
+    ],
+    [
+     "tiles-8",
+     0.01705
+    ],
+    [
+     "tiles-18",
+     0.01264
+    ],
+    [
+     "tiles-14",
+     0.01738
+    ],
+    [
+     "tiles-19",
+     0.0128
+    ],
+    [
+     "orchestrator",
+     0.00806
+    ]
+   ],
+   "reserved": 1.257574,
+   "slack": 0.0,
+   "started": 1792835914.8059824,
+   "state": "settled"
+  },
+  "preview-1792837508": {
+   "actual": 0.007381,
+   "budget": 0.3,
+   "deadline": 1792838711.381068,
+   "done": [
+    "preview"
+   ],
+   "entry": "preview",
+   "inflight": 0.123637,
+   "items": [
+    [
+     "preview",
+     0.00601
+    ],
+    [
+     "orchestrator",
+     0.00137
+    ]
+   ],
+   "reserved": 0.123637,
+   "slack": 0.0,
+   "started": 1792837511.381068,
+   "state": "settled"
+  },
+  "train-1792838063": {
+   "actual": 2.485936,
+   "budget": 5.0,
+   "deadline": 1792845566.3755145,
+   "done": [],
+   "entry": "train",
+   "inflight": 2.897339,
+   "items": [
+    [
+     "training (stopped)",
+     2.36092
+    ],
+    [
+     "orchestrator",
+     0.12501
+    ]
+   ],
+   "reserved": 2.897339,
+   "slack": 0.0,
+   "started": 1792838066.3755145,
+   "state": "settled"
+  },
+  "train-1792851603": {
+   "actual": 0.217575,
+   "budget": 0.8,
+   "deadline": 1792853586.4481533,
+   "done": [],
+   "entry": "train",
+   "inflight": 0.645144,
+   "items": [
+    [
+     "training (stopped)",
+     0.20714
+    ],
+    [
+     "orchestrator",
+     0.01043
+    ]
+   ],
+   "reserved": 0.645144,
+   "slack": 0.0,
+   "started": 1792851606.4481533,
+   "state": "settled"
+  },
+  "train-1792852844": {
+   "actual": 0.060647,
+   "budget": 0.8,
+   "deadline": 1792854829.1660035,
+   "done": [],
+   "entry": "train",
+   "inflight": 0.645144,
+   "items": [
+    [
+     "training",
+     0.05811
+    ],
+    [
+     "orchestrator",
+     0.00253
+    ]
+   ],
+   "reserved": 0.645144,
+   "slack": 0.0,
+   "started": 1792852849.1660035,
+   "state": "settled"
+  },
+  "train-1792853521": {
+   "actual": 2.513364,
+   "budget": 5.0,
+   "deadline": 1792861024.732362,
+   "done": [],
+   "entry": "train",
+   "inflight": 2.897339,
+   "items": [
+    [
+     "training",
+     2.38693
+    ],
+    [
+     "orchestrator",
+     0.12644
+    ]
+   ],
+   "reserved": 2.897339,
+   "slack": 0.0,
+   "started": 1792853524.732362,
+   "state": "settled"
+  }
+ }
+}
