@@ -1088,6 +1088,13 @@ export type LensPatch = {
 	anamorphic?: number | null,
 };
 
+/**  Why a photo's bokeh was left as it is (`render_stats.lens.reason`). */
+export type LensReshapeReason = 
+/**  The sliders did not ask for it. */
+"not_asked" | 
+/**  The photo has little out-of-focus background. */
+"little_blur";
+
 /**
  *  Look › Lens: a lens and three amounts, each 0 to 100. All three at 0 is no lens, whatever the
  *  lens is.
@@ -1101,6 +1108,14 @@ export type LensSettings = {
 	edges: number,
 	/**  Anamorphic: the attachment in front of the lens, 0 to 100. */
 	anamorphic: number,
+};
+
+/**  What the lens did with the photo's bokeh (`render_stats.lens`). */
+export type LensStats = {
+	/**  True when the bokeh was reshaped. */
+	reshaped: boolean,
+	/**  Why it was not, when it was not. */
+	reason: LensReshapeReason | null,
 };
 
 /**  Light classes of the illuminant estimate. */
@@ -1671,8 +1686,8 @@ export type RenderPath =
 "classical";
 
 /**
- *  `render_stats { ms, path, space, zoom_percent, fit_percent }`: the header's status text and the
- *  zoom the last viewport frame was drawn at.
+ *  `render_stats { ms, path, space, zoom_percent, fit_percent, lens }`: the header's status text, the
+ *  zoom the last viewport frame was drawn at and what the lens did with the photo's bokeh.
  */
 export type RenderStats = {
 	/**  Milliseconds the last render took. */
@@ -1688,6 +1703,11 @@ export type RenderStats = {
 	zoom_percent: number | null,
 	/**  The zoom at which the whole final image fits the cell, in percent and not rounded. */
 	fit_percent: number | null,
+	/**
+	 *  What the lens's bokeh reshaping did for the photo (`docs/21` section 10), once its planes
+	 *  exist; `None` without a lens. The Lens card's note reads it.
+	 */
+	lens: LensStats | null,
 };
 
 /**  What `get_settings` and `update_settings` return: the panel's whole state for one photo. */
