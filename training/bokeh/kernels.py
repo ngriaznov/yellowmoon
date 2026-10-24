@@ -11,7 +11,9 @@ second moment about its centroid: `r = sqrt(2 * sum(k * ((x - cx)^2 + (y - cy)^2
 radius (second moment `r^2 / 2`); for a polygon, a cat's eye or a ringed disc it is the size a viewer reads and the
 size the spec's `b` stands for. `make_kernels` scales each shape until the measured radius is the wanted one
 (three fixed-point rounds) and moves its centroid to the grid's centre, so a blurred picture is not shifted.
-Kernels sum to 1. A radius under 0.5 px is an exact one-pixel delta (no blur).
+Kernels sum to 1 and are never negative (a negative lobe on a kernel of a pixel or two gave a negative second moment,
+whose square root was NaN, and one NaN kernel turns a whole sample into NaN: the first Modal run's loss was NaN from
+step 50 on). A radius under 0.5 px is an exact one-pixel delta (no blur).
 """
 
 import math
@@ -65,7 +67,7 @@ def _coverage(rho: torch.Tensor, shift: torch.Tensor, p: dict[str, torch.Tensor]
         if idx.numel():
             sub = {k: v[idx] for k, v in p.items()}
             out[idx] = _shape(name, rho[idx], shift[idx], sub, radius_cells)
-    return out
+    return out.clamp(min=0.0)  # light is never negative, whatever a profile does at the rim of a tiny kernel
 
 
 def _shape(name: str, rho: torch.Tensor, shift: torch.Tensor, p: dict[str, torch.Tensor], radius_cells: int):
@@ -89,7 +91,9 @@ def _shape(name: str, rho: torch.Tensor, shift: torch.Tensor, p: dict[str, torch
     if name == "bright":
         return disc * (1 + c(p["bright"]) * dn**6)
     if name == "dark":
-        return disc * (1 - c(p["dark"]) * dn**2)
+        # `dn` is capped at 1 here (not 1.2): beyond the rim the profile would pass through zero for `dark` above 0.69
+        # and turn negative on the antialiased rim cells of a kernel under about 3 px.
+        return disc * (1 - c(p["dark"]) * dn.clamp(max=1.0) ** 2)
     if name == "onion":
         return disc * (1 + c(p["ring_amp"]) * torch.cos(2 * math.pi * c(p["rings"]) * dn))
     if name == "poly":
@@ -119,7 +123,7 @@ def moments(k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     gy, gx = torch.meshgrid(ax, ax, indexing="ij")
     cx, cy = (k * gx).sum((1, 2)), (k * gy).sum((1, 2))
     m2 = (k * ((gx[None] - cx.view(-1, 1, 1)) ** 2 + (gy[None] - cy.view(-1, 1, 1)) ** 2)).sum((1, 2))
-    return cx, cy, torch.sqrt(2 * m2)
+    return cx, cy, torch.sqrt(2 * m2.clamp(min=0.0))
 
 
 def make_kernels(radius: torch.Tensor, p: dict[str, torch.Tensor], radius_cells: int = KERNEL_R) -> torch.Tensor:

@@ -102,7 +102,7 @@ pub(crate) fn apply_with(
         return field::copy_rect(input, out);
     }
     let z = field_with(plan, planes, k, input, out, opts)?;
-    l3::apply(plan, planes, k, input, z, out)
+    l3::apply(plan, planes, k, input, &z, out)
 }
 
 /// The checks every pass makes before it reads the planes: the planes belong to the plan, and `out` lies in
@@ -170,6 +170,42 @@ fn field_with(
     field::apply(plan, &stage.image(), out, opts)
 }
 
+/// The flare terms of L3 on `out`, `F (a_g K_g * R + a_v K_v * R + sum a_i G_i[H] + ...)`: the light the
+/// flares add, planar `f64`, `3 * out.w * out.h` samples, or `None` when Flares is 0. They read the picture
+/// before L1 and not `Z`, so they do not change with Edges; add them to `Z` with [`add_flares`].
+///
+/// `input` must cover `out` grown by [`flares_halo_px`] and clamped to the frame.
+///
+/// # Errors
+///
+/// As [`apply_flares`].
+pub fn flare_terms(
+    plan: &LensPlan,
+    planes: &LensPlanes,
+    k: usize,
+    input: &ImageRef,
+    out: PixelRect,
+) -> Result<Option<Vec<f64>>, LensError> {
+    input.validate()?;
+    check_scale(plan, k, input)?;
+    if plan.is_identity() {
+        return Ok(None);
+    }
+    check_planes(plan, planes, input, out)?;
+    l3::terms(plan, planes, k, input, out)
+}
+
+/// `(1 - a) Z + terms`: the picture after L3 from `z` ([`apply_field`]) and the flare terms of the same
+/// rectangle ([`flare_terms`]). [`apply_flares`] is `flare_terms` and this, so a cached `terms` gives the
+/// bits a fresh run gives.
+///
+/// # Errors
+///
+/// [`LensError::Frame`] when `z` and `terms` do not have the same number of samples.
+pub fn add_flares(plan: &LensPlan, z: &[f32], terms: &[f64]) -> Result<Vec<f32>, LensError> {
+    l3::combine(plan, z, terms)
+}
+
 /// L3 on `out`: `out = (1 - a) Z + F (flare terms)`, given `z = L2(L1(X))` over `out` ([`apply_field`]).
 ///
 /// `input` is the picture before L1 (the glow's core reads it) and must cover `out` grown by
@@ -184,13 +220,13 @@ pub fn apply_flares(
     planes: &LensPlanes,
     k: usize,
     input: &ImageRef,
-    z: Vec<f32>,
+    z: &[f32],
     out: PixelRect,
 ) -> Result<Vec<f32>, LensError> {
     input.validate()?;
     check_scale(plan, k, input)?;
     if plan.is_identity() {
-        return Ok(z);
+        return Ok(z.to_vec());
     }
     check_planes(plan, planes, input, out)?;
     l3::apply(plan, planes, k, input, z, out)

@@ -188,3 +188,83 @@ def test_ramp_bins_label_the_field_and_blur_each_pixel_with_its_own_radius(no_el
     assert torch.allclose(label[0, 0], field[0], atol=1e-5)
     contrast = lambda x0: float(out[0, 1, 30:60, x0].max() - out[0, 1, 30:60, x0].min())  # noqa: E731
     assert contrast(110) < contrast(30)  # more blur on the right, less contrast
+
+
+# --- the NaN of the first Modal run: a kernel with a negative lobe -----------------------------------------------------
+
+
+def _only_dark(monkeypatch, dark: float = 0.75):
+    """Every kernel the synthesis draws is a dark-rim kernel with the strongest rim."""
+    orig = S.sample_params
+
+    def patched(n, gen, dev, *weights):
+        p = orig(n, gen, dev, *weights)
+        return {**p, "kind": torch.full((n,), K.KINDS.index("dark")), "dark": torch.full((n,), dark)}
+
+    monkeypatch.setattr(S, "sample_params", patched)
+
+
+def test_the_dark_rim_kernel_that_made_the_first_run_nan_is_finite_and_not_negative():
+    # The parameters of the kernel that turned a whole sample of the first run into NaN: a dark rim of 0.745 on a
+    # radius of 0.697 px. Its antialiased rim cells were negative, so its second moment was negative and the square
+    # root in `moments` NaN; the fixed-point iteration of `make_kernels` then spread the NaN over the kernel.
+    p = K.sample_params(1, torch.Generator().manual_seed(0), "cpu", (0, 0, 0, 1.0, 0, 0, 0, 0))
+    p.update(dark=torch.tensor([0.7451964]), ellip=torch.tensor([0.0675503]))
+    k = K.make_kernels(torch.tensor([0.6974374]), p, radius_cells=12)
+    assert torch.isfinite(k).all() and float(k.min()) >= 0.0
+    assert float(k.sum()) == pytest.approx(1.0, abs=1e-5)
+    assert abs(float(K.moments(k)[2]) - 0.6974374) < 0.02
+
+
+def test_no_kernel_is_negative_or_not_finite_at_any_radius_for_the_extreme_parameters():
+    radii = torch.tensor([0.0, 0.3, 0.5, 0.51, 0.6, 0.7, 0.8, 1.0, 1.5, 2.0, 2.8, 4.0, 9.0, 20.0])
+    for dark in (0.3, 0.694, 0.75):
+        for ellip in (0.0, 0.08):
+            n = radii.numel() * len(K.KINDS)
+            radius = radii.repeat(len(K.KINDS))
+            p = K.sample_params(n, torch.Generator().manual_seed(1), "cpu")
+            p.update(kind=torch.arange(len(K.KINDS)).repeat_interleave(radii.numel()), dark=torch.full((n,), dark),
+                     ellip=torch.full((n,), ellip), bright=torch.full((n,), 1.2), ring_amp=torch.full((n,), 0.3),
+                     rim=torch.full((n,), 0.05), round=torch.full((n,), 0.5))
+            k = K.make_kernels(radius, p, radius_cells=28)
+            assert torch.isfinite(k).all(), (dark, ellip)
+            assert float(k.min()) >= 0.0, (dark, ellip)
+            assert torch.allclose(k.sum((1, 2)), torch.ones(n), atol=1e-4), (dark, ellip)
+
+
+def test_the_label_radius_of_a_kernel_with_a_negative_lobe_is_not_nan():
+    k = torch.zeros(1, 9, 9)
+    k[0, 4, 4] = 1.2
+    k[0, 4, 3] = k[0, 4, 5] = k[0, 3, 4] = k[0, 5, 4] = -0.05
+    assert torch.isfinite(K.moments(k)[2]).all()
+
+
+def test_a_background_with_sub_pixel_bins_of_dark_kernels_renders_without_a_nan(monkeypatch):
+    _only_dark(monkeypatch)
+    m, c, nb = 12, 64, 4
+    bg = torch.rand(2, 3, c, c, generator=torch.Generator().manual_seed(3))
+    field = torch.linspace(0, 2.1, c).view(1, 1, c).expand(2, c, c)  # a ramp from sharp to 2 px: bins at 0, 0.7, 1.4, 2.1
+    u = (field / 2.1).clamp(0, 1) * (nb - 1)
+    w = torch.stack([(1 - (u - j).abs()).clamp(0, 1) for j in range(nb)], 1)
+    bg_r = torch.tensor([[0.0, 0.7, 1.4, 2.1]]).expand(2, nb)
+    for seed in range(4):
+        out, label, weight = S.render_layers(bg, w, bg_r, field, [], torch.zeros(2, 0), [], torch.zeros(2, 0),
+                                             torch.Generator().manual_seed(seed), m)
+        assert torch.isfinite(out).all() and torch.isfinite(label).all() and torch.isfinite(weight).all()
+
+
+def test_whole_batches_of_dark_kernels_are_finite_over_many_seeds(monkeypatch):
+    _only_dark(monkeypatch)
+    cfg = S.SynthConfig(sample=64, kernel_r=14, r_max_px=10.0, p_ramp_batch=0.5)
+    tb = fake_tiles(6, 64, seed=8)
+    for seed in range(10):
+        sy = S.synthesize(tb, cfg, torch.Generator().manual_seed(seed))
+        for name, t in (("lin", sy.lin), ("r", sy.r), ("w", sy.w), ("logr", sy.logr)):
+            assert torch.isfinite(t).all(), (seed, name)
+
+
+def test_colorize_treats_a_nan_as_zero_instead_of_indexing_with_it():
+    v = torch.tensor([[[[float("nan"), 0.0], [0.05, float("inf")]]]])
+    col = S.colorize(v, 0.05)
+    assert col.shape == (1, 3, 2, 2) and torch.isfinite(col).all()
+    assert torch.equal(col[..., 0, 0], col[..., 0, 1])  # NaN = 0

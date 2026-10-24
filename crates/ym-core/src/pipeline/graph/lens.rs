@@ -53,7 +53,8 @@ use ym_gpu::cpu::sampler::SamplerWarp;
 use ym_gpu::cpu::{Placement, Rect, RgbImage};
 use ym_lens::{
     Axis, CameraResponse, FrameInfo, ImageRef, LensAmounts, LensError, LensPlan, LensPlanes,
-    PixelRect, ReshapeReason, ReshapeReport, apply, halo_px,
+    PixelRect, ReshapeReason, ReshapeReport, add_flares, apply, apply_field, field_halo_px,
+    flare_terms, flares_halo_px, halo_px,
 };
 use ym_profiles::profile::Profile;
 use ym_raw::makernote::SonyFocus;
@@ -71,6 +72,7 @@ const CAMERA_NOTE: &str =
 pub(crate) type GroupKey = (RawParamsKey, String, usize);
 /// The key of a 512 px tile after the lens: the raw group's, the lens's and the tile.
 pub(crate) type TileKey = (RawParamsKey, String, usize, usize);
+// The field stage's caches use the same shapes of key with the lens's `field_key` in the second place.
 
 /// One photo's lens for one set of inputs (the plan, with what the cache keys need).
 pub(crate) struct LensCtx {
@@ -81,6 +83,13 @@ pub(crate) struct LensCtx {
     /// point the planes were made with. In the frame and display keys, and in the keys of the lens
     /// caches.
     pub key: String,
+    /// What `Z = L2(L1(X))` depends on besides the raw group: [`LensPlan::field_key`] (not Flares)
+    /// and the focus point the planes were made with. In the keys of the field stage's caches, so a
+    /// Flares move keeps `Z`.
+    pub field_key: String,
+    /// What the flare terms of L3 depend on besides the raw group: [`LensPlan::flares_key`] (not
+    /// Edges). In the keys of the flare caches, so an Edges move keeps them.
+    pub flares_key: String,
     /// The camera's focus point as fractions of the auto-cropped frame, in the buffer's orientation.
     pub focus: Option<(f64, f64)>,
     /// L4: the anamorphic bend, the lens's distortion and the zoom, made once for the photo on the
@@ -101,6 +110,14 @@ pub(crate) struct PlanesEntry {
     focus: Option<(u64, u64)>,
     /// The planes.
     pub planes: Arc<LensPlanes>,
+}
+
+/// Which part of the lens a pass runs (`ym_lens::apply`, `apply_field`, `flare_terms`).
+enum LensPass {
+    /// L1 to L3.
+    All,
+    /// `Z = L2(L1(X))`.
+    Field,
 }
 
 fn lens_error(e: LensError) -> RenderError {
@@ -267,6 +284,8 @@ impl Job<'_> {
         };
         let plan = LensPlan::new(&library, &amounts, frame, &camera).map_err(lens_error)?;
         let key = format!("{}|focus{:?}", plan.key(), focus_bits(focus));
+        let field_key = format!("{}|focus{:?}", plan.field_key(), focus_bits(focus));
+        let flares_key = plan.flares_key();
         // L4 on the full-resolution canvas: the zoom is fitted here, once, and reduced canvases
         // reuse it (the geometry's grids take their own canvas size).
         let (canvas_w, canvas_h) = base.canvas_size(raw_plan.out_w, raw_plan.out_h);
@@ -275,6 +294,8 @@ impl Job<'_> {
         let ctx = Arc::new(LensCtx {
             plan,
             key,
+            field_key,
+            flares_key,
             focus,
             warp,
             notes,
@@ -441,8 +462,8 @@ impl Job<'_> {
     // The passes
     // -----------------------------------------------------------------------------------------
 
-    /// `ym_lens::apply` over `out` of the frame at scale `k`, with `input` placed at `(x0, y0)` of a
-    /// frame of `frame` pixels. The result keeps its place in the frame.
+    /// One of the lens passes over `out` of the frame at scale `k`, with `input` placed at `(x0, y0)` of
+    /// a frame of `frame` pixels. The result keeps its place in the frame.
     #[allow(clippy::too_many_arguments)]
     fn lens_apply(
         &mut self,
@@ -453,6 +474,7 @@ impl Job<'_> {
         at: (usize, usize),
         frame: (usize, usize),
         out: PixelRect,
+        pass: LensPass,
     ) -> Result<RgbImage, RenderError> {
         self.check()?;
         let t = Instant::now();
@@ -465,7 +487,11 @@ impl Job<'_> {
             frame_height: frame.1,
             data: &input.data,
         };
-        let data = apply(&ctx.plan, planes, k, &image, out).map_err(lens_error)?;
+        let data = match pass {
+            LensPass::All => apply(&ctx.plan, planes, k, &image, out),
+            LensPass::Field => apply_field(&ctx.plan, planes, k, &image, out),
+        }
+        .map_err(lens_error)?;
         self.timings.lens_ms += t.elapsed().as_secs_f64() * 1000.0;
         let mut image = RgbImage::from_planar(out.w, out.h, data).map_err(RenderError::from_cpu)?;
         image.place = Placement {
@@ -477,10 +503,140 @@ impl Job<'_> {
         Ok(image)
     }
 
+    /// The raw group at 1/`k` after the lens's field stage, `Z = L2(L1(X))`, which Flares does not touch:
+    /// from the field cache, else made from `raw` (the group) and cached by the amounts it reads. With
+    /// Edges and Anamorphic at 0 the stage does nothing and `Z` is the raw group itself.
+    fn lens_field_group(
+        &mut self,
+        ctx: &LensCtx,
+        planes: &LensPlanes,
+        k: usize,
+        raw: &Arc<RgbImage>,
+    ) -> Result<Arc<RgbImage>, RenderError> {
+        if ctx.plan.field_is_identity() {
+            return Ok(Arc::clone(raw));
+        }
+        let key: GroupKey = (self.params()?.key(), ctx.field_key.clone(), k);
+        let hit = lock(&self.g.state)
+            .lens_field_groups
+            .as_mut()
+            .and_then(|groups| groups.get(&key).cloned());
+        if let Some(z) = hit {
+            return Ok(z);
+        }
+        let (w, h) = (raw.width, raw.height);
+        let z = self.lens_apply(
+            ctx,
+            planes,
+            k,
+            raw,
+            (0, 0),
+            (w, h),
+            PixelRect::new(0, 0, w, h),
+            LensPass::Field,
+        )?;
+        self.runs.lens_fields += 1;
+        let z = Arc::new(z);
+        let (bytes, budget) = (z.data.len() * 4, self.g.lens_field_group_budget());
+        lock(&self.g.state)
+            .lens_field_groups
+            .get_or_insert_with(|| crate::scheduler::ByteLru::new(budget))
+            .insert(key, Arc::clone(&z), bytes);
+        Ok(z)
+    }
+
+    /// `(1 - a) Z + terms`: the lens's output from the field stage's picture and the flare terms of the
+    /// same rectangle, placed at `place` in the frame.
+    fn lens_add_flares(
+        &mut self,
+        ctx: &LensCtx,
+        z: &RgbImage,
+        terms: &[f64],
+        place: Placement,
+    ) -> Result<RgbImage, RenderError> {
+        self.check()?;
+        let t = Instant::now();
+        let data = add_flares(&ctx.plan, &z.data, terms).map_err(lens_error)?;
+        self.timings.lens_ms += t.elapsed().as_secs_f64() * 1000.0;
+        let mut image =
+            RgbImage::from_planar(z.width, z.height, data).map_err(RenderError::from_cpu)?;
+        image.place = place;
+        Ok(image)
+    }
+
+    /// The flare terms of the raw group at 1/`k`, `F (glow + veil + ghosts + ...)`: from the flare
+    /// cache, else made from `raw` (the group) and cached by the amounts they read. They do not depend
+    /// on Edges.
+    fn lens_flare_group(
+        &mut self,
+        ctx: &LensCtx,
+        planes: &LensPlanes,
+        k: usize,
+        raw: &RgbImage,
+    ) -> Result<Arc<Vec<f64>>, RenderError> {
+        let key: GroupKey = (self.params()?.key(), ctx.flares_key.clone(), k);
+        let hit = lock(&self.g.state)
+            .lens_flare_groups
+            .as_mut()
+            .and_then(|groups| groups.get(&key).cloned());
+        if let Some(f) = hit {
+            return Ok(f);
+        }
+        let (w, h) = (raw.width, raw.height);
+        let f = Arc::new(self.lens_terms(
+            ctx,
+            planes,
+            k,
+            raw,
+            (0, 0),
+            (w, h),
+            PixelRect::new(0, 0, w, h),
+        )?);
+        self.runs.lens_flares += 1;
+        let (bytes, budget) = (f.len() * 8, self.g.lens_flare_group_budget());
+        lock(&self.g.state)
+            .lens_flare_groups
+            .get_or_insert_with(|| crate::scheduler::ByteLru::new(budget))
+            .insert(key, Arc::clone(&f), bytes);
+        Ok(f)
+    }
+
+    /// The flare terms over `out` ([`flare_terms`]); the plan has flares, so there are some.
+    #[allow(clippy::too_many_arguments)]
+    fn lens_terms(
+        &mut self,
+        ctx: &LensCtx,
+        planes: &LensPlanes,
+        k: usize,
+        input: &RgbImage,
+        at: (usize, usize),
+        frame: (usize, usize),
+        out: PixelRect,
+    ) -> Result<Vec<f64>, RenderError> {
+        self.check()?;
+        let t = Instant::now();
+        let image = ImageRef {
+            width: input.width,
+            height: input.height,
+            x0: at.0,
+            y0: at.1,
+            frame_width: frame.0,
+            frame_height: frame.1,
+            data: &input.data,
+        };
+        let terms = flare_terms(&ctx.plan, planes, k, &image, out).map_err(lens_error)?;
+        self.timings.lens_ms += t.elapsed().as_secs_f64() * 1000.0;
+        // Flares above 0 always add light; a plan without any fraction of light has none.
+        Ok(terms.unwrap_or_else(|| vec![0.0; 3 * out.w * out.h]))
+    }
+
     /// The raw group at 1/`k` after the lens, for a fit view, a thumbnail, a look tile or the
     /// histogram: the lens over the whole frame at that scale (`docs/21` section 3, "Regions"), cached
     /// per lens setting. Without a lens it is [`Job::group_backing`], untouched. With one it is
     /// always a host image: a group on the device is read back first.
+    ///
+    /// The field stage (`Z = L2(L1(X))`) is cached on its own by the amounts it reads, so a Flares move
+    /// runs L3 alone, and an Edges or Anamorphic move runs the field stage and L3.
     ///
     /// # Errors
     ///
@@ -502,17 +658,21 @@ impl Job<'_> {
         let planes = self.lens_planes(&ctx)?;
         let raw = self.group(k)?;
         let (w, h) = (raw.width, raw.height);
-        let image = self.lens_apply(
-            &ctx,
-            &planes,
-            k,
-            &raw,
-            (0, 0),
-            (w, h),
-            PixelRect::new(0, 0, w, h),
-        )?;
+        let z = self.lens_field_group(&ctx, &planes, k, &raw)?;
+        let image = if ctx.plan.flares() == 0.0 {
+            // No flares: the lens's output is the field stage's.
+            z
+        } else {
+            let f = self.lens_flare_group(&ctx, &planes, k, &raw)?;
+            let place = Placement {
+                x0: 0,
+                y0: 0,
+                frame_width: w,
+                frame_height: h,
+            };
+            Arc::new(self.lens_add_flares(&ctx, &z, &f, place)?)
+        };
         self.runs.lens_groups += 1;
-        let image = Arc::new(image);
         let (bytes, budget) = (image.data.len() * 4, self.g.lens_group_budget());
         lock(&self.g.state)
             .lens_groups
@@ -522,8 +682,8 @@ impl Job<'_> {
     }
 
     /// The lens output over `rect` (coordinates of the auto-cropped image), made from the raw
-    /// region grown by the lens halo and clamped to the frame. `keep_raw` lets the raw part come
-    /// from the cached raw tiles (the 100 % view) or from one uncached call (an export).
+    /// region grown by the lens halo and clamped to the frame, in one call (L1 to L3). `keep_raw` lets
+    /// the raw part come from the cached raw tiles or from one uncached call (an export).
     fn lens_region_direct(
         &mut self,
         ctx: &LensCtx,
@@ -536,7 +696,71 @@ impl Job<'_> {
         let out = PixelRect::new(rect.x, rect.y, rect.w, rect.h);
         let want = out.grown(halo_px(&ctx.plan, planes, 1), fw, fh);
         let raw = self.region(Rect::new(want.x, want.y, want.w, want.h), keep_raw)?;
-        self.lens_apply(ctx, planes, 1, &raw, (want.x, want.y), (fw, fh), out)
+        self.lens_apply(
+            ctx,
+            planes,
+            1,
+            &raw,
+            (want.x, want.y),
+            (fw, fh),
+            out,
+            LensPass::All,
+        )
+    }
+
+    /// The rectangle of the 512 px tile `(tx, ty)` of the auto-cropped image.
+    fn lens_tile_rect(&mut self, tx: usize, ty: usize) -> Result<Rect, RenderError> {
+        let plan = self.plan()?;
+        let t = self.opts.tile_px.max(64);
+        Ok(Rect::new(
+            tx * t,
+            ty * t,
+            t.min(plan.out_w - tx * t),
+            t.min(plan.out_h - ty * t),
+        ))
+    }
+
+    /// One 512 px tile of the full-resolution raw group after the lens's field stage, `Z = L2(L1(X))`,
+    /// from the field cache or made from the raw region grown by the field halo.
+    fn lens_field_tile(
+        &mut self,
+        ctx: &Arc<LensCtx>,
+        planes: &LensPlanes,
+        tx: usize,
+        ty: usize,
+    ) -> Result<Arc<RgbImage>, RenderError> {
+        let key: TileKey = (self.params()?.key(), ctx.field_key.clone(), tx, ty);
+        let hit = lock(&self.g.state)
+            .lens_field_tiles
+            .as_mut()
+            .and_then(|tiles| tiles.get(&key).cloned());
+        if let Some(z) = hit {
+            return Ok(z);
+        }
+        self.check()?;
+        let plan = self.plan()?;
+        let (fw, fh) = (plan.out_w, plan.out_h);
+        let rect = self.lens_tile_rect(tx, ty)?;
+        let out = PixelRect::new(rect.x, rect.y, rect.w, rect.h);
+        let want = out.grown(field_halo_px(&ctx.plan, planes, 1), fw, fh);
+        let raw = self.region(Rect::new(want.x, want.y, want.w, want.h), true)?;
+        let z = Arc::new(self.lens_apply(
+            ctx,
+            planes,
+            1,
+            &raw,
+            (want.x, want.y),
+            (fw, fh),
+            out,
+            LensPass::Field,
+        )?);
+        self.runs.lens_fields += 1;
+        let (bytes, budget) = (z.data.len() * 4, self.g.lens_field_tile_budget());
+        lock(&self.g.state)
+            .lens_field_tiles
+            .get_or_insert_with(|| crate::scheduler::ByteLru::new(budget))
+            .insert(key, Arc::clone(&z), bytes);
+        Ok(z)
     }
 
     /// The error of a region outside the photo (as the raw group's methods give it).
@@ -550,7 +774,42 @@ impl Job<'_> {
         Ok(())
     }
 
-    /// One 512 px tile of the full-resolution raw group after the lens, from the cache or made.
+    /// The flare terms of the 512 px tile `(tx, ty)`: from the flare cache, else made from the raw
+    /// region grown by the glow core's reach.
+    fn lens_flare_tile(
+        &mut self,
+        ctx: &Arc<LensCtx>,
+        planes: &LensPlanes,
+        tx: usize,
+        ty: usize,
+    ) -> Result<Arc<Vec<f64>>, RenderError> {
+        let key: TileKey = (self.params()?.key(), ctx.flares_key.clone(), tx, ty);
+        let hit = lock(&self.g.state)
+            .lens_flare_tiles
+            .as_mut()
+            .and_then(|tiles| tiles.get(&key).cloned());
+        if let Some(f) = hit {
+            return Ok(f);
+        }
+        self.check()?;
+        let plan = self.plan()?;
+        let (fw, fh) = (plan.out_w, plan.out_h);
+        let rect = self.lens_tile_rect(tx, ty)?;
+        let out = PixelRect::new(rect.x, rect.y, rect.w, rect.h);
+        let want = out.grown(flares_halo_px(&ctx.plan, planes, 1), fw, fh);
+        let raw = self.region(Rect::new(want.x, want.y, want.w, want.h), true)?;
+        let f = Arc::new(self.lens_terms(ctx, planes, 1, &raw, (want.x, want.y), (fw, fh), out)?);
+        self.runs.lens_flares += 1;
+        let (bytes, budget) = (f.len() * 8, self.g.lens_flare_tile_budget());
+        lock(&self.g.state)
+            .lens_flare_tiles
+            .get_or_insert_with(|| crate::scheduler::ByteLru::new(budget))
+            .insert(key, Arc::clone(&f), bytes);
+        Ok(f)
+    }
+
+    /// One 512 px tile of the full-resolution raw group after the lens, from the cache or made: the
+    /// field stage's tile (cached on its own by the amounts it reads) and L3 on it.
     fn lens_tile(
         &mut self,
         ctx: &Arc<LensCtx>,
@@ -567,15 +826,34 @@ impl Job<'_> {
         }
         self.check()?;
         let planes = self.lens_planes(ctx)?;
-        let plan = self.plan()?;
-        let t = self.opts.tile_px.max(64);
-        let rect = Rect::new(
-            tx * t,
-            ty * t,
-            t.min(plan.out_w - tx * t),
-            t.min(plan.out_h - ty * t),
-        );
-        let image = Arc::new(self.lens_region_direct(ctx, &planes, rect, true)?);
+        let z = if ctx.plan.field_is_identity() {
+            None
+        } else {
+            Some(self.lens_field_tile(ctx, &planes, tx, ty)?)
+        };
+        let image = match z {
+            // No flares: the lens's output is the field stage's.
+            Some(z) if ctx.plan.flares() == 0.0 => z,
+            z => {
+                let f = self.lens_flare_tile(ctx, &planes, tx, ty)?;
+                let plan = self.plan()?;
+                let rect = self.lens_tile_rect(tx, ty)?;
+                let place = Placement {
+                    x0: rect.x,
+                    y0: rect.y,
+                    frame_width: plan.out_w,
+                    frame_height: plan.out_h,
+                };
+                match z {
+                    Some(z) => Arc::new(self.lens_add_flares(ctx, &z, &f, place)?),
+                    None => {
+                        // Without a field stage `Z` is the raw tile itself.
+                        let raw = self.region(rect, true)?;
+                        Arc::new(self.lens_add_flares(ctx, &raw, &f, place)?)
+                    }
+                }
+            }
+        };
         self.runs.lens_tiles += 1;
         let (bytes, budget) = (image.data.len() * 4, self.g.lens_tile_budget());
         lock(&self.g.state)

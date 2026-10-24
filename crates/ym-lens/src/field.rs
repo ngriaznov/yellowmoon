@@ -50,7 +50,7 @@ use crate::simd::F4;
 use crate::spectral::CameraResponse;
 
 /// Number of table sizes `n = 3, 5, ..., MAX_TAPS_SIDE`.
-const SIZES: usize = (MAX_TAPS_SIDE - 3) / 2 + 1;
+pub(crate) const SIZES: usize = (MAX_TAPS_SIDE - 3) / 2 + 1;
 
 /// The most mip levels a kernel can ask for (a safety bound; real kernels need 0 to 4).
 const MAX_LEVEL: u32 = 12;
@@ -202,6 +202,35 @@ impl FieldTables {
         }
     }
 
+    /// The tables as the device reads them (`crate::device::FieldTablesData`): a header of
+    /// [`crate::device::FIELD_HEADER`] four-lane vectors (the radii, `w(rho)` and `T(rho)` padded to 12 values
+    /// each, then the channels' centroids `(x, y, 0, 0)` indexed `[radius * 3 + channel]`) followed by the
+    /// cell tables for `n = 3, 5, ..., 17`, each indexed `[radius][cell]`.
+    pub(crate) fn flatten(&self) -> Vec<[f32; 4]> {
+        let mut out = Vec::new();
+        for column in [&self.radii, &self.half_width, &self.illumination] {
+            let mut padded = [0.0f32; 12];
+            for (d, v) in padded.iter_mut().zip(column.iter()) {
+                *d = *v as f32;
+            }
+            out.extend(padded.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]));
+        }
+        for r in 0..RADII {
+            for c in 0..3 {
+                out.push([
+                    self.centroid[r][c][0] as f32,
+                    self.centroid[r][c][1] as f32,
+                    0.0,
+                    0.0,
+                ]);
+            }
+        }
+        for t in &self.tables {
+            out.extend_from_slice(t);
+        }
+        out
+    }
+
     /// The segment `s` (0 to 7) and blend `t` (0 to 1) of field radius `rho` (held at 1 beyond it).
     fn segment(&self, rho: f64) -> (usize, f64) {
         let rho = rho.clamp(0.0, 1.0);
@@ -344,6 +373,23 @@ impl<'a> Geometry<'a> {
     /// Pixels of context an output rectangle needs around it.
     pub(crate) fn halo(&self) -> usize {
         self.gather_halo + self.pad
+    }
+
+    /// The numbers the device kernels take (`crate::device::FieldPass`).
+    pub(crate) fn pass(&self) -> crate::device::FieldPass {
+        crate::device::FieldPass {
+            width: self.fw as usize,
+            height: self.fh as usize,
+            half_diag: self.h,
+            axis_y: self.axis == Axis::Y,
+            e: self.e,
+            alpha: self.alpha,
+            side: self.side,
+            fringe_boost: self.fringe - 1.0,
+            lmax: self.lmax,
+            gather_halo: self.gather_halo,
+            pad: self.pad,
+        }
     }
 
     /// The kernel of the pixel at integer frame position `(i, j)`.

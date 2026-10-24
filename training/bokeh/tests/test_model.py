@@ -133,3 +133,13 @@ def test_random_weights_are_seeded_and_not_constant():
         ya, yb, yc = a.eval()(x), b.eval()(x), c.eval()(x)
     assert torch.equal(ya, yb) and not torch.equal(ya, yc)
     assert float(ya[0, 0].std()) > 1e-3
+
+
+def test_the_export_refuses_weights_that_are_not_finite(tmp_path):
+    model = BokehNet()
+    export.randomize(model, 3)
+    with torch.no_grad():
+        model.stem[0].weight[0, 0, 0, 0] = float("nan")
+    with pytest.raises(SystemExit, match="not finite"):
+        export.write(model, tmp_path / "w.safetensors", tmp_path / "w.json", "test")  # max() would have let the NaN through
+    assert not (tmp_path / "w.safetensors").exists()

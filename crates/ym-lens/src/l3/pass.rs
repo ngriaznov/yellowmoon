@@ -123,14 +123,49 @@ fn core_at(
 pub(crate) fn apply(
     plan: &LensPlan,
     planes: &LensPlanes,
-    _k: usize,
+    k: usize,
     input: &ImageRef,
-    z: Vec<f32>,
+    z: &[f32],
     out: PixelRect,
 ) -> Result<Vec<f32>, LensError> {
+    match terms(plan, planes, k, input, out)? {
+        Some(t) => combine(plan, z, &t),
+        None => Ok(z.to_vec()),
+    }
+}
+
+/// The picture after L3 from `z` (the output of L2) and the flare terms of the same rectangle
+/// ([`terms`]): `(1 - a) Z + F (flare terms)`. The same expression in the same order as the whole pass
+/// ([`apply`] is `terms` and `combine`), so a cached `terms` gives the bits a fresh run gives.
+pub(crate) fn combine(plan: &LensPlan, z: &[f32], flare: &[f64]) -> Result<Vec<f32>, LensError> {
+    if z.len() != flare.len() {
+        return Err(LensError::Frame(format!(
+            "L3 needs {} samples of Z for {} flare samples, found {}",
+            flare.len(),
+            flare.len(),
+            z.len()
+        )));
+    }
+    let keep = 1.0 - Terms::new(plan).a;
+    Ok(z.par_iter()
+        .zip(flare.par_iter())
+        .map(|(z, f)| (keep * f64::from(*z) + *f) as f32)
+        .collect())
+}
+
+/// The flare terms of `out`, `F (a_g K_g * R + a_v K_v * R + sum a_i G_i[H] + ...)`, planar `f64`
+/// (`3 * out.w * out.h` samples), or `None` when the flares add no light (Flares 0). They depend on the
+/// input and the planes, not on `Z`, so a move of Edges leaves them as they are.
+pub(crate) fn terms(
+    plan: &LensPlan,
+    planes: &LensPlanes,
+    _k: usize,
+    input: &ImageRef,
+    out: PixelRect,
+) -> Result<Option<Vec<f64>>, LensError> {
     let terms = Terms::new(plan);
     if terms.a <= 0.0 || out.w == 0 || out.h == 0 {
-        return Ok(z);
+        return Ok(None);
     }
     let flare = planes.flare();
     let Some(glow) = flare.glow() else {
@@ -138,13 +173,6 @@ pub(crate) fn apply(
             "the planes were built without highlight data".into(),
         ));
     };
-    if z.len() != 3 * out.w * out.h {
-        return Err(LensError::Frame(format!(
-            "L3 needs {} samples for {out}, found {}",
-            3 * out.w * out.h,
-            z.len()
-        )));
-    }
     let (fw, fh) = (input.frame_width, input.frame_height);
     let frame = Frame::new(fw, fh, plan.frame().axis);
 
@@ -193,11 +221,9 @@ pub(crate) fn apply(
     let items = Items::build(plan, &terms, frame, flare.sources(), flare.spikes(), &cull);
 
     let plane = out.w * out.h;
-    let mut result = vec![0.0f32; 3 * plane];
+    let mut result = vec![0.0f64; 3 * plane];
     let (r, rest) = result.split_at_mut(plane);
     let (g, b) = rest.split_at_mut(plane);
-    let (zr, zg, zb) = (&z[..plane], &z[plane..2 * plane], &z[2 * plane..]);
-    let keep = 1.0 - terms.a;
     r.par_chunks_mut(BAND_ROWS * out.w)
         .zip(g.par_chunks_mut(BAND_ROWS * out.w))
         .zip(b.par_chunks_mut(BAND_ROWS * out.w))
@@ -242,17 +268,16 @@ pub(crate) fn apply(
                 items.add(item, &band, &mut acc);
             }
             for row in 0..rows_here {
-                let zrow = (row0 + row) * out.w;
                 for col in 0..out.w {
                     let a = acc[row * out.w + col];
                     let at = row * out.w + col;
-                    rr[at] = (keep * f64::from(zr[zrow + col]) + terms.f * a[0]) as f32;
-                    gr[at] = (keep * f64::from(zg[zrow + col]) + terms.f * a[1]) as f32;
-                    br[at] = (keep * f64::from(zb[zrow + col]) + terms.f * a[2]) as f32;
+                    rr[at] = terms.f * a[0];
+                    gr[at] = terms.f * a[1];
+                    br[at] = terms.f * a[2];
                 }
             }
         });
-    Ok(result)
+    Ok(Some(result))
 }
 
 #[cfg(test)]

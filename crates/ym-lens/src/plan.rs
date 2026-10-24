@@ -320,6 +320,34 @@ impl LensPlan {
         )
     }
 
+    /// What the flare terms of L3 ([`flare_terms`](crate::flare_terms)) depend on besides their input and the
+    /// planes: the lens, its data versions, Flares, Anamorphic, the camera, the frame, the axis, the clip
+    /// levels and the f-number. Not Edges, so an Edges move keeps them.
+    ///
+    /// Like [`LensPlan::key`], all-zero amounts share one key whatever the lens; so do all plans with
+    /// Flares 0, which add no light.
+    #[must_use]
+    pub fn flares_key(&self) -> String {
+        if self.is_identity() || self.amounts.flares == 0.0 {
+            return "lens-flares:none".to_owned();
+        }
+        let f = &self.frame;
+        format!(
+            "lens-flares:{}:v{}:att{}:{:?}:{:?}:{}:{}x{}:{:?}:fn{:?}:clip{:?}",
+            self.amounts.kind,
+            self.lens.info.version,
+            self.attachment.version,
+            self.amounts.flares,
+            self.amounts.anamorphic,
+            self.camera.key(),
+            f.width,
+            f.height,
+            f.axis,
+            f.f_number,
+            f.clip,
+        )
+    }
+
     /// True when `Z = L2(L1(X))` is `X` itself for sure: Edges and Anamorphic are both 0, so neither the
     /// reshaping nor the field optics act (Flares alone, or no lens at all).
     #[must_use]
@@ -352,5 +380,31 @@ impl LensPlan {
     /// The projected spread functions, when the field optics can act.
     pub(crate) fn field_tables(&self) -> Option<&FieldTables> {
         self.field.as_ref()
+    }
+
+    /// The field optics (L2) for the device at a frame of `width x height` pixels (the frame at the scale
+    /// of the caller): the numbers its kernel takes, or `None` when L2 does nothing for this plan.
+    #[must_use]
+    pub fn field_pass(&self, width: usize, height: usize) -> Option<crate::device::FieldPass> {
+        crate::field::Geometry::new(self, width, height, crate::field::Options::default())
+            .map(|g| g.pass())
+    }
+
+    /// The lens's spread functions on the camera's channels as the device reads them, when the field
+    /// optics can act for this plan (Edges or Anamorphic above 0). They depend on the lens and the
+    /// camera only ([`FieldTablesData::key`](crate::device::FieldTablesData)), so one upload serves every
+    /// amount.
+    #[must_use]
+    pub fn field_tables_data(&self) -> Option<crate::device::FieldTablesData> {
+        let tables = self.field.as_ref()?;
+        Some(crate::device::FieldTablesData {
+            key: format!(
+                "field:{}:v{}:{}",
+                self.amounts.kind,
+                self.lens.info.version,
+                self.camera.key()
+            ),
+            data: tables.flatten(),
+        })
     }
 }

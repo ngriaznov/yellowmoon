@@ -111,6 +111,12 @@ pub enum KernelId {
     MosaicCa,
     /// R9 lens resampling.
     Lens,
+    /// L2, the lens's field optics: the box-reduced pyramid of the input, one level per dispatch.
+    LensFieldPyramid,
+    /// L2: the gather of every pixel's spread function (and the gain when there is no fringe shift).
+    LensFieldGather,
+    /// L2: each channel read at its fringe shift along the axis, times the gain.
+    LensFieldFinish,
     /// The half-resolution noise sigma plane, from the resident raw words.
     Sigma,
     /// The k x k mosaic binning of the fit view, with the vignetting gain at the binned pixels.
@@ -192,7 +198,7 @@ impl KernelId {
     /// no render uses. [`KernelSet::kernels`] and `warm_up` compile in this order, so that what the
     /// first frame of the first photo waits for is compiled before what only a zoomed view or an
     /// export needs.
-    pub const ALL: [KernelId; 73] = [
+    pub const ALL: [KernelId; 76] = [
         // The fit view of a mosaic photo.
         KernelId::Prep,
         KernelId::PrepMask,
@@ -208,6 +214,10 @@ impl KernelId {
         KernelId::Bilateral,
         KernelId::Lens,
         KernelId::Copy,
+        // The lens's field optics (L2), between the raw group and the colour pass.
+        KernelId::LensFieldPyramid,
+        KernelId::LensFieldGather,
+        KernelId::LensFieldFinish,
         // The view stages.
         KernelId::Sampler,
         KernelId::Color,
@@ -318,6 +328,9 @@ impl KernelId {
             KernelId::Highlights => "highlights",
             KernelId::MosaicCa => "mosaic_ca",
             KernelId::Lens => "lens",
+            KernelId::LensFieldPyramid => "lens_field_pyramid",
+            KernelId::LensFieldGather => "lens_field_gather",
+            KernelId::LensFieldFinish => "lens_field_finish",
             KernelId::Sigma => "sigma",
             KernelId::Bin => "bin",
             KernelId::BinSigma => "bin_sigma",
@@ -387,7 +400,10 @@ impl KernelId {
             | KernelId::OutputSharpenTransfer
             | KernelId::Sampler
             | KernelId::Encode
-            | KernelId::Magnify => KernelSet::View,
+            | KernelId::Magnify
+            | KernelId::LensFieldPyramid
+            | KernelId::LensFieldGather
+            | KernelId::LensFieldFinish => KernelSet::View,
             KernelId::Resize => KernelSet::Tail,
             _ => KernelSet::Raw,
         }
@@ -459,6 +475,9 @@ impl KernelId {
             | KernelId::ReduceFold => super::highlights::body(self),
             KernelId::MosaicCa => super::mosaic_ca::body(),
             KernelId::Lens => super::lens::body(),
+            KernelId::LensFieldPyramid | KernelId::LensFieldGather | KernelId::LensFieldFinish => {
+                super::lens_field::body(self)
+            }
             KernelId::Sigma => super::sigma::body(),
             KernelId::Bin | KernelId::BinSigma => super::bin::body(self),
             KernelId::Resize => super::resize::body(),

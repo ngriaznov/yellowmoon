@@ -16,6 +16,17 @@ weights (decay 0.999) is what is evaluated and exported, bf16 autocast on a GPU,
 (model, EMA, optimiser, step, elapsed time) is written every `ckpt_every_min` minutes; a rerun with the same `--out`
 continues from it, and `heartbeat(seconds)` is called then so that the budget ledger knows how long the run lived.
 
+**Guards** (the first Modal run had NaN losses from step 50 on and trained, for 100 minutes and $2.49, a network of NaNs: one
+NaN kernel in the synthesis, `kernels.py`, and nothing noticed). A step whose loss is not finite is skipped before the
+backward pass: no optimiser step, no EMA update, the batch-norm statistics put back, and a log line says which input was
+not finite (`{"step", "skipped", "where", "samples", "draw"}`). A step whose gradient norm is not finite is skipped the
+same way (the clipping would otherwise write NaN into every weight). The run is stopped with `TrainingDiverged` (a
+`RuntimeError` that starts "training diverged: ") when more than `MAX_SKIPS_IN_A_ROW` steps in a row were skipped, when more
+than `MAX_SKIP_SHARE` of the steps were after step `SKIP_SHARE_AFTER`, when a weight (or the EMA) is not finite, when an
+evaluation returns a non-finite score, and as soon as step `EARLY_STEPS[1]` is reached with a mean loss over steps
+`EARLY_STEPS` that is not finite or above `EARLY_MAX_LOSS` (a healthy start is about 1: the run would have stopped after one
+minute). The log then ends with `{"diverged": ...}`, and no checkpoint with non-finite weights is ever written.
+
 **Validation** (`evaluate`): on held-out tiles (a hash of the photo id, never trained on) with fixed seeds, on pixels
 whose label is unambiguous (weight at least 0.6), in the spec's units `b = r / half-diagonal`:
 
@@ -57,6 +68,79 @@ DEFAULTS = {
 }
 TYPES = {"max_minutes": float, "steps": int}
 GATE = 0.5
+#: When a run is lost (module docstring, "Guards").
+MAX_SKIPS_IN_A_ROW = 20
+MAX_SKIP_SHARE = 0.02
+SKIP_SHARE_AFTER = 200
+EARLY_STEPS = (25, 100)
+EARLY_MAX_LOSS = 5.0
+
+
+# --- guards -------------------------------------------------------------------------------------------------------
+
+
+class TrainingDiverged(RuntimeError):
+    """The run is lost; stop it now instead of paying for the rest of it. The message starts "training diverged: "."""
+
+    def __init__(self, why: str):
+        # Idempotent: an exception that crosses a process boundary (Modal) is rebuilt from its message.
+        super().__init__(why if why.startswith("training diverged: ") else f"training diverged: {why}")
+
+
+def nonfinite(named: dict[str, torch.Tensor]) -> list[str]:
+    """The names of the floating-point tensors that hold a NaN or an infinity (one device sync for all of them)."""
+    named = {k: t for k, t in named.items() if t.is_floating_point()}
+    if not named:
+        return []
+    good = torch.stack([torch.isfinite(t).all() for t in named.values()]).tolist()
+    return [k for k, ok in zip(named, good) if not ok]
+
+
+def require_finite(model: torch.nn.Module, what: str, step: int | None = None) -> None:
+    """Raises `TrainingDiverged` when a weight or a batch-norm statistic of `model` is not finite."""
+    bad = nonfinite(dict(model.state_dict()))
+    if bad:
+        at = "" if step is None else f" at step {step}"
+        raise TrainingDiverged(f"the {what} are not finite{at} ({len(bad)} tensors, the first is {bad[0]})")
+
+
+def check_scores(scores: dict, step: int) -> None:
+    """Raises `TrainingDiverged` when an evaluation returned a NaN or an infinity."""
+    bad = [k for k, v in scores.items() if isinstance(v, float) and not math.isfinite(v)]
+    if bad:
+        raise TrainingDiverged(f"the evaluation at step {step} returned a non-finite {', '.join(bad)}")
+
+
+def check_early(losses: list[float]) -> None:
+    """The run's first check: the mean loss of steps `EARLY_STEPS` must be finite and at most `EARLY_MAX_LOSS`."""
+    mean = float(np.mean(losses)) if losses else float("nan")
+    if not math.isfinite(mean) or mean > EARLY_MAX_LOSS:
+        raise TrainingDiverged(f"the mean loss of steps {EARLY_STEPS[0]} to {EARLY_STEPS[1]} is {mean:.4g} "
+                               f"(a healthy start is about 1, the limit is {EARLY_MAX_LOSS:g})")
+
+
+class SkipCounter:
+    """Counts the steps skipped for a non-finite value and says when there are too many (module docstring)."""
+
+    def __init__(self, skipped: int = 0):
+        self.total = skipped
+        self.in_a_row = 0
+
+    def applied(self) -> None:
+        """A step went through."""
+        self.in_a_row = 0
+
+    def skipped(self, steps_taken: int) -> None:
+        """A step was skipped; `steps_taken` optimiser steps were made before it. Raises `TrainingDiverged` when too many
+        steps in a row, or too large a share of all, were skipped."""
+        self.total += 1
+        self.in_a_row += 1
+        tried = steps_taken + self.total
+        if self.in_a_row > MAX_SKIPS_IN_A_ROW:
+            raise TrainingDiverged(f"{self.in_a_row} steps in a row were skipped for a non-finite value")
+        if tried > SKIP_SHARE_AFTER and self.total > MAX_SKIP_SHARE * tried:
+            raise TrainingDiverged(f"{self.total} of the {tried} steps so far were skipped for a non-finite value "
+                                   f"(more than {MAX_SKIP_SHARE:.0%})")
 
 
 # --- data ---------------------------------------------------------------------------------------------------------
@@ -224,6 +308,7 @@ def evaluate(model: BokehNet, folder: Path, config: dict, n: int, seed: int, dev
     """The validation numbers of `n` held-out samples (module docstring). The baseline runs on the first `baseline_n`."""
     from PIL import Image
 
+    require_finite(model, "weights to evaluate")  # never score (or draw a sheet of) a network of NaNs
     scfg, batch = synth_config(config), config["batch"]
     ts = sources.TileSet(folder, config["val_share"])
     pool = ts.val or ts.train
@@ -292,7 +377,21 @@ def lr_at(config: dict, step: int, progress: float) -> float:
 
 def train(tiles: Path, out: Path, config: dict, heartbeat=None, log=print) -> dict:
     """Trains one model; writes `model.pt`, `config.json`, `metrics.json` and sample sheets into `out`; returns the
-    metrics. Continues from `out/ckpt.pt` when it exists."""
+    metrics. Continues from `out/ckpt.pt` when it exists. Raises `TrainingDiverged` when the run is lost (module
+    docstring, "Guards"); the log then ends with a `{"diverged": ...}` line."""
+    try:
+        return _train(tiles, out, config, heartbeat, log)
+    except TrainingDiverged as e:
+        log(json.dumps({"diverged": str(e)}))
+        raise
+
+
+def bad_rows(*tensors: torch.Tensor) -> list[int]:
+    """Indices of the batch rows (first dimension) in which any of the tensors holds a NaN or an infinity."""
+    return torch.stack([~torch.isfinite(t).flatten(1).all(1) for t in tensors]).any(0).nonzero().flatten().tolist()
+
+
+def _train(tiles: Path, out: Path, config: dict, heartbeat, log) -> dict:
     config = {**DEFAULTS, **config}
     if not (config["max_minutes"] or config["steps"]):
         raise ValueError("give max_minutes or steps")
@@ -310,7 +409,7 @@ def train(tiles: Path, out: Path, config: dict, heartbeat=None, log=print) -> di
         (no_decay if p.ndim <= 1 else decay).append(p)
     opt = torch.optim.AdamW([{"params": decay, "weight_decay": config["weight_decay"]}, {"params": no_decay, "weight_decay": 0.0}],
                             lr=config["lr"], betas=(0.9, 0.99))
-    step, elapsed_before, history = 0, 0.0, []
+    step, elapsed_before, history, skipped_before = 0, 0.0, [], 0
     ckpt = out / "ckpt.pt"
     if ckpt.exists():
         state = torch.load(ckpt, map_location=device, weights_only=False)
@@ -318,6 +417,9 @@ def train(tiles: Path, out: Path, config: dict, heartbeat=None, log=print) -> di
         ema.load_state_dict(state["ema"])
         opt.load_state_dict(state["opt"])
         step, elapsed_before, history = state["step"], state["elapsed"], state["history"]
+        skipped_before = state.get("skipped", 0)
+        require_finite(model, "weights in the checkpoint", step)  # a diverged run's checkpoint must not be resumed
+        require_finite(ema, "EMA weights in the checkpoint", step)
         log(f"resumed at step {step} after {elapsed_before / 60:.1f} minutes")
     use_amp = bool(config["amp"]) and device.type == "cuda"
     if device.type == "cuda":
@@ -330,6 +432,9 @@ def train(tiles: Path, out: Path, config: dict, heartbeat=None, log=print) -> di
     t0 = time.time()
     last_ckpt = last_eval = time.time()
     losses: list[float] = []
+    early: list[float] = []
+    skips = SkipCounter(skipped_before)
+    stats = list(model.buffers())  # the batch-norm statistics (and their step counts)
     model.train()
 
     def elapsed() -> float:
@@ -344,16 +449,30 @@ def train(tiles: Path, out: Path, config: dict, heartbeat=None, log=print) -> di
         return p
 
     def save_ckpt() -> None:
+        require_finite(model, "weights", step)  # a checkpoint of NaNs would be resumed from, and trained further
+        require_finite(ema, "EMA weights", step)
         tmp = ckpt.with_suffix(".tmp")
         torch.save({"model": model.state_dict(), "ema": ema.state_dict(), "opt": opt.state_dict(), "step": step,
-                    "elapsed": elapsed(), "history": history, "config": config}, tmp)
+                    "elapsed": elapsed(), "history": history, "config": config, "skipped": skips.total}, tmp)
         tmp.replace(ckpt)
         if heartbeat:
             heartbeat(elapsed())
 
+    def skip(reason: str, saved: list[torch.Tensor], where: list[str], rows: list[int], draw: int) -> None:
+        """Leaves the step undone: the batch-norm statistics the forward pass changed are put back, the gradients dropped.
+        Logs it and counts it (`SkipCounter`); weights that are not finite end the run at once."""
+        for b, old in zip(stats, saved):
+            b.copy_(old)
+        opt.zero_grad(set_to_none=True)
+        log(json.dumps({"step": step, "skipped": reason, "where": where, "samples": rows, "draw": draw,
+                        "skipped_total": skips.total + 1}))
+        require_finite(model, "weights", step)
+        skips.skipped(step)
+
     while progress() < 1.0:
         tb = next(it).to(device)
-        gen = torch.Generator(device=device).manual_seed(config["seed"] * 1_000_003 + 7_919 * 1_000 + step)
+        draw = step + skips.total  # a skipped step moves the seed on too: the retry is another batch
+        gen = torch.Generator(device=device).manual_seed(config["seed"] * 1_000_003 + 7_919 * 1_000 + draw)
         with torch.no_grad():
             sy = synthesize(tb, scfg, gen)
             jit = config["gain_jitter_stops"]
@@ -364,15 +483,27 @@ def train(tiles: Path, out: Path, config: dict, heartbeat=None, log=print) -> di
             e = e.contiguous(memory_format=torch.channels_last)
         for g in opt.param_groups:
             g["lr"] = lr_at(config, step, progress())
+        saved = [b.clone() for b in stats]
         with torch.autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
             out_t = model(e)
         mu, s = out_t[:, :1].float(), out_t[:, 1:].float()
         loss = laplace_nll(mu, s, y2, w2)
+        loss_v = loss.item()
+        if not math.isfinite(loss_v):  # before the backward pass: nothing of this batch reaches the weights
+            named = {"synthesis lin": sy.lin, "synthesis label radius": sy.logr, "synthesis weight": sy.w, "encoded input": e,
+                     "target": y2, "target weight": w2, "output mu": mu, "output s": s}
+            # (the outputs of a whole batch are NaN when one input is: batch norm shares its statistics, so name the inputs first)
+            skip("non-finite loss", saved, nonfinite(named) or ["loss"], bad_rows(sy.lin, e, y2, w2) or bad_rows(mu, s), draw)
+            continue
         opt.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        # The returned norm is the one before clipping. A NaN or infinite norm would make the clipping write NaN into every gradient.
+        if not bool(torch.isfinite(torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0))):
+            skip("non-finite gradient", saved, ["gradient"], [], draw)
+            continue
         opt.step()
         step += 1
+        skips.applied()
         d = min(config["ema"], (1 + step) / (10 + step))
         with torch.no_grad():
             for pe, pm in zip(ema.state_dict().values(), model.state_dict().values()):
@@ -380,13 +511,20 @@ def train(tiles: Path, out: Path, config: dict, heartbeat=None, log=print) -> di
                     pe.mul_(d).add_(pm.detach(), alpha=1 - d)
                 else:
                     pe.copy_(pm)
-        losses.append(loss.item())
+        losses.append(loss_v)
+        if EARLY_STEPS[0] <= step <= EARLY_STEPS[1]:
+            early.append(loss_v)
         if step % 25 == 0:
             rec = {"step": step, "minutes": round(elapsed() / 60, 2), "loss": round(float(np.mean(losses)), 4),
                    "lr": round(opt.param_groups[0]["lr"], 6)}
+            if skips.total:
+                rec["skipped"] = skips.total
             history.append(rec)
             log(json.dumps(rec))
             losses = []
+            require_finite(model, "weights", step)
+        if step == EARLY_STEPS[1]:
+            check_early(early)
         now = time.time()
         if now - last_ckpt > config["ckpt_every_min"] * 60:
             save_ckpt()
@@ -395,16 +533,19 @@ def train(tiles: Path, out: Path, config: dict, heartbeat=None, log=print) -> di
             m = evaluate(ema, tiles, config, config["val_samples"], 7, device)
             history.append({"step": step, "eval": {k: m["model"][k] for k in ("mae_b", "fp_rate", "fp_rate_gated", "ece")}})
             log(json.dumps(history[-1]))
+            check_scores(history[-1]["eval"], step)
             model.train()
             last_eval = time.time()
     save_ckpt()
     sheet = out / "samples" / "val-predictions.png"
     final = evaluate(ema, tiles, config, config["final_val_samples"], 11, device, baseline_n=config["baseline_n"], sheet=sheet)
+    check_scores(final["model"], step)
     torch.save({"state_dict": ema.state_dict(), "config": config}, out / "model.pt")
     final_ts = sources.TileSet(tiles, config["val_share"])
     metrics = {
         "parameters": sum(p.numel() for p in ema.parameters()), "macs_per_pixel": round(macs_per_pixel(copy.deepcopy(ema).cpu().float())),
-        "steps": step, "minutes": round(elapsed() / 60, 2), "tiles": {"train": len(final_ts.train), "val": len(final_ts.val)},
+        "steps": step, "skipped_steps": skips.total, "minutes": round(elapsed() / 60, 2),
+        "tiles": {"train": len(final_ts.train), "val": len(final_ts.val)},
         "final": _round(final), "history": history[-40:],
     }
     (out / "config.json").write_text(json.dumps(config, indent=1))

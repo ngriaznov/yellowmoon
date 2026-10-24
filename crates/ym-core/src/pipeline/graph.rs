@@ -13,9 +13,13 @@
 //! | `sigma` | the half-resolution noise sigma | the noise model and the gains `g0` |
 //! | `groups` | the raw group's image at 1/k | [`RawParams`] (all of `decode.*`, whether R3 runs, noise reduction, sharpening, `g0`, noise) and k |
 //! | `lens_planes` | the lens's planes and lists of the photo (`docs/21` section 3), kept outside the evictable caches | [`RawParams`], the lens, its data version, the camera, the frame, the axis, `g0`, the focus point; not the three amounts |
+//! | `lens_field_groups` | the raw group at 1/k after the lens's field stage only, `Z = L2(L1(X))` | [`RawParams`], the lens, its data versions, Edges, Anamorphic, the camera, the frame, the axis, the focus point (`LensPlan::field_key`: not Flares), and k |
+//! | `lens_flare_groups` | the flare terms of L3 at 1/k, `f64` planes | [`RawParams`], the lens, its data versions, Flares, Anamorphic, the camera, the frame, the axis, `g0`, the f-number (`LensPlan::flares_key`: not Edges), and k |
 //! | `lens_groups` | the raw group at 1/k after the lens (L1 to L3) | [`RawParams`], the lens setting and its inputs, and k |
 //! | `full` | the prepared full-resolution chain; one for the final picture and one for the Before view | [`RawParams`] |
 //! | `tiles` | 512 px tiles of the full-resolution raw group | [`RawParams`] and the tile |
+//! | `lens_field_tiles` | 512 px tiles after the lens's field stage only | as `lens_field_groups`, and the tile |
+//! | `lens_flare_tiles` | the flare terms of the 512 px tiles | as `lens_flare_groups`, and the tile |
 //! | `lens_tiles` | 512 px tiles of the full-resolution raw group after the lens, made from the raw tiles grown by the lens halo | [`RawParams`], the lens setting and its inputs, and the tile |
 //! | `color` | the fused matrix and C7 | [`ColorKey`] |
 //! | `grade` | the prepared `ColorChain` | [`GradeKey`] |
@@ -315,6 +319,12 @@ pub struct StageRuns {
     pub lens_planes: u64,
     /// Raw-group images at a reduced scale that went through the lens (L1 to L3).
     pub lens_groups: u64,
+    /// Times the lens's field stage (`Z = L2(L1(X))`, which Flares does not touch) was made for a
+    /// group or a tile: a Flares move reuses the cached one and makes none (`docs/21` section 3).
+    pub lens_fields: u64,
+    /// Times the lens's flare terms (L3's light, which Edges does not touch) were made for a group or a
+    /// tile: an Edges move reuses the cached ones and makes none.
+    pub lens_flares: u64,
     /// Full-resolution regions that went through the lens: the 512 px tiles of the 100 % view and
     /// the tiles of an export.
     pub lens_tiles: u64,
@@ -343,13 +353,15 @@ impl StageRuns {
         self.frame_hits += other.frame_hits;
         self.lens_planes += other.lens_planes;
         self.lens_groups += other.lens_groups;
+        self.lens_fields += other.lens_fields;
+        self.lens_flares += other.lens_flares;
         self.lens_tiles += other.lens_tiles;
     }
 
-    /// The number of times the lens (L1 to L3) did work: planes, groups and tiles.
+    /// The number of times the lens (L1 to L3) did work: planes, groups, field stages and tiles.
     #[must_use]
     pub fn lens_work(&self) -> u64 {
-        self.lens_planes + self.lens_groups + self.lens_tiles
+        self.lens_planes + self.lens_groups + self.lens_fields + self.lens_flares + self.lens_tiles
     }
 }
 
@@ -475,6 +487,16 @@ struct GraphState {
     lens_groups: Option<ByteLru<lens::GroupKey, Arc<RgbImage>>>,
     /// 512 px tiles of the full-resolution raw group after the lens.
     lens_tiles: Option<ByteLru<lens::TileKey, Arc<RgbImage>>>,
+    /// The raw groups at 1/k after the field stage only (`Z = L2(L1(X))`, no flares), by the amounts
+    /// the stage reads: a Flares move finds its `Z` here and runs L3 alone.
+    lens_field_groups: Option<ByteLru<lens::GroupKey, Arc<RgbImage>>>,
+    /// The 512 px tiles after the field stage only.
+    lens_field_tiles: Option<ByteLru<lens::TileKey, Arc<RgbImage>>>,
+    /// The flare terms of the groups at 1/k (`f64` planes, `F (glow + veil + ghosts + ...)`), by the
+    /// amounts they read: an Edges move finds them here.
+    lens_flare_groups: Option<ByteLru<lens::GroupKey, Arc<Vec<f64>>>>,
+    /// The flare terms of the 512 px tiles.
+    lens_flare_tiles: Option<ByteLru<lens::TileKey, Arc<Vec<f64>>>>,
 }
 
 /// The stage caches of one photo.
@@ -565,6 +587,10 @@ impl PhotoGraph {
             + st.lens_planes.as_ref().map_or(0, |e| e.planes.bytes())
             + st.lens_groups.as_ref().map_or(0, ByteLru::used)
             + st.lens_tiles.as_ref().map_or(0, ByteLru::used)
+            + st.lens_field_groups.as_ref().map_or(0, ByteLru::used)
+            + st.lens_field_tiles.as_ref().map_or(0, ByteLru::used)
+            + st.lens_flare_groups.as_ref().map_or(0, ByteLru::used)
+            + st.lens_flare_tiles.as_ref().map_or(0, ByteLru::used)
     }
 
     /// Drops the full-resolution intermediates (tiles and the prepared chain, and the lens tiles),
@@ -575,6 +601,8 @@ impl PhotoGraph {
         st.full = [None, None];
         st.tiles = None;
         st.lens_tiles = None;
+        st.lens_field_tiles = None;
+        st.lens_flare_tiles = None;
     }
 
     /// Drops every cache unless it was made for the image with this fingerprint.
@@ -642,6 +670,28 @@ impl PhotoGraph {
     /// The bytes the lens's 512 px tiles may take: a viewport's worth of them for a few settings.
     fn lens_tile_budget(&self) -> usize {
         (self.budget.cpu_bytes / 12) as usize
+    }
+
+    /// The bytes the field stage's reduced groups may take (as the lens's groups: one for each
+    /// Edges and Anamorphic value a slider has passed through).
+    fn lens_field_group_budget(&self) -> usize {
+        (self.budget.cpu_bytes / 32) as usize
+    }
+
+    /// The bytes the field stage's 512 px tiles may take.
+    fn lens_field_tile_budget(&self) -> usize {
+        (self.budget.cpu_bytes / 12) as usize
+    }
+
+    /// The bytes the flare terms of the reduced groups may take (twice the bytes of a group's image:
+    /// the terms are `f64`).
+    fn lens_flare_group_budget(&self) -> usize {
+        (self.budget.cpu_bytes / 16) as usize
+    }
+
+    /// The bytes the flare terms of the 512 px tiles may take.
+    fn lens_flare_tile_budget(&self) -> usize {
+        (self.budget.cpu_bytes / 6) as usize
     }
 
     fn cache_budget(&self, on_device: bool) -> usize {

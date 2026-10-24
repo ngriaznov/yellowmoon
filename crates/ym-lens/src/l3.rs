@@ -23,5 +23,5 @@ mod restore;
 mod sources;
 mod terms;
 
-pub(crate) use pass::{apply, halo};
+pub(crate) use pass::{apply, combine, halo, terms};
 pub(crate) use planes::FlarePlanes;

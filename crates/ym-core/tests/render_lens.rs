@@ -406,6 +406,149 @@ fn the_fit_view_on_the_device_is_the_cpu_fit_view_of_the_lens_group() {
     );
 }
 
+/// The lens's field stage `Z = L2(L1(X))` does not read Flares and its flare terms do not read Edges: a
+/// Flares move finds `Z` cached and makes the flare terms, an Edges move makes `Z` and finds the flare terms,
+/// an Anamorphic move makes both, and whichever way a frame was reached its pixels are the pixels of a cold
+/// renderer (the caches change what runs, never what comes out).
+fn a_slider_move_runs_only_the_stages_that_read_it_with(r: &Renderer, cold: &dyn Fn() -> Renderer) {
+    let d = developed(1200, 800);
+    let src = plain(&d.source());
+    let state = cell(576.0, 384.0);
+    // (field stages, flare terms, groups) a request made.
+    let stages = |f: &RenderedFrame| {
+        (
+            f.report.runs.lens_fields,
+            f.report.runs.lens_flares,
+            f.report.runs.lens_groups,
+        )
+    };
+    let first = frame(r, &with_lens(&src, VINTAGE), &state);
+    assert_eq!(stages(&first), (1, 1, 1), "{:?}", first.report.runs);
+    let mut previous = first.rgba.clone();
+    for flares in [61.0, 20.0, 100.0] {
+        let moved = LensSettings { flares, ..VINTAGE };
+        let f = frame(r, &with_lens(&src, moved), &state);
+        let runs = f.report.runs;
+        assert_eq!(
+            (stages(&f), runs.lens_planes),
+            ((0, 1, 1), 0),
+            "Flares {flares}: the flare terms alone: {runs:?}"
+        );
+        assert_ne!(f.rgba, previous, "Flares {flares}: the picture did not move");
+        let reference = fresh_frame(&cold(), &with_lens(&src, moved), &state);
+        assert!(
+            f.rgba == reference.rgba,
+            "Flares {flares}: the cached field stage changed the pixels"
+        );
+        previous = f.rgba.clone();
+    }
+    // Edges is read by the field stage and not by the flare terms.
+    let edges = LensSettings {
+        edges: 51.0,
+        ..VINTAGE
+    };
+    let f = frame(r, &with_lens(&src, edges), &state);
+    assert_eq!(stages(&f), (1, 0, 1), "Edges: {:?}", f.report.runs);
+    let reference = fresh_frame(&cold(), &with_lens(&src, edges), &state);
+    assert!(f.rgba == reference.rgba, "Edges: pixels differ from a cold run");
+    // Anamorphic is read by both.
+    let anamorphic = LensSettings {
+        anamorphic: 51.0,
+        ..VINTAGE
+    };
+    let f = frame(r, &with_lens(&src, anamorphic), &state);
+    assert_eq!(stages(&f), (1, 1, 1), "Anamorphic: {:?}", f.report.runs);
+    let reference = fresh_frame(&cold(), &with_lens(&src, anamorphic), &state);
+    assert!(
+        f.rgba == reference.rgba,
+        "Anamorphic: pixels differ from a cold run"
+    );
+    // Back to a value every stage has seen: nothing runs in the lens.
+    let again = fresh_frame(r, &with_lens(&src, VINTAGE), &state);
+    assert_eq!(
+        (lens_work(&again.report.runs), stages(&again)),
+        ((0, 0, 0), (0, 0, 0)),
+        "{:?}",
+        again.report.runs
+    );
+    // Flares at 0 with the field stage on: the lens's output is the field stage's, made once.
+    let off = LensSettings {
+        flares: 0.0,
+        ..VINTAGE
+    };
+    let f = frame(r, &with_lens(&src, off), &state);
+    assert_eq!(stages(&f), (0, 0, 1), "{:?}", f.report.runs);
+    let reference = fresh_frame(&cold(), &with_lens(&src, off), &state);
+    assert!(f.rgba == reference.rgba, "Flares 0: pixels differ from a cold run");
+    // Flares alone has no field stage at all; Edges and Anamorphic at 0 are its other sliders.
+    let only = LensSettings {
+        kind: LensKind::Vintage,
+        flares: 40.0,
+        edges: 0.0,
+        anamorphic: 0.0,
+    };
+    let f = frame(r, &with_lens(&src, only), &state);
+    assert_eq!(stages(&f), (0, 1, 1), "{:?}", f.report.runs);
+    let reference = fresh_frame(&cold(), &with_lens(&src, only), &state);
+    assert!(f.rgba == reference.rgba, "Flares alone: pixels differ from a cold run");
+}
+
+#[test]
+fn a_slider_move_runs_only_the_stages_that_read_it() {
+    a_slider_move_runs_only_the_stages_that_read_it_with(&cpu(), &cpu);
+}
+
+#[test]
+fn a_slider_move_runs_only_the_stages_that_read_it_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    a_slider_move_runs_only_the_stages_that_read_it_with(&device(&gpu), &|| device(&gpu));
+}
+
+/// The same at 100 %: the lens tiles of a Flares move are the cached field tiles plus new flare terms, those
+/// of an Edges move new field tiles plus the cached flare terms.
+fn a_slider_move_runs_only_the_stages_that_read_it_on_tiles_with(
+    r: &Renderer,
+    cold: &dyn Fn() -> Renderer,
+) {
+    let d = developed(800, 600);
+    let src = plain(&d.source());
+    let st = at_100_percent(500.0, 400.0, (800, 600));
+    let first = frame(r, &with_lens(&src, VINTAGE), &st);
+    let runs = first.report.runs;
+    assert!(runs.lens_tiles >= 1, "{runs:?}");
+    assert_eq!(runs.lens_fields, runs.lens_tiles, "one field tile per lens tile: {runs:?}");
+    assert_eq!(runs.lens_flares, runs.lens_tiles, "one flare tile per lens tile: {runs:?}");
+    let moved = LensSettings {
+        flares: 61.0,
+        ..VINTAGE
+    };
+    let f = frame(r, &with_lens(&src, moved), &st);
+    let runs = f.report.runs;
+    assert_eq!(runs.lens_fields, 0, "the field tiles are reused: {runs:?}");
+    assert_eq!(runs.lens_flares, runs.lens_tiles, "{runs:?}");
+    assert!(runs.lens_tiles >= 1, "{runs:?}");
+    let reference = fresh_frame(&cold(), &with_lens(&src, moved), &st);
+    assert!(
+        f.rgba == reference.rgba,
+        "the cached field tiles changed the pixels"
+    );
+    let moved = LensSettings {
+        edges: 51.0,
+        ..VINTAGE
+    };
+    let f = frame(r, &with_lens(&src, moved), &st);
+    let runs = f.report.runs;
+    assert_eq!(runs.lens_fields, runs.lens_tiles, "{runs:?}");
+    assert_eq!(runs.lens_flares, 0, "the flare tiles are reused: {runs:?}");
+    let reference = fresh_frame(&cold(), &with_lens(&src, moved), &st);
+    assert!(f.rgba == reference.rgba, "an Edges move: pixels differ from a cold run");
+}
+
+#[test]
+fn a_slider_move_runs_only_the_stages_that_read_it_on_tiles() {
+    a_slider_move_runs_only_the_stages_that_read_it_on_tiles_with(&cpu(), &cpu);
+}
+
 /// The first lens request is the planes' request: a request after a change of lens (the planes' key
 /// changes) makes them again, an amount does not.
 #[test]

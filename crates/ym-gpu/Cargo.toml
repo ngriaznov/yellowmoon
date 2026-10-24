@@ -14,6 +14,9 @@ ym-color.workspace = true
 # `NoiseDn::from_model` converts the noise model of the sigma map (`cpu::noise`). ym-noise
 # does not depend on this crate.
 ym-noise.workspace = true
+# The lens's plans (`ym_lens::device`): the numbers and tables the lens kernels take, and the CPU references
+# the parity tests compare them with (`docs/21` section 5).
+ym-lens.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
 wgpu.workspace = true

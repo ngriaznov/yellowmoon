@@ -188,3 +188,11 @@ def test_a_restarted_training_run_is_charged_for_the_time_its_dead_attempt_train
     assert second.absorb_heartbeat("t", fn) == 0.0  # once
     second.charge("t", "training", 60 * 60, fn)  # the new attempt trains the remaining hour
     assert second.settle("t") == pytest.approx(fn.cost(40 * 60 + 300) + fn.cost(3600))
+
+
+def test_the_gpu_smoke_and_the_full_run_fit_the_budgets_the_workflow_gives_them():
+    # .github/workflows/bokeh-train.yml: ENTRY=train, ARGS="--budget 0.8 --minutes 8 --steps 1000 --run bokeh-smoke", then
+    # ARGS="--budget 5 --minutes 100 --run bokeh-2"
+    assert B.plan_train(8).worst <= 0.8
+    assert B.plan_train(100).worst <= 5.0
+    assert B.plan_train(8).worst + B.plan_train(100).worst < B.PROGRAMME_CAP / 2

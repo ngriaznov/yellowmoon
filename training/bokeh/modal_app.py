@@ -8,7 +8,8 @@ started by a push to the branch `bokeh-train-run`) or from a computer with direc
     modal run -m training.bokeh.modal_app::check   --budget 0.5     # volumes and photos reachable? times a few photos
     modal run -m training.bokeh.modal_app::prepare --budget 1.5     # index masks, fetch the archives, build the tiles
     modal run -m training.bokeh.modal_app::preview --budget 0.3     # sheets of synthesised inputs and labels
-    modal run -m training.bokeh.modal_app::train   --budget 5 --minutes 100 --run bokeh-1
+    modal run -m training.bokeh.modal_app::train   --budget 0.8 --minutes 8 --steps 1000 --run bokeh-smoke   # the GPU smoke
+    modal run -m training.bokeh.modal_app::train   --budget 5 --minutes 100 --run bokeh-2
     modal run -m training.bokeh.modal_app::results                  # metrics of every run, the ledger
     modal run -m training.bokeh.modal_app::fetch                    # runs, previews, credits, ledger into training/bokeh/runs/
     python -m training.bokeh.budget plan --entry train --minutes 100   # a plan's worst case, no Modal, no spend
@@ -169,11 +170,25 @@ def train_run(run_id: str, run: str, config: dict) -> dict:
         ledger.write_heartbeat(run_id, setup + trained_seconds + 60, B.train_fn(config["max_minutes"]))
         volume.commit()
 
-    metrics = train.train(local, out, {**config, "device": "cuda", "workers": 3}, heartbeat=heartbeat, log=log)
-    model = BokehNet()
-    model.load_state_dict(torch.load(out / "model.pt", map_location="cpu", weights_only=False)["state_dict"])
-    report = export.write(model, out / "bokehnet.safetensors", out / "parity.json", source=run)
-    log(json.dumps({"export": report}))
+    def keep_log() -> None:
+        """For a run that failed or diverged: its log must reach the volume (the error raised stays the one raised)."""
+        log_file.close()
+        with contextlib.suppress(Exception):
+            volume.commit()
+
+    try:
+        metrics = train.train(local, out, {**config, "device": "cuda", "workers": 3}, heartbeat=heartbeat, log=log)
+        model = BokehNet()
+        model.load_state_dict(torch.load(out / "model.pt", map_location="cpu", weights_only=False)["state_dict"])
+        report = export.write(model, out / "bokehnet.safetensors", out / "parity.json", source=run)
+        log(json.dumps({"export": report}))
+    except train.TrainingDiverged as e:
+        keep_log()
+        # The orchestrator's image has no torch to rebuild a subclass with; a plain RuntimeError carries the message across.
+        raise RuntimeError(str(e)) from None
+    except BaseException:
+        keep_log()
+        raise
     log_file.close()
     (out / "ckpt.pt").unlink(missing_ok=True)
     volume.commit()
@@ -336,12 +351,16 @@ def run_train(run_id: str, run_name: str, minutes: float, budget: float, config:
     except Exception as e:  # noqa: BLE001 - whatever stopped the call, it is stopped and counted at its full time
         call.cancel(terminate_containers=True)
         run.charge("training (stopped)", time.time() - t + 60, fn, once=False)
-        run.check("training failed")
-        run.done()
+        try:
+            run.check("training failed")
+        finally:
+            run.done()  # settled at what the call actually cost (a diverged run stops early), not at the reservation
         raise RuntimeError(f"training stopped: {type(e).__name__}: {e}") from e
     run.charge("training", time.time() - t + 60, fn, once=False)
-    run.check("training")
-    run.done()
+    try:
+        run.check("training")
+    finally:
+        run.done()
     return result
 
 
@@ -387,10 +406,15 @@ def preview(budget: float = 0.3, run_id: str = "") -> None:
 
 
 @app.local_entrypoint()
-def train(budget: float = 5.0, run: str = "bokeh-1", minutes: float = 100.0, batch: int = 24, sample: int = 512,
-          lr: float = 2e-3, seed: int = 1, run_id: str = "") -> None:
-    """Trains one model on one L4 for `minutes` of training (the worst case counts the whole call)."""
-    config = {"batch": batch, "sample": sample, "lr": lr, "seed": seed}
+def train(budget: float = 5.0, run: str = "bokeh-2", minutes: float = 100.0, steps: int = 0, batch: int = 24,
+          sample: int = 512, lr: float = 2e-3, seed: int = 1, amp: bool = True, run_id: str = "") -> None:
+    """Trains one model on one L4 for `minutes` of training (the worst case counts the whole call), or for `steps` steps
+    when that comes first (`--steps 1000 --minutes 8 --budget 0.8 --run bokeh-smoke` is the GPU smoke: the full
+    configuration for 1000 steps, about 6 minutes, to see a finite, falling loss before the long run). A name that was
+    used before carries on from that run's checkpoint: a run that diverged needs a new one. The run stops by itself
+    when its loss turns NaN or stays high (`train.py`, "Guards"). `--no-amp` trains in float32 instead of bf16 (slower;
+    for the case that the smoke shows skipped steps with a non-finite gradient)."""
+    config = {"batch": batch, "sample": sample, "lr": lr, "seed": seed, "amp": amp, **({"steps": steps} if steps else {})}
     print(json.dumps(run_train.remote(_id("train", run_id), run, minutes, budget, config), indent=1))
 
 

@@ -15,6 +15,9 @@
 //!    gives the same bits as the whole frame.
 //! 5. [`LensPlan::warp`] gives the L4 map between the canvas and the photo.
 //!
+//! The GPU kernels in `ym-gpu` take their parameters from [`device`]: plain numbers and flat tables made from
+//! a [`LensPlan`], so the CPU references here and the kernels read one source.
+//!
 //! With all three amounts at 0 ([`LensAmounts::is_identity`]) nothing runs and [`apply`] returns its input.
 
 #![warn(missing_docs)]
@@ -23,6 +26,7 @@ mod amounts;
 mod apply;
 pub mod consts;
 mod data;
+pub mod device;
 mod error;
 mod field;
 mod image;
@@ -37,7 +41,10 @@ pub mod test_support;
 mod warp;
 
 pub use amounts::{LensAmounts, LensKind};
-pub use apply::{apply, apply_field, apply_flares, field_halo_px, flares_halo_px, halo_px};
+pub use apply::{
+    add_flares, apply, apply_field, apply_flares, field_halo_px, flare_terms, flares_halo_px,
+    halo_px,
+};
 pub use data::{
     Aperture, AttachmentData, AttachmentField, AttachmentProvenance, Bend, Design, Distortion,
     FieldData, FlareData, GhostData, Glow, LensData, LensInfo, LensLibrary, LensProvenance,

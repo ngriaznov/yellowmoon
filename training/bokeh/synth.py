@@ -479,7 +479,9 @@ def synthesize(tb: TileBatch, cfg: SynthConfig, gen: torch.Generator) -> Synth:
 
 
 def colorize(values: torch.Tensor, vmax: float) -> torch.Tensor:
-    """(N, 1, H, W) -> (N, 3, H, W) in [0, 1]: a dark-blue to red ramp, 0 to `vmax`."""
+    """(N, 1, H, W) -> (N, 3, H, W) in [0, 1]: a dark-blue to red ramp, 0 to `vmax`. A NaN counts as 0: it must never
+    reach the integer index below (on a GPU that is a device-side assert, which is how the first Modal run died)."""
+    values = torch.nan_to_num(values, nan=0.0, posinf=vmax, neginf=0.0)
     anchors = torch.tensor([[0.05, 0.05, 0.25], [0.1, 0.35, 0.85], [0.1, 0.8, 0.8], [0.4, 0.9, 0.3],
                             [0.95, 0.85, 0.1], [0.9, 0.2, 0.1]], device=values.device)
     pos = (values / vmax).clamp(0, 1) * (anchors.shape[0] - 1)

@@ -205,10 +205,14 @@ def randomize(model: BokehNet, seed: int) -> None:
 
 
 def write(model: BokehNet, out: Path, fixture: Path, source: str) -> dict:
-    """Writes the weights and the fixture; returns the report. Raises when the folded network differs from the trained
-    one by more than 2e-4 (activations are clamped to 6, so the folded and the trained networks agree to rounding)."""
+    """Writes the weights and the fixture; returns the report. Raises when a weight is not finite (nothing is written) or
+    when the folded network differs from the trained one by more than 2e-4 (activations are clamped to 6, so the folded
+    and the trained networks agree to rounding)."""
     model = model.eval().float()
     t = tensors(model)
+    bad = [k for k, v in t.items() if not torch.isfinite(v).all()]
+    if bad:  # a NaN would slip past the comparison below (max() ignores it) and into the file
+        raise SystemExit(f"the weights are not finite ({len(bad)} tensors, the first is {bad[0]}); nothing is written")
     out.parent.mkdir(parents=True, exist_ok=True)
     save_deterministic(t, out, metadata(model, source))
     arch = json.loads(arch_json(model))

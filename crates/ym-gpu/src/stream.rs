@@ -550,6 +550,13 @@ impl<'a> PassList<'a> {
         shared
     }
 
+    /// Keeps a buffer somebody else owns (a resident table, a plane uploaded once per photo) alive until
+    /// the work has finished, so it cannot go back to the pool and be written by a later job while this
+    /// list's passes still read it.
+    pub fn hold(&mut self, buffer: Arc<PooledBuffer>) {
+        self.keep.push(buffer);
+    }
+
     /// A scratch storage buffer of `bytes` bytes that only kernels touch, kept alive by the list.
     /// Its content is whatever the pool had (NaN in poison mode): a kernel must write before it reads.
     ///

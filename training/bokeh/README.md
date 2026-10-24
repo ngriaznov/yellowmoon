@@ -125,6 +125,22 @@ exported, bf16 autocast, gradient clipping. **The cosine schedule runs over elap
 is not measured, and a run stopped by its time limit would otherwise end at a high learning rate. A checkpoint every 5 minutes; a rerun
 with the same output folder continues from it. Batch 24 at 512 x 512 (random crops of the 512 tiles are possible for smaller samples).
 
+**The first long run (bokeh-1, 2026-10-24) was lost to a NaN, and what stops that now.** Its loss was 0.93 at step 25 and NaN from
+step 50 on; it trained a network of NaNs for 100 minutes ($2.49) and died in the final sheet (`colorize` indexed a colour ramp with
+a NaN: a device-side assert). Cause: the `dark` (dark-rim) kernel of `kernels.py` had a negative profile on its antialiased rim
+cells when its radius was under about 3 px and its rim strength above 0.69, so a kernel of one or two pixels had a negative
+second moment, the label-radius square root was NaN, and the NaN kernel (through the FFT) turned its whole sample into NaN. About
+one kernel in 300 below 3 px was affected, and a batch of 24 samples draws ~100 kernels, many of them small (ramp bins, layers
+of 1 to 3 px), so roughly every fourth batch held one. Fixed at the root (the dark profile is capped at the rim, coverage is never
+negative, the second moment is clamped) and guarded in `train.py`: a step with a non-finite loss or gradient norm is skipped
+(no optimiser step, no EMA update, batch-norm statistics put back) and logged with the input that was not finite; the run stops
+(`TrainingDiverged`, "training diverged: ...") after 21 skipped steps in a row, when more than 2 % of the steps after step 200
+were skipped, when a weight or an evaluation is not finite, or when the mean loss of steps 25 to 100 is NaN or above 5; no
+checkpoint of NaN weights is written, resumed or exported. A run that diverges costs minutes, not the budget. Run the GPU smoke
+(`modal_app::train --budget 0.8 --minutes 8 --steps 1000 --run bokeh-smoke`, about $0.3) before a long run: it is the full
+configuration, and its log must show finite losses that fall. A run name that was used before resumes from that run's checkpoint,
+so a new run takes a new name.
+
 ### Validation and the go/no-go
 
 On held-out tiles (a hash of the photo id; never trained on), fixed seeds, pixels with label weight at least 0.6, in `b` units
@@ -145,7 +161,7 @@ comparison is the network against that detector on the same scenes.
 
 ## Into the app (`export.py`)
 
-    python -m training.bokeh.export --model <runs>/bokeh-1/model.pt --out data/models/bokeh/bokehnet.safetensors \
+    python -m training.bokeh.export --model <runs>/bokeh-2/model.pt --out data/models/bokeh/bokehnet.safetensors \
         --fixture crates/ym-ml/tests/data/bokehnet_parity.json
     python -m training.bokeh.export --random --seed 1 --out <...>/bokehnet.safetensors --fixture <...>/bokehnet_parity.json
 
@@ -203,7 +219,8 @@ in the workflow file on the branch):
 | 1 | `check` | `--budget 0.5` | volumes and photos reachable? filters 40 photos, times them, tests the Open Images URLs; writes `check.json` |
 | 2 | `prepare` | `--budget 1.5` | index, 16 mask archives, tiles, credits (resumable: run it again after a failure) |
 | 3 | `preview` | `--budget 0.3` | four sheets of synthesised inputs and labels from the real tiles: look at them |
-| 4 | `train` | `--budget 5 --minutes 100 --run bokeh-1` | one L4, then the final evaluation and the export |
+| 4a | `train` | `--budget 0.8 --minutes 8 --steps 1000 --run bokeh-smoke` | the GPU smoke: the full configuration for 1,000 steps (about 6 minutes, about $0.3), then the final evaluation, the sheet and the export. Its log (`runs/bokeh-smoke/log.txt`) must show finite losses that fall and no `skipped` lines |
+| 4b | `train` | `--budget 5 --minutes 100 --run bokeh-2` | one L4, then the final evaluation and the export (`bokeh-1` holds the NaN checkpoint of the lost run: use a new name) |
 | 5 | `results` | | metrics and the ledger |
 
 From a computer with direct internet and the two variables: `pip install modal==1.6.2`, then `modal run -m training.bokeh.modal_app::<entry> <args>`, and

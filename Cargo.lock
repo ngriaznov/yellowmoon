@@ -11268,6 +11268,7 @@ dependencies = [
  "tracing",
  "wgpu",
  "ym-color",
+ "ym-lens",
  "ym-noise",
 ]
 
