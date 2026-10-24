@@ -11,6 +11,7 @@ members = [
     "crates/ym-gpu",
     "crates/ym-noise",
     "crates/ym-ml",
+    "crates/ym-lens",
     "crates/ym-looks",
     "crates/ym-export",
     "crates/ym-cli",
@@ -39,6 +40,7 @@ ym-color = { path = "crates/ym-color", version = "0.1.15" }
 ym-gpu = { path = "crates/ym-gpu", version = "0.1.15" }
 ym-noise = { path = "crates/ym-noise", version = "0.1.15" }
 ym-ml = { path = "crates/ym-ml", version = "0.1.15" }
+ym-lens = { path = "crates/ym-lens", version = "0.1.15" }
 ym-looks = { path = "crates/ym-looks", version = "0.1.15" }
 ym-export = { path = "crates/ym-export", version = "0.1.15" }
 ym-cli = { path = "crates/ym-cli", version = "0.1.15" }

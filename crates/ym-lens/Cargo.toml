@@ -1,0 +1,43 @@
+[package]
+name = "ym-lens"
+description = "Lens character: lens data, plans, planes and the CPU references of the field optics (L2) and the anamorphic bend (L4)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false
+
+[features]
+default = []
+# `ym_lens::test_support`: writes a complete synthetic lens folder (docs/21 section 6) for tests of this and other crates.
+# Off by default; the shipped app never needs it.
+test-support = []
+
+[dependencies]
+# The camera's spectral curves, for the projection of the lens data onto its channels.
+ym-color.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Reads tables.safetensors (as ym-ml does).
+safetensors = "0.8"
+# SHA256SUMS of the lens folder and the camera response key.
+sha2.workspace = true
+hex.workspace = true
+# Rows of the field optics run in parallel; every pixel is independent of the others.
+rayon.workspace = true
+# Transcendental functions with the same bits on every platform (docs/21 section 9).
+libm = "0.2"
+
+[dev-dependencies]
+approx.workspace = true
+tempfile.workspace = true
+# Enables the synthetic lens folder for this crate's own integration tests.
+ym-lens = { path = ".", features = ["test-support"] }
+
+[[example]]
+name = "bench_field"
+path = "examples/bench_field.rs"
+required-features = ["test-support"]
