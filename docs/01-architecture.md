@@ -48,7 +48,7 @@ crates/
   ym-gpu/                  wgpu device/queue ownership, tiling, buffer pools, WGSL kernels + parity tests,
                            the CPU reference implementations of the raw and output stages
   ym-noise/                per-image noise estimation, priors, σ maps
-  ym-ml/                   model loading, inference on tiles (burn or ort behind one trait), the crop model (CPU)
+  ym-ml/                   model loading, inference on tiles (burn or ort behind one trait), the crop model and the bokeh map model (CPU)
   ym-looks/                look library, ARRI package recognition, importer, manifest
   ym-export/               JPEG, TIFF, PNG, DNG writers, ICC, EXIF/XMP; runs output sharpening (CPU code of ym-gpu) after the resize
   ym-compose/              Auto crop: the straightener and the frame proposer (docs/20-auto-crop.md; pure Rust, CPU; the crop model is ym-ml's)

@@ -503,6 +503,7 @@ pub(super) fn detect(
             ev_w: &ev_w,
             ev_s: &ev_s,
             anchor: &anchor,
+            sharp: &sharp,
         },
         cancel,
     )?;

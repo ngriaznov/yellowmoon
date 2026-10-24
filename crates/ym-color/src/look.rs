@@ -32,7 +32,8 @@
 //!   "cdl": { "slope": [1.0, 1.0, 1.0], "offset": [0.0, 0.0, 0.0], "power": [1.0, 1.0, 1.0], "saturation": 1.0 },
 //!   "hue_vs_sat":  [ { "hue_deg":  30.0, "value": 1.15 }, { "hue_deg": 210.0, "value": 0.9 } ],
 //!   "hue_vs_hue":  [ { "hue_deg":  60.0, "value": -6.0 } ],
-//!   "luma_vs_sat": [ { "luma": 0.15, "value": 0.8 }, { "luma": 0.6, "value": 1.1 } ]
+//!   "luma_vs_sat": [ { "luma": 0.15, "value": 0.8 }, { "luma": 0.6, "value": 1.1 } ],
+//!   "red_chroma":  { "up": 1.0, "dark_relief": 0.0 }
 //! }
 //! ```
 //!
@@ -68,6 +69,13 @@
 //!   yellow, 120 green, 180 cyan, 240 blue, 300 magenta). Scaling or rotating `(p, q)` keeps the
 //!   channel mean; the Rec.709 luma is then restored, so these curves never change luma.
 //! * **Order:** `luma_curve`, then `cdl`, then the three colour curves (which see the CDL output).
+//! * `red_chroma`: how much of the red chroma step (C12 step 1c, [`crate::display::red_chroma`]) the look
+//!   lets through; not part of the baked cube, it travels with the [`LookTransform`]. `up` (default 1,
+//!   0 to 1) is the strength of the step's up side, which gives back the chroma ACES 2 takes out of
+//!   mid-tone and light reds; `dark_relief` (default 0, 0 to 1) is the strength of its dark side, which
+//!   takes back part of the boost ACES 2 gives dark reds. A look that sets neither (or no `red_chroma`)
+//!   has Neutral's `up` 1 and `dark_relief` 0; `up` 0 and `dark_relief` 0 skip the step. At look
+//!   intensity `k` the strengths blend from Neutral's to the look's.
 
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +84,7 @@ use crate::consts::{REC709_LUMA_WEIGHTS, Vec3};
 use crate::curve::{
     Curve, CurveError, fritsch_carlson_tangents, fritsch_carlson_tangents_periodic, hermite,
 };
+use crate::display::{RedChroma, RedChromaError};
 use crate::gamut::LinearRec709;
 use crate::grade::{E1, E2};
 use crate::logc::{LogC3Ei800, LogC4};
@@ -148,6 +157,9 @@ pub enum LookError {
     /// The cube could not be built.
     #[error("LUT: {0}")]
     Lut(#[from] LutError),
+    /// A `red_chroma` strength is out of range.
+    #[error("red_chroma: {0}")]
+    RedChroma(#[from] RedChromaError),
     /// The CDL sends a LogC4 input inside the unit cube beyond [`CDL_OUTPUT_LIMIT`].
     #[error(
         "CDL: the {channel} channel reaches {value:e} at white; a look's CDL must stay below {CDL_OUTPUT_LIMIT}"
@@ -210,6 +222,7 @@ pub struct LookTransform {
     input: LookInput,
     cdl: Option<Cdl>,
     lut: Option<Lut>,
+    red_chroma: RedChroma,
 }
 
 impl LookTransform {
@@ -220,6 +233,7 @@ impl LookTransform {
             input: LookInput::LogC4,
             cdl: None,
             lut: None,
+            red_chroma: RedChroma::DEFAULT,
         }
     }
 
@@ -232,7 +246,27 @@ impl LookTransform {
         if input == LookInput::LogC3ToRec709 && lut.is_none() {
             return Err(LookError::MissingLut);
         }
-        Ok(Self { input, cdl, lut })
+        Ok(Self {
+            input,
+            cdl,
+            lut,
+            red_chroma: RedChroma::DEFAULT,
+        })
+    }
+
+    /// The same look with other strengths of the red chroma step (the module notes; the default is
+    /// [`RedChroma::DEFAULT`], Neutral's). They are not part of the pixel transform: [`LookTransform::is_identity`]
+    /// and the LUT do not see them.
+    #[must_use]
+    pub fn with_red_chroma(mut self, red_chroma: RedChroma) -> Self {
+        self.red_chroma = red_chroma;
+        self
+    }
+
+    /// The strengths of the red chroma step this look allows.
+    #[must_use]
+    pub fn red_chroma(&self) -> RedChroma {
+        self.red_chroma
     }
 
     /// The input encoding the look expects.
@@ -398,6 +432,21 @@ pub struct ParametricLookSpec {
     /// Chroma multiplier by luma.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub luma_vs_sat: Vec<LumaPoint>,
+    /// The strengths of the red chroma step (not part of the baked cube).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub red_chroma: Option<RedChromaSpec>,
+}
+
+/// The `red_chroma` block of a parametric look: how much of the red chroma step the look lets through.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RedChromaSpec {
+    /// The up side's strength, 0 to 1 (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up: Option<f64>,
+    /// The dark side's strength (dark relief), 0 to 1 (default 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dark_relief: Option<f64>,
 }
 
 /// A Fritsch-Carlson spline on arbitrary increasing abscissae.
@@ -563,6 +612,8 @@ pub struct ParametricLook {
     hue_vs_sat: Profile,
     hue_vs_hue: Profile,
     luma_vs_sat: Profile,
+    /// The red chroma step's strengths (not part of the baked cube).
+    red_chroma: RedChroma,
 }
 
 impl ParametricLook {
@@ -576,6 +627,7 @@ impl ParametricLook {
             hue_vs_sat: Profile::constant(1.0),
             hue_vs_hue: Profile::constant(0.0),
             luma_vs_sat: Profile::constant(1.0),
+            red_chroma: RedChroma::DEFAULT,
         }
     }
 
@@ -661,6 +713,13 @@ impl ParametricLook {
             |pts: &[HuePoint]| pts.iter().map(|p| (p.hue_deg, p.value)).collect::<Vec<_>>();
         let luma_points: Vec<(f64, f64)> =
             spec.luma_vs_sat.iter().map(|p| (p.luma, p.value)).collect();
+        let red_chroma = match spec.red_chroma {
+            None => RedChroma::DEFAULT,
+            Some(r) => RedChroma::new(
+                r.up.unwrap_or(RedChroma::DEFAULT.up()),
+                r.dark_relief.unwrap_or(RedChroma::DEFAULT.dark_relief()),
+            )?,
+        };
         Ok(Self {
             name: spec.name.clone(),
             luma_curve,
@@ -668,6 +727,7 @@ impl ParametricLook {
             hue_vs_sat: Profile::from_points(&hue_points(&spec.hue_vs_sat), true, 1.0),
             hue_vs_hue: Profile::from_points(&hue_points(&spec.hue_vs_hue), true, 0.0),
             luma_vs_sat: Profile::from_points(&luma_points, false, 1.0),
+            red_chroma,
         })
     }
 
@@ -689,7 +749,15 @@ impl ParametricLook {
         self.luma_curve.as_ref()
     }
 
-    /// Whether the look is exactly the identity (no luma curve, identity CDL and no curves).
+    /// The strengths of the red chroma step the look allows ([`RedChroma::DEFAULT`] when the file sets
+    /// none). They are not part of the baked cube and not seen by [`ParametricLook::is_identity`].
+    #[must_use]
+    pub fn red_chroma(&self) -> RedChroma {
+        self.red_chroma
+    }
+
+    /// Whether the look is exactly the identity in LogC4 (no luma curve, identity CDL and no curves; the
+    /// red chroma strengths are not a LogC4 change and do not count).
     #[must_use]
     pub fn is_identity(&self) -> bool {
         self.luma_curve.is_none()
@@ -784,7 +852,7 @@ impl ParametricLook {
     /// As [`ParametricLook::bake`].
     pub fn to_transform(&self) -> Result<LookTransform, LookError> {
         if self.is_identity() {
-            return Ok(LookTransform::neutral());
+            return Ok(LookTransform::neutral().with_red_chroma(self.red_chroma));
         }
         let cube = self.bake(BAKE_SIZE)?;
         let lut = Lut {
@@ -792,7 +860,7 @@ impl ParametricLook {
             shaper: None,
             cube,
         };
-        LookTransform::new(LookInput::LogC4, None, Some(lut))
+        Ok(LookTransform::new(LookInput::LogC4, None, Some(lut))?.with_red_chroma(self.red_chroma))
     }
 }
 

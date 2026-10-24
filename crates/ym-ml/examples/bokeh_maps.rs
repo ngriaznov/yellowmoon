@@ -178,7 +178,11 @@ fn write_false_colour(
 
 /// The share of cells with `b >= 2 b_min` and `c >= 0.5` (the spec's "out of focus with confidence").
 fn blurred_share(b: &[f32], c: &[f32]) -> f64 {
-    let n = b.iter().zip(c).filter(|&(&b, &c)| b >= 2.0 * B_MIN && c >= 0.5).count();
+    let n = b
+        .iter()
+        .zip(c)
+        .filter(|&(&b, &c)| b >= 2.0 * B_MIN && c >= 0.5)
+        .count();
     n as f64 / b.len().max(1) as f64
 }
 
@@ -201,10 +205,18 @@ fn process(net: &BokehNet, dir: &Path, out: &Path) -> Fallible<Value> {
         .and_then(|t| serde_json::from_str(&t).ok());
     let size = detector
         .as_ref()
-        .and_then(|d| Some((d["bokeh"]["size"][0].as_u64()?, d["bokeh"]["size"][1].as_u64()?)))
+        .and_then(|d| {
+            Some((
+                d["bokeh"]["size"][0].as_u64()?,
+                d["bokeh"]["size"][1].as_u64()?,
+            ))
+        })
         .map_or((w, h), |(a, b)| (a as usize, b as usize));
     let focus = detector.as_ref().and_then(|d| {
-        Some((d["focus_fraction"][0].as_f64()?, d["focus_fraction"][1].as_f64()?))
+        Some((
+            d["focus_fraction"][0].as_f64()?,
+            d["focus_fraction"][1].as_f64()?,
+        ))
     });
     let (b_raw, c) = map.resample(size.0, size.1);
     let b: Vec<f32> = b_raw
@@ -215,7 +227,14 @@ fn process(net: &BokehNet, dir: &Path, out: &Path) -> Fallible<Value> {
 
     fs::create_dir_all(out)?;
     write_false_colour(&out.join("model_b.png"), size.0, size.1, &b, 0.03, focus)?;
-    write_false_colour(&out.join("model_b_raw.png"), size.0, size.1, &b_raw, 0.03, focus)?;
+    write_false_colour(
+        &out.join("model_b_raw.png"),
+        size.0,
+        size.1,
+        &b_raw,
+        0.03,
+        focus,
+    )?;
     write_false_colour(&out.join("model_c.png"), size.0, size.1, &c, 1.0, focus)?;
 
     let share = blurred_share(&b, &c);
@@ -274,8 +293,13 @@ fn main() -> Fallible<()> {
     );
     let mut failed = 0;
     for dir in &stems {
-        let stem = dir.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        let out = args.out.as_ref().map_or_else(|| dir.clone(), |o| o.join(&stem));
+        let stem = dir
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let out = args
+            .out
+            .as_ref()
+            .map_or_else(|| dir.clone(), |o| o.join(&stem));
         match process(&net, dir, &out) {
             Ok(info) => {
                 let ms = &info["ms"];

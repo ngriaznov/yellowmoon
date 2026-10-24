@@ -13,7 +13,7 @@
 //! | C9 primary grade | [`crate::grade`] |
 //! | C10 look (CDL, LUT, intensity) | [`crate::look`] |
 //! | C11 curve | [`crate::curve`] |
-//! | C12 display transform | [`DisplayTransform`]: [`crate::aces2`] or an imported ARRI display LUT |
+//! | C12 display transform | [`DisplayTransform`]: [`crate::aces2`] (behind the white lift and the [`red_chroma`] step) or an imported ARRI display LUT |
 //! | C13 display encode and dither | [`crate::encode`] |
 //!
 //! # Pieces
@@ -56,11 +56,15 @@
 mod chain;
 mod dng_inverse;
 mod frame;
+pub mod red_chroma;
 mod transform;
 
 pub use chain::{BeforePoint, ChainParams, ColorChain, LookSetting, StageTrace, View};
 pub use dng_inverse::DNG_SCENE_LIMIT;
 pub use frame::{Frame, Layout};
+pub use red_chroma::{
+    RedChroma, RedChromaError, RedChromaLch, RedChromaStep, RedChromaTables, RedGamut,
+};
 pub use transform::{
     ArriDisplayLut, DISPLAY_PLACEMENT_EV, DisplayLutInput, DisplayLutOutput, DisplayLutPrimaries,
     DisplayLutTransfer, DisplayTransform, aces2_input_matrix,

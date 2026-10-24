@@ -97,8 +97,9 @@ fn pattern_e(h: usize, w: usize, seed: i64) -> Vec<f32> {
     for c in 0..3i64 {
         for y in 0..hi {
             for x in 0..wi {
-                let v = (x * (c + 2) * 5 + y * (3 + seed) * 3 + ((x * y) >> 4) * (7 + c) + seed * 41)
-                    % 256;
+                let v =
+                    (x * (c + 2) * 5 + y * (3 + seed) * 3 + ((x * y) >> 4) * (7 + c) + seed * 41)
+                        % 256;
                 let block = x * 5 >= wi * 2 && x * 5 < wi * 3 && y * 3 >= hi && y * 3 < hi * 2;
                 let v = if block { 255 - v / 4 } else { v };
                 out.push(v as f32 / 255.0f32);
@@ -141,7 +142,8 @@ fn scene(w: usize, h: usize, seed: u32) -> Vec<f32> {
                     v += 0.5;
                 }
                 for (cx, cy) in [(0.7, 0.3), (0.8, 0.6), (0.2, 0.2)] {
-                    let d = ((fx - cx) * w as f32).hypot((fy - cy) * w as f32);
+                    let (dx, dy) = ((fx - cx) * w as f32, (fy - cy) * w as f32);
+                    let d = (dx * dx + dy * dy).sqrt();
                     if d < 0.03 * w as f32 {
                         v += 8.0;
                     }
@@ -204,7 +206,7 @@ fn the_network_agrees_with_pytorch_on_every_fixture_case() {
             "linear" => {
                 // Through the encoder, as the app feeds it (64 is a multiple of 32: no padding).
                 let encoded = encode_linear(&pattern_linear(h, w), w, h).expect("encode");
-                pad_encoded(&encoded, w, h).0
+                pad_encoded(&encoded, w, h).expect("pad").0
             }
             other => panic!("unknown fixture case kind {other}"),
         };
@@ -247,7 +249,7 @@ fn a_lens_plane_goes_through_the_whole_pipeline_to_the_fixture_s_numbers() {
         .expect("map");
     assert_eq!((map.width, map.height), (w / 2, h / 2));
     assert_eq!((map.plane_width, map.plane_height), (w, h));
-    let hd = 0.5 * (w as f64).hypot(h as f64);
+    let hd = 0.5 * ((w * w + h * h) as f64).sqrt();
     assert!((map.half_diagonal_px - hd).abs() < 1e-12);
     let mut worst = 0.0f64;
     for i in 0..map.width * map.height {
@@ -291,7 +293,12 @@ fn the_same_plane_gives_the_same_bits_on_any_number_of_threads() {
         }
         let (rw, rh) = reduced_size(w, h);
         assert_eq!(
-            (first.plane_width, first.plane_height, first.width, first.height),
+            (
+                first.plane_width,
+                first.plane_height,
+                first.width,
+                first.height
+            ),
             (rw, rh, rw.div_ceil(2), rh.div_ceil(2))
         );
         let (b, c) = map_bits(&first);
@@ -334,7 +341,7 @@ fn the_map_is_the_stages_one_after_the_other() {
     assert_eq!(rw, FRAME_LONG_PX);
     let reduced = box_reduce(&plane, rw, rh).expect("reduce");
     let encoded = encode_linear(&reduced, rw, rh).expect("encode");
-    let (padded, pw, ph) = pad_encoded(&encoded, rw, rh);
+    let (padded, pw, ph) = pad_encoded(&encoded, rw, rh).expect("pad");
     assert_eq!((pw, ph), (1024, 64));
     let by_hand = net
         .forward_padded(&padded, pw, ph)
@@ -437,7 +444,11 @@ fn timing_of_one_map() {
     };
     let t = std::time::Instant::now();
     let net = BokehNet::from_file(&found.weights).expect("load");
-    println!("load: {:.0} ms ({})", t.elapsed().as_secs_f64() * 1e3, found.label);
+    println!(
+        "load: {:.0} ms ({})",
+        t.elapsed().as_secs_f64() * 1e3,
+        found.label
+    );
     println!("rayon threads: {}", rayon::current_num_threads());
     for (w, h) in [(1024usize, 683usize), (1512, 1006)] {
         let data = scene(w, h, 6);

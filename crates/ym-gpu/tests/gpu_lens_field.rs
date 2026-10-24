@@ -168,6 +168,7 @@ fn the_kernel_matches_the_cpu_reference() {
     let mut worst_all = 0.0f32;
     let mut over_all = 0usize;
     let mut total_all = 0usize;
+    let (mut cpu_s, mut gpu_s) = (0.0f64, 0.0f64);
     // Every lens at four amounts on a landscape frame; fewer on an odd-sized portrait frame and on the
     // y axis, which swap the roles of the field coordinates.
     type Sweep<'a> = (usize, usize, Axis, &'a [LensKind], &'a [(f64, f64)]);
@@ -201,8 +202,12 @@ fn the_kernel_matches_the_cpu_reference() {
                 let p = plan(amounts(kind, 0.0, edges, anamorphic), w, h, axis);
                 let planes = planes_of(&p);
                 let out = Rect::whole(w, h);
+                let t = std::time::Instant::now();
                 let want = cpu_field(&p, &planes, &image, (w, h), (0, 0), (w, h), out);
+                cpu_s += t.elapsed().as_secs_f64();
+                let t = std::time::Instant::now();
                 let got = gpu_field(dev, &p, &image, (w, h), (0, 0), out);
+                gpu_s += t.elapsed().as_secs_f64();
                 let f = compare(&got, &want, bound);
                 worst_all = worst_all.max(f.worst);
                 over_all += f.over;
@@ -218,6 +223,9 @@ fn the_kernel_matches_the_cpu_reference() {
             }
         }
     }
+    note!(
+        "L2 timing over {cases} cases: CPU reference {cpu_s:.1} s, device (lavapipe, with uploads) {gpu_s:.1} s"
+    );
     note!(
         "L2 parity: {cases} cases, {total_all} samples, worst difference {worst_all:e}, {over_all} over {bound:e} (flipped decisions)"
     );

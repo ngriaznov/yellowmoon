@@ -8,6 +8,7 @@ This file describes the learned models of Yellowmoon: the illuminant estimator a
 |---|---|---|---|---|
 | `illum` | illuminant estimate: FFCC filter + class head | 13,199 parameters per model (limit 50 k) | once per photo, CPU (`ym_color::illum`) | ships: 11 per-profile models in `data/models/illum/` |
 | `crop` | Auto crop's free crop of a photo's picture: MobileNetV2-style, 256 px input | 1,101,852 parameters | once per photo when Auto crop is asked, CPU (`ym_ml::crop_net`) | ships: `data/models/crop/` (model card there; `docs/20-auto-crop.md` §6) |
+| `bokeh` | blur radius and confidence per 2 × 2 pixels of the lens plane, for lens character (`docs/21` §7): MobileNetV2-style encoder, U-Net decoder, 1024 px long input | 1,522,122 parameters, 3,364 multiply-adds per input pixel | once per photo, CPU (`ym_ml::bokeh_net`) | runtime, parity tests and a dev example exist; weights pending (`training/bokeh/`, go/no-go in its README); the classical detector is the fallback |
 | `jdd` | joint demosaic + denoise (+ cRAW de-banding) | 0.2–1 M params | export, 1:1 tiles | runtime, training code, export and parity tests exist; no trained weights (needs GPU time and PixelShift200, M2-H4) |
 | `jdd-ms` | denoise only, for Lossless M/S RGB input | ≤ 0.5 M params | M/S files | not built; those files use the classical path |
 | `smap` | sensor map MLP | ≤ 5 k params | once per photo, CPU | not used: the table blend of `docs/02` C2 is the sensor map |

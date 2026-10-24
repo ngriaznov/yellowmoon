@@ -454,7 +454,10 @@ struct Step {
 impl Step {
     fn forward(&self, x: &Feat, skip: &Feat) -> Result<Feat> {
         let (h, w) = (x.h * 2, x.w * 2);
-        if skip.h != h || skip.w != w || skip.c != self.skip.cin || x.c + self.skip.cout != self.mix.cin
+        if skip.h != h
+            || skip.w != w
+            || skip.c != self.skip.cin
+            || x.c + self.skip.cout != self.mix.cin
         {
             return Err(MlError::Shape(format!(
                 "decoder step: {}x{}x{} coarse and {}x{}x{} skip do not fit a {}-input mix",
@@ -601,7 +604,9 @@ fn check_header(header: &HashMap<String, String>) -> Result<()> {
             .parse()
             .map_err(|_| MlError::Weights(format!("header field `{key}` is not a number")))?;
         if (got - want).abs() > tolerance * want.abs().max(1.0) {
-            return Err(unsupported(format!("has {key} = {got} (this runtime: {want})")));
+            return Err(unsupported(format!(
+                "has {key} = {got} (this runtime: {want})"
+            )));
         }
         Ok(())
     };
@@ -611,8 +616,8 @@ fn check_header(header: &HashMap<String, String>) -> Result<()> {
     number("input_mean", f64::from(INPUT_MEAN), 1e-6)?;
     number("input_std", f64::from(INPUT_STD), 1e-6)?;
     number("conf_beta0", CONF_BETA0, 1e-12)?;
-    let luma: Vec<f64> = serde_json::from_str(field("luma"))
-        .map_err(|e| MlError::Weights(format!("luma: {e}")))?;
+    let luma: Vec<f64> =
+        serde_json::from_str(field("luma")).map_err(|e| MlError::Weights(format!("luma: {e}")))?;
     if luma.len() != 3 || luma.iter().zip(LUMA).any(|(a, b)| (a - b).abs() > 1e-12) {
         return Err(unsupported(format!("has luma weights {luma:?}")));
     }
@@ -777,7 +782,9 @@ impl BokehNet {
     /// indices of the blocks whose output is a skip.
     fn check_arch(arch: &ArchJson) -> Result<Vec<usize>> {
         if arch.stem == 0 || arch.blocks.is_empty() || arch.out_channels != 2 {
-            return Err(unsupported("has no stem or no blocks, or does not answer (μ, s)"));
+            return Err(unsupported(
+                "has no stem or no blocks, or does not answer (μ, s)",
+            ));
         }
         let mut cin = arch.stem;
         let mut stride = 2usize;
@@ -818,7 +825,13 @@ impl BokehNet {
         Ok(taps)
     }
 
-    fn count(stem: &Stem, blocks: &[Block], ctx: &Pointwise, steps: &[Step], head: &Pointwise) -> usize {
+    fn count(
+        stem: &Stem,
+        blocks: &[Block],
+        ctx: &Pointwise,
+        steps: &[Step],
+        head: &Pointwise,
+    ) -> usize {
         let pw = |p: &Pointwise| p.cin * p.cout + p.cout;
         let dw = |d: &Depthwise| d.c * 9 + d.c;
         let mut n = stem.cout * 27 + stem.cout;
@@ -863,10 +876,9 @@ impl BokehNet {
                 "the input is {width} x {height}, not a positive multiple of {PAD_MULTIPLE}"
             )));
         }
-        if e.len() != 3 * width * height {
+        if width.checked_mul(height).and_then(|n| n.checked_mul(3)) != Some(e.len()) {
             return Err(MlError::Shape(format!(
-                "a {width} x {height} plane needs {} values, got {}",
-                3 * width * height,
+                "a {width} x {height} plane needs 3 x {width} x {height} values, got {}",
                 e.len()
             )));
         }
@@ -948,7 +960,7 @@ impl BokehNet {
         let t1 = Instant::now();
         let encoded = encode_linear(&reduced, rw, rh)?;
         drop(reduced);
-        let (padded, pw, ph) = pad_encoded(&encoded, rw, rh);
+        let (padded, pw, ph) = pad_encoded(&encoded, rw, rh)?;
         drop(encoded);
         let t2 = Instant::now();
         let raw = self.forward_padded(&padded, pw, ph)?;
@@ -1016,7 +1028,10 @@ impl<'a> PlanarRgbRef<'a> {
     fn check(&self) -> Result<()> {
         if self.width == 0
             || self.height == 0
-            || self.width.checked_mul(self.height).and_then(|n| n.checked_mul(3))
+            || self
+                .width
+                .checked_mul(self.height)
+                .and_then(|n| n.checked_mul(3))
                 != Some(self.data.len())
         {
             return Err(MlError::Shape(format!(
@@ -1134,11 +1149,10 @@ pub fn box_reduce(plane: &PlanarRgbRef<'_>, out_w: usize, out_h: usize) -> Resul
 /// [`MlError::Shape`] when `rgb` is not `3 × height × width` values, [`MlError::Input`] when one is
 /// not finite.
 pub fn encode_linear(rgb: &[f64], width: usize, height: usize) -> Result<Vec<f64>> {
-    let n = width * height;
-    if n == 0 || rgb.len() != 3 * n {
+    let n = width.saturating_mul(height);
+    if n == 0 || n.checked_mul(3) != Some(rgb.len()) {
         return Err(MlError::Shape(format!(
-            "a {width} x {height} plane needs {} values, got {}",
-            3 * n,
+            "a {width} x {height} plane needs 3 x {width} x {height} values, got {}",
             rgb.len()
         )));
     }
@@ -1170,8 +1184,18 @@ pub fn encode_linear(rgb: &[f64], width: usize, height: usize) -> Result<Vec<f64
 
 /// Pads an encoded plane (planar `3 × height × width`) to a multiple of [`PAD_MULTIPLE`] with
 /// replicated edge pixels and narrows it to `f32`. Returns the plane and its new width and height.
-#[must_use]
-pub fn pad_encoded(e: &[f64], width: usize, height: usize) -> (Vec<f32>, usize, usize) {
+///
+/// # Errors
+///
+/// [`MlError::Shape`] when `e` is not `3 × height × width` values.
+pub fn pad_encoded(e: &[f64], width: usize, height: usize) -> Result<(Vec<f32>, usize, usize)> {
+    let n = width.saturating_mul(height);
+    if n == 0 || n.checked_mul(3) != Some(e.len()) {
+        return Err(MlError::Shape(format!(
+            "a {width} x {height} plane needs 3 x {width} x {height} values, got {}",
+            e.len()
+        )));
+    }
     let (pw, ph) = (
         width.next_multiple_of(PAD_MULTIPLE),
         height.next_multiple_of(PAD_MULTIPLE),
@@ -1184,7 +1208,7 @@ pub fn pad_encoded(e: &[f64], width: usize, height: usize) -> (Vec<f32>, usize, 
             *d = src[x.min(width - 1)] as f32;
         }
     });
-    (out, pw, ph)
+    Ok((out, pw, ph))
 }
 
 /// The network's raw answer at half resolution, padded size: `μ = ln r` (`r` the disc radius in
@@ -1207,16 +1231,21 @@ impl RawOutput {
     /// reduced plane of `plane_w × plane_h` pixels (before padding).
     #[must_use]
     pub fn into_map(self, plane_w: usize, plane_h: usize) -> BokehMap {
-        let (width, height) = (plane_w.div_ceil(OUTPUT_STRIDE), plane_h.div_ceil(OUTPUT_STRIDE));
-        let half_diagonal_px = 0.5 * (plane_w as f64).hypot(plane_h as f64);
+        let (width, height) = (
+            plane_w.div_ceil(OUTPUT_STRIDE),
+            plane_h.div_ceil(OUTPUT_STRIDE),
+        );
+        // The sum of squares is exact in `f64` and `sqrt` is correctly rounded: the same bits on every platform.
+        let half_diagonal_px = 0.5 * ((plane_w * plane_w + plane_h * plane_h) as f64).sqrt();
         let mut b = vec![0.0f32; width * height];
         let mut c = vec![0.0f32; width * height];
         for y in 0..height.min(self.height) {
             for x in 0..width.min(self.width) {
-                let (mu, s) = (
-                    f64::from(self.mu[y * self.width + x]),
-                    f64::from(self.s[y * self.width + x]),
-                );
+                let i = y * self.width + x;
+                let (Some(&mu), Some(&s)) = (self.mu.get(i), self.s.get(i)) else {
+                    continue;
+                };
+                let (mu, s) = (f64::from(mu), f64::from(s));
                 if mu.is_finite() && s.is_finite() {
                     let r = libm::exp(mu.max(R_FLOOR_PX.ln()));
                     let beta = libm::exp(s.clamp(LOG_BETA_RANGE.0, LOG_BETA_RANGE.1));
@@ -1265,6 +1294,10 @@ impl BokehMap {
     /// interpolation between the cells' centres, held at the edge beyond the outer centres.
     #[must_use]
     pub fn sample(&self, u: f64, v: f64) -> (f32, f32) {
+        let cells = self.width * self.height;
+        if cells == 0 || self.b.len() != cells || self.c.len() != cells {
+            return (0.0, 0.0);
+        }
         let cell = |t: f64, plane: usize, cells: usize| {
             let p = (t * plane as f64 / OUTPUT_STRIDE as f64 - 0.5).clamp(0.0, (cells - 1) as f64);
             let p = if p.is_nan() { 0.0 } else { p };
@@ -1355,7 +1388,11 @@ mod tests {
                                     * f64::from(x.data[(y * cin + i) * w + xx]);
                             }
                             s += f64::from(res.data[(y * cout + o) * w + xx]);
-                            let want = if act == Act::Relu6 { s.clamp(0.0, 6.0) } else { s };
+                            let want = if act == Act::Relu6 {
+                                s.clamp(0.0, 6.0)
+                            } else {
+                                s
+                            };
                             let g = f64::from(got.data[(y * cout + o) * w + xx]);
                             assert!((g - want).abs() < 1e-5, "w {w} o {o}: {g} vs {want}");
                         }
@@ -1459,10 +1496,11 @@ mod tests {
                                     let iy = (2 * yo + ky) as isize - 1;
                                     let ix = (2 * xo + kx) as isize - 1;
                                     if iy >= 0 && iy < h as isize && ix >= 0 && ix < w as isize {
-                                        s += f64::from(stem.weight[((o * 3 + i) * 3 + ky) * 3 + kx])
-                                            * f64::from(
-                                                x.data[(iy as usize * 3 + i) * w + ix as usize],
-                                            );
+                                        s +=
+                                            f64::from(stem.weight[((o * 3 + i) * 3 + ky) * 3 + kx])
+                                                * f64::from(
+                                                    x.data[(iy as usize * 3 + i) * w + ix as usize],
+                                                );
                                     }
                                 }
                             }
@@ -1498,14 +1536,26 @@ mod tests {
 
     #[test]
     fn tap_ranges_cover_exactly_the_inputs_inside() {
-        for (w, stride) in [(1usize, 1usize), (2, 1), (5, 1), (1, 2), (2, 2), (7, 2), (8, 2)] {
+        for (w, stride) in [
+            (1usize, 1usize),
+            (2, 1),
+            (5, 1),
+            (1, 2),
+            (2, 2),
+            (7, 2),
+            (8, 2),
+        ] {
             let wo = (w - 1) / stride + 1;
             for kx in 0..3 {
                 let (lo, hi) = tap_range(w, wo, stride, kx);
                 for xo in 0..wo {
                     let ix = (stride * xo + kx) as isize - 1;
                     let inside = ix >= 0 && ix < w as isize;
-                    assert_eq!((lo..hi).contains(&xo), inside, "w {w} s {stride} kx {kx} xo {xo}");
+                    assert_eq!(
+                        (lo..hi).contains(&xo),
+                        inside,
+                        "w {w} s {stride} kx {kx} xo {xo}"
+                    );
                 }
             }
         }
@@ -1531,7 +1581,10 @@ mod tests {
         let noisy: Vec<f32> = rng.vec(3 * w * h).iter().map(|v| v + 1.0).collect();
         let r = box_reduce(&PlanarRgbRef::new(w, h, &noisy).unwrap(), 16, 10).unwrap();
         for c in 0..3 {
-            let before: f64 = noisy[c * w * h..(c + 1) * w * h].iter().map(|&v| f64::from(v)).sum();
+            let before: f64 = noisy[c * w * h..(c + 1) * w * h]
+                .iter()
+                .map(|&v| f64::from(v))
+                .sum();
             let after: f64 = r[c * 160..(c + 1) * 160].iter().sum();
             // Every output cell is a weighted mean over a footprint of area (w/16)(h/10); the mean
             // of the plane is the mean of the cells.
@@ -1550,7 +1603,11 @@ mod tests {
     fn the_encoding_is_scale_free_and_matches_the_formula() {
         let (w, h) = (9, 7);
         let mut rng = Lcg(21);
-        let plane: Vec<f64> = rng.vec(3 * w * h).iter().map(|&v| f64::from(v) + 0.6).collect();
+        let plane: Vec<f64> = rng
+            .vec(3 * w * h)
+            .iter()
+            .map(|&v| f64::from(v) + 0.6)
+            .collect();
         let e = encode_linear(&plane, w, h).unwrap();
         let doubled: Vec<f64> = plane.iter().map(|v| v * 2.0).collect();
         let e2 = encode_linear(&doubled, w, h).unwrap();
@@ -1585,7 +1642,7 @@ mod tests {
     fn padding_replicates_the_edges() {
         let (w, h) = (3, 2);
         let e: Vec<f64> = (0..3 * w * h).map(|i| i as f64 / 100.0).collect();
-        let (p, pw, ph) = pad_encoded(&e, w, h);
+        let (p, pw, ph) = pad_encoded(&e, w, h).unwrap();
         assert_eq!((pw, ph), (32, 32));
         for c in 0..3 {
             for y in 0..ph {

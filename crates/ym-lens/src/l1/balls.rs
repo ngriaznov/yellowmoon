@@ -77,6 +77,8 @@ pub(super) struct BallInput<'a> {
     pub ev_s: &'a [f32],
     /// Pixels of the subject anchor (the camera's focus point): no ball starts there.
     pub anchor: &'a [bool],
+    /// Pixels at a strong edge that reads sharp (the detector's own flags).
+    pub sharp: &'a [bool],
 }
 
 /// Margin of the take-out disc beyond 1.15 `r`, in working-grid pixels.
@@ -98,7 +100,7 @@ const RESPONSE_NOISE: f64 = 3.0;
 /// Candidate cap.
 const MAX_CANDIDATES: usize = 1500;
 /// Smallest ball radius, in pixels of the working grid.
-const R_MIN_PX: f64 = 2.4;
+const R_MIN_PX: f64 = 3.2;
 /// ... and in half-diagonals (the larger of the two applies).
 const R_MIN_HD: f64 = 0.0025;
 /// A ball with no edges around it (flat ground) must be at least this large, in pixels of the working grid: a
@@ -118,6 +120,9 @@ const MAX_ELONGATION: f64 = 1.6;
 const MIN_FILL: f64 = 0.8;
 /// The search window is this many seed radii either side of the centre.
 const WINDOW_RADII: f64 = 3.2;
+/// A ball whose ring has more than this share of its pixels at a strong sharp edge sits in a sharp scene (a gap
+/// in the leaves, a seed, a catch-light): it is a light in focus, not a defocused one.
+const MAX_SHARP_DENSITY: f64 = 0.05;
 /// Edge evidence (sum of weights in the ring around a ball) needed to hold a ball to the edges' radius.
 const EVIDENCE_MIN: f64 = 1.5;
 /// A ball whose ground reads sharper than this radius, in pixels of the working grid, is a light in focus. (The
@@ -662,17 +667,21 @@ pub(super) fn find_balls(
             }
         }
         let (mut ew, mut es) = (0.0f64, 0.0f64);
+        let (mut n_ring, mut n_sharp) = (0.0f64, 0.0f64);
         for_each_in_annulus(w, h, b.cx, b.cy, 1.5 * b.r, 3.0 * b.r, |x, y, _, _, _| {
             let i = y * w + x;
             if !claim[i] {
                 ew += f64::from(inp.ev_w[i]);
                 es += f64::from(inp.ev_s[i]);
+                n_ring += 1.0;
+                n_sharp += f64::from(u8::from(inp.sharp[i]));
             }
         });
+        let sharp_density = n_sharp / n_ring.max(1.0);
         let supported = ew >= EVIDENCE_MIN;
         if std::env::var_os("YM_BALL_DEBUG").is_some() {
             eprintln!(
-                "BALL ({:.0},{:.0}) r={:.1} T={:.3} B={:.3} ew={:.2} ground_r={:.2} ratio={:.2}",
+                "BALL ({:.0},{:.0}) r={:.1} T={:.3} B={:.3} ew={:.2} ground_r={:.2} ratio={:.2} sharp={:.3}",
                 b.cx,
                 b.cy,
                 b.r,
@@ -685,7 +694,11 @@ pub(super) fn find_balls(
                 } else {
                     0.0
                 },
+                sharp_density,
             );
+        }
+        if sharp_density > MAX_SHARP_DENSITY {
+            continue;
         }
         if supported {
             // The edges' mean log radius against the ball's: a ground much sharper than the ball is a light in

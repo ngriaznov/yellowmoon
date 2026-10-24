@@ -37,6 +37,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::dng_inverse::DngDisplayInverse;
+use super::red_chroma::RedChroma;
 use super::transform::{DisplayTransform, PreparedDisplay};
 use super::{DisplayError, OutputTarget};
 use crate::camera_default::CameraDefault;
@@ -139,6 +140,13 @@ pub struct ChainParams {
     /// highlight range ([`ChainParams::tone`]), which acts on the scene side before LogC4; both run.
     /// [`WhiteLift::NONE`] is the identity.
     pub white_lift: WhiteLift,
+    /// Stage C12 step 1c: the red chroma step, a hue-preserving chroma gain on the reds in front of the
+    /// display placement and ACES 2 (`docs/02`). `true` (the default) runs it with the look's strengths
+    /// ([`RedChroma`]: `up` 1 and `dark_relief` 0 for Neutral and for a look that does not set them, both
+    /// 0 for Signature, which skips it); `false` is plain ACES 2, for tests and tools. Only the ACES 2
+    /// path has it: an imported ARRI display LUT keeps ARRI's reds and ignores it. A DNG does not carry it
+    /// (`docs/09`).
+    pub red_chroma: bool,
     /// Stage C13: which output the display-linear values are encoded for.
     pub output: OutputTarget,
     /// Whether 8-bit outputs are dithered (`docs/02`, C13). 10 and 16-bit outputs never are.
@@ -166,6 +174,7 @@ impl ChainParams {
             curves: CurveSet::default(),
             display: DisplayTransform::Aces2,
             white_lift: WhiteLift::NONE,
+            red_chroma: true,
             output: OutputTarget::Viewport,
             dither: true,
             before: BeforePoint::CameraDefault,
@@ -262,6 +271,26 @@ impl fmt::Debug for ColorChain {
     }
 }
 
+/// The strengths of the red chroma step for `params`: `None` when it is off.
+///
+/// Neutral's strengths ([`RedChroma::DEFAULT`]) when there is no look, for a look with its own display
+/// rendering (our C12 is then only the part that blends with the look's) and at intensity 0; otherwise the
+/// look's own strengths blended in by the look intensity, as its colours are
+/// (`neutral + k (look - neutral)`).
+fn red_chroma_of(params: &ChainParams) -> Option<RedChroma> {
+    if !params.red_chroma {
+        return None;
+    }
+    let strength = match &params.look {
+        Some(s) if !s.look.includes_display_rendering() => RedChroma::DEFAULT.blend(
+            s.look.red_chroma(),
+            intensity_fraction(s.intensity_pct),
+        ),
+        _ => RedChroma::DEFAULT,
+    };
+    Some(strength)
+}
+
 fn sanitize(c: f64) -> f64 {
     if c.is_nan() {
         0.0
@@ -314,7 +343,12 @@ impl ColorChain {
             warp: Warp::new(&params.warp),
             look,
             curves: params.curves.bake(),
-            display: PreparedDisplay::new(&params.display, params.output, params.white_lift),
+            display: PreparedDisplay::new(
+                &params.display,
+                params.output,
+                params.white_lift,
+                red_chroma_of(params),
+            ),
             output: params.output,
             space: params.output.space(),
             dither: params.dither,
@@ -365,6 +399,15 @@ impl ColorChain {
     #[must_use]
     pub fn white_lift(&self) -> WhiteLift {
         self.display.white_lift()
+    }
+
+    /// The strengths of the red chroma step this chain applies in front of ACES 2: `None` when the step
+    /// is off in the parameters, both strengths are 0 (a look such as Signature), or C12 is an imported
+    /// ARRI display LUT. At a look intensity between 0 and 100 the strengths are blended from Neutral's
+    /// to the look's.
+    #[must_use]
+    pub fn red_chroma(&self) -> Option<RedChroma> {
+        self.display.red_chroma()
     }
 
     /// Whether the look includes its own display rendering (LogC3 to Rec.709), which replaces C12.

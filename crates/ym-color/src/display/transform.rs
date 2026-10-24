@@ -12,6 +12,10 @@
 //! `2^`[`DISPLAY_PLACEMENT_EV`]), then [`Aces2Transform::transform_ap0_linear`] for the output's
 //! limiting and encoding primaries.
 //!
+//! In front of the placement sit two scene-linear steps, in this order: the white lift (step 1b,
+//! [`WhiteLift`]) and the red chroma step (step 1c, [`RedChromaStep`]: a hue-preserving chroma gain on
+//! the reds that gives back what ACES 2 takes out of them, `docs/02`). Both run on the ACES 2 path only.
+//!
 //! # Display placement
 //!
 //! ACES 2 SDR is a cinema rendering: it puts scene 0.18 at display-linear 0.100 (sRGB code 89, 38.3 %
@@ -53,6 +57,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use super::red_chroma::{RedChroma, RedChromaStep};
 use super::{DisplayError, OutputTarget};
 use crate::aces2::Aces2Transform;
 use crate::consts::Vec3;
@@ -379,6 +384,8 @@ enum Kind {
         transform: &'static Aces2Transform,
         awg4_to_ap0: Mat3,
         lift: WhiteLift,
+        /// Step 1c, `None` when it is off or both strengths are 0.
+        red: Option<RedChromaStep>,
     },
     Arri {
         lut: ArriDisplayLut,
@@ -388,13 +395,22 @@ enum Kind {
 
 impl PreparedDisplay {
     /// Prepares `transform` for `output`. Builds (or fetches) the ACES 2 tables, which takes
-    /// 10 to 35 ms the first time per limiting gamut.
-    pub(crate) fn new(transform: &DisplayTransform, output: OutputTarget, lift: WhiteLift) -> Self {
+    /// 10 to 35 ms the first time per limiting gamut, and the red chroma tables, a few milliseconds.
+    /// `red` is the strengths of step 1c (`None`: the step is off); both strengths 0 count as off.
+    pub(crate) fn new(
+        transform: &DisplayTransform,
+        output: OutputTarget,
+        lift: WhiteLift,
+        red: Option<RedChroma>,
+    ) -> Self {
         let kind = match transform {
             DisplayTransform::Aces2 => Kind::Aces2 {
                 transform: Aces2Transform::shared(output.aces2()),
                 awg4_to_ap0: aces2_input_matrix(),
                 lift,
+                red: red
+                    .filter(|r| !r.is_off())
+                    .map(|r| RedChromaStep::new(output, r)),
             },
             DisplayTransform::ArriDisplayLut(lut) => Kind::Arri {
                 to_output: primaries_matrix(lut.output.primaries, output.space()),
@@ -412,6 +428,15 @@ impl PreparedDisplay {
         }
     }
 
+    /// The strengths of the red chroma step (step 1c) this display applies: `None` when it is off, both
+    /// strengths are 0, or the display is an imported ARRI display LUT (which has ARRI's own reds).
+    pub(crate) fn red_chroma(&self) -> Option<RedChroma> {
+        match &self.kind {
+            Kind::Aces2 { red, .. } => red.map(|step| step.strength()),
+            Kind::Arri { .. } => None,
+        }
+    }
+
     /// C12: LogC4 to display-linear RGB in the output's primaries (1.0 is 100 nit white).
     pub(crate) fn display_linear(&self, v: LogC4) -> Vec3 {
         match &self.kind {
@@ -419,9 +444,15 @@ impl PreparedDisplay {
                 transform,
                 awg4_to_ap0,
                 lift,
+                red,
             } => {
                 // Step 1b, the white lift (scene-linear, before the placement in `awg4_to_ap0`).
-                let scene = lift.apply(logc4_decode_rgb(v.0));
+                let lifted = lift.apply(logc4_decode_rgb(v.0));
+                // Step 1c, the red chroma step (linear AWG4, before the placement).
+                let scene = match red {
+                    Some(step) => step.apply(lifted),
+                    None => lifted,
+                };
                 let ap0 = linalg::mul_vec(awg4_to_ap0, scene);
                 transform.transform_ap0_linear(ap0)
             }
