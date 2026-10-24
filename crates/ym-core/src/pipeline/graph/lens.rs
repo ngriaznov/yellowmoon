@@ -144,15 +144,12 @@ pub(super) fn lens_error(e: LensError) -> RenderError {
     }
 }
 
-/// How far below the network's radius the lower bound the lens uses sits, in scales `beta` of its error (a
-/// Laplace distribution of `ln r`): `b * exp(-K * beta)` is the radius that the network puts a share
-/// `0.5 * exp(-K)` of its probability below, so `K = ln(1 / (2 * 0.1))` = 1.61 makes it the 10 % quantile.
-const B_LOW_PER_BETA: f64 = 1.61;
-
-/// The network's map of the lens plane as the lens takes it ([`BlurMapInput`]): the radius `b` and a lower bound
-/// of it, `b * exp(-1.61 * beta)` with `beta = -0.25 * ln c` the scale of the network's error. The confidence `c`
-/// itself is not used: it is high on sharp areas and low in blur, so a gate on it would drop the blur.
-/// `None` when the network fails (the classical detector then makes the map).
+/// The network's map of the lens plane as the lens takes it ([`BlurMapInput`]): the radius `b` and the probability
+/// `P(b >= 2 b_min)` per cell, from the Laplace tail the network gives for the log radius
+/// (`ym_ml::bokeh_net::detection_probability`). The lens decides from `P` (blurred at `P >= 0.7`, the photo has
+/// bokeh by the cells at `P >= 0.9`), not from the network's confidence `c`: that is high on sharp areas and low in
+/// blur, so a gate on it would drop the blur. `None` when the network fails (the classical detector then makes the
+/// map).
 pub(crate) fn blur_map_input(model: &BokehNet, plane: &ImageRef) -> Option<BlurMapInput> {
     let planar = match PlanarRgbRef::new(plane.width, plane.height, plane.data) {
         Ok(p) => p,
@@ -171,24 +168,15 @@ pub(crate) fn blur_map_input(model: &BokehNet, plane: &ImageRef) -> Option<BlurM
     Some(blur_map_of(map))
 }
 
-/// The network's map as the lens takes it: `b_low = b * exp(-1.61 * beta)` with `beta = -0.25 * ln c`.
+/// The network's map as the lens takes it.
 pub(crate) fn blur_map_of(map: BokehMap) -> BlurMapInput {
-    let b_low = map
-        .b
-        .iter()
-        .zip(&map.c)
-        .map(|(&b, &c)| {
-            let beta = -0.25 * libm::log(f64::from(c).max(1e-6));
-            (f64::from(b) * libm::exp(-B_LOW_PER_BETA * beta)) as f32
-        })
-        .collect();
     BlurMapInput {
         width: map.width,
         height: map.height,
         plane_width: map.plane_width,
         plane_height: map.plane_height,
         b: map.b,
-        b_low,
+        p: map.p,
     }
 }
 
@@ -1388,33 +1376,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_lower_bound_of_the_bokeh_map_follows_the_confidence_not_a_gate_on_it() {
-        // c = exp(-beta / 0.25): c = 1 is no error at all, c = e^-1 is beta = 0.25.
+    fn the_lens_takes_the_radius_and_the_probability_of_the_networks_map() {
         let map = BokehMap {
             width: 3,
             height: 1,
             plane_width: 6,
             plane_height: 2,
             half_diagonal_px: 100.0,
-            b: vec![0.02, 0.02, 0.02],
-            c: vec![1.0, (-1.0f32).exp(), 0.1],
+            b: vec![0.02, 0.01, 0.001],
+            c: vec![0.1, 0.4, 0.99],
+            p: vec![0.95, 0.75, 0.01],
         };
         let input = blur_map_of(map);
         assert_eq!((input.width, input.height), (3, 1));
         assert_eq!((input.plane_width, input.plane_height), (6, 2));
-        assert_eq!(input.b, vec![0.02, 0.02, 0.02]);
-        assert!(
-            (input.b_low[0] - 0.02).abs() < 1e-7,
-            "no error: the bound is b"
-        );
-        let k = (-1.61f64 * 0.25).exp() as f32;
-        assert!(
-            (input.b_low[1] / 0.02 - k).abs() < 1e-4,
-            "{}",
-            input.b_low[1]
-        );
-        // A low confidence still gives a bound, only a lower one: it is never zero and never above b.
-        assert!(input.b_low[2] > 0.0 && input.b_low[2] < input.b_low[1]);
+        assert_eq!(input.b, vec![0.02, 0.01, 0.001]);
+        // The confidence plays no part: the probability does.
+        assert_eq!(input.p, vec![0.95, 0.75, 0.01]);
     }
 
     fn focus(frame: [u16; 2], point: [u16; 2]) -> Option<SonyFocus> {

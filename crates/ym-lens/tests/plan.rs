@@ -196,24 +196,95 @@ fn the_light_budget_follows_the_spec() {
     let lens = library().get(LensKind::Sonnar).unwrap();
     let att = library().attachment();
     let p = plan_of(LensKind::Sonnar, (100.0, 0.0, 0.0), (600, 400));
-    assert!((p.light_fraction() - lens.flare_fraction()).abs() < 1e-12);
+    let st = p.flare_strengths();
+    let (lens_part, att_part) = (st.lens_fraction(), st.attachment_fraction());
+    // The strengths only raise what the data hold (the synthetic lens is above every floor).
+    assert!(lens_part >= lens.flare_fraction() - 1e-12);
+    assert!(att_part >= att.flare_fraction() - 1e-12);
+    assert!((p.light_fraction() - lens_part).abs() < 1e-12);
     // Half of Flares, full Anamorphic: the streak and the attachment's ghosts at their full fractions.
     let p = plan_of(LensKind::Sonnar, (50.0, 0.0, 100.0), (600, 400));
-    assert!(
-        (p.light_fraction() - 0.5 * (lens.flare_fraction() + att.flare_fraction())).abs() < 1e-12
-    );
+    assert!((p.light_fraction() - 0.5 * (lens_part + att_part)).abs() < 1e-12);
     // Half of Anamorphic scales the attachment's part by (q - 1) / (Q_max - 1) = 0.5.
     let p = plan_of(LensKind::Sonnar, (100.0, 0.0, 50.0), (600, 400));
-    assert!(
-        (p.light_fraction() - (lens.flare_fraction() + 0.5 * att.flare_fraction())).abs() < 1e-12
-    );
+    assert!((p.light_fraction() - (lens_part + 0.5 * att_part)).abs() < 1e-12);
     assert_eq!(
         plan_of(LensKind::Sonnar, (0.0, 100.0, 100.0), (600, 400)).light_fraction(),
         0.0
     );
-    // The budget stays below 1 for every lens at the largest amounts (the loader checks it).
+    // The budget stays below 1 for every lens at the largest amounts (the loader checks the data's).
     for kind in LensKind::ALL {
         assert!(plan_of(kind, (100.0, 100.0, 100.0), (600, 400)).light_fraction() < 1.0);
+    }
+}
+
+#[test]
+fn the_strengths_raise_what_the_data_hold_to_the_floors_and_never_lower_it() {
+    use ym_lens::consts::{
+        ATTACHMENT_GHOST_FLOOR, GHOST_FRACTION_FLOOR, GLOW_FRACTION_FLOOR, STARBURST_FRACTION_FLOOR,
+    };
+    let lib = ym_lens::LensLibrary::load(&common::repo_root().join("data")).unwrap();
+    for kind in LensKind::ALL {
+        let amounts = LensAmounts {
+            kind,
+            flares: 100.0,
+            edges: 0.0,
+            anamorphic: 100.0,
+        };
+        let p = LensPlan::new(&lib, &amounts, common::frame(600, 400, Axis::X), camera()).unwrap();
+        let (lens, att, st) = (p.lens(), p.attachment(), p.flare_strengths());
+        assert!(st.glow >= lens.flare.glow.fraction && st.glow >= GLOW_FRACTION_FLOOR - 1e-15);
+        assert_eq!(
+            st.veil, lens.flare.veil.fraction,
+            "{kind}: the veil is the data's"
+        );
+        assert_eq!(
+            st.streak, att.streak.fraction,
+            "{kind}: the streak is the data's"
+        );
+        for (g, f) in lens.flare.ghosts.iter().zip(&st.ghosts) {
+            assert!(*f >= g.fraction, "{kind}: a ghost was lowered");
+        }
+        for (g, f) in att.ghosts.iter().zip(&st.attachment_ghosts) {
+            assert!(*f >= g.fraction, "{kind}: an attachment ghost was lowered");
+        }
+        let sum: f64 = st.ghosts.iter().sum();
+        assert!(
+            sum >= GHOST_FRACTION_FLOOR * (1.0 - 1e-12),
+            "{kind}: ghosts {sum}"
+        );
+        let att_sum: f64 = st.attachment_ghosts.iter().sum();
+        assert!(
+            att_sum >= ATTACHMENT_GHOST_FLOOR * (1.0 - 1e-12),
+            "{kind}: {att_sum}"
+        );
+        if lens.flare.starburst.fraction > 0.0 {
+            assert!(st.burst >= STARBURST_FRACTION_FLOOR - 1e-15);
+        } else {
+            assert_eq!(
+                st.burst, 0.0,
+                "{kind}: a lens without a starburst stays without"
+            );
+        }
+        // A lens whose ghosts are already above the floor keeps them as they are (Petzval: bare glass).
+        if lens.flare.ghosts.iter().map(|g| g.fraction).sum::<f64>() >= GHOST_FRACTION_FLOOR {
+            for (g, f) in lens.flare.ghosts.iter().zip(&st.ghosts) {
+                assert_eq!(*f, g.fraction, "{kind}");
+            }
+        }
+        // The small ghosts get most of what the floor adds: the smallest ghost's gain is the largest.
+        let gains: Vec<(f64, f64)> = lens
+            .flare
+            .ghosts
+            .iter()
+            .zip(&st.ghosts)
+            .map(|(g, f)| (g.s, f / g.fraction))
+            .collect();
+        let smallest = gains.iter().min_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
+        let largest = gains.iter().max_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
+        assert!(smallest.1 >= largest.1 - 1e-9, "{kind}: {gains:?}");
+        // The whole budget stays small: every lens keeps at least 80 % of the picture's light at the top.
+        assert!(p.light_fraction() < 0.2, "{kind}: {}", p.light_fraction());
     }
 }
 

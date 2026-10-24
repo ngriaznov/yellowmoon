@@ -59,9 +59,9 @@ pub struct Ball {
 /// A blur map made by another source than the classical detector (the learned model, `ym_ml::bokeh_net`): one cell
 /// per `OUTPUT_STRIDE` x `OUTPUT_STRIDE` (2 x 2) pixels of the plane the source saw, `plane_width x plane_height`.
 ///
-/// `b` is the blur radius per cell in half-diagonals, and `b_low` a lower bound of it (a low quantile of the
-/// source's own estimate of its error): a cell counts as out of focus only when `b_low` is at least twice `b_min`,
-/// so a cell the source is unsure about is not stretched. Cells are row-major.
+/// `b` is the blur radius per cell in half-diagonals (at least a pixel), and `p` the source's probability that the
+/// cell is out of focus (`b >= 2 b_min`): a cell is blurred when `p >= 0.7` and weighs `max(p, 1 - p)`, and the
+/// photo has bokeh by the cells with `p >= 0.9`. Cells are row-major.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlurMapInput {
     /// Columns of the map.
@@ -74,19 +74,19 @@ pub struct BlurMapInput {
     pub plane_height: usize,
     /// The radius per cell, in half-diagonals.
     pub b: Vec<f32>,
-    /// A lower bound of the radius per cell, in half-diagonals.
-    pub b_low: Vec<f32>,
+    /// The probability per cell that it is out of focus, from 0 to 1.
+    pub p: Vec<f32>,
 }
 
 impl BlurMapInput {
-    /// The map at `width x height` pixels of the same plane (any size), `(b, b_low)`: bilinear between the cells'
+    /// The map at `width x height` pixels of the same plane (any size), `(b, p)`: bilinear between the cells'
     /// centres, held at the edge beyond the outer ones.
     pub(crate) fn resample(&self, width: usize, height: usize) -> (Vec<f32>, Vec<f32>) {
         let cells = self.width * self.height;
         let mut b = vec![0.0f32; width * height];
-        let mut low = vec![0.0f32; width * height];
-        if cells == 0 || self.b.len() != cells || self.b_low.len() != cells {
-            return (b, low);
+        let mut prob = vec![0.5f32; width * height];
+        if cells == 0 || self.b.len() != cells || self.p.len() != cells {
+            return (b, prob);
         }
         let axis = |t: f64, plane: usize, count: usize| {
             let p = (t * plane as f64 / 2.0 - 0.5).clamp(0.0, (count - 1) as f64);
@@ -112,10 +112,10 @@ impl BlurMapInput {
                     (1.0 - fy) * top + fy * bottom
                 };
                 b[y * width + x] = lerp(&self.b);
-                low[y * width + x] = lerp(&self.b_low);
+                prob[y * width + x] = lerp(&self.p);
             }
         }
-        (b, low)
+        (b, prob)
     }
 }
 

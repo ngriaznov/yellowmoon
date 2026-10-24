@@ -478,8 +478,6 @@ pub fn profile(s: f64) -> f64 {
 pub struct RedChromaStep {
     tables: &'static RedChromaTables,
     strength: RedChroma,
-    awg4_to_xyz: Mat3,
-    xyz_to_awg4: Mat3,
 }
 
 /// Everything [`RedChromaStep::lch`] reports about a pixel, for tests and tools.
@@ -508,8 +506,6 @@ impl RedChromaStep {
         Self {
             tables: RedChromaTables::shared(gamut),
             strength,
-            awg4_to_xyz: matrices().awg4_to_xyz,
-            xyz_to_awg4: matrices().xyz_to_awg4,
         }
     }
 
@@ -546,7 +542,7 @@ impl RedChromaStep {
         if !rgb.iter().all(|c| c.is_finite()) {
             return None;
         }
-        let xyz = linalg::mul_vec(&self.awg4_to_xyz, rgb);
+        let xyz = linalg::mul_vec(&matrices().awg4_to_xyz, rgb);
         let y = xyz[1];
         if y.is_nan() || y <= Y_MIN || !y.is_finite() {
             return None;
@@ -635,7 +631,7 @@ impl RedChromaStep {
         let k = lnk.exp();
         let scaled = lab_to_xyz([lab[0], lab[1] * k, lab[2] * k], LAB_WHITE);
         let y = xyz[1];
-        let out = linalg::mul_vec(&self.xyz_to_awg4, scaled.map(|c| c / yd * y));
+        let out = linalg::mul_vec(&matrices().xyz_to_awg4, scaled.map(|c| c / yd * y));
         if out.iter().all(|c| c.is_finite()) {
             out
         } else {

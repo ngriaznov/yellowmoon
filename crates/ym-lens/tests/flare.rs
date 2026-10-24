@@ -644,9 +644,13 @@ fn a_clipped_light_gets_its_headroom_in_the_flare_and_not_in_its_own_pixels() {
     let at = 171 * scene.w + 251;
     for c in 0..3 {
         let v = out_c[c * scene.w * scene.h + at];
-        // (1 - a) of itself, plus what the glow's core and tail give back: below the light itself.
+        // (1 - a) of itself plus what the glow gives back (the glare makes a light look brighter than it was),
+        // and nowhere near the light's restored light, which is what the flares spread.
         let keep = 1.0 - clipped.light_fraction();
-        assert!(v < 1.0 && f64::from(v) > keep, "channel {c}: {v}");
+        assert!(
+            f64::from(v) > keep && f64::from(v) < 0.5 * headroom,
+            "channel {c}: {v}"
+        );
     }
 }
 
@@ -654,9 +658,11 @@ fn a_clipped_light_gets_its_headroom_in_the_flare_and_not_in_its_own_pixels() {
 fn a_large_clipped_area_is_a_surface_and_keeps_the_plain_headroom() {
     // A clipped block 0.43 half-diagonals across is no light: its flare is its own light at 3 EV, while a small
     // light of the same brightness holds far more. The block's flares stay inside the frame.
+    // Glow and veil only: a block this large is more cells than the source list holds (256), which would
+    // leave the ghosts' light short.
     let lib = parts_library(Parts {
         glow: true,
-        ghosts: true,
+        veil: true,
         ..Parts::NONE
     });
     let mut big = Scene::new(480, 320);
@@ -669,11 +675,13 @@ fn a_large_clipped_area_is_a_surface_and_keeps_the_plain_headroom() {
     let got = measured_energy(&plan, &out, &big.data);
     let want = expected_energy(&plan, &sums_for(&big, size), 1.0);
     check_energy("a big clipped block", got, want, 1e-6);
-    // The glow's share of that is its fraction of the block's light at the plain 3 EV.
-    let glow_only = 0.15 * 110.0 * 110.0 * 8.0;
-    let sm = sums_for(&big, size);
-    assert!((sm.r[1] / (110.0 * 110.0 * 8.0) - 1.0).abs() < 1e-9);
-    assert!(got[1] > glow_only, "the ghosts add to the glow's {glow_only}: {}", got[1]);
+    // The light the glow and the veil spread is their fractions of the block's light at the plain 3 EV.
+    let plain = (0.15 + 0.10) * 110.0 * 110.0 * 8.0;
+    assert!(
+        (got[1] / plain - 1.0).abs() < 1e-5,
+        "{} against {plain}",
+        got[1]
+    );
 }
 
 #[test]
@@ -696,10 +704,12 @@ fn the_extra_headroom_falls_as_the_light_grows() {
         check_energy(&format!("{side} px"), got, want, 1e-6);
         per_pixel.push(got[1] / (side * side) as f64);
     }
+    // The 1 and 3 px lights both hold the whole extra headroom; then it falls.
     assert!(
-        per_pixel.windows(2).all(|p| p[0] > p[1]),
-        "the light per clipped pixel must fall with the light's size: {per_pixel:?}"
+        per_pixel.windows(2).all(|p| p[0] >= p[1] * (1.0 - 1e-6)),
+        "the light per clipped pixel must not grow with the light's size: {per_pixel:?}"
     );
+    assert!(per_pixel[3] < 0.5 * per_pixel[0], "{per_pixel:?}");
 }
 
 /// The scene reduced 2 times by 2 x 2 means.
@@ -1293,52 +1303,134 @@ fn tiles_of_the_grids_equal_the_whole_frame_bit_for_bit() {
     }
 }
 
-/// Ghosts whose peaks add up to under the budget (a quarter of the step of a 16-bit code at the clip level) are
-/// not drawn: the terms of a lens whose ghosts are that faint are those of a lens without ghosts.
-#[test]
-fn ghosts_too_faint_to_see_are_not_drawn() {
-    let scene = lights_scene(40);
-    let faint = big_ghost_library(1e-12);
-    let none = library_with(
-        &|lens| {
-            lens["flare"]["ghosts"] = json!([]);
-            lens["flare"]["glow"]["fraction"] = json!(0.0);
-            lens["flare"]["veil"]["fraction"] = json!(0.0);
-            lens["flare"]["starburst"]["fraction"] = json!(0.0);
-        },
-        &|att| {
-            att["ghosts"] = json!([]);
-            att["streak"]["fraction"] = json!(0.0);
-        },
-    );
-    let terms = |lib: &LensLibrary| {
-        let plan = plan_of(lib, 100.0, 0.0, 100.0, (600, 400), Axis::X, Some(8.0), 1.0);
-        let planes = planes_of(&plan, &scene);
-        ym_lens::flare_terms(
-            &plan,
-            &planes,
-            1,
-            &whole(scene.w, scene.h, &scene.data),
-            scene.rect(),
-        )
-        .expect("terms")
+/// The shipped lenses, from the data folder.
+fn shipped() -> LensLibrary {
+    LensLibrary::load(&common::repo_root().join("data")).expect("the shipped lens data")
+}
+
+/// A plan of a shipped lens on a 960 x 640 frame (under 1024 px: the lens plane is the frame).
+fn shipped_plan(
+    lib: &LensLibrary,
+    kind: LensKind,
+    flares: f64,
+    anamorphic: f64,
+    axis: Axis,
+) -> LensPlan {
+    let amounts = LensAmounts {
+        kind,
+        flares,
+        edges: 0.0,
+        anamorphic,
     };
-    let faint_terms = terms(&faint);
-    let none_terms = terms(&none);
-    // Without any fraction a plan adds no light at all; with faint ghosts the terms are drawn and all zero.
-    assert!(
-        none_terms
-            .as_ref()
-            .is_none_or(|t| t.iter().all(|v| *v == 0.0))
-    );
-    let faint_terms = faint_terms.expect("terms");
-    assert!(
-        faint_terms.iter().all(|v| *v == 0.0),
-        "a faint ghost was drawn"
-    );
-    // Visible ghosts are drawn.
-    let visible = terms(&big_ghost_library(0.02)).expect("terms");
-    assert!(visible.iter().any(|v| *v > 0.0));
+    let (w, h) = if axis == Axis::X {
+        (960, 640)
+    } else {
+        (640, 960)
+    };
+    LensPlan::new(lib, &amounts, common::frame(w, h, axis), common::camera()).expect("plan")
+}
+
+/// A dim grey frame with one clipped light of 4 x 4 px off the centre.
+fn light_on_grey(axis: Axis) -> Scene {
+    let mut s = Scene::new(960, 640);
+    s.fill(0, 0, 960, 640, [0.05; 3]);
+    s.fill(660, 200, 4, 4, [1.0; 3]);
+    if axis == Axis::Y { s.transposed() } else { s }
+}
+
+/// The flare light `terms` adds, per pixel (the mean of the channels), of a shipped lens on `scene`.
+fn shipped_terms(plan: &LensPlan, scene: &Scene) -> Vec<f64> {
+    let planes = planes_of(plan, scene);
+    let t = ym_lens::flare_terms(
+        plan,
+        &planes,
+        1,
+        &whole(scene.w, scene.h, &scene.data),
+        scene.rect(),
+    )
+    .expect("terms");
+    let n = scene.w * scene.h;
+    match t {
+        None => vec![0.0; n],
+        Some(t) => (0..n)
+            .map(|i| (t[i] + t[n + i] + t[2 * n + i]) / 3.0)
+            .collect(),
+    }
+}
+
+#[test]
+fn every_shipped_lens_draws_visible_ghosts_at_the_top_of_the_slider() {
+    // The Default lens's ghosts hold 1e-5 of a light each (two multi-layer surfaces): drawn as the data say they
+    // are 1e-8 of the clip level and the budget leaves them out. The top of Flares raises them (docs/21), so a
+    // clipped light on a dim frame has ghosts far above what 8 bits can show (a 255th of the clip level).
+    let lib = shipped();
+    let scene = light_on_grey(Axis::X);
+    for kind in LensKind::ALL {
+        let plan = shipped_plan(&lib, kind, 100.0, 0.0, Axis::X);
+        let t = shipped_terms(&plan, &scene);
+        // Away from the light itself, whose glow and starburst are not the ghosts, in the picture's far half.
+        let ghost_peak = (0..scene.h)
+            .flat_map(|y| (0..scene.w).map(move |x| (x, y)))
+            .filter(|(x, y)| ((*x as f64 - 662.0).hypot(*y as f64 - 202.0)) > 100.0)
+            .map(|(x, y)| t[y * scene.w + x])
+            .fold(0.0, f64::max);
+        assert!(
+            ghost_peak > 2e-3,
+            "{kind}: the brightest flare light away from the light is {ghost_peak:e} of the clip level"
+        );
+    }
+    // Flares 0 adds nothing at all.
+    let off = shipped_plan(&lib, LensKind::Default, 0.0, 100.0, Axis::X);
+    assert!(shipped_terms(&off, &scene).iter().all(|v| *v == 0.0));
+}
+
+#[test]
+fn the_top_of_the_slider_draws_a_streak_across_the_frame_on_any_clipped_light() {
+    // Anamorphic 100 on the shipped lenses: a clipped light of a few pixels gets a horizontal streak that is
+    // still there, at a clearly visible level, half a frame away, on either axis, and not at Anamorphic 0.
+    let lib = shipped();
+    for axis in [Axis::X, Axis::Y] {
+        let scene = light_on_grey(axis);
+        let (w, h) = (scene.w, scene.h);
+        // The light's pixel and its distance along and across the axis.
+        let (lx, ly) = if axis == Axis::X {
+            (662usize, 202usize)
+        } else {
+            (202, 662)
+        };
+        let at = |t: &[f64], da: isize, dc: isize| -> f64 {
+            let (x, y) = if axis == Axis::X {
+                (lx as isize + da, ly as isize + dc)
+            } else {
+                (lx as isize + dc, ly as isize + da)
+            };
+            if x < 0 || y < 0 || x >= w as isize || y >= h as isize {
+                return 0.0;
+            }
+            t[y as usize * w + x as usize]
+        };
+        for kind in [LensKind::Default, LensKind::Vintage] {
+            let plan = shipped_plan(&lib, kind, 100.0, 100.0, axis);
+            let streaked = shipped_terms(&plan, &scene);
+            let flat = shipped_terms(&shipped_plan(&lib, kind, 100.0, 0.0, axis), &scene);
+            // On the axis, 60 px and 200 px to the left (the right side is nearer the edge): the streak.
+            for d in [60isize, 200] {
+                let on = (-1..=1).map(|c| at(&streaked, -d, c)).fold(0.0, f64::max);
+                let without = (-1..=1).map(|c| at(&flat, -d, c)).fold(0.0, f64::max);
+                assert!(
+                    on - without > 0.02,
+                    "{kind} {axis:?}: the streak adds {} at {d} px, wanted over 0.02 of the clip level",
+                    on - without
+                );
+                // And not 30 px off the axis: a line, not a haze.
+                let off = at(&streaked, -d, 30).max(at(&streaked, -d, -30));
+                assert!(
+                    on > 5.0 * off,
+                    "{kind} {axis:?}: {on} on the axis against {off} 30 px away at {d} px"
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1347,13 +1439,15 @@ fn ghosts_too_faint_to_see_are_not_drawn() {
 /// A uniform frame loses only the light the glow's tail and the veil send beyond its edges (`docs/21` section 4,
 /// L3: light that leaves the frame is lost), on the shipped lenses. That is what a lens does, too: the veiling
 /// glare a pixel receives is the sum of the scene's light within the frame, so the corners get less than the
-/// centre and the frame's mean goes down a little. The bounds are about twice the measured losses at Flares 100
-/// (Default 0.2 %, Vintage 2.8 %; the centre of a Vintage frame loses 1.6 % and its corner 6 %).
+/// centre and the frame's mean goes down a little. The picture also gives up the share of its light that the
+/// ghosts, the starburst and the glow's floor take (`FlareStrengths`: 1.0 % of it at Default, where no light
+/// exists to draw them from), so the bounds are about twice the measured losses at Flares 100 (Default 1.3 %,
+/// Vintage 3.8 %).
 #[test]
 fn a_uniform_frame_loses_only_the_light_that_leaves_it() {
     let lib = LensLibrary::load(&common::repo_root().join("data")).expect("the shipped lens data");
     let (w, h) = (600usize, 400usize);
-    for (kind, max_loss) in [(LensKind::Default, 0.01), (LensKind::Vintage, 0.06)] {
+    for (kind, max_loss) in [(LensKind::Default, 0.03), (LensKind::Vintage, 0.08)] {
         let amounts = LensAmounts {
             kind,
             flares: 100.0,

@@ -69,13 +69,12 @@ const ANCHOR_WEIGHT: f64 = 2.0;
 const BALL_FOOTPRINT: f64 = 2.2;
 /// Total evidence weight a ball adds, spread over its disc and ring.
 const BALL_WEIGHT: f64 = 30.0;
-/// A blurred cell of an outside map: its lower bound must reach this many `b_min` (the map's own confidence is the
-/// width of that bound: a cell that may be sharp is not blurred).
-const MAP_VALID_BMIN: f64 = 2.0;
-/// Confidence given to cells of an outside map that are blurred, and to cells that are in focus.
-const MAP_CONFIDENT: f32 = 0.9;
-/// Confidence of a cell the outside map cannot decide (not blurred for sure, not in focus for sure).
-const MAP_UNSURE: f32 = 0.1;
+/// A cell of an outside map is blurred when the source's probability that it is out of focus (`b >= 2 b_min`) is
+/// at least this (`ym_ml::bokeh_net::BLURRED_P`).
+const MAP_BLURRED_P: f32 = 0.7;
+/// "The photo has bokeh" counts the cells of an outside map whose probability is at least this
+/// (`ym_ml::bokeh_net::STRONG_P`): the low-confidence blobs of a featureless sky stay out of that gate.
+const MAP_STRONG_P: f32 = 0.9;
 /// Weight a blurred cell of an outside map gives to the evidence around a ball (an edge reading has weight 1 at
 /// most; a ring holds hundreds of pixels).
 const MAP_EVIDENCE_WEIGHT: f32 = 0.05;
@@ -116,6 +115,10 @@ pub(super) struct Detected {
     /// Half-diagonal of the working plane in pixels.
     pub hd: f64,
     pub reduce: usize,
+    /// The share of the plane that counts as out of focus for "the photo has bokeh", when the source says (an
+    /// outside map: the cells that are blurred with a probability of [`MAP_STRONG_P`]); `None` for the classical
+    /// detector, which counts `b >= 1.5 b_min` with confidence ([`blurred_fraction`]).
+    pub gate_fraction: Option<f64>,
 }
 
 /// Luminance of a linear camera RGB triple.
@@ -554,6 +557,7 @@ pub(super) fn detect(
             noise_v: 0.0015,
             hd,
             reduce: wp.reduce,
+            gate_fraction: None,
         });
     }
     let v: Vec<f32> = wp.y.iter().map(|&y| y.max(0.0).sqrt()).collect();
@@ -716,14 +720,16 @@ pub(super) fn detect(
         noise_v,
         hd,
         reduce: wp.reduce,
+        gate_fraction: None,
     })
 }
 
-/// The detector with the blur map of another source (the learned model) in place of the edge measure: the map's
-/// cells that are blurred for sure (their lower bound at least [`MAP_VALID_BMIN`] times `b_min`) carry `b`, the
-/// cells that are sharp for sure carry 0, the rest are unknown. The rest of the work is the classical detector's:
-/// the subject anchor, the balls (found on the plane and judged against the map around them), the radius of the
-/// balls written into the map, the cleaning of small specks.
+/// The detector with the blur map of another source (the learned model) in place of the edge measure. The source's
+/// probability `p` that a cell is out of focus decides: a cell with `p >= 0.7` carries its radius `b`, every other
+/// cell carries 0, and each weighs `max(p, 1 - p)` (how sure the decision is, blurred or not). The photo counts as
+/// having bokeh by the cells with `p >= 0.9` ([`Detected::gate_fraction`]). The rest of the work is the classical
+/// detector's: the subject anchor, the balls (found on the plane and judged against the map around them), the
+/// radius of the balls written into the map, the cleaning of small specks.
 pub(super) fn detect_with_map(
     plane: &ImageRef,
     focus: Option<(f64, f64)>,
@@ -747,6 +753,7 @@ pub(super) fn detect_with_map(
             noise_v: 0.0015,
             hd,
             reduce: wp.reduce,
+            gate_fraction: None,
         });
     }
     let v: Vec<f32> = wp.y.iter().map(|&y| y.max(0.0).sqrt()).collect();
@@ -755,27 +762,26 @@ pub(super) fn detect_with_map(
     if cancel() {
         return Err(LensError::Cancelled);
     }
-    let (b_hat, b_low) = map.resample(w, h);
+    let (b_hat, p_hat) = map.resample(w, h);
     let anchor = anchor_mask(focus, w, h, hd);
     let mut conf = vec![0.0f32; n];
     let mut r_est = vec![0.0f64; n];
     let mut sharp = vec![false; n];
     let mut ev_w = vec![0.0f32; n];
     let mut ev_s = vec![0.0f32; n];
-    let mut valid_cells = 0usize;
+    let (mut valid_cells, mut strong) = (0usize, 0usize);
     for i in 0..n {
-        let (bh, bl) = (f64::from(b_hat[i]), f64::from(b_low[i]));
-        if bl >= MAP_VALID_BMIN * B_MIN {
-            conf[i] = MAP_CONFIDENT;
+        let (bh, ph) = (f64::from(b_hat[i]), p_hat[i]);
+        // A cell weighs as much as the source is sure of its decision, blurred or not.
+        conf[i] = ph.max(1.0 - ph).clamp(0.0, 1.0);
+        if ph >= MAP_BLURRED_P {
             r_est[i] = bh * hd;
             ev_w[i] = MAP_EVIDENCE_WEIGHT;
             ev_s[i] = MAP_EVIDENCE_WEIGHT * libm::log(r_est[i].max(1e-3)) as f32;
             valid_cells += 1;
+            strong += usize::from(ph >= MAP_STRONG_P);
         } else if bh < B_MIN {
-            conf[i] = MAP_CONFIDENT;
             sharp[i] = true;
-        } else {
-            conf[i] = MAP_UNSURE;
         }
     }
     let balls = find_balls(
@@ -819,6 +825,7 @@ pub(super) fn detect_with_map(
         noise_v,
         hd,
         reduce: wp.reduce,
+        gate_fraction: Some(strong as f64 / n as f64),
     })
 }
 
@@ -870,8 +877,12 @@ fn drop_small_regions(b: &mut [f32], keep: &[bool], w: usize, h: usize, hd: f64)
     }
 }
 
-/// Fraction of the frame at `b >= 1.5 b_min` with confidence (the "little out-of-focus background" test).
+/// Fraction of the frame that is out of focus (the "little out-of-focus background" test): the source's own
+/// count when it gives one ([`Detected::gate_fraction`]), else the share at `b >= 1.5 b_min` with confidence.
 pub(super) fn blurred_fraction(d: &Detected) -> f64 {
+    if let Some(fraction) = d.gate_fraction {
+        return fraction;
+    }
     let thr = (crate::consts::MIN_BLUR_FROM * B_MIN) as f32;
     let count =
         d.b.iter()

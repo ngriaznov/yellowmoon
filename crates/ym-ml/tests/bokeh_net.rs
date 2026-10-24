@@ -11,8 +11,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use ym_ml::bokeh_net::{
-    BokehMap, BokehNet, FRAME_LONG_PX, PlanarRgbRef, box_reduce, encode_linear, pad_encoded,
-    reduced_size,
+    B_DECIDE, BokehMap, BokehNet, FRAME_LONG_PX, MIRRORED_PASS, PlanarRgbRef, box_reduce,
+    detection_probability, encode_linear, pad_encoded, reduced_size,
 };
 use ym_ml::model::{MlError, sha256_hex};
 
@@ -159,8 +159,14 @@ fn bits(v: &[f32]) -> Vec<u32> {
     v.iter().map(|x| x.to_bits()).collect()
 }
 
-fn map_bits(m: &BokehMap) -> (Vec<u32>, Vec<u32>) {
-    (bits(&m.b), bits(&m.c))
+fn map_bits(m: &BokehMap) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+    (bits(&m.b), bits(&m.c), bits(&m.p))
+}
+
+/// The map of the plain network, without the mirrored pass (what the fixture and the stage-by-stage
+/// test describe).
+fn plain_map(net: &BokehNet, plane: &PlanarRgbRef<'_>) -> BokehMap {
+    net.map_with(plane, false).expect("map").0
 }
 
 #[test]
@@ -244,9 +250,7 @@ fn a_lens_plane_goes_through_the_whole_pipeline_to_the_fixture_s_numbers() {
         .expect("a linear case");
     let (h, w) = (case.height, case.width);
     let plane: Vec<f32> = pattern_linear(h, w).iter().map(|&v| v as f32).collect();
-    let map = net
-        .map(&PlanarRgbRef::new(w, h, &plane).expect("plane"))
-        .expect("map");
+    let map = plain_map(&net, &PlanarRgbRef::new(w, h, &plane).expect("plane"));
     assert_eq!((map.width, map.height), (w / 2, h / 2));
     assert_eq!((map.plane_width, map.plane_height), (w, h));
     let hd = 0.5 * ((w * w + h * h) as f64).sqrt();
@@ -256,11 +260,13 @@ fn a_lens_plane_goes_through_the_whole_pipeline_to_the_fixture_s_numbers() {
         let (mu, s) = (case.output[2 * i], case.output[2 * i + 1]);
         let b = mu.max(0.0).exp() / hd;
         let c = (-s.clamp(-6.0, 3.0).exp() / 0.25).exp();
+        let p = detection_probability(mu, s, hd);
         worst = worst
             .max((f64::from(map.b[i]) - b).abs() * hd) // in pixels
-            .max((f64::from(map.c[i]) - c).abs());
+            .max((f64::from(map.c[i]) - c).abs())
+            .max((f64::from(map.p[i]) - p).abs());
     }
-    println!("map vs fixture: largest difference (b in px, c) {worst:.2e}");
+    println!("map vs fixture: largest difference (b in px, c, p) {worst:.2e}");
     assert!(worst < 1e-3, "{worst}");
     assert!(map.b.iter().all(|&b| b >= (1.0 / hd) as f32 * 0.999));
     assert!(map.c.iter().all(|&c| (0.0..=1.0).contains(&c)));
@@ -301,8 +307,13 @@ fn the_same_plane_gives_the_same_bits_on_any_number_of_threads() {
             ),
             (rw, rh, rw.div_ceil(2), rh.div_ceil(2))
         );
-        let (b, c) = map_bits(&first);
-        let bytes: Vec<u8> = b.iter().chain(&c).flat_map(|v| v.to_le_bytes()).collect();
+        let (b, c, p) = map_bits(&first);
+        let bytes: Vec<u8> = b
+            .iter()
+            .chain(&c)
+            .chain(&p)
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
         println!(
             "{w} x {h} -> {rw} x {rh} -> map {} x {}: output SHA-256 {}",
             first.width,
@@ -347,8 +358,23 @@ fn the_map_is_the_stages_one_after_the_other() {
         .forward_padded(&padded, pw, ph)
         .expect("forward")
         .into_map(rw, rh);
-    assert_eq!(map_bits(&by_hand), map_bits(&net.map(&plane).expect("map")));
+    assert_eq!(map_bits(&by_hand), map_bits(&plain_map(&net, &plane)));
     assert_eq!((by_hand.width, by_hand.height), (512, 30));
+    // With the mirrored pass: the flipped padded input, run, flipped back, and combined.
+    let mut flipped = padded.clone();
+    flipped.chunks_mut(pw).for_each(<[f32]>::reverse);
+    let mut second = net.forward_padded(&flipped, pw, ph).expect("forward");
+    second.mu.chunks_mut(pw / 2).for_each(<[f32]>::reverse);
+    second.s.chunks_mut(pw / 2).for_each(<[f32]>::reverse);
+    let plain_raw = net.forward_padded(&padded, pw, ph).expect("forward");
+    let both = plain_raw.combine_mirrored(&second).into_map(rw, rh);
+    let mirrored = net.map_with(&plane, true).expect("map").0;
+    assert_eq!(map_bits(&both), map_bits(&mirrored));
+    assert_ne!(map_bits(&mirrored), map_bits(&by_hand));
+    assert_eq!(
+        map_bits(&net.map(&plane).expect("map")),
+        map_bits(if MIRRORED_PASS { &mirrored } else { &by_hand })
+    );
 }
 
 #[test]
@@ -456,7 +482,7 @@ fn timing_of_one_map() {
         net.map(&plane).expect("warm-up");
         let runs = 3;
         let mut total = 0.0;
-        let mut parts = [0.0f64; 4];
+        let mut parts = [0.0f64; 5];
         for _ in 0..runs {
             let t = std::time::Instant::now();
             let (_, tm) = net.map_timed(&plane).expect("map");
@@ -465,15 +491,79 @@ fn timing_of_one_map() {
             parts[1] += tm.encode_ms;
             parts[2] += tm.forward_ms;
             parts[3] += tm.convert_ms;
+            parts[4] += tm.mirrored_ms;
         }
         let n = f64::from(runs);
         println!(
-            "{w} x {h}: {:.0} ms per map (reduce {:.0}, encode {:.0}, network {:.0}, convert {:.0})",
+            "{w} x {h}: {:.0} ms per map (reduce {:.0}, encode {:.0}, network {:.0}, convert {:.0}, of it the mirrored pass {:.0})",
             total / n,
             parts[0] / n,
             parts[1] / n,
             parts[2] / n,
-            parts[3] / n
+            parts[3] / n,
+            parts[4] / n
+        );
+    }
+}
+
+#[test]
+fn the_probability_agrees_with_the_training_code() {
+    // `training/bokeh/encode.py detection_probability` (torch, f32) on 160 cells: the tail of the Laplace
+    // distribution above 2 b_min, the scale clamped to e^-6 .. e^3. Needs no weights.
+    #[derive(Deserialize)]
+    struct Cell {
+        mu: f64,
+        s: f64,
+        hd: f64,
+        p: f64,
+    }
+    #[derive(Deserialize)]
+    struct File {
+        b_decide: f64,
+        cases: Vec<Cell>,
+    }
+    let path = repo().join("crates/ym-ml/tests/data/bokeh_probability.json");
+    let file: File =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json");
+    assert_eq!(file.b_decide, B_DECIDE);
+    let mut worst = 0.0f64;
+    for c in &file.cases {
+        worst = worst.max((detection_probability(c.mu, c.s, c.hd) - c.p).abs());
+    }
+    println!("probability vs encode.py: largest difference {worst:.2e}");
+    assert!(worst < 2e-6, "{worst}");
+}
+
+#[test]
+fn the_probability_of_a_map_agrees_with_its_radius_and_both_passes_are_deterministic() {
+    let Some((net, _, _)) = setup() else {
+        return;
+    };
+    let (w, h) = (333, 211);
+    let data = scene(w, h, 7);
+    let plane = PlanarRgbRef::new(w, h, &data).expect("plane");
+    for mirrored in [false, true] {
+        let (map, timings) = net.map_with(&plane, mirrored).expect("map");
+        // `P >= 0.5` is `b >= 2 b_min` (the radius is floored at a pixel, which is far below it).
+        for i in 0..map.width * map.height {
+            let (b, p) = (f64::from(map.b[i]), f64::from(map.p[i]));
+            assert!((0.0..=1.0).contains(&p));
+            if (b - B_DECIDE).abs() > 1e-4 {
+                assert_eq!(p >= 0.5, b >= B_DECIDE, "cell {i}: b {b} p {p}");
+            }
+        }
+        assert_eq!(timings.mirrored_ms > 0.0, mirrored);
+        let again = net.map_with(&plane, mirrored).expect("map").0;
+        assert_eq!(map_bits(&map), map_bits(&again), "mirrored {mirrored}");
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(3)
+            .build()
+            .expect("pool");
+        let got = pool.install(|| net.map_with(&plane, mirrored).expect("map").0);
+        assert_eq!(
+            map_bits(&map),
+            map_bits(&got),
+            "3 threads, mirrored {mirrored}"
         );
     }
 }

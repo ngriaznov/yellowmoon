@@ -29,7 +29,16 @@
 //!    scale of the error of `μ`.
 //! 5. **Convert** the output (cropped back to `⌈w/2⌉ × ⌈h/2⌉`): `b = max(r, 1 px) / hd` with `hd`
 //!    the half-diagonal of the reduced plane in pixels (before padding), and
-//!    `c = exp(−β / 0.25)` with `β = exp(clamp(s, −6, 3))` ([`BokehMap`]).
+//!    `c = exp(−β / 0.25)` with `β = exp(clamp(s, −6, 3))` ([`BokehMap`]), and `P`, the probability
+//!    that `b ≥ 2 b_min` under the Laplace(`μ`, `β`) the network gives for `ln r`
+//!    ([`detection_probability`], `encode.detection_probability`): the lens calls a cell blurred when
+//!    `P ≥ 0.7` ([`BLURRED_P`]) and counts it for "this photo has bokeh" when `P ≥ 0.9`
+//!    ([`STRONG_P`]). `c` says how sure the *radius* is, so it is low inside strong blur: do not gate
+//!    on it.
+//!
+//! With [`MIRRORED_PASS`] the network runs a second time on the padded input flipped left to right
+//! (the answer flipped back), and the two answers become one before step 5: the mean `μ` and the
+//! scale `mean(β) + |μ₁ − μ₂| / 2` ([`RawOutput::combine_mirrored`]).
 //!
 //! `b` is a ratio, so it is the same for the reduced plane and for the lens plane it came from:
 //! the lens plane covers the whole area whose half-diagonal is the unit of the lens data
@@ -73,6 +82,20 @@ pub const OUTPUT_STRIDE: usize = 2;
 pub const R_FLOOR_PX: f64 = 1.0;
 /// `c = exp(-β / CONF_BETA0)` (`encode.CONF_BETA0`).
 pub const CONF_BETA0: f64 = 0.25;
+/// The smallest blur that matters, in half-diagonals (`docs/21` section 4; `encode.B_MIN`).
+pub const B_MIN: f64 = 0.004;
+/// The blur that counts as out of focus, in half-diagonals: twice [`B_MIN`] (`encode.B_DECIDE`).
+pub const B_DECIDE: f64 = 2.0 * B_MIN;
+/// A cell is called blurred when [`BokehMap::p`] is at least this (`encode.DECISION_P`).
+pub const BLURRED_P: f64 = 0.7;
+/// "This photo has bokeh" counts the cells whose [`BokehMap::p`] is at least this: it is the same as the
+/// lower-quantile rule `b * exp(-1.61 β) >= 2 b_min`, and it leaves out the low-confidence blobs of a
+/// featureless sky (`training/bokeh/README.md`, "The decision").
+pub const STRONG_P: f64 = 0.9;
+/// Whether [`BokehNet::map`] also runs the plane flipped left to right and combines the two answers (the mean
+/// log radius, the scale `mean(β) + |μ₁ − μ₂| / 2`): thin sharp structures over a blur read as blur far less
+/// often (31 % to 10 % of their pixels at `P >= 0.7`) for a second network run.
+pub const MIRRORED_PASS: bool = true;
 
 /// Luma weights of the encoding (`encode.LUMA`, Rec. 709).
 const LUMA: [f64; 3] = [0.2126, 0.7152, 0.0722];
@@ -953,6 +976,19 @@ impl BokehNet {
     ///
     /// As [`BokehNet::map`].
     pub fn map_timed(&self, plane: &PlanarRgbRef<'_>) -> Result<(BokehMap, MapTimings)> {
+        self.map_with(plane, MIRRORED_PASS)
+    }
+
+    /// [`BokehNet::map_timed`] with the mirrored pass ([`MIRRORED_PASS`]) on or off.
+    ///
+    /// # Errors
+    ///
+    /// As [`BokehNet::map`].
+    pub fn map_with(
+        &self,
+        plane: &PlanarRgbRef<'_>,
+        mirrored: bool,
+    ) -> Result<(BokehMap, MapTimings)> {
         plane.check()?;
         let t0 = Instant::now();
         let (rw, rh) = reduced_size(plane.width, plane.height);
@@ -963,10 +999,19 @@ impl BokehNet {
         let (padded, pw, ph) = pad_encoded(&encoded, rw, rh)?;
         drop(encoded);
         let t2 = Instant::now();
-        let raw = self.forward_padded(&padded, pw, ph)?;
+        let mut raw = self.forward_padded(&padded, pw, ph)?;
         let t3 = Instant::now();
-        let map = raw.into_map(rw, rh);
+        if mirrored {
+            let flipped = flip_columns(&padded, pw);
+            let mut second = self.forward_padded(&flipped, pw, ph)?;
+            drop(flipped);
+            second.flip_columns();
+            raw = raw.combine_mirrored(&second);
+        }
         let t4 = Instant::now();
+        drop(padded);
+        let map = raw.into_map(rw, rh);
+        let t5 = Instant::now();
         let ms = |a: Instant, b: Instant| b.duration_since(a).as_secs_f64() * 1e3;
         Ok((
             map,
@@ -974,7 +1019,8 @@ impl BokehNet {
                 reduce_ms: ms(t0, t1),
                 encode_ms: ms(t1, t2),
                 forward_ms: ms(t2, t3),
-                convert_ms: ms(t3, t4),
+                mirrored_ms: if mirrored { ms(t3, t4) } else { 0.0 },
+                convert_ms: ms(t4, t5),
             },
         ))
     }
@@ -989,6 +1035,8 @@ pub struct MapTimings {
     pub encode_ms: f64,
     /// The network.
     pub forward_ms: f64,
+    /// The mirrored pass: the flipped input, the second network run and the combination (0 when it is off).
+    pub mirrored_ms: f64,
     /// The conversion of the output to `b` and `c`.
     pub convert_ms: f64,
 }
@@ -1042,6 +1090,23 @@ impl<'a> PlanarRgbRef<'a> {
             )));
         }
         Ok(())
+    }
+}
+
+/// `P(b >= 2 b_min)` for the network's outputs `mu` and `s` at one cell of a plane of `half_diagonal_px` pixels
+/// (`encode.detection_probability`): the tail of the Laplace(`μ`, `β`) distribution of the log radius above
+/// `x = ln(2 b_min hd)` (the threshold in the output's units, pixels), with `β = exp(clamp(s, -6, 3))`:
+/// `1 - exp(-(μ - x) / β) / 2` for `μ >= x` and `exp(-(x - μ) / β) / 2` below it. `P >= 0.5` is `b >= 2 b_min`;
+/// [`BLURRED_P`] and [`STRONG_P`] are the lens's two decisions. Deterministic (`libm`).
+#[must_use]
+pub fn detection_probability(mu: f64, s: f64, half_diagonal_px: f64) -> f64 {
+    let beta = libm::exp(s.clamp(LOG_BETA_RANGE.0, LOG_BETA_RANGE.1));
+    let x = libm::log((B_DECIDE * half_diagonal_px).max(1e-6));
+    let d = mu - x;
+    if d >= 0.0 {
+        1.0 - 0.5 * libm::exp(-d / beta)
+    } else {
+        0.5 * libm::exp(d / beta)
     }
 }
 
@@ -1226,7 +1291,44 @@ pub struct RawOutput {
     pub s: Vec<f32>,
 }
 
+/// `e` (planar rows of `width` values) with every row reversed: the plane flipped left to right.
+fn flip_columns(e: &[f32], width: usize) -> Vec<f32> {
+    let mut out = e.to_vec();
+    out.par_chunks_mut(width).for_each(<[f32]>::reverse);
+    out
+}
+
 impl RawOutput {
+    /// Flips every row of `μ` and `s` (the answer of a flipped input, back to the plane's own columns).
+    fn flip_columns(&mut self) {
+        let w = self.width;
+        self.mu.par_chunks_mut(w).for_each(<[f32]>::reverse);
+        self.s.par_chunks_mut(w).for_each(<[f32]>::reverse);
+    }
+
+    /// The plain and the mirrored answers (the latter already flipped back) as one, as
+    /// `eval_real.combine_mirrored`: the mean log radius and the scale `mean(β) + |μ₁ − μ₂| / 2`, so that
+    /// where the two runs disagree the answer is less sure. A value that is not finite stays not finite.
+    #[must_use]
+    pub fn combine_mirrored(&self, mirrored: &RawOutput) -> RawOutput {
+        let n = self.mu.len().min(mirrored.mu.len());
+        let mut mu = vec![0.0f32; n];
+        let mut s = vec![0.0f32; n];
+        for i in 0..n {
+            let (m1, m2) = (f64::from(self.mu[i]), f64::from(mirrored.mu[i]));
+            let beta = |s: f32| libm::exp(f64::from(s).clamp(LOG_BETA_RANGE.0, LOG_BETA_RANGE.1));
+            let b = 0.5 * (beta(self.s[i]) + beta(mirrored.s[i])) + 0.5 * (m1 - m2).abs();
+            mu[i] = (0.5 * (m1 + m2)) as f32;
+            s[i] = libm::log(b) as f32;
+        }
+        RawOutput {
+            width: self.width,
+            height: self.height,
+            mu,
+            s,
+        }
+    }
+
     /// Crops the padding away and converts to the spec's units (module documentation), for a
     /// reduced plane of `plane_w × plane_h` pixels (before padding).
     #[must_use]
@@ -1239,6 +1341,8 @@ impl RawOutput {
         let half_diagonal_px = 0.5 * ((plane_w * plane_w + plane_h * plane_h) as f64).sqrt();
         let mut b = vec![0.0f32; width * height];
         let mut c = vec![0.0f32; width * height];
+        // A cell that is not finite is "not confident" and no more likely blurred than not.
+        let mut p = vec![0.5f32; width * height];
         for y in 0..height.min(self.height) {
             for x in 0..width.min(self.width) {
                 let i = y * self.width + x;
@@ -1251,6 +1355,7 @@ impl RawOutput {
                     let beta = libm::exp(s.clamp(LOG_BETA_RANGE.0, LOG_BETA_RANGE.1));
                     b[y * width + x] = (r / half_diagonal_px) as f32;
                     c[y * width + x] = libm::exp(-beta / CONF_BETA0) as f32;
+                    p[y * width + x] = detection_probability(mu, s, half_diagonal_px) as f32;
                 }
             }
         }
@@ -1262,6 +1367,7 @@ impl RawOutput {
             half_diagonal_px,
             b,
             c,
+            p,
         }
     }
 }
@@ -1284,8 +1390,13 @@ pub struct BokehMap {
     pub half_diagonal_px: f64,
     /// Blur radius per cell, in half-diagonals (at least `1 / half_diagonal_px`).
     pub b: Vec<f32>,
-    /// Confidence per cell, `exp(-β / 0.25)`.
+    /// Confidence per cell, `exp(-β / 0.25)`: how sure the *radius* is (a relative error), high on sharp areas
+    /// and low inside strong blur, so not a gate for "out of focus".
     pub c: Vec<f32>,
+    /// `P(b >= 2 b_min)` per cell ([`detection_probability`]): how sure the network is that the cell is out of
+    /// focus. A cell is blurred when it is at least [`BLURRED_P`], and counts for "this photo has bokeh" when it
+    /// is at least [`STRONG_P`].
+    pub p: Vec<f32>,
 }
 
 impl BokehMap {
@@ -1677,6 +1788,108 @@ mod tests {
     }
 
     #[test]
+    fn the_probability_is_the_laplace_tail_above_twice_b_min() {
+        let hd = 600.0;
+        let x = (B_DECIDE * hd).ln();
+        // At the threshold it is one half, whatever the scale.
+        for s in [-6.0, -1.0, 0.0, 3.0] {
+            assert!((detection_probability(x, s, hd) - 0.5).abs() < 1e-12);
+        }
+        // One scale above: 1 - e^-1 / 2; one scale below: e^-1 / 2.
+        let beta = 0.4f64;
+        let (above, below) = (
+            detection_probability(x + beta, beta.ln(), hd),
+            detection_probability(x - beta, beta.ln(), hd),
+        );
+        assert!((above - (1.0 - 0.5 * (-1.0f64).exp())).abs() < 1e-12);
+        assert!((below - 0.5 * (-1.0f64).exp()).abs() < 1e-12);
+        // 1.61 scales above the threshold is the 90 % rule (`P >= 0.9` is `mu - 1.61 beta >= x`).
+        let p = detection_probability(x + 1.609_437_9 * beta, beta.ln(), hd);
+        assert!((p - 0.9).abs() < 1e-6, "{p}");
+        // The scale is clamped to e^-6 .. e^3; the probability grows with `mu`.
+        assert_eq!(
+            detection_probability(x + 1.0, -50.0, hd),
+            detection_probability(x + 1.0, -6.0, hd)
+        );
+        assert_eq!(
+            detection_probability(x - 1.0, 50.0, hd),
+            detection_probability(x - 1.0, 3.0, hd)
+        );
+        let ps: Vec<f64> = (-20..20)
+            .map(|i| detection_probability(x + f64::from(i) * 0.2, -0.5, hd))
+            .collect();
+        assert!(ps.windows(2).all(|w| w[0] < w[1]));
+        // A plane too small for a threshold above 1e-6 px still gives a number.
+        assert!(detection_probability(0.0, 0.0, 0.0).is_finite());
+    }
+
+    #[test]
+    fn the_map_carries_the_probability_of_each_cell() {
+        let hd = 0.5 * 18f64.sqrt();
+        let x = (B_DECIDE * hd).ln();
+        let raw = RawOutput {
+            width: 2,
+            height: 2,
+            mu: vec![(x + 0.5) as f32, (x - 0.5) as f32, x as f32, f32::NAN],
+            s: vec![-1.0, -1.0, 0.0, 0.0],
+        };
+        let map = raw.into_map(3, 3);
+        let beta = (-1.0f64).exp();
+        assert!((f64::from(map.p[0]) - (1.0 - 0.5 * (-0.5 / beta).exp())).abs() < 1e-6);
+        assert!((f64::from(map.p[1]) - 0.5 * (-0.5 / beta).exp()).abs() < 1e-6);
+        assert!((f64::from(map.p[2]) - 0.5).abs() < 1e-6);
+        // Not finite: no more likely blurred than not.
+        assert_eq!(map.p[3], 0.5);
+    }
+
+    #[test]
+    fn flipping_columns_twice_is_the_identity_and_reverses_each_row() {
+        let e: Vec<f32> = (0..24).map(|v| v as f32).collect();
+        let f = flip_columns(&e, 4);
+        assert_eq!(&f[..8], &[3.0, 2.0, 1.0, 0.0, 7.0, 6.0, 5.0, 4.0]);
+        assert_eq!(flip_columns(&f, 4), e);
+        let mut raw = RawOutput {
+            width: 3,
+            height: 2,
+            mu: (0..6).map(|v| v as f32).collect(),
+            s: (10..16).map(|v| v as f32).collect(),
+        };
+        raw.flip_columns();
+        assert_eq!(raw.mu, vec![2.0, 1.0, 0.0, 5.0, 4.0, 3.0]);
+        assert_eq!(raw.s, vec![12.0, 11.0, 10.0, 15.0, 14.0, 13.0]);
+    }
+
+    #[test]
+    fn the_two_passes_combine_into_the_mean_radius_and_a_wider_scale() {
+        let a = RawOutput {
+            width: 2,
+            height: 1,
+            mu: vec![2.0, 3.0],
+            s: vec![0.25f32.ln(), (-50.0f32)],
+        };
+        let b = RawOutput {
+            width: 2,
+            height: 1,
+            mu: vec![2.0, 4.0],
+            s: vec![0.25f32.ln(), 50.0],
+        };
+        let c = a.combine_mirrored(&b);
+        // Two runs that agree keep their scale; two that differ by 1 add half of it; scales are clamped first.
+        assert!((c.mu[0] - 2.0).abs() < 1e-6 && (c.mu[1] - 3.5).abs() < 1e-6);
+        assert!((f64::from(c.s[0]).exp() - 0.25).abs() < 1e-6);
+        let want = 0.5 * ((-6.0f64).exp() + 3.0f64.exp()) + 0.5;
+        assert!((f64::from(c.s[1]).exp() - want).abs() < 1e-4);
+        // An answer that is not finite stays so.
+        let nan = RawOutput {
+            width: 2,
+            height: 1,
+            mu: vec![f32::NAN, 1.0],
+            s: vec![0.0, 0.0],
+        };
+        assert!(a.combine_mirrored(&nan).mu[0].is_nan());
+    }
+
+    #[test]
     fn sampling_is_bilinear_between_cell_centres() {
         // A 4 x 2 plane gives 2 x 1 cells with centres at u = 0.25 and 0.75.
         let map = BokehMap {
@@ -1687,6 +1900,7 @@ mod tests {
             half_diagonal_px: 2.0,
             b: vec![1.0, 3.0],
             c: vec![0.0, 1.0],
+            p: vec![0.0, 1.0],
         };
         assert_eq!(map.sample(0.25, 0.5), (1.0, 0.0));
         assert_eq!(map.sample(0.75, 0.5), (3.0, 1.0));

@@ -468,7 +468,9 @@ impl<'a> Items<'a> {
             .fold(0.0f64, f64::max);
         let mut list = Vec::new();
         for src in sources {
-            for ((g, tint), fraction) in lens.flare.ghosts.iter().zip(&lens_tints).zip(&terms.ghosts) {
+            for ((g, tint), fraction) in
+                lens.flare.ghosts.iter().zip(&lens_tints).zip(&terms.ghosts)
+            {
                 if let Some(it) = items.ghost(
                     src,
                     g,
@@ -483,7 +485,9 @@ impl<'a> Items<'a> {
                 }
             }
             if terms.anam > 0.0 {
-                for ((g, tint), fraction) in att.ghosts.iter().zip(&att_tints).zip(&terms.att_ghosts) {
+                for ((g, tint), fraction) in
+                    att.ghosts.iter().zip(&att_tints).zip(&terms.att_ghosts)
+                {
                     if let Some(it) = items.ghost(
                         src,
                         g,
@@ -1297,5 +1301,64 @@ mod tests {
         let blue: Vec<f64> = (0..31).map(|i| if i < 10 { 1.0 } else { 0.1 }).collect();
         let t = normalised_tint(&cam, &blue);
         assert!((t[0] + t[1] + t[2] - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ghosts_too_faint_to_see_are_not_drawn_and_the_others_are() {
+        use crate::amounts::{LensAmounts, LensKind};
+        use crate::plan::{FrameInfo, LensPlan};
+        use crate::test_support::write_synthetic_lenses;
+        let dir = tempfile::tempdir().unwrap();
+        write_synthetic_lenses(dir.path()).unwrap();
+        let lib = crate::data::LensLibrary::from_dir(dir.path()).unwrap();
+        let amounts = LensAmounts {
+            kind: LensKind::Classic,
+            flares: 100.0,
+            edges: 0.0,
+            anamorphic: 100.0,
+        };
+        let frame_info = FrameInfo {
+            width: 600,
+            height: 400,
+            axis: Axis::X,
+            f_number: None,
+            clip: [1.0; 3],
+        };
+        let plan = LensPlan::new(&lib, &amounts, frame_info, &CameraResponse::neutral()).unwrap();
+        let frame = Frame::new(600, 400, Axis::X);
+        // Forty lights of three pixels each at the plain 3 EV of headroom.
+        let energy = 9.0 * 8.0 / (frame.half_diag * frame.half_diag);
+        let sources: Vec<Source> = (0..40)
+            .map(|i| Source {
+                pos: [-0.5 + 0.025 * f64::from(i), 0.01 * f64::from(i % 7)],
+                energy: [energy; 3],
+                var_along: 1e-7,
+                var_across: 1e-7,
+                extent: 0.003,
+            })
+            .collect();
+        let spikes: [Vec<f64>; 3] = std::array::from_fn(|_| vec![0.0; SPIKE_SIZE * SPIKE_SIZE]);
+        let whole = Span {
+            x0: 0,
+            x1: 600,
+            y0: 0,
+            y1: 400,
+        };
+        let ghosts = |fraction: f64| -> usize {
+            let mut terms = Terms::new(&plan);
+            terms.ghosts = vec![fraction; terms.ghosts.len()];
+            terms.att_ghosts = vec![fraction; terms.att_ghosts.len()];
+            Items::build(&plan, &terms, frame, &sources, &spikes, &whole)
+                .list
+                .iter()
+                .filter(|i| matches!(i, Item::Ghost(_)))
+                .count()
+        };
+        // 1e-12 of 7e-4 clip levels of light spread over a ghost: far under a quarter of a 16-bit code.
+        assert_eq!(ghosts(1e-12), 0, "a ghost too faint to see was drawn");
+        // Fractions of the size the strengths give (1e-3 a ghost) are well over the budget: every ghost that
+        // reaches the frame is drawn (the rest lie outside it), none is left out for being faint.
+        let all = ghosts(1e-3);
+        assert!(all >= 100, "only {all} ghosts of 40 lights were drawn");
     }
 }

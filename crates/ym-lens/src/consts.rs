@@ -79,11 +79,11 @@ pub const UNIT_SUM_TOLERANCE: f64 = 1e-4;
 pub const LENS_HEADROOM_EV: f64 = 3.0;
 
 /// How much farther above the clip level a *small* clipped light is assumed to be, in EV at most: a clipped
-/// patch whose equivalent diameter is at most [`LIGHT_BOOST_FULL_HD`] is raised by `2^(LENS_HEADROOM_EV +
-/// LIGHT_BOOST_MAX_EV)` for the ghosts, starbursts and streaks, and for [`GLOW_BOOST_SHARE`] of that many extra
-/// EV for the glow and the veil. A lamp or the sun sends light 10 to 17 EV above the clip level of the exposure it
-/// is photographed at (`docs/21` section 4, L3, *As built (flare strength)*), and the elements that spread a
-/// light over thousands of times its own area only show when the light is that bright.
+/// patch whose equivalent diameter is at most [`LIGHT_BOOST_FULL_HD`] holds `2^(LENS_HEADROOM_EV +
+/// LIGHT_BOOST_MAX_EV)` times its clipped light for the ghosts, starbursts and streaks, and [`GLOW_BOOST_SHARE`]
+/// of those extra EV for the glow and the veil. A lamp or the sun sends light 10 to 17 EV above the clip level of
+/// the exposure it is photographed at (`docs/21` section 4, L3, *As built (flare strength)*), and the elements
+/// that spread a light over thousands of times its own area only show when the light is that bright.
 pub const LIGHT_BOOST_MAX_EV: f64 = 9.0;
 
 /// A clipped patch with an equivalent diameter (the diameter of the disc of the same area) of at most this, in
@@ -92,7 +92,8 @@ pub const LIGHT_BOOST_FULL_HD: f64 = 0.025;
 
 /// A clipped patch with an equivalent diameter of at least this, in half-diagonals, gets no boost (a clipped
 /// sky or wall is a bright surface, not a light); between the two the boost falls linearly with the logarithm of
-/// the diameter.
+/// the diameter, 2.25 EV per doubling, so the light a patch sends into its flares, its area times its
+/// brightness, stays about the same from one to the other.
 pub const LIGHT_BOOST_NONE_HD: f64 = 0.4;
 
 /// The share of the boost, in EV, that the restored light of the glow and the veil gets (the glow's own
@@ -100,9 +101,11 @@ pub const LIGHT_BOOST_NONE_HD: f64 = 0.4;
 pub const GLOW_BOOST_SHARE: f64 = 0.5;
 
 /// At Flares 100 the ghosts of a lens together take at least this fraction of the light of a light: a lens whose
-/// data hold less (every coated lens) has its ghosts raised, all by one factor, to this, the level of twelve
-/// ghosts of two bare glass surfaces (4 % x 4 % = 1.6e-3 each). The lens's data are never lowered.
-pub const GHOST_FRACTION_FLOOR: f64 = 0.008;
+/// data hold less (every coated lens) has its ghosts raised to this, shared out in proportion to
+/// `fraction / s` so that the small ghosts get most. It is three times what twelve ghosts of two single-layer
+/// surfaces (1.3 % each, 1.7e-4 per ghost) take and a third of what twelve pairs of bare glass (4 % each,
+/// 1.6e-3 per ghost) do. The data are never lowered.
+pub const GHOST_FRACTION_FLOOR: f64 = 0.006;
 
 /// The same floor for the attachment's own oval ghosts at Anamorphic 100.
 pub const ATTACHMENT_GHOST_FLOOR: f64 = 0.0007;
@@ -112,7 +115,7 @@ pub const ATTACHMENT_GHOST_FLOOR: f64 = 0.0007;
 pub const GLOW_FRACTION_FLOOR: f64 = 0.02;
 
 /// At Flares 100 the starburst of a lens takes at least this fraction of the light of a compact light.
-pub const STARBURST_FRACTION_FLOOR: f64 = 0.01;
+pub const STARBURST_FRACTION_FLOOR: f64 = 0.02;
 
 /// The clip test on the picture's own pixels: `f` ramps from 0 to 1 as `min_c(X_c / g0_c)` goes from the first
 /// to the second value (per tile, at the tile's scale).

@@ -765,17 +765,17 @@ fn tiles_equal_the_whole_frame_with_an_external_blur_map() {
     let scene = subject_scene(W, H, [5.0, 9.0, 14.0], Noise::LOW, 7);
     let hd = 600.97f64;
     let (cw, ch) = (W.div_ceil(2), H.div_ceil(2));
-    let (mut b, mut b_low) = (vec![0.0f32; cw * ch], vec![0.0f32; cw * ch]);
+    let (mut b, mut p) = (vec![0.0f32; cw * ch], vec![0.0f32; cw * ch]);
     for cy in 0..ch {
         for cx in 0..cw {
             let r = f64::from(scene.truth_r[(2 * cy).min(H - 1) * W + (2 * cx).min(W - 1)]);
-            let (v, lo) = if r > 0.0 {
-                (r / hd, 0.8 * r / hd)
+            let (v, pr) = if r > 0.0 {
+                (r / hd, 0.97)
             } else {
-                (1.0 / hd, 1.0 / hd)
+                (1.0 / hd, 0.02)
             };
             b[cy * cw + cx] = v as f32;
-            b_low[cy * cw + cx] = lo as f32;
+            p[cy * cw + cx] = pr as f32;
         }
     }
     let map = BlurMapInput {
@@ -784,7 +784,7 @@ fn tiles_equal_the_whole_frame_with_an_external_blur_map() {
         plane_width: W,
         plane_height: H,
         b,
-        b_low,
+        p,
     };
     let p = plan(LensKind::Default, 0.0, 100.0, 100.0, W, H, Axis::X);
     let planes = LensPlanes::build_with_map(
