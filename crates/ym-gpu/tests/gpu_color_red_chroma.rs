@@ -5,6 +5,8 @@
 //!   for the Rec.709 and the P3 limiting gamut, on an image of reds (stops, hues and chromas across the
 //!   window and its tails) with colours elsewhere, in every storage mode, against the CPU trace;
 //! * the step's own part: the device's change (step on minus step off) against the CPU's;
+//! * the DNG stop: C11 decoded, lifted and through the step with the P3-D65 tables whatever the output,
+//!   against `ColorChain::apply_dng_pixel`;
 //! * both strengths 0 (a look such as Signature), or the step off, are the exact plain ACES 2 on the device,
 //!   bit for bit, and so is the real `signature.json`;
 //! * grey and the hues outside the window are untouched on the device, bit for bit;
@@ -12,7 +14,8 @@
 //!
 //! **Stated errors** (lavapipe, f32 against the f64 reference; Metal gets its own column in the CI log):
 //! C12 display-linear 5e-4 relative of the largest channel (the gate of `gpu_color.rs`), C13 one 10-bit
-//! code; the step's own part 1e-3 of display white (absolute). The measured numbers are printed.
+//! code; the step's own part 1e-3 of display white (absolute); the DNG stop 2e-4 relative (the gate of
+//! `gpu_color_white_lift.rs`). The measured numbers are printed.
 
 mod common;
 
@@ -41,6 +44,8 @@ const CODE10: f64 = 1.0 / 1023.0;
 const C12_TOLERANCE: f64 = 5e-4;
 /// The step's own part, absolute, display white = 1.
 const STEP_TOLERANCE: f64 = 1e-3;
+/// The DNG stop, relative to `max(|v|, 0.01)`.
+const DNG_TOLERANCE: f64 = 2e-4;
 
 const SIGNATURE_JSON: &str = include_str!("../../../data/looks/builtin/signature.json");
 
@@ -149,6 +154,7 @@ fn c12_and_c13_match_the_cpu_and_the_step_acts() {
             let gpu_off = render(dev, &off, &img, &[ColorOutput::Stage(Stop::C12)]);
             let gpu_off = planar(&gpu_off[0]);
             let mut worst = (0.0f64, 0.0f64, 0.0f64);
+            let mut worst_dng = 0.0f64;
             for (up, dn) in [(1.0, 0.0), (1.0, 0.5), (0.5, 1.0), (0.0, 1.0)] {
                 let chain = chain_with(output, Some(RedChroma::new(up, dn).expect("strengths")));
                 assert_eq!(
@@ -159,9 +165,13 @@ fn c12_and_c13_match_the_cpu_and_the_step_acts() {
                     dev,
                     &chain,
                     &img,
-                    &[ColorOutput::Stage(Stop::C12), ColorOutput::Stage(Stop::C13)],
+                    &[
+                        ColorOutput::Stage(Stop::C12),
+                        ColorOutput::Stage(Stop::C13),
+                        ColorOutput::Stage(Stop::DngLinearAwg4),
+                    ],
                 );
-                let (c12, c13) = (planar(&out[0]), planar(&out[1]));
+                let (c12, c13, dng) = (planar(&out[0]), planar(&out[1]), planar(&out[2]));
                 let mut acting = 0;
                 for i in 0..n {
                     let t = chain.trace(cams[i]);
@@ -172,7 +182,18 @@ fn c12_and_c13_match_the_cpu_and_the_step_acts() {
                         .fold(0.0f64, f64::max)
                         .max(0.02);
                     let mut moved = false;
+                    let want_dng = chain.apply_dng_pixel(cams[i]);
                     for ch in 0..3 {
+                        let e = (f64::from(dng[ch * n + i]) - want_dng[ch]).abs()
+                            / want_dng[ch].abs().max(0.01);
+                        worst_dng = worst_dng.max(e);
+                        assert!(
+                            e <= DNG_TOLERANCE,
+                            "{output:?} {:?} up {up} dn {dn} DNG {i}/{ch}: {} vs {}",
+                            dev.mode,
+                            dng[ch * n + i],
+                            want_dng[ch]
+                        );
                         let got = f64::from(c12[ch * n + i]);
                         let e = (got - t.c12_display_linear[ch]).abs();
                         worst.0 = worst.0.max(e / top);
@@ -213,7 +234,7 @@ fn c12_and_c13_match_the_cpu_and_the_step_acts() {
                 }
             }
             eprintln!(
-                "{output:?} {:?}: red chroma step, worst C12 {:.1e} (relative to the largest channel), C13 {:.1e} (code values), step's own part {:.1e} (display white = 1)",
+                "{output:?} {:?}: red chroma step, worst C12 {:.1e} (relative to the largest channel), C13 {:.1e} (code values), step's own part {:.1e} (display white = 1), DNG stop {worst_dng:.1e} (relative)",
                 dev.mode, worst.0, worst.1, worst.2
             );
         }
@@ -223,7 +244,11 @@ fn c12_and_c13_match_the_cpu_and_the_step_acts() {
 #[test]
 fn both_strengths_zero_or_the_step_off_is_plain_aces2_on_the_device() {
     let img = red_image(RedGamut::P3D65, &WINDOW_HUES);
-    let stages = [ColorOutput::Stage(Stop::C12), ColorOutput::Stage(Stop::C13)];
+    let stages = [
+        ColorOutput::Stage(Stop::C12),
+        ColorOutput::Stage(Stop::C13),
+        ColorOutput::Stage(Stop::DngLinearAwg4),
+    ];
     let off = chain_with(OutputTarget::Viewport, None);
     let zero = chain_with(OutputTarget::Viewport, Some(RedChroma::OFF));
     assert_eq!(zero.red_chroma(), None);
@@ -262,12 +287,16 @@ fn both_strengths_zero_or_the_step_off_is_plain_aces2_on_the_device() {
             }
         }
     }
-    // And on the CPU, bit for bit, for the same pixels.
+    // And on the CPU, bit for bit, for the same pixels (the picture and the DNG).
     for i in 0..(photo.width * photo.height) {
         let c = pixel(&photo, i);
         assert_eq!(
             sig_on.apply_to_display_linear(c).map(f64::to_bits),
             sig_off.apply_to_display_linear(c).map(f64::to_bits)
+        );
+        assert_eq!(
+            sig_on.apply_dng_pixel(c).map(f64::to_bits),
+            sig_off.apply_dng_pixel(c).map(f64::to_bits)
         );
     }
 }

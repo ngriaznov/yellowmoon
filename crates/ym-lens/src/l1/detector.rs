@@ -68,6 +68,8 @@ const ANCHOR_WEIGHT: f64 = 2.0;
 const BALL_FOOTPRINT: f64 = 2.2;
 /// Total evidence weight a ball adds, spread over its disc and ring.
 const BALL_WEIGHT: f64 = 30.0;
+/// A scene with this many balls is reshaped whatever the area of its blur.
+const MIN_BALLS_ACTIVE: usize = 5;
 /// A sharp edge flags the places around it when its gradient is this many noise units.
 const SHARP_STRENGTH: f64 = 5.0;
 /// A blurred region must cover at least this many discs of its own mean blur radius.
@@ -734,7 +736,11 @@ pub(super) fn blurred_fraction(d: &Detected) -> f64 {
     count as f64 / (d.w * d.h).max(1) as f64
 }
 
-/// True when the detection has enough to reshape: enough edges and enough of the frame out of focus.
+/// True when the detection has enough to reshape: enough edges, and either enough of the frame out of focus or a
+/// scene of lights (at least [`MIN_BALLS_ACTIVE`] balls that passed the context test, as on a night street or in
+/// the lights of a tree).
 pub(super) fn enough(d: &Detected) -> bool {
-    d.edges >= MIN_EDGE_SAMPLES && blurred_fraction(d) >= crate::consts::MIN_BLUR_AREA
+    d.edges >= MIN_EDGE_SAMPLES
+        && (blurred_fraction(d) >= crate::consts::MIN_BLUR_AREA
+            || d.balls.len() >= MIN_BALLS_ACTIVE)
 }

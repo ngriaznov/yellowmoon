@@ -21,7 +21,8 @@ use ym_color::curve::{Curve, CurveSet};
 use ym_color::deltae::{d65_white_xyz, delta_e_2000, xyz_to_lab};
 use ym_color::display::{
     BeforePoint, ChainParams, ColorChain, DISPLAY_PLACEMENT_EV, DNG_SCENE_LIMIT, DisplayError,
-    Frame, Layout, LookSetting, OutputTarget, RedChroma, RedChromaStep, View, aces2_input_matrix,
+    Frame, Layout, LookSetting, OutputTarget, RedChroma, RedChromaStep, RedGamut, View,
+    aces2_input_matrix,
 };
 use ym_color::encode::{self, OutputSpace};
 use ym_color::exposure::white::WhiteLift;
@@ -699,6 +700,7 @@ fn a_baked_look_at_intensity_zero_and_an_aces2_chain_keep_the_plain_dng() {
     let mut p = ChainParams::new(fused_matrix(), tone());
     p.curves = curves();
     p.output = OutputTarget::Srgb;
+    p.red_chroma = false; // the step is in a DNG too; this test is about the inverse
     let plain = chain(&p);
     assert!(!plain.dng_inverts_display());
     p.look = Some(LookSetting::new(rec709_baked_look(), 0.0));
@@ -846,7 +848,10 @@ fn near_display_white_a_tinted_colour_keeps_its_tint_in_the_dng() {
 
 #[test]
 fn dng_stop_point_applies_grade_look_and_curve_then_decodes_to_linear_awg4() {
-    let p = rich_params();
+    // The red chroma step is in a DNG too (`a_dng_carries_the_red_chroma_step_with_the_p3_tables`): it is
+    // off here, the stop point is about grade, look and curve.
+    let mut p = rich_params();
+    p.red_chroma = false;
     let c = chain(&p);
     assert!(!c.dng_inverts_display());
     for px in pixels() {
@@ -858,7 +863,9 @@ fn dng_stop_point_applies_grade_look_and_curve_then_decodes_to_linear_awg4() {
         assert_close(logc4_encode_rgb(dng), t.c11_logc4.0, 1e-9, "re-encode");
     }
     // Look and curve really are in it: without them the values differ.
-    let plain = chain(&ChainParams::new(fused_matrix(), tone()));
+    let mut plain_params = ChainParams::new(fused_matrix(), tone());
+    plain_params.red_chroma = false;
+    let plain = chain(&plain_params);
     let moved = pixels()
         .into_iter()
         .filter(|px| {
@@ -874,8 +881,11 @@ fn dng_stop_point_applies_grade_look_and_curve_then_decodes_to_linear_awg4() {
 
 #[test]
 fn dng_stop_point_of_a_neutral_chain_is_the_tone_mapped_linear_awg4() {
-    // Identity grade, Neutral look, identity curves: the DNG holds C7's output, up to the log round trip.
-    let c = chain(&ChainParams::new(fused_matrix(), tone()));
+    // Identity grade, Neutral look, identity curves: the DNG holds C7's output, up to the log round trip
+    // (the red chroma step, which a DNG carries, is off here).
+    let mut p = ChainParams::new(fused_matrix(), tone());
+    p.red_chroma = false;
+    let c = chain(&p);
     for px in pixels() {
         let want = tone().apply_rgb(linalg::mul_vec(&fused_matrix(), px));
         let got = c.apply_dng_pixel(px);
@@ -1679,17 +1689,61 @@ fn the_looks_strengths_reach_the_chain_and_blend_with_the_intensity() {
 }
 
 #[test]
-fn a_dng_does_not_carry_the_red_chroma_step() {
-    // The DNG holds scene-linear AWG4 that the other app's renderer (the profile fitted to plain
-    // ACES 2) turns into a picture; the step is part of our rendering of the reds (docs/09).
-    let on = chain(&ChainParams::new(fused_matrix(), tone()));
-    let mut p = ChainParams::new(fused_matrix(), tone());
-    p.red_chroma = false;
-    let off = chain(&p);
-    let mut differ = 0;
-    for px in pixels_with_reds() {
-        assert_eq!(on.apply_dng_pixel(px), off.apply_dng_pixel(px));
-        differ += usize::from(on.apply_pixel(px) != off.apply_pixel(px));
+fn a_dng_carries_the_red_chroma_step_with_the_p3_tables() {
+    // The DNG holds the scene values the app feeds the placement and ACES 2: C11 decoded, lifted, and
+    // through the red chroma step with the look's strengths. A DNG has no output gamut of its own: the
+    // step uses the P3-D65 tables for every output (`docs/09`).
+    let mut off_params = ChainParams::new(fused_matrix(), tone());
+    off_params.white_lift = WhiteLift::new(0.8, 2.2).unwrap();
+    off_params.red_chroma = false;
+    let off = chain(&off_params);
+    let p3 = RedChromaStep::for_gamut(RedGamut::P3D65, RedChroma::DEFAULT);
+    for target in OutputTarget::ALL {
+        let mut p = off_params.clone();
+        p.red_chroma = true;
+        p.output = target;
+        let on = chain(&p);
+        let mut differ = 0;
+        for px in pixels_with_reds() {
+            let plain = off.apply_dng_pixel(px);
+            let got = on.apply_dng_pixel(px);
+            assert_eq!(got, p3.apply(plain), "{target:?} {px:?}");
+            differ += usize::from(got != plain);
+        }
+        assert!(
+            differ >= 3,
+            "{target:?}: the DNG changed only {differ} test pixels"
+        );
     }
-    assert!(differ >= 3, "the picture changed only {differ} test pixels");
+    // A look that lets none of it through (Signature) gives the plain DNG, bit for bit.
+    let mut p = off_params.clone();
+    p.red_chroma = true;
+    p.look = Some(LookSetting::new(
+        Arc::new(LookTransform::neutral().with_red_chroma(RedChroma::OFF)),
+        100.0,
+    ));
+    let none = chain(&p);
+    for px in pixels_with_reds() {
+        assert_eq!(none.apply_dng_pixel(px), off.apply_dng_pixel(px));
+    }
+    // A look with its own display rendering, above 0 %, is inverted from its picture (plain ACES 2):
+    // no step in front of the inverse. At 0 % the DNG is ours, with the step.
+    let look = rec709_baked_look();
+    let mut q = off_params.clone();
+    q.red_chroma = true;
+    q.look = Some(LookSetting::new(Arc::clone(&look), 100.0));
+    let inverse = chain(&q);
+    assert!(inverse.dng_inverts_display());
+    let mut q_off = q.clone();
+    q_off.red_chroma = false;
+    let inverse_off = chain(&q_off);
+    q.look = Some(LookSetting::new(look, 0.0));
+    let zero = chain(&q);
+    assert!(!zero.dng_inverts_display());
+    for px in pixels_with_reds() {
+        // The inverse of the picture: the picture itself has our C12 only in the blend, which at 100 %
+        // is the look's alone, so the step makes no difference.
+        assert_eq!(inverse.apply_dng_pixel(px), inverse_off.apply_dng_pixel(px));
+        assert_eq!(zero.apply_dng_pixel(px), p3.apply(off.apply_dng_pixel(px)));
+    }
 }

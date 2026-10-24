@@ -18,7 +18,7 @@ use ym_color::consts::Vec3;
 use ym_color::consts::linalg::{self, Mat3};
 use ym_color::display::{
     ArriDisplayLut, ChainParams, ColorChain, DisplayLutInput, DisplayLutOutput, DisplayTransform,
-    LookSetting, OutputTarget, RedChroma, RedChromaStep, aces2_input_matrix,
+    LookSetting, OutputTarget, aces2_input_matrix,
 };
 use ym_color::exposure::PreviewRgb;
 use ym_color::exposure::white::drive_luma;
@@ -56,8 +56,13 @@ fn range_tone(highlights: f64) -> ToneParams {
 
 /// A chain with the identity matrix, so the camera triple is the AWG4 triple, with `lift`.
 fn chain_with(lift: WhiteLift) -> ColorChain {
+    chain_for(lift, OutputTarget::Srgb)
+}
+
+/// [`chain_with`] for another output.
+fn chain_for(lift: WhiteLift, output: OutputTarget) -> ColorChain {
     let mut p = ChainParams::new(identity_matrix(), tone());
-    p.output = OutputTarget::Srgb;
+    p.output = output;
     p.white_lift = lift;
     ColorChain::new(&p).unwrap()
 }
@@ -309,23 +314,23 @@ fn the_chain_changes_nothing_below_the_knee_and_lifts_above_it() {
 
 #[test]
 fn the_dng_pixels_are_the_scene_values_the_app_feeds_aces_2() {
-    // The DNG holds C11 decoded and lifted; Adobe's renderer puts the placement back (BaselineExposure)
-    // and runs ACES 2: so the app's display value is ACES 2 of `aces2_input_matrix * dng pixel`, with
-    // the red chroma step (C12 step 1c) between the two, which a DNG does not carry (`docs/09`): the
-    // pixel is the scene value before the step.
-    let aces = Aces2Transform::new(Aces2Output::Srgb);
-    let red = RedChromaStep::new(OutputTarget::Srgb, RedChroma::DEFAULT);
+    // The DNG holds C11 decoded, lifted and through the red chroma step (C12 step 1c, with the P3-D65
+    // tables: a DNG has no output gamut of its own); Adobe's renderer puts the placement back
+    // (BaselineExposure) and runs ACES 2: so the app's display value for a P3 output is ACES 2 of
+    // `aces2_input_matrix * dng pixel`. (For the sRGB output the step caps at the Rec.709 edge instead and the
+    // two agree where that cap does not act.)
+    let aces = Aces2Transform::new(Aces2Output::Viewport);
     for l in [
         WhiteLift::NONE,
         lift(0.4, 1.8),
         lift(1.15, 2.78),
         lift(2.0, 3.6),
     ] {
-        let c = chain_with(l);
+        let c = chain_for(l, OutputTarget::Viewport);
         for px in pixels(300, 9) {
             let dng = c.apply_dng_pixel(px);
             let app = c.apply_to_display_linear(px);
-            let ap0 = linalg::mul_vec(&aces2_input_matrix(), red.apply(dng));
+            let ap0 = linalg::mul_vec(&aces2_input_matrix(), dng);
             let again = aces.transform_ap0_linear(ap0);
             for k in 0..3 {
                 assert!(

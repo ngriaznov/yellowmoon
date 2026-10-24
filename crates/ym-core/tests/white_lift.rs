@@ -21,7 +21,7 @@ use common::dng_looks::{DISPLAY_LUT_ID, Looks};
 use common::*;
 use ym_color::aces2::{Aces2Output, Aces2Transform};
 use ym_color::consts::linalg;
-use ym_color::display::{OutputTarget, RedChroma, RedChromaStep, aces2_input_matrix};
+use ym_color::display::{OutputTarget, aces2_input_matrix};
 use ym_core::pipeline::{
     ComputeDevice, DisplayChoice, FrameOptions, FullImage, FullRequest, FullTarget, NeutralOnly,
     PhotoSource, RenderOptions, Renderer, ViewportRect, ViewportState,
@@ -221,18 +221,17 @@ fn the_users_highlight_range_does_not_resize_the_lift() {
     assert_ne!(pictures[0], pictures[1]);
 }
 
-/// What the app's own rendering makes of the DNG's pixels: the red chroma step (`docs/02` C12 step 1c,
-/// Neutral's strengths: these photos have the Neutral look; a DNG does not carry the step, `docs/09`), the
-/// placement and ACES 2 (sRGB).
+/// What Adobe's renderer is made to show: the DNG's pixels with the placement through ACES 2, limited to
+/// P3-D65 (the red chroma step in the pixels uses the P3-D65 tables, `docs/09`; so the picture to compare
+/// with is the app's Display P3 one).
 fn the_dng_through_aces2(raw: &FullImage) -> Vec<f64> {
-    let t = Aces2Transform::shared(Aces2Output::Srgb);
+    let t = Aces2Transform::shared(Aces2Output::DisplayP3);
     let m = aces2_input_matrix();
-    let red = RedChromaStep::new(OutputTarget::Srgb, RedChroma::DEFAULT);
     raw.rgb
         .chunks_exact(3)
         .flat_map(|p| {
             let awg4 = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
-            t.transform_ap0_linear(linalg::mul_vec(&m, red.apply(awg4)))
+            t.transform_ap0_linear(linalg::mul_vec(&m, awg4))
         })
         .collect()
 }
@@ -249,7 +248,7 @@ fn the_dngs_pixels_are_the_apps_scene_values_before_aces_2_with_the_lift_in_them
     let src = base.with_settings(s);
     let r = cpu_renderer();
     let lifted_raw = render(&r, &src, FullTarget::DngLinearAwg4);
-    let picture = display(&r, &src);
+    let picture = render(&r, &src, FullTarget::DisplayLinear(OutputTarget::DisplayP3));
     let shown = the_dng_through_aces2(&lifted_raw);
     let mut worst = 0.0f64;
     for (p, s) in picture.rgb.chunks_exact(3).zip(shown.chunks_exact(3)) {
