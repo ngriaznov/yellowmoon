@@ -103,7 +103,7 @@ const R_MIN_PX: f64 = 3.2;
 const R_MIN_HD: f64 = 0.0025;
 /// A ball with no edges around it (flat ground) must be at least this large, in pixels of the working grid: a
 /// smaller light is more likely a point light in focus.
-const UNSUPPORTED_R_MIN_PX: f64 = 6.0;
+const UNSUPPORTED_R_MIN_PX: f64 = 5.0;
 /// Plateau over ground in square-root units (the brightest channel).
 const MIN_CONTRAST: f64 = 0.12;
 /// A plane whose noise (square-root units) is above this is too noisy for the balls' context test. (The lens

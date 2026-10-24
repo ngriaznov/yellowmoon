@@ -116,7 +116,8 @@ pub enum Stop {
     C10,
     /// After the curves: the DNG stop point, in LogC4.
     C11,
-    /// C11 decoded back to linear AWG4 (what the DNG writer takes).
+    /// C11 decoded back to linear AWG4 with the white lift and the red chroma step (P3-D65 tables) when
+    /// C12 is our ACES 2 (what the DNG writer takes).
     DngLinearAwg4,
     /// Display-linear RGB in the output's primaries (C12).
     C12,
@@ -388,11 +389,18 @@ fn white_lift_uniform(u: &mut ChainU, lift: WhiteLift) {
 }
 
 /// C12 step 1c into the block: the red chroma step's two strengths in `rc` (`x` the up side, `y` the dark
-/// side, `ColorChain::red_chroma`). Both 0 when the step is skipped, and the shader then returns the scene
-/// value untouched. The tables are in the persistent `tables` buffer of the output.
+/// side, `ColorChain::red_chroma`) and the table set of the output's limiting gamut in `rc.z` (0 Rec.709,
+/// 1 P3-D65: `RedGamut::index`). Both strengths are 0 when the step is skipped, and the shader then returns
+/// the scene value untouched. The tables are in the persistent `tables` buffer of the output; the DNG stop
+/// always reads the P3-D65 set.
 fn red_chroma_uniform(u: &mut ChainU, chain: &ColorChain) {
     u.rc = match chain.red_chroma() {
-        Some(r) => [r.up() as f32, r.dark_relief() as f32, 0.0, 0.0],
+        Some(r) => [
+            r.up() as f32,
+            r.dark_relief() as f32,
+            RedGamut::of(chain.output()).index() as f32,
+            0.0,
+        ],
         None => [0.0; 4],
     };
 }
@@ -751,14 +759,18 @@ impl ChainTables {
                 data[start + i] = *v as f32;
             }
         }
-        // The red chroma step's tables (C12 step 1c): the neutral axis and the gamut edge of the
-        // limiting gamut of this output, the numbers the CPU step reads.
-        let red = RedChromaTables::shared(RedGamut::of(target));
-        for (i, v) in red.yd().iter().enumerate() {
-            data[table::RC_YD + i] = *v as f32;
-        }
-        for (i, v) in red.cmax().iter().enumerate() {
-            data[table::RC_CMAX + i] = *v as f32;
+        // The red chroma step's tables (C12 step 1c): the neutral axis and the gamut edge of both limiting
+        // gamuts, the numbers the CPU step reads. The set of the output's own gamut serves the picture,
+        // the P3-D65 set the pixels of a DNG.
+        for gamut in [RedGamut::Rec709, RedGamut::P3D65] {
+            let red = RedChromaTables::shared(gamut);
+            let start = table::RC + gamut.index() * table::RC_SET;
+            for (i, v) in red.yd().iter().enumerate() {
+                data[start + i] = *v as f32;
+            }
+            for (i, v) in red.cmax().iter().enumerate() {
+                data[start + table::RC_YD_ENTRIES + i] = *v as f32;
+            }
         }
         let buf = Arc::new(storage_buffer(
             ctx,

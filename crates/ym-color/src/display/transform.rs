@@ -57,7 +57,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use super::red_chroma::{RedChroma, RedChromaStep};
+use super::red_chroma::{RedChroma, RedChromaStep, RedGamut};
 use super::{DisplayError, OutputTarget};
 use crate::aces2::Aces2Transform;
 use crate::consts::Vec3;
@@ -386,6 +386,9 @@ enum Kind {
         lift: WhiteLift,
         /// Step 1c, `None` when it is off or both strengths are 0.
         red: Option<RedChromaStep>,
+        /// The same step with the P3-D65 tables whatever the output, for the pixels of a DNG
+        /// ([`PreparedDisplay::dng_scene`]).
+        dng_red: Option<RedChromaStep>,
     },
     Arri {
         lut: ArriDisplayLut,
@@ -411,6 +414,9 @@ impl PreparedDisplay {
                 red: red
                     .filter(|r| !r.is_off())
                     .map(|r| RedChromaStep::new(output, r)),
+                dng_red: red
+                    .filter(|r| !r.is_off())
+                    .map(|r| RedChromaStep::for_gamut(RedGamut::P3D65, r)),
             },
             DisplayTransform::ArriDisplayLut(lut) => Kind::Arri {
                 to_output: primaries_matrix(lut.output.primaries, output.space()),
@@ -425,6 +431,23 @@ impl PreparedDisplay {
         match &self.kind {
             Kind::Aces2 { lift, .. } => *lift,
             Kind::Arri { .. } => WhiteLift::NONE,
+        }
+    }
+
+    /// The scene values a DNG holds for a pixel of this display, from `linear` (C11 decoded to linear
+    /// AWG4): the white lift (step 1b) and the red chroma step (step 1c) with the P3-D65 tables, in front
+    /// of the placement that `BaselineExposure` carries. A DNG has no output gamut of its own; P3-D65 is the
+    /// viewport's and the Mac display path of the app that opens it (`docs/09`).
+    pub(crate) fn dng_scene(&self, linear: Vec3) -> Vec3 {
+        match &self.kind {
+            Kind::Aces2 { lift, dng_red, .. } => {
+                let lifted = lift.apply(linear);
+                match dng_red {
+                    Some(step) => step.apply(lifted),
+                    None => lifted,
+                }
+            }
+            Kind::Arri { .. } => linear,
         }
     }
 
@@ -445,6 +468,7 @@ impl PreparedDisplay {
                 awg4_to_ap0,
                 lift,
                 red,
+                ..
             } => {
                 // Step 1b, the white lift (scene-linear, before the placement in `awg4_to_ap0`).
                 let lifted = lift.apply(logc4_decode_rgb(v.0));

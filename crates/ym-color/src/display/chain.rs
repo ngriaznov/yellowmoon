@@ -144,8 +144,8 @@ pub struct ChainParams {
     /// display placement and ACES 2 (`docs/02`). `true` (the default) runs it with the look's strengths
     /// ([`RedChroma`]: `up` 1 and `dark_relief` 0 for Neutral and for a look that does not set them, both
     /// 0 for Signature, which skips it); `false` is plain ACES 2, for tests and tools. Only the ACES 2
-    /// path has it: an imported ARRI display LUT keeps ARRI's reds and ignores it. A DNG does not carry it
-    /// (`docs/09`).
+    /// path has it: an imported ARRI display LUT keeps ARRI's reds and ignores it. A DNG carries it in
+    /// its pixels, like the white lift (with the P3-D65 tables; `docs/09`).
     pub red_chroma: bool,
     /// Stage C13: which output the display-linear values are encoded for.
     pub output: OutputTarget,
@@ -542,7 +542,9 @@ impl ColorChain {
     }
 
     /// The DNG path (`docs/09`, Pixel pipeline per format): C1 to C11, then LogC4 decoded back to
-    /// linear AWG4. Negative values are not clipped here (the writer clips and counts them).
+    /// linear AWG4, with the white lift (C12 step 1b) and the red chroma step (step 1c, with the look's
+    /// strengths and the P3-D65 gamut tables: a DNG has no output gamut of its own) when C12 is our ACES 2.
+    /// Negative values are not clipped here (the writer clips and counts them).
     ///
     /// When C12 is not our ACES 2 ([`ColorChain::dng_inverts_display`]) the result is instead the
     /// scene-linear AWG4 triple that ACES 2 with the display placement turns into this chain's
@@ -556,8 +558,9 @@ impl ColorChain {
         let c11 = self.up_to_c11(camera_rgb).c11;
         match &self.dng_inverse {
             // C12 is our ACES 2: the pixels are the scene values it takes in, with the white lift
-            // (a scene-linear gain, in front of the placement that `BaselineExposure` carries).
-            None => self.display.white_lift().apply(c11.to_linear().0),
+            // (a scene-linear gain) and the red chroma step (P3-D65 tables), in front of the placement
+            // that `BaselineExposure` carries.
+            None => self.display.dng_scene(c11.to_linear().0),
             Some(inverse) => inverse.scene_awg4(self.c12(c11)),
         }
     }

@@ -577,14 +577,20 @@ pub(crate) mod table {
     pub const ACES: usize = DITHER_ENTRIES;
     /// Entries per ACES 2 hue table (`ym_color`'s `TOTAL_TABLE_SIZE`: wrap entries included).
     pub const ACES_ENTRIES: usize = ym_color::aces2::TOTAL_TABLE_SIZE;
-    /// The red chroma step's neutral-axis table `YD` (`ym_color::display::red_chroma`), after the ACES 2
-    /// tables; the same numbers for every output with the same limiting gamut.
-    pub const RC_YD: usize = ACES + 5 * ACES_ENTRIES;
-    /// The red chroma step's gamut edge table `CMAX`, 41 rows of 72 entries.
-    pub const RC_CMAX: usize = RC_YD + ym_color::display::red_chroma::YD_LEN;
+    /// The red chroma step's tables (`ym_color::display::red_chroma`), after the ACES 2 tables: one set per
+    /// limiting gamut, Rec.709 then P3-D65 (`RedGamut::index`), each the neutral-axis table `YD`
+    /// followed by the gamut edge table `CMAX`. Every output's buffer holds both sets, because the pixels
+    /// of a DNG use P3-D65 whatever the output.
+    pub const RC: usize = ACES + 5 * ACES_ENTRIES;
+    /// Entries of the neutral-axis table in a set.
+    pub const RC_YD_ENTRIES: usize = ym_color::display::red_chroma::YD_LEN;
+    /// Entries of the gamut edge table in a set: 41 rows of 72.
+    pub const RC_CMAX_ENTRIES: usize =
+        ym_color::display::red_chroma::CMAX_L_ROWS * ym_color::display::red_chroma::CMAX_H_COLS;
+    /// Entries of one set.
+    pub const RC_SET: usize = RC_YD_ENTRIES + RC_CMAX_ENTRIES;
     /// Total f32 elements.
-    pub const TOTAL: usize = RC_CMAX
-        + ym_color::display::red_chroma::CMAX_L_ROWS * ym_color::display::red_chroma::CMAX_H_COLS;
+    pub const TOTAL: usize = RC + 2 * RC_SET;
 }
 
 fn f(x: f64) -> String {
@@ -710,8 +716,8 @@ fn constants() -> String {
         ("RC_YD_LEN", rc::YD_LEN),
         ("RC_CMAX_L_ROWS", rc::CMAX_L_ROWS),
         ("RC_CMAX_H_COLS", rc::CMAX_H_COLS),
-        ("T_RC_YD", table::RC_YD),
-        ("T_RC_CMAX", table::RC_CMAX),
+        ("T_RC", table::RC),
+        ("RC_SET", table::RC_SET),
     ] {
         let _ = writeln!(s, "const {n}: u32 = {v}u;");
     }

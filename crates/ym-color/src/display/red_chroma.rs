@@ -172,6 +172,15 @@ impl RedGamut {
         }
     }
 
+    /// The gamut's place in the pair of table sets the kernel holds: 0 for Rec.709, 1 for P3-D65.
+    #[must_use]
+    pub fn index(self) -> usize {
+        match self {
+            Self::Rec709 => 0,
+            Self::P3D65 => 1,
+        }
+    }
+
     /// The ACES 2 output whose neutral axis defines `YD` (any output with this limiting gamut gives the
     /// same axis).
     fn aces2_output(self) -> Aces2Output {
