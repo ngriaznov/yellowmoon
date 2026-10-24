@@ -124,7 +124,7 @@ The owner's hypothesis can be tested cheaply before any engineering commitment. 
 | Decision | Options | Recommendation |
 |---|---|---|
 | Engine for lens traits | Physical engine; or a generative editor in the pipeline | Physical engine; generative only after the bake-off, and only as an explicit action |
-| Scope | A new Lens card; or presets inside the Look tab with one strength slider | Presets plus strength, which keeps "few controls"; bokeh reshaping takes the camera's focus point, so no click is needed |
+| Scope | A new Lens card; or presets inside the Look tab with one strength slider | **Decided 2026-10-24: Flares, field effects and Anamorphic sliders** (Anamorphic drives the bokeh reshaping); bokeh reshaping takes the camera's focus point, so no click is needed |
 | Depth model delivery | Bundle; or the first-run download that [docs/12](../docs/12-distribution.md) foresees above ~30 MB | **Decided 2026-10-24: first-run download** with a hash check; without it, no bokeh reshaping |
 | Generative exceptions, if a generative layer goes ahead | C++ FFI (sd.cpp) or a large candle port; multi-GB download; per-machine determinism | Defer until a Rust port of an Apache-clean editor exists |
 | Legal checks ([HUMAN]) | Transcribed patent prescriptions; CC BY attribution for the Wu set; web-trained base weights | Transcribe from the patents directly and record provenance per lens |
@@ -136,6 +136,8 @@ The owner's hypothesis can be tested cheaply before any engineering commitment. 
 **Depth model: downloaded on first use** (the owner: "We can download depth model on first use"). It is a hash-checked download from Yellowmoon's own release the first time it is needed, as [docs/12](../docs/12-distribution.md) foresees for weights above about 30 MB; without it the app works and does not reshape bokeh.
 
 **Synthetic lens data, generated outside the repository.** Lens characteristics are computed offline from lens designs Yellowmoon transcribes from expired patents, fitted into compact formulas, and only the formulas are committed. The tool that computes them is kept out of the repository and the app, and the data are described as "synthetic, computed from public lens designs, not measured". Lens designs come only from those patents, never from third-party lens libraries, and each formula set records the patent it comes from. Consequence: the formulas cannot be regenerated from the repository alone.
+
+**Controls** (the owner: "Flares and field effects need its controls. Bokeh reshaping will increase with raising anamorphic slider"). Three sliders: **Flares** (glow, ghosts and streaks, still scaled by the real highlight energy), **field effects** (edge softness, falloff and swirl towards the edges), and **Anamorphic**, which drives the bokeh reshaping: the higher it is, the taller the ovals. Open: whether a lens picker stays above the sliders, and whether Anamorphic also turns flares into horizontal streaks.
 
 ## Addendum 2026-10-24: reshape the bokeh that is there, do not add new bokeh
 
