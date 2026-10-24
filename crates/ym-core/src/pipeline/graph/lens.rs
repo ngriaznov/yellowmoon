@@ -214,7 +214,10 @@ impl Job<'_> {
         let focus = focus_fraction(
             self.src.raw.meta.focus,
             (raw_plan.width, raw_plan.height),
-            raw_plan.lens.as_ref().map(ym_gpu::cpu::lens::LensGeometry::crop),
+            raw_plan
+                .lens
+                .as_ref()
+                .map(ym_gpu::cpu::lens::LensGeometry::crop),
         );
         let amounts = LensAmounts::from(settings);
         let frame = FrameInfo {
@@ -359,11 +362,10 @@ impl Job<'_> {
             data: &source.data,
         };
         let cancel = self.cancel.clone();
-        let planes = LensPlanes::build(&ctx.plan, &image, ctx.focus, &move || {
-            cancel.is_cancelled()
-        })
-        .map(Arc::new)
-        .map_err(lens_error)?;
+        let planes =
+            LensPlanes::build(&ctx.plan, &image, ctx.focus, &move || cancel.is_cancelled())
+                .map(Arc::new)
+                .map_err(lens_error)?;
         self.runs.lens_planes += 1;
         self.timings.lens_ms += t.elapsed().as_secs_f64() * 1000.0;
         self.lens_report = Some(report_of(&ctx.plan, &planes));
@@ -712,7 +714,10 @@ mod tests {
     fn the_focus_point_is_a_fraction_of_the_sensor_frame_without_a_crop() {
         // 6000 x 4000 camera frame on a 6048 x 4024 sensor frame: fractions are the same either way.
         let f = focus_fraction(focus([6000, 4000], [1500, 3000]), (6048, 4024), None).unwrap();
-        assert!((f.0 - 0.25).abs() < 1e-12 && (f.1 - 0.75).abs() < 1e-12, "{f:?}");
+        assert!(
+            (f.0 - 0.25).abs() < 1e-12 && (f.1 - 0.75).abs() < 1e-12,
+            "{f:?}"
+        );
     }
 
     #[test]
@@ -731,9 +736,16 @@ mod tests {
     #[test]
     fn a_file_without_a_focus_point_or_with_an_empty_frame_has_none() {
         assert_eq!(focus_fraction(None, (100, 100), None), None);
-        assert_eq!(focus_fraction(focus([0, 0], [0, 0]), (100, 100), None), None);
         assert_eq!(
-            focus_fraction(focus([100, 100], [5, 5]), (100, 100), Some(Rect::new(0, 0, 0, 10))),
+            focus_fraction(focus([0, 0], [0, 0]), (100, 100), None),
+            None
+        );
+        assert_eq!(
+            focus_fraction(
+                focus([100, 100], [5, 5]),
+                (100, 100),
+                Some(Rect::new(0, 0, 0, 10))
+            ),
             None
         );
     }

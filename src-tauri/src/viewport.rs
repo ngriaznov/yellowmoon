@@ -1460,6 +1460,7 @@ mod tests {
                 timings: ym_core::pipeline::StageTimings::default(),
                 notes: Vec::new(),
                 zoom: None,
+                lens: None,
             },
         }
     }

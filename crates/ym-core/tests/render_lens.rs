@@ -107,8 +107,7 @@ fn device(gpu: &Arc<Gpu>) -> Renderer {
 /// the field optics; and three small lights the sensor clipped, for the flares (a photo's lights are
 /// small and few, and a big bright patch would be hundreds of sources).
 fn developed(w: u32, h: u32) -> Developed {
-    let scene =
-        Scene::new(w, h, light(PROFILE, 5500.0), Layout::Patchwork, 0.35).noise(2e-4, 1e-6);
+    let scene = Scene::new(w, h, light(PROFILE, 5500.0), Layout::Patchwork, 0.35).noise(2e-4, 1e-6);
     let mut mosaic = scene.mosaic();
     let scale = f64::from(w) / 800.0;
     for (fx, fy, radius) in [(0.22, 0.30, 6.0), (0.71, 0.24, 9.0), (0.58, 0.78, 4.0)] {
@@ -241,7 +240,11 @@ fn zero_amounts_are_the_render_without_the_field_with(r: &Renderer) {
         assert_eq!(f.report.timings.lens_ms, 0.0, "{kind}");
         assert!(f.report.lens.is_none() && t.report.lens.is_none() && e.report.lens.is_none());
         assert!(
-            !f.report.notes.iter().chain(&e.report.notes).any(|n| n.contains("lens")),
+            !f.report
+                .notes
+                .iter()
+                .chain(&e.report.notes)
+                .any(|n| n.contains("lens")),
             "{kind}: {:?} {:?}",
             f.report.notes,
             e.report.notes
@@ -286,34 +289,64 @@ fn a_lens_changes_the_fit_view_and_a_slider_move_re_runs_only_the_lens_with(r: &
     assert_eq!(runs.raw_groups, 0, "{runs:?}");
     assert!(first.report.timings.lens_ms > 0.0);
     let worst = worst_difference(&before, &first);
-    assert!(worst >= 4, "the lens moved the picture by {worst} codes only");
+    assert!(
+        worst >= 4,
+        "the lens moved the picture by {worst} codes only"
+    );
     let lens = first.report.lens.expect("the lens report");
     assert!(
         lens.reshaped || lens.reason.is_some(),
         "the report says why when it did not reshape: {lens:?}"
     );
     // The stats the webview gets carry it.
-    assert_eq!(first.report.stats().lens.map(|l| l.reshaped), Some(lens.reshaped));
+    assert_eq!(
+        first.report.stats().lens.map(|l| l.reshaped),
+        Some(lens.reshaped)
+    );
 
     // The same request again: the finished frame is served from the cache and says the same.
     let again = frame(r, &lensed_src, &state);
     assert_eq!(again.rgba, first.rgba);
     assert_eq!(again.report.runs.frame_hits, 1);
     assert_eq!(lens_work(&again.report.runs), (0, 0, 0));
-    assert_eq!(again.report.lens, first.report.lens, "a cached frame forgets the report");
+    assert_eq!(
+        again.report.lens, first.report.lens,
+        "a cached frame forgets the report"
+    );
 
     // A slider move: new pixels, from the cached raw group and the cached planes. Only the lens pass
     // and the colour pass run.
     for (name, moved) in [
-        ("Flares", LensSettings { flares: 61.0, ..VINTAGE }),
-        ("Edges", LensSettings { edges: 51.0, ..VINTAGE }),
-        ("Anamorphic", LensSettings { anamorphic: 51.0, ..VINTAGE }),
+        (
+            "Flares",
+            LensSettings {
+                flares: 61.0,
+                ..VINTAGE
+            },
+        ),
+        (
+            "Edges",
+            LensSettings {
+                edges: 51.0,
+                ..VINTAGE
+            },
+        ),
+        (
+            "Anamorphic",
+            LensSettings {
+                anamorphic: 51.0,
+                ..VINTAGE
+            },
+        ),
     ] {
         let f = frame(r, &with_lens(&src, moved), &state);
         let runs = f.report.runs;
         assert_eq!(runs.raw_work(), 0, "{name}: no raw stage ran: {runs:?}");
         assert_eq!(runs.sigma_planes, 0, "{name}: {runs:?}");
-        assert_eq!(runs.lens_planes, 0, "{name}: the planes were made again: {runs:?}");
+        assert_eq!(
+            runs.lens_planes, 0,
+            "{name}: the planes were made again: {runs:?}"
+        );
         assert_eq!(runs.lens_groups, 1, "{name}: {runs:?}");
         assert_eq!(runs.color_plans + runs.grade_plans, 0, "{name}: {runs:?}");
         assert_ne!(f.rgba, first.rgba, "{name}: the picture did not move");
@@ -359,9 +392,18 @@ fn the_fit_view_on_the_device_is_the_cpu_fit_view_of_the_lens_group() {
     // The raw group is the CPU's in both (the raw chain stays on the CPU), the lens is the host's, and
     // the colour pass differs by the tolerances of the kernels.
     let worst = worst_difference(&on_cpu, &on_device);
-    let _ = writeln!(std::io::stderr(), "[lens] fit view, CPU against device: {worst} codes");
-    assert!(worst <= 2, "the device colour pass differs by {worst} codes");
-    assert_eq!(on_cpu.report.runs.lens_groups, on_device.report.runs.lens_groups);
+    let _ = writeln!(
+        std::io::stderr(),
+        "[lens] fit view, CPU against device: {worst} codes"
+    );
+    assert!(
+        worst <= 2,
+        "the device colour pass differs by {worst} codes"
+    );
+    assert_eq!(
+        on_cpu.report.runs.lens_groups,
+        on_device.report.runs.lens_groups
+    );
 }
 
 /// The first lens request is the planes' request: a request after a change of lens (the planes' key
@@ -376,7 +418,13 @@ fn the_planes_are_made_again_for_another_lens_and_not_for_an_amount() {
     assert_eq!(a.lens_planes, 1);
     let b = frame(
         &r,
-        &with_lens(&src, LensSettings { flares: 20.0, ..VINTAGE }),
+        &with_lens(
+            &src,
+            LensSettings {
+                flares: 20.0,
+                ..VINTAGE
+            },
+        ),
         &state,
     )
     .report
@@ -384,7 +432,13 @@ fn the_planes_are_made_again_for_another_lens_and_not_for_an_amount() {
     assert_eq!(b.lens_planes, 0);
     let c = frame(
         &r,
-        &with_lens(&src, LensSettings { kind: LensKind::Petzval, ..VINTAGE }),
+        &with_lens(
+            &src,
+            LensSettings {
+                kind: LensKind::Petzval,
+                ..VINTAGE
+            },
+        ),
         &state,
     )
     .report
@@ -431,14 +485,34 @@ fn planes_without_the_blur_map_are_made_again_when_a_slider_needs_it_with(r: &Re
         "the planes were made with the blur map"
     );
     // The planes with the map serve the plan that does not need it, and the report is the plan's.
-    let c = frame(r, &with_lens(&src, LensSettings { flares: 51.0, ..flares }), &state);
+    let c = frame(
+        r,
+        &with_lens(
+            &src,
+            LensSettings {
+                flares: 51.0,
+                ..flares
+            },
+        ),
+        &state,
+    );
     assert_eq!(c.report.runs.lens_planes, 0, "{:?}", c.report.runs);
     assert_eq!(
         c.report.lens.and_then(|l| l.reason),
         Some(ym_lens::ReshapeReason::NotAsked)
     );
     // And the other sliders of the plan that needs the map keep them.
-    let d2 = frame(r, &with_lens(&src, LensSettings { anamorphic: 41.0, ..flares }), &state);
+    let d2 = frame(
+        r,
+        &with_lens(
+            &src,
+            LensSettings {
+                anamorphic: 41.0,
+                ..flares
+            },
+        ),
+        &state,
+    );
     assert_eq!(d2.report.runs.lens_planes, 0, "{:?}", d2.report.runs);
     // An export of a plan that needs the map makes its own, with it.
     let e = export(r, &with_lens(&src, anamorphic));
@@ -472,10 +546,9 @@ fn reference_of(r: &Renderer, src: &PhotoSource, lens: LensSettings, axis: Axis)
     let raw = r
         .camera_region(src, Rect::whole(w, h), false, &token)
         .expect("the raw group");
-    let camera = CameraResponse::from_curves(
-        &src.profile.load_curves(&data_root()).expect("the curves"),
-    )
-    .expect("the camera");
+    let camera =
+        CameraResponse::from_curves(&src.profile.load_curves(&data_root()).expect("the curves"))
+            .expect("the camera");
     let g0 = src.estimates.initial_gains().expect("g0");
     let frame = FrameInfo {
         width: w,
@@ -484,7 +557,10 @@ fn reference_of(r: &Renderer, src: &PhotoSource, lens: LensSettings, axis: Axis)
         f_number: src.raw.meta.f_number.filter(|f| f.is_finite() && *f > 0.0),
         clip: [g0[0] as f32, g0[1] as f32, g0[2] as f32],
     };
-    assert!(src.raw.meta.focus.is_none(), "the synthetic file has no focus point");
+    assert!(
+        src.raw.meta.focus.is_none(),
+        "the synthetic file has no focus point"
+    );
     let plan = LensPlan::new(&library(), &LensAmounts::from(lens), frame, &camera).expect("plan");
     let image = ImageRef {
         width: w,
@@ -495,7 +571,11 @@ fn reference_of(r: &Renderer, src: &PhotoSource, lens: LensSettings, axis: Axis)
         frame_height: h,
         data: &raw.data,
     };
-    assert_eq!(plan.lens_plane_scale(), 1, "a test frame is its own lens plane");
+    assert_eq!(
+        plan.lens_plane_scale(),
+        1,
+        "a test frame is its own lens plane"
+    );
     let planes = LensPlanes::build(&plan, &image, None, &|| false).expect("planes");
     let out = ym_lens::apply(&plan, &planes, 1, &image, PixelRect::new(0, 0, w, h)).expect("apply");
     Reference {
@@ -521,7 +601,9 @@ fn an_export_region_is_the_whole_frame_apply_with(r: &Renderer, axis: Axis) {
     let d = developed(640, 540);
     let mut src = with_lens(&d.source(), VINTAGE);
     if axis == Axis::Y {
-        src = edit(&src, |s| s.orientation = ym_core::settings::Orientation::Deg90);
+        src = edit(&src, |s| {
+            s.orientation = ym_core::settings::Orientation::Deg90
+        });
     }
     let reference = reference_of(r, &src, VINTAGE, axis);
     let (w, h) = (reference.width, reference.height);
@@ -560,7 +642,10 @@ fn an_export_region_is_the_whole_frame_apply_with(r: &Renderer, axis: Axis) {
                 }
             }
         }
-        assert_eq!(worst, 0.0, "{rect:?} differs from the whole-frame apply by {worst}");
+        assert_eq!(
+            worst, 0.0,
+            "{rect:?} differs from the whole-frame apply by {worst}"
+        );
     }
 }
 
@@ -583,7 +668,16 @@ fn the_100_percent_view_samples_the_whole_frame_apply_with(r: &Renderer) {
     let reference = reference_of(r, &src, VINTAGE, Axis::X);
     let st = at_100_percent(800.0, 600.0, (800, 600));
     let token = CancelToken::new();
-    for (x, y) in [(3, 5), (100, 100), (511, 300), (512, 300), (513, 301), (700, 590), (400, 511), (400, 512)] {
+    for (x, y) in [
+        (3, 5),
+        (100, 100),
+        (511, 300),
+        (512, 300),
+        (513, 301),
+        (700, 590),
+        (400, 511),
+        (400, 512),
+    ] {
         let got = r
             .camera_rgb_at(&src, &st, (x as f64 + 0.5, y as f64 + 0.5), &token)
             .expect("reading")
@@ -645,7 +739,10 @@ fn the_100_percent_view_is_the_picture_the_export_writes_with(r: &Renderer) {
         std::io::stderr(),
         "[lens] 100 % view against the export: worst {worst:.4} codes"
     );
-    assert!(worst <= 1.0 + 1e-6, "the view and the export differ by {worst} codes");
+    assert!(
+        worst <= 1.0 + 1e-6,
+        "the view and the export differ by {worst} codes"
+    );
     // The picture is not the one without the lens.
     let off = frame(r, &plain(&d.source()), &st);
     assert!(worst_difference(&off, &f) >= 4);
@@ -676,11 +773,18 @@ fn the_work_ahead_makes_the_lens_tiles_with(r: &Renderer) {
     let first = r.viewport_frame(&src, &st, &coarse, &token).expect("frame");
     assert!(!first.sharp, "nothing is ready yet");
     // The coarse frame is the lens too (the fit-size group went through it).
-    assert!(first.report.runs.lens_groups >= 1, "{:?}", first.report.runs);
+    assert!(
+        first.report.runs.lens_groups >= 1,
+        "{:?}",
+        first.report.runs
+    );
     let made = r.prepare_tiles(&src, &st, &token).expect("tiles");
     assert!(made > 0);
     let sharp = r.viewport_frame(&src, &st, &coarse, &token).expect("frame");
-    assert!(sharp.sharp, "the lens tiles are ready, so the frame is sharp");
+    assert!(
+        sharp.sharp,
+        "the lens tiles are ready, so the frame is sharp"
+    );
     assert_eq!(sharp.report.runs.lens_tiles, 0, "{:?}", sharp.report.runs);
     assert_eq!(sharp.report.runs.raw_work(), 0, "{:?}", sharp.report.runs);
     // The same request without the lens had its raw tiles cached by the work ahead too, and a lens-free
@@ -714,7 +818,11 @@ fn releasing_the_full_resolution_drops_the_lens_tiles_and_keeps_the_planes() {
     graph.release_full_resolution();
     assert!(graph.bytes() < held);
     let f = fresh_frame(&r, &src, &st);
-    assert_eq!(f.report.runs.lens_planes, 0, "the planes stayed: {:?}", f.report.runs);
+    assert_eq!(
+        f.report.runs.lens_planes, 0,
+        "the planes stayed: {:?}",
+        f.report.runs
+    );
     assert!(f.report.runs.lens_tiles > 0, "{:?}", f.report.runs);
 }
 
@@ -742,7 +850,12 @@ fn the_before_view_has_no_lens_with(r: &Renderer) {
     assert_eq!(lens_work(&r.counters(src.id)), (0, 0, 0));
     // The readout of the Before view neither.
     let at = r
-        .sample_pixel(&with_lens(&src, VINTAGE), &st, (100.5, 100.5), &CancelToken::new())
+        .sample_pixel(
+            &with_lens(&src, VINTAGE),
+            &st,
+            (100.5, 100.5),
+            &CancelToken::new(),
+        )
         .expect("sample");
     let none = r
         .sample_pixel(&src, &st, (100.5, 100.5), &CancelToken::new())
@@ -778,10 +891,15 @@ fn a_thumbnail_and_a_look_tile_show_the_lens() {
     );
     let neutral = ym_looks::library::LookId::builtin("neutral");
     let tile = r.look_thumbnail_png(&src, &neutral, &token).expect("tile");
-    let tile_with = r.look_thumbnail_png(&lensed, &neutral, &token).expect("tile");
+    let tile_with = r
+        .look_thumbnail_png(&lensed, &neutral, &token)
+        .expect("tile");
     assert_ne!(tile, tile_with, "the lens did not reach the look tile");
     let total = r.counters(src.id);
-    assert_eq!(total.lens_planes, 1, "one set of planes for all of them: {total:?}");
+    assert_eq!(
+        total.lens_planes, 1,
+        "one set of planes for all of them: {total:?}"
+    );
     assert!(total.lens_groups >= 1, "{total:?}");
 }
 
@@ -808,7 +926,10 @@ fn the_report_says_whether_the_bokeh_was_reshaped_and_a_plan_without_the_ask_say
     assert_eq!(lens.reason, Some(ym_lens::ReshapeReason::NotAsked));
     let stats = f.report.stats().lens.expect("stats");
     assert!(!stats.reshaped);
-    assert_eq!(stats.reason, Some(ym_core::pipeline::LensReshapeReason::NotAsked));
+    assert_eq!(
+        stats.reason,
+        Some(ym_core::pipeline::LensReshapeReason::NotAsked)
+    );
     // Anamorphic asks for it: the synthetic patchwork has no out-of-focus background, so the report
     // says why it was left alone.
     let f = frame(&r, &with_lens(&src, VINTAGE), &state);
@@ -838,7 +959,11 @@ fn without_the_lens_data_a_lens_setting_renders_as_no_lens_and_says_so() {
     let a = fresh_frame(&r, &src, &state);
     let b = fresh_frame(&r, &with_lens(&src, VINTAGE), &state);
     assert_eq!(a.rgba, b.rgba);
-    assert!(b.report.notes.iter().any(|n| n.contains("lens")), "{:?}", b.report.notes);
+    assert!(
+        b.report.notes.iter().any(|n| n.contains("lens")),
+        "{:?}",
+        b.report.notes
+    );
     assert_eq!(lens_work(&b.report.runs), (0, 0, 0));
     assert!(b.report.lens.is_none());
 }
@@ -887,7 +1012,128 @@ fn a_lens_render_is_the_same_bytes_whatever_was_looked_at_first() {
     let b = export(&warm, &src);
     assert!(a.rgb == b.rgb, "the export depends on what the viewer did");
     assert_eq!(a.report.runs.lens_planes, 1);
-    assert_eq!(b.report.runs.lens_planes, 1, "an export makes its own planes");
+    assert_eq!(
+        b.report.runs.lens_planes, 1,
+        "an export makes its own planes"
+    );
     // And the same twice.
     assert!(export(&cold, &src).rgb == a.rgb);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Timing (not part of the suite)
+// ---------------------------------------------------------------------------------------------
+
+/// The cost of the lens on a 24 MP photo on the CPU, printed as it goes. Run by hand:
+/// `cargo test -p ym-core --test render_lens -- --ignored --nocapture lens_timing_on_24_megapixels`.
+/// The numbers depend on the machine's load; the test asserts nothing about them.
+#[test]
+#[ignore = "takes minutes: a 24 MP photo on the CPU"]
+fn lens_timing_on_24_megapixels() {
+    let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
+    let say = |what: &str, t: std::time::Instant, runs: Option<&StageRuns>| {
+        let _ = writeln!(
+            std::io::stderr(),
+            "[timing] {what}: {:.0} ms{}",
+            ms(t),
+            runs.map_or(String::new(), |r| format!(
+                " (lens planes {}, groups {}, tiles {}; raw groups {}, tiles {})",
+                r.lens_planes, r.lens_groups, r.lens_tiles, r.raw_groups, r.tiles
+            ))
+        );
+    };
+    let t = std::time::Instant::now();
+    let d = developed(6000, 4000);
+    say("the 24 MP synthetic file, written and developed", t, None);
+    let src = d.source();
+    let lensed = with_lens(&src, VINTAGE);
+    let r = cpu();
+    let fit = cell(1500.0, 1000.0);
+
+    let t = std::time::Instant::now();
+    let f = fresh_frame(&r, &src, &fit);
+    say(
+        "fit view, no lens (cold: the raw group at 1/4)",
+        t,
+        Some(&f.report.runs),
+    );
+    let t = std::time::Instant::now();
+    let f = fresh_frame(&r, &lensed, &fit);
+    say(
+        "fit view, Vintage 60/50/50, first (planes + lens group)",
+        t,
+        Some(&f.report.runs),
+    );
+    let moved = with_lens(
+        &src,
+        LensSettings {
+            flares: 61.0,
+            ..VINTAGE
+        },
+    );
+    let t = std::time::Instant::now();
+    let f = fresh_frame(&r, &moved, &fit);
+    say(
+        "fit view, a Flares move (lens group)",
+        t,
+        Some(&f.report.runs),
+    );
+    let moved = with_lens(
+        &src,
+        LensSettings {
+            edges: 51.0,
+            ..VINTAGE
+        },
+    );
+    let t = std::time::Instant::now();
+    let f = fresh_frame(&r, &moved, &fit);
+    say(
+        "fit view, an Edges move (lens group)",
+        t,
+        Some(&f.report.runs),
+    );
+    let t = std::time::Instant::now();
+    let f = fresh_frame(&r, &src, &fit);
+    say(
+        "fit view, back to no lens (cached raw group)",
+        t,
+        Some(&f.report.runs),
+    );
+
+    let st = at_100_percent(1500.0, 1000.0, (6000, 4000));
+    let t = std::time::Instant::now();
+    let f = fresh_frame(&r, &src, &st);
+    say(
+        "100 % view of 1500 x 1000, no lens (raw tiles)",
+        t,
+        Some(&f.report.runs),
+    );
+    let t = std::time::Instant::now();
+    let f = fresh_frame(&r, &lensed, &st);
+    say(
+        "100 % view, Vintage 60/50/50 (lens tiles; raw tiles cached)",
+        t,
+        Some(&f.report.runs),
+    );
+    let moved = with_lens(
+        &src,
+        LensSettings {
+            flares: 61.0,
+            ..VINTAGE
+        },
+    );
+    let t = std::time::Instant::now();
+    let f = fresh_frame(&r, &moved, &st);
+    say(
+        "100 % view, a Flares move (lens tiles)",
+        t,
+        Some(&f.report.runs),
+    );
+
+    let t = std::time::Instant::now();
+    let e = export(&r, &src);
+    say("export, no lens", t, Some(&e.report.runs));
+    let t = std::time::Instant::now();
+    let e = export(&r, &lensed);
+    say("export, Vintage 60/50/50", t, Some(&e.report.runs));
 }

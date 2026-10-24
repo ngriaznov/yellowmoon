@@ -312,6 +312,7 @@ fn the_rust_types_have_the_fields_of_the_typescript_interfaces() {
             space: ym_export::ColorSpace::DisplayP3,
             zoom_percent: Some(50.0),
             fit_percent: None,
+            lens: None,
         })
         .unwrap(),
     );

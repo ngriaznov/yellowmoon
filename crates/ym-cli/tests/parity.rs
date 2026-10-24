@@ -868,10 +868,7 @@ fn a_lens_is_the_same_picture_through_the_app_and_the_binary() {
         );
     }
     // The file says which lens data made it (`ym:Models`, `docs/09`).
-    let jpeg = app.export(
-        ExportOptions::default(),
-        &sb.root().join("app-models"),
-    );
+    let jpeg = app.export(ExportOptions::default(), &sb.root().join("app-models"));
     let text = String::from_utf8_lossy(&bytes(&jpeg[0])).into_owned();
     assert!(
         text.contains("lens vintage ") && text.contains(", anamorphic "),
