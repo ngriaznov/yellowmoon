@@ -66,7 +66,7 @@ you must fetch yourself.
 | sharpness filter, cut 512 x 512 tiles at native scale, instance-id maps, shards | `sources.photo_tiles`, `prepare.tile_chunk` | Modal CPU, 1,000 photos a call (`tile_chunk`) |
 | credits, counts | `prepare.finalize` | the orchestrator |
 | look at the synthesis | `previews.py` | Modal CPU (`preview`), or locally |
-| render scenes, train, evaluate, export | `synth.py`, `kernels.py`, `train.py`, `export.py` | Modal L4 (`train_run`), or locally on the CPU for a smoke run |
+| render scenes, train, evaluate, export | `synth.py`, `structures.py` (v3), `kernels.py`, `train.py`, `export.py` | Modal L4 (`train_run`), or locally on the CPU for a smoke run |
 | the classical baseline, the sharpness measure | `classical.py` | numpy, in `train.py`'s evaluation and `sources.py` |
 | budget plans and the ledger | `budget.py` | everywhere |
 | local evaluation on research-only sets | `eval_real.py` | locally only |
@@ -93,8 +93,35 @@ pixel's label is the radius of the layer that contributes most to it; where no l
 edge) the loss weight falls to 0.25. `tests/test_synth.py` renders a step edge, a sharp subject, a lamp, a blurred
 foreground and a ramp and measures the blur back: it equals the label.
 
-**Sample sheets** (`preview`, `smoke.py`): per row the network's input (the encoded plane), a display version of it, and the label
-as colour (0 to `b = 0.05`, dark where the weight is low).
+**Sample sheets** (`preview`, `smoke.py`): per row the network's input (the encoded plane), a display version of it, the label
+as colour (0 to `b = 0.05`, dark where the weight is low) and, from v3, the loss weight as grey (cyan on thin structures, magenta
+on featureless layers).
+
+### v3: what the synthesis added (`SynthConfig.v3()`, `structures.py`; `SynthConfig()` is still bokeh-2's recipe, bit for bit)
+
+The owner's review of bokeh-2 ("much better, can we improve it?") and the measurements below (CUHK, the 28 Sony planes, and bokeh-2
+on v3's own scenes) pointed at three holes in the data, all in what the network never saw:
+
+1. **Thin structures in focus in front of a blur** (hair, twigs, wires, grass, chair legs). Five kinds of procedural curves (`structures.TYPES`),
+   drawn antialiased with a width that sums to its line width across the line, in the hue of a place in another tile and moved in brightness
+   until they contrast with the background, as a layer with its own sharp mask in front of the other layers: in 55 % of the samples of a batch
+   with one (0 to 2 such layers per batch; 40 / 45 / 15 %); one batch in five has them out of focus instead (a defocused wire in front).
+   The loss weight of a pixel they dominate is at least 0.9 (a one-pixel line covers a pixel by under 0.9, and its own label is the one to learn).
+2. **Surfaces at every depth.** A fifth mode, 30 % of the samples: a *stack* whose sprites' radii are spread evenly (one in each slice of the log radius)
+   between 1.5 px and the background's, a few in front, the first sprite in focus half of the time; the layer count goes from 2 to 5 to 2 to 6
+   (10 / 25 / 30 / 20 / 15 %). The all-in-focus mode falls from 30 to 22 %.
+3. **Featureless layers** (a sky under a wavy horizon, a wall or sheet of 1 to 3 ellipses; one layer in 40 % of the batches, in 60 % of its
+   samples, in focus 55 % of the time, and the whole background of 7 % of the samples). Gradient and faint clouds only, sharp antialiased
+   edges. Far (more than 8 px plus the blur) from the edge of every layer the radius cannot be read from the picture: the weight there is
+   0.2 and rises to 1 within reach of an edge. (The pixels there are not left out: a region that is uniform to the noise is told apart from a
+   blurred wash by its appearance, and its true labels, in focus 55 % of the time, teach the network to answer "probably sharp, but not sure"
+   there, which the decision rule below turns into "not blurred". At zero weight nothing would teach it, and the many smooth pixels of blurred layers
+   would say "blur".)
+
+The half-resolution target changed with it (see "The half-resolution target" in `train.py`'s docstring: **a mixed block takes the sharp
+radius**), `skip_identity` leaves out the FFT of layers without blur (an exact identity), and the previews have a fourth panel (the weight).
+The synthesis is about 2 to 3 times dearer on the CPU (more layers; the structures' rasterisation); its cost on the L4 is unmeasured: the
+GPU smoke prints it (minutes at step 25, 50, ...).
 
 ### The sharpness filter (the recipe's main label noise)
 
@@ -119,8 +146,12 @@ costs a thousandth of a MAC per pixel, one at stride 2 a quarter.
 
 ## Training (`train.py`)
 
-Loss: Laplace negative log-likelihood of `log r` at half resolution (a 2 x 2 block averages its log radius; a block that mixes radii
-more than `e^0.35` apart counts 30 %). AdamW (lr 2e-3, 300 warm-up steps), an EMA of the weights (0.999) is what is evaluated and
+Loss: Laplace negative log-likelihood of `log r` at half resolution. bokeh-2: a 2 x 2 block averaged its log radius, and one that
+mixed radii more than `e^0.35` apart counted 30 %, so a one-pixel twig in a blur was learnt as a mild blur. **v3: in a mixed block the
+sharp radius wins** (the smallest radius among the pixels of weight at least a half, at 70 %; `half_targets`, `--no-sharp-wins` is the old rule).
+Optional: `--decision-loss w` adds a cross-entropy of the runtime's decision probability against the label (off: CUHK and the synthetic
+groups show no calibration failure it would mend). `--init-from bokeh-2` starts from a finished run's weights (its `model.pt`, EMA) with a
+new optimiser, schedule and step count: the old knowledge is kept and the run learns what v3 added; give a lower `--lr` (1e-3). AdamW (lr 2e-3, 300 warm-up steps), an EMA of the weights (0.999) is what is evaluated and
 exported, bf16 autocast, gradient clipping. **The cosine schedule runs over elapsed time**, not over steps: the throughput of the L4
 is not measured, and a run stopped by its time limit would otherwise end at a high learning rate. A checkpoint every 5 minutes; a rerun
 with the same output folder continues from it. Batch 24 at 512 x 512 (random crops of the 512 tiles are possible for smaller samples).
@@ -137,8 +168,8 @@ negative, the second moment is clamped) and guarded in `train.py`: a step with a
 (`TrainingDiverged`, "training diverged: ...") after 21 skipped steps in a row, when more than 2 % of the steps after step 200
 were skipped, when a weight or an evaluation is not finite, or when the mean loss of steps 25 to 100 is NaN or above 5; no
 checkpoint of NaN weights is written, resumed or exported. A run that diverges costs minutes, not the budget. Run the GPU smoke
-(`modal_app::train --budget 0.8 --minutes 8 --steps 1000 --run bokeh-smoke`, about $0.3) before a long run: it is the full
-configuration, and its log must show finite losses that fall. A run name that was used before resumes from that run's checkpoint,
+(`modal_app::train --budget 0.8 --minutes 8 --steps 1000 --run bokeh-smoke`, about $0.3; v3's is in "Running it") before a long run: it is the full
+configuration, and its log must show finite losses (that fall, from a fresh network) and no `skipped` lines. A run name that was used before resumes from that run's checkpoint,
 so a new run takes a new name.
 
 ### Validation and the go/no-go
@@ -148,7 +179,11 @@ On held-out tiles (a hash of the photo id; never trained on), fixed seeds, pixel
 of pixels with truth below `b_min` that are predicted at `2 * b_min` or more (and `fp_rate_gated`); `recall_2bmin`; calibration (ten bins
 of the predicted scale against the mean absolute log error, and `ece`); the same numbers for the classical baseline (`classical.py`)
 on the first 48 samples next to the model's on the same samples; and `real_sharp`, the false-positive rate on *real* sharp tiles
-without synthesis.
+without synthesis (also with the runtime's decision, `fp_rate_p70`). v3 adds `groups` (the numbers for what the new synthesis added,
+with the decision `P >= 0.7`: the share of blocks on a sharp thin structure over a blur, and in the far inside of a sharp featureless layer,
+that are called blurred; the recall of blur from `2 b_min` to 0.012 and above; the decision's precision and recall) and `legacy`: bokeh-2's
+validation (its synthesis, its half-resolution target, the same tiles, seed and samples as its final numbers), so that `final.legacy.model`
+sits next to bokeh-2's `final.model` and a regression on the old recipe cannot hide behind the new one.
 
 **Go** (the model may go to `data/models/bokeh/`) if: (1) it beats the classical detector on synthetic scenes with known blur (lower
 `mae_b`, at least equal gated precision: `fp_rate_gated` not higher); (2) it does not raise false positives on sharp real photos
@@ -198,6 +233,7 @@ The whole programme stays at or under **$10** by the run's own estimate. Every e
 | `prepare` (20,000 photos) | 1.5 | $1.26 | about $0.3 to $0.5 |
 | `preview` | 0.3 | $0.12 | about $0.02 |
 | `train --minutes 100` | 5 | $2.90 | about $2.6 |
+| `train --minutes 5 --overhead-min 8` (v3's smoke) | 0.45 | $0.33 | about $0.2 |
 | `results` / `fetch` | 0.05 / 0 | $0.008 / none | a cent / none |
 
 `python -m training.bokeh.budget plan --entry train --minutes 100` prints a plan without touching Modal. Expected costs are guesses
@@ -205,6 +241,11 @@ The whole programme stays at or under **$10** by the run's own estimate. Every e
 $0.1 for the orchestrator); the ledger records the real ones. After the four entries above the programme has
 spent about $3.2 and has reserved at most $4.3, leaving about $5.7 for a second run of 150 minutes (worst case $4.2) or more
 data. The longest single training that fits `--budget 5` is 186 minutes.
+
+**The overhead.** The time limit of a training call is `minutes + overhead`, 18 minutes by default: bokeh-2 needed 10 s to copy the tiles and
+75 s for the final evaluation of 576 samples, so 18 is generous, and it is most of a short run's worst case (a 5-minute smoke would have a worst
+case of $0.54). `--overhead-min` (never below 6) says less for a run whose final evaluation is small (`--final-val 96`); the plan, the call's time
+limit and the heartbeat all use it. The programme's spend after bokeh-2 is $5.55 (ledger); v3's smoke and run reserve at most $0.33 and $2.90.
 
 ## Running it
 
@@ -222,6 +263,18 @@ in the workflow file on the branch):
 | 4a | `train` | `--budget 0.8 --minutes 8 --steps 1000 --run bokeh-smoke` | the GPU smoke: the full configuration for 1,000 steps (about 6 minutes, about $0.3), then the final evaluation, the sheet and the export. Its log (`runs/bokeh-smoke/log.txt`) must show finite losses that fall and no `skipped` lines |
 | 4b | `train` | `--budget 5 --minutes 100 --run bokeh-2` | one L4, then the final evaluation and the export (`bokeh-1` holds the NaN checkpoint of the lost run: use a new name) |
 | 5 | `results` | | metrics and the ledger |
+
+**bokeh-3 (v3), the second round** (`ENTRY: train` for both; the cap leaves $4.45 and this round's worst case is $3.22 with the smoke):
+
+| # | ARGS | Does |
+|---|---|---|
+| 0 (optional, a cent) | `ENTRY: preview`, `--budget 0.3` | four sheets of v3's scenes from the 29,000 real tiles (`previews.py` renders `SynthConfig.v3()` now): the lead looks before paying for a smoke |
+| 6a | `--budget 0.45 --minutes 5 --steps 600 --overhead-min 8 --final-val 96 --init-from bokeh-2 --lr 0.001 --run bokeh-3-smoke` | the GPU smoke of the new synthesis and of the start from bokeh-2's weights (worst case $0.33, about $0.2): 600 steps or 5 minutes. Its log must show `started from the weights of`, finite losses and no `skipped` lines; the minutes at steps 25 and 50 give the speed of v3's steps (bokeh-2: 0.17 min per 25 steps); `metrics.json` has `final.groups` and `final.legacy` |
+| 6b | `--budget 3 --minutes 100 --init-from bokeh-2 --lr 0.001 --run bokeh-3` | the run: one L4, bokeh-2's weights as the start (worst case $2.90, about $2.6) |
+
+Starting from bokeh-2 is recommended: v3's data contain bokeh-2's (80 % of the samples have no thin structure or featureless layer), so what
+it learnt carries over and the 100 minutes go to what is new; from scratch the same minutes would also have to learn the old recipe again, with
+slower steps (more layers). The learning rate is half the first run's because the weights are already good (warm-up stays 300 steps).
 
 From a computer with direct internet and the two variables: `pip install modal==1.6.2`, then `modal run -m training.bokeh.modal_app::<entry> <args>`, and
 `modal run -m training.bokeh.modal_app::fetch` copies the small files (weights, metrics, samples, previews, credits, ledger) into
@@ -245,6 +298,14 @@ default plans fit. Synthesis: every kernel kind has its radius, determinism for 
 allowed operations, the bilinear rule, folding, export **bytes** (same weights, same file), fixture, the random mode. Sources: masks,
 the sharpness filter, tiles, shards, the split, `prepare` end to end on a fake volume. Training: the loss, the schedule, the metrics, a
 few real steps, resume. Encode and classical.
+
+v3: the default config is bokeh-2's recipe (recorded sums of a batch); every kind of thin structure is drawn finite, deterministic, in the frame and
+thin; a drawn line covers its width whatever its offset; a structure contrasts with its background; a featureless layer has no texture; a thin
+structure over a blur is labelled sharp and weighted at least 0.9, and the far inside of a featureless layer at 0.2; skipping the FFT of unblurred layers
+changes nothing; the stack mode spreads the radii; whole batches of dark-rim kernels and many seeds are finite (the bokeh-1 NaN); the half-resolution
+targets (bokeh-2's rule, the sharp-wins rule, a thin line, the boost); the decision loss and probability; the group numbers and masks; the final evaluation
+reports the groups and the legacy validation; a run starts from another's weights (and a resumed run does not); the overhead and the smoke's plan; the
+evaluation on research-only sets (`test_eval_real.py`: the rules, the counts, the spread, the polarity).
 
 ## Known limits and risks
 

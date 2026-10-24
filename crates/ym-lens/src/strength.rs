@@ -9,7 +9,8 @@
 //! starburst keep the data's numbers; the streak's fraction is data (`anamorphic.json`).
 
 use crate::consts::{
-    ATTACHMENT_GHOST_FLOOR, GHOST_FRACTION_FLOOR, GHOST_GAIN_MAX, GLOW_GAIN, STARBURST_GAIN,
+    ATTACHMENT_GHOST_FLOOR, GHOST_FRACTION_FLOOR, GHOST_GAIN_MAX, GLOW_FRACTION_FLOOR,
+    STARBURST_FRACTION_FLOOR,
 };
 use crate::data::{AttachmentData, LensData};
 use crate::plan::LensPlan;
@@ -36,6 +37,7 @@ impl FlareStrengths {
     /// The strengths of `lens` behind `attachment`.
     #[must_use]
     pub fn new(lens: &LensData, attachment: &AttachmentData) -> Self {
+        // A part the lens does not have stays absent: the floors only raise what is there.
         let gain = |sum: f64, floor: f64| -> f64 {
             if sum > 0.0 {
                 (floor / sum).clamp(1.0, GHOST_GAIN_MAX)
@@ -43,13 +45,20 @@ impl FlareStrengths {
                 1.0
             }
         };
+        let raised = |fraction: f64, floor: f64| -> f64 {
+            if fraction > 0.0 {
+                fraction.max(floor)
+            } else {
+                0.0
+            }
+        };
         let ghosts: f64 = lens.flare.ghosts.iter().map(|g| g.fraction).sum();
         let att_ghosts: f64 = attachment.ghosts.iter().map(|g| g.fraction).sum();
         FlareStrengths {
-            glow: lens.flare.glow.fraction * GLOW_GAIN,
+            glow: raised(lens.flare.glow.fraction, GLOW_FRACTION_FLOOR),
             veil: lens.flare.veil.fraction,
             ghost_gain: gain(ghosts, GHOST_FRACTION_FLOOR),
-            burst: lens.flare.starburst.fraction * STARBURST_GAIN,
+            burst: raised(lens.flare.starburst.fraction, STARBURST_FRACTION_FLOOR),
             streak: attachment.streak.fraction,
             attachment_ghost_gain: gain(att_ghosts, ATTACHMENT_GHOST_FLOOR),
         }

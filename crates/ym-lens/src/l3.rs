@@ -26,6 +26,7 @@ mod restore;
 mod sources;
 mod terms;
 
+pub use lights::boost_ev;
 pub(crate) use device::{lens_data, mix, plane_data, scale_data};
 pub(crate) use pass::{apply, combine, halo, terms, terms_exact};
 pub(crate) use planes::FlarePlanes;

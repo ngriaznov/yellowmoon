@@ -370,7 +370,7 @@ def test_a_featureless_layer_is_flat_inside_with_a_sharp_edge():
     for i in range(8):
         inner = (alpha[i, 0] > 0.999)
         if int(inner.sum()) > 200:
-            inner = torch.nn.functional.max_pool2d(-inner.float()[None, None], 5, 1, 2)[0, 0] == 0  # 2 px inside
+            inner = torch.nn.functional.max_pool2d(-inner.float()[None, None], 5, 1, 2)[0, 0] == -1  # 2 px inside
             c_i = col[i] / alpha[i].clamp(min=1e-6)
             step = (c_i[:, 1:, :-1] - c_i[:, :-1, :-1]).abs() + (c_i[:, :-1, 1:] - c_i[:, :-1, :-1]).abs()
             m_i = inner[:-1, :-1]
@@ -411,8 +411,8 @@ def test_inside_a_featureless_layer_far_from_every_edge_the_weight_is_low(no_ell
         _, label, weight, dom = S.render_layers(bg, torch.ones(1, 1, c, c), torch.tensor([[12.0]]), torch.full((1, c, c), 12.0), [(sky_c, sky)],
                                                 torch.tensor([[t]]), [], torch.zeros(1, 0), torch.Generator().manual_seed(10), m,
                                                 kind_weights=DISC_ONLY, layer_class=classes, return_class=True)
-        assert int(dom[0, 0, 10, 64]) == S.FLAT and float(label[0, 0, 10, 64]) == t
-        assert float(weight[0, 0, 10, 64]) == pytest.approx(S.FLAT_INTERIOR_WEIGHT, abs=1e-6)  # 80 px from the edge: no evidence
+        assert int(dom[0, 0, 50, 64]) == S.FLAT and float(label[0, 0, 50, 64]) == t
+        assert float(weight[0, 0, 50, 64]) == pytest.approx(S.FLAT_INTERIOR_WEIGHT, abs=1e-6)  # 40 px from the edge: no evidence
         near = [float(weight[0, 0, y, 64]) for y in range(80, 90)]
         assert max(near) > 0.5, (t, near)  # the observable ring along the edge keeps its weight (the share falls to the edge)
 

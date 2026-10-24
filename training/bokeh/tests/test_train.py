@@ -98,18 +98,152 @@ def test_it_refuses_to_run_without_a_limit(tile_folder, tmp_path):
         train.train(tile_folder, tmp_path / "r", {**SMALL, "steps": None, "max_minutes": None})
 
 
-def test_the_half_resolution_targets_average_the_log_radius_and_weaken_mixed_blocks():
+def _blocks():
+    """A 4 x 4 picture whose 2 x 2 blocks are: all 8 px (top left), all 1 px (bottom right), 8 px with one pixel of 1 px
+    (top right: mixed, and the sharp pixel is one of weight 1), and 8 px with a pixel of 1 px whose weight is low (bottom left)."""
     from training.bokeh.synth import Synth
 
     r = torch.ones(1, 1, 4, 4)
     r[..., :2] = 8.0
     r[0, 0, 0, 2] = 8.0  # the block at rows 0-1, columns 2-3 now holds 8 and 1 together: mixed
+    r[0, 0, 3, 0] = 1.0  # bottom left: three of 8 px and one of 1 px
     w = torch.ones(1, 1, 4, 4)
-    sy = Synth(lin=torch.zeros(1, 3, 4, 4), r=r, w=w, hd=torch.ones(1))
-    y2, w2, r2 = train.half_targets(sy)
+    w[0, 0, 3, 0] = 0.3  # ... and that one is an ambiguous pixel
+    return Synth(lin=torch.zeros(1, 3, 4, 4), r=r, w=w, hd=torch.ones(1))
+
+
+def test_the_half_resolution_targets_of_bokeh_2_average_the_log_radius_and_weaken_mixed_blocks():
+    y2, w2, r2 = train.half_targets(_blocks(), sharp_wins=False)
     assert y2.shape == (1, 1, 2, 2)
     assert float(y2[0, 0, 0, 0]) == pytest.approx(np.log(8.0)) and float(y2[0, 0, 1, 1]) == pytest.approx(0.0)
+    assert float(y2[0, 0, 0, 1]) == pytest.approx(np.log(8.0) * 0.25)  # the average of 8, 1, 1, 1 in the log
     assert float(w2[0, 0, 0, 0]) == 1.0 and float(w2[0, 0, 0, 1]) == pytest.approx(0.3)
+
+
+def test_in_a_mixed_block_the_sharp_pixel_wins_when_it_is_a_firm_one():
+    y2, w2, r2 = train.half_targets(_blocks())  # the default
+    assert float(y2[0, 0, 0, 0]) == pytest.approx(np.log(8.0)) and float(w2[0, 0, 0, 0]) == 1.0  # a pure block is as before
+    assert float(y2[0, 0, 0, 1]) == pytest.approx(0.0) and float(r2[0, 0, 0, 1]) == pytest.approx(1.0)  # 8, 1, 1, 1: the smallest
+    assert float(w2[0, 0, 0, 1]) == pytest.approx(0.7)
+    # a block whose only sharp pixel has a low weight is not decided by it: the firm ones (the 8 px) are
+    assert float(y2[0, 0, 1, 0]) == pytest.approx(np.log(8.0)) and float(w2[0, 0, 1, 0]) == pytest.approx(0.7 * (3 + 0.3) / 4)
+    assert float(y2[0, 0, 1, 1]) == pytest.approx(0.0)
+
+
+def test_a_thin_sharp_line_over_a_blur_stays_sharp_at_half_resolution():
+    from training.bokeh.synth import Synth
+
+    r = torch.full((1, 1, 8, 8), 12.0)
+    r[..., 3, :] = 0.0  # a one-pixel line across
+    w = torch.ones(1, 1, 8, 8)
+    sy = Synth(lin=torch.zeros(1, 3, 8, 8), r=r, w=w, hd=torch.ones(1))
+    old, _, _ = train.half_targets(sy, sharp_wins=False)
+    new, wn, _ = train.half_targets(sy)
+    assert float(old[0, 0, 1, 0]) == pytest.approx(0.5 * np.log(12.0))  # absorbed: half way to the blur
+    assert float(new[0, 0, 1, 0]) == pytest.approx(0.0) and float(wn[0, 0, 1, 0]) == pytest.approx(0.7)  # held as sharp
+    assert float(new[0, 0, 0, 0]) == pytest.approx(np.log(12.0))  # the blur beside it is untouched
+
+
+def test_a_block_with_a_thin_structure_counts_more_when_asked():
+    from training.bokeh.synth import THIN, Synth
+
+    r = torch.full((1, 1, 8, 8), 12.0)
+    r[..., 3, :] = 0.0
+    cls = torch.zeros(1, 1, 8, 8, dtype=torch.uint8)
+    cls[..., 3, :] = THIN
+    sy = Synth(lin=torch.zeros(1, 3, 8, 8), r=r, w=torch.ones(1, 1, 8, 8), hd=torch.ones(1), cls=cls)
+    _, w1, _ = train.half_targets(sy)
+    _, w2, _ = train.half_targets(sy, thin_boost=2.0)
+    assert float(w2[0, 0, 1, 0]) == pytest.approx(2 * float(w1[0, 0, 1, 0]))  # the block on the line
+    assert float(w2[0, 0, 0, 0]) == float(w1[0, 0, 0, 0])  # the blur beside it
+    assert torch.equal(train.half_targets(sy, thin_boost=2.0)[0], train.half_targets(sy)[0])  # the target is not changed
+    _, w3, _ = train.half_targets(Synth(lin=sy.lin, r=r, w=sy.w, hd=sy.hd), thin_boost=2.0)  # no classes (bokeh-2's synthesis): nothing to boost
+    assert torch.equal(w3, w1)
+
+
+def test_the_decision_loss_is_a_cross_entropy_of_the_probability_that_b_reaches_twice_b_min():
+    hd = torch.tensor([500.0])
+    x = float(np.log(2 * B_MIN * 500.0))  # the threshold in the outputs' units
+    w = torch.ones(1, 1, 2, 2)
+    y = torch.tensor([[[[x + 1.0, x + 1.0], [x - 1.0, x - 1.0]]]])  # two blocks that are blurred, two that are not
+    s = torch.full((1, 1, 2, 2), float(np.log(0.3)))
+    sure = train.decision_nll(y.clone(), s, y, w, hd)  # the output is the truth, narrow: P is high where the label is blurred, low where not
+    wrong = train.decision_nll(torch.flip(y, dims=(2,)), s, y, w, hd)
+    assert float(sure) < 0.1 < float(wrong)
+    # a block whose own Laplace has half its mass above the threshold costs log 2
+    assert float(train.decision_nll(torch.full((1, 1, 1, 1), x), torch.zeros(1, 1, 1, 1), torch.full((1, 1, 1, 1), x + 1), torch.ones(1, 1, 1, 1), hd)) == pytest.approx(np.log(2), abs=1e-4)
+
+
+def test_the_group_numbers_count_thin_flat_and_the_blur_bands():
+    g = train.Groups()
+    b_true = np.array([[0.001, 0.001, 0.009, 0.01, 0.02, 0.03, 0.001, 0.001]])
+    b_hat = np.array([[0.009, 0.001, 0.009, 0.002, 0.02, 0.001, 0.001, 0.02]])
+    p = np.array([[0.9, 0.1, 0.8, 0.1, 0.95, 0.2, 0.1, 0.9]])
+    w = np.ones_like(b_true)
+    thin = np.array([[True, True, False, False, False, False, False, False]])
+    flat = np.array([[False, False, False, False, False, False, True, True]])
+    g.add(b_hat, p, b_true, w, thin, flat)
+    r = g.result()
+    assert r["thin_false_blur_raw"] == pytest.approx(0.5) and r["thin_false_blur_p70"] == pytest.approx(0.5)
+    assert r["flat_false_blur_raw"] == pytest.approx(0.5) and r["flat_false_blur_p70"] == pytest.approx(0.5)
+    # blurred truth in [2 b_min, 0.012): 0.009 and 0.01: raw hits the first only, p the first only; above: 0.02 hit, 0.03 missed
+    assert r["mid_recall_raw"] == pytest.approx(0.5) and r["mid_recall_p70"] == pytest.approx(0.5)
+    assert r["high_recall_raw"] == pytest.approx(0.5) and r["high_recall_p70"] == pytest.approx(0.5)
+    assert r["blocks"] == {"thin": 2, "flat": 2, "mid": 2, "high": 2, "truth": 4}
+
+
+def test_v3_masks_pick_a_sharp_thin_structure_over_a_blur_and_the_far_inside_of_a_sharp_flat_layer():
+    from training.bokeh.synth import FLAT, THIN, Synth
+
+    r = torch.zeros(1, 1, 16, 16)
+    r[..., 8:, :] = 10.0
+    cls = torch.zeros(1, 1, 16, 16, dtype=torch.uint8)
+    cls[0, 0, 6, 2] = THIN  # a sharp thin pixel, with a 10 px blur within 4 px: counts
+    cls[0, 0, 1, 1] = THIN  # a sharp thin pixel with no blur near: does not
+    cls[0, 0, 4:8, 12:16] = FLAT  # a flat layer, sharp, whose weight was cut
+    w = torch.ones(1, 1, 16, 16)
+    w[0, 0, 4:8, 12:16] = 0.1
+    sy = Synth(lin=torch.zeros(1, 3, 16, 16), r=r, w=w, hd=torch.ones(1), cls=cls)
+    thin, flat = train.v3_masks(sy)
+    assert thin.shape == (1, 8, 8) and bool(thin[0, 3, 1]) and not bool(thin[0, 0, 0])
+    assert bool(flat[0, 2, 6]) and bool(flat[0, 3, 7]) and not bool(flat[0, 0, 0])
+    z = Synth(lin=sy.lin, r=r, w=w, hd=torch.ones(1))  # the bokeh-2 synthesis: no classes
+    assert not bool(torch.stack(train.v3_masks(z)).any())
+
+
+def test_the_final_evaluation_reports_the_groups_and_bokeh_2s_own_validation(tile_folder, tmp_path):
+    m = train.train(tile_folder, tmp_path / "run", SMALL, log=lambda *_: None)
+    final = m["final"]
+    assert {"thin_false_blur_p70", "flat_false_blur_p70", "mid_recall_p70", "precision_p70", "recall_p70"} <= set(final["groups"])
+    assert set(final["legacy"]) == {"model", "groups"} and final["legacy"]["model"]["pixels"]["pos"] > 0  # same samples as bokeh-2's final numbers
+    assert "fp_rate_p70" in final["real_sharp"]["model"]
+    old = train.train(tile_folder, tmp_path / "old", {**SMALL, "synth": 2, "sharp_wins": False}, log=lambda *_: None)
+    assert "legacy" not in old["final"] and old["final"]["groups"]["blocks"]["thin"] == 0
+
+
+def test_a_run_can_start_from_the_weights_of_another_and_the_decision_loss_trains(tile_folder, tmp_path):
+    first = tmp_path / "first"
+    train.train(tile_folder, first, SMALL, log=lambda *_: None)
+    logs = []
+    out = tmp_path / "second"
+    m = train.train(tile_folder, out, {**SMALL, "init_from": str(first / "model.pt"), "decision_loss": 0.3, "steps": 1, "lr": 1e-9, "warmup": 1}, log=logs.append)
+    assert any("started from the weights of" in str(x) for x in logs) and m["steps"] == 1
+    a = torch.load(first / "model.pt", weights_only=False)["state_dict"]
+    b = torch.load(out / "model.pt", weights_only=False)["state_dict"]
+    for k, v in a.items():
+        if v.dtype.is_floating_point and "running_" not in k:
+            assert torch.allclose(v, b[k], atol=1e-4), k  # one step at a tiny learning rate: the same network (batch-norm statistics move)
+    # a rerun of the second run resumes from its own checkpoint, not from the weights it started from
+    logs2 = []
+    train.train(tile_folder, out, {**SMALL, "init_from": str(first / "model.pt"), "steps": 2, "lr": 1e-9, "warmup": 1}, log=logs2.append)
+    assert any("resumed at step 1" in str(x) for x in logs2) and not any("started from" in str(x) for x in logs2)
+
+
+def test_the_synthesis_config_follows_the_run_config():
+    cfg = {**train.DEFAULTS}
+    assert train.synth_config(cfg).thin_layers != (1.0,) and len(train.synth_config(cfg).mode_probs) == 5
+    assert train.synth_config({**cfg, "synth": 2}).thin_layers == (1.0,) and len(train.synth_config({**cfg, "synth": 2}).mode_probs) == 4
+    assert len(train.synth_config(cfg, legacy=True).mode_probs) == 4
 
 
 # --- the guards: a run with a NaN in it must stop, or skip the step, and never go on to train NaNs ---------------------

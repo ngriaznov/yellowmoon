@@ -9,7 +9,9 @@
 //!   --out DIR          output folder (default ./lens-sheets)
 //!   --long-edge N      long edge of the fit frames in pixels (default 1500)
 //!   --quality Q        JPEG quality, 50 to 100 (default 90)
-//!   --only a,b,c       render only these variants (names below)
+//!   --only a,b,c       render only these variants (names below, and the custom ones)
+//!   --variant N=K,F,E,A  add a variant named N: lens K (`default`, `vintage`, ...) with Flares F, Edges E
+//!                      and Anamorphic A; repeat for several (rendered after the built-in ones)
 //!   --resume           skip the variants whose .jpg exists (and the plane dump when bokeh.json exists)
 //!   --dump-planes      also write the lens plane, the blur map b and the confidence c
 //!   --light-planes     with --dump-planes: no .f32 files (saves disk), only the json and the PNGs
@@ -174,6 +176,7 @@ struct Args {
     dump_planes: bool,
     light_planes: bool,
     progress: Option<PathBuf>,
+    custom: Vec<Variant>,
     files: Vec<PathBuf>,
 }
 
@@ -187,6 +190,7 @@ fn parse_args() -> Fallible<Args> {
         dump_planes: false,
         light_planes: false,
         progress: None,
+        custom: Vec::new(),
         files: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
@@ -205,6 +209,21 @@ fn parse_args() -> Fallible<Args> {
                 );
             }
             "--progress" => a.progress = Some(PathBuf::from(value("--progress")?)),
+            "--variant" => {
+                let spec = value("--variant")?;
+                let (name, rest) = spec
+                    .split_once('=')
+                    .ok_or("--variant wants NAME=KIND,FLARES,EDGES,ANAMORPHIC")?;
+                let p: Vec<&str> = rest.split(',').collect();
+                if p.len() != 4 {
+                    return Err("--variant wants NAME=KIND,FLARES,EDGES,ANAMORPHIC".into());
+                }
+                a.custom.push(Variant {
+                    // A few names for the length of the process.
+                    name: Box::leak(name.to_owned().into_boxed_str()),
+                    lens: ls(p[0].parse()?, p[1].parse()?, p[2].parse()?, p[3].parse()?),
+                });
+            }
             "--resume" => a.resume = true,
             "--dump-planes" => a.dump_planes = true,
             "--light-planes" => a.light_planes = true,
@@ -754,7 +773,12 @@ fn render_photo(cx: &Context<'_>, file: &Path, stem: &str, dir: &Path) -> Fallib
         }
         let mut done = 0usize;
         let by_name: HashMap<&str, &Variant> = cx.variants.iter().map(|v| (v.name, v)).collect();
-        for name in RENDER_ORDER {
+        let order: Vec<&str> = RENDER_ORDER
+            .iter()
+            .copied()
+            .chain(cx.args.custom.iter().map(|v| v.name))
+            .collect();
+        for name in order {
             let Some(v) = by_name.get(name) else { continue };
             if let Some(only) = &cx.args.only
                 && !only.iter().any(|o| o == name)
@@ -823,7 +847,8 @@ fn main() -> Fallible<()> {
     fs::create_dir_all(&options.app_root)?;
     let core = Core::open(options)?;
     let lib = Arc::new(LensLibrary::load(core.data_root())?);
-    let variants = variants(&lib)?;
+    let mut variants = variants(&lib)?;
+    variants.extend(args.custom.iter().cloned());
     let cx = Context {
         core: &core,
         lib: &lib,

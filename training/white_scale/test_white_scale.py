@@ -301,8 +301,8 @@ class Pins(unittest.TestCase):
         self.assertEqual(names, {"A1M01454.ARW", "A1M01739.ARW", "A1M01749.ARW"})
         self.assertTrue({"DSLR-A300.ARW", "DSLR-A500.ARW", "ILCE-5000.ARW", "NEX-5N.ARW", "NEX-7.ARW"} <= {p.name for p in fit_mod.real_eval_pins()})
         play = fit_mod.play_raw_pins()
-        self.assertEqual(len(play), 35)
-        self.assertEqual(len({p.sha256 for p in play}), 35)
+        self.assertEqual(len(play), 32)
+        self.assertEqual(len({p.sha256 for p in play}), 32)
         self.assertEqual(len({(p.set, p.name) for p in fit_mod.all_pins()}), len(fit_mod.all_pins()))
 
     def test_every_file_of_the_registry_is_a_pinned_file_of_a_set(self):
@@ -319,9 +319,9 @@ class Pins(unittest.TestCase):
                 if pin.model:
                     self.assertEqual(pin.model, b["model"], f["name"])
                 self.assertIn(f["set"], fit_mod.SETS)
-        # The A1 (3), the A7 (4), the ZV-E10 (3), the NEX-5R (2), twelve bodies with one file each, the A6000 (10), the A6300 (5)
-        # and the A6500 (2).
-        self.assertEqual(used, 41, "the files named by the registry")
+        # The A1 (3), the A7 (4), the ZV-E10 (3), the NEX-5R (2), twelve bodies with one file each, the A6000 (8: the two files
+        # whose post is NonCommercial or states no licence are not pinned), the A6300 (5) and the A6500 (2).
+        self.assertEqual(used, 39, "the files named by the registry")
 
 
 class Registry(unittest.TestCase):
@@ -383,6 +383,14 @@ class Registry(unittest.TestCase):
             self.assertTrue(lo <= res["daylight_k_after"] <= hi, b["model"])
             self.assertGreaterEqual(len(src["files"]), fit_mod.MIN_FILES)
             self.assertEqual(b["match"], "default")
+
+    def test_no_file_of_a_restricted_licence_is_named_by_the_registry(self):
+        # Shipped scales rest only on files whose licence allows any use (docs/03): the Play Raw files whose post states a
+        # NonCommercial licence or none are not pinned, and the entries do not name them.
+        named = {f["name"] for b in self.registry["bodies"] for f in b["white_scale_source"]["files"]}
+        self.assertFalse(named & {"12024__DSC1085.ARW", "35354_DSC00912.ARW", "48272_DSC03902.ARW"})
+        pinned = {p.name for p in fit_mod.play_raw_pins()}
+        self.assertFalse(pinned & {"12024__DSC1085.ARW", "35354_DSC00912.ARW", "48272_DSC03902.ARW"})
 
     def test_the_bodies_whose_files_disagree_are_not_in_the_registry(self):
         # The A7 II (docs/03, Consistency of a body's files: 6 files up to 10.4 % in blue) and the A230 (misses the limits).

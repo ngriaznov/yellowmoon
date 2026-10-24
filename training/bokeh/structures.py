@@ -283,21 +283,30 @@ def rasterize(verts: torch.Tensor, hw: torch.Tensor, alive: torch.Tensor, canvas
     return out
 
 
+def _window_mean(x: torch.Tensor, y: torch.Tensor, x_: torch.Tensor, r: int) -> torch.Tensor:
+    """The mean colour (B, 3) of the (2r+1)-pixel square around (y, x_) (each (B,)) of x (B, 3, S, S), cut at the borders.
+    One window per sample: a pooling of the whole picture, to read one pixel of it, is far dearer."""
+    b, _, s, _ = x.shape
+    off = torch.arange(-r, r + 1, device=x.device)
+    ys = (y.view(b, 1) + off.view(1, -1)).clamp(0, s - 1)  # (B, 2r+1)
+    xs = (x_.view(b, 1) + off.view(1, -1)).clamp(0, s - 1)
+    win = x[torch.arange(b, device=x.device).view(b, 1, 1), :, ys.view(b, -1, 1), xs.view(b, 1, -1)]  # (B, 2r+1, 2r+1, 3)
+    return win.mean((1, 2))
+
+
 def _pick_colour(lin: torch.Tensor, gen, centre: torch.Tensor, canvas_bg_lum_floor: float = 1e-4) -> torch.Tensor:
     """A colour (B, 3) for a thin structure: the hue of a random place in another tile of the batch, moved in brightness
     until it is dark (6 to 30 %) or bright (2.5 to 6 times) against the local background around `centre` (B, 2) in
     pixels. Contrast is what makes the structure's label readable."""
     b, _, s, _ = lin.shape
     dev = lin.device
-    near = F.avg_pool2d(lin, 9, 1, 4)
-    wide = F.avg_pool2d(lin, 25, 1, 12)
     donor = (torch.arange(b, device=dev) + torch.randint(1, max(b, 2), (b,), generator=gen, device=dev)) % b
     yy = torch.randint(0, s, (b,), generator=gen, device=dev)
     xx = torch.randint(0, s, (b,), generator=gen, device=dev)
-    col = near[donor, :, yy, xx]  # (B, 3)
+    col = _window_mean(lin[donor], yy, xx, 4)  # (B, 3)
     cy = centre[:, 1].round().long().clamp(0, s - 1)
     cx = centre[:, 0].round().long().clamp(0, s - 1)
-    bg = wide[torch.arange(b, device=dev), :, cy, cx]
+    bg = _window_mean(lin, cy, cx, 12)
     l_bg = luma_t(bg.view(b, 3, 1, 1)).view(b).clamp(min=canvas_bg_lum_floor)
     l_c = luma_t(col.view(b, 3, 1, 1)).view(b).clamp(min=canvas_bg_lum_floor)
     med = lower_median_t(luma_t(lin)).clamp(min=canvas_bg_lum_floor)

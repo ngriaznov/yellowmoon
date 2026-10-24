@@ -170,7 +170,7 @@ class Table(unittest.TestCase):
 
     def test_every_entry_is_pinned_by_sha256_with_its_post_poster_and_licence(self) -> None:
         files = self.table()["files"]
-        self.assertEqual(len(files), 35)
+        self.assertEqual(len(files), 32)
         names = [f["name"] for f in files]
         self.assertEqual(len(names), len(set(names)))
         hosts = set(self.table()["hosts"])
@@ -181,19 +181,21 @@ class Table(unittest.TestCase):
             self.assertRegex(entry["topic_url"], r"^https://discuss\.pixls\.us/t/\d+$")
             self.assertTrue(entry["name"].startswith(entry["topic_url"].rsplit("/", 1)[1] + "_"), entry["name"])
             self.assertTrue(entry["author"])
-            self.assertTrue(entry["licence"])
             self.assertIn(re.match(r"https://([^/]+)/", entry["url"]).group(1), hosts)
             # The address names the file by its SHA-1, so it cannot change under the pin.
             self.assertRegex(entry["url"], r"/original/\dX/[0-9a-f]/[0-9a-f]/[0-9a-f]{40}\.ARW$")
-            # A file is restricted exactly when its post states a NonCommercial licence or none.
-            restricted = not entry["licence"].startswith(free) or "NonCommercial" in entry["licence"] or "NC" in entry["licence"]
-            self.assertEqual(bool(entry.get("restricted")), restricted, entry["name"])
-        self.assertEqual(sorted(f["name"] for f in files if f.get("restricted")), ["12024__DSC1085.ARW", "35354_DSC00912.ARW", "48272_DSC03902.ARW"])
+            # Only files whose post allows any use are pinned: no NonCommercial licence, none stated.
+            self.assertTrue(entry["licence"].startswith(free), (entry["name"], entry["licence"]))
+            self.assertNotIn("NonCommercial", entry["licence"])
+            self.assertNotIn("NC", entry["licence"])
+            self.assertNotIn("restricted", entry)
+        # The three files of the first draft that are NonCommercial or state no licence are not in the table.
+        self.assertFalse({"12024__DSC1085.ARW", "35354_DSC00912.ARW", "48272_DSC03902.ARW"} & set(names))
 
     def test_the_built_in_table_loads(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop(wsp.TABLE_ENV, None)
-            self.assertEqual(len(wsp.load_table()["files"]), 35)
+            self.assertEqual(len(wsp.load_table()["files"]), 32)
 
     def test_the_table_is_validated_before_anything_is_fetched(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -213,21 +215,6 @@ class Table(unittest.TestCase):
         code, _out, err = run([], bad, Path(tmp.name) / "testdata")
         self.assertEqual(code, wsp.EXIT_USAGE)
         self.assertIn("name", err)
-
-    def test_restricted_must_be_a_boolean_and_is_reported_by_every_run(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        root = Path(tmp.name)
-        table, _host = make_world(root)
-        table["files"][1]["restricted"] = True
-        code, out, _err = run(["--list"], table, root / "testdata")
-        self.assertEqual(code, wsp.EXIT_NOTHING)
-        self.assertIn("1 files are under a NonCommercial licence or state none", out)
-        self.assertIn("101_B.ARW", out)
-        table["files"][1]["restricted"] = "yes"
-        code, _out, err = run([], table, root / "testdata")
-        self.assertEqual(code, wsp.EXIT_USAGE)
-        self.assertIn("restricted", err)
 
     def test_an_address_outside_the_tables_hosts_is_refused(self) -> None:
         tmp = tempfile.TemporaryDirectory()

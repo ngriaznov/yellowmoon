@@ -196,3 +196,22 @@ def test_the_gpu_smoke_and_the_full_run_fit_the_budgets_the_workflow_gives_them(
     assert B.plan_train(8).worst <= 0.8
     assert B.plan_train(100).worst <= 5.0
     assert B.plan_train(8).worst + B.plan_train(100).worst < B.PROGRAMME_CAP / 2
+
+
+def test_the_v3_runs_fit_the_round_s_budget():
+    # bokeh-3's smoke: --budget 0.45 --minutes 5 --steps 600 --overhead-min 8 --final-val 96 --run bokeh-3-smoke
+    # bokeh-3:         --budget 3 --minutes 100 --init-from bokeh-2 --lr 0.001 --run bokeh-3
+    smoke, full = B.plan_train(5, 8), B.plan_train(100)
+    assert smoke.worst <= 0.4 and full.worst <= 3.0
+    assert smoke.worst + full.worst <= 3.5  # the round's worst case, the smoke included
+    # what is spent so far (the ledger's $5.55) plus both worst cases is still under the owner's $10
+    assert 5.55 + smoke.worst + full.worst <= B.PROGRAMME_CAP
+
+
+def test_a_smaller_overhead_shortens_the_time_limit_and_is_never_below_the_floor():
+    assert B.train_fn(5, 8).timeout_s == 13 * 60 and B.train_fn(5).timeout_s == (5 + B.TRAIN_OVERHEAD_MIN) * 60
+    assert B.plan_train(5, 8).items[1][2].timeout_s == (5 + 8 + B.ORCH_OVERHEAD_MIN) * 60
+    assert B.plan_train(5, 8).worst < B.plan_train(5).worst
+    with pytest.raises(ValueError, match="below the"):
+        B.train_fn(5, B.MIN_OVERHEAD_MIN - 1)
+    B.train_fn(5, B.MIN_OVERHEAD_MIN)

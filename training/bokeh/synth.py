@@ -44,6 +44,13 @@ One batch, step by step (`synthesize`):
    levels differ per channel, as on a balanced raw plane). The result is the lens-plane stand-in; `encode.py` turns it
    into the network's input.
 
+**v3** (`SynthConfig.v3()`; the default `SynthConfig()` is bokeh-2's recipe above, bit for bit): between steps 3 and 4 the batch also
+gets *thin structures* in front (`structures.thin_layer`: twigs, hair, wires, grass, bars, in focus, their pixels weighted at least 0.9),
+*featureless layers* (`structures.flat_layer`: a sky, a wall; far from every edge the weight is 0.1) and the whole background of a few
+samples can be featureless; a fifth mode draws a *stack* of surfaces whose blur is spread evenly between 1.5 px and the background's.
+A layer's class (`NORMAL`, `FLAT`, `THIN`) rides along to `render_layers`, which sets the weights and returns the dominating class per
+pixel (`Synth.cls`) for the validation's groups.
+
 The label is the *added* blur. A source's own blur is the main label noise (a Flickr photo with natural bokeh gets
 label 0 there); the tile filter and the Laplace loss limit it (README). Everything is a function of the batch, the
 config and the generator, so a seed repeats it exactly on one device.
@@ -64,7 +71,7 @@ NORMAL, FLAT, THIN = 0, 1, 2
 #: Pixels farther than this from the edge of every layer are "far from any evidence" inside a featureless layer.
 OBS_REACH = 8
 #: The weight of a pixel far from any edge inside a featureless layer, and the floor of a thin structure's own pixels.
-FLAT_INTERIOR_WEIGHT = 0.1
+FLAT_INTERIOR_WEIGHT = 0.2
 THIN_WEIGHT_FLOOR = 0.9
 
 
@@ -362,7 +369,8 @@ def render_layers(bg: torch.Tensor, bin_w: torch.Tensor, bg_r: torch.Tensor, fie
 
     v3: `layer_class` (B, 1 + len(sprites) + len(emitters)) holds `NORMAL`, `FLAT` or `THIN` for the background, the
     sprites and the emitters, in that order. Where a featureless layer dominates a pixel that is farther than `OBS_REACH`
-    px from the edge of every layer (its blurred alpha strictly between 0.02 and 0.98), the radius cannot be read from the
+    px from the edge of every layer (its blurred alpha strictly between 0.02 and 0.98, or jumping by more than 0.02 from a pixel to
+    the next), the radius cannot be read from the
     picture and the weight is scaled by `FLAT_INTERIOR_WEIGHT` (rising to 1 within reach of an edge); where a thin structure
     dominates (share at least a half) the weight is at least `THIN_WEIGHT_FLOOR`: a one-pixel line covers a pixel by less
     than 0.9, and its own label is the one that must be learnt. `skip_identity` leaves out the FFT of every layer whose
@@ -445,7 +453,12 @@ def render_layers(bg: torch.Tensor, bin_w: torch.Tensor, bg_r: torch.Tensor, fie
         return (out, label, weight, torch.zeros_like(label, dtype=torch.uint8)) if return_class else (out, label, weight)
     cls_front = torch.stack([layer_class[ar, order[:, p]] for p in range(n_layers - 1, -1, -1)], 1)  # (B, n_layers), as `share`
     dom = cls_front.view(b, n_layers, 1, 1).expand(b, n_layers, cv, cv).gather(1, which)
-    edge_zone = ((alp[:, 1:] > 0.02) & (alp[:, 1:] < 0.98)).any(1).float() if n_layers > 1 else torch.zeros_like(best)
+    if n_layers > 1:  # the edge of a layer: its blurred alpha is between 0 and 1, or jumps from one pixel to the next
+        a_s = alp[:, 1:, 0].reshape(-1, 1, cv, cv)
+        zone = ((a_s > 0.02) & (a_s < 0.98)) | ((F.max_pool2d(a_s, 3, 1, 1) + F.max_pool2d(-a_s, 3, 1, 1)) > 0.02)
+        edge_zone = zone.view(b, n_layers - 1, cv, cv).any(1, keepdim=True).float()
+    else:
+        edge_zone = torch.zeros_like(best)
     seen = _reach(edge_zone, OBS_REACH)
     weight = torch.where(dom == FLAT, weight * (FLAT_INTERIOR_WEIGHT + (1 - FLAT_INTERIOR_WEIGHT) * seen), weight)
     weight = torch.where((dom == THIN) & (best >= 0.5), weight.clamp(min=THIN_WEIGHT_FLOOR), weight)

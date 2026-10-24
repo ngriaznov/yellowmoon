@@ -14,7 +14,8 @@
 //!
 //! In front of the placement sit two scene-linear steps, in this order: the white lift (step 1b,
 //! [`WhiteLift`]) and the red chroma step (step 1c, [`RedChromaStep`]: a hue-preserving chroma gain on
-//! the reds that gives back what ACES 2 takes out of them, `docs/02`). Both run on the ACES 2 path only.
+//! the reds that gives back what ACES 2 takes out of them, `docs/02`). Both run on the ACES 2 path only, and
+//! a DNG carries both in its pixels.
 //!
 //! # Display placement
 //!

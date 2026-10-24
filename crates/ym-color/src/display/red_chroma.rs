@@ -50,6 +50,14 @@
 //! * `s` is held at [`S_MAX`] (the end of the neutral-axis table, +8 stops: display white) before `P` and
 //!   the table lookups, so the step stays finite for the brightest scene values.
 //!
+//! # In a DNG
+//!
+//! The step is a scene-linear AWG4 to AWG4 map, so a DNG carries it in its pixels like the white lift
+//! (`ColorChain::apply_dng_pixel`, `docs/09`). A DNG has no output gamut of its own: the step there uses the
+//! P3-D65 tables whatever the chain's output ([`RedGamut::P3D65`]). A look with its own display rendering
+//! above 0 % and an imported display LUT are inverted from their picture through plain ACES 2 and have no
+//! step.
+//!
 //! # Tables
 //!
 //! Both tables are computed here, once per limiting gamut, from `ym-color`'s own ACES 2 and gamut code

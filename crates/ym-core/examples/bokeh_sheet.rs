@@ -48,8 +48,10 @@ use ym_gpu::cpu::detail::NoiseReduction;
 use ym_gpu::cpu::sharpen::SharpenParams;
 use ym_gpu::queue::CancelToken;
 use ym_lens::{
-    Axis, CameraResponse, FrameInfo, ImageRef, LensAmounts, LensLibrary, LensPlan, LensPlanes,
+    Axis, BlurMapInput, CameraResponse, FrameInfo, ImageRef, LensAmounts, LensLibrary, LensPlan,
+    LensPlanes,
 };
+use ym_ml::bokeh_net::{BokehMap, BokehNet, PlanarRgbRef};
 use ym_raw::makernote::SonyFocus;
 
 type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
@@ -485,6 +487,102 @@ fn raw_params(src: &PhotoSource) -> Fallible<RawParams> {
     })
 }
 
+/// The lens's view of the network's map for lower-bound factor `k` (`ym-core`'s `blur_map_of` with `k` free).
+fn model_input(map: &BokehMap, k: f64) -> BlurMapInput {
+    let b_low = map
+        .b
+        .iter()
+        .zip(&map.c)
+        .map(|(&b, &c)| {
+            let beta = -0.25 * libm::log(f64::from(c).max(1e-6));
+            (f64::from(b) * libm::exp(-k * beta)) as f32
+        })
+        .collect();
+    BlurMapInput {
+        width: map.width,
+        height: map.height,
+        plane_width: map.plane_width,
+        plane_height: map.plane_height,
+        b: map.b.clone(),
+        b_low,
+    }
+}
+
+/// Runs the bokeh network on the lens plane, writes its raw map (`model_b.f32`, `model_c.f32`) and the planes built
+/// from it for several lower-bound factors, with the time each took.
+fn model_dump(
+    model: &BokehNet,
+    lens_plan: &LensPlan,
+    image: &ImageRef,
+    focus: Option<(f64, f64)>,
+    dir: &Path,
+    light: bool,
+) -> Fallible<serde_json::Value> {
+    let planar = PlanarRgbRef::new(image.width, image.height, image.data)?;
+    let (map, timings) = model.map_timed(&planar)?;
+    if !light {
+        write_f32(&dir.join("model_b.f32"), &map.b)?;
+        write_f32(&dir.join("model_c.f32"), &map.c)?;
+    }
+    let mut gates = Vec::new();
+    for k in [0.0, 0.8, 1.2, 1.61, 2.0, 2.5] {
+        let input = model_input(&map, k);
+        let t = Instant::now();
+        let planes = LensPlanes::build_with_map(lens_plan, image, focus, Some(&input), &|| false)?;
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        let report = planes.report();
+        let mut g = json!({
+            "k": k,
+            "planes_ms": ms,
+            "reshaped": report.reshaped,
+            "reason": report.reason.map(|r| format!("{r:?}")),
+        });
+        if let Some(b) = planes.bokeh() {
+            let (bw, bh) = b.size();
+            let nonzero = b.blur().iter().filter(|v| **v > 0.0).count();
+            g["active"] = json!(b.active());
+            g["edge_count"] = json!(b.edge_count());
+            g["blurred_fraction"] = json!(b.blurred_fraction());
+            g["balls"] = json!(b.balls().len());
+            g["nonzero_fraction"] = json!(nonzero as f64 / (bw * bh) as f64);
+            if !light && (k - 1.61).abs() < 1e-9 {
+                write_f32(&dir.join("model_blur_b.f32"), b.blur())?;
+                write_f32(&dir.join("model_confidence_c.f32"), b.confidence())?;
+                write_false_colour(&dir.join("model_blur_b.png"), bw, bh, b.blur(), 0.03, focus)?;
+            }
+        }
+        gates.push(g);
+    }
+    // The raw map's own shares: of the cells, those with b_low >= 2 b_min at each factor, and with c >= 0.5.
+    let valid_share = |k: f64| -> f64 {
+        let n = map.b.len().max(1);
+        let good = map
+            .b
+            .iter()
+            .zip(&map.c)
+            .filter(|&(&b, &c)| {
+                let beta = -0.25 * libm::log(f64::from(c).max(1e-6));
+                f64::from(b) * libm::exp(-k * beta) >= 2.0 * ym_lens::consts::B_MIN
+            })
+            .count();
+        good as f64 / n as f64
+    };
+    Ok(json!({
+        "cells": [map.width, map.height],
+        "plane": [map.plane_width, map.plane_height],
+        "reduce_ms": timings.reduce_ms,
+        "encode_ms": timings.encode_ms,
+        "forward_ms": timings.forward_ms,
+        "convert_ms": timings.convert_ms,
+        "valid_share": {
+            "k0": valid_share(0.0), "k0.8": valid_share(0.8), "k1.2": valid_share(1.2),
+            "k1.61": valid_share(1.61), "k2": valid_share(2.0), "k2.5": valid_share(2.5),
+        },
+        "c_ge_0_5_share": map.c.iter().filter(|c| **c >= 0.5).count() as f64 / map.c.len().max(1) as f64,
+        "gates": gates,
+    }))
+}
+
 /// Dumps the lens plane, the blur map and the confidence of one photo into `dir`.
 fn dump_planes(
     src: &PhotoSource,
@@ -576,6 +674,14 @@ fn dump_planes(
     };
     let planes = LensPlanes::build(&lens_plan, &image_ref, focus, &|| false)?;
     let planes_ms = t.elapsed().as_secs_f64() * 1000.0;
+    // The learned map, when the data folder has the model: its raw outputs and what the planes make of them for a
+    // few lower-bound quantiles (`b_low = b * exp(-k * beta)`, `beta = -0.25 ln c`; the render uses k = 1.61).
+    let model_info = match BokehNet::load_bundled(data_root) {
+        Ok(model) => Some(model_dump(
+            &model, &lens_plan, &image_ref, focus, dir, light,
+        )?),
+        Err(_) => None,
+    };
     // The 100 % windows' inputs: the raw group at full resolution over each window grown by L1's halo,
     // for `bokeh_probe --crop` (the lens plane and the plan are the ones above).
     if !crops.is_empty() && !frame.reduced {
@@ -622,6 +728,9 @@ fn dump_planes(
         "group_ms": group_ms,
         "planes_ms": planes_ms,
     });
+    if let Some(m) = model_info {
+        info["model"] = m;
+    }
     if let Some(b) = planes.bokeh() {
         let (bw, bh) = b.size();
         if !light {

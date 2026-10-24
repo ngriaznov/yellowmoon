@@ -103,3 +103,41 @@ def test_the_ledger_settles_even_when_the_budget_check_fails_after_a_failed_call
     with pytest.raises(B.BudgetExceeded):
         modal_app.run_train.local("train-4", "bokeh-w", 8.0, 0.8, {})
     assert B.Ledger(tmp_path / "ledger.json").entries["train-4"]["state"] == "settled"
+
+
+def test_a_run_that_starts_from_another_runs_weights_looks_for_them_before_anything_is_copied(tmp_path, monkeypatch):
+    copied = []
+    volume, raw = _run_train_run(tmp_path, monkeypatch, lambda *a, **k: None)
+    monkeypatch.setattr(modal_app.shutil, "copytree", lambda *a, **k: copied.append(a))
+    with pytest.raises(FileNotFoundError, match="--init-from bokeh-2: there is no .*bokeh-2/model.pt"):
+        raw("train-5", "bokeh-3", {"max_minutes": 5.0, "init_from": "bokeh-2"})
+    assert not copied  # nothing was copied or trained
+
+
+def test_a_run_that_starts_from_another_runs_weights_passes_the_path_on(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_train(tiles, out, config, heartbeat=None, log=print):
+        seen.update(config)
+        raise ValueError("stop here")
+
+    volume, raw = _run_train_run(tmp_path, monkeypatch, fake_train)
+    (tmp_path / "runs" / "bokeh-2").mkdir(parents=True)
+    (tmp_path / "runs" / "bokeh-2" / "model.pt").write_bytes(b"x")
+    with pytest.raises(ValueError, match="stop here"):
+        raw("train-6", "bokeh-3", {"max_minutes": 5.0, "init_from": "bokeh-2", "overhead_min": 8.0})
+    assert seen["init_from"] == str(tmp_path / "runs" / "bokeh-2" / "model.pt") and seen["device"] == "cuda"
+
+
+def test_a_smoke_run_with_a_short_overhead_is_planned_and_stopped_at_its_own_time_limit(tmp_path, monkeypatch):
+    call = FakeCall(error=RuntimeError("boom"))
+    monkeypatch.setattr(modal_app, "ROOT", tmp_path)
+    monkeypatch.setattr(modal_app, "volume", FakeVolume())
+    monkeypatch.setattr(modal_app, "train_run", FakeTrainRun(call))
+    with pytest.raises(RuntimeError, match="training stopped"):
+        modal_app.run_train.local("train-7", "bokeh-3-smoke", 5.0, 0.45, {"steps": 600}, 8.0)
+    entry = B.Ledger(tmp_path / "ledger.json").entries["train-7"]
+    assert entry["reserved"] == pytest.approx(B.plan_train(5, 8).worst, abs=1e-5) and entry["reserved"] <= 0.4
+    # a budget under the plan's worst case refuses, as always
+    with pytest.raises(B.BudgetExceeded):
+        modal_app.run_train.local("train-8", "bokeh-3-smoke", 5.0, 0.3, {"steps": 600}, 8.0)

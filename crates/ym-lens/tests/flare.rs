@@ -11,10 +11,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{apply_tile, camera, pattern, tiles, whole};
 use serde_json::{Value, json};
+use ym_lens::consts::GLOW_BOOST_SHARE;
 use ym_lens::test_support::{coating, write_sums, write_synthetic_lenses};
 use ym_lens::{
     Axis, FrameInfo, LensAmounts, LensError, LensKind, LensLibrary, LensPlan, LensPlanes,
-    PixelRect, apply,
+    PixelRect, apply, light_boost_ev,
 };
 
 // ---------------------------------------------------------------------------------------------------------
@@ -235,23 +236,77 @@ fn smoothstep(t: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// The restored light of a pixel of a scene whose pixels are either well inside or well beyond the clip ramps.
-fn restored(x: [f64; 3], clip: f64) -> [f64; 3] {
+/// The extra headroom in EV of every pixel of `scene` (the lens plane: the frames of these tests are under
+/// 1024 px), made the way `l3::lights` does, independently: the 8-connected patches of pixels above 0.9 of the
+/// clip in every channel, each boosted by `light_boost_ev` of the diameter of the disc of its area, in
+/// half-diagonals.
+fn boost_map(scene: &Scene, clip: f64) -> Vec<f64> {
+    let (w, h) = (scene.w, scene.h);
+    let n = w * h;
+    let hd = 0.5 * ((w * w + h * h) as f64).sqrt();
+    let clipped: Vec<bool> = (0..n)
+        .map(|i| {
+            (0..3)
+                .map(|c| f64::from(scene.data[c * n + i]) / clip)
+                .fold(f64::INFINITY, f64::min)
+                > 0.9
+        })
+        .collect();
+    let mut ev = vec![0.0; n];
+    let mut seen = vec![false; n];
+    for start in 0..n {
+        if !clipped[start] || seen[start] {
+            continue;
+        }
+        let mut members = vec![start];
+        seen[start] = true;
+        let mut k = 0;
+        while k < members.len() {
+            let (x, y) = ((members[k] % w) as isize, (members[k] / w) as isize);
+            k += 1;
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0 || ny < 0 || nx >= w as isize || ny >= h as isize {
+                        continue;
+                    }
+                    let q = ny as usize * w + nx as usize;
+                    if clipped[q] && !seen[q] {
+                        seen[q] = true;
+                        members.push(q);
+                    }
+                }
+            }
+        }
+        let d = 2.0 * (members.len() as f64 / hd / hd / std::f64::consts::PI).sqrt();
+        let b = light_boost_ev(d);
+        for q in members {
+            ev[q] = b;
+        }
+    }
+    ev
+}
+
+/// The restored light of a pixel of a scene whose pixels are either well inside or well beyond the clip ramps,
+/// of a light assumed `ev` EV above the plain 3 EV of headroom.
+fn restored(x: [f64; 3], clip: f64, ev: f64) -> [f64; 3] {
     let m = x.iter().map(|v| v / clip).fold(f64::INFINITY, f64::min);
     let f = if m >= 0.98 { 1.0 } else { 0.0 };
-    let g = 1.0 + 7.0 * f;
+    let g = 1.0 + (2f64.powf(3.0 + ev) - 1.0) * f;
     [x[0] * g, x[1] * g, x[2] * g]
 }
 
-/// The highlights of a pixel.
-fn highlight(x: [f64; 3], clip: f64) -> [f64; 3] {
+/// The highlights of a pixel (the light's own extra headroom `ev`).
+fn highlight(x: [f64; 3], clip: f64, ev: f64) -> [f64; 3] {
     let m = x.iter().map(|v| v / clip).fold(f64::NEG_INFINITY, f64::max);
     let k = smoothstep((m - 0.5) / 0.5);
-    let r = restored(x, clip);
+    let r = restored(x, clip, ev);
     [r[0] * k, r[1] * k, r[2] * k]
 }
 
-/// Sums over a scene: the restored light, the highlights, and the highlights of the one-pixel lights.
+/// Sums over a scene: the restored light the glow and the veil read (the lights' extra headroom in EV, times
+/// the glow's share of it), the highlights the ghosts, the starburst and the streak read (the whole extra
+/// headroom), and the highlights of the one-pixel lights.
 struct Sums {
     r: [f64; 3],
     h: [f64; 3],
@@ -260,6 +315,7 @@ struct Sums {
 
 fn sums(scene: &Scene, clip: f64) -> Sums {
     let n = scene.w * scene.h;
+    let ev = boost_map(scene, clip);
     let mut s = Sums {
         r: [0.0; 3],
         h: [0.0; 3],
@@ -271,8 +327,8 @@ fn sums(scene: &Scene, clip: f64) -> Sums {
             f64::from(scene.data[n + i]),
             f64::from(scene.data[2 * n + i]),
         ];
-        let r = restored(x, clip);
-        let h = highlight(x, clip);
+        let r = restored(x, clip, GLOW_BOOST_SHARE * ev[i]);
+        let h = highlight(x, clip, ev[i]);
         for c in 0..3 {
             s.r[c] += r[c];
             s.h[c] += h[c];
@@ -294,18 +350,19 @@ fn tint(coating: &[f64]) -> [f64; 3] {
 fn expected_energy(plan: &LensPlan, s: &Sums, strength: f64) -> [f64; 3] {
     let lens = plan.lens();
     let att = plan.attachment();
+    let st = plan.flare_strengths();
     let anam = (plan.q() - 1.0) / (att.q_max - 1.0);
     let t_streak = tint(&att.streak.tint);
     let mut out = [0.0; 3];
     for c in 0..3 {
-        let mut e = (lens.flare.glow.fraction + lens.flare.veil.fraction) * s.r[c];
+        let mut e = (st.glow + st.veil) * s.r[c];
         for g in &lens.flare.ghosts {
-            e += g.fraction * tint(&g.coating)[c] * s.h[c];
+            e += st.ghost_gain * g.fraction * tint(&g.coating)[c] * s.h[c];
         }
-        e += lens.flare.starburst.fraction * strength * s.h_compact[c];
-        e += anam * att.streak.fraction * t_streak[c] * s.h[c];
+        e += st.burst * strength * s.h_compact[c];
+        e += anam * st.streak * t_streak[c] * s.h[c];
         for g in &att.ghosts {
-            e += anam * g.fraction * tint(&g.coating)[c] * s.h[c];
+            e += anam * st.attachment_ghost_gain * g.fraction * tint(&g.coating)[c] * s.h[c];
         }
         out[c] = e;
     }
@@ -385,8 +442,14 @@ fn sums_for(scene: &Scene, size: (usize, usize)) -> Sums {
             f64::from(scene.data[2 * n + i]),
         ]
     };
+    let ev = boost_map(scene, 1.0);
     for (x, y) in [(300, 120), (200, 200)] {
-        let h = highlight(at(x, y), 1.0);
+        let (px, py) = if size == (scene.w, scene.h) && scene.w < scene.h {
+            (y, x)
+        } else {
+            (x, y)
+        };
+        let h = highlight(at(x, y), 1.0, ev[py * scene.w + px]);
         for (acc, v) in s.h_compact.iter_mut().zip(&h) {
             *acc += v;
         }
@@ -561,16 +624,21 @@ fn a_clipped_light_gets_its_headroom_in_the_flare_and_not_in_its_own_pixels() {
     );
     let e_c = measured_energy(&clipped, &out_c, &scene.data);
     let e_o = measured_energy(&open, &out_o, &scene.data);
+    // The light is small, so it holds more than the plain 3 EV: its extra headroom, the glow's share of it.
+    let hd = 0.5 * (480.0f64 * 480.0 + 320.0 * 320.0).sqrt();
+    let diameter = 2.0 * (9.0 / std::f64::consts::PI).sqrt() / hd;
+    let headroom = 2f64.powf(3.0 + GLOW_BOOST_SHARE * light_boost_ev(diameter));
+    assert!(headroom > 8.0, "a 3 x 3 light must be boosted: {headroom}");
     for c in 0..3 {
         // The output is f32, so nine identical pixels round alike: a few parts in a million at most.
         assert!(
-            (e_c[c] / e_o[c] / 8.0 - 1.0).abs() < 5e-6,
+            (e_c[c] / e_o[c] / headroom - 1.0).abs() < 5e-6,
             "channel {c}: {} against {}",
             e_c[c],
             e_o[c]
         );
-        // And the absolute amount: the glow's fraction of nine pixels at 8.
-        assert!((e_c[c] - 0.15 * 72.0).abs() < 1e-6 * e_c[c]);
+        // And the absolute amount: the glow's fraction of nine pixels at the headroom.
+        assert!((e_c[c] - 0.15 * 9.0 * headroom).abs() < 1e-6 * e_c[c]);
     }
     // The light's own pixels are not raised: they keep (1 - a) of themselves and what the glow gives back.
     let at = 171 * scene.w + 251;
@@ -580,6 +648,58 @@ fn a_clipped_light_gets_its_headroom_in_the_flare_and_not_in_its_own_pixels() {
         let keep = 1.0 - clipped.light_fraction();
         assert!(v < 1.0 && f64::from(v) > keep, "channel {c}: {v}");
     }
+}
+
+#[test]
+fn a_large_clipped_area_is_a_surface_and_keeps_the_plain_headroom() {
+    // A clipped block 0.43 half-diagonals across is no light: its flare is its own light at 3 EV, while a small
+    // light of the same brightness holds far more. The block's flares stay inside the frame.
+    let lib = parts_library(Parts {
+        glow: true,
+        ghosts: true,
+        ..Parts::NONE
+    });
+    let mut big = Scene::new(480, 320);
+    big.fill(185, 105, 110, 110, [1.0; 3]);
+    let size = (big.w, big.h);
+    let plan = plan_of(&lib, 100.0, 0.0, 0.0, size, Axis::X, None, 1.0);
+    let ev = boost_map(&big, 1.0);
+    assert!(ev.iter().all(|e| *e == 0.0), "the block must get no boost");
+    let out = run(&plan, &planes_of(&plan, &big), &big);
+    let got = measured_energy(&plan, &out, &big.data);
+    let want = expected_energy(&plan, &sums_for(&big, size), 1.0);
+    check_energy("a big clipped block", got, want, 1e-6);
+    // The glow's share of that is its fraction of the block's light at the plain 3 EV.
+    let glow_only = 0.15 * 110.0 * 110.0 * 8.0;
+    let sm = sums_for(&big, size);
+    assert!((sm.r[1] / (110.0 * 110.0 * 8.0) - 1.0).abs() < 1e-9);
+    assert!(got[1] > glow_only, "the ghosts add to the glow's {glow_only}: {}", got[1]);
+}
+
+#[test]
+fn the_extra_headroom_falls_as_the_light_grows() {
+    // Lights of 1, 3, 9 and 27 px at the same brightness: the light a pixel sends into the glow falls with
+    // the size, from the whole extra headroom to the plain one, and the energy test holds for each.
+    let lib = parts_library(Parts {
+        glow: true,
+        ..Parts::NONE
+    });
+    let mut per_pixel = Vec::new();
+    for side in [1usize, 3, 9, 27] {
+        let mut scene = Scene::new(480, 320);
+        scene.fill(230, 150, side, side, [1.0; 3]);
+        let size = (scene.w, scene.h);
+        let plan = plan_of(&lib, 100.0, 0.0, 0.0, size, Axis::X, None, 1.0);
+        let out = run(&plan, &planes_of(&plan, &scene), &scene);
+        let got = measured_energy(&plan, &out, &scene.data);
+        let want = expected_energy(&plan, &sums_for(&scene, size), 1.0);
+        check_energy(&format!("{side} px"), got, want, 1e-6);
+        per_pixel.push(got[1] / (side * side) as f64);
+    }
+    assert!(
+        per_pixel.windows(2).all(|p| p[0] > p[1]),
+        "the light per clipped pixel must fall with the light's size: {per_pixel:?}"
+    );
 }
 
 /// The scene reduced 2 times by 2 x 2 means.

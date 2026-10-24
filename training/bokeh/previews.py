@@ -1,6 +1,7 @@
 """Preview sheets of the synthesis: one row per sample with the network's input (the encoded plane), a display version
-of the same plane and the label (`b = r / half-diagonal` as colour, dark where the weight is low). For a human to check
-what the network is trained on; `modal_app.py`'s `preview` and `smoke.py` write them.
+of the same plane, the label (`b = r / half-diagonal` as colour, dark where the weight is low) and the loss weight (grey; cyan
+on thin structures, magenta on featureless layers). For a human to check what the network is trained on; `modal_app.py`'s
+`preview` and `smoke.py` write them. The default is the v3 recipe (`SynthConfig.v3()`); pass `SynthConfig()` for bokeh-2's.
 """
 
 import time
@@ -20,7 +21,7 @@ def render(tiles: Path, out: Path, sheets: int = 3, rows: int = 6, seed: int = 1
     ts = sources.TileSet(tiles)
     pool = ts.train or list(range(len(ts)))
     with_c = [i for i in pool if ts.rows[i][1]["cands"]]
-    cfg = cfg or SynthConfig()
+    cfg = cfg or SynthConfig.v3()
     out.mkdir(parents=True, exist_ok=True)
     paths = []
     for k in range(sheets):

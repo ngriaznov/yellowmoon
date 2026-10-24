@@ -53,6 +53,7 @@ pub use data::{
 };
 pub use error::LensError;
 pub use image::{ImageRef, PixelRect};
+pub use l3::boost_ev as light_boost_ev;
 pub use l1::{Ball, BlurMapInput, BokehPlanes, reshape, reshape_halo};
 pub use plan::{Axis, FrameInfo, LensPlan};
 pub use planes::{LensPlanes, ReshapeReason, ReshapeReport};

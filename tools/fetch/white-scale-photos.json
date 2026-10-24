@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "The Play Raw files (discuss.pixls.us) whose white-balance presets the white scales of docs/03 were fitted on, pinned by SHA-256. 'url' is the upload the post's attachment link leads to on the forum's file store: the last part of the address is the SHA-1 of the file, so it cannot change under the pin. 'topic_url' is the post, 'author' its poster and 'licence' what the post states (the Play Raw template, 'Creative Commons, By-Attribution, Share-Alike', gives no version number). 'restricted' marks the three files whose post states a NonCommercial licence or none: they are in the table because a scale needs their numbers, as the local-eval set holds a CC BY-NC-SA file for the A300; they are evaluation only like the rest. Entries were resolved on 2026-10-24 from the topic's JSON; each file's size and SHA-1 matched the copy that was measured. Evaluation only: fetched on demand, never committed, never redistributed. The scales take only numbers from the files (the white-balance presets the camera wrote), docs/14 rule 8.",
+  "description": "The Play Raw files (discuss.pixls.us) whose white-balance presets the white scales of docs/03 were fitted on, pinned by SHA-256. 'url' is the upload the post's attachment link leads to on the forum's file store: the last part of the address is the SHA-1 of the file, so it cannot change under the pin. 'topic_url' is the post, 'author' its poster and 'licence' what the post states (the Play Raw template, 'Creative Commons, By-Attribution, Share-Alike', gives no version number). A file whose post states a NonCommercial licence or none is not in the table and is not used for a shipped scale. Entries were resolved on 2026-10-24 from the topic's JSON; each file's size and SHA-1 matched the copy that was measured. Evaluation only: fetched on demand, never committed, never redistributed. The scales take only numbers from the files (the white-balance presets the camera wrote), docs/14 rule 8.",
   "hosts": [
     "pixls-discuss.s3.dualstack.us-east-1.amazonaws.com"
   ],
@@ -56,17 +56,6 @@
       "licence": "Creative Commons, By-Attribution, Share-Alike"
     },
     {
-      "name": "12024__DSC1085.ARW",
-      "model": "ILCE-6000",
-      "size": 25133056,
-      "sha256": "18b9856fde76323e3296c10002f966272daec3a2293e01e8c3ca0b841d61cae8",
-      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/a/1/a14f7f4891419348179fdfd0587f8cf77321f010.ARW",
-      "topic_url": "https://discuss.pixls.us/t/12024",
-      "author": "fwolny",
-      "licence": "No licence stated in the post (Play Raw category rule: raw files must be freely licensed)",
-      "restricted": true
-    },
-    {
       "name": "14077__DSC5565.ARW",
       "model": "ILCE-6000",
       "size": 24870912,
@@ -115,17 +104,6 @@
       "topic_url": "https://discuss.pixls.us/t/35231",
       "author": "nekohh",
       "licence": "Creative Commons, By-Attribution, Share-Alike"
-    },
-    {
-      "name": "35354_DSC00912.ARW",
-      "model": "ILCE-6000",
-      "size": 25493504,
-      "sha256": "88dc66d5fa384e9c8c1961f650e48678e62dd843ed20ab47381fa0ca1e392a58",
-      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/3/a/3a2c2893fb6014fb77d799ca9e8736c3956ff794.ARW",
-      "topic_url": "https://discuss.pixls.us/t/35354",
-      "author": "sushey",
-      "licence": "Creative Commons, By-Attribution, NonCommercial, Share-Alike (Attribution-NonCommercial-ShareAlike 4.0)",
-      "restricted": true
     },
     {
       "name": "40822_DSC06078.ARW",
@@ -226,17 +204,6 @@
       "topic_url": "https://discuss.pixls.us/t/34320",
       "author": "OldLenses",
       "licence": "Creative Commons, By-Attribution, Share-Alike (Attribution-ShareAlike 4.0)"
-    },
-    {
-      "name": "48272_DSC03902.ARW",
-      "model": "ILCE-6500",
-      "size": 24739840,
-      "sha256": "006a0fe8c62ae64bdd7948250ebcc57742fb6b55c8cf8203101b948b59bc653f",
-      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/2/6/26cf45b2432293cc74762cfcfb3ce0c16c9956e2.ARW",
-      "topic_url": "https://discuss.pixls.us/t/48272",
-      "author": "AtaraxicShrug",
-      "licence": "CC BY-NC-SA 4.0 (the post writes CC BY_NC_SA 4.0)",
-      "restricted": true
     },
     {
       "name": "50585_DSC02988.ARW",

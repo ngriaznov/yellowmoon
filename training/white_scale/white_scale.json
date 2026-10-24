@@ -668,15 +668,10 @@
       "model": "DSC-RX10M4"
     },
     "312": {
-      "white_scale": [1.0113, 1.0, 1.115],
+      "white_scale": [1.0019, 1.0, 1.115],
       "source": {
         "kind": "presets",
         "files": [
-          {
-            "name": "12024__DSC1085.ARW",
-            "sha256": "18b9856fde76323e3296c10002f966272daec3a2293e01e8c3ca0b841d61cae8",
-            "set": "play-raw"
-          },
           {
             "name": "14077__DSC5565.ARW",
             "sha256": "3c4141424ae2a296f050a2ba34581c93eba5dcec9f3573e529c44362cbce9dd5",
@@ -703,11 +698,6 @@
             "set": "play-raw"
           },
           {
-            "name": "35354_DSC00912.ARW",
-            "sha256": "88dc66d5fa384e9c8c1961f650e48678e62dd843ed20ab47381fa0ca1e392a58",
-            "set": "play-raw"
-          },
-          {
             "name": "40822_DSC06078.ARW",
             "sha256": "ec04e3ac69d54e7300ba0ff582d10ade0fc3ad28f48507b4c35cacc115e4ee86",
             "set": "play-raw"
@@ -726,14 +716,14 @@
         "residual": {
           "mean_preset_angle_before_deg": 2.41,
           "mean_preset_angle_after_deg": 0.72,
-          "daylight_k_before": 4902,
-          "daylight_k_after": 5350,
-          "file_spread_percent": [3.35, 3.94],
+          "daylight_k_before": 4893,
+          "daylight_k_after": 5375,
+          "file_spread_percent": [4.32, 3.94],
           "matrix_scale": [0.9728, 1.0, 0.9889],
-          "matrix_mean_preset_angle_deg": 2.68,
-          "matrix_daylight_k": 4949
+          "matrix_mean_preset_angle_deg": 2.66,
+          "matrix_daylight_k": 4939
         },
-        "note": "Fitted so the five Kelvin presets of the body's own files (2500, 3200, 4500, 6000, 8500 K) read at their labels on the A7R IV locus (least squares in log chroma), one fit per file and the median of the files kept. 10 files, each within 3.94 % of the median scale in red and blue (limit 5 %). The scale the body's published colour matrix at D65 gives (matrix_scale) leaves a mean preset angle of 2.68 degrees and reads the Daylight preset at 4949 K, outside the limits of docs/03 (at most 2 degrees, Daylight 5000 to 5600 K), so the presets set the scale."
+        "note": "Fitted so the five Kelvin presets of the body's own files (2500, 3200, 4500, 6000, 8500 K) read at their labels on the A7R IV locus (least squares in log chroma), one fit per file and the median of the files kept. 8 files, each within 4.32 % of the median scale in red and blue (limit 5 %). The scale the body's published colour matrix at D65 gives (matrix_scale) leaves a mean preset angle of 2.66 degrees and reads the Daylight preset at 4939 K, outside the limits of docs/03 (at most 2 degrees, Daylight 5000 to 5600 K), so the presets set the scale."
       },
       "model": "ILCE-6000"
     },
@@ -783,7 +773,7 @@
       "model": "ILCE-6300"
     },
     "360": {
-      "white_scale": [1.0018, 1.0, 1.1981],
+      "white_scale": [0.9714, 1.0, 1.1687],
       "source": {
         "kind": "presets",
         "files": [
@@ -793,22 +783,22 @@
             "set": "play-raw"
           },
           {
-            "name": "48272_DSC03902.ARW",
-            "sha256": "006a0fe8c62ae64bdd7948250ebcc57742fb6b55c8cf8203101b948b59bc653f",
+            "name": "34320_DSC00486.ARW",
+            "sha256": "70d4b8790ad7e62236aeb955e74c1deecf103eae76dc0e1dc1948c9988425c2b",
             "set": "play-raw"
           }
         ],
         "residual": {
-          "mean_preset_angle_before_deg": 3.61,
-          "mean_preset_angle_after_deg": 0.93,
-          "daylight_k_before": 4666,
-          "daylight_k_after": 5433,
-          "file_spread_percent": [0.88, 2.0],
+          "mean_preset_angle_before_deg": 3.36,
+          "mean_preset_angle_after_deg": 1.2,
+          "daylight_k_before": 4661,
+          "daylight_k_after": 5434,
+          "file_spread_percent": [4.03, 0.46],
           "matrix_scale": [1.0141, 1.0, 1.1019],
-          "matrix_mean_preset_angle_deg": 1.66,
-          "matrix_daylight_k": 4997
+          "matrix_mean_preset_angle_deg": 1.64,
+          "matrix_daylight_k": 4998
         },
-        "note": "Fitted so the five Kelvin presets of the body's own files (2500, 3200, 4500, 6000, 8500 K) read at their labels on the A7R IV locus (least squares in log chroma), one fit per file and the median of the files kept. 2 files, each within 2.00 % of the median scale in red and blue (limit 5 %). Left out as an outlier: 34320_DSC00486.ARW (play-raw; scale [0.9322, 1.1633], 6.9 % from the others). The scale the body's published colour matrix at D65 gives (matrix_scale) leaves a mean preset angle of 1.66 degrees and reads the Daylight preset at 4997 K, outside the limits of docs/03 (at most 2 degrees, Daylight 5000 to 5600 K), so the presets set the scale."
+        "note": "Fitted so the five Kelvin presets of the body's own files (2500, 3200, 4500, 6000, 8500 K) read at their labels on the A7R IV locus (least squares in log chroma), one fit per file and the median of the files kept. 2 files, each within 4.03 % of the median scale in red and blue (limit 5 %). The scale the body's published colour matrix at D65 gives (matrix_scale) leaves a mean preset angle of 1.64 degrees and reads the Daylight preset at 4998 K, outside the limits of docs/03 (at most 2 degrees, Daylight 5000 to 5600 K), so the presets set the scale."
       },
       "model": "ILCE-6500"
     }

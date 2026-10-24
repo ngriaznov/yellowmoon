@@ -10,6 +10,8 @@
 //!   --flares N        Flares (default 100)
 //!   --anamorphic N    Anamorphic (default 0)
 //!   --scale N         the plane's scale k (default: the plane's own, 4 for a synthetic frame)
+//!   --preview DIR     also write DIR/<target>-<lens>.ppm: the plane with the flares added (a plain
+//!                     tone curve, clip level 1), for a quick look; the lens's own start amounts are not used
 //!
 //!   <target>          `synthetic`, or a folder with `lens_plane.f32` and `lens_plane.json` (the files
 //!                     `ym-core`'s `lens_sheet --dump-planes` writes)
@@ -161,6 +163,7 @@ fn main() {
     let mut kinds: Vec<LensKind> = LensKind::ALL.to_vec();
     let (mut flares, mut anamorphic) = (100.0f64, 0.0f64);
     let mut scale: Option<usize> = None;
+    let mut preview: Option<PathBuf> = None;
     let mut targets = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -182,6 +185,7 @@ fn main() {
                     .expect("number");
             }
             "--scale" => scale = Some(args.next().expect("--scale N").parse().expect("number")),
+            "--preview" => preview = Some(PathBuf::from(args.next().expect("--preview DIR"))),
             "synthetic" => targets.push(synthetic()),
             dir => targets.push(load(Path::new(dir))),
         }
@@ -276,6 +280,24 @@ fn main() {
                 println!("{}\t{kind}\tflares 0", t.name);
                 continue;
             };
+            if let Some(dir) = &preview {
+                let out = ym_lens::add_flares(&plan, &t.data, &terms).expect("add");
+                let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+                for i in 0..plane {
+                    for c in 0..3 {
+                        let v = f64::from(out[c * plane + i]) / f64::from(t.g0[c]);
+                        let d = (v * (1.0 + v / 16.0) / (1.0 + v)).clamp(0.0, 1.0);
+                        let e = if d <= 0.003_130_8 {
+                            12.92 * d
+                        } else {
+                            1.055 * d.powf(1.0 / 2.4) - 0.055
+                        };
+                        ppm.push((e * 255.0 + 0.5) as u8);
+                    }
+                }
+                std::fs::create_dir_all(dir).expect("dir");
+                std::fs::write(dir.join(format!("{}-{kind}.ppm", t.name)), ppm).expect("ppm");
+            }
             let tm: Vec<f64> = (0..plane)
                 .map(|i| {
                     (0..3)

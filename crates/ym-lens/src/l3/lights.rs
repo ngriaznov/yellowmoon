@@ -22,7 +22,7 @@ use crate::l3::restore::Restore;
 /// [`LIGHT_BOOST_MAX_EV`] up to [`LIGHT_BOOST_FULL_HD`], 0 from [`LIGHT_BOOST_NONE_HD`], and linear in the
 /// logarithm of the diameter between.
 #[must_use]
-pub(crate) fn boost_ev(diameter_hd: f64) -> f64 {
+pub fn boost_ev(diameter_hd: f64) -> f64 {
     if diameter_hd <= LIGHT_BOOST_FULL_HD {
         return LIGHT_BOOST_MAX_EV;
     }

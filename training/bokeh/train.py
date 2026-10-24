@@ -7,7 +7,9 @@
 `w * (|y - mu| * exp(-s) + s)` with `y` the target `log(max(r, 1 px))` (average of a 2 x 2 block) and `w` the label's
 weight (lowered at the ambiguous edges between layers, and where a block mixes very different radii). The network
 therefore says how sure it is: a textureless region gets a wide scale instead of a confident wrong value. The
-confidence the app uses is `c = exp(-exp(s) / 0.25)` (`encode.py`).
+confidence the app uses is `c = exp(-exp(s) / 0.25)` (`encode.py`); that is how sure the *radius* is, and whether a pixel is out of
+focus is `encode.detection_probability` (README, "The decision"). `decision_loss > 0` adds a cross-entropy of that probability
+against the label `b >= 2 b_min` (`decision_nll`; no new output: it is a function of `mu` and `s`); it is off by default.
 
 **The half-resolution target** (`half_targets`, v3). A 2 x 2 block whose pixels have radii more than a factor of `e^0.35` apart
 is "mixed" (a thin line over a blur, the edge between a subject and its background). bokeh-2 trained such a block to
@@ -82,7 +84,7 @@ DEFAULTS = {
     "kernel_r": 44, "r_max_px": 34.0, "cand_share": 0.34, "val_share": sources.VAL_SHARE,
     # v3: the recipe (3, or 2 for bokeh-2's), the half-resolution target rule, the weight of the extra decision loss (0 = off),
     # and the weights (a model.pt of an earlier run) to start from instead of a fresh network
-    "synth": 3, "sharp_wins": True, "decision_loss": 0.0, "init_from": None,
+    "synth": 3, "sharp_wins": True, "thin_boost": 2.0, "decision_loss": 0.0, "init_from": None,
 }
 TYPES = {"max_minutes": float, "steps": int, "init_from": str}
 GATE = 0.5
@@ -217,11 +219,12 @@ def synth_config(config: dict, legacy: bool = False) -> SynthConfig:
 MIXED_SPREAD = 0.35
 
 
-def half_targets(sy, sharp_wins: bool = True) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def half_targets(sy, sharp_wins: bool = True, thin_boost: float = 1.0) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """(log r, weight, r in pixels) at the network's output resolution (2 x 2 blocks; module docstring, "The
     half-resolution target"). A pure block averages its log radius and takes the mean weight. A mixed block (radii more than
     `e^0.35` apart) takes the smallest log radius among its pixels of weight at least 0.5 at 70 % of the mean weight when
-    `sharp_wins`, else (and when it has no such pixel) the average at 30 %: bokeh-2's rule."""
+    `sharp_wins`, else (and when it has no such pixel) the average at 30 %: bokeh-2's rule. With `sharp_wins`, a block that
+    holds a pixel of a thin structure (v3) counts `thin_boost` times: they are a few pixels in a hundred."""
     logr, w = sy.logr, sy.w
     avg = F.avg_pool2d(logr, 2)
     spread = F.max_pool2d(logr, 2) + F.max_pool2d(-logr, 2)
@@ -233,7 +236,10 @@ def half_targets(sy, sharp_wins: bool = True) -> tuple[torch.Tensor, torch.Tenso
     smallest = -F.max_pool2d(-torch.where(firm, logr, torch.full_like(logr, 1e4)), 2)
     has_firm = F.max_pool2d(firm.float(), 2) > 0
     y = torch.where(mixed & has_firm, smallest, avg)
-    return y, wb * torch.where(mixed, torch.where(has_firm, 0.7, 0.3), 1.0), torch.exp(y)
+    weight = wb * torch.where(mixed, torch.where(has_firm, 0.7, 0.3), 1.0)
+    if thin_boost != 1.0 and sy.cls is not None:
+        weight = weight * torch.where(F.max_pool2d((sy.cls == THIN).float(), 2) > 0, thin_boost, 1.0)
+    return y, weight, torch.exp(y)
 
 
 def laplace_nll(mu: torch.Tensor, s: torch.Tensor, y: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
@@ -439,7 +445,7 @@ def evaluate(model: BokehNet, folder: Path, config: dict, n: int, seed: int, dev
             e = encode_t(sy.lin)
             out = model(e)
             r_hat, beta, conf = radius_and_confidence(out)
-            y2, w2, r2 = half_targets(sy, sharp_wins)
+            y2, w2, r2 = half_targets(sy, sharp_wins)  # no boost: the numbers must not depend on how the loss weighs
             hd = sy.hd.view(-1, 1, 1)
             take = min(batch, n - done)
             sl = slice(0, take)
@@ -600,7 +606,7 @@ def _train(tiles: Path, out: Path, config: dict, heartbeat, log) -> dict:
             jit = config["gain_jitter_stops"]
             gain = torch.exp2((torch.rand(tb.rgb.shape[0], generator=gen, device=device) * 2 - 1) * jit)
             e = encode_t(sy.lin, gain)
-            y2, w2, _ = half_targets(sy, config["sharp_wins"])
+            y2, w2, _ = half_targets(sy, config["sharp_wins"], config["thin_boost"])
         if device.type == "cuda":
             e = e.contiguous(memory_format=torch.channels_last)
         for g in opt.param_groups:

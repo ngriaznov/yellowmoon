@@ -84,37 +84,38 @@ pub const LENS_HEADROOM_EV: f64 = 3.0;
 /// EV for the glow and the veil. A lamp or the sun sends light 10 to 17 EV above the clip level of the exposure it
 /// is photographed at (`docs/21` section 4, L3, *As built (flare strength)*), and the elements that spread a
 /// light over thousands of times its own area only show when the light is that bright.
-pub const LIGHT_BOOST_MAX_EV: f64 = 7.0;
+pub const LIGHT_BOOST_MAX_EV: f64 = 9.0;
 
 /// A clipped patch with an equivalent diameter (the diameter of the disc of the same area) of at most this, in
 /// half-diagonals, gets the whole boost [`LIGHT_BOOST_MAX_EV`].
-pub const LIGHT_BOOST_FULL_HD: f64 = 0.015;
+pub const LIGHT_BOOST_FULL_HD: f64 = 0.025;
 
 /// A clipped patch with an equivalent diameter of at least this, in half-diagonals, gets no boost (a clipped
 /// sky or wall is a bright surface, not a light); between the two the boost falls linearly with the logarithm of
 /// the diameter.
-pub const LIGHT_BOOST_NONE_HD: f64 = 0.15;
+pub const LIGHT_BOOST_NONE_HD: f64 = 0.4;
 
 /// The share of the boost, in EV, that the restored light of the glow and the veil gets (the glow's own
 /// fraction is a tuned artistic amount that already assumes a bright light).
-pub const GLOW_BOOST_SHARE: f64 = 0.5;
+pub const GLOW_BOOST_SHARE: f64 = 0.4;
 
 /// At Flares 100 the ghosts of a lens together take at least this fraction of the light of a light: a lens whose
 /// data hold less (every coated lens) has its ghosts raised, all by one factor, to this, the level of twelve
 /// ghosts of two bare glass surfaces (4 % x 4 % = 1.6e-3 each). The lens's data are never lowered.
-pub const GHOST_FRACTION_FLOOR: f64 = 0.02;
+pub const GHOST_FRACTION_FLOOR: f64 = 0.01;
 
 /// The same floor for the attachment's own oval ghosts at Anamorphic 100.
-pub const ATTACHMENT_GHOST_FLOOR: f64 = 0.004;
+pub const ATTACHMENT_GHOST_FLOOR: f64 = 0.002;
 
 /// The largest factor the floor may raise a lens's ghost fractions by.
 pub const GHOST_GAIN_MAX: f64 = 200.0;
 
-/// The factor on every lens's glow fraction.
-pub const GLOW_GAIN: f64 = 1.0;
+/// At Flares 100 the glow of a lens takes at least this fraction of the light (a veiling glare that the
+/// literature rates "usually good", 1.5 to 3 %); a lens whose data hold less has its glow raised to it.
+pub const GLOW_FRACTION_FLOOR: f64 = 0.02;
 
-/// The factor on every lens's starburst fraction.
-pub const STARBURST_GAIN: f64 = 1.0;
+/// At Flares 100 the starburst of a lens takes at least this fraction of the light of a compact light.
+pub const STARBURST_FRACTION_FLOOR: f64 = 0.01;
 
 /// The clip test on the picture's own pixels: `f` ramps from 0 to 1 as `min_c(X_c / g0_c)` goes from the first
 /// to the second value (per tile, at the tile's scale).

@@ -338,7 +338,7 @@ def run_preview(run_id: str, budget: float) -> dict:
 
 @app.function(image=cpu_image, volumes=VOLS, **orch(plan_train(B.max_train_minutes(5.0))))
 def run_train(run_id: str, run_name: str, minutes: float, budget: float, config: dict,
-              overhead_min: float = B.TRAIN_OVERHEAD_MIN) -> dict:
+              overhead_min: float = float(B.TRAIN_OVERHEAD_MIN)) -> dict:
     """Trains for `minutes` (plus setup and the final evaluation, `overhead_min`, 18 unless a smoke run says less). Refuses
     when the plan's worst case is above `budget` or the programme's cap; stops the call when its time is up; a rerun with the
     same `run_id` and `run_name` carries on from the checkpoint and the same ledger entry."""
@@ -416,7 +416,7 @@ def preview(budget: float = 0.3, run_id: str = "") -> None:
 @app.local_entrypoint()
 def train(budget: float = 5.0, run: str = "bokeh-2", minutes: float = 100.0, steps: int = 0, batch: int = 24,
           sample: int = 512, lr: float = 2e-3, seed: int = 1, amp: bool = True, run_id: str = "", init_from: str = "",
-          overhead_min: float = B.TRAIN_OVERHEAD_MIN, final_val: int = 0, synth: int = 3, sharp_wins: bool = True,
+          overhead_min: float = float(B.TRAIN_OVERHEAD_MIN), final_val: int = 0, synth: int = 3, sharp_wins: bool = True,
           decision_loss: float = 0.0) -> None:
     """Trains one model on one L4 for `minutes` of training (the worst case counts the whole call), or for `steps` steps
     when that comes first (`--steps 1000 --minutes 8 --budget 0.8 --run bokeh-smoke` is the GPU smoke: the full
@@ -432,7 +432,7 @@ def train(budget: float = 5.0, run: str = "bokeh-2", minutes: float = 100.0, ste
     smoke run with `--final-val 96` samples in its final evaluation can say 8, which is what makes its worst case small)."""
     config = {"batch": batch, "sample": sample, "lr": lr, "seed": seed, "amp": amp, "synth": synth, "sharp_wins": sharp_wins,
               "decision_loss": decision_loss, **({"steps": steps} if steps else {}), **({"init_from": init_from} if init_from else {}),
-              **({"final_val_samples": final_val, "baseline_n": min(48, final_val)} if final_val else {})}
+              **({"final_val_samples": final_val, "baseline_n": min(48, max(8, final_val // 4))} if final_val else {})}
     print(json.dumps(run_train.remote(_id("train", run_id), run, minutes, budget, config, overhead_min), indent=1))
 
 
@@ -479,7 +479,7 @@ def fetch(dest: str = "training/bokeh/runs", budget: float = 0.0) -> None:
 
 
 @app.local_entrypoint()
-def plan(entry: str = "train", minutes: float = 100.0, photos: int = 20000, overhead_min: float = B.TRAIN_OVERHEAD_MIN) -> None:
+def plan(entry: str = "train", minutes: float = 100.0, photos: int = 20000, overhead_min: float = float(B.TRAIN_OVERHEAD_MIN)) -> None:
     """Prints a plan's worst case. Spends nothing."""
     p = {"check": plan_check, "prepare": lambda: plan_prepare(photos), "preview": plan_preview,
          "train": lambda: plan_train(minutes, overhead_min), "results": plan_results}[entry]()
