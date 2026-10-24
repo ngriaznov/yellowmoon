@@ -292,6 +292,41 @@ impl LensPlan {
         )
     }
 
+    /// What `Z = L2(L1(X))` ([`apply_field`](crate::apply_field)) depends on besides its input and the planes: the
+    /// lens, its data versions, Edges and Anamorphic, the camera, the frame size and the axis. Not Flares and
+    /// not the f-number (L3 alone reads them), so a Flares move keeps `Z` and runs L3 only.
+    ///
+    /// Like [`LensPlan::key`], all-zero amounts share one key whatever the lens.
+    #[must_use]
+    pub fn field_key(&self) -> String {
+        if self.is_identity() {
+            return "lens-field:none".to_owned();
+        }
+        if self.field_is_identity() {
+            return "lens-field:same".to_owned();
+        }
+        let f = &self.frame;
+        format!(
+            "lens-field:{}:v{}:att{}:{:?}:{:?}:{}:{}x{}:{:?}",
+            self.amounts.kind,
+            self.lens.info.version,
+            self.attachment.version,
+            self.amounts.edges,
+            self.amounts.anamorphic,
+            self.camera.key(),
+            f.width,
+            f.height,
+            f.axis,
+        )
+    }
+
+    /// True when `Z = L2(L1(X))` is `X` itself for sure: Edges and Anamorphic are both 0, so neither the
+    /// reshaping nor the field optics act (Flares alone, or no lens at all).
+    #[must_use]
+    pub fn field_is_identity(&self) -> bool {
+        self.amounts.edges == 0.0 && self.amounts.anamorphic == 0.0
+    }
+
     /// What [`LensPlanes`](crate::LensPlanes) depend on: the lens, its data version, the camera, the frame
     /// size, the axis and the clip levels (the restored light of L3 reads them). Not the amounts: moving a
     /// slider keeps the planes.

@@ -19,12 +19,29 @@ fn frame_at(plan: &LensPlan, k: usize) -> (usize, usize) {
 /// pixel smaller needs no more.
 #[must_use]
 pub fn halo_px(plan: &LensPlan, planes: &LensPlanes, k: usize) -> usize {
+    field_halo_px(plan, planes, k).max(flares_halo_px(plan, planes, k))
+}
+
+/// Context [`apply_field`] needs around an output rectangle at scale `k`: L1's reach plus L2's. 0 when the
+/// reshaping and the field optics do nothing.
+#[must_use]
+pub fn field_halo_px(plan: &LensPlan, planes: &LensPlanes, k: usize) -> usize {
     if plan.is_identity() {
         return 0;
     }
     let (fw, fh) = frame_at(plan, k);
-    let chain = l1::halo(plan, planes, k, fw, fh) + field::halo(plan, fw, fh);
-    chain.max(l3::halo(plan, planes, k, fw, fh))
+    l1::halo(plan, planes, k, fw, fh) + field::halo(plan, fw, fh)
+}
+
+/// Context [`apply_flares`] needs around an output rectangle at scale `k`: the glow core's reach. 0 when the
+/// flares do nothing.
+#[must_use]
+pub fn flares_halo_px(plan: &LensPlan, planes: &LensPlanes, k: usize) -> usize {
+    if plan.is_identity() {
+        return 0;
+    }
+    let (fw, fh) = frame_at(plan, k);
+    l3::halo(plan, planes, k, fw, fh)
 }
 
 /// Checks that the input's frame is the plan's frame at scale `k` (to the rounding of the reduction).
@@ -84,6 +101,18 @@ pub(crate) fn apply_with(
     if plan.is_identity() {
         return field::copy_rect(input, out);
     }
+    let z = field_with(plan, planes, k, input, out, opts)?;
+    l3::apply(plan, planes, k, input, z, out)
+}
+
+/// The checks every pass makes before it reads the planes: the planes belong to the plan, and `out` lies in
+/// the frame.
+fn check_planes(
+    plan: &LensPlan,
+    planes: &LensPlanes,
+    input: &ImageRef,
+    out: PixelRect,
+) -> Result<(), LensError> {
     if planes.key() != plan.planes_key() {
         return Err(LensError::Frame(
             "the planes were built for another lens, camera or frame".into(),
@@ -95,10 +124,74 @@ pub(crate) fn apply_with(
             "the output {out} does not fit the {fw}x{fh} frame"
         )));
     }
-    // L1 over what L2 reads, then L2 on `out`, then L3.
+    Ok(())
+}
+
+/// `Z = L2(L1(X))` on `out`: the picture after the reshaping and the field optics, the part of the lens that
+/// does not depend on Flares (`LensPlan::field_key`). The planar result has `3 * out.w * out.h` samples.
+///
+/// `input` must cover `out` grown by [`field_halo_px`] and clamped to the frame. When neither the reshaping nor
+/// the field optics act (an identity plan, or Flares alone) the result is the input's `out` rectangle bit for
+/// bit.
+///
+/// # Errors
+///
+/// [`LensError::Frame`] for a plan, planes or input that do not belong together,
+/// [`LensError::InputTooSmall`] when the input does not cover the halo.
+pub fn apply_field(
+    plan: &LensPlan,
+    planes: &LensPlanes,
+    k: usize,
+    input: &ImageRef,
+    out: PixelRect,
+) -> Result<Vec<f32>, LensError> {
+    input.validate()?;
+    check_scale(plan, k, input)?;
+    if plan.is_identity() {
+        return field::copy_rect(input, out);
+    }
+    field_with(plan, planes, k, input, out, field::Options::default())
+}
+
+fn field_with(
+    plan: &LensPlan,
+    planes: &LensPlanes,
+    k: usize,
+    input: &ImageRef,
+    out: PixelRect,
+    opts: field::Options,
+) -> Result<Vec<f32>, LensError> {
+    check_planes(plan, planes, input, out)?;
+    let (fw, fh) = (input.frame_width, input.frame_height);
+    // L1 over what L2 reads, then L2 on `out`.
     let l2_halo = field::Geometry::new(plan, fw, fh, opts).map_or(0, |g| g.halo());
     let want = out.grown(l2_halo, fw, fh);
     let stage = l1::apply(plan, planes, k, input, want)?;
-    let z = field::apply(plan, &stage.image(), out, opts)?;
+    field::apply(plan, &stage.image(), out, opts)
+}
+
+/// L3 on `out`: `out = (1 - a) Z + F (flare terms)`, given `z = L2(L1(X))` over `out` ([`apply_field`]).
+///
+/// `input` is the picture before L1 (the glow's core reads it) and must cover `out` grown by
+/// [`flares_halo_px`] and clamped to the frame. With Flares at 0 the result is `z`.
+///
+/// # Errors
+///
+/// [`LensError::Frame`] for a plan, planes, `z` or input that do not belong together,
+/// [`LensError::InputTooSmall`] when the input does not cover the halo.
+pub fn apply_flares(
+    plan: &LensPlan,
+    planes: &LensPlanes,
+    k: usize,
+    input: &ImageRef,
+    z: Vec<f32>,
+    out: PixelRect,
+) -> Result<Vec<f32>, LensError> {
+    input.validate()?;
+    check_scale(plan, k, input)?;
+    if plan.is_identity() {
+        return Ok(z);
+    }
+    check_planes(plan, planes, input, out)?;
     l3::apply(plan, planes, k, input, z, out)
 }

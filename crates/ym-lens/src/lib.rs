@@ -37,7 +37,7 @@ pub mod test_support;
 mod warp;
 
 pub use amounts::{LensAmounts, LensKind};
-pub use apply::{apply, halo_px};
+pub use apply::{apply, apply_field, apply_flares, field_halo_px, flares_halo_px, halo_px};
 pub use data::{
     Aperture, AttachmentData, AttachmentField, AttachmentProvenance, Bend, Design, Distortion,
     FieldData, FlareData, GhostData, Glow, LensData, LensInfo, LensLibrary, LensProvenance,
