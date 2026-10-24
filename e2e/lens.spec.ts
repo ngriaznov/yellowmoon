@@ -113,9 +113,11 @@ test.describe("the Lens card", () => {
     await lensBox(page).focus();
     await page.keyboard.press("Enter");
     await expect(page.getByRole("option")).toHaveCount(7);
-    await page.keyboard.press("ArrowDown");
-    await page.keyboard.press("ArrowDown");
-    await page.keyboard.press("ArrowDown");
+    // Radix moves the focus a tick after the key, so each step waits for it.
+    for (const next of [/^Classic/, /^Vintage/, /^Petzval/]) {
+      await page.keyboard.press("ArrowDown");
+      await expect(page.getByRole("option", { name: next })).toBeFocused();
+    }
     await page.keyboard.press("Enter");
     await expect(lensBox(page)).toHaveText("Petzval");
     expect(await lensPatches(calls)).toEqual([{ kind: "petzval", flares: 30, edges: 70, anamorphic: 0 }]);

@@ -383,6 +383,17 @@ test.describe("focus ring", () => {
     expect(seen.length).toBe(30);
   });
 
+  test("every stop of the Lens card has the ring: its Reset link, the Lens choice and the three sliders with their boxes", async ({ page }) => {
+    await openApp(page, MOCKUP);
+    await openPhotos(page);
+    // The card is the last of the Look tab, far past the 30 stops above: start at the Tone card's last box and walk on to its end.
+    await page.getByRole("textbox", { name: "Saturation value" }).focus();
+    const seen = await walk(page, 8);
+    expect(seen.filter((s) => !s.ring)).toEqual([]);
+    expect(seen.map((s) => s.label)).toEqual(["Reset", "Lens", "", "Flares value", "", "Edges value", "", "Anamorphic value"]);
+    await expect(page.getByRole("region", { name: "Lens" }).getByRole("textbox", { name: "Anamorphic value" })).toBeFocused();
+  });
+
   test("a focused tab shows the 3 px ring, drawn inside its cell", async ({ page }) => {
     await openApp(page, MOCKUP);
     await openPhotos(page);

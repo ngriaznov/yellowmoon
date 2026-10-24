@@ -46,7 +46,7 @@ export function LensCard({ store, rs }: { store: AppStore; rs: ResolvedSettings 
   };
 
   return (
-    <Card className="ym-lens-card" title="Lens" action={<ResetLink size="card" onClick={() => send(NO_LENS, true)} />}>
+    <Card title="Lens" action={<ResetLink size="card" onClick={() => send(NO_LENS, true)} />}>
       <Field label="Lens">
         <Select value={lens.kind} onValueChange={choose} disabled={loading || missing}>
           <SelectTrigger aria-label="Lens" className="w-full">

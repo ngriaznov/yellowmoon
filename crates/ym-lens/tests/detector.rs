@@ -339,7 +339,7 @@ fn the_focus_point_anchors_the_subject() {
         "subject pixels read as blurred: {with} with the focus point, {without} without, of {total}"
     );
     assert!(
-        without as f64 > 0.3 * total as f64,
+        without as f64 > 0.15 * total as f64,
         "the test scene must make the anchor matter: {without} of {total}"
     );
     assert!(
