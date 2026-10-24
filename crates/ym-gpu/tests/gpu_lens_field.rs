@@ -156,7 +156,9 @@ fn compare(got: &[f32], want: &[f32], bound: f32) -> Found {
 #[test]
 fn the_kernel_matches_the_cpu_reference() {
     let _guard = serial();
-    let Some(dev) = common::lens::gpu() else { return };
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
     let bound = if dev.gpu.info().is_software {
         PARITY_BOUND
     } else {
@@ -230,7 +232,9 @@ fn tile(dev: &TestGpu, p: &LensPlan, whole: &[f32], frame: (usize, usize), out: 
 #[test]
 fn tiles_equal_the_whole_frame_bit_for_bit() {
     let _guard = serial();
-    let Some(dev) = common::lens::gpu() else { return };
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
     let (w, h) = (1200usize, 800usize);
     let image = noise(w, h, 3);
     for (kind, edges, anamorphic, axis) in [
@@ -240,7 +244,10 @@ fn tiles_equal_the_whole_frame_bit_for_bit() {
     ] {
         let p = plan(amounts(kind, 0.0, edges, anamorphic), w, h, axis);
         let pass = p.field_pass(w, h).expect("a field pass");
-        assert!(pass.pad > 0 || anamorphic == 0.0, "the fringe's pad is used with the attachment");
+        assert!(
+            pass.pad > 0 || anamorphic == 0.0,
+            "the fringe's pad is used with the attachment"
+        );
         let whole = exact::assert_tiles_equal_whole(
             &format!("L2 {kind} edges {edges} anamorphic {anamorphic} {axis:?}"),
             w,
@@ -257,7 +264,9 @@ fn tiles_equal_the_whole_frame_bit_for_bit() {
 #[test]
 fn a_source_cut_out_with_another_origin_gives_the_same_bits() {
     let _guard = serial();
-    let Some(dev) = common::lens::gpu() else { return };
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
     let (w, h) = (700usize, 500usize);
     let image = noise(w, h, 5);
     let p = plan(amounts(LensKind::Vintage, 0.0, 90.0, 80.0), w, h, Axis::X);
@@ -274,7 +283,9 @@ fn a_source_cut_out_with_another_origin_gives_the_same_bits() {
 #[test]
 fn the_far_corner_of_a_50_mp_frame_is_as_exact_as_the_near_one() {
     let _guard = serial();
-    let Some(dev) = common::lens::gpu() else { return };
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
     let (w, h) = (8658usize, 5772usize);
     let p = plan(amounts(LensKind::Vintage, 0.0, 100.0, 100.0), w, h, Axis::X);
     let planes = planes_of(&p);
@@ -301,10 +312,22 @@ fn the_far_corner_of_a_50_mp_frame_is_as_exact_as_the_near_one() {
                 }
             }
         }
-        let want = cpu_field(&p, &planes, &input, (rect.w, rect.h), (rect.x, rect.y), (w, h), out);
+        let want = cpu_field(
+            &p,
+            &planes,
+            &input,
+            (rect.w, rect.h),
+            (rect.x, rect.y),
+            (w, h),
+            out,
+        );
         let got = gpu_field(dev, &p, &input, (rect.w, rect.h), (rect.x, rect.y), out);
         let f = compare(&got, &want, bound);
-        note!("L2 {name}: worst difference {:e} over {} samples", f.worst, f.total);
+        note!(
+            "L2 {name}: worst difference {:e} over {} samples",
+            f.worst,
+            f.total
+        );
         assert!(
             f.over == 0,
             "{name}: {} of {} samples differ by more than {bound}",
@@ -325,11 +348,18 @@ fn the_far_corner_of_a_50_mp_frame_is_as_exact_as_the_near_one() {
 #[test]
 fn poison_and_a_plain_device_give_the_same_bits() {
     let _guard = serial();
-    let Some(_dev) = common::lens::gpu() else { return };
+    let Some(_dev) = common::lens::gpu() else {
+        return;
+    };
     let (w, h) = (300usize, 220usize);
     let image = noise(w, h, 11);
     for (edges, anamorphic, axis) in [(100.0, 100.0, Axis::X), (60.0, 30.0, Axis::Y)] {
-        let p = plan(amounts(LensKind::Detuned, 0.0, edges, anamorphic), w, h, axis);
+        let p = plan(
+            amounts(LensKind::Detuned, 0.0, edges, anamorphic),
+            w,
+            h,
+            axis,
+        );
         let pass = p.field_pass(w, h).expect("pass");
         let data = p.field_tables_data().expect("tables");
         let out = Rect::new(20, 10, 250, 190);
@@ -349,7 +379,12 @@ fn poison_and_a_plain_device_give_the_same_bits() {
 #[test]
 fn the_binding_stays_inside_the_design_size() {
     let _guard = serial();
-    let p = plan(amounts(LensKind::Petzval, 0.0, 100.0, 100.0), 6000, 4000, Axis::X);
+    let p = plan(
+        amounts(LensKind::Petzval, 0.0, 100.0, 100.0),
+        6000,
+        4000,
+        Axis::X,
+    );
     let pass = p.field_pass(6000, 4000).expect("pass");
     common::limits::assert_max_binding_bytes("lens field", Rect::new(0, 0, 1024, 1024), |r| {
         max_binding_bytes(r, &pass)
@@ -359,7 +394,9 @@ fn the_binding_stays_inside_the_design_size() {
 #[test]
 fn a_source_that_does_not_cover_the_halo_is_refused() {
     let _guard = serial();
-    let Some(dev) = common::lens::gpu() else { return };
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
     let (w, h) = (400usize, 300usize);
     let p = plan(amounts(LensKind::Vintage, 0.0, 100.0, 0.0), w, h, Axis::X);
     let pass = p.field_pass(w, h).expect("pass");
@@ -368,10 +405,12 @@ fn a_source_that_does_not_cover_the_halo_is_refused() {
     // The output is the middle of the frame and the source is exactly the output: no halo.
     let out = Rect::new(100, 100, 100, 100);
     let small = crop(&image, w, h, out);
-    let result = dev.gpu.run(JobSpec::new(Priority::Viewport), move |ctx, _| {
-        let tables = FieldTablesBuffer::upload(ctx, &data)?;
-        field(ctx, &tables, &pass, &small, (100, 100), (100, 100), out)
-    });
+    let result = dev
+        .gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+            let tables = FieldTablesBuffer::upload(ctx, &data)?;
+            field(ctx, &tables, &pass, &small, (100, 100), (100, 100), out)
+        });
     assert!(
         matches!(result, Err(GpuError::InvalidInput(_))),
         "{result:?}"

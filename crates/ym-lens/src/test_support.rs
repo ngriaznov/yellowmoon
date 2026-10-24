@@ -416,9 +416,25 @@ fn write_json(path: &Path, v: &Value) -> io::Result<()> {
 ///
 /// Any I/O error.
 pub fn write_synthetic_lenses(dir: &Path) -> io::Result<()> {
+    write_synthetic_lenses_with(dir, &|_| {}, &|_| {})
+}
+
+/// [`write_synthetic_lenses`] with `lens_edit` applied to the JSON of every lens and `att_edit` to the
+/// attachment's before they are written.
+///
+/// # Errors
+///
+/// Any I/O error.
+pub fn write_synthetic_lenses_with(
+    dir: &Path,
+    lens_edit: &dyn Fn(&mut Value),
+    att_edit: &dyn Fn(&mut Value),
+) -> io::Result<()> {
     std::fs::create_dir_all(dir)?;
     write_json(&dir.join("index.json"), &index_json())?;
-    write_json(&dir.join("anamorphic.json"), &attachment_json())?;
+    let mut att = attachment_json();
+    att_edit(&mut att);
+    write_json(&dir.join("anamorphic.json"), &att)?;
     std::fs::write(
         dir.join("README.md"),
         "Synthetic lens files for tests. Not lens data.\n",
@@ -427,10 +443,59 @@ pub fn write_synthetic_lenses(dir: &Path) -> io::Result<()> {
         let rc = recipe(kind);
         let sub = dir.join(kind.as_str());
         std::fs::create_dir_all(&sub)?;
-        write_json(&sub.join("lens.json"), &lens_json(&rc))?;
+        let mut lens = lens_json(&rc);
+        lens_edit(&mut lens);
+        write_json(&sub.join("lens.json"), &lens)?;
         std::fs::write(sub.join("tables.safetensors"), cached_tables(kind)?)?;
     }
     write_sums(dir)
+}
+
+/// A library whose lenses have only ghosts, big and soft ones as the shipped lenses have (apothems up to a whole
+/// half-diagonal, some cut by their clipping circle), with fractions of light `fraction` times 1 to 3, and no
+/// glow, veil, starburst or streak: the flare terms of a plan are the ghosts' alone. For tests of the drawn items.
+///
+/// # Errors
+///
+/// Any I/O error writing and reading back the folder, which is made under the system's temporary folder and
+/// removed again.
+pub fn ghost_library(fraction: f64) -> io::Result<crate::LensLibrary> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "ym-ghost-lenses-{}-{}",
+        std::process::id(),
+        COUNT.fetch_add(1, Ordering::SeqCst)
+    ));
+    let ghost = |m: f64, n: f64, s: f64, clip: f64, f: f64, soft: f64, nm: f64| {
+        json!({ "m": m, "n": n, "s": s, "clip_radius": clip, "fraction": f, "soft": soft,
+                "coating": coating(nm) })
+    };
+    let written = write_synthetic_lenses_with(
+        &dir,
+        &|lens| {
+            lens["flare"]["glow"]["fraction"] = json!(0.0);
+            lens["flare"]["veil"]["fraction"] = json!(0.0);
+            lens["flare"]["starburst"]["fraction"] = json!(0.0);
+            lens["flare"]["aperture"] =
+                json!({ "blades": 7, "rotation_deg": 10.0, "roundness": 0.5 });
+            lens["flare"]["ghosts"] = json!([
+                ghost(-0.9, 0.0, 0.8, 4.0, fraction, 0.30, 450.0),
+                ghost(0.7, 0.6, 0.45, 0.9, 2.0 * fraction, 0.12, 600.0),
+                ghost(1.6, 0.0, 0.9, 4.0, 3.0 * fraction, 0.05, 520.0),
+                ghost(0.3, 0.2, 0.15, 4.0, fraction, 0.03, 500.0),
+            ]);
+        },
+        &|att| {
+            att["streak"]["fraction"] = json!(0.0);
+            att["ghosts"] = json!([ghost(-0.5, 0.0, 0.7, 4.0, fraction, 0.2, 470.0)]);
+        },
+    );
+    let library = written.and_then(|()| {
+        crate::LensLibrary::from_dir(&dir).map_err(|e| io::Error::other(e.to_string()))
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    library
 }
 
 /// Rewrites `SHA256SUMS` to list every file of the folder (except itself) with its current digest.

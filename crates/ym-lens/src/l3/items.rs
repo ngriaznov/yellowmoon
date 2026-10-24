@@ -198,10 +198,10 @@ pub(crate) struct Ghost {
 
 /// The spacings of the grids the slowly varying ghosts are drawn on, in pixels (even, so that a node sits on a
 /// pixel corner).
-pub(crate) const COARSE_LEVELS: [usize; 3] = [2, 4, 8];
+pub(crate) const COARSE_LEVELS: [usize; 5] = [2, 4, 8, 16, 32];
 
 /// How far past a tile an item can still matter to it: the nodes of the largest grid reach this far.
-pub(crate) const COARSE_REACH_PX: usize = 2 * COARSE_LEVELS[2];
+pub(crate) const COARSE_REACH_PX: usize = 2 * COARSE_LEVELS[4];
 
 /// The starburst of one compact source.
 #[derive(Clone, Debug)]
@@ -745,8 +745,8 @@ impl<'a> Items<'a> {
     }
 
     /// Which of the [`COARSE_LEVELS`] grids hold ghosts.
-    pub(crate) fn coarse_levels(&self) -> [bool; 3] {
-        let mut on = [false; 3];
+    pub(crate) fn coarse_levels(&self) -> [bool; 5] {
+        let mut on = [false; 5];
         for it in &self.list {
             if let Item::Ghost(g) = it
                 && let Some(i) = COARSE_LEVELS.iter().position(|l| *l == g.level)
@@ -1008,19 +1008,13 @@ pub(crate) struct GhostLayer {
 }
 
 impl GhostLayer {
-    /// True when no ghost is on a grid.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.grids.is_empty()
-    }
-
     /// Adds the grids' light to `acc`, the pixels of `band` (row-major, `band` wide), grid by grid.
     pub(crate) fn add_band(&self, band: &Span, acc: &mut [[f64; 3]]) {
         let bw = band.x1 - band.x0;
         for grid in &self.grids {
             let l = grid.l;
-            let cols: Vec<(usize, f64)> = (band.x0..band.x1)
-                .map(|x| split(x, l, grid.j0))
-                .collect();
+            let cols: Vec<(usize, f64)> =
+                (band.x0..band.x1).map(|x| split(x, l, grid.j0)).collect();
             for y in band.y0..band.y1 {
                 let (k, ty) = split(y, l, grid.k0);
                 debug_assert!(k + 1 < grid.ny, "the grid holds the nodes of the row");

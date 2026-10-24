@@ -40,6 +40,8 @@ ml = []
 fault-injection = []
 
 [dev-dependencies]
+# The synthetic lens folders of the tests of the lens kernels (`ym_lens::test_support`).
+ym-lens = { workspace = true, features = ["test-support"] }
 png.workspace = true
 tiff.workspace = true
 serde_json.workspace = true

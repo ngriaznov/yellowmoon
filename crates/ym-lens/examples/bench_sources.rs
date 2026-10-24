@@ -16,8 +16,9 @@ use ym_lens::{
 };
 
 fn main() {
-    let lib = LensLibrary::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data"))
-        .expect("the shipped lens data");
+    let lib =
+        LensLibrary::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data"))
+            .expect("the shipped lens data");
     let curves = ym_color::spectral::SpectralCurves::from_path(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../data/cameras/sony/Sony_ILCE-7RM4_380_780_5.json"

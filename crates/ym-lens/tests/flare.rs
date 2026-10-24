@@ -1131,7 +1131,10 @@ fn the_grids_of_the_ghosts_are_the_exact_sum_within_a_small_share() {
         sum_want
     );
     assert!(worst > 0.0, "the grids were not used");
-    assert!(worst <= 3e-3 * peak, "the grids differ by {worst} of a peak {peak}");
+    assert!(
+        worst <= 3e-3 * peak,
+        "the grids differ by {worst} of a peak {peak}"
+    );
     assert!(
         (sum_got - sum_want).abs() <= 1e-3 * sum_want,
         "{sum_got} against {sum_want}"
@@ -1157,7 +1160,8 @@ fn tiles_of_the_grids_equal_the_whole_frame_bit_for_bit() {
                 .expect("some light");
             for c in 0..3 {
                 for y in 0..t.h {
-                    let want = &reference[c * scene.w * scene.h + (t.y + y) * scene.w + t.x..][..t.w];
+                    let want =
+                        &reference[c * scene.w * scene.h + (t.y + y) * scene.w + t.x..][..t.w];
                     assert_eq!(
                         &got[c * t.w * t.h + y * t.w..][..t.w],
                         want,
@@ -1190,15 +1194,28 @@ fn ghosts_too_faint_to_see_are_not_drawn() {
     let terms = |lib: &LensLibrary| {
         let plan = plan_of(lib, 100.0, 0.0, 100.0, (600, 400), Axis::X, Some(8.0), 1.0);
         let planes = planes_of(&plan, &scene);
-        ym_lens::flare_terms(&plan, &planes, 1, &whole(scene.w, scene.h, &scene.data), scene.rect())
-            .expect("terms")
+        ym_lens::flare_terms(
+            &plan,
+            &planes,
+            1,
+            &whole(scene.w, scene.h, &scene.data),
+            scene.rect(),
+        )
+        .expect("terms")
     };
     let faint_terms = terms(&faint);
     let none_terms = terms(&none);
     // Without any fraction a plan adds no light at all; with faint ghosts the terms are drawn and all zero.
-    assert!(none_terms.as_ref().is_none_or(|t| t.iter().all(|v| *v == 0.0)));
+    assert!(
+        none_terms
+            .as_ref()
+            .is_none_or(|t| t.iter().all(|v| *v == 0.0))
+    );
     let faint_terms = faint_terms.expect("terms");
-    assert!(faint_terms.iter().all(|v| *v == 0.0), "a faint ghost was drawn");
+    assert!(
+        faint_terms.iter().all(|v| *v == 0.0),
+        "a faint ghost was drawn"
+    );
     // Visible ghosts are drawn.
     let visible = terms(&big_ghost_library(0.02)).expect("terms");
     assert!(visible.iter().any(|v| *v > 0.0));

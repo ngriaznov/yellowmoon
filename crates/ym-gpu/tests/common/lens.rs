@@ -103,7 +103,12 @@ pub fn planes_of(plan: &LensPlan) -> LensPlanes {
 }
 
 /// `rect` of a planar image of `width x height` pixels, as a planar image of its own.
-pub fn crop(data: &[f32], width: usize, height: usize, rect: ym_gpu::cpu::tiling::Rect) -> Vec<f32> {
+pub fn crop(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    rect: ym_gpu::cpu::tiling::Rect,
+) -> Vec<f32> {
     let mut out = Vec::with_capacity(3 * rect.w * rect.h);
     for c in 0..3 {
         for y in rect.y..rect.y1() {
@@ -141,7 +146,10 @@ pub fn lit(c: usize, x: usize, y: usize, w: usize, h: usize, lights: &[Light]) -
     let hd = 0.5 * ((w * w + h * h) as f64).sqrt();
     let mut v = 0.4 * texture(c, x, y);
     for (fx, fy, r, colour) in lights {
-        let (dx, dy) = (x as f64 + 0.5 - fx * w as f64, y as f64 + 0.5 - fy * h as f64);
+        let (dx, dy) = (
+            x as f64 + 0.5 - fx * w as f64,
+            y as f64 + 0.5 - fy * h as f64,
+        );
         if (dx * dx + dy * dy).sqrt() <= (r * hd).max(0.8) {
             v = v.max(colour[c]);
         }
@@ -208,7 +216,8 @@ pub fn plan_clipped(amounts: LensAmounts, w: usize, h: usize, axis: Axis) -> Len
 /// that waits behind the others' would pass the device's 30 s hang limit on a loaded machine.
 pub fn serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// How long a job of the lens kernels may take on the test devices. The kernels are heavy for a software
@@ -241,7 +250,9 @@ pub fn gpu() -> Option<&'static super::TestGpu> {
     static GPU: OnceLock<Option<super::TestGpu>> = OnceLock::new();
     GPU.get_or_init(|| {
         let Some(gpu) = start_with(true) else {
-            super::skip_notice("no GPU adapter (set WGPU_BACKEND=vulkan and install mesa-vulkan-drivers)");
+            super::skip_notice(
+                "no GPU adapter (set WGPU_BACKEND=vulkan and install mesa-vulkan-drivers)",
+            );
             return None;
         };
         println!("GPU tests on:\n{}", gpu.info());

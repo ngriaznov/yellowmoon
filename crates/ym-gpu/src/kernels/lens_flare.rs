@@ -73,15 +73,12 @@ struct FlareU {
     clip: [f32; 4],
     /// The clip test's ramp: from, to.
     ramp: [f32; 4],
-    /// The grids of nodes of the ghosts of spacing 2, 4 and 8 px: the first node's column and row, the nodes
-    /// across and down (zeros for a grid the tile does not use).
-    lg0: [i32; 4],
-    /// See `lg0`.
-    lg1: [i32; 4],
-    /// See `lg0`.
-    lg2: [i32; 4],
-    /// Where each grid starts in the node buffer (in vectors), then the bit set of the grids in use.
-    lgo: [u32; 4],
+    /// The grids of nodes of the ghosts of spacing 2, 4, 8, 16 and 32 px: the first node's column and row, the
+    /// nodes across and down (zeros for a grid the tile does not use).
+    lg: [[i32; 4]; 5],
+    /// Where each grid starts in the node buffer (in vectors; the grids 0 to 3, then the grid 4, the bit set
+    /// of the grids in use, and two zeros).
+    lgo: [[u32; 4]; 2],
     /// The grid a node dispatch fills: its index (0 to 2), then zeros.
     lvl: [u32; 4],
 }
@@ -208,11 +205,7 @@ impl FlareScaleBuffers {
                 "lens flare scale data: a bad header".into(),
             ));
         }
-        let vectors = storage_buffer(
-            ctx,
-            "lens flare scale",
-            bytemuck::cast_slice(&data.vectors),
-        )?;
+        let vectors = storage_buffer(ctx, "lens flare scale", bytemuck::cast_slice(&data.vectors))?;
         let bins = storage_buffer(ctx, "lens flare bins", bytemuck::cast_slice(&data.bins))?;
         Ok(FlareScaleBuffers {
             vectors: Arc::new(vectors),
@@ -249,7 +242,11 @@ pub fn max_binding_bytes(rect: Rect, halo: usize) -> u64 {
     let grown = (rect.w + 2 * halo) as u64 * (rect.h + 2 * halo) as u64 * 16;
     grown
         .max(GpuImage::buffer_bytes(rect.w, rect.h, 3))
-        .max(GpuImage::buffer_bytes(rect.w + 2 * halo, rect.h + 2 * halo, 3))
+        .max(GpuImage::buffer_bytes(
+            rect.w + 2 * halo,
+            rect.h + 2 * halo,
+            3,
+        ))
 }
 
 /// Records L3 over `out` (frame coordinates at the scale of `scale`): device in, device out.
@@ -343,8 +340,9 @@ pub fn encode_flare(
         },
     )?;
     // The grids of nodes the slowly varying ghosts are drawn on, over the nodes this tile's pixels read.
-    let mut grids = [[0i32; 4]; 3];
-    let mut grid_offsets = [0u32; 4];
+    let mut grids = [[0i32; 4]; 5];
+    let mut grid_offsets = [[0u32; 4]; 2];
+    let mut grid_set = 0u32;
     let mut node_vectors = 0u64;
     for (li, on) in meta.coarse.iter().enumerate() {
         if !*on {
@@ -355,8 +353,8 @@ pub fn encode_flare(
         let (k0, k1) = node_range(out.y, out.y1(), l);
         let (nx, ny) = (j1 - j0 + 1, k1 - k0 + 1);
         grids[li] = [j0 as i32, k0 as i32, nx as i32, ny as i32];
-        grid_offsets[li] = node_vectors as u32;
-        grid_offsets[3] |= 1 << li;
+        grid_offsets[li / 4][li % 4] = node_vectors as u32;
+        grid_set |= 1 << li;
         node_vectors += (nx * ny) as u64;
     }
     // Always a buffer to bind: the main pass declares the slot.
@@ -375,7 +373,11 @@ pub fn encode_flare(
         fw as i32,
         fh as i32,
         i32::from(meta.axis_y),
-        if has_core { meta.core_radius as i32 } else { -1 },
+        if has_core {
+            meta.core_radius as i32
+        } else {
+            -1
+        },
     ];
     u.outr = [out.x as i32, out.y as i32, out.w as i32, out.h as i32];
     u.resr = [
@@ -384,7 +386,12 @@ pub fn encode_flare(
         region.w as i32,
         region.h as i32,
     ];
-    u.zr = [z_at.0 as i32, z_at.1 as i32, z.width as i32, z.height as i32];
+    u.zr = [
+        z_at.0 as i32,
+        z_at.1 as i32,
+        z.width as i32,
+        z.height as i32,
+    ];
     u.zs = [
         z.stride as u32,
         z.plane_len() as u32,
@@ -412,9 +419,8 @@ pub fn encode_flare(
         meta.restore.boost,
     ];
     u.ramp = [meta.restore.ramp.0, meta.restore.ramp.1, 0.0, 0.0];
-    u.lg0 = grids[0];
-    u.lg1 = grids[1];
-    u.lg2 = grids[2];
+    u.lg = grids;
+    grid_offsets[1][1] = grid_set;
     u.lgo = grid_offsets;
 
     if let Some(res) = &restored {
@@ -445,7 +451,7 @@ pub fn encode_flare(
         )?;
     }
     for (li, grid) in grids.iter().enumerate() {
-        if grid_offsets[3] & (1 << li) == 0 {
+        if grid_set & (1 << li) == 0 {
             continue;
         }
         let mut un = u;
@@ -469,10 +475,9 @@ pub fn encode_flare(
         )?;
     }
     let ub = passes.uniform("lens flare uniform", &u)?;
-    let res_binding = restored.as_ref().map_or_else(
-        || scale.vectors.binding(),
-        |r| r.binding(),
-    );
+    let res_binding = restored
+        .as_ref()
+        .map_or_else(|| scale.vectors.binding(), |r| r.binding());
     passes.dispatch(
         KernelId::LensFlare,
         "lens flare",
@@ -630,9 +635,7 @@ mod tests {
                 ("tail", offset_of!(FlareU, tail)),
                 ("clip", offset_of!(FlareU, clip)),
                 ("ramp", offset_of!(FlareU, ramp)),
-                ("lg0", offset_of!(FlareU, lg0)),
-                ("lg1", offset_of!(FlareU, lg1)),
-                ("lg2", offset_of!(FlareU, lg2)),
+                ("lg", offset_of!(FlareU, lg)),
                 ("lgo", offset_of!(FlareU, lgo)),
                 ("lvl", offset_of!(FlareU, lvl)),
             ];

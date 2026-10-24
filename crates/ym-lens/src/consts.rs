@@ -134,8 +134,8 @@ pub const EDGE_FLOOR_PX: f64 = 1.0;
 /// not pay for thousands of ghosts that cannot be seen. The choice depends on the plan and the planes only.
 pub const GHOST_PRUNE_BUDGET: f64 = 1.0 / 262_144.0;
 
-/// Ghosts whose edges and rim change slowly are drawn on a grid of nodes `L` pixels apart (`L` is 2, 4 or 8, the
-/// largest that keeps this many nodes across the narrowest feature) and read back by bilinear interpolation:
+/// Ghosts whose edges and rim change slowly are drawn on a grid of nodes `L` pixels apart (`L` is 2, 4, 8, 16 or
+/// 32, the largest that keeps this many nodes across the narrowest feature) and read back by bilinear interpolation:
 /// a ghost covers most of the frame, and evaluating it at every pixel of every one of hundreds of sources is
 /// what made a photo with many lights take minutes.
 pub const COARSE_NODES_PER_FEATURE: f64 = 2.5;
@@ -165,7 +165,7 @@ pub const B_MIN: f64 = 0.004;
 pub const B_CAP: f64 = 0.03;
 
 /// The ball list holds at most this many balls (the brightest first).
-pub const MAX_BALLS: usize = 256;
+pub const MAX_BALLS: usize = 512;
 
 /// A line of the stretch has at most this many samples.
 pub const MAX_STRETCH_TAPS: usize = 65;

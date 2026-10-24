@@ -33,7 +33,8 @@ use ym_gpu::device::GpuError;
 use ym_gpu::kernels::lens_flare::{flare, max_binding_bytes};
 use ym_gpu::queue::{JobSpec, Priority};
 use ym_lens::{
-    Axis, ImageRef, LensKind, LensPlan, LensPlanes, PixelRect, apply_flares, flares_halo_px,
+    Axis, FrameInfo, ImageRef, LensKind, LensPlan, LensPlanes, PixelRect, apply_flares,
+    flares_halo_px,
 };
 
 /// The largest difference between the kernel and the CPU reference, relative to the largest value of the
@@ -71,11 +72,24 @@ fn gpu_flare(
     let f = plan.frame();
     let plane_data = planes.flare_plane_data().expect("planes");
     let lens = plan.flare_lens_data();
-    let scale = plan.flare_scale_data(planes, f.width, f.height).expect("scale data");
+    let scale = plan
+        .flare_scale_data(planes, f.width, f.height)
+        .expect("scale data");
     let mix = plan.flare_mix();
     let (input, z) = (input.to_vec(), z.to_vec());
     run(dev, move |ctx| {
-        flare(ctx, &plane_data, &lens, &scale, mix, &input, size, at, &z, out)
+        flare(
+            ctx,
+            &plane_data,
+            &lens,
+            &scale,
+            mix,
+            &input,
+            size,
+            at,
+            &z,
+            out,
+        )
     })
 }
 
@@ -154,7 +168,9 @@ fn compare(got: &[f32], want: &[f32]) -> Found {
 #[test]
 fn the_kernel_matches_the_cpu_reference() {
     let _guard = serial();
-    let Some(dev) = common::lens::gpu() else { return };
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
     let bound = if dev.gpu.info().is_software {
         PARITY_BOUND
     } else {
@@ -172,6 +188,7 @@ fn the_kernel_matches_the_cpu_reference() {
     let mut worst_all = 0.0f32;
     let mut worst_rel = 0.0f32;
     let mut largest = 0.0f32;
+    let mut with_grids = 0;
     for axis in [Axis::X, Axis::Y] {
         for kind in LensKind::ALL {
             for (flares, anamorphic) in [(100.0, 0.0), (100.0, 100.0)] {
@@ -180,6 +197,8 @@ fn the_kernel_matches_the_cpu_reference() {
                 }
                 let p = plan_clipped(amounts(kind, flares, 0.0, anamorphic), w, h, axis);
                 let planes = lit_planes(&p, &lights);
+                let scale = p.flare_scale_data(&planes, w, h).expect("scale data");
+                with_grids += usize::from(scale.coarse.iter().any(|c| *c));
                 let t = std::time::Instant::now();
                 let want = cpu_flare(&p, &planes, &image, (w, h), (0, 0), &nothing, out);
                 let cpu_s = t.elapsed().as_secs_f64();
@@ -201,6 +220,8 @@ fn the_kernel_matches_the_cpu_reference() {
             }
         }
     }
+    // The grids of the slowly varying ghosts are part of what is compared.
+    assert!(with_grids > 0, "no case draws a ghost on a grid of nodes");
     // Mixed with a picture at Flares 40: (1 - a) Z + F terms.
     let z = z_over(out);
     let p = plan_clipped(amounts(LensKind::Classic, 40.0, 0.0, 60.0), w, h, Axis::X);
@@ -218,8 +239,71 @@ fn the_kernel_matches_the_cpu_reference() {
         times.len()
     );
     note!(
-        "L3 parity: {cases} cases; flare terms alone: worst difference {worst_all:e} of values up to {largest:e} ({worst_rel:e} relative); mixed with a picture: {:e}",
+        "L3 parity: {cases} cases ({with_grids} with ghosts on grids of nodes); flare terms alone: worst difference {worst_all:e} of values up to {largest:e} ({worst_rel:e} relative); mixed with a picture: {:e}",
         f.worst
+    );
+}
+
+/// The ghosts on grids of nodes, alone: a lens of big soft ghosts with no glow, veil, starburst or streak, so
+/// that the flare terms are the ghosts' (the shipped lenses' glow is a thousand times brighter than their
+/// ghosts, which hides an error in them from the other test). The bound is the same share of the terms' peak.
+#[test]
+fn the_ghosts_on_the_grids_match_the_cpu_reference() {
+    let _guard = serial();
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
+    let bound = if dev.gpu.info().is_software {
+        PARITY_BOUND
+    } else {
+        PARITY_BOUND_HARDWARE
+    };
+    let lib = ym_lens::test_support::ghost_library(0.02).expect("the synthetic ghost lenses");
+    let (w, h) = (600usize, 400usize);
+    let lights = lights();
+    let image = lit_image(w, h, &lights);
+    let out = Rect::whole(w, h);
+    let nothing = vec![0.0f32; 3 * w * h];
+    let (mut worst_rel, mut largest) = (0.0f32, 0.0f32);
+    for axis in [Axis::X, Axis::Y] {
+        for anamorphic in [0.0, 100.0] {
+            let frame = FrameInfo {
+                width: w,
+                height: h,
+                axis,
+                f_number: Some(8.0),
+                clip: [1.0; 3],
+            };
+            let p = LensPlan::new(
+                &lib,
+                &amounts(LensKind::Classic, 100.0, 0.0, anamorphic),
+                frame,
+                common::lens::camera(),
+            )
+            .expect("plan");
+            let planes = lit_planes(&p, &lights);
+            let scale = p.flare_scale_data(&planes, w, h).expect("scale data");
+            let levels = scale.coarse.iter().filter(|c| **c).count();
+            assert!(
+                levels >= 2,
+                "{axis:?} {anamorphic}: grids in use: {:?}",
+                scale.coarse
+            );
+            let want = cpu_flare(&p, &planes, &image, (w, h), (0, 0), &nothing, out);
+            let got = gpu_flare(dev, &p, &planes, &image, (w, h), (0, 0), &nothing, out);
+            let f = compare(&got, &want);
+            worst_rel = worst_rel.max(f.worst / f.scale.max(1e-9));
+            largest = largest.max(f.scale);
+            assert!(
+                f.worst <= bound * f.scale.max(1e-9),
+                "{axis:?} anamorphic {anamorphic}: worst difference {} (values up to {})",
+                f.worst,
+                f.scale
+            );
+        }
+    }
+    note!(
+        "L3 ghosts on grids: 4 cases, worst difference {worst_rel:e} of the peak (peaks up to {largest:e})"
     );
 }
 
@@ -234,13 +318,24 @@ fn tile(
 ) -> Vec<f32> {
     let r = region(p, planes, out);
     let input = crop(whole, frame.0, frame.1, r);
-    gpu_flare(dev, p, planes, &input, (r.w, r.h), (r.x, r.y), &z_over(out), out)
+    gpu_flare(
+        dev,
+        p,
+        planes,
+        &input,
+        (r.w, r.h),
+        (r.x, r.y),
+        &z_over(out),
+        out,
+    )
 }
 
 #[test]
 fn tiles_equal_the_whole_frame_bit_for_bit() {
     let _guard = serial();
-    let Some(dev) = common::lens::gpu() else { return };
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
     let (w, h) = (1200usize, 800usize);
     let lights = lights();
     let image = lit_image(w, h, &lights);
@@ -268,7 +363,9 @@ fn tiles_equal_the_whole_frame_bit_for_bit() {
 #[test]
 fn the_far_corner_of_a_50_mp_frame_is_as_exact_as_the_near_one() {
     let _guard = serial();
-    let Some(dev) = common::lens::gpu() else { return };
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
     let (w, h) = (8658usize, 5772usize);
     // Lights near both corners and the centre, so every region has items to draw.
     let lights: Vec<Light> = vec![
@@ -326,12 +423,19 @@ fn the_far_corner_of_a_50_mp_frame_is_as_exact_as_the_near_one() {
 #[test]
 fn poison_and_a_plain_device_give_the_same_bits() {
     let _guard = serial();
-    let Some(_dev) = common::lens::gpu() else { return };
+    let Some(_dev) = common::lens::gpu() else {
+        return;
+    };
     let (w, h) = (300usize, 220usize);
     let lights = lights();
     let image = lit_image(w, h, &lights);
     for (anamorphic, axis) in [(100.0, Axis::X), (30.0, Axis::Y)] {
-        let p = plan_clipped(amounts(LensKind::Detuned, 100.0, 0.0, anamorphic), w, h, axis);
+        let p = plan_clipped(
+            amounts(LensKind::Detuned, 100.0, 0.0, anamorphic),
+            w,
+            h,
+            axis,
+        );
         let planes = lit_planes(&p, &lights);
         let plane_data = planes.flare_plane_data().expect("planes");
         let lens = p.flare_lens_data();
@@ -349,7 +453,18 @@ fn poison_and_a_plain_device_give_the_same_bits() {
                 image.clone(),
             );
             gpu.run(JobSpec::new(Priority::Viewport), move |ctx, _| {
-                flare(ctx, &plane_data, &lens, &scale, mix, &image, (w, h), (0, 0), &z, out)
+                flare(
+                    ctx,
+                    &plane_data,
+                    &lens,
+                    &scale,
+                    mix,
+                    &image,
+                    (w, h),
+                    (0, 0),
+                    &z,
+                    out,
+                )
             })
             .expect("flare")
         });

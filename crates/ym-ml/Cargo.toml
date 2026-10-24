@@ -29,6 +29,8 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
+# `exp` and `log2` of the bokeh network's input and output stages, the same bits on every platform (docs/21 section 9). MIT.
+libm = "0.2"
 safetensors = "0.8"
 burn = { version = "0.22", default-features = false, features = ["std", "wgpu"], optional = true }
 # The device the image pipeline owns (`docs/17-gpu.md` section 14); `ml` makes it importable into burn. Only with `burn`.
@@ -39,8 +41,14 @@ ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "
 [dev-dependencies]
 approx.workspace = true
 libc = "0.2"
+# `examples/bokeh_maps.rs` writes false-colour PNGs of the bokeh maps.
+png.workspace = true
 tempfile.workspace = true
 
 [[example]]
 name = "bench"
 path = "examples/bench.rs"
+
+[[example]]
+name = "bokeh_maps"
+path = "examples/bokeh_maps.rs"

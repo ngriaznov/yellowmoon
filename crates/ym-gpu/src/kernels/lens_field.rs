@@ -33,11 +33,9 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-pub use ym_lens::device::{FieldPass, FieldTablesData};
-use ym_lens::consts::{
-    COPY_BELOW_PX, MAX_TAPS_SIDE, RADII, TAP_SPACING_MAX_PX, W_MAX,
-};
+use ym_lens::consts::{COPY_BELOW_PX, MAX_TAPS_SIDE, RADII, TAP_SPACING_MAX_PX, W_MAX};
 use ym_lens::device::{FIELD_HEADER, FIELD_TABLE_SIZES, field_table_offset};
+pub use ym_lens::device::{FieldPass, FieldTablesData};
 
 use super::shader::KernelId;
 use super::util::{GROUP, storage_buffer};
@@ -294,8 +292,18 @@ pub fn encode_field(
         pass.side as f32,
         pass.fringe_boost as f32,
     ];
-    base.ints = [fw as i32, fh as i32, pass.lmax as i32, i32::from(pass.axis_y)];
-    base.src = [at.0 as i32, at.1 as i32, src.width as i32, src.height as i32];
+    base.ints = [
+        fw as i32,
+        fh as i32,
+        pass.lmax as i32,
+        i32::from(pass.axis_y),
+    ];
+    base.src = [
+        at.0 as i32,
+        at.1 as i32,
+        src.width as i32,
+        src.height as i32,
+    ];
     base.srcs = [src.stride as u32, src.plane_len() as u32, 0, 0];
     for (l, lv) in pyramid.levels.iter().enumerate() {
         base.lvl[l] = [lv[0], lv[1], lv[2], 0];

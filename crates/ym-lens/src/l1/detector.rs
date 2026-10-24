@@ -452,6 +452,7 @@ pub(super) fn detect(
 
     // 1. Edge readings.
     let (mut samples, mut sharp) = edge_samples(&ladder, w, h, noise_v, r_min_px, cancel)?;
+    drop(ladder);
     let measured_edges = samples.iter().filter(|s| s.w >= 0.1).count();
 
     // 2. The subject anchor.
@@ -496,16 +497,15 @@ pub(super) fn detect(
             h,
             rgb: [&wp.rgb[0], &wp.rgb[1], &wp.rgb[2]],
             y: &wp.y,
-            ladder: &ladder,
             noise_v,
             r_min_px,
             r_max_px,
             ev_w: &ev_w,
             ev_s: &ev_s,
+            anchor: &anchor,
         },
         cancel,
     )?;
-    drop(ladder);
     // Their rims are not edges of the blur: drop the readings around them and put their radius there.
     if !balls.is_empty() {
         let mut inside = vec![false; n];

@@ -38,11 +38,10 @@ struct FlareU {
     tail: vec4<i32>,        // tail plane width, height, offset of the spike tables in the planes buffer, 0
     clip: vec4<f32>,        // g0 of each channel, 2^h - 1
     ramp: vec4<f32>,        // the clip test's ramp: from, to
-    lg0: vec4<i32>,         // the grid of spacing 2: first node column and row, nodes across and down
-    lg1: vec4<i32>,         // spacing 4
-    lg2: vec4<i32>,         // spacing 8
-    lgo: vec4<u32>,         // where each grid starts in the node buffer (vectors), the bit set in use
-    lvl: vec4<u32>,         // the grid lfl_nodes fills (0 to 2)
+    lg: array<vec4<i32>, 5>,  // the grids of spacing 2, 4, 8, 16, 32: first node column and row, nodes across, down
+    lgo: array<vec4<u32>, 2>, // where each grid starts in the node buffer (vectors): grids 0 to 3, then grid 4,
+                              // the bit set of the grids in use
+    lvl: vec4<u32>,         // the grid lfl_nodes fills (0 to 4)
 };
 
 @group(0) @binding(0) var<uniform> pu: FlareU;
@@ -501,13 +500,11 @@ fn lfl_floor_div(a: i32, b: i32) -> i32 {
 }
 
 fn lfl_grid(li: u32) -> vec4<i32> {
-    if (li == 0u) {
-        return pu.lg0;
-    }
-    if (li == 1u) {
-        return pu.lg1;
-    }
-    return pu.lg2;
+    return pu.lg[li];
+}
+
+fn lfl_grid_offset(li: u32) -> u32 {
+    return pu.lgo[li / 4u][li % 4u];
 }
 
 // One node of the grid pu.lvl.x: the sum, in list order, of the densities of the grid's ghosts at the node's
@@ -552,15 +549,15 @@ fn lfl_nodes_main(gid: vec3<u32>) {
             acc = acc + lfl_ghost(rec, kind.y, a, c);
         }
     }
-    aux[pu.lgo[li] + gid.y * u32(g.z) + gid.x] = vec4<f32>(acc, 0.0);
+    aux[lfl_grid_offset(li) + gid.y * u32(g.z) + gid.x] = vec4<f32>(acc, 0.0);
 }
 
 // The grids' light at the pixel (i, j): each grid in use read by bilinear interpolation between the four
 // nodes around the pixel's centre.
 fn lfl_layer(i: i32, j: i32) -> vec3<f32> {
     var acc = vec3<f32>(0.0);
-    for (var li = 0u; li < 3u; li = li + 1u) {
-        if ((pu.lgo.w & (1u << li)) == 0u) {
+    for (var li = 0u; li < 5u; li = li + 1u) {
+        if ((pu.lgo[1].y & (1u << li)) == 0u) {
             continue;
         }
         let g = lfl_grid(li);
@@ -572,7 +569,7 @@ fn lfl_layer(i: i32, j: i32) -> vec3<f32> {
         let tx = f32(nx - 2 * l * jn) / f32(2 * l);
         let ty = f32(ny - 2 * l * kn) / f32(2 * l);
         let w = u32(g.z);
-        let base = pu.lgo[li] + u32(kn - g.y) * w + u32(jn - g.x);
+        let base = lfl_grid_offset(li) + u32(kn - g.y) * w + u32(jn - g.x);
         let n00 = aux[base].xyz;
         let n10 = aux[base + 1u].xyz;
         let n01 = aux[base + w].xyz;
@@ -596,7 +593,7 @@ fn lfl_main_main(gid: vec3<u32>) {
     }
     acc = acc + lfl_tail(i, j);
     acc = acc + lfl_items(i, j);
-    if (pu.lgo.w != 0u) {
+    if (pu.lgo[1].y != 0u) {
         acc = acc + lfl_layer(i, j);
     }
     let zp = u32(j - pu.zr.y) * pu.zs.x + u32(i - pu.zr.x);

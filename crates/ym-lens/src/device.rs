@@ -173,9 +173,9 @@ pub struct FlareScaleData {
     pub restore: FlareRestore,
     /// True when the plan draws streaks (the header holds their profile).
     pub has_streak: bool,
-    /// Which grids of nodes (spacing 2, 4 and 8 px) hold ghosts: those ghosts are not drawn at every pixel
+    /// Which grids of nodes (spacing 2, 4, 8, 16 and 32 px) hold ghosts: those ghosts are not drawn at every pixel
     /// but at the nodes, and read back by bilinear interpolation (`COARSE_LEVELS`).
-    pub coarse: [bool; 3],
+    pub coarse: [bool; 5],
 }
 
 impl FlareScaleData {

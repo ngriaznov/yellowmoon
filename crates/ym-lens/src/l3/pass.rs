@@ -241,7 +241,6 @@ fn terms_with(
         y0: out.y,
         y1: out.y1(),
     };
-    let t_build = std::time::Instant::now();
     let items = Items::build_with(
         plan,
         &terms,
@@ -252,10 +251,6 @@ fn terms_with(
         coarse,
     );
     let layer = items.ghost_layer(&cull);
-    let ms_build = t_build.elapsed().as_secs_f64() * 1e3;
-    let ns_kind: [std::sync::atomic::AtomicU64; 3] = Default::default();
-    let n_kind: [std::sync::atomic::AtomicU64; 3] = Default::default();
-    let t_all = std::time::Instant::now();
 
     let plane = out.w * out.h;
     let mut result = vec![0.0f64; 3 * plane];
@@ -302,21 +297,9 @@ fn terms_with(
                 }
             }
             for item in &items.list {
-                let t = std::time::Instant::now();
                 items.add(item, &band, &mut acc);
-                let k = match item {
-                    crate::l3::items::Item::Ghost(_) => 0,
-                    crate::l3::items::Item::Burst(_) => 1,
-                    crate::l3::items::Item::Streak(_) => 2,
-                };
-                ns_kind[k].fetch_add(t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
-                n_kind[k].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
-            if !layer.is_empty() {
-                let t = std::time::Instant::now();
-                layer.add_band(&band, &mut acc);
-                ns_kind[1].fetch_add(t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
-            }
+            layer.add_band(&band, &mut acc);
             for row in 0..rows_here {
                 for col in 0..out.w {
                     let a = acc[row * out.w + col];
@@ -327,18 +310,6 @@ fn terms_with(
                 }
             }
         });
-    if std::env::var_os("YM_L3_TRACE").is_some() {
-        let ms = |k: usize| ns_kind[k].load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6;
-        eprintln!(
-            "[l3] items {} (build {:.0} ms); wall for the pixel pass {:.0} ms; summed thread time: ghosts {:.0} ms, bursts {:.0} ms, streaks {:.0} ms",
-            items.list.len(),
-            ms_build,
-            t_all.elapsed().as_secs_f64() * 1e3,
-            ms(0),
-            ms(1),
-            ms(2)
-        );
-    }
     Ok(Some(result))
 }
 

@@ -47,7 +47,9 @@ fn main() -> Fallible<()> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--out" => out = PathBuf::from(it.next().ok_or("--out needs a folder")?),
-            "--anamorphic" => anamorphic = it.next().ok_or("--anamorphic needs a value")?.parse()?,
+            "--anamorphic" => {
+                anamorphic = it.next().ok_or("--anamorphic needs a value")?.parse()?
+            }
             "--no-l1" => run_l1 = false,
             other => dirs.push(PathBuf::from(other)),
         }
@@ -111,7 +113,11 @@ fn main() -> Fallible<()> {
             },
             &camera,
         )?;
-        assert_eq!(plan.lens_plane_scale(), k, "the plan's k_L differs from the dump's");
+        assert_eq!(
+            plan.lens_plane_scale(),
+            k,
+            "the plan's k_L differs from the dump's"
+        );
         let t = Instant::now();
         let planes = LensPlanes::build(&plan, &image, focus, &|| false)?;
         let planes_ms = t.elapsed().as_secs_f64() * 1e3;

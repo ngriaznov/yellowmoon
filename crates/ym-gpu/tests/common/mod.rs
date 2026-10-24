@@ -139,5 +139,5 @@ pub fn f16_round(x: f32) -> f32 {
 
 pub mod chains;
 pub mod exact;
-pub mod limits;
 pub mod lens;
+pub mod limits;
