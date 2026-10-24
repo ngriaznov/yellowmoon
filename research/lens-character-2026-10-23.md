@@ -158,7 +158,7 @@ The owner's hypothesis can be tested cheaply before any engineering commitment. 
 | Taller oval bokeh | Background highlights become vertical ovals | Bokeh reshaping |
 | Horizontal streaks and oval ghosts | Lights flare into horizontal lines | Flares, shaped by the cylinder |
 | Anamorphic distortion | Barrel distortion stronger across the width than the height: horizontal lines near the top and bottom bow, verticals stay nearly straight | A geometric warp |
-| Edge stretch ("mumps") | Objects near the left and right edges look slightly wider | The same warp |
+| ~~Edge stretch ("mumps")~~ | Dropped 2026-10-24: tracing the attachment (US 3,002,427) gives a horizontal barrel that draws the sides in, and "mumps" (faces looking wider) comes from the squeeze changing with focus distance, which a still does not record | — |
 | Oval falloff | Darkening along an oval rather than a circle | Field effects |
 | Softer sides | The left and right edges soften more than the top and bottom | Field effects |
 | Horizontal colour fringing | Fringes mainly along the width | Field effects |
