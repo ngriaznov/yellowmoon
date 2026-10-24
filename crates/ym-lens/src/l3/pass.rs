@@ -159,9 +159,22 @@ pub(crate) fn combine(plan: &LensPlan, z: &[f32], flare: &[f64]) -> Result<Vec<f
 pub(crate) fn terms(
     plan: &LensPlan,
     planes: &LensPlanes,
+    k: usize,
+    input: &ImageRef,
+    out: PixelRect,
+) -> Result<Option<Vec<f64>>, LensError> {
+    terms_with(plan, planes, k, input, out, true)
+}
+
+/// [`terms`], with `coarse` false to draw every ghost at every pixel (the reference the coarse grids are
+/// measured against).
+pub(crate) fn terms_with(
+    plan: &LensPlan,
+    planes: &LensPlanes,
     _k: usize,
     input: &ImageRef,
     out: PixelRect,
+    coarse: bool,
 ) -> Result<Option<Vec<f64>>, LensError> {
     let terms = Terms::new(plan);
     if terms.a <= 0.0 || out.w == 0 || out.h == 0 {
@@ -219,7 +232,16 @@ pub(crate) fn terms(
         y1: out.y1(),
     };
     let t_build = std::time::Instant::now();
-    let items = Items::build(plan, &terms, frame, flare.sources(), flare.spikes(), &cull);
+    let items = Items::build_with(
+        plan,
+        &terms,
+        frame,
+        flare.sources(),
+        flare.spikes(),
+        &cull,
+        coarse,
+    );
+    let layer = items.ghost_layer(&cull);
     let ms_build = t_build.elapsed().as_secs_f64() * 1e3;
     let ns_kind: [std::sync::atomic::AtomicU64; 3] = Default::default();
     let n_kind: [std::sync::atomic::AtomicU64; 3] = Default::default();
@@ -279,6 +301,11 @@ pub(crate) fn terms(
                 };
                 ns_kind[k].fetch_add(t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
                 n_kind[k].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            if !layer.is_empty() {
+                let t = std::time::Instant::now();
+                layer.add_band(&band, &mut acc);
+                ns_kind[1].fetch_add(t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
             }
             for row in 0..rows_here {
                 for col in 0..out.w {

@@ -134,6 +134,18 @@ pub const EDGE_FLOOR_PX: f64 = 1.0;
 /// not pay for thousands of ghosts that cannot be seen. The choice depends on the plan and the planes only.
 pub const GHOST_PRUNE_BUDGET: f64 = 1.0 / 262_144.0;
 
+/// Ghosts whose edges and rim change slowly are drawn on a grid of nodes `L` pixels apart (`L` is 2, 4 or 8, the
+/// largest that keeps this many nodes across the narrowest feature) and read back by bilinear interpolation:
+/// a ghost covers most of the frame, and evaluating it at every pixel of every one of hundreds of sources is
+/// what made a photo with many lights take minutes.
+pub const COARSE_NODES_PER_FEATURE: f64 = 2.5;
+
+/// The rim curve (`RIM_SAMPLES` nodes over the ghost's radius) is smooth at this fraction of the radius.
+pub const COARSE_RIM_FEATURE: f64 = 0.1;
+
+/// Ghosts whose pixel rectangle is smaller than this many pixels are drawn at every pixel: it costs little.
+pub const COARSE_MIN_AREA_PX: usize = 16_384;
+
 /// The f-number the starburst assumes when the photo has none.
 pub const STARBURST_DEFAULT_F_NUMBER: f64 = 4.0;
 

@@ -17,8 +17,11 @@
 //! * A **streak** is separable: a profile along the axis (a sharp core and a power-law tail, cut smoothly at its
 //!   reach) times a Gaussian across it as tall as the source; each pixel gets the exact mass over its area.
 
+use rayon::prelude::*;
+
 use crate::consts::{
-    COMPACT_EXTENT_HD, EDGE_FLOOR_PX, EDGE_REACH_SIGMAS, GHOST_PRUNE_BUDGET, SPIKE_SIZE,
+    COARSE_MIN_AREA_PX, COARSE_NODES_PER_FEATURE, COARSE_RIM_FEATURE, COMPACT_EXTENT_HD,
+    EDGE_FLOOR_PX, EDGE_REACH_SIGMAS, GHOST_PRUNE_BUDGET, SPIKE_SIZE,
 };
 use crate::data::{Aperture, GhostData};
 use crate::l3::geometry::{Frame, Span};
@@ -187,8 +190,18 @@ pub(crate) struct Ghost {
     /// The largest density the ghost reaches anywhere, per channel at most: the brightest channel's `amp`
     /// times the rim's peak.
     peak: f64,
+    /// 1 when the ghost is drawn at every pixel, else the spacing in pixels of the grid of nodes it is drawn
+    /// on ([`COARSE_LEVELS`]).
+    level: usize,
     span: Span,
 }
+
+/// The spacings of the grids the slowly varying ghosts are drawn on, in pixels (even, so that a node sits on a
+/// pixel corner).
+pub(crate) const COARSE_LEVELS: [usize; 3] = [2, 4, 8];
+
+/// How far past a tile an item can still matter to it: the nodes of the largest grid reach this far.
+pub(crate) const COARSE_REACH_PX: usize = 2 * COARSE_LEVELS[2];
 
 /// The starburst of one compact source.
 #[derive(Clone, Debug)]
@@ -377,6 +390,8 @@ pub(crate) struct Items<'a> {
     spike_radius: f64,
     frame: Frame,
     tail: &'static NormalTail,
+    /// True when slowly varying ghosts are drawn on grids of nodes.
+    coarse: bool,
     /// The items, in list order.
     pub(crate) list: Vec<Item>,
 }
@@ -396,6 +411,20 @@ impl<'a> Items<'a> {
         spikes: &'a [Vec<f64>; 3],
         cull: &Span,
     ) -> Self {
+        Self::build_with(plan, terms, frame, sources, spikes, cull, true)
+    }
+
+    /// [`Items::build`], with `coarse` false to draw every ghost at every pixel (the reference the coarse
+    /// grids are measured against).
+    pub(crate) fn build_with(
+        plan: &LensPlan,
+        terms: &Terms,
+        frame: Frame,
+        sources: &[Source],
+        spikes: &'a [Vec<f64>; 3],
+        cull: &Span,
+        coarse: bool,
+    ) -> Self {
         let (lens, att, camera) = (plan.lens(), plan.attachment(), plan.camera());
         let shapes = [Shape::aperture(&lens.flare.aperture), Shape::round()];
         let along = (terms.streak > 0.0 && terms.anam > 0.0).then(|| {
@@ -413,6 +442,7 @@ impl<'a> Items<'a> {
             spike_radius: lens.flare.starburst.radius,
             frame,
             tail: normal_tail(),
+            coarse,
             list: Vec::new(),
         };
         let lens_tints: Vec<[f64; 3]> = lens
@@ -502,7 +532,15 @@ impl<'a> Items<'a> {
             k += 1;
             !left_out[k - 1]
         });
-        list.retain(|it| !it.span().intersect(cull).is_empty());
+        // Items within reach of the tile's nodes count as well: a node a few pixels outside the tile is the same
+        // number whatever the tile is.
+        let reach = Span {
+            x0: cull.x0.saturating_sub(COARSE_REACH_PX),
+            x1: cull.x1.saturating_add(COARSE_REACH_PX),
+            y0: cull.y0.saturating_sub(COARSE_REACH_PX),
+            y1: cull.y1.saturating_add(COARSE_REACH_PX),
+        };
+        list.retain(|it| !it.span().intersect(&reach).is_empty());
         items.list = list;
         items
     }
@@ -552,6 +590,7 @@ impl<'a> Items<'a> {
             fraction * tint[2] * src.energy[2] / norm,
         ];
         let peak = amp[0].max(amp[1]).max(amp[2]) * rim_peak;
+        let level = self.level_for(sigma_edge, s, &span);
         Some(Ghost {
             shape,
             centre,
@@ -564,8 +603,27 @@ impl<'a> Items<'a> {
             g_max,
             amp,
             peak,
+            level,
             span,
         })
+    }
+
+    /// The grid spacing a ghost is drawn on: the largest of [`COARSE_LEVELS`] that keeps
+    /// [`COARSE_NODES_PER_FEATURE`] nodes across its narrowest feature (the edge's standard deviation, and a
+    /// tenth of the radius for the rim curve), or 1 (every pixel) for a ghost that is small or sharp.
+    fn level_for(&self, sigma_edge: f64, s: f64, span: &Span) -> usize {
+        let area = (span.x1.saturating_sub(span.x0)) * (span.y1.saturating_sub(span.y0));
+        if !self.coarse || area < COARSE_MIN_AREA_PX {
+            return 1;
+        }
+        let feature_px = sigma_edge.min(s * COARSE_RIM_FEATURE) * self.frame.half_diag;
+        let nodes = feature_px / COARSE_NODES_PER_FEATURE;
+        COARSE_LEVELS
+            .iter()
+            .rev()
+            .copied()
+            .find(|l| (*l as f64) <= nodes)
+            .unwrap_or(1)
     }
 
     /// The starburst of `src` (the fraction already holds the f-number's strength).
@@ -704,30 +762,39 @@ impl<'a> Items<'a> {
             return;
         }
         match item {
+            // A coarse ghost is in the grids of `ghost_layer`.
+            Item::Ghost(g) if g.level > 1 => {}
             Item::Ghost(g) => self.add_ghost(g, &area, band, acc),
             Item::Burst(b) => self.add_burst(b, &area, band, acc),
             Item::Streak(s) => self.add_streak(s, &area, band, acc),
         }
     }
 
-    fn add_ghost(&self, g: &Ghost, area: &Span, band: &Span, acc: &mut [[f64; 3]]) {
+    /// The ghost's density at the canvas position `(a, c)`: 0 outside its shape and its clipping circle.
+    #[inline]
+    fn ghost_density(&self, g: &Ghost, a: f64, c: f64) -> f64 {
         let shape = &self.shapes[g.shape];
+        let x = (a - g.centre[0]) / g.stretch;
+        let y = c - g.centre[1];
+        let gauge = shape.gauge(x, y) / g.s;
+        if gauge > g.g_max {
+            return 0.0;
+        }
+        let prof = profile(&self.rim, self.tail, gauge, g.sigma_g);
+        let (dx, dy) = (a - g.clip_centre[0], c - g.clip_centre[1]);
+        let d = (dx * dx + dy * dy).sqrt();
+        let dens = prof * self.tail.q((d - g.clip_radius) / g.sigma_clip);
+        dens.max(0.0)
+    }
+
+    fn add_ghost(&self, g: &Ghost, area: &Span, band: &Span, acc: &mut [[f64; 3]]) {
         let frame = &self.frame;
         let bw = band.x1 - band.x0;
         for j in area.y0..area.y1 {
             let row = (j - band.y0) * bw;
             for i in area.x0..area.x1 {
                 let (a, c) = frame.canvas_at(i as f64 + 0.5, j as f64 + 0.5);
-                let x = (a - g.centre[0]) / g.stretch;
-                let y = c - g.centre[1];
-                let gauge = shape.gauge(x, y) / g.s;
-                if gauge > g.g_max {
-                    continue;
-                }
-                let prof = profile(&self.rim, self.tail, gauge, g.sigma_g);
-                let (dx, dy) = (a - g.clip_centre[0], c - g.clip_centre[1]);
-                let d = (dx * dx + dy * dy).sqrt();
-                let dens = prof * self.tail.q((d - g.clip_radius) / g.sigma_clip);
+                let dens = self.ghost_density(g, a, c);
                 if dens > 0.0 {
                     let px = &mut acc[row + i - band.x0];
                     px[0] += g.amp[0] * dens;
@@ -736,6 +803,70 @@ impl<'a> Items<'a> {
                 }
             }
         }
+    }
+
+    /// The grids of nodes the coarse ghosts are drawn on, over the nodes the pixels of `area` read.
+    ///
+    /// The node `(j, k)` of the grid of spacing `L` sits at the pixel position `(L j + L / 2, L k + L / 2)`
+    /// (a corner between pixels) and holds the sum, in list order, of the densities of the grid's ghosts
+    /// whose pixel rectangle grown by `L` holds it. A node is a function of its place and of the list, so any
+    /// tiling reads the same numbers.
+    pub(crate) fn ghost_layer(&self, area: &Span) -> GhostLayer {
+        let mut grids = Vec::new();
+        if area.is_empty() {
+            return GhostLayer { grids };
+        }
+        for &l in &COARSE_LEVELS {
+            let ghosts: Vec<&Ghost> = self
+                .list
+                .iter()
+                .filter_map(|it| match it {
+                    Item::Ghost(g) if g.level == l => Some(g),
+                    _ => None,
+                })
+                .collect();
+            if ghosts.is_empty() {
+                continue;
+            }
+            let li = l as i64;
+            let (j0, j1) = node_range(area.x0, area.x1, li);
+            let (k0, k1) = node_range(area.y0, area.y1, li);
+            let (nx, ny) = ((j1 - j0 + 1) as usize, (k1 - k0 + 1) as usize);
+            let mut data = vec![[0.0f64; 3]; nx * ny];
+            data.par_chunks_mut(nx).enumerate().for_each(|(row, out)| {
+                let k = k0 + row as i64;
+                let py = li * k + li / 2;
+                for g in &ghosts {
+                    let (sy0, sy1) = (g.span.y0 as i64 - li, g.span.y1 as i64 + li);
+                    if py < sy0 || py >= sy1 {
+                        continue;
+                    }
+                    let (sx0, sx1) = (g.span.x0 as i64 - li, g.span.x1 as i64 + li);
+                    for (col, node) in out.iter_mut().enumerate() {
+                        let px = li * (j0 + col as i64) + li / 2;
+                        if px < sx0 || px >= sx1 {
+                            continue;
+                        }
+                        let (a, c) = self.frame.canvas_at(px as f64, py as f64);
+                        let dens = self.ghost_density(g, a, c);
+                        if dens > 0.0 {
+                            node[0] += g.amp[0] * dens;
+                            node[1] += g.amp[1] * dens;
+                            node[2] += g.amp[2] * dens;
+                        }
+                    }
+                }
+            });
+            grids.push(NodeGrid {
+                l: li,
+                j0,
+                k0,
+                nx,
+                ny,
+                data,
+            });
+        }
+        GhostLayer { grids }
     }
 
     fn add_streak(&self, s: &Streak, area: &Span, band: &Span, acc: &mut [[f64; 3]]) {
@@ -836,6 +967,73 @@ impl<'a> Items<'a> {
             }
         }
     }
+}
+
+/// The first and last node index (inclusive) of the grid of spacing `l` that the pixels `[p0, p1)` read: the pixel
+/// `p` lies between the nodes `floor((2 p + 1 - l) / 2 l)` and the next.
+fn node_range(p0: usize, p1: usize, l: i64) -> (i64, i64) {
+    let first = (2 * p0 as i64 + 1 - l).div_euclid(2 * l);
+    let last = (2 * (p1 as i64 - 1) + 1 - l).div_euclid(2 * l) + 1;
+    (first, last)
+}
+
+/// One grid of nodes (see [`Items::ghost_layer`]).
+struct NodeGrid {
+    /// The spacing in pixels.
+    l: i64,
+    /// The index of the first node column and row.
+    j0: i64,
+    k0: i64,
+    nx: usize,
+    ny: usize,
+    data: Vec<[f64; 3]>,
+}
+
+/// The coarse ghosts over a rectangle: their grids, read at every pixel by bilinear interpolation.
+pub(crate) struct GhostLayer {
+    grids: Vec<NodeGrid>,
+}
+
+impl GhostLayer {
+    /// True when no ghost is on a grid.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.grids.is_empty()
+    }
+
+    /// Adds the grids' light to `acc`, the pixels of `band` (row-major, `band` wide), grid by grid.
+    pub(crate) fn add_band(&self, band: &Span, acc: &mut [[f64; 3]]) {
+        let bw = band.x1 - band.x0;
+        for grid in &self.grids {
+            let l = grid.l;
+            let cols: Vec<(usize, f64)> = (band.x0..band.x1)
+                .map(|x| split(x, l, grid.j0))
+                .collect();
+            for y in band.y0..band.y1 {
+                let (k, ty) = split(y, l, grid.k0);
+                let row = (y - band.y0) * bw;
+                let (r0, r1) = (k * grid.nx, (k + 1) * grid.nx);
+                for (c, (j, tx)) in cols.iter().enumerate() {
+                    let at = |r: usize, d: usize, ch: usize| grid.data[r + j + d][ch];
+                    let px = &mut acc[row + c];
+                    for ch in 0..3 {
+                        let top = at(r0, 0, ch) + tx * (at(r0, 1, ch) - at(r0, 0, ch));
+                        let bot = at(r1, 0, ch) + tx * (at(r1, 1, ch) - at(r1, 0, ch));
+                        px[ch] += top + ty * (bot - top);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The node (as an index into the grid starting at `first`) left of the pixel `p`, and the fraction of the way
+/// to the next one, for spacing `l`.
+#[inline]
+fn split(p: usize, l: i64, first: i64) -> (usize, f64) {
+    let num = 2 * p as i64 + 1 - l;
+    let node = num.div_euclid(2 * l);
+    let frac = (num - 2 * l * node) as f64 / (2 * l) as f64;
+    ((node - first) as usize, frac)
 }
 
 /// The integral of the tent `max(0, 1 - |t|)` from minus infinity to `t`.
