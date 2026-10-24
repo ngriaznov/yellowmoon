@@ -129,6 +129,54 @@ impl Sandbox {
     }
 }
 
+/// Copies a folder and everything in it.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("create folder");
+    for entry in std::fs::read_dir(from).expect("read folder") {
+        let entry = entry.expect("entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("type").is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).expect("copy file");
+        }
+    }
+}
+
+impl Sandbox {
+    /// A copy of the shipped data folder in `<root>/data` whose `lenses` folder is a synthetic one
+    /// (`ym_lens::test_support`, seven lenses that say they are not lens data), or no `lenses` folder
+    /// at all, whatever the shipped one is. For the tests of `--lens` and `ym lenses`.
+    pub fn data_with_lenses(&self, synthetic: bool) -> PathBuf {
+        let data = self.root().join("data");
+        for entry in std::fs::read_dir(data_dir()).expect("the data folder") {
+            let entry = entry.expect("entry");
+            if entry.file_name() == "lenses" {
+                continue;
+            }
+            let target = data.join(entry.file_name());
+            if entry.file_type().expect("type").is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::create_dir_all(&data).expect("data folder");
+                std::fs::copy(entry.path(), target).expect("copy file");
+            }
+        }
+        if synthetic {
+            ym_lens::test_support::write_synthetic_lenses(&data.join("lenses"))
+                .expect("write the synthetic lenses");
+        }
+        data
+    }
+
+    /// [`Sandbox::ym`] reading the data folder `data` ([`Sandbox::data_with_lenses`]).
+    pub fn ym_data(&self, data: &Path) -> Command {
+        let mut cmd = self.ym();
+        cmd.env("YELLOWMOON_DATA", data);
+        cmd
+    }
+}
+
 /// The environment variable and value that give `ym` the test advisor of Apple Auto.
 pub const FAKE_APPLE_AUTO: (&str, &str) = ("YELLOWMOON_TEST_APPLE_AUTO", "fake");
 

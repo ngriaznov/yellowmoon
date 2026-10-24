@@ -52,6 +52,8 @@ force-demosaic = ["ym-core/force-demosaic"]
 ym-core = { workspace = true, features = ["force-demosaic"] }
 # `testgen` writes the synthetic ARW files the tests run on.
 ym-raw = { workspace = true, features = ["testgen"] }
+# A complete synthetic lens folder for the tests of `--lens` and `ym lenses` (`ym_lens::test_support`).
+ym-lens = { workspace = true, features = ["test-support"] }
 assert_cmd.workspace = true
 predicates.workspace = true
 serde_json.workspace = true

@@ -16,6 +16,7 @@ The CLI is a second front end on the same core. A file rendered from the termina
 | `ym looks verify` | Re-hash every imported look; report missing or changed files. |
 | `ym looks default <look>` | Set the default look. |
 | `ym looks bake <look.json> [--preview <ARW>…] [--out <dir>]` | Developer tool for the Signature look: bake to a 33-point LUT and render a contact sheet. |
+| `ym lenses list [--json]` | The seven lenses `--lens` knows, with ids, names, lines, starting amounts and design sources (`docs/21-lens-character.md`). |
 | `ym doctor` | GPU (name, backend, limits), the graphics policy and the stages it runs, the memory budgets, runtime chosen, whether Apple Auto is available and which model answers, model weights and hashes, profiles and versions, imported looks count, preferences path, version. For bug reports. `ym doctor --bench FILE.ARW` times the render path on one photo instead. |
 | `ym --version` | Version, pipeline version, git SHA: `ym <version> (pipeline <pipeline version>, <sha>)`. |
 
@@ -64,6 +65,15 @@ The options mirror the app's controls and are grouped as in `ym render --help`. 
 | `--wb auto or <K>[,<tint>]` | 2000–11000 K, tint −50…50 | `--wb 5200` without a tint keeps the automatic tint (the semantics of moving the Kelvin slider, `docs/01-architecture.md`) |
 | `--light auto or day or shade or tungsten or led or fluorescent` | | light preset instead of the estimated light: day 5500 K, shade 7500 K, tungsten 3200 K; LED and fluorescent at the estimated colour. `auto` clears a preset a settings file chose |
 | `--saturation auto or <N>` | −100…100, or `auto` | as `--contrast`. Scales colour about each pixel's luminance (`docs/02-colour-pipeline.md` C9): more makes colours stronger, less makes them greyer, and brightness and neutrals stay |
+
+### Lens
+
+The Look tab's Lens card (`docs/21-lens-character.md` §1 and §8). They are the `lens` field of the settings object (`{ kind, flares, edges, anamorphic }`), which `--settings` takes too.
+
+| Option | Values | Notes |
+|---|---|---|
+| `--lens default or classic or vintage or petzval or triplet or sonnar or detuned` | case-insensitive; `ym lenses list` shows them | the lens. Flares and Edges take the lens's starting amounts (`ym lenses list`) unless `--flares` or `--edges` is given, as when the lens is chosen in the card; Anamorphic stays as it is. Needs the lens data (`data/lenses`): without them it is a usage error (exit 2) |
+| `--flares <0–100>`, `--edges <0–100>`, `--anamorphic <0–100>` | amounts | Flares (glow, veiling glare, ghosts, starbursts), Edges (softness, darkening, fringes, distortion, swirl) and Anamorphic (an anamorphic attachment). Without `--lens` an amount changes that amount of the lens in the settings (the Default lens, or the settings file's). All three at 0 is no lens, whatever the lens is. Today the amounts are recorded in the settings (`--json`, `ym:Settings`) and the stages that draw them arrive with `docs/21` |
 
 ### Detail
 
@@ -252,6 +262,10 @@ In `--json` the values keep the exact characters and are escaped the way JSON do
 - **`default <look>`** takes what `--look` takes.
 - **`bake`** writes `<name>.cube` (33 points, `TITLE` the look's name) into `--out` (default: the folder of the look file) and, with `--preview`, `<name>_contact.png`: a row per photo, Neutral on the left and the baked look on the right, each 480 px on the long edge, in sRGB. The paths are printed on stdout.
 
+## `lenses`
+
+- **`list`** prints a table with the columns ID, NAME, FLARES, EDGES (the starting amounts the card moves to when the lens is chosen), DESIGN (the design the lens was computed from) and LINE (the sentence the card shows under the name), in the menu's order. `--json` prints `{ "lenses": [...] }`, one object per lens in the shape of the app's `lens_list` and `Core::lens_list`: `kind` (the id), `name`, `line`, `start_flares`, `start_edges`, `version` and `design_source`. A missing or damaged `data/lenses` is exit 2 with a sentence that says so.
+
 ## `doctor`
 
 A text report whose first sentence says what it includes (the version, the GPU, the render path, whether Apple Auto is available, the model weights and their hashes, the camera profiles, how many looks are imported, the folders) and that it leaves out photos, file names, locations and look names. `--json` prints the same facts as one object. Model weights are everything under `data/models/` except the illuminant models of `models/illum/` (listed separately, each with its SHA-256) and the metrics: today Auto crop's model, `crop/cropnet.safetensors`.
@@ -324,6 +338,8 @@ ym looks import ~/Downloads/<ARRI look package>.zip
 ym info DSC04204.ARW --json | jq .auto
 ym info DSC04204.ARW --json | jq .apple_auto
 ym render ~/Pictures/Lisbon --apple-auto off --contrast 10
+ym render DSC04204.ARW --lens vintage --flares 60 --anamorphic 40
+ym lenses list --json | jq '.lenses[].kind'
 ```
 
 ## Install

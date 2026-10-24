@@ -11176,6 +11176,7 @@ dependencies = [
  "ym-core",
  "ym-export",
  "ym-gpu",
+ "ym-lens",
  "ym-looks",
  "ym-profiles",
  "ym-raw",

@@ -92,6 +92,11 @@ export const commands = {
 	/**  Along `e2`, green against blue. */
 	b: number,
 } | null>("sample_chroma", { x, y }),
+	/**
+	 *  `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
+	 *  starting amounts. Empty when the lens data could not be loaded.
+	 */
+	lensList: () => __TAURI_INVOKE<LensInfo[]>("lens_list"),
 	/**  `looks_list()`. */
 	looksList: () => __TAURI_INVOKE<Look[]>("looks_list"),
 	/**
@@ -796,6 +801,8 @@ export type DevelopSettings = {
 	saturation: PercentSetting,
 	/**  Colour › Colour warp: its pins. */
 	color_warp: ColorWarp,
+	/**  Look › Lens: the lens and its three amounts. */
+	lens: LensSettings,
 	/**  Detail › Sharpening: Auto or amount and radius. */
 	sharpen: SharpenSetting,
 	/**
@@ -1029,6 +1036,71 @@ export type LastUsedFolders = {
 	export: string | null,
 	/**  Where looks were last imported from. */
 	looks_import: string | null,
+};
+
+/**  One lens of the Lens card's menu (`LensInfo` in `types.ts`, `lens_list`). */
+export type LensInfo = {
+	/**  The lens. */
+	kind: LensKind,
+	/**  The name shown in the menu. */
+	name: string,
+	/**  The line shown under the name. */
+	line: string,
+	/**  Flares the card moves to when this lens is chosen, 0 to 100. */
+	start_flares: number,
+	/**  Edges the card moves to when this lens is chosen, 0 to 100. */
+	start_edges: number,
+	/**  The data version of the lens. */
+	version: number,
+	/**  The design the lens was computed from (a patent or a publication). */
+	design_source: string,
+};
+
+/**
+ *  Look › Lens: which lens (`LensKind` in `types.ts`, `docs/21` section 2). The ids are those of
+ *  `data/lenses/` and of `ym render --lens`.
+ */
+export type LensKind = 
+/**  Clean and modern: even sharpness, faint glow. */
+"default" | 
+/**  Warm and gentle: soft glow, amber flares, smooth falloff. */
+"classic" | 
+/**  Glows wide open, lower contrast, soft edges, a little swirl. */
+"vintage" | 
+/**  Very sharp centre, strong swirl, fast falloff. */
+"petzval" | 
+/**  Soft corners, busy flares, a crisp centre. */
+"triplet" | 
+/**  Smooth and glowing, with gentle edges. */
+"sonnar" | 
+/**  Sharp only in the centre, with smeared flares. */
+"detuned";
+
+/**  Look › Lens parts to change; the others stay as they are. */
+export type LensPatch = {
+	/**  New lens. The amounts do not follow it: send the lens's starting amounts with it. */
+	kind?: LensKind | null,
+	/**  New Flares. */
+	flares?: number | null,
+	/**  New Edges. */
+	edges?: number | null,
+	/**  New Anamorphic. */
+	anamorphic?: number | null,
+};
+
+/**
+ *  Look › Lens: a lens and three amounts, each 0 to 100. All three at 0 is no lens, whatever the
+ *  lens is.
+ */
+export type LensSettings = {
+	/**  The lens. */
+	kind: LensKind,
+	/**  Flares: glow, veiling glare, ghosts and starbursts, 0 to 100. */
+	flares: number,
+	/**  Edges: softness, darkening, fringes, distortion, swirl and cat's-eye shapes, 0 to 100. */
+	edges: number,
+	/**  Anamorphic: the attachment in front of the lens, 0 to 100. */
+	anamorphic: number,
 };
 
 /**  Light classes of the illuminant estimate. */
@@ -1668,6 +1740,8 @@ export type ResolvedValues = {
 	saturation: number,
 	/**  `color_warp`. */
 	color_warp: ColorWarp,
+	/**  `lens`. */
+	lens: LensSettings,
 	/**  The sharpening in effect. */
 	sharpen: SharpenValue,
 	/**  `output_sharpening`. */
@@ -1803,6 +1877,8 @@ export type SettingsPatch = {
 	saturation?: PercentPatch | null,
 	/**  New colour warp: the whole list of pins (`{ pins: [] }` removes them all). */
 	color_warp?: ColorWarp | null,
+	/**  Lens parts to change. */
+	lens?: LensPatch | null,
 	/**  New sharpening; a manual one may leave out a part. */
 	sharpen?: SharpenPatch | null,
 	/**  New output sharpening amount, percent. */
