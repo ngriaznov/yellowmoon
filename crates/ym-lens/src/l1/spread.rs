@@ -51,7 +51,14 @@ fn range_weight(a: &Rgb, b: &Rgb, sigma_g2: f64) -> f64 {
 }
 
 /// Mean-pools `src` (`w x h`) to `(w + 1) / 2 x (h + 1) / 2`; a cell is the mean of the children it has.
-fn pool<T, F>(src: &[T], w: usize, h: usize, zero: T, add: F, scale: impl Fn(T, f32) -> T + Sync) -> Vec<T>
+fn pool<T, F>(
+    src: &[T],
+    w: usize,
+    h: usize,
+    zero: T,
+    add: F,
+    scale: impl Fn(T, f32) -> T + Sync,
+) -> Vec<T>
 where
     T: Copy + Send + Sync,
     F: Fn(T, T) -> T + Sync,
@@ -95,7 +102,11 @@ impl GuidePyramid {
                 |a, s| [a[0] * s, a[1] * s, a[2] * s],
             );
             let (w2, h2) = (last.w.div_ceil(2), last.h.div_ceil(2));
-            levels.push(Level { w: w2, h: h2, guide });
+            levels.push(Level {
+                w: w2,
+                h: h2,
+                guide,
+            });
         }
         GuidePyramid {
             levels,
@@ -130,7 +141,10 @@ fn smooth(level: &Level, sums: &[Sums], sigma_g2: f64) -> Vec<Sums> {
     let side = (2 * RADIUS + 1) as usize;
     let spatial: Vec<f64> = (0..side * side)
         .map(|i| {
-            let (dx, dy) = ((i % side) as f64 - RADIUS as f64, (i / side) as f64 - RADIUS as f64);
+            let (dx, dy) = (
+                (i % side) as f64 - RADIUS as f64,
+                (i / side) as f64 - RADIUS as f64,
+            );
             libm::exp(-(dx * dx + dy * dy) / (2.0 * SPATIAL_SIGMA * SPATIAL_SIGMA))
         })
         .collect();
@@ -214,7 +228,13 @@ fn upsample(child: &Level, parent: &Level, parent_sums: &[Sums], sigma_g2: f64) 
 /// Every level smooths its own cells' sums; a level is trusted as far as its window holds `need` of weight
 /// (readings dense enough nearby); what a level does not cover is filled from the next coarser one, by a
 /// guided upsampling: pull-push interpolation of sparse readings.
-pub(super) fn spread(guide: &GuidePyramid, w0: &[f32], s0: &[f32], q0: &[f32], need: f64) -> Spread {
+pub(super) fn spread(
+    guide: &GuidePyramid,
+    w0: &[f32],
+    s0: &[f32],
+    q0: &[f32],
+    need: f64,
+) -> Spread {
     let base = &guide.levels[0];
     debug_assert_eq!(w0.len(), base.w * base.h);
     let n = base.w * base.h;
@@ -263,7 +283,10 @@ pub(super) fn spread(guide: &GuidePyramid, w0: &[f32], s0: &[f32], q0: &[f32], n
         }
         [cov as f32, m1 as f32, m2 as f32]
     };
-    let mut acc: Vec<Sums> = smoothed[depth - 1].iter().map(|s| combine(s, None)).collect();
+    let mut acc: Vec<Sums> = smoothed[depth - 1]
+        .iter()
+        .map(|s| combine(s, None))
+        .collect();
     for l in (0..depth - 1).rev() {
         let up = upsample(&guide.levels[l], &guide.levels[l + 1], &acc, guide.sigma_g2);
         acc = smoothed[l]
@@ -299,9 +322,17 @@ mod tests {
     use super::*;
 
     /// A plane with two flat colour regions, left and right, and one value on each side.
-    fn two_regions(w: usize, h: usize, edge: usize) -> (GuidePyramid, Vec<f32>, Vec<f32>, Vec<f32>) {
+    fn two_regions(
+        w: usize,
+        h: usize,
+        edge: usize,
+    ) -> (GuidePyramid, Vec<f32>, Vec<f32>, Vec<f32>) {
         let mut guide = vec![[0.0f32; 3]; w * h];
-        let (mut ws, mut ss, mut qs) = (vec![0.0f32; w * h], vec![0.0f32; w * h], vec![0.0f32; w * h]);
+        let (mut ws, mut ss, mut qs) = (
+            vec![0.0f32; w * h],
+            vec![0.0f32; w * h],
+            vec![0.0f32; w * h],
+        );
         for y in 0..h {
             for x in 0..w {
                 guide[y * w + x] = if x < edge { [0.2; 3] } else { [0.8; 3] };
@@ -328,9 +359,16 @@ mod tests {
         let sp = spread(&g, &ws, &ss, &qs, 0.05);
         for (x, y, expect) in [(5, 5, 1.0f32), (30, 60, 1.0), (62, 3, 3.0), (90, 50, 3.0)] {
             let i = y * w + x;
-            assert!(sp.cover[i] > 0.3, "no evidence at ({x}, {y}): {}", sp.cover[i]);
+            assert!(
+                sp.cover[i] > 0.3,
+                "no evidence at ({x}, {y}): {}",
+                sp.cover[i]
+            );
             let mean = sp.mean[i];
-            assert!((mean - expect).abs() < 0.05, "({x}, {y}): {mean} vs {expect}");
+            assert!(
+                (mean - expect).abs() < 0.05,
+                "({x}, {y}): {mean} vs {expect}"
+            );
             assert!(sp.var[i] < 0.05, "variance {} at ({x}, {y})", sp.var[i]);
         }
     }
@@ -340,7 +378,10 @@ mod tests {
         let (w, h, edge) = (96, 64, 40);
         let (g, ws, ss, qs) = two_regions(w, h, edge);
         let a = spread(&g, &ws, &ss, &qs, 0.2);
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
         let b = pool.install(|| spread(&g, &ws, &ss, &qs, 0.2));
         assert_eq!(a.cover, b.cover);
         assert_eq!(a.mean, b.mean);

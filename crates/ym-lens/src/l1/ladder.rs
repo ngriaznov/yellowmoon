@@ -52,7 +52,10 @@ pub(super) fn blur(src: &[f32], w: usize, h: usize, sigma: f64) -> Vec<f32> {
     // Vertical pass: one output row at a time, adding whole rows (sequential memory).
     let mut out = vec![0.0f32; w * h];
     out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
-        let mut acc: Vec<f64> = tmp[y * w..(y + 1) * w].iter().map(|v| k[0] * f64::from(*v)).collect();
+        let mut acc: Vec<f64> = tmp[y * w..(y + 1) * w]
+            .iter()
+            .map(|v| k[0] * f64::from(*v))
+            .collect();
         for (i, ki) in k.iter().enumerate().skip(1) {
             let lo = &tmp[y.saturating_sub(i) * w..][..w];
             let hi = &tmp[(y + i).min(h - 1) * w..][..w];
@@ -103,8 +106,10 @@ pub(super) fn blur_wide(src: &[f32], w: usize, h: usize, sigma: f64) -> Vec<f32>
             let fx = ((x as f64 + 0.5) / 2.0 - 0.5).clamp(0.0, (w2 - 1) as f64);
             let (x0, tx) = (fx as usize, fx - fx.floor());
             let x1 = (x0 + 1).min(w2 - 1);
-            let top = f64::from(blurred[y0 * w2 + x0]) * (1.0 - tx) + f64::from(blurred[y0 * w2 + x1]) * tx;
-            let bot = f64::from(blurred[y1 * w2 + x0]) * (1.0 - tx) + f64::from(blurred[y1 * w2 + x1]) * tx;
+            let top = f64::from(blurred[y0 * w2 + x0]) * (1.0 - tx)
+                + f64::from(blurred[y0 * w2 + x1]) * tx;
+            let bot = f64::from(blurred[y1 * w2 + x0]) * (1.0 - tx)
+                + f64::from(blurred[y1 * w2 + x1]) * tx;
             *o = (top * (1.0 - ty) + bot * ty) as f32;
         }
     });
@@ -128,7 +133,11 @@ pub(super) fn gradient_magnitude(src: &[f32], w: usize, h: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; w * h];
     out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         let (up, down) = (y.saturating_sub(1), (y + 1).min(h - 1));
-        let (r_up, r_mid, r_down) = (&src[up * w..][..w], &src[y * w..][..w], &src[down * w..][..w]);
+        let (r_up, r_mid, r_down) = (
+            &src[up * w..][..w],
+            &src[y * w..][..w],
+            &src[down * w..][..w],
+        );
         for (x, o) in row.iter_mut().enumerate() {
             let (xl, xr) = (x.saturating_sub(1), (x + 1).min(w - 1));
             let gx = 0.5 * (f64::from(r_mid[xr]) - f64::from(r_mid[xl]));
@@ -155,7 +164,7 @@ mod tests {
 
     #[test]
     fn kernel_sums_to_one() {
-        for s in [0.5, 1.0, 1.4142, 4.0, 11.3] {
+        for s in [0.5, 1.0, std::f64::consts::SQRT_2, 4.0, 11.3] {
             let k = kernel(s);
             let sum = k[0] + 2.0 * k[1..].iter().sum::<f64>();
             assert!((sum - 1.0).abs() < 1e-12);
@@ -189,6 +198,9 @@ mod tests {
         let g = gradient_magnitude(&b, w, h);
         let peak = g[4 * w + 63].max(g[4 * w + 64]);
         let expect = 1.0 / (sigma * (2.0 * std::f64::consts::PI).sqrt());
-        assert!((f64::from(peak) - expect).abs() < 0.02 * expect, "{peak} vs {expect}");
+        assert!(
+            (f64::from(peak) - expect).abs() < 0.02 * expect,
+            "{peak} vs {expect}"
+        );
     }
 }

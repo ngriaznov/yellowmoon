@@ -12,8 +12,11 @@
 //! | `plan` | levels, vignetting profile, lens maps and their auto crop; one for the final picture and one for the Before view (the same plan without the vignetting profile) | `lens_corrections`, `chromatic_aberration`, and whether R3 runs |
 //! | `sigma` | the half-resolution noise sigma | the noise model and the gains `g0` |
 //! | `groups` | the raw group's image at 1/k | [`RawParams`] (all of `decode.*`, whether R3 runs, noise reduction, sharpening, `g0`, noise) and k |
+//! | `lens_planes` | the lens's planes and lists of the photo (`docs/21` section 3), kept outside the evictable caches | [`RawParams`], the lens, its data version, the camera, the frame, the axis, `g0`, the focus point; not the three amounts |
+//! | `lens_groups` | the raw group at 1/k after the lens (L1 to L3) | [`RawParams`], the lens setting and its inputs, and k |
 //! | `full` | the prepared full-resolution chain; one for the final picture and one for the Before view | [`RawParams`] |
 //! | `tiles` | 512 px tiles of the full-resolution raw group | [`RawParams`] and the tile |
+//! | `lens_tiles` | 512 px tiles of the full-resolution raw group after the lens, made from the raw tiles grown by the lens halo | [`RawParams`], the lens setting and its inputs, and the tile |
 //! | `color` | the fused matrix and C7 | [`ColorKey`] |
 //! | `grade` | the prepared `ColorChain` | [`GradeKey`] |
 //! | `display` | the display-linear frame of a view before output sharpening | everything above plus geometry and the cell, not the sharpening amount |
@@ -24,6 +27,7 @@
 //! the colour group and leaves the raw group alone.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use std::time::Instant;
@@ -36,13 +40,13 @@ use ym_gpu::cpu::detail::NoiseReduction;
 use ym_gpu::cpu::frame_denoise::{DEFAULT_DENOISE, DenoiseMethod};
 use ym_gpu::cpu::sharpen::SharpenParams;
 use ym_gpu::cpu::sharpen::diffraction::DiffractionParams;
-use ym_gpu::cpu::{Rect, RgbImage};
+use ym_gpu::cpu::{Placement, Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuContext, GpuError, GpuInfo};
 use ym_gpu::image::{GpuImage, RowBands};
 use ym_gpu::kernels::copy::Piece;
 use ym_gpu::kernels::prep::DeviceRaw;
 use ym_gpu::queue::{CancelToken, JobHandle, JobSpec, Priority};
-use ym_lens::LensLibrary;
+use ym_lens::{CameraResponse, LensLibrary, LensPlanes, ReshapeReport};
 
 use super::color::{
     ColorKey, ColorPlan, DisplayChoice, GradeKey, GradePlan, GradeRequest, LookProvider,
@@ -60,6 +64,8 @@ use crate::app::gpu::GpuStages;
 use crate::scheduler::{ByteLru, JobScheduler, MemoryBudget, MemoryLedger};
 use crate::session::PhotoId;
 use ym_color::display::OutputTarget;
+
+mod lens;
 
 /// The note of a render whose demosaic method is not the adaptive ratio (the test-only switch of
 /// `RenderOptions::demosaic`): the device runs that one only.
@@ -114,6 +120,11 @@ pub struct RenderOptions {
     /// when the lens data are missing or damaged (and for a renderer made without a core): a lens
     /// setting then renders as no lens, and the render's notes say so.
     pub lens: Option<Arc<LensLibrary>>,
+    /// The shipped data folder (`data/`), for what a render reads from it at run time: the camera's
+    /// spectral curves (`cameras/…`), which the lens projects its colours on (`docs/21` section 6,
+    /// "Colour"). [`crate::app::Core::open`] fills it from its data root. `None` (a renderer made
+    /// without a core) gives the lens a neutral camera, and the render's notes say so.
+    pub data_root: Option<PathBuf>,
     /// The GPU, when there is one: the colour pass of viewport frames and thumbnails runs on it.
     /// It is opened by [`crate::app::gpu::open_gpu`] and nothing else, and it can be given to a
     /// renderer that exists already ([`Renderer::set_gpu`]: `ym` opens the device while photos
@@ -210,6 +221,7 @@ impl std::fmt::Debug for RenderOptions {
             .field("budget", &self.budget)
             .field("neural", &self.neural)
             .field("lens", &self.lens.is_some())
+            .field("data_root", &self.data_root)
             .field("demosaic", &self.demosaic)
             .field("denoise", &self.denoise)
             .field("gpu", &self.gpu.as_ref().map(|g| g.info().name.clone()))
@@ -230,6 +242,7 @@ impl Default for RenderOptions {
             budget: MemoryBudget::detect(),
             neural: NeuralStatus::unavailable(),
             lens: None,
+            data_root: None,
             gpu: None,
             gpu_stages: GpuStages::ALL,
             gpu_strict: false,
@@ -297,6 +310,14 @@ pub struct StageRuns {
     pub display_hits: u64,
     /// Finished frames served from the frame cache.
     pub frame_hits: u64,
+    /// Times the lens's planes and lists were made (`docs/21` section 3): once per photo and
+    /// [`RawParams`], lens, camera and focus point, never for a move of an amount.
+    pub lens_planes: u64,
+    /// Raw-group images at a reduced scale that went through the lens (L1 to L3).
+    pub lens_groups: u64,
+    /// Full-resolution regions that went through the lens: the 512 px tiles of the 100 % view and
+    /// the tiles of an export.
+    pub lens_tiles: u64,
 }
 
 impl StageRuns {
@@ -320,6 +341,15 @@ impl StageRuns {
         self.output_passes += other.output_passes;
         self.display_hits += other.display_hits;
         self.frame_hits += other.frame_hits;
+        self.lens_planes += other.lens_planes;
+        self.lens_groups += other.lens_groups;
+        self.lens_tiles += other.lens_tiles;
+    }
+
+    /// The number of times the lens (L1 to L3) did work: planes, groups and tiles.
+    #[must_use]
+    pub fn lens_work(&self) -> u64 {
+        self.lens_planes + self.lens_groups + self.lens_tiles
     }
 }
 
@@ -340,6 +370,9 @@ pub struct StageTimings {
     pub pass_ms: f64,
     /// The output-sharpening stage and the final encode (zero when the frame has none).
     pub output_ms: f64,
+    /// The lens (L1 to L3): the planes, and the passes over a group, a tile or an export region.
+    /// The raw stages under it are in `raw_ms`. Zero without a lens.
+    pub lens_ms: f64,
 }
 
 /// Running totals of a graph's [`StageRuns`].
@@ -386,6 +419,9 @@ pub struct RenderReport {
     /// The zoom of the frame, for a viewport frame ([`Renderer::viewport_frame`] sets it, also on a
     /// frame served from the cache); `None` for every other request.
     pub zoom: Option<FrameZoom>,
+    /// What the lens's bokeh reshaping did for this photo (`docs/21` section 10), once the photo's
+    /// planes exist (a frame served from the cache says it too). `None` without a lens.
+    pub lens: Option<ReshapeReport>,
 }
 
 impl RenderReport {
@@ -398,6 +434,7 @@ impl RenderReport {
             space: self.space,
             zoom_percent: self.zoom.map(|z| z.zoom * 100.0),
             fit_percent: self.zoom.map(|z| z.fit_zoom * 100.0),
+            lens: self.lens.map(super::LensStats::from),
         }
     }
 }
@@ -428,6 +465,16 @@ struct GraphState {
     /// Display-linear frames of views, before output sharpening (`frame::DisplayFrame`).
     display: Option<ByteLru<String, Arc<super::frame::DisplayFrame>>>,
     stats: Option<RenderStats>,
+    /// The photo's lens plan, with the text of the inputs it was made from (`lens::LensCtx`).
+    lens_ctx: Option<(String, Arc<lens::LensCtx>)>,
+    /// The lens's planes and lists. Outside the evictable caches on purpose: every tile and every
+    /// scale of the photo shares them, and a cache that tiles can push them out of would make them
+    /// again in the middle of a pan (`docs/21` section 3).
+    lens_planes: Option<lens::PlanesEntry>,
+    /// Raw groups after the lens, at 1/k.
+    lens_groups: Option<ByteLru<lens::GroupKey, Arc<RgbImage>>>,
+    /// 512 px tiles of the full-resolution raw group after the lens.
+    lens_tiles: Option<ByteLru<lens::TileKey, Arc<RgbImage>>>,
 }
 
 /// The stage caches of one photo.
@@ -515,14 +562,19 @@ impl PhotoGraph {
             + st.tiles.as_ref().map_or(0, ByteLru::used)
             + st.frames.as_ref().map_or(0, ByteLru::used)
             + st.display.as_ref().map_or(0, ByteLru::used)
+            + st.lens_planes.as_ref().map_or(0, |e| e.planes.bytes())
+            + st.lens_groups.as_ref().map_or(0, ByteLru::used)
+            + st.lens_tiles.as_ref().map_or(0, ByteLru::used)
     }
 
-    /// Drops the full-resolution intermediates (tiles and the prepared chain), keeping the small
-    /// reduced images: called when the photo is no longer the one being looked at.
+    /// Drops the full-resolution intermediates (tiles and the prepared chain, and the lens tiles),
+    /// keeping the small reduced images and the lens's planes: called when the photo is no longer the
+    /// one being looked at.
     pub fn release_full_resolution(&self) {
         let mut st = lock(&self.state);
         st.full = [None, None];
         st.tiles = None;
+        st.lens_tiles = None;
     }
 
     /// Drops every cache unless it was made for the image with this fingerprint.
@@ -581,6 +633,17 @@ impl PhotoGraph {
         self.cache_budget(on_device)
     }
 
+    /// The bytes the lens's reduced groups may take. They are host images, one for each amount a
+    /// slider has passed through, so the budget is that of the finished frames.
+    fn lens_group_budget(&self) -> usize {
+        (self.budget.cpu_bytes / 32) as usize
+    }
+
+    /// The bytes the lens's 512 px tiles may take: a viewport's worth of them for a few settings.
+    fn lens_tile_budget(&self) -> usize {
+        (self.budget.cpu_bytes / 12) as usize
+    }
+
     fn cache_budget(&self, on_device: bool) -> usize {
         let host = self.budget.cpu_bytes / 6;
         if on_device {
@@ -631,6 +694,9 @@ struct Inner {
     /// again on the CPU; without the flag every later export would try the same shader and fail the
     /// same way before it fell back.
     tail_gpu_disabled: AtomicBool,
+    /// The cameras' spectral curves projected on the lens data (`CameraResponse`), by the profile's
+    /// curves file; a camera whose curves cannot be read keeps the reason. Read once per camera.
+    lens_cameras: Mutex<HashMap<String, Result<CameraResponse, String>>>,
 }
 
 /// Whether the device runs the raw stages that a stage of [`GpuStages`] lets it run, for one photo:
@@ -730,6 +796,7 @@ impl Renderer {
                 view_gpu_disabled: AtomicBool::new(false),
                 prefetch_gate: Mutex::new(()),
                 tail_gpu_disabled: AtomicBool::new(false),
+                lens_cameras: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -1413,6 +1480,13 @@ pub(crate) struct Job<'a> {
     front_failed: bool,
     /// This request pins the photo's raw words on the device while it lives ([`Job::for_export`]).
     pinned: bool,
+    /// The photo's lens for this request ([`Job::lens_ctx`]); `Some(None)` is known to be none.
+    lens: Option<Option<Arc<lens::LensCtx>>>,
+    /// What the lens's planes say about the bokeh, once this request has used or made them.
+    lens_report: Option<ReshapeReport>,
+    /// The planes an export made for itself from the CPU reference group (`lens::planes`): the
+    /// graph's cache is the viewer's, and an export must not depend on what the viewer's device made.
+    lens_job_planes: Option<Arc<LensPlanes>>,
 }
 
 impl Drop for Job<'_> {
@@ -1482,6 +1556,9 @@ impl<'a> Job<'a> {
             capture_sharpening: true,
             front_failed: false,
             pinned: true,
+            lens: None,
+            lens_report: None,
+            lens_job_planes: None,
         }
     }
 
@@ -1493,6 +1570,7 @@ impl<'a> Job<'a> {
     pub fn without_capture_sharpening(mut self) -> Self {
         self.capture_sharpening = false;
         self.params = None;
+        self.lens = None;
         self
     }
 
@@ -1511,6 +1589,7 @@ impl<'a> Job<'a> {
     #[must_use]
     pub fn with_options(mut self, opts: Arc<RenderOptions>) -> Self {
         self.opts = opts;
+        self.lens = None;
         self
     }
 
@@ -1557,6 +1636,7 @@ impl<'a> Job<'a> {
         if !self.src.settings.lens.is_identity() && self.opts.lens.is_none() {
             self.note(LENS_UNAVAILABLE_NOTE);
         }
+        let lens = self.lens_report_for_finish();
         let report = RenderReport {
             ms: self.started.elapsed().as_secs_f64() * 1000.0,
             path: RenderPath::Classical,
@@ -1568,6 +1648,7 @@ impl<'a> Job<'a> {
             timings: self.timings,
             notes: std::mem::take(&mut self.notes),
             zoom: None,
+            lens,
         };
         tracing::debug!(
             photo = %self.src.id,
@@ -2236,6 +2317,13 @@ impl<'a> Job<'a> {
         }
         let t = self.opts.tile_px.max(64);
         let mut out = RgbImage::new(rect.w, rect.h);
+        // The region keeps its place in the frame (an image made of tiles is not the whole frame).
+        out.place = Placement {
+            x0: rect.x,
+            y0: rect.y,
+            frame_width: plan.out_w,
+            frame_height: plan.out_h,
+        };
         for ty in rect.y / t..=(rect.y1() - 1) / t {
             for tx in rect.x / t..=(rect.x1() - 1) / t {
                 self.check()?;

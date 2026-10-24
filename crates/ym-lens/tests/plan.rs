@@ -264,7 +264,11 @@ fn planes_are_built_from_the_lens_plane_and_can_be_cancelled() {
             reason: Some(ReshapeReason::LittleBlur)
         }
     );
-    assert!(planes.bokeh().is_some_and(|b| !b.active() && b.balls().is_empty()));
+    assert!(
+        planes
+            .bokeh()
+            .is_some_and(|b| !b.active() && b.balls().is_empty())
+    );
     assert!(planes.serves(&p));
     // Flares alone ask for no blur map, whatever the lens.
     let flares = plan_of(LensKind::Vintage, (50.0, 0.0, 0.0), (6000, 4000));

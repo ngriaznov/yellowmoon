@@ -144,6 +144,42 @@ pub struct RenderStats {
     /// from. Only a viewport frame has one.
     #[serde(default)]
     pub fit_percent: Option<f64>,
+    /// What the lens's bokeh reshaping did for the photo (`docs/21` section 10), once its planes
+    /// exist. `None` without a lens.
+    #[serde(default)]
+    pub lens: Option<LensStats>,
+}
+
+/// Why a photo's bokeh was left as it is (`RenderStats::lens`): the words of the Lens card's note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LensReshapeReason {
+    /// The sliders did not ask for it.
+    NotAsked,
+    /// The photo has little out-of-focus background ("This photo has little out-of-focus
+    /// background, so its bokeh changes little.").
+    LittleBlur,
+}
+
+/// What the lens did with the photo's bokeh (`render_stats`, `docs/21` section 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LensStats {
+    /// True when the bokeh was reshaped.
+    pub reshaped: bool,
+    /// Why it was not, when it was not.
+    pub reason: Option<LensReshapeReason>,
+}
+
+impl From<ym_lens::ReshapeReport> for LensStats {
+    fn from(r: ym_lens::ReshapeReport) -> Self {
+        Self {
+            reshaped: r.reshaped,
+            reason: r.reason.map(|reason| match reason {
+                ym_lens::ReshapeReason::NotAsked => LensReshapeReason::NotAsked,
+                ym_lens::ReshapeReason::LittleBlur => LensReshapeReason::LittleBlur,
+            }),
+        }
+    }
 }
 
 /// How far a viewport frame is zoomed: device pixels per pixel of the final image (after the lens

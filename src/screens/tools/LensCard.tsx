@@ -57,6 +57,7 @@ export function LensCard({ store, rs }: { store: AppStore; rs: ResolvedSettings 
               <SelectItem key={info.kind} value={info.kind} textValue={info.name}>
                 <span className="ym-lens-option">
                   <span className="ym-lens-option__name">{info.name}</span>
+                  {/* The space is not drawn (the two spans are flex items) but it keeps the option's name one sentence: "Vintage Glows wide open, …". */}{" "}
                   <span className="ym-lens-option__line">{info.line}</span>
                 </span>
               </SelectItem>

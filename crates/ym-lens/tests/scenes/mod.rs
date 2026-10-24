@@ -9,7 +9,7 @@
 //! The textures are Voronoi mosaics (sharp straight edges, supersampled for anti-aliasing) plus very fine
 //! noise, so the blurred layers have edges of every contrast and orientation to be read, like foliage or
 //! buildings, and the disc blur is exact (area-weighted rows).
-#![allow(dead_code)]
+#![allow(dead_code, clippy::needless_range_loop)]
 
 use std::f64::consts::PI;
 
@@ -141,7 +141,11 @@ pub fn texture(w: usize, h: usize, cell: f64, salt: u64, x0: usize, x1: usize) -
                         }
                     }
                     let grain = 1.0 + 0.24 * (hash01(x as i64, y as i64, salt ^ 0x77) - 0.5);
-                    [(acc[0] * grain) as f32, (acc[1] * grain) as f32, (acc[2] * grain) as f32]
+                    [
+                        (acc[0] * grain) as f32,
+                        (acc[1] * grain) as f32,
+                        (acc[2] * grain) as f32,
+                    ]
                 })
                 .collect()
         })
@@ -221,10 +225,22 @@ pub struct Noise {
 }
 
 impl Noise {
-    pub const NONE: Noise = Noise { shot: 0.0, read: 0.0 };
-    pub const LOW: Noise = Noise { shot: 2e-4, read: 0.002 };
-    pub const MID: Noise = Noise { shot: 1.5e-3, read: 0.004 };
-    pub const HIGH: Noise = Noise { shot: 8e-3, read: 0.008 };
+    pub const NONE: Noise = Noise {
+        shot: 0.0,
+        read: 0.0,
+    };
+    pub const LOW: Noise = Noise {
+        shot: 2e-4,
+        read: 0.002,
+    };
+    pub const MID: Noise = Noise {
+        shot: 1.5e-3,
+        read: 0.004,
+    };
+    pub const HIGH: Noise = Noise {
+        shot: 8e-3,
+        read: 0.008,
+    };
 
     pub fn apply(&self, img: &mut Rgb, rng: &mut Rng) {
         if self.shot == 0.0 && self.read == 0.0 {
@@ -268,7 +284,13 @@ impl Scene {
 }
 
 /// Polyline strands from the subject's top edge into the background: 1 to 1.6 px wide dark curves.
-fn draw_strands(img: &mut Rgb, rng: &mut Rng, strand: &mut [bool], count: usize, from: &dyn Fn(f64) -> (f64, f64)) {
+fn draw_strands(
+    img: &mut Rgb,
+    rng: &mut Rng,
+    strand: &mut [bool],
+    count: usize,
+    from: &dyn Fn(f64) -> (f64, f64),
+) {
     let (w, h) = (img.w, img.h);
     let n = w * h;
     for _ in 0..count {
@@ -290,7 +312,8 @@ fn draw_strands(img: &mut Rgb, rng: &mut Rng, strand: &mut [bool], count: usize,
                     if xx < 0 || yy < 0 || xx >= w as i64 || yy >= h as i64 {
                         continue;
                     }
-                    let d = ((xx as f64 + 0.5 - px).powi(2) + (yy as f64 + 0.5 - py).powi(2)).sqrt();
+                    let d =
+                        ((xx as f64 + 0.5 - px).powi(2) + (yy as f64 + 0.5 - py).powi(2)).sqrt();
                     let cov = (0.5 + width / 2.0 - d).clamp(0.0, 1.0);
                     if cov > 0.0 {
                         let i = yy as usize * w + xx as usize;
@@ -317,7 +340,12 @@ pub fn erode(mask: &[bool], w: usize, h: usize, r: i64) -> Vec<bool> {
             'win: for dy in -r..=r {
                 for dx in -r..=r {
                     let (nx, ny) = (x + dx, y + dy);
-                    if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 || !mask[(ny * w as i64 + nx) as usize] {
+                    if nx < 0
+                        || ny < 0
+                        || nx >= w as i64
+                        || ny >= h as i64
+                        || !mask[(ny * w as i64 + nx) as usize]
+                    {
                         all = false;
                         break 'win;
                     }
@@ -353,7 +381,13 @@ pub fn subject_scene(w: usize, h: usize, radii: [f64; 3], noise: Noise, seed: u6
         let mut tex = texture(w, h, cells[i], seed + 11 * i as u64, lo, hi);
         // Mask the texture to its band; the band's own mask is blurred with it so the layers normalise.
         let mask: Vec<f32> = (0..n)
-            .map(|p| if band_of((p % w) as f64 + 0.5) == i { 1.0 } else { 0.0 })
+            .map(|p| {
+                if band_of((p % w) as f64 + 0.5) == i {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
             .collect();
         for c in 0..3 {
             let p = tex.plane_mut(c);
@@ -392,7 +426,12 @@ pub fn subject_scene(w: usize, h: usize, radii: [f64; 3], noise: Noise, seed: u6
         }
     }
     // The subject: a sharp ellipse with its own finer mosaic and stripes.
-    let (scx, scy, sax, say) = (w as f64 * 0.5, h as f64 * 0.72, w as f64 * 0.13, h as f64 * 0.42);
+    let (scx, scy, sax, say) = (
+        w as f64 * 0.5,
+        h as f64 * 0.72,
+        w as f64 * 0.13,
+        h as f64 * 0.42,
+    );
     let subj_tex = texture(
         w,
         h,
@@ -477,7 +516,14 @@ pub fn night_scene(w: usize, h: usize, radii: &[f64], noise: Noise, seed: u64) -
 }
 
 /// [`night_scene`] with the discs at least `spacing` times the sum of their radii apart, centre to centre.
-pub fn night_scene_spaced(w: usize, h: usize, radii: &[f64], noise: Noise, seed: u64, spacing: f64) -> Scene {
+pub fn night_scene_spaced(
+    w: usize,
+    h: usize,
+    radii: &[f64],
+    noise: Noise,
+    seed: u64,
+    spacing: f64,
+) -> Scene {
     let n = w * h;
     let mut rng = Rng::new(seed);
     let mut img = Rgb::new(w, h);
@@ -498,11 +544,13 @@ pub fn night_scene_spaced(w: usize, h: usize, radii: &[f64], noise: Noise, seed:
             tries += 1;
             assert!(tries < 100_000, "cannot place the discs");
             let margin = 3.0 * r + 4.0;
-            let (cx, cy) = (rng.range(margin, w as f64 - margin), rng.range(margin, h as f64 - margin));
-            if discs
-                .iter()
-                .all(|&(ox, oy, or)| ((ox - cx).powi(2) + (oy - cy).powi(2)).sqrt() > spacing * (or + r) + 6.0)
-            {
+            let (cx, cy) = (
+                rng.range(margin, w as f64 - margin),
+                rng.range(margin, h as f64 - margin),
+            );
+            if discs.iter().all(|&(ox, oy, or)| {
+                ((ox - cx).powi(2) + (oy - cy).powi(2)).sqrt() > spacing * (or + r) + 6.0
+            }) {
                 discs.push((cx, cy, r));
                 break;
             }
@@ -515,8 +563,14 @@ pub fn night_scene_spaced(w: usize, h: usize, radii: &[f64], noise: Noise, seed:
             0.7 + 0.3 * hash01(k as i64, 1, 5),
             0.4 + 0.5 * hash01(k as i64, 2, 5),
         ];
-        let (x0, x1) = ((cx - r - 2.0).floor().max(0.0) as usize, ((cx + r + 2.0).ceil() as usize).min(w));
-        let (y0, y1) = ((cy - r - 2.0).floor().max(0.0) as usize, ((cy + r + 2.0).ceil() as usize).min(h));
+        let (x0, x1) = (
+            (cx - r - 2.0).floor().max(0.0) as usize,
+            ((cx + r + 2.0).ceil() as usize).min(w),
+        );
+        let (y0, y1) = (
+            (cy - r - 2.0).floor().max(0.0) as usize,
+            ((cy + r + 2.0).ceil() as usize).min(h),
+        );
         for y in y0..y1 {
             for x in x0..x1 {
                 let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
@@ -620,7 +674,8 @@ pub fn anchor_scene(w: usize, h: usize, noise: Noise, seed: u64) -> Scene {
     let tex = texture(w, h, 32.0, seed, 0, w);
     let mut img = Rgb::new(w, h);
     for c in 0..3 {
-        img.plane_mut(c).copy_from_slice(&disc_blur(tex.plane(c), w, h, 9.0));
+        img.plane_mut(c)
+            .copy_from_slice(&disc_blur(tex.plane(c), w, h, 9.0));
     }
     let (cx, cy, r) = (w as f64 * 0.5, h as f64 * 0.5, h as f64 * 0.2);
     let mut subject = vec![false; n];
@@ -655,31 +710,47 @@ pub fn anchor_scene(w: usize, h: usize, noise: Noise, seed: u64) -> Scene {
 }
 
 /// A textured background blurred by `bg_radius` px with bright flat discs of the given radii on it.
-pub fn balls_over_texture_scene(w: usize, h: usize, bg_radius: f64, radii: &[f64], noise: Noise, seed: u64) -> Scene {
+pub fn balls_over_texture_scene(
+    w: usize,
+    h: usize,
+    bg_radius: f64,
+    radii: &[f64],
+    noise: Noise,
+    seed: u64,
+) -> Scene {
     let n = w * h;
     let mut rng = Rng::new(seed);
     let tex = texture(w, h, 30.0, seed, 0, w);
     let mut img = Rgb::new(w, h);
     for c in 0..3 {
-        img.plane_mut(c).copy_from_slice(&disc_blur(tex.plane(c), w, h, bg_radius));
+        img.plane_mut(c)
+            .copy_from_slice(&disc_blur(tex.plane(c), w, h, bg_radius));
     }
     let mut discs: Vec<(f64, f64, f64)> = Vec::new();
     for &r in radii {
         loop {
             let margin = 3.0 * r + 4.0;
-            let (cx, cy) = (rng.range(margin, w as f64 - margin), rng.range(margin, h as f64 - margin));
-            if discs
-                .iter()
-                .all(|&(ox, oy, or)| ((ox - cx).powi(2) + (oy - cy).powi(2)).sqrt() > 2.4 * (or + r) + 6.0)
-            {
+            let (cx, cy) = (
+                rng.range(margin, w as f64 - margin),
+                rng.range(margin, h as f64 - margin),
+            );
+            if discs.iter().all(|&(ox, oy, or)| {
+                ((ox - cx).powi(2) + (oy - cy).powi(2)).sqrt() > 2.4 * (or + r) + 6.0
+            }) {
                 discs.push((cx, cy, r));
                 break;
             }
         }
     }
     for &(cx, cy, r) in &discs {
-        let (x0, x1) = ((cx - r - 2.0).floor().max(0.0) as usize, ((cx + r + 2.0).ceil() as usize).min(w));
-        let (y0, y1) = ((cy - r - 2.0).floor().max(0.0) as usize, ((cy + r + 2.0).ceil() as usize).min(h));
+        let (x0, x1) = (
+            (cx - r - 2.0).floor().max(0.0) as usize,
+            ((cx + r + 2.0).ceil() as usize).min(w),
+        );
+        let (y0, y1) = (
+            (cy - r - 2.0).floor().max(0.0) as usize,
+            ((cy + r + 2.0).ceil() as usize).min(h),
+        );
         for y in y0..y1 {
             for x in x0..x1 {
                 let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();

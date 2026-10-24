@@ -93,11 +93,10 @@ impl BokehPlanes {
         let fraction = detector::blurred_fraction(&d);
         let active = detector::enough(&d);
         let (w, h) = (d.w, d.h);
-        let b_max = d
-            .b
-            .iter()
-            .fold(0.0f64, |m, v| m.max(f64::from(*v)))
-            .min(B_CAP);
+        let b_max =
+            d.b.iter()
+                .fold(0.0f64, |m, v| m.max(f64::from(*v)))
+                .min(B_CAP);
         let balls: Vec<Ball> = d
             .balls
             .iter()
@@ -147,7 +146,11 @@ impl BokehPlanes {
         // Weight of a cell: its confidence where it is out of focus or confidently in focus, else 0.
         let weight = |i: usize| -> f32 {
             let (b, c) = (self.b[i], self.conf[i]);
-            if b > 0.0 || f64::from(c) >= 0.3 { c } else { 0.0 }
+            if b > 0.0 || f64::from(c) >= 0.3 {
+                c
+            } else {
+                0.0
+            }
         };
         let mut a = Vec::with_capacity(w * h);
         let mut c = Vec::with_capacity(w * h);
@@ -301,7 +304,11 @@ impl BokehPlanes {
 
     /// Bytes the planes hold.
     pub(crate) fn bytes(&self) -> usize {
-        let levels: usize = self.levels.iter().map(|l| 4 * (l.a.len() + l.c.len())).sum();
+        let levels: usize = self
+            .levels
+            .iter()
+            .map(|l| 4 * (l.a.len() + l.c.len()))
+            .sum();
         std::mem::size_of::<Self>()
             + 4 * (self.b.len() + self.conf.len() + self.nonzero.len())
             + levels
@@ -432,5 +439,11 @@ pub fn reshape(
 #[must_use]
 pub fn reshape_halo(plan: &LensPlan, planes: &LensPlanes, k: usize) -> usize {
     let f = plan.frame();
-    halo(plan, planes, k, f.width.div_ceil(k.max(1)), f.height.div_ceil(k.max(1)))
+    halo(
+        plan,
+        planes,
+        k,
+        f.width.div_ceil(k.max(1)),
+        f.height.div_ceil(k.max(1)),
+    )
 }

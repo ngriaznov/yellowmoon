@@ -107,7 +107,9 @@ impl LensPlanes {
         }
         // L1 detects the blur already in the photo, only when a slider asks to reshape bokeh.
         let bokeh = if plan.needs_blur_map() {
-            Some(crate::l1::BokehPlanes::build(plan, lens_plane, focus, cancel)?)
+            Some(crate::l1::BokehPlanes::build(
+                plan, lens_plane, focus, cancel,
+            )?)
         } else {
             None
         };

@@ -57,20 +57,28 @@ impl<'a> Lines<'a> {
             let src = &picture[c * plane..(c + 1) * plane];
             let mut t = vec![0i64; plane];
             if along_y {
-                // Row by row: t[y + 1] = t[y] + q[y] + q[y + 1], all columns at once.
-                for y in 0..h.saturating_sub(1) {
-                    let (head, tail) = t.split_at_mut((y + 1) * w);
-                    let prev = &head[y * w..];
-                    let (a, b) = (&src[y * w..(y + 1) * w], &src[(y + 1) * w..(y + 2) * w]);
-                    for x in 0..w {
-                        tail[x] = prev[x] + quant(a[x]) + quant(b[x]);
+                // Row by row: t[y + 1] = t[y] + q[y] + q[y + 1], all columns at once (each value quantised once).
+                if h > 1 {
+                    let mut q_prev: Vec<i64> = src[..w].iter().map(|v| quant(*v)).collect();
+                    for y in 0..h - 1 {
+                        let (head, tail) = t.split_at_mut((y + 1) * w);
+                        let prev = &head[y * w..];
+                        let next = &src[(y + 1) * w..(y + 2) * w];
+                        for x in 0..w {
+                            let qn = quant(next[x]);
+                            tail[x] = prev[x] + q_prev[x] + qn;
+                            q_prev[x] = qn;
+                        }
                     }
                 }
             } else {
                 t.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
                     let s = &src[y * w..(y + 1) * w];
+                    let mut q_prev = quant(s[0]);
                     for x in 0..w.saturating_sub(1) {
-                        row[x + 1] = row[x] + quant(s[x]) + quant(s[x + 1]);
+                        let qn = quant(s[x + 1]);
+                        row[x + 1] = row[x] + q_prev + qn;
+                        q_prev = qn;
                     }
                 });
             }
@@ -85,7 +93,11 @@ impl<'a> Lines<'a> {
             level.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
                 for (x, o) in row.iter_mut().enumerate() {
                     let other = if along_y {
-                        if y + half < h { Some(prev[(y + half) * w + x]) } else { None }
+                        if y + half < h {
+                            Some(prev[(y + half) * w + x])
+                        } else {
+                            None
+                        }
                     } else if x + half < w {
                         Some(prev[y * w + x + half])
                     } else {
@@ -113,7 +125,11 @@ impl<'a> Lines<'a> {
     /// Index of position `a` along the line through pixel `(x, y)`.
     #[inline(always)]
     fn index(&self, x: usize, y: usize, a: usize) -> usize {
-        if self.along_y { a * self.w + x } else { y * self.w + a }
+        if self.along_y {
+            a * self.w + x
+        } else {
+            y * self.w + a
+        }
     }
 
     /// Length of the lines.
@@ -158,13 +174,19 @@ impl<'a> Lines<'a> {
         }
         let last = origin + (n - 1) as f64;
         if t >= last {
-            return (self.t[c][self.index(x, y, n - 1)], 2.0 * q(n - 1) * (t - last));
+            return (
+                self.t[c][self.index(x, y, n - 1)],
+                2.0 * q(n - 1) * (t - last),
+            );
         }
         let floor = t.floor();
         let f = t - floor;
         let j = floor as usize - self.origin;
         let (qj, qj1) = (q(j), q(j + 1));
-        (self.t[c][self.index(x, y, j)], 2.0 * qj * f + (qj1 - qj) * f * f)
+        (
+            self.t[c][self.index(x, y, j)],
+            2.0 * qj * f + (qj1 - qj) * f * f,
+        )
     }
 
     /// The mean of channel `c` over `[pos - len, pos + len]` (frame coordinates along the line) on the line
@@ -188,7 +210,9 @@ mod tests {
     use super::*;
 
     fn picture(w: usize, h: usize) -> Vec<f32> {
-        (0..3 * w * h).map(|i| ((i * 7919) % 1000) as f32 / 250.0).collect()
+        (0..3 * w * h)
+            .map(|i| ((i * 7919) % 1000) as f32 / 250.0)
+            .collect()
     }
 
     #[test]

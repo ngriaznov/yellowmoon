@@ -9,7 +9,6 @@
 //! times on a shared machine say little.
 
 #[path = "../tests/scenes/mod.rs"]
-#[allow(dead_code)]
 mod scenes;
 
 use std::time::Instant;
@@ -17,8 +16,8 @@ use std::time::Instant;
 use scenes::{Noise, subject_scene};
 use ym_lens::test_support::write_synthetic_lenses;
 use ym_lens::{
-    Axis, CameraResponse, FrameInfo, ImageRef, LensAmounts, LensKind, LensLibrary, LensPlan, LensPlanes, PixelRect,
-    apply, halo_px, reshape, reshape_halo,
+    Axis, CameraResponse, FrameInfo, ImageRef, LensAmounts, LensKind, LensLibrary, LensPlan,
+    LensPlanes, PixelRect, apply, halo_px, reshape, reshape_halo,
 };
 
 /// CPU seconds of this process (user plus system), when the platform tells.
@@ -79,7 +78,8 @@ fn main() {
         frame_height: ph,
         data: &scene.img.data,
     };
-    let (planes, wall, cpu) = timed(|| LensPlanes::build(&plan, &plane, scene.focus, &|| false).expect("planes"));
+    let (planes, wall, cpu) =
+        timed(|| LensPlanes::build(&plan, &plane, scene.focus, &|| false).expect("planes"));
     let bp = planes.bokeh().expect("blur map");
     let blurred = bp.blur().iter().filter(|b| **b > 0.0).count() as f64 / bp.blur().len() as f64;
     println!(
@@ -123,7 +123,10 @@ fn main() {
     }
     let halo_l1 = reshape_halo(&plan, &planes, 1);
     let halo_all = halo_px(&plan, &planes, 1);
-    println!("{} tiles of {tile} px, halo {halo_l1} px (L1) and {halo_all} px (whole lens)", tiles.len());
+    println!(
+        "{} tiles of {tile} px, halo {halo_l1} px (L1) and {halo_all} px (whole lens)",
+        tiles.len()
+    );
     let crop = |rect: PixelRect| -> (Vec<f32>, PixelRect) {
         let need = rect.grown(halo_all, fw, fh);
         let mut buf = Vec::with_capacity(3 * need.w * need.h);
@@ -136,7 +139,7 @@ fn main() {
         (buf, need)
     };
     let megapixels = (fw * fh) as f64 / 1e6;
-    for (name, l1_only) in [("L1 alone", true)][..0].iter().copied() {
+    for (name, l1_only) in [("L1 alone", true), ("whole lens (L1 + L2)", false)] {
         let (_, wall, cpu) = timed(|| {
             for &rect in &tiles {
                 let (buf, need) = crop(rect);
@@ -160,7 +163,11 @@ fn main() {
             "{name} over {megapixels:.0} MP: {:.1} s wall ({:.0} ms/MP), {}",
             wall,
             wall * 1e3 / megapixels,
-            cpu.map_or("CPU n/a".into(), |c| format!("{:.1} s CPU ({:.0} ms/MP CPU)", c, c * 1e3 / megapixels))
+            cpu.map_or("CPU n/a".into(), |c| format!(
+                "{:.1} s CPU ({:.0} ms/MP CPU)",
+                c,
+                c * 1e3 / megapixels
+            ))
         );
     }
 }

@@ -105,7 +105,11 @@ impl<'a> Pass<'a> {
         let hk = 0.5 * ((fw * fw + fh * fh) as f64).sqrt();
         let b = bp.max_blur().min(B_CAP);
         let v_reach = if v_on { (q - 1.0) * b * hk } else { 0.0 };
-        let t_reach = if t_on { lens.swirl_max() * e * b * hk } else { 0.0 };
+        let t_reach = if t_on {
+            lens.swirl_max() * e * b * hk
+        } else {
+            0.0
+        };
         // The map's cells in tile pixels, at the coarsest level that keeps them at least a pixel apart.
         let (mw, mh) = bp.size();
         let (mut sx, mut sy) = (fw as f64 / mw as f64, fh as f64 / mh as f64);
@@ -179,13 +183,6 @@ impl<'a> Pass<'a> {
                 have: input.rect().to_string(),
             });
         }
-        let t0 = std::time::Instant::now();
-        let timing = std::env::var("YM_L1_TIME").is_ok();
-        let mark = |what: &str| {
-            if timing {
-                eprintln!("    [{:>7.1} ms] {what}", t0.elapsed().as_secs_f64() * 1e3);
-            }
-        };
         let lens = self.plan.lens();
         let rim_mean = rim_disc_mean(&lens.rim);
         let sp = ShapeParams {
@@ -214,7 +211,6 @@ impl<'a> Pass<'a> {
             .collect();
         // The blur map at the tile's pixels.
         let bt = self.tile_blur(input, r0, &shapes);
-        mark("blur map");
         if !self.v_on && !self.t_on && shapes.is_empty() {
             return crop_rgb(input, want);
         }
@@ -224,23 +220,19 @@ impl<'a> Pass<'a> {
         // The working picture over r0, with the balls taken out.
         let mut wk = crop_rgb(input, r0)?;
         take_out(&mut wk, r0, &bt, &shapes);
-        mark("take out");
         // The two gathers.
         let o1 = if self.v_on {
             self.gather_vertical(&wk, r0, &bt, r1)
         } else {
             crop_planes(&wk, r0, r1)
         };
-        mark("vertical gather");
         let mut o2 = if self.t_on {
             self.gather_tangential(&o1, r1, &bt, r0, want)
         } else {
             crop_planes(&o1, r1, want)
         };
         // The balls drawn back.
-        mark("tangential gather");
         redraw(&mut o2, want, &bt, r0, &shapes, &sp);
-        mark("redraw");
         Ok(o2)
     }
 
@@ -272,7 +264,8 @@ impl<'a> Pass<'a> {
                     let lo = c as f64 * s;
                     let hi = ((c + 1) as f64 * s).min(full as f64);
                     let p_lo = ((lo - 0.5).ceil().max(0.0)) as usize;
-                    let p_hi = (((hi - 0.5).ceil().max(0.0)) as usize).clamp(p_lo + 1, full.max(p_lo + 1));
+                    let p_hi =
+                        (((hi - 0.5).ceil().max(0.0)) as usize).clamp(p_lo + 1, full.max(p_lo + 1));
                     (0.5 * (lo + hi), p_lo.min(full - 1), p_hi.min(full))
                 })
                 .collect()
@@ -287,28 +280,33 @@ impl<'a> Pass<'a> {
         let ncx = cx_hi.saturating_sub(cx_lo);
         let ncy = cy_hi.saturating_sub(cy_lo);
         let mut cell_guide = vec![[0.0f32; 3]; ncx * ncy];
-        cell_guide.par_chunks_mut(ncx.max(1)).enumerate().for_each(|(j, row)| {
-            let (_, y0, y1) = rows[cy_lo + j];
-            for (i, g) in row.iter_mut().enumerate() {
-                let (_, x0, x1) = cols[cx_lo + i];
-                let mut acc = [0.0f64; 3];
-                let mut n = 0.0f64;
-                for yy in y0..y1 {
-                    for xx in x0..x1 {
-                        let v = root.get(xx as i64, yy as i64);
-                        acc[0] += f64::from(v[0]);
-                        acc[1] += f64::from(v[1]);
-                        acc[2] += f64::from(v[2]);
-                        n += 1.0;
+        cell_guide
+            .par_chunks_mut(ncx.max(1))
+            .enumerate()
+            .for_each(|(j, row)| {
+                let (_, y0, y1) = rows[cy_lo + j];
+                for (i, g) in row.iter_mut().enumerate() {
+                    let (_, x0, x1) = cols[cx_lo + i];
+                    let mut acc = [0.0f64; 3];
+                    let mut n = 0.0f64;
+                    for yy in y0..y1 {
+                        for xx in x0..x1 {
+                            let v = root.get(xx as i64, yy as i64);
+                            acc[0] += f64::from(v[0]);
+                            acc[1] += f64::from(v[1]);
+                            acc[2] += f64::from(v[2]);
+                            n += 1.0;
+                        }
+                    }
+                    if n > 0.0 {
+                        *g = [
+                            (acc[0] / n) as f32,
+                            (acc[1] / n) as f32,
+                            (acc[2] / n) as f32,
+                        ];
                     }
                 }
-                if n > 0.0 {
-                    *g = [(acc[0] / n) as f32, (acc[1] / n) as f32, (acc[2] / n) as f32];
-                }
-            }
-        });
-        let timing = std::env::var("YM_L1_TIME").is_ok();
-        let tb = std::time::Instant::now();
+            });
         let (s0x, s0y) = (fw as f64 / mw as f64, fh as f64 / mh as f64);
         let mut bt = vec![0.0f32; r0.w * r0.h];
         bt.par_chunks_mut(r0.w).enumerate().for_each(|(row, out)| {
@@ -364,15 +362,9 @@ impl<'a> Pass<'a> {
                 }
             }
         });
-        if timing {
-            eprintln!("      upsample {:.1} ms", tb.elapsed().as_secs_f64() * 1e3);
-        }
         // Zero the map where the picture shows an edge sharper than the blur says, except around a ball: its
         // own rim is a sharp edge.
         let mut zero = self.sharp_places(input, r0, &bt);
-        if timing {
-            eprintln!("      sharp places {:.1} ms (since upsample)", tb.elapsed().as_secs_f64() * 1e3);
-        }
         for s in shapes {
             let reach = s.r_out.max(s.r_ball + BALL_RIM_REACH_PX) + 1.0;
             let x0 = ((s.cx - reach).floor().max(r0.x as f64)) as usize;
@@ -399,85 +391,39 @@ impl<'a> Pass<'a> {
     }
 
     /// Pixels of `r0` next to an edge sharper than their blur.
+    ///
+    /// The picture's gradient energy is compared with that of its 3 x 3 mean, summed over 5 x 5 windows: a
+    /// blurred edge loses almost nothing to a 3 x 3 mean, a sharp one (hair, fine detail) loses a lot. Only
+    /// windows with gradient well above the noise count. The result is dilated by 2 pixels.
     fn sharp_places(&self, input: &ImageRef, r0: PixelRect, bt: &[f32]) -> Vec<bool> {
         let (fw, fh) = (self.fw, self.fh);
         let hk = self.hk;
         // Only where some pixel is blurred enough to tell.
-        if !bt
-            .iter()
-            .any(|b| f64::from(*b) * hk >= SHARP_TEST_FROM_PX)
-        {
+        if !bt.iter().any(|b| f64::from(*b) * hk >= SHARP_TEST_FROM_PX) {
             return vec![false; r0.w * r0.h];
         }
-        let p1 = r0.grown(6, fw, fh);
-        let v = lum_root_field(input, p1);
-        // Box 3 x 3 on r0 grown by 5.
-        let p2 = r0.grown(5, fw, fh);
-        let s3 = Field {
-            rect: p2,
-            data: map_rect(p2, |x, y| {
-                let mut acc = 0.0f64;
-                for dy in -1..=1i64 {
-                    for dx in -1..=1i64 {
-                        acc += f64::from(v.get(x + dx, y + dy));
-                    }
-                }
-                (acc / 9.0) as f32
-            }),
-        };
-        // Gradient energies on r0 grown by 4.
+        let v = lum_root_field(input, r0.grown(6, fw, fh));
+        let s3 = box_mean3(&v, r0.grown(5, fw, fh));
         let p3 = r0.grown(4, fw, fh);
-        let grad_energy = |f: &Field, x: i64, y: i64| -> f32 {
-            let gx = 0.5 * (f64::from(f.get(x + 1, y)) - f64::from(f.get(x - 1, y)));
-            let gy = 0.5 * (f64::from(f.get(x, y + 1)) - f64::from(f.get(x, y - 1)));
-            (gx * gx + gy * gy) as f32
-        };
-        let ea = Field {
-            rect: p3,
-            data: map_rect(p3, |x, y| grad_energy(&v, x, y)),
-        };
-        let eb = Field {
-            rect: p3,
-            data: map_rect(p3, |x, y| grad_energy(&s3, x, y)),
-        };
-        // Window sums on r0 grown by 2, and the verdict.
+        let ea = grad_energy(&v, p3);
+        let eb = grad_energy(&s3, p3);
         let p4 = r0.grown(2, fw, fh);
+        let sa = window_sum(&ea, p4, 2);
+        let sb = window_sum(&eb, p4, 2);
         let sigma = self.noise_t();
-        let gate = SHARP_GATE * 25.0 * sigma * sigma;
-        let flags: Vec<bool> = map_rect(p4, |x, y| {
-            let (mut sa, mut sb) = (0.0f64, 0.0f64);
-            for dy in -2..=2i64 {
-                for dx in -2..=2i64 {
-                    sa += f64::from(ea.get(x + dx, y + dy));
-                    sb += f64::from(eb.get(x + dx, y + dy));
-                }
-            }
-            f32::from(sa > gate && sa > SHARP_RATIO * sb)
-        })
-        .into_iter()
-        .map(|f| f > 0.0)
-        .collect();
-        let at = |x: i64, y: i64| -> bool {
-            let xx = x.clamp(p4.x as i64, p4.x1() as i64 - 1) as usize - p4.x;
-            let yy = y.clamp(p4.y as i64, p4.y1() as i64 - 1) as usize - p4.y;
-            flags[yy * p4.w + xx]
+        let gate = (SHARP_GATE * 25.0 * sigma * sigma) as f32;
+        let flags = Field {
+            rect: p4,
+            data: sa
+                .data
+                .iter()
+                .zip(&sb.data)
+                .map(|(a, b)| f32::from(*a > gate && f64::from(*a) > SHARP_RATIO * f64::from(*b)))
+                .collect(),
         };
-        let mut out = vec![false; r0.w * r0.h];
-        out.par_chunks_mut(r0.w).enumerate().for_each(|(row, o)| {
-            let y = (r0.y + row) as i64;
-            for (col, z) in o.iter_mut().enumerate() {
-                let x = (r0.x + col) as i64;
-                'win: for dy in -SHARP_DILATE..=SHARP_DILATE {
-                    for dx in -SHARP_DILATE..=SHARP_DILATE {
-                        if at(x + dx, y + dy) {
-                            *z = true;
-                            break 'win;
-                        }
-                    }
-                }
-            }
-        });
-        out
+        // Dilate by 2 pixels (5 x 5): rows, then columns.
+        let rows = window_max(&flags, r0, SHARP_DILATE);
+        rows.data.iter().map(|f| *f > 0.0).collect()
     }
 
     /// The gather across the anamorphic axis over `r1`; `wk` covers `r0`.
@@ -502,11 +448,7 @@ impl<'a> Pass<'a> {
         // Windows of the sample rule are up to 2 reach + 2 pixels long.
         let max_k = floor_log2(2 * self.v_reach.ceil() as usize + 3);
         let origin = if along_y { r0.y } else { r0.x };
-        let tl = std::time::Instant::now();
         let lines = Lines::new(wk, bt, (r0.w, r0.h), along_y, origin, max_k);
-        if std::env::var("YM_L1_TIME").is_ok() {
-            eprintln!("      line tables {:.1} ms (k {max_k})", tl.elapsed().as_secs_f64() * 1e3);
-        }
         a.par_chunks_mut(r1.w)
             .zip(b.par_chunks_mut(r1.w))
             .zip(c.par_chunks_mut(r1.w))
@@ -527,8 +469,10 @@ impl<'a> Pass<'a> {
                     let (lx, ly) = (x - r0.x, y - r0.y);
                     let pos = if along_y { y } else { x } as f64;
                     // The pixels the line touches (nearest to its ends), inside the region.
-                    let first = (((pos - len + 0.5).floor().max(origin as f64) as usize) - origin).min(n_line - 1);
-                    let last = (((pos + len + 0.5).floor().max(origin as f64) as usize) - origin).min(n_line - 1);
+                    let first = (((pos - len + 0.5).floor().max(origin as f64) as usize) - origin)
+                        .min(n_line - 1);
+                    let last = (((pos + len + 0.5).floor().max(origin as f64) as usize) - origin)
+                        .min(n_line - 1);
                     if lines
                         .min_blur(lx, ly, first, last)
                         .is_some_and(|m| f64::from(m) >= 0.5 * bp)
@@ -546,7 +490,11 @@ impl<'a> Pass<'a> {
                     for t in 0..taps {
                         let s = pos + (t as f64 - half as f64) * step;
                         let ni = ((s + 0.5).floor() as i64).clamp(lo, hi);
-                        let (nx, ny) = if along_y { (x as i64, ni) } else { (ni, y as i64) };
+                        let (nx, ny) = if along_y {
+                            (x as i64, ni)
+                        } else {
+                            (ni, y as i64)
+                        };
                         let bs = f64::from(bt[(ny as usize - r0.y) * r0.w + (nx as usize - r0.x)]);
                         if bs < 0.5 * bp {
                             continue;
@@ -637,8 +585,10 @@ impl<'a> Pass<'a> {
                     for t in 0..taps {
                         let off = (t as f64 - half as f64) * step;
                         let (sx, sy) = (x as f64 + off * ux, y as f64 + off * uy);
-                        let nx = ((sx + 0.5).floor() as i64).clamp(r0.x as i64, r0.x1() as i64 - 1) as usize;
-                        let ny = ((sy + 0.5).floor() as i64).clamp(r0.y as i64, r0.y1() as i64 - 1) as usize;
+                        let nx = ((sx + 0.5).floor() as i64).clamp(r0.x as i64, r0.x1() as i64 - 1)
+                            as usize;
+                        let ny = ((sy + 0.5).floor() as i64).clamp(r0.y as i64, r0.y1() as i64 - 1)
+                            as usize;
                         let bs = f64::from(bt[(ny - r0.y) * r0.w + (nx - r0.x)]);
                         if bs < 0.5 * bp {
                             continue;
@@ -646,15 +596,26 @@ impl<'a> Pass<'a> {
                         let wt = if t == 0 || t == taps - 1 { 0.5 } else { 1.0 };
                         let (fx, fy) = (sx.floor(), sy.floor());
                         let (tx, ty) = (sx - fx, sy - fy);
-                        let cl = |v: i64, lo: usize, hi: usize| v.clamp(lo as i64, hi as i64 - 1) as usize;
-                        let (x0, x1) = (cl(fx as i64, r1.x, r1.x1()), cl(fx as i64 + 1, r1.x, r1.x1()));
-                        let (y0, y1) = (cl(fy as i64, r1.y, r1.y1()), cl(fy as i64 + 1, r1.y, r1.y1()));
+                        let cl = |v: i64, lo: usize, hi: usize| {
+                            v.clamp(lo as i64, hi as i64 - 1) as usize
+                        };
+                        let (x0, x1) = (
+                            cl(fx as i64, r1.x, r1.x1()),
+                            cl(fx as i64 + 1, r1.x, r1.x1()),
+                        );
+                        let (y0, y1) = (
+                            cl(fy as i64, r1.y, r1.y1()),
+                            cl(fy as i64 + 1, r1.y, r1.y1()),
+                        );
                         let idx = |xx: usize, yy: usize| (yy - r1.y) * r1.w + (xx - r1.x);
-                        let (i00, i10, i01, i11) = (idx(x0, y0), idx(x1, y0), idx(x0, y1), idx(x1, y1));
+                        let (i00, i10, i01, i11) =
+                            (idx(x0, y0), idx(x1, y0), idx(x0, y1), idx(x1, y1));
                         for ch in 0..3 {
                             let p = &o1[ch * plane1..(ch + 1) * plane1];
-                            let top = f64::from(p[i00]) + tx * (f64::from(p[i10]) - f64::from(p[i00]));
-                            let bot = f64::from(p[i01]) + tx * (f64::from(p[i11]) - f64::from(p[i01]));
+                            let top =
+                                f64::from(p[i00]) + tx * (f64::from(p[i10]) - f64::from(p[i00]));
+                            let bot =
+                                f64::from(p[i01]) + tx * (f64::from(p[i11]) - f64::from(p[i01]));
                             acc[ch] += wt * (top + ty * (bot - top));
                         }
                         wsum += wt;
@@ -733,6 +694,98 @@ fn map_rect<T: Send>(rect: PixelRect, f: impl Fn(i64, i64) -> T + Sync) -> Vec<T
         out.extend(r);
     }
     out
+}
+
+/// The 3 x 3 mean of `f` over `dst` (reads clamp to `f`'s rectangle): rows, then columns.
+fn box_mean3(f: &Field, dst: PixelRect) -> Field {
+    let hs = horizontal(f, dst, 1, |acc, v| acc + v);
+    let data = vertical(&hs, dst, 1, |acc, v| acc + v, |sum| sum / 9.0);
+    Field { rect: dst, data }
+}
+
+/// The sum of `f` over the `(2 half + 1)^2` window of every pixel of `dst`.
+fn window_sum(f: &Field, dst: PixelRect, half: i64) -> Field {
+    let hs = horizontal(f, dst, half, |acc, v| acc + v);
+    let data = vertical(&hs, dst, half, |acc, v| acc + v, |sum| sum);
+    Field { rect: dst, data }
+}
+
+/// The maximum of `f` over the `(2 half + 1)^2` window of every pixel of `dst`.
+fn window_max(f: &Field, dst: PixelRect, half: i64) -> Field {
+    let hs = horizontal(f, dst, half, f32::max);
+    let data = vertical(&hs, dst, half, f32::max, |m| m);
+    Field { rect: dst, data }
+}
+
+/// A fold of `f` along `x` over `2 half + 1` pixels around each pixel of `dst`, for every row `f` has that `dst`
+/// (grown by `half` rows) needs; the result holds those rows, `dst.w` wide. Reads clamp to `f`'s rectangle.
+fn horizontal(
+    f: &Field,
+    dst: PixelRect,
+    half: i64,
+    fold: impl Fn(f32, f32) -> f32 + Sync,
+) -> (PixelRect, Vec<f32>) {
+    let y0 = (dst.y as i64 - half).max(f.rect.y as i64) as usize;
+    let y1 = ((dst.y1() as i64 + half).min(f.rect.y1() as i64)) as usize;
+    let rows = y1 - y0;
+    let rect = PixelRect::new(dst.x, y0, dst.w, rows);
+    let mut out = vec![0.0f32; dst.w * rows];
+    out.par_chunks_mut(dst.w).enumerate().for_each(|(r, row)| {
+        let y = (y0 + r) as i64;
+        let (lo, hi) = (f.rect.x as i64, f.rect.x1() as i64 - 1);
+        for (c, o) in row.iter_mut().enumerate() {
+            let x = (dst.x + c) as i64;
+            let mut acc = f.get(x - half, y);
+            for d in -half + 1..=half {
+                acc = fold(acc, f.get((x + d).clamp(lo, hi), y));
+            }
+            *o = acc;
+        }
+    });
+    (rect, out)
+}
+
+/// The same fold along `y` of the rows `horizontal` made, giving `dst` (reads clamp to those rows).
+fn vertical(
+    hs: &(PixelRect, Vec<f32>),
+    dst: PixelRect,
+    half: i64,
+    fold: impl Fn(f32, f32) -> f32 + Sync,
+    finish: impl Fn(f32) -> f32 + Sync,
+) -> Vec<f32> {
+    let (rect, rows) = hs;
+    let (lo, hi) = (rect.y as i64, rect.y1() as i64 - 1);
+    let mut out = vec![0.0f32; dst.w * dst.h];
+    out.par_chunks_mut(dst.w).enumerate().for_each(|(r, row)| {
+        let y = (dst.y + r) as i64;
+        let at = |yy: i64| -> &[f32] {
+            let i = (yy.clamp(lo, hi) - rect.y as i64) as usize;
+            &rows[i * rect.w..(i + 1) * rect.w]
+        };
+        for (c, o) in row.iter_mut().enumerate() {
+            let mut acc = at(y - half)[c];
+            for d in -half + 1..=half {
+                acc = fold(acc, at(y + d)[c]);
+            }
+            *o = finish(acc);
+        }
+    });
+    out
+}
+
+/// The gradient energy (central differences, clamped reads) of `f` over `dst`.
+fn grad_energy(f: &Field, dst: PixelRect) -> Field {
+    let mut data = vec![0.0f32; dst.w * dst.h];
+    data.par_chunks_mut(dst.w).enumerate().for_each(|(r, row)| {
+        let y = (dst.y + r) as i64;
+        for (c, o) in row.iter_mut().enumerate() {
+            let x = (dst.x + c) as i64;
+            let gx = 0.5 * (f64::from(f.get(x + 1, y)) - f64::from(f.get(x - 1, y)));
+            let gy = 0.5 * (f64::from(f.get(x, y + 1)) - f64::from(f.get(x, y - 1)));
+            *o = (gx * gx + gy * gy) as f32;
+        }
+    });
+    Field { rect: dst, data }
 }
 
 /// Square roots of the three channels of `input` over `rect`, as `[f32; 3]` per pixel with clamped reads.
@@ -825,7 +878,14 @@ fn take_out(wk: &mut [f32], r0: PixelRect, bt: &[f32], shapes: &[Shape]) {
 }
 
 /// Adds every ball's ellipse to `out` (over `want`), where the blur map says the pixel is out of focus.
-fn redraw(out: &mut [f32], want: PixelRect, bt: &[f32], r0: PixelRect, shapes: &[Shape], sp: &ShapeParams) {
+fn redraw(
+    out: &mut [f32],
+    want: PixelRect,
+    bt: &[f32],
+    r0: PixelRect,
+    shapes: &[Shape],
+    sp: &ShapeParams,
+) {
     let plane = want.w * want.h;
     for s in shapes {
         let reach = s.reach;

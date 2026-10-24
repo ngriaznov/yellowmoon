@@ -13,7 +13,7 @@
 //! 3. **Bright balls** are found and measured by their size ([`super::balls`]); their edges, which a sharp rim
 //!    would make read sharp, are dropped and their radius takes their place.
 //! 4. **Spread.** The sparse readings are spread over the plane by edge-aware normalised convolution
-//!    ([`super::spread`]) in two passes, the second dropping readings that disagree with their surroundings.
+//!    ([`super::spread`]).
 //! 5. **Caution.** The blur is 0 where the evidence is thin or inconsistent, where it is below the smallest
 //!    radius, in the anchor, and next to a strong sharp edge: when unsure, nothing is reshaped.
 
@@ -115,7 +115,11 @@ pub(super) fn work_plane(plane: &ImageRef) -> WorkPlane {
     let reduce = if w0.max(h0) >= REDUCE_FROM { 2 } else { 1 };
     let (w, h) = (w0.div_ceil(reduce), h0.div_ceil(reduce));
     let src = [plane.plane(0), plane.plane(1), plane.plane(2)];
-    let mut rgb = [vec![0.0f32; w * h], vec![0.0f32; w * h], vec![0.0f32; w * h]];
+    let mut rgb = [
+        vec![0.0f32; w * h],
+        vec![0.0f32; w * h],
+        vec![0.0f32; w * h],
+    ];
     for (c, out) in rgb.iter_mut().enumerate() {
         if reduce == 1 {
             out.copy_from_slice(src[c]);
@@ -140,7 +144,13 @@ pub(super) fn work_plane(plane: &ImageRef) -> WorkPlane {
     let y: Vec<f32> = (0..w * h)
         .map(|i| luminance(rgb[0][i], rgb[1][i], rgb[2][i]))
         .collect();
-    WorkPlane { w, h, reduce, rgb, y }
+    WorkPlane {
+        w,
+        h,
+        reduce,
+        rgb,
+        y,
+    }
 }
 
 /// Noise of a plane of square-root luminance (Immerkaer's Laplacian estimate, from a low quantile so that
@@ -153,8 +163,7 @@ pub(super) fn noise_sigma(v: &[f32], w: usize, h: usize) -> f64 {
     for y in 1..h - 1 {
         for x in 1..w - 1 {
             let at = |dx: usize, dy: usize| f64::from(v[(y + dy - 1) * w + (x + dx - 1)]);
-            let n = 4.0 * at(1, 1)
-                - 2.0 * (at(0, 1) + at(2, 1) + at(1, 0) + at(1, 2))
+            let n = 4.0 * at(1, 1) - 2.0 * (at(0, 1) + at(2, 1) + at(1, 0) + at(1, 2))
                 + (at(0, 0) + at(2, 0) + at(0, 2) + at(2, 2));
             vals.push(n.abs() as f32);
         }
@@ -164,7 +173,12 @@ pub(super) fn noise_sigma(v: &[f32], w: usize, h: usize) -> f64 {
 }
 
 /// The scale ladder of a plane: level 0 is the plane, level `m >= 1` is blurred by `level_sigma(m)` pixels.
-fn build_ladder(v: &[f32], w: usize, h: usize, cancel: &dyn Fn() -> bool) -> Result<Vec<Vec<f32>>, LensError> {
+fn build_ladder(
+    v: &[f32],
+    w: usize,
+    h: usize,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Vec<Vec<f32>>, LensError> {
     let mut levels: Vec<Vec<f32>> = Vec::with_capacity(LEVELS);
     levels.push(v.to_vec());
     for m in 0..LEVELS - 1 {
@@ -250,7 +264,9 @@ fn edge_samples(
                     let i = y * w + x;
                     let g = gj[i];
                     // `normalised(g, level) >= thr` without the square root.
-                    if f64::from(g) * f64::from(g) < 4.0 * thr * thr * (f64::from(lj[i]).max(0.0) + floor) {
+                    if f64::from(g) * f64::from(g)
+                        < 4.0 * thr * thr * (f64::from(lj[i]).max(0.0) + floor)
+                    {
                         continue;
                     }
                     let gn = normalised(g, lj[i], floor);
@@ -407,12 +423,6 @@ pub(super) fn detect(
     focus: Option<(f64, f64)>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Detected, LensError> {
-    let t0 = std::time::Instant::now();
-    let mark = |what: &str| {
-        if std::env::var("YM_L1_TIME").is_ok() {
-            eprintln!("  planes [{:>7.1} ms] {what}", t0.elapsed().as_secs_f64() * 1e3);
-        }
-    };
     let wp = work_plane(plane);
     let (w, h) = (wp.w, wp.h);
     let n = w * h;
@@ -435,16 +445,13 @@ pub(super) fn detect(
     let v: Vec<f32> = wp.y.iter().map(|&y| y.max(0.0).sqrt()).collect();
     let noise_v = noise_sigma(&v, w, h);
     drop(v);
-    mark("noise");
     let ladder = build_ladder(&wp.y, w, h, cancel)?;
-    mark("ladder");
     if cancel() {
         return Err(LensError::Cancelled);
     }
 
     // 1. Edge readings.
     let (mut samples, mut sharp) = edge_samples(&ladder, w, h, noise_v, r_min_px, cancel)?;
-    mark("edges");
     let measured_edges = samples.iter().filter(|s| s.w >= 0.1).count();
 
     // 2. The subject anchor.
@@ -453,8 +460,14 @@ pub(super) fn detect(
         let (cx, cy) = (fx * w as f64, fy * h as f64);
         let radius = (ANCHOR_RADIUS * hd).max(6.0);
         let mut inside = vec![false; n];
-        let (x0, x1) = ((cx - radius).floor().max(0.0) as usize, ((cx + radius).ceil() as usize + 1).min(w));
-        let (y0, y1) = ((cy - radius).floor().max(0.0) as usize, ((cy + radius).ceil() as usize + 1).min(h));
+        let (x0, x1) = (
+            (cx - radius).floor().max(0.0) as usize,
+            ((cx + radius).ceil() as usize + 1).min(w),
+        );
+        let (y0, y1) = (
+            (cy - radius).floor().max(0.0) as usize,
+            ((cy + radius).ceil() as usize + 1).min(h),
+        );
         for y in y0..y1 {
             for x in x0..x1 {
                 let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
@@ -493,14 +506,19 @@ pub(super) fn detect(
         cancel,
     )?;
     drop(ladder);
-    mark("balls");
     // Their rims are not edges of the blur: drop the readings around them and put their radius there.
     if !balls.is_empty() {
         let mut inside = vec![false; n];
         for b in &balls {
             let reach = 1.5 * b.r_out;
-            let (x0, x1) = ((b.cx - reach).floor().max(0.0) as usize, ((b.cx + reach).ceil() as usize + 1).min(w));
-            let (y0, y1) = ((b.cy - reach).floor().max(0.0) as usize, ((b.cy + reach).ceil() as usize + 1).min(h));
+            let (x0, x1) = (
+                (b.cx - reach).floor().max(0.0) as usize,
+                ((b.cx + reach).ceil() as usize + 1).min(w),
+            );
+            let (y0, y1) = (
+                (b.cy - reach).floor().max(0.0) as usize,
+                ((b.cy + reach).ceil() as usize + 1).min(h),
+            );
             for y in y0..y1 {
                 for x in x0..x1 {
                     let (dx, dy) = (x as f64 + 0.5 - b.cx, y as f64 + 0.5 - b.cy);
@@ -520,8 +538,14 @@ pub(super) fn detect(
             let reach = 1.6 * b.r;
             let per_pixel = BALL_WEIGHT / (std::f64::consts::PI * reach * reach);
             let ln_r = libm::log(b.r) as f32;
-            let (x0, x1) = ((b.cx - reach).floor().max(0.0) as usize, ((b.cx + reach).ceil() as usize + 1).min(w));
-            let (y0, y1) = ((b.cy - reach).floor().max(0.0) as usize, ((b.cy + reach).ceil() as usize + 1).min(h));
+            let (x0, x1) = (
+                (b.cx - reach).floor().max(0.0) as usize,
+                ((b.cx + reach).ceil() as usize + 1).min(w),
+            );
+            let (y0, y1) = (
+                (b.cy - reach).floor().max(0.0) as usize,
+                ((b.cy + reach).ceil() as usize + 1).min(h),
+            );
             for y in y0..y1 {
                 for x in x0..x1 {
                     let (dx, dy) = (x as f64 + 0.5 - b.cx, y as f64 + 0.5 - b.cy);
@@ -530,52 +554,32 @@ pub(super) fn detect(
                             idx: (y * w + x) as u32,
                             w: per_pixel as f32,
                             ln_r,
-                                    });
+                        });
                     }
                 }
             }
         }
     }
-    let ball_perimeters: f64 = balls
-        .iter()
-        .map(|b| 2.0 * std::f64::consts::PI * b.r)
-        .sum();
+    let ball_perimeters: f64 = balls.iter().map(|b| 2.0 * std::f64::consts::PI * b.r).sum();
     if cancel() {
         return Err(LensError::Cancelled);
     }
 
-    // 4. Spread, twice: the second pass drops readings that disagree with their surroundings.
+    // 4. Spread.
     let sigma_g = (3.0 * noise_v).max(GUIDE_TOLERANCE);
     let guide = GuidePyramid::new(guide_image(&wp.rgb, w, h), w, h, sigma_g);
     let (w0, s0, q0) = accumulate(&samples, n);
-    mark("guide");
-    let first = spread(&guide, &w0, &s0, &q0, EVIDENCE_NEED);
-    mark("spread 1");
+    let spread_out = spread(&guide, &w0, &s0, &q0, EVIDENCE_NEED);
     if cancel() {
         return Err(LensError::Cancelled);
     }
-    let robust: Vec<Sample> = samples
-        .iter()
-        .filter_map(|s| {
-            let (mu, _, _) = moments(&first, s.idx as usize)?;
-            let d = f64::from(s.ln_r) - mu;
-            let keep = libm::exp(-d * d / (2.0 * 0.5 * 0.5));
-            Some(Sample {
-                w: (f64::from(s.w) * keep) as f32,
-                ..*s
-            })
-        })
-        .collect();
-    let (w1, s1, q1) = accumulate(&robust, n);
-    let second = spread(&guide, &w1, &s1, &q1, EVIDENCE_NEED);
-    mark("spread 2");
 
     // 5. Caution, and the maps.
     let mut b = vec![0.0f32; n];
     let mut conf = vec![0.0f32; n];
     let mut r_est = vec![0.0f64; n];
     for i in 0..n {
-        if let Some((mu, var, cover)) = moments(&second, i) {
+        if let Some((mu, var, cover)) = moments(&spread_out, i) {
             let c = cover / (1.0 + var / VARIANCE_HALF);
             conf[i] = c as f32;
             r_est[i] = libm::exp(mu);
@@ -602,8 +606,14 @@ pub(super) fn detect(
     let mut best = vec![f64::INFINITY; n];
     for ball in &balls {
         let reach = BALL_FOOTPRINT * ball.r;
-        let (x0, x1) = ((ball.cx - reach).floor().max(0.0) as usize, ((ball.cx + reach).ceil() as usize + 1).min(w));
-        let (y0, y1) = ((ball.cy - reach).floor().max(0.0) as usize, ((ball.cy + reach).ceil() as usize + 1).min(h));
+        let (x0, x1) = (
+            (ball.cx - reach).floor().max(0.0) as usize,
+            ((ball.cx + reach).ceil() as usize + 1).min(w),
+        );
+        let (y0, y1) = (
+            (ball.cy - reach).floor().max(0.0) as usize,
+            ((ball.cy + reach).ceil() as usize + 1).min(h),
+        );
         for y in y0..y1 {
             for x in x0..x1 {
                 let i = y * w + x;
@@ -642,7 +652,6 @@ pub(super) fn detect(
     // A blurred region smaller than a couple of its own blur discs is a speck of misread edges, not defocus.
     let keep: Vec<bool> = best.iter().map(|d| d.is_finite()).collect();
     drop_small_regions(&mut b, &keep, w, h, hd);
-    mark("done");
     Ok(Detected {
         w,
         h,
@@ -707,12 +716,11 @@ fn drop_small_regions(b: &mut [f32], keep: &[bool], w: usize, h: usize, hd: f64)
 /// Fraction of the frame at `b >= 2 b_min` with confidence (the "little out-of-focus background" test).
 pub(super) fn blurred_fraction(d: &Detected) -> f64 {
     let thr = (2.0 * B_MIN) as f32;
-    let count = d
-        .b
-        .iter()
-        .zip(&d.conf)
-        .filter(|(b, c)| **b >= thr && **c >= 0.5)
-        .count();
+    let count =
+        d.b.iter()
+            .zip(&d.conf)
+            .filter(|(b, c)| **b >= thr && **c >= 0.5)
+            .count();
     count as f64 / (d.w * d.h).max(1) as f64
 }
 

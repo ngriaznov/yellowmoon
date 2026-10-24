@@ -2020,6 +2020,10 @@ fn display_key(
     if let StageWindow::Of(b) = window {
         key.push_str(&format!("|window{b:?}"));
     }
+    // The lens moves every pixel the frame holds: a move of one of its sliders is a new frame.
+    if let Some(lens) = job.lens_key()? {
+        key.push_str(&format!("|{lens}"));
+    }
     Ok(key)
 }
 
@@ -2103,12 +2107,12 @@ fn prepare_view_with(
             .grid_from((plan.out_w, plan.out_h), spec.view_to_final);
         if let Some((x0, y0, x1, y1)) = grid.source_bounds(0, 0, w, h, 3) {
             let rect = Rect::new(x0, y0, x1 - x0, y1 - y0);
-            if spec.coarse_only && !job.tiles_ready(rect)? {
+            if spec.coarse_only && !job.lens_tiles_ready(rect)? {
                 k = plan.effective_scale(2).max(2);
                 sharp = false;
             } else {
                 let region = if pixels {
-                    job.region_pixels(rect)?
+                    job.lens_region_pixels(rect)?
                 } else {
                     Pixels::Host(Arc::new(RgbImage::new(0, 0)))
                 };
@@ -2135,7 +2139,7 @@ fn prepare_view_with(
             });
         }
     }
-    let backing = job.group_backing(k)?;
+    let backing = job.lens_group_backing(k)?;
     let (group_w, group_h) = backing.size();
     let pixels = match backing {
         Backing::Cpu(image) => Pixels::Host(image),
@@ -2329,6 +2333,10 @@ fn frame_key(
     if spec.output == FrameOutput::Device {
         key.push_str("|device");
     }
+    // The lens moves every pixel the frame holds: a move of one of its sliders is a new frame.
+    if let Some(lens) = job.lens_key()? {
+        key.push_str(&format!("|{lens}"));
+    }
     Ok(key)
 }
 
@@ -2472,8 +2480,8 @@ impl Renderer {
         let Some((x0, y0, x1, y1)) = grid.source_bounds(0, 0, dw, dh, 3) else {
             return Ok(0);
         };
-        job.warm_tiles(Rect::new(x0, y0, x1 - x0, y1 - y0))?;
-        let made = job.runs.tiles;
+        job.lens_warm_tiles(Rect::new(x0, y0, x1 - x0, y1 - y0))?;
+        let made = job.runs.tiles + job.runs.lens_tiles;
         job.finish(1, ComputeDevice::Cpu, OutputTarget::Viewport);
         Ok(made as usize)
     }
@@ -2576,6 +2584,32 @@ impl Renderer {
         Ok(self
             .point_reading(src, state, css, false, cancel)?
             .map(|(rgb, _)| rgb))
+    }
+
+    /// The camera RGB (the raw group's output, before C1) over `rect` of the auto-cropped image at
+    /// full resolution, as an export tile makes it: one call over the rectangle, nothing cached.
+    /// With `lens` the photo's lens (L1 to L3, `docs/21`) is applied when it has one; without it,
+    /// or without a lens, this is the raw group alone. For checks and diagnostics, like
+    /// [`Renderer::camera_rgb_at`], of which this is the region form.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data, a region outside the photo or a cancelled job.
+    pub fn camera_region(
+        &self,
+        src: &PhotoSource,
+        rect: Rect,
+        lens: bool,
+        cancel: &CancelToken,
+    ) -> Result<RgbImage, RenderError> {
+        let mut job = Job::for_export(self, src, cancel);
+        let image = if lens {
+            job.lens_region(rect, false)?
+        } else {
+            job.region(rect, false)?
+        };
+        job.finish(1, ComputeDevice::Cpu, OutputTarget::Viewport);
+        Ok(image)
     }
 
     /// The chroma of the colour under a point of the cell at the input of the colour warp: the pixel
@@ -2781,7 +2815,9 @@ impl Renderer {
         // The options of this render are the ones of the moment it began (a device attached while
         // an export runs cannot move half of it onto another device).
         let tile = job.options().full_tile_px.max(64);
-        let halo_allowance = 160usize;
+        // The raw stages' halo, and the lens's (`docs/21` section 3: the raw region of a tile is grown by
+        // it; 0 without a lens).
+        let halo_allowance = 160usize + job.lens_halo()?;
         let per_px = 12u64 * 12; // twelve f32 planes of working set per tile pixel, a generous bound
         let working = ((tile + halo_allowance) as u64).pow(2) * per_px;
         let frame_extra = job.frame()?.extra_bytes() as u64;
@@ -2834,9 +2870,9 @@ impl Renderer {
                         // With the colour stage on the device the raw chain's tile may stay there
                         // (`Job::region_resident`); with the CPU colouring it the host's is wanted.
                         let region = if device_colour.is_some() {
-                            job.region_resident(rect)
+                            job.lens_region_resident(rect)
                         } else {
-                            job.region(rect, false).map(TileImage::Host)
+                            job.lens_region(rect, false).map(TileImage::Host)
                         };
                         let region = match region {
                             Ok(region) => region,

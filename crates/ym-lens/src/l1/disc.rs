@@ -137,7 +137,9 @@ pub(super) fn radius_from_ratio(pair: usize, rho: f64) -> Option<RadiusEstimate>
     }
     let f = (t.rho[lo] - rho) / (t.rho[lo] - t.rho[hi]);
     let ln_r = t.ln_r[lo] + f * (t.ln_r[hi] - t.ln_r[lo]);
-    let dln_rho = (libm::log(t.rho[lo]) - libm::log(t.rho[hi])).abs().max(1e-12);
+    let dln_rho = (libm::log(t.rho[lo]) - libm::log(t.rho[hi]))
+        .abs()
+        .max(1e-12);
     Some(RadiusEstimate {
         r: libm::exp(ln_r),
         sensitivity: (t.ln_r[hi] - t.ln_r[lo]).abs() / dln_rho,

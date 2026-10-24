@@ -148,7 +148,11 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
     let (ux, uy) = (cx - 0.5 * p.fw, cy - 0.5 * p.fh);
     let dist = (ux * ux + uy * uy).sqrt();
     let rho = dist / p.hk;
-    let (rx, ry) = if dist > 1e-9 { (ux / dist, uy / dist) } else { (1.0, 0.0) };
+    let (rx, ry) = if dist > 1e-9 {
+        (ux / dist, uy / dist)
+    } else {
+        (1.0, 0.0)
+    };
     let (tx, ty) = (-ry, rx);
     let sigma = profile_at(p.radii, p.swirl, rho);
     let cat = profile_at(p.radii, p.cats_eye, rho);
@@ -170,7 +174,11 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
         return None;
     }
     let (a, b) = (r_px + s_len, r_px);
-    let m = if stretched { (sx / s_len, sy / s_len) } else { (1.0, 0.0) };
+    let m = if stretched {
+        (sx / s_len, sy / s_len)
+    } else {
+        (1.0, 0.0)
+    };
     // The cat's-eye copies sit half the offset either side of the centre along the radial direction.
     let (half_off, delta) = if cut {
         let h = (0.5 * off * rx, 0.5 * off * ry);
@@ -200,7 +208,11 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
         m,
         half_off,
         delta,
-        density: [ball.energy[0] * scale, ball.energy[1] * scale, ball.energy[2] * scale],
+        density: [
+            ball.energy[0] * scale,
+            ball.energy[1] * scale,
+            ball.energy[2] * scale,
+        ],
         r_out: ball.take_out_radius * p.hk,
         r_ball: r_px,
         reach: a + (half_off.0 * half_off.0 + half_off.1 * half_off.1).sqrt() + 2.0,
@@ -254,7 +266,9 @@ mod tests {
     fn the_disc_mean_of_a_flat_rim_is_one_and_of_a_linear_one_is_two_thirds() {
         let flat = vec![1.0; RIM_SAMPLES];
         assert!((rim_disc_mean(&flat) - 1.0).abs() < 1e-12);
-        let ramp: Vec<f64> = (0..RIM_SAMPLES).map(|i| i as f64 / (RIM_SAMPLES - 1) as f64).collect();
+        let ramp: Vec<f64> = (0..RIM_SAMPLES)
+            .map(|i| i as f64 / (RIM_SAMPLES - 1) as f64)
+            .collect();
         // integral s * 2 s ds = 2/3
         assert!((rim_disc_mean(&ramp) - 2.0 / 3.0).abs() < 1e-12);
     }
@@ -264,7 +278,9 @@ mod tests {
         assert!((lens_area(0.0) - std::f64::consts::PI).abs() < 1e-12);
         assert!(lens_area(2.0).abs() < 1e-12);
         // Two unit discs one radius apart overlap in 2 pi / 3 - sqrt(3) / 2 times two... = 1.2284.
-        assert!((lens_area(1.0) - (2.0 * std::f64::consts::PI / 3.0 - 3f64.sqrt() / 2.0)).abs() < 1e-12);
+        assert!(
+            (lens_area(1.0) - (2.0 * std::f64::consts::PI / 3.0 - 3f64.sqrt() / 2.0)).abs() < 1e-12
+        );
         let flat = vec![1.0; RIM_SAMPLES];
         assert!((lens_mean(&flat, 1.0) - 1.0).abs() < 1e-12);
     }

@@ -88,6 +88,29 @@ describe("copy (docs/11 Range card, owner's decision of 2026-10-17)", () => {
   });
 });
 
+describe("the Lens card (docs/21 section 1)", () => {
+  const ids = ["default", "classic", "vintage", "petzval", "triplet", "sonnar", "detuned"];
+  const lens = (id: string): { name: string; line: string; start: { flares: number; edges: number } } =>
+    JSON.parse(read(`data/lenses/${id}/lens.json`)) as { name: string; line: string; start: { flares: number; edges: number } };
+
+  it("lists the lenses of data/lenses/ in the browser mock with the names, lines and starting amounts of the spec and the data", () => {
+    const spec = read("docs/21-lens-character.md");
+    // The mock's table is wrapped by the formatter where a row is long (Detuned's).
+    const mock = read("src/api.mock.ts").replace(/\s+/g, " ");
+    for (const id of ids) {
+      const { name, line, start } = lens(id);
+      expect(spec, id).toContain(`| ${name} | "${line}" |`);
+      expect(mock, id).toContain(`"${name}", "${line}", ${start.flares}, ${start.edges},`);
+    }
+  });
+
+  it("says in the same words in the component and docs/11 that the lens data are missing", () => {
+    const NOTE = "Lens data are missing, so lenses can't be used.";
+    expect(read("src/screens/tools/LensCard.tsx")).toContain(`"${NOTE}"`);
+    expect(read("docs/11-ui.md")).toContain(`"${NOTE}"`);
+  });
+});
+
 describe("the oldest macOS the app runs on (owner's decision of 2026-10-17, docs/16; STATUS question 30)", () => {
   /** macOS 14 Sonoma ships Safari 17: Tailwind 4's CSS (`@property`, `color-mix()`, `:has()`, `@layer`) needs 16.4. */
   const MINIMUM = "14.0";

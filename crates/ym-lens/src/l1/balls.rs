@@ -313,8 +313,8 @@ fn refine(inp: &BallInput, c: &Candidate) -> Option<Refined> {
             f64::from(*v)
         };
         let floor = p90 * std::f64::consts::FRAC_1_SQRT_2;
-        let flat = inside.iter().filter(|v| f64::from(**v) >= floor).count() as f64
-            / inside.len() as f64;
+        let flat =
+            inside.iter().filter(|v| f64::from(**v) >= floor).count() as f64 / inside.len() as f64;
         if flat < FLAT_FRACTION {
             return None;
         }
@@ -338,6 +338,7 @@ fn refine(inp: &BallInput, c: &Candidate) -> Option<Refined> {
 }
 
 /// Solves the 3 x 3 system `m x = v` by Gaussian elimination with partial pivoting; `None` when singular.
+#[allow(clippy::needless_range_loop)] // indices of a 3 x 3 matrix read better as indices
 fn solve3(mut m: [[f64; 3]; 3], mut v: [f64; 3]) -> Option<[f64; 3]> {
     for col in 0..3 {
         let mut piv = col;
@@ -371,6 +372,7 @@ fn solve3(mut m: [[f64; 3]; 3], mut v: [f64; 3]) -> Option<[f64; 3]> {
 }
 
 /// Least-squares plane `a + b dx + c dy` through `samples = (dx, dy, value)`.
+#[allow(clippy::needless_range_loop)] // indices of a 3 x 3 matrix read better as indices
 fn fit_plane(samples: &[(f64, f64, f64)]) -> Option<[f64; 3]> {
     let mut m = [[0.0f64; 3]; 3];
     let mut v = [0.0f64; 3];

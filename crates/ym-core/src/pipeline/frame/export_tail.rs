@@ -491,7 +491,8 @@ impl Renderer {
         let out = (ow as usize, oh as usize);
         // The reservation is the working set of one tile, not the picture: the frame is on the
         // device, a slab at a time (the CPU path reserves `fw * fh * 12` bytes for its host frame).
-        let halo_allowance = 160usize;
+        // The raw stages' halo, and the lens's (0 without a lens).
+        let halo_allowance = 160usize + job.lens_halo()?;
         let per_px = 12u64 * 12; // twelve f32 planes of working set per tile pixel, a generous bound
         let working = ((tile + halo_allowance) as u64).pow(2) * per_px;
         let frame_extra = job.frame()?.extra_bytes() as u64;
@@ -546,7 +547,7 @@ impl Renderer {
                 let tw = tile.min(fw - ox);
                 if let Some((x0, y0, x1, y1)) = grid.source_bounds(ox, oy, tw, th, 3) {
                     let rect = Rect::new(x0, y0, x1 - x0, y1 - y0);
-                    let region = match job.region_resident(rect) {
+                    let region = match job.lens_region_resident(rect) {
                         Ok(region) => region,
                         Err(RenderError::Gpu(reason)) => {
                             // The raw chain failed on the device; the photo goes to the CPU, all of

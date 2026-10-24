@@ -43,7 +43,7 @@ describe("the Tone card on the Look tab", () => {
   it("sits under the Look card with Temperature, Contrast and Saturation in that order, and no Tint", async () => {
     await setup();
     const regions = screen.getAllByRole("region");
-    expect(regions.map((r) => within(r).getAllByRole("heading", { level: 3 })[0]?.textContent)).toEqual(["Automatic", "Look", "Tone"]);
+    expect(regions.map((r) => within(r).getAllByRole("heading", { level: 3 })[0]?.textContent)).toEqual(["Automatic", "Look", "Tone", "Lens"]);
     const labels = tone()
       .getAllByRole("slider")
       .map((s: HTMLElement) => sliderName(s));
