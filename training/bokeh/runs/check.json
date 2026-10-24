@@ -1,0 +1,17 @@
+{
+ "photos_on_volume": 20000,
+ "manifest_rows": 20000,
+ "pretraining_manifest": true,
+ "pretraining_arrays": 48,
+ "sampled": 40,
+ "photos_with_tiles": 32,
+ "tiles": 61,
+ "pass_rate": 0.8,
+ "seconds_per_photo": 0.257,
+ "mean_jpeg_kb": 309.1,
+ "open_images": {
+  "segmentation_csv": 206,
+  "mask_archive_0": 206
+ },
+ "seconds": 11.0
+}
