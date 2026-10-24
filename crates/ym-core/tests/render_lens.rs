@@ -1024,116 +1024,90 @@ fn a_lens_render_is_the_same_bytes_whatever_was_looked_at_first() {
 // Timing (not part of the suite)
 // ---------------------------------------------------------------------------------------------
 
-/// The cost of the lens on a 24 MP photo on the CPU, printed as it goes. Run by hand:
-/// `cargo test -p ym-core --test render_lens -- --ignored --nocapture lens_timing_on_24_megapixels`.
-/// The numbers depend on the machine's load; the test asserts nothing about them.
+/// Prints one timing line: the wall time and, when the request's report is given, what it ran and how
+/// the time divides between the raw stages and the lens.
+fn say_timing(what: &str, t: std::time::Instant, report: Option<&ym_core::pipeline::RenderReport>) {
+    let _ = writeln!(
+        std::io::stderr(),
+        "[timing] {what}: {:.0} ms{}",
+        t.elapsed().as_secs_f64() * 1000.0,
+        report.map_or(String::new(), |r| format!(
+            " (lens planes {}, groups {}, tiles {}, lens {:.0} ms; raw groups {}, tiles {}, raw {:.0} ms)",
+            r.runs.lens_planes,
+            r.runs.lens_groups,
+            r.runs.lens_tiles,
+            r.timings.lens_ms,
+            r.runs.raw_groups,
+            r.runs.tiles,
+            r.timings.raw_ms
+        ))
+    );
+}
+
+/// The cost of the lens on the views of a 24 MP photo on the CPU, printed as it goes. Run by hand:
+/// `cargo test -p ym-core --test render_lens -- --ignored --nocapture lens_timing_of_the_views_on_24_megapixels`.
+/// The numbers depend on the machine's load and on the profile the tests are built with; the test
+/// asserts nothing about them.
 #[test]
 #[ignore = "takes minutes: a 24 MP photo on the CPU"]
-fn lens_timing_on_24_megapixels() {
-    let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
-    let say = |what: &str, t: std::time::Instant, runs: Option<&StageRuns>| {
-        let _ = writeln!(
-            std::io::stderr(),
-            "[timing] {what}: {:.0} ms{}",
-            ms(t),
-            runs.map_or(String::new(), |r| format!(
-                " (lens planes {}, groups {}, tiles {}; raw groups {}, tiles {})",
-                r.lens_planes, r.lens_groups, r.lens_tiles, r.raw_groups, r.tiles
-            ))
-        );
-    };
+fn lens_timing_of_the_views_on_24_megapixels() {
     let t = std::time::Instant::now();
     let d = developed(6000, 4000);
-    say("the 24 MP synthetic file, written and developed", t, None);
+    say_timing("the 24 MP synthetic file, written and developed", t, None);
     let src = d.source();
     let lensed = with_lens(&src, VINTAGE);
     let r = cpu();
     let fit = cell(1500.0, 1000.0);
-
-    let t = std::time::Instant::now();
-    let f = fresh_frame(&r, &src, &fit);
-    say(
-        "fit view, no lens (cold: the raw group at 1/4)",
-        t,
-        Some(&f.report.runs),
-    );
-    let t = std::time::Instant::now();
-    let f = fresh_frame(&r, &lensed, &fit);
-    say(
+    let mut view = |what: &str, src: &PhotoSource, state: &ViewportState| {
+        let t = std::time::Instant::now();
+        let f = fresh_frame(&r, src, state);
+        say_timing(what, t, Some(&f.report));
+    };
+    view("fit view, no lens (cold: the raw group at 1/4)", &src, &fit);
+    view(
         "fit view, Vintage 60/50/50, first (planes + lens group)",
-        t,
-        Some(&f.report.runs),
+        &lensed,
+        &fit,
     );
-    let moved = with_lens(
+    let flares = with_lens(
         &src,
         LensSettings {
             flares: 61.0,
             ..VINTAGE
         },
     );
-    let t = std::time::Instant::now();
-    let f = fresh_frame(&r, &moved, &fit);
-    say(
-        "fit view, a Flares move (lens group)",
-        t,
-        Some(&f.report.runs),
-    );
-    let moved = with_lens(
+    view("fit view, a Flares move (lens group)", &flares, &fit);
+    let edges = with_lens(
         &src,
         LensSettings {
             edges: 51.0,
             ..VINTAGE
         },
     );
-    let t = std::time::Instant::now();
-    let f = fresh_frame(&r, &moved, &fit);
-    say(
-        "fit view, an Edges move (lens group)",
-        t,
-        Some(&f.report.runs),
-    );
-    let t = std::time::Instant::now();
-    let f = fresh_frame(&r, &src, &fit);
-    say(
-        "fit view, back to no lens (cached raw group)",
-        t,
-        Some(&f.report.runs),
-    );
-
+    view("fit view, an Edges move (lens group)", &edges, &fit);
+    view("fit view, back to no lens (cached raw group)", &src, &fit);
     let st = at_100_percent(1500.0, 1000.0, (6000, 4000));
-    let t = std::time::Instant::now();
-    let f = fresh_frame(&r, &src, &st);
-    say(
-        "100 % view of 1500 x 1000, no lens (raw tiles)",
-        t,
-        Some(&f.report.runs),
-    );
-    let t = std::time::Instant::now();
-    let f = fresh_frame(&r, &lensed, &st);
-    say(
+    view("100 % view of 1500 x 1000, no lens (raw tiles)", &src, &st);
+    view(
         "100 % view, Vintage 60/50/50 (lens tiles; raw tiles cached)",
-        t,
-        Some(&f.report.runs),
+        &lensed,
+        &st,
     );
-    let moved = with_lens(
-        &src,
-        LensSettings {
-            flares: 61.0,
-            ..VINTAGE
-        },
-    );
-    let t = std::time::Instant::now();
-    let f = fresh_frame(&r, &moved, &st);
-    say(
-        "100 % view, a Flares move (lens tiles)",
-        t,
-        Some(&f.report.runs),
-    );
+    view("100 % view, a Flares move (lens tiles)", &flares, &st);
+}
 
+/// The cost of an export with and without the lens on a 24 MP photo on the CPU (see
+/// [`lens_timing_of_the_views_on_24_megapixels`]).
+#[test]
+#[ignore = "takes minutes: a 24 MP photo on the CPU"]
+fn lens_timing_of_the_export_on_24_megapixels() {
+    let d = developed(6000, 4000);
+    let src = d.source();
+    let r = cpu();
     let t = std::time::Instant::now();
     let e = export(&r, &src);
-    say("export, no lens", t, Some(&e.report.runs));
+    say_timing("export, no lens", t, Some(&e.report));
     let t = std::time::Instant::now();
-    let e = export(&r, &lensed);
-    say("export, Vintage 60/50/50", t, Some(&e.report.runs));
+    let e = export(&r, &with_lens(&src, VINTAGE));
+    say_timing("export, Vintage 60/50/50", t, Some(&e.report));
 }
