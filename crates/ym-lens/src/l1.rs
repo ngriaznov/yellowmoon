@@ -25,7 +25,13 @@ impl<'a> Stage<'a> {
 }
 
 /// Context L1 needs around a rectangle of a `fw x fh` frame at scale `k`.
-pub(crate) fn halo(_plan: &LensPlan, _planes: &LensPlanes, _k: usize, _fw: usize, _fh: usize) -> usize {
+pub(crate) fn halo(
+    _plan: &LensPlan,
+    _planes: &LensPlanes,
+    _k: usize,
+    _fw: usize,
+    _fh: usize,
+) -> usize {
     0
 }
 

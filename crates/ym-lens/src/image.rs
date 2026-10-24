@@ -82,7 +82,14 @@ impl PixelRect {
 
 impl std::fmt::Display for PixelRect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}, {}) x [{}, {})", self.x, self.x1(), self.y, self.y1())
+        write!(
+            f,
+            "[{}, {}) x [{}, {})",
+            self.x,
+            self.x1(),
+            self.y,
+            self.y1()
+        )
     }
 }
 

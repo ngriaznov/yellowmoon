@@ -424,13 +424,19 @@ impl LensLibrary {
         if let Some(missing) = LensKind::ALL.iter().find(|k| !kinds.contains(k)) {
             return Err(LensError::invalid(
                 "index.json",
-                format!("lens {:?} is missing; all seven are required", missing.as_str()),
+                format!(
+                    "lens {:?} is missing; all seven are required",
+                    missing.as_str()
+                ),
             ));
         }
         if !is_plain_relative(&index.attachment) {
             return Err(LensError::invalid(
                 "index.json",
-                format!("attachment {:?} is not a relative file name", index.attachment),
+                format!(
+                    "attachment {:?} is not a relative file name",
+                    index.attachment
+                ),
             ));
         }
 
@@ -505,24 +511,31 @@ struct Files {
 impl Files {
     fn open(dir: &Path) -> Result<Self, LensError> {
         let path = dir.join("SHA256SUMS");
-        let text = std::fs::read_to_string(&path).map_err(|source| LensError::Io { path, source })?;
+        let text =
+            std::fs::read_to_string(&path).map_err(|source| LensError::Io { path, source })?;
         let mut sums = BTreeMap::new();
         for (n, line) in text.lines().enumerate() {
             let line = line.trim_end();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let bad = |why: &str| LensError::invalid("SHA256SUMS", format!("line {}: {why}", n + 1));
+            let bad =
+                |why: &str| LensError::invalid("SHA256SUMS", format!("line {}: {why}", n + 1));
             let (hash, rest) = line
                 .split_once(' ')
                 .ok_or_else(|| bad("expected \"<sha256>  <file>\""))?;
             // `sha256sum` writes "<hash>  <file>" (text) or "<hash> *<file>" (binary).
-            let name = rest.strip_prefix(' ').or_else(|| rest.strip_prefix('*')).unwrap_or(rest);
+            let name = rest
+                .strip_prefix(' ')
+                .or_else(|| rest.strip_prefix('*'))
+                .unwrap_or(rest);
             if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err(bad("the digest is not 64 hexadecimal digits"));
             }
             if !is_plain_relative(name) {
-                return Err(bad("the file name is not a relative path inside the folder"));
+                return Err(bad(
+                    "the file name is not a relative path inside the folder",
+                ));
             }
             if sums
                 .insert(name.to_owned(), hash.to_ascii_lowercase())
@@ -665,7 +678,10 @@ impl Check<'_> {
         self.list(what, v, len)?;
         for (i, x) in v.iter().enumerate() {
             if *x < 0.0 {
-                return Err(self.err(&format!("{what}[{i}]"), format!("must not be negative, found {x}")));
+                return Err(self.err(
+                    &format!("{what}[{i}]"),
+                    format!("must not be negative, found {x}"),
+                ));
             }
         }
         Ok(())
@@ -699,7 +715,10 @@ fn load_lens(files: &mut Files, kind: LensKind) -> Result<LensData, LensError> {
     let c = Check { file: &json_name };
 
     if raw.id != kind.as_str() {
-        return Err(c.err("id", format!("is {:?}, the folder is {:?}", raw.id, kind.as_str())));
+        return Err(c.err(
+            "id",
+            format!("is {:?}, the folder is {:?}", raw.id, kind.as_str()),
+        ));
     }
     if raw.version == 0 {
         return Err(c.err("version", "must be an integer from 1"));
@@ -713,7 +732,10 @@ fn load_lens(files: &mut Files, kind: LensKind) -> Result<LensData, LensError> {
     c.statement(&raw.provenance.statement)?;
     let d = &raw.provenance.design;
     if d.kind.trim().is_empty() || d.source.trim().is_empty() || d.format.trim().is_empty() {
-        return Err(c.err("provenance.design", "type, source and format must not be empty"));
+        return Err(c.err(
+            "provenance.design",
+            "type, source and format must not be empty",
+        ));
     }
     c.greater("provenance.design.focal_mm", d.focal_mm, 0.0)?;
     c.greater("provenance.design.f_number", d.f_number, 0.0)?;
@@ -729,9 +751,16 @@ fn load_lens(files: &mut Files, kind: LensKind) -> Result<LensData, LensError> {
     }
     c.list("field.psf_half_width", &f.psf_half_width, RADII)?;
     if let Some(w) = f.psf_half_width.iter().find(|w| **w <= 0.0) {
-        return Err(c.err("field.psf_half_width", format!("must be positive, found {w}")));
+        return Err(c.err(
+            "field.psf_half_width",
+            format!("must be positive, found {w}"),
+        ));
     }
-    c.list("field.relative_illumination", &f.relative_illumination, RADII)?;
+    c.list(
+        "field.relative_illumination",
+        &f.relative_illumination,
+        RADII,
+    )?;
     if f.relative_illumination[0] != 1.0 {
         return Err(c.err("field.relative_illumination", "T(0) must be 1"));
     }
@@ -744,7 +773,10 @@ fn load_lens(files: &mut Files, kind: LensKind) -> Result<LensData, LensError> {
         }
     }
     if f.relative_illumination.windows(2).any(|w| w[1] > w[0]) {
-        return Err(c.err("field.relative_illumination", "must not rise towards the edge"));
+        return Err(c.err(
+            "field.relative_illumination",
+            "must not rise towards the edge",
+        ));
     }
     c.finite("field.distortion.k1", f.distortion.k1)?;
     c.finite("field.distortion.k2", f.distortion.k2)?;
@@ -789,7 +821,11 @@ fn load_lens(files: &mut Files, kind: LensKind) -> Result<LensData, LensError> {
         f64::MIN_POSITIVE,
         STARBURST_MAX_RADIUS,
     )?;
-    c.greater("flare.starburst.f_number_full", fl.starburst.f_number_full, 0.0)?;
+    c.greater(
+        "flare.starburst.f_number_full",
+        fl.starburst.f_number_full,
+        0.0,
+    )?;
 
     // Tables.
     let tables_name = format!("{kind}/tables.safetensors");
@@ -868,7 +904,12 @@ fn read_tables(file: &str, bytes: &[u8]) -> Result<(Vec<f32>, Vec<f32>), LensErr
         "psf",
         &[RADII, PSF_WAVELENGTHS, PSF_SIZE, PSF_SIZE],
     )?;
-    let spikes = read_tensor(file, &st, "spikes", &[PSF_WAVELENGTHS, SPIKE_SIZE, SPIKE_SIZE])?;
+    let spikes = read_tensor(
+        file,
+        &st,
+        "spikes",
+        &[PSF_WAVELENGTHS, SPIKE_SIZE, SPIKE_SIZE],
+    )?;
     Ok((psf, spikes))
 }
 
@@ -892,7 +933,10 @@ fn read_tensor(
     if view.shape() != shape {
         return Err(LensError::invalid(
             file,
-            format!("tensor {name:?} has shape {:?}, expected {shape:?}", view.shape()),
+            format!(
+                "tensor {name:?} has shape {:?}, expected {shape:?}",
+                view.shape()
+            ),
         ));
     }
     let data: Vec<f32> = view
@@ -902,7 +946,10 @@ fn read_tensor(
         .collect();
     let slice = shape[shape.len() - 1] * shape[shape.len() - 2];
     if data.len() != shape.iter().product::<usize>() {
-        return Err(LensError::invalid(file, format!("tensor {name:?} is truncated")));
+        return Err(LensError::invalid(
+            file,
+            format!("tensor {name:?} is truncated"),
+        ));
     }
     for (i, s) in data.chunks_exact(slice).enumerate() {
         let mut sum = 0.0f64;

@@ -10,7 +10,13 @@ use crate::plan::LensPlan;
 use crate::planes::LensPlanes;
 
 /// Context L3 needs around a rectangle of a `fw x fh` frame at scale `k` (its core is gathered per tile).
-pub(crate) fn halo(_plan: &LensPlan, _planes: &LensPlanes, _k: usize, _fw: usize, _fh: usize) -> usize {
+pub(crate) fn halo(
+    _plan: &LensPlan,
+    _planes: &LensPlanes,
+    _k: usize,
+    _fw: usize,
+    _fh: usize,
+) -> usize {
     0
 }
 

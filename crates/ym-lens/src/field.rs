@@ -19,7 +19,10 @@
 //! that table x points radially outwards and table y anticlockwise, and scaled to `+-omega`. Each cell is a
 //! point mass at its centre, read from the input by bilinear interpolation. Because the channel tables have
 //! their own centroids, the channels are shifted against each other: that is the lateral colour. With the
-//! attachment the axis part of each channel's centroid offset is multiplied by `1 + h (q - 1)`.
+//! attachment the axis part of each channel's centroid offset is multiplied by `1 + h (q - 1)`: after the
+//! gather, channel `c` is read `h (q - 1)` times its centroid offset's axis part further along the axis, by
+//! linear interpolation between neighbouring pixels (to first order the same as translating the kernel, and a
+//! single gather instead of three). The gain is applied last.
 //!
 //! A kernel with `omega` below half a pixel is a copy: the pixel is the input pixel times the gain.
 //!
@@ -36,7 +39,9 @@
 
 use rayon::prelude::*;
 
-use crate::consts::{COPY_BELOW_PX, MAX_TAPS_SIDE, PSF_SIZE, PSF_WAVELENGTHS, RADII, TAP_SPACING_MAX_PX, W_MAX};
+use crate::consts::{
+    COPY_BELOW_PX, MAX_TAPS_SIDE, PSF_SIZE, PSF_WAVELENGTHS, RADII, TAP_SPACING_MAX_PX, W_MAX,
+};
 use crate::data::LensData;
 use crate::error::LensError;
 use crate::image::{ImageRef, PixelRect};
@@ -232,8 +237,10 @@ pub(crate) struct Geometry<'a> {
     opts: Options,
     /// Most mip levels any pixel of the frame can ask for.
     lmax: u32,
-    /// Largest context any pixel reads, in pixels.
-    halo: usize,
+    /// Context the gather of a pixel reads, in pixels.
+    gather_halo: usize,
+    /// Pixels the fringe shift reads beyond the output (0 without the attachment's fringe).
+    pad: usize,
 }
 
 /// One pixel's kernel parameters.
@@ -300,16 +307,22 @@ impl<'a> Geometry<'a> {
             lmax = lmax.max(level_for(o.min(omega_max), opts.spacing_max));
             o += 0.25;
         }
-        let halo = if omega_max < COPY_BELOW_PX {
-            0
+        let (gather_halo, pad) = if omega_max < COPY_BELOW_PX {
+            (0, 0)
         } else {
-            // A tap lies within sqrt(2) omega of the pixel centre, plus the fringe shift, which is at most
-            // (boost) times the channel's centroid offset; it reads texels covering P +- 1.5 texels at the
-            // coarsest level.
-            let reach =
-                omega_max * (std::f64::consts::SQRT_2 + (fringe - 1.0).max(0.0) * tables.centroid_max);
+            // A tap lies within sqrt(2) omega of the pixel centre; it reads texels covering P +- 1.5 texels at
+            // the coarsest level.
+            let reach = omega_max * std::f64::consts::SQRT_2;
             let margin = 1.5 * f64::from(1u32 << lmax);
-            reach.ceil() as usize + margin.ceil() as usize + 3
+            let gather_halo = reach.ceil() as usize + margin.ceil() as usize + 3;
+            // The fringe shift is the boost times the centroid offset, at most `centroid_max` omega.
+            let shift = (fringe - 1.0).max(0.0) * tables.centroid_max * omega_max;
+            let pad = if shift > 0.0 {
+                shift.ceil() as usize + 2
+            } else {
+                0
+            };
+            (gather_halo, pad)
         };
         Some(Geometry {
             tables,
@@ -323,13 +336,14 @@ impl<'a> Geometry<'a> {
             fringe,
             opts,
             lmax,
-            halo,
+            gather_halo,
+            pad,
         })
     }
 
     /// Pixels of context an output rectangle needs around it.
     pub(crate) fn halo(&self) -> usize {
-        self.halo
+        self.gather_halo + self.pad
     }
 
     /// The kernel of the pixel at integer frame position `(i, j)`.
@@ -350,7 +364,11 @@ impl<'a> Geometry<'a> {
         let softness = 1.0 + self.side * xa * xa;
         let omega = (self.e * softness * w).min(W_MAX) * self.h;
         let rr = (u * u + v * v).sqrt();
-        let (cs, sn) = if rr > 1e-12 { (u / rr, v / rr) } else { (1.0, 0.0) };
+        let (cs, sn) = if rr > 1e-12 {
+            (u / rr, v / rr)
+        } else {
+            (1.0, 0.0)
+        };
         PixelKernel {
             gain,
             omega: if omega < COPY_BELOW_PX { 0.0 } else { omega },
@@ -366,23 +384,26 @@ impl<'a> Geometry<'a> {
     fn centroid(&self, k: &PixelKernel, c: usize) -> [f64; 2] {
         let a = self.tables.centroid[k.seg][c];
         let b = self.tables.centroid[k.seg + 1][c];
-        [(1.0 - k.t) * a[0] + k.t * b[0], (1.0 - k.t) * a[1] + k.t * b[1]]
+        [
+            (1.0 - k.t) * a[0] + k.t * b[0],
+            (1.0 - k.t) * a[1] + k.t * b[1],
+        ]
     }
 
-    /// The centroid offset of channel `c` in pixels (frame x, y) including the attachment's fringe boost.
+    /// The centroid offset of channel `c` in pixels (frame x, y), without the attachment's fringe boost.
     #[cfg(test)]
     pub(crate) fn centroid_px(&self, k: &PixelKernel, c: usize) -> [f64; 2] {
         let [cx, cy] = self.centroid(k, c);
         // Table x is radial (cs, sn), table y is tangential (sn, -cs).
-        let dx = k.omega * (cx * k.cs + cy * k.sn);
-        let dy = k.omega * (cx * k.sn - cy * k.cs);
-        let s = self.fringe_shifts(k)[c];
-        [dx + s[0], dy + s[1]]
+        [
+            k.omega * (cx * k.cs + cy * k.sn),
+            k.omega * (cx * k.sn - cy * k.cs),
+        ]
     }
 
     /// The taps of channel `c` of a pixel, as `(dx, dy, weight)` with offsets from the pixel centre in
-    /// pixels, for tests and reference checks. Positions and weights are those the gather uses at mip
-    /// level 0 (`n` is the level-0 tap count).
+    /// pixels, for tests and reference checks. Positions and weights are those the gather uses at its mip
+    /// level (the tap count `n` is that level's).
     #[cfg(test)]
     pub(crate) fn taps(&self, k: &PixelKernel, c: usize) -> Vec<(f64, f64, f64)> {
         if k.omega == 0.0 {
@@ -390,7 +411,6 @@ impl<'a> Geometry<'a> {
         }
         let level = level_for(k.omega, self.opts.spacing_max).min(self.lmax);
         let n = taps_for(k.omega / f64::from(1u32 << level));
-        let shift = self.fringe_shifts(k)[c];
         let (lo, hi) = (self.tables.table(n, k.seg), self.tables.table(n, k.seg + 1));
         let mut out = Vec::with_capacity(n * n);
         for b in 0..n {
@@ -398,32 +418,34 @@ impl<'a> Geometry<'a> {
                 let (tx, ty) = (cell_centre(a, n), cell_centre(b, n));
                 let ox = k.omega * (tx * k.cs + ty * k.sn);
                 let oy = k.omega * (tx * k.sn - ty * k.cs);
-                let q = (b * n + a) * 3 + c;
-                out.push((ox + shift[0], oy + shift[1], (1.0 - k.t) * lo[q] + k.t * hi[q]));
+                let q = b * n + a;
+                out.push((
+                    ox,
+                    oy,
+                    (1.0 - k.t) * f64::from(lo[q][c]) + k.t * f64::from(hi[q][c]),
+                ));
             }
         }
         out
     }
 
-    /// Per-channel extra shift in pixels (frame x, y) from the fringe boost: the boost times the axis part of
-    /// the channel's centroid offset.
-    fn fringe_shifts(&self, k: &PixelKernel) -> [[f64; 2]; 3] {
+    /// The shift, in pixels along the axis, at which channel `c` is read after the gather: the boost
+    /// `h (q - 1)` times the axis part of the channel's centroid offset (0 for a copy).
+    pub(crate) fn fringe_shift(&self, k: &PixelKernel, c: usize) -> f64 {
         let boost = self.fringe - 1.0;
-        let mut s = [[0.0; 2]; 3];
         if boost == 0.0 || k.omega == 0.0 {
-            return s;
+            return 0.0;
         }
-        for (c, sc) in s.iter_mut().enumerate() {
-            let a = self.tables.centroid[k.seg][c];
-            let b = self.tables.centroid[k.seg + 1][c];
-            let cx = (1.0 - k.t) * a[0] + k.t * b[0];
-            let cy = (1.0 - k.t) * a[1] + k.t * b[1];
-            match self.axis {
-                Axis::X => sc[0] = boost * k.omega * (cx * k.cs + cy * k.sn),
-                Axis::Y => sc[1] = boost * k.omega * (cx * k.sn - cy * k.cs),
+        let a = self.tables.centroid[k.seg][c];
+        let b = self.tables.centroid[k.seg + 1][c];
+        let cx = (1.0 - k.t) * a[0] + k.t * b[0];
+        let cy = (1.0 - k.t) * a[1] + k.t * b[1];
+        boost
+            * k.omega
+            * match self.axis {
+                Axis::X => cx * k.cs + cy * k.sn,
+                Axis::Y => cx * k.sn - cy * k.cs,
             }
-        }
-        s
     }
 }
 
@@ -470,10 +492,14 @@ impl Pyramid {
         let planes = [input.plane(0), input.plane(1), input.plane(2)];
         let mut base = vec![[0.0f32; 4]; w * h];
         base.par_chunks_mut(w).enumerate().for_each(|(row, d)| {
-            let y = (y0 + row as i64).clamp(0, fh - 1).clamp(iy0, iy0 + ih as i64 - 1);
+            let y = (y0 + row as i64)
+                .clamp(0, fh - 1)
+                .clamp(iy0, iy0 + ih as i64 - 1);
             let at = (y - iy0) as usize * iw;
             for (col, px) in d.iter_mut().enumerate() {
-                let x = (x0 + col as i64).clamp(0, fw - 1).clamp(ix0, ix0 + iw as i64 - 1);
+                let x = (x0 + col as i64)
+                    .clamp(0, fw - 1)
+                    .clamp(ix0, ix0 + iw as i64 - 1);
                 let i = at + (x - ix0) as usize;
                 *px = [planes[0][i], planes[1][i], planes[2][i], 0.0];
             }
@@ -577,7 +603,7 @@ pub(crate) fn apply(
     let Some(geo) = Geometry::new(plan, fw, fh, opts) else {
         return copy_rect(input, out);
     };
-    let need = out.grown(geo.halo, fw, fh);
+    let need = out.grown(geo.halo(), fw, fh);
     if !input.rect().contains(&need) {
         return Err(LensError::InputTooSmall {
             needed: need.to_string(),
@@ -587,20 +613,53 @@ pub(crate) fn apply(
     if out.w == 0 || out.h == 0 {
         return Ok(Vec::new());
     }
-    // The pyramid covers the output grown by the halo, even beyond the frame (replicated).
-    let halo = geo.halo as i64;
+    // Pass 1: the gather over the output grown by the fringe's reach. The pyramid covers that grown by the
+    // gather's halo, even beyond the frame (replicated).
+    let gathered_rect = out.grown(geo.pad, fw, fh);
+    let halo = geo.gather_halo as i64;
     let region = [
-        out.x as i64 - halo,
-        out.y as i64 - halo,
-        out.x1() as i64 + halo,
-        out.y1() as i64 + halo,
+        gathered_rect.x as i64 - halo,
+        gathered_rect.y as i64 - halo,
+        gathered_rect.x1() as i64 + halo,
+        gathered_rect.y1() as i64 + halo,
     ];
     let pyramid = Pyramid::build(input, region, geo.lmax);
+    let gathered = gather_region(&geo, &pyramid, gathered_rect);
 
-    let plane = out.w * out.h;
+    // Pass 2: the fringe shift of each channel and the gain.
+    Ok(finish(&geo, &gathered, gathered_rect, out))
+}
+
+/// The gather (without the gain) of every pixel of `rect`: planar, `3 * rect.w * rect.h` samples.
+fn gather_region(geo: &Geometry, pyr: &Pyramid, rect: PixelRect) -> Vec<f32> {
+    let plane = rect.w * rect.h;
     let mut result = vec![0.0f32; 3 * plane];
     let (r, rest) = result.split_at_mut(plane);
     let (g, b) = rest.split_at_mut(plane);
+    r.par_chunks_mut(rect.w)
+        .zip(g.par_chunks_mut(rect.w))
+        .zip(b.par_chunks_mut(rect.w))
+        .enumerate()
+        .for_each(|(row, ((rr, gr), br))| {
+            let j = rect.y + row;
+            for col in 0..rect.w {
+                let px = gather(geo, pyr, rect.x + col, j);
+                rr[col] = px[0] as f32;
+                gr[col] = px[1] as f32;
+                br[col] = px[2] as f32;
+            }
+        });
+    result
+}
+
+/// The output: every channel of `out` read from `gathered` (the gather over `rect`) at its fringe shift along
+/// the axis, times the gain.
+fn finish(geo: &Geometry, gathered: &[f32], rect: PixelRect, out: PixelRect) -> Vec<f32> {
+    let (gp, op) = (rect.w * rect.h, out.w * out.h);
+    let (fw, fh) = (geo.fw as i64, geo.fh as i64);
+    let mut result = vec![0.0f32; 3 * op];
+    let (r, rest) = result.split_at_mut(op);
+    let (g, b) = rest.split_at_mut(op);
     r.par_chunks_mut(out.w)
         .zip(g.par_chunks_mut(out.w))
         .zip(b.par_chunks_mut(out.w))
@@ -608,13 +667,41 @@ pub(crate) fn apply(
         .for_each(|(row, ((rr, gr), br))| {
             let j = out.y + row;
             for col in 0..out.w {
-                let px = pixel(&geo, &pyramid, out.x + col, j);
-                rr[col] = px[0] as f32;
-                gr[col] = px[1] as f32;
-                br[col] = px[2] as f32;
+                let i = out.x + col;
+                let k = geo.pixel(i, j);
+                let mut px = [0.0f64; 3];
+                for (c, v) in px.iter_mut().enumerate() {
+                    let plane = &gathered[c * gp..(c + 1) * gp];
+                    let shift = geo.fringe_shift(&k, c);
+                    *v = if shift == 0.0 {
+                        f64::from(plane[(j - rect.y) * rect.w + (i - rect.x)])
+                    } else {
+                        // Linear interpolation between the two pixels around i + shift (or j + shift).
+                        let (along, lo, hi, first, last) = match geo.axis {
+                            Axis::X => (i, rect.x, rect.x1(), 0, fw),
+                            Axis::Y => (j, rect.y, rect.y1(), 0, fh),
+                        };
+                        let pos = along as f64 + shift;
+                        let i0 = floor_i64(pos);
+                        let f = pos - i0 as f64;
+                        let at = |q: i64| -> f64 {
+                            let q =
+                                q.clamp(first, last - 1).clamp(lo as i64, hi as i64 - 1) as usize;
+                            f64::from(match geo.axis {
+                                Axis::X => plane[(j - rect.y) * rect.w + (q - rect.x)],
+                                Axis::Y => plane[(q - rect.y) * rect.w + (i - rect.x)],
+                            })
+                        };
+                        let (a, bb) = (at(i0), at(i0 + 1));
+                        a + f * (bb - a)
+                    };
+                }
+                rr[col] = (px[0] * k.gain) as f32;
+                gr[col] = (px[1] * k.gain) as f32;
+                br[col] = (px[2] * k.gain) as f32;
             }
         });
-    Ok(result)
+    result
 }
 
 /// The `out` rectangle of `input`, copied.
@@ -636,19 +723,15 @@ pub(crate) fn copy_rect(input: &ImageRef, out: PixelRect) -> Result<Vec<f32>, Le
     Ok(result)
 }
 
-/// One output pixel (all three channels), already multiplied by the gain.
-fn pixel(geo: &Geometry, pyr: &Pyramid, i: usize, j: usize) -> [f64; 3] {
+/// One pixel's gather (all three channels), without the gain.
+fn gather(geo: &Geometry, pyr: &Pyramid, i: usize, j: usize) -> [f64; 3] {
     let k = geo.pixel(i, j);
     let base_lv = &pyr.levels[0];
     if k.omega == 0.0 {
         // A copy: read the input pixel itself.
         let at = (j as i64 - base_lv.by0) as usize * base_lv.w + (i as i64 - base_lv.bx0) as usize;
         let px = base_lv.data[at];
-        return [
-            f64::from(px[0]) * k.gain,
-            f64::from(px[1]) * k.gain,
-            f64::from(px[2]) * k.gain,
-        ];
+        return [f64::from(px[0]), f64::from(px[1]), f64::from(px[2])];
     }
     let (cx, cy) = (i as f64 + 0.5, j as f64 + 0.5);
     let level = level_for(k.omega, geo.opts.spacing_max).min(geo.lmax);
@@ -666,19 +749,14 @@ fn pixel(geo: &Geometry, pyr: &Pyramid, i: usize, j: usize) -> [f64; 3] {
     let by = to_texel(cy + first * (k.sn - k.cs), lv.by0);
     let (ea_x, ea_y) = (fix(step * k.cs * inv), fix(step * k.sn * inv));
     let (eb_x, eb_y) = (fix(step * k.sn * inv), fix(-step * k.cs * inv));
-    let shifts = geo.fringe_shifts(&k);
-    let shifted = shifts.iter().any(|s| s[0] != 0.0 || s[1] != 0.0);
-    let shift_fix: [[i64; 2]; 3] =
-        std::array::from_fn(|c| [fix(shifts[c][0] * inv), fix(shifts[c][1] * inv)]);
 
     // The positions the taps take: base + col ea + row eb, col and row in 0..n. Do they stay inside the
     // level? (They do whenever the input covers the halo; the clamped path keeps a short input safe.)
     let last = (n - 1) as i64;
-    let reach = shift_fix.iter().flatten().map(|v| v.abs()).max().unwrap_or(0);
     let span = |b: i64, ea: i64, eb: i64| {
         (
-            b + (last * ea).min(0) + (last * eb).min(0) - reach,
-            b + (last * ea).max(0) + (last * eb).max(0) + reach,
+            b + (last * ea).min(0) + (last * eb).min(0),
+            b + (last * ea).max(0) + (last * eb).max(0),
         )
     };
     let (x_lo, x_hi) = span(bx, ea_x, eb_x);
@@ -693,59 +771,481 @@ fn pixel(geo: &Geometry, pyr: &Pyramid, i: usize, j: usize) -> [f64; 3] {
     let hi = geo.tables.table(n, k.seg + 1);
     let mut acc = [0.0f64; 3];
     let mut run = |clamp: bool| {
-        if !shifted {
-            for row in 0..n {
-                let (mut px, mut py) = (bx + row as i64 * eb_x, by + row as i64 * eb_y);
-                let wl = &lo[row * n..(row + 1) * n];
-                let wh = &hi[row * n..(row + 1) * n];
-                let mut sum = F4::splat(0.0);
-                for (a, b) in wl.iter().zip(wh) {
-                    let s = if clamp {
-                        sample::<true>(lv, px, py)
-                    } else {
-                        sample::<false>(lv, px, py)
-                    };
-                    let w = t0.mul(F4::load(a)).add(t1.mul(F4::load(b)));
-                    sum = sum.add(w.mul(s));
-                    px += ea_x;
-                    py += ea_y;
-                }
-                let sum = sum.to_array();
-                for c in 0..3 {
-                    acc[c] += f64::from(sum[c]);
-                }
+        for row in 0..n {
+            let (mut px, mut py) = (bx + row as i64 * eb_x, by + row as i64 * eb_y);
+            let wl = &lo[row * n..(row + 1) * n];
+            let wh = &hi[row * n..(row + 1) * n];
+            let mut sum = F4::splat(0.0);
+            for (a, b) in wl.iter().zip(wh) {
+                let s = if clamp {
+                    sample::<true>(lv, px, py)
+                } else {
+                    sample::<false>(lv, px, py)
+                };
+                let w = t0.mul(F4::load(a)).add(t1.mul(F4::load(b)));
+                sum = sum.add(w.mul(s));
+                px += ea_x;
+                py += ea_y;
             }
-        } else {
+            let sum = sum.to_array();
             for c in 0..3 {
-                let mut total = 0.0f64;
-                for row in 0..n {
-                    let mut px = bx + shift_fix[c][0] + row as i64 * eb_x;
-                    let mut py = by + shift_fix[c][1] + row as i64 * eb_y;
-                    let wl = &lo[row * n..(row + 1) * n];
-                    let wh = &hi[row * n..(row + 1) * n];
-                    let mut sum = F4::splat(0.0);
-                    for (a, b) in wl.iter().zip(wh) {
-                        let s = if clamp {
-                            sample::<true>(lv, px, py)
-                        } else {
-                            sample::<false>(lv, px, py)
-                        };
-                        let w = t0.mul(F4::load(a)).add(t1.mul(F4::load(b)));
-                        sum = sum.add(w.mul(s));
-                        px += ea_x;
-                        py += ea_y;
-                    }
-                    total += f64::from(sum.to_array()[c]);
-                }
-                acc[c] = total;
+                acc[c] += f64::from(sum[c]);
             }
         }
     };
     run(!inside);
-    [acc[0] * k.gain, acc[1] * k.gain, acc[2] * k.gain]
+    acc
 }
 
 /// The context `plan` needs around an output rectangle of a `fw x fh` frame (0 without field optics).
 pub(crate) fn halo(plan: &LensPlan, fw: usize, fh: usize) -> usize {
-    Geometry::new(plan, fw, fh, Options::default()).map_or(0, |g| g.halo)
+    Geometry::new(plan, fw, fh, Options::default()).map_or(0, |g| g.halo())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::OnceLock;
+
+    use super::*;
+    use crate::amounts::{LensAmounts, LensKind};
+    use crate::data::LensLibrary;
+    use crate::plan::FrameInfo;
+    use crate::test_support::write_synthetic_lenses;
+
+    fn library() -> &'static LensLibrary {
+        static LIB: OnceLock<LensLibrary> = OnceLock::new();
+        LIB.get_or_init(|| {
+            let dir = tempfile::tempdir().expect("temp dir");
+            write_synthetic_lenses(dir.path()).expect("write lenses");
+            LensLibrary::from_dir(dir.path()).expect("load lenses")
+        })
+    }
+
+    /// The A7R IV's projection: its channels differ, so the lateral colour shows.
+    fn camera() -> &'static CameraResponse {
+        static CAM: OnceLock<CameraResponse> = OnceLock::new();
+        CAM.get_or_init(|| {
+            let path = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../data/cameras/sony/Sony_ILCE-7RM4_380_780_5.json"
+            );
+            let curves = ym_color::spectral::SpectralCurves::from_path(path).expect("curves");
+            CameraResponse::from_curves(&curves).expect("projection")
+        })
+    }
+
+    fn plan(
+        kind: LensKind,
+        edges: f64,
+        anamorphic: f64,
+        w: usize,
+        h: usize,
+        axis: Axis,
+    ) -> LensPlan {
+        let amounts = LensAmounts {
+            kind,
+            flares: 0.0,
+            edges,
+            anamorphic,
+        };
+        let frame = FrameInfo {
+            width: w,
+            height: h,
+            axis,
+            f_number: None,
+            clip: [1.0; 3],
+        };
+        LensPlan::new(library(), &amounts, frame, camera()).expect("plan")
+    }
+
+    /// A deterministic image with texture at every scale: planar RGB values in 0.05 to 1.
+    fn noise(w: usize, h: usize, seed: u64) -> Vec<f32> {
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        (0..3 * w * h)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                0.05 + 0.95 * ((state >> 40) as f32 / (1u64 << 24) as f32)
+            })
+            .collect()
+    }
+
+    fn whole(w: usize, h: usize, data: &[f32]) -> ImageRef<'_> {
+        ImageRef {
+            width: w,
+            height: h,
+            x0: 0,
+            y0: 0,
+            frame_width: w,
+            frame_height: h,
+            data,
+        }
+    }
+
+    #[test]
+    fn resample_keeps_mass_and_is_exact_at_33() {
+        let src: Vec<f64> = (0..33 * 33).map(|i| 1.0 + f64::from(i % 7)).collect();
+        let total: f64 = src.iter().sum();
+        assert_eq!(resample(&src, 33), src);
+        for n in [3, 5, 9, 17] {
+            let r = resample(&src, n);
+            assert_eq!(r.len(), n * n);
+            assert!(
+                (r.iter().sum::<f64>() - total).abs() < 1e-9 * total,
+                "n = {n}"
+            );
+        }
+        // A uniform table stays uniform.
+        let flat = vec![1.0 / 1089.0; 1089];
+        for v in resample(&flat, 5) {
+            assert!((v - 1.0 / 25.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn level_choice_keeps_the_tap_budget() {
+        assert_eq!(level_for(0.6, 1.0), 0);
+        assert_eq!(level_for(8.0, 1.0), 0);
+        assert_eq!(level_for(8.5, 1.0), 0);
+        assert_eq!(level_for(8.6, 1.0), 1);
+        assert_eq!(level_for(17.0, 1.0), 1);
+        assert_eq!(level_for(17.5, 1.0), 2);
+        assert_eq!(level_for(62.0, 1.0), 3);
+        for omega in [0.7, 3.2, 9.0, 21.0, 43.0, 62.0] {
+            let l = level_for(omega, 1.0);
+            let n = taps_for(omega / f64::from(1u32 << l));
+            assert!(n <= MAX_TAPS_SIDE);
+            assert!(2.0 * omega / f64::from(1u32 << l) / n as f64 <= 1.0 + 1e-12);
+        }
+    }
+
+    #[test]
+    fn kernels_sum_to_one_and_follow_the_projected_centroids() {
+        let p = plan(LensKind::Vintage, 100.0, 0.0, 1500, 1000, Axis::X);
+        let geo = Geometry::new(&p, 1500, 1000, Options::default()).unwrap();
+        let mut checked = 0;
+        for (i, j) in [
+            (750, 500),
+            (1200, 500),
+            (300, 120),
+            (1400, 950),
+            (750, 40),
+            (60, 500),
+        ] {
+            let k = geo.pixel(i, j);
+            if k.omega == 0.0 {
+                continue;
+            }
+            checked += 1;
+            for c in 0..3 {
+                let taps = geo.taps(&k, c);
+                let sum: f64 = taps.iter().map(|t| t.2).sum();
+                assert!(
+                    (sum - 1.0).abs() < 2e-7,
+                    "sum {sum} at ({i},{j}) channel {c}"
+                );
+                let (mx, my) = (
+                    taps.iter().map(|t| t.0 * t.2).sum::<f64>(),
+                    taps.iter().map(|t| t.1 * t.2).sum::<f64>(),
+                );
+                let want = geo.centroid_px(&k, c);
+                // The area-weighted resampling moves the centroid by a small part of a cell.
+                let cell = 2.0 * k.omega
+                    / taps_for(k.omega / f64::from(1u32 << level_for(k.omega, 1.0))) as f64;
+                assert!(
+                    (mx - want[0]).abs() < 0.2 * cell + 1e-6,
+                    "x {mx} vs {} at ({i},{j}) c{c}",
+                    want[0]
+                );
+                assert!(
+                    (my - want[1]).abs() < 0.2 * cell + 1e-6,
+                    "y {my} vs {} at ({i},{j}) c{c}",
+                    want[1]
+                );
+            }
+        }
+        assert!(checked >= 4);
+    }
+
+    #[test]
+    fn red_moves_outwards_and_blue_inwards() {
+        // Lateral colour of the synthetic lenses: long wavelengths shift radially outwards.
+        let p = plan(LensKind::Vintage, 100.0, 0.0, 1500, 1000, Axis::X);
+        let geo = Geometry::new(&p, 1500, 1000, Options::default()).unwrap();
+        // Right of the centre: radial is +x. Below it: radial is +y. Up-left: radial points up-left.
+        for (i, j, sx, sy) in [
+            (1300, 500, 1.0, 0.0),
+            (750, 900, 0.0, 1.0),
+            (200, 100, -1.0, -1.0),
+        ] {
+            let k = geo.pixel(i, j);
+            let r = geo.centroid_px(&k, 0);
+            let b = geo.centroid_px(&k, 2);
+            let dot = |v: [f64; 2]| v[0] * sx + v[1] * sy;
+            assert!(dot(r) > 0.01, "red at ({i},{j}) is {r:?}");
+            assert!(dot(b) < -0.01, "blue at ({i},{j}) is {b:?}");
+        }
+    }
+
+    #[test]
+    fn table_y_is_anticlockwise() {
+        // A table whose mass sits at +y (tangential) must land anticlockwise of the radial direction on screen
+        // (y down): to the right of the centre, anticlockwise is up; below the centre it is to the right.
+        let p = plan(LensKind::Default, 100.0, 0.0, 1500, 1000, Axis::X);
+        let mut tables = p.field_tables().unwrap().clone();
+        for s in 0..SIZES {
+            let n = 3 + 2 * s;
+            let len = n * n;
+            let mut one = vec![[0.0f32; 4]; len];
+            // Cell (x = middle, y = last): table position (0, +1 - 1/n).
+            one[(n - 1) * n + n / 2] = [1.0, 1.0, 1.0, 0.0];
+            for r in 0..RADII {
+                tables.tables[s][r * len..(r + 1) * len].copy_from_slice(&one);
+            }
+        }
+        let geo = Geometry {
+            tables: &tables,
+            ..Geometry::new(&p, 1500, 1000, Options::default()).unwrap()
+        };
+        let right = geo.pixel(1300, 500);
+        let t = geo.taps(&right, 0);
+        let heavy = t.iter().max_by(|a, b| a.2.total_cmp(&b.2)).unwrap();
+        assert!(
+            heavy.1 < -0.5 * right.omega && heavy.0.abs() < 0.2 * right.omega,
+            "right: {heavy:?}"
+        );
+        let below = geo.pixel(750, 900);
+        let t = geo.taps(&below, 0);
+        let heavy = t.iter().max_by(|a, b| a.2.total_cmp(&b.2)).unwrap();
+        assert!(
+            heavy.0 > 0.5 * below.omega && heavy.1.abs() < 0.2 * below.omega,
+            "below: {heavy:?}"
+        );
+    }
+
+    /// The box-reduced image the reference reads: texel `(bx, by)` of level `l` is the mean of the aligned block.
+    fn ref_texel(img: &[f32], w: usize, h: usize, l: u32, bx: i64, by: i64, c: usize) -> f64 {
+        let b = 1i64 << l;
+        let mut sum = 0.0;
+        for y in by * b..(by + 1) * b {
+            for x in bx * b..(bx + 1) * b {
+                let (xc, yc) = (
+                    x.clamp(0, w as i64 - 1) as usize,
+                    y.clamp(0, h as i64 - 1) as usize,
+                );
+                sum += f64::from(img[c * w * h + yc * w + xc]);
+            }
+        }
+        sum / (b * b) as f64
+    }
+
+    fn ref_bilinear(img: &[f32], w: usize, h: usize, l: u32, px: f64, py: f64, c: usize) -> f64 {
+        let s = f64::from(1u32 << l);
+        let (u, v) = (px / s - 0.5, py / s - 0.5);
+        let (i0, j0) = (u.floor(), v.floor());
+        let (fx, fy) = (u - i0, v - j0);
+        let (i0, j0) = (i0 as i64, j0 as i64);
+        let t = |dx, dy| ref_texel(img, w, h, l, i0 + dx, j0 + dy, c);
+        (1.0 - fy) * ((1.0 - fx) * t(0, 0) + fx * t(1, 0))
+            + fy * ((1.0 - fx) * t(0, 1) + fx * t(1, 1))
+    }
+
+    /// The reference gather of one pixel, without the gain: the taps of `Geometry::taps` read from
+    /// independently built texels.
+    fn ref_gather(img: &[f32], w: usize, h: usize, geo: &Geometry, i: usize, j: usize) -> [f64; 3] {
+        let k = geo.pixel(i, j);
+        if k.omega == 0.0 {
+            return std::array::from_fn(|c| f64::from(img[c * w * h + j * w + i]));
+        }
+        let level = level_for(k.omega, geo.opts.spacing_max).min(geo.lmax);
+        std::array::from_fn(|c| {
+            geo.taps(&k, c)
+                .iter()
+                .map(|(dx, dy, wt)| {
+                    wt * ref_bilinear(
+                        img,
+                        w,
+                        h,
+                        level,
+                        i as f64 + 0.5 + dx,
+                        j as f64 + 0.5 + dy,
+                        c,
+                    )
+                })
+                .sum()
+        })
+    }
+
+    /// The reference result of one pixel: each channel's gather read at its fringe shift along the axis (linear
+    /// interpolation between the pixels around it, edge pixels replicated), times the gain.
+    fn ref_pixel(img: &[f32], w: usize, h: usize, geo: &Geometry, i: usize, j: usize) -> [f64; 3] {
+        let k = geo.pixel(i, j);
+        std::array::from_fn(|c| {
+            let shift = geo.fringe_shift(&k, c);
+            let g = |x: i64, y: i64| {
+                let (x, y) = (
+                    x.clamp(0, w as i64 - 1) as usize,
+                    y.clamp(0, h as i64 - 1) as usize,
+                );
+                ref_gather(img, w, h, geo, x, y)[c]
+            };
+            let v = if shift == 0.0 {
+                g(i as i64, j as i64)
+            } else {
+                let (along, other) = match geo.axis {
+                    Axis::X => (i, j),
+                    Axis::Y => (j, i),
+                };
+                let pos = along as f64 + shift;
+                let i0 = pos.floor();
+                let f = pos - i0;
+                let at = |q: i64| match geo.axis {
+                    Axis::X => g(q, other as i64),
+                    Axis::Y => g(other as i64, q),
+                };
+                let (a, b) = (at(i0 as i64), at(i0 as i64 + 1));
+                a + f * (b - a)
+            };
+            v * k.gain
+        })
+    }
+
+    fn check_against_reference(p: &LensPlan, w: usize, h: usize, opts: Options, tol: f64) {
+        let data = noise(w, h, 7);
+        let out = apply(p, &whole(w, h, &data), PixelRect::new(0, 0, w, h), opts).unwrap();
+        let geo = Geometry::new(p, w, h, opts).unwrap();
+        let mut compared = 0;
+        let mut wide = 0;
+        let mut shifted = 0;
+        for j in (0..h).step_by(37).chain([0, h - 1]) {
+            for i in (0..w).step_by(41).chain([0, w - 1]) {
+                let want = ref_pixel(&data, w, h, &geo, i, j);
+                let k = geo.pixel(i, j);
+                if k.omega > 0.0 {
+                    wide += 1;
+                    if (0..3).any(|c| geo.fringe_shift(&k, c).abs() > 0.05) {
+                        shifted += 1;
+                    }
+                }
+                for c in 0..3 {
+                    let got = f64::from(out[c * w * h + j * w + i]);
+                    assert!(
+                        (got - want[c]).abs() < tol,
+                        "pixel ({i},{j}) channel {c}: {got} vs {}",
+                        want[c]
+                    );
+                }
+                compared += 1;
+            }
+        }
+        assert!(
+            compared > 100 && wide > 50,
+            "{compared} compared, {wide} with a kernel"
+        );
+        let fringe = p.fringe_factor() > 1.0;
+        assert_eq!(
+            shifted > 20,
+            fringe,
+            "{shifted} pixels read at a fringe shift"
+        );
+    }
+
+    #[test]
+    fn gather_matches_an_independent_reference() {
+        // Kernels of a few pixels, read at level 0.
+        check_against_reference(
+            &plan(LensKind::Petzval, 100.0, 0.0, 600, 400, Axis::X),
+            600,
+            400,
+            Options::default(),
+            3e-5,
+        );
+    }
+
+    #[test]
+    fn gather_matches_the_reference_with_the_attachment() {
+        // Anamorphic 100: oval radius, side softness and the fringe's per-channel shifts.
+        check_against_reference(
+            &plan(LensKind::Vintage, 60.0, 100.0, 600, 400, Axis::X),
+            600,
+            400,
+            Options::default(),
+            3e-5,
+        );
+        check_against_reference(
+            &plan(LensKind::Triplet, 0.0, 100.0, 1500, 1000, Axis::Y),
+            1500,
+            1000,
+            Options::default(),
+            3e-5,
+        );
+    }
+
+    #[test]
+    fn gather_matches_the_reference_on_reduced_levels() {
+        // A tight spacing makes even small kernels read the 2x, 4x and 8x copies.
+        let opts = Options { spacing_max: 0.45 };
+        let p = plan(LensKind::Petzval, 100.0, 40.0, 600, 400, Axis::X);
+        let geo = Geometry::new(&p, 600, 400, opts).unwrap();
+        assert!(geo.lmax >= 2, "lmax {}", geo.lmax);
+        check_against_reference(&p, 600, 400, opts, 3e-5);
+    }
+
+    #[test]
+    fn wide_kernels_use_reduced_levels_at_full_budget() {
+        let p = plan(LensKind::Petzval, 100.0, 0.0, 6000, 4000, Axis::X);
+        let geo = Geometry::new(&p, 6000, 4000, Options::default()).unwrap();
+        // w_max = 0.012 half-diagonals of 3606 px is 43 px; level 3 brings its cells within a texel.
+        assert_eq!(geo.lmax, 3);
+        assert!(geo.halo() > 50 && geo.halo() < 80, "halo {}", geo.halo());
+    }
+
+    #[test]
+    fn small_kernels_are_a_copy_times_the_gain() {
+        let p = plan(LensKind::Default, 50.0, 0.0, 600, 400, Axis::X);
+        let data = noise(600, 400, 3);
+        let out = apply(
+            &p,
+            &whole(600, 400, &data),
+            PixelRect::new(290, 190, 20, 20),
+            Options::default(),
+        )
+        .unwrap();
+        let geo = Geometry::new(&p, 600, 400, Options::default()).unwrap();
+        for j in 190..210 {
+            for i in 290..310 {
+                let k = geo.pixel(i, j);
+                assert_eq!(
+                    k.omega, 0.0,
+                    "centre kernels of Edges 50 are below half a pixel"
+                );
+                for c in 0..3 {
+                    let want = (f64::from(data[c * 600 * 400 + j * 600 + i]) * k.gain) as f32;
+                    assert_eq!(out[c * 400 + (j - 190) * 20 + (i - 290)], want);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mean_tap_count_is_reported() {
+        // Not an assertion about speed: a guard that the tap budget holds (at most 17 x 17 a pixel).
+        let p = plan(LensKind::Default, 100.0, 0.0, 3000, 2000, Axis::X);
+        let geo = Geometry::new(&p, 3000, 2000, Options::default()).unwrap();
+        let (mut total, mut count) = (0usize, 0usize);
+        for j in (0..2000).step_by(10) {
+            for i in (0..3000).step_by(10) {
+                let k = geo.pixel(i, j);
+                if k.omega > 0.0 {
+                    let n = taps_for(k.omega / f64::from(1u32 << level_for(k.omega, 1.0)));
+                    assert!(n <= MAX_TAPS_SIDE);
+                    total += n * n;
+                }
+                count += 1;
+            }
+        }
+        println!("mean taps per pixel: {:.1}", total as f64 / count as f64);
+        assert!(total as f64 / (count as f64) <= (MAX_TAPS_SIDE * MAX_TAPS_SIDE) as f64);
+    }
 }

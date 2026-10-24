@@ -9,10 +9,11 @@
 //! x2 = x1 (1 + mu x1^2)                      y2 = y1 (1 - beta x1^2)
 //! ```
 //!
-//! with `mu = mu0 (q - 1)`, `beta = beta0 (q - 1)`. The canvas is the map's output divided by the zoom `z`:
-//! `photo_to_canvas(p) = F(p) / z`, and `canvas_to_photo(c) = F^-1(z c)`, found by three Newton steps from
-//! `z c` with the 2 x 2 Jacobian, all in `f64`. The zoom is the smallest factor of at least 1 for which every
-//! point of the canvas edge maps inside the photo with a margin of 1 px.
+//! with `mu = mu0 (q - 1)`, `beta = beta0 (q - 1)`. The canvas is the map's output times the zoom `z`:
+//! `photo_to_canvas(p) = z F(p)`, and `canvas_to_photo(c) = F^-1(c / z)`, found by three Newton steps from
+//! `c / z` with the 2 x 2 Jacobian, all in `f64`. The zoom is the smallest factor of at least 1 for which every
+//! point of the canvas edge, divided by `z`, maps inside the photo with a margin of 1 px (so a larger `z`
+//! zooms in).
 //!
 //! Only `+ - * /` are used (no transcendental function), so the map has the same bits on every platform.
 
@@ -149,19 +150,19 @@ impl LensWarp {
         0.5 * (self.width * self.width + self.height * self.height).sqrt()
     }
 
-    /// Canvas pixel position to photo pixel position: `F^-1(z c)` with three Newton steps, in `f64`.
+    /// Canvas pixel position to photo pixel position: `F^-1(c / z)` with three Newton steps, in `f64`.
     #[must_use]
     pub fn canvas_to_photo(&self, x: f64, y: f64) -> (f64, f64) {
         if self.is_identity() {
             return (x, y);
         }
         let (cx, cy, h) = (0.5 * self.width, 0.5 * self.height, self.half_diagonal());
-        let (nx, ny) = ((x - cx) / h * self.zoom, (y - cy) / h * self.zoom);
+        let (nx, ny) = ((x - cx) / h / self.zoom, (y - cy) / h / self.zoom);
         let (px, py) = self.bend.inverse(nx, ny, NEWTON_STEPS);
         (cx + px * h, cy + py * h)
     }
 
-    /// Photo pixel position to canvas pixel position: the forward map `F(p) / z`.
+    /// Photo pixel position to canvas pixel position: the forward map `z F(p)`.
     #[must_use]
     pub fn photo_to_canvas(&self, x: f64, y: f64) -> (f64, f64) {
         if self.is_identity() {
@@ -169,7 +170,7 @@ impl LensWarp {
         }
         let (cx, cy, h) = (0.5 * self.width, 0.5 * self.height, self.half_diagonal());
         let (fx, fy) = self.bend.forward((x - cx) / h, (y - cy) / h);
-        (cx + fx / self.zoom * h, cy + fy / self.zoom * h)
+        (cx + fx * self.zoom * h, cy + fy * self.zoom * h)
     }
 
     /// Everything the map depends on, as text (exact numbers).
@@ -180,7 +181,13 @@ impl LensWarp {
         }
         format!(
             "warp:{:?}:{:?}:{:?}:{:?}:z{:?}:{:?}x{:?}",
-            self.bend.mu, self.bend.beta, self.bend.d1, self.bend.d2, self.zoom, self.width, self.height
+            self.bend.mu,
+            self.bend.beta,
+            self.bend.d1,
+            self.bend.d2,
+            self.zoom,
+            self.width,
+            self.height
         )
     }
 
@@ -303,10 +310,18 @@ mod tests {
     #[test]
     fn round_trip_is_tight() {
         let w = LensWarp::new(bend(), 6000.0, 4000.0);
-        for &(x, y) in &[(10.0, 10.0), (3000.0, 2000.0), (5990.0, 20.0), (1234.5, 3999.0)] {
+        for &(x, y) in &[
+            (10.0, 10.0),
+            (3000.0, 2000.0),
+            (5990.0, 20.0),
+            (1234.5, 3999.0),
+        ] {
             let (cx, cy) = w.photo_to_canvas(x, y);
             let (px, py) = w.canvas_to_photo(cx, cy);
-            assert!((px - x).abs() < 1e-9 && (py - y).abs() < 1e-9, "{x},{y} -> {px},{py}");
+            assert!(
+                (px - x).abs() < 1e-9 && (py - y).abs() < 1e-9,
+                "{x},{y} -> {px},{py}"
+            );
         }
     }
 }

@@ -1,0 +1,90 @@
+//! All three amounts at 0 are no lens, whatever the lens says (`docs/21` section 2).
+
+mod common;
+
+use common::{apply_tile, camera, noise, plan, planes_for, whole};
+use ym_lens::{Axis, LensAmounts, LensKind, PixelRect, apply, halo_px};
+
+#[test]
+fn zero_amounts_return_the_input_bit_for_bit() {
+    let (w, h) = (300, 200);
+    let data = noise(w, h, 5);
+    for kind in LensKind::ALL {
+        let p = plan(kind, 0.0, 0.0, 0.0, w, h, Axis::X);
+        assert!(p.is_identity());
+        let planes = planes_for(&p);
+        assert_eq!(halo_px(&p, &planes, 1), 0);
+        assert_eq!(p.key(), "lens:none");
+        assert_eq!(p.planes_key(), "lens-planes:none");
+        assert!(!p.needs_blur_map());
+        // The whole frame, and a tile cut from the middle.
+        let out = apply(
+            &p,
+            &planes,
+            1,
+            &whole(w, h, &data),
+            PixelRect::new(0, 0, w, h),
+        )
+        .unwrap();
+        assert_eq!(out, data, "{kind}");
+        let rect = PixelRect::new(37, 11, 120, 90);
+        let tile = apply_tile(&p, &planes, 1, &data, w, h, rect);
+        assert_eq!(tile, common::crop(&data, w, h, rect), "{kind}");
+        // The warp is the identity too.
+        let warp = p.warp(w as f64, h as f64);
+        assert!(warp.is_identity());
+        assert_eq!(warp.zoom(), 1.0);
+        assert_eq!(warp.canvas_to_photo(12.5, 99.25), (12.5, 99.25));
+        assert_eq!(warp.photo_to_canvas(12.5, 99.25), (12.5, 99.25));
+    }
+}
+
+#[test]
+fn identity_ignores_the_lens_in_its_keys() {
+    let keys: Vec<String> = LensKind::ALL
+        .iter()
+        .map(|k| plan(*k, 0.0, 0.0, 0.0, 300, 200, Axis::X).key())
+        .collect();
+    assert!(keys.iter().all(|k| k == &keys[0]));
+    // The amounts' own check: not identity as soon as one is above 0.
+    assert!(
+        !LensAmounts {
+            kind: LensKind::Vintage,
+            flares: 0.0,
+            edges: 0.0,
+            anamorphic: 0.5
+        }
+        .is_identity()
+    );
+    assert!(
+        LensAmounts {
+            kind: LensKind::Vintage,
+            flares: 0.0,
+            edges: 0.0,
+            anamorphic: 0.0
+        }
+        .is_identity()
+    );
+}
+
+#[test]
+fn flares_alone_leave_the_field_untouched_until_l3_exists() {
+    // Flares above 0 is a lens, but without Edges and Anamorphic the field optics have nothing to do: no halo and
+    // the input comes back as it is (L3 is not built yet and adds nothing).
+    let (w, h) = (300, 200);
+    let data = noise(w, h, 6);
+    let p = plan(LensKind::Classic, 60.0, 0.0, 0.0, w, h, Axis::X);
+    assert!(!p.is_identity());
+    let planes = planes_for(&p);
+    assert_eq!(halo_px(&p, &planes, 1), 0);
+    let out = apply(
+        &p,
+        &planes,
+        1,
+        &whole(w, h, &data),
+        PixelRect::new(0, 0, w, h),
+    )
+    .unwrap();
+    assert_eq!(out, data);
+    let _ = camera();
+}

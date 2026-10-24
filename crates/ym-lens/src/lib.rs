@@ -17,6 +17,8 @@
 //!
 //! With all three amounts at 0 ([`LensAmounts::is_identity`]) nothing runs and [`apply`] returns its input.
 
+#![warn(missing_docs)]
+
 mod amounts;
 mod apply;
 pub mod consts;

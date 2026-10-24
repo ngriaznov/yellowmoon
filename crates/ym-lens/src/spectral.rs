@@ -11,7 +11,9 @@
 use sha2::{Digest, Sha256};
 use ym_color::spectral::SpectralCurves;
 
-use crate::consts::{GRID_SAMPLES, GRID_START_NM, GRID_STEP_NM, PSF_WAVELENGTHS, PSF_WAVELENGTHS_NM};
+use crate::consts::{
+    GRID_SAMPLES, GRID_START_NM, GRID_STEP_NM, PSF_WAVELENGTHS, PSF_WAVELENGTHS_NM,
+};
 use crate::error::LensError;
 
 /// A camera's three channels seen at the wavelengths of the lens data.
@@ -32,7 +34,9 @@ fn interpolate(wavelengths: &[f64], values: &[f64], nm: f64) -> Option<f64> {
     if nm < first || nm > last {
         return None;
     }
-    let hi = wavelengths.partition_point(|w| *w < nm).min(wavelengths.len() - 1);
+    let hi = wavelengths
+        .partition_point(|w| *w < nm)
+        .min(wavelengths.len() - 1);
     if hi == 0 || wavelengths[hi] == nm {
         return Some(values[hi]);
     }
@@ -56,15 +60,13 @@ impl CameraResponse {
         for c in 0..3 {
             let channel: Vec<f64> = curves.samples().iter().map(|s| s[c]).collect();
             for (j, nm) in PSF_WAVELENGTHS_NM.iter().enumerate() {
-                at_psf[c][j] = interpolate(wl, &channel, *nm).ok_or_else(|| {
-                    LensError::Camera(format!("the curves do not cover {nm} nm"))
-                })?;
+                at_psf[c][j] = interpolate(wl, &channel, *nm)
+                    .ok_or_else(|| LensError::Camera(format!("the curves do not cover {nm} nm")))?;
             }
             for (k, g) in grid[c].iter_mut().enumerate() {
                 let nm = GRID_START_NM + GRID_STEP_NM * k as f64;
-                *g = interpolate(wl, &channel, nm).ok_or_else(|| {
-                    LensError::Camera(format!("the curves do not cover {nm} nm"))
-                })?;
+                *g = interpolate(wl, &channel, nm)
+                    .ok_or_else(|| LensError::Camera(format!("the curves do not cover {nm} nm")))?;
             }
         }
         let mut weights = [[0.0; PSF_WAVELENGTHS]; 3];
@@ -129,26 +131,22 @@ impl CameraResponse {
     /// The tint of a reflectance spectrum on the 31-sample grid: `t_c = sum S_c R / sum S_c`.
     #[must_use]
     pub fn tint(&self, spectrum: &[f64; GRID_SAMPLES]) -> [f64; 3] {
-        let mut out = [0.0; 3];
-        for c in 0..3 {
+        std::array::from_fn(|c| {
             let dot: f64 = self.grid[c].iter().zip(spectrum).map(|(s, r)| s * r).sum();
-            out[c] = dot / self.grid_sum[c];
-        }
-        out
+            dot / self.grid_sum[c]
+        })
     }
 
     /// The per-channel value of a quantity given at the eight PSF wavelengths: `sum_j w_c(l_j) v_j`.
     #[must_use]
     pub fn project(&self, per_wavelength: &[f64; PSF_WAVELENGTHS]) -> [f64; 3] {
-        let mut out = [0.0; 3];
-        for c in 0..3 {
-            out[c] = self.weights[c]
+        std::array::from_fn(|c| {
+            self.weights[c]
                 .iter()
                 .zip(per_wavelength)
                 .map(|(w, v)| w * v)
-                .sum();
-        }
-        out
+                .sum()
+        })
     }
 }
 

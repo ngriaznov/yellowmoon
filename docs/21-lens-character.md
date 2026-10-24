@@ -124,11 +124,12 @@ Where the detector is not confident, `b` is taken as 0 and nothing is stretched.
 
 ### L2 · Field optics
 
-With `e = edges/100`:
+With `e = edges/100`, and `e' = e + (1 − e)·κ·(q − 1)` the **edge amount**: Edges plus the attachment's own share, so that at Edges 0 the anamorphic terms below still act, alone (`e' = e` at Anamorphic 0; at `e' = 0` L2 is the identity). Every `e` below is `e'`.
 
-- **Point spread.** Each lens has spread functions at nine field radii (`ρ` = 0, 1/8, …, 1) and eight wavelengths, 33 × 33 samples over ±`w(ρ)` in a frame turned to the radial (x) and tangential (y) directions. The plan projects them onto the camera's three channels (section 6) and scales their width by `e`. A pixel gathers with the blend of its two neighbouring radii, turned to its own direction. The channels' kernels have their own centroids, which is the lateral colour fringe; the anamorphic attachment multiplies the horizontal part of that offset by `1 + h·(q − 1)` (horizontal fringing). The width is capped at `w_max` = 0.012 (about 62 px on a 50 MP frame); the implementation may gather the wide part from a half-resolution copy of the tile, as long as D5 and the parity hold.
-- **Falloff.** A gain `1 − e·(1 − T(ρ'))` on all three channels, with the lens's relative illumination `T`.
-- **Anamorphic.** The field radius becomes oval, `ρ' = √((α·x)² + y²)` in half-diagonal units along the axis (x) and across it (y), with `α = 1 + κ·(q − 1)`, so falloff and softness grow faster towards the left and right; the attachment adds its own side softness, `w` times `1 + a_s·(q − 1)·x²`. At Edges 0 these terms act alone.
+- **Point spread.** Each lens has spread functions at nine field radii (`ρ` = 0, 1/8, …, 1) and eight wavelengths, 33 × 33 cells over ±`w(ρ)` (cell-centred, section 6) in a frame turned to the radial (x, outwards from the frame's centre) and tangential (y, anticlockwise on the screen) directions. The plan projects them onto the camera's three channels (section 6). A pixel gathers with the blend of its two neighbouring radii (linear in `ρ'`, held at the last table beyond 1), turned to its own direction and scaled in width to a half-width of `ω = min(e'·(1 + S)·w(ρ'), w_max)·H` pixels, `H` being the half-diagonal in pixels and `S` the side softness below. The channels' kernels have their own centroids, which is the lateral colour fringe; the anamorphic attachment multiplies the axis part of that offset by `1 + h·(q − 1)` (horizontal fringing). The CPU reference does so by reading each channel of the gathered picture that much further along the axis (linear interpolation between neighbouring pixels, the gain applied after): to first order the same as translating the kernel, for one gather instead of three. The width is capped at `w_max` = 0.012 (about 62 px on a 50 MP frame).
+- **Taps.** A kernel of half-width `ω` is `n × n` point masses at its cell centres, `n = min(17, 2·⌈ω⌉ + 1)`: the 33 × 33 table resampled area-weighted and renormalised to sum 1, each mass read from the input by bilinear interpolation. A kernel below `ω` = 0.5 px is a copy of the input (the gain still applies). A kernel whose cells would be more than one texel apart at 17 taps (`ω` above about 8.5 px) reads a 2×, 4×, … box-reduced copy of the input instead, whose blocks are aligned to absolute frame coordinates so that tiles agree; the input is replicated beyond the frame edge. A kernel costs at most 289 taps; the 17 is a speed budget (`ym_lens::consts::MAX_TAPS_SIDE`) and can be raised to 33 where the cost is acceptable.
+- **Falloff.** A gain `1 − e·(1 − T(ρ'))` on all three channels, with the lens's relative illumination `T` (read linearly between radii, held at `T(1)` beyond `ρ'` = 1).
+- **Anamorphic.** The field radius becomes oval, `ρ' = √((α·x)² + y²)` in half-diagonal units along the axis (x) and across it (y), with `α = 1 + κ·(q − 1)`, so falloff and softness grow faster towards the left and right; the attachment adds its own side softness `S = a_s·(q − 1)·x²`, which widens the kernel (`1 + S` times). The kernel's direction is the geometric one, from the frame's centre to the pixel. At Edges 0 these terms act alone through `e'`.
 
 Reduced views use the same kernels at `1/k` scale (a kernel below one pixel is a copy).
 
@@ -157,6 +158,8 @@ The map from the photo to the canvas, in half-diagonal units with x along the an
 
 - the attachment: `x' = x·(1 + μ·x²)`, `y' = y·(1 − β·x²)`, with `μ = μ₀·(q − 1)` (the edge stretch) and `β = β₀·(q − 1)` (horizontal lines bowing);
 - the lens's own radial distortion `r' = r·(1 + e·(δ₁r² + δ₂r⁴))`.
+
+The lens's distortion applies first and the attachment's bend after it. In half-diagonal units of the canvas, centred on its centre, the canvas position of a photo position `p` is `z·F(p)` (`F` the two steps and `z` the zoom below), and a canvas position `c` reads the photo at `F⁻¹(c / z)` (`LensWarp::photo_to_canvas` and `canvas_to_photo`). A reduced view takes the warp of the full-resolution canvas (`LensWarp::rescaled`) so every scale shares one zoom.
 
 Sampling needs the inverse, found by three Newton steps from the output position (f64 in the CPU reference; on the device with the per-tile rebase of D4). The **zoom** `z` is the smallest factor of at least 1 for which every point of the canvas edge (200 samples a side), divided by `z`, maps inside the photo with a 1 px margin, so the canvas has no empty corner. The map sits in the geometry sampler between the canvas and the photo (`pipeline/geometry.rs`): straightening and the crop act on the bent, zoomed canvas, so the crop frame and the panel work on the bent picture.
 
@@ -197,8 +200,8 @@ pub mod cpu { /* reshape, field, flare: run on any rectangle of the frame; warp:
 
 `data/lenses/`, committed, about 2.5 MB in all:
 
-- `<id>/lens.json`: `id`, `version`, `name`, `line`, `start` `{ flares, edges }`, `provenance`, `field` (the radii, `T(ρ)`, the distortion `δ₁, δ₂`, the swirl `σ(ρ)`, the cat's-eye `c(ρ)`), `flare` (glow and veiling fractions and tails, the ghosts `{ m, s, n, R, a, coating }`, the starburst's blade count, rotation and strength), `bokeh.edge`.
-- `<id>/tables.safetensors`: the spread functions (9 radii × 8 wavelengths × 33 × 33), the glow tail per wavelength and the spike table, f32.
+- `<id>/lens.json`: `id`, `version`, `name`, `line`, `start` `{ flares, edges }`, `provenance`, `field` (the radii, `T(ρ)`, the distortion `δ₁, δ₂`, the swirl `σ(ρ)`, the cat's-eye `c(ρ)`), `flare` (glow and veiling fractions and tails, the ghosts `{ m, s, n, R, a, coating }`, the starburst's blade count, rotation and strength), `bokeh.rim`.
+- `<id>/tables.safetensors`: the spread functions (9 radii × 8 wavelengths × 33 × 33) and the spike table, f32 (the glow's tail per wavelength is a formula, `flare.glow` with its `chroma`).
 - `anamorphic.json`: the attachment (`Q_max`, `μ₀`, `β₀`, `κ`, `κ_g`, `a_s`, `h`, the streak's profile, fraction and tint, its oval ghosts).
 - `SHA256SUMS` and `README.md` (what each file holds, the statement below, the designs).
 
@@ -232,8 +235,12 @@ All lengths are in half-diagonal units of the emulated frame (a 36 × 24 mm fram
 
 | Tensor | Shape | Meaning |
 |---|---|---|
-| `psf` | `[9, 8, 33, 33]` | per radius and wavelength, samples on a 33 × 33 grid over `±w(ρ)`, row-major with x radial (outwards) and y tangential (anticlockwise) |
-| `spikes` | `[8, 129, 129]` | per wavelength, the starburst over `±flare.starburst.radius` |
+| `psf` | `[9, 8, 33, 33]` | per radius and wavelength, samples on a 33 × 33 grid over `±w(ρ)`, row-major (index `y·33 + x`) with x radial (outwards) and y tangential (anticlockwise on the screen) |
+| `spikes` | `[8, 129, 129]` | per wavelength, the starburst over `±flare.starburst.radius`, row-major with x to the right and y down |
+
+**Grid of the tables.** A table is a set of cell masses: sample `k` of `n` (33 for `psf`, 129 for `spikes`) is the mass of the cell `[−1 + 2k/n, −1 + 2(k + 1)/n]` in units of the half-width, so the table spans exactly `±w` (or `±radius`), the middle sample is centred on the origin and a slice sums to 1 (1e-4). A table written with samples *at* `−w … +w` would be 3 % too wide.
+
+**Checks.** The loader refuses a lens folder (`LensError`, never a panic) whose `SHA256SUMS` (`sha256sum` format, `<hex>  <relative path>`, one line for every file it reads and for `README.md`) does not match, whose `index.json` does not list all seven lenses once each, whose statement is not the exact sentence, whose radii do not run strictly increasing from 0 to 1, whose `T` is not 1 at the centre, in (0, 1] and falling, whose `σ(0)` is not 0, whose numbers are not finite, whose lists or tensors have another length or shape or hold a negative sample, or whose fractions of light at Flares 100 and Anamorphic 100 add up to 1 or more. `bokeh.rim` is the key of the file format; the stage text's `bokeh.edge` is read as the same table.
 
 `anamorphic.json`: `{ "id": "anamorphic", "version", "provenance", "q_max": 2.0, "bend": { "mu0", "beta0" }, "field": { "kappa", "side_softness", "fringe" }, "ghost_stretch": κ_g, "streak": { "fraction", "reach", "core", "power", "tint": [31] }, "ghosts": [ … as above ] }`.
 

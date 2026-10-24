@@ -40,19 +40,6 @@ fn main() {
     let t = Instant::now();
     let plan = LensPlan::new(&lib, &amounts, frame, &CameraResponse::neutral()).expect("plan");
     println!("plan: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
-    let dummy = vec![0.5f32; 3 * 64 * 64];
-    let tiny = ImageRef {
-        width: 64,
-        height: 64,
-        x0: 0,
-        y0: 0,
-        frame_width: 64,
-        frame_height: 64,
-        data: &dummy,
-    };
-    let _ = tiny;
-    let lens_plane = vec![0.5f32; 3];
-    let _ = lens_plane;
     let planes = {
         let k = plan.lens_plane_scale();
         let (w, h) = (width.div_ceil(k), height.div_ceil(k));

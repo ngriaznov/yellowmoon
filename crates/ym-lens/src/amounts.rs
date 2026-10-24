@@ -73,7 +73,10 @@ impl FromStr for LensKind {
 }
 
 /// The setting `lens` (`docs/21` section 2): a lens and three amounts, each 0 to 100.
+///
+/// A document without a field reads it as the default; an unknown field is refused.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct LensAmounts {
     /// The lens.
     pub kind: LensKind,
@@ -123,6 +126,22 @@ mod tests {
             "Default".parse::<LensKind>(),
             Err(LensError::UnknownLens(_))
         ));
+    }
+
+    #[test]
+    fn partial_documents_read_with_defaults_and_unknown_fields_are_refused() {
+        let a: LensAmounts = serde_json::from_str(r#"{ "flares": 40 }"#).unwrap();
+        assert_eq!(
+            a,
+            LensAmounts {
+                kind: LensKind::Default,
+                flares: 40.0,
+                edges: 0.0,
+                anamorphic: 0.0
+            }
+        );
+        assert!(serde_json::from_str::<LensAmounts>(r#"{ "kind": "leica" }"#).is_err());
+        assert!(serde_json::from_str::<LensAmounts>(r#"{ "grain": 3 }"#).is_err());
     }
 
     #[test]

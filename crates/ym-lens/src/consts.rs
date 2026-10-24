@@ -3,7 +3,8 @@
 //! Starting values set by eye live here or in the lens data, each with a doc comment (`docs/21` section 4).
 
 /// The sentence every lens file carries as `provenance.statement` (`docs/21` section 6).
-pub const PROVENANCE_STATEMENT: &str = "Synthetic, computed from public lens designs, not measured.";
+pub const PROVENANCE_STATEMENT: &str =
+    "Synthetic, computed from public lens designs, not measured.";
 
 /// Number of field radii (`rho` = 0, 1/8, ..., 1) the spread functions are given at.
 pub const RADII: usize = 9;

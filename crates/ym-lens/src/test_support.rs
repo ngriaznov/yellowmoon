@@ -12,9 +12,10 @@
 use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use safetensors::tensor::TensorView;
-use safetensors::{Dtype, serialize_to_file};
+use safetensors::{Dtype, serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -52,7 +53,16 @@ pub struct Recipe {
 /// The recipe of each lens.
 #[must_use]
 pub fn recipe(kind: LensKind) -> Recipe {
-    let r = |kind, w_centre, w_edge, sigma_edge, lateral, falloff, distortion, swirl, cats_eye, start| {
+    let r = |kind,
+             w_centre,
+             w_edge,
+             sigma_edge,
+             lateral,
+             falloff,
+             distortion,
+             swirl,
+             cats_eye,
+             start| {
         Recipe {
             kind,
             w_centre,
@@ -67,21 +77,104 @@ pub fn recipe(kind: LensKind) -> Recipe {
         }
     };
     match kind {
-        LensKind::Default => r(kind, 0.0020, 0.0060, (0.24, 0.22), 0.06, 0.40, (-0.010, 0.004), 0.0, 0.0, (0.0, 0.0)),
-        LensKind::Classic => r(kind, 0.0030, 0.0070, (0.28, 0.24), 0.10, 0.30, (-0.015, 0.005), 0.1, 0.1, (25.0, 20.0)),
-        LensKind::Vintage => r(kind, 0.0040, 0.0100, (0.34, 0.26), 0.14, 0.45, (-0.030, 0.015), 0.3, 0.5, (35.0, 40.0)),
-        LensKind::Petzval => r(kind, 0.0015, 0.0120, (0.40, 0.22), 0.12, 0.55, (0.020, -0.010), 0.8, 0.7, (20.0, 60.0)),
-        LensKind::Triplet => r(kind, 0.0020, 0.0100, (0.36, 0.30), 0.16, 0.50, (-0.025, 0.010), 0.2, 0.3, (30.0, 50.0)),
-        LensKind::Sonnar => r(kind, 0.0030, 0.0070, (0.26, 0.24), 0.08, 0.35, (-0.012, 0.004), 0.1, 0.2, (25.0, 25.0)),
-        LensKind::Detuned => r(kind, 0.0015, 0.0120, (0.42, 0.34), 0.18, 0.50, (-0.020, 0.012), 0.4, 0.6, (40.0, 70.0)),
+        LensKind::Default => r(
+            kind,
+            0.0020,
+            0.0060,
+            (0.24, 0.22),
+            0.06,
+            0.40,
+            (-0.010, 0.004),
+            0.0,
+            0.0,
+            (0.0, 0.0),
+        ),
+        LensKind::Classic => r(
+            kind,
+            0.0030,
+            0.0070,
+            (0.28, 0.24),
+            0.10,
+            0.30,
+            (-0.015, 0.005),
+            0.1,
+            0.1,
+            (25.0, 20.0),
+        ),
+        LensKind::Vintage => r(
+            kind,
+            0.0040,
+            0.0100,
+            (0.34, 0.26),
+            0.14,
+            0.45,
+            (-0.030, 0.015),
+            0.3,
+            0.5,
+            (35.0, 40.0),
+        ),
+        LensKind::Petzval => r(
+            kind,
+            0.0015,
+            0.0120,
+            (0.40, 0.22),
+            0.12,
+            0.55,
+            (0.020, -0.010),
+            0.8,
+            0.7,
+            (20.0, 60.0),
+        ),
+        LensKind::Triplet => r(
+            kind,
+            0.0020,
+            0.0100,
+            (0.36, 0.30),
+            0.16,
+            0.50,
+            (-0.025, 0.010),
+            0.2,
+            0.3,
+            (30.0, 50.0),
+        ),
+        LensKind::Sonnar => r(
+            kind,
+            0.0030,
+            0.0070,
+            (0.26, 0.24),
+            0.08,
+            0.35,
+            (-0.012, 0.004),
+            0.1,
+            0.2,
+            (25.0, 25.0),
+        ),
+        LensKind::Detuned => r(
+            kind,
+            0.0015,
+            0.0120,
+            (0.42, 0.34),
+            0.18,
+            0.50,
+            (-0.020, 0.012),
+            0.4,
+            0.6,
+            (40.0, 70.0),
+        ),
     }
 }
 
 fn name_and_line(kind: LensKind) -> (&'static str, &'static str) {
     match kind {
         LensKind::Default => ("Default", "Clean and modern: even sharpness, faint glow."),
-        LensKind::Classic => ("Classic", "Warm and gentle: soft glow, amber flares, smooth falloff."),
-        LensKind::Vintage => ("Vintage", "Glows wide open, lower contrast, soft edges, a little swirl."),
+        LensKind::Classic => (
+            "Classic",
+            "Warm and gentle: soft glow, amber flares, smooth falloff.",
+        ),
+        LensKind::Vintage => (
+            "Vintage",
+            "Glows wide open, lower contrast, soft edges, a little swirl.",
+        ),
         LensKind::Petzval => ("Petzval", "Very sharp centre, strong swirl, fast falloff."),
         LensKind::Triplet => ("Triplet", "Soft corners, busy flares, a crisp centre."),
         LensKind::Sonnar => ("Sonnar", "Smooth and glowing, with gentle edges."),
@@ -256,12 +349,12 @@ fn io_err(e: impl std::fmt::Display) -> io::Error {
     io::Error::other(e.to_string())
 }
 
-/// Writes `tables.safetensors` with the given `psf` and `spikes` data.
+/// The bytes of a `tables.safetensors` file with the given `psf` and `spikes` data.
 ///
 /// # Errors
 ///
-/// Any I/O error, or a shape that does not fit the data.
-pub fn write_tables(path: &Path, psf: &[f32], spikes: &[f32]) -> io::Result<()> {
+/// A shape that does not fit the data.
+pub fn tables_bytes(psf: &[f32], spikes: &[f32]) -> io::Result<Vec<u8>> {
     let bytes = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
     let (psf_bytes, spike_bytes) = (bytes(psf), bytes(spikes));
     let psf_view = TensorView::new(
@@ -276,7 +369,39 @@ pub fn write_tables(path: &Path, psf: &[f32], spikes: &[f32]) -> io::Result<()> 
         &spike_bytes,
     )
     .map_err(io_err)?;
-    serialize_to_file([("psf", psf_view), ("spikes", spike_view)], None, path).map_err(io_err)
+    serialize([("psf", psf_view), ("spikes", spike_view)], None).map_err(io_err)
+}
+
+/// Writes `tables.safetensors` with the given `psf` and `spikes` data.
+///
+/// # Errors
+///
+/// Any I/O error, or a shape that does not fit the data.
+pub fn write_tables(path: &Path, psf: &[f32], spikes: &[f32]) -> io::Result<()> {
+    std::fs::write(path, tables_bytes(psf, spikes)?)
+}
+
+/// The tables file of each lens, computed once per process.
+fn cached_tables(kind: LensKind) -> io::Result<&'static [u8]> {
+    static CACHE: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
+    let all = CACHE.get_or_init(|| {
+        LensKind::ALL
+            .iter()
+            .map(|k| {
+                let blades = if matches!(k, LensKind::Triplet | LensKind::Detuned) {
+                    6
+                } else {
+                    9
+                };
+                tables_bytes(&psf_table(&recipe(*k)), &spikes_table(blades)).unwrap_or_default()
+            })
+            .collect()
+    });
+    let i = LensKind::ALL.iter().position(|k| *k == kind).unwrap_or(0);
+    if all[i].is_empty() {
+        return Err(io::Error::other("cannot build the synthetic tables"));
+    }
+    Ok(&all[i])
 }
 
 fn write_json(path: &Path, v: &Value) -> io::Result<()> {
@@ -303,8 +428,7 @@ pub fn write_synthetic_lenses(dir: &Path) -> io::Result<()> {
         let sub = dir.join(kind.as_str());
         std::fs::create_dir_all(&sub)?;
         write_json(&sub.join("lens.json"), &lens_json(&rc))?;
-        let blades = if matches!(kind, LensKind::Triplet | LensKind::Detuned) { 6 } else { 9 };
-        write_tables(&sub.join("tables.safetensors"), &psf_table(&rc), &spikes_table(blades))?;
+        std::fs::write(sub.join("tables.safetensors"), cached_tables(kind)?)?;
     }
     write_sums(dir)
 }
@@ -319,7 +443,11 @@ pub fn write_sums(dir: &Path) -> io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            let path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            let path = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
             if entry.file_type()?.is_dir() {
                 walk(&entry.path(), &path, out)?;
             } else if path != "SHA256SUMS" {
