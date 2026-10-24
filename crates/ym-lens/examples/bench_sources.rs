@@ -38,8 +38,19 @@ fn main() {
         .ok()
         .map(|s| s.split(',').filter_map(|v| v.parse().ok()).collect())
         .unwrap_or_else(|| vec![0, 8, 32, 128, 256]);
-    for kind in [LensKind::Default, LensKind::Vintage] {
+    let kinds: Vec<LensKind> = match std::env::var("YM_BENCH_KINDS") {
+        Ok(v) => LensKind::ALL
+            .into_iter()
+            .filter(|k| v.split(',').any(|n| n == k.to_string()))
+            .collect(),
+        Err(_) => vec![LensKind::Default, LensKind::Vintage],
+    };
+    let budget_only = std::env::var_os("YM_BENCH_BUDGET_ONLY").is_some();
+    for kind in kinds {
         for &n in &counts {
+            if budget_only {
+                continue;
+            }
             let mut data = vec![0.25f32; 3 * gw * gh];
             let mut rng = Rng::new(7);
             for _ in 0..n {

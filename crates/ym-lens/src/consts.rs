@@ -128,6 +128,12 @@ pub const COMPACT_EXTENT_HD: f64 = 0.004;
 /// pixel cannot be drawn, and this keeps the drawn energy exact on any pixel grid.
 pub const EDGE_FLOOR_PX: f64 = 1.0;
 
+/// The light, in clip levels, that the ghosts left undrawn may add up to at the very brightest place of the
+/// picture: the sum of their peak densities. The faintest ghosts are not drawn while that sum stays under this
+/// (2^-18, a quarter of the step of a 16-bit code at the clip level), so a photo with hundreds of lights does
+/// not pay for thousands of ghosts that cannot be seen. The choice depends on the plan and the planes only.
+pub const GHOST_PRUNE_BUDGET: f64 = 1.0 / 262_144.0;
+
 /// The f-number the starburst assumes when the photo has none.
 pub const STARBURST_DEFAULT_F_NUMBER: f64 = 4.0;
 

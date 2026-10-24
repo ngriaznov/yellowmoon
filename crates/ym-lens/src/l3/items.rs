@@ -17,7 +17,9 @@
 //! * A **streak** is separable: a profile along the axis (a sharp core and a power-law tail, cut smoothly at its
 //!   reach) times a Gaussian across it as tall as the source; each pixel gets the exact mass over its area.
 
-use crate::consts::{COMPACT_EXTENT_HD, EDGE_FLOOR_PX, EDGE_REACH_SIGMAS, SPIKE_SIZE};
+use crate::consts::{
+    COMPACT_EXTENT_HD, EDGE_FLOOR_PX, EDGE_REACH_SIGMAS, GHOST_PRUNE_BUDGET, SPIKE_SIZE,
+};
 use crate::data::{Aperture, GhostData};
 use crate::l3::geometry::{Frame, Span};
 use crate::l3::profile::{NormalTail, RimCurve, cosine_window, gauss8, normal_tail};
@@ -182,6 +184,9 @@ pub(crate) struct Ghost {
     g_max: f64,
     /// Light per channel over the density's normaliser.
     amp: [f64; 3],
+    /// The largest density the ghost reaches anywhere, per channel at most: the brightest channel's `amp`
+    /// times the rim's peak.
+    peak: f64,
     span: Span,
 }
 
@@ -422,6 +427,15 @@ impl<'a> Items<'a> {
             .map(|g| normalised_tint(camera, &g.coating))
             .collect();
         let streak_tint = normalised_tint(camera, &att.streak.tint);
+        let whole = Span {
+            x0: 0,
+            x1: frame.w,
+            y0: 0,
+            y1: frame.h,
+        };
+        let rim_peak = (0..=256)
+            .map(|i| items.rim.at(f64::from(i) / 256.0))
+            .fold(0.0f64, f64::max);
         let mut list = Vec::new();
         for src in sources {
             for (g, tint) in lens.flare.ghosts.iter().zip(&lens_tints) {
@@ -432,7 +446,8 @@ impl<'a> Items<'a> {
                     terms.stretch,
                     g.fraction,
                     *tint,
-                    cull,
+                    rim_peak,
+                    &whole,
                 ) {
                     list.push(Item::Ghost(it));
                 }
@@ -446,7 +461,8 @@ impl<'a> Items<'a> {
                         terms.stretch,
                         g.fraction * terms.anam,
                         *tint,
-                        cull,
+                        rim_peak,
+                        &whole,
                     ) {
                         list.push(Item::Ghost(it));
                     }
@@ -459,6 +475,33 @@ impl<'a> Items<'a> {
                 list.push(Item::Streak(it));
             }
         }
+        // The faintest ghosts are left out while their peaks add up to no more than the budget (a function of
+        // the whole list, never of the tile, so any tiling draws the same items).
+        let clip = f64::from(plan.frame().clip.iter().copied().fold(0.0f32, f32::max));
+        let budget = GHOST_PRUNE_BUDGET * clip;
+        let mut faint: Vec<(f64, usize)> = list
+            .iter()
+            .enumerate()
+            .filter_map(|(i, it)| match it {
+                Item::Ghost(g) => Some((g.peak, i)),
+                _ => None,
+            })
+            .collect();
+        faint.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        let mut left_out = vec![false; list.len()];
+        let mut sum = 0.0;
+        for (peak, i) in faint {
+            if sum + peak > budget {
+                break;
+            }
+            sum += peak;
+            left_out[i] = true;
+        }
+        let mut k = 0;
+        list.retain(|_| {
+            k += 1;
+            !left_out[k - 1]
+        });
         list.retain(|it| !it.span().intersect(cull).is_empty());
         items.list = list;
         items
@@ -474,6 +517,7 @@ impl<'a> Items<'a> {
         stretch: f64,
         fraction: f64,
         tint: [f64; 3],
+        rim_peak: f64,
         cull: &Span,
     ) -> Option<Ghost> {
         let h = self.frame.half_diag;
@@ -507,6 +551,7 @@ impl<'a> Items<'a> {
             fraction * tint[1] * src.energy[1] / norm,
             fraction * tint[2] * src.energy[2] / norm,
         ];
+        let peak = amp[0].max(amp[1]).max(amp[2]) * rim_peak;
         Some(Ghost {
             shape,
             centre,
@@ -518,6 +563,7 @@ impl<'a> Items<'a> {
             sigma_clip: sigma_edge,
             g_max,
             amp,
+            peak,
             span,
         })
     }
