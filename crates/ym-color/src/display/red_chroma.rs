@@ -638,7 +638,7 @@ struct Gain {
 /// The XYZ of the pixel re-lit at the display luminance `yd` of the neutral axis: its chromaticity at `Y = yd`.
 fn relit(xyz: Vec3, yd: f64) -> Vec3 {
     let y = xyz[1];
-    [xyz[0] / y * yd, y / y * yd, xyz[2] / y * yd]
+    [xyz[0] / y * yd, yd, xyz[2] / y * yd]
 }
 
 #[cfg(test)]
