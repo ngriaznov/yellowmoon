@@ -3134,6 +3134,7 @@ fn core_types_convert_without_loss() {
         "orientation": 270,
         "decode": { "neural_demosaic": false },
         "rolloff": { "highlights": 0.2 },
+        "lens": { "kind": "petzval", "flares": 35, "edges": 50, "anamorphic": 20 },
         "color_warp": { "pins": [
             { "source": [0.12, 0.03], "target": [0.08, 0.1], "locked": false, "range": 0.06,
               "shadows": 0.5, "highlights": 1, "pivot_ev": -1.5, "exposure_ev": 0.25 },
@@ -3222,6 +3223,75 @@ fn core_types_convert_without_loss() {
         &patch.color_warp,
     );
     assert_eq!(core_patch.color_warp.map(|w| w.pins.len()), Some(2));
+    // The lens crosses whole, in the patch and in the settings it made; `lens_list` crosses as the core has it.
+    assert_same("settings_patch.lens", &core_patch.lens, &patch.lens);
+    assert_eq!(
+        core_patch.lens,
+        Some(ym_core::settings::LensPatch {
+            kind: Some(ym_core::settings::LensKind::Petzval),
+            flares: Some(35.0),
+            edges: Some(50.0),
+            anamorphic: Some(20.0),
+        })
+    );
+    let resolved = h.api.get_settings(id).expect("settings");
+    assert_same(
+        "settings.lens",
+        &core
+            .session
+            .settings(ym_core::session::PhotoId(id.0))
+            .expect("settings")
+            .settings
+            .lens,
+        &resolved.settings.lens,
+    );
+    assert_eq!(resolved.values.lens, resolved.settings.lens);
+    assert_eq!(resolved.settings.lens.kind, crate::wire::LensKind::Petzval);
+    assert_same(
+        "lens_list",
+        &core.lens_list(),
+        &h.api.lens_list().expect("lens list"),
+    );
+}
+
+#[test]
+fn the_lenses_cross_the_bridge_by_the_same_word_and_a_lens_patch_redraws_the_thumbnail() {
+    use crate::wire::LensKind as Wire;
+    use ym_lens::LensKind as Core;
+    let pairs = [
+        (Wire::Default, Core::Default, "default"),
+        (Wire::Classic, Core::Classic, "classic"),
+        (Wire::Vintage, Core::Vintage, "vintage"),
+        (Wire::Petzval, Core::Petzval, "petzval"),
+        (Wire::Triplet, Core::Triplet, "triplet"),
+        (Wire::Sonnar, Core::Sonnar, "sonnar"),
+        (Wire::Detuned, Core::Detuned, "detuned"),
+    ];
+    assert_eq!(pairs.len(), Core::ALL.len());
+    for (wire, core, word) in pairs {
+        assert_eq!(Core::from(wire), core);
+        assert_eq!(Wire::from(core), wire);
+        assert_eq!(serde_json::to_value(wire).expect("json"), json!(word));
+        assert_eq!(core.as_str(), word);
+    }
+    // One lens of the menu, as the library gives it, crosses with every field.
+    let info = ym_lens::LensInfo {
+        kind: Core::Sonnar,
+        name: "Sonnar".to_owned(),
+        line: "Smooth and glowing, with gentle edges.".to_owned(),
+        start_flares: 37.5,
+        start_edges: 50.0,
+        version: 3,
+        design_source: "A patent".to_owned(),
+    };
+    let wire: crate::wire::LensInfo = convert(&info).expect("lens info");
+    assert_same("lens_info", &info, &wire);
+    assert_eq!(wire.kind, Wire::Sonnar);
+    // A patch that names the lens changes what a thumbnail shows.
+    let patch: SettingsPatch =
+        serde_json::from_value(json!({ "lens": { "flares": 10 } })).expect("patch");
+    assert!(touches_thumbnail(&patch));
+    assert!(!touches_thumbnail(&SettingsPatch::default()));
 }
 
 #[test]

@@ -884,7 +884,9 @@ mod tests {
         let (w, h) = (480usize, 320usize);
         let frame = Frame::new(w, h, Axis::X);
         let spikes: [Vec<f64>; 3] = std::array::from_fn(|_| Vec::new());
-        let rim: Vec<f64> = (0..16).map(|i| 0.8 + 0.4 * (f64::from(i) / 15.0).powi(4)).collect();
+        let rim: Vec<f64> = (0..16)
+            .map(|i| 0.8 + 0.4 * (f64::from(i) / 15.0).powi(4))
+            .collect();
         let mut worst = [0.0f64; 3];
         for (k, roundness) in [0.0, 0.5, 0.8].into_iter().enumerate() {
             let mut items = bare_items(frame, &spikes, &rim);
@@ -910,7 +912,12 @@ mod tests {
                     soft: 0.1,
                     coating: vec![1.0; 31],
                 };
-                let cull = Span { x0: 0, x1: w, y0: 0, y1: h };
+                let cull = Span {
+                    x0: 0,
+                    x1: w,
+                    y0: 0,
+                    y1: h,
+                };
                 let ghost = items
                     .ghost(&src, &g, SHAPE_APERTURE, 1.0, 0.1, [1.0; 3], &cull)
                     .unwrap();

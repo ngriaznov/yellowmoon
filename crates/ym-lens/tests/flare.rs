@@ -386,8 +386,8 @@ fn sums_for(scene: &Scene, size: (usize, usize)) -> Sums {
     };
     for (x, y) in [(300, 120), (200, 200)] {
         let h = highlight(at(x, y), 1.0);
-        for c in 0..3 {
-            s.h_compact[c] += h[c];
+        for (acc, v) in s.h_compact.iter_mut().zip(&h) {
+            *acc += v;
         }
     }
     s
@@ -534,10 +534,11 @@ fn a_weak_starburst_takes_less_light_and_leaves_the_rest() {
     let out = run(&plan, &planes, &scene);
     let a = full.fraction * (2.0 / (full.f_number_full - 2.0));
     let nn = out.len() / 3;
-    let mut e = 0.0;
-    for i in 0..nn {
-        e += f64::from(out[i]) - (1.0 - a) * f64::from(scene.data[i]);
-    }
+    let e: f64 = out[..nn]
+        .iter()
+        .zip(&scene.data[..nn])
+        .map(|(o, z)| f64::from(*o) - (1.0 - a) * f64::from(*z))
+        .sum();
     assert!((e - a * sm.h_compact[0]).abs() < 2e-5 * e.abs(), "{e}");
 }
 
@@ -842,6 +843,24 @@ fn the_attachment_adds_nothing_at_anamorphic_zero() {
     };
     assert_eq!(run_with(&full, 0.0), run_with(&bare, 0.0));
     assert_ne!(run_with(&full, 100.0), run_with(&bare, 100.0));
+}
+
+#[test]
+fn a_lens_without_flare_light_leaves_the_picture_to_the_field_optics() {
+    // No fractions of light: L3 has nothing to take or give, so with Edges and Anamorphic at 0 the picture comes
+    // back bit for bit, whatever Flares says; with the field optics on, Flares changes nothing either.
+    let lib = parts_library(Parts::NONE);
+    let scene = energy_scene();
+    let size = (scene.w, scene.h);
+    let plan = plan_of(&lib, 70.0, 0.0, 0.0, size, Axis::X, None, 1.0);
+    assert_eq!(plan.light_fraction(), 0.0);
+    assert_eq!(run(&plan, &planes_of(&plan, &scene), &scene), scene.data);
+    let with_field = plan_of(&lib, 70.0, 60.0, 30.0, size, Axis::X, None, 1.0);
+    let without = plan_of(&lib, 0.0, 60.0, 30.0, size, Axis::X, None, 1.0);
+    assert_eq!(
+        run(&with_field, &planes_of(&with_field, &scene), &scene),
+        run(&without, &planes_of(&without, &scene), &scene)
+    );
 }
 
 // ---------------------------------------------------------------------------------------------------------

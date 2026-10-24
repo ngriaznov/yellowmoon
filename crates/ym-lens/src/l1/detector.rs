@@ -165,13 +165,13 @@ pub(super) fn noise_sigma(v: &[f32], w: usize, h: usize) -> f64 {
 fn build_ladder(v: &[f32], w: usize, h: usize, cancel: &dyn Fn() -> bool) -> Result<Vec<Vec<f32>>, LensError> {
     let mut levels: Vec<Vec<f32>> = Vec::with_capacity(LEVELS);
     levels.push(v.to_vec());
-    levels.push(blur(&levels[0], w, h, level_sigma(1)));
-    for m in 1..LEVELS - 1 {
+    for m in 0..LEVELS - 1 {
         if cancel() {
             return Err(LensError::Cancelled);
         }
-        // sigma(m + 1)^2 = 2 sigma(m)^2, so the step from level m is a Gaussian of sigma(m).
-        let next = blur(&levels[m], w, h, level_sigma(m));
+        // Gaussians add in quadrature: the step from level m to m + 1.
+        let step = (level_sigma(m + 1).powi(2) - level_sigma(m).powi(2)).sqrt();
+        let next = blur(&levels[m], w, h, step);
         levels.push(next);
     }
     Ok(levels)
@@ -183,8 +183,6 @@ pub(super) struct Sample {
     pub idx: u32,
     pub w: f32,
     pub ln_r: f32,
-    /// The ladder pair that read it (`u8::MAX` for anchors and balls).
-    pub pair: u8,
 }
 
 /// Floor of the luminance when normalising a gradient by the noise it carries.
@@ -240,8 +238,6 @@ fn edge_samples(
         let lj = &ladder[j];
         let lk = &ladder[k];
         let thr = (EDGE_KAPPA * nj).max(EDGE_ABS_MIN);
-        let dbg_none = std::sync::atomic::AtomicUsize::new(0);
-        let dbg_light = std::sync::atomic::AtomicUsize::new(0);
         // Rows in parallel, each returning its readings in column order.
         let rows: Vec<(Vec<Sample>, Vec<usize>)> = (1..h - 1)
             .into_par_iter()
@@ -289,7 +285,6 @@ fn edge_samples(
                     let gkn = normalised(gk_peak, lk[at_peak], floor);
                     let rho = f64::from(g) / f64::from(gk_peak);
                     let Some(est) = radius_from_ratio(pair, rho) else {
-                        dbg_none.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         continue;
                     };
                     let eps2 = (nj / gn).powi(2) + (nk / gkn).powi(2) + MODEL_ERR * MODEL_ERR;
@@ -299,14 +294,12 @@ fn edge_samples(
                         sharp_here.push(i);
                     }
                     if weight < MIN_SAMPLE_WEIGHT {
-                        dbg_light.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         continue;
                     }
                     out.push(Sample {
                         idx: i as u32,
                         w: weight as f32,
                         ln_r: libm::log(est.r) as f32,
-                        pair: pair as u8,
                     });
                 }
                 (out, sharp_here)
@@ -348,10 +341,6 @@ fn edge_samples(
             }
         }
         samples.extend(found);
-        if std::env::var("YM_L1_DEBUG").is_ok() {
-            let count = samples.len();
-            eprintln!("pair {pair} ({j},{k}): nj {nj:.5} nk {nk:.5} thr {thr:.5} samples so far {count} none {} light {}", dbg_none.load(std::sync::atomic::Ordering::Relaxed), dbg_light.load(std::sync::atomic::Ordering::Relaxed));
-        }
         gj = gk;
         nj = nk;
     }
@@ -470,7 +459,6 @@ pub(super) fn detect(
                 idx: i as u32,
                 w: ANCHOR_WEIGHT as f32,
                 ln_r: ln_sharp,
-                pair: u8::MAX,
             });
         }
     }
@@ -485,7 +473,6 @@ pub(super) fn detect(
             y: &wp.y,
             ladder: &ladder,
             noise_v,
-            hd,
             r_min_px,
             r_max_px,
             ev_w: &ev_w,
@@ -530,8 +517,7 @@ pub(super) fn detect(
                             idx: (y * w + x) as u32,
                             w: per_pixel as f32,
                             ln_r,
-                            pair: u8::MAX,
-                        });
+                                    });
                     }
                 }
             }

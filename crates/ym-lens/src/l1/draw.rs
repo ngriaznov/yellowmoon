@@ -14,6 +14,9 @@ use crate::consts::RIM_SAMPLES;
 
 use super::Ball;
 
+/// The largest distance between the two copies of a cat's-eye ball, in the ellipse's own semi-axes.
+const MAX_CAT_OFFSET: f64 = 1.8;
+
 /// A ball's shape in the pixels of the view being drawn.
 #[derive(Clone, Debug)]
 pub(super) struct Shape {
@@ -27,9 +30,8 @@ pub(super) struct Shape {
     pub m: (f64, f64),
     /// Half the cat's-eye offset between the two copies (a vector in pixels); zero without one.
     pub half_off: (f64, f64),
-    /// The offset in the ellipse's normalised frame: its length and direction.
+    /// The cat's-eye offset in the ellipse's normalised frame, in units of the semi-axes.
     pub delta: f64,
-    pub e_hat: (f64, f64),
     /// Energy per pixel per channel at profile value 1 (so that the drawn values sum to the ball's energy).
     pub density: [f64; 3],
     /// Radius, in pixels, of the disc taken out of the picture.
@@ -170,22 +172,19 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
     let (a, b) = (r_px + s_len, r_px);
     let m = if stretched { (sx / s_len, sy / s_len) } else { (1.0, 0.0) };
     // The cat's-eye copies sit half the offset either side of the centre along the radial direction.
-    let (half_off, delta, e_hat) = if cut {
+    let (half_off, delta) = if cut {
         let h = (0.5 * off * rx, 0.5 * off * ry);
         // The offset vector in the normalised frame (long axis along m, short axis across).
         let n = (-m.1, m.0);
         let full = (2.0 * h.0, 2.0 * h.1);
         let ex = (full.0 * m.0 + full.1 * m.1) / a;
         let ey = (full.0 * n.0 + full.1 * n.1) / b;
-        let len = (ex * ex + ey * ey).sqrt().min(1.8);
-        let dir = if len > 1e-12 {
-            (ex / (ex * ex + ey * ey).sqrt(), ey / (ex * ex + ey * ey).sqrt())
-        } else {
-            (1.0, 0.0)
-        };
-        (h, len, dir)
+        let len = (ex * ex + ey * ey).sqrt();
+        // Two copies further apart than this leave almost nothing: hold the cut at 1.8 semi-axes.
+        let keep = (MAX_CAT_OFFSET / len.max(1e-12)).min(1.0);
+        ((h.0 * keep, h.1 * keep), len * keep)
     } else {
-        ((0.0, 0.0), 0.0, (1.0, 0.0))
+        ((0.0, 0.0), 0.0)
     };
     let (area, mean) = if cut {
         (a * b * lens_area(delta), lens_mean(p.rim, delta))
@@ -201,7 +200,6 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
         m,
         half_off,
         delta,
-        e_hat,
         density: [ball.energy[0] * scale, ball.energy[1] * scale, ball.energy[2] * scale],
         r_out: ball.take_out_radius * p.hk,
         r_ball: r_px,

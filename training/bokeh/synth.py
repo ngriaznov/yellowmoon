@@ -11,8 +11,8 @@ One batch, step by step (`synthesize`):
 1. **Sources.** `TileBatch`: sharp 8-bit tiles of Open Images photos (the sharpness filter ran when the tiles were
    built, `sources.py`), each with an instance-id map (Open Images' CC BY 4.0 masks) and the ids of the instances that
    may be cut out. Decoded from sRGB to linear light. A random crop and a horizontal flip per tile.
-2. **Highlights.** In 60 % of the tiles the pixels near clipping (max channel above 0.85 to 0.97) are raised 1.4 to
-   16 times with a soft knee, so a JPEG's clipped lights are far above clip, as real lights are.
+2. **Highlights.** In 60 % of the tiles the pixels near clipping (max channel from 0.55 to 0.97, a wide soft knee) are
+   raised 1.4 to 16 times, so a JPEG's clipped lights are far above clip, as real lights are.
 3. **Layers.** The first tile of a sample is the background layer (reflect-padded by the kernel margin). 1 to 4 sprites
    follow: an instance cut out of *another* tile of the batch with its mask (so no hole is left behind it), scaled
    0.55 to 1.15 times, turned by up to 0.25 rad, flipped, set down at a random place, its mask eroded by a pixel in
@@ -237,7 +237,7 @@ def _emitters(median_day: torch.Tensor, radius: torch.Tensor, gen, cfg: SynthCon
     palette = torch.tensor([[1.0, 0.72, 0.42], [1.0, 0.85, 0.65], [1.0, 1.0, 1.0], [0.75, 0.85, 1.0],
                             [1.0, 0.25, 0.2], [0.3, 1.0, 0.4], [0.3, 0.45, 1.0]], device=dev)
     pw = torch.tensor([0.28, 0.22, 0.22, 0.13, 0.05, 0.05, 0.05], device=dev)
-    tint = palette[torch.multinomial(pw.expand(b * n, -1), 1, generator=gen).view(b, n)]  # (B, n, 3)
+    tint = palette[torch.multinomial(pw.repeat(b * n, 1), 1, generator=gen).view(b, n)]  # (B, n, 3)
     x0, y0 = pos[..., 0].floor(), pos[..., 1].floor()
     fx, fy = pos[..., 0] - x0, pos[..., 1] - y0
     light = torch.zeros(b, 3, cv * cv, device=dev)
@@ -382,11 +382,11 @@ def synthesize(tb: TileBatch, cfg: SynthConfig, gen: torch.Generator) -> Synth:
     thr = _u(gen, 0.85, 0.97, b, device=dev).view(b, 1, 1, 1)
     gain = torch.exp2(_u(gen, 0.5, 4.0, b, device=dev)).view(b, 1, 1, 1)
     gain = torch.where(_bern(gen, 0.6, b, device=dev).view(b, 1, 1, 1), gain, torch.ones_like(gain))
-    lin = lin * (1 + _smoothstep(thr - 0.12, thr, lin.amax(1, keepdim=True)) * (gain - 1))
+    lin = lin * (1 + _smoothstep(thr - 0.3, thr, lin.amax(1, keepdim=True)) * (gain - 1))
     median_day = lower_median_t(luma_t(lin))
 
     # 3-4. modes, layer counts, radii
-    mode = torch.multinomial(torch.tensor(cfg.mode_probs, device=dev).expand(b, -1), 1, generator=gen).squeeze(1)
+    mode = torch.multinomial(torch.tensor(cfg.mode_probs, device=dev).repeat(b, 1), 1, generator=gen).squeeze(1)
     lf = int(cfg.layers[int(torch.randint(0, len(cfg.layers), (1,), generator=gen, device=dev))]) - 1
     ng = int(torch.multinomial(torch.tensor(cfg.emitter_groups, device=dev), 1, generator=gen))
     ramp_batch = bool(_bern(gen, cfg.p_ramp_batch, 1, device=dev))

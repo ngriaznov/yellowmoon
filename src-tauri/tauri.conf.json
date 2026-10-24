@@ -43,6 +43,7 @@
       "../data/alexa": "data/alexa",
       "../data/arri": "data/arri",
       "../data/cameras": "data/cameras",
+      "../data/lenses": "data/lenses",
       "../data/looks/builtin": "data/looks/builtin",
       "../data/looks/arri-packages.json": "data/looks/arri-packages.json",
       "../data/models": "data/models",

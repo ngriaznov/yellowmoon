@@ -244,7 +244,7 @@ mod tests {
         assert_eq!(curve.at(-1.0), curve.at(0.0));
         assert_eq!(curve.at(2.0), curve.at(1.0));
         // A flat rim is flat.
-        let flat = RimCurve::new(&vec![1.0; RIM_SAMPLES]);
+        let flat = RimCurve::new(&[1.0; RIM_SAMPLES]);
         for i in 0..=100 {
             assert!((flat.at(f64::from(i) / 100.0) - 1.0).abs() < 1e-15);
         }

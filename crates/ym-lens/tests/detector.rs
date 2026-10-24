@@ -176,3 +176,18 @@ fn explore_conf() {
         eprintln!("conf >= {thr}: {n} pixels, within 25%: {:.1}%, median |err| {:.1}%", 100.0 * ok as f64 / n as f64, 100.0 * errs[errs.len() / 2]);
     }
 }
+
+#[test]
+fn explore_violations() {
+    let scene = subject_scene(1000, 667, [5.0, 9.0, 14.0], Noise::LOW, 1);
+    let (w, h) = (scene.img.w, scene.img.h);
+    let (_p, planes) = planes_of(&scene);
+    let bp = planes.bokeh().unwrap();
+    for i in 0..w * h {
+        if (scene.subject[i] || scene.strand[i]) && f64::from(bp.blur()[i]) * 601.0 > 2.0 {
+            let (x, y) = (i % w, i / w);
+            eprintln!("violation at ({x},{y}) subject {} strand {} b {:.2} conf {:.2}; neighbours b: {:?}", scene.subject[i], scene.strand[i], f64::from(bp.blur()[i]) * 601.0, bp.confidence()[i],
+                (-3i64..=3).map(|d| (f64::from(bp.blur()[((y as i64 + d) as usize) * w + x]) * 601.0 * 10.0).round() / 10.0).collect::<Vec<_>>());
+        }
+    }
+}

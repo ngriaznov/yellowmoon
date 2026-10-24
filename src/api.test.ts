@@ -60,6 +60,7 @@ const calls: Row[] = [
   ["setBefore", () => tauriApi.setBefore(true), "set_before", { before: true }, true],
   ["samplePixel", () => tauriApi.samplePixel(10, 20), "sample_pixel", { x: 10, y: 20 }],
   ["sampleChroma", () => tauriApi.sampleChroma(10, 20), "sample_chroma", { x: 10, y: 20 }],
+  ["lensList", () => tauriApi.lensList(), "lens_list", undefined],
   ["looksList", () => tauriApi.looksList(), "looks_list", undefined],
   ["lookThumbnail", () => tauriApi.lookThumbnail(3, "builtin:signature"), "look_thumbnail", { photoId: 3, lookId: "builtin:signature" }],
   ["looksImport", () => tauriApi.looksImport("/x.zip"), "looks_import", { path: "/x.zip", input: null }],

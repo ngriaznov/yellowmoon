@@ -22,34 +22,46 @@ pub(super) fn kernel(sigma: f64) -> Vec<f64> {
 }
 
 /// `src` (`w x h`, row-major) blurred with a Gaussian of `sigma` pixels; the border is replicated.
+///
+/// Each output sample is a sum over the taps in a fixed order (the centre, then each tap's pair outwards), so
+/// rows can run in parallel with the same bits for any number of threads.
 pub(super) fn blur(src: &[f32], w: usize, h: usize, sigma: f64) -> Vec<f32> {
     debug_assert_eq!(src.len(), w * h);
     let k = kernel(sigma);
-    // Horizontal pass.
+    let r = k.len() - 1;
+    // Horizontal pass: the interior without clamps, the borders with them.
     let mut tmp = vec![0.0f32; w * h];
     tmp.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         let s = &src[y * w..(y + 1) * w];
         for (x, out) in row.iter_mut().enumerate() {
             let mut acc = k[0] * f64::from(s[x]);
-            for (i, ki) in k.iter().enumerate().skip(1) {
-                let lo = x.saturating_sub(i);
-                let hi = (x + i).min(w - 1);
-                acc += ki * (f64::from(s[lo]) + f64::from(s[hi]));
+            if x >= r && x + r < w {
+                for (i, ki) in k.iter().enumerate().skip(1) {
+                    acc += ki * (f64::from(s[x - i]) + f64::from(s[x + i]));
+                }
+            } else {
+                for (i, ki) in k.iter().enumerate().skip(1) {
+                    let lo = x.saturating_sub(i);
+                    let hi = (x + i).min(w - 1);
+                    acc += ki * (f64::from(s[lo]) + f64::from(s[hi]));
+                }
             }
             *out = acc as f32;
         }
     });
-    // Vertical pass.
+    // Vertical pass: one output row at a time, adding whole rows (sequential memory).
     let mut out = vec![0.0f32; w * h];
     out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
-        for (x, o) in row.iter_mut().enumerate() {
-            let mut acc = k[0] * f64::from(tmp[y * w + x]);
-            for (i, ki) in k.iter().enumerate().skip(1) {
-                let lo = y.saturating_sub(i);
-                let hi = (y + i).min(h - 1);
-                acc += ki * (f64::from(tmp[lo * w + x]) + f64::from(tmp[hi * w + x]));
+        let mut acc: Vec<f64> = tmp[y * w..(y + 1) * w].iter().map(|v| k[0] * f64::from(*v)).collect();
+        for (i, ki) in k.iter().enumerate().skip(1) {
+            let lo = &tmp[y.saturating_sub(i) * w..][..w];
+            let hi = &tmp[(y + i).min(h - 1) * w..][..w];
+            for x in 0..w {
+                acc[x] += ki * (f64::from(lo[x]) + f64::from(hi[x]));
             }
-            *o = acc as f32;
+        }
+        for (o, a) in row.iter_mut().zip(&acc) {
+            *o = *a as f32;
         }
     });
     out

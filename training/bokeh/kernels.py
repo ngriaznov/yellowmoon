@@ -33,7 +33,7 @@ def _rand(gen: torch.Generator | None, n: int, device, lo: float = 0.0, hi: floa
 def sample_params(n: int, gen: torch.Generator | None, device, weights=KIND_WEIGHTS) -> dict[str, torch.Tensor]:
     """Random shape parameters for `n` kernels (each a tensor of shape (n,))."""
     w = torch.tensor(weights, dtype=torch.float32, device=device)
-    kind = torch.multinomial(w.expand(n, -1), 1, generator=gen).squeeze(1)
+    kind = torch.multinomial(w.repeat(n, 1), 1, generator=gen).squeeze(1)
     return {
         "kind": kind,
         "rim": _rand(gen, n, device, 0.05, 0.18),

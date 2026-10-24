@@ -47,8 +47,6 @@ pub(super) struct BallInput<'a> {
     pub ladder: &'a [Vec<f32>],
     /// Noise of the square-root luminance, per pixel.
     pub noise_v: f64,
-    /// Half-diagonal of the working grid in pixels.
-    pub hd: f64,
     /// Smallest disc radius the map reshapes, in pixels (`b_min`, or the floor of the native blur).
     pub r_min_px: f64,
     /// Largest ball radius, in pixels.
@@ -70,6 +68,8 @@ const MAX_ELONGATION: f64 = 1.4;
 const MAX_CANDIDATES: usize = 1200;
 /// Largest ratio between a ball's radius and the radius the edges around it give.
 const CONSISTENT: f64 = 1.6;
+/// Largest ratio between the radius a scale-space maximum suggests and the radius measured from the area.
+const SEED_RATIO: f64 = 2.0;
 /// Edge evidence (sum of weights in the ring around a ball) needed to hold a ball to the edges' radius.
 const EVIDENCE_MIN: f64 = 1.5;
 /// A scene needs this many balls, or one confirmed by the edges.
@@ -129,14 +129,13 @@ fn for_each_in_annulus(
 /// The scale-space maxima of the differences of the ladder's Gaussians, brightest response first.
 fn candidates(inp: &BallInput) -> Vec<Candidate> {
     let (w, h) = (inp.w, inp.h);
-    let first = 2usize;
-    let last = LEVELS - 2; // DoG of levels m and m + 1 for m = 2 ..= 9
     let r_lo = 0.7 * 2.0 * inp.r_min_px;
     let r_hi = 1.5 * inp.r_max_px;
+    // Differences of consecutive levels (a ratio of 2 in width): the disc radius of the best response is
+    // `2 sigma` of the finer level; the measured area gives the radius afterwards.
     let mut dogs: Vec<(usize, f64, Vec<f32>)> = Vec::new();
-    for m in first..=last {
-        let (s0, s1) = (level_sigma(m), level_sigma(m + 1));
-        let r0 = std::f64::consts::SQRT_2 * (s0 * s1).sqrt();
+    for m in 1..LEVELS - 1 {
+        let r0 = 2.0 * level_sigma(m);
         let d: Vec<f32> = inp.ladder[m + 1]
             .iter()
             .zip(&inp.ladder[m])
@@ -152,7 +151,7 @@ fn candidates(inp: &BallInput) -> Vec<Candidate> {
         }
         // The response of a bright disc is positive: the second Gaussian is darker than the first.
         // `ladder[m + 1] - ladder[m]` is negative at a bright centre, so the response is its negation.
-        let theta = (0.008f64).max(5.0 * 0.115 * noise / level_sigma(*m)) as f32;
+        let theta = (0.008f64).max(5.0 * 0.12 * noise / level_sigma(*m)) as f32;
         for y in 1..h - 1 {
             for x in 1..w - 1 {
                 let v = -d[y * w + x];
@@ -327,9 +326,9 @@ fn refine(inp: &BallInput, c: &Candidate) -> Option<Refined> {
         });
     }
     let rf = result?;
-    // The size the scale-space gave and the size measured must agree.
+    // The size the scale-space gave (octave spacing) and the size measured must agree.
     let ratio = rf.r / c.r0;
-    if !(1.0 / CONSISTENT..=CONSISTENT).contains(&ratio) {
+    if !(1.0 / SEED_RATIO..=SEED_RATIO).contains(&ratio) {
         return None;
     }
     if rf.r < 2.0 * inp.r_min_px || rf.r > inp.r_max_px {

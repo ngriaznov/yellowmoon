@@ -533,25 +533,32 @@ const clamp = (value: number, min: number, max: number): number => Math.min(max,
 export const LENS_KINDS: readonly LensKind[] = ["default", "classic", "vintage", "petzval", "triplet", "sonnar", "detuned"];
 
 /**
- * What `lens_list` answers in the browser build (`docs/21` §1 and §10): the seven lenses with their names and lines. The starting amounts
- * are stand-ins (the shipped ones are in `data/lenses/`): Default starts at 0 and 0, every other lens at Flares 40 and Edges 50.
+ * What `lens_list` answers in the browser build (`docs/21` §1 and §10): the seven lenses as `data/lenses/` (version 1) describes them,
+ * with their names, lines, starting amounts and the designs they were computed from.
  */
 export const MOCK_LENSES: readonly LensInfo[] = [
-  ["default", "Default", "Clean and modern: even sharpness, faint glow.", 0, 0],
-  ["classic", "Classic", "Warm and gentle: soft glow, amber flares, smooth falloff.", 40, 50],
-  ["vintage", "Vintage", "Glows wide open, lower contrast, soft edges, a little swirl.", 40, 50],
-  ["petzval", "Petzval", "Very sharp centre, strong swirl, fast falloff.", 40, 50],
-  ["triplet", "Triplet", "Soft corners, busy flares, a crisp centre.", 40, 50],
-  ["sonnar", "Sonnar", "Smooth and glowing, with gentle edges.", 40, 50],
-  ["detuned", "Detuned", "Sharp only in the centre, with smeared flares.", 40, 50],
-].map(([kind, name, line, start_flares, start_edges]) => ({
+  ["default", "Default", "Clean and modern: even sharpness, faint glow.", 0, 0, "US 2,532,751 (J. G. Baker, Perkin-Elmer), Example 3"],
+  ["classic", "Classic", "Warm and gentle: soft glow, amber flares, smooth falloff.", 35, 30, "US 2,019,985 (H. W. Lee, Kapella Ltd)"],
+  ["vintage", "Vintage", "Glows wide open, lower contrast, soft edges, a little swirl.", 45, 40, "US 1,786,916 (W. Merte, Carl Zeiss), Fig. 2"],
+  ["petzval", "Petzval", "Very sharp centre, strong swirl, fast falloff.", 30, 70, "US 2,500,046 (W. Schade, Eastman Kodak)"],
+  ["triplet", "Triplet", "Soft corners, busy flares, a crisp centre.", 50, 35, "US 568,052 (H. D. Taylor), Series I"],
+  ["sonnar", "Sonnar", "Smooth and glowing, with gentle edges.", 40, 35, "US 2,084,309 (L. Bertele, Zeiss Ikon)"],
+  [
+    "detuned",
+    "Detuned",
+    "Sharp only in the centre, with smeared flares.",
+    45,
+    65,
+    "US 2,532,751 (J. G. Baker, Perkin-Elmer), Example 3; decentres and tilts seeded (seed 22), see README",
+  ],
+].map(([kind, name, line, start_flares, start_edges, design_source]) => ({
   kind: kind as LensKind,
   name: name as string,
   line: line as string,
   start_flares: start_flares as number,
   start_edges: start_edges as number,
   version: 1,
-  design_source: "Mock data, not a lens design",
+  design_source: design_source as string,
 }));
 
 /**

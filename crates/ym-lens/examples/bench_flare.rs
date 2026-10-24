@@ -143,20 +143,11 @@ fn main() {
         t.elapsed().as_secs_f64() * 1e3
     );
 
-    let img = ImageRef {
-        width,
-        height,
-        x0: 0,
-        y0: 0,
-        frame_width: width,
-        frame_height: height,
-        data: &data,
-    };
     let halo = halo_px(&plan, &planes, 1);
     println!("halo: {halo} px");
     // 1024 x 1024 tiles, each given its input with the halo, with the flares off (the other stages alone) and on:
     // the difference is L3.
-    let mut tiles_ms = |p: &LensPlan, tiles: &[(usize, usize)]| {
+    let tiles_ms = |p: &LensPlan, tiles: &[(usize, usize)]| {
         let t = Instant::now();
         let mut px = 0usize;
         for (tx, ty) in tiles {

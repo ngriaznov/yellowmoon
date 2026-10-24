@@ -206,13 +206,6 @@ impl<'a> Pass<'a> {
             .collect();
         // The blur map at the tile's pixels.
         let bt = self.tile_blur(input, r0, &shapes);
-        if std::env::var("YM_L1_DEBUG").is_ok() {
-            let nz = bt.iter().filter(|b| **b > 0.0).count();
-            for sh in shapes.iter().take(2) {
-                eprintln!("shape: c ({:.1},{:.1}) a {:.2} b {:.2} m {:?} density {:?} r_out {:.2} reach {:.1} cov at centre {:?}", sh.cx, sh.cy, sh.a, sh.b, sh.m, sh.density, sh.r_out, sh.reach, sh.coverage(sh.cx, sh.cy));
-            }
-            eprintln!("tile: r0 {r0} bt nonzero {nz}/{} shapes {} v_on {} t_on {} level {} sx {:.2}", bt.len(), shapes.len(), self.v_on, self.t_on, self.level, self.sx);
-        }
         if !self.v_on && !self.t_on && shapes.is_empty() {
             return crop_rgb(input, want);
         }
@@ -374,8 +367,10 @@ impl<'a> Pass<'a> {
                 }
             }
         }
+        // The test needs a blur wide enough at this scale to tell from a sharp edge.
+        let hk = self.hk;
         for (b, z) in bt.iter_mut().zip(&zero) {
-            if *z {
+            if *z && f64::from(*b) * hk >= SHARP_TEST_FROM_PX {
                 *b = 0.0;
             }
         }

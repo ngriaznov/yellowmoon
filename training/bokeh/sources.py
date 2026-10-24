@@ -15,10 +15,11 @@ photo's original or a scaled copy of it, in 16 zip archives named by the first h
 **Tiles.** Each photo that passes the sharpness filter gives up to two 512 x 512 tiles at its native scale (so the
 pixel scale is the one the network runs at), chosen where the strong edges are sharp. The filter is the research
 note's mitigation of the recipe's main label noise (a source's own bokeh is labelled "in focus"):
-`classical.edge_stats` reads the blur of the strong edges, a tile is kept when at most `SOFT_MAX` of them are soft
-(disc radius above 2.5 px) and it has edges at all. Each tile is stored as a JPEG (quality 96, no chroma
+`classical.patch_fractions` reads the blur of every edge in 32-px blocks (a disc radius above 2.5 px is soft); a tile is
+kept when at least `SHARP_MIN` of its blocks are sharp-textured and at most `SOFT_MAX` soft-textured, which drops
+the shallow-depth-of-field photos (natural bokeh and the flat backdrops that go with it). Each tile is stored as a JPEG (quality 96, no chroma
 subsampling) with its instance-id map as a PNG, in shards (`shard-00000.bin` and `.json`), and the ids of the
-instances that may be cut out (between 2 % and 55 % of the tile, at least 85 % of the instance inside it).
+instances that may be cut out (between 1 % and 60 % of the tile, at least 75 % of the instance inside it).
 """
 
 import csv
@@ -42,9 +43,9 @@ TILE = 512
 #: The frame's long edge must be at least this many pixels (the mirror's photos are at most 1024).
 MIN_LONG_EDGE = 700
 MAX_CANDS = 8
-SOFT_MAX = 0.30
-DENSITY_MIN = 0.004
-STRIDE = 128
+#: A tile needs this share of sharp-textured 32-px blocks and at most this share of soft-textured ones.
+SHARP_MIN = 0.75
+SOFT_MAX = 0.04
 TILES_PER_PHOTO = 2
 VAL_SHARE = 0.04
 CC_BY_2 = "https://creativecommons.org/licenses/by/2.0/"
@@ -172,30 +173,27 @@ def gray_of(rgb: np.ndarray) -> np.ndarray:
     return 0.299 * f[..., 0] + 0.587 * f[..., 1] + 0.114 * f[..., 2]
 
 
-def tile_candidates(gray: np.ndarray, tile: int = TILE, stride: int = STRIDE, n: int = TILES_PER_PHOTO) -> list[dict]:
-    """Up to `n` non-overlapping tile positions of a photo, best first, each with its edge statistics; positions whose
-    tile has too few edges, too many soft ones, or is flat, black or blown out are left out."""
+def tile_candidates(gray: np.ndarray, tile: int = TILE, stride: int | None = None, n: int = TILES_PER_PHOTO) -> list[dict]:
+    """Up to `n` non-overlapping tile positions of a photo, best first, each with its patch statistics
+    (`classical.patch_fractions`): a tile is kept when at least `SHARP_MIN` of its 32-px blocks are sharp-textured and at
+    most `SOFT_MAX` soft-textured, and it is not black or blown out. That drops photos with natural bokeh, which would
+    otherwise be labelled "in focus" (the recipe's main label noise), and the flat backdrops that often go with it."""
     h, w = gray.shape
     if h < tile or w < tile:
         return []
-    edge, radius = classical.edge_radii(gray)
-    g0 = classical.gradient_magnitude(gray)
+    stride = stride or tile // 4  # 128 px for a 512-px tile
+    edge, radius = classical.edge_radii(gray, None)
     found = []
     for y in sorted({*range(0, h - tile + 1, stride), h - tile}):
         for x in sorted({*range(0, w - tile + 1, stride), w - tile}):
             sl = (slice(y, y + tile), slice(x, x + tile))
-            e = edge[sl]
-            cnt = int(e.sum())
-            if cnt / (tile * tile) < DENSITY_MIN:
-                continue
-            gt = g0[sl][e]
-            strong = gt >= np.percentile(gt, 67)
-            soft = float((radius[sl][e][strong] > classical.SOFT_RADIUS_PX).mean())
             tg = gray[sl]
-            if soft > SOFT_MAX or tg.std() < 0.03 or tg.mean() < 0.03 or tg.mean() > 0.97:
+            if tg.mean() < 0.03 or tg.mean() > 0.97:
                 continue
-            found.append({"y": y, "x": x, "density": cnt / (tile * tile), "soft": soft,
-                          "score": cnt / (tile * tile) * (1 - soft)})
+            f = classical.patch_fractions(edge[sl], radius[sl])
+            if f["sharp"] < SHARP_MIN or f["soft"] > SOFT_MAX:
+                continue
+            found.append({"y": y, "x": x, **f, "score": f["sharp"] - 2 * f["soft"]})
     found.sort(key=lambda c: (-c["score"], c["y"], c["x"]))
     kept: list[dict] = []
     for c in found:
@@ -212,7 +210,7 @@ def candidate_ids(tile_ids: np.ndarray, full_ids: np.ndarray) -> list[int]:
     area_full = np.bincount(full_ids.ravel(), minlength=256)
     total = tile_ids.size
     ok = [(int(area_tile[i]), i) for i in range(1, 256)
-          if 0.02 * total <= area_tile[i] <= 0.55 * total and area_tile[i] >= 0.85 * area_full[i]]
+          if 0.01 * total <= area_tile[i] <= 0.6 * total and area_tile[i] >= 0.75 * area_full[i]]
     return [i for _, i in sorted(ok, reverse=True)[:MAX_CANDS]]
 
 
@@ -228,13 +226,14 @@ def encode_png(ids: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
-def photo_tiles(jpeg: bytes | Path, photo_id: str, mask_pngs: list[bytes], tile: int = TILE) -> tuple[list[dict], dict]:
+def photo_tiles(jpeg: bytes | Path, photo_id: str, mask_pngs: list[bytes], tile: int = TILE,
+                min_long_edge: int = MIN_LONG_EDGE) -> tuple[list[dict], dict]:
     """The tiles of one photo: a list of `{"jpg", "png", "meta"}` (empty when the photo fails the filter) and a
     short report (`reason`, the whole photo's edge statistics)."""
     with Image.open(jpeg if isinstance(jpeg, Path) else io.BytesIO(jpeg)) as im:
         rgb = np.asarray(im.convert("RGB"))
     h, w = rgb.shape[:2]
-    if max(h, w) < MIN_LONG_EDGE:
+    if max(h, w) < min_long_edge:
         return [], {"reason": "small"}
     gray = gray_of(rgb)
     cands = tile_candidates(gray, tile)
@@ -250,7 +249,7 @@ def photo_tiles(jpeg: bytes | Path, photo_id: str, mask_pngs: list[bytes], tile:
             "jpg": encode_jpeg(np.ascontiguousarray(rgb[sl])),
             "png": encode_png(np.ascontiguousarray(tile_ids)),
             "meta": {"photo": photo_id, "x": c["x"], "y": c["y"], "frame": [w, h], "hd": round(hd, 3),
-                     "density": round(c["density"], 5), "soft": round(c["soft"], 4),
+                     "sharp": round(c["sharp"], 4), "soft": round(c["soft"], 4), "flat": round(c["flat"], 4),
                      "cands": candidate_ids(tile_ids, full_ids)},
         })
     return out, {"reason": "ok", "tiles": len(out)}

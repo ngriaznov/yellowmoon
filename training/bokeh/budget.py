@@ -208,8 +208,10 @@ class Ledger:
         `budget`, or the programme's spend plus the part of the plan not yet reserved is above the cap. `deadline_s` is
         the run's time limit in seconds from now. `slack` is the cost of the time a dead run's last heartbeat may lag."""
         now = self.clock()
-        if key in self.entries and self.entries[key]["state"] == "open":
-            return self.entries[key]
+        if key in self.entries:
+            if self.entries[key]["state"] == "open":
+                return self.entries[key]
+            raise ValueError(f"the run id {key!r} was used and settled; use another")
         if budget > self.cap:
             raise BudgetExceeded(f"--budget ${budget:.2f} is above the programme's cap ${self.cap:.2f}")
         if plan.worst > budget:
@@ -228,6 +230,19 @@ class Ledger:
         }
         self.save()
         return self.entries[key]
+
+    def record_small(self, key: str, plan: Plan, budget: float, seconds: float, fn: Fn) -> float:
+        """For the one-cent entrypoints (`results`): refuses when the plan's worst case is above `budget`, then writes an
+        entry settled at the cost of `seconds`. It does not reserve against the programme's cap, so that reading the results
+        is never refused because the cap has been reached."""
+        if plan.worst > budget:
+            raise BudgetExceeded(f"{plan.entry} could cost up to ${plan.worst:.3f}, more than the budget ${budget:.3f}")
+        cost = fn.cost(seconds)
+        self.entries[key] = {"entry": plan.entry, "state": "settled", "reserved": round(plan.worst, 6), "actual": round(cost, 6),
+                             "budget": budget, "started": self.clock(), "deadline": self.clock(), "inflight": 0.0,
+                             "slack": 0.0, "items": [[plan.entry, round(cost, 5)]], "done": []}
+        self.save()
+        return cost
 
     def charge(self, key: str, what: str, seconds: float, fn: Fn) -> float:
         """Adds `seconds` of a call of kind `fn` (with the margin) to the run's actual spend; returns the cost."""

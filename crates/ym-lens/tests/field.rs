@@ -126,7 +126,14 @@ fn edges_zero_with_anamorphic_zero_changes_nothing() {
             PixelRect::new(0, 0, w, h),
         )
         .unwrap();
-        assert_eq!(out, data);
+        // The field optics do nothing. Flares 70 is L3's: the picture keeps 1 - a of itself and gets the flare
+        // light on top, never less (`tests/flare.rs` checks the exact identity with a lens that has no flare
+        // light).
+        let a = p.light_fraction();
+        assert!(a > 0.0);
+        for (o, x) in out.iter().zip(&data) {
+            assert!(f64::from(*o) >= (1.0 - a) * f64::from(*x) - 1e-6, "{kind}");
+        }
     }
 }
 

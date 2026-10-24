@@ -14,32 +14,19 @@
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
-/// Number of levels of the scale ladder: level 0 is the plane itself, level `m >= 1` is blurred by
-/// `2^((m - 1) / 2)` pixels.
-pub(super) const LEVELS: usize = 11;
+/// Number of levels of the scale ladder: level 0 is the plane itself, level `m >= 1` is blurred by `2^(m - 1)`
+/// pixels (1, 2, 4, 8, 16).
+pub(super) const LEVELS: usize = 6;
 
 /// The Gaussian of each ladder level, in pixels (level 0 is the raw plane).
 pub(super) fn level_sigma(m: usize) -> f64 {
-    const SQRT2: f64 = std::f64::consts::SQRT_2;
-    const SIGMAS: [f64; LEVELS] = [
-        0.0,
-        1.0,
-        SQRT2,
-        2.0,
-        2.0 * SQRT2,
-        4.0,
-        4.0 * SQRT2,
-        8.0,
-        8.0 * SQRT2,
-        16.0,
-        16.0 * SQRT2,
-    ];
+    const SIGMAS: [f64; LEVELS] = [0.0, 1.0, 2.0, 4.0, 8.0, 16.0];
     SIGMAS[m]
 }
 
 /// The pairs of ladder levels `(j, k)` whose gradient ratios give the blur, each one octave apart in
 /// Gaussian width (0 to 1, 1 to 2, 2 to 4, 4 to 8, 8 to 16 pixels).
-pub(super) const PAIRS: [(usize, usize); 5] = [(0, 1), (1, 3), (3, 5), (5, 7), (7, 9)];
+pub(super) const PAIRS: [(usize, usize); 5] = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)];
 
 /// Blur of the photo's own optics and sampling, in pixels, added in quadrature to every Gaussian of the model.
 ///

@@ -1,0 +1,91 @@
+# The bokeh map's training on Modal (training/bokeh/README.md). Modal's client speaks gRPC, which the agents' cloud proxy
+# does not carry, so a run starts from here: a push to the branch `bokeh-train-run` runs `modal run` with this file's ENTRY
+# and ARGS. Needs the repository secrets MODAL_TOKEN_ID and MODAL_TOKEN_SECRET.
+#
+# Budget: the owner's decision of 2026-10-24 is "Yes, use Modal for the bokeh map, cap $10" (about $11 of the account's hard
+# $30 limit is left). Every entrypoint takes --budget, plans its worst case (every call at its time limit, Modal's prices,
+# a 25 % margin; training/bokeh/budget.py), refuses to start when that is above --budget or when the programme's spend so
+# far plus it would pass $10, and keeps its count in a ledger on the Modal volume across restarts. The job runs `modal run`
+# without --detach, so cancelling this job stops the app on Modal too. Every change of ENTRY or ARGS below that spends
+# money needs the owner's yes first.
+#
+# ENTRY is the modal_app entrypoint, in the order of a first run:
+#   results   only reads the volume's metrics and the ledger (about a cent): the default, so a stray push is harmless
+#   check     the dry check: are the volumes and photos reachable, how long do a few photos take.     ARGS: --budget 0.5
+#   prepare   index the masks, fetch the archives, build the tiles (expected cents, worst case $1.3).  ARGS: --budget 1.5
+#   preview   sheets of synthesised inputs and labels from the tiles, to look at.                     ARGS: --budget 0.3
+#   train     one run on one L4 (expected $2 to $2.7, worst case $2.9 for 100 minutes).
+#             ARGS: --budget 5 --minutes 100 --run bokeh-1
+#
+# The results (weights, metrics, samples, previews, credits, the ledger, the log) go to the temporary branch
+# `bokeh-train-runs` and to an artifact; never to main.
+name: bokeh-train
+
+on:
+  push:
+    branches: [bokeh-train-run]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bokeh-train
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      # Read under other names: the step "Modal tokens" strips stray whitespace (a pasted secret can end in a newline;
+      # Modal's tokens never contain whitespace) and exports the clean values as MODAL_TOKEN_ID and MODAL_TOKEN_SECRET.
+      SECRET_MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      SECRET_MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      ENTRY: results
+      ARGS: ""
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install modal==1.6.2
+      - name: Modal tokens
+        shell: bash
+        run: |
+          id="$(printf '%s' "$SECRET_MODAL_TOKEN_ID" | tr -d '[:space:]')"
+          secret="$(printf '%s' "$SECRET_MODAL_TOKEN_SECRET" | tr -d '[:space:]')"
+          test -n "$id" && test -n "$secret"
+          echo "::add-mask::$id"
+          echo "::add-mask::$secret"
+          echo "MODAL_TOKEN_ID=$id" >> "$GITHUB_ENV"
+          echo "MODAL_TOKEN_SECRET=$secret" >> "$GITHUB_ENV"
+      # The log and the results are written outside the checkout while Modal runs: Modal uploads the `training` package
+      # when an app starts and fails if a file under it changes meanwhile.
+      - name: Run
+        shell: bash
+        run: modal run -m training.bokeh.modal_app::$ENTRY $ARGS 2>&1 | tee "$RUNNER_TEMP/bokeh.log"
+      - name: Fetch the results from the volume
+        if: always()
+        run: modal run -m training.bokeh.modal_app::fetch --dest "$RUNNER_TEMP/runs"
+      - name: Push the results to bokeh-train-runs
+        if: always()
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p training/bokeh/runs
+          cp -r "$RUNNER_TEMP/runs/." training/bokeh/runs/ 2>/dev/null || true
+          cp "$RUNNER_TEMP/bokeh.log" training/bokeh/runs/ 2>/dev/null || true
+          git checkout -B bokeh-train-runs
+          git add -f training/bokeh/runs
+          git diff --cached --quiet && exit 0
+          git commit -q -m "Bokeh training results (temporary branch)" \
+            -m "From the bokeh-train workflow, run ${GITHUB_RUN_ID}."
+          git push -f origin bokeh-train-runs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bokeh-train
+          path: training/bokeh/runs
+          retention-days: 14
