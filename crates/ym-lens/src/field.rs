@@ -41,6 +41,7 @@ use crate::data::LensData;
 use crate::error::LensError;
 use crate::image::{ImageRef, PixelRect};
 use crate::plan::{Axis, LensPlan};
+use crate::simd::F4;
 use crate::spectral::CameraResponse;
 
 /// Number of table sizes `n = 3, 5, ..., MAX_TAPS_SIDE`.
@@ -515,57 +516,42 @@ impl Pyramid {
 // ---------------------------------------------------------------------------------------------------------
 // Sampling
 
-/// Fractional bits of the fixed-point tap positions (positions are pixels times `2^FRAC`).
+/// Fractional bits of the fixed-point tap positions.
 const FRAC: u32 = 20;
+const FRAC_MASK: i64 = (1 << FRAC) - 1;
+const FRAC_SCALE: f32 = 1.0 / (1u32 << FRAC) as f32;
 
-/// A fixed-point position from pixels.
+/// A fixed-point value from a real one.
 #[inline(always)]
 fn fix(x: f64) -> i64 {
     floor_i64(x * f64::from(1u32 << FRAC) + 0.5)
 }
 
-/// A texel coordinate in fixed point (`FRAC` fractional bits, texel centres at integers) from a pixel
-/// position in fixed point, at mip level `level`.
 #[inline(always)]
-fn texel_coord(pos: i64, level: u32) -> i64 {
-    (pos >> level) - (1i64 << (FRAC - 1))
+fn lerp(a: F4, b: F4, t: F4) -> F4 {
+    a.add(t.mul(b.sub(a)))
 }
 
-/// The integer part and the 16-bit-quantised fraction of a fixed-point texel coordinate.
-#[inline(always)]
-fn split(u: i64) -> (i64, f32) {
-    let frac = (u & ((1i64 << FRAC) - 1)) >> (FRAC - 16);
-    (u >> FRAC, frac as f32 * (1.0 / 65536.0))
-}
-
-#[inline(always)]
-fn lerp4(a: V4, b: V4, t: f32) -> V4 {
-    [
-        a[0] + t * (b[0] - a[0]),
-        a[1] + t * (b[1] - a[1]),
-        a[2] + t * (b[2] - a[2]),
-        a[3] + t * (b[3] - a[3]),
-    ]
-}
-
-/// Bilinear sample of `lv` at the fixed-point pixel position `(px, py)`.
+/// Bilinear sample of `lv` at the texel coordinate `(ux, uy)`: fixed point, relative to the level's first
+/// texel centre, so texel `(i, j)` is at `(i, j) << FRAC`.
 ///
 /// With `CLAMP` the texel indices are held inside the level (for a pixel whose taps might leave it, which a
 /// covering input rules out); without it they are used as they are.
 #[inline(always)]
-fn sample<const CLAMP: bool>(lv: &Level, level: u32, px: i64, py: i64) -> V4 {
-    let (mut ix, fx) = split(texel_coord(px, level));
-    let (mut iy, fy) = split(texel_coord(py, level));
+fn sample<const CLAMP: bool>(lv: &Level, ux: i64, uy: i64) -> F4 {
+    let (mut ix, mut iy) = (ux >> FRAC, uy >> FRAC);
+    let fx = F4::splat((ux & FRAC_MASK) as i32 as f32 * FRAC_SCALE);
+    let fy = F4::splat((uy & FRAC_MASK) as i32 as f32 * FRAC_SCALE);
     if CLAMP {
-        ix = ix.max(lv.bx0).min(lv.bx0 + lv.w as i64 - 2);
-        iy = iy.max(lv.by0).min(lv.by0 + lv.h as i64 - 2);
+        ix = ix.max(0).min(lv.w as i64 - 2);
+        iy = iy.max(0).min(lv.h as i64 - 2);
     }
-    let at = (iy - lv.by0) as usize * lv.w + (ix - lv.bx0) as usize;
-    let r0 = &lv.data[at..at + 2];
-    let r1 = &lv.data[at + lv.w..at + lv.w + 2];
-    let top = lerp4(r0[0], r0[1], fx);
-    let bot = lerp4(r1[0], r1[1], fx);
-    lerp4(top, bot, fy)
+    let at = iy as usize * lv.w + ix as usize;
+    // One slice for both rows: a single bounds check.
+    let rows = &lv.data[at..at + lv.w + 2];
+    let top = lerp(F4::load(&rows[0]), F4::load(&rows[1]), fx);
+    let bot = lerp(F4::load(&rows[lv.w]), F4::load(&rows[lv.w + 1]), fx);
+    lerp(top, bot, fy)
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -667,35 +653,42 @@ fn pixel(geo: &Geometry, pyr: &Pyramid, i: usize, j: usize) -> [f64; 3] {
     let (cx, cy) = (i as f64 + 0.5, j as f64 + 0.5);
     let level = level_for(k.omega, geo.opts.spacing_max).min(geo.lmax);
     let scale = f64::from(1u32 << level);
-    let n = taps_for(k.omega / scale);
+    let inv = 1.0 / scale;
+    let n = taps_for(k.omega * inv);
     let lv = &pyr.levels[level as usize];
     let nf = n as f64;
-    // Table (tx, ty) -> frame offset omega (tx r + ty t) with r = (cs, sn), t = (sn, -cs).
+    // Table (tx, ty) -> frame offset omega (tx r + ty t) with r = (cs, sn), t = (sn, -cs). Positions below
+    // are texel coordinates of the level, fixed point, relative to its first texel centre.
     let step = 2.0 * k.omega / nf;
     let first = k.omega * (-1.0 + 1.0 / nf);
-    let (bx, by) = (
-        fix(cx + first * (k.cs + k.sn)),
-        fix(cy + first * (k.sn - k.cs)),
-    );
-    let (ea_x, ea_y) = (fix(step * k.cs), fix(step * k.sn));
-    let (eb_x, eb_y) = (fix(step * k.sn), fix(-step * k.cs));
+    let to_texel = |pos: f64, origin: i64| fix(pos * inv - 0.5) - (origin << FRAC);
+    let bx = to_texel(cx + first * (k.cs + k.sn), lv.bx0);
+    let by = to_texel(cy + first * (k.sn - k.cs), lv.by0);
+    let (ea_x, ea_y) = (fix(step * k.cs * inv), fix(step * k.sn * inv));
+    let (eb_x, eb_y) = (fix(step * k.sn * inv), fix(-step * k.cs * inv));
     let shifts = geo.fringe_shifts(&k);
     let shifted = shifts.iter().any(|s| s[0] != 0.0 || s[1] != 0.0);
-    let shift_fix: [[i64; 2]; 3] = std::array::from_fn(|c| [fix(shifts[c][0]), fix(shifts[c][1])]);
+    let shift_fix: [[i64; 2]; 3] =
+        std::array::from_fn(|c| [fix(shifts[c][0] * inv), fix(shifts[c][1] * inv)]);
 
     // The positions the taps take: base + col ea + row eb, col and row in 0..n. Do they stay inside the
     // level? (They do whenever the input covers the halo; the clamped path keeps a short input safe.)
     let last = (n - 1) as i64;
     let reach = shift_fix.iter().flatten().map(|v| v.abs()).max().unwrap_or(0);
-    let span = |b: i64, ea: i64, eb: i64| (b + (last * ea).min(0) + (last * eb).min(0) - reach, b + (last * ea).max(0) + (last * eb).max(0) + reach);
+    let span = |b: i64, ea: i64, eb: i64| {
+        (
+            b + (last * ea).min(0) + (last * eb).min(0) - reach,
+            b + (last * ea).max(0) + (last * eb).max(0) + reach,
+        )
+    };
     let (x_lo, x_hi) = span(bx, ea_x, eb_x);
     let (y_lo, y_hi) = span(by, ea_y, eb_y);
-    let inside = split(texel_coord(x_lo, level)).0 >= lv.bx0
-        && split(texel_coord(x_hi, level)).0 <= lv.bx0 + lv.w as i64 - 2
-        && split(texel_coord(y_lo, level)).0 >= lv.by0
-        && split(texel_coord(y_hi, level)).0 <= lv.by0 + lv.h as i64 - 2;
+    let inside = (x_lo >> FRAC) >= 0
+        && (x_hi >> FRAC) <= lv.w as i64 - 2
+        && (y_lo >> FRAC) >= 0
+        && (y_hi >> FRAC) <= lv.h as i64 - 2;
 
-    let (t0, t1) = ((1.0 - k.t) as f32, k.t as f32);
+    let (t0, t1) = (F4::splat((1.0 - k.t) as f32), F4::splat(k.t as f32));
     let lo = geo.tables.table(n, k.seg);
     let hi = geo.tables.table(n, k.seg + 1);
     let mut acc = [0.0f64; 3];
@@ -705,20 +698,19 @@ fn pixel(geo: &Geometry, pyr: &Pyramid, i: usize, j: usize) -> [f64; 3] {
                 let (mut px, mut py) = (bx + row as i64 * eb_x, by + row as i64 * eb_y);
                 let wl = &lo[row * n..(row + 1) * n];
                 let wh = &hi[row * n..(row + 1) * n];
-                let mut sum = [0.0f32; 4];
+                let mut sum = F4::splat(0.0);
                 for (a, b) in wl.iter().zip(wh) {
                     let s = if clamp {
-                        sample::<true>(lv, level, px, py)
+                        sample::<true>(lv, px, py)
                     } else {
-                        sample::<false>(lv, level, px, py)
+                        sample::<false>(lv, px, py)
                     };
-                    // All four lanes (the padding lane is zero), so the sum is one vector operation.
-                    for c in 0..4 {
-                        sum[c] += (t0 * a[c] + t1 * b[c]) * s[c];
-                    }
+                    let w = t0.mul(F4::load(a)).add(t1.mul(F4::load(b)));
+                    sum = sum.add(w.mul(s));
                     px += ea_x;
                     py += ea_y;
                 }
+                let sum = sum.to_array();
                 for c in 0..3 {
                     acc[c] += f64::from(sum[c]);
                 }
@@ -731,18 +723,19 @@ fn pixel(geo: &Geometry, pyr: &Pyramid, i: usize, j: usize) -> [f64; 3] {
                     let mut py = by + shift_fix[c][1] + row as i64 * eb_y;
                     let wl = &lo[row * n..(row + 1) * n];
                     let wh = &hi[row * n..(row + 1) * n];
-                    let mut sum = 0.0f32;
+                    let mut sum = F4::splat(0.0);
                     for (a, b) in wl.iter().zip(wh) {
                         let s = if clamp {
-                            sample::<true>(lv, level, px, py)
+                            sample::<true>(lv, px, py)
                         } else {
-                            sample::<false>(lv, level, px, py)
+                            sample::<false>(lv, px, py)
                         };
-                        sum += (t0 * a[c] + t1 * b[c]) * s[c];
+                        let w = t0.mul(F4::load(a)).add(t1.mul(F4::load(b)));
+                        sum = sum.add(w.mul(s));
                         px += ea_x;
                         py += ea_y;
                     }
-                    total += f64::from(sum);
+                    total += f64::from(sum.to_array()[c]);
                 }
                 acc[c] = total;
             }

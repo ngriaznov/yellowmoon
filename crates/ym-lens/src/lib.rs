@@ -28,6 +28,7 @@ mod l1;
 mod l3;
 mod plan;
 mod planes;
+mod simd;
 mod spectral;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
