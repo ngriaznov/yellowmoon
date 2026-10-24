@@ -570,10 +570,20 @@ fn lens_renderer(gpu: Option<&Arc<Gpu>>, strict: bool) -> Renderer {
             },
             gpu_strict: strict,
             full_tile_px: 256,
+            lens: Some(lens_library()),
+            data_root: Some(data_root()),
             ..RenderOptions::default()
         },
     )
     .expect("render thread")
+}
+
+/// The shipped lens data, loaded once.
+fn lens_library() -> Arc<ym_lens::LensLibrary> {
+    static LIBRARY: std::sync::OnceLock<Arc<ym_lens::LensLibrary>> = std::sync::OnceLock::new();
+    Arc::clone(LIBRARY.get_or_init(|| {
+        Arc::new(ym_lens::LensLibrary::load(&data_root()).expect("the shipped lens data load"))
+    }))
 }
 
 fn lens_context(home: &Path, gpu: Option<&Arc<Gpu>>, strict: bool) -> ExportContext {

@@ -278,17 +278,20 @@ def _round(x):
 
 
 def real_sharp(model: BokehNet, ts: sources.TileSet, pool: list[int], n: int, baseline_n: int) -> dict:
-    """False positives on real sharp tiles (module docstring): shares of pixels at `b >= 2 b_min`."""
+    """False positives on real sharp tiles (module docstring): shares of pixels at `b >= 2 b_min`. The network runs on the
+    device its weights are on (a GPU in a training run); the tiles, the baseline and the numbers stay on the CPU."""
     from training.bokeh.encode import srgb_to_linear
 
+    device = next(model.parameters()).device
     picks = pool[::max(1, len(pool) // max(1, n))][:n]
     cnt = {k: [0, 0, 0] for k in ("model", "classical")}  # pixels, predicted blurred, predicted blurred with confidence
     for j, i in enumerate(picks):
         rgb, _, _, hd = ts.get(i)
-        e = encode_t(srgb_to_linear(torch.from_numpy(rgb.copy()).permute(2, 0, 1).float().unsqueeze(0) / 255))
+        e = encode_t(srgb_to_linear(torch.from_numpy(rgb.copy()).permute(2, 0, 1).float().unsqueeze(0) / 255))  # on the CPU
         with torch.no_grad():
-            r, _, conf = radius_and_confidence(model(e))
-        maps = {"model": ((r[0] / hd).numpy(), conf[0].numpy())}
+            r, _, conf = radius_and_confidence(model(e.to(device)))
+        r, conf = r[0].cpu(), conf[0].cpu()
+        maps = {"model": ((r / hd).numpy(), conf.numpy())}
         if j < baseline_n:
             rad, cf = classical.estimate(classical.gray_from_encoded(e[0].double().numpy()))
             h2, w2 = rad.shape[0] // 2, rad.shape[1] // 2

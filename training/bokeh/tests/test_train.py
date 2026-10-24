@@ -277,3 +277,41 @@ def test_weights_that_are_not_finite_are_never_evaluated_drawn_or_checkpointed(t
     torch.save(state, out / "ckpt.pt")
     with pytest.raises(train.TrainingDiverged, match="weights in the checkpoint are not finite"):
         train.train(tile_folder, out, {**SMALL, "steps": 8}, log=lambda *_: None)
+
+
+class _HostRefusing(torch.Tensor):
+    """Stands in for a tensor on a GPU, which CUDA-less machines do not have: like one, it cannot become a numpy array
+    before `.cpu()` has brought it back (the error is CUDA's own wording)."""
+
+    def numpy(self, *args, **kwargs):
+        raise TypeError("can't convert cuda:0 device type tensor to numpy. Use Tensor.cpu() to copy the tensor to host memory first.")
+
+    def cpu(self, *args, **kwargs):
+        return self.as_subclass(torch.Tensor)
+
+
+class _OffHostNet(torch.nn.Module):
+    """A network "on another device": its weights live on the `meta` device (so `next(parameters()).device` is not the
+    CPU) and it records where its input was. The outputs it returns refuse `.numpy()` like a GPU's."""
+
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.empty(1, device="meta"))
+        self.input_devices: list[torch.device] = []
+
+    def forward(self, x):
+        self.input_devices.append(x.device)
+        n, _, h, w = x.shape
+        return torch.zeros(n, 2, h // 2, w // 2).as_subclass(_HostRefusing)
+
+
+def test_the_real_sharp_check_runs_the_network_where_its_weights_are_and_brings_the_answers_back(tile_folder):
+    """Was a Modal run's last step: the input stayed on the CPU while the model was on the GPU, and the outputs were
+    turned into numpy arrays without `.cpu()`. Without a GPU the other device is `meta`."""
+    net = _OffHostNet()
+    ts = train.sources.TileSet(tile_folder, SMALL["val_share"])
+    pool = ts.val or ts.train
+    out = train.real_sharp(net, ts, pool, 3, baseline_n=2)  # the baseline reads the CPU copy, whatever the network's device
+    assert net.input_devices and all(d == torch.device("meta") for d in net.input_devices)
+    assert out["tiles"] == len(net.input_devices) and set(out) == {"tiles", "model", "classical"}
+    assert 0.0 <= out["model"]["fp_rate_gated"] <= out["model"]["fp_rate"] <= 1.0
