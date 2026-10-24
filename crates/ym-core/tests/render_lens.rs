@@ -1058,7 +1058,7 @@ fn lens_timing_of_the_views_on_24_megapixels() {
     let lensed = with_lens(&src, VINTAGE);
     let r = cpu();
     let fit = cell(1500.0, 1000.0);
-    let mut view = |what: &str, src: &PhotoSource, state: &ViewportState| {
+    let view = |what: &str, src: &PhotoSource, state: &ViewportState| {
         let t = std::time::Instant::now();
         let f = fresh_frame(&r, src, state);
         say_timing(what, t, Some(&f.report));
