@@ -271,7 +271,8 @@ fn for_every_look_the_dngs_pixels_through_aces2_are_the_apps_picture() {
         assert!(worst < 1e-5, "{name}: {worst}");
         // The preview is the picture of the app (sRGB, display-linear), not the DNG's own render.
         let preview = render(&r, &s, FullTarget::DngPreview);
-        assert_eq!(preview.rgb, picture.rgb, "{name}: the preview");
+        let srgb = render(&r, &s, FullTarget::DisplayLinear(OutputTarget::Srgb));
+        assert_eq!(preview.rgb, srgb.rgb, "{name}: the preview");
     }
 }
 

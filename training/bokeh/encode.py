@@ -24,6 +24,11 @@ The network answers per pixel (output at half the input's resolution):
 The app turns that into the spec's units (`docs/21` section 7) with the plane's half-diagonal `hd` in pixels
 (`hypot(w, h) / 2` of the reduced plane, before it is padded to a multiple of 32; the padding is replicated edge
 pixels and the output is cropped back):  b = exp(mu) / hd  and  c = exp(-exp(s) / CONF_BETA0).
+
+`c` says how sure the *radius* is (a relative error), so it is high on sharp areas (the radius is the floor, easy) and low
+inside strong blur: gating on it throws good blur away. Whether a pixel is out of focus is a different question, and the
+Laplace output answers it directly: `detection_probability` is P(b >= t) for the pixel's own Laplace(mu, beta) of log r,
+a function of the two outputs and nothing else. The runtime decides "out of focus" with `P >= 0.7` (README, "The decision").
 """
 
 import numpy as np
@@ -48,6 +53,9 @@ INPUT_MEAN = 0.30
 INPUT_STD = 0.15
 #: confidence c = exp(-beta / CONF_BETA0)
 CONF_BETA0 = 0.25
+#: The blur that counts as "out of focus" (`b >= 2 * B_MIN`) and the probability above which a pixel is called so.
+B_DECIDE = 2 * B_MIN
+DECISION_P = 0.7
 
 
 def luma_t(rgb: torch.Tensor) -> torch.Tensor:
@@ -104,3 +112,14 @@ def radius_and_confidence(out: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor
     r = torch.exp(out[:, 0].float())
     beta = torch.exp(out[:, 1].float().clamp(-6, 3))
     return r, beta, torch.exp(-beta / CONF_BETA0)
+
+
+def detection_probability(mu: torch.Tensor, s: torch.Tensor, hd, b_thr: float = B_DECIDE) -> torch.Tensor:
+    """P(b >= b_thr) for the network's outputs `mu` and `s` (any shape) of a plane of half-diagonal `hd` pixels (a float,
+    or a tensor that broadcasts with `mu`). With `x = log(b_thr * hd)` (the threshold in the output's units, pixels) and
+    `beta = exp(s)`, the Laplace(mu, beta) tail is `1 - exp(-(mu - x) / beta) / 2` for `mu >= x` and
+    `exp(-(x - mu) / beta) / 2` below it. `P >= 0.9` is the same as the lower-quantile rule `mu - 1.61 beta >= x`."""
+    beta = torch.exp(s.float().clamp(-6, 3))
+    x = torch.log(torch.as_tensor(b_thr * hd, dtype=torch.float32, device=mu.device).clamp(min=1e-6))
+    d = mu.float() - x
+    return torch.where(d >= 0, 1 - 0.5 * torch.exp(-d.abs() / beta), 0.5 * torch.exp(-d.abs() / beta))

@@ -100,7 +100,7 @@ impl GlowProfiles {
             k,
             m_core: [0.0; 3],
             veil_radius: plan.lens().flare.veil.radius,
-            fraction: g.fraction,
+            fraction: plan.flare_strengths().glow,
         };
         for c in 0..3 {
             let mut mass = 0.0;

@@ -15,8 +15,8 @@ use scenes::{
     Noise, Scene, erode, night_scene_spaced, sharp_scene, soft_night_scene, subject_scene,
 };
 use ym_lens::{
-    Axis, ImageRef, LensError, LensKind, LensPlan, LensPlanes, PixelRect, ReshapeReason, apply,
-    halo_px, reshape, reshape_halo,
+    Axis, BlurMapInput, ImageRef, LensError, LensKind, LensPlan, LensPlanes, PixelRect,
+    ReshapeReason, apply, halo_px, reshape, reshape_halo,
 };
 
 const W: usize = 1000;
@@ -757,4 +757,69 @@ fn an_input_too_small_for_the_halo_is_refused() {
     let out = reshape_tile(&p, &planes, 1, &scene.img.data, (W, H), corner);
     assert_eq!(out.len(), 3 * 80 * 80);
     let _ = erode;
+}
+
+#[test]
+fn tiles_equal_the_whole_frame_with_an_external_blur_map() {
+    // The map of another source (the learned model) goes through the same pipeline: tiles are the whole frame.
+    let scene = subject_scene(W, H, [5.0, 9.0, 14.0], Noise::LOW, 7);
+    let hd = 600.97f64;
+    let (cw, ch) = (W.div_ceil(2), H.div_ceil(2));
+    let (mut b, mut b_low) = (vec![0.0f32; cw * ch], vec![0.0f32; cw * ch]);
+    for cy in 0..ch {
+        for cx in 0..cw {
+            let r = f64::from(scene.truth_r[(2 * cy).min(H - 1) * W + (2 * cx).min(W - 1)]);
+            let (v, lo) = if r > 0.0 {
+                (r / hd, 0.8 * r / hd)
+            } else {
+                (1.0 / hd, 1.0 / hd)
+            };
+            b[cy * cw + cx] = v as f32;
+            b_low[cy * cw + cx] = lo as f32;
+        }
+    }
+    let map = BlurMapInput {
+        width: cw,
+        height: ch,
+        plane_width: W,
+        plane_height: H,
+        b,
+        b_low,
+    };
+    let p = plan(LensKind::Default, 0.0, 100.0, 100.0, W, H, Axis::X);
+    let planes = LensPlanes::build_with_map(
+        &p,
+        &whole(W, H, &scene.img.data),
+        scene.focus,
+        Some(&map),
+        &|| false,
+    )
+    .expect("planes");
+    assert!(planes.bokeh().expect("bokeh").active());
+    let data = &scene.img.data;
+    let whole_frame = reshape_tile(&p, &planes, 1, data, (W, H), PixelRect::new(0, 0, W, H));
+    assert!(
+        whole_frame.iter().zip(data).any(|(a, b)| a != b),
+        "nothing changed"
+    );
+    for (nx, ny) in [(2usize, 2usize), (3, 3), (5, 4)] {
+        let mut assembled = vec![0.0f32; 3 * W * H];
+        for rect in common::tiles(W, H, nx, ny) {
+            let a = reshape_tile(&p, &planes, 1, data, (W, H), rect);
+            for c in 0..3 {
+                for y in 0..rect.h {
+                    let dst = c * W * H + (rect.y + y) * W + rect.x;
+                    let src = c * rect.w * rect.h + y * rect.w;
+                    assembled[dst..dst + rect.w].copy_from_slice(&a[src..src + rect.w]);
+                }
+            }
+        }
+        assert!(
+            assembled
+                .iter()
+                .zip(&whole_frame)
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "{nx}x{ny} tiles differ from the whole frame"
+        );
+    }
 }

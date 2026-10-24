@@ -136,6 +136,10 @@ BODIES: tuple[Body, ...] = (
     _default(308, "DSC-RX100M2", "Sony RX100 II"),
     _default(374, "DSC-RX100M7", "Sony RX100 VII"),
     _default(365, "DSC-RX10M4", "Sony RX10 IV"),
+    # Registry 1.3.0, second step: the APS-C bodies whose files agree within 5 % (the new consistency rule of docs/03).
+    _default(312, "ILCE-6000", "Sony A6000"),
+    _default(357, "ILCE-6300", "Sony A6300"),
+    _default(360, "ILCE-6500", "Sony A6500"),
 )
 BODY_BY_ID = {b.model_id: b for b in BODIES}
 

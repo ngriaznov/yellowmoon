@@ -19,7 +19,8 @@ use scenes::{
 };
 use ym_lens::consts::{B_MIN, MAX_BALLS};
 use ym_lens::{
-    Axis, BokehPlanes, LensError, LensKind, LensPlan, LensPlanes, ReshapeReason, ReshapeReport,
+    Axis, BlurMapInput, BokehPlanes, LensError, LensKind, LensPlan, LensPlanes, ReshapeReason,
+    ReshapeReport,
 };
 
 const W: usize = 1000;
@@ -619,4 +620,128 @@ fn cancel_ends_the_build_at_any_step() {
             assert_eq!(seen.get(), stop_at, "polling stops once cancelled");
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// A blur map from another source (the learned model)
+// ---------------------------------------------------------------------------------------------------------------
+
+/// The scene's truth as a dense map, one cell per 2 x 2 pixels: `b` the true radius (a pixel of sharp detail reads
+/// 1 px) and `b_low` `low` times that where it is blurred.
+fn external_map(scene: &Scene, low: f64) -> BlurMapInput {
+    let (w, h) = (scene.img.w, scene.img.h);
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let (mut b, mut b_low) = (vec![0.0f32; cw * ch], vec![0.0f32; cw * ch]);
+    for cy in 0..ch {
+        for cx in 0..cw {
+            let r = f64::from(scene.truth_r[(2 * cy).min(h - 1) * w + (2 * cx).min(w - 1)]);
+            let (v, lo) = if r > 0.0 {
+                (r / HD, low * r / HD)
+            } else {
+                (1.0 / HD, 1.0 / HD)
+            };
+            b[cy * cw + cx] = v as f32;
+            b_low[cy * cw + cx] = lo as f32;
+        }
+    }
+    BlurMapInput {
+        width: cw,
+        height: ch,
+        plane_width: w,
+        plane_height: h,
+        b,
+        b_low,
+    }
+}
+
+fn planes_with_map(scene: &Scene, map: &BlurMapInput) -> LensPlanes {
+    let (w, h) = (scene.img.w, scene.img.h);
+    let p = plan(LensKind::Default, 0.0, 0.0, 100.0, w, h, Axis::X);
+    LensPlanes::build_with_map(
+        &p,
+        &whole(w, h, &scene.img.data),
+        scene.focus,
+        Some(map),
+        &|| false,
+    )
+    .expect("planes")
+}
+
+#[test]
+fn an_external_map_gives_the_blur_and_keeps_the_subject_sharp() {
+    let scene = subject_base().noisy(Noise::LOW, 31);
+    let map = external_map(&scene, 0.8);
+    let planes = planes_with_map(&scene, &map);
+    let bp = bokeh(&planes);
+    assert!(bp.active());
+    let (within, median, covered) = accuracy(&scene, bp, 0.6, 0.25);
+    eprintln!(
+        "external map: within 25 % {:.1} %, median error {:.1} %, confident share {:.1} %",
+        100.0 * within,
+        100.0 * median,
+        100.0 * covered
+    );
+    assert!(within >= 0.85, "{:.1} % within 25 %", 100.0 * within);
+    assert!(median <= 0.15, "median error {:.1} %", 100.0 * median);
+    assert!(
+        covered >= 0.5,
+        "{:.1} % of the background is confident",
+        100.0 * covered
+    );
+    // The sharp subject (the map says so, and the focus point too) is never blurred.
+    let stretched = (0..W * H)
+        .filter(|&i| scene.subject[i] && f64::from(bp.blur()[i]) >= B_MIN)
+        .count();
+    assert_eq!(stretched, 0, "{stretched} subject pixels are blurred");
+    // Same input, same bits.
+    let again = planes_with_map(&scene, &map);
+    assert_eq!(bits(bokeh(&again).blur()), bits(bp.blur()));
+}
+
+#[test]
+fn balls_are_found_against_an_external_map_and_a_sharp_map_vetoes_them() {
+    // Lights over a ground the map reads as blurred are balls; the same lights over a ground it reads as sharp
+    // are lamps in focus, whatever the pixels look like.
+    let radii = [9.0; 6];
+    let scene = balls_over_texture_scene(W, H, 9.0, &radii, Noise::LOW, 4);
+    let planes = planes_with_map(&scene, &external_map(&scene, 0.8));
+    let bp = bokeh(&planes);
+    assert!(bp.active());
+    assert!(bp.balls().len() >= 5, "found {}", bp.balls().len());
+    let (w, h) = bp.size();
+    for &(cx, cy, r) in &scene.discs {
+        let ball = bp
+            .balls()
+            .iter()
+            .find(|b| (b.x * w as f64 - cx).hypot(b.y * h as f64 - cy) < 0.6 * r)
+            .unwrap_or_else(|| panic!("the light of {r} px at ({cx:.0}, {cy:.0}) was not found"));
+        assert!(
+            (ball.radius * HD / r - 1.0).abs() < 0.1,
+            "{}",
+            ball.radius * HD
+        );
+    }
+    // The map says the whole ground is sharp.
+    let mut sharp = scene.clone();
+    sharp.truth_r = vec![0.0; W * H];
+    let planes = planes_with_map(&sharp, &external_map(&sharp, 0.8));
+    assert!(bokeh(&planes).balls().is_empty());
+    assert!(!bokeh(&planes).active());
+}
+
+#[test]
+fn a_map_that_is_unsure_does_not_reshape() {
+    // The same blur, but with a lower bound under twice b_min everywhere: no cell counts as out of focus.
+    let scene = subject_base().noisy(Noise::LOW, 32);
+    let planes = planes_with_map(&scene, &external_map(&scene, 0.1));
+    let bp = bokeh(&planes);
+    eprintln!("unsure map: {} balls", bp.balls().len());
+    assert!(!bp.active());
+    assert_eq!(
+        planes.report(),
+        ReshapeReport {
+            reshaped: false,
+            reason: Some(ReshapeReason::LittleBlur)
+        }
+    );
 }

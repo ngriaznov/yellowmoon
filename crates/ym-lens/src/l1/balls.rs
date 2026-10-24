@@ -75,8 +75,6 @@ pub(super) struct BallInput<'a> {
     /// (`ev_w = confidence`, `ev_s = confidence * ln(radius)`) is another, and both read the same way.
     pub ev_w: &'a [f32],
     pub ev_s: &'a [f32],
-    /// The share of that weight that reads sharp (a radius under [`FINE_PX`] pixels), per pixel.
-    pub ev_fine: &'a [f32],
     /// Pixels of the subject anchor (the camera's focus point): no ball starts there.
     pub anchor: &'a [bool],
     /// Pixels that read sharp: at a strong sharp edge (the classical detector's own flags), or where a dense
@@ -134,8 +132,6 @@ const MAX_ELONGATION: f64 = 1.6;
 const MIN_FILL: f64 = 0.8;
 /// The search window is this many seed radii either side of the centre.
 const WINDOW_RADII: f64 = 3.2;
-/// Edge readings of a radius under this many pixels of the working grid read as sharp (twice the native blur).
-pub(super) const FINE_PX: f64 = 2.0;
 /// A ball whose ring has more than this share of its pixels at a strong sharp edge sits in a sharp scene (a gap
 /// in the leaves, a seed, a catch-light): it is a light in focus, not a defocused one.
 pub(super) const MAX_SHARP_DENSITY: f64 = 0.05;
@@ -639,17 +635,8 @@ pub(super) fn find_balls(
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<BallPx>, LensError> {
     let (w, h) = (inp.w, inp.h);
-    if w < 16 || h < 16 || std::env::var_os("YM_NO_BALLS").is_some() {
+    if w < 16 || h < 16 {
         return Ok(Vec::new());
-    }
-    if std::env::var_os("YM_BALL_DEBUG").is_some() {
-        eprintln!(
-            "SHARP noise_v {:.4} total {:.4} fine {:.4} (of {} px)",
-            inp.noise_v,
-            inp.sharp.iter().filter(|b| **b).count() as f64 / (w * h) as f64,
-            inp.ev_fine.iter().filter(|v| **v >= 0.05).count() as f64 / (w * h) as f64,
-            w * h
-        );
     }
     let (vmax, root) = brightest_channel(inp);
     let cands = candidates(inp, &root, cancel)?;
@@ -717,42 +704,19 @@ pub(super) fn find_balls(
                 continue 'cand;
             }
         }
-        let (mut ew, mut es, mut ef) = (0.0f64, 0.0f64, 0.0f64);
-        let (mut n_ring, mut n_sharp, mut n_fine) = (0.0f64, 0.0f64, 0.0f64);
+        let (mut ew, mut es) = (0.0f64, 0.0f64);
+        let (mut n_ring, mut n_sharp) = (0.0f64, 0.0f64);
         for_each_in_annulus(w, h, b.cx, b.cy, 1.5 * b.r, 3.0 * b.r, |x, y, _, _, _| {
             let i = y * w + x;
             if !claim[i] {
                 ew += f64::from(inp.ev_w[i]);
                 es += f64::from(inp.ev_s[i]);
-                ef += f64::from(inp.ev_fine[i]);
                 n_ring += 1.0;
                 n_sharp += f64::from(u8::from(inp.sharp[i]));
-                n_fine += f64::from(u8::from(inp.ev_fine[i] >= 0.05));
             }
         });
         let sharp_density = n_sharp / n_ring.max(1.0);
         let supported = ew >= EVIDENCE_MIN;
-        if std::env::var_os("YM_BALL_DEBUG").is_some() {
-            eprintln!(
-                "BALL ({:.0},{:.0}) r={:.1} T={:.3} B={:.3} ew={:.2} ground_r={:.2} ratio={:.2} sharp={:.3} soft={:.2} fine={:.3} fdens={:.3}",
-                b.cx,
-                b.cy,
-                b.r,
-                b.top,
-                b.ground,
-                ew,
-                if ew > 0.0 { libm::exp(es / ew) } else { 0.0 },
-                if ew > 0.0 {
-                    libm::exp(es / ew - libm::log(b.r))
-                } else {
-                    0.0
-                },
-                sharp_density,
-                b.softness,
-                if ew > 0.0 { ef / ew } else { 0.0 },
-                n_fine / n_ring.max(1.0),
-            );
-        }
         if sharp_density > inp.max_sharp_density {
             continue;
         }
@@ -845,12 +809,6 @@ pub(super) fn find_balls(
         });
         for e in &mut energy {
             *e = e.max(0.0);
-        }
-        if std::env::var_os("YM_BALL_DEBUG").is_some() {
-            eprintln!(
-                "ACCEPT ({:.0},{:.0}) r={:.1} supported={}",
-                b.cx, b.cy, b.r, supported
-            );
         }
         out.push(BallPx {
             cx: b.cx,

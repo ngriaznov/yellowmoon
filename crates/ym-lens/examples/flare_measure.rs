@@ -15,7 +15,7 @@
 //!                     `ym-core`'s `lens_sheet --dump-planes` writes)
 //! ```
 //!
-//! For every lens one line of tab-separated numbers: the lights found (clipped components of at most 400
+//! For every lens one line of tab-separated numbers: the lights found (clipped components of at most 4000
 //! pixels), the light added in clip levels times pixels (mean over the channels, the plane normalised so that
 //! every channel clips at 1), the peak of the added light and the peak at least 10 px from a clipped pixel
 //! ("off"), the share of the frame where the added light is at least 5 % of the picture there (plus 1 % of
@@ -32,8 +32,10 @@ use ym_lens::{
 
 struct Target {
     name: String,
+    /// The plane's size, which is also the frame's size at its scale.
     width: usize,
     height: usize,
+    /// The full-resolution frame.
     frame_width: usize,
     frame_height: usize,
     k: usize,
@@ -67,8 +69,8 @@ fn synthetic() -> Target {
         name: "synthetic".into(),
         width: w,
         height: h,
-        frame_width: w,
-        frame_height: h,
+        frame_width: 4 * w,
+        frame_height: 4 * h,
         k: 4,
         g0: [1.0; 3],
         f_number: Some(8.0),
@@ -110,14 +112,14 @@ fn load(dir: &Path) -> Target {
     }
 }
 
-/// The clipped components (8-connected, pixels at or above 0.95 of the clip in every channel) of at most
+/// The clipped components (8-connected, pixels at or above 0.9 of the clip in every channel) of at most
 /// 400 pixels: `(centroid x, centroid y, pixels)`, and the mask of all clipped pixels.
 fn lights(t: &Target) -> (Vec<(f64, f64, usize)>, Vec<bool>) {
     let (w, h) = (t.width, t.height);
     let plane = w * h;
     let mut mask = vec![false; plane];
     for (i, m) in mask.iter_mut().enumerate() {
-        *m = (0..3).all(|c| t.data[c * plane + i] >= 0.95 * t.g0[c]);
+        *m = (0..3).all(|c| t.data[c * plane + i] >= 0.9 * t.g0[c]);
     }
     let mut seen = vec![false; plane];
     let mut out = Vec::new();
@@ -147,7 +149,7 @@ fn lights(t: &Target) -> (Vec<(f64, f64, usize)>, Vec<bool>) {
                 }
             }
         }
-        if n <= 400 {
+        if n <= 4000 {
             out.push((sx / n as f64, sy / n as f64, n));
         }
     }
@@ -227,8 +229,8 @@ fn main() {
         }
         let big = lights.iter().max_by_key(|l| l.2).copied();
         let frame = FrameInfo {
-            width: t.frame_width * k,
-            height: t.frame_height * k,
+            width: t.frame_width,
+            height: t.frame_height,
             axis: Axis::X,
             f_number: t.f_number,
             clip: t.g0,
@@ -238,8 +240,8 @@ fn main() {
             height: h,
             x0: 0,
             y0: 0,
-            frame_width: t.frame_width,
-            frame_height: t.frame_height,
+            frame_width: w,
+            frame_height: h,
             data: &t.data,
         };
         let whole = PixelRect::new(0, 0, w, h);

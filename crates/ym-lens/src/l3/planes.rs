@@ -8,11 +8,12 @@
 //!
 //! The data do not depend on the amounts, so a slider moves nothing here.
 
-use crate::consts::{CLIP_RAMP_PLANE, SPIKE_SIZE, TAIL_PLANE_LONG_EDGE};
+use crate::consts::{CLIP_RAMP_PLANE, GLOW_BOOST_SHARE, SPIKE_SIZE, TAIL_PLANE_LONG_EDGE};
 use crate::error::LensError;
 use crate::image::ImageRef;
 use crate::l3::fft::{Convolver, Kernel2d};
 use crate::l3::glow::GlowProfiles;
+use crate::l3::lights;
 use crate::l3::restore::Restore;
 use crate::l3::sources::{self, Source};
 use crate::plan::LensPlan;
@@ -58,27 +59,23 @@ fn halve(src: &[f64], w: usize, h: usize) -> (Vec<f64>, usize, usize) {
     (out, nw, nh)
 }
 
-/// The restored light of the lens plane, reduced to the tail plane's size: three planes and their size.
-fn reduced_restored(
+/// A function of a pixel `(i, j)` of the lens plane to three values (red, green, blue).
+type PixelFn<'a> = &'a dyn Fn(usize, usize) -> [f64; 3];
+
+/// The values `value` of the lens plane's pixels, reduced to the tail plane's size by 2 x 2 box means: three
+/// planes and their size.
+fn reduced(
     plane: &ImageRef,
-    rs: &Restore,
+    value: PixelFn,
     cancel: &dyn Fn() -> bool,
 ) -> Result<([Vec<f64>; 3], usize, usize), LensError> {
     let (w, h) = (plane.width, plane.height);
     let n = w * h;
-    let restored_at = |i: usize, j: usize| -> [f64; 3] {
-        let at = j * w + i;
-        rs.restored([
-            f64::from(plane.data[at]),
-            f64::from(plane.data[n + at]),
-            f64::from(plane.data[2 * n + at]),
-        ])
-    };
     if w.max(h) <= TAIL_PLANE_LONG_EDGE {
         let mut out: [Vec<f64>; 3] = std::array::from_fn(|_| vec![0.0; n]);
         for j in 0..h {
             for i in 0..w {
-                let r = restored_at(i, j);
+                let r = value(i, j);
                 for c in 0..3 {
                     out[c][j * w + i] = r[c];
                 }
@@ -86,7 +83,7 @@ fn reduced_restored(
         }
         return Ok((out, w, h));
     }
-    // The first halving reads the restored light straight from the plane.
+    // The first halving reads the values straight from the plane.
     if cancel() {
         return Err(LensError::Cancelled);
     }
@@ -100,7 +97,7 @@ fn reduced_restored(
                 for dx in 0..2 {
                     let (sx, sy) = (2 * x + dx, 2 * y + dy);
                     if sx < w && sy < h {
-                        let r = restored_at(sx, sy);
+                        let r = value(sx, sy);
                         for c in 0..3 {
                             s[c] += r[c];
                         }
@@ -130,6 +127,60 @@ fn reduced_restored(
         th = nh;
     }
     Ok((cur, tw, th))
+}
+
+/// The restored light of the lens plane, reduced to the tail plane's size, and the extra light of the small
+/// clipped lights (what their extra headroom adds, [`GLOW_BOOST_SHARE`] of it in EV), the same size, or `None`
+/// when no light is boosted: three planes each and their size.
+fn reduced_restored(
+    plane: &ImageRef,
+    rs: &Restore,
+    boost: Option<&[f32]>,
+    cancel: &dyn Fn() -> bool,
+) -> Result<RestoredPlanes, LensError> {
+    let (w, h) = (plane.width, plane.height);
+    let n = w * h;
+    let pixel = |i: usize, j: usize| -> [f64; 3] {
+        let at = j * w + i;
+        [
+            f64::from(plane.data[at]),
+            f64::from(plane.data[n + at]),
+            f64::from(plane.data[2 * n + at]),
+        ]
+    };
+    let (base, tw, th) = reduced(plane, &|i, j| rs.restored(pixel(i, j)), cancel)?;
+    let extra = match boost {
+        Some(b) if b.iter().any(|v| *v > 0.0) => {
+            let ev = |i: usize, j: usize| f64::from(b[j * w + i]) * GLOW_BOOST_SHARE;
+            let (x, _, _) = reduced(
+                plane,
+                &|i, j| {
+                    let x = pixel(i, j);
+                    let (lit, plain) = (rs.restored_ev(x, ev(i, j)), rs.restored(x));
+                    [lit[0] - plain[0], lit[1] - plain[1], lit[2] - plain[2]]
+                },
+                cancel,
+            )?;
+            Some(x)
+        }
+        _ => None,
+    };
+    Ok(RestoredPlanes {
+        base,
+        extra,
+        width: tw,
+        height: th,
+    })
+}
+
+/// The restored light on the tail plane's grid.
+struct RestoredPlanes {
+    /// The restored light `R`.
+    base: [Vec<f64>; 3],
+    /// What the small lights' extra headroom adds to it.
+    extra: Option<[Vec<f64>; 3]>,
+    width: usize,
+    height: usize,
 }
 
 /// The sum of a function of the distance over the pixel grid within `radius_px`, with the pixels nearest the
@@ -174,15 +225,18 @@ fn disc_kernel(
 }
 
 /// The tail plane: per channel, the glow's tail part and the veil convolved with the restored light.
+///
+/// The light a small clipped light holds beyond the plain headroom (`restored.extra`) has no core of its own
+/// (the core is gathered per tile from the plainly restored light): it goes through the whole glow, the tail
+/// kernel scaled to the glow's whole fraction, and the veil, so the glow and the veil take exactly their
+/// fractions of all the light the lights hold.
 fn tail_plane(
     plan: &LensPlan,
     glow: &GlowProfiles,
-    restored: &[Vec<f64>; 3],
-    tw: usize,
-    th: usize,
+    restored: &RestoredPlanes,
     cancel: &dyn Fn() -> bool,
 ) -> Result<[Vec<f64>; 3], LensError> {
-    let fl = &plan.lens().flare;
+    let (tw, th) = (restored.width, restored.height);
     let half_diag = 0.5 * ((tw * tw + th * th) as f64).sqrt();
     let reach = glow.reach().max(glow.veil_radius());
     let radius_px = (libm::ceil(reach * half_diag) as isize).max(1);
@@ -190,7 +244,8 @@ fn tail_plane(
     let hy = (radius_px as usize).min(th.saturating_sub(1));
     let conv = Convolver::new(tw, th, hx, hy);
     let m_core = glow.core_mass();
-    let (a_g, a_v) = (fl.glow.fraction, fl.veil.fraction);
+    let st = plan.flare_strengths();
+    let (a_g, a_v) = (st.glow, st.veil);
 
     let (veil, veil_sum) = disc_kernel(radius_px, hx, hy, half_diag, &|r| glow.veil(r));
     let mut out: [Vec<f64>; 3] = std::array::from_fn(|_| Vec::new());
@@ -199,27 +254,36 @@ fn tail_plane(
             return Err(LensError::Cancelled);
         }
         let (tail, tail_sum) = disc_kernel(radius_px, hx, hy, half_diag, &|r| glow.tail(c, r));
-        let glow_scale = if tail_sum > 0.0 {
-            a_g * (1.0 - m_core[c]) / tail_sum
-        } else {
-            0.0
-        };
         let veil_scale = if veil_sum > 0.0 { a_v / veil_sum } else { 0.0 };
-        let data: Vec<f64> = tail
-            .iter()
-            .zip(&veil)
-            .map(|(g, v)| glow_scale * g + veil_scale * v)
-            .collect();
-        let kernel = Kernel2d { hx, hy, data };
+        let kernel_for = |glow_mass: f64| -> Kernel2d {
+            let glow_scale = if tail_sum > 0.0 {
+                glow_mass / tail_sum
+            } else {
+                0.0
+            };
+            let data: Vec<f64> = tail
+                .iter()
+                .zip(&veil)
+                .map(|(g, v)| glow_scale * g + veil_scale * v)
+                .collect();
+            Kernel2d { hx, hy, data }
+        };
+        let spectrum = conv.kernel_spectrum(&kernel_for(a_g * (1.0 - m_core[c])));
         if cancel() {
             return Err(LensError::Cancelled);
         }
-        let spectrum = conv.kernel_spectrum(&kernel);
-        drop(kernel);
-        if cancel() {
-            return Err(LensError::Cancelled);
+        let mut plane = conv.convolve(&restored.base[c], tw, th, &spectrum);
+        if let Some(extra) = &restored.extra {
+            let spectrum = conv.kernel_spectrum(&kernel_for(a_g));
+            if cancel() {
+                return Err(LensError::Cancelled);
+            }
+            let more = conv.convolve(&extra[c], tw, th, &spectrum);
+            for (p, m) in plane.iter_mut().zip(&more) {
+                *p += m;
+            }
         }
-        out[c] = conv.convolve(&restored[c], tw, th, &spectrum);
+        out[c] = plane;
     }
     Ok(out)
 }
@@ -242,13 +306,17 @@ impl FlarePlanes {
     ) -> Result<Self, LensError> {
         let axis = plan.frame().axis;
         let rs = Restore::new(plan, CLIP_RAMP_PLANE);
-        let sources = sources::find(plane, &rs, axis, cancel)?;
+        let half_diag =
+            0.5 * ((plane.width * plane.width + plane.height * plane.height) as f64).sqrt();
+        let boost = lights::map(plane, &rs, half_diag, cancel)?;
+        let sources = sources::find(plane, &rs, boost.as_deref(), axis, cancel)?;
         if cancel() {
             return Err(LensError::Cancelled);
         }
         let glow = GlowProfiles::new(plan);
-        let (restored, tw, th) = reduced_restored(plane, &rs, cancel)?;
-        let tail = tail_plane(plan, &glow, &restored, tw, th, cancel)?;
+        let restored = reduced_restored(plane, &rs, boost.as_deref(), cancel)?;
+        let (tw, th) = (restored.width, restored.height);
+        let tail = tail_plane(plan, &glow, &restored, cancel)?;
         // The spike tables on the camera's channels.
         let lens = plan.lens();
         let weights = plan.camera().weights();

@@ -633,19 +633,24 @@
             "name": "28105_DSC09372.ARW",
             "sha256": "a1c35f76d83b6852c98a2a5355d10166940a6ba7d12590f756b5d7c708f84b3c",
             "set": "play-raw"
+          },
+          {
+            "name": "35601_DSC09392.ARW",
+            "sha256": "4ec8a72fe699485673e5299adc7b37f247a2791341c5a93591ffae9109757691",
+            "set": "play-raw"
           }
         ],
         "residual": {
-          "mean_preset_angle_before_deg": 2.95,
-          "mean_preset_angle_after_deg": 0.72,
-          "daylight_k_before": 5130,
-          "daylight_k_after": 5410,
-          "file_spread_percent": [0.0, 0.0],
+          "mean_preset_angle_before_deg": 2.87,
+          "mean_preset_angle_after_deg": 0.76,
+          "daylight_k_before": 5172,
+          "daylight_k_after": 5455,
+          "file_spread_percent": [3.05, 0.92],
           "matrix_scale": [0.9255, 1.0, 0.9085],
-          "matrix_mean_preset_angle_deg": 1.62,
-          "matrix_daylight_k": 4979
+          "matrix_mean_preset_angle_deg": 1.51,
+          "matrix_daylight_k": 5017
         },
-        "note": "Fitted so the five Kelvin presets of the body's own files (2500, 3200, 4500, 6000, 8500 K) read at their labels on the A7R IV locus (least squares in log chroma), one fit per file and the median of the files kept. 3 files with the same presets. Left out as an outlier: 35601_DSC09392.ARW (play-raw; scale [0.9037, 0.9465], 3.0 % from the others). The scale the body's published colour matrix at D65 gives (matrix_scale) leaves a mean preset angle of 1.62 degrees and reads the Daylight preset at 4979 K, outside the limits of docs/03 (at most 2 degrees, Daylight 5000 to 5600 K), so the presets set the scale."
+        "note": "Fitted so the five Kelvin presets of the body's own files (2500, 3200, 4500, 6000, 8500 K) read at their labels on the A7R IV locus (least squares in log chroma), one fit per file and the median of the files kept. 4 files, each within 3.05 % of the median scale in red and blue (limit 5 %). The scale the body's published colour matrix at D65 gives (matrix_scale) leaves a mean preset angle of 1.51 degrees and reads the Daylight preset at 5017 K, within the limits of docs/03 (at most 2 degrees, Daylight 5000 to 5600 K); the presets still set the scale."
       }
     },
     {
@@ -787,19 +792,24 @@
             "set": "play-raw"
           },
           {
+            "name": "54329_DSC04704.ARW",
+            "sha256": "dd5c2d43dda3aca84db1420e9ad403904d737e498e45da6f7904487d45839044",
+            "set": "play-raw"
+          },
+          {
             "name": "54881_DSC05065.ARW",
             "sha256": "0a0775e6f803329341b954fd4d0ed08d6cc71b3b226c34d0218865761e31f0d8",
             "set": "play-raw"
           }
         ],
         "residual": {
-          "mean_preset_angle_before_deg": 3.88,
-          "mean_preset_angle_after_deg": 0.56,
-          "daylight_k_before": 4490,
-          "daylight_k_after": 5199,
-          "file_spread_percent": [0.0, 0.0]
+          "mean_preset_angle_before_deg": 3.78,
+          "mean_preset_angle_after_deg": 0.63,
+          "daylight_k_before": 4517,
+          "daylight_k_after": 5236,
+          "file_spread_percent": [0.81, 1.51]
         },
-        "note": "Fitted so the five Kelvin presets of the body's own files (2500, 3200, 4500, 6000, 8500 K) read at their labels on the A7R IV locus (least squares in log chroma), one fit per file and the median of the files kept. 2 files with the same presets. Left out as an outlier: 54329_DSC04704.ARW (play-raw; scale [1.0192, 1.1921], 1.5 % from the others). No published colour matrix of this body was available, so the matrix reference was not computed."
+        "note": "Fitted so the five Kelvin presets of the body's own files (2500, 3200, 4500, 6000, 8500 K) read at their labels on the A7R IV locus (least squares in log chroma), one fit per file and the median of the files kept. 3 files, each within 1.51 % of the median scale in red and blue (limit 5 %). No published colour matrix of this body was available, so the matrix reference was not computed."
       }
     },
     {
@@ -1073,6 +1083,169 @@
         },
         "note": "Fitted so the five Kelvin presets of the body's own files (2500, 3200, 4500, 6000, 8500 K) read at their labels on the A7R IV locus (least squares in log chroma), one fit per file and the median of the files kept. One file: it cannot show whether the body's presets are the same from unit to unit. No published colour matrix of this body was available, so the matrix reference was not computed."
       }
+    },
+    {
+      "model_id": 312,
+      "model": "ILCE-6000",
+      "body": "Sony A6000",
+      "profile": "sony-ilce-7rm4",
+      "match": "default",
+      "via": null,
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile.",
+      "white_scale": [1.0113, 1.0, 1.115],
+      "white_scale_source": {
+        "kind": "presets",
+        "files": [
+          {
+            "name": "12024__DSC1085.ARW",
+            "sha256": "18b9856fde76323e3296c10002f966272daec3a2293e01e8c3ca0b841d61cae8",
+            "set": "play-raw"
+          },
+          {
+            "name": "14077__DSC5565.ARW",
+            "sha256": "3c4141424ae2a296f050a2ba34581c93eba5dcec9f3573e529c44362cbce9dd5",
+            "set": "play-raw"
+          },
+          {
+            "name": "16975__DSC5745.ARW",
+            "sha256": "031f436a237ba5c2e9c679b13427f41e766d37593ef7068bfda608033ab83215",
+            "set": "play-raw"
+          },
+          {
+            "name": "26551_DSC05356.ARW",
+            "sha256": "0c302fc6eef91f195ffb1a52727161f1f504a52b3442c392f3341e9aacd03e5e",
+            "set": "play-raw"
+          },
+          {
+            "name": "33920_DSC08176.ARW",
+            "sha256": "5e07d7bc1f6b01e7081fe783ec04c2b5817231590c00a6ba2e449c85d20a697d",
+            "set": "play-raw"
+          },
+          {
+            "name": "35231_DSC04450.ARW",
+            "sha256": "0abcab0da91b33008bdabe941fbc5e09499f3ea9542e150155cbdb15869a34f2",
+            "set": "play-raw"
+          },
+          {
+            "name": "35354_DSC00912.ARW",
+            "sha256": "88dc66d5fa384e9c8c1961f650e48678e62dd843ed20ab47381fa0ca1e392a58",
+            "set": "play-raw"
+          },
+          {
+            "name": "40822_DSC06078.ARW",
+            "sha256": "ec04e3ac69d54e7300ba0ff582d10ade0fc3ad28f48507b4c35cacc115e4ee86",
+            "set": "play-raw"
+          },
+          {
+            "name": "55098__DSC5869.ARW",
+            "sha256": "0d959b568c13563124fe7c67398fac2cb17aff3a238c04782a6f9135ee15fa7d",
+            "set": "play-raw"
+          },
+          {
+            "name": "55869_DSC07541.ARW",
+            "sha256": "ba70e98cc4b7caf453aaf96f6b9da3f28a460d07aec992a2c6a49a93f90f5af2",
+            "set": "play-raw"
+          }
+        ],
+        "residual": {
+          "mean_preset_angle_before_deg": 2.41,
+          "mean_preset_angle_after_deg": 0.72,
+          "daylight_k_before": 4902,
+          "daylight_k_after": 5350,
+          "file_spread_percent": [3.35, 3.94],
+          "matrix_scale": [0.9728, 1.0, 0.9889],
+          "matrix_mean_preset_angle_deg": 2.68,
+          "matrix_daylight_k": 4949
+        },
+        "note": "Fitted so the five Kelvin presets of the body's own files (2500, 3200, 4500, 6000, 8500 K) read at their labels on the A7R IV locus (least squares in log chroma), one fit per file and the median of the files kept. 10 files, each within 3.94 % of the median scale in red and blue (limit 5 %). The scale the body's published colour matrix at D65 gives (matrix_scale) leaves a mean preset angle of 2.68 degrees and reads the Daylight preset at 4949 K, outside the limits of docs/03 (at most 2 degrees, Daylight 5000 to 5600 K), so the presets set the scale."
+      }
+    },
+    {
+      "model_id": 357,
+      "model": "ILCE-6300",
+      "body": "Sony A6300",
+      "profile": "sony-ilce-7rm4",
+      "match": "default",
+      "via": null,
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile.",
+      "white_scale": [1.0065, 1.0, 1.1698],
+      "white_scale_source": {
+        "kind": "presets",
+        "files": [
+          {
+            "name": "46606_DSC04876.ARW",
+            "sha256": "d2ccda0db2f244bdbc4f6c938cf35543f921aa7c4ec8420a1f036bb61ad95a0d",
+            "set": "play-raw"
+          },
+          {
+            "name": "48259_DSC07735.ARW",
+            "sha256": "fb88685e7e5d502af09dd7c2411dfcd43a17e6fe154b8cbac9393006b20cbd2e",
+            "set": "play-raw"
+          },
+          {
+            "name": "51177__DSC6136.ARW",
+            "sha256": "bed0e70399c51866c240d13bcf4b810f898ebacff06ad39ffd6356c9451aa1ec",
+            "set": "play-raw"
+          },
+          {
+            "name": "56952__DSC4016.ARW",
+            "sha256": "02549cc23aafaab92e13f2eeee720a496329f297487452c2fef9faee7e193f22",
+            "set": "play-raw"
+          },
+          {
+            "name": "60855_DSC08360.ARW",
+            "sha256": "a17f52727e69f805ba9423711fcaccf494cddeb9ef86643e91920833cda2a335",
+            "set": "play-raw"
+          }
+        ],
+        "residual": {
+          "mean_preset_angle_before_deg": 3.27,
+          "mean_preset_angle_after_deg": 1.04,
+          "daylight_k_before": 4735,
+          "daylight_k_after": 5390,
+          "file_spread_percent": [3.59, 2.68],
+          "matrix_scale": [1.0141, 1.0, 1.1019],
+          "matrix_mean_preset_angle_deg": 1.34,
+          "matrix_daylight_k": 5081
+        },
+        "note": "Fitted so the five Kelvin presets of the body's own files (2500, 3200, 4500, 6000, 8500 K) read at their labels on the A7R IV locus (least squares in log chroma), one fit per file and the median of the files kept. 5 files, each within 3.59 % of the median scale in red and blue (limit 5 %). Left out as an outlier: ILCE-6300_craw.ARW (real-eval; scale [0.9409, 1.2022], 6.5 % from the others). The scale the body's published colour matrix at D65 gives (matrix_scale) leaves a mean preset angle of 1.34 degrees and reads the Daylight preset at 5081 K, within the limits of docs/03 (at most 2 degrees, Daylight 5000 to 5600 K); the presets still set the scale."
+      }
+    },
+    {
+      "model_id": 360,
+      "model": "ILCE-6500",
+      "body": "Sony A6500",
+      "profile": "sony-ilce-7rm4",
+      "match": "default",
+      "via": null,
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile.",
+      "white_scale": [1.0018, 1.0, 1.1981],
+      "white_scale_source": {
+        "kind": "presets",
+        "files": [
+          {
+            "name": "26276_DSC03483.ARW",
+            "sha256": "4b1cc7a56a107d5f1a3614e322b0e353b9f2da24d09618d36109ecc1aae58d30",
+            "set": "play-raw"
+          },
+          {
+            "name": "48272_DSC03902.ARW",
+            "sha256": "006a0fe8c62ae64bdd7948250ebcc57742fb6b55c8cf8203101b948b59bc653f",
+            "set": "play-raw"
+          }
+        ],
+        "residual": {
+          "mean_preset_angle_before_deg": 3.61,
+          "mean_preset_angle_after_deg": 0.93,
+          "daylight_k_before": 4666,
+          "daylight_k_after": 5433,
+          "file_spread_percent": [0.88, 2.0],
+          "matrix_scale": [1.0141, 1.0, 1.1019],
+          "matrix_mean_preset_angle_deg": 1.66,
+          "matrix_daylight_k": 4997
+        },
+        "note": "Fitted so the five Kelvin presets of the body's own files (2500, 3200, 4500, 6000, 8500 K) read at their labels on the A7R IV locus (least squares in log chroma), one fit per file and the median of the files kept. 2 files, each within 2.00 % of the median scale in red and blue (limit 5 %). Left out as an outlier: 34320_DSC00486.ARW (play-raw; scale [0.9322, 1.1633], 6.9 % from the others). The scale the body's published colour matrix at D65 gives (matrix_scale) leaves a mean preset angle of 1.66 degrees and reads the Daylight preset at 4997 K, outside the limits of docs/03 (at most 2 degrees, Daylight 5000 to 5600 K), so the presets set the scale."
+      }
     }
   ],
   "model_strings": {
@@ -1086,10 +1259,13 @@
     "ILCE-1": 384,
     "ILCE-1M2": 400,
     "ILCE-5000": 313,
+    "ILCE-6000": 312,
     "ILCE-6100": 379,
     "ILCE-6100A": 403,
+    "ILCE-6300": 357,
     "ILCE-6400": 371,
     "ILCE-6400A": 402,
+    "ILCE-6500": 360,
     "ILCE-6600": 378,
     "ILCE-6700": 394,
     "ILCE-7": 306,

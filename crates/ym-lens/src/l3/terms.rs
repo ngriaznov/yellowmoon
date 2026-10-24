@@ -27,6 +27,10 @@ pub(crate) struct Terms {
     pub(crate) streak: f64,
     /// The widening of ghosts along the axis, `1 + kappa_g (q - 1)`.
     pub(crate) stretch: f64,
+    /// The factor on every lens ghost's fraction ([`FlareStrengths::ghost_gain`](crate::FlareStrengths)).
+    pub(crate) ghost_gain: f64,
+    /// The factor on every attachment ghost's fraction.
+    pub(crate) att_ghost_gain: f64,
 }
 
 impl Terms {
@@ -45,12 +49,13 @@ impl Terms {
         } else {
             ((n - STARBURST_MIN_F_NUMBER) / (full - STARBURST_MIN_F_NUMBER)).clamp(0.0, 1.0)
         };
-        let burst = fl.starburst.fraction * strength;
-        let streak = att.streak.fraction * anam;
-        let att_ghosts: f64 = att.ghosts.iter().map(|g| g.fraction).sum::<f64>() * anam;
-        let lens_ghosts: f64 = fl.ghosts.iter().map(|g| g.fraction).sum();
-        let a =
-            f * (fl.glow.fraction + fl.veil.fraction + lens_ghosts + burst + streak + att_ghosts);
+        let st = plan.flare_strengths();
+        let burst = st.burst * strength;
+        let streak = st.streak * anam;
+        let att_ghosts: f64 =
+            att.ghosts.iter().map(|g| g.fraction).sum::<f64>() * st.attachment_ghost_gain * anam;
+        let lens_ghosts: f64 = fl.ghosts.iter().map(|g| g.fraction).sum::<f64>() * st.ghost_gain;
+        let a = f * (st.glow + st.veil + lens_ghosts + burst + streak + att_ghosts);
         Terms {
             f,
             a,
@@ -58,6 +63,8 @@ impl Terms {
             burst,
             streak,
             stretch: 1.0 + att.ghost_stretch * (q - 1.0),
+            ghost_gain: st.ghost_gain,
+            att_ghost_gain: st.attachment_ghost_gain,
         }
     }
 }

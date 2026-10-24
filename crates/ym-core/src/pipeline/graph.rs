@@ -51,6 +51,7 @@ use ym_gpu::kernels::copy::Piece;
 use ym_gpu::kernels::prep::DeviceRaw;
 use ym_gpu::queue::{CancelToken, JobHandle, JobSpec, Priority};
 use ym_lens::{CameraResponse, LensLibrary, LensPlanes, ReshapeReport};
+use ym_ml::bokeh_net::BokehNet;
 
 use super::color::{
     ColorKey, ColorPlan, DisplayChoice, GradeKey, GradePlan, GradeRequest, LookProvider,
@@ -125,6 +126,12 @@ pub struct RenderOptions {
     /// when the lens data are missing or damaged (and for a renderer made without a core): a lens
     /// setting then renders as no lens, and the render's notes say so.
     pub lens: Option<Arc<LensLibrary>>,
+    /// The bokeh map network (`data/models/bokeh`, `docs/21` section 7), loaded once by
+    /// [`crate::app::Core::open`] next to the lens library. With it the lens reads the blur already in the photo
+    /// from the network's map; without it (`None`: the model is missing or damaged, or the renderer was made
+    /// without a core) the classical detector's edge measure does, and the pictures differ only where the two
+    /// disagree about the map.
+    pub bokeh_model: Option<Arc<BokehNet>>,
     /// The shipped data folder (`data/`), for what a render reads from it at run time: the camera's
     /// spectral curves (`cameras/…`), which the lens projects its colours on (`docs/21` section 6,
     /// "Colour"). [`crate::app::Core::open`] fills it from its data root. `None` (a renderer made
@@ -247,6 +254,7 @@ impl Default for RenderOptions {
             budget: MemoryBudget::detect(),
             neural: NeuralStatus::unavailable(),
             lens: None,
+            bokeh_model: None,
             data_root: None,
             gpu: None,
             gpu_stages: GpuStages::ALL,

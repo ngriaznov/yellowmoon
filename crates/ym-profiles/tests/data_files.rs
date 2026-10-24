@@ -264,7 +264,7 @@ fn registry_round_trip() {
     let n = ids.len();
     ids.dedup();
     assert_eq!(ids.len(), n, "duplicate model IDs");
-    assert_eq!(n, 43);
+    assert_eq!(n, 46);
     for b in &reg.bodies {
         let hits = reg
             .bodies
@@ -318,8 +318,8 @@ fn registry_round_trip() {
         assert_eq!(b.profile, reg.default_profile, "{}", b.model);
     }
     // The default bodies of docs/03: the five without a measured sibling, the A7R V (390) and
-    // A7CR (396), whose same-sensor pairing with the A7R IV failed the ColorMatrix check, and the fifteen
-    // older and compact bodies that carry a fitted white scale.
+    // A7CR (396), whose same-sensor pairing with the A7R IV failed the ColorMatrix check, and the eighteen
+    // older, APS-C and compact bodies that carry a fitted white scale.
     let defaults: Vec<u16> = reg
         .bodies
         .iter()
@@ -331,7 +331,9 @@ fn registry_round_trip() {
         vec![
             390, 396, 384, 400, 392, 407, 410, // the first seven
             // registry 1.3.0: the bodies that carry a white scale fitted on their own files
-            306, 311, 318, 313, 394, 382, 288, 296, 289, 261, 274, 297, 308, 374, 365
+            306, 311, 318, 313, 394, 382, 288, 296, 289, 261, 274, 297, 308, 374, 365,
+            // and the APS-C bodies whose files agree within 5 %
+            312, 357, 360
         ]
     );
 }
@@ -492,13 +494,14 @@ fn every_same_sensor_pairing_has_a_recorded_check() {
 #[test]
 fn bodies_carry_published_sensor_geometry_with_its_source() {
     // docs/algorithms/03 section 2.2: `sensor_width_mm` and `active_width_px` per body, the source in
-    // the entry. 27 of 43 bodies have them; the FX3 has none (Sony gives its stills only as "12M") and neither
-    // do the fifteen bodies added in registry 1.3.0, which were added for their white scale (the EXIF crop-factor
+    // the entry. 27 of 46 bodies have them; the FX3 has none (Sony gives its stills only as "12M") and neither
+    // do the eighteen bodies added in registry 1.3.0, which were added for their white scale (the EXIF crop-factor
     // fallback applies to them, as it did before they were listed).
     let s = store();
     let reg = s.registry();
-    let without: [u16; 16] = [
-        385, 306, 311, 318, 313, 394, 382, 288, 296, 289, 261, 274, 297, 308, 374, 365,
+    let without: [u16; 19] = [
+        385, 306, 311, 318, 313, 394, 382, 288, 296, 289, 261, 274, 297, 308, 374, 365, 312, 357,
+        360,
     ];
     let mut with = 0;
     for b in &reg.bodies {
@@ -714,17 +717,18 @@ fn white_scales_are_recorded_with_their_source() {
         none, 5,
         "the A7R V, A7CR, A9 III, A7 V and A7R VI have no data"
     );
-    // The A1 and the fifteen bodies of registry 1.3.0 are fitted on the presets of their own files. The A6000,
-    // A6300, A6500 and A7 II (files that disagree), the A230 (misses the limits) and every body without a file
-    // have no entry, or `none`.
+    // The A1 and the eighteen bodies of registry 1.3.0 are fitted on the presets of their own files. The A7 II
+    // (files that disagree by more than 5 %), the A230 (misses the limits) and every body without a file have no
+    // entry, or `none`.
     presets.sort_unstable();
     assert_eq!(
         presets,
         [
-            261, 274, 288, 289, 296, 297, 306, 308, 311, 313, 318, 365, 374, 382, 384, 394
+            261, 274, 288, 289, 296, 297, 306, 308, 311, 312, 313, 318, 357, 360, 365, 374, 382,
+            384, 394
         ]
     );
-    for id in [312, 357, 360, 340, 265] {
+    for id in [340, 265] {
         assert!(
             reg.body_by_model_id(id).is_none(),
             "{id}: not listed, because its files disagree or miss the limits (docs/03)"
@@ -746,7 +750,7 @@ fn white_scales_are_recorded_with_their_source() {
             res.file_spread_percent
                 .iter()
                 .all(|p| (0.0..=WHITE_SCALE_FILE_AGREEMENT_PERCENT).contains(p)),
-            "{who}: the files agree within 1 %"
+            "{who}: the files agree within 5 %"
         );
         assert!(res.mean_preset_angle_after_deg <= 2.0, "{who}");
         assert!(
@@ -1030,10 +1034,10 @@ fn the_registry_schema_and_rules_refuse_broken_white_scales() {
             }),
         ),
         (
-            "files that disagree by 1.5 %",
+            "files that disagree by 5.5 %",
             a1,
             Box::new(|b| {
-                b["white_scale_source"]["residual"]["file_spread_percent"] = json!([1.5, 0.0]);
+                b["white_scale_source"]["residual"]["file_spread_percent"] = json!([5.5, 0.0]);
             }),
         ),
         (

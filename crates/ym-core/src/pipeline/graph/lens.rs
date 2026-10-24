@@ -63,10 +63,11 @@ use std::time::Instant;
 use ym_gpu::cpu::sampler::SamplerWarp;
 use ym_gpu::cpu::{Placement, Rect, RgbImage};
 use ym_lens::{
-    Axis, CameraResponse, FrameInfo, ImageRef, LensAmounts, LensError, LensPlan, LensPlanes,
-    PixelRect, ReshapeReason, ReshapeReport, add_flares, apply, apply_field, field_halo_px,
-    flare_terms, flares_halo_px, halo_px,
+    Axis, BlurMapInput, CameraResponse, FrameInfo, ImageRef, LensAmounts, LensError, LensPlan,
+    LensPlanes, PixelRect, ReshapeReason, ReshapeReport, add_flares, apply, apply_field,
+    field_halo_px, flare_terms, flares_halo_px, halo_px,
 };
+use ym_ml::bokeh_net::{BokehMap, BokehNet, PlanarRgbRef};
 use ym_profiles::profile::Profile;
 use ym_raw::makernote::SonyFocus;
 
@@ -140,6 +141,54 @@ pub(super) fn lens_error(e: LensError) -> RenderError {
         other => RenderError::Image(format!(
             "The lens effect can't be applied to this photo: {other}."
         )),
+    }
+}
+
+/// How far below the network's radius the lower bound the lens uses sits, in scales `beta` of its error (a
+/// Laplace distribution of `ln r`): `b * exp(-K * beta)` is the radius that the network puts a share
+/// `0.5 * exp(-K)` of its probability below, so `K = ln(1 / (2 * 0.1))` = 1.61 makes it the 10 % quantile.
+const B_LOW_PER_BETA: f64 = 1.61;
+
+/// The network's map of the lens plane as the lens takes it ([`BlurMapInput`]): the radius `b` and a lower bound
+/// of it, `b * exp(-1.61 * beta)` with `beta = -0.25 * ln c` the scale of the network's error. The confidence `c`
+/// itself is not used: it is high on sharp areas and low in blur, so a gate on it would drop the blur.
+/// `None` when the network fails (the classical detector then makes the map).
+pub(crate) fn blur_map_input(model: &BokehNet, plane: &ImageRef) -> Option<BlurMapInput> {
+    let planar = match PlanarRgbRef::new(plane.width, plane.height, plane.data) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "the bokeh model cannot read the lens plane; the classical detector is used");
+            return None;
+        }
+    };
+    let map = match model.map(&planar) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "the bokeh model failed; the classical detector is used");
+            return None;
+        }
+    };
+    Some(blur_map_of(map))
+}
+
+/// The network's map as the lens takes it: `b_low = b * exp(-1.61 * beta)` with `beta = -0.25 * ln c`.
+pub(crate) fn blur_map_of(map: BokehMap) -> BlurMapInput {
+    let b_low = map
+        .b
+        .iter()
+        .zip(&map.c)
+        .map(|(&b, &c)| {
+            let beta = -0.25 * libm::log(f64::from(c).max(1e-6));
+            (f64::from(b) * libm::exp(-B_LOW_PER_BETA * beta)) as f32
+        })
+        .collect();
+    BlurMapInput {
+        width: map.width,
+        height: map.height,
+        plane_width: map.plane_width,
+        plane_height: map.plane_height,
+        b: map.b,
+        b_low,
     }
 }
 
@@ -413,11 +462,23 @@ impl Job<'_> {
             frame_height: source.height,
             data: &source.data,
         };
+        // The learned map of the blur in the photo, only when something reshapes the bokeh (the network costs
+        // about as much as the detector it replaces); any failure of it is the classical detector's turn.
+        let blur_map = match &self.opts.bokeh_model {
+            Some(model) if ctx.plan.needs_blur_map() => blur_map_input(model, &image),
+            _ => None,
+        };
+        self.check()?;
         let cancel = self.cancel.clone();
-        let planes =
-            LensPlanes::build(&ctx.plan, &image, ctx.focus, &move || cancel.is_cancelled())
-                .map(Arc::new)
-                .map_err(lens_error)?;
+        let planes = LensPlanes::build_with_map(
+            &ctx.plan,
+            &image,
+            ctx.focus,
+            blur_map.as_ref(),
+            &move || cancel.is_cancelled(),
+        )
+        .map(Arc::new)
+        .map_err(lens_error)?;
         self.runs.lens_planes += 1;
         self.timings.lens_ms += t.elapsed().as_secs_f64() * 1000.0;
         self.lens_report = Some(report_of(&ctx.plan, &planes));
@@ -1325,6 +1386,36 @@ impl Job<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lower_bound_of_the_bokeh_map_follows_the_confidence_not_a_gate_on_it() {
+        // c = exp(-beta / 0.25): c = 1 is no error at all, c = e^-1 is beta = 0.25.
+        let map = BokehMap {
+            width: 3,
+            height: 1,
+            plane_width: 6,
+            plane_height: 2,
+            half_diagonal_px: 100.0,
+            b: vec![0.02, 0.02, 0.02],
+            c: vec![1.0, (-1.0f32).exp(), 0.1],
+        };
+        let input = blur_map_of(map);
+        assert_eq!((input.width, input.height), (3, 1));
+        assert_eq!((input.plane_width, input.plane_height), (6, 2));
+        assert_eq!(input.b, vec![0.02, 0.02, 0.02]);
+        assert!(
+            (input.b_low[0] - 0.02).abs() < 1e-7,
+            "no error: the bound is b"
+        );
+        let k = (-1.61f64 * 0.25).exp() as f32;
+        assert!(
+            (input.b_low[1] / 0.02 - k).abs() < 1e-4,
+            "{}",
+            input.b_low[1]
+        );
+        // A low confidence still gives a bound, only a lower one: it is never zero and never above b.
+        assert!(input.b_low[2] > 0.0 && input.b_low[2] < input.b_low[1]);
+    }
 
     fn focus(frame: [u16; 2], point: [u16; 2]) -> Option<SonyFocus> {
         Some(SonyFocus {

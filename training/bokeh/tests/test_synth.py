@@ -275,3 +275,218 @@ def test_a_radius_range_that_would_make_the_log_uniform_draw_nan_is_refused():
         with pytest.raises(ValueError, match="r_min_px"):
             S.SynthConfig(sample=64, kernel_r=14, r_min_px=lo, r_max_px=hi)
     S.SynthConfig(sample=64, kernel_r=14, r_min_px=1.0, r_max_px=1.0)  # a single radius is fine
+
+
+# --- v3: thin structures, featureless layers, the depth stack ------------------------------------------------------------
+
+
+from training.bokeh import structures as ST  # noqa: E402
+
+#: The bokeh-2 recipe's output on these tiles and seeds, recorded before v3 was written (`SynthConfig()`'s defaults draw nothing
+#: extra from the generator): sums per sample of the picture, the radius and the weight, and a corner of the picture.
+LEGACY = {
+    "5": {"lin_sum": [411.61835, 1686.05151, 1186.71411, 368.33008], "r_sum": [6554.9766, 13937.2109, 986.7546, 13280.1416],
+          "w_sum": [2190.1147, 2169.2812, 2129.2751, 2190.5869], "lin_corner": [0.07537, 0.02984, 0.01385, 0.01004, 0.14761, 0.06785, 0.02549, 0.01602]},
+    "6": {"lin_sum": [1391.11719, 579.1601, 1287.03418, 965.73016], "r_sum": [18734.0195, 0.0, 5927.1602, 0.0],
+          "w_sum": [2147.4529, 2304.0, 2100.2051, 2304.0], "lin_corner": [0.21834, 0.23081, 0.23865, 0.24073, 0.2035, 0.2143, 0.23137, 0.2252]},
+}
+
+
+@pytest.mark.parametrize("seed", ["5", "6"])
+def test_the_default_config_is_still_the_bokeh_2_recipe(seed):
+    cfg = S.SynthConfig(sample=48, kernel_r=14, r_max_px=10.0)
+    sy = S.synthesize(fake_tiles(4, 56, seed=3), cfg, torch.Generator().manual_seed(int(seed)))
+    want = LEGACY[seed]
+    assert sy.lin.sum((1, 2, 3)).tolist() == pytest.approx(want["lin_sum"], rel=2e-4)
+    assert sy.r.sum((1, 2, 3)).tolist() == pytest.approx(want["r_sum"], rel=2e-4, abs=1e-3)
+    assert sy.w.sum((1, 2, 3)).tolist() == pytest.approx(want["w_sum"], rel=2e-4)
+    assert sy.lin[0, 1, 20:22, 20:24].flatten().tolist() == pytest.approx(want["lin_corner"], abs=2e-5)
+    assert int((sy.cls != 0).sum()) == 0 and sy.info["thin_layers"] == 0 and sy.info["flat_layers"] == 0
+
+
+def _line_alpha(hw: float, y: float, canvas: int = 48, points: int = 120):
+    """The coverage of one horizontal line of half width `hw` through pixel row coordinate `y` (continuous)."""
+    verts = torch.zeros(1, ST.K_CURVES, ST.N_VERT, 2)
+    verts[0, 0, :, 0] = torch.linspace(-10, canvas + 10, ST.N_VERT)
+    verts[0, 0, :, 1] = y
+    half = torch.zeros(1, ST.K_CURVES, ST.N_VERT)
+    half[0, 0] = hw
+    alive = torch.zeros(1, ST.K_CURVES, dtype=torch.bool)
+    alive[0, 0] = True
+    return ST.rasterize(verts, half, alive, canvas, 0, points)[0, 0]
+
+
+@pytest.mark.parametrize("width", ST.WIDTHS)
+def test_a_drawn_line_covers_as_much_as_its_width_whatever_its_offset(width):
+    for y in (24.5, 24.0, 23.75):  # on a pixel row, between two rows, in between
+        a = _line_alpha(width / 2, y)
+        assert float(a[:, 24].sum()) / 48 > 0  # drawn
+        assert float(a[10:38, 14:34].sum(0).mean()) == pytest.approx(width, rel=0.15), (width, y)
+    # a one-pixel line between two rows is two pixels at one half: as an antialiased photo's is
+    a = _line_alpha(0.5, 24.0)
+    assert float(a[23, 24]) == pytest.approx(0.5, abs=0.12) and float(a[24, 24]) == pytest.approx(0.5, abs=0.12)
+    assert float(a[20, 24]) == 0.0 and 0.0 <= float(a.min()) and float(a.max()) <= 1.0
+
+
+def test_every_kind_of_thin_structure_is_drawn_finite_deterministic_and_in_frame():
+    s, m = 96, 12
+    lin = torch.rand(len(ST.TYPES) * 2, 3, s, s, generator=torch.Generator().manual_seed(0)) * 0.5 + 0.1
+    types = torch.arange(len(ST.TYPES)).repeat_interleave(2)
+    active = torch.ones(len(types), dtype=torch.bool)
+    a1 = ST.thin_layer(lin, types, active, torch.Generator().manual_seed(1), s + 2 * m, m)
+    a2 = ST.thin_layer(lin, types, active, torch.Generator().manual_seed(1), s + 2 * m, m)
+    assert torch.equal(a1[0], a2[0]) and torch.equal(a1[1], a2[1])
+    col, alpha = a1
+    assert torch.isfinite(col).all() and float(alpha.min()) >= 0 and float(alpha.max()) <= 1.0
+    inside = alpha[:, 0, m:m + s, m:m + s]
+    for i, name in enumerate(ST.TYPES):
+        for j in (2 * i, 2 * i + 1):  # something is drawn, and it is thin (a small part of the frame), whatever the seed
+            share = float((inside[j] > 0.3).float().mean())
+            assert 0.0 <= share < 0.45, (name, share)
+        assert float(inside[2 * i:2 * i + 2].max()) > 0.5, name
+    # a sample that is not active has nothing
+    off = ST.thin_layer(lin, types, torch.zeros_like(active), torch.Generator().manual_seed(1), s + 2 * m, m)
+    assert float(off[1].abs().max()) == 0.0 and float(off[0].abs().max()) == 0.0
+
+
+def test_a_thin_structure_contrasts_with_the_background_it_lies_on():
+    s, m = 64, 8
+    for level in (0.02, 0.5):
+        lin = torch.full((6, 3, s, s), level)
+        col, alpha = ST.thin_layer(lin, torch.full((6,), 4), torch.ones(6, dtype=torch.bool), torch.Generator().manual_seed(2), s + 2 * m, m)
+        bar = alpha > 0.9
+        got = (col.sum(1, keepdim=True) / 3)[bar] / alpha[bar]
+        ratio = got / level
+        assert bool(((ratio < 0.45) | (ratio > 2.2)).all()), level  # darker or brighter by more than 2.2 times: visible
+
+
+def test_a_featureless_layer_is_flat_inside_with_a_sharp_edge():
+    s, m = 96, 12
+    lin = torch.rand(8, 3, s, s, generator=torch.Generator().manual_seed(4)) * 0.4 + 0.05
+    col, alpha = ST.flat_layer(lin, torch.ones(8, dtype=torch.bool), torch.Generator().manual_seed(5), s + 2 * m, m)
+    assert torch.isfinite(col).all() and float(alpha.min()) >= 0 and float(alpha.max()) <= 1
+    share = alpha.mean((1, 2, 3))
+    assert float(share.max()) > 0.1  # there is a layer
+    for i in range(8):
+        inner = (alpha[i, 0] > 0.999)
+        if int(inner.sum()) > 200:
+            inner = torch.nn.functional.max_pool2d(-inner.float()[None, None], 5, 1, 2)[0, 0] == 0  # 2 px inside
+            c_i = col[i] / alpha[i].clamp(min=1e-6)
+            step = (c_i[:, 1:, :-1] - c_i[:, :-1, :-1]).abs() + (c_i[:, :-1, 1:] - c_i[:, :-1, :-1]).abs()
+            m_i = inner[:-1, :-1]
+            # no texture: from one pixel to the next the colour moves by a tiny part of itself (a gradient, faint clouds)
+            assert float(step[:, m_i].mean() / c_i[:, inner].mean()) < 0.01
+    bg = ST.flat_background(lin, torch.Generator().manual_seed(6), s + 2 * m)
+    assert bg.shape == (8, 3, s + 2 * m, s + 2 * m) and torch.isfinite(bg).all() and float(bg.min()) >= 0
+
+
+def test_a_sharp_thin_structure_over_a_blur_is_labelled_sharp_and_weighted_up(no_ellipticity):
+    m, c = 16, 128
+    bg = torch.rand(1, 3, c, c, generator=torch.Generator().manual_seed(7)) * 0.5 + 0.2
+    line = torch.zeros(1, 1, c, c)
+    line[..., 63:65, :] = 0.55  # a one-pixel-ish line at half coverage, as an antialiased photo's is: its share is under 0.9
+    line[..., 64, :] = 0.7
+    col = torch.full((1, 3, 1, 1), 0.02) * line
+    classes = torch.tensor([[S.NORMAL, S.THIN]])
+    out, label, weight, dom = S.render_layers(bg, torch.ones(1, 1, c, c), torch.tensor([[10.0]]), torch.full((1, c, c), 10.0), [(col, line)],
+                                              torch.zeros(1, 1), [], torch.zeros(1, 0), torch.Generator().manual_seed(8), m,
+                                              kind_weights=DISC_ONLY, layer_class=classes, return_class=True)
+    assert float(label[0, 0, 64, 64]) == 0.0 and int(dom[0, 0, 64, 64]) == S.THIN
+    assert float(weight[0, 0, 64, 64]) >= S.THIN_WEIGHT_FLOOR - 1e-6
+    assert float(label[0, 0, 30, 30]) == 10.0 and int(dom[0, 0, 30, 30]) == S.NORMAL  # the blurred background around it
+    # without the class the same line gets the share-based weight, lower
+    _, _, w_plain = S.render_layers(bg, torch.ones(1, 1, c, c), torch.tensor([[10.0]]), torch.full((1, c, c), 10.0), [(col, line)],
+                                    torch.zeros(1, 1), [], torch.zeros(1, 0), torch.Generator().manual_seed(8), m, kind_weights=DISC_ONLY)
+    assert float(w_plain[0, 0, 64, 64]) < S.THIN_WEIGHT_FLOOR
+
+
+def test_inside_a_featureless_layer_far_from_every_edge_the_weight_is_low(no_ellipticity):
+    m, c = 16, 128
+    bg = torch.rand(1, 3, c, c, generator=torch.Generator().manual_seed(9)) * 0.5 + 0.2
+    sky = torch.zeros(1, 1, c, c)
+    sky[..., :90, :] = 1.0  # the layer's only edge is the line at row 90
+    sky_c = sky.expand(1, 3, c, c) * 0.8
+    classes = torch.tensor([[S.NORMAL, S.FLAT]])
+    for t in (0.0, 6.0):
+        _, label, weight, dom = S.render_layers(bg, torch.ones(1, 1, c, c), torch.tensor([[12.0]]), torch.full((1, c, c), 12.0), [(sky_c, sky)],
+                                                torch.tensor([[t]]), [], torch.zeros(1, 0), torch.Generator().manual_seed(10), m,
+                                                kind_weights=DISC_ONLY, layer_class=classes, return_class=True)
+        assert int(dom[0, 0, 10, 64]) == S.FLAT and float(label[0, 0, 10, 64]) == t
+        assert float(weight[0, 0, 10, 64]) == pytest.approx(S.FLAT_INTERIOR_WEIGHT, abs=1e-6)  # 80 px from the edge: no evidence
+        near = [float(weight[0, 0, y, 64]) for y in range(80, 90)]
+        assert max(near) > 0.5, (t, near)  # the observable ring along the edge keeps its weight (the share falls to the edge)
+
+
+def test_skipping_the_fft_of_layers_without_blur_changes_nothing(no_ellipticity):
+    m, c = 16, 96
+    g = torch.Generator().manual_seed(11)
+    bg = torch.rand(2, 3, c, c, generator=g) * 0.5
+    sp_a = torch.zeros(2, 1, c, c)
+    sp_a[..., 30:60, 30:60] = 1.0
+    sp = (sp_a * 0.9).expand(2, 3, c, c) * sp_a
+    args = (bg, torch.ones(2, 1, c, c), torch.tensor([[9.0], [9.0]]), torch.full((2, c, c), 9.0), [(sp, sp_a)], torch.zeros(2, 1), [], torch.zeros(2, 0))
+    a = S.render_layers(*args, torch.Generator().manual_seed(12), m, kind_weights=DISC_ONLY)
+    b = S.render_layers(*args, torch.Generator().manual_seed(12), m, kind_weights=DISC_ONLY, skip_identity=True)
+    for x, y in zip(a, b):
+        assert torch.allclose(x, y, atol=1e-5)
+
+
+def test_the_depth_stack_mode_spreads_the_radii_between_the_subject_and_the_background():
+    cfg = S.SynthConfig.v3(sample=64, kernel_r=14, r_max_px=30.0)
+    b, lf = 400, 4
+    mode = torch.full((b,), 4)
+    t_bg = torch.full((b,), 24.0)
+    t = S._signed_radii(mode, t_bg, lf, 0, torch.zeros(b, dtype=torch.bool), torch.Generator().manual_seed(0), cfg, "cpu")
+    assert t.shape == (b, lf)
+    mag = t.abs()
+    assert float(mag.max()) <= 24.0 + 1e-4 and float(mag[:, 1:].min()) >= 1.5 - 1e-4  # between 1.5 px and the background
+    # one in each quarter of the log range [1.5, 24] for every sample (the first may be the subject, at 0)
+    slices = torch.floor(torch.log(mag.clamp(min=1.5) / 1.5) / np.log(24 / 1.5) * lf).clamp(max=lf - 1)
+    for k in range(lf):
+        assert float(((slices == k).any(1) | (mag == 0).any(1)).float().mean()) > 0.97
+    assert 0.05 < float((t < 0).float().mean()) < 0.25  # a few in front
+    assert 0.3 < float((t[:, 0] == 0).float().mean()) < 0.7  # the subject is in focus about half of the time
+
+
+def test_v3_batches_are_sane_over_many_seeds():
+    cfg = S.SynthConfig.v3(sample=64, kernel_r=14, r_max_px=10.0, p_ramp_batch=0.5, p_flat_background=0.3)
+    assert sum(cfg.mode_probs) == pytest.approx(1.0) and len(cfg.layers) == len(cfg.layers_probs)
+    tb = fake_tiles(6, 72, seed=5)
+    seen = set()
+    classes = set()
+    for seed in range(14):
+        sy = S.synthesize(tb, cfg, torch.Generator().manual_seed(seed))
+        assert sy.lin.shape == (6, 3, 64, 64) and sy.r.shape == (6, 1, 64, 64) and sy.cls.shape == (6, 1, 64, 64)
+        for name, t in (("lin", sy.lin), ("r", sy.r), ("w", sy.w), ("logr", sy.logr)):
+            assert torch.isfinite(t).all(), (seed, name)  # the bokeh-1 NaN: never again
+        assert float(sy.lin.min()) >= 0 and float(sy.lin.max()) <= 2.6
+        assert float(sy.r.min()) >= 0 and float(sy.r.max()) <= cfg.r_max_px + 1e-3
+        assert float(sy.w.min()) >= 0.25 * S.FLAT_INTERIOR_WEIGHT - 1e-6 and float(sy.w.max()) <= 1.0 + 1e-6
+        seen |= set(sy.info["mode"].tolist())
+        classes |= set(sy.cls.unique().tolist())
+    assert 4 in seen and classes == {S.NORMAL, S.FLAT, S.THIN}
+
+
+def test_the_v3_synthesis_is_deterministic_for_a_seed():
+    cfg = S.SynthConfig.v3(sample=64, kernel_r=14, r_max_px=10.0)
+    tb = fake_tiles(4, 64, seed=6)
+    a = S.synthesize(tb, cfg, torch.Generator().manual_seed(21))
+    b = S.synthesize(tb, cfg, torch.Generator().manual_seed(21))
+    assert torch.equal(a.lin, b.lin) and torch.equal(a.r, b.r) and torch.equal(a.w, b.w) and torch.equal(a.cls, b.cls)
+
+
+def test_whole_v3_batches_of_dark_kernels_are_finite_over_many_seeds(monkeypatch):
+    _only_dark(monkeypatch)
+    cfg = S.SynthConfig.v3(sample=64, kernel_r=14, r_max_px=10.0, p_ramp_batch=0.5, p_flat_background=0.3)
+    tb = fake_tiles(6, 64, seed=8)
+    for seed in range(8):
+        sy = S.synthesize(tb, cfg, torch.Generator().manual_seed(seed))
+        for name, t in (("lin", sy.lin), ("r", sy.r), ("w", sy.w), ("logr", sy.logr)):
+            assert torch.isfinite(t).all(), (seed, name)
+
+
+def test_the_preview_grid_has_four_panels_with_the_weight_tinted_by_class():
+    cfg = S.SynthConfig.v3(sample=48, kernel_r=14, r_max_px=10.0, thin_layers=(0.0, 1.0), flat_layers=(0.0, 1.0))
+    sy = S.synthesize(fake_tiles(3, 56, seed=2), cfg, torch.Generator().manual_seed(3))
+    grid = S.preview_grid(sy)
+    assert grid.shape == (3 * 48, 4 * 48, 3) and grid.dtype == torch.uint8

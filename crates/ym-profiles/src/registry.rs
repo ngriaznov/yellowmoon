@@ -200,8 +200,9 @@ pub const IDENTITY_WHITE_SCALE: [f64; 3] = [1.0, 1.0, 1.0];
 pub const WHITE_SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.25..=4.0;
 
 /// The most, in percent, that the files a `presets` scale was fitted on may differ from one another in red or blue:
-/// each file's own scale lies within this of the median of the files (`docs/03`, consistency of a body's files).
-pub const WHITE_SCALE_FILE_AGREEMENT_PERCENT: f64 = 1.0;
+/// each file's own scale lies within this of the median of the files (`docs/03`, consistency of a body's files). It is
+/// the unit-to-unit spread of the presets in the files of bodies with curves of their own (4.7 % at most).
+pub const WHITE_SCALE_FILE_AGREEMENT_PERCENT: f64 = 5.0;
 
 fn identity_white_scale() -> [f64; 3] {
     IDENTITY_WHITE_SCALE
@@ -988,7 +989,7 @@ mod tests {
                 mean_preset_angle_after_deg: 0.5,
                 daylight_k_before: 4400.0,
                 daylight_k_after: 5200.0,
-                file_spread_percent: [0.4, 0.0],
+                file_spread_percent: [0.4, 2.0],
                 matrix_scale: Some([0.9, 1.0, 1.0]),
                 matrix_mean_preset_angle_deg: Some(2.0),
                 matrix_daylight_k: Some(4700.0),
@@ -1072,7 +1073,7 @@ mod tests {
         let mut two = r.clone();
         two.bodies[3].white_scale_source = Some(with_files(vec![file("a.ARW"), file("b.ARW")]));
         two.validate().unwrap();
-        for spread in [[1.01, 0.0], [0.0, 1.5], [-0.1, 0.0]] {
+        for spread in [[5.01, 0.0], [0.0, 7.5], [-0.1, 0.0]] {
             let mut bad = r.clone();
             let mut src = presets_source();
             src.residual.as_mut().unwrap().file_spread_percent = spread;

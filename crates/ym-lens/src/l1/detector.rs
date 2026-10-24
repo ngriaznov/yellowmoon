@@ -585,12 +585,6 @@ pub(super) fn detect(
 
     // 3. Bright balls.
     let (ev_w, ev_s, _) = accumulate(&samples, n);
-    let mut ev_fine = vec![0.0f32; n];
-    for sm in &samples {
-        if f64::from(sm.ln_r).exp() < super::balls::FINE_PX {
-            ev_fine[sm.idx as usize] += sm.w;
-        }
-    }
     let balls = find_balls(
         &BallInput {
             w,
@@ -601,7 +595,6 @@ pub(super) fn detect(
             r_max_px,
             ev_w: &ev_w,
             ev_s: &ev_s,
-            ev_fine: &ev_fine,
             anchor: &anchor,
             sharp: &sharp,
             max_sharp_density: super::balls::MAX_SHARP_DENSITY,
@@ -785,7 +778,6 @@ pub(super) fn detect_with_map(
             conf[i] = MAP_UNSURE;
         }
     }
-    let ev_fine = vec![0.0f32; n];
     let balls = find_balls(
         &BallInput {
             w,
@@ -796,7 +788,6 @@ pub(super) fn detect_with_map(
             r_max_px,
             ev_w: &ev_w,
             ev_s: &ev_s,
-            ev_fine: &ev_fine,
             anchor: &anchor,
             sharp: &sharp,
             max_sharp_density: MAP_SHARP_MAX,

@@ -36,6 +36,7 @@ mod plan;
 mod planes;
 mod simd;
 mod spectral;
+mod strength;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 mod warp;
@@ -56,4 +57,5 @@ pub use l1::{Ball, BlurMapInput, BokehPlanes, reshape, reshape_halo};
 pub use plan::{Axis, FrameInfo, LensPlan};
 pub use planes::{LensPlanes, ReshapeReason, ReshapeReport};
 pub use spectral::CameraResponse;
+pub use strength::FlareStrengths;
 pub use warp::LensWarp;

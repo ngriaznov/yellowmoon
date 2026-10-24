@@ -55,8 +55,17 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn.functional as F
 
+from training.bokeh import structures
 from training.bokeh.encode import R_FLOOR_PX, linear_to_srgb, lower_median_t, luma_t, srgb_to_linear
 from training.bokeh.kernels import KERNEL_R, conv_fft, make_kernels, sample_params
+
+#: Layer classes (`render_layers(layer_class=...)`): what a layer is, for its label weight.
+NORMAL, FLAT, THIN = 0, 1, 2
+#: Pixels farther than this from the edge of every layer are "far from any evidence" inside a featureless layer.
+OBS_REACH = 8
+#: The weight of a pixel far from any edge inside a featureless layer, and the floor of a thin structure's own pixels.
+FLAT_INTERIOR_WEIGHT = 0.1
+THIN_WEIGHT_FLOOR = 0.9
 
 
 @dataclass
@@ -81,6 +90,32 @@ class SynthConfig:
     fft_chunk: int = 8
     #: The ramp's number of radius bins.
     bins: int = 4
+    # --- v3. The defaults below are the bokeh-2 recipe, bit for bit (nothing extra is drawn from the generator); `v3()` turns
+    # --- on the thin structures, the featureless layers, the depth stack mode and the layer count that goes with them.
+    #: Probabilities of 0, 1, 2 thin-structure layers in a batch (`structures.thin_layer`); one entry = none.
+    thin_layers: tuple[float, ...] = (1.0,)
+    #: Share of the samples that have a thin structure in a layer that does, and the chance that a layer's structures are
+    #: blurred (a defocused wire in front) instead of in focus.
+    p_thin_sample: float = 0.55
+    p_thin_blurred: float = 0.2
+    #: Probabilities of 0, 1 featureless layers (`structures.flat_layer`) in a batch; one entry = none.
+    flat_layers: tuple[float, ...] = (1.0,)
+    p_flat_sample: float = 0.6
+    #: Chance that a featureless layer is in focus, and that a sample's whole background is featureless.
+    p_flat_sharp: float = 0.55
+    p_flat_background: float = 0.0
+    #: Probabilities of the layer counts in `layers` (None: all alike).
+    layers_probs: tuple[float, ...] | None = None
+    #: Skip the FFT of a layer whose radius is under half a pixel in every sample of the batch (an exact identity).
+    skip_identity: bool = False
+
+    @classmethod
+    def v3(cls, **kw) -> "SynthConfig":
+        """The v3 recipe (module docstring, "v3"): the bokeh-2 settings plus thin structures, featureless layers, a fifth
+        mode (a stack of surfaces whose blur is spread evenly between 1.5 px and the background's) and up to 6 surfaces."""
+        base = dict(layers=(2, 3, 4, 5, 6), layers_probs=(0.10, 0.25, 0.30, 0.20, 0.15), mode_probs=(0.22, 0.25, 0.08, 0.15, 0.30),
+                    thin_layers=(0.40, 0.45, 0.15), flat_layers=(0.60, 0.40), p_flat_background=0.07, skip_identity=True)
+        return cls(**{**base, **kw})
 
     def __post_init__(self):
         # Radii are drawn log-uniform: a lower bound of 0 is log(0) = -inf, which turns into NaN in every sample.
@@ -117,6 +152,8 @@ class Synth:
     w: torch.Tensor
     hd: torch.Tensor
     info: dict = field(default_factory=dict)
+    #: (B, 1, S, S) uint8, v3 only: the class of the layer that dominates each pixel (`NORMAL`, `FLAT`, `THIN`).
+    cls: torch.Tensor | None = None
 
     @property
     def logr(self) -> torch.Tensor:
@@ -281,12 +318,22 @@ def _signed_radii(mode, t_bg, lf, ng, night, gen, cfg: SynthConfig, dev):
     t = torch.where(m == 1, t1, t)
     t = torch.where(m == 2, torch.where(front, -mag, torch.zeros_like(mag)), t)
     t = torch.where(m == 3, torch.where(zero3, torch.zeros_like(mag3), sign3 * mag3), t)
+    if len(cfg.mode_probs) > 4 and lf:
+        # mode 4 (v3), a stack of surfaces: the sprites' radii are spread evenly (one in each of `lf` slices of the log
+        # radius) between 1.5 px and the background's, so every depth in between is drawn; a few are in front; the first
+        # is the subject, in focus, half of the time.
+        strata = (torch.argsort(torch.rand(b, lf, generator=gen, device=dev), 1).float() + torch.rand(b, lf, generator=gen, device=dev)) / lf
+        lo_l, hi_l = math.log(1.5), torch.log(t_bg.clamp(min=1.6)).view(b, 1)
+        r4 = torch.exp(lo_l + (hi_l - lo_l) * strata)
+        t4 = torch.where(_bern(gen, 0.15, b, lf, device=dev), -r4, r4)
+        t4[:, 0] = torch.where(_bern(gen, 0.5, b, device=dev), torch.zeros(b, device=dev), t4[:, 0])
+        t = torch.cat([torch.where(m == 4, t4, t[:, :lf]), t[:, lf:]], 1)
     # emitters: lights are mostly far behind (night: balls you can see)
     if ng:
         e = t[:, lf:]
         bg = t_bg.view(b, 1)
         e1 = torch.where(front[:, lf:], torch.minimum(bg * _u(gen, 0.7, 1.3, b, ng, device=dev), bg), -mag[:, lf:])
-        e = torch.where(m == 1, e1, e)
+        e = torch.where((m == 1) | (m == 4), e1, e)
         night_r = torch.where(_bern(gen, 0.8, b, ng, device=dev), _lu(gen, 3.0, hi, b, ng, device=dev),
                               -_lu(gen, 3.0, hi, b, ng, device=dev))
         e = torch.where(night.view(b, 1), night_r, e)
@@ -294,10 +341,16 @@ def _signed_radii(mode, t_bg, lf, ng, night, gen, cfg: SynthConfig, dev):
     return torch.minimum(t, t_bg.view(b, 1))
 
 
+def _reach(x: torch.Tensor, r: int) -> torch.Tensor:
+    """Max filter of (B, 1, H, W) over a (2r+1) x (2r+1) square (two one-dimensional passes)."""
+    return F.max_pool2d(F.max_pool2d(x, (2 * r + 1, 1), 1, (r, 0)), (1, 2 * r + 1), 1, (0, r))
+
+
 def render_layers(bg: torch.Tensor, bin_w: torch.Tensor, bg_r: torch.Tensor, field_bg: torch.Tensor,
                   sprites: list, t_sprites: torch.Tensor, emitters: list, t_emitters: torch.Tensor,
                   gen: torch.Generator, margin: int, fft_chunk: int = 8,
-                  kind_weights=None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                  kind_weights=None, layer_class: torch.Tensor | None = None, skip_identity: bool = False,
+                  return_class: bool = False):
     """The deterministic core: blurs every layer with its own kernel and composites back to front, and labels.
 
     `bg` (B, 3, C, C) the background colour and `bin_w` (B, nb, C, C) its partition of unity over `nb` radius bins
@@ -305,7 +358,16 @@ def render_layers(bg: torch.Tensor, bin_w: torch.Tensor, bg_r: torch.Tensor, fie
     background's radius at every pixel (the label). `sprites` is a list of (premultiplied colour, alpha) and
     `emitters` a list of light images; `t_sprites` (B, lf) and `t_emitters` (B, ng) are their signed defocus
     (`|t|` pixels of disc radius, larger = further back). Returns the picture (B, 3, C, C), the disc radius in pixels
-    of every pixel (B, 1, C, C) and the loss weight. `kind_weights` picks the kernel kinds (default: the library's)."""
+    of every pixel (B, 1, C, C) and the loss weight. `kind_weights` picks the kernel kinds (default: the library's).
+
+    v3: `layer_class` (B, 1 + len(sprites) + len(emitters)) holds `NORMAL`, `FLAT` or `THIN` for the background, the
+    sprites and the emitters, in that order. Where a featureless layer dominates a pixel that is farther than `OBS_REACH`
+    px from the edge of every layer (its blurred alpha strictly between 0.02 and 0.98), the radius cannot be read from the
+    picture and the weight is scaled by `FLAT_INTERIOR_WEIGHT` (rising to 1 within reach of an edge); where a thin structure
+    dominates (share at least a half) the weight is at least `THIN_WEIGHT_FLOOR`: a one-pixel line covers a pixel by less
+    than 0.9, and its own label is the one that must be learnt. `skip_identity` leaves out the FFT of every layer whose
+    radius is under half a pixel in all samples (the kernel is then an exact delta). `return_class` adds the class of the
+    dominating layer (B, 1, C, C) as a fourth value."""
     dev = bg.device
     b, _, cv, _ = bg.shape
     nb, lf, ng = bin_w.shape[1], len(sprites), len(emitters)
@@ -336,7 +398,13 @@ def render_layers(bg: torch.Tensor, bin_w: torch.Tensor, bg_r: torch.Tensor, fie
     src[:, :nb] = 0
     params = {k: v.view(b, lx).gather(1, src).reshape(-1) for k, v in params.items()}
     kern = make_kernels(rad_x.reshape(-1), params, margin).view(b, lx, 1, 2 * margin + 1, 2 * margin + 1)
-    blurred = torch.cat([conv_fft(stack[i:i + fft_chunk], kern[i:i + fft_chunk]) for i in range(0, b, fft_chunk)], 0)
+    if skip_identity:
+        todo = (rad_x >= 0.5).any(0).nonzero().flatten().tolist()
+        blurred = stack.clone()
+        if todo:
+            blurred[:, todo] = torch.cat([conv_fft(stack[i:i + fft_chunk, todo], kern[i:i + fft_chunk, todo]) for i in range(0, b, fft_chunk)], 0)
+    else:
+        blurred = torch.cat([conv_fft(stack[i:i + fft_chunk], kern[i:i + fft_chunk]) for i in range(0, b, fft_chunk)], 0)
     bg_all = blurred[:, :nb].sum(1)
     layers = torch.cat([bg_all.unsqueeze(1), blurred[:, nb:]], 1)  # (B, n_layers, 4, C, C)
     col, alp = layers[:, :, :3], layers[:, :, 3:].clamp(0, 1)
@@ -371,7 +439,17 @@ def render_layers(bg: torch.Tensor, bin_w: torch.Tensor, bg_r: torch.Tensor, fie
     em_total = (share * emf).sum(1, keepdim=True).clamp(max=1.0)
     share = torch.where(emf, share, share * (1 - em_total))
     best, which = share.max(1, keepdim=True)
-    return out, rmap.gather(1, which), 0.25 + 0.75 * _smoothstep(0.5, 0.9, best)
+    label = rmap.gather(1, which)
+    weight = 0.25 + 0.75 * _smoothstep(0.5, 0.9, best)
+    if layer_class is None:
+        return (out, label, weight, torch.zeros_like(label, dtype=torch.uint8)) if return_class else (out, label, weight)
+    cls_front = torch.stack([layer_class[ar, order[:, p]] for p in range(n_layers - 1, -1, -1)], 1)  # (B, n_layers), as `share`
+    dom = cls_front.view(b, n_layers, 1, 1).expand(b, n_layers, cv, cv).gather(1, which)
+    edge_zone = ((alp[:, 1:] > 0.02) & (alp[:, 1:] < 0.98)).any(1).float() if n_layers > 1 else torch.zeros_like(best)
+    seen = _reach(edge_zone, OBS_REACH)
+    weight = torch.where(dom == FLAT, weight * (FLAT_INTERIOR_WEIGHT + (1 - FLAT_INTERIOR_WEIGHT) * seen), weight)
+    weight = torch.where((dom == THIN) & (best >= 0.5), weight.clamp(min=THIN_WEIGHT_FLOOR), weight)
+    return (out, label, weight, dom.to(torch.uint8)) if return_class else (out, label, weight)
 
 
 def synthesize(tb: TileBatch, cfg: SynthConfig, gen: torch.Generator) -> Synth:
@@ -399,16 +477,34 @@ def synthesize(tb: TileBatch, cfg: SynthConfig, gen: torch.Generator) -> Synth:
 
     # 3-4. modes, layer counts, radii
     mode = torch.multinomial(torch.tensor(cfg.mode_probs, dtype=torch.float32, device=dev).repeat(b, 1), 1, generator=gen).squeeze(1)
-    lf = int(cfg.layers[int(torch.randint(0, len(cfg.layers), (1,), generator=gen, device=dev))]) - 1
+    if cfg.layers_probs is None:
+        lf = int(cfg.layers[int(torch.randint(0, len(cfg.layers), (1,), generator=gen, device=dev))]) - 1
+    else:
+        lf = int(cfg.layers[int(torch.multinomial(torch.tensor(cfg.layers_probs, dtype=torch.float32, device=dev), 1, generator=gen))]) - 1
     ng = int(torch.multinomial(torch.tensor(cfg.emitter_groups, dtype=torch.float32, device=dev), 1, generator=gen))
+    n_flat = int(torch.multinomial(torch.tensor(cfg.flat_layers, dtype=torch.float32, device=dev), 1, generator=gen)) if len(cfg.flat_layers) > 1 else 0
+    n_thin = int(torch.multinomial(torch.tensor(cfg.thin_layers, dtype=torch.float32, device=dev), 1, generator=gen)) if len(cfg.thin_layers) > 1 else 0
     ramp_batch = bool(_bern(gen, cfg.p_ramp_batch, 1, device=dev))
     night = _bern(gen, cfg.p_night, b, device=dev) & (ng > 0)
     lo, hi = cfg.r_min_px, cfg.r_max_px
     t_bg = torch.zeros(b, device=dev)
     t_bg = torch.where(mode == 1, torch.where(_bern(gen, 0.92, b, device=dev), _lu(gen, 1.2, hi, b, device=dev), t_bg), t_bg)
     t_bg = torch.where(mode == 3, torch.where(_bern(gen, 0.8, b, device=dev), _lu(gen, lo, hi, b, device=dev), t_bg), t_bg)
+    if len(cfg.mode_probs) > 4:
+        t_bg = torch.where(mode == 4, torch.where(_bern(gen, 0.95, b, device=dev), _lu(gen, min(4.0, hi), hi, b, device=dev), t_bg), t_bg)
     t_other = _signed_radii(mode, t_bg, lf, ng, night, gen, cfg, dev)
     plain = (mode == 0) & _bern(gen, 0.5, b, device=dev)  # a plain, unmodified tile: no sprites
+    t_flat = torch.zeros(b, n_flat, device=dev)
+    t_thin = torch.zeros(b, n_thin, device=dev)
+    if n_flat:
+        sharp = _bern(gen, cfg.p_flat_sharp, b, n_flat, device=dev)
+        t_flat = torch.where(sharp, t_flat, _lu(gen, 1.2, hi, b, n_flat, device=dev) * torch.where(_bern(gen, 0.85, b, n_flat, device=dev), 1.0, -1.0))
+        t_flat = torch.minimum(t_flat, t_bg.view(b, 1))
+    for j in range(n_thin):
+        if bool(_bern(gen, cfg.p_thin_blurred, 1, device=dev)):  # this layer's structures are out of focus (mostly in front)
+            mag = _lu(gen, 1.2, hi, b, device=dev) * torch.where(_bern(gen, 0.7, b, device=dev), -1.0, 1.0)
+            t_thin[:, j] = torch.minimum(mag, t_bg)
+    flat_bg = (_bern(gen, cfg.p_flat_background, b, device=dev) & ~plain) if cfg.p_flat_background > 0 else torch.zeros(b, dtype=torch.bool, device=dev)
 
     # ramp: the background's radius varies across the frame
     nb = cfg.bins if ramp_batch else 1
@@ -425,21 +521,42 @@ def synthesize(tb: TileBatch, cfg: SynthConfig, gen: torch.Generator) -> Synth:
     r_hi = torch.where(use_ramp, r_hi, t_bg)
     field_bg = r_lo.view(b, 1, 1) + (r_hi - r_lo).view(b, 1, 1) * (xi + 1) / 2  # (B, C, C)
 
-    # layer images: background (bins), sprites, emitters
+    # layer images: background (bins), then the featureless layers (behind sprites of equal radius), the sprites, the thin
+    # structures (in front), the emitters
     canvas_bg = F.pad(lin, (m, m, m, m), mode="reflect")
+    if cfg.p_flat_background > 0:
+        canvas_bg = torch.where(flat_bg.view(b, 1, 1, 1), structures.flat_background(lin, gen, cv), canvas_bg)
     night_gain = torch.where(night, torch.exp2(-_u(gen, 2.5, 5.0, b, device=dev)), torch.ones(b, device=dev))
     ng_ = night_gain.view(b, 1, 1, 1)
     surf_c, surf_a, surf_t = [canvas_bg * ng_], [torch.ones(b, 1, cv, cv, device=dev)], [t_bg]
+    classes = [torch.where(flat_bg, FLAT, NORMAL)]
+    for k in range(n_flat):
+        c_k, a_k = structures.flat_layer(lin, _bern(gen, cfg.p_flat_sample, b, device=dev) & ~plain, gen, cv, m)
+        surf_c.append(c_k * ng_)
+        surf_a.append(a_k)
+        surf_t.append(t_flat[:, k])
+        classes.append(torch.full((b,), FLAT, device=dev))
     for k in range(lf):
         c_k, a_k = _sprite(lin, ids, tb.cands, m, gen, cfg, ~plain)
         surf_c.append(c_k * ng_)
         surf_a.append(a_k)
         surf_t.append(t_other[:, k])
+        classes.append(torch.full((b,), NORMAL, device=dev))
+    thin_types = None
+    for k in range(n_thin):
+        thin_types = torch.multinomial(torch.tensor(structures.TYPE_PROBS, device=dev).repeat(b, 1), 1, generator=gen).squeeze(1)
+        c_k, a_k = structures.thin_layer(lin, thin_types, _bern(gen, cfg.p_thin_sample, b, device=dev) & ~plain, gen, cv, m)
+        surf_c.append(c_k * ng_)
+        surf_a.append(a_k)
+        surf_t.append(t_thin[:, k])
+        classes.append(torch.full((b,), THIN, device=dev))
     em_c, em_t = [], []
     for g in range(ng):
         em_t.append(t_other[:, lf + g])
         em_c.append(_emitters(median_day, t_other[:, lf + g].abs(), gen, cfg, torch.ones(b, dtype=torch.bool, device=dev)))
-    n_layers = 1 + lf + ng
+        classes.append(torch.full((b,), NORMAL, device=dev))
+    n_layers = 1 + n_flat + lf + n_thin + ng
+    n_sprites = n_flat + lf + n_thin
     if nb > 1:
         j = torch.arange(nb, device=dev, dtype=torch.float32).view(1, nb) / (nb - 1)
         bg_r = r_lo.view(b, 1) + (r_hi - r_lo).view(b, 1) * j
@@ -454,11 +571,12 @@ def synthesize(tb: TileBatch, cfg: SynthConfig, gen: torch.Generator) -> Synth:
     t_all = torch.stack(surf_t + em_t, 1)  # (B, n_layers)
 
     # 5-7. kernels, FFT convolution, back-to-front composite, labels
-    out, label_r, weight = render_layers(
-        surf_c[0], bin_w, bg_r, field_bg, list(zip(surf_c[1:], surf_a[1:])), t_all[:, 1:1 + lf], em_c, t_all[:, 1 + lf:],
-        gen, m, cfg.fft_chunk)
+    v3 = n_flat or n_thin or cfg.p_flat_background > 0
+    got = render_layers(
+        surf_c[0], bin_w, bg_r, field_bg, list(zip(surf_c[1:], surf_a[1:])), t_all[:, 1:1 + n_sprites], em_c, t_all[:, 1 + n_sprites:],
+        gen, m, cfg.fft_chunk, layer_class=torch.stack(classes, 1) if v3 else None, skip_identity=cfg.skip_identity, return_class=True)
     crop = (slice(None), slice(None), slice(m, m + s), slice(m, m + s))
-    out, label_r, weight = out[crop], label_r[crop], weight[crop]
+    out, label_r, weight, dom = (g[crop] for g in got)
 
     # 8. sensor
     blur_sigma = torch.where(_bern(gen, 0.4, b, device=dev), _u(gen, 0.3, 0.7, b, device=dev), torch.zeros(b, device=dev))
@@ -476,8 +594,9 @@ def synthesize(tb: TileBatch, cfg: SynthConfig, gen: torch.Generator) -> Synth:
     wb_gain = torch.stack([_u(gen, 1.0, 2.2, b, device=dev), torch.ones(b, device=dev), _u(gen, 1.0, 2.0, b, device=dev)], 1)
     x = x * torch.where(wb.view(b, 1), wb_gain, torch.ones_like(wb_gain)).view(b, 3, 1, 1)
 
-    info = {"mode": mode, "night": night, "plain": plain, "layers": n_layers, "bins": nb, "emitter_groups": ng}
-    return Synth(lin=x, r=label_r, w=weight, hd=tb.hd.to(dev), info=info)
+    info = {"mode": mode, "night": night, "plain": plain, "layers": n_layers, "bins": nb, "emitter_groups": ng,
+            "flat_layers": n_flat, "thin_layers": n_thin, "flat_background": flat_bg}
+    return Synth(lin=x, r=label_r, w=weight, hd=tb.hd.to(dev), info=info, cls=dom)
 
 
 # --- previews ---------------------------------------------------------------------------------------------------
@@ -497,8 +616,9 @@ def colorize(values: torch.Tensor, vmax: float) -> torch.Tensor:
 
 
 def preview_grid(sy: Synth, b_max: float = 0.05) -> torch.Tensor:
-    """(H_total, W_total, 3) uint8: one row per sample, three panels (the input as the network sees it, a display
-    version of the same plane, and the label `b = r / hd` as colour, 0 to `b_max`)."""
+    """(H_total, W_total, 3) uint8: one row per sample, four panels (the input as the network sees it, a display version
+    of the same plane, the label `b = r / hd` as colour, 0 to `b_max`, and the loss weight as grey, tinted cyan where a thin
+    structure dominates and magenta where a featureless layer does)."""
     from training.bokeh.encode import MID, encode_t
 
     e = encode_t(sy.lin)
@@ -507,5 +627,11 @@ def preview_grid(sy: Synth, b_max: float = 0.05) -> torch.Tensor:
     disp = linear_to_srgb(sy.lin * (MID / m) * 1.4)
     b = sy.r / sy.hd.view(-1, 1, 1, 1)
     lab = colorize(b, b_max) * (0.35 + 0.65 * sy.w)
-    panels = torch.cat([e.clamp(0, 1), disp, lab], 3)  # side by side
+    wmap = sy.w.expand(-1, 3, -1, -1).clone()
+    if sy.cls is not None:
+        thin, flat = (sy.cls == THIN).float(), (sy.cls == FLAT).float()
+        wmap[:, 0:1] = wmap[:, 0:1] * (1 - thin) + 0.2 * thin + 0.9 * flat * sy.w
+        wmap[:, 1:2] = wmap[:, 1:2] * (1 - flat) + 0.9 * thin * sy.w + 0.1 * flat
+        wmap[:, 2:3] = wmap[:, 2:3] * (1 - flat) + 0.9 * thin * sy.w + 0.9 * flat * sy.w
+    panels = torch.cat([e.clamp(0, 1), disp, lab, wmap.clamp(0, 1)], 3)  # side by side
     return (torch.cat(list(panels), 1).permute(1, 2, 0).clamp(0, 1) * 255).round().to(torch.uint8).cpu()

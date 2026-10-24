@@ -10,6 +10,8 @@ started by a push to the branch `bokeh-train-run`) or from a computer with direc
     modal run -m training.bokeh.modal_app::preview --budget 0.3     # sheets of synthesised inputs and labels
     modal run -m training.bokeh.modal_app::train   --budget 0.8 --minutes 8 --steps 1000 --run bokeh-smoke   # the GPU smoke
     modal run -m training.bokeh.modal_app::train   --budget 5 --minutes 100 --run bokeh-2
+    modal run -m training.bokeh.modal_app::train   --budget 0.45 --minutes 5 --steps 600 --overhead-min 8 --final-val 96 --run bokeh-3-smoke   # v3's GPU smoke
+    modal run -m training.bokeh.modal_app::train   --budget 3 --minutes 90 --init-from bokeh-2 --lr 0.001 --run bokeh-3             # v3, from bokeh-2's weights
     modal run -m training.bokeh.modal_app::results                  # metrics of every run, the ledger
     modal run -m training.bokeh.modal_app::fetch                    # runs, previews, credits, ledger into training/bokeh/runs/
     python -m training.bokeh.budget plan --entry train --minutes 100   # a plan's worst case, no Modal, no spend
@@ -154,6 +156,11 @@ def train_run(run_id: str, run: str, config: dict) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     if (out / "metrics.json").exists():
         return {**json.loads((out / "metrics.json").read_text()), "call_seconds": time.time() - t_call, "reused": True}
+    if config.get("init_from"):  # the weights of an earlier run on the volume: look now, before anything is copied or trained
+        start = ROOT / "runs" / config["init_from"] / "model.pt"
+        if not start.exists():
+            raise FileNotFoundError(f"--init-from {config['init_from']}: there is no {start} on the volume")
+        config = {**config, "init_from": str(start)}
     local = Path("/tmp/tiles")
     shutil.copytree(ROOT / "tiles", local, ignore=shutil.ignore_patterns("reports", "*.tsv.gz"), dirs_exist_ok=True)
     setup = time.time() - t_call
@@ -167,7 +174,7 @@ def train_run(run_id: str, run: str, config: dict) -> dict:
         log_file.flush()
 
     def heartbeat(trained_seconds: float) -> None:
-        ledger.write_heartbeat(run_id, setup + trained_seconds + 60, B.train_fn(config["max_minutes"]))
+        ledger.write_heartbeat(run_id, setup + trained_seconds + 60, B.train_fn(config["max_minutes"], config.get("overhead_min", B.TRAIN_OVERHEAD_MIN)))
         volume.commit()
 
     def keep_log() -> None:
@@ -330,14 +337,15 @@ def run_preview(run_id: str, budget: float) -> dict:
 
 
 @app.function(image=cpu_image, volumes=VOLS, **orch(plan_train(B.max_train_minutes(5.0))))
-def run_train(run_id: str, run_name: str, minutes: float, budget: float, config: dict) -> dict:
-    """Trains for `minutes` (plus setup and the final evaluation, `B.TRAIN_OVERHEAD_MIN`). Refuses when the plan's worst
-    case is above `budget` or the programme's cap; stops the call when its time is up; a rerun with the same
-    `run_id` and `run_name` carries on from the checkpoint and the same ledger entry."""
-    if minutes > TRAIN_STATIC_MINUTES:
-        raise BudgetExceeded(f"{minutes} minutes is above the {TRAIN_STATIC_MINUTES:.0f} the orchestrator's time limit allows; "
-                             "raise TRAIN_STATIC_MINUTES's budget in modal_app.py (with the owner's agreement)")
-    plan = plan_train(minutes)
+def run_train(run_id: str, run_name: str, minutes: float, budget: float, config: dict,
+              overhead_min: float = B.TRAIN_OVERHEAD_MIN) -> dict:
+    """Trains for `minutes` (plus setup and the final evaluation, `overhead_min`, 18 unless a smoke run says less). Refuses
+    when the plan's worst case is above `budget` or the programme's cap; stops the call when its time is up; a rerun with the
+    same `run_id` and `run_name` carries on from the checkpoint and the same ledger entry."""
+    if minutes + overhead_min > TRAIN_STATIC_MINUTES + B.TRAIN_OVERHEAD_MIN:
+        raise BudgetExceeded(f"{minutes} + {overhead_min} minutes are above the {TRAIN_STATIC_MINUTES:.0f} + {B.TRAIN_OVERHEAD_MIN} the "
+                             "orchestrator's time limit allows; raise TRAIN_STATIC_MINUTES's budget in modal_app.py (with the owner's agreement)")
+    plan = plan_train(minutes, overhead_min)
     fn = plan.items[0][2]
     resumed = run_id in Ledger(ROOT / "ledger.json").entries
     run = Run(run_id, plan, budget, plan.items[-1][2].timeout_s)
@@ -345,7 +353,7 @@ def run_train(run_id: str, run_name: str, minutes: float, budget: float, config:
         print(f"the earlier attempt's heartbeat is charged: ${run.ledger.absorb_heartbeat(run_id, fn):.2f}", flush=True)
         run.commit()
     t = time.time()
-    call = train_run.spawn(run_id, run_name, {**config, "max_minutes": minutes})
+    call = train_run.spawn(run_id, run_name, {**config, "max_minutes": minutes, "overhead_min": overhead_min})
     try:
         result = call.get(timeout=fn.timeout_s)
     except Exception as e:  # noqa: BLE001 - whatever stopped the call, it is stopped and counted at its full time
@@ -407,15 +415,25 @@ def preview(budget: float = 0.3, run_id: str = "") -> None:
 
 @app.local_entrypoint()
 def train(budget: float = 5.0, run: str = "bokeh-2", minutes: float = 100.0, steps: int = 0, batch: int = 24,
-          sample: int = 512, lr: float = 2e-3, seed: int = 1, amp: bool = True, run_id: str = "") -> None:
+          sample: int = 512, lr: float = 2e-3, seed: int = 1, amp: bool = True, run_id: str = "", init_from: str = "",
+          overhead_min: float = B.TRAIN_OVERHEAD_MIN, final_val: int = 0, synth: int = 3, sharp_wins: bool = True,
+          decision_loss: float = 0.0) -> None:
     """Trains one model on one L4 for `minutes` of training (the worst case counts the whole call), or for `steps` steps
     when that comes first (`--steps 1000 --minutes 8 --budget 0.8 --run bokeh-smoke` is the GPU smoke: the full
     configuration for 1000 steps, about 6 minutes, to see a finite, falling loss before the long run). A name that was
     used before carries on from that run's checkpoint: a run that diverged needs a new one. The run stops by itself
     when its loss turns NaN or stays high (`train.py`, "Guards"). `--no-amp` trains in float32 instead of bf16 (slower;
-    for the case that the smoke shows skipped steps with a non-finite gradient)."""
-    config = {"batch": batch, "sample": sample, "lr": lr, "seed": seed, "amp": amp, **({"steps": steps} if steps else {})}
-    print(json.dumps(run_train.remote(_id("train", run_id), run, minutes, budget, config), indent=1))
+    for the case that the smoke shows skipped steps with a non-finite gradient).
+
+    v3: `--synth 2` is bokeh-2's synthesis (3, the default, adds thin structures, featureless layers and the depth stack),
+    `--no-sharp-wins` its half-resolution target, `--decision-loss` the weight of the extra decision term (0 = off),
+    `--init-from bokeh-2` starts from that run's weights on the volume (its `model.pt`) with a new optimiser and schedule (give
+    a lower `--lr`). `--overhead-min` is the minutes the call may take beyond the training (18 by default, never below 6: a
+    smoke run with `--final-val 96` samples in its final evaluation can say 8, which is what makes its worst case small)."""
+    config = {"batch": batch, "sample": sample, "lr": lr, "seed": seed, "amp": amp, "synth": synth, "sharp_wins": sharp_wins,
+              "decision_loss": decision_loss, **({"steps": steps} if steps else {}), **({"init_from": init_from} if init_from else {}),
+              **({"final_val_samples": final_val, "baseline_n": min(48, final_val)} if final_val else {})}
+    print(json.dumps(run_train.remote(_id("train", run_id), run, minutes, budget, config, overhead_min), indent=1))
 
 
 @app.local_entrypoint()
@@ -461,8 +479,8 @@ def fetch(dest: str = "training/bokeh/runs", budget: float = 0.0) -> None:
 
 
 @app.local_entrypoint()
-def plan(entry: str = "train", minutes: float = 100.0, photos: int = 20000) -> None:
+def plan(entry: str = "train", minutes: float = 100.0, photos: int = 20000, overhead_min: float = B.TRAIN_OVERHEAD_MIN) -> None:
     """Prints a plan's worst case. Spends nothing."""
     p = {"check": plan_check, "prepare": lambda: plan_prepare(photos), "preview": plan_preview,
-         "train": lambda: plan_train(minutes), "results": plan_results}[entry]()
+         "train": lambda: plan_train(minutes, overhead_min), "results": plan_results}[entry]()
     print(p.table())

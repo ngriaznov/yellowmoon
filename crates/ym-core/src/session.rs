@@ -97,6 +97,7 @@ use ym_color::exposure::{BurstFrame, burst_groups, share_burst_ev};
 use ym_color::look::{LookTransform, ParametricLook};
 use ym_lens::LensLibrary;
 use ym_looks::library::LookId;
+use ym_ml::bokeh_net::BokehNet;
 use ym_ml::crop_net::CropNet;
 use ym_noise::estimate::PoolKey;
 use ym_noise::priors::{NoisePrior, PriorStore};
@@ -701,6 +702,10 @@ pub struct SessionEnv {
     /// they could not be: a missing or damaged folder is not a crash, the lens list is then empty
     /// and a lens setting renders as no lens (the render's note says so).
     pub lens_library: Result<Arc<LensLibrary>, String>,
+    /// The bokeh map network (`<data_root>/models/bokeh`, `docs/21` section 7), loaded once, or why it could
+    /// not be: without it the lens's bokeh reshaping reads the blur from the classical detector (the render is
+    /// still made; only the map is less sure).
+    pub bokeh_model: Result<Arc<BokehNet>, String>,
 }
 
 /// Auto crop's model from `<data_root>/models/crop`, checked against its `SHA256SUMS`; a missing or
@@ -712,6 +717,15 @@ fn load_crop_model(data_root: &Path) -> Result<Arc<CropNet>, String> {
             tracing::warn!(error = %e, "Auto crop's model is not usable");
             format!("the crop model could not be loaded ({e})")
         })
+}
+
+/// The bokeh map network from `<data_root>/models/bokeh`, checked against its `SHA256SUMS`; a missing or damaged
+/// file is the reason it gives instead of a model, and the lens falls back to the classical detector.
+fn load_bokeh_model(data_root: &Path) -> Result<Arc<BokehNet>, String> {
+    BokehNet::load_bundled(data_root).map(Arc::new).map_err(|e| {
+        tracing::warn!(error = %e, "the bokeh map model is not usable; the classical detector is used");
+        format!("the bokeh model could not be loaded ({e})")
+    })
 }
 
 /// The lens library from `<data_root>/lenses`, checked against its `SHA256SUMS`; a missing or damaged
@@ -775,6 +789,7 @@ impl SessionEnv {
             pictures: None,
             crop_model: load_crop_model(data_root),
             lens_library: load_lens_library(data_root),
+            bokeh_model: load_bokeh_model(data_root),
         })
     }
 

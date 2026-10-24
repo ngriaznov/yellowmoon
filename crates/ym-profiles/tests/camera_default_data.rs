@@ -96,7 +96,7 @@ fn the_matrix_table_agrees_with_the_registry_and_the_exclusions() {
         table.lookup("SONY", "ILCE-3000", Some(302)).how,
         MatrixMatch::ModelId
     );
-    // Registry 1.3.0 added fifteen stand-in bodies for their white scale (`docs/03`). Nine of them have a published
+    // Registry 1.3.0 added eighteen stand-in bodies for their white scale (`docs/03`). Twelve of them have a published
     // matrix and an entry here; these six have none, so the Before view gives them the A7R IV's, as it did when
     // the registry did not list them.
     let without_entry = [
@@ -150,7 +150,7 @@ fn the_matrix_table_agrees_with_the_registry_and_the_exclusions() {
 /// Every entry of the matrix table as Sony publishes it: (model ID, Model string), in file order, which is
 /// the order of the IDs. The IDs are facts about the cameras (maker-note tag 0xB001), pinned here from an
 /// independent public list so that a guessed ID cannot slip in:
-/// `the_matrix_table_agrees_with_the_registry_and_the_exclusions` walks the 43 registry bodies.
+/// `the_matrix_table_agrees_with_the_registry_and_the_exclusions` walks the 46 registry bodies.
 /// Sony lists no 402 and 403 in older versions of that list; the profile registry (`docs/03`) has them.
 /// ID 302 is the A3000's (Sony writes it for the A3500 too, under the Model string ILCE-3500).
 const PUBLISHED_IDS: [(u16, &str); 44] = [

@@ -21,6 +21,8 @@ ym-lens.workspace = true
 ym-looks.workspace = true
 ym-export.workspace = true
 ym-compose.workspace = true
+# `exp` and `ln` that give the same bits on every platform (the lower bound of the bokeh map, `graph/lens.rs`).
+libm = "0.2"
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true

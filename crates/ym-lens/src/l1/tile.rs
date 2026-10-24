@@ -240,17 +240,6 @@ impl<'a> Pass<'a> {
             .collect();
         // The blur map at the tile's pixels.
         let (bt, ramp) = self.tile_blur(input, rb, r0, &shapes);
-        if let Some(path) = std::env::var_os("YM_DEBUG_BT") {
-            // DEBUG (temporary): the tile's blur map, r0 and its size first.
-            let mut bytes = Vec::new();
-            for v in [r0.x as u32, r0.y as u32, r0.w as u32, r0.h as u32] {
-                bytes.extend_from_slice(&v.to_le_bytes());
-            }
-            for v in &bt {
-                bytes.extend_from_slice(&v.to_le_bytes());
-            }
-            let _ = std::fs::write(path, bytes);
-        }
         if !self.v_on && !self.t_on && shapes.is_empty() {
             return crop_rgb(input, want);
         }

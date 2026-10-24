@@ -178,18 +178,20 @@ def scales(*pairs):
 
 
 class Consistency(unittest.TestCase):
-    """The rule of docs/03: files agree within 1 % of the median; one outlier may go from three files on."""
+    """The rule of docs/03: files agree within 5 % of the median; one outlier may go from three files on."""
 
     def test_a_single_file_is_kept_because_nothing_disagrees_with_it(self):
         sel = fit_mod.choose(scales((0.9, 1.1)))
         self.assertEqual((sel.kept, sel.excluded, sel.verdict), ((0,), (), "single"))
 
-    def test_files_within_one_percent_agree(self):
-        sel = fit_mod.choose(scales((0.900, 1.100), (0.905, 1.104), (0.896, 1.097)))
+    def test_files_within_five_percent_agree(self):
+        sel = fit_mod.choose(scales((0.900, 1.100), (0.930, 1.104), (0.870, 1.140)))
         self.assertEqual((sel.kept, sel.excluded, sel.verdict), ((0, 1, 2), (), "agree"))
+        sel = fit_mod.choose(scales((0.90, 1.10), (0.97, 1.10)))  # 7 % apart, 3.6 % from their median each
+        self.assertEqual(sel.verdict, "agree")
 
     def test_two_files_that_disagree_keep_nothing(self):
-        sel = fit_mod.choose(scales((0.90, 1.10), (0.93, 1.10)))
+        sel = fit_mod.choose(scales((0.90, 1.10), (1.00, 1.10)))
         self.assertEqual((sel.kept, sel.verdict), ((), "disagree"))
 
     def test_one_outlier_may_go_from_three_files_on(self):
@@ -199,29 +201,34 @@ class Consistency(unittest.TestCase):
             self.assertEqual((sel.kept, sel.excluded, sel.verdict), (tuple(range(n - 1)), (n - 1,), "outlier"), n)
 
     def test_the_outlier_is_the_file_farthest_from_the_median_in_red_or_blue(self):
-        sel = fit_mod.choose(scales((0.90, 1.10), (0.90, 1.16), (0.90, 1.10), (0.90, 1.10)))
+        sel = fit_mod.choose(scales((0.90, 1.10), (0.90, 1.20), (0.90, 1.10), (0.90, 1.10)))
         self.assertEqual((sel.excluded, sel.verdict), ((1,), "outlier"))
 
     def test_two_files_off_is_not_an_outlier(self):
         sel = fit_mod.choose(scales((0.90, 1.10), (0.90, 1.10), (0.95, 1.10), (0.85, 1.10)))
         self.assertEqual((sel.kept, sel.verdict), ((), "disagree"))
-        sel = fit_mod.choose(scales((0.90, 1.10), (0.95, 1.10), (1.00, 1.10)))
+        sel = fit_mod.choose(scales((0.80, 1.10), (0.95, 1.10), (1.10, 1.10)))
         self.assertEqual((sel.kept, sel.verdict), ((), "disagree"))
 
-    def test_the_limit_is_one_percent_in_red_and_in_blue(self):
-        self.assertEqual(fit_mod.AGREE_LIMIT, 0.01)
-        self.assertEqual(fit_mod.choose(scales((1.0, 1.0), (1.005, 1.0), (1.0, 1.005))).verdict, "agree")
-        self.assertEqual(fit_mod.choose(scales((1.0, 1.0), (1.03, 1.0))).verdict, "disagree")
-        self.assertEqual(fit_mod.choose(scales((1.0, 1.0), (1.0, 1.03))).verdict, "disagree")
+    def test_the_limit_is_five_percent_in_red_and_in_blue(self):
+        self.assertEqual(fit_mod.AGREE_LIMIT, 0.05)
+        self.assertEqual(fit_mod.choose(scales((1.0, 1.0), (1.04, 1.0), (1.0, 1.04))).verdict, "agree")
+        self.assertEqual(fit_mod.choose(scales((1.0, 1.0), (1.12, 1.0))).verdict, "disagree")
+        self.assertEqual(fit_mod.choose(scales((1.0, 1.0), (1.0, 1.12))).verdict, "disagree")
 
-    def test_one_percent_is_a_small_shift_of_the_reading(self):
-        # The justification in docs/03: 1 % in red or blue moves a Kelvin reading by about 1.4 to 1.7 mired.
+    def test_the_limit_is_the_spread_of_the_bodies_with_curves_of_their_own(self):
+        # docs/03: the largest unit-to-unit distances of the files of the measured bodies are 4.7 % (A7 III red).
+        self.assertGreater(fit_mod.AGREE_LIMIT, 0.047)
+        self.assertLess(fit_mod.AGREE_LIMIT, 0.06)
+
+    def test_five_percent_is_seven_to_nine_mired(self):
+        # The justification in docs/03: 5 % in red or blue moves a Kelvin reading by 7 to 9 mired (1 % by 1.4 to 1.7).
         profile = ref.load_profile(rd.DEFAULT_PROFILE)
         w = ref.locus_white(profile, 5500.0)
         base = 1e6 / ref.read_cct(profile, w)
-        for s in ((1.01, 1.0, 1.0), (1.0, 1.0, 1.01)):
+        for s, lo, hi in (((1.05, 1.0, 1.0), 6.5, 7.5), ((1.0, 1.0, 1.05), 8.0, 9.5), ((1.01, 1.0, 1.0), 1.2, 1.9), ((1.0, 1.0, 1.01), 1.2, 1.9)):
             moved = abs(1e6 / ref.read_cct(profile, ref.scaled(w, s)) - base)
-            self.assertTrue(1.2 < moved < 1.9, moved)
+            self.assertTrue(lo < moved < hi, (s, moved))
 
 
 class BodyFit(unittest.TestCase):
@@ -258,7 +265,7 @@ class BodyFit(unittest.TestCase):
         self.assertIn("outlier", entry["source"]["note"])
 
     def test_files_that_disagree_give_no_scale(self):
-        r = fit_mod.evaluate_levels(BODY, self.items((0.88, 1.0, 0.96), (0.93, 1.0, 0.96)))
+        r = fit_mod.evaluate_levels(BODY, self.items((0.88, 1.0, 0.96), (1.00, 1.0, 0.96)))
         self.assertIsNone(r.scale)
         self.assertIn("differ by up to", r.problem)
 
@@ -294,8 +301,8 @@ class Pins(unittest.TestCase):
         self.assertEqual(names, {"A1M01454.ARW", "A1M01739.ARW", "A1M01749.ARW"})
         self.assertTrue({"DSLR-A300.ARW", "DSLR-A500.ARW", "ILCE-5000.ARW", "NEX-5N.ARW", "NEX-7.ARW"} <= {p.name for p in fit_mod.real_eval_pins()})
         play = fit_mod.play_raw_pins()
-        self.assertEqual(len(play), 17)
-        self.assertEqual(len({p.sha256 for p in play}), 17)
+        self.assertEqual(len(play), 35)
+        self.assertEqual(len({p.sha256 for p in play}), 35)
         self.assertEqual(len({(p.set, p.name) for p in fit_mod.all_pins()}), len(fit_mod.all_pins()))
 
     def test_every_file_of_the_registry_is_a_pinned_file_of_a_set(self):
@@ -312,8 +319,9 @@ class Pins(unittest.TestCase):
                 if pin.model:
                     self.assertEqual(pin.model, b["model"], f["name"])
                 self.assertIn(f["set"], fit_mod.SETS)
-        # The A1 (3), the A7 (3), the ZV-E10 (2), the NEX-5R (2) and twelve bodies with one file each.
-        self.assertEqual(used, 22, "the files named by the registry")
+        # The A1 (3), the A7 (4), the ZV-E10 (3), the NEX-5R (2), twelve bodies with one file each, the A6000 (10), the A6300 (5)
+        # and the A6500 (2).
+        self.assertEqual(used, 41, "the files named by the registry")
 
 
 class Registry(unittest.TestCase):
@@ -366,7 +374,7 @@ class Registry(unittest.TestCase):
     def test_every_fitted_body_meets_the_rules_of_docs_03(self):
         lo, hi = fit_mod.DAYLIGHT_WINDOW_K
         fitted = [b for b in self.registry["bodies"] if b["white_scale_source"]["kind"] == "presets"]
-        self.assertEqual(sorted(b["model_id"] for b in fitted), [261, 274, 288, 289, 296, 297, 306, 308, 311, 313, 318, 365, 374, 382, 384, 394])
+        self.assertEqual(sorted(b["model_id"] for b in fitted), [261, 274, 288, 289, 296, 297, 306, 308, 311, 312, 313, 318, 357, 360, 365, 374, 382, 384, 394])
         for b in fitted:
             src = b["white_scale_source"]
             res = src["residual"]
@@ -377,9 +385,9 @@ class Registry(unittest.TestCase):
             self.assertEqual(b["match"], "default")
 
     def test_the_bodies_whose_files_disagree_are_not_in_the_registry(self):
-        # The A6000, A6300, A6500 and A7 II (docs/03, Consistency of a body's files) and the A230 (misses the limits).
+        # The A7 II (docs/03, Consistency of a body's files: 6 files up to 10.4 % in blue) and the A230 (misses the limits).
         ids = {b["model_id"] for b in self.registry["bodies"]}
-        self.assertFalse(ids & {312, 357, 360, 340, 265})
+        self.assertFalse(ids & {340, 265})
 
     def test_a_fresh_fit_on_the_pinned_files_gives_the_committed_table(self):
         folders = [*fit_mod.DEFAULT_FOLDERS, *EXTRA_FOLDERS]

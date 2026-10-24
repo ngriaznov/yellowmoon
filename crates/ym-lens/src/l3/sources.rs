@@ -98,8 +98,15 @@ impl Acc {
     }
 }
 
-/// The highlights of one pixel of the plane, as numbers.
-fn highlight_at(plane: &ImageRef, rs: &Restore, i: usize, j: usize) -> [f64; 3] {
+/// The highlights of one pixel of the plane, as numbers: with the extra headroom `boost` gives the pixel (the
+/// light of a small clipped patch, `crate::l3::lights`), none without a map.
+fn highlight_at(
+    plane: &ImageRef,
+    rs: &Restore,
+    boost: Option<&[f32]>,
+    i: usize,
+    j: usize,
+) -> [f64; 3] {
     let n = plane.width * plane.height;
     let at = j * plane.width + i;
     let x = [
@@ -107,15 +114,17 @@ fn highlight_at(plane: &ImageRef, rs: &Restore, i: usize, j: usize) -> [f64; 3] 
         f64::from(plane.data[n + at]),
         f64::from(plane.data[2 * n + at]),
     ];
-    rs.highlight(x)
+    rs.highlight_ev(x, boost.map_or(0.0, |b| f64::from(b[at])))
 }
 
 /// The sources of the lens plane `plane` (the whole frame at the lens plane's scale).
 ///
-/// `cancel` is polled once per row of the plane.
+/// `boost` is the extra headroom in EV of every pixel (`crate::l3::lights::map`): the energy of a small clipped
+/// light is that much brighter than the plain restored light. `cancel` is polled once per row of the plane.
 pub(crate) fn find(
     plane: &ImageRef,
     rs: &Restore,
+    boost: Option<&[f32]>,
     axis: Axis,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<Source>, LensError> {
@@ -131,7 +140,7 @@ pub(crate) fn find(
             return Err(LensError::Cancelled);
         }
         for i in 0..w {
-            let hl = highlight_at(plane, rs, i, j);
+            let hl = highlight_at(plane, rs, boost, i, j);
             if rs.level(hl) >= SOURCE_FLOOR {
                 mask[j * w + i] = true;
                 any = true;
@@ -235,7 +244,7 @@ pub(crate) fn find(
                     s
                 }
             };
-            let hl = highlight_at(plane, rs, i, j);
+            let hl = highlight_at(plane, rs, boost, i, j);
             let weight = hl[0] + hl[1] + hl[2];
             let (x, y) = (i as f64 + 0.5, j as f64 + 0.5);
             let acc = &mut slots[slot];
@@ -349,7 +358,7 @@ mod tests {
         let data = scene(w, h, &[(450, 120, 3, 3, 1.0)]);
         let p = plan(w, h, Axis::X);
         let rs = Restore::new(&p, crate::consts::CLIP_RAMP_PLANE);
-        let list = find(&image(w, h, &data), &rs, Axis::X, &|| false).unwrap();
+        let list = find(&image(w, h, &data), &rs, None, Axis::X, &|| false).unwrap();
         assert_eq!(list.len(), 1);
         let s = list[0];
         let frame = Frame::new(w, h, Axis::X);
@@ -372,7 +381,7 @@ mod tests {
         let (w, h) = (600, 400);
         let data = scene(w, h, &[(450, 120, 3, 3, 1.0)]);
         let rs = Restore::new(&plan(w, h, Axis::Y), crate::consts::CLIP_RAMP_PLANE);
-        let list = find(&image(w, h, &data), &rs, Axis::Y, &|| false).unwrap();
+        let list = find(&image(w, h, &data), &rs, None, Axis::Y, &|| false).unwrap();
         let frame = Frame::new(w, h, Axis::Y);
         assert!((list[0].pos[0] - frame.v(121.5)).abs() < 1e-12);
         assert!((list[0].pos[1] - frame.u(451.5)).abs() < 1e-12);
@@ -392,7 +401,7 @@ mod tests {
             ],
         );
         let rs = Restore::new(&plan(w, h, Axis::X), crate::consts::CLIP_RAMP_PLANE);
-        let list = find(&image(w, h, &data), &rs, Axis::X, &|| false).unwrap();
+        let list = find(&image(w, h, &data), &rs, None, Axis::X, &|| false).unwrap();
         assert_eq!(list.len(), 2);
         // The clipped (restored) patch is the brighter one and comes first.
         assert!(list[0].total() > list[1].total());
@@ -407,7 +416,7 @@ mod tests {
         let rs = Restore::new(&p, crate::consts::CLIP_RAMP_PLANE);
         // One big clipped block: 400 x 200 px, far larger than 0.02 half-diagonals (about 14 px here).
         let data = scene(w, h, &[(100, 100, 400, 200, 1.0)]);
-        let list = find(&image(w, h, &data), &rs, Axis::X, &|| false).unwrap();
+        let list = find(&image(w, h, &data), &rs, None, Axis::X, &|| false).unwrap();
         assert!(
             list.len() > 100 && list.len() <= SOURCES_MAX,
             "{}",
@@ -422,7 +431,7 @@ mod tests {
         assert!(list.windows(2).all(|p| p[0].total() >= p[1].total()));
         // Cancel is honoured.
         assert!(matches!(
-            find(&image(w, h, &data), &rs, Axis::X, &|| true),
+            find(&image(w, h, &data), &rs, None, Axis::X, &|| true),
             Err(LensError::Cancelled)
         ));
     }
@@ -433,7 +442,7 @@ mod tests {
         let data = scene(w, h, &[]);
         let rs = Restore::new(&plan(w, h, Axis::X), crate::consts::CLIP_RAMP_PLANE);
         assert!(
-            find(&image(w, h, &data), &rs, Axis::X, &|| false)
+            find(&image(w, h, &data), &rs, None, Axis::X, &|| false)
                 .unwrap()
                 .is_empty()
         );

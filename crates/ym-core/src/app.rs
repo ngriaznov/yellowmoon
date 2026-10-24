@@ -232,6 +232,9 @@ impl Core {
         if render.lens.is_none() {
             render.lens = env.lens_library.as_ref().ok().cloned();
         }
+        if render.bokeh_model.is_none() {
+            render.bokeh_model = env.bokeh_model.as_ref().ok().cloned();
+        }
         // The lens reads the cameras' spectral curves from the same folder.
         if render.data_root.is_none() {
             render.data_root = Some(options.data_root.clone());

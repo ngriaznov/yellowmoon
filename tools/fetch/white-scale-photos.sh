@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The Play Raw files behind the white scales of docs/03 (17 ARW files of discuss.pixls.us posts) into
+# The Play Raw files behind the white scales of docs/03 (ARW files of discuss.pixls.us posts) into
 # testdata/white-scale/play-raw/, each file pinned by SHA-256 (tools/fetch/white-scale-photos.json).
 #
 #   tools/fetch/white-scale-photos.sh              download (or verify) the files and list them

@@ -21,7 +21,7 @@ use common::dng_looks::{DISPLAY_LUT_ID, Looks};
 use common::*;
 use ym_color::aces2::{Aces2Output, Aces2Transform};
 use ym_color::consts::linalg;
-use ym_color::display::{OutputTarget, aces2_input_matrix};
+use ym_color::display::{OutputTarget, RedChroma, RedChromaStep, RedGamut, aces2_input_matrix};
 use ym_core::pipeline::{
     ComputeDevice, DisplayChoice, FrameOptions, FullImage, FullRequest, FullTarget, NeutralOnly,
     PhotoSource, RenderOptions, Renderer, ViewportRect, ViewportState,
@@ -263,6 +263,7 @@ fn the_dngs_pixels_are_the_apps_scene_values_before_aces_2_with_the_lift_in_them
     let none = with_offset(&src, -3.0);
     let plain_raw = render(&r, &none, FullTarget::DngLinearAwg4);
     let (mut higher, mut same) = (0usize, 0usize);
+    let red = RedChromaStep::for_gamut(RedGamut::P3D65, RedChroma::DEFAULT);
     for (a, b) in lifted_raw
         .rgb
         .chunks_exact(3)
@@ -274,7 +275,15 @@ fn the_dngs_pixels_are_the_apps_scene_values_before_aces_2_with_the_lift_in_them
             // never darker; just over the knee the gain is within an ulp of 1, so one channel may
             // round up while the others keep their bits
             assert!((0..3).all(|k| a[k] >= b[k]), "{a:?} against {b:?}");
-            // all three channels by one factor: the ratios of the pixel are kept
+            // all three channels by one factor: the ratios of the pixel are kept. (A pixel the red chroma
+            // step acts on is not: the step is not homogeneous in the light, and the lift changes the
+            // light it sees; `crates/ym-color/tests/white_lift.rs` has the property for the lift alone.)
+            let acts =
+                |p: &[f32]| red.ln_gain([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]) != 0.0;
+            if acts(a) || acts(b) {
+                higher += 1;
+                continue;
+            }
             let g = f64::from(a[1]) / f64::from(b[1]);
             for k in [0, 2] {
                 let want = f64::from(b[k]) * g;
@@ -291,8 +300,11 @@ fn the_dngs_pixels_are_the_apps_scene_values_before_aces_2_with_the_lift_in_them
         higher > n / 50 && same > n / 4,
         "{higher} higher, {same} the same, of {n}"
     );
-    // The preview of a DNG is the app's picture with the lift.
-    assert_eq!(render(&r, &src, FullTarget::DngPreview).rgb, picture.rgb);
+    // The preview of a DNG is the app's (sRGB) picture with the lift.
+    assert_eq!(
+        render(&r, &src, FullTarget::DngPreview).rgb,
+        display(&r, &src).rgb
+    );
 }
 
 #[test]

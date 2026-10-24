@@ -6,6 +6,7 @@
 //! The parts, in the order the light travels:
 //!
 //! * [`restore`]: the clip test, the 3 EV of headroom and the soft knee;
+//! * [`lights`]: the extra headroom a small clipped light is assumed to hold;
 //! * [`sources`]: the highlights of the lens plane as a list of lights;
 //! * [`glow`]: the glow and veiling kernels, split into a core gathered per tile and a tail for the plane;
 //! * [`fft`] and [`planes`]: the tail plane, convolved once per photo;
@@ -17,6 +18,7 @@ mod fft;
 mod geometry;
 mod glow;
 mod items;
+mod lights;
 mod pass;
 mod planes;
 mod profile;

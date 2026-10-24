@@ -233,11 +233,11 @@ impl LensPlan {
     /// sum of the fractions in use (the streak's with its Anamorphic factor `(q - 1) / (Q_max - 1)`) times `F`.
     #[must_use]
     pub fn light_fraction(&self) -> f64 {
-        let l = &self.lens;
         let a = &self.attachment;
+        let st = self.flare_strengths();
         let anamorphic = (self.q - 1.0) / (a.q_max - 1.0);
-        let lens_part = l.flare_fraction();
-        let attachment_part = anamorphic * a.flare_fraction();
+        let lens_part = st.lens_fraction(&self.lens);
+        let attachment_part = anamorphic * st.attachment_fraction(a);
         self.flares * (lens_part + attachment_part)
     }
 

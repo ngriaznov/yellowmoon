@@ -9,6 +9,15 @@ weight (lowered at the ambiguous edges between layers, and where a block mixes v
 therefore says how sure it is: a textureless region gets a wide scale instead of a confident wrong value. The
 confidence the app uses is `c = exp(-exp(s) / 0.25)` (`encode.py`).
 
+**The half-resolution target** (`half_targets`, v3). A 2 x 2 block whose pixels have radii more than a factor of `e^0.35` apart
+is "mixed" (a thin line over a blur, the edge between a subject and its background). bokeh-2 trained such a block to
+the *average* log radius at 30 % weight, so a one-pixel twig in a blurred background was learnt as a mild blur and the
+output absorbed it. Now a mixed block takes the *smallest* radius among its firm pixels (label weight at least a half):
+**the sharp one wins**, at 70 % weight. This is the rule the spec already has downstream (L1 never smears a sample that
+is sharper than the pixel's own blur, and a false blur costs detail where a false sharp costs a little reshaping), and
+it makes the map hold a thin sharp structure as sharp, at the price of a sharp region reaching one cell (2 px of the
+1024-px frame) into the blur beside it. `sharp_wins: false` is the bokeh-2 rule.
+
 **Schedule.** Training stops after `--max-minutes` (or `--steps`) and the cosine learning-rate schedule runs over
 *elapsed time*, not over steps, so it ends at the same place whatever the GPU's speed (a run with an unknown
 throughput finishes properly instead of being cut at a high learning rate). AdamW, 300 warm-up steps, an EMA of the
@@ -39,6 +48,12 @@ whose label is unambiguous (weight at least 0.6), in the spec's units `b = r / h
   is the expected absolute error), and `ece` the weighted mean gap between them;
 - the same numbers for the classical baseline (`classical.py`) on the first `baseline_n` samples, next to the
   model's numbers on the same samples;
+- `groups` (v3): the numbers for what the new synthesis adds, with the runtime's decision (`P(b >= 2 b_min) >= 0.7`,
+  `encode.detection_probability`) and the plain `b >= 2 b_min`: `thin_false_blur`, the share of blocks on a sharp thin
+  structure over a blur that are called blurred; `flat_false_blur`, the same for the far interior of a sharp featureless
+  layer; `mid` and `high` the recall of blurred blocks of `b` from `2 b_min` to 0.012 and above; `decision` the
+  precision and recall of the decision over all firm blocks. With `legacy`, the validation of bokeh-2's recipe (the old synthesis and the old target), which
+  puts this run's `model` next to bokeh-2's;
 - `real_sharp`: the false-positive rate on *real* sharp photographs, the go/no-go's second test: the held-out tiles
   themselves (they passed the sharpness filter, so the truth is "in focus"), no synthesis, the share of pixels the
   network (and the baseline) puts at `b >= 2 * b_min`, ungated and gated.
@@ -56,17 +71,20 @@ import torch
 import torch.nn.functional as F
 
 from training.bokeh import classical, sources
-from training.bokeh.encode import B_MIN, encode_t, radius_and_confidence
+from training.bokeh.encode import B_DECIDE, B_MIN, DECISION_P, detection_probability, encode_t, radius_and_confidence
 from training.bokeh.model import BokehNet, macs_per_pixel
-from training.bokeh.synth import SynthConfig, TileBatch, synthesize
+from training.bokeh.synth import FLAT, THIN, SynthConfig, TileBatch, synthesize
 
 DEFAULTS = {
     "seed": 1, "sample": 512, "batch": 24, "lr": 2e-3, "weight_decay": 0.01, "warmup": 300, "ema": 0.999,
     "max_minutes": None, "steps": None, "device": "cuda", "workers": 3, "amp": True, "gain_jitter_stops": 0.6,
     "eval_every_min": 12.0, "ckpt_every_min": 5.0, "val_samples": 192, "final_val_samples": 576, "baseline_n": 48,
     "kernel_r": 44, "r_max_px": 34.0, "cand_share": 0.34, "val_share": sources.VAL_SHARE,
+    # v3: the recipe (3, or 2 for bokeh-2's), the half-resolution target rule, the weight of the extra decision loss (0 = off),
+    # and the weights (a model.pt of an earlier run) to start from instead of a fresh network
+    "synth": 3, "sharp_wins": True, "decision_loss": 0.0, "init_from": None,
 }
-TYPES = {"max_minutes": float, "steps": int}
+TYPES = {"max_minutes": float, "steps": int, "init_from": str}
 GATE = 0.5
 #: When a run is lost (module docstring, "Guards").
 MAX_SKIPS_IN_A_ROW = 20
@@ -189,23 +207,47 @@ def loader(folder: Path, batch: int, seed: int, split: str, workers: int, cand_s
                                        persistent_workers=bool(workers), collate_fn=_identity)
 
 
-def synth_config(config: dict) -> SynthConfig:
-    return SynthConfig(sample=config["sample"], kernel_r=config["kernel_r"], r_max_px=config["r_max_px"])
+def synth_config(config: dict, legacy: bool = False) -> SynthConfig:
+    """The synthesis the run trains on (`config["synth"]`: 3 is v3, 2 is bokeh-2's recipe); `legacy` forces bokeh-2's."""
+    kw = {"sample": config["sample"], "kernel_r": config["kernel_r"], "r_max_px": config["r_max_px"]}
+    return SynthConfig(**kw) if legacy or config["synth"] < 3 else SynthConfig.v3(**kw)
 
 
-def half_targets(sy) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """(log r, weight, r in pixels) at the network's output resolution (2 x 2 blocks). The weight is cut to 30 % where
-    a block mixes radii more than a factor of e^0.35 apart."""
-    logr = sy.logr
+#: Blocks whose pixels' log radii are further apart than this are mixed.
+MIXED_SPREAD = 0.35
+
+
+def half_targets(sy, sharp_wins: bool = True) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """(log r, weight, r in pixels) at the network's output resolution (2 x 2 blocks; module docstring, "The
+    half-resolution target"). A pure block averages its log radius and takes the mean weight. A mixed block (radii more than
+    `e^0.35` apart) takes the smallest log radius among its pixels of weight at least 0.5 at 70 % of the mean weight when
+    `sharp_wins`, else (and when it has no such pixel) the average at 30 %: bokeh-2's rule."""
+    logr, w = sy.logr, sy.w
     avg = F.avg_pool2d(logr, 2)
     spread = F.max_pool2d(logr, 2) + F.max_pool2d(-logr, 2)
-    w = F.avg_pool2d(sy.w, 2) * torch.where(spread < 0.35, 1.0, 0.3)
-    return avg, w, torch.exp(avg)
+    wb = F.avg_pool2d(w, 2)
+    mixed = spread >= MIXED_SPREAD
+    if not sharp_wins:
+        return avg, wb * torch.where(mixed, 0.3, 1.0), torch.exp(avg)
+    firm = w >= 0.5
+    smallest = -F.max_pool2d(-torch.where(firm, logr, torch.full_like(logr, 1e4)), 2)
+    has_firm = F.max_pool2d(firm.float(), 2) > 0
+    y = torch.where(mixed & has_firm, smallest, avg)
+    return y, wb * torch.where(mixed, torch.where(has_firm, 0.7, 0.3), 1.0), torch.exp(y)
 
 
 def laplace_nll(mu: torch.Tensor, s: torch.Tensor, y: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
     s = s.clamp(-4.0, 2.0)
     return (w * ((y - mu).abs() * torch.exp(-s) + s)).sum() / w.sum().clamp(min=1.0)
+
+
+def decision_nll(mu: torch.Tensor, s: torch.Tensor, y: torch.Tensor, w: torch.Tensor, hd: torch.Tensor) -> torch.Tensor:
+    """Binary cross-entropy of the runtime's decision `P(b >= 2 b_min)` (`encode.detection_probability`, a function of
+    the two outputs only) against the block's label `b >= 2 b_min`. Optional (`decision_loss`): it trains the tails of the
+    Laplace, which the log-likelihood fits only on average."""
+    p = detection_probability(mu, s.clamp(-4.0, 2.0), hd.view(-1, 1, 1, 1)).clamp(1e-4, 1 - 1e-4)
+    z = (y >= torch.log(B_DECIDE * hd.view(-1, 1, 1, 1))).float()
+    return (w * -(z * torch.log(p) + (1 - z) * torch.log(1 - p))).sum() / w.sum().clamp(min=1.0)
 
 
 # --- metrics ------------------------------------------------------------------------------------------------------
@@ -277,6 +319,63 @@ def _round(x):
     return x
 
 
+class Groups:
+    """The v3 numbers (module docstring, `groups`). Arrays are numpy of one shape (the batch's output blocks); `b_hat` and
+    `b_true` are in half-diagonal units, `p` is `detection_probability`, `thin` and `flat` are the blocks of a sharp thin
+    structure over a blur and of the far interior of a sharp featureless layer."""
+
+    BANDS = (("mid", B_DECIDE, 0.012), ("high", 0.012, 1e9))
+
+    def __init__(self):
+        self.n: dict[str, int] = {}
+
+    def _inc(self, key: str, v) -> None:
+        self.n[key] = self.n.get(key, 0) + int(v)
+
+    def add(self, b_hat, p, b_true, w, thin, flat) -> None:
+        calls = {"raw": b_hat >= B_DECIDE, "p": p >= DECISION_P}
+        ok = w >= 0.6
+        truth = b_true >= B_DECIDE
+        for name, call in calls.items():
+            self._inc(f"thin_{name}", (thin & call).sum())
+            self._inc(f"flat_{name}", (flat & call).sum())
+            self._inc(f"tp_{name}", (ok & truth & call).sum())
+            self._inc(f"fp_{name}", (ok & ~truth & call).sum())
+            for band, lo, hi in self.BANDS:
+                self._inc(f"{band}_{name}", (ok & (b_true >= lo) & (b_true < hi) & call).sum())
+        self._inc("thin", thin.sum())
+        self._inc("flat", flat.sum())
+        self._inc("truth", (ok & truth).sum())
+        for band, lo, hi in self.BANDS:
+            self._inc(band, (ok & (b_true >= lo) & (b_true < hi)).sum())
+
+    def result(self) -> dict:
+        n, out = self.n, {}
+        for name in ("raw", "p"):
+            tag = "p70" if name == "p" else "raw"
+            out[f"thin_false_blur_{tag}"] = n.get(f"thin_{name}", 0) / max(1, n.get("thin", 0))
+            out[f"flat_false_blur_{tag}"] = n.get(f"flat_{name}", 0) / max(1, n.get("flat", 0))
+            for band, _, _ in self.BANDS:
+                out[f"{band}_recall_{tag}"] = n.get(f"{band}_{name}", 0) / max(1, n.get(band, 0))
+            tp, fp = n.get(f"tp_{name}", 0), n.get(f"fp_{name}", 0)
+            out[f"precision_{tag}"] = tp / max(1, tp + fp)
+            out[f"recall_{tag}"] = tp / max(1, n.get("truth", 0))
+        out["blocks"] = {k: n.get(k, 0) for k in ("thin", "flat", "mid", "high", "truth")}
+        return {k: (round(v, 5) if isinstance(v, float) else v) for k, v in out.items()}
+
+
+def v3_masks(sy) -> tuple[torch.Tensor, torch.Tensor]:
+    """The blocks (B, h, w) of a sharp thin structure over a blur (a firm pixel of a thin layer, label sharp, a label
+    of 3 px or more within 4 px of it) and of the far interior of a sharp featureless layer (all four pixels: its weight
+    was cut), for `Groups`. All false for the bokeh-2 synthesis."""
+    if sy.cls is None:
+        z = torch.zeros(sy.r.shape[0], sy.r.shape[2] // 2, sy.r.shape[3] // 2, dtype=torch.bool, device=sy.r.device)
+        return z, z
+    thin_px = (sy.cls == THIN) & (sy.r < 1.0) & (sy.w >= 0.9) & (F.max_pool2d(sy.r, 9, 1, 4) >= 3.0)
+    flat_px = (sy.cls == FLAT) & (sy.r < 1.0) & (sy.w < 0.5)
+    return (F.max_pool2d(thin_px.float(), 2) > 0)[:, 0], (F.avg_pool2d(flat_px.float(), 2) == 1)[:, 0]
+
+
 def real_sharp(model: BokehNet, ts: sources.TileSet, pool: list[int], n: int, baseline_n: int) -> dict:
     """False positives on real sharp tiles (module docstring): shares of pixels at `b >= 2 b_min`. The network runs on the
     device its weights are on (a GPU in a training run); the tiles, the baseline and the numbers stay on the CPU."""
@@ -285,13 +384,17 @@ def real_sharp(model: BokehNet, ts: sources.TileSet, pool: list[int], n: int, ba
     device = next(model.parameters()).device
     picks = pool[::max(1, len(pool) // max(1, n))][:n]
     cnt = {k: [0, 0, 0] for k in ("model", "classical")}  # pixels, predicted blurred, predicted blurred with confidence
+    dec_hits = 0
     for j, i in enumerate(picks):
         rgb, _, _, hd = ts.get(i)
         e = encode_t(srgb_to_linear(torch.from_numpy(rgb.copy()).permute(2, 0, 1).float().unsqueeze(0) / 255))  # on the CPU
         with torch.no_grad():
-            r, _, conf = radius_and_confidence(model(e.to(device)))
+            raw = model(e.to(device))
+            r, _, conf = radius_and_confidence(raw)
+            p_dec = detection_probability(raw[:, 0], raw[:, 1], hd)[0].cpu()
         r, conf = r[0].cpu(), conf[0].cpu()
         maps = {"model": ((r / hd).numpy(), conf.numpy())}
+        dec_hits += int((p_dec >= DECISION_P).sum())
         if j < baseline_n:
             rad, cf = classical.estimate(classical.gray_from_encoded(e[0].double().numpy()))
             h2, w2 = rad.shape[0] // 2, rad.shape[1] // 2
@@ -302,20 +405,26 @@ def real_sharp(model: BokehNet, ts: sources.TileSet, pool: list[int], n: int, ba
             cnt[key][0] += b_hat.size
             cnt[key][1] += int(blurred.sum())
             cnt[key][2] += int((blurred & (c >= GATE)).sum())
-    return {"tiles": len(picks), **{k: {"fp_rate": v[1] / max(1, v[0]), "fp_rate_gated": v[2] / max(1, v[0])}
-                                    for k, v in cnt.items() if v[0]}}
+    out = {"tiles": len(picks), **{k: {"fp_rate": v[1] / max(1, v[0]), "fp_rate_gated": v[2] / max(1, v[0])}
+                                   for k, v in cnt.items() if v[0]}}
+    if "model" in out:
+        out["model"]["fp_rate_p70"] = dec_hits / max(1, cnt["model"][0])
+    return out
 
 
 def evaluate(model: BokehNet, folder: Path, config: dict, n: int, seed: int, device, baseline_n: int = 0,
-             sheet: Path | None = None) -> dict:
-    """The validation numbers of `n` held-out samples (module docstring). The baseline runs on the first `baseline_n`."""
+             sheet: Path | None = None, legacy: bool = False) -> dict:
+    """The validation numbers of `n` held-out samples (module docstring). The baseline runs on the first `baseline_n`.
+    `legacy` scores on bokeh-2's recipe (its synthesis and its half-resolution target), the same samples bokeh-2's own
+    final evaluation used."""
     from PIL import Image
 
     require_finite(model, "weights to evaluate")  # never score (or draw a sheet of) a network of NaNs
-    scfg, batch = synth_config(config), config["batch"]
+    scfg, batch = synth_config(config, legacy), config["batch"]
+    sharp_wins = bool(config.get("sharp_wins", True)) and not legacy
     ts = sources.TileSet(folder, config["val_share"])
     pool = ts.val or ts.train
-    acc, acc_sub, acc_base = Acc(), Acc(), Acc()
+    acc, acc_sub, acc_base, groups = Acc(), Acc(), Acc(), Groups()
     model.eval()
     done = 0
     k = 0
@@ -330,11 +439,14 @@ def evaluate(model: BokehNet, folder: Path, config: dict, n: int, seed: int, dev
             e = encode_t(sy.lin)
             out = model(e)
             r_hat, beta, conf = radius_and_confidence(out)
-            y2, w2, r2 = half_targets(sy)
+            y2, w2, r2 = half_targets(sy, sharp_wins)
             hd = sy.hd.view(-1, 1, 1)
             take = min(batch, n - done)
             sl = slice(0, take)
             b_hat, b_true = (r_hat[:, :, :] / hd)[sl].cpu().numpy(), (r2[:, 0] / hd)[sl].cpu().numpy()
+            p_dec = detection_probability(out[:, 0], out[:, 1], hd)
+            thin_blk, flat_blk = v3_masks(sy)
+            groups.add(b_hat, p_dec[sl].cpu().numpy(), b_true, w2[:, 0][sl].cpu().numpy(), thin_blk[sl].cpu().numpy(), flat_blk[sl].cpu().numpy())
             logerr = (torch.log(r_hat.clamp(min=1e-3)) - y2[:, 0]).abs()[sl].cpu().numpy()
             args = (b_hat, conf[sl].cpu().numpy(), b_true, w2[:, 0][sl].cpu().numpy())
             acc.add(*args, beta=beta[sl].cpu().numpy(), logerr=logerr)
@@ -361,7 +473,7 @@ def evaluate(model: BokehNet, folder: Path, config: dict, n: int, seed: int, dev
                 Image.fromarray(img).save(sheet)
             done += take
             k += 1
-    out = {"samples": done, "model": acc.result()}
+    out = {"samples": done, "model": acc.result(), "groups": groups.result()}
     if baseline_n:
         out["real_sharp"] = real_sharp(model, ts, pool, min(48, len(pool)), min(16, baseline_n))
     if baseline_n:
@@ -424,6 +536,13 @@ def _train(tiles: Path, out: Path, config: dict, heartbeat, log) -> dict:
         require_finite(model, "weights in the checkpoint", step)  # a diverged run's checkpoint must not be resumed
         require_finite(ema, "EMA weights in the checkpoint", step)
         log(f"resumed at step {step} after {elapsed_before / 60:.1f} minutes")
+    elif config["init_from"]:
+        # the weights (the EMA of an earlier run, `model.pt`) are the start; the optimiser, the schedule and the step count are new
+        start = torch.load(config["init_from"], map_location=device, weights_only=False)["state_dict"]
+        model.load_state_dict(start)
+        ema.load_state_dict(start)
+        require_finite(model, "weights to start from")
+        log(f"started from the weights of {config['init_from']}")
     use_amp = bool(config["amp"]) and device.type == "cuda"
     if device.type == "cuda":
         model = model.to(memory_format=torch.channels_last)
@@ -481,7 +600,7 @@ def _train(tiles: Path, out: Path, config: dict, heartbeat, log) -> dict:
             jit = config["gain_jitter_stops"]
             gain = torch.exp2((torch.rand(tb.rgb.shape[0], generator=gen, device=device) * 2 - 1) * jit)
             e = encode_t(sy.lin, gain)
-            y2, w2, _ = half_targets(sy)
+            y2, w2, _ = half_targets(sy, config["sharp_wins"])
         if device.type == "cuda":
             e = e.contiguous(memory_format=torch.channels_last)
         for g in opt.param_groups:
@@ -491,6 +610,8 @@ def _train(tiles: Path, out: Path, config: dict, heartbeat, log) -> dict:
             out_t = model(e)
         mu, s = out_t[:, :1].float(), out_t[:, 1:].float()
         loss = laplace_nll(mu, s, y2, w2)
+        if config["decision_loss"]:
+            loss = loss + config["decision_loss"] * decision_nll(mu, s, y2, w2, sy.hd)
         loss_v = loss.item()
         if not math.isfinite(loss_v):  # before the backward pass: nothing of this batch reaches the weights
             named = {"synthesis lin": sy.lin, "synthesis label radius": sy.logr, "synthesis weight": sy.w, "encoded input": e,
@@ -535,6 +656,8 @@ def _train(tiles: Path, out: Path, config: dict, heartbeat, log) -> dict:
         if config["eval_every_min"] and now - last_eval > config["eval_every_min"] * 60:
             m = evaluate(ema, tiles, config, config["val_samples"], 7, device)
             history.append({"step": step, "eval": {k: m["model"][k] for k in ("mae_b", "fp_rate", "fp_rate_gated", "ece")}})
+            history[-1]["eval"].update({k: m["groups"][k] for k in ("thin_false_blur_p70", "flat_false_blur_p70", "mid_recall_p70",
+                                                                    "precision_p70", "recall_p70")})
             log(json.dumps(history[-1]))
             check_scores(history[-1]["eval"], step)
             model.train()
@@ -543,6 +666,11 @@ def _train(tiles: Path, out: Path, config: dict, heartbeat, log) -> dict:
     sheet = out / "samples" / "val-predictions.png"
     final = evaluate(ema, tiles, config, config["final_val_samples"], 11, device, baseline_n=config["baseline_n"], sheet=sheet)
     check_scores(final["model"], step)
+    check_scores(final["groups"], step)
+    if config["synth"] >= 3:  # bokeh-2's own validation (same tiles, seed and samples), to put this run's numbers next to its
+        legacy = evaluate(ema, tiles, config, config["final_val_samples"], 11, device, legacy=True)
+        check_scores(legacy["model"], step)
+        final["legacy"] = {"model": legacy["model"], "groups": legacy["groups"]}
     torch.save({"state_dict": ema.state_dict(), "config": config}, out / "model.pt")
     final_ts = sources.TileSet(tiles, config["val_share"])
     metrics = {

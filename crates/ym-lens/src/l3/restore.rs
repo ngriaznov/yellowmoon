@@ -31,9 +31,9 @@ impl Restore {
         }
     }
 
-    /// The factor `1 + f (2^h - 1)` the pixel `x` is raised by.
+    /// The clip test `f` of the pixel `x`: 0 below the ramp, 1 above it, 0 when no channel has a clip level.
     #[inline]
-    pub(crate) fn factor(&self, x: [f64; 3]) -> f64 {
+    pub(crate) fn clip_test(&self, x: [f64; 3]) -> f64 {
         let mut m = f64::INFINITY;
         for (v, g0) in x.iter().zip(&self.clip) {
             if *g0 > 0.0 {
@@ -41,10 +41,25 @@ impl Restore {
             }
         }
         if !m.is_finite() {
-            return 1.0;
+            return 0.0;
         }
-        let f = ((m - self.ramp.0) / (self.ramp.1 - self.ramp.0)).clamp(0.0, 1.0);
-        1.0 + f * self.boost
+        ((m - self.ramp.0) / (self.ramp.1 - self.ramp.0)).clamp(0.0, 1.0)
+    }
+
+    /// The factor `1 + f (2^h - 1)` the pixel `x` is raised by.
+    #[inline]
+    pub(crate) fn factor(&self, x: [f64; 3]) -> f64 {
+        1.0 + self.clip_test(x) * self.boost
+    }
+
+    /// The factor `1 + f (2^(h + extra_ev) - 1)`: the pixel of a light assumed `extra_ev` EV brighter than the
+    /// plain headroom ([`crate::l3::lights`]).
+    #[inline]
+    pub(crate) fn factor_ev(&self, x: [f64; 3], extra_ev: f64) -> f64 {
+        if extra_ev == 0.0 {
+            return self.factor(x);
+        }
+        1.0 + self.clip_test(x) * (libm::exp2(LENS_HEADROOM_EV + extra_ev) - 1.0)
     }
 
     /// The soft knee of the pixel `x`: 0 at half the clip level of its brightest channel, 1 at the clip level.
@@ -69,11 +84,18 @@ impl Restore {
         [x[0] * g, x[1] * g, x[2] * g]
     }
 
-    /// The highlights of the pixel `x`: the restored light times the knee.
+    /// The restored light of the pixel `x` of a light assumed `extra_ev` EV brighter than the plain headroom.
     #[inline]
-    pub(crate) fn highlight(&self, x: [f64; 3]) -> [f64; 3] {
+    pub(crate) fn restored_ev(&self, x: [f64; 3], extra_ev: f64) -> [f64; 3] {
+        let g = self.factor_ev(x, extra_ev);
+        [x[0] * g, x[1] * g, x[2] * g]
+    }
+
+    /// The highlights of the pixel `x` of a light assumed `extra_ev` EV brighter than the plain headroom.
+    #[inline]
+    pub(crate) fn highlight_ev(&self, x: [f64; 3], extra_ev: f64) -> [f64; 3] {
         let k = self.knee(x);
-        let r = self.restored(x);
+        let r = self.restored_ev(x, extra_ev);
         [r[0] * k, r[1] * k, r[2] * k]
     }
 

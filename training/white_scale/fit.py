@@ -11,7 +11,7 @@
   has the scale ``[1, 1, 1]``;
 * a stand-in body (``default``) with pinned files gets reference (a): the scale that puts the Kelvin presets of its
   files on the locus of its profile (``reference.fit_presets``), one fit per file. Its files must agree: every file's
-  scale within ``AGREE_LIMIT`` (1 %) of the median in red and in blue. When they do not, one obvious outlier may be
+  scale within ``AGREE_LIMIT`` (5 %) of the median in red and in blue. When they do not, one obvious outlier may be
   left out if the body has three files or more and the rest agree; otherwise the body is not fitted. The scale is
   the median of the files kept (rounded to four decimals);
 * the scale is accepted when, for every file kept, the mean angle between the Kelvin presets and the locus at their

@@ -10,19 +10,22 @@ Use the wrapper ``white-scale-photos.sh``; it checks for python3 and runs this f
 
 A stand-in body (a Sony body without curves of its own) renders through another body's profile, and its white scale is fitted on the
 white-balance presets its own files carry (``docs/03``, "White scale of stand-in bodies"; ``training/white_scale/fit.py``). The owner's
-A1 photos (``owner-photos.sh``) and the local-eval files (``real-eval.sh``) cover some bodies. This set covers the others: 17 ARW files
-that photographers shared in the Play Raw category of discuss.pixls.us, one to four per body (A7, A7R, A7S, A6700, NEX-5R, ZV-E10, RX100,
-RX100 II, RX100 VII, RX10 IV, and the A1 file that the A1's consistency check leaves out). ``white-scale-photos.json`` is the table: the
-name, body, size, SHA-256, download address, post, poster and licence of every file. The table, not the network, says what a file must be.
+A1 photos (``owner-photos.sh``) and the local-eval files (``real-eval.sh``) cover some bodies. This set covers the others: ARW files that
+photographers shared in the Play Raw category of discuss.pixls.us, one to ten per body (A6000, A6300, A6500, A7, A7R, A7S, A6700, NEX-5R,
+ZV-E10, RX100, RX100 II, RX100 VII, RX10 IV, and the files that the consistency check of a body leaves out). ``white-scale-photos.json`` is
+the table: the name, body, size, SHA-256, download address, post, poster and licence of every file. The table, not the network, says what
+a file must be.
 
 Each file is downloaded from the address the post's attachment link leads to on the forum's file store (the last part of that address is
 the SHA-1 of the file), and its size and SHA-256 are checked against the table before it is written (to a ``.part`` file first, then
 renamed). A file that is already there with the pinned SHA-256 needs no network. A file that differs (your own, or a different version)
 is never replaced without --force. Other files in the folder are never touched.
 
-EVALUATION ONLY. The posts state "Creative Commons, By-Attribution, Share-Alike" (the Play Raw template; no version number) or, for one
-file, "Public Domain". The files are fetched on demand for the white-scale fit, never committed (testdata/ is git-ignored), never shipped
-and never redistributed; the scales take only numbers from them, the presets the camera wrote (docs/14 rule 8).
+EVALUATION ONLY. The posts state "Creative Commons, By-Attribution, Share-Alike" (the Play Raw template; no version number), CC0 or
+"Public Domain" for most files. Three files (``"restricted": true`` in the table) are under a NonCommercial licence or state none; they are
+here because a scale needs their numbers, as the local-eval set holds a CC BY-NC-SA file, and every run says so. The files are fetched on
+demand for the white-scale fit, never committed (testdata/ is git-ignored), never shipped and never redistributed; the scales take only
+numbers from them, the presets the camera wrote (docs/14 rule 8).
 
 Environment: YM_TESTDATA=/path moves testdata/. YM_WHITE_SCALE_PHOTOS=/path/to/table.json replaces the table (the unit test uses a folder
 read through file://; same schema). Exit codes: 0 ok, 1 a file does not match the pin (or, with --list, is missing), 2 usage error or
@@ -90,6 +93,8 @@ def load_table() -> Dict[str, Any]:
         for key in ("model", "url", "topic_url", "author", "licence"):
             if not isinstance(entry.get(key), str) or not entry[key]:
                 raise TableError(f"{name}: {key} is missing")
+        if not isinstance(entry.get("restricted", False), bool):
+            raise TableError(f"{name}: restricted must be true or false")
         if not re.fullmatch(r"[0-9a-f]{64}", str(entry.get("sha256", ""))):
             raise TableError(f"{name}: sha256 must be 64 hex digits")
         if not isinstance(entry.get("size"), int) or entry["size"] <= 0:
@@ -157,9 +162,12 @@ def write_atomically(path: Path, data: bytes) -> None:
             part.unlink()
 
 
-def note() -> None:
-    """Prints the licence note: this set is for evaluation only."""
-    print("Evaluation only: never committed, never shipped or redistributed. The posts state CC BY-SA (no version) or Public Domain; see white-scale-photos.json.")
+def note(table: Dict[str, Any]) -> None:
+    """Prints the licence note: this set is for evaluation only, and some files are restricted."""
+    restricted = [e["name"] for e in table["files"] if e.get("restricted")]
+    print("Evaluation only: never committed, never shipped or redistributed. The posts state CC BY-SA (no version), CC0 or Public Domain; see white-scale-photos.json.")
+    if restricted:
+        print(f"  {len(restricted)} files are under a NonCommercial licence or state none (numbers only, like the local-eval set): " + ", ".join(restricted))
 
 
 def list_files(table: Dict[str, Any]) -> int:
@@ -176,7 +184,7 @@ def list_files(table: Dict[str, Any]) -> int:
     print(f"{ok} of {len(table['files'])} files verified in {root}")
     if bad:
         print("  not verified: " + ", ".join(bad))
-    note()
+    note(table)
     if ok == 0:
         print("Nothing found. Run tools/fetch/white-scale-photos.sh to download the files.")
         return EXIT_NOTHING
@@ -215,7 +223,7 @@ def fetch_files(table: Dict[str, Any], force: bool) -> int:
         fresh += 1
     have = sum(1 for e in table["files"] if status_of(root / e["name"], e) == "ok")
     print(f"{have} of {len(table['files'])} files verified in {root} ({fresh} downloaded, {present} already there)")
-    note()
+    note(table)
     if mismatches:
         return EXIT_MISMATCH
     return EXIT_NETWORK if network else EXIT_OK

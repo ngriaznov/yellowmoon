@@ -79,6 +79,10 @@ RESULTS = Fn(cpu=1, memory_mib=2048, timeout_s=300)
 #: Setup (image start, copying the tiles from the volume), then training for `minutes`, then the final evaluation,
 #: the export and the previews: `TRAIN_OVERHEAD_MIN` minutes on top of the training time are inside the time limit.
 TRAIN_OVERHEAD_MIN = 18
+#: A run may state a smaller overhead (`--overhead-min`; a smoke run scores a handful of samples). Measured in bokeh-2: the
+#: tiles were copied in 10 s and the final evaluation of 576 samples took 75 s. Never below this, so that the call's time
+#: limit leaves room for the setup, the evaluation and the export after the training.
+MIN_OVERHEAD_MIN = 6
 ORCH_OVERHEAD_MIN = 7
 #: Photos per tile-building call and the number of mask archives (Open Images splits them by the id's first hex digit).
 TILE_CHUNK = 1000
@@ -87,9 +91,11 @@ MASK_ZIPS = 16
 CONCURRENCY = 16
 
 
-def train_fn(minutes: float) -> Fn:
-    """The training call for `minutes` of training: one L4, four cores, 16 GiB."""
-    return Fn(cpu=4, memory_mib=16384, gpu=True, timeout_s=int((minutes + TRAIN_OVERHEAD_MIN) * 60))
+def train_fn(minutes: float, overhead_min: float = TRAIN_OVERHEAD_MIN) -> Fn:
+    """The training call for `minutes` of training plus `overhead_min`: one L4, four cores, 16 GiB."""
+    if overhead_min < MIN_OVERHEAD_MIN:
+        raise ValueError(f"an overhead of {overhead_min} minutes is below the {MIN_OVERHEAD_MIN} the setup and the final evaluation need")
+    return Fn(cpu=4, memory_mib=16384, gpu=True, timeout_s=int((minutes + overhead_min) * 60))
 
 
 def orchestrator(timeout_s: int) -> Fn:
@@ -141,10 +147,10 @@ def plan_preview() -> Plan:
     return Plan("preview", [("preview", 1, PREVIEW), ("orchestrator", 1, orchestrator(PREVIEW.timeout_s + 300))])
 
 
-def plan_train(minutes: float) -> Plan:
+def plan_train(minutes: float, overhead_min: float = TRAIN_OVERHEAD_MIN) -> Plan:
     return Plan("train", [
-        ("training (one L4)", 1, train_fn(minutes)),
-        ("orchestrator", 1, orchestrator(int((minutes + TRAIN_OVERHEAD_MIN + ORCH_OVERHEAD_MIN) * 60))),
+        ("training (one L4)", 1, train_fn(minutes, overhead_min)),
+        ("orchestrator", 1, orchestrator(int((minutes + overhead_min + ORCH_OVERHEAD_MIN) * 60))),
     ])
 
 
@@ -317,9 +323,10 @@ def main() -> None:
     ap.add_argument("--entry", choices=["check", "prepare", "preview", "train", "results"], required=True)
     ap.add_argument("--photos", type=int, default=20000)
     ap.add_argument("--minutes", type=float, default=100.0)
+    ap.add_argument("--overhead-min", type=float, default=TRAIN_OVERHEAD_MIN)
     args = ap.parse_args()
     plan = {"check": plan_check, "prepare": lambda: plan_prepare(args.photos), "preview": plan_preview,
-            "train": lambda: plan_train(args.minutes), "results": plan_results}[args.entry]()
+            "train": lambda: plan_train(args.minutes, args.overhead_min), "results": plan_results}[args.entry]()
     print(plan.table())
     if args.entry == "train":
         print(f"the longest training that fits $5.00: {max_train_minutes(5.0):.0f} minutes")
