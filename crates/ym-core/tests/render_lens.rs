@@ -729,9 +729,9 @@ fn the_100_percent_view_is_the_picture_the_export_writes_with(r: &Renderer) {
             let i = (y * 800 + x) * 3;
             let enc = OutputSpace::DisplayP3
                 .encode_clamped([full.rgb[i], full.rgb[i + 1], full.rgb[i + 2]].map(f64::from));
-            for c in 0..3 {
+            for (c, e) in enc.iter().enumerate() {
                 let got = f64::from(f.rgba[(y * 800 + x) * 4 + c]);
-                worst = worst.max((got - enc[c] * 255.0).abs());
+                worst = worst.max((got - e * 255.0).abs());
             }
         }
     }
