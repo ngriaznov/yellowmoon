@@ -339,8 +339,8 @@ mod tests {
             }
         }
         // Samples on a grid, ln r = 1 on the left and 3 on the right.
-        for y in (8..h).step_by(24) {
-            for x in (8..w).step_by(24) {
+        for y in (8..h).step_by(16) {
+            for x in (8..w).step_by(16) {
                 let v = if x < edge { 1.0f32 } else { 3.0 };
                 let i = y * w + x;
                 ws[i] = 1.0;
@@ -357,7 +357,7 @@ mod tests {
         let (g, ws, ss, qs) = two_regions(w, h, edge);
         assert!(g.depth() >= 4);
         let sp = spread(&g, &ws, &ss, &qs, 0.05);
-        for (x, y, expect) in [(5, 5, 1.0f32), (30, 60, 1.0), (62, 3, 3.0), (90, 50, 3.0)] {
+        for (x, y, expect) in [(24, 24, 1.0f32), (30, 48, 1.0), (72, 24, 3.0), (88, 40, 3.0)] {
             let i = y * w + x;
             assert!(
                 sp.cover[i] > 0.3,
