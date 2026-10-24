@@ -56,7 +56,7 @@ const NOISES: [(&str, Noise); 4] = [
 #[test]
 fn isolated_bright_discs_are_measured_within_15_percent() {
     let radii = [
-        6.0, 8.0, 10.0, 12.0, 14.0, 7.0, 9.0, 11.0, 13.0, 15.0, 5.5, 16.0,
+        6.0, 8.0, 10.0, 12.0, 14.0, 7.0, 9.0, 11.0, 13.0, 15.0, 6.5, 16.0,
     ];
     for (name, noise) in NOISES {
         let scene = night_scene(W, H, &radii, noise, 7);

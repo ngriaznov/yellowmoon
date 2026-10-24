@@ -106,6 +106,9 @@ const R_MIN_HD: f64 = 0.0025;
 const UNSUPPORTED_R_MIN_PX: f64 = 6.0;
 /// Plateau over ground in square-root units (the brightest channel).
 const MIN_CONTRAST: f64 = 0.12;
+/// A plane whose noise (square-root units) is above this is too noisy for the balls' context test. (The lens
+/// planes of real photos are binned and denoised: 0.0015 to 0.003.)
+const NOISY_PLANE: f64 = 0.008;
 /// A ball whose rim is wider than this fraction of its radius is a smooth blob, not a ball.
 const MAX_SOFTNESS: f64 = 0.9;
 /// The contrast a ball needs grows with the softness of its rim by this much per unit.
@@ -631,7 +634,8 @@ pub(super) fn find_balls(
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<BallPx>, LensError> {
     let (w, h) = (inp.w, inp.h);
-    if w < 16 || h < 16 || std::env::var_os("YM_NO_BALLS").is_some() {
+    // On a noisy plane the context test (how sharp the edges around a light read) is blind: no balls.
+    if w < 16 || h < 16 || inp.noise_v > NOISY_PLANE || std::env::var_os("YM_NO_BALLS").is_some() {
         return Ok(Vec::new());
     }
     if std::env::var_os("YM_BALL_DEBUG").is_some() {
