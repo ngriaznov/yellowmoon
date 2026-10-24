@@ -35,9 +35,9 @@ impl Restore {
     #[inline]
     pub(crate) fn factor(&self, x: [f64; 3]) -> f64 {
         let mut m = f64::INFINITY;
-        for c in 0..3 {
-            if self.clip[c] > 0.0 {
-                m = m.min(x[c] / self.clip[c]);
+        for (v, g0) in x.iter().zip(&self.clip) {
+            if *g0 > 0.0 {
+                m = m.min(v / g0);
             }
         }
         if !m.is_finite() {
@@ -51,9 +51,9 @@ impl Restore {
     #[inline]
     pub(crate) fn knee(&self, x: [f64; 3]) -> f64 {
         let mut m = f64::NEG_INFINITY;
-        for c in 0..3 {
-            if self.clip[c] > 0.0 {
-                m = m.max(x[c] / self.clip[c]);
+        for (v, g0) in x.iter().zip(&self.clip) {
+            if *g0 > 0.0 {
+                m = m.max(v / g0);
             }
         }
         if !m.is_finite() {
@@ -81,9 +81,9 @@ impl Restore {
     #[inline]
     pub(crate) fn level(&self, h: [f64; 3]) -> f64 {
         let mut m = 0.0f64;
-        for c in 0..3 {
-            if self.clip[c] > 0.0 {
-                m = m.max(h[c] / self.clip[c]);
+        for (v, g0) in h.iter().zip(&self.clip) {
+            if *g0 > 0.0 {
+                m = m.max(v / g0);
             }
         }
         m

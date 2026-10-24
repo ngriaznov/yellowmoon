@@ -717,17 +717,3 @@ pub(super) fn blurred_fraction(d: &Detected) -> f64 {
 pub(super) fn enough(d: &Detected) -> bool {
     d.edges >= MIN_EDGE_SAMPLES && blurred_fraction(d) >= crate::consts::MIN_BLUR_AREA
 }
-
-/// Temporary: the edge readings of a plane, for development.
-#[doc(hidden)]
-pub(super) fn debug_samples(plane: &ImageRef) -> (usize, usize, f64, f64, Vec<(u32, f32, f32, u8)>) {
-    let wp = work_plane(plane);
-    let (w, h) = (wp.w, wp.h);
-    let hd = 0.5 * ((w * w + h * h) as f64).sqrt();
-    let v: Vec<f32> = wp.y.iter().map(|&y| y.max(0.0).sqrt()).collect();
-    let noise_v = noise_sigma(&v, w, h);
-    let ladder = build_ladder(&wp.y, w, h, &|| false).unwrap();
-    let r_min_px = (B_MIN * hd).max(RADIUS_FLOOR_PX);
-    let (samples, _) = edge_samples(&ladder, w, h, noise_v, r_min_px, &|| false).unwrap();
-    (w, h, hd, noise_v, samples.iter().map(|s| (s.idx, s.w, s.ln_r, s.pair)).collect())
-}

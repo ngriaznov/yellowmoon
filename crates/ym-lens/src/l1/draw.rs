@@ -34,6 +34,8 @@ pub(super) struct Shape {
     pub density: [f64; 3],
     /// Radius, in pixels, of the disc taken out of the picture.
     pub r_out: f64,
+    /// The ball's own radius in pixels.
+    pub r_ball: f64,
     /// Bounding radius of everything drawn, in pixels.
     pub reach: f64,
     /// The ball's plane fit: value at the centre and slopes per pixel, per channel.
@@ -202,6 +204,7 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
         e_hat,
         density: [ball.energy[0] * scale, ball.energy[1] * scale, ball.energy[2] * scale],
         r_out: ball.take_out_radius * p.hk,
+        r_ball: r_px,
         reach: a + (half_off.0 * half_off.0 + half_off.1 * half_off.1).sqrt() + 2.0,
         fit: [
             fit_px(&ball.fit[0], p.hk),

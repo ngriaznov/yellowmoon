@@ -70,7 +70,7 @@ fn explore_discs() {
 
 #[test]
 fn explore_column() {
-    let scene = night_scene(1000, 667, &[8.0, 12.0, 9.0], Noise::NONE, 7);
+    let scene = night_scene(1000, 667, &[8.0, 12.0, 9.0, 6.0, 10.0, 14.0, 11.0, 7.0, 13.0, 15.0, 5.5, 16.0], Noise::NONE, 7);
     let (w, h) = (scene.img.w, scene.img.h);
     let p = plan(LensKind::Default, 0.0, 0.0, 100.0, w, h, Axis::X);
     let planes = planes_of(&p, &scene);

@@ -392,8 +392,44 @@ pub(crate) fn apply<'a>(
     })
 }
 
-/// Temporary: development helper.
-#[doc(hidden)]
-pub fn debug_samples(plane: &ImageRef) -> (usize, usize, f64, f64, Vec<(u32, f32, f32, u8)>) {
-    detector::debug_samples(plane)
+/// L1 on its own over `want` (frame coordinates at scale `k`): the planar picture the field optics (L2) would
+/// read, `3 * want.w * want.h` samples. `input` must cover `want` grown by [`reshape_halo`], clamped to the
+/// frame. For tests and diagnostics; [`apply`](crate::apply) runs L1 as part of the lens.
+///
+/// # Errors
+///
+/// [`LensError::Frame`] for planes built without the blur map that the plan needs,
+/// [`LensError::InputTooSmall`] when the input does not cover the halo.
+pub fn reshape(
+    plan: &LensPlan,
+    planes: &LensPlanes,
+    k: usize,
+    input: &ImageRef,
+    want: PixelRect,
+) -> Result<Vec<f32>, LensError> {
+    input.validate()?;
+    if !input.rect().contains(&want) {
+        return Err(LensError::InputTooSmall {
+            needed: want.to_string(),
+            have: input.rect().to_string(),
+        });
+    }
+    let stage = apply(plan, planes, k, input, want)?;
+    let img = stage.image();
+    let plane = img.width * img.height;
+    let mut out = Vec::with_capacity(3 * want.w * want.h);
+    for c in 0..3 {
+        for y in want.y..want.y1() {
+            let row = c * plane + (y - img.y0) * img.width + (want.x - img.x0);
+            out.extend_from_slice(&img.data[row..row + want.w]);
+        }
+    }
+    Ok(out)
+}
+
+/// The context [`reshape`] needs around a rectangle at scale `k`, in pixels at that scale.
+#[must_use]
+pub fn reshape_halo(plan: &LensPlan, planes: &LensPlanes, k: usize) -> usize {
+    let f = plan.frame();
+    halo(plan, planes, k, f.width.div_ceil(k.max(1)), f.height.div_ceil(k.max(1)))
 }

@@ -35,6 +35,8 @@ const SHARP_RATIO: f64 = 1.4;
 const SHARP_GATE: f64 = 16.0;
 /// Dilation of the sharp places in pixels.
 const SHARP_DILATE: i64 = 2;
+/// The sharp-edge test sees a ball's rim this far beyond it, in pixels (gradient, box, window and dilation).
+const BALL_RIM_REACH_PX: f64 = 7.0;
 /// A line shorter than this, in pixels, is not gathered.
 const MIN_LINE_PX: f64 = 0.05;
 
@@ -203,9 +205,12 @@ impl<'a> Pass<'a> {
             })
             .collect();
         // The blur map at the tile's pixels.
-        let bt = self.tile_blur(input, r0);
+        let bt = self.tile_blur(input, r0, &shapes);
         if std::env::var("YM_L1_DEBUG").is_ok() {
             let nz = bt.iter().filter(|b| **b > 0.0).count();
+            for sh in shapes.iter().take(2) {
+                eprintln!("shape: c ({:.1},{:.1}) a {:.2} b {:.2} m {:?} density {:?} r_out {:.2} reach {:.1} cov at centre {:?}", sh.cx, sh.cy, sh.a, sh.b, sh.m, sh.density, sh.r_out, sh.reach, sh.coverage(sh.cx, sh.cy));
+            }
             eprintln!("tile: r0 {r0} bt nonzero {nz}/{} shapes {} v_on {} t_on {} level {} sx {:.2}", bt.len(), shapes.len(), self.v_on, self.t_on, self.level, self.sx);
         }
         if !self.v_on && !self.t_on && shapes.is_empty() {
@@ -241,7 +246,7 @@ impl<'a> Pass<'a> {
 
     /// The blur map over `r0`: upsampled with a joint bilateral filter, then zeroed at sharp edges and below
     /// `b_min`.
-    fn tile_blur(&self, input: &ImageRef, r0: PixelRect) -> Vec<f32> {
+    fn tile_blur(&self, input: &ImageRef, r0: PixelRect, shapes: &[Shape]) -> Vec<f32> {
         let bp = self.bp;
         let (fw, fh) = (self.fw, self.fh);
         let (mw, mh) = bp.size();
@@ -351,8 +356,24 @@ impl<'a> Pass<'a> {
                 }
             }
         });
-        // Zero the map where the picture shows an edge sharper than the blur says.
-        let zero = self.sharp_places(input, r0, &bt);
+        // Zero the map where the picture shows an edge sharper than the blur says, except around a ball: its
+        // own rim is a sharp edge.
+        let mut zero = self.sharp_places(input, r0, &bt);
+        for s in shapes {
+            let reach = s.r_out.max(s.r_ball + BALL_RIM_REACH_PX) + 1.0;
+            let x0 = ((s.cx - reach).floor().max(r0.x as f64)) as usize;
+            let x1 = (((s.cx + reach).ceil() as usize) + 1).min(r0.x1());
+            let y0 = ((s.cy - reach).floor().max(r0.y as f64)) as usize;
+            let y1 = (((s.cy + reach).ceil() as usize) + 1).min(r0.y1());
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let (dx, dy) = (x as f64 + 0.5 - s.cx, y as f64 + 0.5 - s.cy);
+                    if dx * dx + dy * dy <= (reach - 1.0) * (reach - 1.0) {
+                        zero[(y - r0.y) * r0.w + (x - r0.x)] = false;
+                    }
+                }
+            }
+        }
         for (b, z) in bt.iter_mut().zip(&zero) {
             if *z {
                 *b = 0.0;

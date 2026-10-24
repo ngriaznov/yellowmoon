@@ -190,16 +190,7 @@ pub(crate) fn apply(
         y0: out.y,
         y1: out.y1(),
     };
-    let items = Items::build(
-        plan.lens(),
-        plan.attachment(),
-        plan.camera(),
-        &terms,
-        frame,
-        flare.sources(),
-        flare.spikes(),
-        &cull,
-    );
+    let items = Items::build(plan, &terms, frame, flare.sources(), flare.spikes(), &cull);
 
     let plane = out.w * out.h;
     let mut result = vec![0.0f32; 3 * plane];

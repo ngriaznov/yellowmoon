@@ -89,61 +89,6 @@ fn explore() {
         std::fs::write(format!("{dir}/conf.f32"), f32s(c)).unwrap();
         std::fs::write(format!("{dir}/size.txt"), format!("{w} {h}")).unwrap();
     }
-    // Sample-level statistics.
-    let (sw, sh, shd, nv, samples) = ym_lens::debug_samples(&whole(scene.img.w, scene.img.h, &scene.img.data));
-    eprintln!("work grid {sw}x{sh} hd {shd:.1} noise_v {nv:.4} samples {}", samples.len());
-    for band in 0..3 {
-      for pair in 0..5u8 {
-        let mut ratios = Vec::new();
-        let mut wsum = 0.0;
-        for &(idx, wt, ln_r, pr) in &samples {
-            if pr != pair { continue; }
-            let (x, y) = (idx as usize % sw, idx as usize / sw);
-            let i = y * sw + x;
-            if scene.trusted[i] && scene.truth_r[i] > 0.0 && (x * 3 / sw) == band {
-                ratios.push((f64::from(ln_r).exp() / f64::from(scene.truth_r[i]), wt));
-                wsum += f64::from(wt);
-            }
-        }
-        ratios.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let q = |p: f64| ratios[((ratios.len() - 1) as f64 * p) as usize].0;
-        if !ratios.is_empty() {
-            eprintln!("band {band} pair {pair}: {} samples (weight {:.0}), ratio p10 {:.2} p25 {:.2} p50 {:.2} p75 {:.2} p90 {:.2}", ratios.len(), wsum, q(0.1), q(0.25), q(0.5), q(0.75), q(0.9));
-        }
-      }
-    }
-}
-
-#[test]
-fn explore_step() {
-    use scenes::{Rgb, disc_blur};
-    let (w, h) = (400usize, 120usize);
-    for r in [3.0, 5.0, 9.0, 14.0, 20.0] {
-        let mut step = vec![0.1f32; w * h];
-        for y in 0..h {
-            for x in 200..w {
-                step[y * w + x] = 0.8;
-            }
-        }
-        let blurred = disc_blur(&step, w, h, r);
-        let mut img = Rgb::new(w, h);
-        for c in 0..3 {
-            img.plane_mut(c).copy_from_slice(&blurred);
-        }
-        let (sw, _sh, _hd, _nv, samples) = ym_lens::debug_samples(&whole(w, h, &img.data));
-        let mut v: Vec<(f64, f32, usize)> = samples
-            .iter()
-            .filter(|(idx, ..)| {
-                let (x, y) = (*idx as usize % sw, *idx as usize / sw);
-                y > 30 && y < 90 && (x as i64 - 200).abs() < 3
-            })
-            .map(|(idx, wt, ln, _)| (f64::from(*ln).exp() / r, *wt, *idx as usize % sw))
-            .collect();
-        v.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let wsum: f64 = v.iter().map(|s| f64::from(s.1)).sum();
-        let mean: f64 = v.iter().map(|s| s.0.ln() * f64::from(s.1)).sum::<f64>() / wsum;
-        eprintln!("r {r}: {} samples, weight {wsum:.1}, weighted geo-mean ratio {:.3}, min {:.2} max {:.2}", v.len(), mean.exp(), v.first().map_or(0.0, |s| s.0), v.last().map_or(0.0, |s| s.0));
-    }
 }
 
 #[test]

@@ -62,9 +62,9 @@ fn main() {
         clip: [1.0; 3],
     };
     let camera = CameraResponse::neutral();
-    // The planes do not depend on the amounts (their key leaves them out). They are built here with Anamorphic
-    // 0, which leaves out L1's blur map, so that the time is L3's alone.
-    let plan_planes = LensPlan::new(&lib, &amounts(100.0, 0.0), frame, &camera).expect("plan");
+    // The planes do not depend on the amounts (their key leaves them out), but Anamorphic above 0 asks for L1's
+    // blur map. `plan_l3` (Anamorphic 0) builds L3's planes alone, to time them.
+    let plan_l3 = LensPlan::new(&lib, &amounts(100.0, 0.0), frame, &camera).expect("plan");
     let plan = LensPlan::new(&lib, &amounts(100.0, anamorphic), frame, &camera).expect("plan");
     let plan_off = LensPlan::new(&lib, &amounts(0.0, anamorphic), frame, &camera).expect("plan");
 
@@ -99,7 +99,7 @@ fn main() {
     }
 
     // The lens plane: the frame box-reduced `k` times.
-    let k = plan_planes.lens_plane_scale();
+    let k = plan_l3.lens_plane_scale();
     let (pw, ph) = (width.div_ceil(k), height.div_ceil(k));
     let mut plane = vec![0.0f32; 3 * pw * ph];
     for c in 0..3 {
@@ -120,7 +120,7 @@ fn main() {
             }
         }
     }
-    let img = ImageRef {
+    let plane_img = ImageRef {
         width: pw,
         height: ph,
         x0: 0,
@@ -130,11 +130,17 @@ fn main() {
         data: &plane,
     };
     let t = Instant::now();
-    let planes = LensPlanes::build(&plan_planes, &img, None, &|| false).expect("planes");
+    let l3_planes = LensPlanes::build(&plan_l3, &plane_img, None, &|| false).expect("planes");
     println!(
-        "planes ({pw} x {ph} lens plane, k = {k}): {:.0} ms, {} KiB",
+        "L3 planes ({pw} x {ph} lens plane, k = {k}): {:.0} ms, {} KiB",
         t.elapsed().as_secs_f64() * 1e3,
-        planes.bytes() / 1024
+        l3_planes.bytes() / 1024
+    );
+    let t = Instant::now();
+    let planes = LensPlanes::build(&plan, &plane_img, None, &|| false).expect("planes");
+    println!(
+        "all planes at Anamorphic {anamorphic} (with L1's blur map): {:.0} ms",
+        t.elapsed().as_secs_f64() * 1e3
     );
 
     let img = ImageRef {
@@ -146,58 +152,48 @@ fn main() {
         frame_height: height,
         data: &data,
     };
-    let mp = (width * height) as f64 / 1e6;
-    let all = PixelRect::new(0, 0, width, height);
-    println!("halo: {} px", halo_px(&plan, &planes, 1));
-    // The same frame without the flares (L2 alone) and with them: the difference is L3.
-    let t = Instant::now();
-    let base = apply(&plan_off, &planes, 1, &img, all).expect("apply");
-    let base_ms = t.elapsed().as_secs_f64() * 1e3;
-    let t = Instant::now();
-    let out = apply(&plan, &planes, 1, &img, all).expect("apply");
-    let ms = t.elapsed().as_secs_f64() * 1e3;
-    println!(
-        "{width} x {height}, {lights} lights, Anamorphic {anamorphic}: flares off {base_ms:.0} ms, on {ms:.0} ms, \
-         L3 {:.0} ms = {:.0} ms/MP",
-        ms - base_ms,
-        (ms - base_ms) / mp
-    );
-    // The same in 1024 x 1024 tiles, each given its input with the halo.
     let halo = halo_px(&plan, &planes, 1);
-    let mut tiles_ms = |p: &LensPlan| {
+    println!("halo: {halo} px");
+    // 1024 x 1024 tiles, each given its input with the halo, with the flares off (the other stages alone) and on:
+    // the difference is L3.
+    let mut tiles_ms = |p: &LensPlan, tiles: &[(usize, usize)]| {
         let t = Instant::now();
-        for ty in (0..height).step_by(1024) {
-            for tx in (0..width).step_by(1024) {
-                let tile = PixelRect::new(tx, ty, 1024.min(width - tx), 1024.min(height - ty));
-                let need = tile.grown(halo, width, height);
-                let mut buf = Vec::with_capacity(3 * need.w * need.h);
-                for c in 0..3 {
-                    for y in need.y..need.y1() {
-                        let row = c * width * height + y * width + need.x;
-                        buf.extend_from_slice(&data[row..row + need.w]);
-                    }
+        let mut px = 0usize;
+        for (tx, ty) in tiles {
+            let tile = PixelRect::new(*tx, *ty, 1024.min(width - tx), 1024.min(height - ty));
+            let need = tile.grown(halo, width, height);
+            let mut buf = Vec::with_capacity(3 * need.w * need.h);
+            for c in 0..3 {
+                for y in need.y..need.y1() {
+                    let row = c * width * height + y * width + need.x;
+                    buf.extend_from_slice(&data[row..row + need.w]);
                 }
-                let input = ImageRef {
-                    width: need.w,
-                    height: need.h,
-                    x0: need.x,
-                    y0: need.y,
-                    frame_width: width,
-                    frame_height: height,
-                    data: &buf,
-                };
-                let _ = apply(p, &planes, 1, &input, tile).expect("tile");
             }
+            let input = ImageRef {
+                width: need.w,
+                height: need.h,
+                x0: need.x,
+                y0: need.y,
+                frame_width: width,
+                frame_height: height,
+                data: &buf,
+            };
+            let _ = apply(p, &planes, 1, &input, tile).expect("tile");
+            px += tile.w * tile.h;
         }
-        t.elapsed().as_secs_f64() * 1e3
+        (t.elapsed().as_secs_f64() * 1e3, px as f64 / 1e6)
     };
-    let (off_t, on_t) = (tiles_ms(&plan_off), tiles_ms(&plan));
+    let grid: Vec<(usize, usize)> = (0..height.div_ceil(1024))
+        .flat_map(|ty| (0..width.div_ceil(1024)).map(move |tx| (tx * 1024, ty * 1024)))
+        .collect();
+    // A few tiles from the middle of the frame, so that the run stays short.
+    let mid: Vec<(usize, usize)> = grid.iter().copied().skip(grid.len() / 3).take(6).collect();
+    let (off_t, mp) = tiles_ms(&plan_off, &mid);
+    let (on_t, _) = tiles_ms(&plan, &mid);
     println!(
-        "1024 px tiles: flares off {off_t:.0} ms, on {on_t:.0} ms, L3 {:.0} ms = {:.0} ms/MP",
+        "{} tiles of 1024, {mp:.1} MP, {lights} lights in the frame, Anamorphic {anamorphic}: flares off {off_t:.0} ms, on {on_t:.0} ms, L3 {:.0} ms = {:.0} ms/MP",
+        mid.len(),
         on_t - off_t,
         (on_t - off_t) / mp
     );
-    let _ = base;
-    let sum: f64 = out.iter().map(|v| f64::from(*v)).sum();
-    println!("checksum {sum:.3}");
 }

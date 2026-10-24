@@ -8,7 +8,7 @@
 //!
 //! The data do not depend on the amounts, so a slider moves nothing here.
 
-use crate::consts::{CLIP_RAMP_PLANE, PSF_WAVELENGTHS, SPIKE_SIZE, TAIL_PLANE_LONG_EDGE};
+use crate::consts::{CLIP_RAMP_PLANE, SPIKE_SIZE, TAIL_PLANE_LONG_EDGE};
 use crate::error::LensError;
 use crate::image::ImageRef;
 use crate::l3::fft::{Convolver, Kernel2d};
@@ -254,8 +254,7 @@ impl FlarePlanes {
         let weights = plan.camera().weights();
         let spikes: [Vec<f64>; 3] = std::array::from_fn(|c| {
             let mut t = vec![0.0; SPIKE_SIZE * SPIKE_SIZE];
-            for j in 0..PSF_WAVELENGTHS {
-                let w = weights[c][j];
+            for (j, w) in weights[c].iter().enumerate() {
                 for (d, s) in t.iter_mut().zip(lens.spikes(j)) {
                     *d += w * f64::from(*s);
                 }

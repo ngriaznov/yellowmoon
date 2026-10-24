@@ -18,11 +18,12 @@
 //!   reach) times a Gaussian across it as tall as the source; each pixel gets the exact mass over its area.
 
 use crate::consts::{COMPACT_EXTENT_HD, EDGE_FLOOR_PX, EDGE_REACH_SIGMAS, SPIKE_SIZE};
-use crate::data::{Aperture, AttachmentData, GhostData, LensData};
+use crate::data::{Aperture, GhostData};
 use crate::l3::geometry::{Frame, Span};
 use crate::l3::profile::{NormalTail, RimCurve, cosine_window, gauss8, normal_tail};
 use crate::l3::sources::Source;
 use crate::l3::terms::Terms;
+use crate::plan::LensPlan;
 use crate::spectral::CameraResponse;
 
 /// A shape as a gauge: the aperture polygon blended with its inscribed circle (`roundness`).
@@ -360,15 +361,14 @@ const SHAPE_ROUND: usize = 1;
 impl<'a> Items<'a> {
     /// The items of `sources` for a frame at one scale.
     pub(crate) fn build(
-        lens: &LensData,
-        att: &AttachmentData,
-        camera: &CameraResponse,
+        plan: &LensPlan,
         terms: &Terms,
         frame: Frame,
         sources: &[Source],
         spikes: &'a [Vec<f64>; 3],
         cull: &Span,
     ) -> Self {
+        let (lens, att, camera) = (plan.lens(), plan.attachment(), plan.camera());
         let shapes = [Shape::aperture(&lens.flare.aperture), Shape::round()];
         let along = (terms.streak > 0.0 && terms.anam > 0.0).then(|| {
             AlongProfile::new(
@@ -663,9 +663,7 @@ impl<'a> Items<'a> {
                 continue;
             }
             // The table collapsed over the pixel's rows (across the axis).
-            for c in 0..3 {
-                let t = &self.spikes[c];
-                let out = &mut v[c];
+            for (t, out) in self.spikes.iter().zip(v.iter_mut()) {
                 out.fill(0.0);
                 for (k, w) in wn.iter().enumerate() {
                     let row = &t[(n0 + k) * n..(n0 + k + 1) * n];
@@ -677,14 +675,14 @@ impl<'a> Items<'a> {
             for (pi, (m0, wm)) in along_w.iter().enumerate() {
                 let mut mass = [0.0f64; 3];
                 for (k, w) in wm.iter().enumerate() {
-                    for c in 0..3 {
-                        mass[c] += w * v[c][m0 + k];
+                    for (m, vc) in mass.iter_mut().zip(&v) {
+                        *m += w * vc[m0 + k];
                     }
                 }
                 let (i, j) = frame.pixel_of(p0 + pi, q);
                 let px = &mut acc[(j - band.y0) * bw + i - band.x0];
-                for c in 0..3 {
-                    px[c] += b.amp[c] * mass[c] * per_area;
+                for ((p, a), m) in px.iter_mut().zip(&b.amp).zip(&mass) {
+                    *p += a * m * per_area;
                 }
             }
         }

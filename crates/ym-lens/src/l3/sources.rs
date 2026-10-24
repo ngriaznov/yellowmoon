@@ -240,8 +240,8 @@ pub(crate) fn find(
             let (x, y) = (i as f64 + 0.5, j as f64 + 0.5);
             let acc = &mut slots[slot];
             acc.weight += weight;
-            for c in 0..3 {
-                acc.energy[c] += hl[c];
+            for (e, h) in acc.energy.iter_mut().zip(&hl) {
+                *e += h;
             }
             acc.sx += weight * x;
             acc.sy += weight * y;
