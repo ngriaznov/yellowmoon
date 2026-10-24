@@ -42,14 +42,18 @@ pub const W_MAX: f64 = 0.012;
 /// A field-optics kernel whose half-width is below this many pixels is a copy of the input.
 pub const COPY_BELOW_PX: f64 = 0.5;
 
-/// Most taps along a side of a field-optics kernel.
-pub const MAX_TAPS_SIDE: usize = 33;
+/// Most taps along a side of a field-optics kernel (a budget of 17 x 17 = 289 taps a pixel).
+///
+/// A kernel wider than this budget at one tap a pixel reads a reduced copy of the input instead
+/// ([`TAP_SPACING_MAX_PX`]); the 33 x 33 tables are resampled area-weighted to this many cells at most.
+pub const MAX_TAPS_SIDE: usize = 17;
 
-/// Largest spacing of the taps of a kernel, in pixels of the mip level they read; wider spacing reads
-/// the next, 2x reduced level so that no input detail is skipped.
-pub const TAP_SPACING_MAX_PX: f64 = 1.5;
+/// Largest spacing of the taps of a kernel, in pixels of the mip level they read. A kernel whose cells would be
+/// further apart reads the next, 2x reduced level, so that every input pixel contributes (the bilinear
+/// footprints of taps one texel apart sum to a constant) and no detail is skipped.
+pub const TAP_SPACING_MAX_PX: f64 = 1.0;
 
-/// The smallest power of two `k_L` for which the lens plane's long edge is at most this many pixels.
+/// The lens plane keeps a long edge of at least this many pixels (`LensPlan::lens_plane_scale`).
 pub const LENS_PLANE_LONG_EDGE: usize = 1024;
 
 /// Samples per side of the canvas edge the zoom is fitted on (`docs/21` section 4, L4).

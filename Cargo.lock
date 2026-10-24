@@ -11230,6 +11230,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ym-lens"
+version = "0.1.15"
+dependencies = [
+ "approx",
+ "hex",
+ "libm",
+ "rayon",
+ "safetensors 0.8.0",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.21",
+ "ym-color",
+ "ym-lens",
+]
+
+[[package]]
 name = "ym-looks"
 version = "0.1.15"
 dependencies = [

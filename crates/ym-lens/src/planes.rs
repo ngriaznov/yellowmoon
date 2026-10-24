@@ -1,0 +1,143 @@
+//! The amount-independent per-photo data of the lens (`docs/21` section 3, "Planes and lists, once per photo").
+//!
+//! L1 (the blur map and the ball list) and L3 (the tail plane and the source list) put their data here. For
+//! now the planes hold only what identifies them, so the API is the final one.
+
+use crate::error::LensError;
+use crate::image::ImageRef;
+use crate::plan::LensPlan;
+
+/// Why a photo's bokeh was left as it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReshapeReason {
+    /// The settings did not ask for it, or (until L1 is built) it cannot run.
+    NotAsked,
+    /// The photo has little out-of-focus background.
+    LittleBlur,
+}
+
+/// What the bokeh reshaping did for this photo (`RenderReport::lens`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReshapeReport {
+    /// True when the bokeh was reshaped.
+    pub reshaped: bool,
+    /// Why it was not, when it was not.
+    pub reason: Option<ReshapeReason>,
+}
+
+/// The data every tile of a photo shares: made once per photo, on the CPU, from the lens plane.
+#[derive(Clone, Debug)]
+pub struct LensPlanes {
+    key: String,
+    focus: Option<(f64, f64)>,
+    report: ReshapeReport,
+    lens_plane_size: (usize, usize),
+}
+
+impl LensPlanes {
+    /// Makes the planes of a photo.
+    ///
+    /// `lens_plane` is the whole frame at scale [`LensPlan::lens_plane_scale`] (the raw group's image there).
+    /// `focus` is the camera's focus point as fractions `(x, y)` of the frame in the buffer's orientation, when
+    /// the file has one. `cancel` is polled between steps and ends the build with [`LensError::Cancelled`].
+    ///
+    /// # Errors
+    ///
+    /// [`LensError::Cancelled`], or [`LensError::Frame`] when the lens plane or the focus point does not fit
+    /// the plan.
+    pub fn build(
+        plan: &LensPlan,
+        lens_plane: &ImageRef,
+        focus: Option<(f64, f64)>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Self, LensError> {
+        if cancel() {
+            return Err(LensError::Cancelled);
+        }
+        if let Some((x, y)) = focus
+            && !((0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y))
+        {
+            return Err(LensError::Frame(format!(
+                "the focus point ({x}, {y}) must be fractions of the frame from 0 to 1"
+            )));
+        }
+        let planes_key = plan.planes_key();
+        if plan.is_identity() {
+            return Ok(LensPlanes {
+                key: planes_key,
+                focus,
+                report: ReshapeReport {
+                    reshaped: false,
+                    reason: Some(ReshapeReason::NotAsked),
+                },
+                lens_plane_size: (0, 0),
+            });
+        }
+        lens_plane.validate()?;
+        let k = plan.lens_plane_scale();
+        let f = plan.frame();
+        let fits = |plane: usize, full: usize| plane * k + k > full && plane * k < full + k;
+        if lens_plane.x0 != 0
+            || lens_plane.y0 != 0
+            || lens_plane.width != lens_plane.frame_width
+            || lens_plane.height != lens_plane.frame_height
+            || !fits(lens_plane.frame_width, f.width)
+            || !fits(lens_plane.frame_height, f.height)
+        {
+            return Err(LensError::Frame(format!(
+                "the lens plane must be the whole {}x{} frame reduced {k} times, found {}x{} at ({}, {}) of {}x{}",
+                f.width,
+                f.height,
+                lens_plane.width,
+                lens_plane.height,
+                lens_plane.x0,
+                lens_plane.y0,
+                lens_plane.frame_width,
+                lens_plane.frame_height
+            )));
+        }
+        if cancel() {
+            return Err(LensError::Cancelled);
+        }
+        // L1 and L3 build their planes and lists here. Until they do, nothing is reshaped.
+        Ok(LensPlanes {
+            key: planes_key,
+            focus,
+            report: ReshapeReport {
+                reshaped: false,
+                reason: Some(ReshapeReason::NotAsked),
+            },
+            lens_plane_size: (lens_plane.width, lens_plane.height),
+        })
+    }
+
+    /// What the bokeh reshaping did.
+    #[must_use]
+    pub fn report(&self) -> ReshapeReport {
+        self.report
+    }
+
+    /// Bytes the planes hold (for the cache's budget).
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        std::mem::size_of::<Self>() + self.key.len()
+    }
+
+    /// The [`LensPlan::planes_key`] these planes were built for.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// The camera's focus point, as fractions of the frame.
+    #[must_use]
+    pub fn focus(&self) -> Option<(f64, f64)> {
+        self.focus
+    }
+
+    /// The size of the lens plane the planes were built from.
+    #[must_use]
+    pub fn lens_plane_size(&self) -> (usize, usize) {
+        self.lens_plane_size
+    }
+}
