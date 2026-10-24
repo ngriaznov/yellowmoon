@@ -75,10 +75,10 @@ DECIMALS = 4
 #: Daylight presets are labelled by the maker as a typical temperature (docs/03); the check window of the task.
 DAYLIGHT_WINDOW_K = (5000.0, 5600.0)
 MEAN_ANGLE_LIMIT_DEG = 2.0
-#: Files of one body agree when each file's scale is within this fraction of the median in red and in blue. 1 % in
-#: red or blue is 1.4 to 1.7 mired (40 to 50 K at 5500 K, 0.2 to 0.3 degrees of white), against the decision rule's
-#: 2 degrees and 300 K, and a twentieth of the 30 mired by which Sony's Kelvin labels are off the published curves.
-AGREE_LIMIT = 0.01
+#: Files of one body agree when each file's scale is within this fraction of the median in red and in blue: the unit-to-unit
+#: spread of the presets that the files of bodies with curves of their own show (A7 III 4.7 % and 3.5 %, A6400 4.1 % and
+#: 3.1 %, A7 IV 0.7 % and 3.7 %, A7C II 2.6 % and 3.6 %; docs/03). 5 % in red or blue is 7 to 9 mired in the Kelvin reading.
+AGREE_LIMIT = 0.05
 #: Files a body needs. One file cannot show whether its presets are consistent (docs/03 says what that costs).
 MIN_FILES = 1
 #: Files from which one outlier may be left out.

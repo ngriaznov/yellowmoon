@@ -79,8 +79,12 @@ pub(super) struct BallInput<'a> {
     pub ev_fine: &'a [f32],
     /// Pixels of the subject anchor (the camera's focus point): no ball starts there.
     pub anchor: &'a [bool],
-    /// Pixels at a strong edge that reads sharp (the detector's own flags).
+    /// Pixels that read sharp: at a strong sharp edge (the classical detector's own flags), or where a dense
+    /// blur map says in focus.
     pub sharp: &'a [bool],
+    /// The most a ball's ring may hold of those pixels, as a share of the ring: [`MAX_SHARP_DENSITY`] for the
+    /// thin lines of edges, much more for the area of a dense map.
+    pub max_sharp_density: f64,
 }
 
 /// Margin of the take-out disc beyond 1.15 `r`, in working-grid pixels.
@@ -134,7 +138,7 @@ const WINDOW_RADII: f64 = 3.2;
 pub(super) const FINE_PX: f64 = 2.0;
 /// A ball whose ring has more than this share of its pixels at a strong sharp edge sits in a sharp scene (a gap
 /// in the leaves, a seed, a catch-light): it is a light in focus, not a defocused one.
-const MAX_SHARP_DENSITY: f64 = 0.05;
+pub(super) const MAX_SHARP_DENSITY: f64 = 0.05;
 /// Edge evidence (sum of weights in the ring around a ball) needed to hold a ball to the edges' radius.
 const EVIDENCE_MIN: f64 = 1.5;
 /// A ball whose ground reads sharper than this radius, in pixels of the working grid, is a light in focus. (The
@@ -749,7 +753,7 @@ pub(super) fn find_balls(
                 n_fine / n_ring.max(1.0),
             );
         }
-        if sharp_density > MAX_SHARP_DENSITY {
+        if sharp_density > inp.max_sharp_density {
             continue;
         }
         // A soft blob must stand out more: a dim, soft highlight (a nose, a bead of water) is no ball.
@@ -797,7 +801,7 @@ pub(super) fn find_balls(
                     n_sharp += f64::from(u8::from(inp.sharp[i]));
                 }
             });
-            n_sharp / n_ring.max(1.0) <= MAX_SHARP_DENSITY
+            n_sharp / n_ring.max(1.0) <= inp.max_sharp_density
         });
         if accepted.len() == before {
             break;

@@ -56,6 +56,69 @@ pub struct Ball {
     pub softness: f64,
 }
 
+/// A blur map made by another source than the classical detector (the learned model, `ym_ml::bokeh_net`): one cell
+/// per `OUTPUT_STRIDE` x `OUTPUT_STRIDE` (2 x 2) pixels of the plane the source saw, `plane_width x plane_height`.
+///
+/// `b` is the blur radius per cell in half-diagonals, and `b_low` a lower bound of it (a low quantile of the
+/// source's own estimate of its error): a cell counts as out of focus only when `b_low` is at least twice `b_min`,
+/// so a cell the source is unsure about is not stretched. Cells are row-major.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlurMapInput {
+    /// Columns of the map.
+    pub width: usize,
+    /// Rows of the map.
+    pub height: usize,
+    /// Width in pixels of the plane the cells tile (twice the columns, or one less).
+    pub plane_width: usize,
+    /// Height in pixels of that plane.
+    pub plane_height: usize,
+    /// The radius per cell, in half-diagonals.
+    pub b: Vec<f32>,
+    /// A lower bound of the radius per cell, in half-diagonals.
+    pub b_low: Vec<f32>,
+}
+
+impl BlurMapInput {
+    /// The map at `width x height` pixels of the same plane (any size), `(b, b_low)`: bilinear between the cells'
+    /// centres, held at the edge beyond the outer ones.
+    pub(crate) fn resample(&self, width: usize, height: usize) -> (Vec<f32>, Vec<f32>) {
+        let cells = self.width * self.height;
+        let mut b = vec![0.0f32; width * height];
+        let mut low = vec![0.0f32; width * height];
+        if cells == 0 || self.b.len() != cells || self.b_low.len() != cells {
+            return (b, low);
+        }
+        let axis = |t: f64, plane: usize, count: usize| {
+            let p = (t * plane as f64 / 2.0 - 0.5).clamp(0.0, (count - 1) as f64);
+            let i0 = (p.floor() as usize).min(count - 1);
+            (i0, (i0 + 1).min(count - 1), (p - i0 as f64) as f32)
+        };
+        for y in 0..height {
+            let (y0, y1, fy) = axis(
+                (y as f64 + 0.5) / height as f64,
+                self.plane_height,
+                self.height,
+            );
+            for x in 0..width {
+                let (x0, x1, fx) = axis(
+                    (x as f64 + 0.5) / width as f64,
+                    self.plane_width,
+                    self.width,
+                );
+                let lerp = |m: &[f32]| {
+                    let top = (1.0 - fx) * m[y0 * self.width + x0] + fx * m[y0 * self.width + x1];
+                    let bottom =
+                        (1.0 - fx) * m[y1 * self.width + x0] + fx * m[y1 * self.width + x1];
+                    (1.0 - fy) * top + fy * bottom
+                };
+                b[y * width + x] = lerp(&self.b);
+                low[y * width + x] = lerp(&self.b_low);
+            }
+        }
+        (b, low)
+    }
+}
+
 /// One level of the blur map's reductions: the mean of weight times blur, and of weight.
 #[derive(Clone, Debug)]
 pub(crate) struct MapLevel {
@@ -90,9 +153,13 @@ impl BokehPlanes {
         _plan: &LensPlan,
         lens_plane: &ImageRef,
         focus: Option<(f64, f64)>,
+        map: Option<&BlurMapInput>,
         cancel: &dyn Fn() -> bool,
     ) -> Result<Self, LensError> {
-        let d = detector::detect(lens_plane, focus, cancel)?;
+        let d = match map {
+            Some(map) => detector::detect_with_map(lens_plane, focus, map, cancel)?,
+            None => detector::detect(lens_plane, focus, cancel)?,
+        };
         let fraction = detector::blurred_fraction(&d);
         let active = detector::enough(&d);
         let (w, h) = (d.w, d.h);

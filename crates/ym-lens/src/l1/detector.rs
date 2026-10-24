@@ -23,6 +23,7 @@ use crate::consts::{B_CAP, B_MIN, MIN_EDGE_SAMPLES};
 use crate::error::LensError;
 use crate::image::ImageRef;
 
+use super::BlurMapInput;
 use super::balls::{BallInput, BallPx, find_balls};
 use super::disc::{LEVELS, PAIRS, level_sigma, radius_from_ratio};
 use super::ladder::{blur_wide, gradient_at, gradient_magnitude, quantile};
@@ -68,6 +69,18 @@ const ANCHOR_WEIGHT: f64 = 2.0;
 const BALL_FOOTPRINT: f64 = 2.2;
 /// Total evidence weight a ball adds, spread over its disc and ring.
 const BALL_WEIGHT: f64 = 30.0;
+/// A blurred cell of an outside map: its lower bound must reach this many `b_min` (the map's own confidence is the
+/// width of that bound: a cell that may be sharp is not blurred).
+const MAP_VALID_BMIN: f64 = 2.0;
+/// Confidence given to cells of an outside map that are blurred, and to cells that are in focus.
+const MAP_CONFIDENT: f32 = 0.9;
+/// Confidence of a cell the outside map cannot decide (not blurred for sure, not in focus for sure).
+const MAP_UNSURE: f32 = 0.1;
+/// Weight a blurred cell of an outside map gives to the evidence around a ball (an edge reading has weight 1 at
+/// most; a ring holds hundreds of pixels).
+const MAP_EVIDENCE_WEIGHT: f32 = 0.05;
+/// An outside map's in-focus pixels may fill this much of a ball's ring.
+const MAP_SHARP_MAX: f64 = 0.35;
 /// A scene with this many balls is reshaped whatever the area of its blur.
 const MIN_BALLS_ACTIVE: usize = 5;
 /// A sharp edge flags the places around it when its gradient is this many noise units.
@@ -419,6 +432,105 @@ fn moments(sp: &super::spread::Spread, i: usize) -> Option<(f64, f64, f64)> {
     Some((f64::from(sp.mean[i]), f64::from(sp.var[i]), c))
 }
 
+/// The pixels of the subject anchor: the disc around the camera's focus point, in focus whatever the picture says.
+fn anchor_mask(focus: Option<(f64, f64)>, w: usize, h: usize, hd: f64) -> Vec<bool> {
+    let mut anchor = vec![false; w * h];
+    let Some((fx, fy)) = focus else {
+        return anchor;
+    };
+    let (cx, cy) = (fx * w as f64, fy * h as f64);
+    let radius = (ANCHOR_RADIUS * hd).max(6.0);
+    let (x0, x1) = (
+        (cx - radius).floor().max(0.0) as usize,
+        ((cx + radius).ceil() as usize + 1).min(w),
+    );
+    let (y0, y1) = (
+        (cy - radius).floor().max(0.0) as usize,
+        ((cy + radius).ceil() as usize + 1).min(h),
+    );
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
+            if dx * dx + dy * dy <= radius * radius {
+                anchor[y * w + x] = true;
+            }
+        }
+    }
+    anchor
+}
+
+/// Writes the balls' radius into the map over their footprint, then makes `b` and `conf` final (step 5): `b = r /
+/// hd` where the confidence and the radius allow it, 0 elsewhere, the anchor in focus. `r_est` (px) and `conf` are
+/// the map's before the balls; `forced` marks the places next to a sharp edge. Returns `b`.
+#[allow(clippy::too_many_arguments)]
+fn stamp_balls_and_finish(
+    balls: &[BallPx],
+    r_est: &mut [f64],
+    conf: &mut [f32],
+    forced: &mut [bool],
+    anchor: &[bool],
+    (w, h): (usize, usize),
+    hd: f64,
+    r_min_px: f64,
+) -> Vec<f32> {
+    let n = w * h;
+    // The balls' radius over their footprint, except where the map says confidently sharp.
+    let mut best = vec![f64::INFINITY; n];
+    for ball in balls {
+        let reach = BALL_FOOTPRINT * ball.r;
+        let (x0, x1) = (
+            (ball.cx - reach).floor().max(0.0) as usize,
+            ((ball.cx + reach).ceil() as usize + 1).min(w),
+        );
+        let (y0, y1) = (
+            (ball.cy - reach).floor().max(0.0) as usize,
+            ((ball.cy + reach).ceil() as usize + 1).min(h),
+        );
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = y * w + x;
+                let (dx, dy) = (x as f64 + 0.5 - ball.cx, y as f64 + 0.5 - ball.cy);
+                let d = (dx * dx + dy * dy).sqrt();
+                if d > reach || anchor[i] {
+                    continue;
+                }
+                let in_disc = d <= ball.r_out;
+                let sharp_here =
+                    forced[i] || (f64::from(conf[i]) >= 0.3 && r_est[i] < 0.5 * ball.r);
+                // Outside the disc the ball only fills in what the map does not know: a place with a reading of its
+                // own (sharp or blurred) keeps it.
+                if !in_disc && (sharp_here || f64::from(conf[i]) >= CONFIDENCE_MIN) {
+                    continue;
+                }
+                let nd = d / ball.r;
+                if nd < best[i] {
+                    best[i] = nd;
+                    r_est[i] = ball.r;
+                    conf[i] = 0.95;
+                    forced[i] = false;
+                }
+            }
+        }
+    }
+    let mut b = vec![0.0f32; n];
+    for i in 0..n {
+        if anchor[i] {
+            conf[i] = 1.0;
+            continue;
+        }
+        let ok = f64::from(conf[i]) >= CONFIDENCE_MIN && r_est[i] >= r_min_px && !forced[i];
+        if ok {
+            b[i] = (r_est[i] / hd) as f32;
+        } else if forced[i] {
+            conf[i] = conf[i].max(0.5);
+        }
+    }
+    // A blurred region smaller than a couple of its own blur discs is a speck of misread edges, not defocus.
+    let keep: Vec<bool> = best.iter().map(|d| d.is_finite()).collect();
+    drop_small_regions(&mut b, &keep, w, h, hd);
+    b
+}
+
 /// Runs the detector on a lens plane.
 pub(super) fn detect(
     plane: &ImageRef,
@@ -458,31 +570,11 @@ pub(super) fn detect(
     let measured_edges = samples.iter().filter(|s| s.w >= 0.1).count();
 
     // 2. The subject anchor.
-    let mut anchor = vec![false; n];
-    if let Some((fx, fy)) = focus {
-        let (cx, cy) = (fx * w as f64, fy * h as f64);
-        let radius = (ANCHOR_RADIUS * hd).max(6.0);
-        let mut inside = vec![false; n];
-        let (x0, x1) = (
-            (cx - radius).floor().max(0.0) as usize,
-            ((cx + radius).ceil() as usize + 1).min(w),
-        );
-        let (y0, y1) = (
-            (cy - radius).floor().max(0.0) as usize,
-            ((cy + radius).ceil() as usize + 1).min(h),
-        );
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
-                if dx * dx + dy * dy <= radius * radius {
-                    inside[y * w + x] = true;
-                    anchor[y * w + x] = true;
-                }
-            }
-        }
-        samples.retain(|s| !inside[s.idx as usize]);
+    let anchor = anchor_mask(focus, w, h, hd);
+    if anchor.iter().any(|a| *a) {
+        samples.retain(|s| !anchor[s.idx as usize]);
         let ln_sharp = libm::log(0.4) as f32;
-        for (i, _) in inside.iter().enumerate().filter(|(_, b)| **b) {
+        for (i, _) in anchor.iter().enumerate().filter(|(_, b)| **b) {
             samples.push(Sample {
                 idx: i as u32,
                 w: ANCHOR_WEIGHT as f32,
@@ -512,6 +604,7 @@ pub(super) fn detect(
             ev_fine: &ev_fine,
             anchor: &anchor,
             sharp: &sharp,
+            max_sharp_density: super::balls::MAX_SHARP_DENSITY,
         },
         cancel,
     )?;
@@ -584,7 +677,6 @@ pub(super) fn detect(
     }
 
     // 5. Caution, and the maps.
-    let mut b = vec![0.0f32; n];
     let mut conf = vec![0.0f32; n];
     let mut r_est = vec![0.0f64; n];
     for i in 0..n {
@@ -611,59 +703,16 @@ pub(super) fn detect(
             }
         }
     }
-    // The balls' radius over their footprint, except where the map says confidently sharp.
-    let mut best = vec![f64::INFINITY; n];
-    for ball in &balls {
-        let reach = BALL_FOOTPRINT * ball.r;
-        let (x0, x1) = (
-            (ball.cx - reach).floor().max(0.0) as usize,
-            ((ball.cx + reach).ceil() as usize + 1).min(w),
-        );
-        let (y0, y1) = (
-            (ball.cy - reach).floor().max(0.0) as usize,
-            ((ball.cy + reach).ceil() as usize + 1).min(h),
-        );
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let i = y * w + x;
-                let (dx, dy) = (x as f64 + 0.5 - ball.cx, y as f64 + 0.5 - ball.cy);
-                let d = (dx * dx + dy * dy).sqrt();
-                if d > reach || anchor[i] {
-                    continue;
-                }
-                let in_disc = d <= ball.r_out;
-                let sharp_here =
-                    forced[i] || (f64::from(conf[i]) >= 0.3 && r_est[i] < 0.5 * ball.r);
-                // Outside the disc the ball only fills in what the map does not know: a place with a reading of its
-                // own (sharp or blurred) keeps it.
-                if !in_disc && (sharp_here || f64::from(conf[i]) >= CONFIDENCE_MIN) {
-                    continue;
-                }
-                let nd = d / ball.r;
-                if nd < best[i] {
-                    best[i] = nd;
-                    r_est[i] = ball.r;
-                    conf[i] = 0.95;
-                    forced[i] = false;
-                }
-            }
-        }
-    }
-    for i in 0..n {
-        if anchor[i] {
-            conf[i] = 1.0;
-            continue;
-        }
-        let ok = f64::from(conf[i]) >= CONFIDENCE_MIN && r_est[i] >= r_min_px && !forced[i];
-        if ok {
-            b[i] = (r_est[i] / hd) as f32;
-        } else if forced[i] {
-            conf[i] = conf[i].max(0.5);
-        }
-    }
-    // A blurred region smaller than a couple of its own blur discs is a speck of misread edges, not defocus.
-    let keep: Vec<bool> = best.iter().map(|d| d.is_finite()).collect();
-    drop_small_regions(&mut b, &keep, w, h, hd);
+    let b = stamp_balls_and_finish(
+        &balls,
+        &mut r_est,
+        &mut conf,
+        &mut forced,
+        &anchor,
+        (w, h),
+        hd,
+        r_min_px,
+    );
     Ok(Detected {
         w,
         h,
@@ -671,6 +720,111 @@ pub(super) fn detect(
         conf,
         balls,
         edges: measured_edges + ball_perimeters as usize,
+        noise_v,
+        hd,
+        reduce: wp.reduce,
+    })
+}
+
+/// The detector with the blur map of another source (the learned model) in place of the edge measure: the map's
+/// cells that are blurred for sure (their lower bound at least [`MAP_VALID_BMIN`] times `b_min`) carry `b`, the
+/// cells that are sharp for sure carry 0, the rest are unknown. The rest of the work is the classical detector's:
+/// the subject anchor, the balls (found on the plane and judged against the map around them), the radius of the
+/// balls written into the map, the cleaning of small specks.
+pub(super) fn detect_with_map(
+    plane: &ImageRef,
+    focus: Option<(f64, f64)>,
+    map: &BlurMapInput,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Detected, LensError> {
+    let wp = work_plane(plane);
+    let (w, h) = (wp.w, wp.h);
+    let n = w * h;
+    let hd = 0.5 * ((w * w + h * h) as f64).sqrt();
+    let r_min_px = (B_MIN * hd).max(RADIUS_FLOOR_PX);
+    let r_max_px = B_CAP * hd * 1.3;
+    if w < 16 || h < 16 {
+        return Ok(Detected {
+            w,
+            h,
+            b: vec![0.0; n],
+            conf: vec![0.0; n],
+            balls: Vec::new(),
+            edges: 0,
+            noise_v: 0.0015,
+            hd,
+            reduce: wp.reduce,
+        });
+    }
+    let v: Vec<f32> = wp.y.iter().map(|&y| y.max(0.0).sqrt()).collect();
+    let noise_v = noise_sigma(&v, w, h);
+    drop(v);
+    if cancel() {
+        return Err(LensError::Cancelled);
+    }
+    let (b_hat, b_low) = map.resample(w, h);
+    let anchor = anchor_mask(focus, w, h, hd);
+    let mut conf = vec![0.0f32; n];
+    let mut r_est = vec![0.0f64; n];
+    let mut sharp = vec![false; n];
+    let mut ev_w = vec![0.0f32; n];
+    let mut ev_s = vec![0.0f32; n];
+    let mut valid_cells = 0usize;
+    for i in 0..n {
+        let (bh, bl) = (f64::from(b_hat[i]), f64::from(b_low[i]));
+        if bl >= MAP_VALID_BMIN * B_MIN {
+            conf[i] = MAP_CONFIDENT;
+            r_est[i] = bh * hd;
+            ev_w[i] = MAP_EVIDENCE_WEIGHT;
+            ev_s[i] = MAP_EVIDENCE_WEIGHT * libm::log(r_est[i].max(1e-3)) as f32;
+            valid_cells += 1;
+        } else if bh < B_MIN {
+            conf[i] = MAP_CONFIDENT;
+            sharp[i] = true;
+        } else {
+            conf[i] = MAP_UNSURE;
+        }
+    }
+    let ev_fine = vec![0.0f32; n];
+    let balls = find_balls(
+        &BallInput {
+            w,
+            h,
+            rgb: [&wp.rgb[0], &wp.rgb[1], &wp.rgb[2]],
+            y: &wp.y,
+            noise_v,
+            r_max_px,
+            ev_w: &ev_w,
+            ev_s: &ev_s,
+            ev_fine: &ev_fine,
+            anchor: &anchor,
+            sharp: &sharp,
+            max_sharp_density: MAP_SHARP_MAX,
+        },
+        cancel,
+    )?;
+    let ball_perimeters: f64 = balls.iter().map(|b| 2.0 * std::f64::consts::PI * b.r).sum();
+    if cancel() {
+        return Err(LensError::Cancelled);
+    }
+    let mut forced = vec![false; n];
+    let b = stamp_balls_and_finish(
+        &balls,
+        &mut r_est,
+        &mut conf,
+        &mut forced,
+        &anchor,
+        (w, h),
+        hd,
+        r_min_px,
+    );
+    Ok(Detected {
+        w,
+        h,
+        b,
+        conf,
+        balls,
+        edges: valid_cells + ball_perimeters as usize,
         noise_v,
         hd,
         reduce: wp.reduce,

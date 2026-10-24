@@ -55,6 +55,23 @@ impl LensPlanes {
         focus: Option<(f64, f64)>,
         cancel: &dyn Fn() -> bool,
     ) -> Result<Self, LensError> {
+        Self::build_with_map(plan, lens_plane, focus, None, cancel)
+    }
+
+    /// [`LensPlanes::build`] with the blur map of another source (the learned model) in place of the classical
+    /// detector's edge measure: see [`BlurMapInput`]. The balls, the subject anchor and the cleaning of the map
+    /// are the same. With `None` it is `build`.
+    ///
+    /// # Errors
+    ///
+    /// As [`LensPlanes::build`].
+    pub fn build_with_map(
+        plan: &LensPlan,
+        lens_plane: &ImageRef,
+        focus: Option<(f64, f64)>,
+        map: Option<&crate::l1::BlurMapInput>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Self, LensError> {
         if cancel() {
             return Err(LensError::Cancelled);
         }
@@ -108,7 +125,7 @@ impl LensPlanes {
         // L1 detects the blur already in the photo, only when a slider asks to reshape bokeh.
         let bokeh = if plan.needs_blur_map() {
             Some(crate::l1::BokehPlanes::build(
-                plan, lens_plane, focus, cancel,
+                plan, lens_plane, focus, map, cancel,
             )?)
         } else {
             None
