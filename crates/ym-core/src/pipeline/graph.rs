@@ -2832,16 +2832,35 @@ impl<'a> Job<'a> {
         Ok(plan)
     }
 
-    /// The geometry of the settings on this file.
-    pub fn geometry(&self) -> Geometry {
+    /// The geometry of the settings on this file, without the lens's bend: orientation, turns,
+    /// straightening and crop. Enough for the sides of the canvas and the size of the output, and
+    /// what the lens's own plan is made from.
+    pub fn base_geometry(&self) -> Geometry {
         Geometry::new(self.src.exif_orientation(), &self.src.settings)
+    }
+
+    /// The geometry of the settings on this file, through the lens's bend (L4, `docs/21` section 4)
+    /// when the photo has one: Anamorphic above 0, or Edges above 0 on a lens with distortion.
+    ///
+    /// The bend and its zoom are made once per photo from the lens plan, on the full-resolution
+    /// canvas, so every scale and every tile of the photo shares one map. Without a bend this is
+    /// [`Job::base_geometry`], and its `Debug` text (which the frame and display keys carry) names
+    /// the bend, so a slider move is a new key.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Job::lens_ctx`].
+    pub fn geometry(&mut self) -> Result<Geometry, RenderError> {
+        let base = self.base_geometry();
+        let warp = self.lens_ctx()?.and_then(|ctx| ctx.warp);
+        Ok(base.with_warp(warp))
     }
 
     /// The size of the final image at full resolution: the lens-cropped image, turned, straightened
     /// and cropped.
     pub fn final_size(&mut self) -> Result<(usize, usize), RenderError> {
         let plan = self.plan()?;
-        Ok(self.geometry().output_size(plan.out_w, plan.out_h))
+        Ok(self.base_geometry().output_size(plan.out_w, plan.out_h))
     }
 }
 

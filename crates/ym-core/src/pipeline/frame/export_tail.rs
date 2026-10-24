@@ -485,14 +485,20 @@ impl Renderer {
         }
         let tile = opts.full_tile_px.max(64);
         let plan = job.plan()?;
-        let baked = job.geometry().at_full_resolution();
+        let baked = job.geometry()?.at_full_resolution();
         let (fw, fh) = baked.output_size(plan.out_w, plan.out_h);
         let (ow, oh) = request.size.output_dimensions(fw as u32, fh as u32);
         let out = (ow as usize, oh as usize);
         // The reservation is the working set of one tile, not the picture: the frame is on the
         // device, a slab at a time (the CPU path reserves `fw * fh * 12` bytes for its host frame).
-        // The raw stages' halo, and the lens's (0 without a lens).
-        let halo_allowance = 160usize + job.lens_halo()?;
+        // The raw stages' halo, and the lens's (0 without a lens), and the lens's bend: a tile's source
+        // rectangle is the box of its bent edge, a fraction of the tile larger.
+        let bend = if baked.warp.is_some() {
+            tile / 4 + 8
+        } else {
+            0
+        };
+        let halo_allowance = 160usize + job.lens_halo()? + bend;
         let per_px = 12u64 * 12; // twelve f32 planes of working set per tile pixel, a generous bound
         let working = ((tile + halo_allowance) as u64).pow(2) * per_px;
         let frame_extra = job.frame()?.extra_bytes() as u64;

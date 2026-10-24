@@ -135,6 +135,30 @@ impl LensWarp {
         (self.width, self.height)
     }
 
+    /// `mu`: the attachment's edge stretch, `x2 = x1 (1 + mu x1^2)`.
+    #[must_use]
+    pub fn mu(&self) -> f64 {
+        self.bend.mu
+    }
+
+    /// `beta`: the attachment's bowing of horizontal lines, `y2 = y1 (1 - beta x1^2)`.
+    #[must_use]
+    pub fn beta(&self) -> f64 {
+        self.bend.beta
+    }
+
+    /// `e k1`: the lens distortion's `r^2` coefficient, already scaled by Edges.
+    #[must_use]
+    pub fn distortion_k1(&self) -> f64 {
+        self.bend.d1
+    }
+
+    /// `e k2`: the lens distortion's `r^4` coefficient, already scaled by Edges.
+    #[must_use]
+    pub fn distortion_k2(&self) -> f64 {
+        self.bend.d2
+    }
+
     /// The same map for a canvas of another size (a reduced view), with the same zoom.
     #[must_use]
     pub fn rescaled(&self, canvas_width: f64, canvas_height: f64) -> LensWarp {

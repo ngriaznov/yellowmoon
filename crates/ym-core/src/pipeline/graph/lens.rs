@@ -41,7 +41,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
+use ym_gpu::cpu::sampler::SamplerWarp;
 use ym_gpu::cpu::{Placement, Rect, RgbImage};
+use ym_lens::consts::NEWTON_STEPS;
 use ym_lens::{
     Axis, CameraResponse, FrameInfo, ImageRef, LensAmounts, LensError, LensPlan, LensPlanes,
     PixelRect, ReshapeReason, ReshapeReport, apply, halo_px,
@@ -73,6 +75,10 @@ pub(crate) struct LensCtx {
     pub key: String,
     /// The camera's focus point as fractions of the auto-cropped frame, in the buffer's orientation.
     pub focus: Option<(f64, f64)>,
+    /// L4: the anamorphic bend, the lens's distortion and the zoom, made once for the photo on the
+    /// full-resolution canvas (the zoom is the same at every scale), or `None` when the plan has
+    /// neither. [`Job::geometry`] puts it in the geometry.
+    pub warp: Option<SamplerWarp>,
     /// Plain-words notes every request that uses the plan carries.
     notes: Vec<String>,
 }
@@ -200,11 +206,8 @@ impl Job<'_> {
         let raw_plan = self.plan()?;
         // The anamorphic axis is the canvas's horizontal: the buffer's x unless the quarter turns
         // swap the sides, then its y.
-        let axis = if self.geometry().swaps_sides() {
-            Axis::Y
-        } else {
-            Axis::X
-        };
+        let base = self.base_geometry();
+        let axis = if base.swaps_sides() { Axis::Y } else { Axis::X };
         let f_number = self
             .src
             .raw
@@ -256,10 +259,25 @@ impl Job<'_> {
         };
         let plan = LensPlan::new(&library, &amounts, frame, &camera).map_err(lens_error)?;
         let key = format!("{}|focus{:?}", plan.key(), focus_bits(focus));
+        // L4 on the full-resolution canvas: the zoom is fitted here, once, and reduced canvases
+        // reuse it (the geometry's grids take their own canvas size).
+        let (canvas_w, canvas_h) = base.canvas_size(raw_plan.out_w, raw_plan.out_h);
+        let l4 = plan.warp(canvas_w as f64, canvas_h as f64);
+        let warp = (!l4.is_identity()).then(|| {
+            SamplerWarp::new(
+                l4.mu(),
+                l4.beta(),
+                l4.distortion_k1(),
+                l4.distortion_k2(),
+                l4.zoom(),
+                NEWTON_STEPS as u8,
+            )
+        });
         let ctx = Arc::new(LensCtx {
             plan,
             key,
             focus,
+            warp,
             notes,
         });
         lock(&self.g.state).lens_ctx = Some((inputs, Arc::clone(&ctx)));

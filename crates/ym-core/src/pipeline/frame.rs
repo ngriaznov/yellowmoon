@@ -87,7 +87,7 @@ use self::device::{
 };
 pub use self::export_tail::{BAND_DEPTH, GpuBands, TailRequest};
 use super::color::{GradePlan, PhotoSource};
-use super::geometry::{Affine, Grid, oriented_to_sensor, sensor_to_oriented};
+use super::geometry::{Affine, Geometry, Grid, oriented_to_sensor, sensor_to_oriented};
 use super::graph::{
     Backing, ComputeDevice, Job, PartSource, Pixels, RenderReport, Renderer, ResidentPart,
     TileImage,
@@ -1930,7 +1930,7 @@ fn band_split(
     };
     let plan = job.plan()?;
     let image = job.final_size()?;
-    let geometry = job.geometry().at_full_resolution();
+    let geometry = job.geometry()?.at_full_resolution();
     // The camera RGB one band reads: the view's own rows, or with output sharpening the band grown
     // by the stage's receptive field (the frame the band's colour pass makes), or the 100 % picture
     // under a magnified band, which must fit one binding itself, with the band's RGBA8.
@@ -2003,11 +2003,12 @@ fn display_key(
     let params = job.params()?;
     // The sharpening amount is not part of it: the frame is what the amount is applied to. The
     // halo is (it is what the view was grown by).
+    let geometry = job.geometry()?;
     let mut key = format!(
         "display|{:?}|{:?}|{:?}|{:?}|{}x{}|{:?}|{}|{}",
         params.key(),
         grade.key,
-        job.geometry(),
+        geometry,
         grown.view_to_final,
         grown.out_w,
         grown.out_h,
@@ -2094,7 +2095,7 @@ fn prepare_view_with(
     pixels: bool,
 ) -> Result<PreparedView, RenderError> {
     let plan = job.plan()?;
-    let geom = job.geometry();
+    let geom = job.geometry()?;
     let (w, h) = (spec.out_w, spec.out_h);
     // A camera-processed file has no mosaic, so any scale works; the limit that keeps a reduced
     // image at least a few pixels across applies to both.
@@ -2312,11 +2313,12 @@ fn frame_key(
     sharpening: Option<&ViewSharpening>,
 ) -> Result<String, RenderError> {
     let params = job.params()?;
+    let geometry = job.geometry()?;
     let mut key = format!(
         "{:?}|{:?}|{:?}|{:?}|{}x{}|{:?}|{}|{}",
         params.key(),
         grade.key,
-        job.geometry(),
+        geometry,
         spec.view_to_final,
         spec.out_w,
         spec.out_h,
@@ -2357,6 +2359,23 @@ impl Renderer {
         cancel: &CancelToken,
     ) -> Result<(usize, usize), RenderError> {
         Job::new(self, src, cancel)?.final_size()
+    }
+
+    /// The geometry the photo is sampled with: the camera's orientation, the user's turns, the
+    /// straighten angle and the crop, through the lens's bend when the photo has one (L4, `docs/21`
+    /// section 4; [`Geometry::warp`]). The bend is the one every view and export of the photo uses:
+    /// made once on the full-resolution canvas, so a reduced canvas takes the same zoom. For checks and
+    /// diagnostics, like [`Renderer::camera_region`].
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] when the photo's data or its lens cannot be prepared.
+    pub fn geometry(
+        &self,
+        src: &PhotoSource,
+        cancel: &CancelToken,
+    ) -> Result<Geometry, RenderError> {
+        Job::new(self, src, cancel)?.geometry()
     }
 
     /// The frame of a viewport state: the photo in the cell at the zoom and pan of `state`, in
@@ -2474,7 +2493,7 @@ impl Renderer {
             },
         };
         let grid = job
-            .geometry()
+            .geometry()?
             .at_full_resolution()
             .grid_from((plan.out_w, plan.out_h), to_final);
         let Some((x0, y0, x1, y1)) = grid.source_bounds(0, 0, dw, dh, 3) else {
@@ -2656,7 +2675,7 @@ impl Renderer {
         let Some((fx, fy)) = state.final_point_at(image, css) else {
             return Ok(None);
         };
-        let geom = job.geometry();
+        let geom = job.geometry()?;
         let Some(o) = geom.final_to_oriented((plan.out_w, plan.out_h), fx, fy) else {
             return Ok(None);
         };
@@ -2789,7 +2808,7 @@ impl Renderer {
         }
         let plan = job.plan()?;
         // Which geometry the target asks for (see [`FullTarget`]).
-        let baked = job.geometry().at_full_resolution();
+        let baked = job.geometry()?.at_full_resolution();
         let (geom, window) = match request.target {
             FullTarget::DisplayLinear(_) => (baked, None),
             FullTarget::DngLinearAwg4 if baked.is_unrotated() => {
@@ -2816,8 +2835,14 @@ impl Renderer {
         // an export runs cannot move half of it onto another device).
         let tile = job.options().full_tile_px.max(64);
         // The raw stages' halo, and the lens's (`docs/21` section 3: the raw region of a tile is grown by
-        // it; 0 without a lens).
-        let halo_allowance = 160usize + job.lens_halo()?;
+        // it; 0 without a lens), and the lens's bend: a tile's source rectangle is the box of its bent
+        // edge, a fraction of the tile larger (the shrink at the sides is at most 1.25: a quarter).
+        let bend = if baked.warp.is_some() {
+            tile / 4 + 8
+        } else {
+            0
+        };
+        let halo_allowance = 160usize + job.lens_halo()? + bend;
         let per_px = 12u64 * 12; // twelve f32 planes of working set per tile pixel, a generous bound
         let working = ((tile + halo_allowance) as u64).pow(2) * per_px;
         let frame_extra = job.frame()?.extra_bytes() as u64;

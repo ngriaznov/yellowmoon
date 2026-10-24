@@ -18,6 +18,20 @@
 // the exact interval of columns the CPU's f64 predicate accepts (`inside`), so the mask equals the
 // CPU's bit for bit and no rounding can move a pixel across the edge of the photo.
 //
+// The lens's bend (L4, docs/21 section 4). A grid may carry the anamorphic bend, the lens's own
+// distortion and the zoom, which break the separability above: the photo position a canvas position
+// reads is F^-1(c / z), a non-affine map. The tables still give the position the affine chain gives
+// without the bend, exactly, as an integer and a fraction. `warp_pos` turns that position into the
+// canvas's offset from its centre in half-diagonal units (the integer part exact, so there is no
+// f32 of order 1e4: D4), finds the photo's offset with the CPU's Newton steps, and adds only the
+// *displacement* the bend makes (a few percent of the half-diagonal at most) to the exact position.
+// The Newton iteration is written for e = x - t, the offset from the start, so that F(x) - t is e
+// plus the small terms F(x) - x, and nothing of order 1 is ever subtracted from something of order 1.
+// An error in the input offset (about 6e-8 of the half-diagonal) therefore reaches the position
+// scaled by the displacement's slope (0.1 to 0.2), not whole. The result is clamped to the buffer, as
+// the CPU clamps the sensor fraction. Everything is a function of the absolute column and row
+// through the tables, so a tile and the whole frame agree bit for bit (D5).
+//
 // The arithmetic of the samples follows the CPU port operation by operation: the Catmull-Rom
 // weights, `acc += wy_k (wx_0 r_0 + wx_1 r_1 + wx_2 r_2 + wx_3 r_3)` row by row, the bilinear blend
 // and the division of the box by the number of sub-samples that fell inside.
@@ -25,12 +39,25 @@
 struct SamplerU {
     dims: vec4<u32>,    // x: window width, y: window height, z: output stride (even), w: output plane length
     src: vec4<u32>,     // x: source width, y: source height, z: source stride, w: source plane length
-    mode: vec4<u32>,    // x: kernel (0 copy, 1 Catmull-Rom, 2 box), y: sub-samples per axis (1 unless box)
+    mode: vec4<u32>,    // x: kernel (0 copy, 1 Catmull-Rom, 2 box), y: sub-samples per axis (1 unless box), z: 1 with a warp
+    wk: vec4<u32>,      // x: Newton steps, y: 1 when the anamorphic axis is the canvas's y
+    wa: vec4<f32>,      // mu, beta, d1, d2
+    wb: vec4<f32>,      // x: zoom, y: zoom - 1, z: half-diagonal (canvas px), w: 1 / half-diagonal
+    sl: vec4<f32>,      // canvas displacement -> buffer displacement, row-major (s00, s01, s10, s11)
+    si: vec4<f32>,      // its inverse, row-major
+    ci: vec4<i32>,      // x, y: integer part of the canvas centre's buffer position, relative to the source window
+    cf: vec4<f32>,      // x, y: its fraction
+    lim: vec4<i32>,     // x0, y0, x1, y1: the buffer, relative to the source window (the clamp)
 };
 
 struct PosEntry {
     i: vec2<i32>,       // integer parts of the contribution to the source x and y
     f: vec2<f32>,       // fractions, in [0, 1)
+};
+
+struct Pos {
+    i: vec2<i32>,
+    f: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> su: SamplerU;
@@ -111,6 +138,81 @@ fn sample_bil(c: u32, pi: vec2<i32>, pf: vec2<f32>) -> f32 {
     return a * (1.0 - fy) + b * fy;
 }
 
+// The position (pi + pf) the chain gives without the bend, moved by the bend; see the notes above.
+fn warp_pos(pi: vec2<i32>, pf: vec2<f32>) -> Pos {
+    // The canvas centre to this position, in buffer pixels: the integers apart from the fractions.
+    let di = vec2<f32>(pi - su.ci.xy);
+    let df = pf - su.cf.xy;
+    // In canvas pixels (the inverse of the dihedral map), then in half-diagonal units.
+    let ni = vec2<f32>(su.si.x * di.x + su.si.y * di.y, su.si.z * di.x + su.si.w * di.y);
+    let nf = vec2<f32>(su.si.x * df.x + su.si.y * df.y, su.si.z * df.x + su.si.w * df.y);
+    var n = ni * su.wb.w + nf * su.wb.w;
+    if (su.wk.y != 0u) {
+        n = n.yx;
+    }
+    let t = n / su.wb.x;
+    let mu = su.wa.x;
+    let beta = su.wa.y;
+    let d1 = su.wa.z;
+    let d2 = su.wa.w;
+    var e = vec2<f32>(0.0);
+    for (var it = 0u; it < su.wk.x; it = it + 1u) {
+        let x = t.x + e.x;
+        let y = t.y + e.y;
+        let r2 = x * x + y * y;
+        let gm = d1 * r2 + d2 * r2 * r2;
+        let g = 1.0 + gm;
+        let gp = d1 + 2.0 * d2 * r2;
+        let x1 = x * g;
+        let y1 = y * g;
+        let xx = x1 * x1;
+        // F(x) - x, and the residual F(x) - t = e + (F(x) - x).
+        let rx = e.x + (x * gm + mu * x1 * xx);
+        let ry = e.y + (y * gm - beta * y1 * xx);
+        let a = g + 2.0 * x * x * gp;
+        let b = 2.0 * x * y * gp;
+        let d = g + 2.0 * y * y * gp;
+        let dfx_dx1 = 1.0 + 3.0 * mu * xx;
+        let dfy_dx1 = -2.0 * beta * x1 * y1;
+        let dfy_dy1 = 1.0 - beta * xx;
+        let j00 = dfx_dx1 * a;
+        let j01 = dfx_dx1 * b;
+        let j10 = dfy_dx1 * a + dfy_dy1 * b;
+        let j11 = dfy_dx1 * b + dfy_dy1 * d;
+        let det = j00 * j11 - j01 * j10;
+        if (det != 0.0) {
+            e = e - vec2<f32>((j11 * rx - j01 * ry) / det, (-j10 * rx + j00 * ry) / det);
+        }
+    }
+    // The photo's offset is t + e, the canvas's n = z t: the displacement is e - (z - 1) t.
+    var disp = e - su.wb.y * t;
+    if (su.wk.y != 0u) {
+        disp = disp.yx;
+    }
+    let dc = disp * su.wb.z;
+    let db = vec2<f32>(su.sl.x * dc.x + su.sl.y * dc.y, su.sl.z * dc.x + su.sl.w * dc.y);
+    let moved = pf + db;
+    let fl = floor(moved);
+    var qi = pi + vec2<i32>(fl);
+    var qf = moved - fl;
+    // The buffer's edge: the CPU clamps the position to it.
+    if (qi.x < su.lim.x) {
+        qi.x = su.lim.x;
+        qf.x = 0.0;
+    } else if (qi.x >= su.lim.z) {
+        qi.x = su.lim.z;
+        qf.x = 0.0;
+    }
+    if (qi.y < su.lim.y) {
+        qi.y = su.lim.y;
+        qf.y = 0.0;
+    } else if (qi.y >= su.lim.w) {
+        qi.y = su.lim.w;
+        qf.y = 0.0;
+    }
+    return Pos(qi, qf);
+}
+
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = gid.x;
@@ -128,8 +230,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             gone = false;
             let ce = cols[x];
             let re = rows[y];
-            let pi = ce.i + re.i;
-            let pf = ce.f + re.f;
+            var pi = ce.i + re.i;
+            var pf = ce.f + re.f;
+            if (su.mode.z != 0u) {
+                let moved = warp_pos(pi, pf);
+                pi = moved.i;
+                pf = moved.f;
+            }
             if (kernel == 0u) {
                 let ix = clamp(pi.x + i32(floor(pf.x)), 0, i32(su.src.x) - 1);
                 let iy = clamp(pi.y + i32(floor(pf.y)), 0, i32(su.src.y) - 1);
@@ -147,8 +254,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if (i32(x) >= iv.x && i32(x) <= iv.y) {
                     let ce = cols[x * taps + i];
                     let re = rows[y * taps + j];
-                    let pi = ce.i + re.i;
-                    let pf = ce.f + re.f;
+                    var pi = ce.i + re.i;
+                    var pf = ce.f + re.f;
+                    if (su.mode.z != 0u) {
+                        let moved = warp_pos(pi, pf);
+                        pi = moved.i;
+                        pf = moved.f;
+                    }
                     acc = acc + vec3<f32>(sample_bil(0u, pi, pf), sample_bil(1u, pi, pf), sample_bil(2u, pi, pf));
                     count = count + 1u;
                 }

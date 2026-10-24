@@ -24,6 +24,20 @@
 //! every row and sub-sample ([`SamplerGrid::inside_rows`]), so the mask equals the CPU's bit for
 //! bit.
 //!
+//! # The lens's bend
+//!
+//! A grid with a [`SamplerWarp`](crate::cpu::sampler::SamplerWarp) (L4, `docs/21` section 4) is not
+//! separable: the photo position a canvas position reads is the root of a nonlinear map. The tables
+//! stay what they are (the chain *without* the warp, exact), and the kernel adds the warp's
+//! displacement to that position: it takes the canvas offset from the centre in half-diagonal units
+//! (the integer part of the offset exact), runs the CPU's Newton steps in `f32` on the offset from the
+//! start so that nothing of order 1 is subtracted from something of order 1, and moves the exact
+//! position by the displacement (a few percent of the half-diagonal at most). The uniform block
+//! carries the coefficients, the zoom, the dihedral map's linear part ([`SamplerGrid::warp_frame`]),
+//! the canvas centre and the clamp to the buffer. Positions then differ from the CPU's by an `f32`
+//! rounding of the displacement, about 1e-5 px at 50 MP, and a pixel is still a function of the
+//! absolute column and row only, so a tile and the whole frame agree bit for bit.
+//!
 //! # Entry points
 //!
 //! [`encode_sample`] records the pass into a [`PassList`] and returns the
@@ -34,7 +48,7 @@ use bytemuck::{Pod, Zeroable};
 
 use super::shader::KernelId;
 use super::util::{STORAGE_IN, even};
-use crate::cpu::sampler::{Affine2, Kernel, Sampled, SamplerGrid};
+use crate::cpu::sampler::{Affine2, Kernel, Sampled, SamplerGrid, SamplerWarp};
 use crate::cpu::tiling::Rect;
 use crate::cpu::{Placement, RgbImage};
 use crate::device::{GpuContext, GpuError};
@@ -42,13 +56,72 @@ use crate::image::GpuImage;
 use crate::pool::PooledBuffer;
 use crate::stream::{PassList, upload_bytes};
 
-/// The uniform block of `sampler.wgsl` (`SamplerU`): 48 bytes.
+/// The uniform block of `sampler.wgsl` (`SamplerU`): 176 bytes. The last seven members are the lens's
+/// bend and are zero without one.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Default)]
 struct SamplerU {
     dims: [u32; 4],
     src: [u32; 4],
+    /// Kernel, sub-samples per axis, 1 with a warp.
     mode: [u32; 4],
+    /// Newton steps, 1 when the anamorphic axis is the canvas's y.
+    wk: [u32; 4],
+    /// `mu`, `beta`, `d1`, `d2`.
+    wa: [f32; 4],
+    /// Zoom, zoom - 1, half-diagonal in canvas pixels, its inverse.
+    wb: [f32; 4],
+    /// Canvas displacement to buffer displacement, row-major.
+    sl: [f32; 4],
+    /// Its inverse, row-major.
+    si: [f32; 4],
+    /// Integer part of the canvas centre's buffer position, relative to the source window.
+    ci: [i32; 4],
+    /// Its fraction.
+    cf: [f32; 4],
+    /// The buffer's corners relative to the source window: `x0, y0, x1, y1`.
+    lim: [i32; 4],
+}
+
+impl SamplerU {
+    /// The bend's part of the block for `grid`, whose source window starts at `origin`.
+    fn set_warp(&mut self, grid: &SamplerGrid, origin: (usize, usize)) {
+        let Some(w) = &grid.warp else {
+            return;
+        };
+        let frame = grid.warp_frame();
+        let h = SamplerWarp::half_diagonal(grid.canvas);
+        let (ox, oy) = (origin.0 as f64, origin.1 as f64);
+        let (cxi, cxf) = split(frame.centre.0 - ox);
+        let (cyi, cyf) = split(frame.centre.1 - oy);
+        self.mode[2] = 1;
+        self.wk = [u32::from(w.steps), u32::from(w.axis_y), 0, 0];
+        self.wa = [w.mu as f32, w.beta as f32, w.d1 as f32, w.d2 as f32];
+        self.wb = [
+            w.zoom as f32,
+            (w.zoom - 1.0) as f32,
+            h as f32,
+            (1.0 / h) as f32,
+        ];
+        let m = |a: [[f64; 2]; 2]| {
+            [
+                a[0][0] as f32,
+                a[0][1] as f32,
+                a[1][0] as f32,
+                a[1][1] as f32,
+            ]
+        };
+        self.sl = m(frame.linear);
+        self.si = m(frame.inverse);
+        self.ci = [cxi, cyi, 0, 0];
+        self.cf = [cxf, cyf, 0.0, 0.0];
+        self.lim = [
+            (-ox) as i32,
+            (-oy) as i32,
+            (grid.buffer.0 - ox) as i32,
+            (grid.buffer.1 - oy) as i32,
+        ];
+    }
 }
 
 /// One entry of the position tables: an integer part and a fraction in `[0, 1)` for the source x and
@@ -179,7 +252,7 @@ pub fn encode_sample(
     let rows_buf = table("sampler rows", bytemuck::cast_slice(&rows))?;
     let inside_buf = table("sampler inside", bytemuck::cast_slice(&inside))?;
     let out = GpuImage::alloc(ctx, "sampled", w, h, 4, Placement::whole(w, h))?;
-    let u = SamplerU {
+    let mut u = SamplerU {
         dims: [
             w as u32,
             h as u32,
@@ -193,7 +266,9 @@ pub fn encode_sample(
             src.plane_len() as u32,
         ],
         mode: [kernel_code(kernel), taps as u32, 0, 0],
+        ..SamplerU::default()
     };
+    u.set_warp(grid, src_origin);
     let ub = passes.uniform("sampler uniform", &u)?;
     passes.dispatch(
         KernelId::Sampler,
@@ -274,10 +349,18 @@ mod tests {
         let naga::TypeInner::Struct { members, span } = &module.types[var.ty].inner else {
             panic!("su is not a struct");
         };
-        let fields: [(&str, usize); 3] = [
+        let fields: [(&str, usize); 11] = [
             ("dims", offset_of!(SamplerU, dims)),
             ("src", offset_of!(SamplerU, src)),
             ("mode", offset_of!(SamplerU, mode)),
+            ("wk", offset_of!(SamplerU, wk)),
+            ("wa", offset_of!(SamplerU, wa)),
+            ("wb", offset_of!(SamplerU, wb)),
+            ("sl", offset_of!(SamplerU, sl)),
+            ("si", offset_of!(SamplerU, si)),
+            ("ci", offset_of!(SamplerU, ci)),
+            ("cf", offset_of!(SamplerU, cf)),
+            ("lim", offset_of!(SamplerU, lim)),
         ];
         assert_eq!(members.len(), fields.len());
         for (member, (name, offset)) in members.iter().zip(fields) {

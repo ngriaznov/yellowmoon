@@ -232,6 +232,7 @@ mod tests {
                         angle_deg: s.angle_deg,
                         crop: f.rect,
                         pixel_exact: false,
+                        warp: None,
                     }
                     .at_full_resolution();
                     let out = geometry.output_size(w, h);
