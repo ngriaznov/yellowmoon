@@ -791,6 +791,95 @@ fn a_lens_is_the_same_file_through_the_app_the_options_and_a_settings_file() {
 }
 
 #[test]
+fn a_lens_is_the_same_picture_through_the_app_and_the_binary() {
+    // `docs/21` sections 9 and 14: the lens is deterministic, so the app's export and `ym render
+    // --lens vintage --flares 60 --edges 50 --anamorphic 50` write the same bytes, with the shipped
+    // lens data. A 640 x 480 photo is a frame whose long edge is under 1024 px (its lens plane is the
+    // frame) and whose tiles cross the 512 px line. The JPEG is the finished picture, the DNG carries
+    // the lens in its raw pixels and in its preview; both must also differ from the same export
+    // without a lens, or the test would pass for a lens that does nothing.
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("DSC00001.ARW", 640, 480, 11);
+    let app = App::open(&[&arw]);
+    let vintage = ym_core::settings::LensPatch {
+        kind: Some(ym_core::settings::LensKind::Vintage),
+        flares: Some(60.0),
+        edges: Some(50.0),
+        anamorphic: Some(50.0),
+    };
+    let off: Vec<(&str, Vec<u8>)> = ["jpeg", "dng"]
+        .into_iter()
+        .map(|name| {
+            let format = if name == "dng" {
+                FormatKind::Dng
+            } else {
+                FormatKind::Jpeg
+            };
+            let options = ExportOptions {
+                format,
+                ..ExportOptions::default()
+            };
+            let files = app.export(options, &sb.root().join(format!("off-{name}")));
+            (name, bytes(&files[0]))
+        })
+        .collect();
+    app.core
+        .session
+        .update_settings(
+            app.photo,
+            &SettingsPatch {
+                lens: Some(vintage),
+                ..SettingsPatch::default()
+            },
+        )
+        .expect("patch");
+    for (name, plain) in off {
+        let format = if name == "dng" {
+            FormatKind::Dng
+        } else {
+            FormatKind::Jpeg
+        };
+        let options = ExportOptions {
+            format,
+            ..ExportOptions::default()
+        };
+        let from_app = app.export(options, &sb.root().join(format!("app-{name}")));
+        let from_cli = cli_export(
+            &sb,
+            &[&arw],
+            &[
+                "--format",
+                name,
+                "--lens",
+                "vintage",
+                "--flares",
+                "60",
+                "--edges",
+                "50",
+                "--anamorphic",
+                "50",
+            ],
+            &sb.root().join(format!("cli-{name}")),
+        );
+        assert_same_files(&from_app, &from_cli, &format!("lens, {name}"));
+        assert!(
+            bytes(&from_app[0]) != plain,
+            "{name}: the lens changed nothing in the file"
+        );
+    }
+    // The file says which lens data made it (`ym:Models`, `docs/09`).
+    let jpeg = app.export(
+        ExportOptions::default(),
+        &sb.root().join("app-models"),
+    );
+    let text = String::from_utf8_lossy(&bytes(&jpeg[0])).into_owned();
+    assert!(
+        text.contains("lens vintage ") && text.contains(", anamorphic "),
+        "ym:Models names the lens data"
+    );
+}
+
+#[test]
 fn the_settings_an_export_records_reproduce_the_file() {
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");

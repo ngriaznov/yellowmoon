@@ -2364,8 +2364,8 @@ pub struct ThumbnailReady {
     pub url: String,
 }
 
-/// `render_stats { ms, path, space, zoom_percent, fit_percent }`: the header's status text and the
-/// zoom the last viewport frame was drawn at.
+/// `render_stats { ms, path, space, zoom_percent, fit_percent, lens }`: the header's status text, the
+/// zoom the last viewport frame was drawn at and what the lens did with the photo's bokeh.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type, Event)]
 #[tauri_specta(event_name = "render_stats")]
 pub struct RenderStats {
@@ -2380,6 +2380,28 @@ pub struct RenderStats {
     pub zoom_percent: Option<Num>,
     /// The zoom at which the whole final image fits the cell, in percent and not rounded.
     pub fit_percent: Option<Num>,
+    /// What the lens's bokeh reshaping did for the photo (`docs/21` section 10), once its planes
+    /// exist; `None` without a lens. The Lens card's note reads it.
+    pub lens: Option<LensStats>,
+}
+
+/// Why a photo's bokeh was left as it is (`render_stats.lens.reason`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LensReshapeReason {
+    /// The sliders did not ask for it.
+    NotAsked,
+    /// The photo has little out-of-focus background.
+    LittleBlur,
+}
+
+/// What the lens did with the photo's bokeh (`render_stats.lens`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct LensStats {
+    /// True when the bokeh was reshaped.
+    pub reshaped: bool,
+    /// Why it was not, when it was not.
+    pub reason: Option<LensReshapeReason>,
 }
 
 /// `export_progress { job_id, file, done, total, file_percent, error, skipped }`.

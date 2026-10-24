@@ -79,7 +79,7 @@ Every JPEG, TIFF and PNG embeds an ICC profile for its colour space: sRGB (IEC 6
 | `ym:Profile`, `ym:ProfileVersion`, `ym:ProfileMatch` | `sony-ilce-7rm4`, `1.0.0`, `default` |
 | `ym:Look`, `ym:LookSHA256`, `ym:LookIntensity` | `arri:3000:…`, `…`, `100` |
 | `ym:DisplayTransform` | `aces2-sdr100-p3lim` or `arri-display:…` |
-| `ym:Models` | `jdd 1.2.0 (sha256…)` |
+| `ym:Models` | `jdd 1.2.0 (sha256…)`; with a lens (`docs/21`) `lens vintage 1 (sha256:0123456789ab)`, and `, anamorphic 1 (sha256:…)` after it when Anamorphic is above 0: the lens, its data version and the first 12 hex digits of the SHA-256 of its `lens.json` (and of `anamorphic.json`) from the shipped `data/lenses/SHA256SUMS`, so a file says which lens data made it. Entries are joined with `, `. Absent without a lens (all three amounts at 0, or no lens data), and while the classical demosaic is the only model. |
 | `ym:Auto` | `rule` or `apple`: which Auto made the photo's automatic values (`docs/19-apple-auto.md` section 9; `apple` when they came from an Apple Auto answer, the photo's or its burst's, even if the user then set all four by hand) |
 | `ym:AppleAuto` | only when Apple Auto was on for the photo: compact JSON, keys sorted, `{"instructions":"default","instructions_sha256":"…","model":"AFM 3 Core","os":"27.0.1 (27A404)","plan":"…","prompt":3,"result":"answered","scene":"…","steps":{"blacks":null,"contrast":1,"exposure":1,…},"table":2}`, or `"result":"failed"` with `"reason"` (`timeout`, `rate_limited`, …) and no steps |
 | `ym:Settings` | compact JSON of the resolved DevelopSettings (a `serde_json::Value`, keys sorted), in which Auto contrast and saturation are pinned to the numbers they resolved to, as Auto exposure is |

@@ -103,12 +103,31 @@ fn device(gpu: &Arc<Gpu>) -> Renderer {
     .expect("render thread")
 }
 
-/// Patches of many levels, the brightest above the sensor's clip, with a little noise: edges for the
-/// field optics and light for the flares.
+/// Patches of many levels below the flares' knee (half the clip level), with a little noise: edges for
+/// the field optics; and three small lights the sensor clipped, for the flares (a photo's lights are
+/// small and few, and a big bright patch would be hundreds of sources).
 fn developed(w: u32, h: u32) -> Developed {
     let scene =
-        Scene::new(w, h, light(PROFILE, 5500.0), Layout::Patchwork, 1.6).noise(2e-4, 1e-6);
-    Developed::new(&scene, MODEL)
+        Scene::new(w, h, light(PROFILE, 5500.0), Layout::Patchwork, 0.35).noise(2e-4, 1e-6);
+    let mut mosaic = scene.mosaic();
+    let scale = f64::from(w) / 800.0;
+    for (fx, fy, radius) in [(0.22, 0.30, 6.0), (0.71, 0.24, 9.0), (0.58, 0.78, 4.0)] {
+        let (cx, cy, r) = (fx * f64::from(w), fy * f64::from(h), radius * scale);
+        for y in 0..h {
+            for x in 0..w {
+                let d = (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy);
+                if d <= r {
+                    mosaic[(y * w + x) as usize] = scene.white_level as u16;
+                }
+            }
+        }
+    }
+    let dir = tempfile::tempdir().expect("temp dir");
+    scene
+        .builder(MODEL)
+        .write_to(&dir.path().join("DSC00001.ARW"), &mosaic)
+        .expect("write the synthetic ARW");
+    Developed::open(dir)
 }
 
 fn edit(src: &PhotoSource, f: impl FnOnce(&mut DevelopSettings)) -> PhotoSource {
@@ -263,7 +282,8 @@ fn a_lens_changes_the_fit_view_and_a_slider_move_re_runs_only_the_lens_with(r: &
         (1, 1, 0),
         "planes and one group, no tile: {runs:?}"
     );
-    assert!(runs.raw_work() > 0);
+    // The raw group under the lens was made for the frame without it: it is not made again.
+    assert_eq!(runs.raw_groups, 0, "{runs:?}");
     assert!(first.report.timings.lens_ms > 0.0);
     let worst = worst_difference(&before, &first);
     assert!(worst >= 4, "the lens moved the picture by {worst} codes only");
@@ -376,6 +396,60 @@ fn the_planes_are_made_again_for_another_lens_and_not_for_an_amount() {
     assert_eq!(r.counters(src.id).lens_planes, 2);
 }
 
+/// The planes key leaves the amounts out, but the blur map is built only for a plan that asks for
+/// reshaping: planes made for Flares alone do not serve a plan with Anamorphic, and are made again
+/// (`LensPlanes::serves`); planes with the map serve a plan that does not need it.
+fn planes_without_the_blur_map_are_made_again_when_a_slider_needs_it_with(r: &Renderer) {
+    let d = developed(1200, 800);
+    let src = plain(&d.source());
+    let state = cell(576.0, 384.0);
+    let flares = LensSettings {
+        kind: LensKind::Vintage,
+        flares: 50.0,
+        edges: 0.0,
+        anamorphic: 0.0,
+    };
+    let a = frame(r, &with_lens(&src, flares), &state);
+    assert_eq!(a.report.runs.lens_planes, 1);
+    assert_eq!(
+        a.report.lens.and_then(|l| l.reason),
+        Some(ym_lens::ReshapeReason::NotAsked)
+    );
+    // Anamorphic asks for the bokeh: the cached planes lack the map, so they are made again, and the
+    // render works (no error from `apply`).
+    let anamorphic = LensSettings {
+        anamorphic: 40.0,
+        ..flares
+    };
+    let b = frame(r, &with_lens(&src, anamorphic), &state);
+    assert_eq!(b.report.runs.lens_planes, 1, "{:?}", b.report.runs);
+    assert_eq!(b.report.runs.lens_groups, 1);
+    assert_ne!(a.rgba, b.rgba);
+    assert_ne!(
+        b.report.lens.and_then(|l| l.reason),
+        Some(ym_lens::ReshapeReason::NotAsked),
+        "the planes were made with the blur map"
+    );
+    // The planes with the map serve the plan that does not need it, and the report is the plan's.
+    let c = frame(r, &with_lens(&src, LensSettings { flares: 51.0, ..flares }), &state);
+    assert_eq!(c.report.runs.lens_planes, 0, "{:?}", c.report.runs);
+    assert_eq!(
+        c.report.lens.and_then(|l| l.reason),
+        Some(ym_lens::ReshapeReason::NotAsked)
+    );
+    // And the other sliders of the plan that needs the map keep them.
+    let d2 = frame(r, &with_lens(&src, LensSettings { anamorphic: 41.0, ..flares }), &state);
+    assert_eq!(d2.report.runs.lens_planes, 0, "{:?}", d2.report.runs);
+    // An export of a plan that needs the map makes its own, with it.
+    let e = export(r, &with_lens(&src, anamorphic));
+    assert_eq!(e.report.runs.lens_planes, 1);
+}
+
+#[test]
+fn planes_without_the_blur_map_are_made_again_when_a_slider_needs_it() {
+    planes_without_the_blur_map_are_made_again_when_a_slider_needs_it_with(&cpu());
+}
+
 // ---------------------------------------------------------------------------------------------
 // The 100 % view and the export
 // ---------------------------------------------------------------------------------------------
@@ -443,7 +517,8 @@ impl Reference {
 /// An export tile (the raw region grown by the halo, one call) is the whole-frame `apply`, bit for bit,
 /// for rectangles that cross the 512 px lines of the tiles and the borders of the frame.
 fn an_export_region_is_the_whole_frame_apply_with(r: &Renderer, axis: Axis) {
-    let d = developed(800, 600);
+    // 640 x 540: under 1024 px (the lens plane is the frame) and past the 512 px line both ways.
+    let d = developed(640, 540);
     let mut src = with_lens(&d.source(), VINTAGE);
     if axis == Axis::Y {
         src = edit(&src, |s| s.orientation = ym_core::settings::Orientation::Deg90);

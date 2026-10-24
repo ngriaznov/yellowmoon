@@ -950,6 +950,12 @@ export interface RenderStats {
   zoom_percent: number | null;
   /** The zoom at which the whole final image fits the cell, in percent and not rounded; `null` as `zoom_percent`. */
   fit_percent: number | null;
+  /**
+   * What the lens's bokeh reshaping did for the photo (`docs/21` §10), once the photo's planes exist: `reshaped`, and when it was not,
+   * why (`not_asked`: no slider asks for it; `little_blur`: the photo has little out-of-focus background). `null` without a lens;
+   * optional so that a sender with no lens to report (the mock) leaves it out.
+   */
+  lens?: { reshaped: boolean; reason: "not_asked" | "little_blur" | null } | null;
 }
 
 // ---------------------------------------------------------------------------

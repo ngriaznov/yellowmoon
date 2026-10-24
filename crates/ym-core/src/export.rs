@@ -43,7 +43,7 @@
 //! file), with the GPS position left out when the preference "Remove location from exports" is on.
 //! The XMP carries the `ym:` properties of `docs/09`: the pipeline version, the camera profile with
 //! its version and how it was matched, the look with its SHA-256 and intensity, the display
-//! transform, the models (none yet: the classical demosaic has none) and the **pinned settings** as
+//! transform, the models (the lens data when a lens is used; the classical demosaic has none) and the **pinned settings** as
 //! JSON ([`ResolvedSettings::pinned_settings`]: exposure, sharpening and noise reduction as the
 //! numbers they resolved to, white balance as it was set). All dates are the capture time, never
 //! "now".
@@ -89,7 +89,7 @@ use crate::pipeline::{
     RenderReport, Renderer,
 };
 use crate::session::{PhotoId, PhotoView, Session, SessionError};
-use crate::settings::{DevelopSettings, ResolvedSettings, SettingsError};
+use crate::settings::{DevelopSettings, LensSettings, ResolvedSettings, SettingsError};
 use crate::version::{PIPELINE_VERSION, app_version};
 
 /// `<source folder> export` next to the source folder of a photo, spelled the way the path gives
@@ -890,6 +890,50 @@ pub fn exif_of(meta: &RawMetadata, remove_location: bool) -> ExifInfo {
     }
 }
 
+/// The `ym:Models` text of a photo's lens (`docs/09`): `lens vintage 1 (sha256:0123456789ab)`, and
+/// `, anamorphic 1 (sha256:…)` after it when Anamorphic is above 0. The version is the lens data's
+/// own, the digits are the first 12 of the SHA-256 of `lens.json` (`anamorphic.json`) that the shipped
+/// `data/lenses/SHA256SUMS` lists (the library was checked against it when it was loaded); a data folder
+/// the renderer does not know, or a file the sums do not list, leaves the digits out. `None` when the
+/// photo has no lens: all three amounts at 0, or no lens data (the render had none either).
+fn lens_models(renderer: &Renderer, lens: &LensSettings) -> Option<String> {
+    if lens.is_identity() {
+        return None;
+    }
+    let options = renderer.options();
+    let library = options.lens.as_ref()?;
+    let info = library.lenses().iter().find(|i| i.kind == lens.kind)?;
+    let sums = options
+        .data_root
+        .as_ref()
+        .and_then(|root| std::fs::read_to_string(root.join("lenses").join("SHA256SUMS")).ok());
+    let digest = |file: &str| -> String {
+        sums.as_deref()
+            .and_then(|text| {
+                text.lines().find_map(|line| {
+                    let (hash, name) = line.split_once(char::is_whitespace)?;
+                    (name.trim_start_matches([' ', '*']) == file && hash.len() >= 12)
+                        .then(|| format!(" (sha256:{})", &hash[..12]))
+                })
+            })
+            .unwrap_or_default()
+    };
+    let mut text = format!(
+        "lens {} {}{}",
+        lens.kind,
+        info.version,
+        digest(&format!("{}/lens.json", lens.kind))
+    );
+    if lens.anamorphic > 0.0 {
+        text.push_str(&format!(
+            ", anamorphic {}{}",
+            library.attachment().version,
+            digest("anamorphic.json")
+        ));
+    }
+    Some(text)
+}
+
 /// How the profile was matched, as `ym:ProfileMatch` says it: `exact`, `sensor family`, `default`
 /// (or `forced` for the CLI's `--profile`).
 #[must_use]
@@ -1181,7 +1225,7 @@ fn export_photo_unguarded(
                 look_sha256,
                 look_intensity_pct: Some(rounded_percent(photo.source.settings.look_intensity)),
                 display_transform: Some(display_transform_id(&display, space)),
-                models: None,
+                models: lens_models(&ctx.renderer, &photo.source.settings.lens),
                 // Which Auto made the values, and what Apple Auto said (`docs/19` section 9).
                 auto: Some(photo.source.estimates.source().name().to_owned()),
                 apple_auto: photo.source.estimates.apple.xmp_json(),

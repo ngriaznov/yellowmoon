@@ -455,6 +455,7 @@ mod tests {
             space: ColorSpace::DisplayP3,
             zoom_percent: None,
             fit_percent: None,
+            lens: None,
         }
     }
 
