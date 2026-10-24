@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "lenses": [
+    "default",
+    "classic",
+    "vintage",
+    "petzval",
+    "triplet",
+    "sonnar",
+    "detuned"
+  ],
+  "attachment": "anamorphic.json"
+}

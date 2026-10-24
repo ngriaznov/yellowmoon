@@ -115,29 +115,41 @@ impl Rgb {
     }
 }
 
-/// The texture of a band: a mosaic of cells of about `cell` px with 12 % pixel noise, supersampled 3 x 3.
-pub fn texture(w: usize, h: usize, cell: f64, salt: u64) -> Rgb {
+/// The texture of a band: a mosaic of cells of about `cell` px with 12 % pixel noise, supersampled 2 x 2.
+/// Only columns `x0 .. x1` are drawn (the rest is 0).
+pub fn texture(w: usize, h: usize, cell: f64, salt: u64, x0: usize, x1: usize) -> Rgb {
+    use rayon::prelude::*;
     let mut img = Rgb::new(w, h);
     let n = w * h;
-    for y in 0..h {
-        for x in 0..w {
-            let mut acc = [0.0f64; 3];
-            for sy in 0..3 {
-                for sx in 0..3 {
-                    let c = mosaic(
-                        x as f64 + (sx as f64 + 0.5) / 3.0,
-                        y as f64 + (sy as f64 + 0.5) / 3.0,
-                        cell,
-                        salt,
-                    );
-                    for k in 0..3 {
-                        acc[k] += c[k] / 9.0;
+    let rows: Vec<Vec<[f32; 3]>> = (0..h)
+        .into_par_iter()
+        .map(|y| {
+            (x0..x1.min(w))
+                .map(|x| {
+                    let mut acc = [0.0f64; 3];
+                    for sy in 0..2 {
+                        for sx in 0..2 {
+                            let c = mosaic(
+                                x as f64 + (sx as f64 + 0.5) / 2.0,
+                                y as f64 + (sy as f64 + 0.5) / 2.0,
+                                cell,
+                                salt,
+                            );
+                            for k in 0..3 {
+                                acc[k] += c[k] / 4.0;
+                            }
+                        }
                     }
-                }
-            }
-            let grain = 1.0 + 0.24 * (hash01(x as i64, y as i64, salt ^ 0x77) - 0.5);
+                    let grain = 1.0 + 0.24 * (hash01(x as i64, y as i64, salt ^ 0x77) - 0.5);
+                    [(acc[0] * grain) as f32, (acc[1] * grain) as f32, (acc[2] * grain) as f32]
+                })
+                .collect()
+        })
+        .collect();
+    for (y, row) in rows.iter().enumerate() {
+        for (i, px) in row.iter().enumerate() {
             for k in 0..3 {
-                img.data[k * n + y * w + x] = (acc[k] * grain) as f32;
+                img.data[k * n + y * w + x0 + i] = px[k];
             }
         }
     }
@@ -163,17 +175,17 @@ pub fn disc_blur(img: &[f32], w: usize, h: usize, r: f64) -> Vec<f32> {
         half_widths.push(area / 2.0);
         total += area;
     }
-    let mut out = vec![0.0f32; w * h];
-    // Prefix sums per row, with the border replicated by clamping positions.
-    let mut prefix = vec![0.0f64; w + 1];
-    let mut rows_prefix: Vec<Vec<f64>> = Vec::with_capacity(h);
-    for y in 0..h {
-        prefix[0] = 0.0;
-        for x in 0..w {
-            prefix[x + 1] = prefix[x] + f64::from(img[y * w + x]);
-        }
-        rows_prefix.push(prefix.clone());
-    }
+    use rayon::prelude::*;
+    // Prefix sums per row.
+    let rows_prefix: Vec<Vec<f64>> = (0..h)
+        .map(|y| {
+            let mut p = vec![0.0f64; w + 1];
+            for x in 0..w {
+                p[x + 1] = p[x] + f64::from(img[y * w + x]);
+            }
+            p
+        })
+        .collect();
     let cumulative = |y: usize, t: f64| -> f64 {
         // Integral of row y from 0 to t (pixel j covers [j, j + 1)); beyond the ends the edge pixel repeats.
         let p = &rows_prefix[y];
@@ -186,17 +198,18 @@ pub fn disc_blur(img: &[f32], w: usize, h: usize, r: f64) -> Vec<f32> {
         let j = t.floor() as usize;
         p[j] + (t - j as f64) * f64::from(img[y * w + j])
     };
-    for y in 0..h {
-        for x in 0..w {
+    let mut out = vec![0.0f32; w * h];
+    out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        for (x, o) in row.iter_mut().enumerate() {
             let mut acc = 0.0f64;
             for (k, hw) in half_widths.iter().enumerate() {
                 let yy = (y as i64 + k as i64 - rows).clamp(0, h as i64 - 1) as usize;
                 let c = x as f64 + 0.5;
                 acc += cumulative(yy, c + hw) - cumulative(yy, c - hw);
             }
-            out[y * w + x] = (acc / total) as f32;
+            *o = (acc / total) as f32;
         }
-    }
+    });
     out
 }
 
@@ -323,7 +336,9 @@ pub fn subject_scene(w: usize, h: usize, radii: [f64; 3], noise: Noise, seed: u6
     let mut bg = Rgb::new(w, h);
     let mut den = vec![0.0f32; n];
     for (i, &r) in radii.iter().enumerate() {
-        let mut tex = texture(w, h, cells[i], seed + 11 * i as u64);
+        let lo = if i == 0 { 0 } else { cuts[i - 1] as usize };
+        let hi = if i == 2 { w } else { cuts[i] as usize + 1 };
+        let mut tex = texture(w, h, cells[i], seed + 11 * i as u64, lo, hi);
         // Mask the texture to its band; the band's own mask is blurred with it so the layers normalise.
         let mask: Vec<f32> = (0..n)
             .map(|p| if band_of((p % w) as f64 + 0.5) == i { 1.0 } else { 0.0 })
@@ -366,7 +381,14 @@ pub fn subject_scene(w: usize, h: usize, radii: [f64; 3], noise: Noise, seed: u6
     }
     // The subject: a sharp ellipse with its own finer mosaic and stripes.
     let (scx, scy, sax, say) = (w as f64 * 0.5, h as f64 * 0.72, w as f64 * 0.13, h as f64 * 0.42);
-    let subj_tex = texture(w, h, 11.0, seed + 99);
+    let subj_tex = texture(
+        w,
+        h,
+        11.0,
+        seed + 99,
+        (scx - sax - 3.0).max(0.0) as usize,
+        (scx + sax + 3.0) as usize,
+    );
     let mut subject = vec![false; n];
     let mut alpha = vec![0.0f32; n];
     for y in 0..h {
@@ -517,7 +539,7 @@ pub fn night_scene(w: usize, h: usize, radii: &[f64], noise: Noise, seed: u64) -
 pub fn sharp_scene(w: usize, h: usize, noise: Noise, seed: u64) -> Scene {
     let n = w * h;
     let mut rng = Rng::new(seed);
-    let mut img = texture(w, h, 14.0, seed);
+    let mut img = texture(w, h, 14.0, seed, 0, w);
     noise.apply(&mut img, &mut rng);
     Scene {
         img,
@@ -535,7 +557,7 @@ pub fn flat_scene(w: usize, h: usize, noise: Noise, seed: u64) -> Scene {
     let n = w * h;
     let mut rng = Rng::new(seed);
     let mut img = Rgb::new(w, h);
-    let tex = texture(w, h, 30.0, seed);
+    let tex = texture(w, h, 30.0, seed, 0, w);
     let blurred: Vec<Vec<f32>> = (0..3).map(|c| disc_blur(tex.plane(c), w, h, 8.0)).collect();
     let mut truth_r = vec![0.0f32; n];
     for y in 0..h {

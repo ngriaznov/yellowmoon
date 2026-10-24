@@ -271,11 +271,7 @@ pub(crate) fn find(
             let extent = ((a.x1 - a.x0 + 1).max(a.y1 - a.y0 + 1)) as f64 / half_diag;
             let source = Source {
                 pos: [along, across],
-                energy: [
-                    a.energy[0] * area,
-                    a.energy[1] * area,
-                    a.energy[2] * area,
-                ],
+                energy: [a.energy[0] * area, a.energy[1] * area, a.energy[2] * area],
                 var_along: var_along * area,
                 var_across: var_across * area,
                 extent,
@@ -412,7 +408,11 @@ mod tests {
         // One big clipped block: 400 x 200 px, far larger than 0.02 half-diagonals (about 14 px here).
         let data = scene(w, h, &[(100, 100, 400, 200, 1.0)]);
         let list = find(&image(w, h, &data), &rs, Axis::X, &|| false).unwrap();
-        assert!(list.len() > 100 && list.len() <= SOURCES_MAX, "{}", list.len());
+        assert!(
+            list.len() > 100 && list.len() <= SOURCES_MAX,
+            "{}",
+            list.len()
+        );
         let frame = Frame::new(w, h, Axis::X);
         let cell = SOURCE_CELL_HD * frame.half_diag;
         for s in &list {

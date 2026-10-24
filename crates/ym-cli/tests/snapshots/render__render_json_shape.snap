@@ -134,6 +134,12 @@ expression: shape(&v)
       "kind": "string",
       "value": "number"
     },
+    "lens": {
+      "anamorphic": "number",
+      "edges": "number",
+      "flares": "number",
+      "kind": "string"
+    },
     "light_source": "string",
     "look": "string",
     "look_intensity": "number",

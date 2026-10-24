@@ -20,7 +20,7 @@
 use crate::consts::{COMPACT_EXTENT_HD, EDGE_FLOOR_PX, EDGE_REACH_SIGMAS, SPIKE_SIZE};
 use crate::data::{Aperture, AttachmentData, GhostData, LensData};
 use crate::l3::geometry::{Frame, Span};
-use crate::l3::profile::{NormalTail, RimLut, cosine_window, gauss8, normal_tail};
+use crate::l3::profile::{NormalTail, RimCurve, cosine_window, gauss8, normal_tail};
 use crate::l3::sources::Source;
 use crate::l3::terms::Terms;
 use crate::spectral::CameraResponse;
@@ -108,9 +108,28 @@ impl Shape {
     }
 }
 
-/// `integral over t >= 0 of rim(t) Q((t - 1) / sigma) t dt`: the radial integral that normalises a ghost
-/// (the area of `gauge <= t` is `A t^2`, so the plane integral of the profile is `2 A integral(profile t dt)`).
-pub(crate) fn profile_integral(rim: &RimLut, sigma_g: f64) -> f64 {
+/// A ghost's radial profile at the normalised radius `t` (1 on the edge): the rim curve, whose argument stops
+/// rising smoothly as the edge begins, times the Gaussian step of the edge `Q((t - 1) / sigma)`.
+///
+/// The argument is `1 - sigma * ramp((1 - t) / sigma)`: `t` well inside the edge and 1 well outside, with every
+/// derivative continuous, so the profile has no crease where the rim curve ends and a pixel grid samples it
+/// exactly.
+#[inline]
+fn profile(rim: &RimCurve, tail: &NormalTail, t: f64, sigma_g: f64) -> f64 {
+    let z = (1.0 - t) / sigma_g;
+    let arg = if z >= 8.0 {
+        t
+    } else if z <= -8.0 {
+        1.0
+    } else {
+        1.0 - sigma_g * tail.ramp(z)
+    };
+    rim.at(arg) * tail.q(-z)
+}
+
+/// `integral over t >= 0 of profile(t) t dt`: the radial integral that normalises a ghost (the area of
+/// `gauge <= t` is `A t^2`, so the plane integral of the profile is `2 A integral(profile t dt)`).
+pub(crate) fn profile_integral(rim: &RimCurve, sigma_g: f64) -> f64 {
     let q = normal_tail();
     let t_max = 1.0 + EDGE_REACH_SIGMAS * sigma_g;
     let mut breaks: Vec<f64> = (0..=15).map(|k| f64::from(k) / 15.0).collect();
@@ -121,11 +140,11 @@ pub(crate) fn profile_integral(rim: &RimLut, sigma_g: f64) -> f64 {
     breaks.push(t_max);
     breaks.sort_by(f64::total_cmp);
     breaks.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
-    let mut f = |t: f64| rim.at(t) * q.q((t - 1.0) / sigma_g) * t;
+    let mut f = |t: f64| profile(rim, q, t, sigma_g) * t;
     let mut total = 0.0;
     for w in breaks.windows(2) {
         let (a, b) = (w[0], w[1]);
-        let n = (((b - a) / (4.0 * sigma_g)).ceil() as usize).clamp(1, 64);
+        let n = (((b - a) / (2.0 * sigma_g)).ceil() as usize).clamp(1, 64);
         for i in 0..n {
             let (x0, x1) = (
                 a + (b - a) * i as f64 / n as f64,
@@ -303,8 +322,9 @@ impl AlongProfile {
     }
 }
 
-/// A tint normalised to a mean of 1 over the channels (a spectrum that is flat is neutral).
-fn normalised_tint(camera: &CameraResponse, spectrum: &[f64]) -> [f64; 3] {
+/// The tint of a coating or streak spectrum on `camera`, scaled to a mean of 1 over the channels (a flat spectrum
+/// is neutral): the fraction of light a ghost has is its energy, the tint only gives it a colour.
+pub(crate) fn normalised_tint(camera: &CameraResponse, spectrum: &[f64]) -> [f64; 3] {
     let mut s = [0.0; crate::consts::GRID_SAMPLES];
     for (d, v) in s.iter_mut().zip(spectrum) {
         *d = *v;
@@ -318,16 +338,11 @@ fn normalised_tint(camera: &CameraResponse, spectrum: &[f64]) -> [f64; 3] {
     }
 }
 
-/// The tint of a coating or streak spectrum on `camera`, scaled to a mean of 1 over the channels.
-pub(crate) fn tint_of(camera: &CameraResponse, spectrum: &[f64]) -> [f64; 3] {
-    normalised_tint(camera, spectrum)
-}
-
 /// Everything the items of one call share, and the items themselves.
 pub(crate) struct Items<'a> {
     /// The lens's aperture and a circle.
     shapes: [Shape; 2],
-    rim: RimLut,
+    rim: RimCurve,
     along: Option<AlongProfile>,
     spikes: &'a [Vec<f64>; 3],
     spike_radius: f64,
@@ -356,11 +371,15 @@ impl<'a> Items<'a> {
     ) -> Self {
         let shapes = [Shape::aperture(&lens.flare.aperture), Shape::round()];
         let along = (terms.streak > 0.0 && terms.anam > 0.0).then(|| {
-            AlongProfile::new(att.streak.core, att.streak.power, att.streak.reach * terms.anam)
+            AlongProfile::new(
+                att.streak.core,
+                att.streak.power,
+                att.streak.reach * terms.anam,
+            )
         });
         let mut items = Items {
             shapes,
-            rim: RimLut::new(&lens.rim),
+            rim: RimCurve::new(&lens.rim),
             along,
             spikes,
             spike_radius: lens.flare.starburst.radius,
@@ -556,7 +575,7 @@ impl<'a> Items<'a> {
                 if gauge > g.g_max {
                     continue;
                 }
-                let prof = self.rim.at(gauge) * self.tail.q((gauge - 1.0) / g.sigma_g);
+                let prof = profile(&self.rim, self.tail, gauge, g.sigma_g);
                 let (dx, dy) = (a - g.clip_centre[0], c - g.clip_centre[1]);
                 let d = (dx * dx + dy * dy).sqrt();
                 let dens = prof * self.tail.q((d - g.clip_radius) / g.sigma_clip);
@@ -586,7 +605,8 @@ impl<'a> Items<'a> {
         let mass_across: Vec<f64> = (q0..q1)
             .map(|q| {
                 let (e0, e1) = frame.across_edges(q);
-                self.tail.q((e0 - s.centre[1]) / s.sigma) - self.tail.q((e1 - s.centre[1]) / s.sigma)
+                self.tail.q((e0 - s.centre[1]) / s.sigma)
+                    - self.tail.q((e1 - s.centre[1]) / s.sigma)
             })
             .collect();
         let per_area = frame.half_diag * frame.half_diag;
@@ -700,7 +720,11 @@ mod tests {
         });
         // A hexagon of apothem 1: 6 tan(30 degrees).
         let want = 6.0 * (std::f64::consts::PI / 6.0).tan();
-        assert!((hex.area() - want).abs() < 1e-12, "{} vs {want}", hex.area());
+        assert!(
+            (hex.area() - want).abs() < 1e-12,
+            "{} vs {want}",
+            hex.area()
+        );
         assert!((hex.reach - 1.0 / (std::f64::consts::PI / 6.0).cos()).abs() < 1e-12);
         // Fully rounded is a circle again.
         let round = Shape::aperture(&Aperture {
@@ -716,9 +740,11 @@ mod tests {
 
     #[test]
     fn the_profile_integral_matches_a_brute_force_sum() {
-        let rim: Vec<f64> = (0..16).map(|i| 0.8 + 0.05 * f64::from(i) * f64::from(i) / 15.0).collect();
-        let lut = RimLut::new(&rim);
-        for sigma in [0.004, 0.05, 0.4, 2.0] {
+        let rim: Vec<f64> = (0..16)
+            .map(|i| 0.8 + 0.05 * f64::from(i) * f64::from(i) / 15.0)
+            .collect();
+        let lut = RimCurve::new(&rim);
+        for sigma in [0.004, 0.05, 0.2, 0.5] {
             let got = profile_integral(&lut, sigma);
             let q = normal_tail();
             let n = 400_000;
@@ -726,10 +752,13 @@ mod tests {
             let mut sum = 0.0;
             for i in 0..n {
                 let t = (f64::from(i) + 0.5) / f64::from(n) * t_max;
-                sum += lut.at(t) * q.q((t - 1.0) / sigma) * t;
+                sum += profile(&lut, q, t, sigma) * t;
             }
             sum *= t_max / f64::from(n);
-            assert!((got - sum).abs() < 1e-6 * sum, "sigma {sigma}: {got} vs {sum}");
+            assert!(
+                (got - sum).abs() < 1e-6 * sum,
+                "sigma {sigma}: {got} vs {sum}"
+            );
         }
     }
 
@@ -757,26 +786,156 @@ mod tests {
             s += h((f64::from(i) + 0.5) / f64::from(n) * 0.5);
         }
         s *= 0.5 / f64::from(n);
-        assert!((p.cdf(0.3) - (0.5 + 0.5 * {
-            let mut part = 0.0;
-            for i in 0..n {
-                part += h((f64::from(i) + 0.5) / f64::from(n) * 0.3);
-            }
-            part * 0.3 / f64::from(n) / s
-        })).abs() < 1e-6);
+        assert!(
+            (p.cdf(0.3)
+                - (0.5
+                    + 0.5 * {
+                        let mut part = 0.0;
+                        for i in 0..n {
+                            part += h((f64::from(i) + 0.5) / f64::from(n) * 0.3);
+                        }
+                        part * 0.3 / f64::from(n) / s
+                    }))
+            .abs()
+                < 1e-6
+        );
         // The frame helpers agree with the axis.
         let _ = Frame::new(10, 10, Axis::X);
+    }
+
+    /// Items for a frame, with a lens aperture and a flat rim (for the raster tests).
+    fn bare_items<'a>(frame: Frame, spikes: &'a [Vec<f64>; 3], rim: &[f64]) -> Items<'a> {
+        Items {
+            shapes: [Shape::round(), Shape::round()],
+            rim: RimCurve::new(rim),
+            along: None,
+            spikes,
+            spike_radius: 0.06,
+            frame,
+            tail: normal_tail(),
+            list: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_round_ghosts_raster_sums_to_its_light() {
+        let (w, h) = (480usize, 320usize);
+        let frame = Frame::new(w, h, Axis::X);
+        let spikes: [Vec<f64>; 3] = std::array::from_fn(|_| Vec::new());
+        let rims: [Vec<f64>; 2] = [
+            vec![1.0; 16],
+            (0..16)
+                .map(|i| 0.8 + 0.4 * (f64::from(i) / 15.0).powi(4))
+                .collect(),
+        ];
+        let mut worst = 0.0f64;
+        for rim in &rims {
+            let items = bare_items(frame, &spikes, rim);
+            for (s, soft) in [(0.03, 0.1), (0.05, 0.1), (0.08, 0.02), (0.03, 0.5)] {
+                for (dx, dy) in [(0.0, 0.0), (0.37, 0.61), (0.5, 0.5)] {
+                    let src = Source {
+                        pos: [frame.u(300.0 + dx), frame.v(200.0 + dy)],
+                        energy: [2.0, 1.0, 0.5],
+                        var_along: 0.75 / (frame.half_diag * frame.half_diag),
+                        var_across: 0.75 / (frame.half_diag * frame.half_diag),
+                        extent: 0.01,
+                    };
+                    let g = GhostData {
+                        m: -0.5,
+                        n: 0.0,
+                        s,
+                        clip_radius: 3.0,
+                        fraction: 0.1,
+                        soft,
+                        coating: vec![1.0; 31],
+                    };
+                    let cull = Span {
+                        x0: 0,
+                        x1: w,
+                        y0: 0,
+                        y1: h,
+                    };
+                    let ghost = items
+                        .ghost(&src, &g, SHAPE_ROUND, 1.0, 0.1, [1.0; 3], &cull)
+                        .unwrap();
+                    let mut acc = vec![[0.0f64; 3]; w * h];
+                    items.add_ghost(&ghost, &cull, &cull, &mut acc);
+                    let total: f64 = acc.iter().map(|p| p[0]).sum();
+                    // fraction * tint * sum of H over pixels = fraction * E * H^2
+                    let want = 0.1 * 2.0 * frame.half_diag * frame.half_diag;
+                    let rel = (total / want - 1.0).abs();
+                    worst = worst.max(rel);
+                    // A very soft edge (the edge's deviation is half the ghost's radius) puts a cone at the
+                    // ghost's centre, which costs a few parts in a million.
+                    let allowed = if soft > 0.3 { 1e-5 } else { 1e-6 };
+                    assert!(
+                        rel < allowed,
+                        "rim {:?} s {s} soft {soft} offset ({dx}, {dy}): {rel:e}",
+                        rim[15]
+                    );
+                }
+            }
+        }
+        eprintln!("worst relative error of a ghost's raster: {worst:e}");
+    }
+
+    #[test]
+    fn a_polygon_ghosts_raster_sums_to_its_light_closely() {
+        // The corners of a polygon aperture are creases of the gauge that a pixel grid samples with a small
+        // error; the rounder the blades the smaller it is.
+        let (w, h) = (480usize, 320usize);
+        let frame = Frame::new(w, h, Axis::X);
+        let spikes: [Vec<f64>; 3] = std::array::from_fn(|_| Vec::new());
+        let rim: Vec<f64> = (0..16).map(|i| 0.8 + 0.4 * (f64::from(i) / 15.0).powi(4)).collect();
+        let mut worst = [0.0f64; 3];
+        for (k, roundness) in [0.0, 0.5, 0.8].into_iter().enumerate() {
+            let mut items = bare_items(frame, &spikes, &rim);
+            items.shapes[SHAPE_APERTURE] = Shape::aperture(&Aperture {
+                blades: 6,
+                rotation_deg: 10.0,
+                roundness,
+            });
+            for (dx, dy) in [(0.0, 0.0), (0.37, 0.61)] {
+                let src = Source {
+                    pos: [frame.u(300.0 + dx), frame.v(200.0 + dy)],
+                    energy: [1.0, 1.0, 1.0],
+                    var_along: 0.75 / (frame.half_diag * frame.half_diag),
+                    var_across: 0.75 / (frame.half_diag * frame.half_diag),
+                    extent: 0.01,
+                };
+                let g = GhostData {
+                    m: -0.5,
+                    n: 0.0,
+                    s: 0.05,
+                    clip_radius: 3.0,
+                    fraction: 0.1,
+                    soft: 0.1,
+                    coating: vec![1.0; 31],
+                };
+                let cull = Span { x0: 0, x1: w, y0: 0, y1: h };
+                let ghost = items
+                    .ghost(&src, &g, SHAPE_APERTURE, 1.0, 0.1, [1.0; 3], &cull)
+                    .unwrap();
+                let mut acc = vec![[0.0f64; 3]; w * h];
+                items.add_ghost(&ghost, &cull, &cull, &mut acc);
+                let total: f64 = acc.iter().map(|p| p[0]).sum();
+                let want = 0.1 * frame.half_diag * frame.half_diag;
+                worst[k] = worst[k].max((total / want - 1.0).abs());
+            }
+        }
+        eprintln!("polygon ghosts, roundness 0 / 0.5 / 0.8: {worst:?}");
+        assert!(worst.iter().all(|e| *e < 1e-3), "{worst:?}");
     }
 
     #[test]
     fn tint_is_neutral_for_a_flat_coating() {
         let cam = CameraResponse::neutral();
-        let t = tint_of(&cam, &[0.3; 31]);
+        let t = normalised_tint(&cam, &[0.3; 31]);
         for v in t {
             assert!((v - 1.0).abs() < 1e-15);
         }
         let blue: Vec<f64> = (0..31).map(|i| if i < 10 { 1.0 } else { 0.1 }).collect();
-        let t = tint_of(&cam, &blue);
+        let t = normalised_tint(&cam, &blue);
         assert!((t[0] + t[1] + t[2] - 3.0).abs() < 1e-12);
     }
 }

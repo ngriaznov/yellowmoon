@@ -35,7 +35,11 @@ fn lens_of(sb: &Sandbox, data: &std::path::Path, args: &[&str]) -> Value {
 fn the_list_shows_the_seven_lenses_and_its_json_is_the_cores() {
     let sb = Sandbox::new();
     let data = sb.data_with_lenses(true);
-    let out = sb.ym_data(&data).args(["lenses", "list"]).assert().success();
+    let out = sb
+        .ym_data(&data)
+        .args(["lenses", "list"])
+        .assert()
+        .success();
     let l = lines(&out.get_output().stdout);
     assert_eq!(l.len(), 8, "{l:?}");
     for header in ["ID", "NAME", "FLARES", "EDGES", "DESIGN", "LINE"] {
@@ -78,7 +82,11 @@ fn the_list_shows_the_seven_lenses_and_its_json_is_the_cores() {
         "version",
         "design_source",
     ] {
-        assert!(v["lenses"][2].get(key).is_some(), "{key}: {}", v["lenses"][2]);
+        assert!(
+            v["lenses"][2].get(key).is_some(),
+            "{key}: {}",
+            v["lenses"][2]
+        );
     }
 }
 
@@ -90,7 +98,9 @@ fn a_missing_lens_folder_is_a_plain_message_and_exit_code_2() {
         .args(["lenses", "list"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("The lens data could not be loaded"));
+        .stderr(predicate::str::contains(
+            "The lens data could not be loaded",
+        ));
     // --lens needs the starting amounts; the amounts alone do not.
     sb.arw("a.ARW");
     sb.ym_data(&data)
@@ -252,7 +262,14 @@ fn lens_options_are_checked_like_every_number_option() {
     // The help names the lenses and the amounts under their own heading.
     let out = sb.ym().args(["render", "--help"]).assert().success();
     let help = text(&out.get_output().stdout);
-    for word in ["Lens:", "--lens <LENS>", "--flares <N>", "--edges <N>", "--anamorphic <N>", "detuned"] {
+    for word in [
+        "Lens:",
+        "--lens <LENS>",
+        "--flares <N>",
+        "--edges <N>",
+        "--anamorphic <N>",
+        "detuned",
+    ] {
         assert!(help.contains(word), "{word}");
     }
 }

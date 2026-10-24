@@ -63,7 +63,7 @@ fn help(args: &[&str]) -> String {
 #[test]
 fn help_lists_every_top_level_command() {
     let stdout = help(&[]);
-    for command in ["render", "info", "looks", "doctor"] {
+    for command in ["render", "info", "looks", "lenses", "doctor"] {
         assert!(stdout.contains(command), "{command}:\n{stdout}");
     }
     assert!(stdout.contains("Exit codes:"), "{stdout}");
@@ -77,6 +77,8 @@ fn help_snapshots_of_every_command() {
     insta::assert_snapshot!("help_doctor", help(&["doctor"]));
     insta::assert_snapshot!("help_looks", help(&["looks"]));
     insta::assert_snapshot!("help_looks_list", help(&["looks", "list"]));
+    insta::assert_snapshot!("help_lenses", help(&["lenses"]));
+    insta::assert_snapshot!("help_lenses_list", help(&["lenses", "list"]));
     insta::assert_snapshot!("help_looks_import", help(&["looks", "import"]));
     insta::assert_snapshot!("help_looks_verify", help(&["looks", "verify"]));
     insta::assert_snapshot!("help_looks_default", help(&["looks", "default"]));

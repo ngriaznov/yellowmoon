@@ -204,6 +204,10 @@ impl<'a> Pass<'a> {
             .collect();
         // The blur map at the tile's pixels.
         let bt = self.tile_blur(input, r0);
+        if std::env::var("YM_L1_DEBUG").is_ok() {
+            let nz = bt.iter().filter(|b| **b > 0.0).count();
+            eprintln!("tile: r0 {r0} bt nonzero {nz}/{} shapes {} v_on {} t_on {} level {} sx {:.2}", bt.len(), shapes.len(), self.v_on, self.t_on, self.level, self.sx);
+        }
         if !self.v_on && !self.t_on && shapes.is_empty() {
             return crop_rgb(input, want);
         }

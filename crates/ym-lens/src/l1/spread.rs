@@ -7,8 +7,7 @@
 //! distance, and stops at colour edges.
 //!
 //! The input is three sums per pixel (weight `W`, weight times value `S`, weight times value squared `Q`; the
-//! value is a log radius); the output is the same three sums accumulated over each pixel's neighbourhood, from
-//! which the caller reads a mean, a variance and the amount of evidence.
+//! value is a log radius); the output is, per pixel, a mean, a variance and how much evidence backs them.
 //!
 //! Every output sample is a function of fixed windows read in a fixed order, so rows run in parallel with the
 //! same bits for any number of threads.
@@ -19,8 +18,6 @@ use rayon::prelude::*;
 const RADIUS: i64 = 2;
 /// Spatial standard deviation of the smoothing, in cells.
 const SPATIAL_SIGMA: f64 = 1.2;
-/// Weight of level `l` is `LAMBDA^l`: the finest level with evidence counts most.
-const LAMBDA: f64 = 0.5;
 /// The coarsest level keeps at least this many cells on its shorter side.
 const MIN_SIDE: usize = 6;
 
@@ -113,14 +110,15 @@ impl GuidePyramid {
     }
 }
 
-/// The three sums at every pixel of the finest level.
+/// What the spread gives at every pixel of the finest level.
 pub(super) struct Spread {
-    /// Accumulated evidence weight.
-    pub w: Vec<f32>,
-    /// Accumulated weight times value.
-    pub s: Vec<f32>,
-    /// Accumulated weight times value squared.
-    pub q: Vec<f32>,
+    /// How much of the pixel's value is backed by evidence (0 to 1): 1 where readings are dense enough nearby at
+    /// some level, less where only a coarser level or nothing reaches.
+    pub cover: Vec<f32>,
+    /// Mean of the readings that reach the pixel.
+    pub mean: Vec<f32>,
+    /// Variance of those readings.
+    pub var: Vec<f32>,
 }
 
 /// The sums of one level: weight, weight times value, weight times value squared, per cell.
@@ -169,7 +167,8 @@ fn smooth(level: &Level, sums: &[Sums], sigma_g2: f64) -> Vec<Sums> {
     out
 }
 
-/// Guided upsampling of the parent level's accumulated sums to the child level.
+/// Guided upsampling of the parent level's result `(cover, cover * mean, cover * second moment)` to the child
+/// level.
 fn upsample(child: &Level, parent: &Level, parent_sums: &[Sums], sigma_g2: f64) -> Vec<Sums> {
     let (w, h) = (child.w, child.h);
     let mut out = vec![[0.0f32; 3]; w * h];
@@ -211,7 +210,11 @@ fn upsample(child: &Level, parent: &Level, parent_sums: &[Sums], sigma_g2: f64) 
 }
 
 /// Spreads the sums `(w0, s0, q0)` (one entry per pixel of the finest level) over the guide's pyramid.
-pub(super) fn spread(guide: &GuidePyramid, w0: &[f32], s0: &[f32], q0: &[f32]) -> Spread {
+///
+/// Every level smooths its own cells' sums; a level is trusted as far as its window holds `need` of weight
+/// (readings dense enough nearby); what a level does not cover is filled from the next coarser one, by a
+/// guided upsampling: pull-push interpolation of sparse readings.
+pub(super) fn spread(guide: &GuidePyramid, w0: &[f32], s0: &[f32], q0: &[f32], need: f64) -> Spread {
     let base = &guide.levels[0];
     debug_assert_eq!(w0.len(), base.w * base.h);
     let n = base.w * base.h;
@@ -240,35 +243,53 @@ pub(super) fn spread(guide: &GuidePyramid, w0: &[f32], s0: &[f32], q0: &[f32]) -
         .zip(&sums)
         .map(|(lv, s)| smooth(lv, s, guide.sigma_g2))
         .collect();
-    // Push from the coarsest level to the finest.
+    drop(sums);
+    // Push from the coarsest level to the finest: `acc` holds (cover, cover * mean, cover * second moment).
     let depth = guide.levels.len();
-    let weight = |l: usize| LAMBDA.powi(l as i32) as f32;
-    let mut acc: Vec<Sums> = smoothed[depth - 1]
-        .iter()
-        .map(|s| {
-            let k = weight(depth - 1);
-            [s[0] * k, s[1] * k, s[2] * k]
-        })
-        .collect();
-    for l in (0..depth - 1).rev() {
-        let mut up = upsample(&guide.levels[l], &guide.levels[l + 1], &acc, guide.sigma_g2);
-        let k = weight(l);
-        for (u, s) in up.iter_mut().zip(&smoothed[l]) {
-            u[0] += s[0] * k;
-            u[1] += s[1] * k;
-            u[2] += s[2] * k;
+    let combine = |own: &Sums, up: Option<&Sums>| -> Sums {
+        let alpha = (f64::from(own[0]) / need).min(1.0);
+        let (mut cov, mut m1, mut m2) = (0.0f64, 0.0f64, 0.0f64);
+        if own[0] > 0.0 {
+            let w = f64::from(own[0]);
+            cov = alpha;
+            m1 = alpha * f64::from(own[1]) / w;
+            m2 = alpha * f64::from(own[2]) / w;
         }
-        acc = up;
+        if let Some(u) = up {
+            let rest = 1.0 - alpha;
+            cov += rest * f64::from(u[0]);
+            m1 += rest * f64::from(u[1]);
+            m2 += rest * f64::from(u[2]);
+        }
+        [cov as f32, m1 as f32, m2 as f32]
+    };
+    let mut acc: Vec<Sums> = smoothed[depth - 1].iter().map(|s| combine(s, None)).collect();
+    for l in (0..depth - 1).rev() {
+        let up = upsample(&guide.levels[l], &guide.levels[l + 1], &acc, guide.sigma_g2);
+        acc = smoothed[l]
+            .par_iter()
+            .zip(up.par_iter())
+            .map(|(s, u)| combine(s, Some(u)))
+            .collect();
     }
     let mut out = Spread {
-        w: Vec::with_capacity(n),
-        s: Vec::with_capacity(n),
-        q: Vec::with_capacity(n),
+        cover: Vec::with_capacity(n),
+        mean: Vec::with_capacity(n),
+        var: Vec::with_capacity(n),
     };
     for a in &acc {
-        out.w.push(a[0]);
-        out.s.push(a[1]);
-        out.q.push(a[2]);
+        let cov = f64::from(a[0]);
+        if cov > 1e-9 {
+            let mean = f64::from(a[1]) / cov;
+            let var = (f64::from(a[2]) / cov - mean * mean).max(0.0);
+            out.cover.push(cov.min(1.0) as f32);
+            out.mean.push(mean as f32);
+            out.var.push(var as f32);
+        } else {
+            out.cover.push(0.0);
+            out.mean.push(0.0);
+            out.var.push(0.0);
+        }
     }
     out
 }
@@ -301,14 +322,13 @@ mod tests {
         let (w, h, edge) = (96, 64, 40);
         let (g, ws, ss, qs) = two_regions(w, h, edge);
         assert!(g.depth() >= 4);
-        let sp = spread(&g, &ws, &ss, &qs);
+        let sp = spread(&g, &ws, &ss, &qs, 0.2);
         for (x, y, expect) in [(5, 5, 1.0f32), (30, 60, 1.0), (60, 3, 3.0), (90, 50, 3.0)] {
             let i = y * w + x;
-            assert!(sp.w[i] > 0.0, "no evidence at ({x}, {y})");
-            let mean = sp.s[i] / sp.w[i];
+            assert!(sp.cover[i] > 0.9, "no evidence at ({x}, {y})");
+            let mean = sp.mean[i];
             assert!((mean - expect).abs() < 0.05, "({x}, {y}): {mean} vs {expect}");
-            let var = sp.q[i] / sp.w[i] - mean * mean;
-            assert!(var.abs() < 0.05, "variance {var} at ({x}, {y})");
+            assert!(sp.var[i] < 0.05, "variance {} at ({x}, {y})", sp.var[i]);
         }
     }
 
@@ -316,11 +336,11 @@ mod tests {
     fn the_result_does_not_depend_on_the_thread_count() {
         let (w, h, edge) = (96, 64, 40);
         let (g, ws, ss, qs) = two_regions(w, h, edge);
-        let a = spread(&g, &ws, &ss, &qs);
+        let a = spread(&g, &ws, &ss, &qs, 0.2);
         let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
-        let b = pool.install(|| spread(&g, &ws, &ss, &qs));
-        assert_eq!(a.w, b.w);
-        assert_eq!(a.s, b.s);
-        assert_eq!(a.q, b.q);
+        let b = pool.install(|| spread(&g, &ws, &ss, &qs, 0.2));
+        assert_eq!(a.cover, b.cover);
+        assert_eq!(a.mean, b.mean);
+        assert_eq!(a.var, b.var);
     }
 }

@@ -154,8 +154,7 @@ pub struct RenderArgs {
     pub saturation: Option<PercentArg>,
 
     /// Give the photo the look of another lens (`ym lenses list`). Flares and Edges take the lens's starting
-    /// amounts unless --flares or --edges is given, as when the lens is chosen in the app. Without any amount
-    /// above 0 there is no lens effect.
+    /// amounts unless --flares or --edges is given, as when the lens is chosen in the app.
     #[arg(long, value_enum, ignore_case = true, value_name = "LENS", help_heading = H_LENS)]
     pub lens: Option<LensArg>,
     /// Flares, 0 to 100: glow around bright light, veiling glare, ghosts and starbursts.

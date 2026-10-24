@@ -31,11 +31,6 @@ impl Restore {
         }
     }
 
-    /// The clip levels as numbers.
-    pub(crate) fn clip(&self) -> [f64; 3] {
-        self.clip
-    }
-
     /// The factor `1 + f (2^h - 1)` the pixel `x` is raised by.
     #[inline]
     pub(crate) fn factor(&self, x: [f64; 3]) -> f64 {

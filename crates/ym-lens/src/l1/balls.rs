@@ -3,7 +3,7 @@
 //!
 //! A defocused light is a disc with a sharp rim, so the edge measure of the blur map reads it as sharp. The
 //! balls are therefore found directly: a scale-space blob search (differences of the ladder's Gaussians, in the
-//! square-root domain) proposes centres and sizes; each candidate is measured on the linear plane by the area of
+//! square-root domain of the ladder's levels) proposes centres and sizes; each candidate is measured on the linear plane by the area of
 //! its half-level contour; and it must be a flat-topped, round, compact, bright disc, at least 1 EV above the
 //! median of the ring around it, at least twice the smallest reshaped radius, and consistent with the blur the
 //! edges around it say (when they say anything). Balls are kept brightest first, at most 256; of two closer than
@@ -43,7 +43,7 @@ pub(super) struct BallInput<'a> {
     pub rgb: [&'a [f32]; 3],
     /// Its luminance (linear).
     pub y: &'a [f32],
-    /// The scale ladder of the square-root luminance.
+    /// The scale ladder of the linear luminance.
     pub ladder: &'a [Vec<f32>],
     /// Noise of the square-root luminance, per pixel.
     pub noise_v: f64,
@@ -140,7 +140,7 @@ fn candidates(inp: &BallInput) -> Vec<Candidate> {
         let d: Vec<f32> = inp.ladder[m + 1]
             .iter()
             .zip(&inp.ladder[m])
-            .map(|(a, b)| a - b)
+            .map(|(a, b)| a.max(0.0).sqrt() - b.max(0.0).sqrt())
             .collect();
         dogs.push((m, r0, d));
     }

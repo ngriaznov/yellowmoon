@@ -68,9 +68,10 @@ fn identity_ignores_the_lens_in_its_keys() {
 }
 
 #[test]
-fn flares_alone_leave_the_field_untouched_until_l3_exists() {
-    // Flares above 0 is a lens, but without Edges and Anamorphic the field optics have nothing to do: no halo and
-    // the input comes back as it is (L3 is not built yet and adds nothing).
+fn flares_alone_change_the_picture_through_the_highlight_optics() {
+    // Flares above 0 is a lens even without Edges and Anamorphic: the field optics have nothing to do, but L3
+    // takes its fraction of the light and gives it back as glow, veil, ghosts and starbursts. At this size the
+    // glow's core is a single pixel, so a tile needs no context.
     let (w, h) = (300, 200);
     let data = noise(w, h, 6);
     let p = plan(LensKind::Classic, 60.0, 0.0, 0.0, w, h, Axis::X);
@@ -85,6 +86,23 @@ fn flares_alone_leave_the_field_untouched_until_l3_exists() {
         PixelRect::new(0, 0, w, h),
     )
     .unwrap();
-    assert_eq!(out, data);
+    assert_ne!(out, data);
+    assert!(out.iter().all(|v| v.is_finite() && *v >= 0.0));
+    // The picture keeps 1 - a of itself and gets the flare light on top: every pixel stays within the range
+    // of the input and what the budget can add.
+    let a = p.light_fraction();
+    assert!(a > 0.0 && a < 1.0);
+    let (lo, hi) = data
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+    for (o, z) in out.iter().zip(&data) {
+        let o = f64::from(*o);
+        assert!(o >= (1.0 - a) * f64::from(*z) - 1e-6);
+        assert!(o <= (1.0 - a) * f64::from(*z) + 8.0 * f64::from(hi), "{o}");
+    }
+    assert!(lo > 0.0);
+    // Flares 0 with the other amounts at 0 is no lens at all.
+    let zero = plan(LensKind::Classic, 0.0, 0.0, 0.0, w, h, Axis::X);
+    assert!(zero.is_identity());
     let _ = camera();
 }

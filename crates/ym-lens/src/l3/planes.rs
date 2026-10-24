@@ -12,7 +12,6 @@ use crate::consts::{CLIP_RAMP_PLANE, PSF_WAVELENGTHS, SPIKE_SIZE, TAIL_PLANE_LON
 use crate::error::LensError;
 use crate::image::ImageRef;
 use crate::l3::fft::{Convolver, Kernel2d};
-use crate::l3::geometry::Frame;
 use crate::l3::glow::GlowProfiles;
 use crate::l3::restore::Restore;
 use crate::l3::sources::{self, Source};
@@ -27,7 +26,6 @@ const NEAR_PIXELS: isize = 2;
 /// The data of L3 that every tile of a photo shares.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FlarePlanes {
-    ready: bool,
     /// The glow and veil light per channel on the tail plane, row-major.
     tail: [Vec<f64>; 3],
     tail_size: (usize, usize),
@@ -265,18 +263,12 @@ impl FlarePlanes {
             t
         });
         Ok(FlarePlanes {
-            ready: true,
             tail,
             tail_size: (tw, th),
             sources,
             glow: Some(glow),
             spikes,
         })
-    }
-
-    /// True when the data were built for a lens (false for the empty data of a photo without lens effects).
-    pub(crate) fn is_ready(&self) -> bool {
-        self.ready
     }
 
     /// The glow kernels.
@@ -297,11 +289,6 @@ impl FlarePlanes {
     /// The spike tables per camera channel.
     pub(crate) fn spikes(&self) -> &[Vec<f64>; 3] {
         &self.spikes
-    }
-
-    /// The frame of the tail plane.
-    pub(crate) fn tail_frame(&self, plan: &LensPlan) -> Frame {
-        Frame::new(self.tail_size.0, self.tail_size.1, plan.frame().axis)
     }
 
     /// Bytes the data hold.

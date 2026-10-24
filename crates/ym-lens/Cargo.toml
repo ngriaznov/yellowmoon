@@ -44,3 +44,8 @@ ym-lens = { path = ".", features = ["test-support"] }
 name = "bench_field"
 path = "examples/bench_field.rs"
 required-features = ["test-support"]
+
+[[example]]
+name = "bench_flare"
+path = "examples/bench_flare.rs"
+required-features = ["test-support"]

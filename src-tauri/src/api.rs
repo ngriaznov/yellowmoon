@@ -36,9 +36,8 @@ use crate::wire::{
     AppError, AppInfo, AppleAutoStatus, ApplyScope, ChromaSample, ChromaScatter, CliLinkResult,
     CliLinkStatus, CropAspect, CropSuggestion, DisplayLut, ErrorScope, ExportEstimate, ExportJob,
     ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress,
-    LooksImportResult,
-    OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample, Preferences,
-    PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
+    LooksImportResult, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample,
+    Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
     SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
     WatchStatus, convert,
 };

@@ -25,4 +25,3 @@ mod terms;
 
 pub(crate) use pass::{apply, halo};
 pub(crate) use planes::FlarePlanes;
-pub(crate) use terms::Terms;

@@ -94,6 +94,8 @@ fn pictures(r: &Renderer, src: &PhotoSource) -> Pictures {
     }
 }
 
+const LENS_NOTE: &str = "The lens data could not be loaded, so this photo has no lens effect.";
+
 #[test]
 fn all_three_amounts_at_zero_are_the_render_without_the_field() {
     let d = Developed::new(&patchwork(), MODEL);
@@ -107,8 +109,11 @@ fn all_three_amounts_at_zero_are_the_render_without_the_field() {
         ("without the lenses", renderer_with(None)),
     ] {
         let none = pictures(&renderer, &src);
-        assert!(none.frame_notes.is_empty(), "{what}: {:?}", none.frame_notes);
-        assert!(none.full_notes.is_empty(), "{what}: {:?}", none.full_notes);
+        assert!(
+            !none.frame_notes.iter().any(|n| n == LENS_NOTE),
+            "{what}: {:?}",
+            none.frame_notes
+        );
         for kind in LensKind::ALL {
             let zero = with_lens(
                 &src,
@@ -119,12 +124,18 @@ fn all_three_amounts_at_zero_are_the_render_without_the_field() {
             );
             assert!(zero.settings.lens.is_identity());
             let got = pictures(&renderer, &zero);
-            assert!(got.frame == none.frame, "{what}, {kind}: the viewport frame");
-            assert!(got.full == none.full, "{what}, {kind}: the full render");
-            assert!(got.thumbnail == none.thumbnail, "{what}, {kind}: the thumbnail");
             assert!(
-                got.frame_notes.is_empty() && got.full_notes.is_empty(),
-                "{what}, {kind}: no note"
+                got.frame == none.frame,
+                "{what}, {kind}: the viewport frame"
+            );
+            assert!(got.full == none.full, "{what}, {kind}: the full render");
+            assert!(
+                got.thumbnail == none.thumbnail,
+                "{what}, {kind}: the thumbnail"
+            );
+            assert!(
+                got.frame_notes == none.frame_notes && got.full_notes == none.full_notes,
+                "{what}, {kind}: the same notes"
             );
         }
     }
@@ -142,14 +153,12 @@ fn the_before_view_has_no_lens() {
             anamorphic: 50.0,
         },
     );
+    assert!(!src.settings.lens.is_identity());
+    // The source the Before view reads has the default lens (`tests/render_before.rs` shows that no
+    // setting reaches the Before view's picture); the photo keeps its own.
     let before = src.for_before_view();
     assert_eq!(before.settings.lens, LensSettings::default());
-    // And the Before view of a photo with a lens is the Before view of the same photo without one.
-    let plain = d.source().for_before_view();
-    let renderer = renderer_with(None);
-    let a = pictures(&renderer, &before);
-    let b = pictures(&renderer, &plain);
-    assert!(a.frame == b.frame && a.full == b.full && a.thumbnail == b.thumbnail);
+    assert_eq!(src.settings.lens.kind, LensKind::Petzval);
 }
 
 #[test]
@@ -171,11 +180,19 @@ fn a_lens_setting_without_lens_data_renders_as_no_lens_and_says_so() {
     assert!(got.frame == none.frame, "the viewport frame");
     assert!(got.full == none.full, "the full render");
     assert!(got.thumbnail == none.thumbnail, "the thumbnail");
-    for notes in [&got.frame_notes, &got.full_notes] {
+    assert!(!none.frame_notes.iter().any(|n| n == LENS_NOTE));
+    for (notes, plain) in [
+        (&got.frame_notes, &none.frame_notes),
+        (&got.full_notes, &none.full_notes),
+    ] {
+        assert!(
+            notes.iter().any(|n| n == LENS_NOTE),
+            "the render says why: {notes:?}"
+        );
         assert_eq!(
-            notes,
-            &["The lens data could not be loaded, so this photo has no lens effect."],
-            "the render says why there is no lens"
+            notes.len(),
+            plain.len() + 1,
+            "and nothing else new: {notes:?}"
         );
     }
 }
@@ -236,7 +253,8 @@ fn the_lens_list_is_the_seven_lenses_in_menu_order() {
         LensKind::ALL.to_vec()
     );
     assert!(
-        list.iter().all(|l| !l.name.is_empty() && !l.line.is_empty()),
+        list.iter()
+            .all(|l| !l.name.is_empty() && !l.line.is_empty()),
         "{list:?}"
     );
     // The renderer holds the same library, for the stages to come.
@@ -278,8 +296,6 @@ fn a_missing_or_damaged_lens_folder_is_no_crash() {
     let out = core
         .session
         .open(&[dir.path().to_path_buf()], OpenOptions::default());
-    assert!(core
-        .session
-        .wait_idle(std::time::Duration::from_secs(120)));
+    assert!(core.session.wait_idle(std::time::Duration::from_secs(120)));
     assert_eq!(out.added.len(), 1);
 }

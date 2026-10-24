@@ -45,7 +45,7 @@ pub use data::{
 };
 pub use error::LensError;
 pub use image::{ImageRef, PixelRect};
-pub use l1::{Ball, BokehPlanes};
+pub use l1::{Ball, BokehPlanes, debug_samples};
 pub use plan::{Axis, FrameInfo, LensPlan};
 pub use planes::{LensPlanes, ReshapeReason, ReshapeReport};
 pub use spectral::CameraResponse;

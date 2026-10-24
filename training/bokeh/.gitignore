@@ -1,0 +1,4 @@
+# Runs, tiles and previews come back from Modal or are built locally; never committed (training/bokeh/README.md).
+runs/
+tiles/
+testdata/

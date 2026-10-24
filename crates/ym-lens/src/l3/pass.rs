@@ -3,7 +3,7 @@
 //! For each output pixel, in `f64`, in a fixed order:
 //!
 //! 1. the glow's **core**, gathered from the restored picture (the input times the clip test's boost) within
-//!    8 px;
+//!    8 px, in four `f32` lanes (red, green, blue);
 //! 2. the **tail plane** (glow tail and veil, made once per photo), read at the pixel's position with a
 //!    Catmull-Rom curve and held at 0 or above;
 //! 3. the **drawn items** (ghosts, starbursts, streaks) whose bounds hold the pixel, in list order;
@@ -23,18 +23,13 @@ use crate::l3::restore::Restore;
 use crate::l3::terms::Terms;
 use crate::plan::LensPlan;
 use crate::planes::LensPlanes;
+use crate::simd::F4;
 
 /// Rows of output a task handles at once (the unit items are culled for).
 const BAND_ROWS: usize = 16;
 
 /// Context L3 needs around a rectangle of a `fw x fh` frame at scale `k`: the core's reach in pixels.
-pub(crate) fn halo(
-    plan: &LensPlan,
-    planes: &LensPlanes,
-    _k: usize,
-    fw: usize,
-    fh: usize,
-) -> usize {
+pub(crate) fn halo(plan: &LensPlan, planes: &LensPlanes, _k: usize, fw: usize, fh: usize) -> usize {
     let terms = Terms::new(plan);
     if terms.a <= 0.0 {
         return 0;
@@ -70,20 +65,15 @@ fn catmull_rom(t: f64, n: usize) -> ([usize; 4], [f64; 4]) {
     (idx, w)
 }
 
-/// The restored light of `rect` of the input, planar `f32`.
-fn restored_plane(input: &ImageRef, rs: &Restore, rect: PixelRect) -> Vec<f32> {
-    let n = rect.w * rect.h;
-    let mut out = vec![0.0f32; 3 * n];
-    let (r, rest) = out.split_at_mut(n);
-    let (g, b) = rest.split_at_mut(n);
+/// The restored light of `rect` of the input: one `(red, green, blue, 0)` vector per pixel, row-major.
+fn restored_pixels(input: &ImageRef, rs: &Restore, rect: PixelRect) -> Vec<[f32; 4]> {
+    let mut out = vec![[0.0f32; 4]; rect.w * rect.h];
     let plane_n = input.width * input.height;
-    r.par_chunks_mut(rect.w)
-        .zip(g.par_chunks_mut(rect.w))
-        .zip(b.par_chunks_mut(rect.w))
+    out.par_chunks_mut(rect.w)
         .enumerate()
-        .for_each(|(row, ((rr, gr), br))| {
+        .for_each(|(row, px)| {
             let y = rect.y + row - input.y0;
-            for col in 0..rect.w {
+            for (col, p) in px.iter_mut().enumerate() {
                 let at = y * input.width + (rect.x + col - input.x0);
                 let x = [
                     f64::from(input.data[at]),
@@ -91,19 +81,18 @@ fn restored_plane(input: &ImageRef, rs: &Restore, rect: PixelRect) -> Vec<f32> {
                     f64::from(input.data[2 * plane_n + at]),
                 ];
                 let v = rs.restored(x);
-                rr[col] = v[0] as f32;
-                gr[col] = v[1] as f32;
-                br[col] = v[2] as f32;
+                *p = [v[0] as f32, v[1] as f32, v[2] as f32, 0.0];
             }
         });
     out
 }
 
-/// The core gather of the pixel `(x, y)`: the restored light within the taps' reach.
+/// The core gather of the pixel `(x, y)`: the restored light within the taps' reach, in four `f32` lanes (the
+/// sum of at most 289 products, one rounded operation per lane, the same bits on every platform).
 #[inline]
 fn core_at(
     taps: &CoreTaps,
-    restored: &[f32],
+    restored: &[[f32; 4]],
     region: PixelRect,
     frame: &Frame,
     x: usize,
@@ -111,27 +100,23 @@ fn core_at(
 ) -> [f64; 3] {
     let rr = taps.radius as isize;
     let side = 2 * taps.radius + 1;
-    let n = region.w * region.h;
     let dx_lo = (-rr).max(-(x as isize));
     let dx_hi = rr.min(frame.w as isize - 1 - x as isize);
     let dy_lo = (-rr).max(-(y as isize));
     let dy_hi = rr.min(frame.h as isize - 1 - y as isize);
-    let mut out = [0.0; 3];
-    for c in 0..3 {
-        let w = &taps.weights[c];
-        let plane = &restored[c * n..(c + 1) * n];
-        let mut s = 0.0;
-        for dy in dy_lo..=dy_hi {
-            let row = (y as isize + dy) as usize - region.y;
-            let wrow = ((dy + rr) as usize) * side;
-            for dx in dx_lo..=dx_hi {
-                let col = (x as isize + dx) as usize - region.x;
-                s += w[wrow + (dx + rr) as usize] * f64::from(plane[row * region.w + col]);
-            }
+    let mut sum = F4::splat(0.0);
+    for dy in dy_lo..=dy_hi {
+        let row = ((y as isize + dy) as usize - region.y) * region.w;
+        let wrow = ((dy + rr) as usize) * side;
+        for dx in dx_lo..=dx_hi {
+            let col = (x as isize + dx) as usize - region.x;
+            let w = F4::load(&taps.lanes[wrow + (dx + rr) as usize]);
+            let p = F4::load(&restored[row + col]);
+            sum = sum.add(w.mul(p));
         }
-        out[c] = s;
     }
-    out
+    let s = sum.to_array();
+    [f64::from(s[0]), f64::from(s[1]), f64::from(s[2])]
 }
 
 /// L3 on `out`: `z` is the output of L2 over `out`; `input` is the input of L1 (the core reads it).
@@ -177,7 +162,7 @@ pub(crate) fn apply(
     let restored = if taps.is_empty() {
         Vec::new()
     } else {
-        restored_plane(input, &rs, region)
+        restored_pixels(input, &rs, region)
     };
 
     // The tail plane's sample positions: one set per column and per row of the tile.

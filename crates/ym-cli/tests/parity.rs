@@ -86,9 +86,24 @@ impl App {
         Self::open_full(files, method, slot, false)
     }
 
+    /// Like [`App::open`] over another data folder (one with synthetic lenses, `Sandbox::data_with_lenses`).
+    fn open_in(files: &[&Path], data: &Path) -> Self {
+        Self::open_full_in(data, files, DEFAULT_METHOD, None, false)
+    }
+
     fn open_full(files: &[&Path], method: Method, slot: Option<GpuSlot>, fake: bool) -> Self {
+        Self::open_full_in(&data_dir(), files, method, slot, fake)
+    }
+
+    fn open_full_in(
+        data: &Path,
+        files: &[&Path],
+        method: Method,
+        slot: Option<GpuSlot>,
+        fake: bool,
+    ) -> Self {
         let home = tempfile::tempdir().expect("tempdir");
-        let mut options = CoreOptions::new(data_dir(), home.path().to_path_buf());
+        let mut options = CoreOptions::new(data.to_path_buf(), home.path().to_path_buf());
         // What the CLI does: no thumbnail renders competing with the export.
         options.thumbnails = false;
         options.render.demosaic = method;
@@ -713,6 +728,66 @@ fn a_colour_warp_is_the_same_picture_through_the_app_and_the_binary() {
         );
         assert_same_files(&from_app, &from_cli, &format!("colour warp, {name}"));
     }
+}
+
+#[test]
+fn a_lens_is_the_same_file_through_the_app_the_options_and_a_settings_file() {
+    // `docs/21` section 14: `ym render --lens vintage --flares 60 --anamorphic 50` equals the same
+    // settings through `--settings` and the app's export, byte for byte. The settings travel in the
+    // file's `ym:Settings`, so the three agree on every part of the lens; the pixels follow when
+    // the stages arrive (the lens is deterministic, so the bytes will keep agreeing).
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    let data = sb.data_with_lenses(true);
+    let library = ym_lens::LensLibrary::from_dir(&data.join("lenses")).expect("lenses");
+    let start_edges = library
+        .lenses()
+        .iter()
+        .find(|l| l.kind == ym_core::settings::LensKind::Vintage)
+        .expect("vintage")
+        .start_edges;
+    let app = App::open_in(&[&arw], &data);
+    let patch = SettingsPatch {
+        lens: Some(ym_core::settings::LensPatch {
+            kind: Some(ym_core::settings::LensKind::Vintage),
+            flares: Some(60.0),
+            edges: Some(start_edges),
+            anamorphic: Some(50.0),
+        }),
+        ..SettingsPatch::default()
+    };
+    app.core
+        .session
+        .update_settings(app.photo, &patch)
+        .expect("patch");
+    let data_env = data.to_str().expect("utf-8");
+    let from_app = app.export(ExportOptions::default(), &sb.root().join("app"));
+    let from_options = cli_export_env(
+        &sb,
+        &[&arw],
+        &["--lens", "vintage", "--flares", "60", "--anamorphic", "50"],
+        &sb.root().join("options"),
+        &[("YELLOWMOON_DATA", data_env)],
+    );
+    assert_same_files(&from_app, &from_options, "lens as options");
+    let file = sb.root().join("lens.json");
+    std::fs::write(
+        &file,
+        serde_json::json!({ "lens": { "kind": "vintage", "flares": 60, "edges": start_edges, "anamorphic": 50 } })
+            .to_string(),
+    )
+    .expect("write");
+    let from_file = cli_export_env(
+        &sb,
+        &[&arw],
+        &["--settings", file.to_str().expect("utf-8")],
+        &sb.root().join("file"),
+        &[("YELLOWMOON_DATA", data_env)],
+    );
+    assert_same_files(&from_app, &from_file, "lens as a settings file");
+    // And the file says which lens it was made with.
+    let xmp = String::from_utf8_lossy(&bytes(&from_app[0])).into_owned();
+    assert!(xmp.contains("vintage"), "ym:Settings holds the lens");
 }
 
 #[test]

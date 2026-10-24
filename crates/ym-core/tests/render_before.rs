@@ -144,6 +144,17 @@ fn edits() -> Vec<Edit> {
         ),
         ("look intensity", Box::new(|s| s.look_intensity = 20.0)),
         (
+            "lens",
+            Box::new(|s| {
+                s.lens = ym_core::settings::LensSettings {
+                    kind: ym_core::settings::LensKind::Vintage,
+                    flares: 60.0,
+                    edges: 50.0,
+                    anamorphic: 40.0,
+                }
+            }),
+        ),
+        (
             "curve",
             Box::new(|s| {
                 s.curve.luma = vec![[0.0, 0.1], [0.3, 0.2], [0.7, 0.9], [1.0, 1.0]];

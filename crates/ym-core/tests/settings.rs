@@ -678,7 +678,10 @@ fn the_schema_refuses_what_the_core_refuses() {
             "warp with an unknown field",
             json!({ "color_warp": { "pins": [], "strength": 1 } }),
         ),
-        ("lens of an unknown kind", json!({ "lens": { "kind": "leica" } })),
+        (
+            "lens of an unknown kind",
+            json!({ "lens": { "kind": "leica" } }),
+        ),
         (
             "lens kind in capitals",
             json!({ "lens": { "kind": "Vintage" } }),

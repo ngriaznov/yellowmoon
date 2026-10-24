@@ -10,6 +10,7 @@ Commands:
   render  Develop and export photos. Defaults match the app: automatic development and the default look. Options change them for this run only
   info    Print metadata and the automatic estimates without rendering
   looks   Manage the look library
+  lenses  Show the lenses that `ym render --lens` can give a photo
   doctor  Print the diagnostics that go into a bug report
   help    Print this message or the help of the given subcommand(s)
 

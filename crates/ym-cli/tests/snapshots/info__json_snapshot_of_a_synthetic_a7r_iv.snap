@@ -212,6 +212,12 @@ expression: v
       "kind": "manual",
       "value": 0.0
     },
+    "lens": {
+      "anamorphic": 0.0,
+      "edges": 0.0,
+      "flares": 0.0,
+      "kind": "default"
+    },
     "light_source": "auto",
     "look": "builtin:signature",
     "look_intensity": 100.0,

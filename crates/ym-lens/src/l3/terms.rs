@@ -27,8 +27,6 @@ pub(crate) struct Terms {
     pub(crate) streak: f64,
     /// The widening of ghosts along the axis, `1 + kappa_g (q - 1)`.
     pub(crate) stretch: f64,
-    /// The starburst's strength from the f-number.
-    pub(crate) strength: f64,
 }
 
 impl Terms {
@@ -40,10 +38,7 @@ impl Terms {
         let f = plan.flares();
         let q = plan.q();
         let anam = ((q - 1.0) / (att.q_max - 1.0)).clamp(0.0, 1.0);
-        let n = plan
-            .frame()
-            .f_number
-            .unwrap_or(STARBURST_DEFAULT_F_NUMBER);
+        let n = plan.frame().f_number.unwrap_or(STARBURST_DEFAULT_F_NUMBER);
         let full = fl.starburst.f_number_full;
         let strength = if full <= STARBURST_MIN_F_NUMBER {
             f64::from(u8::from(n >= full))
@@ -54,7 +49,8 @@ impl Terms {
         let streak = att.streak.fraction * anam;
         let att_ghosts: f64 = att.ghosts.iter().map(|g| g.fraction).sum::<f64>() * anam;
         let lens_ghosts: f64 = fl.ghosts.iter().map(|g| g.fraction).sum();
-        let a = f * (fl.glow.fraction + fl.veil.fraction + lens_ghosts + burst + streak + att_ghosts);
+        let a =
+            f * (fl.glow.fraction + fl.veil.fraction + lens_ghosts + burst + streak + att_ghosts);
         Terms {
             f,
             a,
@@ -62,7 +58,6 @@ impl Terms {
             burst,
             streak,
             stretch: 1.0 + att.ghost_stretch * (q - 1.0),
-            strength,
         }
     }
 }

@@ -1,0 +1,13 @@
+---
+source: crates/ym-cli/tests/cli.rs
+expression: "help(&[\"lenses\", \"list\"])"
+---
+List the lenses with their ids, names, lines, starting amounts and the design each was computed from
+
+Usage: ym lenses list [OPTIONS]
+
+Options:
+      --json     Print the list as JSON
+  -q, --quiet    Print only errors on stderr
+  -v, --verbose  Print what is happening on stderr: stages, timings and notes
+  -h, --help     Print help

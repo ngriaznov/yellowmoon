@@ -391,3 +391,9 @@ pub(crate) fn apply<'a>(
         data,
     })
 }
+
+/// Temporary: development helper.
+#[doc(hidden)]
+pub fn debug_samples(plane: &ImageRef) -> (usize, usize, f64, f64, Vec<(u32, f32, f32, u8)>) {
+    detector::debug_samples(plane)
+}

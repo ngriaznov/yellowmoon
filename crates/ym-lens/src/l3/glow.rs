@@ -14,9 +14,9 @@
 //! The core is at most 0.0015 half-diagonals and at most 8 px of the full-resolution frame, and it is gathered
 //! per tile at the tile's scale ([`CoreTaps`]); the tail part is smooth and goes to the tail plane.
 //!
-//! Both parts are normalised on the pixel grid they are used on: the core's taps sum to the core's mass
-//! `m_c = integral of K_c s`, and the tail kernel on the tail plane sums to `1 - m_c`, so the two add up to
-//! exactly one unit of light at every scale.
+//! Both parts are normalised on the pixel grid they are used on: the core's taps sum to `a_g m_c` with the core's
+//! mass `m_c = integral of K_c s`, and the tail kernel on the tail plane sums to `a_g (1 - m_c)`, so the two add
+//! up to exactly the glow's fraction `a_g` of light at every scale.
 
 use crate::consts::{
     GLOW_CORE_FLAT, GLOW_CORE_MAX_HD, GLOW_CORE_MAX_PX, GLOW_TABLE_NODES, GLOW_TAPER_START,
@@ -40,6 +40,8 @@ pub(crate) struct GlowProfiles {
     m_core: [f64; 3],
     /// The veiling kernel's radius.
     veil_radius: f64,
+    /// The glow's fraction of the light at Flares 100, `a_g`.
+    fraction: f64,
 }
 
 impl GlowProfiles {
@@ -98,6 +100,7 @@ impl GlowProfiles {
             k,
             m_core: [0.0; 3],
             veil_radius: plan.lens().flare.veil.radius,
+            fraction: g.fraction,
         };
         for c in 0..3 {
             let mut mass = 0.0;
@@ -111,11 +114,6 @@ impl GlowProfiles {
             profiles.m_core[c] = mass.clamp(0.0, 1.0);
         }
         profiles
-    }
-
-    /// The core's radius in half-diagonals.
-    pub(crate) fn core_radius(&self) -> f64 {
-        self.core_radius
     }
 
     /// The tail's reach in half-diagonals.
@@ -171,11 +169,14 @@ impl GlowProfiles {
     /// The core's taps for a frame whose half-diagonal is `half_diag` pixels.
     pub(crate) fn core_taps(&self, half_diag: f64) -> CoreTaps {
         let r_px = self.core_radius * half_diag;
-        let empty = self.core_radius <= 0.0 || self.m_core.iter().all(|m| *m <= 0.0);
+        let empty = self.core_radius <= 0.0
+            || self.fraction <= 0.0
+            || self.m_core.iter().all(|m| *m <= 0.0);
         if empty {
             return CoreTaps {
                 radius: 0,
                 weights: [Vec::new(), Vec::new(), Vec::new()],
+                lanes: Vec::new(),
             };
         }
         let radius = (libm::floor(r_px) as usize).min(GLOW_CORE_MAX_PX as usize);
@@ -191,25 +192,41 @@ impl GlowProfiles {
                 sum += *v;
             }
             if sum > 0.0 {
-                let scale = self.m_core[c] / sum;
+                let scale = self.fraction * self.m_core[c] / sum;
                 for v in &mut w {
                     *v *= scale;
                 }
             }
             w
         });
-        CoreTaps { radius, weights }
+        let lanes = (0..weights[0].len())
+            .map(|q| {
+                [
+                    weights[0][q] as f32,
+                    weights[1][q] as f32,
+                    weights[2][q] as f32,
+                    0.0,
+                ]
+            })
+            .collect();
+        CoreTaps {
+            radius,
+            weights,
+            lanes,
+        }
     }
 }
 
 /// The glow core of one frame size: `(2 radius + 1)^2` weights per channel, row-major, summing to the core's
-/// mass.
+/// mass times the glow's fraction of light, `a_g m_c`.
 #[derive(Clone, Debug)]
 pub(crate) struct CoreTaps {
     /// The taps reach this many pixels from the centre.
     pub(crate) radius: usize,
     /// The weights per channel (empty when the lens has no core).
     pub(crate) weights: [Vec<f64>; 3],
+    /// The same weights as one four-lane vector per tap (red, green, blue and a zero), for the gather.
+    pub(crate) lanes: Vec<[f32; 4]>,
 }
 
 impl CoreTaps {
@@ -262,8 +279,8 @@ mod tests {
             assert!((mass - 1.0).abs() < 1e-9, "channel {c}: {mass}");
             assert!(g.m_core[c] > 0.0 && g.m_core[c] < 0.1, "{:?}", g.m_core);
         }
-        // 8 px of a 7211 px half-diagonal is smaller than 0.0015.
-        assert!(g.core_radius() <= 8.0 / 3605.0 + 1e-12);
+        // 0.0015 half-diagonals is 5.4 px of a 3605 px half-diagonal, below the 8 px limit.
+        assert!((g.core_radius - 0.0015).abs() < 1e-15);
     }
 
     #[test]
@@ -275,7 +292,8 @@ mod tests {
             let taps = g.core_taps(full / k);
             for c in 0..3 {
                 let sum: f64 = taps.weights[c].iter().sum();
-                assert!((sum - g.m_core[c]).abs() < 1e-15, "k={k} c={c}");
+                let want = g.fraction * g.m_core[c];
+                assert!((sum - want).abs() < 1e-15, "k={k} c={c}");
             }
             assert!(taps.radius <= 8);
         }
@@ -290,9 +308,9 @@ mod tests {
         let p = plan(600, 400);
         let g = GlowProfiles::new(&p);
         assert_eq!(g.window(0.0), 1.0);
-        assert_eq!(g.window(g.core_radius()), 0.0);
-        assert_eq!(g.window(2.0 * g.core_radius()), 0.0);
-        let mid = g.window(0.85 * g.core_radius());
+        assert_eq!(g.window(g.core_radius), 0.0);
+        assert_eq!(g.window(2.0 * g.core_radius), 0.0);
+        let mid = g.window(0.85 * g.core_radius);
         assert!(mid > 0.0 && mid < 1.0);
     }
 }
