@@ -27,7 +27,10 @@ whose label is unambiguous (weight at least 0.6), in the spec's units `b = r / h
 - calibration: for ten bins of the predicted scale beta, the mean beta against the mean |log error| (a Laplace scale
   is the expected absolute error), and `ece` the weighted mean gap between them;
 - the same numbers for the classical baseline (`classical.py`) on the first `baseline_n` samples, next to the
-  model's numbers on the same samples.
+  model's numbers on the same samples;
+- `real_sharp`: the false-positive rate on *real* sharp photographs, the go/no-go's second test: the held-out tiles
+  themselves (they passed the sharpness filter, so the truth is "in focus"), no synthesis, the share of pixels the
+  network (and the baseline) puts at `b >= 2 * b_min`, ungated and gated.
 """
 
 import argparse
@@ -190,6 +193,32 @@ def _round(x):
     return x
 
 
+def real_sharp(model: BokehNet, ts: sources.TileSet, pool: list[int], n: int, baseline_n: int) -> dict:
+    """False positives on real sharp tiles (module docstring): shares of pixels at `b >= 2 b_min`."""
+    from training.bokeh.encode import srgb_to_linear
+
+    picks = pool[::max(1, len(pool) // max(1, n))][:n]
+    cnt = {k: [0, 0, 0] for k in ("model", "classical")}  # pixels, predicted blurred, predicted blurred with confidence
+    for j, i in enumerate(picks):
+        rgb, _, _, hd = ts.get(i)
+        e = encode_t(srgb_to_linear(torch.from_numpy(rgb.copy()).permute(2, 0, 1).float().unsqueeze(0) / 255))
+        with torch.no_grad():
+            r, _, conf = radius_and_confidence(model(e))
+        maps = {"model": ((r[0] / hd).numpy(), conf[0].numpy())}
+        if j < baseline_n:
+            rad, cf = classical.estimate(classical.gray_from_encoded(e[0].double().numpy()))
+            h2, w2 = rad.shape[0] // 2, rad.shape[1] // 2
+            half = lambda a: a[:h2 * 2, :w2 * 2].reshape(h2, 2, w2, 2).mean((1, 3))  # noqa: E731
+            maps["classical"] = (half(rad) / hd, half(cf))
+        for key, (b_hat, c) in maps.items():
+            blurred = b_hat >= 2 * B_MIN
+            cnt[key][0] += b_hat.size
+            cnt[key][1] += int(blurred.sum())
+            cnt[key][2] += int((blurred & (c >= GATE)).sum())
+    return {"tiles": len(picks), **{k: {"fp_rate": v[1] / max(1, v[0]), "fp_rate_gated": v[2] / max(1, v[0])}
+                                    for k, v in cnt.items() if v[0]}}
+
+
 def evaluate(model: BokehNet, folder: Path, config: dict, n: int, seed: int, device, baseline_n: int = 0,
              sheet: Path | None = None) -> dict:
     """The validation numbers of `n` held-out samples (module docstring). The baseline runs on the first `baseline_n`."""
@@ -245,6 +274,8 @@ def evaluate(model: BokehNet, folder: Path, config: dict, n: int, seed: int, dev
             done += take
             k += 1
     out = {"samples": done, "model": acc.result()}
+    if baseline_n:
+        out["real_sharp"] = real_sharp(model, ts, pool, min(48, len(pool)), min(16, baseline_n))
     if baseline_n:
         out["baseline_subset"] = {"samples": min(baseline_n, done), "model": acc_sub.result(),
                                   "classical": {kk: v for kk, v in acc_base.result().items() if kk not in ("calibration", "ece")}}

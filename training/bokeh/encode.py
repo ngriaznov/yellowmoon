@@ -22,7 +22,8 @@ The network answers per pixel (output at half the input's resolution):
     s  = log(beta) beta the Laplace scale of the error of mu (a relative error: beta 0.25 is about 25 %)
 
 The app turns that into the spec's units (`docs/21` section 7) with the plane's half-diagonal `hd` in pixels
-(`hypot(w, h) / 2` of the reduced plane):  b = exp(mu) / hd  and  c = exp(-exp(s) / CONF_BETA0).
+(`hypot(w, h) / 2` of the reduced plane, before it is padded to a multiple of 32; the padding is replicated edge
+pixels and the output is cropped back):  b = exp(mu) / hd  and  c = exp(-exp(s) / CONF_BETA0).
 """
 
 import numpy as np

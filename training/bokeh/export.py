@@ -127,7 +127,7 @@ def metadata(model: BokehNet, source: str) -> dict[str, str]:
         "input_mean": repr(encode.INPUT_MEAN), "input_std": repr(encode.INPUT_STD),
         "luma": json.dumps(list(encode.LUMA)), "median": "lower median of luma over the plane; max with 1e-3 * mean; at least 1e-12",
         "output": "channel 0 mu = log r (pixels of the 1024-px-long frame, floor 1), channel 1 s = log beta",
-        "b": "b = exp(mu) / hd, hd = hypot(w, h) / 2 of the network's input in pixels",
+        "b": "b = exp(mu) / hd, hd = hypot(w, h) / 2 of the reduced plane in pixels, before padding to a multiple of 32",
         "conf": "c = exp(-exp(s) / conf_beta0)", "conf_beta0": repr(encode.CONF_BETA0),
         "b_min": repr(encode.B_MIN), "b_cap": repr(encode.B_CAP),
     }
