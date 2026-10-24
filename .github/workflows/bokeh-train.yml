@@ -44,8 +44,8 @@ jobs:
       # Modal's tokens never contain whitespace) and exports the clean values as MODAL_TOKEN_ID and MODAL_TOKEN_SECRET.
       SECRET_MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       SECRET_MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      ENTRY: results
-      ARGS: ""
+      ENTRY: train
+      ARGS: "--budget 3 --minutes 100 --init-from bokeh-2 --lr 0.001 --run bokeh-3"
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
