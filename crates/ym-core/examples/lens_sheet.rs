@@ -10,7 +10,7 @@
 //!   --long-edge N      long edge of the fit frames in pixels (default 1500)
 //!   --quality Q        JPEG quality, 50 to 100 (default 90)
 //!   --only a,b,c       render only these variants (names below)
-//!   --resume           skip a photo whose last variant is already written
+//!   --resume           skip the variants whose .jpg exists (and the plane dump when bokeh.json exists)
 //!   --dump-planes      also write the lens plane, the blur map b and the confidence c
 //!   --light-planes     with --dump-planes: no .f32 files (saves disk), only the json and the PNGs
 //!   --progress FILE    append "START/DONE/FAIL" lines here (default <out>/progress.txt)
@@ -37,6 +37,13 @@
 //!
 //! The variants are rendered in an order that builds the lens planes once per lens (the renderer keeps
 //! one set of planes per photo, and a plan with Anamorphic needs the blur map).
+//!
+//! Speed: the CPU lens at the fit view costs time in proportion to the photo's bright light sources
+//! (L3 draws every ghost, streak and starburst of up to 256 source cells at every pixel they reach).
+//! A photo without such lights takes 2 to 10 s per variant, one with 20 cells 3 to 10 minutes, one that
+//! reaches the 256 cells more than that, so build this example with
+//! `CARGO_PROFILE_DEV_OPT_LEVEL=3 CARGO_PROFILE_DEV_DEBUG=false CARGO_INCREMENTAL=0` and copy the binary
+//! out of `target/` (point `YELLOWMOON_DATA` at a copy of `data/` to keep a run on one lens data version).
 //!
 //! With `--dump-planes` it writes, per photo, in `<out>/<stem>/`: `lens_plane.f32` (the raw group at
 //! `k_L` as the lens receives it: camera RGB, scene linear, white-balanced with g0, planar R then G
@@ -721,7 +728,13 @@ fn render_photo(cx: &Context<'_>, file: &Path, stem: &str, dir: &Path) -> Fallib
         lines.flush()?;
         if cx.args.dump_planes && !(cx.args.resume && dir.join("bokeh.json").exists()) {
             let t = Instant::now();
-            match dump_planes(&base, cx.lib, cx.core.data_root(), dir, cx.args.light_planes) {
+            match dump_planes(
+                &base,
+                cx.lib,
+                cx.core.data_root(),
+                dir,
+                cx.args.light_planes,
+            ) {
                 Ok(info) => {
                     writeln!(
                         lines,

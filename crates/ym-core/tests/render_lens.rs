@@ -1533,6 +1533,80 @@ fn an_export_with_the_lens_on_the_device_is_the_cpu_export_within_tolerance() {
     );
 }
 
+/// D7 for the lens kernels (`docs/17-gpu.md`): viewport frames of the same photo, lens included, rendered from
+/// inside the export (at every progress report, so between its tiles) change not a byte of the export, and
+/// the frames equal the frame rendered alone.
+#[test]
+fn viewport_jobs_between_the_lens_tiles_of_an_export_change_nothing() {
+    let Some(gpu) = gpu() else { return };
+    let d = developed(800, 600);
+    let patch: SettingsPatch = serde_json::from_str(
+        r#"{ "lens": { "kind": "vintage", "flares": 60, "edges": 50, "anamorphic": 50 } }"#,
+    )
+    .expect("patch");
+    d.session.update_settings(d.id, &patch).expect("settings");
+    let photo = ExportPhoto::from_session(&d.session, d.id).expect("photo");
+    let src = d.source();
+    let state = cell(576.0, 384.0);
+    let home = tempfile::tempdir().expect("home");
+    let renderer = Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            gpu: Some(Arc::clone(&gpu)),
+            gpu_stages: GpuStages::ALL,
+            full_tile_px: 256,
+            ..options()
+        },
+    )
+    .expect("render thread");
+    let ctx = ExportContext::new(renderer).with_home(Some(home.path().to_path_buf()));
+    let export_once = |progress: Option<&(dyn Fn(f32) + Sync)>| {
+        let out = tempfile::tempdir().expect("out");
+        let opts = ExportOptions {
+            format: FormatKind::Png,
+            bit_depth: BitDepth::Sixteen,
+            destination: Some(out.path().to_path_buf()),
+            if_exists: IfExists::Replace,
+            ..ExportOptions::default()
+        };
+        let report = export_photo(
+            &ctx,
+            &photo,
+            &ExportParams::new(opts),
+            &ExportControl {
+                cancel: CancelToken::new(),
+                progress,
+            },
+        )
+        .expect("export");
+        assert_eq!(report.device, ComputeDevice::Gpu, "{:?}", report.notes);
+        std::fs::read(&report.path).expect("read")
+    };
+    let alone = fresh_frame(ctx.renderer(), &src, &state).rgba;
+    let reference = export_once(None);
+    let injected: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let between = |_: f32| {
+        if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+            let f = fresh_frame(ctx.renderer(), &src, &state).rgba;
+            injected.lock().expect("lock").push(f);
+        }
+    };
+    let bytes = export_once(Some(&between));
+    assert!(
+        bytes == reference,
+        "viewport jobs between the tiles changed the export"
+    );
+    let injected = injected.into_inner().expect("lock");
+    assert!(!injected.is_empty(), "no progress was reported");
+    for f in &injected {
+        assert!(
+            *f == alone,
+            "a frame rendered during the export differs from the frame rendered alone"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Timing (not part of the suite)
 // ---------------------------------------------------------------------------------------------

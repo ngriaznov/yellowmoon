@@ -40,6 +40,7 @@ use ym_core::export::{
 use ym_core::export_queue::{ExportEvent, ExportJob, ExportQueue, ExportSink};
 use ym_core::pipeline::{ComputeDevice, NeutralOnly, RenderOptions, Renderer};
 use ym_core::session::{ApplyScope, OpenOptions, Session};
+use ym_core::settings::SettingsPatch;
 use ym_export::{BitDepth, ExportOptions, FormatKind, IfExists, Size, TiffCompression};
 use ym_gpu::device::{Gpu, GpuConfig, GpuFault, gpu_required_by_env};
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
@@ -522,5 +523,184 @@ fn a_fault_in_the_first_photo_of_a_queue_reaches_the_second_only_as_far_as_the_r
             }
             assert_eq!(ctx.renderer().ledger().used(), 0, "{cell}");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The lens kernels (`docs/21` section 9)
+// ---------------------------------------------------------------------------------------------
+
+/// A poison device whose jobs may run long: the lens kernels are heavy for a software rasteriser, and the
+/// device's own hang limit (30 s) would fire on a loaded development machine.
+fn start_lens_device() -> Option<Arc<Gpu>> {
+    match Gpu::start(GpuConfig {
+        poison: true,
+        readback_timeout: std::time::Duration::from_secs(900),
+        ..GpuConfig::default()
+    }) {
+        Ok(g) => Some(Arc::new(g)),
+        Err(e) => {
+            assert!(
+                !gpu_required_by_env(),
+                "YM_REQUIRE_GPU is set but no GPU adapter could be opened: {e}"
+            );
+            let _ = writeln!(
+                std::io::stderr(),
+                "\n* GPU TESTS SKIPPED in gpu_faults: {e}\n"
+            );
+            None
+        }
+    }
+}
+
+/// A renderer whose raw stages run on the CPU and whose lens, colour pass and export tail run on the device:
+/// the lens kernels are the first the device meets, so a `shader` fault bites there, and the first tile job
+/// that counts for `tile@N` is a lens tile.
+fn lens_renderer(gpu: Option<&Arc<Gpu>>, strict: bool) -> Renderer {
+    Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            gpu: gpu.cloned(),
+            gpu_stages: if gpu.is_some() {
+                GpuStages::ALL
+                    .difference(GpuStages::RAW_CHAIN)
+                    .difference(GpuStages::RAW_FRONT)
+            } else {
+                GpuStages::NONE
+            },
+            gpu_strict: strict,
+            full_tile_px: 256,
+            ..RenderOptions::default()
+        },
+    )
+    .expect("render thread")
+}
+
+fn lens_context(home: &Path, gpu: Option<&Arc<Gpu>>, strict: bool) -> ExportContext {
+    ExportContext::new(lens_renderer(gpu, strict)).with_home(Some(home.to_path_buf()))
+}
+
+/// The photo of the lens cells: the vintage lens with all three amounts up.
+fn lens_photo() -> (Developed, ExportPhoto) {
+    let d = Developed::new(&scene(3, 0.5), MODEL);
+    let patch: SettingsPatch = serde_json::from_str(
+        r#"{ "lens": { "kind": "vintage", "flares": 60, "edges": 50, "anamorphic": 50 } }"#,
+    )
+    .expect("patch");
+    d.session.update_settings(d.id, &patch).expect("settings");
+    let photo = ExportPhoto::from_session(&d.session, d.id).expect("photo");
+    (d, photo)
+}
+
+fn lens_png(out: &Path) -> ExportOptions {
+    ExportOptions {
+        format: FormatKind::Png,
+        bit_depth: BitDepth::Sixteen,
+        destination: Some(out.to_path_buf()),
+        if_exists: IfExists::Replace,
+        size: Size::Full,
+        ..ExportOptions::default()
+    }
+}
+
+/// A device error in the lens kernels makes the whole export again on the CPU: the file is the CPU export of
+/// the photo with the lens, the report says `device = cpu` and carries the note, and the device's ledger is
+/// back at its baseline; under the strict policy the photo fails with the kind `gpu` and writes nothing. The
+/// `lost` and `shader` cells need a device of their own; the lens is the first stage that meets the fault
+/// (the raw stages are on the CPU), so the fault is the lens kernels'.
+#[test]
+fn a_fault_in_the_lens_kernels_makes_the_whole_photo_again_on_the_cpu() {
+    let Some(shared) = start_lens_device() else { return };
+    let (_d, photo) = lens_photo();
+    let home = tempfile::tempdir().expect("home");
+    let want = {
+        let out = tempfile::tempdir().expect("out");
+        let ctx = lens_context(home.path(), None, false);
+        let r = run(&ctx, &photo, lens_png(out.path()), &ExportControl::none()).expect("cpu export");
+        assert_eq!(r.device, ComputeDevice::Cpu);
+        std::fs::read(&r.path).expect("read")
+    };
+    // The device export of the same photo, for the cells in which the fault does not fire.
+    let faults = [
+        ("oom", GpuFault::OutOfBudget, false),
+        ("shader", GpuFault::Shader, true),
+        ("lost", GpuFault::Lost, true),
+        ("tile@1", GpuFault::FailTile(1), false),
+        ("tile@2", GpuFault::FailTile(2), false),
+    ];
+    for (name, fault, fresh) in faults {
+        for strict in [false, true] {
+            let own = if fresh {
+                start_lens_device().expect("a device")
+            } else {
+                Arc::clone(&shared)
+            };
+            let ctx = lens_context(home.path(), Some(&own), strict);
+            let baseline = pool_in_use(&own);
+            own.set_fault(Some(fault));
+            let out = tempfile::tempdir().expect("out");
+            let result = run(&ctx, &photo, lens_png(out.path()), &ExportControl::none());
+            own.set_fault(None);
+            let cell = format!("{name}, {}", if strict { "strict" } else { "falling back" });
+            if strict {
+                let err = result.expect_err(&format!("{cell}: a strict export must fail"));
+                assert_eq!(err.kind(), "gpu", "{cell}: {err}");
+                assert!(names_in(out.path()).is_empty(), "{cell}: a file was left");
+            } else {
+                let r = result.unwrap_or_else(|e| panic!("{cell}: {e}"));
+                assert!(
+                    r.notes.iter().any(|n| n.starts_with(FALLBACK_NOTE)),
+                    "{cell}: {:?}",
+                    r.notes
+                );
+                assert_eq!(r.device, ComputeDevice::Cpu, "{cell}: {:?}", r.notes);
+                assert!(
+                    std::fs::read(&r.path).expect("read") == want,
+                    "{cell}: the fallback is not the CPU export"
+                );
+                assert_eq!(names_in(out.path()).len(), 1, "{cell}: one file, no temporary");
+            }
+            assert_eq!(ctx.renderer().ledger().used(), 0, "{cell}: host ledger");
+            if !matches!(fault, GpuFault::Lost) {
+                assert_eq!(pool_in_use(&own), baseline, "{cell}: the device ledger");
+            }
+        }
+    }
+}
+
+/// A cancel in the middle of the lens jobs ends the export cleanly: no file, nothing resident, and the
+/// next export of the photo is the uninterrupted one, made on the device.
+#[test]
+fn a_cancel_in_the_lens_kernels_ends_the_export_cleanly_and_the_next_one_is_whole() {
+    let Some(gpu) = start_lens_device() else { return };
+    let (_d, photo) = lens_photo();
+    let home = tempfile::tempdir().expect("home");
+    let ctx = lens_context(home.path(), Some(&gpu), false);
+    let reference = {
+        let out = tempfile::tempdir().expect("out");
+        let r = run(&ctx, &photo, lens_png(out.path()), &ExportControl::none()).expect("export");
+        assert_eq!(r.device, ComputeDevice::Gpu, "{:?}", r.notes);
+        std::fs::read(&r.path).expect("read")
+    };
+    let baseline = pool_in_use(&gpu);
+    for at in [1_u64, 3] {
+        let out = tempfile::tempdir().expect("out");
+        gpu.set_fault(Some(GpuFault::CancelAtJob(at)));
+        let result = run(&ctx, &photo, lens_png(out.path()), &ExportControl::none());
+        gpu.set_fault(None);
+        match result {
+            Err(e) => assert!(e.is_cancelled(), "cancel@{at}: {e}"),
+            Ok(r) => panic!("cancel@{at}: the export finished ({:?}, {:?})", r.device, r.notes),
+        }
+        assert!(names_in(out.path()).is_empty(), "cancel@{at}: a file was left");
+        assert_eq!(pool_in_use(&gpu), baseline, "cancel@{at}");
+        assert_eq!(ctx.renderer().ledger().used(), 0, "cancel@{at}");
+        let out = tempfile::tempdir().expect("out");
+        let again = run(&ctx, &photo, lens_png(out.path()), &ExportControl::none()).expect("export");
+        assert_eq!(again.device, ComputeDevice::Gpu, "cancel@{at}");
+        assert!(
+            std::fs::read(&again.path).expect("read") == reference,
+            "cancel@{at}: the export after the cancel is not the uninterrupted one"
+        );
     }
 }

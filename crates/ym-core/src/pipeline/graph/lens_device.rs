@@ -149,6 +149,9 @@ fn crop_rect(r: Rect, o: Rect) -> Rect {
 fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, GpuError> {
     ctx.inject_tile_fault()?;
     let mut passes = PassList::new(ctx, "lens tile");
+    // Images this job uploads: recorded passes read them when the list is submitted, so they must not go
+    // back to the pool (and be written by a later allocation of the job) before then.
+    let mut held: Vec<Arc<GpuImage>> = Vec::new();
     let want = tile.want;
     // The raw window, when L2 or L3 read it.
     let reads_raw = tile.flare.is_some() || (tile.field.is_some() && tile.l1.is_none());
@@ -157,9 +160,11 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
         for (image, at) in &raw.hosts {
             let mut uploaded = GpuImage::upload_rgb(ctx, "lens raw", image)?;
             uploaded.place = Placement::whole(image.width, image.height);
+            let uploaded = Arc::new(uploaded);
+            held.push(Arc::clone(&uploaded));
             pieces.push(Piece {
                 at: *at,
-                image: Arc::new(uploaded),
+                image: uploaded,
             });
         }
         Some(encode_gather(&mut passes, &pieces, want)?)
@@ -173,7 +178,9 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
         (None, Some(host), _) => {
             let mut z = GpuImage::upload_rgb(ctx, "lens cached z", host)?;
             z.place = Placement::whole(host.width, host.height);
-            (Arc::new(z), (tile.out.x, tile.out.y))
+            let z = Arc::new(z);
+            held.push(Arc::clone(&z));
+            (z, (tile.out.x, tile.out.y))
         }
         (None, None, Some((tables, pass))) => {
             let z = if let Some((data, rect)) = &tile.l1 {
@@ -186,6 +193,8 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
                     data,
                     Placement::whole(rect.w, rect.h),
                 )?;
+                let src = Arc::new(src);
+                held.push(Arc::clone(&src));
                 encode_field(&mut passes, tables, pass, &src, (rect.x, rect.y), tile.out)?
             } else {
                 let Some(input) = &input else {
@@ -246,6 +255,7 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
         }
     };
     passes.submit()?.finish()?;
+    drop(held);
     Ok(TileOut { z: made_z, out })
 }
 
@@ -488,9 +498,17 @@ impl Job<'_> {
     fn lens_z_for(z: Option<&Backing>, out: Rect) -> (Option<Arc<GpuImage>>, Option<Arc<RgbImage>>) {
         match z {
             Some(Backing::Gpu(resident)) => {
-                let hit = resident.pieces().iter().find(|p| {
-                    p.at == (out.x, out.y) && p.image.width == out.w && p.image.height == out.h
-                });
+                // A tile's own `Z` is one piece at the origin of an image of the tile's size; a group's
+                // `Z` holds the tile as a piece at the tile's place in the frame.
+                let at = if (resident.width, resident.height) == (out.w, out.h) {
+                    (0, 0)
+                } else {
+                    (out.x, out.y)
+                };
+                let hit = resident
+                    .pieces()
+                    .iter()
+                    .find(|p| p.at == at && p.image.width == out.w && p.image.height == out.h);
                 (hit.map(|p| Arc::clone(&p.image)), None)
             }
             Some(Backing::Cpu(image)) => {
