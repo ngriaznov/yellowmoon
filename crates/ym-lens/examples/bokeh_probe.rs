@@ -1,7 +1,7 @@
 //! Runs the bokeh detector and L1 on a dumped lens plane (a developer tool for local review; never shipped).
 //!
 //! ```text
-//! cargo run -p ym-lens --example bokeh_probe -- [--out DIR] [--anamorphic 100] [--no-l1] <dump-dir>...
+//! cargo run -p ym-lens --example bokeh_probe -- [--out DIR] [--anamorphic 100] [--no-l1] [--crop NAME]... <dump-dir>...
 //! ```
 //!
 //! A dump folder holds `lens_plane.f32` (planar R, G, B, little-endian f32, camera RGB balanced with g0) and
@@ -10,13 +10,17 @@
 //! the tool writes into `<out>/<name>/`: `stats.json` (the detector's counters and timings), `balls.json`,
 //! `b.f32` and `conf.f32` (the blur map and its confidence), and `a100.f32` (L1 over the whole plane at
 //! Anamorphic `--anamorphic`, planar, same size as the plane) unless `--no-l1`.
+//!
+//! With `--crop NAME` the folder also holds `NAME_l1in.f32` and `.json` (a full-resolution window of the raw group
+//! grown by L1's halo, written by `crates/ym-core/examples/bokeh_sheet.rs --dump-planes --crop`): L1 runs on it at
+//! scale 1, and `NAME_l1base.f32` and `NAME_l1out.f32` (the window before and after, planar) are written.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use ym_lens::{
     Axis, CameraResponse, FrameInfo, ImageRef, LensAmounts, LensKind, LensLibrary, LensPlan,
-    LensPlanes, PixelRect, reshape,
+    LensPlanes, PixelRect, reshape, reshape_halo,
 };
 
 type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
@@ -42,6 +46,7 @@ fn main() -> Fallible<()> {
     let mut out = PathBuf::from("bokeh-probe");
     let mut anamorphic = 100.0;
     let mut run_l1 = true;
+    let mut crops: Vec<String> = Vec::new();
     let mut dirs: Vec<PathBuf> = Vec::new();
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -51,6 +56,7 @@ fn main() -> Fallible<()> {
                 anamorphic = it.next().ok_or("--anamorphic needs a value")?.parse()?
             }
             "--no-l1" => run_l1 = false,
+            "--crop" => crops.push(it.next().ok_or("--crop needs a name")?),
             other => dirs.push(PathBuf::from(other)),
         }
     }
@@ -144,6 +150,69 @@ fn main() -> Fallible<()> {
             let reshaped = reshape(&plan, &planes, k, &image, PixelRect::new(0, 0, w, h))?;
             l1_ms = t.elapsed().as_secs_f64() * 1e3;
             write_f32(&o.join("a100.f32"), &reshaped)?;
+        }
+        for c in &crops {
+            let cj: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
+                dir.join(format!("{c}_l1in.json")),
+            )?)?;
+            let n = |k: &str| {
+                cj[k]
+                    .as_u64()
+                    .ok_or(format!("{k} missing"))
+                    .map(|v| v as usize)
+            };
+            let (x0, y0, cw, ch) = (n("x0")?, n("y0")?, n("width")?, n("height")?);
+            let want = &cj["want"];
+            let wn = |k: &str| want[k].as_u64().map(|v| v as usize).unwrap_or(0);
+            let (fw, fh) = (n("frame_width")?, n("frame_height")?);
+            // The window is shrunk where the dump's margin is smaller than L1's halo now (away from the frame's edge).
+            let halo = reshape_halo(&plan, &planes, 1);
+            let lo = |start: usize, input_start: usize| {
+                if input_start == 0 {
+                    start
+                } else {
+                    start.max(input_start + halo)
+                }
+            };
+            let hi = |end: usize, input_end: usize, frame: usize| {
+                if input_end == frame {
+                    end
+                } else {
+                    end.min(input_end - halo)
+                }
+            };
+            let (wx0, wy0) = (lo(wn("x"), x0), lo(wn("y"), y0));
+            let (wx1, wy1) = (
+                hi(wn("x") + wn("w"), x0 + cw, fw),
+                hi(wn("y") + wn("h"), y0 + ch, fh),
+            );
+            let rect = PixelRect::new(wx0, wy0, wx1 - wx0, wy1 - wy0);
+            let data = read_f32(&dir.join(format!("{c}_l1in.f32")))?;
+            let input = ImageRef {
+                width: cw,
+                height: ch,
+                x0,
+                y0,
+                frame_width: fw,
+                frame_height: fh,
+                data: &data,
+            };
+            let t = Instant::now();
+            let out_px = reshape(&plan, &planes, 1, &input, rect)?;
+            println!("  crop {c}: L1 {:.0} ms", t.elapsed().as_secs_f64() * 1e3);
+            let mut base = Vec::with_capacity(3 * rect.w * rect.h);
+            for ch_i in 0..3 {
+                for y in rect.y..rect.y + rect.h {
+                    let row = ch_i * cw * ch + (y - y0) * cw + (rect.x - x0);
+                    base.extend_from_slice(&data[row..row + rect.w]);
+                }
+            }
+            write_f32(&o.join(format!("{c}_l1base.f32")), &base)?;
+            write_f32(&o.join(format!("{c}_l1out.f32")), &out_px)?;
+            std::fs::write(
+                o.join(format!("{c}_l1.json")),
+                serde_json::to_string(&serde_json::json!({"w": rect.w, "h": rect.h}))?,
+            )?;
         }
         let stats = serde_json::json!({
             "size": [bw, bh], "plane": [w, h], "reduce": bp.reduce(), "axis": format!("{axis:?}"),

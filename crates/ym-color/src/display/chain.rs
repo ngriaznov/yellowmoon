@@ -282,10 +282,9 @@ fn red_chroma_of(params: &ChainParams) -> Option<RedChroma> {
         return None;
     }
     let strength = match &params.look {
-        Some(s) if !s.look.includes_display_rendering() => RedChroma::DEFAULT.blend(
-            s.look.red_chroma(),
-            intensity_fraction(s.intensity_pct),
-        ),
+        Some(s) if !s.look.includes_display_rendering() => {
+            RedChroma::DEFAULT.blend(s.look.red_chroma(), intensity_fraction(s.intensity_pct))
+        }
         _ => RedChroma::DEFAULT,
     };
     Some(strength)

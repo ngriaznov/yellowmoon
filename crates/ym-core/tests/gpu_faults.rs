@@ -620,13 +620,16 @@ fn lens_png(out: &Path) -> ExportOptions {
 /// (the raw stages are on the CPU), so the fault is the lens kernels'.
 #[test]
 fn a_fault_in_the_lens_kernels_makes_the_whole_photo_again_on_the_cpu() {
-    let Some(shared) = start_lens_device() else { return };
+    let Some(shared) = start_lens_device() else {
+        return;
+    };
     let (_d, photo) = lens_photo();
     let home = tempfile::tempdir().expect("home");
     let want = {
         let out = tempfile::tempdir().expect("out");
         let ctx = lens_context(home.path(), None, false);
-        let r = run(&ctx, &photo, lens_png(out.path()), &ExportControl::none()).expect("cpu export");
+        let r =
+            run(&ctx, &photo, lens_png(out.path()), &ExportControl::none()).expect("cpu export");
         assert_eq!(r.device, ComputeDevice::Cpu);
         std::fs::read(&r.path).expect("read")
     };
@@ -668,7 +671,11 @@ fn a_fault_in_the_lens_kernels_makes_the_whole_photo_again_on_the_cpu() {
                     std::fs::read(&r.path).expect("read") == want,
                     "{cell}: the fallback is not the CPU export"
                 );
-                assert_eq!(names_in(out.path()).len(), 1, "{cell}: one file, no temporary");
+                assert_eq!(
+                    names_in(out.path()).len(),
+                    1,
+                    "{cell}: one file, no temporary"
+                );
             }
             assert_eq!(ctx.renderer().ledger().used(), 0, "{cell}: host ledger");
             if !matches!(fault, GpuFault::Lost) {
@@ -682,7 +689,9 @@ fn a_fault_in_the_lens_kernels_makes_the_whole_photo_again_on_the_cpu() {
 /// next export of the photo is the uninterrupted one, made on the device.
 #[test]
 fn a_cancel_in_the_lens_kernels_ends_the_export_cleanly_and_the_next_one_is_whole() {
-    let Some(gpu) = start_lens_device() else { return };
+    let Some(gpu) = start_lens_device() else {
+        return;
+    };
     let (_d, photo) = lens_photo();
     let home = tempfile::tempdir().expect("home");
     let ctx = lens_context(home.path(), Some(&gpu), false);
@@ -700,13 +709,20 @@ fn a_cancel_in_the_lens_kernels_ends_the_export_cleanly_and_the_next_one_is_whol
         gpu.set_fault(None);
         match result {
             Err(e) => assert!(e.is_cancelled(), "cancel@{at}: {e}"),
-            Ok(r) => panic!("cancel@{at}: the export finished ({:?}, {:?})", r.device, r.notes),
+            Ok(r) => panic!(
+                "cancel@{at}: the export finished ({:?}, {:?})",
+                r.device, r.notes
+            ),
         }
-        assert!(names_in(out.path()).is_empty(), "cancel@{at}: a file was left");
+        assert!(
+            names_in(out.path()).is_empty(),
+            "cancel@{at}: a file was left"
+        );
         assert_eq!(pool_in_use(&gpu), baseline, "cancel@{at}");
         assert_eq!(ctx.renderer().ledger().used(), 0, "cancel@{at}");
         let out = tempfile::tempdir().expect("out");
-        let again = run(&ctx, &photo, lens_png(out.path()), &ExportControl::none()).expect("export");
+        let again =
+            run(&ctx, &photo, lens_png(out.path()), &ExportControl::none()).expect("export");
         assert_eq!(again.device, ComputeDevice::Gpu, "cancel@{at}");
         assert!(
             std::fs::read(&again.path).expect("read") == reference,

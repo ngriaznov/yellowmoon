@@ -124,7 +124,12 @@ struct TilePlan {
     /// L2: the spread functions and the pass, when the field stage acts and `Z` is not cached.
     field: Option<(FieldTablesBuffer, FieldPass)>,
     /// L3: the planes, the lens's tables, the scale data and the mix, when the flares add light.
-    flare: Option<(FlarePlaneBuffer, FlareLensBuffer, FlareScaleBuffers, FlareMix)>,
+    flare: Option<(
+        FlarePlaneBuffer,
+        FlareLensBuffer,
+        FlareScaleBuffers,
+        FlareMix,
+    )>,
     /// A cached `Z` over the output (an image whose first pixel is the output's), on the device.
     z_device: Option<Arc<GpuImage>>,
     /// A cached `Z` over the output on the host, uploaded by the job.
@@ -173,49 +178,50 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
     };
     // Z: cached, or L2 over the raw window (or over L1's output).
     let mut made_z = None;
-    let (z, z_at): (Arc<GpuImage>, (usize, usize)) = match (&tile.z_device, &tile.z_host, &tile.field) {
-        (Some(z), _, _) => (Arc::clone(z), (tile.out.x, tile.out.y)),
-        (None, Some(host), _) => {
-            let mut z = GpuImage::upload_rgb(ctx, "lens cached z", host)?;
-            z.place = Placement::whole(host.width, host.height);
-            let z = Arc::new(z);
-            held.push(Arc::clone(&z));
-            (z, (tile.out.x, tile.out.y))
-        }
-        (None, None, Some((tables, pass))) => {
-            let z = if let Some((data, rect)) = &tile.l1 {
-                let src = GpuImage::upload(
-                    ctx,
-                    "lens reshaped",
-                    rect.w,
-                    rect.h,
-                    3,
-                    data,
-                    Placement::whole(rect.w, rect.h),
-                )?;
-                let src = Arc::new(src);
-                held.push(Arc::clone(&src));
-                encode_field(&mut passes, tables, pass, &src, (rect.x, rect.y), tile.out)?
-            } else {
-                let Some(input) = &input else {
-                    return Err(GpuError::InvalidInput(
-                        "lens tile: the field stage has no input".into(),
-                    ));
+    let (z, z_at): (Arc<GpuImage>, (usize, usize)) =
+        match (&tile.z_device, &tile.z_host, &tile.field) {
+            (Some(z), _, _) => (Arc::clone(z), (tile.out.x, tile.out.y)),
+            (None, Some(host), _) => {
+                let mut z = GpuImage::upload_rgb(ctx, "lens cached z", host)?;
+                z.place = Placement::whole(host.width, host.height);
+                let z = Arc::new(z);
+                held.push(Arc::clone(&z));
+                (z, (tile.out.x, tile.out.y))
+            }
+            (None, None, Some((tables, pass))) => {
+                let z = if let Some((data, rect)) = &tile.l1 {
+                    let src = GpuImage::upload(
+                        ctx,
+                        "lens reshaped",
+                        rect.w,
+                        rect.h,
+                        3,
+                        data,
+                        Placement::whole(rect.w, rect.h),
+                    )?;
+                    let src = Arc::new(src);
+                    held.push(Arc::clone(&src));
+                    encode_field(&mut passes, tables, pass, &src, (rect.x, rect.y), tile.out)?
+                } else {
+                    let Some(input) = &input else {
+                        return Err(GpuError::InvalidInput(
+                            "lens tile: the field stage has no input".into(),
+                        ));
+                    };
+                    encode_field(&mut passes, tables, pass, input, (want.x, want.y), tile.out)?
                 };
-                encode_field(&mut passes, tables, pass, input, (want.x, want.y), tile.out)?
-            };
-            let z = Arc::new(z);
-            made_z = Some(Arc::clone(&z));
-            (z, (tile.out.x, tile.out.y))
-        }
-        // No field stage: Z is the raw picture itself.
-        (None, None, None) => {
-            let Some(input) = &input else {
-                return Err(GpuError::InvalidInput("lens tile: no input".into()));
-            };
-            (Arc::clone(input), (want.x, want.y))
-        }
-    };
+                let z = Arc::new(z);
+                made_z = Some(Arc::clone(&z));
+                (z, (tile.out.x, tile.out.y))
+            }
+            // No field stage: Z is the raw picture itself.
+            (None, None, None) => {
+                let Some(input) = &input else {
+                    return Err(GpuError::InvalidInput("lens tile: no input".into()));
+                };
+                (Arc::clone(input), (want.x, want.y))
+            }
+        };
     let out = match &tile.flare {
         Some((planes, lens, scale, mix)) => {
             let Some(input) = &input else {
@@ -237,8 +243,7 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
             )?)
         }
         None => {
-            if z_at == (tile.out.x, tile.out.y) && z.width == tile.out.w && z.height == tile.out.h
-            {
+            if z_at == (tile.out.x, tile.out.y) && z.width == tile.out.w && z.height == tile.out.h {
                 z
             } else {
                 // Z is the raw window: the output is its part.
@@ -278,7 +283,10 @@ impl Job<'_> {
         if results_stay && !self.keeps_on_device() {
             return Ok(None);
         }
-        if self.g.lens_gpu_failed.load(std::sync::atomic::Ordering::SeqCst)
+        if self
+            .g
+            .lens_gpu_failed
+            .load(std::sync::atomic::Ordering::SeqCst)
             || self
                 .r
                 .inner
@@ -388,7 +396,12 @@ impl Job<'_> {
     ) -> Result<
         (
             Option<(FieldTablesBuffer, FieldPass)>,
-            Option<(FlarePlaneBuffer, FlareLensBuffer, FlareScaleBuffers, FlareMix)>,
+            Option<(
+                FlarePlaneBuffer,
+                FlareLensBuffer,
+                FlareScaleBuffers,
+                FlareMix,
+            )>,
         ),
         GpuError,
     > {
@@ -413,7 +426,8 @@ impl Job<'_> {
                             (Some((key, t)), Some(d)) if *key == d.key => t.clone(),
                             (_, Some(d)) => {
                                 let key = d.key.clone();
-                                let t = route.run_job(move |c, _| FieldTablesBuffer::upload(c, &d))?;
+                                let t =
+                                    route.run_job(move |c, _| FieldTablesBuffer::upload(c, &d))?;
                                 device.field = Some((key, t.clone()));
                                 t
                             }
@@ -449,7 +463,8 @@ impl Job<'_> {
                                         "the planes hold no highlight data".into(),
                                     ));
                                 };
-                                let b = route.run_job(move |c, _| FlarePlaneBuffer::upload(c, &d))?;
+                                let b =
+                                    route.run_job(move |c, _| FlarePlaneBuffer::upload(c, &d))?;
                                 device.flare_planes = Some((Arc::clone(planes), b.clone()));
                                 b
                             }
@@ -495,7 +510,10 @@ impl Job<'_> {
     }
 
     /// The raw group's pieces for the lens, and `Z` of the tile when a cache holds it.
-    fn lens_z_for(z: Option<&Backing>, out: Rect) -> (Option<Arc<GpuImage>>, Option<Arc<RgbImage>>) {
+    fn lens_z_for(
+        z: Option<&Backing>,
+        out: Rect,
+    ) -> (Option<Arc<GpuImage>>, Option<Arc<RgbImage>>) {
         match z {
             Some(Backing::Gpu(resident)) => {
                 // A tile's own `Z` is one piece at the origin of an image of the tile's size; a group's

@@ -51,6 +51,9 @@ pub struct Ball {
     pub peak: f64,
     /// True when the edges around the ball agree with its size.
     pub supported: bool,
+    /// Width of the ball's rim, from 80 % to 20 % of its brightness, over its radius: 0.1 to 0.2 for a disc with
+    /// a sharp rim, 0.5 and more for a soft blob. The redrawn oval has a rim of the same softness.
+    pub softness: f64,
 }
 
 /// One level of the blur map's reductions: the mean of weight times blur, and of weight.
@@ -117,6 +120,7 @@ impl BokehPlanes {
                 ],
                 peak: b.peak,
                 supported: b.supported,
+                softness: b.softness,
             })
             .collect();
         let mut planes = BokehPlanes {

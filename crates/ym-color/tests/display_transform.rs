@@ -37,6 +37,8 @@ const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.
 /// A chain that does nothing before C12: identity matrix, C7 off, zero grade, Neutral look.
 fn bare(display: DisplayTransform, output: OutputTarget) -> ColorChain {
     let mut p = ChainParams::new(IDENTITY, ToneParams::IDENTITY);
+    // The plain transform is what these tests compare with: the red chroma step (C12 step 1c) is off.
+    p.red_chroma = false;
     p.display = display;
     p.output = output;
     ColorChain::new(&p).unwrap()

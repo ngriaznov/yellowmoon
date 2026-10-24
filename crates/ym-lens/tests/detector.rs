@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 use common::{plan, whole};
 use scenes::{
     Noise, Scene, anchor_scene, balls_over_texture_scene, flat_scene, night_scene,
-    night_scene_spaced, sharp_scene, subject_scene,
+    night_scene_spaced, sharp_scene, soft_night_scene, subject_scene,
 };
 use ym_lens::consts::{B_MIN, MAX_BALLS};
 use ym_lens::{
@@ -201,9 +201,10 @@ fn of_two_lights_closer_than_1_2_radii_the_dimmer_is_dropped() {
 }
 
 #[test]
-fn balls_must_agree_with_the_blur_around_them() {
-    // Discs of the same size as the blur around them are confirmed by the edges; discs far larger than the blur
-    // around them (a big sharp-edged lamp in a sharper scene) are not balls.
+fn balls_over_a_blurred_texture_are_found_and_lights_in_a_sharp_scene_are_not() {
+    // Discs of the same size as the blur around them are confirmed by the edges; lights over a ground blurred a
+    // little less are balls too (a light is at its own depth). But big lights in a scene whose ground is sharp
+    // are in focus, and are not balls.
     let radii = [9.0; 6];
     let scene = balls_over_texture_scene(W, H, 9.0, &radii, Noise::LOW, 4);
     let (_p, planes) = planes_of(&scene);
@@ -216,11 +217,99 @@ fn balls_must_agree_with_the_blur_around_them() {
     for b in bp.balls() {
         assert!((b.radius * HD / 9.0 - 1.0).abs() < 0.1);
     }
-    let scene = balls_over_texture_scene(W, H, 4.0, &[22.0, 22.0], Noise::LOW, 4);
+    let scene = balls_over_texture_scene(W, H, 0.6, &[12.0, 12.0, 12.0, 12.0], Noise::LOW, 4);
     let (_p, planes) = planes_of(&scene);
     assert!(
         bokeh(&planes).balls().is_empty(),
-        "two big lights in a scene blurred by 4 px say nothing is out of focus by 22 px"
+        "four big lights in a sharp scene are lamps in focus"
+    );
+}
+
+#[test]
+fn soft_edged_clipped_and_dim_balls_are_found_with_their_size() {
+    // Real bokeh balls are soft at the rim, sometimes clipped flat, sometimes dim: (radius, rim width over the
+    // radius, level; a level above 1 is clipped at 1).
+    let balls = [
+        (7.0, 0.0, 0.5),
+        (9.0, 0.3, 0.8),
+        (11.0, 0.6, 1.6),
+        (13.0, 0.5, 1.6),
+        (15.0, 0.2, 0.35),
+        (8.0, 0.4, 1.2),
+        (10.0, 0.0, 0.6),
+        (12.0, 0.4, 0.45),
+        (6.0, 0.3, 1.6),
+    ];
+    let scene = soft_night_scene(W, H, &balls, Noise::NONE, 11, 2.6);
+    let (_p, planes) = planes_of(&scene);
+    let bp = bokeh(&planes);
+    let (w, h) = bp.size();
+    let mut found = 0;
+    for &(cx, cy, r) in &scene.discs {
+        let Some(ball) = bp
+            .balls()
+            .iter()
+            .find(|b| (b.x * w as f64 - cx).hypot(b.y * h as f64 - cy) < 0.6 * r)
+        else {
+            panic!("the ball of {r} px at ({cx:.0}, {cy:.0}) was not found");
+        };
+        found += 1;
+        let est = ball.radius * HD;
+        assert!(
+            (est / r - 1.0).abs() < 0.2,
+            "ball of {r} px measured {est:.2}"
+        );
+        assert!(ball.energy.iter().all(|e| *e > 0.0));
+        // The disc taken out covers the soft rim.
+        assert!(ball.take_out_radius > 1.15 * ball.radius);
+    }
+    assert_eq!(found, balls.len());
+    assert!(bp.active(), "a night of balls is out-of-focus background");
+}
+
+#[test]
+fn a_sharp_frame_with_specular_highlights_has_no_balls() {
+    // Small bright round highlights on a sharp textured scene: in focus, however round.
+    let mut scene = sharp_scene(W, H, Noise::LOW, 3);
+    let n = W * H;
+    let spots = [
+        (150.0, 100.0, 3.5),
+        (400.0, 220.0, 4.5),
+        (700.0, 140.0, 5.0),
+        (250.0, 420.0, 3.8),
+        (560.0, 480.0, 6.0),
+        (830.0, 380.0, 4.2),
+        (120.0, 580.0, 5.5),
+        (660.0, 600.0, 3.6),
+    ];
+    for &(cx, cy, r) in &spots {
+        for y in 0..H {
+            for x in 0..W {
+                let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
+                let a = (r + 0.5 - d).clamp(0.0, 1.0);
+                if a > 0.0 {
+                    for c in 0..3 {
+                        let v = &mut scene.img.data[c * n + y * W + x];
+                        *v = (f64::from(*v) * (1.0 - a) + 2.5 * a) as f32;
+                    }
+                }
+            }
+        }
+    }
+    let (_p, planes) = planes_of(&scene);
+    let bp = bokeh(&planes);
+    assert!(
+        bp.balls().is_empty(),
+        "{} balls in a sharp scene",
+        bp.balls().len()
+    );
+    assert!(!bp.active());
+    assert_eq!(
+        planes.report(),
+        ReshapeReport {
+            reshaped: false,
+            reason: Some(ReshapeReason::LittleBlur)
+        }
     );
 }
 

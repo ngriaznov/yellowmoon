@@ -21,7 +21,7 @@ use ym_color::curve::{Curve, CurveSet};
 use ym_color::deltae::{d65_white_xyz, delta_e_2000, xyz_to_lab};
 use ym_color::display::{
     BeforePoint, ChainParams, ColorChain, DISPLAY_PLACEMENT_EV, DNG_SCENE_LIMIT, DisplayError,
-    Frame, Layout, LookSetting, OutputTarget, View, aces2_input_matrix,
+    Frame, Layout, LookSetting, OutputTarget, RedChroma, RedChromaStep, View, aces2_input_matrix,
 };
 use ym_color::encode::{self, OutputSpace};
 use ym_color::exposure::white::WhiteLift;
@@ -223,6 +223,9 @@ fn trace_equals_an_independent_composition_of_the_stage_modules() {
     let baked = p.curves.bake();
     let look = logc4_look();
     let aces = Aces2Transform::new(Aces2Output::Viewport);
+    // The red chroma step sits in front of the placement (C12 step 1c); this look sets no strengths, so
+    // it is Neutral's.
+    let red = RedChromaStep::new(OutputTarget::Viewport, RedChroma::DEFAULT);
     for px in pixels() {
         let t = c.trace(px);
         let c6 = linalg::mul_vec(&p.matrix, px);
@@ -233,7 +236,7 @@ fn trace_equals_an_independent_composition_of_the_stage_modules() {
         let c9b = warp.apply(c9);
         let c10 = blend_logc4(c9b, look.eval_logc4(c9b).unwrap(), 80.0);
         let c11 = baked.apply(c10);
-        let ap0 = linalg::mul_vec(&aces2_input_matrix(), logc4_decode_rgb(c11.0));
+        let ap0 = linalg::mul_vec(&aces2_input_matrix(), red.apply(logc4_decode_rgb(c11.0)));
         let c12 = aces.transform_ap0_linear(ap0);
         let c13 = OutputSpace::DisplayP3.encode_clamped(c12);
         assert_close(t.c6_linear_awg4, c6, 1e-14, "c6");
@@ -409,6 +412,8 @@ fn auto_everything_is_c12_of_c8_of_c7_of_m_x_for_every_output() {
     for target in OutputTarget::ALL {
         let mut p = ChainParams::new(fused_matrix(), tone());
         p.output = target;
+        // Plain ACES 2: the red chroma step (C12 step 1c) has its own tests below.
+        p.red_chroma = false;
         let c = chain(&p);
         for px in pixels() {
             let c7 = tone().apply_rgb(linalg::mul_vec(&fused_matrix(), px));
@@ -1557,4 +1562,134 @@ fn debug_output_stays_small_for_big_inputs() {
     .unwrap();
     let text = format!("{lut:?}");
     assert!(text.len() < 400 && text.contains("33"), "{text}");
+}
+
+// ---- C12 step 1c: the red chroma step ---------------------------------------------------------------
+
+/// [`pixels`] and a few more reds, mid-tone to light, where the step acts.
+fn pixels_with_reds() -> Vec<Vec3> {
+    let mut v = pixels();
+    v.extend([
+        [0.5, 0.2, 0.12],
+        [0.35, 0.1, 0.07],
+        [0.9, 0.3, 0.2],
+        [0.2, 0.06, 0.04],
+        [1.5, 0.5, 0.3],
+        [0.12, 0.04, 0.03],
+    ]);
+    v
+}
+
+#[test]
+fn the_red_chroma_step_follows_the_white_lift_and_precedes_the_placement() {
+    for target in OutputTarget::ALL {
+        let mut p = ChainParams::new(fused_matrix(), tone());
+        p.output = target;
+        p.white_lift = WhiteLift::new(1.2, 2.5).unwrap();
+        let c = chain(&p);
+        assert_eq!(c.red_chroma(), Some(RedChroma::DEFAULT));
+        let aces = Aces2Transform::new(target.aces2());
+        let red = RedChromaStep::new(target, RedChroma::DEFAULT);
+        let mut moved = 0;
+        for px in pixels_with_reds() {
+            let t = c.trace(px);
+            // Independent composition: C11 decoded, lifted, the red chroma step, then the placement
+            // (the matrix `aces2_input_matrix`) and ACES 2.
+            let lifted = p.white_lift.apply(logc4_decode_rgb(t.c11_logc4.0));
+            let scene = red.apply(lifted);
+            moved += usize::from(scene != lifted);
+            let want = aces.transform_ap0_linear(linalg::mul_vec(&aces2_input_matrix(), scene));
+            assert_close(
+                t.c12_display_linear,
+                want,
+                1e-14,
+                &format!("{target:?} {px:?}"),
+            );
+        }
+        assert!(
+            moved >= 3,
+            "{target:?}: the step moved only {moved} test pixels"
+        );
+    }
+}
+
+#[test]
+fn the_looks_strengths_reach_the_chain_and_blend_with_the_intensity() {
+    use ym_color::display::{ArriDisplayLut, DisplayLutInput, DisplayLutOutput, DisplayTransform};
+    let strength = |up, dn| RedChroma::new(up, dn).unwrap();
+    let look = |up, dn| Arc::new(LookTransform::neutral().with_red_chroma(strength(up, dn)));
+    let with = |look: Arc<LookTransform>, pct: f64| {
+        let mut p = ChainParams::new(fused_matrix(), tone());
+        p.look = Some(LookSetting::new(look, pct));
+        chain(&p)
+    };
+    // No look, Neutral and a look that sets nothing: the full up side, no dark relief.
+    let base = ChainParams::new(fused_matrix(), tone());
+    assert_eq!(chain(&base).red_chroma(), Some(RedChroma::DEFAULT));
+    assert_eq!(
+        with(Arc::new(LookTransform::neutral()), 100.0).red_chroma(),
+        Some(RedChroma::DEFAULT)
+    );
+    assert_eq!(
+        with(logc4_look(), 100.0).red_chroma(),
+        Some(RedChroma::DEFAULT)
+    );
+    // The look's own strengths at 100 %, Neutral's at 0 %, and a blend between.
+    assert_eq!(
+        with(look(0.0, 0.5), 100.0).red_chroma(),
+        Some(strength(0.0, 0.5))
+    );
+    assert_eq!(
+        with(look(0.0, 0.5), 0.0).red_chroma(),
+        Some(RedChroma::DEFAULT)
+    );
+    assert_eq!(
+        with(look(0.0, 0.5), 50.0).red_chroma(),
+        Some(strength(0.5, 0.25))
+    );
+    // Both 0: the step is skipped, bit for bit the plain ACES 2 chain.
+    let skipped = with(look(0.0, 0.0), 100.0);
+    assert_eq!(skipped.red_chroma(), None);
+    let mut off = base.clone();
+    off.red_chroma = false;
+    let off = chain(&off);
+    assert_eq!(off.red_chroma(), None);
+    let on = chain(&base);
+    let mut differ = 0;
+    for px in pixels_with_reds() {
+        assert_eq!(skipped.trace(px), off.trace(px));
+        differ += usize::from(on.trace(px).c12_display_linear != off.trace(px).c12_display_linear);
+    }
+    assert!(differ >= 3, "the step changed only {differ} test pixels");
+    // An imported ARRI display LUT has ARRI's reds: no step. A look with its own display rendering
+    // is blended with our C12, which has Neutral's step.
+    let arri = ArriDisplayLut::new(
+        cube_lut(17, |c| [c[0].powf(1.05), c[1], c[2] * 0.97]),
+        DisplayLutInput::LogC4,
+        DisplayLutOutput::REC709_G24,
+    )
+    .unwrap();
+    let mut p = base.clone();
+    p.display = DisplayTransform::arri(arri);
+    assert_eq!(chain(&p).red_chroma(), None);
+    assert_eq!(
+        with(rec709_baked_look(), 40.0).red_chroma(),
+        Some(RedChroma::DEFAULT)
+    );
+}
+
+#[test]
+fn a_dng_does_not_carry_the_red_chroma_step() {
+    // The DNG holds scene-linear AWG4 that the other app's renderer (the profile fitted to plain
+    // ACES 2) turns into a picture; the step is part of our rendering of the reds (docs/09).
+    let on = chain(&ChainParams::new(fused_matrix(), tone()));
+    let mut p = ChainParams::new(fused_matrix(), tone());
+    p.red_chroma = false;
+    let off = chain(&p);
+    let mut differ = 0;
+    for px in pixels_with_reds() {
+        assert_eq!(on.apply_dng_pixel(px), off.apply_dng_pixel(px));
+        differ += usize::from(on.apply_pixel(px) != off.apply_pixel(px));
+    }
+    assert!(differ >= 3, "the picture changed only {differ} test pixels");
 }

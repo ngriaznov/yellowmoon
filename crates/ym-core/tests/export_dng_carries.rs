@@ -19,7 +19,10 @@ use common::dng_looks::{DISPLAY_LUT_ID, Looks};
 use common::*;
 use ym_color::aces2::{Aces2Output, Aces2Transform};
 use ym_color::consts::linalg;
-use ym_color::display::{DISPLAY_PLACEMENT_EV, DNG_SCENE_LIMIT, OutputTarget, aces2_input_matrix};
+use ym_color::display::{
+    DISPLAY_PLACEMENT_EV, DNG_SCENE_LIMIT, OutputTarget, RedChroma, RedChromaStep,
+    aces2_input_matrix,
+};
 use ym_core::export::{ExportControl, ExportParams, ExportPhoto, export_photo};
 use ym_core::pipeline::{
     DisplayChoice, FullImage, FullRequest, FullTarget, LookProvider, NeutralOnly, PhotoSource,
@@ -188,14 +191,22 @@ fn with_look(src: &PhotoSource, look: &str, intensity: f64) -> PhotoSource {
 
 /// What Adobe's renderer is made to show: the DNG's scene-linear AWG4 pixels, with the display placement
 /// (carried by `BaselineExposure`), through ACES 2 for sRGB. Display-linear Rec.709.
-fn the_dng_through_aces2(raw: &FullImage) -> Vec<f64> {
+///
+/// `red_chroma` puts the red chroma step (`docs/02` C12 step 1c) with Neutral's strengths in front of the
+/// placement, as the app does for a picture of its own ACES 2 rendering: a DNG does not carry the step
+/// (`docs/09`), so its pixels are the scene values *before* it. A picture that is the inverse of a
+/// display rendering that is not ours (a look with its own rendering above 0 %, a display LUT) has no
+/// step to put back: the inverse is of plain ACES 2.
+fn the_dng_through_aces2(raw: &FullImage, red_chroma: bool) -> Vec<f64> {
     let t = Aces2Transform::shared(Aces2Output::Srgb);
     let m = aces2_input_matrix();
+    let red = RedChromaStep::new(OutputTarget::Srgb, RedChroma::DEFAULT);
     raw.rgb
         .chunks_exact(3)
         .flat_map(|p| {
             let awg4 = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
-            t.transform_ap0_linear(linalg::mul_vec(&m, awg4))
+            let scene = if red_chroma { red.apply(awg4) } else { awg4 };
+            t.transform_ap0_linear(linalg::mul_vec(&m, scene))
         })
         .collect()
 }
@@ -203,9 +214,9 @@ fn the_dng_through_aces2(raw: &FullImage) -> Vec<f64> {
 /// How the DNG's pixels, through ACES 2, differ from the app's picture where the picture is inside the
 /// range ACES 2 reaches (display values to 0.9, the DNG pixel below the profile's limit): the largest
 /// difference and the number of pixels compared.
-fn dng_against_picture(raw: &FullImage, picture: &FullImage) -> (f64, usize) {
+fn dng_against_picture(raw: &FullImage, picture: &FullImage, red_chroma: bool) -> (f64, usize) {
     assert_eq!((raw.width, raw.height), (picture.width, picture.height));
-    let shown = the_dng_through_aces2(raw);
+    let shown = the_dng_through_aces2(raw, red_chroma);
     let limit = DNG_SCENE_LIMIT / DISPLAY_PLACEMENT_EV.exp2();
     let (mut worst, mut n) = (0.0_f64, 0usize);
     for (i, (p, raw_px)) in picture
@@ -232,18 +243,20 @@ fn for_every_look_the_dngs_pixels_through_aces2_are_the_apps_picture() {
     // The photo's R8 is set to 0, so the app's picture has none either (a DNG never has any).
     let src = with_sharpening(&source_of(&detailed_scene()), 0.0, 1.0);
     let r = cpu_renderer(Arc::new(Looks));
-    for (name, look, intensity) in [
-        ("neutral", "builtin:neutral", 100.0),
-        ("a log-to-log look", "user:warm", 100.0),
-        ("a log-to-log look at 40 %", "user:warm", 40.0),
-        ("LogC3 to Rec.709", "user:rec709", 100.0),
-        ("LogC3 to Rec.709 at 60 %", "user:rec709", 60.0),
-        ("LogC3 to Rec.709 at 0 %", "user:rec709", 0.0),
+    // The last field: the picture is our ACES 2 rendering (with the red chroma step), not the inverse of a
+    // display rendering that is not ours.
+    for (name, look, intensity, ours) in [
+        ("neutral", "builtin:neutral", 100.0, true),
+        ("a log-to-log look", "user:warm", 100.0, true),
+        ("a log-to-log look at 40 %", "user:warm", 40.0, true),
+        ("LogC3 to Rec.709", "user:rec709", 100.0, false),
+        ("LogC3 to Rec.709 at 60 %", "user:rec709", 60.0, false),
+        ("LogC3 to Rec.709 at 0 %", "user:rec709", 0.0, true),
     ] {
         let s = with_look(&src, look, intensity);
         let raw = render(&r, &s, FullTarget::DngLinearAwg4);
         let picture = render(&r, &s, FullTarget::DisplayLinear(OutputTarget::Srgb));
-        let (worst, n) = dng_against_picture(&raw, &picture);
+        let (worst, n) = dng_against_picture(&raw, &picture, ours);
         eprintln!("{name}: {n} pixels compared, the DNG through ACES 2 differs by {worst:.2e}");
         assert!(n > raw.width * raw.height / 10, "{name}: {n} pixels");
         // f32 pixels through a transform that is steep in the shadows: measured 9e-8 of display light.
@@ -294,7 +307,7 @@ fn an_imported_display_lut_goes_into_the_dng_through_the_same_inverse() {
     ));
     let raw = render(&r, &src, FullTarget::DngLinearAwg4);
     let picture = render(&r, &src, FullTarget::DisplayLinear(OutputTarget::Srgb));
-    let (worst, n) = dng_against_picture(&raw, &picture);
+    let (worst, n) = dng_against_picture(&raw, &picture, false);
     eprintln!("display LUT: {n} pixels compared, the DNG through ACES 2 differs by {worst:.2e}");
     assert!(n > raw.width * raw.height / 4, "{n}");
     assert!(worst < 1e-5, "{worst}");

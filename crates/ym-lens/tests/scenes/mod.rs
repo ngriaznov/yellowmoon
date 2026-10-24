@@ -609,6 +609,85 @@ pub fn night_scene_spaced(
     }
 }
 
+/// Bright balls with soft rims on a dark ground: each ball is `(radius, softness, level)`, its brightness falls
+/// from `level` to nothing over a rim `softness * radius` wide centred on the radius (a smoothstep), and a level
+/// above 1 is clipped at 1 (the scene's clip level), which makes a flat plateau. The balls are at least
+/// `spacing` times the sum of their radii apart.
+pub fn soft_night_scene(
+    w: usize,
+    h: usize,
+    balls: &[(f64, f64, f64)],
+    noise: Noise,
+    seed: u64,
+    spacing: f64,
+) -> Scene {
+    let n = w * h;
+    let mut scene = night_scene_spaced(w, h, &[], noise, seed, spacing);
+    let mut rng = Rng::new(seed ^ 0xBA11);
+    let mut discs: Vec<(f64, f64, f64)> = Vec::new();
+    for &(r, _, _) in balls {
+        loop {
+            let margin = 3.0 * r + 4.0;
+            let (cx, cy) = (
+                rng.range(margin, w as f64 - margin),
+                rng.range(margin, h as f64 - margin),
+            );
+            if discs.iter().all(|&(ox, oy, or)| {
+                ((ox - cx).powi(2) + (oy - cy).powi(2)).sqrt() > spacing * (or + r) + 6.0
+            }) {
+                discs.push((cx, cy, r));
+                break;
+            }
+        }
+    }
+    for (k, (&(cx, cy, r), &(_, soft, level))) in discs.iter().zip(balls).enumerate() {
+        let tint = [
+            1.0,
+            0.75 + 0.25 * hash01(k as i64, 3, 5),
+            0.5 + 0.4 * hash01(k as i64, 4, 5),
+        ];
+        let reach = r * (1.0 + 0.5 * soft) + 2.0;
+        let (x0, x1) = (
+            (cx - reach).floor().max(0.0) as usize,
+            ((cx + reach).ceil() as usize).min(w),
+        );
+        let (y0, y1) = (
+            (cy - reach).floor().max(0.0) as usize,
+            ((cy + reach).ceil() as usize).min(h),
+        );
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
+                let width = (soft * r).max(1.0);
+                let t = ((r + 0.5 * width - d) / width).clamp(0.0, 1.0);
+                let a = t * t * (3.0 - 2.0 * t);
+                if a > 0.0 {
+                    for c in 0..3 {
+                        let v = &mut scene.img.data[c * n + y * w + x];
+                        *v =
+                            (f64::from(*v) + level * tint[c] * a).min(1.0 + 0.02 * c as f64) as f32;
+                    }
+                }
+            }
+        }
+    }
+    // Noise was applied to the empty ground by `night_scene_spaced`; the balls are noiseless. That is enough for
+    // these tests, which look at shapes.
+    scene.truth_r = vec![0.0; n];
+    for &(cx, cy, r) in &discs {
+        for y in 0..h {
+            for x in 0..w {
+                let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
+                if d <= r {
+                    scene.truth_r[y * w + x] = r as f32;
+                }
+            }
+        }
+    }
+    scene.discs = discs;
+    scene
+}
+
 /// A textured scene with no blur beyond the sampling.
 pub fn sharp_scene(w: usize, h: usize, noise: Noise, seed: u64) -> Scene {
     let n = w * h;

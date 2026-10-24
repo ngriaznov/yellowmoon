@@ -57,6 +57,8 @@ fn tone_off() -> ToneParams {
 fn chain_with(matrix: Mat3, tone: ToneParams, output: OutputTarget) -> ColorChain {
     let mut p = ChainParams::new(matrix, tone);
     p.output = output;
+    // These tests compare with the plain transform: the red chroma step (C12 step 1c) is off.
+    p.red_chroma = false;
     ColorChain::new(&p).unwrap()
 }
 
@@ -251,6 +253,8 @@ fn a_logc3_to_rec709_look_keeps_its_own_brightness_and_the_blend_starts_from_the
     for target in OutputTarget::ALL {
         let mut p = ChainParams::new(IDENTITY, tone_off());
         p.output = target;
+        // The reference below is the plain transform: the red chroma step (C12 step 1c) is off.
+        p.red_chroma = false;
         let own = ColorChain::new(&p).unwrap();
         p.look = Some(LookSetting::new(Arc::clone(&look), 100.0));
         let full = ColorChain::new(&p).unwrap();

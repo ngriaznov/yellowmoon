@@ -1299,10 +1299,7 @@ mod tests {
             ]
         );
         // The lens (L2 and L3 kernels) waits for the Metal CI runners.
-        assert_eq!(
-            GpuStages::SIGNED_OFF.union(GpuStages::LENS),
-            GpuStages::ALL
-        );
+        assert_eq!(GpuStages::SIGNED_OFF.union(GpuStages::LENS), GpuStages::ALL);
         assert!(!GpuStages::SIGNED_OFF.contains(GpuStages::LENS));
     }
 

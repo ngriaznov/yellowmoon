@@ -23,12 +23,12 @@ use ym_color::display::OutputTarget;
 use ym_color::encode::OutputSpace;
 use ym_core::app::gpu::GpuStages;
 use ym_core::export::{ExportContext, ExportControl, ExportParams, ExportPhoto, export_photo};
-use ym_export::{BitDepth, ExportOptions, FormatKind, IfExists};
 use ym_core::pipeline::{
-    ComputeDevice, FrameOptions, FullImage, FullRequest, FullTarget, NeutralOnly, PhotoSource, RenderOptions,
-    RenderedFrame, Renderer, StageRuns, ViewportMode, ViewportRect, ViewportState,
+    ComputeDevice, FrameOptions, FullImage, FullRequest, FullTarget, NeutralOnly, PhotoSource,
+    RenderOptions, RenderedFrame, Renderer, StageRuns, ViewportMode, ViewportRect, ViewportState,
 };
 use ym_core::settings::{DevelopSettings, LensKind, LensSettings, SettingsPatch};
+use ym_export::{BitDepth, ExportOptions, FormatKind, IfExists};
 use ym_gpu::cpu::Rect;
 use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::CancelToken;
@@ -474,7 +474,10 @@ fn a_slider_move_runs_only_the_stages_that_read_it_with(
             ((0, 1, 1), 0),
             "Flares {flares}: the flare terms alone: {runs:?}"
         );
-        assert_ne!(f.rgba, previous, "Flares {flares}: the picture did not move");
+        assert_ne!(
+            f.rgba, previous,
+            "Flares {flares}: the picture did not move"
+        );
         let reference = fresh_frame(&cold(), &with_lens(&src, moved), &state);
         assert!(
             f.rgba == reference.rgba,
@@ -496,7 +499,10 @@ fn a_slider_move_runs_only_the_stages_that_read_it_with(
         f.report.runs
     );
     let reference = fresh_frame(&cold(), &with_lens(&src, edges), &state);
-    assert!(f.rgba == reference.rgba, "Edges: pixels differ from a cold run");
+    assert!(
+        f.rgba == reference.rgba,
+        "Edges: pixels differ from a cold run"
+    );
     // Anamorphic is read by both.
     let anamorphic = LensSettings {
         anamorphic: 51.0,
@@ -525,7 +531,10 @@ fn a_slider_move_runs_only_the_stages_that_read_it_with(
     let f = frame(r, &with_lens(&src, off), &state);
     assert_eq!(stages(&f), (0, 0, 1), "{:?}", f.report.runs);
     let reference = fresh_frame(&cold(), &with_lens(&src, off), &state);
-    assert!(f.rgba == reference.rgba, "Flares 0: pixels differ from a cold run");
+    assert!(
+        f.rgba == reference.rgba,
+        "Flares 0: pixels differ from a cold run"
+    );
     // Flares alone has no field stage at all; Edges and Anamorphic at 0 are its other sliders.
     let only = LensSettings {
         kind: LensKind::Vintage,
@@ -536,7 +545,10 @@ fn a_slider_move_runs_only_the_stages_that_read_it_with(
     let f = frame(r, &with_lens(&src, only), &state);
     assert_eq!(stages(&f), (0, 1, 1), "{:?}", f.report.runs);
     let reference = fresh_frame(&cold(), &with_lens(&src, only), &state);
-    assert!(f.rgba == reference.rgba, "Flares alone: pixels differ from a cold run");
+    assert!(
+        f.rgba == reference.rgba,
+        "Flares alone: pixels differ from a cold run"
+    );
 }
 
 #[test]
@@ -583,8 +595,14 @@ fn a_slider_move_runs_only_the_stages_that_read_it_on_tiles_with(
     let first = frame(r, &with_lens(&src, VINTAGE), &st);
     let runs = first.report.runs;
     assert!(runs.lens_tiles >= 1, "{runs:?}");
-    assert_eq!(runs.lens_fields, runs.lens_tiles, "one field tile per lens tile: {runs:?}");
-    assert_eq!(runs.lens_flares, runs.lens_tiles, "one flare tile per lens tile: {runs:?}");
+    assert_eq!(
+        runs.lens_fields, runs.lens_tiles,
+        "one field tile per lens tile: {runs:?}"
+    );
+    assert_eq!(
+        runs.lens_flares, runs.lens_tiles,
+        "one flare tile per lens tile: {runs:?}"
+    );
     let moved = LensSettings {
         flares: 61.0,
         ..VINTAGE
@@ -612,7 +630,10 @@ fn a_slider_move_runs_only_the_stages_that_read_it_on_tiles_with(
         assert_eq!(runs.lens_flares, 0, "the flare tiles are reused: {runs:?}");
     }
     let reference = fresh_frame(&cold(), &with_lens(&src, moved), &st);
-    assert!(f.rgba == reference.rgba, "an Edges move: pixels differ from a cold run");
+    assert!(
+        f.rgba == reference.rgba,
+        "an Edges move: pixels differ from a cold run"
+    );
 }
 
 #[test]
@@ -1388,7 +1409,10 @@ fn the_reshaping_on_the_host_feeds_the_lens_on_the_device() {
             std::io::stderr(),
             "[lens] {label}, reshaped bokeh: CPU lens against device lens {worst} codes"
         );
-        assert!(worst <= 2, "{label}: the device lens differs by {worst} codes");
+        assert!(
+            worst <= 2,
+            "{label}: the device lens differs by {worst} codes"
+        );
     }
 }
 
@@ -1490,8 +1514,13 @@ fn an_export_with_the_lens_on_the_device_is_the_cpu_export_within_tolerance() {
             if_exists: IfExists::Replace,
             ..ExportOptions::default()
         };
-        let report = export_photo(&ctx, &photo, &ExportParams::new(opts), &ExportControl::none())
-            .expect("export");
+        let report = export_photo(
+            &ctx,
+            &photo,
+            &ExportParams::new(opts),
+            &ExportControl::none(),
+        )
+        .expect("export");
         let bytes = std::fs::read(&report.path).expect("read");
         (report, png16(&bytes))
     };

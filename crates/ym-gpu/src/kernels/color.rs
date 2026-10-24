@@ -7,7 +7,8 @@
 //! content changes:
 //!
 //! * the 64 x 64 dither thresholds, once per device;
-//! * the ACES 2 tables, once per device and output;
+//! * the ACES 2 tables, once per device and output, with the red chroma step's two tables (C12 step 1c:
+//!   the neutral axis and the gamut edge of the output's limiting gamut) after them;
 //! * the four 1024-entry curve tables (16 KB), once per distinct set of curves;
 //! * the look and the display cubes (f32, never rounded to f16, never hardware-filtered), in an LRU
 //!   keyed by the content of the LUT (a 65-point cube is 4.4 MB, a 129-point one 34 MB).
@@ -72,7 +73,7 @@ use ym_color::consts::linalg::{self, Mat3};
 use ym_color::curve::{CurveSet, TABLE_SIZE};
 use ym_color::display::{
     BeforePoint, ChainParams, ColorChain, DisplayLutPrimaries, DisplayLutTransfer,
-    DisplayTransform, OutputTarget,
+    DisplayTransform, OutputTarget, RedChromaTables, RedGamut,
 };
 use ym_color::encode::{OutputSpace, dither_threshold};
 use ym_color::exposure::white::WhiteLift;
@@ -201,9 +202,9 @@ pub(crate) const WARP_MOVE_ROWS: usize = WARP_ROWS_PER_MOVE * WARP_MAX_PINS;
 /// the sixteenth row keeps the arithmetic of the sizes plain.
 pub(crate) const WARP_LOCK_ROWS: usize = WARP_MAX_PINS;
 
-/// The per-frame uniform block of `color.wgsl` (`ChainU`), 2096 bytes: window and mode, the chain's
+/// The per-frame uniform block of `color.wgsl` (`ChainU`), 2112 bytes: window and mode, the chain's
 /// parameters, the Before view's camera default (`cam0` to `cam2`: the 3x3 rows, `camt`: the tone curve's
-/// `n`, `s`, `k` and white level), the ACES 2 scalars and the colour warp's pins (`warp_n`: the moving
+/// `n`, `s`, `k` and white level), the red chroma step's two strengths (`rc`), the ACES 2 scalars and the colour warp's pins (`warp_n`: the moving
 /// and locked counts and the flow's steps, `warp_mv`, `warp_lk`: module notes). Field for field the WGSL struct (a test pins
 /// the offsets).
 #[repr(C)]
@@ -243,6 +244,7 @@ struct ChainU {
     cam1: [f32; 4],
     cam2: [f32; 4],
     camt: [f32; 4],
+    rc: [f32; 4],
     aces: AcesU,
     warp_n: [u32; 4],
     warp_mv: [[f32; 4]; WARP_MOVE_ROWS],
@@ -383,6 +385,16 @@ fn white_lift_uniform(u: &mut ChainU, lift: WhiteLift) {
         u.fl[3] = lift.amount_ev() as f32;
         u.grade0[3] = (1.0 / lift.span_ev()) as f32;
     }
+}
+
+/// C12 step 1c into the block: the red chroma step's two strengths in `rc` (`x` the up side, `y` the dark
+/// side, `ColorChain::red_chroma`). Both 0 when the step is skipped, and the shader then returns the scene
+/// value untouched. The tables are in the persistent `tables` buffer of the output.
+fn red_chroma_uniform(u: &mut ChainU, chain: &ColorChain) {
+    u.rc = match chain.red_chroma() {
+        Some(r) => [r.up() as f32, r.dark_relief() as f32, 0.0, 0.0],
+        None => [0.0; 4],
+    };
 }
 
 /// The grade parameters as the kernel wants them (the same preparation as `Grade::new`): the
@@ -739,6 +751,15 @@ impl ChainTables {
                 data[start + i] = *v as f32;
             }
         }
+        // The red chroma step's tables (C12 step 1c): the neutral axis and the gamut edge of the
+        // limiting gamut of this output, the numbers the CPU step reads.
+        let red = RedChromaTables::shared(RedGamut::of(target));
+        for (i, v) in red.yd().iter().enumerate() {
+            data[table::RC_YD + i] = *v as f32;
+        }
+        for (i, v) in red.cmax().iter().enumerate() {
+            data[table::RC_CMAX + i] = *v as f32;
+        }
         let buf = Arc::new(storage_buffer(
             ctx,
             "aces2 tables",
@@ -950,6 +971,9 @@ impl ChainTables {
         // C12 step 1b: the white lift (ACES 2 path only: `ColorChain::white_lift` is the identity for a
         // display LUT), after the grade, whose row it shares.
         white_lift_uniform(&mut u, chain.white_lift());
+        // C12 step 1c: the red chroma step's strengths (ACES 2 path only: `ColorChain::red_chroma` is
+        // `None` for a display LUT, for a look whose strengths are both 0 and when the step is off).
+        red_chroma_uniform(&mut u, chain);
         // C13.
         u.sp[0] = u32::from(space == OutputSpace::Rec2020);
         // The Before view: its reading point, the camera default (the 3x3 from the camera RGB entering the
@@ -1643,7 +1667,7 @@ mod tests {
         // far below the 64 KiB uniform binding the device asks for
         // (`max_uniform_buffer_binding_size` of `wgpu::Limits::default()`) and the 16 KiB of wgpu's
         // downlevel limits.
-        assert_eq!(size_of::<ChainU>(), 2096);
+        assert_eq!(size_of::<ChainU>(), 2112);
         assert_eq!(size_of::<ChainU>() % 16, 0);
         assert_eq!(
             size_of::<ChainU>() - offset_of!(ChainU, warp_n),
@@ -1867,7 +1891,7 @@ mod tests {
             let naga::TypeInner::Struct { members, span } = &module.types[var.ty].inner else {
                 panic!("CU is not a struct");
             };
-            let fields: [(&str, usize); 38] = [
+            let fields: [(&str, usize); 39] = [
                 ("dims", offset_of!(ChainU, dims)),
                 ("src", offset_of!(ChainU, src)),
                 ("origin", offset_of!(ChainU, origin)),
@@ -1902,6 +1926,7 @@ mod tests {
                 ("cam1", offset_of!(ChainU, cam1)),
                 ("cam2", offset_of!(ChainU, cam2)),
                 ("camt", offset_of!(ChainU, camt)),
+                ("rc", offset_of!(ChainU, rc)),
                 ("aces", offset_of!(ChainU, aces)),
                 ("warp_n", offset_of!(ChainU, warp_n)),
                 ("warp_mv", offset_of!(ChainU, warp_mv)),

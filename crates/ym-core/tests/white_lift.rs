@@ -21,7 +21,7 @@ use common::dng_looks::{DISPLAY_LUT_ID, Looks};
 use common::*;
 use ym_color::aces2::{Aces2Output, Aces2Transform};
 use ym_color::consts::linalg;
-use ym_color::display::{OutputTarget, aces2_input_matrix};
+use ym_color::display::{OutputTarget, RedChroma, RedChromaStep, aces2_input_matrix};
 use ym_core::pipeline::{
     ComputeDevice, DisplayChoice, FrameOptions, FullImage, FullRequest, FullTarget, NeutralOnly,
     PhotoSource, RenderOptions, Renderer, ViewportRect, ViewportState,
@@ -221,15 +221,18 @@ fn the_users_highlight_range_does_not_resize_the_lift() {
     assert_ne!(pictures[0], pictures[1]);
 }
 
-/// What Adobe's renderer is made to show: the DNG's pixels with the placement through ACES 2 (sRGB).
+/// What the app's own rendering makes of the DNG's pixels: the red chroma step (`docs/02` C12 step 1c,
+/// Neutral's strengths: these photos have the Neutral look; a DNG does not carry the step, `docs/09`), the
+/// placement and ACES 2 (sRGB).
 fn the_dng_through_aces2(raw: &FullImage) -> Vec<f64> {
     let t = Aces2Transform::shared(Aces2Output::Srgb);
     let m = aces2_input_matrix();
+    let red = RedChromaStep::new(OutputTarget::Srgb, RedChroma::DEFAULT);
     raw.rgb
         .chunks_exact(3)
         .flat_map(|p| {
             let awg4 = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
-            t.transform_ap0_linear(linalg::mul_vec(&m, awg4))
+            t.transform_ap0_linear(linalg::mul_vec(&m, red.apply(awg4)))
         })
         .collect()
 }

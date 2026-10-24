@@ -1225,14 +1225,28 @@ fn ghosts_too_faint_to_see_are_not_drawn() {
 // The light budget of a frame with no lights
 
 /// A uniform frame loses only the light the glow's tail and the veil send beyond its edges (`docs/21` section 4,
-/// L3: light that leaves the frame is lost). That is what a lens does, too: the veiling glare a pixel receives is
-/// the sum of the scene's light within the frame, so the corners get less than the centre and the frame's mean
-/// goes down a little. The bounds are about twice the measured losses at Flares 100 (Default 0.4 %, Vintage 3.2 %).
+/// L3: light that leaves the frame is lost), on the shipped lenses. That is what a lens does, too: the veiling
+/// glare a pixel receives is the sum of the scene's light within the frame, so the corners get less than the
+/// centre and the frame's mean goes down a little. The bounds are about twice the measured losses at Flares 100
+/// (Default 0.2 %, Vintage 2.8 %; the centre of a Vintage frame loses 1.6 % and its corner 6 %).
 #[test]
 fn a_uniform_frame_loses_only_the_light_that_leaves_it() {
+    let lib = LensLibrary::load(&common::repo_root().join("data")).expect("the shipped lens data");
     let (w, h) = (600usize, 400usize);
     for (kind, max_loss) in [(LensKind::Default, 0.01), (LensKind::Vintage, 0.06)] {
-        let p = common::plan(kind, 100.0, 0.0, 0.0, w, h, Axis::X);
+        let amounts = LensAmounts {
+            kind,
+            flares: 100.0,
+            edges: 0.0,
+            anamorphic: 0.0,
+        };
+        let p = LensPlan::new(
+            &lib,
+            &amounts,
+            common::frame(w, h, Axis::X),
+            common::camera(),
+        )
+        .expect("plan");
         let ks = p.lens_plane_scale();
         let (pw, ph) = (w.div_ceil(ks), h.div_ceil(ks));
         let plane = vec![0.2f32; 3 * pw * ph];
@@ -1251,6 +1265,9 @@ fn a_uniform_frame_loses_only_the_light_that_leaves_it() {
             (0.0..=max_loss).contains(&loss),
             "{kind}: the frame lost {loss} of its light"
         );
-        assert!(centre > corner, "{kind}: the corner is not darker than the centre");
+        assert!(
+            centre > corner,
+            "{kind}: the corner is not darker than the centre"
+        );
     }
 }

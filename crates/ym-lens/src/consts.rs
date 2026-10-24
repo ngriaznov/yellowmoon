@@ -177,5 +177,11 @@ pub const UPSAMPLE_RADIUS_PX: usize = 8;
 /// With fewer measured edges than this, nothing is reshaped ("little out-of-focus background").
 pub const MIN_EDGE_SAMPLES: usize = 50;
 
-/// With less than this fraction of the frame at `b >= 2 b_min` with confidence, nothing is reshaped.
+/// The blur that counts towards [`MIN_BLUR_AREA`], in `b_min`: the area at `b >= 1.5 b_min` (a disc of 5 px on a
+/// 1000 px lens plane, 20 px on a 24 MP frame) with confidence. A photo whose background is blurred by less is
+/// left alone: the stretch would move it by a pixel or two.
+pub const MIN_BLUR_FROM: f64 = 1.5;
+
+/// With less than this fraction of the frame at `b >= MIN_BLUR_FROM b_min` with confidence, nothing is reshaped.
+/// (On 32 real photos, the ones with an out-of-focus background are above 2.5 %, the sharp ones below 2 %.)
 pub const MIN_BLUR_AREA: f64 = 0.02;

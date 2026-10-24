@@ -8,8 +8,10 @@
 // ALEXA clip; `c7_range`, its numbers in `CU.tone` and `CU.fl.z`) and then the low-light toe. C12 on the
 // ACES 2 path starts with the white lift (docs/02, step 1b): a scene-linear gain on the tones above +1 stop
 // (`white_lift_gain`, the amount in `CU.fl.w`, 0 for none and for a display LUT, and 1 / span in
-// `CU.grade0.w`), alongside the range; then the placement (folded into AWG4_TO_AP0) and ACES 2. The DNG
-// stop (6) is C11 decoded, with the lift.
+// `CU.grade0.w`), alongside the range; then the red chroma step (docs/02, step 1c: `red_chroma`, the
+// strengths in `CU.rc`, both 0 for none and for a display LUT, the tables behind `T_RC_YD` and `T_RC_CMAX`);
+// then the placement (folded into AWG4_TO_AP0) and ACES 2. The DNG stop (6) is C11 decoded, with the lift
+// and without the red chroma step (a DNG does not carry it, docs/09).
 //
 // `mode.x` selects the stop (so each stage can be checked against `ColorChain::trace`), `mode.y` the
 // output format. One thread handles two horizontally adjacent pixels. All maths is f32; image
@@ -70,6 +72,7 @@ struct ChainU {
     cam1: vec4<f32>,
     cam2: vec4<f32>,
     camt: vec4<f32>,     // tone curve n, s, k and the white level at which it reaches 1
+    rc: vec4<f32>,       // C12 step 1c, the red chroma step: x: strength of the up side (f_up), y: strength of the dark side (f_dn, dark relief); both 0: the step is skipped. z, w: 0
     aces: AcesU,         // the ACES 2 scalars and matrices (aces2.wgsl)
     warp_n: vec4<u32>,   // C9b: x moving pins (0: the stage is skipped), y locked pins
     warp_mv: array<vec4<f32>, WARP_MOVE_ROWS>,  // three rows a moving pin (c9b_warp)
@@ -609,6 +612,189 @@ fn lifted_scene(v: vec3<f32>) -> vec3<f32> {
     return lin * white_lift_gain(lin);
 }
 
+// ---- C12 step 1c: the red chroma step ---------------------------------------------------------------------
+
+// ym_color::display::red_chroma (docs/02, "Red chroma (C12 step 1c)"): a hue-preserving chroma gain on the reds
+// in linear AWG4, in front of the placement and ACES 2. Only called with the ACES 2 path; `CU.rc` is 0 (both
+// strengths) when the host skips the step, which returns the input untouched. The CPU's maths in f32: CIELAB
+// of the colour re-lit at the display luminance of the neutral axis (`rc_yd`, the table behind `T_RC_YD`),
+// the hue window, the up side with the soft gamut cap (`rc_cmax`, `T_RC_CMAX`) or the dark side, then the
+// chroma scale at constant L* and Y. Fast-math (K8): nothing rests on a rounding at the 2e-4 gate. Every
+// branch point is a place where the gain is continuous (the window, the fade, the cross at -0.5 stop, the
+// cap's knee), so a rounding that moves a pixel across one moves its value by nothing measurable; a tanh
+// argument is held to 20 (tanh(20) is 1 in f32 and in f64, and an exponential of twice a large argument
+// would overflow); every divisor is at least 1e-6; a result that is not finite returns the input. Every
+// input is finite (the camera samples are sanitised to +-1e30).
+
+fn finite_f(x: f32) -> bool {
+    return (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u;
+}
+
+fn rc_lab_f(t: f32) -> f32 {
+    if (t > RC_LAB_EPS) {
+        return pow(t, 1.0 / 3.0);
+    }
+    return (RC_LAB_KAPPA * t + 16.0) / 116.0;
+}
+
+fn rc_lab_f_inv(f: f32) -> f32 {
+    let c = f * f * f;
+    if (c > RC_LAB_EPS) {
+        return c;
+    }
+    return (116.0 * f - 16.0) / RC_LAB_KAPPA;
+}
+
+// YD(s): the display luminance of the neutral axis, linear between the 0.25 stop entries, held at the ends.
+fn rc_yd(s: f32) -> f32 {
+    let f = clamp((s - RC_YD_S_MIN) * (1.0 / RC_YD_STEP), 0.0, f32(RC_YD_LEN - 1u));
+    let i = min(u32(f), RC_YD_LEN - 2u);
+    let a = tables[T_RC_YD + i];
+    let b = tables[T_RC_YD + i + 1u];
+    return a + (f - f32(i)) * (b - a);
+}
+
+// CMAX(L*, h): the largest CIELAB chroma inside the output's limiting gamut, bilinear, periodic in hue (h in [0, 360)).
+fn rc_cmax(l: f32, h: f32) -> f32 {
+    let fl = clamp(l * (1.0 / RC_CMAX_L_STEP), 0.0, f32(RC_CMAX_L_ROWS - 1u));
+    let i = min(u32(fl), RC_CMAX_L_ROWS - 2u);
+    let a = fl - f32(i);
+    let fh = h * (1.0 / RC_CMAX_H_STEP);
+    let j = u32(fh) % RC_CMAX_H_COLS;
+    let j1 = (j + 1u) % RC_CMAX_H_COLS;
+    let b = fh - floor(fh);
+    let r0 = T_RC_CMAX + i * RC_CMAX_H_COLS;
+    let r1 = r0 + RC_CMAX_H_COLS;
+    let lo = (1.0 - b) * tables[r0 + j] + b * tables[r0 + j1];
+    let hi = (1.0 - b) * tables[r1 + j] + b * tables[r1 + j1];
+    return (1.0 - a) * lo + a * hi;
+}
+
+// The signed difference a - b in degrees, in [-180, 180) (a in [0, 360)).
+fn rc_hue_diff(a: f32, b: f32) -> f32 {
+    let d = a - b + 180.0;
+    return d - 360.0 * floor(d * (1.0 / 360.0)) - 180.0;
+}
+
+fn rc_window(h: f32) -> f32 {
+    let d_lo = rc_hue_diff(h, RC_WIN_A);
+    let d_hi = rc_hue_diff(h, RC_WIN_B);
+    var w = 1.0;
+    if (d_lo < 0.0) {
+        w = 0.5 * (1.0 + cos(3.14159265 * clamp(-d_lo / RC_WIN_E_LO, 0.0, 1.0)));
+    }
+    if (d_hi > 0.0) {
+        w = 0.5 * (1.0 + cos(3.14159265 * clamp(d_hi / RC_WIN_E_HI, 0.0, 1.0)));
+    }
+    return w;
+}
+
+fn rc_kappa(c: f32) -> f32 {
+    return clamp(pow(RC_KAPPA_C0 / max(c, RC_KAPPA_CMIN), RC_KAPPA_POW), RC_KAPPA_LO, RC_KAPPA_HI);
+}
+
+// P(s): the log of the flat gain at kappa 1.
+fn rc_profile(s: f32) -> f32 {
+    if (s >= RC_S0) {
+        return RC_UP * (s - RC_S0);
+    }
+    return -RC_DARK * tanh(min((RC_S0 - s) * (1.0 / RC_TAU), 20.0));
+}
+
+fn red_chroma(rgb: vec3<f32>) -> vec3<f32> {
+    let f_up = CU.rc.x;
+    let f_dn = CU.rc.y;
+    if (f_up == 0.0 && f_dn == 0.0) {
+        return rgb;
+    }
+    if (!(finite_f(rgb.x) && finite_f(rgb.y) && finite_f(rgb.z))) {
+        return rgb;
+    }
+    let xyz = mv3(AWG4_TO_XYZ_0, AWG4_TO_XYZ_1, AWG4_TO_XYZ_2, rgb);
+    let y = xyz.y;
+    if (is_nan_f(y) || y <= RC_Y_MIN || !finite_f(y)) {
+        return rgb;
+    }
+    let s_raw = log2(y * (1.0 / RC_GREY));
+    let tf = clamp((s_raw - RC_FADE_LO) * (1.0 / (RC_FADE_HI - RC_FADE_LO)), 0.0, 1.0);
+    let fade = tf * tf * (3.0 - 2.0 * tf);
+    if (fade <= 0.0) {
+        return rgb;
+    }
+    let s = min(s_raw, RC_S_MAX);
+    let p = rc_profile(s);
+    if ((p > 0.0 && f_up == 0.0) || (p <= 0.0 && f_dn == 0.0)) {
+        return rgb;
+    }
+    // The colour re-lit at the display luminance of the neutral axis, in CIELAB.
+    let yd = clamp(rc_yd(s), RC_YD_FLOOR, 1.0);
+    let rel = xyz / y * yd;
+    let fx = rc_lab_f(rel.x / RC_WHITE.x);
+    let fy = rc_lab_f(rel.y / RC_WHITE.y);
+    let fz = rc_lab_f(rel.z / RC_WHITE.z);
+    let dfx = fx - fy;
+    let dfz = fy - fz;
+    let lab_l = 116.0 * fy - 16.0;
+    let a = 500.0 * dfx;
+    let b = 200.0 * dfz;
+    let c = sqrt(a * a + b * b);
+    var h = degrees(atan2(b, a));
+    if (h < 0.0) {
+        h = h + 360.0;
+    }
+    let w = rc_window(h);
+    if (w <= 0.0) {
+        return rgb;
+    }
+    let kap = rc_kappa(c);
+    let lnf = kap * p;
+    var lnk: f32;
+    if (p > 0.0) {
+        // The up side: the flat gain, softly capped under the gamut's edge, never below the input chroma.
+        let raw = exp(lnf);
+        var k0 = raw;
+        if (raw > 1.0) {
+            k0 = 1.0 + (RC_K_MAX - 1.0) * tanh(min((raw - 1.0) / (RC_K_MAX - 1.0), 20.0));
+        }
+        let c_in = c * k0;
+        let c_max = max(rc_cmax(lab_l, h), RC_CMAX_FLOOR);
+        let limit = c_max * exp(rc_kappa(RC_CAP_AT * c_max) * p);
+        let knee = RC_KNEE * limit;
+        var c_soft = c_in;
+        if (c_in > knee) {
+            c_soft = knee + (limit - knee) * tanh(min((c_in - knee) / max(limit - knee, 1.0e-6), 20.0));
+        }
+        let x = c_soft - c;
+        var c_boost = c;
+        if (x > 0.0) {
+            c_boost = c + x * x / (x + RC_RAMP_EPS * c + 1.0e-9);
+        }
+        var ln_ratio = log(k0);
+        if (c > RC_C_TINY) {
+            ln_ratio = log(max(c_boost, 1.0e-9) / max(c, RC_C_TINY));
+        }
+        lnk = f_up * w * ln_ratio;
+    } else {
+        // The dark side: the look's dark relief takes back part of ACES 2's boost of dark reds.
+        lnk = f_dn * w * lnf;
+    }
+    lnk = lnk * fade;
+    if (lnk == 0.0) {
+        return rgb;
+    }
+    // Chroma scaled at constant L* (and so constant Y), hue kept.
+    let k = exp(lnk);
+    let gx = fy + dfx * k;
+    let gz = fy - dfz * k;
+    let out_xyz = vec3<f32>(rc_lab_f_inv(gx) * RC_WHITE.x, rc_lab_f_inv(fy) * RC_WHITE.y, rc_lab_f_inv(gz) * RC_WHITE.z);
+    let scaled = vec3<f32>(out_xyz.x / yd * y, y, out_xyz.z / yd * y);
+    let out = mv3(XYZ_TO_AWG4_0, XYZ_TO_AWG4_1, XYZ_TO_AWG4_2, scaled);
+    if (!(finite_f(out.x) && finite_f(out.y) && finite_f(out.z))) {
+        return rgb;
+    }
+    return out;
+}
+
 // ---- C12: display transform --------------------------------------------------------------------------
 
 fn srgb_decode(e: f32) -> f32 {
@@ -635,7 +821,7 @@ fn disp_decode(code: f32) -> f32 {
 
 fn display_ours(v: vec3<f32>) -> vec3<f32> {
     if (CU.flags.w == 0u) {
-        let ap0 = mv3(AWG4_TO_AP0_0, AWG4_TO_AP0_1, AWG4_TO_AP0_2, lifted_scene(v));
+        let ap0 = mv3(AWG4_TO_AP0_0, AWG4_TO_AP0_1, AWG4_TO_AP0_2, red_chroma(lifted_scene(v)));
         return aces2_display_linear(ap0);
     }
     var input = v;

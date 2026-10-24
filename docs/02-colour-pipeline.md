@@ -26,7 +26,7 @@ Input to this chain is the output of `docs/05-raw-processing.md`: demosaiced, de
 | C9b | Colour warp: pins that move chosen colours across the chroma plane | LogC4 → LogC4 | per pixel + pins in the uniform block |
 | C10 | Look: CDL, then 3D LUT, blended by intensity | LogC4 → LogC4 (LogC3 looks via exact conversion) | per pixel + f32 LUT storage buffer |
 | C11 | Curve | LogC4 → LogC4 | f32 curve tables (storage buffer) |
-| C12 | Display transform: ACES 2 (default; the white lift and the display placement come first) or an imported ARRI display LUT | LogC4 → display linear or display code values | per pixel |
+| C12 | Display transform: ACES 2 (default; the white lift, the red chroma step and the display placement come first) or an imported ARRI display LUT | LogC4 → display linear or display code values | per pixel |
 | C13 | Display encode | → Display P3 (viewport) or the export colour space | per pixel |
 
 C1–C6 are linear and fuse into **one 3×3 matrix per photo**, recomputed on the CPU when a colour setting changes:
@@ -596,6 +596,8 @@ Why: ACES 2 SDR is a cinema rendering, which puts scene 0.18 at 10 nits, 0.85 EV
 
 1b. **White lift** (`white_offset_ev`, the Automatic card's White row). A per-photo scene-linear gain `2^(A · smoothstep((s − 1) / span))` on the luma of the decoded C11 output (`s` the stops over middle grey), applied to linear AWG4 **before the placement** and ACES 2: exactly 1 up to +1 stop over mid grey (mid grey and everything below it are untouched), ratio-preserving, per channel monotone, ACES 2 path only (an imported ARRI display LUT and a LogC3-to-Rec.709 look keep ARRI's highlights). `A` and the anchor are sized per photo from the 1/8 preview when it is opened; the DNG carries it in its pixels. The full text is in *White lift (C12 step 1b)* below.
 
+1c. **Red chroma** (a per-look strength, `red_chroma` in the look file; owner decision of 2026-10-24). A smooth, hue-preserving chroma gain on the reds, applied to linear AWG4 **after the white lift and before the placement** and ACES 2: it gives back the chroma ACES 2 takes out of mid-tone and light reds, is capped below the output gamut's edge, and leaves grey, other hues and skin alone. ACES 2 path only. A DNG does not carry it. The full text is in *Red chroma (C12 step 1c)* below.
+
 2. ACES 2 output transform with peak luminance 100 nits, SDR, white D65, and these limiting primaries:
 
 | Output | Limiting primaries | Encoding |
@@ -671,6 +673,59 @@ The estimator never sees the user's settings (light, exposure, grade, look, curv
 **Measured (GPU parity, Mesa lavapipe, `crates/ym-gpu/tests/gpu_color_white_lift.rs`, three storage modes).** The gain is within a relative 2.2e-6 (tolerance 5e-6; the gain of a narrow strong ramp is steep, so it is measured on the device's own luma); C11 within 9.4e-7 of LogC4; the DNG stop within 7.5e-6 relative; C12 within 6.6e-6 relative to the largest channel (gate 5e-4); C13 within 4.1e-6 of a code value (gate one 10-bit code).
 
 **Not built.** A local variant driven by the photo's base layer (the same gain, driven by a guided-filter base instead of the pixel's luma, which keeps texture contrast). It needs the base layer computed once on the preview and sampled, never per tile, or tiles would disagree.
+
+### Red chroma (C12 step 1c)
+
+A hue-preserving chroma gain on the reds, in front of the placement and ACES 2. It is the **R1** candidate of the red-fix investigation of 2026-10-24; the owner chose it ("R1 fix looks better than what we have currently"). Code: `ym_color::display::red_chroma` (`RedChromaStep`, the CPU reference), `red_chroma` in `color.wgsl` (the kernel), tables in Rust, not in files.
+
+**Why.** At the same display lightness ACES 2 takes chroma out of mid-tone and light reds (10 to 22 %: the reds "go coral") and adds 30 to 40 % to dark reds. The step gives back what ACES 2 removes above about −0.5 stop, caps the result below the output gamut's edge, and never folds a colour over another. Measured on the investigation's photographs (display chroma against ACES 2 alone): the pink shirt +20 %, the hat in P3 +7 %, the red shirt +4 %; the Lab hue moves by less than 0.1 degree; on 289 reflectances (the spectra of the investigation) nothing outside the reds changes.
+
+**The stage.** `rgb` is linear AWG4 (after the white lift). `Lab` is CIELAB with the white `X 0.95047, Y 1, Z 1.08883`; `YD(s)` is the display luminance of the neutral axis through ACES 2 with the placement, and `CMAX(L*, h)` the largest CIELAB chroma inside the output's limiting gamut (both below).
+
+```
+xyz  = AWG4_TO_XYZ * rgb ;  Y = xyz.y            unchanged if Y <= 1e-7 or a component is not finite
+s    = log2(Y / 0.18)                            stops over middle grey; s is held at 8 below (the end of YD)
+fade = smoothstep(-7.5, -5.5, s)                 unchanged where fade = 0
+yd   = clamp(YD(s), 1e-7, 1)
+lab  = Lab(xyz / Y * yd) ;  Ld = L* ;  C = |ab| ;  h = atan2(b, a) in [0, 360)
+W    = hue window: 1 on [3, 31] degrees, raised cosine to 0 over 30 degrees below and 12 above   unchanged where W = 0
+kap  = clamp((20 / max(C, 8))^0.65, 0.35, 1.25)
+P(s) = 0.34 (s + 0.5)                      for s >= -0.5          (the up side)
+       -0.43 tanh((-0.5 - s) / 1.65)       for s <  -0.5          (the dark side)
+lnf  = kap * P
+if P > 0:
+    k0   = 1 + 0.45 tanh((exp(lnf) - 1) / 0.45)                   the gain, softly held under 1.45
+    Cin  = C * k0 ;  Cmax = max(CMAX(Ld, h), 1)
+    Lim  = Cmax * exp(kap(0.9 * Cmax) * P) ;  kn = 0.8 * Lim
+    Csoft = Cin if Cin <= kn else kn + (Lim - kn) tanh((Cin - kn) / (Lim - kn))     the cap
+    x    = Csoft - C ;  Cb = C + (x > 0 ? x^2 / (x + 0.015 C + 1e-9) : 0)           never below C
+    lnk  = f_up * W * ln(Cb / C)                                  (ln k0 if C <= 1e-4)
+else:
+    lnk  = f_dn * W * lnf
+lnk *= fade ;  lab.ab *= exp(lnk) ;  Y kept ;  back to XYZ and AWG4
+```
+
+**The strengths are per look.** `f_up` multiplies the up side (`P > 0`: from −0.5 stop up) and `f_dn`, the look's **dark relief**, the dark side (`P < 0`). The look file's `red_chroma` block sets them (`docs/08`): `up` (default 1) and `dark_relief` (default 0), each 0 to 1. So Neutral, every imported look and every look that sets nothing have `f_up = 1` and `f_dn = 0`: the full up side, and ACES 2's dark boost left alone. **Signature** sets both to 0 for now (`"red_chroma": { "up": 0, "dark_relief": 0 }`): its colour saturation of 1.45 already gives back more than ACES 2 takes from light reds (the pink shirt reaches C* 51.1 with the up side on, 43.3 without it, against 37.3 in the camera JPEG), and its dark reds are a separate decision of the owner. With both strengths 0 the step is skipped (`ColorChain::red_chroma()` is `None`): no cost, and the picture is bit for bit the one of before the step existed (`look_signature.rs`, `gpu_color_red_chroma.rs`). At look intensity `k` the chain uses `neutral + k (look − neutral)`, per strength (Signature at 50 %: `f_up` 0.5), so 0 % is Neutral's picture exactly; a look with its own display rendering (LogC3 to Rec.709) is blended with our C12, which has Neutral's strengths; an imported ARRI display LUT has none of the step.
+
+**Tables.** Both are computed in Rust from `ym-color`'s own ACES 2 and gamut code, once per limiting gamut (Rec.709 for the sRGB output; P3-D65 for the viewport, Display P3 and Rec.2020 outputs, which ACES 2 limits to P3), and read by the CPU reference and the kernel. `YD(s)`: the Lab white at `0.18 · 2^s` through the placement and ACES 2, as the luminance of the limited display light, 73 entries from −10 to +8 stops in steps of 0.25, linear between them and held at the ends. `CMAX(L*, h)`: 40 bisection steps on the chroma at each of 41 (L* 0 to 100, step 2.5) by 72 (hue 0 to 355, step 5) nodes for the in-gamut test of linear display light, bilinear between them and periodic in hue. They match the investigation's tables (`crates/ym-color/tests/data/red_chroma/{yd_of_s,cmax_srgb,cmax_p3}.csv`): `YD` to a relative 4.1e-9, `CMAX` to 5.0e-4 (the CSVs have three decimals).
+
+**Properties, all tested** (`display::red_chroma::tests`, `tests/chain_cpu.rs`, `tests/look_signature.rs`):
+
+- Grey is bit-exact: the Lab hue of the neutral axis (the 2e-4 offset of AWG4's white from the Lab white) is about 260 degrees, far outside the window.
+- The step returns its input bit for bit where `W = 0`, where `fade = 0`, for `Y <= 1e-7` and negative `Y`, for a non-finite component, and on the side of `P` whose strength is 0 (`f_dn = 0` leaves everything under −0.5 stop untouched, `f_up = 0` everything over it). A finite input never gives a NaN.
+- Hue (Lab at the display lightness) moves by less than 1e-9 degrees and `Y` by less than 1e-12 relative.
+- No fold: the output chroma grows with the input chroma over stops −6 to +6, hues −40 to +50 degrees and chromas up to 1.6 times the gamut edge. Smallest slope of output against input chroma: Rec.709 0.501 up to 1.0 times `CMAX`, 0.158 up to 1.25, 0.095 up to 1.4, 0.0905 up to 1.6; P3 0.493, 0.171, 0.108, 0.0700 (the investigation's 0.16 and 0.13 are sweeps to about 1.25 times the edge). The slope is smallest well outside the gamut, where the cap squeezes the boost out.
+- `s` is held at +8 stops (the end of `YD`, display white) so the step stays finite for the brightest scene values; `tanh` arguments in the kernel are held to 20 (`tanh(20)` is 1 in f32 and f64).
+
+**Parity.** Python reference to Rust: `tools/vectors/red_chroma_vectors.py` is an independent numpy implementation of the maths above (the matrices from the primaries, `CMAX` by bisection, `YD` from the committed CSV) and writes 416 AWG4 samples (both gamuts, four pairs of strengths, stops −8.5 to 9.5, hues across the window and elsewhere, chromas to 1.6 times the edge) to `tests/data/red_chroma/vectors.json`; the Rust step agrees to 3.8e-10 absolute (2.9e-9 relative to `max(|v|, 1e-3)`), gate 1e-8. The generator agrees with the investigation's own script (`cand.py`, 408 samples) to 4.8e-9. GPU to CPU (`gpu_color_red_chroma.rs`, Mesa lavapipe, three storage modes, Viewport and sRGB, strengths (1, 0), (1, 0.5), (0.5, 1), (0, 1) on 624 reds and other colours): C12 within 1.4e-5 of the CPU relative to the largest channel (gate 5e-4), C13 within 8.3e-6 of a code at 10 bits (gate 1 code), the step's own part (the change it makes) within 9.5e-6 of display white (gate 1e-3). Tiles equal the whole image bit for bit; grey and hues outside the window are bit-identical to a chain without the step.
+
+**The GPU kernel.** `red_chroma` in `color.wgsl` runs inside `display_ours`, between `lifted_scene` and the matrix `AWG4_TO_AP0` (the placement). The two strengths ride in the uniform block (`rc.x`, `rc.y`; both 0 skips the stage and is what the host writes for a display LUT); the two tables sit in the persistent `tables` buffer of the output after the ACES 2 tables (`T_RC_YD`, `T_RC_CMAX`), 3,025 more floats (12 KB). The constants are written from `ym_color::display::red_chroma` into the shader, like the other stages'. Every branch point is continuous, so nothing rests on a rounding under Metal's fast-math (K8, `docs/17`).
+
+**The DNG does not carry it.** Unlike the white lift, the step is not baked into a DNG's pixels. A DNG holds the scene and a profile fitted to plain ACES 2; the step is part of Yellowmoon's own rendering of the reds, a display step, so an app that opens the DNG shows the reds the way ACES 2 renders them (10 to 22 % less chroma in mid-tone and light reds than Yellowmoon's picture; dark reds 30 to 40 % stronger). `ColorChain::apply_dng_pixel` is C11 decoded and lifted, as before. The inverse of a display rendering that is not ours (`docs/09`) inverts plain ACES 2 and has no step either. The tests that compare a DNG's pixels through ACES 2 with the app's picture put the step between the two (`tests/white_lift.rs`) or switch it off (`ChainParams::red_chroma = false`).
+
+**Switching it off.** `ChainParams::red_chroma` (default `true`) is for tests and tools that want plain ACES 2, such as the OpenColorIO vectors.
+
+**Pipeline version.** The step changes the picture of Neutral, of every imported look and of every look that does not set `red_chroma`, so `PIPELINE_VERSION` is 0.6.0. Signature's pictures are unchanged.
 
 ### Imported ARRI display LUT
 

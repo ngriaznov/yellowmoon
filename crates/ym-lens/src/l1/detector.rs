@@ -24,7 +24,7 @@ use crate::error::LensError;
 use crate::image::ImageRef;
 
 use super::balls::{BallInput, BallPx, find_balls};
-use super::disc::{LEVELS, PAIRS, level_sigma, radius_from_ratio};
+use super::disc::{LEVELS, PAIRS, RadiusEstimate, level_sigma, radius_from_ratio};
 use super::ladder::{blur_wide, gradient_at, gradient_magnitude, quantile};
 use super::spread::{GuidePyramid, spread};
 
@@ -47,6 +47,13 @@ const EDGE_KAPPA: f64 = 5.0;
 const EDGE_ABS_MIN: f64 = 0.002;
 /// Relative error of a ratio that no noise explains (the step-edge model against real edges).
 const MODEL_ERR: f64 = 0.05;
+/// A gradient ratio of the coarsest pair above this (and at or below the table's last entry) is an edge wider
+/// than the table; it reads as `b_cap`.
+const WIDE_RHO_MIN: f64 = 0.9;
+/// A reading of the coarsest pair from this fraction of `b_cap` up is taken as `b_cap`.
+const WIDE_FROM: f64 = 0.6;
+/// Sensitivity assumed for such a reading (it is a bound, not a measure).
+const WIDE_SENSITIVITY: f64 = 3.0;
 /// A reading whose log radius has this variance has weight 1.
 const WEIGHT_REF_VAR: f64 = 0.04;
 /// Readings lighter than this are dropped.
@@ -236,6 +243,7 @@ fn edge_samples(
     h: usize,
     noise_v: f64,
     r_min_px: f64,
+    r_wide_px: f64,
     cancel: &dyn Fn() -> bool,
 ) -> Result<(Vec<Sample>, Vec<bool>), LensError> {
     let mut samples = Vec::new();
@@ -303,9 +311,29 @@ fn edge_samples(
                     }
                     let gkn = normalised(gk_peak, lk[at_peak], floor);
                     let rho = f64::from(g) / f64::from(gk_peak);
-                    let Some(est) = radius_from_ratio(pair, rho) else {
-                        continue;
+                    let mut est = match radius_from_ratio(pair, rho) {
+                        Some(e) => e,
+                        // An edge the coarsest pair cannot resolve is wider than the table.
+                        None if pair == PAIRS.len() - 1
+                            && rho.is_finite()
+                            && rho > WIDE_RHO_MIN =>
+                        {
+                            RadiusEstimate {
+                                r: r_wide_px,
+                                sensitivity: WIDE_SENSITIVITY,
+                            }
+                        }
+                        None => continue,
                     };
+                    // A wide edge is blurred at least as much as the stretch ever uses (`r_wide_px`), which is
+                    // all the map needs of it: the pair's ratio there is too flat to give more, and its
+                    // sensitivity would give the reading no weight at all.
+                    if pair == PAIRS.len() - 1 && est.r >= WIDE_FROM * r_wide_px {
+                        est = RadiusEstimate {
+                            r: r_wide_px,
+                            sensitivity: est.sensitivity.min(WIDE_SENSITIVITY),
+                        };
+                    }
                     let eps2 = (nj / gn).powi(2) + (nk / gkn).powi(2) + MODEL_ERR * MODEL_ERR;
                     let var = est.sensitivity * est.sensitivity * eps2;
                     let weight = (WEIGHT_REF_VAR / var).min(1.0);
@@ -451,7 +479,8 @@ pub(super) fn detect(
     }
 
     // 1. Edge readings.
-    let (mut samples, mut sharp) = edge_samples(&ladder, w, h, noise_v, r_min_px, cancel)?;
+    let (mut samples, mut sharp) =
+        edge_samples(&ladder, w, h, noise_v, r_min_px, B_CAP * hd, cancel)?;
     drop(ladder);
     let measured_edges = samples.iter().filter(|s| s.w >= 0.1).count();
 
@@ -498,7 +527,6 @@ pub(super) fn detect(
             rgb: [&wp.rgb[0], &wp.rgb[1], &wp.rgb[2]],
             y: &wp.y,
             noise_v,
-            r_min_px,
             r_max_px,
             ev_w: &ev_w,
             ev_s: &ev_s,
@@ -714,9 +742,9 @@ fn drop_small_regions(b: &mut [f32], keep: &[bool], w: usize, h: usize, hd: f64)
     }
 }
 
-/// Fraction of the frame at `b >= 2 b_min` with confidence (the "little out-of-focus background" test).
+/// Fraction of the frame at `b >= 1.5 b_min` with confidence (the "little out-of-focus background" test).
 pub(super) fn blurred_fraction(d: &Detected) -> f64 {
-    let thr = (2.0 * B_MIN) as f32;
+    let thr = (crate::consts::MIN_BLUR_FROM * B_MIN) as f32;
     let count =
         d.b.iter()
             .zip(&d.conf)

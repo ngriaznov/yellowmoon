@@ -278,6 +278,8 @@ fn bare(target: OutputTarget) -> ColorChain {
     let scale = [[g, 0.0, 0.0], [0.0, g, 0.0], [0.0, 0.0, g]];
     let mut p = ChainParams::new(scale, ToneParams::IDENTITY);
     p.output = target;
+    // OpenColorIO's vectors are the plain transform: the red chroma step (C12 step 1c) is off here.
+    p.red_chroma = false;
     ColorChain::new(&p).unwrap()
 }
 

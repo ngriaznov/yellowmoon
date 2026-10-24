@@ -31,12 +31,23 @@
 //! through. The passes above work on the photo as the lens delivers it, unbent; the sampler bends it
 //! (`docs/21` section 4, L4).
 //!
+//! # Stage caches
+//!
+//! `Z = L2(L1(X))` does not read Flares, and the flare terms of L3 read neither Edges nor `Z`, so the
+//! two halves are cached on their own (`lens_field_*` and `lens_flare_*` in the table of the module
+//! above): a Flares move runs L3's terms over the cached `Z`, an Edges move runs L1 and L2 and reuses
+//! the terms, an Anamorphic move runs both. With Edges and Anamorphic at 0 `Z` is the raw group itself.
+//!
 //! # On the device
 //!
-//! There are no device lens kernels yet. A raw group that lives on the device is read back
-//! ([`Job::group`]) and the lens runs on the host; its output is a host image, which every consumer
-//! (the sampler and the colour pass on the device, the CPU colour pass, the export tail) takes. The
-//! raw chain of a full-resolution region still runs on the device when it can, with a host result.
+//! With [`GpuStages::LENS`](crate::app::gpu::GpuStages) on and a view that keeps its images on the
+//! device, [`lens_device`](super::lens_device) runs the stages as kernels per tile, reading the raw
+//! group where it lives, and the caches hold device images (no readback, `docs/21` section 3). L1 still
+//! runs on the host where it acts (its output is uploaded as the input of L2). Any other request
+//! reads the raw group back ([`Job::group`]) and the lens runs on the host; its output is a host image,
+//! which every consumer (the sampler and the colour pass on the device, the CPU colour pass, the export
+//! tail) takes. The raw chain of a full-resolution region still runs on the device when it can, with a
+//! host result.
 //!
 //! # Exports and determinism
 //!
@@ -68,9 +79,9 @@ use crate::pipeline::raw::RawParamsKey;
 const CAMERA_NOTE: &str =
     "The camera's colour curves could not be read, so the lens colours are neutral.";
 
+use super::lens_device;
 /// The key of a reduced group after the lens: the raw group's, the lens's (`LensCtx::key`) and k.
 pub(crate) use super::lens_device::LensDevice;
-use super::lens_device;
 
 pub(crate) type GroupKey = (RawParamsKey, String, usize);
 /// The key of a 512 px tile after the lens: the raw group's, the lens's and the tile.
@@ -675,7 +686,11 @@ impl Job<'_> {
 
     /// The CPU lens over the raw group at 1/`k`: the field stage (cached), the flare terms (cached) and their
     /// sum.
-    fn lens_group_cpu(&mut self, ctx: &Arc<LensCtx>, k: usize) -> Result<Arc<RgbImage>, RenderError> {
+    fn lens_group_cpu(
+        &mut self,
+        ctx: &Arc<LensCtx>,
+        k: usize,
+    ) -> Result<Arc<RgbImage>, RenderError> {
         let planes = self.lens_planes(ctx)?;
         let raw = self.group(k)?;
         let (w, h) = (raw.width, raw.height);
@@ -716,7 +731,11 @@ impl Job<'_> {
         match source {
             super::PartSource::LensGroup(k) => {
                 if let Some(groups) = st.lens_groups.as_mut() {
-                    groups.insert((raw, ctx.key.clone(), k), Backing::Cpu(Arc::clone(image)), bytes);
+                    groups.insert(
+                        (raw, ctx.key.clone(), k),
+                        Backing::Cpu(Arc::clone(image)),
+                        bytes,
+                    );
                 }
             }
             super::PartSource::LensTile(tx, ty) => {
@@ -763,7 +782,12 @@ impl Job<'_> {
         for ty in 0..h.div_ceil(tile) {
             for tx in 0..w.div_ceil(tile) {
                 self.check()?;
-                let out = Rect::new(tx * tile, ty * tile, tile.min(w - tx * tile), tile.min(h - ty * tile));
+                let out = Rect::new(
+                    tx * tile,
+                    ty * tile,
+                    tile.min(w - tx * tile),
+                    tile.min(h - ty * tile),
+                );
                 let done = self.lens_device_tile(
                     &route,
                     ctx,
@@ -989,7 +1013,8 @@ impl Job<'_> {
                 "The lens of this photo is gone.".to_owned(),
             ));
         };
-        self.lens_tile_cpu(&ctx, tx, ty).map(|image| (*image).clone())
+        self.lens_tile_cpu(&ctx, tx, ty)
+            .map(|image| (*image).clone())
     }
 
     /// The lens over the 512 px tile `(tx, ty)` on the device (the raw tiles around it gathered where they

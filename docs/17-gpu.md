@@ -132,8 +132,11 @@ DNG: the colour stage per tile on the device (Stop::DngLinearAwg4), read back in
 | R8 Richardson–Lucy (default), diffraction | `cpu/sharpen.rs`, `cpu/sharpen/diffraction.rs` | `richardson_lucy`, `diffraction` |
 | R9 lens resample | `cpu/resample.rs` | `lens` |
 | Reduced fit-view group (bin 1/k, gain, sigma, denoise, R9 at 1/k) | `pipeline/raw.rs::{bin_mosaic, reduced_bayer, finish_lens}` | `GpuReduced`, in bands of rows |
+| L2 field optics (`docs/21` section 4) | `ym-lens` `field.rs` (`apply_field`) | `lens_field_pyramid`, `lens_field_gather`, `lens_field_finish` (the box-reduced pyramid, the 289-tap spread-function gather, the fringe shift and the gain); `GpuStages::LENS` |
+| L3 highlight optics (`docs/21` section 4) | `ym-lens` `l3/` (`flare_terms`, `apply_flares`) | `lens_flare_restore`, `lens_flare_nodes`, `lens_flare` (the glow core, the tail plane, the drawn items by 32 px bin, the grids of the slowly varying ghosts); `GpuStages::LENS` |
+| L1 bokeh reshaping (`docs/21` section 4) | `ym-lens` `l1/` (`reshape`) | no: runs on the host where it acts, and its output is uploaded as L2's input |
 | Geometry sampler, with the lens's bend (L4: `SamplerWarp`, `docs/21` section 4) | `ym-gpu` `cpu/sampler.rs` (what `ym-core` calls) | `sampler` (the bend as a displacement of the exact table position, `warp_pos`) |
-| C1 to C12 | `ym-color::display::ColorChain` | `color.wgsl` and `aces2.wgsl` with a persistent `ChainTables` set (ACES 2 and dither tables once per device, curve tables per curve edit, look cubes in an LRU keyed by content) and a per-frame `ChainU` uniform block |
+| C1 to C12 | `ym-color::display::ColorChain` | `color.wgsl` and `aces2.wgsl` with a persistent `ChainTables` set (ACES 2 and dither tables once per device, with the red chroma step's two tables (C12 step 1c, `docs/02`) after the ACES 2 ones; curve tables per curve edit, look cubes in an LRU keyed by content) and a per-frame `ChainU` uniform block (2112 bytes; the step's two strengths in `rc`) |
 | Output sharpening | `cpu/output_sharpen.rs` | `output_sharpen` |
 | C13, dither, quantise | `ym-color::encode`, `ym-export/pixels.rs` | `encode` (RGBA8 for views, u8/u16 bands for exports) |
 | Magnification of a view above 100 % (Catmull-Rom of the sharpened 100 % picture) | `ym-gpu` `cpu/magnify.rs` (what `ym-core`'s `magnify_and_encode` calls) | `magnify` with C13 fused (section 16) |
@@ -146,7 +149,7 @@ DNG: the colour stage per tile on the device (Stop::DngLinearAwg4), read back in
 | Camera-processed files (Lossless M/S) | `ym-raw`, `ym-core` | no |
 | Neural demosaic | `ym-ml` | section 14 |
 
-**Not on the device yet.** Every row marked "no", and the CPU-only cases noted in the rows (the forced demosaic methods, methods B and C of R6, the histogram counts, the DNG white and writer), run on the CPU today.
+**Not on the device yet.** Every row marked "no" (the lens's L1 among them), and the CPU-only cases noted in the rows (the forced demosaic methods, methods B and C of R6, the histogram counts, the DNG white and writer), run on the CPU today.
 
 A viewport frame is one device job: group or composed tile window, sampler, C1 to C12, output sharpening, C13, RGBA8, one readback (none for the native viewport, which draws the RGBA8 buffer where it is: section 16). Above 100 % the colour pass makes the 100 % picture under the view, output sharpening runs on it at `s = 1`, and the magnification kernel makes the view's RGBA8 from it (section 16). `DisplayFrame` holds the display-linear frame on the device, so an Output slider move re-runs sharpening and C13 only. Rectangle moves between resident images use the copy kernel (`copy.wgsl`: `encode_copy_rect`, `encode_crop`, `encode_gather`, pure data movement; `encode_gather` refuses overlapping pieces).
 
@@ -164,7 +167,9 @@ A viewport frame is one device job: group or composed tile window, sampler, C1 t
   | adaptive ratio | 1.4e-6 on vectors, 7.4e-6 on random frames; tie flips counted separately, at most 1.65e-4 of samples on real mosaics |
   | C7 to C11 and the display transform | 1.2e-5 in LogC4; one 10-bit code |
   | output sharpening | 4.3e-5 |
-  | C13 u8 | within one code, at least 99 % exact |
+  | L2 field optics (`tests/gpu_lens_field.rs`) | 6.1e-6 (3.04e-6 measured over 27.5 million samples; a flipped tap-count decision is allowed in 1e-6 of the samples, none did) |
+  | L3 highlight optics (`tests/gpu_lens_flare.rs`) | 2e-5 of the flare terms' peak (8.7e-6 measured; 9.8e-7 for the ghosts alone) |
+| C13 u8 | within one code, at least 99 % exact |
   | magnification of a view above 100 % | 0: its values are the CPU's bit for bit, its codes are C13's |
   | resize | 1e-5 relative; flat field exact; step overshoot under 10 % |
   | R6 method A (`tests/gpu_bm_dct.rs`) | 4.2e-6 on the sweep of noisy frames (2.1e-6 measured: no decision went the other way in 1.9 million samples; 2.3e-6 with the blend of Y alone of pipeline 0.5.1); 3.4e-3 and 4.1e-3 of the samples over 1e-4 on a frame where one does (1.7e-3 and 2.1e-3 measured) |

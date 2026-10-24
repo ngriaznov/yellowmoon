@@ -11,7 +11,9 @@ mod scenes;
 use std::sync::OnceLock;
 
 use common::{apply_tile, plan, whole};
-use scenes::{Noise, Scene, erode, night_scene_spaced, sharp_scene, subject_scene};
+use scenes::{
+    Noise, Scene, erode, night_scene_spaced, sharp_scene, soft_night_scene, subject_scene,
+};
 use ym_lens::{
     Axis, ImageRef, LensError, LensKind, LensPlan, LensPlanes, PixelRect, ReshapeReason, apply,
     halo_px, reshape, reshape_halo,
@@ -229,6 +231,112 @@ fn discs_come_out_q_times_taller_with_their_energy_kept() {
                     b.energy[c]
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn soft_edged_and_clipped_balls_come_out_twice_as_tall_at_anamorphic_100() {
+    // The strongest cue of an anamorphic lens: every out-of-focus highlight is an oval twice as tall as wide, soft
+    // or sharp at the rim, clipped or not. (radius, rim width over radius, level)
+    let balls = [
+        (7.0, 0.0, 0.5),
+        (9.0, 0.3, 0.8),
+        (11.0, 0.6, 1.6),
+        (13.0, 0.5, 1.6),
+        (8.0, 0.4, 1.2),
+        (10.0, 0.0, 0.6),
+        (12.0, 0.4, 0.45),
+        (6.0, 0.3, 1.6),
+    ];
+    let scene = soft_night_scene(W, H, &balls, Noise::NONE, 21, 3.8);
+    for axis in [Axis::X, Axis::Y] {
+        let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, axis);
+        assert!((p.q() - 2.0).abs() < 1e-12);
+        let planes = planes_of(&p, &scene);
+        assert!(planes.bokeh().unwrap().active());
+        let out = reshape_tile(
+            &p,
+            &planes,
+            1,
+            &scene.img.data,
+            (W, H),
+            PixelRect::new(0, 0, W, H),
+        );
+        for &d in &scene.discs {
+            let b = blob(&out, &scene.ground, W, H, d, 3.6);
+            let long_axis = if axis == Axis::X { 90.0 } else { 0.0 };
+            let delta = ((b.angle_deg - long_axis + 90.0).rem_euclid(180.0) - 90.0).abs();
+            assert!(
+                delta < 3.0,
+                "{axis:?}: disc {d:?} major axis at {:.1} deg",
+                b.angle_deg
+            );
+            assert!(
+                b.elongation >= 1.9,
+                "{axis:?}: the ball of {} px is only {:.2} times taller",
+                d.2,
+                b.elongation
+            );
+        }
+    }
+}
+
+#[test]
+fn tiles_equal_the_whole_frame_with_soft_balls() {
+    let balls = [
+        (7.0, 0.0, 0.5),
+        (9.0, 0.3, 0.8),
+        (11.0, 0.6, 1.6),
+        (13.0, 0.5, 1.6),
+        (8.0, 0.4, 1.2),
+        (10.0, 0.0, 0.6),
+        (12.0, 0.4, 0.45),
+        (6.0, 0.3, 1.6),
+        (9.0, 0.2, 0.9),
+        (7.5, 0.5, 1.4),
+    ];
+    let scene = soft_night_scene(W, H, &balls, Noise::LOW, 22, 2.6);
+    let p = plan(LensKind::Petzval, 0.0, 100.0, 100.0, W, H, Axis::X);
+    let planes = planes_of(&p, &scene);
+    assert!(!planes.bokeh().unwrap().balls().is_empty());
+    for k in [1usize, 4] {
+        let (data, fw, fh) = if k == 1 {
+            (scene.img.data.clone(), W, H)
+        } else {
+            reduce(&scene.img.data, W, H, k)
+        };
+        let whole = reshape_tile(
+            &p,
+            &planes,
+            k,
+            &data,
+            (fw, fh),
+            PixelRect::new(0, 0, fw, fh),
+        );
+        assert!(
+            whole.iter().zip(&data).any(|(a, b)| a != b),
+            "k {k}: nothing changed"
+        );
+        for (nx, ny) in [(2usize, 2usize), (3, 3), (5, 4)] {
+            let mut assembled = vec![0.0f32; 3 * fw * fh];
+            for rect in common::tiles(fw, fh, nx, ny) {
+                let a = reshape_tile(&p, &planes, k, &data, (fw, fh), rect);
+                for c in 0..3 {
+                    for y in 0..rect.h {
+                        let dst = c * fw * fh + (rect.y + y) * fw + rect.x;
+                        let src = c * rect.w * rect.h + y * rect.w;
+                        assembled[dst..dst + rect.w].copy_from_slice(&a[src..src + rect.w]);
+                    }
+                }
+            }
+            assert!(
+                assembled
+                    .iter()
+                    .zip(&whole)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "k {k}: {nx}x{ny} tiles differ from the whole frame"
+            );
         }
     }
 }
@@ -626,7 +734,7 @@ fn an_input_too_small_for_the_halo_is_refused() {
     let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
     let planes = planes_of(&p, &scene);
     let halo = reshape_halo(&p, &planes, 1);
-    assert!(halo > 10 && halo <= 40, "{halo}");
+    assert!(halo > 10 && halo <= 70, "{halo}");
     assert!(halo_px(&p, &planes, 1) >= halo);
     let rect = PixelRect::new(300, 200, 100, 100);
     let need = rect.grown(halo - 1, W, H);

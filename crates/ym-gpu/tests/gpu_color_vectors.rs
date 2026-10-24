@@ -106,6 +106,8 @@ fn drt_gate_against_opencolorio_for_all_four_outputs() {
             let ap0_to_awg4 = matrices().ap0_to_awg4.map(|row| row.map(|v| v * unplace));
             let mut params = ChainParams::new(ap0_to_awg4, identity_tone());
             params.output = OutputTarget::from(output);
+            // OpenColorIO's vectors are the plain transform: the red chroma step (C12 step 1c) is off.
+            params.red_chroma = false;
             // f16 devices hold the image in f16, which rounds the AP0 inputs themselves (a relative
             // 2.4e-4 on saturated, very bright wheel colours is a few 10-bit codes after the gamut
             // compression). They are checked against the CPU chain fed the rounded values, and

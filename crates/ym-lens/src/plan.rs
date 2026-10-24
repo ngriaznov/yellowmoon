@@ -180,6 +180,16 @@ impl LensPlan {
         self.q
     }
 
+    /// The half-length of the vertical stretch (L1's first gather) per unit of the pixel's blur radius `b`:
+    /// `sqrt(3 (q^2 - 1)) / 2`, so that a texture blurred by a disc of radius `b` ends with the spread of a
+    /// texture blurred by an ellipse `q` times taller than wide. A line of half-length `(q - 1) b` would give a
+    /// disc the extent of that ellipse but only about half its extra vertical spread (`docs/21` section 4, L1,
+    /// step 4). It is 0 at `q = 1` and 1.5 at `q = 2`.
+    #[must_use]
+    pub fn stretch_per_blur(&self) -> f64 {
+        (3.0 * (self.q * self.q - 1.0)).max(0.0).sqrt() / 2.0
+    }
+
     /// `e = edges / 100`.
     #[must_use]
     pub fn edges(&self) -> f64 {

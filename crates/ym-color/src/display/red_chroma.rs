@@ -72,6 +72,10 @@ use crate::gamut::matrices;
 /// `Z 1.08883`), which is what the investigation used. (AWG4's own white is `0.950456, 1, 1.089058`:
 /// the 2e-4 gap puts the neutral axis at `C` 0.014 and hue 260 degrees, outside the window.)
 pub const LAB_WHITE: Vec3 = [0.95047, 1.0, 1.08883];
+/// CIE epsilon `216/24389` of the CIELAB the step works in (the cube of 6/29).
+pub const LAB_EPSILON: f64 = 216.0 / 24389.0;
+/// CIE kappa `24389/27` of the CIELAB the step works in.
+pub const LAB_KAPPA: f64 = 24389.0 / 27.0;
 /// Scene luminance of middle grey, the reference of `s`.
 pub const GREY: f64 = 0.18;
 /// Below this luminance (AWG4 `Y`) a pixel is returned unchanged.
@@ -839,7 +843,8 @@ mod tests {
                             for i in 1..=n {
                                 let c = extent * edge * f64::from(i) / f64::from(n);
                                 let rgb = pixel(t, s, h, c);
-                                let (Some(a), Some(b)) = (st.lch(rgb), st.lch(st.apply(rgb))) else {
+                                let (Some(a), Some(b)) = (st.lch(rgb), st.lch(st.apply(rgb)))
+                                else {
                                     continue;
                                 };
                                 if let Some((c0, o0)) = prev {
@@ -899,10 +904,15 @@ mod tests {
                     worst_cmax = worst_cmax.max((t.cmax()[i * CMAX_H_COLS + j] - v).abs());
                 }
             }
-            println!("{name}: YD max relative difference {worst_yd:.2e}, CMAX max difference {worst_cmax:.2e}");
+            println!(
+                "{name}: YD max relative difference {worst_yd:.2e}, CMAX max difference {worst_cmax:.2e}"
+            );
             assert!(worst_yd < 1e-8, "{name}: YD differs by {worst_yd:e}");
             // The CSVs carry three decimals.
-            assert!(worst_cmax <= 5.5e-4, "{name}: CMAX differs by {worst_cmax:e}");
+            assert!(
+                worst_cmax <= 5.5e-4,
+                "{name}: CMAX differs by {worst_cmax:e}"
+            );
         }
     }
 
@@ -946,9 +956,15 @@ mod tests {
                 worst_rel = worst_rel.max(d / want[ch].abs().max(1e-3));
             }
         }
-        println!("Python to Rust: max abs difference {worst:.2e} (relative to max(|v|, 1e-3) {worst_rel:.2e}) over {} samples, {changed} changed", samples.len());
+        println!(
+            "Python to Rust: max abs difference {worst:.2e} (relative to max(|v|, 1e-3) {worst_rel:.2e}) over {} samples, {changed} changed",
+            samples.len()
+        );
         assert!(changed > 150, "only {changed} samples changed");
-        assert!(worst < tolerance && worst_rel < tolerance, "{worst:e} {worst_rel:e}");
+        assert!(
+            worst < tolerance && worst_rel < tolerance,
+            "{worst:e} {worst_rel:e}"
+        );
     }
 
     #[test]

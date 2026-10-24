@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Changed
+
+- **Reds keep their colour.** The display rendering (ACES 2) takes chroma out of mid-tone and light reds, so a pink shirt or a red hat went towards coral, and it makes dark reds stronger. A new step in front of it gives back what it takes from mid-tone and light reds, keeps the result inside the display's gamut, and leaves grey, other colours and skin alone. It is part of the Neutral look and of every imported look; the Signature look already has more colour than the rendering takes away, so it does not use the step and its pictures are unchanged. Looks can set how much of it they let through (`red_chroma` in the look file, `docs/08`). A DNG is not changed: other apps show its reds as the display rendering alone makes them. Neutral and imported looks render differently (pipeline 0.6.0).
+
 ## [0.1.15] - 2026-10-23
 
 Auto crop. (0.1.14 was the number of two test builds and was not released.)

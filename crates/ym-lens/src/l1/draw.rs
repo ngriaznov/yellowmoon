@@ -16,6 +16,11 @@ use super::Ball;
 
 /// The largest distance between the two copies of a cat's-eye ball, in the ellipse's own semi-axes.
 const MAX_CAT_OFFSET: f64 = 1.8;
+/// The rim softness (80 % to 20 % of the brightness, over the radius) a sharp rim measures: the optics' own blur
+/// and the pixel grid. Only the softness above it widens the drawn rim.
+const NATIVE_SOFTNESS: f64 = 0.12;
+/// The width of a smoothstep rim from full to nothing, in widths of its 80 % to 20 % span.
+const RIM_SPAN_PER_SOFTNESS: f64 = 2.35;
 
 /// A ball's shape in the pixels of the view being drawn.
 #[derive(Clone, Debug)]
@@ -40,6 +45,8 @@ pub(super) struct Shape {
     pub r_ball: f64,
     /// Bounding radius of everything drawn, in pixels.
     pub reach: f64,
+    /// Width of the rim in pixels, from full brightness to none (1 for a sharp rim: one pixel of coverage).
+    pub edge: f64,
     /// The ball's plane fit: value at the centre and slopes per pixel, per channel.
     pub fit: [[f64; 3]; 3],
 }
@@ -200,6 +207,9 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
         (std::f64::consts::PI * a * b, p.rim_mean)
     };
     let scale = p.fw * p.fh / (area * mean);
+    // A soft ball is drawn with a soft rim; a sharp one with the one pixel of coverage.
+    let edge = (RIM_SPAN_PER_SOFTNESS * (ball.softness - NATIVE_SOFTNESS) * r_px)
+        .clamp(1.0, (2.0 * r_px).max(1.0));
     Some(Shape {
         cx,
         cy,
@@ -215,7 +225,8 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
         ],
         r_out: ball.take_out_radius * p.hk,
         r_ball: r_px,
-        reach: a + (half_off.0 * half_off.0 + half_off.1 * half_off.1).sqrt() + 2.0,
+        reach: a + (half_off.0 * half_off.0 + half_off.1 * half_off.1).sqrt() + 0.5 * edge + 1.5,
+        edge,
         fit: [
             fit_px(&ball.fit[0], p.hk),
             fit_px(&ball.fit[1], p.hk),
@@ -230,7 +241,7 @@ fn fit_px(f: &[f64; 3], hk: f64) -> [f64; 3] {
 }
 
 impl Shape {
-    /// Coverage (0 to 1, one pixel wide edge) and normalised radius at the pixel centre `(px, py)`.
+    /// Coverage (0 to 1; a rim `edge` pixels wide) and normalised radius at the pixel centre `(px, py)`.
     #[inline]
     pub(super) fn coverage(&self, px: f64, py: f64) -> (f64, f64) {
         let ell = |ox: f64, oy: f64| -> (f64, f64) {
@@ -238,23 +249,31 @@ impl Shape {
             let u = dx * self.m.0 + dy * self.m.1;
             let v = -dx * self.m.1 + dy * self.m.0;
             let g = (u / self.a) * (u / self.a) + (v / self.b) * (v / self.b);
-            if g < 0.0625 {
+            if g < 0.0625 && self.edge <= 1.0 {
                 // Deep inside: the signed distance is at least a quarter of the smaller semi-axis.
                 return (-self.b * 0.5, g.sqrt());
             }
             let gx = 2.0 * u / (self.a * self.a);
             let gy = 2.0 * v / (self.b * self.b);
-            let grad = (gx * gx + gy * gy).sqrt();
+            let grad = (gx * gx + gy * gy).sqrt().max(1e-12);
             ((g - 1.0) / grad, g.sqrt())
+        };
+        let cover = |sd: f64| -> f64 {
+            let t = (0.5 - sd / self.edge).clamp(0.0, 1.0);
+            if self.edge > 1.0 {
+                t * t * (3.0 - 2.0 * t)
+            } else {
+                t
+            }
         };
         if self.delta == 0.0 {
             let (sd, rn) = ell(0.0, 0.0);
-            return ((0.5 - sd).clamp(0.0, 1.0), rn);
+            return (cover(sd), rn);
         }
         let (sd1, r1) = ell(-self.half_off.0, -self.half_off.1);
         let (sd2, r2) = ell(self.half_off.0, self.half_off.1);
         let sd = sd1.max(sd2);
-        ((0.5 - sd).clamp(0.0, 1.0), r1.max(r2))
+        (cover(sd), r1.max(r2))
     }
 }
 

@@ -40,6 +40,18 @@ const SHARP_DILATE: i64 = 2;
 const BALL_RIM_REACH_PX: f64 = 7.0;
 /// A line shorter than this, in pixels, is not gathered.
 const MIN_LINE_PX: f64 = 0.05;
+/// A pixel takes a blur from the map only when its colour (square roots, three channels) is within this distance of
+/// the footprint mean of some blurred cell of confidence at least [`ACCEPT_CONFIDENCE`] around it. In a region blurred by
+/// more than a cell the picture is smooth at the cell's scale, so every pixel is near its cell's mean; the rim of
+/// a sharp subject (a bright bud against a dark background) is not near any, and keeps no blur.
+const ACCEPT_COLOUR: f64 = 0.25;
+const ACCEPT_CONFIDENCE: f64 = 0.3;
+/// The stretch fades out towards the border of the blur map (a subject's outline, a hole where the detector
+/// finds sharp detail) over this fraction of the longest line, within these bounds in pixels at the tile's
+/// scale: a hard border cuts the lines of neighbouring pixels differently and tears the picture along it.
+const FEATHER_FRACTION: f64 = 0.3;
+const FEATHER_MIN_PX: usize = 2;
+const FEATHER_MAX_PX: usize = 24;
 
 /// A rectangle of values with clamped reads: reads outside the rectangle take the nearest value inside, which
 /// is the frame's edge replication wherever the rectangle touches the frame's edge.
@@ -73,6 +85,10 @@ pub(super) struct Pass<'a> {
     /// Longest vertical and tangential line in pixels.
     v_reach: f64,
     t_reach: f64,
+    /// Half-length of the vertical stretch per unit of blur ([`LensPlan::stretch_per_blur`]).
+    stretch: f64,
+    /// Width in pixels of the soft edge the stretch has at the border of the blur map (0 without stretch).
+    feather: usize,
     /// Map level, and the tile pixels per cell of it.
     level: usize,
     sx: f64,
@@ -104,11 +120,19 @@ impl<'a> Pass<'a> {
         }
         let hk = 0.5 * ((fw * fw + fh * fh) as f64).sqrt();
         let b = bp.max_blur().min(B_CAP);
-        let v_reach = if v_on { (q - 1.0) * b * hk } else { 0.0 };
+        let stretch = plan.stretch_per_blur();
+        let v_reach = if v_on { stretch * b * hk } else { 0.0 };
         let t_reach = if t_on {
             lens.swirl_max() * e * b * hk
         } else {
             0.0
+        };
+        // The soft edge of the stretch at the map's border: a fraction of the longest line, within bounds.
+        let feather = if v_on || t_on {
+            ((FEATHER_FRACTION * v_reach.max(t_reach)).round() as usize)
+                .clamp(FEATHER_MIN_PX, FEATHER_MAX_PX)
+        } else {
+            0
         };
         // The map's cells in tile pixels, at the coarsest level that keeps them at least a pixel apart.
         let (mw, mh) = bp.size();
@@ -134,6 +158,8 @@ impl<'a> Pass<'a> {
             t_on,
             v_reach,
             t_reach,
+            stretch,
+            feather,
             level,
             sx,
             sy,
@@ -168,7 +194,7 @@ impl<'a> Pass<'a> {
 
     /// The context in pixels the pass needs around the rectangle it produces.
     pub(super) fn halo(&self) -> usize {
-        self.v_halo() + self.t_halo() + self.guide_reach()
+        self.v_halo() + self.t_halo() + self.guide_reach() + self.feather
     }
 
     /// The pass over `want`. `input` covers `want` grown by [`Pass::halo`], clamped to the frame.
@@ -176,7 +202,10 @@ impl<'a> Pass<'a> {
         let (fw, fh) = (self.fw, self.fh);
         let r1 = want.grown(self.t_halo(), fw, fh);
         let r0 = r1.grown(self.v_halo(), fw, fh);
-        let need = r0.grown(self.guide_reach(), fw, fh);
+        // The blur map is made over `rb`, a feather wider than `r0`, so that the soft edge of the stretch
+        // at the border of the map is the same in every tile.
+        let rb = r0.grown(self.feather, fw, fh);
+        let need = rb.grown(self.guide_reach(), fw, fh);
         if !input.rect().contains(&need) {
             return Err(LensError::InputTooSmall {
                 needed: need.to_string(),
@@ -206,11 +235,22 @@ impl<'a> Pass<'a> {
             .filter_map(|b| shape_of(b, &sp))
             .filter(|s| {
                 let reach = s.reach.max(s.r_out + 1.0);
-                touches(&r0, s.cx, s.cy, reach)
+                touches(&rb, s.cx, s.cy, reach)
             })
             .collect();
         // The blur map at the tile's pixels.
-        let bt = self.tile_blur(input, r0, &shapes);
+        let (bt, ramp) = self.tile_blur(input, rb, r0, &shapes);
+        if let Some(path) = std::env::var_os("YM_DEBUG_BT") {
+            // DEBUG (temporary): the tile's blur map, r0 and its size first.
+            let mut bytes = Vec::new();
+            for v in [r0.x as u32, r0.y as u32, r0.w as u32, r0.h as u32] {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+            for v in &bt {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+            let _ = std::fs::write(path, bytes);
+        }
         if !self.v_on && !self.t_on && shapes.is_empty() {
             return crop_rgb(input, want);
         }
@@ -222,12 +262,12 @@ impl<'a> Pass<'a> {
         take_out(&mut wk, r0, &bt, &shapes);
         // The two gathers.
         let o1 = if self.v_on {
-            self.gather_vertical(&wk, r0, &bt, r1)
+            self.gather_vertical(&wk, r0, &bt, &ramp, r1)
         } else {
             crop_planes(&wk, r0, r1)
         };
         let mut o2 = if self.t_on {
-            self.gather_tangential(&o1, r1, &bt, r0, want)
+            self.gather_tangential(&o1, r1, &bt, &ramp, r0, want)
         } else {
             crop_planes(&o1, r1, want)
         };
@@ -242,9 +282,17 @@ impl<'a> Pass<'a> {
         (self.bp.noise_v() * ratio).max(0.0015)
     }
 
-    /// The blur map over `r0`: upsampled with a joint bilateral filter, then zeroed at sharp edges and below
-    /// `b_min`.
-    fn tile_blur(&self, input: &ImageRef, r0: PixelRect, shapes: &[Shape]) -> Vec<f32> {
+    /// The blur map over `out` (made over `rb`, which holds `out` and the feather): upsampled with a joint
+    /// bilateral filter, then zeroed at sharp edges and below `b_min`; and the stretch's ramp (0 to 1), which
+    /// fades the stretch out towards the border of the map.
+    fn tile_blur(
+        &self,
+        input: &ImageRef,
+        rb: PixelRect,
+        out: PixelRect,
+        shapes: &[Shape],
+    ) -> (Vec<f32>, Vec<f32>) {
+        let r0 = rb;
         let bp = self.bp;
         let (fw, fh) = (self.fw, self.fh);
         let (mw, mh) = bp.size();
@@ -330,6 +378,9 @@ impl<'a> Pass<'a> {
                 let i_lo = (((px - sup) / self.sx).floor().max(0.0) as usize).max(cx_lo);
                 let i_hi = ((((px + sup) / self.sx).floor() as usize) + 1).min(cx_hi);
                 let (mut num, mut den, mut nrm) = (0.0f64, 0.0f64, 0.0f64);
+                // How far the pixel's colour is from the nearest confident cell's: a pixel of a different
+                // colour than every cell around it (the rim of a sharp subject) is not part of their blur.
+                let mut nearest2 = f64::INFINITY;
                 for j in j_lo..j_hi {
                     let dy = rows[j].0 - py;
                     for i in i_lo..i_hi {
@@ -346,15 +397,23 @@ impl<'a> Pass<'a> {
                             f64::from(g[1] - cg[1]),
                             f64::from(g[2] - cg[2]),
                         );
-                        let tt = 1.0 + (d0 * d0 + d1 * d1 + d2c * d2c) / sg2;
+                        let dist2 = d0 * d0 + d1 * d1 + d2c * d2c;
+                        let tt = 1.0 + dist2 / sg2;
                         let k = ws / (tt * tt);
                         let idx = j * lw + i;
+                        if level.a[idx] > 0.0 && level.c[idx] >= ACCEPT_CONFIDENCE as f32 {
+                            nearest2 = nearest2.min(dist2);
+                        }
                         num += k * f64::from(level.a[idx]);
                         den += k * f64::from(level.c[idx]);
                         nrm += k;
                     }
                 }
-                if nrm > 0.0 && den >= 0.25 * nrm && den > 0.0 {
+                if nrm > 0.0
+                    && den >= 0.25 * nrm
+                    && den > 0.0
+                    && nearest2 <= ACCEPT_COLOUR * ACCEPT_COLOUR
+                {
                     let v = num / den;
                     if v >= B_MIN {
                         *o = v as f32;
@@ -374,7 +433,8 @@ impl<'a> Pass<'a> {
             for y in y0..y1 {
                 for x in x0..x1 {
                     let (dx, dy) = (x as f64 + 0.5 - s.cx, y as f64 + 0.5 - s.cy);
-                    if dx * dx + dy * dy <= (reach - 1.0) * (reach - 1.0) {
+                    // Only along the rim: a thin strand across the ball or beside it stays protected.
+                    if ((dx * dx + dy * dy).sqrt() - s.r_ball).abs() <= BALL_RIM_REACH_PX {
                         zero[(y - r0.y) * r0.w + (x - r0.x)] = false;
                     }
                 }
@@ -387,7 +447,48 @@ impl<'a> Pass<'a> {
                 *b = 0.0;
             }
         }
-        bt
+        // Inside a ball's take-out disc the map is the ball's radius: the rim of a light is a colour edge the
+        // guided upsampling stops at, which would cut notches into the ball. (Beyond the disc the drawn oval is
+        // still cut by the map, so a sharp subject in front of the light hides part of it.)
+        let mut in_ball = vec![false; r0.w * r0.h];
+        for s in shapes {
+            let reach = s.r_out;
+            let floor_b = ((s.r_ball / hk) as f32).max(B_MIN as f32);
+            let x0 = ((s.cx - reach).floor().max(r0.x as f64)) as usize;
+            let x1 = (((s.cx + reach).ceil() as usize) + 1).min(r0.x1());
+            let y0 = ((s.cy - reach).floor().max(r0.y as f64)) as usize;
+            let y1 = (((s.cy + reach).ceil() as usize) + 1).min(r0.y1());
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = (y - r0.y) * r0.w + (x - r0.x);
+                    let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+                    let (dx, dy) = (px - s.cx, py - s.cy);
+                    if dx * dx + dy * dy <= s.r_out * s.r_out && !zero[i] {
+                        in_ball[i] = true;
+                        if bt[i] < B_MIN as f32 {
+                            bt[i] = floor_b;
+                        }
+                    }
+                }
+            }
+        }
+        // The ramp: the share of the (2 F + 1)^2 window around a pixel that has a blur, from 0 at one half (the
+        // map's border) to 1 at nine tenths, smoothed. A pixel inside a ball has the full stretch.
+        let mut ramp = vec![1.0f32; r0.w * r0.h];
+        if self.feather > 0 {
+            let cover = Field {
+                rect: r0,
+                data: bt.iter().map(|b| f32::from(*b >= B_MIN as f32)).collect(),
+            };
+            let share = box_mean(&cover, r0, self.feather as i64);
+            for ((r, c), ball) in ramp.iter_mut().zip(&share).zip(&in_ball) {
+                if !*ball {
+                    let t = ((*c - 0.5) / 0.4).clamp(0.0, 1.0);
+                    *r = t * t * (3.0 - 2.0 * t);
+                }
+            }
+        }
+        (crop_scalar(&bt, r0, out), crop_scalar(&ramp, r0, out))
     }
 
     /// Pixels of `r0` next to an edge sharper than their blur.
@@ -431,7 +532,14 @@ impl<'a> Pass<'a> {
     /// A pixel whose whole line passes the sample rule (every pixel on it has at least half the pixel's own
     /// blur) gets the exact mean of the picture along the line from running integrals ([`Lines`]); any other
     /// pixel averages explicit taps with the rule applied to each.
-    fn gather_vertical(&self, wk: &[f32], r0: PixelRect, bt: &[f32], r1: PixelRect) -> Vec<f32> {
+    fn gather_vertical(
+        &self,
+        wk: &[f32],
+        r0: PixelRect,
+        bt: &[f32],
+        ramp: &[f32],
+        r1: PixelRect,
+    ) -> Vec<f32> {
         let plane0 = r0.w * r0.h;
         let plane1 = r1.w * r1.h;
         let mut out = vec![0.0f32; 3 * plane1];
@@ -444,7 +552,7 @@ impl<'a> Pass<'a> {
         } else {
             (r0.x as i64, r0.x1() as i64 - 1)
         };
-        let q1 = self.q - 1.0;
+        let q1 = self.stretch;
         // Windows of the sample rule are up to 2 reach + 2 pixels long.
         let max_k = floor_log2(2 * self.v_reach.ceil() as usize + 3);
         let origin = if along_y { r0.y } else { r0.x };
@@ -459,7 +567,7 @@ impl<'a> Pass<'a> {
                     let x = r1.x + col;
                     let i0 = (y - r0.y) * r0.w + (x - r0.x);
                     let bp = f64::from(bt[i0]);
-                    let len = q1 * bp.min(B_CAP) * self.hk;
+                    let len = q1 * bp.min(B_CAP) * self.hk * f64::from(ramp[i0]);
                     if bp < B_MIN || len < MIN_LINE_PX {
                         ra[col] = wk[i0];
                         rb[col] = wk[plane0 + i0];
@@ -538,6 +646,7 @@ impl<'a> Pass<'a> {
         o1: &[f32],
         r1: PixelRect,
         bt: &[f32],
+        ramp: &[f32],
         r0: PixelRect,
         want: PixelRect,
     ) -> Vec<f32> {
@@ -572,7 +681,8 @@ impl<'a> Pass<'a> {
                     let rr = (dx * dx + dy * dy).sqrt();
                     let rho = rr / self.hk;
                     let sigma = profile_at(radii, swirl, rho);
-                    let len = sigma * self.e * bp.min(B_CAP) * self.hk;
+                    let ramp_here = f64::from(ramp[(y - r0.y) * r0.w + (x - r0.x)]);
+                    let len = sigma * self.e * bp.min(B_CAP) * self.hk * ramp_here;
                     if rr < 1e-9 || len < MIN_LINE_PX {
                         copy(ra, rb, rc);
                         continue;
@@ -694,6 +804,23 @@ fn map_rect<T: Send>(rect: PixelRect, f: impl Fn(i64, i64) -> T + Sync) -> Vec<T
         out.extend(r);
     }
     out
+}
+
+/// The `inner` rectangle of a single-channel buffer covering `outer`.
+fn crop_scalar(data: &[f32], outer: PixelRect, inner: PixelRect) -> Vec<f32> {
+    let mut out = Vec::with_capacity(inner.w * inner.h);
+    for y in inner.y..inner.y1() {
+        let row = (y - outer.y) * outer.w + (inner.x - outer.x);
+        out.extend_from_slice(&data[row..row + inner.w]);
+    }
+    out
+}
+
+/// The mean of `f` over the `(2 half + 1)^2` window of every pixel of `dst` (reads clamp to `f`'s rectangle).
+fn box_mean(f: &Field, dst: PixelRect, half: i64) -> Vec<f32> {
+    let n = ((2 * half + 1) * (2 * half + 1)) as f32;
+    let hs = horizontal(f, dst, half, |acc, v| acc + v);
+    vertical(&hs, dst, half, |acc, v| acc + v, move |sum| sum / n)
 }
 
 /// The 3 x 3 mean of `f` over `dst` (reads clamp to `f`'s rectangle): rows, then columns.

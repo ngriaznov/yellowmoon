@@ -686,7 +686,9 @@ impl PhotoGraph {
     fn lens_group_budget_for(&self, backing: &Backing) -> usize {
         match backing {
             Backing::Cpu(_) => self.lens_group_budget(),
-            Backing::Gpu(_) => self.lens_group_budget().min((self.budget.gpu_bytes / 16) as usize),
+            Backing::Gpu(_) => self
+                .lens_group_budget()
+                .min((self.budget.gpu_bytes / 16) as usize),
         }
     }
 
@@ -694,7 +696,9 @@ impl PhotoGraph {
     fn lens_tile_budget_for(&self, backing: &Backing) -> usize {
         match backing {
             Backing::Cpu(_) => self.lens_tile_budget(),
-            Backing::Gpu(_) => self.lens_tile_budget().min((self.budget.gpu_bytes / 8) as usize),
+            Backing::Gpu(_) => self
+                .lens_tile_budget()
+                .min((self.budget.gpu_bytes / 8) as usize),
         }
     }
 

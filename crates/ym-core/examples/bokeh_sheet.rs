@@ -32,8 +32,8 @@ use rayon::prelude::*;
 use serde_json::json;
 use ym_core::app::{Core, CoreOptions};
 use ym_core::pipeline::raw::{
-    FrameData, RawParams, RawPlan, diffraction_params, noise_model_is_usable, reduced_bayer,
-    reduced_rgb, sigma_plane, usable_noise_model,
+    FrameData, FullChain, RawParams, RawPlan, diffraction_params, noise_model_is_usable,
+    reduced_bayer, reduced_rgb, sigma_plane, usable_noise_model,
 };
 use ym_core::pipeline::{
     FrameOptions, PhotoSource, RenderedFrame, ViewportMode, ViewportRect, ViewportState,
@@ -153,10 +153,7 @@ fn parse_args() -> Fallible<Args> {
             "--crop" => {
                 let v = value("--crop")?;
                 let (name, rest) = v.split_once('=').ok_or("--crop NAME=cx,cy,w,h")?;
-                let n: Vec<f64> = rest
-                    .split(',')
-                    .map(str::parse)
-                    .collect::<Result<_, _>>()?;
+                let n: Vec<f64> = rest.split(',').map(str::parse).collect::<Result<_, _>>()?;
                 if n.len() != 4 {
                     return Err("--crop NAME=cx,cy,w,h".into());
                 }
@@ -495,6 +492,7 @@ fn dump_planes(
     data_root: &Path,
     dir: &Path,
     light: bool,
+    crops: &[Crop],
 ) -> Fallible<serde_json::Value> {
     let cancel = CancelToken::new();
     let params = raw_params(src)?;
@@ -578,6 +576,43 @@ fn dump_planes(
     };
     let planes = LensPlanes::build(&lens_plan, &image_ref, focus, &|| false)?;
     let planes_ms = t.elapsed().as_secs_f64() * 1000.0;
+    // The 100 % windows' inputs: the raw group at full resolution over each window grown by L1's halo,
+    // for `bokeh_probe --crop` (the lens plane and the plan are the ones above).
+    if !crops.is_empty() && !frame.reduced {
+        let sigma = sigma_plane(&frame, &plan, &params, &cancel)?;
+        let chain = FullChain::new(&frame, &plan, &params, &sigma, &cancel)?;
+        let halo = ym_lens::reshape_halo(&lens_plan, &planes, 1);
+        for c in crops {
+            let (fw, fh) = (plan.out_w, plan.out_h);
+            let (cw, ch) = (c.size.0.min(fw), c.size.1.min(fh));
+            let x0 = ((c.centre[0] * fw as f64) as isize - cw as isize / 2)
+                .clamp(0, (fw - cw) as isize) as usize;
+            let y0 = ((c.centre[1] * fh as f64) as isize - ch as isize / 2)
+                .clamp(0, (fh - ch) as isize) as usize;
+            let gx0 = x0.saturating_sub(halo);
+            let gy0 = y0.saturating_sub(halo);
+            let gx1 = (x0 + cw + halo).min(fw);
+            let gy1 = (y0 + ch + halo).min(fh);
+            let tile = chain.run_tile(
+                &frame,
+                ym_gpu::cpu::Rect {
+                    x: gx0,
+                    y: gy0,
+                    w: gx1 - gx0,
+                    h: gy1 - gy0,
+                },
+            )?;
+            write_f32(&dir.join(format!("{}_l1in.f32", c.name)), &tile.data)?;
+            fs::write(
+                dir.join(format!("{}_l1in.json", c.name)),
+                serde_json::to_string_pretty(&json!({
+                    "x0": gx0, "y0": gy0, "width": gx1 - gx0, "height": gy1 - gy0,
+                    "frame_width": fw, "frame_height": fh,
+                    "want": {"x": x0, "y": y0, "w": cw, "h": ch}, "halo": halo,
+                }))?,
+            )?;
+        }
+    }
     let report = planes.report();
     let mut info = json!({
         "focus_fraction": focus,
@@ -699,6 +734,7 @@ fn render_photo(cx: &Context<'_>, file: &Path, stem: &str, dir: &Path) -> Fallib
                 cx.core.data_root(),
                 dir,
                 cx.args.light_planes,
+                &cx.args.crops,
             ) {
                 Ok(info) => {
                     writeln!(
@@ -725,7 +761,8 @@ fn render_photo(cx: &Context<'_>, file: &Path, stem: &str, dir: &Path) -> Fallib
             views.push(("fit".to_owned(), state.clone(), Some(image)));
         }
         for c in &cx.args.crops {
-            let mut st = ViewportState::new(ViewportRect::cell(c.size.0 as f64, c.size.1 as f64, 1.0));
+            let mut st =
+                ViewportState::new(ViewportRect::cell(c.size.0 as f64, c.size.1 as f64, 1.0));
             st.mode = ViewportMode::Percent { value: 100.0 };
             st.centre = c.centre;
             views.push((c.name.clone(), st, None));

@@ -7,6 +7,7 @@ use ym_color::consts::{
     LOGC3_EI800, LOGC4, LOGC4_GRAY, LOGC4_STOP, REC709_LUMA_WEIGHTS, linalg::Mat3,
 };
 use ym_color::display::aces2_input_matrix;
+use ym_color::display::red_chroma as rc;
 use ym_color::exposure::TARGET_GREY;
 use ym_color::exposure::white;
 use ym_color::gamut::{awg4_luminance_row, matrices};
@@ -576,8 +577,14 @@ pub(crate) mod table {
     pub const ACES: usize = DITHER_ENTRIES;
     /// Entries per ACES 2 hue table (`ym_color`'s `TOTAL_TABLE_SIZE`: wrap entries included).
     pub const ACES_ENTRIES: usize = ym_color::aces2::TOTAL_TABLE_SIZE;
+    /// The red chroma step's neutral-axis table `YD` (`ym_color::display::red_chroma`), after the ACES 2
+    /// tables; the same numbers for every output with the same limiting gamut.
+    pub const RC_YD: usize = ACES + 5 * ACES_ENTRIES;
+    /// The red chroma step's gamut edge table `CMAX`, 41 rows of 72 entries.
+    pub const RC_CMAX: usize = RC_YD + ym_color::display::red_chroma::YD_LEN;
     /// Total f32 elements.
-    pub const TOTAL: usize = ACES + 5 * ACES_ENTRIES;
+    pub const TOTAL: usize = RC_CMAX
+        + ym_color::display::red_chroma::CMAX_L_ROWS * ym_color::display::red_chroma::CMAX_H_COLS;
 }
 
 fn f(x: f64) -> String {
@@ -662,6 +669,59 @@ fn constants() -> String {
         "const Y_AWG4: vec3<f32> = {};",
         vec3_row(&awg4_luminance_row())
     );
+    // The red chroma step (C12 step 1c, `ym_color::display::red_chroma`): its constants, the Lab white, the
+    // AWG4 and XYZ matrices and the sizes of its tables.
+    for (n, v) in [
+        ("RC_GREY", rc::GREY),
+        ("RC_Y_MIN", rc::Y_MIN),
+        ("RC_S_MAX", rc::S_MAX),
+        ("RC_YD_S_MIN", rc::YD_S_MIN),
+        ("RC_YD_STEP", rc::YD_STEP),
+        ("RC_YD_FLOOR", rc::YD_FLOOR),
+        ("RC_CMAX_L_STEP", rc::CMAX_L_STEP),
+        ("RC_CMAX_H_STEP", rc::CMAX_H_STEP),
+        ("RC_FADE_LO", rc::FADE_LO),
+        ("RC_FADE_HI", rc::FADE_HI),
+        ("RC_WIN_A", rc::WINDOW_A),
+        ("RC_WIN_B", rc::WINDOW_B),
+        ("RC_WIN_E_LO", rc::WINDOW_E_LO),
+        ("RC_WIN_E_HI", rc::WINDOW_E_HI),
+        ("RC_S0", rc::PROFILE_S0),
+        ("RC_UP", rc::PROFILE_UP),
+        ("RC_DARK", rc::PROFILE_DARK),
+        ("RC_TAU", rc::PROFILE_TAU),
+        ("RC_K_MAX", rc::K_MAX),
+        ("RC_KNEE", rc::KNEE),
+        ("RC_KAPPA_C0", rc::KAPPA_C0),
+        ("RC_KAPPA_CMIN", rc::KAPPA_CMIN),
+        ("RC_KAPPA_POW", rc::KAPPA_POW),
+        ("RC_KAPPA_LO", rc::KAPPA_LO),
+        ("RC_KAPPA_HI", rc::KAPPA_HI),
+        ("RC_CAP_AT", rc::CAP_KAPPA_AT),
+        ("RC_CMAX_FLOOR", rc::CMAX_FLOOR),
+        ("RC_RAMP_EPS", rc::RAMP_EPS),
+        ("RC_C_TINY", rc::C_TINY),
+        ("RC_LAB_EPS", rc::LAB_EPSILON),
+        ("RC_LAB_KAPPA", rc::LAB_KAPPA),
+    ] {
+        let _ = writeln!(s, "const {n}: f32 = {};", f(v));
+    }
+    for (n, v) in [
+        ("RC_YD_LEN", rc::YD_LEN),
+        ("RC_CMAX_L_ROWS", rc::CMAX_L_ROWS),
+        ("RC_CMAX_H_COLS", rc::CMAX_H_COLS),
+        ("T_RC_YD", table::RC_YD),
+        ("T_RC_CMAX", table::RC_CMAX),
+    ] {
+        let _ = writeln!(s, "const {n}: u32 = {v}u;");
+    }
+    let _ = writeln!(
+        s,
+        "const RC_WHITE: vec3<f32> = {};",
+        vec3_row(&rc::LAB_WHITE)
+    );
+    s.push_str(&rows("AWG4_TO_XYZ", &m.awg4_to_xyz));
+    s.push_str(&rows("XYZ_TO_AWG4", &m.xyz_to_awg4));
     s.push_str(&rows("AWG4_TO_AWG3", &m.awg4_to_awg3));
     s.push_str(&rows("AWG3_TO_AWG4", &m.awg3_to_awg4));
     // The ACES 2 path's input matrix: AWG4 to AP0 with the display placement 2^k folded in

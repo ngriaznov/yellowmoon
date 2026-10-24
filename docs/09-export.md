@@ -177,7 +177,7 @@ A Yellowmoon DNG opens in other raw editors looking like our render, and keeps r
 
 ### What a DNG carries
 
-**A DNG carries every change Yellowmoon makes except sharpening.** The table says where each stage and setting of a render goes: *pixels* are the LinearRaw data, *tag* a TIFF/DNG tag, *profile* the fitted `ProfileToneCurve` and `ProfileLookTable`.
+**A DNG carries every change Yellowmoon makes except sharpening and the red chroma step.** The table says where each stage and setting of a render goes: *pixels* are the LinearRaw data, *tag* a TIFF/DNG tag, *profile* the fitted `ProfileToneCurve` and `ProfileLookTable`.
 
 | Stage or setting | Goes in the DNG as |
 |---|---|
@@ -193,6 +193,7 @@ A Yellowmoon DNG opens in other raw editors looking like our render, and keeps r
 | C10 look with its own display rendering (LogC3 to Rec.709) | **pixels, approximate**: the scene values ACES 2 turns into the look's picture (below) |
 | C11 curves | pixels |
 | **C12 white lift** (`white_offset_ev`, the automatic amount sized per photo, `docs/02-colour-pipeline.md` C12 step 1b; ACES 2 path only) | **pixels**: a scene-linear gain (`2^(A · smoothstep)` on the luma, ratios kept, exactly 1 up to +1 stop), baked into the AWG4 pixels after the look and curve and before the fitted profile, like the look. Nothing of it is left to undo in the other app, and the DNG's pixels through ACES 2 with the placement are the app's picture to 1e-5 of display light (`tests/white_lift.rs`). With an imported ARRI display LUT, or a look with its own display rendering at 100 %, the picture has no lift (ARRI's highlights) and neither has the DNG; at an intermediate intensity the app blends our lifted C12 with the look's, and the DNG's inverse step takes that blend as it is |
+| **C12 red chroma step** (`docs/02-colour-pipeline.md` C12 step 1c; a hue-preserving chroma gain on the reds in front of ACES 2, per look; ACES 2 path only) | **dropped**: not in the pixels and not in the profile. A DNG holds the scene and a profile fitted to plain ACES 2, and the step is part of Yellowmoon's own rendering of the reds (a display step, like the transform it corrects), so an app that opens the DNG renders the reds as ACES 2 does: 10 to 22 % less chroma in mid-tone and light reds, 30 to 40 % more in dark ones, than Yellowmoon's picture. Unlike the white lift it is not a gain on the scene's light but a correction of one renderer by another; baking it into the pixels would also change the scene colours another app sees under its own rendering. With a look whose strengths are both 0 (Signature) there is nothing to drop. The inverse step for a look with its own rendering inverts plain ACES 2 and has no step either |
 | C12 ACES 2 | profile (tone curve and look table fitted to the plain transform) |
 | C12 display placement (`DISPLAY_PLACEMENT_EV`, +0.85) | `BaselineExposure` (`+ k`; the DNG opens as bright as the app) |
 | C12 imported ARRI display LUT (Preferences › Display rendering) | **pixels, approximate**, like a look with its own rendering |
