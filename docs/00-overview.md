@@ -133,6 +133,7 @@ These are fixed unless new evidence turns up. The reasoning is in `research/`.
 | The GPU path | `docs/17-gpu.md` |
 | Apple Auto | `docs/19-apple-auto.md` |
 | Auto crop | `docs/20-auto-crop.md` |
+| Lens character (specified, not built) | `docs/21-lens-character.md`, `research/lens-character-2026-10-23.md` |
 | Task plan | `docs/15-milestones.md` |
 | Risks and open decisions | `docs/16-risks-and-decisions.md` |
 | Progress | `docs/STATUS.md` |
