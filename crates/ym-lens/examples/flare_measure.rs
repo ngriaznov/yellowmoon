@@ -17,7 +17,9 @@
 //!                     `ym-core`'s `lens_sheet --dump-planes` writes)
 //! ```
 //!
-//! For every lens one line of tab-separated numbers: the lights found (clipped components of at most 4000
+//! One line `BOOST` first per target: the extra light the small lights' headroom adds to the plane's highlights
+//! and the share of it the cap keeps (`LIGHT_BOOST_ENERGY_CAP`). Then for every lens one line of tab-separated
+//! numbers: the lights found (clipped components of at most 4000
 //! pixels), the light added in clip levels times pixels (mean over the channels, the plane normalised so that
 //! every channel clips at 1), the peak of the added light and the peak at least 10 px from a clipped pixel
 //! ("off"), the share of the frame where the added light is at least 5 % of the picture there (plus 1 % of
@@ -158,6 +160,60 @@ fn lights(t: &Target) -> (Vec<(f64, f64, usize)>, Vec<bool>) {
     (out, mask)
 }
 
+/// The energy, in clip levels times half-diagonals squared (mean over the channels), that the extra headroom
+/// of the small clipped lights adds to the highlights of the plane (`l3::lights`, `l3::restore`).
+fn boost_energy(t: &Target) -> (f64, f64) {
+    let (w, h) = (t.width, t.height);
+    let plane = w * h;
+    let hd = 0.5 * ((w * w + h * h) as f64).sqrt();
+    let norm = |c: usize, i: usize| f64::from(t.data[c * plane + i]) / f64::from(t.g0[c]);
+    let f_at = |i: usize| -> f64 {
+        let m = (0..3).map(|c| norm(c, i)).fold(f64::INFINITY, f64::min);
+        ((m - 0.9) / 0.07).clamp(0.0, 1.0)
+    };
+    let mask: Vec<bool> = (0..plane).map(|i| f_at(i) > 0.0).collect();
+    let mut seen = vec![false; plane];
+    let (mut extra, mut plain) = (0.0, 0.0);
+    for start in 0..plane {
+        if !mask[start] || seen[start] {
+            continue;
+        }
+        let mut members = vec![start];
+        seen[start] = true;
+        let mut k = 0;
+        while k < members.len() {
+            let (x, y) = ((members[k] % w) as i64, (members[k] / w) as i64);
+            k += 1;
+            for dy in -1i64..=1 {
+                for dx in -1i64..=1 {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 {
+                        continue;
+                    }
+                    let q = ny as usize * w + nx as usize;
+                    if mask[q] && !seen[q] {
+                        seen[q] = true;
+                        members.push(q);
+                    }
+                }
+            }
+        }
+        let d = 2.0 * (members.len() as f64 / (hd * hd) / std::f64::consts::PI).sqrt();
+        let b = ym_lens::light_boost_ev(d);
+        for q in members {
+            let m = (0..3).map(|c| norm(c, q)).fold(f64::NEG_INFINITY, f64::max);
+            let t_ = ((m - 0.5) / 0.5).clamp(0.0, 1.0);
+            let knee = t_ * t_ * (3.0 - 2.0 * t_);
+            let mean = (0..3).map(|c| norm(c, q)).sum::<f64>() / 3.0;
+            let f = f_at(q);
+            plain += mean * f * 7.0 * knee;
+            extra += mean * f * (2f64.powf(3.0 + b) - 8.0) * knee;
+        }
+    }
+    let area = 1.0 / (hd * hd);
+    (extra * area, plain * area)
+}
+
 fn main() {
     let mut lens_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/lenses");
     let mut kinds: Vec<LensKind> = LensKind::ALL.to_vec();
@@ -203,6 +259,12 @@ fn main() {
         let plane = w * h;
         let k = scale.unwrap_or(t.k);
         let (lights, mask) = lights(t);
+        let (extra_e, plain_e) = boost_energy(t);
+        println!(
+            "{}\tBOOST\textra {extra_e:.3} plain {plain_e:.3} scale {:.3} (clip levels x half-diagonals squared; scale is what the cap keeps)",
+            t.name,
+            (ym_lens::consts::LIGHT_BOOST_ENERGY_CAP / extra_e.max(1e-12)).min(1.0)
+        );
         // The normalised picture: every channel's clip at 1.
         let norm = |c: usize, i: usize| f64::from(t.data[c * plane + i]) / f64::from(t.g0[c]);
         let z_mean: Vec<f64> = (0..plane)

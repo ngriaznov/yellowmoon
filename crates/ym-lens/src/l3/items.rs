@@ -589,9 +589,9 @@ impl<'a> Items<'a> {
             return None;
         }
         let amp = [
-            fraction * tint[0] * src.energy[0] / norm,
-            fraction * tint[1] * src.energy[1] / norm,
-            fraction * tint[2] * src.energy[2] / norm,
+            fraction * tint[0] * src.ghost_energy[0] / norm,
+            fraction * tint[1] * src.ghost_energy[1] / norm,
+            fraction * tint[2] * src.ghost_energy[2] / norm,
         ];
         let peak = amp[0].max(amp[1]).max(amp[2]) * rim_peak;
         let level = self.level_for(sigma_edge, s, &span);
@@ -1193,6 +1193,7 @@ mod tests {
                     let src = Source {
                         pos: [frame.u(300.0 + dx), frame.v(200.0 + dy)],
                         energy: [2.0, 1.0, 0.5],
+                        ghost_energy: [2.0, 1.0, 0.5],
                         var_along: 0.75 / (frame.half_diag * frame.half_diag),
                         var_across: 0.75 / (frame.half_diag * frame.half_diag),
                         extent: 0.01,
@@ -1258,6 +1259,7 @@ mod tests {
                 let src = Source {
                     pos: [frame.u(300.0 + dx), frame.v(200.0 + dy)],
                     energy: [1.0, 1.0, 1.0],
+                    ghost_energy: [1.0, 1.0, 1.0],
                     var_along: 0.75 / (frame.half_diag * frame.half_diag),
                     var_across: 0.75 / (frame.half_diag * frame.half_diag),
                     extent: 0.01,
@@ -1332,6 +1334,7 @@ mod tests {
             .map(|i| Source {
                 pos: [-0.5 + 0.025 * f64::from(i), 0.01 * f64::from(i % 7)],
                 energy: [energy; 3],
+                ghost_energy: [energy; 3],
                 var_along: 1e-7,
                 var_across: 1e-7,
                 extent: 0.003,

@@ -6,13 +6,15 @@
 //! surfaces holds `0.3 % x 0.3 %` of the light, ten thousandths of a per cent. The top of the Flares slider is
 //! therefore the lens as if its coatings were worse: the ghosts of each lens are raised until together they
 //! take at least [`GHOST_FRACTION_FLOOR`] of a light's energy (the light is shared out in proportion to
-//! `fraction / s`, so the small ghosts, which read as shapes, get most of it and the frame-filling ones do not
-//! turn the picture milky), the attachment's likewise, and the glow and the starburst to their floors. Nothing
+//! `fraction / s^2`, with `s` at least [`GHOST_FLOOR_MIN_RADIUS`]: the density of a ghost falls as `1 / s^2`, so
+//! the small ghosts, which read as shapes, get most of it and the frame-filling ones, which would turn the
+//! picture to a haze, almost none), the attachment's likewise, and the glow and the starburst to their floors. Nothing
 //! is ever lowered, a part a lens does not have stays absent, and the veil and the streak keep the data's
 //! numbers.
 
 use crate::consts::{
-    ATTACHMENT_GHOST_FLOOR, GHOST_FRACTION_FLOOR, GLOW_FRACTION_FLOOR, STARBURST_FRACTION_FLOOR,
+    ATTACHMENT_GHOST_FLOOR, GHOST_FLOOR_MIN_RADIUS, GHOST_FRACTION_FLOOR, GLOW_FRACTION_FLOOR,
+    STARBURST_FRACTION_FLOOR,
 };
 use crate::data::{AttachmentData, GhostData, LensData};
 use crate::plan::LensPlan;
@@ -36,7 +38,8 @@ pub struct FlareStrengths {
 }
 
 /// The fractions of `ghosts` raised, if their sum is below `floor`, to a sum of `floor`, shared out in
-/// proportion to `fraction / s` (all of them keep at least their own fraction when the sum is already there).
+/// proportion to `fraction / max(s, GHOST_FLOOR_MIN_RADIUS)^2`; none is ever lowered, and when the sum is
+/// already there they are as they are.
 fn raised_ghosts(ghosts: &[GhostData], floor: f64) -> Vec<f64> {
     let sum: f64 = ghosts.iter().map(|g| g.fraction).sum();
     if sum <= 0.0 || sum >= floor {
@@ -44,7 +47,7 @@ fn raised_ghosts(ghosts: &[GhostData], floor: f64) -> Vec<f64> {
     }
     let weights: Vec<f64> = ghosts
         .iter()
-        .map(|g| if g.s > 0.0 { g.fraction / g.s } else { 0.0 })
+        .map(|g| g.fraction / g.s.max(GHOST_FLOOR_MIN_RADIUS).powi(2))
         .collect();
     let total: f64 = weights.iter().sum();
     ghosts

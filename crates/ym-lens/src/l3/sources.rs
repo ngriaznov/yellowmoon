@@ -25,6 +25,11 @@ pub(crate) struct Source {
     /// The highlights summed over the source, per channel, times the area of a plane pixel in half-diagonals
     /// squared: the light the source sends into its ghosts and streak.
     pub(crate) energy: [f64; 3],
+    /// The same with the cap on the small lights' extra headroom applied
+    /// ([`LightBoost::scale`](crate::l3::lights::LightBoost)): the light the ghosts draw from, whose big,
+    /// frame-filling members add up to a haze over a photo of many lights. The starburst and the streak, which
+    /// are local, read `energy`.
+    pub(crate) ghost_energy: [f64; 3],
     /// The second moment along the axis about the centroid, in half-diagonals squared, including the footprint
     /// of a plane pixel.
     pub(crate) var_along: f64,
@@ -71,6 +76,7 @@ impl Dsu {
 struct Acc {
     weight: f64,
     energy: [f64; 3],
+    ghost_energy: [f64; 3],
     sx: f64,
     sy: f64,
     sxx: f64,
@@ -86,6 +92,7 @@ impl Acc {
         Acc {
             weight: 0.0,
             energy: [0.0; 3],
+            ghost_energy: [0.0; 3],
             sx: 0.0,
             sy: 0.0,
             sxx: 0.0,
@@ -120,10 +127,12 @@ fn highlight_at(
 /// The sources of the lens plane `plane` (the whole frame at the lens plane's scale).
 ///
 /// `boost` is the extra headroom in EV of every pixel (`crate::l3::lights::map`): the energy of a small clipped
-/// light is that much brighter than the plain restored light. `cancel` is polled once per row of the plane.
+/// light is that much brighter than the plain restored light. `rs_ghost` is `rs` with the cap's scale
+/// ([`Restore::with_boost_scale`]), for the sources' ghost energy. `cancel` is polled once per row of the plane.
 pub(crate) fn find(
     plane: &ImageRef,
     rs: &Restore,
+    rs_ghost: &Restore,
     boost: Option<&[f32]>,
     axis: Axis,
     cancel: &dyn Fn() -> bool,
@@ -245,11 +254,15 @@ pub(crate) fn find(
                 }
             };
             let hl = highlight_at(plane, rs, boost, i, j);
+            let hg = highlight_at(plane, rs_ghost, boost, i, j);
             let weight = hl[0] + hl[1] + hl[2];
             let (x, y) = (i as f64 + 0.5, j as f64 + 0.5);
             let acc = &mut slots[slot];
             acc.weight += weight;
             for (e, h) in acc.energy.iter_mut().zip(&hl) {
+                *e += h;
+            }
+            for (e, h) in acc.ghost_energy.iter_mut().zip(&hg) {
                 *e += h;
             }
             acc.sx += weight * x;
@@ -281,6 +294,11 @@ pub(crate) fn find(
             let source = Source {
                 pos: [along, across],
                 energy: [a.energy[0] * area, a.energy[1] * area, a.energy[2] * area],
+                ghost_energy: [
+                    a.ghost_energy[0] * area,
+                    a.ghost_energy[1] * area,
+                    a.ghost_energy[2] * area,
+                ],
                 var_along: var_along * area,
                 var_across: var_across * area,
                 extent,
@@ -358,7 +376,7 @@ mod tests {
         let data = scene(w, h, &[(450, 120, 3, 3, 1.0)]);
         let p = plan(w, h, Axis::X);
         let rs = Restore::new(&p, crate::consts::CLIP_RAMP_PLANE);
-        let list = find(&image(w, h, &data), &rs, None, Axis::X, &|| false).unwrap();
+        let list = find(&image(w, h, &data), &rs, &rs, None, Axis::X, &|| false).unwrap();
         assert_eq!(list.len(), 1);
         let s = list[0];
         let frame = Frame::new(w, h, Axis::X);
@@ -381,7 +399,7 @@ mod tests {
         let (w, h) = (600, 400);
         let data = scene(w, h, &[(450, 120, 3, 3, 1.0)]);
         let rs = Restore::new(&plan(w, h, Axis::Y), crate::consts::CLIP_RAMP_PLANE);
-        let list = find(&image(w, h, &data), &rs, None, Axis::Y, &|| false).unwrap();
+        let list = find(&image(w, h, &data), &rs, &rs, None, Axis::Y, &|| false).unwrap();
         let frame = Frame::new(w, h, Axis::Y);
         assert!((list[0].pos[0] - frame.v(121.5)).abs() < 1e-12);
         assert!((list[0].pos[1] - frame.u(451.5)).abs() < 1e-12);
@@ -401,7 +419,7 @@ mod tests {
             ],
         );
         let rs = Restore::new(&plan(w, h, Axis::X), crate::consts::CLIP_RAMP_PLANE);
-        let list = find(&image(w, h, &data), &rs, None, Axis::X, &|| false).unwrap();
+        let list = find(&image(w, h, &data), &rs, &rs, None, Axis::X, &|| false).unwrap();
         assert_eq!(list.len(), 2);
         // The clipped (restored) patch is the brighter one and comes first.
         assert!(list[0].total() > list[1].total());
@@ -416,7 +434,7 @@ mod tests {
         let rs = Restore::new(&p, crate::consts::CLIP_RAMP_PLANE);
         // One big clipped block: 400 x 200 px, far larger than 0.02 half-diagonals (about 14 px here).
         let data = scene(w, h, &[(100, 100, 400, 200, 1.0)]);
-        let list = find(&image(w, h, &data), &rs, None, Axis::X, &|| false).unwrap();
+        let list = find(&image(w, h, &data), &rs, &rs, None, Axis::X, &|| false).unwrap();
         assert!(
             list.len() > 100 && list.len() <= SOURCES_MAX,
             "{}",
@@ -431,7 +449,7 @@ mod tests {
         assert!(list.windows(2).all(|p| p[0].total() >= p[1].total()));
         // Cancel is honoured.
         assert!(matches!(
-            find(&image(w, h, &data), &rs, None, Axis::X, &|| true),
+            find(&image(w, h, &data), &rs, &rs, None, Axis::X, &|| true),
             Err(LensError::Cancelled)
         ));
     }
@@ -442,7 +460,7 @@ mod tests {
         let data = scene(w, h, &[]);
         let rs = Restore::new(&plan(w, h, Axis::X), crate::consts::CLIP_RAMP_PLANE);
         assert!(
-            find(&image(w, h, &data), &rs, None, Axis::X, &|| false)
+            find(&image(w, h, &data), &rs, &rs, None, Axis::X, &|| false)
                 .unwrap()
                 .is_empty()
         );

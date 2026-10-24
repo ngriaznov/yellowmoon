@@ -9,9 +9,16 @@
 //! the size of the clipped patch, from [`LIGHT_BOOST_MAX_EV`] for a patch of at most [`LIGHT_BOOST_FULL_HD`]
 //! half-diagonals across to nothing at [`LIGHT_BOOST_NONE_HD`].
 //!
+//! A photo of many lights, or of large bright areas that are partly lights, would add more flare light than
+//! any one light's: the extra light the headroom adds to the highlights of the plane is summed (in clip levels
+//! times half-diagonals squared) and, above [`LIGHT_BOOST_ENERGY_CAP`], every light's extra is reduced by the
+//! same factor, [`LightBoost::scale`], so a photo of forty lamps flares like one of a few.
+//!
 //! The map is made once per photo on the lens plane, so any tile or scale reads the same numbers.
 
-use crate::consts::{LIGHT_BOOST_FULL_HD, LIGHT_BOOST_MAX_EV, LIGHT_BOOST_NONE_HD};
+use crate::consts::{
+    LIGHT_BOOST_ENERGY_CAP, LIGHT_BOOST_FULL_HD, LIGHT_BOOST_MAX_EV, LIGHT_BOOST_NONE_HD,
+};
 use crate::error::LensError;
 use crate::image::ImageRef;
 use crate::l3::restore::Restore;
@@ -34,11 +41,21 @@ pub fn boost_ev(diameter_hd: f64) -> f64 {
     LIGHT_BOOST_MAX_EV * t
 }
 
-/// The extra headroom of every pixel of the lens plane, in EV, row-major, or `None` when no pixel is clipped.
+/// The extra headroom of every pixel of the lens plane and what the cap leaves of it.
+#[derive(Clone, Debug)]
+pub(crate) struct LightBoost {
+    /// The extra headroom in EV of every pixel, row-major.
+    pub(crate) ev: Vec<f32>,
+    /// The share of the extra light that is kept, 1 up to the cap.
+    pub(crate) scale: f64,
+}
+
+/// The extra headroom of every pixel of the lens plane, in EV, row-major, and the scale the cap asks for, or
+/// `None` when no pixel is clipped.
 ///
 /// A pixel with a clip test above 0 belongs to a patch: the 8-connected pixels with a clip test above 0. Every
 /// pixel of a patch gets the boost of the patch's size; a pixel whose clip test is 0 gets 0 (it is not raised
-/// whatever the number says). `cancel` is polled once per row.
+/// whatever the number says). `rs` is the plain restoration (scale 1). `cancel` is polled once per row.
 ///
 /// # Errors
 ///
@@ -48,7 +65,7 @@ pub(crate) fn map(
     rs: &Restore,
     half_diag: f64,
     cancel: &dyn Fn() -> bool,
-) -> Result<Option<Vec<f32>>, LensError> {
+) -> Result<Option<LightBoost>, LensError> {
     let (w, h) = (plane.width, plane.height);
     let n = w * h;
     let mut mask = vec![false; n];
@@ -74,6 +91,7 @@ pub(crate) fn map(
         return Ok(None);
     }
     let mut out = vec![0.0f32; n];
+    let mut extra_energy = 0.0f64;
     let mut seen = vec![false; n];
     let mut stack: Vec<usize> = Vec::new();
     let mut members: Vec<usize> = Vec::new();
@@ -108,9 +126,21 @@ pub(crate) fn map(
         let ev = boost_ev(diameter) as f32;
         for p in &members {
             out[*p] = ev;
+            let x = [
+                f64::from(plane.data[*p]),
+                f64::from(plane.data[n + *p]),
+                f64::from(plane.data[2 * n + *p]),
+            ];
+            extra_energy += rs.extra_light(x, f64::from(ev));
         }
     }
-    Ok(Some(out))
+    extra_energy /= half_diag * half_diag;
+    let scale = if extra_energy > LIGHT_BOOST_ENERGY_CAP {
+        LIGHT_BOOST_ENERGY_CAP / extra_energy
+    } else {
+        1.0
+    };
+    Ok(Some(LightBoost { ev: out, scale }))
 }
 
 #[cfg(test)]

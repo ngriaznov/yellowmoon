@@ -267,8 +267,12 @@ fn candidates(
                     continue;
                 }
                 let mut is_max = true;
-                'nb: for nj in mi.saturating_sub(1)..=(mi + 1).min(dogs.len() - 1) {
-                    let other = &dogs[nj];
+                'nb: for (nj, other) in dogs
+                    .iter()
+                    .enumerate()
+                    .take((mi + 1).min(dogs.len() - 1) + 1)
+                    .skip(mi.saturating_sub(1))
+                {
                     for dy in 0..3usize {
                         for dx in 0..3usize {
                             if nj == mi && dx == 1 && dy == 1 {

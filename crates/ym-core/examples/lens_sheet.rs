@@ -721,8 +721,8 @@ fn render_photo(cx: &Context<'_>, file: &Path, stem: &str, dir: &Path) -> Fallib
         let long = image.0.max(image.1) as f64;
         let s = (cx.args.long_edge as f64 / long).min(1.0);
         let (cw, ch) = (
-            ((image.0 as f64 * s).round() as f64).max(1.0),
-            ((image.1 as f64 * s).round() as f64).max(1.0),
+            (image.0 as f64 * s).round().max(1.0),
+            (image.1 as f64 * s).round().max(1.0),
         );
         let state = ViewportState::new(ViewportRect::cell(cw, ch, 1.0));
         fs::create_dir_all(dir)?;

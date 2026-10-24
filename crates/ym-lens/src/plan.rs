@@ -230,7 +230,8 @@ impl LensPlan {
     }
 
     /// The fraction `a` of light the flare terms take from the picture, `a` of `docs/21` section 4, L3: the
-    /// sum of the fractions in use (the streak's with its Anamorphic factor `(q - 1) / (Q_max - 1)`) times `F`.
+    /// sum of the fractions in use (the streak's with its Anamorphic factor `(q - 1) / (Q_max - 1)`) times `F`,
+    /// the fractions being the lens's after the floors of [`FlareStrengths`](crate::FlareStrengths).
     #[must_use]
     pub fn light_fraction(&self) -> f64 {
         let a = &self.attachment;

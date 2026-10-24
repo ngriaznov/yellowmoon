@@ -56,6 +56,9 @@ use ym_raw::makernote::SonyFocus;
 
 type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
 
+/// A view to render: the file name, the viewport and the window size of a 100 % crop.
+type ViewItem = (String, ViewportState, Option<(usize, usize)>);
+
 /// One lens setting to render.
 #[derive(Clone)]
 struct Variant {
@@ -783,8 +786,8 @@ fn render_photo(cx: &Context<'_>, file: &Path, stem: &str, dir: &Path) -> Fallib
         let long = image.0.max(image.1) as f64;
         let s = (cx.args.long_edge as f64 / long).min(1.0);
         let (cw, ch) = (
-            ((image.0 as f64 * s).round() as f64).max(1.0),
-            ((image.1 as f64 * s).round() as f64).max(1.0),
+            (image.0 as f64 * s).round().max(1.0),
+            (image.1 as f64 * s).round().max(1.0),
         );
         let state = ViewportState::new(ViewportRect::cell(cw, ch, 1.0));
         fs::create_dir_all(dir)?;
@@ -837,7 +840,7 @@ fn render_photo(cx: &Context<'_>, file: &Path, stem: &str, dir: &Path) -> Fallib
         let mut done = 0usize;
         let by_name: HashMap<&str, &Variant> = cx.variants.iter().map(|v| (v.name, v)).collect();
         // The views: the fit frame, then the 100 % windows.
-        let mut views: Vec<(String, ViewportState, Option<(usize, usize)>)> = Vec::new();
+        let mut views: Vec<ViewItem> = Vec::new();
         if cx.args.fit {
             views.push(("fit".to_owned(), state.clone(), Some(image)));
         }

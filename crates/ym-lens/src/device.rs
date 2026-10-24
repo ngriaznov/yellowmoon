@@ -187,6 +187,14 @@ impl FlareScaleData {
 }
 
 impl crate::planes::LensPlanes {
+    /// The share, 0 to 1, of the extra headroom of the small clipped lights that this photo keeps: 1 unless its
+    /// lights would add more than `consts::LIGHT_BOOST_ENERGY_CAP` of flare light, in which case every light's
+    /// extra is reduced by this factor (`docs/21` section 4, L3, *As built (flare strength)*).
+    #[must_use]
+    pub fn light_boost_scale(&self) -> f64 {
+        self.flare().boost_scale()
+    }
+
     /// The tail plane and the spike tables for the device, or `None` for planes without highlight data (an
     /// identity plan's).
     #[must_use]

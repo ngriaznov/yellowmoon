@@ -96,16 +96,27 @@ pub const LIGHT_BOOST_FULL_HD: f64 = 0.025;
 /// brightness, stays about the same from one to the other.
 pub const LIGHT_BOOST_NONE_HD: f64 = 0.4;
 
+/// The most light, in clip levels times half-diagonals squared (the mean over the channels, summed over the
+/// plane), that the small lights' extra headroom may add to a photo's highlights. A photo of one sun, a lit
+/// window or a road of lamps adds 1 to 3; one of forty fairy lights, a floodlit palace or a bright window with
+/// a dog in it 20 to 80, and their ghosts and glow would turn the picture to haze. Above the cap every light's
+/// extra is reduced by the same factor.
+pub const LIGHT_BOOST_ENERGY_CAP: f64 = 3.0;
+
 /// The share of the boost, in EV, that the restored light of the glow and the veil gets (the glow's own
 /// fraction is a tuned artistic amount that already assumes a bright light).
 pub const GLOW_BOOST_SHARE: f64 = 0.5;
 
 /// At Flares 100 the ghosts of a lens together take at least this fraction of the light of a light: a lens whose
 /// data hold less (every coated lens) has its ghosts raised to this, shared out in proportion to
-/// `fraction / s` so that the small ghosts get most. It is three times what twelve ghosts of two single-layer
-/// surfaces (1.3 % each, 1.7e-4 per ghost) take and a third of what twelve pairs of bare glass (4 % each,
-/// 1.6e-3 per ghost) do. The data are never lowered.
-pub const GHOST_FRACTION_FLOOR: f64 = 0.006;
+/// `fraction / max(s, GHOST_FLOOR_MIN_RADIUS)^2` so that the small ghosts get most. It is twice what twelve
+/// ghosts of two single-layer surfaces (1.3 % each, 1.7e-4 per ghost) take and a fifth of what twelve pairs of
+/// bare glass (4 % each, 1.6e-3 per ghost) do. The data are never lowered.
+pub const GHOST_FRACTION_FLOOR: f64 = 0.004;
+
+/// The ghost radius, in half-diagonals, below which a ghost counts as this size when the floor is shared out
+/// (a ghost of a few pixels would otherwise take all of it and be a hot spot).
+pub const GHOST_FLOOR_MIN_RADIUS: f64 = 0.15;
 
 /// The same floor for the attachment's own oval ghosts at Anamorphic 100.
 pub const ATTACHMENT_GHOST_FLOOR: f64 = 0.0007;

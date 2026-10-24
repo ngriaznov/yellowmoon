@@ -288,37 +288,42 @@ fn boost_map(scene: &Scene, clip: f64) -> Vec<f64> {
 }
 
 /// The restored light of a pixel of a scene whose pixels are either well inside or well beyond the clip ramps,
-/// of a light assumed `ev` EV above the plain 3 EV of headroom.
-fn restored(x: [f64; 3], clip: f64, ev: f64) -> [f64; 3] {
+/// of a light assumed `ev` EV above the plain 3 EV of headroom, of which the share `scale` is kept (the cap on
+/// a photo's small lights, 1 for the scenes of most tests).
+fn restored(x: [f64; 3], clip: f64, ev: f64, scale: f64) -> [f64; 3] {
     let m = x.iter().map(|v| v / clip).fold(f64::INFINITY, f64::min);
     let f = if m >= 0.98 { 1.0 } else { 0.0 };
-    let g = 1.0 + (2f64.powf(3.0 + ev) - 1.0) * f;
+    let plain = 8.0;
+    let g = 1.0 + (plain + scale * (2f64.powf(3.0 + ev) - plain) - 1.0) * f;
     [x[0] * g, x[1] * g, x[2] * g]
 }
 
 /// The highlights of a pixel (the light's own extra headroom `ev`).
-fn highlight(x: [f64; 3], clip: f64, ev: f64) -> [f64; 3] {
+fn highlight(x: [f64; 3], clip: f64, ev: f64, scale: f64) -> [f64; 3] {
     let m = x.iter().map(|v| v / clip).fold(f64::NEG_INFINITY, f64::max);
     let k = smoothstep((m - 0.5) / 0.5);
-    let r = restored(x, clip, ev);
+    let r = restored(x, clip, ev, scale);
     [r[0] * k, r[1] * k, r[2] * k]
 }
 
 /// Sums over a scene: the restored light the glow and the veil read (the lights' extra headroom in EV, times
-/// the glow's share of it), the highlights the ghosts, the starburst and the streak read (the whole extra
-/// headroom), and the highlights of the one-pixel lights.
+/// the glow's share of it, with the cap's scale), the highlights the ghosts read (the whole extra headroom with
+/// the cap's scale), the highlights the streak and the starburst read (the whole extra headroom, whatever the
+/// cap says), and the highlights of the one-pixel lights.
 struct Sums {
     r: [f64; 3],
     h: [f64; 3],
+    h_ghost: [f64; 3],
     h_compact: [f64; 3],
 }
 
-fn sums(scene: &Scene, clip: f64) -> Sums {
+fn sums(scene: &Scene, clip: f64, scale: f64) -> Sums {
     let n = scene.w * scene.h;
     let ev = boost_map(scene, clip);
     let mut s = Sums {
         r: [0.0; 3],
         h: [0.0; 3],
+        h_ghost: [0.0; 3],
         h_compact: [0.0; 3],
     };
     for i in 0..n {
@@ -327,11 +332,13 @@ fn sums(scene: &Scene, clip: f64) -> Sums {
             f64::from(scene.data[n + i]),
             f64::from(scene.data[2 * n + i]),
         ];
-        let r = restored(x, clip, GLOW_BOOST_SHARE * ev[i]);
-        let h = highlight(x, clip, ev[i]);
+        let r = restored(x, clip, GLOW_BOOST_SHARE * ev[i], scale);
+        let h = highlight(x, clip, ev[i], 1.0);
+        let hg = highlight(x, clip, ev[i], scale);
         for c in 0..3 {
             s.r[c] += r[c];
             s.h[c] += h[c];
+            s.h_ghost[c] += hg[c];
         }
     }
     s
@@ -357,12 +364,12 @@ fn expected_energy(plan: &LensPlan, s: &Sums, strength: f64) -> [f64; 3] {
     for c in 0..3 {
         let mut e = (st.glow + st.veil) * s.r[c];
         for (g, fraction) in lens.flare.ghosts.iter().zip(&st.ghosts) {
-            e += fraction * tint(&g.coating)[c] * s.h[c];
+            e += fraction * tint(&g.coating)[c] * s.h_ghost[c];
         }
         e += st.burst * strength * s.h_compact[c];
         e += anam * st.streak * t_streak[c] * s.h[c];
         for (g, fraction) in att.ghosts.iter().zip(&st.attachment_ghosts) {
-            e += anam * fraction * tint(&g.coating)[c] * s.h[c];
+            e += anam * fraction * tint(&g.coating)[c] * s.h_ghost[c];
         }
         out[c] = e;
     }
@@ -417,7 +424,12 @@ fn part_energy(p: Parts, axis: Axis, anamorphic: f64, tol: f64) -> f64 {
         scene.data.clone()
     };
     let got = measured_energy(&plan, &out, &z);
-    let want = expected_energy(&plan, &sums_for(&scene, size), 1.0);
+    let scale = planes.light_boost_scale();
+    assert_eq!(
+        scale, 1.0,
+        "the standard scene's few lights are under the cap"
+    );
+    let want = expected_energy(&plan, &sums_for(&scene, size, scale), 1.0);
     check_energy(&format!("{axis:?} A{anamorphic}"), got, want, tol);
     // Energy is also spread, not lost: the output is finite and non-negative.
     assert!(out.iter().all(|v| v.is_finite() && *v >= -1e-6));
@@ -425,8 +437,8 @@ fn part_energy(p: Parts, axis: Axis, anamorphic: f64, tol: f64) -> f64 {
 }
 
 /// The sums of a scene, with the one-pixel lights known by position of the standard scene.
-fn sums_for(scene: &Scene, size: (usize, usize)) -> Sums {
-    let mut s = sums(scene, 1.0);
+fn sums_for(scene: &Scene, size: (usize, usize), scale: f64) -> Sums {
+    let mut s = sums(scene, 1.0, scale);
     // The lights B and C of the standard scene are the compact ones.
     let at = |x: usize, y: usize| -> [f64; 3] {
         let (x, y) = if size == (scene.w, scene.h) && scene.w < scene.h {
@@ -449,7 +461,7 @@ fn sums_for(scene: &Scene, size: (usize, usize)) -> Sums {
         } else {
             (x, y)
         };
-        let h = highlight(at(x, y), 1.0, ev[py * scene.w + px]);
+        let h = highlight(at(x, y), 1.0, ev[py * scene.w + px], scale);
         for (acc, v) in s.h_compact.iter_mut().zip(&h) {
             *acc += v;
         }
@@ -554,7 +566,7 @@ fn a_weak_starburst_takes_less_light_and_leaves_the_rest() {
     });
     let scene = energy_scene();
     let size = (scene.w, scene.h);
-    let sm = sums_for(&scene, size);
+    let sm = sums_for(&scene, size, 1.0);
     let full = lib.get(LensKind::Classic).unwrap().flare.starburst;
     let mut energies = Vec::new();
     for n in [2.0, 3.0, 4.0, 8.0, 11.0, 22.0] {
@@ -671,9 +683,14 @@ fn a_large_clipped_area_is_a_surface_and_keeps_the_plain_headroom() {
     let plan = plan_of(&lib, 100.0, 0.0, 0.0, size, Axis::X, None, 1.0);
     let ev = boost_map(&big, 1.0);
     assert!(ev.iter().all(|e| *e == 0.0), "the block must get no boost");
-    let out = run(&plan, &planes_of(&plan, &big), &big);
+    let planes = planes_of(&plan, &big);
+    let out = run(&plan, &planes, &big);
     let got = measured_energy(&plan, &out, &big.data);
-    let want = expected_energy(&plan, &sums_for(&big, size), 1.0);
+    let want = expected_energy(
+        &plan,
+        &sums_for(&big, size, planes.light_boost_scale()),
+        1.0,
+    );
     check_energy("a big clipped block", got, want, 1e-6);
     // The light the glow and the veil spread is their fractions of the block's light at the plain 3 EV.
     let plain = (0.15 + 0.10) * 110.0 * 110.0 * 8.0;
@@ -682,6 +699,60 @@ fn a_large_clipped_area_is_a_surface_and_keeps_the_plain_headroom() {
         "{} against {plain}",
         got[1]
     );
+}
+
+#[test]
+fn many_lights_share_the_cap_and_the_energy_still_adds_up() {
+    // Sixty lights of 3 px would add far more than the cap: every light's extra headroom is reduced alike for the
+    // glow and the ghosts, whose haze would add up, so the photo flares like one of a few, and they still spread
+    // exactly what the reduced lights hold. The streak is a line through its own light and keeps the whole
+    // headroom whatever the cap says. A single light is under the cap and is not reduced.
+    let glow = parts_library(Parts {
+        glow: true,
+        veil: true,
+        ..Parts::NONE
+    });
+    let streak = parts_library(Parts {
+        streak: true,
+        ..Parts::NONE
+    });
+    let mut one = Scene::new(480, 320);
+    one.fill(230, 150, 3, 3, [1.0; 3]);
+    let mut many = Scene::new(480, 320);
+    for i in 0..60usize {
+        many.fill(110 + 28 * (i % 10), 95 + 24 * (i / 10), 3, 3, [1.0; 3]);
+    }
+    let size = (480, 320);
+    let mut scales = Vec::new();
+    for scene in [&one, &many] {
+        // The glow and the veil.
+        let plan = plan_of(&glow, 100.0, 0.0, 0.0, size, Axis::X, None, 1.0);
+        let planes = planes_of(&plan, scene);
+        scales.push(planes.light_boost_scale());
+        let out = run(&plan, &planes, scene);
+        let got = measured_energy(&plan, &out, &scene.data);
+        let want = expected_energy(
+            &plan,
+            &sums_for(scene, size, planes.light_boost_scale()),
+            1.0,
+        );
+        check_energy("the cap, glow", got, want, 1e-6);
+        // The streak, at Anamorphic 100: Z is what the field optics make of the picture.
+        let plan = plan_of(&streak, 100.0, 0.0, 100.0, size, Axis::X, None, 1.0);
+        let planes = planes_of(&plan, scene);
+        let out = run(&plan, &planes, scene);
+        let zplan = plan_of(&streak, 0.0, 0.0, 100.0, size, Axis::X, None, 1.0);
+        let z = run(&zplan, &planes_of(&zplan, scene), scene);
+        let got = measured_energy(&plan, &out, &z);
+        let want = expected_energy(
+            &plan,
+            &sums_for(scene, size, planes.light_boost_scale()),
+            1.0,
+        );
+        check_energy("the cap, streak", got, want, 1e-6);
+    }
+    assert_eq!(scales[0], 1.0);
+    assert!(scales[1] < 0.5 && scales[1] > 0.0, "{scales:?}");
 }
 
 #[test]
@@ -698,9 +769,14 @@ fn the_extra_headroom_falls_as_the_light_grows() {
         scene.fill(230, 150, side, side, [1.0; 3]);
         let size = (scene.w, scene.h);
         let plan = plan_of(&lib, 100.0, 0.0, 0.0, size, Axis::X, None, 1.0);
-        let out = run(&plan, &planes_of(&plan, &scene), &scene);
+        let planes = planes_of(&plan, &scene);
+        let out = run(&plan, &planes, &scene);
         let got = measured_energy(&plan, &out, &scene.data);
-        let want = expected_energy(&plan, &sums_for(&scene, size), 1.0);
+        let want = expected_energy(
+            &plan,
+            &sums_for(&scene, size, planes.light_boost_scale()),
+            1.0,
+        );
         check_energy(&format!("{side} px"), got, want, 1e-6);
         per_pixel.push(got[1] / (side * side) as f64);
     }
@@ -1441,8 +1517,8 @@ fn the_top_of_the_slider_draws_a_streak_across_the_frame_on_any_clipped_light() 
 /// glare a pixel receives is the sum of the scene's light within the frame, so the corners get less than the
 /// centre and the frame's mean goes down a little. The picture also gives up the share of its light that the
 /// ghosts, the starburst and the glow's floor take (`FlareStrengths`: 1.0 % of it at Default, where no light
-/// exists to draw them from), so the bounds are about twice the measured losses at Flares 100 (Default 1.3 %,
-/// Vintage 3.8 %).
+/// exists to draw them from), so the bounds are about twice the measured losses at Flares 100 (Default 1.1 %,
+/// Vintage 3.6 %).
 #[test]
 fn a_uniform_frame_loses_only_the_light_that_leaves_it() {
     let lib = LensLibrary::load(&common::repo_root().join("data")).expect("the shipped lens data");

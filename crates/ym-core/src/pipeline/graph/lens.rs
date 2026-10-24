@@ -1376,6 +1376,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_network_makes_a_map_of_the_lens_plane_when_its_weights_are_there() {
+        // A smoke-run export in the git-ignored `testdata/`; without it (or the shipped model) there is nothing
+        // to run and the test passes.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let Ok(model) =
+            BokehNet::from_file(&root.join("testdata/bokeh-smoke/bokehnet.safetensors"))
+        else {
+            return;
+        };
+        let (w, h) = (130, 90);
+        let data: Vec<f32> = (0..3 * w * h)
+            .map(|i| 0.05 + (i % 97) as f32 * 0.01)
+            .collect();
+        let image = ImageRef {
+            width: w,
+            height: h,
+            x0: 0,
+            y0: 0,
+            frame_width: w,
+            frame_height: h,
+            data: &data,
+        };
+        let input = blur_map_input(&model, &image).expect("a map");
+        assert_eq!((input.width, input.height), (65, 45));
+        assert_eq!((input.plane_width, input.plane_height), (w, h));
+        assert_eq!(input.b.len(), 65 * 45);
+        assert_eq!(input.p.len(), 65 * 45);
+        assert!(input.p.iter().all(|p| (0.0..=1.0).contains(p)));
+        let hd = 0.5 * ((w * w + h * h) as f32).sqrt();
+        assert!(input.b.iter().all(|&b| b >= 0.999 / hd));
+        // A plane the network cannot read (a value that is not finite) is not a crash: no map, so the classical
+        // detector makes it.
+        let mut bad = data.clone();
+        bad[5] = f32::NAN;
+        let image = ImageRef {
+            data: &bad,
+            ..image
+        };
+        assert!(blur_map_input(&model, &image).is_none());
+    }
+
+    #[test]
     fn the_lens_takes_the_radius_and_the_probability_of_the_networks_map() {
         let map = BokehMap {
             width: 3,

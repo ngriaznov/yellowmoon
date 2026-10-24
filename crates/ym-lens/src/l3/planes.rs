@@ -34,6 +34,8 @@ pub(crate) struct FlarePlanes {
     glow: Option<GlowProfiles>,
     /// The lens's spike table per camera channel, `129 x 129`.
     spikes: [Vec<f64>; 3],
+    /// The share of the small lights' extra headroom the photo keeps (`l3::lights`), 1 for most photos.
+    boost_scale: f64,
 }
 
 /// Halves a plane by 2 x 2 means over the pixels that exist.
@@ -291,7 +293,10 @@ fn tail_plane(
 impl FlarePlanes {
     /// The data of a photo without lens effects: nothing to draw.
     pub(crate) fn empty() -> Self {
-        FlarePlanes::default()
+        FlarePlanes {
+            boost_scale: 1.0,
+            ..FlarePlanes::default()
+        }
     }
 
     /// Makes the data of L3 from the lens plane `plane` (the whole frame at the lens plane's scale).
@@ -309,12 +314,17 @@ impl FlarePlanes {
         let half_diag =
             0.5 * ((plane.width * plane.width + plane.height * plane.height) as f64).sqrt();
         let boost = lights::map(plane, &rs, half_diag, cancel)?;
-        let sources = sources::find(plane, &rs, boost.as_deref(), axis, cancel)?;
+        let boost_scale = boost.as_ref().map_or(1.0, |b| b.scale);
+        // The ghosts and the glow's extra layer draw from the lights with the cap's scale, the starburst and the
+        // streak from the lights as they are.
+        let rs_ghost = rs.with_boost_scale(boost_scale);
+        let ev = boost.as_ref().map(|b| b.ev.as_slice());
+        let sources = sources::find(plane, &rs, &rs_ghost, ev, axis, cancel)?;
         if cancel() {
             return Err(LensError::Cancelled);
         }
         let glow = GlowProfiles::new(plan);
-        let restored = reduced_restored(plane, &rs, boost.as_deref(), cancel)?;
+        let restored = reduced_restored(plane, &rs_ghost, ev, cancel)?;
         let (tw, th) = (restored.width, restored.height);
         let tail = tail_plane(plan, &glow, &restored, cancel)?;
         // The spike tables on the camera's channels.
@@ -335,7 +345,13 @@ impl FlarePlanes {
             sources,
             glow: Some(glow),
             spikes,
+            boost_scale,
         })
+    }
+
+    /// The share of the small lights' extra headroom the photo keeps, 0 to 1.
+    pub(crate) fn boost_scale(&self) -> f64 {
+        self.boost_scale
     }
 
     /// The glow kernels.

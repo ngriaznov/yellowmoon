@@ -17,6 +17,8 @@ pub(crate) struct Restore {
     ramp: (f64, f64),
     /// `2^h - 1`.
     boost: f64,
+    /// The share of the small lights' extra headroom that is kept (1: all of it, `crate::l3::lights`).
+    scale: f64,
 }
 
 impl Restore {
@@ -28,7 +30,16 @@ impl Restore {
             clip: [f64::from(c[0]), f64::from(c[1]), f64::from(c[2])],
             ramp,
             boost: libm::exp2(LENS_HEADROOM_EV) - 1.0,
+            scale: 1.0,
         }
+    }
+
+    /// The same restoration keeping only `scale` (0 to 1) of the light the extra headroom of a small clipped
+    /// light adds beyond the plain headroom: a photo whose lights would add more than the cap of
+    /// [`LIGHT_BOOST_ENERGY_CAP`](crate::consts::LIGHT_BOOST_ENERGY_CAP) has them all reduced alike.
+    pub(crate) fn with_boost_scale(mut self, scale: f64) -> Self {
+        self.scale = scale;
+        self
     }
 
     /// The clip test `f` of the pixel `x`: 0 below the ramp, 1 above it, 0 when no channel has a clip level.
@@ -52,14 +63,32 @@ impl Restore {
         1.0 + self.clip_test(x) * self.boost
     }
 
-    /// The factor `1 + f (2^(h + extra_ev) - 1)`: the pixel of a light assumed `extra_ev` EV brighter than the
-    /// plain headroom ([`crate::l3::lights`]).
+    /// The factor `1 + f (2^h + s (2^(h + extra_ev) - 2^h) - 1)`: the pixel of a light assumed `extra_ev` EV
+    /// brighter than the plain headroom, of which the share `s` ([`Restore::with_boost_scale`]) is kept
+    /// ([`crate::l3::lights`]).
     #[inline]
     pub(crate) fn factor_ev(&self, x: [f64; 3], extra_ev: f64) -> f64 {
         if extra_ev == 0.0 {
             return self.factor(x);
         }
-        1.0 + self.clip_test(x) * (libm::exp2(LENS_HEADROOM_EV + extra_ev) - 1.0)
+        let plain = libm::exp2(LENS_HEADROOM_EV);
+        let lit = libm::exp2(LENS_HEADROOM_EV + extra_ev);
+        1.0 + self.clip_test(x) * (plain + self.scale * (lit - plain) - 1.0)
+    }
+
+    /// The light, per channel in clip levels averaged over the channels, that the extra headroom `extra_ev` adds
+    /// to the highlights of the pixel `x` beyond the plain headroom, before any scale: `mean_c(X_c / g0_c) f
+    /// knee (2^(h + extra_ev) - 2^h)`.
+    pub(crate) fn extra_light(&self, x: [f64; 3], extra_ev: f64) -> f64 {
+        let mut sum = 0.0;
+        for (v, g0) in x.iter().zip(&self.clip) {
+            if *g0 > 0.0 {
+                sum += v / g0;
+            }
+        }
+        let plain = libm::exp2(LENS_HEADROOM_EV);
+        let lit = libm::exp2(LENS_HEADROOM_EV + extra_ev);
+        sum / 3.0 * self.clip_test(x) * self.knee(x) * (lit - plain)
     }
 
     /// The soft knee of the pixel `x`: 0 at half the clip level of its brightest channel, 1 at the clip level.
