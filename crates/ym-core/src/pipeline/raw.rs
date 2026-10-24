@@ -2310,7 +2310,7 @@ mod tests {
     // R8 diffraction deconvolution: pixel pitch, gate, method choice
     // -----------------------------------------------------------------------------------------
 
-    use ym_profiles::registry::{ProfileStore, SensorGeometry};
+    use ym_profiles::registry::{BodyMatch, ProfileStore, SensorGeometry};
 
     /// The metadata of a synthetic ARW of `model` with the given f-number and focal lengths.
     fn meta_of(
@@ -2464,6 +2464,7 @@ mod tests {
             ProfileStore::load(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data"))
                 .expect("the data folder");
         let mut with_sensor = 0;
+        let mut without_sensor = Vec::new();
         for b in &store.registry().bodies {
             let meta = meta_of(&b.model, Some(8.0), Some(35.0), Some(35));
             let found = store.detect(&meta.make, &meta.model, meta.model_id);
@@ -2483,13 +2484,46 @@ mod tests {
                 assert_eq!(source, PitchSource::Registry);
                 assert_eq!(pitch, s.pixel_pitch_um);
             } else {
-                assert_eq!(
-                    (b.model.as_str(), source),
-                    ("ILME-FX3", PitchSource::CropFactor)
+                // No published geometry: the crop factor, for the FX3 (Sony gives its stills only
+                // as "12M") and for the `match = default` stand-ins added in registry 1.3.0.
+                assert_eq!(source, PitchSource::CropFactor, "{}", b.model);
+                assert!(
+                    b.model == "ILME-FX3" || b.match_kind == BodyMatch::Default,
+                    "{}: no sensor geometry, and not a stand-in",
+                    b.model
                 );
+                without_sensor.push(b.model.as_str());
             }
         }
+        // The bodies without geometry are the ones `docs/03` names: the FX3 and the eighteen
+        // older, APS-C and compact bodies of registry 1.3.0. A body gaining geometry, or losing
+        // it, is a change to make here on purpose.
+        without_sensor.sort_unstable();
+        let mut expected = [
+            "DSC-RX100",
+            "DSC-RX100M2",
+            "DSC-RX100M7",
+            "DSC-RX10M4",
+            "DSLR-A300",
+            "DSLR-A500",
+            "ILCE-5000",
+            "ILCE-6000",
+            "ILCE-6300",
+            "ILCE-6500",
+            "ILCE-6700",
+            "ILCE-7",
+            "ILCE-7R",
+            "ILCE-7S",
+            "ILME-FX3",
+            "NEX-5N",
+            "NEX-5R",
+            "NEX-7",
+            "ZV-E10",
+        ];
+        expected.sort_unstable();
+        assert_eq!(without_sensor, expected);
         assert_eq!(with_sensor, 27);
+        assert_eq!(with_sensor + without_sensor.len(), 46);
         // A body the registry does not list has no sensor: the crop factor (or nothing).
         let meta = meta_of("ILCE-7M6", Some(8.0), Some(50.0), Some(50));
         let found = store.detect(&meta.make, &meta.model, meta.model_id);

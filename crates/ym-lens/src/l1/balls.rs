@@ -148,6 +148,25 @@ const MIN_CLUSTER: usize = 3;
 /// Of two balls closer than this many radii the dimmer is dropped.
 const MIN_SEPARATION: f64 = 1.2;
 
+// TEMP-DEBUG-BEGIN
+fn dbg_at() -> Vec<(f64, f64)> {
+    let Ok(v) = std::env::var("YM_BALL_DEBUG_AT") else {
+        return Vec::new();
+    };
+    v.split(';')
+        .filter_map(|p| {
+            let mut it = p.split(',').map(|t| t.parse::<f64>().ok());
+            Some((it.next()??, it.next()??))
+        })
+        .collect()
+}
+fn dbg_near(inp: &BallInput, x: f64, y: f64, r: f64) -> bool {
+    dbg_at().iter().any(|(fx, fy)| {
+        let (tx, ty) = (fx * inp.w as f64, fy * inp.h as f64);
+        ((x - tx).powi(2) + (y - ty).powi(2)).sqrt() < 1.0 * r + 3.0
+    })
+}
+// TEMP-DEBUG-END
 #[derive(Clone, Copy, Debug)]
 struct Candidate {
     score: f32,
@@ -352,6 +371,9 @@ fn measure(
         }
         ground = median(&mut sc.values);
         if top < MIN_RATIO * ground {
+            if dbg_near(inp, cx, cy, r) {
+                eprintln!("DBG cand ({:.1},{:.1}) r0 {:.1}: ratio {:.2} < {MIN_RATIO} (top {top:.4} ground {ground:.4})", c.x, c.y, c.r0, top / ground.max(1e-9));
+            }
             return None;
         }
         // A light stands alone: nothing around it is nearly as bright (a patch of a texture has neighbours of
@@ -379,7 +401,12 @@ fn measure(
                 }
             }
         }
-        let (sx, sy) = seed?;
+        let Some((sx, sy)) = seed else {
+            if dbg_near(inp, cx, cy, r) {
+                eprintln!("DBG cand ({:.1},{:.1}) r0 {:.1}: no seed above level", c.x, c.y, c.r0);
+            }
+            return None;
+        };
         sc.seen.clear();
         sc.seen.resize(ww * wh, false);
         sc.stack.clear();
@@ -403,6 +430,9 @@ fn measure(
                 if nx < x0 || ny < y0 || nx >= x1 || ny >= y1 {
                     // The region leaves the window: a texture, not a compact disc of this size.
                     if at(nx, ny) > level {
+                        if dbg_near(inp, cx, cy, r) {
+                            eprintln!("DBG cand ({:.1},{:.1}) r0 {:.1}: region leaves the window (r {r:.1}, top {top:.4} ground {ground:.4})", c.x, c.y, c.r0);
+                        }
                         return None;
                     }
                     continue;
@@ -439,18 +469,37 @@ fn measure(
         r = (n / std::f64::consts::PI).sqrt();
     }
     let contrast = top.sqrt() - ground.sqrt();
+    let dbg = dbg_near(inp, cx, cy, r);
+    if dbg {
+        eprintln!("DBG cand ({:.1},{:.1}) r0 {:.1}: measured at ({cx:.1},{cy:.1}) r {r:.1} top {top:.4} ground {ground:.4} ring_top {ring_top:.4} contrast {contrast:.3} elong {elong:.2} fill {fill:.2}", c.x, c.y, c.r0);
+    }
     if contrast < MIN_CONTRAST || ring_top > ground + RING_CALM * (top - ground) {
+        if dbg {
+            eprintln!("   -> rejected: contrast or ring (ring limit {:.4})", ground + RING_CALM * (top - ground));
+        }
         return None;
     }
     if top - ground < MIN_SN * 2.0 * top.max(1e-6).sqrt() * inp.noise_v {
+        if dbg {
+            eprintln!("   -> rejected: noise");
+        }
         return None;
     }
     if elong > MAX_ELONGATION || fill < MIN_FILL {
+        if dbg {
+            eprintln!("   -> rejected: elong/fill");
+        }
         return None;
     }
     let r_lo = R_MIN_PX.max(R_MIN_HD * hd_of(inp));
     if r < r_lo || r > inp.r_max_px {
+        if dbg {
+            eprintln!("   -> rejected: radius");
+        }
         return None;
+    }
+    if dbg {
+        eprintln!("   -> passes the shape tests");
     }
     // The brightness order: the 90th percentile of the luminance inside the ball.
     sc.values.clear();
@@ -682,6 +731,9 @@ pub(super) fn find_balls(
             let d = ((u.cx - m.cx).powi(2) + (u.cy - m.cy).powi(2)).sqrt();
             d < 0.6 * u.r.max(m.r)
         }) {
+            if dbg_near(inp, m.cx, m.cy, m.r) {
+                eprintln!("DBG ({:.1},{:.1}) r {:.1}: same region as a brighter candidate", m.cx, m.cy, m.r);
+            }
             continue;
         }
         unique.push(m);
@@ -705,6 +757,9 @@ pub(super) fn find_balls(
         for (a, _) in &accepted {
             let d = ((a.cx - b.cx).powi(2) + (a.cy - b.cy).powi(2)).sqrt();
             if d < MIN_SEPARATION * a.r.max(b.r) {
+                if dbg_near(inp, b.cx, b.cy, b.r) {
+                    eprintln!("DBG ({:.1},{:.1}) r {:.1}: dropped, within {MIN_SEPARATION} radii of the brighter ball at ({:.1},{:.1}) r {:.1} (d {d:.1})", b.cx, b.cy, b.r, a.cx, a.cy, a.r);
+                }
                 continue 'cand;
             }
         }
@@ -721,12 +776,22 @@ pub(super) fn find_balls(
         });
         let sharp_density = n_sharp / n_ring.max(1.0);
         let supported = ew >= EVIDENCE_MIN;
+        let dbgb = dbg_near(inp, b.cx, b.cy, b.r);
+        if dbgb {
+            eprintln!("DBG phaseB ({:.1},{:.1}) r {:.1} soft {:.2} sharp_density {:.3} ew {:.2} supported {supported}", b.cx, b.cy, b.r, b.softness, sharp_density, ew);
+        }
         if sharp_density > inp.max_sharp_density {
+            if dbgb {
+                eprintln!("   -> dropped: sharp density");
+            }
             continue;
         }
         // A soft blob must stand out more: a dim, soft highlight (a nose, a bead of water) is no ball.
         let contrast = b.top.sqrt() - b.ground.sqrt();
         if b.softness > MAX_SOFTNESS || contrast < MIN_CONTRAST + SOFT_CONTRAST * b.softness {
+            if dbgb {
+                eprintln!("   -> dropped: soft");
+            }
             continue;
         }
         if supported && inp.noise_v > NOISY_PLANE {
@@ -738,10 +803,19 @@ pub(super) fn find_balls(
             // focus; a ground much blurrier is not this ball's ground.
             let ground = libm::exp(es / ew);
             if ground < GROUND_SHARP_PX || ground > BLURRIER_THAN * b.r {
+                if dbgb {
+                    eprintln!("   -> dropped: ground radius {ground:.2}");
+                }
                 continue;
             }
         } else if b.r < UNSUPPORTED_R_MIN_PX {
+            if dbgb {
+                eprintln!("   -> dropped: unsupported and small");
+            }
             continue;
+        }
+        if dbgb {
+            eprintln!("   -> accepted");
         }
         accepted.push((b.clone(), supported));
         if accepted.len() >= MAX_BALLS {

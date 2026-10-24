@@ -1,7 +1,7 @@
 //! Runs the bokeh detector and L1 on a dumped lens plane (a developer tool for local review; never shipped).
 //!
 //! ```text
-//! cargo run -p ym-lens --example bokeh_probe -- [--out DIR] [--anamorphic 100] [--no-l1] [--crop NAME]... <dump-dir>...
+//! cargo run -p ym-lens --example bokeh_probe -- [--out DIR] [--anamorphic 100] [--no-l1] [--map DIR] [--crop NAME]... <dump-dir>...
 //! ```
 //!
 //! A dump folder holds `lens_plane.f32` (planar R, G, B, little-endian f32, camera RGB balanced with g0) and
@@ -11,6 +11,11 @@
 //! `b.f32` and `conf.f32` (the blur map and its confidence), and `a100.f32` (L1 over the whole plane at
 //! Anamorphic `--anamorphic`, planar, same size as the plane) unless `--no-l1`.
 //!
+//! With `--map DIR` the blur map of the learned model is used in place of the classical detector's: `DIR/<name>/`
+//! holds `model_b.f32` and `model_p.f32` (the cells' radius in half-diagonals and probability of being out of focus,
+//! as `crates/ym-core/examples/bokeh_gate.rs --write-maps` writes them), and the planes are built with
+//! [`LensPlanes::build_with_map`] and the lens's own rule.
+//!
 //! With `--crop NAME` the folder also holds `NAME_l1in.f32` and `.json` (a full-resolution window of the raw group
 //! grown by L1's halo, written by `crates/ym-core/examples/bokeh_sheet.rs --dump-planes --crop`): L1 runs on it at
 //! scale 1, and `NAME_l1base.f32` and `NAME_l1out.f32` (the window before and after, planar) are written.
@@ -19,9 +24,22 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use ym_lens::{
-    Axis, CameraResponse, FrameInfo, ImageRef, LensAmounts, LensKind, LensLibrary, LensPlan,
-    LensPlanes, PixelRect, reshape, reshape_halo,
+    Axis, BlurMapInput, CameraResponse, FrameInfo, ImageRef, LensAmounts, LensKind, LensLibrary,
+    LensPlan, LensPlanes, PixelRect, reshape, reshape_halo,
 };
+
+/// The size of a plane after the network's box reduction to a long edge of 1024 pixels (`ym_ml::bokeh_net`).
+fn reduced_size(w: usize, h: usize) -> (usize, usize) {
+    let long = w.max(h);
+    if long <= 1024 {
+        return (w, h);
+    }
+    let s = 1024.0 / long as f64;
+    (
+        ((w as f64 * s).round() as usize).max(1),
+        ((h as f64 * s).round() as usize).max(1),
+    )
+}
 
 type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -47,6 +65,7 @@ fn main() -> Fallible<()> {
     let mut anamorphic = 100.0;
     let mut run_l1 = true;
     let mut crops: Vec<String> = Vec::new();
+    let mut map_dir: Option<PathBuf> = None;
     let mut dirs: Vec<PathBuf> = Vec::new();
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -56,6 +75,7 @@ fn main() -> Fallible<()> {
                 anamorphic = it.next().ok_or("--anamorphic needs a value")?.parse()?
             }
             "--no-l1" => run_l1 = false,
+            "--map" => map_dir = Some(PathBuf::from(it.next().ok_or("--map needs a folder")?)),
             "--crop" => crops.push(it.next().ok_or("--crop needs a name")?),
             other => dirs.push(PathBuf::from(other)),
         }
@@ -125,7 +145,25 @@ fn main() -> Fallible<()> {
             "the plan's k_L differs from the dump's"
         );
         let t = Instant::now();
-        let planes = LensPlanes::build(&plan, &image, focus, &|| false)?;
+        let map = match &map_dir {
+            Some(m) => {
+                let b = read_f32(&m.join(&name).join("model_b.f32"))?;
+                let p = read_f32(&m.join(&name).join("model_p.f32"))?;
+                let (pw, ph) = reduced_size(w, h);
+                let (cw, ch) = (pw.div_ceil(2), ph.div_ceil(2));
+                assert_eq!(b.len(), cw * ch, "the map's cells do not fit the plane");
+                Some(BlurMapInput {
+                    width: cw,
+                    height: ch,
+                    plane_width: pw,
+                    plane_height: ph,
+                    b,
+                    p,
+                })
+            }
+            None => None,
+        };
+        let planes = LensPlanes::build_with_map(&plan, &image, focus, map.as_ref(), &|| false)?;
         let planes_ms = t.elapsed().as_secs_f64() * 1e3;
         let bp = planes.bokeh().ok_or("no blur map")?;
         let o = out.join(&name);
@@ -140,6 +178,7 @@ fn main() -> Fallible<()> {
                 serde_json::json!({
                     "x": b.x, "y": b.y, "radius": b.radius, "peak": b.peak,
                     "supported": b.supported, "energy": b.energy,
+                    "take_out_radius": b.take_out_radius, "softness": b.softness,
                 })
             })
             .collect();

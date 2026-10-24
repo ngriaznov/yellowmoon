@@ -243,6 +243,8 @@ fn doctor_says_what_the_graphics_policy_comes_to() {
             "raw front"
         ])
     );
+    // The lens stage (L1 to L3, `docs/21`) is in `ALL` but not yet signed off, so `Auto` does not
+    // list it while `On` and `Require` do.
     assert_eq!(
         v["gpu_policy"]["all_stages"],
         serde_json::json!([
@@ -252,7 +254,8 @@ fn doctor_says_what_the_graphics_policy_comes_to() {
             "sharpening",
             "encode",
             "export",
-            "raw front"
+            "raw front",
+            "lens"
         ])
     );
     assert!(text.contains("GPU policy"), "{text}");
@@ -263,7 +266,7 @@ fn doctor_says_what_the_graphics_policy_comes_to() {
     assert!(text.contains("GPU stages"), "{text}");
     assert!(
         text.contains(
-            "raw, sampler, colour, sharpening, encode, export, raw front for Auto; On and Require run raw, sampler, colour"
+            "raw, sampler, colour, sharpening, encode, export, raw front for Auto; On and Require run raw, sampler, colour, sharpening, encode, export, raw front, lens"
         ),
         "{text}"
     );

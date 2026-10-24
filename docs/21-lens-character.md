@@ -228,12 +228,12 @@ Before and after at Flares 100 (Edges 0, each cell "before to after"; clip level
 
 | Photo | Lens | Ghosts, peak away from the light | Glow at 24 px | Starburst, peak 10 px out | Streak at 100 px | Streak at 400 px |
 |---|---|---|---|---|---|---|
-| sun, 1 025 clipped px | default | 0 to 8.5e-2 | 1.1e-2 to 4.4e-1 | 3.8e-5 to 2.5e-4 | 6.5e-4 to 3.9e-1 | 7.6e-5 to 9.8e-2 |
-| sun, 1 025 clipped px | vintage | 1.1e-5 to 1.0e-1 | 4.2e-2 to 4.6e-1 | 7.3e-5 to 2.9e-4 | 6.5e-4 to 3.9e-1 | 7.6e-5 to 9.8e-2 |
-| road at dusk: 13 lamps, the moon | default | 0 to 1.4e-2 | 5.9e-4 to 2.7e-2 | 6.4e-4 to 1.1e-2 | 2.9e-4 to 4.7e-1 | 3.6e-5 to 1.2e-1 |
-| road at dusk: 13 lamps, the moon | vintage | 0 to 2.0e-2 | 3.4e-3 to 4.2e-2 | 8.3e-4 to 1.6e-2 | 2.9e-4 to 4.7e-1 | 3.6e-5 to 1.2e-1 |
-| three lights of 3, 5, 9 px and discs of 24 and 60 px on grey 0.04 | default | 4.1e-6 to 6.2e-2 | 2.3e-2 to 5.6e-1 | 2.6e-6 to 9.9e-4 | 4.7e-4 to 8.4e-2 | 5.6e-5 to 2.1e-2 |
-| three lights of 3, 5, 9 px and discs of 24 and 60 px on grey 0.04 | vintage | 2.2e-5 to 7.6e-2 | 6.3e-2 to 4.6e-1 | 1.0e-5 to 2.3e-3 | 4.7e-4 to 8.4e-2 | 5.6e-5 to 2.1e-2 |
+| sun, 1 025 clipped px | default | 0 to 1.0e-1 | 1.1e-2 to 4.4e-1 | 3.8e-5 to 2.5e-4 | 6.5e-4 to 3.9e-1 | 7.6e-5 to 9.8e-2 |
+| sun, 1 025 clipped px | vintage | 1.1e-5 to 1.1e-1 | 4.2e-2 to 4.6e-1 | 7.3e-5 to 2.9e-4 | 6.5e-4 to 3.9e-1 | 7.6e-5 to 9.8e-2 |
+| road at dusk: 13 lamps, the moon | default | 0 to 1.7e-2 | 5.9e-4 to 2.7e-2 | 6.4e-4 to 1.1e-2 | 2.9e-4 to 4.7e-1 | 3.6e-5 to 1.2e-1 |
+| road at dusk: 13 lamps, the moon | vintage | 0 to 2.2e-2 | 3.4e-3 to 4.2e-2 | 8.3e-4 to 1.6e-2 | 2.9e-4 to 4.7e-1 | 3.6e-5 to 1.2e-1 |
+| three lights of 3, 5, 9 px and discs of 24 and 60 px on grey 0.04 | default | 4.1e-6 to 5.5e-2 | 2.3e-2 to 4.3e-1 | 2.6e-6 to 9.9e-4 | 4.7e-4 to 8.4e-2 | 5.6e-5 to 2.1e-2 |
+| three lights of 3, 5, 9 px and discs of 24 and 60 px on grey 0.04 | vintage | 2.2e-5 to 6.0e-2 | 6.3e-2 to 3.5e-1 | 1.0e-5 to 2.3e-3 | 4.7e-4 to 8.4e-2 | 5.6e-5 to 2.1e-2 |
 
 The sheets of the owner's review, with each photo's brightest light cropped at 100 %: `scratchpad/flares/sheets/` of the session that made this change (off, Default 60 before, Default 60 after, Flares 100, Anamorphic 100 at Flares 60, Vintage 100/100/100). The lens's start amounts (30 to 50) give a third to a half of every number above; the veil is unchanged.
 
