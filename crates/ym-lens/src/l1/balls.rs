@@ -115,7 +115,7 @@ const SOFT_CONTRAST: f64 = 0.3;
 const RING_CALM: f64 = 0.5;
 const RING_PERCENTILE: f64 = 0.95;
 /// Plateau over ground in light.
-const MIN_RATIO: f64 = 1.25;
+const MIN_RATIO: f64 = 2.0;
 /// Plateau over ground, in units of the plateau's noise.
 const MIN_SN: f64 = 6.0;
 /// The level of the ball's region, as a fraction of the way from the ground to the plateau.
@@ -634,6 +634,14 @@ pub(super) fn find_balls(
     if w < 16 || h < 16 {
         return Ok(Vec::new());
     }
+    if std::env::var_os("YM_BALL_DEBUG").is_some() {
+        eprintln!(
+            "SHARP total {:.4} fine {:.4} (of {} px)",
+            inp.sharp.iter().filter(|b| **b).count() as f64 / (w * h) as f64,
+            inp.ev_fine.iter().filter(|v| **v >= 0.05).count() as f64 / (w * h) as f64,
+            w * h
+        );
+    }
     let (vmax, root) = brightest_channel(inp);
     let cands = candidates(inp, &root, cancel)?;
     drop(root);
@@ -756,6 +764,33 @@ pub(super) fn find_balls(
         }
         accepted.push((b.clone(), supported));
         if accepted.len() >= MAX_BALLS {
+            break;
+        }
+    }
+    // Verification: the edges of the other candidates were left out of the evidence above (their rims say nothing
+    // about the blur), which in a dense texture leaves no evidence at all. Now only the balls accepted are left
+    // out: a patch of a sharp texture that was taken for a ball finds the texture's edges around it and goes.
+    for _ in 0..2 {
+        let mut claim2 = vec![false; w * h];
+        for (b, _) in &accepted {
+            let r_out = 1.15 * b.r + TAKE_OUT_MARGIN_PX;
+            for_each_in_annulus(w, h, b.cx, b.cy, 0.0, 1.4 * r_out, |x, y, _, _, _| {
+                claim2[y * w + x] = true;
+            });
+        }
+        let before = accepted.len();
+        accepted.retain(|(b, _)| {
+            let (mut n_ring, mut n_sharp) = (0.0f64, 0.0f64);
+            for_each_in_annulus(w, h, b.cx, b.cy, 1.5 * b.r, 3.0 * b.r, |x, y, _, _, _| {
+                let i = y * w + x;
+                if !claim2[i] {
+                    n_ring += 1.0;
+                    n_sharp += f64::from(u8::from(inp.sharp[i]));
+                }
+            });
+            n_sharp / n_ring.max(1.0) <= MAX_SHARP_DENSITY
+        });
+        if accepted.len() == before {
             break;
         }
     }

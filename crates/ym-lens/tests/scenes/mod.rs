@@ -692,7 +692,9 @@ pub fn soft_night_scene(
 pub fn sharp_scene(w: usize, h: usize, noise: Noise, seed: u64) -> Scene {
     let n = w * h;
     let mut rng = Rng::new(seed);
-    let mut img = texture(w, h, 14.0, seed, 0, w);
+    // Cells of 6 px: a sharp photograph is textured at every scale, and flat patches of 14 px with strong contrast
+    // between them would read as lights.
+    let mut img = texture(w, h, 6.0, seed, 0, w);
     noise.apply(&mut img, &mut rng);
     Scene {
         img,

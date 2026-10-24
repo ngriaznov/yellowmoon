@@ -51,7 +51,7 @@ const MODEL_ERR: f64 = 0.05;
 /// than the table; it reads as `b_cap`.
 const WIDE_RHO_MIN: f64 = 0.9;
 /// A reading of the coarsest pair from this fraction of `b_cap` up is taken as `b_cap`.
-const WIDE_FROM: f64 = 0.6;
+const WIDE_FROM: f64 = 1.0;
 /// Sensitivity assumed for such a reading (it is a bound, not a measure).
 const WIDE_SENSITIVITY: f64 = 3.0;
 /// A reading whose log radius has this variance has weight 1.

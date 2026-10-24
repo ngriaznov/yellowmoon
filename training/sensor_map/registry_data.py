@@ -118,6 +118,24 @@ BODIES: tuple[Body, ...] = (
     _default(392, "ILCE-9M3", "Sony A9 III"),
     _default(407, "ILCE-7M5", "Sony A7 V"),
     _default(410, "ILCE-7RM6", "Sony A7R VI"),
+    # Registry 1.3.0: stand-in bodies that carry a white scale fitted on their own files (docs/03, "White scale of
+    # stand-in bodies"). Without an entry a body cannot carry one. They have no sensor geometry (the EXIF crop-factor
+    # fallback applies, as before). The model IDs and the Model strings were read from the same files.
+    _default(306, "ILCE-7", "Sony A7"),
+    _default(311, "ILCE-7R", "Sony A7R"),
+    _default(318, "ILCE-7S", "Sony A7S"),
+    _default(313, "ILCE-5000", "Sony A5000"),
+    _default(394, "ILCE-6700", "Sony A6700"),
+    _default(382, "ZV-E10", "Sony ZV-E10"),
+    _default(288, "NEX-5N", "Sony NEX-5N"),
+    _default(296, "NEX-5R", "Sony NEX-5R"),
+    _default(289, "NEX-7", "Sony NEX-7"),
+    _default(261, "DSLR-A300", "Sony A300"),
+    _default(274, "DSLR-A500", "Sony A500"),
+    _default(297, "DSC-RX100", "Sony RX100"),
+    _default(308, "DSC-RX100M2", "Sony RX100 II"),
+    _default(374, "DSC-RX100M7", "Sony RX100 VII"),
+    _default(365, "DSC-RX10M4", "Sony RX10 IV"),
 )
 BODY_BY_ID = {b.model_id: b for b in BODIES}
 
