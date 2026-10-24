@@ -1,10 +1,10 @@
 # 21 · Lens character
 
-Lens character gives a photo the look of another lens: how its highlights flare, how its edges soften and darken, how the out-of-focus background is shaped, and, with an anamorphic attachment, taller oval bokeh, horizontal streaks and the anamorphic bend. It is a **Lens** card on the Look tab: a lens choice and three sliders, **Flares**, **Edges** and **Anamorphic**. This file covers what the person sees, the setting, where the lens acts in the pipeline, the four stages, the core's API, the lens data, the depth model, the command line, determinism and speed, the app, and the tests.
+Lens character gives a photo the look of another lens: how its highlights flare, how its edges soften and darken, how the out-of-focus background is shaped, and, with an anamorphic attachment, taller oval bokeh, horizontal streaks and the anamorphic bend. It is a **Lens** card on the Look tab: a lens choice and three sliders, **Flares**, **Edges** and **Anamorphic**. This file covers what the person sees, the setting, where the lens acts in the pipeline, the four stages, the core's API, the lens data, the bokeh detector, the command line, determinism and speed, the app, and the tests.
 
-The reasons, sources and rejected routes (generative editors among them) are in `research/lens-character-2026-10-23.md`. The owner's decisions of 2026-10-24: lenses only, no film looks; the depth model is downloaded on first use; existing bokeh is reshaped and none is ever added ("modification is a better route than adding fake bokeh"; "if photo has no bokeh - it will almost unmodified, but we also do other things for lens simulation"); lens data are synthetic, computed from public lens designs; "Flares and field effects need its controls. Bokeh reshaping will increase with raising anamorphic slider"; Anamorphic also shapes the flares; a lens choice above the sliders with seven lenses including Default; Anamorphic works with every lens and brings the anamorphic distortion and edge stretch; the picture zooms in so no corner is empty.
+The reasons, sources and rejected routes (generative editors among them) are in `research/lens-character-2026-10-23.md`. The owner's decisions of 2026-10-24: lenses only, no film looks; existing bokeh is reshaped and none is ever added ("modification is a better route than adding fake bokeh"; "if photo has no bokeh - it will almost unmodified, but we also do other things for lens simulation"); lens data are synthetic, computed from public lens designs; "Flares and field effects need its controls. Bokeh reshaping will increase with raising anamorphic slider"; Anamorphic also shapes the flares; a lens choice above the sliders with seven lenses including Default; Anamorphic works with every lens and brings the anamorphic distortion and edge stretch; the picture zooms in so no corner is empty. Later the same day the owner dropped the depth model the first version of this spec used: "Why do we need depth model? We need only bokeh detection model so we can modify it"; "Depth on its own does not mean we need to modify bokeh. And we are adding no bokeh, remember? We just modify it." The bokeh detector (section 7) finds the blur already in the photo from the photo itself.
 
-Everything here runs in Rust, the same in the app and `ym`. The optics are classical kernels (a CPU f64 reference and a WGSL kernel each, `docs/17` §6). Machine learning has one job, depth for the bokeh reshaping, and runs on the CPU in Rust (section 7). Nothing is fitted or traced at run time: the lens data are formulas and small tables computed offline (section 6).
+Everything here runs in Rust, the same in the app and `ym`. The optics are classical kernels (a CPU f64 reference and a WGSL kernel each, `docs/17` §6). There is no learned model and nothing to download: the bokeh detector is classical image analysis (section 7). Nothing is fitted or traced at run time: the lens data are formulas and small tables computed offline (section 6).
 
 **Status: specified, not built.** Lens character does not change `PIPELINE_VERSION`: with the three sliders at 0 the lens stages do not run, and every pixel is what it is today.
 
@@ -43,7 +43,6 @@ The names are the approved list; two of them need a check before they ship (sect
 |---|---|
 | Choose a lens | `kind` changes, and Flares and Edges move to that lens's starting amounts (its data's `start`; Default's are 0 and 0). Anamorphic stays. One undo step |
 | Move a slider | the picture follows, as with any slider; one undo step per drag |
-| Anamorphic above 0, or Edges above 0 on a lens that swirls, while the depth model is not installed | the download starts (section 7). Flares, Edges and the anamorphic bend show at once; the bokeh reshapes when the model is ready |
 | Reset (the card's link) | Default, and the three sliders at 0 |
 | Before (`\`) | the camera's default picture, with no lens effect at all (`docs/02` *The Before view*) |
 
@@ -51,14 +50,11 @@ The names are the approved list; two of them need a check before they ship (sect
 
 | State | Line |
 |---|---|
-| downloading | "Downloading the depth model for bokeh (50 MB)… 42%" |
-| the download failed | "Couldn't download the depth model, so bokeh is left as it is." and a **Try again** link |
-| reading depth | "Reading depth…" |
 | little to reshape | "This photo has little out-of-focus background, so its bokeh changes little." |
 
 Otherwise there is no bokeh line. A photo without bokeh still gets flares and edges: the owner's rule.
 
-**Elsewhere.** Copy settings and Paste carry the lens like any setting; "Apply to" copies the look only (`docs/01` *Applying to several photos*); Re-run leaves it alone. The viewport, the filmstrip thumbnails and the look tiles show the lens; a thumbnail or look tile leaves the bokeh as it is until the photo's depth exists (it is made when the photo is shown in the viewport or exported). The automatic estimates (exposure, white lift, white balance, Apple Auto, Auto crop) are made without lens effects, so a lens slider never moves them.
+**Elsewhere.** Copy settings and Paste carry the lens like any setting; "Apply to" copies the look only (`docs/01` *Applying to several photos*); Re-run leaves it alone. The viewport, the filmstrip thumbnails and the look tiles show the lens; a thumbnail or look tile reshapes the bokeh only once the photo's blur map exists (it is made when the photo is shown in the viewport or exported). The automatic estimates (exposure, white lift, white balance, Apple Auto, Auto crop) are made without lens effects, so a lens slider never moves them.
 
 ## 2. The setting
 
@@ -97,7 +93,7 @@ Why there:
 - the **tail plane**: the lens plane halved again until its long edge is at most 512 px;
 - the **source list** (L3) and the **ball list** and **blur map** (L1).
 
-Their key is the raw group's key, the lens `kind` and its data version, the camera profile (for the spectral projection, section 6) and the depth model's version; the slider amounts are not in it, so moving a slider re-runs only the per-tile passes. Each tile then reads them at its own pixels' absolute positions.
+Their key is the raw group's key, the lens `kind` and its data version, the camera profile (for the spectral projection, section 6) and the camera's focus point; the slider amounts are not in it, so moving a slider re-runs only the per-tile passes. Each tile then reads them at its own pixels' absolute positions.
 
 **Regions.** A reduced view (the fit view, thumbnails, look tiles) runs the lens over its whole frame. At full resolution the lens output of a rectangle is computed from the raw group's region grown by the lens halo (`LensPlan::halo_px`, which depends on the amounts and the photo's blur map), assembled from the raw group's cached tiles as `Job::region` already does; the raw tiles keep their own cache and key, and the lens output has its own. An export tile grows its raw source rectangle by the halo the same way.
 
@@ -112,8 +108,7 @@ Starting values below (thresholds, caps, the headroom) are set by eye on the CC0
 It reshapes the blur already in the photo and never adds blur where there is none. Blurring each out-of-focus pixel along one direction, by an amount proportional to its own blur, turns a round disc of radius `r` into an oval `r` wide and `q·r` tall, and leaves pixels in focus untouched (anisotropic defocus magnification; Bae and Durand, 2007). Narrowing a disc would need deconvolution and is not done.
 
 1. **The blur map** (radius `b`, in half-diagonal units), on the lens plane.
-   - The thin lens gives a blur radius proportional to the difference of inverse depths, `b = s·|D − D_f|`. The depth model (section 7) gives `D` up to an unknown scale and offset, the camera's focus point gives `D_f` (`SonyFocus`, `docs/04` §Container; without one, the `D` with the most sharp edges), and the scale `s` comes from the photo's own edges: the re-blur gradient ratio of Zhuo and Sim (2011, implemented from the paper) measures the blur at the plane's strong edges, and `s` is the median of `b_edge / |D − D_f|` over the edges where `b_edge` is at least `b_min`.
-   - The sign of `D − D_f` says whether a pixel is in front of the focus or behind it.
+   - The bokeh detector (section 7) gives the map and a confidence per pixel; nothing else goes into it.
    - With fewer than 50 measured edges, or less than 2 % of the frame at `b ≥ 2·b_min`, nothing is reshaped and the render says why (the note's "little out-of-focus background").
    - Per tile the map is upsampled with a joint bilateral filter guided by the tile's own pixels (radius 8, `docs/17` D4), so hair and fine edges follow the picture, and it is set to 0 where the tile's local gradient energy shows a sharp edge. No matting model is used (section 11).
 2. **Bright balls** (the shapes a viewer reads first) are found on the lens plane where `b ≥ 2·b_min`: local peaks at least 1 EV above the median of a ring of radius `2b`, flat-topped (at least 60 % of the disc within 0.5 EV of the peak), with a radius 0.6 to 1.6 times `b`. At most 256, brightest first; of two closer than 1.2 radii the dimmer is dropped. Each records its centre, radius, energy per channel above its ring and the ring's plane fit.
@@ -121,11 +116,11 @@ It reshapes the blur already in the photo and never adds blur where there is non
 4. **Stretch.** Two one-dimensional gathers, first across the anamorphic axis (vertical on the canvas), then tangential. Each pixel `p` averages samples on a line through it of half-length `ℓ(p)`:
    - vertical: `ℓ = (q − 1)·b(p)`, where `q = 1 + (Q_max − 1)·anamorphic/100` and `Q_max = 2` (section 12, decision 3);
    - tangential: `ℓ = σ(ρ)·edges/100·b(p)`, with the lens's swirl profile `σ(ρ)` (0 at the centre);
-   - a sample counts only when its blur is at least half the pixel's own and on the same side of the focus, and the weights are renormalised, so a sharp subject never smears into the background and the background never spills onto it;
+   - a sample counts only when its blur is at least half the pixel's own, and the weights are renormalised, so a sharp subject never smears into the background and the background never spills onto it;
    - `ℓ` is 0 below `b_min` (0.004) and the blur is capped at `b_cap` (0.03), so the halo is at most `(Q_max − 1 + σ_max)·b_cap` plus the upsampling's 8 px; samples are spaced evenly, at most 65 a line, read with linear interpolation.
 5. **Draw the balls back**, each with the energy it had: an ellipse `r` across and `q·r` along the vertical, turned towards the tangent by the swirl, cut by the lens's cat's-eye at its field radius (the pupil intersected with a second circle of radius `r·c(ρ)` set off from it radially; Edges scales the offset), with the lens's rim profile (`bokeh.edge`: a table of brightness against the normalised radius). Drawn analytically at each pixel from the list, so the edges are sharp at every scale and tiles agree.
 
-Without the depth model L1 is skipped, and L2 to L4 still run.
+Where the detector is not confident, `b` is taken as 0 and nothing is stretched.
 
 ### L2 · Field optics
 
@@ -191,12 +186,12 @@ impl LensPlan {
 pub struct LensPlanes { /* lens plane, tail plane FFT, source list, blur map, ball list */ }
 impl LensPlanes {
     pub fn build(plan: &LensPlan, lens_plane: &RgbImage, clipped: &Plane,
-                 depth: Option<&DepthMap>, cancel: &CancelToken) -> Result<Self, LensError>;
+                 focus: Option<(f64, f64)>, cancel: &CancelToken) -> Result<Self, LensError>;
 }
 pub mod cpu { /* reshape, field, flare: run on any rectangle of the frame; warp: Lens4Map */ }
 ```
 
-`ym-core` keeps the plan and the planes in the photo's graph (*Render graph*) and the depth map with the photo's estimates (in memory only; hard rule 4). `Session::lens_library()`, `Session::model_status(name)` and `Session::fetch_model(name)` back the IPC commands of section 10.
+`ym-core` keeps the plan and the planes in the photo's graph (*Render graph*; in memory only, hard rule 4). `Session::lens_library()` backs the IPC command of section 10.
 
 ## 6. The lens data
 
@@ -250,14 +245,16 @@ All lengths are in half-diagonal units of the emulated frame (a 36 × 24 mm fram
 
 **Licences.** `docs/14` gains a row: lens prescriptions transcribed from expired patents and old publications (facts of a design; provenance per lens; [HUMAN] check, section 13).
 
-## 7. The depth model
+## 7. The bokeh detector
 
-- **Model.** Depth Anything V2-Small (Apache-2.0 code and weights, 24.8 M parameters). `training/depth/export.py` (offline, rule 6) writes its weights as f16 safetensors, about 50 MB, with the architecture in the header and deterministic bytes. Its model card is `data/models/depth/MODEL_CARD.md`; the weights are not committed (they are above the 30 MB line of `docs/12` *Bundle contents*), and `NOTICE` gains the model's notice.
-- **Runtime.** `ym_ml::depth_net`, pure Rust on the CPU, f32 arithmetic in a fixed order, the same bits in the app and `ym` on every platform (as `crop_net`). Parity with PyTorch within 2e-3 of the output's range on five fixtures.
-- **Input.** Apple Auto's picture (`docs/19` §3: the photo at default settings, 768 px, the camera's orientation), resized to 518 px on its short side with both sides multiples of 14. Output: relative inverse depth on that grid, kept with the photo's estimates in memory and never written.
-- **Where it comes from.** A release asset of `github.com/ngriaznov/yellowmoon` under the tag `models-depth-1`, its SHA-256 compiled into the app and `ym`. `docs/12` adopts this first-run download (AGENTS rule 7): it is stored at `~/Library/Application Support/app.yellowmoon/models/depth/1/depth.safetensors`, which `docs/01` *Persistence* gains (`models/`). It is fetched over HTTPS to a temporary file, checked and renamed; a failure leaves nothing behind.
-- **When.** The app downloads it the first time a photo's settings ask for reshaping (section 1), shows the progress in the card's note, and does not retry by itself. The CLI never downloads during a render: `ym models fetch` does (section 8).
-- **Without it** L1 is skipped and everything else runs. An export waits for the photo's depth when the model is installed and the settings need it (as it waits for the shared estimates). The XMP records the lens data's id and version and the depth model's version and SHA-256 when it was used (`docs/01` *Versions written into outputs*).
+Reshaping needs to know where the photo is already out of focus and by how much, not how far away things are: a far wall in a photo taken at f/11 is sharp and must stay as it is. The detector therefore measures the blur the Sony lens left in the photo, from the photo alone, once per photo on the lens plane (`LensPlanes::build`), deterministically in f64 on the CPU:
+
+1. **Blur at edges.** The re-blur gradient ratio of Zhuo and Sim (2011, implemented from the paper): the plane's luminance is blurred again with a Gaussian of 1 px, and at each strong edge (local maxima of the gradient magnitude above a threshold set from the plane's noise) the ratio `ρ_g` of the gradient magnitudes gives the blur `σ = 1 / √(ρ_g² − 1)` px, a sparse map with a confidence from the edge's contrast.
+2. **The subject anchor.** The camera's focus point (`SonyFocus`, `docs/04` §Container, as a fraction of the frame in the buffer's orientation) marks its area as in focus with high confidence; without one, nothing is anchored.
+3. **Spread to every pixel.** The sparse values and confidences are spread over the plane by edge-aware normalised convolution (a joint bilateral filter guided by the plane's colours, run over a fixed pyramid), so a value travels along its own surface and stops at colour edges. The result is `b` (in half-diagonal units) and a confidence `c` per pixel.
+4. **Caution.** `b` is set to 0 where `c` is low, below `b_min`, and where the plane shows sharp texture; balls (section 4, L1 step 2) are looked for only where `b ≥ 2·b_min`.
+
+The report says "little out-of-focus background" when less than 2 % of the frame has `b ≥ 2·b_min` with confidence. Its tests use synthetic scenes with a known blur per region (section 14). If the classical detector proves too weak on real photos, the next step is a small defocus model of our own, trained on synthetic defocus with a known blur (licence-clean, a few MB, bundled; section 11).
 
 ## 8. The command line
 
@@ -270,19 +267,19 @@ All lengths are in half-diagonal units of the emulated frame (a 36 × 24 mm fram
 | `--edges <0–100>` | | Edges |
 | `--anamorphic <0–100>` | | Anamorphic |
 
-They are the `lens` field of the settings object; `--settings` takes it too. New commands: `ym lenses list [--json]` (id, name, line, start amounts, design source) and `ym models list|fetch [--json]` (what is installed, its path and SHA-256; `fetch` downloads the depth model with progress on stderr). A render that needs the model when it is missing warns, once per run: "The depth model is not installed, so bokeh was left as it is. Run `ym models fetch` to install it." (`--json`: a warning with kind `depth_model`). `ym doctor` lists downloaded models in `model_weights` with their paths.
+They are the `lens` field of the settings object; `--settings` takes it too. New commands: `ym lenses list [--json]` (id, name, line, start amounts, design source).
 
 ## 9. Determinism and speed
 
 - The planes and lists are made on the CPU in f64 with a fixed order (lists sorted by energy, ties by position), the FFT with `rustfft`'s scalar planner (MIT OR Apache-2.0) and `libm` for transcendental functions, so they are the same bits on every platform.
 - Every per-tile pass is a function of the planes, the lists, the tile's own pixels and absolute coordinates: tiles equal the whole frame bit for bit at 512 and 1024 px (D5), with the halos of section 4 (L1's stretch, L2's `w_max`, L3's 8 px core).
 - Each stage has a CPU f64 reference and a WGSL kernel, parity within 1e-3 (the f16 storage gate of `docs/05`), and holds under Metal fast-math (K8). The app and `ym` export the same bytes (rule 6).
-- **Targets** (Apple M1, 50 MP, Metal): the planes in at most 0.5 s after a change of lens or photo (off the foreground worker; the fit view shows the lens when they are ready); a slider move in the fit view in at most 100 ms once they exist; a 100 % tile at most twice the cost of the raw tile; an export at most 4 s longer; depth at most 3 s once per photo. CI on Linux measures the CPU and lavapipe as a guard against regressions only; the Mac numbers are the owner's check (section 13).
+- **Targets** (Apple M1, 50 MP, Metal): the planes in at most 0.5 s after a change of lens or photo (off the foreground worker; the fit view shows the lens when they are ready); a slider move in the fit view in at most 100 ms once they exist; a 100 % tile at most twice the cost of the raw tile; an export at most 4 s longer. CI on Linux measures the CPU and lavapipe as a guard against regressions only; the Mac numbers are the owner's check (section 13).
 
 ## 10. The app
 
-- IPC: `lens_list` → `LensInfo[]` (read once); `model_status(name)` and the event `model_download { name, state: idle | downloading { percent } | ready | failed { reason } }`; `fetch_model(name)` (the note's Try again). The render report carries `lens: { reshaped, reason }`, which the note reads ("little out-of-focus background", "depth model missing", "reading depth").
-- The browser build's mock serves `lens_list`, a fake download and the report.
+- IPC: `lens_list` → `LensInfo[]` (read once). The render report carries `lens: { reshaped, reason }`, which the note reads ("little out-of-focus background").
+- The browser build's mock serves `lens_list` and the report.
 - `docs/11` gets the card under *Look tab* and the tab table's Look row.
 
 ## 11. Not in this version
@@ -290,6 +287,7 @@ They are the `lens` field of the settings object; `--settings` takes it too. New
 | Step | Why later |
 |---|---|
 | Adding bokeh to a photo that has none | the owner's direction: reshape what is there, never add |
+| A learned bokeh detector of our own (a small defocus model trained on synthetic defocus with a known blur, bundled) | the classical detector first (section 7); trained only if it proves too weak on real photos, which needs GPU time and the owner's yes |
 | A matting model for hair | the guided upsampling and the sharpness test first; added if tests show halos at hair |
 | A sharp area away from the centre (Detuned's sweet spot moved) | needs a control |
 | A lens with a front effect plate (abstract smeared flares) | Detuned's smear covers a mild form |
@@ -297,7 +295,7 @@ They are the `lens` field of the settings object; `--settings` takes it too. New
 | Breathing and focus pulls | they do not exist in a still |
 | Replicas of named lenses | no public prescriptions or coating data for them |
 | Film looks, grain, halation | out of scope (the owner: lenses only) |
-| A generative layer | fails the pipeline's constraints (research note); the bake-off is still open |
+| A generative layer | fails the pipeline's constraints (research note); the owner, 2026-10-24: "No need for generative model bakeoff" |
 | A 2.39:1 crop aspect | a separate request (section 12, decision 5) |
 
 ## 12. Decisions for the owner
@@ -309,9 +307,7 @@ The spec uses the first option of each until the owner says otherwise.
 3. **Anamorphic 100 is a 2× squeeze**: bokeh twice as tall as it is wide.
 4. **The anamorphic axis follows the picture as seen**, so a portrait photo gets horizontal streaks; a real attachment would turn with the camera and give vertical ones.
 5. **No 2.39:1 crop aspect** in this work; the Crop panel keeps its five.
-6. **The depth model downloads without asking first** (the card says so while it downloads); or ask once.
-7. **Choosing a lens moves Flares and Edges** to its starting amounts (card and `--lens`).
-8. **AGENTS.md rule 4** says the only things that persist are imported looks and a few preferences; a downloaded model is a third kind. The owner's edit, if wanted.
+6. **Choosing a lens moves Flares and Edges** to its starting amounts (card and `--lens`).
 
 ## 13. Tasks
 
@@ -323,8 +319,8 @@ Task format of `docs/15`. Each task updates the specs it touches and `docs/STATU
 **LC-04 · L4** (LC-03): the map, the zoom, the sampler on the CPU and the device, pick, tile rectangles, `Geometry::upright`. *Done when:* the geometry tests of section 14 pass.
 **LC-05 · L2** (LC-01, LC-03): CPU reference, kernel, parity, tiles. *Done when:* its tests pass.
 **LC-06 · L3** (LC-01, LC-03): restored light, planes, FFT, source list, the drawn items; CPU reference, kernels, parity, tiles. *Done when:* its tests pass.
-**LC-07 · Depth model**: export, the release asset, `ym_ml::depth_net` and its parity, the download in the app and `ym models fetch`, `docs/12` and `docs/01` *Persistence*. *Done when:* parity and the download tests pass.
-**LC-08 · L1** (LC-06, LC-07): blur map, balls, stretch, redraw; CPU reference, kernels, parity, tiles. *Done when:* its tests pass.
+**LC-07 · Bokeh detector** (LC-01): the blur map and the ball list of section 7 and L1 step 2. *Done when:* its tests pass.
+**LC-08 · L1** (LC-07): blur map, balls, stretch, redraw; CPU reference, kernels, parity, tiles. *Done when:* its tests pass.
 **LC-09 · The card** (LC-03): Lens card, IPC, the note, the mock, e2e, screenshots. *Done when:* its tests pass and the screenshots are reviewed.
 **LC-10 · The command line** (LC-03): the options, `ym lenses`, `ym models`, `docs/10`. *Done when:* its tests pass.
 
@@ -335,12 +331,12 @@ Task format of `docs/15`. Each task updates the specs it touches and `docs/STATU
 - `ym-lens`: every shipped and synthetic lens file loads, matches `SHA256SUMS` and has `provenance.statement` exactly; spread functions, tails, ghosts, spikes and streak profiles have unit energy (1e-9) and no negative sample; `T(ρ)` is 1 at the centre and falls; the projection of a flat spectrum is neutral for every profile; a damaged file is refused, never a panic.
 - **Identity:** all three amounts at 0, for every lens, gives the bytes of a render without the field (CPU and device, viewport, 100 % and export), and creates no lens pass (`RenderReport::runs`).
 - **Energy (L3):** on synthetic frames whose flares stay inside the frame, the sum of `out` is `(1 − a)·ΣZ` plus each part's fraction times `F` times the light it spreads (`ΣR` for glow and veiling, `ΣH` for the rest), to 1e-6; a clipped point source gets its 3 EV of headroom in the flare and not in its own pixels; a ghost's centre lies on the line from its source through the centre (0.5 px), on the other side for negative `m`; with Anamorphic at 0 there is no streak, and at 100 the streak lies along the axis, also on a turned canvas.
-- **L1:** a synthetic scene with a sharp subject before a background of known disc blur (drawn analytically): background discs come out `q` times taller within 5 %, their energy kept within 1 %; the subject's pixels unchanged to 1e-6; a scene in focus everywhere is unchanged and reports "little out-of-focus background"; without the depth model L1 is skipped and the report says so.
+- **L1:** a synthetic scene with a sharp subject before a background of known disc blur (drawn analytically): background discs come out `q` times taller within 5 %, their energy kept within 1 %; the subject's pixels unchanged to 1e-6; a scene in focus everywhere is unchanged and reports "little out-of-focus background".
 - **L2:** a flat field gets exactly the falloff gain; a point grid gets each lens's spread at its field radius; Edges 0 with Anamorphic 0 is the identity.
 - **L4:** no output pixel of the canvas lacks a source, at full resolution and reduced 3, 8 and 16 times, for every Anamorphic amount, four turns and three straighten angles; the inverse map's round trip within 1e-9 (f64); a straight horizontal line near the top bows and a vertical stays within 0.5 px of straight; `pick_point_at` round trip.
 - **Tiles and parity:** each stage's tiles at 512 and 1024 equal the whole frame bit for bit on the device; CPU and device within 1e-3; the poison and interleave tests of D7; the far-corner test of D4.
 - **Settings:** reading with and without `lens`, partial patches, clamping, an unknown kind, Copy and Paste, Reset, the schema.
-- **CLI and parity:** `ym render --lens vintage --flares 60 --anamorphic 50` equals the same settings through `--settings` and the app's export byte for byte; `ym lenses list --json` equals `lens_list`; the missing-model warning; `ym models fetch` against a local test server (hash checked, a bad hash refused and nothing left behind).
-- **Depth:** `depth_net` against PyTorch on five fixtures; the same bits in two runs and from two sessions.
+- **CLI and parity:** `ym render --lens vintage --flares 60 --anamorphic 50` equals the same settings through `--settings` and the app's export byte for byte; `ym lenses list --json` equals `lens_list`.
+- **Bokeh detector:** synthetic scenes drawn analytically (textured regions blurred by discs of known radii, a sharp subject with fine strands against a blurred background, an evenly sharp scene, flat regions, noise at several ISO-like levels): `b` within 25 % of the truth where the detector is confident, below `b_min` on every sharp region and strand, no reshaping on the sharp scene; the focus point anchors the subject; the same bits in two runs.
 - **Frontend:** the card (the menu and its lines, a lens choice sends the start amounts in one patch and is one undo step, sliders, Reset, the bokeh lines), the mock, e2e `lens.spec.ts`.
 - **Goldens:** the golden set is unchanged (no lens); a lens golden per stage on synthetic scenes joins it.
