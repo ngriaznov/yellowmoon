@@ -36,7 +36,9 @@
 //! and a rotation that is not a quarter turn are errors ([`SettingsError`]). A step (0.01 EV, 50 K)
 //! is the UI's granularity: the core keeps the value it is given, so `--wb 5025` means 5025 K.
 //! The colour warp keeps at most [`WARP_MAX_PINS`] pins (later ones are cut) and clamps each pin the
-//! way `ym_color::warp::WarpPin::clamped` does ([`ColorWarp`]).
+//! way `ym_color::warp::WarpPin::clamped` does ([`ColorWarp`]). The lens (`docs/21` section 2,
+//! [`LensSettings`]) is a kind and three amounts, each clamped to [`LENS_AMOUNT_RANGE`]; a patch may
+//! carry only the parts it changes ([`LensPatch`]).
 
 use serde::{Deserialize, Deserializer, Serialize};
 use ym_color::chain::ChainError;
@@ -44,6 +46,11 @@ use ym_color::exposure::ExposureSetting as ColorExposure;
 use ym_color::exposure::white::OFFSET_RANGE_EV;
 use ym_color::warp::{WARP_COORD_LIMIT, WARP_MAX_PINS, WARP_RANGE_DEFAULT, WarpParams, WarpPin};
 use ym_color::wb::{LightSource, WbReadout, WhiteBalance as ColorWhiteBalance};
+use ym_lens::LensAmounts;
+/// Which lens (`docs/21` section 2): the ids of `data/lenses/` and of `--lens`, `default`,
+/// `classic`, `vintage`, `petzval`, `triplet`, `sonnar` and `detuned`, as JSON strings of the same
+/// spelling.
+pub use ym_lens::LensKind;
 use ym_looks::library::LookId;
 use ym_profiles::profile::Profile;
 
@@ -79,6 +86,8 @@ pub const WHITE_OFFSET_RANGE_EV: (f64, f64) = (-OFFSET_RANGE_EV, OFFSET_RANGE_EV
 pub const NOISE_REDUCTION_RANGE: (f64, f64) = (0.0, 100.0);
 /// Range of both amounts of RAW › Range (`rolloff`): the highlight range and the low-light toe.
 pub const ROLLOFF_RANGE: (f64, f64) = (0.0, 1.0);
+/// Range of the three lens amounts, Flares, Edges and Anamorphic (`docs/21` section 2).
+pub const LENS_AMOUNT_RANGE: (f64, f64) = (0.0, 100.0);
 /// Range of the crop's straighten angle (degrees).
 pub const CROP_ANGLE_RANGE_DEG: (f64, f64) = (-45.0, 45.0);
 /// The most control points one curve may have.
@@ -136,7 +145,8 @@ pub enum SettingsError {
 
 /// The render-graph group of stages a setting first affects (`docs/01` section Render graph).
 ///
-/// A change invalidates its group and every later one: `Raw` before `Colour` before `Grade`.
+/// A change invalidates its group and every later one: `Raw` before `Lens` before `Colour` before
+/// `Grade`.
 /// `Geometry` is applied when sampling for display and export, so no pixel stage re-runs, and
 /// `Output` (sharpening) is the last: it re-runs only its own pass over the rendered frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -145,6 +155,10 @@ pub enum StageGroup {
     /// Vignetting, highlights, demosaic and denoise, detail controls, sharpening, lens resample
     /// (R3 to R9).
     Raw,
+    /// The emulated lens: bokeh reshaping, field optics and highlight optics (L1 to L3, `docs/21`
+    /// section 3), on the light of the raw group. The anamorphic bend (L4) is geometry, applied
+    /// while sampling.
+    Lens,
     /// White balance, sensor map, ARRI matrix, AWG4, exposure, highlight range and toe, LogC4 (C1
     /// to C8).
     Color,
@@ -193,6 +207,8 @@ pub enum SettingsField {
     Saturation,
     /// `color_warp`.
     ColorWarp,
+    /// `lens`.
+    Lens,
     /// `sharpen`.
     Sharpen,
     /// `output_sharpening`.
@@ -215,7 +231,7 @@ pub enum SettingsField {
 
 impl SettingsField {
     /// Every field, in the order of the settings table.
-    pub const ALL: [SettingsField; 24] = [
+    pub const ALL: [SettingsField; 25] = [
         SettingsField::Look,
         SettingsField::LookIntensity,
         SettingsField::Exposure,
@@ -231,6 +247,7 @@ impl SettingsField {
         SettingsField::ColorBalance,
         SettingsField::Saturation,
         SettingsField::ColorWarp,
+        SettingsField::Lens,
         SettingsField::Sharpen,
         SettingsField::OutputSharpening,
         SettingsField::NoiseReduction,
@@ -261,6 +278,7 @@ impl SettingsField {
             Self::ColorBalance => "color_balance",
             Self::Saturation => "saturation",
             Self::ColorWarp => "color_warp",
+            Self::Lens => "lens",
             Self::Sharpen => "sharpen",
             Self::OutputSharpening => "output_sharpening",
             Self::NoiseReduction => "noise_reduction",
@@ -278,6 +296,7 @@ impl SettingsField {
     pub fn group(self) -> StageGroup {
         match self {
             Self::Decode | Self::NoiseReduction | Self::Sharpen => StageGroup::Raw,
+            Self::Lens => StageGroup::Lens,
             Self::LightSource
             | Self::WhiteBalance
             | Self::WhitePick
@@ -833,6 +852,68 @@ impl Default for Rolloff {
     }
 }
 
+/// Look › Lens: a lens and three amounts, each 0 to 100 ([`LENS_AMOUNT_RANGE`]).
+///
+/// All three amounts at 0 is no lens, whatever `kind` says ([`LensSettings::is_identity`]): no lens
+/// stage runs and the render has the bytes it has without the field. Choosing a lens does not move
+/// the amounts by itself: the card and `--lens` send the lens's starting amounts (`LensInfo`) in
+/// the same patch (`docs/21` section 12, decision 6).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LensSettings {
+    /// The lens.
+    pub kind: LensKind,
+    /// Glow, veiling glare, ghosts and starbursts (L3), 0 to 100.
+    pub flares: f64,
+    /// Edge softness, darkening, colour fringes, distortion, swirl and cat's-eye shapes (L1, L2
+    /// and L4), 0 to 100.
+    pub edges: f64,
+    /// The anamorphic attachment in front of the lens (L1 to L4), 0 to 100.
+    pub anamorphic: f64,
+}
+
+impl Default for LensSettings {
+    /// The Default lens with all three amounts at 0: no lens.
+    fn default() -> Self {
+        Self {
+            kind: LensKind::Default,
+            flares: 0.0,
+            edges: 0.0,
+            anamorphic: 0.0,
+        }
+    }
+}
+
+impl LensSettings {
+    /// True when all three amounts are 0, whatever the lens: no lens stage runs.
+    #[must_use]
+    pub fn is_identity(&self) -> bool {
+        self.flares == 0.0 && self.edges == 0.0 && self.anamorphic == 0.0
+    }
+}
+
+impl From<LensSettings> for LensAmounts {
+    fn from(l: LensSettings) -> Self {
+        LensAmounts {
+            kind: l.kind,
+            flares: l.flares,
+            edges: l.edges,
+            anamorphic: l.anamorphic,
+        }
+    }
+}
+
+impl From<LensAmounts> for LensSettings {
+    fn from(a: LensAmounts) -> Self {
+        LensSettings {
+            kind: a.kind,
+            flares: a.flares,
+            edges: a.edges,
+            anamorphic: a.anamorphic,
+        }
+    }
+}
+
 /// A rectangle in image coordinates normalised to [0, 1]².
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1009,6 +1090,9 @@ pub struct DevelopSettings {
     pub saturation: SaturationSetting,
     /// Colour › Colour warp: the pins of stage C9b (docs/02); none by default.
     pub color_warp: ColorWarp,
+    /// Look › Lens: the lens and its three amounts (`docs/21`); no lens by default. A document
+    /// without the field reads as the default.
+    pub lens: LensSettings,
     /// Detail › Sharpening: Auto or amount and radius.
     pub sharpen: SharpenSetting,
     /// Detail › Sharpening › Output: the strength of the output sharpening in percent, 0 to 200,
@@ -1065,6 +1149,7 @@ impl DevelopSettings {
             color_balance: ColorBalance::default(),
             saturation: AutoOr::Auto,
             color_warp: ColorWarp::default(),
+            lens: LensSettings::default(),
             sharpen: AutoOr::Auto,
             output_sharpening: OUTPUT_SHARPENING_DEFAULT,
             noise_reduction: AutoOr::Auto,
@@ -1103,6 +1188,7 @@ impl DevelopSettings {
             SettingsField::ColorBalance => self.color_balance == o.color_balance,
             SettingsField::Saturation => self.saturation == o.saturation,
             SettingsField::ColorWarp => self.color_warp == o.color_warp,
+            SettingsField::Lens => self.lens == o.lens,
             SettingsField::Sharpen => self.sharpen == o.sharpen,
             SettingsField::OutputSharpening => self.output_sharpening == o.output_sharpening,
             SettingsField::NoiseReduction => self.noise_reduction == o.noise_reduction,
@@ -1135,6 +1221,7 @@ impl DevelopSettings {
             SettingsField::ColorBalance => self.color_balance = d.color_balance,
             SettingsField::Saturation => self.saturation = d.saturation,
             SettingsField::ColorWarp => self.color_warp = d.color_warp,
+            SettingsField::Lens => self.lens = d.lens,
             SettingsField::Sharpen => self.sharpen = d.sharpen,
             SettingsField::OutputSharpening => self.output_sharpening = d.output_sharpening,
             SettingsField::NoiseReduction => self.noise_reduction = d.noise_reduction,
@@ -1345,6 +1432,17 @@ impl DevelopSettings {
             changed |= c;
         }
         note(SettingsField::Rolloff, changed);
+        let mut changed = false;
+        for (name, v) in [
+            ("lens.flares", &mut self.lens.flares),
+            ("lens.edges", &mut self.lens.edges),
+            ("lens.anamorphic", &mut self.lens.anamorphic),
+        ] {
+            let (x, c) = clamp_to(name, *v, LENS_AMOUNT_RANGE)?;
+            *v = x;
+            changed |= c;
+        }
+        note(SettingsField::Lens, changed);
         let mut changed = false;
         for (channel, points) in [
             ("luma", &mut self.curve.luma),
@@ -1590,6 +1688,24 @@ pub struct RolloffPatch {
     pub low_light: Option<f64>,
 }
 
+/// Look › Lens parts to change; the others stay as they are (`{ "lens": { "flares": 40 } }`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LensPatch {
+    /// New lens. The amounts do not follow it: send the lens's starting amounts in the same patch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<LensKind>,
+    /// New Flares.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flares: Option<f64>,
+    /// New Edges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edges: Option<f64>,
+    /// New Anamorphic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anamorphic: Option<f64>,
+}
+
 /// Colour-balance wheels to change. The shadows and highlights wheels take Auto (Reset) or Manual
 /// with a point; a plain point reads as Manual at that point, and `[0, 0]` as Auto.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -1636,7 +1752,7 @@ pub struct CurvesPatch {
 /// present change.
 ///
 /// The JSON is `Partial<DevelopSettings>` of `src/api/types.ts`, with two generosities: the nested
-/// objects (`decode`, `rolloff`, `color_balance`, `curve`) may carry only the parts to change, and
+/// objects (`decode`, `rolloff`, `lens`, `color_balance`, `curve`) may carry only the parts to change, and
 /// a manual `white_balance`, `sharpen` or `noise_reduction` may leave out a part, which then keeps
 /// its current (resolved) value. `crop: null` and `white_pick: null` clear the field. `color_warp`
 /// replaces the whole list of pins (`{ "pins": [] }` removes them all).
@@ -1711,6 +1827,9 @@ pub struct SettingsPatch {
     /// New colour warp: the whole list of pins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_warp: Option<ColorWarp>,
+    /// Lens parts to change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lens: Option<LensPatch>,
     /// New sharpening.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sharpen: Option<AutoOr<SharpenManualPatch>>,
@@ -1882,6 +2001,14 @@ impl SettingsPatch {
             }
             SettingsField::Saturation => p.saturation = Some(from.saturation),
             SettingsField::ColorWarp => p.color_warp = Some(from.color_warp.clone()),
+            SettingsField::Lens => {
+                p.lens = Some(LensPatch {
+                    kind: Some(from.lens.kind),
+                    flares: Some(from.lens.flares),
+                    edges: Some(from.lens.edges),
+                    anamorphic: Some(from.lens.anamorphic),
+                });
+            }
             SettingsField::Sharpen => {
                 p.sharpen = Some(match from.sharpen {
                     AutoOr::Auto => AutoOr::Auto,
@@ -1971,6 +2098,7 @@ impl SettingsPatch {
             color_balance,
             saturation,
             color_warp,
+            lens,
             sharpen,
             output_sharpening,
             noise_reduction,
@@ -2116,6 +2244,20 @@ impl DevelopSettings {
         if let Some(v) = &patch.color_warp {
             next.color_warp = v.clone();
         }
+        if let Some(l) = &patch.lens {
+            if let Some(v) = l.kind {
+                next.lens.kind = v;
+            }
+            if let Some(v) = l.flares {
+                next.lens.flares = v;
+            }
+            if let Some(v) = l.edges {
+                next.lens.edges = v;
+            }
+            if let Some(v) = l.anamorphic {
+                next.lens.anamorphic = v;
+            }
+        }
         if let Some(s) = &patch.sharpen {
             next.sharpen = match s {
                 AutoOr::Auto => AutoOr::Auto,
@@ -2253,6 +2395,7 @@ fn patch_touches(p: &SettingsPatch, field: SettingsField) -> bool {
         SettingsField::ColorBalance => p.color_balance.is_some(),
         SettingsField::Saturation => p.saturation.is_some(),
         SettingsField::ColorWarp => p.color_warp.is_some(),
+        SettingsField::Lens => p.lens.is_some(),
         SettingsField::Sharpen => p.sharpen.is_some(),
         SettingsField::OutputSharpening => p.output_sharpening.is_some(),
         SettingsField::NoiseReduction => p.noise_reduction.is_some(),
@@ -2341,6 +2484,8 @@ pub struct ResolvedValues {
     pub saturation: f64,
     /// `color_warp`.
     pub color_warp: ColorWarp,
+    /// `lens`.
+    pub lens: LensSettings,
     /// The sharpening in effect.
     pub sharpen: SharpenValue,
     /// `output_sharpening`.
@@ -2431,6 +2576,7 @@ impl ResolvedSettings {
             },
             saturation: settings.saturation.resolve(estimates.saturation),
             color_warp: settings.color_warp.clone(),
+            lens: settings.lens,
             sharpen: settings.sharpen.manual().copied().unwrap_or(auto_sharpen),
             output_sharpening: settings.output_sharpening,
             noise_reduction: settings
@@ -2671,6 +2817,9 @@ mod tests {
         assert!(StageGroup::Geometry < StageGroup::Output);
         assert_eq!(SettingsField::Contrast.group(), StageGroup::Grade);
         assert_eq!(SettingsField::Look.group(), StageGroup::Grade);
+        // The lens sits between the raw group and the colour group (`docs/21` section 3).
+        assert_eq!(SettingsField::Lens.group(), StageGroup::Lens);
+        assert!(StageGroup::Raw < StageGroup::Lens && StageGroup::Lens < StageGroup::Color);
         assert!(StageGroup::Raw < StageGroup::Color && StageGroup::Color < StageGroup::Grade);
         // Every field has a name that is the serde name.
         for f in SettingsField::ALL {

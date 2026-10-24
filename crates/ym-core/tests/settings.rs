@@ -19,8 +19,9 @@ use ym_core::session::{
 };
 use ym_core::settings::{
     AutoOr, AutoSeeds, COPY_LEAVES_OUT, ColorBalance, ColorWarp, ColorWarpPin, Crop, CropAspect,
-    Curves, DevelopSettings, NoiseReductionValue, NormRect, Orientation, ResolvedSettings, Rolloff,
-    SettingsError, SettingsField, SettingsPatch, SharpenValue, StageGroup,
+    Curves, DevelopSettings, LENS_AMOUNT_RANGE, LensKind, LensPatch, LensSettings,
+    NoiseReductionValue, NormRect, Orientation, ResolvedSettings, Rolloff, SettingsError,
+    SettingsField, SettingsPatch, SharpenValue, StageGroup,
 };
 use ym_looks::library::LookId;
 
@@ -78,6 +79,12 @@ fn rich() -> DevelopSettings {
             },
             ColorWarpPin::from(WarpPin::locked_at([-0.05, -0.1])),
         ],
+    };
+    s.lens = LensSettings {
+        kind: LensKind::Vintage,
+        flares: 60.0,
+        edges: 45.0,
+        anamorphic: 30.0,
     };
     s.sharpen = AutoOr::Manual(SharpenValue {
         amount: 150.0,
@@ -146,6 +153,7 @@ fn typescript_defaults() -> Value {
         },
         "saturation": { "kind": "auto" },
         "color_warp": { "pins": [] },
+        "lens": { "kind": "default", "flares": 0, "edges": 0, "anamorphic": 0 },
         "sharpen": { "kind": "auto" },
         "output_sharpening": 100,
         "noise_reduction": { "kind": "auto" },
@@ -231,6 +239,7 @@ fn the_rust_types_have_the_fields_of_the_typescript_interfaces() {
         "ColorWarpPin",
         serde_json::to_value(settings.color_warp.pins[0]).unwrap(),
     );
+    check("LensSettings", serde_json::to_value(settings.lens).unwrap());
     check("Curves", serde_json::to_value(&settings.curve).unwrap());
     check(
         "DecodeOptions",
@@ -456,6 +465,11 @@ fn unknown_fields_and_malformed_values_are_refused() {
         r#"{"crop": {"rect": {"x": 0, "y": 0, "width": 1}, "angle_deg": 0, "aspect": "free"}}"#,
         r#"{"decode": {"neural": true}}"#,
         r#"{"curve": {"luma": [[0, 0, 0], [1, 1]]}}"#,
+        r#"{"lens": {"kind": "leica"}}"#,
+        r#"{"lens": {"kind": "Vintage"}}"#,
+        r#"{"lens": {"grain": 3}}"#,
+        r#"{"lens": {"flares": "a lot"}}"#,
+        r#"{"lens": "vintage"}"#,
     ] {
         assert!(
             serde_json::from_str::<DevelopSettings>(bad).is_err(),
@@ -664,6 +678,22 @@ fn the_schema_refuses_what_the_core_refuses() {
             "warp with an unknown field",
             json!({ "color_warp": { "pins": [], "strength": 1 } }),
         ),
+        ("lens of an unknown kind", json!({ "lens": { "kind": "leica" } })),
+        (
+            "lens kind in capitals",
+            json!({ "lens": { "kind": "Vintage" } }),
+        ),
+        (
+            "lens with an unknown field",
+            json!({ "lens": { "kind": "vintage", "grain": 3 } }),
+        ),
+        ("flares above range", json!({ "lens": { "flares": 101 } })),
+        ("edges below range", json!({ "lens": { "edges": -1 } })),
+        (
+            "anamorphic above range",
+            json!({ "lens": { "anamorphic": 250 } }),
+        ),
+        ("flares as text", json!({ "lens": { "flares": "40" } })),
         (
             "curve with one point",
             json!({ "curve": { "luma": [[0, 0]] } }),
@@ -729,6 +759,27 @@ fn the_schema_ranges_are_the_ranges_the_core_clamps_to() {
         range(&props["rolloff"]["properties"]["highlights"]),
         ROLLOFF_RANGE
     );
+    for amount in ["flares", "edges", "anamorphic"] {
+        assert_eq!(
+            range(&defs["lens"]["properties"][amount]),
+            LENS_AMOUNT_RANGE,
+            "{amount}"
+        );
+    }
+    // The schema names the seven lenses of `ym_lens::LensKind`, in the menu order, and its default.
+    let kinds: Vec<&str> = defs["lens"]["properties"]["kind"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k.as_str().unwrap())
+        .collect();
+    let wanted: Vec<&str> = LensKind::ALL.iter().map(|k| k.as_str()).collect();
+    assert_eq!(kinds, wanted);
+    assert_eq!(
+        norm(defs["lens"]["default"].clone()),
+        norm(serde_json::to_value(LensSettings::default()).unwrap())
+    );
+    assert_eq!(props["lens"], json!({ "$ref": "#/$defs/lens" }));
     assert_eq!(
         range(&props["crop"]["oneOf"][1]["properties"]["angle_deg"]),
         CROP_ANGLE_RANGE_DEG
@@ -2028,4 +2079,299 @@ fn copy_settings_takes_the_warp_and_resolved_values_carry_it() {
     other.color_warp.pins = vec![pin_at([0.0, -0.2], [0.05, -0.2])];
     other.apply_patch(&patch, None).unwrap();
     assert_eq!(other.color_warp, s.color_warp);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lens (docs/21 section 2)
+// ---------------------------------------------------------------------------------------------
+
+fn lens(kind: LensKind, flares: f64, edges: f64, anamorphic: f64) -> LensSettings {
+    LensSettings {
+        kind,
+        flares,
+        edges,
+        anamorphic,
+    }
+}
+
+#[test]
+fn a_document_reads_with_and_without_a_lens() {
+    let neutral = LookId::builtin("neutral");
+    // Without the field: the default lens, nothing clamped (older settings, older XMP).
+    let (s, clamped) = DevelopSettings::from_json("{}", &neutral).expect("reads");
+    assert_eq!(s.lens, lens(LensKind::Default, 0.0, 0.0, 0.0));
+    assert!(s.lens.is_identity() && clamped.is_empty());
+    // With every field, with some of them (the others take the defaults), and as written.
+    let (s, _) = DevelopSettings::from_json(
+        r#"{ "lens": { "kind": "petzval", "flares": 40, "edges": 55, "anamorphic": 20 } }"#,
+        &neutral,
+    )
+    .expect("reads");
+    assert_eq!(s.lens, lens(LensKind::Petzval, 40.0, 55.0, 20.0));
+    let (s, _) =
+        DevelopSettings::from_json(r#"{ "lens": { "flares": 40 } }"#, &neutral).expect("reads");
+    assert_eq!(s.lens, lens(LensKind::Default, 40.0, 0.0, 0.0));
+    assert!(!s.lens.is_identity());
+    let written = serde_json::to_value(s.lens).unwrap();
+    assert_eq!(
+        written,
+        json!({ "kind": "default", "flares": 40.0, "edges": 0.0, "anamorphic": 0.0 }),
+        "writing writes every field"
+    );
+    // All seven ids are read and written as the same words.
+    for kind in LensKind::ALL {
+        let doc = json!({ "lens": { "kind": kind.as_str() } });
+        let (s, _) = DevelopSettings::from_value(doc, &neutral).expect("reads");
+        assert_eq!(s.lens.kind, kind);
+        assert_eq!(
+            serde_json::to_value(s.lens).unwrap()["kind"],
+            json!(kind.as_str())
+        );
+    }
+    assert_eq!(
+        LensKind::ALL.map(LensKind::as_str),
+        [
+            "default", "classic", "vintage", "petzval", "triplet", "sonnar", "detuned"
+        ]
+    );
+    // An unknown kind or field is a parse error, not a silent default.
+    for bad in [
+        r#"{ "lens": { "kind": "leica" } }"#,
+        r#"{ "lens": { "kind": "Vintage" } }"#,
+        r#"{ "lens": { "grain": 3 } }"#,
+        r#"{ "lens": { "flares": "lots" } }"#,
+    ] {
+        assert!(
+            matches!(
+                DevelopSettings::from_json(bad, &neutral),
+                Err(SettingsError::Parse(_))
+            ),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn the_amounts_clamp_and_a_value_that_is_not_a_number_is_refused() {
+    let neutral = LookId::builtin("neutral");
+    assert_eq!(LENS_AMOUNT_RANGE, (0.0, 100.0));
+    // From a document.
+    let (s, clamped) = DevelopSettings::from_json(
+        r#"{ "lens": { "kind": "sonnar", "flares": 140, "edges": -5, "anamorphic": 100 } }"#,
+        &neutral,
+    )
+    .expect("reads");
+    assert_eq!(s.lens, lens(LensKind::Sonnar, 100.0, 0.0, 100.0));
+    assert_eq!(clamped, vec![SettingsField::Lens]);
+    // From a patch: reported only in the fields the patch touched.
+    let mut s = DevelopSettings::default();
+    let report = apply(&mut s, parse_patch(r#"{ "lens": { "edges": 250 } }"#));
+    assert_eq!(s.lens.edges, 100.0);
+    assert_eq!(report.changed, vec![SettingsField::Lens]);
+    assert_eq!(report.clamped, vec![SettingsField::Lens]);
+    let report = apply(&mut s, parse_patch(r#"{ "contrast": 10 }"#));
+    assert!(report.clamped.is_empty(), "{report:?}");
+    // Negative zero is zero.
+    let report = apply(&mut s, parse_patch(r#"{ "lens": { "flares": -0.0 } }"#));
+    assert!(report.changed.is_empty(), "{report:?}");
+    assert!(s.lens.flares.is_sign_positive());
+    // Not finite: an error that names the field, and nothing is applied.
+    for (field, patch) in [
+        (
+            "lens.flares",
+            LensPatch {
+                flares: Some(f64::NAN),
+                ..LensPatch::default()
+            },
+        ),
+        (
+            "lens.edges",
+            LensPatch {
+                edges: Some(f64::INFINITY),
+                ..LensPatch::default()
+            },
+        ),
+        (
+            "lens.anamorphic",
+            LensPatch {
+                anamorphic: Some(f64::NEG_INFINITY),
+                ..LensPatch::default()
+            },
+        ),
+    ] {
+        let mut t = s.clone();
+        let err = t
+            .apply_patch(
+                &SettingsPatch {
+                    lens: Some(patch),
+                    contrast: Some(ym_core::settings::PercentSetting::manual_value(30.0)),
+                    ..SettingsPatch::default()
+                },
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(err, SettingsError::NotFinite(field));
+        assert_eq!(t, s, "{field}: nothing is applied");
+    }
+    let doc = serde_json::from_value::<DevelopSettings>(json!({ "lens": { "flares": 1 } }))
+        .map(|mut d| {
+            d.lens.edges = f64::NAN;
+            d
+        })
+        .unwrap();
+    assert_eq!(
+        doc.validated().unwrap_err(),
+        SettingsError::NotFinite("lens.edges")
+    );
+}
+
+#[test]
+fn a_lens_patch_may_carry_only_the_parts_it_changes() {
+    let mut s = DevelopSettings::default();
+    // Choosing a lens does not move the amounts by itself.
+    let report = apply(&mut s, parse_patch(r#"{ "lens": { "kind": "triplet" } }"#));
+    assert_eq!(s.lens, lens(LensKind::Triplet, 0.0, 0.0, 0.0));
+    assert_eq!(report.changed, vec![SettingsField::Lens]);
+    assert_eq!(
+        report.first_group(),
+        Some(StageGroup::Lens),
+        "a lens change invalidates the lens group and the ones after it"
+    );
+    // One amount at a time, the rest as they were.
+    apply(&mut s, parse_patch(r#"{ "lens": { "flares": 40 } }"#));
+    apply(&mut s, parse_patch(r#"{ "lens": { "anamorphic": 25.5 } }"#));
+    assert_eq!(s.lens, lens(LensKind::Triplet, 40.0, 0.0, 25.5));
+    // What the card sends on choosing a lens: the kind and its starting amounts, in one patch.
+    let report = apply(
+        &mut s,
+        parse_patch(r#"{ "lens": { "kind": "vintage", "flares": 35, "edges": 50 } }"#),
+    );
+    assert_eq!(s.lens, lens(LensKind::Vintage, 35.0, 50.0, 25.5));
+    assert_eq!(report.changed, vec![SettingsField::Lens]);
+    // The whole object, as the frontend sends it, works the same; the same value again is no change.
+    let same = parse_patch(
+        r#"{ "lens": { "kind": "vintage", "flares": 35, "edges": 50, "anamorphic": 25.5 } }"#,
+    );
+    assert!(apply(&mut s, same).changed.is_empty());
+    // An empty object changes nothing; a patch that leaves the lens out keeps it.
+    assert!(
+        apply(&mut s, parse_patch(r#"{ "lens": {} }"#))
+            .changed
+            .is_empty()
+    );
+    apply(&mut s, parse_patch(r#"{ "exposure": { "kind": "auto" } }"#));
+    assert_eq!(s.lens.kind, LensKind::Vintage);
+    // The patch serialises with only the parts it carries, and an unknown part is refused.
+    let p = parse_patch(r#"{ "lens": { "edges": 10 } }"#);
+    assert_eq!(
+        serde_json::to_value(&p).unwrap(),
+        json!({ "lens": { "edges": 10.0 } })
+    );
+    for bad in [
+        r#"{ "lens": { "kind": "leica" } }"#,
+        r#"{ "lens": { "grain": 1 } }"#,
+        r#"{ "lens": { "flares": "lots" } }"#,
+    ] {
+        assert!(serde_json::from_str::<SettingsPatch>(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn reset_gives_the_default_lens_and_re_run_leaves_it() {
+    let look = LookId::builtin("neutral");
+    assert_eq!(SettingsField::Lens.name(), "lens");
+    assert_eq!(SettingsField::Lens.group(), StageGroup::Lens);
+    assert!(SettingsField::ALL.contains(&SettingsField::Lens));
+    assert_eq!(SettingsField::ALL.len(), 25);
+    let mut s = rich();
+    assert_ne!(s.lens, LensSettings::default());
+    // The Reset patch and `reset_field` agree.
+    let mut by_patch = s.clone();
+    apply(
+        &mut by_patch,
+        SettingsPatch::reset(SettingsField::Lens, &look),
+    );
+    s.reset_field(SettingsField::Lens, &look);
+    assert_eq!(by_patch, s);
+    assert_eq!(s.lens, lens(LensKind::Default, 0.0, 0.0, 0.0));
+    assert_eq!(s.diff(&rich()), vec![SettingsField::Lens]);
+    // Re-run (the Automatic card) does not touch the lens.
+    let mut s = rich();
+    s.reset_automatic(true);
+    assert_eq!(s.lens, rich().lens);
+    // A fresh photo (`with_look`) has no lens.
+    assert_eq!(
+        DevelopSettings::with_look(look.clone()).lens,
+        LensSettings::default()
+    );
+}
+
+#[test]
+fn copy_settings_takes_the_lens_and_resolved_values_and_exports_carry_it() {
+    assert!(!COPY_LEAVES_OUT.contains(&SettingsField::Lens));
+    let dir = tempfile::tempdir().unwrap();
+    let scene = Scene::new(
+        256,
+        192,
+        light("sony-ilce-7rm4", 5200.0),
+        Layout::Patchwork,
+        0.5,
+    );
+    let (_, est, profile) = estimates_of_file(&scene.write(dir.path(), "a.ARW", "ILCE-7RM4"));
+    let s = rich();
+    let resolved = ResolvedSettings::resolve(PhotoId(3), &s, &est, &profile, None).unwrap();
+    assert_eq!(resolved.values.lens, s.lens);
+    // `ym:Settings` of an export is the pinned settings: it gains the lens object, as stored.
+    let pinned = resolved.pinned_settings();
+    assert_eq!(pinned.lens, s.lens);
+    let doc = serde_json::to_value(&pinned).unwrap();
+    assert_eq!(
+        doc["lens"],
+        json!({ "kind": "vintage", "flares": 60.0, "edges": 45.0, "anamorphic": 30.0 })
+    );
+    // Copy takes it, with every part, so Paste onto another photo gives that photo this lens.
+    let patch = SettingsPatch::copied_from(&resolved);
+    assert_eq!(
+        patch.lens,
+        Some(LensPatch {
+            kind: Some(LensKind::Vintage),
+            flares: Some(60.0),
+            edges: Some(45.0),
+            anamorphic: Some(30.0),
+        })
+    );
+    let mut other = DevelopSettings::default();
+    other.lens = lens(LensKind::Detuned, 5.0, 6.0, 7.0);
+    let report = other.apply_patch(&patch, None).unwrap();
+    assert_eq!(other.lens, s.lens);
+    assert!(report.changed.contains(&SettingsField::Lens));
+    // A photo with the default lens copies the default, which clears the lens on the target.
+    let plain = ResolvedSettings::resolve(
+        PhotoId(4),
+        &DevelopSettings::default(),
+        &est,
+        &profile,
+        None,
+    )
+    .unwrap();
+    other
+        .apply_patch(&SettingsPatch::copied_from(&plain), None)
+        .unwrap();
+    assert_eq!(other.lens, LensSettings::default());
+}
+
+#[test]
+fn the_lens_converts_to_and_from_the_lens_crates_amounts() {
+    let s = lens(LensKind::Classic, 12.0, 34.0, 56.0);
+    let a: ym_lens::LensAmounts = s.into();
+    assert_eq!(
+        (a.kind, a.flares, a.edges, a.anamorphic),
+        (LensKind::Classic, 12.0, 34.0, 56.0)
+    );
+    assert_eq!(LensSettings::from(a), s);
+    assert_eq!(a.is_identity(), s.is_identity());
+    assert_eq!(
+        ym_lens::LensAmounts::from(LensSettings::default()).is_identity(),
+        LensSettings::default().is_identity()
+    );
 }

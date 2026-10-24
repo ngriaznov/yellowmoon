@@ -58,6 +58,7 @@
       },
       "default": { "pins": [] }
     },
+    "lens": { "$ref": "#/$defs/lens" },
     "sharpen": { "$ref": "#/$defs/sharpen" },
     "output_sharpening": {
       "description": "Detail > Sharpening > Output: the strength of the sharpening applied to the picture at the size it is shown or written, in percent (0 is off). A plain number, not Auto; the UI steps by 5. A document without it reads as 100.",
@@ -167,6 +168,39 @@
   },
   "$defs": {
     "percent": { "type": "number", "minimum": -100, "maximum": 100, "default": 0 },
+    "lens": {
+      "description": "Look > Lens (docs/21 section 2): the lens and how much of its character each slider brings. All three amounts at 0 is no lens, whatever `kind` says. Choosing a lens does not move the amounts by itself: the card and `ym render --lens` send the lens's starting amounts (`ym lenses list`) with it. A patch may carry only the parts it changes.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["default", "classic", "vintage", "petzval", "triplet", "sonnar", "detuned"],
+          "default": "default"
+        },
+        "flares": {
+          "description": "Glow around bright light, veiling glare, ghosts and starbursts (L3).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 0
+        },
+        "edges": {
+          "description": "Edge softness and darkening, colour fringes, the lens's distortion, swirl and cat's-eye shapes (L1, L2, L4).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 0
+        },
+        "anamorphic": {
+          "description": "An anamorphic attachment in front of the lens: taller bokeh, horizontal streaks, the anamorphic bend (L1 to L4).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 0
+        }
+      },
+      "default": { "kind": "default", "flares": 0, "edges": 0, "anamorphic": 0 }
+    },
     "auto_percent": {
       "description": "contrast, highlights, shadows, black and saturation: Auto (0, or Apple Auto's value for the photo, docs/19 section 5), or a manual value from -100 to 100 (the UI steps by 1). A plain number is an older document: it reads as Manual with that value, and 0 as Auto.",
       "oneOf": [

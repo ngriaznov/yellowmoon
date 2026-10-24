@@ -18,7 +18,7 @@ use crate::system;
 use crate::wire::{
     self, AppError, AppInfo, AppleAutoStatus, ApplyScope, ChromaSample, ChromaScatter,
     CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DisplayLut, ErrorScope,
-    ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId, LookInput,
+    ExportEstimate, ExportJob, ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput,
     LooksImportResult, MenuState, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample,
     Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
     SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
@@ -370,6 +370,16 @@ pub async fn sample_chroma(
     run(&state, move |api| api.sample_chroma(x.0, y.0)).await
 }
 
+// --- Lens -------------------------------------------------------------------------------------
+
+/// `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
+/// starting amounts. Empty when the lens data could not be loaded.
+#[tauri::command]
+#[specta::specta]
+pub async fn lens_list(state: State<'_, AppState>) -> Result<Vec<LensInfo>, AppError> {
+    run(&state, |api| api.lens_list()).await
+}
+
 // --- Looks ------------------------------------------------------------------------------------
 
 /// `looks_list()`.
@@ -688,6 +698,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             set_before,
             sample_pixel,
             sample_chroma,
+            lens_list,
             looks_list,
             look_thumbnail,
             looks_import,

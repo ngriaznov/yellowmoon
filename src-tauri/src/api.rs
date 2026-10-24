@@ -35,7 +35,8 @@ use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
     AppError, AppInfo, AppleAutoStatus, ApplyScope, ChromaSample, ChromaScatter, CliLinkResult,
     CliLinkStatus, CropAspect, CropSuggestion, DisplayLut, ErrorScope, ExportEstimate, ExportJob,
-    ExportJobId, HistogramData, Look, LookId, LookInput, LooksImportProgress, LooksImportResult,
+    ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress,
+    LooksImportResult,
     OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample, Preferences,
     PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
     SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
@@ -170,6 +171,7 @@ fn touches_thumbnail(patch: &SettingsPatch) -> bool {
         || patch.look_intensity.is_some()
         || patch.crop.is_some()
         || patch.orientation.is_some()
+        || patch.lens.is_some()
 }
 
 impl AppApi {
@@ -820,6 +822,18 @@ impl AppApi {
             .sample_chroma(&src, &state, (x, y), &CancelToken::new())
             .map_err(AppError::from)?;
         sample.map(|s| convert(&s)).transpose()
+    }
+
+    // --- Lens ---------------------------------------------------------------------------------
+
+    /// `lens_list`: the lenses of the Lens card's menu in menu order (`docs/21` sections 1 and 10);
+    /// empty when the lens data could not be loaded.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] only if the shapes disagree (a bug).
+    pub fn lens_list(&self) -> Result<Vec<LensInfo>, AppError> {
+        convert(&self.core.lens_list())
     }
 
     // --- Looks --------------------------------------------------------------------------------

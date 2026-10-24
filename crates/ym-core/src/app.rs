@@ -33,6 +33,7 @@ use std::time::Duration;
 use crate::apple_auto::{AppleAutoMode, AppleAutoStatus, AutoAdvisor, check_instructions};
 
 use ym_color::look::LookInput;
+use ym_lens::{LensInfo, LensLibrary};
 use ym_looks::import::Progress;
 use ym_looks::library::LookId;
 
@@ -224,10 +225,17 @@ impl Core {
             &options.data_root,
             Arc::clone(&preferences),
         )?);
-        let renderer = Renderer::new(looks.provider(), options.render)?;
+        // The data folder is read once: the lens library it holds goes to the renderer (which will run
+        // the lens, `docs/21`) and stays in the session's environment (which answers `lens_list`).
+        let env = SessionEnv::load(&options.data_root)?;
+        let mut render = options.render;
+        if render.lens.is_none() {
+            render.lens = env.lens_library.as_ref().ok().cloned();
+        }
+        let renderer = Renderer::new(looks.provider(), render)?;
         renderer.set_display(looks.display_choice());
 
-        let mut env = SessionEnv::load(&options.data_root)?
+        let mut env = env
             .with_events(options.session_events)
             .with_default_look(looks.effective_default())
             .with_decode_threads(options.decode_threads);
@@ -415,6 +423,28 @@ impl Core {
     /// [`AppleAutoMode::FromPreference`]). Takes effect at once, as the preference does.
     pub fn set_apple_auto_mode(&self, mode: AppleAutoMode) {
         self.session.set_apple_auto_mode(mode);
+    }
+
+    // --- Lens -------------------------------------------------------------------------------
+
+    /// `lens_list`: the seven lenses of `data/lenses` in menu order, with what the Lens card shows
+    /// (`docs/21` sections 1 and 10). Empty when the lens data could not be loaded
+    /// ([`Core::lens_library`] says why); a lens setting then renders as no lens.
+    #[must_use]
+    pub fn lens_list(&self) -> Vec<LensInfo> {
+        self.session
+            .lens_library()
+            .map(|library| library.lenses().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// The lens library, or why it could not be loaded (`ym lenses list` and `--lens` say so).
+    ///
+    /// # Errors
+    ///
+    /// The reason, in plain words, when `<data>/lenses` is missing or damaged.
+    pub fn lens_library(&self) -> Result<Arc<LensLibrary>, String> {
+        self.session.lens_library()
     }
 
     // --- Looks ------------------------------------------------------------------------------

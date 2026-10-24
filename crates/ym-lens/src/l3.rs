@@ -1,33 +1,28 @@
-//! L3: highlight optics (`docs/21` section 4, L3). Not built yet.
+//! L3: highlight optics (`docs/21` section 4, L3): glow, veiling glare, ghosts, starbursts and streaks.
 //!
 //! The composition is `out = (1 - a) Z + F (a_g K_g * R + a_v K_v * R + sum a_i G_i[H] + a_* B[H] + a_s ... S[H])`
-//! with `a` = [`LensPlan::light_fraction`]. Until the L3 task fills in the flare terms they are zero and so is
-//! `a`, which makes the pass the identity: `out = Z`.
+//! with `Z` the output of L2, `R` the restored light and `H` the highlights; [`terms`] holds the budget `a`.
+//!
+//! The parts, in the order the light travels:
+//!
+//! * [`restore`]: the clip test, the 3 EV of headroom and the soft knee;
+//! * [`sources`]: the highlights of the lens plane as a list of lights;
+//! * [`glow`]: the glow and veiling kernels, split into a core gathered per tile and a tail for the plane;
+//! * [`fft`] and [`planes`]: the tail plane, convolved once per photo;
+//! * [`items`]: ghosts, starbursts and streaks, drawn analytically per pixel from the list;
+//! * [`pass`]: the per-tile pass that puts them together.
 
-use crate::error::LensError;
-use crate::image::{ImageRef, PixelRect};
-use crate::plan::LensPlan;
-use crate::planes::LensPlanes;
+mod fft;
+mod geometry;
+mod glow;
+mod items;
+mod pass;
+mod planes;
+mod profile;
+mod restore;
+mod sources;
+mod terms;
 
-/// Context L3 needs around a rectangle of a `fw x fh` frame at scale `k` (its core is gathered per tile).
-pub(crate) fn halo(
-    _plan: &LensPlan,
-    _planes: &LensPlanes,
-    _k: usize,
-    _fw: usize,
-    _fh: usize,
-) -> usize {
-    0
-}
-
-/// L3 on `out`: `z` is the output of L2 over `out`; `x` is the input of L1 (the flares read it).
-pub(crate) fn apply(
-    _plan: &LensPlan,
-    _planes: &LensPlanes,
-    _k: usize,
-    _x: &ImageRef<'_>,
-    z: Vec<f32>,
-    _out: PixelRect,
-) -> Result<Vec<f32>, LensError> {
-    Ok(z)
-}
+pub(crate) use pass::{apply, halo};
+pub(crate) use planes::FlarePlanes;
+pub(crate) use terms::Terms;

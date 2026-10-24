@@ -257,6 +257,41 @@ export interface Rolloff {
   low_light: number;
 }
 
+/** Look › Lens: which lens (`docs/21` §2). The ids are those of `data/lenses/` and of `ym render --lens`. */
+export type LensKind = "default" | "classic" | "vintage" | "petzval" | "triplet" | "sonnar" | "detuned";
+
+/**
+ * Look › Lens (`docs/21` §2): a lens and three amounts, each 0–100, step 1. All three at 0 is no lens, whatever the lens is. Choosing a
+ * lens does not move the amounts by itself: the card sends `kind` with the lens's `start_flares` and `start_edges` (`LensInfo`) in one
+ * patch. A patch may carry only the parts it changes.
+ */
+export interface LensSettings {
+  kind: LensKind;
+  /** Glow, veiling glare, ghosts and starbursts. */
+  flares: number;
+  /** Edge softness and darkening, colour fringes, distortion, swirl and cat's-eye shapes. */
+  edges: number;
+  /** An anamorphic attachment: taller bokeh, horizontal streaks, the anamorphic bend. */
+  anamorphic: number;
+}
+
+/** One lens of the Lens card's menu: `lens_list()` answers the seven, in menu order (`docs/21` §1 and §10). */
+export interface LensInfo {
+  kind: LensKind;
+  /** The name shown in the menu. */
+  name: string;
+  /** The line under the name, and in the card's note. */
+  line: string;
+  /** Flares (0–100) the card moves to when this lens is chosen. */
+  start_flares: number;
+  /** Edges (0–100) the card moves to when this lens is chosen. */
+  start_edges: number;
+  /** The data version, raised whenever the lens's files change. */
+  version: number;
+  /** The design the lens was computed from: a patent number or a publication. */
+  design_source: string;
+}
+
 /** A rectangle in image coordinates normalised to [0, 1]². */
 export interface NormRect {
   x: number;
@@ -343,6 +378,8 @@ export interface DevelopSettings {
   saturation: PercentSetting;
   /** Colour › Colour warp: the pins of stage C9b, `{ pins: [] }` by default. */
   color_warp: ColorWarp;
+  /** Look › Lens: the lens and its Flares, Edges and Anamorphic, `{ kind: "default", flares: 0, edges: 0, anamorphic: 0 }` (no lens) by default. */
+  lens: LensSettings;
   /** Detail › Sharpening: `Auto` or `{ amount 0–300, radius_px 0.3–2.5 }`. */
   sharpen: AutoOr<{ amount: number; radius_px: number }>;
   /**

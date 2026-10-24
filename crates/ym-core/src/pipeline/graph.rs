@@ -42,6 +42,7 @@ use ym_gpu::image::{GpuImage, RowBands};
 use ym_gpu::kernels::copy::Piece;
 use ym_gpu::kernels::prep::DeviceRaw;
 use ym_gpu::queue::{CancelToken, JobHandle, JobSpec, Priority};
+use ym_lens::LensLibrary;
 
 use super::color::{
     ColorKey, ColorPlan, DisplayChoice, GradeKey, GradePlan, GradeRequest, LookProvider,
@@ -65,6 +66,10 @@ use ym_color::display::OutputTarget;
 const METHOD_NOT_ON_DEVICE_NOTE: &str = "The graphics card runs the adaptive ratio demosaic only, so the CPU ran the one that was asked for.";
 const DENOISE_NOT_ON_DEVICE_NOTE: &str =
     "The graphics card does not run this denoise method, so the CPU ran the raw stages.";
+/// The note of a render whose lens setting asks for a lens while the lens data could not be loaded
+/// ([`RenderOptions::lens`] is `None`): the photo is developed with no lens effect.
+const LENS_UNAVAILABLE_NOTE: &str =
+    "The lens data could not be loaded, so this photo has no lens effect.";
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -105,6 +110,10 @@ pub struct RenderOptions {
     pub budget: MemoryBudget,
     /// Whether the learned demosaic can run.
     pub neural: NeuralStatus,
+    /// The lens library (`data/lenses`, `docs/21`), loaded once by [`crate::app::Core::open`]. `None`
+    /// when the lens data are missing or damaged (and for a renderer made without a core): a lens
+    /// setting then renders as no lens, and the render's notes say so.
+    pub lens: Option<Arc<LensLibrary>>,
     /// The GPU, when there is one: the colour pass of viewport frames and thumbnails runs on it.
     /// It is opened by [`crate::app::gpu::open_gpu`] and nothing else, and it can be given to a
     /// renderer that exists already ([`Renderer::set_gpu`]: `ym` opens the device while photos
@@ -200,6 +209,7 @@ impl std::fmt::Debug for RenderOptions {
             .field("full_tile_px", &self.full_tile_px)
             .field("budget", &self.budget)
             .field("neural", &self.neural)
+            .field("lens", &self.lens.is_some())
             .field("demosaic", &self.demosaic)
             .field("denoise", &self.denoise)
             .field("gpu", &self.gpu.as_ref().map(|g| g.info().name.clone()))
@@ -219,6 +229,7 @@ impl Default for RenderOptions {
             full_tile_px: 1024,
             budget: MemoryBudget::detect(),
             neural: NeuralStatus::unavailable(),
+            lens: None,
             gpu: None,
             gpu_stages: GpuStages::ALL,
             gpu_strict: false,
@@ -1542,6 +1553,9 @@ impl<'a> Job<'a> {
         {
             let reason = reason.clone();
             self.note(&reason);
+        }
+        if !self.src.settings.lens.is_identity() && self.opts.lens.is_none() {
+            self.note(LENS_UNAVAILABLE_NOTE);
         }
         let report = RenderReport {
             ms: self.started.elapsed().as_secs_f64() * 1000.0,

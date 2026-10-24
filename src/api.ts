@@ -36,6 +36,7 @@ import type {
   ExportJob,
   ExportJobId,
   HistogramData,
+  LensInfo,
   LookId,
   Look,
   LookInput,
@@ -164,6 +165,14 @@ export interface Api {
    * its corner, as Pick white) at the warp's input. `null` on the paper around a letterboxed photo.
    */
   sampleChroma(x: number, y: number): Promise<ChromaSample | null>;
+
+  // --- Lens ----------------------------------------------------------------
+
+  /**
+   * `lens_list`: the lenses of the Lens card's menu in menu order, each with its name, its line and the Flares and Edges the card moves to
+   * when it is chosen (`docs/21` §1 and §10). Read once. Empty when the lens data could not be loaded.
+   */
+  lensList(): Promise<LensInfo[]>;
 
   // --- Looks ---------------------------------------------------------------
 
@@ -330,6 +339,7 @@ export const tauriApi: Api = {
   samplePixel: (x, y) => commands.samplePixel(x, y),
   sampleChroma: (x, y) => commands.sampleChroma(x, y),
 
+  lensList: () => commands.lensList(),
   looksList: () => commands.looksList(),
   lookThumbnail: (photoId, lookId) => commands.lookThumbnail(photoId, lookId),
   looksImport: (path, input) => commands.looksImport(path, input ?? null),

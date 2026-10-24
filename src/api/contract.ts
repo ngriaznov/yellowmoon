@@ -54,6 +54,7 @@ export type FromCore = AllTrue<{
   chromaScatter: Assignable<B.ChromaScatter, T.ChromaScatter>;
   cropSuggestion: Assignable<B.CropSuggestion, T.CropSuggestion>;
   chromaSample: Assignable<B.ChromaSample, T.ChromaSample>;
+  lensInfo: Assignable<B.LensInfo, T.LensInfo>;
   exportEstimate: Assignable<B.ExportEstimate, T.ExportEstimate>;
   cliLinkResult: Assignable<B.CliLinkResult, T.CliLinkResult>;
   cliLinkStatus: Assignable<B.CliLinkStatus, T.CliLinkStatus>;
@@ -90,6 +91,8 @@ export type Both = AllTrue<{
   balanceSetting: Same<T.BalanceSetting, B.BalanceSetting>;
   colorWarp: Same<T.ColorWarp, B.ColorWarp>;
   colorWarpPin: Same<T.ColorWarpPin, B.ColorWarpPin>;
+  lensKind: Same<T.LensKind, B.LensKind>;
+  lensSettings: Same<T.LensSettings, B.LensSettings>;
   viewportRect: Same<T.ViewportRect, B.ViewportRect>;
   viewportInput: Same<T.ViewportInput, B.ViewportInput>;
   viewportMode: Same<T.ViewportMode, B.ViewportMode>;

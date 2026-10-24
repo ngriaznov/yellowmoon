@@ -32,6 +32,10 @@ pub struct LensPlanes {
     focus: Option<(f64, f64)>,
     report: ReshapeReport,
     lens_plane_size: (usize, usize),
+    /// L3's tail plane, source list and kernels.
+    flare: crate::l3::FlarePlanes,
+    /// L1's blur map and ball list, when the plan needs them ([`LensPlan::needs_blur_map`]).
+    bokeh: Option<crate::l1::BokehPlanes>,
 }
 
 impl LensPlanes {
@@ -71,6 +75,8 @@ impl LensPlanes {
                     reason: Some(ReshapeReason::NotAsked),
                 },
                 lens_plane_size: (0, 0),
+                flare: crate::l3::FlarePlanes::empty(),
+                bokeh: None,
             });
         }
         lens_plane.validate()?;
@@ -99,15 +105,29 @@ impl LensPlanes {
         if cancel() {
             return Err(LensError::Cancelled);
         }
-        // L1 and L3 build their planes and lists here. Until they do, nothing is reshaped.
-        Ok(LensPlanes {
-            key: planes_key,
-            focus,
-            report: ReshapeReport {
+        // L1 detects the blur already in the photo, only when a slider asks to reshape bokeh.
+        let bokeh = if plan.needs_blur_map() {
+            Some(crate::l1::BokehPlanes::build(plan, lens_plane, focus, cancel)?)
+        } else {
+            None
+        };
+        let report = bokeh.as_ref().map_or(
+            ReshapeReport {
                 reshaped: false,
                 reason: Some(ReshapeReason::NotAsked),
             },
+            crate::l1::BokehPlanes::report,
+        );
+        if cancel() {
+            return Err(LensError::Cancelled);
+        }
+        Ok(LensPlanes {
+            key: planes_key,
+            focus,
+            report,
             lens_plane_size: (lens_plane.width, lens_plane.height),
+            flare: crate::l3::FlarePlanes::build(plan, lens_plane, cancel)?,
+            bokeh,
         })
     }
 
@@ -117,10 +137,33 @@ impl LensPlanes {
         self.report
     }
 
+    /// L1's data: the blur map and the ball list. `None` when the plan the planes were built for did not ask
+    /// to reshape bokeh ([`LensPlan::needs_blur_map`]).
+    #[must_use]
+    pub fn bokeh(&self) -> Option<&crate::l1::BokehPlanes> {
+        self.bokeh.as_ref()
+    }
+
+    /// True when these planes hold everything `plan` needs: the same [`LensPlan::planes_key`], and the blur map
+    /// when the plan asks to reshape bokeh. The key leaves the slider amounts out, so a plan that gains
+    /// Anamorphic needs planes built again; this says so.
+    #[must_use]
+    pub fn serves(&self, plan: &LensPlan) -> bool {
+        self.key == plan.planes_key() && (!plan.needs_blur_map() || self.bokeh.is_some())
+    }
+
     /// Bytes the planes hold (for the cache's budget).
     #[must_use]
     pub fn bytes(&self) -> usize {
-        std::mem::size_of::<Self>() + self.key.len()
+        std::mem::size_of::<Self>()
+            + self.key.len()
+            + self.flare.bytes()
+            + self.bokeh.as_ref().map_or(0, crate::l1::BokehPlanes::bytes)
+    }
+
+    /// L3's data: the tail plane, the source list and the kernels.
+    pub(crate) fn flare(&self) -> &crate::l3::FlarePlanes {
+        &self.flare
     }
 
     /// The [`LensPlan::planes_key`] these planes were built for.

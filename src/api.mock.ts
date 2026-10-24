@@ -59,6 +59,9 @@ import type {
   ExportJobId,
   ExportOptions,
   HistogramData,
+  LensInfo,
+  LensKind,
+  LensSettings,
   LightSource,
   Look,
   LookFormat,
@@ -506,6 +509,7 @@ export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
     color_balance: { shadows: { kind: "auto" }, midtones: [0, 0], highlights: { kind: "auto" } },
     saturation: { kind: "auto" },
     color_warp: { pins: [] },
+    lens: { kind: "default", flares: 0, edges: 0, anamorphic: 0 },
     sharpen: { kind: "auto" },
     output_sharpening: 100,
     noise_reduction: { kind: "auto" },
@@ -524,6 +528,41 @@ export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
 }
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
+
+/** The ids of the seven lenses, in menu order (`LensKind`, `docs/21` §1). */
+export const LENS_KINDS: readonly LensKind[] = ["default", "classic", "vintage", "petzval", "triplet", "sonnar", "detuned"];
+
+/**
+ * What `lens_list` answers in the browser build (`docs/21` §1 and §10): the seven lenses with their names and lines. The starting amounts
+ * are stand-ins (the shipped ones are in `data/lenses/`): Default starts at 0 and 0, every other lens at Flares 40 and Edges 50.
+ */
+export const MOCK_LENSES: readonly LensInfo[] = [
+  ["default", "Default", "Clean and modern: even sharpness, faint glow.", 0, 0],
+  ["classic", "Classic", "Warm and gentle: soft glow, amber flares, smooth falloff.", 40, 50],
+  ["vintage", "Vintage", "Glows wide open, lower contrast, soft edges, a little swirl.", 40, 50],
+  ["petzval", "Petzval", "Very sharp centre, strong swirl, fast falloff.", 40, 50],
+  ["triplet", "Triplet", "Soft corners, busy flares, a crisp centre.", 40, 50],
+  ["sonnar", "Sonnar", "Smooth and glowing, with gentle edges.", 40, 50],
+  ["detuned", "Detuned", "Sharp only in the centre, with smeared flares.", 40, 50],
+].map(([kind, name, line, start_flares, start_edges]) => ({
+  kind: kind as LensKind,
+  name: name as string,
+  line: line as string,
+  start_flares: start_flares as number,
+  start_edges: start_edges as number,
+  version: 1,
+  design_source: "Mock data, not a lens design",
+}));
+
+/**
+ * The `lens` setting as the core reads it (`docs/21` §2): a missing part keeps its default, an unknown lens reads as Default, and the
+ * three amounts are clamped to 0…100.
+ */
+export function lensSettings(value: Partial<LensSettings> | undefined): LensSettings {
+  const kind = LENS_KINDS.includes(value?.kind as LensKind) ? (value?.kind as LensKind) : "default";
+  const amount = (v: number | undefined): number => clamp(Number.isFinite(v) ? (v as number) : 0, 0, 100);
+  return { kind, flares: amount(value?.flares), edges: amount(value?.edges), anamorphic: amount(value?.anamorphic) };
+}
 
 /** Pulls a colour-balance point into the unit disc. */
 function unitDisc([a, b]: [number, number]): [number, number] {
@@ -574,6 +613,8 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
     },
     // The core's rule (`WarpPin::clamped`): the first sixteen pins, every value in its range. Settings from before the warp have none.
     color_warp: { pins: clampPins(s.color_warp?.pins ?? []) },
+    // Settings from before the lens have none: they read as the default lens.
+    lens: lensSettings(s.lens),
     orientation: (((Math.round(s.orientation / 90) * 90) % 360 + 360) % 360) as DevelopSettings["orientation"],
     white_pick: s.white_pick ? [clamp(s.white_pick[0], 0, 1), clamp(s.white_pick[1], 0, 1)] : null,
     crop: s.crop
@@ -2261,6 +2302,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         for (const [key, value] of Object.entries(patch)) if (value !== undefined) merged[key] = value;
         // The wheels may come as parts (the core's `ColorBalancePatch`): the missing ones keep their value.
         if (patch.color_balance) merged.color_balance = { ...rec.settings.color_balance, ...patch.color_balance };
+        // The lens may come as parts too (the core's `LensPatch`): the missing ones keep their value.
+        if (patch.lens) merged.lens = { ...rec.settings.lens, ...patch.lens };
         if (patch.white_pick) {
           // Picking white sets the white balance by hand from the colour under the point.
           merged.white_balance = { kind: "manual", ...whiteFromPick(rec.scene, patch.white_pick) };
@@ -2338,6 +2381,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
           }
           const merged = { ...rec.settings } as Record<string, unknown>;
           for (const [key, value] of Object.entries(pasteable)) if (value !== undefined) merged[key] = value;
+          if (pasteable.lens) merged.lens = { ...rec.settings.lens, ...pasteable.lens };
           const next = clampSettings(merged as unknown as DevelopSettings);
           const step = diffSettings(rec.settings, next);
           report.pasted.push({ id, before: step?.before ?? {}, after: step?.after ?? {} });
@@ -2449,6 +2493,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         return { a, b };
       }),
 
+    lensList: () => run("lensList", () => MOCK_LENSES.map((lens) => ({ ...lens }))),
     looksList: () => run("looksList", () => looks),
     lookThumbnail: (photoId, lookId) =>
       run("lookThumbnail", (): string => {

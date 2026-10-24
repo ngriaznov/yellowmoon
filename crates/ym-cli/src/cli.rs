@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use ym_core::apple_auto::AppleAutoMode;
-use ym_core::settings::CropAspect;
+use ym_core::settings::{CropAspect, LensKind};
 use ym_core::version::{PIPELINE_VERSION, app_version};
 use ym_export::{BitDepth, ColorSpace, FormatKind, TiffCompression};
 
@@ -58,6 +58,9 @@ pub enum Command {
     /// Manage the look library.
     #[command(subcommand)]
     Looks(LooksCommand),
+    /// Show the lenses that `ym render --lens` can give a photo.
+    #[command(subcommand)]
+    Lenses(LensesCommand),
     /// Print the diagnostics that go into a bug report.
     Doctor(DoctorArgs),
 }
@@ -70,6 +73,7 @@ const H_INPUT: &str = "Photos";
 const H_LOOK: &str = "Look and display";
 const H_LIGHT: &str = "Light";
 const H_COLOR: &str = "Colour";
+const H_LENS: &str = "Lens";
 const H_DETAIL: &str = "Detail";
 const H_RAW: &str = "RAW";
 const H_OUTPUT: &str = "Output";
@@ -148,6 +152,23 @@ pub struct RenderArgs {
     /// stronger, less makes them greyer; brightness stays.
     #[arg(long, value_name = "auto|N", value_parser = percent_or_auto, allow_negative_numbers = true, help_heading = H_COLOR)]
     pub saturation: Option<PercentArg>,
+
+    /// Give the photo the look of another lens (`ym lenses list`). Flares and Edges take the lens's starting
+    /// amounts unless --flares or --edges is given, as when the lens is chosen in the app. Without any amount
+    /// above 0 there is no lens effect.
+    #[arg(long, value_enum, ignore_case = true, value_name = "LENS", help_heading = H_LENS)]
+    pub lens: Option<LensArg>,
+    /// Flares, 0 to 100: glow around bright light, veiling glare, ghosts and starbursts.
+    #[arg(long, value_name = "N", value_parser = lens_amount, help_heading = H_LENS)]
+    pub flares: Option<f64>,
+    /// Edges, 0 to 100: softer and darker edges, colour fringes, the lens's distortion, swirl and cat's-eye shapes
+    /// in the out-of-focus background.
+    #[arg(long, value_name = "N", value_parser = lens_amount, help_heading = H_LENS)]
+    pub edges: Option<f64>,
+    /// Anamorphic, 0 to 100: an anamorphic attachment in front of the lens, with taller out-of-focus highlights,
+    /// horizontal flare streaks and the anamorphic bend. It works with every lens.
+    #[arg(long, value_name = "N", value_parser = lens_amount, help_heading = H_LENS)]
+    pub anamorphic: Option<f64>,
 
     /// Noise reduction: `auto`, or luminance, colour and detail strengths (0 to 100 each).
     #[arg(long, value_name = "auto|L,C,D", value_parser = noise_reduction, help_heading = H_DETAIL)]
@@ -373,6 +394,39 @@ pub enum LightArg {
     Fluorescent,
 }
 
+/// `--lens` (`docs/21` section 8): the ids of `data/lenses/`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum LensArg {
+    /// Clean and modern: even sharpness, faint glow.
+    Default,
+    /// Warm and gentle: soft glow, amber flares, smooth falloff.
+    Classic,
+    /// Glows wide open, lower contrast, soft edges, a little swirl.
+    Vintage,
+    /// Very sharp centre, strong swirl, fast falloff.
+    Petzval,
+    /// Soft corners, busy flares, a crisp centre.
+    Triplet,
+    /// Smooth and glowing, with gentle edges.
+    Sonnar,
+    /// Sharp only in the centre, with smeared flares.
+    Detuned,
+}
+
+impl From<LensArg> for LensKind {
+    fn from(l: LensArg) -> Self {
+        match l {
+            LensArg::Default => Self::Default,
+            LensArg::Classic => Self::Classic,
+            LensArg::Vintage => Self::Vintage,
+            LensArg::Petzval => Self::Petzval,
+            LensArg::Triplet => Self::Triplet,
+            LensArg::Sonnar => Self::Sonnar,
+            LensArg::Detuned => Self::Detuned,
+        }
+    }
+}
+
 /// `--exposure`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExposureArg {
@@ -544,6 +598,10 @@ fn sharpen(text: &str) -> Result<SharpenArg, String> {
     })
 }
 
+fn lens_amount(text: &str) -> Result<f64, String> {
+    in_range(text, "the amount", 0.0, 100.0)
+}
+
 fn output_sharpening(text: &str) -> Result<f64, String> {
     in_range(text, "the output sharpening", 0.0, 200.0)
 }
@@ -659,6 +717,21 @@ pub enum LooksCommand {
     Default(LooksDefaultArgs),
     /// Developer tool: bake a parametric look to a 33-point LUT and render a contact sheet.
     Bake(LooksBakeArgs),
+}
+
+/// Subcommands of `ym lenses`.
+#[derive(Debug, Subcommand)]
+pub enum LensesCommand {
+    /// List the lenses with their ids, names, lines, starting amounts and the design each was computed from.
+    List(LensesListArgs),
+}
+
+/// Arguments of `ym lenses list`.
+#[derive(Debug, Args)]
+pub struct LensesListArgs {
+    /// Print the list as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments of `ym looks list`.

@@ -14,7 +14,7 @@
 //! * `Orientation` and `BitDepth` are the literal unions of `types.ts` (`0 | 90 | 180 | 270`,
 //!   `8 | 16`).
 //! * `SettingsPatch` is the core's patch, a little more generous than `Partial<DevelopSettings>`:
-//!   nested objects (`decode`, `rolloff`, `color_balance`, `curve`) and a manual `white_balance`,
+//!   nested objects (`decode`, `rolloff`, `lens`, `color_balance`, `curve`) and a manual `white_balance`,
 //!   `sharpen` or `noise_reduction` may leave parts out, and `crop` and `white_pick` may be `null`
 //!   to clear them. Everything `Partial<DevelopSettings>` accepts is accepted. `color_warp` is the
 //!   whole list of pins, as in `types.ts`.
@@ -589,6 +589,88 @@ pub struct Rolloff {
     pub low_light: Num,
 }
 
+/// Look › Lens: which lens (`LensKind` in `types.ts`, `docs/21` section 2). The ids are those of
+/// `data/lenses/` and of `ym render --lens`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LensKind {
+    /// Clean and modern: even sharpness, faint glow.
+    Default,
+    /// Warm and gentle: soft glow, amber flares, smooth falloff.
+    Classic,
+    /// Glows wide open, lower contrast, soft edges, a little swirl.
+    Vintage,
+    /// Very sharp centre, strong swirl, fast falloff.
+    Petzval,
+    /// Soft corners, busy flares, a crisp centre.
+    Triplet,
+    /// Smooth and glowing, with gentle edges.
+    Sonnar,
+    /// Sharp only in the centre, with smeared flares.
+    Detuned,
+}
+
+impl From<ym_lens::LensKind> for LensKind {
+    fn from(k: ym_lens::LensKind) -> Self {
+        match k {
+            ym_lens::LensKind::Default => Self::Default,
+            ym_lens::LensKind::Classic => Self::Classic,
+            ym_lens::LensKind::Vintage => Self::Vintage,
+            ym_lens::LensKind::Petzval => Self::Petzval,
+            ym_lens::LensKind::Triplet => Self::Triplet,
+            ym_lens::LensKind::Sonnar => Self::Sonnar,
+            ym_lens::LensKind::Detuned => Self::Detuned,
+        }
+    }
+}
+
+impl From<LensKind> for ym_lens::LensKind {
+    fn from(k: LensKind) -> Self {
+        match k {
+            LensKind::Default => Self::Default,
+            LensKind::Classic => Self::Classic,
+            LensKind::Vintage => Self::Vintage,
+            LensKind::Petzval => Self::Petzval,
+            LensKind::Triplet => Self::Triplet,
+            LensKind::Sonnar => Self::Sonnar,
+            LensKind::Detuned => Self::Detuned,
+        }
+    }
+}
+
+/// Look › Lens: a lens and three amounts, each 0 to 100. All three at 0 is no lens, whatever the
+/// lens is.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct LensSettings {
+    /// The lens.
+    pub kind: LensKind,
+    /// Flares: glow, veiling glare, ghosts and starbursts, 0 to 100.
+    pub flares: Num,
+    /// Edges: softness, darkening, fringes, distortion, swirl and cat's-eye shapes, 0 to 100.
+    pub edges: Num,
+    /// Anamorphic: the attachment in front of the lens, 0 to 100.
+    pub anamorphic: Num,
+}
+
+/// One lens of the Lens card's menu (`LensInfo` in `types.ts`, `lens_list`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct LensInfo {
+    /// The lens.
+    pub kind: LensKind,
+    /// The name shown in the menu.
+    pub name: String,
+    /// The line shown under the name.
+    pub line: String,
+    /// Flares the card moves to when this lens is chosen, 0 to 100.
+    pub start_flares: Num,
+    /// Edges the card moves to when this lens is chosen, 0 to 100.
+    pub start_edges: Num,
+    /// The data version of the lens.
+    pub version: u32,
+    /// The design the lens was computed from (a patent or a publication).
+    pub design_source: String,
+}
+
 /// A rectangle in image coordinates normalised to [0, 1]².
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
 pub struct NormRect {
@@ -741,6 +823,8 @@ pub struct DevelopSettings {
     pub saturation: PercentSetting,
     /// Colour › Colour warp: its pins.
     pub color_warp: ColorWarp,
+    /// Look › Lens: the lens and its three amounts.
+    pub lens: LensSettings,
     /// Detail › Sharpening: Auto or amount and radius.
     pub sharpen: SharpenSetting,
     /// Detail › Sharpening › Output: the strength of the sharpening of the picture at the size it
@@ -857,6 +941,24 @@ pub struct RolloffPatch {
     pub low_light: Option<Num>,
 }
 
+/// Look › Lens parts to change; the others stay as they are.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct LensPatch {
+    /// New lens. The amounts do not follow it: send the lens's starting amounts with it.
+    #[serde(default)]
+    pub kind: Option<LensKind>,
+    /// New Flares.
+    #[serde(default)]
+    pub flares: Option<Num>,
+    /// New Edges.
+    #[serde(default)]
+    pub edges: Option<Num>,
+    /// New Anamorphic.
+    #[serde(default)]
+    pub anamorphic: Option<Num>,
+}
+
 /// Colour-balance wheels to change.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
@@ -943,6 +1045,9 @@ pub struct SettingsPatch {
     /// New colour warp: the whole list of pins (`{ pins: [] }` removes them all).
     #[serde(default)]
     pub color_warp: Option<ColorWarp>,
+    /// Lens parts to change.
+    #[serde(default)]
+    pub lens: Option<LensPatch>,
     /// New sharpening; a manual one may leave out a part.
     #[serde(default)]
     pub sharpen: Option<SharpenPatch>,
@@ -1005,6 +1110,7 @@ impl Serialize for SettingsPatch {
         entry(&mut map, "color_balance", &self.color_balance)?;
         entry(&mut map, "saturation", &self.saturation)?;
         entry(&mut map, "color_warp", &self.color_warp)?;
+        entry(&mut map, "lens", &self.lens)?;
         entry(&mut map, "sharpen", &self.sharpen)?;
         entry(&mut map, "output_sharpening", &self.output_sharpening)?;
         entry(&mut map, "noise_reduction", &self.noise_reduction)?;
@@ -1394,6 +1500,8 @@ pub struct ResolvedValues {
     pub saturation: Num,
     /// `color_warp`.
     pub color_warp: ColorWarp,
+    /// `lens`.
+    pub lens: LensSettings,
     /// The sharpening in effect.
     pub sharpen: SharpenValue,
     /// `output_sharpening`.

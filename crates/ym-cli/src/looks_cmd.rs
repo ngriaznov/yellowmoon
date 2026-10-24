@@ -81,7 +81,7 @@ fn library_text(library: LookLibrary) -> &'static str {
 }
 
 /// Left-aligned columns separated by two spaces; the last column is not padded.
-fn table(rows: &[Vec<String>]) -> String {
+pub(crate) fn table(rows: &[Vec<String>]) -> String {
     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
     let widths: Vec<usize> = (0..columns)
         .map(|c| {

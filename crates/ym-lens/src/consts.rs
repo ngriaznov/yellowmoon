@@ -71,3 +71,93 @@ pub const NEWTON_STEPS: usize = 3;
 
 /// Tolerance of "each slice sums to 1" in the lens files.
 pub const UNIT_SUM_TOLERANCE: f64 = 1e-4;
+
+// ---------------------------------------------------------------------------------------------------------
+// L3: highlight optics (`docs/21` section 4, L3)
+
+/// The headroom `h` of the restored light, in EV: a pixel the sensor clipped is raised by `2^h` for the flares.
+pub const LENS_HEADROOM_EV: f64 = 3.0;
+
+/// The clip test on the picture's own pixels: `f` ramps from 0 to 1 as `min_c(X_c / g0_c)` goes from the first
+/// to the second value (per tile, at the tile's scale).
+pub const CLIP_RAMP: (f64, f64) = (0.95, 0.98);
+
+/// The clip test on the lens plane, where binning mixes clipped and unclipped photosites.
+pub const CLIP_RAMP_PLANE: (f64, f64) = (0.90, 0.97);
+
+/// The highlights `H` are the restored light weighted by a soft knee that is 0 at this fraction of the clip
+/// level and 1 at the clip level.
+pub const KNEE_START: f64 = 0.5;
+
+/// The tail plane is the restored lens plane halved until its long edge is at most this many pixels.
+pub const TAIL_PLANE_LONG_EDGE: usize = 512;
+
+/// The glow's core is at most this long, in half-diagonals.
+pub const GLOW_CORE_MAX_HD: f64 = 0.0015;
+
+/// The glow's core is at most this long, in pixels of the full-resolution frame.
+pub const GLOW_CORE_MAX_PX: f64 = 8.0;
+
+/// The core's window is 1 up to this fraction of the core radius and falls to 0 at the radius (cosine).
+pub const GLOW_CORE_FLAT: f64 = 0.7;
+
+/// Nodes of the glow's radial tables (the tail runs to `flare.glow.reach`).
+pub const GLOW_TABLE_NODES: usize = 16384;
+
+/// The glow's tail is cut smoothly over the last part of its reach: it is 1 up to this fraction of the reach and
+/// falls to 0 at the reach (cosine).
+pub const GLOW_TAPER_START: f64 = 0.85;
+
+/// The veiling kernel is flat up to this fraction of `flare.veil.radius` and falls to 0 at the radius (cosine).
+pub const VEIL_FLAT: f64 = 0.6;
+
+/// A pixel of the lens plane is a source pixel when its highlight, in clip levels, reaches this value in some
+/// channel.
+pub const SOURCE_FLOOR: f64 = 0.02;
+
+/// Sources larger than this, in half-diagonals, are split into cells of this size.
+pub const SOURCE_CELL_HD: f64 = 0.02;
+
+/// The source list holds at most this many sources (the brightest, ties by position).
+pub const SOURCES_MAX: usize = 256;
+
+/// Sources at most this large, in half-diagonals, get a starburst.
+pub const COMPACT_EXTENT_HD: f64 = 0.004;
+
+/// The standard deviation, in pixels, below which a ghost's edge is not made sharper: an edge narrower than a
+/// pixel cannot be drawn, and this keeps the drawn energy exact on any pixel grid.
+pub const EDGE_FLOOR_PX: f64 = 1.0;
+
+/// The f-number the starburst assumes when the photo has none.
+pub const STARBURST_DEFAULT_F_NUMBER: f64 = 4.0;
+
+/// The f-number below which the starburst has no strength.
+pub const STARBURST_MIN_F_NUMBER: f64 = 2.0;
+
+/// The drawn items stop where the edge profile is below this fraction (about seven standard deviations).
+pub const EDGE_REACH_SIGMAS: f64 = 7.0;
+
+// ---------------------------------------------------------------------------------------------------------
+// L1: bokeh reshaping and the bokeh detector (`docs/21` section 4, L1, and section 7)
+
+/// `b_min`: blur radii below this, in half-diagonals, are left alone (about 2.5 px on a 1024 px lens plane).
+pub const B_MIN: f64 = 0.004;
+
+/// `b_cap`: the blur radius the stretch uses is held at this many half-diagonals.
+pub const B_CAP: f64 = 0.03;
+
+/// The ball list holds at most this many balls (the brightest first).
+pub const MAX_BALLS: usize = 256;
+
+/// A line of the stretch has at most this many samples.
+pub const MAX_STRETCH_TAPS: usize = 65;
+
+/// The joint bilateral upsampling of the blur map reads the tile's own pixels within this many pixels of a
+/// pixel at the tile's scale (`docs/17` D4).
+pub const UPSAMPLE_RADIUS_PX: usize = 8;
+
+/// With fewer measured edges than this, nothing is reshaped ("little out-of-focus background").
+pub const MIN_EDGE_SAMPLES: usize = 50;
+
+/// With less than this fraction of the frame at `b >= 2 b_min` with confidence, nothing is reshaped.
+pub const MIN_BLUR_AREA: f64 = 0.02;

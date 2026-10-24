@@ -19,6 +19,8 @@ ym-raw.workspace = true
 ym-color.workspace = true
 ym-export.workspace = true
 ym-gpu.workspace = true
+# The lens library behind `ym lenses list` (docs/21 section 8); ours.
+ym-lens.workspace = true
 ym-looks.workspace = true
 ym-profiles.workspace = true
 # Apple Auto's bridge (docs/19): `ym_apple::system_advisor()`, the advisor `ym` hands to the core. On

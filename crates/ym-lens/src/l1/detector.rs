@@ -1,0 +1,591 @@
+//! The bokeh detector (`docs/21` section 7): the blur the photo already holds, measured from the photo alone.
+//!
+//! The work is done once per photo on the lens plane (or its half when the plane is large), in `f64` where it
+//! sums and in `f32` where it stores, in a fixed order, so that the maps are the same bits on every platform and
+//! for any number of threads.
+//!
+//! 1. **Blur at edges.** The square root of the luminance (which makes sensor noise nearly constant) goes up a
+//!    ladder of Gaussians. At each strong edge (a maximum of the gradient along its direction) the ratio of the
+//!    gradient magnitudes between two ladder levels gives the radius of the disc that blurred the edge
+//!    ([`super::disc`]); every edge is read at the levels that resolve it, each reading weighted by how well
+//!    its ratio is conditioned and how far it stands above the noise.
+//! 2. **The subject anchor.** The camera's focus point marks its neighbourhood as in focus.
+//! 3. **Bright balls** are found and measured by their size ([`super::balls`]); their edges, which a sharp rim
+//!    would make read sharp, are dropped and their radius takes their place.
+//! 4. **Spread.** The sparse readings are spread over the plane by edge-aware normalised convolution
+//!    ([`super::spread`]) in two passes, the second dropping readings that disagree with their surroundings.
+//! 5. **Caution.** The blur is 0 where the evidence is thin or inconsistent, where it is below the smallest
+//!    radius, in the anchor, and next to a strong sharp edge: when unsure, nothing is reshaped.
+
+use rayon::prelude::*;
+
+use crate::consts::{B_CAP, B_MIN, MIN_EDGE_SAMPLES};
+use crate::error::LensError;
+use crate::image::ImageRef;
+
+use super::balls::{BallInput, BallPx, find_balls};
+use super::disc::{LEVELS, PAIRS, level_sigma, radius_from_ratio};
+use super::ladder::{blur, gradient_at, gradient_magnitude, quantile};
+use super::spread::{GuidePyramid, spread};
+
+/// A plane whose long edge is at least this many pixels is detected on its 2x reduction.
+const REDUCE_FROM: usize = 1536;
+/// The smallest disc radius the detector reports, in pixels, whatever `b_min` is on a small plane: the native
+/// blur of a sharp edge on the binned plane reads as a disc of about one pixel, and the margin keeps it from
+/// being reshaped.
+const RADIUS_FLOOR_PX: f64 = 2.2;
+/// An edge is a gradient maximum above this many noise units.
+const EDGE_KAPPA: f64 = 5.0;
+/// ... and above this absolute gradient (square-root units per pixel), for noiseless data.
+const EDGE_ABS_MIN: f64 = 0.002;
+/// Relative error of a ratio that no noise explains (the step-edge model against real edges).
+const MODEL_ERR: f64 = 0.05;
+/// A reading whose log radius has this variance has weight 1.
+const WEIGHT_REF_VAR: f64 = 0.04;
+/// Readings lighter than this are dropped.
+const MIN_SAMPLE_WEIGHT: f64 = 0.02;
+/// Evidence at which the confidence is one half.
+const EVIDENCE_HALF: f64 = 0.3;
+/// Variance of the log radius at which the confidence is halved (35 % spread).
+const VARIANCE_HALF: f64 = 0.12;
+/// Below this confidence the blur is taken as 0.
+const CONFIDENCE_MIN: f64 = 0.3;
+/// The anchor around the focus point, in half-diagonals, and its weight per pixel.
+const ANCHOR_RADIUS: f64 = 0.05;
+const ANCHOR_WEIGHT: f64 = 2.0;
+/// The ball footprint that carries the ball's radius into the map, in radii.
+const BALL_FOOTPRINT: f64 = 2.6;
+/// Total evidence weight a ball adds, spread over its disc and ring.
+const BALL_WEIGHT: f64 = 30.0;
+/// Dilation, in pixels, of the places that show a strong sharp edge.
+const SHARP_DILATION: i64 = 2;
+
+/// The plane the detector works on.
+pub(super) struct WorkPlane {
+    pub w: usize,
+    pub h: usize,
+    /// How many pixels of the lens plane one pixel of this plane covers (1 or 2).
+    pub reduce: usize,
+    pub rgb: [Vec<f32>; 3],
+    pub y: Vec<f32>,
+}
+
+/// What the detector found.
+pub(super) struct Detected {
+    pub w: usize,
+    pub h: usize,
+    /// Blur radius per pixel in half-diagonals (0 where nothing is reshaped).
+    pub b: Vec<f32>,
+    /// Confidence of the value above (of 0, too).
+    pub conf: Vec<f32>,
+    pub balls: Vec<BallPx>,
+    /// Edges measured (readings of weight at least 0.1, plus the perimeters of the balls).
+    pub edges: usize,
+    /// Noise of the square-root luminance per pixel.
+    pub noise_v: f64,
+    /// Half-diagonal of the working plane in pixels.
+    pub hd: f64,
+    pub reduce: usize,
+}
+
+/// Luminance of a linear camera RGB triple.
+#[inline]
+pub(super) fn luminance(r: f32, g: f32, b: f32) -> f32 {
+    0.25 * r + 0.5 * g + 0.25 * b
+}
+
+/// The lens plane as the detector's working plane: itself, or 2x2 box means when it is large.
+pub(super) fn work_plane(plane: &ImageRef) -> WorkPlane {
+    let (w0, h0) = (plane.width, plane.height);
+    let reduce = if w0.max(h0) >= REDUCE_FROM { 2 } else { 1 };
+    let (w, h) = (w0.div_ceil(reduce), h0.div_ceil(reduce));
+    let src = [plane.plane(0), plane.plane(1), plane.plane(2)];
+    let mut rgb = [vec![0.0f32; w * h], vec![0.0f32; w * h], vec![0.0f32; w * h]];
+    for (c, out) in rgb.iter_mut().enumerate() {
+        if reduce == 1 {
+            out.copy_from_slice(src[c]);
+            continue;
+        }
+        out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            for (x, o) in row.iter_mut().enumerate() {
+                let (mut acc, mut n) = (0.0f32, 0.0f32);
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        let (sx, sy) = (2 * x + dx, 2 * y + dy);
+                        if sx < w0 && sy < h0 {
+                            acc += src[c][sy * w0 + sx];
+                            n += 1.0;
+                        }
+                    }
+                }
+                *o = acc / n;
+            }
+        });
+    }
+    let y: Vec<f32> = (0..w * h)
+        .map(|i| luminance(rgb[0][i], rgb[1][i], rgb[2][i]))
+        .collect();
+    WorkPlane { w, h, reduce, rgb, y }
+}
+
+/// Noise of a plane of square-root luminance (Immerkaer's Laplacian estimate, from a low quantile so that
+/// texture inflates it little).
+pub(super) fn noise_sigma(v: &[f32], w: usize, h: usize) -> f64 {
+    if w < 3 || h < 3 {
+        return 0.0015;
+    }
+    let mut vals = Vec::with_capacity((w - 2) * (h - 2));
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let at = |dx: usize, dy: usize| f64::from(v[(y + dy - 1) * w + (x + dx - 1)]);
+            let n = 4.0 * at(1, 1)
+                - 2.0 * (at(0, 1) + at(2, 1) + at(1, 0) + at(1, 2))
+                + (at(0, 0) + at(2, 0) + at(0, 2) + at(2, 2));
+            vals.push(n.abs() as f32);
+        }
+    }
+    let p = quantile(&mut vals, 0.3);
+    (p / (0.385 * 6.0)).max(0.0015)
+}
+
+/// The scale ladder of a plane: level 0 is the plane, level `m >= 1` is blurred by `level_sigma(m)` pixels.
+fn build_ladder(v: &[f32], w: usize, h: usize, cancel: &dyn Fn() -> bool) -> Result<Vec<Vec<f32>>, LensError> {
+    let mut levels: Vec<Vec<f32>> = Vec::with_capacity(LEVELS);
+    levels.push(v.to_vec());
+    levels.push(blur(&levels[0], w, h, level_sigma(1)));
+    for m in 1..LEVELS - 1 {
+        if cancel() {
+            return Err(LensError::Cancelled);
+        }
+        // sigma(m + 1)^2 = 2 sigma(m)^2, so the step from level m is a Gaussian of sigma(m).
+        let next = blur(&levels[m], w, h, level_sigma(m));
+        levels.push(next);
+    }
+    Ok(levels)
+}
+
+/// One reading of the blur: a pixel, its weight and the log of the disc radius in pixels.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Sample {
+    pub idx: u32,
+    pub w: f32,
+    pub ln_r: f32,
+}
+
+/// Noise scale of the gradient magnitude at ladder level `m`.
+fn gradient_noise(g: &[f32], m: usize, noise_v: f64) -> f64 {
+    let mut copy = g.to_vec();
+    let q = quantile(&mut copy, 0.25) / 0.758;
+    // White noise through a Gaussian of sigma s and a central difference.
+    let s = level_sigma(m);
+    let floor = if m == 0 {
+        noise_v * std::f64::consts::FRAC_1_SQRT_2
+    } else {
+        noise_v / ((8.0 * std::f64::consts::PI).sqrt() * s * s)
+    };
+    q.max(floor).max(1e-7)
+}
+
+/// The edge readings of the ladder, and the places that show a strong sharp edge.
+fn edge_samples(
+    ladder: &[Vec<f32>],
+    w: usize,
+    h: usize,
+    noise_v: f64,
+    r_min_px: f64,
+    cancel: &dyn Fn() -> bool,
+) -> Result<(Vec<Sample>, Vec<bool>), LensError> {
+    let mut samples = Vec::new();
+    let mut sharp = vec![false; w * h];
+    let mut gj = gradient_magnitude(&ladder[PAIRS[0].0], w, h);
+    let mut nj = gradient_noise(&gj, PAIRS[0].0, noise_v);
+    for (pair, &(j, k)) in PAIRS.iter().enumerate() {
+        if cancel() {
+            return Err(LensError::Cancelled);
+        }
+        let gk = gradient_magnitude(&ladder[k], w, h);
+        let nk = gradient_noise(&gk, k, noise_v);
+        let lj = &ladder[j];
+        let thr = (EDGE_KAPPA * nj).max(EDGE_ABS_MIN) as f32;
+        // Rows in parallel, each returning its readings in column order.
+        let rows: Vec<(Vec<Sample>, Vec<usize>)> = (1..h - 1)
+            .into_par_iter()
+            .map(|y| {
+                let mut out = Vec::new();
+                let mut sharp_here = Vec::new();
+                for x in 1..w - 1 {
+                    let i = y * w + x;
+                    let g = gj[i];
+                    if g < thr {
+                        continue;
+                    }
+                    // Non-maximum suppression along the gradient direction (4 sectors).
+                    let (gx, gy) = gradient_at(lj, w, h, x, y);
+                    let (ax, ay) = (gx.abs(), gy.abs());
+                    let (dx, dy): (i64, i64) = if ay <= 0.4142 * ax {
+                        (1, 0)
+                    } else if ax <= 0.4142 * ay {
+                        (0, 1)
+                    } else if gx * gy > 0.0 {
+                        (1, 1)
+                    } else {
+                        (1, -1)
+                    };
+                    let a = gj[((y as i64 + dy) as usize) * w + (x as i64 + dx) as usize];
+                    let b = gj[((y as i64 - dy) as usize) * w + (x as i64 - dx) as usize];
+                    if g < a || g <= b {
+                        continue;
+                    }
+                    // The second level's peak around this pixel.
+                    let mut gk_peak = 0.0f32;
+                    for yy in y - 1..=y + 1 {
+                        for xx in x - 1..=x + 1 {
+                            gk_peak = gk_peak.max(gk[yy * w + xx]);
+                        }
+                    }
+                    if gk_peak <= 0.0 {
+                        continue;
+                    }
+                    let rho = f64::from(g) / f64::from(gk_peak);
+                    let Some(est) = radius_from_ratio(pair, rho) else {
+                        continue;
+                    };
+                    let eps2 = (nj / f64::from(g)).powi(2)
+                        + (nk / f64::from(gk_peak)).powi(2)
+                        + MODEL_ERR * MODEL_ERR;
+                    let var = est.sensitivity * est.sensitivity * eps2;
+                    let weight = (WEIGHT_REF_VAR / var).min(1.0);
+                    if pair == 0 && est.r < 0.5 * r_min_px && f64::from(g) > 8.0 * nj {
+                        sharp_here.push(i);
+                    }
+                    if weight < MIN_SAMPLE_WEIGHT {
+                        continue;
+                    }
+                    out.push(Sample {
+                        idx: i as u32,
+                        w: weight as f32,
+                        ln_r: libm::log(est.r) as f32,
+                    });
+                }
+                (out, sharp_here)
+            })
+            .collect();
+        for (out, sh) in rows {
+            samples.extend(out);
+            for i in sh {
+                sharp[i] = true;
+            }
+        }
+        gj = gk;
+        nj = nk;
+    }
+    Ok((samples, sharp))
+}
+
+/// The three sums per pixel of a list of readings.
+fn accumulate(samples: &[Sample], n: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let (mut w, mut s, mut q) = (vec![0.0f64; n], vec![0.0f64; n], vec![0.0f64; n]);
+    for sm in samples {
+        let i = sm.idx as usize;
+        let (wt, l) = (f64::from(sm.w), f64::from(sm.ln_r));
+        w[i] += wt;
+        s[i] += wt * l;
+        q[i] += wt * l * l;
+    }
+    (
+        w.into_iter().map(|v| v as f32).collect(),
+        s.into_iter().map(|v| v as f32).collect(),
+        q.into_iter().map(|v| v as f32).collect(),
+    )
+}
+
+/// The guide: the square root of each channel, smoothed by (1, 2, 1) / 4 both ways.
+fn guide_image(rgb: &[Vec<f32>; 3], w: usize, h: usize) -> Vec<[f32; 3]> {
+    let mut out = vec![[0.0f32; 3]; w * h];
+    for c in 0..3 {
+        let root: Vec<f32> = rgb[c].iter().map(|v| v.max(0.0).sqrt()).collect();
+        let mut tmp = vec![0.0f32; w * h];
+        tmp.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            for (x, o) in row.iter_mut().enumerate() {
+                let l = root[y * w + x.saturating_sub(1)];
+                let r = root[y * w + (x + 1).min(w - 1)];
+                *o = 0.25 * l + 0.5 * root[y * w + x] + 0.25 * r;
+            }
+        });
+        out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            for (x, o) in row.iter_mut().enumerate() {
+                let u = tmp[y.saturating_sub(1) * w + x];
+                let d = tmp[(y + 1).min(h - 1) * w + x];
+                o[c] = 0.25 * u + 0.5 * tmp[y * w + x] + 0.25 * d;
+            }
+        });
+    }
+    out
+}
+
+/// Mean, variance and evidence at a pixel from the spread sums.
+#[inline]
+fn moments(sp: &super::spread::Spread, i: usize) -> Option<(f64, f64, f64)> {
+    let w = f64::from(sp.w[i]);
+    if w <= 1e-9 {
+        return None;
+    }
+    let mu = f64::from(sp.s[i]) / w;
+    let var = (f64::from(sp.q[i]) / w - mu * mu).max(0.0);
+    Some((mu, var, w))
+}
+
+/// Runs the detector on a lens plane.
+pub(super) fn detect(
+    plane: &ImageRef,
+    focus: Option<(f64, f64)>,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Detected, LensError> {
+    let wp = work_plane(plane);
+    let (w, h) = (wp.w, wp.h);
+    let n = w * h;
+    let hd = 0.5 * ((w * w + h * h) as f64).sqrt();
+    let r_min_px = (B_MIN * hd).max(RADIUS_FLOOR_PX);
+    let r_max_px = B_CAP * hd * 1.3;
+    if w < 16 || h < 16 {
+        return Ok(Detected {
+            w,
+            h,
+            b: vec![0.0; n],
+            conf: vec![0.0; n],
+            balls: Vec::new(),
+            edges: 0,
+            noise_v: 0.0015,
+            hd,
+            reduce: wp.reduce,
+        });
+    }
+    let v: Vec<f32> = wp.y.iter().map(|&y| y.max(0.0).sqrt()).collect();
+    let noise_v = noise_sigma(&v, w, h);
+    let ladder = build_ladder(&v, w, h, cancel)?;
+    if cancel() {
+        return Err(LensError::Cancelled);
+    }
+
+    // 1. Edge readings.
+    let (mut samples, mut sharp) = edge_samples(&ladder, w, h, noise_v, r_min_px, cancel)?;
+    let measured_edges = samples.iter().filter(|s| s.w >= 0.1).count();
+
+    // 2. The subject anchor.
+    let mut anchor = vec![false; n];
+    if let Some((fx, fy)) = focus {
+        let (cx, cy) = (fx * w as f64, fy * h as f64);
+        let radius = (ANCHOR_RADIUS * hd).max(6.0);
+        let mut inside = vec![false; n];
+        let (x0, x1) = ((cx - radius).floor().max(0.0) as usize, ((cx + radius).ceil() as usize + 1).min(w));
+        let (y0, y1) = ((cy - radius).floor().max(0.0) as usize, ((cy + radius).ceil() as usize + 1).min(h));
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
+                if dx * dx + dy * dy <= radius * radius {
+                    inside[y * w + x] = true;
+                    anchor[y * w + x] = true;
+                }
+            }
+        }
+        samples.retain(|s| !inside[s.idx as usize]);
+        let ln_sharp = libm::log(0.4) as f32;
+        for (i, _) in inside.iter().enumerate().filter(|(_, b)| **b) {
+            samples.push(Sample {
+                idx: i as u32,
+                w: ANCHOR_WEIGHT as f32,
+                ln_r: ln_sharp,
+            });
+        }
+    }
+
+    // 3. Bright balls.
+    let (ev_w, ev_s, _) = accumulate(&samples, n);
+    let balls = find_balls(
+        &BallInput {
+            w,
+            h,
+            rgb: [&wp.rgb[0], &wp.rgb[1], &wp.rgb[2]],
+            y: &wp.y,
+            ladder: &ladder,
+            noise_v,
+            hd,
+            r_min_px,
+            r_max_px,
+            ev_w: &ev_w,
+            ev_s: &ev_s,
+        },
+        cancel,
+    )?;
+    drop(ladder);
+    // Their rims are not edges of the blur: drop the readings around them and put their radius there.
+    if !balls.is_empty() {
+        let mut inside = vec![false; n];
+        for b in &balls {
+            let reach = 1.5 * b.r_out;
+            let (x0, x1) = ((b.cx - reach).floor().max(0.0) as usize, ((b.cx + reach).ceil() as usize + 1).min(w));
+            let (y0, y1) = ((b.cy - reach).floor().max(0.0) as usize, ((b.cy + reach).ceil() as usize + 1).min(h));
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let (dx, dy) = (x as f64 + 0.5 - b.cx, y as f64 + 0.5 - b.cy);
+                    if dx * dx + dy * dy <= reach * reach {
+                        inside[y * w + x] = true;
+                    }
+                }
+            }
+        }
+        samples.retain(|s| !inside[s.idx as usize]);
+        for (i, f) in inside.iter().enumerate() {
+            if *f {
+                sharp[i] = false;
+            }
+        }
+        for b in &balls {
+            let reach = 1.6 * b.r;
+            let per_pixel = BALL_WEIGHT / (std::f64::consts::PI * reach * reach);
+            let ln_r = libm::log(b.r) as f32;
+            let (x0, x1) = ((b.cx - reach).floor().max(0.0) as usize, ((b.cx + reach).ceil() as usize + 1).min(w));
+            let (y0, y1) = ((b.cy - reach).floor().max(0.0) as usize, ((b.cy + reach).ceil() as usize + 1).min(h));
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let (dx, dy) = (x as f64 + 0.5 - b.cx, y as f64 + 0.5 - b.cy);
+                    if dx * dx + dy * dy <= reach * reach {
+                        samples.push(Sample {
+                            idx: (y * w + x) as u32,
+                            w: per_pixel as f32,
+                            ln_r,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let ball_perimeters: f64 = balls
+        .iter()
+        .map(|b| 2.0 * std::f64::consts::PI * b.r)
+        .sum();
+    if cancel() {
+        return Err(LensError::Cancelled);
+    }
+
+    // 4. Spread, twice: the second pass drops readings that disagree with their surroundings.
+    let sigma_g = (3.0 * noise_v).max(0.06);
+    let guide = GuidePyramid::new(guide_image(&wp.rgb, w, h), w, h, sigma_g);
+    let (w0, s0, q0) = accumulate(&samples, n);
+    let first = spread(&guide, &w0, &s0, &q0);
+    if cancel() {
+        return Err(LensError::Cancelled);
+    }
+    let robust: Vec<Sample> = samples
+        .iter()
+        .filter_map(|s| {
+            let (mu, _, _) = moments(&first, s.idx as usize)?;
+            let d = f64::from(s.ln_r) - mu;
+            let keep = libm::exp(-d * d / (2.0 * 0.5 * 0.5));
+            Some(Sample {
+                w: (f64::from(s.w) * keep) as f32,
+                ..*s
+            })
+        })
+        .collect();
+    let (w1, s1, q1) = accumulate(&robust, n);
+    let second = spread(&guide, &w1, &s1, &q1);
+
+    // 5. Caution, and the maps.
+    let mut b = vec![0.0f32; n];
+    let mut conf = vec![0.0f32; n];
+    let mut r_est = vec![0.0f64; n];
+    for i in 0..n {
+        if let Some((mu, var, ev)) = moments(&second, i) {
+            let c = ev / (ev + EVIDENCE_HALF) / (1.0 + var / VARIANCE_HALF);
+            conf[i] = c as f32;
+            r_est[i] = libm::exp(mu);
+        }
+    }
+    // Places next to a strong sharp edge are not reshaped.
+    let mut forced = vec![false; n];
+    for y in 0..h {
+        for x in 0..w {
+            if !sharp[y * w + x] {
+                continue;
+            }
+            for dy in -SHARP_DILATION..=SHARP_DILATION {
+                for dx in -SHARP_DILATION..=SHARP_DILATION {
+                    let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                    if nx >= 0 && ny >= 0 && nx < w as i64 && ny < h as i64 {
+                        forced[ny as usize * w + nx as usize] = true;
+                    }
+                }
+            }
+        }
+    }
+    // The balls' radius over their footprint, except where the map says confidently sharp.
+    let mut best = vec![f64::INFINITY; n];
+    for ball in &balls {
+        let reach = BALL_FOOTPRINT * ball.r;
+        let (x0, x1) = ((ball.cx - reach).floor().max(0.0) as usize, ((ball.cx + reach).ceil() as usize + 1).min(w));
+        let (y0, y1) = ((ball.cy - reach).floor().max(0.0) as usize, ((ball.cy + reach).ceil() as usize + 1).min(h));
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = y * w + x;
+                let (dx, dy) = (x as f64 + 0.5 - ball.cx, y as f64 + 0.5 - ball.cy);
+                let d = (dx * dx + dy * dy).sqrt();
+                if d > reach || anchor[i] {
+                    continue;
+                }
+                let in_disc = d <= ball.r_out;
+                let sharp_here = forced[i] || (f64::from(conf[i]) >= 0.5 && r_est[i] < r_min_px);
+                if !in_disc && sharp_here {
+                    continue;
+                }
+                let nd = d / ball.r;
+                if nd < best[i] {
+                    best[i] = nd;
+                    r_est[i] = ball.r;
+                    conf[i] = 0.95;
+                    forced[i] = false;
+                }
+            }
+        }
+    }
+    for i in 0..n {
+        if anchor[i] {
+            conf[i] = 1.0;
+            continue;
+        }
+        let ok = f64::from(conf[i]) >= CONFIDENCE_MIN && r_est[i] >= r_min_px && !forced[i];
+        if ok {
+            b[i] = (r_est[i] / hd) as f32;
+        } else if forced[i] {
+            conf[i] = conf[i].max(0.5);
+        }
+    }
+    Ok(Detected {
+        w,
+        h,
+        b,
+        conf,
+        balls,
+        edges: measured_edges + ball_perimeters as usize,
+        noise_v,
+        hd,
+        reduce: wp.reduce,
+    })
+}
+
+/// Fraction of the frame at `b >= 2 b_min` with confidence (the "little out-of-focus background" test).
+pub(super) fn blurred_fraction(d: &Detected) -> f64 {
+    let thr = (2.0 * B_MIN) as f32;
+    let count = d
+        .b
+        .iter()
+        .zip(&d.conf)
+        .filter(|(b, c)| **b >= thr && **c >= 0.5)
+        .count();
+    count as f64 / (d.w * d.h).max(1) as f64
+}
+
+/// True when the detection has enough to reshape: enough edges and enough of the frame out of focus.
+pub(super) fn enough(d: &Detected) -> bool {
+    d.edges >= MIN_EDGE_SAMPLES && blurred_fraction(d) >= crate::consts::MIN_BLUR_AREA
+}

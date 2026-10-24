@@ -50,7 +50,7 @@ use super::RenderError;
 use super::raw::{CaptureMethod, DEFAULT_CAPTURE_METHOD};
 use crate::auto::{AutoEstimates, as_shot_gains, as_shot_rggb};
 use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
-use crate::settings::{AutoOr, CurvePoint, DevelopSettings};
+use crate::settings::{AutoOr, CurvePoint, DevelopSettings, LensSettings};
 
 // ---------------------------------------------------------------------------------------------
 // Looks and the display transform
@@ -354,6 +354,8 @@ impl PhotoSource {
         let mut settings = self.settings.clone();
         settings.noise_reduction = AutoOr::Auto;
         settings.sharpen = AutoOr::Auto;
+        // The camera default has no lens effect at all (`docs/21` section 1).
+        settings.lens = LensSettings::default();
         Self {
             before_view: true,
             ..self.with_settings(settings)

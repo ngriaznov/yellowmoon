@@ -30,6 +30,9 @@ hex.workspace = true
 rayon.workspace = true
 # Transcendental functions with the same bits on every platform (docs/21 section 9).
 libm = "0.2"
+# FFT of the tail plane (L3). Scalar planner only (`FftPlannerScalar`), so the bits do not depend on the CPU's
+# vector extensions; MIT OR Apache-2.0 (docs/14).
+rustfft = { version = "6.4.1", default-features = false }
 
 [dev-dependencies]
 approx.workspace = true

@@ -95,6 +95,7 @@ use serde::{Deserialize, Serialize};
 use ym_color::consts::Vec3;
 use ym_color::exposure::{BurstFrame, burst_groups, share_burst_ev};
 use ym_color::look::{LookTransform, ParametricLook};
+use ym_lens::LensLibrary;
 use ym_looks::library::LookId;
 use ym_ml::crop_net::CropNet;
 use ym_noise::estimate::PoolKey;
@@ -696,6 +697,10 @@ pub struct SessionEnv {
     /// Auto crop's crop model (`<data_root>/models/crop`, `docs/20` §6), or why it could not be
     /// loaded; Auto crop answers that reason as its error.
     pub crop_model: Result<Arc<CropNet>, String>,
+    /// The seven lenses (`<data_root>/lenses`, `docs/21` section 6), loaded and checked once, or why
+    /// they could not be: a missing or damaged folder is not a crash, the lens list is then empty
+    /// and a lens setting renders as no lens (the render's note says so).
+    pub lens_library: Result<Arc<LensLibrary>, String>,
 }
 
 /// Auto crop's model from `<data_root>/models/crop`, checked against its `SHA256SUMS`; a missing or
@@ -707,6 +712,15 @@ fn load_crop_model(data_root: &Path) -> Result<Arc<CropNet>, String> {
             tracing::warn!(error = %e, "Auto crop's model is not usable");
             format!("the crop model could not be loaded ({e})")
         })
+}
+
+/// The lens library from `<data_root>/lenses`, checked against its `SHA256SUMS`; a missing or damaged
+/// folder is the reason the lens list gives instead of lenses.
+fn load_lens_library(data_root: &Path) -> Result<Arc<LensLibrary>, String> {
+    LensLibrary::load(data_root).map(Arc::new).map_err(|e| {
+        tracing::warn!(error = %e, "the lens data are not usable");
+        format!("the lens data could not be loaded ({e})")
+    })
 }
 
 /// The decode pool size: `min(available_parallelism - 2, 6)`, at least one.
@@ -760,6 +774,7 @@ impl SessionEnv {
             apple_auto: None,
             pictures: None,
             crop_model: load_crop_model(data_root),
+            lens_library: load_lens_library(data_root),
         })
     }
 
@@ -2022,6 +2037,15 @@ impl Session {
     #[must_use]
     pub fn env(&self) -> &SessionEnv {
         &self.inner.env
+    }
+
+    /// The lens library (`docs/21` section 6), or why it could not be loaded.
+    ///
+    /// # Errors
+    ///
+    /// The reason, in plain words, when `<data>/lenses` is missing or damaged.
+    pub fn lens_library(&self) -> Result<Arc<LensLibrary>, String> {
+        self.inner.env.lens_library.clone()
     }
 
     // --- Opening -----------------------------------------------------------------------------

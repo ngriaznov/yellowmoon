@@ -17,9 +17,9 @@ use std::path::Path;
 use serde_json::Value;
 use ym_color::wb::LightSource;
 use ym_core::settings::{
-    AutoOr, DecodePatch, DevelopSettings, ExposureSetting, NoiseReductionManualPatch,
-    PercentSetting, RolloffPatch, SettingsField, SettingsPatch, SharpenManualPatch,
-    WhiteBalanceManualPatch,
+    AutoOr, DecodePatch, DevelopSettings, ExposureSetting, LensKind, LensPatch,
+    NoiseReductionManualPatch, PercentSetting, RolloffPatch, SettingsField, SettingsPatch,
+    SharpenManualPatch, WhiteBalanceManualPatch,
 };
 use ym_looks::library::LookId;
 
@@ -34,6 +34,18 @@ fn percent_setting(arg: PercentArg) -> PercentSetting {
         PercentArg::Auto => AutoOr::Auto,
         PercentArg::Value(value) => PercentSetting::manual_value(value),
     }
+}
+
+/// `--lens` resolved against the lens library: the lens and the Flares and Edges the Lens card moves
+/// to when it is chosen (`LensInfo`, `docs/21` section 12, decision 6).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LensChoice {
+    /// The lens.
+    pub kind: LensKind,
+    /// Its starting Flares, used unless `--flares` is given.
+    pub start_flares: f64,
+    /// Its starting Edges, used unless `--edges` is given.
+    pub start_edges: f64,
 }
 
 /// The options of `ym render` that change a photo's settings.
@@ -83,11 +95,20 @@ pub struct Overrides {
     pub no_ca: bool,
     /// `--rolloff`.
     pub rolloff: Option<RolloffArg>,
+    /// `--lens`, resolved.
+    pub lens: Option<LensChoice>,
+    /// `--flares`.
+    pub flares: Option<f64>,
+    /// `--edges`.
+    pub edges: Option<f64>,
+    /// `--anamorphic`.
+    pub anamorphic: Option<f64>,
 }
 
 impl Overrides {
-    /// The overrides of a `render` command; `look` is the id `--look` resolved to.
-    pub fn from_args(args: &RenderArgs, look: Option<LookId>) -> Self {
+    /// The overrides of a `render` command; `look` is the id `--look` resolved to and `lens` the
+    /// lens `--lens` resolved to.
+    pub fn from_args(args: &RenderArgs, look: Option<LookId>, lens: Option<LensChoice>) -> Self {
         Self {
             look,
             intensity: args.intensity,
@@ -111,7 +132,29 @@ impl Overrides {
             no_lens: args.no_lens,
             no_ca: args.no_ca,
             rolloff: args.rolloff,
+            lens,
+            flares: args.flares,
+            edges: args.edges,
+            anamorphic: args.anamorphic,
         }
+    }
+
+    /// The `lens` part of the patch. A chosen lens brings its starting Flares and Edges, as the card
+    /// sends them, unless an amount is given; an amount alone changes that amount only.
+    fn lens_patch(&self) -> Option<LensPatch> {
+        if self.lens.is_none()
+            && self.flares.is_none()
+            && self.edges.is_none()
+            && self.anamorphic.is_none()
+        {
+            return None;
+        }
+        Some(LensPatch {
+            kind: self.lens.map(|l| l.kind),
+            flares: self.flares.or(self.lens.map(|l| l.start_flares)),
+            edges: self.edges.or(self.lens.map(|l| l.start_edges)),
+            anamorphic: self.anamorphic,
+        })
     }
 
     /// The patch for one photo whose automatic exposure is `auto_exposure_ev`.
@@ -185,6 +228,7 @@ impl Overrides {
             highlights: Some(r.highlights),
             low_light: Some(r.low_light),
         });
+        p.lens = self.lens_patch();
         p
     }
 

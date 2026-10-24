@@ -23,12 +23,13 @@ use std::time::{Duration, Instant};
 use ym_core::app::gpu::{
     CpuReason, GPU_ENV, GpuOutcome, GpuPolicy, GpuSlot, PolicyChoice, PolicySource, open_gpu,
 };
+use ym_core::app::Core;
 use ym_core::export_queue::{ExportEvent, ExportJob, FileDone, QueueError};
 use ym_core::looks::{LookService, LooksError};
 use ym_core::pipeline::{ComputeDevice, DisplayChoice};
 use ym_core::preferences::DisplayRendering;
 use ym_core::session::{ApplyScope, OpenOptions, PhotoId, PhotoStatus};
-use ym_core::settings::{Crop, CropAspect, SettingsPatch};
+use ym_core::settings::{Crop, CropAspect, LensKind, SettingsPatch};
 use ym_export::{ExportOptions, FormatKind, IfExists, JpegQuality, Size};
 use ym_looks::library::LookId;
 use ym_looks::library::ResolveError;
@@ -36,7 +37,7 @@ use ym_raw::layout::DecodeKind;
 
 use crate::cli::{AppleAutoArg, RenderArgs};
 use crate::console::{Console, bar, duration_text, photos, shorten};
-use crate::develop::{LoadedSettings, Overrides, SettingsFile};
+use crate::develop::{LensChoice, LoadedSettings, Overrides, SettingsFile};
 use crate::exit::{self, Failure};
 use crate::inputs::{self, Expanded, Problem};
 use crate::report::{AppleAutoField, Object, develop_fields, render_error, render_ok};
@@ -72,6 +73,34 @@ pub fn look_failure(error: &LooksError) -> Failure {
         ),
         other => Failure::new(code, other.to_string()),
     }
+}
+
+/// Finds the lens `--lens` names in the lens library, with the Flares and Edges it starts at.
+///
+/// # Errors
+///
+/// A usage failure when the lens data could not be loaded: without them the starting amounts are
+/// not known.
+pub fn resolve_lens(core: &Core, kind: LensKind) -> Result<LensChoice, Failure> {
+    let library = core.lens_library().map_err(|why| {
+        Failure::usage(format!(
+            "--lens can't be used: {why}. Reinstall Yellowmoon, or set YELLOWMOON_DATA to a data folder that has them."
+        ))
+    })?;
+    let info = library
+        .lenses()
+        .iter()
+        .find(|l| l.kind == kind)
+        .ok_or_else(|| {
+            Failure::usage(format!(
+                "The lens data have no lens called {kind}. Run `ym lenses list` to see them."
+            ))
+        })?;
+    Ok(LensChoice {
+        kind,
+        start_flares: info.start_flares,
+        start_edges: info.start_edges,
+    })
 }
 
 /// Finds the look `--look` or `looks default` names, and checks that its file is there.
@@ -402,7 +431,11 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         .as_deref()
         .map(|q| resolve_look(&core.looks, q))
         .transpose()?;
-    let overrides = Overrides::from_args(args, look);
+    let lens = args
+        .lens
+        .map(|arg| resolve_lens(core, arg.into()))
+        .transpose()?;
+    let overrides = Overrides::from_args(args, look, lens);
 
     // The settings file.
     let default_look = core.looks.effective_default();

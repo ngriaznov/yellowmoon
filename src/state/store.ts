@@ -299,6 +299,7 @@ const DIRECT_KEYS: ReadonlySet<string> = new Set([
   "white_offset_ev",
   "light_source",
   "color_warp",
+  "lens",
   "output_sharpening",
   "curve",
   "decode",

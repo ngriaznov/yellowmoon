@@ -12,6 +12,7 @@ mod doctor;
 mod exit;
 mod info;
 mod inputs;
+mod lenses_cmd;
 mod looks_cmd;
 mod render;
 mod report;
@@ -35,12 +36,13 @@ fn main() -> ExitCode {
 /// The crates of this workspace. The log is about what Yellowmoon does: the graphics stack and the
 /// libraries below it have their own opinions about drivers that are not installed, and a missing
 /// EGL driver is not an error on a machine that has Vulkan.
-const OUR_CRATES: [&str; 10] = [
+const OUR_CRATES: [&str; 11] = [
     "ym_cli",
     "ym_color",
     "ym_core",
     "ym_export",
     "ym_gpu",
+    "ym_lens",
     "ym_looks",
     "ym_ml",
     "ym_noise",
@@ -84,6 +86,7 @@ fn run(cli: Cli) -> u8 {
         Command::Render(args) => render::run(&args, &mut console),
         Command::Info(args) => info::run(&args, &mut console),
         Command::Looks(command) => looks_cmd::run(&command, &mut console),
+        Command::Lenses(command) => lenses_cmd::run(&command, &mut console),
         Command::Doctor(args) => doctor::run(&args, &mut console),
     }
 }

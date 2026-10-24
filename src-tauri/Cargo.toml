@@ -26,6 +26,7 @@ ym-apple.workspace = true
 ym-color.workspace = true
 ym-export.workspace = true
 ym-gpu.workspace = true
+ym-lens.workspace = true
 ym-looks.workspace = true
 serde.workspace = true
 serde_json.workspace = true
