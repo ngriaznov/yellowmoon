@@ -24,6 +24,7 @@ use crate::plan::{Axis, LensPlan};
 use super::BokehPlanes;
 use super::draw::{Shape, ShapeParams, profile_at, rim_at, rim_disc_mean, shape_of};
 use super::line::{Lines, floor_log2};
+use super::detector::luminance;
 
 /// Pixels farther than this from the edge of a gather's reach are not read: a safety margin for the bilinear
 /// neighbour of the last sample.
@@ -46,6 +47,9 @@ const MIN_LINE_PX: f64 = 0.05;
 /// a sharp subject (a bright bud against a dark background) is not near any, and keeps no blur.
 const ACCEPT_COLOUR: f64 = 0.25;
 const ACCEPT_CONFIDENCE: f64 = 0.3;
+/// A pixel is a subject (a sharp thing a drawn ball does not cover) when this share of the weight of the cells around
+/// it, by the same colour-guided weights as the blur, is known to be in focus.
+const SUBJECT_SHARE: f64 = 0.5;
 /// The stretch fades out towards the border of the blur map (a subject's outline, a hole where the detector
 /// finds sharp detail) over this fraction of the longest line, within these bounds in pixels at the tile's
 /// scale: a hard border cuts the lines of neighbouring pixels differently and tears the picture along it.
@@ -239,11 +243,13 @@ impl<'a> Pass<'a> {
             })
             .collect();
         // The blur map at the tile's pixels.
-        let (bt, ramp) = self.tile_blur(input, rb, r0, &shapes);
+        let (bt, ramp, occ) = self.tile_blur(input, rb, r0, &shapes);
         if !self.v_on && !self.t_on && shapes.is_empty() {
             return crop_rgb(input, want);
         }
-        if bt.iter().all(|b| *b == 0.0) {
+        // Nothing blurred and no ball to draw: the picture as it is. (A ball whose oval reaches into this tile is
+        // drawn here whatever the map says, so its disc, which may lie in another tile, decides nothing.)
+        if shapes.is_empty() && bt.iter().all(|b| *b == 0.0) {
             return crop_rgb(input, want);
         }
         // The working picture over r0, with the balls taken out.
@@ -261,7 +267,7 @@ impl<'a> Pass<'a> {
             crop_planes(&o1, r1, want)
         };
         // The balls drawn back.
-        redraw(&mut o2, want, &bt, r0, &shapes, &sp);
+        redraw(&mut o2, want, &bt, &occ, r0, &shapes, &sp);
         Ok(o2)
     }
 
@@ -280,7 +286,7 @@ impl<'a> Pass<'a> {
         rb: PixelRect,
         out: PixelRect,
         shapes: &[Shape],
-    ) -> (Vec<f32>, Vec<f32>) {
+    ) -> (Vec<f32>, Vec<f32>, Vec<bool>) {
         let r0 = rb;
         let bp = self.bp;
         let (fw, fh) = (self.fw, self.fh);
@@ -344,14 +350,27 @@ impl<'a> Pass<'a> {
                     }
                 }
             });
+        let view = CellView {
+            level,
+            cols: &cols,
+            rows: &rows,
+            cell_guide: &cell_guide,
+            cx_lo,
+            cx_hi,
+            cy_lo,
+            cy_hi,
+            ncx,
+            root: &root,
+            sx: self.sx,
+            sy: self.sy,
+            sup,
+            sg2,
+        };
         let (s0x, s0y) = (fw as f64 / mw as f64, fh as f64 / mh as f64);
         let mut bt = vec![0.0f32; r0.w * r0.h];
         bt.par_chunks_mut(r0.w).enumerate().for_each(|(row, out)| {
             let y = r0.y + row;
             let py = y as f64 + 0.5;
-            // Rows of cells within support.
-            let j_lo = (((py - sup) / self.sy).floor().max(0.0) as usize).max(cy_lo);
-            let j_hi = ((((py + sup) / self.sy).floor() as usize) + 1).min(cy_hi);
             for (col, o) in out.iter_mut().enumerate() {
                 let x = r0.x + col;
                 let px = x as f64 + 0.5;
@@ -363,47 +382,13 @@ impl<'a> Pass<'a> {
                 if bp.count_blurred(a0, a1, b0, b1) == 0 {
                     continue;
                 }
-                let g = smoothed_root(&root, x as i64, y as i64);
-                let i_lo = (((px - sup) / self.sx).floor().max(0.0) as usize).max(cx_lo);
-                let i_hi = ((((px + sup) / self.sx).floor() as usize) + 1).min(cx_hi);
-                let (mut num, mut den, mut nrm) = (0.0f64, 0.0f64, 0.0f64);
-                // How far the pixel's colour is from the nearest confident cell's: a pixel of a different
-                // colour than every cell around it (the rim of a sharp subject) is not part of their blur.
-                let mut nearest2 = f64::INFINITY;
-                for j in j_lo..j_hi {
-                    let dy = rows[j].0 - py;
-                    for i in i_lo..i_hi {
-                        let dx = cols[i].0 - px;
-                        let d2 = dx * dx + dy * dy;
-                        if d2 >= sup * sup {
-                            continue;
-                        }
-                        let t = 1.0 - d2 / (sup * sup);
-                        let ws = t * t;
-                        let cg = &cell_guide[(j - cy_lo) * ncx + (i - cx_lo)];
-                        let (d0, d1, d2c) = (
-                            f64::from(g[0] - cg[0]),
-                            f64::from(g[1] - cg[1]),
-                            f64::from(g[2] - cg[2]),
-                        );
-                        let dist2 = d0 * d0 + d1 * d1 + d2c * d2c;
-                        let tt = 1.0 + dist2 / sg2;
-                        let k = ws / (tt * tt);
-                        let idx = j * lw + i;
-                        if level.a[idx] > 0.0 && level.c[idx] >= ACCEPT_CONFIDENCE as f32 {
-                            nearest2 = nearest2.min(dist2);
-                        }
-                        num += k * f64::from(level.a[idx]);
-                        den += k * f64::from(level.c[idx]);
-                        nrm += k;
-                    }
-                }
-                if nrm > 0.0
-                    && den >= 0.25 * nrm
-                    && den > 0.0
-                    && nearest2 <= ACCEPT_COLOUR * ACCEPT_COLOUR
+                let c = view.sums(x, y);
+                if c.nrm > 0.0
+                    && c.den >= 0.25 * c.nrm
+                    && c.den > 0.0
+                    && c.nearest2 <= ACCEPT_COLOUR * ACCEPT_COLOUR
                 {
-                    let v = num / den;
+                    let v = c.num / c.den;
                     if v >= B_MIN {
                         *o = v as f32;
                     }

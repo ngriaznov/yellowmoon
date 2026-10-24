@@ -29,12 +29,19 @@
 //!    [`MAX_BALLS`].
 //!
 //! Then each ball gets the plane fit of its ring, the energy above it, and the radius of the disc that is
-//! taken out: 1.15 `r` plus a margin.
+//! taken out: 1.15 `r` plus a margin, or where the ball's own light has died away into its ground when its rim
+//! is soft (the light that stays in the picture is stretched with the rest of the blur and would stand beside the
+//! redrawn oval as a pillar).
 
 use crate::consts::MAX_BALLS;
 use crate::error::LensError;
 
 use super::ladder::{blur, blur_wide};
+
+// TEMP-KNOB
+fn knob(name: &str, default: f64) -> f64 {
+    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
 
 /// A ball on the detector's working grid, in pixels of that grid.
 #[derive(Clone, Debug, PartialEq)]
@@ -83,10 +90,26 @@ pub(super) struct BallInput<'a> {
     /// The most a ball's ring may hold of those pixels, as a share of the ring: [`MAX_SHARP_DENSITY`] for the
     /// thin lines of edges, much more for the area of a dense map.
     pub max_sharp_density: f64,
+    /// True when `sharp` is the area of a dense blur map (a sharp subject on one side of a ball is then no reason
+    /// to drop it: the median over the ring's sectors counts); false for the classical detector's thin edge flags
+    /// (a single sharp edge in the ring of a light is a gap in leaves, not a subject: the whole ring counts).
+    pub sector_rule: bool,
 }
 
 /// Margin of the take-out disc beyond 1.15 `r`, in working-grid pixels.
 pub(super) const TAKE_OUT_MARGIN_PX: f64 = 1.5;
+/// The take-out disc reaches at least 1.15 `r`, at most this many radii (plus the margin), and where the ball's
+/// own light has died away in between.
+const TAKE_OUT_MIN_RADII: f64 = 1.15;
+const TAKE_OUT_MAX_RADII: f64 = 2.0;
+/// The ball's light has died away where the median of what is above the ground, in a ring half a pixel wide, is
+/// within the allowance: the smaller of [`TAIL_FRACTION`] of the ball's height above the ground and
+/// [`TAIL_OF_GROUND`] times the ground (a very bright ball over a dark ground must not leave a tail as bright as
+/// the ground), but at least [`TAIL_NOISE_UNITS`] noise units of the ground (the plane's noise must not hold the
+/// disc open).
+const TAIL_FRACTION: f64 = 0.03;
+const TAIL_OF_GROUND: f64 = 0.15;
+const TAIL_NOISE_UNITS: f64 = 3.0;
 /// Standard deviations (px) of the scale-space levels: half-octave steps.
 const SCALES: [f64; 10] = [
     1.0, 1.414, 2.0, 2.828, 4.0, 5.657, 8.0, 11.314, 16.0, 22.627,
@@ -112,14 +135,18 @@ const MIN_CONTRAST: f64 = 0.12;
 /// patch of a texture (the ball is left out unless the ground is flat). (The lens
 /// planes of real photos are binned and denoised: 0.0015 to 0.003.)
 const NOISY_PLANE: f64 = 0.008;
-/// A ball whose rim is wider than this fraction of its radius is a smooth blob, not a ball.
-const MAX_SOFTNESS: f64 = 0.9;
+/// A ball whose rim is wider than this fraction of its radius is a smooth blob, not a ball. (A soft ball must also
+/// stand out by [`SOFT_CONTRAST`] per unit of softness, which is what keeps the dim soft blobs out: this bound
+/// only holds back the ones that are all rim.)
+const MAX_SOFTNESS: f64 = 1.3;
 /// The contrast a ball needs grows with the softness of its rim by this much per unit.
 const SOFT_CONTRAST: f64 = 0.3;
-/// The ring around a ball (its 95th percentile) must stay below this fraction of the way from the ground to the
-/// plateau.
+/// The ring around a ball is calm where it stays below this fraction of the way from the ground to the plateau.
 const RING_CALM: f64 = 0.5;
-const RING_PERCENTILE: f64 = 0.95;
+/// Up to this share of the ring may be above that level: a light beside a bright thing (the curl of a hook, its
+/// neighbour in a cluster of lights) is still a light, while a patch of a texture has neighbours of its own
+/// brightness all around it.
+const RING_BRIGHT_MAX: f64 = 0.2;
 /// Plateau over ground in light.
 const MIN_RATIO: f64 = 2.5;
 /// Plateau over ground, in units of the plateau's noise.
@@ -133,8 +160,13 @@ const MIN_FILL: f64 = 0.8;
 /// The search window is this many seed radii either side of the centre.
 const WINDOW_RADII: f64 = 3.2;
 /// A ball whose ring has more than this share of its pixels at a strong sharp edge sits in a sharp scene (a gap
-/// in the leaves, a seed, a catch-light): it is a light in focus, not a defocused one.
+/// in the leaves, a seed, a catch-light): it is a light in focus, not a defocused one. The share is that of the
+/// sectors the ring is cut into: see [`RING_SECTORS`].
 pub(super) const MAX_SHARP_DENSITY: f64 = 0.05;
+/// The ring around a ball (1.5 to 3 radii) is cut into this many sectors, and what is sharp around the ball is the
+/// share that at least five eighths of them reach (the lower median): a light in focus has a sharp ground all
+/// around it, a defocused light beside a sharp subject (a hat, a hand) has it on one side.
+const RING_SECTORS: usize = 8;
 /// Edge evidence (sum of weights in the ring around a ball) needed to hold a ball to the edges' radius.
 const EVIDENCE_MIN: f64 = 1.5;
 /// A ball whose ground reads sharper than this radius, in pixels of the working grid, is a light in focus. (The
@@ -148,25 +180,6 @@ const MIN_CLUSTER: usize = 3;
 /// Of two balls closer than this many radii the dimmer is dropped.
 const MIN_SEPARATION: f64 = 1.2;
 
-// TEMP-DEBUG-BEGIN
-fn dbg_at() -> Vec<(f64, f64)> {
-    let Ok(v) = std::env::var("YM_BALL_DEBUG_AT") else {
-        return Vec::new();
-    };
-    v.split(';')
-        .filter_map(|p| {
-            let mut it = p.split(',').map(|t| t.parse::<f64>().ok());
-            Some((it.next()??, it.next()??))
-        })
-        .collect()
-}
-fn dbg_near(inp: &BallInput, x: f64, y: f64, r: f64) -> bool {
-    dbg_at().iter().any(|(fx, fy)| {
-        let (tx, ty) = (fx * inp.w as f64, fy * inp.h as f64);
-        ((x - tx).powi(2) + (y - ty).powi(2)).sqrt() < 1.0 * r + 3.0
-    })
-}
-// TEMP-DEBUG-END
 #[derive(Clone, Copy, Debug)]
 struct Candidate {
     score: f32,
@@ -188,6 +201,18 @@ struct Measured {
     /// Width of the rim (from 80 % to 20 % of the way from the ground to the plateau, in the mean radial
     /// profile) over the radius: about 0.2 for a sharp-rimmed disc, over 0.5 for a soft blob.
     softness: f64,
+    /// The radius at which the ball's light has died away into the ground (median radial profile).
+    tail: f64,
+}
+
+impl Measured {
+    /// The radius of the disc that is taken out: 1.15 `r` plus the margin, or the tail's end when that is farther,
+    /// at most [`TAKE_OUT_MAX_RADII`] radii.
+    fn r_out(&self) -> f64 {
+        (TAKE_OUT_MIN_RADII * self.r + TAKE_OUT_MARGIN_PX)
+            .max(self.tail + 1.0)
+            .min(TAKE_OUT_MAX_RADII * self.r + TAKE_OUT_MARGIN_PX)
+    }
 }
 
 fn median(values: &mut [f32]) -> f64 {
@@ -342,7 +367,7 @@ fn measure(
     let (w, h) = (inp.w, inp.h);
     let (mut cx, mut cy) = (c.x as f64 + 0.5, c.y as f64 + 0.5);
     let mut r = c.r0;
-    let (mut top, mut ground, mut ring_top) = (0.0, 0.0, 0.0);
+    let (mut top, mut ground, mut ring_bright) = (0.0, 0.0, 0.0);
     let (mut elong, mut fill) = (1.0, 1.0);
     for _ in 0..3 {
         // The plateau and the ground.
@@ -371,14 +396,13 @@ fn measure(
         }
         ground = median(&mut sc.values);
         if top < MIN_RATIO * ground {
-            if dbg_near(inp, cx, cy, r) {
-                eprintln!("DBG cand ({:.1},{:.1}) r0 {:.1}: ratio {:.2} < {MIN_RATIO} (top {top:.4} ground {ground:.4})", c.x, c.y, c.r0, top / ground.max(1e-9));
-            }
             return None;
         }
         // A light stands alone: nothing around it is nearly as bright (a patch of a texture has neighbours of
         // its own brightness).
-        ring_top = percentile(&mut sc.values, RING_PERCENTILE);
+        let ring_hi = ground + RING_CALM * (top - ground);
+        ring_bright = sc.values.iter().filter(|v| f64::from(**v) > ring_hi).count() as f64
+            / sc.values.len() as f64;
         let level = (ground + LEVEL * (top - ground)) as f32;
         // The region above the level that holds the centre, in a window around it.
         let win = (WINDOW_RADII * r).ceil() as i64 + 2;
@@ -401,12 +425,7 @@ fn measure(
                 }
             }
         }
-        let Some((sx, sy)) = seed else {
-            if dbg_near(inp, cx, cy, r) {
-                eprintln!("DBG cand ({:.1},{:.1}) r0 {:.1}: no seed above level", c.x, c.y, c.r0);
-            }
-            return None;
-        };
+        let (sx, sy) = seed?;
         sc.seen.clear();
         sc.seen.resize(ww * wh, false);
         sc.stack.clear();
@@ -430,9 +449,6 @@ fn measure(
                 if nx < x0 || ny < y0 || nx >= x1 || ny >= y1 {
                     // The region leaves the window: a texture, not a compact disc of this size.
                     if at(nx, ny) > level {
-                        if dbg_near(inp, cx, cy, r) {
-                            eprintln!("DBG cand ({:.1},{:.1}) r0 {:.1}: region leaves the window (r {r:.1}, top {top:.4} ground {ground:.4})", c.x, c.y, c.r0);
-                        }
                         return None;
                     }
                     continue;
@@ -469,37 +485,18 @@ fn measure(
         r = (n / std::f64::consts::PI).sqrt();
     }
     let contrast = top.sqrt() - ground.sqrt();
-    let dbg = dbg_near(inp, cx, cy, r);
-    if dbg {
-        eprintln!("DBG cand ({:.1},{:.1}) r0 {:.1}: measured at ({cx:.1},{cy:.1}) r {r:.1} top {top:.4} ground {ground:.4} ring_top {ring_top:.4} contrast {contrast:.3} elong {elong:.2} fill {fill:.2}", c.x, c.y, c.r0);
-    }
-    if contrast < MIN_CONTRAST || ring_top > ground + RING_CALM * (top - ground) {
-        if dbg {
-            eprintln!("   -> rejected: contrast or ring (ring limit {:.4})", ground + RING_CALM * (top - ground));
-        }
+    if contrast < MIN_CONTRAST || ring_bright > knob("YM_X_RING", RING_BRIGHT_MAX) {
         return None;
     }
     if top - ground < MIN_SN * 2.0 * top.max(1e-6).sqrt() * inp.noise_v {
-        if dbg {
-            eprintln!("   -> rejected: noise");
-        }
         return None;
     }
     if elong > MAX_ELONGATION || fill < MIN_FILL {
-        if dbg {
-            eprintln!("   -> rejected: elong/fill");
-        }
         return None;
     }
     let r_lo = R_MIN_PX.max(R_MIN_HD * hd_of(inp));
     if r < r_lo || r > inp.r_max_px {
-        if dbg {
-            eprintln!("   -> rejected: radius");
-        }
         return None;
-    }
-    if dbg {
-        eprintln!("   -> passes the shape tests");
     }
     // The brightness order: the 90th percentile of the luminance inside the ball.
     sc.values.clear();
@@ -510,7 +507,7 @@ fn measure(
         return None;
     }
     let peak = percentile(&mut sc.values, 0.9);
-    let softness = rim_softness(inp, vmax, cx, cy, r, top, ground);
+    let (softness, tail) = rim_profile(inp, vmax, cx, cy, r, top, ground);
     Some(Measured {
         cx,
         cy,
@@ -519,11 +516,14 @@ fn measure(
         ground,
         peak,
         softness,
+        tail,
     })
 }
 
-/// The rim width over the radius, from the mean radial profile in rings half a pixel wide.
-fn rim_softness(
+/// The rim width over the radius (from the mean radial profile in rings half a pixel wide), and the radius at which
+/// the ball's light has died away (from the median profile, which a neighbour covering part of a ring does not
+/// lift; see [`TAIL_FRACTION`]).
+fn rim_profile(
     inp: &BallInput,
     vmax: &[f32],
     cx: f64,
@@ -531,16 +531,18 @@ fn rim_softness(
     r: f64,
     top: f64,
     ground: f64,
-) -> f64 {
+) -> (f64, f64) {
     let (w, h) = (inp.w, inp.h);
     let limit = 2.5 * r + 1.0;
     let bins = (2.0 * limit).ceil() as usize + 1;
     let mut sum = vec![0.0f64; bins];
     let mut cnt = vec![0.0f64; bins];
+    let mut rings: Vec<Vec<f32>> = vec![Vec::new(); bins];
     for_each_in_annulus(w, h, cx, cy, 0.0, limit, |x, y, _, _, d| {
         let i = ((2.0 * d) as usize).min(bins - 1);
         sum[i] += f64::from(vmax[y * w + x]);
         cnt[i] += 1.0;
+        rings[i].push(vmax[y * w + x]);
     });
     let span = (top - ground).max(1e-9);
     let (mut d80, mut d20) = (None, None);
@@ -557,10 +559,30 @@ fn rim_softness(
             d20 = Some(d);
         }
     }
-    match (d80, d20) {
+    let softness = match (d80, d20) {
         (Some(a), Some(b)) => (b - a).max(0.0) / r,
         _ => 1.0,
+    };
+    // The tail: the first ring beyond the ball's radius whose median is within the allowance of the ground.
+    let noise_lin = 2.0 * ground.max(1e-6).sqrt() * inp.noise_v.max(0.0015);
+    let allowance = (TAIL_NOISE_UNITS * noise_lin)
+        .max((TAIL_FRACTION * (top - ground)).min(TAIL_OF_GROUND * ground));
+    let reach = TAKE_OUT_MAX_RADII * r + TAKE_OUT_MARGIN_PX;
+    let mut tail = reach;
+    for (i, ring) in rings.iter_mut().enumerate() {
+        let d = 0.5 * (i as f64 + 0.5);
+        if d <= r || ring.is_empty() {
+            continue;
+        }
+        if d > reach {
+            break;
+        }
+        if median(ring) - ground <= allowance {
+            tail = d;
+            break;
+        }
     }
+    (softness, tail)
 }
 
 /// The half-diagonal of the working grid in pixels.
@@ -682,6 +704,35 @@ fn ring_fit(inp: &BallInput, ball: &Measured, r_out: f64, owner: &[i32]) -> [[f6
     out
 }
 
+/// The share of the ring around a ball (1.5 to 3 radii, outside the footprints in `claim`) that reads sharp. With a
+/// dense blur map ([`BallInput::sector_rule`]) it is the lower median, over the ring's [`RING_SECTORS`] sectors, of
+/// each sector's share (so that at least five eighths of the sectors are that sharp or sharper; a sector with no
+/// pixel counts as 0); with the classical detector's edge flags it is the share of the whole ring.
+fn ring_sharpness(inp: &BallInput, cx: f64, cy: f64, r: f64, claim: &[bool]) -> f64 {
+    let w = inp.w;
+    let mut n = [0.0f64; RING_SECTORS];
+    let mut sharp = [0.0f64; RING_SECTORS];
+    for_each_in_annulus(inp.w, inp.h, cx, cy, 1.5 * r, 3.0 * r, |x, y, dx, dy, _| {
+        let i = y * w + x;
+        if claim[i] {
+            return;
+        }
+        let turn = (libm::atan2(dy, dx) + std::f64::consts::PI) / std::f64::consts::TAU;
+        let k = ((turn * RING_SECTORS as f64) as usize).min(RING_SECTORS - 1);
+        n[k] += 1.0;
+        sharp[k] += f64::from(u8::from(inp.sharp[i]));
+    });
+    let mut share: Vec<f64> = (0..RING_SECTORS)
+        .map(|k| if n[k] > 0.0 { sharp[k] / n[k] } else { 0.0 })
+        .collect();
+    share.sort_by(f64::total_cmp);
+    if !inp.sector_rule {
+        let (total, flagged) = (n.iter().sum::<f64>(), sharp.iter().sum::<f64>());
+        return flagged / total.max(1.0);
+    }
+    share[(RING_SECTORS - 1) / 2]
+}
+
 /// Finds the balls of a plane.
 pub(super) fn find_balls(
     inp: &BallInput,
@@ -731,9 +782,6 @@ pub(super) fn find_balls(
             let d = ((u.cx - m.cx).powi(2) + (u.cy - m.cy).powi(2)).sqrt();
             d < 0.6 * u.r.max(m.r)
         }) {
-            if dbg_near(inp, m.cx, m.cy, m.r) {
-                eprintln!("DBG ({:.1},{:.1}) r {:.1}: same region as a brighter candidate", m.cx, m.cy, m.r);
-            }
             continue;
         }
         unique.push(m);
@@ -746,7 +794,7 @@ pub(super) fn find_balls(
     // are sharp edges that say nothing about the blur around).
     let mut claim = vec![false; w * h];
     for b in &refined {
-        let r_out = 1.15 * b.r + TAKE_OUT_MARGIN_PX;
+        let r_out = b.r_out();
         for_each_in_annulus(w, h, b.cx, b.cy, 0.0, 1.4 * r_out, |x, y, _, _, _| {
             claim[y * w + x] = true;
         });
@@ -757,41 +805,25 @@ pub(super) fn find_balls(
         for (a, _) in &accepted {
             let d = ((a.cx - b.cx).powi(2) + (a.cy - b.cy).powi(2)).sqrt();
             if d < MIN_SEPARATION * a.r.max(b.r) {
-                if dbg_near(inp, b.cx, b.cy, b.r) {
-                    eprintln!("DBG ({:.1},{:.1}) r {:.1}: dropped, within {MIN_SEPARATION} radii of the brighter ball at ({:.1},{:.1}) r {:.1} (d {d:.1})", b.cx, b.cy, b.r, a.cx, a.cy, a.r);
-                }
                 continue 'cand;
             }
         }
         let (mut ew, mut es) = (0.0f64, 0.0f64);
-        let (mut n_ring, mut n_sharp) = (0.0f64, 0.0f64);
         for_each_in_annulus(w, h, b.cx, b.cy, 1.5 * b.r, 3.0 * b.r, |x, y, _, _, _| {
             let i = y * w + x;
             if !claim[i] {
                 ew += f64::from(inp.ev_w[i]);
                 es += f64::from(inp.ev_s[i]);
-                n_ring += 1.0;
-                n_sharp += f64::from(u8::from(inp.sharp[i]));
             }
         });
-        let sharp_density = n_sharp / n_ring.max(1.0);
+        let sharp_density = ring_sharpness(inp, b.cx, b.cy, b.r, &claim);
         let supported = ew >= EVIDENCE_MIN;
-        let dbgb = dbg_near(inp, b.cx, b.cy, b.r);
-        if dbgb {
-            eprintln!("DBG phaseB ({:.1},{:.1}) r {:.1} soft {:.2} sharp_density {:.3} ew {:.2} supported {supported}", b.cx, b.cy, b.r, b.softness, sharp_density, ew);
-        }
         if sharp_density > inp.max_sharp_density {
-            if dbgb {
-                eprintln!("   -> dropped: sharp density");
-            }
             continue;
         }
         // A soft blob must stand out more: a dim, soft highlight (a nose, a bead of water) is no ball.
         let contrast = b.top.sqrt() - b.ground.sqrt();
-        if b.softness > MAX_SOFTNESS || contrast < MIN_CONTRAST + SOFT_CONTRAST * b.softness {
-            if dbgb {
-                eprintln!("   -> dropped: soft");
-            }
+        if b.softness > knob("YM_X_SOFT", MAX_SOFTNESS) || contrast < MIN_CONTRAST + SOFT_CONTRAST * b.softness {
             continue;
         }
         if supported && inp.noise_v > NOISY_PLANE {
@@ -803,19 +835,10 @@ pub(super) fn find_balls(
             // focus; a ground much blurrier is not this ball's ground.
             let ground = libm::exp(es / ew);
             if ground < GROUND_SHARP_PX || ground > BLURRIER_THAN * b.r {
-                if dbgb {
-                    eprintln!("   -> dropped: ground radius {ground:.2}");
-                }
                 continue;
             }
         } else if b.r < UNSUPPORTED_R_MIN_PX {
-            if dbgb {
-                eprintln!("   -> dropped: unsupported and small");
-            }
             continue;
-        }
-        if dbgb {
-            eprintln!("   -> accepted");
         }
         accepted.push((b.clone(), supported));
         if accepted.len() >= MAX_BALLS {
@@ -828,22 +851,14 @@ pub(super) fn find_balls(
     for _ in 0..2 {
         let mut claim2 = vec![false; w * h];
         for (b, _) in &accepted {
-            let r_out = 1.15 * b.r + TAKE_OUT_MARGIN_PX;
+            let r_out = b.r_out();
             for_each_in_annulus(w, h, b.cx, b.cy, 0.0, 1.4 * r_out, |x, y, _, _, _| {
                 claim2[y * w + x] = true;
             });
         }
         let before = accepted.len();
         accepted.retain(|(b, _)| {
-            let (mut n_ring, mut n_sharp) = (0.0f64, 0.0f64);
-            for_each_in_annulus(w, h, b.cx, b.cy, 1.5 * b.r, 3.0 * b.r, |x, y, _, _, _| {
-                let i = y * w + x;
-                if !claim2[i] {
-                    n_ring += 1.0;
-                    n_sharp += f64::from(u8::from(inp.sharp[i]));
-                }
-            });
-            n_sharp / n_ring.max(1.0) <= inp.max_sharp_density
+            ring_sharpness(inp, b.cx, b.cy, b.r, &claim2) <= inp.max_sharp_density
         });
         if accepted.len() == before {
             break;
@@ -858,10 +873,7 @@ pub(super) fn find_balls(
     }
     // The take-out discs. (A soft ball's tail is left in the picture: it is gathered with the rest of the
     // blur and reads as the glow of the ball. Taking it out would leave a dark box around the redrawn oval.)
-    let r_outs: Vec<f64> = accepted
-        .iter()
-        .map(|(b, _)| 1.15 * b.r + TAKE_OUT_MARGIN_PX)
-        .collect();
+    let r_outs: Vec<f64> = accepted.iter().map(|(b, _)| b.r_out()).collect();
     // Ownership of the discs (the brightest ball owns a pixel two discs share).
     let mut owner = vec![-1i32; w * h];
     for (i, (b, _)) in accepted.iter().enumerate() {

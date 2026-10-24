@@ -75,6 +75,9 @@ const MAP_BLURRED_P: f32 = 0.7;
 /// "The photo has bokeh" counts the cells of an outside map whose probability is at least this
 /// (`ym_ml::bokeh_net::STRONG_P`): the low-confidence blobs of a featureless sky stay out of that gate.
 const MAP_STRONG_P: f32 = 0.9;
+/// A cell of an outside map is known to be in focus (a subject a ball cannot be drawn over) when the source's
+/// probability that it is out of focus is at most this.
+const MAP_SUBJECT_P: f32 = 0.1;
 /// Weight a blurred cell of an outside map gives to the evidence around a ball (an edge reading has weight 1 at
 /// most; a ring holds hundreds of pixels).
 const MAP_EVIDENCE_WEIGHT: f32 = 0.05;
@@ -119,6 +122,9 @@ pub(super) struct Detected {
     /// outside map: the cells that are blurred with a probability of [`MAP_STRONG_P`]); `None` for the classical
     /// detector, which counts `b >= 1.5 b_min` with confidence ([`blurred_fraction`]).
     pub gate_fraction: Option<f64>,
+    /// Pixels known to be in focus: the subject anchor, and next to a sharp edge (classical detector) or where the
+    /// source says so with certainty (an outside map: [`MAP_SUBJECT_P`]). A drawn ball does not cover them.
+    pub subject: Vec<bool>,
 }
 
 /// Luminance of a linear camera RGB triple.
@@ -558,6 +564,7 @@ pub(super) fn detect(
             hd,
             reduce: wp.reduce,
             gate_fraction: None,
+            subject: vec![false; n],
         });
     }
     let v: Vec<f32> = wp.y.iter().map(|&y| y.max(0.0).sqrt()).collect();
@@ -602,6 +609,7 @@ pub(super) fn detect(
             anchor: &anchor,
             sharp: &sharp,
             max_sharp_density: super::balls::MAX_SHARP_DENSITY,
+            sector_rule: false,
         },
         cancel,
     )?;
@@ -700,6 +708,7 @@ pub(super) fn detect(
             }
         }
     }
+    let subject: Vec<bool> = forced.iter().zip(&anchor).map(|(f, a)| *f || *a).collect();
     let b = stamp_balls_and_finish(
         &balls,
         &mut r_est,
@@ -721,6 +730,7 @@ pub(super) fn detect(
         hd,
         reduce: wp.reduce,
         gate_fraction: None,
+        subject,
     })
 }
 
@@ -754,6 +764,7 @@ pub(super) fn detect_with_map(
             hd,
             reduce: wp.reduce,
             gate_fraction: None,
+            subject: vec![false; n],
         });
     }
     let v: Vec<f32> = wp.y.iter().map(|&y| y.max(0.0).sqrt()).collect();
@@ -797,6 +808,7 @@ pub(super) fn detect_with_map(
             anchor: &anchor,
             sharp: &sharp,
             max_sharp_density: MAP_SHARP_MAX,
+            sector_rule: true,
         },
         cancel,
     )?;
@@ -805,6 +817,11 @@ pub(super) fn detect_with_map(
         return Err(LensError::Cancelled);
     }
     let mut forced = vec![false; n];
+    let subject: Vec<bool> = p_hat
+        .iter()
+        .zip(&anchor)
+        .map(|(p, a)| *a || *p <= MAP_SUBJECT_P)
+        .collect();
     let b = stamp_balls_and_finish(
         &balls,
         &mut r_est,
@@ -826,6 +843,7 @@ pub(super) fn detect_with_map(
         hd,
         reduce: wp.reduce,
         gate_fraction: Some(strong as f64 / n as f64),
+        subject,
     })
 }
 

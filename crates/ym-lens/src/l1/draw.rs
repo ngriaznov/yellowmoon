@@ -43,6 +43,9 @@ pub(super) struct Shape {
     pub r_out: f64,
     /// The ball's own radius in pixels.
     pub r_ball: f64,
+    /// Half the ball's plateau (linear luminance): a pixel in the ball at least this bright is the ball's own light,
+    /// however sharp it reads (a glass ornament's highlight at its centre).
+    pub core: f64,
     /// Bounding radius of everything drawn, in pixels.
     pub reach: f64,
     /// Width of the rim in pixels, from full brightness to none (1 for a sharp rim: one pixel of coverage).
@@ -225,6 +228,7 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
         ],
         r_out: ball.take_out_radius * p.hk,
         r_ball: r_px,
+        core: 0.5 * ball.peak,
         reach: a + (half_off.0 * half_off.0 + half_off.1 * half_off.1).sqrt() + 0.5 * edge + 1.5,
         edge,
         fit: [

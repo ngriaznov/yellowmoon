@@ -119,13 +119,15 @@ impl BlurMapInput {
     }
 }
 
-/// One level of the blur map's reductions: the mean of weight times blur, and of weight.
+/// One level of the blur map's reductions: the mean of weight times blur, of weight, and of the cells known to be
+/// in focus (a subject).
 #[derive(Clone, Debug)]
 pub(crate) struct MapLevel {
     pub(crate) w: usize,
     pub(crate) h: usize,
     pub(crate) a: Vec<f32>,
     pub(crate) c: Vec<f32>,
+    pub(crate) s: Vec<f32>,
 }
 
 /// The per-photo data of L1: the blur map and the ball list (`docs/21` section 3).
@@ -143,6 +145,9 @@ pub struct BokehPlanes {
     b_max: f64,
     noise_v: f64,
     levels: Vec<MapLevel>,
+    /// Cells known to be in focus: the subject anchor, the places next to a sharp edge, where a learned map is
+    /// sure ([`detector::Detected::subject`]).
+    subject: Vec<bool>,
     /// Summed-area table (`(w + 1) x (h + 1)`) of the cells with a blur.
     nonzero: Vec<u32>,
 }
@@ -203,6 +208,7 @@ impl BokehPlanes {
             b_max,
             noise_v: d.noise_v,
             levels: Vec::new(),
+            subject: d.subject,
             nonzero: Vec::new(),
         };
         if active {
@@ -225,12 +231,14 @@ impl BokehPlanes {
         };
         let mut a = Vec::with_capacity(w * h);
         let mut c = Vec::with_capacity(w * h);
+        let mut s = Vec::with_capacity(w * h);
         for i in 0..w * h {
             let wt = weight(i);
             a.push(wt * self.b[i]);
             c.push(wt);
+            s.push(f32::from(u8::from(self.subject[i])));
         }
-        let mut levels = vec![MapLevel { w, h, a, c }];
+        let mut levels = vec![MapLevel { w, h, a, c, s }];
         while levels.len() < 6 {
             let last = levels.last().expect("one level");
             if last.w < 2 || last.h < 2 {
@@ -239,21 +247,24 @@ impl BokehPlanes {
             let (w2, h2) = (last.w.div_ceil(2), last.h.div_ceil(2));
             let mut a2 = vec![0.0f32; w2 * h2];
             let mut c2 = vec![0.0f32; w2 * h2];
+            let mut s2 = vec![0.0f32; w2 * h2];
             for y in 0..h2 {
                 for x in 0..w2 {
-                    let (mut sa, mut sc, mut n) = (0.0f32, 0.0f32, 0.0f32);
+                    let (mut sa, mut sc, mut ss, mut n) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
                     for dy in 0..2 {
                         for dx in 0..2 {
                             let (sx, sy) = (2 * x + dx, 2 * y + dy);
                             if sx < last.w && sy < last.h {
                                 sa += last.a[sy * last.w + sx];
                                 sc += last.c[sy * last.w + sx];
+                                ss += last.s[sy * last.w + sx];
                                 n += 1.0;
                             }
                         }
                     }
                     a2[y * w2 + x] = sa / n;
                     c2[y * w2 + x] = sc / n;
+                    s2[y * w2 + x] = ss / n;
                 }
             }
             levels.push(MapLevel {
@@ -261,6 +272,7 @@ impl BokehPlanes {
                 h: h2,
                 a: a2,
                 c: c2,
+                s: s2,
             });
         }
         self.levels = levels;
@@ -378,10 +390,11 @@ impl BokehPlanes {
         let levels: usize = self
             .levels
             .iter()
-            .map(|l| 4 * (l.a.len() + l.c.len()))
+            .map(|l| 4 * (l.a.len() + l.c.len() + l.s.len()))
             .sum();
         std::mem::size_of::<Self>()
             + 4 * (self.b.len() + self.conf.len() + self.nonzero.len())
+            + self.subject.len()
             + levels
             + self.balls.len() * std::mem::size_of::<Ball>()
     }
