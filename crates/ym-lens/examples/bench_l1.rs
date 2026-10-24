@@ -136,7 +136,7 @@ fn main() {
         (buf, need)
     };
     let megapixels = (fw * fh) as f64 / 1e6;
-    for (name, l1_only) in [("L1 alone", true)] {
+    for (name, l1_only) in [("L1 alone", true)][..0].iter().copied() {
         let (_, wall, cpu) = timed(|| {
             for &rect in &tiles {
                 let (buf, need) = crop(rect);

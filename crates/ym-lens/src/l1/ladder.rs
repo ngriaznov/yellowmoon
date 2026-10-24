@@ -67,6 +67,50 @@ pub(super) fn blur(src: &[f32], w: usize, h: usize, sigma: f64) -> Vec<f32> {
     out
 }
 
+/// The same blur for a wide Gaussian (`sigma` of 6 or more pixels), made on the plane reduced 2x (a 2 x 2 box
+/// mean), blurred there and brought back with bilinear interpolation: the plane is already smooth at that scale,
+/// and the work is a quarter of it. The blur of the reduction and of the interpolation (together about 0.6
+/// px^2 of variance) is taken from `sigma`.
+pub(super) fn blur_wide(src: &[f32], w: usize, h: usize, sigma: f64) -> Vec<f32> {
+    if sigma < 6.0 || w < 8 || h < 8 {
+        return blur(src, w, h, sigma);
+    }
+    let (w2, h2) = (w.div_ceil(2), h.div_ceil(2));
+    let mut small = vec![0.0f32; w2 * h2];
+    small.par_chunks_mut(w2).enumerate().for_each(|(y, row)| {
+        for (x, o) in row.iter_mut().enumerate() {
+            let (mut acc, mut n) = (0.0f32, 0.0f32);
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let (sx, sy) = (2 * x + dx, 2 * y + dy);
+                    if sx < w && sy < h {
+                        acc += src[sy * w + sx];
+                        n += 1.0;
+                    }
+                }
+            }
+            *o = acc / n;
+        }
+    });
+    let blurred = blur(&small, w2, h2, (sigma * sigma - 0.6).sqrt() / 2.0);
+    let mut out = vec![0.0f32; w * h];
+    out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        // The output pixel's centre in the reduced plane's pixel coordinates.
+        let fy = ((y as f64 + 0.5) / 2.0 - 0.5).clamp(0.0, (h2 - 1) as f64);
+        let (y0, ty) = (fy as usize, fy - fy.floor());
+        let y1 = (y0 + 1).min(h2 - 1);
+        for (x, o) in row.iter_mut().enumerate() {
+            let fx = ((x as f64 + 0.5) / 2.0 - 0.5).clamp(0.0, (w2 - 1) as f64);
+            let (x0, tx) = (fx as usize, fx - fx.floor());
+            let x1 = (x0 + 1).min(w2 - 1);
+            let top = f64::from(blurred[y0 * w2 + x0]) * (1.0 - tx) + f64::from(blurred[y0 * w2 + x1]) * tx;
+            let bot = f64::from(blurred[y1 * w2 + x0]) * (1.0 - tx) + f64::from(blurred[y1 * w2 + x1]) * tx;
+            *o = (top * (1.0 - ty) + bot * ty) as f32;
+        }
+    });
+    out
+}
+
 /// Central-difference gradient `(gx, gy)` at `(x, y)` of a `w x h` plane (border replicated).
 #[inline]
 pub(super) fn gradient_at(s: &[f32], w: usize, h: usize, x: usize, y: usize) -> (f64, f64) {
@@ -83,8 +127,12 @@ pub(super) fn gradient_at(s: &[f32], w: usize, h: usize, x: usize, y: usize) -> 
 pub(super) fn gradient_magnitude(src: &[f32], w: usize, h: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; w * h];
     out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        let (up, down) = (y.saturating_sub(1), (y + 1).min(h - 1));
+        let (r_up, r_mid, r_down) = (&src[up * w..][..w], &src[y * w..][..w], &src[down * w..][..w]);
         for (x, o) in row.iter_mut().enumerate() {
-            let (gx, gy) = gradient_at(src, w, h, x, y);
+            let (xl, xr) = (x.saturating_sub(1), (x + 1).min(w - 1));
+            let gx = 0.5 * (f64::from(r_mid[xr]) - f64::from(r_mid[xl]));
+            let gy = 0.5 * (f64::from(r_down[x]) - f64::from(r_up[x]));
             *o = (gx * gx + gy * gy).sqrt() as f32;
         }
     });

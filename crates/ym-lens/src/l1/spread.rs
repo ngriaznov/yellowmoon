@@ -15,9 +15,9 @@
 use rayon::prelude::*;
 
 /// Window radius, in cells of a level, of the bilateral smoothing.
-const RADIUS: i64 = 2;
+const RADIUS: i64 = 1;
 /// Spatial standard deviation of the smoothing, in cells.
-const SPATIAL_SIGMA: f64 = 1.2;
+const SPATIAL_SIGMA: f64 = 0.9;
 /// The coarsest level keeps at least this many cells on its shorter side.
 const MIN_SIDE: usize = 6;
 

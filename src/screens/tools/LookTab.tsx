@@ -11,6 +11,7 @@ import { isArriLook, LOOK_LIBRARIES, looksInDisplayOrder, lookTooltip } from "..
 import type { LookLibraryInfo } from "../../state/looks";
 import type { AppStore } from "../../state/store";
 import { useLookThumbnail } from "../../state/useLookThumbnail";
+import { LensCard } from "./LensCard";
 import { shortBody } from "./RawTab";
 import { ContrastSlider, KelvinSlider, SaturationSlider, whiteBalanceState, whiteBalanceToAuto } from "./controls";
 import { AUTO, tintLabel } from "./shared";
@@ -313,8 +314,8 @@ export interface LookTabProps extends TabProps {
 
 /**
  * Look: the Automatic card (what was worked out for this photo, and where to change it), the
- * Look card (strength, "Apply to", search and the grid of looks with lazy thumbnails) and the Tone
- * card (Temperature, Contrast, Saturation).
+ * Look card (strength, "Apply to", search and the grid of looks with lazy thumbnails), the Tone
+ * card (Temperature, Contrast, Saturation) and the Lens card (a lens and its Flares, Edges and Anamorphic, `docs/21`).
  */
 export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
   perfCount("LookTab");
@@ -570,6 +571,7 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
         </div>
       </Card>
       <ToneCard store={store} rs={rs} />
+      <LensCard store={store} rs={rs} />
     </>
   );
 });

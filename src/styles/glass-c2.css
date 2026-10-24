@@ -384,6 +384,26 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   font-size: var(--fs-label);
   font-weight: var(--fw-heavy);
 }
+/* A lens in the Lens card's menu (`docs/21` section 1): its name, and its line under it in the quieter label colour. The trigger shows
+   the name only. */
+.ym-lens-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  max-width: 280px;
+  text-align: start;
+  white-space: normal;
+}
+.ym-lens-option__name {
+  font-weight: var(--fw-bold);
+}
+.ym-lens-option__line {
+  color: var(--glass-label-secondary);
+  font-size: var(--fs-label);
+  line-height: 1.35;
+}
 
 /* The histogram (an SVG: glasscn has none). */
 .ym-histogram {

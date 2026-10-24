@@ -25,7 +25,7 @@ use crate::image::ImageRef;
 
 use super::balls::{BallInput, BallPx, find_balls};
 use super::disc::{LEVELS, PAIRS, level_sigma, radius_from_ratio};
-use super::ladder::{blur, gradient_at, gradient_magnitude, quantile};
+use super::ladder::{blur_wide, gradient_at, gradient_magnitude, quantile};
 use super::spread::{GuidePyramid, spread};
 
 /// A plane whose long edge is at least this many pixels is detected on its 2x reduction.
@@ -54,9 +54,9 @@ const MIN_SAMPLE_WEIGHT: f64 = 0.02;
 /// Colour tolerance of the spread (square-root units): textured backgrounds have many colours, so the guide only
 /// stops the spread at large differences.
 const GUIDE_TOLERANCE: f64 = 0.25;
-/// A level of the spread is trusted where the readings in its window weigh this much (a window of 25 cells
-/// holds a kernel sum of about 9, so this is a few readings of full weight).
-const EVIDENCE_NEED: f64 = 0.5;
+/// A level of the spread is trusted where the readings in its window weigh this much (a window of 9 cells
+/// holds a kernel sum of about 4, so this is a fraction of a reading of full weight).
+const EVIDENCE_NEED: f64 = 0.25;
 /// Variance of the log radius at which the confidence is halved (35 % spread).
 const VARIANCE_HALF: f64 = 0.12;
 /// Below this confidence the blur is taken as 0.
@@ -173,7 +173,7 @@ fn build_ladder(v: &[f32], w: usize, h: usize, cancel: &dyn Fn() -> bool) -> Res
         }
         // Gaussians add in quadrature: the step from level m to m + 1.
         let step = (level_sigma(m + 1).powi(2) - level_sigma(m).powi(2)).sqrt();
-        let next = blur(&levels[m], w, h, step);
+        let next = blur_wide(&levels[m], w, h, step);
         levels.push(next);
     }
     Ok(levels)
@@ -249,10 +249,11 @@ fn edge_samples(
                 for x in 1..w - 1 {
                     let i = y * w + x;
                     let g = gj[i];
-                    let gn = normalised(g, lj[i], floor);
-                    if gn < thr {
+                    // `normalised(g, level) >= thr` without the square root.
+                    if f64::from(g) * f64::from(g) < 4.0 * thr * thr * (f64::from(lj[i]).max(0.0) + floor) {
                         continue;
                     }
+                    let gn = normalised(g, lj[i], floor);
                     // Non-maximum suppression along the gradient direction (4 sectors).
                     let (gx, gy) = gradient_at(lj, w, h, x, y);
                     let (ax, ay) = (gx.abs(), gy.abs());
@@ -406,6 +407,12 @@ pub(super) fn detect(
     focus: Option<(f64, f64)>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Detected, LensError> {
+    let t0 = std::time::Instant::now();
+    let mark = |what: &str| {
+        if std::env::var("YM_L1_TIME").is_ok() {
+            eprintln!("  planes [{:>7.1} ms] {what}", t0.elapsed().as_secs_f64() * 1e3);
+        }
+    };
     let wp = work_plane(plane);
     let (w, h) = (wp.w, wp.h);
     let n = w * h;
@@ -428,13 +435,16 @@ pub(super) fn detect(
     let v: Vec<f32> = wp.y.iter().map(|&y| y.max(0.0).sqrt()).collect();
     let noise_v = noise_sigma(&v, w, h);
     drop(v);
+    mark("noise");
     let ladder = build_ladder(&wp.y, w, h, cancel)?;
+    mark("ladder");
     if cancel() {
         return Err(LensError::Cancelled);
     }
 
     // 1. Edge readings.
     let (mut samples, mut sharp) = edge_samples(&ladder, w, h, noise_v, r_min_px, cancel)?;
+    mark("edges");
     let measured_edges = samples.iter().filter(|s| s.w >= 0.1).count();
 
     // 2. The subject anchor.
@@ -483,6 +493,7 @@ pub(super) fn detect(
         cancel,
     )?;
     drop(ladder);
+    mark("balls");
     // Their rims are not edges of the blur: drop the readings around them and put their radius there.
     if !balls.is_empty() {
         let mut inside = vec![false; n];
@@ -537,7 +548,9 @@ pub(super) fn detect(
     let sigma_g = (3.0 * noise_v).max(GUIDE_TOLERANCE);
     let guide = GuidePyramid::new(guide_image(&wp.rgb, w, h), w, h, sigma_g);
     let (w0, s0, q0) = accumulate(&samples, n);
+    mark("guide");
     let first = spread(&guide, &w0, &s0, &q0, EVIDENCE_NEED);
+    mark("spread 1");
     if cancel() {
         return Err(LensError::Cancelled);
     }
@@ -555,6 +568,7 @@ pub(super) fn detect(
         .collect();
     let (w1, s1, q1) = accumulate(&robust, n);
     let second = spread(&guide, &w1, &s1, &q1, EVIDENCE_NEED);
+    mark("spread 2");
 
     // 5. Caution, and the maps.
     let mut b = vec![0.0f32; n];
@@ -628,6 +642,7 @@ pub(super) fn detect(
     // A blurred region smaller than a couple of its own blur discs is a speck of misread edges, not defocus.
     let keep: Vec<bool> = best.iter().map(|d| d.is_finite()).collect();
     drop_small_regions(&mut b, &keep, w, h, hd);
+    mark("done");
     Ok(Detected {
         w,
         h,

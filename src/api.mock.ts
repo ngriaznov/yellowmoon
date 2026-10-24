@@ -379,6 +379,8 @@ export interface MockOptions {
   allLibraries?: boolean;
   /** Slugs of imported looks whose file is "missing or changed" ("film-warm"): listed with `missing: true`. */
   missingLooks?: string[];
+  /** The lens data could not be loaded (`?mockLenses=0`): `lens_list` answers with no lens, as the core does (`docs/21` §10). Default false. */
+  lensesMissing?: boolean;
   /** Development stops at this many photos (fractions allowed: 5.4 is five done, the sixth under way). Default: all. */
   holdAt?: number;
   /** Settings the photos open with, keyed by file name ("DSC04204.ARW" or "DSC04204"). */
@@ -805,6 +807,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   looksImported: true,
   allLibraries: false,
   missingLooks: [],
+  lensesMissing: false,
   holdAt: Number.POSITIVE_INFINITY,
   initialSettings: {},
   photoOverrides: {},
@@ -836,7 +839,7 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
  * Reads the mock's options from the page URL so Playwright (and a person with a browser) can
  * set the scene without code: `?mockSpeed=20` (or `Infinity`), `mockSkipped=DSC04207,DSC04209`
  * (a reason after a colon), `mockPicked=2,3,4`, `mockCurrent=3`, `mockPhotos=500` (a folder of 500 photos, the twelve repeating), `mockFolder=Name` (the folder's name), `mockLooks=0` (no imported
- * looks), `mockLibraries=all` (looks in every section of the Look tab), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
+ * looks), `mockLibraries=all` (looks in every section of the Look tab), `mockLenses=0` (no lens data: the Lens card's menu is empty), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
  * land in Downloads while the wizard watches), `mockDownloadsDenied=1`, `mockExisting=DSC04204_neutral.jpg`,
  * `mockExportFails=DSC04204:reason`, `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
  * (preferences survive a reload), `mockViewport=native` or `fallback` (the mock behaves like that viewport backend of the app),
@@ -874,6 +877,7 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (count !== null && Number.isInteger(Number(count)) && Number(count) >= 1) out.photoCount = Number(count);
   if (params.get("mockLooks") === "0") out.looksImported = false;
   if (params.get("mockLibraries") === "all") out.allLibraries = true;
+  if (params.get("mockLenses") === "0") out.lensesMissing = true;
   const missing = list("mockMissing");
   if (missing) out.missingLooks = missing;
   const hold = params.get("mockHold");
@@ -2500,7 +2504,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         return { a, b };
       }),
 
-    lensList: () => run("lensList", () => MOCK_LENSES.map((lens) => ({ ...lens }))),
+    lensList: () => run("lensList", () => (options.lensesMissing ? [] : MOCK_LENSES.map((lens) => ({ ...lens })))),
     looksList: () => run("looksList", () => looks),
     lookThumbnail: (photoId, lookId) =>
       run("lookThumbnail", (): string => {

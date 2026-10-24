@@ -502,7 +502,11 @@ impl<'a> Pass<'a> {
         // Windows of the sample rule are up to 2 reach + 2 pixels long.
         let max_k = floor_log2(2 * self.v_reach.ceil() as usize + 3);
         let origin = if along_y { r0.y } else { r0.x };
+        let tl = std::time::Instant::now();
         let lines = Lines::new(wk, bt, (r0.w, r0.h), along_y, origin, max_k);
+        if std::env::var("YM_L1_TIME").is_ok() {
+            eprintln!("      line tables {:.1} ms (k {max_k})", tl.elapsed().as_secs_f64() * 1e3);
+        }
         a.par_chunks_mut(r1.w)
             .zip(b.par_chunks_mut(r1.w))
             .zip(c.par_chunks_mut(r1.w))

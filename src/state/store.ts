@@ -36,6 +36,7 @@ import type {
   ExportOptions,
   ExportProgress,
   HistogramData,
+  LensInfo,
   Look,
   LookId,
   LookInput,
@@ -167,6 +168,11 @@ export interface AppState {
   settings: Readonly<Record<PhotoId, ResolvedSettings>>;
   /** The look library; null until it has been asked for. */
   looks: readonly Look[] | null;
+  /**
+   * The lenses of the Lens card's menu (`lens_list`, `docs/21` §10), asked for once; null until the first answer, empty when the
+   * lens data are missing.
+   */
+  lenses: readonly LensInfo[] | null;
   /** The last `render_stats`: "Neural · 42 ms · Display P3". */
   stats: RenderStats | null;
   /** Showing the photo before the look and display transform. */
@@ -255,6 +261,7 @@ export function initialState(): AppState {
     thumbnails: {},
     settings: {},
     looks: null,
+    lenses: null,
     stats: null,
     before: false,
     zoom: { kind: "fit" },
@@ -599,6 +606,7 @@ export class AppStore {
   async load(): Promise<void> {
     await Promise.all([
       this.refreshLooks(),
+      this.refreshLenses(),
       this.refreshSession(),
       this.refreshPreferences(),
       this.refreshDisplayLuts(),
@@ -648,6 +656,19 @@ export class AppStore {
       const looks = await this.api.looksList();
       this.set({ looks });
     } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /**
+   * Asks for the lenses of the Lens card's menu, once per run (`docs/21` §10). A core that has no lens data answers with none; one that
+   * fails to answer leaves the card with none too, and the error bar says what went wrong.
+   */
+  async refreshLenses(): Promise<void> {
+    try {
+      this.set({ lenses: await this.api.lensList() });
+    } catch (error) {
+      this.set({ lenses: [] });
       this.fail(error);
     }
   }
@@ -901,6 +922,7 @@ export class AppStore {
     this.state = {
       ...initialState(),
       looks: this.state.looks,
+      lenses: this.state.lenses,
       applyScope: this.state.applyScope,
       collapsedLookLibraries: this.state.collapsedLookLibraries,
       stats: null,
