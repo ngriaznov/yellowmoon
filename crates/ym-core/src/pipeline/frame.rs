@@ -400,6 +400,10 @@ pub(crate) fn sample_to_camera(
 }
 
 /// Where the pixels of a view come from once the raw group is there.
+// One of these lives for the length of a frame, and a `Grid` carries the lens's bend now (a few more
+// numbers, kept `Copy` on purpose), so the image variant is a little over the lint's size: boxing it
+// would only add an allocation per frame.
+#[allow(clippy::large_enum_variant)]
 enum ViewSource {
     /// Camera RGB: `pixels` is a window of the raw group whose pixel (0, 0) is buffer pixel `origin`
     /// (on the device, the images that cover the rectangle that starts there), sampled through `grid`.

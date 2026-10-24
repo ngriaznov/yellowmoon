@@ -33,6 +33,24 @@ use crate::settings::{Crop, DevelopSettings, NormRect, Orientation};
 /// Largest straighten angle that counts as "none" (radians would be overkill: this is degrees).
 const ANGLE_EPS_DEG: f64 = 1e-9;
 
+/// The lens's bend as the sampler reads it, from the lens plan's map for the full-resolution canvas
+/// (`ym_lens::LensPlan::warp`): the coefficients, the zoom and the Newton steps, as plain data.
+/// `None` for the identity (no Anamorphic, and no distortion or no Edges), so a photo without a bend
+/// has the geometry it has without a lens. The axis is the canvas's horizontal.
+#[must_use]
+pub fn sampler_warp(warp: &ym_lens::LensWarp) -> Option<SamplerWarp> {
+    (!warp.is_identity()).then(|| {
+        SamplerWarp::new(
+            warp.mu(),
+            warp.beta(),
+            warp.distortion_k1(),
+            warp.distortion_k2(),
+            warp.zoom(),
+            ym_lens::consts::NEWTON_STEPS as u8,
+        )
+    })
+}
+
 /// Maps a point of the photo as the camera oriented it to the same spot on the sensor (both as
 /// fractions): [`display_to_sensor`] under the name this module uses.
 #[must_use]

@@ -16,7 +16,7 @@
 //!   from a cut-out source image with another origin.
 //! * **The far corner** of an 8658 x 5772 frame is sampled as exactly as the near one (D4).
 //! * **The lens's bend (L4)**: a grid with a [`SamplerWarp`] (the anamorphic bend, the lens's
-//!   distortion and the zoom) matches the CPU port within [`WARP_VALUE_BOUND`] for every orientation
+//!   distortion and the zoom) matches the CPU port within [`VALUE_BOUND`] for every orientation
 //!   and turn, both axes, Catmull-Rom and the box; the outside mask is still the CPU's own; tiles
 //!   equal the whole output bit for bit, also from a cut-out source; and the far corner of the 50 MP
 //!   frame is sampled through a warp as exactly as the near one.
@@ -57,24 +57,20 @@ const VALUE_BOUND: f64 = 1.2e-6;
 /// and divides with a reciprocal): the first proposal, 5e-6, until the Metal run gives a number.
 const VALUE_BOUND_HARDWARE: f64 = 5e-6;
 
-/// Largest absolute difference between the kernel and the CPU port through a warp (L4). The kernel
-/// adds the warp's displacement, computed in `f32` from the canvas offset in half-diagonal units, to
-/// the exact position, so a position differs from the CPU's by a few ulps of the displacement
-/// (at most 300 px, so about 1.5e-5 px) plus the damped rounding of the offset: 1e-5 px on the 200 px
-/// frames of the matrix, about 1e-4 px at 50 MP. A value differs by that times the scene's gradient
-/// (up to 0.04 a pixel here) on top of the rounding of the weights. The first measured maximum on
-/// Mesa lavapipe (1152 cases, every orientation and turn, six warps on both axes, Catmull-Rom and
-/// the box) was 7.153e-7, against 5.960e-7 for the same matrix without a warp; the bound is twice
-/// that and is never loosened.
-const WARP_VALUE_BOUND: f64 = 1.5e-6;
-/// The same on a hardware adapter, as for the sampler without a warp, until the Metal run gives a
-/// number.
-const WARP_VALUE_BOUND_HARDWARE: f64 = 5e-6;
-/// The same for the far corner of the 50 MP frame, where the half-diagonal is 5200 px: the first
-/// measured maximum on lavapipe was 4.888e-6 (3.815e-6 at the near corner: the error is that of the
-/// displacement's rounding, not of the distance from the origin), and the bound is twice it.
+/// Through a warp (L4) the matrix keeps the sampler's own bounds, [`VALUE_BOUND`] and
+/// [`VALUE_BOUND_HARDWARE`]. The kernel adds the warp's displacement, computed in `f32` from the canvas
+/// offset in half-diagonal units, to the exact position, so a position differs from the CPU's by a few
+/// ulps of the displacement (at most 300 px, so about 1.5e-5 px) plus the damped rounding of the
+/// offset: 1e-5 px on the 200 px frames of the matrix, about 1e-4 px at 50 MP. A value differs by that
+/// times the scene's gradient (up to 0.04 a pixel here) on top of the rounding of the weights. The
+/// first measured maximum on Mesa lavapipe (1152 cases, every orientation and turn, six warps on both
+/// axes, Catmull-Rom and the box) was 7.153e-7, against 5.960e-7 for the same matrix without a warp.
+///
+/// The far corner of the 50 MP frame, where the half-diagonal is 5200 px, has a bound of its own: the
+/// first measured maximum on lavapipe was 4.888e-6 (3.815e-6 at the near corner: the error is that of
+/// the displacement's rounding, not of the distance from the origin), and the bound is twice it.
 const WARP_FAR_CORNER_BOUND: f64 = 1e-5;
-/// The far corner on a hardware adapter.
+/// The far corner on a hardware adapter, until the Metal run gives a number.
 const WARP_FAR_CORNER_BOUND_HARDWARE: f64 = 2e-5;
 
 /// The warp of the attachment at `q - 1 = extra` (the shipped constants) with a lens distortion of
@@ -556,9 +552,9 @@ fn warped_grids_match_the_cpu_port() {
     let (bw, bh) = (211usize, 157usize);
     let img = scene(bw, bh, 12);
     let bound = if dev.gpu.info().is_software {
-        WARP_VALUE_BOUND
+        VALUE_BOUND
     } else {
-        WARP_VALUE_BOUND_HARDWARE
+        VALUE_BOUND_HARDWARE
     };
     let mut worst = 0.0f64;
     let (mut cases, mut boxes, mut bicubics, mut with_mask) = (0usize, 0usize, 0usize, 0usize);
@@ -771,6 +767,44 @@ fn the_far_corner_of_a_50_mp_frame_is_as_exact_through_a_warp() {
         errors.iter().all(|&e| e <= bound),
         "{errors:?} above {bound:e}"
     );
+}
+
+#[test]
+#[ignore = "timing: prints what the bend costs the sampler and asserts nothing"]
+fn the_bend_costs_the_sampler_this_much() {
+    // A 2048 x 1366 picture (2.8 MP) sampled to a picture of its own size through a rotation of 0.3
+    // degrees, Catmull-Rom, with and without the bend. `cargo test -p ym-gpu --test gpu_sampler --
+    // --ignored --nocapture the_bend_costs`. The device time includes the upload and the readback
+    // (the same in both rows); lavapipe runs the kernel on the CPU.
+    let Some(dev) = gpus().first() else { return };
+    let (bw, bh) = (2048usize, 1366usize);
+    let img = scene(bw, bh, 30);
+    let (plain, cw, ch) = general_grid(bw, bh, 1, 0, 0.3, 1.0, (0.0, 0.0));
+    let warp = fitted_warp(1.0, -0.03, 0.01, (cw as f64, ch as f64));
+    let best = |f: &dyn Fn()| -> f64 {
+        (0..3)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                f();
+                t.elapsed().as_secs_f64() * 1000.0
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    for (name, grid) in [
+        ("rotated", plain),
+        ("rotated and bent", plain.with_warp(Some(warp))),
+    ] {
+        let kernel = grid.kernel();
+        let cpu = best(&|| {
+            let _ = sample_to_camera(&img, (0, 0), &grid, (0, 0), bw, bh);
+        });
+        let gpu = best(&|| {
+            let _ = gpu_sample(dev, &img, (0, 0), grid, (0, 0), bw, bh);
+        });
+        note!(
+            "{name} ({kernel:?}): CPU {cpu:.0} ms, device (lavapipe, with upload and readback) {gpu:.0} ms"
+        );
+    }
 }
 
 #[test]

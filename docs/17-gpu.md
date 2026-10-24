@@ -132,7 +132,7 @@ DNG: the colour stage per tile on the device (Stop::DngLinearAwg4), read back in
 | R8 Richardson–Lucy (default), diffraction | `cpu/sharpen.rs`, `cpu/sharpen/diffraction.rs` | `richardson_lucy`, `diffraction` |
 | R9 lens resample | `cpu/resample.rs` | `lens` |
 | Reduced fit-view group (bin 1/k, gain, sigma, denoise, R9 at 1/k) | `pipeline/raw.rs::{bin_mosaic, reduced_bayer, finish_lens}` | `GpuReduced`, in bands of rows |
-| Geometry sampler | `ym-gpu` `cpu/sampler.rs` (what `ym-core` calls) | `sampler` |
+| Geometry sampler, with the lens's bend (L4: `SamplerWarp`, `docs/21` section 4) | `ym-gpu` `cpu/sampler.rs` (what `ym-core` calls) | `sampler` (the bend as a displacement of the exact table position, `warp_pos`) |
 | C1 to C12 | `ym-color::display::ColorChain` | `color.wgsl` and `aces2.wgsl` with a persistent `ChainTables` set (ACES 2 and dither tables once per device, curve tables per curve edit, look cubes in an LRU keyed by content) and a per-frame `ChainU` uniform block |
 | Output sharpening | `cpu/output_sharpen.rs` | `output_sharpen` |
 | C13, dither, quantise | `ym-color::encode`, `ym-export/pixels.rs` | `encode` (RGBA8 for views, u8/u16 bands for exports) |

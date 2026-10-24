@@ -536,6 +536,8 @@ struct Reference {
     out: Vec<f32>,
     width: usize,
     height: usize,
+    /// The plan's L4 map for the frame (a canvas the size of the frame, no turns).
+    warp: ym_lens::LensWarp,
 }
 
 fn reference_of(r: &Renderer, src: &PhotoSource, lens: LensSettings, axis: Axis) -> Reference {
@@ -578,19 +580,36 @@ fn reference_of(r: &Renderer, src: &PhotoSource, lens: LensSettings, axis: Axis)
     );
     let planes = LensPlanes::build(&plan, &image, None, &|| false).expect("planes");
     let out = ym_lens::apply(&plan, &planes, 1, &image, PixelRect::new(0, 0, w, h)).expect("apply");
+    let warp = plan.warp(w as f64, h as f64);
     Reference {
         raw,
         out,
         width: w,
         height: h,
+        warp,
     }
 }
 
 impl Reference {
-    fn pixel(&self, x: usize, y: usize) -> [f32; 3] {
+    /// What the geometry sampler reads at the canvas position `(x, y)` (continuous, pixel centres at
+    /// `i + 0.5`) of an unturned, unstraightened view of the frame: the lens output at the photo
+    /// position L4's inverse map gives, by Catmull-Rom (the sampler's kernel for a bent grid).
+    fn sampled(&self, x: f64, y: f64) -> [f32; 3] {
         let n = self.width * self.height;
-        let i = y * self.width + x;
-        [self.out[i], self.out[n + i], self.out[2 * n + i]]
+        let (px, py) = self.warp.canvas_to_photo(x, y);
+        let (px, py) = (
+            px.clamp(0.0, self.width as f64),
+            py.clamp(0.0, self.height as f64),
+        );
+        std::array::from_fn(|c| {
+            ym_gpu::cpu::resample::sample_catmull_rom(
+                &self.out[c * n..(c + 1) * n],
+                self.width,
+                self.height,
+                px,
+                py,
+            )
+        })
     }
 }
 
@@ -682,7 +701,9 @@ fn the_100_percent_view_samples_the_whole_frame_apply_with(r: &Renderer) {
             .camera_rgb_at(&src, &st, (x as f64 + 0.5, y as f64 + 0.5), &token)
             .expect("reading")
             .expect("inside the photo");
-        let want = reference.pixel(x, y);
+        // The photo's lens bends the picture (Anamorphic and Edges are above 0): the view reads the
+        // lens output at the position the map gives, not at the pixel itself.
+        let want = reference.sampled(x as f64 + 0.5, y as f64 + 0.5);
         for c in 0..3 {
             assert!(
                 (got[c] - f64::from(want[c])).abs() <= 1e-6 * f64::from(want[c]).abs().max(1.0),

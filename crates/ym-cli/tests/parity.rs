@@ -877,6 +877,106 @@ fn a_lens_is_the_same_picture_through_the_app_and_the_binary() {
 }
 
 #[test]
+fn a_full_anamorphic_bend_is_the_same_picture_through_the_app_and_the_binary() {
+    // `docs/21` sections 4 and 14 (L4): the bend, the lens's distortion and the zoom are geometry,
+    // applied while the export samples its tiles. At Anamorphic 100 (the strongest bend and zoom), with
+    // a quarter turn and a straighten angle (the bend acts on the turned canvas and the straightening
+    // acts on the bent one), the app's export and `ym` write the same bytes: the JPEG (the baked
+    // picture) and the DNG (the bend travels in `Geometry::upright`, in the buffer's own orientation,
+    // for the raw pixels and the preview). A 640 x 480 photo is a frame whose tiles cross the 512 px
+    // line. Both must differ from the same export without the bend, or the test would pass for a bend
+    // that does nothing.
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("DSC00001.ARW", 640, 480, 11);
+    let app = App::open(&[&arw]);
+    let doc = |anamorphic: f64, edges: f64| {
+        serde_json::json!({
+            "lens": { "kind": "vintage", "flares": 0, "edges": edges, "anamorphic": anamorphic },
+            "crop": { "rect": { "x": 0.04, "y": 0.06, "width": 0.84, "height": 0.86 }, "angle_deg": 3.0, "aspect": "free" },
+            "orientation": 90
+        })
+    };
+    let apply = |value: serde_json::Value| {
+        let (settings, clamped) =
+            DevelopSettings::from_value(value, &app.core.looks.effective_default())
+                .expect("settings");
+        assert!(clamped.is_empty(), "{clamped:?}");
+        app.core
+            .session
+            .replace_settings(app.photo, settings)
+            .expect("replace");
+    };
+    let file_of = |name: &str, value: serde_json::Value| {
+        let file = sb.root().join(name);
+        std::fs::write(&file, value.to_string()).expect("write");
+        file
+    };
+    let straight = file_of("straight.json", doc(0.0, 0.0));
+    let bent = file_of("bent.json", doc(100.0, 50.0));
+    for (name, format) in [("jpeg", FormatKind::Jpeg), ("dng", FormatKind::Dng)] {
+        let options = || ExportOptions {
+            format,
+            ..ExportOptions::default()
+        };
+        apply(doc(0.0, 0.0));
+        let without = cli_export(
+            &sb,
+            &[&arw],
+            &[
+                "--format",
+                name,
+                "--settings",
+                straight.to_str().expect("utf-8"),
+            ],
+            &sb.root().join(format!("without-{name}")),
+        );
+        apply(doc(100.0, 50.0));
+        let from_app = app.export(options(), &sb.root().join(format!("app-{name}")));
+        let from_cli = cli_export(
+            &sb,
+            &[&arw],
+            &[
+                "--format",
+                name,
+                "--settings",
+                bent.to_str().expect("utf-8"),
+            ],
+            &sb.root().join(format!("cli-{name}")),
+        );
+        assert_same_files(&from_app, &from_cli, &format!("anamorphic bend, {name}"));
+        assert!(
+            bytes(&from_app[0]) != bytes(&without[0]),
+            "{name}: the bend changed nothing in the file"
+        );
+        // And with the options instead of the file, for the JPEG: the same picture.
+        if name == "jpeg" {
+            apply(serde_json::json!({
+                "lens": { "kind": "vintage", "flares": 0, "edges": 50, "anamorphic": 100 },
+            }));
+            let plain_app = app.export(options(), &sb.root().join("app-options"));
+            let plain_cli = cli_export(
+                &sb,
+                &[&arw],
+                &[
+                    "--format",
+                    "jpeg",
+                    "--lens",
+                    "vintage",
+                    "--flares",
+                    "0",
+                    "--edges",
+                    "50",
+                    "--anamorphic",
+                    "100",
+                ],
+                &sb.root().join("cli-options"),
+            );
+            assert_same_files(&plain_app, &plain_cli, "anamorphic bend as options");
+        }
+    }
+}
+
+#[test]
 fn the_settings_an_export_records_reproduce_the_file() {
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");

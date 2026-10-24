@@ -23,6 +23,14 @@
 //! Without a lens every one of them is the raw method it mirrors, and nothing here runs: no plan, no
 //! planes, no counter, the bytes of a render that never heard of lenses.
 //!
+//! # L4, the bend
+//!
+//! The anamorphic bend, the lens's distortion and the zoom are geometry, not a pass: the plan's map
+//! is fitted once per photo on the full-resolution canvas ([`LensCtx::warp`]) and [`Job::geometry`]
+//! puts it in the [`Geometry`](crate::pipeline::geometry::Geometry) every view and export samples
+//! through. The passes above work on the photo as the lens delivers it, unbent; the sampler bends it
+//! (`docs/21` section 4, L4).
+//!
 //! # On the device
 //!
 //! There are no device lens kernels yet. A raw group that lives on the device is read back
@@ -43,7 +51,6 @@ use std::time::Instant;
 
 use ym_gpu::cpu::sampler::SamplerWarp;
 use ym_gpu::cpu::{Placement, Rect, RgbImage};
-use ym_lens::consts::NEWTON_STEPS;
 use ym_lens::{
     Axis, CameraResponse, FrameInfo, ImageRef, LensAmounts, LensError, LensPlan, LensPlanes,
     PixelRect, ReshapeReason, ReshapeReport, apply, halo_px,
@@ -53,6 +60,7 @@ use ym_raw::makernote::SonyFocus;
 
 use super::{Job, Pixels, Renderer, TileImage, lock};
 use crate::pipeline::RenderError;
+use crate::pipeline::geometry::sampler_warp;
 use crate::pipeline::raw::RawParamsKey;
 
 /// The note of a render whose camera curves could not be read: the lens colours use a neutral camera.
@@ -263,16 +271,7 @@ impl Job<'_> {
         // reuse it (the geometry's grids take their own canvas size).
         let (canvas_w, canvas_h) = base.canvas_size(raw_plan.out_w, raw_plan.out_h);
         let l4 = plan.warp(canvas_w as f64, canvas_h as f64);
-        let warp = (!l4.is_identity()).then(|| {
-            SamplerWarp::new(
-                l4.mu(),
-                l4.beta(),
-                l4.distortion_k1(),
-                l4.distortion_k2(),
-                l4.zoom(),
-                NEWTON_STEPS as u8,
-            )
-        });
+        let warp = sampler_warp(&l4);
         let ctx = Arc::new(LensCtx {
             plan,
             key,

@@ -17,7 +17,7 @@ use std::sync::{Arc, OnceLock};
 
 use common::*;
 use ym_color::display::OutputTarget;
-use ym_core::pipeline::geometry::{Geometry, canvas_to_oriented, oriented_to_canvas};
+use ym_core::pipeline::geometry::{Geometry, canvas_to_oriented, oriented_to_canvas, sampler_warp};
 use ym_core::pipeline::{
     FullImage, FullRequest, FullTarget, NeutralOnly, PhotoSource, RenderOptions, Renderer,
     ViewportRect, ViewportState,
@@ -85,6 +85,38 @@ fn turned(src: &PhotoSource, quarter_turns: u8) -> PhotoSource {
     })
 }
 
+/// A photo of patches with a little noise, `w x h`, camera orientation `exif`: texture for the tests
+/// that compare pictures.
+fn textured(w: u32, h: u32, exif: u16) -> Developed {
+    let scene = Scene::new(w, h, light(PROFILE, 5500.0), Layout::Patchwork, 0.35).noise(2e-4, 1e-6);
+    let dir = tempfile::tempdir().expect("temp dir");
+    scene
+        .builder(MODEL)
+        .orientation(exif)
+        .write_to(&dir.path().join("DSC00001.ARW"), &scene.mosaic())
+        .expect("write the synthetic ARW");
+    Developed::open(dir)
+}
+
+/// A flat photo of `w x h`, camera orientation `exif`, whose file carries no lens-correction tables
+/// (the synthetic files carry the camera's by default, and R9 then resamples the frame by a fraction
+/// of a percent): the buffer is the mosaic, and a position in the photo is a position in the file.
+fn bare(w: u32, h: u32, exif: u16) -> Developed {
+    let scene = Scene::new(w, h, light(PROFILE, 5500.0), Layout::Uniform, 0.4);
+    let dir = tempfile::tempdir().expect("temp dir");
+    scene
+        .builder(MODEL)
+        .orientation(exif)
+        .lens_tables(ym_raw::testgen::LensTables {
+            vignetting: None,
+            chromatic_aberration: None,
+            distortion: None,
+        })
+        .write_to(&dir.path().join("DSC00001.ARW"), &scene.mosaic())
+        .expect("write the synthetic ARW");
+    Developed::open(dir)
+}
+
 /// A flat photo of `w x h`, camera orientation `exif`.
 fn flat(w: u32, h: u32, exif: u16) -> Developed {
     let scene = Scene::new(w, h, light(PROFILE, 5500.0), Layout::Uniform, 0.4);
@@ -132,10 +164,20 @@ fn the_samplers_warp_is_the_lens_warp_bit_for_bit() {
                 if full.is_identity() {
                     continue;
                 }
-                let sampler = ym_core::pipeline::lens_warp_of(&full);
-                for (k, view) in [(1usize, full.clone()), (3, full.rescaled(w as f64 / 3.0, h as f64 / 3.0)), (16, full.rescaled((w / 16) as f64, (h / 16) as f64))] {
+                let sampler = sampler_warp(&full).expect("a bend");
+                for (k, view) in [
+                    (1usize, full.clone()),
+                    (3, full.rescaled(w as f64 / 3.0, h as f64 / 3.0)),
+                    (16, full.rescaled((w / 16) as f64, (h / 16) as f64)),
+                ] {
                     let canvas = view.canvas_size();
-                    for (fx, fy) in [(0.0, 0.0), (0.31, 0.77), (0.5, 0.5), (1.0, 1.0), (0.93, 0.02)] {
+                    for (fx, fy) in [
+                        (0.0, 0.0),
+                        (0.31, 0.77),
+                        (0.5, 0.5),
+                        (1.0, 1.0),
+                        (0.93, 0.02),
+                    ] {
                         let (x, y) = (fx * canvas.0, fy * canvas.1);
                         let a = sampler.canvas_to_photo(canvas, x, y);
                         let b = view.canvas_to_photo(x, y);
@@ -206,7 +248,10 @@ fn the_geometry_of_a_photo_carries_the_zoom_of_its_full_resolution_canvas() {
     .expect("plan");
     assert_eq!(tw.zoom, plan_y.warp(480.0, 640.0).zoom());
     assert_ne!(tw.zoom, warp.zoom, "another canvas, another zoom");
-    assert!(!tw.axis_y, "the canvas's horizontal is the axis in the baked geometry");
+    assert!(
+        !tw.axis_y,
+        "the canvas's horizontal is the axis in the baked geometry"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -234,7 +279,7 @@ fn no_pixel_of_the_canvas_lacks_a_source_at_any_scale() {
     let (w, h) = (1210usize, 806usize);
     let d = flat(w as u32, h as u32, 1);
     let base = d.source();
-    let mut worst_over = [0.0f64; 4];
+    let mut closest = [f64::INFINITY; 4];
     let mut checked = 0usize;
     for (edges, amounts) in [
         (0.0, [10.0, 25.0, 50.0, 75.0, 100.0].as_slice()),
@@ -260,15 +305,19 @@ fn no_pixel_of_the_canvas_lacks_a_source_at_any_scale() {
                         // A lattice at full resolution (a million pixels a case is slow), every
                         // pixel on the reduced canvases.
                         let step = if k == 1 { 7 } else { 1 };
-                        let mut over = 0.0f64;
+                        let mut inside_by = f64::INFINITY;
                         for y in (0..ch).step_by(step).chain([ch - 1]) {
                             for x in (0..cw).step_by(step).chain([cw - 1]) {
                                 // The canvas position of the output pixel, from the formula of the
                                 // straighten map, independent of the grid.
-                                let (qx, qy) = (x as f64 + 0.5 - canvas.0 * 0.5, y as f64 + 0.5 - canvas.1 * 0.5);
+                                let (qx, qy) = (
+                                    x as f64 + 0.5 - canvas.0 * 0.5,
+                                    y as f64 + 0.5 - canvas.1 * 0.5,
+                                );
                                 let px = canvas.0 * 0.5 + cos * qx + sin * qy;
                                 let py = canvas.1 * 0.5 - sin * qx + cos * qy;
-                                let on_canvas = px >= 0.0 && py >= 0.0 && px <= canvas.0 && py <= canvas.1;
+                                let on_canvas =
+                                    px >= 0.0 && py >= 0.0 && px <= canvas.0 && py <= canvas.1;
                                 let source = grid.source(x, y);
                                 assert_eq!(
                                     source.is_some(),
@@ -280,11 +329,11 @@ fn no_pixel_of_the_canvas_lacks_a_source_at_any_scale() {
                                 }
                                 // Where the bent canvas reads, before the clamp.
                                 let (sx, sy) = warp.canvas_to_photo(canvas, px, py);
-                                over = over
-                                    .max(-sx)
-                                    .max(sx - canvas.0)
-                                    .max(-sy)
-                                    .max(sy - canvas.1);
+                                inside_by = inside_by
+                                    .min(sx)
+                                    .min(canvas.0 - sx)
+                                    .min(sy)
+                                    .min(canvas.1 - sy);
                                 checked += 1;
                                 if angle == 0.0 {
                                     assert!(source.is_some());
@@ -295,20 +344,21 @@ fn no_pixel_of_the_canvas_lacks_a_source_at_any_scale() {
                         // A reduced canvas has sides rounded to whole pixels (its half-diagonal
                         // is not the full canvas's over k), which moves the edge by a fraction of
                         // a reduced pixel at most; the sampler clamps what is left.
-                        let allowed = if k == 1 { 1e-6 } else { 0.5 };
+                        let allowed = if k == 1 { -1e-6 } else { -0.5 };
                         assert!(
-                            over <= allowed,
-                            "e{edges} a{anamorphic} turns {turns} angle {angle} /{k}: reads {over} px outside the photo"
+                            inside_by >= allowed,
+                            "e{edges} a{anamorphic} turns {turns} angle {angle} /{k}: reads {} px outside the photo",
+                            -inside_by
                         );
-                        worst_over[si] = worst_over[si].max(over);
+                        closest[si] = closest[si].min(inside_by);
                     }
                 }
             }
         }
     }
     eprintln!(
-        "lens bend: {checked} pixels read; worst overshoot beyond the photo (px of the view): full {:.2e}, /3 {:.2e}, /8 {:.2e}, /16 {:.2e}",
-        worst_over[0], worst_over[1], worst_over[2], worst_over[3]
+        "lens bend: {checked} pixels read; the closest any comes to the photo's edge (px of the view; negative is outside): full {:.3}, /3 {:.3}, /8 {:.3}, /16 {:.3}",
+        closest[0], closest[1], closest[2], closest[3]
     );
     assert!(checked > 1_000_000);
 }
@@ -326,8 +376,12 @@ fn lines() -> Developed {
     let dark = (scene.black + 0.04 * (scene.white_level - scene.black)) as u16;
     for y in 0..h {
         for x in 0..w {
-            let on_vertical = [160u32, 320, 480].iter().any(|&c| x + 2 >= c && x + 2 < c + 4);
-            let on_horizontal = [60u32, 240, 420].iter().any(|&c| y + 2 >= c && y + 2 < c + 4);
+            let on_vertical = [160u32, 320, 480]
+                .iter()
+                .any(|&c| x + 2 >= c && x + 2 < c + 4);
+            let on_horizontal = [60u32, 240, 420]
+                .iter()
+                .any(|&c| y + 2 >= c && y + 2 < c + 4);
             if on_vertical || on_horizontal {
                 mosaic[(y * w + x) as usize] = dark;
             }
@@ -379,9 +433,28 @@ fn centroid(img: &FullImage, line: usize, along_x: bool, around: f64, half: usiz
     (sum > 0.05 * level).then(|| moment / sum)
 }
 
+/// True when the photo column `x` is clear of the vertical lines (a column through one is dark all
+/// the way down, and says nothing about a horizontal line).
+fn away_from_verticals(x: f64) -> bool {
+    [160.0, 320.0, 480.0].iter().all(|&c| (x - c).abs() > 16.0)
+}
+
+/// The extremes of a set of numbers.
+fn span(values: &[f64]) -> (f64, f64) {
+    values
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| {
+            (a.min(v), b.max(v))
+        })
+}
+
 /// In the finished picture of a photo of lines, at Anamorphic 100 and Edges 0, a vertical line is
 /// straight to 0.5 px, at the place the map puts it, and a horizontal line near the top bows as the
 /// map says (and by a few pixels, so the check means something).
+///
+/// The map's input is the photo as the lens stage gets it, not the mosaic: the raw stages move the
+/// lines by a fraction of a pixel (R9 resamples the frame), so the lines are first measured in the
+/// picture of the same photo without a lens, and those are the places the map is applied to.
 #[test]
 fn a_horizontal_line_near_the_top_bows_and_a_vertical_stays_straight() {
     let r = renderer();
@@ -391,71 +464,92 @@ fn a_horizontal_line_near_the_top_bows_and_a_vertical_stays_straight() {
     let warp = g.warp.expect("Anamorphic 100 bends");
     let canvas = (640.0, 480.0);
     let img = export(&r, &src);
+    let base = export(&r, &with_lens(&d.source(), LensSettings::default()));
     assert_eq!((img.width, img.height), (640, 480));
+    assert_eq!((base.width, base.height), (640, 480));
 
-    // The verticals: x = 160, 320, 480 in the photo.
-    for photo_x in [160.0, 320.0, 480.0] {
-        let want = warp.photo_to_canvas(canvas, photo_x, 240.0).0;
+    // The verticals: x = 160, 320, 480 in the photo, away from the horizontal lines' rows.
+    let rows: Vec<usize> = (30..450)
+        .step_by(10)
+        .filter(|&row| {
+            [60.0, 240.0, 420.0]
+                .iter()
+                .all(|&c| (row as f64 - c).abs() >= 40.0)
+        })
+        .collect();
+    for line_x in [160.0, 320.0, 480.0] {
+        // Where the raw stages leave the line: the mean over the rows.
+        let in_photo = rows
+            .iter()
+            .map(|&row| centroid(&base, row, true, line_x, 10).expect("the line, no lens"))
+            .sum::<f64>()
+            / rows.len() as f64;
+        let want = warp.photo_to_canvas(canvas, in_photo, 240.0).0;
         // The map keeps a vertical line vertical: the canvas x does not depend on the photo's y.
         for y in [0.0, 120.0, 479.0] {
-            assert!((warp.photo_to_canvas(canvas, photo_x, y).0 - want).abs() < 1e-9);
+            assert!((warp.photo_to_canvas(canvas, in_photo, y).0 - want).abs() < 1e-9);
         }
-        let mut found = Vec::new();
-        for row in (30..450).step_by(10) {
-            // Away from the horizontal lines (their rows cross the vertical ones).
-            if [60.0, 240.0, 420.0].iter().any(|&c| (row as f64 - c).abs() < 40.0) {
-                continue;
-            }
-            found.push(centroid(&img, row, true, want, 10).expect("the line is in the picture"));
-        }
-        let (lo, hi) = found
+        let found: Vec<f64> = rows
             .iter()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
+            .map(|&row| centroid(&img, row, true, want, 10).expect("the line is in the picture"))
+            .collect();
+        let (lo, hi) = span(&found);
         assert!(
             hi - lo <= 0.5,
-            "the vertical line at {photo_x} is not straight: {lo:.3} to {hi:.3}"
+            "the vertical line at {line_x} is not straight: {lo:.3} to {hi:.3}"
         );
         let mean = found.iter().sum::<f64>() / found.len() as f64;
         assert!(
             (mean - want).abs() <= 0.5,
-            "the vertical line at {photo_x} is at {mean:.3}, the map says {want:.3}"
+            "the vertical line at {line_x} is at {mean:.3}, the map says {want:.3} (it was at {in_photo:.3} without the lens)"
+        );
+        eprintln!(
+            "lens bend: vertical {line_x}: {in_photo:.3} -> {mean:.3} (map {want:.3}), spread {:.3}",
+            hi - lo
         );
     }
 
-    // The horizontal line at y = 60, along its length.
-    let mut bow = Vec::new();
-    for s in (60..=580).step_by(20) {
-        let (cx, cy) = warp.photo_to_canvas(canvas, f64::from(s), 60.0);
-        let column = cx.floor() as usize;
-        let measured = centroid(&img, column, false, cy, 12).expect("the line is in the picture");
-        // The column is cut at the pixel's left edge, the line's slope is below 0.1: well inside the
-        // tolerance.
-        assert!(
-            (measured - cy).abs() <= 0.5,
-            "the horizontal line at x = {s} is at {measured:.3}, the map says {cy:.3}"
-        );
-        bow.push(measured);
-    }
-    let (lo, hi) = bow
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
+    // A horizontal line along its length: the bent line against the map of the unbent one, which is
+    // measured column by column in the picture without a lens.
+    let along = |photo_y: f64, step: usize| -> (Vec<f64>, Vec<f64>) {
+        let (mut expected, mut measured) = (Vec::new(), Vec::new());
+        for s in (60..=580u32)
+            .step_by(step)
+            .filter(|&s| away_from_verticals(f64::from(s)))
+        {
+            let y_in_photo =
+                centroid(&base, s as usize, false, photo_y, 12).expect("the line, no lens");
+            let (cx, cy) = warp.photo_to_canvas(canvas, f64::from(s) + 0.5, y_in_photo);
+            // The column the bent line crosses at that place (its slope is below 0.1).
+            let y = centroid(&img, cx.floor() as usize, false, cy, 12)
+                .expect("the line is in the picture");
+            assert!(
+                (y - cy).abs() <= 0.5,
+                "the horizontal line of the photo at x = {s}, y = {photo_y}: it is at {y:.3}, the map says {cy:.3}"
+            );
+            expected.push(cy);
+            measured.push(y);
+        }
+        (expected, measured)
+    };
+    let (_, top) = along(60.0, 20);
+    let (lo, hi) = span(&top);
+    eprintln!(
+        "lens bend: horizontal line near the top spans {:.2} px",
+        hi - lo
+    );
     assert!(
         hi - lo >= 3.0,
         "the horizontal line near the top must bow, it spans {:.2} px",
         hi - lo
     );
-    // A line through the middle stays straight (y = 240 is on the axis' perpendicular centre).
-    let middle: Vec<f64> = (60..=580)
-        .step_by(40)
-        .map(|s| {
-            let (cx, cy) = warp.photo_to_canvas(canvas, f64::from(s), 240.0);
-            centroid(&img, cx.floor() as usize, false, cy, 12).expect("the middle line")
-        })
-        .collect();
-    let (lo, hi) = middle
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
-    assert!(hi - lo <= 0.5, "the middle line is not straight: {lo:.3} to {hi:.3}");
+    // The line through the middle stays straight.
+    let (_, middle) = along(240.0, 40);
+    let (lo, hi) = span(&middle);
+    assert!(
+        hi - lo <= 0.5,
+        "the middle line is not straight: {lo:.3} to {hi:.3}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -474,7 +568,7 @@ fn a_click_goes_through_the_bend_and_back() {
     let r = renderer();
     let mut worst = 0.0f64;
     for (exif, user_turns) in [(1u16, 0u8), (6, 0), (1, 1), (8, 1), (3, 2)] {
-        let d = flat(600, 400, exif);
+        let d = bare(600, 400, exif);
         let src = turned(
             &with_lens(&d.source(), lens(LensKind::Default, 0.0, 100.0, 100.0)),
             user_turns,
@@ -484,25 +578,35 @@ fn a_click_goes_through_the_bend_and_back() {
         let (cw, ch) = g.canvas_size(600, 400);
         // A cell half the canvas' size: css px are canvas px over 2.
         let st = cell(cw as f64 / 2.0, ch as f64 / 2.0);
-        for (u, v) in [(0.5, 0.5), (0.1, 0.12), (0.93, 0.88), (0.25, 0.8), (0.02, 0.5)] {
+        for (u, v) in [
+            (0.5, 0.5),
+            (0.1, 0.12),
+            (0.93, 0.88),
+            (0.25, 0.8),
+            (0.02, 0.5),
+        ] {
+            let css = (u * cw as f64 / 2.0, v * ch as f64 / 2.0);
+            // Where the click is on the final image, which is the canvas (no crop, no angle).
+            let (fx, fy) = st
+                .final_point_at((cw, ch), css)
+                .expect("the click is on the picture");
             let p = r
-                .pick_point_at(&src, &st, (u * cw as f64 / 2.0, v * ch as f64 / 2.0), &token())
+                .pick_point_at(&src, &st, css, &token())
                 .expect("pick")
                 .expect("inside");
             // The oriented photo's fractions back to the canvas, then forward through the bend.
             let c = oriented_to_canvas(user_turns, p);
-            let (x, y) = warp.photo_to_canvas((cw as f64, ch as f64), c[0] * cw as f64, c[1] * ch as f64);
-            let err = ((x / cw as f64 - u).abs() * cw as f64).max((y / ch as f64 - v).abs() * ch as f64);
+            let (x, y) =
+                warp.photo_to_canvas((cw as f64, ch as f64), c[0] * cw as f64, c[1] * ch as f64);
+            let err = (x - fx).abs().max((y - fy).abs());
             worst = worst.max(err);
             assert!(
                 err < 1e-6,
-                "exif {exif} turns {user_turns}: click ({u}, {v}) -> photo {p:?} -> canvas ({:.6}, {:.6}) px of {cw}x{ch}",
-                x / cw as f64,
-                y / ch as f64
+                "exif {exif} turns {user_turns}: click {css:?} = canvas ({fx:.4}, {fy:.4}) -> photo {p:?} -> canvas ({x:.4}, {y:.4}) of {cw}x{ch}"
             );
             // And the pick is not the click: the bend moved it (at the sides and corners).
             if (u - 0.5).abs() > 0.3 {
-                let straight = canvas_to_oriented(user_turns, [u, v]);
+                let straight = canvas_to_oriented(user_turns, [fx / cw as f64, fy / ch as f64]);
                 assert!(
                     (straight[0] - p[0]).abs() + (straight[1] - p[1]).abs() > 1e-3,
                     "exif {exif}: the pick ignored the bend"
@@ -543,7 +647,8 @@ fn without_anamorphic_and_distortion_the_geometry_is_the_plain_one() {
     let (_dir, flat_lens) = undistorted_library();
     let d = flat(640, 480, 1);
     let plain = Geometry::new(1, &d.source().settings);
-    let r = Renderer::new(Arc::new(NeutralOnly), options_with(flat_lens, 0)).expect("render thread");
+    let r =
+        Renderer::new(Arc::new(NeutralOnly), options_with(flat_lens, 0)).expect("render thread");
     for l in [
         lens(LensKind::Default, 60.0, 100.0, 0.0),
         lens(LensKind::Default, 0.0, 0.0, 0.0),
@@ -558,17 +663,30 @@ fn without_anamorphic_and_distortion_the_geometry_is_the_plain_one() {
         assert_eq!(grid.sampler_grid().kernel(), Kernel::Copy);
     }
     // Anamorphic bends, even on that lens.
-    let bent = geometry_of(&r, &with_lens(&d.source(), lens(LensKind::Default, 0.0, 0.0, 30.0)));
+    let bent = geometry_of(
+        &r,
+        &with_lens(&d.source(), lens(LensKind::Default, 0.0, 0.0, 30.0)),
+    );
     assert!(bent.warp.is_some());
     let grid = bent.at_full_resolution().grid((640, 480), (640, 480));
     assert!(!grid.is_pixel_copy());
-    assert_eq!(grid.sampler_grid().kernel(), Kernel::Bicubic, "Catmull-Rom at full resolution");
+    assert_eq!(
+        grid.sampler_grid().kernel(),
+        Kernel::Bicubic,
+        "Catmull-Rom at full resolution"
+    );
 
     // The shipped lens has distortion: Edges alone bends it, Flares alone does not.
     let r = renderer();
-    let e = geometry_of(&r, &with_lens(&d.source(), lens(LensKind::Sonnar, 0.0, 100.0, 0.0)));
+    let e = geometry_of(
+        &r,
+        &with_lens(&d.source(), lens(LensKind::Sonnar, 0.0, 100.0, 0.0)),
+    );
     assert!(e.warp.is_some(), "Edges bends a lens with distortion");
-    let f = geometry_of(&r, &with_lens(&d.source(), lens(LensKind::Sonnar, 100.0, 0.0, 0.0)));
+    let f = geometry_of(
+        &r,
+        &with_lens(&d.source(), lens(LensKind::Sonnar, 100.0, 0.0, 0.0)),
+    );
     assert_eq!(f.warp, None, "Flares alone do not");
 
     // The Before view has no lens, so no bend, whatever the settings say.
@@ -585,7 +703,10 @@ fn at_full_resolution_every_lens_is_catmull_rom() {
     let d = flat(640, 480, 1);
     for kind in LensKind::ALL {
         for turns in [0u8, 1] {
-            let src = turned(&with_lens(&d.source(), lens(kind, 0.0, 100.0, 100.0)), turns);
+            let src = turned(
+                &with_lens(&d.source(), lens(kind, 0.0, 100.0, 100.0)),
+                turns,
+            );
             let g = geometry_of(&r, &src);
             let (cw, ch) = g.canvas_size(640, 480);
             let grid = g.at_full_resolution().grid((640, 480), (cw, ch));
@@ -611,10 +732,23 @@ fn at_full_resolution_every_lens_is_catmull_rom() {
 fn the_dng_preview_is_the_baked_picture_unturned() {
     let r = renderer();
     // 320 x 240 under camera orientation 6 (the picture is 240 x 320), and a user's quarter turn.
-    for (exif, user_turns, angle) in [(1u16, 0u8, 0.0), (6, 0, 0.0), (1, 1, 0.0), (6, 1, 4.0), (8, 0, -3.0)] {
-        let d = flat(320, 240, exif);
-        let mut src = turned(
-            &with_lens(&d.source(), lens(LensKind::Default, 0.0, 100.0, 100.0)),
+    for (exif, user_turns, angle) in [
+        (1u16, 0u8, 0.0),
+        (6, 0, 0.0),
+        (1, 1, 0.0),
+        (6, 1, 4.0),
+        (8, 0, -3.0),
+    ] {
+        let d = textured(320, 240, exif);
+        // No capture sharpening on either side: a DNG's renders are made without R8.
+        let mut src = edit(&d.source(), |s| {
+            s.sharpen = ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
+                amount: 0.0,
+                radius_px: 1.0,
+            });
+        });
+        src = turned(
+            &with_lens(&src, lens(LensKind::Default, 0.0, 100.0, 100.0)),
             user_turns,
         );
         if angle != 0.0 {
@@ -669,7 +803,11 @@ fn the_dng_preview_is_the_baked_picture_unturned() {
                     8 => (y, uw - 1 - x),
                     _ => (x, y),
                 };
-                let (mut ow, mut oh) = if (5..=8).contains(&exif) { (uh, uw) } else { (uw, uh) };
+                let (mut ow, mut oh) = if (5..=8).contains(&exif) {
+                    (uh, uw)
+                } else {
+                    (uw, uh)
+                };
                 for _ in 0..user_turns {
                     (px, py) = (oh - 1 - py, px);
                     std::mem::swap(&mut ow, &mut oh);
@@ -696,12 +834,14 @@ fn the_dng_preview_is_the_baked_picture_unturned() {
 /// tile, so the sampler never reads a pixel that was not cut out for it.
 #[test]
 fn an_exports_tiles_equal_the_whole_frame_with_a_bend() {
-    let d = flat(400, 300, 1);
+    let d = textured(400, 300, 1);
     let l = lens(LensKind::Default, 0.0, 100.0, 100.0);
-    let whole = Renderer::new(Arc::new(NeutralOnly), options_with(library(), 1024)).expect("render thread");
+    let whole =
+        Renderer::new(Arc::new(NeutralOnly), options_with(library(), 1024)).expect("render thread");
     let a = export(&whole, &with_lens(&d.source(), l));
     for tile in [64usize, 96, 160] {
-        let tiled = Renderer::new(Arc::new(NeutralOnly), options_with(library(), tile)).expect("render thread");
+        let tiled = Renderer::new(Arc::new(NeutralOnly), options_with(library(), tile))
+            .expect("render thread");
         let b = export(&tiled, &with_lens(&d.source(), l));
         assert_eq!((a.width, a.height), (b.width, b.height));
         let differing = a
@@ -710,7 +850,10 @@ fn an_exports_tiles_equal_the_whole_frame_with_a_bend() {
             .zip(&b.rgb)
             .filter(|(x, y)| x.to_bits() != y.to_bits())
             .count();
-        assert_eq!(differing, 0, "tile {tile}: {differing} samples differ from the whole frame");
+        assert_eq!(
+            differing, 0,
+            "tile {tile}: {differing} samples differ from the whole frame"
+        );
     }
     // The bend did something.
     let plain = export(&whole, &d.source());
