@@ -36,10 +36,37 @@ Notes on the designs:
 1. Classic: the patent's radii are printed to two or three figures (for example 0.9 and 6.1 inch), which is enough to move the computed focal length by 3.6 % from the stated one inch. The data are scaled from the computed focal length, so the focal length of the lens it stands for is exact.
 2. Default: the patent gives three examples, all f/2 and focal length 1.000; Example 3 is used. The lens is traced at f/2.4, about half a stop below its largest opening, because at f/2 its zonal spherical aberration and coma (RMS spot 16 um on the axis and 45 um at half field, against 7 and 10 um at f/2.4) do not fit "clean and modern".
 3. Openings: Classic's patent is an f/1.4 design (it quotes its f/2 predecessor); it is traced stopped down to f/2. Vintage (an f/1.4 design as well) is traced stopped down to f/2, the Petzval at f/2.8 (its patent draws the aberration plot to f/2.0 and f/2.8), the Sonnar at f/2 (the patent says only "a great aperture").
-4. Triplet: the patent gives finished diameters, used as the clear apertures; its diaphragm for f/4 (0.177 of the focal length across) is reproduced by the traced stop to 0.1%. The lens is designed to cover about 14 degrees; at the corner of a 50 mm frame (23 degrees) it passes almost no light (T 0.04) and its spread function there is wider than the runtime's cap, so the numbers describe soft, dark corners. At rho = 1 the traced chief ray grazes total internal reflection, so the spread functions of that radius are those of rho = 0.875 made 20 % wider.
+4. Triplet: the patent gives finished diameters, used as the clear apertures; its diaphragm for f/4 (0.177 of the focal length across) is reproduced by the traced stop to 0.1%. The lens is designed to cover about 14 degrees; at the corner of a 50 mm frame (23 degrees) it passes almost no light (T 0.04) and its spread function there is wider than the runtime draws (see "Spread-function width"), so the numbers describe soft, dark corners. At rho = 1 the traced chief ray grazes total internal reflection, so the spread functions of that radius are those of rho = 0.875 made 20 % wider before the cut.
 5. Sonnar: the patent describes a front lens, a cemented triplet, a cemented pair and a rear meniscus (a triplet derivative with cemented groups).
 6. Glass: every patent gives the refractive index and the Abbe number at the d line (the Triplet's patent also gives the C-to-F dispersion). The index at other wavelengths is a three-term Cauchy formula through the C, d and F lines, with the F-line value taken from the normal partial-dispersion line `P(F,d) = 0.7183 - 0.00039 V`.
 7. Attachment: the patent prints no Abbe numbers. They are assumed within the usual range of each index so that the attachment is afocal and achromatic to first order: T1 and T2 (n 1.52) V = 64, T3 (n 1.65) V = 41.8, the front lens of T4 (n 1.73) V = 26.0, its rear lens (n 1.56) V = 62.0. The patent's stated focal length of the doublet T4 (167.66 mm) is not reproduced (149.8 mm computed), while the afocal ratio and the other stated focal lengths are.
+
+## Spread-function width
+
+`field.psf_half_width` is the width that holds 99 % of the traced rays at every wavelength, but at most 0.012 half-diagonals, which is the widest spread function the runtime draws. Where the traced spread is wider, the `psf` table keeps only the central 0.012 half-diagonals (about 260 um on the sensor): the rays outside that square are dropped (their light is the faint coma and flare tail, which the Flares glow stands for) and each slice is normalised to 1 again. At the other radii the table leaves out about 1 % of the rays by the 99 % rule. The share of rays left out where the cap applied (mean over the eight wavelengths, worst wavelength in brackets):
+
+| Lens | Field radius | `psf_half_width` | share left out |
+|---|---|---|---|
+| classic | 0.375 | 0.012 (traced 0.0174) | 2.8 % (3.6 %) |
+| classic | 0.5 | 0.012 (traced 0.0234) | 6.8 % (7.2 %) |
+| classic | 0.625 | 0.012 (traced 0.0292) | 10.4 % (11.9 %) |
+| classic | 0.75 | 0.012 (traced 0.0294) | 14.2 % (16.7 %) |
+| classic | 0.875 | 0.012 (traced 0.0255) | 14.2 % (17.2 %) |
+| classic | 1 | 0.012 (traced 0.0255) | 14.9 % (18.8 %) |
+| vintage | 0.5 | 0.012 (traced 0.0122) | 0.1 % (0.3 %) |
+| vintage | 0.625 | 0.012 (traced 0.016) | 2.7 % (3.6 %) |
+| vintage | 0.75 | 0.012 (traced 0.0158) | 3.0 % (3.9 %) |
+| vintage | 0.875 | 0.012 (traced 0.0121) | 0.0 % (0.1 %) |
+| vintage | 1 | 0.012 (traced 0.0129) | 0.4 % (0.9 %) |
+| petzval | 1 | 0.012 (traced 0.0148) | 0.7 % (4.3 %) |
+| triplet | 0.625 | 0.012 (traced 0.0181) | 1.9 % (5.4 %) |
+| triplet | 0.75 | 0.012 (traced 0.0253) | 10.3 % (21.5 %) |
+| triplet | 0.875 | 0.012 (traced 0.038) | 71.5 % (74.0 %) |
+| triplet | 1 | 0.012 (traced 0.0465) | 77.1 % (79.1 %) |
+| sonnar | 0.625 | 0.012 (traced 0.0276) | 3.8 % (4.2 %) |
+| sonnar | 0.75 | 0.012 (traced 0.0406) | 8.7 % (9.1 %) |
+| sonnar | 0.875 | 0.012 (traced 0.0378) | 10.9 % (11.5 %) |
+| sonnar | 1 | 0.012 (traced 0.0227) | 2.8 % (3.5 %) |
 
 ## Coatings (assumed, an artistic choice)
 
@@ -56,7 +83,7 @@ Ghost fractions are the product of the two surface reflectances at 550 nm and th
 
 ## What is traced and what is tuned
 
-Traced from the prescription: the spread-function tables (real rays, one common best-focus plane per lens, diffraction at the lens's f-number added), relative illumination, distortion, the cat's-eye offset, the bokeh rim profile, and the ghost positions, sizes, clips, fractions and spectra.
+Traced from the prescription: the spread-function tables (real rays, one common best-focus plane per lens, diffraction at the lens's f-number added, the central 0.012 half-diagonals at most), relative illumination, distortion, the cat's-eye offset, the bokeh rim profile, and the ghost positions, sizes, clips, fractions and spectra.
 
 Tuned by hand (an artistic choice, not computed):
 
