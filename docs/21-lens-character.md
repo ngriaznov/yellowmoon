@@ -99,6 +99,17 @@ Their key is the raw group's key, the lens `kind` and its data version, the came
 
 **Render graph.** `docs/01` *Render graph* gains the row "Lens (L1 to L3) | `lens`, and everything that invalidates the raw group; the orientation when Anamorphic is above 0", and its Geometry row gains L4.
 
+**As built (L1 to L3 in the graph, CPU; `crates/ym-core/src/pipeline/graph/lens.rs`).** The decisions the build made:
+
+- **Where.** The lens sits behind the five places the raw group leaves the graph (`docs/01` *The renderer and its keys*): `Job::lens_group_backing(k)` (fit view, thumbnails, look tiles, histogram and readout: `apply` over the whole group at 1/k, cached per lens setting), `Job::lens_region_pixels(rect)` (the 100 % view: lens tiles on the 512 px grid, cached), `Job::lens_region(rect, false)` and `Job::lens_region_resident(rect)` (exports, the export tail and both DNG targets: the raw region grown by `halo_px`, one call, `apply`, cropped to the rectangle; nothing cached), and `Job::lens_tiles_ready` / `Job::lens_warm_tiles` (so a 100 % view with a lens is not stuck coarse). Without a lens each is the raw method it mirrors. The lens's caches are host images; there are no device lens kernels yet, so a raw group on the device is read back first and the colour pass on the device uploads the lens's host image like any other.
+- **Planes.** One set per photo in `GraphState`, outside the `ByteLru`s (and counted in `PhotoGraph::bytes`), made from the raw group at `k_L`; for a frame under 1024 px (`k_L` = 1, only tiny test frames) the whole frame is assembled from the raw tiles. An **export makes its planes itself** from the CPU reference raw group and keeps them for the request, so the bytes of an export do not depend on what the viewer looked at (and a device-made group never feeds them): the app and `ym` write the same file.
+- **The axis is in the key whatever the amounts**, not only when Anamorphic is above 0: L3's starbursts and ghosts follow the canvas's orientation too. A quarter turn therefore makes the lens passes again.
+- **The focus point** is the maker note's point as a fraction of the sensor frame, shifted and scaled by R9's crop and clamped to the frame (the distortion correction's few pixels are ignored: the detector needs the area). Sony's "centre when unknown" is not told apart from a real centre point.
+- **The camera's colour** comes from the profile's spectral curves read from the data folder (`RenderOptions::data_root`), projected once per camera. When the curves cannot be read the lens uses a neutral camera and the render's notes say "The camera's colour curves could not be read, so the lens colours are neutral."
+- **Thumbnails and look tiles** make the photo's planes like any other request (including the blur map when a slider asks for bokeh), so they show the lens exactly as the viewport does and do not depend on what was opened first; section 1's "only once the blur map exists" is not needed. The price is one set of planes per photo whose graph a thumbnail touches (the renderer keeps three graphs).
+- **Budgets.** The reduced lens groups take up to 1/32 and the 100 % lens tiles up to 1/12 of the CPU budget, per photo; a slider drag leaves one entry per value until the oldest are evicted. An export adds the lens's halo to the 160 px its working set is reserved for.
+- **Counters.** `StageRuns::lens_planes`, `lens_groups`, `lens_tiles`; `StageTimings::lens_ms`; all zero without a lens (a test pins it for every lens).
+
 ## 4. The stages
 
 Starting values below (thresholds, caps, the headroom) are set by eye on the CC0 night, backlit and shallow-focus photos of `docs/test-photo-sources.md` and kept in `ym_lens::consts` or the lens data, each with a doc comment.
@@ -302,7 +313,7 @@ They are the `lens` field of the settings object; `--settings` takes it too. New
 
 ## 10. The app
 
-- IPC: `lens_list` → `LensInfo[]` (read once). The render report carries `lens: { reshaped, reason }`, which the note reads ("little out-of-focus background").
+- IPC: `lens_list` → `LensInfo[]` (read once). The render report carries `lens: { reshaped, reason }`, which the note reads ("little out-of-focus background"). As built: `RenderReport::lens` is `ym_lens::ReshapeReport`, and the `render_stats` event carries it as `lens: { reshaped: boolean, reason: "not_asked" | "little_blur" | null } | null` (`null` without a lens). A plan that does not ask for reshaping (no Anamorphic, and Edges on a lens without swirl) says `not_asked` whatever planes were made for an earlier setting; a frame served from the frame cache says what the photo's planes say.
 - The browser build's mock serves `lens_list` and the report.
 - `docs/11` gets the card under *Look tab* and the tab table's Look row.
 

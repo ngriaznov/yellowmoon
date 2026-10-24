@@ -357,7 +357,12 @@ mod tests {
         let (g, ws, ss, qs) = two_regions(w, h, edge);
         assert!(g.depth() >= 4);
         let sp = spread(&g, &ws, &ss, &qs, 0.05);
-        for (x, y, expect) in [(24, 24, 1.0f32), (30, 48, 1.0), (72, 24, 3.0), (88, 40, 3.0)] {
+        for (x, y, expect) in [
+            (24, 24, 1.0f32),
+            (30, 48, 1.0),
+            (72, 24, 3.0),
+            (88, 40, 3.0),
+        ] {
             let i = y * w + x;
             assert!(
                 sp.cover[i] > 0.3,
