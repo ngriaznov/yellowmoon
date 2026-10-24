@@ -107,6 +107,12 @@ impl Shape {
     pub(crate) fn area(&self) -> f64 {
         self.area
     }
+
+    /// The outward normals of the polygon's edges (empty for a round shape) and the weight of the circle in
+    /// the blend, for the device.
+    pub(crate) fn device_shape(&self) -> (&[[f64; 2]], f64) {
+        (&self.normals, self.rho)
+    }
 }
 
 /// A ghost's radial profile at the normalised radius `t` (1 on the edge): the rim curve, whose argument stops
@@ -320,6 +326,23 @@ impl AlongProfile {
     /// The reach.
     pub(crate) fn length(&self) -> f64 {
         self.length
+    }
+
+    /// The profile's constants for the device: `core`, `power`, `length`, `flat`, the mass of the power law
+    /// up to `flat`, the mass of the whole half profile, and the cumulative mass of the cut part at its
+    /// panel boundaries.
+    pub(crate) fn device_constants(&self) -> ([f64; 6], &[f64]) {
+        (
+            [
+                self.core,
+                self.power,
+                self.length,
+                self.flat,
+                self.flat_mass,
+                self.half_mass,
+            ],
+            &self.cut,
+        )
     }
 }
 
@@ -545,6 +568,86 @@ impl<'a> Items<'a> {
             ],
             span,
         })
+    }
+
+    /// The streak's profile, when the plan has one.
+    pub(crate) fn along(&self) -> Option<&AlongProfile> {
+        self.along.as_ref()
+    }
+
+    /// The items as the device reads them: six four-lane vectors each (`l3::device`).
+    pub(crate) fn device_records(&self) -> Vec<[f32; 4]> {
+        let bits = |v: i32| f32::from_bits(v as u32);
+        let mut out = Vec::with_capacity(6 * self.list.len());
+        for item in &self.list {
+            let span = item.span();
+            let span_v = [
+                bits(span.x0 as i32),
+                bits(span.x1 as i32),
+                bits(span.y0 as i32),
+                bits(span.y1 as i32),
+            ];
+            match item {
+                Item::Ghost(g) => {
+                    out.push([
+                        g.centre[0] as f32,
+                        g.centre[1] as f32,
+                        g.clip_centre[0] as f32,
+                        g.clip_centre[1] as f32,
+                    ]);
+                    out.push([
+                        g.clip_radius as f32,
+                        g.s as f32,
+                        g.stretch as f32,
+                        g.sigma_g as f32,
+                    ]);
+                    out.push([
+                        g.sigma_clip as f32,
+                        g.g_max as f32,
+                        g.amp[0] as f32,
+                        g.amp[1] as f32,
+                    ]);
+                    out.push([g.amp[2] as f32, 0.0, 0.0, 0.0]);
+                    out.push([bits(0), bits(g.shape as i32), 0.0, 0.0]);
+                }
+                Item::Burst(b) => {
+                    out.push([
+                        b.centre[0] as f32,
+                        b.centre[1] as f32,
+                        b.amp[0] as f32,
+                        b.amp[1] as f32,
+                    ]);
+                    out.push([b.amp[2] as f32, 0.0, 0.0, 0.0]);
+                    out.push([0.0; 4]);
+                    out.push([0.0; 4]);
+                    out.push([bits(1), 0.0, 0.0, 0.0]);
+                }
+                Item::Streak(s) => {
+                    out.push([
+                        s.centre[0] as f32,
+                        s.centre[1] as f32,
+                        s.sigma as f32,
+                        s.amp[0] as f32,
+                    ]);
+                    out.push([s.amp[1] as f32, s.amp[2] as f32, 0.0, 0.0]);
+                    out.push([0.0; 4]);
+                    out.push([0.0; 4]);
+                    out.push([bits(2), 0.0, 0.0, 0.0]);
+                }
+            }
+            out.push(span_v);
+        }
+        out
+    }
+
+    /// The pixel rectangle of every item, in list order.
+    pub(crate) fn spans(&self) -> Vec<Span> {
+        self.list.iter().map(Item::span).collect()
+    }
+
+    /// The spike radius of the starburst table, in half-diagonals.
+    pub(crate) fn spike_radius(&self) -> f64 {
+        self.spike_radius
     }
 
     /// Adds the item's light to `acc`, the pixels of `band` (row-major, `band` wide), for the pixels of the

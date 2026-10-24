@@ -82,6 +82,11 @@ class SynthConfig:
     #: The ramp's number of radius bins.
     bins: int = 4
 
+    def __post_init__(self):
+        # Radii are drawn log-uniform: a lower bound of 0 is log(0) = -inf, which turns into NaN in every sample.
+        if not 0 < self.r_min_px <= self.r_max_px:
+            raise ValueError(f"need 0 < r_min_px <= r_max_px, got r_min_px={self.r_min_px}, r_max_px={self.r_max_px}")
+
     @property
     def canvas(self) -> int:
         return self.sample + 2 * self.kernel_r

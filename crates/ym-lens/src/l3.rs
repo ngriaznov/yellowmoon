@@ -12,6 +12,7 @@
 //! * [`items`]: ghosts, starbursts and streaks, drawn analytically per pixel from the list;
 //! * [`pass`]: the per-tile pass that puts them together.
 
+mod device;
 mod fft;
 mod geometry;
 mod glow;
@@ -23,5 +24,6 @@ mod restore;
 mod sources;
 mod terms;
 
+pub(crate) use device::{lens_data, mix, plane_data, scale_data};
 pub(crate) use pass::{apply, combine, halo, terms};
 pub(crate) use planes::FlarePlanes;

@@ -59,7 +59,7 @@ use ym_lens::{
 use ym_profiles::profile::Profile;
 use ym_raw::makernote::SonyFocus;
 
-use super::{Job, Pixels, Renderer, TileImage, lock};
+use super::{Backing, Job, Pixels, Renderer, ResidentPart, TileImage, lock};
 use crate::pipeline::RenderError;
 use crate::pipeline::geometry::sampler_warp;
 use crate::pipeline::raw::RawParamsKey;
@@ -69,6 +69,9 @@ const CAMERA_NOTE: &str =
     "The camera's colour curves could not be read, so the lens colours are neutral.";
 
 /// The key of a reduced group after the lens: the raw group's, the lens's (`LensCtx::key`) and k.
+pub(crate) use super::lens_device::LensDevice;
+use super::lens_device;
+
 pub(crate) type GroupKey = (RawParamsKey, String, usize);
 /// The key of a 512 px tile after the lens: the raw group's, the lens's and the tile.
 pub(crate) type TileKey = (RawParamsKey, String, usize, usize);
@@ -120,7 +123,7 @@ enum LensPass {
     Field,
 }
 
-fn lens_error(e: LensError) -> RenderError {
+pub(super) fn lens_error(e: LensError) -> RenderError {
     match e {
         LensError::Cancelled => RenderError::Cancelled,
         other => RenderError::Image(format!(
@@ -505,7 +508,8 @@ impl Job<'_> {
 
     /// The raw group at 1/`k` after the lens's field stage, `Z = L2(L1(X))`, which Flares does not touch:
     /// from the field cache, else made from `raw` (the group) and cached by the amounts it reads. With
-    /// Edges and Anamorphic at 0 the stage does nothing and `Z` is the raw group itself.
+    /// Edges and Anamorphic at 0 the stage does nothing and `Z` is the raw group itself. (The CPU lens;
+    /// a field stage the device made is not read here.)
     fn lens_field_group(
         &mut self,
         ctx: &LensCtx,
@@ -521,7 +525,7 @@ impl Job<'_> {
             .lens_field_groups
             .as_mut()
             .and_then(|groups| groups.get(&key).cloned());
-        if let Some(z) = hit {
+        if let Some(Backing::Cpu(z)) = hit {
             return Ok(z);
         }
         let (w, h) = (raw.width, raw.height);
@@ -541,7 +545,7 @@ impl Job<'_> {
         lock(&self.g.state)
             .lens_field_groups
             .get_or_insert_with(|| crate::scheduler::ByteLru::new(budget))
-            .insert(key, Arc::clone(&z), bytes);
+            .insert(key, Backing::Cpu(Arc::clone(&z)), bytes);
         Ok(z)
     }
 
@@ -632,8 +636,9 @@ impl Job<'_> {
 
     /// The raw group at 1/`k` after the lens, for a fit view, a thumbnail, a look tile or the
     /// histogram: the lens over the whole frame at that scale (`docs/21` section 3, "Regions"), cached
-    /// per lens setting. Without a lens it is [`Job::group_backing`], untouched. With one it is
-    /// always a host image: a group on the device is read back first.
+    /// per lens setting. Without a lens it is [`Job::group_backing`], untouched. With one it is made on
+    /// the device when the lens stage is on and the caches keep their images there (and then stays on the
+    /// device, no pixel read back), else on the host.
     ///
     /// The field stage (`Z = L2(L1(X))`) is cached on its own by the amounts it reads, so a Flares move
     /// runs L3 alone, and an Edges or Anamorphic move runs the field stage and L3.
@@ -651,34 +656,169 @@ impl Job<'_> {
             .lens_groups
             .as_mut()
             .and_then(|groups| groups.get(&key).cloned());
-        if let Some(image) = hit {
-            return Ok(super::Backing::Cpu(image));
+        if let Some(backing) = hit {
+            return Ok(backing);
         }
         self.check()?;
-        let planes = self.lens_planes(&ctx)?;
-        let raw = self.group(k)?;
-        let (w, h) = (raw.width, raw.height);
-        let z = self.lens_field_group(&ctx, &planes, k, &raw)?;
-        let image = if ctx.plan.flares() == 0.0 {
-            // No flares: the lens's output is the field stage's.
-            z
-        } else {
-            let f = self.lens_flare_group(&ctx, &planes, k, &raw)?;
-            let place = Placement {
-                x0: 0,
-                y0: 0,
-                frame_width: w,
-                frame_height: h,
-            };
-            Arc::new(self.lens_add_flares(&ctx, &z, &f, place)?)
+        let made = match self.lens_group_on_device(&ctx, k)? {
+            Some(made) => made,
+            None => Backing::Cpu(self.lens_group_cpu(&ctx, k)?),
         };
         self.runs.lens_groups += 1;
-        let (bytes, budget) = (image.data.len() * 4, self.g.lens_group_budget());
+        let (bytes, budget) = (made.bytes(), self.g.lens_group_budget_for(&made));
         lock(&self.g.state)
             .lens_groups
             .get_or_insert_with(|| crate::scheduler::ByteLru::new(budget))
-            .insert(key, Arc::clone(&image), bytes);
-        Ok(super::Backing::Cpu(image))
+            .insert(key, made.clone(), bytes);
+        Ok(made)
+    }
+
+    /// The CPU lens over the raw group at 1/`k`: the field stage (cached), the flare terms (cached) and their
+    /// sum.
+    fn lens_group_cpu(&mut self, ctx: &Arc<LensCtx>, k: usize) -> Result<Arc<RgbImage>, RenderError> {
+        let planes = self.lens_planes(ctx)?;
+        let raw = self.group(k)?;
+        let (w, h) = (raw.width, raw.height);
+        let z = self.lens_field_group(ctx, &planes, k, &raw)?;
+        if ctx.plan.flares() == 0.0 {
+            // No flares: the lens's output is the field stage's.
+            return Ok(z);
+        }
+        let f = self.lens_flare_group(ctx, &planes, k, &raw)?;
+        let place = Placement {
+            x0: 0,
+            y0: 0,
+            frame_width: w,
+            frame_height: h,
+        };
+        Ok(Arc::new(self.lens_add_flares(ctx, &z, &f, place)?))
+    }
+
+    /// The group again on the host, for [`PartSource::LensGroup`](super::PartSource) when the device
+    /// cannot hand its image over.
+    pub(super) fn lens_make_group_on_host(&mut self, k: usize) -> Result<RgbImage, RenderError> {
+        let Some(ctx) = self.lens_ctx()? else {
+            return Err(RenderError::Image(
+                "The lens of this photo is gone.".to_owned(),
+            ));
+        };
+        self.lens_group_cpu(&ctx, k).map(|image| (*image).clone())
+    }
+
+    /// Puts a host image in the place of the cache entry of a lens group or tile.
+    pub(super) fn lens_keep_host(&mut self, source: super::PartSource, image: &Arc<RgbImage>) {
+        let Ok(Some(ctx)) = self.lens_ctx() else {
+            return;
+        };
+        let Ok(params) = self.params() else { return };
+        let (raw, bytes) = (params.key(), image.data.len() * 4);
+        let mut st = lock(&self.g.state);
+        match source {
+            super::PartSource::LensGroup(k) => {
+                if let Some(groups) = st.lens_groups.as_mut() {
+                    groups.insert((raw, ctx.key.clone(), k), Backing::Cpu(Arc::clone(image)), bytes);
+                }
+            }
+            super::PartSource::LensTile(tx, ty) => {
+                if let Some(tiles) = st.lens_tiles.as_mut() {
+                    tiles.insert(
+                        (raw, ctx.key.clone(), tx, ty),
+                        Backing::Cpu(Arc::clone(image)),
+                        bytes,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The lens over the raw group at 1/`k` on the device, tile by tile of 1024 px, or `None` when the CPU
+    /// makes it (no device route, a device error that falls back, a lens that does nothing on the device).
+    /// The field stage's tiles are cached on the device on their own.
+    fn lens_group_on_device(
+        &mut self,
+        ctx: &Arc<LensCtx>,
+        k: usize,
+    ) -> Result<Option<Backing>, RenderError> {
+        let Some(route) = self.lens_gpu(true)? else {
+            return Ok(None);
+        };
+        let planes = self.lens_planes(ctx)?;
+        let raw = self.group_backing(k)?;
+        let (w, h) = raw.size();
+        let z_key: GroupKey = (self.params()?.key(), ctx.field_key.clone(), k);
+        let z_cached = if ctx.plan.field_is_identity() {
+            None
+        } else {
+            lock(&self.g.state)
+                .lens_field_groups
+                .as_mut()
+                .and_then(|groups| groups.get(&z_key).cloned())
+        };
+        let src = lens_device::RawSrc::Group(k, raw);
+        let tile = lens_device::GROUP_TILE_PX;
+        let mut pieces = Vec::new();
+        let mut z_pieces = Vec::new();
+        let mut made_z = false;
+        for ty in 0..h.div_ceil(tile) {
+            for tx in 0..w.div_ceil(tile) {
+                self.check()?;
+                let out = Rect::new(tx * tile, ty * tile, tile.min(w - tx * tile), tile.min(h - ty * tile));
+                let done = self.lens_device_tile(
+                    &route,
+                    ctx,
+                    &planes,
+                    k,
+                    (w, h),
+                    out,
+                    &src,
+                    z_cached.as_ref(),
+                )?;
+                match done {
+                    Ok(t) => {
+                        pieces.push(ym_gpu::kernels::copy::Piece {
+                            at: (out.x, out.y),
+                            image: t.out,
+                        });
+                        if let Some(z) = t.z {
+                            made_z = true;
+                            z_pieces.push(ym_gpu::kernels::copy::Piece {
+                                at: (out.x, out.y),
+                                image: z,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        self.lens_gpu_failed(&e)?;
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        if made_z {
+            self.runs.lens_fields += 1;
+            let z = self.lens_resident(z_pieces, (w, h), &route);
+            let (bytes, budget) = (z.bytes(), self.g.lens_field_group_budget_for(&z));
+            lock(&self.g.state)
+                .lens_field_groups
+                .get_or_insert_with(|| crate::scheduler::ByteLru::new(budget))
+                .insert(z_key, z, bytes);
+        }
+        if ctx.plan.flares() > 0.0 {
+            self.runs.lens_flares += 1;
+        }
+        Ok(Some(self.lens_resident(pieces, (w, h), &route)))
+    }
+
+    /// The error of a region outside the photo (as the raw group's methods give it).
+    fn check_region(&mut self, rect: Rect) -> Result<(), RenderError> {
+        let plan = self.plan()?;
+        if rect.is_empty() || rect.x1() > plan.out_w || rect.y1() > plan.out_h {
+            return Err(RenderError::Image(
+                "The region is outside the photo.".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     /// The lens output over `rect` (coordinates of the auto-cropped image), made from the raw
@@ -721,7 +861,7 @@ impl Job<'_> {
     }
 
     /// One 512 px tile of the full-resolution raw group after the lens's field stage, `Z = L2(L1(X))`,
-    /// from the field cache or made from the raw region grown by the field halo.
+    /// from the field cache or made from the raw region grown by the field halo (the CPU lens).
     fn lens_field_tile(
         &mut self,
         ctx: &Arc<LensCtx>,
@@ -734,7 +874,7 @@ impl Job<'_> {
             .lens_field_tiles
             .as_mut()
             .and_then(|tiles| tiles.get(&key).cloned());
-        if let Some(z) = hit {
+        if let Some(Backing::Cpu(z)) = hit {
             return Ok(z);
         }
         self.check()?;
@@ -759,19 +899,8 @@ impl Job<'_> {
         lock(&self.g.state)
             .lens_field_tiles
             .get_or_insert_with(|| crate::scheduler::ByteLru::new(budget))
-            .insert(key, Arc::clone(&z), bytes);
+            .insert(key, Backing::Cpu(Arc::clone(&z)), bytes);
         Ok(z)
-    }
-
-    /// The error of a region outside the photo (as the raw group's methods give it).
-    fn check_region(&mut self, rect: Rect) -> Result<(), RenderError> {
-        let plan = self.plan()?;
-        if rect.is_empty() || rect.x1() > plan.out_w || rect.y1() > plan.out_h {
-            return Err(RenderError::Image(
-                "The region is outside the photo.".to_owned(),
-            ));
-        }
-        Ok(())
     }
 
     /// The flare terms of the 512 px tile `(tx, ty)`: from the flare cache, else made from the raw
@@ -808,22 +937,14 @@ impl Job<'_> {
         Ok(f)
     }
 
-    /// One 512 px tile of the full-resolution raw group after the lens, from the cache or made: the
-    /// field stage's tile (cached on its own by the amounts it reads) and L3 on it.
-    fn lens_tile(
+    /// One 512 px tile of the full-resolution raw group after the lens on the CPU: the field stage's
+    /// tile (cached on its own by the amounts it reads) and L3 on it.
+    fn lens_tile_cpu(
         &mut self,
         ctx: &Arc<LensCtx>,
         tx: usize,
         ty: usize,
     ) -> Result<Arc<RgbImage>, RenderError> {
-        let key: TileKey = (self.params()?.key(), ctx.key.clone(), tx, ty);
-        let hit = lock(&self.g.state)
-            .lens_tiles
-            .as_mut()
-            .and_then(|tiles| tiles.get(&key).cloned());
-        if let Some(image) = hit {
-            return Ok(image);
-        }
         self.check()?;
         let planes = self.lens_planes(ctx)?;
         let z = if ctx.plan.field_is_identity() {
@@ -831,7 +952,7 @@ impl Job<'_> {
         } else {
             Some(self.lens_field_tile(ctx, &planes, tx, ty)?)
         };
-        let image = match z {
+        Ok(match z {
             // No flares: the lens's output is the field stage's.
             Some(z) if ctx.plan.flares() == 0.0 => z,
             z => {
@@ -853,17 +974,140 @@ impl Job<'_> {
                     }
                 }
             }
+        })
+    }
+
+    /// The tile again on the host, for [`PartSource::LensTile`](super::PartSource) when the device
+    /// cannot hand its image over.
+    pub(super) fn lens_make_tile_on_host(
+        &mut self,
+        tx: usize,
+        ty: usize,
+    ) -> Result<RgbImage, RenderError> {
+        let Some(ctx) = self.lens_ctx()? else {
+            return Err(RenderError::Image(
+                "The lens of this photo is gone.".to_owned(),
+            ));
+        };
+        self.lens_tile_cpu(&ctx, tx, ty).map(|image| (*image).clone())
+    }
+
+    /// The lens over the 512 px tile `(tx, ty)` on the device (the raw tiles around it gathered where they
+    /// are), or `None` when the CPU makes it.
+    fn lens_tile_on_device(
+        &mut self,
+        ctx: &Arc<LensCtx>,
+        tx: usize,
+        ty: usize,
+    ) -> Result<Option<Backing>, RenderError> {
+        let Some(route) = self.lens_gpu(true)? else {
+            return Ok(None);
+        };
+        let planes = self.lens_planes(ctx)?;
+        let plan = self.plan()?;
+        let frame = (plan.out_w, plan.out_h);
+        let out = self.lens_tile_rect(tx, ty)?;
+        let z_key: TileKey = (self.params()?.key(), ctx.field_key.clone(), tx, ty);
+        let z_cached = if ctx.plan.field_is_identity() {
+            None
+        } else {
+            lock(&self.g.state)
+                .lens_field_tiles
+                .as_mut()
+                .and_then(|tiles| tiles.get(&z_key).cloned())
+        };
+        let done = self.lens_device_tile(
+            &route,
+            ctx,
+            &planes,
+            1,
+            frame,
+            out,
+            &lens_device::RawSrc::Tiles,
+            z_cached.as_ref(),
+        )?;
+        match done {
+            Ok(t) => {
+                if let Some(z) = t.z {
+                    self.runs.lens_fields += 1;
+                    let z = self.lens_resident(
+                        vec![ym_gpu::kernels::copy::Piece {
+                            at: (0, 0),
+                            image: z,
+                        }],
+                        (out.w, out.h),
+                        &route,
+                    );
+                    let (bytes, budget) = (z.bytes(), self.g.lens_field_tile_budget_for(&z));
+                    lock(&self.g.state)
+                        .lens_field_tiles
+                        .get_or_insert_with(|| crate::scheduler::ByteLru::new(budget))
+                        .insert(z_key, z, bytes);
+                }
+                if ctx.plan.flares() > 0.0 {
+                    self.runs.lens_flares += 1;
+                }
+                Ok(Some(self.lens_resident(
+                    vec![ym_gpu::kernels::copy::Piece {
+                        at: (0, 0),
+                        image: t.out,
+                    }],
+                    (out.w, out.h),
+                    &route,
+                )))
+            }
+            Err(e) => {
+                self.lens_gpu_failed(&e)?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// One 512 px tile of the full-resolution raw group after the lens, from the cache or made: on the
+    /// device where it can be, else on the CPU.
+    fn lens_tile_backing(
+        &mut self,
+        ctx: &Arc<LensCtx>,
+        tx: usize,
+        ty: usize,
+    ) -> Result<Backing, RenderError> {
+        let key: TileKey = (self.params()?.key(), ctx.key.clone(), tx, ty);
+        let hit = lock(&self.g.state)
+            .lens_tiles
+            .as_mut()
+            .and_then(|tiles| tiles.get(&key).cloned());
+        if let Some(backing) = hit {
+            return Ok(backing);
+        }
+        self.check()?;
+        let made = match self.lens_tile_on_device(ctx, tx, ty)? {
+            Some(made) => made,
+            None => Backing::Cpu(self.lens_tile_cpu(ctx, tx, ty)?),
         };
         self.runs.lens_tiles += 1;
-        let (bytes, budget) = (image.data.len() * 4, self.g.lens_tile_budget());
+        let (bytes, budget) = (made.bytes(), self.g.lens_tile_budget_for(&made));
         lock(&self.g.state)
             .lens_tiles
             .get_or_insert_with(|| crate::scheduler::ByteLru::new(budget))
-            .insert(key, Arc::clone(&image), bytes);
-        Ok(image)
+            .insert(key, made.clone(), bytes);
+        Ok(made)
     }
 
-    /// The lens output over `rect`, put together from cached lens tiles.
+    /// One lens tile as a host image (a tile on the device is read back, and the cache keeps the host
+    /// image from then on).
+    fn lens_tile_host(
+        &mut self,
+        ctx: &Arc<LensCtx>,
+        tx: usize,
+        ty: usize,
+    ) -> Result<Arc<RgbImage>, RenderError> {
+        match self.lens_tile_backing(ctx, tx, ty)? {
+            Backing::Cpu(image) => Ok(image),
+            Backing::Gpu(resident) => self.demote(super::PartSource::LensTile(tx, ty), &resident),
+        }
+    }
+
+    /// The lens output over `rect`, put together from cached lens tiles on the host.
     fn lens_region_cached(
         &mut self,
         ctx: &Arc<LensCtx>,
@@ -882,7 +1126,7 @@ impl Job<'_> {
         for ty in rect.y / t..=(rect.y1() - 1) / t {
             for tx in rect.x / t..=(rect.x1() - 1) / t {
                 self.check()?;
-                let tile = self.lens_tile(ctx, tx, ty)?;
+                let tile = self.lens_tile_host(ctx, tx, ty)?;
                 let tr = Rect::new(tx * t, ty * t, tile.width, tile.height);
                 let ov = tr.intersect(&rect);
                 out.paste(
@@ -897,8 +1141,9 @@ impl Job<'_> {
     }
 
     /// The pixels the 100 % view samples from after the lens: the full-resolution raw group over
-    /// `rect`, out of cached lens tiles, as a host image. Without a lens it is
-    /// [`Job::region_pixels`].
+    /// `rect`, out of cached lens tiles. When every tile is on the device they stay there and the sampler
+    /// reads them in place ([`Pixels::Resident`]); else the host assembles the region. Without a lens it
+    /// is [`Job::region_pixels`].
     ///
     /// # Errors
     ///
@@ -907,13 +1152,40 @@ impl Job<'_> {
         let Some(ctx) = self.lens_ctx()? else {
             return self.region_pixels(rect);
         };
-        self.lens_region_cached(&ctx, rect)
-            .map(|image| Pixels::Host(Arc::new(image)))
+        self.check_region(rect)?;
+        let plan = self.plan()?;
+        if !self.keeps_on_device() || plan.reduced {
+            return self
+                .lens_region_cached(&ctx, rect)
+                .map(|image| Pixels::Host(Arc::new(image)));
+        }
+        let t = self.opts.tile_px.max(64);
+        let mut parts = Vec::new();
+        for ty in rect.y / t..=(rect.y1() - 1) / t {
+            for tx in rect.x / t..=(rect.x1() - 1) / t {
+                self.check()?;
+                match self.lens_tile_backing(&ctx, tx, ty)? {
+                    Backing::Gpu(image) => parts.push(ResidentPart {
+                        image,
+                        at: (tx * t, ty * t),
+                        source: super::PartSource::LensTile(tx, ty),
+                    }),
+                    // A tile the CPU made: the host assembles the region.
+                    Backing::Cpu(_) => {
+                        return self
+                            .lens_region_cached(&ctx, rect)
+                            .map(|image| Pixels::Host(Arc::new(image)));
+                    }
+                }
+            }
+        }
+        Ok(Pixels::Resident { parts, rect })
     }
 
     /// The full-resolution raw group over `rect` after the lens as a host image: out of cached lens
     /// tiles with `keep`, else from the raw region grown by the lens halo in one uncached call (an
-    /// export's tile). Without a lens it is [`Job::region`].
+    /// export's tile). Without a lens it is [`Job::region`]. (The CPU lens: an export whose colour stage
+    /// is on the device asks for [`Job::lens_region_resident`].)
     ///
     /// # Errors
     ///
@@ -932,16 +1204,47 @@ impl Job<'_> {
         Ok(image)
     }
 
-    /// [`Job::region_resident`] after the lens: a host tile (there are no device lens kernels, so the
-    /// tile the raw chain made on the device is read back inside [`Job::region`]); the export's colour
-    /// stage uploads it when it runs on the device. Without a lens it is [`Job::region_resident`].
+    /// [`Job::region_resident`] after the lens: for an export whose colour stage is on the device. With the
+    /// lens stage on the device the tile is made there from the raw region (itself left on the device where
+    /// the raw chain made it) and stays there; else the CPU lens makes a host tile that the colour stage
+    /// uploads. Without a lens it is [`Job::region_resident`].
     ///
     /// # Errors
     ///
-    /// As [`Job::lens_region`].
+    /// As [`Job::lens_region`]; an export's device error asks to start again on the CPU
+    /// ([`Job::take_gpu_restart`]).
     pub fn lens_region_resident(&mut self, rect: Rect) -> Result<TileImage, RenderError> {
-        if self.lens_ctx()?.is_none() {
+        let Some(ctx) = self.lens_ctx()? else {
             return self.region_resident(rect);
+        };
+        self.check_region(rect)?;
+        if let Some(route) = self.lens_gpu(false)? {
+            let planes = self.lens_planes(&ctx)?;
+            let plan = self.plan()?;
+            let frame = (plan.out_w, plan.out_h);
+            let done = self.lens_device_tile(
+                &route,
+                &ctx,
+                &planes,
+                1,
+                frame,
+                rect,
+                &lens_device::RawSrc::Export,
+                None,
+            )?;
+            match done {
+                Ok(t) => {
+                    self.runs.lens_tiles += 1;
+                    if !ctx.plan.field_is_identity() {
+                        self.runs.lens_fields += 1;
+                    }
+                    if ctx.plan.flares() > 0.0 {
+                        self.runs.lens_flares += 1;
+                    }
+                    return Ok(TileImage::Device(t.out));
+                }
+                Err(e) => self.lens_gpu_failed(&e)?,
+            }
         }
         self.lens_region(rect, false).map(TileImage::Host)
     }
@@ -972,7 +1275,8 @@ impl Job<'_> {
     }
 
     /// Makes the lens tiles that cover `rect` and keeps them (the raw tiles under them stay cached
-    /// too): the work ahead of a 100 % view. Without a lens it is [`Job::warm_tiles`].
+    /// too, on the device where the raw chain made them): the work ahead of a 100 % view. Without a lens
+    /// it is [`Job::warm_tiles`].
     ///
     /// # Errors
     ///
@@ -986,7 +1290,7 @@ impl Job<'_> {
         for ty in rect.y / t..=(rect.y1() - 1) / t {
             for tx in rect.x / t..=(rect.x1() - 1) / t {
                 self.check()?;
-                self.lens_tile(&ctx, tx, ty)?;
+                self.lens_tile_backing(&ctx, tx, ty)?;
             }
         }
         Ok(())

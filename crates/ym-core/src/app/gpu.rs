@@ -67,8 +67,15 @@ impl GpuStages {
     /// `k x k` binning, the denoise and R9 at 1/k) that never builds a full-resolution frame on the
     /// host. Signed off on 2026-10-15 ([`GpuStages::SIGNED_OFF`]).
     pub const RAW_FRONT: Self = Self(1 << 6);
+    /// The lens character stages L1 to L3 (`docs/21`): the field optics (L2) and the highlight optics (L3)
+    /// of the raw group, run per tile between the raw group and the sampler, with the lens's per-photo
+    /// planes uploaded once. A plan whose bokeh reshaping (L1) is on still runs L1 on the host and
+    /// uploads its output (the L1 kernel is not written yet). **Not yet in [`GpuStages::SIGNED_OFF`]**:
+    /// its parity, tile and determinism suites have run on Mesa lavapipe and still wait for the Metal CI
+    /// runners.
+    pub const LENS: Self = Self(1 << 7);
     /// Every stage.
-    pub const ALL: Self = Self(0b111_1111);
+    pub const ALL: Self = Self(0b1111_1111);
 
     /// What `Auto` runs on the device: the stages signed off, that is, the ones whose parity, tile
     /// and determinism suites pass on the Metal CI runners (`.github/workflows/mac-gpu.yml`), the
@@ -91,12 +98,13 @@ impl GpuStages {
 
     /// The stages of an export that run on the device in this version: the raw chain (R6 to R8 of
     /// every full-resolution tile: demosaic, denoise, R7 and capture sharpening) and the
-    /// raw front (R1 to R5b and R9 of every tile), and the export tail: the sampler, the colour
+    /// raw front (R1 to R5b and R9 of every tile), the lens (L2 and L3 of every tile of a photo with
+    /// one) and the export tail: the sampler, the colour
     /// chain, the Lanczos-3 resize, output sharpening and C13 of the written picture, which the CPU
     /// writers pull as encoded bands. Decides whether `ym` warms the kernels up while photos
     /// decode; **a stage that exports run on the device is added here**.
     pub const USED_BY_EXPORTS: Self =
-        Self(Self::RAW_CHAIN.0 | Self::RAW_FRONT.0 | Self::EXPORT_TAIL.0);
+        Self(Self::RAW_CHAIN.0 | Self::RAW_FRONT.0 | Self::EXPORT_TAIL.0 | Self::LENS.0);
 
     /// Whether every stage of `other` is in this set.
     #[must_use]
@@ -116,6 +124,12 @@ impl GpuStages {
         Self(self.0 | other.0)
     }
 
+    /// The stages of this set that are not in `other`.
+    #[must_use]
+    pub const fn difference(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
     /// Whether there is no stage.
     #[must_use]
     pub const fn is_empty(self) -> bool {
@@ -123,7 +137,7 @@ impl GpuStages {
     }
 
     /// The names of the stages in the set, in the order of the members (`raw`, `sampler`,
-    /// `colour`, `sharpening`, `encode`, `export`, `raw front`): what `ym doctor` prints.
+    /// `colour`, `sharpening`, `encode`, `export`, `raw front`, `lens`): what `ym doctor` prints.
     #[must_use]
     pub fn names(self) -> Vec<&'static str> {
         [
@@ -134,6 +148,7 @@ impl GpuStages {
             (Self::ENCODE, "encode"),
             (Self::EXPORT_TAIL, "export"),
             (Self::RAW_FRONT, "raw front"),
+            (Self::LENS, "lens"),
         ]
         .into_iter()
         .filter(|(stage, _)| self.contains(*stage))
@@ -1283,7 +1298,12 @@ mod tests {
                 "raw front"
             ]
         );
-        assert_eq!(GpuStages::SIGNED_OFF, GpuStages::ALL);
+        // The lens (L2 and L3 kernels) waits for the Metal CI runners.
+        assert_eq!(
+            GpuStages::SIGNED_OFF.union(GpuStages::LENS),
+            GpuStages::ALL
+        );
+        assert!(!GpuStages::SIGNED_OFF.contains(GpuStages::LENS));
     }
 
     #[test]
@@ -1296,6 +1316,7 @@ mod tests {
             GpuStages::ENCODE,
             GpuStages::EXPORT_TAIL,
             GpuStages::RAW_FRONT,
+            GpuStages::LENS,
         ];
         let mut union = GpuStages::NONE;
         for (i, a) in all.iter().enumerate() {
@@ -1310,7 +1331,7 @@ mod tests {
         assert_eq!(GpuStages::NONE.to_string(), "none");
         assert_eq!(
             GpuStages::ALL.to_string(),
-            "raw, sampler, colour, sharpening, encode, export, raw front"
+            "raw, sampler, colour, sharpening, encode, export, raw front, lens"
         );
         assert!(GpuStages::ALL.contains(GpuStages::NONE));
     }
@@ -1324,6 +1345,8 @@ mod tests {
         // The export tail: the sampler, colour chain, resize, sharpening and C13 of the written
         // picture.
         assert!(GpuStages::USED_BY_EXPORTS.contains(GpuStages::EXPORT_TAIL));
+        // The lens: L2 and L3 of every tile of a photo with one.
+        assert!(GpuStages::USED_BY_EXPORTS.contains(GpuStages::LENS));
     }
 
     // --- the real stack -----------------------------------------------------------------------

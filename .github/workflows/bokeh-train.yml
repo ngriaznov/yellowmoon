@@ -15,7 +15,10 @@
 #   prepare   index the masks, fetch the archives, build the tiles (expected cents, worst case $1.3).  ARGS: --budget 1.5
 #   preview   sheets of synthesised inputs and labels from the tiles, to look at.                     ARGS: --budget 0.3
 #   train     one run on one L4 (expected $2 to $2.7, worst case $2.9 for 100 minutes).
-#             ARGS: --budget 5 --minutes 100 --run bokeh-1
+#             smoke first (1000 steps, about 6 minutes): ARGS: --budget 0.8 --minutes 8 --steps 1000 --run bokeh-smoke
+#             then the run:                              ARGS: --budget 5 --minutes 100 --run bokeh-2
+#             (bokeh-1, the first run, trained NaNs for 100 minutes: a NaN kernel in the synthesis, now fixed and
+#             guarded, training/bokeh/README.md. Its checkpoint on the volume is NaN; a run of that name now stops at once.)
 #
 # The results (weights, metrics, samples, previews, credits, the ledger, the log) go to the temporary branch
 # `bokeh-train-runs` and to an artifact; never to main.

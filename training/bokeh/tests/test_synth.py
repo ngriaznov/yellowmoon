@@ -268,3 +268,10 @@ def test_colorize_treats_a_nan_as_zero_instead_of_indexing_with_it():
     col = S.colorize(v, 0.05)
     assert col.shape == (1, 3, 2, 2) and torch.isfinite(col).all()
     assert torch.equal(col[..., 0, 0], col[..., 0, 1])  # NaN = 0
+
+
+def test_a_radius_range_that_would_make_the_log_uniform_draw_nan_is_refused():
+    for lo, hi in ((0.0, 10.0), (-1.0, 10.0), (3.0, 2.0)):
+        with pytest.raises(ValueError, match="r_min_px"):
+            S.SynthConfig(sample=64, kernel_r=14, r_min_px=lo, r_max_px=hi)
+    S.SynthConfig(sample=64, kernel_r=14, r_min_px=1.0, r_max_px=1.0)  # a single radius is fine

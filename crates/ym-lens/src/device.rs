@@ -77,3 +77,172 @@ impl FieldPass {
         self.gather_halo + self.pad
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// L3: highlight optics
+
+/// The most polygon edges of the aperture the flare kernel takes.
+pub const MAX_APERTURE_NORMALS: usize = 16;
+
+/// Vectors of the header of [`FlareScaleData::vectors`]: the streak's profile (`core`, `power`, `length`,
+/// `flat`; the mass of the power law up to `flat` and of the whole half profile; a spare) and the cumulative
+/// mass of its cut part at its 65 panel boundaries (17 vectors).
+pub const FLARE_HEADER: usize = 20;
+
+/// Vectors in [`FlareLensData::tab`] before the normal tail's nodes: the rim's samples (4) and second
+/// derivatives (4), the aperture's count and roundness (1) and its normals (8).
+pub const FLARE_TAB_HEADER: usize = 17;
+
+/// Nodes of the normal tail's table: `(Q, dQ/dz, R, dR/dz)` at `z = -8 + i / 256` for `i` in `0..=4096`.
+pub const NORMAL_TAIL_NODES: usize = 4097;
+
+/// The tail plane and the spike tables of one photo (`LensPlanes::flare_plane_data`): made once, from the
+/// lens plane, whatever the amounts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlarePlaneData {
+    /// Width and height of the tail plane.
+    pub tail_size: (usize, usize),
+    /// The glow and veil light per channel on the tail plane: red, green, blue planes, row-major,
+    /// `3 * width * height` samples.
+    pub tail: Vec<f32>,
+    /// The starburst tables on the camera's channels: `3 * 129 * 129` samples, row-major, x to the right and
+    /// y down.
+    pub spikes: Vec<f32>,
+}
+
+/// What the flare kernel reads of a lens on a camera (`LensPlan::flare_lens_data`): the rim curve
+/// (samples and second derivatives), the aperture and the normal tail's table. All in four-lane vectors
+/// from [`FLARE_TAB_HEADER`] on: the table's [`NORMAL_TAIL_NODES`] nodes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlareLensData {
+    /// Names the lens, its data version and the camera: equal keys, equal data.
+    pub key: String,
+    /// The vectors.
+    pub tab: Vec<[f32; 4]>,
+}
+
+/// The clip test of the restored light for the device (`docs/21` section 4, L3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlareRestore {
+    /// The clip level `g0` of each channel.
+    pub clip: [f32; 3],
+    /// The ramp of the clip test on the picture's own pixels.
+    pub ramp: (f32, f32),
+    /// `2^h - 1` for the headroom `h`.
+    pub boost: f32,
+}
+
+/// The flare kernel's data for one plan shape at one scale (`LensPlan::flare_scale_data`): the glow core's
+/// taps, the streak's profile and the drawn items with the bins that cull them. It does not depend on
+/// Flares: [`LensPlan::flare_mix`] gives the weights of the sum.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlareScaleData {
+    /// Width of the frame at this scale in pixels.
+    pub width: usize,
+    /// Height of the frame at this scale in pixels.
+    pub height: usize,
+    /// The half-diagonal of that frame in pixels.
+    pub half_diag: f64,
+    /// True when the anamorphic axis is the buffer's y axis.
+    pub axis_y: bool,
+    /// The glow core's reach in pixels (0: no core). This is the halo the pass needs around a rectangle.
+    pub core_radius: usize,
+    /// The header ([`FLARE_HEADER`] vectors), then the core's taps `(2 r + 1)^2` one vector each (red, green,
+    /// blue weights and a zero), then six vectors per item (`ym_lens::l3::items`: four of numbers, one of
+    /// kind and shape as bits, one of the item's pixel rectangle `x0, x1, y0, y1` as bits).
+    pub vectors: Vec<[f32; 4]>,
+    /// Index of the first core tap in `vectors`.
+    pub core_offset: usize,
+    /// Index of the first item in `vectors`.
+    pub record_offset: usize,
+    /// Number of items.
+    pub records: usize,
+    /// The bins that cull the items: `bins_x * bins_y + 1` offsets, then the item indices of each bin in
+    /// list order. A bin is `bin_px` pixels square on the absolute pixel grid.
+    pub bins: Vec<u32>,
+    /// Bins across.
+    pub bins_x: usize,
+    /// Bins down.
+    pub bins_y: usize,
+    /// Side of a bin in pixels.
+    pub bin_px: usize,
+    /// The radius of the starburst tables in half-diagonals.
+    pub spike_radius: f64,
+    /// The clip test.
+    pub restore: FlareRestore,
+    /// True when the plan draws streaks (the header holds their profile).
+    pub has_streak: bool,
+}
+
+impl FlareScaleData {
+    /// Pixels of context an output rectangle needs around it: the core's reach.
+    #[must_use]
+    pub fn halo(&self) -> usize {
+        self.core_radius
+    }
+}
+
+impl crate::planes::LensPlanes {
+    /// The tail plane and the spike tables for the device, or `None` for planes without highlight data (an
+    /// identity plan's).
+    #[must_use]
+    pub fn flare_plane_data(&self) -> Option<FlarePlaneData> {
+        crate::l3::plane_data(self)
+    }
+}
+
+impl crate::plan::LensPlan {
+    /// The lens's rim, aperture and normal tail for the device.
+    #[must_use]
+    pub fn flare_lens_data(&self) -> FlareLensData {
+        crate::l3::lens_data(self)
+    }
+
+    /// The flare kernel's data for a frame of `width x height` pixels (the frame at the scale of the
+    /// caller), or `None` when the flares add no light or the planes hold no highlight data.
+    #[must_use]
+    pub fn flare_scale_data(
+        &self,
+        planes: &crate::planes::LensPlanes,
+        width: usize,
+        height: usize,
+    ) -> Option<FlareScaleData> {
+        crate::l3::scale_data(self, planes, width, height)
+    }
+
+    /// `(F, 1 - a)`: the weight of the flare terms and the share of the picture's light that stays, for
+    /// `out = (1 - a) Z + F (terms)`.
+    #[must_use]
+    pub fn flare_mix(&self) -> FlareMix {
+        let (f, keep) = crate::l3::mix(self);
+        FlareMix { f, keep }
+    }
+
+    /// What [`flare_scale_data`](LensPlan::flare_scale_data) depends on besides the planes and the frame
+    /// size: the lens, its data versions, the camera, the axis, the clip levels, the f-number and Anamorphic
+    /// (ghosts widen, streaks reach). Not Flares and not Edges.
+    #[must_use]
+    pub fn flare_shape_key(&self) -> String {
+        let f = self.frame();
+        format!(
+            "lens-flare-shape:{}:v{}:att{}:{:?}:{}:{:?}:fn{:?}:clip{:?}",
+            self.kind(),
+            self.lens().info.version,
+            self.attachment().version,
+            self.amounts().anamorphic,
+            self.camera().key(),
+            f.axis,
+            f.f_number,
+            f.clip,
+        )
+    }
+}
+
+/// The weights of the flare sum, `out = keep * Z + f * terms` (`LensPlan::flare_mix`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlareMix {
+    /// `F`: the weight of the flare terms (`flares / 100`).
+    pub f: f64,
+    /// `1 - a`: the share of the picture's light that stays.
+    pub keep: f64,
+}

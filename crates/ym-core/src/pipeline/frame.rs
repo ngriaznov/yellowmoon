@@ -2146,13 +2146,20 @@ fn prepare_view_with(
     }
     let backing = job.lens_group_backing(k)?;
     let (group_w, group_h) = backing.size();
+    // A group after the lens is not the raw group: a read-back that has to make it again makes the lens
+    // too.
+    let source = if job.lens_ctx()?.is_some() {
+        PartSource::LensGroup(k)
+    } else {
+        PartSource::Group(k)
+    };
     let pixels = match backing {
         Backing::Cpu(image) => Pixels::Host(image),
         Backing::Gpu(image) => Pixels::Resident {
             parts: vec![ResidentPart {
                 image,
                 at: (0, 0),
-                source: PartSource::Group(k),
+                source,
             }],
             rect: Rect::new(0, 0, group_w, group_h),
         },

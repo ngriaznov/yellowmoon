@@ -70,6 +70,7 @@ use crate::session::PhotoId;
 use ym_color::display::OutputTarget;
 
 mod lens;
+mod lens_device;
 
 /// The note of a render whose demosaic method is not the adaptive ratio (the test-only switch of
 /// `RenderOptions::demosaic`): the device runs that one only.
@@ -483,15 +484,19 @@ struct GraphState {
     /// scale of the photo shares them, and a cache that tiles can push them out of would make them
     /// again in the middle of a pan (`docs/21` section 3).
     lens_planes: Option<lens::PlanesEntry>,
-    /// Raw groups after the lens, at 1/k.
-    lens_groups: Option<ByteLru<lens::GroupKey, Arc<RgbImage>>>,
+    /// Raw groups after the lens, at 1/k: on the host, or on the device when the lens ran there
+    /// (`docs/21` section 3, "As built").
+    lens_groups: Option<ByteLru<lens::GroupKey, Backing>>,
     /// 512 px tiles of the full-resolution raw group after the lens.
-    lens_tiles: Option<ByteLru<lens::TileKey, Arc<RgbImage>>>,
+    lens_tiles: Option<ByteLru<lens::TileKey, Backing>>,
     /// The raw groups at 1/k after the field stage only (`Z = L2(L1(X))`, no flares), by the amounts
     /// the stage reads: a Flares move finds its `Z` here and runs L3 alone.
-    lens_field_groups: Option<ByteLru<lens::GroupKey, Arc<RgbImage>>>,
+    lens_field_groups: Option<ByteLru<lens::GroupKey, Backing>>,
     /// The 512 px tiles after the field stage only.
-    lens_field_tiles: Option<ByteLru<lens::TileKey, Arc<RgbImage>>>,
+    lens_field_tiles: Option<ByteLru<lens::TileKey, Backing>>,
+    /// What the device holds of the photo's lens: the spread functions, the flare planes and the scale
+    /// data, uploaded once (`lens::LensDevice`).
+    lens_device: Option<lens::LensDevice>,
     /// The flare terms of the groups at 1/k (`f64` planes, `F (glow + veil + ghosts + ...)`), by the
     /// amounts they read: an Edges move finds them here.
     lens_flare_groups: Option<ByteLru<lens::GroupKey, Arc<Vec<f64>>>>,
@@ -513,6 +518,9 @@ pub struct PhotoGraph {
     /// output sharpening and C13 of frames, thumbnails and look tiles): from then on the CPU makes
     /// its frames, quietly (`docs/17-gpu.md` section 9).
     view_gpu_failed: AtomicBool,
+    /// A device error ended the GPU route of this photo's lens (L2 and L3 of the groups and tiles):
+    /// from then on the CPU runs the lens, with a note (`docs/17-gpu.md` section 9).
+    lens_gpu_failed: AtomicBool,
     /// When the photo's raw words were last used on the device, in ticks of the renderer's clock
     /// (the order of the two-photo LRU).
     resident_tick: AtomicU64,
@@ -541,6 +549,7 @@ impl PhotoGraph {
             budget,
             raw_gpu_failed: AtomicBool::new(false),
             view_gpu_failed: AtomicBool::new(false),
+            lens_gpu_failed: AtomicBool::new(false),
             resident_tick: AtomicU64::new(0),
             upload_gate: Mutex::new(()),
             pins: AtomicU32::new(0),
@@ -672,6 +681,43 @@ impl PhotoGraph {
         (self.budget.cpu_bytes / 12) as usize
     }
 
+    /// The bytes the lens's reduced groups may take for an entry that is `backing`: the host's budget
+    /// for a host image, a share of the device's (as the raw groups') for an image on the device.
+    fn lens_group_budget_for(&self, backing: &Backing) -> usize {
+        match backing {
+            Backing::Cpu(_) => self.lens_group_budget(),
+            Backing::Gpu(_) => self.lens_group_budget().min((self.budget.gpu_bytes / 16) as usize),
+        }
+    }
+
+    /// As [`PhotoGraph::lens_group_budget_for`], for the lens's 512 px tiles.
+    fn lens_tile_budget_for(&self, backing: &Backing) -> usize {
+        match backing {
+            Backing::Cpu(_) => self.lens_tile_budget(),
+            Backing::Gpu(_) => self.lens_tile_budget().min((self.budget.gpu_bytes / 8) as usize),
+        }
+    }
+
+    /// As [`PhotoGraph::lens_group_budget_for`], for the field stage's groups.
+    fn lens_field_group_budget_for(&self, backing: &Backing) -> usize {
+        match backing {
+            Backing::Cpu(_) => self.lens_field_group_budget(),
+            Backing::Gpu(_) => self
+                .lens_field_group_budget()
+                .min((self.budget.gpu_bytes / 16) as usize),
+        }
+    }
+
+    /// As [`PhotoGraph::lens_group_budget_for`], for the field stage's tiles.
+    fn lens_field_tile_budget_for(&self, backing: &Backing) -> usize {
+        match backing {
+            Backing::Cpu(_) => self.lens_field_tile_budget(),
+            Backing::Gpu(_) => self
+                .lens_field_tile_budget()
+                .min((self.budget.gpu_bytes / 8) as usize),
+        }
+    }
+
     /// The bytes the field stage's reduced groups may take (as the lens's groups: one for each
     /// Edges and Anamorphic value a slider has passed through).
     fn lens_field_group_budget(&self) -> usize {
@@ -734,6 +780,9 @@ struct Inner {
     /// A shader of the view stages failed to compile on this machine: the device does not run them
     /// for the rest of the process.
     view_gpu_disabled: AtomicBool,
+    /// A shader of the lens kernels failed to compile on this machine: the device does not run the lens
+    /// for the rest of the process.
+    lens_gpu_disabled: AtomicBool,
     /// Held while a prefetch of raw words counts the photos that are resident and uploads, so that
     /// two prefetches do not both find room for the last place ([`Renderer::prefetch_raw`]).
     prefetch_gate: Mutex<()>,
@@ -844,6 +893,7 @@ impl Renderer {
                 resident_clock: AtomicU64::new(0),
                 previous: Mutex::new(None),
                 view_gpu_disabled: AtomicBool::new(false),
+                lens_gpu_disabled: AtomicBool::new(false),
                 prefetch_gate: Mutex::new(()),
                 tail_gpu_disabled: AtomicBool::new(false),
                 lens_cameras: Mutex::new(HashMap::new()),
@@ -1390,6 +1440,16 @@ impl ResidentImage {
         }
     }
 
+    /// An image made of `pieces` (they do not overlap and cover `width x height`) on `gpu`.
+    fn of_pieces(pieces: Vec<Piece>, width: usize, height: usize, gpu: &Arc<Gpu>) -> Self {
+        Self {
+            pieces,
+            width,
+            height,
+            gpu: Arc::downgrade(gpu),
+        }
+    }
+
     /// A tile made on `gpu`.
     fn of_tile(image: Arc<GpuImage>, gpu: &Arc<Gpu>) -> Self {
         Self {
@@ -1444,6 +1504,10 @@ pub(crate) enum PartSource {
     Group(usize),
     /// The tile `(tx, ty)` of the full-resolution group.
     Tile(usize, usize),
+    /// The raw group at 1/k after the lens (`lens_groups`).
+    LensGroup(usize),
+    /// The tile `(tx, ty)` of the full-resolution group after the lens (`lens_tiles`).
+    LensTile(usize, usize),
 }
 
 /// A cached image on the device and its place in the buffer a view samples from.
@@ -1537,6 +1601,9 @@ pub(crate) struct Job<'a> {
     /// The planes an export made for itself from the CPU reference group (`lens::planes`): the
     /// graph's cache is the viewer's, and an export must not depend on what the viewer's device made.
     lens_job_planes: Option<Arc<LensPlanes>>,
+    /// What the device holds of the lens for an export's request (an export keeps its own, as it keeps its
+    /// own planes): `lens::LensDevice`.
+    lens_job_device: Option<lens::LensDevice>,
 }
 
 impl Drop for Job<'_> {
@@ -1609,6 +1676,7 @@ impl<'a> Job<'a> {
             lens: None,
             lens_report: None,
             lens_job_planes: None,
+            lens_job_device: None,
         }
     }
 
@@ -2116,6 +2184,8 @@ impl<'a> Job<'a> {
                 let (full, frame, rect) = self.tile_inputs(tx, ty, true)?;
                 self.run_full_tile(&full, &frame, rect)
             }
+            PartSource::LensGroup(k) => self.lens_make_group_on_host(k),
+            PartSource::LensTile(tx, ty) => self.lens_make_tile_on_host(tx, ty),
         }
     }
 
@@ -2135,6 +2205,10 @@ impl<'a> Job<'a> {
                 if let Some(tiles) = st.tiles.as_mut() {
                     tiles.insert((key, tx, ty), Backing::Cpu(Arc::clone(image)), bytes);
                 }
+            }
+            PartSource::LensGroup(_) | PartSource::LensTile(_, _) => {
+                drop(st);
+                self.lens_keep_host(source, image);
             }
         }
     }

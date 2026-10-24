@@ -52,6 +52,15 @@ impl NormalTail {
         NormalTail { nodes, ramp }
     }
 
+    /// The table for the device: node `i` is `(Q, dQ/dz, R, dR/dz)` at `z = -8 + i / 256`.
+    pub(crate) fn device_nodes(&self) -> Vec<[f32; 4]> {
+        self.nodes
+            .iter()
+            .zip(&self.ramp)
+            .map(|(q, r)| [q[0] as f32, q[1] as f32, r[0] as f32, r[1] as f32])
+            .collect()
+    }
+
     /// `Q(z)`: 1 far below 0, 0 far above.
     #[inline]
     pub(crate) fn q(&self, z: f64) -> f64 {
@@ -147,6 +156,11 @@ impl RimCurve {
             m[i] = (rhs[i] - up[i] * m[i + 1]) / diag[i];
         }
         RimCurve { y: rim.to_vec(), m }
+    }
+
+    /// The samples and the spline's second derivatives, for the device.
+    pub(crate) fn device_tables(&self) -> (&[f64], &[f64]) {
+        (&self.y, &self.m)
     }
 
     /// The brightness at the normalised radius `t` (held at 0 and 1 beyond them).

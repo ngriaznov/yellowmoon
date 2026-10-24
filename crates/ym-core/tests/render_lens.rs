@@ -22,11 +22,13 @@ use common::*;
 use ym_color::display::OutputTarget;
 use ym_color::encode::OutputSpace;
 use ym_core::app::gpu::GpuStages;
+use ym_core::export::{ExportContext, ExportControl, ExportParams, ExportPhoto, export_photo};
+use ym_export::{BitDepth, ExportOptions, FormatKind, IfExists};
 use ym_core::pipeline::{
-    FrameOptions, FullImage, FullRequest, FullTarget, NeutralOnly, PhotoSource, RenderOptions,
+    ComputeDevice, FrameOptions, FullImage, FullRequest, FullTarget, NeutralOnly, PhotoSource, RenderOptions,
     RenderedFrame, Renderer, StageRuns, ViewportMode, ViewportRect, ViewportState,
 };
-use ym_core::settings::{DevelopSettings, LensKind, LensSettings};
+use ym_core::settings::{DevelopSettings, LensKind, LensSettings, SettingsPatch};
 use ym_gpu::cpu::Rect;
 use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::CancelToken;
@@ -67,8 +69,11 @@ fn cpu() -> Renderer {
 
 /// The device, in poison mode. Skipped, loudly, when no adapter opens, unless `YM_REQUIRE_GPU=1`.
 fn gpu() -> Option<Arc<Gpu>> {
+    // A job of the lens kernels is heavy for a software rasteriser: the device's 30 s hang limit would
+    // fire on a loaded development machine.
     match Gpu::start(GpuConfig {
         poison: true,
+        readback_timeout: std::time::Duration::from_secs(900),
         ..GpuConfig::default()
     }) {
         Ok(g) => Some(Arc::new(g)),
@@ -97,6 +102,37 @@ fn device(gpu: &Arc<Gpu>) -> Renderer {
                 .union(GpuStages::COLOR)
                 .union(GpuStages::OUTPUT_SHARPEN)
                 .union(GpuStages::ENCODE),
+            ..options()
+        },
+    )
+    .expect("render thread")
+}
+
+/// A renderer whose lens runs on the device too (L2 and L3 kernels), with the view stages; the raw group is
+/// the CPU's and the lens uploads it.
+fn device_lens(gpu: &Arc<Gpu>) -> Renderer {
+    Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            gpu: Some(Arc::clone(gpu)),
+            gpu_stages: GpuStages::SAMPLER
+                .union(GpuStages::COLOR)
+                .union(GpuStages::OUTPUT_SHARPEN)
+                .union(GpuStages::ENCODE)
+                .union(GpuStages::LENS),
+            ..options()
+        },
+    )
+    .expect("render thread")
+}
+
+/// A renderer with every stage on the device: the raw group is made there and the lens reads it where it is.
+fn device_everything(gpu: &Arc<Gpu>) -> Renderer {
+    Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            gpu: Some(Arc::clone(gpu)),
+            gpu_stages: GpuStages::ALL,
             ..options()
         },
     )
@@ -410,7 +446,11 @@ fn the_fit_view_on_the_device_is_the_cpu_fit_view_of_the_lens_group() {
 /// Flares move finds `Z` cached and makes the flare terms, an Edges move makes `Z` and finds the flare terms,
 /// an Anamorphic move makes both, and whichever way a frame was reached its pixels are the pixels of a cold
 /// renderer (the caches change what runs, never what comes out).
-fn a_slider_move_runs_only_the_stages_that_read_it_with(r: &Renderer, cold: &dyn Fn() -> Renderer) {
+fn a_slider_move_runs_only_the_stages_that_read_it_with(
+    r: &Renderer,
+    cold: &dyn Fn() -> Renderer,
+    device: bool,
+) {
     let d = developed(1200, 800);
     let src = plain(&d.source());
     let state = cell(576.0, 384.0);
@@ -442,13 +482,19 @@ fn a_slider_move_runs_only_the_stages_that_read_it_with(r: &Renderer, cold: &dyn
         );
         previous = f.rgba.clone();
     }
-    // Edges is read by the field stage and not by the flare terms.
+    // Edges is read by the field stage and not by the flare terms (the device does not keep those: it
+    // makes them again in a kernel that costs next to nothing).
     let edges = LensSettings {
         edges: 51.0,
         ..VINTAGE
     };
     let f = frame(r, &with_lens(&src, edges), &state);
-    assert_eq!(stages(&f), (1, 0, 1), "Edges: {:?}", f.report.runs);
+    assert_eq!(
+        stages(&f),
+        (1, u64::from(device), 1),
+        "Edges: {:?}",
+        f.report.runs
+    );
     let reference = fresh_frame(&cold(), &with_lens(&src, edges), &state);
     assert!(f.rgba == reference.rgba, "Edges: pixels differ from a cold run");
     // Anamorphic is read by both.
@@ -495,13 +541,33 @@ fn a_slider_move_runs_only_the_stages_that_read_it_with(r: &Renderer, cold: &dyn
 
 #[test]
 fn a_slider_move_runs_only_the_stages_that_read_it() {
-    a_slider_move_runs_only_the_stages_that_read_it_with(&cpu(), &cpu);
+    a_slider_move_runs_only_the_stages_that_read_it_with(&cpu(), &cpu, false);
 }
 
 #[test]
 fn a_slider_move_runs_only_the_stages_that_read_it_on_the_device() {
     let Some(gpu) = gpu() else { return };
-    a_slider_move_runs_only_the_stages_that_read_it_with(&device(&gpu), &|| device(&gpu));
+    a_slider_move_runs_only_the_stages_that_read_it_with(&device(&gpu), &|| device(&gpu), false);
+}
+
+#[test]
+fn a_slider_move_runs_only_the_stages_that_read_it_with_the_lens_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    a_slider_move_runs_only_the_stages_that_read_it_with(
+        &device_lens(&gpu),
+        &|| device_lens(&gpu),
+        true,
+    );
+}
+
+#[test]
+fn a_slider_move_runs_only_the_stages_that_read_it_with_everything_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    a_slider_move_runs_only_the_stages_that_read_it_with(
+        &device_everything(&gpu),
+        &|| device_everything(&gpu),
+        true,
+    );
 }
 
 /// The same at 100 %: the lens tiles of a Flares move are the cached field tiles plus new flare terms, those
@@ -509,6 +575,7 @@ fn a_slider_move_runs_only_the_stages_that_read_it_on_the_device() {
 fn a_slider_move_runs_only_the_stages_that_read_it_on_tiles_with(
     r: &Renderer,
     cold: &dyn Fn() -> Renderer,
+    device: bool,
 ) {
     let d = developed(800, 600);
     let src = plain(&d.source());
@@ -539,14 +606,38 @@ fn a_slider_move_runs_only_the_stages_that_read_it_on_tiles_with(
     let f = frame(r, &with_lens(&src, moved), &st);
     let runs = f.report.runs;
     assert_eq!(runs.lens_fields, runs.lens_tiles, "{runs:?}");
-    assert_eq!(runs.lens_flares, 0, "the flare tiles are reused: {runs:?}");
+    if device {
+        assert_eq!(runs.lens_flares, runs.lens_tiles, "{runs:?}");
+    } else {
+        assert_eq!(runs.lens_flares, 0, "the flare tiles are reused: {runs:?}");
+    }
     let reference = fresh_frame(&cold(), &with_lens(&src, moved), &st);
     assert!(f.rgba == reference.rgba, "an Edges move: pixels differ from a cold run");
 }
 
 #[test]
 fn a_slider_move_runs_only_the_stages_that_read_it_on_tiles() {
-    a_slider_move_runs_only_the_stages_that_read_it_on_tiles_with(&cpu(), &cpu);
+    a_slider_move_runs_only_the_stages_that_read_it_on_tiles_with(&cpu(), &cpu, false);
+}
+
+#[test]
+fn a_slider_move_runs_only_the_stages_that_read_it_on_tiles_with_the_lens_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    a_slider_move_runs_only_the_stages_that_read_it_on_tiles_with(
+        &device_lens(&gpu),
+        &|| device_lens(&gpu),
+        true,
+    );
+}
+
+#[test]
+fn a_slider_move_runs_only_the_stages_that_read_it_on_tiles_with_everything_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    a_slider_move_runs_only_the_stages_that_read_it_on_tiles_with(
+        &device_everything(&gpu),
+        &|| device_everything(&gpu),
+        true,
+    );
 }
 
 /// The first lens request is the planes' request: a request after a change of lens (the planes' key
@@ -1182,6 +1273,264 @@ fn a_lens_render_is_the_same_bytes_whatever_was_looked_at_first() {
     );
     // And the same twice.
     assert!(export(&cold, &src).rgb == a.rgb);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The lens on the device
+// ---------------------------------------------------------------------------------------------
+
+/// A night scene of defocused lights (discs of 18 px on a dark ground): the blur the detector finds, so the
+/// bokeh reshaping acts.
+fn bokeh_developed(w: u32, h: u32) -> Developed {
+    let scene = Scene::new(w, h, light(PROFILE, 5500.0), Layout::Uniform, 0.02).noise(2e-4, 1e-6);
+    let mut mosaic = scene.mosaic();
+    let code = (scene.black + 0.45 * (scene.white_level - scene.black)) as u16;
+    let radius = 0.015 * f64::from(w);
+    for fy in [0.18, 0.4, 0.62, 0.84] {
+        for fx in [0.1, 0.26, 0.42, 0.58, 0.74, 0.9] {
+            let (cx, cy) = (fx * f64::from(w), fy * f64::from(h));
+            for y in 0..h {
+                for x in 0..w {
+                    let d = (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy);
+                    if d <= radius {
+                        mosaic[(y * w + x) as usize] = code;
+                    }
+                }
+            }
+        }
+    }
+    let dir = tempfile::tempdir().expect("temp dir");
+    scene
+        .builder(MODEL)
+        .write_to(&dir.path().join("DSC00001.ARW"), &mosaic)
+        .expect("write the synthetic ARW");
+    Developed::open(dir)
+}
+
+/// The CPU lens and the device lens make the same picture of the fit view and of the 100 % view, within the
+/// tolerances of the kernels and of the colour pass; the device lens runs kernels (the counters say so) and
+/// reads nothing back that the CPU lens would read.
+fn the_device_lens_matches_the_cpu_lens_with(device: &Renderer, label: &str) {
+    let d = developed(1200, 800);
+    let src = plain(&d.source());
+    let lensed = with_lens(&src, VINTAGE);
+    let reference = cpu();
+    for (name, state) in [
+        ("fit view", cell(576.0, 384.0)),
+        ("100 % view", at_100_percent(500.0, 400.0, (1200, 800))),
+    ] {
+        let want = fresh_frame(&reference, &lensed, &state);
+        let got = fresh_frame(device, &lensed, &state);
+        let worst = worst_difference(&want, &got);
+        let _ = writeln!(
+            std::io::stderr(),
+            "[lens] {label}, {name}: CPU lens against device lens {worst} codes"
+        );
+        assert!(
+            worst <= 2,
+            "{label}, {name}: the device lens differs by {worst} codes"
+        );
+        assert_eq!(
+            lens_work(&got.report.runs).0,
+            lens_work(&want.report.runs).0,
+            "{label}, {name}: the planes are the CPU's in both"
+        );
+        assert!(
+            got.report.runs.lens_groups + got.report.runs.lens_tiles >= 1,
+            "{label}, {name}: {:?}",
+            got.report.runs
+        );
+    }
+}
+
+#[test]
+fn the_lens_on_the_device_matches_the_cpu_lens() {
+    let Some(gpu) = gpu() else { return };
+    the_device_lens_matches_the_cpu_lens_with(&device_lens(&gpu), "lens on the device");
+}
+
+#[test]
+fn the_lens_on_the_device_after_the_raw_group_on_the_device_matches_the_cpu_lens() {
+    let Some(gpu) = gpu() else { return };
+    the_device_lens_matches_the_cpu_lens_with(&device_everything(&gpu), "everything on the device");
+}
+
+/// Bokeh reshaping (L1) runs on the host and L2 and L3 on the device: the picture is the CPU lens's.
+#[test]
+fn the_reshaping_on_the_host_feeds_the_lens_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    let d = bokeh_developed(1200, 800);
+    let src = plain(&d.source());
+    let lensed = with_lens(
+        &src,
+        LensSettings {
+            kind: LensKind::Vintage,
+            flares: 40.0,
+            edges: 60.0,
+            anamorphic: 100.0,
+        },
+    );
+    let state = cell(576.0, 384.0);
+    let want = fresh_frame(&cpu(), &lensed, &state);
+    let lens = want.report.lens.expect("the lens report");
+    assert!(
+        lens.reshaped,
+        "the scene must have bokeh for the detector: {lens:?}"
+    );
+    for (label, renderer) in [
+        ("lens on the device", device_lens(&gpu)),
+        ("everything on the device", device_everything(&gpu)),
+    ] {
+        let got = fresh_frame(&renderer, &lensed, &state);
+        assert_eq!(got.report.lens, want.report.lens, "{label}");
+        let worst = worst_difference(&want, &got);
+        let _ = writeln!(
+            std::io::stderr(),
+            "[lens] {label}, reshaped bokeh: CPU lens against device lens {worst} codes"
+        );
+        assert!(worst <= 2, "{label}: the device lens differs by {worst} codes");
+    }
+}
+
+/// With the raw group and the lens on the device the group never comes back to the host for the lens:
+/// a Flares move reads back the finished frame and nothing else. (The CPU lens reads the group back.)
+#[test]
+fn a_slider_move_on_the_device_reads_back_the_frame_and_not_the_group() {
+    let Some(gpu) = gpu() else { return };
+    let d = developed(1200, 800);
+    let src = plain(&d.source());
+    let state = cell(576.0, 384.0);
+    let frame_bytes = 576 * 384 * 4;
+    let on_device = device_everything(&gpu);
+    let first = frame(&on_device, &with_lens(&src, VINTAGE), &state);
+    assert!(first.sharp);
+    let before = gpu.counters();
+    let moved = frame(
+        &on_device,
+        &with_lens(
+            &src,
+            LensSettings {
+                flares: 61.0,
+                ..VINTAGE
+            },
+        ),
+        &state,
+    );
+    let read = gpu.counters().since(before);
+    assert_eq!(moved.report.runs.lens_fields, 0, "{:?}", moved.report.runs);
+    assert!(
+        read.readback_bytes <= 2 * frame_bytes,
+        "a Flares move read {} bytes back (the frame is {frame_bytes})",
+        read.readback_bytes
+    );
+    // The CPU lens on a raw group made on the device reads the group (3 planes of 600 x 400) back first.
+    let cpu_lens = Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            gpu: Some(Arc::clone(&gpu)),
+            gpu_stages: GpuStages::ALL.difference(GpuStages::LENS),
+            ..options()
+        },
+    )
+    .expect("render thread");
+    let before = gpu.counters();
+    let _ = frame(&cpu_lens, &with_lens(&src, VINTAGE), &state);
+    let read_cpu = gpu.counters().since(before);
+    assert!(
+        read_cpu.readback_bytes > 2 * frame_bytes,
+        "the CPU lens read only {} bytes back",
+        read_cpu.readback_bytes
+    );
+}
+
+/// All three amounts at 0: no lens pass at all on the device either, and the bytes of a render without the
+/// field.
+#[test]
+fn zero_amounts_are_the_render_without_the_field_with_the_lens_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    zero_amounts_are_the_render_without_the_field_with(&device_lens(&gpu));
+    zero_amounts_are_the_render_without_the_field_with(&device_everything(&gpu));
+}
+
+/// The codes of a 16-bit PNG.
+fn png16(bytes: &[u8]) -> (usize, usize, Vec<u32>) {
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes.to_vec()));
+    let mut reader = decoder.read_info().expect("png header");
+    let mut buf = vec![0; reader.output_buffer_size().expect("size")];
+    let info = reader.next_frame(&mut buf).expect("png frame");
+    assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
+    let codes = buf[..info.buffer_size()]
+        .chunks_exact(2)
+        .map(|c| u32::from(u16::from_be_bytes([c[0], c[1]])))
+        .collect();
+    (info.width as usize, info.height as usize, codes)
+}
+
+/// An export through the export tail with the lens on the device (the kernels read the raw tiles where the raw
+/// chain left them and hand the sampler the lens tiles) is the CPU export within the kernels' tolerances, and
+/// it is made wholly on the device.
+#[test]
+fn an_export_with_the_lens_on_the_device_is_the_cpu_export_within_tolerance() {
+    let Some(gpu) = gpu() else { return };
+    let d = developed(800, 600);
+    let patch: SettingsPatch = serde_json::from_str(
+        r#"{ "lens": { "kind": "vintage", "flares": 60, "edges": 50, "anamorphic": 50 } }"#,
+    )
+    .expect("patch");
+    d.session.update_settings(d.id, &patch).expect("settings");
+    let photo = ExportPhoto::from_session(&d.session, d.id).expect("photo");
+    let home = tempfile::tempdir().expect("home");
+    let run = |renderer: Renderer| {
+        let out = tempfile::tempdir().expect("out");
+        let ctx = ExportContext::new(renderer).with_home(Some(home.path().to_path_buf()));
+        let opts = ExportOptions {
+            format: FormatKind::Png,
+            bit_depth: BitDepth::Sixteen,
+            destination: Some(out.path().to_path_buf()),
+            if_exists: IfExists::Replace,
+            ..ExportOptions::default()
+        };
+        let report = export_photo(&ctx, &photo, &ExportParams::new(opts), &ExportControl::none())
+            .expect("export");
+        let bytes = std::fs::read(&report.path).expect("read");
+        (report, png16(&bytes))
+    };
+    let (want_report, (w, h, want)) = run(cpu());
+    assert_eq!(want_report.device, ComputeDevice::Cpu);
+    let on_device = Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            gpu: Some(Arc::clone(&gpu)),
+            gpu_stages: GpuStages::ALL,
+            full_tile_px: 256,
+            ..options()
+        },
+    )
+    .expect("render thread");
+    let (report, (w2, h2, got)) = run(on_device);
+    assert_eq!(report.device, ComputeDevice::Gpu, "{:?}", report.notes);
+    assert!(
+        !report.notes.iter().any(|n| n.contains("graphics card")),
+        "{:?}",
+        report.notes
+    );
+    assert_eq!((w, h), (w2, h2));
+    let (mut worst, mut over) = (0u32, 0usize);
+    for (a, b) in want.iter().zip(&got) {
+        let dif = a.abs_diff(*b);
+        worst = worst.max(dif);
+        over += usize::from(dif > 256);
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "[lens] export tail, CPU against device: worst {worst} of 65535, {over} of {} samples over 256",
+        want.len()
+    );
+    assert!(worst <= 2500, "the device export differs by {worst} codes");
+    assert!(
+        (over as f64) <= 1e-3 * want.len() as f64,
+        "{over} samples differ by more than 256 codes"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

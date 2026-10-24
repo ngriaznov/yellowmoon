@@ -57,6 +57,7 @@ pub mod guided;
 pub mod highlights;
 pub mod lens;
 pub mod lens_field;
+pub mod lens_flare;
 pub mod log_guided;
 pub mod magnify;
 pub mod mosaic_ca;
