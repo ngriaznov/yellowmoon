@@ -137,7 +137,33 @@ The owner's hypothesis can be tested cheaply before any engineering commitment. 
 
 **Synthetic lens data, generated outside the repository.** Lens characteristics are computed offline from lens designs Yellowmoon transcribes from expired patents, fitted into compact formulas, and only the formulas are committed. The tool that computes them is kept out of the repository and the app, and the data are described as "synthetic, computed from public lens designs, not measured". Lens designs come only from those patents, never from third-party lens libraries, and each formula set records the patent it comes from. Consequence: the formulas cannot be regenerated from the repository alone.
 
-**Controls** (the owner: "Flares and field effects need its controls. Bokeh reshaping will increase with raising anamorphic slider"). Three sliders: **Flares** (glow, ghosts and streaks, still scaled by the real highlight energy), **field effects** (edge softness, falloff and swirl towards the edges), and **Anamorphic**, which drives the bokeh reshaping: the higher it is, the taller the ovals. Open: whether a lens picker stays above the sliders, and whether Anamorphic also turns flares into horizontal streaks.
+**Controls** (the owner: "Flares and field effects need its controls. Bokeh reshaping will increase with raising anamorphic slider"). Three sliders: **Flares** (glow, ghosts and streaks, still scaled by the real highlight energy), **field effects** (edge softness, falloff and swirl towards the edges), and **Anamorphic**, which drives the bokeh reshaping: the higher it is, the taller the ovals. Anamorphic also shapes the flares (the owner: "1 - yes"): its cylinder turns round ghosts into oval ones and draws horizontal streaks, while Flares sets how much.
+
+**Lens choice above the sliders** (the owner: "2 - yes, but we need more options, including default"; "list works well"). The lens decides what Flares, field effects and Anamorphic look like (ghost colours, how edges soften, how strong the swirl is); the sliders set the amounts. All lenses are spherical, each built from a public expired-patent design and named descriptively:
+
+| Lens | Character | Public design it comes from |
+|---|---|---|
+| Default | Modern, clean cinema prime: even sharpness, faint glow, neutral flares | A well-corrected double Gauss with modern coatings (authored) |
+| Classic | Warm, gentle: soft glow around highlights, amber flares, smooth falloff | 1930s cinema primes of the Speed Panchro type |
+| Vintage | Glow wide open, lower contrast, soft edges, a little swirl | Biotar-type double Gauss |
+| Petzval | Very sharp centre, strong swirl, fast falloff | Petzval portrait lens (1840) |
+| Triplet | Soft corners, busy flares, high centre contrast | Cooke triplet (1893) |
+| Sonnar | Smooth and glowing wide open | Sonnar type (1930s) |
+| Detuned | Sharp only in the centre, harsh edge falloff, smeared flares | A deliberately misaligned Default |
+
+**Anamorphic works with every lens.** It models a front anamorphic attachment on the chosen lens, as real adapters on spherical lenses do, so Vintage or Petzval keep their own character and gain the anamorphic traits. Everything the slider brings, scaled by one amount:
+
+| Trait | What is seen | Made by |
+|---|---|---|
+| Taller oval bokeh | Background highlights become vertical ovals | Bokeh reshaping |
+| Horizontal streaks and oval ghosts | Lights flare into horizontal lines | Flares, shaped by the cylinder |
+| Anamorphic distortion | Barrel distortion stronger across the width than the height: horizontal lines near the top and bottom bow, verticals stay nearly straight | A geometric warp |
+| Edge stretch ("mumps") | Objects near the left and right edges look slightly wider | The same warp |
+| Oval falloff | Darkening along an oval rather than a circle | Field effects |
+| Softer sides | The left and right edges soften more than the top and bottom | Field effects |
+| Horizontal colour fringing | Fringes mainly along the width | Field effects |
+
+The distortion pulls the frame's edges inwards, and no frame may show an empty corner (`docs/20` §7), so the image zooms in as Anamorphic rises, losing a sliver at the edges as a real anamorphic frame does. The warp runs with straightening and cropping, so the crop frame and Auto crop work on the distorted image.
 
 ## Addendum 2026-10-24: reshape the bokeh that is there, do not add new bokeh
 
