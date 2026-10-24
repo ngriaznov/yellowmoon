@@ -102,10 +102,10 @@ pub const GLOW_BOOST_SHARE: f64 = 0.5;
 /// At Flares 100 the ghosts of a lens together take at least this fraction of the light of a light: a lens whose
 /// data hold less (every coated lens) has its ghosts raised, all by one factor, to this, the level of twelve
 /// ghosts of two bare glass surfaces (4 % x 4 % = 1.6e-3 each). The lens's data are never lowered.
-pub const GHOST_FRACTION_FLOOR: f64 = 0.01;
+pub const GHOST_FRACTION_FLOOR: f64 = 0.008;
 
 /// The same floor for the attachment's own oval ghosts at Anamorphic 100.
-pub const ATTACHMENT_GHOST_FLOOR: f64 = 0.002;
+pub const ATTACHMENT_GHOST_FLOOR: f64 = 0.0007;
 
 /// At Flares 100 the glow of a lens takes at least this fraction of the light (a veiling glare that the
 /// literature rates "usually good", 1.5 to 3 %); a lens whose data hold less has its glow raised to it.
