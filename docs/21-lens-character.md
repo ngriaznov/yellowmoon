@@ -254,7 +254,7 @@ Reshaping needs to know where the photo is already out of focus and by how much,
 3. **Spread to every pixel.** The sparse values and confidences are spread over the plane by edge-aware normalised convolution (a joint bilateral filter guided by the plane's colours, run over a fixed pyramid), so a value travels along its own surface and stops at colour edges. The result is `b` (in half-diagonal units) and a confidence `c` per pixel.
 4. **Caution.** `b` is set to 0 where `c` is low, below `b_min`, and where the plane shows sharp texture; balls (section 4, L1 step 2) are looked for only where `b ≥ 2·b_min`.
 
-The report says "little out-of-focus background" when less than 2 % of the frame has `b ≥ 2·b_min` with confidence. Its tests use synthetic scenes with a known blur per region (section 14). If the classical detector proves too weak on real photos, the next step is a small defocus model of our own, trained on synthetic defocus with a known blur (licence-clean, a few MB, bundled; section 11).
+The report says "little out-of-focus background" when less than 2 % of the frame has `b ≥ 2·b_min` with confidence. Its tests use synthetic scenes with a known blur per region (section 14). The owner allows a learned model here ("Bokeh map extraction can use ML if needed, of course"): a bokeh-map model that gives `b` and `c` directly, either a pretrained one whose code, weights and training data are all licence-clean, or a small one of our own trained on synthetic defocus with a known blur (a few MB, bundled, run in Rust like the crop model; section 11). The candidates are being checked; the classical detector above is the first version and stays as the fallback.
 
 ## 8. The command line
 
@@ -287,7 +287,7 @@ They are the `lens` field of the settings object; `--settings` takes it too. New
 | Step | Why later |
 |---|---|
 | Adding bokeh to a photo that has none | the owner's direction: reshape what is there, never add |
-| A learned bokeh detector of our own (a small defocus model trained on synthetic defocus with a known blur, bundled) | the classical detector first (section 7); trained only if it proves too weak on real photos, which needs GPU time and the owner's yes |
+| A learned bokeh detector of our own (a small defocus model trained on synthetic defocus with a known blur, bundled) | allowed by the owner (section 7); after the licence check of pretrained candidates, and training needs GPU time and the owner's yes before any Modal money is spent |
 | A matting model for hair | the guided upsampling and the sharpness test first; added if tests show halos at hair |
 | A sharp area away from the centre (Detuned's sweet spot moved) | needs a control |
 | A lens with a front effect plate (abstract smeared flares) | Detuned's smear covers a mild form |
