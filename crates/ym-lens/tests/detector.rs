@@ -1,193 +1,405 @@
-//! The bokeh detector on synthetic scenes with known blur (`docs/21` section 14).
+//! The bokeh detector on synthetic scenes with known blur (`docs/21` sections 7 and 14).
+//!
+//! The scenes are drawn analytically with a fixed seed (`tests/scenes`): textured regions blurred by discs of
+//! known radii, a sharp subject with strands against a blurred background, isolated bright discs on a dark noisy
+//! ground, an evenly sharp scene, flat regions. The frames are 1000 x 667 px, so the lens plane is the frame
+//! (`k_L` = 1) and its half-diagonal is 601 px: `b_min` is 2.4 px and `b_cap` 18 px.
 
 mod common;
 mod scenes;
 
-use common::{plan, whole};
-use scenes::{Noise, Scene, night_scene, sharp_scene, subject_scene};
-use ym_lens::{Axis, BokehPlanes, LensKind, LensPlanes};
+use std::sync::OnceLock;
 
-fn planes_of(scene: &Scene) -> (ym_lens::LensPlan, LensPlanes) {
+use common::{plan, whole};
+use scenes::{
+    Noise, Scene, anchor_scene, balls_over_texture_scene, flat_scene, night_scene, night_scene_spaced, sharp_scene,
+    subject_scene,
+};
+use ym_lens::consts::{B_MIN, MAX_BALLS};
+use ym_lens::{Axis, BokehPlanes, LensError, LensKind, LensPlan, LensPlanes, ReshapeReason, ReshapeReport};
+
+const W: usize = 1000;
+const H: usize = 667;
+/// The half-diagonal of the 1000 x 667 lens plane in pixels.
+const HD: f64 = 600.97;
+
+fn planes_of(scene: &Scene) -> (LensPlan, LensPlanes) {
     let (w, h) = (scene.img.w, scene.img.h);
     let p = plan(LensKind::Default, 0.0, 0.0, 100.0, w, h, Axis::X);
-    assert_eq!(p.lens_plane_scale(), 1);
+    assert_eq!(p.lens_plane_scale(), 1, "the frame is the lens plane");
     let planes = LensPlanes::build(&p, &whole(w, h, &scene.img.data), scene.focus, &|| false).expect("planes");
     (p, planes)
 }
 
-#[test]
-fn explore() {
-    let t = std::time::Instant::now();
-    let scene = subject_scene(1000, 667, [5.0, 9.0, 14.0], Noise::LOW, 1);
-    eprintln!("scene {:?}", t.elapsed());
-    let t = std::time::Instant::now();
-    let (_p, planes) = planes_of(&scene);
-    eprintln!("planes {:?}", t.elapsed());
-    let bp: &BokehPlanes = planes.bokeh().unwrap();
-    eprintln!("report {:?} edges {} frac {} active {} bmax {}", planes.report(), bp.edge_count(), bp.blurred_fraction(), bp.active(), bp.max_blur());
-    let (w, h) = bp.size();
-    let hd = 0.5 * ((w * w + h * h) as f64).sqrt();
-    let b = bp.blur();
-    let c = bp.confidence();
-    for band in 0..3 {
-        let (mut sum, mut cnt) = (0.0f64, 0usize);
-        let mut vals = Vec::new();
-        for y in 0..h {
-            for x in 0..w {
-                let i = y * w + x;
-                if scene.trusted[i] && scene.truth_r[i] > 0.0 && (x * 3 / w) == band && c[i] > 0.5 && b[i] > 0.0 {
-                    let est = f64::from(b[i]) * hd;
-                    vals.push(est / f64::from(scene.truth_r[i]));
-                    sum += est;
-                    cnt += 1;
-                }
-            }
-        }
-        vals.sort_by(|a, b| a.total_cmp(b));
-        let total = (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| scene.trusted[y * w + x] && (x * 3 / w) == band).count();
-        if !vals.is_empty() {
-            eprintln!("band {band}: confident {cnt}/{total}, ratio p10 {:.2} p50 {:.2} p90 {:.2}", vals[vals.len() / 10], vals[vals.len() / 2], vals[vals.len() * 9 / 10]);
-        } else {
-            eprintln!("band {band}: no confident pixel of {total}");
-        }
-    }
-    let mut worst = 0.0f32;
-    for i in 0..w * h {
-        if scene.subject[i] || scene.strand[i] {
-            worst = worst.max(b[i]);
-        }
-    }
-    {
-        let (mut ns, mut nviol, mut nst, mut nstv) = (0usize, 0usize, 0usize, 0usize);
-        let mut bins = [0usize; 6];
-        for i in 0..w * h {
-            if scene.subject[i] {
-                ns += 1;
-                if f64::from(b[i]) * hd > 2.4 {
-                    nviol += 1;
-                    let v = f64::from(b[i]) * hd;
-                    bins[((v / 5.0) as usize).min(5)] += 1;
-                }
-            }
-            if scene.strand[i] {
-                nst += 1;
-                if f64::from(b[i]) * hd > 2.4 {
-                    nstv += 1;
-                }
-            }
-        }
-        eprintln!("subject pixels {ns}, violating {nviol} (b px in 5-wide bins {bins:?}); strand pixels {nst}, violating {nstv}");
-    }
-    eprintln!("sharp worst b*hd = {:.2} (b_min px = {:.2})", f64::from(worst) * hd, 0.004 * hd);
-    let _ = (night_scene, sharp_scene);
-    if let Ok(dir) = std::env::var("YM_L1_DUMP") {
-        let f32s = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
-        let px: Vec<f32> = b.iter().map(|v| (f64::from(*v) * hd) as f32).collect();
-        std::fs::write(format!("{dir}/lum.f32"), f32s(&scene.img.luminance())).unwrap();
-        std::fs::write(format!("{dir}/truth.f32"), f32s(&scene.truth_r)).unwrap();
-        std::fs::write(format!("{dir}/b.f32"), f32s(&px)).unwrap();
-        std::fs::write(format!("{dir}/conf.f32"), f32s(c)).unwrap();
-        std::fs::write(format!("{dir}/size.txt"), format!("{w} {h}")).unwrap();
-    }
+fn bokeh(planes: &LensPlanes) -> &BokehPlanes {
+    planes.bokeh().expect("the plan reshapes bokeh")
 }
 
+/// The subject scene without noise, made once.
+fn subject_base() -> &'static Scene {
+    static S: OnceLock<Scene> = OnceLock::new();
+    S.get_or_init(|| subject_scene(W, H, [5.0, 9.0, 14.0], Noise::NONE, 1))
+}
+
+const NOISES: [(&str, Noise); 4] = [
+    ("none", Noise::NONE),
+    ("low", Noise::LOW),
+    ("mid", Noise::MID),
+    ("high", Noise::HIGH),
+];
+
 #[test]
-fn explore_night() {
+fn isolated_bright_discs_are_measured_within_15_percent() {
     let radii = [6.0, 8.0, 10.0, 12.0, 14.0, 7.0, 9.0, 11.0, 13.0, 15.0, 5.5, 16.0];
-    for (name, noise) in [("none", Noise::NONE), ("low", Noise::LOW), ("mid", Noise::MID), ("high", Noise::HIGH)] {
-        let scene = night_scene(1000, 667, &radii, noise, 7);
-        let t = std::time::Instant::now();
+    for (name, noise) in NOISES {
+        let scene = night_scene(W, H, &radii, noise, 7);
         let (_p, planes) = planes_of(&scene);
-        let bp = planes.bokeh().unwrap();
-        let hd = 601.0;
-        eprintln!("night {name}: {:?}, balls {} (of {}), report {:?}, frac {:.3} edges {}", t.elapsed(), bp.balls().len(), scene.discs.len(), planes.report(), bp.blurred_fraction(), bp.edge_count());
+        let bp = bokeh(&planes);
         let (w, h) = bp.size();
+        assert_eq!((w, h), (W, H));
+        assert_eq!(bp.balls().len(), radii.len(), "noise {name}: every disc is found, nothing else");
         for &(cx, cy, r) in &scene.discs {
-            let found = bp.balls().iter().find(|b| (b.x * w as f64 - cx).hypot(b.y * h as f64 - cy) < 0.6 * r);
-            match found {
-                Some(b) => {
-                    let est = b.radius * hd;
-                    let true_energy = std::f64::consts::PI * r * r;
-                    let _ = true_energy;
-                    eprintln!("  disc r {r:5.1} at ({cx:.0},{cy:.0}): ball r {est:.2} ({:+.1}%), centre err {:.2} px, energy {:.3?} supported {}", (est / r - 1.0) * 100.0, (b.x * w as f64 - cx).hypot(b.y * h as f64 - cy), b.energy.map(|e| e * (w * h) as f64), b.supported);
-                }
-                None => eprintln!("  disc r {r:5.1} at ({cx:.0},{cy:.0}): NOT FOUND"),
-            }
+            let ball = bp
+                .balls()
+                .iter()
+                .find(|b| (b.x * w as f64 - cx).hypot(b.y * h as f64 - cy) < 0.6 * r)
+                .unwrap_or_else(|| panic!("noise {name}: disc of {r} px at ({cx:.0}, {cy:.0}) not found"));
+            let est = ball.radius * HD;
+            assert!((est / r - 1.0).abs() < 0.15, "noise {name}: disc {r} px measured {est:.2}");
+            // The measure is in fact much better than the 15 % asked for.
+            assert!((est / r - 1.0).abs() < 0.03, "noise {name}: disc {r} px measured {est:.2}");
+            let centre_err = (ball.x * w as f64 - cx).hypot(ball.y * h as f64 - cy);
+            assert!(centre_err < 0.5, "centre off by {centre_err}");
+            assert!(ball.energy.iter().all(|e| *e > 0.0));
         }
-        let false_balls = bp.balls().iter().filter(|b| !scene.discs.iter().any(|&(cx, cy, r)| (b.x * w as f64 - cx).hypot(b.y * h as f64 - cy) < 0.6 * r)).count();
-        eprintln!("  false balls {false_balls}");
+        // The map carries each ball's radius over its disc, with confidence.
+        for &(cx, cy, r) in &scene.discs {
+            let i = cy as usize * w + cx as usize;
+            let b = f64::from(bp.blur()[i]) * HD;
+            assert!((b / r - 1.0).abs() < 0.15, "map at the disc of {r} px: {b:.2}");
+            assert!(bp.confidence()[i] > 0.9);
+        }
+        assert!(bp.active(), "noise {name}: balls on a dark ground are out-of-focus background");
+        assert_eq!(planes.report(), ReshapeReport { reshaped: true, reason: None });
     }
 }
 
 #[test]
-fn explore_sharp_and_flat() {
-    for (name, scene) in [
-        ("sharp none", sharp_scene(1000, 667, Noise::NONE, 3)),
-        ("sharp mid", sharp_scene(1000, 667, Noise::MID, 3)),
-        ("sharp high", sharp_scene(1000, 667, Noise::HIGH, 3)),
-        ("flat low", scenes::flat_scene(1000, 667, Noise::LOW, 3)),
-    ] {
+fn balls_are_ordered_brightest_first_and_capped() {
+    let radii = [6.0, 8.0, 10.0, 12.0, 14.0, 7.0, 9.0, 11.0];
+    let scene = night_scene(W, H, &radii, Noise::LOW, 5);
+    let (_p, planes) = planes_of(&scene);
+    let balls = bokeh(&planes).balls();
+    assert_eq!(balls.len(), radii.len());
+    assert!(balls.windows(2).all(|w| w[0].peak >= w[1].peak), "brightest first");
+    assert!(balls.len() <= MAX_BALLS);
+    // A ball's fit is the ground it sits on: a dark plane, and its energy is its disc times its brightness.
+    for b in balls {
+        assert!(b.fit.iter().all(|f| f[0] < 0.02 && f[0] >= 0.0), "{:?}", b.fit);
+        assert!(b.take_out_radius > 1.15 * b.radius);
+    }
+}
+
+#[test]
+fn a_lone_round_light_and_small_sharp_lights_are_not_balls() {
+    // One round light (the moon) and two: more likely sharp than blurred, so no balls and no reshaping.
+    for count in [1usize, 2] {
+        let scene = night_scene(W, H, &[11.0, 9.0][..count], Noise::LOW, 3);
         let (_p, planes) = planes_of(&scene);
-        let bp = planes.bokeh().unwrap();
-        let hd = 601.0;
-        if name == "sharp mid" {
-            if let Ok(dir) = std::env::var("YM_L1_DUMP") {
-                let f32s = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
-                let px: Vec<f32> = bp.blur().iter().map(|v| (f64::from(*v) * hd) as f32).collect();
-                std::fs::write(format!("{dir}/lum.f32"), f32s(&scene.img.luminance())).unwrap();
-                std::fs::write(format!("{dir}/truth.f32"), f32s(&scene.truth_r)).unwrap();
-                std::fs::write(format!("{dir}/b.f32"), f32s(&px)).unwrap();
-                std::fs::write(format!("{dir}/conf.f32"), f32s(bp.confidence())).unwrap();
-                std::fs::write(format!("{dir}/size.txt"), "1000 667").unwrap();
+        let bp = bokeh(&planes);
+        assert!(bp.balls().is_empty(), "{count} light(s)");
+        assert!(!bp.active());
+        assert_eq!(
+            planes.report(),
+            ReshapeReport { reshaped: false, reason: Some(ReshapeReason::LittleBlur) }
+        );
+    }
+    // Small sharp lamps (a few pixels across) are below the smallest ball.
+    let scene = night_scene(W, H, &[1.5; 24], Noise::LOW, 3);
+    let (_p, planes) = planes_of(&scene);
+    assert!(bokeh(&planes).balls().is_empty());
+    assert!(!planes.report().reshaped);
+}
+
+#[test]
+fn of_two_lights_closer_than_1_2_radii_the_dimmer_is_dropped() {
+    // Discs overlapping in pairs, one dimmer than the other; the balls kept are never closer than 1.2 radii.
+    let mut scene = night_scene_spaced(W, H, &[10.0, 12.0, 9.0, 8.0, 11.0], Noise::NONE, 9, 3.0);
+    let n = W * H;
+    for k in 0..scene.discs.len() {
+        let (cx, cy, r) = scene.discs[k];
+        // A dimmer twin 0.9 radii away.
+        for y in 0..H {
+            for x in 0..W {
+                let d = ((x as f64 + 0.5 - cx - 0.9 * r).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
+                let a = (r + 0.5 - d).clamp(0.0, 1.0) as f32;
+                if a > 0.0 {
+                    for c in 0..3 {
+                        scene.img.data[c * n + y * W + x] += 0.1 * a;
+                    }
+                }
             }
         }
-        let nz = bp.blur().iter().filter(|b| f64::from(**b) * hd > 2.4).count();
-        let mx = bp.blur().iter().fold(0.0f32, |m, v| m.max(*v));
-        eprintln!("{name}: report {:?} frac {:.4} edges {} pixels above b_min {} ({:.3}%), max b px {:.1}, balls {}", planes.report(), bp.blurred_fraction(), bp.edge_count(), nz, 100.0 * nz as f64 / bp.blur().len() as f64, f64::from(mx) * hd, bp.balls().len());
+    }
+    let (_p, planes) = planes_of(&scene);
+    let balls = bokeh(&planes).balls();
+    for (i, a) in balls.iter().enumerate() {
+        for b in &balls[i + 1..] {
+            let d = (a.x - b.x).hypot((a.y - b.y) * H as f64 / W as f64 * 0.0 + (a.y - b.y)) ;
+            let d_px = ((a.x - b.x) * W as f64).hypot((a.y - b.y) * H as f64);
+            let _ = d;
+            assert!(d_px >= 1.2 * a.radius.max(b.radius) * HD, "balls {d_px:.1} px apart, radii {} {}", a.radius * HD, b.radius * HD);
+        }
     }
 }
 
 #[test]
-fn explore_conf() {
-    let hd = 601.0;
-    let pct = |v: &mut Vec<f32>, p: f64| -> f32 { v.sort_by(|a, b| a.total_cmp(b)); if v.is_empty() { 0.0 } else { v[((v.len() - 1) as f64 * p) as usize] } };
-    let sharp = sharp_scene(1000, 667, Noise::MID, 3);
-    let (_p, planes) = planes_of(&sharp);
-    let bp = planes.bokeh().unwrap();
-    let mut cs: Vec<f32> = bp.blur().iter().zip(bp.confidence()).filter(|(b, _)| f64::from(**b) * hd > 2.4).map(|(_, c)| *c).collect();
-    eprintln!("sharp mid false-positive confidences: n {} p10 {:.2} p50 {:.2} p90 {:.2} p99 {:.2}", cs.len(), pct(&mut cs, 0.1), pct(&mut cs, 0.5), pct(&mut cs, 0.9), pct(&mut cs, 0.99));
-    let scene = subject_scene(1000, 667, [5.0, 9.0, 14.0], Noise::MID, 2);
+fn balls_must_agree_with_the_blur_around_them() {
+    // Discs of the same size as the blur around them are confirmed by the edges; discs far larger than the blur
+    // around them (a big sharp-edged lamp in a sharper scene) are not balls.
+    let radii = [9.0; 6];
+    let scene = balls_over_texture_scene(W, H, 9.0, &radii, Noise::LOW, 4);
     let (_p, planes) = planes_of(&scene);
-    let bp = planes.bokeh().unwrap();
-    let mut cs: Vec<f32> = (0..bp.blur().len()).filter(|&i| scene.trusted[i] && scene.truth_r[i] > 0.0 && f64::from(bp.blur()[i]) * hd > 2.4).map(|i| bp.confidence()[i]).collect();
-    eprintln!("subject-scene background confidences: n {} p10 {:.2} p25 {:.2} p50 {:.2} p90 {:.2}", cs.len(), pct(&mut cs, 0.1), pct(&mut cs, 0.25), pct(&mut cs, 0.5), pct(&mut cs, 0.9));
-    for thr in [0.3f32, 0.4, 0.5, 0.6, 0.7, 0.8] {
-        let (mut n, mut ok) = (0usize, 0usize);
-        let mut errs = Vec::new();
-        for i in 0..bp.blur().len() {
-            if scene.trusted[i] && scene.truth_r[i] > 0.0 && bp.confidence()[i] >= thr && bp.blur()[i] > 0.0 {
+    let bp = bokeh(&planes);
+    assert!(bp.balls().len() >= 5, "found {}", bp.balls().len());
+    assert!(bp.balls().iter().filter(|b| b.supported).count() >= 4, "the edges around them confirm the size");
+    for b in bp.balls() {
+        assert!((b.radius * HD / 9.0 - 1.0).abs() < 0.1);
+    }
+    let scene = balls_over_texture_scene(W, H, 4.0, &[22.0, 22.0], Noise::LOW, 4);
+    let (_p, planes) = planes_of(&scene);
+    assert!(
+        bokeh(&planes).balls().is_empty(),
+        "two big lights in a scene blurred by 4 px say nothing is out of focus by 22 px"
+    );
+}
+
+/// Where the detector is confident, the share of pixels within `tol` of the truth, the median error, and the
+/// share of the trusted background that is confident.
+fn accuracy(scene: &Scene, bp: &BokehPlanes, min_conf: f32, tol: f64) -> (f64, f64, f64) {
+    let (mut n, mut ok, mut trusted) = (0usize, 0usize, 0usize);
+    let mut errs = Vec::new();
+    for i in 0..W * H {
+        if scene.trusted[i] && scene.truth_r[i] > 0.0 {
+            trusted += 1;
+            if bp.confidence()[i] >= min_conf && bp.blur()[i] > 0.0 {
                 n += 1;
-                let ratio = f64::from(bp.blur()[i]) * hd / f64::from(scene.truth_r[i]);
-                if (ratio - 1.0).abs() <= 0.25 { ok += 1; }
-                errs.push((ratio - 1.0).abs());
+                let e = (f64::from(bp.blur()[i]) * HD / f64::from(scene.truth_r[i]) - 1.0).abs();
+                errs.push(e);
+                if e <= tol {
+                    ok += 1;
+                }
             }
         }
-        errs.sort_by(|a, b| a.total_cmp(b));
-        eprintln!("conf >= {thr}: {n} pixels, within 25%: {:.1}%, median |err| {:.1}%", 100.0 * ok as f64 / n as f64, 100.0 * errs[errs.len() / 2]);
+    }
+    errs.sort_by(f64::total_cmp);
+    (ok as f64 / n.max(1) as f64, errs[errs.len() / 2], n as f64 / trusted as f64)
+}
+
+#[test]
+fn the_blur_map_follows_the_truth_where_confident() {
+    for (name, noise) in NOISES {
+        let scene = subject_base().noisy(noise, 21);
+        let (_p, planes) = planes_of(&scene);
+        let bp = bokeh(&planes);
+        assert!(bp.active(), "noise {name}");
+        let (within, median, covered) = accuracy(&scene, bp, 0.6, 0.25);
+        eprintln!("noise {name}: confident pixels within 25 %: {:.1} %, median error {:.1} %, confident share {:.1} %", 100.0 * within, 100.0 * median, 100.0 * covered);
+        assert!(within >= 0.85, "noise {name}: {:.1} % within 25 %", 100.0 * within);
+        assert!(median <= 0.15, "noise {name}: median error {:.1} %", 100.0 * median);
+        assert!(covered >= 0.3, "noise {name}: only {:.1} % of the background is confident", 100.0 * covered);
+        // The largest blur is held at b_cap by the stretch; the map itself reports what it measured.
+        assert!(bp.max_blur() <= 0.03 + 1e-9);
     }
 }
 
 #[test]
-fn explore_violations() {
-    let scene = subject_scene(1000, 667, [5.0, 9.0, 14.0], Noise::LOW, 1);
-    let (w, h) = (scene.img.w, scene.img.h);
+fn sharp_regions_and_strands_stay_below_b_min() {
+    for (name, noise) in NOISES {
+        let scene = subject_base().noisy(noise, 22);
+        let (_p, planes) = planes_of(&scene);
+        let bp = bokeh(&planes);
+        let visible = visible_strands(&scene, noise);
+        let (mut subject, mut strand) = (0usize, 0usize);
+        for i in 0..W * H {
+            if scene.subject[i] || (scene.strand[i] && visible[i]) {
+                let b = f64::from(bp.blur()[i]);
+                if b >= B_MIN {
+                    if scene.subject[i] {
+                        subject += 1;
+                    } else {
+                        strand += 1;
+                    }
+                }
+            }
+        }
+        let (ns, nt) = (scene.subject.iter().filter(|s| **s).count(), visible.iter().filter(|s| **s).count());
+        eprintln!("noise {name}: {subject} of {ns} subject pixels and {strand} of {nt} strand pixels at or above b_min");
+        assert_eq!(subject, 0, "noise {name}: the sharp subject is never blurred");
+        assert_eq!(strand, 0, "noise {name}: nor the hair");
+    }
+}
+
+#[test]
+fn the_focus_point_anchors_the_subject() {
+    // A smooth, soft-edged subject in a blurred textured scene: nothing in it says it is sharp but the focus point.
+    let scene = anchor_scene(W, H, Noise::LOW, 6);
+    let (p, planes) = planes_of(&scene);
+    let bp = bokeh(&planes);
+    let above = |bp: &BokehPlanes| {
+        (0..W * H).filter(|&i| scene.subject[i] && f64::from(bp.blur()[i]) >= B_MIN).count()
+    };
+    let total = scene.subject.iter().filter(|s| **s).count();
+    let with = above(bp);
+    // Without the focus point the smooth subject reads as blurred as its surroundings.
+    let no_focus = LensPlanes::build(&p, &whole(W, H, &scene.img.data), None, &|| false).unwrap();
+    let without = above(bokeh(&no_focus));
+    eprintln!("subject pixels read as blurred: {with} with the focus point, {without} without, of {total}");
+    assert!(without as f64 > 0.3 * total as f64, "the test scene must make the anchor matter: {without} of {total}");
+    assert!(with == 0, "with the focus point the subject is in focus: {with} of {total} pixels are blurred");
+    // The anchor is confident.
+    let centre = (H / 2) * W + W / 2;
+    assert!(bp.confidence()[centre] >= 0.99);
+    assert!(bp.blur()[centre] == 0.0);
+    // Away from the subject the background is blurred as the truth says.
+    let mut far = scene.clone();
+    for i in 0..W * H {
+        let (x, y) = ((i % W) as f64, (i / W) as f64);
+        if (x - 500.0).hypot(y - 333.5) < 190.0 {
+            far.trusted[i] = false;
+        }
+    }
+    let (within, _, covered) = accuracy(&far, bp, 0.6, 0.25);
+    assert!(within > 0.85 && covered > 0.3, "{within} {covered}");
+}
+
+#[test]
+fn an_evenly_sharp_scene_is_not_reshaped() {
+    for (name, noise) in NOISES {
+        let scene = sharp_scene(W, H, noise, 3);
+        let (_p, planes) = planes_of(&scene);
+        let bp = bokeh(&planes);
+        assert!(!bp.active(), "noise {name}");
+        assert_eq!(
+            planes.report(),
+            ReshapeReport { reshaped: false, reason: Some(ReshapeReason::LittleBlur) },
+            "noise {name}"
+        );
+        assert!(bp.blurred_fraction() < 0.005, "noise {name}: {}", bp.blurred_fraction());
+        assert!(bp.balls().is_empty());
+        // What is left of false readings is a few specks well under the 2 % that would ask for reshaping.
+        let above = bp.blur().iter().filter(|b| **b >= B_MIN as f32).count();
+        assert!(above < W * H / 50, "noise {name}: {above} pixels read as blurred");
+    }
+}
+
+#[test]
+fn flat_regions_are_left_alone() {
+    let scene = flat_scene(W, H, Noise::LOW, 3);
     let (_p, planes) = planes_of(&scene);
-    let bp = planes.bokeh().unwrap();
-    for i in 0..w * h {
-        if (scene.subject[i] || scene.strand[i]) && f64::from(bp.blur()[i]) * 601.0 > 2.0 {
-            let (x, y) = (i % w, i / w);
-            eprintln!("violation at ({x},{y}) subject {} strand {} b {:.2} conf {:.2}; neighbours b: {:?}", scene.subject[i], scene.strand[i], f64::from(bp.blur()[i]) * 601.0, bp.confidence()[i],
-                (-3i64..=3).map(|d| (f64::from(bp.blur()[((y as i64 + d) as usize) * w + x]) * 601.0 * 10.0).round() / 10.0).collect::<Vec<_>>());
+    let bp = bokeh(&planes);
+    assert!(bp.active(), "the blurred band is a third of the frame");
+    let (mut flat_blurred, mut flat) = (0usize, 0usize);
+    for y in 0..H {
+        for x in 0..W {
+            let fx = x as f64 / W as f64;
+            // Flat parts, away from the band (a blur's width and the spread's reach).
+            if fx < 0.33 || fx > 0.77 {
+                flat += 1;
+                if bp.blur()[y * W + x] > 0.0 {
+                    flat_blurred += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        (flat_blurred as f64) < 0.02 * flat as f64,
+        "{flat_blurred} of {flat} flat pixels read as blurred"
+    );
+    let (within, _, covered) = accuracy(&scene, bp, 0.6, 0.25);
+    assert!(within > 0.85 && covered > 0.1, "{within} {covered}");
+}
+
+#[test]
+fn two_runs_and_any_thread_count_give_the_same_bits() {
+    let scene = subject_base().noisy(Noise::LOW, 23);
+    let (p, a) = planes_of(&scene);
+    let b = LensPlanes::build(&p, &whole(W, H, &scene.img.data), scene.focus, &|| false).unwrap();
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let c = pool.install(|| LensPlanes::build(&p, &whole(W, H, &scene.img.data), scene.focus, &|| false).unwrap());
+    for other in [&b, &c] {
+        let (x, y) = (bokeh(&a), bokeh(other));
+        assert_eq!(bits(x.blur()), bits(y.blur()));
+        assert_eq!(bits(x.confidence()), bits(y.confidence()));
+        assert_eq!(x.balls(), y.balls());
+        assert_eq!(x.edge_count(), y.edge_count());
+        assert_eq!(x.blurred_fraction().to_bits(), y.blurred_fraction().to_bits());
+    }
+    // The same with balls.
+    let night = night_scene(W, H, &[6.0, 8.0, 10.0, 12.0], Noise::MID, 7);
+    let (p, a) = planes_of(&night);
+    let c = pool.install(|| LensPlanes::build(&p, &whole(W, H, &night.img.data), None, &|| false).unwrap());
+    assert_eq!(bits(bokeh(&a).blur()), bits(bokeh(&c).blur()));
+    assert_eq!(bokeh(&a).balls(), bokeh(&c).balls());
+}
+
+/// Strand pixels that stand out of their surroundings: darker (linear) than the mean of the non-strand pixels
+/// around them by at least 0.1 and eight times the sensor noise at that level. A faint hair over a dark cell, or
+/// buried in noise, cannot be told from the background by any method.
+fn visible_strands(scene: &Scene, noise: Noise) -> Vec<bool> {
+    let lum = scene.img.luminance();
+    let mut out = vec![false; W * H];
+    for y in 5..H - 5 {
+        for x in 5..W - 5 {
+            let i = y * W + x;
+            if !scene.strand[i] {
+                continue;
+            }
+            let (mut sum, mut n) = (0.0f64, 0.0f64);
+            for dy in -5i64..=5 {
+                for dx in -5i64..=5 {
+                    let j = ((y as i64 + dy) as usize) * W + (x as i64 + dx) as usize;
+                    if !scene.strand[j] {
+                        sum += f64::from(lum[j]);
+                        n += 1.0;
+                    }
+                }
+            }
+            let bg = sum / n.max(1.0);
+            let sigma = (noise.shot * bg + noise.read * noise.read).sqrt();
+            out[i] = n > 0.0 && bg - f64::from(lum[i]) >= 0.1f64.max(8.0 * sigma);
+        }
+    }
+    out
+}
+
+fn bits(v: &[f32]) -> Vec<u32> {
+    v.iter().map(|x| x.to_bits()).collect()
+}
+
+#[test]
+fn cancel_ends_the_build_at_any_step() {
+    let scene = subject_base().noisy(Noise::LOW, 24);
+    let night = night_scene(W, H, &[6.0, 8.0, 10.0, 12.0], Noise::LOW, 7);
+    for scene in [&scene, &night] {
+        let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
+        let polls = std::cell::Cell::new(0usize);
+        let ok = LensPlanes::build(&p, &whole(W, H, &scene.img.data), scene.focus, &|| {
+            polls.set(polls.get() + 1);
+            false
+        });
+        assert!(ok.is_ok());
+        let total = polls.get();
+        assert!(total >= 12, "the detector polls between its steps: {total}");
+        for stop_at in [1, 3, total / 2, total - 1, total] {
+            let seen = std::cell::Cell::new(0usize);
+            let r = LensPlanes::build(&p, &whole(W, H, &scene.img.data), scene.focus, &|| {
+                seen.set(seen.get() + 1);
+                seen.get() >= stop_at
+            });
+            assert!(matches!(r, Err(LensError::Cancelled)), "cancelled at poll {stop_at} of {total}");
+            // It stops at the poll that asked, not later.
+            assert_eq!(seen.get(), stop_at, "polling stops once cancelled");
         }
     }
 }

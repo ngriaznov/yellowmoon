@@ -298,6 +298,8 @@ def train(tiles: Path, out: Path, config: dict, heartbeat=None, log=print) -> di
         raise ValueError("give max_minutes or steps")
     torch.manual_seed(config["seed"])
     device = torch.device(config["device"])
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True  # the input size never changes
     out.mkdir(parents=True, exist_ok=True)
     model = BokehNet().to(device)
     ema = copy.deepcopy(model).eval()

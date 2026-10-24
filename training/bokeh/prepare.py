@@ -69,9 +69,23 @@ def build_index(crop_root: Path, vol: Path, photos: int, extra: int, seed: int, 
                "chunks": -(-len(rows) // TILE_CHUNK), "masks_per_archive": per_char}
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"params": {"photos": photos, "extra": extra, "seed": seed}, "summary": summary, "photos": rows}))
+    params = {"photos": photos, "extra": extra, "seed": seed}
+    tmp.write_text(json.dumps({"params": params, "summary": summary, "photos": rows}))
     os.replace(tmp, path)
+    small = path.with_name("summary.json")  # for the orchestrator, which does not need the 10 MB list
+    small.write_text(json.dumps({"params": params, "summary": summary}))
     return summary
+
+
+def known_summary(vol: Path, photos: int, extra: int, seed: int) -> dict | None:
+    """The summary of an index already built with these parameters, or None (then `build_index` makes it, or says why
+    it cannot)."""
+    path = vol / "index" / "summary.json"
+    if path.exists():
+        doc = json.loads(path.read_text())
+        if doc["params"] == {"photos": photos, "extra": extra, "seed": seed}:
+            return doc["summary"]
+    return None
 
 
 def load_index(vol: Path) -> dict:

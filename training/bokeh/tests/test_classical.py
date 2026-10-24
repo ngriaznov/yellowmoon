@@ -33,16 +33,16 @@ def test_the_estimate_is_spread_over_flat_regions_and_confidence_falls_with_dist
 def test_patch_fractions_tell_sharp_photos_from_soft_ones():
     sharp = blocks_photo(256, 192, 1).astype(np.float64).mean(2) / 255
     soft = ndimage.gaussian_filter(sharp, 3.0)
-    edge, rad = classical.edge_radii(sharp, None)
+    edge, rad = classical.patch_edges(sharp)
     f_sharp = classical.patch_fractions(edge, rad)
-    edge, rad = classical.edge_radii(soft, None)
+    edge, rad = classical.patch_edges(soft)
     f_soft = classical.patch_fractions(edge, rad)
     assert f_sharp["sharp"] > 0.7 and f_sharp["soft"] < 0.05
     assert f_soft["sharp"] < 0.2 and (f_soft["soft"] + f_soft["flat"]) > 0.8
 
 
 def test_flat_pictures_have_no_edges():
-    edge, _ = classical.edge_radii(np.full((64, 64), 0.4), None)
+    edge, _ = classical.patch_edges(np.full((64, 64), 0.4))
     assert not edge.any()
     est, conf = classical.estimate(np.full((64, 64), 0.4))
     assert np.isfinite(est).all() and conf.max() == 0.0

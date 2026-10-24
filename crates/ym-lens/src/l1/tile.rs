@@ -23,6 +23,7 @@ use crate::plan::{Axis, LensPlan};
 
 use super::BokehPlanes;
 use super::draw::{Shape, ShapeParams, profile_at, rim_at, rim_disc_mean, shape_of};
+use super::line::{Lines, floor_log2};
 
 /// Pixels farther than this from the edge of a gather's reach are not read: a safety margin for the bilinear
 /// neighbour of the last sample.
@@ -178,6 +179,13 @@ impl<'a> Pass<'a> {
                 have: input.rect().to_string(),
             });
         }
+        let t0 = std::time::Instant::now();
+        let timing = std::env::var("YM_L1_TIME").is_ok();
+        let mark = |what: &str| {
+            if timing {
+                eprintln!("    [{:>7.1} ms] {what}", t0.elapsed().as_secs_f64() * 1e3);
+            }
+        };
         let lens = self.plan.lens();
         let rim_mean = rim_disc_mean(&lens.rim);
         let sp = ShapeParams {
@@ -206,6 +214,7 @@ impl<'a> Pass<'a> {
             .collect();
         // The blur map at the tile's pixels.
         let bt = self.tile_blur(input, r0, &shapes);
+        mark("blur map");
         if !self.v_on && !self.t_on && shapes.is_empty() {
             return crop_rgb(input, want);
         }
@@ -215,19 +224,23 @@ impl<'a> Pass<'a> {
         // The working picture over r0, with the balls taken out.
         let mut wk = crop_rgb(input, r0)?;
         take_out(&mut wk, r0, &bt, &shapes);
+        mark("take out");
         // The two gathers.
         let o1 = if self.v_on {
             self.gather_vertical(&wk, r0, &bt, r1)
         } else {
             crop_planes(&wk, r0, r1)
         };
+        mark("vertical gather");
         let mut o2 = if self.t_on {
             self.gather_tangential(&o1, r1, &bt, r0, want)
         } else {
             crop_planes(&o1, r1, want)
         };
         // The balls drawn back.
+        mark("tangential gather");
         redraw(&mut o2, want, &bt, r0, &shapes, &sp);
+        mark("redraw");
         Ok(o2)
     }
 
@@ -294,6 +307,8 @@ impl<'a> Pass<'a> {
                 }
             }
         });
+        let timing = std::env::var("YM_L1_TIME").is_ok();
+        let tb = std::time::Instant::now();
         let (s0x, s0y) = (fw as f64 / mw as f64, fh as f64 / mh as f64);
         let mut bt = vec![0.0f32; r0.w * r0.h];
         bt.par_chunks_mut(r0.w).enumerate().for_each(|(row, out)| {
@@ -349,9 +364,15 @@ impl<'a> Pass<'a> {
                 }
             }
         });
+        if timing {
+            eprintln!("      upsample {:.1} ms", tb.elapsed().as_secs_f64() * 1e3);
+        }
         // Zero the map where the picture shows an edge sharper than the blur says, except around a ball: its
         // own rim is a sharp edge.
         let mut zero = self.sharp_places(input, r0, &bt);
+        if timing {
+            eprintln!("      sharp places {:.1} ms (since upsample)", tb.elapsed().as_secs_f64() * 1e3);
+        }
         for s in shapes {
             let reach = s.r_out.max(s.r_ball + BALL_RIM_REACH_PX) + 1.0;
             let x0 = ((s.cx - reach).floor().max(r0.x as f64)) as usize;
@@ -460,6 +481,10 @@ impl<'a> Pass<'a> {
     }
 
     /// The gather across the anamorphic axis over `r1`; `wk` covers `r0`.
+    ///
+    /// A pixel whose whole line passes the sample rule (every pixel on it has at least half the pixel's own
+    /// blur) gets the exact mean of the picture along the line from running integrals ([`Lines`]); any other
+    /// pixel averages explicit taps with the rule applied to each.
     fn gather_vertical(&self, wk: &[f32], r0: PixelRect, bt: &[f32], r1: PixelRect) -> Vec<f32> {
         let plane0 = r0.w * r0.h;
         let plane1 = r1.w * r1.h;
@@ -467,12 +492,17 @@ impl<'a> Pass<'a> {
         let (a, rest) = out.split_at_mut(plane1);
         let (b, c) = rest.split_at_mut(plane1);
         let along_y = self.axis == Axis::X;
+        let n_line = if along_y { r0.h } else { r0.w };
         let (lo, hi) = if along_y {
             (r0.y as i64, r0.y1() as i64 - 1)
         } else {
             (r0.x as i64, r0.x1() as i64 - 1)
         };
         let q1 = self.q - 1.0;
+        // Windows of the sample rule are up to 2 reach + 2 pixels long.
+        let max_k = floor_log2(2 * self.v_reach.ceil() as usize + 3);
+        let origin = if along_y { r0.y } else { r0.x };
+        let lines = Lines::new(wk, bt, (r0.w, r0.h), along_y, origin, max_k);
         a.par_chunks_mut(r1.w)
             .zip(b.par_chunks_mut(r1.w))
             .zip(c.par_chunks_mut(r1.w))
@@ -488,6 +518,20 @@ impl<'a> Pass<'a> {
                         ra[col] = wk[i0];
                         rb[col] = wk[plane0 + i0];
                         rc[col] = wk[2 * plane0 + i0];
+                        continue;
+                    }
+                    let (lx, ly) = (x - r0.x, y - r0.y);
+                    let pos = if along_y { y } else { x } as f64;
+                    // The pixels the line touches (nearest to its ends), inside the region.
+                    let first = (((pos - len + 0.5).floor().max(origin as f64) as usize) - origin).min(n_line - 1);
+                    let last = (((pos + len + 0.5).floor().max(origin as f64) as usize) - origin).min(n_line - 1);
+                    if lines
+                        .min_blur(lx, ly, first, last)
+                        .is_some_and(|m| f64::from(m) >= 0.5 * bp)
+                    {
+                        ra[col] = lines.mean(0, lx, ly, pos, len) as f32;
+                        rb[col] = lines.mean(1, lx, ly, pos, len) as f32;
+                        rc[col] = lines.mean(2, lx, ly, pos, len) as f32;
                         continue;
                     }
                     let (taps, half) = taps_for(len);

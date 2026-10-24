@@ -157,3 +157,34 @@ def test_modal_app_builds_its_functions_from_the_plans():
     assert modal_app.TRAIN_STATIC.timeout_s >= B.train_fn(100).timeout_s
     for name in ("check", "prepare", "preview", "train", "results", "fetch", "plan"):
         assert callable(getattr(modal_app, name))
+
+
+def test_a_failed_run_lapses_soon_instead_of_at_its_whole_time_limit(tmp_path):
+    clock = Clock()
+    ledger = Ledger(tmp_path / "ledger.json", clock=clock)
+    plan = B.plan_prepare(20000)
+    ledger.reserve("p", plan, budget=1.5, deadline_s=5400)
+    ledger.charge_once("p", "index", 300, B.INDEX)
+    ledger.expire_soon("p", grace_s=120)
+    assert ledger.spent() == pytest.approx(plan.worst)
+    clock.t += 121
+    assert ledger.spent() == pytest.approx(min(plan.worst, B.INDEX.cost(300) + plan.inflight))
+    # a second reserve of the same id (a restart) gives it a new lifetime
+    ledger.reserve("p", plan, budget=1.5, deadline_s=5400)
+    assert ledger.spent() == pytest.approx(plan.worst)
+
+
+def test_a_restarted_training_run_is_charged_for_the_time_its_dead_attempt_trained(tmp_path):
+    clock = Clock()
+    path = tmp_path / "ledger.json"
+    plan = B.plan_train(100)
+    fn = plan.items[0][2]
+    first = Ledger(path, clock=clock)
+    first.reserve("t", plan, budget=5.0, deadline_s=plan.items[1][2].timeout_s)
+    first.write_heartbeat("t", 40 * 60, fn)  # the worker trained 40 minutes, then everything died
+    second = Ledger(path, clock=clock)  # the lead starts the run again with the same id
+    second.reserve("t", plan, budget=5.0, deadline_s=plan.items[1][2].timeout_s)
+    assert second.absorb_heartbeat("t", fn) == pytest.approx(fn.cost(40 * 60 + 300))
+    assert second.absorb_heartbeat("t", fn) == 0.0  # once
+    second.charge("t", "training", 60 * 60, fn)  # the new attempt trains the remaining hour
+    assert second.settle("t") == pytest.approx(fn.cost(40 * 60 + 300) + fn.cost(3600))

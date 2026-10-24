@@ -399,6 +399,85 @@ mod tests {
         LookId::builtin("neutral")
     }
 
+    fn vintage() -> LensChoice {
+        LensChoice {
+            kind: LensKind::Vintage,
+            start_flares: 45.0,
+            start_edges: 40.0,
+        }
+    }
+
+    #[test]
+    fn a_lens_brings_its_starting_amounts_and_an_amount_given_beats_them() {
+        // No lens option, no lens in the patch.
+        assert_eq!(Overrides::default().patch(0.0).lens, None);
+        assert!(Overrides::default().is_empty());
+        // The lens alone: the kind with its starting Flares and Edges, as the card sends them.
+        let only_lens = Overrides {
+            lens: Some(vintage()),
+            ..Overrides::default()
+        };
+        assert!(!only_lens.is_empty());
+        assert_eq!(
+            only_lens.patch(0.0).lens,
+            Some(LensPatch {
+                kind: Some(LensKind::Vintage),
+                flares: Some(45.0),
+                edges: Some(40.0),
+                anamorphic: None,
+            })
+        );
+        // An amount beats the lens's start, for that amount only; Anamorphic is never a start.
+        let overridden = Overrides {
+            lens: Some(vintage()),
+            flares: Some(10.0),
+            anamorphic: Some(50.0),
+            ..Overrides::default()
+        };
+        assert_eq!(
+            overridden.patch(0.0).lens,
+            Some(LensPatch {
+                kind: Some(LensKind::Vintage),
+                flares: Some(10.0),
+                edges: Some(40.0),
+                anamorphic: Some(50.0),
+            })
+        );
+        // An amount alone changes that amount only and leaves the lens as it is.
+        let amount = Overrides {
+            edges: Some(0.0),
+            ..Overrides::default()
+        };
+        assert_eq!(
+            amount.patch(0.0).lens,
+            Some(LensPatch {
+                kind: None,
+                flares: None,
+                edges: Some(0.0),
+                anamorphic: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_settings_file_may_carry_a_lens() {
+        let loaded = SettingsFile::parse(
+            r#"{"lens": {"kind": "petzval", "flares": 140, "anamorphic": 20}}"#,
+            &neutral(),
+        )
+        .expect("parses");
+        let SettingsFile::Global(s) = &loaded.file else {
+            panic!("global");
+        };
+        assert_eq!(s.lens.kind, LensKind::Petzval);
+        assert_eq!(
+            (s.lens.flares, s.lens.edges, s.lens.anamorphic),
+            (100.0, 0.0, 20.0)
+        );
+        assert_eq!(loaded.clamped, vec![(String::new(), vec!["lens"])]);
+        assert!(SettingsFile::parse(r#"{"lens": {"kind": "leica"}}"#, &neutral()).is_err());
+    }
+
     #[test]
     fn a_document_of_settings_fields_is_global_and_may_name_only_what_it_changes() {
         let loaded = SettingsFile::parse(

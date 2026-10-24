@@ -44,7 +44,7 @@ TILE = 512
 MIN_LONG_EDGE = 700
 MAX_CANDS = 8
 #: A tile needs this share of sharp-textured 32-px blocks and at most this share of soft-textured ones.
-SHARP_MIN = 0.75
+SHARP_MIN = 0.85
 SOFT_MAX = 0.04
 TILES_PER_PHOTO = 2
 VAL_SHARE = 0.04
@@ -182,7 +182,7 @@ def tile_candidates(gray: np.ndarray, tile: int = TILE, stride: int | None = Non
     if h < tile or w < tile:
         return []
     stride = stride or tile // 4  # 128 px for a 512-px tile
-    edge, radius = classical.edge_radii(gray, None)
+    edge, radius = classical.patch_edges(gray)
     found = []
     for y in sorted({*range(0, h - tile + 1, stride), h - tile}):
         for x in sorted({*range(0, w - tile + 1, stride), w - tile}):

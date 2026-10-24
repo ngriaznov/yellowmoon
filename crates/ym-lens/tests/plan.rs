@@ -256,14 +256,27 @@ fn planes_are_built_from_the_lens_plane_and_can_be_cancelled() {
     assert_eq!(planes.focus(), Some((0.4, 0.6)));
     assert!(planes.bytes() > 0);
     assert_eq!(planes.lens_plane_size(), (w, h));
-    // Nothing is reshaped until L1 exists.
+    // A flat plane has no blur to reshape: the planes say so (L1 asked, found little).
     assert_eq!(
         planes.report(),
+        ReshapeReport {
+            reshaped: false,
+            reason: Some(ReshapeReason::LittleBlur)
+        }
+    );
+    assert!(planes.bokeh().is_some_and(|b| !b.active() && b.balls().is_empty()));
+    assert!(planes.serves(&p));
+    // Flares alone ask for no blur map, whatever the lens.
+    let flares = plan_of(LensKind::Vintage, (50.0, 0.0, 0.0), (6000, 4000));
+    let none = LensPlanes::build(&flares, &whole(w, h, &data), None, &|| false).unwrap();
+    assert_eq!(
+        none.report(),
         ReshapeReport {
             reshaped: false,
             reason: Some(ReshapeReason::NotAsked)
         }
     );
+    assert!(none.bokeh().is_none());
     // A plane of another size, a plane that is only part of the frame, a focus point outside the frame.
     let small = vec![0.4f32; 3 * 750 * 500];
     assert!(matches!(

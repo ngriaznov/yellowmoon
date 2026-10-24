@@ -1,0 +1,14 @@
+# Python dependencies of the bokeh map's training (training/bokeh). Not shipped.
+#
+# Local (smoke run, tests, evaluation), CPU:
+#   pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r training/bokeh/requirements.txt
+# The GPU stages run on Modal, which builds its own image (modal_app.py): torch 2.6.0, numpy 2.2.6, pillow 12.2.0, scipy 1.15.3.
+# The tests pass with exactly those versions and with torch 2.14.
+torch==2.6.0          # the Modal image's version; the tests also pass with newer ones
+numpy>=2.0            # reproduced with 2.2.6
+pillow>=11            # reproduced with 12.2.0
+scipy>=1.11           # reproduced with 1.15.3 (the sharpness filter and the classical baseline)
+safetensors>=0.4      # only the tests read the exported file back; export.py writes the format itself (deterministic bytes)
+pytest>=8
+modal>=1.6            # reproduced with 1.6.2; only to launch the Modal stages

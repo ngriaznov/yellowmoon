@@ -17,6 +17,7 @@ mod detector;
 mod disc;
 mod draw;
 mod ladder;
+mod line;
 mod spread;
 mod tile;
 

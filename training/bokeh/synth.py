@@ -25,7 +25,8 @@ One batch, step by step (`synthesize`):
    foreground (10 %), and random radii (25 %). Radii are log-uniform from 1 to `r_max_px` (up to `b_cap` and beyond,
    for coverage). In a quarter of the batches the background is a tilted plane: its radius ramps across the frame,
    rendered as four radius bins blended by a partition of unity. Layers are drawn back to front in order of `t`.
-5. **Kernels.** One per layer from the library (`kernels.py`): disc, soft rim, bright and dark rim, onion rings,
+5. **Kernels.** From the library (`kernels.py`), one lens per picture in 70 % of the samples (every layer and every bin of the
+   ramp shares the kernel's family, as one iris would), one draw per layer otherwise: disc, soft rim, bright and dark rim, onion rings,
    5 to 9 blades, cat's eye, Gaussian. The kernel's label radius is the disc radius with the same second moment.
 6. **Render.** Every layer's premultiplied colour and alpha are convolved with its kernel by FFT (on a canvas with the
    kernel's size as margin, cropped after) and composited back to front: `out = out (1 - a~) + c~` with the *blurred*
@@ -323,6 +324,12 @@ def render_layers(bg: torch.Tensor, bin_w: torch.Tensor, bg_r: torch.Tensor, fie
     rad_x = torch.stack(part_r, 1).clamp(max=float(margin - 3))
     lx = stack.shape[1]
     params = sample_params(b * lx, gen, dev) if kind_weights is None else sample_params(b * lx, gen, dev, kind_weights)
+    # One lens per picture: the bins of the background always share a kernel, and in 70 % of the samples so do all the layers
+    # (the same iris, as in a real photo); in the others every layer draws its own, for diversity.
+    same = _bern(gen, 0.7, b, 1, device=dev)
+    src = torch.where(same, torch.zeros(b, lx, dtype=torch.long, device=dev), torch.arange(lx, device=dev).repeat(b, 1))
+    src[:, :nb] = 0
+    params = {k: v.view(b, lx).gather(1, src).reshape(-1) for k, v in params.items()}
     kern = make_kernels(rad_x.reshape(-1), params, margin).view(b, lx, 1, 2 * margin + 1, 2 * margin + 1)
     blurred = torch.cat([conv_fft(stack[i:i + fft_chunk], kern[i:i + fft_chunk]) for i in range(0, b, fft_chunk)], 0)
     bg_all = blurred[:, :nb].sum(1)
@@ -386,9 +393,9 @@ def synthesize(tb: TileBatch, cfg: SynthConfig, gen: torch.Generator) -> Synth:
     median_day = lower_median_t(luma_t(lin))
 
     # 3-4. modes, layer counts, radii
-    mode = torch.multinomial(torch.tensor(cfg.mode_probs, device=dev).repeat(b, 1), 1, generator=gen).squeeze(1)
+    mode = torch.multinomial(torch.tensor(cfg.mode_probs, dtype=torch.float32, device=dev).repeat(b, 1), 1, generator=gen).squeeze(1)
     lf = int(cfg.layers[int(torch.randint(0, len(cfg.layers), (1,), generator=gen, device=dev))]) - 1
-    ng = int(torch.multinomial(torch.tensor(cfg.emitter_groups, device=dev), 1, generator=gen))
+    ng = int(torch.multinomial(torch.tensor(cfg.emitter_groups, dtype=torch.float32, device=dev), 1, generator=gen))
     ramp_batch = bool(_bern(gen, cfg.p_ramp_batch, 1, device=dev))
     night = _bern(gen, cfg.p_night, b, device=dev) & (ng > 0)
     lo, hi = cfg.r_min_px, cfg.r_max_px

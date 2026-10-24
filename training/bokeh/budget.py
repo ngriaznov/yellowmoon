@@ -210,6 +210,7 @@ class Ledger:
         now = self.clock()
         if key in self.entries:
             if self.entries[key]["state"] == "open":
+                self.entries[key]["deadline"] = now + deadline_s  # a restarted orchestrator has a new lifetime
                 return self.entries[key]
             raise ValueError(f"the run id {key!r} was used and settled; use another")
         if budget > self.cap:
@@ -268,6 +269,25 @@ class Ledger:
               f"${self.spent():.2f} of ${self.cap:.2f}", flush=True)
         if e["actual"] > e["budget"]:
             raise BudgetExceeded(f"estimated spend ${e['actual']:.2f} passed the budget ${e['budget']:.2f} at {stage}")
+
+    def expire_soon(self, key: str, grace_s: float = 120.0) -> None:
+        """For a run that failed: its reservation stops counting in full after `grace_s` (then the rule for a dead run
+        applies: what was recorded plus a bound on what can still be running) instead of at the run's whole time limit."""
+        e = self.entries[key]
+        if e["state"] == "open":
+            e["deadline"] = min(e["deadline"], self.clock() + grace_s)
+            self.save()
+
+    def absorb_heartbeat(self, key: str, fn: Fn, extra_s: float = 300.0) -> float:
+        """For a restarted training run: charges, once, the time its earlier attempt's last heartbeat recorded (plus
+        `extra_s` for the start and what ran since the beat), then removes the file. Returns the cost."""
+        hb = self.heartbeat_path(key)
+        if not hb.exists():
+            return 0.0
+        seconds = json.loads(hb.read_text())["seconds"] + extra_s
+        cost = self.charge_once(key, f"previous-attempt-{int(seconds)}", seconds, fn)
+        hb.unlink()
+        return cost
 
     def settle(self, key: str) -> float:
         """Closes the run at its actual cost; returns it."""

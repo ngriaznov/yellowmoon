@@ -75,7 +75,7 @@ def build_tiles(work: Path, rows: list[dict]) -> int:
 def previews(work: Path) -> list[Path]:
     from training.bokeh import previews as pv
 
-    return pv.render(work / "tiles", work, sheets=3, rows=6, seed=100)
+    return pv.render(work / "tiles", work, sheets=4, rows=6, seed=100)
 
 
 def main() -> None:
@@ -83,6 +83,7 @@ def main() -> None:
     ap.add_argument("--work", type=Path, required=True)
     ap.add_argument("--n", type=int, default=50)
     ap.add_argument("--steps", type=int, default=40)
+    ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--stage", choices=["data", "previews", "train", "export", "all"], default="all")
     ap.add_argument("--threads", type=int, default=2)
     args = ap.parse_args()
@@ -94,7 +95,7 @@ def main() -> None:
         previews(args.work)
     run = args.work / "run"
     if args.stage in ("train", "all") and not (run / "metrics.json").exists():
-        config = {"sample": 192, "batch": 4, "kernel_r": 20, "r_max_px": 14.0, "device": "cpu", "workers": 1, "amp": False,
+        config = {"sample": 192, "batch": args.batch, "kernel_r": 20, "r_max_px": 14.0, "device": "cpu", "workers": 1, "amp": False,
                   "steps": args.steps, "warmup": max(2, args.steps // 10), "lr": 3e-3, "eval_every_min": 0.0,
                   "final_val_samples": 24, "baseline_n": 12, "val_share": 0.15, "ckpt_every_min": 5.0}
         trainer.train(args.work / "tiles", run, config)

@@ -273,7 +273,9 @@ fn a_missing_or_damaged_lens_folder_is_no_crash() {
     let data = data_root_with(None);
     let (core, _app) = open_core(data.path());
     assert!(core.lens_list().is_empty());
-    let why = core.lens_library().err().expect("a reason");
+    let Err(why) = core.lens_library() else {
+        panic!("a missing lens folder has a reason");
+    };
     assert!(why.contains("lens data"), "{why}");
     assert!(core.renderer.options().lens.is_none());
 

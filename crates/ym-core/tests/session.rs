@@ -1270,6 +1270,12 @@ fn edit_everything() -> SettingsPatch {
                 ym_color::warp::WarpPin::locked_at([-0.05, -0.1]).into(),
             ],
         }),
+        lens: Some(ym_core::settings::LensPatch {
+            kind: Some(ym_core::settings::LensKind::Sonnar),
+            flares: Some(40.0),
+            edges: Some(35.0),
+            anamorphic: Some(15.0),
+        }),
         sharpen: Some(AutoOr::Manual(SharpenManualPatch {
             amount: Some(80.0),
             radius_px: Some(1.2),

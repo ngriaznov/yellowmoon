@@ -239,6 +239,7 @@ impl Noise {
 }
 
 /// A scene with the truth the detector is checked against.
+#[derive(Clone)]
 pub struct Scene {
     pub img: Rgb,
     /// The disc radius in pixels that blurred each pixel (0 for sharp pixels).
@@ -253,6 +254,17 @@ pub struct Scene {
     pub discs: Vec<(f64, f64, f64)>,
     /// A focus point on the subject, as fractions.
     pub focus: Option<(f64, f64)>,
+    /// The scene without its discs and noise, planar (night scenes only; empty otherwise).
+    pub ground: Vec<f32>,
+}
+
+impl Scene {
+    /// The same scene with sensor noise added.
+    pub fn noisy(&self, noise: Noise, seed: u64) -> Scene {
+        let mut s = self.clone();
+        noise.apply(&mut s.img, &mut Rng::new(seed));
+        s
+    }
 }
 
 /// Polyline strands from the subject's top edge into the background: 1 to 1.6 px wide dark curves.
@@ -455,11 +467,17 @@ pub fn subject_scene(w: usize, h: usize, radii: [f64; 3], noise: Noise, seed: u6
         strand,
         discs: Vec::new(),
         focus: Some((0.5, 0.75)),
+        ground: Vec::new(),
     }
 }
 
 /// Bright flat discs of the given radii on a dark ground.
 pub fn night_scene(w: usize, h: usize, radii: &[f64], noise: Noise, seed: u64) -> Scene {
+    night_scene_spaced(w, h, radii, noise, seed, 2.0)
+}
+
+/// [`night_scene`] with the discs at least `spacing` times the sum of their radii apart, centre to centre.
+pub fn night_scene_spaced(w: usize, h: usize, radii: &[f64], noise: Noise, seed: u64, spacing: f64) -> Scene {
     let n = w * h;
     let mut rng = Rng::new(seed);
     let mut img = Rgb::new(w, h);
@@ -472,6 +490,7 @@ pub fn night_scene(w: usize, h: usize, radii: &[f64], noise: Noise, seed: u64) -
             }
         }
     }
+    let ground = img.data.clone();
     let mut discs: Vec<(f64, f64, f64)> = Vec::new();
     let mut tries = 0;
     for &r in radii {
@@ -482,7 +501,7 @@ pub fn night_scene(w: usize, h: usize, radii: &[f64], noise: Noise, seed: u64) -
             let (cx, cy) = (rng.range(margin, w as f64 - margin), rng.range(margin, h as f64 - margin));
             if discs
                 .iter()
-                .all(|&(ox, oy, or)| ((ox - cx).powi(2) + (oy - cy).powi(2)).sqrt() > 2.0 * (or + r) + 6.0)
+                .all(|&(ox, oy, or)| ((ox - cx).powi(2) + (oy - cy).powi(2)).sqrt() > spacing * (or + r) + 6.0)
             {
                 discs.push((cx, cy, r));
                 break;
@@ -532,6 +551,7 @@ pub fn night_scene(w: usize, h: usize, radii: &[f64], noise: Noise, seed: u64) -
         strand: vec![false; n],
         discs,
         focus: None,
+        ground,
     }
 }
 
@@ -549,6 +569,7 @@ pub fn sharp_scene(w: usize, h: usize, noise: Noise, seed: u64) -> Scene {
         strand: vec![false; n],
         discs: Vec::new(),
         focus: None,
+        ground: Vec::new(),
     }
 }
 
@@ -586,5 +607,101 @@ pub fn flat_scene(w: usize, h: usize, noise: Noise, seed: u64) -> Scene {
         strand: vec![false; n],
         discs: Vec::new(),
         focus: None,
+        ground: Vec::new(),
+    }
+}
+
+/// A smooth, soft-edged disc (the subject) in a textured background blurred by 9 px everywhere, with the focus
+/// point on the disc: the subject is in focus but has nothing sharp in it (smooth skin, a soft silhouette), so
+/// only the focus point says so.
+pub fn anchor_scene(w: usize, h: usize, noise: Noise, seed: u64) -> Scene {
+    let n = w * h;
+    let mut rng = Rng::new(seed);
+    let tex = texture(w, h, 32.0, seed, 0, w);
+    let mut img = Rgb::new(w, h);
+    for c in 0..3 {
+        img.plane_mut(c).copy_from_slice(&disc_blur(tex.plane(c), w, h, 9.0));
+    }
+    let (cx, cy, r) = (w as f64 * 0.5, h as f64 * 0.5, h as f64 * 0.2);
+    let mut subject = vec![false; n];
+    for y in 0..h {
+        for x in 0..w {
+            let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
+            // A soft edge 24 px wide.
+            let t = ((r + 12.0 - d) / 24.0).clamp(0.0, 1.0);
+            let a = t * t * (3.0 - 2.0 * t);
+            if a > 0.0 {
+                // Smooth shading across the subject.
+                let shade = 1.0 - 0.35 * (d / r).min(1.0).powi(2);
+                for (c, tone) in [0.32, 0.27, 0.23].into_iter().enumerate() {
+                    let v = &mut img.data[c * n + y * w + x];
+                    *v = (f64::from(*v) * (1.0 - a) + tone * shade * a) as f32;
+                }
+            }
+            subject[y * w + x] = d < r - 14.0;
+        }
+    }
+    noise.apply(&mut img, &mut rng);
+    Scene {
+        img,
+        truth_r: vec![9.0; n],
+        trusted: vec![true; n],
+        subject: erode(&subject, w, h, 4),
+        strand: vec![false; n],
+        discs: Vec::new(),
+        focus: Some((0.5, 0.5)),
+        ground: Vec::new(),
+    }
+}
+
+/// A textured background blurred by `bg_radius` px with bright flat discs of the given radii on it.
+pub fn balls_over_texture_scene(w: usize, h: usize, bg_radius: f64, radii: &[f64], noise: Noise, seed: u64) -> Scene {
+    let n = w * h;
+    let mut rng = Rng::new(seed);
+    let tex = texture(w, h, 30.0, seed, 0, w);
+    let mut img = Rgb::new(w, h);
+    for c in 0..3 {
+        img.plane_mut(c).copy_from_slice(&disc_blur(tex.plane(c), w, h, bg_radius));
+    }
+    let mut discs: Vec<(f64, f64, f64)> = Vec::new();
+    for &r in radii {
+        loop {
+            let margin = 3.0 * r + 4.0;
+            let (cx, cy) = (rng.range(margin, w as f64 - margin), rng.range(margin, h as f64 - margin));
+            if discs
+                .iter()
+                .all(|&(ox, oy, or)| ((ox - cx).powi(2) + (oy - cy).powi(2)).sqrt() > 2.4 * (or + r) + 6.0)
+            {
+                discs.push((cx, cy, r));
+                break;
+            }
+        }
+    }
+    for &(cx, cy, r) in &discs {
+        let (x0, x1) = ((cx - r - 2.0).floor().max(0.0) as usize, ((cx + r + 2.0).ceil() as usize).min(w));
+        let (y0, y1) = ((cy - r - 2.0).floor().max(0.0) as usize, ((cy + r + 2.0).ceil() as usize).min(h));
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
+                let a = (r + 0.5 - d).clamp(0.0, 1.0);
+                if a > 0.0 {
+                    for (c, tone) in [4.0, 3.4, 2.6].into_iter().enumerate() {
+                        let v = &mut img.data[c * n + y * w + x];
+                        *v = (f64::from(*v) * (1.0 - a) + tone * a) as f32;
+                    }
+                }
+            }
+        }
+    }
+    noise.apply(&mut img, &mut rng);
+    Scene {
+        img,
+        truth_r: vec![bg_radius as f32; n],
+        trusted: vec![true; n],
+        subject: vec![false; n],
+        strand: vec![false; n],
+        discs,
+        focus: None,
+        ground: Vec::new(),
     }
 }

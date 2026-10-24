@@ -68,6 +68,8 @@ const ANCHOR_WEIGHT: f64 = 2.0;
 const BALL_FOOTPRINT: f64 = 2.6;
 /// Total evidence weight a ball adds, spread over its disc and ring.
 const BALL_WEIGHT: f64 = 30.0;
+/// A sharp edge flags the places around it when its gradient is this many noise units.
+const SHARP_STRENGTH: f64 = 5.0;
 /// A blurred region must cover at least this many discs of its own mean blur radius.
 const SMALL_REGION: f64 = 2.0;
 /// Dilation, in pixels, of the places that show a strong sharp edge.
@@ -290,7 +292,7 @@ fn edge_samples(
                     let eps2 = (nj / gn).powi(2) + (nk / gkn).powi(2) + MODEL_ERR * MODEL_ERR;
                     let var = est.sensitivity * est.sensitivity * eps2;
                     let weight = (WEIGHT_REF_VAR / var).min(1.0);
-                    if pair == 0 && est.r < 0.5 * r_min_px && gn > 8.0 * nj {
+                    if pair == 0 && est.r < 0.5 * r_min_px && gn > SHARP_STRENGTH * nj {
                         sharp_here.push(i);
                     }
                     if weight < MIN_SAMPLE_WEIGHT {

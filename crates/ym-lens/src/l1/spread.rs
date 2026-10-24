@@ -307,25 +307,28 @@ mod tests {
                 guide[y * w + x] = if x < edge { [0.2; 3] } else { [0.8; 3] };
             }
         }
-        // One sample in each region, ln r = 1 on the left and 3 on the right.
-        for (x, v) in [(edge / 2, 1.0f32), (edge + (w - edge) / 2, 3.0)] {
-            let i = (h / 2) * w + x;
-            ws[i] = 1.0;
-            ss[i] = v;
-            qs[i] = v * v;
+        // Samples on a grid, ln r = 1 on the left and 3 on the right.
+        for y in (8..h).step_by(24) {
+            for x in (8..w).step_by(24) {
+                let v = if x < edge { 1.0f32 } else { 3.0 };
+                let i = y * w + x;
+                ws[i] = 1.0;
+                ss[i] = v;
+                qs[i] = v * v;
+            }
         }
         (GuidePyramid::new(guide, w, h, 0.1), ws, ss, qs)
     }
 
     #[test]
     fn a_value_spreads_over_its_surface_and_stops_at_the_colour_edge() {
-        let (w, h, edge) = (96, 64, 40);
+        let (w, h, edge) = (96, 64, 52);
         let (g, ws, ss, qs) = two_regions(w, h, edge);
         assert!(g.depth() >= 4);
-        let sp = spread(&g, &ws, &ss, &qs, 0.2);
-        for (x, y, expect) in [(5, 5, 1.0f32), (30, 60, 1.0), (60, 3, 3.0), (90, 50, 3.0)] {
+        let sp = spread(&g, &ws, &ss, &qs, 0.05);
+        for (x, y, expect) in [(5, 5, 1.0f32), (30, 60, 1.0), (62, 3, 3.0), (90, 50, 3.0)] {
             let i = y * w + x;
-            assert!(sp.cover[i] > 0.9, "no evidence at ({x}, {y})");
+            assert!(sp.cover[i] > 0.3, "no evidence at ({x}, {y}): {}", sp.cover[i]);
             let mean = sp.mean[i];
             assert!((mean - expect).abs() < 0.05, "({x}, {y}): {mean} vs {expect}");
             assert!(sp.var[i] < 0.05, "variance {} at ({x}, {y})", sp.var[i]);

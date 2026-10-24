@@ -31,6 +31,7 @@ Volume `yellowmoon-bokeh`: `ledger.json`, `index/photos.json`, `masks/`, `tiles/
 `metrics.json`, `log.txt`, `samples/`, `ckpt.pt` while training), `check.json`.
 """
 
+import contextlib
 import json
 import shutil
 import time
@@ -209,6 +210,16 @@ class Run:
         finally:
             volume.commit()
 
+    @contextlib.contextmanager
+    def guard(self):
+        """On any failure, lets the reservation lapse soon (`Ledger.expire_soon`) and passes the error on."""
+        try:
+            yield
+        except BaseException:
+            self.ledger.expire_soon(self.id)
+            self.commit()
+            raise
+
     def done(self) -> float:
         """Charges the orchestrator's own time, settles the entry, returns its cost."""
         orch_fn = next((f for what, _, f in self.plan.items if what == "orchestrator"), None)
@@ -229,10 +240,11 @@ def orch(plan: B.Plan) -> dict:
 @app.function(image=cpu_image, volumes=VOLS, **orch(plan_check()))
 def run_check(run_id: str, budget: float) -> dict:
     run = Run(run_id, plan_check(), budget, plan_check().items[-1][2].timeout_s)
-    t = time.time()
-    out = probe.remote()
-    run.charge("probe", time.time() - t + 20, B.PROBE)
-    run.check("probe")
+    with run.guard():
+        t = time.time()
+        out = probe.remote()
+        run.charge("probe", time.time() - t + 20, B.PROBE)
+        run.check("probe")
     run.done()
     return out
 
@@ -244,46 +256,48 @@ def run_prepare(run_id: str, photos: int, extra: int, seed: int, budget: float) 
     from training.bokeh import prepare
 
     volume.reload()
-    idx_path = ROOT / "index" / "photos.json"
-    have = json.loads(idx_path.read_text())["summary"]["photos"] if idx_path.exists() else None
-    n_plan = have or (photos or 20000) + extra
+    known = prepare.known_summary(ROOT, photos, extra, seed)
+    n_plan = known["photos"] if known else (photos or 20000) + extra
     plan = plan_prepare(n_plan)
     run = Run(run_id, plan, budget, plan.items[-1][2].timeout_s)
-    t = time.time()
-    summary = index_photos.remote(photos, extra, seed)
-    run.charge("index", time.time() - t + 20, B.INDEX)
-    run.check("index")
-    print(json.dumps(summary), flush=True)
-    if summary["chunks"] > plan_prepare(n_plan).items[2][1]:
-        raise BudgetExceeded(f"{summary['chunks']} chunks are more than the plan counted ({plan.items[2][1]})")
+    with run.guard():
+        summary = known
+        if summary is None:  # the index is made once; a rerun with the same parameters reads it
+            t = time.time()
+            summary = index_photos.remote(photos, extra, seed)
+            run.charge("index", time.time() - t + 20, B.INDEX)
+            run.check("index")
+        print(json.dumps(summary), flush=True)
+        if summary["chunks"] > plan_prepare(n_plan).items[2][1]:
+            raise BudgetExceeded(f"{summary['chunks']} chunks are more than the plan counted ({plan.items[2][1]})")
 
-    volume.reload()
-    todo = [c for c in prepare.HEX if summary["masks_per_archive"][c] and not (ROOT / "masks" / f"{c}.json").exists()]
-    print(f"mask archives to fetch: {len(todo)}", flush=True)
-    t = time.time()
-    for got in mask_archive.map(todo, order_outputs=False, return_exceptions=True):
-        if isinstance(got, Exception):
-            run.charge(f"masks-failed-{time.time():.0f}", B.MASKS.timeout_s, B.MASKS, once=False)
-            print(f"a mask archive failed: {type(got).__name__}: {got}", flush=True)
-        else:
-            run.charge(f"masks-{got['c']}", got["seconds"] + 30, B.MASKS)
-            print(f"masks {got['c']}: {got['masks']}", flush=True)
-        run.check("masks")
-    volume.reload()
-    chunks = [k for k in range(summary["chunks"]) if not (ROOT / "tiles" / f"shard-{k:05d}.json").exists()]
-    print(f"tile chunks to build: {len(chunks)} of {summary['chunks']}", flush=True)
-    for got in tile_chunk.map(chunks, order_outputs=False, return_exceptions=True):
-        if isinstance(got, Exception):
-            run.charge(f"tiles-failed-{time.time():.0f}", B.TILES.timeout_s, B.TILES, once=False)
-            print(f"a tile chunk failed: {type(got).__name__}: {got}", flush=True)
-        else:
-            run.charge(f"tiles-{got['k']}", got["call_seconds"] + 30, B.TILES)
-            print(json.dumps(got), flush=True)
-        run.check("tiles")
-    volume.reload()
-    missing = [k for k in range(summary["chunks"]) if not (ROOT / "tiles" / f"shard-{k:05d}.json").exists()]
-    final = prepare.finalize(ROOT)
-    volume.commit()
+        volume.reload()
+        todo = [c for c in prepare.HEX if summary["masks_per_archive"][c] and not (ROOT / "masks" / f"{c}.json").exists()]
+        print(f"mask archives to fetch: {len(todo)}", flush=True)
+        t = time.time()
+        for got in mask_archive.map(todo, order_outputs=False, return_exceptions=True):
+            if isinstance(got, Exception):
+                run.charge(f"masks-failed-{time.time():.0f}", B.MASKS.timeout_s, B.MASKS, once=False)
+                print(f"a mask archive failed: {type(got).__name__}: {got}", flush=True)
+            else:
+                run.charge(f"masks-{got['c']}", got["seconds"] + 30, B.MASKS)
+                print(f"masks {got['c']}: {got['masks']}", flush=True)
+            run.check("masks")
+        volume.reload()
+        chunks = [k for k in range(summary["chunks"]) if not (ROOT / "tiles" / f"shard-{k:05d}.json").exists()]
+        print(f"tile chunks to build: {len(chunks)} of {summary['chunks']}", flush=True)
+        for got in tile_chunk.map(chunks, order_outputs=False, return_exceptions=True):
+            if isinstance(got, Exception):
+                run.charge(f"tiles-failed-{time.time():.0f}", B.TILES.timeout_s, B.TILES, once=False)
+                print(f"a tile chunk failed: {type(got).__name__}: {got}", flush=True)
+            else:
+                run.charge(f"tiles-{got['k']}", got["call_seconds"] + 30, B.TILES)
+                print(json.dumps(got), flush=True)
+            run.check("tiles")
+        volume.reload()
+        missing = [k for k in range(summary["chunks"]) if not (ROOT / "tiles" / f"shard-{k:05d}.json").exists()]
+        final = prepare.finalize(ROOT)
+        volume.commit()
     cost = run.done()
     return {"tiles": final, "chunks_missing": missing, "spend": cost}
 
@@ -291,10 +305,11 @@ def run_prepare(run_id: str, photos: int, extra: int, seed: int, budget: float) 
 @app.function(image=cpu_image, volumes=VOLS, **orch(plan_preview()))
 def run_preview(run_id: str, budget: float) -> dict:
     run = Run(run_id, plan_preview(), budget, plan_preview().items[-1][2].timeout_s)
-    t = time.time()
-    out = preview_sheets.remote()
-    run.charge("preview", time.time() - t + 20, B.PREVIEW)
-    run.check("preview")
+    with run.guard():
+        t = time.time()
+        out = preview_sheets.remote()
+        run.charge("preview", time.time() - t + 20, B.PREVIEW)
+        run.check("preview")
     run.done()
     return out
 
@@ -309,7 +324,11 @@ def run_train(run_id: str, run_name: str, minutes: float, budget: float, config:
                              "raise TRAIN_STATIC_MINUTES's budget in modal_app.py (with the owner's agreement)")
     plan = plan_train(minutes)
     fn = plan.items[0][2]
+    resumed = run_id in Ledger(ROOT / "ledger.json").entries
     run = Run(run_id, plan, budget, plan.items[-1][2].timeout_s)
+    if resumed:
+        print(f"the earlier attempt's heartbeat is charged: ${run.ledger.absorb_heartbeat(run_id, fn):.2f}", flush=True)
+        run.commit()
     t = time.time()
     call = train_run.spawn(run_id, run_name, {**config, "max_minutes": minutes})
     try:

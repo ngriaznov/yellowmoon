@@ -47,13 +47,27 @@ const STEPS: usize = 512;
 pub(super) fn peak_gradient(s: f64, r: f64) -> f64 {
     let norm = 1.0 / (s * (2.0 * PI).sqrt());
     let mut acc = 0.0;
-    for i in 0..STEPS {
-        let theta = -PI / 2.0 + PI * (i as f64 + 0.5) / STEPS as f64;
-        let (sin, cos) = (libm::sin(theta), libm::cos(theta));
-        let x = r * sin;
-        acc += cos * cos * libm::exp(-0.5 * x * x / (s * s));
+    if r <= 7.0 * s {
+        // The Gaussian is wider than the disc's edge: integrate over the disc, `x = r sin theta`, where the
+        // integrand is smooth.
+        for i in 0..STEPS {
+            let theta = -PI / 2.0 + PI * (i as f64 + 0.5) / STEPS as f64;
+            let (sin, cos) = (libm::sin(theta), libm::cos(theta));
+            let x = r * sin;
+            acc += cos * cos * libm::exp(-0.5 * x * x / (s * s));
+        }
+        (2.0 / PI) * acc * (PI / STEPS as f64) * norm
+    } else {
+        // A narrow Gaussian in a wide disc: integrate where the Gaussian is, `x` within 7 sigma.
+        let width = 7.0 * s;
+        let dx = 2.0 * width / STEPS as f64;
+        for i in 0..STEPS {
+            let x = -width + dx * (i as f64 + 0.5);
+            let lsf = 2.0 / (PI * r * r) * (r * r - x * x).sqrt();
+            acc += lsf * libm::exp(-0.5 * x * x / (s * s));
+        }
+        acc * dx * norm
     }
-    (2.0 / PI) * acc * (PI / STEPS as f64) * norm
 }
 
 /// One pair's table: `rho` falls as `r` grows.

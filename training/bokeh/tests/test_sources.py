@@ -129,6 +129,7 @@ def test_prepare_end_to_end_on_a_fake_volume(tmp_path):
     summary = prepare.build_index(crop, vol, 0, 0, 1, lambda: sources.stream_lines(str(seg_path)))
     assert summary["photos"] == 5 and summary["with_masks"] == 3 and summary["masks"] == 3 and summary["chunks"] == 1
     assert prepare.build_index(crop, vol, 0, 0, 1, lambda: sources.stream_lines(str(seg_path))) == summary  # idempotent
+    assert prepare.known_summary(vol, 0, 0, 1) == summary and prepare.known_summary(vol, 2, 0, 1) is None
     with pytest.raises(RuntimeError, match="other parameters"):
         prepare.build_index(crop, vol, 2, 0, 1, lambda: sources.stream_lines(str(seg_path)))
     assert prepare.mask_archive(vol, "0", local_zip=zipf) == 3
