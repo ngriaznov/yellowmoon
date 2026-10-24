@@ -85,7 +85,7 @@ A new stage group, **Lens (L1 to L3)**, sits between the raw group (after R9) an
 Why there:
 
 - Added light stays additive, and white balance, exposure, the sensor map, the highlight range (C7), the look and the display transform then treat flare light like the rest of the scene, as they would a real lens's.
-- The clip mask of R1 is at hand, so the light the sensor clipped can be restored for the flares (L3).
+- The clipped light is still recognisable (R5 leaves a pixel at its clip level in every channel only where every channel clipped), so it can be restored for the flares (L3).
 - A colour, grade or look edit does not re-run the lens: the group's key is the raw group's key, the reduction, the lens setting and, when Anamorphic is above 0, the axis (below).
 - The photo's own lens corrections (R3, R5b, R9) still run first. The emulated lens adds its character on top; the Sony lens's corrections are never switched off to get it (the research note's decision).
 
@@ -93,11 +93,13 @@ Why there:
 
 **Planes and lists, once per photo.** Some parts of the lens see the whole frame (a ghost lies across the centre from its light; glow reaches far), while tiles must equal the whole frame bit for bit (`docs/17` D5). Those parts are therefore made once per photo, on the CPU, from small whole-frame images, and shared by every tile and every scale:
 
-- the **lens plane**: the raw group's image at `k_L`, the smallest power of two that gives a long edge of at most 1024 px, with the fraction of clipped photosites per pixel (R1's mask binned the same way);
+- the **lens plane**: the raw group's image at `k_L`, the smallest power of two that gives a long edge of at most 1024 px;
 - the **tail plane**: the lens plane halved again until its long edge is at most 512 px;
 - the **source list** (L3) and the **ball list** and **blur map** (L1).
 
 Their key is the raw group's key, the lens `kind` and its data version, the camera profile (for the spectral projection, section 6) and the depth model's version; the slider amounts are not in it, so moving a slider re-runs only the per-tile passes. Each tile then reads them at its own pixels' absolute positions.
+
+**Regions.** A reduced view (the fit view, thumbnails, look tiles) runs the lens over its whole frame. At full resolution the lens output of a rectangle is computed from the raw group's region grown by the lens halo (`LensPlan::halo_px`, which depends on the amounts and the photo's blur map), assembled from the raw group's cached tiles as `Job::region` already does; the raw tiles keep their own cache and key, and the lens output has its own. An export tile grows its raw source rectangle by the halo the same way.
 
 **Render graph.** `docs/01` *Render graph* gains the row "Lens (L1 to L3) | `lens`, and everything that invalidates the raw group; the orientation when Anamorphic is above 0", and its Geometry row gains L4.
 
@@ -139,7 +141,7 @@ Reduced views use the same kernels at `1/k` scale (a kernel below one pixel is a
 
 With `F = flares/100`:
 
-- **Restored light** `R`: the image, except where R1's clip mask marks every channel clipped, where it is multiplied by `2^h`, `h = 3` EV (`LENS_HEADROOM_EV`; on planes, by `1 + f·(2^h − 1)` for a clipped fraction `f`). Only the flares read `R`; the picture's own clipped pixels are not raised.
+- **Restored light** `R`: the image times `1 + f·(2^h − 1)`, `h = 3` EV (`LENS_HEADROOM_EV`), where `f` is the clip test: a ramp from 0 to 1 as `min_c(X_c / g0_c)` goes from 0.95 to 0.98 (`g0` is the clip level of each channel in the group's scale; R3's gain only raises clipped values, so they still pass; on the lens plane the ramp runs from 0.90 to 0.97, because binning mixes clipped and unclipped photosites). Only the flares read `R`; the picture's own clipped pixels are not raised.
 - **Highlights** `H`: `R` weighted by a soft knee from 0 at half the clip level to 1 at the clip.
 - **The light budget.** The lens data give the fractions of light at Flares 100: glow `a_g`, veiling `a_v`, each ghost `a_i`, starburst `a_*`, and the attachment's streak `a_s`. With `Z` the output of L2 and `a` the sum of the fractions in use (the streak's with its Anamorphic factor) times `F`:
 
@@ -172,7 +174,7 @@ Sampling needs the inverse, found by three Newton steps from the output position
 
 ## 5. The core's API
 
-New crate **`ym-lens`** (CPU references, data, plans; depends on `ym-color` for the spectral projection). Kernels in `ym-gpu` (`kernels/lens_reshape.wgsl`, `lens_field.wgsl`, `lens_flare.wgsl`; L4 in the sampler).
+New crate **`ym-lens`** (data, plans, planes and the CPU references; it depends on `ym-color` for the spectral projection and not on `ym-gpu`, and works on planar `f32` slices with their place in the frame). Kernels in `ym-gpu`, which depends on `ym-lens` for the plans (`kernels/lens_reshape.wgsl`, `lens_field.wgsl`, `lens_flare.wgsl`; L4 in the sampler).
 
 ```rust
 pub struct LensLibrary { /* data/lenses, loaded and checked once */ }
@@ -204,6 +206,41 @@ pub mod cpu { /* reshape, field, flare: run on any rectangle of the frame; warp:
 - `<id>/tables.safetensors`: the spread functions (9 radii × 8 wavelengths × 33 × 33), the glow tail per wavelength and the spike table, f32.
 - `anamorphic.json`: the attachment (`Q_max`, `μ₀`, `β₀`, `κ`, `κ_g`, `a_s`, `h`, the streak's profile, fraction and tint, its oval ghosts).
 - `SHA256SUMS` and `README.md` (what each file holds, the statement below, the designs).
+
+### File format
+
+All lengths are in half-diagonal units of the emulated frame (a 36 × 24 mm frame, half-diagonal 21.633 mm, at the design's focal length); spectra on the 31-sample grid 400, 410, …, 700 nm; the eight PSF wavelengths are 420, 460, 500, 540, 580, 620, 660 and 700 nm.
+
+`index.json`: `{ "version": 1, "lenses": ["default", "classic", "vintage", "petzval", "triplet", "sonnar", "detuned"], "attachment": "anamorphic.json" }` (the menu order).
+
+`<id>/lens.json`:
+
+| Field | Meaning |
+|---|---|
+| `id`, `version`, `name`, `line` | as in section 1; `version` is an integer, raised when the data change |
+| `start` | `{ "flares": 0–100, "edges": 0–100 }` |
+| `provenance` | `statement` (exactly the sentence above), `design` `{ type, source, year, focal_mm, f_number, format }`, `coatings`, `generated` (a date), `method` (one sentence) |
+| `field.radii` | 9 field radii, 0 to 1 |
+| `field.psf_half_width` | `w(ρ)` per radius: the PSF table spans `±w` |
+| `field.relative_illumination` | `T(ρ)` per radius, `T(0) = 1`, read linearly between radii |
+| `field.distortion` | `{ "k1": δ₁, "k2": δ₂ }` |
+| `field.swirl` | `σ(ρ)` per radius |
+| `field.cats_eye` | `c(ρ)` per radius: the offset of the second circle in ball radii (0: none) |
+| `bokeh.rim` | 16 samples of a ball's brightness against its normalised radius (0 the centre, 1 the edge), mean 1 |
+| `flare.glow` | `{ "fraction", "core_radius", "r0", "power", "reach", "chroma": [8] }`: the core is a disc of `core_radius` with a soft edge; the tail falls as `(1 + r/r0)^−power` out to `reach`; `chroma` scales `r0` per PSF wavelength |
+| `flare.veil` | `{ "fraction", "radius" }` |
+| `flare.aperture` | `{ "blades": 0 for round or a count, "rotation_deg", "roundness": 0–1 }` |
+| `flare.ghosts` | a list of `{ "m", "n", "s", "clip_radius", "fraction", "soft", "coating": [31] }` (section 4, L3; `soft` is the edge's width in ghost radii) |
+| `flare.starburst` | `{ "fraction", "radius", "f_number_full": the f-number at which it reaches its full strength }` |
+
+`<id>/tables.safetensors` (f32, little-endian, each slice summing to 1):
+
+| Tensor | Shape | Meaning |
+|---|---|---|
+| `psf` | `[9, 8, 33, 33]` | per radius and wavelength, samples on a 33 × 33 grid over `±w(ρ)`, row-major with x radial (outwards) and y tangential (anticlockwise) |
+| `spikes` | `[8, 129, 129]` | per wavelength, the starburst over `±flare.starburst.radius` |
+
+`anamorphic.json`: `{ "id": "anamorphic", "version", "provenance", "q_max": 2.0, "bend": { "mu0", "beta0" }, "field": { "kappa", "side_softness", "fringe" }, "ghost_stretch": κ_g, "streak": { "fraction", "reach", "core", "power", "tint": [31] }, "ghosts": [ … as above ] }`.
 
 **Colour.** Coatings and tints are reflectance spectra (31 samples, 400 to 700 nm), and the spread functions and tails are given per wavelength. The plan projects them onto the photo's camera channels with the profile's spectral curves (`data/cameras/sony/`, `docs/03`), so a blue streak is the blue that body's sensor would record. Stand-in bodies use their profile's curves.
 
