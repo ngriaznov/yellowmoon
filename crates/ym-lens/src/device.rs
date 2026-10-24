@@ -149,7 +149,8 @@ pub struct FlareScaleData {
     pub core_radius: usize,
     /// The header ([`FLARE_HEADER`] vectors), then the core's taps `(2 r + 1)^2` one vector each (red, green,
     /// blue weights and a zero), then six vectors per item (`ym_lens::l3::items`: four of numbers, one of
-    /// kind and shape as bits, one of the item's pixel rectangle `x0, x1, y0, y1` as bits).
+    /// kind, shape and grid spacing as bits (1: drawn at every pixel), one of the item's pixel rectangle
+    /// `x0, x1, y0, y1` as bits).
     pub vectors: Vec<[f32; 4]>,
     /// Index of the first core tap in `vectors`.
     pub core_offset: usize,
@@ -172,6 +173,9 @@ pub struct FlareScaleData {
     pub restore: FlareRestore,
     /// True when the plan draws streaks (the header holds their profile).
     pub has_streak: bool,
+    /// Which grids of nodes (spacing 2, 4 and 8 px) hold ghosts: those ghosts are not drawn at every pixel
+    /// but at the nodes, and read back by bilinear interpolation (`COARSE_LEVELS`).
+    pub coarse: [bool; 3],
 }
 
 impl FlareScaleData {

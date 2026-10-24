@@ -195,6 +195,29 @@ pub fn flare_terms(
     l3::terms(plan, planes, k, input, out)
 }
 
+/// [`flare_terms`] with every ghost drawn at every pixel: the exact sum the coarse grids of the ghosts that vary
+/// slowly stand for. Slow (minutes for a photo with hundreds of lights); for tests and for measuring the grids'
+/// error.
+///
+/// # Errors
+///
+/// As [`flare_terms`].
+pub fn flare_terms_exact(
+    plan: &LensPlan,
+    planes: &LensPlanes,
+    k: usize,
+    input: &ImageRef,
+    out: PixelRect,
+) -> Result<Option<Vec<f64>>, LensError> {
+    input.validate()?;
+    check_scale(plan, k, input)?;
+    if plan.is_identity() {
+        return Ok(None);
+    }
+    check_planes(plan, planes, input, out)?;
+    l3::terms_exact(plan, planes, k, input, out)
+}
+
 /// `(1 - a) Z + terms`: the picture after L3 from `z` ([`apply_field`]) and the flare terms of the same
 /// rectangle ([`flare_terms`]). [`apply_flares`] is `flare_terms` and this, so a cached `terms` gives the
 /// bits a fresh run gives.

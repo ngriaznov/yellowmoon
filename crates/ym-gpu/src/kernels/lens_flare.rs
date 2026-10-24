@@ -73,6 +73,17 @@ struct FlareU {
     clip: [f32; 4],
     /// The clip test's ramp: from, to.
     ramp: [f32; 4],
+    /// The grids of nodes of the ghosts of spacing 2, 4 and 8 px: the first node's column and row, the nodes
+    /// across and down (zeros for a grid the tile does not use).
+    lg0: [i32; 4],
+    /// See `lg0`.
+    lg1: [i32; 4],
+    /// See `lg0`.
+    lg2: [i32; 4],
+    /// Where each grid starts in the node buffer (in vectors), then the bit set of the grids in use.
+    lgo: [u32; 4],
+    /// The grid a node dispatch fills: its index (0 to 2), then zeros.
+    lvl: [u32; 4],
 }
 
 /// The tail plane and spike tables of one photo on the device.
@@ -223,6 +234,14 @@ impl FlareScaleBuffers {
     }
 }
 
+/// The first and last node (inclusive) of the grid of spacing `l` px that the pixels `[p0, p1)` read: the pixel
+/// `p` lies between the nodes `floor((2 p + 1 - l) / 2 l)` and the next (`ym_lens` `node_range`).
+fn node_range(p0: usize, p1: usize, l: i64) -> (i64, i64) {
+    let first = (2 * p0 as i64 + 1 - l).div_euclid(2 * l);
+    let last = (2 * (p1 as i64 - 1) + 1 - l).div_euclid(2 * l) + 1;
+    (first, last)
+}
+
 /// The largest storage binding (bytes) the pass needs for an output of `rect` pixels with a core of
 /// `halo` pixels: the restored light or an image.
 #[must_use]
@@ -323,6 +342,25 @@ pub fn encode_flare(
             frame_height: fh,
         },
     )?;
+    // The grids of nodes the slowly varying ghosts are drawn on, over the nodes this tile's pixels read.
+    let mut grids = [[0i32; 4]; 3];
+    let mut grid_offsets = [0u32; 4];
+    let mut node_vectors = 0u64;
+    for (li, on) in meta.coarse.iter().enumerate() {
+        if !*on {
+            continue;
+        }
+        let l = 2i64 << li;
+        let (j0, j1) = node_range(out.x, out.x1(), l);
+        let (k0, k1) = node_range(out.y, out.y1(), l);
+        let (nx, ny) = (j1 - j0 + 1, k1 - k0 + 1);
+        grids[li] = [j0 as i32, k0 as i32, nx as i32, ny as i32];
+        grid_offsets[li] = node_vectors as u32;
+        grid_offsets[3] |= 1 << li;
+        node_vectors += (nx * ny) as u64;
+    }
+    // Always a buffer to bind: the main pass declares the slot.
+    let nodes = passes.scratch("lens flare nodes", node_vectors.max(1) * 16)?;
     let (tw, th) = planes.tail_size;
     let nodes_after = (3 * tw * th) as i32;
     let mut u = FlareU::zeroed();
@@ -374,6 +412,10 @@ pub fn encode_flare(
         meta.restore.boost,
     ];
     u.ramp = [meta.restore.ramp.0, meta.restore.ramp.1, 0.0, 0.0];
+    u.lg0 = grids[0];
+    u.lg1 = grids[1];
+    u.lg2 = grids[2];
+    u.lgo = grid_offsets;
 
     if let Some(res) = &restored {
         // The restored light reads the input (binding 2 of the restore pass is the input's planes).
@@ -402,6 +444,30 @@ pub fn encode_flare(
             ),
         )?;
     }
+    for (li, grid) in grids.iter().enumerate() {
+        if grid_offsets[3] & (1 << li) == 0 {
+            continue;
+        }
+        let mut un = u;
+        un.lvl = [li as u32, 0, 0, 0];
+        let ub = passes.uniform("lens flare nodes uniform", &un)?;
+        passes.dispatch(
+            KernelId::LensFlareNodes,
+            "lens flare nodes",
+            &[
+                (0, ub.binding()),
+                (5, scale.vectors.binding()),
+                (6, scale.bins.binding()),
+                (7, lens.buf.binding()),
+                (8, nodes.binding()),
+            ],
+            (
+                (grid[2] as u32).div_ceil(GROUP),
+                (grid[3] as u32).div_ceil(GROUP),
+                1,
+            ),
+        )?;
+    }
     let ub = passes.uniform("lens flare uniform", &u)?;
     let res_binding = restored.as_ref().map_or_else(
         || scale.vectors.binding(),
@@ -419,6 +485,7 @@ pub fn encode_flare(
             (5, scale.vectors.binding()),
             (6, scale.bins.binding()),
             (7, lens.buf.binding()),
+            (8, nodes.binding()),
         ],
         (
             (out.w as u32).div_ceil(GROUP),
@@ -522,6 +589,7 @@ fn constants() -> String {
 pub(super) fn body(id: KernelId) -> String {
     let main = match id {
         KernelId::LensFlareRestore => "lfl_restore_main",
+        KernelId::LensFlareNodes => "lfl_nodes_main",
         _ => "lfl_main_main",
     };
     let mut s = constants();
@@ -542,7 +610,11 @@ mod tests {
 
     #[test]
     fn the_uniform_block_has_the_layout_of_its_rust_struct() {
-        for id in [KernelId::LensFlareRestore, KernelId::LensFlare] {
+        for id in [
+            KernelId::LensFlareRestore,
+            KernelId::LensFlareNodes,
+            KernelId::LensFlare,
+        ] {
             let (fields, span) = uniform_layout(id, "pu");
             let want = [
                 ("zero", offset_of!(FlareU, zero)),
@@ -558,6 +630,11 @@ mod tests {
                 ("tail", offset_of!(FlareU, tail)),
                 ("clip", offset_of!(FlareU, clip)),
                 ("ramp", offset_of!(FlareU, ramp)),
+                ("lg0", offset_of!(FlareU, lg0)),
+                ("lg1", offset_of!(FlareU, lg1)),
+                ("lg2", offset_of!(FlareU, lg2)),
+                ("lgo", offset_of!(FlareU, lgo)),
+                ("lvl", offset_of!(FlareU, lvl)),
             ];
             assert_eq!(fields.len(), want.len(), "{id:?}");
             for ((name, offset), (want_name, want_offset)) in fields.iter().zip(want) {

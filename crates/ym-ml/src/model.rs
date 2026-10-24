@@ -71,6 +71,9 @@ pub enum MlError {
     /// A buffer or tile has the wrong size.
     #[error("shape mismatch: {0}")]
     Shape(String),
+    /// An input holds a value the model cannot take (for example one that is not finite).
+    #[error("invalid input: {0}")]
+    Input(String),
     /// The file's SHA-256 does not match the recorded one.
     #[error("checksum mismatch for {what}: expected {expected}, found {found}")]
     Checksum {

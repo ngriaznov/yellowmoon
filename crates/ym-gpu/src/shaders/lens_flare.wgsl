@@ -1,12 +1,16 @@
 // L3, the lens's highlight optics, on the device (docs/21 section 4, L3; the CPU reference is
-// `ym_lens::l3`). Two kernels share this module:
+// `ym_lens::l3`). Three kernels share this module:
 //
 //   lfl_restore  the restored light of the input: x times 1 + f (2^h - 1), f the clip test, as
 //                (r, g, b, 0) over the rectangle the glow core reads.
-//   lfl_main     one output pixel: out = keep Z + F (core + tail + items), the sum in the CPU's order:
-//                the glow core gathered from the restored light (the taps of the scale), the tail plane
-//                read with a Catmull-Rom curve and held at 0 or above, then the drawn items (ghosts,
-//                starbursts and streaks) of the pixel's bin in list order.
+//   lfl_nodes    the nodes of one grid of the ghosts that vary slowly: the sum, in list order, of the
+//                densities of the grid's ghosts at the node's place (a pixel corner, 2, 4 or 8 px apart on
+//                the absolute pixel grid), as (r, g, b, 0).
+//   lfl_main     one output pixel: out = keep Z + F (core + tail + items + grids), the sum in the CPU's
+//                order: the glow core gathered from the restored light (the taps of the scale), the tail
+//                plane read with a Catmull-Rom curve and held at 0 or above, then the drawn items (ghosts
+//                that are drawn at every pixel, starbursts and streaks) of the pixel's bin in list order,
+//                then the grids read by bilinear interpolation.
 //
 // Positions (D4 and D5 of docs/17-gpu.md). A pixel is its absolute column and row (exact integers); its
 // field coordinates are (i + 0.5 - w / 2) / H in f32, the same function of the column and row whatever
@@ -16,9 +20,9 @@
 //
 // Bindings of lfl_main: 0 uniform, 1 the restored light, 2 Z (planar), 3 the output (planar), 4 the photo's
 // planes (tail plane, then the spike tables), 5 the scale's data (header, core taps, items), 6 the bins,
-// 7 the lens's tables (rim, aperture, normal tail). Bindings of lfl_restore: 0 uniform, 2 the input's
-// planes (the same slot as Z: the uniform's `zr` and `zs` describe whichever image it is), 8 the restored
-// light it writes.
+// 7 the lens's tables (rim, aperture, normal tail), 8 the grids' nodes. Bindings of lfl_restore: 0 uniform,
+// 2 the input's planes (the same slot as Z: the uniform's `zr` and `zs` describe whichever image it is),
+// 8 the restored light it writes. Bindings of lfl_nodes: 0 uniform, 5, 6, 7 as above, 8 the nodes it writes.
 
 struct FlareU {
     zero: vec4<u32>,        // x: always 0 (the opaque word of the barrier)
@@ -34,6 +38,11 @@ struct FlareU {
     tail: vec4<i32>,        // tail plane width, height, offset of the spike tables in the planes buffer, 0
     clip: vec4<f32>,        // g0 of each channel, 2^h - 1
     ramp: vec4<f32>,        // the clip test's ramp: from, to
+    lg0: vec4<i32>,         // the grid of spacing 2: first node column and row, nodes across and down
+    lg1: vec4<i32>,         // spacing 4
+    lg2: vec4<i32>,         // spacing 8
+    lgo: vec4<u32>,         // where each grid starts in the node buffer (vectors), the bit set in use
+    lvl: vec4<u32>,         // the grid lfl_nodes fills (0 to 2)
 };
 
 @group(0) @binding(0) var<uniform> pu: FlareU;
@@ -44,7 +53,7 @@ struct FlareU {
 @group(0) @binding(5) var<storage, read> scale: array<vec4<f32>>;
 @group(0) @binding(6) var<storage, read> bins: array<u32>;
 @group(0) @binding(7) var<storage, read> tab: array<vec4<f32>>;
-@group(0) @binding(8) var<storage, read_write> rres: array<vec4<f32>>;
+@group(0) @binding(8) var<storage, read_write> aux: array<vec4<f32>>;
 
 // Generated before this text (kernels/lens_flare.rs): FL_SPIKE, FL_TAB_*, FL_NODES, FL_MAX_NORMALS and the
 // constants of the lens plan.
@@ -71,7 +80,7 @@ fn lfl_restore_main(gid: vec3<u32>) {
         let f = clamp((m - pu.ramp.x) / (pu.ramp.y - pu.ramp.x), 0.0, 1.0);
         factor = 1.0 + f * pu.clip.w;
     }
-    rres[gid.y * u32(pu.resr.z) + gid.x] = vec4<f32>(v * factor, 0.0);
+    aux[gid.y * u32(pu.resr.z) + gid.x] = vec4<f32>(v * factor, 0.0);
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -467,12 +476,110 @@ fn lfl_items(i: i32, j: i32) -> vec3<f32> {
         }
         let kind = bitcast<vec4<i32>>(scale[rec + 4u]);
         if (kind.x == 0) {
-            acc = acc + lfl_ghost(rec, kind.y, a, c);
+            // A ghost on a grid (kind.z above 1) is in the nodes.
+            if (kind.z <= 1) {
+                acc = acc + lfl_ghost(rec, kind.y, a, c);
+            }
         } else if (kind.x == 1) {
             acc = acc + lfl_burst(rec, i, j);
         } else {
             acc = acc + lfl_streak(rec, i, j);
         }
+    }
+    return acc;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The grids of the ghosts that vary slowly
+
+fn lfl_floor_div(a: i32, b: i32) -> i32 {
+    var q = a / b;
+    if ((a % b) != 0 && ((a < 0) != (b < 0))) {
+        q = q - 1;
+    }
+    return q;
+}
+
+fn lfl_grid(li: u32) -> vec4<i32> {
+    if (li == 0u) {
+        return pu.lg0;
+    }
+    if (li == 1u) {
+        return pu.lg1;
+    }
+    return pu.lg2;
+}
+
+// One node of the grid pu.lvl.x: the sum, in list order, of the densities of the grid's ghosts at the node's
+// place. A node (j, k) of the grid of spacing l is the pixel corner (l j + l / 2, l k + l / 2); a ghost
+// counts when its pixel rectangle grown by l holds the node. The node's bin is the bin of the nearest
+// pixel of the frame (the bins hold the rectangles grown by the largest spacing).
+fn lfl_nodes_main(gid: vec3<u32>) {
+    let li = pu.lvl.x;
+    let g = lfl_grid(li);
+    if (gid.x >= u32(g.z) || gid.y >= u32(g.w)) {
+        return;
+    }
+    let l = i32(2u << li);
+    let px = l * (g.x + i32(gid.x)) + l / 2;
+    let py = l * (g.y + i32(gid.y)) + l / 2;
+    var acc = vec3<f32>(0.0);
+    if (pu.offs.z != 0u) {
+        let bx = u32(clamp(px, 0, pu.ints.x - 1)) / pu.bins.z;
+        let by = u32(clamp(py, 0, pu.ints.y - 1)) / pu.bins.z;
+        let bin = by * pu.bins.x + bx;
+        let first = bins[bin];
+        let last = bins[bin + 1u];
+        let u = (f32(px) - 0.5 * pu.frame.x) / pu.frame.z;
+        let v = (f32(py) - 0.5 * pu.frame.y) / pu.frame.z;
+        var a = u;
+        var c = v;
+        if (pu.ints.z == 1) {
+            a = v;
+            c = u;
+        }
+        for (var t = first; t < last; t = t + 1u) {
+            let k = bins[pu.bins.w + t];
+            let rec = pu.offs.y + 6u * k;
+            let kind = bitcast<vec4<i32>>(scale[rec + 4u]);
+            if (kind.x != 0 || kind.z != l) {
+                continue;
+            }
+            let span = bitcast<vec4<i32>>(scale[rec + 5u]);
+            if (px < span.x - l || px >= span.y + l || py < span.z - l || py >= span.w + l) {
+                continue;
+            }
+            acc = acc + lfl_ghost(rec, kind.y, a, c);
+        }
+    }
+    aux[pu.lgo[li] + gid.y * u32(g.z) + gid.x] = vec4<f32>(acc, 0.0);
+}
+
+// The grids' light at the pixel (i, j): each grid in use read by bilinear interpolation between the four
+// nodes around the pixel's centre.
+fn lfl_layer(i: i32, j: i32) -> vec3<f32> {
+    var acc = vec3<f32>(0.0);
+    for (var li = 0u; li < 3u; li = li + 1u) {
+        if ((pu.lgo.w & (1u << li)) == 0u) {
+            continue;
+        }
+        let g = lfl_grid(li);
+        let l = i32(2u << li);
+        let nx = 2 * i + 1 - l;
+        let ny = 2 * j + 1 - l;
+        let jn = lfl_floor_div(nx, 2 * l);
+        let kn = lfl_floor_div(ny, 2 * l);
+        let tx = f32(nx - 2 * l * jn) / f32(2 * l);
+        let ty = f32(ny - 2 * l * kn) / f32(2 * l);
+        let w = u32(g.z);
+        let base = pu.lgo[li] + u32(kn - g.y) * w + u32(jn - g.x);
+        let n00 = aux[base].xyz;
+        let n10 = aux[base + 1u].xyz;
+        let n01 = aux[base + w].xyz;
+        let n11 = aux[base + w + 1u].xyz;
+        let top = n00 + tx * (n10 - n00);
+        let bot = n01 + tx * (n11 - n01);
+        acc = acc + (top + ty * (bot - top));
     }
     return acc;
 }
@@ -489,6 +596,9 @@ fn lfl_main_main(gid: vec3<u32>) {
     }
     acc = acc + lfl_tail(i, j);
     acc = acc + lfl_items(i, j);
+    if (pu.lgo.w != 0u) {
+        acc = acc + lfl_layer(i, j);
+    }
     let zp = u32(j - pu.zr.y) * pu.zs.x + u32(i - pu.zr.x);
     let at = gid.y * pu.zs.z + gid.x;
     let keep = pu.mix.y;

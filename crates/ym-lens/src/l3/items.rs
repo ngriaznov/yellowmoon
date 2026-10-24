@@ -712,7 +712,7 @@ impl<'a> Items<'a> {
                         g.amp[1] as f32,
                     ]);
                     out.push([g.amp[2] as f32, 0.0, 0.0, 0.0]);
-                    out.push([bits(0), bits(g.shape as i32), 0.0, 0.0]);
+                    out.push([bits(0), bits(g.shape as i32), bits(g.level as i32), 0.0]);
                 }
                 Item::Burst(b) => {
                     out.push([
@@ -742,6 +742,19 @@ impl<'a> Items<'a> {
             out.push(span_v);
         }
         out
+    }
+
+    /// Which of the [`COARSE_LEVELS`] grids hold ghosts.
+    pub(crate) fn coarse_levels(&self) -> [bool; 3] {
+        let mut on = [false; 3];
+        for it in &self.list {
+            if let Item::Ghost(g) = it
+                && let Some(i) = COARSE_LEVELS.iter().position(|l| *l == g.level)
+            {
+                on[i] = true;
+            }
+        }
+        on
     }
 
     /// The pixel rectangle of every item, in list order.
@@ -1010,6 +1023,7 @@ impl GhostLayer {
                 .collect();
             for y in band.y0..band.y1 {
                 let (k, ty) = split(y, l, grid.k0);
+                debug_assert!(k + 1 < grid.ny, "the grid holds the nodes of the row");
                 let row = (y - band.y0) * bw;
                 let (r0, r1) = (k * grid.nx, (k + 1) * grid.nx);
                 for (c, (j, tx)) in cols.iter().enumerate() {
@@ -1158,6 +1172,7 @@ mod tests {
             spike_radius: 0.06,
             frame,
             tail: normal_tail(),
+            coarse: false,
             list: Vec::new(),
         }
     }
@@ -1201,7 +1216,7 @@ mod tests {
                         y1: h,
                     };
                     let ghost = items
-                        .ghost(&src, &g, SHAPE_ROUND, 1.0, 0.1, [1.0; 3], &cull)
+                        .ghost(&src, &g, SHAPE_ROUND, 1.0, 0.1, [1.0; 3], 1.2, &cull)
                         .unwrap();
                     let mut acc = vec![[0.0f64; 3]; w * h];
                     items.add_ghost(&ghost, &cull, &cull, &mut acc);
@@ -1266,7 +1281,7 @@ mod tests {
                     y1: h,
                 };
                 let ghost = items
-                    .ghost(&src, &g, SHAPE_APERTURE, 1.0, 0.1, [1.0; 3], &cull)
+                    .ghost(&src, &g, SHAPE_APERTURE, 1.0, 0.1, [1.0; 3], 1.2, &cull)
                     .unwrap();
                 let mut acc = vec![[0.0f64; 3]; w * h];
                 items.add_ghost(&ghost, &cull, &cull, &mut acc);

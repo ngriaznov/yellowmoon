@@ -14,7 +14,7 @@ use crate::device::{
     FlareLensData, FlarePlaneData, FlareRestore, FlareScaleData, MAX_APERTURE_NORMALS,
 };
 use crate::l3::geometry::{Frame, Span};
-use crate::l3::items::Items;
+use crate::l3::items::{COARSE_REACH_PX, Items};
 use crate::l3::profile::{RimCurve, normal_tail};
 use crate::l3::terms::Terms;
 use crate::plan::{Axis, LensPlan};
@@ -133,9 +133,25 @@ pub(crate) fn scale_data(
     let count = records.len() / 6;
     vectors.extend(records);
 
-    // Bins: the items whose pixel rectangle meets each bin of the absolute grid, in list order.
+    // Bins: the items whose pixel rectangle, grown by the reach of the coarse grids, meets each bin of the
+    // absolute grid, in list order (a node of a grid sits up to that far outside a ghost's rectangle).
     let (nbx, nby) = (width.div_ceil(BIN_PX), height.div_ceil(BIN_PX));
-    let spans = items.spans();
+    let spans: Vec<Span> = items
+        .spans()
+        .into_iter()
+        .map(|s| {
+            if s.is_empty() {
+                s
+            } else {
+                Span {
+                    x0: s.x0.saturating_sub(COARSE_REACH_PX),
+                    x1: (s.x1 + COARSE_REACH_PX).min(width),
+                    y0: s.y0.saturating_sub(COARSE_REACH_PX),
+                    y1: (s.y1 + COARSE_REACH_PX).min(height),
+                }
+            }
+        })
+        .collect();
     let mut counts = vec![0u32; nbx * nby];
     let bins_of = |s: &Span| -> (usize, usize, usize, usize) {
         (
@@ -200,6 +216,7 @@ pub(crate) fn scale_data(
             boost: (libm::exp2(LENS_HEADROOM_EV) - 1.0) as f32,
         },
         has_streak: items.along().is_some(),
+        coarse: items.coarse_levels(),
     })
 }
 

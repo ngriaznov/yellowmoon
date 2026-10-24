@@ -6,6 +6,7 @@
 mod common;
 
 use std::fs;
+use std::io::Write as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{apply_tile, camera, pattern, tiles, whole};
@@ -1043,4 +1044,162 @@ fn a_cancel_during_build_returns_cancelled() {
             "cancelled at poll {stop} of {total}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Many lights: the cost of the ghosts
+
+fn soft_ghost(m: f64, n: f64, s: f64, clip: f64, fraction: f64, soft: f64, nm: f64) -> Value {
+    json!({ "m": m, "n": n, "s": s, "clip_radius": clip, "fraction": fraction, "soft": soft,
+            "coating": coating(nm) })
+}
+
+/// A lens that only has ghosts, big and soft ones (the apothem is up to a whole half-diagonal, as in the
+/// shipped lenses), some cut by their clipping circle, with the fractions `fraction` times 1, 2 and 3.
+fn big_ghost_library(fraction: f64) -> LensLibrary {
+    library_with(
+        &|lens| {
+            lens["flare"]["glow"] = json!({ "fraction": 0.0, "core_radius": 0.0015, "r0": 0.01,
+                "power": 2.0, "reach": 0.3, "chroma": [1.3, 1.2, 1.1, 1.0, 0.95, 0.9, 0.85, 0.8] });
+            lens["flare"]["veil"] = json!({ "fraction": 0.0, "radius": 0.3 });
+            lens["flare"]["aperture"] =
+                json!({ "blades": 7, "rotation_deg": 10.0, "roundness": 0.5 });
+            lens["flare"]["ghosts"] = json!([
+                soft_ghost(-0.9, 0.0, 0.8, 4.0, fraction, 0.30, 450.0),
+                soft_ghost(0.7, 0.6, 0.45, 0.9, 2.0 * fraction, 0.12, 600.0),
+                soft_ghost(1.6, 0.0, 0.9, 4.0, 3.0 * fraction, 0.05, 520.0),
+                soft_ghost(0.3, 0.2, 0.15, 4.0, fraction, 0.03, 500.0),
+            ]);
+            lens["flare"]["starburst"] =
+                json!({ "fraction": 0.0, "radius": 0.06, "f_number_full": 11.0 });
+        },
+        &|att| {
+            att["streak"] = json!({ "fraction": 0.0, "reach": 0.3, "core": 0.002, "power": 1.5,
+                "tint": coating(470.0) });
+            att["ghosts"] = json!([soft_ghost(-0.5, 0.0, 0.7, 4.0, fraction, 0.2, 470.0)]);
+        },
+    )
+}
+
+/// A 600 x 400 scene with `n` clipped lights of 2 to 4 px at seeded places.
+fn lights_scene(n: usize) -> Scene {
+    let mut s = Scene::new(600, 400);
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (state >> 33) as f64 / f64::from(1u32 << 31)
+    };
+    for _ in 0..n {
+        let size = 2 + (next() * 3.0) as usize;
+        let x = 10 + (next() * 570.0) as usize;
+        let y = 10 + (next() * 370.0) as usize;
+        s.fill(x, y, size, size, [1.0, 0.9 + 0.1 * next() as f32, 0.8]);
+    }
+    s
+}
+
+/// The ghosts that vary slowly are drawn on grids of nodes and read back by interpolation: the light they
+/// add is the exact sum within a small share of its peak, and its total is the same.
+#[test]
+fn the_grids_of_the_ghosts_are_the_exact_sum_within_a_small_share() {
+    let lib = big_ghost_library(0.02);
+    let plan = plan_of(&lib, 100.0, 0.0, 100.0, (600, 400), Axis::X, Some(8.0), 1.0);
+    let scene = lights_scene(40);
+    let planes = planes_of(&plan, &scene);
+    let input = whole(scene.w, scene.h, &scene.data);
+    let rect = scene.rect();
+    let got = ym_lens::flare_terms(&plan, &planes, 1, &input, rect)
+        .expect("terms")
+        .expect("some light");
+    let want = ym_lens::flare_terms_exact(&plan, &planes, 1, &input, rect)
+        .expect("exact terms")
+        .expect("some light");
+    assert_eq!(got.len(), want.len());
+    let peak = want.iter().fold(0.0f64, |m, v| m.max(*v));
+    let worst = got
+        .iter()
+        .zip(&want)
+        .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+    let (sum_got, sum_want): (f64, f64) = (got.iter().sum(), want.iter().sum());
+    let _ = writeln!(
+        std::io::stderr(),
+        "[flare] grids against every pixel: worst {worst:.3e} of a peak {peak:.3e} ({:.3} %), total light {:.6} of {:.6}",
+        100.0 * worst / peak,
+        sum_got,
+        sum_want
+    );
+    assert!(worst > 0.0, "the grids were not used");
+    assert!(worst <= 3e-3 * peak, "the grids differ by {worst} of a peak {peak}");
+    assert!(
+        (sum_got - sum_want).abs() <= 1e-3 * sum_want,
+        "{sum_got} against {sum_want}"
+    );
+}
+
+/// Tiles of any size read the same nodes: the terms of every tile equal the whole frame's bit for bit, with
+/// the nodes beyond the tile's edge included.
+#[test]
+fn tiles_of_the_grids_equal_the_whole_frame_bit_for_bit() {
+    let lib = big_ghost_library(0.02);
+    let plan = plan_of(&lib, 100.0, 0.0, 100.0, (600, 400), Axis::X, Some(8.0), 1.0);
+    let scene = lights_scene(40);
+    let planes = planes_of(&plan, &scene);
+    let input = whole(scene.w, scene.h, &scene.data);
+    let reference = ym_lens::flare_terms(&plan, &planes, 1, &input, scene.rect())
+        .expect("terms")
+        .expect("some light");
+    for (nx, ny) in [(2, 2), (3, 3), (5, 2)] {
+        for t in tiles(scene.w, scene.h, nx, ny) {
+            let got = ym_lens::flare_terms(&plan, &planes, 1, &input, t)
+                .expect("tile")
+                .expect("some light");
+            for c in 0..3 {
+                for y in 0..t.h {
+                    let want = &reference[c * scene.w * scene.h + (t.y + y) * scene.w + t.x..][..t.w];
+                    assert_eq!(
+                        &got[c * t.w * t.h + y * t.w..][..t.w],
+                        want,
+                        "{nx}x{ny} tile {t:?} channel {c} row {y}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Ghosts whose peaks add up to under the budget (a quarter of the step of a 16-bit code at the clip level) are
+/// not drawn: the terms of a lens whose ghosts are that faint are those of a lens without ghosts.
+#[test]
+fn ghosts_too_faint_to_see_are_not_drawn() {
+    let scene = lights_scene(40);
+    let faint = big_ghost_library(1e-12);
+    let none = library_with(
+        &|lens| {
+            lens["flare"]["ghosts"] = json!([]);
+            lens["flare"]["glow"]["fraction"] = json!(0.0);
+            lens["flare"]["veil"]["fraction"] = json!(0.0);
+            lens["flare"]["starburst"]["fraction"] = json!(0.0);
+        },
+        &|att| {
+            att["ghosts"] = json!([]);
+            att["streak"]["fraction"] = json!(0.0);
+        },
+    );
+    let terms = |lib: &LensLibrary| {
+        let plan = plan_of(lib, 100.0, 0.0, 100.0, (600, 400), Axis::X, Some(8.0), 1.0);
+        let planes = planes_of(&plan, &scene);
+        ym_lens::flare_terms(&plan, &planes, 1, &whole(scene.w, scene.h, &scene.data), scene.rect())
+            .expect("terms")
+    };
+    let faint_terms = terms(&faint);
+    let none_terms = terms(&none);
+    // Without any fraction a plan adds no light at all; with faint ghosts the terms are drawn and all zero.
+    assert!(none_terms.as_ref().is_none_or(|t| t.iter().all(|v| *v == 0.0)));
+    let faint_terms = faint_terms.expect("terms");
+    assert!(faint_terms.iter().all(|v| *v == 0.0), "a faint ghost was drawn");
+    // Visible ghosts are drawn.
+    let visible = terms(&big_ghost_library(0.02)).expect("terms");
+    assert!(visible.iter().any(|v| *v > 0.0));
 }

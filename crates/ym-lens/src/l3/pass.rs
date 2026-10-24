@@ -166,9 +166,19 @@ pub(crate) fn terms(
     terms_with(plan, planes, k, input, out, true)
 }
 
-/// [`terms`], with `coarse` false to draw every ghost at every pixel (the reference the coarse grids are
-/// measured against).
-pub(crate) fn terms_with(
+/// [`terms`] with every ghost drawn at every pixel (the reference the coarse grids are measured against).
+pub(crate) fn terms_exact(
+    plan: &LensPlan,
+    planes: &LensPlanes,
+    k: usize,
+    input: &ImageRef,
+    out: PixelRect,
+) -> Result<Option<Vec<f64>>, LensError> {
+    terms_with(plan, planes, k, input, out, false)
+}
+
+/// [`terms`], with `coarse` false to draw every ghost at every pixel.
+fn terms_with(
     plan: &LensPlan,
     planes: &LensPlanes,
     _k: usize,
