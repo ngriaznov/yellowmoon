@@ -31,7 +31,9 @@ from pathlib import Path
 from training.common import jsonfmt, paths
 from training.sensor_map import registry_data as rd
 
-REGISTRY_VERSION = "1.2.0"
+#: 1.1.0 added the sensor geometry, 1.2.0 the white scale, 1.3.0 the stand-in bodies that carry a scale fitted on their
+#: own files (15 more ``default`` bodies) and the pinned ``files`` / ``file_spread_percent`` of a ``presets`` source.
+REGISTRY_VERSION = "1.3.0"
 WHITE_SCALE_JSON = Path(__file__).resolve().parents[1] / "white_scale" / "white_scale.json"
 
 

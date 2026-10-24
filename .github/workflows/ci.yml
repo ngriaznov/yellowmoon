@@ -254,6 +254,7 @@ jobs:
       - run: python3 -m training.sensor_map.gate --expect-failing LED-V2
       - run: python3 -I tools/vectors/lut_vectors.py --check
       - run: python3 -I tools/vectors/aces2_vectors.py --check
+      - run: python3 -I tools/vectors/red_chroma_vectors.py --check --cmax-check
       - run: pip install -r training/illum/requirements.txt && python3 -m unittest training.illum.test_illum
       - run: python3 -m unittest training.noise.test_public_priors
       # The white scale of stand-in bodies (docs/03): our SR2 reader, the two references, the fit, and that registry.json carries

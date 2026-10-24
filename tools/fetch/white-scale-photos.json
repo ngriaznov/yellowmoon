@@ -1,0 +1,179 @@
+{
+  "schema_version": 1,
+  "description": "The Play Raw files (discuss.pixls.us) whose white-balance presets the white scales of docs/03 were fitted on, pinned by SHA-256. 'url' is the upload the post's attachment link redirects to on the forum's file store: the last part of the address is the SHA-1 of the file, so it cannot change under the pin. 'topic_url' is the post, 'author' its poster and 'licence' what the post states (the Play Raw template, 'Creative Commons, By-Attribution, Share-Alike', gives no version number). Entries were resolved on 2026-10-24 from the topic's JSON; each file's size and SHA-1 matched the copy that was measured. Evaluation only: fetched on demand, never committed, never redistributed. The scales take only numbers from the files (the white-balance presets the camera wrote), docs/14 rule 8.",
+  "hosts": [
+    "pixls-discuss.s3.dualstack.us-east-1.amazonaws.com"
+  ],
+  "files": [
+    {
+      "name": "59278_DSC05638.ARW",
+      "model": "DSC-RX100",
+      "size": 20535296,
+      "sha256": "217c2d6c2fe4e522831114812448d94dc409f34cefb707911d43b14bec356b2f",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/7/3/73a7738c729431a5abb84648b86498a76c826a27.ARW",
+      "topic_url": "https://discuss.pixls.us/t/59278",
+      "author": "jufn",
+      "licence": "Public Domain"
+    },
+    {
+      "name": "16238_DSC00416.ARW",
+      "model": "DSC-RX100M2",
+      "size": 20904960,
+      "sha256": "70e8f84231c119daeccb37ce7deb86292bced8f7bfa89183e3e13d8763366236",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/7/8/78463837c106eab304b4c9df534ed438e35d783d.ARW",
+      "topic_url": "https://discuss.pixls.us/t/16238",
+      "author": "srgmro",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "57817_DSC01318.ARW",
+      "model": "DSC-RX100M7",
+      "size": 20935680,
+      "sha256": "0356b7c3889c62abf64fbb1b9792865f5d92ab52baaaf3275ee7e568ede59ecc",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/6/f/6f1e071b6d2f59b63c343d204b22f1b0e0a5ce02.ARW",
+      "topic_url": "https://discuss.pixls.us/t/57817",
+      "author": "Klogg",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "47934_DSC00947.ARW",
+      "model": "DSC-RX10M4",
+      "size": 21066752,
+      "sha256": "0ad1087f3284d17ea81c284f3f359aba46c629094b63ffb2ad89fe42cb9c6c0b",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/0/e/0eea3e629ce7c46fcec30355f0956f5a5c173a90.ARW",
+      "topic_url": "https://discuss.pixls.us/t/47934",
+      "author": "FinDale",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "60282_DSC00636.ARW",
+      "model": "ILCE-1",
+      "size": 56238080,
+      "sha256": "3ad41be5de8eafddf22dd9a93067bd742ac0cbc0e55f6cb7d5a9cbcdf36abc48",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/1/0/1026834290dd5f275581873e8001ef473b832171.ARW",
+      "topic_url": "https://discuss.pixls.us/t/60282",
+      "author": "Pberg",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "50585_DSC02988.ARW",
+      "model": "ILCE-6700",
+      "size": 27803648,
+      "sha256": "ad26580c96a9cf7bb0d3301b57082bb1ed4b806a2b8290295d8e35cd3b8f8e6b",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/1/0/10581a4f1b8a2745f98ec7a2907eb1a557e84414.ARW",
+      "topic_url": "https://discuss.pixls.us/t/50585",
+      "author": "Dmitry",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "27308_DSC08793.ARW",
+      "model": "ILCE-7",
+      "size": 24871786,
+      "sha256": "e243ed75678fa2a80f6f3945fddd872bf08bd63de0c359d32e25d28c614270fa",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/8/4/847916caabad8ff972d2d4f48c7318fe36313d4b.ARW",
+      "topic_url": "https://discuss.pixls.us/t/27308",
+      "author": "ilia3101",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "27998_DSC00319.ARW",
+      "model": "ILCE-7",
+      "size": 25034752,
+      "sha256": "93e4a728464868a0237831faf41eacd65499626085faabaefcaa6151feac156f",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/a/8/a8788dd48d51c817ed6b8149186c7ee3e521a68b.ARW",
+      "topic_url": "https://discuss.pixls.us/t/27998",
+      "author": "ilia3101",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "28105_DSC09372.ARW",
+      "model": "ILCE-7",
+      "size": 24805376,
+      "sha256": "a1c35f76d83b6852c98a2a5355d10166940a6ba7d12590f756b5d7c708f84b3c",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/0/6/0653c2162a972245fe1d4033326fbbf67f4ba26e.ARW",
+      "topic_url": "https://discuss.pixls.us/t/28105",
+      "author": "ilia3101",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "35601_DSC09392.ARW",
+      "model": "ILCE-7",
+      "size": 25133056,
+      "sha256": "4ec8a72fe699485673e5299adc7b37f247a2791341c5a93591ffae9109757691",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/2/3/23cfeb8032966ca426052f567f35ee5f2cc59fa3.ARW",
+      "topic_url": "https://discuss.pixls.us/t/35601",
+      "author": "clind",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "60942_DSC00950.ARW",
+      "model": "ILCE-7R",
+      "size": 36667392,
+      "sha256": "91762691cba4b6653848eef8deebf30d956bab9b7c44192272fc008ba9e4b5e4",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/8/4/843cf482973918ba48bef8fe2f036fef87f42dbb.ARW",
+      "topic_url": "https://discuss.pixls.us/t/60942",
+      "author": "AdamFromCanada",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "43248_DSC01025.ARW",
+      "model": "ILCE-7S",
+      "size": 13107200,
+      "sha256": "8f1676b4ed3ba5c76b0bfacb53750c8a7016ed978589433f66bfa62f5ab9d1c3",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/b/2/b2f1dd046f05f63b2f3da63d046abe9175899b49.ARW",
+      "topic_url": "https://discuss.pixls.us/t/43248",
+      "author": "123sg",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "44518_DSC03392.ARW",
+      "model": "NEX-5R",
+      "size": 17104896,
+      "sha256": "dde7a46648aad151e0f1e648842aa826ce8c41ecbd1e763008f28c87499b183b",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/a/c/acd752016278bc367dd132e466834a88b771c702.ARW",
+      "topic_url": "https://discuss.pixls.us/t/44518",
+      "author": "123sg",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "58792_DSC04818.ARW",
+      "model": "NEX-5R",
+      "size": 16711680,
+      "sha256": "834d3ac4a90c1bcf80dc3aacf1bc47acaf9d1cff778735ee755254e645ca63a7",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/f/d/fd51e687534aad0bf95f4ded49f140799402be48.ARW",
+      "topic_url": "https://discuss.pixls.us/t/58792",
+      "author": "123sg",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "51893_DSC03462.ARW",
+      "model": "ZV-E10",
+      "size": 25230080,
+      "sha256": "d047c4807b444bfe210b0c0db9c099b135d3a4d34260bbb871695539606d07bf",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/5/3/533125fc356d55da57888db5b62214e2425339d3.ARW",
+      "topic_url": "https://discuss.pixls.us/t/51893",
+      "author": "pu.photograph",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "54329_DSC04704.ARW",
+      "model": "ZV-E10",
+      "size": 24951552,
+      "sha256": "dd5c2d43dda3aca84db1420e9ad403904d737e498e45da6f7904487d45839044",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/6/c/6cbb538ccddc30e543484ec8ee5f2d09d5e90b63.ARW",
+      "topic_url": "https://discuss.pixls.us/t/54329",
+      "author": "pu.photograph",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    },
+    {
+      "name": "54881_DSC05065.ARW",
+      "model": "ZV-E10",
+      "size": 24890112,
+      "sha256": "0a0775e6f803329341b954fd4d0ed08d6cc71b3b226c34d0218865761e31f0d8",
+      "url": "https://pixls-discuss.s3.dualstack.us-east-1.amazonaws.com/original/3X/1/9/19c002a78c52f565a19cd2e86ec42667b070a221.ARW",
+      "topic_url": "https://discuss.pixls.us/t/54881",
+      "author": "pu.photograph",
+      "licence": "Creative Commons, By-Attribution, Share-Alike"
+    }
+  ]
+}

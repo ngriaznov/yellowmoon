@@ -26,6 +26,14 @@ Next to the CC0 corpus and the golden tiers sits **local-eval**: nine real Sony 
 - **Use:** decoder and pipeline smoke tests that skip without them (`crates/ym-core/tests/real_files.rs`, `render_real.rs`, `export_real.rs`, `tools/dngfit/tests/real_files.rs`, `training/illum/smoke_real.py`), the auto-exposure study (`tools/eval`) and visual checks. **No gate depends on them**; results are reported as "local, not corpus data" and do not close a corpus gate.
 - **Names:** the link names are the ones the local tests read. The two immich files carry the raw variant in the name (`ILCE-6300_craw.ARW`, `ILCE-7M2_unc14.ARW`), the others the model from the file's own Model tag.
 
+### The white-scale photos (Play Raw)
+
+The white scales of the stand-in bodies (`docs/03`, *White scale of stand-in bodies*) are fitted on the white-balance presets that real files carry. Three sets feed them: the owner's A1 photos (`tools/fetch/owner-photos.sh`), the local-eval files above, and **17 Play Raw files** of discuss.pixls.us that `tools/fetch/white-scale-photos.sh` fetches into `testdata/white-scale/play-raw/` (`tools/fetch/white-scale-photos.json` pins name, size, SHA-256, download address, post, poster and licence of each).
+
+- **Licence:** the posts state "Creative Commons, By-Attribution, Share-Alike" (the Play Raw template, no version number) or, for one file, "Public Domain". Files whose post states no licence, or a NonCommercial one, are not in the table.
+- **Class:** CI cache would be allowed for CC BY-SA files (`docs/test-photo-sources.md`, tier 2), but nothing here is a gate or runs in CI: the fit is run by hand (`python3 -m training.white_scale.fit --check`) and its tests skip without the files. The files are never committed, shipped or redistributed; the scales take only the numbers the camera wrote (`docs/14` rule 8).
+- **Reach:** `discuss.pixls.us` and its file store (`pixls-discuss.s3.dualstack.us-east-1.amazonaws.com`) answered from the sandbox on 2026-10-24; two files were downloaded and matched their SHA-256.
+
 ## What the build sandbox can reach
 
 Reachability is probed with `curl` from the container the coding agents work in; re-probe before relying on a row, because the proxy policy changes. GitHub Actions runners and ordinary developer machines are assumed to have open internet, so every script below is meant to run there; the scripts fail with a clear message and exit code 4 when a host refuses (`tools/fetch/README.md`).

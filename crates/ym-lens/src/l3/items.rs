@@ -1022,11 +1022,10 @@ impl GhostLayer {
                 let (r0, r1) = (k * grid.nx, (k + 1) * grid.nx);
                 for (c, (j, tx)) in cols.iter().enumerate() {
                     let at = |r: usize, d: usize, ch: usize| grid.data[r + j + d][ch];
-                    let px = &mut acc[row + c];
-                    for ch in 0..3 {
+                    for (ch, v) in acc[row + c].iter_mut().enumerate() {
                         let top = at(r0, 0, ch) + tx * (at(r0, 1, ch) - at(r0, 0, ch));
                         let bot = at(r1, 0, ch) + tx * (at(r1, 1, ch) - at(r1, 0, ch));
-                        px[ch] += top + ty * (bot - top);
+                        *v += top + ty * (bot - top);
                     }
                 }
             }

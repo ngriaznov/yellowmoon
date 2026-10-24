@@ -199,6 +199,10 @@ pub const IDENTITY_WHITE_SCALE: [f64; 3] = [1.0, 1.0, 1.0];
 /// differ from one another's curves by tens of percent, not by a factor of four.
 pub const WHITE_SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.25..=4.0;
 
+/// The most, in percent, that the files a `presets` scale was fitted on may differ from one another in red or blue:
+/// each file's own scale lies within this of the median of the files (`docs/03`, consistency of a body's files).
+pub const WHITE_SCALE_FILE_AGREEMENT_PERCENT: f64 = 1.0;
+
 fn identity_white_scale() -> [f64; 3] {
     IDENTITY_WHITE_SCALE
 }
@@ -219,11 +223,38 @@ pub enum WhiteScaleKind {
     None,
 }
 
-/// The fit of a `presets` white scale against both references (`docs/03`).
+/// The set a file of a `presets` white scale comes from; each has a fetch script that reproduces it
+/// (`docs/03`, Provenance per body).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PhotoSet {
+    /// The owner's A1 photos (`tools/fetch/owner-photos.sh`).
+    OwnerPhotos,
+    /// The local-eval files (`tools/fetch/real-eval.sh`).
+    RealEval,
+    /// Play Raw files of discuss.pixls.us (`tools/fetch/white-scale-photos.sh`).
+    PlayRaw,
+}
+
+/// One file a `presets` white scale was fitted on: its name, its SHA-256 and the set it comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WhiteScaleFile {
+    /// The file name (`A1M01454.ARW`).
+    pub name: String,
+    /// SHA-256 of the file, 64 lower-case hex digits.
+    pub sha256: String,
+    /// The set (and so the fetch script) the file comes from.
+    pub set: PhotoSet,
+}
+
+/// The fit of a `presets` white scale against the presets of its files, and against the published colour
+/// matrix where the body has one (`docs/03`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WhiteScaleResidual {
-    /// Mean angle between the five Kelvin presets and the locus white at their labels, degrees, with no scale.
+    /// Mean angle between the five Kelvin presets and the locus white at their labels, degrees, with no scale
+    /// (the mean over the files kept).
     pub mean_preset_angle_before_deg: f64,
     /// The same with the scale applied.
     pub mean_preset_angle_after_deg: f64,
@@ -231,12 +262,19 @@ pub struct WhiteScaleResidual {
     pub daylight_k_before: f64,
     /// The same with the scale applied.
     pub daylight_k_after: f64,
-    /// The scale the body's published colour matrix at D65 would give: `[r, 1, b]`.
-    pub matrix_scale: [f64; 3],
+    /// The largest distance, in percent, of a kept file's own scale from the median of the kept files, in red
+    /// and in blue; at most [`WHITE_SCALE_FILE_AGREEMENT_PERCENT`].
+    pub file_spread_percent: [f64; 2],
+    /// The scale the body's published colour matrix at D65 would give: `[r, 1, b]`. Absent, with the next two
+    /// fields, for a body that has no published matrix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix_scale: Option<[f64; 3]>,
     /// The mean preset angle with the matrix scale applied, degrees.
-    pub matrix_mean_preset_angle_deg: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix_mean_preset_angle_deg: Option<f64>,
     /// The Daylight preset's reading with the matrix scale applied, kelvin.
-    pub matrix_daylight_k: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix_daylight_k: Option<f64>,
 }
 
 /// Where a body's white scale comes from.
@@ -245,8 +283,8 @@ pub struct WhiteScaleResidual {
 pub struct WhiteScaleSource {
     /// How it was found.
     pub kind: WhiteScaleKind,
-    /// The files whose presets it was fitted on (names), for `presets`; empty otherwise.
-    pub files: Vec<String>,
+    /// The files whose presets it was fitted on, for `presets`; empty otherwise.
+    pub files: Vec<WhiteScaleFile>,
     /// The fit's residuals, for `presets`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub residual: Option<WhiteScaleResidual>,
@@ -412,6 +450,45 @@ impl Body {
         }
         if (source.kind == WhiteScaleKind::Presets) == source.files.is_empty() {
             return Err(bad("files are named for kind presets, and only for it"));
+        }
+        for (i, file) in source.files.iter().enumerate() {
+            let hex = file.sha256.len() == 64
+                && file
+                    .sha256
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c));
+            if !hex {
+                return Err(bad(&format!(
+                    "{}: the SHA-256 is not 64 lower-case hex digits",
+                    file.name
+                )));
+            }
+            if !file.name.to_ascii_uppercase().ends_with(".ARW") || file.name.contains('/') {
+                return Err(bad(&format!("{}: not a plain ARW file name", file.name)));
+            }
+            if source.files[..i].iter().any(|o| o.name == file.name) {
+                return Err(bad(&format!("{} is listed twice", file.name)));
+            }
+        }
+        if let Some(res) = &source.residual {
+            let [sr, sb] = res.file_spread_percent;
+            if !(0.0..=WHITE_SCALE_FILE_AGREEMENT_PERCENT).contains(&sr)
+                || !(0.0..=WHITE_SCALE_FILE_AGREEMENT_PERCENT).contains(&sb)
+            {
+                return Err(bad(&format!(
+                    "the files disagree: {sr} % and {sb} % from their median against a limit of {WHITE_SCALE_FILE_AGREEMENT_PERCENT} %"
+                )));
+            }
+            let matrix = [
+                res.matrix_scale.is_some(),
+                res.matrix_mean_preset_angle_deg.is_some(),
+                res.matrix_daylight_k.is_some(),
+            ];
+            if matrix.iter().any(|m| *m) && !matrix.iter().all(|m| *m) {
+                return Err(bad(
+                    "the matrix reference is all or nothing: matrix_scale, its angle and its Daylight reading",
+                ));
+            }
         }
         Ok(())
     }
@@ -895,17 +972,26 @@ mod tests {
         }
     }
 
+    fn file(name: &str) -> WhiteScaleFile {
+        WhiteScaleFile {
+            name: name.to_string(),
+            sha256: "ab".repeat(32),
+            set: PhotoSet::PlayRaw,
+        }
+    }
+
     fn presets_source() -> WhiteScaleSource {
         WhiteScaleSource {
-            files: vec!["a.ARW".to_string()],
+            files: vec![file("a.ARW")],
             residual: Some(WhiteScaleResidual {
                 mean_preset_angle_before_deg: 3.0,
                 mean_preset_angle_after_deg: 0.5,
                 daylight_k_before: 4400.0,
                 daylight_k_after: 5200.0,
-                matrix_scale: [0.9, 1.0, 1.0],
-                matrix_mean_preset_angle_deg: 2.0,
-                matrix_daylight_k: 4700.0,
+                file_spread_percent: [0.4, 0.0],
+                matrix_scale: Some([0.9, 1.0, 1.0]),
+                matrix_mean_preset_angle_deg: Some(2.0),
+                matrix_daylight_k: Some(4700.0),
             }),
             ..source(WhiteScaleKind::Presets)
         }
@@ -956,10 +1042,56 @@ mod tests {
         assert!(refused(&bad));
         let mut bad = r.clone();
         bad.bodies[3].white_scale_source = Some(WhiteScaleSource {
-            files: vec!["a.ARW".to_string()],
+            files: vec![file("a.ARW")],
             ..source(WhiteScaleKind::Sibling)
         });
         assert!(refused(&bad));
+        // The files are pinned and agree: a bad hash, a name that is not an ARW, a repeated name, a spread over the
+        // limit, a half-given matrix reference are all refused; no matrix at all is fine.
+        let with_files = |files: Vec<WhiteScaleFile>| WhiteScaleSource {
+            files,
+            ..presets_source()
+        };
+        for files in [
+            vec![WhiteScaleFile {
+                sha256: "AB".repeat(32),
+                ..file("a.ARW")
+            }],
+            vec![WhiteScaleFile {
+                sha256: "ab".repeat(31),
+                ..file("a.ARW")
+            }],
+            vec![file("a.jpg")],
+            vec![file("../a.ARW")],
+            vec![file("a.ARW"), file("a.ARW")],
+        ] {
+            let mut bad = r.clone();
+            bad.bodies[3].white_scale_source = Some(with_files(files.clone()));
+            assert!(refused(&bad), "{files:?}");
+        }
+        let mut two = r.clone();
+        two.bodies[3].white_scale_source = Some(with_files(vec![file("a.ARW"), file("b.ARW")]));
+        two.validate().unwrap();
+        for spread in [[1.01, 0.0], [0.0, 1.5], [-0.1, 0.0]] {
+            let mut bad = r.clone();
+            let mut src = presets_source();
+            src.residual.as_mut().unwrap().file_spread_percent = spread;
+            bad.bodies[3].white_scale_source = Some(src);
+            assert!(refused(&bad), "{spread:?}");
+        }
+        let mut bad = r.clone();
+        let mut src = presets_source();
+        src.residual.as_mut().unwrap().matrix_daylight_k = None;
+        bad.bodies[3].white_scale_source = Some(src);
+        assert!(refused(&bad));
+        let mut ok = r.clone();
+        let mut src = presets_source();
+        let res = src.residual.as_mut().unwrap();
+        res.matrix_scale = None;
+        res.matrix_mean_preset_angle_deg = None;
+        res.matrix_daylight_k = None;
+        ok.bodies[3].white_scale_source = Some(src);
+        ok.validate().unwrap();
         // A sibling takes a scale and says so.
         let mut ok = r.clone();
         ok.bodies[3].white_scale_source = Some(source(WhiteScaleKind::Sibling));

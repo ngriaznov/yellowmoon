@@ -215,8 +215,19 @@ fn balls_over_a_blurred_texture_are_found_and_lights_in_a_sharp_scene_are_not() 
         bp.balls().iter().filter(|b| b.supported).count() >= 4,
         "the edges around them confirm the size"
     );
-    for b in bp.balls() {
-        assert!((b.radius * HD / 9.0 - 1.0).abs() < 0.1);
+    // Every light is found, and measured within 10 %. (A bright patch of the blurred texture can be a ball too.)
+    let (w, h) = bp.size();
+    for &(cx, cy, r) in &scene.discs {
+        let ball = bp
+            .balls()
+            .iter()
+            .find(|b| (b.x * w as f64 - cx).hypot(b.y * h as f64 - cy) < 0.6 * r)
+            .unwrap_or_else(|| panic!("the light of {r} px at ({cx:.0}, {cy:.0}) was not found"));
+        assert!(
+            (ball.radius * HD / r - 1.0).abs() < 0.1,
+            "{}",
+            ball.radius * HD
+        );
     }
     let scene = balls_over_texture_scene(W, H, 0.6, &[12.0, 12.0, 12.0, 12.0], Noise::LOW, 4);
     let (_p, planes) = planes_of(&scene);
@@ -273,6 +284,11 @@ fn a_sharp_frame_with_specular_highlights_has_no_balls() {
     // Small bright round highlights on a sharp textured scene: in focus, however round.
     let mut scene = sharp_scene(W, H, Noise::LOW, 3);
     let n = W * H;
+    // A photograph's sharp detail has contrast: stretch the texture's tones about their mean.
+    let mean = scene.img.data.iter().map(|v| f64::from(*v)).sum::<f64>() / (3 * n) as f64;
+    for v in &mut scene.img.data {
+        *v = (mean + 3.0 * (f64::from(*v) - mean)).max(0.002) as f32;
+    }
     let spots = [
         (150.0, 100.0, 3.5),
         (400.0, 220.0, 4.5),

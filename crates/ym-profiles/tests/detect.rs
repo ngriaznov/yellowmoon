@@ -16,7 +16,7 @@ use ym_profiles::registry::BodyMatch;
 fn every_body_of_the_registry_is_detected_by_its_model_id() {
     let s = store();
     let table = docs_table();
-    assert_eq!(table.len(), 28);
+    assert_eq!(table.len(), 43);
     for b in &s.registry().bodies {
         // Whatever Model string the file carries, the ID decides.
         for model in [b.model.as_str(), "", "garbage"] {

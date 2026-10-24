@@ -24,7 +24,7 @@ use crate::error::LensError;
 use crate::image::ImageRef;
 
 use super::balls::{BallInput, BallPx, find_balls};
-use super::disc::{LEVELS, PAIRS, RadiusEstimate, level_sigma, radius_from_ratio};
+use super::disc::{LEVELS, PAIRS, level_sigma, radius_from_ratio};
 use super::ladder::{blur_wide, gradient_at, gradient_magnitude, quantile};
 use super::spread::{GuidePyramid, spread};
 
@@ -47,13 +47,6 @@ const EDGE_KAPPA: f64 = 5.0;
 const EDGE_ABS_MIN: f64 = 0.002;
 /// Relative error of a ratio that no noise explains (the step-edge model against real edges).
 const MODEL_ERR: f64 = 0.05;
-/// A gradient ratio of the coarsest pair above this (and at or below the table's last entry) is an edge wider
-/// than the table; it reads as `b_cap`.
-const WIDE_RHO_MIN: f64 = 0.9;
-/// A reading of the coarsest pair from this fraction of `b_cap` up is taken as `b_cap`.
-const WIDE_FROM: f64 = 1.0;
-/// Sensitivity assumed for such a reading (it is a bound, not a measure).
-const WIDE_SENSITIVITY: f64 = 3.0;
 /// A reading whose log radius has this variance has weight 1.
 const WEIGHT_REF_VAR: f64 = 0.04;
 /// Readings lighter than this are dropped.
@@ -72,7 +65,7 @@ const CONFIDENCE_MIN: f64 = 0.3;
 const ANCHOR_RADIUS: f64 = 0.05;
 const ANCHOR_WEIGHT: f64 = 2.0;
 /// The ball footprint that carries the ball's radius into the map, in radii.
-const BALL_FOOTPRINT: f64 = 2.6;
+const BALL_FOOTPRINT: f64 = 2.2;
 /// Total evidence weight a ball adds, spread over its disc and ring.
 const BALL_WEIGHT: f64 = 30.0;
 /// A sharp edge flags the places around it when its gradient is this many noise units.
@@ -243,7 +236,6 @@ fn edge_samples(
     h: usize,
     noise_v: f64,
     r_min_px: f64,
-    r_wide_px: f64,
     cancel: &dyn Fn() -> bool,
 ) -> Result<(Vec<Sample>, Vec<bool>), LensError> {
     let mut samples = Vec::new();
@@ -311,29 +303,9 @@ fn edge_samples(
                     }
                     let gkn = normalised(gk_peak, lk[at_peak], floor);
                     let rho = f64::from(g) / f64::from(gk_peak);
-                    let mut est = match radius_from_ratio(pair, rho) {
-                        Some(e) => e,
-                        // An edge the coarsest pair cannot resolve is wider than the table.
-                        None if pair == PAIRS.len() - 1
-                            && rho.is_finite()
-                            && rho > WIDE_RHO_MIN =>
-                        {
-                            RadiusEstimate {
-                                r: r_wide_px,
-                                sensitivity: WIDE_SENSITIVITY,
-                            }
-                        }
-                        None => continue,
+                    let Some(est) = radius_from_ratio(pair, rho) else {
+                        continue;
                     };
-                    // A wide edge is blurred at least as much as the stretch ever uses (`r_wide_px`), which is
-                    // all the map needs of it: the pair's ratio there is too flat to give more, and its
-                    // sensitivity would give the reading no weight at all.
-                    if pair == PAIRS.len() - 1 && est.r >= WIDE_FROM * r_wide_px {
-                        est = RadiusEstimate {
-                            r: r_wide_px,
-                            sensitivity: est.sensitivity.min(WIDE_SENSITIVITY),
-                        };
-                    }
                     let eps2 = (nj / gn).powi(2) + (nk / gkn).powi(2) + MODEL_ERR * MODEL_ERR;
                     let var = est.sensitivity * est.sensitivity * eps2;
                     let weight = (WEIGHT_REF_VAR / var).min(1.0);
@@ -479,8 +451,7 @@ pub(super) fn detect(
     }
 
     // 1. Edge readings.
-    let (mut samples, mut sharp) =
-        edge_samples(&ladder, w, h, noise_v, r_min_px, B_CAP * hd, cancel)?;
+    let (mut samples, mut sharp) = edge_samples(&ladder, w, h, noise_v, r_min_px, cancel)?;
     drop(ladder);
     let measured_edges = samples.iter().filter(|s| s.w >= 0.1).count();
 
@@ -659,8 +630,11 @@ pub(super) fn detect(
                     continue;
                 }
                 let in_disc = d <= ball.r_out;
-                let sharp_here = forced[i] || (f64::from(conf[i]) >= 0.5 && r_est[i] < r_min_px);
-                if !in_disc && sharp_here {
+                let sharp_here =
+                    forced[i] || (f64::from(conf[i]) >= 0.3 && r_est[i] < 0.5 * ball.r);
+                // Outside the disc the ball only fills in what the map does not know: a place with a reading of its
+                // own (sharp or blurred) keeps it.
+                if !in_disc && (sharp_here || f64::from(conf[i]) >= CONFIDENCE_MIN) {
                     continue;
                 }
                 let nd = d / ball.r;

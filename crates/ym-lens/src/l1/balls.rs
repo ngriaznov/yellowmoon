@@ -103,7 +103,7 @@ const R_MIN_PX: f64 = 3.2;
 const R_MIN_HD: f64 = 0.0025;
 /// A ball with no edges around it (flat ground) must be at least this large, in pixels of the working grid: a
 /// smaller light is more likely a point light in focus.
-const UNSUPPORTED_R_MIN_PX: f64 = 4.0;
+const UNSUPPORTED_R_MIN_PX: f64 = 6.0;
 /// Plateau over ground in square-root units (the brightest channel).
 const MIN_CONTRAST: f64 = 0.12;
 /// A ball whose rim is wider than this fraction of its radius is a smooth blob, not a ball.
@@ -115,7 +115,7 @@ const SOFT_CONTRAST: f64 = 0.3;
 const RING_CALM: f64 = 0.5;
 const RING_PERCENTILE: f64 = 0.95;
 /// Plateau over ground in light.
-const MIN_RATIO: f64 = 2.0;
+const MIN_RATIO: f64 = 2.5;
 /// Plateau over ground, in units of the plateau's noise.
 const MIN_SN: f64 = 6.0;
 /// The level of the ball's region, as a fraction of the way from the ground to the plateau.
@@ -631,12 +631,13 @@ pub(super) fn find_balls(
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<BallPx>, LensError> {
     let (w, h) = (inp.w, inp.h);
-    if w < 16 || h < 16 {
+    if w < 16 || h < 16 || std::env::var_os("YM_NO_BALLS").is_some() {
         return Ok(Vec::new());
     }
     if std::env::var_os("YM_BALL_DEBUG").is_some() {
         eprintln!(
-            "SHARP total {:.4} fine {:.4} (of {} px)",
+            "SHARP noise_v {:.4} total {:.4} fine {:.4} (of {} px)",
+            inp.noise_v,
             inp.sharp.iter().filter(|b| **b).count() as f64 / (w * h) as f64,
             inp.ev_fine.iter().filter(|v| **v >= 0.05).count() as f64 / (w * h) as f64,
             w * h
@@ -832,6 +833,12 @@ pub(super) fn find_balls(
         });
         for e in &mut energy {
             *e = e.max(0.0);
+        }
+        if std::env::var_os("YM_BALL_DEBUG").is_some() {
+            eprintln!(
+                "ACCEPT ({:.0},{:.0}) r={:.1} supported={}",
+                b.cx, b.cy, b.r, supported
+            );
         }
         out.push(BallPx {
             cx: b.cx,

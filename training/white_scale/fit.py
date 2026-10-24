@@ -76,8 +76,8 @@ DECIMALS = 4
 DAYLIGHT_WINDOW_K = (5000.0, 5600.0)
 MEAN_ANGLE_LIMIT_DEG = 2.0
 #: Files of one body agree when each file's scale is within this fraction of the median in red and in blue. 1 % in
-#: red or blue is 1.4 to 1.7 mired (40 to 50 K at 5500 K, 0.2 to 0.3 degrees of white), a tenth of the decision
-#: rule's own limits and a fifth of the 30 mired by which Sony's Kelvin labels are off the published curves.
+#: red or blue is 1.4 to 1.7 mired (40 to 50 K at 5500 K, 0.2 to 0.3 degrees of white), against the decision rule's
+#: 2 degrees and 300 K, and a twentieth of the 30 mired by which Sony's Kelvin labels are off the published curves.
 AGREE_LIMIT = 0.01
 #: Files a body needs. One file cannot show whether its presets are consistent (docs/03 says what that costs).
 MIN_FILES = 1
@@ -210,7 +210,7 @@ def deviations(scales: np.ndarray) -> np.ndarray:
 
 @dataclass(frozen=True)
 class Selection:
-    """Which files of a body are kept, and why (``single``, ``agree``, ``outlier`` or ``disagree``)."""
+    """Which files of a body are kept, and why (``single``, ``agree``, ``outlier``; ``disagree`` or ``few``: none)."""
 
     kept: tuple[int, ...]
     excluded: tuple[int, ...]
@@ -223,7 +223,7 @@ def choose(scales: np.ndarray) -> Selection:
     n = len(scales)
     everyone = tuple(range(n))
     if n < MIN_FILES:
-        return Selection((), everyone, "disagree")
+        return Selection((), everyone, "few")
     if n == 1:
         return Selection(everyone, (), "single")
     dev = deviations(scales)
@@ -289,10 +289,14 @@ def within_limits(fit: ref.Fit) -> bool:
 
 def evaluate_body(body: rd.Body, found: list[Found], matrix=None) -> BodyResult:
     """Fit a stand-in body on the files found for it; ``matrix`` is its published D65 matrix (XYZ to camera), if any."""
+    return evaluate_levels(body, [(f, sr2.read_levels(f.path)) for f in sorted(found, key=lambda x: x.pin.name)], matrix)
+
+
+def evaluate_levels(body: rd.Body, items: list[tuple[Found, dict]], matrix=None) -> BodyResult:
+    """The same on files already read: ``(file, white-balance levels)`` pairs."""
     profile = ref.load_profile(body.profile)
     files = []
-    for f in sorted(found, key=lambda x: x.pin.name):
-        levels = sr2.read_levels(f.path)
+    for f, levels in items:
         try:
             scale = ref.fit_presets(profile, levels)
         except ValueError as e:
@@ -302,6 +306,9 @@ def evaluate_body(body: rd.Body, found: list[Found], matrix=None) -> BodyResult:
         files.append(FileFit(f, levels, scale))
     sel = choose(np.array([f.scale for f in files]))
     result = BodyResult(body, profile, files, sel)
+    if sel.verdict == "few":
+        result.problem = f"only {len(files)} file(s), at least {MIN_FILES} needed"
+        return result
     if not sel.kept:
         dev = deviations(np.array([f.scale for f in files]))
         result.problem = (
@@ -336,6 +343,8 @@ def _file_clause(r: BodyResult) -> str:
     if n == 1:
         return "One file: it cannot show whether the body's presets are the same from unit to unit."
     sr, sb = r.spread_percent()
+    if max(sr, sb) == 0.0:
+        return f"{n} files with the same presets."
     return f"{n} files, each within {max(sr, sb):.2f} % of the median scale in red and blue (limit {100 * AGREE_LIMIT:g} %)."
 
 
@@ -356,12 +365,13 @@ def _matrix_clause(r: BodyResult) -> str:
     angle = _mean(f.mean_angle_after_deg for f in r.matrix_fits)
     day = _mean(f.daylight_k_after for f in r.matrix_fits)
     meets = angle <= MEAN_ANGLE_LIMIT_DEG and DAYLIGHT_WINDOW_K[0] <= day <= DAYLIGHT_WINDOW_K[1]
+    limits = (
+        f"the limits of docs/03 (at most {MEAN_ANGLE_LIMIT_DEG:g} degrees, Daylight {DAYLIGHT_WINDOW_K[0]:.0f} to {DAYLIGHT_WINDOW_K[1]:.0f} K)"
+    )
     return (
         " The scale the body's published colour matrix at D65 gives (matrix_scale) leaves a mean preset angle of "
         f"{angle:.2f} degrees and reads the Daylight preset at {day:.0f} K, "
-        + ("within" if meets else "outside")
-        + f" the limits of docs/03 (at most {MEAN_ANGLE_LIMIT_DEG:g} degrees, Daylight {DAYLIGHT_WINDOW_K[0]:.0f} to "
-        f"{DAYLIGHT_WINDOW_K[1]:.0f} K), so the presets set the scale."
+        + (f"within {limits}; the presets still set the scale." if meets else f"outside {limits}, so the presets set the scale.")
     )
 
 
@@ -495,9 +505,16 @@ def fit_all(folders=DEFAULT_FOLDERS) -> dict:
 # ---------------------------------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------------------------------
-def _report_rows(folders) -> list[tuple]:
-    """One row per (Model string, profile) over every ARW of the folders: pinned or not."""
-    matrices = ref.load_matrices()
+def published_matrices_by_model() -> dict[str, np.ndarray]:
+    """The published D65 matrices of ``data/cameras/color-matrices.json`` by Model string (every body that has one)."""
+    doc = json.loads((paths.CAMERAS_DIR / "color-matrices.json").read_text())
+    return {b["model"]: np.array(b["xyz_d65_to_camera"], dtype=float) for b in doc["bodies"]}
+
+
+def report_rows(folders) -> list[tuple[str, str, bool, int, int, BodyResult]]:
+    """``(Model string, profile id, listed in the registry, files, pinned files, fit)`` over every ARW of the folders,
+    pinned or not. A body that is not a stand-in is shown on its own profile and on the default one."""
+    matrices = published_matrices_by_model()
     reg = json.loads(paths.REGISTRY_JSON.read_text())
     by_model = {b["model"]: b for b in reg["bodies"]}
     pinned = {f.path.resolve(): f for f in scan(folders).found}
@@ -505,59 +522,50 @@ def _report_rows(folders) -> list[tuple]:
     for path in arw_files(folders):
         try:
             model = sr2.read_model(path)
-            sr2.read_levels(path)
+            levels = sr2.read_levels(path)
         except (sr2.Sr2Error, OSError, ValueError) as e:
             print(f"skipping {path.name}: {e}", file=sys.stderr)
             continue
-        f = pinned.get(path.resolve()) or Found(Pin("", path.name), path, "")
-        groups.setdefault(model, []).append(f)
+        if "daylight" not in levels or sum(k in levels for k in sr2.KELVIN_PRESETS) < 3:
+            print(f"skipping {path.name}: no white-balance presets", file=sys.stderr)
+            continue
+        groups.setdefault(model, []).append(pinned.get(path.resolve()) or Found(Pin("", path.name), path, ""))
     rows = []
     for model, files in sorted(groups.items()):
-        reg_body = by_model.get(model)
-        own = reg_body["profile"] if reg_body else rd.DEFAULT_PROFILE
-        for pid in [own] if own == rd.DEFAULT_PROFILE else [own, rd.DEFAULT_PROFILE]:
-            stub = rd.Body(reg_body["model_id"] if reg_body else 0, model, reg_body["body"] if reg_body else f"Sony {model}", pid, "default")
-            m = dict(matrices)
-            if reg_body is None:
-                m = {0: None}
-                m.pop(0)
-            rows.append((model, pid, reg_body, files, evaluate_body(stub, files, m)))
+        listed = by_model.get(model)
+        own = listed["profile"] if listed else rd.DEFAULT_PROFILE
+        for pid in dict.fromkeys([own, rd.DEFAULT_PROFILE]):
+            stub = rd.Body(listed["model_id"] if listed else 0, model, listed["body"] if listed else f"Sony {model}", pid, "default")
+            rows.append((model, pid, listed is not None, len(files), sum(1 for f in files if f.pin.set), evaluate_body(stub, files, matrices.get(model))))
     return rows
 
 
 def report(folders) -> None:
-    rows = _report_rows(folders)
     print(
-        f"{'body':12s} {'profile':10s} {'n':>3s} {'pin':>3s} | {'scale r, b':>13s} {'spread r/b %':>13s} {'angle':>11s} {'Day K':>11s} {'limits':6s} {'files':9s} | "
+        f"{'body':12s} {'profile':9s} {'n':>3s} {'pin':>3s} | {'scale r, b':>13s} {'spread r/b %':>12s} {'angle':>10s} {'Daylight K':>12s} {'limits':6s} {'files':8s} | "
         f"{'matrix scale':>13s} {'angle':>5s} {'Day K':>5s}"
     )
-    for model, pid, reg_body, files, r in rows:
-        pinned = sum(1 for f in files if f.pin.set)
-        all_scales = np.array([f.scale for f in r.files])
-        med = np.median(all_scales, axis=0)
-        dev = deviations(all_scales)
-        spread = f"{100 * max(abs(all_scales[:, 0] / med[0] - 1)):4.1f}/{100 * max(abs(all_scales[:, 2] / med[2] - 1)):4.1f}"
-        scale = r.scale or tuple(med)
-        fit = ref.judge(r.profile, r.files[0].levels, scale) if len(r.files) == 1 or r.scale is None else None
-        fits = r.fits or [ref.judge(r.profile, f.levels, scale) for f in r.files]
-        before = _mean(f.mean_angle_before_deg for f in fits)
-        after = _mean(f.mean_angle_after_deg for f in fits)
-        d_before = _mean(f.daylight_k_before for f in fits)
-        d_after = _mean(f.daylight_k_after for f in fits)
-        ok = all(within_limits(f) for f in fits)
-        verdict = {"single": "single", "agree": "agree", "outlier": "outlier", "disagree": "DISAGREE"}[r.selection.verdict]
+    for model, pid, listed, n, n_pinned, r in report_rows(folders):
+        scales = np.array([f.scale for f in r.files])
+        scale = r.scale or _round(np.median(scales, axis=0))
+        shown = r.fits or [ref.judge(r.profile, f.levels, scale) for f in r.files]
+        med = np.median(scales, axis=0)
+        spread = f"{100 * np.max(np.abs(scales[:, 0] / med[0] - 1)):4.1f}/{100 * np.max(np.abs(scales[:, 2] / med[2] - 1)):4.1f}"
+        ok = all(within_limits(f) for f in shown)
         line = (
-            f"{model:12s} {pid[5:]:10s} {len(files):3d} {pinned:3d} | [{scale[0]:.3f},{scale[2]:.3f}] {spread:>13s} "
-            f"{before:5.2f}->{after:4.2f} {d_before:5.0f}->{d_after:5.0f} {'ok' if ok else 'MISS':6s} {verdict:9s} | "
+            f"{model:12s} {pid[5:]:9s} {n:3d} {n_pinned:3d} | [{scale[0]:.3f},{scale[2]:.3f}] {spread:>12s} "
+            f"{_mean(f.mean_angle_before_deg for f in shown):4.2f}->{_mean(f.mean_angle_after_deg for f in shown):4.2f} "
+            f"{_mean(f.daylight_k_before for f in shown):5.0f}->{_mean(f.daylight_k_after for f in shown):5.0f} "
+            f"{'ok' if ok else 'MISS':6s} {r.selection.verdict:8s} | "
         )
-        if r.matrix_scale is not None and r.scale is not None:
+        if r.matrix_scale is not None:
             line += f"[{r.matrix_scale[0]:.3f},{r.matrix_scale[2]:.3f}] {_mean(f.mean_angle_after_deg for f in r.matrix_fits):5.2f} {_mean(f.daylight_k_after for f in r.matrix_fits):5.0f}"
-        elif reg_body is None:
+        elif not listed:
             line += "(body not in the registry)"
         print(line)
-        if r.excluded:
-            print("     left out: " + ", ".join(f"{f.found.pin.name or f.found.path.name} (scale {f.scale[0]:.4f}, {f.scale[2]:.4f})" for f in r.excluded))
-        del fit, dev
+        if r.selection.verdict == "outlier":
+            for f in r.excluded:
+                print(f"      left out: {f.found.pin.name or f.found.path.name} (scale [{f.scale[0]:.4f}, {f.scale[2]:.4f}])")
     print("\nthe published matrix against the curves of the measured bodies (as if each were a stand-in on the A7R IV profile):")
     matrices = ref.load_matrices()
     s_prof = ref.load_profile(rd.DEFAULT_PROFILE)

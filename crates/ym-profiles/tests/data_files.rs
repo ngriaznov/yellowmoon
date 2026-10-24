@@ -13,7 +13,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use ym_profiles::profile::{Profile, ProfileError, Target};
 use ym_profiles::registry::{
-    BodyMatch, IDENTITY_WHITE_SCALE, ProfileStore, Registry, RegistryError, WhiteScaleKind,
+    BodyMatch, IDENTITY_WHITE_SCALE, PhotoSet, ProfileStore, Registry, RegistryError,
+    WHITE_SCALE_FILE_AGREEMENT_PERCENT, WhiteScaleKind,
 };
 
 fn validator(schema_file: &str) -> Validator {
@@ -263,7 +264,7 @@ fn registry_round_trip() {
     let n = ids.len();
     ids.dedup();
     assert_eq!(ids.len(), n, "duplicate model IDs");
-    assert_eq!(n, 28);
+    assert_eq!(n, 43);
     for b in &reg.bodies {
         let hits = reg
             .bodies
@@ -316,15 +317,23 @@ fn registry_round_trip() {
     {
         assert_eq!(b.profile, reg.default_profile, "{}", b.model);
     }
-    // The default bodies of docs/03: the five without a measured sibling, and the A7R V (390) and
-    // A7CR (396), whose same-sensor pairing with the A7R IV failed the ColorMatrix check.
+    // The default bodies of docs/03: the five without a measured sibling, the A7R V (390) and
+    // A7CR (396), whose same-sensor pairing with the A7R IV failed the ColorMatrix check, and the fifteen
+    // older and compact bodies that carry a fitted white scale.
     let defaults: Vec<u16> = reg
         .bodies
         .iter()
         .filter(|b| b.match_kind == BodyMatch::Default)
         .map(|b| b.model_id)
         .collect();
-    assert_eq!(defaults, vec![390, 396, 384, 400, 392, 407, 410]);
+    assert_eq!(
+        defaults,
+        vec![
+            390, 396, 384, 400, 392, 407, 410, // the first seven
+            // registry 1.3.0: the bodies that carry a white scale fitted on their own files
+            306, 311, 318, 313, 394, 382, 288, 296, 289, 261, 274, 297, 308, 374, 365
+        ]
+    );
 }
 
 #[test]
@@ -483,14 +492,19 @@ fn every_same_sensor_pairing_has_a_recorded_check() {
 #[test]
 fn bodies_carry_published_sensor_geometry_with_its_source() {
     // docs/algorithms/03 section 2.2: `sensor_width_mm` and `active_width_px` per body, the source in
-    // the entry. 27 of 28 bodies have them; the FX3 has none (Sony gives its stills only as "12M").
+    // the entry. 27 of 43 bodies have them; the FX3 has none (Sony gives its stills only as "12M") and neither
+    // do the fifteen bodies added in registry 1.3.0, which were added for their white scale (the EXIF crop-factor
+    // fallback applies to them, as it did before they were listed).
     let s = store();
     let reg = s.registry();
+    let without: [u16; 16] = [
+        385, 306, 311, 318, 313, 394, 382, 288, 296, 289, 261, 274, 297, 308, 374, 365,
+    ];
     let mut with = 0;
     for b in &reg.bodies {
         match b.sensor() {
             None => {
-                assert_eq!(b.model, "ILME-FX3");
+                assert!(without.contains(&b.model_id), "{}", b.model);
                 assert!(b.sensor_source.is_none() && b.sensor_source_kind.is_none());
             }
             Some(g) => {
@@ -666,10 +680,10 @@ fn the_registry_schema_and_rules_refuse_broken_sensor_fields() {
 #[test]
 fn white_scales_are_recorded_with_their_source() {
     // docs/03, White scale of stand-in bodies: a body with a profile of its own or of its sensor has [1, 1, 1];
-    // a stand-in body has the scale fitted on the presets of its own files, a sibling's, or [1, 1, 1] with the
-    // statement that nothing was measured. Every body says which.
+    // a stand-in body has the scale fitted on the presets stored in its own files, a sibling's, or [1, 1, 1] with
+    // the statement that nothing was measured. Every body says which.
     let reg = store().registry();
-    let (mut own, mut same, mut none) = (0, 0, 0);
+    let (mut own, mut same, mut none, mut presets) = (0, 0, 0, Vec::new());
     for b in &reg.bodies {
         let src = b
             .white_scale_source
@@ -690,7 +704,8 @@ fn white_scales_are_recorded_with_their_source() {
                 none += 1;
                 assert_eq!(b.white_scale, IDENTITY_WHITE_SCALE, "{}", b.model);
             }
-            (BodyMatch::Default, WhiteScaleKind::Presets | WhiteScaleKind::Sibling) => {}
+            (BodyMatch::Default, WhiteScaleKind::Presets) => presets.push(b.model_id),
+            (BodyMatch::Default, WhiteScaleKind::Sibling) => {}
             (m, k) => panic!("{}: match {m:?} with white scale source {k:?}", b.model),
         }
     }
@@ -699,25 +714,123 @@ fn white_scales_are_recorded_with_their_source() {
         none, 5,
         "the A7R V, A7CR, A9 III, A7 V and A7R VI have no data"
     );
+    // The A1 and the fifteen bodies of registry 1.3.0 are fitted on the presets of their own files. The A6000,
+    // A6300, A6500 and A7 II (files that disagree), the A230 (misses the limits) and every body without a file
+    // have no entry, or `none`.
+    presets.sort_unstable();
+    assert_eq!(
+        presets,
+        [
+            261, 274, 288, 289, 296, 297, 306, 308, 311, 313, 318, 365, 374, 382, 384, 394
+        ]
+    );
+    for id in [312, 357, 360, 340, 265] {
+        assert!(
+            reg.body_by_model_id(id).is_none(),
+            "{id}: not listed, because its files disagree or miss the limits (docs/03)"
+        );
+    }
 
-    // The A1: fitted on the presets stored in the owner's three photos.
+    // Every fitted body meets the rules of docs/03: its files agree, the presets read within 2 degrees of their
+    // labels on average and the Daylight preset between 5000 and 5600 K, and each file is a pinned file.
+    let owner =
+        std::fs::read_to_string(repo_root().join("tools/fetch/owner-photos.sha256")).unwrap();
+    let play_raw = read_json(&repo_root().join("tools/fetch/white-scale-photos.json"));
+    let play_raw = play_raw["files"].as_array().unwrap();
+    for id in &presets {
+        let b = reg.body_by_model_id(*id).unwrap();
+        let src = b.white_scale_source.as_ref().unwrap();
+        let res = src.residual.as_ref().unwrap();
+        let who = &b.model;
+        assert!(
+            res.file_spread_percent
+                .iter()
+                .all(|p| (0.0..=WHITE_SCALE_FILE_AGREEMENT_PERCENT).contains(p)),
+            "{who}: the files agree within 1 %"
+        );
+        assert!(res.mean_preset_angle_after_deg <= 2.0, "{who}");
+        assert!(
+            (5000.0..=5600.0).contains(&res.daylight_k_after),
+            "{who}: Daylight {}",
+            res.daylight_k_after
+        );
+        assert!(!src.files.is_empty(), "{who}");
+        if let Some(m) = res.matrix_scale {
+            assert_eq!(m[1], 1.0, "{who}");
+        }
+        for f in &src.files {
+            let pinned = match f.set {
+                // owner-photos.sha256: "<sha256>  <name>"
+                PhotoSet::OwnerPhotos => owner
+                    .lines()
+                    .any(|l| l == format!("{}  {}", f.sha256, f.name)),
+                PhotoSet::PlayRaw => play_raw.iter().any(|e| {
+                    e["name"] == f.name.as_str()
+                        && e["sha256"] == f.sha256.as_str()
+                        && e["model"] == b.model.as_str()
+                }),
+                // real-eval pins git blob ids (tools/fetch/real_eval.py); the link names are the pinned names.
+                PhotoSet::RealEval => {
+                    let real_eval =
+                        std::fs::read_to_string(repo_root().join("tools/fetch/real_eval.py"))
+                            .unwrap();
+                    real_eval.contains(&format!("\"name\": \"{}\"", f.name))
+                }
+            };
+            assert!(
+                pinned,
+                "{who}: {} is not pinned by its fetch script",
+                f.name
+            );
+        }
+    }
+
+    // The A1: fitted on the presets stored in the owner's three photos; a fourth A1 file (Play Raw) differs by
+    // 6 % in blue and is left out, which the note says.
     let a1 = reg.body_by_model_id(384).unwrap();
     let src = a1.white_scale_source.as_ref().unwrap();
     assert_eq!(src.kind, WhiteScaleKind::Presets);
-    let mut files = src.files.clone();
-    files.sort();
+    let mut files: Vec<&str> = src.files.iter().map(|f| f.name.as_str()).collect();
+    files.sort_unstable();
     assert_eq!(files, ["A1M01454.ARW", "A1M01739.ARW", "A1M01749.ARW"]);
+    assert!(src.files.iter().all(|f| f.set == PhotoSet::OwnerPhotos));
+    assert!(src.note.contains("60282_DSC00636.ARW") && src.note.contains("outlier"));
     let [r, g, b] = a1.white_scale;
     assert!((0.80..0.95).contains(&r) && g == 1.0 && (1.0..1.2).contains(&b));
     // The limits of docs/03: the presets read within 2 degrees of their labels on average and the Daylight preset
     // reads between 5000 and 5600 K; the matrix reference does not do either, which is why it did not decide.
     let res = src.residual.as_ref().unwrap();
     assert!(res.mean_preset_angle_before_deg > 2.0 * res.mean_preset_angle_after_deg);
-    assert!(res.mean_preset_angle_after_deg <= 2.0);
-    assert!((5000.0..=5600.0).contains(&res.daylight_k_after));
     assert!(res.daylight_k_before < 4600.0);
-    assert!(res.matrix_mean_preset_angle_deg > 2.0 || res.matrix_daylight_k < 5000.0);
-    assert_eq!(res.matrix_scale[1], 1.0);
+    assert!(
+        res.matrix_mean_preset_angle_deg.unwrap() > 2.0 || res.matrix_daylight_k.unwrap() < 5000.0
+    );
+    assert_eq!(res.matrix_scale.unwrap()[1], 1.0);
+
+    // Six fitted bodies have no published colour matrix, so no matrix reference: the three RX100s, the RX10 IV,
+    // the ZV-E10 and the A6700. The record says so by leaving the three matrix fields out.
+    let mut no_matrix: Vec<u16> = presets
+        .iter()
+        .copied()
+        .filter(|id| {
+            let res = reg
+                .body_by_model_id(*id)
+                .unwrap()
+                .white_scale_source
+                .as_ref()
+                .unwrap()
+                .residual
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                res.matrix_scale.is_some(),
+                res.matrix_daylight_k.is_some() && res.matrix_mean_preset_angle_deg.is_some()
+            );
+            res.matrix_scale.is_none()
+        })
+        .collect();
+    no_matrix.sort_unstable();
+    assert_eq!(no_matrix, [297, 308, 365, 374, 382, 394]);
 
     // The A1 II takes the A1's scale: the published colour matrices of the two are the same.
     let a1m2 = reg.body_by_model_id(400).unwrap();
@@ -879,6 +992,71 @@ fn the_registry_schema_and_rules_refuse_broken_white_scales() {
             }),
         ),
         (
+            "a file given by its name only",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]["files"] = json!(["A1M01454.ARW"]);
+            }),
+        ),
+        (
+            "a file without a SHA-256",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]["files"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("sha256");
+            }),
+        ),
+        (
+            "a SHA-256 that is not one",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]["files"][0]["sha256"] = json!("xyz");
+            }),
+        ),
+        (
+            "a file from a set nobody fetches",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]["files"][0]["set"] = json!("elsewhere");
+            }),
+        ),
+        (
+            "a file that is not an ARW",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]["files"][0]["name"] = json!("A1M01454.jpg");
+            }),
+        ),
+        (
+            "files that disagree by 1.5 %",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]["residual"]["file_spread_percent"] = json!([1.5, 0.0]);
+            }),
+        ),
+        (
+            "no spread recorded",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]["residual"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("file_spread_percent");
+            }),
+        ),
+        (
+            "half a matrix reference",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]["residual"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("matrix_daylight_k");
+            }),
+        ),
+        (
             "an empty note",
             a1,
             Box::new(|b| {
@@ -896,6 +1074,20 @@ fn the_registry_schema_and_rules_refuse_broken_white_scales() {
             "the typed registry accepted: {name}"
         );
     }
+    // A body with no published colour matrix has no matrix reference at all, and that is fine.
+    let mut doc = registry.clone();
+    for key in [
+        "matrix_scale",
+        "matrix_mean_preset_angle_deg",
+        "matrix_daylight_k",
+    ] {
+        doc["bodies"][a1]["white_scale_source"]["residual"]
+            .as_object_mut()
+            .unwrap()
+            .remove(key);
+    }
+    assert!(rv.is_valid(&doc));
+    Registry::parse(&doc.to_string()).unwrap();
     // A registry written before the scale existed (no fields at all) still loads: every body is the identity.
     let mut old = registry.clone();
     for b in old["bodies"].as_array_mut().unwrap() {

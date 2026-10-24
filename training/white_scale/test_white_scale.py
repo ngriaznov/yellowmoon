@@ -3,8 +3,9 @@
 The registry data tests are in ``crates/ym-profiles/tests/data_files.rs`` and the pipeline's in
 ``crates/ym-color/tests/white_scale.rs`` and ``crates/ym-core/tests/white_scale.rs``. This file checks the
 Python side: our own SR2 reader (pad cipher against the vectors of ``crates/ym-raw/src/sr2.rs``, the presets of
-the owner's photos when they are on disk), the two references and the fit on constructed bodies, and that the
-committed ``white_scale.json`` is what ``registry.json`` carries (and, with the owner's photos, what a fresh fit gives).
+the owner's photos when they are on disk), the two references, the consistency rule for a body's files and the fit on
+constructed bodies, the pins of the fetch scripts, and that the committed ``white_scale.json`` is what ``registry.json``
+carries (and, with the pinned files on disk, what a fresh fit gives).
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ from training.white_scale import reference as ref
 from training.white_scale import sr2
 
 PHOTOS = paths.TESTDATA / "readme-photos" / "src"
+#: Folders where the Play Raw files of other work already sit (the fit finds the pinned files by content in any folder).
+EXTRA_FOLDERS = (paths.TESTDATA / "lens-photos", paths.TESTDATA / "cropeval" / "playraw")
 A1_FILES = sorted(PHOTOS.glob("A1M0*.ARW"))
 SYNTHETIC = paths.TESTDATA / "synthetic" / "arw"
 
@@ -161,6 +164,158 @@ class Fit(unittest.TestCase):
         self.assertGreater(ref.matrix_difference(m, n), 0.01)
 
 
+def found(name, sha="0" * 64, set_=fit_mod.PLAY_RAW):
+    return fit_mod.Found(fit_mod.Pin(set_, name), Path(name), sha)
+
+
+#: A stand-in body of the registry (the A7, ILCE-7) and the labels of a camera whose Daylight preset sits at 5300 K.
+BODY = rd.BODY_BY_ID[306]
+LABELS = {**sr2.KELVIN_PRESETS, "daylight": 5300.0}
+
+
+def scales(*pairs):
+    return np.array([[r, 1.0, b] for r, b in pairs])
+
+
+class Consistency(unittest.TestCase):
+    """The rule of docs/03: files agree within 1 % of the median; one outlier may go from three files on."""
+
+    def test_a_single_file_is_kept_because_nothing_disagrees_with_it(self):
+        sel = fit_mod.choose(scales((0.9, 1.1)))
+        self.assertEqual((sel.kept, sel.excluded, sel.verdict), ((0,), (), "single"))
+
+    def test_files_within_one_percent_agree(self):
+        sel = fit_mod.choose(scales((0.900, 1.100), (0.905, 1.104), (0.896, 1.097)))
+        self.assertEqual((sel.kept, sel.excluded, sel.verdict), ((0, 1, 2), (), "agree"))
+
+    def test_two_files_that_disagree_keep_nothing(self):
+        sel = fit_mod.choose(scales((0.90, 1.10), (0.93, 1.10)))
+        self.assertEqual((sel.kept, sel.verdict), ((), "disagree"))
+
+    def test_one_outlier_may_go_from_three_files_on(self):
+        for n in (3, 4, 6):
+            files = [(0.90, 1.10)] * (n - 1) + [(0.95, 1.10)]
+            sel = fit_mod.choose(scales(*files))
+            self.assertEqual((sel.kept, sel.excluded, sel.verdict), (tuple(range(n - 1)), (n - 1,), "outlier"), n)
+
+    def test_the_outlier_is_the_file_farthest_from_the_median_in_red_or_blue(self):
+        sel = fit_mod.choose(scales((0.90, 1.10), (0.90, 1.16), (0.90, 1.10), (0.90, 1.10)))
+        self.assertEqual((sel.excluded, sel.verdict), ((1,), "outlier"))
+
+    def test_two_files_off_is_not_an_outlier(self):
+        sel = fit_mod.choose(scales((0.90, 1.10), (0.90, 1.10), (0.95, 1.10), (0.85, 1.10)))
+        self.assertEqual((sel.kept, sel.verdict), ((), "disagree"))
+        sel = fit_mod.choose(scales((0.90, 1.10), (0.95, 1.10), (1.00, 1.10)))
+        self.assertEqual((sel.kept, sel.verdict), ((), "disagree"))
+
+    def test_the_limit_is_one_percent_in_red_and_in_blue(self):
+        self.assertEqual(fit_mod.AGREE_LIMIT, 0.01)
+        self.assertEqual(fit_mod.choose(scales((1.0, 1.0), (1.005, 1.0), (1.0, 1.005))).verdict, "agree")
+        self.assertEqual(fit_mod.choose(scales((1.0, 1.0), (1.03, 1.0))).verdict, "disagree")
+        self.assertEqual(fit_mod.choose(scales((1.0, 1.0), (1.0, 1.03))).verdict, "disagree")
+
+    def test_one_percent_is_a_small_shift_of_the_reading(self):
+        # The justification in docs/03: 1 % in red or blue moves a Kelvin reading by about 1.4 to 1.7 mired.
+        profile = ref.load_profile(rd.DEFAULT_PROFILE)
+        w = ref.locus_white(profile, 5500.0)
+        base = 1e6 / ref.read_cct(profile, w)
+        for s in ((1.01, 1.0, 1.0), (1.0, 1.0, 1.01)):
+            moved = abs(1e6 / ref.read_cct(profile, ref.scaled(w, s)) - base)
+            self.assertTrue(1.2 < moved < 1.9, moved)
+
+
+class BodyFit(unittest.TestCase):
+    """The fit of one body on constructed files whose presets come from a known scale."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.profile = ref.load_profile(rd.DEFAULT_PROFILE)
+
+    def items(self, *true_scales):
+        return [(found(f"f{i}.ARW"), levels_for(self.profile, s, LABELS)) for i, s in enumerate(true_scales)]
+
+    def test_files_with_one_scale_give_that_scale(self):
+        r = fit_mod.evaluate_levels(BODY, self.items((0.88, 1.0, 0.96), (0.88, 1.0, 0.96)))
+        self.assertEqual(r.problem, "")
+        self.assertEqual(r.selection.verdict, "agree")
+        self.assertAlmostEqual(r.scale[0], 0.88, delta=4e-3)
+        self.assertAlmostEqual(r.scale[2], 0.96, delta=4e-3)
+        self.assertEqual(r.scale[1], 1.0)
+        self.assertEqual(r.spread_percent(), (0.0, 0.0))
+
+    def test_the_scale_is_the_median_of_the_files_kept(self):
+        r = fit_mod.evaluate_levels(BODY, self.items((0.88, 1.0, 0.96), (0.8812, 1.0, 0.9612), (0.8788, 1.0, 0.9588)))
+        self.assertEqual(r.selection.verdict, "agree")
+        per_file = sorted(f.scale[0] for f in r.files)
+        self.assertEqual(r.scale[0], round(per_file[1], fit_mod.DECIMALS))
+
+    def test_an_outlier_is_left_out_named_and_its_file_is_not_in_the_entry(self):
+        r = fit_mod.evaluate_levels(BODY, self.items((0.88, 1.0, 0.96), (0.88, 1.0, 0.96), (0.88, 1.0, 0.96), (0.88, 1.0, 1.01)))
+        self.assertEqual(r.selection.verdict, "outlier")
+        entry = fit_mod.source_entry(r)
+        self.assertEqual([f["name"] for f in entry["source"]["files"]], ["f0.ARW", "f1.ARW", "f2.ARW"])
+        self.assertIn("f3.ARW", entry["source"]["note"])
+        self.assertIn("outlier", entry["source"]["note"])
+
+    def test_files_that_disagree_give_no_scale(self):
+        r = fit_mod.evaluate_levels(BODY, self.items((0.88, 1.0, 0.96), (0.93, 1.0, 0.96)))
+        self.assertIsNone(r.scale)
+        self.assertIn("differ by up to", r.problem)
+
+    def test_a_scale_that_misses_the_limits_is_refused(self):
+        levels = levels_for(self.profile, (0.88, 1.0, 0.96), {**sr2.KELVIN_PRESETS, "daylight": 6800.0})
+        r = fit_mod.evaluate_levels(BODY, [(found("f.ARW"), levels)])
+        self.assertIsNotNone(r.scale)
+        self.assertIn("Daylight preset", r.problem)
+
+    def test_the_entry_has_the_shape_of_the_registry(self):
+        matrix = ref.load_matrices()[375]
+        for m in (None, matrix):
+            r = fit_mod.evaluate_levels(BODY, self.items((0.88, 1.0, 0.96)), m)
+            entry = fit_mod.source_entry(r)
+            src = entry["source"]
+            self.assertEqual(entry["white_scale"], list(r.scale))
+            self.assertEqual(src["kind"], "presets")
+            self.assertEqual(src["files"], [{"name": "f0.ARW", "sha256": "0" * 64, "set": "play-raw"}])
+            res = src["residual"]
+            self.assertEqual(res["file_spread_percent"], [0.0, 0.0])
+            matrix_keys = {"matrix_scale", "matrix_mean_preset_angle_deg", "matrix_daylight_k"}
+            self.assertEqual(matrix_keys <= set(res), m is not None)
+            self.assertEqual(matrix_keys & set(res) in (set(), matrix_keys), True, "all or nothing")
+            self.assertIn("One file", src["note"])
+            self.assertEqual("No published colour matrix" in src["note"], m is None)
+
+
+class Pins(unittest.TestCase):
+    """Every file a shipped scale rests on is pinned by a fetch script of the repository."""
+
+    def test_the_pin_tables_are_read(self):
+        names = {p.name for p in fit_mod.owner_pins()}
+        self.assertEqual(names, {"A1M01454.ARW", "A1M01739.ARW", "A1M01749.ARW"})
+        self.assertTrue({"DSLR-A300.ARW", "DSLR-A500.ARW", "ILCE-5000.ARW", "NEX-5N.ARW", "NEX-7.ARW"} <= {p.name for p in fit_mod.real_eval_pins()})
+        play = fit_mod.play_raw_pins()
+        self.assertEqual(len(play), 17)
+        self.assertEqual(len({p.sha256 for p in play}), 17)
+        self.assertEqual(len({(p.set, p.name) for p in fit_mod.all_pins()}), len(fit_mod.all_pins()))
+
+    def test_every_file_of_the_registry_is_a_pinned_file_of_a_set(self):
+        registry = json.loads(paths.REGISTRY_JSON.read_text())
+        pins = {(p.set, p.name): p for p in fit_mod.all_pins()}
+        used = 0
+        for b in registry["bodies"]:
+            for f in b["white_scale_source"]["files"]:
+                used += 1
+                pin = pins.get((f["set"], f["name"]))
+                self.assertIsNotNone(pin, f"{b['model']}: {f['name']} ({f['set']}) is pinned by no fetch script")
+                if pin.sha256:
+                    self.assertEqual(f["sha256"], pin.sha256, f["name"])
+                if pin.model:
+                    self.assertEqual(pin.model, b["model"], f["name"])
+                self.assertIn(f["set"], fit_mod.SETS)
+        # The A1 (3), the A7 (3), the ZV-E10 (2), the NEX-5R (2) and twelve bodies with one file each.
+        self.assertEqual(used, 22, "the files named by the registry")
+
+
 class Registry(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -208,10 +363,30 @@ class Registry(unittest.TestCase):
             if b["white_scale"] != [1.0, 1.0, 1.0]:
                 self.assertEqual(b["profile"], self.registry["default_profile"], "a scale is fitted to its profile's locus")
 
-    def test_a_fresh_fit_on_the_owners_photos_gives_the_committed_table(self):
-        if not A1_FILES:
-            self.skipTest("the owner's photos are not on disk (tools/fetch/owner-photos.sh)")
-        self.assertEqual(fit_mod.fit_all(PHOTOS), self.table)
+    def test_every_fitted_body_meets_the_rules_of_docs_03(self):
+        lo, hi = fit_mod.DAYLIGHT_WINDOW_K
+        fitted = [b for b in self.registry["bodies"] if b["white_scale_source"]["kind"] == "presets"]
+        self.assertEqual(sorted(b["model_id"] for b in fitted), [261, 274, 288, 289, 296, 297, 306, 308, 311, 313, 318, 365, 374, 382, 384, 394])
+        for b in fitted:
+            src = b["white_scale_source"]
+            res = src["residual"]
+            self.assertLessEqual(max(res["file_spread_percent"]), 100 * fit_mod.AGREE_LIMIT, b["model"])
+            self.assertLessEqual(res["mean_preset_angle_after_deg"], fit_mod.MEAN_ANGLE_LIMIT_DEG, b["model"])
+            self.assertTrue(lo <= res["daylight_k_after"] <= hi, b["model"])
+            self.assertGreaterEqual(len(src["files"]), fit_mod.MIN_FILES)
+            self.assertEqual(b["match"], "default")
+
+    def test_the_bodies_whose_files_disagree_are_not_in_the_registry(self):
+        # The A6000, A6300, A6500 and A7 II (docs/03, Consistency of a body's files) and the A230 (misses the limits).
+        ids = {b["model_id"] for b in self.registry["bodies"]}
+        self.assertFalse(ids & {312, 357, 360, 340, 265})
+
+    def test_a_fresh_fit_on_the_pinned_files_gives_the_committed_table(self):
+        folders = [*fit_mod.DEFAULT_FOLDERS, *EXTRA_FOLDERS]
+        missing = fit_mod.scan(folders).missing()
+        if missing:
+            self.skipTest("pinned files are not on disk: " + ", ".join(p.name for p in missing[:4]) + " ...")
+        self.assertEqual(fit_mod.fit_all(folders), self.table)
 
 
 if __name__ == "__main__":

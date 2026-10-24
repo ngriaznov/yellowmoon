@@ -25,6 +25,15 @@ use ym_core::settings::{LensKind, LensPatch, SettingsPatch};
 use ym_export::{BitDepth, ExportOptions, FormatKind};
 use ym_gpu::device::gpu_required_by_env;
 
+/// The tests of this file run one at a time: they share a software rasteriser on a CI runner, and a lens export is
+/// heavy enough to push the others past the device's hang limit when they run beside it (a render that fell back
+/// to the CPU is a different file).
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Whether the slot holds a device; says so, loudly, when it does not (and fails when the environment
 /// demands one).
 fn slot_has_device(slot: &GpuSlot) -> bool {
@@ -147,6 +156,7 @@ fn assert_same_files(a: &[PathBuf], b: &[PathBuf], what: &str) {
 /// jobs and the tile seams are part of the comparison.
 #[test]
 fn a_jpeg_of_several_tiles_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let _serial = serial();
     let sb = Sandbox::new();
     let arw = sb.arw_sized("big.ARW", 2100, 1100, 9);
     let Some(app) = App::open(&[&arw]) else {
@@ -168,6 +178,7 @@ fn a_jpeg_of_several_tiles_is_byte_identical_through_the_app_path_and_the_binary
 
 #[test]
 fn the_binary_gives_the_same_bytes_twice_and_with_one_and_several_photos_in_flight() {
+    let _serial = serial();
     let sb = Sandbox::new();
     sb.arw_sized("a.ARW", 2100, 1100, 9);
     sb.arw_sized("b.ARW", 1300, 900, 5);
@@ -193,6 +204,7 @@ fn the_binary_gives_the_same_bytes_twice_and_with_one_and_several_photos_in_flig
 /// device and no fall-back note was written.
 #[test]
 fn the_binary_really_renders_the_raw_chain_on_the_device_under_the_on_policy() {
+    let _serial = serial();
     let sb = Sandbox::new();
     let arw = sb.arw_sized("a.ARW", 1300, 900, 5);
     if !device_opens() {
@@ -220,6 +232,7 @@ fn the_binary_really_renders_the_raw_chain_on_the_device_under_the_on_policy() {
 /// A 16-bit TIFF keeps the pixels the JPEG quantises: the two front ends agree on every one.
 #[test]
 fn a_sixteen_bit_tiff_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let _serial = serial();
     let sb = Sandbox::new();
     let arw = sb.arw_sized("big.ARW", 1500, 1100, 3);
     let Some(app) = App::open(&[&arw]) else {
@@ -244,6 +257,7 @@ fn a_sixteen_bit_tiff_is_byte_identical_through_the_app_path_and_the_binary_on_t
 /// two front ends agree on every byte, the XMP, the preview and the 16-bit pixels included.
 #[test]
 fn a_dng_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let _serial = serial();
     let sb = Sandbox::new();
     let arw = sb.arw_sized("big.ARW", 1500, 1100, 3);
     let Some(app) = App::open(&[&arw]) else {
@@ -271,6 +285,7 @@ fn a_dng_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
 /// alone. Nothing of R8 leaks from one into the other (`docs/09`, "What a DNG carries").
 #[test]
 fn a_dng_and_a_tiff_exported_one_after_the_other_on_the_device_do_not_share_r8() {
+    let _serial = serial();
     let sb = Sandbox::new();
     let arw = sb.arw_sized("big.ARW", 1500, 1100, 3);
     let Some(app) = App::open(&[&arw]) else {
@@ -309,6 +324,7 @@ fn a_dng_and_a_tiff_exported_one_after_the_other_on_the_device_do_not_share_r8()
 /// device without a fall-back note, and the lens changed the file.
 #[test]
 fn a_lens_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let _serial = serial();
     let sb = Sandbox::new();
     let arw = sb.arw_sized("big.ARW", 1500, 1100, 3);
     let Some(app) = App::open(&[&arw]) else {
