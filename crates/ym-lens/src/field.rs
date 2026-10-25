@@ -1283,13 +1283,13 @@ mod tests {
                 .collect();
             assert!((tables.centroid[r][1][0] - traced[1][0]).abs() < 1e-12);
             for c in [0, 2] {
-                for axis in 0..2 {
-                    let want =
-                        traced[1][axis] + LATERAL_COLOR_SCALE * (traced[c][axis] - traced[1][axis]);
-                    let got = tables.centroid[r][c][axis];
-                    // The translation splits mass between cells, so the centroid is exact to rounding, but
-                    // for the mass that would leave the table and is kept on its edge (the Classic's tables
-                    // are cut at the widest spread): a few hundredths of a cell.
+                let want: [f64; 2] = std::array::from_fn(|a| {
+                    traced[1][a] + LATERAL_COLOR_SCALE * (traced[c][a] - traced[1][a])
+                });
+                // The translation splits mass between cells, so the centroid is exact to rounding, but
+                // for the mass that would leave the table and is kept on its edge (the Classic's tables
+                // are cut at the widest spread): a few hundredths of a cell.
+                for (axis, (got, want)) in tables.centroid[r][c].iter().zip(want).enumerate() {
                     assert!(
                         (got - want).abs() < 0.05 * cell,
                         "radius {r} channel {c} axis {axis}: {got} against {want}"

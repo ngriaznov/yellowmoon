@@ -1284,44 +1284,52 @@ fn planes_all_blurred(p: &LensPlan, data: &[f32], radius_px: f64) -> LensPlanes 
 
 #[test]
 fn a_small_sharp_thing_in_a_blurred_field_leaves_no_step_around_it() {
-    // A dark 5 x 5 square on a flat field the map calls blurred (12 px, so the lines are 27 px long). The sharp-edge
-    // test flags it, and what it flags holds the stretch back around it: smoothly. The first build set the blur to
-    // 0 on the flagged pixels (the square dilated), so that the lines of the pixels around it changed from nothing
-    // to 27 px across the edge of a 9 x 9 hole, a step of the light the lines pick up of the square.
-    let data = flat_with(0.5, &[(498, 503, 328, 333, 0.05)]);
+    // A dark 5 x 5 square on a field the map calls blurred (12 px, so the lines are 27 px long) with a soft bright
+    // band below it. The sharp-edge test flags the square, and what it flags holds the stretch back around it, and
+    // keeps its pixels out of the lines of the others: smoothly. The first build set the blur to 0 on the flagged
+    // pixels (the square dilated by 2 px), so the lines of the pixels beside the hole, which reach the band, lost
+    // the hole's samples and the lines of the pixels in it did not: a step of the band's light at the edge of a
+    // 9 x 9 hole, and stripes of the width of the hole above and below it.
+    let n = W * H;
+    let mut data = vec![0.0f32; 3 * n];
+    for c in 0..3 {
+        for y in 0..H {
+            let band = 0.6 * (-((y as f64 - 352.0) / 9.0).powi(2) / 2.0).exp();
+            for x in 0..W {
+                data[c * n + y * W + x] = (0.3 + band) as f32;
+            }
+        }
+        for y in 328..333 {
+            for x in 498..503 {
+                data[c * n + y * W + x] = 0.05;
+            }
+        }
+    }
     let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
     let planes = planes_all_blurred(&p, &data, 12.0);
     assert!(planes.bokeh().is_some_and(|b| b.active()));
     let out = reshape_tile(&p, &planes, 1, &data, (W, H), PixelRect::new(0, 0, W, H));
-    // The lines run along y, so the square's light is in the columns it covers: the steps are down those columns,
-    // from the edge of the hole outwards.
-    let (xc, yc) = (500usize, 330usize);
+    // Along rows between the square and the band, across the square's columns: the step from one pixel to the next.
     let mut worst = 0.0f32;
-    for x in xc - 2..=xc + 2 {
-        for y in (yc + 5..yc + 30).chain(yc - 30..yc - 5) {
-            let step = (out[W * H + (y + 1) * W + x] - out[W * H + y * W + x]).abs();
+    for y in [336usize, 340, 344] {
+        for x in 484..516 {
+            let step = (out[n + y * W + x + 1] - out[n + y * W + x]).abs();
+            if step > worst {
+                eprintln!("step {step:.4} at ({x}, {y})");
+            }
             worst = worst.max(step);
         }
     }
-    let moved = out.iter().zip(&data).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-    let bp = planes.bokeh().expect("bokeh");
-    eprintln!(
-        "out {} data {} at (500,340): {} vs {}; moved {moved}, max blur {}, balls {}, nonzero {}",
-        out.len(),
-        data.len(),
-        out[W * H + 340 * W + 500],
-        data[W * H + 340 * W + 500],
-        bp.max_blur(),
-        bp.balls().len(),
-        bp.blur().iter().filter(|b| **b > 0.0).count()
-    );
-    eprintln!(
-        "L1 largest step below a sharp square in a blurred field: {worst:.4}; column {:?}",
-        (yc - 24..yc + 25).step_by(4).map(|y| (out[W * H + y * W + xc] * 1000.0).round()).collect::<Vec<_>>()
-    );
+    for y in [336usize, 344] {
+        eprintln!(
+            "row {y}: {:?}",
+            (484..516).map(|x| (out[n + y * W + x] * 1000.0).round()).collect::<Vec<_>>()
+        );
+    }
+    eprintln!("L1 largest step beside a sharp square in a blurred field: {worst:.4}");
     assert!(worst < 0.012, "the largest step beside the square is {worst:.4}");
     // The square itself is still there: it is sharp, and was not smeared into the field.
-    let centre = out[W * H + yc * W + xc];
+    let centre = out[n + 330 * W + 500];
     assert!(centre < 0.1, "the square's centre is {centre:.3}");
 }
 
