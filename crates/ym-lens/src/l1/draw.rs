@@ -18,7 +18,7 @@
 //!
 //! Everything is a function of the ball and the pixel's absolute position, so tiles agree.
 
-use crate::consts::{BALL_GLOW_FADE, RIM_FADE_RADII, RIM_SAMPLES};
+use crate::consts::{BALL_GLOW_FADE, RIM_FADE_RADII, RIM_SAMPLES, RIM_SOFT_FROM, RIM_SOFT_TO};
 
 use super::Ball;
 
@@ -52,6 +52,9 @@ pub(super) struct Shape {
     pub r_out: f64,
     /// The ball's own radius in pixels.
     pub r_ball: f64,
+    /// How much of the lens's rim profile this ball takes, 0 to 1: all for a crisp disc, none for a soft glow
+    /// ([`RIM_SOFT_FROM`], [`RIM_SOFT_TO`]).
+    pub rim_k: f64,
     /// Half the ball's plateau (linear luminance): a pixel in the ball at least this bright is the ball's own light,
     /// however sharp it reads (a glass ornament's highlight at its centre).
     pub core: f64,
@@ -60,8 +63,9 @@ pub(super) struct Shape {
     /// The ball's plane fit: value at the centre and slopes per pixel, per channel.
     pub fit: [[f64; 3]; 3],
     /// The earlier balls (brighter ones, which own the pixels two discs share) whose disc overlaps this ball's: the
-    /// offset of their centre from this ball's and their disc's radius (0 for an empty place).
-    pub earlier: [(f64, f64, f64); OWNERS],
+    /// offset of their centre from this ball's, their disc's radius (0 for an empty place) and the width of their
+    /// weight's fall ([`Shape::fade`]).
+    pub earlier: [(f64, f64, f64, f64); OWNERS],
 }
 
 /// What one tile pass needs to shape the balls.
@@ -130,13 +134,22 @@ pub(super) fn rim_disc_mean(rim: &[f64]) -> f64 {
 }
 
 /// The factor the lens's rim profile puts on the ball's light at `s` radii from its centre: the profile over its
-/// mean across the ball, fading to 1 over [`RIM_FADE_RADII`] radii beyond its edge.
+/// mean across the ball, fading to 1 over [`RIM_FADE_RADII`] radii beyond its edge, by `strength` (0 to 1: how much
+/// of the profile this ball takes, [`Shape::rim_k`]).
 #[inline]
-pub(super) fn rim_gain(rim: &[f64], mean: f64, s: f64) -> f64 {
-    let g = rim_at(rim, s) / mean;
+pub(super) fn rim_gain(rim: &[f64], mean: f64, s: f64, strength: f64) -> f64 {
+    let g = 1.0 + strength * (rim_at(rim, s) / mean - 1.0);
     let t = ((s - 1.0) / RIM_FADE_RADII).clamp(0.0, 1.0);
     let fade = t * t * (3.0 - 2.0 * t);
     g + fade * (1.0 - g)
+}
+
+/// The share of the lens's rim profile a ball whose rim is `softness` radii wide takes: 1 for a crisp disc, 0 for
+/// a soft glow.
+#[inline]
+pub(super) fn rim_strength(softness: f64) -> f64 {
+    let t = ((softness - RIM_SOFT_FROM) / (RIM_SOFT_TO - RIM_SOFT_FROM)).clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
 }
 
 /// The aspect of a disc blurred along a line of box half-length `sigma e` radii: its second moment over the
@@ -221,6 +234,7 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
         edge,
         r_out,
         r_ball: r_px,
+        rim_k: rim_strength(ball.softness),
         core: 0.5 * ball.peak,
         reach: a + (half_off.0 * half_off.0 + half_off.1 * half_off.1).sqrt() + 0.5 * edge + 1.5,
         fit: [
@@ -228,25 +242,33 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
             fit_px(&ball.fit[1], p.hk),
             fit_px(&ball.fit[2], p.hk),
         ],
-        earlier: [(0.0, 0.0, 0.0); OWNERS],
+        earlier: [(0.0, 0.0, 0.0, 0.0); OWNERS],
     })
 }
 
-/// Fills in which earlier balls overlap each ball's disc (`shapes` in list order): a pixel two discs share belongs
-/// to the earlier one, which is the brighter.
+/// Fills in which earlier balls overlap each ball's disc (`shapes` in list order): the light of a place two discs
+/// share is divided between them by the earlier one's weight (the earlier is the brighter, and keeps the part
+/// nearer its centre).
 pub(super) fn assign_owners(shapes: &mut [Shape]) {
     for i in 0..shapes.len() {
         let mut found = 0;
-        let mut earlier = [(0.0, 0.0, 0.0); OWNERS];
+        let mut earlier = [(0.0, 0.0, 0.0, 0.0); OWNERS];
         for j in 0..i {
             let (dx, dy) = (shapes[j].cx - shapes[i].cx, shapes[j].cy - shapes[i].cy);
             if dx.hypot(dy) < shapes[i].r_out + shapes[j].r_out && found < OWNERS {
-                earlier[found] = (dx, dy, shapes[j].r_out);
+                earlier[found] = (dx, dy, shapes[j].r_out, shapes[j].fade());
                 found += 1;
             }
         }
         shapes[i].earlier = earlier;
     }
+}
+
+/// The smoothstep of `t` between 0 and 1: a weight falling from 1 to 0 as `t` goes from 1 to 0.
+#[inline]
+fn fall(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// A plane fit given per half-diagonal, as value at the centre and slope per pixel.
@@ -266,7 +288,7 @@ pub(super) struct Source {
 
 impl Shape {
     /// The position in the ball that the pixel centre `(px, py)` of the stretched picture reads, or `None` outside the
-    /// ball's disc or in a part of it an earlier ball owns.
+    /// ball's disc or where an earlier ball has all of the light.
     #[inline]
     pub(super) fn source(&self, px: f64, py: f64) -> Option<Source> {
         let (dx, dy) = (px - self.cx, py - self.cy);
@@ -277,15 +299,21 @@ impl Shape {
             return None;
         }
         let (sx, sy) = (u * self.m.0 - v * self.m.1, u * self.m.1 + v * self.m.0);
-        for &(ox, oy, r) in &self.earlier {
-            if r > 0.0 && (sx - ox).hypot(sy - oy) <= r {
-                return None;
+        // The light of a place an earlier ball's disc covers is shared: that ball has its weight there, this one the
+        // rest (no edge where the discs meet, and no light drawn twice).
+        let mut share = alpha;
+        for &(ox, oy, r, fade) in &self.earlier {
+            if r > 0.0 {
+                share *= 1.0 - fall((r + 0.5 - (sx - ox).hypot(sy - oy)) / fade);
             }
+        }
+        if share <= 0.0 {
+            return None;
         }
         Some(Source {
             dx: sx,
             dy: sy,
-            alpha,
+            alpha: share,
         })
     }
 
@@ -293,9 +321,14 @@ impl Shape {
     /// the take-out radius (half a pixel beyond it) over [`BALL_GLOW_FADE`] of the glow's width, at least a pixel.
     #[inline]
     pub(super) fn weight(&self, d: f64) -> f64 {
-        let fade = (BALL_GLOW_FADE * (self.r_out - self.r_ball)).max(1.0) + 0.5;
-        let t = ((self.r_out + 0.5 - d) / fade).clamp(0.0, 1.0);
-        t * t * (3.0 - 2.0 * t)
+        fall((self.r_out + 0.5 - d) / self.fade())
+    }
+
+    /// The width in pixels over which [`Shape::weight`] falls from 1 to 0: [`BALL_GLOW_FADE`] of the glow's width, at
+    /// least a pixel, and half a pixel more.
+    #[inline]
+    pub(super) fn fade(&self) -> f64 {
+        (BALL_GLOW_FADE * (self.r_out - self.r_ball)).max(1.0) + 0.5
     }
 
     /// The ball's plane fit of channel `c` at the offset `(dx, dy)` from its centre, as the take-out reads it.
@@ -362,14 +395,22 @@ mod tests {
     fn a_flat_rim_profile_changes_nothing_and_the_gain_fades_out_beyond_the_edge() {
         let flat = vec![1.0; RIM_SAMPLES];
         for s in [0.0, 0.5, 1.0, 1.2, 2.0] {
-            assert!((rim_gain(&flat, 1.0, s) - 1.0).abs() < 1e-12);
+            assert!((rim_gain(&flat, 1.0, s, 1.0) - 1.0).abs() < 1e-12);
         }
         let mut bright_edge = vec![1.0; RIM_SAMPLES];
         bright_edge[RIM_SAMPLES - 1] = 3.0;
         let mean = rim_disc_mean(&bright_edge);
-        assert!(rim_gain(&bright_edge, mean, 1.0) > 2.5);
-        assert!((rim_gain(&bright_edge, mean, 1.0 + RIM_FADE_RADII) - 1.0).abs() < 1e-12);
-        assert!((rim_gain(&bright_edge, mean, 3.0) - 1.0).abs() < 1e-12);
+        assert!(rim_gain(&bright_edge, mean, 1.0, 1.0) > 2.5);
+        assert!((rim_gain(&bright_edge, mean, 1.0 + RIM_FADE_RADII, 1.0) - 1.0).abs() < 1e-12);
+        assert!((rim_gain(&bright_edge, mean, 3.0, 1.0) - 1.0).abs() < 1e-12);
+        // A soft ball takes none of the profile, a ball in between a part.
+        assert!((rim_gain(&bright_edge, mean, 1.0, 0.0) - 1.0).abs() < 1e-12);
+        let half = rim_gain(&bright_edge, mean, 1.0, 0.5);
+        assert!(half > 1.5 && half < rim_gain(&bright_edge, mean, 1.0, 1.0));
+        assert_eq!(rim_strength(0.0), 1.0);
+        assert_eq!(rim_strength(RIM_SOFT_FROM), 1.0);
+        assert_eq!(rim_strength(RIM_SOFT_TO), 0.0);
+        assert_eq!(rim_strength(1.3), 0.0);
     }
 
     #[test]
@@ -379,7 +420,7 @@ mod tests {
         assert!(tangential_aspect(0.5) > 1.0 && tangential_aspect(0.5) < tangential_aspect(1.0));
     }
 
-    fn patch(f: f64, earlier: [(f64, f64, f64); OWNERS]) -> Shape {
+    fn patch(f: f64, earlier: [(f64, f64, f64, f64); OWNERS]) -> Shape {
         Shape {
             cx: 100.0,
             cy: 100.0,
@@ -392,6 +433,7 @@ mod tests {
             edge: 1.5,
             r_out: 20.0,
             r_ball: 14.0,
+            rim_k: 1.0,
             core: 0.0,
             reach: f * 20.0 + 3.0,
             fit: [[0.0; 3]; 3],
@@ -401,23 +443,47 @@ mod tests {
 
     #[test]
     fn a_pixel_reads_the_ball_where_it_was_before_the_stretch() {
-        // Stretched twice along y: the pixel 30 px above the centre reads the ball 15 px above it, the one across stays.
-        let s = patch(2.0, [(0.0, 0.0, 0.0); OWNERS]);
-        let at = s.source(100.0 + 7.0, 100.0 - 30.0).expect("inside");
-        assert!((at.dx - 7.0).abs() < 1e-12 && (at.dy + 15.0).abs() < 1e-12, "{at:?}");
+        // Stretched twice along y: the pixel 20 px above the centre reads the ball 10 px above it, the one across stays.
+        let s = patch(2.0, [(0.0, 0.0, 0.0, 0.0); OWNERS]);
+        let at = s.source(100.0 + 7.0, 100.0 - 20.0).expect("inside");
+        assert!(
+            (at.dx - 7.0).abs() < 1e-12 && (at.dy + 10.0).abs() < 1e-12,
+            "{at:?}"
+        );
         assert!((at.alpha - 1.0).abs() < 1e-12);
         // The disc's edge is a ramp of a pixel, and beyond it nothing is read: 2 x 20 = 40 px along the axis.
-        assert!(s.source(100.0, 100.0 - 40.2).is_some_and(|a| a.alpha > 0.0 && a.alpha < 1.0));
+        assert!(
+            s.source(100.0, 100.0 - 40.2)
+                .is_some_and(|a| a.alpha > 0.0 && a.alpha < 1.0)
+        );
         assert!(s.source(100.0, 100.0 - 41.0).is_none());
         assert!(s.source(100.0 + 21.0, 100.0).is_none());
     }
 
     #[test]
-    fn a_pixel_two_discs_share_belongs_to_the_earlier_ball() {
-        let mut earlier = [(0.0, 0.0, 0.0); OWNERS];
-        earlier[0] = (30.0, 0.0, 20.0);
+    fn the_light_two_discs_share_is_divided_between_them_without_an_edge() {
+        // The earlier ball's disc (radius 20, centre 15 px to the right) overlaps this one's (radius 20).
+        let mut earlier = [(0.0, 0.0, 0.0, 0.0); OWNERS];
+        let other = patch(1.0, [(0.0, 0.0, 0.0, 0.0); OWNERS]);
+        earlier[0] = (15.0, 0.0, 20.0, other.fade());
         let s = patch(1.0, earlier);
-        assert!(s.source(100.0 - 10.0, 100.0).is_some());
-        assert!(s.source(100.0 + 15.0, 100.0).is_none(), "inside the earlier ball's disc");
+        let alone = patch(1.0, [(0.0, 0.0, 0.0, 0.0); OWNERS]);
+        // Away from the earlier ball's disc nothing changes; deep inside it the later ball has none.
+        let at = |s: &Shape, x: f64| s.source(100.0 + x, 100.0).map_or(0.0, |a| a.alpha);
+        assert!((at(&s, -10.0) - at(&alone, -10.0)).abs() < 1e-12);
+        assert!(at(&s, 10.0) < 1e-9, "deep inside the earlier ball's disc");
+        // The two shares add up to this ball's weight alone, and fall step by step, never jump.
+        let mut prev = at(&s, -10.0);
+        let mut x = -10.0;
+        while x < 18.0 {
+            x += 0.25;
+            let a = at(&s, x);
+            assert!(a <= prev + 1e-12 && prev - a < 0.2, "x {x}: {prev} -> {a}");
+            let earlier_weight = other.weight((x - 15.0f64).abs());
+            if (at(&alone, x) - 1.0).abs() < 1e-12 {
+                assert!((a - (1.0 - earlier_weight)).abs() < 1e-12, "x {x}");
+            }
+            prev = a;
+        }
     }
 }

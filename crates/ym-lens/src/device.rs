@@ -275,10 +275,10 @@ pub const BOKEH_HEADER: usize = 11;
 /// | 0 | centre column's integer part (a whole number), its fraction, centre row's integer part, its fraction |
 /// | 1 | semi-axes `a` (along `m`) and `b` of the stretched patch, the unit vector `m` |
 /// | 2 | half the cat's-eye offset (a vector), the offset in semi-axes, the width of the mask's edge in pixels |
-/// | 3 | the stretch (`a / b`), two zeros, the take-out radius (the patch's) |
+/// | 3 | the stretch (`a / b`), the share of the lens's rim profile the ball takes (0 to 1), a zero, the take-out radius (the patch's) |
 /// | 4 | the ball's radius, half its plateau, the reach of everything drawn, the blur a pixel inside the ball gets |
 /// | 5 to 7 | the ring's plane fit of each channel: the value at the centre and the slopes per pixel, and a zero |
-/// | 8 to 10 | the earlier balls whose discs overlap this one's, three at most: the offset of their centre from this one's, the radius of their disc (0 for none), and a zero |
+/// | 8 to 10 | the earlier balls whose discs overlap this one's, three at most: the offset of their centre from this one's, the radius of their disc (0 for none), and the width of their weight's fall |
 pub const BOKEH_SHAPE_VECTORS: usize = 11;
 
 /// Side in pixels of the bins that cull the balls, on the absolute pixel grid.

@@ -596,17 +596,6 @@ impl<'a> Items<'a> {
                     }
                 }
             }
-            if std::env::var_os("YM_GHOST_DEBUG").is_some() {
-                for g in &group {
-                    eprintln!(
-                        "ghost src_e {:.4e} comp {} s {:.3} raw_level {:.4e}",
-                        src.total(),
-                        src.component,
-                        g.s,
-                        g.peak_level(&items.clip, rim_peak)
-                    );
-                }
-            }
             for g in &group {
                 *peaks.entry((src.component, g.index)).or_insert(0.0) +=
                     g.peak_level(&items.clip, rim_peak);

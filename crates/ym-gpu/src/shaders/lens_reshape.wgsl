@@ -16,8 +16,9 @@
 //                (smoothly), the ball's own blur inside its take-out disc, and the pixels a drawn oval may not
 //                cover (`info`: bit 1 in a ball, bit 2 occluded).
 //   lr_cover     the horizontal counts of blurred pixels in the feather's window, over the columns of `r0`.
-//   lr_ramp      the stretch's ramp (0 to 1) towards the border of the blur map, over `r0`; what it stores is the
-//                gathers' blur: the map's, held at the cap, times the ramp.
+//   lr_ramp      the stretch's ramp (0 to 1) towards the border of the blur map, over `r0` (inside a ball's disc at
+//                least the ball's weight); what it stores is the gathers' blur: the map's, held at the cap, times the
+//                ramp.
 //   lr_takeout   the picture over `r0` with each ball's disc replaced by its ring's plane fit (by the ball's
 //                smooth weight).
 //   lr_vgather   the gather across the anamorphic axis over `r1`.
@@ -553,8 +554,8 @@ fn lr_protect_main(gid: vec3<u32>) {
         for (var k = range.x; k < range.y; k = k + 1u) {
             let s = bins[k];
             let d = lr_off(lr_sh(s, 0u), x, y);
-            let r_out = lr_sh(s, 3u).w;
-            if (d.x * d.x + d.y * d.y <= r_out * r_out) {
+            let r_in = lr_sh(s, 3u).w + 1.0;
+            if (d.x * d.x + d.y * d.y <= r_in * r_in) {
                 in_ball = true;
                 if (b < LR_B_MIN) {
                     b = lr_sh(s, 4u).w;
@@ -601,8 +602,8 @@ fn lr_cover_main(gid: vec3<u32>) {
     cnt[gid.y * u32(r.z) + gid.x] = n;
 }
 
-// The ramp: the share of the window that has a blur, from 0 at one half to 1 at nine tenths, smoothed; 1 in a ball.
-// What is stored is the gathers' blur: the map's, held at the cap, times the ramp.
+// The ramp: the share of the window that has a blur, from 0 at one half to 1 at nine tenths, smoothed; in a ball's
+// disc at least the ball's weight. What is stored is the gathers' blur: the map's, held at the cap, times the ramp.
 fn lr_ramp_main(gid: vec3<u32>) {
     let r = pu.r0;
     if (gid.x >= u32(r.z) || gid.y >= u32(r.w)) {
@@ -620,10 +621,25 @@ fn lr_ramp_main(gid: vec3<u32>) {
         }
     }
     var v = 1.0;
-    if (f > 0 && (info[lr_at(pu.rb, x, y)] & 1u) == 0u) {
+    if (f > 0) {
         let n = f32((2 * f + 1) * (2 * f + 1));
         let t = clamp((f32(total) / n - 0.5) / 0.4, 0.0, 1.0);
         v = t * t * (3.0 - 2.0 * t);
+    }
+    // Inside a ball's disc the stretch is at least the ball's weight: the full stretch over the ball, fading out over
+    // the glow's width at the disc's edge.
+    if ((info[lr_at(pu.rb, x, y)] & 1u) != 0u) {
+        let range = lr_bin(x, y);
+        var w = 0.0;
+        for (var k = range.x; k < range.y; k = k + 1u) {
+            let s = bins[k];
+            let d = length(lr_off(lr_sh(s, 0u), x, y));
+            let r_in = lr_sh(s, 3u).w + 1.0;
+            if (d * d <= r_in * r_in) {
+                w = max(w, lr_weight(s, d));
+            }
+        }
+        v = max(v, w);
     }
     rmp[gid.y * u32(r.z) + gid.x] = lr_opaque(min(bt[lr_at(pu.rb, x, y)], LR_B_CAP) * v);
 }
@@ -789,8 +805,8 @@ fn lr_bt_at(x: i32, y: i32) -> f32 {
 
 // The factor the lens's rim profile puts on a ball's light at s radii from its centre: the profile over its mean
 // across the ball, fading to 1 over LR_RIM_FADE radii beyond its edge (the reference's `rim_gain`).
-fn lr_rim_gain(s: f32) -> f32 {
-    let g = lr_rim_at(s) / tab[10u].x;
+fn lr_rim_gain(s: f32, strength: f32) -> f32 {
+    let g = 1.0 + strength * (lr_rim_at(s) / tab[10u].x - 1.0);
     let t = clamp((s - 1.0) / LR_RIM_FADE, 0.0, 1.0);
     let fade = t * t * (3.0 - 2.0 * t);
     return g + fade * (1.0 - g);
@@ -811,17 +827,22 @@ fn lr_ball_light(s: u32, x: i32, y: i32) -> vec3<f32> {
     // Where the pixel was before the stretch: along the long axis 1 / f of the distance, across it the same.
     let u = (d.x * m.x + d.y * m.y) / lr_sh(s, 3u).x;
     let v = -d.x * m.y + d.y * m.x;
-    let alpha = lr_weight(s, length(vec2<f32>(u, v)));
+    var alpha = lr_weight(s, length(vec2<f32>(u, v)));
     if (alpha <= 0.0) {
         return vec3<f32>(0.0);
     }
     let sx = u * m.x - v * m.y;
     let sy = u * m.y + v * m.x;
+    // The light of a place an earlier ball's disc covers is shared: that ball has its weight there, this one the rest.
     for (var o = 0u; o < 3u; o = o + 1u) {
         let e = lr_sh(s, 8u + o);
-        if (e.z > 0.0 && length(vec2<f32>(sx - e.x, sy - e.y)) <= e.z) {
-            return vec3<f32>(0.0);
+        if (e.z > 0.0) {
+            let t = clamp((e.z + 0.5 - length(vec2<f32>(sx - e.x, sy - e.y))) / e.w, 0.0, 1.0);
+            alpha = alpha * (1.0 - t * t * (3.0 - 2.0 * t));
         }
+    }
+    if (alpha <= 0.0) {
+        return vec3<f32>(0.0);
     }
     var mask = 1.0;
     if (lr_sh(s, 2u).z > 0.0) {
@@ -849,7 +870,7 @@ fn lr_ball_light(s: u32, x: i32, y: i32) -> vec3<f32> {
     if (taken <= 0.0) {
         return vec3<f32>(0.0);
     }
-    let gain = lr_rim_gain(length(vec2<f32>(sx, sy)) / s4.x);
+    let gain = lr_rim_gain(length(vec2<f32>(sx, sy)) / s4.x, lr_sh(s, 3u).y);
     let k = alpha * mask * taken * gain;
     var light = vec3<f32>(0.0);
     for (var c = 0u; c < 3u; c = c + 1u) {

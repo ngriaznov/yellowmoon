@@ -576,6 +576,8 @@ pub fn encode_reshape(
             (2, bt.binding()),
             (3, info.binding()),
             (7, ramp.binding()),
+            (8, scale.tab.binding()),
+            (9, scale.bins.binding()),
             (13, counts.binding()),
         ],
         (t.r0.w, t.r0.h),
@@ -598,11 +600,7 @@ pub fn encode_reshape(
         passes,
         KernelId::LensReshapeVGather,
         "lens bokeh vertical gather",
-        &[
-            (4, scr.binding()),
-            (5, o1.binding()),
-            (7, ramp.binding()),
-        ],
+        &[(4, scr.binding()), (5, o1.binding()), (7, ramp.binding())],
         (t.r1.w, t.r1.h),
     )?;
     run(

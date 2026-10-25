@@ -901,10 +901,18 @@ pub(super) fn find_balls(
             && let Some(blurred) = inp.blurred
         {
             let (mut n, mut blurry) = (0.0f64, 0.0f64);
-            for_each_in_annulus(w, h, b.cx, b.cy, 0.0, TAKE_OUT_MIN_RADII * b.r, |x, y, _, _, _| {
-                n += 1.0;
-                blurry += f64::from(u8::from(blurred[y * w + x]));
-            });
+            for_each_in_annulus(
+                w,
+                h,
+                b.cx,
+                b.cy,
+                0.0,
+                TAKE_OUT_MIN_RADII * b.r,
+                |x, y, _, _, _| {
+                    n += 1.0;
+                    blurry += f64::from(u8::from(blurred[y * w + x]));
+                },
+            );
             if blurry < SOFT_BLURRED_SHARE * n {
                 continue;
             }

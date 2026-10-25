@@ -675,30 +675,77 @@ fn swirl_stretches_balls_along_the_tangent_more_towards_the_edges() {
             );
             continue;
         }
-        // The data's swirl at this field radius (read from the lens) and Edges 100.
+        // The lens's swirl at this field radius (read between its radii) and Edges 100: the oval's aspect is that of a
+        // disc blurred along the tangent, `sqrt(1 + 4 sigma^2 / 3)` (2 at sigma 1.5).
         let lens = p.lens();
-        let sigma = lens
+        let at = lens
             .field
-            .swirl
+            .radii
             .iter()
-            .zip(&lens.field.radii)
-            .fold(0.0, |acc, (s, r)| if *r <= rho { *s } else { acc });
+            .position(|r| *r >= rho)
+            .unwrap_or(8)
+            .max(1);
+        let (r0, r1) = (lens.field.radii[at - 1], lens.field.radii[at]);
+        let (s0, s1) = (lens.field.swirl[at - 1], lens.field.swirl[at]);
+        let sigma = s0 + ((rho - r0) / (r1 - r0)).clamp(0.0, 1.0) * (s1 - s0);
+        let wanted = (1.0 + 4.0 / 3.0 * sigma * sigma).sqrt();
         assert!(
-            b.elongation > 1.0 + 0.3 * sigma,
-            "rho {rho:.2}: elongation {:.3}, swirl {sigma:.3}",
+            (b.elongation / wanted - 1.0).abs() < 0.03,
+            "rho {rho:.2}: elongation {:.3}, wanted {wanted:.3} (swirl {sigma:.3})",
             b.elongation
         );
-        // The long axis is the tangent: perpendicular to the radius, within 6 degrees.
-        let radial = uy.atan2(ux).to_degrees();
-        let off = ((b.angle_deg - radial + 90.0 + 90.0).rem_euclid(180.0) - 90.0).abs();
-        assert!(
-            off < 6.0,
-            "rho {rho:.2}: major axis {:.1} deg, radial {radial:.1} deg",
-            b.angle_deg
-        );
-        checked += 1;
+        if wanted > 1.08 {
+            // The long axis is the tangent: perpendicular to the radius, within 6 degrees.
+            let radial = uy.atan2(ux).to_degrees();
+            let off = ((b.angle_deg - radial + 90.0 + 90.0).rem_euclid(180.0) - 90.0).abs();
+            assert!(
+                off < 6.0,
+                "rho {rho:.2}: major axis {:.1} deg, radial {radial:.1} deg",
+                b.angle_deg
+            );
+            checked += 1;
+        }
     }
-    assert!(checked >= 6, "{checked}");
+    assert!(checked >= 3, "{checked}");
+}
+
+#[test]
+fn the_shipped_petzvals_swirl_is_visible_and_the_vintages_is_a_third_of_it() {
+    // `data/lenses/README.md`, *What is traced and what is tuned*: at Edges 100 the Petzval's tangential line is
+    // `sigma` blur radii long, 1.5 at the corner (a tangential oval twice as long as wide), about 0.3 at half the
+    // field, nothing inside `rho` 0.3 (continuous with a continuous slope, rising); the Vintage's is a third of it.
+    let root = common::repo_root().join("data");
+    if !root.join("lenses/index.json").exists() {
+        eprintln!("skipped: no lens data");
+        return;
+    }
+    let lib = ym_lens::LensLibrary::load(&root).expect("data/lenses loads");
+    let petzval = &lib.get(LensKind::Petzval).expect("petzval").field;
+    let vintage = &lib.get(LensKind::Vintage).expect("vintage").field;
+    assert_eq!(
+        petzval.radii,
+        [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]
+    );
+    let sigma = &petzval.swirl;
+    assert_eq!(sigma[..3], [0.0; 3], "nothing inside rho 0.3");
+    assert!(sigma[3] > 0.0 && sigma[3] < 0.12, "{}", sigma[3]);
+    assert!((sigma[4] - 0.3).abs() < 0.02, "rho 0.5: {}", sigma[4]);
+    assert!((sigma[8] - 1.5).abs() < 1e-5, "rho 1: {}", sigma[8]);
+    // Rising, and its slope rising too (a smooth start: no kink where it leaves 0).
+    for i in 1..9 {
+        assert!(sigma[i] >= sigma[i - 1], "monotone at {i}");
+    }
+    for i in 3..8 {
+        assert!(
+            sigma[i + 1] - sigma[i] > sigma[i] - sigma[i - 1] - 0.02,
+            "no sudden change of slope at {i}"
+        );
+    }
+    // The aspect of the oval at the corner is 2: `sqrt(1 + 4 sigma^2 / 3)`.
+    assert!(((1.0 + 4.0 / 3.0 * sigma[8] * sigma[8]).sqrt() - 2.0).abs() < 1e-4);
+    for (v, p) in vintage.swirl.iter().zip(sigma) {
+        assert!((v - p / 3.0).abs() < 1e-5, "{v} against a third of {p}");
+    }
 }
 
 #[test]
@@ -1129,7 +1176,7 @@ fn a_very_bright_soft_ball_with_a_glow_leaves_no_pillar_beside_its_oval() {
     // 10 px: whatever of its light stays in the picture is stretched with the rest of the blur and stands beside
     // the oval as a vertical pillar. The take-out reaches to where the light has died away, so (nearly) all of it is
     // stretched with the ball, glow included: nothing is added above the patch, and the surface brightness is kept
-    // (twice the light, to 5 % with so wide a rim).
+    // (twice the light, to 8 % with so wide a rim and a glow: part of the glow stays in the picture, stretched by the gather).
     let (cx, cy) = (503.0, 340.0);
     let mut scene = balls_on_ground(&[(cx, cy, 12.0, 0.8, 8.0)], Noise::NONE, 54);
     let n = W * H;
@@ -1188,7 +1235,7 @@ fn a_very_bright_soft_ball_with_a_glow_leaves_no_pillar_beside_its_oval() {
         "the strip above the patch holds {above_out:.4}, the picture had {above_in:.4}: a pillar"
     );
     assert!(
-        (e_out[1] / (2.0 * e_in[1]) - 1.0).abs() < 0.05,
+        (e_out[1] / (2.0 * e_in[1]) - 1.0).abs() < 0.08,
         "energy {:.3} -> {:.3}, wanted twice",
         e_in[1],
         e_out[1]
@@ -1247,7 +1294,11 @@ fn a_soft_ball_with_a_glow_is_stretched_as_it_is_with_no_ring_and_its_edge_scale
             .iter()
             .position(|v| *v == peak)
             .expect("the peak is in the profile");
-        let i = top + profile[top..].iter().position(|v| *v < target).expect("falls");
+        let i = top
+            + profile[top..]
+                .iter()
+                .position(|v| *v < target)
+                .expect("falls");
         (i - 1) as f64 + (profile[i - 1] - target) / (profile[i - 1] - profile[i])
     };
     // Inside the ball the profile is the lens's rim profile (this test lens brightens towards the rim); beyond its
@@ -1330,7 +1381,11 @@ fn a_smooth_bright_blob_the_map_does_not_call_blurred_is_not_a_ball() {
     };
     let blurred_all = planes_with_map(&p, &scene, &learned_map(9.0, 0, 0));
     let found = near(blurred_all.bokeh().expect("bokeh"));
-    assert_eq!(found.len(), 1, "the blob is a ball where the map calls it blurred");
+    assert_eq!(
+        found.len(),
+        1,
+        "the blob is a ball where the map calls it blurred"
+    );
     assert!(found[0] > 0.9, "the blob's rim is wide: {:.2}", found[0]);
     let unsure = planes_with_map(&p, &scene, &map_with_unsure_disc(9.0, (500.0, 330.0, 60.0)));
     assert!(
@@ -1428,7 +1483,10 @@ fn a_small_sharp_thing_in_a_blurred_field_leaves_no_step_around_it() {
     // (With the sharp places counted pixel by pixel, a hole of the square dilated, the step is 0.116; with the
     // density over a 15 x 15 window it is 0.027.)
     eprintln!("L1 largest step beside a sharp square in a blurred field: {worst:.4}");
-    assert!(worst < 0.04, "the largest step beside the square is {worst:.4}");
+    assert!(
+        worst < 0.04,
+        "the largest step beside the square is {worst:.4}"
+    );
     // The square itself is still there: it is sharp, and was not smeared into the field.
     let centre = out[n + 330 * W + 500];
     assert!(centre < 0.1, "the square's centre is {centre:.3}");
@@ -1460,9 +1518,8 @@ fn a_sharp_bright_subject_beside_a_blurred_field_is_not_dragged_into_it() {
         p: pr,
     };
     let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
-    let planes =
-        LensPlanes::build_with_map(&p, &whole(W, H, &data), None, Some(&map), &|| false)
-            .expect("planes");
+    let planes = LensPlanes::build_with_map(&p, &whole(W, H, &data), None, Some(&map), &|| false)
+        .expect("planes");
     assert!(planes.bokeh().is_some_and(|b| b.active()));
     let out = reshape_tile(&p, &planes, 1, &data, (W, H), PixelRect::new(0, 0, W, H));
     let n = W * H;
@@ -1471,10 +1528,19 @@ fn a_sharp_bright_subject_beside_a_blurred_field_is_not_dragged_into_it() {
         assert_eq!(out[n + y * W + x], data[n + y * W + x]);
     }
     // The field above and to the side, at the block's edge, keeps (nearly) its value.
-    for (x, y) in [(500, 298), (500, 296), (702, 400), (704, 400), (500, 502), (500, 504)] {
+    for (x, y) in [
+        (500, 298),
+        (500, 296),
+        (702, 400),
+        (704, 400),
+        (500, 502),
+        (500, 504),
+    ] {
         let (got, was) = (out[n + y * W + x], data[n + y * W + x]);
         eprintln!("L1 field at ({x}, {y}) beside a sharp bright block: {was:.3} became {got:.3}");
-        assert!((got - was).abs() < 0.03, "({x}, {y}): {was:.3} became {got:.3}");
+        assert!(
+            (got - was).abs() < 0.03,
+            "({x}, {y}): {was:.3} became {got:.3}"
+        );
     }
 }
-

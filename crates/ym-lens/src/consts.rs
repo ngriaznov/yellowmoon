@@ -371,12 +371,20 @@ pub const MIN_LINE_PX: f64 = 0.05;
 /// A ball's own light and the take-out of it fade out together over this share of the zone between the ball's radius
 /// and the take-out radius (the glow), and at least a pixel: where a neighbour's light overlaps the ball's disc, the
 /// part of it that is taken out is put back by the same weight, so no edge of the disc shows.
-pub const BALL_GLOW_FADE: f64 = 0.5;
+pub const BALL_GLOW_FADE: f64 = 1.0;
 
 /// The lens's rim profile (`bokeh.edge`) modulates a ball's light up to its edge, relative to the profile's mean over
 /// the disc, and fades out over this many ball radii beyond the edge (a neighbour's light that overlaps the ball's
 /// disc is not shaped by this ball's profile).
 pub const RIM_FADE_RADII: f64 = 0.3;
+
+/// The lens's rim profile is measured on crisp discs; a ball whose rim is as wide as this many of its radii or more
+/// (a soft glow, the highlight of an ornament) has no rim for it to shape, and a ball between this and
+/// [`RIM_SOFT_TO`] takes it in part (a smoothstep). Applied to a soft ball it draws faint rings.
+pub const RIM_SOFT_FROM: f64 = 0.3;
+
+/// See [`RIM_SOFT_FROM`]: the rim width, in radii, from which the lens's rim profile is not applied.
+pub const RIM_SOFT_TO: f64 = 0.8;
 
 /// The half-length of both gathers, in units of the half-length of the box line that has the same variance: the line
 /// is a biweight `(1 - u^2)^2` (variance `1/7` of the squared half-length against `1/3` for a box), so a line of the

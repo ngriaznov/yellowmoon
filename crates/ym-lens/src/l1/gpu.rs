@@ -89,8 +89,8 @@ fn shape_record(s: &Shape, half_diag: f64) -> [[f32; 4]; BOKEH_SHAPE_VECTORS] {
         ]
     };
     let owner = |i: usize| {
-        let (dx, dy, r) = s.earlier[i];
-        [dx as f32, dy as f32, r as f32, 0.0]
+        let (dx, dy, r, fade) = s.earlier[i];
+        [dx as f32, dy as f32, r as f32, fade as f32]
     };
     [
         [whole(cxi), cxf, whole(cyi), cyf],
@@ -101,7 +101,7 @@ fn shape_record(s: &Shape, half_diag: f64) -> [[f32; 4]; BOKEH_SHAPE_VECTORS] {
             s.delta as f32,
             s.edge as f32,
         ],
-        [s.f as f32, 0.0, 0.0, s.r_out as f32],
+        [s.f as f32, s.rim_k as f32, 0.0, s.r_out as f32],
         [s.r_ball as f32, s.core as f32, s.reach as f32, floor_b],
         fit(0),
         fit(1),

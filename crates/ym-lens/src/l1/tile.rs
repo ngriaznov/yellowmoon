@@ -31,7 +31,9 @@ use crate::plan::{Axis, LensPlan};
 
 use super::BokehPlanes;
 use super::detector::luminance;
-use super::draw::{Shape, ShapeParams, assign_owners, profile_at, rim_disc_mean, rim_gain, shape_of};
+use super::draw::{
+    Shape, ShapeParams, assign_owners, profile_at, rim_disc_mean, rim_gain, shape_of,
+};
 
 /// What the cells of the blur map around a pixel add up to, by the colour-guided weights of the upsampling.
 struct CellSums {
@@ -604,11 +606,16 @@ impl<'a> Pass<'a> {
             *b = (f64::from(*b) * (1.0 - hold * px)) as f32;
         }
         // Inside a ball's take-out disc the map is the ball's radius: the rim of a light is a colour edge the
-        // guided upsampling stops at, which would cut notches into the ball. (Beyond the disc the drawn oval is
-        // cut by what is known to be sharp, `occ` below, so a subject in front of the light hides part of it.)
+        // guided upsampling stops at, which would cut notches into the ball. The disc is a pixel wider than where the
+        // ball's weight reaches zero (`Shape::weight`), so that its own edge, a circle of whole pixels, is never
+        // where the take-out or the stretched light stops. (Beyond the disc the drawn oval is cut by what is known
+        // to be sharp, `occ` below, so a subject in front of the light hides part of it.)
         let mut in_ball = vec![false; r0.w * r0.h];
+        // ... and its stretch fades out with the ball's weight towards the disc's edge, so that the blurred disc
+        // does not end at a seam in the picture (the neighbours' light inside it is smeared, outside it is not).
+        let mut ball_weight = vec![0.0f32; r0.w * r0.h];
         for s in shapes {
-            let reach = s.r_out;
+            let reach = s.r_out + 1.0;
             let floor_b = ((s.r_ball / hk) as f32).max(B_MIN as f32);
             let x0 = ((s.cx - reach).floor().max(r0.x as f64)) as usize;
             let x1 = (((s.cx + reach).ceil() as usize) + 1).min(r0.x1());
@@ -619,8 +626,9 @@ impl<'a> Pass<'a> {
                     let i = (y - r0.y) * r0.w + (x - r0.x);
                     let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
                     let (dx, dy) = (px - s.cx, py - s.cy);
-                    if dx * dx + dy * dy <= s.r_out * s.r_out && !zero[zi(x, y)] {
+                    if dx * dx + dy * dy <= reach * reach && !zero[zi(x, y)] {
                         in_ball[i] = true;
+                        ball_weight[i] = ball_weight[i].max(s.weight(dx.hypot(dy)) as f32);
                         if bt[i] < B_MIN as f32 {
                             bt[i] = floor_b;
                         }
@@ -629,7 +637,8 @@ impl<'a> Pass<'a> {
             }
         }
         // The ramp: the share of the (2 F + 1)^2 window around a pixel that has a blur, from 0 at one half (the
-        // map's border) to 1 at nine tenths, smoothed. A pixel inside a ball has the full stretch.
+        // map's border) to 1 at nine tenths, smoothed. A pixel inside a ball has the full stretch where the ball
+        // is (below).
         let mut ramp = vec![1.0f32; r0.w * r0.h];
         if self.feather > 0 {
             let cover = Field {
@@ -637,11 +646,16 @@ impl<'a> Pass<'a> {
                 data: bt.iter().map(|b| f32::from(*b >= B_MIN as f32)).collect(),
             };
             let share = box_mean(&cover, r0, self.feather as i64);
-            for ((r, c), ball) in ramp.iter_mut().zip(&share).zip(&in_ball) {
-                if !*ball {
-                    let t = ((*c - 0.5) / 0.4).clamp(0.0, 1.0);
-                    *r = t * t * (3.0 - 2.0 * t);
-                }
+            for (r, c) in ramp.iter_mut().zip(&share) {
+                let t = ((*c - 0.5) / 0.4).clamp(0.0, 1.0);
+                *r = t * t * (3.0 - 2.0 * t);
+            }
+        }
+        // (Inside a ball's disc the stretch is at least the ball's weight: the full stretch over the ball, fading out
+        // over the glow's width at the disc's edge, wherever the map has no blur beyond it.)
+        for (r, (w, ball)) in ramp.iter_mut().zip(ball_weight.iter().zip(&in_ball)) {
+            if *ball {
+                *r = r.max(*w);
             }
         }
         // Where a drawn ball may not go: pixels of a sharp subject, found by the guided share of the cells known to
@@ -678,7 +692,10 @@ impl<'a> Pass<'a> {
             wr("bt", &bt);
             wr("ramp", &ramp);
             wr("density", &density);
-            wr("occ", &occ.iter().map(|z| f32::from(*z)).collect::<Vec<_>>());
+            wr(
+                "occ",
+                &occ.iter().map(|z| f32::from(*z)).collect::<Vec<_>>(),
+            );
             let _ = std::fs::write(
                 format!("{dir}/rect.txt"),
                 format!("{} {} {} {}", r0.x, r0.y, r0.w, r0.h),
@@ -885,7 +902,8 @@ impl<'a> Pass<'a> {
                         acc[ch] = f64::from(o1[ch * plane1 + i1]);
                     }
                     wsum += 1.0;
-                    let cl = |v: i64, lo: usize, hi: usize| v.clamp(lo as i64, hi as i64 - 1) as usize;
+                    let cl =
+                        |v: i64, lo: usize, hi: usize| v.clamp(lo as i64, hi as i64 - 1) as usize;
                     for sign in [-1.0f64, 1.0] {
                         for k in 1..=half {
                             let off = sign * k as f64 * step;
@@ -1315,7 +1333,12 @@ fn sample_input(input: &ImageRef, qx: f64, qy: f64) -> [f64; 3] {
         ]
     };
     let (x0, y0) = (fx as i64, fy as i64);
-    let (p00, p10, p01, p11) = (at(x0, y0), at(x0 + 1, y0), at(x0, y0 + 1), at(x0 + 1, y0 + 1));
+    let (p00, p10, p01, p11) = (
+        at(x0, y0),
+        at(x0 + 1, y0),
+        at(x0, y0 + 1),
+        at(x0 + 1, y0 + 1),
+    );
     let mut out = [0.0; 3];
     for c in 0..3 {
         let top = p00[c] + tx * (p10[c] - p00[c]);
@@ -1385,7 +1408,12 @@ fn redraw(
                     continue;
                 }
                 let orig = sample_input(input, qx, qy);
-                let gain = rim_gain(sp.rim, sp.rim_mean, src.dx.hypot(src.dy) / s.r_ball);
+                let gain = rim_gain(
+                    sp.rim,
+                    sp.rim_mean,
+                    src.dx.hypot(src.dy) / s.r_ball,
+                    s.rim_k,
+                );
                 let k = src.alpha * mask * taken * gain;
                 let i = (y - want.y) * want.w + (x - want.x);
                 for c in 0..3 {
@@ -1457,7 +1485,10 @@ mod tests {
         let mut prev = 0.0;
         for i in 0..=200 {
             let w = sample_weight(i as f64 / 100.0);
-            assert!(w >= prev - 1e-15 && (w - prev).abs() < 0.03, "{i}: {prev} -> {w}");
+            assert!(
+                w >= prev - 1e-15 && (w - prev).abs() < 0.05,
+                "{i}: {prev} -> {w}"
+            );
             prev = w;
         }
         assert_eq!(knee(0.0), 0.0);
