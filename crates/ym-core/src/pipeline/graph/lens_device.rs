@@ -1,4 +1,4 @@
-//! The lens on the device (`docs/21` sections 3 and 9, `docs/17-gpu.md` section 11): L2 and L3 run as
+//! The lens on the device (`docs/21` sections 3 and 9, `docs/17-gpu.md` section 11): L1, L2 and L3 run as
 //! kernels per tile, from the raw group where it lives, and hand the colour pass a device image without
 //! a readback.
 //!

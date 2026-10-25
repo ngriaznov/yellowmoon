@@ -67,12 +67,11 @@ impl GpuStages {
     /// `k x k` binning, the denoise and R9 at 1/k) that never builds a full-resolution frame on the
     /// host. Signed off on 2026-10-15 ([`GpuStages::SIGNED_OFF`]).
     pub const RAW_FRONT: Self = Self(1 << 6);
-    /// The lens character stages L1 to L3 (`docs/21`): the field optics (L2) and the highlight optics (L3)
-    /// of the raw group, run per tile between the raw group and the sampler, with the lens's per-photo
-    /// planes uploaded once. A plan whose bokeh reshaping (L1) is on still runs L1 on the host and
-    /// uploads its output (the L1 kernel is not written yet). **Not yet in [`GpuStages::SIGNED_OFF`]**:
-    /// its parity, tile and determinism suites have run on Mesa lavapipe and still wait for the Metal CI
-    /// runners.
+    /// The lens character stages L1 to L3 (`docs/21`): the bokeh reshaping (L1), the field optics (L2) and the
+    /// highlight optics (L3) of the raw group, run per tile between the raw group and the sampler, with the
+    /// lens's per-photo planes uploaded once (the blur detector, the ball list and the blur map stay on the host,
+    /// once per photo). **Not yet in [`GpuStages::SIGNED_OFF`]**: its parity, tile and determinism suites have
+    /// run on Mesa lavapipe and still wait for the Metal CI runners.
     pub const LENS: Self = Self(1 << 7);
     /// Every stage.
     pub const ALL: Self = Self(0b1111_1111);
@@ -98,7 +97,7 @@ impl GpuStages {
 
     /// The stages of an export that run on the device in this version: the raw chain (R6 to R8 of
     /// every full-resolution tile: demosaic, denoise, R7 and capture sharpening) and the
-    /// raw front (R1 to R5b and R9 of every tile), the lens (L2 and L3 of every tile of a photo with
+    /// raw front (R1 to R5b and R9 of every tile), the lens (L1 to L3 of every tile of a photo with
     /// one) and the export tail: the sampler, the colour
     /// chain, the Lanczos-3 resize, output sharpening and C13 of the written picture, which the CPU
     /// writers pull as encoded bands. Decides whether `ym` warms the kernels up while photos
@@ -1298,7 +1297,7 @@ mod tests {
                 "raw front"
             ]
         );
-        // The lens (L2 and L3 kernels) waits for the Metal CI runners.
+        // The lens (L1, L2 and L3 kernels) waits for the Metal CI runners.
         assert_eq!(GpuStages::SIGNED_OFF.union(GpuStages::LENS), GpuStages::ALL);
         assert!(!GpuStages::SIGNED_OFF.contains(GpuStages::LENS));
     }
@@ -1342,7 +1341,7 @@ mod tests {
         // The export tail: the sampler, colour chain, resize, sharpening and C13 of the written
         // picture.
         assert!(GpuStages::USED_BY_EXPORTS.contains(GpuStages::EXPORT_TAIL));
-        // The lens: L2 and L3 of every tile of a photo with one.
+        // The lens: L1 to L3 of every tile of a photo with one.
         assert!(GpuStages::USED_BY_EXPORTS.contains(GpuStages::LENS));
     }
 

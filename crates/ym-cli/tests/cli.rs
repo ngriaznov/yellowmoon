@@ -167,12 +167,18 @@ fn doctor_json_has_the_same_parts() {
         assert!(v["gpu"]["reason"].is_string());
     }
     assert_eq!(v["render_path"]["demosaic"], "classical");
-    // The only weight file is Auto crop's model, with the hash its SHA256SUMS gives.
-    let sums = std::fs::read_to_string(data_dir().join("models/crop/SHA256SUMS")).expect("sums");
-    let crop_sha256 = sums.split_whitespace().next().expect("hash");
+    // The weight files are the bokeh map's and Auto crop's model, each with the hash its SHA256SUMS gives, in path order.
+    let sha256_of = |model: &str| -> String {
+        let sums = std::fs::read_to_string(data_dir().join(format!("models/{model}/SHA256SUMS")))
+            .expect("sums");
+        sums.split_whitespace().next().expect("hash").to_owned()
+    };
     assert_eq!(
         v["model_weights"],
-        serde_json::json!([{ "file": "crop/cropnet.safetensors", "sha256": crop_sha256 }])
+        serde_json::json!([
+            { "file": "bokeh/bokehnet.safetensors", "sha256": sha256_of("bokeh") },
+            { "file": "crop/cropnet.safetensors", "sha256": sha256_of("crop") },
+        ])
     );
     assert!(v["illuminant_models"].as_array().expect("models").len() >= 10);
     for model in v["illuminant_models"].as_array().expect("models") {

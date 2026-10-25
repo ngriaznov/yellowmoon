@@ -526,7 +526,7 @@ pub struct PhotoGraph {
     /// output sharpening and C13 of frames, thumbnails and look tiles): from then on the CPU makes
     /// its frames, quietly (`docs/17-gpu.md` section 9).
     view_gpu_failed: AtomicBool,
-    /// A device error ended the GPU route of this photo's lens (L2 and L3 of the groups and tiles):
+    /// A device error ended the GPU route of this photo's lens (L1 to L3 of the groups and tiles):
     /// from then on the CPU runs the lens, with a note (`docs/17-gpu.md` section 9).
     lens_gpu_failed: AtomicBool,
     /// When the photo's raw words were last used on the device, in ticks of the renderer's clock
