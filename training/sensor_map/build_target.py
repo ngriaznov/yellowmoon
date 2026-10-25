@@ -14,7 +14,7 @@ import sys
 
 from training.common import jsonfmt, paths
 
-TARGET_VERSION = "1.0.0"
+TARGET_VERSION = "1.1.0"  # 1.0.0: the estimate without the hue push (owner decision 2026-10-25 moved it)
 
 
 def sha256(path) -> str:
@@ -37,7 +37,13 @@ def build() -> dict:
             "method": "Curves whose own optimal Academy P-2013-001-style matrices equal ARRI's published "
                       "native-to-ACES AP0 matrices at 17 CCTs (2000-11000 K), under a 4-component PCA prior "
                       "built from the 52 measured camera curves in rawtoaces-data (all 52, penalty 1, "
-                      "rawtoaces illuminants). 24-variant ensemble in variants.csv.",
+                      "rawtoaces illuminants), moved by a hue push (owner decision 2026-10-25, \"Move ALEXA "
+                      "estimate\"): of the curves in that family, the one that renders the 47 orange, red and "
+                      "ochre training reflectances (Lab hue 25-95 degrees, chroma above 12) 1.5 degrees of "
+                      "CIELAB hue toward yellow at 5200 K through ARRI's matrix, with the matrix RMS (0.0092 per "
+                      "coefficient, 0.0067 without the push) within the maximum of the 24-variant ensemble "
+                      "(0.0064 to 0.0093). The 24 variants in variants.csv and the band in the ensemble CSV are "
+                      "without the push; the estimate without it is `estimate_alexa --no-push`.",
             "inputs": [
                 "ARRI ALEXA SUP 3.x native-to-ACES AP0 matrices, 17 CCTs, 13 Nov 2013 "
                 "(aces-dev v1.3.1, ARRI-supplied, AMPAS licence, data/arri/AMPAS-LICENSE.md)",
@@ -49,7 +55,9 @@ def build() -> dict:
             "recommended_variant": {"prior": "all", "K": 4, "lam": 1.0, "conv": "rta"},
             "validation": {
                 "method": "leave-one-camera-out over the 52 measured cameras (training/alexa/validate_loo.py, "
-                          "checked by training/alexa/check_loo.py in .github/workflows/alexa-curve.yml)",
+                          "checked by training/alexa/check_loo.py in .github/workflows/alexa-curve.yml); the "
+                          "numbers are those of the estimator without the hue push, which has no held-out "
+                          "counterpart (the push leaves the curves that agree best with the matrices on purpose)",
                 "published": {
                     "rfse_median_pct": 2.2,
                     "rfse_p90_pct": 3.6,
@@ -62,6 +70,12 @@ def build() -> dict:
             "caveats": [
                 "Expected accuracy 3-5 % RFSE for this camera, not the 2.2 % LOO median "
                 "(research/alexa-ssf/README.md).",
+                "The shipped curve is the estimate plus a hue push (owner decision 2026-10-25), 2.2 % RFSE from "
+                "the estimate without it: the red channel is lowered at 550-585 nm (0.49 against 0.60 of peak at "
+                "580 nm) and by 0.02 to 0.04 at 615-660 nm, the green channel raised (by 0.12 at 490 nm and 0.05 at "
+                "585 nm), so that oranges, reds and ochres render less crimson. ARRI's matrices allow it and do "
+                "not ask for it; the curve lies outside the 24-variant band at 68 of 243 samples, by at most 0.019 "
+                "of peak (G at 600 nm). It is a choice, not a measurement.",
                 "Beyond about 660 nm the curve is mostly the prior; treat 660-720 nm as unknown.",
                 "Represents ALEXA SUP 3.x / ALEV III processing; not the ALEXA 35 or REVEAL.",
                 "Assumes ARRI made its matrices the P-2013-001 way; a different recipe adds error not "

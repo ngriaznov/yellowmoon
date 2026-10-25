@@ -39,7 +39,7 @@ Python 3.12 is what CI uses; 3.13 gives the same numbers. Set `YM_TESTDATA` to m
 |---|---|---|
 | `python3 -m training.alexa.validate_loo` | leave-one-camera-out over the 52 cameras → `testdata/out/alexa/loo_results.csv` (the per-camera results behind the published table); `--quick` runs only the shipped variant (K=4, λ=1) | 5–10 min (full), ~2 min (`--quick`) |
 | `python3 -m training.alexa.check_loo` | compares the run with the published numbers (median RFSE 2.2 %, emulation ΔE00 median 0.23, plus the other published figures) within ±0.1, and with the `docs/13` gate (RFSE ≤ 3 %, ΔE00 ≤ 0.3); non-zero exit on failure | 1 s |
-| `python3 -m training.alexa.estimate_alexa` then `compare_estimate` | regenerates `data/alexa/*` into `testdata/out/alexa/estimate/` and checks it equals the shipped files | ~10 min |
+| `python3 -m training.alexa.estimate_alexa` then `compare_estimate` | regenerates `data/alexa/*` (the estimate with its hue push, `docs/03` *The ALEXA estimate*) into `testdata/out/alexa/estimate/` and checks it equals the shipped files; `--no-push` writes the estimate of 2026-10-11 (without the push) into `estimate_nopush/` | ~15 min |
 | `python3 -m training.sensor_map.evaluate` | reproduces `research/alexa-ssf/out/sony_profiles.csv` (the published sensor-map result) | 5 s |
 | `python3 -m training.sensor_map.build_profiles` | writes the 11 `data/cameras/profiles/*/profile.json` (`--check` compares without writing) | 20 s |
 | `python3 -m training.sensor_map.build_registry` / `build_target` | write `data/cameras/registry.json` / `data/alexa/target.json` | 1 s |

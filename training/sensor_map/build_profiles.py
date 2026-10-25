@@ -46,7 +46,7 @@ from training.sensor_map.registry_data import (
     siblings_of,
 )
 
-PROFILE_VERSION = "1.0.0"
+PROFILE_VERSION = "1.1.0"  # 1.0.0: before the ALEXA estimate moved (owner decision 2026-10-25, docs/03)
 M_DECIMALS = 12
 FIT_SOURCES = (
     "training/alexa/ssf_core.py",

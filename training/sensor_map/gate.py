@@ -31,6 +31,13 @@ Mykyta's decision of 2026-10-12: the gate stays as specified and LED-V2 stays a 
 non-zero status for A7R IV while LED-V2 is over; ``gate_status`` lists which lights are over, and
 ``--expect-failing LED-V2`` makes the exit status 0 when exactly those lights (and no others) fail.
 
+Mykyta's decision of 2026-10-25, "Move ALEXA estimate": the ALEXA estimate that the gate scores against
+carries a hue push (``training/alexa/estimate_alexa.py``), which moves the red channel off the curve that
+is closest to ARRI's matrices and so away from what a white-preserving 3x3 maps best. The thresholds are
+unchanged and six of the nine lights are now over for A7R IV (blackbody-2850K, daylight-5250K,
+daylight-6750K, FL3.15, LED-B3, LED-V2); the list is in ``docs/03`` and ``docs/STATUS.md`` with the
+numbers before and after, and CI runs ``--expect-failing`` with exactly these six.
+
 Extra columns for context (not gated): ``identity`` (no mapping, M = I) and ``fit_at_light``
 (the 3x3 fitted at the gate light itself, the lower bound a better blend could reach), and the
 same blend from the shipped fit (all reference lights, which puts LED-B3, LED-RGB1 and LED-V2

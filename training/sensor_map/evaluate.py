@@ -142,13 +142,39 @@ def compare_rows(rows: list[dict], research_csv: Path = RESEARCH_CSV) -> dict:
     return out
 
 
+def update_research(rows: list[dict], research_csv: Path = RESEARCH_CSV) -> None:
+    """Write ``rows`` into the published CSV when the ALEXA target changes (owner decision 2026-10-25).
+
+    The columns this module computes are replaced; the ``est_*`` columns (the estimator applied to each
+    Sony body's own matrices, which does not involve the ALEXA target) are kept as they are.
+    """
+    with open(research_csv, newline="") as fh:
+        reader = csv.DictReader(fh)
+        fields = list(reader.fieldnames or [])
+        old = {r["camera"]: r for r in reader}
+    new = {r["camera"]: r for r in rows}
+    if old.keys() != new.keys():
+        raise SystemExit(f"{research_csv} and the evaluation list different cameras")
+    with open(research_csv, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=fields, lineterminator="\n")
+        w.writeheader()
+        for cam, row in old.items():
+            w.writerow({**row, **{k: new[cam][k] for k in new[cam]}})
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, default=paths.OUT / "sensor_map" / "sony_profiles.csv")
     ap.add_argument("--tol", type=float, default=0.02, help="allowed |difference| (docs/13: 0.02)")
+    ap.add_argument("--update-research", action="store_true",
+                    help="rewrite research/alexa-ssf/out/sony_profiles.csv with these numbers (after the ALEXA target "
+                         "changed); its est_* columns are kept")
     args = ap.parse_args(argv)
 
     rows = sony_profiles_rows()
+    if args.update_research:
+        update_research(rows)
+        print("updated", RESEARCH_CSV)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))
