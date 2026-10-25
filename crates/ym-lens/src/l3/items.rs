@@ -38,7 +38,7 @@ use crate::l3::geometry::{Frame, Span};
 use crate::l3::profile::{NormalTail, RimCurve, cosine_window, gauss8, normal_tail, smoothstep};
 use crate::l3::sources::{Source, SourceView};
 use crate::l3::terms::Terms;
-use crate::plan::LensPlan;
+use crate::plan::{Axis, LensPlan};
 use crate::spectral::CameraResponse;
 
 /// A shape as a gauge: the aperture polygon blended with its inscribed circle (`roundness`).
@@ -1076,9 +1076,15 @@ impl<'a> Items<'a> {
                     out.push([bits(1), 0.0, 0.0, 0.0]);
                 }
                 Item::Streak(s) => {
+                    // The light's place in pixels of the frame (along the axis, across it), so that the kernel
+                    // measures the pixel's edges from it and not from the frame's centre.
+                    let (half_along, half_across) = match self.frame.axis {
+                        Axis::X => (0.5 * self.frame.w as f64, 0.5 * self.frame.h as f64),
+                        Axis::Y => (0.5 * self.frame.h as f64, 0.5 * self.frame.w as f64),
+                    };
                     out.push([
-                        s.centre[0] as f32,
-                        s.centre[1] as f32,
+                        (s.centre[0] * self.frame.half_diag + half_along) as f32,
+                        (s.centre[1] * self.frame.half_diag + half_across) as f32,
                         s.sigma as f32,
                         s.amp[0] as f32,
                     ]);

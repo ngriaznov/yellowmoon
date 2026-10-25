@@ -1689,9 +1689,10 @@ fn a_dim_light_makes_a_short_faint_streak_and_a_bright_one_a_long_one() {
 /// The synthetic lenses with the shipped attachment's streak and nothing else of the attachment (no oval ghosts, no
 /// ghost stretch): Anamorphic then adds the streaks and nothing more.
 fn streak_lib() -> LensLibrary {
-    let shipped: Value =
-        serde_json::from_slice(&fs::read(common::repo_root().join("data/lenses/anamorphic.json")).unwrap())
-            .unwrap();
+    let shipped: Value = serde_json::from_slice(
+        &fs::read(common::repo_root().join("data/lenses/anamorphic.json")).unwrap(),
+    )
+    .unwrap();
     let streak = shipped["streak"].clone();
     library_with(&|_| {}, &|att| {
         att["ghosts"] = json!([]);
@@ -1750,7 +1751,10 @@ fn a_large_bright_area_makes_no_streak_and_a_glint_in_it_none_of_its_own() {
         }
         // The glint's own row.
         let v = at(d, -11);
-        assert!(v.iter().all(|x| x.abs() < 1e-5), "streak light {v:?} on the glint's row at {d} px");
+        assert!(
+            v.iter().all(|x| x.abs() < 1e-5),
+            "streak light {v:?} on the glint's row at {d} px"
+        );
     }
 }
 
@@ -1827,7 +1831,10 @@ fn the_streak_ends_smoothly_to_nothing() {
             "{axis:?}: a step of {step} near the end of the streak at {end} px"
         );
         for d in from..end {
-            assert!(v[d + 1] <= v[d] * 1.0001 + 1e-9, "{axis:?}: not falling at {d} px");
+            assert!(
+                v[d + 1] <= v[d] * 1.0001 + 1e-9,
+                "{axis:?}: not falling at {d} px"
+            );
         }
     }
 }

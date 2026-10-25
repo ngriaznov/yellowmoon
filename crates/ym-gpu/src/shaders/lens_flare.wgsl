@@ -429,35 +429,50 @@ fn lfl_cdf(a: f32) -> f32 {
     return 0.5 - 0.5 * share;
 }
 
+// The mass of the streak's profile between a0 < a1 (in units of the light's reach): cdf(a1) - cdf(a0). Where the
+// interval is small and on one side of the light, the difference of two cumulative values in f32 loses digits
+// (each is good to 6e-8 of itself, the pixel's mass can be 1e-4), so the mass is integrated from the height
+// instead (8 Gauss-Legendre points, ym_lens AlongProfile::cdf is the same number in f64).
+fn lfl_mass(a0: f32, a1: f32) -> f32 {
+    let p0 = scale[0];
+    let width = a1 - a0;
+    if (width < 0.1 * p0.x && (a0 >= 0.0 || a1 <= 0.0)) {
+        let x0 = min(abs(a0), abs(a1));
+        let x1 = max(abs(a0), abs(a1));
+        return 0.5 * lfl_gauss8(x0, x1, p0.x, p0.y, p0.z) / scale[1].y;
+    }
+    return lfl_cdf(a1) - lfl_cdf(a0);
+}
+
 fn lfl_streak(rec: u32, i: i32, j: i32) -> vec3<f32> {
     let v0 = scale[rec];
     let v1 = scale[rec + 1u];
     let v2 = scale[rec + 2u];
     var pa = i;
     var pc = j;
-    var sa = pu.frame.x;
-    var sc = pu.frame.y;
     if (pu.ints.z == 1) {
         pa = j;
         pc = i;
-        sa = pu.frame.y;
-        sc = pu.frame.x;
     }
-    let a0 = lfl_edge(pa, sa);
-    let a1 = lfl_edge(pa + 1, sa);
-    let c0 = lfl_edge(pc, sc);
-    let c1 = lfl_edge(pc + 1, sc);
+    // The pixel's edges relative to the light, in half-diagonals. The light's place (v0.x along the axis, v0.y
+    // across it) is in pixels of this frame, so the two edges of a pixel are off by the same amount (which moves
+    // the whole streak by 1e-4 px at 50 MP) and the pixel's width stays 1 / half-diagonal to 1e-6; edges taken
+    // from the frame's centre in f32 would each be 3e-4 px off, 5e-4 of a pixel's width.
+    let a0 = (f32(pa) - v0.x) / pu.frame.z;
+    let a1 = (f32(pa + 1) - v0.x) / pu.frame.z;
+    let c0 = (f32(pc) - v0.y) / pu.frame.z;
+    let c1 = (f32(pc + 1) - v0.y) / pu.frame.z;
     // Across the axis: the core (Gaussian of v0.z) and the wider halo that holds FL_STREAK_HALO_SHARE of the light.
     let wide = FL_STREAK_HALO_WIDTH * v0.z;
-    let mc = (1.0 - FL_STREAK_HALO_SHARE) * (lfl_q((c0 - v0.y) / v0.z) - lfl_q((c1 - v0.y) / v0.z))
-        + FL_STREAK_HALO_SHARE * (lfl_q((c0 - v0.y) / wide) - lfl_q((c1 - v0.y) / wide));
+    let mc = (1.0 - FL_STREAK_HALO_SHARE) * (lfl_q(c0 / v0.z) - lfl_q(c1 / v0.z))
+        + FL_STREAK_HALO_SHARE * (lfl_q(c0 / wide) - lfl_q(c1 / wide));
     if (mc <= 0.0) {
         return vec3<f32>(0.0);
     }
     // Along it: the attachment's profile stretched to the light's reach (v1.z); the colour turns from the light's
     // (v0.w, v1.x, v1.y) to the tail's (v1.w, v2.x, v2.y) over FL_STREAK_TURN of the reach, a smooth step.
-    let ma = lfl_cdf((a1 - v0.x) / v1.z) - lfl_cdf((a0 - v0.x) / v1.z);
-    let turn = clamp(abs(0.5 * (a0 + a1) - v0.x) / (FL_STREAK_TURN * scale[0].z * v1.z), 0.0, 1.0);
+    let ma = lfl_mass(a0 / v1.z, a1 / v1.z);
+    let turn = clamp(abs(0.5 * (a0 + a1)) / (FL_STREAK_TURN * scale[0].z * v1.z), 0.0, 1.0);
     let w = turn * turn * (3.0 - 2.0 * turn);
     let per_area = pu.frame.z * pu.frame.z;
     return mix(vec3<f32>(v0.w, v1.x, v1.y), vec3<f32>(v1.w, v2.x, v2.y), w) * (ma * mc * per_area);
