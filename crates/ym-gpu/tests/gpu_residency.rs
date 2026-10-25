@@ -982,6 +982,7 @@ fn a_cold_start_compiles_the_fit_view_then_the_view_stages_then_the_full_resolut
         LensFlareRestore,
         LensFlareNodes,
         LensFlare,
+        LensLight,
         LensReshapeGuide,
         LensReshapeBlur,
         LensReshapeLumRoot,
