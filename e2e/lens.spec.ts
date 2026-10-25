@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { openApp, openPhotos, recordCalls, setValue, watchErrors } from "./helpers/app";
+import { arrowInList, openApp, openPhotos, recordCalls, setValue, watchErrors } from "./helpers/app";
 
 // The Lens tab (docs/21 section 1, docs/11 "Lens card"): the Lens card (the seven lenses as rows, each with its line) and the Amounts card
 // (Flares, Edges and Anamorphic), in a real browser against the mocked API.
@@ -53,12 +53,6 @@ async function dragSlider(page: Page, label: string, to: number, steps = 6): Pro
   await page.mouse.move(box.x + box.width * to, y, { steps });
   await page.mouse.up();
 }
-
-/**
- * An arrow key held for 60 ms, as a hand holds it. Radix chooses the row an arrow focused only while the key is still down, and moves the
- * focus a tick after `keydown`: `keyboard.press` with no delay lets go before that tick and only moves the focus.
- */
-const arrow = (page: Page, key: "ArrowDown" | "ArrowUp"): Promise<void> => page.keyboard.press(key, { delay: 60 });
 
 type Lens = { kind: string; flares: number; edges: number; anamorphic: number };
 
@@ -160,10 +154,10 @@ test.describe("the Lens tab", () => {
     await page.keyboard.press("Tab");
     await expect(row(page, "Default")).toBeFocused();
     await expect(row(page, "Default")).toHaveCSS("outline-width", "3px");
-    await arrow(page, "ArrowDown");
+    await arrowInList(page, "ArrowDown");
     await expect(row(page, "Classic")).toBeFocused();
     await expect(row(page, "Classic")).toHaveAttribute("aria-checked", "true");
-    await arrow(page, "ArrowDown");
+    await arrowInList(page, "ArrowDown");
     await expect(row(page, "Vintage")).toBeFocused();
     await expect(row(page, "Vintage")).toHaveAttribute("aria-checked", "true");
     expect(await lensPatches(calls)).toEqual([
@@ -171,9 +165,9 @@ test.describe("the Lens tab", () => {
       { kind: "vintage", flares: 45, edges: 40, anamorphic: 0 },
     ]);
     // The arrows wrap at the ends, and only the chosen row is a Tab stop: the next Tab leaves the list for the Amounts card's Reset.
-    await arrow(page, "ArrowUp");
-    await arrow(page, "ArrowUp");
-    await arrow(page, "ArrowUp");
+    await arrowInList(page, "ArrowUp");
+    await arrowInList(page, "ArrowUp");
+    await arrowInList(page, "ArrowUp");
     await expect(row(page, "Detuned")).toBeFocused();
     await expect(row(page, "Detuned")).toHaveAttribute("aria-checked", "true");
     await page.keyboard.press("Tab");

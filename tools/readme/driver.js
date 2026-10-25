@@ -10,8 +10,8 @@
   const config = window.__SMOKE__;
   const { invoke, sleep, send, waitFor, q, qa, loaded, textOf, key, frame, emit, dropPaths } = window.__YM_KIT__;
 
-  /** The tool tabs by the name of a state: the key that picks the tab (⌘1 to ⌘4) and the words of its title block. */
-  const TABS = { look: { key: "1", title: "Look" }, light: { key: "2", title: "Light" }, colour: { key: "3", title: "Colour" }, detail: { key: "4", title: "Detail" } };
+  /** The tool tabs by the name of a state: the key that picks the tab (⌘1 to ⌘5; ⌘2 is Lens, which has no state here) and the words of its title block. */
+  const TABS = { look: { key: "1", title: "Look" }, light: { key: "3", title: "Light" }, colour: { key: "4", title: "Colour" }, detail: { key: "5", title: "Detail" } };
   /** The tab each photo state shows. */
   const STATE_TAB = { look: "look", light: "light", colour: "colour", "colour-warp": "colour", detail: "detail" };
   /** How far one press of an arrow key moves a warp pin on the chroma plane (`WARP_KEY_STEP`); with Shift, ten times as far. */

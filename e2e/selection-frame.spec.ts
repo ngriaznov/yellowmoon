@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { describeClips, frameClipping } from "./helpers/frames";
 import type { FrameTarget } from "./helpers/frames";
-import { openApp, openPhotos } from "./helpers/app";
+import { arrowInList, openApp, openPhotos } from "./helpers/app";
 
 // Selection frames, drawn whole (the owner, 2026-10-20: "Selection frame is cut off"). A ring is drawn outside the box it belongs to, and a
 // box that clips its content (overflow hidden, auto, scroll) cuts it off when the item stands closer to the edge than the ring is wide. These
@@ -174,11 +174,11 @@ test.describe("lens rows", () => {
         // The row that has the keyboard is the chosen one: one ring measured for each, the focus ring of the circle and of the row.
         await expectWhole(page, LENS_CHOSEN);
         await expectWhole(page, LENS_FOCUS, 2);
-        if (i < 6) await page.keyboard.press("ArrowDown", { delay: 60 });
+        if (i < 6) await arrowInList(page, "ArrowDown");
       }
       // And back up to the first row, which the panel scrolls to its top edge, below its scroll padding.
       for (let i = 5; i >= 0; i--) {
-        await page.keyboard.press("ArrowUp", { delay: 60 });
+        await arrowInList(page, "ArrowUp");
         await expect(radios.nth(i)).toBeFocused();
         await expectWhole(page, LENS_FOCUS, 2);
       }

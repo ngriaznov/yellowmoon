@@ -132,6 +132,23 @@ export interface RecordedCall {
 }
 
 /**
+ * An arrow key in a radio list (the Lens tab's lenses), held until the focus has moved to the next row and let go after. Radix focuses the
+ * next row a tick after `keydown` and chooses it only if the key is still down at that moment (`isArrowKeyPressedRef`, cleared on `keyup`),
+ * so a key pressed and released at once, or held for a fixed 60 ms on a machine that is busy enough to run the tick after the release,
+ * moves the focus and chooses nothing. A hand holds the key for 80 ms or more with an idle page behind it; this does the same without
+ * counting on either.
+ */
+export async function arrowInList(page: Page, key: "ArrowDown" | "ArrowUp"): Promise<void> {
+  const was = await page.evaluateHandle(() => document.activeElement);
+  await page.keyboard.down(key);
+  try {
+    await page.waitForFunction((before) => document.activeElement !== before, was);
+  } finally {
+    await page.keyboard.up(key);
+  }
+}
+
+/**
  * Wraps a command of the mock in the page so every call is recorded, and returns a function that
  * reads (and optionally clears) the record. The app looks the command up when it calls it, so the
  * wrapper sees every call.
