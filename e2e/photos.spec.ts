@@ -140,9 +140,8 @@ test.describe("the flow", () => {
     const first = await sizes();
     expect(first.length).toBeGreaterThanOrEqual(2);
     expect(first.length).toBeLessThan(9);
-    await page.locator(".ym-tools__scroll").evaluate((el) => {
-      el.scrollTop = el.scrollHeight;
-    });
+    // The last tile, not the end of the panel: the Tone and Lens cards lie below the grid, so the end of the panel shows no tile.
+    await page.locator(".ym-look-tile").last().evaluate((el) => el.scrollIntoView({ block: "end" }));
     await expect.poll(async () => (await sizes()).length).toBe(9);
     await settle(page);
     expect((await sizes()).every(([w, h]) => w === 240 && h === 160)).toBe(true);

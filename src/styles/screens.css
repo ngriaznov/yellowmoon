@@ -55,7 +55,14 @@
   box-sizing: border-box;
   border-left: var(--rule) solid var(--ink);
 }
-.ym-tools__scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.ym-tools__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* A control that focus (or a key) brings in from under the top or bottom edge is aligned to the edge of the box. Its ring stands up to 4 px
+     outside it and the box clips that, so the aligned control leaves room for the ring (e2e/selection-frame.spec.ts, look tiles). */
+  scroll-padding-block: 8px;
+}
 .ym-tools__footer {
   display: flex;
   flex-shrink: 0;
