@@ -172,17 +172,17 @@ fn lr_sums(x: i32, y: i32) -> LrSums {
             let ws = t * t;
             let gc = cg[u32((j - cy_lo) * ncx + (i - cx_lo))].xyz;
             let dd = g - gc;
-            let dist2 = dd.x * dd.x + dd.y * dd.y + dd.z * dd.z;
+            let dist2 = lr_opaque(lr_opaque(lr_opaque(dd.x * dd.x) + lr_opaque(dd.y * dd.y)) + lr_opaque(dd.z * dd.z));
             let tt = 1.0 + dist2 / pu.par.z;
             let k = ws / (tt * tt);
             let cell = cells[u32(pu.lvl.x + j * lw + i)];
             if (cell.x > 0.0 && cell.y >= LR_ACCEPT_CONF) {
                 c.nearest2 = min(c.nearest2, dist2);
             }
-            c.num = c.num + k * cell.x;
-            c.den = c.den + k * cell.y;
-            c.sub = c.sub + k * cell.z;
-            c.nrm = c.nrm + k;
+            c.num = lr_opaque(c.num + lr_opaque(k * cell.x));
+            c.den = lr_opaque(c.den + lr_opaque(k * cell.y));
+            c.sub = lr_opaque(c.sub + lr_opaque(k * cell.z));
+            c.nrm = lr_opaque(c.nrm + k);
         }
     }
     return c;
@@ -191,7 +191,7 @@ fn lr_sums(x: i32, y: i32) -> LrSums {
 // True when the cells around a pixel known to be in focus carry LR_SUBJECT_SHARE of their weight.
 fn lr_subject(x: i32, y: i32) -> bool {
     let c = lr_sums(x, y);
-    return c.nrm > 0.0 && c.sub >= LR_SUBJECT_SHARE * c.nrm;
+    return c.nrm > 0.0 && c.sub >= lr_opaque(LR_SUBJECT_SHARE * c.nrm);
 }
 
 // The footprint means of the root colours of the cells (columns x_lo.., rows y_lo..).
@@ -246,7 +246,7 @@ fn lr_blur_main(gid: vec3<u32>) {
     var out = 0.0;
     if (blurred != 0u) {
         let c = lr_sums(x, y);
-        if (c.nrm > 0.0 && c.den >= 0.25 * c.nrm && c.den > 0.0 && c.nearest2 <= LR_ACCEPT2) {
+        if (c.nrm > 0.0 && c.den >= lr_opaque(0.25 * c.nrm) && c.den > 0.0 && c.nearest2 <= LR_ACCEPT2) {
             let v = c.num / c.den;
             if (v >= LR_B_MIN) {
                 out = v;
@@ -413,11 +413,18 @@ fn lr_cover(sd: f32, edge: f32) -> f32 {
     return t;
 }
 
-// Coverage (0 to 1; a rim `edge` pixels wide) and normalised radius of ball s at the pixel (x, y).
+// Coverage (0 to 1; a rim `edge` pixels wide) and normalised radius of ball s at the pixel (x, y); 0 outside the
+// box of the ball's reach, [floor(cx - reach), ceil(cx + reach)] by the same for y, which is where the reference
+// draws (the first-order distance of the coverage leaves a faint tail beyond it).
 fn lr_coverage(s: u32, x: i32, y: i32) -> vec2<f32> {
     let s0 = lr_sh(s, 0u);
     let s1 = lr_sh(s, 1u);
     let s2 = lr_sh(s, 2u);
+    let reach = lr_sh(s, 4u).z;
+    if (x - i32(s0.x) < i32(floor(s0.y - reach)) || x - i32(s0.x) > i32(ceil(s0.y + reach))
+        || y - i32(s0.z) < i32(floor(s0.w - reach)) || y - i32(s0.z) > i32(ceil(s0.w + reach))) {
+        return vec2<f32>(0.0, 0.0);
+    }
     let d = lr_off(s0, x, y);
     if (s2.z == 0.0) {
         let e = lr_ellipse(d, s1.x, s1.y, s1.zw, s2.w);
@@ -622,7 +629,7 @@ fn lr_vgather_main(gid: vec3<u32>) {
     let at = gid.y * u32(r.z) + gid.x;
     let own = lr_wk(vec2<i32>(x, y));
     let bp = bt[lr_at(pu.rb, x, y)];
-    let len = pu.par.x * min(bp, LR_B_CAP) * pu.frame.z * rmp[at];
+    let len = lr_opaque(lr_opaque(lr_opaque(pu.par.x * min(bp, LR_B_CAP)) * pu.frame.z) * rmp[at]);
     var out = own;
     if (bp >= LR_B_MIN && len >= LR_MIN_LINE) {
         let pos = select(x, y, pu.ints.z == 1);
@@ -732,7 +739,7 @@ fn lr_final_main(gid: vec3<u32>) {
         let dy = f32(2 * y + 1 - pu.ints.y) * 0.5;
         let rr = sqrt(dx * dx + dy * dy);
         let sigma = lr_swirl_at(rr / pu.frame.z);
-        let len = sigma * pu.par.y * min(bp, LR_B_CAP) * pu.frame.z * rmp[lr_at(pu.r1, x, y)];
+        let len = lr_opaque(lr_opaque(lr_opaque(lr_opaque(sigma * pu.par.y) * min(bp, LR_B_CAP)) * pu.frame.z) * rmp[lr_at(pu.r1, x, y)]);
         if (rr >= 1.0e-9 && len >= LR_MIN_LINE) {
             let ux = -dy / rr;
             let uy = dx / rr;

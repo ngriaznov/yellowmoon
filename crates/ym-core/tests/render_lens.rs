@@ -1300,32 +1300,9 @@ fn a_lens_render_is_the_same_bytes_whatever_was_looked_at_first() {
 // The lens on the device
 // ---------------------------------------------------------------------------------------------
 
-/// A night scene of defocused lights (discs of 18 px on a dark ground): the blur the detector finds, so the
-/// bokeh reshaping acts.
+/// A night scene of defocused lights: the blur the detector finds, so the bokeh reshaping acts.
 fn bokeh_developed(w: u32, h: u32) -> Developed {
-    let scene = Scene::new(w, h, light(PROFILE, 5500.0), Layout::Uniform, 0.02).noise(2e-4, 1e-6);
-    let mut mosaic = scene.mosaic();
-    let code = (scene.black + 0.45 * (scene.white_level - scene.black)) as u16;
-    let radius = 0.015 * f64::from(w);
-    for fy in [0.18, 0.4, 0.62, 0.84] {
-        for fx in [0.1, 0.26, 0.42, 0.58, 0.74, 0.9] {
-            let (cx, cy) = (fx * f64::from(w), fy * f64::from(h));
-            for y in 0..h {
-                for x in 0..w {
-                    let d = (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy);
-                    if d <= radius {
-                        mosaic[(y * w + x) as usize] = code;
-                    }
-                }
-            }
-        }
-    }
-    let dir = tempfile::tempdir().expect("temp dir");
-    scene
-        .builder(MODEL)
-        .write_to(&dir.path().join("DSC00001.ARW"), &mosaic)
-        .expect("write the synthetic ARW");
-    Developed::open(dir)
+    common::bokeh_developed(w, h, MODEL, PROFILE)
 }
 
 /// The CPU lens and the device lens make the same picture of the fit view and of the 100 % view, within the
@@ -1376,9 +1353,10 @@ fn the_lens_on_the_device_after_the_raw_group_on_the_device_matches_the_cpu_lens
     the_device_lens_matches_the_cpu_lens_with(&device_everything(&gpu), "everything on the device");
 }
 
-/// Bokeh reshaping (L1) runs on the host and L2 and L3 on the device: the picture is the CPU lens's.
+/// Bokeh reshaping (L1), the field optics (L2) and the highlight optics (L3) all run on the device: the picture is
+/// the CPU lens's within the kernels' tolerance, and the report says the bokeh was reshaped.
 #[test]
-fn the_reshaping_on_the_host_feeds_the_lens_on_the_device() {
+fn the_reshaping_on_the_device_gives_the_cpu_lens_picture() {
     let Some(gpu) = gpu() else { return };
     let d = bokeh_developed(1200, 800);
     let src = plain(&d.source());
@@ -1412,6 +1390,66 @@ fn the_reshaping_on_the_host_feeds_the_lens_on_the_device() {
         assert!(
             worst <= 2,
             "{label}: the device lens differs by {worst} codes"
+        );
+    }
+}
+
+/// The reshaping on the device is the CPU lens's at the 100 % view too (L1 over the 512 px tiles, from the raw
+/// tiles where the raw chain left them), and Anamorphic and Edges moves re-run the field stage and nothing under
+/// it, reading back the finished frame and not the group.
+#[test]
+fn the_reshaping_on_the_device_follows_anamorphic_and_edges_without_a_readback_of_the_group() {
+    let Some(gpu) = gpu() else { return };
+    let d = bokeh_developed(1200, 800);
+    let src = plain(&d.source());
+    let lens = |edges: f64, anamorphic: f64| {
+        with_lens(
+            &src,
+            LensSettings {
+                kind: LensKind::Vintage,
+                flares: 0.0,
+                edges,
+                anamorphic,
+            },
+        )
+    };
+    // The 100 % view: the device lens against the CPU lens.
+    let tiles = at_100_percent(500.0, 400.0, (1200, 800));
+    let lensed = lens(60.0, 100.0);
+    let want = fresh_frame(&cpu(), &lensed, &tiles);
+    assert!(want.report.lens.expect("report").reshaped);
+    let got = fresh_frame(&device_everything(&gpu), &lensed, &tiles);
+    let worst = worst_difference(&want, &got);
+    let _ = writeln!(
+        std::io::stderr(),
+        "[lens] reshaped bokeh, 100 % view: CPU lens against device lens {worst} codes"
+    );
+    assert!(worst <= 2, "the 100 % view differs by {worst} codes");
+    // The fit view: moves of Anamorphic and Edges.
+    let state = cell(576.0, 384.0);
+    let frame_bytes = 576 * 384 * 4;
+    let on_device = device_everything(&gpu);
+    let first = frame(&on_device, &lens(60.0, 100.0), &state);
+    assert!(first.report.lens.expect("report").reshaped);
+    for (edges, anamorphic) in [(60.0, 70.0), (20.0, 70.0), (20.0, 0.0)] {
+        let before = gpu.counters();
+        let moved = frame(&on_device, &lens(edges, anamorphic), &state);
+        let read = gpu.counters().since(before);
+        assert_eq!(moved.report.runs.lens_fields, 1, "{:?}", moved.report.runs);
+        assert!(
+            read.readback_bytes <= 2 * frame_bytes,
+            "a move to edges {edges}, anamorphic {anamorphic} read {} bytes back (the frame is {frame_bytes})",
+            read.readback_bytes
+        );
+        let reference = fresh_frame(&cpu(), &lens(edges, anamorphic), &state);
+        let worst = worst_difference(&reference, &moved);
+        assert!(
+            worst <= 2,
+            "edges {edges}, anamorphic {anamorphic}: {worst} codes from the CPU lens"
+        );
+        assert_eq!(
+            moved.report.lens.map(|l| l.reshaped),
+            reference.report.lens.map(|l| l.reshaped)
         );
     }
 }
@@ -1495,8 +1533,21 @@ fn png16(bytes: &[u8]) -> (usize, usize, Vec<u32>) {
 /// it is made wholly on the device.
 #[test]
 fn an_export_with_the_lens_on_the_device_is_the_cpu_export_within_tolerance() {
+    an_export_with_the_lens_on_the_device_is_the_cpu_export_within_tolerance_with(&developed(
+        800, 600,
+    ));
+}
+
+/// The same on a photo whose bokeh is reshaped (L1's kernels in every lens tile job of the export).
+#[test]
+fn an_export_of_reshaped_bokeh_with_the_lens_on_the_device_is_the_cpu_export_within_tolerance() {
+    an_export_with_the_lens_on_the_device_is_the_cpu_export_within_tolerance_with(
+        &bokeh_developed(800, 600),
+    );
+}
+
+fn an_export_with_the_lens_on_the_device_is_the_cpu_export_within_tolerance_with(d: &Developed) {
     let Some(gpu) = gpu() else { return };
-    let d = developed(800, 600);
     let patch: SettingsPatch = serde_json::from_str(
         r#"{ "lens": { "kind": "vintage", "flares": 60, "edges": 50, "anamorphic": 50 } }"#,
     )
@@ -1567,8 +1618,19 @@ fn an_export_with_the_lens_on_the_device_is_the_cpu_export_within_tolerance() {
 /// the frames equal the frame rendered alone.
 #[test]
 fn viewport_jobs_between_the_lens_tiles_of_an_export_change_nothing() {
+    viewport_jobs_between_the_lens_tiles_of_an_export_change_nothing_with(&developed(800, 600));
+}
+
+/// The same on a photo whose bokeh is reshaped: L1's twelve dispatches are in every lens tile job.
+#[test]
+fn viewport_jobs_between_the_lens_tiles_of_an_export_of_reshaped_bokeh_change_nothing() {
+    viewport_jobs_between_the_lens_tiles_of_an_export_change_nothing_with(&bokeh_developed(
+        800, 600,
+    ));
+}
+
+fn viewport_jobs_between_the_lens_tiles_of_an_export_change_nothing_with(d: &Developed) {
     let Some(gpu) = gpu() else { return };
-    let d = developed(800, 600);
     let patch: SettingsPatch = serde_json::from_str(
         r#"{ "lens": { "kind": "vintage", "flares": 60, "edges": 50, "anamorphic": 50 } }"#,
     )

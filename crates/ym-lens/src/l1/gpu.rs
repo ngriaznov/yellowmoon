@@ -167,7 +167,8 @@ pub(crate) fn scale_data(
             }
         }
     }
-    let mut bins = Vec::with_capacity(per_bin.len() + 1 + per_bin.iter().map(Vec::len).sum::<usize>());
+    let mut bins =
+        Vec::with_capacity(per_bin.len() + 1 + per_bin.iter().map(Vec::len).sum::<usize>());
     let mut at = 0u32;
     bins.push(0);
     for b in &per_bin {

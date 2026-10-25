@@ -66,12 +66,17 @@ impl App {
     /// Opens `files` with the device of the `On` policy attached, or `None` (with a notice) when
     /// there is no adapter.
     fn open(files: &[&Path]) -> Option<Self> {
+        Self::open_with(files, data_dir())
+    }
+
+    /// [`App::open`] over the data folder `data`.
+    fn open_with(files: &[&Path], data: PathBuf) -> Option<Self> {
         let slot = open_gpu(GpuPolicy::On, MemoryBudget::detect());
         if !slot_has_device(&slot) {
             return None;
         }
         let home = tempfile::tempdir().expect("tempdir");
-        let mut options = CoreOptions::new(data_dir(), home.path().to_path_buf());
+        let mut options = CoreOptions::new(data, home.path().to_path_buf());
         // What the CLI does: no thumbnail renders competing with the export.
         options.thumbnails = false;
         let core = Core::open(options).expect("core");
@@ -118,8 +123,19 @@ fn bytes(path: &Path) -> Vec<u8> {
 
 /// Runs the binary on `inputs` with the device switched on, `flags` extra, writing to `dir`.
 fn cli_export(sb: &Sandbox, inputs: &[&Path], flags: &[&str], dir: &Path) -> Vec<PathBuf> {
+    cli_export_in(sb, &data_dir(), inputs, flags, dir)
+}
+
+/// [`cli_export`] reading the data folder `data`.
+fn cli_export_in(
+    sb: &Sandbox,
+    data: &Path,
+    inputs: &[&Path],
+    flags: &[&str],
+    dir: &Path,
+) -> Vec<PathBuf> {
     let out = sb
-        .ym()
+        .ym_data(data)
         .env("YELLOWMOON_GPU", "on")
         .args(["render", "--apple-auto", "off"])
         .args(inputs)
@@ -318,19 +334,44 @@ fn a_dng_and_a_tiff_exported_one_after_the_other_on_the_device_do_not_share_r8()
     );
 }
 
-/// The lens on the device (`docs/21` section 9): L2 and L3 as kernels, from the raw tiles where the raw chain
+/// The lens on the device (`docs/21` section 9): L1, L2 and L3 as kernels, from the raw tiles where the raw chain
 /// left them, into the export tail. The app's export and `ym render --lens vintage ...` with the device on
 /// write the same bytes (a JPEG and a 16-bit TIFF), the binary's report says the pictures were made on the
-/// device without a fall-back note, and the lens changed the file.
+/// device without a fall-back note, and the lens changed the file. Two photos: a gradient (L2 and L3 act) and a
+/// night scene of defocused lights (the bokeh is reshaped too: L1's kernels run, which the dispatch count shows).
 #[test]
 fn a_lens_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
     let _serial = serial();
     let sb = Sandbox::new();
-    let arw = sb.arw_sized("big.ARW", 1500, 1100, 3);
-    let Some(app) = App::open(&[&arw]) else {
-        return;
-    };
-    let plain = app.export(ExportOptions::default(), &sb.root().join("plain"));
+    let gradient = sb.arw_sized("big.ARW", 1500, 1100, 3);
+    let lights = sb.arw_bokeh("lights.ARW", 1500, 1100, 4);
+    // The classical detector decides which photos have bokeh: the learned map's verdict on a synthetic scene is
+    // its own business (`docs/21` section 7).
+    let data = sb.data_without_the_bokeh_model();
+    let mut dispatches = Vec::new();
+    for (name, arw) in [("gradient", &gradient), ("defocused lights", &lights)] {
+        let Some(d) = lens_parity(&sb, &data, name, arw) else {
+            return;
+        };
+        dispatches.push(d);
+    }
+    eprintln!(
+        "[parity_gpu] lens export dispatches: gradient {}, defocused lights {}",
+        dispatches[0], dispatches[1]
+    );
+    // The reshaping's kernels ran on the second photo and not on the first: twelve dispatches a tile at least.
+    assert!(
+        dispatches[1] >= dispatches[0] + 12,
+        "L1 did not run on the device for the defocused lights: {dispatches:?} dispatches"
+    );
+}
+
+/// The checks of the test above for one photo; the number of dispatches of the app's lens export, or `None` when
+/// there is no adapter.
+fn lens_parity(sb: &Sandbox, data: &Path, name: &str, arw: &Path) -> Option<u64> {
+    let app = App::open_with(&[arw], data.to_path_buf())?;
+    let out = |what: &str| sb.root().join(format!("{name}-{what}"));
+    let plain = app.export(ExportOptions::default(), &out("plain"));
     app.core
         .session
         .update_settings(
@@ -358,42 +399,52 @@ fn a_lens_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() 
     ];
     let device = app.slot.gpu().expect("a device").clone();
     let before = device.counters();
-    let from_app = app.export(ExportOptions::default(), &sb.root().join("app"));
-    assert!(device.counters().since(before).dispatches > 0);
+    let from_app = app.export(ExportOptions::default(), &out("app"));
+    let dispatches = device.counters().since(before).dispatches;
+    assert!(dispatches > 0);
     let mut jpeg_flags = vec!["--format", "jpeg"];
     jpeg_flags.extend(flags);
-    let from_cli = cli_export(&sb, &[&arw], &jpeg_flags, &sb.root().join("cli"));
-    assert_same_files(&from_app, &from_cli, "a lens on the device, jpeg");
+    let from_cli = cli_export_in(sb, data, &[arw], &jpeg_flags, &out("cli"));
+    assert_same_files(
+        &from_app,
+        &from_cli,
+        &format!("{name}: a lens on the device, jpeg"),
+    );
     assert!(
         bytes(&from_app[0]) != bytes(&plain[0]),
-        "the lens changed nothing in the file"
+        "{name}: the lens changed nothing in the file"
     );
     let tiff = ExportOptions {
         format: FormatKind::Tiff,
         bit_depth: BitDepth::Sixteen,
         ..ExportOptions::default()
     };
-    let from_app = app.export(tiff, &sb.root().join("app-tiff"));
+    let from_app = app.export(tiff, &out("app-tiff"));
     let mut tiff_flags = vec!["--format", "tiff", "--bits", "16", "--compression", "lzw"];
     tiff_flags.extend(flags);
-    let from_cli = cli_export(&sb, &[&arw], &tiff_flags, &sb.root().join("cli-tiff"));
-    assert_same_files(&from_app, &from_cli, "a lens on the device, tiff-16");
+    let from_cli = cli_export_in(sb, data, &[arw], &tiff_flags, &out("cli-tiff"));
+    assert_same_files(
+        &from_app,
+        &from_cli,
+        &format!("{name}: a lens on the device, tiff-16"),
+    );
     // The binary really made the pictures on the device.
-    let out = sb
-        .ym()
+    let json = sb
+        .ym_data(data)
         .env("YELLOWMOON_GPU", "on")
         .args(["render", "--json", "--quiet", "--apple-auto", "off"])
-        .arg(&arw)
+        .arg(arw)
         .args(flags)
         .arg("--out")
-        .arg(sb.root().join("json"))
+        .arg(out("json"))
         .assert()
         .success();
-    let text = String::from_utf8(out.get_output().stdout.clone()).expect("utf-8");
+    let text = String::from_utf8(json.get_output().stdout.clone()).expect("utf-8");
     let v: serde_json::Value = serde_json::from_str(text.trim()).expect("one JSON object");
-    assert_eq!(v["device"], "gpu", "{text}");
+    assert_eq!(v["device"], "gpu", "{name}: {text}");
     assert!(
         !v["notes"].to_string().contains("graphics card"),
-        "the binary fell back to the CPU: {text}"
+        "{name}: the binary fell back to the CPU: {text}"
     );
+    Some(dispatches)
 }

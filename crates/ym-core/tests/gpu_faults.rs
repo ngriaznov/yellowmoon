@@ -38,7 +38,9 @@ use ym_core::export::{
     export_photo,
 };
 use ym_core::export_queue::{ExportEvent, ExportJob, ExportQueue, ExportSink};
-use ym_core::pipeline::{ComputeDevice, NeutralOnly, RenderOptions, Renderer};
+use ym_core::pipeline::{
+    ComputeDevice, FrameOptions, NeutralOnly, RenderOptions, Renderer, ViewportRect, ViewportState,
+};
 use ym_core::session::{ApplyScope, OpenOptions, Session};
 use ym_core::settings::SettingsPatch;
 use ym_export::{BitDepth, ExportOptions, FormatKind, IfExists, Size, TiffCompression};
@@ -590,9 +592,37 @@ fn lens_context(home: &Path, gpu: Option<&Arc<Gpu>>, strict: bool) -> ExportCont
     ExportContext::new(lens_renderer(gpu, strict)).with_home(Some(home.to_path_buf()))
 }
 
-/// The photo of the lens cells: the vintage lens with all three amounts up.
-fn lens_photo() -> (Developed, ExportPhoto) {
-    let d = Developed::new(&scene(3, 0.5), MODEL);
+/// The photos of the lens cells: the vintage lens with all three amounts up, on a noise scene (L2 and L3 act) and
+/// on a night scene of defocused lights (L1 reshapes the bokeh too: Anamorphic and Edges are above 0 and the
+/// detector finds the lights).
+fn lens_photos() -> Vec<(&'static str, Developed, ExportPhoto)> {
+    vec![
+        {
+            let (d, photo) = lens_photo(Developed::new(&scene(3, 0.5), MODEL));
+            ("noise scene", d, photo)
+        },
+        {
+            let (d, photo) = lens_photo(bokeh_developed(640, 480, MODEL, "sony-ilce-7rm4"));
+            // The detector finds the lights: L1 reshapes the bokeh (on the CPU here, as the reference).
+            let frame = lens_renderer(None, false)
+                .viewport_frame(
+                    &d.source(),
+                    &ViewportState::new(ViewportRect::cell(320.0, 240.0, 1.0)),
+                    &FrameOptions::default(),
+                    &CancelToken::new(),
+                )
+                .expect("a frame");
+            assert!(
+                frame.report.lens.is_some_and(|l| l.reshaped),
+                "the photo of defocused lights must have bokeh to reshape: {:?}",
+                frame.report.lens
+            );
+            ("defocused lights", d, photo)
+        },
+    ]
+}
+
+fn lens_photo(d: Developed) -> (Developed, ExportPhoto) {
     let patch: SettingsPatch = serde_json::from_str(
         r#"{ "lens": { "kind": "vintage", "flares": 60, "edges": 50, "anamorphic": 50 } }"#,
     )
@@ -623,13 +653,17 @@ fn a_fault_in_the_lens_kernels_makes_the_whole_photo_again_on_the_cpu() {
     let Some(shared) = start_lens_device() else {
         return;
     };
-    let (_d, photo) = lens_photo();
+    for (what, _d, photo) in lens_photos() {
+        a_fault_in_the_lens_kernels_with(&shared, what, &photo);
+    }
+}
+
+fn a_fault_in_the_lens_kernels_with(shared: &Arc<Gpu>, what: &str, photo: &ExportPhoto) {
     let home = tempfile::tempdir().expect("home");
     let want = {
         let out = tempfile::tempdir().expect("out");
         let ctx = lens_context(home.path(), None, false);
-        let r =
-            run(&ctx, &photo, lens_png(out.path()), &ExportControl::none()).expect("cpu export");
+        let r = run(&ctx, photo, lens_png(out.path()), &ExportControl::none()).expect("cpu export");
         assert_eq!(r.device, ComputeDevice::Cpu);
         std::fs::read(&r.path).expect("read")
     };
@@ -646,15 +680,18 @@ fn a_fault_in_the_lens_kernels_makes_the_whole_photo_again_on_the_cpu() {
             let own = if fresh {
                 start_lens_device().expect("a device")
             } else {
-                Arc::clone(&shared)
+                Arc::clone(shared)
             };
             let ctx = lens_context(home.path(), Some(&own), strict);
             let baseline = pool_in_use(&own);
             own.set_fault(Some(fault));
             let out = tempfile::tempdir().expect("out");
-            let result = run(&ctx, &photo, lens_png(out.path()), &ExportControl::none());
+            let result = run(&ctx, photo, lens_png(out.path()), &ExportControl::none());
             own.set_fault(None);
-            let cell = format!("{name}, {}", if strict { "strict" } else { "falling back" });
+            let cell = format!(
+                "{what}: {name}, {}",
+                if strict { "strict" } else { "falling back" }
+            );
             if strict {
                 let err = result.expect_err(&format!("{cell}: a strict export must fail"));
                 assert_eq!(err.kind(), "gpu", "{cell}: {err}");
@@ -692,41 +729,45 @@ fn a_cancel_in_the_lens_kernels_ends_the_export_cleanly_and_the_next_one_is_whol
     let Some(gpu) = start_lens_device() else {
         return;
     };
-    let (_d, photo) = lens_photo();
+    for (what, _d, photo) in lens_photos() {
+        a_cancel_in_the_lens_kernels_with(&gpu, what, &photo);
+    }
+}
+
+fn a_cancel_in_the_lens_kernels_with(gpu: &Arc<Gpu>, what: &str, photo: &ExportPhoto) {
     let home = tempfile::tempdir().expect("home");
-    let ctx = lens_context(home.path(), Some(&gpu), false);
+    let ctx = lens_context(home.path(), Some(gpu), false);
     let reference = {
         let out = tempfile::tempdir().expect("out");
-        let r = run(&ctx, &photo, lens_png(out.path()), &ExportControl::none()).expect("export");
+        let r = run(&ctx, photo, lens_png(out.path()), &ExportControl::none()).expect("export");
         assert_eq!(r.device, ComputeDevice::Gpu, "{:?}", r.notes);
         std::fs::read(&r.path).expect("read")
     };
-    let baseline = pool_in_use(&gpu);
+    let baseline = pool_in_use(gpu);
     for at in [1_u64, 3] {
         let out = tempfile::tempdir().expect("out");
         gpu.set_fault(Some(GpuFault::CancelAtJob(at)));
-        let result = run(&ctx, &photo, lens_png(out.path()), &ExportControl::none());
+        let result = run(&ctx, photo, lens_png(out.path()), &ExportControl::none());
         gpu.set_fault(None);
         match result {
-            Err(e) => assert!(e.is_cancelled(), "cancel@{at}: {e}"),
+            Err(e) => assert!(e.is_cancelled(), "{what}: cancel@{at}: {e}"),
             Ok(r) => panic!(
-                "cancel@{at}: the export finished ({:?}, {:?})",
+                "{what}: cancel@{at}: the export finished ({:?}, {:?})",
                 r.device, r.notes
             ),
         }
         assert!(
             names_in(out.path()).is_empty(),
-            "cancel@{at}: a file was left"
+            "{what}: cancel@{at}: a file was left"
         );
-        assert_eq!(pool_in_use(&gpu), baseline, "cancel@{at}");
-        assert_eq!(ctx.renderer().ledger().used(), 0, "cancel@{at}");
+        assert_eq!(pool_in_use(gpu), baseline, "{what}: cancel@{at}");
+        assert_eq!(ctx.renderer().ledger().used(), 0, "{what}: cancel@{at}");
         let out = tempfile::tempdir().expect("out");
-        let again =
-            run(&ctx, &photo, lens_png(out.path()), &ExportControl::none()).expect("export");
-        assert_eq!(again.device, ComputeDevice::Gpu, "cancel@{at}");
+        let again = run(&ctx, photo, lens_png(out.path()), &ExportControl::none()).expect("export");
+        assert_eq!(again.device, ComputeDevice::Gpu, "{what}: cancel@{at}");
         assert!(
             std::fs::read(&again.path).expect("read") == reference,
-            "cancel@{at}: the export after the cancel is not the uninterrupted one"
+            "{what}: cancel@{at}: the export after the cancel is not the uninterrupted one"
         );
     }
 }

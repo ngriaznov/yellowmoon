@@ -34,8 +34,8 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use ym_lens::PixelRect;
 use ym_lens::consts::{
-    ACCEPT_COLOUR, ACCEPT_CONFIDENCE, B_CAP, B_MIN, BALL_RIM_REACH_PX, MAX_STRETCH_TAPS, MIN_LINE_PX,
-    SHARP_DILATE, SHARP_RATIO, SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE, STRAND_VALLEY,
+    ACCEPT_COLOUR, ACCEPT_CONFIDENCE, B_CAP, B_MIN, BALL_RIM_REACH_PX, MAX_STRETCH_TAPS,
+    MIN_LINE_PX, SHARP_DILATE, SHARP_RATIO, SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE, STRAND_VALLEY,
     SUBJECT_SHARE,
 };
 use ym_lens::device::{
@@ -277,12 +277,7 @@ fn layout(pass: &BokehPass, want: Rect) -> Layout {
     let first = tile.r1.y.saturating_sub(f);
     let last = (tile.r1.y1() + f).min(fh);
     let area = |r: PixelRect| r.w * r.h;
-    let a = [
-        0,
-        area(e6),
-        area(e6) + area(e4),
-        area(e6) + 2 * area(e4),
-    ];
+    let a = [0, area(e6), area(e6) + area(e4), area(e6) + 2 * area(e4)];
     let flags_chain = a[3] + area(e2);
     let taken_out = 3 * area(tile.r0);
     Layout {
@@ -375,7 +370,10 @@ pub fn encode_reshape(
     let scr = passes.scratch("lens bokeh scratch", l.scr_len as u64 * 4)?;
     let o1 = passes.scratch("lens bokeh vertical", 3 * (t.r1.w * t.r1.h) as u64 * 4)?;
     let ramp = passes.scratch("lens bokeh ramp", (t.r1.w * t.r1.h) as u64 * 4)?;
-    let counts = passes.scratch("lens bokeh counts", (t.r1.w * l.cnt_rows.1).max(1) as u64 * 4)?;
+    let counts = passes.scratch(
+        "lens bokeh counts",
+        (t.r1.w * l.cnt_rows.1).max(1) as u64 * 4,
+    )?;
 
     let mut u = ReshapeU::zeroed();
     u.frame = [
@@ -424,7 +422,12 @@ pub fn encode_reshape(
         scale.shape_offset as u32,
         scale.list_offset as u32,
     ];
-    u.bins = [scale.bins_x as u32, scale.bins_y as u32, BOKEH_BIN_PX as u32, 0];
+    u.bins = [
+        scale.bins_x as u32,
+        scale.bins_y as u32,
+        BOKEH_BIN_PX as u32,
+        0,
+    ];
     u.src = [
         at.0 as i32,
         at.1 as i32,
@@ -450,10 +453,10 @@ pub fn encode_reshape(
 
     let groups = |w: usize, h: usize| ((w as u32).div_ceil(GROUP), (h as u32).div_ceil(GROUP), 1);
     let run = |passes: &mut PassList<'_>,
-                   id: KernelId,
-                   label: &str,
-                   entries: &[(u32, wgpu::BindingResource<'_>)],
-                   size: (usize, usize)|
+               id: KernelId,
+               label: &str,
+               entries: &[(u32, wgpu::BindingResource<'_>)],
+               size: (usize, usize)|
      -> Result<(), GpuError> {
         let ub = passes.uniform(&format!("{label} uniform"), &u)?;
         let mut all = vec![(0, ub.binding())];
@@ -791,5 +794,4 @@ mod tests {
         // The counts' rows are inside the blur region.
         assert!(l.cnt_rows.0 >= l.tile.rb.y && l.cnt_rows.0 + l.cnt_rows.1 <= l.tile.rb.y1());
     }
-
 }

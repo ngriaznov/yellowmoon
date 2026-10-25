@@ -41,10 +41,10 @@ use ym_gpu::device::{Gpu, GpuContext, GpuError};
 use ym_gpu::image::GpuImage;
 use ym_gpu::kernels::copy::{Piece, encode_crop, encode_gather};
 use ym_gpu::kernels::lens_field::{FieldTablesBuffer, encode_field};
-use ym_gpu::kernels::lens_reshape::{BokehPlaneBuffer, BokehScaleBuffers, encode_reshape};
 use ym_gpu::kernels::lens_flare::{
     FlareLensBuffer, FlarePlaneBuffer, FlareScaleBuffers, encode_flare,
 };
+use ym_gpu::kernels::lens_reshape::{BokehPlaneBuffer, BokehScaleBuffers, encode_reshape};
 use ym_gpu::stream::PassList;
 use ym_lens::device::{FieldPass, FlareMix};
 use ym_lens::{LensPlanes, PixelRect};
@@ -119,7 +119,7 @@ impl RawIn {
 /// Where a tile's raw pixels come from.
 pub(super) enum RawSrc {
     /// The raw group at 1/k, as the cache holds it.
-    Group(usize, Backing),
+    Group(Backing),
     /// The 512 px tiles of the full-resolution group (the 100 % view).
     Tiles,
     /// An export's region, made in one call.
@@ -402,7 +402,7 @@ impl Job<'_> {
 
     /// Makes the tile plan's buffers for the photo's lens at the frame `frame` pixels (the scale of the
     /// caller): uploads the ones the device does not hold yet, in jobs of the route.
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     fn lens_device_buffers(
         &mut self,
         route: &GpuRoute,
@@ -488,7 +488,8 @@ impl Job<'_> {
                             b
                         }
                     };
-                    let scale_buf = match device.bokeh_scales.iter().position(|(k, _)| *k == shape) {
+                    let scale_buf = match device.bokeh_scales.iter().position(|(k, _)| *k == shape)
+                    {
                         Some(i) => {
                             let entry = device.bokeh_scales.remove(i);
                             let b = entry.1.clone();
@@ -502,8 +503,8 @@ impl Job<'_> {
                                     "the lens has a bokeh pass but no shapes".into(),
                                 ));
                             };
-                            let b = route
-                                .run_job(move |c, _| BokehScaleBuffers::upload(c, &data))?;
+                            let b =
+                                route.run_job(move |c, _| BokehScaleBuffers::upload(c, &data))?;
                             device.bokeh_scales.push((shape, b.clone()));
                             while device.bokeh_scales.len() > BOKEH_SCALES_KEPT {
                                 device.bokeh_scales.remove(0);
@@ -658,7 +659,10 @@ impl Job<'_> {
         let l2_rect = grown(field_halo);
         let mut want = grown(flare_halo.max(field_halo));
         let bokeh = bokeh.map(|(planes, scale)| {
-            let l1_need = scale.pass().tile(PixelRect::new(l2_rect.x, l2_rect.y, l2_rect.w, l2_rect.h)).need;
+            let l1_need = scale
+                .pass()
+                .tile(PixelRect::new(l2_rect.x, l2_rect.y, l2_rect.w, l2_rect.h))
+                .need;
             let l1_need = clamp(l1_need);
             let (x0, y0) = (want.x.min(l1_need.x), want.y.min(l1_need.y));
             let (x1, y1) = (want.x1().max(l1_need.x1()), want.y1().max(l1_need.y1()));
@@ -690,7 +694,7 @@ impl Job<'_> {
     fn lens_raw_in(&mut self, src: &RawSrc, want: Rect) -> Result<RawIn, RenderError> {
         let mut raw = RawIn::default();
         match src {
-            RawSrc::Group(_, backing) => raw.push_backing(backing, (0, 0)),
+            RawSrc::Group(backing) => raw.push_backing(backing, (0, 0)),
             RawSrc::Tiles => {
                 let t = self.opts.tile_px.max(64);
                 for ty in want.y / t..=(want.y1() - 1) / t {

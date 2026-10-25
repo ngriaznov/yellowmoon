@@ -71,6 +71,34 @@ impl Sandbox {
         path
     }
 
+    /// Writes a synthetic ARW of defocused lights (`docs/21` section 4, L1): a dark ground with 4 x 6 flat discs of
+    /// 1.5 % of the width, the blur the bokeh detector finds, so Anamorphic reshapes the photo.
+    pub fn arw_bokeh(&self, name: &str, width: u32, height: u32, seed: u64) -> PathBuf {
+        let path = self.photos().join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create folder");
+        }
+        let mut mosaic = gradient_mosaic(width, height, 512, 700, seed);
+        let radius = 0.015 * f64::from(width);
+        for fy in [0.18, 0.4, 0.62, 0.84] {
+            for fx in [0.1, 0.26, 0.42, 0.58, 0.74, 0.9] {
+                let (cx, cy) = (fx * f64::from(width), fy * f64::from(height));
+                for y in 0..height {
+                    for x in 0..width {
+                        let d = (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy);
+                        if d <= radius {
+                            mosaic[(y * width + x) as usize] = 7_000;
+                        }
+                    }
+                }
+            }
+        }
+        ArwBuilder::new("ILCE-7RM4", width, height)
+            .write_to(&path, &mosaic)
+            .expect("write synthetic ARW");
+        path
+    }
+
     /// Like [`Sandbox::arw_sized`] with a chosen white level of the mosaic: a lower one is a darker
     /// photo, which the automatic exposure lifts by a different amount. It is taken a day later
     /// than the other synthetic photos: photos shot together share their median exposure (a
@@ -165,6 +193,29 @@ impl Sandbox {
         if synthetic {
             ym_lens::test_support::write_synthetic_lenses(&data.join("lenses"))
                 .expect("write the synthetic lenses");
+        }
+        data
+    }
+
+    /// The shipped data folder in `<root>/data-classical` without the learned bokeh map (`models/bokeh`), so the
+    /// classical detector decides which photos have bokeh whatever the weights say: the same files, linked and not
+    /// copied. For the tests that need a photo with bokeh to be reshaped (`docs/21` section 7).
+    #[cfg(unix)]
+    pub fn data_without_the_bokeh_model(&self) -> PathBuf {
+        use std::os::unix::fs::symlink;
+        let data = self.root().join("data-classical");
+        std::fs::create_dir_all(data.join("models")).expect("data folder");
+        for entry in std::fs::read_dir(data_dir()).expect("the data folder") {
+            let entry = entry.expect("entry");
+            if entry.file_name() != "models" {
+                symlink(entry.path(), data.join(entry.file_name())).expect("link");
+            }
+        }
+        for entry in std::fs::read_dir(data_dir().join("models")).expect("the models") {
+            let entry = entry.expect("entry");
+            if entry.file_name() != "bokeh" {
+                symlink(entry.path(), data.join("models").join(entry.file_name())).expect("link");
+            }
         }
         data
     }

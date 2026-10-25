@@ -18,9 +18,9 @@ use rayon::prelude::*;
 
 use crate::consts::{
     ACCEPT_COLOUR, ACCEPT_CONFIDENCE, B_CAP, B_MIN, BALL_RIM_REACH_PX, FEATHER_FRACTION,
-    FEATHER_MAX_PX, FEATHER_MIN_PX, GATHER_PAD, GUIDE_SIGMA_MIN, GUIDE_SIGMA_NOISE, MAX_STRETCH_TAPS,
-    MIN_LINE_PX, NOISE_FLOOR, SHARP_DILATE, SHARP_GATE, SHARP_RATIO, SHARP_TEST_FROM_PX,
-    STRAND_MARGIN_NOISE, STRAND_VALLEY, SUBJECT_SHARE, UPSAMPLE_RADIUS_PX,
+    FEATHER_MAX_PX, FEATHER_MIN_PX, GATHER_PAD, GUIDE_SIGMA_MIN, GUIDE_SIGMA_NOISE,
+    MAX_STRETCH_TAPS, MIN_LINE_PX, NOISE_FLOOR, SHARP_DILATE, SHARP_GATE, SHARP_RATIO,
+    SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE, STRAND_VALLEY, SUBJECT_SHARE, UPSAMPLE_RADIUS_PX,
 };
 use crate::device::{BokehCells, BokehPass, BokehTile};
 use crate::error::LensError;
@@ -642,13 +642,7 @@ impl<'a> Pass<'a> {
     /// The flags are read at the pixels blurred by at least [`SHARP_TEST_FROM_PX`] and around the balls
     /// (`balls`), nowhere else; a region with neither is not tested. (A region's flags never depend on what the
     /// region holds: the same pixel gets the same flag in every tile.)
-    fn sharp_places(
-        &self,
-        input: &ImageRef,
-        r0: PixelRect,
-        bt: &[f32],
-        balls: bool,
-    ) -> Vec<bool> {
+    fn sharp_places(&self, input: &ImageRef, r0: PixelRect, bt: &[f32], balls: bool) -> Vec<bool> {
         let (fw, fh) = (self.fw, self.fh);
         let hk = self.hk;
         // Only where some pixel is blurred enough to tell, or a ball is near.
@@ -725,14 +719,12 @@ impl<'a> Pass<'a> {
                     let pos = if along_y { y } else { x } as i64;
                     // The index of the pixel at position `j` along the line through `(x, y)`, held inside the
                     // region.
-                    let at = |j: i64| -> usize {
-                        let j = j.clamp(lo, hi) as usize;
-                        if along_y {
-                            (j - r0.y) * r0.w + (x - r0.x)
-                        } else {
-                            (y - r0.y) * r0.w + (j - r0.x)
-                        }
+                    let (step, base) = if along_y {
+                        (r0.w, x - r0.x)
+                    } else {
+                        (1, (y - r0.y) * r0.w)
                     };
+                    let at = |j: i64| -> usize { base + (j.clamp(lo, hi) - lo) as usize * step };
                     // The pixels the line touches (nearest to its ends), inside the region.
                     let first = (pos as f64 - len + 0.5).floor() as i64;
                     let last = (pos as f64 + len + 0.5).floor() as i64;
@@ -740,7 +732,7 @@ impl<'a> Pass<'a> {
                     if (first.clamp(lo, hi)..=last.clamp(lo, hi))
                         .all(|j| f64::from(bt[at(j)]) >= floor)
                     {
-                        let m = line_mean(wk, plane0, &at, pos, len);
+                        let m = line_mean(wk, plane0, at, pos, len);
                         ra[col] = m[0] as f32;
                         rb[col] = m[1] as f32;
                         rc[col] = m[2] as f32;
@@ -894,13 +886,8 @@ impl<'a> Pass<'a> {
 /// each as the width of its part of the interval times the picture's mean over that part. The positions are
 /// relative to the integer `pos`, so no value of the order of the frame's size enters a sum and any tiling
 /// gives the same bits. At most `2 len + 2` segments.
-fn line_mean(
-    wk: &[f32],
-    plane: usize,
-    at: &dyn Fn(i64) -> usize,
-    pos: i64,
-    len: f64,
-) -> [f64; 3] {
+#[inline]
+fn line_mean(wk: &[f32], plane: usize, at: impl Fn(i64) -> usize, pos: i64, len: f64) -> [f64; 3] {
     let value = |j: i64| -> [f64; 3] {
         let i = at(j);
         [
@@ -1243,6 +1230,82 @@ fn redraw(
                     out[c * plane + i] += (s.density[c] * k) as f32;
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A planar picture of `n` pixels along one line (three channels).
+    fn picture(n: usize) -> Vec<f32> {
+        (0..3 * n)
+            .map(|i| ((i * 7919) % 1000) as f32 / 250.0)
+            .collect()
+    }
+
+    /// The reference: the mean of the piecewise-linear picture by fine sampling.
+    fn sampled(wk: &[f32], n: usize, c: usize, pos: i64, len: f64) -> f64 {
+        let at = |t: f64| -> f64 {
+            let t = t.clamp(0.0, (n - 1) as f64);
+            let j = (t.floor() as usize).min(n - 2);
+            let f = t - j as f64;
+            let v = |a: usize| f64::from(wk[c * n + a]);
+            v(j) + f * (v(j + 1) - v(j))
+        };
+        let steps = 200_000;
+        let mut acc = 0.0;
+        for i in 0..steps {
+            acc += at(pos as f64 - len + 2.0 * len * (i as f64 + 0.5) / steps as f64);
+        }
+        acc / steps as f64
+    }
+
+    #[test]
+    fn the_line_mean_is_the_integral_of_the_linear_picture() {
+        let n = 40;
+        let wk = picture(n);
+        let at = |j: i64| j.clamp(0, n as i64 - 1) as usize;
+        for (pos, len) in [(17, 3.4), (20, 0.7), (11, 6.0), (25, 5.25)] {
+            let got = line_mean(&wk, n, at, pos, len);
+            for (c, g) in got.iter().enumerate() {
+                let want = sampled(&wk, n, c, pos, len);
+                assert!(
+                    (g - want).abs() < 1e-6,
+                    "pos {pos} len {len} channel {c}: {g} against {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_edges_repeat_and_a_constant_stays() {
+        let n = 16;
+        let wk = vec![0.75f32; 3 * n];
+        let at = |j: i64| j.clamp(0, n as i64 - 1) as usize;
+        // An interval hanging over the line's end.
+        let m = line_mean(&wk, n, at, 1, 5.0);
+        for v in m {
+            assert!((v - 0.75).abs() < 1e-12, "{v}");
+        }
+    }
+
+    #[test]
+    fn a_line_in_a_region_with_another_origin_gives_the_same_bits() {
+        // The same line read from two regions that start at different places gives the same mean, bit for bit:
+        // the sum runs over the same unit segments, whatever the region's origin.
+        let n = 90;
+        let wk = picture(n);
+        let whole = |j: i64| j.clamp(0, n as i64 - 1) as usize;
+        let sub: Vec<f32> = (0..3)
+            .flat_map(|c| wk[c * n + 30..c * n + 70].to_vec())
+            .collect();
+        let part = |j: i64| (j.clamp(30, 69) - 30) as usize;
+        let a = line_mean(&wk, n, whole, 48, 9.3);
+        let b = line_mean(&sub, 40, part, 48, 9.3);
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!(x.to_bits(), y.to_bits());
         }
     }
 }

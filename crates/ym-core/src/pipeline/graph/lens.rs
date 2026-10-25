@@ -42,8 +42,8 @@
 //!
 //! With [`GpuStages::LENS`](crate::app::gpu::GpuStages) on and a view that keeps its images on the
 //! device, [`lens_device`](super::lens_device) runs the stages as kernels per tile, reading the raw
-//! group where it lives, and the caches hold device images (no readback, `docs/21` section 3). L1 still
-//! runs on the host where it acts (its output is uploaded as the input of L2). Any other request
+//! group where it lives (L1 included: its twelve dispatches feed L2 on the device), and the caches hold
+//! device images (no readback, `docs/21` section 3). Any other request
 //! reads the raw group back ([`Job::group`]) and the lens runs on the host; its output is a host image,
 //! which every consumer (the sampler and the colour pass on the device, the CPU colour pass, the export
 //! tail) takes. The raw chain of a full-resolution region still runs on the device when it can, with a
@@ -823,7 +823,7 @@ impl Job<'_> {
                 .as_mut()
                 .and_then(|groups| groups.get(&z_key).cloned())
         };
-        let src = lens_device::RawSrc::Group(k, raw);
+        let src = lens_device::RawSrc::Group(raw);
         let tile = lens_device::GROUP_TILE_PX;
         let mut pieces = Vec::new();
         let mut z_pieces = Vec::new();

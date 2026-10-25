@@ -318,6 +318,34 @@ impl Developed {
     }
 }
 
+/// A night scene of defocused lights (discs of 1.5 % of the width on a dark ground, 4 x 6 of them): the blur the
+/// bokeh detector finds, so L1 (`docs/21` section 4) reshapes the photo when a slider asks for it.
+pub fn bokeh_developed(w: u32, h: u32, model: &str, profile: &str) -> Developed {
+    let scene = Scene::new(w, h, light(profile, 5500.0), Layout::Uniform, 0.02).noise(2e-4, 1e-6);
+    let mut mosaic = scene.mosaic();
+    let code = (scene.black + 0.45 * (scene.white_level - scene.black)) as u16;
+    let radius = 0.015 * f64::from(w);
+    for fy in [0.18, 0.4, 0.62, 0.84] {
+        for fx in [0.1, 0.26, 0.42, 0.58, 0.74, 0.9] {
+            let (cx, cy) = (fx * f64::from(w), fy * f64::from(h));
+            for y in 0..h {
+                for x in 0..w {
+                    let d = (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy);
+                    if d <= radius {
+                        mosaic[(y * w + x) as usize] = code;
+                    }
+                }
+            }
+        }
+    }
+    let dir = tempfile::tempdir().expect("temp dir");
+    scene
+        .builder(model)
+        .write_to(&dir.path().join("DSC00001.ARW"), &mosaic)
+        .expect("write the synthetic ARW");
+    Developed::open(dir)
+}
+
 /// The mean of channel `c` (0 R, 1 G, 2 B) of an RGBA frame over the pixels of a rectangle.
 pub fn mean_rgba(
     frame: &ym_core::pipeline::RenderedFrame,

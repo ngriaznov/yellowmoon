@@ -974,17 +974,44 @@ fn a_cold_start_compiles_the_fit_view_then_the_view_stages_then_the_full_resolut
         OutputSharpenTransfer,
         Encode,
     ];
+    // The lens between the raw group and the colour pass (L1 to L3), compiled right after the fit view's kernels.
+    let lens = [
+        LensFieldPyramid,
+        LensFieldGather,
+        LensFieldFinish,
+        LensFlareRestore,
+        LensFlareNodes,
+        LensFlare,
+        LensReshapeGuide,
+        LensReshapeBlur,
+        LensReshapeLumRoot,
+        LensReshapeGrad,
+        LensReshapeFlags,
+        LensReshapeDilate,
+        LensReshapeProtect,
+        LensReshapeCover,
+        LensReshapeRamp,
+        LensReshapeTakeOut,
+        LensReshapeVGather,
+        LensReshapeFinal,
+    ];
     let unused = [SpikeNormalize, SpikeDemosaic, SpikeMatrix, Probe];
     let last_of = |ids: &[KernelId]| ids.iter().map(|&k| at(k)).max().expect("some");
     let first_of = |ids: &[KernelId]| ids.iter().map(|&k| at(k)).min().expect("some");
     assert_eq!(first_of(&fit), 0);
     assert!(
-        last_of(&fit) < first_of(&view),
-        "the fit view before the view stages"
+        last_of(&fit) < first_of(&lens) && last_of(&lens) < first_of(&view),
+        "the fit view, then the lens, before the view stages"
     );
     let chain: Vec<KernelId> = KernelId::ALL
         .into_iter()
-        .filter(|k| !fit.contains(k) && !view.contains(k) && !unused.contains(k) && *k != Resize)
+        .filter(|k| {
+            !fit.contains(k)
+                && !lens.contains(k)
+                && !view.contains(k)
+                && !unused.contains(k)
+                && *k != Resize
+        })
         .collect();
     assert!(!chain.is_empty());
     assert!(
