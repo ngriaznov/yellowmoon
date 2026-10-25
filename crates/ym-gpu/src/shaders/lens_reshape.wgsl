@@ -602,7 +602,7 @@ fn lr_cover_main(gid: vec3<u32>) {
     cnt[gid.y * u32(r.z) + gid.x] = n;
 }
 
-// The ramp: the share of the window that has a blur, from 0 at one half to 1 at nine tenths, smoothed; in a ball's
+// The ramp: the share of the window that has a blur, from 0 at one half to 1 at one half plus LR_RAMP_SPAN, smoothed; in a ball's
 // disc at least the ball's weight. What is stored is the gathers' blur: the map's, held at the cap, times the ramp.
 fn lr_ramp_main(gid: vec3<u32>) {
     let r = pu.r0;
@@ -623,7 +623,7 @@ fn lr_ramp_main(gid: vec3<u32>) {
     var v = 1.0;
     if (f > 0) {
         let n = f32((2 * f + 1) * (2 * f + 1));
-        let t = clamp((f32(total) / n - 0.5) / 0.4, 0.0, 1.0);
+        let t = clamp((f32(total) / n - 0.5) / LR_RAMP_SPAN, 0.0, 1.0);
         v = t * t * (3.0 - 2.0 * t);
     }
     // Inside a ball's disc the stretch is at least the ball's weight: the full stretch over the ball, fading out over

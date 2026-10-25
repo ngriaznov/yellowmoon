@@ -94,6 +94,22 @@ fn main() {
     };
     let raw = data.clone();
     let mut data = data;
+    if let Ok(ev) = std::env::var("RESTORE") {
+        // Experiment: the headroom of a saturated light is 2^ev, for the pixels with a saturated channel.
+        let ev: f64 = ev.parse().expect("RESTORE");
+        for i in 0..w * h {
+            let n = (0..3)
+                .map(|c| f64::from(data[c * w * h + i]) / f64::from(g0[c]))
+                .fold(0.0f64, f64::max);
+            let sat = smooth((n - 0.9) / 0.1);
+            if sat > 0.0 {
+                let gain = 1.0 + sat * (ev.exp2() - 1.0);
+                for c in 0..3 {
+                    data[c * w * h + i] *= gain as f32;
+                }
+            }
+        }
+    }
     if std::env::var("LIFT").is_ok() {
         let g = [f64::from(g0[0]), f64::from(g0[1]), f64::from(g0[2])];
         for i in 0..w * h {

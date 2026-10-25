@@ -1631,7 +1631,10 @@ fn ochres_and_yellows_get_the_up_side_and_skin_does_not() {
                 "{rgb:?} is at hue {} not in the window",
                 lch.h
             );
-            let (a, b) = (off.apply_to_display_linear(rgb), on.apply_to_display_linear(rgb));
+            let (a, b) = (
+                off.apply_to_display_linear(rgb),
+                on.apply_to_display_linear(rgb),
+            );
             assert_ne!(a, b, "{target:?} {rgb:?}");
         }
         for rgb in SKIN {

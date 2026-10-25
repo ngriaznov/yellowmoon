@@ -964,9 +964,10 @@ fn ghost_centres_lie_on_the_line_from_the_source_through_the_centre() {
             assert!(weight > 0.0);
             let off = ((got.0 - want.0).powi(2) + (got.1 - want.1).powi(2)).sqrt();
             // The shading (brighter toward the optical axis) moves the centroid along the line by a quarter of
-            // `GHOST_SHADE` of the ghost's apothem at most (here 0.03 half-diagonals, 8.6 px).
+            // `GHOST_SHADE` of the ghost's apothem (here 0.03 half-diagonals, 8.6 px) and more where the
+            // attachment widens the ghost along the axis.
             assert!(
-                off < 0.25 * GHOST_SHADE * 0.03 * 288.0 + 0.5,
+                off < 0.4 * GHOST_SHADE * 0.03 * 288.0 + 0.5,
                 "{axis:?} A{anamorphic} m = {m}: the ghost is at {got:?}, expected {want:?}"
             );
             // On the line through the source and the centre, and on the far side for negative m.
@@ -1726,7 +1727,8 @@ fn a_ghost_is_brighter_on_the_side_that_faces_the_axis() {
     let (s, centre) = (0.2, (240.0, 160.0));
     let lib = one_ghost_library(-0.5, s, 0.1, 0.0004, 520.0);
     let mut scene = Scene::new(480, 320);
-    scene.fill(300, 160, 3, 3, [0.85; 3]);
+    // A clipped light: a light of 0.85 holds so little that its ghost is under the budget and is not drawn.
+    scene.fill(300, 160, 3, 3, [1.0; 3]);
     let t = terms_of(&lib, &scene);
     let n = scene.w * scene.h;
     let hd = 0.5 * ((480.0f64).powi(2) + (320.0f64).powi(2)).sqrt();
@@ -1747,8 +1749,6 @@ fn a_ghost_is_brighter_on_the_side_that_faces_the_axis() {
     );
 }
 
-#[test]
-fn ghost_tints_are_pale() {
 #[test]
 fn ghost_tints_are_pale() {
     // A coating that reflects mostly one end of the spectrum has a tint that differs several times between the

@@ -192,9 +192,10 @@ impl Law {
         y
     }
 
-    /// What the oval field radius is divided by (`docs/21` section 4, L2): at least 1, at least the oval
-    /// radius of the middle of the long edge, and enough that the corner lies no farther past 1 than 0.6 of the
-    /// way to where the end slope would take `T` to 0.
+    /// What the oval field radius is divided by (`docs/21` section 4, L2): at least 1, at least what puts the
+    /// oval radius of the middle of the long edge at 0.93 (or at the unstretched side's own radius if that is
+    /// farther out), and enough that the corner lies no farther past 1 than 0.6 of the way to where the end
+    /// slope would take `T` to 0.
     fn scale(&self, alpha: f64, (xa_max, ya_max): (f64, f64)) -> f64 {
         let side = alpha * xa_max;
         let corner = side.hypot(ya_max);
@@ -204,7 +205,7 @@ impl Law {
         } else {
             0.0
         };
-        1.0f64.max(side).max(to_corner)
+        1.0f64.max(side / 0.93f64.max(xa_max)).max(to_corner)
     }
 
     /// `w(rho')` in half-diagonals, before the cap.

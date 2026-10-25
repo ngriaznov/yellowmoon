@@ -356,8 +356,14 @@ fn yellows_move_on_the_up_side_only_on_the_device() {
     // The stops of `red_image` are 4 pixels each (4 chromas): the first 5 stops are below -0.5.
     let stops_below_cross = 5 * 4;
     let off = chain_with(OutputTarget::Viewport, None);
-    let up = chain_with(OutputTarget::Viewport, Some(RedChroma::new(1.0, 0.0).expect("up")));
-    let dn = chain_with(OutputTarget::Viewport, Some(RedChroma::new(0.0, 1.0).expect("dn")));
+    let up = chain_with(
+        OutputTarget::Viewport,
+        Some(RedChroma::new(1.0, 0.0).expect("up")),
+    );
+    let dn = chain_with(
+        OutputTarget::Viewport,
+        Some(RedChroma::new(0.0, 1.0).expect("dn")),
+    );
     let stage = [ColorOutput::Stage(Stop::C12)];
     for dev in gpus() {
         let base = render(dev, &off, &img, &stage);
@@ -390,7 +396,11 @@ fn yellows_move_on_the_up_side_only_on_the_device() {
                 }
             }
         }
-        assert!(moved_up > 60, "{:?}: the up side moved {moved_up} samples", dev.mode);
+        assert!(
+            moved_up > 60,
+            "{:?}: the up side moved {moved_up} samples",
+            dev.mode
+        );
     }
 }
 

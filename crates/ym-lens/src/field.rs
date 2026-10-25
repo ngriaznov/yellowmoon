@@ -46,7 +46,7 @@ use rayon::prelude::*;
 
 use crate::consts::{
     COPY_BELOW_PX, LATERAL_COLOR_SCALE, MAX_TAPS_SIDE, PSF_SIZE, PSF_WAVELENGTHS, RADII,
-    T_OVERSHOOT, TAP_SPACING_MAX_PX, W_KNEE, W_MAX,
+    SIDE_TABLE_RADIUS, T_OVERSHOOT, TAP_SPACING_MAX_PX, W_KNEE, W_MAX,
 };
 use crate::data::LensData;
 use crate::error::LensError;
@@ -506,13 +506,13 @@ impl FieldTables {
         )
     }
 
-    /// How much the table radius is the oval field radius divided by, for a frame whose far edge along the
-    /// axis lies at `xa_max` half-diagonals and whose far edge across it at `ya_max`, under the stretch
-    /// `alpha`. At least 1 (so that a frame without the attachment reads the tables as they are), at least the
-    /// oval radius of the middle of the long edge (the traced corner value falls on the side of the frame, as
-    /// the plateau of the first build had it, and the side is no darker than that), and enough that the
-    /// corner of the frame lies no farther past the last radius than [`T_OVERSHOOT`] of the way to the
-    /// place where the end slope would take `T` to 0.
+    /// What the oval field radius is divided by to read the relative illumination, for a frame whose far edge
+    /// along the axis lies at `xa_max` half-diagonals and whose far edge across it at `ya_max`, under the stretch
+    /// `alpha`. At least 1 (so that a frame without the attachment reads the tables as they are), at least what
+    /// puts the oval radius of the middle of the long edge at [`SIDE_TABLE_RADIUS`] (or at the unstretched
+    /// side's own radius where that is farther out, so that the scale grows from 1 with the attachment), and
+    /// enough that the corner of the frame lies no farther past the last radius than [`T_OVERSHOOT`] of the way
+    /// to the place where the end slope would take `T` to 0.
     pub(crate) fn radius_scale(&self, alpha: f64, xa_max: f64, ya_max: f64) -> f64 {
         let side = alpha * xa_max;
         let corner = (side * side + ya_max * ya_max).sqrt();
@@ -523,7 +523,9 @@ impl FieldTables {
         } else {
             0.0
         };
-        1.0f64.max(side).max(to_corner)
+        1.0f64
+            .max(side / SIDE_TABLE_RADIUS.max(xa_max))
+            .max(to_corner)
     }
 
     /// The half-width `w(rho')` of the spread functions (half-diagonals) on segment `seg` with blend `t`:
@@ -1811,12 +1813,13 @@ mod tests {
         );
     }
 
-    /// The scale that puts the traced end value on the side of the frame: 1 without the attachment (the
-    /// tables are read as they are), the oval radius of the middle of the long edge from Anamorphic 70 on, more
-    /// where the corner would otherwise be left with less than `1 - T_OVERSHOOT` of the traced end value; and
-    /// the corner's gain is never below that, so no lens is cut to black or to a negative gain.
+    /// The scale that puts the side of the frame at [`SIDE_TABLE_RADIUS`] of the tables: 1 without the attachment
+    /// (the tables are read as they are), the oval radius of the middle of the long edge over it from about
+    /// Anamorphic 45 on, more where the corner would otherwise be left with less than `1 - T_OVERSHOOT` of the
+    /// traced end value; and the corner's gain is never below that, so no lens is cut to black or to a negative
+    /// gain.
     #[test]
-    fn the_table_radius_scale_keeps_the_side_at_the_traced_end_and_the_corner_above_zero() {
+    fn the_table_radius_scale_keeps_the_side_at_the_tables_side_radius_and_the_corner_above_zero() {
         for kind in LensKind::ALL {
             let p0 = shipped_plan(kind, 100.0, 0.0, 1500, 1000, Axis::X);
             let g0 = Geometry::new(&p0, 1500, 1000, Options::default()).expect("field optics");
@@ -1836,9 +1839,10 @@ mod tests {
                     assert_eq!(e, 1.0);
                     let (um, vm) = (0.5 * geo.fw / geo.h, 0.5 * geo.fh / geo.h);
                     let xm = if axis == Axis::X { um } else { vm };
+                    // The middle of the long edge is at the side radius of the tables or inside it.
                     assert!(
-                        geo.radius_scale >= (p.alpha() * xm).max(1.0) - 1e-12,
-                        "{kind} {fw}x{fh} A{anamorphic}: the side is past the last radius"
+                        p.alpha() * xm / geo.radius_scale <= SIDE_TABLE_RADIUS.max(xm) + 1e-12,
+                        "{kind} {fw}x{fh} A{anamorphic}: the side is past the tables' side radius"
                     );
                     // The corner's relative illumination, at the scaled radius.
                     let corner = geo.kernel_at(um, vm).gain;

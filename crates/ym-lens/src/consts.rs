@@ -60,6 +60,18 @@ pub const W_KNEE: f64 = 0.75 * W_MAX;
 /// lens, so each keeps its own lateral colour relative to the others.
 pub const LATERAL_COLOR_SCALE: f64 = 0.3;
 
+/// The table radius the middle of the long edge of the frame is given under the attachment (`docs/21` section 4, L2,
+/// *As built (the field law)*).
+///
+/// The oval field radius puts the side of the frame past the traced lens's last radius (1.08 at Anamorphic 100 on
+/// a 3:2 frame), where the lens has no data. The law reads the tables at the oval radius over a scale that puts the
+/// side at this radius (at least 1, and at least the unstretched side's own radius), so that the side is as dark
+/// as the traced lens is at 0.93 of its corner (its relative illumination there: Vintage 0.64, Default 0.47): dark
+/// enough to read as the attachment's falloff, not so dark that a plain sky, fog or snow reads as a frame. At 1
+/// the sky of the darkest test photo (46435) kept 0.47 to 0.49 of its brightness at the outer 20 px at Vintage
+/// 100 / 100 / 100 against the 0.55 asked for.
+pub const SIDE_TABLE_RADIUS: f64 = 0.93;
+
 /// How far past the last table radius the corner of the frame may lie under the attachment, as a share of the
 /// distance in which the traced relative illumination would fall to 0 along its end slope (`docs/21` section 4,
 /// L2, *As built (the field law)*).
@@ -68,7 +80,7 @@ pub const LATERAL_COLOR_SCALE: f64 = 0.3;
 /// has no data. The law carries the end slope straight on there (a falloff whose slope never lessens, so
 /// that no band appears on a flat field); a straight line reaches 0, so the radius is scaled until the corner
 /// is no farther out than this share of the way to 0: with 0.6 a corner has at least 0.4 of the traced
-/// end value. Only the Triplet (whose corner is nearly dark) and the Sonnar (a steep end) are scaled by it.
+/// end value. On a 3:2 frame only the Triplet, whose corner is nearly dark, is scaled by it.
 pub const T_OVERSHOOT: f64 = 0.6;
 
 /// A field-optics kernel whose half-width is below this many pixels is a copy of the input.
@@ -302,6 +314,14 @@ pub const STREAK_SIGMA_EXTENT: f64 = 0.1;
 /// area makes a soft faint band and a point makes a line.
 pub const STREAK_SIGMA_REF_HD: f64 = 0.03;
 
+/// A light larger than this (the larger side of its bounding box, half-diagonals) starts to be a surface, not a
+/// light, and its streak fades; from [`STREAK_SURFACE_END_HD`] on it makes none (a smooth step between). A large
+/// bright area (a lit wall, a window, blurred pavement) does not draw a line or a band across the picture.
+pub const STREAK_SURFACE_START_HD: f64 = 0.12;
+
+/// See [`STREAK_SURFACE_START_HD`].
+pub const STREAK_SURFACE_END_HD: f64 = 0.24;
+
 /// Across the axis a streak is two Gaussians: the core (the light's width) and a halo `STREAK_HALO_WIDTH` times as
 /// wide that holds this share of its light, so the line has no sharp feet.
 pub const STREAK_HALO_SHARE: f64 = 0.2;
@@ -331,7 +351,7 @@ pub const STREAK_MAX_LIGHTS: usize = 5;
 
 /// The sum over the lights of a frame of (peak in clip levels times reach in half-diagonals) is brought down to
 /// this when it is larger, every streak by the same factor, so a frame of fifty lights does not fill with lines.
-pub const STREAK_TOTAL_CAP: f64 = 1.5;
+pub const STREAK_TOTAL_CAP: f64 = 0.4;
 
 /// Each streak after the brightest is weaker by this factor than the one before it (`STREAK_RANK_DECAY^rank`): a
 /// frame of equally bright lights (a Christmas tree) has one clear streak and fainter ones, never a ladder.
@@ -342,7 +362,7 @@ pub const STREAK_RANK_DECAY: f64 = 0.75;
 pub const STREAK_REL_POWER: f64 = 1.0;
 
 /// A streak whose peak would be under this (clip levels) is not drawn: it is under what a dark sky shows.
-pub const STREAK_PEAK_FLOOR: f64 = 0.006;
+pub const STREAK_PEAK_FLOOR: f64 = 0.03;
 
 /// Two lights merge into one streak when their rows (the positions across the axis) are within
 /// `STREAK_MERGE_BASE_HD + STREAK_MERGE_SIGMAS` of their widths' sum, and their positions along the axis within
@@ -523,7 +543,14 @@ pub const SUBJECT_SHARE: f64 = 0.5;
 /// finds sharp detail) over this fraction of the longest line, within [`FEATHER_MIN_PX`] and
 /// [`FEATHER_MAX_PX`] pixels at the tile's scale: a hard border cuts the lines of neighbouring pixels differently
 /// and tears the picture along it.
-pub const FEATHER_FRACTION: f64 = 0.6;
+pub const FEATHER_FRACTION: f64 = 0.8;
+
+/// The ramp that fades the stretch out at the border of the blur map is the share of the feather's window that has a
+/// blur, from one half (the border) to this share, smoothed (`docs/21` section 4, L1, *As built (the ramp)*): with
+/// the feather at [`FEATHER_FRACTION`] of the longest line, the stretch of a pixel grows by at most about one pixel of
+/// line for every pixel it lies from a sharp subject, so the halo that touches an in-focus subject is not smeared
+/// at full length beside it and no straight edge shows where the smear starts.
+pub const RAMP_SHARE_TO: f64 = 1.0;
 
 /// See [`FEATHER_FRACTION`].
 pub const FEATHER_MIN_PX: usize = 2;

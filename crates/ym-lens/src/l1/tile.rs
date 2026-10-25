@@ -23,7 +23,8 @@ use rayon::prelude::*;
 use crate::consts::{
     ACCEPT_COLOUR, ACCEPT_CONFIDENCE, B_CAP, B_MIN, BALL_RIM_REACH_PX, FEATHER_FRACTION,
     FEATHER_MAX_PX, FEATHER_MIN_PX, GATHER_PAD, GUIDE_SIGMA_MIN, GUIDE_SIGMA_NOISE,
-    MAX_STRETCH_TAPS, MIN_LINE_PX, NOISE_FLOOR, SAMPLE_RATIO_FROM, SAMPLE_RATIO_TO, SHARP_DILATE,
+    MAX_STRETCH_TAPS, MIN_LINE_PX, NOISE_FLOOR, RAMP_SHARE_TO, SAMPLE_RATIO_FROM, SAMPLE_RATIO_TO,
+    SHARP_DILATE,
     SHARP_GATE, SHARP_RATIO, SHARP_SOFT_FROM, SHARP_SOFT_HALF, SHARP_SOFT_TO, SHARP_TEST_FROM_PX,
     STRAND_MARGIN_NOISE, STRAND_VALLEY, SUBJECT_SHARE, UPSAMPLE_RADIUS_PX,
 };
@@ -682,7 +683,7 @@ impl<'a> Pass<'a> {
             }
         }
         // The ramp: the share of the (2 F + 1)^2 window around a pixel that has a blur, from 0 at one half (the
-        // map's border) to 1 at nine tenths, smoothed. A pixel inside a ball has the full stretch where the ball
+        // map's border) to 1 at `RAMP_SHARE_TO`, smoothed. A pixel inside a ball has the full stretch where the ball
         // is (below).
         let mut ramp = vec![1.0f32; r0.w * r0.h];
         if self.feather > 0 {
@@ -692,7 +693,7 @@ impl<'a> Pass<'a> {
             };
             let share = box_mean(&cover, r0, self.feather as i64);
             for (r, c) in ramp.iter_mut().zip(&share) {
-                let t = ((*c - 0.5) / 0.4).clamp(0.0, 1.0);
+                let t = ((*c - 0.5) / (RAMP_SHARE_TO as f32 - 0.5)).clamp(0.0, 1.0);
                 *r = t * t * (3.0 - 2.0 * t);
             }
         }

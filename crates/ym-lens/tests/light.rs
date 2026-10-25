@@ -218,20 +218,28 @@ fn balls_at_the_clip_pattern_are_redrawn_in_neutral_light() {
     let plan = plan_with_clip(LensKind::Default, 0.0, 0.0, 100.0, clip, w, h);
     let planes = LensPlanes::build(&plan, &whole(w, h, &sc.img.data), sc.focus, &|| false)
         .expect("planes");
-    let balls = planes.bokeh().expect("the plan reshapes bokeh").balls();
-    assert!(balls.len() >= 4, "found {}", balls.len());
-    for b in balls {
+    let bp = planes.bokeh().expect("the plan reshapes bokeh");
+    let (bw, bh) = bp.size();
+    let mut checked = 0;
+    // The scene's lights (a bright patch of the blurred texture can be a ball too, and has its own colour).
+    for &(cx, cy, r) in &sc.discs {
+        let Some(b) = bp
+            .balls()
+            .iter()
+            .find(|b| (b.x * bw as f64 - cx).hypot(b.y * bh as f64 - cy) < 0.6 * r)
+        else {
+            continue;
+        };
+        checked += 1;
         let got = chroma(b.energy);
         for c in 0..3 {
             // A rim pixel is a blend of the light and the ground, not the clip pattern: the cast is under 0.04
             // against 0.2 raw (4.0 : 3.4 : 2.6 is 1.2 : 1.02 : 0.78).
             assert!(
                 (got[c] - 1.0).abs() < 0.04,
-                "a ball at ({:.2}, {:.2}) carries {:?}",
-                b.x,
-                b.y,
-                got
+                "the ball of the light at ({cx:.0}, {cy:.0}) carries {got:?}"
             );
         }
     }
+    assert!(checked >= 4, "found the balls of {checked} lights");
 }

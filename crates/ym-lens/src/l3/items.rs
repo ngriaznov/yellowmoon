@@ -30,7 +30,8 @@ use crate::consts::{
     STREAK_MERGE_BASE_HD, STREAK_MERGE_SIGMAS, STREAK_PEAK_FLOOR, STREAK_PEAK_PER_FRACTION,
     STREAK_RANK_DECAY, STREAK_REACH_AT_E0, STREAK_REACH_E0, STREAK_REACH_MIN,
     STREAK_REACH_PER_DECADE, STREAK_REL_POWER, STREAK_SIGMA_EXTENT, STREAK_SIGMA_MIN_HD,
-    STREAK_SIGMA_REF_HD, STREAK_TAIL_CHROMA, STREAK_TOTAL_CAP, STREAK_TURN,
+    STREAK_SIGMA_REF_HD, STREAK_SURFACE_END_HD, STREAK_SURFACE_START_HD, STREAK_TAIL_CHROMA,
+    STREAK_TOTAL_CAP, STREAK_TURN,
 };
 use crate::data::{Aperture, GhostData};
 use crate::l3::geometry::{Frame, Span};
@@ -290,6 +291,8 @@ struct Knobs {
     merge_sigmas: f64,
     merge_along: f64,
     absorb_ratio: f64,
+    surface_start: f64,
+    surface_end: f64,
     tail_chroma: f64,
     total_cap: f64,
 }
@@ -316,6 +319,8 @@ impl Knobs {
             merge_sigmas: knob("YM_S_MERGE_SIGMAS", STREAK_MERGE_SIGMAS),
             merge_along: knob("YM_S_MERGE_ALONG", STREAK_MERGE_ALONG_HD),
             absorb_ratio: knob("YM_S_ABSORB", STREAK_ABSORB_RATIO),
+            surface_start: knob("YM_S_SURF0", STREAK_SURFACE_START_HD),
+            surface_end: knob("YM_S_SURF1", STREAK_SURFACE_END_HD),
             tail_chroma: knob("YM_S_TAIL", STREAK_TAIL_CHROMA),
             total_cap: knob("YM_S_CAP", STREAK_TOTAL_CAP),
         }
@@ -998,8 +1003,13 @@ impl<'a> Items<'a> {
             e: f64,
         }
         let penalty = |sigma: f64| 1.0 / (1.0 + (sigma / k.sigma_ref).powi(2));
+        let surface = |extent: f64| {
+            1.0 - smoothstep(
+                (extent - k.surface_start) / (k.surface_end - k.surface_start),
+            )
+        };
         let mut order: Vec<usize> = (0..clusters.len()).collect();
-        let eff = |c: &Cluster| c.e * penalty(c.sigma);
+        let eff = |c: &Cluster| c.e * penalty(c.sigma) * surface(c.extent);
         order.sort_by(|a, b| eff(&clusters[*b]).total_cmp(&eff(&clusters[*a])).then(a.cmp(b)));
         let eff_top = order.first().map_or(1.0, |i| eff(&clusters[*i]));
         let mut planned: Vec<Planned> = Vec::new();
@@ -1011,7 +1021,12 @@ impl<'a> Items<'a> {
             let c = &clusters[i];
             let sat = c.e / (c.e + k.e_half);
             let rel = (eff(c) / eff_top).powf(k.rel_power);
-            let peak = peak_max * sat * penalty(c.sigma) * rel * k.rank_decay.powi(rank as i32);
+            let peak = peak_max
+                * sat
+                * penalty(c.sigma)
+                * surface(c.extent)
+                * rel
+                * k.rank_decay.powi(rank as i32);
             if peak < k.peak_floor {
                 continue;
             }
