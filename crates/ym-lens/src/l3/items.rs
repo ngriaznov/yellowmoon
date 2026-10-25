@@ -931,6 +931,7 @@ impl<'a> Items<'a> {
             /// The brightest member's size.
             extent: f64,
             sigma: f64,
+            members: usize,
         }
         let sigma_of = |var_across: f64, extent: f64| -> f64 {
             (k.sigma_min * k.sigma_min + var_across + (k.sigma_ext * extent).powi(2)).sqrt()
@@ -971,6 +972,7 @@ impl<'a> Items<'a> {
                         *a += b;
                     }
                     c.sigma = sigma_of(c.var_across, c.extent);
+                    c.members += 1;
                     continue 'lights;
                 }
             }
@@ -981,6 +983,7 @@ impl<'a> Items<'a> {
                 var_across: src.var_across,
                 extent: src.extent,
                 sigma,
+                members: 1,
             });
         }
         // Step 4: the strength of each, over the strongest.
@@ -991,6 +994,8 @@ impl<'a> Items<'a> {
             sigma: f64,
             n_src: [f64; 3],
             top: f64,
+            members: usize,
+            e: f64,
         }
         let penalty = |sigma: f64| 1.0 / (1.0 + (sigma / k.sigma_ref).powi(2));
         let mut order: Vec<usize> = (0..clusters.len()).collect();
@@ -1027,15 +1032,27 @@ impl<'a> Items<'a> {
                 sigma: c.sigma,
                 n_src,
                 top,
+                members: c.members,
+                e: c.e,
             });
         }
         if std::env::var("YM_STREAK_DEBUG").is_ok() {
             for p in &planned {
                 let f = &self.frame;
+                let (x, y) = match f.axis {
+                    crate::plan::Axis::X => (
+                        p.pos[0] * f.half_diag + 0.5 * f.w as f64,
+                        p.pos[1] * f.half_diag + 0.5 * f.h as f64,
+                    ),
+                    crate::plan::Axis::Y => (
+                        p.pos[1] * f.half_diag + 0.5 * f.w as f64,
+                        p.pos[0] * f.half_diag + 0.5 * f.h as f64,
+                    ),
+                };
                 eprintln!(
-                    "STREAKPLAN along {:.0} across {:.0} (frame px, axis coordinates) sigma {:.2} px peak {:.4} reach {:.2} ({:.0} px) colour {:.2},{:.2},{:.2}",
-                    p.pos[0] * f.half_diag + 0.5 * f.w.max(f.h) as f64,
-                    p.pos[1] * f.half_diag + 0.5 * f.w.min(f.h) as f64,
+                    "STREAKPLAN xy=({x:.0},{y:.0}) members {} e {:.4} sigma {:.2} px peak {:.4} reach {:.2} ({:.0} px) colour {:.2},{:.2},{:.2}",
+                    p.members,
+                    p.e,
                     p.sigma * f.half_diag,
                     p.peak,
                     p.reach,
@@ -1766,6 +1783,44 @@ mod tests {
         }
         eprintln!("polygon ghosts, roundness 0 / 0.5 / 0.8: {worst:?}");
         assert!(worst.iter().all(|e| *e < 1e-3), "{worst:?}");
+    }
+
+    #[test]
+    fn the_ghosts_of_one_lens_have_different_pale_tints() {
+        // A coating with its reflectance minimum at 550 nm, rising toward both ends, as every shipped coating
+        // but the bare glass has: unshifted, all the ghosts of a lens would be one magenta.
+        let curves = ym_color::spectral::SpectralCurves::from_path(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/cameras/sony/Sony_ILCE-7RM4_380_780_5.json"
+        ))
+        .unwrap();
+        let cam = CameraResponse::from_curves(&curves).unwrap();
+        let coating: Vec<f64> = (0..31)
+            .map(|k| 0.003 * (1.0 + ((400.0 + 10.0 * f64::from(k) - 550.0) / 100.0).powi(2)))
+            .collect();
+        let tints: Vec<[f64; 3]> = (0..12).map(|i| lens_ghost_tint(&cam, &coating, i)).collect();
+        let (mut warm, mut cool) = (0, 0);
+        for t in &tints {
+            let spread = t[0].max(t[1]).max(t[2]) / t[0].min(t[1]).min(t[2]);
+            assert!(spread <= GHOST_TINT_MAX_RATIO + 1e-9, "{t:?}");
+            assert!((t[0] + t[1] + t[2] - 3.0).abs() < 1e-9, "{t:?}");
+            warm += usize::from(t[0] > t[2] * 1.02);
+            cool += usize::from(t[2] > t[0] * 1.02);
+        }
+        assert!(warm >= 3 && cool >= 3, "warm {warm}, cool {cool}: {tints:?}");
+        // The shifts cover the range evenly, are the same on every call and stay inside it.
+        let shifts: Vec<f64> = (0..12).map(coating_shift_nm).collect();
+        assert_eq!(shifts, (0..12).map(coating_shift_nm).collect::<Vec<_>>());
+        assert!(shifts.iter().all(|s| {
+            (GHOST_COATING_SHIFT_NM.0..=GHOST_COATING_SHIFT_NM.1).contains(s)
+        }));
+        let (lo, hi) = (
+            shifts.iter().copied().fold(f64::INFINITY, f64::min),
+            shifts.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        );
+        assert!(hi - lo > 0.8 * (GHOST_COATING_SHIFT_NM.1 - GHOST_COATING_SHIFT_NM.0));
+        // A shift of 0 is the coating itself.
+        assert_eq!(shifted_spectrum(&coating, 0.0), coating);
     }
 
     #[test]

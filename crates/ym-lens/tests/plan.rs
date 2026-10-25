@@ -221,7 +221,8 @@ fn the_light_budget_follows_the_spec() {
 #[test]
 fn the_strengths_raise_what_the_data_hold_to_the_floors_and_never_lower_it() {
     use ym_lens::consts::{
-        ATTACHMENT_GHOST_FLOOR, GHOST_FRACTION_FLOOR, GLOW_FRACTION_FLOOR, STARBURST_FRACTION_FLOOR,
+        ATTACHMENT_GHOST_FLOOR, GHOST_FRACTION_FLOOR, GHOST_GAIN_MAX, GLOW_FRACTION_FLOOR,
+        STARBURST_FRACTION_FLOOR,
     };
     let lib = ym_lens::LensLibrary::load(&common::repo_root().join("data")).unwrap();
     for kind in LensKind::ALL {
@@ -242,22 +243,30 @@ fn the_strengths_raise_what_the_data_hold_to_the_floors_and_never_lower_it() {
             st.streak, att.streak.fraction,
             "{kind}: the streak is the data's"
         );
-        for (g, f) in lens.flare.ghosts.iter().zip(&st.ghosts) {
-            assert!(*f >= g.fraction, "{kind}: a ghost was lowered");
+        // The ghosts are the data's, all scaled alike by floor / sum, at most GHOST_GAIN_MAX, never below the data.
+        for (ghosts, fractions, floor, what) in [
+            (&lens.flare.ghosts, &st.ghosts, GHOST_FRACTION_FLOOR, "ghost"),
+            (
+                &att.ghosts,
+                &st.attachment_ghosts,
+                ATTACHMENT_GHOST_FLOOR,
+                "attachment ghost",
+            ),
+        ] {
+            let sum: f64 = ghosts.iter().map(|g| g.fraction).sum();
+            let gain = (floor / sum).clamp(1.0, GHOST_GAIN_MAX);
+            for (g, f) in ghosts.iter().zip(fractions) {
+                assert!(*f >= g.fraction, "{kind}: a {what} was lowered");
+                assert!(
+                    (*f - g.fraction * gain).abs() <= 1e-15 * g.fraction.max(1e-12),
+                    "{kind}: a {what} of {} is {f}, not {gain} times it",
+                    g.fraction
+                );
+            }
+            // The sum is the floor where the gain reaches it, and the data's where they are above it.
+            let got: f64 = fractions.iter().sum();
+            assert!(got >= sum.min(floor) * (1.0 - 1e-12), "{kind}: {what}s {got}");
         }
-        for (g, f) in att.ghosts.iter().zip(&st.attachment_ghosts) {
-            assert!(*f >= g.fraction, "{kind}: an attachment ghost was lowered");
-        }
-        let sum: f64 = st.ghosts.iter().sum();
-        assert!(
-            sum >= GHOST_FRACTION_FLOOR * (1.0 - 1e-12),
-            "{kind}: ghosts {sum}"
-        );
-        let att_sum: f64 = st.attachment_ghosts.iter().sum();
-        assert!(
-            att_sum >= ATTACHMENT_GHOST_FLOOR * (1.0 - 1e-12),
-            "{kind}: {att_sum}"
-        );
         if lens.flare.starburst.fraction > 0.0 {
             assert!(st.burst >= STARBURST_FRACTION_FLOOR - 1e-15);
         } else {
@@ -272,17 +281,6 @@ fn the_strengths_raise_what_the_data_hold_to_the_floors_and_never_lower_it() {
                 assert_eq!(*f, g.fraction, "{kind}");
             }
         }
-        // The small ghosts get most of what the floor adds: the smallest ghost's gain is the largest.
-        let gains: Vec<(f64, f64)> = lens
-            .flare
-            .ghosts
-            .iter()
-            .zip(&st.ghosts)
-            .map(|(g, f)| (g.s, f / g.fraction))
-            .collect();
-        let smallest = gains.iter().min_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
-        let largest = gains.iter().max_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
-        assert!(smallest.1 >= largest.1 - 1e-9, "{kind}: {gains:?}");
         // The whole budget stays small: every lens keeps at least 80 % of the picture's light at the top.
         assert!(p.light_fraction() < 0.2, "{kind}: {}", p.light_fraction());
     }

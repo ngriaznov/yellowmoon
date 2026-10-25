@@ -208,15 +208,25 @@ fn main() {
             let pq = peak.1;
             let r = &rows[pq];
             let rc = &row_codes[pq];
-            // How far from the peak, to each side, the streak still adds 2 codes (an unbroken run).
+            // How far from the peak, to each side, the streak still adds 2 codes: the farthest pixel over 2 codes
+            // that is reached through gaps of at most 60 px (the light itself and what it clips are skipped).
             let side = |dir: isize| -> usize {
-                let mut d = 0usize;
+                let (mut d, mut last, mut gap) = (0usize, 0usize, 0usize);
                 loop {
-                    let p = peak.2 as isize + dir * (d as isize + 1);
-                    if p < 0 || p >= along as isize || rc[p as usize] < 2.0 {
-                        break d;
-                    }
                     d += 1;
+                    let p = peak.2 as isize + dir * d as isize;
+                    if p < 0 || p >= along as isize {
+                        break last;
+                    }
+                    if rc[p as usize] >= 2.0 {
+                        last = d;
+                        gap = 0;
+                    } else if d > 16 {
+                        gap += 1;
+                        if gap > 60 {
+                            break last;
+                        }
+                    }
                 }
             };
             let thick = (start..=end)

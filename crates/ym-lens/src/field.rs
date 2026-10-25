@@ -1835,7 +1835,7 @@ mod tests {
                     let e = p.field_amount();
                     assert_eq!(e, 1.0);
                     let (um, vm) = (0.5 * geo.fw / geo.h, 0.5 * geo.fh / geo.h);
-                    let (xm, ym) = if axis == Axis::X { (um, vm) } else { (vm, um) };
+                    let xm = if axis == Axis::X { um } else { vm };
                     assert!(
                         geo.radius_scale >= (p.alpha() * xm).max(1.0) - 1e-12,
                         "{kind} {fw}x{fh} A{anamorphic}: the side is past the last radius"

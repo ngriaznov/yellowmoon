@@ -417,12 +417,32 @@ impl<'a> Pass<'a> {
         // The working picture over r0, with the balls taken out.
         let mut wk = crop_rgb(input, r0)?;
         take_out(&mut wk, r0, &bt, &shapes);
+        // TEMP-DEBUG-H (remove before the end)
+        if let Ok(dir) = std::env::var("YM_L1_DUMP") {
+            let tag = format!("{dir}/r0_{}_{}_{}_{}", r0.x, r0.y, r0.w, r0.h);
+            let bytes: Vec<u8> = wk.iter().flat_map(|x| x.to_le_bytes()).collect();
+            let _ = std::fs::write(format!("{tag}_wk.f32"), bytes);
+            let _ = std::fs::write(
+                format!("{tag}_info.txt"),
+                format!(
+                    "want {} {} {} {} r1 {} {} {} {} hk {} stretch {} axis_x {}\n",
+                    want.x, want.y, want.w, want.h, r1.x, r1.y, r1.w, r1.h, self.hk, self.stretch,
+                    self.axis == Axis::X
+                ),
+            );
+        }
         // The two gathers.
         let o1 = if self.v_on {
             self.gather_vertical(&wk, r0, &be, r1)
         } else {
             crop_planes(&wk, r0, r1)
         };
+        // TEMP-DEBUG-H (remove before the end)
+        if let Ok(dir) = std::env::var("YM_L1_DUMP") {
+            let tag = format!("{dir}/r0_{}_{}_{}_{}", r0.x, r0.y, r0.w, r0.h);
+            let bytes: Vec<u8> = o1.iter().flat_map(|x| x.to_le_bytes()).collect();
+            let _ = std::fs::write(format!("{tag}_o1.f32"), bytes);
+        }
         let mut o2 = if self.t_on {
             self.gather_tangential(&o1, r1, &be, r0, want)
         } else {

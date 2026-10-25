@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use common::{apply_tile, camera, pattern, tiles, whole};
 use serde_json::{Value, json};
 use ym_lens::consts::{
-    GHOST_FULL_RADIUS, GHOST_PEAK_MAX, GHOST_SMALL_SHARE, GHOST_TINT_MAX_RATIO, GLOW_BOOST_SHARE,
+    GHOST_COATING_SHIFT_NM, GHOST_FULL_RADIUS, GHOST_PEAK_MAX, GHOST_SHADE, GHOST_SMALL_SHARE,
+    GHOST_TINT_MAX_RATIO, GLOW_BOOST_SHARE, HAZE_NEUTRAL,
 };
 use ym_lens::test_support::{coating, write_sums, write_synthetic_lenses};
 use ym_lens::{
@@ -95,15 +96,15 @@ fn parts_library(p: Parts) -> LensLibrary {
             lens["flare"]["aperture"] =
                 json!({ "blades": p.blades, "rotation_deg": 10.0, "roundness": 0.5 });
             lens["flare"]["ghosts"] = if p.ghosts {
-                // The fractions sum to the floor (`GHOST_FRACTION_FLOOR`, 0.004) and the ghosts are 0.1 half-diagonals
-                // across: a clipped light of three pixels is assumed thousands of times brighter than the clip
-                // level, so with more light or smaller ghosts their peaks would pass the bound on a ghost's
-                // brightness (`GHOST_PEAK_MAX`) and the light they spread would no longer be the fraction times
-                // the light's energy (`ghost_peaks_are_bounded...` tests the bound).
+                // The fractions sum to a little over the floor (`GHOST_FRACTION_FLOOR`, 0.0008: no gain) and the ghosts
+                // are 0.3 half-diagonals across: a clipped light of three pixels is assumed thousands of times
+                // brighter than the clip level, so with more light or smaller ghosts their peaks would pass the
+                // bound on a ghost's brightness (`GHOST_PEAK_MAX`, 0.004) and the light they spread would no
+                // longer be the fraction times the light's energy (`ghost_peaks_are_bounded...` tests the bound).
                 json!([
-                    ghost_json(-0.5, 0.3, 0.10, 3.0, 0.0017, 450.0),
-                    ghost_json(0.7, -0.2, 0.12, 3.0, 0.0013, 600.0),
-                    ghost_json(1.4, 0.0, 0.10, 3.0, 0.0010, 520.0),
+                    ghost_json(-0.5, 0.3, 0.30, 3.0, 0.00035, 450.0),
+                    ghost_json(0.7, -0.2, 0.32, 3.0, 0.00030, 600.0),
+                    ghost_json(1.4, 0.0, 0.30, 3.0, 0.00025, 520.0),
                 ])
             } else {
                 json!([])
@@ -116,8 +117,8 @@ fn parts_library(p: Parts) -> LensLibrary {
                 "power": 1.5, "tint": coating(470.0) });
             att["ghosts"] = if p.att_ghosts {
                 json!([
-                    ghost_json(-0.4, 0.2, 0.10, 3.0, 0.0004, 470.0),
-                    ghost_json(0.9, 0.1, 0.09, 3.0, 0.0003, 560.0),
+                    ghost_json(-0.4, 0.2, 0.30, 3.0, 0.0004, 470.0),
+                    ghost_json(0.9, 0.1, 0.28, 3.0, 0.0003, 560.0),
                 ])
             } else {
                 json!([])
@@ -361,6 +362,31 @@ fn tint(coating: &[f64]) -> [f64; 3] {
     [3.0 * t[0] / sum, 3.0 * t[1] / sum, 3.0 * t[2] / sum]
 }
 
+/// The shift of the coating of the lens's ghost `index`, in nm: the fractional parts of the multiples of the golden
+/// ratio's conjugate over `GHOST_COATING_SHIFT_NM` (`docs/21`, L3, *As built (ghosts as light)*).
+fn coating_shift_nm(index: usize) -> f64 {
+    let u = (0.618_033_988_749_894_9 * (index as f64 + 1.0)).fract();
+    GHOST_COATING_SHIFT_NM.0 + (GHOST_COATING_SHIFT_NM.1 - GHOST_COATING_SHIFT_NM.0) * u
+}
+
+/// The coating moved `shift_nm` toward longer wavelengths on the 10 nm grid (linear, the ends held).
+fn shifted(coating: &[f64], shift_nm: f64) -> Vec<f64> {
+    let n = coating.len();
+    (0..n)
+        .map(|k| {
+            let t = (k as f64 - shift_nm / 10.0).clamp(0.0, (n - 1) as f64);
+            let i = (t.floor() as usize).min(n - 1);
+            let j = (i + 1).min(n - 1);
+            coating[i] + (t - i as f64) * (coating[j] - coating[i])
+        })
+        .collect()
+}
+
+/// The tint of the lens's ghost `index`: its coating shifted, then [`ghost_tint`].
+fn lens_ghost_tint(coating: &[f64], index: usize) -> [f64; 3] {
+    ghost_tint(&shifted(coating, coating_shift_nm(index)))
+}
+
 /// The tint of a ghost's coating: [`tint`] with its spread between the channels limited to
 /// `GHOST_TINT_MAX_RATIO` by a power below 1 (`docs/21`, L3, *As built (flares as light)*).
 fn ghost_tint(coating: &[f64]) -> [f64; 3] {
@@ -385,9 +411,11 @@ fn expected_energy(plan: &LensPlan, s: &Sums, strength: f64) -> [f64; 3] {
     let anam = (plan.q() - 1.0) / (att.q_max - 1.0);
     let mut out = [0.0; 3];
     for (c, o) in out.iter_mut().enumerate() {
-        let mut e = (st.glow + st.veil) * s.r[c];
-        for (g, fraction) in lens.flare.ghosts.iter().zip(&st.ghosts) {
-            e += fraction * ghost_tint(&g.coating)[c] * s.h_ghost[c];
+        // The veil is a haze: `HAZE_NEUTRAL` of it is the mean of the channels.
+        let mean_r = (s.r[0] + s.r[1] + s.r[2]) / 3.0;
+        let mut e = st.glow * s.r[c] + st.veil * (s.r[c] + HAZE_NEUTRAL * (mean_r - s.r[c]));
+        for (i, (g, fraction)) in lens.flare.ghosts.iter().zip(&st.ghosts).enumerate() {
+            e += fraction * lens_ghost_tint(&g.coating, i)[c] * s.h_ghost[c];
         }
         e += st.burst * strength * s.h_compact[c];
         for (g, fraction) in att.ghosts.iter().zip(&st.attachment_ghosts) {
@@ -935,8 +963,10 @@ fn ghost_centres_lie_on_the_line_from_the_source_through_the_centre() {
             let (got, weight) = centroid(&d, scene.w, scene.h, want.0, want.1, 16.0);
             assert!(weight > 0.0);
             let off = ((got.0 - want.0).powi(2) + (got.1 - want.1).powi(2)).sqrt();
+            // The shading (brighter toward the optical axis) moves the centroid along the line by a quarter of
+            // `GHOST_SHADE` of the ghost's apothem at most (here 0.03 half-diagonals, 8.6 px).
             assert!(
-                off < 0.5,
+                off < 0.25 * GHOST_SHADE * 0.03 * 288.0 + 0.5,
                 "{axis:?} A{anamorphic} m = {m}: the ghost is at {got:?}, expected {want:?}"
             );
             // On the line through the source and the centre, and on the far side for negative m.
@@ -1434,8 +1464,9 @@ fn shipped_terms(plan: &LensPlan, scene: &Scene) -> Vec<f64> {
 #[test]
 fn every_shipped_lens_draws_visible_ghosts_at_the_top_of_the_slider() {
     // The Default lens's ghosts hold 1e-5 of a light each (two multi-layer surfaces): drawn as the data say they
-    // are 1e-8 of the clip level and the budget leaves them out. The top of Flares raises them (docs/21), so a
-    // clipped light on a dim frame has ghosts far above what 8 bits can show (a 255th of the clip level).
+    // are 1e-8 of the clip level and the budget leaves them out. The top of Flares raises them (docs/21: twice
+    // the data's fractions at most), so a clipped light on a dim frame has ghosts above what 8 bits can show
+    // (a thousandth of the clip level is code 8 at the camera's exposure).
     let lib = shipped();
     let scene = light_on_grey(Axis::X);
     for kind in LensKind::ALL {
@@ -1448,7 +1479,7 @@ fn every_shipped_lens_draws_visible_ghosts_at_the_top_of_the_slider() {
             .map(|(x, y)| t[y * scene.w + x])
             .fold(0.0, f64::max);
         assert!(
-            ghost_peak > 2e-3,
+            ghost_peak > 1e-3,
             "{kind}: the brightest flare light away from the light is {ghost_peak:e} of the clip level"
         );
     }
@@ -1652,9 +1683,9 @@ fn terms_of(lib: &LensLibrary, scene: &Scene) -> Vec<f64> {
 }
 
 #[test]
-fn a_ghosts_edge_is_a_ramp_of_a_fifth_of_its_radius_whatever_the_data_say() {
+fn a_ghosts_edge_is_a_ramp_of_a_quarter_of_its_radius_whatever_the_data_say() {
     // The data's `soft` of 0.0 (a hard disc) is drawn with a step of GHOST_SOFT_MIN radii: the 10 to 90 % width
-    // of the edge is then 2.56 x 0.08 = 20 % of the radius.
+    // of the edge is then 2.56 x 0.10 = 26 % of the radius.
     let (s, centre) = (0.15, (240.0, 160.0));
     let lib = one_ghost_library(-0.5, s, 0.0, 0.004, 520.0);
     let mut scene = Scene::new(480, 320);
@@ -1683,11 +1714,41 @@ fn a_ghosts_edge_is_a_ramp_of_a_fifth_of_its_radius_whatever_the_data_say() {
     }
     let width = at90 - at10;
     assert!(
-        width >= 0.15 * radius,
+        width >= 0.22 * radius,
         "the edge is {width} px wide for a ghost of radius {radius} px (inside {inner})"
     );
 }
 
+#[test]
+fn a_ghost_is_brighter_on_the_side_that_faces_the_axis() {
+    // The image of the aperture is vignetted by the barrel: a ghost is 1 + GHOST_SHADE times its mean at the edge
+    // that faces the optical axis and 1 - GHOST_SHADE at the other, and carries the same light as without it.
+    let (s, centre) = (0.2, (240.0, 160.0));
+    let lib = one_ghost_library(-0.5, s, 0.1, 0.0004, 520.0);
+    let mut scene = Scene::new(480, 320);
+    scene.fill(300, 160, 3, 3, [0.85; 3]);
+    let t = terms_of(&lib, &scene);
+    let n = scene.w * scene.h;
+    let hd = 0.5 * ((480.0f64).powi(2) + (320.0f64).powi(2)).sqrt();
+    let cx = centre.0 - 0.5 * (301.5 - centre.0);
+    let radius = s * hd;
+    // The ghost lies left of the optical axis (the light is on the right): its axis side is its right side.
+    let mean = |x0: f64, x1: f64| {
+        (x0 as usize..x1 as usize)
+            .map(|x| t[n + 161 * scene.w + x])
+            .sum::<f64>()
+            / (x1 - x0)
+    };
+    let toward = mean(cx + 0.35 * radius, cx + 0.55 * radius);
+    let away = mean(cx - 0.55 * radius, cx - 0.35 * radius);
+    assert!(
+        toward > 1.25 * away,
+        "toward the axis {toward:e}, away from it {away:e}"
+    );
+}
+
+#[test]
+fn ghost_tints_are_pale() {
 #[test]
 fn ghost_tints_are_pale() {
     // A coating that reflects mostly one end of the spectrum has a tint that differs several times between the
