@@ -85,13 +85,14 @@ pub struct FieldData {
     pub relative_illumination: Vec<f64>,
     /// The lens's radial distortion.
     pub distortion: Distortion,
-    /// `sigma(rho)`: the swirl profile (0 at the centre).
+    /// `sigma(rho)`: the swirl profile (0 at the centre): at Anamorphic 100 the half-length, in blur radii, of the
+    /// box line the tangential gather has the spread of.
     pub swirl: Vec<f64>,
     /// `a(rho)`: the astigmatism, the extra half-length of the tangential gather in half-diagonals that does not
     /// depend on the blur (0 at the centre, rising towards the edge). A file without it reads as all zeros.
     #[serde(default = "no_astigmatism")]
     pub astigmatism: Vec<f64>,
-    /// `c(rho)`: the cat's-eye offset in ball radii (0: none).
+    /// `c(rho)`: the cat's-eye offset in ball radii at Anamorphic 100 (0: none).
     pub cats_eye: Vec<f64>,
 }
 

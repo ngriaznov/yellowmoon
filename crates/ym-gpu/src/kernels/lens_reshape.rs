@@ -20,7 +20,8 @@
 //! Two kinds, by how long they live ([`ym_lens::device`]): the photo's [`BokehPlaneBuffer`] (the blur map's levels
 //! and the table of blurred cells, uploaded once with the planes) and the scale's [`BokehScaleBuffers`] (the lens's
 //! profiles, the map level's cell geometry, the balls' shapes and the bins that cull them; they depend on
-//! Anamorphic and Edges, not on Flares). The numbers of the pass are [`ym_lens::device::BokehPass`].
+//! Anamorphic, not on Edges (the lens's swirl and cat's-eye are Anamorphic's) and not on Flares). The numbers of
+//! the pass are [`ym_lens::device::BokehPass`].
 //!
 //! # Positions
 //!
@@ -62,7 +63,7 @@ struct ReshapeU {
     zero: [u32; 4],
     /// Frame width, height, half-diagonal in pixels, noise of the square-root luminance.
     frame: [f32; 4],
-    /// Stretch per unit of blur, Edges, the guide's width squared, the upsampling's support.
+    /// Stretch per unit of blur, the swirl's amount (Anamorphic / 100), the guide's width squared, the upsampling's support.
     par: [f32; 4],
     /// The level's cell size in pixels along x and y, the sharp test's gate, 0.
     par2: [f32; 4],
@@ -404,7 +405,7 @@ pub fn encode_reshape(
     ];
     u.par = [
         pass.stretch as f32,
-        pass.edges as f32,
+        pass.swirl as f32,
         (pass.sigma_guide * pass.sigma_guide) as f32,
         pass.support as f32,
     ];
@@ -815,7 +816,7 @@ mod tests {
             half_diag: 1803.0,
             noise: 0.01,
             stretch: 1.5,
-            edges: 1.0,
+            swirl: 1.0,
             lines_along_y: true,
             vertical: true,
             tangential: true,

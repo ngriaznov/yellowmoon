@@ -102,10 +102,10 @@ Lens:
           Flares, 0 to 100: glow around bright light, veiling glare, ghosts and starbursts
 
       --edges <N>
-          Edges, 0 to 100: softer and darker edges, colour fringes, the lens's distortion, swirl and cat's-eye shapes in the out-of-focus background
+          Edges, 0 to 100: softer and darker edges, colour fringes and the lens's distortion
 
       --anamorphic <N>
-          Anamorphic, 0 to 100: an anamorphic attachment in front of the lens, with taller out-of-focus highlights, horizontal flare streaks and the anamorphic bend. It works with every lens
+          Anamorphic, 0 to 100: an anamorphic attachment in front of the lens, with taller out-of-focus highlights that take the lens's own swirl and cat's-eye shapes, horizontal flare streaks and the anamorphic bend. It works with every lens
 
 Detail:
       --nr <auto|L,C,D>

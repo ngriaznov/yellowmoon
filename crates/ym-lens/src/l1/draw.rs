@@ -11,12 +11,13 @@
 //!
 //! The long axis is the sum of the stretch across the anamorphic axis, `(q - 1) r`, and the stretch along the
 //! tangent, `(q_t - 1) r` with `q_t = sqrt(1 + 4 s^2 / 3)` (the aspect of a disc blurred along a box line of
-//! half-length `s r`, whose second moment the gather matches; `s = e (sigma + a H / (k r))` for the lens's swirl
-//! `sigma` and astigmatism `a`, [`tangent_half_length`]) held to [`TANGENT_ASPECT_MAX`], the sign of the second
-//! chosen to add. The
-//! lens's cat's-eye cuts the stretched patch with a soft mask: the patch's ellipse intersected with a copy of it
-//! shifted radially. The lens's rim profile (`bokeh.edge`) modulates the light, relative to its mean over the
-//! disc (so that a flat profile changes nothing), across the ball and not beyond it.
+//! half-length `s r`, whose second moment the gather matches; `s = A (sigma + a H / (k r))` for the lens's swirl
+//! `sigma` and astigmatism `a` and the Anamorphic amount `A`, [`tangent_half_length`]) held to
+//! [`TANGENT_ASPECT_MAX`], the sign of the second chosen to add. The lens's cat's-eye cuts the stretched patch with
+//! a soft mask: the patch's ellipse intersected with a copy of it shifted radially (by `A` times the lens's
+//! offset). The swirl and the cat's-eye belong to the Anamorphic slider, not to Edges (`docs/21` section 4, L1,
+//! *As built (swirl with Anamorphic)*). The lens's rim profile (`bokeh.edge`) modulates the light, relative to its
+//! mean over the disc (so that a flat profile changes nothing), across the ball and not beyond it.
 //!
 //! Everything is a function of the ball and the pixel's absolute position, so tiles agree.
 
@@ -82,8 +83,8 @@ pub(super) struct ShapeParams<'a> {
     pub hk: f64,
     /// Bokeh height over width.
     pub q: f64,
-    /// Edges, 0 to 1.
-    pub e: f64,
+    /// The amount of the lens's own swirl and cat's-eye, 0 to 1: Anamorphic / 100.
+    pub amount: f64,
     /// True when the anamorphic axis is the buffer's x axis (so the cross direction is y).
     pub axis_x: bool,
     /// Lens field radii, swirl, astigmatism and cat's-eye profiles (9 entries each).
@@ -166,13 +167,20 @@ pub(super) fn tangential_aspect(sigma_e: f64) -> f64 {
 }
 
 /// The half-length, in pixels, of the biweight line of the tangential gather at a pixel of blur `blur_px` where
-/// the lens has the swirl `sigma` and the astigmatism `astig` (half-diagonals): `e (k sigma b + a H)` with
-/// `k` = [`PROFILE_SCALE`] and `H` = `hk`, the half-diagonal in pixels, held to [`TANGENT_REACH_MAX`] of it
-/// (`docs/21` section 4, L1, *As built (field swirl)*). The first term grows with the blur, the second does not
-/// depend on it: the tangential and sagittal focal surfaces part with the field radius whatever the defocus.
+/// the lens has the swirl `sigma` and the astigmatism `astig` (half-diagonals): `A (k sigma b + a H)` with `A` the
+/// amount (Anamorphic / 100), `k` = [`PROFILE_SCALE`] and `H` = `hk`, the half-diagonal in pixels, held to
+/// [`TANGENT_REACH_MAX`] of it (`docs/21` section 4, L1, *As built (field swirl)*). The first term grows with the
+/// blur, the second does not depend on it: the tangential and sagittal focal surfaces part with the field radius
+/// whatever the defocus.
 #[inline]
-pub(super) fn tangent_half_length(e: f64, sigma: f64, astig: f64, blur_px: f64, hk: f64) -> f64 {
-    (e * (PROFILE_SCALE * sigma * blur_px + astig * hk)).min(TANGENT_REACH_MAX * hk)
+pub(super) fn tangent_half_length(
+    amount: f64,
+    sigma: f64,
+    astig: f64,
+    blur_px: f64,
+    hk: f64,
+) -> f64 {
+    (amount * (PROFILE_SCALE * sigma * blur_px + astig * hk)).min(TANGENT_REACH_MAX * hk)
 }
 
 /// The patch of `ball` for this view, or `None` when the lens leaves the ball as it is.
@@ -200,7 +208,7 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
     // the gather's line (the box line of its spread), a lemon of at most `TANGENT_ASPECT_MAX` to one.
     let (yx, yy) = if p.axis_x { (0.0, 1.0) } else { (1.0, 0.0) };
     let v = (p.q - 1.0) * r_px;
-    let box_half = tangent_half_length(p.e, sigma, astig, r_px, p.hk) / PROFILE_SCALE;
+    let box_half = tangent_half_length(p.amount, sigma, astig, r_px, p.hk) / PROFILE_SCALE;
     let q_t = tangential_aspect(box_half / r_px).min(TANGENT_ASPECT_MAX);
     let t = (q_t - 1.0) * r_px;
     let (vx, vy) = (v * yx, v * yy);
@@ -210,7 +218,7 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
     }
     let (sx, sy) = (vx + sgn * t * tx, vy + sgn * t * ty);
     let s_len = (sx * sx + sy * sy).sqrt();
-    let off = cat * p.e * r_px;
+    let off = cat * p.amount * r_px;
     let stretched = s_len > 0.02 * r_px;
     let cut = off > 0.02 * r_px;
     if !stretched && !cut {
@@ -464,13 +472,13 @@ mod tests {
         750.0f64.hypot(500.0)
     }
 
-    fn params(t: &Tables, e: f64) -> ShapeParams<'_> {
+    fn params(t: &Tables, amount: f64) -> ShapeParams<'_> {
         ShapeParams {
             fw: 1500.0,
             fh: 1000.0,
             hk: half_diagonal(),
             q: 1.0,
-            e,
+            amount,
             axis_x: true,
             radii: &t.radii,
             swirl: &t.swirl,
@@ -512,7 +520,7 @@ mod tests {
         let flat = tangent_half_length(1.0, 0.0, 0.03, 20.0, hk);
         assert!((flat - 27.0).abs() < 1e-12, "{flat}");
         assert_eq!(flat, tangent_half_length(1.0, 0.0, 0.03, 5.0, hk));
-        // Together they add, and Edges scales both.
+        // Together they add, and the amount scales both.
         let both = tangent_half_length(1.0, 1.2, 0.03, 20.0, hk);
         assert!((both - (swirl + flat)).abs() < 1e-12);
         let half = tangent_half_length(0.5, 1.2, 0.03, 20.0, hk);
@@ -551,7 +559,7 @@ mod tests {
         let tiny = shape_of(&ball_on_diagonal(0.95, 1.0), &p).expect("a lemon");
         assert!((tiny.f - TANGENT_ASPECT_MAX).abs() < 1e-9, "{}", tiny.f);
         assert!(shape_of(&ball_on_diagonal(0.1, 12.0), &p).is_none());
-        // Edges 0 leaves every ball round.
+        // An amount of 0 (Anamorphic 0) leaves every ball round.
         assert!(shape_of(&ball_on_diagonal(0.9, 8.0), &params(&t, 0.0)).is_none());
     }
 

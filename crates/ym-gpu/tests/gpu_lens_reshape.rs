@@ -4,7 +4,8 @@
 //! What is compared, and with which bound:
 //!
 //! * **Parity.** The kernel matches the CPU reference within [`PARITY_BOUND`] over every lens that has a swirl or a
-//!   cat's-eye, several Edges and Anamorphic amounts, both axes, on scenes with out-of-focus balls over a
+//!   cat's-eye, several Edges and Anamorphic amounts (the swirl and the cat's-eye are Anamorphic's; Edges is in the
+//!   pairs to show it changes nothing here), both axes, on scenes with out-of-focus balls over a
 //!   textured background, with a sharp subject and its strands, and on a night scene. The CPU reference decides a
 //!   pixel's blur, the length of its line and its tap count in `f64`, the kernel in `f32`; a pixel whose blur or
 //!   length lies within the `f32` rounding of a decision threshold (an integer tap count, the acceptance of the
@@ -14,7 +15,7 @@
 //! * **Tiles equal the whole frame bit for bit** (D5 of `docs/17-gpu.md`), at 512 and 1024 px.
 //! * **The far corner** of an 8658 x 5772 frame is as exact as the near one (D4).
 //! * **Poison**: a poisoned and a plain device give the same bits and nothing is NaN.
-//! * **Identity**: Anamorphic and Edges at 0 give no pass at all.
+//! * **Identity**: Anamorphic at 0 gives no pass at all, whatever Edges is.
 //! * The binding stays inside the design size (K4).
 
 mod common;
@@ -315,7 +316,7 @@ fn the_kernel_matches_the_cpu_reference() {
             textured(),
             Axis::X,
             &LensKind::ALL,
-            &[(0.0, 100.0), (100.0, 0.0), (60.0, 70.0), (100.0, 100.0)],
+            &[(0.0, 100.0), (0.0, 35.0), (60.0, 70.0), (100.0, 100.0)],
         ),
         (
             "balls over texture, y axis",
@@ -336,7 +337,7 @@ fn the_kernel_matches_the_cpu_reference() {
             night(),
             Axis::X,
             &[LensKind::Vintage, LensKind::Triplet, LensKind::Default],
-            &[(100.0, 100.0), (50.0, 0.0)],
+            &[(100.0, 100.0), (0.0, 50.0)],
         ),
         (
             "night, y axis",
@@ -690,14 +691,17 @@ fn a_job_between_two_runs_changes_nothing() {
 fn nothing_runs_when_the_reshaping_has_nothing_to_do() {
     let _guard = serial();
     let scene = textured();
-    // Anamorphic and Edges at 0: no blur map is needed, no pass exists.
-    let p = plan(amounts(LensKind::Vintage, 60.0, 0.0, 0.0), W, H, Axis::X);
-    assert!(!p.needs_blur_map());
-    let planes = planes_of_scene(&p, scene);
-    assert!(planes.bokeh().is_none());
-    assert!(p.bokeh_pass(&planes, 1, W, H).is_none());
-    assert!(p.bokeh_scale_data(&planes, 1, W, H).is_none());
-    assert!(planes.bokeh_plane_data().is_none());
+    // Anamorphic at 0, with Edges at 0 or at 100 (the lens's swirl is Anamorphic's): no blur map is needed, no pass
+    // exists.
+    for edges in [0.0, 100.0] {
+        let p = plan(amounts(LensKind::Vintage, 60.0, edges, 0.0), W, H, Axis::X);
+        assert!(!p.needs_blur_map());
+        let planes = planes_of_scene(&p, scene);
+        assert!(planes.bokeh().is_none());
+        assert!(p.bokeh_pass(&planes, 1, W, H).is_none());
+        assert!(p.bokeh_scale_data(&planes, 1, W, H).is_none());
+        assert!(planes.bokeh_plane_data().is_none());
+    }
     // A scene with no out-of-focus background: the planes are inactive, there is no pass.
     let p = plan(amounts(LensKind::Vintage, 0.0, 100.0, 100.0), W, H, Axis::X);
     let sharp = scenes::sharp_scene(W, H, Noise::NONE, 2);

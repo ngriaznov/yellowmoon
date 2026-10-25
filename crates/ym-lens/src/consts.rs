@@ -507,10 +507,10 @@ pub const RIM_SOFT_TO: f64 = 0.8;
 pub const PROFILE_SCALE: f64 = 1.527_525_231_651_947;
 
 /// The longest tangential gather, as the half-length of its biweight line in half-diagonals: the half-length
-/// `e (k sigma(rho) b + a(rho) H)` of the field swirl (`docs/21` section 4, L1, *As built (field swirl)*) is held
-/// to it, so that the halo, and with it the device's largest binding, stays bounded whatever the blur and the lens
-/// (at `b_cap` the Petzval's swirl at the corner reaches 0.092 and with its astigmatism 0.122; the old swirl, 1.5,
-/// reached 0.069).
+/// `A (k sigma(rho) b + a(rho) H)` of the field swirl, `A` the Anamorphic amount (`docs/21` section 4, L1, *As
+/// built (field swirl)*), is held to it, so that the halo, and with it the device's largest binding, stays bounded
+/// whatever the blur and the lens (at `b_cap` and Anamorphic 100 the Petzval's swirl at the corner, 2.45, reaches
+/// 0.112, which the bound cuts to 0.10; the first swirl, 1.5, reached 0.069).
 pub const TANGENT_REACH_MAX: f64 = 0.10;
 
 /// A ball is stretched along the tangent to at most this many times its width (`q_t`): beyond it a small light of

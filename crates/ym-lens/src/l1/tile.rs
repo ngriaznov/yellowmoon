@@ -147,7 +147,8 @@ pub(super) struct Pass<'a> {
     hk: f64,
     k: usize,
     q: f64,
-    e: f64,
+    /// The amount of the lens's own swirl and cat's-eye: Anamorphic / 100 (not Edges).
+    amount: f64,
     axis: Axis,
     v_on: bool,
     t_on: bool,
@@ -182,11 +183,13 @@ impl<'a> Pass<'a> {
             return None;
         }
         let q = plan.q();
-        let e = plan.edges();
+        // The lens's own swirl and cat's-eye come with the attachment: Anamorphic sets their amount, Edges has none
+        // of them (`docs/21` section 4, L1, *As built (swirl with Anamorphic)*).
+        let amount = plan.anamorphic();
         let lens = plan.lens();
         let v_on = q > 1.0 + 1e-12;
-        let t_on = e > 0.0 && (lens.swirl_max() > 0.0 || lens.astigmatism_max() > 0.0);
-        let cat_on = e > 0.0 && lens.cats_eye_max() > 0.0;
+        let t_on = amount > 0.0 && (lens.swirl_max() > 0.0 || lens.astigmatism_max() > 0.0);
+        let cat_on = amount > 0.0 && lens.cats_eye_max() > 0.0;
         if !(v_on || t_on || cat_on) || bp.balls().is_empty() && !(v_on || t_on) {
             return None;
         }
@@ -196,7 +199,7 @@ impl<'a> Pass<'a> {
         let v_reach = if v_on { stretch * b * hk } else { 0.0 };
         // The longest tangential line: the swirl at the capped blur and the astigmatism, both at their largest.
         let t_reach = if t_on {
-            tangent_half_length(e, lens.swirl_max(), lens.astigmatism_max(), b * hk, hk)
+            tangent_half_length(amount, lens.swirl_max(), lens.astigmatism_max(), b * hk, hk)
         } else {
             0.0
         };
@@ -225,7 +228,7 @@ impl<'a> Pass<'a> {
             hk,
             k,
             q,
-            e,
+            amount,
             axis: plan.frame().axis,
             v_on,
             t_on,
@@ -243,7 +246,7 @@ impl<'a> Pass<'a> {
                 half_diag: hk,
                 noise: 0.0,
                 stretch,
-                edges: e,
+                swirl: amount,
                 lines_along_y: plan.frame().axis == Axis::X,
                 vertical: v_on,
                 tangential: t_on,
@@ -328,7 +331,7 @@ impl<'a> Pass<'a> {
             fh: self.fh as f64,
             hk: self.hk,
             q: self.q,
-            e: self.e,
+            amount: self.amount,
             axis_x: self.axis == Axis::X,
             radii: &lens.field.radii,
             swirl: &lens.field.swirl,
@@ -882,8 +885,8 @@ impl<'a> Pass<'a> {
                     let rho = rr / self.hk;
                     let sigma = profile_at(radii, swirl, rho);
                     let astig = profile_at(radii, astigmatism, rho);
-                    let len =
-                        tangent_half_length(self.e, sigma, astig, bp * self.hk, self.hk) * knee(bp);
+                    let len = tangent_half_length(self.amount, sigma, astig, bp * self.hk, self.hk)
+                        * knee(bp);
                     if rr < 1e-9 || len < MIN_LINE_PX {
                         copy(ra, rb, rc);
                         continue;

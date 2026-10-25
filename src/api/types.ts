@@ -269,9 +269,9 @@ export interface LensSettings {
   kind: LensKind;
   /** Glow, veiling glare, ghosts and starbursts. */
   flares: number;
-  /** Edge softness and darkening, colour fringes, distortion, swirl and cat's-eye shapes. */
+  /** Edge softness and darkening, colour fringes and distortion. */
   edges: number;
-  /** An anamorphic attachment: taller bokeh, horizontal streaks, the anamorphic bend. */
+  /** An anamorphic attachment: taller bokeh with the lens's own swirl and cat's-eye shapes, horizontal streaks, the anamorphic bend. */
   anamorphic: number;
 }
 

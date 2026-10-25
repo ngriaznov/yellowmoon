@@ -41,7 +41,7 @@
 struct ReshapeU {
     zero: vec4<u32>,        // x: always 0 (the opaque word of the barrier)
     frame: vec4<f32>,       // frame width, height, half-diagonal in pixels, noise of the square-root luminance
-    par: vec4<f32>,         // stretch per unit of blur, Edges, the guide's width squared, the upsampling's support
+    par: vec4<f32>,         // stretch per unit of blur, the swirl's amount (Anamorphic / 100), the guide's width squared, the upsampling's support
     par2: vec4<f32>,        // the map level's cell size in pixels along x and y, the sharp test's gate, 0
     ints: vec4<i32>,        // frame width, height, 1 when the gather lines run along y, feather
     mode: vec4<i32>,        // 1 with the vertical gather, 1 with the tangential gather, balls, 0
@@ -905,8 +905,9 @@ fn lr_final_main(gid: vec3<u32>) {
         let dx = f32(2 * x + 1 - pu.ints.x) * 0.5;
         let dy = f32(2 * y + 1 - pu.ints.y) * 0.5;
         let rr = sqrt(dx * dx + dy * dy);
-        // The half-length of the tangential line, `e (k sigma b + a H)` held to LR_TAN_MAX of the half-diagonal, times
-        // the knee (the reference's `tangent_half_length`): the swirl grows with the blur, the astigmatism does not.
+        // The half-length of the tangential line, `A (k sigma b + a H)` (A = Anamorphic / 100, `par.y`) held to
+        // LR_TAN_MAX of the half-diagonal, times the knee (the reference's `tangent_half_length`): the swirl grows
+        // with the blur, the astigmatism does not.
         let sigma = lr_prof_at(3u, rr / pu.frame.z);
         let astig = lr_prof_at(11u, rr / pu.frame.z);
         let blur_px = lr_opaque(bp * pu.frame.z);

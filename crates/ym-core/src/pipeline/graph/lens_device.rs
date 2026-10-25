@@ -22,11 +22,12 @@
 //!
 //! # Bokeh reshaping (L1)
 //!
-//! Where L1 acts (Anamorphic above 0, or Edges on a lens with a swirl, an astigmatism or a cat's-eye, on a photo with
-//! out-of-focus background) the tile gathers the raw window L1 reads (L2's input rectangle grown by L1's halo),
-//! runs the reshaping kernels over L2's input rectangle, and L2 reads their output; L3 still reads the raw
-//! picture. The photo's blur map is uploaded once with the planes and the balls' shapes once per plan shape
-//! (an Edges or Anamorphic move uploads a few kilobytes), so the whole of `Z = L2(L1(X))` stays on the device.
+//! Where L1 acts (Anamorphic above 0, on a photo with out-of-focus background: the attachment's taller ovals and the
+//! lens's own swirl and cat's-eye, which Anamorphic brings; Edges never reshapes bokeh) the tile gathers the raw
+//! window L1 reads (L2's input rectangle grown by L1's halo), runs the reshaping kernels over L2's input rectangle,
+//! and L2 reads their output; L3 still reads the raw picture. The photo's blur map is uploaded once with the planes
+//! and the balls' shapes once per plan shape (an Anamorphic move uploads a few kilobytes; an Edges move none), so
+//! the whole of `Z = L2(L1(X))` stays on the device.
 //!
 //! # Failures
 //!

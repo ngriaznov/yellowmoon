@@ -82,9 +82,10 @@ pub struct LensAmounts {
     pub kind: LensKind,
     /// Glow, veiling glare, ghosts and starbursts (L3).
     pub flares: f64,
-    /// Edge softness, darkening, fringes, the lens's distortion, swirl and cat's-eye (L1, L2, L4).
+    /// Edge softness, darkening, fringes and the lens's distortion (L2, L4).
     pub edges: f64,
-    /// The anamorphic attachment (L1 to L4).
+    /// The anamorphic attachment (L1 to L4): taller bokeh, streaks, the bend, and the lens's own swirl and
+    /// cat's-eye shapes in the blur (L1).
     pub anamorphic: f64,
 }
 

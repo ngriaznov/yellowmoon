@@ -1,10 +1,11 @@
 //! L1: bokeh reshaping and the bokeh detector that feeds it (`docs/21` section 4, L1, and section 7).
 //!
 //! L1 never adds bokeh. It reshapes the blur the photo already holds: out-of-focus areas are stretched into
-//! taller ovals across the anamorphic axis (Anamorphic) and along the tangent (Edges times the lens's swirl, which
-//! grows with the blur, and its astigmatism, which does not), and bright balls are stretched as they are (their own light, read where it was before the stretch).
-//! Pixels in focus are never
-//! changed, and where the detector is unsure nothing happens.
+//! taller ovals across the anamorphic axis and along the tangent (the lens's swirl, which grows with the blur, and
+//! its astigmatism, which does not), with the lens's cat's-eye cut, and bright balls are stretched as they are
+//! (their own light, read where it was before the stretch). All of it is the Anamorphic slider's: the attachment
+//! brings the lens's own swirl and cat's-eye with its vertical stretch, and Edges has none of it. Pixels in focus
+//! are never changed, and where the detector is unsure nothing happens.
 //!
 //! * [`BokehPlanes`] is the per-photo data, made once by [`LensPlanes::build`](crate::LensPlanes::build) on the
 //!   lens plane: the blur map and its confidence, and the ball list. The detector is classical image analysis

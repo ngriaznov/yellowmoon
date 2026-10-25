@@ -646,9 +646,9 @@ pub struct LensSettings {
     pub kind: LensKind,
     /// Flares: glow, veiling glare, ghosts and starbursts, 0 to 100.
     pub flares: Num,
-    /// Edges: softness, darkening, fringes, distortion, swirl and cat's-eye shapes, 0 to 100.
+    /// Edges: softness, darkening, fringes and distortion, 0 to 100.
     pub edges: Num,
-    /// Anamorphic: the attachment in front of the lens, 0 to 100.
+    /// Anamorphic: the attachment in front of the lens, with the lens's own swirl and cat's-eye shapes in the blur, 0 to 100.
     pub anamorphic: Num,
 }
 

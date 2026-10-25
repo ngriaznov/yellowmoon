@@ -160,12 +160,12 @@ pub struct RenderArgs {
     /// Flares, 0 to 100: glow around bright light, veiling glare, ghosts and starbursts.
     #[arg(long, value_name = "N", value_parser = lens_amount, help_heading = H_LENS)]
     pub flares: Option<f64>,
-    /// Edges, 0 to 100: softer and darker edges, colour fringes, the lens's distortion, swirl and cat's-eye shapes
-    /// in the out-of-focus background.
+    /// Edges, 0 to 100: softer and darker edges, colour fringes and the lens's distortion.
     #[arg(long, value_name = "N", value_parser = lens_amount, help_heading = H_LENS)]
     pub edges: Option<f64>,
-    /// Anamorphic, 0 to 100: an anamorphic attachment in front of the lens, with taller out-of-focus highlights,
-    /// horizontal flare streaks and the anamorphic bend. It works with every lens.
+    /// Anamorphic, 0 to 100: an anamorphic attachment in front of the lens, with taller out-of-focus highlights
+    /// that take the lens's own swirl and cat's-eye shapes, horizontal flare streaks and the anamorphic bend. It
+    /// works with every lens.
     #[arg(long, value_name = "N", value_parser = lens_amount, help_heading = H_LENS)]
     pub anamorphic: Option<f64>,
 

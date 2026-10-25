@@ -351,13 +351,13 @@ pub struct BokehPass {
     pub noise: f64,
     /// Half-length of the vertical stretch per unit of blur.
     pub stretch: f64,
-    /// Edges, 0 to 1.
-    pub edges: f64,
+    /// The amount of the lens's own swirl and cat's-eye, 0 to 1: Anamorphic / 100 (Edges has none of it).
+    pub swirl: f64,
     /// True when the vertical gather runs along the buffer's y (the anamorphic axis is the buffer's x).
     pub lines_along_y: bool,
     /// True when the vertical gather acts (Anamorphic above 0).
     pub vertical: bool,
-    /// True when the tangential gather acts (Edges on a lens with a swirl or an astigmatism).
+    /// True when the tangential gather acts (Anamorphic on a lens with a swirl or an astigmatism).
     pub tangential: bool,
     /// Pixels of context the vertical gather needs.
     pub v_halo: usize,
@@ -427,7 +427,7 @@ impl BokehPass {
 
 /// The balls' shapes at one scale for the device (`LensPlan::bokeh_scale_data`): the lens's profiles, the cell
 /// geometry of the map's level and the shape of every ball the plan changes, with the bins that cull them.
-/// It depends on Anamorphic and Edges (the shapes), not on Flares.
+/// It depends on Anamorphic (the shapes), not on Edges and not on Flares.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BokehScaleData {
     /// The pass these numbers belong to.
@@ -491,16 +491,16 @@ impl crate::plan::LensPlan {
     }
 
     /// What [`bokeh_scale_data`](Self::bokeh_scale_data) depends on besides the planes, the scale and the frame:
-    /// the lens and its data versions, Anamorphic, Edges and the axis. Not Flares.
+    /// the lens and its data versions, Anamorphic and the axis. Not Edges (the swirl and the cat's-eye are
+    /// Anamorphic's) and not Flares.
     #[must_use]
     pub fn bokeh_shape_key(&self) -> String {
         format!(
-            "lens-bokeh-shape:{}:v{}:att{}:{:?}:{:?}:{:?}",
+            "lens-bokeh-shape:{}:v{}:att{}:{:?}:{:?}",
             self.kind(),
             self.lens().info.version,
             self.attachment().version,
             self.amounts().anamorphic,
-            self.amounts().edges,
             self.frame().axis,
         )
     }

@@ -50,6 +50,8 @@ pub struct LensPlan {
     q: f64,
     /// `e = edges / 100`.
     e: f64,
+    /// `A = anamorphic / 100`: the amount of the lens's own swirl and cat's-eye (L1).
+    a: f64,
     /// `F = flares / 100`.
     flares: f64,
     /// `e' = e + (1 - e) kappa (q - 1)`: the edge amount the field optics run at.
@@ -100,6 +102,7 @@ impl LensPlan {
 
         let q = 1.0 + (attachment.q_max - 1.0) * amounts.anamorphic / 100.0;
         let e = amounts.edges / 100.0;
+        let a = amounts.anamorphic / 100.0;
         let flares = amounts.flares / 100.0;
         let extra = q - 1.0;
         let e_field = e + (1.0 - e) * attachment.field.kappa * extra;
@@ -125,6 +128,7 @@ impl LensPlan {
             camera: camera.clone(),
             q,
             e,
+            a,
             flares,
             e_field,
             bend,
@@ -197,6 +201,15 @@ impl LensPlan {
         self.e
     }
 
+    /// `A = anamorphic / 100`: how much of the lens's own swirl (the tangential stretch of its blurred lights) and
+    /// cat's-eye cut the bokeh reshaping draws, 0 to 1. The attachment brings them with its vertical stretch
+    /// (the owner, 2026-10-25: "swirl is added to Petzval when anamorphic is moved, mixed with anamorphic"); Edges
+    /// has none of them (`docs/21` section 4, L1, *As built (swirl with Anamorphic)*).
+    #[must_use]
+    pub fn anamorphic(&self) -> f64 {
+        self.a
+    }
+
     /// `F = flares / 100`.
     #[must_use]
     pub fn flares(&self) -> f64 {
@@ -243,15 +256,12 @@ impl LensPlan {
         self.flares * (lens_part + attachment_part)
     }
 
-    /// True when the picture's blur map is needed: Anamorphic above 0, or Edges above 0 on a lens whose swirl,
-    /// astigmatism or cat's-eye is not zero (the bokeh reshaping, L1).
+    /// True when the picture's blur map is needed: Anamorphic above 0 (the bokeh reshaping, L1: the attachment's
+    /// taller ovals and the lens's own swirl and cat's-eye, which the attachment brings). Edges alone never
+    /// reshapes bokeh, on any lens, so it never asks for the map.
     #[must_use]
     pub fn needs_blur_map(&self) -> bool {
         self.amounts.anamorphic > 0.0
-            || (self.amounts.edges > 0.0
-                && (self.lens.swirl_max() > 0.0
-                    || self.lens.astigmatism_max() > 0.0
-                    || self.lens.cats_eye_max() > 0.0))
     }
 
     /// `k_L`: the scale of the lens plane, the largest power of two, at least 2, for which the frame's long

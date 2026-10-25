@@ -73,7 +73,7 @@ The Look tab's Lens card (`docs/21-lens-character.md` §1 and §8). They are the
 | Option | Values | Notes |
 |---|---|---|
 | `--lens default or classic or vintage or petzval or triplet or sonnar or detuned` | case-insensitive; `ym lenses list` shows them | the lens. Flares and Edges take the lens's starting amounts (`ym lenses list`) unless `--flares` or `--edges` is given, as when the lens is chosen in the card; Anamorphic stays as it is. Needs the lens data (`data/lenses`): without them it is a usage error (exit 2) |
-| `--flares <0–100>`, `--edges <0–100>`, `--anamorphic <0–100>` | amounts | Flares (glow, veiling glare, ghosts, starbursts), Edges (softness, darkening, fringes, distortion, swirl) and Anamorphic (an anamorphic attachment). Without `--lens` an amount changes that amount of the lens in the settings (the Default lens, or the settings file's). All three at 0 is no lens, whatever the lens is. Today the amounts are recorded in the settings (`--json`, `ym:Settings`) and the stages that draw them arrive with `docs/21` |
+| `--flares <0–100>`, `--edges <0–100>`, `--anamorphic <0–100>` | amounts | Flares (glow, veiling glare, ghosts, starbursts), Edges (softness, darkening, fringes, distortion) and Anamorphic (an anamorphic attachment: taller bokeh that takes the lens's own swirl and cat's-eye shapes, streaks, the bend). Without `--lens` an amount changes that amount of the lens in the settings (the Default lens, or the settings file's). All three at 0 is no lens, whatever the lens is. Today the amounts are recorded in the settings (`--json`, `ym:Settings`) and the stages that draw them arrive with `docs/21` |
 
 ### Detail
 

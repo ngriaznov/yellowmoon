@@ -865,10 +865,10 @@ pub struct LensSettings {
     pub kind: LensKind,
     /// Glow, veiling glare, ghosts and starbursts (L3), 0 to 100.
     pub flares: f64,
-    /// Edge softness, darkening, colour fringes, distortion, swirl and cat's-eye shapes (L1, L2
-    /// and L4), 0 to 100.
+    /// Edge softness, darkening, colour fringes and the lens's distortion (L2 and L4), 0 to 100.
     pub edges: f64,
-    /// The anamorphic attachment in front of the lens (L1 to L4), 0 to 100.
+    /// The anamorphic attachment in front of the lens (L1 to L4), 0 to 100: taller bokeh that takes the lens's
+    /// own swirl and cat's-eye shapes, streaks and the bend.
     pub anamorphic: f64,
 }
 

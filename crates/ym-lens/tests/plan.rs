@@ -40,17 +40,44 @@ fn the_lens_plane_scale_follows_the_long_edge() {
 }
 
 #[test]
-fn the_blur_map_is_needed_by_anamorphic_and_by_swirling_lenses() {
+fn the_blur_map_is_needed_by_anamorphic_alone() {
+    // The bokeh reshaping, swirl and cat's-eye included, is the Anamorphic slider's: Edges and Flares never ask for
+    // the blur map, on a lens with no swirl or one with the strongest (the truth table over the three amounts).
     let needs = |kind, a: (f64, f64, f64)| plan_of(kind, a, (600, 400)).needs_blur_map();
-    // Default has neither swirl nor cat's-eye.
-    assert!(!needs(LensKind::Default, (0.0, 100.0, 0.0)));
-    assert!(!needs(LensKind::Default, (100.0, 0.0, 0.0)));
-    assert!(needs(LensKind::Default, (0.0, 0.0, 1.0)));
-    // Petzval swirls: Edges asks for it, Flares alone does not.
-    assert!(needs(LensKind::Petzval, (0.0, 1.0, 0.0)));
+    for kind in [LensKind::Default, LensKind::Petzval, LensKind::Vintage] {
+        for flares in [0.0, 100.0] {
+            for edges in [0.0, 1.0, 100.0] {
+                for (anamorphic, wanted) in [(0.0, false), (1.0, true), (100.0, true)] {
+                    assert_eq!(
+                        needs(kind, (flares, edges, anamorphic)),
+                        wanted,
+                        "{kind:?}, Flares {flares}, Edges {edges}, Anamorphic {anamorphic}"
+                    );
+                }
+            }
+        }
+    }
+    // The swirling lenses: Edges alone, even at 100, does not ask any more.
+    assert!(!needs(LensKind::Petzval, (0.0, 100.0, 0.0)));
+    assert!(!needs(LensKind::Vintage, (0.0, 20.0, 0.0)));
     assert!(!needs(LensKind::Petzval, (100.0, 0.0, 0.0)));
-    assert!(needs(LensKind::Vintage, (0.0, 20.0, 0.0)));
+    assert!(needs(LensKind::Petzval, (0.0, 0.0, 1.0)));
     assert!(!needs(LensKind::Default, (0.0, 0.0, 0.0)));
+}
+
+#[test]
+fn the_swirl_amount_is_anamorphic_over_100_and_edges_is_not_in_it() {
+    for (edges, anamorphic) in [
+        (0.0, 0.0),
+        (100.0, 0.0),
+        (0.0, 50.0),
+        (100.0, 100.0),
+        (30.0, 25.0),
+    ] {
+        let p = plan_of(LensKind::Petzval, (30.0, edges, anamorphic), (600, 400));
+        assert_eq!(p.anamorphic(), anamorphic / 100.0);
+        assert_eq!(p.edges(), edges / 100.0);
+    }
 }
 
 #[test]
@@ -358,6 +385,19 @@ fn planes_are_built_from_the_lens_plane_and_can_be_cancelled() {
         }
     );
     assert!(none.bokeh().is_none());
+    // Nor does Edges alone: the lens's swirl and cat's-eye are Anamorphic's, so Edges 100 on the swirling Vintage
+    // reshapes no bokeh and the planes are built without the map.
+    let edges = plan_of(LensKind::Vintage, (0.0, 100.0, 0.0), (6000, 4000));
+    let edges_only = LensPlanes::build(&edges, &whole(w, h, &data), None, &|| false).unwrap();
+    assert_eq!(
+        edges_only.report(),
+        ReshapeReport {
+            reshaped: false,
+            reason: Some(ReshapeReason::NotAsked)
+        }
+    );
+    assert!(edges_only.bokeh().is_none());
+    assert!(edges_only.serves(&edges));
     // A plane of another size, a plane that is only part of the frame, a focus point outside the frame.
     let small = vec![0.4f32; 3 * 750 * 500];
     assert!(matches!(

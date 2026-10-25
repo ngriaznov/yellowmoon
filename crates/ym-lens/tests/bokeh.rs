@@ -468,7 +468,7 @@ fn tiles_equal_the_whole_frame_bit_for_bit() {
     for (kind, flares, edges, anamorphic) in [
         (LensKind::Default, 0.0, 0.0, 100.0),
         (LensKind::Petzval, 0.0, 100.0, 60.0),
-        (LensKind::Vintage, 30.0, 50.0, 0.0),
+        (LensKind::Vintage, 30.0, 50.0, 40.0),
     ] {
         let p = plan(kind, flares, edges, anamorphic, W, H, Axis::X);
         let planes = planes_of(&p, &scene);
@@ -488,7 +488,8 @@ fn tiles_equal_the_whole_frame_bit_for_bit() {
             );
             let whole_lens =
                 apply_tile(&p, &planes, k, &data, fw, fh, PixelRect::new(0, 0, fw, fh));
-            if edges > 0.0 || anamorphic > 0.0 {
+            // L1 acts with Anamorphic alone; Edges never reshapes bokeh.
+            if anamorphic > 0.0 {
                 let changed = whole_l1.iter().zip(&data).filter(|(a, b)| a != b).count();
                 assert!(changed > 0, "{kind:?} k {k}: L1 changed nothing");
             }
@@ -614,7 +615,7 @@ fn a_scene_with_no_blur_is_left_as_it_is() {
     let scene = sharp_scene(W, H, Noise::MID, 3);
     for (kind, edges, anamorphic) in [
         (LensKind::Default, 0.0, 100.0),
-        (LensKind::Petzval, 100.0, 0.0),
+        (LensKind::Petzval, 0.0, 100.0),
     ] {
         let p = plan(kind, 0.0, edges, anamorphic, W, H, Axis::X);
         let planes = planes_of(&p, &scene);
@@ -636,11 +637,100 @@ fn a_scene_with_no_blur_is_left_as_it_is() {
     }
 }
 
+/// The stretch of a ball at `(cx, cy)` of the 1000 x 667 frame, as the shapes make it (`docs/21` section 4, L1, *As
+/// built (swirl with Anamorphic)*): the long axis is the sum of the attachment's stretch across the anamorphic axis
+/// (vertical here), `(q - 1) r`, and the tangential one, `(q_t - 1) r` with `q_t = sqrt(1 + 4 (A sigma)^2 / 3)`, the
+/// sign of the second chosen to add. Returns the aspect `f` (the patch's long over short axis) and the long axis's
+/// angle in degrees (image coordinates, y down), from `q`, the swirl `sigma` and the amount `A`.
+fn vector_sum_stretch(cx: f64, cy: f64, q: f64, sigma: f64, amount: f64) -> (f64, f64) {
+    let (ux, uy) = (cx - 500.0, cy - 333.5);
+    let dist = ux.hypot(uy);
+    let (tx, ty) = (-uy / dist, ux / dist);
+    let q_t = (1.0 + 4.0 / 3.0 * (amount * sigma).powi(2)).sqrt();
+    let v = q - 1.0;
+    let sgn = if v * ty < 0.0 { -1.0 } else { 1.0 };
+    let (sx, sy) = (sgn * (q_t - 1.0) * tx, v + sgn * (q_t - 1.0) * ty);
+    (1.0 + sx.hypot(sy), sy.atan2(sx).to_degrees())
+}
+
+/// The difference of two axis angles, in degrees, modulo 180 (0 to 90).
+fn axis_gap_deg(a: f64, b: f64) -> f64 {
+    ((a - b + 90.0).rem_euclid(180.0) - 90.0).abs()
+}
+
+/// A plan of the synthetic Petzval with `swirl`, `astigmatism` and `cats_eye` as its three tables, on an attachment
+/// whose `q_max` is `q_max`, at the given Edges and Anamorphic.
+fn tables_plan(
+    (swirl, astigmatism, cats_eye): (&[f64; 9], &[f64; 9], &[f64; 9]),
+    q_max: f64,
+    (edges, anamorphic): (f64, f64),
+) -> LensPlan {
+    use serde_json::json;
+    let dir = tempfile::tempdir().expect("temp dir");
+    ym_lens::test_support::write_synthetic_lenses_with(
+        dir.path(),
+        &|lens| {
+            lens["field"]["swirl"] = json!(swirl);
+            lens["field"]["astigmatism"] = json!(astigmatism);
+            lens["field"]["cats_eye"] = json!(cats_eye);
+        },
+        &|att| att["q_max"] = json!(q_max),
+    )
+    .expect("write");
+    let lib = ym_lens::LensLibrary::from_dir(dir.path()).expect("loads");
+    let amounts = ym_lens::LensAmounts {
+        kind: LensKind::Petzval,
+        flares: 0.0,
+        edges,
+        anamorphic,
+    };
+    LensPlan::new(
+        &lib,
+        &amounts,
+        common::frame(W, H, Axis::X),
+        common::camera(),
+    )
+    .expect("plan")
+}
+
+/// Where the balls of the swirl tests stand, in the 1000 x 667 frame: the right-hand side, where the tangent is the
+/// axis and the two stretches add, the top, where they are at right angles, and the four corners. Far enough
+/// apart that a ball's patch (3.9 to 1 at most, 35 px) holds no other ball, near enough to the corners to be at
+/// 0.85 of the field and still whole inside the frame.
+const SWIRL_SPOTS: [(f64, f64); 13] = [
+    (650.0, 333.5),
+    (750.0, 333.5),
+    (850.0, 333.5),
+    (950.0, 333.5),
+    (500.0, 60.0),
+    (300.0, 90.0),
+    (150.0, 560.0),
+    (780.0, 100.0),
+    (780.0, 580.0),
+    (940.0, 600.0),
+    (60.0, 70.0),
+    (940.0, 70.0),
+    (60.0, 600.0),
+];
+
+/// The shipped Petzval's swirl (`data/lenses/petzval/lens.json`, pinned by the test of the tables).
+const PETZVAL_SWIRL: [f64; 9] = [0.0, 0.0, 0.0, 0.6, 1.5, 1.85, 2.1, 2.3, 2.45];
+
 #[test]
-fn swirl_stretches_balls_along_the_tangent_more_towards_the_edges() {
-    let scene = night_scene_spaced(W, H, &[10.0; 10], Noise::LOW, 11, 3.0);
-    let p = plan(LensKind::Petzval, 0.0, 100.0, 0.0, W, H, Axis::X);
+fn swirl_stretches_balls_along_the_tangent_mixed_with_the_attachments_stretch_towards_the_edges() {
+    // The swirl is Anamorphic's: at Anamorphic 100 a ball is `(q - 1) r` taller across the axis and `(q_t - 1) r`
+    // longer along the tangent, the long axis the sum of the two (vertical at the sides, where they add, tilted
+    // between). The shipped Petzval's swirl, 2 to 1 at half the field and 3 to 1 at the corner for the tangent
+    // alone, on balls of 7 px with no cat's-eye (its mask would thin them: tested below).
+    let p = tables_plan((&PETZVAL_SWIRL, &[0.0; 9], &[0.0; 9]), 2.0, (0.0, 100.0));
     assert!(p.needs_blur_map());
+    let q = p.q();
+    assert!((q - 2.0).abs() < 1e-12);
+    let balls: Vec<_> = SWIRL_SPOTS
+        .iter()
+        .map(|&(x, y)| (x, y, 7.0, 0.15, 1.5))
+        .collect();
+    let scene = balls_on_ground(&balls, Noise::LOW, 5);
     let planes = planes_of(&p, &scene);
     let out = reshape_tile(
         &p,
@@ -651,72 +741,120 @@ fn swirl_stretches_balls_along_the_tangent_more_towards_the_edges() {
         PixelRect::new(0, 0, W, H),
     );
     let hd = 600.97;
-    let mut checked = 0;
+    let (mut checked, mut corner_three) = (0, 0);
     for &d in &scene.discs {
-        let (ux, uy) = (d.0 - 500.0, d.1 - 333.5);
-        let rho = ux.hypot(uy) / hd;
-        let b = blob(&out, &scene.ground, W, H, d, 3.4);
+        let rho = (d.0 - 500.0).hypot(d.1 - 333.5) / hd;
+        let sigma = table_at(&p.lens().field.radii, &p.lens().field.swirl, rho);
+        let (wanted, angle) = vector_sum_stretch(d.0, d.1, q, sigma, 1.0);
+        // The window holds the whole patch (`1.3` of the ball's radius is its take-out disc) and no other ball.
+        let b = blob(&out, &scene.ground, W, H, d, 1.3 * wanted + 1.5);
         let before = input_energy(&scene, d, 3.4);
-        // The ball's own pixels are stretched along the tangent: its light grows with its length.
+        eprintln!(
+            "rho {rho:.2} swirl {sigma:.2}: elongation {:.3}, vector sum {wanted:.3}, axis {:.1} deg (wanted {angle:.1})",
+            b.elongation, b.angle_deg
+        );
+        // The ball's own pixels are stretched: its light grows with its length.
         for c in 0..3 {
             assert!(
-                (b.energy[c] / before[c] / b.elongation - 1.0).abs() < 0.04,
+                (b.energy[c] / before[c] / b.elongation - 1.0).abs() < 0.05,
                 "disc {d:?} channel {c}: light {:.3} -> {:.3}, elongation {:.3}",
                 before[c],
                 b.energy[c],
                 b.elongation
             );
         }
-        if rho < 0.15 {
-            assert!(
-                b.elongation < 1.05,
-                "near the centre the swirl is nothing: {}",
-                b.elongation
-            );
-            continue;
-        }
-        // The lens's swirl at this field radius (read between its radii) and Edges 100: the oval's aspect is that of a
-        // disc blurred along the tangent, `sqrt(1 + 4 sigma^2 / 3)` (2 at sigma 1.5).
-        let lens = p.lens();
-        let at = lens
-            .field
-            .radii
-            .iter()
-            .position(|r| *r >= rho)
-            .unwrap_or(8)
-            .max(1);
-        let (r0, r1) = (lens.field.radii[at - 1], lens.field.radii[at]);
-        let (s0, s1) = (lens.field.swirl[at - 1], lens.field.swirl[at]);
-        let sigma = s0 + ((rho - r0) / (r1 - r0)).clamp(0.0, 1.0) * (s1 - s0);
-        let wanted = (1.0 + 4.0 / 3.0 * sigma * sigma).sqrt();
         assert!(
-            (b.elongation / wanted - 1.0).abs() < 0.03,
+            (b.elongation / wanted - 1.0).abs() < 0.04,
             "rho {rho:.2}: elongation {:.3}, wanted {wanted:.3} (swirl {sigma:.3})",
             b.elongation
         );
-        if wanted > 1.08 {
-            // The long axis is the tangent: perpendicular to the radius, within 6 degrees.
-            let radial = uy.atan2(ux).to_degrees();
-            let off = ((b.angle_deg - radial + 90.0 + 90.0).rem_euclid(180.0) - 90.0).abs();
-            assert!(
-                off < 6.0,
-                "rho {rho:.2}: major axis {:.1} deg, radial {radial:.1} deg",
-                b.angle_deg
-            );
+        assert!(
+            axis_gap_deg(b.angle_deg, angle) < 8.0,
+            "rho {rho:.2}: major axis {:.1} deg, wanted {angle:.1} deg",
+            b.angle_deg
+        );
+        if sigma > 0.5 {
             checked += 1;
         }
+        // Towards the corners the balls are at least 3 to 1 along the vector sum.
+        if rho > 0.8 && wanted >= 3.0 {
+            corner_three += 1;
+        }
     }
-    assert!(checked >= 3, "{checked}");
+    assert!(checked >= 5, "{checked}");
+    assert_eq!(corner_three, 4, "the four balls near the corners");
 }
 
 #[test]
-fn the_shipped_petzvals_swirl_and_astigmatism_are_visible_and_the_vintages_are_a_third_of_them() {
-    // `data/lenses/README.md`, *What is traced and what is tuned*, and `docs/21` L1, *As built (field swirl)*: at
-    // Edges 100 the Petzval's tangential line is `e (k sigma b + a H)` long: `sigma` blur radii (box-equivalent)
-    // plus the absolute `a` of the half-diagonal. The swirl `2 t^1.3` starts at `rho` 0.2 and reaches 2.0 at the
-    // corner (a tangential oval 2.5 times as long as wide for a disc), the astigmatism `0.03 t^1.64` starts there
-    // too and reaches 0.03 of the half-diagonal at the corner and 0.006 at half the field (`t = (rho - 0.2) / 0.8`);
-    // the Vintage's are a third of them.
+fn the_cats_eye_cuts_the_ovals_at_anamorphic_and_the_ovals_stay_as_tall() {
+    // The same balls with the shipped Petzval's cat's-eye: the second circle takes a slice off the oval across its
+    // short axis (the radial direction), so the oval is narrower than without, and still along the same axis. The
+    // mask works on the take-out disc (1.3 radii here), each copy shifted by half the offset times that: it cuts
+    // the glow around the ball first and the ball itself only where the offset is 0.45 radii or more, so the oval
+    // shows it near the corners (0.7 to 0.8 radii at 0.85 of the field) and not halfway out (0.3).
+    let cats = [0.0, 0.0, 0.0, 0.12, 0.3, 0.48, 0.62, 0.72, 0.8];
+    let with = tables_plan((&PETZVAL_SWIRL, &[0.0; 9], &cats), 2.0, (0.0, 100.0));
+    let without = tables_plan((&PETZVAL_SWIRL, &[0.0; 9], &[0.0; 9]), 2.0, (0.0, 100.0));
+    let balls: Vec<_> = SWIRL_SPOTS
+        .iter()
+        .map(|&(x, y)| (x, y, 7.0, 0.15, 1.5))
+        .collect();
+    let scene = balls_on_ground(&balls, Noise::LOW, 5);
+    let run = |p: &LensPlan| {
+        let planes = planes_of(p, &scene);
+        reshape_tile(
+            p,
+            &planes,
+            1,
+            &scene.img.data,
+            (W, H),
+            PixelRect::new(0, 0, W, H),
+        )
+    };
+    let (a, b) = (run(&with), run(&without));
+    let mut cut_balls = 0;
+    for &d in &scene.discs {
+        let rho = (d.0 - 500.0).hypot(d.1 - 333.5) / 600.97;
+        let (cut, round) = (
+            blob(&a, &scene.ground, W, H, d, 6.0),
+            blob(&b, &scene.ground, W, H, d, 6.0),
+        );
+        if rho < 0.65 {
+            // The offset is under 0.45 radii here: the glow is cut, not the ball.
+            assert!(
+                (cut.elongation / round.elongation - 1.0).abs() < 0.03,
+                "ball {d:?}: {:.3} with the cat's-eye, {:.3} without",
+                cut.elongation,
+                round.elongation
+            );
+        } else if rho > 0.8 {
+            assert!(
+                cut.elongation > 1.1 * round.elongation,
+                "ball {d:?} (rho {rho:.2}): {:.3} with the cat's-eye, {:.3} without",
+                cut.elongation,
+                round.elongation
+            );
+            assert!(axis_gap_deg(cut.angle_deg, round.angle_deg) < 8.0);
+            assert!(
+                cut.energy[1] < round.energy[1],
+                "the slice takes light off the oval"
+            );
+            cut_balls += 1;
+        }
+    }
+    assert_eq!(cut_balls, 4, "the four balls near the corners");
+}
+
+#[test]
+fn the_shipped_petzvals_swirl_is_two_to_one_halfway_and_three_to_one_at_the_corner_and_the_vintages_is_a_third()
+ {
+    // `data/lenses/README.md`, *What is traced and what is tuned*, and `docs/21` L1, *As built (swirl with
+    // Anamorphic)*: at Anamorphic 100 the Petzval's tangential line is `k sigma b` long, `sigma` blur radii (the
+    // half-length of the box line with the spread of the gather), so a disc becomes an oval `sqrt(1 + 4 sigma^2 / 3)`
+    // times as long as wide: 2 to 1 at half the field (sigma 1.5), 3 to 1 at the corner (sigma 2.45). It has no
+    // astigmatism (the absolute part is 0), a cat's-eye of 0.8 radii at the corner, and the field optics' own spread
+    // (`psf_half_width`) is about 0.3 to 0.45 of what it was outside the centre, so that Edges softens less. The
+    // Vintage's swirl is a third of it.
     let root = common::repo_root().join("data");
     if !root.join("lenses/index.json").exists() {
         eprintln!("skipped: no lens data");
@@ -730,32 +868,48 @@ fn the_shipped_petzvals_swirl_and_astigmatism_are_visible_and_the_vintages_are_a
         [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]
     );
     let sigma = &petzval.swirl;
-    assert_eq!(sigma[..2], [0.0; 2], "nothing inside rho 0.2");
-    assert!(sigma[2] > 0.0 && sigma[2] < 0.2, "rho 0.25: {}", sigma[2]);
-    assert!((sigma[4] - 0.56).abs() < 0.01, "rho 0.5: {}", sigma[4]);
-    assert!((sigma[8] - 2.0).abs() < 1e-5, "rho 1: {}", sigma[8]);
-    // Rising, and its slope rising too (a smooth start: no kink where it leaves 0).
+    let aspect = |s: f64| (1.0 + 4.0 / 3.0 * s * s).sqrt();
+    assert_eq!(sigma[..3], [0.0; 3], "nothing inside rho 0.25");
+    assert!(sigma[3] > 0.0 && sigma[3] < 1.0, "rho 0.375: {}", sigma[3]);
+    assert!(
+        (aspect(sigma[4]) - 2.0).abs() < 0.01,
+        "rho 0.5: {}",
+        sigma[4]
+    );
+    assert!((aspect(sigma[8]) - 3.0).abs() < 0.01, "rho 1: {}", sigma[8]);
+    assert!((sigma[8] - 2.45).abs() < 1e-9, "rho 1: {}", sigma[8]);
     for i in 1..9 {
         assert!(sigma[i] >= sigma[i - 1], "monotone at {i}");
     }
-    // The aspect of a disc at the corner is 2.5: `sqrt(1 + 4 sigma^2 / 3)`.
-    let aspect = (1.0 + 4.0 / 3.0 * sigma[8] * sigma[8]).sqrt();
-    assert!((aspect - 2.52).abs() < 0.02, "{aspect}");
-    let a = &petzval.astigmatism;
-    assert_eq!(a[..2], [0.0; 2], "nothing inside rho 0.2");
-    assert!((a[4] - 0.006).abs() < 1e-5, "rho 0.5: {}", a[4]);
-    assert!((a[8] - 0.03).abs() < 1e-6, "rho 1: {}", a[8]);
+    // No absolute part: a small light of the outer field is an oval of the same aspect as a large one.
+    assert_eq!(petzval.astigmatism, [0.0; 9]);
+    assert_eq!(vintage.astigmatism, [0.0; 9]);
+    // The cat's-eye grows outwards to 0.8 radii at the corner.
+    let cat = &petzval.cats_eye;
+    assert_eq!(cat[..3], [0.0; 3]);
+    assert!((cat[8] - 0.8).abs() < 1e-9, "{}", cat[8]);
     for i in 1..9 {
-        assert!(a[i] >= a[i - 1], "monotone at {i}");
+        assert!(cat[i] >= cat[i - 1], "monotone at {i}");
     }
-    // About 27 px at the corner of a 1500 x 1000 frame (half-diagonal 901 px) and 108 px at 24 MP.
-    assert!((a[8] * 901.4 - 27.0).abs() < 0.2);
+    // The isotropic spread of L2, now about 0.3 (corner) to 0.45 (half the field) of the old table's.
+    let old = [
+        0.0015, 0.0019, 0.0028, 0.0041, 0.0053, 0.0067, 0.0086, 0.0113, 0.012,
+    ];
+    assert_eq!(petzval.psf_half_width[0], old[0], "the centre is as it was");
+    for i in 4..9 {
+        let ratio = petzval.psf_half_width[i] / old[i];
+        assert!(
+            (0.29..=0.46).contains(&ratio),
+            "rho {}: {} of the old width",
+            petzval.radii[i],
+            ratio
+        );
+    }
+    // The Vintage keeps a third of the swirl, and its own (traced) cat's-eye.
     for (v, p) in vintage.swirl.iter().zip(sigma) {
         assert!((v - p / 3.0).abs() < 1e-5, "{v} against a third of {p}");
     }
-    for (v, p) in vintage.astigmatism.iter().zip(a) {
-        assert!((v - p / 3.0).abs() < 1e-6, "{v} against a third of {p}");
-    }
+    assert!((vintage.cats_eye[8] - 0.721_268).abs() < 1e-9);
     // The traced lenses keep none: their spread functions already hold their astigmatism (L2).
     for kind in [
         LensKind::Default,
@@ -768,47 +922,106 @@ fn the_shipped_petzvals_swirl_and_astigmatism_are_visible_and_the_vintages_are_a
         assert_eq!(lens.astigmatism_max(), 0.0, "{kind:?}");
         assert!(lens.info.version >= 2, "{kind:?}: data version");
     }
-    assert!(lib.get(LensKind::Petzval).unwrap().info.version >= 2);
-    assert!(lib.get(LensKind::Vintage).unwrap().info.version >= 2);
+    assert!(lib.get(LensKind::Petzval).unwrap().info.version >= 3);
+    assert!(lib.get(LensKind::Vintage).unwrap().info.version >= 4);
+}
+
+#[test]
+fn edges_alone_reshape_no_bokeh_on_any_lens_and_the_swirl_follows_anamorphic() {
+    // The swirl and the cat's-eye are the Anamorphic slider's. At Anamorphic 0 no lens, whatever its tables, draws a
+    // tangential stretch or a cat's-eye: L1 needs no blur map, hands its input back bit for bit and has no pass;
+    // with Anamorphic above 0 the pass takes its swirl amount from Anamorphic alone, and Edges changes nothing in it.
+    let root = common::repo_root().join("data");
+    if !root.join("lenses/index.json").exists() {
+        eprintln!("skipped: no lens data");
+        return;
+    }
+    let lib = ym_lens::LensLibrary::load(&root).expect("data/lenses loads");
+    let make = |kind: LensKind, edges: f64, anamorphic: f64| {
+        let amounts = ym_lens::LensAmounts {
+            kind,
+            flares: 0.0,
+            edges,
+            anamorphic,
+        };
+        LensPlan::new(
+            &lib,
+            &amounts,
+            common::frame(W, H, Axis::X),
+            common::camera(),
+        )
+        .expect("plan")
+    };
+    let scene = night_scene_spaced(W, H, &[10.0; 10], Noise::LOW, 11, 3.0);
+    let rect = PixelRect::new(0, 0, W, H);
+    for kind in LensKind::ALL {
+        let p = make(kind, 100.0, 0.0);
+        assert!(!p.needs_blur_map(), "{kind:?}: Edges 100 needs no blur map");
+        assert_eq!(p.anamorphic(), 0.0);
+        let planes = planes_of(&p, &scene);
+        assert!(planes.bokeh().is_none(), "{kind:?}");
+        assert_eq!(reshape_halo(&p, &planes, 1), 0, "{kind:?}");
+        assert!(p.bokeh_pass(&planes, 1, W, H).is_none(), "{kind:?}");
+        let out = reshape_tile(&p, &planes, 1, &scene.img.data, (W, H), rect);
+        assert_eq!(
+            out,
+            common::crop(&scene.img.data, W, H, rect),
+            "{kind:?}: L1 hands back its input bit for bit at Anamorphic 0"
+        );
+    }
+    // Anamorphic 100: the Petzval's pass swirls by the whole of its tables, and Edges is not in it.
+    let a100 = make(LensKind::Petzval, 0.0, 100.0);
+    let planes = planes_of(&a100, &scene);
+    let pass = a100.bokeh_pass(&planes, 1, W, H).expect("a pass");
+    assert!(pass.tangential && pass.vertical);
+    assert_eq!(pass.swirl, 1.0);
+    let with_edges = make(LensKind::Petzval, 100.0, 100.0);
+    let planes_e = planes_of(&with_edges, &scene);
+    assert_eq!(
+        with_edges.bokeh_pass(&planes_e, 1, W, H),
+        Some(pass),
+        "Edges is not part of L1's pass"
+    );
+    assert_eq!(a100.bokeh_shape_key(), with_edges.bokeh_shape_key());
+    let half = make(LensKind::Petzval, 0.0, 50.0);
+    let planes_h = planes_of(&half, &scene);
+    assert_eq!(
+        half.bokeh_pass(&planes_h, 1, W, H).expect("pass").swirl,
+        0.5
+    );
+    // L1's picture is the same bit for bit at Edges 0 and Edges 100.
+    let (lo, hi) = (
+        reshape_tile(&a100, &planes, 1, &scene.img.data, (W, H), rect),
+        reshape_tile(&with_edges, &planes_e, 1, &scene.img.data, (W, H), rect),
+    );
+    assert!(
+        lo.iter().zip(&hi).all(|(a, b)| a.to_bits() == b.to_bits()),
+        "Edges changes nothing in L1"
+    );
+    assert_ne!(
+        lo,
+        common::crop(&scene.img.data, W, H, rect),
+        "and L1 acted"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------------------------
 // The field swirl (docs/21 section 4, L1, "As built (field swirl)"): the tangential half-length is
-// `e (k sigma(rho) b + a(rho) H)`: the swirl grows with the blur, the astigmatism does not.
+// `A (k sigma(rho) b + a(rho) H)`, `A` = Anamorphic / 100: the swirl grows with the blur, the astigmatism does not.
 // ---------------------------------------------------------------------------------------------------------------
 
 /// A plan of a synthetic Petzval whose swirl is `swirl rho^2` and whose astigmatism is `astigmatism rho^2`
-/// half-diagonals, with no cat's-eye.
-fn field_swirl_plan(swirl: f64, astigmatism: f64, edges: f64) -> LensPlan {
-    use serde_json::json;
-    let dir = tempfile::tempdir().expect("temp dir");
-    ym_lens::test_support::write_synthetic_lenses_with(
-        dir.path(),
-        &|lens| {
-            let rho2: Vec<f64> = (0..9).map(|i| (i as f64 / 8.0).powi(2)).collect();
-            lens["field"]["swirl"] = json!(rho2.iter().map(|r| swirl * r).collect::<Vec<_>>());
-            lens["field"]["astigmatism"] =
-                json!(rho2.iter().map(|r| astigmatism * r).collect::<Vec<_>>());
-            // No cat's-eye: its mask would cut the lemons across their short axis and thin them.
-            lens["field"]["cats_eye"] = json!(vec![0.0; 9]);
-        },
-        &|_| {},
+/// half-diagonals, with no cat's-eye, at Anamorphic `anamorphic` on an attachment that stretches next to nothing
+/// (`q_max` 1.000001: a vertical line of 0.02 px at a blur of 12 px, under the gathers' minimum), so that the
+/// tangential gather is seen alone.
+fn field_swirl_plan(swirl: f64, astigmatism: f64, anamorphic: f64) -> LensPlan {
+    let rho2: Vec<f64> = (0..9).map(|i| (i as f64 / 8.0).powi(2)).collect();
+    let table = |scale: f64| -> [f64; 9] { std::array::from_fn(|i| scale * rho2[i]) };
+    tables_plan(
+        (&table(swirl), &table(astigmatism), &[0.0; 9]),
+        1.000_001,
+        (0.0, anamorphic),
     )
-    .expect("write");
-    let lib = ym_lens::LensLibrary::from_dir(dir.path()).expect("loads");
-    let amounts = ym_lens::LensAmounts {
-        kind: LensKind::Petzval,
-        flares: 0.0,
-        edges,
-        anamorphic: 0.0,
-    };
-    LensPlan::new(
-        &lib,
-        &amounts,
-        common::frame(W, H, Axis::X),
-        common::camera(),
-    )
-    .expect("plan")
 }
 
 /// A table read between the lens's nine radii, as the gathers read it.
@@ -821,13 +1034,11 @@ fn table_at(radii: &[f64], values: &[f64], rho: f64) -> f64 {
 #[test]
 fn astigmatism_makes_small_balls_of_the_outer_field_tangential_lemons_by_the_formula() {
     // `a(rho) = 0.0283 rho^2`, no swirl: a ball of radius r at rho 0.9 is blurred along its tangent by a box line
-    // of half-length `e a H / k` = 8.6 px, whatever its own blur, so a ball of 8 px becomes a lemon 1.7 times as long
-    // as wide, one of 10 px 1.5 times, and the same balls near the centre stay round.
+    // of half-length `A a H / k` = 8.6 px, whatever its own blur, so a ball of 8 px becomes a lemon 1.7 times as long
+    // as wide, one of 10 px 1.5 times, and the same balls near the centre stay round. (A lens with astigmatism in
+    // its table, which no shipped lens has now, shows it with Anamorphic.)
     let p = field_swirl_plan(0.0, 0.0283, 100.0);
-    assert!(
-        p.needs_blur_map(),
-        "the astigmatism alone asks for the blur map"
-    );
+    assert!(p.needs_blur_map(), "Anamorphic alone asks for the blur map");
     let hd = 600.97;
     // (x, y, r): four balls at rho 0.9 in the corners, four inside.
     let balls = [
@@ -956,15 +1167,15 @@ fn the_gather_smears_a_blurred_field_along_the_tangent_by_the_swirl_plus_the_ast
             }
         }
     }
-    let spread = |swirl: f64, astigmatism: f64, edges: f64, blur_px: f64| -> (f64, f64) {
-        let p = field_swirl_plan(swirl, astigmatism, edges);
+    let spread = |swirl: f64, astigmatism: f64, anamorphic: f64, blur_px: f64| -> (f64, f64) {
+        let p = field_swirl_plan(swirl, astigmatism, anamorphic);
         let planes = planes_all_blurred(&p, &data, blur_px);
         assert!(planes.bokeh().is_some_and(|b| b.active()));
         let out = reshape_tile(&p, &planes, 1, &data, (W, H), PixelRect::new(0, 0, W, H));
         let lens = p.lens();
         let sigma = table_at(&lens.field.radii, &lens.field.swirl, rho);
         let a = table_at(&lens.field.radii, &lens.field.astigmatism, rho);
-        let len = edges / 100.0 * (1.527_525 * sigma * blur_px + a * hd);
+        let len = anamorphic / 100.0 * (1.527_525 * sigma * blur_px + a * hd);
         let (along, across, _) = response_moments(&out, base, at, 70, tangent);
         // The bump's own 9 px^2 is in both; the line adds to the first only.
         ((along - across) / (len * len / 7.0), across)
@@ -987,7 +1198,7 @@ fn the_gather_smears_a_blurred_field_along_the_tangent_by_the_swirl_plus_the_ast
         (across12 - 9.0).abs() < 0.5 && (across20 - 9.0).abs() < 0.5,
         "across: {across12} {across20}"
     );
-    // The swirl alone grows with the blur; the two together add; Edges scales both.
+    // The swirl alone grows with the blur; the two together add; Anamorphic scales both.
     let (s12, _) = spread(1.2, 0.0, 100.0, 12.0);
     let (s20, _) = spread(1.2, 0.0, 100.0, 16.0);
     assert!(
@@ -997,7 +1208,7 @@ fn the_gather_smears_a_blurred_field_along_the_tangent_by_the_swirl_plus_the_ast
     let (both, _) = spread(1.2, 0.04, 100.0, 12.0);
     assert!((both - 1.0).abs() < 0.03, "both: {both:.4}");
     let (half, _) = spread(1.2, 0.04, 50.0, 12.0);
-    assert!((half - 1.0).abs() < 0.03, "Edges 50: {half:.4}");
+    assert!((half - 1.0).abs() < 0.03, "Anamorphic 50: {half:.4}");
 }
 
 #[test]

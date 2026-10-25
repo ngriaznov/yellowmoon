@@ -185,14 +185,14 @@
           "default": 0
         },
         "edges": {
-          "description": "Edge softness and darkening, colour fringes, the lens's distortion, swirl and cat's-eye shapes (L1, L2, L4).",
+          "description": "Edge softness and darkening, colour fringes and the lens's distortion (L2, L4).",
           "type": "number",
           "minimum": 0,
           "maximum": 100,
           "default": 0
         },
         "anamorphic": {
-          "description": "An anamorphic attachment in front of the lens: taller bokeh, horizontal streaks, the anamorphic bend (L1 to L4).",
+          "description": "An anamorphic attachment in front of the lens: taller bokeh that takes the lens's own swirl and cat's-eye shapes, horizontal streaks, the anamorphic bend (L1 to L4).",
           "type": "number",
           "minimum": 0,
           "maximum": 100,
