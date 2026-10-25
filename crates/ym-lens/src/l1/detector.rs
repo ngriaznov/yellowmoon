@@ -78,6 +78,9 @@ const MAP_STRONG_P: f32 = 0.9;
 /// A cell of an outside map is known to be in focus (a subject a ball cannot be drawn over) when the source's
 /// probability that it is out of focus is at most this.
 const MAP_SUBJECT_P: f32 = 0.1;
+/// A region known to be in focus smaller than this many cells (a dilated speck of noise or dust: 25 cells) is not a
+/// subject a ball must not be drawn over.
+const MIN_SUBJECT_CELLS: usize = 60;
 /// Weight a blurred cell of an outside map gives to the evidence around a ball (an edge reading has weight 1 at
 /// most; a ring holds hundreds of pixels).
 const MAP_EVIDENCE_WEIGHT: f32 = 0.05;
@@ -478,6 +481,7 @@ fn stamp_balls_and_finish(
     conf: &mut [f32],
     forced: &mut [bool],
     anchor: &[bool],
+    subject: &[bool],
     (w, h): (usize, usize),
     hd: f64,
     r_min_px: f64,
@@ -500,7 +504,8 @@ fn stamp_balls_and_finish(
                 let i = y * w + x;
                 let (dx, dy) = (x as f64 + 0.5 - ball.cx, y as f64 + 0.5 - ball.cy);
                 let d = (dx * dx + dy * dy).sqrt();
-                if d > reach || anchor[i] {
+                // (A pixel known to be in focus keeps its place: a subject beside a light, or a strand across it.)
+                if d > reach || anchor[i] || subject[i] {
                     continue;
                 }
                 let in_disc = d <= ball.r_out;
@@ -708,13 +713,18 @@ pub(super) fn detect(
             }
         }
     }
-    let subject: Vec<bool> = forced.iter().zip(&anchor).map(|(f, a)| *f || *a).collect();
+    let subject = subject_regions(
+        forced.iter().zip(&anchor).map(|(f, a)| *f || *a).collect(),
+        w,
+        h,
+    );
     let b = stamp_balls_and_finish(
         &balls,
         &mut r_est,
         &mut conf,
         &mut forced,
         &anchor,
+        &subject,
         (w, h),
         hd,
         r_min_px,
@@ -817,17 +827,22 @@ pub(super) fn detect_with_map(
         return Err(LensError::Cancelled);
     }
     let mut forced = vec![false; n];
-    let subject: Vec<bool> = p_hat
-        .iter()
-        .zip(&anchor)
-        .map(|(p, a)| *a || *p <= MAP_SUBJECT_P)
-        .collect();
+    let subject = subject_regions(
+        p_hat
+            .iter()
+            .zip(&anchor)
+            .map(|(p, a)| *a || *p <= MAP_SUBJECT_P)
+            .collect(),
+        w,
+        h,
+    );
     let b = stamp_balls_and_finish(
         &balls,
         &mut r_est,
         &mut conf,
         &mut forced,
         &anchor,
+        &subject,
         (w, h),
         hd,
         r_min_px,
@@ -845,6 +860,50 @@ pub(super) fn detect_with_map(
         gate_fraction: Some(strong as f64 / n as f64),
         subject,
     })
+}
+
+/// The cells known to be in focus that lie in a region (4-connected) of at least [`MIN_SUBJECT_CELLS`] cells: a
+/// single speck the sharp-edge flags caught is not a subject.
+fn subject_regions(mut known: Vec<bool>, w: usize, h: usize) -> Vec<bool> {
+    let mut seen = vec![false; w * h];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut members: Vec<usize> = Vec::new();
+    for start in 0..w * h {
+        if seen[start] || !known[start] {
+            continue;
+        }
+        members.clear();
+        stack.push(start);
+        seen[start] = true;
+        while let Some(i) = stack.pop() {
+            members.push(i);
+            let (x, y) = (i % w, i / w);
+            let mut visit = |j: usize| {
+                if !seen[j] && known[j] {
+                    seen[j] = true;
+                    stack.push(j);
+                }
+            };
+            if x > 0 {
+                visit(i - 1);
+            }
+            if x + 1 < w {
+                visit(i + 1);
+            }
+            if y > 0 {
+                visit(i - w);
+            }
+            if y + 1 < h {
+                visit(i + w);
+            }
+        }
+        if members.len() < MIN_SUBJECT_CELLS {
+            for &i in &members {
+                known[i] = false;
+            }
+        }
+    }
+    known
 }
 
 /// Zeroes the connected regions (4-connected) of `b > 0` whose area is below `SMALL_REGION` discs of their own
@@ -911,10 +970,10 @@ pub(super) fn blurred_fraction(d: &Detected) -> f64 {
 }
 
 /// True when the detection has enough to reshape: enough edges, and either enough of the frame out of focus or a
-/// scene of lights (at least [`MIN_BALLS_ACTIVE`] balls that passed the context test, as on a night street or in
-/// the lights of a tree).
+/// scene of lights (at least [`MIN_BALLS_ACTIVE`] clear balls, those that passed the strict rules and the context
+/// test, as on a night street or in the lights of a tree).
 pub(super) fn enough(d: &Detected) -> bool {
     d.edges >= MIN_EDGE_SAMPLES
         && (blurred_fraction(d) >= crate::consts::MIN_BLUR_AREA
-            || d.balls.len() >= MIN_BALLS_ACTIVE)
+            || d.balls.iter().filter(|b| b.clear).count() >= MIN_BALLS_ACTIVE)
 }

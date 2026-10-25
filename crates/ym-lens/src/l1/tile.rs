@@ -22,9 +22,9 @@ use crate::image::{ImageRef, PixelRect};
 use crate::plan::{Axis, LensPlan};
 
 use super::BokehPlanes;
+use super::detector::luminance;
 use super::draw::{Shape, ShapeParams, profile_at, rim_at, rim_disc_mean, shape_of};
 use super::line::{Lines, floor_log2};
-use super::detector::luminance;
 
 /// Pixels farther than this from the edge of a gather's reach are not read: a safety margin for the bilinear
 /// neighbour of the last sample.
@@ -39,6 +39,9 @@ const SHARP_GATE: f64 = 16.0;
 const SHARP_DILATE: i64 = 2;
 /// The sharp-edge test sees a ball's rim this far beyond it, in pixels (gradient, box, window and dilation).
 const BALL_RIM_REACH_PX: f64 = 7.0;
+/// A sharp pixel in or around a ball that is darker than this fraction of the pixels three either side of it along a
+/// row or a column (by more than twelve noise units of them) is a strand in front of the ball and stays protected.
+const STRAND_VALLEY: f64 = 0.6;
 /// A line shorter than this, in pixels, is not gathered.
 const MIN_LINE_PX: f64 = 0.05;
 /// A pixel takes a blur from the map only when its colour (square roots, three channels) is within this distance of
@@ -56,6 +59,89 @@ const SUBJECT_SHARE: f64 = 0.5;
 const FEATHER_FRACTION: f64 = 0.3;
 const FEATHER_MIN_PX: usize = 2;
 const FEATHER_MAX_PX: usize = 24;
+
+/// What the cells of the blur map around a pixel add up to, by the colour-guided weights of the upsampling.
+struct CellSums {
+    /// Sum of weight times blur, of weight, and of the weights of the guide (the weights `k` themselves).
+    num: f64,
+    den: f64,
+    nrm: f64,
+    /// Sum of weight times the share of the cell known to be in focus.
+    sub: f64,
+    /// The squared colour distance to the nearest blurred cell of confidence [`ACCEPT_CONFIDENCE`] or more.
+    nearest2: f64,
+}
+
+/// The cells of one level of the blur map around the pixels of a tile, with the tile's colours.
+struct CellView<'a> {
+    level: &'a super::MapLevel,
+    cols: &'a [(f64, usize, usize)],
+    rows: &'a [(f64, usize, usize)],
+    cell_guide: &'a [[f32; 3]],
+    cx_lo: usize,
+    cx_hi: usize,
+    cy_lo: usize,
+    cy_hi: usize,
+    ncx: usize,
+    root: &'a RootField,
+    sx: f64,
+    sy: f64,
+    sup: f64,
+    sg2: f64,
+}
+
+impl CellView<'_> {
+    /// The sums over the cells within the support of pixel `(x, y)`.
+    fn sums(&self, x: usize, y: usize) -> CellSums {
+        let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+        let (sup, level) = (self.sup, self.level);
+        let lw = level.w;
+        let g = smoothed_root(self.root, x as i64, y as i64);
+        let j_lo = (((py - sup) / self.sy).floor().max(0.0) as usize).max(self.cy_lo);
+        let j_hi = ((((py + sup) / self.sy).floor() as usize) + 1).min(self.cy_hi);
+        let i_lo = (((px - sup) / self.sx).floor().max(0.0) as usize).max(self.cx_lo);
+        let i_hi = ((((px + sup) / self.sx).floor() as usize) + 1).min(self.cx_hi);
+        let mut c = CellSums {
+            num: 0.0,
+            den: 0.0,
+            nrm: 0.0,
+            sub: 0.0,
+            nearest2: f64::INFINITY,
+        };
+        // How far the pixel's colour is from the nearest confident cell's: a pixel of a different colour than every
+        // cell around it (the rim of a sharp subject) is not part of their blur.
+        for j in j_lo..j_hi {
+            let dy = self.rows[j].0 - py;
+            for i in i_lo..i_hi {
+                let dx = self.cols[i].0 - px;
+                let d2 = dx * dx + dy * dy;
+                if d2 >= sup * sup {
+                    continue;
+                }
+                let t = 1.0 - d2 / (sup * sup);
+                let ws = t * t;
+                let cg = &self.cell_guide[(j - self.cy_lo) * self.ncx + (i - self.cx_lo)];
+                let (d0, d1, d2c) = (
+                    f64::from(g[0] - cg[0]),
+                    f64::from(g[1] - cg[1]),
+                    f64::from(g[2] - cg[2]),
+                );
+                let dist2 = d0 * d0 + d1 * d1 + d2c * d2c;
+                let tt = 1.0 + dist2 / self.sg2;
+                let k = ws / (tt * tt);
+                let idx = j * lw + i;
+                if level.a[idx] > 0.0 && level.c[idx] >= ACCEPT_CONFIDENCE as f32 {
+                    c.nearest2 = c.nearest2.min(dist2);
+                }
+                c.num += k * f64::from(level.a[idx]);
+                c.den += k * f64::from(level.c[idx]);
+                c.sub += k * f64::from(level.s[idx]);
+                c.nrm += k;
+            }
+        }
+        c
+    }
+}
 
 /// A rectangle of values with clamped reads: reads outside the rectangle take the nearest value inside, which
 /// is the frame's edge replication wherever the rectangle touches the frame's edge.
@@ -238,7 +324,12 @@ impl<'a> Pass<'a> {
             .iter()
             .filter_map(|b| shape_of(b, &sp))
             .filter(|s| {
-                let reach = s.reach.max(s.r_out + 1.0);
+                // Everything of the ball that reads or writes pixels of the tile: its oval, its take-out disc and
+                // the zone around its rim in which the sharp-edge test is lifted.
+                let reach = s
+                    .reach
+                    .max(s.r_out + 1.0)
+                    .max(s.r_ball + BALL_RIM_REACH_PX + 1.0);
                 touches(&rb, s.cx, s.cy, reach)
             })
             .collect();
@@ -396,8 +487,23 @@ impl<'a> Pass<'a> {
             }
         });
         // Zero the map where the picture shows an edge sharper than the blur says, except around a ball: its
-        // own rim is a sharp edge.
+        // own rim is a sharp edge, and so is a highlight in it (a glass ornament's, at the centre).
         let mut zero = self.sharp_places(input, r0, &bt);
+        let planes = [input.plane(0), input.plane(1), input.plane(2)];
+        let lum_at = |x: i64, y: i64| -> f64 {
+            let xc = x.clamp(input.x0 as i64, (input.x0 + input.width) as i64 - 1) as usize;
+            let yc = y.clamp(input.y0 as i64, (input.y0 + input.height) as i64 - 1) as usize;
+            let i = (yc - input.y0) * input.width + (xc - input.x0);
+            f64::from(luminance(planes[0][i], planes[1][i], planes[2][i]))
+        };
+        let noise_t = self.noise_t();
+        // A thin dark line (a valley: much darker than the pixels three either side of it along a row or a column).
+        let thin_dark = |x: i64, y: i64| -> bool {
+            let lum = lum_at(x, y);
+            let margin = |v: f64| 12.0 * v.max(0.0).sqrt() * noise_t;
+            let valley = |a: f64, b: f64| lum < STRAND_VALLEY * a.min(b) - margin(a.min(b));
+            valley(lum_at(x - 3, y), lum_at(x + 3, y)) || valley(lum_at(x, y - 3), lum_at(x, y + 3))
+        };
         for s in shapes {
             let reach = s.r_out.max(s.r_ball + BALL_RIM_REACH_PX) + 1.0;
             let x0 = ((s.cx - reach).floor().max(r0.x as f64)) as usize;
@@ -407,8 +513,24 @@ impl<'a> Pass<'a> {
             for y in y0..y1 {
                 for x in x0..x1 {
                     let (dx, dy) = (x as f64 + 0.5 - s.cx, y as f64 + 0.5 - s.cy);
-                    // Only along the rim: a thin strand across the ball or beside it stays protected.
-                    if ((dx * dx + dy * dy).sqrt() - s.r_ball).abs() <= BALL_RIM_REACH_PX {
+                    let d = (dx * dx + dy * dy).sqrt();
+                    let lum = lum_at(x as i64, y as i64);
+                    // A thin dark line is a strand in front of the ball, not its rim: it stays protected.
+                    if thin_dark(x as i64, y as i64) {
+                        continue;
+                    }
+                    // Nor is the edge of a subject beside the light (a hat) the ball's rim.
+                    if zero[(y - r0.y) * r0.w + (x - r0.x)] {
+                        let c = view.sums(x, y);
+                        if c.nrm > 0.0 && c.sub >= SUBJECT_SHARE * c.nrm {
+                            continue;
+                        }
+                    }
+                    // Along the rim: a thin strand across the ball or beside it stays protected (see above).
+                    let on_rim = (d - s.r_ball).abs() <= BALL_RIM_REACH_PX;
+                    // Inside the ball a sharp pixel as bright as the ball is the ball's own light.
+                    let core = d < s.r_ball && lum >= s.core;
+                    if on_rim || core {
                         zero[(y - r0.y) * r0.w + (x - r0.x)] = false;
                     }
                 }
@@ -423,7 +545,7 @@ impl<'a> Pass<'a> {
         }
         // Inside a ball's take-out disc the map is the ball's radius: the rim of a light is a colour edge the
         // guided upsampling stops at, which would cut notches into the ball. (Beyond the disc the drawn oval is
-        // still cut by the map, so a sharp subject in front of the light hides part of it.)
+        // cut by what is known to be sharp, `occ` below, so a subject in front of the light hides part of it.)
         let mut in_ball = vec![false; r0.w * r0.h];
         for s in shapes {
             let reach = s.r_out;
@@ -462,7 +584,37 @@ impl<'a> Pass<'a> {
                 }
             }
         }
-        (crop_scalar(&bt, r0, out), crop_scalar(&ramp, r0, out))
+        // Where a drawn ball may not go: pixels of a sharp subject, found by the guided share of the cells known to
+        // be in focus, or strands (thin dark lines the picture's sharp-edge test flags). Only where an oval would
+        // be drawn on a pixel with no blur of its own; elsewhere the map has already decided.
+        let mut occ = vec![false; r0.w * r0.h];
+        for s in shapes {
+            let reach = s.reach;
+            let x0 = ((s.cx - reach).floor().max(r0.x as f64)) as usize;
+            let x1 = (((s.cx + reach).ceil() as usize) + 1).min(r0.x1());
+            let y0 = ((s.cy - reach).floor().max(r0.y as f64)) as usize;
+            let y1 = (((s.cy + reach).ceil() as usize) + 1).min(r0.y1());
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = (y - r0.y) * r0.w + (x - r0.x);
+                    if bt[i] >= B_MIN as f32 || occ[i] {
+                        continue;
+                    }
+                    if s.coverage(x as f64 + 0.5, y as f64 + 0.5).0 <= 0.0 {
+                        continue;
+                    }
+                    // (A flag of the sharp-edge test protects a strand, not a speck: only a thin dark line counts.)
+                    let c = view.sums(x, y);
+                    occ[i] = (zero[i] && thin_dark(x as i64, y as i64))
+                        || (c.nrm > 0.0 && c.sub >= SUBJECT_SHARE * c.nrm);
+                }
+            }
+        }
+        (
+            crop_scalar(&bt, r0, out),
+            crop_scalar(&ramp, r0, out),
+            crop_bool(&occ, r0, out),
+        )
     }
 
     /// Pixels of `r0` next to an edge sharper than their blur.
@@ -780,6 +932,16 @@ fn map_rect<T: Send>(rect: PixelRect, f: impl Fn(i64, i64) -> T + Sync) -> Vec<T
     out
 }
 
+/// The `inner` rectangle of a boolean mask covering `outer`.
+fn crop_bool(data: &[bool], outer: PixelRect, inner: PixelRect) -> Vec<bool> {
+    let mut out = Vec::with_capacity(inner.w * inner.h);
+    for y in inner.y..inner.y1() {
+        let row = (y - outer.y) * outer.w + (inner.x - outer.x);
+        out.extend_from_slice(&data[row..row + inner.w]);
+    }
+    out
+}
+
 /// The `inner` rectangle of a single-channel buffer covering `outer`.
 fn crop_scalar(data: &[f32], outer: PixelRect, inner: PixelRect) -> Vec<f32> {
     let mut out = Vec::with_capacity(inner.w * inner.h);
@@ -978,11 +1140,13 @@ fn take_out(wk: &mut [f32], r0: PixelRect, bt: &[f32], shapes: &[Shape]) {
     }
 }
 
-/// Adds every ball's ellipse to `out` (over `want`), where the blur map says the pixel is out of focus.
+/// Adds every ball's ellipse to `out` (over `want`), except on the pixels of a sharp subject (`occ`) that have no
+/// blur of their own: the oval is the ball's light, and a ball is not clipped where the map is merely unsure.
 fn redraw(
     out: &mut [f32],
     want: PixelRect,
     bt: &[f32],
+    occ: &[bool],
     r0: PixelRect,
     shapes: &[Shape],
     sp: &ShapeParams,
@@ -997,7 +1161,7 @@ fn redraw(
         for y in y0..y1 {
             for x in x0..x1 {
                 let bi = (y - r0.y) * r0.w + (x - r0.x);
-                if f64::from(bt[bi]) < B_MIN {
+                if f64::from(bt[bi]) < B_MIN && occ[bi] {
                     continue;
                 }
                 let (cov, rn) = s.coverage(x as f64 + 0.5, y as f64 + 0.5);

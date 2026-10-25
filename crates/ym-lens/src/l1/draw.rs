@@ -21,6 +21,11 @@ const MAX_CAT_OFFSET: f64 = 1.8;
 const NATIVE_SOFTNESS: f64 = 0.12;
 /// The width of a smoothstep rim from full to nothing, in widths of its 80 % to 20 % span.
 const RIM_SPAN_PER_SOFTNESS: f64 = 2.35;
+/// The area a rim of width `E` adds to a convex shape whose edge it is centred on (Steiner's formula: the part
+/// outside has the longer perimeter), in `E` squared: `2 pi` times the first moment of the rim's coverage about the
+/// edge, for a smoothstep and for the linear ramp of a sharp rim.
+const SMOOTH_RIM_AREA: f64 = 0.157_08;
+const LINEAR_RIM_AREA: f64 = 0.261_80;
 
 /// A ball's shape in the pixels of the view being drawn.
 #[derive(Clone, Debug)]
@@ -209,10 +214,18 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
     } else {
         (std::f64::consts::PI * a * b, p.rim_mean)
     };
-    let scale = p.fw * p.fh / (area * mean);
     // A soft ball is drawn with a soft rim; a sharp one with the one pixel of coverage.
     let edge = (RIM_SPAN_PER_SOFTNESS * (ball.softness - NATIVE_SOFTNESS) * r_px)
         .clamp(1.0, (2.0 * r_px).max(1.0));
+    // The drawn mass is the profile over the shape plus what the rim adds outside the edge (at the profile's edge
+    // value), so that the shape carries the ball's energy whatever its rim.
+    let rim_area = if edge > 1.0 {
+        SMOOTH_RIM_AREA
+    } else {
+        LINEAR_RIM_AREA
+    } * edge
+        * edge;
+    let scale = p.fw * p.fh / (area * mean + rim_area * rim_at(p.rim, 1.0));
     Some(Shape {
         cx,
         cy,

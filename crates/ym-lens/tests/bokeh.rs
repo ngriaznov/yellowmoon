@@ -823,3 +823,350 @@ fn tiles_equal_the_whole_frame_with_an_external_blur_map() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Balls beside bright things, balls at the edge of a map, balls across tiles (docs/21 section 4, L1, "As built").
+// ---------------------------------------------------------------------------------------------------------------
+
+/// A dark scene (ground 0.03) with soft-rimmed balls `(cx, cy, radius, rim width over radius, level)` added to it
+/// (the rim is a smoothstep centred on the radius, as in `soft_night_scene`), with sensor noise.
+fn balls_on_ground(balls: &[(f64, f64, f64, f64, f64)], noise: Noise, seed: u64) -> Scene {
+    let mut scene = night_scene_spaced(W, H, &[], Noise::NONE, seed, 2.0);
+    let n = W * H;
+    for v in scene.img.data.iter_mut().chain(scene.ground.iter_mut()) {
+        *v += 0.03;
+    }
+    for (k, &(cx, cy, r, soft, level)) in balls.iter().enumerate() {
+        let tint = [
+            1.0,
+            0.85 - 0.05 * (k % 3) as f64,
+            0.6 + 0.05 * (k % 4) as f64,
+        ];
+        let reach = r * (1.0 + 0.5 * soft) + 2.0;
+        let (x0, x1) = (
+            (cx - reach).floor().max(0.0) as usize,
+            ((cx + reach).ceil() as usize).min(W),
+        );
+        let (y0, y1) = (
+            (cy - reach).floor().max(0.0) as usize,
+            ((cy + reach).ceil() as usize).min(H),
+        );
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
+                let width = (soft * r).max(1.0);
+                let t = ((r + 0.5 * width - d) / width).clamp(0.0, 1.0);
+                let a = t * t * (3.0 - 2.0 * t);
+                for c in 0..3 {
+                    scene.img.data[c * n + y * W + x] += (level * tint[c] * a) as f32;
+                }
+            }
+        }
+        scene.discs.push((cx, cy, r));
+    }
+    scene.focus = None;
+    scene.noisy(noise, seed + 1)
+}
+
+/// A learned-style blur map of the 1000 x 667 frame: cells of 2 x 2 pixels at radius `radius_px`, out of focus with
+/// probability 0.95 below `subject_above`/unsure above `unsure_above`, with `p = 0.02` (a sure subject) in the rows
+/// above `subject_above` and `p = 0.5` (unsure, radius 0) between that and `unsure_above`, as a network gives it
+/// near a subject's outline.
+fn learned_map(radius_px: f64, subject_above: usize, unsure_above: usize) -> BlurMapInput {
+    let hd = 0.5 * ((W * W + H * H) as f64).sqrt();
+    let (cw, ch) = (W.div_ceil(2), H.div_ceil(2));
+    let (mut b, mut p) = (vec![0.0f32; cw * ch], vec![0.0f32; cw * ch]);
+    for cy in 0..ch {
+        for cx in 0..cw {
+            let y = 2 * cy;
+            let (bv, pv) = if y < subject_above {
+                (1.0 / hd, 0.02)
+            } else if y < unsure_above {
+                (1.0 / hd, 0.5)
+            } else {
+                (radius_px / hd, 0.95)
+            };
+            b[cy * cw + cx] = bv as f32;
+            p[cy * cw + cx] = pv as f32;
+        }
+    }
+    BlurMapInput {
+        width: cw,
+        height: ch,
+        plane_width: W,
+        plane_height: H,
+        b,
+        p,
+    }
+}
+
+fn planes_with_map(p: &LensPlan, scene: &Scene, map: &BlurMapInput) -> LensPlanes {
+    LensPlanes::build_with_map(
+        p,
+        &whole(W, H, &scene.img.data),
+        scene.focus,
+        Some(map),
+        &|| false,
+    )
+    .expect("planes")
+}
+
+/// The light above `base` per channel and the elongation (second moments of the green) over the box
+/// `[x0, x1) x [y0, y1)`.
+fn box_blob(
+    out: &[f32],
+    base: &[f32],
+    (x0, x1, y0, y1): (usize, usize, usize, usize),
+) -> ([f64; 3], f64) {
+    let n = W * H;
+    let mut energy = [0.0f64; 3];
+    let (mut m, mut mx, mut my) = (0.0f64, 0.0f64, 0.0f64);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            for (c, e) in energy.iter_mut().enumerate() {
+                *e += f64::from(out[c * n + y * W + x]) - f64::from(base[c * n + y * W + x]);
+            }
+            let v = f64::from(out[n + y * W + x]) - f64::from(base[n + y * W + x]);
+            m += v;
+            mx += v * (x as f64 + 0.5);
+            my += v * (y as f64 + 0.5);
+        }
+    }
+    let (mx, my) = (mx / m, my / m);
+    let (mut sxx, mut syy) = (0.0f64, 0.0f64);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let v = f64::from(out[n + y * W + x]) - f64::from(base[n + y * W + x]);
+            sxx += v * (x as f64 + 0.5 - mx).powi(2);
+            syy += v * (y as f64 + 0.5 - my).powi(2);
+        }
+    }
+    (energy, (syy / sxx).sqrt())
+}
+
+#[test]
+fn a_small_soft_ball_beside_a_larger_one_survives_as_an_oval_with_its_energy() {
+    // The small ball (r 7, soft rim, 5 times its ground) has the big one's edge in its ring over a fourteenth of the
+    // ring (more than the twentieth a clear ball allows): a light beside a bright thing (the curl of a hook, a
+    // neighbour in a cluster), still a light. In a learned
+    // map (blurred all around) both are found, and both come out twice as tall with the light they had.
+    let balls = [
+        (463.0, 330.0, 7.0, 0.3, 0.14),
+        (501.0, 330.0, 22.0, 0.3, 1.2),
+    ];
+    let scene = balls_on_ground(&balls, Noise::LOW, 51);
+    let map = learned_map(9.0, 0, 0);
+    let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
+    let planes = planes_with_map(&p, &scene, &map);
+    let bp = planes.bokeh().expect("bokeh");
+    assert!(bp.active());
+    let hd = 0.5 * ((W * W + H * H) as f64).sqrt();
+    for &(cx, cy, r, _, _) in &balls {
+        let found = bp.balls().iter().find(|b| {
+            ((b.x * W as f64 - cx).powi(2) + (b.y * H as f64 - cy).powi(2)).sqrt() < 0.3 * r
+        });
+        let b = found.unwrap_or_else(|| panic!("the ball of {r} px at ({cx}, {cy}) was not found"));
+        assert!(
+            (b.radius * hd / r - 1.0).abs() < 0.2,
+            "found at radius {:.1}, wanted {r}",
+            b.radius * hd
+        );
+    }
+    let out = reshape_tile(
+        &p,
+        &planes,
+        1,
+        &scene.img.data,
+        (W, H),
+        PixelRect::new(0, 0, W, H),
+    );
+    // The small ball's own window: the side away from the big ball, and the oval's whole height.
+    let win = (452, 475, 296, 364);
+    let (e_out, elong) = box_blob(&out, &scene.ground, win);
+    let (e_in, _) = box_blob(&scene.img.data, &scene.ground, win);
+    assert!(
+        (1.85..=2.15).contains(&elong),
+        "the small ball is {elong:.2} times taller, wanted 2"
+    );
+    for c in 0..3 {
+        assert!(
+            (e_out[c] / e_in[c] - 1.0).abs() < 0.02,
+            "channel {c}: the small ball's light {:.3} -> {:.3}",
+            e_in[c],
+            e_out[c]
+        );
+    }
+}
+
+#[test]
+fn a_ball_beside_a_bright_thing_is_found_with_the_classical_detector_too() {
+    let balls = [
+        (463.0, 330.0, 7.0, 0.3, 0.14),
+        (501.0, 330.0, 22.0, 0.3, 1.2),
+        (300.0, 200.0, 9.0, 0.2, 0.8),
+        (700.0, 450.0, 11.0, 0.2, 0.9),
+        (200.0, 500.0, 10.0, 0.3, 0.7),
+    ];
+    let scene = balls_on_ground(&balls, Noise::LOW, 52);
+    let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
+    let planes = planes_of(&p, &scene);
+    let bp = planes.bokeh().expect("bokeh");
+    assert_eq!(bp.balls().len(), 5, "every ball is found");
+}
+
+#[test]
+fn a_ball_is_drawn_whole_where_the_map_is_unsure_and_hidden_where_a_subject_is() {
+    // A ball of 14 px whose oval (28 px up, 28 px down) crosses the lines at which a 2 x 2 split of the frame cuts
+    // it. The map above the ball is first unsure (p 0.5, radius 0), then a sure subject (p 0.02) from 20 px above
+    // the centre up: the first draws the oval whole, the second hides the part of it that lies over the subject
+    // (but not the ball's own disc).
+    let (cx, cy) = (503.0, 345.0);
+    let scene = balls_on_ground(&[(cx, cy, 14.0, 0.2, 1.0)], Noise::LOW, 53);
+    let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
+    let half = |out: &[f32]| {
+        let top = box_blob(
+            out,
+            &scene.ground,
+            (cx as usize - 20, cx as usize + 20, 305, 345),
+        );
+        let bottom = box_blob(
+            out,
+            &scene.ground,
+            (cx as usize - 20, cx as usize + 20, 345, 385),
+        );
+        (top.0[1], bottom.0[1])
+    };
+    for (name, subject, unsure) in [("unsure", 0, 330), ("subject", 325, 330)] {
+        let map = learned_map(14.0, subject, unsure);
+        let planes = planes_with_map(&p, &scene, &map);
+        assert_eq!(planes.bokeh().expect("bokeh").balls().len(), 1, "{name}");
+        let whole_frame = reshape_tile(
+            &p,
+            &planes,
+            1,
+            &scene.img.data,
+            (W, H),
+            PixelRect::new(0, 0, W, H),
+        );
+        let (top, bottom) = half(&whole_frame);
+        let ratio = top / bottom;
+        if subject == 0 {
+            assert!(
+                (0.95..=1.05).contains(&ratio),
+                "{name}: the oval's top half has {ratio:.3} of the bottom half's light"
+            );
+            let (e_out, elong) = box_blob(
+                &whole_frame,
+                &scene.ground,
+                (cx as usize - 20, cx as usize + 20, 305, 385),
+            );
+            let (e_in, _) = box_blob(
+                &scene.img.data,
+                &scene.ground,
+                (cx as usize - 20, cx as usize + 20, 305, 385),
+            );
+            assert!(
+                (1.85..=2.15).contains(&elong),
+                "{name}: {elong:.2} times taller"
+            );
+            assert!(
+                (e_out[1] / e_in[1] - 1.0).abs() < 0.02,
+                "{name}: energy {:.3} -> {:.3}",
+                e_in[1],
+                e_out[1]
+            );
+        } else {
+            assert!(
+                (0.55..=0.92).contains(&ratio),
+                "{name}: the top half, partly over a subject, has {ratio:.3} of the bottom half's light"
+            );
+        }
+        // Tiles agree with the whole frame to the bit, for splits through the oval.
+        for (nx, ny) in [(2usize, 2usize), (3, 3)] {
+            let mut assembled = vec![0.0f32; 3 * W * H];
+            for rect in common::tiles(W, H, nx, ny) {
+                let a = reshape_tile(&p, &planes, 1, &scene.img.data, (W, H), rect);
+                for c in 0..3 {
+                    for y in 0..rect.h {
+                        let dst = c * W * H + (rect.y + y) * W + rect.x;
+                        let src = c * rect.w * rect.h + y * rect.w;
+                        assembled[dst..dst + rect.w].copy_from_slice(&a[src..src + rect.w]);
+                    }
+                }
+            }
+            assert!(
+                assembled
+                    .iter()
+                    .zip(&whole_frame)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "{name}: {nx}x{ny} tiles differ from the whole frame"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_very_bright_soft_ball_with_a_glow_leaves_no_pillar_beside_its_oval() {
+    // A ball 270 times brighter than its ground, with a rim 0.8 radii wide and a glow around that dies away over
+    // 10 px: whatever of its light stays in the picture is stretched with the rest of the blur and stands beside
+    // the oval as a vertical pillar. The take-out reaches to where the light has died away, so (nearly) all of it is
+    // drawn, as the oval: nothing is added above the oval, and the energy is kept (to 3 % with so wide a rim).
+    let (cx, cy) = (503.0, 340.0);
+    let mut scene = balls_on_ground(&[(cx, cy, 12.0, 0.8, 8.0)], Noise::NONE, 54);
+    let n = W * H;
+    for y in 0..H {
+        for x in 0..W {
+            let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
+            if d > 12.0 {
+                let glow = (0.3 * (-(d - 12.0) / 10.0).exp()) as f32;
+                for c in 0..3 {
+                    scene.img.data[c * n + y * W + x] += glow;
+                }
+            }
+        }
+    }
+    let scene = scene.noisy(Noise::LOW, 55);
+    let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
+    let map = learned_map(12.0, 0, 0);
+    let planes = planes_with_map(&p, &scene, &map);
+    assert_eq!(planes.bokeh().expect("bokeh").balls().len(), 1);
+    let out = reshape_tile(
+        &p,
+        &planes,
+        1,
+        &scene.img.data,
+        (W, H),
+        PixelRect::new(0, 0, W, H),
+    );
+    let win = (
+        cx as usize - 70,
+        cx as usize + 70,
+        cy as usize - 120,
+        cy as usize + 120,
+    );
+    let (e_out, _) = box_blob(&out, &scene.ground, win);
+    let (e_in, _) = box_blob(&scene.img.data, &scene.ground, win);
+    // The light in a strip above the oval's top (the oval is 24 px up from the centre, its rim a few more): the
+    // glow that was left in the picture would be stretched up into it and stand there as a pillar.
+    let strip = |img: &[f32]| {
+        let mut sum = 0.0f64;
+        for y in (cy as usize - 40)..(cy as usize - 32) {
+            for x in (cx as usize - 6)..(cx as usize + 6) {
+                let i = W * H + y * W + x;
+                sum += f64::from(img[i]) - f64::from(scene.ground[i]);
+            }
+        }
+        sum / (12 * 8) as f64
+    };
+    let (above_in, above_out) = (strip(&scene.img.data), strip(&out));
+    assert!(
+        above_out <= 1.25 * above_in,
+        "the strip above the oval holds {above_out:.4}, the picture had {above_in:.4}: a pillar"
+    );
+    assert!(
+        (e_out[1] / e_in[1] - 1.0).abs() < 0.03,
+        "energy {:.3} -> {:.3}",
+        e_in[1],
+        e_out[1]
+    );
+}

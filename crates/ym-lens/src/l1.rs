@@ -54,6 +54,11 @@ pub struct Ball {
     /// Width of the ball's rim, from 80 % to 20 % of its brightness, over its radius: 0.1 to 0.2 for a disc with
     /// a sharp rim, 0.5 and more for a soft blob. The redrawn oval has a rim of the same softness.
     pub softness: f64,
+    /// True when the ball passes the strict rules (a calm ring, a rim of at most 0.9 radii, no sharp ground around
+    /// it). Only such balls count towards "the scene is one of lights" (the gate); the others, which needed the
+    /// relaxed rules where the blur around them says the ground is out of focus, are drawn in a photo that is
+    /// reshaped but do not make one.
+    pub clear: bool,
 }
 
 /// A blur map made by another source than the classical detector (the learned model, `ym_ml::bokeh_net`): one cell
@@ -193,6 +198,7 @@ impl BokehPlanes {
                 peak: b.peak,
                 supported: b.supported,
                 softness: b.softness,
+                clear: b.clear,
             })
             .collect();
         let mut planes = BokehPlanes {
