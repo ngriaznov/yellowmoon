@@ -417,12 +417,17 @@ pub(crate) fn limited_tint(t: [f64; 3], max_ratio: f64) -> [f64; 3] {
     [p[0] / mean, p[1] / mean, p[2] / mean]
 }
 
-/// The brightest a ghost of apothem `s` (half-diagonals) may be, in clip levels at Flares 100:
-/// [`GHOST_PEAK_MAX`] from [`GHOST_FULL_RADIUS`] up, falling in proportion to the apothem below that to at
-/// least [`GHOST_SMALL_SHARE`] of it. A small ghost carries little light for its peak: the lens data's small
-/// ghosts, a few pixels across, came out as hot dots many times brighter than the scene.
+/// The brightest a ghost of apothem `s` (half-diagonals) may be, in clip levels at Flares 100: the smaller of
+///
+/// * [`GHOST_PEAK_MAX`] from [`GHOST_FULL_RADIUS`] up, falling in proportion to the apothem below that to at
+///   least [`GHOST_SMALL_SHARE`] of it (a ghost of a few pixels carries little light for its peak: the lens
+///   data's smallest ghosts came out as hot dots many times the clip level), and
+/// * [`GHOST_LIGHT_MAX`] over the ghost's area `pi s^2` (a frame-filling ghost that bright is a haze: the
+///   light a ghost carries is bounded as well as its peak).
 pub(crate) fn ghost_peak_max(s: f64) -> f64 {
-    GHOST_PEAK_MAX * (s / GHOST_FULL_RADIUS).clamp(GHOST_SMALL_SHARE, 1.0)
+    let by_peak = GHOST_PEAK_MAX * (s / GHOST_FULL_RADIUS).clamp(GHOST_SMALL_SHARE, 1.0);
+    let by_light = GHOST_LIGHT_MAX / (std::f64::consts::PI * s * s).max(1e-12);
+    by_peak.min(by_light)
 }
 
 /// The tint of a ghost's coating on `camera`: [`normalised_tint`] with its spread limited to
@@ -1295,17 +1300,23 @@ mod tests {
     }
 
     #[test]
-    fn the_bound_on_a_ghost_falls_with_its_size_to_a_share_of_the_bound() {
-        use crate::consts::{GHOST_FULL_RADIUS, GHOST_PEAK_MAX, GHOST_SMALL_SHARE};
+    fn the_bound_on_a_ghost_rises_to_the_peak_and_falls_again_for_a_ghost_that_fills_the_frame() {
+        use crate::consts::{GHOST_FULL_RADIUS, GHOST_LIGHT_MAX, GHOST_PEAK_MAX, GHOST_SMALL_SHARE};
+        // From the full radius to where the light bound meets the peak bound: the peak bound.
         assert_eq!(ghost_peak_max(GHOST_FULL_RADIUS), GHOST_PEAK_MAX);
-        assert_eq!(ghost_peak_max(3.0), GHOST_PEAK_MAX);
+        assert_eq!(ghost_peak_max(0.25), GHOST_PEAK_MAX);
+        // Small ghosts: a share of it, rising with the size.
         assert_eq!(ghost_peak_max(0.0), GHOST_PEAK_MAX * GHOST_SMALL_SHARE);
-        let mut last = 0.0;
-        for k in 0..40 {
-            let b = ghost_peak_max(0.005 * f64::from(k));
-            assert!(b >= last && b > 0.0);
-            last = b;
+        assert!(ghost_peak_max(0.05) > ghost_peak_max(0.02));
+        // Large ghosts: the light bound, falling as one over the area.
+        let (a, b) = (ghost_peak_max(0.8), ghost_peak_max(1.6));
+        assert!((a - GHOST_LIGHT_MAX / (std::f64::consts::PI * 0.64)).abs() < 1e-12);
+        assert!((a / b - 4.0).abs() < 1e-9);
+        for k in 1..60 {
+            let v = ghost_peak_max(0.05 * f64::from(k));
+            assert!(v > 0.0 && v <= GHOST_PEAK_MAX);
         }
+    }
     }
     use crate::plan::Axis;
 

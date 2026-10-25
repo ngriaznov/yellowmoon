@@ -228,6 +228,11 @@ pub const GHOST_TINT_MAX_RATIO: f64 = 1.2;
 /// [`GHOST_FULL_RADIUS`] and larger; smaller ones get less (`l3::items::ghost_peak_max`).
 pub const GHOST_PEAK_MAX: f64 = 0.07;
 
+/// The most light a ghost carries, in clip levels times half-diagonals squared at Flares 100: its brightest value
+/// may not pass this over its area `pi s^2`, so a ghost of apothem over 0.25 is fainter than [`GHOST_PEAK_MAX`] in
+/// proportion to one over its area (0.28 of it at an apothem of 0.5, 0.07 at 1).
+pub const GHOST_LIGHT_MAX: f64 = 0.0137;
+
 /// The apothem, in half-diagonals, from which a ghost may be as bright as [`GHOST_PEAK_MAX`].
 pub const GHOST_FULL_RADIUS: f64 = 0.1;
 
@@ -381,13 +386,13 @@ pub const SAMPLE_RATIO_TO: f64 = 0.85;
 /// `2 SHARP_SOFT_HALF + 1` pixels a side, not one pixel at a time: the density is `d`, the protection `1 - smoothstep`
 /// of `d` between these two bounds, so a speck of a few pixels barely holds anything back and a region of sharp detail
 /// (fur, a strand's whole length) holds back everything, with edges as wide as the window.
-pub const SHARP_SOFT_HALF: usize = 5;
+pub const SHARP_SOFT_HALF: usize = 7;
 
 /// See [`SHARP_SOFT_HALF`]: the density from which the protection starts.
-pub const SHARP_SOFT_FROM: f64 = 0.15;
+pub const SHARP_SOFT_FROM: f64 = 0.2;
 
 /// See [`SHARP_SOFT_HALF`]: the density from which the stretch is held back altogether.
-pub const SHARP_SOFT_TO: f64 = 0.6;
+pub const SHARP_SOFT_TO: f64 = 0.7;
 
 /// A pixel takes a blur from the map only when its colour (square roots, three channels) is within this distance of
 /// the footprint mean of some blurred cell of confidence at least [`ACCEPT_CONFIDENCE`] around it. In a region
