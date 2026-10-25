@@ -1799,8 +1799,9 @@ fn a_crowd_of_equal_lights_makes_a_few_faint_streaks_and_not_a_ladder() {
 
 #[test]
 fn the_streak_ends_smoothly_to_nothing() {
-    // The last tenth of a streak's reach falls to 0 with no step: the largest difference between neighbouring
-    // pixels there is far under a code value (1/255 of the clip level), and the streak is gone at its reach.
+    // The last tenth of a streak's visible length falls to 0 with no step: the largest difference between
+    // neighbouring pixels there is far under a code value (1/255 of the clip level), and the streak is gone at
+    // its reach.
     let lib = shipped();
     for axis in [Axis::X, Axis::Y] {
         let scene = light_on_grey(axis);
