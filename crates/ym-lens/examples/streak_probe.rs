@@ -15,10 +15,13 @@
 //! ```
 //!
 //! `<plane dir>` is a folder with `lens_plane.f32` and `lens_plane.json`, as `lens_sheet --dump-planes` writes
-//! them. The streaks are the flare terms at the Anamorphic amount minus those at 0. One block is printed per
-//! photo: the bands of rows the streaks cross (the brightest channel's value over its clip level, `peak`, and
-//! the longest run of pixels over `0.001`, `0.004` and `0.02` of it, with the column where the run starts
-//! and ends) and, for the brightest row, the colour (blue over red) at a few distances from the peak.
+//! them. The streaks are the flare terms at the Anamorphic amount minus those at 0 (with the attachment's own
+//! ghosts there as well: point `--lenses` at a copy of the folder whose `anamorphic.json` has `ghosts: []` and
+//! `ghost_stretch: 1` to see the streaks alone). One block is printed per band of rows the streaks cross: the
+//! brightest channel's value over its clip level (`peak`), where it is, how many rows add 2 codes or more on a
+//! plain display of the plane (the plane's value as the background, +1.11 EV, the sRGB curve), how far to either
+//! side of the peak the streak still adds 2 codes, and, at 8, 40, 120 and 300 px from the peak, the value and the
+//! colour of the added light (blue over red and green over red in plane units, 1 for a neutral).
 
 use std::path::{Path, PathBuf};
 

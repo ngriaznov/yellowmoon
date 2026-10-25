@@ -49,11 +49,12 @@ const PARITY_BOUND: f32 = 2e-5;
 const PARITY_BOUND_HARDWARE: f32 = 1e-4;
 
 /// The same on the 50 MP frame of the far-corner test. The streak is bright since `docs/21`'s flare strengths
-/// (a light's energy times 2^12 for the small lights), and 2 to 3 standard deviations across from a light its
-/// value is read in the Gaussian's tail, where the light's centre, stored in `f32` (6e-8 half-diagonals, 3e-4 px
-/// of 50 MP), moves the value by up to 1e-4 of itself. Measured 1.17e-4 of the region's peak in the corner
-/// beside a light (the 500 x 350 cases above stay under 7e-6); the bound is twice that and never loosened.
-const PARITY_BOUND_50MP: f32 = 2.5e-4;
+/// (a light's energy times 2^12 for the small lights). Its pixel edges are measured from the light's place in
+/// pixels (`lfl_streak`), not from the frame's centre in half-diagonals: with the latter each edge of a pixel is
+/// 3e-4 px off in `f32` at 50 MP, 5e-4 of the pixel's width, which was 3.6e-5 of 0.152 (2.4e-4) in the corner
+/// beside a light. Measured now 2.95e-6 of 0.152 (1.9e-5 of the region's peak; the 500 x 350 cases above stay
+/// under 2e-6); the bound is a little over twice that and never loosened.
+const PARITY_BOUND_50MP: f32 = 5e-5;
 
 /// The same on a hardware adapter.
 const PARITY_BOUND_50MP_HARDWARE: f32 = 5e-4;

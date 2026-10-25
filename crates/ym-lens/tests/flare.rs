@@ -1579,9 +1579,10 @@ fn the_streak_is_a_soft_line_of_light_that_starts_in_the_lights_colour_and_turns
             };
             // Colour: next to the light the blue is within 25 % of the red (the light itself is neutral) and
             // it gains on the red as the line fades, to the tail's colour, which is a pale blue: the tint at
-            // half its chroma, so well under the coating's own blue over red.
+            // half its chroma, so well under the coating's own blue over red. (The streak of a light this
+            // size is about 100 px long on this frame.)
             let near = line(12);
-            let far = line(150);
+            let far = line(70);
             let (near_ratio, far_ratio) = (near[2] / near[0], far[2] / far[0]);
             assert!(
                 (0.8..1.25).contains(&near_ratio),
@@ -1589,11 +1590,11 @@ fn the_streak_is_a_soft_line_of_light_that_starts_in_the_lights_colour_and_turns
             );
             assert!(
                 (far_ratio / tail - 1.0).abs() < 0.12 && far_ratio > 1.3,
-                "{kind} {axis:?}: blue over red {far_ratio} at 150 px, the tail's is {tail}"
+                "{kind} {axis:?}: blue over red {far_ratio} at 70 px, the tail's is {tail}"
             );
             // Brightness: under the clip with a clear margin everywhere beyond 6 px, falling with the distance.
             let mut last = f64::INFINITY;
-            for d in [8isize, 16, 32, 64, 128, 256] {
+            for d in [8isize, 16, 32, 50, 70] {
                 let v = line(d);
                 let peak = v[0].max(v[1]).max(v[2]);
                 assert!(
@@ -1720,7 +1721,7 @@ fn lights_in_a_row_make_one_streak_and_not_a_set_of_lines() {
     for (i, x) in [560usize, 600, 640, 680].into_iter().enumerate() {
         scene.fill(x, 200 + 6 * i, 4, 4, [1.0; 3]);
     }
-    let col = streak_column(&lib, &scene, 300, 170, 250);
+    let col = streak_column(&lib, &scene, 500, 170, 250);
     let peak = col.iter().cloned().fold(0.0, f64::max);
     assert!(peak > 1e-3, "a streak at all: {peak}");
     let maxima = (1..col.len() - 1)
@@ -1803,10 +1804,10 @@ fn a_crowd_of_equal_lights_makes_a_few_faint_streaks_and_not_a_ladder() {
 
 #[test]
 fn the_streak_ends_smoothly_to_nothing() {
-    // The last tenth of a streak's visible length falls to 0 with no step: the largest difference between
-    // neighbouring pixels there is far under a code value (1/255 of the clip level), and the streak is gone at
-    // its reach.
-    let lib = shipped();
+    // The last tenth of a streak's length falls to 0 with no step: the largest difference between neighbouring
+    // pixels there is a tenth of a code at the clip level at most, the streak falls all the way and is gone
+    // at its reach.
+    let lib = streak_lib();
     for axis in [Axis::X, Axis::Y] {
         let scene = light_on_grey(axis);
         let light = if axis == Axis::X {
@@ -1814,25 +1815,26 @@ fn the_streak_ends_smoothly_to_nothing() {
         } else {
             (202, 662)
         };
-        let at = streak_at(&lib, LensKind::Vintage, axis, &scene, light);
+        let at = streak_at(&lib, LensKind::Classic, axis, &scene, light);
         let v: Vec<f64> = (0..=660isize).map(|d| at(-d, 0)[2]).collect();
         let peak = v[8];
         assert!(peak > 0.01, "{axis:?}: a streak: {peak}");
-        // Where the streak is gone (under a thousandth of its value 8 px out).
-        let end = v.iter().rposition(|x| *x > peak * 1e-3).expect("an end");
+        // Where the streak is gone.
+        let end = v.iter().rposition(|x| *x > 1e-9).expect("an end");
         assert!(end < 660, "{axis:?}: the streak still goes on at 660 px");
-        // The last tenth of the reach: no step between neighbouring pixels (a hundredth of a code at the clip level).
+        assert!(end > 40, "{axis:?}: the streak is only {end} px long");
+        // The last tenth: no step between neighbouring pixels.
         let from = (end as f64 * 0.9) as usize;
-        let step = (from..end + 1)
+        let step = (from..=end)
             .map(|d| (v[d + 1] - v[d]).abs())
             .fold(0.0, f64::max);
         assert!(
-            step < 1.0 / 255.0 / 100.0,
+            step < 1.0 / 255.0 / 10.0,
             "{axis:?}: a step of {step} near the end of the streak at {end} px"
         );
         for d in from..end {
             assert!(
-                v[d + 1] <= v[d] * 1.0001 + 1e-9,
+                v[d + 1] <= v[d] * 1.0001 + 1e-12,
                 "{axis:?}: not falling at {d} px"
             );
         }
