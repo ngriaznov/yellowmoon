@@ -140,8 +140,8 @@ pub struct ChainParams {
     /// highlight range ([`ChainParams::tone`]), which acts on the scene side before LogC4; both run.
     /// [`WhiteLift::NONE`] is the identity.
     pub white_lift: WhiteLift,
-    /// Stage C12 step 1c: the red chroma step, a hue-preserving chroma gain on the reds, ochres and yellows
-    /// in front of the display placement and ACES 2 (`docs/02`). `true` (the default) runs it with the look's strengths
+    /// Stage C12 step 1c: the red chroma step, a hue-preserving chroma gain on the reds in front of the
+    /// display placement and ACES 2 (`docs/02`). `true` (the default) runs it with the look's strengths
     /// ([`RedChroma`]: `up` 1 and `dark_relief` 0 for Neutral and for a look that does not set them, both
     /// 0 for Signature, which skips it); `false` is plain ACES 2, for tests and tools. Only the ACES 2
     /// path has it: an imported ARRI display LUT keeps ARRI's reds and ignores it. A DNG carries it in

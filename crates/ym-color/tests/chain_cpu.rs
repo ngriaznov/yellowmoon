@@ -1396,8 +1396,6 @@ fn c13_srgb_differs_from_the_aces2_references_moncurve_by_under_1e5() {
     for target in OutputTarget::ALL {
         let mut p = ChainParams::new(identity, tone_off);
         p.output = target;
-        // The colour [1, 0.9, 0.7] is an ochre, inside the yellow window: this test is about plain ACES 2.
-        p.red_chroma = false;
         let c = chain(&p);
         let reference = Aces2Transform::new(target.aces2());
         let mut worst = 0.0_f64;
@@ -1578,22 +1576,7 @@ fn debug_output_stays_small_for_big_inputs() {
 
 // ---- C12 step 1c: the red chroma step ---------------------------------------------------------------
 
-/// Ochres and yellows in the yellow window (Lab hue 68 to 95 degrees at the display lightness), mid-tone to
-/// light, where the step acts.
-const OCHRES: [Vec3; 6] = [
-    [0.6, 0.45, 0.12],
-    [0.5, 0.38, 0.2],
-    [0.9, 0.7, 0.2],
-    [0.3, 0.22, 0.06],
-    [0.8, 0.6, 0.25],
-    [0.5, 0.35, 0.15],
-];
-
-/// Skin tones (Lab hue 49, 52 and 61 degrees: the last is light skin in warm light), in the band between the
-/// red and the yellow window, where the step does nothing.
-const SKIN: [Vec3; 3] = [[0.62, 0.42, 0.28], [0.7, 0.52, 0.4], [0.6, 0.43, 0.27]];
-
-/// [`pixels`] and a few more reds, mid-tone to light, and ochres, where the step acts.
+/// [`pixels`] and a few more reds, mid-tone to light, where the step acts.
 fn pixels_with_reds() -> Vec<Vec3> {
     let mut v = pixels();
     v.extend([
@@ -1604,45 +1587,7 @@ fn pixels_with_reds() -> Vec<Vec3> {
         [1.5, 0.5, 0.3],
         [0.12, 0.04, 0.03],
     ]);
-    v.extend(OCHRES);
     v
-}
-
-#[test]
-fn ochres_and_yellows_get_the_up_side_and_skin_does_not() {
-    for target in OutputTarget::ALL {
-        // The identity matrix and tone: the camera triple is linear AWG4.
-        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let p = {
-            let mut p = ChainParams::new(identity, ToneParams::IDENTITY);
-            p.output = target;
-            p
-        };
-        let on = chain(&p);
-        let mut off_params = p.clone();
-        off_params.red_chroma = false;
-        let off = chain(&off_params);
-        let step = RedChromaStep::new(target, RedChroma::DEFAULT);
-        // The ochres sit in the yellow window and their display chroma grows; skin is left alone, bit for bit.
-        for rgb in OCHRES {
-            let lch = step.lch(rgb).unwrap();
-            assert!(
-                (68.0..=95.0).contains(&lch.h),
-                "{rgb:?} is at hue {} not in the window",
-                lch.h
-            );
-            let (a, b) = (
-                off.apply_to_display_linear(rgb),
-                on.apply_to_display_linear(rgb),
-            );
-            assert_ne!(a, b, "{target:?} {rgb:?}");
-        }
-        for rgb in SKIN {
-            let lch = step.lch(rgb).unwrap();
-            assert!((44.0..62.0).contains(&lch.h), "{rgb:?} is at hue {}", lch.h);
-            assert_eq!(step.apply(rgb), rgb);
-        }
-    }
 }
 
 #[test]

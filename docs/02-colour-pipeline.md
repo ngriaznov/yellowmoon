@@ -596,7 +596,7 @@ Why: ACES 2 SDR is a cinema rendering, which puts scene 0.18 at 10 nits, 0.85 EV
 
 1b. **White lift** (`white_offset_ev`, the Automatic card's White row). A per-photo scene-linear gain `2^(A · smoothstep((s − 1) / span))` on the luma of the decoded C11 output (`s` the stops over middle grey), applied to linear AWG4 **before the placement** and ACES 2: exactly 1 up to +1 stop over mid grey (mid grey and everything below it are untouched), ratio-preserving, per channel monotone, ACES 2 path only (an imported ARRI display LUT and a LogC3-to-Rec.709 look keep ARRI's highlights). `A` and the anchor are sized per photo from the 1/8 preview when it is opened; the DNG carries it in its pixels. The full text is in *White lift (C12 step 1b)* below.
 
-1c. **Red chroma** (a per-look strength, `red_chroma` in the look file; owner decisions of 2026-10-24 for the reds and 2026-10-25 for the yellows). A smooth, hue-preserving chroma gain on the reds and, on the up side, the ochres and yellows, applied to linear AWG4 **after the white lift and before the placement** and ACES 2: it gives back the chroma ACES 2 takes out of mid-tone and light reds, ochres and yellows, is capped below the output gamut's edge, and leaves grey, skin and other hues alone. ACES 2 path only. A DNG carries it in its pixels, like the white lift. The full text is in *Red chroma (C12 step 1c)* below.
+1c. **Red chroma** (a per-look strength, `red_chroma` in the look file; owner decision of 2026-10-24). A smooth, hue-preserving chroma gain on the reds, applied to linear AWG4 **after the white lift and before the placement** and ACES 2: it gives back the chroma ACES 2 takes out of mid-tone and light reds, is capped below the output gamut's edge, and leaves grey, other hues and skin alone. ACES 2 path only. A DNG carries it in its pixels, like the white lift. The full text is in *Red chroma (C12 step 1c)* below.
 
 2. ACES 2 output transform with peak luminance 100 nits, SDR, white D65, and these limiting primaries:
 
@@ -676,46 +676,9 @@ The estimator never sees the user's settings (light, exposure, grade, look, curv
 
 ### Red chroma (C12 step 1c)
 
-A hue-preserving chroma gain on the reds and, on the up side, the ochres and yellows, in front of the placement and ACES 2. It is the **R1** candidate of the red-fix investigation of 2026-10-24; the owner chose it ("R1 fix looks better than what we have currently"), and on 2026-10-25, after the ochre walls of his street photos came out peach, extended it: "Yellows keep colour: extend the existing red step to yellows/ochres/oranges: give back the saturation ACES 2 removes there, hue unchanged, gamut-safe. Neutral and imported looks; Signature already has it." Code: `ym_color::display::red_chroma` (`RedChromaStep`, the CPU reference), `red_chroma` in `color.wgsl` (the kernel), tables in Rust, not in files.
+A hue-preserving chroma gain on the reds, in front of the placement and ACES 2. It is the **R1** candidate of the red-fix investigation of 2026-10-24; the owner chose it ("R1 fix looks better than what we have currently"). Code: `ym_color::display::red_chroma` (`RedChromaStep`, the CPU reference), `red_chroma` in `color.wgsl` (the kernel), tables in Rust, not in files.
 
 **Why.** At the same display lightness ACES 2 takes chroma out of mid-tone and light reds (10 to 22 %: the reds "go coral") and adds 30 to 40 % to dark reds. The step gives back what ACES 2 removes above about −0.5 stop, caps the result below the output gamut's edge, and never folds a colour over another. Measured on the investigation's photographs (display chroma against ACES 2 alone): the pink shirt +20 %, the hat in P3 +7 %, the red shirt +4 %; the Lab hue moves by less than 0.1 degree; on 289 reflectances (the spectra of the investigation) nothing outside the reds changes.
-
-**Yellows (2026-10-25).** On the owner's Sony A1 street photos the ochre walls came out peach or pinkish. Their hue already matched the camera's own JPEG (right wall: JPEG 68.6 degrees, Neutral 67.7), but ACES 2 took about a third of the chroma out of them (C* 36.3 in the JPEG, 24.4 in Neutral). **Measured** (`tools/vectors/red_chroma_vectors.py`'s tables and OpenColorIO 2.6's ACES 2 transform, the placement in front; scratch scripts of the investigation): the ratio of the display's C* to the colorimetric C* of the same chromaticity at the displayed lightness, for a colour of C* 25 at the neutral-axis lightness (the Rec.709 and the P3 limit give the same numbers inside the gamut), ACES 2 alone and with the step:
-
-| Lab hue | +0 stop | +1 stop | +2 stops |
-|---|---|---|---|
-| 10 (red) | 0.86, 0.99 | 0.58, 0.83 | 0.36, 0.55 |
-| 30 (red) | 0.84, 0.97 | 0.56, 0.81 | 0.34, 0.52 |
-| 45 to 60 (skin, orange) | 0.89 to 0.92, unchanged | 0.61 to 0.65, unchanged | 0.38 to 0.41, unchanged |
-| 70 (ochre) | 0.93, 1.07 | 0.66, 0.96 | 0.42, 0.67 |
-| 80 (ochre) | 0.94, 1.08 | 0.67, 0.98 | 0.43, 0.69 |
-| 90 (yellow) | 0.94, 1.09 | 0.68, 0.99 | 0.44, 0.71 |
-| 100 (yellow) | 0.95, 1.06 | 0.69, 0.92 | 0.45, 0.64 |
-| 110 to 120 (yellow-green) | 0.96, unchanged | 0.70, unchanged | 0.46, unchanged |
-
-ACES 2 desaturates everything as the lightness rises, reds the most (0.56 at +1 stop) and yellow-greens the least (0.70); at chroma 10 the ratio is 0.59 at +1 stop and at chroma 40 it is 0.75 (it takes more of a muted colour), which is the shape the step's `kappa(C)` already follows. The yellows and ochres therefore need the same gain as the reds, and the step's own profile `P(s)`, `kappa(C)`, the soft hold under 1.45 and the cap to `CMAX` do that: it takes the ochres and yellows (hue 70 to 100) to 1.06 to 1.09 of colourimetric at +0 stop, 1.01 to 1.07 at +0.5 stop, 0.92 to 0.99 at +1 stop and (held by the 1.45) 0.64 to 0.71 at +2 stops, with the same figures on the sRGB and the P3 output. So the **yellow window** reuses the maths of the reds unchanged and only adds a hue range to the up side: 1 on 68 to 95 degrees, a raised cosine to 0 over 6 degrees below (62) and 15 above (110). The red window ends at 43 degrees, so **skin hues, 43 to 62, keep a weight of 0** and the step returns them bit for bit. The dark side (`dark_relief`) stays red-only: ACES 2's boost of dark yellows is left in. There is no new look key: `red_chroma.up` covers both ranges, and Signature (0, 0) skips the step as before.
-
-**Why the window starts at 62, not 58.** Skin sits at CIELAB hue 31 to 55 degrees in the portraits tested (5th to 95th percentile), and light or tanned skin in warm light reaches 60. The first window (1 on 66 to 95, 0 at 58) moved a skin colour of scene hue 62 by ΔE00 0.8 to 2.1 and of hue 64 by 1.3 to 3.7 (display ΔC* up to +4.6 and +8.4, at 0 to +1 stop and C* 15 to 35), so it was moved to start at 62: hue 64 then moves by 0.4 to 1.0 and 66 by 1.2 to 3.2, hues of ochre rather than skin. What it costs: the ochre walls of the street photos (hue 67.7 to 73) are unchanged, a white door in shade at 66.6 degrees gets a fifth less of its gain (C* +4.0 became +3.1), and the orange wall of `A1M03159` at hue 62 (C* 24.5 in Neutral, 36.5 in the camera JPEG), which the first window took to 28.2, is left where it was, because orange at 62 degrees and light skin are the same hues.
-
-**Hue.** The step scales chroma at constant L* in the step's space (hue unchanged to 1e-9 degrees); ACES 2's own hue response to a larger input chroma moves the displayed hue by at most 0.48 degrees up to +2 stops and chroma 45, and by up to 1.0 degrees at +4 stops (python reference through OpenColorIO, 1,788 colours of the window, hue 62 to 110).
-
-**Measured on real photos** (`ym render --cpu --apple-auto off --look neutral --format png --long-edge 1500`, sRGB, patch medians of display CIELAB; the camera JPEG is the one embedded in the ARW; "today" is the build before the yellow window, "new" the one with it; the owner's files are not in the repository):
-
-| Patch | Camera JPEG C* / h | Today C* / h | New C* / h |
-|---|---|---|---|
-| `A1M03185` right wall, sunlit ochre | 36.3 / 68.6 | 24.4 / 67.7 | 30.8 / 67.7 |
-| far right wall, bright | 34.7 / 73.2 | 23.7 / 72.3 | 30.7 / 72.2 |
-| left wall, lit | 25.0 / 72.7 | 16.6 / 73.4 | 20.5 / 73.3 |
-| left wall, shade (below the −0.5 stop cross) | 17.0 / 68.1 | 13.3 / 69.5 | 14.0 / 69.9 |
-| white door in shade | 16.1 / 68.2 | 10.3 / 66.6 | 13.4 / 67.3 |
-| asphalt, cobbles, sky, red pipe | | | unchanged, ΔE00 0.000 |
-| `A1M03159` left wall, sunlit orange (hue 62: skin territory) | 36.5 / 66.1 | 24.5 / 62.3 | 24.5 / 62.3, unchanged |
-| `A1M03165` yellow flowers | 56.0 / 81.5 | 47.4 / 86.1 | 52.0 / 86.4 |
-| `A1M03175` orange dahlia | 50.5 / 76.1 | 36.0 / 74.3 | 50.9 / 73.1 |
-| `A1M03175` cream dahlia | 19.3 / 77.1 | 11.4 / 68.0 | 14.4 / 69.2 |
-| `A1M01749` dry grass | 14.6 / 77.2 | 10.6 / 73.9 | 14.8 / 74.5 |
-
-Hue per pixel is unchanged by the step; the median hue of a patch moves by under 0.7 degrees on the walls and by up to 1.2 degrees on flower patches that straddle a taper or reach the gamut edge. **Greys:** over the pixels of `A1M03185` whose chroma is under 2 (10 % of the photo) the mean ΔE00 is 0.015, 99 % are under 0.47 and 0.9 % are over 0.5 (a warm-tinted grey, at most 1.8). **Clipping:** the brightest yellow flowers of `A1M03165` go from 0.873 to 0.884 of full scale and none reaches 255; in `A1M03175` the light orange highlights of the dahlias reach the sRGB edge and put the red channel on 255 in 861 more pixels (0.057 % of the picture; the camera JPEG has 0.022 %): at the light end the cap lets a pale, saturated orange arrive on the edge ACES 2 maps it to, and the sRGB limit is the narrowest of the outputs. **Skin** (five portraits, tight boxes on face and arms, ΔE00 between today and new, pixels binned by their display hue; `tools/` scratch scripts, not shipped): at 55 to 62 degrees the mean is 0.00 to 0.02 and the 95th percentile 0.00 to 0.10 (0.075 and 0.46 in `26551_DSC05356`, where blond hair shares the box); at 62 to 66 degrees the mean is 0.005 to 0.70 and the 95th percentile 0.01 to 1.86; below 55 degrees the mean is under 0.03 (the red window's tail starts at 43 degrees). Indoor and warm-lit skin sits high: 71 % of the face and arm pixels of `54329_DSC04704` and 57 % of `54881_DSC05065` are at 55 to 62 degrees, which the first window (58 to 66) moved by up to ΔE00 0.46 (58 to 62) and 1.04 (62 to 66) and the final one leaves alone. The golden scenes of `tools/golden` render with Signature, so none of them changes.
 
 **The stage.** `rgb` is linear AWG4 (after the white lift). `Lab` is CIELAB with the white `X 0.95047, Y 1, Z 1.08883`; `YD(s)` is the display luminance of the neutral axis through ACES 2 with the placement, and `CMAX(L*, h)` the largest CIELAB chroma inside the output's limiting gamut (both below).
 
@@ -725,10 +688,7 @@ s    = log2(Y / 0.18)                            stops over middle grey; s is he
 fade = smoothstep(-7.5, -5.5, s)                 unchanged where fade = 0
 yd   = clamp(YD(s), 1e-7, 1)
 lab  = Lab(xyz / Y * yd) ;  Ld = L* ;  C = |ab| ;  h = atan2(b, a) in [0, 360)
-W    = hue window, unchanged where W = 0:
-         red window     1 on [3, 31] degrees, raised cosine to 0 over 30 degrees below and 12 above
-         yellow window  1 on [66, 95] degrees, raised cosine to 0 over 8 degrees below and 15 above
-       the up side (P > 0) uses the larger of the two (they never overlap), the dark side (P < 0) the red window only
+W    = hue window: 1 on [3, 31] degrees, raised cosine to 0 over 30 degrees below and 12 above   unchanged where W = 0
 kap  = clamp((20 / max(C, 8))^0.65, 0.35, 1.25)
 P(s) = 0.34 (s + 0.5)                      for s >= -0.5          (the up side)
        -0.43 tanh((-0.5 - s) / 1.65)       for s <  -0.5          (the dark side)
@@ -751,14 +711,13 @@ lnk *= fade ;  lab.ab *= exp(lnk) ;  Y kept ;  back to XYZ and AWG4
 
 **Properties, all tested** (`display::red_chroma::tests`, `tests/chain_cpu.rs`, `tests/look_signature.rs`):
 
-- Grey is bit-exact: the Lab hue of the neutral axis (the 2e-4 offset of AWG4's white from the Lab white) is about 260 degrees, far outside both windows.
-- Skin hues (43 to 62 degrees) have a weight of 0 on both sides: the step returns them bit for bit (`the_yellow_window_has_the_stated_shape`, `outside_the_window_and_in_the_deep_dark_nothing_changes`, and on the device `grey_and_the_hues_outside_the_window_are_untouched_on_the_device`). The yellow window is C1 (slope 0 where it meets 0 and 1) and never overlaps the red one; the dark side has no yellow window, so ACES 2's boost of dark yellows is left alone.
+- Grey is bit-exact: the Lab hue of the neutral axis (the 2e-4 offset of AWG4's white from the Lab white) is about 260 degrees, far outside the window.
 - The step returns its input bit for bit where `W = 0`, where `fade = 0`, for `Y <= 1e-7` and negative `Y`, for a non-finite component, and on the side of `P` whose strength is 0 (`f_dn = 0` leaves everything under −0.5 stop untouched, `f_up = 0` everything over it). A finite input never gives a NaN.
 - Hue (Lab at the display lightness) moves by less than 1e-9 degrees and `Y` by less than 1e-12 relative.
-- No fold: the output chroma grows with the input chroma over stops −6 to +6, hues −40 to +50 degrees and chromas up to 1.6 times the gamut edge. Smallest slope of output against input chroma: Rec.709 0.501 up to 1.0 times `CMAX`, 0.158 up to 1.25, 0.095 up to 1.4, 0.0905 up to 1.6; P3 0.493, 0.171, 0.108, 0.0700 (the investigation's 0.16 and 0.13 are sweeps to about 1.25 times the edge). The same sweep over hues 60 to 115 degrees (the yellow window and its tails): Rec.709 0.1437 up to 1.25 times the edge and 0.0661 up to 1.6; P3 0.1144 and 0.0556. The slope is smallest well outside the gamut, where the cap squeezes the boost out.
+- No fold: the output chroma grows with the input chroma over stops −6 to +6, hues −40 to +50 degrees and chromas up to 1.6 times the gamut edge. Smallest slope of output against input chroma: Rec.709 0.501 up to 1.0 times `CMAX`, 0.158 up to 1.25, 0.095 up to 1.4, 0.0905 up to 1.6; P3 0.493, 0.171, 0.108, 0.0700 (the investigation's 0.16 and 0.13 are sweeps to about 1.25 times the edge). The slope is smallest well outside the gamut, where the cap squeezes the boost out.
 - `s` is held at +8 stops (the end of `YD`, display white) so the step stays finite for the brightest scene values; `tanh` arguments in the kernel are held to 20 (`tanh(20)` is 1 in f32 and f64).
 
-**Parity.** Python reference to Rust: `tools/vectors/red_chroma_vectors.py` is an independent numpy implementation of the maths above (the matrices from the primaries, `CMAX` by bisection, `YD` from the committed CSV) and writes 624 AWG4 samples (both gamuts, four pairs of strengths, stops −8.5 to 9.5, hues across the red window, the yellow window with its tails and elsewhere, chromas to 1.6 times the edge; 416 of them are the samples of the red step as first written, 208 are added for the yellows) to `tests/data/red_chroma/vectors.json`; the Rust step agrees to 3.8e-10 absolute (2.9e-9 relative to `max(|v|, 1e-3)`), gate 1e-8, over the 624. The generator agrees with the investigation's own script (`cand.py`, 408 samples) to 4.8e-9. GPU to CPU (`gpu_color_red_chroma.rs`, Mesa lavapipe, three storage modes, Viewport and sRGB, strengths (1, 0), (1, 0.5), (0.5, 1), (0, 1) on 1,056 reds, ochres, yellows and other colours, 22 hues): C12 within 1.4e-5 of the CPU relative to the largest channel (gate 5e-4), C13 within 8.3e-6 in encoded value, 0.009 of a 10-bit code (gate 1 code), the step's own part (the change it makes) within 9.5e-6 of display white (gate 1e-3). The DNG stop (C11 decoded, lifted, through the step with the P3-D65 set) is within 1.6e-5 relative of `apply_dng_pixel`, for both outputs. Tiles equal the whole image bit for bit; grey, skin hues and hues outside both windows are bit-identical to a chain without the step, and with the dark relief alone, or on the dark side, the yellows are bit-identical too.
+**Parity.** Python reference to Rust: `tools/vectors/red_chroma_vectors.py` is an independent numpy implementation of the maths above (the matrices from the primaries, `CMAX` by bisection, `YD` from the committed CSV) and writes 416 AWG4 samples (both gamuts, four pairs of strengths, stops −8.5 to 9.5, hues across the window and elsewhere, chromas to 1.6 times the edge) to `tests/data/red_chroma/vectors.json`; the Rust step agrees to 3.8e-10 absolute (2.9e-9 relative to `max(|v|, 1e-3)`), gate 1e-8. The generator agrees with the investigation's own script (`cand.py`, 408 samples) to 4.8e-9. GPU to CPU (`gpu_color_red_chroma.rs`, Mesa lavapipe, three storage modes, Viewport and sRGB, strengths (1, 0), (1, 0.5), (0.5, 1), (0, 1) on 624 reds and other colours): C12 within 1.4e-5 of the CPU relative to the largest channel (gate 5e-4), C13 within 8.3e-6 in encoded value, 0.009 of a 10-bit code (gate 1 code), the step's own part (the change it makes) within 9.5e-6 of display white (gate 1e-3). The DNG stop (C11 decoded, lifted, through the step with the P3-D65 set) is within 1.4e-5 relative of `apply_dng_pixel`, for both outputs. Tiles equal the whole image bit for bit; grey and hues outside the window are bit-identical to a chain without the step.
 
 **The GPU kernel.** `red_chroma` in `color.wgsl` runs inside `display_ours`, between `lifted_scene` and the matrix `AWG4_TO_AP0` (the placement), and after `lifted_scene` in the DNG stop (6). The two strengths ride in the uniform block (`rc.x`, `rc.y`; both 0 skips the stage and is what the host writes for a display LUT); the tables sit in the persistent `tables` buffer of the output after the ACES 2 tables (`T_RC`): one set of 3,025 floats for Rec.709 and one for P3-D65 (24 KB), because the DNG stop always reads the P3-D65 set while the picture reads the set of the output's limiting gamut (`rc.z`). The constants are written from `ym_color::display::red_chroma` into the shader, like the other stages'. Every branch point is continuous, so nothing rests on a rounding under Metal's fast-math (K8, `docs/17`).
 
@@ -766,7 +725,7 @@ lnk *= fade ;  lab.ab *= exp(lnk) ;  Y kept ;  back to XYZ and AWG4
 
 **Switching it off.** `ChainParams::red_chroma` (default `true`) is for tests and tools that want plain ACES 2, such as the OpenColorIO vectors.
 
-**Pipeline version.** The step changes the picture of Neutral, of every imported look and of every look that does not set `red_chroma`, so `PIPELINE_VERSION` is 0.6.0 (0.6.0 is unreleased, and the yellows came before its release, so the version did not change again). Signature's pictures are unchanged.
+**Pipeline version.** The step changes the picture of Neutral, of every imported look and of every look that does not set `red_chroma`, so `PIPELINE_VERSION` is 0.6.0. Signature's pictures are unchanged.
 
 ### Imported ARRI display LUT
 
