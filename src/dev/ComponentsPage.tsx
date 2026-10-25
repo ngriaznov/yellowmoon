@@ -546,12 +546,12 @@ function TabBarSection() {
   const [shortcutTab, setShortcutTab] = useState<TabId>("light");
   useTabShortcuts(setShortcutTab);
   return (
-    <Section id="tabbar" title="TabBar and TitleBlock" lead="←/→ move between tabs inside the bar. ⌘1–⌘6 switch tabs from anywhere on this page (the second bar follows the shortcuts).">
+    <Section id="tabbar" title="TabBar and TitleBlock" lead="←/→ move between tabs inside the bar. ⌘1–⌘7 switch tabs from anywhere on this page (the second bar follows the shortcuts).">
       <Demo title="Live" frame="bare">
         <TabBar value={tab} onChange={setTab} />
         <TitleBlock tab={tab} />
       </Demo>
-      <Demo title="Follows ⌘1–⌘6" frame="bare">
+      <Demo title="Follows ⌘1–⌘7" frame="bare">
         <TabBar value={shortcutTab} onChange={setShortcutTab} label="Shortcut tabs" />
       </Demo>
       {TABS.map((t) => (

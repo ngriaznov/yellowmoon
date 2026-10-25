@@ -15,8 +15,9 @@ describe("TitleBlock", () => {
     expect(container.firstChild).toHaveAttribute("data-tab", "raw");
   });
 
-  it("has the six titles and blurbs of the mockup", () => {
-    expect(TABS.map((t) => t.label)).toEqual(["Look", "Light", "Colour", "Detail", "Curve", "RAW"]);
+  it("has the seven titles and blurbs", () => {
+    expect(TABS.map((t) => t.label)).toEqual(["Look", "Lens", "Light", "Colour", "Detail", "Curve", "RAW"]);
+    expect(TABS.find((t) => t.id === "lens")?.blurb).toBe("How a lens draws light: flares, softer edges, the shape of blur. Off until you raise a slider.");
     expect(TABS.find((t) => t.id === "curve")?.blurb).toBe("Fine contrast, for all channels or one at a time.");
     expect(TABS.find((t) => t.id === "light")?.blurb).toBe("Exposure starts at your camera's own. Adjust it from there.");
   });

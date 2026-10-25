@@ -21,11 +21,11 @@ function Harness({ initial = "look" as TabId, onChange }: { initial?: TabId; onC
 }
 
 describe("TabBar", () => {
-  it("is a tablist of six tabs with the active one selected", () => {
+  it("is a tablist of seven tabs with the active one selected", () => {
     render(<Harness initial="curve" />);
     expect(screen.getByRole("tablist", { name: "Tool tabs" })).toBeInTheDocument();
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((t) => t.textContent)).toEqual(["Look", "Light", "Colour", "Detail", "Curve", "RAW"]);
+    expect(tabs.map((t) => t.textContent)).toEqual(["Look", "Lens", "Light", "Colour", "Detail", "Curve", "RAW"]);
     expect(screen.getByRole("tab", { name: "Curve" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Look" })).toHaveAttribute("aria-selected", "false");
   });
@@ -50,7 +50,7 @@ describe("TabBar", () => {
   it("has one tab in the tab order", async () => {
     const user = userEvent.setup();
     render(<Harness initial="color" />);
-    // Radix's roving focus: the list takes the Tab and hands the focus to the selected tab; the other five are out of the order.
+    // Radix's roving focus: the list takes the Tab and hands the focus to the selected tab; the other six are out of the order.
     await user.tab();
     expect(screen.getByRole("tab", { name: "Colour" })).toHaveFocus();
     expect(screen.getByRole("tab", { name: "Look" })).toHaveAttribute("tabindex", "-1");
@@ -93,15 +93,21 @@ describe("TabBar", () => {
   });
 });
 
-describe("⌘1–⌘6", () => {
-  it("maps ⌘1 to ⌘6 onto the tabs in order", () => {
+describe("⌘1–⌘7", () => {
+  it("maps ⌘1 to ⌘7 onto the tabs in order", () => {
     TAB_IDS.forEach((id, i) => {
       expect(tabForShortcut({ metaKey: true, shiftKey: false, altKey: false, ctrlKey: false, code: `Digit${i + 1}`, key: String(i + 1) })).toBe(id);
     });
   });
 
+  it("follows the bar: Look, Lens, Light, Colour, Detail, Curve, RAW", () => {
+    expect(TAB_IDS).toEqual(["look", "lens", "light", "color", "detail", "curve", "raw"]);
+    const press = (digit: number) => tabForShortcut({ metaKey: true, shiftKey: false, altKey: false, ctrlKey: false, code: `Digit${digit}`, key: String(digit) });
+    expect([1, 2, 3, 4, 5, 6, 7].map(press)).toEqual(TAB_IDS);
+  });
+
   it("ignores other digits and other modifiers", () => {
-    const base = { metaKey: true, shiftKey: false, altKey: false, ctrlKey: false, code: "Digit7", key: "7" };
+    const base = { metaKey: true, shiftKey: false, altKey: false, ctrlKey: false, code: "Digit8", key: "8" };
     expect(tabForShortcut(base)).toBeNull();
     expect(tabForShortcut({ ...base, code: "Digit1", key: "1", metaKey: false })).toBeNull();
     expect(tabForShortcut({ ...base, code: "Digit1", key: "1", shiftKey: true })).toBeNull();
@@ -115,9 +121,9 @@ describe("⌘1–⌘6", () => {
     const input = document.createElement("input");
     document.body.append(input);
     input.focus();
-    fireEvent.keyDown(input, { key: "3", code: "Digit3", metaKey: true });
+    fireEvent.keyDown(input, { key: "4", code: "Digit4", metaKey: true });
     expect(onSelect).toHaveBeenCalledWith("color");
-    fireEvent.keyDown(window, { key: "6", code: "Digit6", metaKey: true });
+    fireEvent.keyDown(window, { key: "7", code: "Digit7", metaKey: true });
     expect(onSelect).toHaveBeenLastCalledWith("raw");
     input.remove();
   });

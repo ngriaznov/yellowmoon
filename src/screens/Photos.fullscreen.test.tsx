@@ -138,10 +138,10 @@ describe("in full screen", () => {
     expect(screen.getByRole("banner")).toBeVisible();
   });
 
-  it("⌘1–⌘6 leave full screen and show the tab", async () => {
+  it("⌘1–⌘7 leave full screen and show the tab", async () => {
     await setup();
     await h!.user.keyboard("f");
-    await h!.user.keyboard("{Meta>}2{/Meta}");
+    await h!.user.keyboard("{Meta>}3{/Meta}");
     expectLayout();
     expect(screen.getByRole("tab", { name: "Light" })).toHaveAttribute("aria-selected", "true");
   });

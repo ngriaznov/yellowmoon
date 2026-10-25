@@ -56,19 +56,19 @@ describe("Preferences (⌘,)", () => {
     await waitFor(() => expect(h!.store.currentPhoto()?.picked).toBe(false));
   });
 
-  it("leaves the panel behind alone when ⌘1 to ⌘6 are pressed over it", async () => {
+  it("leaves the panel behind alone when ⌘1 to ⌘7 are pressed over it", async () => {
     h = renderApp({ current: 3 });
     await openPhotos(h);
     await h.user.keyboard("{Meta>}e{/Meta}");
     expect(await screen.findByRole("complementary", { name: "Export" })).toBeInTheDocument();
     await h.user.keyboard("{Meta>},{/Meta}");
     await screen.findByRole("dialog", { name: "Preferences" });
-    await h.user.keyboard("{Meta>}3{/Meta}");
+    await h.user.keyboard("{Meta>}4{/Meta}");
     expect(h.store.getState().panel).toBe("export");
     expect(screen.getByRole("complementary", { name: "Export" })).toBeInTheDocument();
     // Once the dialog is closed the shortcut works again.
     await h.user.keyboard("{Escape}");
-    await h.user.keyboard("{Meta>}3{/Meta}");
+    await h.user.keyboard("{Meta>}4{/Meta}");
     await waitFor(() => expect(h!.store.getState().panel).toBe("tools"));
     expect(screen.getByRole("tab", { name: "Colour", selected: true })).toBeInTheDocument();
   });

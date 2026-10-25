@@ -189,22 +189,23 @@ describe("Before, zoom and the viewport", () => {
 });
 
 describe("the tabs", () => {
-  it("has six tabs in order, the Look tab first", async () => {
+  it("has seven tabs in order, the Look tab first", async () => {
     await setup();
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((t) => t.textContent)).toEqual(["Look", "Light", "Colour", "Detail", "Curve", "RAW"]);
+    expect(tabs.map((t) => t.textContent)).toEqual(["Look", "Lens", "Light", "Colour", "Detail", "Curve", "RAW"]);
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");
     expect(within(tools()).getByRole("heading", { level: 2, name: "Look" })).toBeInTheDocument();
   });
 
-  it("⌘1 to ⌘6 switch tabs and each shows its title block and cards", async () => {
+  it("⌘1 to ⌘7 switch tabs and each shows its title block and cards", async () => {
     await setup();
     const expected: Array<[string, string, string[]]> = [
-      ["2", "Light", ["Exposure", "High dynamic range"]],
-      ["3", "Colour", ["White balance", "Colour balance"]],
-      ["4", "Detail", ["Sharpening", "Noise reduction"]],
-      ["5", "Curve", ["Curve"]],
-      ["6", "RAW", ["Camera", "Decode", "Range"]],
+      ["2", "Lens", ["Lens", "Amounts"]],
+      ["3", "Light", ["Exposure", "High dynamic range"]],
+      ["4", "Colour", ["White balance", "Colour balance"]],
+      ["5", "Detail", ["Sharpening", "Noise reduction"]],
+      ["6", "Curve", ["Curve"]],
+      ["7", "RAW", ["Camera", "Decode", "Range"]],
       ["1", "Look", ["Automatic", "Look"]],
     ];
     for (const [key, title, cards] of expected) {

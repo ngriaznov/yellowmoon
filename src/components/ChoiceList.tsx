@@ -25,7 +25,7 @@ export interface ChoiceListProps<T extends string> {
 /**
  * A short list of choices, one row each with its name and a line under it, for a choice that wants its words in view: glasscn's
  * `RadioGroup` of `Item` rows. It has radio semantics (`role="radiogroup"` with a `role="radio"` and `aria-checked` per row, one Tab stop,
- * ←/↑ and →/↓ move and choose, Home and End jump). A click anywhere on a row chooses it. The chosen row is ringed in the tab colour, as
+ * the arrows move and choose, wrapping at the ends). A click anywhere on a row chooses it. The chosen row is ringed in the tab colour, as
  * the look in use is, and its circle takes the same colour; a row's accessible name is its name followed by its line.
  */
 export function ChoiceList<T extends string>({ options, value, onChange, label, disabled = false, className }: ChoiceListProps<T>) {

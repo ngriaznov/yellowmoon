@@ -68,11 +68,11 @@ describe("components.html page", () => {
     expect(photo.querySelector('[data-native="true"]')).not.toBeNull();
   });
 
-  it("answers ⌘1–⌘6 on the tab shortcut demo", () => {
+  it("answers ⌘1–⌘7 on the tab shortcut demo", () => {
     render(<ComponentsPage />);
     const bar = screen.getByRole("tablist", { name: "Shortcut tabs" });
     act(() => {
-      fireEvent.keyDown(window, { key: "5", code: "Digit5", metaKey: true });
+      fireEvent.keyDown(window, { key: "6", code: "Digit6", metaKey: true });
     });
     expect(within(bar).getByRole("tab", { name: "Curve" })).toHaveAttribute("aria-selected", "true");
   });
