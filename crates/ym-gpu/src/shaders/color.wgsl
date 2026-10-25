@@ -618,7 +618,7 @@ fn lifted_scene(v: vec3<f32>) -> vec3<f32> {
 // in linear AWG4, in front of the placement and ACES 2. Only called with the ACES 2 path; `CU.rc` is 0 (both
 // strengths) when the host skips the step, which returns the input untouched. The CPU's maths in f32: CIELAB
 // of the colour re-lit at the display luminance of the neutral axis (`rc_yd`, the first table of a set),
-// the hue window, the up side with the soft gamut cap (`rc_cmax`, the second table of a set) or the dark side, then the
+// the hue window (the red window, plus the yellow window on the up side), the up side with the soft gamut cap (`rc_cmax`, the second table of a set) or the dark side, then the
 // chroma scale at constant L* and Y. Fast-math (K8): nothing rests on a rounding at the 2e-4 gate. Every
 // branch point is a place where the gain is continuous (the window, the fade, the cross at -0.5 stop, the
 // cap's knee), so a rounding that moves a pixel across one moves its value by nothing measurable; a tanh
@@ -678,17 +678,28 @@ fn rc_hue_diff(a: f32, b: f32) -> f32 {
     return d - 360.0 * floor(d * (1.0 / 360.0)) - 180.0;
 }
 
-fn rc_window(h: f32) -> f32 {
-    let d_lo = rc_hue_diff(h, RC_WIN_A);
-    let d_hi = rc_hue_diff(h, RC_WIN_B);
+// The raised-cosine window on hue: 1 on a..b, 0 more than e_lo below a and e_hi above b.
+fn rc_raised_window(h: f32, a: f32, b: f32, e_lo: f32, e_hi: f32) -> f32 {
+    let d_lo = rc_hue_diff(h, a);
+    let d_hi = rc_hue_diff(h, b);
     var w = 1.0;
     if (d_lo < 0.0) {
-        w = 0.5 * (1.0 + cos(3.14159265 * clamp(-d_lo / RC_WIN_E_LO, 0.0, 1.0)));
+        w = 0.5 * (1.0 + cos(3.14159265 * clamp(-d_lo / e_lo, 0.0, 1.0)));
     }
     if (d_hi > 0.0) {
-        w = 0.5 * (1.0 + cos(3.14159265 * clamp(d_hi / RC_WIN_E_HI, 0.0, 1.0)));
+        w = 0.5 * (1.0 + cos(3.14159265 * clamp(d_hi / e_hi, 0.0, 1.0)));
     }
     return w;
+}
+
+// The red window (both sides of the step).
+fn rc_window(h: f32) -> f32 {
+    return rc_raised_window(h, RC_WIN_A, RC_WIN_B, RC_WIN_E_LO, RC_WIN_E_HI);
+}
+
+// The window of the up side: the red window and the yellow window (they never overlap).
+fn rc_window_up(h: f32) -> f32 {
+    return max(rc_window(h), rc_raised_window(h, RC_YWIN_A, RC_YWIN_B, RC_YWIN_E_LO, RC_YWIN_E_HI));
 }
 
 fn rc_kappa(c: f32) -> f32 {
@@ -745,7 +756,11 @@ fn red_chroma(rgb: vec3<f32>, g: u32) -> vec3<f32> {
     if (h < 0.0) {
         h = h + 360.0;
     }
-    let w = rc_window(h);
+    // The dark side is for reds only: ACES 2's boost of dark yellows is left alone.
+    var w = rc_window(h);
+    if (p > 0.0) {
+        w = rc_window_up(h);
+    }
     if (w <= 0.0) {
         return rgb;
     }

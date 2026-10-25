@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Generate the parity vectors of the red chroma step (C12 step 1c, docs/02-colour-pipeline.md).
 
-The step is a hue-preserving chroma gain on the reds, applied to linear AWG4 in front of the display
-placement and ACES 2 (crates/ym-color/src/display/red_chroma.rs). This script is an independent numpy
+The step is a hue-preserving chroma gain on the reds and, on its up side, the ochres and yellows, applied to
+linear AWG4 in front of the display placement and ACES 2 (crates/ym-color/src/display/red_chroma.rs). This
+script is an independent numpy
 implementation of the same maths, the one the investigation of 2026-10-24 used (owner decision "R1 fix looks
 better than what we have currently"): it reads the neutral-axis table `YD(s)` from
 crates/ym-color/tests/data/red_chroma/yd_of_s.csv (the display luminance of the neutral axis through ACES 2,
@@ -51,6 +52,8 @@ S_MAX = 8.0
 YD_S_MIN, YD_STEP, YD_LEN = -10.0, 0.25, 73
 FADE = (-7.5, -5.5)
 WINDOW = dict(a=3.0, b=31.0, e_lo=30.0, e_hi=12.0)
+# The yellow window of the up side (ochres, yellows): 1 on 66..95 degrees, 0 below 58 and above 110.
+WINDOW_Y = dict(a=66.0, b=95.0, e_lo=8.0, e_hi=15.0)
 S0, UP, DARK, TAU = -0.5, 0.34, 0.43, 1.65
 K_MAX, KNEE = 1.45, 0.8
 CAP_AT, CMAX_FLOOR, RAMP_EPS, C_TINY = 0.9, 1.0, 0.015, 1e-4
@@ -153,12 +156,22 @@ def hdiff(a, b):
     return (a - b + 180.0) % 360.0 - 180.0
 
 
+def raised_window(h, w):
+    d_lo, d_hi = hdiff(h, w["a"]), hdiff(h, w["b"])
+    out = np.ones_like(h)
+    out = np.where(d_lo < 0, 0.5 * (1 + np.cos(np.pi * np.clip(-d_lo / w["e_lo"], 0, 1))), out)
+    out = np.where(d_hi > 0, 0.5 * (1 + np.cos(np.pi * np.clip(d_hi / w["e_hi"], 0, 1))), out)
+    return out
+
+
 def window(h):
-    d_lo, d_hi = hdiff(h, WINDOW["a"]), hdiff(h, WINDOW["b"])
-    w = np.ones_like(h)
-    w = np.where(d_lo < 0, 0.5 * (1 + np.cos(np.pi * np.clip(-d_lo / WINDOW["e_lo"], 0, 1))), w)
-    w = np.where(d_hi > 0, 0.5 * (1 + np.cos(np.pi * np.clip(d_hi / WINDOW["e_hi"], 0, 1))), w)
-    return w
+    """The red window (both sides of the step)."""
+    return raised_window(h, WINDOW)
+
+
+def window_up(h):
+    """The window of the up side: the red window and the yellow window (they never overlap)."""
+    return np.maximum(window(h), raised_window(h, WINDOW_Y))
 
 
 def kappa(c):
@@ -181,8 +194,9 @@ def red_chroma(awg4, gamut, tables, f_up, f_dn):
     lab = xyz_to_lab(xyz / y[:, None] * yd[:, None])
     c = np.hypot(lab[:, 1], lab[:, 2])
     h = np.degrees(np.arctan2(lab[:, 2], lab[:, 1])) % 360.0
-    w = window(h)
     p = profile(s)
+    # The dark side is for reds only; the up side also covers the yellow window.
+    w = np.where(p > 0, window_up(h), window(h))
     kap = kappa(c)
     lnf = kap * p
     c_max = np.maximum(cmax_lookup(cmax_table, lab[:, 0], h), CMAX_FLOOR)
@@ -227,6 +241,7 @@ STRENGTHS = [(1.0, 0.0), (1.0, 0.5), (0.5, 1.0), (0.0, 1.0)]
 
 def make(tables_by_gamut):
     rng = np.random.default_rng(SEED)
+    rng_y = np.random.default_rng(SEED + 1)
     samples = []
     for gamut in ("rec709", "p3"):
         tables = tables_by_gamut[gamut]
@@ -249,6 +264,19 @@ def make(tables_by_gamut):
             c = np.maximum(rng.uniform(0.2, 1.6, n) * np.maximum(edge, 3.0), 0.05)
             # A few muted colours, where kappa is largest.
             c[:6] = rng.uniform(0.2, 6.0, 6)
+            # The yellow window and its tails, from a second generator so the samples above stay as they were.
+            ny = 26
+            sy = np.concatenate([np.array([-3.0, -0.75, 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0]), rng_y.uniform(-7.5, 8.0, ny - 9)])
+            hy = np.concatenate([np.array([57.0, 58.5, 62.0, 66.0, 80.0, 95.0, 102.0, 110.0, 112.0]), rng_y.uniform(52.0, 118.0, ny - 9)])
+            edge_y = cmax_lookup(
+                tables[1],
+                xyz_to_lab(np.clip(yd_of_s(tables[0], np.minimum(sy, S_MAX)), 1e-7, 1.0)[:, None] * LAB_WHITE)[:, 0],
+                hy,
+            )
+            cy = np.maximum(rng_y.uniform(0.2, 1.6, ny) * np.maximum(edge_y, 3.0), 0.05)
+            cy[:4] = rng_y.uniform(0.2, 6.0, 4)
+            s, h, c = np.concatenate([s, sy]), np.concatenate([h, hy]), np.concatenate([c, cy])
+            n += ny
             awg4 = pixel(tables, s, h, c)
             out, lnk = red_chroma(awg4, gamut, tables, f_up, f_dn)
             for i in range(n):

@@ -5,11 +5,12 @@
 //!   for the Rec.709 and the P3 limiting gamut, on an image of reds (stops, hues and chromas across the
 //!   window and its tails) with colours elsewhere, in every storage mode, against the CPU trace;
 //! * the step's own part: the device's change (step on minus step off) against the CPU's;
+//! * the yellow window (the up side only): ochres and yellows move, the dark side never touches them;
 //! * the DNG stop: C11 decoded, lifted and through the step with the P3-D65 tables whatever the output,
 //!   against `ColorChain::apply_dng_pixel`;
 //! * both strengths 0 (a look such as Signature), or the step off, are the exact plain ACES 2 on the device,
 //!   bit for bit, and so is the real `signature.json`;
-//! * grey and the hues outside the window are untouched on the device, bit for bit;
+//! * grey, skin hues and the hues outside both windows are untouched on the device, bit for bit;
 //! * tiles of a render equal the whole image.
 //!
 //! **Stated errors** (lavapipe, f32 against the f64 reference; Metal gets its own column in the CI log):
@@ -97,7 +98,7 @@ fn awg4_at(tables: &RedChromaTables, s: f64, h: f64, c: f64) -> Vec3 {
     ]
 }
 
-/// 48 x 13 pixels: 12 stops, 13 hues (the window, its tails and elsewhere), 4 chromas, as AWG4 for the
+/// 48 x one row per hue pixels: 12 stops, the hues (the windows, their tails and elsewhere), 4 chromas, as AWG4 for the
 /// identity-matrix chain (f16-exact, so every storage mode reads the same numbers).
 fn red_image(gamut: RedGamut, hues: &[f64]) -> RgbImage {
     let tables = RedChromaTables::shared(gamut);
@@ -119,8 +120,11 @@ fn red_image(gamut: RedGamut, hues: &[f64]) -> RgbImage {
     RgbImage::from_interleaved(w, h, &rgb).expect("image")
 }
 
-const WINDOW_HUES: [f64; 13] = [
-    -35.0, -25.0, -15.0, -5.0, 5.0, 15.0, 25.0, 35.0, 45.0, 55.0, 120.0, 200.0, 280.0,
+/// The hues of the image: the red window and its tails, the skin band between the windows (45 to 55), the
+/// yellow window and its tails (58 to 110), and elsewhere.
+const WINDOW_HUES: [f64; 21] = [
+    -35.0, -25.0, -15.0, -5.0, 5.0, 15.0, 25.0, 35.0, 45.0, 55.0, 60.0, 64.0, 70.0, 80.0, 90.0,
+    100.0, 106.0, 112.0, 120.0, 200.0, 280.0,
 ];
 
 fn chain_with(output: OutputTarget, strength: Option<RedChroma>) -> ColorChain {
@@ -305,8 +309,11 @@ fn both_strengths_zero_or_the_step_off_is_plain_aces2_on_the_device() {
 fn grey_and_the_hues_outside_the_window_are_untouched_on_the_device() {
     let on = chain_with(OutputTarget::Viewport, Some(RedChroma::DEFAULT));
     let off = chain_with(OutputTarget::Viewport, None);
-    // Hues 60 to 320 are outside the window and its tails (-27 to 43 degrees) by 17 degrees or more.
-    let outside: Vec<f64> = (0..13).map(|i| 60.0 + 20.0 * f64::from(i)).collect();
+    // Outside both windows and their tails (reds -27 to 43 degrees, yellows 58 to 110): the skin band
+    // between them (44 to 57) and everything from 111 to 333.
+    let outside: Vec<f64> = vec![
+        44.0, 48.0, 52.0, 57.0, 111.0, 125.0, 150.0, 180.0, 210.0, 240.0, 270.0, 300.0, 330.0,
+    ];
     let mut img_pixels = red_image(RedGamut::P3D65, &outside);
     // A grey ramp in the first row's place: every stop from -9 to +8, every pixel r = g = b.
     let w = img_pixels.width;
@@ -335,6 +342,55 @@ fn grey_and_the_hues_outside_the_window_are_untouched_on_the_device() {
                 p.len() - same
             );
         }
+    }
+}
+
+/// The yellow window acts on the up side only, on the device as on the CPU: with the dark relief alone, or
+/// below the cross at -0.5 stop, the yellow rows are the plain ACES 2 bit for bit; with the up side they move.
+#[test]
+fn yellows_move_on_the_up_side_only_on_the_device() {
+    let gamut = RedGamut::P3D65;
+    let hues = [66.0, 80.0, 95.0];
+    let img = red_image(gamut, &hues);
+    let (w, rows) = (img.width, img.height);
+    // The stops of `red_image` are 4 pixels each (4 chromas): the first 5 stops are below -0.5.
+    let stops_below_cross = 5 * 4;
+    let off = chain_with(OutputTarget::Viewport, None);
+    let up = chain_with(OutputTarget::Viewport, Some(RedChroma::new(1.0, 0.0).expect("up")));
+    let dn = chain_with(OutputTarget::Viewport, Some(RedChroma::new(0.0, 1.0).expect("dn")));
+    let stage = [ColorOutput::Stage(Stop::C12)];
+    for dev in gpus() {
+        let base = render(dev, &off, &img, &stage);
+        let with_up = render(dev, &up, &img, &stage);
+        let with_dn = render(dev, &dn, &img, &stage);
+        let (base, with_up, with_dn) = (planar(&base[0]), planar(&with_up[0]), planar(&with_dn[0]));
+        let n = w * rows;
+        let mut moved_up = 0;
+        for row in 0..rows {
+            for x in 0..w {
+                let i = row * w + x;
+                for ch in 0..3 {
+                    let j = ch * n + i;
+                    assert_eq!(
+                        with_dn[j].to_bits(),
+                        base[j].to_bits(),
+                        "{:?}: dark relief moved a yellow ({row}, {x})",
+                        dev.mode
+                    );
+                    if x < stops_below_cross {
+                        assert_eq!(
+                            with_up[j].to_bits(),
+                            base[j].to_bits(),
+                            "{:?}: the up side moved a dark yellow ({row}, {x})",
+                            dev.mode
+                        );
+                    } else if (with_up[j] - base[j]).abs() > 1e-3 {
+                        moved_up += 1;
+                    }
+                }
+            }
+        }
+        assert!(moved_up > 60, "{:?}: the up side moved {moved_up} samples", dev.mode);
     }
 }
 

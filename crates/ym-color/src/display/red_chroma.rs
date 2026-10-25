@@ -128,6 +128,17 @@ pub const WINDOW_B: f64 = 31.0;
 pub const WINDOW_E_LO: f64 = 30.0;
 /// See [`WINDOW_A`].
 pub const WINDOW_E_HI: f64 = 12.0;
+/// The yellow window of the up side (ochres, yellows, warm oranges): 1 on `YELLOW_WINDOW_A..=YELLOW_WINDOW_B`
+/// degrees, a raised cosine to 0 over `YELLOW_WINDOW_E_LO` below and `YELLOW_WINDOW_E_HI` above. It starts at 58
+/// degrees, after skin (CIELAB hue 45 to 62 degrees in the photos tested) and well after the red window's
+/// end at 43 degrees, so the two never overlap and a band of hues between them is left alone.
+pub const YELLOW_WINDOW_A: f64 = 66.0;
+/// See [`YELLOW_WINDOW_A`].
+pub const YELLOW_WINDOW_B: f64 = 95.0;
+/// See [`YELLOW_WINDOW_A`].
+pub const YELLOW_WINDOW_E_LO: f64 = 8.0;
+/// See [`YELLOW_WINDOW_A`].
+pub const YELLOW_WINDOW_E_HI: f64 = 15.0;
 /// Where the profile `P` crosses 0: -0.5 stop.
 pub const PROFILE_S0: f64 = -0.5;
 /// Slope of `P` above `PROFILE_S0`, per stop.
@@ -440,19 +451,44 @@ fn hue_diff(a: f64, b: f64) -> f64 {
     (a - b + 180.0).rem_euclid(360.0) - 180.0
 }
 
-/// The hue window `W(h)` (`h` in degrees).
-#[must_use]
-pub fn hue_window(h: f64) -> f64 {
-    let d_lo = hue_diff(h, WINDOW_A);
-    let d_hi = hue_diff(h, WINDOW_B);
+/// A raised-cosine window on hue (`h` in degrees): 1 on `a..=b`, 0 more than `e_lo` below `a` and more than
+/// `e_hi` above `b`, C1 at both ends.
+fn raised_window(h: f64, a: f64, b: f64, e_lo: f64, e_hi: f64) -> f64 {
+    let d_lo = hue_diff(h, a);
+    let d_hi = hue_diff(h, b);
     let mut w = 1.0;
     if d_lo < 0.0 {
-        w = 0.5 * (1.0 + (std::f64::consts::PI * (-d_lo / WINDOW_E_LO).clamp(0.0, 1.0)).cos());
+        w = 0.5 * (1.0 + (std::f64::consts::PI * (-d_lo / e_lo).clamp(0.0, 1.0)).cos());
     }
     if d_hi > 0.0 {
-        w = 0.5 * (1.0 + (std::f64::consts::PI * (d_hi / WINDOW_E_HI).clamp(0.0, 1.0)).cos());
+        w = 0.5 * (1.0 + (std::f64::consts::PI * (d_hi / e_hi).clamp(0.0, 1.0)).cos());
     }
     w
+}
+
+/// The red hue window `W(h)` (`h` in degrees): the window of both sides of the step.
+#[must_use]
+pub fn hue_window(h: f64) -> f64 {
+    raised_window(h, WINDOW_A, WINDOW_B, WINDOW_E_LO, WINDOW_E_HI)
+}
+
+/// The yellow hue window (`h` in degrees): 1 on 66 to 95 degrees, 0 below 58 and above 110. Only the up side
+/// of the step uses it.
+#[must_use]
+pub fn yellow_window(h: f64) -> f64 {
+    raised_window(
+        h,
+        YELLOW_WINDOW_A,
+        YELLOW_WINDOW_B,
+        YELLOW_WINDOW_E_LO,
+        YELLOW_WINDOW_E_HI,
+    )
+}
+
+/// The hue window of the up side: the red window and the yellow window (they never overlap).
+#[must_use]
+pub fn hue_window_up(h: f64) -> f64 {
+    hue_window(h).max(yellow_window(h))
 }
 
 /// `kappa(C)`: how much of the flat gain a colour of CIELAB chroma `c` takes (more for muted colours).
@@ -575,7 +611,12 @@ impl RedChromaStep {
         let lab = xyz_to_lab(relit(xyz, yd), LAB_WHITE);
         let c = lab[1].hypot(lab[2]);
         let h = lab[2].atan2(lab[1]).to_degrees().rem_euclid(360.0);
-        let w = hue_window(h);
+        // The dark side is for reds only: ACES 2's boost of dark yellows is left alone.
+        let w = if p > 0.0 {
+            hue_window_up(h)
+        } else {
+            hue_window(h)
+        };
         if w <= 0.0 {
             return None;
         }
@@ -672,6 +713,16 @@ mod tests {
         linalg::mul_vec(&matrices().xyz_to_awg4, rel.map(|v| v / yd * y))
     }
 
+    /// The window the step uses at `s` stops over grey: the up side (above -0.5 stop) has the red and the
+    /// yellow window, the dark side the red one.
+    fn window_of(s: f64, h: f64) -> f64 {
+        if s > PROFILE_S0 {
+            hue_window_up(h)
+        } else {
+            hue_window(h)
+        }
+    }
+
     #[test]
     fn grey_is_bit_exact_at_every_stop() {
         for gamut in [RedGamut::Rec709, RedGamut::P3D65] {
@@ -740,9 +791,10 @@ mod tests {
                             let ya = linalg::mul_vec(&matrices().awg4_to_xyz, rgb)[1];
                             let yb = linalg::mul_vec(&matrices().awg4_to_xyz, out)[1];
                             worst_y = worst_y.max(((yb - ya) / ya).abs());
-                            // Only the window (with its tails, -27 to 43 degrees) is touched.
-                            assert!(hue_window(a.h) > 0.0, "h {} moved", a.h);
-                        } else if hue_window(a.h) > 0.01 && s >= -5.4 && s != -0.5 {
+                            // Only the windows (with their tails: reds -27 to 43 degrees, and on the up
+                            // side yellows 58 to 110 degrees) are touched.
+                            assert!(window_of(s, a.h) > 0.0, "s {s} h {} moved", a.h);
+                        } else if window_of(s, a.h) > 0.01 && s >= -5.4 && s != -0.5 {
                             // Inside the window the step does something (the up side, or the dark side
                             // at strength 1), unless the colour is already near the gamut cap.
                             let edge = t.cmax_at(a.l, a.h).max(CMAX_FLOOR);
@@ -807,11 +859,38 @@ mod tests {
                 assert_eq!(st.apply(rgb), rgb, "fade 0 at s {s}");
             }
         }
-        for s in [-4.0, -1.0, 0.5, 3.0] {
-            // Window 0 is -27 to 43 degrees' complement: from 43 to 333 degrees.
+        for s in [0.5, 3.0] {
+            // The up side: the red window is 0 from 43 degrees to 333, the yellow window is 0 below 58 and
+            // above 110. Skin hues (44 to 57) and everything from 111 to 333 are untouched.
+            for h in (44..58).chain(111..333) {
+                let rgb = pixel(t, s, f64::from(h), 30.0);
+                assert_eq!(st.apply(rgb), rgb, "window 0 at s {s} h {h}");
+            }
+        }
+        for s in [-4.0, -1.0] {
+            // The dark side is for reds only: yellows are untouched there, whatever the strength.
             for h in 44..333 {
                 let rgb = pixel(t, s, f64::from(h), 30.0);
-                assert_eq!(st.apply(rgb), rgb, "window 0 at h {h}");
+                assert_eq!(st.apply(rgb), rgb, "dark side, window 0 at s {s} h {h}");
+            }
+        }
+    }
+
+    #[test]
+    fn yellows_get_the_up_side_only() {
+        for gamut in [RedGamut::Rec709, RedGamut::P3D65] {
+            let up = step(gamut, 1.0, 0.0);
+            let dn = step(gamut, 0.0, 1.0);
+            let t = up.tables();
+            for h in [66.0, 80.0, 95.0] {
+                // Up side: the chroma grows (a mid-tone ochre at +1 stop).
+                let rgb = pixel(t, 1.0, h, 25.0);
+                let (a, b) = (up.lch(rgb).unwrap(), up.lch(up.apply(rgb)).unwrap());
+                assert!(b.c > 1.2 * a.c, "h {h}: chroma {} to {}", a.c, b.c);
+                // A strength of 0 on the up side leaves it alone; the dark side never touches yellows.
+                assert_eq!(dn.apply(rgb), rgb, "h {h} with f_up 0");
+                let dark = pixel(t, -3.0, h, 25.0);
+                assert_eq!(step(gamut, 1.0, 1.0).apply(dark), dark, "dark yellow h {h}");
             }
         }
     }
@@ -831,52 +910,104 @@ mod tests {
         assert!((hue_window(359.999) - hue_window(-0.001)).abs() < 1e-12);
     }
 
-    /// Output chroma against input chroma, over stops (-6 to +6), hues (-40 to +50 degrees) and chroma up to
-    /// a multiple of the gamut edge: never falls (no fold). Minimum slope measured (Python and Rust agree):
-    /// Rec.709 0.501 up to 1.0 times the edge, 0.158 up to 1.25, 0.095 up to 1.4 and 0.0905 up to 1.6;
-    /// P3 0.493, 0.171, 0.108 and 0.0700 (at s +2, hue 11, chroma 69, edge 43).
+    #[test]
+    fn the_yellow_window_has_the_stated_shape() {
+        // 1 on 66 to 95 degrees, a raised cosine to 0 over 8 degrees below and 15 above.
+        for h in [66.0, 70.0, 80.0, 95.0] {
+            assert_eq!(yellow_window(h), 1.0, "{h}");
+        }
+        assert!(yellow_window(58.0).abs() < 1e-15 && yellow_window(110.0).abs() < 1e-15);
+        assert!((yellow_window(62.0) - 0.5).abs() < 1e-15);
+        assert!((yellow_window(102.5) - 0.5).abs() < 1e-15);
+        for h in [0.0, 30.0, 45.0, 57.9, 110.1, 150.0, 260.0, 359.9] {
+            assert_eq!(yellow_window(h), 0.0, "{h}");
+        }
+        // C1: the slope is 0 where the window meets 0 and 1, and the window is continuous with a bounded
+        // slope everywhere (pi / 2 / 8 per degree at most on the short side).
+        let eps = 1e-6;
+        for edge in [58.0, 66.0, 95.0, 110.0] {
+            let slope = (yellow_window(edge + eps) - yellow_window(edge - eps)) / (2.0 * eps);
+            assert!(slope.abs() < 1e-4, "slope {slope} at {edge}");
+        }
+        let mut prev = yellow_window(40.0);
+        let mut h = 40.0;
+        while h < 130.0 {
+            h += 0.01;
+            let w = yellow_window(h);
+            assert!((w - prev).abs() < 0.0035, "jump at {h}");
+            prev = w;
+        }
+        // The two windows never overlap, so the up side's window is the larger of them.
+        for i in 0..3600 {
+            let h = f64::from(i) * 0.1;
+            assert!(hue_window(h) == 0.0 || yellow_window(h) == 0.0, "{h}");
+            assert_eq!(hue_window_up(h), hue_window(h).max(yellow_window(h)));
+        }
+        // Skin hues (45 to 57) keep weight 0, and the band between the windows is 43 to 58 degrees.
+        assert_eq!(hue_window_up(50.0), 0.0);
+        assert_eq!(hue_window_up(57.0), 0.0);
+    }
+
+    /// Output chroma against input chroma, over stops (-6 to +6), hues (-40 to +50 degrees for the reds, 56 to
+    /// 115 for the yellows) and chroma up to a multiple of the gamut edge: never falls (no fold). Minimum slope
+    /// measured (Python and Rust agree), reds: Rec.709 0.501 up to 1.0 times the edge, 0.158 up to 1.25, 0.095
+    /// up to 1.4 and 0.0905 up to 1.6; P3 0.493, 0.171, 0.108 and 0.0700 (at s +2, hue 11, chroma 69, edge
+    /// 43). Yellows: see `YELLOW_SLOPE_FLOORS`.
     #[test]
     fn chroma_is_monotone_up_to_one_point_six_times_the_gamut_edge() {
-        for (extent, floors) in [(1.25, [0.15, 0.15]), (1.6, [0.09, 0.069])] {
-            for (gamut, floor) in [RedGamut::Rec709, RedGamut::P3D65].into_iter().zip(floors) {
-                let mut slopes = Vec::new();
-                for dn in [0.0, 1.0] {
-                    let st = step(gamut, 1.0, dn);
-                    let t = st.tables();
-                    let mut min_slope = f64::INFINITY;
-                    for s in (-12..=12).map(|i| f64::from(i) * 0.5) {
-                        for h in (-40..=50).map(f64::from) {
-                            let h = h.rem_euclid(360.0);
-                            let Some(probe) = st.lch(pixel(t, s, h, 20.0)) else {
-                                continue;
-                            };
-                            let edge = t.cmax_at(probe.l, h).max(CMAX_FLOOR);
-                            let n = 120;
-                            let mut prev: Option<(f64, f64)> = None;
-                            for i in 1..=n {
-                                let c = extent * edge * f64::from(i) / f64::from(n);
-                                let rgb = pixel(t, s, h, c);
-                                let (Some(a), Some(b)) = (st.lch(rgb), st.lch(st.apply(rgb)))
-                                else {
+        for (hues, range_name) in [(-40..=50, "reds"), (56..=115, "yellows")] {
+            for (extent, floors) in [(1.25, [0.15, 0.15]), (1.6, [0.09, 0.069])] {
+                let floors = if range_name == "yellows" {
+                    YELLOW_SLOPE_FLOORS[usize::from(extent > 1.3)]
+                } else {
+                    floors
+                };
+                for (gamut, floor) in [RedGamut::Rec709, RedGamut::P3D65].into_iter().zip(floors) {
+                    let mut slopes = Vec::new();
+                    for dn in [0.0, 1.0] {
+                        let st = step(gamut, 1.0, dn);
+                        let t = st.tables();
+                        let mut min_slope = f64::INFINITY;
+                        for s in (-12..=12).map(|i| f64::from(i) * 0.5) {
+                            for h in hues.clone().map(f64::from) {
+                                let h = h.rem_euclid(360.0);
+                                let Some(probe) = st.lch(pixel(t, s, h, 20.0)) else {
                                     continue;
                                 };
-                                if let Some((c0, o0)) = prev {
-                                    min_slope = min_slope.min((b.c - o0) / (a.c - c0));
+                                let edge = t.cmax_at(probe.l, h).max(CMAX_FLOOR);
+                                let n = 120;
+                                let mut prev: Option<(f64, f64)> = None;
+                                for i in 1..=n {
+                                    let c = extent * edge * f64::from(i) / f64::from(n);
+                                    let rgb = pixel(t, s, h, c);
+                                    let (Some(a), Some(b)) = (st.lch(rgb), st.lch(st.apply(rgb)))
+                                    else {
+                                        continue;
+                                    };
+                                    if let Some((c0, o0)) = prev {
+                                        min_slope = min_slope.min((b.c - o0) / (a.c - c0));
+                                    }
+                                    prev = Some((a.c, b.c));
                                 }
-                                prev = Some((a.c, b.c));
                             }
                         }
+                        assert!(
+                            min_slope >= floor,
+                            "{range_name} {gamut:?} dn {dn} to {extent} x edge: minimum slope {min_slope} under {floor}"
+                        );
+                        slopes.push(min_slope);
                     }
-                    assert!(
-                        min_slope >= floor,
-                        "{gamut:?} dn {dn} to {extent} x edge: minimum slope {min_slope} under {floor}"
+                    println!(
+                        "{range_name} {gamut:?} up to {extent} x edge: minimum slope {slopes:?}"
                     );
-                    slopes.push(min_slope);
                 }
-                println!("{gamut:?} up to {extent} x edge: minimum slope {slopes:?}");
             }
         }
     }
+
+    /// The smallest slope of output against input chroma allowed in the yellow window, up to 1.25 and to 1.6
+    /// times the gamut edge: `[[Rec.709, P3-D65]; 2]`.
+    const YELLOW_SLOPE_FLOORS: [[f64; 2]; 2] = [[0.14, 0.11], [0.065, 0.055]];
 
     /// The tables ym-color builds from its own ACES 2 and gamut code are the investigation's.
     #[test]
@@ -936,7 +1067,7 @@ mod tests {
             serde_json::from_str(include_str!("../../tests/data/red_chroma/vectors.json")).unwrap();
         let tolerance = doc["tolerance"].as_f64().unwrap();
         let samples = doc["samples"].as_array().unwrap();
-        assert!(samples.len() >= 400);
+        assert!(samples.len() >= 600);
         let triple = |v: &serde_json::Value| -> Vec3 {
             let a = v.as_array().unwrap();
             [
