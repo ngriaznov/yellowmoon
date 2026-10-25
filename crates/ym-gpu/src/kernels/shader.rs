@@ -124,6 +124,30 @@ pub enum KernelId {
     LensFlareNodes,
     /// L3: the glow core, the tail plane and the drawn items of every pixel, mixed with Z.
     LensFlare,
+    /// L1, the lens's bokeh reshaping: the footprint means of the root colours of the blur map's cells (the upsampling's colour guide).
+    LensReshapeGuide,
+    /// L1, the lens's bokeh reshaping: the blur map at the pixels of the tile: the joint bilateral upsampling and its acceptance tests.
+    LensReshapeBlur,
+    /// L1, the lens's bokeh reshaping: the square root of the luminance, the field the sharp-edge test reads.
+    LensReshapeLumRoot,
+    /// L1, the lens's bokeh reshaping: the gradient energy of that field and of its 3 x 3 mean.
+    LensReshapeGrad,
+    /// L1, the lens's bokeh reshaping: the places whose 5 x 5 energy exceeds the mean's by the ratio of the sharp-edge test.
+    LensReshapeFlags,
+    /// L1, the lens's bokeh reshaping: the sharp flags dilated by 2 pixels.
+    LensReshapeDilate,
+    /// L1, the lens's bokeh reshaping: the balls' protection of their rim and light, the blur zeroed on the sharp places, the balls' floor and the occluded pixels.
+    LensReshapeProtect,
+    /// L1, the lens's bokeh reshaping: the horizontal counts of blurred pixels in the feather's window.
+    LensReshapeCover,
+    /// L1, the lens's bokeh reshaping: the stretch's ramp towards the border of the blur map.
+    LensReshapeRamp,
+    /// L1, the lens's bokeh reshaping: the picture with each ball's disc replaced by its ring's plane fit.
+    LensReshapeTakeOut,
+    /// L1, the lens's bokeh reshaping: the gather across the anamorphic axis.
+    LensReshapeVGather,
+    /// L1, the lens's bokeh reshaping: the gather along the tangent and the balls drawn back.
+    LensReshapeFinal,
     /// The half-resolution noise sigma plane, from the resident raw words.
     Sigma,
     /// The k x k mosaic binning of the fit view, with the vignetting gain at the binned pixels.
@@ -205,7 +229,7 @@ impl KernelId {
     /// no render uses. [`KernelSet::kernels`] and `warm_up` compile in this order, so that what the
     /// first frame of the first photo waits for is compiled before what only a zoomed view or an
     /// export needs.
-    pub const ALL: [KernelId; 79] = [
+    pub const ALL: [KernelId; 91] = [
         // The fit view of a mosaic photo.
         KernelId::Prep,
         KernelId::PrepMask,
@@ -227,6 +251,18 @@ impl KernelId {
         KernelId::LensFieldFinish,
         KernelId::LensFlareRestore,
         KernelId::LensFlareNodes,
+        KernelId::LensReshapeGuide,
+        KernelId::LensReshapeBlur,
+        KernelId::LensReshapeLumRoot,
+        KernelId::LensReshapeGrad,
+        KernelId::LensReshapeFlags,
+        KernelId::LensReshapeDilate,
+        KernelId::LensReshapeProtect,
+        KernelId::LensReshapeCover,
+        KernelId::LensReshapeRamp,
+        KernelId::LensReshapeTakeOut,
+        KernelId::LensReshapeVGather,
+        KernelId::LensReshapeFinal,
         KernelId::LensFlare,
         // The view stages.
         KernelId::Sampler,
@@ -344,6 +380,18 @@ impl KernelId {
             KernelId::LensFlareRestore => "lens_flare_restore",
             KernelId::LensFlareNodes => "lens_flare_nodes",
             KernelId::LensFlare => "lens_flare",
+            KernelId::LensReshapeGuide => "lens_reshape_guide",
+            KernelId::LensReshapeBlur => "lens_reshape_blur",
+            KernelId::LensReshapeLumRoot => "lens_reshape_lumroot",
+            KernelId::LensReshapeGrad => "lens_reshape_grad",
+            KernelId::LensReshapeFlags => "lens_reshape_flags",
+            KernelId::LensReshapeDilate => "lens_reshape_dilate",
+            KernelId::LensReshapeProtect => "lens_reshape_protect",
+            KernelId::LensReshapeCover => "lens_reshape_cover",
+            KernelId::LensReshapeRamp => "lens_reshape_ramp",
+            KernelId::LensReshapeTakeOut => "lens_reshape_takeout",
+            KernelId::LensReshapeVGather => "lens_reshape_vgather",
+            KernelId::LensReshapeFinal => "lens_reshape_final",
             KernelId::Sigma => "sigma",
             KernelId::Bin => "bin",
             KernelId::BinSigma => "bin_sigma",
@@ -419,6 +467,18 @@ impl KernelId {
             | KernelId::LensFieldFinish
             | KernelId::LensFlareRestore
             | KernelId::LensFlareNodes
+            | KernelId::LensReshapeGuide
+            | KernelId::LensReshapeBlur
+            | KernelId::LensReshapeLumRoot
+            | KernelId::LensReshapeGrad
+            | KernelId::LensReshapeFlags
+            | KernelId::LensReshapeDilate
+            | KernelId::LensReshapeProtect
+            | KernelId::LensReshapeCover
+            | KernelId::LensReshapeRamp
+            | KernelId::LensReshapeTakeOut
+            | KernelId::LensReshapeVGather
+            | KernelId::LensReshapeFinal
             | KernelId::LensFlare => KernelSet::View,
             KernelId::Resize => KernelSet::Tail,
             _ => KernelSet::Raw,
@@ -497,6 +557,18 @@ impl KernelId {
             KernelId::LensFlareRestore | KernelId::LensFlareNodes | KernelId::LensFlare => {
                 super::lens_flare::body(self)
             }
+            KernelId::LensReshapeGuide
+            | KernelId::LensReshapeBlur
+            | KernelId::LensReshapeLumRoot
+            | KernelId::LensReshapeGrad
+            | KernelId::LensReshapeFlags
+            | KernelId::LensReshapeDilate
+            | KernelId::LensReshapeProtect
+            | KernelId::LensReshapeCover
+            | KernelId::LensReshapeRamp
+            | KernelId::LensReshapeTakeOut
+            | KernelId::LensReshapeVGather
+            | KernelId::LensReshapeFinal => super::lens_reshape::body(self),
             KernelId::Sigma => super::sigma::body(),
             KernelId::Bin | KernelId::BinSigma => super::bin::body(self),
             KernelId::Resize => super::resize::body(),

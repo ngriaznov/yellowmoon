@@ -16,10 +16,12 @@ mod balls;
 mod detector;
 mod disc;
 mod draw;
+mod gpu;
 mod ladder;
-mod line;
 mod spread;
 mod tile;
+
+pub(crate) use gpu::{device_pass, plane_data, scale_data};
 
 use crate::consts::B_CAP;
 use crate::error::LensError;

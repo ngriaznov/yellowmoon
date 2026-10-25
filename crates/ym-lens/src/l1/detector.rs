@@ -75,6 +75,12 @@ const MAP_BLURRED_P: f32 = 0.7;
 /// "The photo has bokeh" counts the cells of an outside map whose probability is at least this
 /// (`ym_ml::bokeh_net::STRONG_P`): the low-confidence blobs of a featureless sky stay out of that gate.
 const MAP_STRONG_P: f32 = 0.9;
+/// With an outside map, "the photo has bokeh" needs this share of the frame in cells with `p >= MAP_STRONG_P` (or
+/// [`MIN_BALLS_ACTIVE`] clear balls). The classical detector's 2 % ([`crate::consts::MIN_BLUR_AREA`]) does not carry
+/// over: with the bokeh-3 weights a photo without bokeh reads up to 2.74 % at `p >= 0.9` (patches of sky) and the
+/// weakest photo with bokeh and no balls reads 9.4 %; 5 % is the geometric middle of that gap (`docs/21` section 7,
+/// *The gate's share*; `data/models/bokeh/MODEL_CARD.md`).
+const MAP_MIN_STRONG_AREA: f64 = 0.05;
 /// A cell of an outside map is known to be in focus (a subject a ball cannot be drawn over) when the source's
 /// probability that it is out of focus is at most this.
 const MAP_SUBJECT_P: f32 = 0.1;
@@ -973,7 +979,14 @@ pub(super) fn blurred_fraction(d: &Detected) -> f64 {
 /// scene of lights (at least [`MIN_BALLS_ACTIVE`] clear balls, those that passed the strict rules and the context
 /// test, as on a night street or in the lights of a tree).
 pub(super) fn enough(d: &Detected) -> bool {
+    // An outside map counts the cells it is sure of (`p >= MAP_STRONG_P`) against its own share; the classical
+    // detector counts `b >= 1.5 b_min` with confidence against the spec's 2 %.
+    let area = if d.gate_fraction.is_some() {
+        MAP_MIN_STRONG_AREA
+    } else {
+        crate::consts::MIN_BLUR_AREA
+    };
     d.edges >= MIN_EDGE_SAMPLES
-        && (blurred_fraction(d) >= crate::consts::MIN_BLUR_AREA
+        && (blurred_fraction(d) >= area
             || d.balls.iter().filter(|b| b.clear).count() >= MIN_BALLS_ACTIVE)
 }

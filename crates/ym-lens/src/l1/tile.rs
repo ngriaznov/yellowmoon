@@ -16,7 +16,13 @@
 
 use rayon::prelude::*;
 
-use crate::consts::{B_CAP, B_MIN, MAX_STRETCH_TAPS, UPSAMPLE_RADIUS_PX};
+use crate::consts::{
+    ACCEPT_COLOUR, ACCEPT_CONFIDENCE, B_CAP, B_MIN, BALL_RIM_REACH_PX, FEATHER_FRACTION,
+    FEATHER_MAX_PX, FEATHER_MIN_PX, GATHER_PAD, GUIDE_SIGMA_MIN, GUIDE_SIGMA_NOISE, MAX_STRETCH_TAPS,
+    MIN_LINE_PX, NOISE_FLOOR, SHARP_DILATE, SHARP_GATE, SHARP_RATIO, SHARP_TEST_FROM_PX,
+    STRAND_MARGIN_NOISE, STRAND_VALLEY, SUBJECT_SHARE, UPSAMPLE_RADIUS_PX,
+};
+use crate::device::{BokehCells, BokehPass, BokehTile};
 use crate::error::LensError;
 use crate::image::{ImageRef, PixelRect};
 use crate::plan::{Axis, LensPlan};
@@ -24,41 +30,6 @@ use crate::plan::{Axis, LensPlan};
 use super::BokehPlanes;
 use super::detector::luminance;
 use super::draw::{Shape, ShapeParams, profile_at, rim_at, rim_disc_mean, shape_of};
-use super::line::{Lines, floor_log2};
-
-/// Pixels farther than this from the edge of a gather's reach are not read: a safety margin for the bilinear
-/// neighbour of the last sample.
-const GATHER_PAD: usize = 1;
-/// The sharp-edge test runs only where the blur is at least this many pixels at the tile's scale.
-const SHARP_TEST_FROM_PX: f64 = 4.0;
-/// A pixel is sharp when the gradient energy of the picture exceeds that of its 3 x 3 mean by this factor.
-const SHARP_RATIO: f64 = 1.4;
-/// ... and the mean gradient energy of its 5 x 5 window exceeds this many noise variances.
-const SHARP_GATE: f64 = 16.0;
-/// Dilation of the sharp places in pixels.
-const SHARP_DILATE: i64 = 2;
-/// The sharp-edge test sees a ball's rim this far beyond it, in pixels (gradient, box, window and dilation).
-const BALL_RIM_REACH_PX: f64 = 7.0;
-/// A sharp pixel in or around a ball that is darker than this fraction of the pixels three either side of it along a
-/// row or a column (by more than twelve noise units of them) is a strand in front of the ball and stays protected.
-const STRAND_VALLEY: f64 = 0.6;
-/// A line shorter than this, in pixels, is not gathered.
-const MIN_LINE_PX: f64 = 0.05;
-/// A pixel takes a blur from the map only when its colour (square roots, three channels) is within this distance of
-/// the footprint mean of some blurred cell of confidence at least [`ACCEPT_CONFIDENCE`] around it. In a region blurred by
-/// more than a cell the picture is smooth at the cell's scale, so every pixel is near its cell's mean; the rim of
-/// a sharp subject (a bright bud against a dark background) is not near any, and keeps no blur.
-const ACCEPT_COLOUR: f64 = 0.25;
-const ACCEPT_CONFIDENCE: f64 = 0.3;
-/// A pixel is a subject (a sharp thing a drawn ball does not cover) when this share of the weight of the cells around
-/// it, by the same colour-guided weights as the blur, is known to be in focus.
-const SUBJECT_SHARE: f64 = 0.5;
-/// The stretch fades out towards the border of the blur map (a subject's outline, a hole where the detector
-/// finds sharp detail) over this fraction of the longest line, within these bounds in pixels at the tile's
-/// scale: a hard border cuts the lines of neighbouring pixels differently and tears the picture along it.
-const FEATHER_FRACTION: f64 = 0.3;
-const FEATHER_MIN_PX: usize = 2;
-const FEATHER_MAX_PX: usize = 24;
 
 /// What the cells of the blur map around a pixel add up to, by the colour-guided weights of the upsampling.
 struct CellSums {
@@ -185,6 +156,9 @@ pub(super) struct Pass<'a> {
     sy: f64,
     /// Spatial support of the upsampling, in tile pixels.
     support: f64,
+    /// The same numbers in the form the device takes them, which is also where the geometry of a pass over a
+    /// rectangle comes from ([`BokehPass::tile`]).
+    dev: BokehPass,
 }
 
 impl<'a> Pass<'a> {
@@ -234,7 +208,7 @@ impl<'a> Pass<'a> {
             sy *= 2.0;
         }
         let support = (UPSAMPLE_RADIUS_PX as f64).min(1.6 * sx.max(sy)).max(1.2);
-        Some(Pass {
+        let mut pass = Pass {
             bp,
             plan,
             fw,
@@ -254,7 +228,36 @@ impl<'a> Pass<'a> {
             sx,
             sy,
             support,
-        })
+            dev: BokehPass {
+                width: fw,
+                height: fh,
+                half_diag: hk,
+                noise: 0.0,
+                stretch,
+                edges: e,
+                lines_along_y: plan.frame().axis == Axis::X,
+                vertical: v_on,
+                tangential: t_on,
+                v_halo: 0,
+                t_halo: 0,
+                feather,
+                guide_reach: 0,
+                map: (mw, mh),
+                level,
+                level_size: (bp.level(level).w, bp.level(level).h),
+                level_offset: (0..level).map(|l| bp.level(l).w * bp.level(l).h).sum(),
+                cell: (sx, sy),
+                support,
+                sigma_guide: 0.0,
+            },
+        };
+        let noise = pass.noise_t();
+        pass.dev.noise = noise;
+        pass.dev.sigma_guide = (GUIDE_SIGMA_NOISE * noise).max(GUIDE_SIGMA_MIN);
+        pass.dev.v_halo = pass.v_halo();
+        pass.dev.t_halo = pass.t_halo();
+        pass.dev.guide_reach = pass.guide_reach();
+        Some(pass)
     }
 
     /// Rows of the vertical gather's reach and of the tangential one, with the bilinear neighbour.
@@ -287,26 +290,22 @@ impl<'a> Pass<'a> {
         self.v_halo() + self.t_halo() + self.guide_reach() + self.feather
     }
 
-    /// The pass over `want`. `input` covers `want` grown by [`Pass::halo`], clamped to the frame.
-    pub(super) fn run(&self, input: &ImageRef, want: PixelRect) -> Result<Vec<f32>, LensError> {
-        let (fw, fh) = (self.fw, self.fh);
-        let r1 = want.grown(self.t_halo(), fw, fh);
-        let r0 = r1.grown(self.v_halo(), fw, fh);
-        // The blur map is made over `rb`, a feather wider than `r0`, so that the soft edge of the stretch
-        // at the border of the map is the same in every tile.
-        let rb = r0.grown(self.feather, fw, fh);
-        let need = rb.grown(self.guide_reach(), fw, fh);
-        if !input.rect().contains(&need) {
-            return Err(LensError::InputTooSmall {
-                needed: need.to_string(),
-                have: input.rect().to_string(),
-            });
-        }
+    /// The rectangles a pass over `want` works on and the cells of the map they read ([`BokehPass::tile`]).
+    pub(super) fn rects(&self, want: PixelRect) -> BokehTile {
+        self.dev.tile(want)
+    }
+
+    /// The numbers of this pass in the form the device takes them.
+    pub(super) fn device(&self) -> BokehPass {
+        self.dev
+    }
+
+    /// What the shapes of the balls are made from, for this scale and plan.
+    pub(super) fn shape_params(&self) -> ShapeParams<'a> {
         let lens = self.plan.lens();
-        let rim_mean = rim_disc_mean(&lens.rim);
-        let sp = ShapeParams {
-            fw: fw as f64,
-            fh: fh as f64,
+        ShapeParams {
+            fw: self.fw as f64,
+            fh: self.fh as f64,
             hk: self.hk,
             q: self.q,
             e: self.e,
@@ -315,14 +314,38 @@ impl<'a> Pass<'a> {
             swirl: &lens.field.swirl,
             cats_eye: &lens.field.cats_eye,
             rim: &lens.rim,
-            rim_mean,
-        };
-        // The balls that change and touch this tile.
-        let shapes: Vec<Shape> = self
-            .bp
+            rim_mean: rim_disc_mean(&lens.rim),
+        }
+    }
+
+    /// The shapes of every ball the pass changes, in list order.
+    pub(super) fn shapes(&self) -> Vec<Shape> {
+        let sp = self.shape_params();
+        self.bp
             .balls()
             .iter()
             .filter_map(|b| shape_of(b, &sp))
+            .collect()
+    }
+
+    /// The pass over `want`. `input` covers `want` grown by [`Pass::halo`], clamped to the frame.
+    pub(super) fn run(&self, input: &ImageRef, want: PixelRect) -> Result<Vec<f32>, LensError> {
+        // The blur map is made over `rb`, a feather wider than `r0`, so that the soft edge of the stretch
+        // at the border of the map is the same in every tile.
+        let BokehTile {
+            r1, r0, rb, need, ..
+        } = self.rects(want);
+        if !input.rect().contains(&need) {
+            return Err(LensError::InputTooSmall {
+                needed: need.to_string(),
+                have: input.rect().to_string(),
+            });
+        }
+        let sp = self.shape_params();
+        // The balls that change and touch this tile.
+        let shapes: Vec<Shape> = self
+            .shapes()
+            .into_iter()
             .filter(|s| {
                 // Everything of the ball that reads or writes pixels of the tile: its oval, its take-out disc and
                 // the zone around its rim in which the sharp-edge test is lifted.
@@ -365,7 +388,7 @@ impl<'a> Pass<'a> {
     /// Noise of the square-root luminance per pixel at this scale.
     fn noise_t(&self) -> f64 {
         let ratio = (self.bp.reduce() * self.plan.lens_plane_scale()) as f64 / self.k as f64;
-        (self.bp.noise_v() * ratio).max(0.0015)
+        (self.bp.noise_v() * ratio).max(NOISE_FLOOR)
     }
 
     /// The blur map over `out` (made over `rb`, which holds `out` and the feather): upsampled with a joint
@@ -384,7 +407,7 @@ impl<'a> Pass<'a> {
         let (mw, mh) = bp.size();
         let level = bp.level(self.level);
         let (lw, lh) = (level.w, level.h);
-        let sigma_g = (3.0 * self.noise_t()).max(0.06);
+        let sigma_g = self.dev.sigma_guide;
         let sg2 = sigma_g * sigma_g;
         let sup = self.support;
         // The tile's square-root colours over everything the upsampling reads.
@@ -393,24 +416,17 @@ impl<'a> Pass<'a> {
         let root = root_field(input, er);
         // Cell geometry: footprints and centres along each axis.
         let axis_cells = |s: f64, n: usize, full: usize| -> Vec<(f64, usize, usize)> {
-            (0..n)
-                .map(|c| {
-                    let lo = c as f64 * s;
-                    let hi = ((c + 1) as f64 * s).min(full as f64);
-                    let p_lo = ((lo - 0.5).ceil().max(0.0)) as usize;
-                    let p_hi =
-                        (((hi - 0.5).ceil().max(0.0)) as usize).clamp(p_lo + 1, full.max(p_lo + 1));
-                    (0.5 * (lo + hi), p_lo.min(full - 1), p_hi.min(full))
-                })
-                .collect()
+            (0..n).map(|c| axis_cell(s, c, full)).collect()
         };
         let cols = axis_cells(self.sx, lw, fw);
         let rows = axis_cells(self.sy, lh, fh);
         // Footprint means of the root colours for the cells within reach of r0.
-        let cx_lo = ((r0.x as f64 - sup) / self.sx).floor().max(0.0) as usize;
-        let cx_hi = (((r0.x1() as f64 + sup) / self.sx).ceil() as usize + 1).min(lw);
-        let cy_lo = ((r0.y as f64 - sup) / self.sy).floor().max(0.0) as usize;
-        let cy_hi = (((r0.y1() as f64 + sup) / self.sy).ceil() as usize + 1).min(lh);
+        let BokehCells {
+            x_lo: cx_lo,
+            x_hi: cx_hi,
+            y_lo: cy_lo,
+            y_hi: cy_hi,
+        } = self.dev.cells_of(r0);
         let ncx = cx_hi.saturating_sub(cx_lo);
         let ncy = cy_hi.saturating_sub(cy_lo);
         let mut cell_guide = vec![[0.0f32; 3]; ncx * ncy];
@@ -488,7 +504,7 @@ impl<'a> Pass<'a> {
         });
         // Zero the map where the picture shows an edge sharper than the blur says, except around a ball: its
         // own rim is a sharp edge, and so is a highlight in it (a glass ornament's, at the centre).
-        let mut zero = self.sharp_places(input, r0, &bt);
+        let mut zero = self.sharp_places(input, r0, &bt, !shapes.is_empty());
         let planes = [input.plane(0), input.plane(1), input.plane(2)];
         let lum_at = |x: i64, y: i64| -> f64 {
             let xc = x.clamp(input.x0 as i64, (input.x0 + input.width) as i64 - 1) as usize;
@@ -500,7 +516,7 @@ impl<'a> Pass<'a> {
         // A thin dark line (a valley: much darker than the pixels three either side of it along a row or a column).
         let thin_dark = |x: i64, y: i64| -> bool {
             let lum = lum_at(x, y);
-            let margin = |v: f64| 12.0 * v.max(0.0).sqrt() * noise_t;
+            let margin = |v: f64| STRAND_MARGIN_NOISE * v.max(0.0).sqrt() * noise_t;
             let valley = |a: f64, b: f64| lum < STRAND_VALLEY * a.min(b) - margin(a.min(b));
             valley(lum_at(x - 3, y), lum_at(x + 3, y)) || valley(lum_at(x, y - 3), lum_at(x, y + 3))
         };
@@ -622,11 +638,21 @@ impl<'a> Pass<'a> {
     /// The picture's gradient energy is compared with that of its 3 x 3 mean, summed over 5 x 5 windows: a
     /// blurred edge loses almost nothing to a 3 x 3 mean, a sharp one (hair, fine detail) loses a lot. Only
     /// windows with gradient well above the noise count. The result is dilated by 2 pixels.
-    fn sharp_places(&self, input: &ImageRef, r0: PixelRect, bt: &[f32]) -> Vec<bool> {
+    ///
+    /// The flags are read at the pixels blurred by at least [`SHARP_TEST_FROM_PX`] and around the balls
+    /// (`balls`), nowhere else; a region with neither is not tested. (A region's flags never depend on what the
+    /// region holds: the same pixel gets the same flag in every tile.)
+    fn sharp_places(
+        &self,
+        input: &ImageRef,
+        r0: PixelRect,
+        bt: &[f32],
+        balls: bool,
+    ) -> Vec<bool> {
         let (fw, fh) = (self.fw, self.fh);
         let hk = self.hk;
-        // Only where some pixel is blurred enough to tell.
-        if !bt.iter().any(|b| f64::from(*b) * hk >= SHARP_TEST_FROM_PX) {
+        // Only where some pixel is blurred enough to tell, or a ball is near.
+        if !balls && !bt.iter().any(|b| f64::from(*b) * hk >= SHARP_TEST_FROM_PX) {
             return vec![false; r0.w * r0.h];
         }
         let v = lum_root_field(input, r0.grown(6, fw, fh));
@@ -649,15 +675,16 @@ impl<'a> Pass<'a> {
                 .collect(),
         };
         // Dilate by 2 pixels (5 x 5): rows, then columns.
-        let rows = window_max(&flags, r0, SHARP_DILATE);
+        let rows = window_max(&flags, r0, SHARP_DILATE as i64);
         rows.data.iter().map(|f| *f > 0.0).collect()
     }
 
     /// The gather across the anamorphic axis over `r1`; `wk` covers `r0`.
     ///
     /// A pixel whose whole line passes the sample rule (every pixel on it has at least half the pixel's own
-    /// blur) gets the exact mean of the picture along the line from running integrals ([`Lines`]); any other
-    /// pixel averages explicit taps with the rule applied to each.
+    /// blur) gets the exact mean of the piecewise-linear picture along the line, summed segment by segment
+    /// over the at most `2 l + 3` pixels the line touches; any other pixel averages explicit taps with the rule
+    /// applied to each. The kernel (`lens_reshape.wgsl`) runs the same loops in `f32`.
     fn gather_vertical(
         &self,
         wk: &[f32],
@@ -672,17 +699,12 @@ impl<'a> Pass<'a> {
         let (a, rest) = out.split_at_mut(plane1);
         let (b, c) = rest.split_at_mut(plane1);
         let along_y = self.axis == Axis::X;
-        let n_line = if along_y { r0.h } else { r0.w };
         let (lo, hi) = if along_y {
             (r0.y as i64, r0.y1() as i64 - 1)
         } else {
             (r0.x as i64, r0.x1() as i64 - 1)
         };
         let q1 = self.stretch;
-        // Windows of the sample rule are up to 2 reach + 2 pixels long.
-        let max_k = floor_log2(2 * self.v_reach.ceil() as usize + 3);
-        let origin = if along_y { r0.y } else { r0.x };
-        let lines = Lines::new(wk, bt, (r0.w, r0.h), along_y, origin, max_k);
         a.par_chunks_mut(r1.w)
             .zip(b.par_chunks_mut(r1.w))
             .zip(c.par_chunks_mut(r1.w))
@@ -700,51 +722,46 @@ impl<'a> Pass<'a> {
                         rc[col] = wk[2 * plane0 + i0];
                         continue;
                     }
-                    let (lx, ly) = (x - r0.x, y - r0.y);
-                    let pos = if along_y { y } else { x } as f64;
+                    let pos = if along_y { y } else { x } as i64;
+                    // The index of the pixel at position `j` along the line through `(x, y)`, held inside the
+                    // region.
+                    let at = |j: i64| -> usize {
+                        let j = j.clamp(lo, hi) as usize;
+                        if along_y {
+                            (j - r0.y) * r0.w + (x - r0.x)
+                        } else {
+                            (y - r0.y) * r0.w + (j - r0.x)
+                        }
+                    };
                     // The pixels the line touches (nearest to its ends), inside the region.
-                    let first = (((pos - len + 0.5).floor().max(origin as f64) as usize) - origin)
-                        .min(n_line - 1);
-                    let last = (((pos + len + 0.5).floor().max(origin as f64) as usize) - origin)
-                        .min(n_line - 1);
-                    if lines
-                        .min_blur(lx, ly, first, last)
-                        .is_some_and(|m| f64::from(m) >= 0.5 * bp)
+                    let first = (pos as f64 - len + 0.5).floor() as i64;
+                    let last = (pos as f64 + len + 0.5).floor() as i64;
+                    let floor = 0.5 * bp;
+                    if (first.clamp(lo, hi)..=last.clamp(lo, hi))
+                        .all(|j| f64::from(bt[at(j)]) >= floor)
                     {
-                        ra[col] = lines.mean(0, lx, ly, pos, len) as f32;
-                        rb[col] = lines.mean(1, lx, ly, pos, len) as f32;
-                        rc[col] = lines.mean(2, lx, ly, pos, len) as f32;
+                        let m = line_mean(wk, plane0, &at, pos, len);
+                        ra[col] = m[0] as f32;
+                        rb[col] = m[1] as f32;
+                        rc[col] = m[2] as f32;
                         continue;
                     }
                     let (taps, half) = taps_for(len);
                     let step = len / half as f64;
-                    let pos = if along_y { y } else { x } as f64;
+                    let pos = pos as f64;
                     let mut acc = [0.0f64; 3];
                     let mut wsum = 0.0f64;
                     for t in 0..taps {
                         let s = pos + (t as f64 - half as f64) * step;
                         let ni = ((s + 0.5).floor() as i64).clamp(lo, hi);
-                        let (nx, ny) = if along_y {
-                            (x as i64, ni)
-                        } else {
-                            (ni, y as i64)
-                        };
-                        let bs = f64::from(bt[(ny as usize - r0.y) * r0.w + (nx as usize - r0.x)]);
+                        let bs = f64::from(bt[at(ni)]);
                         if bs < 0.5 * bp {
                             continue;
                         }
                         let wt = if t == 0 || t == taps - 1 { 0.5 } else { 1.0 };
                         let f0 = s.floor();
                         let fr = s - f0;
-                        let p0 = (f0 as i64).clamp(lo, hi);
-                        let p1 = (f0 as i64 + 1).clamp(lo, hi);
-                        let (x0, y0, x1, y1) = if along_y {
-                            (x as i64, p0, x as i64, p1)
-                        } else {
-                            (p0, y as i64, p1, y as i64)
-                        };
-                        let j0 = (y0 as usize - r0.y) * r0.w + (x0 as usize - r0.x);
-                        let j1 = (y1 as usize - r0.y) * r0.w + (x1 as usize - r0.x);
+                        let (j0, j1) = (at(f0 as i64), at(f0 as i64 + 1));
                         for ch in 0..3 {
                             let v0 = f64::from(wk[ch * plane0 + j0]);
                             let v1 = f64::from(wk[ch * plane0 + j1]);
@@ -869,6 +886,48 @@ impl<'a> Pass<'a> {
     }
 }
 
+/// The mean over `[pos - len, pos + len]` of the piecewise-linear picture along a line, per channel: the picture
+/// at the line's integer positions `j` is `wk[c * plane + at(j)]` (`at` holds `j` inside the region, which
+/// repeats the edge pixel beyond the ends), linear between them.
+///
+/// The integral is summed unit segment by unit segment, from the segment holding the start of the interval,
+/// each as the width of its part of the interval times the picture's mean over that part. The positions are
+/// relative to the integer `pos`, so no value of the order of the frame's size enters a sum and any tiling
+/// gives the same bits. At most `2 len + 2` segments.
+fn line_mean(
+    wk: &[f32],
+    plane: usize,
+    at: &dyn Fn(i64) -> usize,
+    pos: i64,
+    len: f64,
+) -> [f64; 3] {
+    let value = |j: i64| -> [f64; 3] {
+        let i = at(j);
+        [
+            f64::from(wk[i]),
+            f64::from(wk[plane + i]),
+            f64::from(wk[2 * plane + i]),
+        ]
+    };
+    let (m0, m1) = ((-len).floor() as i64, len.floor() as i64);
+    let mut acc = [0.0f64; 3];
+    let mut q = value(pos + m0);
+    for m in m0..=m1 {
+        let next = value(pos + m + 1);
+        let (u, v) = ((m as f64).max(-len), ((m + 1) as f64).min(len));
+        if v > u {
+            let w = v - u;
+            let mid = 0.5 * ((u - m as f64) + (v - m as f64));
+            for c in 0..3 {
+                acc[c] += w * (q[c] + mid * (next[c] - q[c]));
+            }
+        }
+        q = next;
+    }
+    let norm = 2.0 * len;
+    [acc[0] / norm, acc[1] / norm, acc[2] / norm]
+}
+
 /// Samples on a line of half-length `len` pixels: an odd count with the centre included, at most the cap.
 /// Returns the count and the number of steps either side of the centre.
 fn taps_for(len: f64) -> (usize, usize) {
@@ -882,6 +941,16 @@ fn touches(r: &PixelRect, cx: f64, cy: f64, reach: f64) -> bool {
         && cx - reach <= r.x1() as f64
         && cy + reach >= r.y as f64
         && cy - reach <= r.y1() as f64
+}
+
+/// Cell `c` of the map's level along an axis of `full` pixels with cells `s` pixels wide: its centre in pixels, and
+/// the first pixel and one past the last pixel of its footprint (the pixels whose centres it covers).
+pub(super) fn axis_cell(s: f64, c: usize, full: usize) -> (f64, usize, usize) {
+    let lo = c as f64 * s;
+    let hi = ((c + 1) as f64 * s).min(full as f64);
+    let p_lo = ((lo - 0.5).ceil().max(0.0)) as usize;
+    let p_hi = (((hi - 0.5).ceil().max(0.0)) as usize).clamp(p_lo + 1, full.max(p_lo + 1));
+    (0.5 * (lo + hi), p_lo.min(full - 1), p_hi.min(full))
 }
 
 /// The `rect` of `input`, copied (planar).

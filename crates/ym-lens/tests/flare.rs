@@ -326,15 +326,15 @@ fn sums(scene: &Scene, clip: f64, scale: f64) -> Sums {
         h_ghost: [0.0; 3],
         h_compact: [0.0; 3],
     };
-    for i in 0..n {
+    for (i, &ev_i) in ev.iter().enumerate().take(n) {
         let x = [
             f64::from(scene.data[i]),
             f64::from(scene.data[n + i]),
             f64::from(scene.data[2 * n + i]),
         ];
-        let r = restored(x, clip, GLOW_BOOST_SHARE * ev[i], scale);
-        let h = highlight(x, clip, ev[i], 1.0);
-        let hg = highlight(x, clip, ev[i], scale);
+        let r = restored(x, clip, GLOW_BOOST_SHARE * ev_i, scale);
+        let h = highlight(x, clip, ev_i, 1.0);
+        let hg = highlight(x, clip, ev_i, scale);
         for c in 0..3 {
             s.r[c] += r[c];
             s.h[c] += h[c];

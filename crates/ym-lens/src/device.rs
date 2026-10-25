@@ -258,3 +258,239 @@ pub struct FlareMix {
     /// `1 - a`: the share of the picture's light that stays.
     pub keep: f64,
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// L1: bokeh reshaping
+
+/// Vectors in the header of [`BokehScaleData::vectors`]: the lens's field radii (3 vectors, 9 values and 3 of
+/// padding), its swirl profile (3) and its rim profile (4, 16 values).
+pub const BOKEH_HEADER: usize = 10;
+
+/// Vectors per ball in [`BokehScaleData::vectors`]. A record, with integers carried as bits:
+///
+/// | vector | contents |
+/// |---|---|
+/// | 0 | centre column's integer part (a whole number), its fraction, centre row's integer part, its fraction |
+/// | 1 | semi-axes `a` (along `m`) and `b`, the unit vector `m` |
+/// | 2 | half the cat's-eye offset (a vector), the offset in semi-axes, the rim's width in pixels |
+/// | 3 | the energy density per channel, the take-out radius |
+/// | 4 | the ball's radius, half its plateau, the reach of everything drawn, the blur a pixel inside the ball gets |
+/// | 5 to 7 | the ring's plane fit of each channel: the value at the centre and the slopes per pixel, and a zero |
+pub const BOKEH_SHAPE_VECTORS: usize = 8;
+
+/// Side in pixels of the bins that cull the balls, on the absolute pixel grid.
+pub const BOKEH_BIN_PX: usize = 32;
+
+/// A photo's blur map for the device (`LensPlanes::bokeh_plane_data`): made once, whatever the amounts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BokehPlaneData {
+    /// Columns and rows of the map (level 0).
+    pub size: (usize, usize),
+    /// Per level of the map's reductions: columns, rows and the index in [`cells`](Self::cells) of its first
+    /// cell.
+    pub levels: Vec<(usize, usize, usize)>,
+    /// `(a, c, s, 0)` per cell, the levels one after the other, each row-major: the mean of weight times blur, of
+    /// the weight (the cell's confidence where it is blurred or confidently sharp) and of the share known to be in
+    /// focus.
+    pub cells: Vec<[f32; 4]>,
+    /// The summed-area table of the level-0 cells that have a blur, `(columns + 1) * (rows + 1)` entries.
+    pub nonzero: Vec<u32>,
+}
+
+/// The cells `[x_lo, x_hi)` x `[y_lo, y_hi)` of the map's level that a region reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BokehCells {
+    /// First column.
+    pub x_lo: usize,
+    /// One past the last column.
+    pub x_hi: usize,
+    /// First row.
+    pub y_lo: usize,
+    /// One past the last row.
+    pub y_hi: usize,
+}
+
+/// The rectangles of a pass over `want`, from the output outwards, and the cells of the blur map they read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BokehTile {
+    /// The output.
+    pub want: crate::PixelRect,
+    /// The input of the tangential gather.
+    pub r1: crate::PixelRect,
+    /// The input of the vertical gather, over which the stretch's blur is used.
+    pub r0: crate::PixelRect,
+    /// The region the blur map is made over (`r0` and the feather), so that the stretch's soft edge is the same in
+    /// every tile.
+    pub rb: crate::PixelRect,
+    /// The picture the pass reads.
+    pub need: crate::PixelRect,
+    /// The cells of the map's level that pixels of `rb` read.
+    pub cells: BokehCells,
+}
+
+/// L1 at one scale (`LensPlan::bokeh_pass`): the numbers the per-tile passes take, in the form the CPU reference
+/// uses them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BokehPass {
+    /// Width of the frame at this scale in pixels.
+    pub width: usize,
+    /// Height of the frame at this scale in pixels.
+    pub height: usize,
+    /// The half-diagonal of that frame in pixels.
+    pub half_diag: f64,
+    /// The noise of the square-root luminance per pixel at this scale.
+    pub noise: f64,
+    /// Half-length of the vertical stretch per unit of blur.
+    pub stretch: f64,
+    /// Edges, 0 to 1.
+    pub edges: f64,
+    /// True when the vertical gather runs along the buffer's y (the anamorphic axis is the buffer's x).
+    pub lines_along_y: bool,
+    /// True when the vertical gather acts (Anamorphic above 0).
+    pub vertical: bool,
+    /// True when the tangential gather acts (Edges on a lens with a swirl).
+    pub tangential: bool,
+    /// Pixels of context the vertical gather needs.
+    pub v_halo: usize,
+    /// Pixels of context the tangential gather needs.
+    pub t_halo: usize,
+    /// Width in pixels of the soft edge the stretch has at the border of the blur map.
+    pub feather: usize,
+    /// Pixels of the tile's own picture the blur map's upsampling and the sharp-edge test read.
+    pub guide_reach: usize,
+    /// Columns and rows of the map (level 0).
+    pub map: (usize, usize),
+    /// The level of the map's reductions the upsampling reads.
+    pub level: usize,
+    /// Columns and rows of that level.
+    pub level_size: (usize, usize),
+    /// Index in [`BokehPlaneData::cells`] of that level's first cell.
+    pub level_offset: usize,
+    /// The level's cells in pixels of this scale, along x and along y.
+    pub cell: (f64, f64),
+    /// Spatial support of the upsampling in pixels.
+    pub support: f64,
+    /// Width of the upsampling's colour guide.
+    pub sigma_guide: f64,
+}
+
+impl BokehPass {
+    /// Pixels of context an output rectangle needs around it.
+    #[must_use]
+    pub fn halo(&self) -> usize {
+        self.v_halo + self.t_halo + self.guide_reach + self.feather
+    }
+
+    /// The rectangles a pass over `want` works on, from the output outwards, and the map cells they read.
+    #[must_use]
+    pub fn tile(&self, want: crate::PixelRect) -> BokehTile {
+        let (fw, fh) = (self.width, self.height);
+        let r1 = want.grown(self.t_halo, fw, fh);
+        let r0 = r1.grown(self.v_halo, fw, fh);
+        let rb = r0.grown(self.feather, fw, fh);
+        let need = rb.grown(self.guide_reach, fw, fh);
+        BokehTile {
+            want,
+            r1,
+            r0,
+            rb,
+            need,
+            cells: self.cells_of(rb),
+        }
+    }
+
+    /// The cells of the map's level that pixels of `rb` read: those within the upsampling's support of any of
+    /// them.
+    #[must_use]
+    pub fn cells_of(&self, rb: crate::PixelRect) -> BokehCells {
+        let (lw, lh) = self.level_size;
+        let sup = self.support;
+        BokehCells {
+            x_lo: ((rb.x as f64 - sup) / self.cell.0).floor().max(0.0) as usize,
+            x_hi: (((rb.x1() as f64 + sup) / self.cell.0).ceil() as usize + 1).min(lw),
+            y_lo: ((rb.y as f64 - sup) / self.cell.1).floor().max(0.0) as usize,
+            y_hi: (((rb.y1() as f64 + sup) / self.cell.1).ceil() as usize + 1).min(lh),
+        }
+    }
+}
+
+/// The balls' shapes at one scale for the device (`LensPlan::bokeh_scale_data`): the lens's profiles, the cell
+/// geometry of the map's level and the shape of every ball the plan changes, with the bins that cull them.
+/// It depends on Anamorphic and Edges (the shapes), not on Flares.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BokehScaleData {
+    /// The pass these numbers belong to.
+    pub pass: BokehPass,
+    /// The header ([`BOKEH_HEADER`] vectors), then one vector per column of the map's level and one per row (the
+    /// centre's integer part, its fraction, the first pixel the cell's footprint covers and one past the last, the
+    /// whole numbers as `f32` values), then [`BOKEH_SHAPE_VECTORS`] per ball.
+    pub vectors: Vec<[f32; 4]>,
+    /// Index in `vectors` of the first column's cell.
+    pub x_offset: usize,
+    /// Index in `vectors` of the first row's cell.
+    pub y_offset: usize,
+    /// Index in `vectors` of the first ball.
+    pub shape_offset: usize,
+    /// Number of balls.
+    pub shapes: usize,
+    /// The bins that cull the balls: `bins_x * bins_y + 1` offsets, then the ball indices of each bin in list
+    /// order. A bin is [`BOKEH_BIN_PX`] pixels square on the absolute pixel grid and lists every ball whose
+    /// influence (what it draws, takes out or protects) can reach one of its pixels.
+    pub bins: Vec<u32>,
+    /// Bins across.
+    pub bins_x: usize,
+    /// Bins down.
+    pub bins_y: usize,
+}
+
+impl crate::planes::LensPlanes {
+    /// The blur map for the device, or `None` for planes without one (the plan did not ask to reshape bokeh, or
+    /// the photo has little out-of-focus background).
+    #[must_use]
+    pub fn bokeh_plane_data(&self) -> Option<BokehPlaneData> {
+        crate::l1::plane_data(self)
+    }
+}
+
+impl crate::plan::LensPlan {
+    /// L1's numbers for a frame of `width x height` pixels at scale `k`, or `None` when the reshaping leaves the
+    /// picture alone for these planes (no blur map, little blur, or nothing that changes a ball or a pixel).
+    #[must_use]
+    pub fn bokeh_pass(
+        &self,
+        planes: &crate::planes::LensPlanes,
+        k: usize,
+        width: usize,
+        height: usize,
+    ) -> Option<BokehPass> {
+        crate::l1::device_pass(self, planes, k, width, height)
+    }
+
+    /// The balls' shapes and the lens's profiles for the device at that scale, or `None` as
+    /// [`bokeh_pass`](Self::bokeh_pass).
+    #[must_use]
+    pub fn bokeh_scale_data(
+        &self,
+        planes: &crate::planes::LensPlanes,
+        k: usize,
+        width: usize,
+        height: usize,
+    ) -> Option<BokehScaleData> {
+        crate::l1::scale_data(self, planes, k, width, height)
+    }
+
+    /// What [`bokeh_scale_data`](Self::bokeh_scale_data) depends on besides the planes, the scale and the frame:
+    /// the lens and its data versions, Anamorphic, Edges and the axis. Not Flares.
+    #[must_use]
+    pub fn bokeh_shape_key(&self) -> String {
+        format!(
+            "lens-bokeh-shape:{}:v{}:att{}:{:?}:{:?}:{:?}",
+            self.kind(),
+            self.lens().info.version,
+            self.attachment().version,
+            self.amounts().anamorphic,
+            self.amounts().edges,
+            self.frame().axis,
+        )
+    }
+}

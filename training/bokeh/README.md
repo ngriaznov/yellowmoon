@@ -6,8 +6,8 @@ frame) and how sure that is. It is blur, not depth: a far wall at f/11 is sharp.
 blur-detection model is licence-clean (`research/bokeh-map-2026-10-24.md`), so this directory trains our own small network
 (`model.py`, 1.5 M parameters, from scratch) on synthetic defocus with a known blur, made from licence-clean sharp photos.
 Python only trains, exports and writes fixtures: the app and `ym` never run it (`AGENTS.md` rule 6); a Rust runtime
-(`ym_ml`, like `crop_net.rs`) will run the exported weights. Nothing here ships yet: weights go to `data/models/bokeh/` with
-a model card only if the model passes the go/no-go below.
+(`ym_ml`, like `crop_net.rs`) will run the exported weights. The weights of **bokeh-3** ship in `data/models/bokeh/` with their model card (the owner's decision of 2026-10-25;
+the go/no-go below, the metrics and the known limits are in that card).
 
 The owner's decisions of 2026-10-24: the learned route is allowed ("Bokeh map extraction can use ML if needed"), **Modal may
 be used, cap $10** ("Yes, use Modal for the bokeh map, cap $10"; about $11 of the account's hard $30 limit is left), and
@@ -23,7 +23,7 @@ the research-only blur sets (CUHK, DUT-DBD, RTF) may be used for **local evaluat
 
 Weights trained on CC BY photos keep the repository's Apache-2.0. Every photo with a tile is credited (author, Flickr page,
 title) in `tiles/credits.tsv.gz`, written by `prepare` in the format of `training/crop/CREDITS.tsv.gz`, for the model card
-and `NOTICE`. **Never used:** CUHK, DUT-DBD, RTF, SYNDOF/SYNTHIA, Hypersim, DPDD, DIV2K, ImageNet, COCO (research-only,
+and `NOTICE`; the list of the 16,091 photos of the shipped model is committed as `training/bokeh/CREDITS.tsv.gz`. **Never used:** CUHK, DUT-DBD, RTF, SYNDOF/SYNTHIA, Hypersim, DPDD, DIV2K, ImageNet, COCO (research-only,
 non-commercial, share-alike or unclear), and no pretrained weights of any kind. DIODE (MIT) is left out of the first run to keep
 it simple; its val split is small. The crop volume's 96,000 pretraining photos exist there only as 256 x 256 letterboxed arrays, too
 small for samples at the 1024-px scale, so they are not used; `prepare --extra N` can download more photos from the mirror
@@ -336,6 +336,8 @@ Starting from bokeh-2 is recommended: v3's data contain bokeh-2's (80 % of the s
 it learnt carries over and the 100 minutes go to what is new; from scratch the same minutes would also have to learn the old recipe again, with
 slower steps (more layers). The learning rate is half the first run's because the weights are already good (warm-up stays 300 steps).
 
+**What the runs cost and gave (the programme's ledger, 2026-10-25).** `bokeh-1` (lost to the NaN) $2.49, `bokeh-2` (14,977 steps, 101.2 minutes) $2.51, `bokeh-3` (from bokeh-2's weights, 10,536 steps, 101.4 minutes, no step skipped; export SHA-256 `adf978dd...72fe`) $2.51, indexing, masks, tiles and previews $0.28, the GPU smoke runs $0.46: **$8.25 of the $10 cap**. `bokeh-3` is the model that ships: on the synthetic validation it beats the classical baseline (mean absolute error of `b` 0.00488 against 0.01821 on the same 48 samples), keeps what `bokeh-2` knew (`final.legacy`: 0.00348 against 0.00409), has an `ece` of 0.032 and calls 0.046 % of real sharp tiles blurred; on the 28 real Sony planes it is more specific than `bokeh-2` (`data/models/bokeh/MODEL_CARD.md`).
+
 From a computer with direct internet and the two variables: `pip install modal==1.6.2`, then `modal run -m training.bokeh.modal_app::<entry> <args>`, and
 `modal run -m training.bokeh.modal_app::fetch` copies the small files (weights, metrics, samples, previews, credits, ledger) into
 `training/bokeh/runs/` (git-ignored). The volume is `yellowmoon-bokeh`; the crop volume is mounted read-only and never written.
@@ -385,6 +387,6 @@ evaluation on research-only sets (`test_eval_real.py`: the rules, the counts, th
   a blur under `b_min` is "sharp" by construction, and natural bokeh in the sources is filtered, not removed (the self-cleaning round: run the first
   model over the unblurred sources and give the pixels where it already predicts blur no weight as "sharp" labels; the cost is one more forward pass per batch).
 - **Thin structures and featureless regions are the weak points of bokeh-2** (v3's target): 31 % of the pixels of a sharp twig or hair over a blur are called
-  blurred, and 47 % of a sharp sky's interior (`P >= 0.7`). v3's synthesis and the sharp-wins target are the fix, unmeasured until bokeh-3 has run
-  (`compare.py` and `final.groups` say whether it worked); the synthetic structures are procedural (constant colour along a strand, no texture) and
+  blurred, and 47 % of a sharp sky's interior (`P >= 0.7`). v3's synthesis and the sharp-wins target are the fix; measured on bokeh-3 (`final.groups`): 28 % of the blocks on a thin
+  structure and 10 % in a featureless layer's interior are still called blurred at `P >= 0.7` (37 % and 15 % by the radius alone), and the lens planes show no false blur on wires, hair or twigs; the synthetic structures are procedural (constant colour along a strand, no texture) and
   real hair and branches are not, so the real photographs (the lens planes) are the test, and thin structures can still be absorbed there.

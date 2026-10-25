@@ -232,6 +232,74 @@ pub const MIN_EDGE_SAMPLES: usize = 50;
 /// left alone: the stretch would move it by a pixel or two.
 pub const MIN_BLUR_FROM: f64 = 1.5;
 
-/// With less than this fraction of the frame at `b >= MIN_BLUR_FROM b_min` with confidence, nothing is reshaped.
+/// With less than this fraction of the frame at `b >= MIN_BLUR_FROM b_min` with confidence, nothing is reshaped (the
+/// classical detector's rule; a learned map counts the cells it is sure of against a share of its own, see
+/// `l1::detector::MAP_MIN_STRONG_AREA`).
 /// (On 32 real photos, the ones with an out-of-focus background are above 2.5 %, the sharp ones below 2 %.)
 pub const MIN_BLUR_AREA: f64 = 0.02;
+
+// ---------------------------------------------------------------------------------------------------------
+// L1: the per-tile pass (`l1::tile`), which the CPU reference and the kernel (`lens_reshape.wgsl`) share
+
+/// The sharp-edge test runs only where the blur is at least this many pixels at the tile's scale.
+pub const SHARP_TEST_FROM_PX: f64 = 4.0;
+
+/// A pixel is sharp when the gradient energy of the picture exceeds that of its 3 x 3 mean by this factor.
+pub const SHARP_RATIO: f64 = 1.4;
+
+/// ... and the mean gradient energy of its 5 x 5 window exceeds this many noise variances.
+pub const SHARP_GATE: f64 = 16.0;
+
+/// Dilation of the sharp places in pixels.
+pub const SHARP_DILATE: usize = 2;
+
+/// The sharp-edge test sees a ball's rim this far beyond it, in pixels (gradient, box, window and dilation).
+pub const BALL_RIM_REACH_PX: f64 = 7.0;
+
+/// A sharp pixel in or around a ball that is darker than this fraction of the pixels three either side of it along a
+/// row or a column (by more than twelve noise units of them) is a strand in front of the ball and stays protected.
+pub const STRAND_VALLEY: f64 = 0.6;
+
+/// The noise units a strand must be darker than its surroundings by (see [`STRAND_VALLEY`]).
+pub const STRAND_MARGIN_NOISE: f64 = 12.0;
+
+/// A line shorter than this, in pixels, is not gathered.
+pub const MIN_LINE_PX: f64 = 0.05;
+
+/// A pixel takes a blur from the map only when its colour (square roots, three channels) is within this distance of
+/// the footprint mean of some blurred cell of confidence at least [`ACCEPT_CONFIDENCE`] around it. In a region
+/// blurred by more than a cell the picture is smooth at the cell's scale, so every pixel is near its cell's mean;
+/// the rim of a sharp subject (a bright bud against a dark background) is not near any, and keeps no blur.
+pub const ACCEPT_COLOUR: f64 = 0.25;
+
+/// See [`ACCEPT_COLOUR`].
+pub const ACCEPT_CONFIDENCE: f64 = 0.3;
+
+/// A pixel is a subject (a sharp thing a drawn ball does not cover) when this share of the weight of the cells around
+/// it, by the same colour-guided weights as the blur, is known to be in focus.
+pub const SUBJECT_SHARE: f64 = 0.5;
+
+/// The stretch fades out towards the border of the blur map (a subject's outline, a hole where the detector
+/// finds sharp detail) over this fraction of the longest line, within [`FEATHER_MIN_PX`] and
+/// [`FEATHER_MAX_PX`] pixels at the tile's scale: a hard border cuts the lines of neighbouring pixels differently
+/// and tears the picture along it.
+pub const FEATHER_FRACTION: f64 = 0.3;
+
+/// See [`FEATHER_FRACTION`].
+pub const FEATHER_MIN_PX: usize = 2;
+
+/// See [`FEATHER_FRACTION`].
+pub const FEATHER_MAX_PX: usize = 24;
+
+/// Pixels farther than this from the edge of a gather's reach are not read: a safety margin for the bilinear
+/// neighbour of the last sample.
+pub const GATHER_PAD: usize = 1;
+
+/// The least colour noise, in square-root units, the upsampling and the sharp-edge test assume.
+pub const NOISE_FLOOR: f64 = 0.0015;
+
+/// The least width of the upsampling's colour guide, in square-root units.
+pub const GUIDE_SIGMA_MIN: f64 = 0.06;
+
+/// Noise units in the width of the upsampling's colour guide.
+pub const GUIDE_SIGMA_NOISE: f64 = 3.0;

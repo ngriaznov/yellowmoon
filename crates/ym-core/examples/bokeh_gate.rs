@@ -11,7 +11,7 @@
 //! classical detector and each rule (`blurred:strong`, the probabilities that call a cell blurred and count it
 //! for "the photo has bokeh"; the lens uses `0.7:0.9`, the others are tried by remapping the probability so that
 //! the lens's own thresholds fall there) and pass (`plain`, `mirrored`) whether the planes are active, their edge
-//! count, blurred fraction, balls and the share of the map above zero. With `--write-maps` the lens's own rule's
+//! count, blurred fraction (the gate's share), balls (and how many are clear) and the share of the map above zero. With `--write-maps` the lens's own rule's
 //! map and the network's raw `b`, `c` and `p` go to `OUT/<name>/` as little-endian f32 (`model_b.f32`,
 //! `model_c.f32`, `model_p.f32`, `blur_b.f32`, `conf.f32`, `balls.json`, `size.json`) for the mirrored pass.
 
@@ -74,6 +74,7 @@ fn stats(planes: &LensPlanes, ms: f64) -> serde_json::Value {
         v["edges"] = json!(b.edge_count());
         v["blurred_fraction"] = json!(b.blurred_fraction());
         v["balls"] = json!(b.balls().len());
+        v["clear_balls"] = json!(b.balls().iter().filter(|x| x.clear).count());
         v["nonzero_fraction"] = json!(nonzero as f64 / b.blur().len().max(1) as f64);
     }
     v

@@ -1,0 +1,626 @@
+//! L1, the lens's bokeh reshaping (`kernels::lens_reshape`, `shaders/lens_reshape.wgsl`), against its CPU
+//! reference (`ym_lens::reshape`, `ym_lens::l1`).
+//!
+//! What is compared, and with which bound:
+//!
+//! * **Parity.** The kernel matches the CPU reference within [`PARITY_BOUND`] over every lens that has a swirl or a
+//!   cat's-eye, several Edges and Anamorphic amounts, both axes, on scenes with out-of-focus balls over a
+//!   textured background, with a sharp subject and its strands, and on a night scene. The CPU reference decides a
+//!   pixel's blur, the length of its line and its tap count in `f64`, the kernel in `f32`; a pixel whose blur or
+//!   length lies within the `f32` rounding of a decision threshold (an integer tap count, the acceptance of the
+//!   map, a flag of the sharp-edge test) may decide the other way, which changes its value by a fraction of the
+//!   local variation of the picture. Those pixels are counted, not hidden: at most [`FLIP_SHARE`] of the samples
+//!   may differ by more than [`PARITY_BOUND`], and none by more than [`FLIP_BOUND`].
+//! * **Tiles equal the whole frame bit for bit** (D5 of `docs/17-gpu.md`), at 512 and 1024 px.
+//! * **The far corner** of an 8658 x 5772 frame is as exact as the near one (D4).
+//! * **Poison**: a poisoned and a plain device give the same bits and nothing is NaN.
+//! * **Identity**: Anamorphic and Edges at 0 give no pass at all.
+//! * The binding stays inside the design size (K4).
+
+mod common;
+#[allow(dead_code, clippy::needless_range_loop)]
+#[path = "../../ym-lens/tests/scenes/mod.rs"]
+mod scenes;
+
+macro_rules! note {
+    ($($arg:tt)*) => {{
+        let line = format!($($arg)*);
+        println!("{line}");
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!("[{}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
+        );
+    }};
+}
+
+use std::sync::OnceLock;
+
+use common::lens::{amounts, crop, plan, serial};
+use common::{TestGpu, exact};
+use scenes::{Noise, Scene, balls_over_texture_scene, soft_night_scene, subject_scene};
+use ym_gpu::cpu::tiling::Rect;
+use ym_gpu::device::GpuError;
+use ym_gpu::kernels::lens_reshape::reshape;
+use ym_gpu::queue::{JobSpec, Priority};
+use ym_lens::{Axis, ImageRef, LensKind, LensPlan, LensPlanes, PixelRect};
+
+/// The largest difference between the kernel and the CPU reference over the pixels that did not decide a blur,
+/// a length or a flag the other way (see the module notes).
+const PARITY_BOUND: f32 = 1.0e-4;
+
+/// The share of samples that may differ by more than the bound because of a flipped decision.
+const FLIP_SHARE: f64 = 2e-4;
+
+/// No sample may differ by more than this (a flipped decision moves a pixel by a fraction of the local
+/// variation, `docs/21` section 14 allows 1e-3 of white for the device against the reference).
+const FLIP_BOUND: f32 = 1.0e-2;
+
+const W: usize = 1000;
+const H: usize = 667;
+
+fn run<R: Send + 'static>(
+    dev: &TestGpu,
+    job: impl FnOnce(&ym_gpu::device::GpuContext) -> Result<R, GpuError> + Send + 'static,
+) -> R {
+    dev.gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, _| job(ctx))
+        .expect("GPU job")
+}
+
+/// The scenes of the tests, made once.
+fn textured() -> &'static Scene {
+    static S: OnceLock<Scene> = OnceLock::new();
+    S.get_or_init(|| {
+        balls_over_texture_scene(
+            W,
+            H,
+            8.0,
+            &[12.0, 17.5, 9.0, 14.0, 20.0, 11.0, 13.0, 10.0],
+            Noise::NONE,
+            4,
+        )
+    })
+}
+
+fn subject() -> &'static Scene {
+    static S: OnceLock<Scene> = OnceLock::new();
+    S.get_or_init(|| subject_scene(W, H, [5.0, 9.0, 14.0], Noise::NONE, 1))
+}
+
+fn night() -> &'static Scene {
+    static S: OnceLock<Scene> = OnceLock::new();
+    S.get_or_init(|| {
+        soft_night_scene(
+            W,
+            H,
+            &[
+                (14.0, 0.25, 1.4),
+                (9.0, 0.5, 0.9),
+                (18.0, 0.15, 2.0),
+                (11.0, 0.7, 1.2),
+                (7.0, 0.3, 1.1),
+                (16.0, 0.4, 1.6),
+                (12.0, 0.2, 1.0),
+            ],
+            Noise::LOW,
+            3,
+            2.2,
+        )
+    })
+}
+
+fn whole(scene: &Scene) -> ImageRef<'_> {
+    ImageRef {
+        width: scene.img.w,
+        height: scene.img.h,
+        x0: 0,
+        y0: 0,
+        frame_width: scene.img.w,
+        frame_height: scene.img.h,
+        data: &scene.img.data,
+    }
+}
+
+/// The planes of a plan made from a scene whose frame is the plan's frame (the lens plane is the scene).
+fn planes_of_scene(p: &LensPlan, scene: &Scene) -> LensPlanes {
+    assert_eq!(p.lens_plane_scale(), 1, "the scenes are the lens plane");
+    LensPlanes::build(p, &whole(scene), scene.focus, &|| false).expect("planes")
+}
+
+/// What a comparison found.
+struct Found {
+    worst: f32,
+    over: usize,
+    total: usize,
+}
+
+fn compare(got: &[f32], want: &[f32], bound: f32) -> Found {
+    assert_eq!(got.len(), want.len());
+    let mut worst = 0.0f32;
+    let mut over = 0;
+    for (g, w) in got.iter().zip(want) {
+        let d = (g - w).abs();
+        assert!(d.is_finite(), "a NaN or infinity in the device's output");
+        worst = worst.max(d);
+        if d > bound {
+            over += 1;
+        }
+    }
+    Found {
+        worst,
+        over,
+        total: got.len(),
+    }
+}
+
+/// The input a rectangle `out` needs: `out` grown by the pass's halo, cut from the whole image.
+fn input_for(
+    halo: usize,
+    whole: &[f32],
+    frame: (usize, usize),
+    out: Rect,
+) -> (Vec<f32>, Rect) {
+    let r = PixelRect::new(out.x, out.y, out.w, out.h).grown(halo, frame.0, frame.1);
+    let rect = Rect::new(r.x, r.y, r.w, r.h);
+    (crop(whole, frame.0, frame.1, rect), rect)
+}
+
+/// The CPU reference over `out` of a frame at scale `k`, from the whole image.
+fn cpu_reshape(
+    p: &LensPlan,
+    planes: &LensPlanes,
+    k: usize,
+    image: &[f32],
+    frame: (usize, usize),
+    out: Rect,
+) -> Vec<f32> {
+    let halo = ym_lens::reshape_halo(p, planes, k);
+    let (input, rect) = input_for(halo, image, frame, out);
+    let input = ImageRef {
+        width: rect.w,
+        height: rect.h,
+        x0: rect.x,
+        y0: rect.y,
+        frame_width: frame.0,
+        frame_height: frame.1,
+        data: &input,
+    };
+    ym_lens::reshape(p, planes, k, &input, PixelRect::new(out.x, out.y, out.w, out.h))
+        .expect("the CPU reference")
+}
+
+/// The kernel over `out` of a frame at scale `k`, from the whole image cut to the pass's halo.
+fn gpu_reshape(
+    dev: &TestGpu,
+    p: &LensPlan,
+    planes: &LensPlanes,
+    k: usize,
+    image: &[f32],
+    frame: (usize, usize),
+    out: Rect,
+) -> Vec<f32> {
+    let plane_data = planes.bokeh_plane_data().expect("a blur map");
+    let scale = p
+        .bokeh_scale_data(planes, k, frame.0, frame.1)
+        .expect("a pass");
+    let (input, rect) = input_for(scale.pass.halo(), image, frame, out);
+    run(dev, move |ctx| {
+        reshape(
+            ctx,
+            &plane_data,
+            &scale,
+            &input,
+            (rect.w, rect.h),
+            (rect.x, rect.y),
+            out,
+        )
+    })
+}
+
+/// The scenes' images reduced `k` times by box means (the frame at scale `k`).
+fn reduce(data: &[f32], w: usize, h: usize, k: usize) -> (Vec<f32>, usize, usize) {
+    let (rw, rh) = (w.div_ceil(k), h.div_ceil(k));
+    let mut out = vec![0.0f32; 3 * rw * rh];
+    for c in 0..3 {
+        for y in 0..rh {
+            for x in 0..rw {
+                let (mut acc, mut cnt) = (0.0f64, 0.0f64);
+                for dy in 0..k {
+                    for dx in 0..k {
+                        let (sx, sy) = (x * k + dx, y * k + dy);
+                        if sx < w && sy < h {
+                            acc += f64::from(data[c * w * h + sy * w + sx]);
+                            cnt += 1.0;
+                        }
+                    }
+                }
+                out[c * rw * rh + y * rw + x] = (acc / cnt) as f32;
+            }
+        }
+    }
+    (out, rw, rh)
+}
+
+/// One comparison of the kernel and the reference on the whole frame: the sweeps' cell.
+struct Cell {
+    found: Found,
+    changed: f32,
+    cpu_s: f64,
+    gpu_s: f64,
+}
+
+fn compare_case(
+    dev: &TestGpu,
+    p: &LensPlan,
+    planes: &LensPlanes,
+    k: usize,
+    image: &[f32],
+    frame: (usize, usize),
+) -> Option<Cell> {
+    let pass = p.bokeh_pass(planes, k, frame.0, frame.1)?;
+    assert!(pass.halo() > 0);
+    let out = Rect::whole(frame.0, frame.1);
+    let t = std::time::Instant::now();
+    let want = cpu_reshape(p, planes, k, image, frame, out);
+    let cpu_s = t.elapsed().as_secs_f64();
+    let t = std::time::Instant::now();
+    let got = gpu_reshape(dev, p, planes, k, image, frame, out);
+    let gpu_s = t.elapsed().as_secs_f64();
+    Some(Cell {
+        found: compare(&got, &want, PARITY_BOUND),
+        changed: exact::max_abs_diff(&want, image),
+        cpu_s,
+        gpu_s,
+    })
+}
+
+#[test]
+fn the_kernel_matches_the_cpu_reference() {
+    let _guard = serial();
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
+    let mut cases = 0;
+    let mut worst_all = 0.0f32;
+    let (mut over_all, mut total_all) = (0usize, 0usize);
+    let (mut cpu_s, mut gpu_s) = (0.0f64, 0.0f64);
+    type Sweep<'a> = (&'a str, &'a Scene, Axis, &'a [LensKind], &'a [(f64, f64)]);
+    let sweeps: [Sweep; 5] = [
+        (
+            "balls over texture",
+            textured(),
+            Axis::X,
+            &LensKind::ALL,
+            &[(0.0, 100.0), (100.0, 0.0), (60.0, 70.0), (100.0, 100.0)],
+        ),
+        (
+            "balls over texture, y axis",
+            textured(),
+            Axis::Y,
+            &[LensKind::Vintage, LensKind::Petzval],
+            &[(100.0, 100.0), (30.0, 50.0)],
+        ),
+        (
+            "sharp subject",
+            subject(),
+            Axis::X,
+            &[LensKind::Vintage, LensKind::Detuned, LensKind::Default],
+            &[(0.0, 100.0), (100.0, 100.0)],
+        ),
+        (
+            "night",
+            night(),
+            Axis::X,
+            &[LensKind::Vintage, LensKind::Triplet, LensKind::Default],
+            &[(100.0, 100.0), (50.0, 0.0)],
+        ),
+        (
+            "night, y axis",
+            night(),
+            Axis::Y,
+            &[LensKind::Petzval],
+            &[(80.0, 60.0)],
+        ),
+    ];
+    for (name, scene, axis, kinds, amount_pairs) in sweeps {
+        for &kind in kinds {
+            for &(edges, anamorphic) in amount_pairs {
+                let p = plan(amounts(kind, 0.0, edges, anamorphic), W, H, axis);
+                let planes = planes_of_scene(&p, scene);
+                let Some(cell) = compare_case(dev, &p, &planes, 1, &scene.img.data, (W, H)) else {
+                    continue;
+                };
+                cases += 1;
+                worst_all = worst_all.max(cell.found.worst);
+                over_all += cell.found.over;
+                total_all += cell.found.total;
+                cpu_s += cell.cpu_s;
+                gpu_s += cell.gpu_s;
+                note!(
+                    "L1 {name} {kind} edges {edges} anamorphic {anamorphic}: worst {:e}, {} over {PARITY_BOUND:e}; the picture moved by up to {:.3}",
+                    cell.found.worst,
+                    cell.found.over,
+                    cell.changed
+                );
+                assert!(
+                    cell.found.over as f64 <= FLIP_SHARE * cell.found.total as f64
+                        && cell.found.worst <= FLIP_BOUND,
+                    "{name} {kind} {axis:?} edges {edges} anamorphic {anamorphic}: {} of {} samples differ by more than {PARITY_BOUND} (worst {})",
+                    cell.found.over,
+                    cell.found.total,
+                    cell.found.worst
+                );
+            }
+        }
+    }
+    assert!(cases >= 20, "the sweep ran {cases} cases");
+    note!("L1 timing over {cases} cases: CPU reference {cpu_s:.1} s, device (lavapipe, with uploads) {gpu_s:.1} s");
+    note!(
+        "L1 parity: {cases} cases, {total_all} samples, worst difference {worst_all:e}, {over_all} over {PARITY_BOUND:e}"
+    );
+}
+
+/// A larger scene (1400 x 900, whose lens plane is its half) for the tiles: balls over a blurred texture, some
+/// of which lie across the 512 and 1024 px tile boundaries.
+fn big() -> &'static Scene {
+    static S: OnceLock<Scene> = OnceLock::new();
+    S.get_or_init(|| {
+        balls_over_texture_scene(
+            1400,
+            900,
+            10.0,
+            &[
+                24.0, 30.0, 18.0, 26.0, 36.0, 22.0, 20.0, 28.0, 16.0, 32.0, 19.0, 25.0,
+            ],
+            Noise::NONE,
+            9,
+        )
+    })
+}
+
+/// The planes of a plan whose lens plane is `scene` reduced `k_L` times (`k_L` the plan's).
+fn planes_of_big(p: &LensPlan, scene: &Scene) -> LensPlanes {
+    let k = p.lens_plane_scale();
+    let (plane, pw, ph) = reduce(&scene.img.data, scene.img.w, scene.img.h, k);
+    let image = ImageRef {
+        width: pw,
+        height: ph,
+        x0: 0,
+        y0: 0,
+        frame_width: pw,
+        frame_height: ph,
+        data: &plane,
+    };
+    LensPlanes::build(p, &image, scene.focus, &|| false).expect("planes")
+}
+
+fn tile_of(
+    dev: &TestGpu,
+    p: &LensPlan,
+    planes: &LensPlanes,
+    image: &[f32],
+    frame: (usize, usize),
+    out: Rect,
+) -> Vec<f32> {
+    gpu_reshape(dev, p, planes, 1, image, frame, out)
+}
+
+#[test]
+fn tiles_equal_the_whole_frame_bit_for_bit() {
+    let _guard = serial();
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
+    let scene = big();
+    let (w, h) = (scene.img.w, scene.img.h);
+    for (kind, edges, anamorphic, axis) in [
+        (LensKind::Vintage, 100.0, 100.0, Axis::X),
+        (LensKind::Petzval, 70.0, 40.0, Axis::Y),
+    ] {
+        let p = plan(amounts(kind, 0.0, edges, anamorphic), w, h, axis);
+        let planes = planes_of_big(&p, scene);
+        let bp = planes.bokeh().expect("the blur map");
+        assert!(bp.active(), "the scene is reshaped");
+        let pass = p.bokeh_pass(&planes, 1, w, h).expect("a pass");
+        // Some ball lies across a tile boundary, so a ball is drawn by two tiles.
+        let frame = (w as f64, h as f64);
+        let crossing = |tile: f64| {
+            bp.balls().iter().any(|b| {
+                let (cx, cy, r) = (b.x * frame.0, b.y * frame.1, b.radius * pass.half_diag);
+                [(cx, r), (cy, r)]
+                    .iter()
+                    .any(|&(c, r)| (c / tile).floor() != ((c + 2.0 * r) / tile).floor())
+            })
+        };
+        assert!(crossing(512.0) && crossing(1024.0), "a ball across a tile boundary");
+        let whole = exact::assert_tiles_equal_whole(
+            &format!("L1 {kind} edges {edges} anamorphic {anamorphic} {axis:?}"),
+            w,
+            h,
+            3,
+            &[512, 1024],
+            |rect| tile_of(dev, &p, &planes, &scene.img.data, (w, h), rect),
+        );
+        // The reshaping did something, and the whole frame is what the reference makes.
+        assert!(exact::max_abs_diff(&whole, &scene.img.data) > 1e-2);
+        let want = cpu_reshape(&p, &planes, 1, &scene.img.data, (w, h), Rect::whole(w, h));
+        let f = compare(&whole, &want, PARITY_BOUND);
+        note!(
+            "L1 {kind} {w}x{h}: tiles of 512 and 1024 equal the whole frame; against the reference worst {:e}, {} over {PARITY_BOUND:e}",
+            f.worst,
+            f.over
+        );
+        assert!(f.over as f64 <= FLIP_SHARE * f.total as f64 && f.worst <= FLIP_BOUND);
+    }
+}
+
+#[test]
+fn a_source_cut_out_with_another_origin_gives_the_same_bits() {
+    let _guard = serial();
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
+    let scene = textured();
+    let p = plan(amounts(LensKind::Vintage, 0.0, 90.0, 80.0), W, H, Axis::X);
+    let planes = planes_of_scene(&p, scene);
+    let out = Rect::new(333, 211, 129, 197);
+    let frame = (W, H);
+    // The whole image, with more than the halo around, and exactly the halo's rectangle.
+    let plane_data = planes.bokeh_plane_data().expect("map");
+    let scale = p.bokeh_scale_data(&planes, 1, W, H).expect("pass");
+    let halo = scale.pass.halo();
+    let (input, rect) = input_for(halo, &scene.img.data, frame, out);
+    let from_cut = {
+        let (plane_data, scale) = (plane_data.clone(), scale.clone());
+        run(dev, move |ctx| {
+            reshape(ctx, &plane_data, &scale, &input, (rect.w, rect.h), (rect.x, rect.y), out)
+        })
+    };
+    let all = scene.img.data.clone();
+    let from_whole = run(dev, move |ctx| {
+        reshape(ctx, &plane_data, &scale, &all, (W, H), (0, 0), out)
+    });
+    assert!(rect.x > 0 && rect.y > 0 && rect.w < W && halo > 0);
+    exact::assert_bit_equal("a cut-out source", &from_cut, &from_whole);
+}
+
+#[test]
+fn a_reduced_frame_reads_the_coarser_levels_of_the_map() {
+    let _guard = serial();
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
+    let scene = textured();
+    let p = plan(amounts(LensKind::Vintage, 0.0, 100.0, 100.0), W, H, Axis::X);
+    let planes = planes_of_scene(&p, scene);
+    for k in [2usize, 4] {
+        let (image, rw, rh) = reduce(&scene.img.data, W, H, k);
+        let pass = p.bokeh_pass(&planes, k, rw, rh).expect("a pass");
+        assert!(pass.level > 0, "the cells are under a pixel apart at 1/{k}");
+        let out = Rect::whole(rw, rh);
+        let want = cpu_reshape(&p, &planes, k, &image, (rw, rh), out);
+        let got = gpu_reshape(dev, &p, &planes, k, &image, (rw, rh), out);
+        let f = compare(&got, &want, PARITY_BOUND);
+        note!(
+            "L1 at 1/{k} (level {} of the map, {rw}x{rh}): worst {:e}, {} over {PARITY_BOUND:e}",
+            pass.level,
+            f.worst,
+            f.over
+        );
+        assert!(
+            f.over as f64 <= FLIP_SHARE * f.total as f64 && f.worst <= FLIP_BOUND,
+            "1/{k}: {} of {} over the bound (worst {})",
+            f.over,
+            f.total,
+            f.worst
+        );
+        assert!(exact::max_abs_diff(&want, &image) > 1e-2, "the reshaping did something");
+    }
+}
+
+#[test]
+fn poison_and_a_plain_device_give_the_same_bits() {
+    let _guard = serial();
+    let Some(_dev) = common::lens::gpu() else {
+        return;
+    };
+    let scene = textured();
+    for (kind, edges, anamorphic, axis) in [
+        (LensKind::Vintage, 100.0, 100.0, Axis::X),
+        (LensKind::Detuned, 60.0, 30.0, Axis::Y),
+    ] {
+        let p = plan(amounts(kind, 0.0, edges, anamorphic), W, H, axis);
+        let planes = planes_of_scene(&p, scene);
+        let plane_data = planes.bokeh_plane_data().expect("map");
+        let scale = p.bokeh_scale_data(&planes, 1, W, H).expect("pass");
+        let out = Rect::new(40, 30, 600, 420);
+        let (input, rect) = input_for(scale.pass.halo(), &scene.img.data, (W, H), out);
+        let got = common::lens::assert_poison_neutral("L1", move |gpu| {
+            let (plane_data, scale, input) = (plane_data.clone(), scale.clone(), input.clone());
+            gpu.run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+                reshape(ctx, &plane_data, &scale, &input, (rect.w, rect.h), (rect.x, rect.y), out)
+            })
+            .expect("reshape")
+        });
+        assert!(got.is_some());
+    }
+}
+
+#[test]
+fn a_job_between_two_runs_changes_nothing() {
+    // D7: what ran before (here a run of another lens on another tile) does not change a run.
+    let _guard = serial();
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
+    let scene = textured();
+    let p = plan(amounts(LensKind::Vintage, 0.0, 100.0, 100.0), W, H, Axis::X);
+    let planes = planes_of_scene(&p, scene);
+    let out = Rect::new(100, 80, 400, 300);
+    let first = gpu_reshape(dev, &p, &planes, 1, &scene.img.data, (W, H), out);
+    let other = plan(amounts(LensKind::Petzval, 0.0, 40.0, 60.0), W, H, Axis::Y);
+    let other_planes = planes_of_scene(&other, scene);
+    let _ = gpu_reshape(dev, &other, &other_planes, 1, &scene.img.data, (W, H), Rect::new(300, 200, 500, 400));
+    let second = gpu_reshape(dev, &p, &planes, 1, &scene.img.data, (W, H), out);
+    exact::assert_bit_equal("a run after another", &second, &first);
+}
+
+#[test]
+fn nothing_runs_when_the_reshaping_has_nothing_to_do() {
+    let _guard = serial();
+    let scene = textured();
+    // Anamorphic and Edges at 0: no blur map is needed, no pass exists.
+    let p = plan(amounts(LensKind::Vintage, 60.0, 0.0, 0.0), W, H, Axis::X);
+    assert!(!p.needs_blur_map());
+    let planes = planes_of_scene(&p, scene);
+    assert!(planes.bokeh().is_none());
+    assert!(p.bokeh_pass(&planes, 1, W, H).is_none());
+    assert!(p.bokeh_scale_data(&planes, 1, W, H).is_none());
+    assert!(planes.bokeh_plane_data().is_none());
+    // Edges on the lens with neither a swirl nor a cat's-eye (Default) and Anamorphic at 0.
+    let p = plan(amounts(LensKind::Default, 0.0, 100.0, 0.0), W, H, Axis::X);
+    assert!(!p.needs_blur_map());
+    // A scene with no out-of-focus background: the planes are inactive, there is no pass.
+    let p = plan(amounts(LensKind::Vintage, 0.0, 100.0, 100.0), W, H, Axis::X);
+    let sharp = scenes::sharp_scene(W, H, Noise::NONE, 2);
+    let planes = LensPlanes::build(&p, &whole(&sharp), None, &|| false).expect("planes");
+    assert!(planes.bokeh().is_some_and(|b| !b.active()));
+    assert!(p.bokeh_pass(&planes, 1, W, H).is_none());
+    assert!(planes.bokeh_plane_data().is_none());
+}
+
+#[test]
+fn the_binding_stays_inside_the_design_size() {
+    let _guard = serial();
+    let (w, h) = (6000usize, 4000usize);
+    let p = plan(amounts(LensKind::Petzval, 0.0, 100.0, 100.0), w, h, Axis::X);
+    // The lens plane of a 6000 x 4000 frame is 1500 x 1000.
+    let scene = balls_over_texture_scene(1500, 1000, 7.0, &[14.0, 20.0, 11.0, 17.0], Noise::NONE, 6);
+    let planes = planes_of_big(&p, &scene);
+    let pass = p.bokeh_pass(&planes, 1, w, h).expect("a pass");
+    common::limits::assert_max_binding_bytes("lens reshape", Rect::new(0, 0, 1024, 1024), |r| {
+        ym_gpu::kernels::lens_reshape::max_binding_bytes(r, &pass)
+    });
+}
+
+#[test]
+fn a_source_that_does_not_cover_the_halo_is_refused() {
+    let _guard = serial();
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
+    let scene = textured();
+    let p = plan(amounts(LensKind::Vintage, 0.0, 100.0, 100.0), W, H, Axis::X);
+    let planes = planes_of_scene(&p, scene);
+    let plane_data = planes.bokeh_plane_data().expect("map");
+    let scale = p.bokeh_scale_data(&planes, 1, W, H).expect("pass");
+    // The output is the middle of the frame and the source is exactly the output: no halo.
+    let out = Rect::new(300, 200, 100, 100);
+    let small = crop(&scene.img.data, W, H, out);
+    let result = dev
+        .gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+            reshape(ctx, &plane_data, &scale, &small, (100, 100), (300, 200), out)
+        });
+    assert!(matches!(result, Err(GpuError::InvalidInput(_))), "{result:?}");
+}
