@@ -25,8 +25,8 @@ use crate::consts::{
     COARSE_MIN_AREA_PX, COARSE_NODES_PER_FEATURE, COARSE_RIM_FEATURE, COMPACT_EXTENT_HD,
     EDGE_FLOOR_PX, EDGE_REACH_SIGMAS, GHOST_COATING_SHIFT_NM, GHOST_FULL_RADIUS, GHOST_LIGHT_MAX,
     GHOST_PEAK_MAX, GHOST_PRUNE_BUDGET, GHOST_SHADE, GHOST_SMALL_SHARE, GHOST_SOFT_MIN,
-    GHOST_TINT_MAX_RATIO, SPIKE_SIZE, STREAK_ABSORB_RATIO, STREAK_E_HALF, STREAK_E_MIN, STREAK_FLAT,
-    STREAK_HALO_SHARE, STREAK_HALO_WIDTH, STREAK_MAX_LIGHTS, STREAK_MERGE_ALONG_HD,
+    GHOST_TINT_MAX_RATIO, SPIKE_SIZE, STREAK_ABSORB_RATIO, STREAK_E_HALF, STREAK_E_MIN,
+    STREAK_FLAT, STREAK_HALO_SHARE, STREAK_HALO_WIDTH, STREAK_MAX_LIGHTS, STREAK_MERGE_ALONG_HD,
     STREAK_MERGE_BASE_HD, STREAK_MERGE_SIGMAS, STREAK_PEAK_FLOOR, STREAK_PEAK_PER_FRACTION,
     STREAK_RANK_DECAY, STREAK_REACH_AT_E0, STREAK_REACH_E0, STREAK_REACH_MIN,
     STREAK_REACH_PER_DECADE, STREAK_REL_POWER, STREAK_SIGMA_EXTENT, STREAK_SIGMA_MIN_HD,
@@ -215,7 +215,9 @@ pub(crate) struct Ghost {
 impl Ghost {
     /// The brightest channel, in clip levels, at the ghost's brightest place.
     fn peak_level(&self, clip: &[f64; 3], rim_peak: f64) -> f64 {
-        (0..3).map(|c| self.amp[c] / clip[c]).fold(0.0f64, f64::max) * rim_peak * (1.0 + self.shade[2])
+        (0..3).map(|c| self.amp[c] / clip[c]).fold(0.0f64, f64::max)
+            * rim_peak
+            * (1.0 + self.shade[2])
     }
 
     /// The ghost with its light scaled by `k`.
@@ -223,7 +225,8 @@ impl Ghost {
         for a in &mut self.amp {
             *a *= k;
         }
-        self.peak = self.amp[0].max(self.amp[1]).max(self.amp[2]) * rim_peak * (1.0 + self.shade[2]);
+        self.peak =
+            self.amp[0].max(self.amp[1]).max(self.amp[2]) * rim_peak * (1.0 + self.shade[2]);
     }
 }
 
@@ -258,75 +261,6 @@ pub(crate) struct Streak {
     stretch: f64,
     span: Span,
 }
-
-// G2-DEBUG begin: the streak's constants, overridable from the environment while they are tuned (removed at the end).
-fn knob(name: &str, default: f64) -> f64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
-}
-
-fn streak_flat() -> f64 {
-    knob("YM_S_FLAT", STREAK_FLAT)
-}
-
-struct Knobs {
-    e_half: f64,
-    e_min: f64,
-    sigma_min: f64,
-    sigma_ext: f64,
-    sigma_ref: f64,
-    halo_share: f64,
-    halo_width: f64,
-    reach_e0: f64,
-    reach_at_e0: f64,
-    reach_per_decade: f64,
-    reach_min: f64,
-    max_lights: usize,
-    rank_decay: f64,
-    rel_power: f64,
-    peak_floor: f64,
-    merge_base: f64,
-    merge_sigmas: f64,
-    merge_along: f64,
-    absorb_ratio: f64,
-    surface_start: f64,
-    surface_end: f64,
-    tail_chroma: f64,
-    total_cap: f64,
-}
-
-impl Knobs {
-    fn new() -> Self {
-        Knobs {
-            e_half: knob("YM_S_E_HALF", STREAK_E_HALF),
-            e_min: knob("YM_S_E_MIN", STREAK_E_MIN),
-            sigma_min: knob("YM_S_SIGMA_MIN", STREAK_SIGMA_MIN_HD),
-            sigma_ext: knob("YM_S_SIGMA_EXT", STREAK_SIGMA_EXTENT),
-            sigma_ref: knob("YM_S_SIGMA_REF", STREAK_SIGMA_REF_HD),
-            halo_share: knob("YM_S_HALO_SHARE", STREAK_HALO_SHARE),
-            halo_width: knob("YM_S_HALO_WIDTH", STREAK_HALO_WIDTH),
-            reach_e0: knob("YM_S_REACH_E0", STREAK_REACH_E0),
-            reach_at_e0: knob("YM_S_REACH_AT", STREAK_REACH_AT_E0),
-            reach_per_decade: knob("YM_S_REACH_DEC", STREAK_REACH_PER_DECADE),
-            reach_min: knob("YM_S_REACH_MIN", STREAK_REACH_MIN),
-            max_lights: knob("YM_S_MAX", STREAK_MAX_LIGHTS as f64) as usize,
-            rank_decay: knob("YM_S_RANK", STREAK_RANK_DECAY),
-            rel_power: knob("YM_S_REL", STREAK_REL_POWER),
-            peak_floor: knob("YM_S_FLOOR", STREAK_PEAK_FLOOR),
-            merge_base: knob("YM_S_MERGE_BASE", STREAK_MERGE_BASE_HD),
-            merge_sigmas: knob("YM_S_MERGE_SIGMAS", STREAK_MERGE_SIGMAS),
-            merge_along: knob("YM_S_MERGE_ALONG", STREAK_MERGE_ALONG_HD),
-            absorb_ratio: knob("YM_S_ABSORB", STREAK_ABSORB_RATIO),
-            surface_start: knob("YM_S_SURF0", STREAK_SURFACE_START_HD),
-            surface_end: knob("YM_S_SURF1", STREAK_SURFACE_END_HD),
-            tail_chroma: knob("YM_S_TAIL", STREAK_TAIL_CHROMA),
-            total_cap: knob("YM_S_CAP", STREAK_TOTAL_CAP),
-        }
-    }
-}
-// G2-DEBUG end
 
 /// One drawn item.
 #[derive(Clone, Debug)]
@@ -376,7 +310,7 @@ impl AlongProfile {
     /// The profile with a sharp core of width `core`, the exponent `power` and the reach `length` (all in
     /// half-diagonals).
     pub(crate) fn new(core: f64, power: f64, length: f64) -> Self {
-        let flat = streak_flat() * length;
+        let flat = STREAK_FLAT * length;
         let mut p = AlongProfile {
             core,
             power,
@@ -406,7 +340,7 @@ impl AlongProfile {
 
     /// The profile at distance `x >= 0` from the source.
     fn height(&self, x: f64) -> f64 {
-        libm::pow(1.0 + x / self.core, -self.power) * cosine_window(x / self.length, streak_flat())
+        libm::pow(1.0 + x / self.core, -self.power) * cosine_window(x / self.length, STREAK_FLAT)
     }
 
     /// The closed-form mass of the plain power law from 0 to `x`.
@@ -537,10 +471,7 @@ pub(crate) fn shifted_spectrum(spectrum: &[f64], shift_nm: f64) -> Vec<f64> {
 
 /// The tint of the lens's ghost `index`: its coating moved by [`coating_shift_nm`], then [`ghost_tint`].
 pub(crate) fn lens_ghost_tint(camera: &CameraResponse, spectrum: &[f64], index: usize) -> [f64; 3] {
-    ghost_tint(
-        camera,
-        &shifted_spectrum(spectrum, coating_shift_nm(index)),
-    )
+    ghost_tint(camera, &shifted_spectrum(spectrum, coating_shift_nm(index)))
 }
 
 /// The tint of a coating or streak spectrum on `camera`, scaled to a mean of 1 over the channels (a flat spectrum
@@ -900,9 +831,11 @@ impl<'a> Items<'a> {
     /// 3. the **width** is the light's own spread, `STREAK_SIGMA_MIN_HD` and `STREAK_SIGMA_EXTENT` of its size added
     ///    in quadrature;
     /// 4. the **peak**, in clip levels in the brightest channel, is `STREAK_PEAK_PER_FRACTION x fraction x e / (e +
-    ///    STREAK_E_HALF)`, divided by `1 + (sigma / STREAK_SIGMA_REF_HD)^2` for a band, by the light's energy over
-    ///    the strongest light's (as divided) to `STREAK_REL_POWER`, and by `STREAK_RANK_DECAY` for every light
-    ///    stronger than it; only the brightest `STREAK_MAX_LIGHTS` are drawn and none under `STREAK_PEAK_FLOOR`;
+    ///    STREAK_E_HALF)`, divided by `1 + (sigma / STREAK_SIGMA_REF_HD)^2` for a band and taken to nothing between
+    ///    `STREAK_SURFACE_START_HD` and `STREAK_SURFACE_END_HD` of width (a lit wall is a surface, not a light),
+    ///    multiplied by the light's energy over the strongest light's (both as divided) to `STREAK_REL_POWER`, and by
+    ///    `STREAK_RANK_DECAY` for every light stronger than it; only the brightest `STREAK_MAX_LIGHTS` are drawn
+    ///    and none under `STREAK_PEAK_FLOOR`;
     /// 5. the **reach** is `STREAK_REACH_AT_E0 + STREAK_REACH_PER_DECADE log10(e / STREAK_REACH_E0)` of the
     ///    attachment's, between `STREAK_REACH_MIN` and 1;
     /// 6. the **colour** is the light's own at the light and the tail's (the coating's tint at `STREAK_TAIL_CHROMA`
@@ -915,17 +848,9 @@ impl<'a> Items<'a> {
         if fraction <= 0.0 {
             return Vec::new();
         }
-        let k = Knobs::new();
         let peak_max = STREAK_PEAK_PER_FRACTION * fraction;
-        let mut tail_tint: [f64; 3] = std::array::from_fn(|c| 1.0 + k.tail_chroma * (tint[c] - 1.0));
-        if let Ok(v) = std::env::var("YM_S_TAIL_RGB") {
-            // G2-DEBUG: the tail colour straight from the environment (camera channels, scaled to a mean of 1).
-            let t: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();
-            if t.len() == 3 {
-                let m = (t[0] + t[1] + t[2]) / 3.0;
-                tail_tint = [t[0] / m, t[1] / m, t[2] / m];
-            }
-        }
+        let tail_tint: [f64; 3] =
+            std::array::from_fn(|c| 1.0 + STREAK_TAIL_CHROMA * (tint[c] - 1.0));
         // Steps 1 and 2: the lights that make streaks, merged.
         struct Cluster {
             /// Place along the axis (the brightest member's), across it (energy-weighted).
@@ -937,10 +862,12 @@ impl<'a> Items<'a> {
             /// The brightest member's size.
             extent: f64,
             sigma: f64,
-            members: usize,
         }
         let sigma_of = |var_across: f64, extent: f64| -> f64 {
-            (k.sigma_min * k.sigma_min + var_across + (k.sigma_ext * extent).powi(2)).sqrt()
+            (STREAK_SIGMA_MIN_HD * STREAK_SIGMA_MIN_HD
+                + var_across
+                + (STREAK_SIGMA_EXTENT * extent).powi(2))
+            .sqrt()
         };
         let e_of = |src: &Source| -> f64 {
             (0..3).map(|c| src.energy[c] / self.clip[c]).sum::<f64>() / 3.0
@@ -948,12 +875,12 @@ impl<'a> Items<'a> {
         let mut clusters: Vec<Cluster> = Vec::new();
         'lights: for src in lights {
             let e = e_of(src);
-            if e < k.e_min || src.total() <= 0.0 {
+            if e < STREAK_E_MIN || src.total() <= 0.0 {
                 continue;
             }
             // A light inside a much larger one belongs to it.
             for c in &clusters {
-                if c.extent >= k.absorb_ratio * src.extent
+                if c.extent >= STREAK_ABSORB_RATIO * src.extent
                     && (src.pos[0] - c.pos[0]).abs() <= 0.5 * c.extent
                     && (src.pos[1] - c.pos[1]).abs() <= 0.5 * c.extent
                 {
@@ -962,9 +889,9 @@ impl<'a> Items<'a> {
             }
             let sigma = sigma_of(src.var_across, src.extent);
             for c in &mut clusters {
-                let reach = k.merge_base + k.merge_sigmas * (sigma + c.sigma);
+                let reach = STREAK_MERGE_BASE_HD + STREAK_MERGE_SIGMAS * (sigma + c.sigma);
                 if (src.pos[1] - c.pos[1]).abs() <= reach
-                    && (src.pos[0] - c.pos[0]).abs() <= k.merge_along
+                    && (src.pos[0] - c.pos[0]).abs() <= STREAK_MERGE_ALONG_HD
                 {
                     // Merge: the row is the energy-weighted mean, the spread covers both.
                     let total = c.e + e;
@@ -978,7 +905,6 @@ impl<'a> Items<'a> {
                         *a += b;
                     }
                     c.sigma = sigma_of(c.var_across, c.extent);
-                    c.members += 1;
                     continue 'lights;
                 }
             }
@@ -989,7 +915,6 @@ impl<'a> Items<'a> {
                 var_across: src.var_across,
                 extent: src.extent,
                 sigma,
-                members: 1,
             });
         }
         // Step 4: the strength of each, over the strongest.
@@ -1000,16 +925,21 @@ impl<'a> Items<'a> {
             sigma: f64,
             n_src: [f64; 3],
             top: f64,
-            members: usize,
-            e: f64,
         }
-        let penalty = |sigma: f64| 1.0 / (1.0 + (sigma / k.sigma_ref).powi(2));
+        let penalty = |sigma: f64| 1.0 / (1.0 + (sigma / STREAK_SIGMA_REF_HD).powi(2));
         let surface = |sigma: f64| {
-            1.0 - smoothstep((sigma - k.surface_start) / (k.surface_end - k.surface_start))
+            1.0 - smoothstep(
+                (sigma - STREAK_SURFACE_START_HD)
+                    / (STREAK_SURFACE_END_HD - STREAK_SURFACE_START_HD),
+            )
         };
         let mut order: Vec<usize> = (0..clusters.len()).collect();
         let eff = |c: &Cluster| c.e * penalty(c.sigma) * surface(c.sigma);
-        order.sort_by(|a, b| eff(&clusters[*b]).total_cmp(&eff(&clusters[*a])).then(a.cmp(b)));
+        order.sort_by(|a, b| {
+            eff(&clusters[*b])
+                .total_cmp(&eff(&clusters[*a]))
+                .then(a.cmp(b))
+        });
         let eff_top = order.first().map_or(0.0, |i| eff(&clusters[*i]));
         if eff_top <= 0.0 {
             return Vec::new();
@@ -1017,23 +947,24 @@ impl<'a> Items<'a> {
         let mut planned: Vec<Planned> = Vec::new();
         let mut total = 0.0;
         for (rank, i) in order.into_iter().enumerate() {
-            if planned.len() >= k.max_lights {
+            if planned.len() >= STREAK_MAX_LIGHTS {
                 break;
             }
             let c = &clusters[i];
-            let sat = c.e / (c.e + k.e_half);
-            let rel = (eff(c) / eff_top).powf(k.rel_power);
+            let sat = c.e / (c.e + STREAK_E_HALF);
+            let rel = (eff(c) / eff_top).powf(STREAK_REL_POWER);
             let peak = peak_max
                 * sat
                 * penalty(c.sigma)
                 * surface(c.sigma)
                 * rel
-                * k.rank_decay.powi(rank as i32);
-            if peak < k.peak_floor {
+                * STREAK_RANK_DECAY.powi(rank as i32);
+            if peak < STREAK_PEAK_FLOOR {
                 continue;
             }
-            let reach = (k.reach_at_e0 + k.reach_per_decade * libm::log10(eff(c) / k.reach_e0))
-                .clamp(k.reach_min, 1.0);
+            let reach = (STREAK_REACH_AT_E0
+                + STREAK_REACH_PER_DECADE * libm::log10(eff(c) / STREAK_REACH_E0))
+            .clamp(STREAK_REACH_MIN, 1.0);
             // The light's colour, as shares of its mean, and the scale at which its brightest channel (in clip
             // levels) is 1.
             let mean = (c.energy[0] + c.energy[1] + c.energy[2]) / 3.0;
@@ -1049,54 +980,26 @@ impl<'a> Items<'a> {
                 sigma: c.sigma,
                 n_src,
                 top,
-                members: c.members,
-                e: c.e,
             });
         }
-        if std::env::var("YM_STREAK_DEBUG").is_ok() {
-            for p in &planned {
-                let f = &self.frame;
-                let (x, y) = match f.axis {
-                    crate::plan::Axis::X => (
-                        p.pos[0] * f.half_diag + 0.5 * f.w as f64,
-                        p.pos[1] * f.half_diag + 0.5 * f.h as f64,
-                    ),
-                    crate::plan::Axis::Y => (
-                        p.pos[1] * f.half_diag + 0.5 * f.w as f64,
-                        p.pos[0] * f.half_diag + 0.5 * f.h as f64,
-                    ),
-                };
-                eprintln!(
-                    "STREAKPLAN xy=({x:.0},{y:.0}) members {} e {:.4} sigma {:.2} px peak {:.4} reach {:.2} ({:.0} px) colour {:.2},{:.2},{:.2}",
-                    p.members,
-                    p.e,
-                    p.sigma * f.half_diag,
-                    p.peak,
-                    p.reach,
-                    p.reach * along.length() * f.half_diag,
-                    p.n_src[0],
-                    p.n_src[1],
-                    p.n_src[2],
-                );
-            }
-        }
-        let keep = if total > k.total_cap {
-            k.total_cap / total
+        let keep = if total > STREAK_TOTAL_CAP {
+            STREAK_TOTAL_CAP / total
         } else {
             1.0
         };
         let two_mass = 2.0 * along.half_mass();
         let root_two_pi = (2.0 * std::f64::consts::PI).sqrt();
         // The centre density of a unit-mass core plus halo, in units of the core's: 1 - h + h / width.
-        let shape = 1.0 - k.halo_share + k.halo_share / k.halo_width;
+        let shape = 1.0 - STREAK_HALO_SHARE + STREAK_HALO_SHARE / STREAK_HALO_WIDTH;
         planned
             .iter()
             .map(|p| {
-                let scale = keep * p.peak * two_mass * p.reach * p.sigma * root_two_pi / (p.top * shape);
+                let scale =
+                    keep * p.peak * two_mass * p.reach * p.sigma * root_two_pi / (p.top * shape);
                 let amp: [f64; 3] = std::array::from_fn(|c| scale * p.n_src[c]);
                 let tail: [f64; 3] = std::array::from_fn(|c| scale * tail_tint[c]);
                 let along_reach = along.length() * p.reach;
-                let across = EDGE_REACH_SIGMAS * p.sigma * k.halo_width;
+                let across = EDGE_REACH_SIGMAS * p.sigma * STREAK_HALO_WIDTH;
                 let span = self.frame.span_of(
                     p.pos[0] - along_reach,
                     p.pos[0] + along_reach,
@@ -1343,7 +1246,7 @@ impl<'a> Items<'a> {
         let (q0, q1) = frame.across_range(area);
         // The mass of the profile in each pixel's interval along the axis, and how far the colour has turned
         // at its centre (a smooth step over `STREAK_TURN` of the reach).
-        let turn_len = knob("YM_S_TURN", STREAK_TURN) * along.length() * s.stretch;
+        let turn_len = STREAK_TURN * along.length() * s.stretch;
         let (mass_along, turned): (Vec<f64>, Vec<f64>) = (p0..p1)
             .map(|p| {
                 let (e0, e1) = frame.along_edges(p);
@@ -1354,15 +1257,13 @@ impl<'a> Items<'a> {
                 )
             })
             .unzip();
-        let (halo_share, halo_width) = (
-            knob("YM_S_HALO_SHARE", STREAK_HALO_SHARE),
-            knob("YM_S_HALO_WIDTH", STREAK_HALO_WIDTH),
-        );
+        let (halo_share, halo_width) = (STREAK_HALO_SHARE, STREAK_HALO_WIDTH);
         let mass_across: Vec<f64> = (q0..q1)
             .map(|q| {
                 let (e0, e1) = frame.across_edges(q);
                 let gauss = |sigma: f64| {
-                    self.tail.q((e0 - s.centre[1]) / sigma) - self.tail.q((e1 - s.centre[1]) / sigma)
+                    self.tail.q((e0 - s.centre[1]) / sigma)
+                        - self.tail.q((e1 - s.centre[1]) / sigma)
                 };
                 (1.0 - halo_share) * gauss(s.sigma) + halo_share * gauss(halo_width * s.sigma)
             })
@@ -1815,7 +1716,9 @@ mod tests {
         let coating: Vec<f64> = (0..31)
             .map(|k| 0.003 * (1.0 + ((400.0 + 10.0 * f64::from(k) - 550.0) / 100.0).powi(2)))
             .collect();
-        let tints: Vec<[f64; 3]> = (0..12).map(|i| lens_ghost_tint(&cam, &coating, i)).collect();
+        let tints: Vec<[f64; 3]> = (0..12)
+            .map(|i| lens_ghost_tint(&cam, &coating, i))
+            .collect();
         let (mut warm, mut cool) = (0, 0);
         for t in &tints {
             let spread = t[0].max(t[1]).max(t[2]) / t[0].min(t[1]).min(t[2]);
@@ -1824,13 +1727,18 @@ mod tests {
             warm += usize::from(t[0] > t[2] * 1.02);
             cool += usize::from(t[2] > t[0] * 1.02);
         }
-        assert!(warm >= 3 && cool >= 3, "warm {warm}, cool {cool}: {tints:?}");
+        assert!(
+            warm >= 3 && cool >= 3,
+            "warm {warm}, cool {cool}: {tints:?}"
+        );
         // The shifts cover the range evenly, are the same on every call and stay inside it.
         let shifts: Vec<f64> = (0..12).map(coating_shift_nm).collect();
         assert_eq!(shifts, (0..12).map(coating_shift_nm).collect::<Vec<_>>());
-        assert!(shifts.iter().all(|s| {
-            (GHOST_COATING_SHIFT_NM.0..=GHOST_COATING_SHIFT_NM.1).contains(s)
-        }));
+        assert!(
+            shifts
+                .iter()
+                .all(|s| { (GHOST_COATING_SHIFT_NM.0..=GHOST_COATING_SHIFT_NM.1).contains(s) })
+        );
         let (lo, hi) = (
             shifts.iter().copied().fold(f64::INFINITY, f64::min),
             shifts.iter().copied().fold(f64::NEG_INFINITY, f64::max),

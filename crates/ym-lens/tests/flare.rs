@@ -1075,8 +1075,10 @@ fn streaks_lie_along_the_axis_and_only_with_anamorphic() {
         let d = flare_light(&plan, &out, &z);
         let along = band_light(&d, scene.w, scene.h, axis, source, true);
         let across = band_light(&d, scene.w, scene.h, axis, source, false);
+        // The streak's halo (a fifth of its light, four times as wide as its core) reaches 12 to 80 px off the axis
+        // with a few per cent of the light the line carries there.
         assert!(
-            along > 100.0 * across.max(1e-12) && along > 0.1,
+            along > 20.0 * across.max(1e-12) && along > 0.1,
             "{axis:?}: {along} along the axis against {across} across it"
         );
     }
@@ -1814,12 +1816,13 @@ fn the_streak_ends_smoothly_to_nothing() {
         // Where the streak is gone (under a thousandth of its value 8 px out).
         let end = v.iter().rposition(|x| *x > peak * 1e-3).expect("an end");
         assert!(end < 660, "{axis:?}: the streak still goes on at 660 px");
-        let from = (end as f64 * 0.7) as usize;
+        // The last tenth of the reach: no step between neighbouring pixels (a hundredth of a code at the clip level).
+        let from = (end as f64 * 0.9) as usize;
         let step = (from..end + 1)
             .map(|d| (v[d + 1] - v[d]).abs())
             .fold(0.0, f64::max);
         assert!(
-            step < 0.5 / 255.0 / 20.0,
+            step < 1.0 / 255.0 / 100.0,
             "{axis:?}: a step of {step} near the end of the streak at {end} px"
         );
         for d in from..end {

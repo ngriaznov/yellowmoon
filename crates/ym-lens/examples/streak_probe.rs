@@ -233,7 +233,11 @@ fn main() {
                 .filter(|q| row_codes[*q].iter().cloned().fold(0.0f64, f64::max) >= 2.0)
                 .count();
             let plane_at = |p: usize, c: usize| -> f64 {
-                let i = if axis == Axis::X { pq * w + p } else { p * w + pq };
+                let i = if axis == Axis::X {
+                    pq * w + p
+                } else {
+                    p * w + pq
+                };
                 streak[c * plane + i]
             };
             let probe = |d: usize| -> String {

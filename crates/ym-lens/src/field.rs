@@ -7,15 +7,16 @@
 //!
 //! * the **oval field radius** `rho' = sqrt((alpha x_a)^2 + y_a^2)` with `x_a`, `y_a` the field coordinates
 //!   along and across the anamorphic axis and `alpha = 1 + kappa (q - 1)`; it selects the spread function
-//!   tables (held at the last table beyond 1), the relative illumination `T` and the width `w`, which are
-//!   read by a monotone cubic through the nine radii and carried on beyond 1 by the lens's own end slope
-//!   ([`FieldTables::illumination_at`], [`FieldTables::half_width_at`]), so that no ray through the frame
-//!   meets a corner or a plateau;
+//!   tables (held at the last table beyond 1) and the width `w`, which is read by a monotone cubic through
+//!   the nine radii and carried on beyond 1 along its end slope ([`FieldTables::half_width_at`]), and, over
+//!   the scale `n` ([`FieldTables::radius_scale`]), the relative illumination `T`, a concave curve through
+//!   the nine values carried straight on beyond 1 ([`FieldTables::illumination_at`]), so that no ray through
+//!   the frame meets a corner or a plateau and the falloff of a flat field has no inflection;
 //! * the **edge amount** `e' = e + (1 - e) kappa (q - 1)`: Edges, plus the attachment's own share, so that at
 //!   Edges 0 the anamorphic terms act alone (`docs/21` section 4, L2);
 //! * the **half-width** `omega = cap(e' (1 + S) w(rho')) H` pixels, with the side softness
 //!   `S = a_s (q - 1) x_a^2` and [`soft_cap`] bending the width towards `w_max` without a corner;
-//! * the **gain** `1 - e' (1 - T(rho'))`.
+//! * the **gain** `1 - e' (1 - T(rho' / n))`.
 //!
 //! The kernel is the projected channel table (`sum_j w_c(l_j) P_j`), blended linearly between the two
 //! neighbouring radii, resampled area-weighted to `n x n` cells (`n = min(17, 2 ceil(omega) + 1)`), turned so
