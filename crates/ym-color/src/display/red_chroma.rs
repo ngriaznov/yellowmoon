@@ -24,7 +24,7 @@
 //! lab  = Lab_D65(xyz / Y * yd) ; Ld = L* of yd ; C = |ab| ; h = atan2(b, a)
 //! kap  = clamp((20 / max(C, 8))^0.65, 0.35, 1.25)
 //! W    = raised-cosine hue window: the red window (1 on [3, 31] deg, 0 below -27 and above 43 deg); on the
-//!        up side also the yellow window (1 on [66, 95] deg, 0 below 58 and above 110 deg), whichever is larger;
+//!        up side also the yellow window (1 on [68, 95] deg, 0 below 62 and above 110 deg), whichever is larger;
 //!        the dark side has the red window only
 //! P(s) = 0.34 (s + 0.5) for s >= -0.5 ; -0.43 tanh((-0.5 - s) / 1.65) for s < -0.5
 //! lnf  = kap * P
@@ -48,8 +48,9 @@
 //! * Grey is bit-exact: the Lab hue of the neutral axis (the offset of AWG4's white from the Lab reference
 //!   white) is about 260 degrees, far outside the window, so the step returns its input.
 //! * Hue is kept (the Lab hue at the display lightness changes by less than 1e-9 degrees), Y is kept.
-//! * Skin hues (CIELAB 45 to 57 degrees, between the red and the yellow window) keep a weight of 0: the step
-//!   returns them bit for bit.
+//! * Skin hues (CIELAB 43 to 62 degrees, between the red and the yellow window; the portraits tested have
+//!   skin at 31 to 55 degrees, light or tanned skin in warm light up to about 60) keep a weight of 0: the
+//!   step returns them bit for bit.
 //! * Bit-exact where the window is 0, where the fade is 0, where `f_up` or `f_dn` is 0 for the side the
 //!   pixel is on, and for `Y <= 1e-7`, a negative `Y` or a non-finite component.
 //! * Monotone in chroma (never folds): the output chroma grows with the input chroma at every stop and hue,
@@ -137,14 +138,16 @@ pub const WINDOW_E_LO: f64 = 30.0;
 /// See [`WINDOW_A`].
 pub const WINDOW_E_HI: f64 = 12.0;
 /// The yellow window of the up side (ochres, yellows, warm oranges): 1 on `YELLOW_WINDOW_A..=YELLOW_WINDOW_B`
-/// degrees, a raised cosine to 0 over `YELLOW_WINDOW_E_LO` below and `YELLOW_WINDOW_E_HI` above. It starts at 58
-/// degrees, after skin (CIELAB hue 45 to 62 degrees in the photos tested) and well after the red window's
-/// end at 43 degrees, so the two never overlap and a band of hues between them is left alone.
-pub const YELLOW_WINDOW_A: f64 = 66.0;
+/// degrees (68 to 95), a raised cosine to 0 over `YELLOW_WINDOW_E_LO` (6) below and `YELLOW_WINDOW_E_HI` (15)
+/// above, so it is 0 below 62 and above 110 degrees. It starts after skin: in the portraits tested the CIELAB
+/// hue of skin at the display lightness runs from 31 to 55 degrees (5th to 95th percentile) and light or
+/// tanned skin in warm light reaches 60; the window's weight is 0 up to 62 degrees, and the red window's
+/// is 0 from 43 degrees, so the two never overlap and skin hues (43 to 62) keep a weight of 0.
+pub const YELLOW_WINDOW_A: f64 = 68.0;
 /// See [`YELLOW_WINDOW_A`].
 pub const YELLOW_WINDOW_B: f64 = 95.0;
 /// See [`YELLOW_WINDOW_A`].
-pub const YELLOW_WINDOW_E_LO: f64 = 8.0;
+pub const YELLOW_WINDOW_E_LO: f64 = 6.0;
 /// See [`YELLOW_WINDOW_A`].
 pub const YELLOW_WINDOW_E_HI: f64 = 15.0;
 /// Where the profile `P` crosses 0: -0.5 stop.
@@ -480,7 +483,7 @@ pub fn hue_window(h: f64) -> f64 {
     raised_window(h, WINDOW_A, WINDOW_B, WINDOW_E_LO, WINDOW_E_HI)
 }
 
-/// The yellow hue window (`h` in degrees): 1 on 66 to 95 degrees, 0 below 58 and above 110. Only the up side
+/// The yellow hue window (`h` in degrees): 1 on 68 to 95 degrees, 0 below 62 and above 110. Only the up side
 /// of the step uses it.
 #[must_use]
 pub fn yellow_window(h: f64) -> f64 {
@@ -800,7 +803,7 @@ mod tests {
                             let yb = linalg::mul_vec(&matrices().awg4_to_xyz, out)[1];
                             worst_y = worst_y.max(((yb - ya) / ya).abs());
                             // Only the windows (with their tails: reds -27 to 43 degrees, and on the up
-                            // side yellows 58 to 110 degrees) are touched.
+                            // side yellows 62 to 110 degrees) are touched.
                             assert!(window_of(s, a.h) > 0.0, "s {s} h {} moved", a.h);
                         } else if window_of(s, a.h) > 0.01 && s >= -5.4 && s != -0.5 {
                             // Inside the window the step does something (the up side, or the dark side
@@ -868,9 +871,9 @@ mod tests {
             }
         }
         for s in [0.5, 3.0] {
-            // The up side: the red window is 0 from 43 degrees to 333, the yellow window is 0 below 58 and
-            // above 110. Skin hues (44 to 57) and everything from 111 to 333 are untouched.
-            for h in (44..58).chain(111..333) {
+            // The up side: the red window is 0 from 43 degrees to 333, the yellow window is 0 below 62 and
+            // above 110. Skin hues (44 to 61) and everything from 111 to 333 are untouched.
+            for h in (44..62).chain(111..333) {
                 let rgb = pixel(t, s, f64::from(h), 30.0);
                 assert_eq!(st.apply(rgb), rgb, "window 0 at s {s} h {h}");
             }
@@ -890,7 +893,7 @@ mod tests {
             let up = step(gamut, 1.0, 0.0);
             let dn = step(gamut, 0.0, 1.0);
             let t = up.tables();
-            for h in [66.0, 80.0, 95.0] {
+            for h in [68.0, 80.0, 95.0] {
                 // Up side: the chroma grows (a mid-tone ochre at +1 stop).
                 let rgb = pixel(t, 1.0, h, 25.0);
                 let (a, b) = (up.lch(rgb).unwrap(), up.lch(up.apply(rgb)).unwrap());
@@ -920,20 +923,20 @@ mod tests {
 
     #[test]
     fn the_yellow_window_has_the_stated_shape() {
-        // 1 on 66 to 95 degrees, a raised cosine to 0 over 8 degrees below and 15 above.
-        for h in [66.0, 70.0, 80.0, 95.0] {
+        // 1 on 68 to 95 degrees, a raised cosine to 0 over 6 degrees below and 15 above.
+        for h in [68.0, 70.0, 80.0, 95.0] {
             assert_eq!(yellow_window(h), 1.0, "{h}");
         }
-        assert!(yellow_window(58.0).abs() < 1e-15 && yellow_window(110.0).abs() < 1e-15);
-        assert!((yellow_window(62.0) - 0.5).abs() < 1e-15);
+        assert!(yellow_window(62.0).abs() < 1e-15 && yellow_window(110.0).abs() < 1e-15);
+        assert!((yellow_window(65.0) - 0.5).abs() < 1e-15);
         assert!((yellow_window(102.5) - 0.5).abs() < 1e-15);
-        for h in [0.0, 30.0, 45.0, 57.9, 110.1, 150.0, 260.0, 359.9] {
+        for h in [0.0, 30.0, 45.0, 57.9, 61.9, 110.1, 150.0, 260.0, 359.9] {
             assert_eq!(yellow_window(h), 0.0, "{h}");
         }
         // C1: the slope is 0 where the window meets 0 and 1, and the window is continuous with a bounded
         // slope everywhere (pi / 2 / 8 per degree at most on the short side).
         let eps = 1e-6;
-        for edge in [58.0, 66.0, 95.0, 110.0] {
+        for edge in [62.0, 68.0, 95.0, 110.0] {
             let slope = (yellow_window(edge + eps) - yellow_window(edge - eps)) / (2.0 * eps);
             assert!(slope.abs() < 1e-4, "slope {slope} at {edge}");
         }
@@ -951,19 +954,21 @@ mod tests {
             assert!(hue_window(h) == 0.0 || yellow_window(h) == 0.0, "{h}");
             assert_eq!(hue_window_up(h), hue_window(h).max(yellow_window(h)));
         }
-        // Skin hues (45 to 57) keep weight 0, and the band between the windows is 43 to 58 degrees.
-        assert_eq!(hue_window_up(50.0), 0.0);
-        assert_eq!(hue_window_up(57.0), 0.0);
+        // Skin hues (43 to 62) keep weight 0: the band between the windows is 43 to 62 degrees.
+        for i in 0..=190 {
+            let h = 43.0 + f64::from(i) * 0.1;
+            assert_eq!(hue_window_up(h), 0.0, "{h}");
+        }
     }
 
-    /// Output chroma against input chroma, over stops (-6 to +6), hues (-40 to +50 degrees for the reds, 56 to
+    /// Output chroma against input chroma, over stops (-6 to +6), hues (-40 to +50 degrees for the reds, 60 to
     /// 115 for the yellows) and chroma up to a multiple of the gamut edge: never falls (no fold). Minimum slope
     /// measured (Python and Rust agree), reds: Rec.709 0.501 up to 1.0 times the edge, 0.158 up to 1.25, 0.095
     /// up to 1.4 and 0.0905 up to 1.6; P3 0.493, 0.171, 0.108 and 0.0700 (at s +2, hue 11, chroma 69, edge
     /// 43). Yellows: see `YELLOW_SLOPE_FLOORS`.
     #[test]
     fn chroma_is_monotone_up_to_one_point_six_times_the_gamut_edge() {
-        for (hues, range_name) in [(-40..=50, "reds"), (56..=115, "yellows")] {
+        for (hues, range_name) in [(-40..=50, "reds"), (60..=115, "yellows")] {
             for (extent, floors) in [(1.25, [0.15, 0.15]), (1.6, [0.09, 0.069])] {
                 let floors = if range_name == "yellows" {
                     YELLOW_SLOPE_FLOORS[usize::from(extent > 1.3)]

@@ -1578,7 +1578,7 @@ fn debug_output_stays_small_for_big_inputs() {
 
 // ---- C12 step 1c: the red chroma step ---------------------------------------------------------------
 
-/// Ochres and yellows in the yellow window (Lab hue 66 to 95 degrees at the display lightness), mid-tone to
+/// Ochres and yellows in the yellow window (Lab hue 68 to 95 degrees at the display lightness), mid-tone to
 /// light, where the step acts.
 const OCHRES: [Vec3; 6] = [
     [0.6, 0.45, 0.12],
@@ -1589,8 +1589,9 @@ const OCHRES: [Vec3; 6] = [
     [0.5, 0.35, 0.15],
 ];
 
-/// Skin tones (Lab hue 49 and 52 degrees), in the band between the red and the yellow window.
-const SKIN: [Vec3; 2] = [[0.62, 0.42, 0.28], [0.7, 0.52, 0.4]];
+/// Skin tones (Lab hue 49, 52 and 61 degrees: the last is light skin in warm light), in the band between the
+/// red and the yellow window, where the step does nothing.
+const SKIN: [Vec3; 3] = [[0.62, 0.42, 0.28], [0.7, 0.52, 0.4], [0.6, 0.43, 0.27]];
 
 /// [`pixels`] and a few more reds, mid-tone to light, and ochres, where the step acts.
 fn pixels_with_reds() -> Vec<Vec3> {
@@ -1626,7 +1627,7 @@ fn ochres_and_yellows_get_the_up_side_and_skin_does_not() {
         for rgb in OCHRES {
             let lch = step.lch(rgb).unwrap();
             assert!(
-                (66.0..=95.0).contains(&lch.h),
+                (68.0..=95.0).contains(&lch.h),
                 "{rgb:?} is at hue {} not in the window",
                 lch.h
             );
@@ -1635,7 +1636,7 @@ fn ochres_and_yellows_get_the_up_side_and_skin_does_not() {
         }
         for rgb in SKIN {
             let lch = step.lch(rgb).unwrap();
-            assert!((44.0..58.0).contains(&lch.h), "{rgb:?} is at hue {}", lch.h);
+            assert!((44.0..62.0).contains(&lch.h), "{rgb:?} is at hue {}", lch.h);
             assert_eq!(step.apply(rgb), rgb);
         }
     }

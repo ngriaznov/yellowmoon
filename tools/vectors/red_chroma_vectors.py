@@ -52,8 +52,8 @@ S_MAX = 8.0
 YD_S_MIN, YD_STEP, YD_LEN = -10.0, 0.25, 73
 FADE = (-7.5, -5.5)
 WINDOW = dict(a=3.0, b=31.0, e_lo=30.0, e_hi=12.0)
-# The yellow window of the up side (ochres, yellows): 1 on 66..95 degrees, 0 below 58 and above 110.
-WINDOW_Y = dict(a=66.0, b=95.0, e_lo=8.0, e_hi=15.0)
+# The yellow window of the up side (ochres, yellows): 1 on 68..95 degrees, 0 below 62 and above 110.
+WINDOW_Y = dict(a=68.0, b=95.0, e_lo=6.0, e_hi=15.0)
 S0, UP, DARK, TAU = -0.5, 0.34, 0.43, 1.65
 K_MAX, KNEE = 1.45, 0.8
 CAP_AT, CMAX_FLOOR, RAMP_EPS, C_TINY = 0.9, 1.0, 0.015, 1e-4
@@ -267,7 +267,7 @@ def make(tables_by_gamut):
             # The yellow window and its tails, from a second generator so the samples above stay as they were.
             ny = 26
             sy = np.concatenate([np.array([-3.0, -0.75, 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0]), rng_y.uniform(-7.5, 8.0, ny - 9)])
-            hy = np.concatenate([np.array([57.0, 58.5, 62.0, 66.0, 80.0, 95.0, 102.0, 110.0, 112.0]), rng_y.uniform(52.0, 118.0, ny - 9)])
+            hy = np.concatenate([np.array([57.0, 61.0, 62.5, 65.0, 68.0, 80.0, 95.0, 102.0, 112.0]), rng_y.uniform(52.0, 118.0, ny - 9)])
             edge_y = cmax_lookup(
                 tables[1],
                 xyz_to_lab(np.clip(yd_of_s(tables[0], np.minimum(sy, S_MAX)), 1e-7, 1.0)[:, None] * LAB_WHITE)[:, 0],

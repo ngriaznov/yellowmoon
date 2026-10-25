@@ -1,6 +1,6 @@
 {
   "id": "vintage",
-  "version": 2,
+  "version": 3,
   "name": "Vintage",
   "line": "Glows wide open, lower contrast, soft edges, a little swirl.",
   "start": {
@@ -38,15 +38,15 @@
   },
   "flare": {
     "glow": {
-      "fraction": 0.05,
+      "fraction": 0.03,
       "core_radius": 0.0016,
       "r0": 0.008,
       "power": 2.1,
-      "reach": 1,
+      "reach": 0.25,
       "chroma": [2.0445, 1.8, 1.6017, 1.4381, 1.3012, 1.1852, 1.0859, 1]
     },
     "veil": {
-      "fraction": 0.03,
+      "fraction": 0.003,
       "radius": 1.2
     },
     "aperture": {

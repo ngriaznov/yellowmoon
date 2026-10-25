@@ -25,14 +25,16 @@ use crate::consts::{
     COARSE_MIN_AREA_PX, COARSE_NODES_PER_FEATURE, COARSE_RIM_FEATURE, COMPACT_EXTENT_HD,
     EDGE_FLOOR_PX, EDGE_REACH_SIGMAS, GHOST_COATING_SHIFT_NM, GHOST_FULL_RADIUS, GHOST_LIGHT_MAX,
     GHOST_PEAK_MAX, GHOST_PRUNE_BUDGET, GHOST_SHADE, GHOST_SMALL_SHARE, GHOST_SOFT_MIN,
-    GHOST_TINT_MAX_RATIO, SPIKE_SIZE,
-    STREAK_E_HALF, STREAK_E_MIN, STREAK_MAX_LIGHTS, STREAK_PEAK_PER_FRACTION, STREAK_REACH_AT_E0,
-    STREAK_REACH_E0, STREAK_REACH_MIN, STREAK_REACH_PER_DECADE, STREAK_SIGMA_MIN_HD,
-    STREAK_SIGMA_REF_HD, STREAK_STRETCH_MIN, STREAK_TOTAL_CAP,
+    GHOST_TINT_MAX_RATIO, SPIKE_SIZE, STREAK_ABSORB_RATIO, STREAK_E_HALF, STREAK_E_MIN, STREAK_FLAT,
+    STREAK_HALO_SHARE, STREAK_HALO_WIDTH, STREAK_MAX_LIGHTS, STREAK_MERGE_ALONG_HD,
+    STREAK_MERGE_BASE_HD, STREAK_MERGE_SIGMAS, STREAK_PEAK_FLOOR, STREAK_PEAK_PER_FRACTION,
+    STREAK_RANK_DECAY, STREAK_REACH_AT_E0, STREAK_REACH_E0, STREAK_REACH_MIN,
+    STREAK_REACH_PER_DECADE, STREAK_REL_POWER, STREAK_SIGMA_EXTENT, STREAK_SIGMA_MIN_HD,
+    STREAK_SIGMA_REF_HD, STREAK_TAIL_CHROMA, STREAK_TOTAL_CAP, STREAK_TURN,
 };
 use crate::data::{Aperture, GhostData};
 use crate::l3::geometry::{Frame, Span};
-use crate::l3::profile::{NormalTail, RimCurve, cosine_window, gauss8, normal_tail};
+use crate::l3::profile::{NormalTail, RimCurve, cosine_window, gauss8, normal_tail, smoothstep};
 use crate::l3::sources::{Source, SourceView};
 use crate::l3::terms::Terms;
 use crate::plan::LensPlan;
@@ -239,20 +241,87 @@ pub(crate) struct Burst {
     span: Span,
 }
 
-/// The streak of one light: a Gaussian band across the axis times, in each channel, the attachment's profile
-/// along it stretched to that channel's reach.
+/// The streak of one light: a band across the axis (a Gaussian and its wider halo) times the attachment's profile
+/// along it, whose colour turns from the light's own to the tail's with the distance.
 #[derive(Clone, Debug)]
 pub(crate) struct Streak {
     centre: [f64; 2],
-    /// The standard deviation across the axis.
+    /// The standard deviation of the core across the axis.
     sigma: f64,
-    /// The light of each channel: its mass, which makes the profile's peak the channel's `peak`
+    /// The light of each channel at the light: its mass, which makes the profile's peak the channel's value
     /// ([`Items::streaks`]).
     amp: [f64; 3],
-    /// The stretch of each channel's profile along the axis (the light's reach times the channel's share).
-    stretch: [f64; 3],
+    /// The same in the colour of the tail, where the streak has turned (`STREAK_TURN` of its reach out).
+    tail: [f64; 3],
+    /// The stretch of the profile along the axis: the light's reach.
+    stretch: f64,
     span: Span,
 }
+
+// G2-DEBUG begin: the streak's constants, overridable from the environment while they are tuned (removed at the end).
+fn knob(name: &str, default: f64) -> f64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn streak_flat() -> f64 {
+    knob("YM_S_FLAT", STREAK_FLAT)
+}
+
+struct Knobs {
+    e_half: f64,
+    e_min: f64,
+    sigma_min: f64,
+    sigma_ext: f64,
+    sigma_ref: f64,
+    halo_share: f64,
+    halo_width: f64,
+    reach_e0: f64,
+    reach_at_e0: f64,
+    reach_per_decade: f64,
+    reach_min: f64,
+    max_lights: usize,
+    rank_decay: f64,
+    rel_power: f64,
+    peak_floor: f64,
+    merge_base: f64,
+    merge_sigmas: f64,
+    merge_along: f64,
+    absorb_ratio: f64,
+    tail_chroma: f64,
+    total_cap: f64,
+}
+
+impl Knobs {
+    fn new() -> Self {
+        Knobs {
+            e_half: knob("YM_S_E_HALF", STREAK_E_HALF),
+            e_min: knob("YM_S_E_MIN", STREAK_E_MIN),
+            sigma_min: knob("YM_S_SIGMA_MIN", STREAK_SIGMA_MIN_HD),
+            sigma_ext: knob("YM_S_SIGMA_EXT", STREAK_SIGMA_EXTENT),
+            sigma_ref: knob("YM_S_SIGMA_REF", STREAK_SIGMA_REF_HD),
+            halo_share: knob("YM_S_HALO_SHARE", STREAK_HALO_SHARE),
+            halo_width: knob("YM_S_HALO_WIDTH", STREAK_HALO_WIDTH),
+            reach_e0: knob("YM_S_REACH_E0", STREAK_REACH_E0),
+            reach_at_e0: knob("YM_S_REACH_AT", STREAK_REACH_AT_E0),
+            reach_per_decade: knob("YM_S_REACH_DEC", STREAK_REACH_PER_DECADE),
+            reach_min: knob("YM_S_REACH_MIN", STREAK_REACH_MIN),
+            max_lights: knob("YM_S_MAX", STREAK_MAX_LIGHTS as f64) as usize,
+            rank_decay: knob("YM_S_RANK", STREAK_RANK_DECAY),
+            rel_power: knob("YM_S_REL", STREAK_REL_POWER),
+            peak_floor: knob("YM_S_FLOOR", STREAK_PEAK_FLOOR),
+            merge_base: knob("YM_S_MERGE_BASE", STREAK_MERGE_BASE_HD),
+            merge_sigmas: knob("YM_S_MERGE_SIGMAS", STREAK_MERGE_SIGMAS),
+            merge_along: knob("YM_S_MERGE_ALONG", STREAK_MERGE_ALONG_HD),
+            absorb_ratio: knob("YM_S_ABSORB", STREAK_ABSORB_RATIO),
+            tail_chroma: knob("YM_S_TAIL", STREAK_TAIL_CHROMA),
+            total_cap: knob("YM_S_CAP", STREAK_TOTAL_CAP),
+        }
+    }
+}
+// G2-DEBUG end
 
 /// One drawn item.
 #[derive(Clone, Debug)]
@@ -298,14 +367,11 @@ pub(crate) struct AlongProfile {
 /// Panels of the cut part.
 const CUT_PANELS: usize = 64;
 
-/// The part of the reach where the streak's profile is still the plain power law.
-const STREAK_FLAT: f64 = 0.8;
-
 impl AlongProfile {
     /// The profile with a sharp core of width `core`, the exponent `power` and the reach `length` (all in
     /// half-diagonals).
     pub(crate) fn new(core: f64, power: f64, length: f64) -> Self {
-        let flat = STREAK_FLAT * length;
+        let flat = streak_flat() * length;
         let mut p = AlongProfile {
             core,
             power,
@@ -335,7 +401,7 @@ impl AlongProfile {
 
     /// The profile at distance `x >= 0` from the source.
     fn height(&self, x: f64) -> f64 {
-        libm::pow(1.0 + x / self.core, -self.power) * cosine_window(x / self.length, STREAK_FLAT)
+        libm::pow(1.0 + x / self.core, -self.power) * cosine_window(x / self.length, streak_flat())
     }
 
     /// The closed-form mass of the plain power law from 0 to `x`.
@@ -822,21 +888,28 @@ impl<'a> Items<'a> {
     /// The streaks of the lights `lights` (every connected component of the lens plane's highlights whole, not
     /// its cells), at the attachment's strength `fraction` (`Terms::streak`) and with the streak's `tint`.
     ///
-    /// A streak is a Gaussian band across the axis, as wide as the light (at least `STREAK_SIGMA_MIN_HD`), times a
-    /// profile along it that is 1 at the light and falls as the attachment's profile says, cut at the light's
-    /// reach. Per light, with `e` the light's energy (`mean_c(E_c / g0_c)`, `Source::energy`):
+    /// A streak is a band across the axis (a Gaussian as wide as the light and its wider halo) times a profile along
+    /// it that is 1 at the light and falls as the attachment's profile says, to 0 with a zero slope at the light's
+    /// reach. The lights go through these steps (the constants are `STREAK_*` in `crate::consts`):
     ///
-    /// * the **peak**, in clip levels in the brightest channel, is `STREAK_PEAK_PER_FRACTION x fraction x e / (e +
-    ///   STREAK_E_HALF)`, divided by `1 + sigma / STREAK_SIGMA_REF_HD` for a band: it saturates with the energy
-    ///   and a large light makes a faint wide band;
-    /// * the **reach** is `STREAK_REACH_AT_E0 + STREAK_REACH_PER_DECADE log10(e / STREAK_REACH_E0)` of the
-    ///   attachment's, between `STREAK_REACH_MIN` and 1;
-    /// * the **colour** at the light is the light's own; each channel's profile is stretched by the streak tint's
-    ///   share of its largest channel (the square root of it, at least `STREAK_STRETCH_MIN`), so the red and
-    ///   green die out first and the tail is blue;
-    /// * lights under `STREAK_E_MIN` make none, only the brightest `STREAK_MAX_LIGHTS` (the list is in the order
-    ///   of energy) make one, and the sum of peak times reach over the frame is brought down to
-    ///   `STREAK_TOTAL_CAP`.
+    /// 1. a light under `STREAK_E_MIN` of energy `e` (`mean_c(E_c / g0_c)`, `Source::energy`) makes none, and a
+    ///    light inside the bounding box of one `STREAK_ABSORB_RATIO` times its size belongs to it (a glint on a lit
+    ///    window);
+    /// 2. lights whose rows (positions across the axis) are within `STREAK_MERGE_BASE_HD` plus `STREAK_MERGE_SIGMAS`
+    ///    of their widths, and within `STREAK_MERGE_ALONG_HD` along the axis, are one streak: lamps in a row, the
+    ///    gaps of one patch of sky. It sits at the brightest one's place along the axis, at their energy-weighted
+    ///    row, as wide as the rows they spread over;
+    /// 3. the **width** is the light's own spread, `STREAK_SIGMA_MIN_HD` and `STREAK_SIGMA_EXTENT` of its size added
+    ///    in quadrature;
+    /// 4. the **peak**, in clip levels in the brightest channel, is `STREAK_PEAK_PER_FRACTION x fraction x e / (e +
+    ///    STREAK_E_HALF)`, divided by `1 + (sigma / STREAK_SIGMA_REF_HD)^2` for a band, by the light's energy over
+    ///    the strongest light's (as divided) to `STREAK_REL_POWER`, and by `STREAK_RANK_DECAY` for every light
+    ///    stronger than it; only the brightest `STREAK_MAX_LIGHTS` are drawn and none under `STREAK_PEAK_FLOOR`;
+    /// 5. the **reach** is `STREAK_REACH_AT_E0 + STREAK_REACH_PER_DECADE log10(e / STREAK_REACH_E0)` of the
+    ///    attachment's, between `STREAK_REACH_MIN` and 1;
+    /// 6. the **colour** is the light's own at the light and the tail's (the coating's tint at `STREAK_TAIL_CHROMA`
+    ///    of its chroma) from `STREAK_TURN` of the reach on, a smooth step between;
+    /// 7. the sum of peak times reach over the frame is brought down to `STREAK_TOTAL_CAP`.
     fn streaks(&self, lights: &[Source], fraction: f64, tint: [f64; 3]) -> Vec<Item> {
         let Some(along) = self.along.as_ref() else {
             return Vec::new();
@@ -844,116 +917,164 @@ impl<'a> Items<'a> {
         if fraction <= 0.0 {
             return Vec::new();
         }
+        let k = Knobs::new();
         let peak_max = STREAK_PEAK_PER_FRACTION * fraction;
-        let widest = tint[0].max(tint[1]).max(tint[2]);
-        let share: [f64; 3] = std::array::from_fn(|c| {
-            if widest > 0.0 {
-                libm::sqrt(tint[c] / widest).max(STREAK_STRETCH_MIN)
-            } else {
-                1.0
-            }
-        });
-        // G2-DEBUG begin
-        if std::env::var("YM_STREAK_DEBUG").is_ok() {
-            let f = &self.frame;
-            eprintln!(
-                "STREAKDBG frame {}x{} half_diag {:.1} clip {:?} lights {} peak_max {:.4}",
-                f.w,
-                f.h,
-                f.half_diag,
-                self.clip,
-                lights.len(),
-                peak_max
-            );
-            for (k, src) in lights.iter().take(60).enumerate() {
-                let e = (0..3).map(|c| src.energy[c] / self.clip[c]).sum::<f64>() / 3.0;
-                let mean = (src.energy[0] + src.energy[1] + src.energy[2]) / 3.0;
-                let sigma = src.var_across.sqrt().max(STREAK_SIGMA_MIN_HD);
-                let peak = peak_max * e / (e + STREAK_E_HALF) / (1.0 + sigma / STREAK_SIGMA_REF_HD);
-                let reach = (STREAK_REACH_AT_E0 + STREAK_REACH_PER_DECADE * libm::log10(e / STREAK_REACH_E0))
-                    .clamp(STREAK_REACH_MIN, 1.0);
-                let top = (0..3).map(|c| src.energy[c] / mean / self.clip[c]).fold(0.0f64, f64::max);
-                let col: [f64; 3] = std::array::from_fn(|c| src.energy[c] / mean / top);
-                let (x, y) = match f.axis {
-                    crate::plan::Axis::X => (src.pos[0] * f.half_diag + (0.5 * f.w as f64), src.pos[1] * f.half_diag + (0.5 * f.h as f64)),
-                    crate::plan::Axis::Y => (src.pos[1] * f.half_diag + (0.5 * f.w as f64), src.pos[0] * f.half_diag + (0.5 * f.h as f64)),
-                };
-                eprintln!(
-                    "STREAKDBG #{k} xy=({x:.0},{y:.0}) e={e:.4} extent_px={:.1} sig_across_px={:.2} sig_along_px={:.2} col=({:.2},{:.2},{:.2}) peak={peak:.4} reach={reach:.2} reach_px={:.0} {}",
-                    src.extent * f.half_diag,
-                    sigma * f.half_diag,
-                    src.var_along.sqrt() * f.half_diag,
-                    col[0], col[1], col[2],
-                    reach * along.length() * f.half_diag,
-                    if k < STREAK_MAX_LIGHTS && e >= STREAK_E_MIN { "PLANNED" } else { "-" }
-                );
-            }
+        let tail_tint: [f64; 3] = std::array::from_fn(|c| 1.0 + k.tail_chroma * (tint[c] - 1.0));
+        // Steps 1 and 2: the lights that make streaks, merged.
+        struct Cluster {
+            /// Place along the axis (the brightest member's), across it (energy-weighted).
+            pos: [f64; 2],
+            energy: [f64; 3],
+            e: f64,
+            /// The energy-weighted spread of the members' rows: their own variance and their offsets.
+            var_across: f64,
+            /// The brightest member's size.
+            extent: f64,
+            sigma: f64,
         }
-        // G2-DEBUG end
-        struct Planned<'s> {
-            src: &'s Source,
+        let sigma_of = |var_across: f64, extent: f64| -> f64 {
+            (k.sigma_min * k.sigma_min + var_across + (k.sigma_ext * extent).powi(2)).sqrt()
+        };
+        let e_of = |src: &Source| -> f64 {
+            (0..3).map(|c| src.energy[c] / self.clip[c]).sum::<f64>() / 3.0
+        };
+        let mut clusters: Vec<Cluster> = Vec::new();
+        'lights: for src in lights {
+            let e = e_of(src);
+            if e < k.e_min || src.total() <= 0.0 {
+                continue;
+            }
+            // A light inside a much larger one belongs to it.
+            for c in &clusters {
+                if c.extent >= k.absorb_ratio * src.extent
+                    && (src.pos[0] - c.pos[0]).abs() <= 0.5 * c.extent
+                    && (src.pos[1] - c.pos[1]).abs() <= 0.5 * c.extent
+                {
+                    continue 'lights;
+                }
+            }
+            let sigma = sigma_of(src.var_across, src.extent);
+            for c in &mut clusters {
+                let reach = k.merge_base + k.merge_sigmas * (sigma + c.sigma);
+                if (src.pos[1] - c.pos[1]).abs() <= reach
+                    && (src.pos[0] - c.pos[0]).abs() <= k.merge_along
+                {
+                    // Merge: the row is the energy-weighted mean, the spread covers both.
+                    let total = c.e + e;
+                    let row = (c.pos[1] * c.e + src.pos[1] * e) / total;
+                    c.var_across = (c.e * (c.var_across + (c.pos[1] - row).powi(2))
+                        + e * (src.var_across + (src.pos[1] - row).powi(2)))
+                        / total;
+                    c.pos[1] = row;
+                    c.e = total;
+                    for (a, b) in c.energy.iter_mut().zip(&src.energy) {
+                        *a += b;
+                    }
+                    c.sigma = sigma_of(c.var_across, c.extent);
+                    continue 'lights;
+                }
+            }
+            clusters.push(Cluster {
+                pos: src.pos,
+                energy: src.energy,
+                e,
+                var_across: src.var_across,
+                extent: src.extent,
+                sigma,
+            });
+        }
+        // Step 4: the strength of each, over the strongest.
+        struct Planned {
+            pos: [f64; 2],
             peak: f64,
             reach: f64,
             sigma: f64,
-            colour: [f64; 3],
+            n_src: [f64; 3],
+            top: f64,
         }
+        let penalty = |sigma: f64| 1.0 / (1.0 + (sigma / k.sigma_ref).powi(2));
+        let mut order: Vec<usize> = (0..clusters.len()).collect();
+        let eff = |c: &Cluster| c.e * penalty(c.sigma);
+        order.sort_by(|a, b| eff(&clusters[*b]).total_cmp(&eff(&clusters[*a])).then(a.cmp(b)));
+        let eff_top = order.first().map_or(1.0, |i| eff(&clusters[*i]));
         let mut planned: Vec<Planned> = Vec::new();
         let mut total = 0.0;
-        for src in lights {
-            if planned.len() >= STREAK_MAX_LIGHTS {
+        for (rank, i) in order.into_iter().enumerate() {
+            if planned.len() >= k.max_lights {
                 break;
             }
-            let e = (0..3).map(|c| src.energy[c] / self.clip[c]).sum::<f64>() / 3.0;
-            let mean = (src.energy[0] + src.energy[1] + src.energy[2]) / 3.0;
-            if e < STREAK_E_MIN || mean <= 0.0 {
+            let c = &clusters[i];
+            let sat = c.e / (c.e + k.e_half);
+            let rel = (eff(c) / eff_top).powf(k.rel_power);
+            let peak = peak_max * sat * penalty(c.sigma) * rel * k.rank_decay.powi(rank as i32);
+            if peak < k.peak_floor {
                 continue;
             }
-            let sigma = src.var_across.sqrt().max(STREAK_SIGMA_MIN_HD);
-            let peak = peak_max * e / (e + STREAK_E_HALF) / (1.0 + sigma / STREAK_SIGMA_REF_HD);
-            let reach = (STREAK_REACH_AT_E0
-                + STREAK_REACH_PER_DECADE * libm::log10(e / STREAK_REACH_E0))
-            .clamp(STREAK_REACH_MIN, 1.0);
-            // The light's colour, scaled so that its brightest channel (in clip levels) is 1.
+            let reach = (k.reach_at_e0 + k.reach_per_decade * libm::log10(eff(c) / k.reach_e0))
+                .clamp(k.reach_min, 1.0);
+            // The light's colour, as shares of its mean, and the scale at which its brightest channel (in clip
+            // levels) is 1.
+            let mean = (c.energy[0] + c.energy[1] + c.energy[2]) / 3.0;
+            let n_src: [f64; 3] = std::array::from_fn(|ch| c.energy[ch] / mean);
             let top = (0..3)
-                .map(|c| src.energy[c] / mean / self.clip[c])
+                .map(|ch| n_src[ch] / self.clip[ch])
                 .fold(0.0f64, f64::max);
-            let colour: [f64; 3] = std::array::from_fn(|c| src.energy[c] / mean / top);
             total += peak * reach;
             planned.push(Planned {
-                src,
+                pos: c.pos,
                 peak,
                 reach,
-                sigma,
-                colour,
+                sigma: c.sigma,
+                n_src,
+                top,
             });
         }
-        let keep = if total > STREAK_TOTAL_CAP {
-            STREAK_TOTAL_CAP / total
+        if std::env::var("YM_STREAK_DEBUG").is_ok() {
+            for p in &planned {
+                let f = &self.frame;
+                eprintln!(
+                    "STREAKPLAN along {:.0} across {:.0} (frame px, axis coordinates) sigma {:.2} px peak {:.4} reach {:.2} ({:.0} px) colour {:.2},{:.2},{:.2}",
+                    p.pos[0] * f.half_diag + 0.5 * f.w.max(f.h) as f64,
+                    p.pos[1] * f.half_diag + 0.5 * f.w.min(f.h) as f64,
+                    p.sigma * f.half_diag,
+                    p.peak,
+                    p.reach,
+                    p.reach * along.length() * f.half_diag,
+                    p.n_src[0],
+                    p.n_src[1],
+                    p.n_src[2],
+                );
+            }
+        }
+        let keep = if total > k.total_cap {
+            k.total_cap / total
         } else {
             1.0
         };
         let two_mass = 2.0 * along.half_mass();
         let root_two_pi = (2.0 * std::f64::consts::PI).sqrt();
+        // The centre density of a unit-mass core plus halo, in units of the core's: 1 - h + h / width.
+        let shape = 1.0 - k.halo_share + k.halo_share / k.halo_width;
         planned
             .iter()
             .map(|p| {
-                let stretch: [f64; 3] = std::array::from_fn(|c| p.reach * share[c]);
-                let amp: [f64; 3] = std::array::from_fn(|c| {
-                    keep * p.peak * p.colour[c] * two_mass * stretch[c] * p.sigma * root_two_pi
-                });
+                let scale = keep * p.peak * two_mass * p.reach * p.sigma * root_two_pi / (p.top * shape);
+                let amp: [f64; 3] = std::array::from_fn(|c| scale * p.n_src[c]);
+                let tail: [f64; 3] = std::array::from_fn(|c| scale * tail_tint[c]);
                 let along_reach = along.length() * p.reach;
-                let across = EDGE_REACH_SIGMAS * p.sigma;
+                let across = EDGE_REACH_SIGMAS * p.sigma * k.halo_width;
                 let span = self.frame.span_of(
-                    p.src.pos[0] - along_reach,
-                    p.src.pos[0] + along_reach,
-                    p.src.pos[1] - across,
-                    p.src.pos[1] + across,
+                    p.pos[0] - along_reach,
+                    p.pos[0] + along_reach,
+                    p.pos[1] - across,
+                    p.pos[1] + across,
                 );
                 Item::Streak(Streak {
-                    centre: p.src.pos,
+                    centre: p.pos,
                     sigma: p.sigma,
                     amp,
-                    stretch,
+                    tail,
+                    stretch: p.reach,
                     span,
                 })
             })
@@ -1027,10 +1148,10 @@ impl<'a> Items<'a> {
                     out.push([
                         s.amp[1] as f32,
                         s.amp[2] as f32,
-                        s.stretch[0] as f32,
-                        s.stretch[1] as f32,
+                        s.stretch as f32,
+                        s.tail[0] as f32,
                     ]);
-                    out.push([s.stretch[2] as f32, 0.0, 0.0, 0.0]);
+                    out.push([s.tail[1] as f32, s.tail[2] as f32, 0.0, 0.0]);
                     out.push([0.0; 4]);
                     out.push([bits(2), 0.0, 0.0, 0.0]);
                 }
@@ -1186,21 +1307,30 @@ impl<'a> Items<'a> {
         let frame = &self.frame;
         let (p0, p1) = frame.along_range(area);
         let (q0, q1) = frame.across_range(area);
-        // Per channel, the mass of the stretched profile in each pixel's interval along the axis.
-        let mass_along: [Vec<f64>; 3] = std::array::from_fn(|c| {
-            (p0..p1)
-                .map(|p| {
-                    let (e0, e1) = frame.along_edges(p);
-                    along.cdf((e1 - s.centre[0]) / s.stretch[c])
-                        - along.cdf((e0 - s.centre[0]) / s.stretch[c])
-                })
-                .collect()
-        });
+        // The mass of the profile in each pixel's interval along the axis, and how far the colour has turned
+        // at its centre (a smooth step over `STREAK_TURN` of the reach).
+        let turn_len = knob("YM_S_TURN", STREAK_TURN) * along.length() * s.stretch;
+        let (mass_along, turned): (Vec<f64>, Vec<f64>) = (p0..p1)
+            .map(|p| {
+                let (e0, e1) = frame.along_edges(p);
+                (
+                    along.cdf((e1 - s.centre[0]) / s.stretch)
+                        - along.cdf((e0 - s.centre[0]) / s.stretch),
+                    smoothstep((0.5 * (e0 + e1) - s.centre[0]).abs() / turn_len),
+                )
+            })
+            .unzip();
+        let (halo_share, halo_width) = (
+            knob("YM_S_HALO_SHARE", STREAK_HALO_SHARE),
+            knob("YM_S_HALO_WIDTH", STREAK_HALO_WIDTH),
+        );
         let mass_across: Vec<f64> = (q0..q1)
             .map(|q| {
                 let (e0, e1) = frame.across_edges(q);
-                self.tail.q((e0 - s.centre[1]) / s.sigma)
-                    - self.tail.q((e1 - s.centre[1]) / s.sigma)
+                let gauss = |sigma: f64| {
+                    self.tail.q((e0 - s.centre[1]) / sigma) - self.tail.q((e1 - s.centre[1]) / sigma)
+                };
+                (1.0 - halo_share) * gauss(s.sigma) + halo_share * gauss(halo_width * s.sigma)
             })
             .collect();
         let per_area = frame.half_diag * frame.half_diag;
@@ -1212,8 +1342,10 @@ impl<'a> Items<'a> {
             for pi in 0..p1 - p0 {
                 let (i, j) = frame.pixel_of(p0 + pi, q0 + qi);
                 let px = &mut acc[(j - band.y0) * bw + i - band.x0];
-                for ((v, a), m) in px.iter_mut().zip(&s.amp).zip(&mass_along) {
-                    *v += a * m[pi] * mc * per_area;
+                let w = turned[pi];
+                let m = mass_along[pi] * mc * per_area;
+                for (c, v) in px.iter_mut().enumerate() {
+                    *v += ((1.0 - w) * s.amp[c] + w * s.tail[c]) * m;
                 }
             }
         }

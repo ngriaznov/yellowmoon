@@ -42,21 +42,10 @@ fn tone(v: f64) -> f64 {
     v * (1.0 + v / 9.0) / (1.0 + v)
 }
 
-/// The longest run of columns in `row` whose level is at least `level`: `(start, end)` inclusive, or `None`.
-fn longest_run(row: &[f64], level: f64) -> Option<(usize, usize)> {
-    let mut best: Option<(usize, usize)> = None;
-    let mut start: Option<usize> = None;
-    for (x, v) in row.iter().enumerate().chain(std::iter::once((row.len(), &0.0))) {
-        if *v >= level {
-            start.get_or_insert(x);
-        } else if let Some(s) = start.take() {
-            let run = (s, x - 1);
-            if best.is_none_or(|b| b.1 - b.0 < run.1 - run.0) {
-                best = Some(run);
-            }
-        }
-    }
-    best
+/// The plain display of a plane value in clip levels: +1.11 EV of exposure and a shoulder.
+fn tone2(v: f64) -> f64 {
+    let d = 2.16 * v.max(0.0);
+    d / (1.0 + 0.5 * d)
 }
 
 fn main() {
@@ -158,7 +147,9 @@ fn main() {
         let secs = t0.elapsed().as_secs_f64();
         let plane = w * h;
         let streak: Vec<f64> = with.iter().zip(&without).map(|(a, b)| a - b).collect();
-        // The brightest channel over its clip level, per pixel.
+        // The brightest channel over its clip level, per pixel, and the change in code values it makes on a
+        // plain display of the plane (the plane's own value as the background, +1.11 EV of exposure, the
+        // sRGB curve): the proxy of "adds more than 2 codes".
         let level: Vec<f64> = (0..plane)
             .map(|i| {
                 (0..3)
@@ -166,19 +157,32 @@ fn main() {
                     .fold(0.0f64, f64::max)
             })
             .collect();
+        let code = |v: f64| -> f64 { f64::from(srgb(tone2(v))) };
+        let codes: Vec<f64> = (0..plane)
+            .map(|i| {
+                (0..3)
+                    .map(|c| {
+                        let bg = f64::from(data[c * plane + i]) / f64::from(g0[c]);
+                        code(bg + streak[c * plane + i] / f64::from(g0[c])) - code(bg)
+                    })
+                    .fold(0.0f64, f64::max)
+            })
+            .collect();
         println!("== {name}\t{kind}\tF{flares} A{anamorphic}\t{w}x{h}\t{secs:.1}s");
-        // Bands of rows (on the axis' across direction; rows for X, columns for Y are read as rows of the
-        // transposed picture) where some pixel is over 0.001.
         let (across, along) = if axis == Axis::X { (h, w) } else { (w, h) };
-        let at = |q: usize, p: usize| -> f64 {
+        let at = |v: &[f64], q: usize, p: usize| -> f64 {
             if axis == Axis::X {
-                level[q * w + p]
+                v[q * w + p]
             } else {
-                level[p * w + q]
+                v[p * w + q]
             }
         };
+        // Bands of rows (across the axis) where some pixel is over 0.001 of the clip level.
         let rows: Vec<Vec<f64>> = (0..across)
-            .map(|q| (0..along).map(|p| at(q, p)).collect())
+            .map(|q| (0..along).map(|p| at(&level, q, p)).collect())
+            .collect();
+        let row_codes: Vec<Vec<f64>> = (0..across)
+            .map(|q| (0..along).map(|p| at(&codes, q, p)).collect())
             .collect();
         let mut q = 0;
         while q < across {
@@ -201,31 +205,45 @@ fn main() {
                 q += 1;
             }
             let end = q - 1;
-            let r = &rows[peak.1];
-            let fmt = |level: f64| match longest_run(r, level) {
-                Some((a, b)) => format!("{a}..{b} ({} px)", b - a + 1),
-                None => "-".to_string(),
-            };
             let pq = peak.1;
-            let px = |p: usize, c: usize| -> f64 {
-                let i = if axis == Axis::X { pq * w + p } else { p * w + pq };
-                streak[c * plane + i] / f64::from(g0[c])
+            let r = &rows[pq];
+            let rc = &row_codes[pq];
+            // How far from the peak, to each side, the streak still adds 2 codes (an unbroken run).
+            let side = |dir: isize| -> usize {
+                let mut d = 0usize;
+                loop {
+                    let p = peak.2 as isize + dir * (d as isize + 1);
+                    if p < 0 || p >= along as isize || rc[p as usize] < 2.0 {
+                        break d;
+                    }
+                    d += 1;
+                }
             };
-            let (b, e) = longest_run(r, 0.001).unwrap_or((peak.2, peak.2));
+            let thick = (start..=end)
+                .filter(|q| row_codes[*q].iter().cloned().fold(0.0f64, f64::max) >= 2.0)
+                .count();
+            let plane_at = |p: usize, c: usize| -> f64 {
+                let i = if axis == Axis::X { pq * w + p } else { p * w + pq };
+                streak[c * plane + i]
+            };
             let probe = |d: usize| -> String {
                 let p = if peak.2 >= d { peak.2 - d } else { peak.2 + d };
                 let p = p.min(along - 1);
-                let (rr, gg, bb) = (px(p, 0), px(p, 1), px(p, 2));
-                format!("{d}px: {:.4} b/r {:.2}", rr.max(gg).max(bb), bb / rr.max(1e-12))
+                let (rr, gg, bb) = (plane_at(p, 0), plane_at(p, 1), plane_at(p, 2));
+                format!(
+                    "{d}px: {:.4} b/r {:.2} g/r {:.2}",
+                    r[p],
+                    bb / rr.max(1e-12),
+                    gg / rr.max(1e-12)
+                )
             };
             println!(
-                "rows {start}..{end} ({} thick) peak {:.4} at ({}, {pq}) run>0.001 {} run>0.004 {} run>0.02 {} extent {b}..{e}\n    {}  {}  {}  {}",
-                end - start + 1,
+                "rows {start}..{end} ({} rows over 2 codes) peak {:.4} at (along {}, across {pq}) visible: {} px toward 0, {} px toward the end (frame along {along} px)\n    {}  {}  {}  {}",
+                thick,
                 peak.0,
                 peak.2,
-                fmt(0.001),
-                fmt(0.004),
-                fmt(0.02),
+                side(-1),
+                side(1),
                 probe(8),
                 probe(40),
                 probe(120),

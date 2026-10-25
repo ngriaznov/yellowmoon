@@ -277,25 +277,37 @@ pub const GHOST_COATING_SHIFT_NM: (f64, f64) = (-70.0, 120.0);
 pub const GHOST_SHADE: f64 = 0.35;
 
 /// The peak of a streak at its light, in clip levels, for a light that is bright and compact, per unit of the
-/// attachment's streak `fraction` (data version 2: 0.004, so 0.25): the streak is a line a quarter of the clip
+/// attachment's streak `fraction` (data version 3: 0.004, so 0.4): the streak is a line two fifths of the clip
 /// level bright at its core at most, never as bright as the light it comes from.
 pub const STREAK_PEAK_PER_FRACTION: f64 = 100.0;
 
 /// The light's energy (`mean_c(E_c / g0_c)`, clip levels times half-diagonals squared) at which a streak reaches
 /// half its peak: the peak is `peak e / (e + STREAK_E_HALF)`, a law that saturates, so a light of ten thousand
-/// pixels does not make a streak a thousand times stronger than one of ten.
+/// pixels does not make a streak a thousand times stronger than one of ten, and a star (0.01) makes a faint one.
 pub const STREAK_E_HALF: f64 = 0.02;
 
 /// Lights with less energy than this (same unit) make no streak.
 pub const STREAK_E_MIN: f64 = 0.004;
 
-/// The least standard deviation of a streak across the axis, in half-diagonals (1.5 px of the 1500 px fit
-/// frame): a soft line however small the light is.
-pub const STREAK_SIGMA_MIN_HD: f64 = 0.0017;
+/// The least standard deviation of a streak across the axis, in half-diagonals (2.5 px of the 1500 px fit
+/// frame, a line 6 px wide at half its height): a soft line however small the light is.
+pub const STREAK_SIGMA_MIN_HD: f64 = 0.0028;
 
-/// A streak whose light is wider than this (standard deviation across the axis, half-diagonals) is a band:
-/// its peak is divided by `1 + sigma / STREAK_SIGMA_REF_HD`, so a large bright area makes a soft faint band.
-pub const STREAK_SIGMA_REF_HD: f64 = 0.04;
+/// The streak is wider than its light's own spread by this share of the light's extent (the larger side of its
+/// bounding box, half-diagonals), added in quadrature: a big light has a thicker streak than a point.
+pub const STREAK_SIGMA_EXTENT: f64 = 0.1;
+
+/// A streak whose light is wider than this (standard deviation across the axis, half-diagonals) is a band: its
+/// peak, and the energy it counts with, are divided by `1 + (sigma / STREAK_SIGMA_REF_HD)^2`, so a large bright
+/// area makes a soft faint band and a point makes a line.
+pub const STREAK_SIGMA_REF_HD: f64 = 0.03;
+
+/// Across the axis a streak is two Gaussians: the core (the light's width) and a halo `STREAK_HALO_WIDTH` times as
+/// wide that holds this share of its light, so the line has no sharp feet.
+pub const STREAK_HALO_SHARE: f64 = 0.2;
+
+/// The halo's width over the core's (standard deviations). See [`STREAK_HALO_SHARE`].
+pub const STREAK_HALO_WIDTH: f64 = 4.0;
 
 /// The reach of a streak grows with the logarithm of the light's energy: `STREAK_REACH_AT_E0` (of the attachment's
 /// reach) at the energy `STREAK_REACH_E0`, `STREAK_REACH_PER_DECADE` more for every factor 10, at least
@@ -308,18 +320,52 @@ pub const STREAK_REACH_PER_DECADE: f64 = 0.5;
 /// See [`STREAK_REACH_E0`].
 pub const STREAK_REACH_MIN: f64 = 0.3;
 
+/// The part of its reach over which a streak's profile along the axis is cut to 0 by a cosine, counted from the
+/// reach inwards: the profile starts to fall to 0 at `STREAK_FLAT` of the reach (a smooth end, with a zero slope,
+/// so the streak does not stop anywhere).
+pub const STREAK_FLAT: f64 = 0.35;
+
 /// Only this many lights of a frame, the brightest, make a streak: the streaks are the signature of the few
 /// brightest lights, and fifty lamps do not draw fifty lines.
-pub const STREAK_MAX_LIGHTS: usize = 10;
+pub const STREAK_MAX_LIGHTS: usize = 5;
 
 /// The sum over the lights of a frame of (peak in clip levels times reach in half-diagonals) is brought down to
 /// this when it is larger, every streak by the same factor, so a frame of fifty lights does not fill with lines.
 pub const STREAK_TOTAL_CAP: f64 = 1.5;
 
-/// A channel's profile along the streak is the attachment's profile stretched by the square root of the channel's
-/// tint over the largest channel's, at least this: the red and green die out sooner than the blue, so a streak is the light's
-/// own colour at its core and turns blue as it fades.
-pub const STREAK_STRETCH_MIN: f64 = 0.35;
+/// Each streak after the brightest is weaker by this factor than the one before it (`STREAK_RANK_DECAY^rank`): a
+/// frame of equally bright lights (a Christmas tree) has one clear streak and fainter ones, never a ladder.
+pub const STREAK_RANK_DECAY: f64 = 0.75;
+
+/// A light's streak is weaker by `(its energy / the strongest light's)^STREAK_REL_POWER` (energies as the peak law
+/// counts them, over the width penalty): a bright gap beside the sun does not draw a bar as strong as the sun's.
+pub const STREAK_REL_POWER: f64 = 1.0;
+
+/// A streak whose peak would be under this (clip levels) is not drawn: it is under what a dark sky shows.
+pub const STREAK_PEAK_FLOOR: f64 = 0.006;
+
+/// Two lights merge into one streak when their rows (the positions across the axis) are within
+/// `STREAK_MERGE_BASE_HD + STREAK_MERGE_SIGMAS` of their widths' sum, and their positions along the axis within
+/// `STREAK_MERGE_ALONG_HD`: lamps in a row, or the bright gaps of one patch of sky, are one band, not a set of
+/// lines. The streak is at the brightest light's place along the axis and the energy-weighted row across.
+pub const STREAK_MERGE_BASE_HD: f64 = 0.012;
+
+/// See [`STREAK_MERGE_BASE_HD`].
+pub const STREAK_MERGE_SIGMAS: f64 = 1.5;
+
+/// See [`STREAK_MERGE_BASE_HD`].
+pub const STREAK_MERGE_ALONG_HD: f64 = 0.35;
+
+/// A light inside the bounding box of a larger one, this many times its size or more, belongs to it (a glint on
+/// a lit window): it makes no streak of its own.
+pub const STREAK_ABSORB_RATIO: f64 = 4.0;
+
+/// The colour of a streak turns from the light's own to the tail's over this share of its reach (a smooth step).
+pub const STREAK_TURN: f64 = 0.4;
+
+/// The tail's colour is the coating's tint (a blue) at this share of its chroma, between white (0) and the tint (1):
+/// the streak is never a saturated blue, whatever the coating.
+pub const STREAK_TAIL_CHROMA: f64 = 0.5;
 
 /// Ghosts whose edges and rim change slowly are drawn on a grid of nodes `L` pixels apart (`L` is 2, 4, 8, 16 or
 /// 32, the largest that keeps this many nodes across the narrowest feature) and read back by bilinear interpolation:

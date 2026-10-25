@@ -98,7 +98,7 @@ fn awg4_at(tables: &RedChromaTables, s: f64, h: f64, c: f64) -> Vec3 {
     ]
 }
 
-/// 48 x one row per hue pixels: 12 stops, the hues (the windows, their tails and elsewhere), 4 chromas, as AWG4 for the
+/// 48 pixels per row (12 stops, 4 chromas), one row per hue (the windows, their tails and elsewhere), as AWG4 for the
 /// identity-matrix chain (f16-exact, so every storage mode reads the same numbers).
 fn red_image(gamut: RedGamut, hues: &[f64]) -> RgbImage {
     let tables = RedChromaTables::shared(gamut);
@@ -120,11 +120,11 @@ fn red_image(gamut: RedGamut, hues: &[f64]) -> RgbImage {
     RgbImage::from_interleaved(w, h, &rgb).expect("image")
 }
 
-/// The hues of the image: the red window and its tails, the skin band between the windows (45 to 55), the
-/// yellow window and its tails (58 to 110), and elsewhere.
-const WINDOW_HUES: [f64; 21] = [
-    -35.0, -25.0, -15.0, -5.0, 5.0, 15.0, 25.0, 35.0, 45.0, 55.0, 60.0, 64.0, 70.0, 80.0, 90.0,
-    100.0, 106.0, 112.0, 120.0, 200.0, 280.0,
+/// The hues of the image: the red window and its tails, the skin band between the windows (45 to 60), the
+/// yellow window and its tails (62 to 110), and elsewhere.
+const WINDOW_HUES: [f64; 22] = [
+    -35.0, -25.0, -15.0, -5.0, 5.0, 15.0, 25.0, 35.0, 45.0, 55.0, 60.0, 64.0, 66.0, 70.0, 80.0,
+    90.0, 100.0, 106.0, 112.0, 120.0, 200.0, 280.0,
 ];
 
 fn chain_with(output: OutputTarget, strength: Option<RedChroma>) -> ColorChain {
@@ -309,10 +309,10 @@ fn both_strengths_zero_or_the_step_off_is_plain_aces2_on_the_device() {
 fn grey_and_the_hues_outside_the_window_are_untouched_on_the_device() {
     let on = chain_with(OutputTarget::Viewport, Some(RedChroma::DEFAULT));
     let off = chain_with(OutputTarget::Viewport, None);
-    // Outside both windows and their tails (reds -27 to 43 degrees, yellows 58 to 110): the skin band
-    // between them (44 to 57) and everything from 111 to 333.
+    // Outside both windows and their tails (reds -27 to 43 degrees, yellows 62 to 110): the skin band
+    // between them (44 to 61) and everything from 111 to 333.
     let outside: Vec<f64> = vec![
-        44.0, 48.0, 52.0, 57.0, 111.0, 125.0, 150.0, 180.0, 210.0, 240.0, 270.0, 300.0, 330.0,
+        44.0, 48.0, 52.0, 57.0, 61.0, 111.0, 125.0, 150.0, 180.0, 210.0, 240.0, 270.0, 300.0, 330.0,
     ];
     let mut img_pixels = red_image(RedGamut::P3D65, &outside);
     // A grey ramp in the first row's place: every stop from -9 to +8, every pixel r = g = b.
@@ -350,7 +350,7 @@ fn grey_and_the_hues_outside_the_window_are_untouched_on_the_device() {
 #[test]
 fn yellows_move_on_the_up_side_only_on_the_device() {
     let gamut = RedGamut::P3D65;
-    let hues = [66.0, 80.0, 95.0];
+    let hues = [68.0, 80.0, 95.0];
     let img = red_image(gamut, &hues);
     let (w, rows) = (img.width, img.height);
     // The stops of `red_image` are 4 pixels each (4 chromas): the first 5 stops are below -0.5.

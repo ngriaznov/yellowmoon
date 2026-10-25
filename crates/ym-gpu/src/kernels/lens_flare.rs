@@ -583,10 +583,16 @@ fn constants() -> String {
          const FL_TAB_APERTURE: u32 = {}u;\n\
          const FL_TAB_NODES: u32 = {FLARE_TAB_HEADER}u;\n\
          const FL_NODES: u32 = {NORMAL_TAIL_NODES}u;\n\
-         const FL_STREAK_FLAT: f32 = {:?};\n",
+         const FL_STREAK_FLAT: f32 = {:?};\n\
+         const FL_STREAK_HALO_SHARE: f32 = {:?};\n\
+         const FL_STREAK_HALO_WIDTH: f32 = {:?};\n\
+         const FL_STREAK_TURN: f32 = {:?};\n",
         RIM_SAMPLES / 4,
         2 * RIM_SAMPLES / 4,
-        0.8f32,
+        ym_lens::consts::STREAK_FLAT as f32,
+        ym_lens::consts::STREAK_HALO_SHARE as f32,
+        ym_lens::consts::STREAK_HALO_WIDTH as f32,
+        ym_lens::consts::STREAK_TURN as f32,
     )
 }
 

@@ -680,6 +680,25 @@ A hue-preserving chroma gain on the reds and, on the up side, the ochres and yel
 
 **Why.** At the same display lightness ACES 2 takes chroma out of mid-tone and light reds (10 to 22 %: the reds "go coral") and adds 30 to 40 % to dark reds. The step gives back what ACES 2 removes above about −0.5 stop, caps the result below the output gamut's edge, and never folds a colour over another. Measured on the investigation's photographs (display chroma against ACES 2 alone): the pink shirt +20 %, the hat in P3 +7 %, the red shirt +4 %; the Lab hue moves by less than 0.1 degree; on 289 reflectances (the spectra of the investigation) nothing outside the reds changes.
 
+**Yellows (2026-10-25).** On the owner's Sony A1 street photos the ochre walls came out peach or pinkish. Their hue already matched the camera's own JPEG (right wall: JPEG 68.6 degrees, Neutral 67.7), but ACES 2 took about a third of the chroma out of them (C* 36.3 in the JPEG, 24.4 in Neutral). **Measured** (`tools/vectors/red_chroma_vectors.py`'s tables and OpenColorIO 2.6's ACES 2 transform, the placement in front; scratch scripts of the investigation): the ratio of the display's C* to the colorimetric C* of the same chromaticity at the displayed lightness, for a colour of C* 25 at the neutral-axis lightness (the Rec.709 and the P3 limit give the same numbers inside the gamut), ACES 2 alone and with the step:
+
+| Lab hue | +0 stop | +1 stop | +2 stops |
+|---|---|---|---|
+| 10 (red) | 0.86, 0.99 | 0.58, 0.83 | 0.36, 0.55 |
+| 30 (red) | 0.84, 0.97 | 0.56, 0.81 | 0.34, 0.52 |
+| 45 to 60 (skin, orange) | 0.89 to 0.92, unchanged | 0.61 to 0.65, unchanged | 0.38 to 0.41, unchanged |
+| 70 (ochre) | 0.93, 1.07 | 0.66, 0.96 | 0.42, 0.67 |
+| 80 (ochre) | 0.94, 1.08 | 0.67, 0.98 | 0.43, 0.69 |
+| 90 (yellow) | 0.94, 1.09 | 0.68, 0.99 | 0.44, 0.71 |
+| 100 (yellow) | 0.95, 1.06 | 0.69, 0.92 | 0.45, 0.64 |
+| 110 to 120 (yellow-green) | 0.96, unchanged | 0.70, unchanged | 0.46, unchanged |
+
+ACES 2 desaturates everything as the lightness rises, reds the most (0.56 at +1 stop) and yellow-greens the least (0.70); at chroma 10 the ratio is 0.59 at +1 stop and at chroma 40 it is 0.75 (it takes more of a muted colour), which is the shape the step's `kappa(C)` already follows. The yellows and ochres therefore need the same gain as the reds, and the step's own profile `P(s)`, `kappa(C)`, the soft hold under 1.45 and the cap to `CMAX` do that: it takes the ochres to 1.06 to 1.09 of colourimetric at +0 and +0.5 stop, 0.92 to 0.99 at +1 stop and (held by the 1.45) 0.64 to 0.71 at +2 stops. So the **yellow window** reuses the maths of the reds unchanged and only adds a hue range to the up side: 1 on 68 to 95 degrees, a raised cosine to 0 over 6 degrees below (62) and 15 above (110). The red window ends at 43 degrees, so **skin hues, 43 to 62, keep a weight of 0** and the step returns them bit for bit. The dark side (`dark_relief`) stays red-only: ACES 2's boost of dark yellows is left in. There is no new look key: `red_chroma.up` covers both ranges, and Signature (0, 0) skips the step as before.
+
+**Why the window starts at 62, not 58.** Skin sits at CIELAB hue 31 to 55 degrees in the portraits tested (5th to 95th percentile), and light or tanned skin in warm light reaches 60. The first window (1 on 66 to 95, 0 at 58) moved a skin colour of scene hue 62 by ΔE00 0.8 to 2.1 and of hue 64 by 1.3 to 3.7 (display ΔC* up to +4.6 and +8.4, at 0 to +1 stop and C* 15 to 35), so it was moved to start at 62: hue 64 then moves by 0.4 to 1.0 and 66 by 1.2 to 3.2, hues of ochre rather than skin. What it costs: the ochre walls of the street photos (hue 67.7 to 73) are unchanged, a white door in shade at 66.6 gets 13 per cent less of its gain, and the orange wall of `A1M03159` at hue 62 (C* 24.5 in Neutral, 36.5 in the camera JPEG), which the first window took to 28.2, is left where it was, because orange at 62 degrees and light skin are the same hues.
+
+**Hue.** The step scales chroma at constant L* in the step's space (hue unchanged to 1e-9 degrees); ACES 2's own hue response to a larger input chroma moves the displayed hue by at most 0.48 degrees up to +2 stops and chroma 45, and by up to 1.0 degrees at +4 stops (python reference through OpenColorIO, 1,788 colours of the window, hue 62 to 110).
+
 **The stage.** `rgb` is linear AWG4 (after the white lift). `Lab` is CIELAB with the white `X 0.95047, Y 1, Z 1.08883`; `YD(s)` is the display luminance of the neutral axis through ACES 2 with the placement, and `CMAX(L*, h)` the largest CIELAB chroma inside the output's limiting gamut (both below).
 
 ```
