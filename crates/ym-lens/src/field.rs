@@ -1910,7 +1910,10 @@ mod tests {
         ] {
             let h = 0.5;
             let m = (y1 - y0) / h;
-            assert!(d0 >= m - 1e-12 && m >= d1 - 1e-12, "the case is a valid one");
+            assert!(
+                d0 >= m - 1e-12 && m >= d1 - 1e-12,
+                "the case is a valid one"
+            );
             assert!((concave_piece(y0, y1, d0, d1, h, 0.0) - y0).abs() < 1e-12);
             assert!((concave_piece(y0, y1, d0, d1, h, 1.0) - y1).abs() < 1e-12);
             let n = 4000;

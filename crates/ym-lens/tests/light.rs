@@ -141,7 +141,10 @@ fn a_light_with_a_colour_of_its_own_keeps_it() {
     let want = chroma([want[0], want[1], want[2]].map(f64::from));
     let got = chroma(sum);
     for c in 0..3 {
-        assert!((got[c] / want[c] - 1.0).abs() < 0.01, "{got:?} against {want:?}");
+        assert!(
+            (got[c] / want[c] - 1.0).abs() < 0.01,
+            "{got:?} against {want:?}"
+        );
     }
 }
 
@@ -201,7 +204,11 @@ fn tiles_of_the_field_stages_equal_the_whole_frame_with_saturated_lights() {
                 for x in 0..t.w {
                     let a = got[c * t.w * t.h + y * t.w + x];
                     let b = whole_out[c * W * H + (t.y + y) * W + t.x + x];
-                    assert_eq!(a.to_bits(), b.to_bits(), "tile {t}: channel {c} at ({x}, {y})");
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "tile {t}: channel {c} at ({x}, {y})"
+                    );
                 }
             }
         }
@@ -216,8 +223,8 @@ fn balls_at_the_clip_pattern_are_redrawn_in_neutral_light() {
     let sc = balls_over_texture_scene(1000, 667, 9.0, &[9.0; 6], Noise::LOW, 4);
     let (w, h) = (sc.img.w, sc.img.h);
     let plan = plan_with_clip(LensKind::Default, 0.0, 0.0, 100.0, clip, w, h);
-    let planes = LensPlanes::build(&plan, &whole(w, h, &sc.img.data), sc.focus, &|| false)
-        .expect("planes");
+    let planes =
+        LensPlanes::build(&plan, &whole(w, h, &sc.img.data), sc.focus, &|| false).expect("planes");
     let bp = planes.bokeh().expect("the plan reshapes bokeh");
     let (bw, bh) = bp.size();
     let mut checked = 0;

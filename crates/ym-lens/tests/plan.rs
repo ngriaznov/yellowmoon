@@ -245,7 +245,12 @@ fn the_strengths_raise_what_the_data_hold_to_the_floors_and_never_lower_it() {
         );
         // The ghosts are the data's, all scaled alike by floor / sum, at most GHOST_GAIN_MAX, never below the data.
         for (ghosts, fractions, floor, what) in [
-            (&lens.flare.ghosts, &st.ghosts, GHOST_FRACTION_FLOOR, "ghost"),
+            (
+                &lens.flare.ghosts,
+                &st.ghosts,
+                GHOST_FRACTION_FLOOR,
+                "ghost",
+            ),
             (
                 &att.ghosts,
                 &st.attachment_ghosts,
@@ -265,7 +270,10 @@ fn the_strengths_raise_what_the_data_hold_to_the_floors_and_never_lower_it() {
             }
             // The sum is the floor where the gain reaches it, and the data's where they are above it.
             let got: f64 = fractions.iter().sum();
-            assert!(got >= sum.min(floor) * (1.0 - 1e-12), "{kind}: {what}s {got}");
+            assert!(
+                got >= sum.min(floor) * (1.0 - 1e-12),
+                "{kind}: {what}s {got}"
+            );
         }
         if lens.flare.starburst.fraction > 0.0 {
             assert!(st.burst >= STARBURST_FRACTION_FLOOR - 1e-15);

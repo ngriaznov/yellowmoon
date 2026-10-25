@@ -697,7 +697,11 @@ impl Job<'_> {
             z_device,
             z_host,
             bokeh,
-            light: if field_runs { ctx.plan.light_pass() } else { None },
+            light: if field_runs {
+                ctx.plan.light_pass()
+            } else {
+                None
+            },
         };
         let t = std::time::Instant::now();
         let made = route.run_job(move |c, _| run_tile(c, raw, &tile));

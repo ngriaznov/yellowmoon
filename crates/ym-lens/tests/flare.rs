@@ -96,15 +96,15 @@ fn parts_library(p: Parts) -> LensLibrary {
             lens["flare"]["aperture"] =
                 json!({ "blades": p.blades, "rotation_deg": 10.0, "roundness": 0.5 });
             lens["flare"]["ghosts"] = if p.ghosts {
-                // The fractions sum to a little over the floor (`GHOST_FRACTION_FLOOR`, 0.0008: no gain) and the ghosts
-                // are 0.3 half-diagonals across: a clipped light of three pixels is assumed thousands of times
+                // The fractions sum to the floor (`GHOST_FRACTION_FLOOR`, 0.0012: no gain) and the ghosts
+                // are 0.35 half-diagonals across: a clipped light of three pixels is assumed thousands of times
                 // brighter than the clip level, so with more light or smaller ghosts their peaks would pass the
-                // bound on a ghost's brightness (`GHOST_PEAK_MAX`, 0.004) and the light they spread would no
+                // bound on a ghost's brightness (`GHOST_PEAK_MAX`, 0.003) and the light they spread would no
                 // longer be the fraction times the light's energy (`ghost_peaks_are_bounded...` tests the bound).
                 json!([
-                    ghost_json(-0.5, 0.3, 0.30, 3.0, 0.00035, 450.0),
-                    ghost_json(0.7, -0.2, 0.32, 3.0, 0.00030, 600.0),
-                    ghost_json(1.4, 0.0, 0.30, 3.0, 0.00025, 520.0),
+                    ghost_json(-0.5, 0.3, 0.35, 3.0, 0.00050, 450.0),
+                    ghost_json(0.7, -0.2, 0.36, 3.0, 0.00040, 600.0),
+                    ghost_json(1.4, 0.0, 0.35, 3.0, 0.00030, 520.0),
                 ])
             } else {
                 json!([])
@@ -454,6 +454,20 @@ fn check_energy(label: &str, got: [f64; 3], want: [f64; 3], tol: f64) {
     }
 }
 
+/// Checks the measured energy of a glow or veil run: the light is the same in total (`tol`), and each channel is
+/// within a few per cent of the model's, because the veil and the glow's far tail are a haze, `HAZE_NEUTRAL` of
+/// which is the mean of the channels, so the channels differ from the picture's by the share of the glow that is
+/// far, which the model does not know.
+fn check_haze_energy(label: &str, got: [f64; 3], want: [f64; 3], tol: f64) {
+    check_energy(
+        &format!("{label}, the three channels together"),
+        [got.iter().sum::<f64>(); 3],
+        [want.iter().sum::<f64>(); 3],
+        tol,
+    );
+    check_energy(label, got, want, 0.03);
+}
+
 /// One part of the flare on the energy scene: the light it spreads is the fraction times what it reads.
 fn part_energy(p: Parts, axis: Axis, anamorphic: f64, tol: f64) -> f64 {
     let lib = parts_library(p);
@@ -480,7 +494,11 @@ fn part_energy(p: Parts, axis: Axis, anamorphic: f64, tol: f64) -> f64 {
         "the standard scene's few lights are under the cap"
     );
     let want = expected_energy(&plan, &sums_for(&scene, size, scale), 1.0);
-    check_energy(&format!("{axis:?} A{anamorphic}"), got, want, tol);
+    if p.glow || p.veil {
+        check_haze_energy(&format!("{axis:?} A{anamorphic}"), got, want, tol);
+    } else {
+        check_energy(&format!("{axis:?} A{anamorphic}"), got, want, tol);
+    }
     // Energy is also spread, not lost: the output is finite and non-negative.
     assert!(out.iter().all(|v| v.is_finite() && *v >= -1e-6));
     got.iter().sum::<f64>()
@@ -524,9 +542,9 @@ fn sums_for(scene: &Scene, size: (usize, usize), scale: f64) -> Sums {
 
 #[test]
 fn each_part_spreads_exactly_the_light_it_takes() {
-    // 1e-4: the ghosts of the faint coloured pixel B are left out under the prune budget (`GHOST_PRUNE_BUDGET`,
-    // 4e-6 of the clip level), which with ghosts that hold 0.4 % of the light is 2e-5 of the light they spread.
-    let tight = 1e-4;
+    // 3e-4: the ghosts of the faint coloured pixel B are left out under the prune budget (`GHOST_PRUNE_BUDGET`,
+    // 4e-6 of the clip level), which with ghosts that hold 0.12 % of the light is 2e-4 of the light they spread.
+    let tight = 3e-4;
     for (label, p) in [
         (
             "glow",
@@ -684,16 +702,23 @@ fn a_clipped_light_gets_its_headroom_in_the_flare_and_not_in_its_own_pixels() {
     let diameter = 2.0 * (9.0 / std::f64::consts::PI).sqrt() / hd;
     let headroom = 2f64.powf(3.0 + GLOW_BOOST_SHARE * light_boost_ev(diameter));
     assert!(headroom > 8.0, "a 3 x 3 light must be boosted: {headroom}");
+    // The light is the same in total whatever the pixels' clip level: the headroom times the glow's fraction of nine
+    // pixels. (The output is f32, so nine identical pixels round alike: a few parts in a million at most.) Each
+    // channel is within a few per cent: the glow's far tail is a haze that is neutral in part.
+    let (sum_c, sum_o) = (e_c.iter().sum::<f64>(), e_o.iter().sum::<f64>());
+    assert!(
+        (sum_c / sum_o / headroom - 1.0).abs() < 5e-6,
+        "{sum_c} against {sum_o}"
+    );
+    assert!((sum_c / 3.0 - 0.15 * 9.0 * headroom).abs() < 1e-6 * sum_c);
     for c in 0..3 {
-        // The output is f32, so nine identical pixels round alike: a few parts in a million at most.
         assert!(
-            (e_c[c] / e_o[c] / headroom - 1.0).abs() < 5e-6,
+            (e_c[c] / e_o[c] / headroom - 1.0).abs() < 0.03,
             "channel {c}: {} against {}",
             e_c[c],
             e_o[c]
         );
-        // And the absolute amount: the glow's fraction of nine pixels at the headroom.
-        assert!((e_c[c] - 0.15 * 9.0 * headroom).abs() < 1e-6 * e_c[c]);
+        assert!((e_c[c] / (0.15 * 9.0 * headroom) - 1.0).abs() < 0.03);
     }
     // The light's own pixels are not raised: they keep (1 - a) of themselves and what the glow gives back.
     let at = 171 * scene.w + 251;
@@ -734,14 +759,11 @@ fn a_large_clipped_area_is_a_surface_and_keeps_the_plain_headroom() {
         &sums_for(&big, size, planes.light_boost_scale()),
         1.0,
     );
-    check_energy("a big clipped block", got, want, 1e-6);
+    check_haze_energy("a big clipped block", got, want, 1e-6);
     // The light the glow and the veil spread is their fractions of the block's light at the plain 3 EV.
     let plain = (0.15 + 0.10) * 110.0 * 110.0 * 8.0;
-    assert!(
-        (got[1] / plain - 1.0).abs() < 1e-5,
-        "{} against {plain}",
-        got[1]
-    );
+    let mean = got.iter().sum::<f64>() / 3.0;
+    assert!((mean / plain - 1.0).abs() < 1e-5, "{mean} against {plain}");
 }
 
 #[test]
@@ -774,7 +796,7 @@ fn many_lights_share_the_cap_and_the_energy_still_adds_up() {
             &sums_for(scene, size, planes.light_boost_scale()),
             1.0,
         );
-        check_energy("the cap, glow", got, want, 1e-6);
+        check_haze_energy("the cap, glow", got, want, 1e-6);
     }
     assert_eq!(scales[0], 1.0);
     assert!(scales[1] < 0.5 && scales[1] > 0.0, "{scales:?}");
@@ -802,8 +824,8 @@ fn the_extra_headroom_falls_as_the_light_grows() {
             &sums_for(&scene, size, planes.light_boost_scale()),
             1.0,
         );
-        check_energy(&format!("{side} px"), got, want, 1e-6);
-        per_pixel.push(got[1] / (side * side) as f64);
+        check_haze_energy(&format!("{side} px"), got, want, 1e-6);
+        per_pixel.push(got.iter().sum::<f64>() / 3.0 / (side * side) as f64);
     }
     // The 1 and 3 px lights both hold the whole extra headroom; then it falls.
     assert!(
@@ -1523,13 +1545,23 @@ fn streak_at(
     }
 }
 
+/// The streak's tint of the shipped attachment on the test camera, and the tail's colour (the tint at
+/// `STREAK_TAIL_CHROMA` of its chroma, mean 1): the blue over red the far end of a streak has.
+fn tail_blue_over_red(lib: &LensLibrary) -> f64 {
+    let t = tint(&lib.attachment().streak.tint);
+    let k = ym_lens::consts::STREAK_TAIL_CHROMA;
+    (1.0 + k * (t[2] - 1.0)) / (1.0 + k * (t[0] - 1.0))
+}
+
 #[test]
-fn the_streak_is_a_thin_line_that_starts_white_and_turns_blue_and_stays_under_the_clip() {
-    // Anamorphic 100 on the shipped lenses: a clipped light of 4 x 4 px on a dim frame gets a soft horizontal line
-    // through it, on either axis, which is (a) the light's own colour next to it and bluer further out, (b)
-    // everywhere beyond a few pixels dimmer than `STREAK_PEAK_MAX` clip levels, (c) a line, not a haze, and
-    // (d) fades steadily with the distance.
+fn the_streak_is_a_soft_line_of_light_that_starts_in_the_lights_colour_and_turns_to_a_pale_blue() {
+    // Anamorphic 100 on the shipped lenses: a clipped light of 4 x 4 px on a dim frame gets a soft horizontal
+    // line through it, on either axis, which is (a) the light's own colour next to it and a pale blue at the far
+    // end (the coating's tint at half its chroma, never more), (b) everywhere beyond a few pixels dimmer than
+    // `STREAK_PEAK_MAX_CLIP` clip levels, (c) a soft line, not a 1 px thread and not a haze, (d) fading steadily
+    // with the distance.
     let lib = shipped();
+    let tail = tail_blue_over_red(&lib);
     for axis in [Axis::X, Axis::Y] {
         let scene = light_on_grey(axis);
         let light = if axis == Axis::X {
@@ -1543,18 +1575,19 @@ fn the_streak_is_a_thin_line_that_starts_white_and_turns_blue_and_stays_under_th
                 let rows = [at(-d, -1), at(-d, 0), at(-d, 1)];
                 std::array::from_fn(|c| rows.iter().map(|r| r[c]).fold(0.0, f64::max))
             };
-            // Colour: next to the light the blue is at most 1.7 times the red (the light itself is neutral), and
-            // it gains on the red as the line fades, to twice it and more.
+            // Colour: next to the light the blue is within 25 % of the red (the light itself is neutral) and
+            // it gains on the red as the line fades, to the tail's colour, which is a pale blue: the tint at
+            // half its chroma, so well under the coating's own blue over red.
             let near = line(12);
             let far = line(150);
             let (near_ratio, far_ratio) = (near[2] / near[0], far[2] / far[0]);
             assert!(
-                (0.6..1.7).contains(&near_ratio),
+                (0.8..1.25).contains(&near_ratio),
                 "{kind} {axis:?}: blue over red {near_ratio} 12 px from the light: {near:?}"
             );
             assert!(
-                far_ratio > 1.3 * near_ratio && far_ratio > 1.8,
-                "{kind} {axis:?}: blue over red {far_ratio} at 150 px against {near_ratio} at 12 px"
+                (far_ratio / tail - 1.0).abs() < 0.12 && far_ratio > 1.3,
+                "{kind} {axis:?}: blue over red {far_ratio} at 150 px, the tail's is {tail}"
             );
             // Brightness: under the clip with a clear margin everywhere beyond 6 px, falling with the distance.
             let mut last = f64::INFINITY;
@@ -1567,7 +1600,13 @@ fn the_streak_is_a_thin_line_that_starts_white_and_turns_blue_and_stays_under_th
                 );
                 assert!(peak < last, "{kind} {axis:?}: not falling at {d} px");
                 last = peak;
-                // A line: 30 px off the axis there is much less.
+                // A soft line: 2 px off the axis it is still most of the way up (the core is 1.6 px wide here),
+                // 30 px off there is much less.
+                let two: f64 = at(-d, 2).iter().cloned().fold(0.0, f64::max);
+                assert!(
+                    two > 0.35 * peak,
+                    "{kind} {axis:?}: only {two} 2 px off the axis against {peak} on it at {d} px: a thread"
+                );
                 let off = at(-d, 30).iter().cloned().fold(0.0, f64::max);
                 assert!(
                     peak > 5.0 * off,
@@ -1586,31 +1625,31 @@ fn the_streak_is_a_thin_line_that_starts_white_and_turns_blue_and_stays_under_th
 }
 
 /// The least a streak's brightest channel may be called "under the clip with a margin": `STREAK_PEAK_PER_FRACTION`
-/// times the shipped attachment's fraction (data version 3: 0.004), in clip levels.
+/// times the shipped attachment's fraction (data version 4: 0.004), in clip levels.
 const STREAK_PEAK_MAX_CLIP: f64 = 0.4 + 1e-9;
 
 #[test]
-fn the_streak_saturates_with_the_light_and_a_large_area_is_a_soft_band() {
-    // A light of 1600 clipped pixels (40 x 40) holds 100 times the light of one of 16 pixels (4 x 4): its streak
-    // is not 100 times stronger, and it is a wide soft band, not a line.
+fn the_streak_saturates_with_the_light_and_a_large_light_is_a_soft_band() {
+    // A light of 400 clipped pixels (20 x 20) holds 25 times the light of one of 16 pixels (4 x 4): its streak
+    // is not 25 times stronger, and it is a wider soft band, not a line.
     let lib = shipped();
     let small = light_on_grey(Axis::X);
     let mut big = Scene::new(960, 640);
     big.fill(0, 0, 960, 640, [0.05; 3]);
-    big.fill(642, 182, 40, 40, [1.0; 3]);
+    big.fill(652, 192, 20, 20, [1.0; 3]);
     let s_small = streak_at(&lib, LensKind::Default, Axis::X, &small, (662, 202));
     let s_big = streak_at(&lib, LensKind::Default, Axis::X, &big, (662, 202));
     for d in [60isize, 120] {
-        // Away from the block's own edge (20 px from its centre) along the axis.
+        // Away from the block's own edge (10 px from its centre) along the axis.
         let a = s_small(-d, 0)[1];
         let b = s_big(-d, 0)[1];
         assert!(
             a > 0.0 && b < 3.0 * a,
             "{b} against {a} at {d} px: not saturating"
         );
-        // The big light's band is wide: 30 px off the axis it is still most of the way up.
-        let wide = s_big(-d, 30)[1] / s_big(-d, 0)[1].max(1e-12);
-        let thin = s_small(-d, 30)[1] / s_small(-d, 0)[1].max(1e-12);
+        // The big light's band is wide: 12 px off the axis it is still a good part of the way up.
+        let wide = s_big(-d, 12)[1] / s_big(-d, 0)[1].max(1e-12);
+        let thin = s_small(-d, 12)[1] / s_small(-d, 0)[1].max(1e-12);
         assert!(
             wide > 3.0 * thin,
             "band {wide} against line {thin} at {d} px"
@@ -1621,7 +1660,7 @@ fn the_streak_saturates_with_the_light_and_a_large_area_is_a_soft_band() {
 #[test]
 fn a_dim_light_makes_a_short_faint_streak_and_a_bright_one_a_long_one() {
     let lib = shipped();
-    // A light of 1 px, one of 4 x 4 and one of 12 x 12 on the same frame, one at a time.
+    // A light of 2 x 2 px, one of 4 x 4 and one of 12 x 12 on the same frame, one at a time.
     let reach_of = |side: usize| -> (f64, f64) {
         let mut scene = Scene::new(960, 640);
         scene.fill(0, 0, 960, 640, [0.02; 3]);
@@ -1637,12 +1676,156 @@ fn a_dim_light_makes_a_short_faint_streak_and_a_bright_one_a_long_one() {
         }
         (reach, at(-12, 0)[1])
     };
-    let (r1, v1) = reach_of(1);
+    let (r2, v2) = reach_of(2);
     let (r4, v4) = reach_of(4);
     let (r12, v12) = reach_of(12);
-    assert!(r1 < r4 && r4 <= r12, "reach {r1} {r4} {r12}");
-    assert!(v1 < v4 && v4 <= v12 * 1.5, "peak {v1} {v4} {v12}");
-    assert!(r1 < 400.0, "a light of one pixel makes a line {r1} px long");
+    assert!(r2 <= r4 && r4 <= r12, "reach {r2} {r4} {r12}");
+    assert!(v2 <= v4 && v4 <= v12 * 1.5, "peak {v2} {v4} {v12}");
+    assert!(r2 < 400.0, "a light of 2 px makes a line {r2} px long");
+}
+
+/// The synthetic lenses with the shipped attachment's streak and nothing else of the attachment (no oval ghosts, no
+/// ghost stretch): Anamorphic then adds the streaks and nothing more.
+fn streak_lib() -> LensLibrary {
+    let shipped: Value =
+        serde_json::from_slice(&fs::read(common::repo_root().join("data/lenses/anamorphic.json")).unwrap())
+            .unwrap();
+    let streak = shipped["streak"].clone();
+    library_with(&|_| {}, &|att| {
+        att["ghosts"] = json!([]);
+        att["ghost_stretch"] = json!(1.0);
+        att["streak"] = streak.clone();
+    })
+}
+
+/// The streak-only light along the rows of `scene` at `d` px left of the lights' column `x`, for rows `y0..y1`
+/// (Anamorphic 100 minus 0, the brightest channel over its clip level).
+fn streak_column(lib: &LensLibrary, scene: &Scene, x: usize, y0: usize, y1: usize) -> Vec<f64> {
+    let at = streak_at(lib, LensKind::Classic, Axis::X, scene, (x, 0));
+    (y0..y1)
+        .map(|y| at(0, y as isize).iter().cloned().fold(0.0, f64::max))
+        .collect()
+}
+
+#[test]
+fn lights_in_a_row_make_one_streak_and_not_a_set_of_lines() {
+    // Four lights on rows 6 px apart, spread along the axis (a row of lamps seen at an angle): one soft band
+    // through them, not four lines. Seen across the axis well away from the lights the band has one maximum.
+    let lib = streak_lib();
+    let mut scene = Scene::new(960, 640);
+    scene.fill(0, 0, 960, 640, [0.05; 3]);
+    for (i, x) in [560usize, 600, 640, 680].into_iter().enumerate() {
+        scene.fill(x, 200 + 6 * i, 4, 4, [1.0; 3]);
+    }
+    let col = streak_column(&lib, &scene, 300, 170, 250);
+    let peak = col.iter().cloned().fold(0.0, f64::max);
+    assert!(peak > 1e-3, "a streak at all: {peak}");
+    let maxima = (1..col.len() - 1)
+        .filter(|i| col[*i] > col[*i - 1] && col[*i] >= col[*i + 1] && col[*i] > 0.1 * peak)
+        .count();
+    assert_eq!(maxima, 1, "{maxima} lines across the rows: {col:?}");
+}
+
+#[test]
+fn a_large_bright_area_makes_no_streak_and_a_glint_in_it_none_of_its_own() {
+    // A lit window of 240 x 120 px with a separate clipped glint of 4 x 4 px inside it (a dark gap round it), on
+    // a dark frame: a surface does not draw a band across the picture, and the glint inside it belongs to it.
+    // Beyond the window along the axis there is no streak light at all.
+    let lib = streak_lib();
+    let mut scene = Scene::new(960, 640);
+    scene.fill(0, 0, 960, 640, [0.03; 3]);
+    scene.fill(560, 250, 240, 120, [1.0; 3]);
+    scene.fill(566, 294, 10, 10, [0.1; 3]);
+    scene.fill(569, 297, 4, 4, [1.0; 3]);
+    let at = streak_at(&lib, LensKind::Classic, Axis::X, &scene, (680, 310));
+    for d in [-450isize, -380, 260, 280] {
+        for dc in [-60isize, -20, 0, 20, 60] {
+            let v = at(d, dc);
+            assert!(
+                v.iter().all(|x| x.abs() < 1e-5),
+                "streak light {v:?} at {d} px along and {dc} across a window"
+            );
+        }
+        // The glint's own row.
+        let v = at(d, -11);
+        assert!(v.iter().all(|x| x.abs() < 1e-5), "streak light {v:?} on the glint's row at {d} px");
+    }
+}
+
+#[test]
+fn a_crowd_of_equal_lights_makes_a_few_faint_streaks_and_not_a_ladder() {
+    // Twelve lights of 6 x 6 px of the same brightness, 40 px apart across the axis, spread along it: at most
+    // `STREAK_MAX_LIGHTS` of them draw a streak, the first the strongest, each after it fainter.
+    let lib = streak_lib();
+    let mut scene = Scene::new(960, 640);
+    scene.fill(0, 0, 960, 640, [0.03; 3]);
+    let rows: Vec<usize> = (0..12).map(|i| 60 + 45 * i).collect();
+    for (i, y) in rows.iter().enumerate() {
+        scene.fill(500 + (i * 53) % 300, *y, 6, 6, [1.0; 3]);
+    }
+    let at = streak_at(&lib, LensKind::Classic, Axis::X, &scene, (0, 0));
+    let mut levels: Vec<f64> = Vec::new();
+    for (i, y) in rows.iter().enumerate() {
+        let x = 500 + (i * 53) % 300;
+        // 120 px to the left of the light, on its row.
+        let v = (0..3)
+            .map(|k| {
+                let row = *y as isize + 3;
+                at(x as isize - 120, row)[k]
+            })
+            .fold(0.0, f64::max);
+        levels.push(v);
+    }
+    let drawn = levels.iter().filter(|v| **v > 1e-3).count();
+    assert!(
+        (1..=ym_lens::consts::STREAK_MAX_LIGHTS).contains(&drawn),
+        "{drawn} streaks of {levels:?}"
+    );
+    // The strongest of a crowd is faint (the frame's streaks share `STREAK_TOTAL_CAP`), and the weakest of the drawn
+    // ones is under half of it.
+    let top = levels.iter().cloned().fold(0.0, f64::max);
+    assert!(top < 0.2, "the first of a crowd is faint: {top}");
+    let weakest = levels
+        .iter()
+        .cloned()
+        .filter(|v| *v > 1e-3)
+        .fold(f64::INFINITY, f64::min);
+    if drawn > 1 {
+        assert!(weakest < 0.5 * top, "a ladder: {levels:?}");
+    }
+}
+
+#[test]
+fn the_streak_ends_smoothly_to_nothing() {
+    // The last tenth of a streak's reach falls to 0 with no step: the largest difference between neighbouring
+    // pixels there is far under a code value (1/255 of the clip level), and the streak is gone at its reach.
+    let lib = shipped();
+    for axis in [Axis::X, Axis::Y] {
+        let scene = light_on_grey(axis);
+        let light = if axis == Axis::X {
+            (662, 202)
+        } else {
+            (202, 662)
+        };
+        let at = streak_at(&lib, LensKind::Vintage, axis, &scene, light);
+        let v: Vec<f64> = (0..=660isize).map(|d| at(-d, 0)[2]).collect();
+        let peak = v[8];
+        assert!(peak > 0.01, "{axis:?}: a streak: {peak}");
+        // Where the streak is gone (under a thousandth of its value 8 px out).
+        let end = v.iter().rposition(|x| *x > peak * 1e-3).expect("an end");
+        assert!(end < 660, "{axis:?}: the streak still goes on at 660 px");
+        let from = (end as f64 * 0.7) as usize;
+        let step = (from..end + 1)
+            .map(|d| (v[d + 1] - v[d]).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            step < 0.5 / 255.0 / 20.0,
+            "{axis:?}: a step of {step} near the end of the streak at {end} px"
+        );
+        for d in from..end {
+            assert!(v[d + 1] <= v[d] * 1.0001 + 1e-9, "{axis:?}: not falling at {d} px");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------

@@ -24,9 +24,8 @@ use crate::consts::{
     ACCEPT_COLOUR, ACCEPT_CONFIDENCE, B_CAP, B_MIN, BALL_RIM_REACH_PX, FEATHER_FRACTION,
     FEATHER_MAX_PX, FEATHER_MIN_PX, GATHER_PAD, GUIDE_SIGMA_MIN, GUIDE_SIGMA_NOISE,
     MAX_STRETCH_TAPS, MIN_LINE_PX, NOISE_FLOOR, RAMP_SHARE_TO, SAMPLE_RATIO_FROM, SAMPLE_RATIO_TO,
-    SHARP_DILATE,
-    SHARP_GATE, SHARP_RATIO, SHARP_SOFT_FROM, SHARP_SOFT_HALF, SHARP_SOFT_TO, SHARP_TEST_FROM_PX,
-    STRAND_MARGIN_NOISE, STRAND_VALLEY, SUBJECT_SHARE, UPSAMPLE_RADIUS_PX,
+    SHARP_DILATE, SHARP_GATE, SHARP_RATIO, SHARP_SOFT_FROM, SHARP_SOFT_HALF, SHARP_SOFT_TO,
+    SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE, STRAND_VALLEY, SUBJECT_SHARE, UPSAMPLE_RADIUS_PX,
 };
 use crate::device::{BokehCells, BokehPass, BokehTile};
 use crate::error::LensError;
@@ -388,25 +387,6 @@ impl<'a> Pass<'a> {
             .collect();
         // The blur map at the tile's pixels.
         let (bt, be, occ) = self.tile_blur(input, rbs, rb, r0, &shapes);
-        // TEMP-DEBUG-H (remove before the end): dump the maps of this tile for local diagnosis.
-        if let Ok(dir) = std::env::var("YM_L1_DUMP") {
-            let tag = format!("{dir}/r0_{}_{}_{}_{}", r0.x, r0.y, r0.w, r0.h);
-            let f32s = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
-            let _ = std::fs::write(format!("{tag}_bt.f32"), f32s(&bt));
-            let _ = std::fs::write(format!("{tag}_be.f32"), f32s(&be));
-            let _ = std::fs::write(
-                format!("{tag}_occ.u8"),
-                occ.iter().map(|o| u8::from(*o)).collect::<Vec<u8>>(),
-            );
-            let mut txt = String::new();
-            for sh in &shapes {
-                txt += &format!(
-                    "{:.2} {:.2} r_ball {:.2} r_out {:.2} f {:.3} a {:.2} b {:.2} reach {:.2}\n",
-                    sh.cx, sh.cy, sh.r_ball, sh.r_out, sh.f, sh.a, sh.b, sh.reach
-                );
-            }
-            let _ = std::fs::write(format!("{tag}_shapes.txt"), txt);
-        }
         if !self.v_on && !self.t_on && shapes.is_empty() {
             return crop_rgb(input, want);
         }
@@ -418,32 +398,12 @@ impl<'a> Pass<'a> {
         // The working picture over r0, with the balls taken out.
         let mut wk = crop_rgb(input, r0)?;
         take_out(&mut wk, r0, &bt, &shapes);
-        // TEMP-DEBUG-H (remove before the end)
-        if let Ok(dir) = std::env::var("YM_L1_DUMP") {
-            let tag = format!("{dir}/r0_{}_{}_{}_{}", r0.x, r0.y, r0.w, r0.h);
-            let bytes: Vec<u8> = wk.iter().flat_map(|x| x.to_le_bytes()).collect();
-            let _ = std::fs::write(format!("{tag}_wk.f32"), bytes);
-            let _ = std::fs::write(
-                format!("{tag}_info.txt"),
-                format!(
-                    "want {} {} {} {} r1 {} {} {} {} hk {} stretch {} axis_x {}\n",
-                    want.x, want.y, want.w, want.h, r1.x, r1.y, r1.w, r1.h, self.hk, self.stretch,
-                    self.axis == Axis::X
-                ),
-            );
-        }
         // The two gathers.
         let o1 = if self.v_on {
             self.gather_vertical(&wk, r0, &be, r1)
         } else {
             crop_planes(&wk, r0, r1)
         };
-        // TEMP-DEBUG-H (remove before the end)
-        if let Ok(dir) = std::env::var("YM_L1_DUMP") {
-            let tag = format!("{dir}/r0_{}_{}_{}_{}", r0.x, r0.y, r0.w, r0.h);
-            let bytes: Vec<u8> = o1.iter().flat_map(|x| x.to_le_bytes()).collect();
-            let _ = std::fs::write(format!("{tag}_o1.f32"), bytes);
-        }
         let mut o2 = if self.t_on {
             self.gather_tangential(&o1, r1, &be, r0, want)
         } else {

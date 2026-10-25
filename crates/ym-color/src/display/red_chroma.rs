@@ -7,7 +7,7 @@
 //!
 //! ACES 2 SDR takes chroma out of mid-tone and light reds at the same display lightness (10 to 22 %, the
 //! reds "go coral") and adds 30 to 40 % to dark reds. It takes about a third out of ochres and yellows at
-//! +1 stop over grey (display C* over colourimetric C* 0.66 to 0.70 at hue 70 to 100 degrees, 0.43 to 0.46
+//! +1 stop over grey (display C* over colourimetric C* 0.66 to 0.69 at hue 70 to 100 degrees, 0.42 to 0.45
 //! at +2 stops), so an ochre wall reads as peach. The step gives back what ACES 2 removes above about -0.5
 //! stop, caps the result below the output gamut's edge, and (per look) can take back part of ACES 2's dark
 //! boost of reds. Grey, skin and other hues are untouched.

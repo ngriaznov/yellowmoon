@@ -156,15 +156,15 @@ pub const GLOW_BOOST_SHARE: f64 = 0.5;
 /// proportions between its ghosts stay the data's. Twelve ghosts of two single-layer surfaces (1.3 % each) hold
 /// 2e-3 together, of two multi-layer ones (0.3 % each) 1e-4, of two bare surfaces (4 %) 2e-2. The data are
 /// never lowered.
-pub const GHOST_FRACTION_FLOOR: f64 = 0.0008;
+pub const GHOST_FRACTION_FLOOR: f64 = 0.0012;
 
 /// The most a lens's ghosts are scaled up to the floor ([`GHOST_FRACTION_FLOOR`]): Default and Detuned (1.2e-4)
-/// and Vintage (3.4e-4) get twice their data's light, Sonnar (8.6e-4) and Classic (1.4e-3) are above the floor
-/// or nearly, and the uncoated Triplet (5e-3) and Petzval (2.7e-2) are as they are.
-pub const GHOST_GAIN_MAX: f64 = 2.0;
+/// and Vintage (3.4e-4) get three times their data's light, Sonnar (8.6e-4) 1.4 times, Classic (1.4e-3) and the
+/// uncoated Triplet (5e-3) and Petzval (2.7e-2) are as they are.
+pub const GHOST_GAIN_MAX: f64 = 3.0;
 
 /// The same floor for the attachment's own oval ghosts at Anamorphic 100 (data 2.3e-4).
-pub const ATTACHMENT_GHOST_FLOOR: f64 = 0.0004;
+pub const ATTACHMENT_GHOST_FLOOR: f64 = 0.0006;
 
 /// At Flares 100 the glow of a lens takes at least this fraction of the light (a veiling glare that the
 /// literature rates "usually good", 1.5 to 3 %); a lens whose data hold less has its glow raised to it.
@@ -222,6 +222,15 @@ pub const VEIL_FLAT: f64 = 0.6;
 /// the picture's average colour). The glow's tail round a light keeps the light's colour.
 pub const HAZE_NEUTRAL: f64 = 1.0;
 
+/// The glow's tail is the halo of a light up to this radius (half-diagonals) and haze from [`GLOW_HAZE_TO_HD`] on,
+/// with a smoothstep between: the far part of the tail joins the veil in being neutral (`HAZE_NEUTRAL`), the
+/// near part keeps the light's colour (a sodium lamp has an orange halo, and a dark trunk a hundred pixels
+/// from a warm sun is not an orange patch).
+pub const GLOW_HAZE_FROM_HD: f64 = 0.05;
+
+/// See [`GLOW_HAZE_FROM_HD`]: the radius from which the glow's tail is haze.
+pub const GLOW_HAZE_TO_HD: f64 = 0.15;
+
 /// A pixel of the lens plane is a source pixel when its highlight, in clip levels, reaches this value in some
 /// channel.
 pub const SOURCE_FLOOR: f64 = 0.02;
@@ -262,12 +271,12 @@ pub const GHOST_TINT_MAX_RATIO: f64 = 1.2;
 /// clipped light is assumed thousands of times brighter than the clip level (`LIGHT_BOOST_MAX_EV`), which spread
 /// over a ghost's area still made discs brighter than the scene around them. Applies to ghosts of apothem
 /// [`GHOST_FULL_RADIUS`] and larger; smaller ones get less (`l3::items::ghost_peak_max`).
-pub const GHOST_PEAK_MAX: f64 = 0.004;
+pub const GHOST_PEAK_MAX: f64 = 0.003;
 
 /// The most light a ghost carries, in clip levels times half-diagonals squared at Flares 100: its brightest value
 /// may not pass this over its area `pi s^2`, so a ghost of apothem over 0.25 is fainter than [`GHOST_PEAK_MAX`] in
 /// proportion to one over its area (a quarter of it at an apothem of 0.5, 6 % at 1).
-pub const GHOST_LIGHT_MAX: f64 = 0.000_78;
+pub const GHOST_LIGHT_MAX: f64 = 0.000_59;
 
 /// The apothem, in half-diagonals, from which a ghost may be as bright as [`GHOST_PEAK_MAX`].
 pub const GHOST_FULL_RADIUS: f64 = 0.1;
@@ -312,15 +321,16 @@ pub const STREAK_SIGMA_EXTENT: f64 = 0.1;
 /// A streak whose light is wider than this (standard deviation across the axis, half-diagonals) is a band: its
 /// peak, and the energy it counts with, are divided by `1 + (sigma / STREAK_SIGMA_REF_HD)^2`, so a large bright
 /// area makes a soft faint band and a point makes a line.
-pub const STREAK_SIGMA_REF_HD: f64 = 0.03;
+pub const STREAK_SIGMA_REF_HD: f64 = 0.04;
 
-/// A light larger than this (the larger side of its bounding box, half-diagonals) starts to be a surface, not a
-/// light, and its streak fades; from [`STREAK_SURFACE_END_HD`] on it makes none (a smooth step between). A large
-/// bright area (a lit wall, a window, blurred pavement) does not draw a line or a band across the picture.
-pub const STREAK_SURFACE_START_HD: f64 = 0.12;
+/// A light whose light is spread wider than this (standard deviation across the axis, half-diagonals) starts to be a
+/// surface, not a light, and its streak fades; from [`STREAK_SURFACE_END_HD`] on it makes none (a smooth step
+/// between). A large bright area (a lit wall, a window, blurred pavement) does not draw a line or a band across
+/// the picture. The spread is of the light (`H`), so a bright sun in a hazy sky counts by its core.
+pub const STREAK_SURFACE_START_HD: f64 = 0.03;
 
 /// See [`STREAK_SURFACE_START_HD`].
-pub const STREAK_SURFACE_END_HD: f64 = 0.24;
+pub const STREAK_SURFACE_END_HD: f64 = 0.055;
 
 /// Across the axis a streak is two Gaussians: the core (the light's width) and a halo `STREAK_HALO_WIDTH` times as
 /// wide that holds this share of its light, so the line has no sharp feet.

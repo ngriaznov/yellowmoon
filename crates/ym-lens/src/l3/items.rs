@@ -719,13 +719,6 @@ impl<'a> Items<'a> {
             for mut g in group {
                 let total = peaks.get(&(src.component, g.index)).copied().unwrap_or(0.0);
                 let allowed = ghost_peak_max(g.s);
-                if std::env::var_os("YM_G1_DEBUG").is_some() {
-                    eprintln!(
-                        "G1GHOST comp {} src {:.3},{:.3} ext {:.4} idx {} s {:.3} total {:.5} allowed {:.5} amp_clip {:.5},{:.5},{:.5}",
-                        src.component, src.pos[0], src.pos[1], src.extent, g.index, g.s, total, allowed,
-                        g.amp[0] / items.clip[0] * rim_peak, g.amp[1] / items.clip[1] * rim_peak, g.amp[2] / items.clip[2] * rim_peak
-                    );
-                }
                 if total > allowed {
                     g.scale(allowed / total, rim_peak);
                 }
@@ -924,7 +917,15 @@ impl<'a> Items<'a> {
         }
         let k = Knobs::new();
         let peak_max = STREAK_PEAK_PER_FRACTION * fraction;
-        let tail_tint: [f64; 3] = std::array::from_fn(|c| 1.0 + k.tail_chroma * (tint[c] - 1.0));
+        let mut tail_tint: [f64; 3] = std::array::from_fn(|c| 1.0 + k.tail_chroma * (tint[c] - 1.0));
+        if let Ok(v) = std::env::var("YM_S_TAIL_RGB") {
+            // G2-DEBUG: the tail colour straight from the environment (camera channels, scaled to a mean of 1).
+            let t: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+            if t.len() == 3 {
+                let m = (t[0] + t[1] + t[2]) / 3.0;
+                tail_tint = [t[0] / m, t[1] / m, t[2] / m];
+            }
+        }
         // Steps 1 and 2: the lights that make streaks, merged.
         struct Cluster {
             /// Place along the axis (the brightest member's), across it (energy-weighted).
@@ -1003,15 +1004,16 @@ impl<'a> Items<'a> {
             e: f64,
         }
         let penalty = |sigma: f64| 1.0 / (1.0 + (sigma / k.sigma_ref).powi(2));
-        let surface = |extent: f64| {
-            1.0 - smoothstep(
-                (extent - k.surface_start) / (k.surface_end - k.surface_start),
-            )
+        let surface = |sigma: f64| {
+            1.0 - smoothstep((sigma - k.surface_start) / (k.surface_end - k.surface_start))
         };
         let mut order: Vec<usize> = (0..clusters.len()).collect();
-        let eff = |c: &Cluster| c.e * penalty(c.sigma) * surface(c.extent);
+        let eff = |c: &Cluster| c.e * penalty(c.sigma) * surface(c.sigma);
         order.sort_by(|a, b| eff(&clusters[*b]).total_cmp(&eff(&clusters[*a])).then(a.cmp(b)));
-        let eff_top = order.first().map_or(1.0, |i| eff(&clusters[*i]));
+        let eff_top = order.first().map_or(0.0, |i| eff(&clusters[*i]));
+        if eff_top <= 0.0 {
+            return Vec::new();
+        }
         let mut planned: Vec<Planned> = Vec::new();
         let mut total = 0.0;
         for (rank, i) in order.into_iter().enumerate() {
@@ -1024,7 +1026,7 @@ impl<'a> Items<'a> {
             let peak = peak_max
                 * sat
                 * penalty(c.sigma)
-                * surface(c.extent)
+                * surface(c.sigma)
                 * rel
                 * k.rank_decay.powi(rank as i32);
             if peak < k.peak_floor {

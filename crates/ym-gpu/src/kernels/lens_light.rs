@@ -7,8 +7,8 @@
 //! frame give the same bits. The restored light of L3 (`lens_flare.wgsl`) includes the same function.
 
 use bytemuck::{Pod, Zeroable};
-use ym_lens::consts::{CLIP_PATTERN_SPREAD, LIGHT_SATURATION_RAMP};
 pub use ym_lens::LightPass;
+use ym_lens::consts::{CLIP_PATTERN_SPREAD, LIGHT_SATURATION_RAMP};
 
 use super::shader::KernelId;
 use super::util::GROUP;
