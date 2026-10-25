@@ -22,8 +22,11 @@
 //!
 //! # Bokeh reshaping (L1)
 //!
-//! L1 has no kernel yet: where it acts the host runs `ym_lens::reshape` on the raw region, uploads its
-//! output as the input of L2, and L3 still reads the raw picture. Everything after L1 stays on the device.
+//! Where L1 acts (Anamorphic above 0, or Edges on a lens with a swirl or a cat's-eye, on a photo with
+//! out-of-focus background) the tile gathers the raw window L1 reads (L2's input rectangle grown by L1's halo),
+//! runs the reshaping kernels over L2's input rectangle, and L2 reads their output; L3 still reads the raw
+//! picture. The photo's blur map is uploaded once with the planes and the balls' shapes once per plan shape
+//! (an Edges or Anamorphic move uploads a few kilobytes), so the whole of `Z = L2(L1(X))` stays on the device.
 //!
 //! # Failures
 //!
@@ -38,15 +41,16 @@ use ym_gpu::device::{Gpu, GpuContext, GpuError};
 use ym_gpu::image::GpuImage;
 use ym_gpu::kernels::copy::{Piece, encode_crop, encode_gather};
 use ym_gpu::kernels::lens_field::{FieldTablesBuffer, encode_field};
+use ym_gpu::kernels::lens_reshape::{BokehPlaneBuffer, BokehScaleBuffers, encode_reshape};
 use ym_gpu::kernels::lens_flare::{
     FlareLensBuffer, FlarePlaneBuffer, FlareScaleBuffers, encode_flare,
 };
 use ym_gpu::stream::PassList;
 use ym_lens::device::{FieldPass, FlareMix};
-use ym_lens::{ImageRef, LensPlanes, PixelRect, reshape, reshape_halo};
+use ym_lens::{LensPlanes, PixelRect};
 
 use super::super::raw::GpuRoute;
-use super::lens::{LensCtx, lens_error};
+use super::lens::LensCtx;
 use super::{Backing, Job, ResidentImage, TileImage, lock};
 use crate::app::gpu::GpuStages;
 use crate::pipeline::RenderError;
@@ -56,6 +60,9 @@ pub(super) const GROUP_TILE_PX: usize = 1024;
 
 /// Scale data kept per photo (the plan shapes of the last few requests).
 const SCALES_KEPT: usize = 6;
+
+/// Shapes of the balls kept per photo (the plan shapes and scales of the last few requests).
+const BOKEH_SCALES_KEPT: usize = 6;
 
 /// What the device holds of a photo's lens, made on first use.
 #[derive(Default)]
@@ -69,6 +76,10 @@ pub(crate) struct LensDevice {
     flare_lens: Option<(String, FlareLensBuffer)>,
     /// The scale data of recent plan shapes, newest last, with their key.
     scales: Vec<(String, FlareScaleBuffers)>,
+    /// The photo's blur map, with the planes it was made from.
+    bokeh_planes: Option<(Arc<LensPlanes>, BokehPlaneBuffer)>,
+    /// The balls' shapes of recent plan shapes and scales, newest last, with their key.
+    bokeh_scales: Vec<(String, BokehScaleBuffers)>,
 }
 
 /// The pieces of a raw picture, on the device or the host, that a tile reads.
@@ -119,7 +130,7 @@ pub(super) enum RawSrc {
 struct TilePlan {
     /// The output rectangle (frame coordinates at the scale of the frame).
     out: Rect,
-    /// The window of the raw picture the job gathers: the output grown by what L2 (without L1) and L3 read.
+    /// The window of the raw picture the job gathers: the output grown by what L1 (or L2 without L1) and L3 read.
     want: Rect,
     /// L2: the spread functions and the pass, when the field stage acts and `Z` is not cached.
     field: Option<(FieldTablesBuffer, FieldPass)>,
@@ -134,8 +145,9 @@ struct TilePlan {
     z_device: Option<Arc<GpuImage>>,
     /// A cached `Z` over the output on the host, uploaded by the job.
     z_host: Option<Arc<RgbImage>>,
-    /// The output of L1 over the rectangle L2 reads (the host ran the reshaping), with its place.
-    l1: Option<(Vec<f32>, Rect)>,
+    /// L1: the photo's blur map, the balls' shapes at this scale and the rectangle L2 reads (L1's output), when
+    /// the reshaping acts and `Z` is not cached.
+    bokeh: Option<(BokehPlaneBuffer, BokehScaleBuffers, Rect)>,
 }
 
 /// What a tile job gives back.
@@ -158,8 +170,8 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
     // back to the pool (and be written by a later allocation of the job) before then.
     let mut held: Vec<Arc<GpuImage>> = Vec::new();
     let want = tile.want;
-    // The raw window, when L2 or L3 read it.
-    let reads_raw = tile.flare.is_some() || (tile.field.is_some() && tile.l1.is_none());
+    // The raw window, when L1, L2 or L3 read it.
+    let reads_raw = tile.flare.is_some() || tile.field.is_some();
     let input = if reads_raw {
         let mut pieces = raw.pieces;
         for (image, at) in &raw.hosts {
@@ -189,25 +201,31 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
                 (z, (tile.out.x, tile.out.y))
             }
             (None, None, Some((tables, pass))) => {
-                let z = if let Some((data, rect)) = &tile.l1 {
-                    let src = GpuImage::upload(
-                        ctx,
-                        "lens reshaped",
-                        rect.w,
-                        rect.h,
-                        3,
-                        data,
-                        Placement::whole(rect.w, rect.h),
-                    )?;
-                    let src = Arc::new(src);
-                    held.push(Arc::clone(&src));
-                    encode_field(&mut passes, tables, pass, &src, (rect.x, rect.y), tile.out)?
+                let Some(input) = &input else {
+                    return Err(GpuError::InvalidInput(
+                        "lens tile: the field stage has no input".into(),
+                    ));
+                };
+                let z = if let Some((planes, scale, l2_rect)) = &tile.bokeh {
+                    // L1 over what L2 reads, from the raw window; L2 reads its output.
+                    let reshaped = Arc::new(encode_reshape(
+                        &mut passes,
+                        planes,
+                        scale,
+                        input,
+                        (want.x, want.y),
+                        *l2_rect,
+                    )?);
+                    held.push(Arc::clone(&reshaped));
+                    encode_field(
+                        &mut passes,
+                        tables,
+                        pass,
+                        &reshaped,
+                        (l2_rect.x, l2_rect.y),
+                        tile.out,
+                    )?
                 } else {
-                    let Some(input) = &input else {
-                        return Err(GpuError::InvalidInput(
-                            "lens tile: the field stage has no input".into(),
-                        ));
-                    };
                     encode_field(&mut passes, tables, pass, input, (want.x, want.y), tile.out)?
                 };
                 let z = Arc::new(z);
@@ -390,12 +408,14 @@ impl Job<'_> {
         route: &GpuRoute,
         ctx: &LensCtx,
         planes: &Arc<LensPlanes>,
+        k: usize,
         frame: (usize, usize),
         need_field: bool,
         need_flare: bool,
     ) -> Result<
         (
             Option<(FieldTablesBuffer, FieldPass)>,
+            Option<(BokehPlaneBuffer, BokehScaleBuffers)>,
             Option<(
                 FlarePlaneBuffer,
                 FlareLensBuffer,
@@ -440,6 +460,58 @@ impl Job<'_> {
                         Some((tables, pass))
                     }
                     None => None,
+                }
+            } else {
+                None
+            };
+            // L1 acts inside the field stage, where the plan reshapes bokeh and the photo has some to reshape.
+            let bokeh = if need_field && ctx.plan.bokeh_pass(planes, k, frame.0, frame.1).is_some()
+            {
+                {
+                    let shape = format!(
+                        "{}|{}x{}|k{k}|{:p}",
+                        ctx.plan.bokeh_shape_key(),
+                        frame.0,
+                        frame.1,
+                        Arc::as_ptr(planes)
+                    );
+                    let plane_buf = match &device.bokeh_planes {
+                        Some((p, b)) if Arc::ptr_eq(p, planes) => b.clone(),
+                        _ => {
+                            let Some(d) = planes.bokeh_plane_data() else {
+                                return Err(GpuError::InvalidInput(
+                                    "the planes hold no blur map".into(),
+                                ));
+                            };
+                            let b = route.run_job(move |c, _| BokehPlaneBuffer::upload(c, &d))?;
+                            device.bokeh_planes = Some((Arc::clone(planes), b.clone()));
+                            b
+                        }
+                    };
+                    let scale_buf = match device.bokeh_scales.iter().position(|(k, _)| *k == shape) {
+                        Some(i) => {
+                            let entry = device.bokeh_scales.remove(i);
+                            let b = entry.1.clone();
+                            device.bokeh_scales.push(entry);
+                            b
+                        }
+                        None => {
+                            let Some(data) = ctx.plan.bokeh_scale_data(planes, k, frame.0, frame.1)
+                            else {
+                                return Err(GpuError::InvalidInput(
+                                    "the lens has a bokeh pass but no shapes".into(),
+                                ));
+                            };
+                            let b = route
+                                .run_job(move |c, _| BokehScaleBuffers::upload(c, &data))?;
+                            device.bokeh_scales.push((shape, b.clone()));
+                            while device.bokeh_scales.len() > BOKEH_SCALES_KEPT {
+                                device.bokeh_scales.remove(0);
+                            }
+                            b
+                        }
+                    };
+                    Some((plane_buf, scale_buf))
                 }
             } else {
                 None
@@ -503,7 +575,7 @@ impl Job<'_> {
             } else {
                 None
             };
-            Ok((field, flare))
+            Ok((field, bokeh, flare))
         })();
         self.put_lens_device(device);
         result
@@ -563,10 +635,11 @@ impl Job<'_> {
         let (z_device, z_host) = Self::lens_z_for(z, out);
         let z_cached = z_device.is_some() || z_host.is_some();
         let need_flare = ctx.plan.flares() > 0.0;
-        let (field, flare) = match self.lens_device_buffers(
+        let (field, bokeh, flare) = match self.lens_device_buffers(
             route,
             ctx,
             planes,
+            k,
             frame,
             need_field && !z_cached,
             need_flare,
@@ -580,44 +653,19 @@ impl Job<'_> {
         };
         let field_halo = field.as_ref().map_or(0, |(_, p)| p.halo());
         let flare_halo = flare.as_ref().map_or(0, |(_, _, s, _)| s.halo());
-        // L1 where it acts: the host reshapes the raw region L2 reads and L2 reads that.
-        let l1_halo = if field.is_some() {
-            reshape_halo(&ctx.plan, planes, k)
-        } else {
-            0
-        };
-        let mut l1 = None;
-        let mut want = grown(flare_halo.max(if l1_halo == 0 { field_halo } else { 0 }));
-        if l1_halo > 0 {
-            let l2_rect = grown(field_halo);
-            let need = clamp(
-                PixelRect::new(l2_rect.x, l2_rect.y, l2_rect.w, l2_rect.h)
-                    .grown(l1_halo, frame.0, frame.1),
-            );
-            let (image, origin) = self.lens_host_raw(src, need)?;
-            let input = ImageRef {
-                width: image.width,
-                height: image.height,
-                x0: origin.0,
-                y0: origin.1,
-                frame_width: frame.0,
-                frame_height: frame.1,
-                data: &image.data,
-            };
-            let t = std::time::Instant::now();
-            let data = reshape(
-                &ctx.plan,
-                planes,
-                k,
-                &input,
-                PixelRect::new(l2_rect.x, l2_rect.y, l2_rect.w, l2_rect.h),
-            )
-            .map_err(lens_error)?;
-            self.timings.lens_ms += t.elapsed().as_secs_f64() * 1000.0;
-            l1 = Some((data, l2_rect));
-            want = grown(flare_halo);
-        }
-        let reads_raw = flare.is_some() || (field.is_some() && l1.is_none());
+        // The raw window the tile gathers: what L3 reads around the output, and what L2 reads (its input
+        // rectangle, grown by L1's halo where the reshaping acts, which L1 turns into L2's input).
+        let l2_rect = grown(field_halo);
+        let mut want = grown(flare_halo.max(field_halo));
+        let bokeh = bokeh.map(|(planes, scale)| {
+            let l1_need = scale.pass().tile(PixelRect::new(l2_rect.x, l2_rect.y, l2_rect.w, l2_rect.h)).need;
+            let l1_need = clamp(l1_need);
+            let (x0, y0) = (want.x.min(l1_need.x), want.y.min(l1_need.y));
+            let (x1, y1) = (want.x1().max(l1_need.x1()), want.y1().max(l1_need.y1()));
+            want = Rect::new(x0, y0, x1 - x0, y1 - y0);
+            (planes, scale, l2_rect)
+        });
+        let reads_raw = flare.is_some() || field.is_some();
         let raw = if reads_raw {
             self.lens_raw_in(src, want)?
         } else {
@@ -630,7 +678,7 @@ impl Job<'_> {
             flare,
             z_device,
             z_host,
-            l1,
+            bokeh,
         };
         let t = std::time::Instant::now();
         let made = route.run_job(move |c, _| run_tile(c, raw, &tile));
@@ -659,20 +707,6 @@ impl Job<'_> {
             }
         }
         Ok(raw)
-    }
-
-    /// A host image of the raw picture around `need`, with the place of its first pixel in the frame (the
-    /// reshaping runs on the host).
-    fn lens_host_raw(
-        &mut self,
-        src: &RawSrc,
-        need: Rect,
-    ) -> Result<(Arc<RgbImage>, (usize, usize)), RenderError> {
-        match src {
-            RawSrc::Group(k, _) => Ok((self.group(*k)?, (0, 0))),
-            RawSrc::Tiles => Ok((Arc::new(self.region(need, true)?), (need.x, need.y))),
-            RawSrc::Export => Ok((Arc::new(self.region(need, false)?), (need.x, need.y))),
-        }
     }
 
     /// The device image of a finished tile as a cache entry.

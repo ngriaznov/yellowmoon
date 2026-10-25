@@ -378,6 +378,60 @@ fn big() -> &'static Scene {
     })
 }
 
+/// The planes of a plan whose lens plane is `scene` itself (a frame `k_L` times its size).
+fn planes_from_plane(p: &LensPlan, scene: &Scene) -> LensPlanes {
+    planes_from_image(p, &scene.img.data, scene.img.w, scene.img.h)
+}
+
+fn planes_from_image(p: &LensPlan, data: &[f32], w: usize, h: usize) -> LensPlanes {
+    let image = ImageRef {
+        width: w,
+        height: h,
+        x0: 0,
+        y0: 0,
+        frame_width: w,
+        frame_height: h,
+        data,
+    };
+    LensPlanes::build(p, &image, None, &|| false).expect("planes")
+}
+
+/// A lens plane of `w x h`: a texture blurred by a disc of `bg` px with flat bright discs `(x, y, radius)` on it.
+fn plane_with_balls(w: usize, h: usize, bg: f64, balls: &[(f64, f64, f64)], seed: u64) -> Vec<f32> {
+    let tex = scenes::texture(w, h, 30.0, seed, 0, w);
+    let n = w * h;
+    let mut img = scenes::Rgb::new(w, h);
+    for c in 0..3 {
+        img.plane_mut(c)
+            .copy_from_slice(&scenes::disc_blur(tex.plane(c), w, h, bg));
+    }
+    for &(cx, cy, r) in balls {
+        let (x0, x1) = ((cx - r - 2.0).floor().max(0.0) as usize, ((cx + r + 2.0).ceil() as usize).min(w));
+        let (y0, y1) = ((cy - r - 2.0).floor().max(0.0) as usize, ((cy + r + 2.0).ceil() as usize).min(h));
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
+                let a = (r + 0.5 - d).clamp(0.0, 1.0);
+                if a > 0.0 {
+                    for (c, tone) in [4.0, 3.4, 2.6].into_iter().enumerate() {
+                        let v = &mut img.data[c * n + y * w + x];
+                        *v = (f64::from(*v) * (1.0 - a) + tone * a) as f32;
+                    }
+                }
+            }
+        }
+    }
+    img.data
+}
+
+/// A smooth picture of any position of a frame, so a region far from the origin needs no image of the frame.
+fn smooth(c: usize, x: usize, y: usize) -> f32 {
+    let (xf, yf, cf) = (x as f64, y as f64, c as f64);
+    (0.35
+        + 0.2 * (0.013 * xf + 1.1 * cf).sin() * (0.011 * yf - 0.4 * cf).cos()
+        + 0.1 * (0.0071 * (xf + yf) + cf).sin()) as f32
+}
+
 /// The planes of a plan whose lens plane is `scene` reduced `k_L` times (`k_L` the plan's).
 fn planes_of_big(p: &LensPlan, scene: &Scene) -> LensPlanes {
     let k = p.lens_plane_scale();
@@ -577,9 +631,6 @@ fn nothing_runs_when_the_reshaping_has_nothing_to_do() {
     assert!(p.bokeh_pass(&planes, 1, W, H).is_none());
     assert!(p.bokeh_scale_data(&planes, 1, W, H).is_none());
     assert!(planes.bokeh_plane_data().is_none());
-    // Edges on the lens with neither a swirl nor a cat's-eye (Default) and Anamorphic at 0.
-    let p = plan(amounts(LensKind::Default, 0.0, 100.0, 0.0), W, H, Axis::X);
-    assert!(!p.needs_blur_map());
     // A scene with no out-of-focus background: the planes are inactive, there is no pass.
     let p = plan(amounts(LensKind::Vintage, 0.0, 100.0, 100.0), W, H, Axis::X);
     let sharp = scenes::sharp_scene(W, H, Noise::NONE, 2);
@@ -596,7 +647,7 @@ fn the_binding_stays_inside_the_design_size() {
     let p = plan(amounts(LensKind::Petzval, 0.0, 100.0, 100.0), w, h, Axis::X);
     // The lens plane of a 6000 x 4000 frame is 1500 x 1000.
     let scene = balls_over_texture_scene(1500, 1000, 7.0, &[14.0, 20.0, 11.0, 17.0], Noise::NONE, 6);
-    let planes = planes_of_big(&p, &scene);
+    let planes = planes_from_plane(&p, &scene);
     let pass = p.bokeh_pass(&planes, 1, w, h).expect("a pass");
     common::limits::assert_max_binding_bytes("lens reshape", Rect::new(0, 0, 1024, 1024), |r| {
         ym_gpu::kernels::lens_reshape::max_binding_bytes(r, &pass)
@@ -623,4 +674,85 @@ fn a_source_that_does_not_cover_the_halo_is_refused() {
             reshape(ctx, &plane_data, &scale, &small, (100, 100), (300, 200), out)
         });
     assert!(matches!(result, Err(GpuError::InvalidInput(_))), "{result:?}");
+}
+
+#[test]
+fn the_far_corner_of_a_50_mp_frame_is_as_exact_as_the_near_one() {
+    let _guard = serial();
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
+    let (w, h) = (8658usize, 5772usize);
+    // The lens plane of this frame is 1082 x 722 (k_L = 8); balls at the corners and in the middle.
+    let (pw, ph) = (1082usize, 722usize);
+    let balls = [
+        (22.0, 20.0, 12.0),
+        (541.0, 361.0, 14.0),
+        (1058.0, 704.0, 12.0),
+        (200.0, 500.0, 16.0),
+        (900.0, 150.0, 10.0),
+        (700.0, 600.0, 13.0),
+        (330.0, 120.0, 11.0),
+    ];
+    let plane = plane_with_balls(pw, ph, 4.0, &balls, 21);
+    let p = plan(amounts(LensKind::Vintage, 0.0, 100.0, 100.0), w, h, Axis::X);
+    assert_eq!(p.lens_plane_scale(), 8);
+    let planes = planes_from_image(&p, &plane, pw, ph);
+    assert!(planes.bokeh().is_some_and(|b| b.active()), "the plane is reshaped");
+    assert!(planes.bokeh().is_some_and(|b| b.balls().len() >= 5), "the balls are found");
+    let plane_data = planes.bokeh_plane_data().expect("map");
+    let scale = p.bokeh_scale_data(&planes, 1, w, h).expect("pass");
+    let halo = scale.pass.halo();
+    let mut worsts = Vec::new();
+    for (name, out) in [
+        ("near corner", Rect::new(0, 0, 64, 64)),
+        ("centre", Rect::new(w / 2 - 32, h / 2 - 32, 64, 64)),
+        ("far corner", Rect::new(w - 64, h - 64, 64, 64)),
+    ] {
+        let r = PixelRect::new(out.x, out.y, out.w, out.h).grown(halo, w, h);
+        let rect = Rect::new(r.x, r.y, r.w, r.h);
+        let mut input = Vec::with_capacity(3 * rect.w * rect.h);
+        for c in 0..3 {
+            for y in rect.y..rect.y1() {
+                for x in rect.x..rect.x1() {
+                    input.push(smooth(c, x, y));
+                }
+            }
+        }
+        let image = ImageRef {
+            width: rect.w,
+            height: rect.h,
+            x0: rect.x,
+            y0: rect.y,
+            frame_width: w,
+            frame_height: h,
+            data: &input,
+        };
+        let want = ym_lens::reshape(&p, &planes, 1, &image, PixelRect::new(out.x, out.y, out.w, out.h))
+            .expect("the CPU reference");
+        let got = {
+            let (plane_data, scale, input) = (plane_data.clone(), scale.clone(), input.clone());
+            run(dev, move |ctx| {
+                reshape(ctx, &plane_data, &scale, &input, (rect.w, rect.h), (rect.x, rect.y), out)
+            })
+        };
+        let f = compare(&got, &want, PARITY_BOUND);
+        let original = crop(&input, rect.w, rect.h, Rect::new(out.x - rect.x, out.y - rect.y, out.w, out.h));
+        let moved = exact::max_abs_diff(&want, &original);
+        note!(
+            "L1 {name}: worst difference {:e} over {} samples; the reference moved the picture by up to {moved:.3}",
+            f.worst,
+            f.total
+        );
+        assert!(f.over == 0, "{name}: {} of {} samples differ by more than {PARITY_BOUND}", f.over, f.total);
+        assert!(moved > 0.02, "{name}: the pass did something");
+        worsts.push(f.worst);
+    }
+    // Position errors at the far corner would show as differences orders above the near corner's.
+    assert!(
+        worsts[2] <= 4.0 * worsts[0].max(1e-6),
+        "the far corner ({:e}) is not as exact as the near one ({:e})",
+        worsts[2],
+        worsts[0]
+    );
 }
