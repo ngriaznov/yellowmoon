@@ -1,8 +1,8 @@
 //! L1: bokeh reshaping and the bokeh detector that feeds it (`docs/21` section 4, L1, and section 7).
 //!
 //! L1 never adds bokeh. It reshapes the blur the photo already holds: out-of-focus areas are stretched into
-//! taller ovals across the anamorphic axis (Anamorphic) and a little along the tangent (Edges times the lens's
-//! swirl), and bright balls are stretched as they are (their own light, read where it was before the stretch).
+//! taller ovals across the anamorphic axis (Anamorphic) and along the tangent (Edges times the lens's swirl, which
+//! grows with the blur, and its astigmatism, which does not), and bright balls are stretched as they are (their own light, read where it was before the stretch).
 //! Pixels in focus are never
 //! changed, and where the detector is unsure nothing happens.
 //!

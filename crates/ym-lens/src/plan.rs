@@ -243,13 +243,15 @@ impl LensPlan {
         self.flares * (lens_part + attachment_part)
     }
 
-    /// True when the picture's blur map is needed: Anamorphic above 0, or Edges above 0 on a lens whose swirl
-    /// or cat's-eye is not zero (the bokeh reshaping, L1).
+    /// True when the picture's blur map is needed: Anamorphic above 0, or Edges above 0 on a lens whose swirl,
+    /// astigmatism or cat's-eye is not zero (the bokeh reshaping, L1).
     #[must_use]
     pub fn needs_blur_map(&self) -> bool {
         self.amounts.anamorphic > 0.0
             || (self.amounts.edges > 0.0
-                && (self.lens.swirl_max() > 0.0 || self.lens.cats_eye_max() > 0.0))
+                && (self.lens.swirl_max() > 0.0
+                    || self.lens.astigmatism_max() > 0.0
+                    || self.lens.cats_eye_max() > 0.0))
     }
 
     /// `k_L`: the scale of the lens plane, the largest power of two, at least 2, for which the frame's long

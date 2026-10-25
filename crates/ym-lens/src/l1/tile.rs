@@ -23,9 +23,9 @@ use rayon::prelude::*;
 use crate::consts::{
     ACCEPT_COLOUR, ACCEPT_CONFIDENCE, B_CAP, B_MIN, BALL_RIM_REACH_PX, FEATHER_FRACTION,
     FEATHER_MAX_PX, FEATHER_MIN_PX, GATHER_PAD, GUIDE_SIGMA_MIN, GUIDE_SIGMA_NOISE,
-    MAX_STRETCH_TAPS, MIN_LINE_PX, NOISE_FLOOR, PROFILE_SCALE, SAMPLE_RATIO_FROM, SAMPLE_RATIO_TO,
-    SHARP_DILATE, SHARP_GATE, SHARP_RATIO, SHARP_SOFT_FROM, SHARP_SOFT_HALF, SHARP_SOFT_TO,
-    SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE, STRAND_VALLEY, SUBJECT_SHARE, UPSAMPLE_RADIUS_PX,
+    MAX_STRETCH_TAPS, MIN_LINE_PX, NOISE_FLOOR, SAMPLE_RATIO_FROM, SAMPLE_RATIO_TO, SHARP_DILATE,
+    SHARP_GATE, SHARP_RATIO, SHARP_SOFT_FROM, SHARP_SOFT_HALF, SHARP_SOFT_TO, SHARP_TEST_FROM_PX,
+    STRAND_MARGIN_NOISE, STRAND_VALLEY, SUBJECT_SHARE, UPSAMPLE_RADIUS_PX,
 };
 use crate::device::{BokehCells, BokehPass, BokehTile};
 use crate::error::LensError;
@@ -36,6 +36,7 @@ use super::BokehPlanes;
 use super::detector::luminance;
 use super::draw::{
     Shape, ShapeParams, assign_owners, profile_at, rim_disc_mean, rim_gain, shape_of,
+    tangent_half_length,
 };
 
 /// What the cells of the blur map around a pixel add up to, by the colour-guided weights of the upsampling.
@@ -184,7 +185,7 @@ impl<'a> Pass<'a> {
         let e = plan.edges();
         let lens = plan.lens();
         let v_on = q > 1.0 + 1e-12;
-        let t_on = e > 0.0 && lens.swirl_max() > 0.0;
+        let t_on = e > 0.0 && (lens.swirl_max() > 0.0 || lens.astigmatism_max() > 0.0);
         let cat_on = e > 0.0 && lens.cats_eye_max() > 0.0;
         if !(v_on || t_on || cat_on) || bp.balls().is_empty() && !(v_on || t_on) {
             return None;
@@ -193,8 +194,9 @@ impl<'a> Pass<'a> {
         let b = bp.max_blur().min(B_CAP);
         let stretch = plan.stretch_per_blur();
         let v_reach = if v_on { stretch * b * hk } else { 0.0 };
+        // The longest tangential line: the swirl at the capped blur and the astigmatism, both at their largest.
         let t_reach = if t_on {
-            lens.swirl_max() * e * b * hk * PROFILE_SCALE
+            tangent_half_length(e, lens.swirl_max(), lens.astigmatism_max(), b * hk, hk)
         } else {
             0.0
         };
@@ -330,6 +332,7 @@ impl<'a> Pass<'a> {
             axis_x: self.axis == Axis::X,
             radii: &lens.field.radii,
             swirl: &lens.field.swirl,
+            astigmatism: &lens.field.astigmatism,
             cats_eye: &lens.field.cats_eye,
             rim: &lens.rim,
             rim_mean: rim_disc_mean(&lens.rim),
@@ -847,7 +850,11 @@ impl<'a> Pass<'a> {
         let plane_w = want.w * want.h;
         let mut out = vec![0.0f32; 3 * plane_w];
         let lens = self.plan.lens();
-        let (radii, swirl) = (&lens.field.radii, &lens.field.swirl);
+        let (radii, swirl, astigmatism) = (
+            &lens.field.radii,
+            &lens.field.swirl,
+            &lens.field.astigmatism,
+        );
         let (cxm, cym) = (0.5 * self.fw as f64, 0.5 * self.fh as f64);
         let (a, rest) = out.split_at_mut(plane_w);
         let (b, c) = rest.split_at_mut(plane_w);
@@ -874,7 +881,9 @@ impl<'a> Pass<'a> {
                     let rr = (dx * dx + dy * dy).sqrt();
                     let rho = rr / self.hk;
                     let sigma = profile_at(radii, swirl, rho);
-                    let len = sigma * self.e * PROFILE_SCALE * bp * self.hk * knee(bp);
+                    let astig = profile_at(radii, astigmatism, rho);
+                    let len =
+                        tangent_half_length(self.e, sigma, astig, bp * self.hk, self.hk) * knee(bp);
                     if rr < 1e-9 || len < MIN_LINE_PX {
                         copy(ra, rb, rc);
                         continue;
@@ -1414,6 +1423,7 @@ fn redraw(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consts::PROFILE_SCALE;
 
     /// The variance of the profile over `[-1, 1]` against its mass, by a fine sum.
     fn moments() -> (f64, f64) {

@@ -210,6 +210,26 @@ fn the_lens_id_must_match_its_folder() {
 }
 
 #[test]
+fn a_lens_file_without_astigmatism_reads_as_none() {
+    // Data written before the field swirl have no `field.astigmatism`: they load, with zeros.
+    let dir = folder();
+    damage_json(dir.path(), "petzval/lens.json", |v| {
+        v["field"].as_object_mut().unwrap().remove("astigmatism");
+    });
+    let lib = load(dir.path()).expect("loads");
+    let lens = lib.get(LensKind::Petzval).unwrap();
+    assert_eq!(lens.field.astigmatism, vec![0.0; 9]);
+    assert_eq!(lens.astigmatism_max(), 0.0);
+    // And a file with one reads it.
+    let dir = folder();
+    damage_json(dir.path(), "vintage/lens.json", |v| {
+        v["field"]["astigmatism"] = json!([0, 0, 0.001, 0.002, 0.004, 0.006, 0.008, 0.01, 0.012]);
+    });
+    let lib = load(dir.path()).expect("loads");
+    assert_eq!(lib.get(LensKind::Vintage).unwrap().astigmatism_max(), 0.012);
+}
+
+#[test]
 fn bad_numbers_are_refused() {
     type Edit = fn(&mut Value);
     let cases: Vec<(&str, &str, Edit)> = vec![
@@ -239,6 +259,18 @@ fn bad_numbers_are_refused() {
         }),
         ("swirl at the centre", "petzval/lens.json", |v| {
             v["field"]["swirl"][0] = json!(0.1)
+        }),
+        ("astigmatism at the centre", "petzval/lens.json", |v| {
+            v["field"]["astigmatism"][0] = json!(0.001)
+        }),
+        ("astigmatism that falls", "petzval/lens.json", |v| {
+            v["field"]["astigmatism"] = json!([0, 0, 0, 0, 0.01, 0.02, 0.01, 0.02, 0.03])
+        }),
+        ("a negative astigmatism", "petzval/lens.json", |v| {
+            v["field"]["astigmatism"][3] = json!(-0.001)
+        }),
+        ("astigmatism of 8 values", "petzval/lens.json", |v| {
+            v["field"]["astigmatism"].as_array_mut().unwrap().pop();
         }),
         ("a negative cat's-eye", "petzval/lens.json", |v| {
             v["field"]["cats_eye"][4] = json!(-0.1)

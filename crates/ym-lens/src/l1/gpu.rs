@@ -139,6 +139,7 @@ pub(crate) fn scale_data(
     vectors.extend(pad4(&lens.field.swirl, 3));
     vectors.extend(pad4(&lens.rim, 4));
     vectors.push([rim_disc_mean(&lens.rim) as f32, 0.0, 0.0, 0.0]);
+    vectors.extend(pad4(&lens.field.astigmatism, 3));
     debug_assert_eq!(vectors.len(), BOKEH_HEADER);
     let cell = |s: f64, c: usize, full: usize| {
         let (centre, p_lo, p_hi) = axis_cell(s, c, full);

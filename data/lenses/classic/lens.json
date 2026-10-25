@@ -1,6 +1,6 @@
 {
   "id": "classic",
-  "version": 1,
+  "version": 2,
   "name": "Classic",
   "line": "Warm and gentle: soft glow, amber flares, smooth falloff.",
   "start": {
@@ -30,6 +30,7 @@
       "k2": 0.00640691
     },
     "swirl": [0, 2.13076e-05, 0, 0, 0, 0, 0.0134415, 0.094431, 0.248039],
+    "astigmatism": [0, 0, 0, 0, 0, 0, 0, 0, 0],
     "cats_eye": [0, 0, 0, 0, 0, 0, 0.00434408, 0.216097, 0.555167]
   },
   "bokeh": {

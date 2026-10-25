@@ -87,8 +87,17 @@ pub struct FieldData {
     pub distortion: Distortion,
     /// `sigma(rho)`: the swirl profile (0 at the centre).
     pub swirl: Vec<f64>,
+    /// `a(rho)`: the astigmatism, the extra half-length of the tangential gather in half-diagonals that does not
+    /// depend on the blur (0 at the centre, rising towards the edge). A file without it reads as all zeros.
+    #[serde(default = "no_astigmatism")]
+    pub astigmatism: Vec<f64>,
     /// `c(rho)`: the cat's-eye offset in ball radii (0: none).
     pub cats_eye: Vec<f64>,
+}
+
+/// The default of `field.astigmatism` when a file has none: zero at every radius.
+fn no_astigmatism() -> Vec<f64> {
+    vec![0.0; RADII]
 }
 
 /// The radial distortion `r' = r (1 + e (k1 r^2 + k2 r^4))` of a lens.
@@ -258,6 +267,12 @@ impl LensData {
     #[must_use]
     pub fn swirl_max(&self) -> f64 {
         self.field.swirl.iter().copied().fold(0.0, f64::max)
+    }
+
+    /// The largest astigmatism `a(rho)` (half-diagonals).
+    #[must_use]
+    pub fn astigmatism_max(&self) -> f64 {
+        self.field.astigmatism.iter().copied().fold(0.0, f64::max)
     }
 
     /// The largest cat's-eye offset `c(rho)`.
@@ -783,6 +798,16 @@ fn load_lens(files: &mut Files, kind: LensKind) -> Result<LensData, LensError> {
     c.non_negative_list("field.swirl", &f.swirl, RADII)?;
     if f.swirl[0] != 0.0 {
         return Err(c.err("field.swirl", "sigma(0) must be 0"));
+    }
+    c.non_negative_list("field.astigmatism", &f.astigmatism, RADII)?;
+    if f.astigmatism[0] != 0.0 {
+        return Err(c.err("field.astigmatism", "a(0) must be 0"));
+    }
+    if f.astigmatism.windows(2).any(|w| w[1] < w[0]) {
+        return Err(c.err(
+            "field.astigmatism",
+            "must not fall towards the edge (the focal surfaces only part with the field)",
+        ));
     }
     c.non_negative_list("field.cats_eye", &f.cats_eye, RADII)?;
 

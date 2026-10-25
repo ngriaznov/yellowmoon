@@ -1,6 +1,6 @@
 {
   "id": "detuned",
-  "version": 1,
+  "version": 2,
   "name": "Detuned",
   "line": "Sharp only in the centre, with smeared flares.",
   "start": {
@@ -30,6 +30,7 @@
       "k2": 0.0105911
     },
     "swirl": [0, 9.16677e-05, 0.000280096, 0.000542753, 0.000963171, 0.0161727, 0.0657336, 0.162698, 0.348674],
+    "astigmatism": [0, 0, 0, 0, 0, 0, 0, 0, 0],
     "cats_eye": [0, 0, 0, 0, 0, 0.0182028, 0.157193, 0.402843, 0.768784]
   },
   "bokeh": {

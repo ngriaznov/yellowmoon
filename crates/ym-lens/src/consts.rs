@@ -393,6 +393,17 @@ pub const RIM_SOFT_TO: f64 = 0.8;
 /// (soft gathers)*).
 pub const PROFILE_SCALE: f64 = 1.527_525_231_651_947;
 
+/// The longest tangential gather, as the half-length of its biweight line in half-diagonals: the half-length
+/// `e (k sigma(rho) b + a(rho) H)` of the field swirl (`docs/21` section 4, L1, *As built (field swirl)*) is held
+/// to it, so that the halo, and with it the device's largest binding, stays bounded whatever the blur and the lens
+/// (`b_cap` with a swirl of 2.9 alone would reach 0.20, and the Petzval's at the corner with its astigmatism 0.12;
+/// the old swirl, 1.5, reached 0.10).
+pub const TANGENT_REACH_MAX: f64 = 0.10;
+
+/// A ball is stretched along the tangent to at most this many times its width (`q_t`): beyond it a small light of
+/// the outer field, whose absolute astigmatism is many of its radii, would become a line, not a lemon.
+pub const TANGENT_ASPECT_MAX: f64 = 4.0;
+
 /// A sample counts with the weight of a smoothstep of its blur over the pixel's own, from nothing at this ratio ...
 pub const SAMPLE_RATIO_FROM: f64 = 0.5;
 

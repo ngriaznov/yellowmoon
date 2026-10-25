@@ -710,10 +710,13 @@ fn swirl_stretches_balls_along_the_tangent_more_towards_the_edges() {
 }
 
 #[test]
-fn the_shipped_petzvals_swirl_is_visible_and_the_vintages_is_a_third_of_it() {
-    // `data/lenses/README.md`, *What is traced and what is tuned*: at Edges 100 the Petzval's tangential line is
-    // `sigma` blur radii long, 1.5 at the corner (a tangential oval twice as long as wide), about 0.3 at half the
-    // field, nothing inside `rho` 0.3 (continuous with a continuous slope, rising); the Vintage's is a third of it.
+fn the_shipped_petzvals_swirl_and_astigmatism_are_visible_and_the_vintages_are_a_third_of_them() {
+    // `data/lenses/README.md`, *What is traced and what is tuned*, and `docs/21` L1, *As built (field swirl)*: at
+    // Edges 100 the Petzval's tangential line is `e (k sigma b + a H)` long: `sigma` blur radii (box-equivalent)
+    // plus the absolute `a` of the half-diagonal. The swirl `2 t^1.3` starts at `rho` 0.2 and reaches 2.0 at the
+    // corner (a tangential oval 2.5 times as long as wide for a disc), the astigmatism `0.03 t^1.64` starts there
+    // too and reaches 0.03 of the half-diagonal at the corner and 0.006 at half the field (`t = (rho - 0.2) / 0.8`);
+    // the Vintage's are a third of them.
     let root = common::repo_root().join("data");
     if !root.join("lenses/index.json").exists() {
         eprintln!("skipped: no lens data");
@@ -727,25 +730,274 @@ fn the_shipped_petzvals_swirl_is_visible_and_the_vintages_is_a_third_of_it() {
         [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]
     );
     let sigma = &petzval.swirl;
-    assert_eq!(sigma[..3], [0.0; 3], "nothing inside rho 0.3");
-    assert!(sigma[3] > 0.0 && sigma[3] < 0.12, "{}", sigma[3]);
-    assert!((sigma[4] - 0.3).abs() < 0.02, "rho 0.5: {}", sigma[4]);
-    assert!((sigma[8] - 1.5).abs() < 1e-5, "rho 1: {}", sigma[8]);
+    assert_eq!(sigma[..2], [0.0; 2], "nothing inside rho 0.2");
+    assert!(sigma[2] > 0.0 && sigma[2] < 0.2, "rho 0.25: {}", sigma[2]);
+    assert!((sigma[4] - 0.56).abs() < 0.01, "rho 0.5: {}", sigma[4]);
+    assert!((sigma[8] - 2.0).abs() < 1e-5, "rho 1: {}", sigma[8]);
     // Rising, and its slope rising too (a smooth start: no kink where it leaves 0).
     for i in 1..9 {
         assert!(sigma[i] >= sigma[i - 1], "monotone at {i}");
     }
-    for i in 3..8 {
-        assert!(
-            sigma[i + 1] - sigma[i] > sigma[i] - sigma[i - 1] - 0.02,
-            "no sudden change of slope at {i}"
-        );
+    // The aspect of a disc at the corner is 2.5: `sqrt(1 + 4 sigma^2 / 3)`.
+    let aspect = (1.0 + 4.0 / 3.0 * sigma[8] * sigma[8]).sqrt();
+    assert!((aspect - 2.52).abs() < 0.02, "{aspect}");
+    let a = &petzval.astigmatism;
+    assert_eq!(a[..2], [0.0; 2], "nothing inside rho 0.2");
+    assert!((a[4] - 0.006).abs() < 1e-5, "rho 0.5: {}", a[4]);
+    assert!((a[8] - 0.03).abs() < 1e-6, "rho 1: {}", a[8]);
+    for i in 1..9 {
+        assert!(a[i] >= a[i - 1], "monotone at {i}");
     }
-    // The aspect of the oval at the corner is 2: `sqrt(1 + 4 sigma^2 / 3)`.
-    assert!(((1.0 + 4.0 / 3.0 * sigma[8] * sigma[8]).sqrt() - 2.0).abs() < 1e-4);
+    // About 27 px at the corner of a 1500 x 1000 frame (half-diagonal 901 px) and 108 px at 24 MP.
+    assert!((a[8] * 901.4 - 27.0).abs() < 0.2);
     for (v, p) in vintage.swirl.iter().zip(sigma) {
         assert!((v - p / 3.0).abs() < 1e-5, "{v} against a third of {p}");
     }
+    for (v, p) in vintage.astigmatism.iter().zip(a) {
+        assert!((v - p / 3.0).abs() < 1e-6, "{v} against a third of {p}");
+    }
+    // The traced lenses keep none: their spread functions already hold their astigmatism (L2).
+    for kind in [
+        LensKind::Default,
+        LensKind::Classic,
+        LensKind::Triplet,
+        LensKind::Sonnar,
+        LensKind::Detuned,
+    ] {
+        let lens = lib.get(kind).expect("lens");
+        assert_eq!(lens.astigmatism_max(), 0.0, "{kind:?}");
+        assert!(lens.info.version >= 2, "{kind:?}: data version");
+    }
+    assert!(lib.get(LensKind::Petzval).unwrap().info.version >= 2);
+    assert!(lib.get(LensKind::Vintage).unwrap().info.version >= 2);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The field swirl (docs/21 section 4, L1, "As built (field swirl)"): the tangential half-length is
+// `e (k sigma(rho) b + a(rho) H)`: the swirl grows with the blur, the astigmatism does not.
+// ---------------------------------------------------------------------------------------------------------------
+
+/// A plan of a synthetic Petzval whose swirl is `swirl rho^2` and whose astigmatism is `astigmatism rho^2`
+/// half-diagonals, with no cat's-eye.
+fn field_swirl_plan(swirl: f64, astigmatism: f64, edges: f64) -> LensPlan {
+    use serde_json::json;
+    let dir = tempfile::tempdir().expect("temp dir");
+    ym_lens::test_support::write_synthetic_lenses_with(
+        dir.path(),
+        &|lens| {
+            let rho2: Vec<f64> = (0..9).map(|i| (i as f64 / 8.0).powi(2)).collect();
+            lens["field"]["swirl"] = json!(rho2.iter().map(|r| swirl * r).collect::<Vec<_>>());
+            lens["field"]["astigmatism"] =
+                json!(rho2.iter().map(|r| astigmatism * r).collect::<Vec<_>>());
+            // No cat's-eye: its mask would cut the lemons across their short axis and thin them.
+            lens["field"]["cats_eye"] = json!(vec![0.0; 9]);
+        },
+        &|_| {},
+    )
+    .expect("write");
+    let lib = ym_lens::LensLibrary::from_dir(dir.path()).expect("loads");
+    let amounts = ym_lens::LensAmounts {
+        kind: LensKind::Petzval,
+        flares: 0.0,
+        edges,
+        anamorphic: 0.0,
+    };
+    LensPlan::new(
+        &lib,
+        &amounts,
+        common::frame(W, H, Axis::X),
+        common::camera(),
+    )
+    .expect("plan")
+}
+
+/// A table read between the lens's nine radii, as the gathers read it.
+fn table_at(radii: &[f64], values: &[f64], rho: f64) -> f64 {
+    let at = radii.iter().position(|r| *r >= rho).unwrap_or(8).max(1);
+    let (r0, r1) = (radii[at - 1], radii[at]);
+    values[at - 1] + ((rho - r0) / (r1 - r0)).clamp(0.0, 1.0) * (values[at] - values[at - 1])
+}
+
+#[test]
+fn astigmatism_makes_small_balls_of_the_outer_field_tangential_lemons_by_the_formula() {
+    // `a(rho) = 0.0283 rho^2`, no swirl: a ball of radius r at rho 0.9 is blurred along its tangent by a box line
+    // of half-length `e a H / k` = 8.6 px, whatever its own blur, so a ball of 8 px becomes a lemon 1.7 times as long
+    // as wide, one of 10 px 1.5 times, and the same balls near the centre stay round.
+    let p = field_swirl_plan(0.0, 0.0283, 100.0);
+    assert!(
+        p.needs_blur_map(),
+        "the astigmatism alone asks for the blur map"
+    );
+    let hd = 600.97;
+    // (x, y, r): four balls at rho 0.9 in the corners, four inside.
+    let balls = [
+        (950.0, 633.5, 8.0),
+        (50.0, 33.5, 10.0),
+        (950.0, 33.5, 9.0),
+        (50.0, 633.5, 7.0),
+        (830.0, 333.5, 8.0),
+        (170.0, 333.5, 8.0),
+        (500.0, 93.5, 8.0),
+        (500.0, 573.5, 8.0),
+    ];
+    let balls: Vec<_> = balls
+        .iter()
+        .map(|&(x, y, r)| (x, y, r, 0.15, 1.5))
+        .collect();
+    let scene = balls_on_ground(&balls, Noise::LOW, 5);
+    let planes = planes_of(&p, &scene);
+    let out = reshape_tile(
+        &p,
+        &planes,
+        1,
+        &scene.img.data,
+        (W, H),
+        PixelRect::new(0, 0, W, H),
+    );
+    let lens = p.lens();
+    let mut lemons = 0;
+    for &d in &scene.discs {
+        let (ux, uy) = (d.0 - 500.0, d.1 - 333.5);
+        let rho = ux.hypot(uy) / hd;
+        let b = blob(&out, &scene.ground, W, H, d, 3.6);
+        let a = table_at(&lens.field.radii, &lens.field.astigmatism, rho);
+        // The ball's radius as the detector measured it (the region above 40 % of the way to its plateau), which
+        // is what the stretch is made from.
+        let ball = planes
+            .bokeh()
+            .expect("map")
+            .balls()
+            .iter()
+            .find(|k| (k.x * W as f64 - d.0).hypot(k.y * H as f64 - d.1) < 3.0)
+            .expect("the ball is found");
+        let r = ball.radius * hd;
+        assert!((r / d.2 - 1.0).abs() < 0.12, "radius {r} against {}", d.2);
+        let wanted = (1.0 + 4.0 / 3.0 * (a * hd / (1.527_525 * r)).powi(2)).sqrt();
+        eprintln!(
+            "rho {rho:.2}, r {r:.2}: elongation {:.3}, formula {wanted:.3}",
+            b.elongation
+        );
+        assert!(
+            (b.elongation / wanted - 1.0).abs() < 0.03,
+            "rho {rho:.2}, r {r:.2}: elongation {:.3}, wanted {wanted:.3} (a {a:.4})",
+            b.elongation
+        );
+        if wanted > 1.3 {
+            // The long axis is the tangent: perpendicular to the radius, within 6 degrees.
+            let radial = uy.atan2(ux).to_degrees();
+            let off = ((b.angle_deg - radial + 90.0 + 90.0).rem_euclid(180.0) - 90.0).abs();
+            assert!(
+                off < 6.0,
+                "rho {rho:.2}: major axis {:.1} deg, radial {radial:.1} deg",
+                b.angle_deg
+            );
+            lemons += 1;
+        } else if rho < 0.45 {
+            assert!(
+                b.elongation < 1.05,
+                "near the centre the balls stay round: rho {rho:.2}: {}",
+                b.elongation
+            );
+        }
+    }
+    assert_eq!(lemons, 4, "the four balls at rho 0.9");
+}
+
+/// The second moments, along the unit vector `u` and across it, of the light the green channel has above `base`
+/// within `half` pixels of `(cx, cy)`, and the light itself.
+fn response_moments(
+    out: &[f32],
+    base: f32,
+    (cx, cy): (f64, f64),
+    half: i64,
+    u: (f64, f64),
+) -> (f64, f64, f64) {
+    let n = W * H;
+    let (mut m, mut mx, mut my) = (0.0f64, 0.0f64, 0.0f64);
+    for y in cy as i64 - half..=cy as i64 + half {
+        for x in cx as i64 - half..=cx as i64 + half {
+            let v = f64::from(out[n + y as usize * W + x as usize] - base);
+            m += v;
+            mx += v * (x as f64 + 0.5);
+            my += v * (y as f64 + 0.5);
+        }
+    }
+    let (mx, my) = (mx / m, my / m);
+    let (mut along, mut across) = (0.0f64, 0.0f64);
+    for y in cy as i64 - half..=cy as i64 + half {
+        for x in cx as i64 - half..=cx as i64 + half {
+            let v = f64::from(out[n + y as usize * W + x as usize] - base);
+            let (dx, dy) = (x as f64 + 0.5 - mx, y as f64 + 0.5 - my);
+            along += v * (dx * u.0 + dy * u.1).powi(2);
+            across += v * (-dx * u.1 + dy * u.0).powi(2);
+        }
+    }
+    (along / m, across / m, m)
+}
+
+#[test]
+fn the_gather_smears_a_blurred_field_along_the_tangent_by_the_swirl_plus_the_astigmatism() {
+    // A smooth bump (a Gaussian of 3 px, too faint to be a ball) on a field the map calls blurred everywhere: the
+    // response of the tangential gather. A biweight line of half-length L adds a variance of L^2 / 7 along the
+    // tangent and nothing across it, with L = e (k sigma b + a H) (`tangent_half_length`).
+    let at: (f64, f64) = (948.0, 628.0);
+    let hd = 600.97;
+    let rho = (at.0 - 500.0).hypot(at.1 - 333.5) / hd;
+    let (rx, ry) = ((at.0 - 500.0) / (rho * hd), (at.1 - 333.5) / (rho * hd));
+    let tangent = (-ry, rx);
+    let base = 0.5f32;
+    let n = W * H;
+    let mut data = vec![base; 3 * n];
+    for c in 0..3 {
+        for y in 0..H {
+            for x in 0..W {
+                let d2 = (x as f64 + 0.5 - at.0).powi(2) + (y as f64 + 0.5 - at.1).powi(2);
+                data[c * n + y * W + x] += (0.12 * (-d2 / (2.0 * 9.0)).exp()) as f32;
+            }
+        }
+    }
+    let spread = |swirl: f64, astigmatism: f64, edges: f64, blur_px: f64| -> (f64, f64) {
+        let p = field_swirl_plan(swirl, astigmatism, edges);
+        let planes = planes_all_blurred(&p, &data, blur_px);
+        assert!(planes.bokeh().is_some_and(|b| b.active()));
+        let out = reshape_tile(&p, &planes, 1, &data, (W, H), PixelRect::new(0, 0, W, H));
+        let lens = p.lens();
+        let sigma = table_at(&lens.field.radii, &lens.field.swirl, rho);
+        let a = table_at(&lens.field.radii, &lens.field.astigmatism, rho);
+        let len = edges / 100.0 * (1.527_525 * sigma * blur_px + a * hd);
+        let (along, across, _) = response_moments(&out, base, at, 70, tangent);
+        // The bump's own 9 px^2 is in both; the line adds to the first only.
+        ((along - across) / (len * len / 7.0), across)
+    };
+    // The astigmatism alone: whatever the blur, the line is the same.
+    let (r12, across12) = spread(0.0, 0.04, 100.0, 12.0);
+    eprintln!(
+        "astigmatism alone, blur 12 px: variance along the tangent over L^2/7 {r12:.4}, across {across12:.3}"
+    );
+    let (r20, across20) = spread(0.0, 0.04, 100.0, 16.0);
+    assert!(
+        (r12 - 1.0).abs() < 0.03,
+        "astigmatism at a blur of 12 px: {r12:.4} of L^2/7"
+    );
+    assert!(
+        (r20 - 1.0).abs() < 0.03,
+        "astigmatism at a blur of 16 px: {r20:.4} of L^2/7"
+    );
+    assert!(
+        (across12 - 9.0).abs() < 0.5 && (across20 - 9.0).abs() < 0.5,
+        "across: {across12} {across20}"
+    );
+    // The swirl alone grows with the blur; the two together add; Edges scales both.
+    let (s12, _) = spread(1.2, 0.0, 100.0, 12.0);
+    let (s20, _) = spread(1.2, 0.0, 100.0, 16.0);
+    assert!(
+        (s12 - 1.0).abs() < 0.03 && (s20 - 1.0).abs() < 0.03,
+        "swirl: {s12:.4} {s20:.4}"
+    );
+    let (both, _) = spread(1.2, 0.04, 100.0, 12.0);
+    assert!((both - 1.0).abs() < 0.03, "both: {both:.4}");
+    let (half, _) = spread(1.2, 0.04, 50.0, 12.0);
+    assert!((half - 1.0).abs() < 0.03, "Edges 50: {half:.4}");
 }
 
 #[test]

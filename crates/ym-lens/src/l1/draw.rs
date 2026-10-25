@@ -10,15 +10,20 @@
 //! unknown) stays as bright as it was over its larger area.
 //!
 //! The long axis is the sum of the stretch across the anamorphic axis, `(q - 1) r`, and the stretch along the
-//! tangent, `(q_t - 1) r` with `q_t = sqrt(1 + 4 (sigma e)^2 / 3)` (the aspect of a disc blurred along a line of
-//! half-length `sigma e r`, whose second moment the gather matches), the sign of the second chosen to add. The
+//! tangent, `(q_t - 1) r` with `q_t = sqrt(1 + 4 s^2 / 3)` (the aspect of a disc blurred along a box line of
+//! half-length `s r`, whose second moment the gather matches; `s = e (sigma + a H / (k r))` for the lens's swirl
+//! `sigma` and astigmatism `a`, [`tangent_half_length`]) held to [`TANGENT_ASPECT_MAX`], the sign of the second
+//! chosen to add. The
 //! lens's cat's-eye cuts the stretched patch with a soft mask: the patch's ellipse intersected with a copy of it
 //! shifted radially. The lens's rim profile (`bokeh.edge`) modulates the light, relative to its mean over the
 //! disc (so that a flat profile changes nothing), across the ball and not beyond it.
 //!
 //! Everything is a function of the ball and the pixel's absolute position, so tiles agree.
 
-use crate::consts::{BALL_GLOW_FADE, RIM_FADE_RADII, RIM_SAMPLES, RIM_SOFT_FROM, RIM_SOFT_TO};
+use crate::consts::{
+    BALL_GLOW_FADE, PROFILE_SCALE, RIM_FADE_RADII, RIM_SAMPLES, RIM_SOFT_FROM, RIM_SOFT_TO,
+    TANGENT_ASPECT_MAX, TANGENT_REACH_MAX,
+};
 
 use super::Ball;
 
@@ -81,9 +86,10 @@ pub(super) struct ShapeParams<'a> {
     pub e: f64,
     /// True when the anamorphic axis is the buffer's x axis (so the cross direction is y).
     pub axis_x: bool,
-    /// Lens field radii, swirl and cat's-eye profiles (9 entries each).
+    /// Lens field radii, swirl, astigmatism and cat's-eye profiles (9 entries each).
     pub radii: &'a [f64],
     pub swirl: &'a [f64],
+    pub astigmatism: &'a [f64],
     pub cats_eye: &'a [f64],
     /// The lens's rim profile (16 samples).
     pub rim: &'a [f64],
@@ -159,6 +165,16 @@ pub(super) fn tangential_aspect(sigma_e: f64) -> f64 {
     (1.0 + 4.0 / 3.0 * sigma_e * sigma_e).sqrt()
 }
 
+/// The half-length, in pixels, of the biweight line of the tangential gather at a pixel of blur `blur_px` where
+/// the lens has the swirl `sigma` and the astigmatism `astig` (half-diagonals): `e (k sigma b + a H)` with
+/// `k` = [`PROFILE_SCALE`] and `H` = `hk`, the half-diagonal in pixels, held to [`TANGENT_REACH_MAX`] of it
+/// (`docs/21` section 4, L1, *As built (field swirl)*). The first term grows with the blur, the second does not
+/// depend on it: the tangential and sagittal focal surfaces part with the field radius whatever the defocus.
+#[inline]
+pub(super) fn tangent_half_length(e: f64, sigma: f64, astig: f64, blur_px: f64, hk: f64) -> f64 {
+    (e * (PROFILE_SCALE * sigma * blur_px + astig * hk)).min(TANGENT_REACH_MAX * hk)
+}
+
 /// The patch of `ball` for this view, or `None` when the lens leaves the ball as it is.
 pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
     let r_px = ball.radius * p.hk;
@@ -178,11 +194,15 @@ pub(super) fn shape_of(ball: &Ball, p: &ShapeParams) -> Option<Shape> {
     };
     let (tx, ty) = (-ry, rx);
     let sigma = profile_at(p.radii, p.swirl, rho);
+    let astig = profile_at(p.radii, p.astigmatism, rho);
     let cat = profile_at(p.radii, p.cats_eye, rho);
-    // The stretch across the anamorphic axis and the swirl along the tangent.
+    // The stretch across the anamorphic axis and the swirl along the tangent: the aspect of a disc blurred along
+    // the gather's line (the box line of its spread), a lemon of at most `TANGENT_ASPECT_MAX` to one.
     let (yx, yy) = if p.axis_x { (0.0, 1.0) } else { (1.0, 0.0) };
     let v = (p.q - 1.0) * r_px;
-    let t = (tangential_aspect(sigma * p.e) - 1.0) * r_px;
+    let box_half = tangent_half_length(p.e, sigma, astig, r_px, p.hk) / PROFILE_SCALE;
+    let q_t = tangential_aspect(box_half / r_px).min(TANGENT_ASPECT_MAX);
+    let t = (q_t - 1.0) * r_px;
     let (vx, vy) = (v * yx, v * yy);
     let mut sgn = 1.0;
     if vx * tx + vy * ty < 0.0 {
@@ -418,6 +438,119 @@ mod tests {
         assert!((tangential_aspect(0.0) - 1.0).abs() < 1e-12);
         assert!((tangential_aspect(1.5) - 2.0).abs() < 1e-12);
         assert!(tangential_aspect(0.5) > 1.0 && tangential_aspect(0.5) < tangential_aspect(1.0));
+    }
+
+    /// The nine radii and a lens with the given swirl and astigmatism tables (cat's-eye none, rim flat).
+    fn tables(
+        swirl: [f64; 9],
+        astigmatism: [f64; 9],
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+        (
+            (0..9).map(|i| i as f64 / 8.0).collect(),
+            swirl.to_vec(),
+            astigmatism.to_vec(),
+            vec![0.0; 9],
+            vec![1.0; RIM_SAMPLES],
+        )
+    }
+
+    /// The half-diagonal of the 1500 x 1000 frame of these tests, in pixels.
+    fn half_diagonal() -> f64 {
+        750.0f64.hypot(500.0)
+    }
+
+    fn params<'a>(
+        t: &'a (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>),
+        e: f64,
+    ) -> ShapeParams<'a> {
+        ShapeParams {
+            fw: 1500.0,
+            fh: 1000.0,
+            hk: half_diagonal(),
+            q: 1.0,
+            e,
+            axis_x: true,
+            radii: &t.0,
+            swirl: &t.1,
+            astigmatism: &t.2,
+            cats_eye: &t.3,
+            rim: &t.4,
+            rim_mean: 1.0,
+        }
+    }
+
+    /// A ball of `r_px` pixels at `rho` half-diagonals from the centre of the 1500 x 1000 frame, on the diagonal.
+    fn ball_on_diagonal(rho: f64, r_px: f64) -> Ball {
+        let hk = half_diagonal();
+        let (ux, uy) = (1500.0 / (2.0 * hk), 1000.0 / (2.0 * hk));
+        Ball {
+            x: 0.5 + rho * hk * ux / 1500.0,
+            y: 0.5 + rho * hk * uy / 1000.0,
+            radius: r_px / hk,
+            take_out_radius: 1.5 * r_px / hk,
+            energy: [1.0; 3],
+            fit: [[0.0; 3]; 3],
+            peak: 1.0,
+            supported: true,
+            softness: 0.2,
+            clear: true,
+        }
+    }
+
+    #[test]
+    fn the_tangent_line_is_the_swirl_plus_the_astigmatism_held_to_the_reach() {
+        let hk = 900.0;
+        // Nothing without either term; the swirl grows with the blur, the astigmatism does not.
+        assert_eq!(tangent_half_length(1.0, 0.0, 0.0, 30.0, hk), 0.0);
+        let swirl = tangent_half_length(1.0, 1.2, 0.0, 20.0, hk);
+        assert!(
+            (swirl - PROFILE_SCALE * 1.2 * 20.0).abs() < 1e-12,
+            "{swirl}"
+        );
+        let flat = tangent_half_length(1.0, 0.0, 0.03, 20.0, hk);
+        assert!((flat - 27.0).abs() < 1e-12, "{flat}");
+        assert_eq!(flat, tangent_half_length(1.0, 0.0, 0.03, 5.0, hk));
+        // Together they add, and Edges scales both.
+        let both = tangent_half_length(1.0, 1.2, 0.03, 20.0, hk);
+        assert!((both - (swirl + flat)).abs() < 1e-12);
+        let half = tangent_half_length(0.5, 1.2, 0.03, 20.0, hk);
+        assert!((half - 0.5 * both).abs() < 1e-12);
+        // Never longer than the reach.
+        let cap = TANGENT_REACH_MAX * hk;
+        assert_eq!(tangent_half_length(1.0, 2.9, 0.03, 27.0, hk), cap);
+        assert!(tangent_half_length(1.0, 0.1, 0.01, 10.0, hk) < cap);
+    }
+
+    #[test]
+    fn a_small_ball_of_the_outer_field_is_a_lemon_by_the_formula_and_never_a_line() {
+        let mut astig = [0.0; 9];
+        for (i, a) in astig.iter_mut().enumerate().skip(3) {
+            *a = 0.03 * ((i as f64 / 8.0 - 0.2) / 0.8).powf(1.64);
+        }
+        let t = tables([0.0; 9], astig);
+        let p = params(&t, 1.0);
+        let hk = p.hk;
+        for (rho, r_px) in [(0.9, 6.0), (0.9, 12.0), (0.9, 24.0), (0.6, 10.0)] {
+            let s = shape_of(&ball_on_diagonal(rho, r_px), &p).expect("a lemon");
+            // `a(rho)` read between the nine radii as the gather reads it.
+            let a = profile_at(&t.0, &t.2, rho);
+            let box_half = a * hk / PROFILE_SCALE;
+            let want = tangential_aspect(box_half / r_px).min(TANGENT_ASPECT_MAX);
+            assert!(
+                (s.f / want - 1.0).abs() < 1e-9,
+                "rho {rho}, r {r_px}: stretch {} against {want}",
+                s.f
+            );
+            // The long axis is the tangent: perpendicular to the radius (the diagonal here).
+            let (dx, dy) = (1500.0 / (2.0 * hk), 1000.0 / (2.0 * hk));
+            assert!((s.m.0 * dx + s.m.1 * dy).abs() < 1e-6, "{:?}", s.m);
+        }
+        // A tiny ball would be a line: held at the cap. One at the centre stays round.
+        let tiny = shape_of(&ball_on_diagonal(0.95, 1.0), &p).expect("a lemon");
+        assert!((tiny.f - TANGENT_ASPECT_MAX).abs() < 1e-9, "{}", tiny.f);
+        assert!(shape_of(&ball_on_diagonal(0.1, 12.0), &p).is_none());
+        // Edges 0 leaves every ball round.
+        assert!(shape_of(&ball_on_diagonal(0.9, 8.0), &params(&t, 0.0)).is_none());
     }
 
     fn patch(f: f64, earlier: [(f64, f64, f64, f64); OWNERS]) -> Shape {

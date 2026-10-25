@@ -22,7 +22,7 @@
 //!
 //! # Bokeh reshaping (L1)
 //!
-//! Where L1 acts (Anamorphic above 0, or Edges on a lens with a swirl or a cat's-eye, on a photo with
+//! Where L1 acts (Anamorphic above 0, or Edges on a lens with a swirl, an astigmatism or a cat's-eye, on a photo with
 //! out-of-focus background) the tile gathers the raw window L1 reads (L2's input rectangle grown by L1's halo),
 //! runs the reshaping kernels over L2's input rectangle, and L2 reads their output; L3 still reads the raw
 //! picture. The photo's blur map is uploaded once with the planes and the balls' shapes once per plan shape

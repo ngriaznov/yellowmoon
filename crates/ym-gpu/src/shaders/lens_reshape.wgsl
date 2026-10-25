@@ -84,7 +84,7 @@ struct ReshapeU {
 // Generated before this text (kernels/lens_reshape.rs, from ym_lens::consts): LR_B_MIN, LR_B_CAP, LR_MIN_LINE,
 // LR_ACCEPT2, LR_ACCEPT_CONF, LR_SUBJECT_SHARE, LR_SHARP_FROM, LR_SHARP_RATIO, LR_STRAND_VALLEY,
 // LR_STRAND_MARGIN, LR_RIM_REACH, LR_DILATE, LR_HALF_TAPS, LR_SHAPE_VECTORS, LR_PROFILE_SCALE, LR_RATIO_FROM,
-// LR_RATIO_TO, LR_SOFT_HALF, LR_SOFT_FROM, LR_SOFT_TO, LR_GLOW_FADE, LR_RIM_FADE.
+// LR_RATIO_TO, LR_SOFT_HALF, LR_SOFT_FROM, LR_SOFT_TO, LR_GLOW_FADE, LR_RIM_FADE, LR_TAN_MAX.
 
 // A smoothstep between two bounds (the reference's `smoothstep`).
 fn lr_ss(e0: f32, e1: f32, x: f32) -> f32 {
@@ -766,22 +766,24 @@ fn lr_radius(i: u32) -> f32 {
     return tab[i / 4u][i % 4u];
 }
 
-fn lr_swirl(i: u32) -> f32 {
-    return tab[3u + i / 4u][i % 4u];
+// Entry i of the lens profile whose three vectors start at `base` in the scale's table (the swirl at 3, the
+// astigmatism at 11).
+fn lr_prof(base: u32, i: u32) -> f32 {
+    return tab[base + i / 4u][i % 4u];
 }
 
-// The lens's swirl profile at the field radius rho, linear between its nine radii, held beyond the last.
-fn lr_swirl_at(rho: f32) -> f32 {
+// The lens profile at `base` at the field radius rho, linear between its nine radii, held beyond the last.
+fn lr_prof_at(base: u32, rho: f32) -> f32 {
     if (rho <= lr_radius(0u)) {
-        return lr_swirl(0u);
+        return lr_prof(base, 0u);
     }
     for (var i = 1u; i < 9u; i = i + 1u) {
         if (rho <= lr_radius(i)) {
             let t = (rho - lr_radius(i - 1u)) / (lr_radius(i) - lr_radius(i - 1u));
-            return lr_swirl(i - 1u) + t * (lr_swirl(i) - lr_swirl(i - 1u));
+            return lr_prof(base, i - 1u) + t * (lr_prof(base, i) - lr_prof(base, i - 1u));
         }
     }
-    return lr_swirl(8u);
+    return lr_prof(base, 8u);
 }
 
 fn lr_o1(x: i32, y: i32) -> vec3<f32> {
@@ -903,8 +905,15 @@ fn lr_final_main(gid: vec3<u32>) {
         let dx = f32(2 * x + 1 - pu.ints.x) * 0.5;
         let dy = f32(2 * y + 1 - pu.ints.y) * 0.5;
         let rr = sqrt(dx * dx + dy * dy);
-        let sigma = lr_swirl_at(rr / pu.frame.z);
-        let len = lr_opaque(lr_opaque(lr_opaque(lr_opaque(lr_opaque(sigma * pu.par.y) * LR_PROFILE_SCALE) * bp) * pu.frame.z) * lr_knee(bp));
+        // The half-length of the tangential line, `e (k sigma b + a H)` held to LR_TAN_MAX of the half-diagonal, times
+        // the knee (the reference's `tangent_half_length`): the swirl grows with the blur, the astigmatism does not.
+        let sigma = lr_prof_at(3u, rr / pu.frame.z);
+        let astig = lr_prof_at(11u, rr / pu.frame.z);
+        let blur_px = lr_opaque(bp * pu.frame.z);
+        let along = lr_opaque(lr_opaque(sigma * LR_PROFILE_SCALE) * blur_px);
+        let flat = lr_opaque(astig * pu.frame.z);
+        let line = lr_opaque(pu.par.y * lr_opaque(along + flat));
+        let len = lr_opaque(lr_opaque(min(line, LR_TAN_MAX * pu.frame.z)) * lr_knee(bp));
         if (rr >= 1.0e-9 && len >= LR_MIN_LINE) {
             let ux = -dy / rr;
             let uy = dx / rr;

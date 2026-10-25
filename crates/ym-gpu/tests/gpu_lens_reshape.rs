@@ -730,6 +730,47 @@ fn the_binding_stays_inside_the_design_size() {
 }
 
 #[test]
+fn the_binding_stays_inside_the_design_size_at_the_blur_cap_of_a_50_mp_frame() {
+    // The longest lines: the lens plane's balls are blurred by more than `b_cap` (0.03 half-diagonals), so the
+    // vertical line (Anamorphic 100), the tangential one (the Petzval's field swirl at Edges 100, held to
+    // `TANGENT_REACH_MAX`), the feather and the guide all reach their ends, on an 8658 x 5772 frame (lens plane
+    // 1083 x 722). The 1024 px tile of the export and its window must still be one binding of the design size.
+    let _guard = serial();
+    let (w, h) = (8658usize, 5772usize);
+    let p = plan(amounts(LensKind::Petzval, 0.0, 100.0, 100.0), w, h, Axis::X);
+    assert_eq!(p.lens_plane_scale(), 8);
+    let scene =
+        balls_over_texture_scene(1083, 722, 12.0, &[24.0, 26.0, 22.0, 25.0], Noise::NONE, 8);
+    let planes = planes_from_plane(&p, &scene);
+    let pass = p.bokeh_pass(&planes, 1, w, h).expect("a pass");
+    let reach = ym_lens::consts::TANGENT_REACH_MAX * pass.half_diag;
+    note!(
+        "L1 at the blur cap on 8658 x 5772: tangential half-length at most {:.0} px, halo {} px (vertical {}, tangential {}, feather {}), largest binding of a 1024 px tile {:.1} MiB, of a 512 px tile {:.1} MiB",
+        reach,
+        pass.halo(),
+        pass.v_halo,
+        pass.t_halo,
+        pass.feather,
+        ym_gpu::kernels::lens_reshape::max_binding_bytes(Rect::new(3000, 2000, 1024, 1024), &pass)
+            as f64
+            / f64::from(1u32 << 20),
+        ym_gpu::kernels::lens_reshape::max_binding_bytes(Rect::new(3000, 2000, 512, 512), &pass)
+            as f64
+            / f64::from(1u32 << 20),
+    );
+    assert!(
+        pass.t_halo as f64 <= reach + 2.0,
+        "the tangential halo {} is held to the reach {reach}",
+        pass.t_halo
+    );
+    common::limits::assert_max_binding_bytes(
+        "lens reshape at the cap",
+        Rect::new(3000, 2000, 1024, 1024),
+        |r| ym_gpu::kernels::lens_reshape::max_binding_bytes(r, &pass),
+    );
+}
+
+#[test]
 fn a_source_that_does_not_cover_the_halo_is_refused() {
     let _guard = serial();
     let Some(dev) = common::lens::gpu() else {

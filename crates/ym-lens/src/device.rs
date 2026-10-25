@@ -264,9 +264,9 @@ pub struct FlareMix {
 // L1: bokeh reshaping
 
 /// Vectors in the header of [`BokehScaleData::vectors`]: the lens's field radii (3 vectors, 9 values and 3 of
-/// padding), its swirl profile (3), its rim profile (4, 16 values) and the profile's mean over a disc (1: the
-/// value, three zeros).
-pub const BOKEH_HEADER: usize = 11;
+/// padding), its swirl profile (3), its rim profile (4, 16 values), the profile's mean over a disc (1: the
+/// value, three zeros) and its astigmatism profile (3).
+pub const BOKEH_HEADER: usize = 14;
 
 /// Vectors per ball in [`BokehScaleData::vectors`]. A record, with integers carried as whole numbers:
 ///
@@ -354,7 +354,7 @@ pub struct BokehPass {
     pub lines_along_y: bool,
     /// True when the vertical gather acts (Anamorphic above 0).
     pub vertical: bool,
-    /// True when the tangential gather acts (Edges on a lens with a swirl).
+    /// True when the tangential gather acts (Edges on a lens with a swirl or an astigmatism).
     pub tangential: bool,
     /// Pixels of context the vertical gather needs.
     pub v_halo: usize,

@@ -44,6 +44,9 @@ pub struct Recipe {
     pub distortion: (f64, f64),
     /// Swirl at the edge.
     pub swirl: f64,
+    /// Astigmatism at the edge, in half-diagonals (none of the synthetic lenses has any: a test that wants it
+    /// edits `field.astigmatism`).
+    pub astigmatism: f64,
     /// Cat's-eye at the edge.
     pub cats_eye: f64,
     /// Starting `(flares, edges)`.
@@ -72,6 +75,7 @@ pub fn recipe(kind: LensKind) -> Recipe {
             falloff,
             distortion,
             swirl,
+            astigmatism: 0.0,
             cats_eye,
             start,
         }
@@ -298,6 +302,7 @@ pub fn lens_json(rc: &Recipe) -> Value {
             "relative_illumination": rho2.iter().map(|r2| 1.0 - rc.falloff * r2).collect::<Vec<_>>(),
             "distortion": { "k1": rc.distortion.0, "k2": rc.distortion.1 },
             "swirl": rho2.iter().map(|r2| rc.swirl * r2).collect::<Vec<_>>(),
+            "astigmatism": rho2.iter().map(|r2| rc.astigmatism * r2).collect::<Vec<_>>(),
             "cats_eye": rho2.iter().map(|r2| rc.cats_eye * r2).collect::<Vec<_>>(),
         },
         "bokeh": { "rim": rim },
