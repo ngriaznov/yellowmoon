@@ -34,7 +34,7 @@
 //! | `off` | no lens |
 //! | `default` | default 60 40 0 |
 //! | `classic`, `vintage`, `petzval`, `triplet`, `sonnar`, `detuned` | the lens with its `start` amounts, 0 |
-//! | `anamorphic` | default 70 30 100 |
+//! | `anamorphic` | default 60 40 100 |
 //! | `vintage-max` | vintage 100 100 100 |
 //!
 //! The variants are rendered in an order that builds the lens planes once per lens (the renderer keeps
@@ -143,7 +143,7 @@ fn variants(lib: &LensLibrary) -> Fallible<Vec<Variant>> {
     }
     out.push(Variant {
         name: "anamorphic",
-        lens: ls(LensKind::Default, 70.0, 30.0, 100.0),
+        lens: ls(LensKind::Default, 60.0, 40.0, 100.0),
     });
     out.push(Variant {
         name: "vintage-max",
