@@ -1,13 +1,16 @@
-//! C12 step 1c: the red chroma step, a smooth hue-preserving chroma gain on the reds, applied to linear
-//! AWG4 in front of ACES 2 (`docs/02-colour-pipeline.md`, "Red chroma (C12 step 1c)"; owner decision of
-//! 2026-10-24, "R1 fix looks better than what we have currently").
+//! C12 step 1c: the red chroma step, a smooth hue-preserving chroma gain on the reds and, on its up side,
+//! the ochres and yellows, applied to linear AWG4 in front of ACES 2 (`docs/02-colour-pipeline.md`, "Red
+//! chroma (C12 step 1c)"; owner decisions of 2026-10-24, "R1 fix looks better than what we have currently",
+//! and 2026-10-25, "Yellows keep colour").
 //!
 //! # Why
 //!
 //! ACES 2 SDR takes chroma out of mid-tone and light reds at the same display lightness (10 to 22 %, the
-//! reds "go coral") and adds 30 to 40 % to dark reds. The step gives back what ACES 2 removes above about
-//! -0.5 stop, caps the result below the output gamut's edge, and (per look) can take back part of ACES 2's
-//! dark boost. Grey, other hues and skin are untouched.
+//! reds "go coral") and adds 30 to 40 % to dark reds. It takes about a third out of ochres and yellows at
+//! +1 stop over grey (display C* over colourimetric C* 0.66 to 0.70 at hue 70 to 100 degrees, 0.43 to 0.46
+//! at +2 stops), so an ochre wall reads as peach. The step gives back what ACES 2 removes above about -0.5
+//! stop, caps the result below the output gamut's edge, and (per look) can take back part of ACES 2's dark
+//! boost of reds. Grey, skin and other hues are untouched.
 //!
 //! # The step
 //!
@@ -20,7 +23,9 @@
 //! yd   = YD(s)                                     display luminance of the neutral axis through ACES 2
 //! lab  = Lab_D65(xyz / Y * yd) ; Ld = L* of yd ; C = |ab| ; h = atan2(b, a)
 //! kap  = clamp((20 / max(C, 8))^0.65, 0.35, 1.25)
-//! W    = raised-cosine hue window: 1 on [3, 31] deg, 0 below -27 and above 43 deg
+//! W    = raised-cosine hue window: the red window (1 on [3, 31] deg, 0 below -27 and above 43 deg); on the
+//!        up side also the yellow window (1 on [66, 95] deg, 0 below 58 and above 110 deg), whichever is larger;
+//!        the dark side has the red window only
 //! P(s) = 0.34 (s + 0.5) for s >= -0.5 ; -0.43 tanh((-0.5 - s) / 1.65) for s < -0.5
 //! lnf  = kap * P
 //! if P > 0:                                        the up side, strength f_up
@@ -43,10 +48,13 @@
 //! * Grey is bit-exact: the Lab hue of the neutral axis (the offset of AWG4's white from the Lab reference
 //!   white) is about 260 degrees, far outside the window, so the step returns its input.
 //! * Hue is kept (the Lab hue at the display lightness changes by less than 1e-9 degrees), Y is kept.
+//! * Skin hues (CIELAB 45 to 57 degrees, between the red and the yellow window) keep a weight of 0: the step
+//!   returns them bit for bit.
 //! * Bit-exact where the window is 0, where the fade is 0, where `f_up` or `f_dn` is 0 for the side the
 //!   pixel is on, and for `Y <= 1e-7`, a negative `Y` or a non-finite component.
 //! * Monotone in chroma (never folds): the output chroma grows with the input chroma at every stop and hue,
-//!   up to 1.6 times the gamut edge, with a minimum slope of 0.16 (Rec.709) and 0.13 (P3).
+//!   up to 1.6 times the gamut edge, with a minimum slope of 0.09 (Rec.709) and 0.07 (P3) for the reds and
+//!   0.066 and 0.056 for the yellows.
 //! * `s` is held at [`S_MAX`] (the end of the neutral-axis table, +8 stops: display white) before `P` and
 //!   the table lookups, so the step stays finite for the brightest scene values.
 //!

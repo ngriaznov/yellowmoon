@@ -24,7 +24,7 @@
 
 struct FieldU {
     zero: vec4<u32>,            // x: always 0 (the opaque word of the barrier)
-    frame: vec4<f32>,           // frame width, height, half-diagonal in pixels, 0
+    frame: vec4<f32>,           // frame width, height, half-diagonal in pixels, the table radius scale
     plan: vec4<f32>,            // e', alpha, side softness, fringe boost
     ints: vec4<i32>,            // frame width, height, lmax, 1 when the axis is the buffer's y
     src: vec4<i32>,             // the input: frame column and row of its first pixel, width, height
@@ -89,6 +89,58 @@ fn lf_hermite(y0: f32, y1: f32, d0: f32, d1: f32, h: f32, t: f32) -> f32 {
         + (3.0 * t2 - 2.0 * t3) * y1 + (t3 - t2) * h * d1;
 }
 
+// The concave C1 curve through (0, y0) and (h, y1) whose slope falls from d0 to d1 (d0 >= (y1 - y0) / h >=
+// d1), at x = t h (ym_lens::field::concave_piece): a quadratic when the secant is the mean of the two
+// slopes, else a straight run at the slope of one end and a quadratic at the other.
+fn lf_concave_piece(y0: f32, y1: f32, d0: f32, d1: f32, h: f32, t: f32) -> f32 {
+    let x = t * h;
+    let dd = d0 - d1;
+    if (dd <= 1.0e-9) {
+        return y0 + d0 * x;
+    }
+    let m = (y1 - y0) / h;
+    if (m <= 0.5 * (d0 + d1)) {
+        let h1 = clamp(2.0 * h * (m - d1) / dd, 0.0, h);
+        if (x <= h1) {
+            if (h1 <= 0.0) {
+                return y0;
+            }
+            return y0 + d0 * x - dd * x * x / (2.0 * h1);
+        }
+        return y0 + 0.5 * h1 * (d0 + d1) + d1 * (x - h1);
+    }
+    let h2 = clamp(2.0 * h * (d0 - m) / dd, 0.0, h);
+    let h1 = h - h2;
+    if (x <= h1) {
+        return y0 + d0 * x;
+    }
+    let u = x - h1;
+    return y0 + d0 * x - dd * u * u / (2.0 * h2);
+}
+
+// The relative illumination T at the table radius rho_t (ym_lens::field::FieldTables::illumination_at):
+// the concave curve through the nine values, and beyond 1 the end slope carried straight on.
+fn lf_illumination_at(rho_t: f32) -> f32 {
+    let last = LF_RADII - 1u;
+    if (rho_t > 1.0) {
+        return lf_illumination(last) + lf_illumination_slope(last) * (rho_t - 1.0);
+    }
+    let rho = clamp(rho_t, 0.0, 1.0);
+    var s = 0u;
+    loop {
+        if (s + 2u < LF_RADII && rho > lf_radius(s + 1u)) {
+            s = s + 1u;
+        } else {
+            break;
+        }
+    }
+    let ra = lf_radius(s);
+    let rb = lf_radius(s + 1u);
+    let t = clamp((rho - ra) / (rb - ra), 0.0, 1.0);
+    return lf_concave_piece(lf_illumination(s), lf_illumination(s + 1u), lf_illumination_slope(s),
+        lf_illumination_slope(s + 1u), rb - ra, t);
+}
+
 // Bends a half-width towards LF_W_MAX without a corner (ym_lens::field::soft_cap): the width up to
 // LF_W_KNEE, then K + (W - K) u / (1 + u) for u = (x - K) / (W - K).
 fn lf_soft_cap(x: f32) -> f32 {
@@ -123,8 +175,8 @@ fn lf_pixel(i: i32, j: i32) -> LfPix {
         ya = u;
     }
     let ax = pu.plan.y * xa;
-    // The oval radius as it is: beyond 1 the tables' shapes are held at the last radius, while T and w
-    // carry on by their own law.
+    // The oval radius as it is: beyond 1 the tables' shapes are held at the last radius, while w carries on
+    // by its own law (and T by the end slope, at the radius over the scale).
     let rho_raw = sqrt(ax * ax + ya * ya);
     let rho = clamp(rho_raw, 0.0, 1.0);
     // The segment: the table radius below rho and the blend towards the next one.
@@ -139,15 +191,12 @@ fn lf_pixel(i: i32, j: i32) -> LfPix {
     let ra = lf_radius(s);
     let rb = lf_radius(s + 1u);
     let t = clamp((rho - ra) / (rb - ra), 0.0, 1.0);
-    var illum = lf_hermite(lf_illumination(s), lf_illumination(s + 1u), lf_illumination_slope(s),
-        lf_illumination_slope(s + 1u), rb - ra, t);
+    // The gain reads T at the oval radius over the scale; the width reads the oval radius itself.
+    let illum = lf_illumination_at(rho_raw / pu.frame.w);
     var w = lf_hermite(lf_half_width(s), lf_half_width(s + 1u), lf_half_width_slope(s),
         lf_half_width_slope(s + 1u), rb - ra, t);
     if (rho_raw > 1.0) {
         let at_edge = LF_RADII - 1u;
-        let t_edge = lf_illumination(at_edge);
-        let m = -lf_illumination_slope(at_edge) / t_edge;
-        illum = t_edge / (1.0 + m * (rho_raw - 1.0));
         w = w + lf_half_width_slope(at_edge) * (rho_raw - 1.0);
     }
     let gain = 1.0 - pu.plan.x * (1.0 - illum);

@@ -58,6 +58,7 @@ pub mod highlights;
 pub mod lens;
 pub mod lens_field;
 pub mod lens_flare;
+pub mod lens_light;
 pub mod lens_reshape;
 pub mod log_guided;
 pub mod magnify;

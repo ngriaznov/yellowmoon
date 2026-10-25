@@ -23,8 +23,9 @@ use rayon::prelude::*;
 
 use crate::consts::{
     COARSE_MIN_AREA_PX, COARSE_NODES_PER_FEATURE, COARSE_RIM_FEATURE, COMPACT_EXTENT_HD,
-    EDGE_FLOOR_PX, EDGE_REACH_SIGMAS, GHOST_FULL_RADIUS, GHOST_LIGHT_MAX, GHOST_PEAK_MAX,
-    GHOST_PRUNE_BUDGET, GHOST_SMALL_SHARE, GHOST_SOFT_MIN, GHOST_TINT_MAX_RATIO, SPIKE_SIZE,
+    EDGE_FLOOR_PX, EDGE_REACH_SIGMAS, GHOST_COATING_SHIFT_NM, GHOST_FULL_RADIUS, GHOST_LIGHT_MAX,
+    GHOST_PEAK_MAX, GHOST_PRUNE_BUDGET, GHOST_SHADE, GHOST_SMALL_SHARE, GHOST_SOFT_MIN,
+    GHOST_TINT_MAX_RATIO, SPIKE_SIZE,
     STREAK_E_HALF, STREAK_E_MIN, STREAK_MAX_LIGHTS, STREAK_PEAK_PER_FRACTION, STREAK_REACH_AT_E0,
     STREAK_REACH_E0, STREAK_REACH_MIN, STREAK_REACH_PER_DECADE, STREAK_SIGMA_MIN_HD,
     STREAK_SIGMA_REF_HD, STREAK_STRETCH_MIN, STREAK_TOTAL_CAP,
@@ -197,8 +198,11 @@ pub(crate) struct Ghost {
     /// Light per channel over the density's normaliser.
     amp: [f64; 3],
     /// The largest density the ghost reaches anywhere, per channel at most: the brightest channel's `amp`
-    /// times the rim's peak.
+    /// times the rim's peak times the shading's `1 + beta`.
     peak: f64,
+    /// The shading across the ghost: the unit vector toward the optical axis in the ghost's own (unstretched)
+    /// coordinates, and `beta` ([`GHOST_SHADE`]). The density is times `1 + beta (x ux + y uy) / s`.
+    shade: [f64; 3],
     /// 1 when the ghost is drawn at every pixel, else the spacing in pixels of the grid of nodes it is drawn
     /// on ([`COARSE_LEVELS`]).
     level: usize,
@@ -208,7 +212,7 @@ pub(crate) struct Ghost {
 impl Ghost {
     /// The brightest channel, in clip levels, at the ghost's brightest place.
     fn peak_level(&self, clip: &[f64; 3], rim_peak: f64) -> f64 {
-        (0..3).map(|c| self.amp[c] / clip[c]).fold(0.0f64, f64::max) * rim_peak
+        (0..3).map(|c| self.amp[c] / clip[c]).fold(0.0f64, f64::max) * rim_peak * (1.0 + self.shade[2])
     }
 
     /// The ghost with its light scaled by `k`.
@@ -216,7 +220,7 @@ impl Ghost {
         for a in &mut self.amp {
             *a *= k;
         }
-        self.peak = self.amp[0].max(self.amp[1]).max(self.amp[2]) * rim_peak;
+        self.peak = self.amp[0].max(self.amp[1]).max(self.amp[2]) * rim_peak * (1.0 + self.shade[2]);
     }
 }
 
@@ -436,6 +440,38 @@ pub(crate) fn ghost_tint(camera: &CameraResponse, spectrum: &[f64]) -> [f64; 3] 
     limited_tint(normalised_tint(camera, spectrum), GHOST_TINT_MAX_RATIO)
 }
 
+/// The shift, in nanometres, of the coating of the lens's ghost `index` ([`GHOST_COATING_SHIFT_NM`]): the
+/// fractional parts of the multiples of the golden ratio's conjugate, spread over the range, so any run of
+/// ghosts covers it evenly and the same ghost has the same shift in every photo.
+pub(crate) fn coating_shift_nm(index: usize) -> f64 {
+    let u = (0.618_033_988_749_894_9 * (index as f64 + 1.0)).fract();
+    GHOST_COATING_SHIFT_NM.0 + (GHOST_COATING_SHIFT_NM.1 - GHOST_COATING_SHIFT_NM.0) * u
+}
+
+/// A reflectance spectrum on the 31-sample grid moved `shift_nm` toward longer wavelengths (linear
+/// interpolation, the end values held).
+pub(crate) fn shifted_spectrum(spectrum: &[f64], shift_nm: f64) -> Vec<f64> {
+    let n = spectrum.len();
+    let step = crate::consts::GRID_STEP_NM;
+    (0..n)
+        .map(|k| {
+            let t = (k as f64 - shift_nm / step).clamp(0.0, (n - 1) as f64);
+            let i = (libm::floor(t) as usize).min(n - 1);
+            let j = (i + 1).min(n - 1);
+            let f = t - i as f64;
+            spectrum[i] + f * (spectrum[j] - spectrum[i])
+        })
+        .collect()
+}
+
+/// The tint of the lens's ghost `index`: its coating moved by [`coating_shift_nm`], then [`ghost_tint`].
+pub(crate) fn lens_ghost_tint(camera: &CameraResponse, spectrum: &[f64], index: usize) -> [f64; 3] {
+    ghost_tint(
+        camera,
+        &shifted_spectrum(spectrum, coating_shift_nm(index)),
+    )
+}
+
 /// The tint of a coating or streak spectrum on `camera`, scaled to a mean of 1 over the channels (a flat spectrum
 /// is neutral): the fraction of light a ghost has is its energy, the tint only gives it a colour.
 pub(crate) fn normalised_tint(camera: &CameraResponse, spectrum: &[f64]) -> [f64; 3] {
@@ -527,7 +563,8 @@ impl<'a> Items<'a> {
             .flare
             .ghosts
             .iter()
-            .map(|g| ghost_tint(camera, &g.coating))
+            .enumerate()
+            .map(|(i, g)| lens_ghost_tint(camera, &g.coating, i))
             .collect();
         let att_tints: Vec<[f64; 3]> = att
             .ghosts
@@ -611,6 +648,13 @@ impl<'a> Items<'a> {
             for mut g in group {
                 let total = peaks.get(&(src.component, g.index)).copied().unwrap_or(0.0);
                 let allowed = ghost_peak_max(g.s);
+                if std::env::var_os("YM_G1_DEBUG").is_some() {
+                    eprintln!(
+                        "G1GHOST comp {} src {:.3},{:.3} ext {:.4} idx {} s {:.3} total {:.5} allowed {:.5} amp_clip {:.5},{:.5},{:.5}",
+                        src.component, src.pos[0], src.pos[1], src.extent, g.index, g.s, total, allowed,
+                        g.amp[0] / items.clip[0] * rim_peak, g.amp[1] / items.clip[1] * rim_peak, g.amp[2] / items.clip[2] * rim_peak
+                    );
+                }
                 if total > allowed {
                     g.scale(allowed / total, rim_peak);
                 }
@@ -707,7 +751,14 @@ impl<'a> Items<'a> {
             fraction * tint[1] * src.ghost_energy[1] / norm,
             fraction * tint[2] * src.ghost_energy[2] / norm,
         ];
-        let peak = amp[0].max(amp[1]).max(amp[2]) * rim_peak;
+        let peak = amp[0].max(amp[1]).max(amp[2]) * rim_peak * (1.0 + GHOST_SHADE);
+        // Brighter on the side that faces the optical axis (the ghost lies on the line through it).
+        let norm_c = (centre[0] * centre[0] + centre[1] * centre[1]).sqrt();
+        let (ux, uy) = if norm_c > 1e-9 {
+            (-centre[0] / norm_c, -centre[1] / norm_c)
+        } else {
+            (1.0, 0.0)
+        };
         let level = self.level_for(sigma_edge, s, &span);
         Some(Ghost {
             index,
@@ -722,6 +773,7 @@ impl<'a> Items<'a> {
             g_max,
             amp,
             peak,
+            shade: [ux, uy, GHOST_SHADE],
             level,
             span,
         })
@@ -945,7 +997,12 @@ impl<'a> Items<'a> {
                         g.amp[0] as f32,
                         g.amp[1] as f32,
                     ]);
-                    out.push([g.amp[2] as f32, 0.0, 0.0, 0.0]);
+                    out.push([
+                        g.amp[2] as f32,
+                        g.shade[0] as f32,
+                        g.shade[1] as f32,
+                        g.shade[2] as f32,
+                    ]);
                     out.push([bits(0), bits(g.shape as i32), bits(g.level as i32), 0.0]);
                 }
                 Item::Burst(b) => {
@@ -1035,7 +1092,8 @@ impl<'a> Items<'a> {
         let prof = profile(&self.rim, self.tail, gauge, g.sigma_g);
         let (dx, dy) = (a - g.clip_centre[0], c - g.clip_centre[1]);
         let d = (dx * dx + dy * dy).sqrt();
-        let dens = prof * self.tail.q((d - g.clip_radius) / g.sigma_clip);
+        let shade = (1.0 + g.shade[2] * (x * g.shade[0] + y * g.shade[1]) / g.s).max(0.0);
+        let dens = prof * shade * self.tail.q((d - g.clip_radius) / g.sigma_clip);
         dens.max(0.0)
     }
 

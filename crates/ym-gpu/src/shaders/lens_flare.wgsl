@@ -1,8 +1,9 @@
 // L3, the lens's highlight optics, on the device (docs/21 section 4, L3; the CPU reference is
 // `ym_lens::l3`). Three kernels share this module:
 //
-//   lfl_restore  the restored light of the input: x times 1 + f (2^h - 1), f the clip test (a pixel left at
-//                the clip pattern first made neutral), as (r, g, b, 0) over the rectangle the glow core reads.
+//   lfl_restore  the restored light of the input: the light's colour (a pixel left at the clip pattern made
+//                neutral, a saturated channel raised to the mean of the others; lens_light_colour.wgsl) times
+//                1 + f (2^h - 1), f the clip test, as (r, g, b, 0) over the rectangle the glow core reads.
 //   lfl_nodes    the nodes of one grid of the ghosts that vary slowly: the sum, in list order, of the
 //                densities of the grid's ghosts at the node's place (a pixel corner, 2, 4 or 8 px apart on
 //                the absolute pixel grid), as (r, g, b, 0).
@@ -68,6 +69,8 @@ fn lfl_restore_main(gid: vec3<u32>) {
     let y = pu.resr.y + i32(gid.y);
     let p = u32(y - pu.zr.y) * pu.zs.x + u32(x - pu.zr.x);
     let v = vec3<f32>(zin[p], zin[pu.zs.y + p], zin[2u * pu.zs.y + p]);
+    // The factor reads the pixel as it is; the colour is the light's (ym_lens Restore::light_colour: the clip
+    // pattern's cast taken off, a saturated channel raised to the mean of the others).
     var m = 1.0e30;
     for (var c = 0u; c < 3u; c = c + 1u) {
         if (pu.clip[c] > 0.0) {
@@ -75,28 +78,11 @@ fn lfl_restore_main(gid: vec3<u32>) {
         }
     }
     var factor = 1.0;
-    var base = v;
     if (m < 1.0e29) {
         let f = clamp((m - pu.ramp.x) / (pu.ramp.y - pu.ramp.x), 0.0, 1.0);
         factor = 1.0 + f * pu.clip.w;
-        // A pixel left at the clip pattern (every channel at its own clip level, highlight recovery off) is
-        // restored as a neutral of the same total (ym_lens Restore::without_clip_cast).
-        var hi = -1.0e30;
-        var lo = 1.0e30;
-        for (var c = 0u; c < 3u; c = c + 1u) {
-            if (pu.clip[c] > 0.0) {
-                let n = v[c] / pu.clip[c];
-                hi = max(hi, n);
-                lo = min(lo, n);
-            }
-        }
-        if (hi > 0.0) {
-            let t = clamp((hi - lo) / hi / FL_CLIP_PATTERN, 0.0, 1.0);
-            let w = f * (1.0 - t * t * (3.0 - 2.0 * t));
-            let mean = (v.x + v.y + v.z) / 3.0;
-            base = v + w * (vec3<f32>(mean) - v);
-        }
     }
+    let base = ll_light_colour(v, pu.clip.xyz, pu.ramp.xy);
     aux[gid.y * u32(pu.resr.z) + gid.x] = vec4<f32>(base * factor, 0.0);
 }
 
@@ -295,7 +281,9 @@ fn lfl_ghost(rec: u32, shape: i32, a: f32, c: f32) -> vec3<f32> {
     let dx = a - v0.z;
     let dy = c - v0.w;
     let d = sqrt(dx * dx + dy * dy);
-    let dens = prof * lfl_q((d - v1.x) / v2.x);
+    // Brighter on the side that faces the optical axis: 1 + beta (x ux + y uy) / s, held at 0 or above.
+    let shade = max(1.0 + v3.w * (x * v3.y + y * v3.z) / v1.y, 0.0);
+    let dens = prof * shade * lfl_q((d - v1.x) / v2.x);
     if (dens > 0.0) {
         return vec3<f32>(v2.z, v2.w, v3.x) * dens;
     }

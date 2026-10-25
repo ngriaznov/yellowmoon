@@ -72,8 +72,9 @@
 //! * `red_chroma`: how much of the red chroma step (C12 step 1c, [`crate::display::red_chroma`]) the look
 //!   lets through; not part of the baked cube, it travels with the [`LookTransform`]. `up` (default 1,
 //!   0 to 1) is the strength of the step's up side, which gives back the chroma ACES 2 takes out of
-//!   mid-tone and light reds; `dark_relief` (default 0, 0 to 1) is the strength of its dark side, which
-//!   takes back part of the boost ACES 2 gives dark reds. A look that sets neither (or no `red_chroma`)
+//!   mid-tone and light reds, ochres and yellows (one strength for both); `dark_relief` (default 0, 0 to 1)
+//!   is the strength of its dark side, which takes back part of the boost ACES 2 gives dark reds (reds
+//!   only). A look that sets neither (or no `red_chroma`)
 //!   has Neutral's `up` 1 and `dark_relief` 0; `up` 0 and `dark_relief` 0 skip the step. At look
 //!   intensity `k` the strengths blend from Neutral's to the look's.
 

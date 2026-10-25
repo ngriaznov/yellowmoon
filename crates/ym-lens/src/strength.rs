@@ -1,19 +1,19 @@
 //! The strength of each flare element at Flares 100: the mapping from the lens data to the light fractions L3
-//! uses (`docs/21` section 4, L3, *As built (flare strength)*).
+//! uses (`docs/21` section 4, L3, *As built (flare strength)* and *As built (ghosts as light)*).
 //!
 //! The data give the fractions of light a lens would send into each element. They are physical for the glass
-//! they describe, and for a modern coated lens they are far too faint to see: a ghost of two multi-layer
-//! surfaces holds `0.3 % x 0.3 %` of the light, ten thousandths of a per cent. The top of the Flares slider is
-//! therefore the lens as if its coatings were worse: the ghosts of each lens are raised until together they
-//! take at least [`GHOST_FRACTION_FLOOR`] of a light's energy (the light is shared out in proportion to
-//! `fraction / s^2`, with `s` at least [`GHOST_FLOOR_MIN_RADIUS`]: the density of a ghost falls as `1 / s^2`, so
-//! the small ghosts, which read as shapes, get most of it and the frame-filling ones, which would turn the
-//! picture to a haze, almost none), the attachment's likewise, and the glow and the starburst to their floors. Nothing
-//! is ever lowered, a part a lens does not have stays absent, and the veil and the streak keep the data's
-//! numbers.
+//! they describe, and for a modern coated lens they are faint: a ghost of two multi-layer surfaces holds
+//! `0.3 % x 0.3 %` of the light, ten thousandths of a per cent. The top of the Flares slider is therefore the
+//! lens as if its coatings were somewhat worse: the ghosts of a lens whose fractions add up to less than
+//! [`GHOST_FRACTION_FLOOR`] are scaled, all alike, by `floor / sum` and at most [`GHOST_GAIN_MAX`] (so the
+//! proportions between its ghosts stay the data's: the ghost of a light is a defocused copy of the light, as
+//! faint as the glass makes it, and a large ghost of a small light, which spreads the same light over a larger
+//! area, is fainter than a small one), the attachment's likewise, and the glow and the starburst are raised to
+//! their floors. Nothing is ever lowered, a part a lens does not have stays absent, and the veil and the
+//! streak keep the data's numbers.
 
 use crate::consts::{
-    ATTACHMENT_GHOST_FLOOR, GHOST_FLOOR_MIN_RADIUS, GHOST_FRACTION_FLOOR, GLOW_FRACTION_FLOOR,
+    ATTACHMENT_GHOST_FLOOR, GHOST_FRACTION_FLOOR, GHOST_GAIN_MAX, GLOW_FRACTION_FLOOR,
     STARBURST_FRACTION_FLOOR,
 };
 use crate::data::{AttachmentData, GhostData, LensData};
@@ -37,24 +37,15 @@ pub struct FlareStrengths {
     pub attachment_ghosts: Vec<f64>,
 }
 
-/// The fractions of `ghosts` raised, if their sum is below `floor`, to a sum of `floor`, shared out in
-/// proportion to `fraction / max(s, GHOST_FLOOR_MIN_RADIUS)^2`; none is ever lowered, and when the sum is
-/// already there they are as they are.
+/// The fractions of `ghosts` scaled, if their sum is below `floor`, by `floor / sum` (at most
+/// [`GHOST_GAIN_MAX`]), all alike; none is ever lowered, and when the sum is already there they are as they are.
 fn raised_ghosts(ghosts: &[GhostData], floor: f64) -> Vec<f64> {
     let sum: f64 = ghosts.iter().map(|g| g.fraction).sum();
     if sum <= 0.0 || sum >= floor {
         return ghosts.iter().map(|g| g.fraction).collect();
     }
-    let weights: Vec<f64> = ghosts
-        .iter()
-        .map(|g| g.fraction / g.s.max(GHOST_FLOOR_MIN_RADIUS).powi(2))
-        .collect();
-    let total: f64 = weights.iter().sum();
-    ghosts
-        .iter()
-        .zip(&weights)
-        .map(|(g, w)| g.fraction.max(floor * w / total))
-        .collect()
+    let gain = (floor / sum).min(GHOST_GAIN_MAX);
+    ghosts.iter().map(|g| g.fraction * gain).collect()
 }
 
 impl FlareStrengths {

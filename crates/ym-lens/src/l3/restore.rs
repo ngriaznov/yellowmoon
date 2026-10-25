@@ -10,7 +10,7 @@
 //! white balance, not the light's: it happens only with highlight recovery switched off) is restored as a
 //! neutral of the same total, so a clipped white light is white in the flares whatever `g0` is.
 
-use crate::consts::{CLIP_PATTERN_SPREAD, KNEE_START, LENS_HEADROOM_EV};
+use crate::consts::{CLIP_PATTERN_SPREAD, KNEE_START, LENS_HEADROOM_EV, LIGHT_SATURATION_RAMP};
 use crate::l3::profile::smoothstep;
 use crate::plan::LensPlan;
 
@@ -90,6 +90,58 @@ impl Restore {
         ]
     }
 
+    /// The colour of the light the pixel `x` holds, which is the colour the lens gives the light it moves: `x` with
+    /// the clip pattern's cast taken off ([`Restore::without_clip_cast`]) and, where a channel is saturated while
+    /// the others are still measuring, the saturated channel raised to the mean of the others.
+    ///
+    /// A saturated channel (its value, in its own clip levels, from `LIGHT_SATURATION_RAMP.0` to `.1`, a smoothstep) is
+    /// a lower bound of the light. The channel with the smallest `g0` (green) saturates first for any white
+    /// light, and between its clip level and the others' the pixel reads magenta although the light is white
+    /// (R5's estimate is calibrated on the fringe around the light and stays under it). Spread over the frame
+    /// by a lens stage the pixel's light would keep that cast. Each saturated channel is therefore raised to the
+    /// mean of the channels that are not (weighted by how unsaturated they are), by the share it is saturated
+    /// and the share of the others that are measuring, and never lowered: a coloured light (a sodium lamp
+    /// clipped in green, red above its value, blue under) has the others' mean under its own value and stays as
+    /// it is, and a pixel with no channel saturated, or with all of them saturated (a neutral by R5, or by the
+    /// clip pattern's rule above), is returned as it is. A function of the pixel alone, so a tile and the whole
+    /// frame agree.
+    #[inline]
+    pub(crate) fn light_colour(&self, x: [f64; 3]) -> [f64; 3] {
+        let y = self.without_clip_cast(x);
+        let (from, to) = LIGHT_SATURATION_RAMP;
+        let mut s = [0.0; 3];
+        let mut any = false;
+        for c in 0..3 {
+            if self.clip[c] > 0.0 {
+                s[c] = smoothstep((y[c] / self.clip[c] - from) / (to - from));
+                any |= s[c] > 0.0;
+            }
+        }
+        if !any {
+            return y;
+        }
+        let mut out = y;
+        for c in 0..3 {
+            if s[c] <= 0.0 {
+                continue;
+            }
+            let (mut weight, mut sum) = (0.0, 0.0);
+            for o in 0..3 {
+                if o != c {
+                    let w = 1.0 - s[o];
+                    weight += w;
+                    sum += w * y[o];
+                }
+            }
+            if weight <= 0.0 {
+                continue;
+            }
+            let estimate = sum / weight;
+            out[c] = y[c] + s[c] * 0.5 * weight * (estimate - y[c]).max(0.0);
+        }
+        out
+    }
+
     /// The factor `1 + f (2^h - 1)` the pixel `x` is raised by.
     #[inline]
     pub(crate) fn factor(&self, x: [f64; 3]) -> f64 {
@@ -143,7 +195,7 @@ impl Restore {
     #[inline]
     pub(crate) fn restored(&self, x: [f64; 3]) -> [f64; 3] {
         let g = self.factor(x);
-        let y = self.without_clip_cast(x);
+        let y = self.light_colour(x);
         [y[0] * g, y[1] * g, y[2] * g]
     }
 
@@ -151,7 +203,7 @@ impl Restore {
     #[inline]
     pub(crate) fn restored_ev(&self, x: [f64; 3], extra_ev: f64) -> [f64; 3] {
         let g = self.factor_ev(x, extra_ev);
-        let y = self.without_clip_cast(x);
+        let y = self.light_colour(x);
         [y[0] * g, y[1] * g, y[2] * g]
     }
 
@@ -209,6 +261,41 @@ mod tests {
         )
         .unwrap();
         Restore::new(&plan, CLIP_RAMP)
+    }
+
+    #[test]
+    fn a_saturated_channel_under_the_others_is_raised_to_their_mean() {
+        // Green clips first for a white light (g0 of 1 against 2.6 and 1.95): the star of 60855 has its green
+        // at the clip level while red and blue still measure.
+        let rs = restore_with_clip([2.61, 1.0, 1.95]);
+        let x = [1.36, 1.08, 1.67];
+        let y = rs.light_colour(x);
+        assert_eq!(y[0], x[0]);
+        assert_eq!(y[2], x[2]);
+        assert!((y[1] - 0.5 * (x[0] + x[2])).abs() < 1e-12, "{y:?}");
+        // Nothing saturated, a neutral recovered core and a coloured light clipped in one channel are as they are.
+        for x in [
+            [0.3, 0.2, 0.1],
+            [0.9, 0.85, 0.8],
+            [2.61, 2.61, 2.61],
+            [3.0, 3.0, 3.0],
+            // A sodium lamp: green clipped, red above its value, blue far under.
+            [2.0, 1.2, 0.2],
+            // A green leaf in the sun.
+            [0.3, 1.1, 0.2],
+        ] {
+            assert_eq!(rs.light_colour(x), x, "{x:?}");
+        }
+        // A saturated channel is never lowered, more light in it never gives less, and it changes smoothly.
+        let mut last = 0.85;
+        for i in 0..=400 {
+            let g = 0.85 + 0.001 * f64::from(i);
+            let y = rs.light_colour([1.4, g, 1.7]);
+            assert!(y[1] >= g && y[0] == 1.4 && y[2] == 1.7);
+            assert!(y[1] >= last, "monotone at g = {g}");
+            assert!(y[1] - last < 0.03, "smooth at g = {g}");
+            last = y[1];
+        }
     }
 
     #[test]

@@ -285,7 +285,12 @@ pub fn encode_field(
         )?)
     };
     let mut base = FieldU::zeroed();
-    base.frame = [fw as f32, fh as f32, pass.half_diag as f32, 0.0];
+    base.frame = [
+        fw as f32,
+        fh as f32,
+        pass.half_diag as f32,
+        pass.radius_scale as f32,
+    ];
     base.plan = [
         pass.e as f32,
         pass.alpha as f32,
@@ -530,6 +535,7 @@ mod tests {
             axis_y: false,
             e: 1.0,
             alpha: 1.0,
+            radius_scale: 1.0,
             side: 0.0,
             fringe_boost: 0.0,
             lmax: 3,

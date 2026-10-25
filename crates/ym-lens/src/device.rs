@@ -58,6 +58,9 @@ pub struct FieldPass {
     pub e: f64,
     /// `alpha`: the stretch of the field radius along the axis.
     pub alpha: f64,
+    /// What the oval field radius is divided by to read the relative illumination (1 without the
+    /// attachment).
+    pub radius_scale: f64,
     /// The side softness's amount `a_s (q - 1)`.
     pub side: f64,
     /// `h (q - 1)`: the boost on the axis part of the channels' centroid offsets (0 without the

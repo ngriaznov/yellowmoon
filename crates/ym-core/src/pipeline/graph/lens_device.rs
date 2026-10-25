@@ -44,10 +44,11 @@ use ym_gpu::kernels::lens_field::{FieldTablesBuffer, encode_field};
 use ym_gpu::kernels::lens_flare::{
     FlareLensBuffer, FlarePlaneBuffer, FlareScaleBuffers, encode_flare,
 };
+use ym_gpu::kernels::lens_light::encode_light;
 use ym_gpu::kernels::lens_reshape::{BokehPlaneBuffer, BokehScaleBuffers, encode_reshape};
 use ym_gpu::stream::PassList;
 use ym_lens::device::{FieldPass, FlareMix};
-use ym_lens::{LensPlanes, PixelRect};
+use ym_lens::{LensPlanes, LightPass, PixelRect};
 
 use super::super::raw::GpuRoute;
 use super::lens::LensCtx;
@@ -148,6 +149,8 @@ struct TilePlan {
     /// L1: the photo's blur map, the balls' shapes at this scale and the rectangle L2 reads (L1's output), when
     /// the reshaping acts and `Z` is not cached.
     bokeh: Option<(BokehPlaneBuffer, BokehScaleBuffers, Rect)>,
+    /// The pass that gives L1 and L2 the colour of the light they move, when they run (`ym_lens::lit_input`).
+    light: Option<LightPass>,
 }
 
 /// What a tile job gives back.
@@ -188,6 +191,16 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
     } else {
         None
     };
+    // The picture L1 and L2 spread: the light in its own colour (L3 reads the raw window as it is).
+    let lit = match (&input, tile.light) {
+        (Some(raw), Some(pass)) if tile.field.is_some() => {
+            let lit = Arc::new(encode_light(&mut passes, raw, pass)?);
+            held.push(Arc::clone(&lit));
+            Some(lit)
+        }
+        _ => None,
+    };
+    let field_input = lit.as_ref().or(input.as_ref());
     // Z: cached, or L2 over the raw window (or over L1's output).
     let mut made_z = None;
     let (z, z_at): (Arc<GpuImage>, (usize, usize)) =
@@ -201,7 +214,7 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
                 (z, (tile.out.x, tile.out.y))
             }
             (None, None, Some((tables, pass))) => {
-                let Some(input) = &input else {
+                let Some(input) = field_input else {
                     return Err(GpuError::InvalidInput(
                         "lens tile: the field stage has no input".into(),
                     ));
@@ -670,6 +683,7 @@ impl Job<'_> {
             (planes, scale, l2_rect)
         });
         let reads_raw = flare.is_some() || field.is_some();
+        let field_runs = field.is_some();
         let raw = if reads_raw {
             self.lens_raw_in(src, want)?
         } else {
@@ -683,6 +697,7 @@ impl Job<'_> {
             z_device,
             z_host,
             bokeh,
+            light: if field_runs { ctx.plan.light_pass() } else { None },
         };
         let t = std::time::Instant::now();
         let made = route.run_job(move |c, _| run_tile(c, raw, &tile));

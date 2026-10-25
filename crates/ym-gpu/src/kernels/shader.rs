@@ -124,6 +124,8 @@ pub enum KernelId {
     LensFlareNodes,
     /// L3: the glow core, the tail plane and the drawn items of every pixel, mixed with Z.
     LensFlare,
+    /// L1 and L2, the lens's field stages: the input with the colour of the light it holds.
+    LensLight,
     /// L1, the lens's bokeh reshaping: the footprint means of the root colours of the blur map's cells (the upsampling's colour guide).
     LensReshapeGuide,
     /// L1, the lens's bokeh reshaping: the blur map at the pixels of the tile: the joint bilateral upsampling and its acceptance tests.
@@ -251,6 +253,7 @@ impl KernelId {
         KernelId::LensFieldFinish,
         KernelId::LensFlareRestore,
         KernelId::LensFlareNodes,
+        KernelId::LensLight,
         KernelId::LensReshapeGuide,
         KernelId::LensReshapeBlur,
         KernelId::LensReshapeLumRoot,
@@ -380,6 +383,7 @@ impl KernelId {
             KernelId::LensFlareRestore => "lens_flare_restore",
             KernelId::LensFlareNodes => "lens_flare_nodes",
             KernelId::LensFlare => "lens_flare",
+            KernelId::LensLight => "lens_light",
             KernelId::LensReshapeGuide => "lens_reshape_guide",
             KernelId::LensReshapeBlur => "lens_reshape_blur",
             KernelId::LensReshapeLumRoot => "lens_reshape_lumroot",
@@ -467,6 +471,7 @@ impl KernelId {
             | KernelId::LensFieldFinish
             | KernelId::LensFlareRestore
             | KernelId::LensFlareNodes
+            | KernelId::LensLight
             | KernelId::LensReshapeGuide
             | KernelId::LensReshapeBlur
             | KernelId::LensReshapeLumRoot
@@ -557,6 +562,7 @@ impl KernelId {
             KernelId::LensFlareRestore | KernelId::LensFlareNodes | KernelId::LensFlare => {
                 super::lens_flare::body(self)
             }
+            KernelId::LensLight => super::lens_light::body(),
             KernelId::LensReshapeGuide
             | KernelId::LensReshapeBlur
             | KernelId::LensReshapeLumRoot

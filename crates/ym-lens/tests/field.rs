@@ -12,9 +12,13 @@ use ym_lens::{
 };
 
 /// The field law the L2 pass follows, written from the public lens data and the spec (`docs/21` section 4,
-/// L2, *As built (the field law)*): the nine `T(rho)` and `w(rho)` of a lens, `w` pooled to be non-decreasing,
-/// read by the monotone cubic of Fritsch and Butland and carried on beyond `rho = 1` (`T` as
-/// `T(1) / (1 + m (rho - 1))` with `m = -T'(1) / T(1)`, `w` along its end slope).
+/// L2, *As built (the field law)*): the nine `T(rho)` and `w(rho)` of a lens. `w` is pooled to be non-decreasing
+/// and read by the monotone cubic of Fritsch and Butland, carried on beyond `rho = 1` along its end slope. `T`
+/// is pooled to be concave (adjacent intervals whose secants rise become one straight run), has the same
+/// rule's slopes held between the secants either side of each node, is joined by a quadratic whose slope falls
+/// (with a straight run at one end's slope where the secant is not the mean of the two slopes) and is carried
+/// on beyond `rho = 1` straight at the end slope. The gain reads `T` at the oval radius over the scale
+/// ([`Law::scale`]).
 struct Law {
     radii: Vec<f64>,
     t: Vec<f64>,
@@ -27,7 +31,6 @@ impl Law {
     fn of(kind: LensKind) -> Law {
         let f = &library().get(kind).unwrap().field;
         let radii = f.radii.clone();
-        let t = f.relative_illumination.clone();
         // Pool adjacent violators: non-decreasing w.
         let mut blocks: Vec<(f64, usize)> = Vec::new();
         for v in &f.psf_half_width {
@@ -48,7 +51,54 @@ impl Law {
                 w.push(if *n == 1 { *sum } else { sum / *n as f64 });
             }
         }
-        let (dt, dw) = (Self::slopes(&radii, &t), Self::slopes(&radii, &w));
+        // T: the data are non-increasing; pool the secants to be non-increasing too (a concave curve).
+        let raw = &f.relative_illumination;
+        assert!(raw.windows(2).all(|p| p[1] <= p[0]), "{kind}: T falls");
+        let mut runs: Vec<(usize, usize)> = (0..8).map(|k| (k, k + 1)).collect();
+        let secant = |a: usize, b: usize| (raw[b] - raw[a]) / (radii[b] - radii[a]);
+        let mut at = 0;
+        while at + 1 < runs.len() {
+            if secant(runs[at].0, runs[at].1) < secant(runs[at + 1].0, runs[at + 1].1) {
+                runs[at].1 = runs[at + 1].1;
+                runs.remove(at + 1);
+                at = at.saturating_sub(1);
+            } else {
+                at += 1;
+            }
+        }
+        let mut t = raw.clone();
+        for (a, b) in &runs {
+            for k in *a..*b {
+                t[k] = raw[*a] + secant(*a, *b) * (radii[k] - radii[*a]);
+            }
+        }
+        let (mut dt, dw) = (Self::slopes(&radii, &t), Self::slopes(&radii, &w));
+        for k in 0..9 {
+            let lo = if k < 8 {
+                (t[k + 1] - t[k]) / (radii[k + 1] - radii[k])
+            } else {
+                f64::NEG_INFINITY
+            };
+            let hi = if k > 0 {
+                (t[k] - t[k - 1]) / (radii[k] - radii[k - 1])
+            } else {
+                0.0
+            };
+            dt[k] = dt[k].clamp(lo.min(hi), hi.min(0.0));
+        }
+        // An interval with the same secant as a neighbour is a straight run: both its slopes are the secant.
+        let secants: Vec<f64> = (0..8)
+            .map(|k| (t[k + 1] - t[k]) / (radii[k + 1] - radii[k]))
+            .collect();
+        let same = |a: f64, b: f64| (a - b).abs() <= 1e-9 * (1.0 + a.abs());
+        for k in 0..8 {
+            let before = k > 0 && same(secants[k - 1], secants[k]);
+            let after = k < 7 && same(secants[k], secants[k + 1]);
+            if before || after {
+                dt[k] = secants[k];
+                dt[k + 1] = secants[k];
+            }
+        }
         Law {
             radii,
             t,
@@ -96,13 +146,65 @@ impl Law {
             + (t3 - t2) * h * d[s + 1]
     }
 
-    /// `T(rho')`.
+    /// `T` at the table radius `rho`: on each interval the curve whose slope is the piecewise linear function
+    /// of the radius that falls from `d0` to `d1` (the shortest straight run and quadratic that make the
+    /// interval's rise), integrated from the node; beyond 1 the end slope straight on.
     fn illumination(&self, rho: f64) -> f64 {
-        if rho <= 1.0 {
-            return self.cubic(&self.t, &self.dt, rho);
+        if rho > 1.0 {
+            return self.t[8] + self.dt[8] * (rho - 1.0);
         }
-        let end = self.t[8];
-        end / (1.0 + (-self.dt[8] / end) * (rho - 1.0))
+        let s = (0..8).find(|s| rho <= self.radii[s + 1]).unwrap_or(7);
+        let h = self.radii[s + 1] - self.radii[s];
+        let x = (rho - self.radii[s]).clamp(0.0, h);
+        let (y0, y1, d0, d1) = (self.t[s], self.t[s + 1], self.dt[s], self.dt[s + 1]);
+        let m = (y1 - y0) / h;
+        if d0 - d1 <= 1e-9 {
+            return y0 + d0 * x;
+        }
+        // The slope as a function of x is piecewise linear with one corner, `knee`: it falls from d0 to d1 over
+        // `fall` (first or last on the interval) and is flat on the rest, and the interval's rise is its area.
+        let (flat_first, fall) = if m <= 0.5 * (d0 + d1) {
+            (false, (2.0 * h * (m - d1) / (d0 - d1)).clamp(0.0, h))
+        } else {
+            (true, (2.0 * h * (d0 - m) / (d0 - d1)).clamp(0.0, h))
+        };
+        let knee = if flat_first { h - fall } else { fall };
+        let slope_at = |x: f64| -> f64 {
+            if flat_first {
+                if x <= knee {
+                    d0
+                } else {
+                    d0 - (d0 - d1) * (x - knee) / fall
+                }
+            } else if x <= knee {
+                d0 - (d0 - d1) * x / fall
+            } else {
+                d1
+            }
+        };
+        // Each part is a straight piece of the slope, so its midpoint value times its length is exact.
+        let mut y = y0;
+        for (a, b) in [(0.0, knee.min(x)), (knee.min(x), x)] {
+            if b > a {
+                y += slope_at(0.5 * (a + b)) * (b - a);
+            }
+        }
+        y
+    }
+
+    /// What the oval field radius is divided by (`docs/21` section 4, L2): at least 1, at least the oval
+    /// radius of the middle of the long edge, and enough that the corner lies no farther past 1 than 0.6 of the
+    /// way to where the end slope would take `T` to 0.
+    fn scale(&self, alpha: f64, (xa_max, ya_max): (f64, f64)) -> f64 {
+        let side = alpha * xa_max;
+        let corner = side.hypot(ya_max);
+        let fall = -self.dt[8];
+        let to_corner = if fall > 0.0 {
+            corner / (1.0 + 0.6 * self.t[8] / fall)
+        } else {
+            0.0
+        };
+        1.0f64.max(side).max(to_corner)
     }
 
     /// `w(rho')` in half-diagonals, before the cap.
@@ -144,7 +246,11 @@ fn expected_gain(
     let (xa, ya) = if axis == Axis::X { (u, v) } else { (v, u) };
     let rho = ((alpha * xa).powi(2) + ya * ya).sqrt();
     let _ = lens;
-    1.0 - e_field * (1.0 - Law::of(kind).illumination(rho))
+    let law = Law::of(kind);
+    let along = if axis == Axis::X { fw } else { fh } as f64;
+    let across = if axis == Axis::X { fh } else { fw } as f64;
+    let scale = law.scale(alpha, (0.5 * along / h, 0.5 * across / h));
+    1.0 - e_field * (1.0 - law.illumination(rho / scale))
 }
 
 #[test]

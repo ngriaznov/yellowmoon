@@ -596,7 +596,7 @@ Why: ACES 2 SDR is a cinema rendering, which puts scene 0.18 at 10 nits, 0.85 EV
 
 1b. **White lift** (`white_offset_ev`, the Automatic card's White row). A per-photo scene-linear gain `2^(A · smoothstep((s − 1) / span))` on the luma of the decoded C11 output (`s` the stops over middle grey), applied to linear AWG4 **before the placement** and ACES 2: exactly 1 up to +1 stop over mid grey (mid grey and everything below it are untouched), ratio-preserving, per channel monotone, ACES 2 path only (an imported ARRI display LUT and a LogC3-to-Rec.709 look keep ARRI's highlights). `A` and the anchor are sized per photo from the 1/8 preview when it is opened; the DNG carries it in its pixels. The full text is in *White lift (C12 step 1b)* below.
 
-1c. **Red chroma** (a per-look strength, `red_chroma` in the look file; owner decision of 2026-10-24). A smooth, hue-preserving chroma gain on the reds, applied to linear AWG4 **after the white lift and before the placement** and ACES 2: it gives back the chroma ACES 2 takes out of mid-tone and light reds, is capped below the output gamut's edge, and leaves grey, other hues and skin alone. ACES 2 path only. A DNG carries it in its pixels, like the white lift. The full text is in *Red chroma (C12 step 1c)* below.
+1c. **Red chroma** (a per-look strength, `red_chroma` in the look file; owner decisions of 2026-10-24 for the reds and 2026-10-25 for the yellows). A smooth, hue-preserving chroma gain on the reds and, on the up side, the ochres and yellows, applied to linear AWG4 **after the white lift and before the placement** and ACES 2: it gives back the chroma ACES 2 takes out of mid-tone and light reds, ochres and yellows, is capped below the output gamut's edge, and leaves grey, skin and other hues alone. ACES 2 path only. A DNG carries it in its pixels, like the white lift. The full text is in *Red chroma (C12 step 1c)* below.
 
 2. ACES 2 output transform with peak luminance 100 nits, SDR, white D65, and these limiting primaries:
 
@@ -676,7 +676,7 @@ The estimator never sees the user's settings (light, exposure, grade, look, curv
 
 ### Red chroma (C12 step 1c)
 
-A hue-preserving chroma gain on the reds, in front of the placement and ACES 2. It is the **R1** candidate of the red-fix investigation of 2026-10-24; the owner chose it ("R1 fix looks better than what we have currently"). Code: `ym_color::display::red_chroma` (`RedChromaStep`, the CPU reference), `red_chroma` in `color.wgsl` (the kernel), tables in Rust, not in files.
+A hue-preserving chroma gain on the reds and, on the up side, the ochres and yellows, in front of the placement and ACES 2. It is the **R1** candidate of the red-fix investigation of 2026-10-24; the owner chose it ("R1 fix looks better than what we have currently"), and on 2026-10-25, after the ochre walls of his street photos came out peach, extended it: "Yellows keep colour: extend the existing red step to yellows/ochres/oranges: give back the saturation ACES 2 removes there, hue unchanged, gamut-safe. Neutral and imported looks; Signature already has it." Code: `ym_color::display::red_chroma` (`RedChromaStep`, the CPU reference), `red_chroma` in `color.wgsl` (the kernel), tables in Rust, not in files.
 
 **Why.** At the same display lightness ACES 2 takes chroma out of mid-tone and light reds (10 to 22 %: the reds "go coral") and adds 30 to 40 % to dark reds. The step gives back what ACES 2 removes above about −0.5 stop, caps the result below the output gamut's edge, and never folds a colour over another. Measured on the investigation's photographs (display chroma against ACES 2 alone): the pink shirt +20 %, the hat in P3 +7 %, the red shirt +4 %; the Lab hue moves by less than 0.1 degree; on 289 reflectances (the spectra of the investigation) nothing outside the reds changes.
 
@@ -688,7 +688,10 @@ s    = log2(Y / 0.18)                            stops over middle grey; s is he
 fade = smoothstep(-7.5, -5.5, s)                 unchanged where fade = 0
 yd   = clamp(YD(s), 1e-7, 1)
 lab  = Lab(xyz / Y * yd) ;  Ld = L* ;  C = |ab| ;  h = atan2(b, a) in [0, 360)
-W    = hue window: 1 on [3, 31] degrees, raised cosine to 0 over 30 degrees below and 12 above   unchanged where W = 0
+W    = hue window, unchanged where W = 0:
+         red window     1 on [3, 31] degrees, raised cosine to 0 over 30 degrees below and 12 above
+         yellow window  1 on [66, 95] degrees, raised cosine to 0 over 8 degrees below and 15 above
+       the up side (P > 0) uses the larger of the two (they never overlap), the dark side (P < 0) the red window only
 kap  = clamp((20 / max(C, 8))^0.65, 0.35, 1.25)
 P(s) = 0.34 (s + 0.5)                      for s >= -0.5          (the up side)
        -0.43 tanh((-0.5 - s) / 1.65)       for s <  -0.5          (the dark side)

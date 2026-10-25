@@ -8,7 +8,9 @@
 //!
 //! The data do not depend on the amounts, so a slider moves nothing here.
 
-use crate::consts::{CLIP_RAMP_PLANE, GLOW_BOOST_SHARE, SPIKE_SIZE, TAIL_PLANE_LONG_EDGE};
+use crate::consts::{
+    CLIP_RAMP_PLANE, GLOW_BOOST_SHARE, HAZE_NEUTRAL, SPIKE_SIZE, TAIL_PLANE_LONG_EDGE,
+};
 use crate::error::LensError;
 use crate::image::ImageRef;
 use crate::l3::fft::{Convolver, Kernel2d};
@@ -252,24 +254,49 @@ fn tail_plane(
     let (a_g, a_v) = (st.glow, st.veil);
 
     let (veil, veil_sum) = disc_kernel(radius_px, hx, hy, half_diag, &|r| glow.veil(r));
+    let veil_scale = if veil_sum > 0.0 { a_v / veil_sum } else { 0.0 };
+    let veil_kernel = Kernel2d {
+        hx,
+        hy,
+        data: veil.iter().map(|v| veil_scale * v).collect(),
+    };
+    // The veil, per channel: the light of the whole picture (and of the lights' extra headroom, whole) spread by
+    // the one flat kernel. Its colour is the picture's average colour, which is not the light's: a veil is a
+    // haze, and it is neutral (`HAZE_NEUTRAL` of it is the mean of the channels).
+    let veil_spectrum = conv.kernel_spectrum(&veil_kernel);
+    let mut veil_light: [Vec<f64>; 3] = std::array::from_fn(|_| Vec::new());
+    for c in 0..3 {
+        if cancel() {
+            return Err(LensError::Cancelled);
+        }
+        let mut plane = conv.convolve(&restored.base[c], tw, th, &veil_spectrum);
+        if let Some(extra) = &restored.extra {
+            let more = conv.convolve(&extra[c], tw, th, &veil_spectrum);
+            for (p, m) in plane.iter_mut().zip(&more) {
+                *p += m;
+            }
+        }
+        veil_light[c] = plane;
+    }
+    for i in 0..veil_light[0].len() {
+        let mean = (veil_light[0][i] + veil_light[1][i] + veil_light[2][i]) / 3.0;
+        for plane in &mut veil_light {
+            plane[i] += HAZE_NEUTRAL * (mean - plane[i]);
+        }
+    }
     let mut out: [Vec<f64>; 3] = std::array::from_fn(|_| Vec::new());
     for c in 0..3 {
         if cancel() {
             return Err(LensError::Cancelled);
         }
         let (tail, tail_sum) = disc_kernel(radius_px, hx, hy, half_diag, &|r| glow.tail(c, r));
-        let veil_scale = if veil_sum > 0.0 { a_v / veil_sum } else { 0.0 };
         let kernel_for = |glow_mass: f64| -> Kernel2d {
             let glow_scale = if tail_sum > 0.0 {
                 glow_mass / tail_sum
             } else {
                 0.0
             };
-            let data: Vec<f64> = tail
-                .iter()
-                .zip(&veil)
-                .map(|(g, v)| glow_scale * g + veil_scale * v)
-                .collect();
+            let data: Vec<f64> = tail.iter().map(|g| glow_scale * g).collect();
             Kernel2d { hx, hy, data }
         };
         let spectrum = conv.kernel_spectrum(&kernel_for(a_g * (1.0 - m_core[c])));
@@ -286,6 +313,9 @@ fn tail_plane(
             for (p, m) in plane.iter_mut().zip(&more) {
                 *p += m;
             }
+        }
+        for (p, v) in plane.iter_mut().zip(&veil_light[c]) {
+            *p += v;
         }
         out[c] = plane;
     }

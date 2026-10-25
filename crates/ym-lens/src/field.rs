@@ -46,7 +46,7 @@ use rayon::prelude::*;
 
 use crate::consts::{
     COPY_BELOW_PX, LATERAL_COLOR_SCALE, MAX_TAPS_SIDE, PSF_SIZE, PSF_WAVELENGTHS, RADII,
-    TAP_SPACING_MAX_PX, W_KNEE, W_MAX,
+    T_OVERSHOOT, TAP_SPACING_MAX_PX, W_KNEE, W_MAX,
 };
 use crate::data::LensData;
 use crate::error::LensError;
@@ -166,6 +166,105 @@ fn hermite(y0: f64, y1: f64, d0: f64, d1: f64, h: f64, t: f64) -> f64 {
         + (t3 - 2.0 * t2 + t) * h * d0
         + (3.0 * t2 - 2.0 * t3) * y1
         + (t3 - t2) * h * d1
+}
+
+/// The closest concave sequence to `values` at `radii` (in the least-squares sense on the secants): adjacent
+/// intervals whose secant slopes rise are pooled into one straight run between the same end values, so a
+/// sequence that is concave already is returned bit for bit.
+fn pool_concave(radii: &[f64; RADII], values: &[f64; RADII]) -> [f64; RADII] {
+    // Blocks of (rise, run, intervals); concave means the secants fall from block to block.
+    let mut blocks: Vec<(f64, f64, usize)> = Vec::with_capacity(RADII - 1);
+    for k in 0..RADII - 1 {
+        blocks.push((values[k + 1] - values[k], radii[k + 1] - radii[k], 1));
+        while blocks.len() >= 2 {
+            let (y1, x1, n1) = blocks[blocks.len() - 1];
+            let (y0, x0, n0) = blocks[blocks.len() - 2];
+            if y0 / x0 >= y1 / x1 {
+                break;
+            }
+            blocks.truncate(blocks.len() - 2);
+            blocks.push((y0 + y1, x0 + x1, n0 + n1));
+        }
+    }
+    let mut out = *values;
+    let mut at = 0;
+    for (rise, run, n) in blocks {
+        let secant = rise / run;
+        for i in 1..n {
+            out[at + i] = values[at] + secant * (radii[at + i] - radii[at]);
+        }
+        at += n;
+    }
+    out
+}
+
+/// The slopes for the concave curve through `(x, y)` with `y` concave: [`monotone_slopes`] held between the
+/// secants either side of each node (the later one at most, the earlier one at least), the first slope at most
+/// 0 and the last at most the last secant, so that [`concave_piece`] has a falling slope on every interval.
+/// An interval that has the same secant as a neighbour is a straight run (pooling makes such runs): its two
+/// slopes are the secant, since a curve whose slope starts above the secant and ends at it cannot have the
+/// interval's rise without a corner.
+fn concave_slopes(x: &[f64; RADII], y: &[f64; RADII]) -> [f64; RADII] {
+    let mut d = monotone_slopes(x, y);
+    let mut secant = [0.0; RADII - 1];
+    for (k, m) in secant.iter_mut().enumerate() {
+        *m = (y[k + 1] - y[k]) / (x[k + 1] - x[k]);
+    }
+    for (k, slope) in d.iter_mut().enumerate() {
+        let lo = if k < RADII - 1 {
+            secant[k]
+        } else {
+            f64::NEG_INFINITY
+        };
+        let hi = if k > 0 { secant[k - 1] } else { 0.0 };
+        let hi = if k == RADII - 1 { hi.min(0.0) } else { hi };
+        *slope = slope.clamp(lo.min(hi), hi);
+    }
+    // (Equal to the rounding: a pooled run's secants are computed from its rounded node values.)
+    let same = |a: f64, b: f64| (a - b).abs() <= 1e-9 * (1.0 + a.abs());
+    for k in 0..RADII - 1 {
+        let before = k > 0 && same(secant[k - 1], secant[k]);
+        let after = k < RADII - 2 && same(secant[k], secant[k + 1]);
+        if before || after {
+            d[k] = secant[k];
+            d[k + 1] = secant[k];
+        }
+    }
+    d
+}
+
+/// The concave `C^1` curve through `(0, y0)` and `(h, y1)` whose slope falls from `d0` to `d1`
+/// (`d0 >= (y1 - y0) / h >= d1`), at `x = t h`: a quadratic whose slope falls linearly from `d0` to `d1`
+/// when the secant is the mean of the two slopes, else a straight run at the slope of one end and a quadratic
+/// at the other (Schumaker's single extra knot, at the place that keeps the area). Its second derivative is
+/// never above 0, so a gain made of it, along a row of a flat field, cannot bend back.
+fn concave_piece(y0: f64, y1: f64, d0: f64, d1: f64, h: f64, t: f64) -> f64 {
+    let x = t * h;
+    let dd = d0 - d1;
+    if dd <= 1e-9 {
+        return y0 + d0 * x;
+    }
+    let m = (y1 - y0) / h;
+    if m <= 0.5 * (d0 + d1) {
+        // The slope falls to d1 over the first h1, then stays there.
+        let h1 = (2.0 * h * (m - d1) / dd).clamp(0.0, h);
+        if x <= h1 {
+            if h1 <= 0.0 {
+                return y0;
+            }
+            return y0 + d0 * x - dd * x * x / (2.0 * h1);
+        }
+        y0 + 0.5 * h1 * (d0 + d1) + d1 * (x - h1)
+    } else {
+        // The slope stays at d0 for the first h - h2, then falls to d1 over the last h2.
+        let h2 = (2.0 * h * (d0 - m) / dd).clamp(0.0, h);
+        let h1 = h - h2;
+        if x <= h1 {
+            return y0 + d0 * x;
+        }
+        let u = x - h1;
+        y0 + d0 * x - dd * u * u / (2.0 * h2)
+    }
 }
 
 /// The lens's spread functions projected on a camera's three channels, at every table size.
@@ -332,7 +431,7 @@ impl FieldTables {
         half_width.copy_from_slice(&lens.field.psf_half_width);
         illumination.copy_from_slice(&lens.field.relative_illumination);
         let half_width = pool_monotone(&half_width, true);
-        let illumination = pool_monotone(&illumination, false);
+        let illumination = pool_concave(&radii, &pool_monotone(&illumination, false));
         let centroid_max = centroid
             .iter()
             .flatten()
@@ -343,7 +442,7 @@ impl FieldTables {
             half_width,
             illumination,
             half_width_slope: monotone_slopes(&radii, &half_width),
-            illumination_slope: monotone_slopes(&radii, &illumination),
+            illumination_slope: concave_slopes(&radii, &illumination),
             centroid,
             centroid_max,
             tables,
@@ -386,26 +485,45 @@ impl FieldTables {
         out
     }
 
-    /// The relative illumination `T(rho')` of the oval field radius `rho'` on segment `seg` with blend `t`
-    /// (`segment(rho')`): the monotone cubic through the nine `T(rho)`, and beyond `rho' = 1` the lens's own
-    /// law carried on from its end slope `T'(1)` as `T(1) / (1 + m (rho' - 1))`, `m = -T'(1) / T(1)`: it falls
-    /// on at the rate it had, never reaches 0 and has the slope the cubic had at 1 (`docs/21` section 4, L2).
-    pub(crate) fn illumination_at(&self, seg: usize, t: f64, rho: f64) -> f64 {
+    /// The relative illumination `T(rho_t)` at the table radius `rho_t` on segment `seg` with blend `t`
+    /// (`segment(rho_t)`): the nine `T(rho)`, made concave, joined by [`concave_piece`] (`C^1`, its second
+    /// derivative never above 0), and beyond `rho_t = 1` carried straight on at the end slope, so that along
+    /// any row of a flat field the gain is monotone and its slope never lessens towards the edge of the
+    /// frame (`docs/21` section 4, L2, *As built (the field law)*).
+    pub(crate) fn illumination_at(&self, seg: usize, t: f64, rho_t: f64) -> f64 {
+        if rho_t > 1.0 {
+            let end = RADII - 1;
+            return self.illumination[end] + self.illumination_slope[end] * (rho_t - 1.0);
+        }
         let (a, b) = (self.radii[seg], self.radii[seg + 1]);
-        let near = hermite(
+        concave_piece(
             self.illumination[seg],
             self.illumination[seg + 1],
             self.illumination_slope[seg],
             self.illumination_slope[seg + 1],
             b - a,
             t,
-        );
-        if rho <= 1.0 {
-            return near;
-        }
-        let end = self.illumination[RADII - 1];
-        let m = -self.illumination_slope[RADII - 1] / end;
-        end / (1.0 + m * (rho - 1.0))
+        )
+    }
+
+    /// How much the table radius is the oval field radius divided by, for a frame whose far edge along the
+    /// axis lies at `xa_max` half-diagonals and whose far edge across it at `ya_max`, under the stretch
+    /// `alpha`. At least 1 (so that a frame without the attachment reads the tables as they are), at least the
+    /// oval radius of the middle of the long edge (the traced corner value falls on the side of the frame, as
+    /// the plateau of the first build had it, and the side is no darker than that), and enough that the
+    /// corner of the frame lies no farther past the last radius than [`T_OVERSHOOT`] of the way to the
+    /// place where the end slope would take `T` to 0.
+    pub(crate) fn radius_scale(&self, alpha: f64, xa_max: f64, ya_max: f64) -> f64 {
+        let side = alpha * xa_max;
+        let corner = (side * side + ya_max * ya_max).sqrt();
+        let end = RADII - 1;
+        let fall = -self.illumination_slope[end];
+        let to_corner = if fall > 0.0 {
+            corner / (1.0 + T_OVERSHOOT * self.illumination[end] / fall)
+        } else {
+            0.0
+        };
+        1.0f64.max(side).max(to_corner)
     }
 
     /// The half-width `w(rho')` of the spread functions (half-diagonals) on segment `seg` with blend `t`:
@@ -455,6 +573,9 @@ pub(crate) struct Geometry<'a> {
     h: f64,
     axis: Axis,
     alpha: f64,
+    /// What the oval field radius is divided by to read the relative illumination
+    /// ([`FieldTables::radius_scale`]).
+    radius_scale: f64,
     side: f64,
     e: f64,
     fringe: f64,
@@ -529,6 +650,7 @@ impl<'a> Geometry<'a> {
         };
         let xa_max = 0.5 * along / h;
         let ya_max = 0.5 * across / h;
+        let radius_scale = tables.radius_scale(alpha, xa_max, ya_max);
         // `w` does not fall with the radius, so its value at the frame's farthest point bounds every pixel's.
         let rho_far = ((alpha * xa_max) * (alpha * xa_max) + ya_max * ya_max).sqrt();
         let (seg_far, t_far) = tables.segment(rho_far);
@@ -564,6 +686,7 @@ impl<'a> Geometry<'a> {
             h,
             axis,
             alpha,
+            radius_scale,
             side,
             e,
             fringe,
@@ -588,6 +711,7 @@ impl<'a> Geometry<'a> {
             axis_y: self.axis == Axis::Y,
             e: self.e,
             alpha: self.alpha,
+            radius_scale: self.radius_scale,
             side: self.side,
             fringe_boost: self.fringe - 1.0,
             lmax: self.lmax,
@@ -620,7 +744,11 @@ impl<'a> Geometry<'a> {
         let rho = (ax * ax + ya * ya).sqrt();
         let tb = self.tables;
         let (seg, t) = tb.segment(rho);
-        let illum = tb.illumination_at(seg, t, rho);
+        // The gain reads the relative illumination at the oval radius over `radius_scale`; the kernel's shape
+        // and width read the oval radius itself.
+        let rho_t = rho / self.radius_scale;
+        let (seg_t, t_t) = tb.segment(rho_t);
+        let illum = tb.illumination_at(seg_t, t_t, rho_t);
         let gain = 1.0 - self.e * (1.0 - illum);
         let w = tb.half_width_at(seg, t, rho);
         let softness = 1.0 + self.side * xa * xa;
@@ -1593,6 +1721,205 @@ mod tests {
             println!("{kind} new law: largest slope step: gain {g2:.3}, width {w2:.3}");
             assert!(g2 < GAIN_SLOPE_STEP, "{kind}: {g2}");
             assert!(w2 < WIDTH_SLOPE_STEP, "{kind}: {w2}");
+        }
+    }
+
+    /// The gain along a row (`v` fixed) or a column (`u` fixed) of the frame, from the centre line out to the edge,
+    /// at `n + 1` samples.
+    fn gain_line(geo: &Geometry, fixed: f64, along_u: bool, n: usize) -> Vec<f64> {
+        let max = if along_u {
+            0.5 * geo.fw / geo.h
+        } else {
+            0.5 * geo.fh / geo.h
+        };
+        (0..=n)
+            .map(|i| {
+                let x = max * i as f64 / n as f64;
+                if along_u {
+                    geo.kernel_at(x, fixed).gain
+                } else {
+                    geo.kernel_at(fixed, x).gain
+                }
+            })
+            .collect()
+    }
+
+    /// The flat-field falloff has no band: along every row and column, from the centre line out, the gain
+    /// never rises and its slope never lessens (second differences of one sign, to rounding) for every lens, at
+    /// Anamorphic 0, 50 and 100, at several Edges, on landscape, portrait, square and panorama frames with the
+    /// axis along either side (`docs/21` section 4, L2). The law this build replaced bent back at `rho' = 1`,
+    /// 56 px from the side of a 1500 px frame at Anamorphic 100, which a white field shows as a grey band.
+    #[test]
+    fn the_gain_is_concave_along_every_row_and_column_of_a_flat_field() {
+        let n = 1500;
+        let mut worst = (0.0f64, String::new());
+        let mut lines = 0usize;
+        for kind in LensKind::ALL {
+            for anamorphic in [0.0, 50.0, 100.0] {
+                for edges in [10.0, 40.0, 70.0, 100.0] {
+                    for (fw, fh, axis) in [
+                        (1500, 1000, Axis::X),
+                        (1000, 1500, Axis::Y),
+                        (1000, 1500, Axis::X),
+                        (1500, 1000, Axis::Y),
+                        (1600, 900, Axis::X),
+                        (1000, 1000, Axis::X),
+                        (3000, 1000, Axis::X),
+                    ] {
+                        let p = shipped_plan(kind, edges, anamorphic, fw, fh, axis);
+                        let geo =
+                            Geometry::new(&p, fw, fh, Options::default()).expect("field optics");
+                        for along_u in [true, false] {
+                            // The other coordinate runs from the centre line to the far edge.
+                            let across = if along_u {
+                                0.5 * geo.fh / geo.h
+                            } else {
+                                0.5 * geo.fw / geo.h
+                            };
+                            for r in 0..=12 {
+                                let g = gain_line(&geo, across * r as f64 / 12.0, along_u, n);
+                                let what = format!(
+                                    "{kind} edges {edges} anamorphic {anamorphic} {fw}x{fh} {axis:?} \
+                                     {} {r}",
+                                    if along_u { "row" } else { "column" }
+                                );
+                                for i in 1..g.len() - 1 {
+                                    assert!(g[i] <= g[i - 1] + 1e-12, "{what}: rises at {i}");
+                                    let d2 = g[i + 1] - 2.0 * g[i] + g[i - 1];
+                                    if d2 > worst.0 {
+                                        worst = (d2, format!("{what} sample {i}"));
+                                    }
+                                }
+                                assert!(g[n] <= g[n - 1] + 1e-12, "{what}: rises at the edge");
+                                lines += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!(
+            "{lines} lines; the largest second difference (it must be 0): {:.2e} ({})",
+            worst.0, worst.1
+        );
+        assert!(lines > 10_000);
+        assert!(
+            worst.0 < 1e-12,
+            "the gain bends back by {:.3e}: {}",
+            worst.0,
+            worst.1
+        );
+    }
+
+    /// The scale that puts the traced end value on the side of the frame: 1 without the attachment (the
+    /// tables are read as they are), the oval radius of the middle of the long edge from Anamorphic 70 on, more
+    /// where the corner would otherwise be left with less than `1 - T_OVERSHOOT` of the traced end value; and
+    /// the corner's gain is never below that, so no lens is cut to black or to a negative gain.
+    #[test]
+    fn the_table_radius_scale_keeps_the_side_at_the_traced_end_and_the_corner_above_zero() {
+        for kind in LensKind::ALL {
+            let p0 = shipped_plan(kind, 100.0, 0.0, 1500, 1000, Axis::X);
+            let g0 = Geometry::new(&p0, 1500, 1000, Options::default()).expect("field optics");
+            assert_eq!(g0.radius_scale, 1.0, "{kind}: scale without the attachment");
+            let tb = g0.tables;
+            let end = tb.illumination[RADII - 1];
+            for (fw, fh, axis) in [
+                (1500, 1000, Axis::X),
+                (1000, 1500, Axis::Y),
+                (1000, 1000, Axis::X),
+                (3000, 1000, Axis::X),
+            ] {
+                for anamorphic in [30.0, 70.0, 100.0] {
+                    let p = shipped_plan(kind, 100.0, anamorphic, fw, fh, axis);
+                    let geo = Geometry::new(&p, fw, fh, Options::default()).expect("field optics");
+                    let e = p.field_amount();
+                    assert_eq!(e, 1.0);
+                    let (um, vm) = (0.5 * geo.fw / geo.h, 0.5 * geo.fh / geo.h);
+                    let (xm, ym) = if axis == Axis::X { (um, vm) } else { (vm, um) };
+                    assert!(
+                        geo.radius_scale >= (p.alpha() * xm).max(1.0) - 1e-12,
+                        "{kind} {fw}x{fh} A{anamorphic}: the side is past the last radius"
+                    );
+                    // The corner's relative illumination, at the scaled radius.
+                    let corner = geo.kernel_at(um, vm).gain;
+                    let floor = (1.0 - T_OVERSHOOT) * end;
+                    assert!(
+                        corner >= floor - 1e-9,
+                        "{kind} {fw}x{fh} A{anamorphic}: the corner's gain {corner} is below {floor}"
+                    );
+                    // The middle of the long edge: the traced end value, or lighter where the corner asked
+                    // for a larger scale.
+                    let side = if axis == Axis::X {
+                        geo.kernel_at(um, 0.0).gain
+                    } else {
+                        geo.kernel_at(0.0, vm).gain
+                    };
+                    if p.alpha() * xm > 1.0 {
+                        assert!(
+                            side >= end - 1e-9,
+                            "{kind} {fw}x{fh} A{anamorphic}: the side is darker ({side}) than T(1) {end}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// `pool_concave` leaves a concave sequence as it is, bit for bit, and makes any other concave with the
+    /// same end values and the same total: the Triplet's last three intervals rise in secant slope.
+    #[test]
+    fn concave_pooling_changes_only_what_is_not_concave() {
+        let radii: [f64; RADII] = std::array::from_fn(|k| k as f64 / 8.0);
+        let concave = [1.0, 1.0, 0.983, 0.954, 0.914, 0.843, 0.717, 0.55, 0.353];
+        assert_eq!(pool_concave(&radii, &concave), concave);
+        let triplet = [1.0, 0.988, 0.913, 0.817, 0.676, 0.514, 0.345, 0.187, 0.042];
+        let pooled = pool_concave(&radii, &triplet);
+        assert_eq!(pooled[0], triplet[0]);
+        assert_eq!(pooled[8], triplet[8]);
+        let secants: Vec<f64> = pooled.windows(2).map(|p| p[1] - p[0]).collect();
+        for w in secants.windows(2) {
+            assert!(w[1] <= w[0] + 1e-15, "not concave: {secants:?}");
+        }
+        // Only the interior of the pooled run moved (nodes 5 to 7 of this sequence: the run starts at node 4).
+        for k in 0..5 {
+            assert_eq!(pooled[k], triplet[k], "node {k}");
+        }
+        for k in 5..8 {
+            assert!((pooled[k] - triplet[k]).abs() < 0.02, "node {k}");
+        }
+    }
+
+    /// `concave_piece` passes through both ends with the given slopes and has a slope that never rises, for
+    /// the three cases (the secant below, at and above the mean of the end slopes) and the straight run.
+    #[test]
+    fn concave_pieces_hit_their_ends_and_never_bend_back() {
+        // Over h = 0.5: the secant below the mean of the end slopes, at it, above it, a straight run, a steep
+        // end, and a near straight one.
+        for (y0, y1, d0, d1) in [
+            (1.0, 0.9, 0.0, -0.3),
+            (1.0, 0.925, 0.0, -0.3),
+            (1.0, 0.95, 0.0, -0.3),
+            (1.0, 0.9, -0.2, -0.2),
+            (1.0, 0.8, -0.05, -1.0),
+            (0.9, 0.15, -1.4, -1.6),
+            (0.5, 0.2, -0.1, -0.7),
+        ] {
+            let h = 0.5;
+            let m = (y1 - y0) / h;
+            assert!(d0 >= m - 1e-12 && m >= d1 - 1e-12, "the case is a valid one");
+            assert!((concave_piece(y0, y1, d0, d1, h, 0.0) - y0).abs() < 1e-12);
+            assert!((concave_piece(y0, y1, d0, d1, h, 1.0) - y1).abs() < 1e-12);
+            let n = 4000;
+            let v: Vec<f64> = (0..=n)
+                .map(|i| concave_piece(y0, y1, d0, d1, h, i as f64 / n as f64))
+                .collect();
+            let ds = h / n as f64;
+            assert!(((v[1] - v[0]) / ds - d0).abs() < 1e-3, "start slope");
+            assert!(((v[n] - v[n - 1]) / ds - d1).abs() < 1e-3, "end slope");
+            for i in 1..n {
+                let (a, b) = (v[i] - v[i - 1], v[i + 1] - v[i]);
+                assert!(b <= a + 1e-12, "the slope rises at {i} of {n}");
+            }
         }
     }
 

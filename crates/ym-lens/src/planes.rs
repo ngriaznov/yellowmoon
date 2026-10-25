@@ -124,8 +124,13 @@ impl LensPlanes {
         }
         // L1 detects the blur already in the photo, only when a slider asks to reshape bokeh.
         let bokeh = if plan.needs_blur_map() {
+            // The balls L1 redraws carry the colour of their light, not the clip pattern's cast.
+            let lit = crate::light::lit_input(plan, lens_plane);
+            let plane = lit
+                .as_deref()
+                .map_or(*lens_plane, |data| ImageRef { data, ..*lens_plane });
             Some(crate::l1::BokehPlanes::build(
-                plan, lens_plane, focus, map, cancel,
+                plan, &plane, focus, map, cancel,
             )?)
         } else {
             None

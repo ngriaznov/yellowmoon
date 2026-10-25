@@ -349,6 +349,98 @@ fn a_light_at_the_clip_pattern_is_the_same_on_the_device() {
     }
 }
 
+/// A light clipped in green alone (red and blue still measuring, the star of the review) is restored with its
+/// green raised to the mean of the others, on the device as on the CPU (`ym_lens` `Restore::light_colour`,
+/// `ll_light_colour` in `lens_light_colour.wgsl`): the same flare terms within the parity bound.
+#[test]
+fn a_light_saturated_in_one_channel_is_the_same_on_the_device() {
+    let _guard = serial();
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
+    let bound = if dev.gpu.info().is_software {
+        PARITY_BOUND
+    } else {
+        PARITY_BOUND_HARDWARE
+    };
+    let (w, h) = (360usize, 240usize);
+    let g0 = [2.6f32, 1.0, 1.95];
+    // Background below the knee, and lights of every kind of saturation: green alone with red and blue
+    // measuring (the star), green and blue (a cyan light), red alone, and the three at their clip levels
+    // times 1.6 (a neutral core).
+    let spots: [(f64, f64, f64, [f32; 3]); 5] = [
+        (0.3, 0.3, 4.0, [1.4, 1.1, 1.7]),
+        (0.7, 0.4, 3.0, [0.5, 1.2, 2.2]),
+        (0.5, 0.75, 3.0, [2.9, 0.6, 0.4]),
+        (0.15, 0.8, 5.0, [4.2, 1.6, 3.1]),
+        (0.8, 0.8, 2.0, [2.0, 1.2, 0.2]),
+    ];
+    let value = |c: usize, x: usize, y: usize| -> f32 {
+        let mut v = 0.4 * texture(c, x, y) * g0[c];
+        for (fx, fy, r, colour) in spots {
+            let (dx, dy) = (
+                x as f64 + 0.5 - fx * w as f64,
+                y as f64 + 0.5 - fy * h as f64,
+            );
+            if (dx * dx + dy * dy).sqrt() <= r {
+                v = v.max(colour[c]);
+            }
+        }
+        v
+    };
+    let mut image = Vec::with_capacity(3 * w * h);
+    for c in 0..3 {
+        for y in 0..h {
+            for x in 0..w {
+                image.push(value(c, x, y));
+            }
+        }
+    }
+    let frame = FrameInfo {
+        width: w,
+        height: h,
+        axis: Axis::X,
+        f_number: Some(8.0),
+        clip: g0,
+    };
+    let out = Rect::whole(w, h);
+    let nothing = vec![0.0f32; 3 * w * h];
+    for kind in [LensKind::Default, LensKind::Vintage] {
+        let p = LensPlan::new(
+            common::lens::library(),
+            &amounts(kind, 100.0, 0.0, 0.0),
+            frame,
+            common::lens::camera(),
+        )
+        .expect("plan");
+        let plane = ImageRef {
+            width: w,
+            height: h,
+            x0: 0,
+            y0: 0,
+            frame_width: w,
+            frame_height: h,
+            data: &image,
+        };
+        let planes = LensPlanes::build(&p, &plane, None, &|| false).expect("planes");
+        let want = cpu_flare(&p, &planes, &image, (w, h), (0, 0), &nothing, out);
+        let got = gpu_flare(dev, &p, &planes, &image, (w, h), (0, 0), &nothing, out);
+        let f = compare(&got, &want);
+        note!(
+            "L3 saturated channels, {kind}: worst difference {:e} of values up to {:e}",
+            f.worst,
+            f.scale
+        );
+        assert!(f.scale > 0.0, "{kind}: no flare light");
+        assert!(
+            f.worst <= bound * f.scale,
+            "{kind}: worst difference {} of values up to {}",
+            f.worst,
+            f.scale
+        );
+    }
+}
+
 /// The ghosts on grids of nodes, alone: a lens of big soft ghosts with no glow, veil, starburst or streak, so
 /// that the flare terms are the ghosts' (the shipped lenses' glow is a thousand times brighter than their
 /// ghosts, which hides an error in them from the other test). The bound is the same share of the terms' peak.

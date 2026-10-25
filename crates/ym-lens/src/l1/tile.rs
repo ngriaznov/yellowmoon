@@ -387,6 +387,25 @@ impl<'a> Pass<'a> {
             .collect();
         // The blur map at the tile's pixels.
         let (bt, be, occ) = self.tile_blur(input, rbs, rb, r0, &shapes);
+        // TEMP-DEBUG-H (remove before the end): dump the maps of this tile for local diagnosis.
+        if let Ok(dir) = std::env::var("YM_L1_DUMP") {
+            let tag = format!("{dir}/r0_{}_{}_{}_{}", r0.x, r0.y, r0.w, r0.h);
+            let f32s = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
+            let _ = std::fs::write(format!("{tag}_bt.f32"), f32s(&bt));
+            let _ = std::fs::write(format!("{tag}_be.f32"), f32s(&be));
+            let _ = std::fs::write(
+                format!("{tag}_occ.u8"),
+                occ.iter().map(|o| u8::from(*o)).collect::<Vec<u8>>(),
+            );
+            let mut txt = String::new();
+            for sh in &shapes {
+                txt += &format!(
+                    "{:.2} {:.2} r_ball {:.2} r_out {:.2} f {:.3} a {:.2} b {:.2} reach {:.2}\n",
+                    sh.cx, sh.cy, sh.r_ball, sh.r_out, sh.f, sh.a, sh.b, sh.reach
+                );
+            }
+            let _ = std::fs::write(format!("{tag}_shapes.txt"), txt);
+        }
         if !self.v_on && !self.t_on && shapes.is_empty() {
             return crop_rgb(input, want);
         }

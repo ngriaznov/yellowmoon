@@ -163,6 +163,9 @@ fn field_with(
 ) -> Result<Vec<f32>, LensError> {
     check_planes(plan, planes, input, out)?;
     let (fw, fh) = (input.frame_width, input.frame_height);
+    // The stages that move light spread the light's colour, not the clip pattern's cast.
+    let lit = crate::light::lit_input(plan, input);
+    let input = &lit.as_deref().map_or(*input, |data| ImageRef { data, ..*input });
     // L1 over what L2 reads, then L2 on `out`.
     let l2_halo = field::Geometry::new(plan, fw, fh, opts).map_or(0, |g| g.halo());
     let want = out.grown(l2_halo, fw, fh);

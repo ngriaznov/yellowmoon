@@ -60,6 +60,17 @@ pub const W_KNEE: f64 = 0.75 * W_MAX;
 /// lens, so each keeps its own lateral colour relative to the others.
 pub const LATERAL_COLOR_SCALE: f64 = 0.3;
 
+/// How far past the last table radius the corner of the frame may lie under the attachment, as a share of the
+/// distance in which the traced relative illumination would fall to 0 along its end slope (`docs/21` section 4,
+/// L2, *As built (the field law)*).
+///
+/// The oval field radius puts the corner of the frame past 1 (1.12 to 1.22 at Anamorphic 100), where the lens
+/// has no data. The law carries the end slope straight on there (a falloff whose slope never lessens, so
+/// that no band appears on a flat field); a straight line reaches 0, so the radius is scaled until the corner
+/// is no farther out than this share of the way to 0: with 0.6 a corner has at least 0.4 of the traced
+/// end value. Only the Triplet (whose corner is nearly dark) and the Sonnar (a steep end) are scaled by it.
+pub const T_OVERSHOOT: f64 = 0.6;
+
 /// A field-optics kernel whose half-width is below this many pixels is a copy of the input.
 pub const COPY_BELOW_PX: f64 = 0.5;
 
@@ -128,18 +139,20 @@ pub const LIGHT_BOOST_ENERGY_CAP: f64 = 3.0;
 pub const GLOW_BOOST_SHARE: f64 = 0.5;
 
 /// At Flares 100 the ghosts of a lens together take at least this fraction of the light of a light: a lens whose
-/// data hold less (every coated lens) has its ghosts raised to this, shared out in proportion to
-/// `fraction / max(s, GHOST_FLOOR_MIN_RADIUS)^2` so that the small ghosts get most. It is twice what twelve
-/// ghosts of two single-layer surfaces (1.3 % each, 1.7e-4 per ghost) take and a fifth of what twelve pairs of
-/// bare glass (4 % each, 1.6e-3 per ghost) do. The data are never lowered.
-pub const GHOST_FRACTION_FLOOR: f64 = 0.004;
+/// data hold less (a coated lens: Default 1.2e-4, Vintage 3.4e-4) has them all scaled by `floor / sum`, at most
+/// [`GHOST_GAIN_MAX`], so the lens as built is a lens whose coatings are somewhat worse than its design's. The
+/// proportions between its ghosts stay the data's. Twelve ghosts of two single-layer surfaces (1.3 % each) hold
+/// 2e-3 together, of two multi-layer ones (0.3 % each) 1e-4, of two bare surfaces (4 %) 2e-2. The data are
+/// never lowered.
+pub const GHOST_FRACTION_FLOOR: f64 = 0.0008;
 
-/// The ghost radius, in half-diagonals, below which a ghost counts as this size when the floor is shared out
-/// (a ghost of a few pixels would otherwise take all of it and be a hot spot).
-pub const GHOST_FLOOR_MIN_RADIUS: f64 = 0.15;
+/// The most a lens's ghosts are scaled up to the floor ([`GHOST_FRACTION_FLOOR`]): Default and Detuned (1.2e-4)
+/// and Vintage (3.4e-4) get twice their data's light, Sonnar (8.6e-4) and Classic (1.4e-3) are above the floor
+/// or nearly, and the uncoated Triplet (5e-3) and Petzval (2.7e-2) are as they are.
+pub const GHOST_GAIN_MAX: f64 = 2.0;
 
-/// The same floor for the attachment's own oval ghosts at Anamorphic 100.
-pub const ATTACHMENT_GHOST_FLOOR: f64 = 0.0007;
+/// The same floor for the attachment's own oval ghosts at Anamorphic 100 (data 2.3e-4).
+pub const ATTACHMENT_GHOST_FLOOR: f64 = 0.0004;
 
 /// At Flares 100 the glow of a lens takes at least this fraction of the light (a veiling glare that the
 /// literature rates "usually good", 1.5 to 3 %); a lens whose data hold less has its glow raised to it.
@@ -159,6 +172,12 @@ pub const CLIP_RAMP_PLANE: (f64, f64) = (0.90, 0.97);
 /// pattern (`g0`: a colour cast of the white balance, which highlight recovery removes) and are restored as a
 /// neutral (`l3::restore`).
 pub const CLIP_PATTERN_SPREAD: f64 = 0.1;
+
+/// A channel counts as saturated (its value is a lower bound of the light, not a measurement) with a weight that
+/// ramps from 0 to 1 as its value, in its own clip levels, goes from the first to the second number. The channel
+/// with the smallest `g0` (green) saturates first for a white light, and the others are still measuring: the
+/// light's colour is then the others' with the saturated channel raised (`l3::restore`, *the light's colour*).
+pub const LIGHT_SATURATION_RAMP: (f64, f64) = (0.90, 1.0);
 
 /// The highlights `H` are the restored light weighted by a soft knee that is 0 at this fraction of the clip
 /// level and 1 at the clip level.
@@ -186,6 +205,11 @@ pub const GLOW_TAPER_START: f64 = 0.85;
 /// The veiling kernel is flat up to this fraction of `flare.veil.radius` and falls to 0 at the radius (cosine).
 pub const VEIL_FLAT: f64 = 0.6;
 
+/// The veil is a haze over the whole frame, not light from one place, so its colour is the picture's average
+/// colour and not the lights': this share of it is the mean of its three channels (1: a neutral grey haze, 0:
+/// the picture's average colour). The glow's tail round a light keeps the light's colour.
+pub const HAZE_NEUTRAL: f64 = 1.0;
+
 /// A pixel of the lens plane is a source pixel when its highlight, in clip levels, reaches this value in some
 /// channel.
 pub const SOURCE_FLOOR: f64 = 0.02;
@@ -211,9 +235,9 @@ pub const GHOST_PRUNE_BUDGET: f64 = 1.0 / 262_144.0;
 
 /// The least width of a ghost's edge, as the standard deviation of its Gaussian step in ghost radii (the lens
 /// data give `soft`, some 0.03: a near-hard disc). The 10 to 90 % width of the step is 2.56 standard
-/// deviations, so 0.08 is a ramp of 20 % of the radius: a ghost is a defocused image of the light, never a
-/// sticker with an edge.
-pub const GHOST_SOFT_MIN: f64 = 0.08;
+/// deviations, so 0.10 is a ramp of 26 % of the radius (at least a quarter): a ghost is a defocused image of the
+/// light, never a sticker with an edge.
+pub const GHOST_SOFT_MIN: f64 = 0.10;
 
 /// The most the normalised tint of a ghost's coating may differ between channels (largest over smallest). The
 /// data's coatings, the product of two reflectance spectra, are far more saturated than a ghost looks (6 to 23
@@ -226,18 +250,31 @@ pub const GHOST_TINT_MAX_RATIO: f64 = 1.2;
 /// clipped light is assumed thousands of times brighter than the clip level (`LIGHT_BOOST_MAX_EV`), which spread
 /// over a ghost's area still made discs brighter than the scene around them. Applies to ghosts of apothem
 /// [`GHOST_FULL_RADIUS`] and larger; smaller ones get less (`l3::items::ghost_peak_max`).
-pub const GHOST_PEAK_MAX: f64 = 0.05;
+pub const GHOST_PEAK_MAX: f64 = 0.004;
 
 /// The most light a ghost carries, in clip levels times half-diagonals squared at Flares 100: its brightest value
 /// may not pass this over its area `pi s^2`, so a ghost of apothem over 0.25 is fainter than [`GHOST_PEAK_MAX`] in
 /// proportion to one over its area (a quarter of it at an apothem of 0.5, 6 % at 1).
-pub const GHOST_LIGHT_MAX: f64 = 0.0098;
+pub const GHOST_LIGHT_MAX: f64 = 0.000_78;
 
 /// The apothem, in half-diagonals, from which a ghost may be as bright as [`GHOST_PEAK_MAX`].
 pub const GHOST_FULL_RADIUS: f64 = 0.1;
 
 /// The least share of [`GHOST_PEAK_MAX`] a small ghost is allowed.
 pub const GHOST_SMALL_SHARE: f64 = 0.25;
+
+/// The coating of ghost `i` is shifted along the wavelengths by a number of nanometres between these two (a
+/// low-discrepancy sequence of the ghost's index, `l3::items::coating_shift_nm`): the surfaces of a lens are not
+/// coated alike and a ray meets a coating at an angle, which moves its reflectance minimum toward blue, so the
+/// ghosts of one light come out amber, magenta, blue and cyan in turn (pale, [`GHOST_TINT_MAX_RATIO`]) and do
+/// not all read as one lilac.
+pub const GHOST_COATING_SHIFT_NM: (f64, f64) = (-70.0, 120.0);
+
+/// A ghost is brighter on the side that faces the optical axis by this share of its mean, and fainter on the
+/// other by the same (a linear shading across its apothem): the image of the aperture is vignetted by the lens's
+/// barrel, which is never even. It integrates to nothing over the ghost, so the light the ghost carries is the
+/// same, and the brightest value is `1 +` this times the profile's (`l3::items`).
+pub const GHOST_SHADE: f64 = 0.35;
 
 /// The peak of a streak at its light, in clip levels, for a light that is bright and compact, per unit of the
 /// attachment's streak `fraction` (data version 2: 0.004, so 0.25): the streak is a line a quarter of the clip
