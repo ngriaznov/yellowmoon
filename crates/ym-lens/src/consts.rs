@@ -230,7 +230,7 @@ pub const GHOST_PEAK_MAX: f64 = 0.07;
 
 /// The most light a ghost carries, in clip levels times half-diagonals squared at Flares 100: its brightest value
 /// may not pass this over its area `pi s^2`, so a ghost of apothem over 0.25 is fainter than [`GHOST_PEAK_MAX`] in
-/// proportion to one over its area (0.28 of it at an apothem of 0.5, 0.07 at 1).
+/// proportion to one over its area (a quarter of it at an apothem of 0.5, 6 % at 1).
 pub const GHOST_LIGHT_MAX: f64 = 0.0137;
 
 /// The apothem, in half-diagonals, from which a ghost may be as bright as [`GHOST_PEAK_MAX`].

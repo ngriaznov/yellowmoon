@@ -1304,7 +1304,7 @@ mod tests {
         use crate::consts::{GHOST_FULL_RADIUS, GHOST_LIGHT_MAX, GHOST_PEAK_MAX, GHOST_SMALL_SHARE};
         // From the full radius to where the light bound meets the peak bound: the peak bound.
         assert_eq!(ghost_peak_max(GHOST_FULL_RADIUS), GHOST_PEAK_MAX);
-        assert_eq!(ghost_peak_max(0.25), GHOST_PEAK_MAX);
+        assert_eq!(ghost_peak_max(0.2), GHOST_PEAK_MAX);
         // Small ghosts: a share of it, rising with the size.
         assert_eq!(ghost_peak_max(0.0), GHOST_PEAK_MAX * GHOST_SMALL_SHARE);
         assert!(ghost_peak_max(0.05) > ghost_peak_max(0.02));
