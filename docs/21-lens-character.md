@@ -1,6 +1,6 @@
 # 21 · Lens character
 
-Lens character gives a photo the look of another lens: how its highlights flare, how its edges soften and darken, how the out-of-focus background is shaped, and, with an anamorphic attachment, taller oval bokeh, horizontal streaks and the anamorphic bend. It is a **Lens** card on the Look tab: a lens choice and three sliders, **Flares**, **Edges** and **Anamorphic**. This file covers what the person sees, the setting, where the lens acts in the pipeline, the four stages, the core's API, the lens data, the bokeh detector, the command line, determinism and speed, the app, and the tests.
+Lens character gives a photo the look of another lens: how its highlights flare, how its edges soften and darken, how the out-of-focus background is shaped, and, with an anamorphic attachment, taller oval bokeh, horizontal streaks and the anamorphic bend. It is a **Lens** tab, the second tab of the tool panel: a Lens card with the seven lenses as rows and an Amounts card with three sliders, **Flares**, **Edges** and **Anamorphic**. This file covers what the person sees, the setting, where the lens acts in the pipeline, the four stages, the core's API, the lens data, the bokeh detector, the command line, determinism and speed, the app, and the tests.
 
 The reasons, sources and rejected routes (generative editors among them) are in `research/lens-character-2026-10-23.md`. The owner's decisions of 2026-10-24: lenses only, no film looks; existing bokeh is reshaped and none is ever added ("modification is a better route than adding fake bokeh"; "if photo has no bokeh - it will almost unmodified, but we also do other things for lens simulation"); lens data are synthetic, computed from public lens designs; "Flares and field effects need its controls. Bokeh reshaping will increase with raising anamorphic slider"; Anamorphic also shapes the flares; a lens choice above the sliders with seven lenses including Default; Anamorphic works with every lens and brings the anamorphic distortion; the picture zooms in so no corner is empty. Later the same day the owner dropped the depth model the first version of this spec used: "Why do we need depth model? We need only bokeh detection model so we can modify it"; "Depth on its own does not mean we need to modify bokeh. And we are adding no bokeh, remember? We just modify it." The bokeh detector (section 7) finds the blur already in the photo from the photo itself.
 
@@ -10,16 +10,17 @@ Everything here runs in Rust, the same in the app and `ym`. The optics are class
 
 ## 1. What the person sees
 
-The Look tab's fourth card, under Tone: **Lens**.
+The **Lens** tab (the owner's request of 2026-10-25: "lens should be its own tab like Look, Light and others"; it had been the fourth card of the Look tab, under Tone, below the visible part of the panel) is the second tab, ⌘2, in a soft violet (#BD8CFF), and has two cards (`docs/11` *Lens card* has the details of the controls). Its blurb is "How a lens draws light: flares, softer edges, the shape of blur. Off until you raise a slider."
 
 | Part | What it is |
 |---|---|
-| Header | "Lens" and the card's Reset link |
-| **Lens** row | a glasscn `Select` with the seven lenses below; the menu shows each lens's line under its name |
+| **Lens** card, header | "Lens" (no Reset: the Amounts card's does that) |
+| **Lens** list | the seven lenses below as rows of a glasscn `RadioGroup` (`ChoiceList`, `Item` rows), one row per lens: the name in bold and the line under it, in the order of the table; the chosen row is ringed in the tab colour |
+| **Amounts** card, header | "Amounts" and the card's Reset link |
 | **Flares** | 0 to 100, step 1, detent and Reset at 0, shown with `formats.integer` |
 | **Edges** | the same |
 | **Anamorphic** | the same |
-| Note | a `RowNote`: the chosen lens's line, then the bokeh line when there is one (below) |
+| Note | a `RowNote` under the sliders, for the bokeh line when there is one (below); the chosen lens's line is in its row and is not repeated |
 
 | Lens | Line |
 |---|---|
@@ -43,7 +44,7 @@ The names are the approved list; two of them need a check before they ship (sect
 |---|---|
 | Choose a lens | `kind` changes, and Flares and Edges move to that lens's starting amounts (its data's `start`; Default's are 0 and 0). Anamorphic stays. One undo step |
 | Move a slider | the picture follows, as with any slider; one undo step per drag |
-| Reset (the card's link) | Default, and the three sliders at 0 |
+| Reset (the Amounts card's link) | Default, and the three sliders at 0 |
 | Before (`\`) | the camera's default picture, with no lens effect at all (`docs/02` *The Before view*) |
 
 **The bokeh line** shows while a slider asks for bokeh reshaping:
@@ -60,7 +61,7 @@ Otherwise there is no bokeh line. A photo without bokeh still gets flares and ed
 
 | Field | Type / range | Default | UI |
 |---|---|---|---|
-| `lens` | `{ kind, flares 0–100, edges 0–100, anamorphic 0–100 }`; `kind` is one of `default`, `classic`, `vintage`, `petzval`, `triplet`, `sonnar`, `detuned` | `{ kind: "default", flares: 0, edges: 0, anamorphic: 0 }` | Look › Lens |
+| `lens` | `{ kind, flares 0–100, edges 0–100, anamorphic 0–100 }`; `kind` is one of `default`, `classic`, `vintage`, `petzval`, `triplet`, `sonnar`, `detuned` | `{ kind: "default", flares: 0, edges: 0, anamorphic: 0 }` | Lens tab |
 
 - **Rules.** As `color_warp` (`docs/01` *Settings in the core*): a document without `lens` reads as the default; numbers are clamped (`PatchReport::clamped`), a value that is not finite is `SettingsError::NotFinite("lens.<field>")`, an unknown `kind` or field is `SettingsError::Parse`; a patch may carry only the parts it changes (`{ "lens": { "flares": 40 } }`); writing writes every field, so the `ym:Settings` of every export gains `"lens":{...}` (no pixel changes).
 - **No lens.** All three amounts at 0 is no lens, whatever `kind` says: no lens stage runs, and the render has the bytes it has today without the field (a test).
@@ -534,5 +535,5 @@ Task format of `docs/15`. Each task updates the specs it touches and `docs/STATU
 - **Settings:** reading with and without `lens`, partial patches, clamping, an unknown kind, Copy and Paste, Reset, the schema.
 - **CLI and parity:** `ym render --lens vintage --flares 60 --anamorphic 50` equals the same settings through `--settings` and the app's export byte for byte; `ym lenses list --json` equals `lens_list`.
 - **Bokeh detector:** synthetic scenes drawn analytically (textured regions blurred by discs of known radii, a sharp subject with fine strands against a blurred background, an evenly sharp scene, flat regions, noise at several ISO-like levels): isolated bright discs of known radius on a dark noisy ground measured within 15 %; `b` within 25 % of the truth where the detector is confident, below `b_min` on every sharp region and strand, no reshaping on the sharp scene; the focus point anchors the subject; the same bits in two runs.
-- **Frontend:** the card (the menu and its lines, a lens choice sends the start amounts in one patch and is one undo step, sliders, Reset, the bokeh lines), the mock, e2e `lens.spec.ts`.
+- **Frontend:** the Lens tab (the lenses as rows with their lines, a lens choice sends the start amounts in one patch and is one undo step, the arrows, the Amounts card's sliders and Reset, the bokeh lines), the mock, e2e `lens.spec.ts`.
 - **Goldens:** the golden set is unchanged (no lens); a lens golden per stage on synthetic scenes joins it.

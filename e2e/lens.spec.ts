@@ -2,26 +2,45 @@ import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { openApp, openPhotos, recordCalls, setValue, watchErrors } from "./helpers/app";
 
-// The Look tab's Lens card (docs/21 section 1, docs/11 "Lens card"): a lens choice, Flares, Edges and Anamorphic, and a note with the
-// lens's line, in a real browser against the mocked API.
+// The Lens tab (docs/21 section 1, docs/11 "Lens card"): the Lens card (the seven lenses as rows, each with its line) and the Amounts card
+// (Flares, Edges and Anamorphic), in a real browser against the mocked API.
 
 const MOCKUP = { mockCurrent: 3, mockPicked: "2,3,4" } as const;
 
 async function photos(page: Page, extra: Record<string, string | number> = {}): Promise<void> {
   await openApp(page, { ...MOCKUP, ...extra });
   await openPhotos(page);
+  await page.getByRole("tab", { name: "Lens" }).click();
+  await expect(page.getByRole("tab", { name: "Lens" })).toHaveAttribute("aria-selected", "true");
 }
 
 const lens = (page: Page) => page.getByRole("region", { name: "Lens" });
-const lensBox = (page: Page) => lens(page).getByRole("combobox", { name: "Lens" });
+const amounts = (page: Page) => page.getByRole("region", { name: "Amounts" });
+const list = (page: Page) => lens(page).getByRole("radiogroup", { name: "Lens" });
+/** The row of the lens called `name`: a radio named by the name and then the line. */
+const row = (page: Page, name: string) => list(page).getByRole("radio", { name: new RegExp(`^${name} `) });
 const valueBox = (page: Page, label: string) => page.getByRole("textbox", { name: `${label} value` });
 
-/** The card lies under the look grid: scrolls the panel to its end, so the card and its thumbs are where the mouse can reach them. */
-async function scrollToCard(page: Page): Promise<void> {
+const NAMES = ["Default", "Classic", "Vintage", "Petzval", "Triplet", "Sonnar", "Detuned"];
+const LINES = [
+  "Clean and modern: even sharpness, faint glow.",
+  "Warm and gentle: soft glow, amber flares, smooth falloff.",
+  "Glows wide open, lower contrast, soft edges, a little swirl.",
+  "Very sharp centre, strong swirl, fast falloff.",
+  "Soft corners, busy flares, a crisp centre.",
+  "Smooth and glowing, with gentle edges.",
+  "Sharp only in the centre, with smeared flares.",
+];
+
+/**
+ * The sliders lie under the list: at 1440 × 900 the Amounts card is below the visible part of the panel, so the panel is scrolled to its
+ * end, where the mouse can reach them (a real mouse drag does not scroll).
+ */
+async function scrollToAmounts(page: Page): Promise<void> {
   await page.locator(".ym-tools__scroll").evaluate((el) => {
     el.scrollTop = el.scrollHeight;
   });
-  await expect(lens(page)).toBeInViewport({ ratio: 0.98 });
+  await expect(amounts(page).getByRole("slider", { name: "Anamorphic" })).toBeInViewport({ ratio: 1 });
 }
 
 /** Drags a slider's thumb to a share of its track with the real mouse. */
@@ -35,6 +54,12 @@ async function dragSlider(page: Page, label: string, to: number, steps = 6): Pro
   await page.mouse.up();
 }
 
+/**
+ * An arrow key held for 60 ms, as a hand holds it. Radix chooses the row an arrow focused only while the key is still down, and moves the
+ * focus a tick after `keydown`: `keyboard.press` with no delay lets go before that tick and only moves the focus.
+ */
+const arrow = (page: Page, key: "ArrowDown" | "ArrowUp"): Promise<void> => page.keyboard.press(key, { delay: 60 });
+
 type Lens = { kind: string; flares: number; edges: number; anamorphic: number };
 
 /** The `lens` of every `update_settings` call recorded so far. */
@@ -42,95 +67,126 @@ async function lensPatches(calls: () => Promise<Array<{ args: unknown[] }>>): Pr
   return (await calls()).map((c) => (c.args[1] as { lens: Lens }).lens);
 }
 
-test.describe("the Lens card", () => {
-  test("sits under the Tone card: the Lens choice, then Flares, Edges and Anamorphic, then the lens's line", async ({ page }) => {
+test.describe("the Lens tab", () => {
+  test("is the second tab, ⌘2 opens it, and it has the Lens card (seven rows) and the Amounts card", async ({ page }) => {
     const problems = watchErrors(page);
-    await photos(page);
-    await scrollToCard(page);
-    const tone = (await page.getByRole("region", { name: "Tone" }).boundingBox())!;
-    const card = (await lens(page).boundingBox())!;
-    expect(card.y).toBeGreaterThanOrEqual(tone.y + tone.height - 1);
+    await openApp(page, MOCKUP);
+    await openPhotos(page);
+    await expect(page.getByRole("tab")).toHaveText(["Look", "Lens", "Light", "Colour", "Detail", "Curve", "RAW"]);
+    await page.keyboard.press("Meta+2");
+    await expect(page.getByRole("tab", { name: "Lens" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("complementary", { name: "Tools" }).getByRole("heading", { level: 2, name: "Lens" })).toBeVisible();
+    await expect(page.getByText("How a lens draws light: flares, softer edges, the shape of blur. Off until you raise a slider.")).toBeVisible();
     await expect(lens(page).getByRole("heading", { level: 3, name: "Lens" })).toBeVisible();
-    await expect(lensBox(page)).toHaveText("Default");
-    const ys: number[] = [(await lensBox(page).boundingBox())!.y];
-    for (const label of ["Flares", "Edges", "Anamorphic"]) {
-      await expect(lens(page).getByRole("slider", { name: label })).toBeVisible();
-      await expect(valueBox(page, label)).toHaveValue("0");
-      ys.push((await valueBox(page, label).boundingBox())!.y);
-    }
-    const note = lens(page).getByText("Clean and modern: even sharpness, faint glow.");
-    await expect(note).toBeVisible();
-    ys.push((await note.boundingBox())!.y);
-    expect(ys).toEqual([...ys].sort((a, b) => a - b));
+    await expect(amounts(page).getByRole("heading", { level: 3, name: "Amounts" })).toBeVisible();
+    await expect(list(page).getByRole("radio")).toHaveCount(7);
+    // The list is above the sliders.
+    const listBox = (await list(page).boundingBox())!;
+    const flares = (await valueBox(page, "Flares").boundingBox())!;
+    expect(flares.y).toBeGreaterThan(listBox.y + listBox.height);
     expect(problems).toEqual([]);
   });
 
-  test("the menu lists the seven lenses with their lines, and choosing one sends it with its starting amounts in one patch", async ({ page }) => {
+  test("the Look tab has no Lens card, and Light is the third tab (⌘3)", async ({ page }) => {
+    await openApp(page, MOCKUP);
+    await openPhotos(page);
+    await expect(page.getByRole("region", { name: "Tone" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Lens" })).toHaveCount(0);
+    await expect(page.getByRole("slider", { name: "Flares" })).toHaveCount(0);
+    await page.keyboard.press("Meta+3");
+    await expect(page.getByRole("tab", { name: "Light" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  test("the tab has its own colour: a soft violet on the chosen row, the underline and a changed value", async ({ page }) => {
     await photos(page);
-    await scrollToCard(page);
+    // #bd8cff; black on it.
+    const violet = "rgb(189, 140, 255)";
+    await expect(row(page, "Default")).toHaveCSS("background-color", violet);
+    await expect(page.locator('[data-slot="tabs-indicator"]')).toHaveCSS("background-color", violet);
+    await expect(page.getByRole("tabpanel")).toHaveAttribute("data-tab", "lens");
+    const chosenRow = row(page, "Default").locator("xpath=ancestor::label[1]");
+    // The ring of the row is the tab colour too (an inset ring of 2 px).
+    expect(await chosenRow.evaluate((el) => getComputedStyle(el).boxShadow)).toContain(violet);
+    await setValue(page, "Flares", "60");
+    await expect(valueBox(page, "Flares")).toHaveCSS("border-color", violet);
+  });
+
+  test("the list has the seven lenses, each with its line under its name, in the order of the card", async ({ page }) => {
+    await photos(page);
+    const rows = list(page).locator("label");
+    await expect(rows).toHaveCount(7);
+    for (const [i, name] of NAMES.entries()) {
+      await expect(rows.nth(i).locator(".ym-choice-row__name")).toHaveText(name);
+      await expect(rows.nth(i).locator(".ym-choice-row__line")).toHaveText(LINES[i]!);
+      // The line is under the name and in the quieter colour.
+      const nameBox = (await rows.nth(i).locator(".ym-choice-row__name").boundingBox())!;
+      const lineBox = (await rows.nth(i).locator(".ym-choice-row__line").boundingBox())!;
+      expect(lineBox.y).toBeGreaterThanOrEqual(nameBox.y + nameBox.height - 1);
+    }
+    await expect(row(page, "Default")).toHaveAttribute("aria-checked", "true");
+    // A row has the name and then the line as its accessible name.
+    await expect(row(page, "Vintage")).toHaveAccessibleName(`Vintage ${LINES[2]}`);
+    // The line of the chosen lens is in its row only: the Amounts card has none.
+    await expect(page.getByText(LINES[0]!)).toHaveCount(1);
+    await expect(amounts(page).locator(".ym-row-note")).toHaveCount(0);
+  });
+
+  test("choosing a lens with a click sends it with its starting amounts in one patch, keeps Anamorphic and is one undo step", async ({ page }) => {
+    await photos(page);
     await setValue(page, "Anamorphic", "25");
     await expect(valueBox(page, "Anamorphic")).toHaveValue("25");
     const calls = await recordCalls(page, "updateSettings");
 
-    await lensBox(page).click();
-    const options = page.getByRole("option");
-    await expect(options).toHaveCount(7);
-    const names = ["Default", "Classic", "Vintage", "Petzval", "Triplet", "Sonnar", "Detuned"];
-    const lines = [
-      "Clean and modern: even sharpness, faint glow.",
-      "Warm and gentle: soft glow, amber flares, smooth falloff.",
-      "Glows wide open, lower contrast, soft edges, a little swirl.",
-      "Very sharp centre, strong swirl, fast falloff.",
-      "Soft corners, busy flares, a crisp centre.",
-      "Smooth and glowing, with gentle edges.",
-      "Sharp only in the centre, with smeared flares.",
-    ];
-    for (const [i, name] of names.entries()) {
-      await expect(options.nth(i).locator(".ym-lens-option__name")).toHaveText(name);
-      await expect(options.nth(i).locator(".ym-lens-option__line")).toHaveText(lines[i]!);
-    }
-    await options.nth(2).click();
-
-    await expect(lensBox(page)).toHaveText("Vintage");
+    // A click on the line of a row chooses it, as a click on the name or the circle does.
+    await lens(page).getByText(LINES[2]!).click();
+    await expect(row(page, "Vintage")).toHaveAttribute("aria-checked", "true");
+    await expect(row(page, "Default")).toHaveAttribute("aria-checked", "false");
     expect(await lensPatches(calls)).toEqual([{ kind: "vintage", flares: 45, edges: 40, anamorphic: 25 }]);
     await expect(valueBox(page, "Flares")).toHaveValue("45");
     await expect(valueBox(page, "Edges")).toHaveValue("40");
     await expect(valueBox(page, "Anamorphic")).toHaveValue("25");
-    await expect(lens(page).getByText(lines[2]!)).toBeVisible();
-    await expect(lens(page).getByText(lines[0]!)).toHaveCount(0);
 
     // One undo step: the lens and the amounts it moved go back, the earlier Anamorphic stays.
     await page.keyboard.press("Meta+z");
-    await expect(lensBox(page)).toHaveText("Default");
+    await expect(row(page, "Default")).toHaveAttribute("aria-checked", "true");
     await expect(valueBox(page, "Flares")).toHaveValue("0");
     await expect(valueBox(page, "Anamorphic")).toHaveValue("25");
   });
 
-  test("a lens can be chosen with the keyboard alone", async ({ page }) => {
+  test("a lens can be chosen with the keyboard alone: Tab reaches the list on the chosen row, the arrows choose, one patch each", async ({ page }) => {
     await photos(page);
-    await scrollToCard(page);
     const calls = await recordCalls(page, "updateSettings");
-    await lensBox(page).focus();
-    await page.keyboard.press("Enter");
-    await expect(page.getByRole("option")).toHaveCount(7);
-    // Radix moves the focus a tick after the key, so each step waits for it.
-    for (const next of [/^Classic/, /^Vintage/, /^Petzval/]) {
-      await page.keyboard.press("ArrowDown");
-      await expect(page.getByRole("option", { name: next })).toBeFocused();
-    }
-    await page.keyboard.press("Enter");
-    await expect(lensBox(page)).toHaveText("Petzval");
-    expect(await lensPatches(calls)).toEqual([{ kind: "petzval", flares: 30, edges: 70, anamorphic: 0 }]);
-    // The focus comes back to the box.
-    await expect(lensBox(page)).toBeFocused();
+    await page.getByRole("tab", { name: "Lens" }).focus();
+    await page.keyboard.press("Tab");
+    await expect(row(page, "Default")).toBeFocused();
+    await expect(row(page, "Default")).toHaveCSS("outline-width", "3px");
+    await arrow(page, "ArrowDown");
+    await expect(row(page, "Classic")).toBeFocused();
+    await expect(row(page, "Classic")).toHaveAttribute("aria-checked", "true");
+    await arrow(page, "ArrowDown");
+    await expect(row(page, "Vintage")).toBeFocused();
+    await expect(row(page, "Vintage")).toHaveAttribute("aria-checked", "true");
+    expect(await lensPatches(calls)).toEqual([
+      { kind: "classic", flares: 35, edges: 30, anamorphic: 0 },
+      { kind: "vintage", flares: 45, edges: 40, anamorphic: 0 },
+    ]);
+    // The arrows wrap at the ends, and only the chosen row is a Tab stop: the next Tab leaves the list for the Amounts card's Reset.
+    await arrow(page, "ArrowUp");
+    await arrow(page, "ArrowUp");
+    await arrow(page, "ArrowUp");
+    await expect(row(page, "Detuned")).toBeFocused();
+    await expect(row(page, "Detuned")).toHaveAttribute("aria-checked", "true");
+    await page.keyboard.press("Tab");
+    await expect(amounts(page).getByRole("button", { name: "Reset", exact: true })).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(row(page, "Detuned")).toBeFocused();
   });
 
   test("dragging a slider sends the whole lens object and is one undo step", async ({ page }) => {
     await photos(page);
-    await scrollToCard(page);
-    await lensBox(page).click();
-    await page.getByRole("option", { name: /^Classic/ }).click();
+    await row(page, "Classic").click();
     await expect(valueBox(page, "Flares")).toHaveValue("35");
+    await scrollToAmounts(page);
     const calls = await recordCalls(page, "updateSettings");
     await dragSlider(page, "Edges", 0.9);
     const patches = await lensPatches(calls);
@@ -147,54 +203,50 @@ test.describe("the Lens card", () => {
     // The whole drag is one step.
     await page.keyboard.press("Meta+z");
     await expect(valueBox(page, "Edges")).toHaveValue("30");
-    await expect(lensBox(page)).toHaveText("Classic");
+    await expect(row(page, "Classic")).toHaveAttribute("aria-checked", "true");
   });
 
-  test("a row's Reset sends that amount at 0, and the card's Reset goes to Default with the sliders at 0", async ({ page }) => {
+  test("a row's Reset sends that amount at 0, and the Amounts card's Reset goes to Default with the sliders at 0", async ({ page }) => {
     await photos(page);
-    await scrollToCard(page);
-    await lensBox(page).click();
-    await page.getByRole("option", { name: /^Detuned/ }).click();
+    await row(page, "Detuned").click();
     await setValue(page, "Anamorphic", "60");
     await expect(valueBox(page, "Anamorphic")).toHaveValue("60");
     const calls = await recordCalls(page, "updateSettings");
 
-    await lens(page).getByRole("button", { name: "Reset Edges" }).click();
+    await amounts(page).getByRole("button", { name: "Reset Edges" }).click();
     await expect(valueBox(page, "Edges")).toHaveValue("0");
     expect((await lensPatches(calls)).at(-1)).toEqual({ kind: "detuned", flares: 45, edges: 0, anamorphic: 60 });
 
-    await lens(page).getByRole("button", { name: "Reset", exact: true }).click();
-    await expect(lensBox(page)).toHaveText("Default");
+    await amounts(page).getByRole("button", { name: "Reset", exact: true }).click();
+    await expect(row(page, "Default")).toHaveAttribute("aria-checked", "true");
     for (const label of ["Flares", "Edges", "Anamorphic"]) await expect(valueBox(page, label)).toHaveValue("0");
     expect((await lensPatches(calls)).at(-1)).toEqual({ kind: "default", flares: 0, edges: 0, anamorphic: 0 });
-    await expect(lens(page).getByText("Clean and modern: even sharpness, faint glow.")).toBeVisible();
   });
 
   test("the lens belongs to the photo: another photo has its own", async ({ page }) => {
     await photos(page);
-    await scrollToCard(page);
-    await lensBox(page).click();
-    await page.getByRole("option", { name: /^Triplet/ }).click();
-    await expect(lensBox(page)).toHaveText("Triplet");
+    await row(page, "Triplet").click();
+    await expect(row(page, "Triplet")).toHaveAttribute("aria-checked", "true");
     // The filmstrip: the photo next to it has no lens; coming back, Triplet is still on the first.
     const thumb = (n: number) => page.locator(".ym-filmstrip__thumb").nth(n);
     await thumb(4).click();
     await expect(page.locator(".ym-filmstrip__caption")).toContainText("5 of 12");
-    await expect(lensBox(page)).toHaveText("Default");
+    await expect(row(page, "Default")).toHaveAttribute("aria-checked", "true");
     await expect(valueBox(page, "Flares")).toHaveValue("0");
     await thumb(3).click();
     await expect(page.locator(".ym-filmstrip__caption")).toContainText("4 of 12");
-    await expect(lensBox(page)).toHaveText("Triplet");
+    await expect(row(page, "Triplet")).toHaveAttribute("aria-checked", "true");
     await expect(valueBox(page, "Flares")).toHaveValue("50");
   });
 
-  test("without lens data the card stays, with the choice and the sliders off and a note that says why", async ({ page }) => {
+  test("without lens data both cards stay: one row off for the photo's lens, the sliders off, and a note that says why", async ({ page }) => {
     await photos(page, { mockLenses: 0 });
-    await scrollToCard(page);
-    await expect(lensBox(page)).toBeDisabled();
+    await expect(list(page).getByRole("radio")).toHaveCount(1);
+    await expect(list(page).getByRole("radio")).toBeDisabled();
+    await expect(list(page).getByRole("radio")).toHaveAttribute("aria-checked", "true");
     for (const label of ["Flares", "Edges", "Anamorphic"]) await expect(valueBox(page, label)).toBeDisabled();
     await expect(lens(page).getByText("Lens data are missing, so lenses can't be used.")).toBeVisible();
     // Reset still works.
-    await expect(lens(page).getByRole("button", { name: "Reset", exact: true })).toBeEnabled();
+    await expect(amounts(page).getByRole("button", { name: "Reset", exact: true })).toBeEnabled();
   });
 });

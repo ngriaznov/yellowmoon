@@ -13,6 +13,9 @@ import { openApp, openPhotos } from "./helpers/app";
 // - the photo on screen in the filmstrip, at the start, the middle and the end of the strip, and in the Export panel;
 // - the crop frame and its eight handles (the frame is the whole photo when Crop opens, so its right and bottom handles stood on the edge of
 //   the cell and lost 2 to 4 px of their 14 px).
+// - the chosen lens row of the Lens tab and the focus ring of the row that has the keyboard (the row's tab-colour ring is an inset ring, so
+//   nothing of it is outside the row; the circle's focus ring is 5 px out and stands 14 px in from the row's edge; the list is longer than
+//   the panel in the smaller windows, so the arrows scroll it).
 //
 // Screenshot comparisons are in screenshots.spec.ts.
 
@@ -26,6 +29,8 @@ const LOOK_IN_USE: FrameTarget[] = [{ selector: '.ym-look-tile[aria-pressed="tru
 const LOOK_FOCUS: FrameTarget[] = [{ selector: ".ym-look-tile:focus-visible", ring: ".ym-look-tile__picture" }];
 const PHOTO_ON_SCREEN: FrameTarget[] = [{ selector: '.ym-filmstrip__thumb[aria-current="true"]' }];
 const THUMB_FOCUS: FrameTarget[] = [{ selector: ".ym-filmstrip__thumb:focus-visible" }];
+const LENS_CHOSEN: FrameTarget[] = [{ selector: '.ym-choice-row:has([data-state="checked"])' }];
+const LENS_FOCUS: FrameTarget[] = [{ selector: '.ym-choice-row [data-slot="radio-group-item"]:focus-visible' }, { selector: '.ym-choice-row:has(:focus-visible)' }];
 const CROP_HANDLES: FrameTarget[] = [{ selector: ".ym-crop__handle" }];
 const CROP_FOCUS: FrameTarget[] = [{ selector: ".ym-crop__frame:focus-visible" }, { selector: ".ym-crop__handle:focus-visible" }];
 
@@ -107,18 +112,98 @@ test.describe("look tiles", () => {
   });
 
   test("a tile that focus brings in from under the panel's top edge shows its ring whole", async ({ page }) => {
-    await photos(page);
+    // At 1180 × 760, the smallest window: the panel is 590 px high, so it scrolls far enough (to 841 px) for a tile of the first row to stand
+    // partly above its top edge. (In a taller window, or for a tile of a later row, the panel cannot scroll that far: the Look tab ends
+    // with the Tone card, and the Lens card, which used to make it long enough, has its own tab.)
+    await photos(page, SIZES[1]);
     await byKeyboard(page);
     const scroller = page.locator(".ym-tools__scroll");
-    const tile = page.locator(".ym-look-tile").nth(4);
+    const tile = page.locator(".ym-look-tile").first();
     // Scroll so that the tile starts 10 px above the top of the panel: partly in view, which focus then brings fully in. (The browser
     // centres an element that is partly out of view, so the ring ends up clear of the edge without any scroll padding.)
-    await scroller.evaluate((el, index) => {
-      const target = el.querySelectorAll(".ym-look-tile")[index]!;
+    await scroller.evaluate((el) => {
+      const target = el.querySelector(".ym-look-tile")!;
       el.scrollTop += target.getBoundingClientRect().top - el.getBoundingClientRect().top + 10;
-    }, 4);
+    });
+    const placed = await page.evaluate(() => {
+      const box = document.querySelector(".ym-tools__scroll")!.getBoundingClientRect();
+      const t = document.querySelector(".ym-look-tile")!.getBoundingClientRect();
+      return { above: box.top - t.top, belowTop: t.bottom - box.top };
+    });
+    expect(placed.above, "the tile starts above the panel's top edge").toBeGreaterThan(0);
+    expect(placed.belowTop, "and reaches below it: it is partly in view").toBeGreaterThan(20);
     await tile.focus();
     await expectWhole(page, LOOK_FOCUS);
+  });
+
+  test("a tile that focus brings in from under the panel's bottom edge shows its ring whole", async ({ page }) => {
+    // The same at the other edge, in every window: the last row of the grid, scrolled until 10 px of it show above the panel's bottom edge.
+    for (const size of SIZES) {
+      await photos(page, size);
+      await byKeyboard(page);
+      const tile = page.locator(".ym-look-tile").last();
+      await page.locator(".ym-tools__scroll").evaluate((el) => {
+        const target = [...el.querySelectorAll(".ym-look-tile")].at(-1)!;
+        el.scrollTop += target.getBoundingClientRect().top - (el.getBoundingClientRect().bottom - 10);
+      });
+      const placed = await page.evaluate(() => {
+        const box = document.querySelector(".ym-tools__scroll")!.getBoundingClientRect();
+        const t = [...document.querySelectorAll(".ym-look-tile")].at(-1)!.getBoundingClientRect();
+        return { insideBottom: box.bottom - t.top, belowBottom: t.bottom - box.bottom };
+      });
+      expect(placed.insideBottom, `${size.join(" × ")}: the tile starts above the panel's bottom edge`).toBeGreaterThan(0);
+      expect(placed.belowBottom, `${size.join(" × ")}: and ends below it: it is partly in view`).toBeGreaterThan(20);
+      await tile.focus();
+      await expectWhole(page, LOOK_FOCUS);
+    }
+  });
+});
+
+test.describe("lens rows", () => {
+  for (const size of SIZES) {
+    test(`the chosen row and the focus ring are whole for each of the seven lenses, first row to last, at ${size[0]} × ${size[1]}`, async ({ page }) => {
+      await photos(page, size);
+      await page.getByRole("tab", { name: "Lens" }).click();
+      await byKeyboard(page);
+      const radios = page.getByRole("radio");
+      await expect(radios).toHaveCount(7);
+      await radios.first().focus();
+      for (let i = 0; i < 7; i++) {
+        await expect(radios.nth(i)).toBeFocused();
+        await expect(radios.nth(i)).toHaveAttribute("aria-checked", "true");
+        // The row that has the keyboard is the chosen one: one ring measured for each, the focus ring of the circle and of the row.
+        await expectWhole(page, LENS_CHOSEN);
+        await expectWhole(page, LENS_FOCUS, 2);
+        if (i < 6) await page.keyboard.press("ArrowDown", { delay: 60 });
+      }
+      // And back up to the first row, which the panel scrolls to its top edge, below its scroll padding.
+      for (let i = 5; i >= 0; i--) {
+        await page.keyboard.press("ArrowUp", { delay: 60 });
+        await expect(radios.nth(i)).toBeFocused();
+        await expectWhole(page, LENS_FOCUS, 2);
+      }
+    });
+  }
+
+  test("a row that focus brings in from under the panel's top edge shows its focus ring whole", async ({ page }) => {
+    // At 1180 × 760 the list is longer than the 590 px panel, which can scroll to put the first row partly above its top edge (in a taller
+    // window the whole tab fits or nearly: the panel cannot scroll that far).
+    await photos(page, SIZES[1]);
+    await page.getByRole("tab", { name: "Lens" }).click();
+    await byKeyboard(page);
+    await page.locator(".ym-tools__scroll").evaluate((el) => {
+      const row = el.querySelector(".ym-choice-row")!;
+      el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top + 10;
+    });
+    const placed = await page.evaluate(() => {
+      const box = document.querySelector(".ym-tools__scroll")!.getBoundingClientRect();
+      const r = document.querySelector(".ym-choice-row")!.getBoundingClientRect();
+      return { above: box.top - r.top, belowTop: r.bottom - box.top };
+    });
+    expect(placed.above, "the row starts above the panel's top edge").toBeGreaterThan(0);
+    expect(placed.belowTop, "and reaches below it: it is partly in view").toBeGreaterThan(20);
+    await page.getByRole("radio").first().focus();
+    await expectWhole(page, LENS_FOCUS, 2);
   });
 });
 

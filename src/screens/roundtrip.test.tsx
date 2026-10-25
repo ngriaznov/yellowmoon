@@ -1,5 +1,5 @@
 /**
- * M3-07, "every control round-trips through update_settings": each control of the six tabs is
+ * M3-07, "every control round-trips through update_settings": each control of the Look, Light, Colour, Detail, Curve and RAW tabs is
  * driven the way a person would (keys, typed values, clicks), the patch that reaches the mock is
  * checked, and so is what the screen shows once the core's resolved settings come back.
  */

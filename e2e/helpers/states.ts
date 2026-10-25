@@ -5,8 +5,9 @@ import { configureMock, dropFiles, failNext, lookTilesLoaded, openApp, openPhoto
 // Every page state of the app that can be reached on the mock API: the 30 states of the dark glass interface (C2), the ones its
 // screenshots were taken of and its page audit ran over (`e2e/glass.spec.ts`), the two of Colour › Colour warp (2026-10-17), the three of
 // Apple Auto (`docs/19`: the Automatic card with Apple's answer, Preferences with its row, and the instructions for Apple's model edited,
-// with Reset to default) and the one of Auto crop (`docs/20`: the Crop panel with Auto on and its note). A state is a function that
-// leaves a page in it; the numbers in the names are only an order.
+// with Reset to default), the one of Auto crop (`docs/20`: the Crop panel with Auto on and its note) and the three of the Lens tab
+// (`docs/21`: no lens, a lens chosen at its start amounts, and the lens data missing). A state is a function that leaves a page in it;
+// the numbers in the names are only an order.
 
 const MOCKUP = { mockCurrent: 3, mockPicked: "2,3,4" } as const;
 const LL4 = "ARRI_LookLibrary_LogC4.zip";
@@ -354,6 +355,27 @@ export const STATES: readonly PageState[] = [
       await p.getByRole("button", { name: "Auto crop" }).click();
       await expect(p.getByText("Levelled by 1.4°.")).toBeVisible();
       await p.waitForTimeout(500);
+    },
+  ],
+  // The Lens tab (docs/21 section 1, the owner's request of 2026-10-25): the list of seven lenses with Default chosen and the amounts at
+  // 0; Petzval chosen, with its start amounts on the sliders; and the lens data missing (one row off, the sliders off, the note).
+  ["37-tab-lens", async (p) => (await photos(p), tab(p, "Lens"))],
+  [
+    "38-tab-lens-chosen",
+    async (p) => {
+      await photos(p);
+      await tab(p, "Lens");
+      await p.getByRole("radio", { name: /^Petzval / }).click();
+      await expect(p.getByRole("textbox", { name: "Edges value" })).toHaveValue("70");
+      await p.waitForTimeout(300);
+    },
+  ],
+  [
+    "39-tab-lens-missing",
+    async (p) => {
+      await photos(p, { ...MOCKUP, mockLenses: 0 });
+      await tab(p, "Lens");
+      await expect(p.getByText("Lens data are missing, so lenses can't be used.")).toBeVisible();
     },
   ],
 ];

@@ -38,12 +38,14 @@ test.describe("the page audit: no element of ours where glasscn has one", () => 
 });
 
 test.describe("tabs", () => {
-  test("← and → move and select, ⌘3 selects Colour, and the panel is labelled by its tab", async ({ page }) => {
+  test("← and → move and select, ⌘4 selects Colour, and the panel is labelled by its tab", async ({ page }) => {
     await photos(page);
     await page.getByRole("tab", { name: "Look" }).focus();
     await page.keyboard.press("ArrowRight");
+    await expect(page.getByRole("tab", { name: "Lens" })).toHaveAttribute("aria-selected", "true");
+    await page.keyboard.press("ArrowRight");
     await expect(page.getByRole("tab", { name: "Light" })).toHaveAttribute("aria-selected", "true");
-    await page.keyboard.press("Meta+3");
+    await page.keyboard.press("Meta+4");
     await expect(page.getByRole("tab", { name: "Colour" })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "ym-tab-color");
   });
@@ -67,6 +69,69 @@ test.describe("tabs", () => {
     expect(Math.abs(g.labelMid - g.rowMid), JSON.stringify(g)).toBeLessThanOrEqual(1);
     expect(Math.abs(g.lineBottom - g.rimTop), JSON.stringify(g)).toBeLessThanOrEqual(0.5);
   });
+});
+
+test.describe("the tab row at three window sizes", () => {
+  // Seven labels in the 400 px panel's 46 px row (the owner's request of 2026-10-25: Lens is the second tab). Each label is on one line with
+  // its underline under it, nothing is clipped or overlaps its neighbour, whatever the window: the panel is 400 px at every size, so the
+  // three sizes also show that nothing in the row depends on the window.
+  for (const [width, height] of [
+    [1440, 900],
+    [1180, 760],
+    [1800, 1100],
+  ] as const) {
+    test(`every label fits on one line with its underline, at ${width} × ${height}`, async ({ page }) => {
+      await page.setViewportSize({ width, height });
+      await photos(page);
+      const ids = ["look", "lens", "light", "color", "detail", "curve", "raw"];
+      for (const id of ids) {
+        await page.locator(`#ym-tab-${id}`).click();
+        await expect(page.locator(`#ym-tab-${id}`)).toHaveAttribute("aria-selected", "true");
+        // The underline slides to the chosen tab; measure it where it has stopped.
+        await expect
+          .poll(async () =>
+            page.locator(".ym-tools").evaluate((tools, tab) => {
+              const line = tools.querySelector('[data-slot="tabs-indicator"]')!.getBoundingClientRect();
+              const trigger = tools.querySelector(`#ym-tab-${tab}`)!.getBoundingClientRect();
+              return Math.max(Math.abs(line.left - trigger.left), Math.abs(line.right - trigger.right));
+            }, id),
+          )
+          .toBeLessThanOrEqual(1);
+      }
+      const g = await page.locator(".ym-tools").evaluate((tools) => {
+        const row = tools.querySelector(':scope > [data-slot="tabs"]')!.getBoundingClientRect();
+        const triggers = [...tools.querySelectorAll<HTMLElement>('[data-slot="tabs-trigger"]')];
+        const labels = triggers.map((trigger) => {
+          const range = document.createRange();
+          range.selectNodeContents(trigger);
+          const rects = [...range.getClientRects()];
+          const box = trigger.getBoundingClientRect();
+          return {
+            name: trigger.textContent,
+            lines: new Set(rects.map((r) => Math.round(r.top))).size,
+            left: Math.min(...rects.map((r) => r.left)),
+            right: Math.max(...rects.map((r) => r.right)),
+            cell: { left: box.left, right: box.right },
+            overflow: trigger.scrollWidth - trigger.clientWidth,
+          };
+        });
+        return { rowHeight: row.height, rowLeft: row.left, rowRight: row.right, labels };
+      });
+      expect(g.rowHeight, JSON.stringify(g)).toBe(46);
+      expect(g.labels.map((l) => l.name)).toEqual(["Look", "Lens", "Light", "Colour", "Detail", "Curve", "RAW"]);
+      for (const [i, l] of g.labels.entries()) {
+        expect(l.lines, `${l.name} is on one line`).toBe(1);
+        expect(l.overflow, `${l.name} overflows its cell`).toBeLessThanOrEqual(0);
+        // The label sits inside its own cell (so the underline, which is the cell's width, runs under all of it) and inside the row.
+        expect(l.left, `${l.name} starts inside its cell`).toBeGreaterThanOrEqual(l.cell.left - 0.5);
+        expect(l.right, `${l.name} ends inside its cell`).toBeLessThanOrEqual(l.cell.right + 0.5);
+        expect(l.left, `${l.name} is not clipped on the left`).toBeGreaterThanOrEqual(g.rowLeft + 4);
+        expect(l.right, `${l.name} is not clipped on the right`).toBeLessThanOrEqual(g.rowRight - 4);
+        const next = g.labels[i + 1];
+        if (next) expect(next.left - l.right, `the gap between ${l.name} and ${next.name}`).toBeGreaterThanOrEqual(8);
+      }
+    });
+  }
 });
 
 test.describe("sliders and their boxes", () => {

@@ -169,7 +169,7 @@ export interface AppState {
   /** The look library; null until it has been asked for. */
   looks: readonly Look[] | null;
   /**
-   * The lenses of the Lens card's menu (`lens_list`, `docs/21` §10), asked for once; null until the first answer, empty when the
+   * The lenses of the Lens card's list (`lens_list`, `docs/21` §10), asked for once; null until the first answer, empty when the
    * lens data are missing.
    */
   lenses: readonly LensInfo[] | null;
@@ -661,7 +661,7 @@ export class AppStore {
   }
 
   /**
-   * Asks for the lenses of the Lens card's menu, once per run (`docs/21` §10). A core that has no lens data answers with none; one that
+   * Asks for the lenses of the Lens card's list, once per run (`docs/21` §10). A core that has no lens data answers with none; one that
    * fails to answer leaves the card with none too, and the error bar says what went wrong.
    */
   async refreshLenses(): Promise<void> {

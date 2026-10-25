@@ -37,7 +37,7 @@ These are static mockups with fake data: 12 photos from "Lisbon" drawn as flat s
 | `start-idle.png` | Start, nothing opened |
 | `start-busy.png` | Developing, 5 of 12 ready (`busy:true, prog:5.4`) |
 | `start-done.png` | All 12 ready (`prog:12`) |
-| `photos-look.png`, `photos-light.png`, `photos-color.png`, `photos-detail.png`, `photos-curve.png`, `photos-raw.png` | Each tool tab (`tab`) |
+| `photos-look.png`, `photos-lens.png`, `photos-light.png`, `photos-color.png`, `photos-detail.png`, `photos-curve.png`, `photos-raw.png` | Each tool tab (`tab`) |
 | `photos-look-teal.png` | Teal and orange picked, side panel scrolled to the look library |
 | `photos-look-search.png` | Look search "film" |
 | `photos-before.png` | Before/after showing "before" |

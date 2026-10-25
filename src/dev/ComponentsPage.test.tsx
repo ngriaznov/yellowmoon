@@ -19,6 +19,7 @@ describe("components.html page", () => {
       "Slider",
       "ValueBox",
       "Segmented",
+      "ChoiceList",
       "Switch",
       "Card",
       "TabBar and TitleBlock",

@@ -86,6 +86,14 @@ test.describe("Photos", () => {
     await compareScreen(page, "photos-look");
   });
 
+  test("Lens: Default chosen, the amounts at 0 (photos-lens.png)", async ({ page }) => {
+    // The owner's request of 2026-10-25 (docs/11 *Lens card*): the second tab, the seven lenses as rows, the Amounts card below them.
+    await photos(page);
+    await tab(page, "Lens");
+    await expect(page.getByRole("radiogroup", { name: "Lens" }).getByRole("radio")).toHaveCount(7);
+    await compareScreen(page, "photos-lens");
+  });
+
   test("Light (photos-light.png)", async ({ page }) => {
     await photos(page);
     await tab(page, "Light");

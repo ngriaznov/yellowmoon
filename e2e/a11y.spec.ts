@@ -78,7 +78,7 @@ test.describe("names and landmarks", () => {
     expect(count(snapshot, "banner")).toBe(1);
     // The folder name is the screen's heading.
     expect(snapshot).toMatch(/heading "Lisbon" \[level=1\]/);
-    for (const tab of ["Look", "Light", "Colour", "Detail", "Curve", "RAW"]) {
+    for (const tab of ["Look", "Lens", "Light", "Colour", "Detail", "Curve", "RAW"]) {
       await page.getByRole("tab", { name: tab }).click();
       await expect(page.getByRole("tab", { name: tab })).toHaveAttribute("aria-selected", "true");
       await expectNamed(page, `the ${tab} tab`);
@@ -241,6 +241,8 @@ test.describe("keyboard only", () => {
     await tabTo(page, (el) => el.getAttribute("role") === "tab");
     await expect(page.getByRole("tab", { name: "Look" })).toBeFocused();
     await page.keyboard.press("ArrowRight");
+    await expect(page.getByRole("tab", { name: "Lens" })).toHaveAttribute("aria-selected", "true");
+    await page.keyboard.press("ArrowRight");
     await expect(page.getByRole("tab", { name: "Light" })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByRole("complementary", { name: "Tools" }).getByRole("heading", { level: 2, name: "Light" })).toBeVisible();
 
@@ -291,7 +293,7 @@ test.describe("keyboard only", () => {
     await expect(page.getByRole("radiogroup", { name: "Apply look to" }).getByRole("radio", { name: /^Picked/ })).toHaveAttribute("aria-checked", "true");
 
     // A switch toggles with Space.
-    await page.keyboard.press("Meta+6");
+    await page.keyboard.press("Meta+7");
     const lens = page.getByRole("switch", { name: /Lens corrections/ });
     await lens.focus();
     const was = await lens.getAttribute("aria-checked");
@@ -302,7 +304,7 @@ test.describe("keyboard only", () => {
   test("a typed value takes Return, and Esc gives it up", async ({ page }) => {
     await openApp(page, MOCKUP);
     await openPhotos(page);
-    await page.keyboard.press("Meta+2");
+    await page.keyboard.press("Meta+3");
     await setValue(page, "Contrast", "25");
     await expect(page.getByRole("slider", { name: "Contrast" })).toHaveAttribute("aria-valuenow", "25");
     const box = page.getByRole("textbox", { name: "Contrast value" });
@@ -383,21 +385,26 @@ test.describe("focus ring", () => {
     expect(seen.length).toBe(30);
   });
 
-  test("every stop of the Lens card has the ring: its Reset link, the Lens choice and the three sliders with their boxes", async ({ page }) => {
+  test("every stop of the Lens tab has the ring: the list is one stop, then Reset and the three sliders with their boxes", async ({ page }) => {
     await openApp(page, MOCKUP);
     await openPhotos(page);
-    // The card is the last of the Look tab, far past the 30 stops above: start at the Tone card's last box and walk on to its end.
-    await page.getByRole("textbox", { name: "Saturation value" }).focus();
-    const seen = await walk(page, 8);
+    await page.keyboard.press("Meta+2");
+    await expect(page.getByRole("tab", { name: "Lens" })).toHaveAttribute("aria-selected", "true");
+    // From the tab bar, the list takes one Tab (on the chosen row: a radio), then Reset and the sliders of the Amounts card.
+    await page.getByRole("tab", { name: "Lens" }).focus();
+    const first = await walk(page, 1);
+    expect(first).toEqual([{ label: "", ring: true }]);
+    await expect(page.getByRole("radio", { name: /^Default / })).toBeFocused();
+    const seen = await walk(page, 7);
     expect(seen.filter((s) => !s.ring)).toEqual([]);
-    expect(seen.map((s) => s.label)).toEqual(["Reset", "Lens", "", "Flares value", "", "Edges value", "", "Anamorphic value"]);
-    await expect(page.getByRole("region", { name: "Lens" }).getByRole("textbox", { name: "Anamorphic value" })).toBeFocused();
+    expect(seen.map((s) => s.label)).toEqual(["Reset", "", "Flares value", "", "Edges value", "", "Anamorphic value"]);
+    await expect(page.getByRole("region", { name: "Amounts" }).getByRole("textbox", { name: "Anamorphic value" })).toBeFocused();
   });
 
   test("a focused tab shows the 3 px ring, drawn inside its cell", async ({ page }) => {
     await openApp(page, MOCKUP);
     await openPhotos(page);
-    await page.keyboard.press("Meta+6");
+    await page.keyboard.press("Meta+7");
     await tabTo(page, (el) => el.getAttribute("role") === "tab");
     const raw = page.getByRole("tab", { name: "RAW" });
     await expect(raw).toBeFocused();

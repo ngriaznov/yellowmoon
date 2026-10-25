@@ -11,6 +11,7 @@ import {
   AutoToggle,
   Button,
   Card,
+  ChoiceList,
   CURVE_CHANNEL_LABELS,
   CurvePlot,
   DevelopList,
@@ -86,6 +87,7 @@ const SECTIONS = [
   ["slider", "Slider"],
   ["valuebox", "ValueBox"],
   ["segmented", "Segmented"],
+  ["choice", "ChoiceList"],
   ["switch", "Switch"],
   ["card", "Card"],
   ["tabbar", "TabBar"],
@@ -129,6 +131,7 @@ export function ComponentsPage() {
       <SliderSection />
       <ValueBoxSection />
       <SegmentedSection />
+      <ChoiceListSection />
       <SwitchSection />
       <CardSection />
       <TabBarSection />
@@ -435,6 +438,32 @@ function SegmentedSection() {
             { value: "arri", label: "ARRI's", disabled: true },
           ]}
         />
+      </Demo>
+    </Section>
+  );
+}
+
+// ---- ChoiceList --------------------------------------------------------------------------------
+
+const DEMO_CHOICES = [
+  { value: "default", name: "Default", line: "Clean and modern: even sharpness, faint glow." },
+  { value: "classic", name: "Classic", line: "Warm and gentle: soft glow, amber flares, smooth falloff." },
+  { value: "vintage", name: "Vintage", line: "Glows wide open, lower contrast, soft edges, a little swirl." },
+  { value: "petzval", name: "Petzval", line: "Very sharp centre, strong swirl, fast falloff." },
+] as const;
+
+function ChoiceListSection() {
+  const [choice, setChoice] = useState<string>("classic");
+  return (
+    <Section id="choice" title="ChoiceList" lead="glasscn's RadioGroup of Item rows, a name with a line under it. One row is in the tab order; arrows move and choose. The chosen row is ringed in the tab colour.">
+      <Demo title="The Lens card's lenses · Lens tab colour" frame="panel" tab="lens">
+        <ChoiceList label="Lens" value={choice} onChange={setChoice} options={DEMO_CHOICES} />
+      </Demo>
+      <Demo title="In another tab's colour, and a row with no line" frame="panel" tab="light">
+        <ChoiceList label="Light" value="b" onChange={() => undefined} options={[{ value: "a", name: "Plain row" }, { value: "b", name: "Chosen row", line: "A line under the name, in the quieter colour." }]} />
+      </Demo>
+      <Demo title="Off (the lens data are missing)" frame="panel" tab="lens">
+        <ChoiceList label="Lens, off" value="default" onChange={() => undefined} options={[{ value: "default", name: "Default" }]} disabled />
       </Demo>
     </Section>
   );

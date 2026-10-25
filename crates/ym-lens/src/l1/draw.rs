@@ -440,18 +440,23 @@ mod tests {
         assert!(tangential_aspect(0.5) > 1.0 && tangential_aspect(0.5) < tangential_aspect(1.0));
     }
 
-    /// The nine radii and a lens with the given swirl and astigmatism tables (cat's-eye none, rim flat).
-    fn tables(
-        swirl: [f64; 9],
-        astigmatism: [f64; 9],
-    ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
-        (
-            (0..9).map(|i| i as f64 / 8.0).collect(),
-            swirl.to_vec(),
-            astigmatism.to_vec(),
-            vec![0.0; 9],
-            vec![1.0; RIM_SAMPLES],
-        )
+    /// The profiles of a lens for the shape tests: nine radii, a swirl, an astigmatism, no cat's-eye and a flat rim.
+    struct Tables {
+        radii: Vec<f64>,
+        swirl: Vec<f64>,
+        astigmatism: Vec<f64>,
+        cats_eye: Vec<f64>,
+        rim: Vec<f64>,
+    }
+
+    fn tables(swirl: [f64; 9], astigmatism: [f64; 9]) -> Tables {
+        Tables {
+            radii: (0..9).map(|i| i as f64 / 8.0).collect(),
+            swirl: swirl.to_vec(),
+            astigmatism: astigmatism.to_vec(),
+            cats_eye: vec![0.0; 9],
+            rim: vec![1.0; RIM_SAMPLES],
+        }
     }
 
     /// The half-diagonal of the 1500 x 1000 frame of these tests, in pixels.
@@ -459,10 +464,7 @@ mod tests {
         750.0f64.hypot(500.0)
     }
 
-    fn params<'a>(
-        t: &'a (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>),
-        e: f64,
-    ) -> ShapeParams<'a> {
+    fn params(t: &Tables, e: f64) -> ShapeParams<'_> {
         ShapeParams {
             fw: 1500.0,
             fh: 1000.0,
@@ -470,11 +472,11 @@ mod tests {
             q: 1.0,
             e,
             axis_x: true,
-            radii: &t.0,
-            swirl: &t.1,
-            astigmatism: &t.2,
-            cats_eye: &t.3,
-            rim: &t.4,
+            radii: &t.radii,
+            swirl: &t.swirl,
+            astigmatism: &t.astigmatism,
+            cats_eye: &t.cats_eye,
+            rim: &t.rim,
             rim_mean: 1.0,
         }
     }
@@ -533,7 +535,7 @@ mod tests {
         for (rho, r_px) in [(0.9, 6.0), (0.9, 12.0), (0.9, 24.0), (0.6, 10.0)] {
             let s = shape_of(&ball_on_diagonal(rho, r_px), &p).expect("a lemon");
             // `a(rho)` read between the nine radii as the gather reads it.
-            let a = profile_at(&t.0, &t.2, rho);
+            let a = profile_at(&t.radii, &t.astigmatism, rho);
             let box_half = a * hk / PROFILE_SCALE;
             let want = tangential_aspect(box_half / r_px).min(TANGENT_ASPECT_MAX);
             assert!(

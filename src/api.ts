@@ -169,7 +169,7 @@ export interface Api {
   // --- Lens ----------------------------------------------------------------
 
   /**
-   * `lens_list`: the lenses of the Lens card's menu in menu order, each with its name, its line and the Flares and Edges the card moves to
+   * `lens_list`: the lenses of the Lens card's list in list order, each with its name, its line and the Flares and Edges the card moves to
    * when it is chosen (`docs/21` §1 and §10). Read once. Empty when the lens data could not be loaded.
    */
   lensList(): Promise<LensInfo[]>;

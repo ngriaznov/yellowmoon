@@ -531,7 +531,7 @@ export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
-/** The ids of the seven lenses, in menu order (`LensKind`, `docs/21` §1). */
+/** The ids of the seven lenses, in list order (`LensKind`, `docs/21` §1). */
 export const LENS_KINDS: readonly LensKind[] = ["default", "classic", "vintage", "petzval", "triplet", "sonnar", "detuned"];
 
 /**
@@ -839,7 +839,7 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
  * Reads the mock's options from the page URL so Playwright (and a person with a browser) can
  * set the scene without code: `?mockSpeed=20` (or `Infinity`), `mockSkipped=DSC04207,DSC04209`
  * (a reason after a colon), `mockPicked=2,3,4`, `mockCurrent=3`, `mockPhotos=500` (a folder of 500 photos, the twelve repeating), `mockFolder=Name` (the folder's name), `mockLooks=0` (no imported
- * looks), `mockLibraries=all` (looks in every section of the Look tab), `mockLenses=0` (no lens data: the Lens card's menu is empty), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
+ * looks), `mockLibraries=all` (looks in every section of the Look tab), `mockLenses=0` (no lens data: the Lens card's list is empty), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
  * land in Downloads while the wizard watches), `mockDownloadsDenied=1`, `mockExisting=DSC04204_neutral.jpg`,
  * `mockExportFails=DSC04204:reason`, `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
  * (preferences survive a reload), `mockViewport=native` or `fallback` (the mock behaves like that viewport backend of the app),

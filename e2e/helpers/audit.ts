@@ -35,7 +35,7 @@ export const NO_COUNTERPART: ReadonlyArray<readonly [string, string]> = [
 
 /** The `data-slot` values of glasscn's components (`src/components/glass/`) that a control can be or sit in. */
 export const GLASS_SLOT =
-  /^(tabs-list|segmented-control|button|toggle|tabs-trigger|segmented-control-item|slider-thumb|slider|switch|select-trigger|select-item|input|search-field-input|search-field-clear|dropdown-menu-[a-z-]+|dialog-close|dialog-content|item|card|badge|progress|separator|kbd|collapsible-trigger|toggle-group-item|tooltip-trigger|popover-trigger|textarea|tabs|spinner)$/;
+  /^(tabs-list|segmented-control|button|toggle|tabs-trigger|segmented-control-item|slider-thumb|slider|switch|radio-group|radio-group-item|select-trigger|select-item|input|search-field-input|search-field-clear|dropdown-menu-[a-z-]+|dialog-close|dialog-content|item|card|badge|progress|separator|kbd|collapsible-trigger|toggle-group-item|tooltip-trigger|popover-trigger|textarea|tabs|spinner)$/;
 
 /** What the audit found on one page. */
 export interface PageAudit {

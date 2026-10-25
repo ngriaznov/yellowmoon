@@ -140,7 +140,8 @@ test.describe("the flow", () => {
     const first = await sizes();
     expect(first.length).toBeGreaterThanOrEqual(2);
     expect(first.length).toBeLessThan(9);
-    // The last tile, not the end of the panel: the Tone and Lens cards lie below the grid, so the end of the panel shows no tile.
+    // The last tile, brought into view, not the end of the panel: the Tone card below the grid is short, so what the end of the panel shows
+    // depends on the window (with the Lens card below Tone, as it was, the end of the panel showed no tile at all).
     await page.locator(".ym-look-tile").last().evaluate((el) => el.scrollIntoView({ block: "end" }));
     await expect.poll(async () => (await sizes()).length).toBe(9);
     await settle(page);
@@ -332,8 +333,8 @@ test.describe("controls with the real mouse", () => {
 test.describe("keyboard shortcuts", () => {
   test("the shortcuts of docs/11", async ({ page }) => {
     await photos(page);
-    // ⌘1 to ⌘6
-    for (const [key, name] of [["2", "Light"], ["3", "Colour"], ["4", "Detail"], ["5", "Curve"], ["6", "RAW"], ["1", "Look"]] as const) {
+    // ⌘1 to ⌘7, in the order of the bar
+    for (const [key, name] of [["2", "Lens"], ["3", "Light"], ["4", "Colour"], ["5", "Detail"], ["6", "Curve"], ["7", "RAW"], ["1", "Look"]] as const) {
       await page.keyboard.press(`Meta+${key}`);
       await expect(tabs(page).getByRole("tab", { name })).toHaveAttribute("aria-selected", "true");
     }
@@ -367,7 +368,7 @@ test.describe("keyboard shortcuts", () => {
 
   test("⌘Z and ⇧⌘Z undo and redo changes to the photo on screen", async ({ page }) => {
     await photos(page);
-    await page.keyboard.press("Meta+2");
+    await page.keyboard.press("Meta+3");
     await setValue(page, "Contrast", "30");
     await expect(valueBox(page, "Contrast")).toHaveValue("+30");
     await setValue(page, "Brightness", "-10");
@@ -544,7 +545,7 @@ test.describe("error states", () => {
   test("an error from the core shows over the photos and can be dismissed", async ({ page }) => {
     await photos(page);
     await failNext(page, "updateSettings", { scope: "render", message: "The photo couldn't be drawn. Try the change again." });
-    await page.keyboard.press("Meta+2");
+    await page.keyboard.press("Meta+3");
     await setValue(page, "Contrast", "40");
     await expect(page.getByRole("alert")).toHaveText(/The photo couldn't be drawn\. Try the change again\./);
     // The control goes back to what the core has.
@@ -603,9 +604,9 @@ test("settings made before the session opens come through the mock (initialSetti
   await openApp(page, MOCKUP);
   await configureMock(page, { initialSettings: { DSC04204: { highlights: manual(-18), shadows: manual(12), saturation: manual(6) } } });
   await openPhotos(page);
-  await page.keyboard.press("Meta+2");
+  await page.keyboard.press("Meta+3");
   await expect(valueBox(page, "Highlights")).toHaveValue("−18");
   await expect(valueBox(page, "Shadows")).toHaveValue("+12");
-  await page.keyboard.press("Meta+3");
+  await page.keyboard.press("Meta+4");
   await expect(valueBox(page, "Saturation")).toHaveValue("+6");
 });

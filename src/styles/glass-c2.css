@@ -49,7 +49,7 @@ html.dark {
   --tab-detail: #f4b9ac; --tab-detail-ink: #000000;
   --tab-curve: #ff7340;  --tab-curve-ink: #000000;
   --tab-raw: #5b9bff;    --tab-raw-ink: #000000;
-  --tab-lens: #b48cff;   --tab-lens-ink: #000000;
+  --tab-lens: #bd8cff;   --tab-lens-ink: #000000;
 }
 /* A tab's accent is the accent of its controls: glasscn paints sliders, switches, toggles, the tab underline and the focus ring from
    --primary, so setting it on the tab's subtree is all it takes. */
@@ -399,6 +399,9 @@ html:has(.ym-screen[data-screen="photos"]) #root {
 }
 .ym-choice-row__radio {
   margin-top: 1px;
+  /* The circle is what takes the focus, and the browser scrolls it into the panel with the panel's scroll padding (8 px) around it; the
+     row's box and its ring stand 9 px outside the circle, so without this the row's top or bottom edge was cut by a pixel. */
+  scroll-margin-block: 10px;
 }
 .ym-choice-row__text {
   gap: 2px;

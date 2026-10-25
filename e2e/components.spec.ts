@@ -246,13 +246,15 @@ test.describe("photo cell in a real browser", () => {
 });
 
 test.describe("shortcuts and drops in a real browser", () => {
-  test("⌘1–⌘6 switch tabs from anywhere, even inside a value box", async ({ page }) => {
+  test("⌘1–⌘7 switch tabs from anywhere, even inside a value box", async ({ page }) => {
     await page.goto("/components.html?replica=photos&tab=look");
     await ready(page);
     await page.getByRole("textbox", { name: "Intensity value" }).focus();
-    await page.keyboard.press("Meta+Digit3");
+    await page.keyboard.press("Meta+Digit2");
+    await expect(page.getByRole("tab", { name: "Lens" })).toHaveAttribute("aria-selected", "true");
+    await page.keyboard.press("Meta+Digit4");
     await expect(page.getByRole("tab", { name: "Colour" })).toHaveAttribute("aria-selected", "true");
-    await page.keyboard.press("Meta+Digit6");
+    await page.keyboard.press("Meta+Digit7");
     await expect(page.getByRole("tab", { name: "RAW" })).toHaveAttribute("aria-selected", "true");
     await page.keyboard.press("Meta+Digit1");
     await expect(page.getByRole("tab", { name: "Look" })).toHaveAttribute("aria-selected", "true");
@@ -263,8 +265,8 @@ test.describe("shortcuts and drops in a real browser", () => {
     await ready(page);
     await page.getByRole("tab", { name: "Look" }).focus();
     await page.keyboard.press("ArrowRight");
-    await expect(page.getByRole("tab", { name: "Light" })).toBeFocused();
-    await expect(page.getByRole("tab", { name: "Light" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tab", { name: "Lens" })).toBeFocused();
+    await expect(page.getByRole("tab", { name: "Lens" })).toHaveAttribute("aria-selected", "true");
     await page.keyboard.press("ArrowLeft");
     await expect(page.getByRole("tab", { name: "Look" })).toBeFocused();
     // From the first tab the arrow wraps to the last.
