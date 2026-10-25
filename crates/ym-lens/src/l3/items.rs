@@ -801,6 +801,43 @@ impl<'a> Items<'a> {
                 1.0
             }
         });
+        // G2-DEBUG begin
+        if std::env::var("YM_STREAK_DEBUG").is_ok() {
+            let f = &self.frame;
+            eprintln!(
+                "STREAKDBG frame {}x{} half_diag {:.1} clip {:?} lights {} peak_max {:.4}",
+                f.w,
+                f.h,
+                f.half_diag,
+                self.clip,
+                lights.len(),
+                peak_max
+            );
+            for (k, src) in lights.iter().take(60).enumerate() {
+                let e = (0..3).map(|c| src.energy[c] / self.clip[c]).sum::<f64>() / 3.0;
+                let mean = (src.energy[0] + src.energy[1] + src.energy[2]) / 3.0;
+                let sigma = src.var_across.sqrt().max(STREAK_SIGMA_MIN_HD);
+                let peak = peak_max * e / (e + STREAK_E_HALF) / (1.0 + sigma / STREAK_SIGMA_REF_HD);
+                let reach = (STREAK_REACH_AT_E0 + STREAK_REACH_PER_DECADE * libm::log10(e / STREAK_REACH_E0))
+                    .clamp(STREAK_REACH_MIN, 1.0);
+                let top = (0..3).map(|c| src.energy[c] / mean / self.clip[c]).fold(0.0f64, f64::max);
+                let col: [f64; 3] = std::array::from_fn(|c| src.energy[c] / mean / top);
+                let (x, y) = match f.axis {
+                    crate::plan::Axis::X => (src.pos[0] * f.half_diag + (0.5 * f.w as f64), src.pos[1] * f.half_diag + (0.5 * f.h as f64)),
+                    crate::plan::Axis::Y => (src.pos[1] * f.half_diag + (0.5 * f.w as f64), src.pos[0] * f.half_diag + (0.5 * f.h as f64)),
+                };
+                eprintln!(
+                    "STREAKDBG #{k} xy=({x:.0},{y:.0}) e={e:.4} extent_px={:.1} sig_across_px={:.2} sig_along_px={:.2} col=({:.2},{:.2},{:.2}) peak={peak:.4} reach={reach:.2} reach_px={:.0} {}",
+                    src.extent * f.half_diag,
+                    sigma * f.half_diag,
+                    src.var_along.sqrt() * f.half_diag,
+                    col[0], col[1], col[2],
+                    reach * along.length() * f.half_diag,
+                    if k < STREAK_MAX_LIGHTS && e >= STREAK_E_MIN { "PLANNED" } else { "-" }
+                );
+            }
+        }
+        // G2-DEBUG end
         struct Planned<'s> {
             src: &'s Source,
             peak: f64,
