@@ -42,13 +42,14 @@ html.dark {
   /* The rules between the cells: a thin light rim. */
   --rim: color-mix(in oklch, var(--ink) 16%, transparent);
 
-  /* Tab colours: each keeps its hue, lightened where it was dark; black text on all six. */
+  /* Tab colours: each keeps its hue, lightened where it was dark; black text on all seven (Lens, the owner's request of 2026-10-25, is a soft violet). */
   --tab-look: #ffc20e;   --tab-look-ink: #000000;
   --tab-light: #2ec4f4;  --tab-light-ink: #000000;
   --tab-colour: #7be35f; --tab-colour-ink: #000000;
   --tab-detail: #f4b9ac; --tab-detail-ink: #000000;
   --tab-curve: #ff7340;  --tab-curve-ink: #000000;
   --tab-raw: #5b9bff;    --tab-raw-ink: #000000;
+  --tab-lens: #b48cff;   --tab-lens-ink: #000000;
 }
 /* A tab's accent is the accent of its controls: glasscn paints sliders, switches, toggles, the tab underline and the focus ring from
    --primary, so setting it on the tab's subtree is all it takes. */
@@ -58,6 +59,7 @@ html.dark {
 [data-tab="detail"] { --primary: var(--tab-detail); --primary-foreground: var(--tab-detail-ink); --ring: var(--tab-detail); }
 [data-tab="curve"] { --primary: var(--tab-curve); --primary-foreground: var(--tab-curve-ink); --ring: var(--tab-curve); }
 [data-tab="raw"] { --primary: var(--tab-raw); --primary-foreground: var(--tab-raw-ink); --ring: var(--tab-raw); }
+[data-tab="lens"] { --primary: var(--tab-lens); --primary-foreground: var(--tab-lens-ink); --ring: var(--tab-lens); }
 
 body {
   font-family: var(--font);
@@ -384,24 +386,31 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   font-size: var(--fs-label);
   font-weight: var(--fw-heavy);
 }
-/* A lens in the Lens card's menu (`docs/21` section 1): its name, and its line under it in the quieter label colour. The trigger shows
-   the name only. */
-.ym-lens-option {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+/* A list of choices with a line under each name (`ChoiceList`, the Lens card, `docs/21` section 1): glasscn's RadioGroup of Item rows. The
+   row is a label, so a click anywhere on it chooses it; the chosen row has the tab colour as a 2 px ring drawn inside its box (an inset
+   ring: nothing outside the row for a clipping box to cut) and a circle filled with it. The name is bold, the line under it is in the
+   quieter label colour. */
+.ym-choice-list {
+  gap: 6px;
+}
+.ym-choice-row {
+  gap: 12px;
+  padding-block: 8px;
+}
+.ym-choice-row__radio {
+  margin-top: 1px;
+}
+.ym-choice-row__text {
   gap: 2px;
   min-width: 0;
-  max-width: 280px;
-  text-align: start;
-  white-space: normal;
 }
-.ym-lens-option__name {
+.ym-choice-row__name {
+  font-size: var(--fs-body);
   font-weight: var(--fw-bold);
 }
-.ym-lens-option__line {
+.ym-choice-row__line {
   color: var(--glass-label-secondary);
-  font-size: var(--fs-label);
+  font-size: var(--fs-small);
   line-height: 1.35;
 }
 

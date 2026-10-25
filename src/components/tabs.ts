@@ -1,5 +1,5 @@
 /**
- * The six tool tabs of the Photos screen (`docs/11-ui.md` §Photos). Each tab owns a flat colour
+ * The seven tool tabs of the Photos screen (`docs/11-ui.md` §Photos). Each tab owns a flat colour
  * that fills its tab, its title block, its slider fills and its changed value boxes. The
  * colours live in `styles/tokens.css` (`--tab-look` …); `components.css` maps a `data-tab`
  * attribute onto `--tab` and `--tab-ink` so every component below an element with
@@ -7,7 +7,7 @@
  */
 
 /** Tab ids. American spelling in identifiers; the label reads "Colour". */
-export type TabId = "look" | "light" | "color" | "detail" | "curve" | "raw";
+export type TabId = "look" | "lens" | "light" | "color" | "detail" | "curve" | "raw";
 
 /** One tab: its id, the caps label and the blurb under the title (`design/mockups/photos.html`). */
 export interface TabInfo {
@@ -16,9 +16,14 @@ export interface TabInfo {
   blurb: string;
 }
 
-/** The tabs in bar order. ⌘1 selects the first, ⌘6 the last. */
+/** The tabs in bar order. ⌘1 selects the first, ⌘7 the last. */
 export const TABS: readonly TabInfo[] = [
   { id: "look", label: "Look", blurb: "Every photo is developed automatically. Pick a look and how strongly to apply it." },
+  {
+    id: "lens",
+    label: "Lens",
+    blurb: "How a lens draws light: flares, softer edges, the shape of blur. Off until you raise a slider.",
+  },
   { id: "light", label: "Light", blurb: "Exposure starts at your camera's own. Adjust it from there." },
   {
     id: "color",

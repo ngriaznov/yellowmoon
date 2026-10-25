@@ -12,6 +12,7 @@ import {
   AutoToggle,
   Button,
   Card,
+  ChoiceList,
   CurvePlot,
   CURVE_CHANNEL_LABELS,
   Field,
@@ -41,6 +42,7 @@ import {
 } from "../components";
 import type { CurveChannel, TabId } from "../components";
 import type { ColorBalancePoint } from "../api/types";
+import { MOCK_LENSES } from "../api.mock";
 import { SCENES } from "../fixtures/scenes";
 import { CURVE_DEMO_POINTS, DEMO_LOOKS, demoHistogram, gradeScene, lisbonPhotos, logScene, lookThumbnail, sceneDataUrl } from "./demoData";
 
@@ -91,6 +93,11 @@ const NR = reg(
   S("nrl", "Luminance", 0, 100, 1, 30, formats.integer),
   S("nrc", "Colour", 0, 100, 1, 50, formats.integer),
   S("nrd", "Detail", 0, 100, 1, 50, formats.integer),
+);
+const LENS_AMOUNTS = reg(
+  S("fla", "Flares", 0, 100, 1, 0, formats.integer),
+  S("edg", "Edges", 0, 100, 1, 0, formats.integer),
+  S("ana", "Anamorphic", 0, 100, 1, 0, formats.integer),
 );
 const ROLL = reg(S("hro", "Highlights", 0, 1, 0.01, 1, formats.fixed2), S("lro", "Low light", 0, 1, 0.01, 0.5, formats.fixed2));
 
@@ -152,6 +159,7 @@ export function PhotosReplica({
     blue: CURVE_DEMO_POINTS.blue,
   });
   const [wheels, setWheels] = useState(WHEEL_DEFAULTS);
+  const [lens, setLens] = useState<string>("default");
   const [switches, setSwitches] = useState<Record<string, boolean>>({ neural: true, hlr: true, lens: true, ca: true });
   useTabShortcuts(setTab);
 
@@ -271,6 +279,14 @@ export function PhotosReplica({
             </>,
             { action: <ResetLink size="card" onClick={() => { setLook("neutral"); reset(INTENSITY); }} /> },
           )}
+        </>
+      );
+      break;
+    case "lens":
+      panel = (
+        <>
+          {card("Lens", <ChoiceList label="Lens" value={lens} onChange={setLens} options={MOCK_LENSES.map((l) => ({ value: l.kind, name: l.name, line: l.line }))} />)}
+          {card("Amounts", LENS_AMOUNTS.map(slider), { action: <ResetLink size="card" onClick={() => reset(LENS_AMOUNTS)} /> })}
         </>
       );
       break;

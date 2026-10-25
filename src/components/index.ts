@@ -17,6 +17,8 @@ export { Slider } from "./Slider";
 export type { SliderProps } from "./Slider";
 export { Segmented } from "./Segmented";
 export type { SegmentedOption, SegmentedProps } from "./Segmented";
+export { ChoiceList } from "./ChoiceList";
+export type { ChoiceListProps, ChoiceOption } from "./ChoiceList";
 export { Switch } from "./Switch";
 export type { SwitchProps } from "./Switch";
 export { AutoRow, Card, Field, InfoRow, RowNote, Rows, SwitchRow } from "./Card";

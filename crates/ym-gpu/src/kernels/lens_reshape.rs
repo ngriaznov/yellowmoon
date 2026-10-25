@@ -263,9 +263,10 @@ struct Layout {
     e2: PixelRect,
     /// First row and number of rows of the feather's counts (columns are `r1`'s).
     cnt_rows: (usize, usize),
-    /// Offsets in the scratch buffer of the square roots, the two energies and the flags (`f32` elements).
+    /// Offsets in the scratch buffer of the square roots, the two energies and the flags (`f32` elements); the flags
+    /// lie over the square roots.
     scr_offsets: [usize; 4],
-    /// Offset in the scratch buffer of the sharp places over `rbs` (`f32` elements).
+    /// Offset in the scratch buffer of the sharp places over `rbs` (`f32` elements); they lie over the first energy.
     sharp_offset: usize,
     /// Elements of the scratch buffer.
     scr_len: usize,
@@ -286,11 +287,15 @@ fn layout(pass: &BokehPass, want: Rect) -> Layout {
     let first = tile.r0.y.saturating_sub(f);
     let last = (tile.r0.y1() + f).min(fh);
     let area = |r: PixelRect| r.w * r.h;
-    let a = [0, area(e6), area(e6) + area(e4), area(e6) + 2 * area(e4)];
-    let flags_chain = a[3] + area(e2);
+    // The square roots (over `e6`) and the two energies (over `e4`) are three planes. The flags (over `e2`) are
+    // written over the square roots, which are dead once the energies are made, and the sharp places (over `rbs`)
+    // over the first energy, which is dead once the flags are made: five planes became three, which is what keeps
+    // a 1024 px tile of a 50 MP frame, with the longest lines, inside the design binding.
+    let a = [0, area(e6), area(e6) + area(e4), 0];
+    let chain = area(e6) + 2 * area(e4);
     // The sharp places live from the dilation to the density pass, after the chain has died and before the
-    // taken-out picture is made, so they share the scratch buffer with both, past the flags.
-    let sharp_offset = flags_chain;
+    // taken-out picture is made, so they share the scratch buffer with both.
+    let sharp_offset = area(e6);
     let sharp_end = sharp_offset + area(tile.rbs);
     let taken_out = 3 * area(tile.r0);
     Layout {
@@ -301,7 +306,7 @@ fn layout(pass: &BokehPass, want: Rect) -> Layout {
         cnt_rows: (first, last.saturating_sub(first)),
         scr_offsets: a,
         sharp_offset,
-        scr_len: sharp_end.max(taken_out),
+        scr_len: chain.max(sharp_end).max(taken_out),
     }
 }
 
@@ -825,13 +830,30 @@ mod tests {
             sigma_guide: 0.06,
         };
         let l = layout(&pass, Rect::new(1000, 600, 1024, 800));
-        // The chain's fields do not overlap, and the scratch holds the larger of the chain and the picture.
+        // The square roots and the two energies do not overlap; the flags lie over the square roots (dead once the
+        // energies are made, and read by nothing after), the sharp places over the first energy (dead once the flags
+        // are made), and the scratch holds the largest of the chain and the picture: three planes of the sharp
+        // places' region, not five.
         let area = |r: PixelRect| r.w * r.h;
+        assert_eq!(l.scr_offsets[0], 0);
         assert_eq!(l.scr_offsets[1], area(l.e6));
         assert_eq!(l.scr_offsets[2], area(l.e6) + area(l.e4));
-        assert_eq!(l.scr_offsets[3], area(l.e6) + 2 * area(l.e4));
-        assert!(l.scr_len >= l.scr_offsets[3] + area(l.e2));
-        assert_eq!(l.sharp_offset, l.scr_offsets[3] + area(l.e2));
+        assert_eq!(l.scr_offsets[3], 0, "the flags lie over the square roots");
+        assert!(
+            area(l.e2) <= area(l.e6),
+            "the flags fit over the square roots"
+        );
+        assert_eq!(
+            l.sharp_offset,
+            area(l.e6),
+            "the sharp places lie over the first energy"
+        );
+        assert!(
+            l.sharp_offset >= area(l.e2),
+            "and not over the flags they are made from"
+        );
+        assert!(area(l.tile.rbs) <= area(l.e4), "and fit in it");
+        assert_eq!(l.scr_len, area(l.e6) + 2 * area(l.e4));
         assert!(l.scr_len >= l.sharp_offset + area(l.tile.rbs));
         assert!(l.scr_len >= 3 * area(l.tile.r0));
         assert!(l.tile.rbs.contains(&l.tile.rb));

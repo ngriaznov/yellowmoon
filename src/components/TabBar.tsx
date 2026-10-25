@@ -12,8 +12,8 @@ export interface TabBarProps {
 }
 
 /**
- * The six tool tabs, as glasscn's `Tabs`: a glass capsule with a pill that slides to the chosen tab. `role="tablist"`. ←/→ move between
- * the tabs and select them (Home and End jump to the ends); ⌘1–⌘6 work from anywhere through `useTabShortcuts`. Each tab keeps the ids
+ * The seven tool tabs, as glasscn's `Tabs`: a glass capsule with a pill that slides to the chosen tab. `role="tablist"`. ←/→ move between
+ * the tabs and select them (Home and End jump to the ends); ⌘1–⌘7 work from anywhere through `useTabShortcuts`. Each tab keeps the ids
  * `tabPanelProps(tab)` expects, so the panel the screen draws stays tied to it.
  */
 export function TabBar({ value, onChange, label = "Tool tabs", className }: TabBarProps) {

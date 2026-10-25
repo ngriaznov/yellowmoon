@@ -19,6 +19,7 @@
 [data-tab="detail"] { --tab: var(--tab-detail); --tab-ink: var(--tab-detail-ink); }
 [data-tab="curve"] { --tab: var(--tab-curve); --tab-ink: var(--tab-curve-ink); }
 [data-tab="raw"] { --tab: var(--tab-raw); --tab-ink: var(--tab-raw-ink); }
+[data-tab="lens"] { --tab: var(--tab-lens); --tab-ink: var(--tab-lens-ink); }
 
 /* ---- MoonMark ---------------------------------------------------------------------------- */
 .ym-moon {

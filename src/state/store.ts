@@ -87,7 +87,7 @@ import { fitZoomExact, fitZoomOf, showsWhole, zoomAfter } from "./zoom";
 /** The screens of the app (`docs/11-ui.md` §Screens that have a window of their own). */
 export type Screen = "start" | "photos" | "import-looks";
 
-/** What Photos shows in the right-hand panel: the six tool tabs, or Export (`docs/11-ui.md` §Export). */
+/** What Photos shows in the right-hand panel: the seven tool tabs, or Export (`docs/11-ui.md` §Export). */
 export type Panel = "tools" | "export";
 
 /** What the notice bar offers next to Dismiss: Undo for a removal (`docs/11` §Removing photos). Only the notice of a removal has one. */

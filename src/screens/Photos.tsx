@@ -25,6 +25,7 @@ import { useFullScreen } from "./useFullScreen";
 import { ColorTab } from "./tools/ColorTab";
 import { CurveTab } from "./tools/CurveTab";
 import { DetailTab } from "./tools/DetailTab";
+import { LensTab } from "./tools/LensTab";
 import { LightTab } from "./tools/LightTab";
 import { LookTab } from "./tools/LookTab";
 import { RawTab } from "./tools/RawTab";
@@ -164,7 +165,7 @@ function ExportCellContainer({ store }: { store: AppStore }) {
 /**
  * The Photos screen (`design/mockups/photos.html`, `docs/11-ui.md` §Photos): the header with
  * Before, Crop, Pick white, Add photos and the zoom menu, the photo, the filmstrip and the tool panel with its
- * six tabs. The Crop panel and the Export panel replace the tool panel. F shows the photo alone, filling the window
+ * seven tabs. The Crop panel and the Export panel replace the tool panel. F shows the photo alone, filling the window
  * (`docs/11` §Full screen).
  */
 export function Photos() {
@@ -437,6 +438,8 @@ export function Photos() {
           {photo && rs && isReady(photo) ? (
             tab === "look" ? (
               <LookTab store={store} photo={photo} rs={rs} onOpenTab={setTab} />
+            ) : tab === "lens" ? (
+              <LensTab store={store} photo={photo} rs={rs} />
             ) : tab === "light" ? (
               <LightTab store={store} photo={photo} rs={rs} />
             ) : tab === "color" ? (
