@@ -264,20 +264,22 @@ pub struct FlareMix {
 // L1: bokeh reshaping
 
 /// Vectors in the header of [`BokehScaleData::vectors`]: the lens's field radii (3 vectors, 9 values and 3 of
-/// padding), its swirl profile (3) and its rim profile (4, 16 values).
-pub const BOKEH_HEADER: usize = 10;
+/// padding), its swirl profile (3), its rim profile (4, 16 values) and the profile's mean over a disc (1: the
+/// value, three zeros).
+pub const BOKEH_HEADER: usize = 11;
 
-/// Vectors per ball in [`BokehScaleData::vectors`]. A record, with integers carried as bits:
+/// Vectors per ball in [`BokehScaleData::vectors`]. A record, with integers carried as whole numbers:
 ///
 /// | vector | contents |
 /// |---|---|
 /// | 0 | centre column's integer part (a whole number), its fraction, centre row's integer part, its fraction |
-/// | 1 | semi-axes `a` (along `m`) and `b`, the unit vector `m` |
-/// | 2 | half the cat's-eye offset (a vector), the offset in semi-axes, the rim's width in pixels |
-/// | 3 | the energy density per channel, the take-out radius |
+/// | 1 | semi-axes `a` (along `m`) and `b` of the stretched patch, the unit vector `m` |
+/// | 2 | half the cat's-eye offset (a vector), the offset in semi-axes, the width of the mask's edge in pixels |
+/// | 3 | the stretch (`a / b`), two zeros, the take-out radius (the patch's) |
 /// | 4 | the ball's radius, half its plateau, the reach of everything drawn, the blur a pixel inside the ball gets |
 /// | 5 to 7 | the ring's plane fit of each channel: the value at the centre and the slopes per pixel, and a zero |
-pub const BOKEH_SHAPE_VECTORS: usize = 8;
+/// | 8 to 10 | the earlier balls whose discs overlap this one's, three at most: the offset of their centre from this one's, the radius of their disc (0 for none), and a zero |
+pub const BOKEH_SHAPE_VECTORS: usize = 11;
 
 /// Side in pixels of the bins that cull the balls, on the absolute pixel grid.
 pub const BOKEH_BIN_PX: usize = 32;

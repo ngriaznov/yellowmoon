@@ -34,10 +34,10 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use ym_lens::PixelRect;
 use ym_lens::consts::{
-    ACCEPT_COLOUR, ACCEPT_CONFIDENCE, B_CAP, B_MIN, BALL_RIM_REACH_PX, MAX_STRETCH_TAPS,
-    MIN_LINE_PX, PROFILE_SCALE, SAMPLE_RATIO_FROM, SAMPLE_RATIO_TO, SHARP_DILATE, SHARP_RATIO,
-    SHARP_SOFT_FROM, SHARP_SOFT_HALF, SHARP_SOFT_TO, SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE,
-    STRAND_VALLEY, SUBJECT_SHARE,
+    ACCEPT_COLOUR, ACCEPT_CONFIDENCE, B_CAP, B_MIN, BALL_GLOW_FADE, BALL_RIM_REACH_PX,
+    MAX_STRETCH_TAPS, MIN_LINE_PX, PROFILE_SCALE, RIM_FADE_RADII, SAMPLE_RATIO_FROM,
+    SAMPLE_RATIO_TO, SHARP_DILATE, SHARP_RATIO, SHARP_SOFT_FROM, SHARP_SOFT_HALF, SHARP_SOFT_TO,
+    SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE, STRAND_VALLEY, SUBJECT_SHARE,
 };
 use ym_lens::device::{
     BOKEH_BIN_PX, BOKEH_HEADER, BOKEH_SHAPE_VECTORS, BokehPass, BokehPlaneData, BokehScaleData,
@@ -610,6 +610,7 @@ pub fn encode_reshape(
         KernelId::LensReshapeFinal,
         "lens bokeh tangential gather",
         &[
+            (1, src.buf.binding()),
             (2, bt.binding()),
             (3, info.binding()),
             (5, o1.binding()),
@@ -688,7 +689,9 @@ fn constants() -> String {
          const LR_RATIO_TO: f32 = {};\n\
          const LR_SOFT_HALF: i32 = {SHARP_SOFT_HALF};\n\
          const LR_SOFT_FROM: f32 = {};\n\
-         const LR_SOFT_TO: f32 = {};\n",
+         const LR_SOFT_TO: f32 = {};\n\
+         const LR_GLOW_FADE: f32 = {};\n\
+         const LR_RIM_FADE: f32 = {};\n",
         f(B_MIN),
         f(B_CAP),
         f(MIN_LINE_PX),
@@ -706,6 +709,8 @@ fn constants() -> String {
         f(SAMPLE_RATIO_TO),
         f(SHARP_SOFT_FROM),
         f(SHARP_SOFT_TO),
+        f(BALL_GLOW_FADE),
+        f(RIM_FADE_RADII),
     )
 }
 

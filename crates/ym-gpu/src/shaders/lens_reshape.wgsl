@@ -18,9 +18,11 @@
 //   lr_cover     the horizontal counts of blurred pixels in the feather's window, over the columns of `r0`.
 //   lr_ramp      the stretch's ramp (0 to 1) towards the border of the blur map, over `r0`; what it stores is the
 //                gathers' blur: the map's, held at the cap, times the ramp.
-//   lr_takeout   the picture over `r0` with each ball's disc replaced by its ring's plane fit.
+//   lr_takeout   the picture over `r0` with each ball's disc replaced by its ring's plane fit (by the ball's
+//                smooth weight).
 //   lr_vgather   the gather across the anamorphic axis over `r1`.
-//   lr_final     the gather along the tangent over the output, and the balls drawn back.
+//   lr_final     the gather along the tangent over the output, and the balls' own light drawn back stretched (each
+//                pixel of the patch reads the picture where it was before the stretch).
 //
 // Every pixel is a function of its absolute column and row, of the input within the halo and of the lists, in
 // the CPU reference's order; reads of the intermediate fields clamp to the frame (the reference's clamp to a
@@ -29,8 +31,8 @@
 // integer part and a fraction, a tap is the pixel plus an offset of at most the line's length. Decisions that
 // compare sums sit behind the OR barrier (K8).
 //
-// Bindings: 0 uniform, 1 the input planes, 2 the blur (over rb), 3 info bits (over rb), 4 scratch (the flags'
-// fields and the sharp places, then the taken-out picture), 5 the vertical gather's output (over r1), 6 the output
+// Bindings: 0 uniform, 1 the input planes (the final pass reads the balls' light from them), 2 the blur (over rb),
+// 3 info bits (over rb), 4 scratch (the flags' fields and the sharp places, then the taken-out picture), 5 the vertical gather's output (over r1), 6 the output
 // planes (over want), 7 the gathers' blur (over r0), 8 the scale's table (profiles, the cells' geometry, the
 // balls), 9 the bins, 10 the map's levels, 11 the summed-area table, 12 the cells' colour guide, 13 the
 // horizontal counts.
@@ -81,7 +83,7 @@ struct ReshapeU {
 // Generated before this text (kernels/lens_reshape.rs, from ym_lens::consts): LR_B_MIN, LR_B_CAP, LR_MIN_LINE,
 // LR_ACCEPT2, LR_ACCEPT_CONF, LR_SUBJECT_SHARE, LR_SHARP_FROM, LR_SHARP_RATIO, LR_STRAND_VALLEY,
 // LR_STRAND_MARGIN, LR_RIM_REACH, LR_DILATE, LR_HALF_TAPS, LR_SHAPE_VECTORS, LR_PROFILE_SCALE, LR_RATIO_FROM,
-// LR_RATIO_TO, LR_SOFT_HALF, LR_SOFT_FROM, LR_SOFT_TO.
+// LR_RATIO_TO, LR_SOFT_HALF, LR_SOFT_FROM, LR_SOFT_TO, LR_GLOW_FADE, LR_RIM_FADE.
 
 // A smoothstep between two bounds (the reference's `smoothstep`).
 fn lr_ss(e0: f32, e1: f32, x: f32) -> f32 {
@@ -433,6 +435,12 @@ fn lr_cover(sd: f32, edge: f32) -> f32 {
     return t;
 }
 
+// Is the pixel (x, y) in the box of the ball's reach, [floor(cx - reach), ceil(cx + reach)] by the same for y?
+fn lr_in_reach(s0: vec4<f32>, reach: f32, x: i32, y: i32) -> bool {
+    return !(x - i32(s0.x) < i32(floor(s0.y - reach)) || x - i32(s0.x) > i32(ceil(s0.y + reach))
+        || y - i32(s0.z) < i32(floor(s0.w - reach)) || y - i32(s0.z) > i32(ceil(s0.w + reach)));
+}
+
 // Coverage (0 to 1; a rim `edge` pixels wide) and normalised radius of ball s at the pixel (x, y); 0 outside the
 // box of the ball's reach, [floor(cx - reach), ceil(cx + reach)] by the same for y, which is where the reference
 // draws (the first-order distance of the coverage leaves a faint tail beyond it).
@@ -440,9 +448,7 @@ fn lr_coverage(s: u32, x: i32, y: i32) -> vec2<f32> {
     let s0 = lr_sh(s, 0u);
     let s1 = lr_sh(s, 1u);
     let s2 = lr_sh(s, 2u);
-    let reach = lr_sh(s, 4u).z;
-    if (x - i32(s0.x) < i32(floor(s0.y - reach)) || x - i32(s0.x) > i32(ceil(s0.y + reach))
-        || y - i32(s0.z) < i32(floor(s0.w - reach)) || y - i32(s0.z) > i32(ceil(s0.w + reach))) {
+    if (!lr_in_reach(s0, lr_sh(s, 4u).z, x, y)) {
         return vec2<f32>(0.0, 0.0);
     }
     let d = lr_off(s0, x, y);
@@ -625,6 +631,17 @@ fn lr_ramp_main(gid: vec3<u32>) {
 // ---------------------------------------------------------------------------------------------------------
 // Taking the balls out
 
+// The weight of ball s's own light and of its take-out at the distance d from its centre (the reference's
+// `Shape::weight`): 1 over the ball, falling to 0 half a pixel beyond the take-out radius over LR_GLOW_FADE of the
+// glow's width, at least a pixel.
+fn lr_weight(s: u32, d: f32) -> f32 {
+    let r_out = lr_sh(s, 3u).w;
+    let r_ball = lr_sh(s, 4u).x;
+    let fade = max(LR_GLOW_FADE * (r_out - r_ball), 1.0) + 0.5;
+    let t = clamp((r_out + 0.5 - d) / fade, 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
 fn lr_takeout_main(gid: vec3<u32>) {
     let r = pu.r0;
     if (gid.x >= u32(r.z) || gid.y >= u32(r.w)) {
@@ -638,7 +655,7 @@ fn lr_takeout_main(gid: vec3<u32>) {
         for (var k = range.x; k < range.y; k = k + 1u) {
             let s = bins[k];
             let d = lr_off(lr_sh(s, 0u), x, y);
-            let m = clamp(lr_sh(s, 3u).w + 0.5 - length(d), 0.0, 1.0);
+            let m = lr_weight(s, length(d));
             if (m <= 0.0) {
                 continue;
             }
@@ -764,6 +781,92 @@ fn lr_be(x: i32, y: i32) -> f32 {
     return rmp[lr_at(r, clamp(x, r.x, r.x + r.z - 1), clamp(y, r.y, r.y + r.w - 1))];
 }
 
+// The blur map at a frame pixel, the coordinates held inside r0 (the reference's `sample_blur` reads r0).
+fn lr_bt_at(x: i32, y: i32) -> f32 {
+    let r = pu.r0;
+    return bt[lr_at(pu.rb, clamp(x, r.x, r.x + r.z - 1), clamp(y, r.y, r.y + r.w - 1))];
+}
+
+// The factor the lens's rim profile puts on a ball's light at s radii from its centre: the profile over its mean
+// across the ball, fading to 1 over LR_RIM_FADE radii beyond its edge (the reference's `rim_gain`).
+fn lr_rim_gain(s: f32) -> f32 {
+    let g = lr_rim_at(s) / tab[10u].x;
+    let t = clamp((s - 1.0) / LR_RIM_FADE, 0.0, 1.0);
+    let fade = t * t * (3.0 - 2.0 * t);
+    return g + fade * (1.0 - g);
+}
+
+// The stretched light of ball s at the pixel (x, y) (the reference's `redraw`): the picture above the ring's plane
+// fit, read where the pixel was before the stretch, as the rim profile modulates it, where the ball was taken out,
+// cut by the cat's-eye mask, in the part of a shared disc this ball owns.
+fn lr_ball_light(s: u32, x: i32, y: i32) -> vec3<f32> {
+    let s0 = lr_sh(s, 0u);
+    let s4 = lr_sh(s, 4u);
+    if (!lr_in_reach(s0, s4.z, x, y)) {
+        return vec3<f32>(0.0);
+    }
+    let s1 = lr_sh(s, 1u);
+    let m = s1.zw;
+    let d = lr_off(s0, x, y);
+    // Where the pixel was before the stretch: along the long axis 1 / f of the distance, across it the same.
+    let u = (d.x * m.x + d.y * m.y) / lr_sh(s, 3u).x;
+    let v = -d.x * m.y + d.y * m.x;
+    let alpha = lr_weight(s, length(vec2<f32>(u, v)));
+    if (alpha <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let sx = u * m.x - v * m.y;
+    let sy = u * m.y + v * m.x;
+    for (var o = 0u; o < 3u; o = o + 1u) {
+        let e = lr_sh(s, 8u + o);
+        if (e.z > 0.0 && length(vec2<f32>(sx - e.x, sy - e.y)) <= e.z) {
+            return vec3<f32>(0.0);
+        }
+    }
+    var mask = 1.0;
+    if (lr_sh(s, 2u).z > 0.0) {
+        mask = lr_coverage(s, x, y).x;
+        if (mask <= 0.0) {
+            return vec3<f32>(0.0);
+        }
+    }
+    // The source position (pixel centres at i + 0.5): the ball's integer part plus a small offset.
+    let tx = s0.y - 0.5 + sx;
+    let ty = s0.w - 0.5 + sy;
+    let fx = floor(tx);
+    let fy = floor(ty);
+    let wx = tx - fx;
+    let wy = ty - fy;
+    let ix = i32(s0.x) + i32(fx);
+    let iy = i32(s0.z) + i32(fy);
+    let b00 = lr_bt_at(ix, iy);
+    let b10 = lr_bt_at(ix + 1, iy);
+    let b01 = lr_bt_at(ix, iy + 1);
+    let b11 = lr_bt_at(ix + 1, iy + 1);
+    let btop = b00 + wx * (b10 - b00);
+    let bbot = b01 + wx * (b11 - b01);
+    let taken = lr_ss(0.5 * LR_B_MIN, LR_B_MIN, btop + wy * (bbot - btop));
+    if (taken <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let gain = lr_rim_gain(length(vec2<f32>(sx, sy)) / s4.x);
+    let k = alpha * mask * taken * gain;
+    var light = vec3<f32>(0.0);
+    for (var c = 0u; c < 3u; c = c + 1u) {
+        let p00 = lr_src(c, ix, iy);
+        let p10 = lr_src(c, ix + 1, iy);
+        let p01 = lr_src(c, ix, iy + 1);
+        let p11 = lr_src(c, ix + 1, iy + 1);
+        let top = p00 + wx * (p10 - p00);
+        let bot = p01 + wx * (p11 - p01);
+        let orig = top + wy * (bot - top);
+        let f = lr_sh(s, 5u + c);
+        let fit = max(f.x + f.y * sx + f.z * sy, 0.0);
+        light[c] = k * max(orig - fit, 0.0);
+    }
+    return light;
+}
+
 fn lr_final_main(gid: vec3<u32>) {
     let w = pu.wnt;
     if (gid.x >= u32(w.z) || gid.y >= u32(w.w)) {
@@ -829,18 +932,11 @@ fn lr_final_main(gid: vec3<u32>) {
             col = acc / wsum;
         }
     }
-    // The balls drawn back, in list order, except where a sharp subject (or a strand) has no blur of its own.
+    // The balls' light drawn back, in list order, except where a sharp subject (or a strand) has no blur of its own.
     if (!(braw < LR_B_MIN && (info[bi] & 2u) != 0u)) {
         let range = lr_bin(x, y);
         for (var k = range.x; k < range.y; k = k + 1u) {
-            let s = bins[k];
-            let cv = lr_coverage(s, x, y);
-            if (cv.x <= 0.0) {
-                continue;
-            }
-            let k_rim = cv.x * lr_rim_at(cv.y);
-            let dens = lr_sh(s, 3u).xyz;
-            col = col + dens * k_rim;
+            col = col + lr_ball_light(bins[k], x, y);
         }
     }
     let at = gid.y * pu.dst.x + gid.x;

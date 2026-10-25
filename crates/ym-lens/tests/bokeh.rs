@@ -169,7 +169,7 @@ fn input_energy(scene: &Scene, d: (f64, f64, f64), reach: f64) -> [f64; 3] {
 }
 
 #[test]
-fn discs_come_out_q_times_taller_with_their_energy_kept() {
+fn discs_come_out_q_times_taller_with_their_surface_brightness_kept() {
     let radii = [
         6.0, 9.0, 12.0, 8.0, 14.0, 10.0, 7.0, 11.0, 13.0, 9.0, 6.5, 12.0,
     ];
@@ -223,10 +223,12 @@ fn discs_come_out_q_times_taller_with_their_energy_kept() {
         for &d in &noisy.discs {
             let b = blob(&out, &noisy.ground, W, H, d, 3.4);
             let before = input_energy(&noisy, d, 3.4);
+            // The ball's own pixels are stretched, so it keeps its surface brightness and carries `q` times the light
+            // over its `q` times larger area.
             for c in 0..3 {
                 assert!(
-                    (b.energy[c] / before[c] - 1.0).abs() < 0.01,
-                    "{axis:?} {anamorphic}: disc {d:?} channel {c} energy {:.4} -> {:.4}",
+                    (b.energy[c] / (q * before[c]) - 1.0).abs() < 0.03,
+                    "{axis:?} {anamorphic}: disc {d:?} channel {c} energy {:.4} -> {:.4}, wanted {q:.2} times",
                     before[c],
                     b.energy[c]
                 );
@@ -342,7 +344,7 @@ fn tiles_equal_the_whole_frame_with_soft_balls() {
 }
 
 #[test]
-fn the_whole_frames_light_is_kept() {
+fn the_whole_frames_light_grows_by_the_stretched_balls_extra_light_only() {
     let radii = [6.0, 9.0, 12.0, 8.0, 14.0, 10.0, 7.0, 11.0];
     let scene = night_scene_spaced(W, H, &radii, Noise::LOW, 32, 2.5);
     let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
@@ -355,6 +357,9 @@ fn the_whole_frames_light_is_kept() {
         (W, H),
         PixelRect::new(0, 0, W, H),
     );
+    // The gathers keep the light of the ground; the balls keep their surface brightness over `q` times the area, so
+    // the picture gains `q - 1` times the light the balls held, and nothing else.
+    let q = p.q();
     for c in 0..3 {
         let sum = |v: &[f32]| {
             v[c * W * H..(c + 1) * W * H]
@@ -362,8 +367,17 @@ fn the_whole_frames_light_is_kept() {
                 .map(|x| f64::from(*x))
                 .sum::<f64>()
         };
+        let balls: f64 = scene
+            .discs
+            .iter()
+            .map(|&d| input_energy(&scene, d, 3.4)[c])
+            .sum();
         let (a, b) = (sum(&scene.img.data), sum(&out));
-        assert!((b / a - 1.0).abs() < 0.005, "channel {c}: {a:.1} -> {b:.1}");
+        let want = a + (q - 1.0) * balls;
+        assert!(
+            (b / want - 1.0).abs() < 0.01,
+            "channel {c}: {a:.1} -> {b:.1}, wanted {want:.1}"
+        );
     }
 }
 
@@ -643,10 +657,14 @@ fn swirl_stretches_balls_along_the_tangent_more_towards_the_edges() {
         let rho = ux.hypot(uy) / hd;
         let b = blob(&out, &scene.ground, W, H, d, 3.4);
         let before = input_energy(&scene, d, 3.4);
+        // The ball's own pixels are stretched along the tangent: its light grows with its length.
         for c in 0..3 {
             assert!(
-                (b.energy[c] / before[c] - 1.0).abs() < 0.015,
-                "disc {d:?} channel {c}"
+                (b.energy[c] / before[c] / b.elongation - 1.0).abs() < 0.04,
+                "disc {d:?} channel {c}: light {:.3} -> {:.3}, elongation {:.3}",
+                before[c],
+                b.energy[c],
+                b.elongation
             );
         }
         if rho < 0.15 {
@@ -945,11 +963,11 @@ fn box_blob(
 }
 
 #[test]
-fn a_small_soft_ball_beside_a_larger_one_survives_as_an_oval_with_its_energy() {
+fn a_small_soft_ball_beside_a_larger_one_survives_as_an_oval_with_its_brightness() {
     // The small ball (r 7, soft rim, 5 times its ground) has the big one's edge in its ring over a fourteenth of the
     // ring (more than the twentieth a clear ball allows): a light beside a bright thing (the curl of a hook, a
     // neighbour in a cluster), still a light. In a learned
-    // map (blurred all around) both are found, and both come out twice as tall with the light they had.
+    // map (blurred all around) both are found, and both come out twice as tall with the surface brightness they had.
     let balls = [
         (463.0, 330.0, 7.0, 0.3, 0.14),
         (501.0, 330.0, 22.0, 0.3, 1.2),
@@ -990,8 +1008,8 @@ fn a_small_soft_ball_beside_a_larger_one_survives_as_an_oval_with_its_energy() {
     );
     for c in 0..3 {
         assert!(
-            (e_out[c] / e_in[c] - 1.0).abs() < 0.02,
-            "channel {c}: the small ball's light {:.3} -> {:.3}",
+            (e_out[c] / (2.0 * e_in[c]) - 1.0).abs() < 0.03,
+            "channel {c}: the small ball's light {:.3} -> {:.3}, wanted twice",
             e_in[c],
             e_out[c]
         );
@@ -1070,8 +1088,8 @@ fn a_ball_is_drawn_whole_where_the_map_is_unsure_and_hidden_where_a_subject_is()
                 "{name}: {elong:.2} times taller"
             );
             assert!(
-                (e_out[1] / e_in[1] - 1.0).abs() < 0.02,
-                "{name}: energy {:.3} -> {:.3}",
+                (e_out[1] / (2.0 * e_in[1]) - 1.0).abs() < 0.03,
+                "{name}: energy {:.3} -> {:.3}, wanted twice",
                 e_in[1],
                 e_out[1]
             );
@@ -1110,7 +1128,8 @@ fn a_very_bright_soft_ball_with_a_glow_leaves_no_pillar_beside_its_oval() {
     // A ball 270 times brighter than its ground, with a rim 0.8 radii wide and a glow around that dies away over
     // 10 px: whatever of its light stays in the picture is stretched with the rest of the blur and stands beside
     // the oval as a vertical pillar. The take-out reaches to where the light has died away, so (nearly) all of it is
-    // drawn, as the oval: nothing is added above the oval, and the energy is kept (to 3 % with so wide a rim).
+    // stretched with the ball, glow included: nothing is added above the patch, and the surface brightness is kept
+    // (twice the light, to 5 % with so wide a rim).
     let (cx, cy) = (503.0, 340.0);
     let mut scene = balls_on_ground(&[(cx, cy, 12.0, 0.8, 8.0)], Noise::NONE, 54);
     let n = W * H;
@@ -1130,6 +1149,9 @@ fn a_very_bright_soft_ball_with_a_glow_leaves_no_pillar_beside_its_oval() {
     let map = learned_map(12.0, 0, 0);
     let planes = planes_with_map(&p, &scene, &map);
     assert_eq!(planes.bokeh().expect("bokeh").balls().len(), 1);
+    // The patch is the take-out disc, glow included, twice as tall.
+    let hd = 0.5 * ((W * W + H * H) as f64).sqrt();
+    let top = (cy - 2.0 * planes.bokeh().expect("bokeh").balls()[0].take_out_radius * hd) as usize;
     let out = reshape_tile(
         &p,
         &planes,
@@ -1146,11 +1168,11 @@ fn a_very_bright_soft_ball_with_a_glow_leaves_no_pillar_beside_its_oval() {
     );
     let (e_out, _) = box_blob(&out, &scene.ground, win);
     let (e_in, _) = box_blob(&scene.img.data, &scene.ground, win);
-    // The light in a strip above the oval's top (the oval is 24 px up from the centre, its rim a few more): the
-    // glow that was left in the picture would be stretched up into it and stand there as a pillar.
+    // The light in a strip above the patch's top: the glow that was left in the picture would be stretched up into
+    // it and stand there as a pillar.
     let strip = |img: &[f32]| {
         let mut sum = 0.0f64;
-        for y in (cy as usize - 40)..(cy as usize - 32) {
+        for y in (top - 14)..(top - 6) {
             for x in (cx as usize - 6)..(cx as usize + 6) {
                 let i = W * H + y * W + x;
                 sum += f64::from(img[i]) - f64::from(scene.ground[i]);
@@ -1159,15 +1181,101 @@ fn a_very_bright_soft_ball_with_a_glow_leaves_no_pillar_beside_its_oval() {
         sum / (12 * 8) as f64
     };
     let (above_in, above_out) = (strip(&scene.img.data), strip(&out));
+    // The glow past the take-out is the picture's own, stretched with the rest of the blur: less than a tenth of the
+    // ground's (0.03) is added, where a pillar would add a large part of the ball's (8).
     assert!(
-        above_out <= 1.25 * above_in,
-        "the strip above the oval holds {above_out:.4}, the picture had {above_in:.4}: a pillar"
+        above_out - above_in <= 0.003,
+        "the strip above the patch holds {above_out:.4}, the picture had {above_in:.4}: a pillar"
     );
     assert!(
-        (e_out[1] / e_in[1] - 1.0).abs() < 0.03,
-        "energy {:.3} -> {:.3}",
+        (e_out[1] / (2.0 * e_in[1]) - 1.0).abs() < 0.05,
+        "energy {:.3} -> {:.3}, wanted twice",
         e_in[1],
         e_out[1]
+    );
+}
+
+#[test]
+fn a_soft_ball_with_a_glow_is_stretched_as_it_is_with_no_ring_and_its_edge_scaled_by_q() {
+    // The owner's complaint was a harder dark circle around a squeezed ball: the ball is not drawn again as a
+    // synthetic ellipse, its own pixels (soft rim, glow and all) are stretched. A soft ball of 14 px with a rim
+    // 0.6 radii wide and a glow of a tenth of its level on a flat ground, noiseless: the profile out from the centre
+    // along the long axis and across it falls without a dip (a ring would be one), and the width of its edge along
+    // the long axis is `q` times the one across, which is the input's.
+    let (cx, cy, r, level, ground) = (503.0, 340.0, 14.0, 1.2, 0.03);
+    let mut scene = balls_on_ground(&[(cx, cy, r, 0.6, level)], Noise::NONE, 56);
+    let n = W * H;
+    for y in 0..H {
+        for x in 0..W {
+            let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
+            let glow = (0.1 * level * (-(d - r).max(0.0) / 9.0).exp()) as f32;
+            for c in 0..3 {
+                scene.img.data[c * n + y * W + x] += glow;
+            }
+        }
+    }
+    let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
+    let map = learned_map(r, 0, 0);
+    let planes = planes_with_map(&p, &scene, &map);
+    assert_eq!(planes.bokeh().expect("bokeh").balls().len(), 1);
+    let out = reshape_tile(
+        &p,
+        &planes,
+        1,
+        &scene.img.data,
+        (W, H),
+        PixelRect::new(0, 0, W, H),
+    );
+    let at = |img: &[f32], x: usize, y: usize| f64::from(img[W * H + y * W + x]);
+    // The profiles from the centre out: up the column (the long axis for an anamorphic axis X) and along the row.
+    let up = |img: &[f32]| -> Vec<f64> {
+        (0..70)
+            .map(|i| at(img, cx as usize, cy as usize - i))
+            .collect()
+    };
+    let side = |img: &[f32]| -> Vec<f64> {
+        (0..40)
+            .map(|i| at(img, cx as usize + i, cy as usize))
+            .collect()
+    };
+    // The distance from the centre at which a profile falls to a share of its peak above the ground, linearly
+    // interpolated.
+    let falls_to = |profile: &[f64], share: f64| -> f64 {
+        let peak = profile.iter().copied().fold(0.0, f64::max);
+        let target = ground + share * (peak - ground);
+        let top = profile
+            .iter()
+            .position(|v| *v == peak)
+            .expect("the peak is in the profile");
+        let i = top + profile[top..].iter().position(|v| *v < target).expect("falls");
+        (i - 1) as f64 + (profile[i - 1] - target) / (profile[i - 1] - profile[i])
+    };
+    // Inside the ball the profile is the lens's rim profile (this test lens brightens towards the rim); beyond its
+    // edge, where a ring would be, the light only falls, to the ground.
+    for (name, profile) in [("long axis", up(&out)), ("across", side(&out))] {
+        let edge = falls_to(&profile, 0.5).ceil() as usize;
+        for i in edge + 1..profile.len() {
+            assert!(
+                profile[i] <= profile[i - 1] + 0.005 * level,
+                "{name}: the profile rises from {:.4} to {:.4} at {i} px, beyond the edge at {edge} px: a ring",
+                profile[i - 1],
+                profile[i]
+            );
+        }
+    }
+    let width = |profile: &[f64]| falls_to(profile, 0.1) - falls_to(profile, 0.5);
+    let (along, across) = (width(&up(&out)), width(&side(&out)));
+    let before = width(&side(&scene.img.data));
+    // (The lens's rim profile lifts the rim a little, so the span from half to a tenth of the peak is narrower.)
+    assert!(
+        (across / before - 1.0).abs() < 0.3,
+        "the edge across the stretch is {across:.2} px wide, the ball's was {before:.2}"
+    );
+    assert!(
+        (along / across / p.q() - 1.0).abs() < 0.15,
+        "the edge along the stretch is {along:.2} px wide, {:.2} times the one across (wanted {:.2})",
+        along / across,
+        p.q()
     );
 }
 

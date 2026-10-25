@@ -23,11 +23,11 @@ use rayon::prelude::*;
 
 use crate::consts::{
     COARSE_MIN_AREA_PX, COARSE_NODES_PER_FEATURE, COARSE_RIM_FEATURE, COMPACT_EXTENT_HD,
-    EDGE_FLOOR_PX, EDGE_REACH_SIGMAS, GHOST_FULL_RADIUS, GHOST_PEAK_MAX, GHOST_PRUNE_BUDGET,
-    GHOST_SMALL_SHARE, GHOST_SOFT_MIN, GHOST_TINT_MAX_RATIO, SPIKE_SIZE, STREAK_E_HALF,
-    STREAK_E_MIN, STREAK_MAX_LIGHTS, STREAK_PEAK_PER_FRACTION, STREAK_REACH_AT_E0, STREAK_REACH_E0,
-    STREAK_REACH_MIN, STREAK_REACH_PER_DECADE, STREAK_SIGMA_MIN_HD, STREAK_SIGMA_REF_HD,
-    STREAK_STRETCH_MIN, STREAK_TOTAL_CAP,
+    EDGE_FLOOR_PX, EDGE_REACH_SIGMAS, GHOST_FULL_RADIUS, GHOST_LIGHT_MAX, GHOST_PEAK_MAX,
+    GHOST_PRUNE_BUDGET, GHOST_SMALL_SHARE, GHOST_SOFT_MIN, GHOST_TINT_MAX_RATIO, SPIKE_SIZE,
+    STREAK_E_HALF, STREAK_E_MIN, STREAK_MAX_LIGHTS, STREAK_PEAK_PER_FRACTION, STREAK_REACH_AT_E0,
+    STREAK_REACH_E0, STREAK_REACH_MIN, STREAK_REACH_PER_DECADE, STREAK_SIGMA_MIN_HD,
+    STREAK_SIGMA_REF_HD, STREAK_STRETCH_MIN, STREAK_TOTAL_CAP,
 };
 use crate::data::{Aperture, GhostData};
 use crate::l3::geometry::{Frame, Span};
@@ -1301,7 +1301,9 @@ mod tests {
 
     #[test]
     fn the_bound_on_a_ghost_rises_to_the_peak_and_falls_again_for_a_ghost_that_fills_the_frame() {
-        use crate::consts::{GHOST_FULL_RADIUS, GHOST_LIGHT_MAX, GHOST_PEAK_MAX, GHOST_SMALL_SHARE};
+        use crate::consts::{
+            GHOST_FULL_RADIUS, GHOST_LIGHT_MAX, GHOST_PEAK_MAX, GHOST_SMALL_SHARE,
+        };
         // From the full radius to where the light bound meets the peak bound: the peak bound.
         assert_eq!(ghost_peak_max(GHOST_FULL_RADIUS), GHOST_PEAK_MAX);
         assert_eq!(ghost_peak_max(0.2), GHOST_PEAK_MAX);
@@ -1317,7 +1319,7 @@ mod tests {
             assert!(v > 0.0 && v <= GHOST_PEAK_MAX);
         }
     }
-    }
+
     use crate::plan::Axis;
 
     #[test]
@@ -1452,7 +1454,6 @@ mod tests {
                         var_along: 0.75 / (frame.half_diag * frame.half_diag),
                         var_across: 0.75 / (frame.half_diag * frame.half_diag),
                         extent: 0.01,
-                        area: 0.0001,
                         component: 0,
                     };
                     let g = GhostData {
@@ -1520,7 +1521,6 @@ mod tests {
                     var_along: 0.75 / (frame.half_diag * frame.half_diag),
                     var_across: 0.75 / (frame.half_diag * frame.half_diag),
                     extent: 0.01,
-                    area: 0.0001,
                     component: 0,
                 };
                 let g = GhostData {
@@ -1597,7 +1597,6 @@ mod tests {
                 var_along: 1e-7,
                 var_across: 1e-7,
                 extent: 0.003,
-                area: 0.0001,
                 component: i as u32,
             })
             .collect();

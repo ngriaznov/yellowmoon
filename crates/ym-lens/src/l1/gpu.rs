@@ -12,7 +12,7 @@ use crate::device::{
 use crate::plan::LensPlan;
 use crate::planes::LensPlanes;
 
-use super::draw::Shape;
+use super::draw::{Shape, rim_disc_mean};
 use super::tile::{Pass, axis_cell};
 
 /// The blur map of the planes: every level's cells and the table of blurred cells.
@@ -88,6 +88,10 @@ fn shape_record(s: &Shape, half_diag: f64) -> [[f32; 4]; BOKEH_SHAPE_VECTORS] {
             0.0,
         ]
     };
+    let owner = |i: usize| {
+        let (dx, dy, r) = s.earlier[i];
+        [dx as f32, dy as f32, r as f32, 0.0]
+    };
     [
         [whole(cxi), cxf, whole(cyi), cyf],
         [s.a as f32, s.b as f32, s.m.0 as f32, s.m.1 as f32],
@@ -97,16 +101,14 @@ fn shape_record(s: &Shape, half_diag: f64) -> [[f32; 4]; BOKEH_SHAPE_VECTORS] {
             s.delta as f32,
             s.edge as f32,
         ],
-        [
-            s.density[0] as f32,
-            s.density[1] as f32,
-            s.density[2] as f32,
-            s.r_out as f32,
-        ],
+        [s.f as f32, 0.0, 0.0, s.r_out as f32],
         [s.r_ball as f32, s.core as f32, s.reach as f32, floor_b],
         fit(0),
         fit(1),
         fit(2),
+        owner(0),
+        owner(1),
+        owner(2),
     ]
 }
 
@@ -136,6 +138,7 @@ pub(crate) fn scale_data(
     vectors.extend(pad4(&lens.field.radii, 3));
     vectors.extend(pad4(&lens.field.swirl, 3));
     vectors.extend(pad4(&lens.rim, 4));
+    vectors.push([rim_disc_mean(&lens.rim) as f32, 0.0, 0.0, 0.0]);
     debug_assert_eq!(vectors.len(), BOKEH_HEADER);
     let cell = |s: f64, c: usize, full: usize| {
         let (centre, p_lo, p_hi) = axis_cell(s, c, full);

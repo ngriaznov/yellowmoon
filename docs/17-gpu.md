@@ -168,7 +168,7 @@ A viewport frame is one device job: group or composed tile window, sampler, C1 t
   | C7 to C11 and the display transform | 1.2e-5 in LogC4; one 10-bit code |
   | output sharpening | 4.3e-5 |
   | L2 field optics (`tests/gpu_lens_field.rs`) | 6.1e-6 (3.04e-6 measured over 27.5 million samples; a flipped tap-count decision is allowed in 1e-6 of the samples, none did) |
-  | L3 highlight optics (`tests/gpu_lens_flare.rs`) | 2e-5 of the flare terms' peak (8.7e-6 measured; 9.8e-7 for the ghosts alone) |
+  | L3 highlight optics (`tests/gpu_lens_flare.rs`) | 2e-5 of the flare terms' peak (7.2e-6 measured; 3.5e-7 for the ghosts alone) |
   | L1 bokeh reshaping (`tests/gpu_lens_reshape.rs`) | 2e-5 plus 1e-5 of the value (all but 15 of 90 million samples within 6.4e-6; a flipped tap count or rule is allowed in 5e-6 of the samples, none above 5e-4; the largest seen 9.4e-5) |
 | C13 u8 | within one code, at least 99 % exact |
   | magnification of a view above 100 % | 0: its values are the CPU's bit for bit, its codes are C13's |

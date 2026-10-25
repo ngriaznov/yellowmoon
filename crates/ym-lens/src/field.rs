@@ -21,7 +21,9 @@
 //! neighbouring radii, resampled area-weighted to `n x n` cells (`n = min(17, 2 ceil(omega) + 1)`), turned so
 //! that table x points radially outwards and table y anticlockwise, and scaled to `+-omega`. Each cell is a
 //! point mass at its centre, read from the input by bilinear interpolation. Because the channel tables have
-//! their own centroids, the channels are shifted against each other: that is the lateral colour. With the
+//! their own centroids, the channels are shifted against each other: that is the lateral colour, of which the
+//! projection keeps [`LATERAL_COLOR_SCALE`] of the traced offsets from green (red and blue tables are
+//! translated, green stays). With the
 //! attachment the axis part of each channel's centroid offset is multiplied by `1 + h (q - 1)`: after the
 //! gather, channel `c` is read `h (q - 1)` times its centroid offset's axis part further along the axis, by
 //! linear interpolation between neighbouring pixels (to first order the same as translating the kernel, and a

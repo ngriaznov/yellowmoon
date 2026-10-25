@@ -53,11 +53,11 @@ pub const W_KNEE: f64 = 0.75 * W_MAX;
 ///
 /// A channel's kernel is moved, when the tables are projected on the camera, so that its centroid's offset from
 /// the green channel's is this fraction of the traced one: 1 would draw the traced fringes, 0 none. The traced
-/// lenses, widened to the spread the runtime draws, put red and blue 0.35 % (Vintage) to 0.45 % (Classic) of a
-/// half-diagonal apart at the sides of the frame at Edges 100 with the attachment's doubling (3 to 6 px on a
-/// 1500 px frame), far more than a real lens shows (a couple of pixels at the corner of 24 MP, 0.05 to 0.1 %).
-/// With 0.3 the worst lens (Classic, Edges 100, Anamorphic 100) has 0.13 %. It is one number for every lens,
-/// so each keeps its own lateral colour relative to the others.
+/// lenses, widened to the spread the runtime draws, put red and blue 0.35 % (Vintage) to 0.39 % (Classic) of a
+/// half-diagonal apart at the sides of the frame at Edges 100 with the attachment's doubling (3.1 to 3.5 px on
+/// a 1500 px frame), far more than a real lens shows (a couple of pixels at the corner of 24 MP, 0.05 to
+/// 0.1 %). With 0.3 the worst lens (Classic, Edges 100, Anamorphic 100) has 0.12 %. It is one number for every
+/// lens, so each keeps its own lateral colour relative to the others.
 pub const LATERAL_COLOR_SCALE: f64 = 0.3;
 
 /// A field-optics kernel whose half-width is below this many pixels is a copy of the input.
@@ -226,12 +226,12 @@ pub const GHOST_TINT_MAX_RATIO: f64 = 1.2;
 /// clipped light is assumed thousands of times brighter than the clip level (`LIGHT_BOOST_MAX_EV`), which spread
 /// over a ghost's area still made discs brighter than the scene around them. Applies to ghosts of apothem
 /// [`GHOST_FULL_RADIUS`] and larger; smaller ones get less (`l3::items::ghost_peak_max`).
-pub const GHOST_PEAK_MAX: f64 = 0.07;
+pub const GHOST_PEAK_MAX: f64 = 0.05;
 
 /// The most light a ghost carries, in clip levels times half-diagonals squared at Flares 100: its brightest value
 /// may not pass this over its area `pi s^2`, so a ghost of apothem over 0.25 is fainter than [`GHOST_PEAK_MAX`] in
 /// proportion to one over its area (a quarter of it at an apothem of 0.5, 6 % at 1).
-pub const GHOST_LIGHT_MAX: f64 = 0.0137;
+pub const GHOST_LIGHT_MAX: f64 = 0.0098;
 
 /// The apothem, in half-diagonals, from which a ghost may be as bright as [`GHOST_PEAK_MAX`].
 pub const GHOST_FULL_RADIUS: f64 = 0.1;
@@ -367,6 +367,16 @@ pub const STRAND_MARGIN_NOISE: f64 = 12.0;
 
 /// A line shorter than this, in pixels, is not gathered.
 pub const MIN_LINE_PX: f64 = 0.05;
+
+/// A ball's own light and the take-out of it fade out together over this share of the zone between the ball's radius
+/// and the take-out radius (the glow), and at least a pixel: where a neighbour's light overlaps the ball's disc, the
+/// part of it that is taken out is put back by the same weight, so no edge of the disc shows.
+pub const BALL_GLOW_FADE: f64 = 0.5;
+
+/// The lens's rim profile (`bokeh.edge`) modulates a ball's light up to its edge, relative to the profile's mean over
+/// the disc, and fades out over this many ball radii beyond the edge (a neighbour's light that overlaps the ball's
+/// disc is not shaped by this ball's profile).
+pub const RIM_FADE_RADII: f64 = 0.3;
 
 /// The half-length of both gathers, in units of the half-length of the box line that has the same variance: the line
 /// is a biweight `(1 - u^2)^2` (variance `1/7` of the squared half-length against `1/3` for a box), so a line of the

@@ -31,7 +31,7 @@ use crate::plan::{Axis, LensPlan};
 
 use super::BokehPlanes;
 use super::detector::luminance;
-use super::draw::{Shape, ShapeParams, profile_at, rim_at, rim_disc_mean, shape_of};
+use super::draw::{Shape, ShapeParams, assign_owners, profile_at, rim_disc_mean, rim_gain, shape_of};
 
 /// What the cells of the blur map around a pixel add up to, by the colour-guided weights of the upsampling.
 struct CellSums {
@@ -259,10 +259,21 @@ impl<'a> Pass<'a> {
         pass.dev.v_halo = pass.v_halo();
         pass.dev.t_halo = pass.t_halo();
         pass.dev.guide_reach = pass.guide_reach();
+        // A stretched ball reads its own light where it was before the stretch, up to `f - 1` of its disc's radii
+        // away from the pixel it draws: the context holds that too, whatever the gathers' reach.
+        let patch = pass
+            .shapes()
+            .iter()
+            .map(|s| ((s.f - 1.0) * s.r_out).ceil() as usize + GATHER_PAD)
+            .max()
+            .unwrap_or(0);
+        pass.dev.v_halo = pass.dev.v_halo.max(patch.saturating_sub(pass.dev.t_halo));
         Some(pass)
     }
 
-    /// Rows of the vertical gather's reach and of the tangential one, with the bilinear neighbour.
+    /// Rows of the vertical gather's reach and of the tangential one, with the bilinear neighbour (and, for the
+    /// vertical one, the reach of a stretched ball's patch, which is part of the context between `r0` and the
+    /// output).
     fn v_halo(&self) -> usize {
         if self.v_on {
             self.v_reach.ceil() as usize + GATHER_PAD
@@ -289,7 +300,7 @@ impl<'a> Pass<'a> {
 
     /// The context in pixels the pass needs around the rectangle it produces.
     pub(super) fn halo(&self) -> usize {
-        self.v_halo() + self.t_halo() + self.guide_reach() + self.feather + SHARP_SOFT_HALF
+        self.dev.halo()
     }
 
     /// The rectangles a pass over `want` works on and the cells of the map they read ([`BokehPass::tile`]).
@@ -323,11 +334,14 @@ impl<'a> Pass<'a> {
     /// The shapes of every ball the pass changes, in list order.
     pub(super) fn shapes(&self) -> Vec<Shape> {
         let sp = self.shape_params();
-        self.bp
+        let mut shapes: Vec<Shape> = self
+            .bp
             .balls()
             .iter()
             .filter_map(|b| shape_of(b, &sp))
-            .collect()
+            .collect();
+        assign_owners(&mut shapes);
+        shapes
     }
 
     /// The pass over `want`. `input` covers `want` grown by [`Pass::halo`], clamped to the frame.
@@ -388,7 +402,7 @@ impl<'a> Pass<'a> {
             crop_planes(&o1, r1, want)
         };
         // The balls drawn back.
-        redraw(&mut o2, want, &bt, &occ, r0, &shapes, &sp);
+        redraw(&mut o2, want, input, (&bt, &occ, r0), &shapes, &sp);
         Ok(o2)
     }
 
@@ -1261,7 +1275,7 @@ fn take_out(wk: &mut [f32], r0: PixelRect, bt: &[f32], shapes: &[Shape]) {
         for y in y0..y1 {
             for x in x0..x1 {
                 let (dx, dy) = (x as f64 + 0.5 - s.cx, y as f64 + 0.5 - s.cy);
-                let m = (s.r_out + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0);
+                let m = s.weight((dx * dx + dy * dy).sqrt());
                 if m <= 0.0 {
                     continue;
                 }
@@ -1280,14 +1294,61 @@ fn take_out(wk: &mut [f32], r0: PixelRect, bt: &[f32], shapes: &[Shape]) {
     }
 }
 
-/// Adds every ball's ellipse to `out` (over `want`), except on the pixels of a sharp subject (`occ`) that have no
-/// blur of their own: the oval is the ball's light, and a ball is not clipped where the map is merely unsure.
+/// The picture at the continuous position `(qx, qy)` (pixel centres at `i + 0.5`), bilinear between the four pixels
+/// around it, the pixel's coordinates held inside the frame and the input.
+fn sample_input(input: &ImageRef, qx: f64, qy: f64) -> [f64; 3] {
+    let (gx, gy) = (qx - 0.5, qy - 0.5);
+    let (fx, fy) = (gx.floor(), gy.floor());
+    let (tx, ty) = (gx - fx, gy - fy);
+    let at = |x: i64, y: i64| -> [f64; 3] {
+        let xc = x
+            .clamp(0, input.frame_width as i64 - 1)
+            .clamp(input.x0 as i64, (input.x0 + input.width) as i64 - 1) as usize;
+        let yc = y
+            .clamp(0, input.frame_height as i64 - 1)
+            .clamp(input.y0 as i64, (input.y0 + input.height) as i64 - 1) as usize;
+        let i = (yc - input.y0) * input.width + (xc - input.x0);
+        [
+            f64::from(input.plane(0)[i]),
+            f64::from(input.plane(1)[i]),
+            f64::from(input.plane(2)[i]),
+        ]
+    };
+    let (x0, y0) = (fx as i64, fy as i64);
+    let (p00, p10, p01, p11) = (at(x0, y0), at(x0 + 1, y0), at(x0, y0 + 1), at(x0 + 1, y0 + 1));
+    let mut out = [0.0; 3];
+    for c in 0..3 {
+        let top = p00[c] + tx * (p10[c] - p00[c]);
+        let bot = p01[c] + tx * (p11[c] - p01[c]);
+        out[c] = top + ty * (bot - top);
+    }
+    out
+}
+
+/// The blur map `bt` (over `r0`) at the continuous position `(qx, qy)`, bilinear, the pixel's coordinates held inside `r0`.
+fn sample_blur(bt: &[f32], r0: PixelRect, qx: f64, qy: f64) -> f64 {
+    let (gx, gy) = (qx - 0.5, qy - 0.5);
+    let (fx, fy) = (gx.floor(), gy.floor());
+    let (tx, ty) = (gx - fx, gy - fy);
+    let at = |x: i64, y: i64| -> f64 {
+        let xc = x.clamp(r0.x as i64, r0.x1() as i64 - 1) as usize;
+        let yc = y.clamp(r0.y as i64, r0.y1() as i64 - 1) as usize;
+        f64::from(bt[(yc - r0.y) * r0.w + (xc - r0.x)])
+    };
+    let (x0, y0) = (fx as i64, fy as i64);
+    let top = at(x0, y0) + tx * (at(x0 + 1, y0) - at(x0, y0));
+    let bot = at(x0, y0 + 1) + tx * (at(x0 + 1, y0 + 1) - at(x0, y0 + 1));
+    top + ty * (bot - top)
+}
+
+/// Adds the stretched light of every ball to `out` (over `want`), except on the pixels of a sharp subject (`occ`)
+/// that have no blur of their own: a pixel reads the ball's light (the picture above the ring's plane fit, as the
+/// lens's rim profile modulates it) where it was before the stretch, and only where the ball was taken out there.
 fn redraw(
     out: &mut [f32],
     want: PixelRect,
-    bt: &[f32],
-    occ: &[bool],
-    r0: PixelRect,
+    input: &ImageRef,
+    (bt, occ, r0): (&[f32], &[bool], PixelRect),
     shapes: &[Shape],
     sp: &ShapeParams,
 ) {
@@ -1304,14 +1365,32 @@ fn redraw(
                 if f64::from(bt[bi]) < B_MIN && occ[bi] {
                     continue;
                 }
-                let (cov, rn) = s.coverage(x as f64 + 0.5, y as f64 + 0.5);
-                if cov <= 0.0 {
+                let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+                let Some(src) = s.source(px, py) else {
+                    continue;
+                };
+                // The cat's-eye cuts the patch with a soft mask.
+                let mask = if s.delta > 0.0 {
+                    s.coverage(px, py).0
+                } else {
+                    1.0
+                };
+                if mask <= 0.0 {
                     continue;
                 }
-                let k = cov * rim_at(sp.rim, rn);
+                // Where the ball was taken out of the picture: the blur is the ball's there.
+                let (qx, qy) = (s.cx + src.dx, s.cy + src.dy);
+                let taken = smoothstep(0.5 * B_MIN, B_MIN, sample_blur(bt, r0, qx, qy));
+                if taken <= 0.0 {
+                    continue;
+                }
+                let orig = sample_input(input, qx, qy);
+                let gain = rim_gain(sp.rim, sp.rim_mean, src.dx.hypot(src.dy) / s.r_ball);
+                let k = src.alpha * mask * taken * gain;
                 let i = (y - want.y) * want.w + (x - want.x);
                 for c in 0..3 {
-                    out[c * plane + i] += (s.density[c] * k) as f32;
+                    let light = (orig[c] - s.fit_at(c, src.dx, src.dy)).max(0.0);
+                    out[c * plane + i] += (k * light) as f32;
                 }
             }
         }

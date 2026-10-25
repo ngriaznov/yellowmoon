@@ -37,8 +37,6 @@ pub(crate) struct Source {
     pub(crate) var_across: f64,
     /// The larger side of the source's bounding box, in half-diagonals.
     pub(crate) extent: f64,
-    /// The area of the source's pixels, in half-diagonals squared.
-    pub(crate) area: f64,
     /// The connected component the source belongs to (the raster index of its first pixel): the cells of one
     /// large light share it, and the limits that are on a light as a whole (`l3::items`) count them together.
     pub(crate) component: u32,
@@ -80,7 +78,6 @@ impl Dsu {
 #[derive(Clone, Copy)]
 struct Acc {
     component: u32,
-    count: usize,
     weight: f64,
     energy: [f64; 3],
     ghost_energy: [f64; 3],
@@ -99,7 +96,6 @@ impl Acc {
     fn add(&mut self, i: usize, j: usize, hl: [f64; 3], hg: [f64; 3]) {
         let weight = hl[0] + hl[1] + hl[2];
         let (x, y) = (i as f64 + 0.5, j as f64 + 0.5);
-        self.count += 1;
         self.weight += weight;
         for (e, h) in self.energy.iter_mut().zip(&hl) {
             *e += h;
@@ -120,7 +116,6 @@ impl Acc {
     fn new(component: u32, x: usize, y: usize) -> Self {
         Acc {
             component,
-            count: 0,
             weight: 0.0,
             energy: [0.0; 3],
             ghost_energy: [0.0; 3],
@@ -362,7 +357,6 @@ pub(crate) fn find_all(
                     var_along: var_along * area,
                     var_across: var_across * area,
                     extent,
-                    area: a.count as f64 * area,
                     component: a.component,
                 };
                 (source, cy, cx)
@@ -542,9 +536,8 @@ mod tests {
             let sum: f64 = cells.iter().map(|s| s.energy[c]).sum();
             assert!((sum - big.energy[c]).abs() < 1e-9 * big.energy[c], "{sum}");
         }
-        // The light is as wide as the block: 100 x 100 px, the area of the pixels, its centre in the middle.
+        // The light is as wide as the block: 100 x 100 px, its centre in the middle.
         let frame = Frame::new(w, h, Axis::X);
-        assert!((big.area - 100.0 * 100.0 / (frame.half_diag * frame.half_diag)).abs() < 1e-9);
         assert!((big.pos[0] - frame.u(150.0)).abs() < 1e-9);
         assert!(
             big.var_across > 0.9 * (100.0f64.powi(2) / 12.0) / (frame.half_diag * frame.half_diag)
