@@ -5,10 +5,123 @@ mod common;
 use common::{
     apply_textured, camera, frame, library, noise, plan, planes_for, region, tiles, whole,
 };
+use ym_lens::consts::LATERAL_COLOR_SCALE;
 use ym_lens::{
     Axis, ImageRef, LensAmounts, LensError, LensKind, LensPlan, LensPlanes, PixelRect, apply,
     halo_px,
 };
+
+/// The field law the L2 pass follows, written from the public lens data and the spec (`docs/21` section 4,
+/// L2, *As built (the field law)*): the nine `T(rho)` and `w(rho)` of a lens, `w` pooled to be non-decreasing,
+/// read by the monotone cubic of Fritsch and Butland and carried on beyond `rho = 1` (`T` as
+/// `T(1) / (1 + m (rho - 1))` with `m = -T'(1) / T(1)`, `w` along its end slope).
+struct Law {
+    radii: Vec<f64>,
+    t: Vec<f64>,
+    w: Vec<f64>,
+    dt: Vec<f64>,
+    dw: Vec<f64>,
+}
+
+impl Law {
+    fn of(kind: LensKind) -> Law {
+        let f = &library().get(kind).unwrap().field;
+        let radii = f.radii.clone();
+        let t = f.relative_illumination.clone();
+        // Pool adjacent violators: non-decreasing w.
+        let mut blocks: Vec<(f64, usize)> = Vec::new();
+        for v in &f.psf_half_width {
+            blocks.push((*v, 1));
+            while blocks.len() > 1 {
+                let (s1, n1) = blocks[blocks.len() - 1];
+                let (s0, n0) = blocks[blocks.len() - 2];
+                if s0 / n0 as f64 <= s1 / n1 as f64 {
+                    break;
+                }
+                blocks.truncate(blocks.len() - 2);
+                blocks.push((s0 + s1, n0 + n1));
+            }
+        }
+        let mut w = Vec::new();
+        for (sum, n) in &blocks {
+            for _ in 0..*n {
+                w.push(if *n == 1 { *sum } else { sum / *n as f64 });
+            }
+        }
+        let (dt, dw) = (Self::slopes(&radii, &t), Self::slopes(&radii, &w));
+        Law {
+            radii,
+            t,
+            w,
+            dt,
+            dw,
+        }
+    }
+
+    fn slopes(x: &[f64], y: &[f64]) -> Vec<f64> {
+        let n = x.len();
+        let h: Vec<f64> = x.windows(2).map(|p| p[1] - p[0]).collect();
+        let m: Vec<f64> = (0..n - 1).map(|k| (y[k + 1] - y[k]) / h[k]).collect();
+        let mut d = vec![0.0; n];
+        for k in 1..n - 1 {
+            if m[k - 1] * m[k] > 0.0 {
+                let (a, b) = (2.0 * h[k] + h[k - 1], h[k] + 2.0 * h[k - 1]);
+                d[k] = (a + b) / (a / m[k - 1] + b / m[k]);
+            }
+        }
+        let end = |h0: f64, h1: f64, m0: f64, m1: f64| {
+            let e = ((2.0 * h0 + h1) * m0 - h0 * m1) / (h0 + h1);
+            if e * m0 <= 0.0 {
+                0.0
+            } else if m0 * m1 <= 0.0 && e.abs() > 3.0 * m0.abs() {
+                3.0 * m0
+            } else {
+                e
+            }
+        };
+        d[0] = end(h[0], h[1], m[0], m[1]);
+        d[n - 1] = end(h[n - 2], h[n - 3], m[n - 2], m[n - 3]);
+        d
+    }
+
+    /// The cubic through the nine values with the given slopes, at `rho` in 0 to 1.
+    fn cubic(&self, y: &[f64], d: &[f64], rho: f64) -> f64 {
+        let s = (0..8).find(|s| rho <= self.radii[s + 1]).unwrap_or(7);
+        let h = self.radii[s + 1] - self.radii[s];
+        let t = ((rho - self.radii[s]) / h).clamp(0.0, 1.0);
+        let (t2, t3) = (t * t, t * t * t);
+        (2.0 * t3 - 3.0 * t2 + 1.0) * y[s]
+            + (t3 - 2.0 * t2 + t) * h * d[s]
+            + (3.0 * t2 - 2.0 * t3) * y[s + 1]
+            + (t3 - t2) * h * d[s + 1]
+    }
+
+    /// `T(rho')`.
+    fn illumination(&self, rho: f64) -> f64 {
+        if rho <= 1.0 {
+            return self.cubic(&self.t, &self.dt, rho);
+        }
+        let end = self.t[8];
+        end / (1.0 + (-self.dt[8] / end) * (rho - 1.0))
+    }
+
+    /// `w(rho')` in half-diagonals, before the cap.
+    fn width(&self, rho: f64) -> f64 {
+        let near = self.cubic(&self.w, &self.dw, rho.min(1.0));
+        near + self.dw[8] * (rho - 1.0).max(0.0)
+    }
+}
+
+/// The soft cap on a kernel's half-width: `x` up to `0.75 * 0.012`, then bent towards 0.012.
+fn capped(x: f64) -> f64 {
+    let (knee, max) = (0.75 * 0.012, 0.012);
+    if x <= knee {
+        x
+    } else {
+        let u = (x - knee) / (max - knee);
+        knee + (max - knee) * u / (1.0 + u)
+    }
+}
 
 /// The falloff gain of a pixel, from the public lens data: `1 - e' (1 - T(rho'))`.
 fn expected_gain(
@@ -29,13 +142,9 @@ fn expected_gain(
     let u = (px as f64 + 0.5 - 0.5 * fw as f64) / h;
     let v = (py as f64 + 0.5 - 0.5 * fh as f64) / h;
     let (xa, ya) = if axis == Axis::X { (u, v) } else { (v, u) };
-    let rho = ((alpha * xa).powi(2) + ya * ya).sqrt().min(1.0);
-    let r = &lens.field.radii;
-    let s = (0..8).find(|s| rho <= r[s + 1]).unwrap_or(7);
-    let t = (rho - r[s]) / (r[s + 1] - r[s]);
-    let illum = (1.0 - t) * lens.field.relative_illumination[s]
-        + t * lens.field.relative_illumination[s + 1];
-    1.0 - e_field * (1.0 - illum)
+    let rho = ((alpha * xa).powi(2) + ya * ya).sqrt();
+    let _ = lens;
+    1.0 - e_field * (1.0 - Law::of(kind).illumination(rho))
 }
 
 #[test]
@@ -170,8 +279,19 @@ fn the_attachment_acts_alone_at_edges_zero() {
 }
 
 /// The centroid of one channel of a lens's table at radius index `r`, in table units (x radial, y tangential),
-/// computed from the public data with the camera's weights.
+/// computed from the public data with the camera's weights, with the lateral colour kept as the field optics
+/// keep it: red and blue at `LATERAL_COLOR_SCALE` of their traced offset from green.
 fn table_centroid(kind: LensKind, r: usize, c: usize) -> [f64; 2] {
+    let traced = traced_centroid(kind, r, c);
+    if c == 1 {
+        return traced;
+    }
+    let green = traced_centroid(kind, r, 1);
+    std::array::from_fn(|a| green[a] + LATERAL_COLOR_SCALE * (traced[a] - green[a]))
+}
+
+/// The traced centroid of one channel's table (before the lateral colour is scaled).
+fn traced_centroid(kind: LensKind, r: usize, c: usize) -> [f64; 2] {
     let lens = library().get(kind).unwrap();
     let w = camera().weights()[c];
     let n = 33;
@@ -242,20 +362,11 @@ fn lateral_colour_shifts_each_channel_by_its_table_centroid() {
             .unwrap_or(7);
         let t = (rho - lens.field.radii[s]) / (lens.field.radii[s + 1] - lens.field.radii[s]);
         let blend = |a: f64, b: f64| (1.0 - t) * a + t * b;
-        let omega = (blend(
-            lens.field.psf_half_width[s],
-            lens.field.psf_half_width[s + 1],
-        ))
-        .min(0.012)
-            * h;
+        let law = Law::of(kind);
+        let omega = capped(law.width(rho)) * h;
         let rr = (u * u + v * v).sqrt();
         let (cs, sn) = (u / rr, v / rr);
-        let gain = 1.0
-            - (1.0
-                - blend(
-                    lens.field.relative_illumination[s],
-                    lens.field.relative_illumination[s + 1],
-                ));
+        let gain = law.illumination(rho);
         assert!(omega > 12.0, "pixel ({px},{py}) has a kernel of {omega} px");
         let mut shifts = Vec::new();
         for c in 0..3 {
@@ -279,7 +390,7 @@ fn lateral_colour_shifts_each_channel_by_its_table_centroid() {
         let apart =
             ((shifts[0].0 - shifts[2].0).powi(2) + (shifts[0].1 - shifts[2].1).powi(2)).sqrt();
         assert!(
-            apart > 0.5,
+            apart > 0.15,
             "red and blue are {apart} px apart at ({px},{py})"
         );
     }
@@ -302,12 +413,7 @@ fn expected_kernel(
         .unwrap_or(7);
     let t = (rho - lens.field.radii[s]) / (lens.field.radii[s + 1] - lens.field.radii[s]);
     let blend = |a: f64, b: f64| (1.0 - t) * a + t * b;
-    let omega = blend(
-        lens.field.psf_half_width[s],
-        lens.field.psf_half_width[s + 1],
-    )
-    .min(0.012)
-        * h;
+    let omega = capped(Law::of(kind).width(rho)) * h;
     let (cs, sn) = (u / rho, v / rho);
     let shifts = std::array::from_fn(|c| {
         let (ca, cb) = (table_centroid(kind, s, c), table_centroid(kind, s + 1, c));
@@ -726,7 +832,7 @@ fn anamorphic_fringe_boosts_the_axis_part_of_the_lateral_colour() {
     );
     let apart = |s: [f64; 3]| s[0] - s[2];
     assert!(
-        apart(b).abs() > 1.0,
+        apart(b).abs() > 0.3,
         "red and blue are {} px apart without the fringe",
         apart(b)
     );

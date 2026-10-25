@@ -7,11 +7,14 @@
 //!
 //! * the **oval field radius** `rho' = sqrt((alpha x_a)^2 + y_a^2)` with `x_a`, `y_a` the field coordinates
 //!   along and across the anamorphic axis and `alpha = 1 + kappa (q - 1)`; it selects the spread function
-//!   tables (held at the last table beyond 1) and the relative illumination `T`;
+//!   tables (held at the last table beyond 1), the relative illumination `T` and the width `w`, which are
+//!   read by a monotone cubic through the nine radii and carried on beyond 1 by the lens's own end slope
+//!   ([`FieldTables::illumination_at`], [`FieldTables::half_width_at`]), so that no ray through the frame
+//!   meets a corner or a plateau;
 //! * the **edge amount** `e' = e + (1 - e) kappa (q - 1)`: Edges, plus the attachment's own share, so that at
 //!   Edges 0 the anamorphic terms act alone (`docs/21` section 4, L2);
-//! * the **half-width** `omega = min(e' (1 + S) w(rho'), w_max) H` pixels, with the side softness
-//!   `S = a_s (q - 1) x_a^2`;
+//! * the **half-width** `omega = cap(e' (1 + S) w(rho')) H` pixels, with the side softness
+//!   `S = a_s (q - 1) x_a^2` and [`soft_cap`] bending the width towards `w_max` without a corner;
 //! * the **gain** `1 - e' (1 - T(rho'))`.
 //!
 //! The kernel is the projected channel table (`sum_j w_c(l_j) P_j`), blended linearly between the two
@@ -40,7 +43,8 @@
 use rayon::prelude::*;
 
 use crate::consts::{
-    COPY_BELOW_PX, MAX_TAPS_SIDE, PSF_SIZE, PSF_WAVELENGTHS, RADII, TAP_SPACING_MAX_PX, W_MAX,
+    COPY_BELOW_PX, LATERAL_COLOR_SCALE, MAX_TAPS_SIDE, PSF_SIZE, PSF_WAVELENGTHS, RADII,
+    TAP_SPACING_MAX_PX, W_KNEE, W_MAX,
 };
 use crate::data::LensData;
 use crate::error::LensError;
@@ -70,14 +74,109 @@ impl Default for Options {
     }
 }
 
+/// Bends a kernel half-width `x` (half-diagonals) towards [`W_MAX`] without a corner: `x` up to [`W_KNEE`],
+/// then `K + (W - K) u / (1 + u)` with `u = (x - K) / (W - K)`. It is continuous with a continuous first
+/// derivative at the knee (1 on both sides), strictly increasing, at most `x` and below `W_MAX`, so the
+/// halo bounds taken from `min(x, W_MAX)` still hold. Only `+ - * /`.
+pub(crate) fn soft_cap(x: f64) -> f64 {
+    if x <= W_KNEE {
+        x
+    } else {
+        let r = W_MAX - W_KNEE;
+        let u = (x - W_KNEE) / r;
+        W_KNEE + r * u / (1.0 + u)
+    }
+}
+
+/// The values made monotone by pooling adjacent violators (equal weights): the closest non-decreasing (or,
+/// with `increasing` false, non-increasing) sequence in the least-squares sense. A monotone input is
+/// returned bit for bit.
+fn pool_monotone(values: &[f64; RADII], increasing: bool) -> [f64; RADII] {
+    let sign = if increasing { 1.0 } else { -1.0 };
+    // Blocks of (sum, count), merged while a block's mean is below the one before it.
+    let mut blocks: Vec<(f64, usize)> = Vec::with_capacity(RADII);
+    for v in values {
+        blocks.push((sign * v, 1));
+        while blocks.len() >= 2 {
+            let (s1, n1) = blocks[blocks.len() - 1];
+            let (s0, n0) = blocks[blocks.len() - 2];
+            if s0 / n0 as f64 <= s1 / n1 as f64 {
+                break;
+            }
+            blocks.truncate(blocks.len() - 2);
+            blocks.push((s0 + s1, n0 + n1));
+        }
+    }
+    let mut out = *values;
+    let mut at = 0;
+    for (sum, n) in blocks {
+        for slot in &mut out[at..at + n] {
+            *slot = if n == 1 {
+                *slot
+            } else {
+                sign * (sum / n as f64)
+            };
+        }
+        at += n;
+    }
+    out
+}
+
+/// The slopes of the monotone cubic through `(x, y)` (Fritsch and Butland's rule, the end slopes of a
+/// three-point formula held to the data's direction): the cubic Hermite curve with these slopes is `C^1` and
+/// monotone wherever `y` is.
+fn monotone_slopes(x: &[f64; RADII], y: &[f64; RADII]) -> [f64; RADII] {
+    let mut h = [0.0; RADII - 1];
+    let mut m = [0.0; RADII - 1];
+    for k in 0..RADII - 1 {
+        h[k] = x[k + 1] - x[k];
+        m[k] = (y[k + 1] - y[k]) / h[k];
+    }
+    let mut d = [0.0; RADII];
+    for k in 1..RADII - 1 {
+        if m[k - 1] * m[k] > 0.0 {
+            let w1 = 2.0 * h[k] + h[k - 1];
+            let w2 = h[k] + 2.0 * h[k - 1];
+            d[k] = (w1 + w2) / (w1 / m[k - 1] + w2 / m[k]);
+        }
+    }
+    let end = |h0: f64, h1: f64, m0: f64, m1: f64| -> f64 {
+        let slope = ((2.0 * h0 + h1) * m0 - h0 * m1) / (h0 + h1);
+        if slope * m0 <= 0.0 {
+            0.0
+        } else if m0 * m1 <= 0.0 && slope.abs() > 3.0 * m0.abs() {
+            3.0 * m0
+        } else {
+            slope
+        }
+    };
+    d[0] = end(h[0], h[1], m[0], m[1]);
+    d[RADII - 1] = end(h[RADII - 2], h[RADII - 3], m[RADII - 2], m[RADII - 3]);
+    d
+}
+
+/// The cubic Hermite curve through `(0, y0)` and `(1, y1)` with slopes `d0 h` and `d1 h` (`h` the interval
+/// in the curve's own units), at `t`.
+fn hermite(y0: f64, y1: f64, d0: f64, d1: f64, h: f64, t: f64) -> f64 {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    (2.0 * t3 - 3.0 * t2 + 1.0) * y0
+        + (t3 - 2.0 * t2 + t) * h * d0
+        + (3.0 * t2 - 2.0 * t3) * y1
+        + (t3 - t2) * h * d1
+}
+
 /// The lens's spread functions projected on a camera's three channels, at every table size.
 #[derive(Clone, Debug)]
 pub(crate) struct FieldTables {
     radii: [f64; RADII],
+    /// `w(rho)` at the radii, made non-decreasing (the traced Detuned dips once).
     half_width: [f64; RADII],
+    /// `T(rho)` at the radii (the data are non-increasing).
     illumination: [f64; RADII],
-    /// Largest `w(rho)`.
-    pub(crate) half_width_max: f64,
+    /// The slopes of the monotone cubics through `half_width` and `illumination`.
+    half_width_slope: [f64; RADII],
+    illumination_slope: [f64; RADII],
     /// Centroid of each channel table in table units (x radial, y tangential), indexed `[radius][channel]`.
     centroid: [[[f64; 2]; 3]; RADII],
     /// Largest centroid distance from the table centre, in table units.
@@ -93,6 +192,36 @@ type V4 = [f32; 4];
 /// Centre of cell `k` of `n` cells over `[-1, 1]`.
 fn cell_centre(k: usize, n: usize) -> f64 {
     -1.0 + (2 * k + 1) as f64 / n as f64
+}
+
+/// Moves the mass of a `PSF_SIZE` x `PSF_SIZE` table by `(dx, dy)` cells: each cell's mass is shared between the
+/// four cells around its new place by bilinear weights, and what would leave the table lands on its outermost
+/// row or column (the tables are cut at the widest spread the runtime draws, so there is mass out there to
+/// keep: nothing is dropped and the sum stays 1). A zero shift returns the table as it was.
+fn translate(table: &mut [f64], dx: f64, dy: f64) {
+    if dx == 0.0 && dy == 0.0 {
+        return;
+    }
+    let m = PSF_SIZE as i64;
+    let (ix, iy) = (floor_i64(dx), floor_i64(dy));
+    let (fx, fy) = (dx - ix as f64, dy - iy as f64);
+    let mut out = vec![0.0; table.len()];
+    for j in 0..m {
+        for i in 0..m {
+            let mass = table[(j * m + i) as usize];
+            for (ox, oy, w) in [
+                (0, 0, (1.0 - fx) * (1.0 - fy)),
+                (1, 0, fx * (1.0 - fy)),
+                (0, 1, (1.0 - fx) * fy),
+                (1, 1, fx * fy),
+            ] {
+                let x = (i + ix + ox).clamp(0, m - 1);
+                let y = (j + iy + oy).clamp(0, m - 1);
+                out[(y * m + x) as usize] += mass * w;
+            }
+        }
+    }
+    table.copy_from_slice(&out);
 }
 
 /// Area-weighted resampling of a 33 x 33 mass table to `n x n` cells over the same span. Mass is kept.
@@ -139,6 +268,14 @@ impl FieldTables {
         let cells = PSF_SIZE * PSF_SIZE;
         let mut proj = vec![0.0f64; RADII * 3 * cells];
         let mut centroid = [[[0.0; 2]; 3]; RADII];
+        let table_centroid = |t: &[f64]| -> [f64; 2] {
+            let (mut cx, mut cy) = (0.0, 0.0);
+            for (i, m) in t.iter().enumerate() {
+                cx += m * cell_centre(i % PSF_SIZE, PSF_SIZE);
+                cy += m * cell_centre(i / PSF_SIZE, PSF_SIZE);
+            }
+            [cx, cy]
+        };
         for r in 0..RADII {
             for c in 0..3 {
                 let dst = &mut proj[(r * 3 + c) * cells..][..cells];
@@ -152,12 +289,18 @@ impl FieldTables {
                 for d in dst.iter_mut() {
                     *d /= sum;
                 }
-                let (mut cx, mut cy) = (0.0, 0.0);
-                for (i, m) in dst.iter().enumerate() {
-                    cx += m * cell_centre(i % PSF_SIZE, PSF_SIZE);
-                    cy += m * cell_centre(i / PSF_SIZE, PSF_SIZE);
-                }
-                centroid[r][c] = [cx, cy];
+                centroid[r][c] = table_centroid(dst);
+            }
+            // The lateral colour kept: red and blue move so that their centroids' offsets from green's are
+            // `LATERAL_COLOR_SCALE` times the traced ones (table units are half-widths; a cell is 2 / 33).
+            let green = centroid[r][1];
+            for c in [0, 2] {
+                let cell = 2.0 / PSF_SIZE as f64;
+                let dx = (LATERAL_COLOR_SCALE - 1.0) * (centroid[r][c][0] - green[0]) / cell;
+                let dy = (LATERAL_COLOR_SCALE - 1.0) * (centroid[r][c][1] - green[1]) / cell;
+                let dst = &mut proj[(r * 3 + c) * cells..][..cells];
+                translate(dst, dx, dy);
+                centroid[r][c] = table_centroid(dst);
             }
         }
         let mut tables = Vec::with_capacity(SIZES);
@@ -186,6 +329,8 @@ impl FieldTables {
         radii.copy_from_slice(&lens.field.radii);
         half_width.copy_from_slice(&lens.field.psf_half_width);
         illumination.copy_from_slice(&lens.field.relative_illumination);
+        let half_width = pool_monotone(&half_width, true);
+        let illumination = pool_monotone(&illumination, false);
         let centroid_max = centroid
             .iter()
             .flatten()
@@ -195,7 +340,8 @@ impl FieldTables {
             radii,
             half_width,
             illumination,
-            half_width_max: half_width.iter().copied().fold(0.0, f64::max),
+            half_width_slope: monotone_slopes(&radii, &half_width),
+            illumination_slope: monotone_slopes(&radii, &illumination),
             centroid,
             centroid_max,
             tables,
@@ -204,16 +350,20 @@ impl FieldTables {
 
     /// The tables as the device reads them (`crate::device::FieldTablesData`): a header of
     /// [`crate::device::FIELD_HEADER`] four-lane vectors (the radii, `w(rho)` and `T(rho)` padded to 12 values
-    /// each, then the channels' centroids `(x, y, 0, 0)` indexed `[radius * 3 + channel]`) followed by the
-    /// cell tables for `n = 3, 5, ..., 17`, each indexed `[radius][cell]`.
+    /// each, then the channels' centroids `(x, y, 0, 0)` indexed `[radius * 3 + channel]`, then the slopes of
+    /// the cubics through `w` and through `T`, padded likewise) followed by the cell tables for
+    /// `n = 3, 5, ..., 17`, each indexed `[radius][cell]`.
     pub(crate) fn flatten(&self) -> Vec<[f32; 4]> {
         let mut out = Vec::new();
-        for column in [&self.radii, &self.half_width, &self.illumination] {
+        let padded_column = |column: &[f64; RADII], out: &mut Vec<[f32; 4]>| {
             let mut padded = [0.0f32; 12];
             for (d, v) in padded.iter_mut().zip(column.iter()) {
                 *d = *v as f32;
             }
             out.extend(padded.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]));
+        };
+        for column in [&self.radii, &self.half_width, &self.illumination] {
+            padded_column(column, &mut out);
         }
         for r in 0..RADII {
             for c in 0..3 {
@@ -225,10 +375,53 @@ impl FieldTables {
                 ]);
             }
         }
+        for column in [&self.half_width_slope, &self.illumination_slope] {
+            padded_column(column, &mut out);
+        }
         for t in &self.tables {
             out.extend_from_slice(t);
         }
         out
+    }
+
+    /// The relative illumination `T(rho')` of the oval field radius `rho'` on segment `seg` with blend `t`
+    /// (`segment(rho')`): the monotone cubic through the nine `T(rho)`, and beyond `rho' = 1` the lens's own
+    /// law carried on from its end slope `T'(1)` as `T(1) / (1 + m (rho' - 1))`, `m = -T'(1) / T(1)`: it falls
+    /// on at the rate it had, never reaches 0 and has the slope the cubic had at 1 (`docs/21` section 4, L2).
+    pub(crate) fn illumination_at(&self, seg: usize, t: f64, rho: f64) -> f64 {
+        let (a, b) = (self.radii[seg], self.radii[seg + 1]);
+        let near = hermite(
+            self.illumination[seg],
+            self.illumination[seg + 1],
+            self.illumination_slope[seg],
+            self.illumination_slope[seg + 1],
+            b - a,
+            t,
+        );
+        if rho <= 1.0 {
+            return near;
+        }
+        let end = self.illumination[RADII - 1];
+        let m = -self.illumination_slope[RADII - 1] / end;
+        end / (1.0 + m * (rho - 1.0))
+    }
+
+    /// The half-width `w(rho')` of the spread functions (half-diagonals) on segment `seg` with blend `t`:
+    /// the monotone cubic through the nine `w(rho)`, and beyond `rho' = 1` a line with the end slope.
+    pub(crate) fn half_width_at(&self, seg: usize, t: f64, rho: f64) -> f64 {
+        let (a, b) = (self.radii[seg], self.radii[seg + 1]);
+        let near = hermite(
+            self.half_width[seg],
+            self.half_width[seg + 1],
+            self.half_width_slope[seg],
+            self.half_width_slope[seg + 1],
+            b - a,
+            t,
+        );
+        if rho <= 1.0 {
+            return near;
+        }
+        near + self.half_width_slope[RADII - 1] * (rho - 1.0)
     }
 
     /// The segment `s` (0 to 7) and blend `t` (0 to 1) of field radius `rho` (held at 1 beyond it).
@@ -328,8 +521,17 @@ impl<'a> Geometry<'a> {
             Axis::X => fwf,
             Axis::Y => fhf,
         };
+        let across = match axis {
+            Axis::X => fhf,
+            Axis::Y => fwf,
+        };
         let xa_max = 0.5 * along / h;
-        let omega_max = (e * (1.0 + side * xa_max * xa_max) * tables.half_width_max).min(W_MAX) * h;
+        let ya_max = 0.5 * across / h;
+        // `w` does not fall with the radius, so its value at the frame's farthest point bounds every pixel's.
+        let rho_far = ((alpha * xa_max) * (alpha * xa_max) + ya_max * ya_max).sqrt();
+        let (seg_far, t_far) = tables.segment(rho_far);
+        let w_far = tables.half_width_at(seg_far, t_far, rho_far);
+        let omega_max = soft_cap(e * (1.0 + side * xa_max * xa_max) * w_far) * h;
         let mut lmax = 0;
         let mut o = COPY_BELOW_PX;
         while o < omega_max + 0.25 {
@@ -396,6 +598,18 @@ impl<'a> Geometry<'a> {
     pub(crate) fn pixel(&self, i: usize, j: usize) -> PixelKernel {
         let u = (i as f64 + 0.5 - 0.5 * self.fw) / self.h;
         let v = (j as f64 + 0.5 - 0.5 * self.fh) / self.h;
+        let mut k = self.kernel_at(u, v);
+        if k.omega < COPY_BELOW_PX {
+            k.omega = 0.0;
+        }
+        k
+    }
+
+    /// The kernel at the field position `(u, v)` (frame coordinates in half-diagonals from the centre, x to the
+    /// right and y down), with the half-width as the law gives it: a half-width below [`COPY_BELOW_PX`] is not
+    /// yet turned into a copy (that is [`Geometry::pixel`]'s, for pixels). The law's gain and width are `C^1`
+    /// and monotone along every ray from the centre (`docs/21` section 4, L2).
+    pub(crate) fn kernel_at(&self, u: f64, v: f64) -> PixelKernel {
         let (xa, ya) = match self.axis {
             Axis::X => (u, v),
             Axis::Y => (v, u),
@@ -404,11 +618,11 @@ impl<'a> Geometry<'a> {
         let rho = (ax * ax + ya * ya).sqrt();
         let tb = self.tables;
         let (seg, t) = tb.segment(rho);
-        let illum = (1.0 - t) * tb.illumination[seg] + t * tb.illumination[seg + 1];
+        let illum = tb.illumination_at(seg, t, rho);
         let gain = 1.0 - self.e * (1.0 - illum);
-        let w = (1.0 - t) * tb.half_width[seg] + t * tb.half_width[seg + 1];
+        let w = tb.half_width_at(seg, t, rho);
         let softness = 1.0 + self.side * xa * xa;
-        let omega = (self.e * softness * w).min(W_MAX) * self.h;
+        let omega = soft_cap(self.e * softness * w) * self.h;
         let rr = (u * u + v * v).sqrt();
         let (cs, sn) = if rr > 1e-12 {
             (u / rr, v / rr)
@@ -417,7 +631,7 @@ impl<'a> Geometry<'a> {
         };
         PixelKernel {
             gain,
-            omega: if omega < COPY_BELOW_PX { 0.0 } else { omega },
+            omega,
             seg,
             t,
             cs,
@@ -1016,7 +1230,8 @@ mod tests {
 
     #[test]
     fn red_moves_outwards_and_blue_inwards() {
-        // Lateral colour of the synthetic lenses: long wavelengths shift radially outwards.
+        // Lateral colour of the synthetic lenses: long wavelengths shift radially outwards of short ones, with
+        // green between them (the lateral colour is kept about green's centroid, `LATERAL_COLOR_SCALE`).
         let p = plan(LensKind::Vintage, 100.0, 0.0, 1500, 1000, Axis::X);
         let geo = Geometry::new(&p, 1500, 1000, Options::default()).unwrap();
         // Right of the centre: radial is +x. Below it: radial is +y. Up-left: radial points up-left.
@@ -1026,11 +1241,61 @@ mod tests {
             (200, 100, -1.0, -1.0),
         ] {
             let k = geo.pixel(i, j);
-            let r = geo.centroid_px(&k, 0);
-            let b = geo.centroid_px(&k, 2);
-            let dot = |v: [f64; 2]| v[0] * sx + v[1] * sy;
-            assert!(dot(r) > 0.01, "red at ({i},{j}) is {r:?}");
-            assert!(dot(b) < -0.01, "blue at ({i},{j}) is {b:?}");
+            let dot = |c: usize| {
+                let v = geo.centroid_px(&k, c);
+                v[0] * sx + v[1] * sy
+            };
+            let (r, g, b) = (dot(0), dot(1), dot(2));
+            assert!(
+                r > g + 0.005,
+                "red {r} is not outwards of green {g} at ({i},{j})"
+            );
+            assert!(
+                g > b + 0.005,
+                "blue {b} is not inwards of green {g} at ({i},{j})"
+            );
+        }
+    }
+
+    #[test]
+    fn the_lateral_colour_kept_is_the_tuned_share_of_the_traced_one() {
+        // Green keeps its place; red and blue keep `LATERAL_COLOR_SCALE` of their offsets from it.
+        let kind = LensKind::Classic;
+        let lens = shipped().get(kind).expect("lens");
+        let p = shipped_plan(kind, 100.0, 0.0, 1500, 1000, Axis::X);
+        let tables = p.field_tables().unwrap();
+        let cell = 2.0 / PSF_SIZE as f64;
+        for r in [2, 5, 8] {
+            let traced: Vec<[f64; 2]> = (0..3)
+                .map(|c| {
+                    let (mut cx, mut cy, mut total) = (0.0, 0.0, 0.0);
+                    for j in 0..PSF_WAVELENGTHS {
+                        let w = camera().weights()[c][j];
+                        for (i, v) in lens.psf(r, j).iter().enumerate() {
+                            let m = w * f64::from(*v);
+                            total += m;
+                            cx += m * cell_centre(i % PSF_SIZE, PSF_SIZE);
+                            cy += m * cell_centre(i / PSF_SIZE, PSF_SIZE);
+                        }
+                    }
+                    [cx / total, cy / total]
+                })
+                .collect();
+            assert!((tables.centroid[r][1][0] - traced[1][0]).abs() < 1e-12);
+            for c in [0, 2] {
+                for axis in 0..2 {
+                    let want =
+                        traced[1][axis] + LATERAL_COLOR_SCALE * (traced[c][axis] - traced[1][axis]);
+                    let got = tables.centroid[r][c][axis];
+                    // The translation splits mass between cells, so the centroid is exact to rounding, but
+                    // for the mass that would leave the table and is kept on its edge (the Classic's tables
+                    // are cut at the widest spread): a few hundredths of a cell.
+                    assert!(
+                        (got - want).abs() < 0.05 * cell,
+                        "radius {r} channel {c} axis {axis}: {got} against {want}"
+                    );
+                }
+            }
         }
     }
 
@@ -1068,6 +1333,287 @@ mod tests {
             heavy.0 > 0.5 * below.omega && heavy.1.abs() < 0.2 * below.omega,
             "below: {heavy:?}"
         );
+    }
+
+    /// The red-blue displacement of the kernels' centroids (the fringe on a dark edge against a bright one), in
+    /// half-diagonals, the largest over a grid of the frame, including the attachment's doubling of the axis part.
+    fn largest_fringe(geo: &Geometry, fw: usize, fh: usize) -> f64 {
+        let mut worst = 0.0f64;
+        for j in (0..fh).step_by(25).chain([fh - 1]) {
+            for i in (0..fw).step_by(25).chain([fw - 1]) {
+                let k = geo.pixel(i, j);
+                let at = |c: usize| {
+                    let m = geo.centroid_px(&k, c);
+                    let shift = geo.fringe_shift(&k, c);
+                    match geo.axis {
+                        Axis::X => [m[0] + shift, m[1]],
+                        Axis::Y => [m[0], m[1] + shift],
+                    }
+                };
+                let (r, b) = (at(0), at(2));
+                worst = worst.max((r[0] - b[0]).hypot(r[1] - b[1]) / geo.h);
+            }
+        }
+        worst
+    }
+
+    /// The lateral colour of every shipped lens stays within what a strong real lens shows: at Edges 100 with
+    /// Anamorphic 100 (which doubles the axis part) the red-blue displacement is at most 0.15 % of the
+    /// half-diagonal anywhere in the frame (the traced lenses gave 0.35 to 0.45 %), and at Edges 100 alone at most
+    /// half of that. A soft colour edge remains: the worst lens still has about a pixel on a 1500 px frame.
+    #[test]
+    fn the_lateral_colour_of_every_shipped_lens_stays_small() {
+        let mut worst_both = 0.0f64;
+        for kind in LensKind::ALL {
+            let mut row = format!("{kind:8}");
+            for (edges, anamorphic, limit) in [(100.0, 100.0, 0.0015), (100.0, 0.0, 0.00075)] {
+                let p = shipped_plan(kind, edges, anamorphic, 1500, 1000, Axis::X);
+                let geo = Geometry::new(&p, 1500, 1000, Options::default()).expect("field optics");
+                let worst = largest_fringe(&geo, 1500, 1000);
+                row += &format!(
+                    "  E{edges} A{anamorphic}: {:.3} % H ({:.2} px)",
+                    100.0 * worst,
+                    worst * geo.h
+                );
+                assert!(
+                    worst <= limit,
+                    "{kind} edges {edges} anamorphic {anamorphic}: red and blue are {:.3} % of the half-diagonal apart",
+                    100.0 * worst
+                );
+                if anamorphic > 0.0 {
+                    worst_both = worst_both.max(worst);
+                }
+            }
+            println!("{row}");
+        }
+        assert!(worst_both > 0.0005, "the fringe is gone: {worst_both}");
+    }
+
+    /// The shipped lenses (`data/lenses`), the real ones: the field law is checked on them, not on the
+    /// synthetic tables.
+    fn shipped() -> &'static LensLibrary {
+        static LIB: OnceLock<LensLibrary> = OnceLock::new();
+        LIB.get_or_init(|| {
+            LensLibrary::from_dir(std::path::Path::new(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../data/lenses"
+            )))
+            .expect("shipped lenses")
+        })
+    }
+
+    fn shipped_plan(
+        kind: LensKind,
+        edges: f64,
+        anamorphic: f64,
+        w: usize,
+        h: usize,
+        axis: Axis,
+    ) -> LensPlan {
+        let amounts = LensAmounts {
+            kind,
+            flares: 0.0,
+            edges,
+            anamorphic,
+        };
+        let frame = FrameInfo {
+            width: w,
+            height: h,
+            axis,
+            f_number: None,
+            clip: [1.0; 3],
+        };
+        LensPlan::new(shipped(), &amounts, frame, camera()).expect("plan")
+    }
+
+    /// The gain and the width `omega / W_MAX` along the ray at `angle` from the frame's centre to its edge,
+    /// `n + 1` samples, with the step `ds` in half-diagonals.
+    fn ray_profile(geo: &Geometry, angle: f64, n: usize) -> (Vec<f64>, Vec<f64>, f64) {
+        let (c, s) = (angle.cos(), angle.sin());
+        let (um, vm) = (0.5 * geo.fw / geo.h, 0.5 * geo.fh / geo.h);
+        let s_max = (um / c.abs().max(1e-12)).min(vm / s.abs().max(1e-12));
+        let ds = s_max / n as f64;
+        let (mut gain, mut width) = (Vec::new(), Vec::new());
+        for i in 0..=n {
+            let r = ds * i as f64;
+            let k = geo.kernel_at(r * c, r * s);
+            gain.push(k.gain);
+            width.push(k.omega / geo.h / W_MAX);
+        }
+        (gain, width, ds)
+    }
+
+    /// The largest change of the slope between neighbouring samples of a curve sampled at step `ds`, as the
+    /// slope's change per sample over `ds`.
+    fn largest_slope_step(values: &[f64], ds: f64) -> (f64, usize) {
+        let mut worst = (0.0f64, 0usize);
+        for i in 1..values.len() - 1 {
+            let step = ((values[i + 1] - values[i]) - (values[i] - values[i - 1])) / ds;
+            if step.abs() > worst.0 {
+                worst = (step.abs(), i);
+            }
+        }
+        worst
+    }
+
+    /// The tolerances of the `C^1` check, in the change of slope per sample: the law's curvature times the
+    /// step (the gain's slope is at most about 2 and bends over 0.1 or more, so below 0.05; the width over
+    /// `W_MAX` bends where it meets the cap, below 0.3), against the corners the checks are for, which change
+    /// the slope by 0.5 to 4 at once (`the_check_sees_the_corners_of_the_old_law`).
+    const GAIN_SLOPE_STEP: f64 = 0.05;
+    const WIDTH_SLOPE_STEP: f64 = 0.3;
+
+    /// Every lens, many amounts, both orientations and both axes: along any ray from the centre the gain
+    /// never rises and the width never falls (to 1e-12), and both are `C^1` (slope steps under
+    /// [`GAIN_SLOPE_STEP`] and [`WIDTH_SLOPE_STEP`] at 2000 samples a ray).
+    #[test]
+    fn the_field_law_is_c1_and_monotone_along_every_ray() {
+        let n = 2000;
+        let mut checked = 0usize;
+        let mut worst_gain = (0.0f64, String::new());
+        let mut worst_width = (0.0f64, String::new());
+        for kind in LensKind::ALL {
+            for (edges, anamorphic) in [
+                (0.0, 100.0),
+                (0.0, 40.0),
+                (10.0, 0.0),
+                (35.0, 60.0),
+                (60.0, 100.0),
+                (100.0, 0.0),
+                (100.0, 30.0),
+                (100.0, 100.0),
+            ] {
+                for (fw, fh, axis) in [
+                    (1500, 1000, Axis::X),
+                    (1000, 1500, Axis::Y),
+                    (1000, 1500, Axis::X),
+                    (1500, 1000, Axis::Y),
+                    (1600, 900, Axis::X),
+                ] {
+                    let p = shipped_plan(kind, edges, anamorphic, fw, fh, axis);
+                    let geo = Geometry::new(&p, fw, fh, Options::default()).expect("field optics");
+                    for a in 0..16 {
+                        let angle = std::f64::consts::PI * (a as f64 + 0.37) / 8.0;
+                        let (gain, width, ds) = ray_profile(&geo, angle, n);
+                        let what = format!(
+                            "{kind} edges {edges} anamorphic {anamorphic} {fw}x{fh} {axis:?} ray {a}"
+                        );
+                        for i in 0..n {
+                            assert!(
+                                gain[i + 1] <= gain[i] + 1e-12,
+                                "{what}: the gain rises at sample {i}"
+                            );
+                            assert!(
+                                width[i + 1] >= width[i] - 1e-12,
+                                "{what}: the width falls at sample {i}"
+                            );
+                        }
+                        let (g, gi) = largest_slope_step(&gain, ds);
+                        let (w, wi) = largest_slope_step(&width, ds);
+                        if g > worst_gain.0 {
+                            worst_gain = (g, format!("{what} sample {gi}"));
+                        }
+                        if w > worst_width.0 {
+                            worst_width = (w, format!("{what} sample {wi}"));
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        println!(
+            "{checked} rays; largest slope step: gain {:.4} ({}), width {:.4} ({})",
+            worst_gain.0, worst_gain.1, worst_width.0, worst_width.1
+        );
+        assert!(checked > 4000);
+        assert!(
+            worst_gain.0 < GAIN_SLOPE_STEP,
+            "the gain's slope jumps by {:.4}: {}",
+            worst_gain.0,
+            worst_gain.1
+        );
+        assert!(
+            worst_width.0 < WIDTH_SLOPE_STEP,
+            "the width's slope jumps by {:.4}: {}",
+            worst_width.0,
+            worst_width.1
+        );
+    }
+
+    /// The check has teeth: the law this build replaced (the tables read linearly between radii, `rho'` held at 1,
+    /// the width cut at `W_MAX`) fails it by a wide margin on the same rays.
+    #[test]
+    fn the_check_sees_the_corners_of_the_old_law() {
+        let n = 2000;
+        for (kind, edges, gain_floor, width_floor) in [
+            (LensKind::Default, 40.0, 10.0 * GAIN_SLOPE_STEP, 0.0),
+            (
+                LensKind::Vintage,
+                100.0,
+                10.0 * GAIN_SLOPE_STEP,
+                10.0 * WIDTH_SLOPE_STEP,
+            ),
+        ] {
+            let p = shipped_plan(kind, edges, 100.0, 1500, 1000, Axis::X);
+            let geo = Geometry::new(&p, 1500, 1000, Options::default()).expect("field optics");
+            let radii = p.lens().field.radii.clone();
+            let lin = |y: &[f64], rho: f64| {
+                let rho = rho.min(1.0);
+                let s = (0..8).find(|s| rho <= radii[s + 1]).unwrap_or(7);
+                let u = (rho - radii[s]) / (radii[s + 1] - radii[s]);
+                (1.0 - u) * y[s] + u * y[s + 1]
+            };
+            let ds = 0.5 * geo.fw / geo.h / n as f64;
+            let e = p.field_amount();
+            let (mut gain, mut width) = (Vec::new(), Vec::new());
+            for i in 0..=n {
+                let x = ds * i as f64;
+                let rho = p.alpha() * x;
+                gain.push(1.0 - e * (1.0 - lin(&p.lens().field.relative_illumination, rho)));
+                let w = lin(&p.lens().field.psf_half_width, rho);
+                width.push((e * (1.0 + p.side_softness() * x * x) * w).min(W_MAX) / W_MAX);
+            }
+            let (g, _) = largest_slope_step(&gain, ds);
+            let (w, _) = largest_slope_step(&width, ds);
+            println!("{kind} old law: largest slope step: gain {g:.3}, width {w:.3}");
+            assert!(
+                g > gain_floor,
+                "{kind}: the old gain's worst slope step is {g}"
+            );
+            assert!(
+                w > width_floor,
+                "{kind}: the old width's worst slope step is {w}"
+            );
+            // The new law on the same ray.
+            let (new_gain, new_width, nds) = ray_profile(&geo, 0.0, n);
+            let (g2, _) = largest_slope_step(&new_gain, nds);
+            let (w2, _) = largest_slope_step(&new_width, nds);
+            println!("{kind} new law: largest slope step: gain {g2:.3}, width {w2:.3}");
+            assert!(g2 < GAIN_SLOPE_STEP, "{kind}: {g2}");
+            assert!(w2 < WIDTH_SLOPE_STEP, "{kind}: {w2}");
+        }
+    }
+
+    /// No plateau where the lens's own law is still falling: at Edges 40 and Anamorphic 100, on the long axis
+    /// of a landscape frame, the gain keeps falling to the last pixel (the old law held `rho'` at 1 and the last
+    /// 60 to 100 pixels of a 1500 px frame were flat). The Triplet's `T` is almost 0 there, so its gain, which
+    /// cannot fall below `1 - e'`, has little left to fall.
+    #[test]
+    fn the_gain_does_not_flatten_towards_the_side_of_the_frame() {
+        for kind in LensKind::ALL {
+            let p = shipped_plan(kind, 40.0, 100.0, 1500, 1000, Axis::X);
+            let geo = Geometry::new(&p, 1500, 1000, Options::default()).expect("field optics");
+            let g = |i: usize| geo.pixel(i, 500).gain;
+            // The slope over the last 20 px, and over 20 px 130 px in.
+            let last = (g(1479) - g(1499)) / 20.0;
+            let inner = (g(1349) - g(1369)) / 20.0;
+            assert!(inner > 0.0, "{kind}: the gain falls towards the side");
+            let share = if kind == LensKind::Triplet { 0.05 } else { 0.3 };
+            assert!(
+                last > share * inner,
+                "{kind}: the last 20 px fall by {last:.5} a pixel, 130 px in {inner:.5}"
+            );
+        }
     }
 
     /// The box-reduced image the reference reads: texel `(bx, by)` of level `l` is the mean of the aligned block.
@@ -1170,7 +1716,7 @@ mod tests {
                 let k = geo.pixel(i, j);
                 if k.omega > 0.0 {
                     wide += 1;
-                    if (0..3).any(|c| geo.fringe_shift(&k, c).abs() > 0.05) {
+                    if (0..3).any(|c| geo.fringe_shift(&k, c).abs() > 0.015) {
                         shifted += 1;
                     }
                 }

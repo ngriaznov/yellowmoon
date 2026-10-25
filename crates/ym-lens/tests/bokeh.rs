@@ -734,7 +734,7 @@ fn an_input_too_small_for_the_halo_is_refused() {
     let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
     let planes = planes_of(&p, &scene);
     let halo = reshape_halo(&p, &planes, 1);
-    assert!(halo > 10 && halo <= 70, "{halo}");
+    assert!(halo > 10 && halo <= 120, "{halo}");
     assert!(halo_px(&p, &planes, 1) >= halo);
     let rect = PixelRect::new(300, 200, 100, 100);
     let need = rect.grown(halo - 1, W, H);
@@ -1170,3 +1170,202 @@ fn a_very_bright_soft_ball_with_a_glow_leaves_no_pillar_beside_its_oval() {
         e_out[1]
     );
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Soft gathers (`docs/21` section 4, L1, "As built (soft gathers)"): a smooth bright thing in focus is no ball, a
+// speck of sharp detail leaves no step, a bright edge beside a blurred field is not dragged.
+// ---------------------------------------------------------------------------------------------------------------
+
+/// A learned-style map of the frame: cells of 2 x 2 pixels, out of focus (`p = 0.95`, radius `radius_px`) except in
+/// the cells within `r` of `(cx, cy)`, where the network is unsure (`p = 0.3`, radius 0): a bright thing it cannot
+/// tell from one in focus.
+fn map_with_unsure_disc(radius_px: f64, (cx, cy, r): (f64, f64, f64)) -> BlurMapInput {
+    let hd = 0.5 * ((W * W + H * H) as f64).sqrt();
+    let (cw, ch) = (W.div_ceil(2), H.div_ceil(2));
+    let (mut b, mut p) = (vec![0.0f32; cw * ch], vec![0.0f32; cw * ch]);
+    for y in 0..ch {
+        for x in 0..cw {
+            let d = ((2 * x + 1) as f64 - cx).hypot((2 * y + 1) as f64 - cy);
+            let (bv, pv) = if d <= r {
+                (0.0, 0.3)
+            } else {
+                (radius_px / hd, 0.95)
+            };
+            b[y * cw + x] = bv as f32;
+            p[y * cw + x] = pv as f32;
+        }
+    }
+    BlurMapInput {
+        width: cw,
+        height: ch,
+        plane_width: W,
+        plane_height: H,
+        b,
+        p,
+    }
+}
+
+#[test]
+fn a_smooth_bright_blob_the_map_does_not_call_blurred_is_not_a_ball() {
+    // A bright blob with no plateau and a wide soft rim (a bud, a cloud: the rings of its profile read a rim of
+    // more than 0.9 of its radius) in a garden the map calls blurred. Where the map says the blob itself is blurred
+    // too, it is a defocused light and a ball; where the map is not sure of the blob, it is a smooth bright thing,
+    // and the blur around it is no reason to call it a light.
+    let scene = cone_blob((500.0, 330.0, 50.0), (3.0, 3.5), Noise::LOW, 61);
+    let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
+    let near = |bp: &ym_lens::BokehPlanes| {
+        bp.balls()
+            .iter()
+            .filter(|b| (b.x * W as f64 - 500.0).hypot(b.y * H as f64 - 330.0) < 12.0)
+            .map(|b| b.softness)
+            .collect::<Vec<_>>()
+    };
+    let blurred_all = planes_with_map(&p, &scene, &learned_map(9.0, 0, 0));
+    let found = near(blurred_all.bokeh().expect("bokeh"));
+    assert_eq!(found.len(), 1, "the blob is a ball where the map calls it blurred");
+    assert!(found[0] > 0.9, "the blob's rim is wide: {:.2}", found[0]);
+    let unsure = planes_with_map(&p, &scene, &map_with_unsure_disc(9.0, (500.0, 330.0, 60.0)));
+    assert!(
+        near(unsure.bokeh().expect("bokeh")).is_empty(),
+        "no ball where the map does not call the blob blurred"
+    );
+}
+
+/// A dark scene (ground 0.03) with a bright cone, `level (1 - d / reach)^power` out to `reach` pixels: a smooth
+/// bright thing with no plateau, whose rings' profile reads a rim about as wide as its radius.
+fn cone_blob(
+    (cx, cy, reach): (f64, f64, f64),
+    (level, power): (f64, f64),
+    noise: Noise,
+    seed: u64,
+) -> Scene {
+    let mut scene = balls_on_ground(&[], Noise::NONE, seed);
+    let n = W * H;
+    for y in (cy - reach).max(0.0) as usize..((cy + reach) as usize + 1).min(H) {
+        for x in (cx - reach).max(0.0) as usize..((cx + reach) as usize + 1).min(W) {
+            let d = (x as f64 + 0.5 - cx).hypot(y as f64 + 0.5 - cy);
+            let a = (1.0 - d / reach).max(0.0).powf(power);
+            for (c, tint) in [1.0, 0.95, 0.9].iter().enumerate() {
+                scene.img.data[c * n + y * W + x] += (level * tint * a) as f32;
+            }
+        }
+    }
+    scene.focus = None;
+    scene.noisy(noise, seed + 1)
+}
+
+/// A frame of one value (all channels) with a few rectangles `(x0, x1, y0, y1, value)` over it.
+fn flat_with(base: f32, rects: &[(usize, usize, usize, usize, f32)]) -> Vec<f32> {
+    let n = W * H;
+    let mut data = vec![base; 3 * n];
+    for &(x0, x1, y0, y1, v) in rects {
+        for c in 0..3 {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    data[c * n + y * W + x] = v;
+                }
+            }
+        }
+    }
+    data
+}
+
+/// Planes of a frame the learned map calls blurred everywhere (`radius_px`), so that the stretch acts on all of it.
+fn planes_all_blurred(p: &LensPlan, data: &[f32], radius_px: f64) -> LensPlanes {
+    LensPlanes::build_with_map(
+        p,
+        &whole(W, H, data),
+        None,
+        Some(&learned_map(radius_px, 0, 0)),
+        &|| false,
+    )
+    .expect("planes")
+}
+
+#[test]
+fn a_small_sharp_thing_in_a_blurred_field_leaves_no_step_around_it() {
+    // A dark 5 x 5 square on a flat field the map calls blurred (12 px, so the lines are 27 px long). The sharp-edge
+    // test flags it, and what it flags holds the stretch back around it: smoothly. The first build set the blur to
+    // 0 on the flagged pixels (the square dilated), so that the lines of the pixels around it changed from nothing
+    // to 27 px across the edge of a 9 x 9 hole, a step of the light the lines pick up of the square.
+    let data = flat_with(0.5, &[(498, 503, 328, 333, 0.05)]);
+    let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
+    let planes = planes_all_blurred(&p, &data, 12.0);
+    assert!(planes.bokeh().is_some_and(|b| b.active()));
+    let out = reshape_tile(&p, &planes, 1, &data, (W, H), PixelRect::new(0, 0, W, H));
+    // The lines run along y, so the square's light is in the columns it covers: the steps are down those columns,
+    // from the edge of the hole outwards.
+    let (xc, yc) = (500usize, 330usize);
+    let mut worst = 0.0f32;
+    for x in xc - 2..=xc + 2 {
+        for y in (yc + 5..yc + 30).chain(yc - 30..yc - 5) {
+            let step = (out[W * H + (y + 1) * W + x] - out[W * H + y * W + x]).abs();
+            worst = worst.max(step);
+        }
+    }
+    let moved = out.iter().zip(&data).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    let bp = planes.bokeh().expect("bokeh");
+    eprintln!(
+        "out {} data {} at (500,340): {} vs {}; moved {moved}, max blur {}, balls {}, nonzero {}",
+        out.len(),
+        data.len(),
+        out[W * H + 340 * W + 500],
+        data[W * H + 340 * W + 500],
+        bp.max_blur(),
+        bp.balls().len(),
+        bp.blur().iter().filter(|b| **b > 0.0).count()
+    );
+    eprintln!(
+        "L1 largest step below a sharp square in a blurred field: {worst:.4}; column {:?}",
+        (yc - 24..yc + 25).step_by(4).map(|y| (out[W * H + y * W + xc] * 1000.0).round()).collect::<Vec<_>>()
+    );
+    assert!(worst < 0.012, "the largest step beside the square is {worst:.4}");
+    // The square itself is still there: it is sharp, and was not smeared into the field.
+    let centre = out[W * H + yc * W + xc];
+    assert!(centre < 0.1, "the square's centre is {centre:.3}");
+}
+
+#[test]
+fn a_sharp_bright_subject_beside_a_blurred_field_is_not_dragged_into_it() {
+    // A bright block in focus (the map reads 0 on it) on a dark field the map calls blurred: its pixels keep
+    // their values and the field touching it keeps its own, instead of taking the block's light up and down
+    // along the lines.
+    let data = flat_with(0.05, &[(300, 700, 300, 500, 1.0)]);
+    let hd = 0.5 * ((W * W + H * H) as f64).sqrt();
+    let (cw, ch) = (W.div_ceil(2), H.div_ceil(2));
+    let (mut b, mut pr) = (vec![0.0f32; cw * ch], vec![0.0f32; cw * ch]);
+    for y in 0..ch {
+        for x in 0..cw {
+            let (px, py) = (2 * x + 1, 2 * y + 1);
+            let inside = (298..702).contains(&px) && (298..502).contains(&py);
+            b[y * cw + x] = if inside { 0.0 } else { (12.0 / hd) as f32 };
+            pr[y * cw + x] = if inside { 0.02 } else { 0.95 };
+        }
+    }
+    let map = BlurMapInput {
+        width: cw,
+        height: ch,
+        plane_width: W,
+        plane_height: H,
+        b,
+        p: pr,
+    };
+    let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
+    let planes =
+        LensPlanes::build_with_map(&p, &whole(W, H, &data), None, Some(&map), &|| false)
+            .expect("planes");
+    assert!(planes.bokeh().is_some_and(|b| b.active()));
+    let out = reshape_tile(&p, &planes, 1, &data, (W, H), PixelRect::new(0, 0, W, H));
+    let n = W * H;
+    // The block's interior is untouched.
+    for (x, y) in [(310, 310), (500, 400), (690, 490)] {
+        assert_eq!(out[n + y * W + x], data[n + y * W + x]);
+    }
+    // The field above and to the side, at the block's edge, keeps (nearly) its value.
+    for (x, y) in [(500, 298), (500, 296), (702, 400), (704, 400), (500, 502), (500, 504)] {
+        let (got, was) = (out[n + y * W + x], data[n + y * W + x]);
+        eprintln!("L1 field at ({x}, {y}) beside a sharp bright block: {was:.3} became {got:.3}");
+        assert!((got - was).abs() < 0.03, "({x}, {y}): {was:.3} became {got:.3}");
+    }
+}
+

@@ -9,10 +9,10 @@
 //! # Passes
 //!
 //! Twelve dispatches over the regions of one tile ([`ym_lens::device::BokehTile`]; `lens_reshape.wgsl` lists them):
-//! the cells' colour guide, the blur map over `rb`, the sharp places (four passes over fields grown by 6, 4 and 2
-//! pixels), the balls' protection and floor over `rb`, the feather's counts and the ramp over `r1`, the balls
-//! taken out over `r0`, the vertical gather over `r1`, and the tangential gather with the balls drawn back over
-//! the output.
+//! the cells' colour guide, the blur map over `rb`, the sharp places (three passes over fields grown by 6, 4 and 2
+//! pixels from `rbs`, then their dilation and lift over `rbs`), the density of the sharp places and the balls' floor
+//! over `rb`, the feather's counts and the ramp over `r0`, the balls taken out over `r0`, the vertical gather over
+//! `r1`, and the tangential gather with the balls drawn back over the output.
 //!
 //! # Data
 //!
@@ -35,8 +35,9 @@ use bytemuck::{Pod, Zeroable};
 use ym_lens::PixelRect;
 use ym_lens::consts::{
     ACCEPT_COLOUR, ACCEPT_CONFIDENCE, B_CAP, B_MIN, BALL_RIM_REACH_PX, MAX_STRETCH_TAPS,
-    MIN_LINE_PX, SHARP_DILATE, SHARP_RATIO, SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE, STRAND_VALLEY,
-    SUBJECT_SHARE,
+    MIN_LINE_PX, PROFILE_SCALE, SAMPLE_RATIO_FROM, SAMPLE_RATIO_TO, SHARP_DILATE, SHARP_RATIO,
+    SHARP_SOFT_FROM, SHARP_SOFT_HALF, SHARP_SOFT_TO, SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE,
+    STRAND_VALLEY, SUBJECT_SHARE,
 };
 use ym_lens::device::{
     BOKEH_BIN_PX, BOKEH_HEADER, BOKEH_SHAPE_VECTORS, BokehPass, BokehPlaneData, BokehScaleData,
@@ -102,6 +103,10 @@ struct ReshapeU {
     scr: [u32; 4],
     /// Output row stride, plane length.
     dst: [u32; 4],
+    /// `rb` grown by the sharp places' window.
+    rbs: [i32; 4],
+    /// Scratch offset (`f32` elements) of the sharp places, 0, 0, 0.
+    scr2: [u32; 4],
 }
 
 /// A photo's blur map on the device: the levels' cells and the table of blurred cells.
@@ -259,6 +264,8 @@ struct Layout {
     cnt_rows: (usize, usize),
     /// Offsets in the scratch buffer of the square roots, the two energies and the flags (`f32` elements).
     scr_offsets: [usize; 4],
+    /// Offset in the scratch buffer of the sharp places over `rbs` (`f32` elements).
+    sharp_offset: usize,
     /// Elements of the scratch buffer.
     scr_len: usize,
 }
@@ -267,18 +274,23 @@ fn layout(pass: &BokehPass, want: Rect) -> Layout {
     let (fw, fh) = (pass.width, pass.height);
     let tile = pass.tile(pixel_rect(want));
     // The fields of the sharp-edge test: the luminance root, the gradient energies and the flags, each reading
-    // the one before within a pixel, two pixels or (the flags' dilation) `SHARP_DILATE`.
+    // the one before within a pixel, two pixels or (the flags' dilation) `SHARP_DILATE`; the dilated and lifted
+    // flags, the sharp places, are over `rbs`.
     let (e6, e4, e2) = (
-        tile.rb.grown(SHARP_DILATE + 4, fw, fh),
-        tile.rb.grown(SHARP_DILATE + 2, fw, fh),
-        tile.rb.grown(SHARP_DILATE, fw, fh),
+        tile.rbs.grown(SHARP_DILATE + 4, fw, fh),
+        tile.rbs.grown(SHARP_DILATE + 2, fw, fh),
+        tile.rbs.grown(SHARP_DILATE, fw, fh),
     );
     let f = pass.feather;
-    let first = tile.r1.y.saturating_sub(f);
-    let last = (tile.r1.y1() + f).min(fh);
+    let first = tile.r0.y.saturating_sub(f);
+    let last = (tile.r0.y1() + f).min(fh);
     let area = |r: PixelRect| r.w * r.h;
     let a = [0, area(e6), area(e6) + area(e4), area(e6) + 2 * area(e4)];
     let flags_chain = a[3] + area(e2);
+    // The sharp places live from the dilation to the density pass, after the chain has died and before the
+    // taken-out picture is made, so they share the scratch buffer with both, past the flags.
+    let sharp_offset = flags_chain;
+    let sharp_end = sharp_offset + area(tile.rbs);
     let taken_out = 3 * area(tile.r0);
     Layout {
         tile,
@@ -287,7 +299,8 @@ fn layout(pass: &BokehPass, want: Rect) -> Layout {
         e2,
         cnt_rows: (first, last.saturating_sub(first)),
         scr_offsets: a,
-        scr_len: flags_chain.max(taken_out),
+        sharp_offset,
+        scr_len: sharp_end.max(taken_out),
     }
 }
 
@@ -301,6 +314,7 @@ pub fn max_binding_bytes(want: Rect, pass: &BokehPass) -> u64 {
     GpuImage::buffer_bytes(t.need.w, t.need.h, 3)
         .max(l.scr_len as u64 * 4)
         .max(plane(t.rb))
+        .max(plane(t.r0))
         .max(3 * plane(t.r1))
         .max(GpuImage::buffer_bytes(want.w, want.h, 3))
 }
@@ -359,7 +373,7 @@ pub fn encode_reshape(
             frame_height: fh,
         },
     )?;
-    let cells = pass.cells_of(t.rb);
+    let cells = pass.cells_of(t.rbs);
     let (ncx, ncy) = (
         cells.x_hi.saturating_sub(cells.x_lo),
         cells.y_hi.saturating_sub(cells.y_lo),
@@ -369,10 +383,10 @@ pub fn encode_reshape(
     let info = passes.scratch("lens bokeh flags", (t.rb.w * t.rb.h) as u64 * 4)?;
     let scr = passes.scratch("lens bokeh scratch", l.scr_len as u64 * 4)?;
     let o1 = passes.scratch("lens bokeh vertical", 3 * (t.r1.w * t.r1.h) as u64 * 4)?;
-    let ramp = passes.scratch("lens bokeh ramp", (t.r1.w * t.r1.h) as u64 * 4)?;
+    let ramp = passes.scratch("lens bokeh ramp", (t.r0.w * t.r0.h) as u64 * 4)?;
     let counts = passes.scratch(
         "lens bokeh counts",
-        (t.r1.w * l.cnt_rows.1).max(1) as u64 * 4,
+        (t.r0.w * l.cnt_rows.1).max(1) as u64 * 4,
     )?;
 
     let mut u = ReshapeU::zeroed();
@@ -450,6 +464,8 @@ pub fn encode_reshape(
         l.scr_offsets[3] as u32,
     ];
     u.dst = [dst.stride as u32, dst.plane_len() as u32, 0, 0];
+    u.rbs = ints(t.rbs);
+    u.scr2 = [l.sharp_offset as u32, 0, 0, 0];
 
     let groups = |w: usize, h: usize| ((w as u32).div_ceil(GROUP), (h as u32).div_ceil(GROUP), 1);
     let run = |passes: &mut PassList<'_>,
@@ -516,10 +532,17 @@ pub fn encode_reshape(
         passes,
         KernelId::LensReshapeDilate,
         "lens bokeh dilate",
-        &[(3, info.binding()), (4, scr.binding())],
-        (t.rb.w, t.rb.h),
+        &[
+            (1, src.buf.binding()),
+            (4, scr.binding()),
+            (8, scale.tab.binding()),
+            (9, scale.bins.binding()),
+            (10, planes.cells.binding()),
+            (12, guide.binding()),
+        ],
+        (t.rbs.w, t.rbs.h),
     )?;
-    // The balls' protection and floor, the ramp.
+    // The density of the sharp places and the balls' floor, the ramp.
     run(
         passes,
         KernelId::LensReshapeProtect,
@@ -528,6 +551,7 @@ pub fn encode_reshape(
             (1, src.buf.binding()),
             (2, bt.binding()),
             (3, info.binding()),
+            (4, scr.binding()),
             (8, scale.tab.binding()),
             (9, scale.bins.binding()),
             (10, planes.cells.binding()),
@@ -541,7 +565,7 @@ pub fn encode_reshape(
             KernelId::LensReshapeCover,
             "lens bokeh cover",
             &[(2, bt.binding()), (13, counts.binding())],
-            (t.r1.w, l.cnt_rows.1),
+            (t.r0.w, l.cnt_rows.1),
         )?;
     }
     run(
@@ -549,11 +573,12 @@ pub fn encode_reshape(
         KernelId::LensReshapeRamp,
         "lens bokeh ramp",
         &[
+            (2, bt.binding()),
             (3, info.binding()),
             (7, ramp.binding()),
             (13, counts.binding()),
         ],
-        (t.r1.w, t.r1.h),
+        (t.r0.w, t.r0.h),
     )?;
     // The balls taken out, the two gathers, the balls drawn back.
     run(
@@ -574,7 +599,6 @@ pub fn encode_reshape(
         KernelId::LensReshapeVGather,
         "lens bokeh vertical gather",
         &[
-            (2, bt.binding()),
             (4, scr.binding()),
             (5, o1.binding()),
             (7, ramp.binding()),
@@ -658,7 +682,13 @@ fn constants() -> String {
          const LR_RIM_REACH: f32 = {};\n\
          const LR_DILATE: i32 = {SHARP_DILATE};\n\
          const LR_HALF_TAPS: i32 = {};\n\
-         const LR_SHAPE_VECTORS: u32 = {BOKEH_SHAPE_VECTORS}u;\n",
+         const LR_SHAPE_VECTORS: u32 = {BOKEH_SHAPE_VECTORS}u;\n\
+         const LR_PROFILE_SCALE: f32 = {};\n\
+         const LR_RATIO_FROM: f32 = {};\n\
+         const LR_RATIO_TO: f32 = {};\n\
+         const LR_SOFT_HALF: i32 = {SHARP_SOFT_HALF};\n\
+         const LR_SOFT_FROM: f32 = {};\n\
+         const LR_SOFT_TO: f32 = {};\n",
         f(B_MIN),
         f(B_CAP),
         f(MIN_LINE_PX),
@@ -671,6 +701,11 @@ fn constants() -> String {
         f(STRAND_MARGIN_NOISE),
         f(BALL_RIM_REACH_PX),
         (MAX_STRETCH_TAPS - 1) / 2,
+        f(PROFILE_SCALE),
+        f(SAMPLE_RATIO_FROM),
+        f(SAMPLE_RATIO_TO),
+        f(SHARP_SOFT_FROM),
+        f(SHARP_SOFT_TO),
     )
 }
 
@@ -747,6 +782,8 @@ mod tests {
                 ("cnt", offset_of!(ReshapeU, cnt)),
                 ("scr", offset_of!(ReshapeU, scr)),
                 ("dst", offset_of!(ReshapeU, dst)),
+                ("rbs", offset_of!(ReshapeU, rbs)),
+                ("scr2", offset_of!(ReshapeU, scr2)),
             ];
             assert_eq!(fields.len(), want.len(), "{id:?}");
             for ((name, offset), (want_name, want_offset)) in fields.iter().zip(want) {
@@ -788,10 +825,14 @@ mod tests {
         assert_eq!(l.scr_offsets[2], area(l.e6) + area(l.e4));
         assert_eq!(l.scr_offsets[3], area(l.e6) + 2 * area(l.e4));
         assert!(l.scr_len >= l.scr_offsets[3] + area(l.e2));
+        assert_eq!(l.sharp_offset, l.scr_offsets[3] + area(l.e2));
+        assert!(l.scr_len >= l.sharp_offset + area(l.tile.rbs));
         assert!(l.scr_len >= 3 * area(l.tile.r0));
+        assert!(l.tile.rbs.contains(&l.tile.rb));
         assert!(l.tile.rb.contains(&l.tile.r0) && l.tile.r0.contains(&l.tile.r1));
-        assert!(l.e6.contains(&l.e4) && l.e4.contains(&l.e2) && l.e2.contains(&l.tile.rb));
+        assert!(l.e6.contains(&l.e4) && l.e4.contains(&l.e2) && l.e2.contains(&l.tile.rbs));
         // The counts' rows are inside the blur region.
         assert!(l.cnt_rows.0 >= l.tile.rb.y && l.cnt_rows.0 + l.cnt_rows.1 <= l.tile.rb.y1());
+        assert!(l.cnt_rows.0 + l.cnt_rows.1 >= l.tile.r0.y1());
     }
 }

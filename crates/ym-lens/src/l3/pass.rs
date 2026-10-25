@@ -245,7 +245,7 @@ fn terms_with(
         plan,
         &terms,
         frame,
-        flare.sources(),
+        flare.source_view(),
         flare.spikes(),
         &cull,
         coarse,

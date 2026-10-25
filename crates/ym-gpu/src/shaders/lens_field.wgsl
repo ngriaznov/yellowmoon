@@ -45,8 +45,8 @@ struct FieldU {
 @group(0) @binding(5) var<storage, read> gat: array<f32>;
 
 // Generated before this text (kernels/lens_field.rs, from ym_lens::consts and ym_lens::device): LF_RADII,
-// LF_W_MAX, LF_COPY_BELOW_PX, LF_MAX_TAPS, LF_SPACING_MAX, LF_HEADER and LF_OFF, the offsets of the cell
-// tables of side 3, 5, ..., 17 after the header.
+// LF_W_MAX, LF_W_KNEE, LF_COPY_BELOW_PX, LF_MAX_TAPS, LF_SPACING_MAX, LF_HEADER and LF_OFF, the offsets of
+// the cell tables of side 3, 5, ..., 17 after the header.
 
 // Hides a value from the optimiser (docs/17-gpu.md K8): an OR with a word that is 0 at run time, which
 // is idempotent where an XOR is not.
@@ -69,6 +69,35 @@ fn lf_illumination(s: u32) -> f32 {
 // The (x, y) centroid of channel c at radius index s, in table units.
 fn lf_centroid(s: u32, c: u32) -> vec2<f32> {
     return tab[9u + s * 3u + c].xy;
+}
+
+// The slopes of the monotone cubics through w(rho) and through T(rho) at radius index s.
+fn lf_half_width_slope(s: u32) -> f32 {
+    return tab[36u + s / 4u][s % 4u];
+}
+
+fn lf_illumination_slope(s: u32) -> f32 {
+    return tab[39u + s / 4u][s % 4u];
+}
+
+// The cubic Hermite curve through (0, y0) and (1, y1) with slopes d0 h and d1 h, at t
+// (ym_lens::field::hermite).
+fn lf_hermite(y0: f32, y1: f32, d0: f32, d1: f32, h: f32, t: f32) -> f32 {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    return (2.0 * t3 - 3.0 * t2 + 1.0) * y0 + (t3 - 2.0 * t2 + t) * h * d0
+        + (3.0 * t2 - 2.0 * t3) * y1 + (t3 - t2) * h * d1;
+}
+
+// Bends a half-width towards LF_W_MAX without a corner (ym_lens::field::soft_cap): the width up to
+// LF_W_KNEE, then K + (W - K) u / (1 + u) for u = (x - K) / (W - K).
+fn lf_soft_cap(x: f32) -> f32 {
+    if (x <= LF_W_KNEE) {
+        return x;
+    }
+    let r = LF_W_MAX - LF_W_KNEE;
+    let u = (x - LF_W_KNEE) / r;
+    return LF_W_KNEE + r * u / (1.0 + u);
 }
 
 // One pixel's kernel parameters (ym_lens::field::PixelKernel).
@@ -94,7 +123,10 @@ fn lf_pixel(i: i32, j: i32) -> LfPix {
         ya = u;
     }
     let ax = pu.plan.y * xa;
-    let rho = clamp(sqrt(ax * ax + ya * ya), 0.0, 1.0);
+    // The oval radius as it is: beyond 1 the tables' shapes are held at the last radius, while T and w
+    // carry on by their own law.
+    let rho_raw = sqrt(ax * ax + ya * ya);
+    let rho = clamp(rho_raw, 0.0, 1.0);
     // The segment: the table radius below rho and the blend towards the next one.
     var s = 0u;
     loop {
@@ -107,12 +139,21 @@ fn lf_pixel(i: i32, j: i32) -> LfPix {
     let ra = lf_radius(s);
     let rb = lf_radius(s + 1u);
     let t = clamp((rho - ra) / (rb - ra), 0.0, 1.0);
-    let illum = (1.0 - t) * lf_illumination(s) + t * lf_illumination(s + 1u);
+    var illum = lf_hermite(lf_illumination(s), lf_illumination(s + 1u), lf_illumination_slope(s),
+        lf_illumination_slope(s + 1u), rb - ra, t);
+    var w = lf_hermite(lf_half_width(s), lf_half_width(s + 1u), lf_half_width_slope(s),
+        lf_half_width_slope(s + 1u), rb - ra, t);
+    if (rho_raw > 1.0) {
+        let at_edge = LF_RADII - 1u;
+        let t_edge = lf_illumination(at_edge);
+        let m = -lf_illumination_slope(at_edge) / t_edge;
+        illum = t_edge / (1.0 + m * (rho_raw - 1.0));
+        w = w + lf_half_width_slope(at_edge) * (rho_raw - 1.0);
+    }
     let gain = 1.0 - pu.plan.x * (1.0 - illum);
-    let w = (1.0 - t) * lf_half_width(s) + t * lf_half_width(s + 1u);
     let softness = 1.0 + pu.plan.z * xa * xa;
     let ew = lf_opaque(pu.plan.x * softness);
-    let omega = min(lf_opaque(ew * w), LF_W_MAX) * h;
+    let omega = lf_soft_cap(lf_opaque(ew * w)) * h;
     let rr = sqrt(u * u + v * v);
     var cs = 1.0;
     var sn = 0.0;

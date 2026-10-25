@@ -621,6 +621,7 @@ pub(super) fn detect(
             sharp: &sharp,
             max_sharp_density: super::balls::MAX_SHARP_DENSITY,
             sector_rule: false,
+            blurred: None,
         },
         cancel,
     )?;
@@ -794,6 +795,7 @@ pub(super) fn detect_with_map(
     let mut conf = vec![0.0f32; n];
     let mut r_est = vec![0.0f64; n];
     let mut sharp = vec![false; n];
+    let mut blurred = vec![false; n];
     let mut ev_w = vec![0.0f32; n];
     let mut ev_s = vec![0.0f32; n];
     let (mut valid_cells, mut strong) = (0usize, 0usize);
@@ -802,6 +804,7 @@ pub(super) fn detect_with_map(
         // A cell weighs as much as the source is sure of its decision, blurred or not.
         conf[i] = ph.max(1.0 - ph).clamp(0.0, 1.0);
         if ph >= MAP_BLURRED_P {
+            blurred[i] = true;
             r_est[i] = bh * hd;
             ev_w[i] = MAP_EVIDENCE_WEIGHT;
             ev_s[i] = MAP_EVIDENCE_WEIGHT * libm::log(r_est[i].max(1e-3)) as f32;
@@ -825,6 +828,7 @@ pub(super) fn detect_with_map(
             sharp: &sharp,
             max_sharp_density: MAP_SHARP_MAX,
             sector_rule: true,
+            blurred: Some(&blurred),
         },
         cancel,
     )?;

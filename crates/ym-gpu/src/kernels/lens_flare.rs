@@ -28,7 +28,7 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use ym_lens::consts::{RIM_SAMPLES, SPIKE_SIZE};
+use ym_lens::consts::{CLIP_PATTERN_SPREAD, RIM_SAMPLES, SPIKE_SIZE};
 use ym_lens::device::{
     FLARE_HEADER, FLARE_TAB_HEADER, FlareLensData, FlareMix, FlarePlaneData, FlareScaleData,
     NORMAL_TAIL_NODES,
@@ -583,10 +583,12 @@ fn constants() -> String {
          const FL_TAB_APERTURE: u32 = {}u;\n\
          const FL_TAB_NODES: u32 = {FLARE_TAB_HEADER}u;\n\
          const FL_NODES: u32 = {NORMAL_TAIL_NODES}u;\n\
-         const FL_STREAK_FLAT: f32 = {:?};\n",
+         const FL_STREAK_FLAT: f32 = {:?};\n\
+         const FL_CLIP_PATTERN: f32 = {:?};\n",
         RIM_SAMPLES / 4,
         2 * RIM_SAMPLES / 4,
         0.8f32,
+        CLIP_PATTERN_SPREAD as f32,
     )
 }
 

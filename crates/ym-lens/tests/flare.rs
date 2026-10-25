@@ -11,7 +11,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{apply_tile, camera, pattern, tiles, whole};
 use serde_json::{Value, json};
-use ym_lens::consts::GLOW_BOOST_SHARE;
+use ym_lens::consts::{
+    GHOST_FULL_RADIUS, GHOST_PEAK_MAX, GHOST_SMALL_SHARE, GHOST_TINT_MAX_RATIO, GLOW_BOOST_SHARE,
+};
 use ym_lens::test_support::{coating, write_sums, write_synthetic_lenses};
 use ym_lens::{
     Axis, FrameInfo, LensAmounts, LensError, LensKind, LensLibrary, LensPlan, LensPlanes,
@@ -68,12 +70,13 @@ impl Parts {
         att_ghosts: false,
         blades: 0,
     };
+    /// Every part whose light is the fraction times the energy (the streak is drawn by its own law).
     const ALL: Parts = Parts {
         glow: true,
         veil: true,
         ghosts: true,
         burst: true,
-        streak: true,
+        streak: false,
         att_ghosts: true,
         blades: 0,
     };
@@ -92,10 +95,15 @@ fn parts_library(p: Parts) -> LensLibrary {
             lens["flare"]["aperture"] =
                 json!({ "blades": p.blades, "rotation_deg": 10.0, "roundness": 0.5 });
             lens["flare"]["ghosts"] = if p.ghosts {
+                // The fractions sum to the floor (`GHOST_FRACTION_FLOOR`, 0.004) and the ghosts are 0.1 half-diagonals
+                // across: a clipped light of three pixels is assumed thousands of times brighter than the clip
+                // level, so with more light or smaller ghosts their peaks would pass the bound on a ghost's
+                // brightness (`GHOST_PEAK_MAX`) and the light they spread would no longer be the fraction times
+                // the light's energy (`ghost_peaks_are_bounded...` tests the bound).
                 json!([
-                    ghost_json(-0.5, 0.3, 0.04, 3.0, 0.10, 450.0),
-                    ghost_json(0.7, -0.2, 0.06, 3.0, 0.08, 600.0),
-                    ghost_json(1.4, 0.0, 0.03, 3.0, 0.06, 520.0),
+                    ghost_json(-0.5, 0.3, 0.10, 3.0, 0.0017, 450.0),
+                    ghost_json(0.7, -0.2, 0.12, 3.0, 0.0013, 600.0),
+                    ghost_json(1.4, 0.0, 0.10, 3.0, 0.0010, 520.0),
                 ])
             } else {
                 json!([])
@@ -108,8 +116,8 @@ fn parts_library(p: Parts) -> LensLibrary {
                 "power": 1.5, "tint": coating(470.0) });
             att["ghosts"] = if p.att_ghosts {
                 json!([
-                    ghost_json(-0.4, 0.2, 0.05, 3.0, 0.06, 470.0),
-                    ghost_json(0.9, 0.1, 0.04, 3.0, 0.04, 560.0),
+                    ghost_json(-0.4, 0.2, 0.10, 3.0, 0.0004, 470.0),
+                    ghost_json(0.9, 0.1, 0.09, 3.0, 0.0003, 560.0),
                 ])
             } else {
                 json!([])
@@ -353,25 +361,39 @@ fn tint(coating: &[f64]) -> [f64; 3] {
     [3.0 * t[0] / sum, 3.0 * t[1] / sum, 3.0 * t[2] / sum]
 }
 
-/// What L3 should return per channel, in units of `F`, from the lens data and the scene's sums.
+/// The tint of a ghost's coating: [`tint`] with its spread between the channels limited to
+/// `GHOST_TINT_MAX_RATIO` by a power below 1 (`docs/21`, L3, *As built (flares as light)*).
+fn ghost_tint(coating: &[f64]) -> [f64; 3] {
+    let t = tint(coating);
+    let hi = t[0].max(t[1]).max(t[2]);
+    let lo = t[0].min(t[1]).min(t[2]);
+    if hi / lo <= GHOST_TINT_MAX_RATIO {
+        return t;
+    }
+    let gamma = GHOST_TINT_MAX_RATIO.ln() / (hi / lo).ln();
+    let p = t.map(|v| v.powf(gamma));
+    let mean = (p[0] + p[1] + p[2]) / 3.0;
+    p.map(|v| v / mean)
+}
+
+/// What L3 should return per channel, in units of `F`, from the lens data and the scene's sums (the streak is
+/// not in it: it has its own law).
 fn expected_energy(plan: &LensPlan, s: &Sums, strength: f64) -> [f64; 3] {
     let lens = plan.lens();
     let att = plan.attachment();
     let st = plan.flare_strengths();
     let anam = (plan.q() - 1.0) / (att.q_max - 1.0);
-    let t_streak = tint(&att.streak.tint);
     let mut out = [0.0; 3];
-    for c in 0..3 {
+    for (c, o) in out.iter_mut().enumerate() {
         let mut e = (st.glow + st.veil) * s.r[c];
         for (g, fraction) in lens.flare.ghosts.iter().zip(&st.ghosts) {
-            e += fraction * tint(&g.coating)[c] * s.h_ghost[c];
+            e += fraction * ghost_tint(&g.coating)[c] * s.h_ghost[c];
         }
         e += st.burst * strength * s.h_compact[c];
-        e += anam * st.streak * t_streak[c] * s.h[c];
         for (g, fraction) in att.ghosts.iter().zip(&st.attachment_ghosts) {
-            e += anam * fraction * tint(&g.coating)[c] * s.h_ghost[c];
+            e += anam * fraction * ghost_tint(&g.coating)[c] * s.h_ghost[c];
         }
-        out[c] = e;
+        *o = e;
     }
     out
 }
@@ -474,7 +496,9 @@ fn sums_for(scene: &Scene, size: (usize, usize), scale: f64) -> Sums {
 
 #[test]
 fn each_part_spreads_exactly_the_light_it_takes() {
-    let tight = 1e-6;
+    // 1e-4: the ghosts of the faint coloured pixel B are left out under the prune budget (`GHOST_PRUNE_BUDGET`,
+    // 4e-6 of the clip level), which with ghosts that hold 0.4 % of the light is 2e-5 of the light they spread.
+    let tight = 1e-4;
     for (label, p) in [
         (
             "glow",
@@ -508,23 +532,14 @@ fn each_part_spreads_exactly_the_light_it_takes() {
         let e = part_energy(p, Axis::X, 0.0, tight);
         assert!(e > 0.0, "{label} spread no light");
     }
-    // The streak and the attachment's ghosts need Anamorphic; the axis may be either.
-    for (label, p) in [
-        (
-            "streak",
-            Parts {
-                streak: true,
-                ..Parts::NONE
-            },
-        ),
-        (
-            "attachment ghosts",
-            Parts {
-                att_ghosts: true,
-                ..Parts::NONE
-            },
-        ),
-    ] {
+    // The attachment's ghosts need Anamorphic; the axis may be either.
+    for (label, p) in [(
+        "attachment ghosts",
+        Parts {
+            att_ghosts: true,
+            ..Parts::NONE
+        },
+    )] {
         for axis in [Axis::X, Axis::Y] {
             let e = part_energy(p, axis, 100.0, tight);
             assert!(e > 0.0, "{label} {axis:?} spread no light");
@@ -541,7 +556,7 @@ fn all_parts_together_keep_the_budget() {
         (Axis::X, 50.0),
         (Axis::X, 0.0),
     ] {
-        part_energy(Parts::ALL, axis, anamorphic, 1e-6);
+        part_energy(Parts::ALL, axis, anamorphic, 1e-4);
     }
 }
 
@@ -705,15 +720,10 @@ fn a_large_clipped_area_is_a_surface_and_keeps_the_plain_headroom() {
 fn many_lights_share_the_cap_and_the_energy_still_adds_up() {
     // Sixty lights of 3 px would add far more than the cap: every light's extra headroom is reduced alike for the
     // glow and the ghosts, whose haze would add up, so the photo flares like one of a few, and they still spread
-    // exactly what the reduced lights hold. The streak is a line through its own light and keeps the whole
-    // headroom whatever the cap says. A single light is under the cap and is not reduced.
+    // exactly what the reduced lights hold. A single light is under the cap and is not reduced.
     let glow = parts_library(Parts {
         glow: true,
         veil: true,
-        ..Parts::NONE
-    });
-    let streak = parts_library(Parts {
-        streak: true,
         ..Parts::NONE
     });
     let mut one = Scene::new(480, 320);
@@ -737,19 +747,6 @@ fn many_lights_share_the_cap_and_the_energy_still_adds_up() {
             1.0,
         );
         check_energy("the cap, glow", got, want, 1e-6);
-        // The streak, at Anamorphic 100: Z is what the field optics make of the picture.
-        let plan = plan_of(&streak, 100.0, 0.0, 100.0, size, Axis::X, None, 1.0);
-        let planes = planes_of(&plan, scene);
-        let out = run(&plan, &planes, scene);
-        let zplan = plan_of(&streak, 0.0, 0.0, 100.0, size, Axis::X, None, 1.0);
-        let z = run(&zplan, &planes_of(&zplan, scene), scene);
-        let got = measured_energy(&plan, &out, &z);
-        let want = expected_energy(
-            &plan,
-            &sums_for(scene, size, planes.light_boost_scale()),
-            1.0,
-        );
-        check_energy("the cap, streak", got, want, 1e-6);
     }
     assert_eq!(scales[0], 1.0);
     assert!(scales[1] < 0.5 && scales[1] > 0.0, "{scales:?}");
@@ -1460,53 +1457,288 @@ fn every_shipped_lens_draws_visible_ghosts_at_the_top_of_the_slider() {
     assert!(shipped_terms(&off, &scene).iter().all(|v| *v == 0.0));
 }
 
+/// The streak's light along the axis of `scene` (960 x 640 frame, light at (662, 202) or its transpose): the
+/// terms at Anamorphic 100 minus those at Anamorphic 0, per channel, at `da` pixels from the light's centre
+/// along the axis (negative: to the left) and `dc` across, the largest of the three rows around `dc`.
+fn streak_at(
+    lib: &LensLibrary,
+    kind: LensKind,
+    axis: Axis,
+    scene: &Scene,
+    light: (usize, usize),
+) -> impl Fn(isize, isize) -> [f64; 3] {
+    let n = scene.w * scene.h;
+    let (w, h) = (scene.w, scene.h);
+    let terms = |anamorphic: f64| -> Vec<f64> {
+        let plan = shipped_plan(lib, kind, 100.0, anamorphic, axis);
+        let planes = planes_of(&plan, scene);
+        ym_lens::flare_terms(&plan, &planes, 1, &whole(w, h, &scene.data), scene.rect())
+            .expect("terms")
+            .expect("flares")
+    };
+    let (with, without) = (terms(100.0), terms(0.0));
+    move |da: isize, dc: isize| -> [f64; 3] {
+        let (x, y) = if axis == Axis::X {
+            (light.0 as isize + da, light.1 as isize + dc)
+        } else {
+            (light.0 as isize + dc, light.1 as isize + da)
+        };
+        if x < 0 || y < 0 || x >= w as isize || y >= h as isize {
+            return [0.0; 3];
+        }
+        let i = y as usize * w + x as usize;
+        std::array::from_fn(|c| with[c * n + i] - without[c * n + i])
+    }
+}
+
 #[test]
-fn the_top_of_the_slider_draws_a_streak_across_the_frame_on_any_clipped_light() {
-    // Anamorphic 100 on the shipped lenses: a clipped light of a few pixels gets a horizontal streak that is
-    // still there, at a clearly visible level, half a frame away, on either axis, and not at Anamorphic 0.
+fn the_streak_is_a_thin_line_that_starts_white_and_turns_blue_and_stays_under_the_clip() {
+    // Anamorphic 100 on the shipped lenses: a clipped light of 4 x 4 px on a dim frame gets a soft horizontal line
+    // through it, on either axis, which is (a) the light's own colour next to it and bluer further out, (b)
+    // everywhere beyond a few pixels dimmer than `STREAK_PEAK_MAX` clip levels, (c) a line, not a haze, and
+    // (d) fades steadily with the distance.
     let lib = shipped();
     for axis in [Axis::X, Axis::Y] {
         let scene = light_on_grey(axis);
-        let (w, h) = (scene.w, scene.h);
-        // The light's pixel and its distance along and across the axis.
-        let (lx, ly) = if axis == Axis::X {
-            (662usize, 202usize)
+        let light = if axis == Axis::X {
+            (662, 202)
         } else {
             (202, 662)
         };
-        let at = |t: &[f64], da: isize, dc: isize| -> f64 {
-            let (x, y) = if axis == Axis::X {
-                (lx as isize + da, ly as isize + dc)
-            } else {
-                (lx as isize + dc, ly as isize + da)
-            };
-            if x < 0 || y < 0 || x >= w as isize || y >= h as isize {
-                return 0.0;
-            }
-            t[y as usize * w + x as usize]
-        };
         for kind in [LensKind::Default, LensKind::Vintage] {
-            let plan = shipped_plan(&lib, kind, 100.0, 100.0, axis);
-            let streaked = shipped_terms(&plan, &scene);
-            let flat = shipped_terms(&shipped_plan(&lib, kind, 100.0, 0.0, axis), &scene);
-            // On the axis, 60 px and 200 px to the left (the right side is nearer the edge): the streak.
-            for d in [60isize, 200] {
-                let on = (-1..=1).map(|c| at(&streaked, -d, c)).fold(0.0, f64::max);
-                let without = (-1..=1).map(|c| at(&flat, -d, c)).fold(0.0, f64::max);
+            let at = streak_at(&lib, kind, axis, &scene, light);
+            let line = |d: isize| -> [f64; 3] {
+                let rows = [at(-d, -1), at(-d, 0), at(-d, 1)];
+                std::array::from_fn(|c| rows.iter().map(|r| r[c]).fold(0.0, f64::max))
+            };
+            // Colour: next to the light the blue is at most 1.7 times the red (the light itself is neutral), and
+            // it gains on the red as the line fades, to twice it and more.
+            let near = line(12);
+            let far = line(150);
+            let (near_ratio, far_ratio) = (near[2] / near[0], far[2] / far[0]);
+            assert!(
+                (0.6..1.7).contains(&near_ratio),
+                "{kind} {axis:?}: blue over red {near_ratio} 12 px from the light: {near:?}"
+            );
+            assert!(
+                far_ratio > 1.3 * near_ratio && far_ratio > 1.8,
+                "{kind} {axis:?}: blue over red {far_ratio} at 150 px against {near_ratio} at 12 px"
+            );
+            // Brightness: under the clip with a clear margin everywhere beyond 6 px, falling with the distance.
+            let mut last = f64::INFINITY;
+            for d in [8isize, 16, 32, 64, 128, 256] {
+                let v = line(d);
+                let peak = v[0].max(v[1]).max(v[2]);
                 assert!(
-                    on - without > 0.02,
-                    "{kind} {axis:?}: the streak adds {} at {d} px, wanted over 0.02 of the clip level",
-                    on - without
+                    peak < STREAK_PEAK_MAX_CLIP,
+                    "{kind} {axis:?}: the streak is {peak} of the clip level {d} px from the light"
                 );
-                // And not 30 px off the axis: a line, not a haze.
-                let off = at(&streaked, -d, 30).max(at(&streaked, -d, -30));
+                assert!(peak < last, "{kind} {axis:?}: not falling at {d} px");
+                last = peak;
+                // A line: 30 px off the axis there is much less.
+                let off = at(-d, 30).iter().cloned().fold(0.0, f64::max);
                 assert!(
-                    on > 5.0 * off,
-                    "{kind} {axis:?}: {on} on the axis against {off} 30 px away at {d} px"
+                    peak > 5.0 * off,
+                    "{kind} {axis:?}: {peak} on the axis against {off} 30 px away at {d} px"
                 );
             }
+            // And it is there: a clearly visible line a little way out.
+            let v = line(32);
+            assert!(
+                v[1] > 2e-3,
+                "{kind} {axis:?}: the streak adds only {} 32 px from the light",
+                v[1]
+            );
         }
     }
+}
+
+/// The least a streak's brightest channel may be called "under the clip with a margin": `STREAK_PEAK_PER_FRACTION`
+/// times the shipped attachment's fraction (data version 3: 0.004), in clip levels.
+const STREAK_PEAK_MAX_CLIP: f64 = 0.4 + 1e-9;
+
+#[test]
+fn the_streak_saturates_with_the_light_and_a_large_area_is_a_soft_band() {
+    // A light of 1600 clipped pixels (40 x 40) holds 100 times the light of one of 16 pixels (4 x 4): its streak
+    // is not 100 times stronger, and it is a wide soft band, not a line.
+    let lib = shipped();
+    let small = light_on_grey(Axis::X);
+    let mut big = Scene::new(960, 640);
+    big.fill(0, 0, 960, 640, [0.05; 3]);
+    big.fill(642, 182, 40, 40, [1.0; 3]);
+    let s_small = streak_at(&lib, LensKind::Default, Axis::X, &small, (662, 202));
+    let s_big = streak_at(&lib, LensKind::Default, Axis::X, &big, (662, 202));
+    for d in [60isize, 120] {
+        // Away from the block's own edge (20 px from its centre) along the axis.
+        let a = s_small(-d, 0)[1];
+        let b = s_big(-d, 0)[1];
+        assert!(
+            a > 0.0 && b < 3.0 * a,
+            "{b} against {a} at {d} px: not saturating"
+        );
+        // The big light's band is wide: 30 px off the axis it is still most of the way up.
+        let wide = s_big(-d, 30)[1] / s_big(-d, 0)[1].max(1e-12);
+        let thin = s_small(-d, 30)[1] / s_small(-d, 0)[1].max(1e-12);
+        assert!(
+            wide > 3.0 * thin,
+            "band {wide} against line {thin} at {d} px"
+        );
+    }
+}
+
+#[test]
+fn a_dim_light_makes_a_short_faint_streak_and_a_bright_one_a_long_one() {
+    let lib = shipped();
+    // A light of 1 px, one of 4 x 4 and one of 12 x 12 on the same frame, one at a time.
+    let reach_of = |side: usize| -> (f64, f64) {
+        let mut scene = Scene::new(960, 640);
+        scene.fill(0, 0, 960, 640, [0.02; 3]);
+        scene.fill(662 - side / 2, 202 - side / 2, side, side, [1.0; 3]);
+        let at = streak_at(&lib, LensKind::Default, Axis::X, &scene, (662, 202));
+        // The distance to the left at which the streak falls under 2e-4 of the clip level, and the value at
+        // 12 px.
+        let mut reach = 0.0;
+        for d in (10..640).step_by(4) {
+            if at(-(d as isize), 0)[1] > 2e-4 {
+                reach = f64::from(d);
+            }
+        }
+        (reach, at(-12, 0)[1])
+    };
+    let (r1, v1) = reach_of(1);
+    let (r4, v4) = reach_of(4);
+    let (r12, v12) = reach_of(12);
+    assert!(r1 < r4 && r4 <= r12, "reach {r1} {r4} {r12}");
+    assert!(v1 < v4 && v4 <= v12 * 1.5, "peak {v1} {v4} {v12}");
+    assert!(r1 < 400.0, "a light of one pixel makes a line {r1} px long");
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Ghosts as light: soft edges, pale tints, a bound on the brightness
+
+/// A lens with one ghost (`m`, `s`, `soft`, `fraction`, the coating's centre in nm), nothing else, round, with
+/// a flat rim, on the synthetic folder.
+fn one_ghost_library(m: f64, s: f64, soft: f64, fraction: f64, nm: f64) -> LensLibrary {
+    library_with(
+        &|lens| {
+            lens["flare"]["glow"]["fraction"] = json!(0.0);
+            lens["flare"]["veil"]["fraction"] = json!(0.0);
+            lens["flare"]["starburst"]["fraction"] = json!(0.0);
+            lens["flare"]["aperture"] =
+                json!({ "blades": 0, "rotation_deg": 0.0, "roundness": 1.0 });
+            lens["flare"]["ghosts"] = json!([soft_ghost(m, 0.0, s, 4.0, fraction, soft, nm)]);
+            lens["bokeh"]["rim"] = json!(vec![1.0; 16]);
+        },
+        &|att| {
+            att["streak"]["fraction"] = json!(0.0);
+            att["ghosts"] = json!([]);
+        },
+    )
+}
+
+/// The flare terms (per channel) of `scene` on a 480 x 320 frame under `lib` at Flares 100.
+fn terms_of(lib: &LensLibrary, scene: &Scene) -> Vec<f64> {
+    let plan = plan_of(lib, 100.0, 0.0, 0.0, (scene.w, scene.h), Axis::X, None, 1.0);
+    let planes = planes_of(&plan, scene);
+    ym_lens::flare_terms(
+        &plan,
+        &planes,
+        1,
+        &whole(scene.w, scene.h, &scene.data),
+        scene.rect(),
+    )
+    .expect("terms")
+    .expect("flares")
+}
+
+#[test]
+fn a_ghosts_edge_is_a_ramp_of_a_fifth_of_its_radius_whatever_the_data_say() {
+    // The data's `soft` of 0.0 (a hard disc) is drawn with a step of GHOST_SOFT_MIN radii: the 10 to 90 % width
+    // of the edge is then 2.56 x 0.08 = 20 % of the radius.
+    let (s, centre) = (0.15, (240.0, 160.0));
+    let lib = one_ghost_library(-0.5, s, 0.0, 0.004, 520.0);
+    let mut scene = Scene::new(480, 320);
+    // A bright unclipped light, so that the light's own boost does not enter: 3 x 3 px at 0.85.
+    scene.fill(300, 160, 3, 3, [0.85; 3]);
+    let t = terms_of(&lib, &scene);
+    let n = scene.w * scene.h;
+    let row = |x: usize| t[n + 161 * scene.w + x];
+    // The ghost's centre is at -0.5 x (the light's offset from the frame's centre).
+    let hd = 0.5 * ((480.0f64).powi(2) + (320.0f64).powi(2)).sqrt();
+    let cx = centre.0 - 0.5 * (301.5 - centre.0);
+    let radius = s * hd;
+    let inner = (0..40)
+        .map(|k| row((cx - 0.5 * radius) as usize + k))
+        .sum::<f64>()
+        / 40.0;
+    // The edge on the left of the centre: where the row crosses 90 % and 10 % of the inside.
+    let (mut at90, mut at10) = (f64::NAN, f64::NAN);
+    for x in ((cx - 1.6 * radius) as usize..(cx - 0.5 * radius) as usize).rev() {
+        if at90.is_nan() && row(x) < 0.9 * inner {
+            at90 = x as f64;
+        }
+        if at10.is_nan() && row(x) < 0.1 * inner {
+            at10 = x as f64;
+        }
+    }
+    let width = at90 - at10;
+    assert!(
+        width >= 0.15 * radius,
+        "the edge is {width} px wide for a ghost of radius {radius} px (inside {inner})"
+    );
+}
+
+#[test]
+fn ghost_tints_are_pale() {
+    // A coating that reflects mostly one end of the spectrum has a tint that differs several times between the
+    // channels; the ghost it makes differs by at most GHOST_TINT_MAX_RATIO.
+    let raw = tint(&coating(430.0));
+    let spread = |t: [f64; 3]| t[0].max(t[1]).max(t[2]) / t[0].min(t[1]).min(t[2]);
+    assert!(
+        spread(raw) > 2.0 * GHOST_TINT_MAX_RATIO,
+        "the coating is not saturated: {raw:?}"
+    );
+    let lib = one_ghost_library(-0.5, 0.15, 0.3, 0.004, 430.0);
+    let mut scene = Scene::new(480, 320);
+    scene.fill(300, 160, 3, 3, [0.85; 3]);
+    let t = terms_of(&lib, &scene);
+    let n = scene.w * scene.h;
+    // The ghost's middle: its centre is at 240 - 0.5 x 61.5 = 209 on row 160.
+    let at = |c: usize| t[c * n + 161 * scene.w + 209];
+    let got = [at(0), at(1), at(2)];
+    assert!(got.iter().all(|v| *v > 0.0), "no ghost light: {got:?}");
+    assert!(
+        spread(got) <= GHOST_TINT_MAX_RATIO + 1e-6,
+        "the ghost's channels differ {} times, at most {GHOST_TINT_MAX_RATIO} wanted: {got:?}",
+        spread(got)
+    );
+}
+
+#[test]
+fn a_ghost_is_never_brighter_than_the_bound_and_a_faint_one_is_untouched() {
+    // A clipped light of 3 px is assumed thousands of times brighter than the clip level: a ghost of
+    // 10 % of the light's energy would be many times the clip level. It stays under GHOST_PEAK_MAX (a ghost of
+    // apothem 0.15 may be as bright as that), and with an unclipped light of 0.85 the same ghost is as the
+    // data say (its light is the fraction times the light's energy, to 1e-6).
+    let (s, fraction) = (0.15, 0.1);
+    let lib = one_ghost_library(-0.5, s, 0.3, fraction, 520.0);
+    let mut bright = Scene::new(480, 320);
+    bright.fill(300, 160, 3, 3, [1.0; 3]);
+    let t = terms_of(&lib, &bright);
+    let peak = t.iter().cloned().fold(0.0, f64::max);
+    let cap = GHOST_PEAK_MAX * (s / GHOST_FULL_RADIUS).clamp(GHOST_SMALL_SHARE, 1.0);
+    assert!(
+        peak <= 1.3 * cap && peak >= 0.5 * cap,
+        "the ghost's peak is {peak} of the clip level, the bound is {cap}"
+    );
+    let mut faint = Scene::new(480, 320);
+    faint.fill(300, 160, 3, 3, [0.85; 3]);
+    let plan = plan_of(&lib, 100.0, 0.0, 0.0, (480, 320), Axis::X, None, 1.0);
+    let planes = planes_of(&plan, &faint);
+    let out = run(&plan, &planes, &faint);
+    let got = measured_energy(&plan, &out, &faint.data);
+    let want = expected_energy(&plan, &sums_for(&faint, (480, 320), 1.0), 1.0);
+    check_energy("a faint ghost", got, want, 1e-6);
 }
 
 // ---------------------------------------------------------------------------------------------------------

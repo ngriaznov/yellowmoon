@@ -15,7 +15,7 @@ use crate::l3::fft::{Convolver, Kernel2d};
 use crate::l3::glow::GlowProfiles;
 use crate::l3::lights;
 use crate::l3::restore::Restore;
-use crate::l3::sources::{self, Source};
+use crate::l3::sources::{self, Source, SourceView};
 use crate::plan::LensPlan;
 
 /// Subsamples per side for the kernel pixels nearest the centre, where the tail changes within a pixel.
@@ -31,6 +31,8 @@ pub(crate) struct FlarePlanes {
     tail: [Vec<f64>; 3],
     tail_size: (usize, usize),
     sources: Vec<Source>,
+    /// The lights whole, one source per connected component (`l3::sources::SourceLists`).
+    lights: Vec<Source>,
     glow: Option<GlowProfiles>,
     /// The lens's spike table per camera channel, `129 x 129`.
     spikes: [Vec<f64>; 3],
@@ -319,7 +321,7 @@ impl FlarePlanes {
         // streak from the lights as they are.
         let rs_ghost = rs.with_boost_scale(boost_scale);
         let ev = boost.as_ref().map(|b| b.ev.as_slice());
-        let sources = sources::find(plane, &rs, &rs_ghost, ev, axis, cancel)?;
+        let found = sources::find_all(plane, &rs, &rs_ghost, ev, axis, cancel)?;
         if cancel() {
             return Err(LensError::Cancelled);
         }
@@ -342,7 +344,8 @@ impl FlarePlanes {
         Ok(FlarePlanes {
             tail,
             tail_size: (tw, th),
-            sources,
+            sources: found.cells,
+            lights: found.lights,
             glow: Some(glow),
             spikes,
             boost_scale,
@@ -359,9 +362,12 @@ impl FlarePlanes {
         self.glow.as_ref()
     }
 
-    /// The sources, brightest first.
-    pub(crate) fn sources(&self) -> &[Source] {
-        &self.sources
+    /// The sources and the lights whole.
+    pub(crate) fn source_view(&self) -> SourceView<'_> {
+        SourceView {
+            cells: &self.sources,
+            lights: &self.lights,
+        }
     }
 
     /// The tail plane's channel `c`, row-major, with its size.
@@ -378,7 +384,7 @@ impl FlarePlanes {
     pub(crate) fn bytes(&self) -> usize {
         self.tail.iter().map(|t| t.len() * 8).sum::<usize>()
             + self.spikes.iter().map(|t| t.len() * 8).sum::<usize>()
-            + self.sources.len() * std::mem::size_of::<Source>()
+            + (self.sources.len() + self.lights.len()) * std::mem::size_of::<Source>()
             + std::mem::size_of::<Self>()
     }
 }

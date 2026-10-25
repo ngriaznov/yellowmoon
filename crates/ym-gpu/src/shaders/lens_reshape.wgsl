@@ -3,19 +3,21 @@
 // (kernels/lens_reshape.rs):
 //
 //   lr_guide     the footprint means of the square-root colours of the blur map's cells (the colour guide of
-//                the upsampling), over the cells `rb` reads.
+//                the upsampling), over the cells `rbs` reads.
 //   lr_blur      the blur map at the pixels of `rb`: the joint bilateral upsampling guided by the pixel's own
 //                colours, with the acceptance tests; 0 where there is no blur.
-//   lr_lumroot   the square root of the luminance over `rb` grown by 6.
-//   lr_grad      the gradient energy of that field and of its 3 x 3 mean, over `rb` grown by 4.
+//   lr_lumroot   the square root of the luminance over `rbs` grown by 6.
+//   lr_grad      the gradient energy of that field and of its 3 x 3 mean, over `rbs` grown by 4.
 //   lr_flags     the places whose 5 x 5 energy exceeds the mean's by SHARP_RATIO (an edge sharper than its blur
-//                says), over `rb` grown by 2.
-//   lr_dilate    the flags dilated by 2: the sharp places (bit 4 of `info`).
-//   lr_protect   per pixel of `rb`: the sharp places lifted around a ball's rim and light (a strand and a
-//                subject stay), the blur zeroed on the sharp places, the ball's own blur inside its take-out
-//                disc, and the pixels a drawn oval may not cover (`info`: bit 1 in a ball, bit 2 occluded).
-//   lr_cover     the horizontal counts of blurred pixels in the feather's window.
-//   lr_ramp      the stretch's ramp (0 to 1) towards the border of the blur map, over `r1`.
+//                says), over `rbs` grown by 2.
+//   lr_dilate    over `rbs`: the flags dilated by 2, and lifted around a ball's rim and light (a strand and a
+//                subject stay): the sharp places, 0 or 1 per pixel.
+//   lr_protect   per pixel of `rb`: the density of the sharp places in the window around it holds the blur back
+//                (smoothly), the ball's own blur inside its take-out disc, and the pixels a drawn oval may not
+//                cover (`info`: bit 1 in a ball, bit 2 occluded).
+//   lr_cover     the horizontal counts of blurred pixels in the feather's window, over the columns of `r0`.
+//   lr_ramp      the stretch's ramp (0 to 1) towards the border of the blur map, over `r0`; what it stores is the
+//                gathers' blur: the map's, held at the cap, times the ramp.
 //   lr_takeout   the picture over `r0` with each ball's disc replaced by its ring's plane fit.
 //   lr_vgather   the gather across the anamorphic axis over `r1`.
 //   lr_final     the gather along the tangent over the output, and the balls drawn back.
@@ -28,9 +30,10 @@
 // compare sums sit behind the OR barrier (K8).
 //
 // Bindings: 0 uniform, 1 the input planes, 2 the blur (over rb), 3 info bits (over rb), 4 scratch (the flags'
-// fields, then the taken-out picture), 5 the vertical gather's output (over r1), 6 the output planes (over
-// want), 7 the ramp (over r1), 8 the scale's table (profiles, the cells' geometry, the balls), 9 the bins,
-// 10 the map's levels, 11 the summed-area table, 12 the cells' colour guide, 13 the horizontal counts.
+// fields and the sharp places, then the taken-out picture), 5 the vertical gather's output (over r1), 6 the output
+// planes (over want), 7 the gathers' blur (over r0), 8 the scale's table (profiles, the cells' geometry, the
+// balls), 9 the bins, 10 the map's levels, 11 the summed-area table, 12 the cells' colour guide, 13 the
+// horizontal counts.
 
 struct ReshapeU {
     zero: vec4<u32>,        // x: always 0 (the opaque word of the barrier)
@@ -56,6 +59,8 @@ struct ReshapeU {
     cnt: vec4<i32>,         // the counts' first row and rows
     scr: vec4<u32>,         // scratch offsets (f32 elements): the square roots, the energies, their mean's, the flags
     dst: vec4<u32>,         // output row stride, plane length
+    rbs: vec4<i32>,         // rb grown by the sharp places' window: the region the sharp places are known over
+    scr2: vec4<u32>,        // scratch offsets (f32 elements): the sharp places (0 or 1), 0, 0, 0
 };
 
 @group(0) @binding(0) var<uniform> pu: ReshapeU;
@@ -75,7 +80,33 @@ struct ReshapeU {
 
 // Generated before this text (kernels/lens_reshape.rs, from ym_lens::consts): LR_B_MIN, LR_B_CAP, LR_MIN_LINE,
 // LR_ACCEPT2, LR_ACCEPT_CONF, LR_SUBJECT_SHARE, LR_SHARP_FROM, LR_SHARP_RATIO, LR_STRAND_VALLEY,
-// LR_STRAND_MARGIN, LR_RIM_REACH, LR_HALF_TAPS, LR_SHAPE_VECTORS.
+// LR_STRAND_MARGIN, LR_RIM_REACH, LR_DILATE, LR_HALF_TAPS, LR_SHAPE_VECTORS, LR_PROFILE_SCALE, LR_RATIO_FROM,
+// LR_RATIO_TO, LR_SOFT_HALF, LR_SOFT_FROM, LR_SOFT_TO.
+
+// A smoothstep between two bounds (the reference's `smoothstep`).
+fn lr_ss(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// The weight of a tap at `u` (its offset over the line's half-length): the biweight (1 - u^2)^2.
+fn lr_profile(u: f32) -> f32 {
+    let a = 1.0 - u * u;
+    if (a <= 0.0) {
+        return 0.0;
+    }
+    return a * a;
+}
+
+// The weight of a sample whose blur is `ratio` times the pixel's own.
+fn lr_sample_w(ratio: f32) -> f32 {
+    return lr_ss(LR_RATIO_FROM, LR_RATIO_TO, ratio);
+}
+
+// The share of a line a pixel keeps, by its own blur.
+fn lr_knee(b: f32) -> f32 {
+    return lr_ss(0.5 * LR_B_MIN, LR_B_MIN, b);
+}
 
 // Hides a value from the optimiser (docs/17-gpu.md K8): an OR with a word that is 0 at run time.
 fn lr_opaque(x: f32) -> f32 {
@@ -342,23 +373,12 @@ fn lr_flags_main(gid: vec3<u32>) {
     scr[pu.scr.w + gid.y * u32(r.z) + gid.x] = flag;
 }
 
-// The flags dilated by LR_DILATE pixels in both directions: bit 4 of `info`.
-fn lr_dilate_main(gid: vec3<u32>) {
-    let r = pu.rb;
-    if (gid.x >= u32(r.z) || gid.y >= u32(r.w)) {
-        return;
-    }
-    let x = r.x + i32(gid.x);
-    let y = r.y + i32(gid.y);
-    var m = 0.0;
-    for (var dy = -LR_DILATE; dy <= LR_DILATE; dy = dy + 1) {
-        let yy = clamp(y + dy, 0, pu.ints.y - 1);
-        for (var dx = -LR_DILATE; dx <= LR_DILATE; dx = dx + 1) {
-            let xx = clamp(x + dx, 0, pu.ints.x - 1);
-            m = max(m, scr[pu.scr.w + lr_at(pu.e2, xx, yy)]);
-        }
-    }
-    info[gid.y * u32(r.z) + gid.x] = select(0u, 4u, m > 0.0);
+// The sharp places at a pixel (0 or 1), the coordinates held inside the frame (the region they are known over is
+// `rbs`, which touches the frame's edge wherever the frame ends).
+fn lr_lf(x: i32, y: i32) -> f32 {
+    let cx = clamp(x, 0, pu.ints.x - 1);
+    let cy = clamp(y, 0, pu.ints.y - 1);
+    return scr[pu.scr2.x + lr_at(pu.rbs, cx, cy)];
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -448,8 +468,52 @@ fn lr_thin_dark(x: i32, y: i32) -> bool {
         || lr_valley(lum, lr_lum(x, y - 3), lr_lum(x, y + 3));
 }
 
-// Per pixel of rb: the sharp places lifted around the balls, the blur zeroed on them, the balls' own blur
-// inside their take-out discs, and the pixels a drawn oval may not cover.
+// Over rbs: the flags dilated by LR_DILATE pixels in both directions, and lifted around the balls: a flagged pixel
+// on a ball's rim or in its light is the ball's own edge, not detail, unless it is a thin dark line (a strand in
+// front of the light) or the edge of a subject beside it. 0 or 1.
+fn lr_dilate_main(gid: vec3<u32>) {
+    let r = pu.rbs;
+    if (gid.x >= u32(r.z) || gid.y >= u32(r.w)) {
+        return;
+    }
+    let x = r.x + i32(gid.x);
+    let y = r.y + i32(gid.y);
+    var m = 0.0;
+    for (var dy = -LR_DILATE; dy <= LR_DILATE; dy = dy + 1) {
+        let yy = clamp(y + dy, 0, pu.ints.y - 1);
+        for (var dx = -LR_DILATE; dx <= LR_DILATE; dx = dx + 1) {
+            let xx = clamp(x + dx, 0, pu.ints.x - 1);
+            m = max(m, scr[pu.scr.w + lr_at(pu.e2, xx, yy)]);
+        }
+    }
+    var zero = m > 0.0;
+    if (zero) {
+        let range = lr_bin(x, y);
+        // Is the pixel on a ball's rim, or in its light? (Any ball: the order does not matter.)
+        var zone = false;
+        for (var k = range.x; k < range.y; k = k + 1u) {
+            let s = bins[k];
+            let s0 = lr_sh(s, 0u);
+            let s4 = lr_sh(s, 4u);
+            let d = length(lr_off(s0, x, y));
+            var core = false;
+            if (d < s4.x) {
+                core = lr_lum(x, y) >= s4.y;
+            }
+            if (abs(d - s4.x) <= LR_RIM_REACH || core) {
+                zone = true;
+                break;
+            }
+        }
+        if (zone && !lr_thin_dark(x, y) && !lr_subject(x, y)) {
+            zero = false;
+        }
+    }
+    scr[pu.scr2.x + gid.y * u32(r.z) + gid.x] = select(0.0, 1.0, zero);
+}
+
+// Per pixel of rb: the density of the sharp places in the window around it holds the blur back, smoothly; the
+// balls' own blur inside their take-out discs, and the pixels a drawn oval may not cover.
 fn lr_protect_main(gid: vec3<u32>) {
     let r = pu.rb;
     if (gid.x >= u32(r.z) || gid.y >= u32(r.w)) {
@@ -460,33 +524,23 @@ fn lr_protect_main(gid: vec3<u32>) {
     let idx = gid.y * u32(r.z) + gid.x;
     let hk = pu.frame.z;
     let range = lr_bin(x, y);
-    // Is the pixel on a ball's rim, or in its light? (Any ball: the order does not matter.)
-    var zone = false;
-    for (var k = range.x; k < range.y; k = k + 1u) {
-        let s = bins[k];
-        let s0 = lr_sh(s, 0u);
-        let s4 = lr_sh(s, 4u);
-        let d = length(lr_off(s0, x, y));
-        var core = false;
-        if (d < s4.x) {
-            core = lr_lum(x, y) >= s4.y;
+    // The share of the window that is sharp (the counts are whole numbers, so any order sums them alike).
+    var tot = 0.0;
+    for (var dy = -LR_SOFT_HALF; dy <= LR_SOFT_HALF; dy = dy + 1) {
+        var row = 0.0;
+        for (var dx = -LR_SOFT_HALF; dx <= LR_SOFT_HALF; dx = dx + 1) {
+            row = row + lr_lf(x + dx, y + dy);
         }
-        if (abs(d - s4.x) <= LR_RIM_REACH || core) {
-            zone = true;
-            break;
-        }
+        tot = tot + row;
     }
-    var zero = (info[idx] & 4u) != 0u;
-    // A thin dark line (a strand in front of the light) and the edge of a subject beside it stay protected.
-    if (zero && zone) {
-        if (!lr_thin_dark(x, y) && !lr_subject(x, y)) {
-            zero = false;
-        }
-    }
+    let side = f32(2 * LR_SOFT_HALF + 1);
+    let density = lr_opaque(tot) / (side * side);
     var b = bt[idx];
-    if (zero && b * hk >= LR_SHARP_FROM) {
-        b = 0.0;
-    }
+    let hold = lr_ss(LR_SOFT_FROM, LR_SOFT_TO, density);
+    // It acts from a blur of about LR_SHARP_FROM pixels (a smoothstep over 3 to 5 at 4).
+    let px = lr_ss(LR_SHARP_FROM - 1.0, LR_SHARP_FROM + 1.0, b * hk);
+    b = b * (1.0 - hold * px);
+    let zero = lr_lf(x, y) > 0.0;
     // Inside a ball's take-out disc the map is the ball's radius (the first ball in the list that holds the pixel).
     var in_ball = false;
     if (!zero) {
@@ -523,10 +577,10 @@ fn lr_protect_main(gid: vec3<u32>) {
 // ---------------------------------------------------------------------------------------------------------
 // The ramp
 
-// Horizontal counts of the pixels with a blur in the window of the feather, over the columns of r1 and the
-// rows the vertical window reaches.
+// Horizontal counts of the pixels with a blur in the window of the feather, over the columns of r0 and the rows
+// the vertical window reaches.
 fn lr_cover_main(gid: vec3<u32>) {
-    let r = pu.r1;
+    let r = pu.r0;
     if (gid.x >= u32(r.z) || gid.y >= u32(pu.cnt.y)) {
         return;
     }
@@ -542,8 +596,9 @@ fn lr_cover_main(gid: vec3<u32>) {
 }
 
 // The ramp: the share of the window that has a blur, from 0 at one half to 1 at nine tenths, smoothed; 1 in a ball.
+// What is stored is the gathers' blur: the map's, held at the cap, times the ramp.
 fn lr_ramp_main(gid: vec3<u32>) {
-    let r = pu.r1;
+    let r = pu.r0;
     if (gid.x >= u32(r.z) || gid.y >= u32(r.w)) {
         return;
     }
@@ -564,7 +619,7 @@ fn lr_ramp_main(gid: vec3<u32>) {
         let t = clamp((f32(total) / n - 0.5) / 0.4, 0.0, 1.0);
         v = t * t * (3.0 - 2.0 * t);
     }
-    rmp[gid.y * u32(r.z) + gid.x] = v;
+    rmp[gid.y * u32(r.z) + gid.x] = lr_opaque(min(bt[lr_at(pu.rb, x, y)], LR_B_CAP) * v);
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -628,64 +683,43 @@ fn lr_vgather_main(gid: vec3<u32>) {
     let plane1 = u32(r.z * r.w);
     let at = gid.y * u32(r.z) + gid.x;
     let own = lr_wk(vec2<i32>(x, y));
-    let bp = bt[lr_at(pu.rb, x, y)];
-    let len = lr_opaque(lr_opaque(lr_opaque(pu.par.x * min(bp, LR_B_CAP)) * pu.frame.z) * rmp[at]);
+    let bp = rmp[lr_at(pu.r0, x, y)];
+    let len = lr_opaque(lr_opaque(lr_opaque(pu.par.x * bp) * pu.frame.z) * lr_knee(bp));
     var out = own;
-    if (bp >= LR_B_MIN && len >= LR_MIN_LINE) {
+    if (len >= LR_MIN_LINE) {
         let pos = select(x, y, pu.ints.z == 1);
-        let lo = select(pu.r0.x, pu.r0.y, pu.ints.z == 1);
-        let hi = select(pu.r0.x + pu.r0.z - 1, pu.r0.y + pu.r0.w - 1, pu.ints.z == 1);
-        // The sample rule along the whole line: every pixel it touches has at least half the pixel's own blur.
-        let first = clamp(pos + i32(floor(-len + 0.5)), lo, hi);
-        let last = clamp(pos + i32(floor(len + 0.5)), lo, hi);
-        var uniform_line = true;
-        for (var j = first; j <= last; j = j + 1) {
-            if (bt[lr_at(pu.rb, lr_line(j, x, y).x, lr_line(j, x, y).y)] < 0.5 * bp) {
-                uniform_line = false;
-                break;
-            }
-        }
-        if (uniform_line) {
-            // The exact mean of the piecewise-linear picture over [pos - len, pos + len].
-            let m0 = i32(floor(-len));
-            let m1 = i32(floor(len));
-            var q = lr_wk(lr_line(pos + m0, x, y));
-            var acc = vec3<f32>(0.0);
-            for (var m = m0; m <= m1; m = m + 1) {
-                let nx = lr_wk(lr_line(pos + m + 1, x, y));
-                let u = max(f32(m), -len);
-                let v = min(f32(m + 1), len);
-                if (v > u) {
-                    let mid = 0.5 * ((u - f32(m)) + (v - f32(m)));
-                    acc = acc + (v - u) * (q + mid * (nx - q));
+        let half = clamp(i32(ceil(len)), 1, LR_HALF_TAPS);
+        let step = len / f32(half);
+        // The pixel's own value (weight 1), then the taps outwards on each side, the weight of a tap the profile
+        // times the sample rule's smoothstep of its blur over the pixel's own.
+        var acc = own;
+        var wsum = 1.0;
+        for (var side = 0; side < 2; side = side + 1) {
+            let sign = select(-1.0, 1.0, side == 1);
+            for (var k = 1; k <= half; k = k + 1) {
+                let off = sign * f32(k) * step;
+                let wp = lr_profile(off / len);
+                if (wp <= 0.0) {
+                    break;
                 }
-                q = nx;
-            }
-            out = acc / (2.0 * len);
-        } else {
-            let half = clamp(i32(ceil(len)), 1, LR_HALF_TAPS);
-            let taps = 2 * half + 1;
-            let step = len / f32(half);
-            var acc = vec3<f32>(0.0);
-            var wsum = 0.0;
-            for (var t = 0; t < taps; t = t + 1) {
-                let off = f32(t - half) * step;
-                let near = lr_line(pos + i32(floor(off + 0.5)), x, y);
-                if (bt[lr_at(pu.rb, near.x, near.y)] < 0.5 * bp) {
-                    continue;
-                }
-                let wt = select(1.0, 0.5, t == 0 || t == taps - 1);
                 let f0 = floor(off);
                 let fr = off - f0;
-                let va = lr_wk(lr_line(pos + i32(f0), x, y));
-                let vb = lr_wk(lr_line(pos + i32(f0) + 1, x, y));
+                let pa = lr_line(pos + i32(f0), x, y);
+                let pb = lr_line(pos + i32(f0) + 1, x, y);
+                let ba = rmp[lr_at(pu.r0, pa.x, pa.y)];
+                let bb = rmp[lr_at(pu.r0, pb.x, pb.y)];
+                let bs = ba + fr * (bb - ba);
+                let wt = wp * lr_sample_w(bs / bp);
+                if (wt <= 0.0) {
+                    continue;
+                }
+                let va = lr_wk(pa);
+                let vb = lr_wk(pb);
                 acc = acc + wt * (va + fr * (vb - va));
                 wsum = wsum + wt;
             }
-            if (wsum > 0.0) {
-                out = acc / wsum;
-            }
         }
+        out = acc / wsum;
     }
     o1[at] = out.x;
     o1[plane1 + at] = out.y;
@@ -724,6 +758,12 @@ fn lr_o1(x: i32, y: i32) -> vec3<f32> {
     return vec3<f32>(o1[i], o1[plane + i], o1[2u * plane + i]);
 }
 
+// The gathers' blur at a frame pixel, the coordinates held inside r0.
+fn lr_be(x: i32, y: i32) -> f32 {
+    let r = pu.r0;
+    return rmp[lr_at(r, clamp(x, r.x, r.x + r.z - 1), clamp(y, r.y, r.y + r.w - 1))];
+}
+
 fn lr_final_main(gid: vec3<u32>) {
     let w = pu.wnt;
     if (gid.x >= u32(w.z) || gid.y >= u32(w.w)) {
@@ -733,53 +773,64 @@ fn lr_final_main(gid: vec3<u32>) {
     let y = w.y + i32(gid.y);
     var col = lr_o1(x, y);
     let bi = lr_at(pu.rb, x, y);
-    let bp = bt[bi];
-    if (pu.mode.y == 1 && bp >= LR_B_MIN) {
+    let braw = bt[bi];
+    let bp = rmp[lr_at(pu.r0, x, y)];
+    if (pu.mode.y == 1 && bp > 0.5 * LR_B_MIN) {
         let dx = f32(2 * x + 1 - pu.ints.x) * 0.5;
         let dy = f32(2 * y + 1 - pu.ints.y) * 0.5;
         let rr = sqrt(dx * dx + dy * dy);
         let sigma = lr_swirl_at(rr / pu.frame.z);
-        let len = lr_opaque(lr_opaque(lr_opaque(lr_opaque(sigma * pu.par.y) * min(bp, LR_B_CAP)) * pu.frame.z) * rmp[lr_at(pu.r1, x, y)]);
+        let len = lr_opaque(lr_opaque(lr_opaque(lr_opaque(lr_opaque(sigma * pu.par.y) * LR_PROFILE_SCALE) * bp) * pu.frame.z) * lr_knee(bp));
         if (rr >= 1.0e-9 && len >= LR_MIN_LINE) {
             let ux = -dy / rr;
             let uy = dx / rr;
             let half = clamp(i32(ceil(len)), 1, LR_HALF_TAPS);
-            let taps = 2 * half + 1;
             let step = len / f32(half);
-            var acc = vec3<f32>(0.0);
-            var wsum = 0.0;
-            for (var t = 0; t < taps; t = t + 1) {
-                let off = f32(t - half) * step;
-                let ox = off * ux;
-                let oy = off * uy;
-                let nx = clamp(x + i32(floor(ox + 0.5)), pu.r0.x, pu.r0.x + pu.r0.z - 1);
-                let ny = clamp(y + i32(floor(oy + 0.5)), pu.r0.y, pu.r0.y + pu.r0.w - 1);
-                if (bt[lr_at(pu.rb, nx, ny)] < 0.5 * bp) {
-                    continue;
+            var acc = col;
+            var wsum = 1.0;
+            for (var side = 0; side < 2; side = side + 1) {
+                let sign = select(-1.0, 1.0, side == 1);
+                for (var k = 1; k <= half; k = k + 1) {
+                    let off = sign * f32(k) * step;
+                    let wp = lr_profile(off / len);
+                    if (wp <= 0.0) {
+                        break;
+                    }
+                    let ox = off * ux;
+                    let oy = off * uy;
+                    let fx = floor(ox);
+                    let fy = floor(oy);
+                    let tx = ox - fx;
+                    let ty = oy - fy;
+                    let x0 = x + i32(fx);
+                    let y0 = y + i32(fy);
+                    // The blur at the sample, bilinear between the four pixels around it.
+                    let b00 = lr_be(x0, y0);
+                    let b10 = lr_be(x0 + 1, y0);
+                    let b01 = lr_be(x0, y0 + 1);
+                    let b11 = lr_be(x0 + 1, y0 + 1);
+                    let btop = b00 + tx * (b10 - b00);
+                    let bbot = b01 + tx * (b11 - b01);
+                    let bs = btop + ty * (bbot - btop);
+                    let wt = wp * lr_sample_w(bs / bp);
+                    if (wt <= 0.0) {
+                        continue;
+                    }
+                    let p00 = lr_o1(x0, y0);
+                    let p10 = lr_o1(x0 + 1, y0);
+                    let p01 = lr_o1(x0, y0 + 1);
+                    let p11 = lr_o1(x0 + 1, y0 + 1);
+                    let top = p00 + tx * (p10 - p00);
+                    let bot = p01 + tx * (p11 - p01);
+                    acc = acc + wt * (top + ty * (bot - top));
+                    wsum = wsum + wt;
                 }
-                let wt = select(1.0, 0.5, t == 0 || t == taps - 1);
-                let fx = floor(ox);
-                let fy = floor(oy);
-                let tx = ox - fx;
-                let ty = oy - fy;
-                let x0 = x + i32(fx);
-                let y0 = y + i32(fy);
-                let p00 = lr_o1(x0, y0);
-                let p10 = lr_o1(x0 + 1, y0);
-                let p01 = lr_o1(x0, y0 + 1);
-                let p11 = lr_o1(x0 + 1, y0 + 1);
-                let top = p00 + tx * (p10 - p00);
-                let bot = p01 + tx * (p11 - p01);
-                acc = acc + wt * (top + ty * (bot - top));
-                wsum = wsum + wt;
             }
-            if (wsum > 0.0) {
-                col = acc / wsum;
-            }
+            col = acc / wsum;
         }
     }
     // The balls drawn back, in list order, except where a sharp subject (or a strand) has no blur of its own.
-    if (!(bp < LR_B_MIN && (info[bi] & 2u) != 0u)) {
+    if (!(braw < LR_B_MIN && (info[bi] & 2u) != 0u)) {
         let range = lr_bin(x, y);
         for (var k = range.x; k < range.y; k = k + 1u) {
             let s = bins[k];

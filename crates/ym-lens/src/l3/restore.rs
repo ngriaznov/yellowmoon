@@ -5,8 +5,12 @@
 //! 1))` with the headroom `h` of 3 EV, and only the flares read it: the picture's own clipped pixels are not
 //! raised. The highlights are the restored light weighted by a soft knee that is 0 at half the clip level and 1
 //! at the clip level; the knee reads the brightest channel, so a coloured light keeps its colour in its ghosts.
+//!
+//! A pixel R5 left at the clip pattern (every channel at its own clip level, which is a colour cast of the
+//! white balance, not the light's: it happens only with highlight recovery switched off) is restored as a
+//! neutral of the same total, so a clipped white light is white in the flares whatever `g0` is.
 
-use crate::consts::{KNEE_START, LENS_HEADROOM_EV};
+use crate::consts::{CLIP_PATTERN_SPREAD, KNEE_START, LENS_HEADROOM_EV};
 use crate::l3::profile::smoothstep;
 use crate::plan::LensPlan;
 
@@ -55,6 +59,35 @@ impl Restore {
             return 0.0;
         }
         ((m - self.ramp.0) / (self.ramp.1 - self.ramp.0)).clamp(0.0, 1.0)
+    }
+
+    /// The clip test's pixel `x` with the clip pattern's colour cast taken off: `x + w (mean(x) - x)`, `w` the
+    /// clip test times how close the channels are to each other in clip levels (1 up to no spread, 0 from
+    /// [`CLIP_PATTERN_SPREAD`] on). A pixel with its own colour (R5's recovered cores are neutral or the
+    /// light's colour, their channels differ in clip levels) is as it is.
+    #[inline]
+    pub(crate) fn without_clip_cast(&self, x: [f64; 3]) -> [f64; 3] {
+        let (mut hi, mut lo) = (f64::NEG_INFINITY, f64::INFINITY);
+        for (v, g0) in x.iter().zip(&self.clip) {
+            if *g0 > 0.0 {
+                let n = v / g0;
+                hi = hi.max(n);
+                lo = lo.min(n);
+            }
+        }
+        if !hi.is_finite() || hi <= 0.0 {
+            return x;
+        }
+        let w = self.clip_test(x) * (1.0 - smoothstep((hi - lo) / hi / CLIP_PATTERN_SPREAD));
+        if w <= 0.0 {
+            return x;
+        }
+        let mean = (x[0] + x[1] + x[2]) / 3.0;
+        [
+            x[0] + w * (mean - x[0]),
+            x[1] + w * (mean - x[1]),
+            x[2] + w * (mean - x[2]),
+        ]
     }
 
     /// The factor `1 + f (2^h - 1)` the pixel `x` is raised by.
@@ -110,14 +143,16 @@ impl Restore {
     #[inline]
     pub(crate) fn restored(&self, x: [f64; 3]) -> [f64; 3] {
         let g = self.factor(x);
-        [x[0] * g, x[1] * g, x[2] * g]
+        let y = self.without_clip_cast(x);
+        [y[0] * g, y[1] * g, y[2] * g]
     }
 
     /// The restored light of the pixel `x` of a light assumed `extra_ev` EV brighter than the plain headroom.
     #[inline]
     pub(crate) fn restored_ev(&self, x: [f64; 3], extra_ev: f64) -> [f64; 3] {
         let g = self.factor_ev(x, extra_ev);
-        [x[0] * g, x[1] * g, x[2] * g]
+        let y = self.without_clip_cast(x);
+        [y[0] * g, y[1] * g, y[2] * g]
     }
 
     /// The highlights of the pixel `x` of a light assumed `extra_ev` EV brighter than the plain headroom.
@@ -138,5 +173,71 @@ impl Restore {
             }
         }
         m
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consts::CLIP_RAMP;
+    use crate::test_support::write_synthetic_lenses;
+
+    fn restore_with_clip(clip: [f32; 3]) -> Restore {
+        use crate::amounts::{LensAmounts, LensKind};
+        use crate::plan::{Axis, FrameInfo};
+        let dir = tempfile::tempdir().unwrap();
+        write_synthetic_lenses(dir.path()).unwrap();
+        let lib = crate::data::LensLibrary::from_dir(dir.path()).unwrap();
+        let amounts = LensAmounts {
+            kind: LensKind::Classic,
+            flares: 100.0,
+            edges: 0.0,
+            anamorphic: 0.0,
+        };
+        let frame = FrameInfo {
+            width: 600,
+            height: 400,
+            axis: Axis::X,
+            f_number: None,
+            clip,
+        };
+        let plan = LensPlan::new(
+            &lib,
+            &amounts,
+            frame,
+            &crate::spectral::CameraResponse::neutral(),
+        )
+        .unwrap();
+        Restore::new(&plan, CLIP_RAMP)
+    }
+
+    #[test]
+    fn a_pixel_left_at_the_clip_pattern_is_restored_as_a_neutral_of_the_same_total() {
+        // With highlight recovery off a fully clipped pixel sits at (g0_R, 1, g0_B): a magenta cast.
+        let rs = restore_with_clip([2.9, 1.0, 1.5]);
+        let x = [2.9, 1.0, 1.5];
+        let r = rs.restored(x);
+        let g = rs.factor(x);
+        let mean = (2.9 + 1.0 + 1.5) / 3.0;
+        for v in r {
+            assert!((v - mean * g).abs() < 1e-9, "{r:?}");
+        }
+        // A recovered neutral core (R5 raises fully clipped photosites to the largest): as it is.
+        let y = [3.1, 3.0, 3.0];
+        let r = rs.restored(y);
+        let g = rs.factor(y);
+        for (a, b) in r.iter().zip(&y) {
+            assert!((a - b * g).abs() < 1e-12, "{r:?}");
+        }
+        // A pixel that is not clipped at all keeps its colour and its light.
+        let z = [0.3, 0.2, 0.1];
+        assert_eq!(rs.restored(z), z);
+        // A coloured light that clipped (the sun at sunset, red above its clip, blue well below): as it is.
+        let warm = [3.2, 2.0, 0.6];
+        let g = rs.factor(warm);
+        let r = rs.restored(warm);
+        for (a, b) in r.iter().zip(&warm) {
+            assert!((a - b * g).abs() < 1e-12, "{r:?}");
+        }
     }
 }

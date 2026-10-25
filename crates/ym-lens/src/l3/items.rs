@@ -17,16 +17,22 @@
 //! * A **streak** is separable: a profile along the axis (a sharp core and a power-law tail, cut smoothly at its
 //!   reach) times a Gaussian across it as tall as the source; each pixel gets the exact mass over its area.
 
+use std::collections::BTreeMap;
+
 use rayon::prelude::*;
 
 use crate::consts::{
     COARSE_MIN_AREA_PX, COARSE_NODES_PER_FEATURE, COARSE_RIM_FEATURE, COMPACT_EXTENT_HD,
-    EDGE_FLOOR_PX, EDGE_REACH_SIGMAS, GHOST_PRUNE_BUDGET, SPIKE_SIZE,
+    EDGE_FLOOR_PX, EDGE_REACH_SIGMAS, GHOST_FULL_RADIUS, GHOST_PEAK_MAX, GHOST_PRUNE_BUDGET,
+    GHOST_SMALL_SHARE, GHOST_SOFT_MIN, GHOST_TINT_MAX_RATIO, SPIKE_SIZE, STREAK_E_HALF,
+    STREAK_E_MIN, STREAK_MAX_LIGHTS, STREAK_PEAK_PER_FRACTION, STREAK_REACH_AT_E0, STREAK_REACH_E0,
+    STREAK_REACH_MIN, STREAK_REACH_PER_DECADE, STREAK_SIGMA_MIN_HD, STREAK_SIGMA_REF_HD,
+    STREAK_STRETCH_MIN, STREAK_TOTAL_CAP,
 };
 use crate::data::{Aperture, GhostData};
 use crate::l3::geometry::{Frame, Span};
 use crate::l3::profile::{NormalTail, RimCurve, cosine_window, gauss8, normal_tail};
-use crate::l3::sources::Source;
+use crate::l3::sources::{Source, SourceView};
 use crate::l3::terms::Terms;
 use crate::plan::LensPlan;
 use crate::spectral::CameraResponse;
@@ -171,6 +177,9 @@ pub(crate) fn profile_integral(rim: &RimCurve, sigma_g: f64) -> f64 {
 /// One ghost of one source.
 #[derive(Clone, Debug)]
 pub(crate) struct Ghost {
+    /// The place of the ghost in its lens's list (the attachment's follow the lens's): the same ghost of every
+    /// cell of one light has the same index.
+    index: usize,
     /// Index into [`Items::shapes`].
     shape: usize,
     centre: [f64; 2],
@@ -196,6 +205,21 @@ pub(crate) struct Ghost {
     span: Span,
 }
 
+impl Ghost {
+    /// The brightest channel, in clip levels, at the ghost's brightest place.
+    fn peak_level(&self, clip: &[f64; 3], rim_peak: f64) -> f64 {
+        (0..3).map(|c| self.amp[c] / clip[c]).fold(0.0f64, f64::max) * rim_peak
+    }
+
+    /// The ghost with its light scaled by `k`.
+    fn scale(&mut self, k: f64, rim_peak: f64) {
+        for a in &mut self.amp {
+            *a *= k;
+        }
+        self.peak = self.amp[0].max(self.amp[1]).max(self.amp[2]) * rim_peak;
+    }
+}
+
 /// The spacings of the grids the slowly varying ghosts are drawn on, in pixels (even, so that a node sits on a
 /// pixel corner).
 pub(crate) const COARSE_LEVELS: [usize; 5] = [2, 4, 8, 16, 32];
@@ -211,13 +235,18 @@ pub(crate) struct Burst {
     span: Span,
 }
 
-/// The streak of one source.
+/// The streak of one light: a Gaussian band across the axis times, in each channel, the attachment's profile
+/// along it stretched to that channel's reach.
 #[derive(Clone, Debug)]
 pub(crate) struct Streak {
     centre: [f64; 2],
     /// The standard deviation across the axis.
     sigma: f64,
+    /// The light of each channel: its mass, which makes the profile's peak the channel's `peak`
+    /// ([`Items::streaks`]).
     amp: [f64; 3],
+    /// The stretch of each channel's profile along the axis (the light's reach times the channel's share).
+    stretch: [f64; 3],
     span: Span,
 }
 
@@ -346,6 +375,11 @@ impl AlongProfile {
         self.length
     }
 
+    /// The mass of the half profile (the integral of the height from 0 to the reach).
+    pub(crate) fn half_mass(&self) -> f64 {
+        self.half_mass
+    }
+
     /// The profile's constants for the device: `core`, `power`, `length`, `flat`, the mass of the power law
     /// up to `flat`, the mass of the whole half profile, and the cumulative mass of the cut part at its
     /// panel boundaries.
@@ -362,6 +396,39 @@ impl AlongProfile {
             &self.cut,
         )
     }
+}
+
+/// The tint `t` (mean 1 over the channels) with its spread between the channels brought to at most `max_ratio`
+/// (largest over smallest): raised to the power `ln(max_ratio) / ln(largest / smallest)` when it is wider, then
+/// scaled to a mean of 1 again. The order of the channels and the hue stay, the chroma shrinks.
+pub(crate) fn limited_tint(t: [f64; 3], max_ratio: f64) -> [f64; 3] {
+    let hi = t[0].max(t[1]).max(t[2]);
+    let lo = t[0].min(t[1]).min(t[2]);
+    if lo <= 0.0 || hi / lo <= max_ratio {
+        return t;
+    }
+    let gamma = libm::log(max_ratio) / libm::log(hi / lo);
+    let p = [
+        libm::pow(t[0], gamma),
+        libm::pow(t[1], gamma),
+        libm::pow(t[2], gamma),
+    ];
+    let mean = (p[0] + p[1] + p[2]) / 3.0;
+    [p[0] / mean, p[1] / mean, p[2] / mean]
+}
+
+/// The brightest a ghost of apothem `s` (half-diagonals) may be, in clip levels at Flares 100:
+/// [`GHOST_PEAK_MAX`] from [`GHOST_FULL_RADIUS`] up, falling in proportion to the apothem below that to at
+/// least [`GHOST_SMALL_SHARE`] of it. A small ghost carries little light for its peak: the lens data's small
+/// ghosts, a few pixels across, came out as hot dots many times brighter than the scene.
+pub(crate) fn ghost_peak_max(s: f64) -> f64 {
+    GHOST_PEAK_MAX * (s / GHOST_FULL_RADIUS).clamp(GHOST_SMALL_SHARE, 1.0)
+}
+
+/// The tint of a ghost's coating on `camera`: [`normalised_tint`] with its spread limited to
+/// [`GHOST_TINT_MAX_RATIO`], so the ghosts of a coating that reflects one end of the spectrum come out pale.
+pub(crate) fn ghost_tint(camera: &CameraResponse, spectrum: &[f64]) -> [f64; 3] {
+    limited_tint(normalised_tint(camera, spectrum), GHOST_TINT_MAX_RATIO)
 }
 
 /// The tint of a coating or streak spectrum on `camera`, scaled to a mean of 1 over the channels (a flat spectrum
@@ -389,6 +456,8 @@ pub(crate) struct Items<'a> {
     spikes: &'a [Vec<f64>; 3],
     spike_radius: f64,
     frame: Frame,
+    /// The clip level of each channel (`g0`), 1 where the plan has none.
+    clip: [f64; 3],
     tail: &'static NormalTail,
     /// True when slowly varying ghosts are drawn on grids of nodes.
     coarse: bool,
@@ -407,7 +476,7 @@ impl<'a> Items<'a> {
         plan: &LensPlan,
         terms: &Terms,
         frame: Frame,
-        sources: &[Source],
+        sources: SourceView,
         spikes: &'a [Vec<f64>; 3],
         cull: &Span,
     ) -> Self {
@@ -420,7 +489,7 @@ impl<'a> Items<'a> {
         plan: &LensPlan,
         terms: &Terms,
         frame: Frame,
-        sources: &[Source],
+        view: SourceView,
         spikes: &'a [Vec<f64>; 3],
         cull: &Span,
         coarse: bool,
@@ -441,6 +510,10 @@ impl<'a> Items<'a> {
             spikes,
             spike_radius: lens.flare.starburst.radius,
             frame,
+            clip: plan
+                .frame()
+                .clip
+                .map(|c| if c > 0.0 { f64::from(c) } else { 1.0 }),
             tail: normal_tail(),
             coarse,
             list: Vec::new(),
@@ -449,12 +522,12 @@ impl<'a> Items<'a> {
             .flare
             .ghosts
             .iter()
-            .map(|g| normalised_tint(camera, &g.coating))
+            .map(|g| ghost_tint(camera, &g.coating))
             .collect();
         let att_tints: Vec<[f64; 3]> = att
             .ghosts
             .iter()
-            .map(|g| normalised_tint(camera, &g.coating))
+            .map(|g| ghost_tint(camera, &g.coating))
             .collect();
         let streak_tint = normalised_tint(camera, &att.streak.tint);
         let whole = Span {
@@ -466,13 +539,24 @@ impl<'a> Items<'a> {
         let rim_peak = (0..=256)
             .map(|i| items.rim.at(f64::from(i) / 256.0))
             .fold(0.0f64, f64::max);
-        let mut list = Vec::new();
+        // The ghosts of every source, then the limit on the ghosts of each light (a connected component of
+        // clipped pixels: a large light is several sources, its cells).
+        let sources = view.cells;
+        let mut ghosts_of: Vec<Vec<Ghost>> = Vec::with_capacity(sources.len());
+        let mut peaks: BTreeMap<(u32, usize), f64> = BTreeMap::new();
         for src in sources {
-            for ((g, tint), fraction) in
-                lens.flare.ghosts.iter().zip(&lens_tints).zip(&terms.ghosts)
+            let mut group: Vec<Ghost> = Vec::new();
+            for (index, ((g, tint), fraction)) in lens
+                .flare
+                .ghosts
+                .iter()
+                .zip(&lens_tints)
+                .zip(&terms.ghosts)
+                .enumerate()
             {
                 if let Some(it) = items.ghost(
                     src,
+                    index,
                     g,
                     SHAPE_APERTURE,
                     terms.stretch,
@@ -481,15 +565,20 @@ impl<'a> Items<'a> {
                     rim_peak,
                     &whole,
                 ) {
-                    list.push(Item::Ghost(it));
+                    group.push(it);
                 }
             }
             if terms.anam > 0.0 {
-                for ((g, tint), fraction) in
-                    att.ghosts.iter().zip(&att_tints).zip(&terms.att_ghosts)
+                for (k, ((g, tint), fraction)) in att
+                    .ghosts
+                    .iter()
+                    .zip(&att_tints)
+                    .zip(&terms.att_ghosts)
+                    .enumerate()
                 {
                     if let Some(it) = items.ghost(
                         src,
+                        lens.flare.ghosts.len() + k,
                         g,
                         SHAPE_ROUND,
                         terms.stretch,
@@ -498,17 +587,46 @@ impl<'a> Items<'a> {
                         rim_peak,
                         &whole,
                     ) {
-                        list.push(Item::Ghost(it));
+                        group.push(it);
                     }
                 }
+            }
+            if std::env::var_os("YM_GHOST_DEBUG").is_some() {
+                for g in &group {
+                    eprintln!(
+                        "ghost src_e {:.4e} comp {} s {:.3} raw_level {:.4e}",
+                        src.total(),
+                        src.component,
+                        g.s,
+                        g.peak_level(&items.clip, rim_peak)
+                    );
+                }
+            }
+            for g in &group {
+                *peaks.entry((src.component, g.index)).or_insert(0.0) +=
+                    g.peak_level(&items.clip, rim_peak);
+            }
+            ghosts_of.push(group);
+        }
+        let mut list = Vec::new();
+        for (src, group) in sources.iter().zip(ghosts_of) {
+            // The same ghost of every cell of a light lies on the same place, so its peak is the sum of the
+            // cells' peaks in clip levels. A ghost may be as bright as `ghost_peak_max` of its size and no
+            // brighter: all its cells are brought down by the same factor (a ghost under the bound is as it
+            // was).
+            for mut g in group {
+                let total = peaks.get(&(src.component, g.index)).copied().unwrap_or(0.0);
+                let allowed = ghost_peak_max(g.s);
+                if total > allowed {
+                    g.scale(allowed / total, rim_peak);
+                }
+                list.push(Item::Ghost(g));
             }
             if terms.burst > 0.0 && src.extent <= COMPACT_EXTENT_HD {
                 list.push(Item::Burst(items.burst(src, terms.burst)));
             }
-            if let Some(it) = items.streak(src, terms.streak, streak_tint) {
-                list.push(Item::Streak(it));
-            }
         }
+        list.extend(items.streaks(view.lights, terms.streak, streak_tint));
         // The faintest ghosts are left out while their peaks add up to no more than the budget (a function of
         // the whole list, never of the tile, so any tiling draws the same items).
         let clip = f64::from(plan.frame().clip.iter().copied().fold(0.0f32, f32::max));
@@ -554,6 +672,7 @@ impl<'a> Items<'a> {
     fn ghost(
         &self,
         src: &Source,
+        index: usize,
         g: &GhostData,
         shape: usize,
         stretch: f64,
@@ -565,7 +684,8 @@ impl<'a> Items<'a> {
         let h = self.frame.half_diag;
         let s = g.s;
         let var = 0.5 * (src.var_along + src.var_across);
-        let sigma_edge = ((g.soft * s).powi(2) + var + (EDGE_FLOOR_PX / h).powi(2)).sqrt();
+        let soft = g.soft.max(GHOST_SOFT_MIN);
+        let sigma_edge = ((soft * s).powi(2) + var + (EDGE_FLOOR_PX / h).powi(2)).sqrt();
         let sigma_g = sigma_edge / s;
         let sh = &self.shapes[shape];
         let centre = [g.m * src.pos[0], g.m * src.pos[1]];
@@ -596,6 +716,7 @@ impl<'a> Items<'a> {
         let peak = amp[0].max(amp[1]).max(amp[2]) * rim_peak;
         let level = self.level_for(sigma_edge, s, &span);
         Some(Ghost {
+            index,
             shape,
             centre,
             clip_centre,
@@ -652,30 +773,108 @@ impl<'a> Items<'a> {
         }
     }
 
-    /// The streak of `src`.
-    fn streak(&self, src: &Source, fraction: f64, tint: [f64; 3]) -> Option<Streak> {
-        let along = self.along.as_ref()?;
+    /// The streaks of the lights `lights` (every connected component of the lens plane's highlights whole, not
+    /// its cells), at the attachment's strength `fraction` (`Terms::streak`) and with the streak's `tint`.
+    ///
+    /// A streak is a Gaussian band across the axis, as wide as the light (at least `STREAK_SIGMA_MIN_HD`), times a
+    /// profile along it that is 1 at the light and falls as the attachment's profile says, cut at the light's
+    /// reach. Per light, with `e` the light's energy (`mean_c(E_c / g0_c)`, `Source::energy`):
+    ///
+    /// * the **peak**, in clip levels in the brightest channel, is `STREAK_PEAK_PER_FRACTION x fraction x e / (e +
+    ///   STREAK_E_HALF)`, divided by `1 + sigma / STREAK_SIGMA_REF_HD` for a band: it saturates with the energy
+    ///   and a large light makes a faint wide band;
+    /// * the **reach** is `STREAK_REACH_AT_E0 + STREAK_REACH_PER_DECADE log10(e / STREAK_REACH_E0)` of the
+    ///   attachment's, between `STREAK_REACH_MIN` and 1;
+    /// * the **colour** at the light is the light's own; each channel's profile is stretched by the streak tint's
+    ///   share of its largest channel (the square root of it, at least `STREAK_STRETCH_MIN`), so the red and
+    ///   green die out first and the tail is blue;
+    /// * lights under `STREAK_E_MIN` make none, only the brightest `STREAK_MAX_LIGHTS` (the list is in the order
+    ///   of energy) make one, and the sum of peak times reach over the frame is brought down to
+    ///   `STREAK_TOTAL_CAP`.
+    fn streaks(&self, lights: &[Source], fraction: f64, tint: [f64; 3]) -> Vec<Item> {
+        let Some(along) = self.along.as_ref() else {
+            return Vec::new();
+        };
         if fraction <= 0.0 {
-            return None;
+            return Vec::new();
         }
-        let sigma = src.var_across.sqrt();
-        let reach = EDGE_REACH_SIGMAS * sigma;
-        let span = self.frame.span_of(
-            src.pos[0] - along.length(),
-            src.pos[0] + along.length(),
-            src.pos[1] - reach,
-            src.pos[1] + reach,
-        );
-        Some(Streak {
-            centre: src.pos,
-            sigma,
-            amp: [
-                fraction * tint[0] * src.energy[0],
-                fraction * tint[1] * src.energy[1],
-                fraction * tint[2] * src.energy[2],
-            ],
-            span,
-        })
+        let peak_max = STREAK_PEAK_PER_FRACTION * fraction;
+        let widest = tint[0].max(tint[1]).max(tint[2]);
+        let share: [f64; 3] = std::array::from_fn(|c| {
+            if widest > 0.0 {
+                libm::sqrt(tint[c] / widest).max(STREAK_STRETCH_MIN)
+            } else {
+                1.0
+            }
+        });
+        struct Planned<'s> {
+            src: &'s Source,
+            peak: f64,
+            reach: f64,
+            sigma: f64,
+            colour: [f64; 3],
+        }
+        let mut planned: Vec<Planned> = Vec::new();
+        let mut total = 0.0;
+        for src in lights {
+            if planned.len() >= STREAK_MAX_LIGHTS {
+                break;
+            }
+            let e = (0..3).map(|c| src.energy[c] / self.clip[c]).sum::<f64>() / 3.0;
+            let mean = (src.energy[0] + src.energy[1] + src.energy[2]) / 3.0;
+            if e < STREAK_E_MIN || mean <= 0.0 {
+                continue;
+            }
+            let sigma = src.var_across.sqrt().max(STREAK_SIGMA_MIN_HD);
+            let peak = peak_max * e / (e + STREAK_E_HALF) / (1.0 + sigma / STREAK_SIGMA_REF_HD);
+            let reach = (STREAK_REACH_AT_E0
+                + STREAK_REACH_PER_DECADE * libm::log10(e / STREAK_REACH_E0))
+            .clamp(STREAK_REACH_MIN, 1.0);
+            // The light's colour, scaled so that its brightest channel (in clip levels) is 1.
+            let top = (0..3)
+                .map(|c| src.energy[c] / mean / self.clip[c])
+                .fold(0.0f64, f64::max);
+            let colour: [f64; 3] = std::array::from_fn(|c| src.energy[c] / mean / top);
+            total += peak * reach;
+            planned.push(Planned {
+                src,
+                peak,
+                reach,
+                sigma,
+                colour,
+            });
+        }
+        let keep = if total > STREAK_TOTAL_CAP {
+            STREAK_TOTAL_CAP / total
+        } else {
+            1.0
+        };
+        let two_mass = 2.0 * along.half_mass();
+        let root_two_pi = (2.0 * std::f64::consts::PI).sqrt();
+        planned
+            .iter()
+            .map(|p| {
+                let stretch: [f64; 3] = std::array::from_fn(|c| p.reach * share[c]);
+                let amp: [f64; 3] = std::array::from_fn(|c| {
+                    keep * p.peak * p.colour[c] * two_mass * stretch[c] * p.sigma * root_two_pi
+                });
+                let along_reach = along.length() * p.reach;
+                let across = EDGE_REACH_SIGMAS * p.sigma;
+                let span = self.frame.span_of(
+                    p.src.pos[0] - along_reach,
+                    p.src.pos[0] + along_reach,
+                    p.src.pos[1] - across,
+                    p.src.pos[1] + across,
+                );
+                Item::Streak(Streak {
+                    centre: p.src.pos,
+                    sigma: p.sigma,
+                    amp,
+                    stretch,
+                    span,
+                })
+            })
+            .collect()
     }
 
     /// The streak's profile, when the plan has one.
@@ -737,8 +936,13 @@ impl<'a> Items<'a> {
                         s.sigma as f32,
                         s.amp[0] as f32,
                     ]);
-                    out.push([s.amp[1] as f32, s.amp[2] as f32, 0.0, 0.0]);
-                    out.push([0.0; 4]);
+                    out.push([
+                        s.amp[1] as f32,
+                        s.amp[2] as f32,
+                        s.stretch[0] as f32,
+                        s.stretch[1] as f32,
+                    ]);
+                    out.push([s.stretch[2] as f32, 0.0, 0.0, 0.0]);
                     out.push([0.0; 4]);
                     out.push([bits(2), 0.0, 0.0, 0.0]);
                 }
@@ -893,12 +1097,16 @@ impl<'a> Items<'a> {
         let frame = &self.frame;
         let (p0, p1) = frame.along_range(area);
         let (q0, q1) = frame.across_range(area);
-        let mass_along: Vec<f64> = (p0..p1)
-            .map(|p| {
-                let (e0, e1) = frame.along_edges(p);
-                along.cdf(e1 - s.centre[0]) - along.cdf(e0 - s.centre[0])
-            })
-            .collect();
+        // Per channel, the mass of the stretched profile in each pixel's interval along the axis.
+        let mass_along: [Vec<f64>; 3] = std::array::from_fn(|c| {
+            (p0..p1)
+                .map(|p| {
+                    let (e0, e1) = frame.along_edges(p);
+                    along.cdf((e1 - s.centre[0]) / s.stretch[c])
+                        - along.cdf((e0 - s.centre[0]) / s.stretch[c])
+                })
+                .collect()
+        });
         let mass_across: Vec<f64> = (q0..q1)
             .map(|q| {
                 let (e0, e1) = frame.across_edges(q);
@@ -912,13 +1120,12 @@ impl<'a> Items<'a> {
             if *mc <= 0.0 {
                 continue;
             }
-            for (pi, ma) in mass_along.iter().enumerate() {
+            for pi in 0..p1 - p0 {
                 let (i, j) = frame.pixel_of(p0 + pi, q0 + qi);
-                let m = ma * mc * per_area;
                 let px = &mut acc[(j - band.y0) * bw + i - band.x0];
-                px[0] += s.amp[0] * m;
-                px[1] += s.amp[1] * m;
-                px[2] += s.amp[2] * m;
+                for ((v, a), m) in px.iter_mut().zip(&s.amp).zip(&mass_along) {
+                    *v += a * m[pi] * mc * per_area;
+                }
             }
         }
     }
@@ -1064,6 +1271,42 @@ fn tent_integral(t: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tint_wider_than_the_limit_is_brought_to_it_and_a_narrower_one_is_left() {
+        // A tint 9 times wider than the limit: brought to it, hue and order kept, mean 1.
+        let t = [3.0, 1.0, 0.33];
+        let mean = (t[0] + t[1] + t[2]) / 3.0;
+        let t = t.map(|v| v / mean);
+        let limited = limited_tint(t, 1.2);
+        let ratio =
+            limited[0].max(limited[1]).max(limited[2]) / limited[0].min(limited[1]).min(limited[2]);
+        assert!((ratio - 1.2).abs() < 1e-12, "{ratio}");
+        assert!(((limited[0] + limited[1] + limited[2]) / 3.0 - 1.0).abs() < 1e-12);
+        assert!(
+            limited[0] > limited[1] && limited[1] > limited[2],
+            "{limited:?}"
+        );
+        // A tint within the limit is returned as it is.
+        let narrow = [1.1, 1.0, 0.9];
+        assert_eq!(limited_tint(narrow, 1.3), narrow);
+        // A neutral tint stays neutral.
+        assert_eq!(limited_tint([1.0; 3], 1.3), [1.0; 3]);
+    }
+
+    #[test]
+    fn the_bound_on_a_ghost_falls_with_its_size_to_a_share_of_the_bound() {
+        use crate::consts::{GHOST_FULL_RADIUS, GHOST_PEAK_MAX, GHOST_SMALL_SHARE};
+        assert_eq!(ghost_peak_max(GHOST_FULL_RADIUS), GHOST_PEAK_MAX);
+        assert_eq!(ghost_peak_max(3.0), GHOST_PEAK_MAX);
+        assert_eq!(ghost_peak_max(0.0), GHOST_PEAK_MAX * GHOST_SMALL_SHARE);
+        let mut last = 0.0;
+        for k in 0..40 {
+            let b = ghost_peak_max(0.005 * f64::from(k));
+            assert!(b >= last && b > 0.0);
+            last = b;
+        }
+    }
     use crate::plan::Axis;
 
     #[test]
@@ -1168,6 +1411,7 @@ mod tests {
             spikes,
             spike_radius: 0.06,
             frame,
+            clip: [1.0; 3],
             tail: normal_tail(),
             coarse: false,
             list: Vec::new(),
@@ -1197,6 +1441,8 @@ mod tests {
                         var_along: 0.75 / (frame.half_diag * frame.half_diag),
                         var_across: 0.75 / (frame.half_diag * frame.half_diag),
                         extent: 0.01,
+                        area: 0.0001,
+                        component: 0,
                     };
                     let g = GhostData {
                         m: -0.5,
@@ -1214,7 +1460,7 @@ mod tests {
                         y1: h,
                     };
                     let ghost = items
-                        .ghost(&src, &g, SHAPE_ROUND, 1.0, 0.1, [1.0; 3], 1.2, &cull)
+                        .ghost(&src, 0, &g, SHAPE_ROUND, 1.0, 0.1, [1.0; 3], 1.2, &cull)
                         .unwrap();
                     let mut acc = vec![[0.0f64; 3]; w * h];
                     items.add_ghost(&ghost, &cull, &cull, &mut acc);
@@ -1263,6 +1509,8 @@ mod tests {
                     var_along: 0.75 / (frame.half_diag * frame.half_diag),
                     var_across: 0.75 / (frame.half_diag * frame.half_diag),
                     extent: 0.01,
+                    area: 0.0001,
+                    component: 0,
                 };
                 let g = GhostData {
                     m: -0.5,
@@ -1280,7 +1528,7 @@ mod tests {
                     y1: h,
                 };
                 let ghost = items
-                    .ghost(&src, &g, SHAPE_APERTURE, 1.0, 0.1, [1.0; 3], 1.2, &cull)
+                    .ghost(&src, 0, &g, SHAPE_APERTURE, 1.0, 0.1, [1.0; 3], 1.2, &cull)
                     .unwrap();
                 let mut acc = vec![[0.0f64; 3]; w * h];
                 items.add_ghost(&ghost, &cull, &cull, &mut acc);
@@ -1338,6 +1586,8 @@ mod tests {
                 var_along: 1e-7,
                 var_across: 1e-7,
                 extent: 0.003,
+                area: 0.0001,
+                component: i as u32,
             })
             .collect();
         let spikes: [Vec<f64>; 3] = std::array::from_fn(|_| vec![0.0; SPIKE_SIZE * SPIKE_SIZE]);
@@ -1351,11 +1601,21 @@ mod tests {
             let mut terms = Terms::new(&plan);
             terms.ghosts = vec![fraction; terms.ghosts.len()];
             terms.att_ghosts = vec![fraction; terms.att_ghosts.len()];
-            Items::build(&plan, &terms, frame, &sources, &spikes, &whole)
-                .list
-                .iter()
-                .filter(|i| matches!(i, Item::Ghost(_)))
-                .count()
+            Items::build(
+                &plan,
+                &terms,
+                frame,
+                SourceView {
+                    cells: &sources,
+                    lights: &[],
+                },
+                &spikes,
+                &whole,
+            )
+            .list
+            .iter()
+            .filter(|i| matches!(i, Item::Ghost(_)))
+            .count()
         };
         // 1e-12 of 7e-4 clip levels of light spread over a ghost: far under a quarter of a 16-bit code.
         assert_eq!(ghosts(1e-12), 0, "a ghost too faint to see was drawn");

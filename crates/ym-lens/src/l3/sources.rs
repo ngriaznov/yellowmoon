@@ -37,6 +37,11 @@ pub(crate) struct Source {
     pub(crate) var_across: f64,
     /// The larger side of the source's bounding box, in half-diagonals.
     pub(crate) extent: f64,
+    /// The area of the source's pixels, in half-diagonals squared.
+    pub(crate) area: f64,
+    /// The connected component the source belongs to (the raster index of its first pixel): the cells of one
+    /// large light share it, and the limits that are on a light as a whole (`l3::items`) count them together.
+    pub(crate) component: u32,
 }
 
 impl Source {
@@ -74,6 +79,8 @@ impl Dsu {
 /// What a cell of a component has gathered.
 #[derive(Clone, Copy)]
 struct Acc {
+    component: u32,
+    count: usize,
     weight: f64,
     energy: [f64; 3],
     ghost_energy: [f64; 3],
@@ -88,8 +95,32 @@ struct Acc {
 }
 
 impl Acc {
-    fn new(x: usize, y: usize) -> Self {
+    /// Adds the pixel `(i, j)`, whose highlights are `hl` (for `energy`) and `hg` (for `ghost_energy`).
+    fn add(&mut self, i: usize, j: usize, hl: [f64; 3], hg: [f64; 3]) {
+        let weight = hl[0] + hl[1] + hl[2];
+        let (x, y) = (i as f64 + 0.5, j as f64 + 0.5);
+        self.count += 1;
+        self.weight += weight;
+        for (e, h) in self.energy.iter_mut().zip(&hl) {
+            *e += h;
+        }
+        for (e, h) in self.ghost_energy.iter_mut().zip(&hg) {
+            *e += h;
+        }
+        self.sx += weight * x;
+        self.sy += weight * y;
+        self.sxx += weight * x * x;
+        self.syy += weight * y * y;
+        self.x0 = self.x0.min(i);
+        self.x1 = self.x1.max(i);
+        self.y0 = self.y0.min(j);
+        self.y1 = self.y1.max(j);
+    }
+
+    fn new(component: u32, x: usize, y: usize) -> Self {
         Acc {
+            component,
+            count: 0,
             weight: 0.0,
             energy: [0.0; 3],
             ghost_energy: [0.0; 3],
@@ -129,6 +160,7 @@ fn highlight_at(
 /// `boost` is the extra headroom in EV of every pixel (`crate::l3::lights::map`): the energy of a small clipped
 /// light is that much brighter than the plain restored light. `rs_ghost` is `rs` with the cap's scale
 /// ([`Restore::with_boost_scale`]), for the sources' ghost energy. `cancel` is polled once per row of the plane.
+#[cfg(test)]
 pub(crate) fn find(
     plane: &ImageRef,
     rs: &Restore,
@@ -137,6 +169,38 @@ pub(crate) fn find(
     axis: Axis,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Vec<Source>, LensError> {
+    Ok(find_all(plane, rs, rs_ghost, boost, axis, cancel)?.cells)
+}
+
+/// The two lists of the lens plane's highlights: the sources as [`find`] makes them (the cells of the large
+/// lights) and the lights whole (one source for every connected component, however large: the streaks read
+/// these, a large clipped area is one light with one thickness, not a row of cells that draw a line each).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SourceLists {
+    /// The cells, brightest first.
+    pub(crate) cells: Vec<Source>,
+    /// The components, brightest first.
+    pub(crate) lights: Vec<Source>,
+}
+
+/// The two lists, borrowed.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SourceView<'a> {
+    /// The cells (ghosts, starbursts).
+    pub(crate) cells: &'a [Source],
+    /// The lights whole (streaks).
+    pub(crate) lights: &'a [Source],
+}
+
+/// [`find`] and the lights whole.
+pub(crate) fn find_all(
+    plane: &ImageRef,
+    rs: &Restore,
+    rs_ghost: &Restore,
+    boost: Option<&[f32]>,
+    axis: Axis,
+    cancel: &dyn Fn() -> bool,
+) -> Result<SourceLists, LensError> {
     let (w, h) = (plane.width, plane.height);
     let frame = Frame::new(w, h, axis);
     let half_diag = frame.half_diag;
@@ -157,7 +221,7 @@ pub(crate) fn find(
         }
     }
     if !any {
-        return Ok(Vec::new());
+        return Ok(SourceLists::default());
     }
 
     // 8-connected components, labelled by their first pixel in raster order.
@@ -223,6 +287,9 @@ pub(crate) fn find(
     let mut index: HashMap<Key, usize> = HashMap::new();
     let mut slots: Vec<Acc> = Vec::new();
     let mut last: Option<(Key, usize)> = None;
+    // The same sums per component, for the lights whole.
+    let mut comp_index: HashMap<u32, usize> = HashMap::new();
+    let mut comps: Vec<Acc> = Vec::new();
     for j in 0..h {
         if cancel() {
             return Err(LensError::Cancelled);
@@ -246,7 +313,7 @@ pub(crate) fn find(
                 Some((k, s)) if k == key => s,
                 _ => {
                     let s = *index.entry(key).or_insert_with(|| {
-                        slots.push(Acc::new(i, j));
+                        slots.push(Acc::new(key.0, i, j));
                         slots.len() - 1
                     });
                     last = Some((key, s));
@@ -255,65 +322,65 @@ pub(crate) fn find(
             };
             let hl = highlight_at(plane, rs, boost, i, j);
             let hg = highlight_at(plane, rs_ghost, boost, i, j);
-            let weight = hl[0] + hl[1] + hl[2];
-            let (x, y) = (i as f64 + 0.5, j as f64 + 0.5);
-            let acc = &mut slots[slot];
-            acc.weight += weight;
-            for (e, h) in acc.energy.iter_mut().zip(&hl) {
-                *e += h;
-            }
-            for (e, h) in acc.ghost_energy.iter_mut().zip(&hg) {
-                *e += h;
-            }
-            acc.sx += weight * x;
-            acc.sy += weight * y;
-            acc.sxx += weight * x * x;
-            acc.syy += weight * y * y;
-            acc.x0 = acc.x0.min(i);
-            acc.x1 = acc.x1.max(i);
-            acc.y0 = acc.y0.min(j);
-            acc.y1 = acc.y1.max(j);
+            slots[slot].add(i, j, hl, hg);
+            let whole = match comp_index.get(&root) {
+                Some(c) => *c,
+                None => {
+                    comps.push(Acc::new(root, i, j));
+                    comp_index.insert(root, comps.len() - 1);
+                    comps.len() - 1
+                }
+            };
+            comps[whole].add(i, j, hl, hg);
         }
     }
 
-    // The sources, brightest first; equal energies keep the raster order of the cells' first pixels.
+    // The sources, brightest first; equal energies keep the raster order of the first pixels.
     let area = 1.0 / (half_diag * half_diag);
-    let mut sources: Vec<(Source, f64, f64)> = slots
-        .iter()
-        .filter(|a| a.weight > 0.0)
-        .map(|a| {
-            let (cx, cy) = (a.sx / a.weight, a.sy / a.weight);
-            let var_x = (a.sxx / a.weight - cx * cx).max(0.0) + 1.0 / 12.0;
-            let var_y = (a.syy / a.weight - cy * cy).max(0.0) + 1.0 / 12.0;
-            let (along, across) = frame.canvas_at(cx, cy);
-            let (var_along, var_across) = match axis {
-                Axis::X => (var_x, var_y),
-                Axis::Y => (var_y, var_x),
-            };
-            let extent = ((a.x1 - a.x0 + 1).max(a.y1 - a.y0 + 1)) as f64 / half_diag;
-            let source = Source {
-                pos: [along, across],
-                energy: [a.energy[0] * area, a.energy[1] * area, a.energy[2] * area],
-                ghost_energy: [
-                    a.ghost_energy[0] * area,
-                    a.ghost_energy[1] * area,
-                    a.ghost_energy[2] * area,
-                ],
-                var_along: var_along * area,
-                var_across: var_across * area,
-                extent,
-            };
-            (source, cy, cx)
-        })
-        .collect();
-    sources.sort_by(|a, b| {
-        b.0.total()
-            .total_cmp(&a.0.total())
-            .then(a.1.total_cmp(&b.1))
-            .then(a.2.total_cmp(&b.2))
-    });
-    sources.truncate(SOURCES_MAX);
-    Ok(sources.into_iter().map(|(s, _, _)| s).collect())
+    let make = |accs: &[Acc]| -> Vec<Source> {
+        let mut sources: Vec<(Source, f64, f64)> = accs
+            .iter()
+            .filter(|a| a.weight > 0.0)
+            .map(|a| {
+                let (cx, cy) = (a.sx / a.weight, a.sy / a.weight);
+                let var_x = (a.sxx / a.weight - cx * cx).max(0.0) + 1.0 / 12.0;
+                let var_y = (a.syy / a.weight - cy * cy).max(0.0) + 1.0 / 12.0;
+                let (along, across) = frame.canvas_at(cx, cy);
+                let (var_along, var_across) = match axis {
+                    Axis::X => (var_x, var_y),
+                    Axis::Y => (var_y, var_x),
+                };
+                let extent = ((a.x1 - a.x0 + 1).max(a.y1 - a.y0 + 1)) as f64 / half_diag;
+                let source = Source {
+                    pos: [along, across],
+                    energy: [a.energy[0] * area, a.energy[1] * area, a.energy[2] * area],
+                    ghost_energy: [
+                        a.ghost_energy[0] * area,
+                        a.ghost_energy[1] * area,
+                        a.ghost_energy[2] * area,
+                    ],
+                    var_along: var_along * area,
+                    var_across: var_across * area,
+                    extent,
+                    area: a.count as f64 * area,
+                    component: a.component,
+                };
+                (source, cy, cx)
+            })
+            .collect();
+        sources.sort_by(|a, b| {
+            b.0.total()
+                .total_cmp(&a.0.total())
+                .then(a.1.total_cmp(&b.1))
+                .then(a.2.total_cmp(&b.2))
+        });
+        sources.truncate(SOURCES_MAX);
+        sources.into_iter().map(|(s, _, _)| s).collect()
+    };
+    Ok(SourceLists {
+        cells: make(&slots),
+        lights: make(&comps),
+    })
 }
 
 #[cfg(test)]
@@ -452,6 +519,47 @@ mod tests {
             find(&image(w, h, &data), &rs, &rs, None, Axis::X, &|| true),
             Err(LensError::Cancelled)
         ));
+    }
+
+    #[test]
+    fn a_large_light_is_one_light_and_many_cells_of_one_component() {
+        let (w, h) = (600, 400);
+        let p = plan(w, h, Axis::X);
+        let rs = Restore::new(&p, crate::consts::CLIP_RAMP_PLANE);
+        let data = scene(w, h, &[(100, 100, 100, 100, 1.0), (30, 30, 3, 3, 1.0)]);
+        let found = find_all(&image(w, h, &data), &rs, &rs, None, Axis::X, &|| false).unwrap();
+        assert!(found.cells.len() > 100, "{}", found.cells.len());
+        assert_eq!(found.lights.len(), 2, "the block and the small light");
+        let big = found.lights[0];
+        // The cells of the block share its component and hold all its light.
+        let cells: Vec<&Source> = found
+            .cells
+            .iter()
+            .filter(|c| c.component == big.component)
+            .collect();
+        assert!(cells.len() > 100);
+        for c in 0..3 {
+            let sum: f64 = cells.iter().map(|s| s.energy[c]).sum();
+            assert!((sum - big.energy[c]).abs() < 1e-9 * big.energy[c], "{sum}");
+        }
+        // The light is as wide as the block: 100 x 100 px, the area of the pixels, its centre in the middle.
+        let frame = Frame::new(w, h, Axis::X);
+        assert!((big.area - 100.0 * 100.0 / (frame.half_diag * frame.half_diag)).abs() < 1e-9);
+        assert!((big.pos[0] - frame.u(150.0)).abs() < 1e-9);
+        assert!(
+            big.var_across > 0.9 * (100.0f64.powi(2) / 12.0) / (frame.half_diag * frame.half_diag)
+        );
+        // The small light is its own component, a single cell.
+        let small = found.lights[1];
+        assert_eq!(
+            found
+                .cells
+                .iter()
+                .filter(|c| c.component == small.component)
+                .count(),
+            1
+        );
+        assert_ne!(small.component, big.component);
     }
 
     #[test]

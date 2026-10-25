@@ -178,7 +178,15 @@ fn the_kernel_matches_the_cpu_reference() {
             400,
             Axis::X,
             &LensKind::ALL,
-            &[(100.0, 0.0), (60.0, 100.0), (0.0, 100.0), (30.0, 40.0)],
+            &[
+                (100.0, 0.0),
+                (60.0, 100.0),
+                (0.0, 100.0),
+                (30.0, 40.0),
+                // Vintage max and its kin: the oval radius is past 1 over the outer part of the long
+                // axis and the width is bent towards its cap.
+                (100.0, 100.0),
+            ],
         ),
         (
             451,

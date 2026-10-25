@@ -103,7 +103,14 @@ pub(crate) fn scale_data(
         y0: 0,
         y1: height,
     };
-    let items = Items::build(plan, &terms, frame, flare.sources(), flare.spikes(), &whole);
+    let items = Items::build(
+        plan,
+        &terms,
+        frame,
+        flare.source_view(),
+        flare.spikes(),
+        &whole,
+    );
     let taps = glow.core_taps(frame.half_diag);
     let core_radius = if taps.is_empty() { 0 } else { taps.radius };
 

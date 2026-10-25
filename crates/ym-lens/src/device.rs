@@ -7,8 +7,9 @@
 
 /// Four-lane vectors in the header of the field tables (`FieldTablesData::data`): the radii, `w(rho)` and
 /// `T(rho)` padded to 12 values each (3 vectors apiece), then 27 centroids `(x, y, 0, 0)` indexed
-/// `[radius * 3 + channel]`.
-pub const FIELD_HEADER: usize = 36;
+/// `[radius * 3 + channel]`, then the slopes of the monotone cubics through `w` and through `T` (3 vectors
+/// apiece).
+pub const FIELD_HEADER: usize = 42;
 
 /// The sizes `n` of the cell tables, `3, 5, ..., MAX_TAPS_SIDE`, in the order they follow the header.
 pub const FIELD_TABLE_SIZES: usize = crate::field::SIZES;
@@ -322,9 +323,12 @@ pub struct BokehTile {
     /// The region the blur map is made over (`r0` and the feather), so that the stretch's soft edge is the same in
     /// every tile.
     pub rb: crate::PixelRect,
+    /// `rb` grown by [`SHARP_SOFT_HALF`](crate::consts::SHARP_SOFT_HALF): the region the sharp places are known
+    /// over, so that their density over the window around a pixel of `rb` is the same in every tile.
+    pub rbs: crate::PixelRect,
     /// The picture the pass reads.
     pub need: crate::PixelRect,
-    /// The cells of the map's level that pixels of `rb` read.
+    /// The cells of the map's level that pixels of `rbs` read.
     pub cells: BokehCells,
 }
 
@@ -378,7 +382,7 @@ impl BokehPass {
     /// Pixels of context an output rectangle needs around it.
     #[must_use]
     pub fn halo(&self) -> usize {
-        self.v_halo + self.t_halo + self.guide_reach + self.feather
+        self.v_halo + self.t_halo + self.guide_reach + self.feather + crate::consts::SHARP_SOFT_HALF
     }
 
     /// The rectangles a pass over `want` works on, from the output outwards, and the map cells they read.
@@ -388,14 +392,16 @@ impl BokehPass {
         let r1 = want.grown(self.t_halo, fw, fh);
         let r0 = r1.grown(self.v_halo, fw, fh);
         let rb = r0.grown(self.feather, fw, fh);
-        let need = rb.grown(self.guide_reach, fw, fh);
+        let rbs = rb.grown(crate::consts::SHARP_SOFT_HALF, fw, fh);
+        let need = rbs.grown(self.guide_reach, fw, fh);
         BokehTile {
             want,
             r1,
             r0,
             rb,
+            rbs,
             need,
-            cells: self.cells_of(rb),
+            cells: self.cells_of(rbs),
         }
     }
 

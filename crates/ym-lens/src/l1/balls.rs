@@ -92,6 +92,10 @@ pub(super) struct BallInput<'a> {
     /// to drop it: the median over the ring's sectors counts); false for the classical detector's thin edge flags
     /// (a single sharp edge in the ring of a light is a gap in leaves, not a subject: the whole ring counts).
     pub sector_rule: bool,
+    /// The pixels a learned blur map calls blurred, when there is one (the classical detector has none). A ball with
+    /// a wide rim is a smooth blob, and what tells a defocused light from a smooth bright thing in focus (a bud, a
+    /// cloud, white fur) is that the map reads the blob itself as blurred ([`SOFT_BLURRED_SHARE`]).
+    pub blurred: Option<&'a [bool]>,
 }
 
 /// Margin of the take-out disc beyond 1.15 `r`, in working-grid pixels.
@@ -136,6 +140,10 @@ const NOISY_PLANE: f64 = 0.008;
 /// A ball whose rim is wider than this fraction of its radius needs the blur around it to say so (edges or a blur
 /// map): a smooth bright patch of a sharp subject (white fur, a cloud) is no ball.
 const SOFT_NEEDS_EVIDENCE: f64 = 0.9;
+/// A ball with a wide rim (softness above [`SOFT_NEEDS_EVIDENCE`]) must lie where a learned blur map reads blurred:
+/// at least this share of the pixels of its disc and rim (to 1.15 radii) must be called blurred. The blur around it
+/// is not enough (a bud in a blurred garden has that), the blob itself has to be out of focus.
+const SOFT_BLURRED_SHARE: f64 = 0.5;
 /// A ball whose rim is wider than this fraction of its radius is a smooth blob, not a ball. (A soft ball must also
 /// stand out by [`SOFT_CONTRAST`] per unit of softness, which is what keeps the dim soft blobs out: this bound
 /// only holds back the ones that are all rim.)
@@ -888,6 +896,18 @@ pub(super) fn find_balls(
             || contrast < MIN_CONTRAST + SOFT_CONTRAST * soft_excess
         {
             continue;
+        }
+        if b.softness > SOFT_NEEDS_EVIDENCE
+            && let Some(blurred) = inp.blurred
+        {
+            let (mut n, mut blurry) = (0.0f64, 0.0f64);
+            for_each_in_annulus(w, h, b.cx, b.cy, 0.0, TAKE_OUT_MIN_RADII * b.r, |x, y, _, _, _| {
+                n += 1.0;
+                blurry += f64::from(u8::from(blurred[y * w + x]));
+            });
+            if blurry < SOFT_BLURRED_SHARE * n {
+                continue;
+            }
         }
         if supported && inp.noise_v > NOISY_PLANE {
             // The edges around it are too noisy to read: no way to tell a light from a patch of a texture.

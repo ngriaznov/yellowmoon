@@ -3,11 +3,12 @@
 //! For a rectangle of the frame at scale `k`:
 //!
 //! 1. the photo's blur map is brought to the tile's pixels by a joint bilateral upsampling guided by the tile's
-//!    own pixels (radius 8), and set to 0 where the tile's local gradient energy shows a sharp edge (hair,
-//!    fine detail: sharper than the blur says);
+//!    own pixels (radius 8), and held back where the tile's picture shows detail sharper than the blur says (hair,
+//!    fine detail), by the density of such places in a window, so that no single pixel switches;
 //! 2. the balls are taken out of the picture (their disc replaced by the plane fit of their ring);
 //! 3. two gathers, across the anamorphic axis and then along the tangent, with the per-pixel length set by the
-//!    blur and the rule that a sample counts only when its blur is at least half the pixel's own;
+//!    blur, a biweight profile along the line and, for each sample, the weight of a smoothstep of its blur over
+//!    the pixel's own;
 //! 4. the balls are drawn back as ellipses carrying the energy they had.
 //!
 //! Pixels whose blur is below `b_min` are never touched. Every pixel is a function of the planes, of input
@@ -19,7 +20,8 @@ use rayon::prelude::*;
 use crate::consts::{
     ACCEPT_COLOUR, ACCEPT_CONFIDENCE, B_CAP, B_MIN, BALL_RIM_REACH_PX, FEATHER_FRACTION,
     FEATHER_MAX_PX, FEATHER_MIN_PX, GATHER_PAD, GUIDE_SIGMA_MIN, GUIDE_SIGMA_NOISE,
-    MAX_STRETCH_TAPS, MIN_LINE_PX, NOISE_FLOOR, SHARP_DILATE, SHARP_GATE, SHARP_RATIO,
+    MAX_STRETCH_TAPS, MIN_LINE_PX, NOISE_FLOOR, PROFILE_SCALE, SAMPLE_RATIO_FROM, SAMPLE_RATIO_TO,
+    SHARP_DILATE, SHARP_GATE, SHARP_RATIO, SHARP_SOFT_FROM, SHARP_SOFT_HALF, SHARP_SOFT_TO,
     SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE, STRAND_VALLEY, SUBJECT_SHARE, UPSAMPLE_RADIUS_PX,
 };
 use crate::device::{BokehCells, BokehPass, BokehTile};
@@ -187,7 +189,7 @@ impl<'a> Pass<'a> {
         let stretch = plan.stretch_per_blur();
         let v_reach = if v_on { stretch * b * hk } else { 0.0 };
         let t_reach = if t_on {
-            lens.swirl_max() * e * b * hk
+            lens.swirl_max() * e * b * hk * PROFILE_SCALE
         } else {
             0.0
         };
@@ -287,7 +289,7 @@ impl<'a> Pass<'a> {
 
     /// The context in pixels the pass needs around the rectangle it produces.
     pub(super) fn halo(&self) -> usize {
-        self.v_halo() + self.t_halo() + self.guide_reach() + self.feather
+        self.v_halo() + self.t_halo() + self.guide_reach() + self.feather + SHARP_SOFT_HALF
     }
 
     /// The rectangles a pass over `want` works on and the cells of the map they read ([`BokehPass::tile`]).
@@ -333,7 +335,12 @@ impl<'a> Pass<'a> {
         // The blur map is made over `rb`, a feather wider than `r0`, so that the soft edge of the stretch
         // at the border of the map is the same in every tile.
         let BokehTile {
-            r1, r0, rb, need, ..
+            r1,
+            r0,
+            rb,
+            rbs,
+            need,
+            ..
         } = self.rects(want);
         if !input.rect().contains(&need) {
             return Err(LensError::InputTooSmall {
@@ -353,11 +360,11 @@ impl<'a> Pass<'a> {
                     .reach
                     .max(s.r_out + 1.0)
                     .max(s.r_ball + BALL_RIM_REACH_PX + 1.0);
-                touches(&rb, s.cx, s.cy, reach)
+                touches(&rbs, s.cx, s.cy, reach)
             })
             .collect();
         // The blur map at the tile's pixels.
-        let (bt, ramp, occ) = self.tile_blur(input, rb, r0, &shapes);
+        let (bt, be, occ) = self.tile_blur(input, rbs, rb, r0, &shapes);
         if !self.v_on && !self.t_on && shapes.is_empty() {
             return crop_rgb(input, want);
         }
@@ -371,12 +378,12 @@ impl<'a> Pass<'a> {
         take_out(&mut wk, r0, &bt, &shapes);
         // The two gathers.
         let o1 = if self.v_on {
-            self.gather_vertical(&wk, r0, &bt, &ramp, r1)
+            self.gather_vertical(&wk, r0, &be, r1)
         } else {
             crop_planes(&wk, r0, r1)
         };
         let mut o2 = if self.t_on {
-            self.gather_tangential(&o1, r1, &bt, &ramp, r0, want)
+            self.gather_tangential(&o1, r1, &be, r0, want)
         } else {
             crop_planes(&o1, r1, want)
         };
@@ -392,11 +399,14 @@ impl<'a> Pass<'a> {
     }
 
     /// The blur map over `out` (made over `rb`, which holds `out` and the feather): upsampled with a joint
-    /// bilateral filter, then zeroed at sharp edges and below `b_min`; and the stretch's ramp (0 to 1), which
-    /// fades the stretch out towards the border of the map.
+    /// bilateral filter, then held back where the picture shows sharp detail (by the density of the sharp places
+    /// in a window around the pixel, not pixel by pixel) and below `b_min`; and the stretch's ramp (0 to 1), which
+    /// fades the stretch out towards the border of the map. The sharp places are known over `rbs`, `rb` and the
+    /// window's reach.
     fn tile_blur(
         &self,
         input: &ImageRef,
+        rbs: PixelRect,
         rb: PixelRect,
         out: PixelRect,
         shapes: &[Shape],
@@ -412,7 +422,7 @@ impl<'a> Pass<'a> {
         let sup = self.support;
         // The tile's square-root colours over everything the upsampling reads.
         let reach = self.support.ceil() as usize + (self.sx.max(self.sy) / 2.0).ceil() as usize + 3;
-        let er = r0.grown(reach, fw, fh);
+        let er = rbs.grown(reach, fw, fh);
         let root = root_field(input, er);
         // Cell geometry: footprints and centres along each axis.
         let axis_cells = |s: f64, n: usize, full: usize| -> Vec<(f64, usize, usize)> {
@@ -420,13 +430,13 @@ impl<'a> Pass<'a> {
         };
         let cols = axis_cells(self.sx, lw, fw);
         let rows = axis_cells(self.sy, lh, fh);
-        // Footprint means of the root colours for the cells within reach of r0.
+        // Footprint means of the root colours for the cells within reach of rbs.
         let BokehCells {
             x_lo: cx_lo,
             x_hi: cx_hi,
             y_lo: cy_lo,
             y_hi: cy_hi,
-        } = self.dev.cells_of(r0);
+        } = self.dev.cells_of(rbs);
         let ncx = cx_hi.saturating_sub(cx_lo);
         let ncy = cy_hi.saturating_sub(cy_lo);
         let mut cell_guide = vec![[0.0f32; 3]; ncx * ncy];
@@ -502,9 +512,15 @@ impl<'a> Pass<'a> {
                 }
             }
         });
-        // Zero the map where the picture shows an edge sharper than the blur says, except around a ball: its
-        // own rim is a sharp edge, and so is a highlight in it (a glass ornament's, at the centre).
-        let mut zero = self.sharp_places(input, r0, &bt, !shapes.is_empty());
+        // The sharp places over rbs, except around a ball: its own rim is a sharp edge, and so is a highlight in
+        // it (a glass ornament's, at the centre).
+        let hk = self.hk;
+        let tested = !shapes.is_empty()
+            || bt
+                .iter()
+                .any(|b| f64::from(*b) * hk >= SHARP_TEST_FROM_PX - 1.0);
+        let mut zero = self.sharp_places(input, rbs, tested);
+        let zi = |x: usize, y: usize| (y - rbs.y) * rbs.w + (x - rbs.x);
         let planes = [input.plane(0), input.plane(1), input.plane(2)];
         let lum_at = |x: i64, y: i64| -> f64 {
             let xc = x.clamp(input.x0 as i64, (input.x0 + input.width) as i64 - 1) as usize;
@@ -522,10 +538,10 @@ impl<'a> Pass<'a> {
         };
         for s in shapes {
             let reach = s.r_out.max(s.r_ball + BALL_RIM_REACH_PX) + 1.0;
-            let x0 = ((s.cx - reach).floor().max(r0.x as f64)) as usize;
-            let x1 = (((s.cx + reach).ceil() as usize) + 1).min(r0.x1());
-            let y0 = ((s.cy - reach).floor().max(r0.y as f64)) as usize;
-            let y1 = (((s.cy + reach).ceil() as usize) + 1).min(r0.y1());
+            let x0 = ((s.cx - reach).floor().max(rbs.x as f64)) as usize;
+            let x1 = (((s.cx + reach).ceil() as usize) + 1).min(rbs.x1());
+            let y0 = ((s.cy - reach).floor().max(rbs.y as f64)) as usize;
+            let y1 = (((s.cy + reach).ceil() as usize) + 1).min(rbs.y1());
             for y in y0..y1 {
                 for x in x0..x1 {
                     let (dx, dy) = (x as f64 + 0.5 - s.cx, y as f64 + 0.5 - s.cy);
@@ -536,7 +552,7 @@ impl<'a> Pass<'a> {
                         continue;
                     }
                     // Nor is the edge of a subject beside the light (a hat) the ball's rim.
-                    if zero[(y - r0.y) * r0.w + (x - r0.x)] {
+                    if zero[zi(x, y)] {
                         let c = view.sums(x, y);
                         if c.nrm > 0.0 && c.sub >= SUBJECT_SHARE * c.nrm {
                             continue;
@@ -547,17 +563,31 @@ impl<'a> Pass<'a> {
                     // Inside the ball a sharp pixel as bright as the ball is the ball's own light.
                     let core = d < s.r_ball && lum >= s.core;
                     if on_rim || core {
-                        zero[(y - r0.y) * r0.w + (x - r0.x)] = false;
+                        zero[zi(x, y)] = false;
                     }
                 }
             }
         }
-        // The test needs a blur wide enough at this scale to tell from a sharp edge.
-        let hk = self.hk;
-        for (b, z) in bt.iter_mut().zip(&zero) {
-            if *z && f64::from(*b) * hk >= SHARP_TEST_FROM_PX {
-                *b = 0.0;
-            }
+        // The density of the sharp places in the window around a pixel holds the stretch back, smoothly: nothing
+        // for a speck, everything for a region of detail or a strand along its length. It acts from a blur of
+        // about 4 px at the tile's scale, which the test needs to tell sharp from blurred (a smoothstep over 3 to
+        // 5 px, so that no pixel changes abruptly).
+        let density = box_mean(
+            &Field {
+                rect: rbs,
+                data: zero.iter().map(|z| f32::from(u8::from(*z))).collect(),
+            },
+            rb,
+            SHARP_SOFT_HALF as i64,
+        );
+        for (b, d) in bt.iter_mut().zip(&density) {
+            let hold = smoothstep(SHARP_SOFT_FROM, SHARP_SOFT_TO, f64::from(*d));
+            let px = smoothstep(
+                SHARP_TEST_FROM_PX - 1.0,
+                SHARP_TEST_FROM_PX + 1.0,
+                f64::from(*b) * hk,
+            );
+            *b = (f64::from(*b) * (1.0 - hold * px)) as f32;
         }
         // Inside a ball's take-out disc the map is the ball's radius: the rim of a light is a colour edge the
         // guided upsampling stops at, which would cut notches into the ball. (Beyond the disc the drawn oval is
@@ -575,7 +605,7 @@ impl<'a> Pass<'a> {
                     let i = (y - r0.y) * r0.w + (x - r0.x);
                     let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
                     let (dx, dy) = (px - s.cx, py - s.cy);
-                    if dx * dx + dy * dy <= s.r_out * s.r_out && !zero[i] {
+                    if dx * dx + dy * dy <= s.r_out * s.r_out && !zero[zi(x, y)] {
                         in_ball[i] = true;
                         if bt[i] < B_MIN as f32 {
                             bt[i] = floor_b;
@@ -621,40 +651,59 @@ impl<'a> Pass<'a> {
                     }
                     // (A flag of the sharp-edge test protects a strand, not a speck: only a thin dark line counts.)
                     let c = view.sums(x, y);
-                    occ[i] = (zero[i] && thin_dark(x as i64, y as i64))
+                    occ[i] = (zero[zi(x, y)] && thin_dark(x as i64, y as i64))
                         || (c.nrm > 0.0 && c.sub >= SUBJECT_SHARE * c.nrm);
                 }
             }
         }
+        if let Ok(dir) = std::env::var("YM_L1_DUMP") {
+            let wr = |name: &str, v: &[f32]| {
+                let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+                let _ = std::fs::write(format!("{dir}/{name}.f32"), bytes);
+            };
+            wr("bt", &bt);
+            wr("ramp", &ramp);
+            wr("density", &density);
+            wr("occ", &occ.iter().map(|z| f32::from(*z)).collect::<Vec<_>>());
+            let _ = std::fs::write(
+                format!("{dir}/rect.txt"),
+                format!("{} {} {} {}", r0.x, r0.y, r0.w, r0.h),
+            );
+        }
+        // What the gathers use as every pixel's blur: the map's, held at the cap and faded out towards its border,
+        // so that the stretch of a pixel and what it takes from the others both die away at the border.
+        let be: Vec<f32> = bt
+            .iter()
+            .zip(&ramp)
+            .map(|(b, r)| (f64::from(*b).min(B_CAP) * f64::from(*r)) as f32)
+            .collect();
         (
             crop_scalar(&bt, r0, out),
-            crop_scalar(&ramp, r0, out),
+            crop_scalar(&be, r0, out),
             crop_bool(&occ, r0, out),
         )
     }
 
-    /// Pixels of `r0` next to an edge sharper than their blur.
+    /// Pixels of `rs` next to an edge sharper than their blur.
     ///
     /// The picture's gradient energy is compared with that of its 3 x 3 mean, summed over 5 x 5 windows: a
     /// blurred edge loses almost nothing to a 3 x 3 mean, a sharp one (hair, fine detail) loses a lot. Only
     /// windows with gradient well above the noise count. The result is dilated by 2 pixels.
     ///
-    /// The flags are read at the pixels blurred by at least [`SHARP_TEST_FROM_PX`] and around the balls
-    /// (`balls`), nowhere else; a region with neither is not tested. (A region's flags never depend on what the
+    /// The flags are wanted at the pixels blurred by about [`SHARP_TEST_FROM_PX`] or more and around the balls
+    /// (`tested`), nowhere else; a region with neither is not tested. (A region's flags never depend on what the
     /// region holds: the same pixel gets the same flag in every tile.)
-    fn sharp_places(&self, input: &ImageRef, r0: PixelRect, bt: &[f32], balls: bool) -> Vec<bool> {
+    fn sharp_places(&self, input: &ImageRef, rs: PixelRect, tested: bool) -> Vec<bool> {
         let (fw, fh) = (self.fw, self.fh);
-        let hk = self.hk;
-        // Only where some pixel is blurred enough to tell, or a ball is near.
-        if !balls && !bt.iter().any(|b| f64::from(*b) * hk >= SHARP_TEST_FROM_PX) {
-            return vec![false; r0.w * r0.h];
+        if !tested {
+            return vec![false; rs.w * rs.h];
         }
-        let v = lum_root_field(input, r0.grown(6, fw, fh));
-        let s3 = box_mean3(&v, r0.grown(5, fw, fh));
-        let p3 = r0.grown(4, fw, fh);
+        let v = lum_root_field(input, rs.grown(6, fw, fh));
+        let s3 = box_mean3(&v, rs.grown(5, fw, fh));
+        let p3 = rs.grown(4, fw, fh);
         let ea = grad_energy(&v, p3);
         let eb = grad_energy(&s3, p3);
-        let p4 = r0.grown(2, fw, fh);
+        let p4 = rs.grown(2, fw, fh);
         let sa = window_sum(&ea, p4, 2);
         let sb = window_sum(&eb, p4, 2);
         let sigma = self.noise_t();
@@ -669,24 +718,17 @@ impl<'a> Pass<'a> {
                 .collect(),
         };
         // Dilate by 2 pixels (5 x 5): rows, then columns.
-        let rows = window_max(&flags, r0, SHARP_DILATE as i64);
+        let rows = window_max(&flags, rs, SHARP_DILATE as i64);
         rows.data.iter().map(|f| *f > 0.0).collect()
     }
 
     /// The gather across the anamorphic axis over `r1`; `wk` covers `r0`.
     ///
-    /// A pixel whose whole line passes the sample rule (every pixel on it has at least half the pixel's own
-    /// blur) gets the exact mean of the piecewise-linear picture along the line, summed segment by segment
-    /// over the at most `2 l + 3` pixels the line touches; any other pixel averages explicit taps with the rule
-    /// applied to each. The kernel (`lens_reshape.wgsl`) runs the same loops in `f32`.
-    fn gather_vertical(
-        &self,
-        wk: &[f32],
-        r0: PixelRect,
-        bt: &[f32],
-        ramp: &[f32],
-        r1: PixelRect,
-    ) -> Vec<f32> {
+    /// A pixel averages the picture over a line of half-length `l` through it, `2 ceil(l) + 1` evenly spaced taps (at
+    /// most 65) read with linear interpolation: its own value with the weight 1, every other tap with the weight of
+    /// the profile at its place (a biweight) times the sample rule's smoothstep of its blur over the pixel's own.
+    /// The kernel (`lens_reshape.wgsl`) runs the same loops in `f32`.
+    fn gather_vertical(&self, wk: &[f32], r0: PixelRect, bt: &[f32], r1: PixelRect) -> Vec<f32> {
         let plane0 = r0.w * r0.h;
         let plane1 = r1.w * r1.h;
         let mut out = vec![0.0f32; 3 * plane1];
@@ -709,8 +751,8 @@ impl<'a> Pass<'a> {
                     let x = r1.x + col;
                     let i0 = (y - r0.y) * r0.w + (x - r0.x);
                     let bp = f64::from(bt[i0]);
-                    let len = q1 * bp.min(B_CAP) * self.hk * f64::from(ramp[i0]);
-                    if bp < B_MIN || len < MIN_LINE_PX {
+                    let len = q1 * bp * self.hk * knee(bp);
+                    if len < MIN_LINE_PX {
                         ra[col] = wk[i0];
                         rb[col] = wk[plane0 + i0];
                         rc[col] = wk[2 * plane0 + i0];
@@ -725,41 +767,41 @@ impl<'a> Pass<'a> {
                         (1, (y - r0.y) * r0.w)
                     };
                     let at = |j: i64| -> usize { base + (j.clamp(lo, hi) - lo) as usize * step };
-                    // The pixels the line touches (nearest to its ends), inside the region.
-                    let first = (pos as f64 - len + 0.5).floor() as i64;
-                    let last = (pos as f64 + len + 0.5).floor() as i64;
-                    let floor = 0.5 * bp;
-                    if (first.clamp(lo, hi)..=last.clamp(lo, hi))
-                        .all(|j| f64::from(bt[at(j)]) >= floor)
-                    {
-                        let m = line_mean(wk, plane0, at, pos, len);
-                        ra[col] = m[0] as f32;
-                        rb[col] = m[1] as f32;
-                        rc[col] = m[2] as f32;
-                        continue;
-                    }
-                    let (taps, half) = taps_for(len);
-                    let step = len / half as f64;
+                    let half = taps_for(len);
+                    let tap_step = len / half as f64;
                     let pos = pos as f64;
                     let mut acc = [0.0f64; 3];
                     let mut wsum = 0.0f64;
-                    for t in 0..taps {
-                        let s = pos + (t as f64 - half as f64) * step;
-                        let ni = ((s + 0.5).floor() as i64).clamp(lo, hi);
-                        let bs = f64::from(bt[at(ni)]);
-                        if bs < 0.5 * bp {
-                            continue;
+                    // The pixel's own value (weight 1), then the taps outwards on each side.
+                    let own = [wk[i0], wk[plane0 + i0], wk[2 * plane0 + i0]];
+                    for ch in 0..3 {
+                        acc[ch] = f64::from(own[ch]);
+                    }
+                    wsum += 1.0;
+                    for sign in [-1.0f64, 1.0] {
+                        for k in 1..=half {
+                            let off = sign * k as f64 * tap_step;
+                            let wp = profile(off / len);
+                            if wp <= 0.0 {
+                                break;
+                            }
+                            let s = pos + off;
+                            let f0 = s.floor();
+                            let fr = s - f0;
+                            let (j0, j1) = (at(f0 as i64), at(f0 as i64 + 1));
+                            let (b0, b1) = (f64::from(bt[j0]), f64::from(bt[j1]));
+                            let bs = b0 + fr * (b1 - b0);
+                            let wt = wp * sample_weight(bs / bp);
+                            if wt <= 0.0 {
+                                continue;
+                            }
+                            for ch in 0..3 {
+                                let v0 = f64::from(wk[ch * plane0 + j0]);
+                                let v1 = f64::from(wk[ch * plane0 + j1]);
+                                acc[ch] += wt * (v0 + fr * (v1 - v0));
+                            }
+                            wsum += wt;
                         }
-                        let wt = if t == 0 || t == taps - 1 { 0.5 } else { 1.0 };
-                        let f0 = s.floor();
-                        let fr = s - f0;
-                        let (j0, j1) = (at(f0 as i64), at(f0 as i64 + 1));
-                        for ch in 0..3 {
-                            let v0 = f64::from(wk[ch * plane0 + j0]);
-                            let v1 = f64::from(wk[ch * plane0 + j1]);
-                            acc[ch] += wt * (v0 + fr * (v1 - v0));
-                        }
-                        wsum += wt;
                     }
                     if wsum > 0.0 {
                         ra[col] = (acc[0] / wsum) as f32;
@@ -781,7 +823,6 @@ impl<'a> Pass<'a> {
         o1: &[f32],
         r1: PixelRect,
         bt: &[f32],
-        ramp: &[f32],
         r0: PixelRect,
         want: PixelRect,
     ) -> Vec<f32> {
@@ -808,7 +849,7 @@ impl<'a> Pass<'a> {
                         rc[col] = o1[2 * plane1 + i1];
                     };
                     let bp = f64::from(bt[(y - r0.y) * r0.w + (x - r0.x)]);
-                    if bp < B_MIN {
+                    if bp <= 0.5 * B_MIN {
                         copy(ra, rb, rc);
                         continue;
                     }
@@ -816,54 +857,71 @@ impl<'a> Pass<'a> {
                     let rr = (dx * dx + dy * dy).sqrt();
                     let rho = rr / self.hk;
                     let sigma = profile_at(radii, swirl, rho);
-                    let ramp_here = f64::from(ramp[(y - r0.y) * r0.w + (x - r0.x)]);
-                    let len = sigma * self.e * bp.min(B_CAP) * self.hk * ramp_here;
+                    let len = sigma * self.e * PROFILE_SCALE * bp * self.hk * knee(bp);
                     if rr < 1e-9 || len < MIN_LINE_PX {
                         copy(ra, rb, rc);
                         continue;
                     }
                     let (ux, uy) = (-dy / rr, dx / rr);
-                    let (taps, half) = taps_for(len);
+                    let half = taps_for(len);
                     let step = len / half as f64;
                     let mut acc = [0.0f64; 3];
                     let mut wsum = 0.0f64;
-                    for t in 0..taps {
-                        let off = (t as f64 - half as f64) * step;
-                        let (sx, sy) = (x as f64 + off * ux, y as f64 + off * uy);
-                        let nx = ((sx + 0.5).floor() as i64).clamp(r0.x as i64, r0.x1() as i64 - 1)
-                            as usize;
-                        let ny = ((sy + 0.5).floor() as i64).clamp(r0.y as i64, r0.y1() as i64 - 1)
-                            as usize;
-                        let bs = f64::from(bt[(ny - r0.y) * r0.w + (nx - r0.x)]);
-                        if bs < 0.5 * bp {
-                            continue;
+                    for ch in 0..3 {
+                        acc[ch] = f64::from(o1[ch * plane1 + i1]);
+                    }
+                    wsum += 1.0;
+                    let cl = |v: i64, lo: usize, hi: usize| v.clamp(lo as i64, hi as i64 - 1) as usize;
+                    for sign in [-1.0f64, 1.0] {
+                        for k in 1..=half {
+                            let off = sign * k as f64 * step;
+                            let wp = profile(off / len);
+                            if wp <= 0.0 {
+                                break;
+                            }
+                            let (sx, sy) = (x as f64 + off * ux, y as f64 + off * uy);
+                            let (fx, fy) = (sx.floor(), sy.floor());
+                            let (tx, ty) = (sx - fx, sy - fy);
+                            // The blur at the sample, bilinear between the four pixels around it.
+                            let (bx0, bx1) = (
+                                cl(fx as i64, r0.x, r0.x1()),
+                                cl(fx as i64 + 1, r0.x, r0.x1()),
+                            );
+                            let (by0, by1) = (
+                                cl(fy as i64, r0.y, r0.y1()),
+                                cl(fy as i64 + 1, r0.y, r0.y1()),
+                            );
+                            let bat = |xx: usize, yy: usize| {
+                                f64::from(bt[(yy - r0.y) * r0.w + (xx - r0.x)])
+                            };
+                            let btop = bat(bx0, by0) + tx * (bat(bx1, by0) - bat(bx0, by0));
+                            let bbot = bat(bx0, by1) + tx * (bat(bx1, by1) - bat(bx0, by1));
+                            let bs = btop + ty * (bbot - btop);
+                            let wt = wp * sample_weight(bs / bp);
+                            if wt <= 0.0 {
+                                continue;
+                            }
+                            let (x0, x1) = (
+                                cl(fx as i64, r1.x, r1.x1()),
+                                cl(fx as i64 + 1, r1.x, r1.x1()),
+                            );
+                            let (y0, y1) = (
+                                cl(fy as i64, r1.y, r1.y1()),
+                                cl(fy as i64 + 1, r1.y, r1.y1()),
+                            );
+                            let idx = |xx: usize, yy: usize| (yy - r1.y) * r1.w + (xx - r1.x);
+                            let (i00, i10, i01, i11) =
+                                (idx(x0, y0), idx(x1, y0), idx(x0, y1), idx(x1, y1));
+                            for ch in 0..3 {
+                                let p = &o1[ch * plane1..(ch + 1) * plane1];
+                                let top = f64::from(p[i00])
+                                    + tx * (f64::from(p[i10]) - f64::from(p[i00]));
+                                let bot = f64::from(p[i01])
+                                    + tx * (f64::from(p[i11]) - f64::from(p[i01]));
+                                acc[ch] += wt * (top + ty * (bot - top));
+                            }
+                            wsum += wt;
                         }
-                        let wt = if t == 0 || t == taps - 1 { 0.5 } else { 1.0 };
-                        let (fx, fy) = (sx.floor(), sy.floor());
-                        let (tx, ty) = (sx - fx, sy - fy);
-                        let cl = |v: i64, lo: usize, hi: usize| {
-                            v.clamp(lo as i64, hi as i64 - 1) as usize
-                        };
-                        let (x0, x1) = (
-                            cl(fx as i64, r1.x, r1.x1()),
-                            cl(fx as i64 + 1, r1.x, r1.x1()),
-                        );
-                        let (y0, y1) = (
-                            cl(fy as i64, r1.y, r1.y1()),
-                            cl(fy as i64 + 1, r1.y, r1.y1()),
-                        );
-                        let idx = |xx: usize, yy: usize| (yy - r1.y) * r1.w + (xx - r1.x);
-                        let (i00, i10, i01, i11) =
-                            (idx(x0, y0), idx(x1, y0), idx(x0, y1), idx(x1, y1));
-                        for ch in 0..3 {
-                            let p = &o1[ch * plane1..(ch + 1) * plane1];
-                            let top =
-                                f64::from(p[i00]) + tx * (f64::from(p[i10]) - f64::from(p[i00]));
-                            let bot =
-                                f64::from(p[i01]) + tx * (f64::from(p[i11]) - f64::from(p[i01]));
-                            acc[ch] += wt * (top + ty * (bot - top));
-                        }
-                        wsum += wt;
                     }
                     if wsum > 0.0 {
                         ra[col] = (acc[0] / wsum) as f32;
@@ -878,48 +936,36 @@ impl<'a> Pass<'a> {
     }
 }
 
-/// The mean over `[pos - len, pos + len]` of the piecewise-linear picture along a line, per channel: the picture
-/// at the line's integer positions `j` is `wk[c * plane + at(j)]` (`at` holds `j` inside the region, which
-/// repeats the edge pixel beyond the ends), linear between them.
-///
-/// The integral is summed unit segment by unit segment, from the segment holding the start of the interval,
-/// each as the width of its part of the interval times the picture's mean over that part. The positions are
-/// relative to the integer `pos`, so no value of the order of the frame's size enters a sum and any tiling
-/// gives the same bits. At most `2 len + 2` segments.
+/// The weight of a tap at `u` (its offset over the line's half-length, -1 to 1): a biweight, `(1 - u^2)^2`.
 #[inline]
-fn line_mean(wk: &[f32], plane: usize, at: impl Fn(i64) -> usize, pos: i64, len: f64) -> [f64; 3] {
-    let value = |j: i64| -> [f64; 3] {
-        let i = at(j);
-        [
-            f64::from(wk[i]),
-            f64::from(wk[plane + i]),
-            f64::from(wk[2 * plane + i]),
-        ]
-    };
-    let (m0, m1) = ((-len).floor() as i64, len.floor() as i64);
-    let mut acc = [0.0f64; 3];
-    let mut q = value(pos + m0);
-    for m in m0..=m1 {
-        let next = value(pos + m + 1);
-        let (u, v) = ((m as f64).max(-len), ((m + 1) as f64).min(len));
-        if v > u {
-            let w = v - u;
-            let mid = 0.5 * ((u - m as f64) + (v - m as f64));
-            for c in 0..3 {
-                acc[c] += w * (q[c] + mid * (next[c] - q[c]));
-            }
-        }
-        q = next;
-    }
-    let norm = 2.0 * len;
-    [acc[0] / norm, acc[1] / norm, acc[2] / norm]
+fn profile(u: f64) -> f64 {
+    let a = 1.0 - u * u;
+    if a <= 0.0 { 0.0 } else { a * a }
 }
 
-/// Samples on a line of half-length `len` pixels: an odd count with the centre included, at most the cap.
-/// Returns the count and the number of steps either side of the centre.
-fn taps_for(len: f64) -> (usize, usize) {
-    let half = (len.ceil() as usize).clamp(1, (MAX_STRETCH_TAPS - 1) / 2);
-    (2 * half + 1, half)
+/// `0` below `e0`, `1` above `e1`, a smoothstep between.
+#[inline]
+fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The weight of a sample whose blur is `ratio` times the pixel's own: nothing from [`SAMPLE_RATIO_FROM`], all of
+/// it from [`SAMPLE_RATIO_TO`].
+#[inline]
+fn sample_weight(ratio: f64) -> f64 {
+    smoothstep(SAMPLE_RATIO_FROM, SAMPLE_RATIO_TO, ratio)
+}
+
+/// The share of a line a pixel keeps, by its own blur `bp`: nothing at half of `b_min`, all of it from `b_min`.
+#[inline]
+fn knee(bp: f64) -> f64 {
+    smoothstep(0.5 * B_MIN, B_MIN, bp)
+}
+
+/// Samples on a line of half-length `len` pixels: the centre and this many either side of it, at most the cap.
+fn taps_for(len: f64) -> usize {
+    (len.ceil() as usize).clamp(1, (MAX_STRETCH_TAPS - 1) / 2)
 }
 
 /// True when the disc of radius `reach` around `(cx, cy)` touches the rectangle.
@@ -1009,10 +1055,48 @@ fn crop_scalar(data: &[f32], outer: PixelRect, inner: PixelRect) -> Vec<f32> {
 }
 
 /// The mean of `f` over the `(2 half + 1)^2` window of every pixel of `dst` (reads clamp to `f`'s rectangle).
+///
+/// `f` holds counts (0 or 1: the pixels with a blur, the sharp places): their sums are whole numbers, which `f64`
+/// holds exactly in any order, so running sums cost a few operations a pixel whatever the window, and any tiling
+/// of the frame gives the same bits.
 fn box_mean(f: &Field, dst: PixelRect, half: i64) -> Vec<f32> {
-    let n = ((2 * half + 1) * (2 * half + 1)) as f32;
-    let hs = horizontal(f, dst, half, |acc, v| acc + v);
-    vertical(&hs, dst, half, |acc, v| acc + v, move |sum| sum / n)
+    let side = (2 * half + 1) as usize;
+    let n = (side * side) as f32;
+    let width = dst.w + 2 * half as usize;
+    let rows = dst.h + 2 * half as usize;
+    // The sums along x of the rows the vertical window reaches.
+    let mut hs = vec![0.0f64; rows * dst.w];
+    hs.par_chunks_mut(dst.w).enumerate().for_each(|(r, row)| {
+        let y = dst.y as i64 - half + r as i64;
+        let mut pre = vec![0.0f64; width + 1];
+        for i in 0..width {
+            pre[i + 1] = pre[i] + f64::from(f.get(dst.x as i64 - half + i as i64, y));
+        }
+        for (c, o) in row.iter_mut().enumerate() {
+            *o = pre[c + side] - pre[c];
+        }
+    });
+    // Then down each column.
+    let mut out = vec![0.0f32; dst.w * dst.h];
+    let columns: Vec<Vec<f32>> = (0..dst.w)
+        .into_par_iter()
+        .map(|c| {
+            let mut acc: f64 = (0..side).map(|r| hs[r * dst.w + c]).sum();
+            let mut col = Vec::with_capacity(dst.h);
+            col.push(acc as f32 / n);
+            for r in 1..dst.h {
+                acc += hs[(r + side - 1) * dst.w + c] - hs[(r - 1) * dst.w + c];
+                col.push(acc as f32 / n);
+            }
+            col
+        })
+        .collect();
+    for (c, col) in columns.iter().enumerate() {
+        for (r, v) in col.iter().enumerate() {
+            out[r * dst.w + c] = *v;
+        }
+    }
+    out
 }
 
 /// The 3 x 3 mean of `f` over `dst` (reads clamp to `f`'s rectangle): rows, then columns.
@@ -1238,74 +1322,67 @@ fn redraw(
 mod tests {
     use super::*;
 
-    /// A planar picture of `n` pixels along one line (three channels).
-    fn picture(n: usize) -> Vec<f32> {
-        (0..3 * n)
-            .map(|i| ((i * 7919) % 1000) as f32 / 250.0)
-            .collect()
-    }
-
-    /// The reference: the mean of the piecewise-linear picture by fine sampling.
-    fn sampled(wk: &[f32], n: usize, c: usize, pos: i64, len: f64) -> f64 {
-        let at = |t: f64| -> f64 {
-            let t = t.clamp(0.0, (n - 1) as f64);
-            let j = (t.floor() as usize).min(n - 2);
-            let f = t - j as f64;
-            let v = |a: usize| f64::from(wk[c * n + a]);
-            v(j) + f * (v(j + 1) - v(j))
-        };
-        let steps = 200_000;
-        let mut acc = 0.0;
-        for i in 0..steps {
-            acc += at(pos as f64 - len + 2.0 * len * (i as f64 + 0.5) / steps as f64);
+    /// The variance of the profile over `[-1, 1]` against its mass, by a fine sum.
+    fn moments() -> (f64, f64) {
+        let n = 200_000;
+        let (mut mass, mut var) = (0.0, 0.0);
+        for i in 0..n {
+            let u = -1.0 + 2.0 * (i as f64 + 0.5) / n as f64;
+            let w = profile(u);
+            mass += w;
+            var += w * u * u;
         }
-        acc / steps as f64
+        (mass * 2.0 / n as f64, var / mass)
     }
 
     #[test]
-    fn the_line_mean_is_the_integral_of_the_linear_picture() {
-        let n = 40;
-        let wk = picture(n);
-        let at = |j: i64| j.clamp(0, n as i64 - 1) as usize;
-        for (pos, len) in [(17, 3.4), (20, 0.7), (11, 6.0), (25, 5.25)] {
-            let got = line_mean(&wk, n, at, pos, len);
-            for (c, g) in got.iter().enumerate() {
-                let want = sampled(&wk, n, c, pos, len);
-                assert!(
-                    (g - want).abs() < 1e-6,
-                    "pos {pos} len {len} channel {c}: {g} against {want}"
-                );
-            }
-        }
+    fn the_profile_has_the_variance_the_scale_assumes() {
+        // A biweight has a variance of 1/7 of its squared half-length, a box of 1/3: the gathers' lines are
+        // `PROFILE_SCALE` = sqrt(7/3) times the half-length of the box with the same spread.
+        let (mass, var) = moments();
+        assert!((mass - 16.0 / 15.0).abs() < 1e-6, "mass {mass}");
+        assert!((var - 1.0 / 7.0).abs() < 1e-6, "variance {var}");
+        let scale = (var * 3.0).recip().sqrt();
+        assert!((scale - PROFILE_SCALE).abs() < 1e-6, "{scale}");
     }
 
     #[test]
-    fn the_edges_repeat_and_a_constant_stays() {
-        let n = 16;
-        let wk = vec![0.75f32; 3 * n];
-        let at = |j: i64| j.clamp(0, n as i64 - 1) as usize;
-        // An interval hanging over the line's end.
-        let m = line_mean(&wk, n, at, 1, 5.0);
-        for v in m {
-            assert!((v - 0.75).abs() < 1e-12, "{v}");
+    fn a_line_of_the_planned_length_turns_a_disc_into_the_spread_of_the_ellipse() {
+        // A disc of radius `b` has a one-dimensional variance of `b^2 / 4` along a line through it; the ellipse
+        // `q` times taller has `q^2 b^2 / 4`. The biweight line of the plan's half-length (per unit of `b`) adds
+        // its own `l^2 / 7`, so the two are the same, whatever the amount.
+        let (_, var) = moments();
+        for q in [1.1f64, 1.25, 1.5, 1.75, 2.0] {
+            let l = (3.0 * (q * q - 1.0)).sqrt() / 2.0 * PROFILE_SCALE;
+            let spread = 0.25 + l * l * var;
+            assert!(
+                (spread - q * q / 4.0).abs() < 1e-6,
+                "q {q}: {spread} against {}",
+                q * q / 4.0
+            );
         }
     }
 
     #[test]
-    fn a_line_in_a_region_with_another_origin_gives_the_same_bits() {
-        // The same line read from two regions that start at different places gives the same mean, bit for bit:
-        // the sum runs over the same unit segments, whatever the region's origin.
-        let n = 90;
-        let wk = picture(n);
-        let whole = |j: i64| j.clamp(0, n as i64 - 1) as usize;
-        let sub: Vec<f32> = (0..3)
-            .flat_map(|c| wk[c * n + 30..c * n + 70].to_vec())
-            .collect();
-        let part = |j: i64| (j.clamp(30, 69) - 30) as usize;
-        let a = line_mean(&wk, n, whole, 48, 9.3);
-        let b = line_mean(&sub, 40, part, 48, 9.3);
-        for (x, y) in a.iter().zip(&b) {
-            assert_eq!(x.to_bits(), y.to_bits());
+    fn the_profile_and_the_sample_weight_are_continuous_and_end_at_zero() {
+        assert_eq!(profile(1.0), 0.0);
+        assert_eq!(profile(-1.0), 0.0);
+        assert_eq!(profile(1.5), 0.0);
+        assert_eq!(profile(0.0), 1.0);
+        // Smooth at the end: the value and the slope vanish there.
+        assert!(profile(0.999) < 1e-5);
+        assert_eq!(sample_weight(0.0), 0.0);
+        assert_eq!(sample_weight(SAMPLE_RATIO_FROM), 0.0);
+        assert_eq!(sample_weight(SAMPLE_RATIO_TO), 1.0);
+        assert_eq!(sample_weight(3.0), 1.0);
+        let mut prev = 0.0;
+        for i in 0..=200 {
+            let w = sample_weight(i as f64 / 100.0);
+            assert!(w >= prev - 1e-15 && (w - prev).abs() < 0.03, "{i}: {prev} -> {w}");
+            prev = w;
         }
+        assert_eq!(knee(0.0), 0.0);
+        assert_eq!(knee(B_MIN), 1.0);
+        assert!(knee(0.75 * B_MIN) > 0.0 && knee(0.75 * B_MIN) < 1.0);
     }
 }

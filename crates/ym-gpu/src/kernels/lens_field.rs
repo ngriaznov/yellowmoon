@@ -33,7 +33,7 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use ym_lens::consts::{COPY_BELOW_PX, MAX_TAPS_SIDE, RADII, TAP_SPACING_MAX_PX, W_MAX};
+use ym_lens::consts::{COPY_BELOW_PX, MAX_TAPS_SIDE, RADII, TAP_SPACING_MAX_PX, W_KNEE, W_MAX};
 use ym_lens::device::{FIELD_HEADER, FIELD_TABLE_SIZES, field_table_offset};
 pub use ym_lens::device::{FieldPass, FieldTablesData};
 
@@ -440,6 +440,7 @@ fn constants() -> String {
     format!(
         "const LF_RADII: u32 = {}u;\n\
          const LF_W_MAX: f32 = {:?};\n\
+         const LF_W_KNEE: f32 = {:?};\n\
          const LF_COPY_BELOW_PX: f32 = {:?};\n\
          const LF_MAX_TAPS: u32 = {}u;\n\
          const LF_SPACING_MAX: f32 = {:?};\n\
@@ -447,6 +448,7 @@ fn constants() -> String {
          var<private> LF_OFF: array<u32, {}> = array<u32, {}>({});\n",
         RADII,
         W_MAX as f32,
+        W_KNEE as f32,
         COPY_BELOW_PX as f32,
         MAX_TAPS_SIDE,
         TAP_SPACING_MAX_PX as f32,

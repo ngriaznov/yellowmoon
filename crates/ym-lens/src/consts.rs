@@ -38,7 +38,27 @@ pub const RIM_SAMPLES: usize = 16;
 pub const STARBURST_MAX_RADIUS: f64 = 0.08;
 
 /// Largest half-width of a field-optics kernel, in half-diagonals (`docs/21` section 4, L2).
+///
+/// The width is bent towards it, never cut at it: [`W_KNEE`].
 pub const W_MAX: f64 = 0.012;
+
+/// Where the half-width of a field-optics kernel starts to bend towards [`W_MAX`], in half-diagonals: up to
+/// here it is what the lens's curves and the attachment say, beyond it it grows ever more slowly and
+/// approaches [`W_MAX`] without reaching it, so the spread has no corner where a hard cap would engage
+/// (`docs/21` section 4, L2, *As built (the field law)*).
+pub const W_KNEE: f64 = 0.75 * W_MAX;
+
+/// The share of the traced lateral colour the field optics keep (`docs/21` section 4, L2, *As built (the
+/// field law)*; `data/lenses/README.md`, *Tuned by hand*).
+///
+/// A channel's kernel is moved, when the tables are projected on the camera, so that its centroid's offset from
+/// the green channel's is this fraction of the traced one: 1 would draw the traced fringes, 0 none. The traced
+/// lenses, widened to the spread the runtime draws, put red and blue 0.35 % (Vintage) to 0.45 % (Classic) of a
+/// half-diagonal apart at the sides of the frame at Edges 100 with the attachment's doubling (3 to 6 px on a
+/// 1500 px frame), far more than a real lens shows (a couple of pixels at the corner of 24 MP, 0.05 to 0.1 %).
+/// With 0.3 the worst lens (Classic, Edges 100, Anamorphic 100) has 0.13 %. It is one number for every lens,
+/// so each keeps its own lateral colour relative to the others.
+pub const LATERAL_COLOR_SCALE: f64 = 0.3;
 
 /// A field-optics kernel whose half-width is below this many pixels is a copy of the input.
 pub const COPY_BELOW_PX: f64 = 0.5;
@@ -135,6 +155,11 @@ pub const CLIP_RAMP: (f64, f64) = (0.95, 0.98);
 /// The clip test on the lens plane, where binning mixes clipped and unclipped photosites.
 pub const CLIP_RAMP_PLANE: (f64, f64) = (0.90, 0.97);
 
+/// A clipped pixel whose channels, in clip levels, differ by less than this share of the largest are at the clip
+/// pattern (`g0`: a colour cast of the white balance, which highlight recovery removes) and are restored as a
+/// neutral (`l3::restore`).
+pub const CLIP_PATTERN_SPREAD: f64 = 0.1;
+
 /// The highlights `H` are the restored light weighted by a soft knee that is 0 at this fraction of the clip
 /// level and 1 at the clip level.
 pub const KNEE_START: f64 = 0.5;
@@ -183,6 +208,76 @@ pub const EDGE_FLOOR_PX: f64 = 1.0;
 /// (2^-18, a quarter of the step of a 16-bit code at the clip level), so a photo with hundreds of lights does
 /// not pay for thousands of ghosts that cannot be seen. The choice depends on the plan and the planes only.
 pub const GHOST_PRUNE_BUDGET: f64 = 1.0 / 262_144.0;
+
+/// The least width of a ghost's edge, as the standard deviation of its Gaussian step in ghost radii (the lens
+/// data give `soft`, some 0.03: a near-hard disc). The 10 to 90 % width of the step is 2.56 standard
+/// deviations, so 0.08 is a ramp of 20 % of the radius: a ghost is a defocused image of the light, never a
+/// sticker with an edge.
+pub const GHOST_SOFT_MIN: f64 = 0.08;
+
+/// The most the normalised tint of a ghost's coating may differ between channels (largest over smallest). The
+/// data's coatings, the product of two reflectance spectra, are far more saturated than a ghost looks (6 to 23
+/// times between the channels); the tint is brought to this by raising it to a power below 1 (`l3::items`), so
+/// a coating keeps its hue and its ghosts come out pale.
+pub const GHOST_TINT_MAX_RATIO: f64 = 1.2;
+
+/// The brightest a ghost of one light gets, in clip levels at Flares 100, whatever the light is (the same ghost
+/// of the cells of a large light counts together): a ghost brighter than this is brought down to it. A small
+/// clipped light is assumed thousands of times brighter than the clip level (`LIGHT_BOOST_MAX_EV`), which spread
+/// over a ghost's area still made discs brighter than the scene around them. Applies to ghosts of apothem
+/// [`GHOST_FULL_RADIUS`] and larger; smaller ones get less (`l3::items::ghost_peak_max`).
+pub const GHOST_PEAK_MAX: f64 = 0.07;
+
+/// The apothem, in half-diagonals, from which a ghost may be as bright as [`GHOST_PEAK_MAX`].
+pub const GHOST_FULL_RADIUS: f64 = 0.1;
+
+/// The least share of [`GHOST_PEAK_MAX`] a small ghost is allowed.
+pub const GHOST_SMALL_SHARE: f64 = 0.25;
+
+/// The peak of a streak at its light, in clip levels, for a light that is bright and compact, per unit of the
+/// attachment's streak `fraction` (data version 2: 0.004, so 0.25): the streak is a line a quarter of the clip
+/// level bright at its core at most, never as bright as the light it comes from.
+pub const STREAK_PEAK_PER_FRACTION: f64 = 100.0;
+
+/// The light's energy (`mean_c(E_c / g0_c)`, clip levels times half-diagonals squared) at which a streak reaches
+/// half its peak: the peak is `peak e / (e + STREAK_E_HALF)`, a law that saturates, so a light of ten thousand
+/// pixels does not make a streak a thousand times stronger than one of ten.
+pub const STREAK_E_HALF: f64 = 0.02;
+
+/// Lights with less energy than this (same unit) make no streak.
+pub const STREAK_E_MIN: f64 = 0.004;
+
+/// The least standard deviation of a streak across the axis, in half-diagonals (1.5 px of the 1500 px fit
+/// frame): a soft line however small the light is.
+pub const STREAK_SIGMA_MIN_HD: f64 = 0.0017;
+
+/// A streak whose light is wider than this (standard deviation across the axis, half-diagonals) is a band:
+/// its peak is divided by `1 + sigma / STREAK_SIGMA_REF_HD`, so a large bright area makes a soft faint band.
+pub const STREAK_SIGMA_REF_HD: f64 = 0.04;
+
+/// The reach of a streak grows with the logarithm of the light's energy: `STREAK_REACH_AT_E0` (of the attachment's
+/// reach) at the energy `STREAK_REACH_E0`, `STREAK_REACH_PER_DECADE` more for every factor 10, at least
+/// `STREAK_REACH_MIN` and at most 1.
+pub const STREAK_REACH_E0: f64 = 0.045;
+/// See [`STREAK_REACH_E0`].
+pub const STREAK_REACH_AT_E0: f64 = 0.5;
+/// See [`STREAK_REACH_E0`].
+pub const STREAK_REACH_PER_DECADE: f64 = 0.5;
+/// See [`STREAK_REACH_E0`].
+pub const STREAK_REACH_MIN: f64 = 0.3;
+
+/// Only this many lights of a frame, the brightest, make a streak: the streaks are the signature of the few
+/// brightest lights, and fifty lamps do not draw fifty lines.
+pub const STREAK_MAX_LIGHTS: usize = 10;
+
+/// The sum over the lights of a frame of (peak in clip levels times reach in half-diagonals) is brought down to
+/// this when it is larger, every streak by the same factor, so a frame of fifty lights does not fill with lines.
+pub const STREAK_TOTAL_CAP: f64 = 1.5;
+
+/// A channel's profile along the streak is the attachment's profile stretched by the square root of the channel's
+/// tint over the largest channel's, at least this: the red and green die out sooner than the blue, so a streak is the light's
+/// own colour at its core and turns blue as it fades.
+pub const STREAK_STRETCH_MIN: f64 = 0.35;
 
 /// Ghosts whose edges and rim change slowly are drawn on a grid of nodes `L` pixels apart (`L` is 2, 4, 8, 16 or
 /// 32, the largest that keeps this many nodes across the narrowest feature) and read back by bilinear interpolation:
@@ -244,8 +339,10 @@ pub const MIN_BLUR_AREA: f64 = 0.02;
 /// The sharp-edge test runs only where the blur is at least this many pixels at the tile's scale.
 pub const SHARP_TEST_FROM_PX: f64 = 4.0;
 
-/// A pixel is sharp when the gradient energy of the picture exceeds that of its 3 x 3 mean by this factor.
-pub const SHARP_RATIO: f64 = 1.4;
+/// A pixel is sharp when the gradient energy of the picture exceeds that of its 3 x 3 mean by this factor. (At 1.4 the
+/// crisp rims of defocused discs, edges of 2 to 3 px in a field blurred by ten or more, were flagged as detail and
+/// held back as small unstretched bites in the stretched field; the edges of hair and fur lose more than 1.8 times.)
+pub const SHARP_RATIO: f64 = 1.8;
 
 /// ... and the mean gradient energy of its 5 x 5 window exceeds this many noise variances.
 pub const SHARP_GATE: f64 = 16.0;
@@ -266,6 +363,32 @@ pub const STRAND_MARGIN_NOISE: f64 = 12.0;
 /// A line shorter than this, in pixels, is not gathered.
 pub const MIN_LINE_PX: f64 = 0.05;
 
+/// The half-length of both gathers, in units of the half-length of the box line that has the same variance: the line
+/// is a biweight `(1 - u^2)^2` (variance `1/7` of the squared half-length against `1/3` for a box), so a line of the
+/// same spread is `sqrt(7/3)` times as long. The weights fall to zero smoothly at both ends, so that a small change in
+/// a pixel's line (its length, a sample dropping out) changes its value a little (`docs/21` section 4, L1, *As built
+/// (soft gathers)*).
+pub const PROFILE_SCALE: f64 = 1.527_525_231_651_947;
+
+/// A sample counts with the weight of a smoothstep of its blur over the pixel's own, from nothing at this ratio ...
+pub const SAMPLE_RATIO_FROM: f64 = 0.5;
+
+/// ... to everything at this one (a hard rule at one half tore the picture along the edge of a subject and where a
+/// speck of sharp detail sat in a blurred field).
+pub const SAMPLE_RATIO_TO: f64 = 0.85;
+
+/// The sharp places (the flags the edge test sets, dilated) hold back the stretch by their density in a window of
+/// `2 SHARP_SOFT_HALF + 1` pixels a side, not one pixel at a time: the density is `d`, the protection `1 - smoothstep`
+/// of `d` between these two bounds, so a speck of a few pixels barely holds anything back and a region of sharp detail
+/// (fur, a strand's whole length) holds back everything, with edges as wide as the window.
+pub const SHARP_SOFT_HALF: usize = 5;
+
+/// See [`SHARP_SOFT_HALF`]: the density from which the protection starts.
+pub const SHARP_SOFT_FROM: f64 = 0.15;
+
+/// See [`SHARP_SOFT_HALF`]: the density from which the stretch is held back altogether.
+pub const SHARP_SOFT_TO: f64 = 0.6;
+
 /// A pixel takes a blur from the map only when its colour (square roots, three channels) is within this distance of
 /// the footprint mean of some blurred cell of confidence at least [`ACCEPT_CONFIDENCE`] around it. In a region
 /// blurred by more than a cell the picture is smooth at the cell's scale, so every pixel is near its cell's mean;
@@ -283,13 +406,13 @@ pub const SUBJECT_SHARE: f64 = 0.5;
 /// finds sharp detail) over this fraction of the longest line, within [`FEATHER_MIN_PX`] and
 /// [`FEATHER_MAX_PX`] pixels at the tile's scale: a hard border cuts the lines of neighbouring pixels differently
 /// and tears the picture along it.
-pub const FEATHER_FRACTION: f64 = 0.3;
+pub const FEATHER_FRACTION: f64 = 0.6;
 
 /// See [`FEATHER_FRACTION`].
 pub const FEATHER_MIN_PX: usize = 2;
 
 /// See [`FEATHER_FRACTION`].
-pub const FEATHER_MAX_PX: usize = 24;
+pub const FEATHER_MAX_PX: usize = 96;
 
 /// Pixels farther than this from the edge of a gather's reach are not read: a safety margin for the bilinear
 /// neighbour of the last sample.
