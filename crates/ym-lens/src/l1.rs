@@ -2,7 +2,8 @@
 //!
 //! L1 never adds bokeh. It reshapes the blur the photo already holds: out-of-focus areas are stretched into
 //! taller ovals across the anamorphic axis (Anamorphic) and a little along the tangent (Edges times the lens's
-//! swirl), and bright balls are redrawn as ellipses with the energy they had. Pixels in focus are never
+//! swirl), and bright balls are stretched as they are (their own light, read where it was before the stretch).
+//! Pixels in focus are never
 //! changed, and where the detector is unsure nothing happens.
 //!
 //! * [`BokehPlanes`] is the per-photo data, made once by [`LensPlanes::build`](crate::LensPlanes::build) on the

@@ -1482,7 +1482,6 @@ fn a_small_sharp_thing_in_a_blurred_field_leaves_no_step_around_it() {
     }
     // (With the sharp places counted pixel by pixel, a hole of the square dilated, the step is 0.116; with the
     // density over a 15 x 15 window it is 0.027.)
-    eprintln!("L1 largest step beside a sharp square in a blurred field: {worst:.4}");
     assert!(
         worst < 0.04,
         "the largest step beside the square is {worst:.4}"
@@ -1537,7 +1536,6 @@ fn a_sharp_bright_subject_beside_a_blurred_field_is_not_dragged_into_it() {
         (500, 504),
     ] {
         let (got, was) = (out[n + y * W + x], data[n + y * W + x]);
-        eprintln!("L1 field at ({x}, {y}) beside a sharp bright block: {was:.3} became {got:.3}");
         assert!(
             (got - was).abs() < 0.03,
             "({x}, {y}): {was:.3} became {got:.3}"

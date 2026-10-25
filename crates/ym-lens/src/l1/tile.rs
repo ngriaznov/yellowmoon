@@ -5,11 +5,14 @@
 //! 1. the photo's blur map is brought to the tile's pixels by a joint bilateral upsampling guided by the tile's
 //!    own pixels (radius 8), and held back where the tile's picture shows detail sharper than the blur says (hair,
 //!    fine detail), by the density of such places in a window, so that no single pixel switches;
-//! 2. the balls are taken out of the picture (their disc replaced by the plane fit of their ring);
+//! 2. the balls are taken out of the picture (their disc replaced by the plane fit of their ring, by the ball's
+//!    smooth weight);
 //! 3. two gathers, across the anamorphic axis and then along the tangent, with the per-pixel length set by the
 //!    blur, a biweight profile along the line and, for each sample, the weight of a smoothstep of its blur over
 //!    the pixel's own;
-//! 4. the balls are drawn back as ellipses carrying the energy they had.
+//! 4. the balls' own light (the picture above the plane fit) is stretched and added back: every pixel of the
+//!    stretched patch reads it where it was before the stretch (`draw`), so a ball keeps its surface brightness,
+//!    its soft edge and its glow, and no ring is left.
 //!
 //! Pixels whose blur is below `b_min` are never touched. Every pixel is a function of the planes, of input
 //! pixels within the halo and of absolute coordinates, in a fixed order, so any tiling gives the same bits as
@@ -683,23 +686,6 @@ impl<'a> Pass<'a> {
                         || (c.nrm > 0.0 && c.sub >= SUBJECT_SHARE * c.nrm);
                 }
             }
-        }
-        if let Ok(dir) = std::env::var("YM_L1_DUMP") {
-            let wr = |name: &str, v: &[f32]| {
-                let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
-                let _ = std::fs::write(format!("{dir}/{name}.f32"), bytes);
-            };
-            wr("bt", &bt);
-            wr("ramp", &ramp);
-            wr("density", &density);
-            wr(
-                "occ",
-                &occ.iter().map(|z| f32::from(*z)).collect::<Vec<_>>(),
-            );
-            let _ = std::fs::write(
-                format!("{dir}/rect.txt"),
-                format!("{} {} {} {}", r0.x, r0.y, r0.w, r0.h),
-            );
         }
         // What the gathers use as every pixel's blur: the map's, held at the cap and faded out towards its border,
         // so that the stretch of a pixel and what it takes from the others both die away at the border.

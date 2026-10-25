@@ -3,8 +3,9 @@
 //! The CPU reference is `ym_lens::l1` (reached through [`ym_lens::reshape`]): the photo's blur map is
 //! brought to the tile's pixels by a joint bilateral upsampling guided by the tile's own colours and zeroed
 //! where the picture shows an edge sharper than its blur; the bright balls are taken out of the picture; two
-//! gathers, across the anamorphic axis and along the tangent, with lengths set by the blur; and the balls drawn
-//! back as ellipses with the energy they had. This module is the same computation in `f32`.
+//! gathers, across the anamorphic axis and along the tangent, with lengths set by the blur; and the balls' own
+//! light drawn back stretched (each pixel of a ball's patch reads it where it was before the stretch). This
+//! module is the same computation in `f32`.
 //!
 //! # Passes
 //!
@@ -12,7 +13,7 @@
 //! the cells' colour guide, the blur map over `rb`, the sharp places (three passes over fields grown by 6, 4 and 2
 //! pixels from `rbs`, then their dilation and lift over `rbs`), the density of the sharp places and the balls' floor
 //! over `rb`, the feather's counts and the ramp over `r0`, the balls taken out over `r0`, the vertical gather over
-//! `r1`, and the tangential gather with the balls drawn back over the output.
+//! `r1`, and the tangential gather with the balls' light drawn back over the output.
 //!
 //! # Data
 //!
@@ -26,8 +27,8 @@
 //! D4 and D5 of `docs/17-gpu.md`: a pixel is its absolute column and row; a ball's centre and a cell's centre are
 //! an integer and a fraction, so the offsets that enter a distance are small; a tap is the pixel plus an offset of
 //! at most the line's length. The balls a pixel meets are those of its bin of the absolute pixel grid, in list
-//! order, so a tile and the whole frame draw the same balls in the same order. The vertical gather's exact mean is
-//! a direct sum over the line's at most `2 l + 3` pixels, so it does not depend on where a tile starts.
+//! order, so a tile and the whole frame draw the same balls in the same order. Each gather's line is a direct sum
+//! over at most 65 taps, so it does not depend on where a tile starts.
 
 use std::sync::Arc;
 
