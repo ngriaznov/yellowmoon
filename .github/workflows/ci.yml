@@ -235,7 +235,8 @@ jobs:
 
   # Data, fits and test vectors stay reproducible: camera profiles and registry (M1-04), the spectral
   # reference for the Rust runtime (M1-02), the research reproduction and the sensor-map gate with its
-  # one reported failure (M1-05, LED-V2), LUT and ACES 2 vectors against OpenColorIO (M1-10, M1-11),
+  # reported failures (M1-05: LED-V2 since 2026-10-12; five more lights since the owner's decision of 2026-10-25,
+  # "Move ALEXA estimate", docs/STATUS.md), LUT and ACES 2 vectors against OpenColorIO (M1-10, M1-11),
   # the illuminant estimator (M1-06) and the noise-prior fitting (M2-01).
   data-checks:
     if: github.event_name != 'schedule'
@@ -251,7 +252,11 @@ jobs:
       - run: python3 -m training.sensor_map.check_reference
       - run: python3 -m training.sensor_map.evaluate
       - run: python3 -m training.sensor_map.build_profiles --check
-      - run: python3 -m training.sensor_map.gate --expect-failing LED-V2
+      # The thresholds are unchanged (median 0.5, p95 1.2). Exactly these six lights of the A7R IV are over: LED-V2 (owner,
+      # 2026-10-12) and, with the ALEXA estimate moved (owner, 2026-10-25), the other five. A seventh, or one fewer, fails.
+      - run: python3 -m training.sensor_map.gate --expect-failing blackbody-2850K daylight-5250K daylight-6750K FL3.15 LED-B3 LED-V2
+      # The hue push of the shipped ALEXA curve: its numbers against the committed data (docs/03, The ALEXA estimate).
+      - run: python3 -m unittest training.alexa.test_push
       - run: python3 -I tools/vectors/lut_vectors.py --check
       - run: python3 -I tools/vectors/aces2_vectors.py --check
       - run: python3 -I tools/vectors/red_chroma_vectors.py --check --cmax-check
