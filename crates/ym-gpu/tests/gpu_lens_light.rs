@@ -313,8 +313,7 @@ fn the_headroom_kernel_matches_the_cpu_reference() {
     assert!(map.ev.iter().any(|v| *v > 0.0), "the stars are lights");
     // Mode 1: the raw picture, at the scale of the lens plane.
     let want = l2_input(&plan, &planes, plan.lens_plane_scale(), &raw, None).expect("a headroom input");
-    assert!(want.own.is_none());
-    let (got, none) = {
+    let (got, got_own) = {
         let data = data.clone();
         let map = map.clone();
         let k = plan.lens_plane_scale();
@@ -322,20 +321,19 @@ fn the_headroom_kernel_matches_the_cpu_reference() {
             headroom(ctx, &data, (HW, HH), (0, 0), None, pass, &map, k).expect("the headroom pass")
         })
     };
-    assert!(none.is_empty());
     let largest = want.extra.iter().fold(0.0f32, |m, v| m.max(v.abs()));
-    let worst = got
-        .iter()
-        .zip(&want.extra)
-        .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+    let diff = |a: &[f32], b: &[f32]| a.iter().zip(b).fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
+    let (worst, worst_own) = (diff(&got, &want.extra), diff(&got_own, &want.own));
     println!(
-        "extra light, mode 1: worst difference {worst:e} of values up to {largest:e} ({:e} relative)",
+        "extra light, mode 1: worst difference {worst:e} (extra) and {worst_own:e} (picture) of values up to {largest:e} ({:e} relative)",
         worst / largest
     );
-    assert!(got.iter().all(|v| v.is_finite()));
+    assert!(got.iter().chain(&got_own).all(|v| v.is_finite()));
     assert!(largest > 5.0, "the clipped stars hold headroom: {largest}");
-    assert!(got.iter().all(|v| *v >= 0.0));
-    assert!(worst <= bound * largest, "worst {worst} of {largest}");
+    assert!(
+        worst <= bound * largest && worst_own <= bound * largest,
+        "worst {worst} and {worst_own} of {largest}"
+    );
     // Mode 2: after L1, which changed a block of pixels (a blurred patch) and left the others as they are.
     let lit = lit_input(&plan, &raw).expect("saturated pixels");
     let (bx, by, bw, bh) = (30usize, 20usize, 230usize, 140usize);
@@ -369,7 +367,7 @@ fn the_headroom_kernel_matches_the_cpu_reference() {
     };
     let want = l2_input(&plan, &planes, plan.lens_plane_scale(), &raw, Some(&l1_image))
         .expect("a headroom input after L1");
-    let want_own = want.own.as_ref().expect("an own light after L1");
+    let want_own = &want.own;
     let (got, got_own) = {
         let (data, l1, map) = (data.clone(), l1.clone(), map.clone());
         let k = plan.lens_plane_scale();
@@ -420,13 +418,13 @@ fn l2_with_an_extra_light_matches_the_cpu_reference() {
     let whole = {
         let (data, map) = (data.clone(), map.clone());
         run(dev, move |ctx| {
-            let (extra, _) = headroom(ctx, &data, (HW, HH), (0, 0), None, pass, &map, k).expect("headroom");
+            let (extra, own) = headroom(ctx, &data, (HW, HH), (0, 0), None, pass, &map, k).expect("headroom");
             let tables = FieldTablesBuffer::upload(ctx, &tables_data).expect("tables");
             field_with_extra(
                 ctx,
                 &tables,
                 &field_pass,
-                &data,
+                &own,
                 (HW, HH),
                 (0, 0),
                 (&extra, (HW, HH), (0, 0)),
@@ -483,13 +481,13 @@ fn a_tile_of_the_headroom_and_l2_equals_the_frame_bit_for_bit_and_poison_changes
         }
         let (map, field_pass, tables_data) = (map.clone(), field_pass.clone(), tables_data.clone());
         gpu.run(JobSpec::new(Priority::Viewport), move |ctx, _| {
-            let (extra, _) = headroom(ctx, &window, (ww, wh), (x0, y0), None, pass, &map, k).expect("headroom");
+            let (extra, own) = headroom(ctx, &window, (ww, wh), (x0, y0), None, pass, &map, k).expect("headroom");
             let tables = FieldTablesBuffer::upload(ctx, &tables_data).expect("tables");
             field_with_extra(
                 ctx,
                 &tables,
                 &field_pass,
-                &window,
+                &own,
                 (ww, wh),
                 (x0, y0),
                 (&extra, (ww, wh), (x0, y0)),

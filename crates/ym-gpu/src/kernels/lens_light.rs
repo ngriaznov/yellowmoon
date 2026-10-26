@@ -17,7 +17,7 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 pub use ym_lens::LightPass;
 use ym_lens::consts::{
-    CLIP_PATTERN_SPREAD, FIELD_HEADROOM_SHARE, L1_UNCHANGED_RAMP, LIGHT_SATURATION_RAMP,
+    CLIP_PATTERN_SPREAD, FIELD_HEADROOM_MAX, FIELD_HEADROOM_SHARE, L1_UNCHANGED_RAMP, LIGHT_SATURATION_RAMP,
     LIGHT_WHITE_RAMP,
 };
 pub use ym_lens::device::LightMapData;
@@ -195,20 +195,18 @@ pub fn encode_light(
 
 /// L2's extra light and the picture it gathers, on the device.
 pub struct HeadroomImages {
-    /// The light L2 spreads that the picture does not record: the picture with the light's colour and the
-    /// headroom of the clipped small lights, less the picture (after L1, where L1 left a pixel as it is).
+    /// The light L2 spreads that the picture does not record (`ym_lens::L2Input::extra`).
     pub extra: GpuImage,
-    /// The picture L2 gathers, where that is not the raw picture (after L1, which changed some pixels); `None`
-    /// when it is the raw picture.
-    pub own: Option<GpuImage>,
+    /// The picture L2 gathers (`ym_lens::L2Input::own`): the raw picture, and L1's output where L1 changed a pixel.
+    pub own: GpuImage,
 }
 
 /// Records the headroom pass: L2's extra light from the raw picture `raw` (a window whose first pixel is the
 /// frame pixel `raw_at`), and, when L1 reshaped, L1's output `l1` (an image whose first pixel is `l1_at`; the
 /// pass runs over it). `k` is the scale of the picture the window belongs to.
 ///
-/// Without `l1` the pass runs over the raw window and gives `extra` alone (mode 1); with it, over L1's output,
-/// and gives `extra` and `own` (mode 2).
+/// Without `l1` the pass runs over the raw window (mode 1); with it, over L1's output (mode 2). It gives `extra`
+/// and `own` either way.
 ///
 /// # Errors
 ///
@@ -250,18 +248,14 @@ pub fn encode_headroom(
         3,
         Placement::whole(rect.w, rect.h),
     )?;
-    let own = if l1.is_some() {
-        Some(GpuImage::alloc(
-            ctx,
-            "lens l2 picture",
-            rect.w,
-            rect.h,
-            3,
-            Placement::whole(rect.w, rect.h),
-        )?)
-    } else {
-        None
-    };
+    let own = GpuImage::alloc(
+        ctx,
+        "lens l2 picture",
+        rect.w,
+        rect.h,
+        3,
+        Placement::whole(rect.w, rect.h),
+    )?;
     let mut u = base_uniform(pass);
     u.src = [raw.stride as u32, raw.plane_len() as u32, 0, 0];
     u.dst = [
@@ -285,14 +279,9 @@ pub fn encode_headroom(
     u.mapf = [map.scale, 0.0, 0.0, 0.0];
     let ub = passes.uniform("lens headroom uniform", &u)?;
     let dummy_y = passes.scratch("lens light unused", 16)?;
-    let dummy_own = passes.scratch("lens light unused", 16)?;
     let y_in = match l1 {
         Some((img, _)) => img.buf.binding(),
         None => dummy_y.binding(),
-    };
-    let own_out = match &own {
-        Some(o) => o.buf.binding(),
-        None => dummy_own.binding(),
     };
     passes.dispatch(
         KernelId::LensLight,
@@ -302,7 +291,7 @@ pub fn encode_headroom(
             (1, raw.buf.binding()),
             (2, extra.buf.binding()),
             (3, y_in),
-            (4, own_out),
+            (4, own.buf.binding()),
             (5, map.buf.binding()),
         ],
         (
@@ -346,8 +335,7 @@ pub fn light(
 
 /// The headroom pass on the host's behalf: uploads `raw` (three planes, `size`, whose first pixel is the frame
 /// pixel `raw_at`) and, when given, L1's output (`l1`: its samples, size and first frame pixel), runs the pass
-/// and reads back `extra` and `own` (`own` empty without L1). The GPU counterpart of `ym_lens::l2_input`; for
-/// tests.
+/// and reads back `extra` and `own`. The GPU counterpart of `ym_lens::l2_input`; for tests.
 ///
 /// # Errors
 ///
@@ -392,16 +380,10 @@ pub fn headroom(
     };
     let out = encode_headroom(&mut passes, &src, raw_at, l1_arg, pass, &map, k)?;
     let read_extra = out.extra.encode_read(&mut passes)?;
-    let read_own = match &out.own {
-        Some(o) => Some(o.encode_read(&mut passes)?),
-        None => None,
-    };
+    let read_own = out.own.encode_read(&mut passes)?;
     let done = passes.submit()?.finish()?;
     let extra = out.extra.take(&done, read_extra)?;
-    let own = match (&out.own, read_own) {
-        (Some(o), Some(id)) => o.take(&done, id)?,
-        _ => Vec::new(),
-    };
+    let own = out.own.take(&done, read_own)?;
     Ok((extra, own))
 }
 
@@ -431,9 +413,13 @@ pub(super) fn body() -> String {
     let mut s = colour_function();
     s.push_str(&format!(
         "const LL_SHARE: f32 = {:?};\n\
+         const LL_MAX: f32 = {:?};\n\
          const LL_L1_FROM: f32 = {:?};\n\
          const LL_L1_TO: f32 = {:?};\n",
-        FIELD_HEADROOM_SHARE as f32, L1_UNCHANGED_RAMP.0 as f32, L1_UNCHANGED_RAMP.1 as f32,
+        FIELD_HEADROOM_SHARE as f32,
+        FIELD_HEADROOM_MAX as f32,
+        L1_UNCHANGED_RAMP.0 as f32,
+        L1_UNCHANGED_RAMP.1 as f32,
     ));
     s.push_str(include_str!("../shaders/lens_light.wgsl"));
     s.push_str(&format!(

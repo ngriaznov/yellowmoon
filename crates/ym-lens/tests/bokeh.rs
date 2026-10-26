@@ -2140,6 +2140,71 @@ fn a_rim_in_a_stretched_field_is_not_given_back_as_grain() {
     );
 }
 
+#[test]
+fn a_stretched_field_keeps_the_grain_of_a_clean_photo_whose_noise_is_under_the_floor() {
+    // 56893 and 39211 are low-ISO photos: their noise is about 0.0012 in square roots, under the detector's floor
+    // (`NOISE_FLOOR` 0.0015), so the gates are the floor's multiples. The gate on the window's spread (1.5 to 3
+    // noise units) must not take the grain of such a photo with the structure: the stretched field keeps its
+    // input's grain, to within 15 %.
+    let data = grainy_field(0.25, 0.0012, 44);
+    let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
+    let map = split_map(330, 12.0);
+    let planes = LensPlanes::build_with_map(&p, &whole(W, H, &data), None, Some(&map), &|| false)
+        .expect("planes");
+    let out = reshape_tile(&p, &planes, 1, &data, (W, H), PixelRect::new(0, 0, W, H));
+    let stretched = (520, 940, 80, 590);
+    let (g_in, g_out) = (grain_std(&data, stretched), grain_std(&out, stretched));
+    eprintln!(
+        "grain of a clean photo (square-root units): {g_in:.5} in, {g_out:.5} out ({:.2})",
+        g_out / g_in
+    );
+    assert!(
+        (0.85..=1.15).contains(&(g_out / g_in)),
+        "the stretched field has {g_out:.5} of grain against {g_in:.5} in the picture"
+    );
+}
+
+#[test]
+fn a_faint_diagonal_line_in_a_stretched_field_is_smoothed_not_given_back_as_grain() {
+    // A line 2 px wide at 45 degrees, 0.01 in square roots above a clean ground (the grain is 0.0012): five noise
+    // units, far below what the sharp-edge test sees and far above the picture's grain (the faint scratch beside
+    // the ice of 56893: a gather smooths it out along the vertical, and the grain a first build gave back was the
+    // residual of its pixels, line and all, at 0.97 of its height). The window's spread and the residual are
+    // those of structure, not of grain: the line is in the output at no more than a third of its height.
+    let n = W * H;
+    let mut data = grainy_field(0.25, 0.0012, 45);
+    for c in 0..3 {
+        for y in 100..560 {
+            for x in 560..1000 {
+                // The distance to the line x = y + 300.
+                let d = ((x as f64 - y as f64) - 300.0) / std::f64::consts::SQRT_2;
+                data[c * n + y * W + x] += (0.01 * (-(d / 1.0).powi(2) / 2.0).exp()) as f32;
+            }
+        }
+    }
+    let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
+    let planes = planes_all_blurred(&p, &data, 12.0);
+    let out = reshape_tile(&p, &planes, 1, &data, (W, H), PixelRect::new(0, 0, W, H));
+    // The mean over the line's pixels against the mean 8 px to either side of it (the grain averages out).
+    let excess = |f: &[f32]| {
+        let (mut on, mut off, mut count) = (0.0f64, 0.0f64, 0.0f64);
+        for y in 200..460 {
+            let x = y + 300;
+            on += f64::from(f[n + y * W + x]);
+            off += 0.5 * (f64::from(f[n + y * W + x - 8]) + f64::from(f[n + y * W + x + 8]));
+            count += 1.0;
+        }
+        (on - off) / count
+    };
+    let (was, is) = (excess(&data), excess(&out));
+    eprintln!("the line: {was:.5} above its sides in the picture, {is:.5} in the output");
+    assert!(was > 0.006, "the test line is too faint: {was:.5}");
+    assert!(
+        is < was / 3.0,
+        "the line came back: {is:.5} above its sides in the output, {was:.5} in the picture"
+    );
+}
+
 /// A pale bar on a ground of `ground`: a soft line (a Gaussian of 3 px across, `peak` high) along row 333 from x = 200
 /// to 330, then fading out by 350 (the soft end of a leaf, not a crisp edge: the sharp-edge test must not be the one
 /// that holds it).

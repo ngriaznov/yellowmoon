@@ -252,14 +252,13 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
                             )?;
                             let extra = Arc::new(h.extra);
                             held.push(Arc::clone(&extra));
-                            let own = h.own.map(Arc::new);
-                            held.extend(own.iter().cloned());
-                            let picture = own.as_ref().unwrap_or(&reshaped);
+                            let own = Arc::new(h.own);
+                            held.push(Arc::clone(&own));
                             encode_field(
                                 &mut passes,
                                 tables,
                                 pass,
-                                picture,
+                                &own,
                                 l2_at,
                                 Some((&*extra, l2_at)),
                                 tile.out,
@@ -270,15 +269,17 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
                 } else {
                     match (tile.light, &tile.light_map) {
                         (Some(lpass), Some(map)) => {
-                            // The extra light from the raw window; L2 gathers the raw picture beside it.
+                            // The extra light from the raw window; L2 gathers the picture beside it.
                             let h = encode_headroom(&mut passes, raw_in, at, None, lpass, map, tile.k)?;
                             let extra = Arc::new(h.extra);
                             held.push(Arc::clone(&extra));
+                            let own = Arc::new(h.own);
+                            held.push(Arc::clone(&own));
                             encode_field(
                                 &mut passes,
                                 tables,
                                 pass,
-                                raw_in,
+                                &own,
                                 at,
                                 Some((&*extra, at)),
                                 tile.out,

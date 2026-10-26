@@ -23,7 +23,7 @@
 use rayon::prelude::*;
 
 use crate::consts::{
-    CLIP_RAMP, CLIP_RAMP_PLANE, FIELD_HEADROOM_SHARE, FIELD_LIGHT_SIZE_FACTOR, L1_UNCHANGED_RAMP,
+    CLIP_RAMP, CLIP_RAMP_PLANE, FIELD_HEADROOM_MAX, FIELD_HEADROOM_SHARE, FIELD_LIGHT_SIZE_FACTOR, L1_UNCHANGED_RAMP,
     LIGHT_SATURATION_RAMP,
 };
 use crate::error::LensError;
@@ -290,7 +290,7 @@ fn pixel_light(rs: &Restore, map: &LightMap, x: [f64; 3], ev: f64) -> ([f64; 3],
         return (lit, 0.0);
     }
     let nu = lit[0].min(lit[1]).min(lit[2]).max(0.0);
-    (lit, a * map.gain(ev) * nu)
+    (lit, (a * map.gain(ev) * nu).min(FIELD_HEADROOM_MAX))
 }
 
 /// True when some channel of some pixel of `input` is in the saturation ramp.
@@ -308,31 +308,34 @@ fn any_saturated(plan: &LensPlan, input: &ImageRef) -> bool {
     !(below(0) && below(1) && below(2))
 }
 
-/// What L2 reads besides the picture as it is ([`l2_input`]).
+/// What L2 reads: the picture it gathers and the extra light it spreads beside it ([`l2_input`]).
 #[derive(Clone, Debug)]
 pub struct L2Input {
     /// The rectangle `extra` and `own` cover.
     pub rect: PixelRect,
     /// The light L2 spreads that the picture does not record, per pixel of `rect`: planar, `3 * rect.w * rect.h`
-    /// samples. The pixel's light in its own colour (the saturated channel raised to the others' mean, the clip
-    /// pattern's cast taken off: a channel above its light's colour is lowered, so a sample can be negative) and
-    /// the headroom of the clipped small lights, less the picture. The picture and this are never below 0 together.
+    /// samples. The pixel's light in its own colour less the picture (the saturated channel raised to the others'
+    /// mean, the clip pattern's cast taken off: a channel above its light's colour is lowered, so a sample can be
+    /// negative) and the headroom of a clipped small light (neutral, never negative). 0 for the pixels L1
+    /// changed.
     pub extra: Vec<f32>,
-    /// The picture L2 gathers over `rect`, where that is not the raw picture (after L1, which changed some
-    /// pixels: there the extra is 0 and this is L1's output); `None` when it is the raw picture.
-    pub own: Option<Vec<f32>>,
+    /// The picture L2 gathers over `rect`, planar like `extra`: the raw picture, and L1's output at the pixels L1
+    /// changed.
+    pub own: Vec<f32>,
 }
 
-/// The light L2 spreads besides the picture, from the picture `raw` and L1's output `l1` over `want` (`None` when
-/// L1 leaves the picture alone), or `None` when nothing in the picture is saturated (L2 reads `l1`, or `raw`, as
-/// they are).
+/// What L2 reads besides the picture as it is, from the picture `raw` and L1's output `l1` over `want` (`None`
+/// when L1 leaves the picture alone), or `None` when nothing in the picture is saturated (L2 reads `l1`, or `raw`,
+/// as they are).
 ///
 /// Every pixel's light is in its own colour ([`Restore::light`]) and a clipped small light holds its headroom
-/// ([`pixel_light`]); the extra is the difference to the picture, negative where the light's colour is under it. The pixels L1 left as they are (its output
-/// within [`L1_UNCHANGED_RAMP`] of the picture with the light's colour) get it, the pixels L1 changed (a blurred
-/// pixel: a ball's core is not a small light) none, and between the two by a smoothstep; where L1 changed a pixel
-/// L2 gathers L1's output. A function of the pixel and its place alone, so a tile and the whole frame give the
-/// same bits.
+/// ([`pixel_light`]); the extra is that light less the picture. L2 gathers the picture and the extra apart and
+/// adds the extra only where the lens moves light (`EXTRA_INFLOW_RAMP`, `EXTRA_CHANGE_RAMP`,
+/// `EXTRA_KERNEL_RAMP`), so a pixel the lens leaves alone is the picture's. The pixels L1 left as they are (its
+/// output within [`L1_UNCHANGED_RAMP`] of the picture with the light's colour, a smoothstep) get the extra, the
+/// pixels L1 changed (a blurred pixel: a ball's core is not a small light) gather L1's output and have none, and
+/// between the two by the smoothstep. A function of the pixel and its place alone, so a tile and the whole frame
+/// give the same bits.
 #[must_use]
 pub fn l2_input(
     plan: &LensPlan,
@@ -362,21 +365,19 @@ pub(crate) fn l2_input_with(
     let n = w * h;
     let rn = raw.width * raw.height;
     let mut extra = vec![0.0f32; 3 * n];
-    let mut own = l1.map(|_| vec![0.0f32; 3 * n]);
+    let mut own = vec![0.0f32; 3 * n];
     let (er, erest) = extra.split_at_mut(n);
     let (eg, eb) = erest.split_at_mut(n);
+    let (or, orest) = own.split_at_mut(n);
+    let (og, ob) = orest.split_at_mut(n);
     let rows = er
         .par_chunks_mut(w)
         .zip(eg.par_chunks_mut(w))
-        .zip(eb.par_chunks_mut(w));
-    let own_rows = own.as_mut().map(|o| {
-        let (or, orest) = o.split_at_mut(n);
-        let (og, ob) = orest.split_at_mut(n);
-        (or, og, ob)
-    });
-    type Row<'a> = ((&'a mut [f32], &'a mut [f32]), &'a mut [f32]);
-    type OwnRow<'a> = Option<(&'a mut [f32], &'a mut [f32], &'a mut [f32])>;
-    let work = |row: usize, ((er, eg), eb): Row, mut o: OwnRow| {
+        .zip(eb.par_chunks_mut(w))
+        .zip(or.par_chunks_mut(w))
+        .zip(og.par_chunks_mut(w))
+        .zip(ob.par_chunks_mut(w));
+    rows.enumerate().for_each(|(row, (((((er, eg), eb), or), og), ob))| {
         let j = rect.y + row;
         for col in 0..w {
             let i = rect.x + col;
@@ -388,13 +389,18 @@ pub(crate) fn l2_input_with(
             ];
             let ev = map.ev_at(i, j, k);
             let (lit, headroom) = pixel_light(&rs, map, x, ev);
-            match l1 {
-                None => {
-                    // The picture with the light's colour and the headroom, less the picture.
-                    er[col] = (lit[0] - x[0] + headroom) as f32;
-                    eg[col] = (lit[1] - x[1] + headroom) as f32;
-                    eb[col] = (lit[2] - x[2] + headroom) as f32;
-                }
+            // Without L1: the picture gathers as it is, and the light in its own colour less the picture, with
+            // the headroom, is spread beside it.
+            let (picture, more) = (
+                x,
+                [
+                    lit[0] - x[0] + headroom,
+                    lit[1] - x[1] + headroom,
+                    lit[2] - x[2] + headroom,
+                ],
+            );
+            let (picture, more) = match l1 {
+                None => (picture, more),
                 Some(l1) => {
                     let li = (j - l1.y0) * l1.width + (i - l1.x0);
                     let ln = l1.width * l1.height;
@@ -412,42 +418,24 @@ pub(crate) fn l2_input_with(
                     }
                     let m = 1.0
                         - smooth((d - L1_UNCHANGED_RAMP.0) / (L1_UNCHANGED_RAMP.1 - L1_UNCHANGED_RAMP.0));
-                    // The picture with the light's colour and the headroom where L1 left the pixel, less the
-                    // picture, by the share L1 left it.
-                    let spread = [v[0] + m * headroom, v[1] + m * headroom, v[2] + m * headroom];
-                    let e = [
-                        m * (spread[0] - x[0]),
-                        m * (spread[1] - x[1]),
-                        m * (spread[2] - x[2]),
-                    ];
-                    er[col] = e[0] as f32;
-                    eg[col] = e[1] as f32;
-                    eb[col] = e[2] as f32;
-                    if let Some((or, og, ob)) = o.as_mut() {
-                        if m >= 1.0 {
-                            or[col] = x[0] as f32;
-                            og[col] = x[1] as f32;
-                            ob[col] = x[2] as f32;
-                        } else {
-                            or[col] = (spread[0] - e[0]) as f32;
-                            og[col] = (spread[1] - e[1]) as f32;
-                            ob[col] = (spread[2] - e[2]) as f32;
-                        }
-                    }
+                    (
+                        [
+                            m * picture[0] + (1.0 - m) * v[0],
+                            m * picture[1] + (1.0 - m) * v[1],
+                            m * picture[2] + (1.0 - m) * v[2],
+                        ],
+                        [m * more[0], m * more[1], m * more[2]],
+                    )
                 }
-            }
+            };
+            er[col] = more[0] as f32;
+            eg[col] = more[1] as f32;
+            eb[col] = more[2] as f32;
+            or[col] = picture[0] as f32;
+            og[col] = picture[1] as f32;
+            ob[col] = picture[2] as f32;
         }
-    };
-    match own_rows {
-        Some((or, og, ob)) => {
-            rows.zip(or.par_chunks_mut(w).zip(og.par_chunks_mut(w)).zip(ob.par_chunks_mut(w)))
-                .enumerate()
-                .for_each(|(row, (yy, ((o1, o2), o3)))| work(row, yy, Some((o1, o2, o3))));
-        }
-        None => {
-            rows.enumerate().for_each(|(row, yy)| work(row, yy, None));
-        }
-    }
+    });
     Some(L2Input { rect, extra, own })
 }
 

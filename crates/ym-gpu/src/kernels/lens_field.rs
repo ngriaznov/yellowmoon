@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use ym_lens::consts::{
-    COPY_BELOW_PX, EXTRA_CHANGE_FLOOR, EXTRA_CHANGE_RAMP, MAX_TAPS_SIDE, RADII, TAP_SPACING_MAX_PX,
+    COPY_BELOW_PX, EXTRA_CHANGE_FLOOR, EXTRA_CHANGE_RAMP, EXTRA_INFLOW_RAMP, EXTRA_KERNEL_RAMP, MAX_TAPS_SIDE, RADII, TAP_SPACING_MAX_PX,
     W_KNEE, W_MAX,
 };
 use ym_lens::device::{FIELD_HEADER, FIELD_TABLE_SIZES, field_table_offset};
@@ -218,8 +218,8 @@ fn grown(r: Rect, px: usize, fw: usize, fh: usize) -> Rect {
 /// `extra` is light the picture does not record and L2 spreads (`ym_lens::l2_input`: the headroom of a clipped
 /// light, and the light's colour where a channel clipped): an image and its first frame pixel, covering what `src`
 /// does (`out` grown by [`FieldPass::halo`]). It is gathered with the same spread functions and added to the
-/// gather of `src` by the share of how much the lens changes the light of the pixel with the extra in it
-/// (`EXTRA_CHANGE_RAMP`); a pixel with no kernel gets none.
+/// gather of `src` by the share of how much of the picture's inflow it is and how much the lens changes the
+/// pixel (`EXTRA_INFLOW_RAMP`, `EXTRA_CHANGE_RAMP`); a pixel with no kernel gets none.
 ///
 /// # Errors
 ///
@@ -573,6 +573,10 @@ fn constants() -> String {
          const LF_MAX_TAPS: u32 = {}u;\n\
          const LF_SPACING_MAX: f32 = {:?};\n\
          const LF_HEADER: u32 = {}u;\n\
+         const LF_INFLOW_FROM: f32 = {:?};\n\
+         const LF_INFLOW_TO: f32 = {:?};\n\
+         const LF_KERNEL_FROM: f32 = {:?};\n\
+         const LF_KERNEL_TO: f32 = {:?};\n\
          const LF_CHANGE_FROM: f32 = {:?};\n\
          const LF_CHANGE_TO: f32 = {:?};\n\
          const LF_CHANGE_FLOOR: f32 = {:?};\n\
@@ -584,6 +588,10 @@ fn constants() -> String {
         MAX_TAPS_SIDE,
         TAP_SPACING_MAX_PX as f32,
         FIELD_HEADER,
+        EXTRA_INFLOW_RAMP.0 as f32,
+        EXTRA_INFLOW_RAMP.1 as f32,
+        EXTRA_KERNEL_RAMP.0 as f32,
+        EXTRA_KERNEL_RAMP.1 as f32,
         EXTRA_CHANGE_RAMP.0 as f32,
         EXTRA_CHANGE_RAMP.1 as f32,
         EXTRA_CHANGE_FLOOR as f32,

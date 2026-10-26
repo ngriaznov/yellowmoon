@@ -205,6 +205,13 @@ pub const LIGHT_WHITE_RAMP: f64 = 0.1;
 /// it than the core does (`docs/21`, *As built (the light's colour, the headroom of a clipped light)*).
 pub const FIELD_HEADROOM_SHARE: f64 = GLOW_BOOST_SHARE;
 
+/// The most light, in clip levels of the lens plane, that the headroom of a clipped light adds to one pixel
+/// ([`FIELD_HEADROOM_SHARE`]): an upper bound on what the lens can make of a light in one pixel, a few tens of
+/// times the clip level, where a star of a few pixels has 20 to 30 and a street lamp with the brightest recovered
+/// core 60 and more without it. The bound keeps the peak the spread leaves round a light (a pixel beside it
+/// where the kernel is narrow) a size a resampling after the lens does not ring below zero.
+pub const FIELD_HEADROOM_MAX: f64 = 40.0;
+
 /// The field stages read L3's estimate of a light's boost ([`LIGHT_BOOST_FULL_HD`], [`LIGHT_BOOST_NONE_HD`]) at
 /// this many times the patch's diameter: L2 spreads the light of a patch by the lens's spread functions, which
 /// reach tens of pixels, so only a patch of a few pixels (a star, a lamp, a glint) is a point whose clipped
@@ -213,18 +220,36 @@ pub const FIELD_HEADROOM_SHARE: f64 = GLOW_BOOST_SHARE;
 pub const FIELD_LIGHT_SIZE_FACTOR: f64 = 4.0;
 
 /// How much of the extra light the field stage spreads (the headroom of a clipped light and the light's colour,
-/// `light::l2_input`) a pixel is given: the largest over the channels of how much the spread changes the pixel's
-/// light with the extra in it, `|gather(picture + extra) - (picture + extra)| / (picture + extra)`, none up to the
-/// first number, all of it from the second, a smoothstep between. Where the spread changes the light of a pixel
-/// by a few per cent at most (a flat bright area: a clipped window, the fur of a white dog, a sky) the lens
-/// leaves the pixel as the picture gives it, as it is without the rule; where it changes it by a tenth or more
-/// (a star and its halo, the edge of a window, the pixels of a small lamp) the pixel has the extra light that
-/// reaches it. Measured on four photos at Flares 0 (Default with Edges 40, Vintage with Edges 100): 99.8 % or
-/// more of the bright pixels the lens does not move are as `off` has them.
-pub const EXTRA_CHANGE_RAMP: (f64, f64) = (0.02, 0.10);
+/// `light::l2_input`) a pixel is given, the larger of two shares, each a smoothstep (none up to the first number,
+/// all of it from the second).
+///
+/// The first is how much the extra that the spread brings to the pixel is of the picture that it brings: the
+/// largest over the channels of `|gather(extra)| / gather(picture)`, from [`EXTRA_INFLOW_RAMP`]. Beside a star on a
+/// dark ground the extra is 10 to 1000 times the picture's light and arrives whole; in a bright area the extra
+/// only moves from pixel to pixel, a lift of a fraction of the picture, and the pixel is as the picture gives it.
+///
+/// The second is how much the spread changes the pixel's own picture: the largest over the channels of
+/// `|gather(picture) - picture| / picture`, from [`EXTRA_CHANGE_RAMP`]. A pixel the spread changes by a half or
+/// more (the dark ground and the dim edge round a clipped light, the pixels of a small one) has the light of its
+/// neighbours in their own colour whatever share of the picture that is (a light at the clip pattern, whose green
+/// is raised by most of its own value), where a pixel the spread changes by a quarter at most (the middle and
+/// the edge of a window, whatever the width of the kernel; a bright pixel the look's highlight curve shows
+/// unchanged) keeps its own light as recorded.
+pub const EXTRA_INFLOW_RAMP: (f64, f64) = (0.5, 2.0);
 
-/// The least light, in clip levels of the lens plane, that the change of [`EXTRA_CHANGE_RAMP`] divides by (a
-/// black pixel is not given every faint tail of a light).
+/// The ramp of the second share, the change of the picture: see [`EXTRA_INFLOW_RAMP`].
+pub const EXTRA_CHANGE_RAMP: (f64, f64) = (0.25, 1.0);
+
+/// How wide the lens's spread must be at a pixel for the extra light to reach it, as a share of the half-diagonal
+/// (the kernel's half-width over it): none up to the first number, all of it from the second, a smoothstep
+/// between. Where the kernel is a pixel or two (the middle of the frame, a small Edges amount) the lens moves
+/// the light of a clipped light no farther than its neighbours and the extra lands as a peak a hundred times
+/// them, which a resampling of the picture after the lens rings round, and the ring goes below zero beside it:
+/// a black or coloured pixel in a white light. There the lens leaves the light as the picture records it.
+pub const EXTRA_KERNEL_RAMP: (f64, f64) = (0.001, 0.003);
+
+/// The least light, in clip levels of the lens plane, that the shares of [`EXTRA_INFLOW_RAMP`] and
+/// [`EXTRA_CHANGE_RAMP`] divide by (a black pixel is not given every faint tail of a light).
 pub const EXTRA_CHANGE_FLOOR: f64 = 1e-3;
 
 /// L1 left a pixel as it is when its output is within this share of a clip level of its input in every
@@ -638,11 +663,13 @@ pub const GRAIN_GATE_TO: f64 = 12.0;
 /// deviation of the square roots) by this many noise units or more is no longer grain alone, and the residual
 /// against its mean, which a bump or a sharp detail beside it pulls to the other side (a dark dash along the edge of
 /// a bright sharp thing), is not given back; nothing from [`GRAIN_SPREAD_TO`] on (a smoothstep between). The grain of a
-/// photo spreads by one to two and a half units.
-pub const GRAIN_SPREAD_FROM: f64 = 4.0;
+/// photo spreads by one to two units (39211: the median 1.0, the 99th percentile 1.2 to 2.0, by channel), so this is
+/// set just above it: a faint thin line (the scratch beside the ice of 56893, 4 to 8 units of residual and 3 to 6 of
+/// spread) is structure, and was given back at 4 to 8, the first form, as a line.
+pub const GRAIN_SPREAD_FROM: f64 = 1.5;
 
 /// See [`GRAIN_SPREAD_FROM`].
-pub const GRAIN_SPREAD_TO: f64 = 8.0;
+pub const GRAIN_SPREAD_TO: f64 = 3.0;
 
 /// A pixel in the wedge beside a sharp subject (the ramp under 1) whose square-root luminance stands above the picture
 /// on both sides of it, this share of its own line away along the gather, is a thin bright thing, narrower than its

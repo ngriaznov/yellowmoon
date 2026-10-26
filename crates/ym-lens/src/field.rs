@@ -48,7 +48,7 @@ use rayon::prelude::*;
 use crate::consts::{
     COPY_BELOW_PX, LATERAL_COLOR_SCALE, MAX_TAPS_SIDE, PSF_SIZE, PSF_WAVELENGTHS, RADII,
     SIDE_TABLE_RADIUS, T_OVERSHOOT, TAP_SPACING_MAX_PX, W_KNEE, W_MAX,
-    EXTRA_CHANGE_FLOOR, EXTRA_CHANGE_RAMP,
+    EXTRA_CHANGE_FLOOR, EXTRA_CHANGE_RAMP, EXTRA_INFLOW_RAMP, EXTRA_KERNEL_RAMP,
 };
 use crate::data::LensData;
 use crate::error::LensError;
@@ -984,11 +984,11 @@ fn sample<const CLAMP: bool>(lv: &Level, ux: i64, uy: i64) -> F4 {
 ///
 /// `extra` is light the picture does not record and the stage spreads (`light::l2_input`: the headroom of a
 /// clipped light, and the light's colour where a channel clipped), an image of the rectangle of `input` or
-/// more. It is gathered with the same spread functions and added to the gather of `input` by the share `mu` of
-/// how much the lens changes the light of the pixel with the extra in it ([`EXTRA_CHANGE_RAMP`]): a pixel whose
-/// light the spread changes by a few per cent at most (a flat bright area, where the extra only moves from
-/// pixel to pixel) is as the picture alone gives it, and one beside a clipped star has the extra whole. A pixel
-/// with no kernel (a copy) is never given any.
+/// more. It is gathered with the same spread functions and added to the gather of `input` by the share `mu`
+/// of [`EXTRA_INFLOW_RAMP`] and [`EXTRA_CHANGE_RAMP`] (the larger of how much of the picture's inflow the extra
+/// is, and how much the lens changes the pixel's picture): a pixel in a flat bright area, where the extra only
+/// moves from pixel to pixel and the lens changes nothing, is as the picture alone gives it, and one beside a
+/// clipped star has the extra whole. A pixel with no kernel (a copy) is never given any.
 pub(crate) fn apply(
     plan: &LensPlan,
     input: &ImageRef,
@@ -1041,7 +1041,7 @@ pub(crate) fn apply(
         let pyramid = Pyramid::build(extra, region, geo.lmax);
         let occupancy = Occupancy::build(extra);
         let more = gather_region(&geo, &pyramid, gathered_rect, Some(&occupancy));
-        add_extra(&geo, input, extra, &mut gathered, &more, gathered_rect);
+        add_extra(&geo, input, &mut gathered, &more, gathered_rect);
     }
 
     // Pass 2: the fringe shift of each channel and the gain.
@@ -1090,22 +1090,25 @@ impl Occupancy {
     }
 }
 
-/// Adds to the gather `gathered` of the picture the share `mu` of the gather `more` of the extra light that the
-/// lens changes the light of each pixel by, over `rect` (see [`apply`]): `mu` is the smoothstep of the largest
-/// over the channels of `|gathered + more - (input + extra)| / (input + extra)` at the pixel.
+/// Adds to the gather `gathered` of the picture the share `mu` of the gather `more` of the extra light, over `rect`
+/// (see [`apply`]): the larger of the smoothsteps of `|more| / gathered` over [`EXTRA_INFLOW_RAMP`] and of
+/// `|gathered - input| / input` at the pixel over [`EXTRA_CHANGE_RAMP`], each the largest over the channels, times
+/// the smoothstep of the kernel's half-width over the half-diagonal over [`EXTRA_KERNEL_RAMP`].
 fn add_extra(
     geo: &Geometry,
     input: &ImageRef,
-    extra: &ImageRef,
     gathered: &mut [f32],
     more: &[f32],
     rect: PixelRect,
 ) {
     let plane = rect.w * rect.h;
-    let (from, to) = EXTRA_CHANGE_RAMP;
+    let smooth = |v: f64, (from, to): (f64, f64)| {
+        let t = ((v - from) / (to - from)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
     let (r, rest) = gathered.split_at_mut(plane);
     let (g, b) = rest.split_at_mut(plane);
-    let (inp, ext) = (input.width * input.height, extra.width * extra.height);
+    let inp = input.width * input.height;
     r.par_chunks_mut(rect.w)
         .zip(g.par_chunks_mut(rect.w))
         .zip(b.par_chunks_mut(rect.w))
@@ -1124,15 +1127,15 @@ fn add_extra(
                 }
                 let base = [rr[col], gr[col], br[col]];
                 let pi = (j - input.y0) * input.width + (i - input.x0);
-                let pe = (j - extra.y0) * extra.width + (i - extra.x0);
-                let mut change = 0.0f64;
+                let (mut inflow, mut change) = (0.0f64, 0.0f64);
                 for c in 0..3 {
-                    let lit = f64::from(input.data[c * inp + pi]) + f64::from(extra.data[c * ext + pe]);
-                    let moved = f64::from(base[c]) + f64::from(e[c]);
-                    change = change.max((moved - lit).abs() / lit.max(EXTRA_CHANGE_FLOOR));
+                    let own = f64::from(input.data[c * inp + pi]);
+                    let got = f64::from(base[c]);
+                    inflow = inflow.max(f64::from(e[c]).abs() / got.max(EXTRA_CHANGE_FLOOR));
+                    change = change.max((got - own).abs() / own.max(EXTRA_CHANGE_FLOOR));
                 }
-                let t = ((change - from) / (to - from)).clamp(0.0, 1.0);
-                let mu = t * t * (3.0 - 2.0 * t);
+                let width = smooth(geo.pixel(i, j).omega / geo.h, EXTRA_KERNEL_RAMP);
+                let mu = smooth(inflow, EXTRA_INFLOW_RAMP).max(smooth(change, EXTRA_CHANGE_RAMP)) * width;
                 if mu > 0.0 {
                     rr[col] = (f64::from(base[0]) + mu * f64::from(e[0])) as f32;
                     gr[col] = (f64::from(base[1]) + mu * f64::from(e[1])) as f32;

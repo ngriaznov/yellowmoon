@@ -23,7 +23,7 @@
 // 3 the input planes, 4 the output planes, 5 the gather (read by lf_finish), 6 the picture's pyramid (read by
 // the extra light's gather only). With `ex.x` 2 the gather kernel reads the pyramid of the extra light (*As
 // built (the headroom of a clipped light)*) at binding 2 and adds it to what the output planes hold, by the
-// share of how much the lens changes the light of the pixel with the extra in it.
+// share of ym_lens::consts EXTRA_INFLOW_RAMP and EXTRA_CHANGE_RAMP.
 
 struct FieldU {
     zero: vec4<u32>,            // x: always 0 (the opaque word of the barrier)
@@ -385,7 +385,7 @@ fn lf_gather_main(gid: vec3<u32>) {
     let at = gid.y * pu.dst.x + gid.x;
     if (pu.ex.x == 2u) {
         // The extra light: its gather, added to the picture's gather the output planes hold by the share mu of how
-        // much the lens changes the light of the pixel with the extra in it (ym_lens::field::add_extra). A pixel
+        // much of the picture's inflow the extra is and how much the lens changes the pixel (ym_lens::field::add_extra). A pixel
         // with no kernel gets none.
         if (k.omega == 0.0 || !lf_has_light(i, j, k)) {
             return;
@@ -395,18 +395,20 @@ fn lf_gather_main(gid: vec3<u32>) {
             return;
         }
         let base = vec3<f32>(dst[at], dst[pu.dst.y + at], dst[2u * pu.dst.y + at]);
-        // The pixel's own light: the picture's and the extra light's level 0 texels at the pixel.
+        // The pixel's own picture: its level 0 texel.
         let l0 = pu.lvl[0];
         let o0 = pu.org[0];
-        let p0 = u32(l0.x) + u32(j - o0.y) * u32(l0.y) + u32(i - o0.x);
-        let lit = pyr_o[p0].xyz + pyr[p0].xyz;
-        let moved = base + more;
+        let own = pyr_o[u32(l0.x) + u32(j - o0.y) * u32(l0.y) + u32(i - o0.x)].xyz;
+        var inflow = 0.0;
         var change = 0.0;
         for (var c = 0u; c < 3u; c = c + 1u) {
-            change = max(change, abs(moved[c] - lit[c]) / max(lit[c], LF_CHANGE_FLOOR));
+            inflow = max(inflow, abs(more[c]) / max(base[c], LF_CHANGE_FLOOR));
+            change = max(change, abs(base[c] - own[c]) / max(own[c], LF_CHANGE_FLOOR));
         }
-        let t = clamp((change - LF_CHANGE_FROM) / (LF_CHANGE_TO - LF_CHANGE_FROM), 0.0, 1.0);
-        let mu = t * t * (3.0 - 2.0 * t);
+        let ti = clamp((inflow - LF_INFLOW_FROM) / (LF_INFLOW_TO - LF_INFLOW_FROM), 0.0, 1.0);
+        let tc = clamp((change - LF_CHANGE_FROM) / (LF_CHANGE_TO - LF_CHANGE_FROM), 0.0, 1.0);
+        let tk = clamp((k.omega / pu.frame.z - LF_KERNEL_FROM) / (LF_KERNEL_TO - LF_KERNEL_FROM), 0.0, 1.0);
+        let mu = max(ti * ti * (3.0 - 2.0 * ti), tc * tc * (3.0 - 2.0 * tc)) * (tk * tk * (3.0 - 2.0 * tk));
         if (mu > 0.0) {
             let sum = base + mu * more;
             dst[at] = sum.x;

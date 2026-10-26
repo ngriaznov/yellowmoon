@@ -6,21 +6,21 @@
 //
 // Modes (mode.x):
 //   0  the light's colour alone, over the input (L1's input);
-//   1  the extra light over the input raw window (L2's when L1 leaves the picture alone): the picture with the
-//      light's colour and the headroom, less the picture, written to the output planes;
-//   2  over L1's output: the same where L1 left the pixel as it is (its output within LL_L1_FROM to LL_L1_TO clip
-//      levels of the picture with the light's colour, a smoothstep) and none where it changed it, written to the
-//      output planes, and the picture L2 gathers beside it (the raw picture's value where L1 left the pixel, L1's
-//      output where it changed it) written to the own planes.
+//   1  L2's picture and extra light over the input raw window (L1 leaves the picture alone): the picture is the
+//      raw one, the extra light the light in its own colour less it, with the headroom of a clipped small light;
+//      the extra to the output planes, the picture to the own planes;
+//   2  over L1's output: the same blended by the share L1 left the pixel as it is (its output within LL_L1_FROM to
+//      LL_L1_TO clip levels of the picture with the light's colour, a smoothstep) with L1's output, which the
+//      pixels it changed gather and spread none of.
 //
 // The headroom of a pixel: a g nu in every channel. a: how much of a clipped light the pixel is, the larger of
 // the clip test and the white light weight; g: scale (2^(LL_SHARE ev) - 1) with the EV of the lens-plane pixel
 // the pixel lies in (the map) and the cap's scale; nu: the smallest channel of the light's colour.
 //
 // Bindings: 0 uniform, 1 the raw planes, 2 the planes written, 3 L1's output (mode 2), 4 the picture written
-// (mode 2), 5 the map (the EV of the lens plane, row-major).
+// (modes 1 and 2), 5 the map (the EV of the lens plane, row-major).
 //
-// Generated before this text (kernels/lens_light.rs): LL_SHARE, LL_L1_FROM, LL_L1_TO.
+// Generated before this text (kernels/lens_light.rs): LL_SHARE, LL_MAX, LL_L1_FROM, LL_L1_TO.
 
 struct LightU {
     clip: vec4<f32>,   // g0 of each channel, 0
@@ -74,7 +74,7 @@ fn ll_headroom(v: vec3<f32>, ev: f32) -> vec4<f32> {
     }
     let nu = max(min(min(lw.x, lw.y), lw.z), 0.0);
     let gain = pu.mapf.x * (exp2(LL_SHARE * ev) - 1.0);
-    return vec4<f32>(lw.xyz, a * gain * nu);
+    return vec4<f32>(lw.xyz, min(a * gain * nu, LL_MAX));
 }
 
 fn ll_main(gid: vec3<u32>) {
@@ -98,11 +98,17 @@ fn ll_main(gid: vec3<u32>) {
     let x = vec3<f32>(src[a], src[pu.src.y + a], src[2u * pu.src.y + a]);
     let hr = ll_headroom(x, ll_ev(i, j));
     let lit = hr.xyz;
+    // Without L1: the picture gathers as it is, and the light in its own colour less it, with the headroom, is
+    // spread beside it.
+    let picture = x;
+    let more = lit - x + vec3<f32>(hr.w);
     if (pu.mode.x == 1u) {
-        let e1 = lit - x + vec3<f32>(hr.w);
-        dst[b] = e1.x;
-        dst[pu.dst.y + b] = e1.y;
-        dst[2u * pu.dst.y + b] = e1.z;
+        dst[b] = more.x;
+        dst[pu.dst.y + b] = more.y;
+        dst[2u * pu.dst.y + b] = more.z;
+        kept[b] = picture.x;
+        kept[pu.dst.y + b] = picture.y;
+        kept[2u * pu.dst.y + b] = picture.z;
         return;
     }
     // Mode 2: L1's output at the same pixel.
@@ -118,15 +124,11 @@ fn ll_main(gid: vec3<u32>) {
     }
     let t = clamp((d - LL_L1_FROM) / (LL_L1_TO - LL_L1_FROM), 0.0, 1.0);
     let m = 1.0 - t * t * (3.0 - 2.0 * t);
-    let spread = v + vec3<f32>(m * hr.w);
-    let e2 = m * (spread - x);
+    let e2 = m * more;
+    let k = m * picture + (1.0 - m) * v;
     dst[b] = e2.x;
     dst[pu.dst.y + b] = e2.y;
     dst[2u * pu.dst.y + b] = e2.z;
-    var k = x;
-    if (m < 1.0) {
-        k = spread - e2;
-    }
     kept[b] = k.x;
     kept[pu.dst.y + b] = k.y;
     kept[2u * pu.dst.y + b] = k.z;

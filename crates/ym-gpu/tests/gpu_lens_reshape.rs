@@ -415,9 +415,10 @@ fn split_map(split_x: usize, radius_px: f64) -> BlurMapInput {
 
 #[test]
 fn the_kernel_matches_the_reference_on_the_grain_and_a_thin_bright_end() {
-    // Two scenes of the grain and thin-end rules (L1, round 4): a smooth field with sensor grain (the grain a gather
-    // takes out is given back, in square roots, gated by the noise) and a pale bar whose body is in focus and whose
-    // end lies in the wedge (the stretch is held back on a thin bright thing there), both beside a sharp part.
+    // Three scenes of the grain and thin-end rules (L1, round 4): a smooth field with sensor grain (the grain a gather
+    // takes out is given back, in square roots, gated by the noise), a pale bar whose body is in focus and whose end
+    // lies in the wedge (the stretch is held back on a thin bright thing there), both beside a sharp part, and a
+    // clean field with a faint diagonal line (the window's spread and the residual inside the gates' ramps).
     let _guard = serial();
     let Some(dev) = common::lens::gpu() else {
         return;
@@ -447,9 +448,27 @@ fn the_kernel_matches_the_reference_on_the_grain_and_a_thin_bright_end() {
             }
         }
     }
+    // A clean photo (grain 0.0012, under the detector's floor, so the gates are the floor's multiples) with a faint
+    // diagonal line of 0.01: the window's spread and the residual of its pixels are in the gates' ramps.
+    let mut rng = scenes::Rng::new(78);
+    let mut line = vec![0.0f32; 3 * n];
+    for c in 0..3 {
+        for y in 0..H {
+            for x in 0..W {
+                let smooth = 0.25 + 0.03 * (x as f64 / 110.0).sin() * (y as f64 / 80.0).cos();
+                let d = ((x as f64 - y as f64) - 300.0) / std::f64::consts::SQRT_2;
+                let faint = if (100..560).contains(&y) && x >= 560 {
+                    0.01 * (-(d * d) / 2.0).exp()
+                } else {
+                    0.0
+                };
+                line[c * n + y * W + x] = (smooth + faint + 0.0012 * rng.normal()).max(0.0) as f32;
+            }
+        }
+    }
     let mut cases = 0;
     let mut worst_all = 0.0f32;
-    for (name, image) in [("grain", &field), ("thin end", &bar)] {
+    for (name, image) in [("grain", &field), ("thin end", &bar), ("faint line", &line)] {
         for (kind, edges) in [(LensKind::Default, 0.0), (LensKind::Petzval, 70.0)] {
             let p = plan(amounts(kind, 0.0, edges, 100.0), W, H, Axis::X);
             let planes = LensPlanes::build_with_map(
@@ -491,7 +510,7 @@ fn the_kernel_matches_the_reference_on_the_grain_and_a_thin_bright_end() {
             );
         }
     }
-    assert_eq!(cases, 4);
+    assert_eq!(cases, 6);
     note!("L1 grain and thin end parity: {cases} cases, worst difference {worst_all:e}");
 }
 

@@ -193,10 +193,7 @@ fn field_with(
     match &l2 {
         Some(l2) => {
             let extra = over(l2.rect, (fw, fh), &l2.extra);
-            let picture = l2
-                .own
-                .as_deref()
-                .map_or(*input, |own| over(l2.rect, (fw, fh), own));
+            let picture = over(l2.rect, (fw, fh), &l2.own);
             field::apply(plan, &picture, Some(&extra), out, opts)
         }
         None => field::apply(plan, &image, None, out, opts),

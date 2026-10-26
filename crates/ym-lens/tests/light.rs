@@ -73,9 +73,10 @@ fn scene(value: [f32; 3], cx: f64, cy: f64, r: f64) -> Vec<f32> {
 }
 
 /// The light the disc adds to the field stages' output in a frame of `SW` x `SH`, per channel, summed over the
-/// pixels more than 2 px beyond the disc: the picture with the disc minus the picture without it. The light the
-/// lens puts outside the light is what it moves; a pixel inside it that the spread changes by a few per cent
-/// keeps its own light, as the picture records it.
+/// pixels more than 2 px beyond the disc that it lights by at least the ground's own level (0.02): the picture with
+/// the disc minus the picture without it. The light the lens puts outside the light is what it moves; a pixel
+/// inside it that the spread changes by a few per cent keeps its own light, as the picture records it, and a
+/// pixel it lights by a fraction of its own light has the cast of the clip pattern in that fraction.
 fn spread_light(plan: &LensPlan, value: [f32; 3], cx: f64, cy: f64, r: f64) -> [f64; 3] {
     let planes = common::planes_for(plan);
     let with = scene_in(SW, SH, value, cx, cy, r);
@@ -90,9 +91,13 @@ fn spread_light(plan: &LensPlan, value: [f32; 3], cx: f64, cy: f64, r: f64) -> [
             if (x as f64 + 0.5 - cx).hypot(y as f64 + 0.5 - cy) <= r + 2.0 {
                 continue;
             }
+            let at = y * SW + x;
+            let added = (0..3).map(|c| a[c * n + at] - b[c * n + at]).fold(0.0f32, f32::max);
+            if added < 0.02 {
+                continue;
+            }
             for c in 0..3 {
-                let i = c * n + y * SW + x;
-                sum[c] += f64::from(a[i]) - f64::from(b[i]);
+                sum[c] += f64::from(a[c * n + at]) - f64::from(b[c * n + at]);
             }
         }
     }

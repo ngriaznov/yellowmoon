@@ -11,6 +11,9 @@
 //!   --star X,Y        the light's pixel on the lens plane (default 169,650)
 //!   --neutral R       replace the plane within R px of the star by its mean over the channels (a neutral
 //!                     light of the same brightness): the colour the lens's own spread gives a white light
+//!   --dump FILE       write the stages' output (planar f32, little-endian) to FILE
+//!   --patch X,Y,R     print the picture and the stages' output over the square of half-side R at (X, Y),
+//!                     channel by channel, and count the output samples that are negative or not finite
 //! ```
 //!
 //! `<plane dir>` is a folder with `lens_plane.f32` and `lens_plane.json`, as `lens_sheet --dump-planes`
@@ -31,6 +34,8 @@ fn main() {
     let (mut edges, mut anamorphic) = (100.0f64, 0.0f64);
     let mut star = (169usize, 650usize);
     let mut neutral: Option<f64> = None;
+    let mut window: Option<(usize, usize, usize)> = None;
+    let mut dump: Option<PathBuf> = None;
     let mut dir = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -55,6 +60,16 @@ fn main() {
                     .map(|n| n.parse().expect("number"))
                     .collect();
                 star = (v[0], v[1]);
+            }
+            "--dump" => dump = Some(PathBuf::from(args.next().expect("--dump FILE"))),
+            "--patch" => {
+                let v: Vec<usize> = args
+                    .next()
+                    .expect("--patch X,Y,R")
+                    .split(',')
+                    .map(|n| n.parse().expect("number"))
+                    .collect();
+                window = Some((v[0], v[1], v[2]));
             }
             "--neutral" => neutral = Some(args.next().expect("--neutral R").parse().expect("number")),
             d => dir = Some(PathBuf::from(d)),
@@ -136,6 +151,30 @@ fn main() {
         map.ev.get(star.1 * w + star.0).copied().unwrap_or(0.0)
     );
     let out = apply_field(&plan, &planes, k, &input, PixelRect::new(0, 0, w, h)).expect("field");
+    if let Some(path) = &dump {
+        let bytes: Vec<u8> = out.iter().flat_map(|v| v.to_le_bytes()).collect();
+        std::fs::write(path, bytes).expect("dump");
+    }
+    let bad = out.iter().filter(|v| !v.is_finite() || **v < 0.0).count();
+    println!("output samples negative or not finite: {bad} of {}", out.len());
+    for (i, v) in out.iter().enumerate().filter(|(_, v)| !v.is_finite() || **v < 0.0).take(12) {
+        let (c, rest) = (i / plane, i % plane);
+        println!("  channel {c} at ({}, {}): {v}", rest % w, rest / w);
+    }
+    if let Some((px, py, r)) = window {
+        for (c, name) in ["R", "G", "B"].iter().enumerate() {
+            println!("channel {name}: picture | output (x {}..{}, y {}..{})", px - r, px + r, py - r, py + r);
+            for y in py - r..=py + r {
+                let row = |d: &[f32]| {
+                    (px - r..=px + r)
+                        .map(|x| format!("{:6.2}", d[c * plane + y * w + x]))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                };
+                println!("{y:4} {} | {}", row(&data), row(&out));
+            }
+        }
+    }
     println!(
         "{kind} Edges {edges} Anamorphic {anamorphic}, star at {star:?}{}",
         neutral.map_or(String::new(), |r| format!(" made neutral within {r} px"))
