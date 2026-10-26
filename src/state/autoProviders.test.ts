@@ -23,8 +23,8 @@ import {
 describe("the words of the Auto providers (docs/22 sections 3.4 and 12)", () => {
   it("names the providers as AutoProvider::name does, and Antigravity (agy) in the dropdown", () => {
     expect(AUTO_PROVIDERS).toEqual(["yellowmoon", "apple", "claude", "agy"]);
-    expect(AUTO_PROVIDERS.map((p) => PROVIDER_NAMES[p])).toEqual(["Yellowmoon's own Auto", "Apple Intelligence", "Claude Code", "Antigravity"]);
-    expect(AUTO_PROVIDERS.map((p) => PROVIDER_LIST_NAMES[p])).toEqual(["Yellowmoon's own Auto", "Apple Intelligence", "Claude Code", "Antigravity (agy)"]);
+    expect(AUTO_PROVIDERS.map((p) => PROVIDER_NAMES[p])).toEqual(["Default Auto", "Apple Intelligence", "Claude Code", "Antigravity"]);
+    expect(AUTO_PROVIDERS.map((p) => PROVIDER_LIST_NAMES[p])).toEqual(["Default Auto", "Apple Intelligence", "Claude Code", "Antigravity (agy)"]);
     expect(AUTO_PROVIDERS.filter(isCloud)).toEqual(["claude", "agy"]);
   });
 
@@ -62,7 +62,7 @@ describe("the words of the Auto providers (docs/22 sections 3.4 and 12)", () => 
     expect(hint("not_installed")).toBeNull();
   });
 
-  it("has no hint for Apple Intelligence or Yellowmoon's own Auto: their rows hide instead", () => {
+  it("has no hint for Apple Intelligence or Default Auto: their rows hide instead", () => {
     expect(unavailableHint("apple", "apple_intelligence_off", null, "macos")).toBeNull();
     expect(unavailableHint("yellowmoon", null, null, "macos")).toBeNull();
   });
@@ -80,8 +80,8 @@ describe("the words of the Auto providers (docs/22 sections 3.4 and 12)", () => 
   });
 
   it("says the saved choice is not available only for a program that is not the one that grades", () => {
-    expect(savedChoiceNote("claude", "yellowmoon")).toBe("Your saved choice, Claude Code, isn't available now, so Auto uses Yellowmoon's own settings until it is.");
-    expect(savedChoiceNote("agy", "yellowmoon")).toBe("Your saved choice, Antigravity, isn't available now, so Auto uses Yellowmoon's own settings until it is.");
+    expect(savedChoiceNote("claude", "yellowmoon")).toBe("Your saved choice, Claude Code, isn't available now, so Default Auto is used until it is.");
+    expect(savedChoiceNote("agy", "yellowmoon")).toBe("Your saved choice, Antigravity, isn't available now, so Default Auto is used until it is.");
     expect(savedChoiceNote("claude", "claude")).toBeNull();
     expect(savedChoiceNote("claude", "apple")).toBeNull();
     expect(savedChoiceNote("apple", "yellowmoon")).toBeNull();

@@ -23,8 +23,8 @@ PLAN_FORMAT = "yellowmoon-ab-plan"
 #: 3: the steps of prompt version 2 (docs/19 section 4), any of which may be empty (null), and the instructions in the
 #: provenance.
 PLAN_VERSION = 3
-#: Every picture the plan can show. `apple` (Apple Auto on) is the picture under test; the others are what it is
-#: compared with: `rule` (Apple Auto off, Yellowmoon's own Auto) and `camera` (the camera's JPEG, with --with-camera).
+#: Every picture the plan can show. `apple` (the provider under test: Apple Auto unless `--provider` says otherwise) is the picture under test; the others are what it is
+#: compared with: `rule` (Default Auto) and `camera` (the camera's JPEG, with --with-camera).
 VARIANTS: Tuple[str, ...] = ("apple", "rule", "camera")
 #: The picture under test, on one side of every trial.
 UNDER_TEST = "apple"
@@ -68,7 +68,7 @@ PICTURES_DIR = "pictures"
 _UNSAFE_IN_NAME = re.compile(r"[^A-Za-z0-9_.-]")
 
 #: One field of an answer: a step or a strength (int), a colour (str), or None where the model left it empty, which
-#: sets nothing (the control keeps Yellowmoon's own Auto value).
+#: sets nothing (the control keeps Default Auto's value).
 StepValue = Union[int, str, None]
 #: A photo's steps, in the order of ANSWER_FIELDS.
 Steps = Tuple[StepValue, ...]
@@ -89,12 +89,12 @@ class AbTest:
     page_kind: Optional[str] = None
 
 
-#: Apple Auto (`apple`, Apple Auto on) against the rule (`rule`, Apple Auto off, Yellowmoon's own Auto), and with
+#: The provider's Auto (`apple`: Apple Auto, Claude Code or Antigravity) against the rule (`rule`, Default Auto), and with
 #: --with-camera against the camera's JPEG (`camera`, reported, not gated). The default test; a plan without a `test`
 #: field is one of it.
 APPLE_TEST = AbTest(name="apple", under_test=UNDER_TEST, variants=VARIANTS, comparisons=COMPARISONS, gated=GATED)
 #: Auto crop (`crop`: `--auto-crop=original`, docs/20 section 8) against the original framing (`original`: no crop).
-#: Both pictures are made at the defaults with Apple Auto off, so only the framing differs. The page shows both
+#: Both pictures are made at the defaults with Default Auto, so only the framing differs. The page shows both
 #: pictures without a border, at one size when they have one shape (`page_kind` "framing").
 CROP_TEST = AbTest(
     name="crop",

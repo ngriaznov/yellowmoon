@@ -66,14 +66,18 @@ def visible_markup(text: str) -> str:
 
 
 #: A stand-in for `ym`. It records each call (arguments, the YELLOWMOON_ variables it sees, whether the home folder is
-#: empty), answers `doctor --json` (unavailable with FAKE_YM_UNAVAILABLE set to a reason), `info --json` (the embedded
-#: JPEG's place from the fake raw file) and `render --json` with the JSON shapes of docs/19 section 8, and writes a
+#: empty), answers `doctor --json` (Apple unavailable with FAKE_YM_UNAVAILABLE set to a reason; the programs
+#: unavailable with FAKE_YM_PROGRAM_DOWN, for example `claude=signed_out`), `info --json` (the embedded JPEG's place
+#: from the fake raw file) and `render --json` with the JSON shapes of docs/19 section 8 and docs/22 sections 13 and
+#: 14 (`auto_advisor` for the provider of `--auto-provider`, `apple_auto` for Apple; with FAKE_YM_OLD only `apple_auto`
+#: and `--apple-auto on|off`, as a `ym` before the providers), and writes a
 #: small JPEG whose metadata names the Auto that made it and whose scan data stands for its pixels. Per stem:
 #: FAKE_YM_FAIL (the render fails), FAKE_YM_APPLE_FAIL (the answer times out), FAKE_YM_APPLE_OTHER (the answer fails
 #: with Apple's message), FAKE_YM_APPLE_GONE (Apple Auto unavailable for the run), FAKE_YM_SAME_PIXELS (an answer that
 #: changes no pixel), FAKE_YM_STEPS (a JSON object stem -> [exposure, white, contrast, saturation], the other fields
 #: left empty, or stem -> the whole steps object; default [1, 0, 1, 0]) and FAKE_YM_SLEEP (seconds an Apple render
-#: takes). It reads the instructions of `--apple-auto-instructions FILE` as `ym` does and reports their digest.
+#: takes). It reads the instructions of `--auto-instructions FILE` (or `--apple-auto-instructions FILE`) as `ym` does
+#: and reports their digest.
 #:
 #: Auto crop (docs/20, `render --auto-crop[=ASPECT]`): `render --help` lists the flag (not with FAKE_YM_NO_AUTO_CROP
 #: set), and a render with it gets `auto_crop` in its record: by default Auto crop levels the photo by 1.4° and crops
@@ -99,9 +103,10 @@ FIELDS = ["exposure", "highlights", "shadows", "blacks", "contrast", "white", "t
 
 
 def instructions_id():
-    if "--apple-auto-instructions" not in args:
+    flag = next((name for name in ("--auto-instructions", "--apple-auto-instructions") if name in args), None)
+    if flag is None:
         return {"instructions": "default", "instructions_sha256": DEFAULT_SHA}
-    with open(args[args.index("--apple-auto-instructions") + 1], encoding="utf-8") as handle:
+    with open(args[args.index(flag) + 1], encoding="utf-8") as handle:
         text = handle.read()
     if text.endswith("\n"):
         text = text[:-1]
@@ -148,7 +153,23 @@ if args[:1] == ["doctor"]:
     else:
         apple = {"available": True, "reason": None, "model": MODEL, "os": MACOS, "preference": True,
                  "prompt": 3, "table": 2, "instructions": "default", "instructions_sha256": DEFAULT_SHA}
-    print(json.dumps({"apple_auto": apple, "version": "9.9.9"}))
+    doc = {"apple_auto": apple, "version": "9.9.9"}
+    if not os.environ.get("FAKE_YM_OLD"):
+        down = dict(part.split("=", 1) for part in os.environ.get("FAKE_YM_PROGRAM_DOWN", "").split(",") if "=" in part)
+        providers = {
+            "yellowmoon": {"state": "available", "reason": None},
+            "apple": {"state": "unavailable" if reason else "available", "reason": reason or None,
+                      "model": None if reason else MODEL, "os": None if reason else MACOS, "prompt": 3},
+        }
+        for name, model, version in (("claude", "sonnet", "2.1.310"), ("agy", "default", "1.4.7")):
+            why = down.get(name)
+            providers[name] = {"state": "available" if not why else ("signed_out" if why == "signed_out" else "unavailable"),
+                               "reason": why or None, "path": "/fake/" + name, "tool_version": version, "model": model,
+                               "api": None, "auth": None, "prompt": 1, "schema": 1, "image": "jpeg444q92@768"}
+        doc["auto"] = {"preference": "apple", "effective": "apple", "consent": {"claude": False, "agy": False},
+                       "instructions": "default", "instructions_sha256": DEFAULT_SHA, "table": 2,
+                       "providers": providers}
+    print(json.dumps(doc))
     sys.exit(0)
 if args[:1] == ["info"]:
     src = args[-1]
@@ -169,17 +190,25 @@ if args == ["render", "--help"]:
     print("Render raw files\n\nUsage: ym render [OPTIONS] <FILES>...\n\nOptions:")
     if not os.environ.get("FAKE_YM_NO_AUTO_CROP"):
         print("      --auto-crop[=<ASPECT>]  Give each photo the crop the app's Auto would give")
-    print("      --apple-auto <MODE>     Apple Auto for this run")
+    print("      --auto-provider <PROVIDER>  Who grades each photo for this run")
     sys.exit(0)
 if args[:1] == ["render"]:
     src = args[-1]
     stem = os.path.splitext(os.path.basename(src))[0]
     out = args[args.index("--out") + 1]
     name = args[args.index("--name") + 1]
-    mode = args[args.index("--apple-auto") + 1]
+    old = bool(os.environ.get("FAKE_YM_OLD"))
+    if old:
+        if "--auto-provider" in args:
+            sys.stderr.write("error: unexpected argument '--auto-provider'\n")
+            sys.exit(2)
+        provider = "apple" if args[args.index("--apple-auto") + 1] == "on" else "yellowmoon"
+    else:
+        provider = args[args.index("--auto-provider") + 1]
+    mode = "off" if provider == "yellowmoon" else "on"
     crop_flag = next((arg for arg in args if arg == "--auto-crop" or arg.startswith("--auto-crop=")), None)
-    record(cmd="render", stem=stem, args=args, mode=mode, home_empty=home_empty, seen=seen, data=data,
-           start=time.monotonic(), crop=crop_flag)
+    record(cmd="render", stem=stem, args=args, mode=mode, provider=provider, home_empty=home_empty, seen=seen,
+           data=data, start=time.monotonic(), crop=crop_flag)
     if stem in stems("FAKE_YM_FAIL"):
         message = "fake failure for " + stem
         print(json.dumps({"status": "error", "error": {"kind": "unsupported", "message": message}, "input": src,
@@ -214,9 +243,15 @@ if args[:1] == ["render"]:
         applied = [named[name] or 0 for name in ("exposure", "white", "contrast", "saturation")]
         if named["shadow_color"] not in (None, "none") and named["shadow_color_strength"]:
             applied.append(named["shadow_color"])
-    source = "apple" if apple_auto is not None and apple_auto["state"] == "answered" else "rule"
-    if apple_auto is not None and apple_auto["state"] == "failed":
-        source = "rule"
+    source = provider if apple_auto is not None and apple_auto["state"] == "answered" else "rule"
+    advisor = {"provider": provider, "state": "off", "reason": None}
+    if provider != "yellowmoon":
+        gone = "apple_intelligence_off" if provider == "apple" else "signed_out"
+        advisor = dict(apple_auto) if apple_auto is not None else {"state": "unavailable", "reason": gone}
+        advisor.update(provider=provider, reproducible=provider == "apple")
+        if provider != "apple":
+            advisor.update(model="claude-sonnet-5-5" if provider == "claude" else "default", os=None, prompt=1,
+                           schema=1, image="jpeg444q92@768", tool_version="2.1.310", api="firstParty")
     auto_crop = None
     crop_setting = None
     if crop_flag is not None:
@@ -254,8 +289,12 @@ if args[:1] == ["render"]:
     auto = {"apple": auto_apple, "contrast": 15.0 * applied[2], "exposure_ev": 0.5 + 0.3 * applied[0],
             "kelvin": 5000.0 - 100 * applied[1], "saturation": 15.0 * applied[3], "source": source, "tint": 0.0}
     obj = {"input": src, "output": target, "status": "ok", "auto": auto, "auto_source": source}
-    if apple_auto is not None:
-        obj["apple_auto"] = apple_auto
+    if old:
+        if apple_auto is not None:
+            obj["apple_auto"] = apple_auto
+    else:
+        obj["apple_auto"] = apple_auto if provider == "apple" and apple_auto is not None else {"state": "off"}
+        obj["auto_advisor"] = advisor
     if crop_flag is not None:
         obj["auto_crop"] = auto_crop
     obj["settings"] = {"contrast": {"kind": "manual", "value": auto["contrast"]}, "crop": crop_setting}
@@ -1047,11 +1086,11 @@ class PrepareTests(PrepareHarness):
         apple = result.plan["provenance"]["apple_auto"]  # type: ignore[index]
         self.assertEqual((apple["instructions"], apple["instructions_sha256"]), ("edited", digest))
         for call in self.renders_logged():
-            flag = "--apple-auto-instructions" in call["args"]  # type: ignore[operator]
+            flag = "--auto-instructions" in call["args"]  # type: ignore[operator]
             self.assertEqual(flag, call["mode"] == "on", call)
             if flag:
                 args = call["args"]
-                self.assertEqual(args[args.index("--apple-auto-instructions") + 1], str(path))  # type: ignore
+                self.assertEqual(args[args.index("--auto-instructions") + 1], str(path))  # type: ignore
         # The default text in a file is the default; the plan id changes with the instructions.
         default = self.root / "default.txt"
         default.write_text("  \n", encoding="utf-8")
@@ -1098,8 +1137,8 @@ class PrepareTests(PrepareHarness):
             self.assertEqual(camera.read_bytes(), camera_bytes(entry["stem"]))
         for call in read_log(self.log):
             if call["cmd"] == "info":
-                self.assertIn("--apple-auto", call["args"])
-                self.assertEqual(call["args"][call["args"].index("--apple-auto") + 1], "off")
+                self.assertIn("--auto-provider", call["args"])
+                self.assertEqual(call["args"][call["args"].index("--auto-provider") + 1], "yellowmoon")
 
     def test_a_photo_without_an_embedded_jpeg_gives_only_the_trial_against_the_rule(self) -> None:
         write_arw(self.photos / "landscape" / "L2.ARW", None)
@@ -1380,6 +1419,178 @@ class CommandLineTests(PrepareHarness):
         written = json.loads((downloads / "score.json").read_text(encoding="utf-8"))
         self.assertEqual(written["provenance"]["apple_auto"]["model"], MODEL)
         self.assertEqual(written["photos"]["found"], 6)
+
+
+class ProviderTests(PrepareHarness):
+    """The blind A/B of Claude Code and Antigravity (docs/22 section 17): `--provider`, the availability check, the plan's
+    provenance, one photo at a time, the seconds per photo and the models that answered."""
+
+    def run_main(self, argv: Sequence[str]) -> Tuple[int, str, str]:
+        out, err = StringIO(), StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = ab.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def prepare_argv(self, *extra: str) -> List[str]:
+        return [
+            "prepare", str(self.photos), "--out", str(self.out), "--ym", str(self.ym), "--data", str(self.data),
+            "--long-edge", "900", *extra,
+        ]
+
+    def test_the_render_names_the_provider_and_the_rule_names_default_auto(self) -> None:
+        self.prepare(provider="claude")
+        by_stem: Dict[str, Dict[str, str]] = {}
+        for call in self.renders_logged():
+            args = call["args"]
+            by_stem.setdefault(str(call["stem"]), {})[str(call["mode"])] = args[args.index("--auto-provider") + 1]
+            self.assertNotIn("--apple-auto", args)
+        self.assertEqual(sorted(by_stem), sorted(self.STEMS))
+        for stem, providers in by_stem.items():
+            self.assertEqual(providers, {"on": "claude", "off": "yellowmoon"}, stem)
+
+    def test_the_plan_records_the_provider_its_version_and_the_model(self) -> None:
+        result = self.prepare(provider="claude")
+        under_test = result.plan["provenance"]["apple_auto"]  # type: ignore[index]
+        self.assertEqual(
+            under_test,
+            {"available": True, "reason": None, "model": "sonnet", "os": None, "prompt": 1, "table": 2,
+             "instructions": "default", "instructions_sha256": DEFAULT_SHA, "tool_version": "2.1.310", "schema": 1,
+             "image": "jpeg444q92@768", "provider": "claude"},
+        )
+        # The models that answered, and how long it took: outside the plan's id.
+        answers = result.plan["answers"]  # type: ignore[index]
+        self.assertEqual(answers["models"], {"claude-sonnet-5-5": len(result.plan["photos"])})  # type: ignore
+        self.assertEqual(answers["photos_timed"], len(self.STEMS))
+        self.assertIsInstance(answers["seconds_per_photo"], float)
+        again = ab.prepare(self.options(provider="claude", out=self.root / "again"), log=lambda _: None)
+        self.assertEqual(again.plan["plan_id"], result.plan["plan_id"])
+
+    def test_the_apple_plan_has_no_program_keys(self) -> None:
+        result = self.prepare()
+        self.assertNotIn("provider", result.plan["provenance"]["apple_auto"])  # type: ignore[index]
+        self.assertEqual(
+            sorted(result.plan["provenance"]["apple_auto"]),  # type: ignore[index]
+            ["available", "instructions", "instructions_sha256", "model", "os", "prompt", "reason", "table"],
+        )
+
+    def test_a_program_that_is_not_signed_in_stops_before_rendering(self) -> None:
+        with mock.patch.dict(os.environ, {"FAKE_YM_PROGRAM_DOWN": "claude=signed_out"}):
+            with self.assertRaises(ab.PrepareFailed) as caught:
+                self.prepare(provider="claude")
+            self.assertEqual(
+                str(caught.exception),
+                "Claude Code is not available on this computer (Claude Code isn't signed in). "
+                "The test needs it signed in.",
+            )
+            self.assertEqual(self.renders_logged(), [])
+            # The other program is not asked about: its state is its own.
+            self.assertTrue(self.prepare(provider="agy").plan["trials"])
+
+    def test_each_reason_is_said_in_the_programs_words(self) -> None:
+        for reason, clause in (
+            ("not_installed", "Antigravity isn't installed"),
+            ("too_old", "Antigravity 1.4.7 is too old"),
+            ("probe_failed", "Antigravity didn't answer its check"),
+            ("unsafe_launcher", "Antigravity was found only as a script that Yellowmoon can't run safely"),
+        ):
+            with mock.patch.dict(os.environ, {"FAKE_YM_PROGRAM_DOWN": f"agy={reason}"}):
+                with self.assertRaises(ab.PrepareFailed) as caught:
+                    self.prepare(provider="agy")
+            self.assertEqual(
+                str(caught.exception),
+                f"Antigravity is not available on this computer ({clause}). The test needs it signed in.",
+            )
+
+    def test_allow_unavailable_goes_on_with_a_note(self) -> None:
+        notes: List[str] = []
+        with mock.patch.dict(os.environ, {"FAKE_YM_PROGRAM_DOWN": "claude=signed_out"}):
+            result = ab.prepare(self.options(provider="claude", allow_unavailable=True), log=notes.append)
+        self.assertIn(
+            "note: Claude Code is not available (Claude Code isn't signed in); going on because of --allow-unavailable",
+            notes,
+        )
+        self.assertEqual(result.plan["provenance"]["apple_auto"]["reason"], "signed_out")  # type: ignore[index]
+
+    def test_a_ym_before_the_providers_runs_the_apple_test_but_not_the_others(self) -> None:
+        with mock.patch.dict(os.environ, {"FAKE_YM_OLD": "1"}):
+            # The doctor and the records of the older `ym` are Apple's alone, but it does not know `--auto-provider`.
+            with self.assertRaises(ab.UsageError) as caught:
+                self.prepare(provider="claude")
+            self.assertIn("older than the Auto providers", str(caught.exception))
+            status = ab.provider_status(self.ym, self.data, self.scratch)
+            self.assertEqual((status["available"], status["model"], status["os"]), (True, MODEL, MACOS))
+
+    def test_the_provider_option_and_its_default_jobs(self) -> None:
+        seen: List[ab.PrepareOptions] = []
+        with mock.patch.object(ab, "prepare", side_effect=lambda options, log=None: seen.append(options) or self.fail_run()):
+            for extra in ((), ("--provider", "claude"), ("--provider", "agy", "--jobs", "3")):
+                with redirect_stderr(StringIO()):
+                    self.assertEqual(ab.run_prepare(ab.build_parser().parse_args(self.prepare_argv(*extra))), 1)
+        self.assertEqual([o.provider for o in seen], ["apple", "claude", "agy"])
+        self.assertEqual([o.jobs for o in seen], [ab.default_jobs(), 1, 3])
+
+    @staticmethod
+    def fail_run() -> None:
+        raise ab.PrepareFailed("stop")
+
+    def test_an_unknown_provider_is_an_argument_error(self) -> None:
+        with self.assertRaises(SystemExit) as caught:
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                ab.main(self.prepare_argv("--provider", "gemini"))
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_the_summary_names_the_program_the_seconds_and_the_models(self) -> None:
+        code, text, _ = self.run_main(self.prepare_argv("--provider", "claude", "--with-camera"))
+        self.assertEqual(code, 0)
+        self.assertIn(f"Blind A/B of Claude Code written to {self.out.resolve()}", text)
+        self.assertIn(
+            f"Claude Code 2.1.310 · sonnet · prompt 1 · schema 1 · table 2 · instructions default ({DEFAULT_SHA})", text
+        )
+        self.assertIn("Claude Code left 0 of 6 photos as they were: they give no trial.", text)
+        self.assertIn("seconds per photo: ", text)
+        self.assertIn("models that answered: claude-sonnet-5-5 (6)", text)
+        self.assertIn("trials: 12 (Claude Code vs the rule 6, Claude Code vs the camera's JPEG 6)", text)
+        self.assertNotIn("Apple", text)
+
+    def test_a_failed_answer_is_said_in_the_programs_words(self) -> None:
+        with mock.patch.dict(os.environ, {"FAKE_YM_APPLE_FAIL": "N1", "FAKE_YM_APPLE_GONE": "L2"}):
+            result = self.prepare(provider="claude")
+        self.assertEqual(
+            [(item["stem"], item["reason"]) for item in result.failed],
+            [("L2", "Claude Code was not available (Claude Code isn't signed in)"),
+             ("N1", "Claude Code failed (no answer within 90 seconds)")],
+        )
+
+    def test_with_resume_an_answer_of_another_provider_is_asked_again(self) -> None:
+        self.prepare(provider="claude")
+        first = len(self.renders_logged())
+        self.prepare(provider="claude", resume=True)
+        self.assertEqual(len(self.renders_logged()), first, "the same provider: everything is kept")
+        self.prepare(provider="agy", resume=True)
+        agy = [c for c in self.renders_logged()[first:] if c["mode"] == "on"]
+        self.assertEqual(len(agy), len(self.STEMS), "another provider: each answer is asked again")
+
+    def test_the_crop_test_has_no_provider(self) -> None:
+        code, _, err = self.run_main(self.prepare_argv("--test", "crop", "--provider", "claude"))
+        self.assertEqual(code, 2)
+        self.assertIn("--provider is for the provider test", err)
+
+    def test_the_report_names_the_program(self) -> None:
+        plan, results = make_case([("rule", "portrait", 70, 20, 10, 1, 5)])
+        plan["provenance"] = {
+            "ym": "ym 1.0",
+            "apple_auto": {"provider": "agy", "model": "default", "tool_version": "1.4.7", "prompt": 1, "schema": 1,
+                           "table": 2, "instructions": "default", "instructions_sha256": DEFAULT_SHA},
+        }
+        plan["answers"] = {"photos_timed": 4, "seconds_per_photo": 7.5, "models": {"default": 4}}
+        text = scorelib.format_report(score_answers(plan, results))
+        self.assertIn("Blind A/B of Antigravity, plan", text)
+        self.assertIn("Antigravity 1.4.7 · default · prompt 1 · schema 1 · table 2", text)
+        self.assertIn("Antigravity vs the rule", text)
+        self.assertIn("Gate, Antigravity against the rule", text)
+        self.assertIn("Answers: 7.5 s per photo", text)
+        self.assertIn("models that answered: default (4)", text)
+        self.assertNotIn("Apple", text)
 
 
 class PageTests(unittest.TestCase):
@@ -2125,9 +2336,9 @@ class CropPrepareTests(PrepareHarness):
             self.assertEqual(args[args.index("--quality") + 1], "92")  # type: ignore[union-attr]
             self.assertEqual(args[args.index("--long-edge") + 1], "900")  # type: ignore[union-attr]
             for setting in ("--look", "--exposure", "--contrast", "--saturation", "--wb", "--settings", "--light",
-                            "--apple-auto-instructions"):
+                            "--auto-instructions"):
                 self.assertNotIn(setting, args, "the defaults: every setting at Auto, the default look")
-            self.assertEqual(call["mode"], "off", "both pictures with Apple Auto off")
+            self.assertEqual(call["mode"], "off", "both pictures with Default Auto")
             self.assertTrue(call["home_empty"])
             self.assertEqual(call["data"], str(self.data))
         self.assertEqual(sorted(c["stem"] for c in self.crop_renders()), sorted(self.STEMS))
@@ -2308,8 +2519,7 @@ class CropCommandLineTests(PrepareHarness):
         self.assertEqual(code, 0)
         for line in (
             f"Blind A/B of Auto crop written to {self.out.resolve()}",
-            "Auto crop: aspect original, against the original framing; both pictures at the defaults with Apple Auto "
-            "off",
+            "Auto crop: aspect original, against the original framing; both pictures at the defaults with Default Auto",
             "photos: 6 found, 4 in the test",
             "Auto crop changed nothing on 1 of 6 photos: each kept its frame, so they give no trial.",
             "Auto crop failed on 1 of 6 photos: they are left out.",
@@ -2335,10 +2545,10 @@ class CropCommandLineTests(PrepareHarness):
         instructions.write_text("Moody.", encoding="utf-8")
         code, _, err = self.run_main(self.prepare_argv("--with-camera"))
         self.assertEqual(code, 2)
-        self.assertIn("--with-camera is for the Apple Auto test", err)
+        self.assertIn("--with-camera is for the provider test", err)
         code, _, err = self.run_main(self.prepare_argv("--instructions", str(instructions)))
         self.assertEqual(code, 2)
-        self.assertIn("--instructions is for the Apple Auto test", err)
+        self.assertIn("--instructions is for the provider test", err)
         self.assertEqual(self.renders_logged(), [])
 
     def test_an_unknown_test_is_an_argument_error(self) -> None:
@@ -2522,7 +2732,7 @@ class CropScoreTests(unittest.TestCase):
         self.assertIn("They need your agreement.", text)
         self.assertIn("Photos: 120 found, 110 in the test; 10 kept their frame (no trial)", text)
         for word in ("apple", "the rule"):
-            self.assertNotIn(word, text.replace("Apple Auto off", "").lower())
+            self.assertNotIn(word, text.replace("Default Auto", "").lower())
 
     def test_score_json_keeps_every_number(self) -> None:
         plan, results = make_crop_case([("well-framed", 3, 4, 2, 0, 0)], kept={"well-framed": 1})

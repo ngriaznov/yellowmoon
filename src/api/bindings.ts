@@ -516,7 +516,7 @@ export type AutoFlags = {
 
 /**  Who grades (`docs/22` section 1; the core's `AutoProvider`). The order is the dropdown's. */
 export type AutoProvider = 
-/**  Yellowmoon's own Auto, the rule. */
+/**  Default Auto, the rule. */
 "yellowmoon" | 
 /**  Apple Intelligence, the on-device model. */
 "apple" | 
@@ -530,7 +530,7 @@ export type AutoProvider =
  *  Intelligence (`apple`), Claude Code (`claude`) or Antigravity (`agy`, `docs/22` section 14.1).
  */
 export type AutoSource = 
-/**  Yellowmoon's own Auto. */
+/**  Default Auto. */
 "rule" | 
 /**  Apple Intelligence's answer (the photo's own or its burst's). */
 "apple" | 
@@ -1654,7 +1654,7 @@ export type Preferences = {
 	last_used_folders: LastUsedFolders,
 	/**
 	 *  Who grades (`docs/22` section 10.1): Apple Intelligence by default. A provider that is not
-	 *  available, or a program the person has not agreed to yet, acts as Yellowmoon's own Auto.
+	 *  available, or a program the person has not agreed to yet, acts as Default Auto.
 	 */
 	auto_provider: AutoProvider,
 	/**  Whether the person agreed to send photos through Claude Code and through Antigravity. */

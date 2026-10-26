@@ -25,7 +25,12 @@ const DOM_DIR = resolve(OUT, "screenshot-dom");
  * 24 on a channel. The 0.35 % is room for another machine (a CI runner's GPU and Chromium build); if a state needs more there, it gets a
  * line here with the number measured and the date, as the states of the pre-glass comparison did.
  */
-const BUDGETS: Readonly<Record<string, number>> = {};
+const BUDGETS: Readonly<Record<string, number>> = {
+  // The consent dialog over Preferences (2026-10-26): the Preferences text under the overlay is drawn one CSS pixel to the left in about
+  // half of the runs (the boxes measure the same in both; 1.595 % of the pixels differ at Playwright's count, 0.000 % in the other runs),
+  // so the state may differ by 2 %. The dialog itself and everything outside the overlay's rim are identical in both.
+  "photos-preferences-consent": 0.02,
+};
 
 /** The reference PNG of a state. */
 export const reference = (name: string): Buffer => readFileSync(resolve(REFERENCES, `${name}.png`));

@@ -84,7 +84,7 @@ Every JPEG, TIFF and PNG embeds an ICC profile for its colour space: sRGB (IEC 6
 | `ym:AutoAdvisor` | only when a provider (Apple Intelligence, Claude Code or Antigravity) acted on the photo: compact JSON, keys sorted, a key without a value left out, `{"api":"firstParty","image":"jpeg444q92@768","instructions":"default","instructions_sha256":"…","model":"claude-sonnet-5-5","plan":"…","prompt":1,"provider":"claude","reproducible":false,"result":"answered","scene":"…","schema":1,"steps":{"blacks":null,"contrast":1,"exposure":1,…},"table":2,"tool_version":"2.1.310"}` (for Apple `"model":"AFM 3 Core","os":"27.0.1 (27A404)","prompt":3,"provider":"apple","reproducible":true`, no `api`, `image`, `schema` or `tool_version`), or `"result":"failed"` with `"reason"` (`timeout`, `rate_limited`, `not_signed_in`, …) and no steps. The program's path and messages are never written. It replaces `ym:AppleAuto`, which files made before `docs/22` carry (the same JSON without `provider` and `reproducible`; readers accept both) |
 | `ym:Settings` | compact JSON of the resolved DevelopSettings (a `serde_json::Value`, keys sorted), in which Auto contrast and saturation are pinned to the numbers they resolved to, as Auto exposure is |
 
-With Yellowmoon's own Auto (no provider acting) an export carries every property except `ym:AutoAdvisor`, with `ym:Auto` = `rule`.
+With Default Auto (no provider acting) an export carries every property except `ym:AutoAdvisor`, with `ym:Auto` = `rule`.
 
 No sidecars. Nothing is written anywhere except the exported file.
 

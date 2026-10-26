@@ -2177,7 +2177,7 @@ fn apple_auto_reaches_the_webview_through_the_settings_the_status_and_settings_c
         matches!(apple_state(&h, id), AppleAuto::Answered { .. })
     });
 
-    // Yellowmoon's own Auto chosen: every photo back to the rule at once, and the webview is told.
+    // Default Auto chosen: every photo back to the rule at once, and the webview is told.
     let asks = h.api.core().session.apple_auto_asks();
     let before = h.events.events().len();
     let prefs = h
@@ -2362,7 +2362,7 @@ fn auto_status_lists_every_provider_the_way_the_dropdown_shows_them() {
     let h = Harness::with_advisors(advisors);
     let status = h.api.auto_status().expect("status");
     // The row shows: a program is there. The saved choice is Apple Intelligence, which is off, so
-    // Yellowmoon's own Auto grades and the choice stays.
+    // Default Auto grades and the choice stays.
     assert!(status.visible && !status.active);
     assert_eq!(
         (status.preference, status.chosen, status.effective),
@@ -2506,7 +2506,7 @@ fn a_program_is_chosen_with_its_consent_in_one_patch_and_never_without_it() {
         }
     );
     assert!(status.providers[2].consent && !status.providers[3].consent);
-    // Yellowmoon's own Auto and Apple Intelligence are always taken, available or not.
+    // Default Auto and Apple Intelligence are always taken, available or not.
     for choice in ["yellowmoon", "apple"] {
         h.api
             .preferences_set(&prefs_patch(json!({ "auto_provider": choice })))
@@ -2603,7 +2603,7 @@ fn a_program_that_grades_says_so_on_the_wire_in_the_answer_and_in_the_failure() 
 
 #[test]
 fn a_program_that_is_chosen_but_not_agreed_to_leaves_the_photos_to_the_rule_and_says_why() {
-    // A preferences file edited by hand: Claude Code saved with no consent acts as Yellowmoon's own Auto (`docs/22` section 10.2).
+    // A preferences file edited by hand: Claude Code saved with no consent acts as Default Auto (`docs/22` section 10.2).
     let (advisors, _claude, _agy) = a_computer_with_claude_signed_in();
     let h = Harness::with_preferences_file(advisors, r#"{ "auto_provider": "claude" }"#);
     let status = h.api.auto_status().expect("status");

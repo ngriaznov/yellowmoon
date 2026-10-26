@@ -1,7 +1,7 @@
-"""The score of the blind A/B of Apple Auto: wins, losses and ties per comparison, the Wilson bound, the strata, the
+"""The score of the blind A/B of an Auto provider (Apple Auto, Claude Code or Antigravity): wins, losses and ties per comparison, the Wilson bound, the strata, the
 gate of docs/19 section 13 and the diagnostics that help tune the table of docs/19 section 5.
 
-The gate compares Apple Auto with the rule (Apple Auto off). Its thresholds are provisional: they are the numbers of
+The gate compares the provider's Auto with the rule (Default Auto). Its thresholds are provisional: they are the numbers of
 the parked `autoset` test (gate 5 of the old docs/18) until the owner agrees to them.
 
 * the pooled win share of Apple Auto is at least 60 %, ties counting as half a win;
@@ -68,6 +68,13 @@ LABELS: Mapping[str, str] = {
     "rule": "Apple Auto vs the rule",
     "camera": "Apple Auto vs the camera's JPEG",
     "original": "Auto crop vs the original framing",
+}
+#: What each provider is called in the report: (its name, the short form for "Apple's"), by the `provider` that the
+#: plan's `provenance.apple_auto` records (`prepare --provider`); a plan without one is Apple Auto's.
+PROVIDER_NAMES: Mapping[str, Tuple[str, str]] = {
+    "apple": ("Apple Auto", "Apple"),
+    "claude": ("Claude Code", "Claude Code"),
+    "agy": ("Antigravity", "Antigravity"),
 }
 #: What the picture under test and the other picture are called in the "needs a fix" reason of each test.
 FIX_NAMES: Mapping[str, Tuple[str, str]] = {
@@ -830,6 +837,7 @@ def build_report(plan: Mapping[str, object], rows: Sequence[Row]) -> Dict[str, o
         "seed": plan.get("seed"),
         "provenance": provenance,
         "photos": plan.get("counts"),
+        **({"answers": plan["answers"]} if isinstance(plan.get("answers"), dict) else {}),
         "trials": total,
         "answered": len(rows),
         "complete": len(rows) == total,
@@ -851,24 +859,49 @@ def build_report(plan: Mapping[str, object], rows: Sequence[Row]) -> Dict[str, o
     }
 
 
+def _provider_names(provenance: Mapping[str, object]) -> Tuple[str, str]:
+    """The name of the provider under test and its short form, from the plan's provenance."""
+    under_test = provenance.get("apple_auto")
+    provider = under_test.get("provider") if isinstance(under_test, dict) else None
+    return PROVIDER_NAMES.get(str(provider), PROVIDER_NAMES["apple"])
+
+
 def _model_line(provenance: Mapping[str, object]) -> Optional[str]:
     apple = provenance.get("apple_auto")
     if not isinstance(apple, dict):
         return None
-    line = (
-        f"Apple Auto: {apple.get('model') or 'unknown model'} · macOS {apple.get('os') or 'unknown'} · "
-        f"prompt {apple.get('prompt')} · table {apple.get('table')}"
-    )
+    name, _ = _provider_names(provenance)
+    if apple.get("provider") in ("claude", "agy"):
+        line = (
+            f"{name} {apple.get('tool_version') or 'unknown version'} · {apple.get('model') or 'unknown model'} · "
+            f"prompt {apple.get('prompt')} · schema {apple.get('schema')} · table {apple.get('table')}"
+        )
+    else:
+        line = (
+            f"{name}: {apple.get('model') or 'unknown model'} · macOS {apple.get('os') or 'unknown'} · "
+            f"prompt {apple.get('prompt')} · table {apple.get('table')}"
+        )
     if apple.get("instructions"):
         line += f" · instructions {apple.get('instructions')} ({apple.get('instructions_sha256')})"
     return line
 
 
-def _photos_line(counts: object) -> Optional[str]:
+def _answers_line(answers: object) -> Optional[str]:
+    """What the answers took and which models gave them (`answers` of the plan), when the plan has it."""
+    if not isinstance(answers, dict) or answers.get("seconds_per_photo") is None:
+        return None
+    line = f"Answers: {answers.get('seconds_per_photo')} s per photo (the whole ym call, the picture included)"
+    models = answers.get("models")
+    if isinstance(models, dict) and models:
+        line += "; models that answered: " + ", ".join(f"{model} ({count})" for model, count in models.items())
+    return line
+
+
+def _photos_line(counts: object, name: str = "Apple Auto") -> Optional[str]:
     if not isinstance(counts, dict):
         return None
     return (
-        f"Photos: {counts.get('found')} found, {counts.get('in_test')} in the test; Apple Auto left "
+        f"Photos: {counts.get('found')} found, {counts.get('in_test')} in the test; {name} left "
         f"{counts.get('unchanged')} as they were (no trial) and failed on {counts.get('failed')}; "
         f"{counts.get('not_rendered')} could not be rendered."
     )
@@ -884,7 +917,11 @@ def _group_line(group: Mapping[str, object]) -> str:
 
 
 def _comparison_lines(
-    comparisons: Mapping[str, Mapping[str, object]], fix_title: str, tested: str, stratum_width: int = 22
+    comparisons: Mapping[str, Mapping[str, object]],
+    fix_title: str,
+    tested: str,
+    stratum_width: int = 22,
+    labels: Mapping[str, str] = LABELS,
 ) -> List[str]:
     """The table of the comparisons (a row each, with the needs-a-fix rates of the picture under test, `tested`, and
     of the other picture under `fix_title`) and the strata of each comparison, their names in a column
@@ -903,7 +940,7 @@ def _comparison_lines(
         fix = f"{pct(needs[tested])} / {pct(needs['other'])}"  # type: ignore[index]
         verdict = str(entry["verdict"]) if entry["gated"] else f"({entry['verdict']})"
         lines.append(
-            f"{LABELS[name]:<34}{entry['trials']:>7}{entry['wins']:>6}{entry['losses']:>8}{entry['ties']:>6}"
+            f"{labels[name]:<34}{entry['trials']:>7}{entry['wins']:>6}{entry['losses']:>8}{entry['ties']:>6}"
             f"{pct(entry['share']):>9}{pct(entry['wilson_lower']):>12}  {fix:<22}{verdict:>10}"  # type: ignore[arg-type]
         )
     if any(not entry["gated"] for entry in comparisons.values()):
@@ -911,7 +948,7 @@ def _comparison_lines(
     lines.append("")
     lines.append("Strata, win share (in the gate, a stratum below 45 % fails):")
     for name, entry in comparisons.items():
-        lines.append(f"  {LABELS[name]}")
+        lines.append(f"  {labels[name]}")
         strata: Mapping[str, Mapping[str, object]] = entry["strata"]  # type: ignore[assignment]
         if not strata:
             lines.append("    no answers yet")
@@ -953,7 +990,7 @@ def format_crop_report(report: Mapping[str, object]) -> str:
     if isinstance(crop, dict):
         lines.append(
             f"Auto crop: aspect {crop.get('aspect')}, against the original framing; both pictures at the defaults with "
-            f"Apple Auto off · {provenance.get('ym')}"  # type: ignore[union-attr]
+            f"Default Auto · {provenance.get('ym')}"  # type: ignore[union-attr]
         )
     counts = report.get("photos")
     if isinstance(counts, dict):
@@ -1034,21 +1071,28 @@ def format_report(report: Mapping[str, object]) -> str:
     if report.get("test") == CROP_TEST.name:
         return format_crop_report(report)
     comparisons: Mapping[str, Mapping[str, object]] = report["comparisons"]  # type: ignore[assignment]
+    name, short = _provider_names(report.get("provenance") or {})  # type: ignore[arg-type]
+    labels = {**LABELS, "rule": f"{name} vs the rule", "camera": f"{name} vs the camera's JPEG"}
     lines = [
-        f"Blind A/B of Apple Auto, plan {report['plan_id']} (seed {report['seed']}): "
+        f"Blind A/B of {name}, plan {report['plan_id']} (seed {report['seed']}): "
         f"{report['answered']} of {report['trials']} trials answered."
     ]
-    for extra in (_model_line(report.get("provenance") or {}), _photos_line(report.get("photos"))):  # type: ignore
+    extras = (
+        _model_line(report.get("provenance") or {}),  # type: ignore[arg-type]
+        _photos_line(report.get("photos"), name),
+        _answers_line(report.get("answers")),
+    )
+    for extra in extras:
         if extra:
             lines.append(extra)
     if not report["complete"]:
         lines.append("Not every trial is answered yet, so the verdict below is provisional.")
     lines.append("")
-    lines.extend(_comparison_lines(comparisons, "Fix: Apple / other", APPLE_TEST.under_test))
+    lines.extend(_comparison_lines(comparisons, f"Fix: {short} / other", APPLE_TEST.under_test, labels=labels))
     diag = report.get("diagnostics")
     if isinstance(diag, dict):
         lines.append("")
-        lines.append("For tuning the table (docs/19 section 5): Apple Auto's win share against the rule, by what it did.")
+        lines.append(f"For tuning the table (docs/19 section 5): {name}'s win share against the rule, by what it did.")
         for title, key in (
             ("By direction (a photo with several changes counts in each)", "by_direction"),
             ("By the colour of the shadows or the highlights", "by_color"),
@@ -1063,17 +1107,17 @@ def format_report(report: Mapping[str, object]) -> str:
         empty = diag.get("left_empty")
         if isinstance(empty, dict) and empty.get("trials"):
             counts = [f"{name} {count}" for name, count in empty["fields"].items() if count]
-            lines.append(f"  Fields Apple's model left empty (they set nothing), of {_trials(empty['trials'])}:")
+            lines.append(f"  Fields {short}'s model left empty (they set nothing), of {_trials(empty['trials'])}:")
             lines.append(f"    {', '.join(counts) if counts else 'none'}")
         losses = diag["losses"]
         lines.append("")
-        lines.append(f"Trials Apple Auto lost against the rule ({len(losses)}), with Apple's scene, plan and changes:")
+        lines.append(f"Trials {name} lost against the rule ({len(losses)}), with {short}'s scene, plan and changes:")
         if not losses:
             lines.append("  none")
         for loss in losses:
             fixes = []
             if loss["needs_fix"]["apple"]:
-                fixes.append("Apple's picture needs a fix")
+                fixes.append(f"{short}'s picture needs a fix")
             if loss["needs_fix"]["other"]:
                 fixes.append("the rule's picture needs a fix")
             fix_text = f" [{'; '.join(fixes)}]" if fixes else ""
@@ -1088,10 +1132,10 @@ def format_report(report: Mapping[str, object]) -> str:
     lines.append("")
     lines.append(
         f"Thresholds ({THRESHOLDS_NOTE}): win share at least 60 % (ties as half), Wilson 95 % lower bound above 50 % "
-        "(ties left out), no stratum below 45 %, Apple Auto's picture not marked \"needs a fix\" more often than the "
+        f"(ties left out), no stratum below 45 %, {name}'s picture not marked \"needs a fix\" more often than the "
         "rule's. They need your agreement."
     )
-    lines.append(f"Gate, Apple Auto against the rule ({THRESHOLDS_NOTE}): {gate}{provisional}")
+    lines.append(f"Gate, {name} against the rule ({THRESHOLDS_NOTE}): {gate}{provisional}")
     return "\n".join(lines)
 
 

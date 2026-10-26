@@ -1591,7 +1591,7 @@ describe("Auto providers: what the computer has (docs/22 sections 3.1 and 12.8)"
     expect(await visible({ agy: "unavailable" })).toBe(true);
   });
 
-  it("acts as Yellowmoon's own Auto while the saved choice is not available or not agreed to, and keeps the choice", async () => {
+  it("acts as Default Auto while the saved choice is not available or not agreed to, and keeps the choice", async () => {
     api.reset({ providers: { apple: "available", claude: "signed_out", agy: "available" }, autoProvider: "claude", consent: { claude: true, agy: false } });
     expect(await api.autoStatus()).toMatchObject({ preference: "claude", effective: "yellowmoon", active: false });
     await api.openPaths(ARW);
@@ -1601,7 +1601,7 @@ describe("Auto providers: what the computer has (docs/22 sections 3.1 and 12.8)"
     // Agreed to, available: it acts.
     api.setProviders({ apple: "available", claude: "available", agy: "available" });
     expect(await api.autoStatus()).toMatchObject({ preference: "claude", effective: "claude", active: true });
-    // Available but not agreed to (a file edited by hand): Yellowmoon's own Auto, and the photo says why.
+    // Available but not agreed to (a file edited by hand): Default Auto, and the photo says why.
     api.reset({ providers: { claude: "available" }, autoProvider: "claude" });
     expect(await api.autoStatus()).toMatchObject({ preference: "claude", effective: "yellowmoon" });
     await api.openPaths(ARW);
@@ -1665,7 +1665,7 @@ describe("Auto providers: the preference and the consent (docs/22 section 10.2)"
     expect((await api.preferencesSet({ auto_provider: "claude" })).auto_provider).toBe("claude");
   });
 
-  it("always takes Yellowmoon's own Auto and Apple Intelligence, available or not", async () => {
+  it("always takes Default Auto and Apple Intelligence, available or not", async () => {
     expect((await api.preferencesSet({ auto_provider: "yellowmoon" })).auto_provider).toBe("yellowmoon");
     expect((await api.preferencesSet({ auto_provider: "apple" })).auto_provider).toBe("apple");
   });

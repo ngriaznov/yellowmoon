@@ -1185,7 +1185,7 @@ pub struct NoiseModel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum AutoSource {
-    /// Yellowmoon's own Auto.
+    /// Default Auto.
     Rule,
     /// Apple Intelligence's answer (the photo's own or its burst's).
     Apple,
@@ -1199,7 +1199,7 @@ pub enum AutoSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum AutoProvider {
-    /// Yellowmoon's own Auto, the rule.
+    /// Default Auto, the rule.
     Yellowmoon,
     /// Apple Intelligence, the on-device model.
     Apple,
@@ -2307,7 +2307,7 @@ pub struct Preferences {
     /// Folders remembered between runs.
     pub last_used_folders: LastUsedFolders,
     /// Who grades (`docs/22` section 10.1): Apple Intelligence by default. A provider that is not
-    /// available, or a program the person has not agreed to yet, acts as Yellowmoon's own Auto.
+    /// available, or a program the person has not agreed to yet, acts as Default Auto.
     pub auto_provider: AutoProvider,
     /// Whether the person agreed to send photos through Claude Code and through Antigravity.
     pub auto_consent: AutoConsent,

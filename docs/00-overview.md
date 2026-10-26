@@ -110,7 +110,7 @@ These are fixed unless new evidence turns up. The reasoning is in `research/`.
 | RFSE | Relative RMS error of a spectral curve, as a percentage of its peak. |
 | Stand-in profile | A camera profile used for a body that has none of its own (A7R IV by default). |
 | Apple Auto | Optional per-photo Auto values from Apple's on-device model, on Macs where that model can look at a picture (`docs/19-apple-auto.md`). |
-| Auto provider | Who grades each photo: Yellowmoon's own Auto, Apple Intelligence, Claude Code or Antigravity (agy); the last two are the person's own programs, which Yellowmoon starts (`docs/22-auto-providers.md`). |
+| Auto provider | Who grades each photo: Default Auto (the rule), Apple Intelligence, Claude Code or Antigravity (agy); the last two are the person's own programs, which Yellowmoon starts (`docs/22-auto-providers.md`). |
 | [HUMAN] | A task only the owner can do (emails, legal checks, design decisions, reviews and blind tests). |
 
 ## Where to find things

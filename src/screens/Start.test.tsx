@@ -219,7 +219,7 @@ describe("Start, developing", () => {
     expect(within(screen.getByRole("list", { name: "Photos being developed" })).getAllByText("Ready")).toHaveLength(12);
   });
 
-  it("with Yellowmoon's own Auto chosen while photos wait, stops waiting for the provider", async () => {
+  it("with Default Auto chosen while photos wait, stops waiting for the provider", async () => {
     h = renderApp({ appleAuto: "pending" });
     await h.user.click(await screen.findByRole("button", { name: "Open files…" }));
     h.api.flush();

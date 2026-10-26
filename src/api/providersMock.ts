@@ -15,7 +15,7 @@ import type {
   ProviderStatus,
 } from "./types";
 
-/** The three providers a computer can have (Yellowmoon's own Auto is always there). */
+/** The three providers a computer can have (Default Auto is always there). */
 export type MockProviderName = "apple" | "claude" | "agy";
 
 /** What a mock provider is doing: available, or one of the ways a program is listed but cannot be used, or still being checked. */
@@ -158,8 +158,8 @@ export type MockActivity =
   | { kind: "active"; provider: Exclude<AutoProvider, "yellowmoon"> };
 
 /**
- * `Activity::decide` for the mock: no provider on the computer is the browser build (no advisors: off); the chosen provider is Yellowmoon's
- * own Auto (off); a provider that is not there, not available or, for a program, not agreed to, is unavailable with its reason; the rest
+ * `Activity::decide` for the mock: no provider on the computer is the browser build (no advisors: off); the chosen provider is Default
+ * Auto (off); a provider that is not there, not available or, for a program, not agreed to, is unavailable with its reason; the rest
  * acts.
  */
 export function mockActivity(providers: MockProviders, chosen: AutoProvider, consent: AutoConsent): MockActivity {

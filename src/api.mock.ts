@@ -147,7 +147,7 @@ const CPU_FRAME_MS = 600;
 // The mock has no zoom of its own to report: the screen estimates it (`fit_percent: null`).
 const RENDER_STATS: RenderStats = { ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null };
 
-/** What "Auto" resolves to for every photo in the mock, with Apple Auto off (Yellowmoon's own Auto, "the rule"). */
+/** What "Auto" resolves to for every photo in the mock, with Apple Auto off (Default Auto, "the rule"). */
 export const MOCK_ESTIMATES: AutoEstimates = {
   exposure_ev: 0.3,
   white_ev: 0.8,
@@ -176,7 +176,7 @@ export const MOCK_ESTIMATES: AutoEstimates = {
  * `none` (the default) is the browser build and every computer the app has no advisor on: no provider, no reason, every photo `off`, so
  * every screen is the one without a provider. `unavailable` is a Mac where Apple Intelligence is off. `pending`, `answered` and `failed`
  * are a Mac where Apple Intelligence is available: with it chosen, every developed photo is waiting for its answer, has the answer of
- * {@link MOCK_APPLE_ANSWER}, or failed (no answer within 30 seconds); with Yellowmoon's own Auto chosen every photo is `off`. Where
+ * {@link MOCK_APPLE_ANSWER}, or failed (no answer within 30 seconds); with Default Auto chosen every photo is `off`. Where
  * `providers` names the computer's providers (`?mockProviders=`) the mode applies to the one that grades, and `none` or `unavailable`
  * then read as `answered`.
  */
@@ -2740,7 +2740,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
             fail("preferences", "Those display LUTs aren't imported. Import ARRI's display LUTs first.");
           }
         }
-        // Auto follows its preference at once: Yellowmoon's own Auto, every photo back to the rule; a provider, its answers (kept) come back.
+        // Auto follows its preference at once: Default Auto, every photo back to the rule; a provider, its answers (kept) come back.
         changingEstimates(() => {
           preferences = next as unknown as Preferences;
         });

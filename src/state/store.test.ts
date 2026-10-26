@@ -902,7 +902,7 @@ describe("Auto providers (docs/19, docs/22)", () => {
   describe("choosing a provider", () => {
     const provider = (store: AppStore) => store.getState().preferences?.auto_provider;
 
-    it("saves Yellowmoon's own Auto, Apple Intelligence and an agreed program at once", async () => {
+    it("saves Default Auto, Apple Intelligence and an agreed program at once", async () => {
       const { api, store } = await connected({ providers: { apple: "available", claude: "available" }, consent: { claude: true, agy: false } });
       const spy = vi.spyOn(api, "preferencesSet");
       await store.chooseProvider("yellowmoon");
@@ -1018,7 +1018,7 @@ describe("Auto providers (docs/19, docs/22)", () => {
     expect(settingsOf(store).values.contrast).toBe(15);
   });
 
-  it("follows the choice: Yellowmoon's own Auto puts every photo back to the rule, Apple Intelligence brings the answers back", async () => {
+  it("follows the choice: Default Auto puts every photo back to the rule, Apple Intelligence brings the answers back", async () => {
     const { store } = await opened({ appleAuto: "answered" });
     expect(settingsOf(store).values.contrast).toBe(15);
     await store.setPreferences({ auto_provider: "yellowmoon" });

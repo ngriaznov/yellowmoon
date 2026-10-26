@@ -182,12 +182,12 @@ test.describe("Apple Auto (docs/19)", () => {
     const select = page.getByRole("combobox", { name: "Auto grading" });
     await select.focus();
     await page.keyboard.press("Enter");
-    await expect(page.getByRole("option", { name: "Yellowmoon's own Auto" })).toBeVisible();
+    await expect(page.getByRole("option", { name: "Default Auto" })).toBeVisible();
     await page.keyboard.press("ArrowUp");
     // Radix moves the focus a tick after the key.
-    await expect(page.getByRole("option", { name: "Yellowmoon's own Auto" })).toBeFocused();
+    await expect(page.getByRole("option", { name: "Default Auto" })).toBeFocused();
     await page.keyboard.press("Enter");
-    await expect(select).toHaveText("Yellowmoon's own Auto");
+    await expect(select).toHaveText("Default Auto");
   });
 });
 
@@ -209,7 +209,7 @@ test.describe("Auto providers (docs/22 section 12)", () => {
     await page.getByRole("combobox", { name: "Auto grading" }).click();
     await expect(page.getByRole("option", { name: "Claude Code" })).toBeVisible();
     snapshot = await expectNamed(page, "the open list");
-    expect(snapshot).toMatch(/option "Yellowmoon's own Auto"/);
+    expect(snapshot).toMatch(/option "Default Auto"/);
     expect(snapshot).toMatch(/option "Apple Intelligence" \[selected\]/);
     expect(snapshot).toMatch(/option "Claude Code"/);
     // The signed-out program is listed, disabled, and its name says why.

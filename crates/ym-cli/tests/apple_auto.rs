@@ -139,7 +139,7 @@ fn render_json_says_apple_made_the_auto_values_and_what_it_answered() {
         json!({ "kind": "manual", "value": 15.0 })
     );
     assert_eq!(v["settings"]["exposure"]["ev"], v["auto"]["exposure_ev"]);
-    // The same photo with Yellowmoon's own Auto: the exposure is the table's step brighter.
+    // The same photo with Default Auto: the exposure is the table's step brighter.
     let rule = render_json(
         sb.ym_fake(),
         &arw,
@@ -274,7 +274,7 @@ fn the_apple_auto_preference_decides_unless_the_run_says_otherwise() {
     );
     assert_eq!(on["auto_source"], "apple");
     assert_eq!(on["apple_auto"]["state"], "answered");
-    // And `ym doctor` shows the saved choice: the old switch off reads as Yellowmoon's own Auto.
+    // And `ym doctor` shows the saved choice: the old switch off reads as Default Auto.
     let doctor = sb.ym_fake().args(["doctor", "--json"]).assert().success();
     let doctor: Value = serde_json::from_slice(&doctor.get_output().stdout).expect("JSON");
     assert_eq!(doctor["apple_auto"]["preference"], false);
@@ -285,7 +285,7 @@ fn the_apple_auto_preference_decides_unless_the_run_says_otherwise() {
     assert!(
         text_report
             .lines()
-            .any(|l| l.starts_with("Auto grading") && l.ends_with("Yellowmoon's own Auto")),
+            .any(|l| l.starts_with("Auto grading") && l.ends_with("Default Auto")),
         "{text_report}"
     );
 }
@@ -349,7 +349,7 @@ fn info_json_has_the_apple_auto_object_and_the_auto_values_in_effect() {
         .assert()
         .success();
     let off = json_lines(&off.get_output().stdout).remove(0);
-    // The old object is Apple's view: for any other provider (here Yellowmoon's own Auto) it is `off`.
+    // The old object is Apple's view: for any other provider (here Default Auto) it is `off`.
     assert_eq!(off["apple_auto"], json!({ "state": "off" }));
     assert_eq!(off["auto_advisor"]["provider"], "yellowmoon");
     assert_eq!(off["auto_advisor"]["state"], "off");
@@ -397,13 +397,10 @@ fn info_text_has_an_auto_grading_row() {
         row(sb.ym_fake(), &[]),
         "Apple Intelligence · Darker -0.3 EV · highlights -20 · contrast +15 · teal shadows (subtle) · scene \"Test picture\" · plan \"Test plan: You\""
     );
-    assert_eq!(
-        row(sb.ym_fake(), &["--apple-auto", "off"]),
-        "Yellowmoon's own Auto"
-    );
+    assert_eq!(row(sb.ym_fake(), &["--apple-auto", "off"]), "Default Auto");
     assert_eq!(
         row(sb.ym_fake(), &["--auto-provider", "yellowmoon"]),
-        "Yellowmoon's own Auto"
+        "Default Auto"
     );
     if cfg!(not(target_os = "macos")) {
         assert_eq!(row(sb.ym(), &[]), "Not available (this is not a Mac)");

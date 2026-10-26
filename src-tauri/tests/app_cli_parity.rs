@@ -10,7 +10,7 @@
 //!   (the way `tools/dev/prepare-sidecar.sh` builds the app's sidecar), in a cargo invocation that shares nothing with this
 //!   one. `crates/ym-cli/tests/parity.rs` is the same comparison in one invocation, where both sides get the same features.
 //!
-//! Auto's providers (`docs/19`, `docs/22`) are off on both sides: the app's core has no advisor and Yellowmoon's own Auto is chosen, and
+//! Auto's providers (`docs/19`, `docs/22`) are off on both sides: the app's core has no advisor and Default Auto is chosen, and
 //! `ym` runs with `--apple-auto off` (the alias of `--auto-provider yellowmoon`) and no program is looked for, so the bytes are today's on every machine, a Mac with Apple
 //! Intelligence and a computer with Claude Code included.
 //!
@@ -273,7 +273,7 @@ fn open_core_on(arw: &Path, method: Method, slot: Option<&GpuSlot>) -> (Core, te
     let mut options = CoreOptions::new(data_dir(), app_home.path().to_path_buf());
     options.thumbnails = false;
     options.render.demosaic = method;
-    // Yellowmoon's own Auto, as `ym --apple-auto off` (`docs/22` section 13.5): no advisor, and that provider chosen
+    // Default Auto, as `ym --apple-auto off` (`docs/22` section 13.5): no advisor, and that provider chosen
     // should one ever be given here.
     options.advisors = ProviderAdvisors::default();
     options.auto_choice = AutoChoice::Provider(AutoProvider::Yellowmoon);

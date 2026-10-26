@@ -389,7 +389,7 @@ fn switching_provider_asks_the_photos_without_an_answer_and_keeps_the_others() {
     }
     // The viewers were told about each change of values.
     assert!(!rig.drain().is_empty());
-    // And Yellowmoon's own Auto shows the rule while both answers stay.
+    // And Default Auto shows the rule while both answers stay.
     rig.session.set_auto_preference(AutoProvider::Yellowmoon);
     assert_eq!(rig.state(ids[0]), AppleAuto::Off);
     assert_eq!(
@@ -703,7 +703,7 @@ fn a_cloud_provider_acts_only_with_its_consent_or_when_the_run_names_it() {
     );
     let id = rig.open()[0];
     rig.settle();
-    // The saved choice is Claude Code, but nothing agreed to it: Yellowmoon's own Auto acts, and says why.
+    // The saved choice is Claude Code, but nothing agreed to it: Default Auto acts, and says why.
     assert_eq!(
         rig.state(id),
         AppleAuto::Unavailable {
@@ -976,14 +976,14 @@ fn the_preference_patch_reaches_the_session_and_the_consent_rule_holds() {
     );
     assert_eq!(s.consent, CLAUDE_OK);
     assert_eq!(claude.calls().len(), 1);
-    // Choosing Yellowmoon's own Auto or Apple is always allowed.
+    // Choosing Default Auto or Apple is always allowed.
     core.preferences_set(&patch(AutoProvider::Yellowmoon, None))
         .unwrap();
     assert!(!core.auto_status().active);
     core.preferences_set(&patch(AutoProvider::Apple, None))
         .unwrap();
     assert_eq!(core.auto_status().effective, AutoProvider::Apple);
-    // A file with a cloud choice and no consent acts as Yellowmoon's own Auto.
+    // A file with a cloud choice and no consent acts as Default Auto.
     let from_file = core_rig(
         advisors(&apple, &claude, None),
         AutoChoice::FromPreference,
@@ -993,7 +993,7 @@ fn the_preference_patch_reaches_the_session_and_the_consent_rule_holds() {
     assert_eq!(s.preference, AutoProvider::Claude);
     assert_eq!(s.effective, AutoProvider::Yellowmoon);
     assert!(s.visible);
-    // The old switch off reads as Yellowmoon's own Auto.
+    // The old switch off reads as Default Auto.
     let migrated = core_rig(
         advisors(&apple, &claude, None),
         AutoChoice::FromPreference,

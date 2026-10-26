@@ -244,12 +244,12 @@ pub struct RenderArgs {
     /// Beats YELLOWMOON_GPU.
     #[arg(long, help_heading = H_RUN)]
     pub cpu: bool,
-    /// Who grades each photo's Auto for this run: yellowmoon (Yellowmoon's own Auto, the rule), apple (Apple's
+    /// Who grades each photo's Auto for this run: yellowmoon (Default Auto, the rule), apple (Apple's
     /// on-device model, on a Mac with Apple Intelligence), claude (the Claude Code installed on this computer)
     /// or agy (the Antigravity installed on this computer). A provider sets the automatic exposure, highlights,
     /// shadows, black, contrast, warmth, tint and saturation and the colours of the shadows and highlights.
     /// Default: the app's setting, which acts where that provider is available and, for claude and agy, where
-    /// you agreed to it in Preferences; otherwise Yellowmoon's own Auto. Naming claude or agy is your consent
+    /// you agreed to it in Preferences; otherwise Default Auto. Naming claude or agy is your consent
     /// for this run: ym then sends a 768 px picture of each photo and the instructions to that service,
     /// through the program installed on this computer. Answers from Claude Code and Antigravity can differ
     /// from run to run.
@@ -374,7 +374,7 @@ impl From<ColorSpaceArg> for ColorSpace {
 /// `--auto-provider` (`docs/22` section 13.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum AutoProviderArg {
-    /// Yellowmoon's own Auto: the rule.
+    /// Default Auto: the rule.
     Yellowmoon,
     /// Apple Intelligence's on-device model, where it is available.
     Apple,
@@ -691,7 +691,7 @@ pub struct InfoArgs {
     /// Force a camera profile, for comparisons (for example `sony-ilce-7rm4`).
     #[arg(long, value_name = "ID")]
     pub profile: Option<String>,
-    /// Who grades each photo's Auto for this run: yellowmoon (Yellowmoon's own Auto), apple (Apple Intelligence),
+    /// Who grades each photo's Auto for this run: yellowmoon (Default Auto), apple (Apple Intelligence),
     /// claude (Claude Code) or agy (Antigravity). Default: the app's setting. Naming claude or agy is your
     /// consent for this run: ym sends a 768 px picture of each photo and the instructions to that service,
     /// through the program installed on this computer. Answers from Claude Code and Antigravity can differ

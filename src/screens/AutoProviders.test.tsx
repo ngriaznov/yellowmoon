@@ -81,34 +81,34 @@ describe("the Auto grading row is shown while a provider is there", () => {
 });
 
 describe("the dropdown", () => {
-  it("lists Yellowmoon's own Auto, Apple Intelligence, Claude Code and Antigravity (agy) in that order", async () => {
+  it("lists Default Auto, Apple Intelligence, Claude Code and Antigravity (agy) in that order", async () => {
     const dialog = await openPreferences({ providers: ALL });
     const options = await entries(dialog);
-    expect(options.map((o) => o.getAttribute("aria-label"))).toEqual(["Yellowmoon's own Auto", "Apple Intelligence", "Claude Code", "Antigravity (agy), experimental"]);
-    expect(options.map((o) => o.textContent)).toEqual(["Yellowmoon's own Auto", "Apple Intelligence", "Claude Code", "Antigravity (agy)Experimental"]);
+    expect(options.map((o) => o.getAttribute("aria-label"))).toEqual(["Default Auto", "Apple Intelligence", "Claude Code", "Antigravity (agy), experimental"]);
+    expect(options.map((o) => o.textContent)).toEqual(["Default Auto", "Apple Intelligence", "Claude Code", "Antigravity (agy)Experimental"]);
     expect(select(dialog)).toHaveTextContent("Apple Intelligence");
   });
 
-  it("lists Apple Intelligence only while it is available, and always Yellowmoon's own Auto", async () => {
+  it("lists Apple Intelligence only while it is available, and always Default Auto", async () => {
     const dialog = await openPreferences({ providers: { claude: "available", apple: "unavailable" } });
-    expect((await entries(dialog)).map((o) => o.textContent)).toEqual(["Yellowmoon's own Auto", "Claude Code"]);
+    expect((await entries(dialog)).map((o) => o.textContent)).toEqual(["Default Auto", "Claude Code"]);
   });
 
   it("does not list a program that is not installed or still being checked", async () => {
     const dialog = await openPreferences({ providers: { apple: "available", agy: "checking" } });
-    expect((await entries(dialog)).map((o) => o.textContent)).toEqual(["Yellowmoon's own Auto", "Apple Intelligence"]);
+    expect((await entries(dialog)).map((o) => o.textContent)).toEqual(["Default Auto", "Apple Intelligence"]);
   });
 
   it("lists a program that cannot be used disabled, with a muted tag after its name", async () => {
     const dialog = await openPreferences({ providers: { claude: "signed_out", agy: "too_old", apple: "available" } });
     const options = await entries(dialog);
     expect(options.map((o) => o.getAttribute("aria-label"))).toEqual([
-      "Yellowmoon's own Auto",
+      "Default Auto",
       "Apple Intelligence",
       "Claude Code, not signed in",
       "Antigravity (agy), experimental, update needed",
     ]);
-    expect(options.map((o) => o.textContent)).toEqual(["Yellowmoon's own Auto", "Apple Intelligence", "Claude CodeNot signed in", "Antigravity (agy)ExperimentalUpdate needed"]);
+    expect(options.map((o) => o.textContent)).toEqual(["Default Auto", "Apple Intelligence", "Claude CodeNot signed in", "Antigravity (agy)ExperimentalUpdate needed"]);
     const claude = screen.getByRole("option", { name: "Claude Code, not signed in" });
     expect(claude).toHaveAttribute("aria-disabled", "true");
     expect(within(claude).getByText("Not signed in")).toHaveAttribute("data-slot", "badge");
@@ -116,7 +116,7 @@ describe("the dropdown", () => {
     expect(agy).toHaveAttribute("aria-disabled", "true");
     expect(within(agy).getByText("Update needed")).toHaveAttribute("data-slot", "badge");
     // Not working: a program that was found but did not answer its check.
-    expect(screen.getByRole("option", { name: "Yellowmoon's own Auto" })).not.toHaveAttribute("aria-disabled");
+    expect(screen.getByRole("option", { name: "Default Auto" })).not.toHaveAttribute("aria-disabled");
   });
 
   it("says Not working for a program that did not answer its check", async () => {
@@ -150,7 +150,7 @@ describe("the dropdown", () => {
 describe("the hint under the title follows the provider that grades", () => {
   it("says what each provider does and what it sends, word for word", async () => {
     expect(PROVIDER_HINTS.yellowmoon).toBe(
-      "Yellowmoon's own Auto sets the exposure and the white by a fixed rule and leaves every other value at 0. It is the same on every computer and sends nothing anywhere.",
+      "Default Auto sets the exposure and the white by a fixed rule and leaves every other value at 0. It is the same on every computer and sends nothing anywhere.",
     );
     expect(PROVIDER_HINTS.claude).toBe(
       "Claude Code looks at a small copy of each photo and grades it the same way. Yellowmoon runs the Claude Code installed on this computer and hands it the copy, 768 pixels on the long side, and your instructions. Claude Code sends them to Anthropic, or to the service it is set up to use, with your own sign-in. Yellowmoon itself makes no connection. Answers can differ from run to run.",
@@ -184,11 +184,11 @@ describe("the hint under the title follows the provider that grades", () => {
     await waitFor(() => expect(row.querySelector(".ym-pref__hint")).toHaveTextContent(PROVIDER_HINTS.claude));
   });
 
-  it("says Yellowmoon's own Auto sends nothing while a program is installed but not chosen", async () => {
+  it("says Default Auto sends nothing while a program is installed but not chosen", async () => {
     const dialog = await openPreferences({ providers: { claude: "available" }, autoProvider: "yellowmoon" });
     const row = within(dialog).getByRole("group", { name: AUTO_GRADING_TITLE });
     expect(row.querySelector(".ym-pref__hint")).toHaveTextContent(PROVIDER_HINTS.yellowmoon);
-    expect(select(dialog)).toHaveTextContent("Yellowmoon's own Auto");
+    expect(select(dialog)).toHaveTextContent("Default Auto");
   });
 });
 
@@ -270,25 +270,25 @@ describe("the notes under the row", () => {
 });
 
 describe("the saved choice's note", () => {
-  it("says the saved program is not available now and Yellowmoon's own Auto is used until it is", async () => {
+  it("says the saved program is not available now and Default Auto is used until it is", async () => {
     const dialog = await openPreferences({ providers: { apple: "available", claude: "signed_out" }, autoProvider: "claude", consent: { claude: true, agy: false } });
-    expect(select(dialog)).toHaveTextContent("Yellowmoon's own Auto");
-    expect(within(dialog).getByText("Your saved choice, Claude Code, isn't available now, so Auto uses Yellowmoon's own settings until it is.")).toHaveAttribute("role", "note");
+    expect(select(dialog)).toHaveTextContent("Default Auto");
+    expect(within(dialog).getByText("Your saved choice, Claude Code, isn't available now, so Default Auto is used until it is.")).toHaveAttribute("role", "note");
     // Under Yellowmoon's own hint, with no instructions field: nothing grades.
     expect(within(dialog).queryByRole("textbox")).toBeNull();
   });
 
   it("is there for Antigravity too, and for a program that was not agreed to", async () => {
     let dialog = await openPreferences({ providers: { agy: "too_old" }, autoProvider: "agy" });
-    expect(within(dialog).getByText("Your saved choice, Antigravity, isn't available now, so Auto uses Yellowmoon's own settings until it is.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Your saved choice, Antigravity, isn't available now, so Default Auto is used until it is.")).toBeInTheDocument();
     h!.unmount();
     h = undefined;
-    // Available but not agreed to (a file edited by hand): it acts as Yellowmoon's own Auto, and the note says so.
+    // Available but not agreed to (a file edited by hand): it acts as Default Auto, and the note says so.
     dialog = await openPreferences({ providers: { claude: "available" }, autoProvider: "claude" });
-    expect(within(dialog).getByText("Your saved choice, Claude Code, isn't available now, so Auto uses Yellowmoon's own settings until it is.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Your saved choice, Claude Code, isn't available now, so Default Auto is used until it is.")).toBeInTheDocument();
   });
 
-  it("is not there when the saved choice is Apple Intelligence, Yellowmoon's own Auto or a program that grades", async () => {
+  it("is not there when the saved choice is Apple Intelligence, Default Auto or a program that grades", async () => {
     for (const options of [
       { providers: { claude: "available" }, autoProvider: "apple" },
       { providers: { claude: "available" }, autoProvider: "yellowmoon" },
@@ -426,10 +426,10 @@ describe("the consent dialog", () => {
     expect(within(consent).getByText(`${CONSENT_COPY.claude.body} ${WINDOWS_CONSENT_SENTENCE}`)).toBeInTheDocument();
   });
 
-  it("is never asked for Yellowmoon's own Auto or Apple Intelligence", async () => {
+  it("is never asked for Default Auto or Apple Intelligence", async () => {
     const dialog = await openPreferences({ providers: ALL });
-    await choose(dialog, "Yellowmoon's own Auto");
-    await waitFor(() => expect(select(dialog)).toHaveTextContent("Yellowmoon's own Auto"));
+    await choose(dialog, "Default Auto");
+    await waitFor(() => expect(select(dialog)).toHaveTextContent("Default Auto"));
     await choose(dialog, "Apple Intelligence");
     await waitFor(() => expect(select(dialog)).toHaveTextContent("Apple Intelligence"));
     expect(screen.queryByRole("dialog", { name: /^Send photos/ })).toBeNull();
@@ -482,7 +482,7 @@ describe("the instructions follow the provider that grades", () => {
     }
   });
 
-  it("are not shown while Yellowmoon's own Auto grades, whatever is installed", async () => {
+  it("are not shown while Default Auto grades, whatever is installed", async () => {
     const dialog = await openPreferences({ providers: ALL, autoProvider: "yellowmoon" });
     expect(within(dialog).queryByRole("textbox")).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "Reset to default" })).toBeNull();
@@ -540,7 +540,7 @@ describe("the Automatic card names the provider", () => {
     }
   });
 
-  it("says nothing for a program that is still being checked or not agreed to, nor for Apple Intelligence, nor with Yellowmoon's own Auto", async () => {
+  it("says nothing for a program that is still being checked or not agreed to, nor for Apple Intelligence, nor with Default Auto", async () => {
     for (const options of [
       { providers: { claude: "checking" }, autoProvider: "claude", consent: { claude: true, agy: false } },
       { providers: { claude: "available" }, autoProvider: "claude" },

@@ -1,4 +1,4 @@
-# Blind A/B of Apple Auto (docs/19 section 13) and of Auto crop (docs/20 section 12)
+# Blind A/B of the Auto providers (docs/19 section 13, docs/22 section 17) and of Auto crop (docs/20 section 12)
 
 This kit answers one question with your own photos: do you prefer the pictures Apple Auto makes? You look at two
 versions of the same photo, side by side, without being told which is which, and pick one. The kit then scores your
@@ -6,14 +6,16 @@ picks against the gate that decides whether Apple Auto stays on by default (AA-1
 
 It also runs a second test, **Auto crop against the original framing**, with `--test crop`: see
 [The blind A/B of Auto crop](#the-blind-ab-of-auto-crop---test-crop) below. Everything before that section is about
-the Apple Auto test, which is what the kit makes when you do not name a test.
+the Apple Auto test, which is what the kit makes when you do not name a test. The same test runs for Claude Code and
+Antigravity with `--provider`: see [The blind A/B of Claude Code and Antigravity](#the-blind-ab-of-claude-code-and-antigravity---provider-claude--agy)
+below.
 
 The two versions of each photo:
 
 - **Apple Auto**: Apple's on-device model looks at the photo and grades it: exposure, highlights, shadows, black
   level, contrast, warmth, tint, saturation and the colours of the shadows and highlights (`docs/19`, prompt version
   2). This is the picture under test.
-- **The rule**: Apple Auto off, Yellowmoon's own Auto, the same on every computer.
+- **The rule**: Default Auto, Yellowmoon's own grader, the same on every computer.
 
 Both are made at the defaults, as a new photo opens in the app: the built-in default look and every setting at Auto.
 Each photo gives one trial. With `--with-camera` a photo gives a second trial, Apple Auto against **the camera's own
@@ -209,7 +211,7 @@ The score finds `plan.json` next to the results, or in the default test folder. 
   (`docs/19` section 5) do not come in: both versions use the photo's own values.
 - **The defaults.** Each render gets its own empty home folder, so your preferences and imported looks cannot change
   the test, and the renders use the built-in default look. Your Apple Auto preference does not matter either: the
-  renders ask for Apple Auto on (`--apple-auto on`) or off (`--apple-auto off`).
+  renders name the provider (`--auto-provider apple`) or Default Auto (`--auto-provider yellowmoon`).
 - **Only the photos Apple changed.** A photo whose picture Apple Auto left as it was gives no trial, so the win share
   is over the photos where Apple Auto did something. The summary and the score say how many photos that leaves out.
 - **The camera's JPEG** (`--with-camera`). It is shown turned upright from the raw file's orientation, as the renders
@@ -220,6 +222,45 @@ The score finds `plan.json` next to the results, or in the default test folder. 
   build may answer differently; the plan records the model and the macOS version.
 - **The test advisor.** With `YELLOWMOON_TEST_APPLE_AUTO=fake` in the environment (for developers), the answers come
   from Yellowmoon's test stand-in, not from Apple's model, and the summary says so. Do not set it for the real test.
+
+## The blind A/B of Claude Code and Antigravity (`--provider claude` / `agy`)
+
+The same test, with the other two graders of `docs/22-auto-providers.md` (section 17). Claude Code and Antigravity are
+programs you have installed and signed in to; Yellowmoon starts them and sends each photo, as a 768 px picture, with
+the instructions, to the service behind them. **The program bills your own account**, and nothing in this test is
+free of that, so you choose when to run it. It is about 150 fresh photos per provider, as for Apple Auto.
+
+    tools/eval/ab/ab.sh prepare --provider claude --ym PATH ~/Pictures/ab
+    tools/eval/ab/ab.sh prepare --provider agy --ym PATH --out testdata/ab-agy ~/Pictures/ab
+
+- **What it needs.** The program installed and signed in on this computer: the kit asks `ym doctor --json` first and
+  stops unless `auto.providers.<p>.state` is `available`, with the sentence "Claude Code is not available on this
+  computer (Claude Code isn't signed in). The test needs it signed in." (the words in brackets say what to change).
+  Use a `ym` that has the providers (the one inside a build of the branch `cli-auto` or later); an older `ym` is refused
+  with "older than the Auto providers".
+- **The renders.** The provider's picture is made with `--auto-provider claude` (or `agy`), the rule's with
+  `--auto-provider yellowmoon`; everything else is as for Apple Auto. The trials, the page, the gate and its
+  provisional thresholds are the same (the gate decides whether the provider's row of the Preferences dropdown is
+  recommended in the release notes; a provider that fails keeps its row, and the owner decides).
+- **One photo at a time.** `--jobs` defaults to 1 for the programs (each call is one photo, and the limits and the bill
+  are those of your account); `--apple-jobs` still limits how many wait for an answer at once.
+- **The model.** The plan records the provider, the program's version (`tool_version`), the model asked for and, once
+  answers have arrived, the model ids that answered (`answers.models`; for Claude Code the id the service served, as
+  the alias `sonnet` is not a fixed model). The summary and the score print them with the seconds per photo (the whole
+  `ym` call, the picture included, so it is longer than the program's own time; renders kept by `--resume` are not
+  timed). To try another model or effort for one run, set the developer variables
+  `YELLOWMOON_CLAUDE_MODEL`, `YELLOWMOON_CLAUDE_EFFORT`, `YELLOWMOON_AGY_MODEL` or `YELLOWMOON_AGY_EFFORT` in the
+  environment of the command; the kit passes them to `ym` and the plan records the model that answered. Never edit the
+  code for it.
+- **Answers differ from run to run.** Neither program has a seed, so running `prepare` again gives other answers and
+  another plan. `--resume` keeps the answers already received (and asks again only where one failed or came from
+  another provider or other instructions).
+- **`--instructions FILE`, `--with-camera`, `--resume`, `--out`, `--seed`, `--long-edge` and `--data`** work as in the
+  Apple Auto test. Keep each provider in its own `--out` folder: `prepare` replaces the folder's plan.
+- **Scoring** is the same command. The score names the provider and says which models answered and how long it took.
+- **Not for CI.** No runner has an account. The kit's own tests use a stand-in `ym`; with the test doubles of
+  `ym-agents` (`YELLOWMOON_TEST_AUTO_PROVIDERS=claude=exec:<ym-fake-claude>`, passed through to `ym`) the whole path can
+  be tried without a service, and the summary then says the answers came from a test double.
 
 ## The blind A/B of Auto crop (`--test crop`)
 
@@ -232,8 +273,8 @@ two versions of each photo:
   picture under test.
 - **The original framing**: the same photo, not cropped and not turned.
 
-Both are made at the defaults with Apple Auto off (`--apple-auto off`): the built-in default look and every setting at
-Auto, so only the framing differs. Each photo gives one trial. There is no comparison with the camera's JPEG.
+Both are made at the defaults with Default Auto (`--auto-provider yellowmoon`): the built-in default look and every
+setting at Auto, so only the framing differs. Each photo gives one trial. There is no comparison with the camera's JPEG.
 
 Two kinds of photo give no trial, and the kit counts both:
 
@@ -263,9 +304,9 @@ the gate says NOT DECIDED with the reason.
 On GitHub, open **Actions › Build › Run workflow** and choose the branch `auto-crop` (the architecture `aarch64` on
 Apple silicon, `universal` on an Intel Mac), or use the run the lead names. Then go on as in step 1 of the Apple Auto
 test: download the artefact, put Yellowmoon in a folder of its own and allow it to open. The test uses the `ym` inside
-it. Apple Intelligence and macOS 27 are not needed: both pictures are made with Apple Auto off.
+it. Apple Intelligence and macOS 27 are not needed: both pictures are made with Default Auto.
 
-**Or build `ym` from the branch** (needs Rust; Xcode 27 is not needed, because the test does not use Apple Auto):
+**Or build `ym` from the branch** (needs Rust; Xcode 27 is not needed, because the test does not use a provider):
 
     git checkout auto-crop
     cargo build --release -p ym-cli
@@ -302,7 +343,7 @@ one never replaces the other's plan. The summary gives the photos found and in t
 no `well-framed` folder), the number of trials, and the command that opens the page.
 
 The options `--out`, `--long-edge`, `--jobs`, `--seed`, `--resume` (which also asks Auto crop again where it failed)
-and `--data` work as in the Apple Auto test. `--with-camera` and `--instructions` belong to the Apple Auto test and are
+and `--data` work as in the Apple Auto test. `--with-camera`, `--instructions` and `--provider` belong to the provider test and are
 refused here; `--apple-jobs` does nothing.
 
 ### 4. Answer the trials

@@ -211,7 +211,7 @@ pub fn apple_auto_value(apple: &AppleAuto, provider: AutoProvider) -> Value {
 /// `tool_version`, `api`, `instructions` and `instructions_sha256` come from the answer's or the
 /// failure's [`AdvisorInfo`](ym_core::apple_auto::AdvisorInfo) and are null otherwise (`os` is null for
 /// the programs); `prompt`, `schema`, `image`, `table` and `reproducible` are the provider's constants
-/// (null for Yellowmoon's own Auto; `schema` and `image` null for Apple; `reproducible` true for Apple
+/// (null for Default Auto; `schema` and `image` null for Apple; `reproducible` true for Apple
 /// on one Mac and macOS build, false for the programs). The program's path is not in it. `provider`
 /// is the one that acted, or the one chosen for a photo it did not act on.
 #[must_use]
@@ -328,9 +328,9 @@ fn failure_text(provider: AutoProvider, kind: FailureKind, message: &str) -> Str
 ///   Brighter +0.3 EV · contrast +15 · scene "Backlit portrait at dusk" · plan "Warm, soft
 ///   contrast"` (`No change · …` for keep on every step), with `(shared with its burst)` when the
 ///   burst's steps differ from the photo's own;
-/// * failed: `Failed (Claude Code reported a rate limit); Yellowmoon's own Auto`, or the burst's
+/// * failed: `Failed (Claude Code reported a rate limit); Default Auto`, or the burst's
 ///   steps when the burst has them;
-/// * `Yellowmoon's own Auto` when no provider acts, `Not available (Claude Code isn't signed in)`,
+/// * `Default Auto` when no provider acts, `Not available (Claude Code isn't signed in)`,
 ///   and `Waiting for Claude Code` for a photo still waiting for its answer.
 #[must_use]
 pub fn auto_text(
@@ -371,7 +371,7 @@ pub fn auto_text(
             let why = failure_text(info.provider, *kind, message);
             match in_effect {
                 Some(steps) => format!("Failed ({why}); its burst's answer: {}", steps_text(steps)),
-                None => format!("Failed ({why}); Yellowmoon's own Auto"),
+                None => format!("Failed ({why}); Default Auto"),
             }
         }
     }
@@ -603,7 +603,7 @@ mod tests {
         );
         assert_eq!(
             auto_text(&AppleAuto::Off, None, AutoProvider::Yellowmoon, None),
-            "Yellowmoon's own Auto"
+            "Default Auto"
         );
         let unavailable = |provider, reason, version| {
             auto_text(&AppleAuto::Unavailable { reason }, None, provider, version)
@@ -646,7 +646,7 @@ mod tests {
                 apple,
                 None
             ),
-            "Failed (macOS asked Yellowmoon to wait); Yellowmoon's own Auto"
+            "Failed (macOS asked Yellowmoon to wait); Default Auto"
         );
         assert_eq!(
             auto_text(
@@ -655,7 +655,7 @@ mod tests {
                 apple,
                 None
             ),
-            "Failed (an error: The model said no.); Yellowmoon's own Auto"
+            "Failed (an error: The model said no.); Default Auto"
         );
         assert_eq!(
             auto_text(
@@ -674,7 +674,7 @@ mod tests {
                 AutoProvider::Claude,
                 None
             ),
-            "Failed (Claude Code reported a rate limit); Yellowmoon's own Auto"
+            "Failed (Claude Code reported a rate limit); Default Auto"
         );
         assert_eq!(
             auto_text(
@@ -687,7 +687,7 @@ mod tests {
                 AutoProvider::Claude,
                 None
             ),
-            "Failed (Claude Code reported an error: it exited with code 1); Yellowmoon's own Auto"
+            "Failed (Claude Code reported an error: it exited with code 1); Default Auto"
         );
         assert_eq!(
             auto_text(
@@ -696,7 +696,7 @@ mod tests {
                 AutoProvider::Claude,
                 None
             ),
-            "Failed (no answer within 90 seconds); Yellowmoon's own Auto"
+            "Failed (no answer within 90 seconds); Default Auto"
         );
     }
 

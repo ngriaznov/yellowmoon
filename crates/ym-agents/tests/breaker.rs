@@ -50,7 +50,7 @@ fn three_failures_open_it_and_an_open_breaker_starts_no_process() {
     assert_eq!(
         sentence,
         "Claude Code failed three times in a row (Claude Code reported an error). \
-         Photos it doesn't answer use Yellowmoon's own Auto."
+         Photos it doesn't answer use Default Auto."
     );
     // A refresh does not clear it.
     rig.probe();

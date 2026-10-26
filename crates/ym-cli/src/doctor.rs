@@ -397,7 +397,7 @@ fn apple_auto_value(s: &AutoStatus) -> Value {
     })
 }
 
-/// The `Auto grading` row: `Claude Code (saved in Preferences)`, or `Yellowmoon's own Auto`, with
+/// The `Auto grading` row: `Claude Code (saved in Preferences)`, or `Default Auto`, with
 /// ` · not agreed to yet; naming it with --auto-provider is enough for ym` when it is a program whose
 /// consent is not saved.
 fn auto_grading_text(s: &AutoStatus) -> String {
@@ -885,7 +885,7 @@ mod tests {
             row(&r, AutoProvider::Agy),
             "didn't answer its check · /opt/agy"
         );
-        assert_eq!(auto_grading_text(&r.status), "Yellowmoon's own Auto");
+        assert_eq!(auto_grading_text(&r.status), "Default Auto");
         let r = report(
             Availability::Unavailable(R::NotAMac),
             out(R::UnsafeLauncher, AdvisorDetails::default()),

@@ -90,7 +90,7 @@ pub struct CoreSettings {
     pub forced_profile: Option<String>,
     /// The Auto providers (`docs/22`): `Some(choice)` hands the core the advisors of this computer,
     /// as the app does, with the choice of `--auto-provider` ([`AutoChoice::FromPreference`] without
-    /// it); `None` hands it none, which is Yellowmoon's own Auto (`doctor --bench`, which times the
+    /// it); `None` hands it none, which is Default Auto (`doctor --bench`, which times the
     /// render path only).
     pub auto: Option<AutoChoice>,
     /// Instructions for the model for this run instead of the `apple_auto_instructions` preference
@@ -156,7 +156,7 @@ pub struct Runtime {
 struct AutoWatch {
     /// How the run chose its provider.
     choice: AutoChoice,
-    /// The run wants a provider other than Yellowmoon's own Auto to act: it named one, or the saved
+    /// The run wants a provider other than Default Auto to act: it named one, or the saved
     /// choice is one whose consent is saved.
     wanted: bool,
     /// The chosen provider was available when it was last read.
@@ -311,7 +311,7 @@ impl Runtime {
 
     /// The breaker's sentence (`docs/22` section 9.2), once, when an advisor stopped asking after three
     /// failures in a row during the run: "Claude Code failed three times in a row (<the last failure in
-    /// words>). Photos it doesn't answer use Yellowmoon's own Auto." Read it after the run's waits.
+    /// words>). Photos it doesn't answer use Default Auto." Read it after the run's waits.
     #[must_use]
     pub fn breaker_notice(&self) -> Option<String> {
         let mut watch = self.watch();
@@ -657,7 +657,7 @@ mod tests {
         let rt = runtime_with(&advisor, AutoChoice::FromPreference, app.path());
         assert!(rt.auto_notices().is_empty());
         assert_eq!(rt.auto_notice_before_export(), None);
-        // Yellowmoon's own Auto for the run: nothing is wanted, nothing is said.
+        // Default Auto for the run: nothing is wanted, nothing is said.
         advisor.0.store(true, Ordering::SeqCst);
         let rt = runtime_with(
             &advisor,

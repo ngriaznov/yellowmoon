@@ -64,8 +64,9 @@ def find_files(paths):
 
 def ours(ym, path):
     """Our reader's view of a file: the first line `ym info --json` prints, parsed (None when it prints nothing)."""
-    # Apple Auto off: only the metadata is compared, and a Mac with Apple Intelligence would ask its model too.
-    proc = subprocess.run([ym, "info", "--json", path, "--apple-auto", "off"], capture_output=True, text=True)
+    # Default Auto: only the metadata is compared, and a computer with Apple Intelligence, Claude Code or Antigravity
+    # would ask its provider too.
+    proc = subprocess.run([ym, "info", "--json", path, "--auto-provider", "yellowmoon"], capture_output=True, text=True)
     lines = proc.stdout.strip().splitlines()
     if not lines:
         return None

@@ -700,7 +700,7 @@ pub struct SessionEnv {
     /// A profile id that replaces the detected one (the CLI's `--profile`).
     pub forced_profile: Option<String>,
     /// The Auto providers, when the app or `ym` gives advisors (`docs/19`, `docs/22`); `None`
-    /// everywhere else, which is Yellowmoon's own Auto only.
+    /// everywhere else, which is Default Auto only.
     pub apple_auto: Option<AppleAutoEnv>,
     /// The renderer of the picture Auto crop looks at (`docs/20-auto-crop.md` §4), the same as
     /// Apple Auto's. Without it Auto crop uses Apple Auto's renderer, and without either it is not
@@ -1053,7 +1053,7 @@ struct Served {
     steps: Option<AutoSteps>,
     state: AppleAuto,
     /// The provider whose grading `steps` and `state` are: the chosen one while a provider acts or
-    /// is asked about, Yellowmoon's own Auto while the state is off.
+    /// is asked about, Default Auto while the state is off.
     provider: AutoProvider,
 }
 
@@ -3181,7 +3181,7 @@ impl Session {
     /// says its availability changed) and brings every photo in step with it. Asks the chosen
     /// advisor to probe again ([`AutoAdvisor::refresh`]: a background thread, never waited for) and
     /// reads what it has cached. Returns that; `None` without an advisor for the chosen provider
-    /// (Yellowmoon's own Auto included), and once the workers are gone (they could not start, or
+    /// (Default Auto included), and once the workers are gone (they could not start, or
     /// one stopped), which is the same. No process runs on the caller's thread.
     pub fn refresh_apple_auto(&self) -> Option<Availability> {
         let apple = self.inner.env.apple_auto.as_ref()?;
@@ -4234,7 +4234,7 @@ impl Inner {
     /// panic that comes back here cannot stop the worker: the request ends and whoever waits is
     /// woken whatever happens.
     fn apple_recover(&self, task: &AppleTask, message: String) {
-        tracing::error!(photo = task.id.0, %message, "an Auto request stopped unexpectedly; the photo uses Yellowmoon's own Auto");
+        tracing::error!(photo = task.id.0, %message, "an Auto request stopped unexpectedly; the photo uses Default Auto");
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let refresh = {
                 let mut st = lock(&self.state);

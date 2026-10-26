@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# The blind A/B of Apple Auto (docs/19 section 13, AA-1), or with --test crop of Auto crop (docs/20 section 12): make
-# the test on your photos, then score your answers.
+# The blind A/B of an Auto provider (Apple Auto: docs/19 section 13, AA-1; Claude Code and Antigravity: docs/22
+# section 17, with --provider), or with --test crop of Auto crop (docs/20 section 12): make the test on your photos,
+# then score your answers.
 #
-#   tools/eval/ab/ab.sh prepare PHOTOS_DIR --ym PATH [--test apple|crop] [--out DIR] [--long-edge 2000] [--seed N]
-#                                          [--jobs N] [--apple-jobs 1] [--with-camera] [--resume] [--data DIR]
-#                                          [--instructions FILE]
+#   tools/eval/ab/ab.sh prepare PHOTOS_DIR --ym PATH [--test apple|crop] [--provider apple|claude|agy] [--out DIR]
+#                                          [--long-edge 2000] [--seed N] [--jobs N] [--apple-jobs 1] [--with-camera]
+#                                          [--resume] [--data DIR] [--instructions FILE]
 #   tools/eval/ab/ab.sh score RESULTS_JSON [--plan PLAN_JSON]
 #
 # Python 3.9 or newer, standard library only; nothing is uploaded. See tools/eval/ab/README.md.

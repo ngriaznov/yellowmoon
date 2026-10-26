@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
-"""The blind A/B kit for Apple Auto (docs/19 section 13, AA-1) and Auto crop (docs/20 section 12): `prepare` makes the
-test, `score` scores the answers.
+"""The blind A/B kit for the Auto providers (Apple Auto, docs/19 section 13, AA-1; Claude Code and Antigravity, docs/22
+section 17) and for Auto crop (docs/20 section 12): `prepare` makes the test, `score` scores the answers.
 
-    tools/eval/ab/ab.sh prepare PHOTOS_DIR --ym PATH [--test apple|crop] [--out DIR] [--long-edge 2000] [--seed N]
-                                           [--jobs N] [--apple-jobs 1] [--with-camera] [--resume] [--data DIR]
-                                           [--instructions FILE]
+    tools/eval/ab/ab.sh prepare PHOTOS_DIR --ym PATH [--test apple|crop] [--provider apple|claude|agy] [--out DIR]
+                                           [--long-edge 2000] [--seed N] [--jobs N] [--apple-jobs 1] [--with-camera]
+                                           [--resume] [--data DIR] [--instructions FILE]
     tools/eval/ab/ab.sh score RESULTS_JSON [--plan PLAN_JSON]
 
 `--test crop` makes the blind A/B of Auto crop instead: each photo rendered with `--auto-crop=original` (`crop`) and
-without (`original`), both at the defaults with Apple Auto off, into `testdata/ab-crop` by default. A photo where Auto
+without (`original`), both at the defaults with Default Auto, into `testdata/ab-crop` by default. A photo where Auto
 crop changed nothing kept its frame and gives no trial; a photo where it failed is left out with its reason. There is
 no camera leg, and `ym doctor` is not asked. `score` tells the two tests apart by their plan.
 
-`prepare` checks with `ym doctor` that Apple Auto is available, then renders each photo with Apple Auto on (`apple`)
-and off (`rule`, Yellowmoon's own Auto), at the defaults: the built-in default look and every setting at Auto. Apple's
-model reads the default instructions, or those of --instructions FILE (docs/19 section 2); the plan records which, with
-their digest. A photo whose answer failed is left out with its reason; a photo whose answer changed nothing gives no
-trial. With
+`prepare` checks with `ym doctor` that the provider under test is available (`--provider`, default `apple`; for
+`claude` and `agy` the program must be installed and signed in: `auto.providers.<p>.state` is `available`), then
+renders each photo with that provider (`apple`, `--auto-provider <p>`) and with Default Auto (`rule`,
+`--auto-provider yellowmoon`), at the defaults: the built-in default look and every setting at Auto. The provider's
+model reads the default instructions, or those of --instructions FILE (docs/19 section 2); the plan records which,
+with their digest, and the provider, the program's version and the model. The programs bill the person's own account,
+so they are asked one photo at a time (`--jobs 1` by default for them), and the summary gives the seconds per photo
+and, for Claude Code, the model ids that answered. A photo whose answer failed is left out with its reason; a photo
+whose answer changed nothing gives no trial. With
 --with-camera it also copies the camera's own JPEG for a second, reported comparison. It writes `index.html` (the
 blind page), `plan.js` (what the page shows), `plan.json` (the key, for scoring), the pictures under `pictures/` and
 `ym`'s records under `records/` (the key too). `score` reads the `results.json` the page exports, applies the gate with
@@ -62,10 +66,12 @@ from plan import (  # noqa: E402
 )
 from renders import (  # noqa: E402
     AUTO_CROP_FLAG,
+    DEFAULT_PROVIDER,
     QUALITY,
     Outcome,
     PhotoJob,
     PictureError,
+    PROVIDERS,
     Pictures,
     call_ym,
     make_pictures,
@@ -79,7 +85,7 @@ from score import LABELS, ScoreError, format_report, score_results  # noqa: E402
 
 REPO = HERE.parents[2]
 DEFAULT_OUT = REPO / "testdata" / "ab"
-#: The crop test's default folder, apart from the Apple Auto test's so that making one never replaces the other's plan.
+#: The crop test's default folder, apart from the provider test's so that making one never replaces the other's plan.
 DEFAULT_CROP_OUT = REPO / "testdata" / "ab-crop"
 #: The default out folder of each test.
 DEFAULT_OUTS: Dict[str, Path] = {DEFAULT_TEST: DEFAULT_OUT, CROP_TEST.name: DEFAULT_CROP_OUT}
@@ -99,7 +105,7 @@ class UsageError(Exception):
 
 
 class PrepareFailed(Exception):
-    """The test could not be made (exit 1): Apple Auto is not available, or no photo is in the test."""
+    """The test could not be made (exit 1): the provider is not available, or no photo is in the test."""
 
 
 @dataclass(frozen=True)
@@ -118,11 +124,13 @@ class PrepareOptions:
     allow_unavailable: bool = False
     scratch_root: Optional[Path] = None
     resume: bool = False
-    #: Instructions for Apple's model instead of the default (`--instructions FILE`).
+    #: Instructions for the provider's model instead of the default (`--instructions FILE`).
     instructions: Optional[Path] = None
-    #: Which test to make (`--test`): `apple` (Apple Auto against the rule) or `crop` (Auto crop against the original
-    #: framing).
+    #: Which test to make (`--test`): `apple` (the provider under test against the rule) or `crop` (Auto crop against
+    #: the original framing).
     test: str = DEFAULT_TEST
+    #: The provider under test (`--provider`): `apple`, `claude` or `agy`.
+    provider: str = DEFAULT_PROVIDER
 
 
 @dataclass
@@ -183,34 +191,72 @@ def ym_version(ym: Path, data: Optional[Path], scratch: Path) -> str:
     return lines[0].strip()
 
 
-def apple_auto_status(ym: Path, data: Optional[Path], scratch: Path) -> Dict[str, object]:
-    """`apple_auto` of `ym doctor --json` (docs/19 section 8): available, reason, model, os, prompt, table, and the
-    instructions (`default` here: each `ym` call has an empty home folder) with their digest."""
+#: The keys of a provider's status that the plan keeps, from `auto.providers.<p>` of `ym doctor --json` (docs/22
+#: section 13.3) and from `apple_auto` of an older `ym`.
+STATUS_KEYS = ("reason", "model", "os", "prompt", "table", "tool_version", "schema", "image")
+
+
+def provider_status(
+    ym: Path, data: Optional[Path], scratch: Path, provider: str = DEFAULT_PROVIDER
+) -> Dict[str, object]:
+    """What `ym doctor --json` says about the provider under test: `auto.providers.<provider>` (docs/22 section 13.3:
+    `state`, `reason`, `model`, `tool_version`, `prompt`, `schema`, `image`, ...) with the instructions and the table of
+    `auto`, and for Apple also the `apple_auto` object of docs/19 section 8, which an older `ym` has alone. The result
+    has `available`, `state`, `reason`, `model`, `os`, `prompt`, `table`, `instructions` (`default` here: each `ym` call
+    has an empty home folder), `instructions_sha256` and, for the programs, `tool_version`, `schema` and `image`."""
     try:
         code, doc, last_error = call_ym(ym, data, scratch, ["doctor", "--json"], DOCTOR_TIMEOUT_S)
     except PictureError as exc:
         raise UsageError(f"ym doctor did not run: {exc}") from None
-    status = doc.get("apple_auto") if isinstance(doc, dict) else None
-    if not isinstance(status, dict):
+    doc = doc if isinstance(doc, dict) else {}
+    auto = doc.get("auto") if isinstance(doc.get("auto"), dict) else {}
+    providers = auto.get("providers") if isinstance(auto.get("providers"), dict) else {}
+    entry = providers.get(provider) if isinstance(providers.get(provider), dict) else None
+    legacy = doc.get("apple_auto") if provider == DEFAULT_PROVIDER and isinstance(doc.get("apple_auto"), dict) else None
+    if entry is None and legacy is None:
         detail = f" ({last_error})" if last_error else ""
+        name = PROVIDERS.get(provider, provider)
+        older = "Apple Auto" if provider == DEFAULT_PROVIDER else "the Auto providers"
         raise UsageError(
-            f"ym doctor gave no Apple Auto status (exit {code}){detail}. This ym is older than Apple Auto: pass the ym "
-            "of the test build with --ym PATH"
+            f"ym doctor gave no {name} status (exit {code}){detail}. This ym is older than {older}: pass the ym of "
+            "the test build with --ym PATH"
         )
+    status: Dict[str, object] = {}
+    if legacy is not None:
+        status.update({key: legacy.get(key) for key in (*STATUS_KEYS, "instructions", "instructions_sha256")})
+        status["available"] = legacy.get("available") is True
+        status["state"] = "available" if status["available"] else "unavailable"
+    if entry is not None:
+        for key in STATUS_KEYS:
+            if entry.get(key) is not None or key not in status:
+                status[key] = entry.get(key)
+        status["state"] = entry.get("state")
+        status["available"] = entry.get("state") == "available"
+        for key in ("instructions", "instructions_sha256", "table"):
+            if status.get(key) is None:
+                status[key] = auto.get(key)
     return status
 
 
-def check_available(status: Dict[str, object], allow_unavailable: bool, log: Callable[[str], None]) -> None:
-    """Stops when Apple Auto is not available (unless `allow_unavailable`, for tests): the test would have nothing
-    to compare."""
+def check_available(
+    status: Dict[str, object],
+    allow_unavailable: bool,
+    log: Callable[[str], None],
+    provider: str = DEFAULT_PROVIDER,
+) -> None:
+    """Stops when the provider under test is not available (unless `allow_unavailable`, for tests): the test would
+    have nothing to compare."""
     if status.get("available") is True:
         return
-    words = unavailable_words(status.get("reason"))
+    words = unavailable_words(status.get("reason"), provider, status.get("tool_version"))
+    name = PROVIDERS.get(provider, provider)
     if not allow_unavailable:
-        raise PrepareFailed(
-            f"Apple Auto is not available on this Mac ({words}). The test needs macOS 27 with Apple Intelligence on."
-        )
-    log(f"note: Apple Auto is not available ({words}); going on because of --allow-unavailable")
+        if provider == DEFAULT_PROVIDER:
+            raise PrepareFailed(
+                f"{name} is not available on this Mac ({words}). The test needs macOS 27 with Apple Intelligence on."
+            )
+        raise PrepareFailed(f"{name} is not available on this computer ({words}). The test needs it signed in.")
+    log(f"note: {name} is not available ({words}); going on because of --allow-unavailable")
 
 
 def check_auto_crop(ym: Path, data: Optional[Path], scratch: Path) -> None:
@@ -301,7 +347,7 @@ def _crop_item(job: PhotoJob, outcome: Outcome) -> Dict[str, object]:
 
 def prepare_crop(options: PrepareOptions, log: Callable[[str], None] = stderr_log) -> PrepareResult:
     """The crop test: checks that `ym` has Auto crop, renders every photo with Auto crop (`--auto-crop=original`) and
-    without, both at the defaults with Apple Auto off, keeps the photos where Auto crop changed the picture, and writes
+    without, both at the defaults with Default Auto, keeps the photos where Auto crop changed the picture, and writes
     the test. A photo where it changed nothing kept its frame (`unchanged`); one where it failed is left out (`failed`).
 
     The originals are only read. Pictures go under `options.out/pictures`, `ym`'s records under `options.out/records`,
@@ -373,9 +419,25 @@ def prepare_crop(options: PrepareOptions, log: Callable[[str], None] = stderr_lo
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def answers_summary(outcomes: Dict[int, Outcome]) -> Dict[str, object]:
+    """How long the provider's renders took and which models answered (docs/22 section 17): the mean seconds per photo
+    of the renders made in this run (the whole `ym` call, the picture included; none for renders kept by --resume) and
+    the model ids of the answers, each with its count."""
+    taken = [o.seconds for o in outcomes.values() if o.seconds is not None]
+    models: Dict[str, int] = {}
+    for outcome in outcomes.values():
+        if outcome.model:
+            models[outcome.model] = models.get(outcome.model, 0) + 1
+    return {
+        "photos_timed": len(taken),
+        "seconds_per_photo": round(sum(taken) / len(taken), 1) if taken else None,
+        "models": dict(sorted(models.items())),
+    }
+
+
 def prepare(options: PrepareOptions, log: Callable[[str], None] = stderr_log) -> PrepareResult:
-    """Checks that Apple Auto is available, renders every photo with Apple Auto on and off, keeps the photos whose
-    answer changed the picture, and writes the test. With `options.test` "crop" it makes the crop test instead
+    """Checks that the provider under test is available, renders every photo with it and with Default Auto, keeps the
+    photos whose answer changed the picture, and writes the test. With `options.test` "crop" it makes the crop test instead
     (`prepare_crop`).
 
     The originals are only read. Pictures go under `options.out/pictures`, `ym`'s records under `options.out/records`,
@@ -391,18 +453,28 @@ def prepare(options: PrepareOptions, log: Callable[[str], None] = stderr_log) ->
     scratch = Path(tempfile.mkdtemp(prefix="ab-", dir=parent))
     try:
         version = ym_version(options.ym, options.data, scratch)
-        status = apple_auto_status(options.ym, options.data, scratch)
-        check_available(status, options.allow_unavailable, log)
+        status = provider_status(options.ym, options.data, scratch, options.provider)
+        check_available(status, options.allow_unavailable, log, options.provider)
         instructions = instructions_id(status, options.instructions)
+        under_test: Dict[str, object] = {
+            **{key: status.get(key) for key in ("available", "reason", "model", "os", "prompt", "table")},
+            **instructions,
+        }
+        if options.provider != DEFAULT_PROVIDER:
+            # What the plan says about the program (docs/22 section 17): which it is, its version and the model it
+            # will use (the models that answered are in `answers`), the answer form and the picture.
+            under_test.update({key: status.get(key) for key in ("tool_version", "schema", "image")})
+            under_test["provider"] = options.provider
+            hook = os.environ.get("YELLOWMOON_TEST_AUTO_PROVIDERS")
+            if hook:
+                under_test["test_hook"] = hook
         provenance = {
             "ym": version,
             "long_edge": options.long_edge,
             "quality": QUALITY,
             "with_camera": options.with_camera,
-            "apple_auto": {
-                **{key: status.get(key) for key in ("available", "reason", "model", "os", "prompt", "table")},
-                **instructions,
-            },
+            # The key keeps its name, for the plans made before the providers; `provider` inside it says which.
+            "apple_auto": under_test,
         }
         jobs = [
             PhotoJob(
@@ -425,10 +497,12 @@ def prepare(options: PrepareOptions, log: Callable[[str], None] = stderr_log) ->
             resume=options.resume,
             instructions=options.instructions,
             instructions_sha256=instructions["instructions_sha256"],  # type: ignore[arg-type]
+            provider=options.provider,
         )
+        name = PROVIDERS.get(options.provider, options.provider)
         log(
-            f"Rendering {len(jobs)} photos with Apple Auto on and off, {options.jobs} at a time "
-            f"({options.apple_jobs} waiting for Apple's model at a time)"
+            f"Rendering {len(jobs)} photos with {name} and with Default Auto, {options.jobs} at a time "
+            f"({options.apple_jobs} waiting for the provider at a time)"
         )
         outcomes = make_pictures(pictures, jobs, options.jobs, options.apple_jobs, log)
         reported = {o.instructions for o in outcomes.values() if o.instructions is not None}
@@ -468,7 +542,7 @@ def prepare(options: PrepareOptions, log: Callable[[str], None] = stderr_log) ->
                 details[job.number] = {"auto_values": outcome.values}
         if not kept:
             raise PrepareFailed(
-                f"no photo is in the test: Apple Auto left {len(result.unchanged)} of {len(jobs)} photos as they were, "
+                f"no photo is in the test: {name} left {len(result.unchanged)} of {len(jobs)} photos as they were, "
                 f"failed on {len(result.failed)}, and {len(result.errors)} could not be rendered; see the lines above"
             )
         plan = build_plan(kept, options.seed, provenance, details)
@@ -485,6 +559,8 @@ def prepare(options: PrepareOptions, log: Callable[[str], None] = stderr_log) ->
             {**item, "why": "not rendered"} for item in result.errors
         ]
         plan["no_camera"] = result.no_camera
+        # What the answers took and which models gave them: outside the plan's id, which does not change with the clock.
+        plan["answers"] = answers_summary(outcomes)
         write_test(options.out, plan, log)
         result.plan = plan
         return result
@@ -517,8 +593,7 @@ def crop_summary_text(result: PrepareResult, out: Path, ym_name: str) -> str:
     unchanged = len(result.unchanged)
     lines = [
         f"Blind A/B of Auto crop written to {out}",
-        f"  Auto crop: aspect {aspect}, against the original framing; both pictures at the defaults with Apple Auto "
-        "off",
+        f"  Auto crop: aspect {aspect}, against the original framing; both pictures at the defaults with Default Auto",
         f"  ym: {provenance['ym']}",  # type: ignore[index]
         f"  photos: {found} found, {kept} in the test",
         f"  Auto crop changed nothing on {unchanged} of {found} {_photos_word(found)}: each kept its frame, so they "
@@ -555,9 +630,35 @@ def crop_summary_text(result: PrepareResult, out: Path, ym_name: str) -> str:
     return "\n".join(lines)
 
 
+def provider_line(under_test: Dict[str, object]) -> str:
+    """The line of the summary that names the provider under test, its model and its versions."""
+    provider = str(under_test.get("provider") or DEFAULT_PROVIDER)
+    instructions = f"instructions {under_test.get('instructions')} ({under_test.get('instructions_sha256')})"
+    if provider == DEFAULT_PROVIDER:
+        return (
+            f"  Apple Auto: {under_test.get('model')} · macOS {under_test.get('os')} · prompt "
+            f"{under_test.get('prompt')} · table {under_test.get('table')} · {instructions}"
+        )
+    return (
+        f"  {PROVIDERS.get(provider, provider)} {under_test.get('tool_version')} · {under_test.get('model')} · prompt "
+        f"{under_test.get('prompt')} · schema {under_test.get('schema')} · table {under_test.get('table')} · "
+        f"{instructions}"
+    )
+
+
+def answers_line(answers: Dict[str, object]) -> str:
+    """The summary's line about the time the answers took and the models that gave them."""
+    line = f"  seconds per photo: {answers.get('seconds_per_photo')} (the whole ym call, the picture included"
+    line += f"; {answers.get('photos_timed')} timed)"
+    models = answers.get("models")
+    if isinstance(models, dict) and models:
+        line += "; models that answered: " + ", ".join(f"{model} ({count})" for model, count in models.items())
+    return line
+
+
 def summary_text(result: PrepareResult, out: Path, ym_name: str) -> str:
-    """The summary `prepare` prints: Apple's model, the photos, how many Apple Auto left as they were and how many
-    it failed on, the strata, the trials, and how to open the page. The crop test's is `crop_summary_text`'s."""
+    """The summary `prepare` prints: the provider's model, the photos, how many the provider left as they were and how
+    many it failed on, the strata, the trials, and how to open the page. The crop test's is `crop_summary_text`'s."""
     plan = result.plan
     if plan.get("test") == CROP_TEST.name:
         return crop_summary_text(result, out, ym_name)
@@ -566,14 +667,15 @@ def summary_text(result: PrepareResult, out: Path, ym_name: str) -> str:
     provenance = plan["provenance"]  # type: ignore[index]
     apple = provenance["apple_auto"]  # type: ignore[index]
     found = result.found
+    provider = str(apple.get("provider") or DEFAULT_PROVIDER)
+    name = PROVIDERS.get(provider, provider)
     lines = [
-        f"Blind A/B of Apple Auto written to {out}",
-        f"  Apple Auto: {apple.get('model')} · macOS {apple.get('os')} · prompt {apple.get('prompt')} · "
-        f"table {apple.get('table')} · instructions {apple.get('instructions')} ({apple.get('instructions_sha256')})",
+        f"Blind A/B of {name} written to {out}",
+        provider_line(apple),
         f"  ym: {provenance['ym']}",  # type: ignore[index]
         f"  photos: {found} found, {kept} in the test",
-        f"  Apple Auto left {len(result.unchanged)} of {found} {_photos_word(found)} as they were: they give no trial.",
-        f"  Apple Auto failed on {len(result.failed)} of {found} {_photos_word(found)}: they are left out.",
+        f"  {name} left {len(result.unchanged)} of {found} {_photos_word(found)} as they were: they give no trial.",
+        f"  {name} failed on {len(result.failed)} of {found} {_photos_word(found)}: they are left out.",
     ]
     for item in result.failed:
         lines.append(f"    {item['stratum']}/{item['stem']}: {item['reason']}")
@@ -591,13 +693,21 @@ def summary_text(result: PrepareResult, out: Path, ym_name: str) -> str:
         "  strata (photos in the test): "
         + ", ".join(f"{name} {count}" for name, count in sorted(counts.by_stratum.items()))
     )
-    parts = [f"{LABELS[name]} {count}" for name, count in counts.by_comparison.items()]
+    labels = {**LABELS, "rule": f"{name} vs the rule", "camera": f"{name} vs the camera's JPEG"}
+    parts = [f"{labels[key]} {count}" for key, count in counts.by_comparison.items()]
     lines.append(
         f"  trials: {len(plan['trials'])} ({', '.join(parts)}); seed {plan['seed']}; plan {plan['plan_id']}"  # type: ignore
     )
+    answers = plan.get("answers")
+    if isinstance(answers, dict) and answers.get("seconds_per_photo") is not None:
+        lines.append(answers_line(answers))
     if apple.get("model") == TEST_ADVISOR:
         lines.append(
             "  note: the answers came from the test advisor (YELLOWMOON_TEST_APPLE_AUTO), not from Apple's model"
+        )
+    if apple.get("test_hook"):
+        lines.append(
+            "  note: the answers came from a test double (YELLOWMOON_TEST_AUTO_PROVIDERS), not from the program"
         )
     lines.extend(_how_to_go_on(out, ym_name))
     return "\n".join(lines)
@@ -607,8 +717,8 @@ def build_parser() -> argparse.ArgumentParser:
     """The command line: `prepare` and `score`, with the defaults of the plan (seed, long edge, jobs, paths)."""
     parser = argparse.ArgumentParser(
         prog="ab.sh",
-        description="Blind A/B of Apple Auto (docs/19 section 13) or of Auto crop (docs/20 section 12): prepare the "
-        "test, then score the answers.",
+        description="Blind A/B of an Auto provider (docs/19 section 13, docs/22 section 17) or of Auto crop (docs/20 "
+        "section 12): prepare the test, then score the answers.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -618,8 +728,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--test",
         choices=sorted(TESTS),
         default=DEFAULT_TEST,
-        help="which test: apple, Apple Auto against the rule (the default), or crop, Auto crop against the original "
-        "framing",
+        help="which test: apple, a provider's Auto against the rule (the default), or crop, Auto crop against the "
+        "original framing",
+    )
+    prep.add_argument(
+        "--provider",
+        choices=sorted(PROVIDERS),
+        default=DEFAULT_PROVIDER,
+        help="the provider under test: apple (the default), claude (Claude Code) or agy (Antigravity); the program "
+        "must be installed and signed in, and it bills the person's own account (not with --test crop)",
     )
     prep.add_argument(
         "--ym",
@@ -636,17 +753,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prep.add_argument("--long-edge", type=int, default=2000, help="long edge of the renders in pixels (default 2000)")
     prep.add_argument("--seed", type=int, default=DEFAULT_SEED, help=f"seed of the plan (default {DEFAULT_SEED})")
-    prep.add_argument("--jobs", type=int, default=default_jobs(), help="photos at the same time (default: CPUs / 2)")
+    prep.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        help="photos at the same time (default: CPUs / 2; 1 with claude or agy, which are asked one photo at a time)",
+    )
     prep.add_argument(
         "--apple-jobs",
         type=int,
         default=1,
-        help="renders waiting for Apple's model at the same time (default 1: one question at a time)",
+        help="renders waiting for the provider's answer at the same time (default 1: one question at a time)",
     )
     prep.add_argument(
         "--with-camera",
         action="store_true",
-        help="also compare Apple Auto with the camera's JPEG (reported, not part of the gate; not with --test crop)",
+        help="also compare the provider's Auto with the camera's JPEG (reported, not part of the gate; not with --test crop)",
     )
     prep.add_argument(
         "--resume",
@@ -665,13 +787,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="FILE",
         default=None,
-        help="a text file of instructions for Apple's model instead of the default (docs/19 section 2; at most 2000 "
-        "characters); the plan records which instructions were read (not with --test crop)",
+        help="a text file of instructions for the provider's model instead of the default (docs/19 section 2; at most "
+        "2000 characters); the plan records which instructions were read (not with --test crop)",
     )
     prep.add_argument(
         "--allow-unavailable",
         action="store_true",
-        help="go on when ym doctor says Apple Auto is not available (for tests of the kit)",
+        help="go on when ym doctor says the provider is not available (for tests of the kit)",
     )
 
     score = sub.add_parser("score", help="score the results.json the page exported")
@@ -691,14 +813,18 @@ def run_prepare(args: argparse.Namespace) -> int:
         raise UsageError(f"{args.photos} is not a folder")
     if args.long_edge < 64:
         raise UsageError("--long-edge must be at least 64")
+    if args.jobs is None:
+        args.jobs = default_jobs() if args.provider == DEFAULT_PROVIDER else 1
     if args.jobs < 1:
         raise UsageError("--jobs must be at least 1")
     if args.apple_jobs < 1:
         raise UsageError("--apple-jobs must be at least 1")
     if args.test == CROP_TEST.name and args.with_camera:
-        raise UsageError("--with-camera is for the Apple Auto test; the crop test has no comparison with the camera")
+        raise UsageError("--with-camera is for the provider test; the crop test has no comparison with the camera")
     if args.test == CROP_TEST.name and args.instructions is not None:
-        raise UsageError("--instructions is for the Apple Auto test; the crop test does not ask Apple's model")
+        raise UsageError("--instructions is for the provider test; the crop test does not ask a provider")
+    if args.test == CROP_TEST.name and args.provider != DEFAULT_PROVIDER:
+        raise UsageError("--provider is for the provider test; the crop test does not ask a provider")
     ym = args.ym.expanduser()
     if not (ym.is_file() and os.access(ym, os.X_OK)):
         raise UsageError(
@@ -726,6 +852,7 @@ def run_prepare(args: argparse.Namespace) -> int:
         resume=args.resume,
         instructions=instructions,
         test=args.test,
+        provider=args.provider,
     )
     try:
         result = prepare(options)

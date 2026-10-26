@@ -99,7 +99,7 @@ pub struct Preferences {
     pub last_used_folders: LastUsedFolders,
     /// "Auto grading" (`docs/22` section 10.1): who grades each photo's Auto, Apple Intelligence by
     /// default. A provider that is not available (or not agreed to, [`Preferences::auto_consent`]) at
-    /// run time acts as Yellowmoon's own Auto, and the choice stays saved. A file from before
+    /// run time acts as Default Auto, and the choice stays saved. A file from before
     /// providers has `apple_auto` instead, which reads as this field (`false` is `yellowmoon`) and is
     /// never written again.
     pub auto_provider: AutoProvider,
@@ -226,7 +226,7 @@ impl PreferencesPatch {
     /// [`PreferencesPatch::check`] and the consent rule of `docs/22` section 10.2: a patch that makes
     /// `auto_provider` Claude Code or Antigravity is refused when `auto_consent` for it is not true
     /// after the patch is applied to `current` ("Say yes to sending photos to Claude Code first.").
-    /// Choosing Yellowmoon's own Auto or Apple Intelligence is always allowed, available or not.
+    /// Choosing Default Auto or Apple Intelligence is always allowed, available or not.
     /// [`PreferencesStore::update`] calls this against the file's current content.
     ///
     /// # Errors
@@ -445,7 +445,7 @@ pub fn parse(text: &str) -> ParsedPreferences {
         p.watch_downloads_during_import = v;
     }
     // The provider: a valid `auto_provider` wins; a file from before providers has `apple_auto`
-    // (`false` is Yellowmoon's own Auto, `true` or absent is Apple); `apple_auto` is never written
+    // (`false` is Default Auto, `true` or absent is Apple); `apple_auto` is never written
     // again (`docs/22` section 10.1, decision D15).
     let legacy = map.remove("apple_auto");
     let provider = match map.remove("auto_provider") {
@@ -716,7 +716,7 @@ mod tests {
     #[test]
     fn the_provider_migrates_from_the_old_switch() {
         let provider = |text: &str| parse(text).preferences.auto_provider;
-        // Nothing, or the old switch on: Apple Intelligence. The old switch off: Yellowmoon's own Auto.
+        // Nothing, or the old switch on: Apple Intelligence. The old switch off: Default Auto.
         assert_eq!(provider("{}"), AutoProvider::Apple);
         assert_eq!(
             provider(r#"{ "remove_location_from_exports": true }"#),
@@ -899,7 +899,7 @@ mod tests {
         // Antigravity is still refused: its consent was never given.
         assert!(store.update(&choose(AutoProvider::Agy)).is_err());
         assert_eq!(store.get().auto_provider, AutoProvider::Claude);
-        // Yellowmoon's own Auto and Apple Intelligence are always allowed, consent or not.
+        // Default Auto and Apple Intelligence are always allowed, consent or not.
         let fresh = PreferencesStore::open(tempfile::tempdir().unwrap().path());
         for p in [AutoProvider::Yellowmoon, AutoProvider::Apple] {
             assert!(fresh.update(&choose(p)).is_ok(), "{p:?}");

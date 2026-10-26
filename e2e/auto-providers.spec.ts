@@ -39,7 +39,7 @@ test.describe("the row", () => {
     const dialog = await preferences(page, { mockProviders: "claude:signed_out" });
     await expect(dialog.getByRole("group", { name: TITLE })).toBeVisible();
     const select = dialog.getByRole("combobox", { name: TITLE });
-    await expect(select).toHaveText("Yellowmoon's own Auto");
+    await expect(select).toHaveText("Default Auto");
     await expect(dialog.getByRole("note")).toHaveText("Claude Code is installed but not signed in. Open Terminal, run claude and sign in.");
   });
 
@@ -49,7 +49,7 @@ test.describe("the row", () => {
     await dialog.getByRole("combobox", { name: TITLE }).click();
     const options = page.getByRole("option");
     await expect(options).toHaveCount(4);
-    await expect(options.nth(0)).toContainText("Yellowmoon's own Auto");
+    await expect(options.nth(0)).toContainText("Default Auto");
     await expect(options.nth(1)).toContainText("Apple Intelligence");
     await expect(options.nth(2)).toContainText("Claude Code");
     await expect(options.nth(2)).toContainText("Update needed");
@@ -120,9 +120,9 @@ test.describe("the row", () => {
 
   test("says the saved program is not available now, and follows it when it signs in", async ({ page }) => {
     const dialog = await preferences(page, { mockProviders: "apple,claude:signed_out", mockAutoProvider: "claude", mockConsent: "claude" });
-    const note = dialog.getByText("Your saved choice, Claude Code, isn't available now, so Auto uses Yellowmoon's own settings until it is.");
+    const note = dialog.getByText("Your saved choice, Claude Code, isn't available now, so Default Auto is used until it is.");
     await expect(note).toBeVisible();
-    await expect(dialog.getByRole("combobox", { name: TITLE })).toHaveText("Yellowmoon's own Auto");
+    await expect(dialog.getByRole("combobox", { name: TITLE })).toHaveText("Default Auto");
     await page.evaluate(() => window.__yellowmoon!.mockApi.setProviders({ apple: "available", claude: "available" }));
     await expect(note).toHaveCount(0);
     await expect(dialog.getByRole("combobox", { name: TITLE })).toHaveText("Claude Code");

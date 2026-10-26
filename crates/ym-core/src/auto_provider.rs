@@ -91,7 +91,7 @@ pub type ChangeListener = Arc<dyn Fn() + Send + Sync>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AutoProvider {
-    /// Yellowmoon's own Auto: the rule (`docs/02`). Needs no advisor and sends nothing anywhere.
+    /// Default Auto: the rule (`docs/02`). Needs no advisor and sends nothing anywhere.
     Yellowmoon,
     /// Apple Intelligence's on-device model through `ym-apple` (`docs/19`).
     Apple,
@@ -116,12 +116,12 @@ impl AutoProvider {
         }
     }
 
-    /// The name in the interface and in sentences: "Yellowmoon's own Auto", "Apple Intelligence",
+    /// The name in the interface and in sentences: "Default Auto", "Apple Intelligence",
     /// "Claude Code", "Antigravity".
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
-            Self::Yellowmoon => "Yellowmoon's own Auto",
+            Self::Yellowmoon => "Default Auto",
             Self::Apple => "Apple Intelligence",
             Self::Claude => "Claude Code",
             Self::Agy => "Antigravity",
@@ -251,7 +251,7 @@ pub struct AutoConsent {
 }
 
 impl AutoConsent {
-    /// Whether `provider` may be used without the run naming it: true for Yellowmoon's own Auto and
+    /// Whether `provider` may be used without the run naming it: true for Default Auto and
     /// Apple Intelligence (nothing leaves the computer), the saved flag for the two programs.
     #[must_use]
     pub fn get(&self, provider: AutoProvider) -> bool {
@@ -379,9 +379,9 @@ pub struct AutoStatus {
     /// The provider chosen for this run: the preference, or the one the run named.
     pub chosen: AutoProvider,
     /// The provider that acts now: the chosen one when it can answer (and its consent is saved or the
-    /// run named it), else Yellowmoon's own Auto.
+    /// run named it), else Default Auto.
     pub effective: AutoProvider,
-    /// Whether a provider other than Yellowmoon's own Auto acts (`effective` is not `yellowmoon`).
+    /// Whether a provider other than Default Auto acts (`effective` is not `yellowmoon`).
     pub active: bool,
     /// Whether the dropdown and the instructions show: Apple Intelligence is available, or Claude Code
     /// or Antigravity is listed (`docs/22` section 3.1).
@@ -481,7 +481,7 @@ fn provider_status(
     let consent = input.consent.get(provider);
     let experimental = provider == AutoProvider::Agy;
     let Some(slot) = provider.slot() else {
-        // Yellowmoon's own Auto: always there, needs nothing.
+        // Default Auto: always there, needs nothing.
         return ProviderStatus {
             provider,
             state: ProviderState::Available,
@@ -544,7 +544,7 @@ fn provider_status(
 }
 
 /// The registry of advisors a session holds: one optional slot each for Apple Intelligence, Claude
-/// Code and Antigravity (`docs/22` decision D4). Yellowmoon's own Auto has none. Cheap to clone.
+/// Code and Antigravity (`docs/22` decision D4). Default Auto has none. Cheap to clone.
 #[derive(Clone, Default)]
 pub struct ProviderAdvisors {
     slots: [Option<Arc<dyn AutoAdvisor>>; 3],
@@ -564,13 +564,13 @@ impl fmt::Debug for ProviderAdvisors {
 }
 
 impl ProviderAdvisors {
-    /// The same registry with `advisor` as `provider`'s. Yellowmoon's own Auto takes none: that call
+    /// The same registry with `advisor` as `provider`'s. Default Auto takes none: that call
     /// is ignored (and logged).
     #[must_use]
     pub fn with(mut self, provider: AutoProvider, advisor: Arc<dyn AutoAdvisor>) -> Self {
         match provider.slot() {
             Some(slot) => self.slots[slot] = Some(advisor),
-            None => tracing::warn!("an advisor was given for Yellowmoon's own Auto; it is ignored"),
+            None => tracing::warn!("an advisor was given for Default Auto; it is ignored"),
         }
         self
     }
@@ -653,7 +653,7 @@ fn command(provider: AutoProvider) -> &'static str {
 
 /// The hint Preferences shows under a provider that is listed but not usable, and `ym` prints as its
 /// warning (`docs/22` section 3.4): a sentence with its action. Empty for the reasons that show no
-/// hint (`not_installed`, `checking`, `not_consented`) and for Yellowmoon's own Auto. `tool_version`
+/// hint (`not_installed`, `checking`, `not_consented`) and for Default Auto. `tool_version`
 /// is the version the program printed; `os` is `std::env::consts::OS` (on `"windows"` the word
 /// "Terminal" is "a terminal window"). For Apple Intelligence it is the reason in words
 /// ([`UnavailableReason::words`]).
@@ -693,7 +693,7 @@ pub fn unavailable_hint(
 
 /// The clause `ym doctor` and `ym info` put in "Not available (<clause>)" (`docs/22` section 3.4):
 /// "Claude Code isn't signed in", "Antigravity 1.0.9 is too old", ... For Apple Intelligence it is
-/// [`UnavailableReason::words`]. Empty for Yellowmoon's own Auto.
+/// [`UnavailableReason::words`]. Empty for Default Auto.
 #[must_use]
 pub fn unavailable_words(
     provider: AutoProvider,
@@ -1016,7 +1016,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "Yellowmoon's own Auto",
+                "Default Auto",
                 "Apple Intelligence",
                 "Claude Code",
                 "Antigravity"
@@ -1145,7 +1145,7 @@ mod tests {
 
     #[test]
     fn the_dropdown_shows_when_any_provider_is_there_to_choose() {
-        // Nothing registered: hidden, and Yellowmoon's own Auto acts.
+        // Nothing registered: hidden, and Default Auto acts.
         let s = AutoStatus::build(&input(
             [None, None, None],
             AutoProvider::Apple,
@@ -1455,7 +1455,7 @@ mod tests {
         let advisors = ProviderAdvisors::default()
             .with(AutoProvider::Claude, claude.clone())
             .with(AutoProvider::Apple, apple)
-            // Yellowmoon's own Auto takes no advisor.
+            // Default Auto takes no advisor.
             .with(AutoProvider::Yellowmoon, claude);
         assert!(!advisors.is_empty());
         assert!(advisors.get(AutoProvider::Yellowmoon).is_none());

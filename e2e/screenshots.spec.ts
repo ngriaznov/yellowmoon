@@ -208,6 +208,9 @@ test.describe("Photos", () => {
     await openPhotos(page);
     await showUpdateReady(page);
     await page.keyboard.press("Meta+,");
+    // Wait for the dialog to finish opening before the click: a click on a dialog that is still scaling up can scroll its body.
+    await expect(page.getByRole("combobox", { name: "Auto grading" })).toBeVisible();
+    await dialogsSettled(page);
     await page.getByRole("combobox", { name: "Auto grading" }).click();
     await expect(page.getByRole("option", { name: "Antigravity (agy), experimental, not signed in" })).toBeVisible();
     await dialogsSettled(page);
@@ -220,6 +223,8 @@ test.describe("Photos", () => {
     await openPhotos(page);
     await showUpdateReady(page);
     await page.keyboard.press("Meta+,");
+    await expect(page.getByRole("combobox", { name: "Auto grading" })).toBeVisible();
+    await dialogsSettled(page);
     await page.getByRole("combobox", { name: "Auto grading" }).click();
     await page.getByRole("option", { name: "Claude Code" }).click();
     await expect(page.getByRole("dialog", { name: "Send photos to Claude Code?" })).toBeVisible();

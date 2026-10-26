@@ -46,7 +46,7 @@ I don't intend to compete with existing raw processors or to replace any of them
 - Built-in looks, and a guided import of ARRI's free Look Library.
 - Exports JPEG, TIFF, PNG, and DNG with your look baked in.
 - A command-line tool, `ym`, with the same results as the app, for scripts and batch jobs.
-- On macOS 27 with Apple Intelligence, Auto can ask Apple's on-device model to fine-tune each photo (below).
+- Auto can ask a grader to fine-tune each photo: Apple's on-device model on macOS 27, or the Claude Code or Antigravity you have installed (below).
 
 ## How the colour works
 
@@ -61,25 +61,23 @@ In short: estimate the light, translate what the Sony sensor recorded into what 
 
 The details, with every constant and gate, are in `docs/02-colour-pipeline.md`.
 
-## Auto with Apple Intelligence (macOS 27)
+## Auto grading
 
-On a Mac with Apple silicon, macOS 27 and Apple Intelligence turned on, Yellowmoon can ask Apple's on-device model to look at each photo and fine-tune four of Auto's values:
+Auto sets the exposure and the white of each photo by a fixed rule. That is **Default Auto**: it is the same on every computer and sends nothing anywhere. Beside it, another grader can look at each photo and fine-tune Auto's values: exposure, highlights, shadows, black level, contrast, warmth, tint, saturation and the colours of the shadows and highlights. Choose who grades in **Preferences › Auto grading**:
 
-- **Exposure:** a little brighter or darker than Yellowmoon's own Auto, by up to one stop.
-- **White:** the estimated white made a little warmer or cooler. The model never picks the Kelvin itself.
-- **Contrast** and **saturation**.
+- **Apple Intelligence** (a Mac with Apple silicon, macOS 27 and Apple Intelligence turned on): Apple's on-device model. It runs on your Mac and sends nothing anywhere. Yellowmoon uses only the on-device model, never Apple's cloud models.
+- **Claude Code** and **Antigravity (agy)**: the programs you installed and signed in to yourself. Yellowmoon runs them on your computer and hands them a small copy of each photo (768 pixels on the long side) and your instructions. The program sends them to its own service, Anthropic's or Google's, or the one you set it up to use, with your own account and plan; Yellowmoon makes no connection of its own and never touches your sign-in. The original file, its name and its place on disk stay on your computer. Antigravity is marked experimental.
 
 How it behaves:
 
-- It is on by default where it is available: **Preferences › Auto with Apple Intelligence**. Turn it off to use Yellowmoon's own Auto, the same on every computer.
-- It runs on your Mac and sends nothing anywhere. Yellowmoon uses only the on-device model, never Apple's cloud models, and never uses its answers to train anything.
-- A photo appears at once with Yellowmoon's own Auto. When the answer arrives, a second or a few later, its Auto values and the picture update, and the Automatic card on the Look tab says what Apple Intelligence did. Exports wait for the answers.
-- Only values you leave on Auto change. Anything you set by hand stays as you set it.
-- Answers can differ between Macs and after macOS updates. Every export records which Auto made it and, for Apple's, the model and the macOS version that answered (`ym:Auto` and `ym:AppleAuto` in its metadata).
-- On other Macs (Intel, macOS 14 to 26, or Apple Intelligence off or still downloading its model) the setting is not shown and Auto works as before.
-- `ym` follows the same setting. `ym render --apple-auto off` (or `on`) overrides it for one run, and `ym doctor` says whether it is available on this Mac and, if not, why.
+- Apple Intelligence is the default where it is available. Claude Code and Antigravity are never chosen for you: the first time you choose one, Yellowmoon says what is sent and where, and asks you to agree. Cancel keeps the previous choice. A row for a program that is installed but not usable is listed greyed out and says why, for example "Not signed in".
+- A photo appears at once with Default Auto. When the answer arrives, a second or a few later, its Auto values and the picture update, and the Automatic card on the Look tab says who graded it. Exports wait for the answers. A photo whose answer fails keeps Default Auto's values.
+- Only values you leave on Auto change. Anything you set by hand stays as you set it. Your own instructions, in Preferences, go to whichever grader you chose.
+- Answers can differ. Apple's model gives the same answer on one Mac and macOS version, but Claude Code and Antigravity have no seed, so the same photo can be graded differently from run to run. Every export records which Auto made it and the model that answered (`ym:Auto` and `ym:AutoAdvisor` in its metadata), and its settings pin the values, so rendering from them gives the same picture.
+- A grader that is not there is not shown, or is greyed out, and Auto works as before.
+- `ym` follows the same setting and the same consent. `ym render --auto-provider claude` (or `apple`, `agy`, `yellowmoon`) chooses for one run; naming a program is your agreement to send photos to it for that run, and nothing is saved. `ym doctor` says what is available and, if not, why. `--apple-auto on` and `off` still work.
 
-This is a first version: how much each answer moves a photo is still being tuned. The details are in `docs/19-apple-auto.md`.
+This is a first version: how much each answer moves a photo is still being tuned. The details are in `docs/22-auto-providers.md` and, for Apple's model, `docs/19-apple-auto.md`.
 
 ## Install
 
@@ -113,7 +111,8 @@ You only do this once. After that Yellowmoon opens like any other app, and the u
 ```
 ym render ~/Pictures/2026-10-04 --look neutral --format jpeg --long-edge 3000
 ym info DSC04204.ARW --json
-ym render DSC04204.ARW --apple-auto off      # Yellowmoon's own Auto, the same on every computer
+ym render DSC04204.ARW --auto-provider yellowmoon   # Default Auto, the same on every computer
+ym render DSC04204.ARW --auto-provider claude       # Claude Code grades it (sends a small copy of the photo to Anthropic)
 ym looks import ~/Downloads/<ARRI look package>.zip
 ```
 

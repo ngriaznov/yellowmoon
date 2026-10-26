@@ -44,7 +44,7 @@ const charCount = (text: string): number => [...text].length;
 
 /**
  * The instructions the grading model reads before each photo (`docs/19` section 2, `docs/22` section 12.4), under the Auto grading row
- * while a provider other than Yellowmoon's own Auto grades: a glasscn text area holding the instructions in use (the default when none
+ * while a provider other than Default Auto grades: a glasscn text area holding the instructions in use (the default when none
  * are saved), a hint, a count against the limit and a Reset to default button, disabled while the text is the default. The text is one
  * for every provider; its label and hint name the one that grades (`provider`). It is saved when the field loses focus or when typing
  * has rested for {@link APPLE_INSTRUCTIONS_SAVE_MS}, never per keystroke; the default text is saved as `""` (the default), and text over
@@ -201,7 +201,7 @@ function EntryName({ status }: { status: ProviderStatus }) {
 }
 
 /**
- * The "Auto grading" row and what belongs to it (`docs/22` section 12): a glasscn `Select` of Yellowmoon's own Auto, Apple Intelligence
+ * The "Auto grading" row and what belongs to it (`docs/22` section 12): a glasscn `Select` of Default Auto, Apple Intelligence
  * (while available), Claude Code and Antigravity (while listed; a program that is installed but cannot be used is listed disabled, with
  * a tag), the hint of the provider that grades, Antigravity's Experimental note, a note under the row for each program that cannot be
  * used and for a saved choice that is not available, and the instructions. The select shows who grades now (`effective`); choosing a

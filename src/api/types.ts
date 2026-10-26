@@ -471,7 +471,7 @@ export type AppleAutoReason =
   | "checking"
   | "not_consented";
 
-/** Why one request to Apple's model failed (`docs/19` sections 6 and 8). A failed photo uses Yellowmoon's own Auto. */
+/** Why one request to Apple's model failed (`docs/19` sections 6 and 8). A failed photo uses Default Auto. */
 export type AppleAutoFailure =
   | "unavailable"
   | "rate_limited"
@@ -491,12 +491,12 @@ export type AppleAutoFailure =
 export type AppleAutoInstructions = "default" | "edited";
 
 /**
- * Who grades: Yellowmoon's own Auto (the rule, `docs/02`), Apple Intelligence (`docs/19`), or Claude Code or Antigravity (the `agy` program),
+ * Who grades: Default Auto (the rule, `docs/02`), Apple Intelligence (`docs/19`), or Claude Code or Antigravity (the `agy` program),
  * which the person installed and signed in to themselves (`docs/22` section 1). The order is the dropdown's.
  */
 export type AutoProvider = "yellowmoon" | "apple" | "claude" | "agy";
 
-/** Whether the person agreed to send photos through a program (`docs/22` section 10.2). Apple and Yellowmoon's own Auto need none. */
+/** Whether the person agreed to send photos through a program (`docs/22` section 10.2). Apple and Default Auto need none. */
 export interface AutoConsent {
   claude: boolean;
   agy: boolean;

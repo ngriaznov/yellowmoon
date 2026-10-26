@@ -1197,7 +1197,7 @@ pub struct AutoEstimates {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AutoSource {
-    /// Yellowmoon's own Auto.
+    /// Default Auto.
     Rule,
     /// Apple Intelligence's answer (the photo's own or its burst's).
     Apple,
@@ -1219,7 +1219,7 @@ impl AutoSource {
         }
     }
 
-    /// The source of answers from `provider`: Yellowmoon's own Auto is the rule.
+    /// The source of answers from `provider`: Default Auto is the rule.
     #[must_use]
     pub fn of(provider: AutoProvider) -> Self {
         match provider {

@@ -61,11 +61,11 @@ test.describe("Preferences", () => {
     // The hint is not cut: its paragraph is as tall as its lines.
     const hint = row.locator(".ym-pref__hint");
     expect(await hint.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
-    // The dropdown lists Yellowmoon's own Auto and Apple Intelligence, and writes the preference.
+    // The dropdown lists Default Auto and Apple Intelligence, and writes the preference.
     await select.click();
-    await expect(page.getByRole("option")).toHaveText(["Yellowmoon's own Auto", "Apple Intelligence"]);
-    await page.getByRole("option", { name: "Yellowmoon's own Auto" }).click();
-    await expect(select).toHaveText("Yellowmoon's own Auto");
+    await expect(page.getByRole("option")).toHaveText(["Default Auto", "Apple Intelligence"]);
+    await page.getByRole("option", { name: "Default Auto" }).click();
+    await expect(select).toHaveText("Default Auto");
     await expect.poll(() => page.evaluate(async () => (await window.__yellowmoon!.mockApi.preferencesGet()).auto_provider)).toBe("yellowmoon");
     expect(problems).toEqual([]);
   });
@@ -106,9 +106,9 @@ test.describe("Preferences", () => {
     await expect(field).toHaveValue(defaults);
     await expect(reset).toBeDisabled();
     await expect.poll(() => page.evaluate(async () => (await window.__yellowmoon!.mockApi.autoStatus()).instructions)).toBe("default");
-    // The field goes away with Apple Intelligence: Yellowmoon's own Auto needs no instructions.
+    // The field goes away with Apple Intelligence: Default Auto needs no instructions.
     await dialog.getByRole("combobox", { name: TITLE }).click();
-    await page.getByRole("option", { name: "Yellowmoon's own Auto" }).click();
+    await page.getByRole("option", { name: "Default Auto" }).click();
     await expect(field).toHaveCount(0);
     await expect(reset).toHaveCount(0);
     expect(problems).toEqual([]);
@@ -186,12 +186,12 @@ test.describe("the Automatic card", () => {
     await expect(page.getByText(LINES.failed)).toBeVisible();
   });
 
-  test("choosing Yellowmoon's own Auto gives back today's card at once", async ({ page }) => {
+  test("choosing Default Auto gives back today's card at once", async ({ page }) => {
     await openApp(page, { ...MOCKUP, mockAppleAuto: "answered" });
     await openPhotos(page);
     await page.keyboard.press("Meta+,");
     await page.getByRole("combobox", { name: TITLE }).click();
-    await page.getByRole("option", { name: "Yellowmoon's own Auto" }).click();
+    await page.getByRole("option", { name: "Default Auto" }).click();
     await page.keyboard.press("Escape");
     await expect.poll(() => rows(page)).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
     await expect(page.getByText(LINES.answered)).toHaveCount(0);

@@ -20,7 +20,7 @@ export function isCloud(provider: AutoProvider): provider is CloudProvider {
 
 /** What the interface calls a provider (`AutoProvider::name`; `docs/22` section 1: "Antigravity (agy)" in the dropdown). */
 export const PROVIDER_NAMES: Readonly<Record<AutoProvider, string>> = {
-  yellowmoon: "Yellowmoon's own Auto",
+  yellowmoon: "Default Auto",
   apple: "Apple Intelligence",
   claude: "Claude Code",
   agy: "Antigravity",
@@ -35,7 +35,7 @@ export const AUTO_GRADING_TITLE = "Auto grading";
 /** The hint under the row, by the provider that grades now (`docs/22` section 12.2, word for word). */
 export const PROVIDER_HINTS: Readonly<Record<AutoProvider, string>> = {
   yellowmoon:
-    "Yellowmoon's own Auto sets the exposure and the white by a fixed rule and leaves every other value at 0. It is the same on every computer and sends nothing anywhere.",
+    "Default Auto sets the exposure and the white by a fixed rule and leaves every other value at 0. It is the same on every computer and sends nothing anywhere.",
   apple:
     "Apple's on-device model looks at each photo and grades it: exposure, highlights, shadows, black level, contrast, warmth, tint, saturation and the colours of the shadows and highlights. It runs on this Mac and sends nothing anywhere.",
   claude:
@@ -104,7 +104,7 @@ export function providerNote(status: ProviderStatus, os: string): string | null 
 /** The saved-choice note (`docs/22` section 12.2): the saved program is not the one that grades now. */
 export function savedChoiceNote(saved: AutoProvider, effective: AutoProvider): string | null {
   if (!isCloud(saved) || effective !== "yellowmoon") return null;
-  return `Your saved choice, ${PROVIDER_NAMES[saved]}, isn't available now, so Auto uses Yellowmoon's own settings until it is.`;
+  return `Your saved choice, ${PROVIDER_NAMES[saved]}, isn't available now, so Default Auto is used until it is.`;
 }
 
 /** The label and the hint of the instructions field, by the provider that grades now (`docs/22` section 12.4). */

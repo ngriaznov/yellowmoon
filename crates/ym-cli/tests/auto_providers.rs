@@ -171,7 +171,7 @@ fn the_saved_choice_acts_only_with_its_consent_and_naming_it_is_the_consent_for_
     let sb = Sandbox::new();
     let arw = photo(&sb);
     let cloud = "Claude Code will send a 768 px picture of each photo and the instructions to";
-    // Saved, with nothing agreed to: Yellowmoon's own Auto, silently (the app's row is hidden too), and
+    // Saved, with nothing agreed to: Default Auto, silently (the app's row is hidden too), and
     // the photo says why.
     sb.set_auto_provider("claude", &[]);
     let (v, stderr) = render(
@@ -246,7 +246,7 @@ fn the_saved_choice_acts_only_with_its_consent_and_naming_it_is_the_consent_for_
     );
     assert_eq!(v["auto_source"], "claude");
     assert_eq!(stderr.matches(cloud).count(), 1, "once per run: {stderr}");
-    // `--quiet` hides it; the old switch off, or Yellowmoon's own Auto for the run, does not call it.
+    // `--quiet` hides it; the old switch off, or Default Auto for the run, does not call it.
     let (_, stderr) = render(
         sb.ym_provider("claude=available"),
         &arw,
@@ -546,7 +546,7 @@ fn the_json_names_the_provider_and_the_old_object_is_apples_view() {
         info_row(&sb, "claude=available", &["--auto-provider", "claude"]),
         "Claude Code · Darker -0.3 EV · highlights -20 · contrast +15 · teal shadows (subtle) · scene \"Test picture\" · plan \"Test plan: You\""
     );
-    // Yellowmoon's own Auto: the rule, and no object for a render.
+    // Default Auto: the rule, and no object for a render.
     let (v, _) = render(
         sb.ym_provider("claude=available"),
         &arw,
@@ -566,7 +566,7 @@ fn the_json_names_the_provider_and_the_old_object_is_apples_view() {
     assert_eq!(i["auto_advisor"]["prompt"], Value::Null);
     assert_eq!(
         info_row(&sb, "claude=available", &["--auto-provider", "yellowmoon"]),
-        "Yellowmoon's own Auto"
+        "Default Auto"
     );
 }
 
@@ -593,7 +593,7 @@ fn an_export_records_the_provider_in_its_xmp() {
     );
     // Nothing of the program's place or messages, and no `ym:AppleAuto`.
     assert!(!xmp.contains("ym:AppleAuto"), "{xmp}");
-    // Yellowmoon's own Auto writes `ym:Auto` `rule` and no advisor.
+    // Default Auto writes `ym:Auto` `rule` and no advisor.
     let (rule, _) = render(
         sb.ym_provider("claude=available"),
         &arw,
@@ -911,8 +911,14 @@ fn three_failures_in_a_row_open_the_breaker_and_ym_says_so_once() {
         .assert()
         .success();
     let stderr = text(&out.get_output().stderr);
-    let sentence = "Claude Code failed three times in a row (Claude Code reported a rate limit). Photos it doesn't answer use Yellowmoon's own Auto.";
+    // The program's name and the failure are the advisor's words (`docs/22` section 9.2), and so is the name
+    // of the Auto that answers the rest (`Default Auto`).
+    let sentence = "Claude Code failed three times in a row (Claude Code reported a rate limit). Photos it doesn't answer use ";
     assert_eq!(stderr.matches(sentence).count(), 1, "{stderr}");
+    assert!(
+        stderr.contains("Default Auto."),
+        "the sentence names Default Auto: {stderr}"
+    );
     let objects = json_lines(&out.get_output().stdout);
     assert_eq!(objects.len(), 6);
     for v in &objects {

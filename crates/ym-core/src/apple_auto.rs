@@ -1118,7 +1118,7 @@ pub fn steps_json(steps: &AutoSteps) -> serde_json::Value {
 pub enum Activity {
     /// It acts: photos are asked, answers change Auto. Which model answers.
     Active(AdvisorInfo),
-    /// Off: no advisor was given at all, or Yellowmoon's own Auto is chosen.
+    /// Off: no advisor was given at all, or Default Auto is chosen.
     Off,
     /// The chosen provider cannot act: not available, not installed, or not consented.
     Unavailable(UnavailableReason),
@@ -1128,7 +1128,7 @@ impl Activity {
     /// Decides the activity. The first rule that applies decides (`docs/22` section 10.4):
     ///
     /// 1. no advisor was given at all (`has_advisors` false: the golden tool, most tests): off;
-    /// 2. Yellowmoon's own Auto is chosen: off;
+    /// 2. Default Auto is chosen: off;
     /// 3. the chosen provider has no advisor, or its availability has not been read (`availability`
     ///    is `None`): unavailable, reason `not_installed`;
     /// 4. its availability is `Unavailable(reason)`: unavailable with that reason (the choice is
@@ -2029,7 +2029,7 @@ mod tests {
             Activity::decide(false, Apple, true, &claude_ok, Some(&available)),
             Activity::Off
         );
-        // 2. Yellowmoon's own Auto: off.
+        // 2. Default Auto: off.
         assert_eq!(
             Activity::decide(true, Yellowmoon, true, &claude_ok, Some(&available)),
             Activity::Off

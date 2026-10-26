@@ -100,13 +100,13 @@ describe("Preferences › Auto grading with Apple Intelligence", () => {
     }
   });
 
-  it("writes the preference when Yellowmoon's own Auto is chosen, and when Apple Intelligence is chosen again", async () => {
+  it("writes the preference when Default Auto is chosen, and when Apple Intelligence is chosen again", async () => {
     const dialog = await openPreferences("answered");
     const select = within(dialog).getByRole("combobox", { name: AUTO_GRADING_TITLE });
     await h!.user.click(select);
-    await h!.user.click(await screen.findByRole("option", { name: "Yellowmoon's own Auto" }));
+    await h!.user.click(await screen.findByRole("option", { name: "Default Auto" }));
     await waitFor(async () => expect((await h!.api.preferencesGet()).auto_provider).toBe("yellowmoon"));
-    await waitFor(() => expect(select).toHaveTextContent("Yellowmoon's own Auto"));
+    await waitFor(() => expect(select).toHaveTextContent("Default Auto"));
     await waitFor(() => expect(h!.store.getState().auto?.active).toBe(false));
     await h!.user.click(select);
     await h!.user.click(await screen.findByRole("option", { name: "Apple Intelligence" }));
@@ -125,10 +125,10 @@ describe("Preferences › Auto grading with Apple Intelligence", () => {
     // At the default there is nothing to reset: the button is there, and disabled.
     const reset = within(dialog).getByRole("button", { name: APPLE_INSTRUCTIONS_RESET });
     expect(reset).toHaveAttribute("aria-disabled", "true");
-    // Yellowmoon's own Auto chosen, the field goes; Apple Intelligence again, it is back.
+    // Default Auto chosen, the field goes; Apple Intelligence again, it is back.
     const select = within(dialog).getByRole("combobox", { name: AUTO_GRADING_TITLE });
     await h!.user.click(select);
-    await h!.user.click(await screen.findByRole("option", { name: "Yellowmoon's own Auto" }));
+    await h!.user.click(await screen.findByRole("option", { name: "Default Auto" }));
     await waitFor(() => expect(within(dialog).queryByRole("textbox", { name: APPLE_INSTRUCTIONS_LABEL })).toBeNull());
     await h!.user.click(select);
     await h!.user.click(await screen.findByRole("option", { name: "Apple Intelligence" }));
@@ -188,7 +188,7 @@ describe("the Automatic card with Apple Auto", () => {
     }
   });
 
-  it("is today's card when Yellowmoon's own Auto is chosen", async () => {
+  it("is today's card when Default Auto is chosen", async () => {
     await onPhotos("answered");
     await h!.store.setPreferences({ auto_provider: "yellowmoon" });
     await waitFor(() => expect(rowLabels()).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]));

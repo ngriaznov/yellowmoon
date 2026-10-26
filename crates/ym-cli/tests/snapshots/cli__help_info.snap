@@ -19,7 +19,7 @@ Options:
   -v, --verbose
           Print what is happening on stderr: stages, timings and notes
       --auto-provider <yellowmoon|apple|claude|agy>
-          Who grades each photo's Auto for this run: yellowmoon (Yellowmoon's own Auto), apple (Apple Intelligence), claude (Claude Code) or agy (Antigravity). Default: the app's setting. Naming claude or agy is your consent for this run: ym sends a 768 px picture of each photo and the instructions to that service, through the program installed on this computer. Answers from Claude Code and Antigravity can differ from run to run
+          Who grades each photo's Auto for this run: yellowmoon (Default Auto), apple (Apple Intelligence), claude (Claude Code) or agy (Antigravity). Default: the app's setting. Naming claude or agy is your consent for this run: ym sends a 768 px picture of each photo and the instructions to that service, through the program installed on this computer. Answers from Claude Code and Antigravity can differ from run to run
       --apple-auto <on|off>
           The old name of --auto-provider: on is apple, off is yellowmoon. Not with --auto-provider
       --auto-instructions <FILE>

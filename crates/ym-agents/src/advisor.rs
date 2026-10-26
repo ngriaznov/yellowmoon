@@ -158,7 +158,7 @@ impl Core {
         let breaker = self.breaker.open_reason().map(|last| {
             format!(
                 "{} failed three times in a row ({last}). Photos it doesn't answer use \
-                 Yellowmoon's own Auto.",
+                 Default Auto.",
                 self.tool.display_name()
             )
         });

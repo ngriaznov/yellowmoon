@@ -57,7 +57,7 @@ class Command(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             binary = fake_ym(Path(tmp))
             result = compare_metadata.ours(str(binary), "photo.ARW")
-        self.assertEqual(result["argv"], ["info", "--json", "photo.ARW", "--apple-auto", "off"])
+        self.assertEqual(result["argv"], ["info", "--json", "photo.ARW", "--auto-provider", "yellowmoon"])
 
     def test_a_missing_binary_is_a_usage_error_that_names_ym(self):
         with tempfile.TemporaryDirectory() as tmp:

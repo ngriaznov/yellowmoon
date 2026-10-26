@@ -16,7 +16,7 @@
 //! skips with a notice, unless `YM_REQUIRE_GPU=1` makes that a failure.
 //!
 //! Auto providers (`docs/19` section 7, `docs/22` section 14.4). The app's side here has no advisor
-//! (Yellowmoon's own Auto) and the binary is given `--auto-provider yellowmoon`, so a Mac with Apple
+//! (Default Auto) and the binary is given `--auto-provider yellowmoon`, so a Mac with Apple
 //! Intelligence compares today's bytes too. The Apple Auto leg gives both sides the test advisor
 //! (`FakeAdvisor` in the core, the binary `YELLOWMOON_TEST_APPLE_AUTO=fake` and no option, so the
 //! app's setting decides as in the app): the same answers, the same files. The Claude Code leg gives
@@ -46,7 +46,7 @@ use ym_gpu::device::gpu_required_by_env;
 /// What the app's core is given to grade with.
 #[derive(Clone, Copy)]
 enum Auto {
-    /// No advisor: Yellowmoon's own Auto.
+    /// No advisor: Default Auto.
     None,
     /// Apple Intelligence's test advisor, the saved choice deciding.
     AppleFake,
@@ -212,7 +212,7 @@ fn cli_export_env(
     } else {
         &["--cpu"]
     };
-    // Yellowmoon's own Auto, as on the app's side, unless the test gives both sides a provider.
+    // Default Auto, as on the app's side, unless the test gives both sides a provider.
     let apple_auto: &[&str] = if env
         .iter()
         .any(|(k, _)| *k == common::FAKE_APPLE_AUTO.0 || *k == common::AUTO_PROVIDERS_ENV)

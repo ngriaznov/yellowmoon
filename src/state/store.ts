@@ -1334,7 +1334,7 @@ export class AppStore {
   }
 
   /**
-   * The dropdown's choice of a provider (`docs/22` section 12.1). Yellowmoon's own Auto, Apple Intelligence and a program the person
+   * The dropdown's choice of a provider (`docs/22` section 12.1). Default Auto, Apple Intelligence and a program the person
    * already agreed to are saved at once; a program they have not agreed to opens the consent dialog and changes nothing until they say yes
    * ({@link AppStore.answerConsent}).
    */
