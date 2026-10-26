@@ -197,8 +197,8 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
     let rt = Runtime::open(&CoreSettings {
         jobs: Some(1),
         forced_profile: None,
-        apple_auto: None,
-        apple_auto_instructions: None,
+        auto: None,
+        auto_instructions: None,
     })?;
     rt.core.attach_gpu(&slot);
     let gpu = slot.gpu().cloned();

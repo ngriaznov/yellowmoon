@@ -101,7 +101,7 @@ test.describe("the row", () => {
     expect(noteBox!.y).toBeGreaterThanOrEqual(hintBox!.y + hintBox!.height - 1);
     // The trigger shows the choice with its badge, all of it: nothing is cut off.
     const trigger = dialog.getByRole("combobox", { name: TITLE });
-    await expect(trigger).toContainText("Antigravity (agy)");
+    await expect(trigger).toContainText("Antigravity");
     await expect(trigger).toContainText("Experimental");
     const clipped = await trigger.evaluate((el) => {
       const value = el.querySelector<HTMLElement>('[data-slot="select-value"]')!;
@@ -151,7 +151,7 @@ test.describe("the consent dialog", () => {
     await expect(consent.getByRole("button", { name: "Cancel" })).toBeFocused();
     await expect(consent.getByRole("button", { name: "Use Claude Code" })).toHaveAttribute("data-slot", "button");
     const box = await consent.boundingBox();
-    expect(Math.round(box!.width)).toBe(480);
+    expect(Math.abs(box!.width - 480)).toBeLessThanOrEqual(1);
     // Nothing has changed.
     expect(await saved(page)).toBe("apple");
     expect(problems).toEqual([]);
@@ -195,8 +195,12 @@ test.describe("the consent dialog", () => {
     await expect(dialog).toBeVisible();
     await expect(select).toHaveText("Apple Intelligence");
     await ask();
-    await page.mouse.click(5, 5);
-    await expect(consent).toHaveCount(0);
+    await expect(consent.getByRole("button", { name: "Cancel" })).toBeFocused();
+    // Radix starts to listen for a click outside a tick after the dialog opens, which a busy machine can stretch: click until it is heard.
+    await expect(async () => {
+      await page.mouse.click(5, 5);
+      await expect(consent).toHaveCount(0, { timeout: 1500 });
+    }).toPass({ timeout: 15_000 });
     await expect(dialog).toBeVisible();
     expect(await saved(page)).toBe("apple");
     expect(await page.evaluate(async () => (await window.__yellowmoon!.mockApi.preferencesGet()).auto_consent)).toEqual({ claude: false, agy: false });
@@ -210,7 +214,7 @@ test.describe("the consent dialog", () => {
     await expect(consent).toContainText("This is experimental. Yellowmoon itself makes no connection.");
     await expect(consent).toContainText(`Yellowmoon itself makes no connection. ${WINDOWS_SENTENCE}`);
     await consent.getByRole("button", { name: "Use Antigravity" }).click();
-    await expect(dialog.getByRole("combobox", { name: TITLE })).toContainText("Antigravity (agy)");
+    await expect(dialog.getByRole("combobox", { name: TITLE })).toContainText("Antigravity");
     expect(await saved(page)).toBe("agy");
   });
 

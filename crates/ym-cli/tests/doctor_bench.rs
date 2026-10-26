@@ -232,6 +232,7 @@ fn ctrl_c_during_the_bench_ends_it_with_130_and_removes_its_scratch_folder() {
         .env("YELLOWMOON_HOME", sb.home())
         .env("YELLOWMOON_DATA", common::data_dir())
         .env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1)
+        .env(common::NO_AUTO_PROVIDERS.0, common::NO_AUTO_PROVIDERS.1)
         .env("YELLOWMOON_GPU", "off")
         .env("TMPDIR", &tmp)
         .stdout(Stdio::piped())

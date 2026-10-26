@@ -163,7 +163,12 @@ export const commands = {
 	preferencesGet: () => __TAURI_INVOKE<Preferences>("preferences_get"),
 	/**  `preferences_set(patch)`: applies a patch and returns the new preferences. */
 	preferencesSet: (patch: PreferencesPatch) => __TAURI_INVOKE<Preferences>("preferences_set", { patch }),
-	/**  `auto_status()` (hand edit: regenerate with the bindings test). */
+	/**
+	 *  `auto_status()` (`docs/22` sections 11 and 12.6; it replaces `apple_auto_status()`): the four
+	 *  providers and which one grades now. The core refreshes every provider's availability in the
+	 *  background and answers what it has cached, so this never waits for a program; Preferences asks
+	 *  when it opens and again on `auto_status_changed`.
+	 */
 	autoStatus: () => __TAURI_INVOKE<AutoStatus>("auto_status"),
 	/**  `install_cli_link()`: the "Install Command-Line Tool…" menu item. */
 	installCliLink: () => __TAURI_INVOKE<CliLinkResult>("install_cli_link"),
@@ -210,7 +215,10 @@ export type AppInfo = {
 	version: string,
 	/**  The pipeline version written into exports. */
 	pipeline_version: string,
-	/**  The operating system. */
+	/**
+	 *  The operating system, as Rust names it (`std::env::consts::OS`): "macos", "windows" or
+	 *  "linux". Preferences words a few sentences differently on Windows (`docs/22` section 12.3).
+	 */
 	os: string,
 };
 
@@ -278,13 +286,27 @@ export type AppleAutoFailure =
 /**  Anything else; the message says what. */
 "other";
 
-/**  Which model answers, and with which instructions (the core's `AdvisorInfo`). */
+/**
+ *  Which model answers, and with which instructions (the core's `AdvisorInfo`).
+ * 
+ *  The core writes what a program says about itself as `tool: { version, api, auth }`; the webview
+ *  reads `tool_version` and `api` (`docs/22` section 12.6), so this type reads either shape.
+ */
 export type AppleAutoInfo = {
+	/**  Whose grading it is. */
 	provider: AutoProvider,
+	/**
+	 *  The model: Apple's variant display name ("AFM 3 Core"), or for the programs the id that
+	 *  answered, the alias asked for until one answered, or `default`.
+	 */
 	model: string,
+	/**  The macOS version and build: "27.0.1 (27A404)"; `""` for the programs. */
 	os: string,
+	/**  The version the program printed ("2.1.310"); null for Apple Intelligence. */
 	tool_version: string | null,
+	/**  Where Claude Code's requests go (`firstParty`: Anthropic); null for the others. */
 	api: string | null,
+	/**  The version of the prompt the provider is asked with. */
 	prompt: number,
 	/**  The default instructions or the person's own. */
 	instructions: AppleAutoInstructions,
@@ -300,8 +322,8 @@ export type AppleAutoInstructions =
 "edited";
 
 /**
- *  Why Apple Auto is not available on this computer (`docs/19` section 1; the core's
- *  `UnavailableReason`).
+ *  Why a provider is not available on this computer (`docs/19` section 1 and `docs/22` section 3;
+ *  the core's `UnavailableReason`).
  */
 export type AppleAutoReason = 
 /**  Not a Mac. */
@@ -322,12 +344,19 @@ export type AppleAutoReason =
 "unavailable" | 
 /**  The model on this Mac cannot take pictures. */
 "no_image_input" | 
+/**  No usable program was found. */
 "not_installed" | 
+/**  The program runs but its version is below the minimum. */
 "too_old" | 
+/**  The program runs and is not signed in. */
 "signed_out" | 
+/**  The program was found but its check failed or timed out. */
 "probe_failed" | 
+/**  Windows: only a script was found, which Yellowmoon does not run. */
 "unsafe_launcher" | 
+/**  The first check has not finished. */
 "checking" | 
+/**  A program is chosen and available but the person has not agreed to send photos through it. */
 "not_consented";
 
 /**
@@ -399,43 +428,15 @@ export type ApplyScope =
 /**  Every photo. */
 "all";
 
+/**
+ *  Whether the person agreed to send photos through each program (`docs/22` section 10.2; the
+ *  core's `AutoConsent`).
+ */
 export type AutoConsent = {
+	/**  Claude Code. */
 	claude: boolean,
+	/**  Antigravity. */
 	agy: boolean,
-};
-
-export type AutoProvider = "yellowmoon" | "apple" | "claude" | "agy";
-
-export type AutoStatus = {
-	providers: ProviderStatus[],
-	preference: AutoProvider,
-	chosen: AutoProvider,
-	effective: AutoProvider,
-	active: boolean,
-	visible: boolean,
-	consent: AutoConsent,
-	table: number,
-	instructions: AppleAutoInstructions,
-	instructions_sha256: string,
-	own_instructions: string,
-	default_instructions: string,
-	instructions_max_chars: number,
-};
-
-export type AutoStatusChanged = null;
-
-export type ProviderState = "available" | "not_installed" | "too_old" | "signed_out" | "unavailable" | "checking";
-
-export type ProviderStatus = {
-	provider: AutoProvider,
-	state: ProviderState,
-	reason: AppleAutoReason | null,
-	info: AppleAutoInfo | null,
-	tool_version: string | null,
-	consent: boolean,
-	experimental: boolean,
-	listed: boolean,
-	selectable: boolean,
 };
 
 /**  Per-photo automatic estimates (`AutoEstimates` in `types.ts`; the core's `AutoSummary`). */
@@ -464,6 +465,11 @@ export type AutoEstimates = {
 	balance_highlights: [number, number],
 	/**  Which Auto made these values. */
 	source: AutoSource,
+	/**
+	 *  The provider the photo's `apple` state belongs to (`docs/22` section 14.1): the chosen provider
+	 *  while it acts or is asked about, `yellowmoon` while the state is `off`.
+	 */
+	provider: AutoProvider,
 	/**  Where the photo stands with Apple Auto. */
 	apple: AppleAuto,
 	/**  Apple Auto's steps in effect (the photo's answer, or its burst's), null when Auto is the rule. */
@@ -508,17 +514,73 @@ export type AutoFlags = {
 	noise_reduction: boolean,
 };
 
+/**  Who grades (`docs/22` section 1; the core's `AutoProvider`). The order is the dropdown's. */
+export type AutoProvider = 
+/**  Yellowmoon's own Auto, the rule. */
+"yellowmoon" | 
+/**  Apple Intelligence, the on-device model. */
+"apple" | 
+/**  Claude Code, a program the person installed and signed in to. */
+"claude" | 
+/**  Antigravity (`agy`), the same. */
+"agy";
+
 /**
- *  Which Auto made a photo's automatic values: Yellowmoon's own (`rule`) or Apple Auto's answer
- *  (`apple`).
+ *  Which Auto made a photo's automatic values: Yellowmoon's own (`rule`), or the answer of Apple
+ *  Intelligence (`apple`), Claude Code (`claude`) or Antigravity (`agy`, `docs/22` section 14.1).
  */
 export type AutoSource = 
 /**  Yellowmoon's own Auto. */
 "rule" | 
-/**  Apple Auto's answer (the photo's own or its burst's). */
+/**  Apple Intelligence's answer (the photo's own or its burst's). */
 "apple" | 
+/**  Claude Code's answer. */
 "claude" | 
+/**  Antigravity's answer. */
 "agy";
+
+/**
+ *  `auto_status()`: the four providers and which one grades now (`docs/22` sections 11 and 12.6; the
+ *  core's `AutoStatus`, which replaces `AppleAutoStatus`). Preferences shows its "Auto grading" row
+ *  only while `visible`.
+ */
+export type AutoStatus = {
+	/**  Every provider, in the dropdown's order. */
+	providers: ProviderStatus[],
+	/**  The saved choice (`auto_provider`). */
+	preference: AutoProvider,
+	/**  The provider chosen for the session: the saved choice in the app. */
+	chosen: AutoProvider,
+	/**
+	 *  The provider that grades now: the chosen one while it is available and agreed to, else
+	 *  `yellowmoon`.
+	 */
+	effective: AutoProvider,
+	/**  `effective` is not `yellowmoon`. */
+	active: boolean,
+	/**  The dropdown and the instructions show. */
+	visible: boolean,
+	/**  The saved consent. */
+	consent: AutoConsent,
+	/**  The table's version. */
+	table: number,
+	/**  The default instructions or the person's own. */
+	instructions: AppleAutoInstructions,
+	/**  The first 12 hex digits of the SHA-256 of the instructions. */
+	instructions_sha256: string,
+	/**  The person's own instructions, `""` for the default. */
+	own_instructions: string,
+	/**  The default instructions, for Preferences' text field and its Reset to default. */
+	default_instructions: string,
+	/**  The longest instructions the models are given, in characters. */
+	instructions_max_chars: number,
+};
+
+/**
+ *  `auto_status_changed` (`docs/22` section 12.6): a provider's availability changed (a program was
+ *  found, signed in or out, or a check ended). No data; the webview asks `auto_status()` again.
+ */
+export type AutoStatusChanged = null;
 
 /**
  *  A shadows or highlights wheel in a patch: either form of [`BalanceSetting`], or a plain point,
@@ -1590,8 +1652,17 @@ export type Preferences = {
 	watch_downloads_during_import: boolean,
 	/**  Folders remembered between runs. */
 	last_used_folders: LastUsedFolders,
+	/**
+	 *  Who grades (`docs/22` section 10.1): Apple Intelligence by default. A provider that is not
+	 *  available, or a program the person has not agreed to yet, acts as Yellowmoon's own Auto.
+	 */
 	auto_provider: AutoProvider,
+	/**  Whether the person agreed to send photos through Claude Code and through Antigravity. */
 	auto_consent: AutoConsent,
+	/**
+	 *  Instructions for the grading model (`docs/19` section 2, `docs/22` D1): the person's own, at
+	 *  most 2000 characters, one text for every provider; `""` is the default.
+	 */
 	apple_auto_instructions: string,
 };
 
@@ -1611,9 +1682,58 @@ export type PreferencesPatch = {
 	watch_downloads_during_import?: boolean | null,
 	/**  New remembered folders. */
 	last_used_folders?: LastUsedFolders | null,
+	/**
+	 *  New value of "Auto grading". A program is refused unless `auto_consent` (in the same patch
+	 *  or already saved) says the person agreed.
+	 */
 	auto_provider?: AutoProvider | null,
+	/**  New consent for the two programs; replaces the saved one whole. */
 	auto_consent?: AutoConsent | null,
+	/**
+	 *  New instructions (`""` or the default text: the default); at most 2000 characters, longer
+	 *  text is refused.
+	 */
 	apple_auto_instructions?: string | null,
+};
+
+/**  Where one provider stands (`docs/22` section 3.1; the core's `ProviderState`). */
+export type ProviderState = 
+/**  It can answer now. */
+"available" | 
+/**  No usable program was found. */
+"not_installed" | 
+/**  The program runs but its version is below the minimum. */
+"too_old" | 
+/**  It runs and is not signed in. */
+"signed_out" | 
+/**  It cannot answer, for a reason. */
+"unavailable" | 
+/**  The first check has not finished. */
+"checking";
+
+/**
+ *  One provider of [`AutoStatus`] (the core's `ProviderStatus`, without the program's path, which
+ *  never leaves the core).
+ */
+export type ProviderStatus = {
+	/**  Which provider. */
+	provider: AutoProvider,
+	/**  Where it stands. */
+	state: ProviderState,
+	/**  Why it is not available; null when it is. */
+	reason: AppleAutoReason | null,
+	/**  Which model answers, when it is available. */
+	info: AppleAutoInfo | null,
+	/**  The program's version, also while it is too old or signed out. */
+	tool_version: string | null,
+	/**  Whether the person agreed to send photos through it. */
+	consent: boolean,
+	/**  Whether the interface marks it Experimental (Antigravity). */
+	experimental: boolean,
+	/**  Whether the dropdown lists it. */
+	listed: boolean,
+	/**  Whether the dropdown lets the person choose it. */
+	selectable: boolean,
 };
 
 /**  What the recogniser made of one source (`looks_recognise`). */

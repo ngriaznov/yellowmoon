@@ -27,6 +27,9 @@ ym-profiles.workspace = true
 # Apple silicon with the macOS 27 SDK it carries the Swift bridge, and `build.rs` links FoundationModels
 # weakly; everywhere else it is a stub that says why Apple Auto is not available. Our own crate.
 ym-apple.workspace = true
+# The two programs' advisors (docs/22): `ym_agents::system_advisors()`, which starts the person's own
+# `claude` and `agy` as child processes. Our own crate; it opens no network connection (hard rule 7).
+ym-agents.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
@@ -46,6 +49,9 @@ ctrlc = { version = "3", features = ["termination"] }
 force-demosaic = ["ym-core/force-demosaic"]
 
 [dev-dependencies]
+# The test doubles of `claude` and `agy` (`ym_agents::testing::fake_cli_path`) for the tests of `--auto-provider`
+# (docs/22 section 15.3).
+ym-agents = { workspace = true, features = ["test-support"] }
 # The test-only demosaic switch, so that the binary the tests start can be told to use another
 # method (the switch reads an environment variable that is never set outside the tests). Only
 # `cargo test` sees this: `cargo build -p ym-cli` and the sidecar build do not.

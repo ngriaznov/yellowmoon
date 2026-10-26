@@ -7,8 +7,8 @@
 mod fakes;
 
 use fakes::{
-    Recorder, answer_for, decode_jpeg, first_word, flood, has, hang, maybe_sleeper, must_fail,
-    out, reject, request_index, require, requests_so_far, scenario, slow, twist, value_of, version,
+    Recorder, answer_for, decode_jpeg, first_word, flood, hang, has, maybe_sleeper, must_fail, out,
+    reject, request_index, requests_so_far, require, scenario, slow, twist, value_of, version,
 };
 use serde_json::{Value, json};
 
@@ -17,12 +17,17 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let scenario = scenario();
     let recorder = Recorder::start();
+    fakes::maybe_raw(&recorder, &scenario);
 
     if args == ["--version"] {
         if scenario == "probe_hang" {
             hang();
         }
-        let default = if scenario == "too_old" { "1.0.9" } else { "1.4.7" };
+        let default = if scenario == "too_old" {
+            "1.0.9"
+        } else {
+            "1.4.7"
+        };
         println!("{}", version(default));
         return;
     }
@@ -55,7 +60,9 @@ fn usage(args: &[String], scenario: &str) {
     if scenario == "signed_out" || (scenario == "late_signout" && requests_so_far() >= 1) {
         signed_out();
     }
-    out(json!({"status": "SUCCESS", "response": "quota: plenty"}).to_string().as_bytes());
+    out(json!({"status": "SUCCESS", "response": "quota: plenty"})
+        .to_string()
+        .as_bytes());
     out(b"\n");
 }
 
@@ -67,7 +74,10 @@ fn request(args: &[String], prompt: &str, scenario: &str, recorder: &Recorder) {
     }
     require(args, "--sandbox");
     require(args, "--disable-slash-commands");
-    if args.iter().any(|a| a.starts_with("--dangerously") || a == "--continue") {
+    if args
+        .iter()
+        .any(|a| a.starts_with("--dangerously") || a == "--continue")
+    {
         reject("an option Yellowmoon never passes");
     }
     for flag in ["--effort", "--print-timeout"] {
@@ -98,7 +108,9 @@ fn request(args: &[String], prompt: &str, scenario: &str, recorder: &Recorder) {
         })
         .unwrap_or_default();
     if names != ["photo.jpg"] {
-        reject(&format!("the working folder holds {names:?}, not exactly photo.jpg"));
+        reject(&format!(
+            "the working folder holds {names:?}, not exactly photo.jpg"
+        ));
     }
     let Ok(jpeg) = std::fs::read(cwd.join("photo.jpg")) else {
         reject("photo.jpg cannot be read");
@@ -109,7 +121,7 @@ fn request(args: &[String], prompt: &str, scenario: &str, recorder: &Recorder) {
     };
 
     // The first word of the instructions: they follow the first line and a blank line.
-    let instructions = prompt.splitn(2, "\n\n").nth(1).unwrap_or("");
+    let instructions = prompt.split_once("\n\n").map_or("", |(_, rest)| rest);
     let word = first_word(instructions);
 
     if scenario == "crash" {
@@ -126,6 +138,7 @@ fn request(args: &[String], prompt: &str, scenario: &str, recorder: &Recorder) {
     let counting = scenario == "late_signout" || std::env::var_os("YM_FAKE_FAILS").is_some();
     let index = if counting { request_index() } else { 0 };
 
+    fakes::delay();
     match scenario {
         "signed_out" => signed_out(),
         "late_signout" if index >= 1 => signed_out(),

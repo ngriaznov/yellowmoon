@@ -16,13 +16,12 @@ use tauri_specta::{Builder, collect_commands, collect_events};
 use crate::api::AppApi;
 use crate::system;
 use crate::wire::{
-    self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter,
-    CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DisplayLut, ErrorScope,
-    ExportEstimate, ExportJob, ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput,
-    LooksImportResult, MenuState, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample,
-    Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
-    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
-    WatchStatus,
+    self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, CliLinkResult,
+    CliLinkStatus, CropAspect, CropSuggestion, DisplayLut, ErrorScope, ExportEstimate, ExportJob,
+    ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput, LooksImportResult, MenuState,
+    Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample, Preferences, PreferencesPatch,
+    ResolvedSettings, SessionChange, SessionState, SettingsPatch, SourceRecognition,
+    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, WatchStatus,
 };
 
 /// The managed state: the command handlers, or why the application could not start.
@@ -803,6 +802,22 @@ mod tests {
         assert_sync(set_menu_state);
     }
 
+    /// One provider of `auto_status` as the webview reads it (`docs/22` section 12.6): no model and no
+    /// program version, and a consent that only the two programs lack until it is given.
+    fn provider_json(
+        id: &str,
+        state: &str,
+        reason: Option<&str>,
+        listed: bool,
+        selectable: bool,
+    ) -> Value {
+        json!({
+            "provider": id, "state": state, "reason": reason, "info": null, "tool_version": null,
+            "consent": !matches!(id, "claude" | "agy"), "experimental": id == "agy",
+            "listed": listed, "selectable": selectable
+        })
+    }
+
     fn call(window: &WebviewWindow<MockRuntime>, cmd: &str, args: Value) -> Result<Value, Value> {
         get_ipc_response(
             window,
@@ -996,7 +1011,19 @@ mod tests {
         .expect("recognise");
         assert_eq!(seen["recognition"]["kind"], json!("missing"));
         assert_eq!(seen["source"], json!("zip"));
-        assert!(call(&window, "preferences_get", json!({})).expect("prefs")["export_defaults"]["bit_depth"].is_number());
+        let prefs = call(&window, "preferences_get", json!({})).expect("prefs");
+        assert!(prefs["export_defaults"]["bit_depth"].is_number());
+        // Who grades and whether the person agreed (`docs/22` section 12.6); the old switch is gone.
+        assert_eq!(prefs["auto_provider"], json!("apple"));
+        assert_eq!(
+            prefs["auto_consent"],
+            json!({ "claude": false, "agy": false })
+        );
+        assert!(prefs.get("apple_auto").is_none());
+        assert_eq!(
+            call(&window, "app_info", json!({})).expect("app_info")["os"],
+            json!(std::env::consts::OS)
+        );
         call(&window, "close_session", json!({})).expect("close");
         assert_eq!(
             call(&window, "session_state", json!({})).expect("state")["photos"],

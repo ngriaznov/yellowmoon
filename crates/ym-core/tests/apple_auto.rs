@@ -1771,14 +1771,16 @@ fn an_exports_photo_moves_up_with_its_burst_so_the_export_waits_for_its_burst_al
     advisor.gate.open();
 }
 
-/// A sink that panics the first time the Apple Auto worker sends `estimates_changed` from its own
+/// A sink that panics the first time an Auto worker sends `estimates_changed` from its own
 /// thread (when an answer arrives), and forwards every event.
 fn panicking_sink() -> (EventSink, Receiver<SessionEvent>) {
     let (tx, rx) = std::sync::mpsc::channel();
     let tx = Mutex::new(tx);
     let armed = std::sync::atomic::AtomicBool::new(true);
     let sink = EventSink::new(move |e| {
-        let worker = std::thread::current().name() == Some("ym-apple-auto");
+        let worker = std::thread::current()
+            .name()
+            .is_some_and(|n| n.starts_with("ym-auto-"));
         if worker
             && matches!(e, SessionEvent::EstimatesChanged { .. })
             && armed.swap(false, Ordering::SeqCst)

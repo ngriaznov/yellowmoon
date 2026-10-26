@@ -84,7 +84,8 @@ describe("the dropdown", () => {
   it("lists Yellowmoon's own Auto, Apple Intelligence, Claude Code and Antigravity (agy) in that order", async () => {
     const dialog = await openPreferences({ providers: ALL });
     const options = await entries(dialog);
-    expect(options.map((o) => o.textContent)).toEqual(["Yellowmoon's own Auto", "Apple Intelligence", "Claude Code", "Antigravity (agy) Experimental"]);
+    expect(options.map((o) => o.getAttribute("aria-label"))).toEqual(["Yellowmoon's own Auto", "Apple Intelligence", "Claude Code", "Antigravity (agy), experimental"]);
+    expect(options.map((o) => o.textContent)).toEqual(["Yellowmoon's own Auto", "Apple Intelligence", "Claude Code", "Antigravity (agy)Experimental"]);
     expect(select(dialog)).toHaveTextContent("Apple Intelligence");
   });
 
@@ -101,7 +102,13 @@ describe("the dropdown", () => {
   it("lists a program that cannot be used disabled, with a muted tag after its name", async () => {
     const dialog = await openPreferences({ providers: { claude: "signed_out", agy: "too_old", apple: "available" } });
     const options = await entries(dialog);
-    expect(options.map((o) => o.textContent)).toEqual(["Yellowmoon's own Auto", "Apple Intelligence", "Claude Code, not signed in Not signed in", "Antigravity (agy) Experimental, update needed Update needed"]);
+    expect(options.map((o) => o.getAttribute("aria-label"))).toEqual([
+      "Yellowmoon's own Auto",
+      "Apple Intelligence",
+      "Claude Code, not signed in",
+      "Antigravity (agy), experimental, update needed",
+    ]);
+    expect(options.map((o) => o.textContent)).toEqual(["Yellowmoon's own Auto", "Apple Intelligence", "Claude CodeNot signed in", "Antigravity (agy)ExperimentalUpdate needed"]);
     const claude = screen.getByRole("option", { name: "Claude Code, not signed in" });
     expect(claude).toHaveAttribute("aria-disabled", "true");
     expect(within(claude).getByText("Not signed in")).toHaveAttribute("data-slot", "badge");
@@ -132,8 +139,8 @@ describe("the dropdown", () => {
 
   it("marks Antigravity Experimental, in the list and in the trigger", async () => {
     const dialog = await openPreferences({ providers: { agy: "available" }, autoProvider: "agy", consent: { claude: false, agy: true } });
-    // The trigger shows the choice with the badge.
-    expect(select(dialog)).toHaveTextContent("Antigravity (agy) Experimental");
+    // The trigger shows the choice with the badge ("Antigravity (agy)" is in the list; the trigger is only 220 px wide).
+    expect(select(dialog)).toHaveTextContent("Antigravity Experimental");
     await entries(dialog);
     const option = screen.getByRole("option", { name: /^Antigravity \(agy\)/ });
     expect(within(option).getByText("Experimental")).toHaveAttribute("data-slot", "badge");
@@ -374,7 +381,7 @@ describe("the consent dialog", () => {
     expect(within(consent).getByRole("button", { name: "Cancel" })).toHaveFocus();
     await h!.user.click(within(consent).getByRole("button", { name: "Use Antigravity" }));
     await waitFor(() => expect(spy).toHaveBeenCalledWith({ auto_provider: "agy", auto_consent: { claude: false, agy: true } }));
-    await waitFor(() => expect(select(dialog)).toHaveTextContent("Antigravity (agy) Experimental"));
+    await waitFor(() => expect(select(dialog)).toHaveTextContent("Antigravity Experimental"));
   });
 
   it("Cancel closes it and keeps the previous choice", async () => {
@@ -386,6 +393,8 @@ describe("the consent dialog", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Send photos to Claude Code?" })).toBeNull());
     expect(spy).not.toHaveBeenCalled();
     expect(select(dialog)).toHaveTextContent("Apple Intelligence");
+    // The focus goes back to the dropdown that asked.
+    await waitFor(() => expect(select(dialog)).toHaveFocus());
     expect(await h!.api.preferencesGet()).toMatchObject({ auto_provider: "apple", auto_consent: { claude: false, agy: false } });
     // Preferences stays open.
     expect(screen.getByRole("dialog", { name: "Preferences" })).toBeInTheDocument();

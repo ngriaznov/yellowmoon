@@ -32,11 +32,11 @@ use ym_raw::error::RawError;
 use ym_raw::layout::{DecodeKind, Rect};
 use ym_raw::metadata::{LensTags, LevelSource, RawMetadata, probe};
 
-use crate::cli::{AppleAutoArg, InfoArgs};
+use crate::cli::{InfoArgs, auto_choice};
 use crate::console::Console;
 use crate::exit::{self, Failure};
 use crate::report::{
-    AppleAutoField, Object, apple_auto_text, camera_json, develop_fields, error_value, match_word,
+    AppleAutoField, Object, auto_text, camera_json, develop_fields, error_value, match_word,
 };
 use crate::runtime::{CoreSettings, Runtime, interrupted, read_instructions};
 use crate::text::{lossy, path_text};
@@ -103,9 +103,9 @@ fn run_to(args: &InfoArgs, console: &mut Console, out: &mut dyn Write) -> Result
         .collect();
 
     // The estimates need the core; files that cannot even be read do not.
-    let apple_auto = AppleAutoArg::mode(args.apple_auto);
-    let apple_auto_instructions = args
-        .apple_auto_instructions
+    let choice = auto_choice(args.auto_provider, args.apple_auto).map_err(Failure::usage)?;
+    let auto_instructions = args
+        .auto_instructions
         .as_deref()
         .map(read_instructions)
         .transpose()?;
@@ -113,14 +113,14 @@ fn run_to(args: &InfoArgs, console: &mut Console, out: &mut dyn Write) -> Result
         Some(Runtime::open(&CoreSettings {
             jobs: None,
             forced_profile: args.profile.clone(),
-            apple_auto: Some(apple_auto),
-            apple_auto_instructions,
+            auto: Some(choice),
+            auto_instructions,
         })?)
     } else {
         None
     };
     if let Some(rt) = &runtime {
-        if let Some(notice) = rt.apple_auto_notice(apple_auto) {
+        for notice in rt.auto_notices() {
             console.warn(&notice);
         }
         let mut opened: HashMap<PathBuf, Option<PhotoId>> = HashMap::new();
@@ -139,19 +139,24 @@ fn run_to(args: &InfoArgs, console: &mut Console, out: &mut dyn Write) -> Result
                     .flatten()
             });
         }
+        let asking = rt.asking().name();
         let finished = rt.wait_developed(|w| {
             console.progress(match w.answers {
-                Some((answered, n)) => format!("Asking Apple Intelligence {answered}/{n}"),
+                Some((answered, n)) => format!("Asking {asking} {answered}/{n}"),
                 None => format!("Reading {}/{}", w.ready, w.total),
             });
         });
         console.finish_progress();
+        if let Some(notice) = rt.breaker_notice() {
+            console.warn(&notice);
+        }
         if !finished {
             console.info("Interrupted.");
             return Ok(exit::INTERRUPTED);
         }
     }
 
+    let auto_note = runtime.as_ref().map(auto_note).unwrap_or_default();
     let mut failures = 0usize;
     let mut printed_text = false;
     for entry in &entries {
@@ -209,7 +214,14 @@ fn run_to(args: &InfoArgs, console: &mut Console, out: &mut dyn Write) -> Result
                     write!(
                         out,
                         "{}",
-                        render_text(&entry.path, meta, &camera, shown, auto_crop.as_ref())
+                        render_text(
+                            &entry.path,
+                            meta,
+                            &camera,
+                            shown,
+                            auto_crop.as_ref(),
+                            &auto_note
+                        )
                     )?;
                     printed_text = true;
                 }
@@ -222,6 +234,47 @@ fn run_to(args: &InfoArgs, console: &mut Console, out: &mut dyn Write) -> Result
     } else {
         exit::SOME_FAILED
     })
+}
+
+/// What the **Auto grading** row needs that the photo's estimates do not say (`docs/22` section 3.4).
+#[derive(Debug, Clone, Default)]
+pub struct AutoNote {
+    /// The version the chosen provider's program printed, for "Claude Code 2.1.100 is too old".
+    pub tool_version: Option<String>,
+    /// The saved choice is a program whose consent is not saved and the run did not name it: it was
+    /// not asked to probe (a run touches no program it does not use), so its photos read `checking`
+    /// and the row says what is true instead.
+    pub not_consented: bool,
+}
+
+impl AutoNote {
+    /// The photo's Auto state, with `checking` of an unconsented program read as `not_consented`.
+    fn state(&self, apple: &ym_core::apple_auto::AppleAuto) -> ym_core::apple_auto::AppleAuto {
+        use ym_core::apple_auto::{AppleAuto, UnavailableReason};
+        match apple {
+            AppleAuto::Unavailable {
+                reason: UnavailableReason::Checking,
+            } if self.not_consented => AppleAuto::Unavailable {
+                reason: UnavailableReason::NotConsented,
+            },
+            other => other.clone(),
+        }
+    }
+}
+
+/// What the run knows about its provider for the row.
+fn auto_note(rt: &Runtime) -> AutoNote {
+    let status = rt.auto_status();
+    let chosen = status.chosen;
+    let tool_version = status
+        .provider(chosen)
+        .and_then(|p| p.tool_version.clone());
+    AutoNote {
+        tool_version,
+        not_consented: chosen.is_cloud()
+            && !rt.explicit_choice()
+            && !status.consent.get(chosen),
+    }
 }
 
 /// The session's view of a developed photo with its settings resolved, or why there is none.
@@ -287,6 +340,7 @@ pub fn json_ok(
             obj.insert("auto", Value::Null);
             obj.insert("auto_source", Value::Null);
             obj.insert("apple_auto", Value::Null);
+            obj.insert("auto_advisor", Value::Null);
             obj.insert("settings", Value::Null);
             obj.insert("notes", json!([reason]));
         }
@@ -391,7 +445,11 @@ fn profile_text(camera: &PhotoCamera) -> String {
 }
 
 /// The rows of what the automatic development makes of a photo.
-fn develop_rows(view: &PhotoView, resolved: &ResolvedSettings) -> Vec<(&'static str, String)> {
+fn develop_rows(
+    view: &PhotoView,
+    resolved: &ResolvedSettings,
+    note: &AutoNote,
+) -> Vec<(&'static str, String)> {
     let e = &resolved.estimates;
     vec![
         (
@@ -422,10 +480,15 @@ fn develop_rows(view: &PhotoView, resolved: &ResolvedSettings) -> Vec<(&'static 
                 trim_number(e.tint, 1)
             ),
         ),
-        // What Apple Auto did to the values above (`docs/19` section 8).
+        // What the Auto provider did to the values above (`docs/19` section 8, `docs/22` section 13.4).
         (
-            "Apple Auto",
-            apple_auto_text(&e.apple, view.estimates.apple_steps),
+            "Auto grading",
+            auto_text(
+                &note.state(&e.apple),
+                view.estimates.apple_steps,
+                view.estimates.provider,
+                note.tool_version.as_deref(),
+            ),
         ),
         (
             "Noise model",
@@ -493,6 +556,7 @@ pub fn render_text(
     camera: &PhotoCamera,
     developed: Result<Developed<'_>, &str>,
     auto_crop: Option<&Result<CropSuggestion, String>>,
+    note: &AutoNote,
 ) -> String {
     let mut rows: Vec<(&str, String)> = Vec::new();
 
@@ -630,7 +694,7 @@ pub fn render_text(
     }
 
     match developed {
-        Ok((view, resolved)) => rows.extend(develop_rows(view, resolved)),
+        Ok((view, resolved)) => rows.extend(develop_rows(view, resolved, note)),
         Err(reason) => {
             // ARW 6.0 and unknown layouts already said so above.
             if !matches!(meta.decode, DecodeKind::Arw6 | DecodeKind::Unknown { .. }) {
@@ -830,8 +894,9 @@ mod tests {
                 files: vec![path.clone()],
                 json,
                 profile: None,
+                auto_provider: None,
                 apple_auto: None,
-                apple_auto_instructions: None,
+                auto_instructions: None,
                 suggest_crop: None,
             };
             let mut console = Console::new(true, false, true);
@@ -853,8 +918,9 @@ mod tests {
             files: vec![bad, good.clone()],
             json: false,
             profile: None,
+            auto_provider: None,
             apple_auto: None,
-            apple_auto_instructions: None,
+            auto_instructions: None,
             suggest_crop: None,
         };
         let mut out = Vec::new();

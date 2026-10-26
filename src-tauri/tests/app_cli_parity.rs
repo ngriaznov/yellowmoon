@@ -10,8 +10,9 @@
 //!   (the way `tools/dev/prepare-sidecar.sh` builds the app's sidecar), in a cargo invocation that shares nothing with this
 //!   one. `crates/ym-cli/tests/parity.rs` is the same comparison in one invocation, where both sides get the same features.
 //!
-//! Apple Auto (`docs/19`) is off on both sides: the app's core has no advisor and its mode is off, and `ym` runs with
-//! `--apple-auto off`, so the bytes are today's on every machine, a Mac with Apple Intelligence included.
+//! Auto's providers (`docs/19`, `docs/22`) are off on both sides: the app's core has no advisor and Yellowmoon's own Auto is chosen, and
+//! `ym` runs with `--apple-auto off` (the alias of `--auto-provider yellowmoon`) and no program is looked for, so the bytes are today's on every machine, a Mac with Apple
+//! Intelligence and a computer with Claude Code included.
 //!
 //! Headless: nothing here opens a window (no webview, no display; the Tauri runtime is not started). Without `YM_BIN` the
 //! test says so and passes, unless `YM_REQUIRE_PARITY_BIN` is set (the CI job sets it).
@@ -39,7 +40,7 @@ use std::time::Duration;
 
 use ym_core::app::gpu::{GpuPolicy, GpuSlot, open_gpu};
 use ym_core::app::{Core, CoreOptions};
-use ym_core::apple_auto::AppleAutoMode;
+use ym_core::auto_provider::{AutoChoice, AutoProvider, ProviderAdvisors};
 use ym_core::export_queue::ExportJob;
 use ym_core::scheduler::MemoryBudget;
 use ym_core::session::{ApplyScope, OpenOptions};
@@ -216,9 +217,11 @@ fn export_both(
         .arg("render")
         .arg(arw)
         .args(case.flags)
-        // Apple Auto off on both sides (`docs/19` section 7): today's bytes on every machine, a Mac
-        // with Apple Intelligence included.
+        // Auto's providers off on both sides (`docs/19` section 7, `docs/22` section 13.5): today's bytes on every machine, a Mac
+        // with Apple Intelligence included, and no program is looked for.
         .args(["--apple-auto", "off"])
+        .env("YELLOWMOON_TEST_APPLE_AUTO", "none")
+        .env("YELLOWMOON_TEST_AUTO_PROVIDERS", "none")
         // The CPU reference unless the leg says otherwise (`env` comes after and wins).
         .env("YELLOWMOON_GPU", "off")
         .envs(env.iter().copied())
@@ -270,10 +273,10 @@ fn open_core_on(arw: &Path, method: Method, slot: Option<&GpuSlot>) -> (Core, te
     let mut options = CoreOptions::new(data_dir(), app_home.path().to_path_buf());
     options.thumbnails = false;
     options.render.demosaic = method;
-    // Apple Auto off, as `ym --apple-auto off` (`docs/19` section 7): no advisor, and the mode off
+    // Yellowmoon's own Auto, as `ym --apple-auto off` (`docs/22` section 13.5): no advisor, and that provider chosen
     // should one ever be given here.
-    options.advisor = None;
-    options.apple_auto = AppleAutoMode::Off;
+    options.advisors = ProviderAdvisors::default();
+    options.auto_choice = AutoChoice::Provider(AutoProvider::Yellowmoon);
     let core = Core::open(options).expect("core");
     if let Some(slot) = slot {
         core.attach_gpu(slot);
@@ -394,6 +397,8 @@ fn every_format_is_byte_identical_with_menon_forced_and_the_default_is_the_adapt
             .args(["render"])
             .arg(&arw)
             .args(["--apple-auto", "off"])
+            .env("YELLOWMOON_TEST_APPLE_AUTO", "none")
+            .env("YELLOWMOON_TEST_AUTO_PROVIDERS", "none")
             .args(["--format", "png", "--bits", "16", "--out"])
             .arg(&out)
             .env("YELLOWMOON_GPU", "off")

@@ -8,11 +8,16 @@
 //! | Variable | Meaning |
 //! |---|---|
 //! | `YM_FAKE_SCENARIO` | the behaviour, default `signed_in` |
-//! | `YM_FAKE_RECORD=<folder>` | what the double saw: `argv.txt`, `cwd.txt`, `stdin.bin`, `env.txt`, `files.txt` of the last run, and the same in `run-<n>/` for every run |
+//! | `YM_FAKE_RECORD=<folder>` | what the double saw: `argv.txt` (and `argv.json`), `cwd.txt`, `stdin.bin`, `env.txt`, `files.txt` of the last run, and the same in `run-<n>/` for every run |
 //! | `YM_FAKE_PIDFILE=<file>` | the `slow` scenarios write their own pid and a grandchild's; the grandchild beats in `<file>.beat` |
 //! | `YM_FAKE_VERSION` | replaces the version it prints |
 //! | `YM_FAKE_FAILS=<n>` | the first n requests fail (for the breaker) |
 //! | `YM_FAKE_COUNTER=<folder>` | where requests are counted, for `YM_FAKE_FAILS` and `late_signout` (default: the record folder) |
+//! | `YM_FAKE_DELAY_MS` | a request sleeps this long before it answers |
+//! | `version.txt` | next to the double: its first line is the version it prints (a copy per version) |
+//!
+//! `--ym-fake-raw` as the first argument runs the scenario at once without checking a request
+//! (`slow`, `backpressure`, `huge`, `early_exit`, `crash`): the process runner's tests use it.
 #![allow(dead_code)]
 
 use std::fs;
@@ -33,9 +38,28 @@ pub fn reject(reason: &str) -> ! {
     std::process::exit(99);
 }
 
-/// The version to print: `YM_FAKE_VERSION`, else `default`.
+/// The version to print: `YM_FAKE_VERSION`, else the first line of `version.txt` next to this
+/// executable (so that two copies of the double in two folders can be two versions), else `default`.
 pub fn version(default: &str) -> String {
-    std::env::var("YM_FAKE_VERSION").unwrap_or_else(|_| default.to_owned())
+    if let Ok(v) = std::env::var("YM_FAKE_VERSION") {
+        return v;
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| fs::read_to_string(exe.with_file_name("version.txt")).ok())
+        .and_then(|text| text.lines().next().map(|l| l.trim().to_owned()))
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| default.to_owned())
+}
+
+/// Sleeps for `YM_FAKE_DELAY_MS` milliseconds, when it is set (a request that takes time).
+pub fn delay() {
+    if let Some(ms) = std::env::var("YM_FAKE_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        std::thread::sleep(Duration::from_millis(ms));
+    }
 }
 
 /// Blocks for ever (a probe that never ends).
@@ -123,6 +147,11 @@ impl Recorder {
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         recorder.write("argv.txt", args.join("\n").as_bytes());
+        // An argument may hold a line break (agy's prompt): the same list as a JSON array is exact.
+        recorder.write(
+            "argv.json",
+            serde_json::to_string(&args).unwrap_or_default().as_bytes(),
+        );
         let cwd = std::env::current_dir().unwrap_or_default();
         recorder.write("cwd.txt", cwd.to_string_lossy().as_bytes());
         let mut names: Vec<String> = fs::read_dir(&cwd)
@@ -150,8 +179,8 @@ impl Recorder {
         ] {
             env.push_str(&format!("{name}={}\n", var(name)));
         }
-        let remote = std::env::vars_os()
-            .any(|(k, _)| k.to_string_lossy().starts_with("CLAUDE_CODE_REMOTE"));
+        let remote =
+            std::env::vars_os().any(|(k, _)| k.to_string_lossy().starts_with("CLAUDE_CODE_REMOTE"));
         env.push_str(&format!(
             "CLAUDE_CODE_REMOTE*={}\n",
             if remote { "set" } else { "unset" }
@@ -218,15 +247,41 @@ pub fn slow() -> ! {
             .arg(&beat)
             .spawn();
         let grandchild = child.as_ref().map(std::process::Child::id).unwrap_or(0);
-        let _ = fs::write(
-            &pidfile,
-            format!("{}\n{grandchild}\n", std::process::id()),
-        );
+        let _ = fs::write(&pidfile, format!("{}\n{grandchild}\n", std::process::id()));
         // The grandchild is left running: it is the process group's to end.
         std::mem::forget(child);
     }
     std::thread::sleep(Duration::from_secs(600));
     std::process::exit(0)
+}
+
+/// The argument of the raw mode: the scenario's behaviour at once, with no check of the request. The
+/// tests of the process runner use it to start the behaviours (`slow`, `backpressure`, `huge`,
+/// `early_exit`) without making a valid request.
+pub const RAW_ARG: &str = "--ym-fake-raw";
+
+/// Runs the raw mode when the first argument asks for it; does not return in that case.
+pub fn maybe_raw(recorder: &Recorder, scenario: &str) {
+    if std::env::args().nth(1).as_deref() != Some(RAW_ARG) {
+        return;
+    }
+    match scenario {
+        "slow" => slow(),
+        "backpressure" => {
+            flood(2);
+            let stdin = read_stdin();
+            recorder.write("stdin.len", stdin.len().to_string().as_bytes());
+            out(b"done\n");
+        }
+        "huge" => flood(6),
+        "early_exit" => {}
+        "crash" => {
+            eprintln!("fatal: key sk-ant-FAKE0123456789 was rejected");
+            std::process::exit(3);
+        }
+        _ => out(b"raw ok\n"),
+    }
+    std::process::exit(0);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -284,7 +339,10 @@ fn count_scans(bytes: &[u8]) -> usize {
             // The entropy-coded data follows; skip to the next marker that is not a stuffed byte or a restart.
             at += 2 + len;
             while at + 1 < bytes.len() {
-                if bytes[at] == 0xFF && bytes[at + 1] != 0 && !(0xD0..=0xD7).contains(&bytes[at + 1]) {
+                if bytes[at] == 0xFF
+                    && bytes[at + 1] != 0
+                    && !(0xD0..=0xD7).contains(&bytes[at + 1])
+                {
                     break;
                 }
                 at += 1;
@@ -393,7 +451,9 @@ pub fn flood(megabytes: usize) {
 
 /// The text after `flag` in `args`, when `flag` is there.
 pub fn value_of<'a>(args: &'a [String], flag: &str) -> Option<&'a String> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1))
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
 }
 
 /// Whether `flag` is in `args`.
@@ -417,7 +477,8 @@ pub fn check_schema(schema_text: &str) {
         reject("the schema's root is not an object");
     }
     let required = schema.get("required").and_then(Value::as_array);
-    let has_both = required.is_some_and(|r| r.contains(&json!("scene")) && r.contains(&json!("plan")));
+    let has_both =
+        required.is_some_and(|r| r.contains(&json!("scene")) && r.contains(&json!("plan")));
     if !has_both {
         reject("the schema does not require scene and plan");
     }

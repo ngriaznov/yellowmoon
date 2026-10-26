@@ -390,7 +390,7 @@ export const STATES: readonly PageState[] = [
       const select = p.getByRole("combobox", { name: "Auto grading" });
       await expect(select).toHaveText("Claude Code");
       await select.click();
-      await expect(p.getByRole("option", { name: "Antigravity (agy) Experimental, not signed in" })).toBeVisible();
+      await expect(p.getByRole("option", { name: "Antigravity (agy), experimental, not signed in" })).toBeVisible();
       await p.waitForTimeout(400);
     },
   ],

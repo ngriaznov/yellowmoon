@@ -10,9 +10,6 @@ use std::time::{Duration, Instant};
 /// Called when the cached reading changes (the same type as `ym_core::auto_provider::ChangeListener`).
 pub type Listener = Arc<dyn Fn() + Send + Sync>;
 
-/// The minimum time between two probes started by `refresh` (`docs/22` section 3.3).
-pub const MIN_INTERVAL: Duration = Duration::from_secs(5);
-
 /// How much a probe asks of the program. `agy`'s sign-in check is the only probe known to make its
 /// program contact a network, so the start-up probe is [`Level::Light`] (up to its version) and only a
 /// [`Level::Full`] one, asked for by `refresh`, runs the sign-in check (`docs/22` D7).
@@ -88,6 +85,7 @@ impl<T: Clone + PartialEq + Send + 'static> Prober<T> {
 
     /// Whether a probe runs now.
     #[must_use]
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     pub fn is_running(&self) -> bool {
         lock(&self.shared.state).running.is_some()
     }
@@ -148,7 +146,8 @@ impl<T: Clone + PartialEq + Send + 'static> Prober<T> {
         true
     }
 
-    /// The probe thread: runs `first`, then a full probe that was queued behind it.
+    /// The probe thread: runs `first`, then a full probe that was queued behind it. The listeners hear
+    /// of a change before `settle` returns, so a caller that settled reads what they read.
     fn work(&self, level: Level, first: Job<T>) {
         let mut job = Some((level, first));
         while let Some((level, probe)) = job.take() {
@@ -170,20 +169,23 @@ impl<T: Clone + PartialEq + Send + 'static> Prober<T> {
                 if level == Level::Full {
                     state.last_end = Some(Instant::now());
                 }
-                match state.pending.take() {
-                    Some(next) => job = Some((Level::Full, next)),
-                    None => state.running = None,
-                }
-                if matches!(job, Some((l, _)) if l == Level::Full) {
-                    state.running = Some(Level::Full);
-                }
                 changed
             };
-            if job.is_none() {
-                self.shared.idle.notify_all();
-            }
             if changed {
                 self.notify();
+            }
+            {
+                let mut state = lock(&self.shared.state);
+                match state.pending.take() {
+                    Some(next) => {
+                        job = Some((Level::Full, next));
+                        state.running = Some(Level::Full);
+                    }
+                    None => state.running = None,
+                }
+            }
+            if job.is_none() {
+                self.shared.idle.notify_all();
             }
         }
     }

@@ -82,8 +82,9 @@ export type PhotoStatus =
   | { kind: "skipped"; reason: string };
 
 /**
- * Stages of the background job that develops a freshly opened photo (`docs/01` §Session), and `apple`: Apple Auto's answer (`docs/19`
- * section 6), started while the photo waits for it and done when it arrived, failed or Apple Auto stopped acting on the photo. The
+ * Stages of the background job that develops a freshly opened photo (`docs/01` §Session), and `apple`: the answer of the provider that
+ * grades (Apple Intelligence, Claude Code or Antigravity; `docs/19` section 6, the name kept, `docs/22` D3), started while the photo
+ * waits for it and done when it arrived, failed or the provider stopped acting on the photo. The
  * photo is ready (it can be edited) before `apple` is done; that stage changes `PhotoSummary.apple_pending`, never the status.
  */
 export type PhotoStage = "probe" | "decode" | "estimate" | "thumbnail" | "apple";
@@ -552,10 +553,11 @@ export interface AppleAutoAnswer {
 }
 
 /**
- * Where a photo stands with Apple Auto (`docs/19` sections 6 and 12). `off`: the preference is off, or the app has no advisor (the
- * browser build); `unavailable`: not on this computer; `pending`: asked, or waiting for its turn (Auto is the rule until the answer);
- * `answered`; `failed` (Auto is the rule). The Automatic card shows its Contrast and Saturation rows and its line while the state is
- * `pending`, `answered` or `failed`.
+ * Where a photo stands with the provider that grades it (`docs/19` sections 6 and 12, `docs/22` section 10.4). `off`: Yellowmoon's own
+ * Auto is chosen, or the app has no advisor (the browser build); `unavailable`: the chosen provider cannot answer (`reason`; a program
+ * the person has not agreed to is `not_consented`); `pending`: asked, or waiting for its turn (Auto is the rule until the answer);
+ * `answered` (`info.provider` says who); `failed` (Auto is the rule). The Automatic card shows its rows and its line while the state is
+ * `pending`, `answered` or `failed`, and a line for a program that was chosen and `unavailable`.
  */
 export type AppleAuto =
   | { state: "off" }
@@ -645,6 +647,11 @@ export interface AutoEstimates {
   balance_highlights: ColorBalancePoint;
   /** Which Auto made these values. */
   source: AutoSource;
+  /**
+   * The provider `apple` and `apple_steps` belong to (`docs/22` section 14.1): the chosen provider while it acts or is asked about (so
+   * the card can name it while the photo is `pending` or `unavailable`), `yellowmoon` while the state is `off`.
+   */
+  provider: AutoProvider;
   /** Where the photo stands with Apple Auto. */
   apple: AppleAuto;
   /** Apple Auto's steps in effect (the photo's answer, or its burst's), null when Auto is the rule. */

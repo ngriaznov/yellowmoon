@@ -10,11 +10,21 @@ Arguments:
   <FILES>...  ARW files to inspect
 
 Options:
-      --json                            Print one JSON object per file instead of text (the shape of `render --json` without `output` and `timings_ms`)
-  -q, --quiet                           Print only errors on stderr
-      --profile <ID>                    Force a camera profile, for comparisons (for example `sony-ilce-7rm4`)
-  -v, --verbose                         Print what is happening on stderr: stages, timings and notes
-      --apple-auto <on|off>             Apple Auto for this run. On a Mac with Apple Intelligence, Apple's on-device model grades each photo: it sets the automatic exposure, highlights, shadows, black, contrast, warmth, tint and saturation and the colours of the shadows and highlights. Default: the app's setting where Apple Auto is available, off elsewhere
-      --apple-auto-instructions <FILE>  A text file with instructions for Apple's model, used for this run instead of those in Preferences (at most 2000 characters; an empty file is the default instructions)
-      --suggest-crop[=<ASPECT>]         Also print Auto crop's proposal: the straighten angle and the frame for an aspect (original, free, 1:1, 4:5 or 16:9; original when none is given), for the photo as the camera turned it
-  -h, --help                            Print help
+      --json
+          Print one JSON object per file instead of text (the shape of `render --json` without `output` and `timings_ms`)
+  -q, --quiet
+          Print only errors on stderr
+      --profile <ID>
+          Force a camera profile, for comparisons (for example `sony-ilce-7rm4`)
+  -v, --verbose
+          Print what is happening on stderr: stages, timings and notes
+      --auto-provider <yellowmoon|apple|claude|agy>
+          Who grades each photo's Auto for this run: yellowmoon (Yellowmoon's own Auto), apple (Apple Intelligence), claude (Claude Code) or agy (Antigravity). Default: the app's setting. Naming claude or agy is your consent for this run: ym sends a 768 px picture of each photo and the instructions to that service, through the program installed on this computer. Answers from Claude Code and Antigravity can differ from run to run
+      --apple-auto <on|off>
+          The old name of --auto-provider: on is apple, off is yellowmoon. Not with --auto-provider
+      --auto-instructions <FILE>
+          A text file with instructions for the model, used for this run instead of those in Preferences (at most 2000 characters; an empty file is the default instructions). Also called --apple-auto-instructions
+      --suggest-crop[=<ASPECT>]
+          Also print Auto crop's proposal: the straighten angle and the frame for an aspect (original, free, 1:1, 4:5 or 16:9; original when none is given), for the photo as the camera turned it
+  -h, --help
+          Print help

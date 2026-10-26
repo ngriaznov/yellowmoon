@@ -84,7 +84,8 @@ pub struct AppConfig {
 /// asks for the status.
 fn system_advisors() -> ProviderAdvisors {
     use ym_core::auto_provider::AutoProvider;
-    let mut advisors = ProviderAdvisors::default().with(AutoProvider::Apple, ym_apple::system_advisor());
+    let mut advisors =
+        ProviderAdvisors::default().with(AutoProvider::Apple, ym_apple::system_advisor());
     for (provider, advisor) in ym_agents::system_advisors(ym_agents::StartProbe::Now) {
         advisors = advisors.with(provider, advisor);
     }

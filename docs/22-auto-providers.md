@@ -197,7 +197,7 @@ The wording is fixed here (`ym_core::auto_provider::unavailable_hint`, `unavaila
 
 `ym_agents::process::run(RunSpec) -> RunOutput` is the one place that starts a child. A `RunSpec` has the program, the arguments, the environment changes, the working folder, the bytes for stdin, the time limit, the caps and a cancel token.
 
-- **Start.** `process_wrap::std::CommandWrap` over `std::process::Command` with stdin, stdout and stderr piped, wrapped in `ProcessGroup::leader()` on Unix and `JobObject` plus `CreationFlags(CREATE_NO_WINDOW = 0x0800_0000)` on Windows (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so the tree dies when the job handle closes), and `KillOnDrop` (on Windows add `CreationFlags` before `JobObject`, so the job object's own start flag is not overwritten; check the order the crate's documentation gives for the version in use). A program that cannot be started is `SpawnFailed(error)`. The probes and the shell lookup go through the same function.
+- **Start.** `process_wrap::std::CommandWrap` over `std::process::Command` with stdin, stdout and stderr piped, wrapped in `ProcessGroup::leader()` on Unix and `JobObject` plus `CreationFlags(CREATE_NO_WINDOW)` on Windows, and a guard of our own that kills the tree when it is dropped (*As built*, 15.7: the standard-library API of `process-wrap` 10 has no `KillOnDrop` and its `JobObject` does not set `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; `CreationFlags` and `JobObject` may be added in either order, the crate merges their flags). A program that cannot be started is `SpawnFailed(error)`. The probes and the shell lookup go through the same function.
 - **Arguments.** The picture and the instructions never travel in arguments (Windows allows about 32 K characters), except that `agy`'s prompt (at most about 6 KB) does, as its flag requires. Claude Code's schema (under 4 KB) is one argument. Arguments are passed as separate `OsString`s, never through a shell.
 - **Environment.** Inherited, then for **every** child (probes included): `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `DISABLE_TELEMETRY=1`, `DISABLE_ERROR_REPORTING=1`, `DISABLE_AUTOUPDATER=1` (the last three for versions that predate the first), and `NO_COLOR=1`; and removed: `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION` and every variable starting `CLAUDE_CODE_REMOTE`, which describe a parent Claude Code session when `ym` runs inside one (the list is unverified, section 19). For `agy` only the `NO_COLOR` change applies: no telemetry switch is documented for it. Nothing else is added, and nothing is printed.
 - **Working folder.** `tempfile::TempDir::with_prefix("ym-auto-")` in `std::env::temp_dir()` (mode 0700 on Unix, the user's own on Windows, D11), made per request. It holds `cwd/` (the working folder; empty for Claude Code, only `photo.jpg` for `agy`) and `in/` (`instructions.txt` for Claude Code, `schema.json` for `agy`), so that the working folder holds nothing the program does not need. Probes use an empty `cwd/` of their own. The folder is deleted when the request ends, on every path including a panic (the `TempDir` drops).
@@ -670,6 +670,18 @@ Switching provider keeps the text and the saved instructions; it asks nothing ag
 
 `src/screens/AppleAuto.test.tsx` (extended) and a new `src/screens/AutoProviders.test.tsx`: the row hidden with no provider and shown with any; the list in order with Apple only when available; disabled entries with their tags and the notes under the row; Antigravity's badge and note; the hint of each provider; choosing a provider without consent opens the dialog and changes nothing until **Use …**, which sends one patch; Cancel and Esc keep the previous value; the saved-choice note; the instructions' label and hint per provider; the Automatic card's and the Start screen's lines per provider. `e2e/auto-providers.spec.ts`: the same flow in a browser with `mockProviders`; `e2e/a11y.spec.ts`: names of the select, its entries (`Claude Code, not signed in`), the notes and the dialog's buttons; the glass audit gets two states, **Preferences with every provider listed** (a `Select` open, Claude Code available, Antigravity signed out) and **the consent dialog**. The shell: `src-tauri/src/api/tests.rs` (`auto_status_*` with scripted advisors, the patch refusal, `auto_status_changed`) and `commands.rs` (the wire shapes).
 
+### 12.10 As built (lane C)
+
+The app and the frontend follow sections 12.1 to 12.9. Where the text was silent or the code needed something it does not name, this is what was done:
+
+- **The operating system.** `app_info()` gains `os` (`std::env::consts::OS`: `macos`, `windows`, `linux`; `AppInfo::os` in `wire.rs`, `AppInfo.os` in `types.ts`), because 12.3 says the webview knows the platform from `app_info` and the command named none. The store asks for it when Preferences opens (`state.os`); the mock says `macos` or `?mockOs=windows|linux`. It words "a terminal window" in the hints (3.4) and adds the Windows sentence to the consent text (D11).
+- **When the webview asks again.** `auto_status()` makes the core refresh every advisor, and `agy`'s sign-in check contacts its service (3.3, D7). So the store asks when Preferences opens and after a change of the choice, the consent or the instructions, but on `auto_status_changed` only while Preferences is open. Nothing else needs the whole status: the card names the provider by the photo's own `estimates.provider` (14.1; the wire's `AutoEstimates` carries it, the mirror test of `src-tauri` requires it) and `estimates.apple`, and the Start screen, which has no estimates yet, reads the saved choice (`preferences.auto_provider`), which is the provider that waits while a photo is `pending` (only an acting provider is waited for).
+- **The wire of the answer's info.** The core writes what a program says about itself as `tool: { version, api, auth }` (11, `AdvisorInfo`); the webview reads the flat `tool_version` and `api` of 12.6. The wire type `AppleAutoInfo` therefore reads either shape (a manual `Deserialize` in `wire.rs`, the `Serialize` is flat), tested in `src-tauri/src/api/tests.rs`. `AutoSource` on the wire has the four values of 14.1. `AutoConsent` on the wire has both fields required (no `#[serde(default)]`: the core always writes both and the webview always sends both).
+- **The shell and quitting.** `Core::shutdown` already calls `cancel_auto`, so the app's quit path (`AppApi::shutdown` on `RunEvent::Exit`) kills the programs without a call of its own. `AppConfig::advisors` is built by `system_advisors()` in `api.rs`: Apple's advisor, then `ym_agents::system_advisors(StartProbe::Now)`.
+- **The dropdown.** The `Select` shows `auto_status().effective`; choosing the value it already shows does nothing (Radix sends no change), so a person whose saved program is not available cannot "choose" Yellowmoon's own Auto to clear the saved-choice note: they choose another provider and back. Each entry has an `aria-label` that says why it is disabled ("Claude Code, not signed in"; Antigravity's is "Antigravity (agy), experimental"). The trigger, 220 px wide, writes Antigravity as "Antigravity" with a small Experimental badge: the full name and badge are cut off there (the list has both in full). The consent dialog is mounted by `Overlays` beside Preferences, not inside it; the focus goes back to the dropdown when it closes.
+- **The mock.** `MockOptions.providers` is `null` by default and then derived from `appleAuto` (so every screen and test of Apple Intelligence is unchanged); `mockProviders` names the computer and the mode of `appleAuto` then plays the photos of the provider that acts, `answered` when it says `none` or `unavailable`. A chosen provider that is not in `mockProviders` is `unavailable` with the reason `not_installed`, which the card names for a program ("Antigravity isn't available right now, …", 12.5) and not for Apple. The mock keeps no per-provider answers: a switch gives every photo the new provider's answer at once.
+- **Screenshots.** The two new states are in `design/screenshots-c2/` as `photos-preferences-providers.png` and `photos-preferences-consent.png`, and in the glass audit as `40-dialog-preferences-providers` and `41-dialog-consent`.
+
 ## 13. `ym`
 
 ### 13.1 Options
@@ -793,7 +805,8 @@ crates/ym-agents/
   src/tool.rs       Tool { Claude, Agy }: names, minimum versions, constants
   src/discovery.rs  section 4
   src/process.rs    section 5
-  src/probe.rs      the cache and single-flight probe, refresh/settle/on_change, details()
+  src/probe.rs      the cache and single-flight probe, refresh/settle/on_change
+  src/advisor.rs    what the two advisors share: the reading, the probes of both programs, details(), the skeleton of a request
   src/breaker.rs    9.2
   src/jpeg.rs       6.1
   src/schema.rs     6.2 and 6.3
@@ -803,7 +816,7 @@ crates/ym-agents/
   src/testing.rs    (test-support) fake_cli_path(Tool), scenario helpers
   src/fakes.rs      shared by the two test doubles (#[path] include)
   src/bin/ym-fake-claude.rs, src/bin/ym-fake-agy.rs      the test doubles, 15.2
-  tests/            discovery.rs, process.rs, claude.rs, agy.rs, schema.rs, breaker.rs, probe.rs, no_network.rs
+  tests/            discovery.rs, process.rs, process_env.rs, claude.rs, agy.rs, schema.rs, jpeg.rs, breaker.rs, probe.rs, env_hook.rs, doubles.rs, no_network.rs
 ```
 
 Public API (fixed between the lanes, section 18):
@@ -828,13 +841,15 @@ Everything else is private. No `unwrap` or `expect` in library code outside test
 | Crate | Use | Licence | Notes |
 |---|---|---|---|
 | `which` 8 | `PATH` and `PATHEXT` lookup (`which_global`) | MIT | new (4.4.2 is in the lock as a build tool only) |
-| `process-wrap` 10, `default-features = false`, features `std`, `process-group`, `job-object`, `kill-on-drop`, `creation-flags` | process group, job object, kill on drop, `CREATE_NO_WINDOW` | Apache-2.0 OR MIT | new; the feature names are those of crates.io's 10.0.1, check them when adding |
+| `process-wrap` 10, `default-features = false`, features `std`, `process-group`, `job-object`, `creation-flags` | process group, job object, `CREATE_NO_WINDOW` | Apache-2.0 OR MIT | new (10.0.1). Its `kill-on-drop` feature is for Tokio only and is not enabled |
+| `windows` 0.62, Windows only, `default-features = false`, feature `Win32_System_Threading` | the `CREATE_NO_WINDOW` constant that `CreationFlags` takes | MIT OR Apache-2.0 | already in the lock (process-wrap, Tauri) |
+| `zune-jpeg` 0.5 | the test doubles decode the picture they are given | MIT OR Apache-2.0 OR Zlib | also a dev-dependency of `ym-export` and `ym-color`; nothing in the library uses it |
 | `tempfile` 3 | the private temp folders | MIT OR Apache-2.0 | workspace dependency |
 | `jsonschema` 0.58, `default-features = false` | the answer's validation | MIT | add to `[workspace.dependencies]` (ym-core and ym-profiles name it themselves today); **no default features** (they pull an HTTP client) |
 | `jpeg-encoder` 0.7 | the picture | (MIT OR Apache-2.0) AND IJG | workspace dependency, allowed in `deny.toml`; the IJG sentence is already in `NOTICE` |
 | `base64` 0.22 | the image block | MIT OR Apache-2.0 | already in the lock |
 | `semver` (workspace), `serde`, `serde_json`, `thiserror`, `tracing`, `sha2`/`hex` if needed | | MIT/Apache-2.0 | workspace |
-| dev: `zune-jpeg` 0.5, `assert_cmd`, `insta` (workspace) | tests | MIT/Apache-2.0 | |
+| dev: nothing but this crate itself with `test-support` (*As built*, 15.7) | tests | | |
 
 `cargo deny check` passes with `deny.toml` as it is (all licences are already allowed); no change expected. `docs/14` gets the rows of 15.6.
 
@@ -903,6 +918,25 @@ A new workflow `.github/workflows/agents.yml` (on pushes to `main` and on pull r
 | Claude Code (`claude`) | Anthropic's legal agreements; all rights reserved | **not shipped, not linked, not modified**: Yellowmoon starts the person's own copy (`docs/22`). The name is used in plain text to say what runs. |
 | Antigravity CLI (`agy`) | Google Antigravity Additional Terms of Service; closed source | **not shipped, not linked, not modified**: Yellowmoon starts the person's own copy, marked Experimental (`docs/22`). |
 | `which`, `process-wrap`, `base64` | MIT / Apache-2.0 | dependencies of `ym-agents` |
+
+### 15.7 As built (lane A, 2026-10-26)
+
+What the crate does where this file left a choice or turned out different. Each is a decision, not a deviation from a test of section 16.
+
+- **Process handling.** `process-wrap` 10's standard-library API has no `KillOnDrop` (it is Tokio's) and its `JobObject` sets no `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. `process::run` therefore owns the child in a guard that kills the group or the job and reaps it on every way out, a panic included; a Windows `ym` that is killed abruptly (not by Ctrl-C, which cancels) leaves the child to its own time limit. `ProcessGroupChild::try_wait` waits for the whole group, so the loop polls the native child and, once it has exited, kills what it left behind before reaping. Windows needs the `windows` crate (type of `CreationFlags`); `CreationFlags` and `JobObject` may be wrapped in either order.
+- **A program that is being written.** `process::run` tries a program again for up to half a second when starting it fails with "text file busy" (`ETXTBSY`): the program's own updater may be replacing the file, and a test that copies a double and starts it at once meets it whenever another thread forks in between.
+- **Temporary folders.** `tempfile` makes a folder with the process's umask, not 0700; `Workdir` sets mode 0700 on the folder and on `cwd/` and `in/` itself (a unit test reads the modes back).
+- **Cancelling.** A request that is cancelled returns `Err(AdvisorError { kind: Other, message: "the request was cancelled" })` and changes nothing in the breaker. The core drops it (every cancel is followed by a session or instructions change).
+- **The breaker.** `Other` and `Unavailable` failures (our own: a temp folder that cannot be made, no program path) change nothing; `AutoAdvisor::details().breaker` is `Some` from the opening until a request that goes through closes the breaker, also after the 60 s.
+- **Probes.** The start-up probe of `agy` does not count toward the 5 s minimum interval, and a full probe asked for while it runs follows it at once, so `auto_status()` right after the start still runs the sign-in check. A change is announced to the listeners **before** `settle` returns. `ClaudeAdvisor::start()` / `AgyAdvisor::start()` (hidden) start the first probe of `StartProbe::Now`; `system_advisors` sweeps stale `ym-auto-*` folders for both values of it.
+- **Discovery.** `$SHELL` must be an absolute path whose file name is one of the six; on Windows only a file with the extension `.exe` is started, anything else is a script (resolved for the npm layout, else dropped); `with_program` / `exec:` still run `--version` on the program and judge it as `locate` does, a path that is not a file is `not_installed`; the first `PATH` match is the one used (the other matches are not tried).
+- **Claude Code's answer.** `api_retry` events decide only when `is_error` is true (a retry that worked is not a failure); the cached `info.model` is the alias until `served_model` says otherwise. A request line that is not valid is the doubles' business (exit 99), never the advisor's: the advisor builds the line by hand so its key order is the spec's.
+- **Schema.** The compiled validator is built once per process, not per advisor (it holds no state). The text is built by hand from `schema::FIELDS`; `tests/schema.rs` compares the cases and guides with the Swift source and with the table of 6.2.
+- **Redaction** works on words (letters, digits, `-_.+=`): a word that starts with `sk-`, `AIza` or `ya29.`, the word after `Bearer`, and any run of 40 or more letters, digits, `-` and `_` become `…`; paths and sentences survive.
+- **Test hook.** An empty `YELLOWMOON_TEST_AUTO_PROVIDERS` counts as unset. `claude=available` and the other states give `FakeProvider`s whose `details().tool_version` is `0.0.0-test` (not `not_installed`).
+- **Tests reach the internals.** The modules are private; with the feature `test-support` they are public and hidden from the documentation, and the crate has itself as a dev-dependency with that feature, so a plain `cargo test -p ym-agents` runs every test. `Tuning` (time limits, breaker, scenario variables for a double, the temporary folder, model and effort) and `ClaudeAdvisor::custom` / `AgyAdvisor::custom` (hidden) are how a test changes them; no test sets an environment variable except `env_hook.rs` and `process_env.rs`, which are single-test files.
+- **The doubles** (`src/fakes.rs`) write each invocation to `YM_FAKE_RECORD/run-NNNN/` as well as to the top level (the last run wins there); `argv.json` is the exact argument list (an `agy` prompt holds line breaks, `argv.txt` does not survive them). More variables and scenarios than 15.2 lists: `YM_FAKE_DELAY_MS`, `YM_FAKE_COUNTER` (default: the record folder; where requests are counted for `YM_FAKE_FAILS` and `late_signout`), `YM_FAKE_API_PROVIDER` and `YM_FAKE_AUTH_METHOD` (what `auth status` says), `version.txt` next to a copy of a double (its version, so two folders can hold two versions), the scenarios `extra_keys`, `signin_hang` (the sign-in check hangs, `--version` does not), `early_exit`, and the first argument `--ym-fake-raw`, which runs a scenario without checking a request (the runner's tests). On Windows `env.txt` also has `CONSOLE_PROCESSES=<n>`, which the Windows test reads to see that `CREATE_NO_WINDOW` gave the child a console of its own.
+- **CI.** All three steps are required on all three systems. `cargo check --target x86_64-pc-windows-msvc` passes for `ym-agents` (library, doubles and tests, clippy with `-D warnings`) and for `ym-cli`, so the render stack type-checks on Windows; no Windows runner has run the steps yet. If `ym-cli`'s tests fail on Windows for a reason outside this feature, 15.4's fallback applies.
 
 ## 16. Tests and checks
 

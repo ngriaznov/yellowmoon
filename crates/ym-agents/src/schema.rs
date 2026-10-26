@@ -282,10 +282,10 @@ pub fn parse_answer(output: &Value) -> Result<Parsed, String> {
 
     let mut kept = Map::new();
     for field in &FIELDS {
-        if let Some(value) = object.get(field.json) {
-            if !value.is_null() {
-                kept.insert(field.json.to_owned(), value.clone());
-            }
+        if let Some(value) = object.get(field.json)
+            && !value.is_null()
+        {
+            kept.insert(field.json.to_owned(), value.clone());
         }
     }
     let kept = Value::Object(kept);
@@ -411,6 +411,29 @@ mod tests {
             let error = parse_answer(&bad).unwrap_err();
             assert!(!error.is_empty() && error.chars().count() <= 300, "{bad}: {error}");
         }
+    }
+
+    #[test]
+    fn a_strength_without_a_colour_is_ignored_by_the_checked_answer() {
+        use ym_core::apple_auto::AdvisorAnswer;
+        let answer = json!({
+            "scene": format!("{}x", "s".repeat(200)), "plan": "p", "exposure": "keep",
+            "shadowColour": "none", "shadowColourStrength": "strong",
+            "highlightColourStrength": "subtle"
+        });
+        let parsed = parse_answer(&answer).unwrap();
+        assert_eq!(parsed.steps.shadow_color_strength, Some(3));
+        let checked = AdvisorAnswer {
+            steps: parsed.steps,
+            scene: parsed.scene,
+            plan: parsed.plan,
+            served_model: None,
+        }
+        .checked()
+        .unwrap();
+        assert_eq!(checked.steps.shadow_color_strength, None);
+        assert_eq!(checked.steps.highlight_color_strength, None);
+        assert_eq!(checked.scene.chars().count(), 80, "scene is cut to 80 characters");
     }
 
     #[test]

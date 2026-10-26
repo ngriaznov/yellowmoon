@@ -1,7 +1,7 @@
 //! Auto providers that run the person's own Claude Code (`claude`) and Antigravity (`agy`) programs
 //! (`docs/22-auto-providers.md`).
 //!
-//! [`system_advisors`] gives the app and `ym` the two [`AutoAdvisor`]s of this computer: [`ClaudeAdvisor`]
+//! [`system_advisors`] gives the app and `ym` the two [`AutoAdvisor`](ym_core::apple_auto::AutoAdvisor)s of this computer: [`ClaudeAdvisor`]
 //! and [`AgyAdvisor`]. Each starts the person's own program as a child process, hands it a 768 px picture
 //! of the photo and the instructions, and reads its answer; the program talks to its own service. This
 //! crate opens no network connection, uses no HTTP client (`tests/no_network.rs` checks its
@@ -43,6 +43,3 @@ pub use agy::AgyAdvisor;
 pub use claude::ClaudeAdvisor;
 pub use system::{StartProbe, TEST_PROVIDERS_ENV, system_advisors};
 pub use tool::Tool;
-
-#[allow(unused_imports)]
-use ym_core::apple_auto::AutoAdvisor;

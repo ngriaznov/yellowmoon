@@ -43,6 +43,12 @@ const MOCKUP_SETTINGS: MockOptions["initialSettings"] = {
   },
 };
 
+/** Waits until the dialogs and the list have finished opening: a busy machine stretches their 300 ms, and a picture taken in the middle differs. */
+async function dialogsSettled(page: Page): Promise<void> {
+  await page.waitForTimeout(200);
+  await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== "running"));
+}
+
 test.describe("Start", () => {
   test("idle (start-idle.png)", async ({ page }) => {
     await openApp(page, { mockLooks: 0 });
@@ -192,6 +198,33 @@ test.describe("Photos", () => {
     });
     await expect(page.locator(".ym-filmstrip__thumb img")).toHaveCount(12);
     await compareScreen(page, "photos-look-apple-auto");
+  });
+
+  test("Preferences with every provider listed and the list open (photos-preferences-providers.png)", async ({ page }) => {
+    // docs/22 section 12.9, not in the mockup: a computer with Apple Intelligence and Claude Code available and Antigravity installed but
+    // signed out, Claude Code the saved choice, the Auto grading list open: the disabled entry with its Experimental badge and its tag,
+    // the note under the row and the instructions for Claude Code.
+    await openApp(page, { ...MOCKUP, mockProviders: "apple,claude,agy:signed_out", mockAutoProvider: "claude", mockConsent: "claude", mockAppleAuto: "answered" });
+    await openPhotos(page);
+    await showUpdateReady(page);
+    await page.keyboard.press("Meta+,");
+    await page.getByRole("combobox", { name: "Auto grading" }).click();
+    await expect(page.getByRole("option", { name: "Antigravity (agy), experimental, not signed in" })).toBeVisible();
+    await dialogsSettled(page);
+    await compareScreen(page, "photos-preferences-providers");
+  });
+
+  test("the consent dialog over Preferences (photos-preferences-consent.png)", async ({ page }) => {
+    // docs/22 section 12.3: Claude Code chosen for the first time, the question over Preferences with Cancel in focus.
+    await openApp(page, { ...MOCKUP, mockProviders: "apple,claude,agy:signed_out", mockAppleAuto: "answered" });
+    await openPhotos(page);
+    await showUpdateReady(page);
+    await page.keyboard.press("Meta+,");
+    await page.getByRole("combobox", { name: "Auto grading" }).click();
+    await page.getByRole("option", { name: "Claude Code" }).click();
+    await expect(page.getByRole("dialog", { name: "Send photos to Claude Code?" })).toBeVisible();
+    await dialogsSettled(page);
+    await compareScreen(page, "photos-preferences-consent");
   });
 
   test("Look: search \"film\" (photos-look-search.png)", async ({ page }) => {

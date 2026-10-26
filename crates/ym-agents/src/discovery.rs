@@ -189,17 +189,17 @@ pub fn resolve_launcher(tool: Tool, candidate: &Path) -> Launcher {
     if is_exe {
         return Launcher::Program(candidate.to_path_buf());
     }
-    if tool == Tool::Claude {
-        if let Some(dir) = candidate.parent() {
-            let real = dir
-                .join("node_modules")
-                .join("@anthropic-ai")
-                .join("claude-code")
-                .join("bin")
-                .join("claude.exe");
-            if real.is_file() {
-                return Launcher::Program(real);
-            }
+    if tool == Tool::Claude
+        && let Some(dir) = candidate.parent()
+    {
+        let real = dir
+            .join("node_modules")
+            .join("@anthropic-ai")
+            .join("claude-code")
+            .join("bin")
+            .join("claude.exe");
+        if real.is_file() {
+            return Launcher::Program(real);
         }
     }
     Launcher::Script
@@ -231,7 +231,7 @@ impl Tally {
 /// known folders and `PATH` gave no usable program.
 #[must_use]
 pub fn locate(tool: Tool, loc: &Locations, tuning: &Tuning) -> Discovery {
-    let Ok(workdir) = Workdir::new() else {
+    let Ok(workdir) = tuning.workdir() else {
         return Discovery::ProbeFailed {
             path: PathBuf::new(),
         };
@@ -273,7 +273,7 @@ pub fn check_program(tool: Tool, program: &Path, tuning: &Tuning) -> Discovery {
     if !program.is_file() {
         return Discovery::NotInstalled;
     }
-    let Ok(workdir) = Workdir::new() else {
+    let Ok(workdir) = tuning.workdir() else {
         return Discovery::ProbeFailed {
             path: program.to_path_buf(),
         };

@@ -1,0 +1,83 @@
+# Auto providers: the crate that starts the person's own Claude Code and Antigravity programs (docs/22-auto-providers.md,
+# section 15.4) on Linux, macOS and Windows.
+#
+# Why three systems: the crate's job is process handling that differs by system (a process group on Unix, a job object and
+# CREATE_NO_WINDOW on Windows, the login shell on macOS and Linux, `.cmd` shims on Windows, other known install folders).
+# No runner has a Claude or Google account, so nothing here starts a real `claude` or `agy`: the tests start the crate's two
+# test doubles, `ym-fake-claude` and `ym-fake-agy` (built by `cargo test -p ym-agents`), which check the request
+# they are given. What a signed-in machine must still check is docs/22 section 19, listed in docs/STATUS.md.
+#
+# YM_REQUIRE_FAKE_CLI turns "the test double is not built" from a printed SKIPPED into a failure, as the other YM_REQUIRE_*
+# variables of ci.yml do. The main `rust` job (macOS) still runs the whole workspace, this crate included.
+#
+# The ym-cli step runs ym's own Auto-provider tests against the doubles. The render stack (ym-gpu, ym-raw, ...) was never built
+# on Windows before this workflow; `cargo check --target x86_64-pc-windows-msvc -p ym-cli` passes (2026-10-26), but no Windows
+# runner has run that step yet. If it fails there for a reason outside this feature, docs/22 section 15.4 says what to do: that
+# leg runs ym-agents alone, the cause goes to docs/STATUS.md under Known issues, and a task is opened. It is not hidden here.
+name: Auto providers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/ym-agents/**"
+      - "crates/ym-core/src/apple_auto.rs"
+      - "crates/ym-core/src/auto_provider.rs"
+      - "crates/ym-cli/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/agents.yml"
+  pull_request:
+    paths:
+      - "crates/ym-agents/**"
+      - "crates/ym-core/src/apple_auto.rs"
+      - "crates/ym-core/src/auto_provider.rs"
+      - "crates/ym-cli/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/agents.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agents-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  YM_REQUIRE_FAKE_CLI: "1"
+
+defaults:
+  run:
+    # One script serves the three systems (Git Bash on Windows).
+    shell: bash
+
+jobs:
+  agents:
+    name: ym-agents on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install   # rustfmt and clippy come from the file's components
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: agents-${{ matrix.os }}
+          cache-on-failure: true
+      - name: Clippy
+        run: cargo clippy -p ym-agents --all-targets -- -D warnings
+      - name: ym-agents (builds the two test doubles and runs against them)
+        run: cargo test -p ym-agents --features test-support
+      - name: ym-cli, the Auto-provider tests against the doubles
+        # The doubles were built by the step above; `ym_agents::testing::fake_cli_path` finds them in target/<profile>.
+        run: cargo test -p ym-cli --test auto_providers

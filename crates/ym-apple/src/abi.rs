@@ -254,6 +254,7 @@ pub(crate) fn answer_from(raw: &YmAppleAnswer) -> Result<AdvisorAnswer, AdvisorE
         steps,
         scene: c_string(&raw.scene),
         plan: c_string(&raw.plan),
+        served_model: None,
     }
     .checked()
 }

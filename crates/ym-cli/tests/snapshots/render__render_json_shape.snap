@@ -30,6 +30,7 @@ expression: shape(&v)
       "detail": "number",
       "luminance": "number"
     },
+    "provider": "string",
     "saturation": "number",
     "shadows": "number",
     "sharpen": {

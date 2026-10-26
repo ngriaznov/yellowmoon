@@ -763,6 +763,10 @@ span.ym-filmstrip__thumb {
   font-size: 0.9375rem;
   font-weight: 600;
 }
+/* A row with a paragraph of hint and a note (Auto grading): the control stays level with the title, not in the middle of the text. */
+.ym-pref--top {
+  align-items: flex-start;
+}
 .ym-pref__hint {
   color: var(--glass-label-secondary);
   font-size: 0.8125rem;

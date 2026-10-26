@@ -161,6 +161,7 @@ export const MOCK_ESTIMATES: AutoEstimates = {
   balance_shadows: [0, 0],
   balance_highlights: [0, 0],
   source: "rule",
+  provider: "yellowmoon",
   apple: { state: "off" },
   apple_steps: null,
   light_class: "daylight",
@@ -235,12 +236,12 @@ export function mockAppleState(mode: MockAppleAuto, activity: MockActivity, ownI
  * (`docs/19` section 5: the exposure added to the rule's, the white made warmer along the locus and read to 50 K, the tint added to
  * the scene's, the sliders and the wheels from the table; a step left empty sets nothing).
  */
-export function mockEstimates(apple: AppleAuto): AutoEstimates {
-  if (apple.state !== "answered") return { ...MOCK_ESTIMATES, apple };
+export function mockEstimates(apple: AppleAuto, provider: AutoProvider = "yellowmoon"): AutoEstimates {
+  if (apple.state !== "answered") return { ...MOCK_ESTIMATES, apple, provider };
   const { steps } = apple.answer;
   const at = (table: Record<number, number>, step: number | null): number => (step === null ? 0 : (table[step] ?? 0));
   const mired = 1e6 / MOCK_ESTIMATES.kelvin - at(APPLE_TABLE.warmer_mired, steps.white);
-  const provider = apple.info.provider;
+  const answeredBy = apple.info.provider;
   return {
     ...MOCK_ESTIMATES,
     exposure_ev: Math.round((MOCK_ESTIMATES.exposure_ev + at(APPLE_TABLE.exposure_ev, steps.exposure)) * 100) / 100,
@@ -259,7 +260,8 @@ export function mockEstimates(apple: AppleAuto): AutoEstimates {
       steps.highlight_color === null ? undefined : APPLE_TABLE.highlight_directions[steps.highlight_color],
       steps.highlight_color === "none" ? 0 : steps.highlight_color_strength,
     ),
-    source: provider === "yellowmoon" ? "rule" : provider,
+    source: answeredBy === "yellowmoon" ? "rule" : answeredBy,
+    provider: answeredBy,
     apple,
     apple_steps: steps,
   };
@@ -1589,7 +1591,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
 
   /** What Auto resolves to now: the same for every photo, with the answer of the provider that grades while it has one. */
   function estimates(): AutoEstimates {
-    return mockEstimates(appleState());
+    const activityNow = activity();
+    // The provider the photo's state belongs to: the one that acts, or the chosen one it was asked about; Yellowmoon's own while off.
+    const provider = activityNow.kind === "active" ? activityNow.provider : activityNow.kind === "unavailable" ? preferences.auto_provider : "yellowmoon";
+    return mockEstimates(appleState(), provider);
   }
 
   /**

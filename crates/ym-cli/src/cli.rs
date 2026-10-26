@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use ym_core::apple_auto::AppleAutoMode;
+use ym_core::auto_provider::{AutoChoice, AutoProvider};
 use ym_core::settings::{CropAspect, LensKind};
 use ym_core::version::{PIPELINE_VERSION, app_version};
 use ym_export::{BitDepth, ColorSpace, FormatKind, TiffCompression};
@@ -244,16 +244,32 @@ pub struct RenderArgs {
     /// Beats YELLOWMOON_GPU.
     #[arg(long, help_heading = H_RUN)]
     pub cpu: bool,
-    /// Apple Auto for this run. On a Mac with Apple Intelligence, Apple's on-device model grades each photo:
-    /// it sets the automatic exposure, highlights, shadows, black, contrast, warmth, tint and saturation and
-    /// the colours of the shadows and highlights. Default: the app's setting where Apple Auto is available,
-    /// off elsewhere.
+    /// Who grades each photo's Auto for this run: yellowmoon (Yellowmoon's own Auto, the rule), apple (Apple's
+    /// on-device model, on a Mac with Apple Intelligence), claude (the Claude Code installed on this computer)
+    /// or agy (the Antigravity installed on this computer). A provider sets the automatic exposure, highlights,
+    /// shadows, black, contrast, warmth, tint and saturation and the colours of the shadows and highlights.
+    /// Default: the app's setting, which acts where that provider is available and, for claude and agy, where
+    /// you agreed to it in Preferences; otherwise Yellowmoon's own Auto. Naming claude or agy is your consent
+    /// for this run: ym then sends a 768 px picture of each photo and the instructions to that service,
+    /// through the program installed on this computer. Answers from Claude Code and Antigravity can differ
+    /// from run to run.
+    #[arg(
+        long,
+        value_enum,
+        ignore_case = true,
+        value_name = "yellowmoon|apple|claude|agy",
+        hide_possible_values = true,
+        help_heading = H_RUN
+    )]
+    pub auto_provider: Option<AutoProviderArg>,
+    /// The old name of --auto-provider: on is apple, off is yellowmoon. Not with --auto-provider.
     #[arg(long, value_enum, ignore_case = true, value_name = "on|off", hide_possible_values = true, help_heading = H_RUN)]
     pub apple_auto: Option<AppleAutoArg>,
-    /// A text file with instructions for Apple's model, used for this run instead of those in Preferences
-    /// (at most 2000 characters; an empty file is the default instructions).
-    #[arg(long, value_name = "FILE", help_heading = H_RUN)]
-    pub apple_auto_instructions: Option<PathBuf>,
+    /// A text file with instructions for the model, used for this run instead of those in Preferences
+    /// (at most 2000 characters; an empty file is the default instructions). Also called
+    /// --apple-auto-instructions.
+    #[arg(long, alias = "apple-auto-instructions", value_name = "FILE", help_heading = H_RUN)]
+    pub auto_instructions: Option<PathBuf>,
     /// Crop each photo as the Crop panel's Auto does: its straighten angle and its first frame for an aspect
     /// (original, free, 1:1, 4:5 or 16:9; original when none is given), at the photo's orientation. Replaces a
     /// crop from --settings.
@@ -355,24 +371,57 @@ impl From<ColorSpaceArg> for ColorSpace {
     }
 }
 
-/// `--apple-auto` (`docs/19` section 8).
+/// `--auto-provider` (`docs/22` section 13.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AutoProviderArg {
+    /// Yellowmoon's own Auto: the rule.
+    Yellowmoon,
+    /// Apple Intelligence's on-device model, where it is available.
+    Apple,
+    /// The Claude Code installed on this computer. Naming it is the consent for this run.
+    Claude,
+    /// The Antigravity (agy) installed on this computer. Naming it is the consent for this run.
+    Agy,
+}
+
+impl AutoProviderArg {
+    /// The provider the option names.
+    #[must_use]
+    pub fn provider(self) -> AutoProvider {
+        match self {
+            Self::Yellowmoon => AutoProvider::Yellowmoon,
+            Self::Apple => AutoProvider::Apple,
+            Self::Claude => AutoProvider::Claude,
+            Self::Agy => AutoProvider::Agy,
+        }
+    }
+}
+
+/// `--apple-auto`, the old name of `--auto-provider` (`docs/19` section 8, `docs/22` section 13.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum AppleAutoArg {
-    /// Apple Auto acts where it is available, whatever the app's setting says.
+    /// Same as `--auto-provider apple`.
     On,
-    /// Auto is Yellowmoon's own for this run.
+    /// Same as `--auto-provider yellowmoon`.
     Off,
 }
 
-impl AppleAutoArg {
-    /// The core's mode for the option, given or not: without it the app's setting decides.
-    #[must_use]
-    pub fn mode(arg: Option<Self>) -> AppleAutoMode {
-        match arg {
-            None => AppleAutoMode::FromPreference,
-            Some(Self::On) => AppleAutoMode::On,
-            Some(Self::Off) => AppleAutoMode::Off,
-        }
+/// The choice a run makes from `--auto-provider` and `--apple-auto` (`docs/22` section 10.3): the
+/// saved choice when neither is given, else the provider named.
+///
+/// # Errors
+///
+/// "Use --auto-provider or --apple-auto, not both." (a usage error) when both are given.
+pub fn auto_choice(
+    provider: Option<AutoProviderArg>,
+    apple_auto: Option<AppleAutoArg>,
+) -> Result<AutoChoice, String> {
+    match (provider, apple_auto) {
+        (Some(_), Some(_)) => Err("Use --auto-provider or --apple-auto, not both.".to_owned()),
+        (Some(p), None) => Ok(AutoChoice::Provider(p.provider())),
+        (None, Some(AppleAutoArg::On)) => Ok(AutoChoice::Provider(AutoProvider::Apple)),
+        (None, Some(AppleAutoArg::Off)) => Ok(AutoChoice::Provider(AutoProvider::Yellowmoon)),
+        (None, None) => Ok(AutoChoice::FromPreference),
     }
 }
 
@@ -642,10 +691,20 @@ pub struct InfoArgs {
     /// Force a camera profile, for comparisons (for example `sony-ilce-7rm4`).
     #[arg(long, value_name = "ID")]
     pub profile: Option<String>,
-    /// Apple Auto for this run. On a Mac with Apple Intelligence, Apple's on-device model grades each photo:
-    /// it sets the automatic exposure, highlights, shadows, black, contrast, warmth, tint and saturation and
-    /// the colours of the shadows and highlights. Default: the app's setting where Apple Auto is available,
-    /// off elsewhere.
+    /// Who grades each photo's Auto for this run: yellowmoon (Yellowmoon's own Auto), apple (Apple Intelligence),
+    /// claude (Claude Code) or agy (Antigravity). Default: the app's setting. Naming claude or agy is your
+    /// consent for this run: ym sends a 768 px picture of each photo and the instructions to that service,
+    /// through the program installed on this computer. Answers from Claude Code and Antigravity can differ
+    /// from run to run.
+    #[arg(
+        long,
+        value_enum,
+        ignore_case = true,
+        value_name = "yellowmoon|apple|claude|agy",
+        hide_possible_values = true
+    )]
+    pub auto_provider: Option<AutoProviderArg>,
+    /// The old name of --auto-provider: on is apple, off is yellowmoon. Not with --auto-provider.
     #[arg(
         long,
         value_enum,
@@ -654,10 +713,11 @@ pub struct InfoArgs {
         hide_possible_values = true
     )]
     pub apple_auto: Option<AppleAutoArg>,
-    /// A text file with instructions for Apple's model, used for this run instead of those in Preferences
-    /// (at most 2000 characters; an empty file is the default instructions).
-    #[arg(long, value_name = "FILE")]
-    pub apple_auto_instructions: Option<PathBuf>,
+    /// A text file with instructions for the model, used for this run instead of those in Preferences
+    /// (at most 2000 characters; an empty file is the default instructions). Also called
+    /// --apple-auto-instructions.
+    #[arg(long, alias = "apple-auto-instructions", value_name = "FILE")]
+    pub auto_instructions: Option<PathBuf>,
     /// Also print Auto crop's proposal: the straighten angle and the frame for an aspect (original, free, 1:1,
     /// 4:5 or 16:9; original when none is given), for the photo as the camera turned it.
     #[arg(
@@ -819,33 +879,99 @@ mod tests {
     }
 
     #[test]
-    fn apple_auto_is_on_off_or_the_apps_setting_in_any_case() {
-        let mode = |args: &[&str]| -> AppleAutoMode {
+    fn the_auto_provider_is_named_in_any_case_or_follows_the_apps_setting() {
+        let choice = |args: &[&str]| -> Result<AutoChoice, String> {
             let cli = Cli::try_parse_from(args).expect("parses");
             match cli.command {
-                Command::Render(r) => AppleAutoArg::mode(r.apple_auto),
-                Command::Info(i) => AppleAutoArg::mode(i.apple_auto),
+                Command::Render(r) => auto_choice(r.auto_provider, r.apple_auto),
+                Command::Info(i) => auto_choice(i.auto_provider, i.apple_auto),
                 other => panic!("{other:?}"),
             }
         };
+        let named = |p| Ok(AutoChoice::Provider(p));
         assert_eq!(
-            mode(&["ym", "render", "a.ARW"]),
-            AppleAutoMode::FromPreference
+            choice(&["ym", "render", "a.ARW"]),
+            Ok(AutoChoice::FromPreference)
         );
         assert_eq!(
-            mode(&["ym", "render", "a.ARW", "--apple-auto", "on"]),
-            AppleAutoMode::On
+            choice(&["ym", "info", "a.ARW"]),
+            Ok(AutoChoice::FromPreference)
+        );
+        for (word, provider) in [
+            ("yellowmoon", AutoProvider::Yellowmoon),
+            ("apple", AutoProvider::Apple),
+            ("claude", AutoProvider::Claude),
+            ("agy", AutoProvider::Agy),
+            ("Claude", AutoProvider::Claude),
+            ("AGY", AutoProvider::Agy),
+        ] {
+            assert_eq!(
+                choice(&["ym", "render", "a.ARW", "--auto-provider", word]),
+                named(provider),
+                "{word}"
+            );
+            assert_eq!(
+                choice(&["ym", "info", "a.ARW", "--auto-provider", word]),
+                named(provider),
+                "{word}"
+            );
+        }
+        // The old name is an alias: on is apple, off is yellowmoon, in any case.
+        assert_eq!(
+            choice(&["ym", "render", "a.ARW", "--apple-auto", "on"]),
+            named(AutoProvider::Apple)
         );
         assert_eq!(
-            mode(&["ym", "info", "a.ARW", "--apple-auto", "OFF"]),
-            AppleAutoMode::Off
+            choice(&["ym", "info", "a.ARW", "--apple-auto", "OFF"]),
+            named(AutoProvider::Yellowmoon)
         );
+        // Both together are a usage error.
         assert_eq!(
-            mode(&["ym", "info", "a.ARW"]),
-            AppleAutoMode::FromPreference
+            choice(&[
+                "ym",
+                "render",
+                "a.ARW",
+                "--apple-auto",
+                "on",
+                "--auto-provider",
+                "claude"
+            ]),
+            Err("Use --auto-provider or --apple-auto, not both.".to_owned())
         );
+        // A name that is no provider, or no name, is a usage error.
+        assert!(Cli::try_parse_from(["ym", "render", "a.ARW", "--auto-provider", "gemini"]).is_err());
+        assert!(Cli::try_parse_from(["ym", "render", "a.ARW", "--auto-provider"]).is_err());
         assert!(Cli::try_parse_from(["ym", "render", "a.ARW", "--apple-auto", "maybe"]).is_err());
         assert!(Cli::try_parse_from(["ym", "render", "a.ARW", "--apple-auto"]).is_err());
+    }
+
+    #[test]
+    fn the_instructions_file_has_two_names_and_not_both() {
+        let file = |args: &[&str]| match Cli::try_parse_from(args).expect("parses").command {
+            Command::Render(r) => r.auto_instructions,
+            Command::Info(i) => i.auto_instructions,
+            other => panic!("{other:?}"),
+        };
+        for name in ["--auto-instructions", "--apple-auto-instructions"] {
+            for command in ["render", "info"] {
+                assert_eq!(
+                    file(&["ym", command, "a.ARW", name, "words.txt"]),
+                    Some(PathBuf::from("words.txt"))
+                );
+            }
+        }
+        assert!(
+            Cli::try_parse_from([
+                "ym",
+                "render",
+                "a.ARW",
+                "--auto-instructions",
+                "a.txt",
+                "--apple-auto-instructions",
+                "b.txt"
+            ])
+            .is_err()
+        );
     }
 
     #[test]

@@ -238,6 +238,7 @@ pub struct RunOutput {
 impl RunOutput {
     /// Whether the program ended by itself with exit code 0.
     #[must_use]
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     pub fn success(&self) -> bool {
         self.outcome == Outcome::Exited && self.exit_code == Some(0)
     }
@@ -338,6 +339,43 @@ pub fn tail_message(text: &str) -> String {
     format!("…{tail}")
 }
 
+/// The JSON object a program printed: the whole output when it is one object (also when it is printed
+/// over several lines), else the last line that starts an object and parses to the end of the output (a
+/// banner or a warning may come before it).
+#[must_use]
+pub fn last_json_object(output: &[u8]) -> Option<serde_json::Value> {
+    let text = String::from_utf8_lossy(output);
+    let text = text.trim();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text)
+        && value.is_object()
+    {
+        return Some(value);
+    }
+    // Every line that could start the object, from the last: the one-line envelope after a banner is
+    // the last line; a pretty-printed one starts earlier and runs to the end.
+    let mut starts: Vec<usize> = text
+        .match_indices('\n')
+        .map(|(at, _)| at + 1)
+        .filter(|at| text[*at..].starts_with('{'))
+        .collect();
+    if text.starts_with('{') {
+        starts.insert(0, 0);
+    }
+    for &start in starts.iter().rev() {
+        let tail = &text[start..];
+        // The last line alone first (a one-line envelope), then everything from here.
+        let last_line = tail.lines().last().unwrap_or("");
+        for candidate in [last_line, tail] {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate)
+                && value.is_object()
+            {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------------------------
 // The temporary folder
 // ---------------------------------------------------------------------------------------------
@@ -352,21 +390,27 @@ pub struct Workdir {
 }
 
 impl Workdir {
-    /// Makes `ym-auto-*` in the operating system's temporary folder (mode 0700 on Unix) with its two
-    /// empty subfolders.
+    /// Makes `ym-auto-*` in the operating system's temporary folder (mode 0700 on Unix, set here: the
+    /// `tempfile` crate leaves it to the umask) with its two empty subfolders.
     pub fn new() -> std::io::Result<Self> {
         Self::new_in(&std::env::temp_dir())
     }
 
     /// As [`Workdir::new`], in another folder (the tests'sweep).
     pub fn new_in(parent: &Path) -> std::io::Result<Self> {
-        let dir = tempfile::Builder::new()
-            .prefix(WORKDIR_PREFIX)
-            .tempdir_in(parent)?;
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(WORKDIR_PREFIX);
+        // `tempfile` makes the folder with the process's umask; the user's alone is the spec's.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o700));
+        }
+        let dir = builder.tempdir_in(parent)?;
         let cwd = dir.path().join("cwd");
         let input = dir.path().join("in");
-        std::fs::create_dir(&cwd)?;
-        std::fs::create_dir(&input)?;
+        make_private_dir(&cwd)?;
+        make_private_dir(&input)?;
         Ok(Self { dir, cwd, input })
     }
 
@@ -386,6 +430,20 @@ impl Workdir {
     #[must_use]
     pub fn input(&self) -> &Path {
         &self.input
+    }
+}
+
+/// Makes `path` readable by the user alone (mode 0700 on Unix; on Windows the folder inherits its
+/// parent's access, which is the user's own temporary folder).
+fn make_private_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir(path)
     }
 }
 
@@ -493,6 +551,13 @@ struct Pipes {
 /// [`Outcome`].
 #[must_use]
 pub fn run(spec: RunSpec) -> RunOutput {
+    run_with(spec, || {})
+}
+
+/// [`run`], calling `after_spawn` once the child is running and before the first poll. The tests make it
+/// panic, to see that the guard ends the tree of a request whose caller panics.
+#[must_use]
+pub fn run_with(spec: RunSpec, after_spawn: impl FnOnce()) -> RunOutput {
     let started = Instant::now();
     let fail = |outcome| RunOutput {
         outcome,
@@ -513,7 +578,14 @@ pub fn run(spec: RunSpec) -> RunOutput {
     });
     wrap_for_platform(&mut wrap);
 
-    let mut child = match wrap.spawn() {
+    // Argument lists and standard error are logged at debug level only, with anything that looks like a
+    // token cut out (`docs/22` section 2.1).
+    tracing::debug!(
+        program = %spec.program.display(),
+        args = %message(&spec.args.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ")),
+        "starting a program"
+    );
+    let mut child = match spawn_with_retry(&mut wrap) {
         Ok(child) => child,
         Err(error) => return fail(Outcome::SpawnFailed(message(&error.to_string()))),
     };
@@ -524,6 +596,8 @@ pub fn run(spec: RunSpec) -> RunOutput {
         child,
         finished: false,
     };
+
+    after_spawn();
 
     let pipes = Pipes {
         stdout: Arc::new(Mutex::new(Vec::new())),
@@ -620,7 +694,7 @@ pub fn run(spec: RunSpec) -> RunOutput {
     } else {
         outcome
     };
-    RunOutput {
+    let output = RunOutput {
         exit_code: if outcome == Outcome::Exited {
             exit.and_then(|s| s.code())
         } else {
@@ -630,6 +704,30 @@ pub fn run(spec: RunSpec) -> RunOutput {
         stdout,
         stderr,
         elapsed: started.elapsed(),
+    };
+    tracing::debug!(
+        outcome = ?output.outcome,
+        exit_code = ?output.exit_code,
+        elapsed_ms = output.elapsed.as_millis() as u64,
+        stderr = %output.stderr_message(),
+        "a program ended"
+    );
+    output
+}
+
+/// Starts the child; a program whose file is still open for writing ("text file busy", `ETXTBSY`) is tried
+/// again for up to half a second. It happens while a program is being updated by its own updater, and
+/// whenever another thread of this process forks while the file was being written.
+fn spawn_with_retry(wrap: &mut CommandWrap) -> std::io::Result<Box<dyn ChildWrapper>> {
+    let mut attempts = 0;
+    loop {
+        match wrap.spawn() {
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 10 => {
+                attempts += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            other => return other,
+        }
     }
 }
 
@@ -804,6 +902,19 @@ mod tests {
     }
 
     #[test]
+    fn the_json_object_is_found_after_a_banner_or_over_several_lines() {
+        let one = br#"{"a":1}"#;
+        assert_eq!(last_json_object(one).unwrap()["a"], 1);
+        assert_eq!(last_json_object(b"banner\n{\"a\":2}\n").unwrap()["a"], 2);
+        assert_eq!(last_json_object(b"banner\n\n{\n  \"a\": 3,\n  \"b\": {\"c\": 4}\n}\n").unwrap()["a"], 3);
+        assert_eq!(last_json_object(b"{\n \"a\": 5\n}\n").unwrap()["a"], 5);
+        // Another object earlier in the output is not the answer; the last one is.
+        assert_eq!(last_json_object(b"{\"a\":1}\n{\"a\":6}\n").unwrap()["a"], 6);
+        assert!(last_json_object(b"").is_none());
+        assert!(last_json_object(b"no json here\n[1,2]\n").is_none());
+    }
+
+    #[test]
     fn a_cancel_source_cancels_earlier_tokens_only() {
         let source = CancelSource::new();
         let before = source.token();
@@ -829,6 +940,18 @@ mod tests {
         assert_eq!(sweep_stale_in(parent.path(), Duration::ZERO), 1);
         assert!(!old_path.exists());
         assert!(other.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_workdir_is_private_to_the_user() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = tempfile::tempdir().unwrap();
+        let dir = Workdir::new_in(parent.path()).unwrap();
+        for folder in [dir.path(), dir.cwd(), dir.input()] {
+            let mode = std::fs::metadata(folder).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode & 0o077, 0, "{} is {mode:o}", folder.display());
+        }
     }
 
     #[test]

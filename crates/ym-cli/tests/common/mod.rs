@@ -5,11 +5,13 @@
 //! look library into it (so a test never touches the real app folder) and `YELLOWMOON_DATA` at the
 //! repository's `data/`.
 //!
-//! Apple Auto (`docs/19`): [`Sandbox::ym`] sets `YELLOWMOON_TEST_APPLE_AUTO=none`, so Apple Auto is
-//! not available, for the reason a build without the bridge gives on this platform (`not_a_mac` on
-//! Linux), even on a Mac with Apple Intelligence: every test gets the rule unless it asks for the
-//! deterministic test advisor ([`Sandbox::ym_fake`]). A test that compares bytes or values with the
-//! core's (parity, the snapshots) also passes `--apple-auto off`.
+//! Auto providers (`docs/19`, `docs/22`): [`Sandbox::ym`] sets `YELLOWMOON_TEST_APPLE_AUTO=none`, so Apple
+//! Auto is not available, for the reason a build without the bridge gives on this platform
+//! (`not_a_mac` on Linux), even on a Mac with Apple Intelligence, and `YELLOWMOON_TEST_AUTO_PROVIDERS=none`,
+//! so Claude Code and Antigravity are not installed, even on a computer that has them: every test gets
+//! the rule unless it asks for the deterministic test advisor ([`Sandbox::ym_fake`]) or a provider
+//! ([`Sandbox::ym_provider`]). A test that compares bytes or values with the core's (parity, the
+//! snapshots) also passes `--auto-provider yellowmoon`.
 
 #![allow(dead_code, reason = "each test binary uses some of the helpers")]
 
@@ -135,6 +137,7 @@ impl Sandbox {
             .env_remove("RUST_LOG")
             .env_remove("XDG_DATA_HOME")
             .env(NO_APPLE_AUTO.0, NO_APPLE_AUTO.1)
+            .env(NO_AUTO_PROVIDERS.0, NO_AUTO_PROVIDERS.1)
             .current_dir(self.root());
         cmd
     }
@@ -147,13 +150,33 @@ impl Sandbox {
         cmd
     }
 
-    /// Writes the app's `preferences.json` with the `apple_auto` preference (`docs/19` section 2).
+    /// [`Sandbox::ym`] with the programs as the test hook says (`docs/22` section 15.3): for example
+    /// `claude=available,agy=signed_out`, or `claude=exec:/path/to/ym-fake-claude`.
+    pub fn ym_provider(&self, hook: &str) -> Command {
+        let mut cmd = self.ym();
+        cmd.env(AUTO_PROVIDERS_ENV, hook);
+        cmd
+    }
+
+    /// Writes the app's `preferences.json` with the `apple_auto` preference of before the providers
+    /// (`docs/19` section 2), which reads as `auto_provider` (`docs/22` section 10.1).
     pub fn set_apple_auto_preference(&self, on: bool) {
-        std::fs::write(
-            self.home().join("preferences.json"),
-            serde_json::json!({ "apple_auto": on }).to_string(),
-        )
-        .expect("write preferences");
+        self.write_preferences(&serde_json::json!({ "apple_auto": on }));
+    }
+
+    /// Writes the app's `preferences.json` with the saved choice and, for a program, its consent
+    /// (`docs/22` section 10).
+    pub fn set_auto_provider(&self, provider: &str, consent: &[&str]) {
+        self.write_preferences(&serde_json::json!({
+            "auto_provider": provider,
+            "auto_consent": { "claude": consent.contains(&"claude"), "agy": consent.contains(&"agy") },
+        }));
+    }
+
+    /// Writes the app's `preferences.json` as given.
+    pub fn write_preferences(&self, preferences: &Value) {
+        std::fs::write(self.home().join("preferences.json"), preferences.to_string())
+            .expect("write preferences");
     }
 }
 
@@ -234,6 +257,14 @@ pub const FAKE_APPLE_AUTO: (&str, &str) = ("YELLOWMOON_TEST_APPLE_AUTO", "fake")
 /// The environment variable and value that make Apple Auto unavailable to `ym`, as on a computer
 /// without it, whatever this one can do.
 pub const NO_APPLE_AUTO: (&str, &str) = ("YELLOWMOON_TEST_APPLE_AUTO", "none");
+
+/// The environment variable and value that make Claude Code and Antigravity not installed for `ym`
+/// (`docs/22` section 13.5), whatever this computer has: a developer's own programs are never started by a
+/// test. Every test that starts the binary sets it with [`NO_APPLE_AUTO`].
+pub const NO_AUTO_PROVIDERS: (&str, &str) = ("YELLOWMOON_TEST_AUTO_PROVIDERS", "none");
+
+/// The environment variable of the test hook for the two programs (`docs/22` section 15.3).
+pub const AUTO_PROVIDERS_ENV: &str = "YELLOWMOON_TEST_AUTO_PROVIDERS";
 
 /// The lines of a captured stdout.
 pub fn lines(bytes: &[u8]) -> Vec<String> {

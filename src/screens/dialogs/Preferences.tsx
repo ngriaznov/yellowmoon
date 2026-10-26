@@ -15,6 +15,7 @@ import {
   INSTRUCTIONS_COPY,
   PROVIDER_HINTS,
   PROVIDER_LIST_NAMES,
+  PROVIDER_NAMES,
   providerNote,
   savedChoiceNote,
   unavailableTag,
@@ -147,13 +148,15 @@ interface RowProps {
   longHint?: boolean;
   /** Under the hint, in the same column: a note that belongs to the row (Antigravity's Experimental note). */
   note?: ReactNode;
+  /** The control sits at the top, level with the title, instead of in the middle of a tall text column. */
+  top?: boolean;
   children: ReactNode;
 }
 
 /** One row of Preferences: a title and a line of help at the left, the control at the right. */
-function Row({ title, hint, longHint = false, note, children }: RowProps) {
+function Row({ title, hint, longHint = false, note, top = false, children }: RowProps) {
   return (
-    <Item size="sm" role="group" aria-label={title} className="ym-pref">
+    <Item size="sm" role="group" aria-label={title} className={top ? "ym-pref ym-pref--top" : "ym-pref"}>
       <ItemContent className="ym-pref__text">
         <ItemTitle className="ym-pref__title" aria-hidden="true">
           {title}
@@ -166,28 +169,32 @@ function Row({ title, hint, longHint = false, note, children }: RowProps) {
   );
 }
 
-/** The muted tag after an entry's name while it is listed but cannot be chosen (`docs/22` section 12.1), and the words a screen reader adds. */
+/**
+ * What a screen reader says for an entry of the dropdown: the name, "experimental" for Antigravity and, for a program that is listed but
+ * cannot be chosen, why ("Claude Code, not signed in", `docs/22` section 12.9). The visible tag and badge say the same in short.
+ */
+function entryLabel(status: ProviderStatus): string {
+  const tag = status.selectable ? null : unavailableTag(status.state);
+  return [PROVIDER_LIST_NAMES[status.provider], status.experimental ? "experimental" : null, tag ? tag.toLowerCase() : null]
+    .filter((part) => part !== null)
+    .join(", ");
+}
+
+/** An entry of the dropdown: the name, Antigravity's Experimental badge, and the muted tag of a program that cannot be chosen (`docs/22` section 12.1). */
 function EntryName({ status }: { status: ProviderStatus }) {
   const tag = status.selectable ? null : unavailableTag(status.state);
-  // The spaces between the parts are for the accessible name ("Antigravity (agy) Experimental"); in the flex row of the list they do not show.
   return (
     <>
       {PROVIDER_LIST_NAMES[status.provider]}
       {status.experimental ? (
-        <>
-          {" "}
-          <Badge variant="outline" className="ym-pref__badge">
-            {EXPERIMENTAL_LABEL}
-          </Badge>
-        </>
+        <Badge variant="outline" className="ym-pref__badge">
+          {EXPERIMENTAL_LABEL}
+        </Badge>
       ) : null}
       {tag ? (
-        <>
-          <span className="sr-only">{`, ${tag.toLowerCase()}`}</span>{" "}
-          <Badge variant="secondary" className="ym-pref__tag" aria-hidden="true">
-            {tag}
-          </Badge>
-        </>
+        <Badge variant="secondary" className="ym-pref__tag">
+          {tag}
+        </Badge>
       ) : null}
     </>
   );
@@ -201,6 +208,18 @@ function EntryName({ status }: { status: ProviderStatus }) {
  * program the person has not agreed to opens the consent dialog and changes nothing until they say yes (`AppStore.chooseProvider`).
  */
 function AutoGrading({ store, auto, saved, os }: { store: AppStore; auto: AutoStatus; saved: string; os: string | null }) {
+  // When the consent dialog closes the focus goes back to the dropdown that opened it (Radix cannot: the list had already closed when
+  // the dialog mounted, so there was nothing to remember).
+  const trigger = useRef<HTMLButtonElement>(null);
+  const consentFor = useAppState((s) => s.consentFor);
+  const asked = useRef(false);
+  useEffect(() => {
+    if (consentFor !== null) asked.current = true;
+    else if (asked.current) {
+      asked.current = false;
+      trigger.current?.focus({ preventScroll: true });
+    }
+  }, [consentFor]);
   const entries = auto.providers.filter((p) => p.provider === "yellowmoon" || p.listed);
   const notes = auto.providers.map((p) => providerNote(p, os ?? "")).filter((note): note is string => note !== null);
   const saveNote = savedChoiceNote(auto.preference, auto.effective);
@@ -211,6 +230,7 @@ function AutoGrading({ store, auto, saved, os }: { store: AppStore; auto: AutoSt
         title={AUTO_GRADING_TITLE}
         hint={PROVIDER_HINTS[auto.effective]}
         longHint
+        top
         note={
           experimental ? (
             <div className="ym-pref__experimental">
@@ -221,12 +241,30 @@ function AutoGrading({ store, auto, saved, os }: { store: AppStore; auto: AutoSt
         }
       >
         <Select value={auto.effective} onValueChange={(next) => void store.chooseProvider(next as AutoProvider)}>
-          <SelectTrigger aria-label={AUTO_GRADING_TITLE} className="w-[220px]">
-            <SelectValue />
+          <SelectTrigger ref={trigger} aria-label={AUTO_GRADING_TITLE} className="w-[220px]">
+            {/* Antigravity's name is short here ("Antigravity (agy)" is in the list) so that its badge fits the 220 px of the trigger. */}
+            <SelectValue>
+              {PROVIDER_NAMES[auto.effective]}
+              {experimental ? (
+                <>
+                  {" "}
+                  <Badge variant="outline" className="ym-pref__badge h-4 px-1.5 text-[0.625rem]">
+                    {EXPERIMENTAL_LABEL}
+                  </Badge>
+                </>
+              ) : null}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             {entries.map((entry) => (
-              <SelectItem key={entry.provider} value={entry.provider} disabled={entry.provider !== "yellowmoon" && !entry.selectable}>
+              // Radix names an option by its text; `aria-labelledby` is left out so that the label above says why an entry is disabled.
+              <SelectItem
+                key={entry.provider}
+                value={entry.provider}
+                disabled={entry.provider !== "yellowmoon" && !entry.selectable}
+                aria-label={entryLabel(entry)}
+                aria-labelledby={undefined}
+              >
                 <EntryName status={entry} />
               </SelectItem>
             ))}

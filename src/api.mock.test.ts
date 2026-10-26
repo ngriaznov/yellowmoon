@@ -1398,6 +1398,7 @@ describe("Auto providers (docs/19, docs/22)", () => {
     const rs = await api.getSettings(1);
     expect(rs.estimates).toEqual(MOCK_ESTIMATES);
     expect(rs.estimates.apple).toEqual({ state: "off" });
+    expect(rs.estimates.provider).toBe("yellowmoon");
     expect(rs.settings.contrast).toEqual({ kind: "auto" });
   });
 
@@ -1421,8 +1422,8 @@ describe("Auto providers (docs/19, docs/22)", () => {
     expect(e.apple_steps).toEqual(MOCK_APPLE_ANSWER.steps);
     expect(e.apple).toMatchObject({ state: "answered", info: MOCK_APPLE_INFO });
     // The programs answer the same way and say who did.
-    expect(answeredBy("claude")).toMatchObject({ source: "claude", contrast: 15, apple: { state: "answered", info: MOCK_CLAUDE_INFO } });
-    expect(answeredBy("agy")).toMatchObject({ source: "agy", apple: { state: "answered", info: MOCK_AGY_INFO } });
+    expect(answeredBy("claude")).toMatchObject({ source: "claude", provider: "claude", contrast: 15, apple: { state: "answered", info: MOCK_CLAUDE_INFO } });
+    expect(answeredBy("agy")).toMatchObject({ source: "agy", provider: "agy", apple: { state: "answered", info: MOCK_AGY_INFO } });
     // Pending and failed are the rule.
     for (const mode of ["pending", "failed"] as const) {
       const rule = mockEstimates(mockAppleState(mode, { kind: "active", provider: "apple" }));
@@ -1595,6 +1596,8 @@ describe("Auto providers: what the computer has (docs/22 sections 3.1 and 12.8)"
     expect(await api.autoStatus()).toMatchObject({ preference: "claude", effective: "yellowmoon", active: false });
     await api.openPaths(ARW);
     expect((await api.getSettings(1)).estimates.apple).toEqual({ state: "unavailable", reason: "signed_out" });
+    // The photo's state is about the provider that was asked, whoever grades.
+    expect((await api.getSettings(1)).estimates.provider).toBe("claude");
     // Agreed to, available: it acts.
     api.setProviders({ apple: "available", claude: "available", agy: "available" });
     expect(await api.autoStatus()).toMatchObject({ preference: "claude", effective: "claude", active: true });

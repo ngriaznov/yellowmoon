@@ -6,10 +6,10 @@
 //! only code that makes a file). Results arrive as the queue finishes each photo; the command
 //! prints them in that order.
 //!
-//! Apple Auto (`docs/19`) is the app's too: the core gets this computer's advisor and the
-//! `apple_auto` preference decides unless `--apple-auto on|off` says otherwise. When it acts, the
+//! The Auto providers (`docs/19`, `docs/22`) are the app's too: the core gets this computer's advisors
+//! and the saved `auto_provider` decides unless `--auto-provider` says otherwise. When one acts, the
 //! photos are developed and answered before their settings are applied (`Session::wait_idle` waits
-//! for the answers), so the JSON and the files carry Apple's values.
+//! for the answers), so the JSON and the files carry the provider's values.
 //!
 //! stdout carries data only: the path of every file written, or one JSON object per photo with
 //! `--json`. Everything for a person (progress, warnings, the summary) goes to stderr.
@@ -35,7 +35,7 @@ use ym_looks::library::LookId;
 use ym_looks::library::ResolveError;
 use ym_raw::layout::DecodeKind;
 
-use crate::cli::{AppleAutoArg, RenderArgs};
+use crate::cli::{RenderArgs, auto_choice};
 use crate::console::{Console, bar, duration_text, photos, shorten};
 use crate::develop::{LensChoice, LoadedSettings, Overrides, SettingsFile};
 use crate::exit::{self, Failure};
@@ -374,21 +374,21 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         args.inputs.clone()
     };
 
-    // The data folder, the preferences, the look library and Apple Auto's advisor.
-    let apple_auto = AppleAutoArg::mode(args.apple_auto);
-    let apple_auto_instructions = args
-        .apple_auto_instructions
+    // The data folder, the preferences, the look library and the Auto providers' advisors.
+    let choice = auto_choice(args.auto_provider, args.apple_auto).map_err(Failure::usage)?;
+    let auto_instructions = args
+        .auto_instructions
         .as_deref()
         .map(read_instructions)
         .transpose()?;
     let rt = Runtime::open(&CoreSettings {
         jobs: args.jobs,
         forced_profile: args.profile.clone(),
-        apple_auto: Some(apple_auto),
-        apple_auto_instructions,
+        auto: Some(choice),
+        auto_instructions,
     })?;
     let core = &rt.core;
-    if let Some(notice) = rt.apple_auto_notice(apple_auto) {
+    for notice in rt.auto_notices() {
         console.warn(&notice);
     }
 
@@ -522,10 +522,11 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         });
     }
     let total = plans.len();
+    let asking = format!("Asking {}", rt.asking().name());
     let developed = rt.wait_developed(|w| {
-        // Apple Auto's answers come after the photos are developed (`docs/19` section 6).
+        // The provider's answers come after the photos are developed (`docs/19` section 6).
         let (label, done, n) = match w.answers {
-            Some((answered, n)) => ("Asking Apple Intelligence", answered, n),
+            Some((answered, n)) => (asking.as_str(), answered, n),
             None => ("Developing", w.ready, w.total),
         };
         console.progress(format!(
@@ -534,6 +535,9 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         ));
     });
     console.finish_progress();
+    if let Some(notice) = rt.breaker_notice() {
+        console.warn(&notice);
+    }
     if !developed {
         core.close_session();
         console.info("Interrupted.");
@@ -634,10 +638,10 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         scope: ApplyScope::Picked,
         options: options.clone(),
     };
-    // Apple Auto's availability is read again before the export starts, as the app's
-    // `Core::export_start` does (`docs/19` section 1); an Apple Auto the run wanted that has gone
+    // The provider's availability is read again before the export starts, as the app's
+    // `Core::export_start` does (`docs/19` section 1); a provider the run wanted that has gone
     // meanwhile is said once.
-    if let Some(notice) = rt.apple_auto_notice_before_export() {
+    if let Some(notice) = rt.auto_notice_before_export() {
         console.warn(&notice);
     }
     let started = Instant::now();

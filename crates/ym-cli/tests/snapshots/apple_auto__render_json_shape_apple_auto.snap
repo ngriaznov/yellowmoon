@@ -53,7 +53,9 @@ expression: "Value::Object(picked)"
         "instructions": "string",
         "instructions_sha256": "string",
         "model": "string",
-        "os": "string"
+        "os": "string",
+        "prompt": "number",
+        "provider": "string"
       },
       "state": "string"
     },
@@ -93,6 +95,7 @@ expression: "Value::Object(picked)"
       "detail": "number",
       "luminance": "number"
     },
+    "provider": "string",
     "saturation": "number",
     "shadows": "number",
     "sharpen": {
@@ -102,6 +105,38 @@ expression: "Value::Object(picked)"
     "source": "string",
     "tint": "number",
     "white_ev": "number"
+  },
+  "auto_advisor": {
+    "api": "null",
+    "image": "null",
+    "instructions": "string",
+    "instructions_sha256": "string",
+    "model": "string",
+    "os": "string",
+    "plan": "string",
+    "prompt": "number",
+    "provider": "string",
+    "reason": "null",
+    "reproducible": "bool",
+    "scene": "string",
+    "schema": "null",
+    "state": "string",
+    "steps": {
+      "blacks": "null",
+      "contrast": "number",
+      "exposure": "number",
+      "highlight_color": "null",
+      "highlight_color_strength": "null",
+      "highlights": "number",
+      "saturation": "number",
+      "shadow_color": "string",
+      "shadow_color_strength": "number",
+      "shadows": "number",
+      "tint": "null",
+      "white": "number"
+    },
+    "table": "number",
+    "tool_version": "null"
   },
   "auto_source": "string"
 }

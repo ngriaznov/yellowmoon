@@ -4,14 +4,7 @@ expression: v
 ---
 {
   "apple_auto": {
-    "instructions": null,
-    "instructions_sha256": null,
-    "model": null,
-    "os": null,
-    "prompt": 3,
-    "reason": null,
-    "state": "off",
-    "table": 2
+    "state": "off"
   },
   "auto": {
     "apple": {
@@ -42,6 +35,7 @@ expression: v
       "detail": 50.0,
       "luminance": 30.0
     },
+    "provider": "yellowmoon",
     "saturation": 0.0,
     "shadows": 0.0,
     "sharpen": {
@@ -51,6 +45,22 @@ expression: v
     "source": "rule",
     "tint": -25.0,
     "white_ev": 0.4554
+  },
+  "auto_advisor": {
+    "api": null,
+    "image": null,
+    "instructions": null,
+    "instructions_sha256": null,
+    "model": null,
+    "os": null,
+    "prompt": null,
+    "provider": "yellowmoon",
+    "reason": null,
+    "reproducible": null,
+    "schema": null,
+    "state": "off",
+    "table": null,
+    "tool_version": null
   },
   "auto_source": "rule",
   "black": [

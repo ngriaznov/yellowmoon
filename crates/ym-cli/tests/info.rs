@@ -22,7 +22,8 @@ fn ym() -> Command {
             std::env::temp_dir().join("ym-cli-info-tests-no-such-home"),
         )
         .env_remove("RUST_LOG")
-        .env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1);
+        .env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1)
+        .env(common::NO_AUTO_PROVIDERS.0, common::NO_AUTO_PROVIDERS.1);
     cmd
 }
 
@@ -585,6 +586,7 @@ fn a_reader_that_goes_away_ends_the_run_quietly() {
         .args(["info", "--json"])
         .args(&files)
         .env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1)
+        .env(common::NO_AUTO_PROVIDERS.0, common::NO_AUTO_PROVIDERS.1)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

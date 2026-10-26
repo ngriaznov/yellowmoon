@@ -393,8 +393,8 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
   const noiseValue = `Luminance ${Math.round(values.noise_reduction.luminance)}`;
   // A provider on for the session: the photo is waiting for its answer, has it, or failed (`docs/19` section 10). Its rows are the
   // values the answer in effect set, in the order of the table; a value the model left empty has no row.
-  const chosen = useAppState((s) => s.preferences?.auto_provider ?? "apple");
-  const appleLine = appleAutoLine(rs.estimates.apple, chosen);
+  // The provider the photo's state is about: the core says (`estimates.provider`, `docs/22` section 14.1), also while it is pending.
+  const appleLine = appleAutoLine(rs.estimates.apple, rs.estimates.provider);
   const applePlan = appleAutoPlan(rs.estimates.apple);
   const rows = appleRows(appleLine !== null ? rs.estimates.apple_steps : null);
   const openLight = (): void => onOpenTab("light");

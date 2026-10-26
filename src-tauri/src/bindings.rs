@@ -73,6 +73,7 @@ mod tests {
             "render_stats",
             "export_progress",
             "looks_changed",
+            "auto_status_changed",
             "update_state",
             "error",
             "looks_import_progress",

@@ -18,7 +18,7 @@ use crate::advisor::{Core, Fail, Source};
 use crate::discovery::Locations;
 use crate::jpeg;
 use crate::probe::Level;
-use crate::process::{CancelToken, EnvProfile, Outcome, RunOutput, RunSpec, Workdir, message, run, tail_message};
+use crate::process::{CancelToken, EnvProfile, Outcome, RunOutput, RunSpec, message, run};
 use crate::schema;
 use crate::tool::{Tool, Tuning};
 
@@ -56,7 +56,8 @@ impl ClaudeAdvisor {
     }
 
     /// Starts the first probe (`StartProbe::Now`): everything, the sign-in check included.
-    pub(crate) fn start(&self) {
+    #[doc(hidden)]
+    pub fn start(&self) {
         self.core.refresh(Level::Full);
     }
 
@@ -69,8 +70,9 @@ impl ClaudeAdvisor {
         picture: &AdvisorPicture,
         instructions: &str,
     ) -> Result<AdvisorAnswer, Fail> {
+        let tuning = self.core.tuning();
         let jpeg = jpeg::encode(picture).map_err(|e| Fail::new(FailureKind::Other, e.to_string()))?;
-        let workdir = Workdir::new().map_err(|e| {
+        let workdir = tuning.workdir().map_err(|e| {
             Fail::new(
                 FailureKind::Other,
                 message(&format!("could not make a temporary folder: {e}")),
@@ -84,7 +86,6 @@ impl ClaudeAdvisor {
             )
         })?;
 
-        let tuning = self.core.tuning();
         let spec = RunSpec::new(program, workdir.cwd(), EnvProfile::Claude)
             .args(arguments(
                 &self.core.model_alias(),

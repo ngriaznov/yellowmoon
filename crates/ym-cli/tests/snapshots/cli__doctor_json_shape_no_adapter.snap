@@ -14,6 +14,54 @@ expression: shape(&v)
     "reason": "null",
     "table": "number"
   },
+  "auto": {
+    "consent": {
+      "agy": "bool",
+      "claude": "bool"
+    },
+    "effective": "string",
+    "instructions": "string",
+    "instructions_sha256": "string",
+    "preference": "string",
+    "providers": {
+      "agy": {
+        "api": "null",
+        "auth": "null",
+        "image": "string",
+        "model": "string",
+        "path": "null",
+        "prompt": "number",
+        "reason": "string",
+        "schema": "number",
+        "state": "string",
+        "tool_version": "null"
+      },
+      "apple": {
+        "model": "string",
+        "os": "string",
+        "prompt": "number",
+        "reason": "null",
+        "state": "string"
+      },
+      "claude": {
+        "api": "null",
+        "auth": "null",
+        "image": "string",
+        "model": "string",
+        "path": "null",
+        "prompt": "number",
+        "reason": "string",
+        "schema": "number",
+        "state": "string",
+        "tool_version": "null"
+      },
+      "yellowmoon": {
+        "reason": "null",
+        "state": "string"
+      }
+    },
+    "table": "number"
+  },
   "data_folder": "string",
   "gpu": {
     "available": "bool",

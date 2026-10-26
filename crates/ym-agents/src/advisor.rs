@@ -15,7 +15,9 @@ use ym_core::auto_provider::{
 use crate::breaker::{Breaker, Record};
 use crate::discovery::{Discovery, Locations, check_program, locate};
 use crate::probe::{Level, Prober};
-use crate::process::{CancelSource, CancelToken, EnvProfile, Outcome, RunSpec, Workdir, run};
+use crate::process::{
+    CancelSource, CancelToken, EnvProfile, Outcome, RunSpec, last_json_object, run,
+};
 use crate::tool::{Tool, Tuning};
 
 /// Where a program comes from.
@@ -331,7 +333,7 @@ fn claude_sign_in(path: &Path, version: &semver::Version, tuning: &Tuning, model
         path: Some(path.to_path_buf()),
         tool: Some(tool),
     };
-    let Ok(workdir) = Workdir::new() else {
+    let Ok(workdir) = tuning.workdir() else {
         return failed(tool);
     };
     let output = run(
@@ -343,7 +345,7 @@ fn claude_sign_in(path: &Path, version: &semver::Version, tuning: &Tuning, model
     if output.outcome != Outcome::Exited {
         return failed(tool);
     }
-    let Ok(status) = serde_json::from_slice::<Value>(&output.stdout) else {
+    let Some(status) = last_json_object(&output.stdout) else {
         return failed(tool);
     };
     tool.api = status
@@ -388,7 +390,7 @@ fn agy_sign_in(path: &Path, version: &semver::Version, tuning: &Tuning, model: &
         tool: Some(tool.clone()),
     };
     let failed = || reading(Availability::Unavailable(UnavailableReason::ProbeFailed));
-    let Ok(workdir) = Workdir::new() else {
+    let Ok(workdir) = tuning.workdir() else {
         return failed();
     };
     let output = run(

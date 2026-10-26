@@ -2,9 +2,11 @@
 //! version each is used from, and the limits of its probes.
 
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use semver::Version;
+use crate::process::Workdir;
 use ym_core::auto_provider::{
     AGY_TIMEOUT_S, AutoProvider, BREAKER_COOLDOWN_S, BREAKER_FAILURES, CLAUDE_TIMEOUT_S,
     PROBE_MIN_INTERVAL_S,
@@ -122,6 +124,9 @@ pub struct Tuning {
     pub model: Option<String>,
     /// The effort to ask for, instead of `YELLOWMOON_CLAUDE_EFFORT` / `YELLOWMOON_AGY_EFFORT` and `low`.
     pub effort: Option<String>,
+    /// Where the temporary folders are made, instead of the operating system's (the tests look for
+    /// leftovers in a folder of their own).
+    pub temp_dir: Option<PathBuf>,
 }
 
 impl Tuning {
@@ -142,6 +147,15 @@ impl Tuning {
             extra_env: Vec::new(),
             model: None,
             effort: None,
+            temp_dir: None,
+        }
+    }
+
+    /// A new private folder for one request or probe (`docs/22` section 5).
+    pub fn workdir(&self) -> std::io::Result<Workdir> {
+        match &self.temp_dir {
+            Some(dir) => Workdir::new_in(dir),
+            None => Workdir::new(),
         }
     }
 

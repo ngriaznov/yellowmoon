@@ -19,7 +19,7 @@ use crate::discovery::Locations;
 use crate::jpeg;
 use crate::probe::Level;
 use crate::process::{
-    CancelToken, EnvProfile, Outcome, RunOutput, RunSpec, Workdir, message, run,
+    CancelToken, EnvProfile, Outcome, RunOutput, RunSpec, last_json_object, message, run,
 };
 use crate::schema;
 use crate::tool::{Tool, Tuning};
@@ -60,7 +60,8 @@ impl AgyAdvisor {
 
     /// Starts the first probe (`StartProbe::Now`): up to the version. The sign-in check, which makes the
     /// program contact its service, runs only when asked for (`docs/22` D7).
-    pub(crate) fn start(&self) {
+    #[doc(hidden)]
+    pub fn start(&self) {
         self.core.refresh(Level::Light);
     }
 
@@ -72,18 +73,18 @@ impl AgyAdvisor {
         picture: &AdvisorPicture,
         instructions: &str,
     ) -> Result<AdvisorAnswer, Fail> {
+        let tuning = self.core.tuning();
         let jpeg = jpeg::encode(picture).map_err(|e| Fail::new(FailureKind::Other, e.to_string()))?;
         let io_failure = |what: &str, e: std::io::Error| {
             Fail::new(FailureKind::Other, message(&format!("could not {what}: {e}")))
         };
-        let workdir = Workdir::new().map_err(|e| io_failure("make a temporary folder", e))?;
+        let workdir = tuning.workdir().map_err(|e| io_failure("make a temporary folder", e))?;
         std::fs::write(workdir.cwd().join("photo.jpg"), &jpeg)
             .map_err(|e| io_failure("write the picture", e))?;
         let schema_file = workdir.input().join("schema.json");
         std::fs::write(&schema_file, schema::schema_text())
             .map_err(|e| io_failure("write the schema", e))?;
 
-        let tuning = self.core.tuning();
         let spec = RunSpec::new(program, workdir.cwd(), EnvProfile::Agy)
             .args(arguments(
                 &prompt(instructions),
@@ -185,14 +186,8 @@ fn interpret(
         }
     }
 
-    // Exit 0: the envelope is the last non-empty line that parses as a JSON object; banner lines come
-    // before it.
-    let envelope = output
-        .stdout
-        .split(|b| *b == b'\n')
-        .rev()
-        .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
-        .find_map(|line| serde_json::from_slice::<Value>(line).ok().filter(Value::is_object));
+    // Exit 0: the envelope is the JSON object the program printed last; banner lines may come before it.
+    let envelope = last_json_object(&output.stdout);
     let Some(envelope) = envelope else {
         return Err(Fail::new(
             FailureKind::CliFailed,

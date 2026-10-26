@@ -1135,8 +1135,10 @@ struct AppleState {
     concurrency: [usize; 3],
     /// The photos an export waits for, in the order they were asked for.
     urgent: Vec<PhotoId>,
-    /// The photos being asked about.
-    in_flight: Vec<PhotoId>,
+    /// The requests being made: the photo and the provider asked. Each provider's advisor takes at
+    /// most its own `concurrency()` at once; a request made before the provider changed finishes
+    /// without holding up the new one.
+    in_flight: Vec<(PhotoId, AutoProvider)>,
     /// The person's own instructions, `""` for the default.
     instructions: Arc<str>,
     /// Bumped when the instructions change: an answer to a request made with older instructions
@@ -1633,7 +1635,7 @@ impl State {
     fn apple_wanted(&self, p: &Photo, provider: AutoProvider) -> bool {
         p.own.is_some()
             && p.apple_result(provider).is_none()
-            && !self.apple.in_flight.contains(&p.id)
+            && !self.apple.in_flight.contains(&(p.id, provider))
             && !matches!(p.summary.status, PhotoStatus::Skipped { .. })
     }
 
@@ -1643,12 +1645,12 @@ impl State {
     /// returned. `None` while no provider acts or the chosen advisor's `concurrency()` requests are
     /// in flight.
     fn next_apple_task(&self) -> Option<usize> {
-        if self.apple.in_flight.len() >= self.apple.chosen_concurrency()
+        let provider = self.apple.chosen();
+        if self.in_flight_of(provider) >= self.apple.chosen_concurrency()
             || !self.apple.activity().is_active()
         {
             return None;
         }
-        let provider = self.apple.chosen();
         let eligible = |i: usize| {
             let p = &self.photos[i];
             self.apple_wanted(p, provider) && !matches!(p.apple_picture, PictureSlot::Rendering)
@@ -1669,9 +1671,18 @@ impl State {
     /// provider acts.
     fn apple_busy(&self) -> bool {
         let provider = self.apple.chosen();
-        !self.apple.in_flight.is_empty()
+        self.in_flight_of(provider) > 0
             || (self.apple.activity().is_active()
                 && self.photos.iter().any(|p| self.apple_wanted(p, provider)))
+    }
+
+    /// How many requests to `provider`'s advisor are in flight.
+    fn in_flight_of(&self, provider: AutoProvider) -> usize {
+        self.apple
+            .in_flight
+            .iter()
+            .filter(|(_, p)| *p == provider)
+            .count()
     }
 
     /// How many pictures the development jobs hold or are rendering.
@@ -3286,10 +3297,17 @@ impl Session {
     /// caller's thread.
     #[must_use]
     pub fn auto_status(&self) -> AutoStatus {
-        let apple = self.inner.env.apple_auto.as_ref();
-        if let Some(apple) = apple {
+        if let Some(apple) = &self.inner.env.apple_auto {
             apple.advisors.refresh(None);
         }
+        self.auto_status_cached()
+    }
+
+    /// [`Session::auto_status`] without asking any advisor to probe: what each last said. `ym` uses it,
+    /// so a run touches no program it does not use (`docs/22` section 13.1).
+    #[must_use]
+    pub fn auto_status_cached(&self) -> AutoStatus {
+        let apple = self.inner.env.apple_auto.as_ref();
         let readings: [Option<(Availability, AdvisorDetails)>; 3] = std::array::from_fn(|slot| {
             let advisor = AutoProvider::from_slot(slot)
                 .and_then(|p| apple.and_then(|a| a.advisors.get(p)))?;
@@ -4198,7 +4216,7 @@ impl Inner {
                         provider,
                         advisor,
                     };
-                    st.apple.in_flight.push(task.id);
+                    st.apple.in_flight.push((task.id, provider));
                     return Some(task);
                 }
             }
@@ -4255,7 +4273,9 @@ impl Inner {
         }));
         {
             let mut st = lock(&self.state);
-            st.apple.in_flight.retain(|id| *id != task.id);
+            st.apple
+                .in_flight
+                .retain(|r| *r != (task.id, task.provider));
         }
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.sync_apple_stage(task.epoch);
@@ -4459,7 +4479,9 @@ impl Inner {
         // the session to be idle never sees the gap between the two.
         {
             let mut st = lock(&self.state);
-            st.apple.in_flight.retain(|id| *id != task.id);
+            st.apple
+                .in_flight
+                .retain(|r| *r != (task.id, task.provider));
         }
         self.sync_apple_stage(task.epoch);
         self.apple_wake.notify_all();

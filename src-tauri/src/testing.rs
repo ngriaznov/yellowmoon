@@ -67,7 +67,9 @@ impl Harness {
     /// An app whose Apple Intelligence slot asks `advisor` (`docs/19` section 12: `FakeAdvisor`, or a
     /// scripted one); the other harnesses have none, as the golden and parity tests need.
     pub(crate) fn with_advisor(advisor: Arc<dyn ym_core::apple_auto::AutoAdvisor>) -> Self {
-        Self::with_advisors(ProviderAdvisors::default().with(ym_core::auto_provider::AutoProvider::Apple, advisor))
+        Self::with_advisors(
+            ProviderAdvisors::default().with(ym_core::auto_provider::AutoProvider::Apple, advisor),
+        )
     }
 
     /// An app with the given providers (`docs/22` section 12.6: scripted or fake ones for Apple
@@ -76,9 +78,27 @@ impl Harness {
         Self::with(WatchConfig::default(), advisors)
     }
 
+    /// An app with the given providers over a `preferences.json` written by hand before it starts (a
+    /// file with a choice the app itself would not save, such as a program without its consent).
+    pub(crate) fn with_preferences_file(advisors: ProviderAdvisors, preferences: &str) -> Self {
+        Self::with_files(WatchConfig::default(), advisors, Some(preferences))
+    }
+
     fn with(watch: WatchConfig, advisors: ProviderAdvisors) -> Self {
+        Self::with_files(watch, advisors, None)
+    }
+
+    fn with_files(
+        watch: WatchConfig,
+        advisors: ProviderAdvisors,
+        preferences: Option<&str>,
+    ) -> Self {
         let photos = tempfile::tempdir().expect("photos");
         let app_root = tempfile::tempdir().expect("app root");
+        if let Some(text) = preferences {
+            std::fs::write(app_root.path().join("preferences.json"), text)
+                .expect("preferences.json");
+        }
         let home = tempfile::tempdir().expect("home");
         let events = Arc::new(Recorder::new());
         let frames = Arc::new(FrameStore::new());

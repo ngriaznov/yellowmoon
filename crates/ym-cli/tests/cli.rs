@@ -13,7 +13,8 @@ use serde_json::Value;
 /// (`common`).
 fn ym() -> Command {
     let mut cmd = cargo_bin_cmd!("ym");
-    cmd.env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1);
+    cmd.env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1)
+        .env(common::NO_AUTO_PROVIDERS.0, common::NO_AUTO_PROVIDERS.1);
     cmd
 }
 

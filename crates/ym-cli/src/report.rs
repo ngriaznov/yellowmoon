@@ -10,6 +10,9 @@ use ym_core::apple_auto::{
     AppleAuto, AutoSteps, FailureKind, HighlightColor, PROMPT_VERSION, ShadowColor, TABLE_VERSION,
     steps_json, strength_name,
 };
+use ym_core::auto_provider::{
+    AutoProvider, IMAGE_ENCODING, SCHEMA_VERSION, failure_words, unavailable_words,
+};
 use ym_core::camera::PhotoCamera;
 use ym_core::session::PhotoView;
 use ym_core::settings::ResolvedSettings;
@@ -129,8 +132,8 @@ pub fn error_value(kind: &str, message: &str) -> Value {
     json!({ "kind": kind, "message": message })
 }
 
-/// When `apple_auto` goes into a photo's object: `info` always has it, `render` only for a photo
-/// Apple Auto acted on (`docs/19` section 8).
+/// When `apple_auto` and `auto_advisor` go into a photo's object: `info` always has them, `render`
+/// only for a photo a provider acted on (`docs/19` section 8, `docs/22` section 14.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppleAutoField {
     /// Every photo (`ym info --json`).
@@ -139,16 +142,9 @@ pub enum AppleAutoField {
     WhenActive,
 }
 
-/// The per-photo `apple_auto` object of `ym info --json` and `ym render --json` (`docs/19` section
-/// 8): `{ "state", "reason", "model", "os", "instructions", "instructions_sha256", "prompt",
-/// "table" }`, with `steps`, `scene` and `plan` when the photo was answered. `reason` is the wire
-/// name of why Apple Auto is not available (`unavailable`) or why the request failed (`failed`),
-/// else null; `model`, `os` and the instructions name the model that answered or was asked and what
-/// it read, null otherwise. `steps` are the photo's own answer, as `ym:AppleAuto` records them, a
-/// step the model left empty `null`; the steps in effect can be its burst's (`docs/19` section 5).
-#[must_use]
-pub fn apple_auto_value(apple: &AppleAuto) -> Value {
-    let (state, reason, info) = match apple {
+/// The state, the reason and the info of a photo's Auto state, as `--json` words them.
+fn state_reason_info(apple: &AppleAuto) -> (&'static str, Value, Option<&ym_core::apple_auto::AdvisorInfo>) {
+    match apple {
         AppleAuto::Off => ("off", Value::Null, None),
         AppleAuto::Unavailable { reason } => (
             "unavailable",
@@ -162,7 +158,24 @@ pub fn apple_auto_value(apple: &AppleAuto) -> Value {
             serde_json::to_value(kind).unwrap_or(Value::Null),
             Some(info),
         ),
-    };
+    }
+}
+
+/// The per-photo `apple_auto` object of `ym info --json` and `ym render --json` (`docs/19` section
+/// 8), **kept one version, deprecated**, as an Apple-only view (`docs/22` section 14.1): for the
+/// provider `apple` it is `{ "state", "reason", "model", "os", "instructions", "instructions_sha256",
+/// "prompt", "table" }`, with `steps`, `scene` and `plan` when the photo was answered; for every other
+/// provider it is `{ "state": "off" }`. `reason` is the wire name of why Apple Auto is not available
+/// (`unavailable`) or why the request failed (`failed`), else null; `model`, `os` and the instructions
+/// name the model that answered or was asked and what it read, null otherwise. `steps` are the photo's
+/// own answer, as `ym:AutoAdvisor` records them, a step the model left empty `null`; the steps in
+/// effect can be its burst's (`docs/19` section 5).
+#[must_use]
+pub fn apple_auto_value(apple: &AppleAuto, provider: AutoProvider) -> Value {
+    if provider != AutoProvider::Apple {
+        return json!({ "state": "off" });
+    }
+    let (state, reason, info) = state_reason_info(apple);
     let mut value = json!({
         "state": state,
         "reason": reason,
@@ -172,6 +185,55 @@ pub fn apple_auto_value(apple: &AppleAuto) -> Value {
         "instructions_sha256": info.map(|i| i.instructions.instructions_sha256.as_str()),
         "prompt": PROMPT_VERSION,
         "table": TABLE_VERSION,
+    });
+    if let (AppleAuto::Answered { answer, .. }, Value::Object(map)) = (apple, &mut value) {
+        map.insert("steps".to_owned(), steps_json(&answer.steps));
+        map.insert("scene".to_owned(), json!(answer.scene));
+        map.insert("plan".to_owned(), json!(answer.plan));
+    }
+    value
+}
+
+/// The per-photo `auto_advisor` object of `ym info --json` and `ym render --json` (`docs/22` section
+/// 14.1): every key, sorted, `{ "api", "image", "instructions", "instructions_sha256", "model", "os",
+/// "plan", "prompt", "provider", "reason", "reproducible", "scene", "schema", "state", "steps",
+/// "table", "tool_version" }` (the last four lines' worth being `null` where they do not apply), with
+/// `steps`, `scene` and `plan` only when the photo was answered.
+///
+/// `provider` and `state` (`off`, `unavailable`, `pending`, `answered`, `failed`) are always set;
+/// `reason` is the wire name of the unavailable reason or of the failure; `model`, `os`,
+/// `tool_version`, `api`, `instructions` and `instructions_sha256` come from the answer's or the
+/// failure's [`AdvisorInfo`](ym_core::apple_auto::AdvisorInfo) and are null otherwise (`os` is null for
+/// the programs); `prompt`, `schema`, `image`, `table` and `reproducible` are the provider's constants
+/// (null for Yellowmoon's own Auto; `schema` and `image` null for Apple; `reproducible` true for Apple
+/// on one Mac and macOS build, false for the programs). The program's path is not in it. `provider`
+/// is the one that acted, or the one chosen for a photo it did not act on.
+#[must_use]
+pub fn auto_advisor_value(apple: &AppleAuto, chosen: AutoProvider) -> Value {
+    let (state, reason, info) = state_reason_info(apple);
+    let provider = info.map_or(chosen, |i| i.provider);
+    let programs = provider.is_cloud();
+    let own = provider == AutoProvider::Yellowmoon;
+    let tool = info.and_then(|i| i.tool.as_ref());
+    let mut value = json!({
+        "api": tool.and_then(|t| t.api.as_deref()),
+        "image": programs.then_some(IMAGE_ENCODING),
+        "instructions": info.map(|i| i.instructions.instructions),
+        "instructions_sha256": info.map(|i| i.instructions.instructions_sha256.as_str()),
+        "model": info.map(|i| i.model.as_str()),
+        "os": info.map(|i| i.os.as_str()).filter(|os| !os.is_empty()),
+        "prompt": (!own).then_some(provider.prompt_version()),
+        "provider": provider.id(),
+        "reason": reason,
+        "reproducible": match provider {
+            AutoProvider::Yellowmoon => None,
+            AutoProvider::Apple => Some(true),
+            AutoProvider::Claude | AutoProvider::Agy => Some(false),
+        },
+        "schema": programs.then_some(SCHEMA_VERSION),
+        "state": state,
+        "table": (!own).then_some(TABLE_VERSION),
+        "tool_version": tool.map(|t| t.version.as_str()),
     });
     if let (AppleAuto::Answered { answer, .. }, Value::Object(map)) = (apple, &mut value) {
         map.insert("steps".to_owned(), steps_json(&answer.steps));
@@ -240,35 +302,47 @@ pub fn steps_text(steps: AutoSteps) -> String {
     })
 }
 
-/// A failure in words: the kind's words, with Apple's message for a failure of no known kind.
-fn failure_text(kind: FailureKind, message: &str) -> String {
-    if kind == FailureKind::Other && !message.trim().is_empty() {
-        format!("{}: {}", kind.words(), line_text(message.trim()))
+/// A failure in words (`docs/22` section 9.1): the provider's words for the kind, with the message
+/// for a failure of no known kind (`other`) and for `cli_failed`.
+fn failure_text(provider: AutoProvider, kind: FailureKind, message: &str) -> String {
+    let words = failure_words(provider, kind);
+    if matches!(kind, FailureKind::Other | FailureKind::CliFailed) && !message.trim().is_empty() {
+        format!("{words}: {}", line_text(message.trim()))
     } else {
-        kind.words().to_owned()
+        words.to_owned()
     }
 }
 
-/// The **Apple Auto** row of `ym info` (`docs/19` section 8). `in_effect` is the steps the photo's
-/// Auto values use (`AutoEstimates::apple_steps`: its own answer, or its burst's), `None` when Auto
-/// is the rule.
+/// The **Auto grading** row of `ym info` (`docs/19` section 8, `docs/22` section 13.4). `in_effect` is
+/// the steps the photo's Auto values use (`AutoEstimates::apple_steps`: its own answer, or its
+/// burst's), `None` when Auto is the rule. `provider` is the chosen provider (the answer's own names
+/// it); `tool_version` is the version of its program, for "too old".
 ///
-/// * answered: what the steps do, the scene and the plan, `Brighter +0.3 EV · contrast +15 · scene
-///   "Backlit portrait at dusk" · plan "Warm, soft contrast"` (`No change · …` for keep on every
-///   step), with `(shared with its burst)` when the burst's steps differ from the photo's own;
-/// * failed: `Failed (macOS asked Yellowmoon to wait); Yellowmoon's own Auto`, or the burst's
+/// * answered: the provider's name, what the steps do, the scene and the plan, `Claude Code ·
+///   Brighter +0.3 EV · contrast +15 · scene "Backlit portrait at dusk" · plan "Warm, soft
+///   contrast"` (`No change · …` for keep on every step), with `(shared with its burst)` when the
+///   burst's steps differ from the photo's own;
+/// * failed: `Failed (Claude Code reported a rate limit); Yellowmoon's own Auto`, or the burst's
 ///   steps when the burst has them;
-/// * `Off`, `Not available (Apple Intelligence is off in System Settings)`, and
-///   `Waiting for Apple Intelligence` for a photo still waiting for its answer.
+/// * `Yellowmoon's own Auto` when no provider acts, `Not available (Claude Code isn't signed in)`,
+///   and `Waiting for Claude Code` for a photo still waiting for its answer.
 #[must_use]
-pub fn apple_auto_text(apple: &AppleAuto, in_effect: Option<AutoSteps>) -> String {
+pub fn auto_text(
+    apple: &AppleAuto,
+    in_effect: Option<AutoSteps>,
+    provider: AutoProvider,
+    tool_version: Option<&str>,
+) -> String {
     match apple {
-        AppleAuto::Off => "Off".to_owned(),
-        AppleAuto::Unavailable { reason } => format!("Not available ({})", reason.words()),
-        AppleAuto::Pending => "Waiting for Apple Intelligence".to_owned(),
-        AppleAuto::Answered { answer, .. } => {
+        AppleAuto::Off => AutoProvider::Yellowmoon.name().to_owned(),
+        AppleAuto::Unavailable { reason } => format!(
+            "Not available ({})",
+            unavailable_words(provider, *reason, tool_version)
+        ),
+        AppleAuto::Pending => format!("Waiting for {}", provider.name()),
+        AppleAuto::Answered { answer, info } => {
             let steps = in_effect.unwrap_or(answer.steps);
-            let mut text = steps_text(steps);
+            let mut text = format!("{} · {}", info.provider.name(), steps_text(steps));
             if steps != answer.steps {
                 text.push_str(" (shared with its burst)");
             }
@@ -282,8 +356,10 @@ pub fn apple_auto_text(apple: &AppleAuto, in_effect: Option<AutoSteps>) -> Strin
             }
             text
         }
-        AppleAuto::Failed { kind, message, .. } => {
-            let why = failure_text(*kind, message);
+        AppleAuto::Failed {
+            kind, message, info, ..
+        } => {
+            let why = failure_text(info.provider, *kind, message);
             match in_effect {
                 Some(steps) => format!("Failed ({why}); its burst's answer: {}", steps_text(steps)),
                 None => format!("Failed ({why}); Yellowmoon's own Auto"),
@@ -292,12 +368,14 @@ pub fn apple_auto_text(apple: &AppleAuto, in_effect: Option<AutoSteps>) -> Strin
     }
 }
 
-/// `camera`, `look`, `auto`, `auto_source`, `apple_auto` and `settings` of a developed photo, ready
-/// to be merged into an object.
+/// `camera`, `look`, `auto`, `auto_source`, `apple_auto`, `auto_advisor` and `settings` of a
+/// developed photo, ready to be merged into an object.
 ///
-/// `auto_source` is which Auto made the automatic values (`rule` or `apple`, as `ym:Auto` records
-/// it); `apple_auto` is [`apple_auto_value`], always or only for a photo Apple Auto acted on
-/// (`field`). `settings` is the document an export records as `ym:Settings`
+/// `auto_source` is which Auto made the automatic values (`rule`, `apple`, `claude` or `agy`, as
+/// `ym:Auto` records it); `apple_auto` is [`apple_auto_value`] (the deprecated Apple-only view) and
+/// `auto_advisor` is [`auto_advisor_value`], each always or, in `render`, only for a photo a provider
+/// acted on (`field`; `apple_auto` only for one Apple Intelligence acted on). `settings` is the
+/// document an export records as `ym:Settings`
 /// ([`ResolvedSettings::pinned_settings`]): feed it back with `--settings` to get the same file.
 #[must_use]
 pub fn develop_fields(
@@ -320,9 +398,13 @@ pub fn develop_fields(
     );
     out.insert("auto_source", resolved.estimates.source.name());
     let apple = &resolved.estimates.apple;
+    let provider = resolved.estimates.provider;
     let acted = !matches!(apple, AppleAuto::Off | AppleAuto::Unavailable { .. });
+    if field == AppleAutoField::Always || (acted && provider == AutoProvider::Apple) {
+        out.insert("apple_auto", apple_auto_value(apple, provider));
+    }
     if field == AppleAutoField::Always || acted {
-        out.insert("apple_auto", apple_auto_value(apple));
+        out.insert("auto_advisor", auto_advisor_value(apple, provider));
     }
     out.insert(
         "settings",
@@ -406,6 +488,7 @@ mod tests {
                 steps: s,
                 scene: scene.to_owned(),
                 plan: plan.to_owned(),
+                served_model: None,
             },
             info: info(),
         }
@@ -459,73 +542,164 @@ mod tests {
         assert_eq!(steps_text(keep_only), "No change");
     }
 
+    fn claude_info() -> ym_core::apple_auto::AdvisorInfo {
+        ym_core::apple_auto::AdvisorInfo::cli(
+            AutoProvider::Claude,
+            "claude-sonnet-5-5",
+            ym_core::auto_provider::ToolInfo {
+                version: "2.1.310".to_owned(),
+                api: Some("firstParty".to_owned()),
+                auth: Some("oauth_token".to_owned()),
+            },
+        )
+    }
+
     #[test]
-    fn the_apple_auto_row_says_what_happened() {
+    fn the_auto_grading_row_says_what_happened() {
         use ym_core::apple_auto::UnavailableReason;
+        let apple = AutoProvider::Apple;
         let a = answered(
             steps(1, 0, 1, 0),
             "Backlit portrait at dusk",
             "Warm and soft",
         );
         assert_eq!(
-            apple_auto_text(&a, Some(steps(1, 0, 1, 0))),
-            "Brighter +0.3 EV · contrast +15 · scene \"Backlit portrait at dusk\" · plan \"Warm and soft\""
+            auto_text(&a, Some(steps(1, 0, 1, 0)), apple, None),
+            "Apple Intelligence · Brighter +0.3 EV · contrast +15 · scene \"Backlit portrait at dusk\" · plan \"Warm and soft\""
         );
         // A burst's shared steps are the ones in effect, and the row says so.
         assert_eq!(
-            apple_auto_text(&a, Some(steps(0, 0, 1, 0))),
-            "Contrast +15 (shared with its burst) · scene \"Backlit portrait at dusk\" · plan \"Warm and soft\""
+            auto_text(&a, Some(steps(0, 0, 1, 0)), apple, None),
+            "Apple Intelligence · Contrast +15 (shared with its burst) · scene \"Backlit portrait at dusk\" · plan \"Warm and soft\""
+        );
+        // The name is the provider's that answered.
+        let claude = AppleAuto::Answered {
+            answer: ym_core::apple_auto::AdvisorAnswer {
+                steps: steps(1, 0, 1, 0),
+                scene: "Harbour".to_owned(),
+                plan: "Cool and crisp".to_owned(),
+                served_model: None,
+            },
+            info: claude_info(),
+        };
+        assert_eq!(
+            auto_text(&claude, Some(steps(1, 0, 1, 0)), AutoProvider::Claude, None),
+            "Claude Code · Brighter +0.3 EV · contrast +15 · scene \"Harbour\" · plan \"Cool and crisp\""
         );
         // A scene with a control character in it does nothing to the terminal.
         let hostile = answered(steps(0, 0, 0, 0), "a\u{1b}[2Jb", "");
         assert_eq!(
-            apple_auto_text(&hostile, Some(steps(0, 0, 0, 0))),
-            "No change · scene \"a\\x1b[2Jb\""
+            auto_text(&hostile, Some(steps(0, 0, 0, 0)), apple, None),
+            "Apple Intelligence · No change · scene \"a\\x1b[2Jb\""
         );
-        assert_eq!(apple_auto_text(&AppleAuto::Off, None), "Off");
         assert_eq!(
-            apple_auto_text(
-                &AppleAuto::Unavailable {
-                    reason: UnavailableReason::AppleIntelligenceOff
-                },
-                None
-            ),
-            "Not available (Apple Intelligence is off in System Settings)"
+            auto_text(&AppleAuto::Off, None, AutoProvider::Yellowmoon, None),
+            "Yellowmoon's own Auto"
         );
-        let failed = |kind, message: &str| AppleAuto::Failed {
-            kind,
-            message: message.to_owned(),
-            info: ym_core::apple_auto::AdvisorInfo::new("m", "o"),
+        let unavailable = |provider, reason, version| {
+            auto_text(&AppleAuto::Unavailable { reason }, None, provider, version)
         };
         assert_eq!(
-            apple_auto_text(&failed(FailureKind::RateLimited, "busy"), None),
+            unavailable(apple, UnavailableReason::AppleIntelligenceOff, None),
+            "Not available (Apple Intelligence is off in System Settings)"
+        );
+        assert_eq!(
+            unavailable(AutoProvider::Claude, UnavailableReason::SignedOut, None),
+            "Not available (Claude Code isn't signed in)"
+        );
+        assert_eq!(
+            unavailable(AutoProvider::Agy, UnavailableReason::TooOld, Some("1.0.9")),
+            "Not available (Antigravity 1.0.9 is too old)"
+        );
+        assert_eq!(
+            unavailable(AutoProvider::Claude, UnavailableReason::NotConsented, None),
+            "Not available (you haven't agreed to send photos to Claude Code yet)"
+        );
+        assert_eq!(
+            auto_text(&AppleAuto::Pending, None, AutoProvider::Claude, None),
+            "Waiting for Claude Code"
+        );
+        assert_eq!(
+            auto_text(&AppleAuto::Pending, None, apple, None),
+            "Waiting for Apple Intelligence"
+        );
+        let failed = |info: ym_core::apple_auto::AdvisorInfo, kind, message: &str| AppleAuto::Failed {
+            kind,
+            message: message.to_owned(),
+            info,
+        };
+        let apple_info = || ym_core::apple_auto::AdvisorInfo::new("m", "o");
+        assert_eq!(
+            auto_text(&failed(apple_info(), FailureKind::RateLimited, "busy"), None, apple, None),
             "Failed (macOS asked Yellowmoon to wait); Yellowmoon's own Auto"
         );
         assert_eq!(
-            apple_auto_text(&failed(FailureKind::Other, "The model said no."), None),
+            auto_text(
+                &failed(apple_info(), FailureKind::Other, "The model said no."),
+                None,
+                apple,
+                None
+            ),
             "Failed (an error: The model said no.); Yellowmoon's own Auto"
         );
         assert_eq!(
-            apple_auto_text(&failed(FailureKind::Timeout, ""), Some(steps(-1, 0, 0, 0))),
+            auto_text(
+                &failed(apple_info(), FailureKind::Timeout, ""),
+                Some(steps(-1, 0, 0, 0)),
+                apple,
+                None
+            ),
             "Failed (no answer within 30 seconds); its burst's answer: Darker -0.3 EV"
+        );
+        // The programs have their own words, and `cli_failed` carries the program's message.
+        assert_eq!(
+            auto_text(
+                &failed(claude_info(), FailureKind::RateLimited, "429"),
+                None,
+                AutoProvider::Claude,
+                None
+            ),
+            "Failed (Claude Code reported a rate limit); Yellowmoon's own Auto"
+        );
+        assert_eq!(
+            auto_text(
+                &failed(claude_info(), FailureKind::CliFailed, "it exited with code 1"),
+                None,
+                AutoProvider::Claude,
+                None
+            ),
+            "Failed (Claude Code reported an error: it exited with code 1); Yellowmoon's own Auto"
+        );
+        assert_eq!(
+            auto_text(
+                &failed(claude_info(), FailureKind::Timeout, ""),
+                None,
+                AutoProvider::Claude,
+                None
+            ),
+            "Failed (no answer within 90 seconds); Yellowmoon's own Auto"
         );
     }
 
     #[test]
-    fn the_apple_auto_object_has_steps_scene_and_plan_only_when_answered() {
+    fn the_apple_auto_object_is_an_apple_only_view_with_steps_only_when_answered() {
         use ym_core::apple_auto::{InstructionsId, UnavailableReason};
+        let apple = AutoProvider::Apple;
         let sha = InstructionsId::default().instructions_sha256;
-        let v = apple_auto_value(&answered(
-            AutoSteps {
-                exposure: Some(1),
-                white: Some(-1),
-                contrast: Some(1),
-                saturation: Some(0),
-                ..AutoSteps::default()
-            },
-            "Dusk",
-            "Cool and moody",
-        ));
+        let v = apple_auto_value(
+            &answered(
+                AutoSteps {
+                    exposure: Some(1),
+                    white: Some(-1),
+                    contrast: Some(1),
+                    saturation: Some(0),
+                    ..AutoSteps::default()
+                },
+                "Dusk",
+                "Cool and moody",
+            ),
+            apple,
+        );
         assert_eq!(
             v,
             json!({
@@ -542,19 +716,25 @@ mod tests {
                 "plan": "Cool and moody"
             })
         );
-        let v = apple_auto_value(&AppleAuto::Unavailable {
-            reason: UnavailableReason::NotAMac,
-        });
+        let v = apple_auto_value(
+            &AppleAuto::Unavailable {
+                reason: UnavailableReason::NotAMac,
+            },
+            apple,
+        );
         assert_eq!(
             v,
             json!({ "state": "unavailable", "reason": "not_a_mac", "model": null, "os": null,
                     "instructions": null, "instructions_sha256": null, "prompt": 3, "table": 2 })
         );
-        let v = apple_auto_value(&AppleAuto::Failed {
-            kind: FailureKind::RateLimited,
-            message: "busy".to_owned(),
-            info: info().with_instructions("Moody."),
-        });
+        let v = apple_auto_value(
+            &AppleAuto::Failed {
+                kind: FailureKind::RateLimited,
+                message: "busy".to_owned(),
+                info: info().with_instructions("Moody."),
+            },
+            apple,
+        );
         assert_eq!(v["state"], "failed");
         assert_eq!(v["reason"], "rate_limited");
         assert_eq!(v["model"], "AFM 3 Core");
@@ -565,10 +745,152 @@ mod tests {
         );
         assert!(v.get("steps").is_none() && v.get("scene").is_none() && v.get("plan").is_none());
         assert_eq!(
-            apple_auto_value(&AppleAuto::Off),
+            apple_auto_value(&AppleAuto::Off, apple),
             json!({ "state": "off", "reason": null, "model": null, "os": null,
                     "instructions": null, "instructions_sha256": null, "prompt": 3, "table": 2 })
         );
+        // For every other provider the old object is `{ "state": "off" }`, so a script that looks for
+        // `state == "answered"` finds only what Apple graded.
+        for provider in [AutoProvider::Yellowmoon, AutoProvider::Claude, AutoProvider::Agy] {
+            let answered = AppleAuto::Answered {
+                answer: ym_core::apple_auto::AdvisorAnswer {
+                    steps: AutoSteps::keep(),
+                    scene: "x".to_owned(),
+                    plan: "y".to_owned(),
+                    served_model: None,
+                },
+                info: claude_info(),
+            };
+            assert_eq!(apple_auto_value(&answered, provider), json!({ "state": "off" }));
+        }
+    }
+
+    #[test]
+    fn the_auto_advisor_object_has_every_key_sorted_and_steps_only_when_answered() {
+        use ym_core::apple_auto::{InstructionsId, UnavailableReason};
+        let sha = InstructionsId::default().instructions_sha256;
+        let claude = AppleAuto::Answered {
+            answer: ym_core::apple_auto::AdvisorAnswer {
+                steps: steps(1, 0, 1, 0),
+                scene: "Harbour in morning light".to_owned(),
+                plan: "Cool, crisp morning".to_owned(),
+                served_model: None,
+            },
+            info: claude_info(),
+        };
+        let v = auto_advisor_value(&claude, AutoProvider::Claude);
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "api", "image", "instructions", "instructions_sha256", "model", "os", "plan",
+                "prompt", "provider", "reason", "reproducible", "scene", "schema", "state",
+                "steps", "table", "tool_version"
+            ]
+        );
+        assert_eq!(
+            (v["api"].clone(), v["image"].clone(), v["model"].clone(), v["os"].clone()),
+            (
+                json!("firstParty"),
+                json!("jpeg444q92@768"),
+                json!("claude-sonnet-5-5"),
+                Value::Null
+            )
+        );
+        assert_eq!(
+            (
+                v["prompt"].clone(),
+                v["schema"].clone(),
+                v["table"].clone(),
+                v["reproducible"].clone(),
+                v["tool_version"].clone(),
+                v["state"].clone(),
+                v["reason"].clone()
+            ),
+            (
+                json!(1),
+                json!(1),
+                json!(2),
+                json!(false),
+                json!("2.1.310"),
+                json!("answered"),
+                Value::Null
+            )
+        );
+        assert_eq!(v["instructions_sha256"], json!(sha));
+        assert_eq!(v["scene"], "Harbour in morning light");
+        // Apple's: no `api`, `image`, `schema` or `tool_version`; the macOS build; reproducible.
+        let v = auto_advisor_value(&answered(steps(0, 0, 0, 0), "s", "p"), AutoProvider::Apple);
+        assert_eq!(
+            (
+                v["provider"].clone(),
+                v["os"].clone(),
+                v["api"].clone(),
+                v["image"].clone(),
+                v["schema"].clone(),
+                v["tool_version"].clone(),
+                v["prompt"].clone(),
+                v["reproducible"].clone()
+            ),
+            (
+                json!("apple"),
+                json!("27.0.1 (27A404)"),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                json!(3),
+                json!(true)
+            )
+        );
+        // Off, unavailable and pending name the chosen provider and carry no info; Yellowmoon's own
+        // Auto has no prompt, table or reproducibility.
+        let v = auto_advisor_value(&AppleAuto::Off, AutoProvider::Yellowmoon);
+        assert_eq!(
+            (
+                v["provider"].clone(),
+                v["state"].clone(),
+                v["prompt"].clone(),
+                v["table"].clone(),
+                v["reproducible"].clone(),
+                v["model"].clone()
+            ),
+            (
+                json!("yellowmoon"),
+                json!("off"),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null
+            )
+        );
+        let v = auto_advisor_value(
+            &AppleAuto::Unavailable {
+                reason: UnavailableReason::SignedOut,
+            },
+            AutoProvider::Claude,
+        );
+        assert_eq!(
+            (v["provider"].clone(), v["state"].clone(), v["reason"].clone(), v["prompt"].clone()),
+            (json!("claude"), json!("unavailable"), json!("signed_out"), json!(1))
+        );
+        assert!(v.get("steps").is_none());
+        let v = auto_advisor_value(&AppleAuto::Pending, AutoProvider::Agy);
+        assert_eq!(
+            (v["provider"].clone(), v["state"].clone(), v["schema"].clone()),
+            (json!("agy"), json!("pending"), json!(1))
+        );
+        let failed = AppleAuto::Failed {
+            kind: FailureKind::Timeout,
+            message: "slow".to_owned(),
+            info: claude_info().with_model("sonnet"),
+        };
+        let v = auto_advisor_value(&failed, AutoProvider::Claude);
+        assert_eq!(
+            (v["state"].clone(), v["reason"].clone(), v["model"].clone()),
+            (json!("failed"), json!("timeout"), json!("sonnet"))
+        );
+        assert!(v.get("steps").is_none() && v.get("plan").is_none());
     }
 
     #[test]

@@ -2034,6 +2034,20 @@ impl ym_core::apple_auto::AutoAdvisor for Scripted {
     }
 }
 
+/// What `Scripted` says about itself on the wire: Apple Intelligence's shape, model `Scripted`.
+fn scripted_info(sha: &str) -> AppleAutoInfo {
+    AppleAutoInfo {
+        provider: AutoProvider::Apple,
+        model: "Scripted".into(),
+        os: "test".into(),
+        tool_version: None,
+        api: None,
+        prompt: 3,
+        instructions: crate::wire::AppleAutoInstructions::Default,
+        instructions_sha256: sha.to_owned(),
+    }
+}
+
 fn apple_state(h: &Harness, id: PhotoId) -> AppleAuto {
     h.api.get_settings(id).expect("settings").estimates.apple
 }
@@ -2058,23 +2072,27 @@ fn apple_auto_reaches_the_webview_through_the_settings_the_status_and_settings_c
         },
         scene: "A grey gradient".into(),
         plan: "Teal shadows, more contrast".into(),
+        served_model: None,
     };
     let h = Harness::with_advisor(Arc::new(Scripted(Ok(answer))));
-    let status = h.api.apple_auto_status().expect("status");
-    assert!(status.available && status.active && status.preference);
-    assert_eq!(status.reason, None);
-    let sha = ym_core::apple_auto::InstructionsId::default().instructions_sha256;
+    let status = h.api.auto_status().expect("status");
+    assert!(status.visible && status.active);
     assert_eq!(
-        status.info,
-        Some(AppleAutoInfo {
-            model: "Scripted".into(),
-            os: "test".into(),
-            instructions: crate::wire::AppleAutoInstructions::Default,
-            instructions_sha256: sha.clone(),
-        })
+        (status.preference, status.chosen, status.effective),
+        (
+            AutoProvider::Apple,
+            AutoProvider::Apple,
+            AutoProvider::Apple
+        )
     );
-    assert_eq!(status.mode, AppleAutoMode::FromPreference);
-    assert_eq!((status.prompt, status.table), (3, 2));
+    let apple = &status.providers[1];
+    assert_eq!(apple.provider, AutoProvider::Apple);
+    assert_eq!(apple.state, ProviderState::Available);
+    assert_eq!(apple.reason, None);
+    assert!(apple.listed && apple.selectable && apple.consent && !apple.experimental);
+    let sha = ym_core::apple_auto::InstructionsId::default().instructions_sha256;
+    assert_eq!(apple.info, Some(scripted_info(&sha)));
+    assert_eq!(status.table, 2);
     assert_eq!(status.own_instructions, "");
     assert_eq!(
         status.default_instructions,
@@ -2127,6 +2145,7 @@ fn apple_auto_reaches_the_webview_through_the_settings_the_status_and_settings_c
     );
     assert_eq!(info.model, "Scripted");
     assert_eq!(rs.estimates.source, AutoSource::Apple);
+    assert_eq!(rs.estimates.provider, AutoProvider::Apple);
     assert_eq!(
         (rs.estimates.contrast, rs.estimates.saturation),
         (Num(30.0), Num(-15.0))
@@ -2158,14 +2177,14 @@ fn apple_auto_reaches_the_webview_through_the_settings_the_status_and_settings_c
         matches!(apple_state(&h, id), AppleAuto::Answered { .. })
     });
 
-    // The preference off: every photo back to the rule at once, and the webview is told.
+    // Yellowmoon's own Auto chosen: every photo back to the rule at once, and the webview is told.
     let asks = h.api.core().session.apple_auto_asks();
     let before = h.events.events().len();
     let prefs = h
         .api
-        .preferences_set(&prefs_patch(json!({ "apple_auto": false })))
+        .preferences_set(&prefs_patch(json!({ "auto_provider": "yellowmoon" })))
         .expect("off");
-    assert!(!prefs.apple_auto);
+    assert_eq!(prefs.auto_provider, AutoProvider::Yellowmoon);
     let off = h.api.get_settings(id).expect("settings");
     assert_eq!(off.estimates.apple, AppleAuto::Off);
     assert_eq!(off.estimates.source, AutoSource::Rule);
@@ -2176,16 +2195,24 @@ fn apple_auto_reaches_the_webview_through_the_settings_the_status_and_settings_c
     wait_until("settings_changed for the preference", || {
         h.events.events()[before..].contains(&AppEvent::SettingsChanged(id))
     });
-    let status = h.api.apple_auto_status().expect("status");
-    assert!(status.available && !status.active && !status.preference);
+    let status = h.api.auto_status().expect("status");
+    assert!(status.visible && !status.active);
+    assert_eq!(
+        (status.preference, status.effective),
+        (AutoProvider::Yellowmoon, AutoProvider::Yellowmoon)
+    );
+    assert_eq!(status.providers[1].state, ProviderState::Available);
 
-    // On again: the answer was kept, so nothing is asked again.
+    // Apple Intelligence again: the answer was kept, so nothing is asked again.
     h.api
-        .preferences_set(&prefs_patch(json!({ "apple_auto": true })))
+        .preferences_set(&prefs_patch(json!({ "auto_provider": "apple" })))
         .expect("on");
     assert!(matches!(apple_state(&h, id), AppleAuto::Answered { .. }));
     assert_eq!(h.api.core().session.apple_auto_asks(), asks);
-    assert!(h.api.preferences_get().expect("prefs").apple_auto);
+    assert_eq!(
+        h.api.preferences_get().expect("prefs").auto_provider,
+        AutoProvider::Apple
+    );
 
     // New instructions: saved, every photo asked again; too long: refused with a plain message.
     let asks = h.api.core().session.apple_auto_asks();
@@ -2207,7 +2234,7 @@ fn apple_auto_reaches_the_webview_through_the_settings_the_status_and_settings_c
         h.api.core().session.apple_auto_asks() > asks
             && matches!(apple_state(&h, id), AppleAuto::Answered { .. })
     });
-    let status = h.api.apple_auto_status().expect("status");
+    let status = h.api.auto_status().expect("status");
     assert_eq!(
         status.instructions,
         crate::wire::AppleAutoInstructions::Edited
@@ -2247,13 +2274,9 @@ fn a_failed_question_crosses_the_bridge_and_auto_stays_the_rule() {
         AppleAuto::Failed {
             kind: AppleAutoFailure::Refused,
             message: "Not this one.".into(),
-            info: AppleAutoInfo {
-                model: "Scripted".into(),
-                os: "test".into(),
-                instructions: crate::wire::AppleAutoInstructions::Default,
-                instructions_sha256: ym_core::apple_auto::InstructionsId::default()
-                    .instructions_sha256,
-            }
+            info: scripted_info(
+                &ym_core::apple_auto::InstructionsId::default().instructions_sha256
+            ),
         }
     );
     assert_eq!(rs.estimates.source, AutoSource::Rule);
@@ -2264,12 +2287,16 @@ fn a_failed_question_crosses_the_bridge_and_auto_stays_the_rule() {
 }
 
 #[test]
-fn without_an_advisor_apple_auto_is_off_and_its_row_stays_hidden() {
+fn without_an_advisor_every_provider_is_off_and_the_row_stays_hidden() {
     let h = Harness::new();
-    let status = h.api.apple_auto_status().expect("status");
-    assert!(!status.available && !status.active);
-    assert_eq!(status.reason, None);
-    assert_eq!(status.info, None);
+    let status = h.api.auto_status().expect("status");
+    assert!(!status.visible && !status.active);
+    assert_eq!(status.effective, AutoProvider::Yellowmoon);
+    for provider in &status.providers[1..] {
+        assert_eq!(provider.state, ProviderState::NotInstalled);
+        assert_eq!(provider.info, None);
+        assert!(!provider.listed && !provider.selectable);
+    }
     h.open(1);
     h.develop();
     let rs = h.api.get_settings(h.first()).expect("settings");
@@ -2289,16 +2316,342 @@ fn the_system_advisor_off_apple_silicon_says_why_it_is_not_available() {
         return;
     }
     let h = Harness::with_advisor(ym_apple::system_advisor());
-    let status = h.api.apple_auto_status().expect("status");
-    assert!(!status.available && !status.active);
+    let status = h.api.auto_status().expect("status");
+    assert!(!status.visible && !status.active);
+    let apple = &status.providers[1];
+    assert_eq!(apple.state, ProviderState::Unavailable);
+    assert!(!apple.listed && !apple.selectable);
     assert!(
         matches!(
-            status.reason,
+            apple.reason,
             Some(AppleAutoReason::NotAMac | AppleAutoReason::IntelMac)
         ),
         "{:?}",
-        status.reason
+        apple.reason
     );
+}
+
+/// The providers of a computer: Apple Intelligence switched off, Claude Code signed in and
+/// Antigravity not, as scripted fakes (`docs/22` section 12.9).
+fn a_computer_with_claude_signed_in() -> (
+    ym_core::auto_provider::ProviderAdvisors,
+    Arc<ym_core::auto_provider::FakeProvider>,
+    Arc<ym_core::auto_provider::FakeProvider>,
+) {
+    use ym_core::apple_auto::{Availability, UnavailableReason};
+    use ym_core::auto_provider::{AutoProvider as Core, FakeProvider, ProviderAdvisors};
+    let apple = FakeProvider::new(
+        Core::Apple,
+        Availability::Unavailable(UnavailableReason::AppleIntelligenceOff),
+    );
+    let claude = Arc::new(FakeProvider::available(Core::Claude).with_served_model("claude-fake-1"));
+    let agy = Arc::new(FakeProvider::new(
+        Core::Agy,
+        Availability::Unavailable(UnavailableReason::SignedOut),
+    ));
+    let advisors = ProviderAdvisors::default()
+        .with(Core::Apple, Arc::new(apple))
+        .with(Core::Claude, claude.clone())
+        .with(Core::Agy, agy.clone());
+    (advisors, claude, agy)
+}
+
+#[test]
+fn auto_status_lists_every_provider_the_way_the_dropdown_shows_them() {
+    let (advisors, _claude, _agy) = a_computer_with_claude_signed_in();
+    let h = Harness::with_advisors(advisors);
+    let status = h.api.auto_status().expect("status");
+    // The row shows: a program is there. The saved choice is Apple Intelligence, which is off, so
+    // Yellowmoon's own Auto grades and the choice stays.
+    assert!(status.visible && !status.active);
+    assert_eq!(
+        (status.preference, status.chosen, status.effective),
+        (
+            AutoProvider::Apple,
+            AutoProvider::Apple,
+            AutoProvider::Yellowmoon
+        )
+    );
+    assert_eq!(
+        status.consent,
+        AutoConsent {
+            claude: false,
+            agy: false
+        }
+    );
+    let shown: Vec<_> = status
+        .providers
+        .iter()
+        .map(|p| (p.provider, p.state, p.listed, p.selectable, p.experimental))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            (
+                AutoProvider::Yellowmoon,
+                ProviderState::Available,
+                true,
+                true,
+                false
+            ),
+            (
+                AutoProvider::Apple,
+                ProviderState::Unavailable,
+                false,
+                false,
+                false
+            ),
+            (
+                AutoProvider::Claude,
+                ProviderState::Available,
+                true,
+                true,
+                false
+            ),
+            (
+                AutoProvider::Agy,
+                ProviderState::SignedOut,
+                true,
+                false,
+                true
+            ),
+        ]
+    );
+    assert_eq!(
+        status.providers[1].reason,
+        Some(AppleAutoReason::AppleIntelligenceOff)
+    );
+    assert_eq!(status.providers[3].reason, Some(AppleAutoReason::SignedOut));
+    // The program's own details: who answers, which version, where its pictures go, which prompt.
+    let sha = ym_core::apple_auto::InstructionsId::default().instructions_sha256;
+    assert_eq!(
+        status.providers[2].info,
+        Some(AppleAutoInfo {
+            provider: AutoProvider::Claude,
+            model: "Test Claude Code".into(),
+            os: String::new(),
+            tool_version: Some("0.0.0-test".into()),
+            api: None,
+            prompt: 1,
+            instructions: crate::wire::AppleAutoInstructions::Default,
+            instructions_sha256: sha,
+        })
+    );
+    // Nothing of the program's place on disk is on the wire.
+    let json = serde_json::to_value(&status).expect("json");
+    assert!(json["providers"][2].get("path").is_none());
+    assert!(json.get("choice").is_none());
+    assert_eq!(h.api.app_info().os, std::env::consts::OS);
+}
+
+#[test]
+fn a_program_is_chosen_with_its_consent_in_one_patch_and_never_without_it() {
+    let (advisors, _claude, _agy) = a_computer_with_claude_signed_in();
+    let h = Harness::with_advisors(advisors);
+    let err = h
+        .api
+        .preferences_set(&prefs_patch(json!({ "auto_provider": "claude" })))
+        .expect_err("no consent yet");
+    // (The preferences go through the look service, so the scope is the one every refused patch has.)
+    assert_eq!(
+        err.message,
+        "Say yes to sending photos to Claude Code first."
+    );
+    let err = h
+        .api
+        .preferences_set(&prefs_patch(json!({
+            "auto_provider": "agy", "auto_consent": { "claude": true, "agy": false }
+        })))
+        .expect_err("not for this program");
+    assert_eq!(
+        err.message,
+        "Say yes to sending photos to Antigravity first."
+    );
+    let prefs = h.api.preferences_get().expect("prefs");
+    assert_eq!(prefs.auto_provider, AutoProvider::Apple, "nothing changed");
+    assert_eq!(
+        prefs.auto_consent,
+        AutoConsent {
+            claude: false,
+            agy: false
+        }
+    );
+
+    // One patch, the choice and the consent: saved, and Claude Code grades.
+    let prefs = h
+        .api
+        .preferences_set(&prefs_patch(json!({
+            "auto_provider": "claude", "auto_consent": { "claude": true, "agy": false }
+        })))
+        .expect("agreed");
+    assert_eq!(prefs.auto_provider, AutoProvider::Claude);
+    assert_eq!(
+        prefs.auto_consent,
+        AutoConsent {
+            claude: true,
+            agy: false
+        }
+    );
+    let status = h.api.auto_status().expect("status");
+    assert!(status.active);
+    assert_eq!(
+        (status.preference, status.effective),
+        (AutoProvider::Claude, AutoProvider::Claude)
+    );
+    assert_eq!(
+        status.consent,
+        AutoConsent {
+            claude: true,
+            agy: false
+        }
+    );
+    assert!(status.providers[2].consent && !status.providers[3].consent);
+    // Yellowmoon's own Auto and Apple Intelligence are always taken, available or not.
+    for choice in ["yellowmoon", "apple"] {
+        h.api
+            .preferences_set(&prefs_patch(json!({ "auto_provider": choice })))
+            .expect(choice);
+    }
+    // The old switch is gone from the wire: a patch with it is refused before it reaches the core.
+    assert!(
+        serde_json::from_value::<PreferencesPatch>(json!({ "apple_auto": false })).is_err(),
+        "apple_auto is not a preference any more"
+    );
+}
+
+#[test]
+fn a_provider_that_changes_tells_the_webview_to_ask_again() {
+    use ym_core::apple_auto::{Availability, UnavailableReason};
+    use ym_core::auto_provider::FakeProvider;
+    let (advisors, claude, _agy) = a_computer_with_claude_signed_in();
+    claude.set_availability(Availability::Unavailable(UnavailableReason::SignedOut));
+    let h = Harness::with_advisors(advisors);
+    assert_eq!(
+        h.api.auto_status().expect("status").providers[2].state,
+        ProviderState::SignedOut
+    );
+    let before = h.events.events().len();
+    claude.set_availability(Availability::Available(FakeProvider::info_for(
+        ym_core::auto_provider::AutoProvider::Claude,
+    )));
+    wait_until("auto_status_changed", || {
+        h.events.events()[before..].contains(&AppEvent::AutoStatusChanged)
+    });
+    let status = h.api.auto_status().expect("status");
+    assert_eq!(status.providers[2].state, ProviderState::Available);
+    assert!(status.providers[2].selectable);
+    // The same reading again says nothing.
+    let before = h.events.events().len();
+    claude.set_availability(Availability::Available(FakeProvider::info_for(
+        ym_core::auto_provider::AutoProvider::Claude,
+    )));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!h.events.events()[before..].contains(&AppEvent::AutoStatusChanged));
+}
+
+#[test]
+fn a_program_that_grades_says_so_on_the_wire_in_the_answer_and_in_the_failure() {
+    let (advisors, claude, _agy) = a_computer_with_claude_signed_in();
+    let h = Harness::with_advisors(advisors);
+    h.api
+        .preferences_set(&prefs_patch(json!({
+            "auto_provider": "claude", "auto_consent": { "claude": true, "agy": false }
+        })))
+        .expect("agreed");
+    h.open(1);
+    h.develop();
+    let id = h.first();
+    wait_until("the answer", || {
+        matches!(apple_state(&h, id), AppleAuto::Answered { .. })
+    });
+    let rs = h.api.get_settings(id).expect("settings");
+    let AppleAuto::Answered { info, .. } = &rs.estimates.apple else {
+        panic!("answered: {:?}", rs.estimates.apple);
+    };
+    assert_eq!(info.provider, AutoProvider::Claude);
+    // The model the program says answered, not the alias asked for.
+    assert_eq!(info.model, "claude-fake-1");
+    assert_eq!(info.tool_version.as_deref(), Some("0.0.0-test"));
+    assert_eq!(info.prompt, 1);
+    assert_eq!(rs.estimates.source, AutoSource::Claude);
+    assert_eq!(rs.estimates.provider, AutoProvider::Claude);
+    // Re-run asks again and the program fails: the photo says why and Auto is the rule.
+    claude.fail_with(Some((
+        ym_core::apple_auto::FailureKind::CliFailed,
+        "It stopped.".into(),
+    )));
+    h.api.rerun_auto(id).expect("rerun");
+    wait_until("the failure", || {
+        matches!(apple_state(&h, id), AppleAuto::Failed { .. })
+    });
+    let AppleAuto::Failed {
+        kind,
+        message,
+        info,
+    } = apple_state(&h, id)
+    else {
+        panic!("failed");
+    };
+    assert_eq!(kind, AppleAutoFailure::CliFailed);
+    assert_eq!(message, "It stopped.");
+    assert_eq!(info.provider, AutoProvider::Claude);
+    assert_eq!(
+        h.api.get_settings(id).expect("settings").estimates.source,
+        AutoSource::Rule
+    );
+}
+
+#[test]
+fn a_program_that_is_chosen_but_not_agreed_to_leaves_the_photos_to_the_rule_and_says_why() {
+    // A preferences file edited by hand: Claude Code saved with no consent acts as Yellowmoon's own Auto (`docs/22` section 10.2).
+    let (advisors, _claude, _agy) = a_computer_with_claude_signed_in();
+    let h = Harness::with_preferences_file(advisors, r#"{ "auto_provider": "claude" }"#);
+    let status = h.api.auto_status().expect("status");
+    assert_eq!(
+        (status.preference, status.effective),
+        (AutoProvider::Claude, AutoProvider::Yellowmoon)
+    );
+    assert!(!status.active);
+    h.open(1);
+    h.develop();
+    let id = h.first();
+    wait_until("the reason", || {
+        matches!(
+            apple_state(&h, id),
+            AppleAuto::Unavailable {
+                reason: AppleAutoReason::NotConsented
+            }
+        )
+    });
+}
+
+#[test]
+fn the_info_of_a_program_reads_the_cores_tool_object_and_the_wires_own_fields() {
+    let core_shape = json!({
+        "provider": "claude", "model": "claude-sonnet-5-5", "os": "",
+        "tool": { "version": "2.1.310", "api": "firstParty", "auth": "oauth_token" },
+        "prompt": 1, "instructions": "default", "instructions_sha256": "932b96907b63"
+    });
+    let info: AppleAutoInfo = serde_json::from_value(core_shape).expect("the core's shape");
+    assert_eq!(info.provider, AutoProvider::Claude);
+    assert_eq!(info.tool_version.as_deref(), Some("2.1.310"));
+    assert_eq!(info.api.as_deref(), Some("firstParty"));
+    // What the webview gets is flat, and reads back as itself.
+    let wire = serde_json::to_value(&info).expect("json");
+    assert_eq!(wire["tool_version"], json!("2.1.310"));
+    assert_eq!(wire["api"], json!("firstParty"));
+    assert!(wire.get("tool").is_none());
+    assert_eq!(
+        serde_json::from_value::<AppleAutoInfo>(wire).expect("again"),
+        info
+    );
+    // Apple Intelligence has no tool.
+    let apple: AppleAutoInfo = serde_json::from_value(json!({
+        "provider": "apple", "model": "AFM 3 Core", "os": "27.0.1 (27A404)",
+        "prompt": 3, "instructions": "edited", "instructions_sha256": "abc"
+    }))
+    .expect("Apple's shape");
+    assert_eq!((apple.tool_version, apple.api), (None, None));
 }
 
 #[test]
@@ -3031,6 +3384,7 @@ fn app_info_and_the_looks_folder() {
     let info = h.api.app_info();
     assert_eq!(info.version, ym_core::version::app_version());
     assert_eq!(info.pipeline_version, ym_core::version::PIPELINE_VERSION);
+    assert_eq!(info.os, std::env::consts::OS);
     let folder = h.api.looks_folder().expect("looks folder");
     assert!(folder.is_dir() && folder.starts_with(h.app_root.path()));
 }
@@ -3344,6 +3698,7 @@ impl ym_core::apple_auto::AutoAdvisor for Sequence {
             },
             scene: format!("Photo {n}"),
             plan: String::new(),
+            served_model: None,
         })
     }
 }

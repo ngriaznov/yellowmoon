@@ -36,7 +36,8 @@ fn main() -> ExitCode {
 /// The crates of this workspace. The log is about what Yellowmoon does: the graphics stack and the
 /// libraries below it have their own opinions about drivers that are not installed, and a missing
 /// EGL driver is not an error on a machine that has Vulkan.
-const OUR_CRATES: [&str; 11] = [
+const OUR_CRATES: [&str; 12] = [
+    "ym_agents",
     "ym_cli",
     "ym_color",
     "ym_core",

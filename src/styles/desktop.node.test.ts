@@ -123,6 +123,7 @@ describe("the text of the app is not selectable, except where people copy it", (
     ".ym-export__example",
     ".ym-export__folder-text",
     ".ym-pref__hint",
+    ".ym-pref__note",
     ".ym-about-dialog__version",
     ".ym-about-dialog__section",
     ".ym-about-dialog__adobe",
@@ -158,7 +159,7 @@ describe("the text of the app is not selectable, except where people copy it", (
   it("keeps a field a field: the I-beam over text fields and over the read-only text people copy, not over sliders", () => {
     const beam = ALL.filter((r) => r.decls.get("cursor") === "text").flatMap((r) => r.selectors);
     expect(beam).toEqual(
-      expect.arrayContaining(["textarea", ".ym-export__code", ".ym-pref__hint", '.ym-error-bar [data-slot="item-content"]', ".ym-develop__notice"]),
+      expect.arrayContaining(["textarea", ".ym-export__code", ".ym-pref__hint", ".ym-pref__note", '.ym-error-bar [data-slot="item-content"]', ".ym-develop__notice"]),
     );
     expect(beam).not.toContain("input");
   });

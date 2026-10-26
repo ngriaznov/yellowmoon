@@ -801,9 +801,9 @@ Tauri commands carry requests and Tauri events carry progress. The TypeScript ty
 | `export_busy()` | An export is queued or running in the core, also one this window did not start (after a reload). "Update ready" waits while it is |
 | `cli_preview(job)` → string | The equivalent `ym render …` command |
 | `preferences_get()`, `preferences_set(patch)` | Preferences |
-| `apple_auto_status()` | Whether Apple Auto is available on this computer (read again for the answer) and whether it acts (`docs/19-apple-auto.md` sections 1 and 2). Preferences asks when it opens and shows "Auto with Apple Intelligence" only while it is available |
+| `auto_status()` | Which providers grade Auto on this computer and which one does now: Yellowmoon's own Auto, Apple Intelligence, Claude Code and Antigravity (`docs/22-auto-providers.md` sections 11 and 12.6; it replaces `apple_auto_status()`). The core reads every provider's availability again in the background and answers what it has cached, so the call never waits for a program. Preferences asks when it opens and again on `auto_status_changed`, and shows "Auto grading" only while `visible` |
 | `install_cli_link()`, `cli_link_status()` | The "Install Command-Line Tool…" menu item, and whether the link exists and where (Preferences › Command-line tool) |
-| `app_info()` | Version numbers for About |
+| `app_info()` | Version numbers for About, and the operating system (`os`: `macos`, `windows` or `linux`) for the words that differ on Windows (`docs/22` section 12.3) |
 | `thumbnails()` → `[{ id, url }]` | The address of the thumbnail of every photo that has one, to get them again after the webview reloaded (the core announces each thumbnail once). Only addresses cross the bridge |
 | `choose_folder(start)`, `choose_look_files()` | The system's folder chooser (Save to › Choose…) and file chooser for zips and `.cube` files (wizard › Choose file…). `null` when cancelled |
 | `open_url(url)`, `reveal_in_finder(path)`, `trash_path(path)` | Open a page in the system browser (ARRI's page, GitHub); show a file or folder in Finder (Export › Show in Finder); move a file to the Trash, recoverable (the wizard's "Move to Trash"; the `trash` crate) |
@@ -822,6 +822,7 @@ Tauri commands carry requests and Tauri events carry progress. The TypeScript ty
 | `export_progress` | `{ job_id, file, done, total, error? }` |
 | `export_busy` | `{ busy }`: an export is queued or running, or the queue has just gone quiet. "Update ready" waits while it is true |
 | `looks_changed` | No data: the look library changed |
+| `auto_status_changed` | No data: a provider's availability changed (a program found, signed in or out, a check ended); ask `auto_status()` again (`docs/22` section 12.6) |
 | `looks_import_progress` | Files of one source copied so far during `looks_import` (the wizard's Import step) |
 | `download_found` | The Downloads watcher found a package zip (`looks_watch_downloads`) |
 | `menu_action` | `{ action }`: a native menu item that needs the webview was chosen. Items the shell handles itself (Show Looks Folder, the Help links) are not sent |

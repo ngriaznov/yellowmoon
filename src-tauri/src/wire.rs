@@ -1577,6 +1577,9 @@ pub struct AutoEstimates {
     pub balance_highlights: [Num; 2],
     /// Which Auto made these values.
     pub source: AutoSource,
+    /// The provider the photo's `apple` state belongs to (`docs/22` section 14.1): the chosen provider
+    /// while it acts or is asked about, `yellowmoon` while the state is `off`.
+    pub provider: AutoProvider,
     /// Where the photo stands with Apple Auto.
     pub apple: AppleAuto,
     /// Apple Auto's steps in effect (the photo's answer, or its burst's), null when Auto is the rule.

@@ -8,9 +8,9 @@ mod fakes;
 
 use base64::Engine;
 use fakes::{
-    Recorder, answer_for, decode_jpeg, first_word, flood, has, hang, maybe_sleeper, must_fail,
-    out, read_stdin, reject, request_index, require, requests_so_far, scenario, slow, twist,
-    value_of, version,
+    Recorder, answer_for, decode_jpeg, first_word, flood, hang, has, maybe_sleeper, must_fail, out,
+    read_stdin, reject, request_index, requests_so_far, require, scenario, slow, twist, value_of,
+    version,
 };
 use serde_json::{Value, json};
 
@@ -19,12 +19,17 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let scenario = scenario();
     let recorder = Recorder::start();
+    fakes::maybe_raw(&recorder, &scenario);
 
     if args == ["--version"] {
         if scenario == "probe_hang" {
             hang();
         }
-        let default = if scenario == "too_old" { "2.1.100" } else { "2.1.310" };
+        let default = if scenario == "too_old" {
+            "2.1.100"
+        } else {
+            "2.1.310"
+        };
         println!("{} (Claude Code)", version(default));
         return;
     }
@@ -44,12 +49,15 @@ fn auth_status(scenario: &str) {
     if matches!(scenario, "probe_hang" | "signin_hang") {
         hang();
     }
-    let signed_out = scenario == "signed_out" || (scenario == "late_signout" && requests_so_far() >= 1);
+    let signed_out =
+        scenario == "signed_out" || (scenario == "late_signout" && requests_so_far() >= 1);
     let api = std::env::var("YM_FAKE_API_PROVIDER").unwrap_or_else(|_| "firstParty".to_owned());
     if signed_out {
-        out(json!({"loggedIn": false, "authMethod": "none", "apiProvider": api})
-            .to_string()
-            .as_bytes());
+        out(
+            json!({"loggedIn": false, "authMethod": "none", "apiProvider": api})
+                .to_string()
+                .as_bytes(),
+        );
         out(b"\n");
         std::process::exit(1);
     }
@@ -94,7 +102,10 @@ fn request(args: &[String], scenario: &str, recorder: &Recorder) {
             reject(&format!("{flag} needs a value"));
         }
     }
-    if args.iter().any(|a| a.starts_with("--dangerously") || a == "--bare") {
+    if args
+        .iter()
+        .any(|a| a.starts_with("--dangerously") || a == "--bare")
+    {
         reject("an option Yellowmoon never passes");
     }
     let Some(prompt_file) = value_of(args, "--system-prompt-file") else {
@@ -166,33 +177,55 @@ fn request(args: &[String], scenario: &str, recorder: &Recorder) {
         Err(why) => reject(&why),
     };
 
+    fakes::delay();
     match scenario {
         "signed_out" => error_result("Not logged in · Please run /login", None, &[]),
-        "late_signout" if index >= 1 => error_result("Not logged in · Please run /login", None, &[]),
+        "late_signout" if index >= 1 => {
+            error_result("Not logged in · Please run /login", None, &[])
+        }
         "unauthenticated" => error_result(
             "API Error: request failed",
             None,
-            &[json!({"type": "system", "subtype": "api_retry", "attempt": 1, "error": "authentication_failed"})],
+            &[
+                json!({"type": "system", "subtype": "api_retry", "attempt": 1, "error": "authentication_failed"}),
+            ],
         ),
         "rate_limit" => error_result(
             "API Error: rate limited",
             Some(429),
-            &[json!({"type": "system", "subtype": "api_retry", "attempt": 1, "error": "rate_limit"})],
+            &[
+                json!({"type": "system", "subtype": "api_retry", "attempt": 1, "error": "rate_limit"}),
+            ],
         ),
         _ if must_fail(index) => error_result("fake failure", Some(500), &[]),
-        "no_structured" => success(None, "Here is my opinion of the photo, in words.", "end_turn"),
+        "no_structured" => success(
+            None,
+            "Here is my opinion of the photo, in words.",
+            "end_turn",
+        ),
         "refused" => success(None, "I can't help with that.", "refusal"),
         "huge" => {
             flood(6);
-            success(Some(answer(&picture, &instructions, scenario)), "", "end_turn");
+            success(
+                Some(answer(&picture, &instructions, scenario)),
+                "",
+                "end_turn",
+            );
         }
-        _ => success(Some(answer(&picture, &instructions, scenario)), "", "end_turn"),
+        _ => success(
+            Some(answer(&picture, &instructions, scenario)),
+            "",
+            "end_turn",
+        ),
     }
 }
 
 /// The scenario's answer object.
 fn answer(picture: &fakes::Picture, instructions: &str, scenario: &str) -> Value {
-    Value::Object(twist(answer_for(picture, &first_word(instructions)), scenario))
+    Value::Object(twist(
+        answer_for(picture, &first_word(instructions)),
+        scenario,
+    ))
 }
 
 /// The events and the success `result` line.

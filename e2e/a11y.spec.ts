@@ -184,6 +184,8 @@ test.describe("Apple Auto (docs/19)", () => {
     await page.keyboard.press("Enter");
     await expect(page.getByRole("option", { name: "Yellowmoon's own Auto" })).toBeVisible();
     await page.keyboard.press("ArrowUp");
+    // Radix moves the focus a tick after the key.
+    await expect(page.getByRole("option", { name: "Yellowmoon's own Auto" })).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(select).toHaveText("Yellowmoon's own Auto");
   });
@@ -211,7 +213,7 @@ test.describe("Auto providers (docs/22 section 12)", () => {
     expect(snapshot).toMatch(/option "Apple Intelligence" \[selected\]/);
     expect(snapshot).toMatch(/option "Claude Code"/);
     // The signed-out program is listed, disabled, and its name says why.
-    expect(snapshot).toMatch(/option "Antigravity \(agy\) Experimental, not signed in" \[disabled\]/);
+    expect(snapshot).toMatch(/option "Antigravity \(agy\), experimental, not signed in" \[disabled\]/);
   });
 
   test("the consent dialog is named, its buttons too, focus starts on Cancel, Esc and Tab stay in it", async ({ page }) => {
