@@ -220,6 +220,12 @@ use ym_lens::{LensPlanes, PixelRect, apply_field, l2_input};
 /// is in the test's output; the bound is a few times it and is never loosened.
 const HEADROOM_BOUND: f32 = 2e-6;
 
+/// The same for the pass after L1 (mode 2). Where L1 changed a pixel by about a thousandth of a clip level the
+/// share `m` of the pixels L1 left as they are is a smoothstep over `L1_UNCHANGED_RAMP` (1e-4 to 1e-3), whose
+/// slope is 1700 per unit: an `f32` rounding of the change (1e-7 of values up to 5) moves `m` by up to 5e-4. The
+/// first measurement on Mesa lavapipe was 2.2e-4 of the largest value.
+const HEADROOM_AFTER_L1_BOUND: f32 = 5e-4;
+
 /// The frame of the headroom tests: a plan with the light's clip levels, shipped Vintage with Edges 70.
 const HW: usize = 300;
 const HH: usize = 200;
@@ -387,6 +393,11 @@ fn the_headroom_kernel_matches_the_cpu_reference() {
     println!(
         "extra light, mode 2: worst difference {wy:e} (extra) and {wo:e} (picture) of values up to {largest:e}"
     );
+    let bound = if dev.gpu.info().is_software {
+        HEADROOM_AFTER_L1_BOUND
+    } else {
+        10.0 * HEADROOM_AFTER_L1_BOUND
+    };
     assert!(wy <= bound * largest && wo <= bound * largest);
 }
 

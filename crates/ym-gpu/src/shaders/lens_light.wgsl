@@ -99,7 +99,7 @@ fn ll_main(gid: vec3<u32>) {
     let hr = ll_headroom(x, ll_ev(i, j));
     let lit = hr.xyz;
     if (pu.mode.x == 1u) {
-        let e1 = max(lit - x + vec3<f32>(hr.w), vec3<f32>(0.0));
+        let e1 = lit - x + vec3<f32>(hr.w);
         dst[b] = e1.x;
         dst[pu.dst.y + b] = e1.y;
         dst[2u * pu.dst.y + b] = e1.z;
@@ -119,7 +119,7 @@ fn ll_main(gid: vec3<u32>) {
     let t = clamp((d - LL_L1_FROM) / (LL_L1_TO - LL_L1_FROM), 0.0, 1.0);
     let m = 1.0 - t * t * (3.0 - 2.0 * t);
     let spread = v + vec3<f32>(m * hr.w);
-    let e2 = max(m * (spread - x), vec3<f32>(0.0));
+    let e2 = m * (spread - x);
     dst[b] = e2.x;
     dst[pu.dst.y + b] = e2.y;
     dst[2u * pu.dst.y + b] = e2.z;

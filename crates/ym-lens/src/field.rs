@@ -48,7 +48,7 @@ use rayon::prelude::*;
 use crate::consts::{
     COPY_BELOW_PX, LATERAL_COLOR_SCALE, MAX_TAPS_SIDE, PSF_SIZE, PSF_WAVELENGTHS, RADII,
     SIDE_TABLE_RADIUS, T_OVERSHOOT, TAP_SPACING_MAX_PX, W_KNEE, W_MAX,
-    EXTRA_INFLOW_FLOOR, EXTRA_INFLOW_RAMP,
+    EXTRA_CHANGE_FLOOR, EXTRA_CHANGE_RAMP,
 };
 use crate::data::LensData;
 use crate::error::LensError;
@@ -984,12 +984,11 @@ fn sample<const CLAMP: bool>(lv: &Level, ux: i64, uy: i64) -> F4 {
 ///
 /// `extra` is light the picture does not record and the stage spreads (`light::l2_input`: the headroom of a
 /// clipped light, and the light's colour where a channel clipped), an image of the rectangle of `input` or
-/// more. It is gathered with the same spread functions and added to the gather of `input` by the share
-/// `mu` of how much of it the lens moves to the pixel ([`EXTRA_INFLOW_RAMP`]: the largest over the channels of the
-/// extra that reaches the pixel over the light the pixel gets from the picture): a pixel whose picture the
-/// spread changes by a few per cent at most is as the picture alone gives it, where the extra only moves
-/// from pixel to pixel of a bright area, and a pixel beside a clipped star has it. A pixel with no kernel (a
-/// copy) is never given any.
+/// more. It is gathered with the same spread functions and added to the gather of `input` by the share `mu` of
+/// how much the lens changes the light of the pixel with the extra in it ([`EXTRA_CHANGE_RAMP`]): a pixel whose
+/// light the spread changes by a few per cent at most (a flat bright area, where the extra only moves from
+/// pixel to pixel) is as the picture alone gives it, and one beside a clipped star has the extra whole. A pixel
+/// with no kernel (a copy) is never given any.
 pub(crate) fn apply(
     plan: &LensPlan,
     input: &ImageRef,
@@ -1042,7 +1041,7 @@ pub(crate) fn apply(
         let pyramid = Pyramid::build(extra, region, geo.lmax);
         let occupancy = Occupancy::build(extra);
         let more = gather_region(&geo, &pyramid, gathered_rect, Some(&occupancy));
-        add_inflow(&geo, &mut gathered, &more, gathered_rect);
+        add_extra(&geo, input, extra, &mut gathered, &more, gathered_rect);
     }
 
     // Pass 2: the fringe shift of each channel and the gain.
@@ -1091,13 +1090,22 @@ impl Occupancy {
     }
 }
 
-/// Adds to the gather `gathered` of the picture the share of the gather `more` of the extra light that reaches
-/// each pixel, over `rect` (see [`apply`]).
-fn add_inflow(geo: &Geometry, gathered: &mut [f32], more: &[f32], rect: PixelRect) {
+/// Adds to the gather `gathered` of the picture the share `mu` of the gather `more` of the extra light that the
+/// lens changes the light of each pixel by, over `rect` (see [`apply`]): `mu` is the smoothstep of the largest
+/// over the channels of `|gathered + more - (input + extra)| / (input + extra)` at the pixel.
+fn add_extra(
+    geo: &Geometry,
+    input: &ImageRef,
+    extra: &ImageRef,
+    gathered: &mut [f32],
+    more: &[f32],
+    rect: PixelRect,
+) {
     let plane = rect.w * rect.h;
-    let (from, to) = EXTRA_INFLOW_RAMP;
+    let (from, to) = EXTRA_CHANGE_RAMP;
     let (r, rest) = gathered.split_at_mut(plane);
     let (g, b) = rest.split_at_mut(plane);
+    let (inp, ext) = (input.width * input.height, extra.width * extra.height);
     r.par_chunks_mut(rect.w)
         .zip(g.par_chunks_mut(rect.w))
         .zip(b.par_chunks_mut(rect.w))
@@ -1105,7 +1113,8 @@ fn add_inflow(geo: &Geometry, gathered: &mut [f32], more: &[f32], rect: PixelRec
         .for_each(|(row, ((rr, gr), br))| {
             let j = rect.y + row;
             for col in 0..rect.w {
-                if geo.pixel(rect.x + col, j).omega == 0.0 {
+                let i = rect.x + col;
+                if geo.pixel(i, j).omega == 0.0 {
                     continue;
                 }
                 let at = row * rect.w + col;
@@ -1114,11 +1123,15 @@ fn add_inflow(geo: &Geometry, gathered: &mut [f32], more: &[f32], rect: PixelRec
                     continue;
                 }
                 let base = [rr[col], gr[col], br[col]];
-                let mut ratio = 0.0f64;
+                let pi = (j - input.y0) * input.width + (i - input.x0);
+                let pe = (j - extra.y0) * extra.width + (i - extra.x0);
+                let mut change = 0.0f64;
                 for c in 0..3 {
-                    ratio = ratio.max(f64::from(e[c]) / f64::from(base[c]).max(EXTRA_INFLOW_FLOOR));
+                    let lit = f64::from(input.data[c * inp + pi]) + f64::from(extra.data[c * ext + pe]);
+                    let moved = f64::from(base[c]) + f64::from(e[c]);
+                    change = change.max((moved - lit).abs() / lit.max(EXTRA_CHANGE_FLOOR));
                 }
-                let t = ((ratio - from) / (to - from)).clamp(0.0, 1.0);
+                let t = ((change - from) / (to - from)).clamp(0.0, 1.0);
                 let mu = t * t * (3.0 - 2.0 * t);
                 if mu > 0.0 {
                     rr[col] = (f64::from(base[0]) + mu * f64::from(e[0])) as f32;
@@ -2329,10 +2342,11 @@ mod tests {
     }
 
     #[test]
-    fn an_extra_light_the_lens_barely_moves_leaves_the_picture_as_it_is() {
-        // A flat extra light of 1 % of the picture where the lens spreads (Vintage, Edges 100, near the right
-        // edge): the share the spread brings to a pixel is under the ramp's start, so every output pixel is the
-        // picture's alone, bit for bit; and a pixel with no kernel never gets any.
+    fn an_extra_light_where_the_lens_changes_nothing_leaves_the_picture_as_it_is() {
+        // A flat extra light of 1 % of a smooth picture, Vintage with Edges 100: where the spread changes the light of
+        // a pixel by under the ramp's start (every pixel but those at the frame's border, where the replicated
+        // edge bends the gradient) the output is the picture's alone, bit for bit, and anywhere it adds at most
+        // the extra's own 1 %.
         let (w, h) = (600, 400);
         let p = plan(LensKind::Vintage, 100.0, 0.0, w, h, Axis::X);
         let (data, _) = picture_and_extra(w, h, 0.0, 0.0, 0.0, 0.0);
@@ -2347,10 +2361,21 @@ mod tests {
             Options::default(),
         )
         .unwrap();
-        assert_eq!(
-            plain.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-            with.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
-        );
+        let n = w * h;
+        let mut inner = 0usize;
+        for c in 0..3 {
+            for y in 0..h {
+                for x in 0..w {
+                    let i = c * n + y * w + x;
+                    assert!(with[i] >= plain[i] && with[i] <= plain[i] * 1.0101, "sample {i}");
+                    if (120..w - 120).contains(&x) && (120..h - 120).contains(&y) {
+                        assert_eq!(with[i].to_bits(), plain[i].to_bits(), "sample {i} at ({x}, {y})");
+                        inner += 1;
+                    }
+                }
+            }
+        }
+        assert!(inner > n / 2);
     }
 
     #[test]

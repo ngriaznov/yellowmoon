@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use ym_lens::consts::{
-    COPY_BELOW_PX, EXTRA_INFLOW_FLOOR, EXTRA_INFLOW_RAMP, MAX_TAPS_SIDE, RADII, TAP_SPACING_MAX_PX,
+    COPY_BELOW_PX, EXTRA_CHANGE_FLOOR, EXTRA_CHANGE_RAMP, MAX_TAPS_SIDE, RADII, TAP_SPACING_MAX_PX,
     W_KNEE, W_MAX,
 };
 use ym_lens::device::{FIELD_HEADER, FIELD_TABLE_SIZES, field_table_offset};
@@ -218,8 +218,8 @@ fn grown(r: Rect, px: usize, fw: usize, fh: usize) -> Rect {
 /// `extra` is light the picture does not record and L2 spreads (`ym_lens::l2_input`: the headroom of a clipped
 /// light, and the light's colour where a channel clipped): an image and its first frame pixel, covering what `src`
 /// does (`out` grown by [`FieldPass::halo`]). It is gathered with the same spread functions and added to the
-/// gather of `src` by the share of how much of it the lens moves to the pixel (`EXTRA_INFLOW_RAMP`); a pixel with
-/// no kernel gets none.
+/// gather of `src` by the share of how much the lens changes the light of the pixel with the extra in it
+/// (`EXTRA_CHANGE_RAMP`); a pixel with no kernel gets none.
 ///
 /// # Errors
 ///
@@ -388,6 +388,8 @@ pub fn encode_field(
             (1, tables.buf.binding()),
             (2, pyr.binding()),
             (4, target.buf.binding()),
+            // Read only by the extra light's gather; any other storage buffer will do.
+            (6, tables.buf.binding()),
         ],
         (
             (region.w as u32).div_ceil(GROUP),
@@ -438,6 +440,7 @@ pub fn encode_field(
                 (1, tables.buf.binding()),
                 (2, pyr_e.binding()),
                 (4, target.buf.binding()),
+                (6, pyr.binding()),
             ],
             (
                 (region.w as u32).div_ceil(GROUP),
@@ -570,9 +573,9 @@ fn constants() -> String {
          const LF_MAX_TAPS: u32 = {}u;\n\
          const LF_SPACING_MAX: f32 = {:?};\n\
          const LF_HEADER: u32 = {}u;\n\
-         const LF_INFLOW_FROM: f32 = {:?};\n\
-         const LF_INFLOW_TO: f32 = {:?};\n\
-         const LF_INFLOW_FLOOR: f32 = {:?};\n\
+         const LF_CHANGE_FROM: f32 = {:?};\n\
+         const LF_CHANGE_TO: f32 = {:?};\n\
+         const LF_CHANGE_FLOOR: f32 = {:?};\n\
          var<private> LF_OFF: array<u32, {}> = array<u32, {}>({});\n",
         RADII,
         W_MAX as f32,
@@ -581,9 +584,9 @@ fn constants() -> String {
         MAX_TAPS_SIDE,
         TAP_SPACING_MAX_PX as f32,
         FIELD_HEADER,
-        EXTRA_INFLOW_RAMP.0 as f32,
-        EXTRA_INFLOW_RAMP.1 as f32,
-        EXTRA_INFLOW_FLOOR as f32,
+        EXTRA_CHANGE_RAMP.0 as f32,
+        EXTRA_CHANGE_RAMP.1 as f32,
+        EXTRA_CHANGE_FLOOR as f32,
         FIELD_TABLE_SIZES,
         FIELD_TABLE_SIZES,
         offsets.join(", "),

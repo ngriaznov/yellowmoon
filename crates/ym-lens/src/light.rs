@@ -314,8 +314,9 @@ pub struct L2Input {
     /// The rectangle `extra` and `own` cover.
     pub rect: PixelRect,
     /// The light L2 spreads that the picture does not record, per pixel of `rect`: planar, `3 * rect.w * rect.h`
-    /// samples, none negative. Its light's colour (the saturated channel raised to the others' mean, the clip
-    /// pattern's cast taken off) and the headroom of the clipped small lights.
+    /// samples. The pixel's light in its own colour (the saturated channel raised to the others' mean, the clip
+    /// pattern's cast taken off: a channel above its light's colour is lowered, so a sample can be negative) and
+    /// the headroom of the clipped small lights, less the picture. The picture and this are never below 0 together.
     pub extra: Vec<f32>,
     /// The picture L2 gathers over `rect`, where that is not the raw picture (after L1, which changed some
     /// pixels: there the extra is 0 and this is L1's output); `None` when it is the raw picture.
@@ -327,7 +328,7 @@ pub struct L2Input {
 /// they are).
 ///
 /// Every pixel's light is in its own colour ([`Restore::light`]) and a clipped small light holds its headroom
-/// ([`pixel_light`]); the extra is the difference to the picture. The pixels L1 left as they are (its output
+/// ([`pixel_light`]); the extra is the difference to the picture, negative where the light's colour is under it. The pixels L1 left as they are (its output
 /// within [`L1_UNCHANGED_RAMP`] of the picture with the light's colour) get it, the pixels L1 changed (a blurred
 /// pixel: a ball's core is not a small light) none, and between the two by a smoothstep; where L1 changed a pixel
 /// L2 gathers L1's output. A function of the pixel and its place alone, so a tile and the whole frame give the
@@ -390,9 +391,9 @@ pub(crate) fn l2_input_with(
             match l1 {
                 None => {
                     // The picture with the light's colour and the headroom, less the picture.
-                    er[col] = (lit[0] - x[0] + headroom).max(0.0) as f32;
-                    eg[col] = (lit[1] - x[1] + headroom).max(0.0) as f32;
-                    eb[col] = (lit[2] - x[2] + headroom).max(0.0) as f32;
+                    er[col] = (lit[0] - x[0] + headroom) as f32;
+                    eg[col] = (lit[1] - x[1] + headroom) as f32;
+                    eb[col] = (lit[2] - x[2] + headroom) as f32;
                 }
                 Some(l1) => {
                     let li = (j - l1.y0) * l1.width + (i - l1.x0);
@@ -415,9 +416,9 @@ pub(crate) fn l2_input_with(
                     // picture, by the share L1 left it.
                     let spread = [v[0] + m * headroom, v[1] + m * headroom, v[2] + m * headroom];
                     let e = [
-                        (m * (spread[0] - x[0])).max(0.0),
-                        (m * (spread[1] - x[1])).max(0.0),
-                        (m * (spread[2] - x[2])).max(0.0),
+                        m * (spread[0] - x[0]),
+                        m * (spread[1] - x[1]),
+                        m * (spread[2] - x[2]),
                     ];
                     er[col] = e[0] as f32;
                     eg[col] = e[1] as f32;

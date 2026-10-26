@@ -20,9 +20,10 @@
 // two windows build equal texels where they overlap.
 //
 // Bindings: 0 uniform, 1 tables (header and cell tables, `ym_lens::device::FieldTablesData`), 2 pyramid,
-// 3 the input planes, 4 the output planes, 5 the gather (read by lf_finish). With `ex.x` 2 the gather kernel
-// reads the pyramid of the extra light (*As built (the headroom of a clipped light)*) and adds it to what the
-// output planes hold, by the share the lens moves to the pixel.
+// 3 the input planes, 4 the output planes, 5 the gather (read by lf_finish), 6 the picture's pyramid (read by
+// the extra light's gather only). With `ex.x` 2 the gather kernel reads the pyramid of the extra light (*As
+// built (the headroom of a clipped light)*) at binding 2 and adds it to what the output planes hold, by the
+// share of how much the lens changes the light of the pixel with the extra in it.
 
 struct FieldU {
     zero: vec4<u32>,            // x: always 0 (the opaque word of the barrier)
@@ -46,6 +47,7 @@ struct FieldU {
 @group(0) @binding(3) var<storage, read> src: array<f32>;
 @group(0) @binding(4) var<storage, read_write> dst: array<f32>;
 @group(0) @binding(5) var<storage, read> gat: array<f32>;
+@group(0) @binding(6) var<storage, read> pyr_o: array<vec4<f32>>;
 
 // Generated before this text (kernels/lens_field.rs, from ym_lens::consts and ym_lens::device): LF_RADII,
 // LF_W_MAX, LF_W_KNEE, LF_COPY_BELOW_PX, LF_MAX_TAPS, LF_SPACING_MAX, LF_HEADER and LF_OFF, the offsets of
@@ -383,7 +385,8 @@ fn lf_gather_main(gid: vec3<u32>) {
     let at = gid.y * pu.dst.x + gid.x;
     if (pu.ex.x == 2u) {
         // The extra light: its gather, added to the picture's gather the output planes hold by the share mu of how
-        // much of it the lens moves to the pixel (ym_lens::field::add_inflow). A pixel with no kernel gets none.
+        // much the lens changes the light of the pixel with the extra in it (ym_lens::field::add_extra). A pixel
+        // with no kernel gets none.
         if (k.omega == 0.0 || !lf_has_light(i, j, k)) {
             return;
         }
@@ -392,11 +395,17 @@ fn lf_gather_main(gid: vec3<u32>) {
             return;
         }
         let base = vec3<f32>(dst[at], dst[pu.dst.y + at], dst[2u * pu.dst.y + at]);
-        var ratio = 0.0;
+        // The pixel's own light: the picture's and the extra light's level 0 texels at the pixel.
+        let l0 = pu.lvl[0];
+        let o0 = pu.org[0];
+        let p0 = u32(l0.x) + u32(j - o0.y) * u32(l0.y) + u32(i - o0.x);
+        let lit = pyr_o[p0].xyz + pyr[p0].xyz;
+        let moved = base + more;
+        var change = 0.0;
         for (var c = 0u; c < 3u; c = c + 1u) {
-            ratio = max(ratio, more[c] / max(base[c], LF_INFLOW_FLOOR));
+            change = max(change, abs(moved[c] - lit[c]) / max(lit[c], LF_CHANGE_FLOOR));
         }
-        let t = clamp((ratio - LF_INFLOW_FROM) / (LF_INFLOW_TO - LF_INFLOW_FROM), 0.0, 1.0);
+        let t = clamp((change - LF_CHANGE_FROM) / (LF_CHANGE_TO - LF_CHANGE_FROM), 0.0, 1.0);
         let mu = t * t * (3.0 - 2.0 * t);
         if (mu > 0.0) {
             let sum = base + mu * more;
