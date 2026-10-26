@@ -353,12 +353,15 @@ struct TailBounds {
 
 /// First measured on lavapipe: 354 of 1.62 M 16-bit samples over 1 code and 81 over 8 (at most 89
 /// off), the JPEGs 280 over 1 (1.7e-4) at most 5 off, and no sharpened 8-bit sample more than one off.
+/// The JPEG share over 1 is twice the worst of the moved ALEXA estimate instead (the owner's
+/// agreement, 2026-10-26): its picture put the straightened crop's JPEG at 249 of 703 800 samples
+/// (3.54e-4, at most 6 codes, 0.99900 exact) where the data before it gave 15, with the same code.
 const SOFTWARE: TailBounds = TailBounds {
     over_one_16: 4.4e-4,
     over_eight_16: 1.0e-4,
     max_16: 180,
     jpeg_max: 10,
-    jpeg_over_one: 3.5e-4,
+    jpeg_over_one: 7.1e-4,
     jpeg_exact: 0.99,
     sharp8_max: 1,
     sharp8_over_one: 0.0,
