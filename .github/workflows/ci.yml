@@ -149,7 +149,7 @@ jobs:
   gpu-lavapipe:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 100   # the lens kernels' suites, measured 2026-10-26: about 55 minutes before the export parity step (60 cancelled it)
     env:
       YM_REQUIRE_GPU: "1"
       WGPU_BACKEND: vulkan

@@ -297,8 +297,21 @@ class Pins(unittest.TestCase):
     """Every file a shipped scale rests on is pinned by a fetch script of the repository."""
 
     def test_the_pin_tables_are_read(self):
-        names = {p.name for p in fit_mod.owner_pins()}
-        self.assertEqual(names, {"A1M01454.ARW", "A1M01739.ARW", "A1M01749.ARW"})
+        # The seven A1 photos of tools/fetch/owner-photos.sha256 (three landscapes, four Provence street and market photos
+        # pinned in b90ec8e), each by name and SHA-256.
+        pinned = {p.name: p.sha256 for p in fit_mod.owner_pins()}
+        self.assertEqual(
+            pinned,
+            {
+                "A1M01454.ARW": "55d20fa10ac3d880c0d1485a34b247b9fe137ea9888d7a39aad05e8f82df0f8e",
+                "A1M01739.ARW": "aa170c3792dda23c4beb3ede12a46a2143edb7df06b7321240d368009357f700",
+                "A1M01749.ARW": "629b7c36664e1458196a74d45c56e5ec55b1fc056826bfe36e5b4a4fd6fca93e",
+                "A1M03159.ARW": "10bf29a430f2c1c678c0f5f62d24f63fcef91e01569bd0f5b42cba24a85e972a",
+                "A1M03165.ARW": "ae4f59dc52c3ae14f3ceb4ebfcc87f3c51512bc0f681c804867e28bd9bf23945",
+                "A1M03175.ARW": "4bb4f0f54c4037a9cd567f4e84b69edfafc38743554f8ddaaeaa35896ac5ffb7",
+                "A1M03185.ARW": "9322b2105e841f7e678a43f74d605cbc4354d114226d59c2671c4e4f5c8a26d9",
+            },
+        )
         self.assertFalse(hasattr(fit_mod, "real_eval_pins"), "the local-eval files (unclear or non-commercial licences) are not pins")
         self.assertEqual({p.set for p in fit_mod.all_pins()}, {"owner-photos", "play-raw"})
         play = fit_mod.play_raw_pins()
@@ -320,9 +333,9 @@ class Pins(unittest.TestCase):
                 if pin.model:
                     self.assertEqual(pin.model, b["model"], f["name"])
                 self.assertIn(f["set"], fit_mod.SETS)
-        # The A1 (3), the A7 (4), the ZV-E10 (3), the NEX-5R (2), seven bodies with one file each, the A6000 (8: the two files
+        # The A1 (7), the A7 (4), the ZV-E10 (3), the NEX-5R (2), seven bodies with one file each, the A6000 (8: the two files
         # whose post is NonCommercial or states no licence are not pinned), the A6300 (5) and the A6500 (2).
-        self.assertEqual(used, 34, "the files named by the registry")
+        self.assertEqual(used, 38, "the files named by the registry")
 
 
 class Registry(unittest.TestCase):

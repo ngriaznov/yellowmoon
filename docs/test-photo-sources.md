@@ -46,7 +46,7 @@ They are used for smoke tests that skip without them, for the auto-exposure stud
 
 The owner's own Sony photos are kept in the repository: the raw files live on the `readme-photos` branch in Git LFS (never merged; about 45 MB each), with the owner's reference exports in `ref-export/`. They may be used as test and evaluation data, in CI, and in images the repository and its README publish. They are never bundled with the app, and no credit is given for them.
 
-`tools/fetch/owner-photos.sh` fetches them into `testdata/readme-photos/src/` and checks their SHA-256 (`tools/fetch/owner-photos.sha256`). There are three Sony A1 photos (A1M01454, A1M01739, A1M01749), daylight landscapes. They are not taken for V1 (they existed already), so the V1 data rule holds. They are not a golden set on their own: three files, one body, one kind of light.
+`tools/fetch/owner-photos.sh` fetches them into `testdata/readme-photos/src/` and checks their SHA-256 (`tools/fetch/owner-photos.sha256`). There are seven Sony A1 photos: three daylight landscapes (A1M01454, A1M01739, A1M01749) and, since 2026-10-25, four photos of Provence streets and a flower market (A1M03159, A1M03165, A1M03175, A1M03185). They are not taken for V1 (they existed already), so the V1 data rule holds. They are not a golden set on their own: seven files, one body, daylight only.
 
 ## No test shoots in V1
 

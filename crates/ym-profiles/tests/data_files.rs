@@ -789,14 +789,26 @@ fn white_scales_are_recorded_with_their_source() {
         }
     }
 
-    // The A1: fitted on the presets stored in the owner's three photos; a fourth A1 file (Play Raw) differs by
-    // 6 % in blue and is left out, which the note says.
+    // The A1: fitted on the presets stored in the owner's seven photos (the three landscapes and the four Provence
+    // street and market photos pinned in b90ec8e); an eighth A1 file (Play Raw) differs by 6 % in blue and is left
+    // out, which the note says.
     let a1 = reg.body_by_model_id(384).unwrap();
     let src = a1.white_scale_source.as_ref().unwrap();
     assert_eq!(src.kind, WhiteScaleKind::Presets);
     let mut files: Vec<&str> = src.files.iter().map(|f| f.name.as_str()).collect();
     files.sort_unstable();
-    assert_eq!(files, ["A1M01454.ARW", "A1M01739.ARW", "A1M01749.ARW"]);
+    assert_eq!(
+        files,
+        [
+            "A1M01454.ARW",
+            "A1M01739.ARW",
+            "A1M01749.ARW",
+            "A1M03159.ARW",
+            "A1M03165.ARW",
+            "A1M03175.ARW",
+            "A1M03185.ARW"
+        ]
+    );
     assert!(src.files.iter().all(|f| f.set == PhotoSet::OwnerPhotos));
     assert!(src.note.contains("60282_DSC00636.ARW") && src.note.contains("outlier"));
     let [r, g, b] = a1.white_scale;
