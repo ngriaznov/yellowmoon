@@ -38,9 +38,13 @@ def _root_poly(x: np.ndarray) -> np.ndarray:
 
 
 def diagnose(profile_id: str) -> list[dict]:
-    ctx = ev.context()
     prof = next(p for p in PROFILES if p.id == profile_id)
-    S = fit.sony_curves()[prof.curves_name]
+    return diagnose_curves(fit.sony_curves()[prof.curves_name])
+
+
+def diagnose_curves(S: np.ndarray) -> list[dict]:
+    """:func:`diagnose` for any peak-normalised curves ``S`` (81, 3), not only a shipped profile's."""
+    ctx = ev.context()
     rows = []
     for L in lt.gate_lights():
         E = L.spd

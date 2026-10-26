@@ -1,0 +1,152 @@
+body,measured,nearest_measured,max_abs_diff,within_limit
+Canon EOS 1000D,,Canon Digital Rebel XTi,0.0913,False
+Canon EOS 100D,Canon EOS 100D,Canon EOS M,0.0,True
+Canon EOS 10D,,Canon Digital Rebel XTi,0.2094,False
+Canon EOS 1100D,,Canon EOS 600D,0.0248,False
+Canon EOS 1200D,,Canon EOS 600D,0.0,True
+Canon EOS 1300D,,Canon EOS 100D,0.0288,False
+Canon EOS 1500D,,Canon EOS RP,0.0602,False
+Canon EOS 200D,Canon EOS 200D,Canon EOS 5D Mark III,0.0577,False
+Canon EOS 20D,,Canon EOS 5D,0.0262,False
+Canon EOS 20Da,,Canon EOS R5m2,0.2469,False
+Canon EOS 250D,Canon EOS 200D II,Canon EOS R6,0.0394,False
+Canon EOS 3000D,,Canon EOS 100D,0.0288,False
+Canon EOS 300D,,Canon Digital Rebel XTi,0.2094,False
+Canon EOS 30D,,Canon EOS 5D,0.0411,False
+Canon EOS 350D,,Canon EOS 5D,0.0603,False
+Canon EOS 400D,Canon Digital Rebel XTi,Canon EOS 5D,0.2495,False
+Canon EOS 40D,,Canon EOS 5D,0.0694,False
+Canon EOS 450D,,Canon EOS 5D,0.0965,False
+Canon EOS 500D,,Canon EOS 5D Mark II,0.1407,False
+Canon EOS 50D,,Canon EOS 5D Mark II,0.162,False
+Canon EOS 550D,,Canon EOS 600D,0.062,False
+Canon EOS 5D,Canon EOS 5D,Canon EOS-1Ds Mark II,0.0453,False
+Canon EOS 5D Mark II,Canon EOS 5D Mark II,Canon EOS-1Ds Mark III,0.1913,False
+Canon EOS 5D Mark III,Canon EOS 5D Mark III,Canon EOS 100D,0.0573,False
+Canon EOS 5D Mark IV,Canon EOS 5D Mark IV,Canon EOS 200D,0.0729,False
+Canon EOS 5DS,Canon EOS 5DS,Canon EOS-1D X Mark II,0.0358,False
+Canon EOS 5DS R,,Canon EOS 5DS,0.0,True
+Canon EOS 600D,Canon EOS 600D,Canon EOS 100D,0.0301,False
+Canon EOS 60D,,Canon EOS 600D,0.0275,False
+Canon EOS 60Da,,Canon PowerShot S90,0.1643,False
+Canon EOS 650D,,Canon EOS 100D,0.0,True
+Canon EOS 6D,,Canon EOS 100D,0.0206,False
+Canon EOS 6D Mark II,,Canon EOS 100D,0.024,False
+Canon EOS 700D,,Canon EOS 100D,0.0,True
+Canon EOS 70D,,Canon EOS 100D,0.0206,False
+Canon EOS 750D,,Canon EOS 600D,0.027,False
+Canon EOS 760D,,Canon EOS 600D,0.027,False
+Canon EOS 77D,,Canon EOS 200D,0.0,True
+Canon EOS 7D,,Canon EOS 600D,0.0433,False
+Canon EOS 7D Mark II,,Canon EOS 600D,0.0397,False
+Canon EOS 800D,,Canon EOS 5D Mark IV,0.0338,False
+Canon EOS 80D,,Canon EOS 5DS,0.0462,False
+Canon EOS 850D,,Canon EOS 200D II,0.0,True
+Canon EOS 90D,,Canon EOS R5,0.0909,False
+Canon EOS C500,,Canon PowerShot S90,0.7051,False
+Canon EOS D30,,Canon EOS RP,0.1561,False
+Canon EOS D60,,Canon Digital Rebel XTi,0.2083,False
+Canon EOS M,Canon EOS M,Canon EOS 100D,0.0,True
+Canon EOS M10,,Canon EOS 5DS,0.0744,False
+Canon EOS M100,,Canon EOS 200D,0.0284,False
+Canon EOS M2,,Canon EOS 5DS,0.0744,False
+Canon EOS M200,,Canon EOS 200D II,0.0186,True
+Canon EOS M3,,Canon EOS 600D,0.027,False
+Canon EOS M5,,Canon EOS 200D,0.0284,False
+Canon EOS M50,,Canon EOS 200D,0.0284,False
+Canon EOS M50 Mark II,,Canon EOS 200D II,0.0186,True
+Canon EOS M6,,Canon EOS 200D,0.0284,False
+Canon EOS M6 Mark II,,Canon EOS R5,0.0909,False
+Canon EOS R,Canon EOS R,Canon EOS R6,0.0404,False
+Canon EOS R1,,Canon EOS RP,0.0499,False
+Canon EOS R10,Canon EOS R10,Canon EOS 200D II,0.0707,False
+Canon EOS R100,,Canon EOS R10,0.0606,False
+Canon EOS R3,,Canon EOS R5,0.0269,False
+Canon EOS R5,Canon EOS R5,Canon EOS R6m2,0.0287,False
+Canon EOS R5 C,,Canon EOS R5,0.0,True
+Canon EOS R5 Mark II,Canon EOS R5m2,Canon EOS R6m2,0.0475,False
+Canon EOS R50,,Canon EOS R10,0.0,True
+Canon EOS R50 V,,Canon EOS R10,0.037,False
+Canon EOS R6,Canon EOS R6,Canon EOS 200D II,0.0394,False
+Canon EOS R6 Mark II,Canon EOS R6m2,Canon EOS R5,0.0287,False
+Canon EOS R7,,Canon EOS R5,0.0205,False
+Canon EOS R8,,Canon EOS R6m2,0.0,True
+Canon EOS RP,Canon EOS RP,Canon EOS R,0.0812,False
+Canon EOS Ra,,Canon PowerShot S90,0.5458,False
+Canon EOS-1D,,Canon EOS 5D Mark II,0.2161,False
+Canon EOS-1D C,,Canon EOS 5D Mark III,0.0372,False
+Canon EOS-1D Mark II,,Canon EOS-1Ds Mark II,0.0276,False
+Canon EOS-1D Mark II N,,Canon EOS-1Ds Mark II,0.0309,False
+Canon EOS-1D Mark III,,Canon EOS 5D,0.0241,False
+Canon EOS-1D Mark IV,,Canon EOS 5D Mark IV,0.0575,False
+Canon EOS-1D X,,Canon EOS 5D Mark III,0.0372,False
+Canon EOS-1D X Mark II,Canon EOS-1D X Mark II,Canon EOS 5DS,0.0358,False
+Canon EOS-1D X Mark III,,Canon EOS R,0.0391,False
+Canon EOS-1Ds,,Canon EOS 5D Mark II,0.5157,False
+Canon EOS-1Ds Mark II,Canon EOS-1Ds Mark II,Canon EOS 5D,0.0453,False
+Canon EOS-1Ds Mark III,Canon EOS-1Ds Mark III,Canon EOS 5D,0.0545,False
+Canon PowerShot S90,Canon PowerShot S90,Canon EOS R5,0.2638,False
+Nikon D1,,Nikon D200,0.1517,False
+Nikon D100,,Nikon D700,0.1864,False
+Nikon D1H,,Nikon D200,0.1456,False
+Nikon D1X,,Nikon D200,0.1563,False
+Nikon D200,Nikon D200,Nikon D700,0.0537,False
+Nikon D2H,,Nikon D700,0.2553,False
+Nikon D2X,,Nikon D70,0.0899,False
+Nikon D3,,Nikon D700,0.0,True
+Nikon D300,,Nikon D700,0.1286,False
+Nikon D3000,,Nikon D200,0.0729,False
+Nikon D300S,,Nikon D700,0.1286,False
+Nikon D3100,,Nikon D5100,0.0844,False
+Nikon D3200,,Nikon D3300,0.0634,False
+Nikon D3300,Nikon D3300,Nikon D5300,0.0,True
+Nikon D3400,,Nikon D3300,0.0,True
+Nikon D3500,,Nikon D810,0.0306,False
+Nikon D3S,,Nikon D800E,0.0676,False
+Nikon D3X,,Nikon D700,0.1127,False
+Nikon D4,,Nikon D810,0.1226,False
+Nikon D40,,Nikon D200,0.084,False
+Nikon D40X,,Nikon D200,0.0816,False
+Nikon D4S,,Nikon D810,0.1226,False
+Nikon D5,,Nikon D850,0.0536,False
+Nikon D50,,Nikon D70,0.0,True
+Nikon D500,,Nikon D850,0.0992,False
+Nikon D5000,,Nikon D700,0.1774,False
+Nikon D5100,Nikon D5100,Nikon D7000,0.0,True
+Nikon D5200,,Nikon D850,0.0874,False
+Nikon D5300,Nikon D5300,Nikon D3300,0.0,True
+Nikon D5500,,Nikon D810,0.0306,False
+Nikon D5600,,Nikon D810,0.0306,False
+Nikon D6,,Nikon D850,0.0824,False
+Nikon D60,,Nikon D200,0.0729,False
+Nikon D600,,Nikon D800E,0.0242,False
+Nikon D610,,Nikon D800E,0.0242,False
+Nikon D70,Nikon D70,Nikon D200,0.1481,False
+Nikon D700,Nikon D700,Nikon D200,0.0537,False
+Nikon D7000,Nikon D7000,Nikon D5100,0.0,True
+Nikon D70s,,Nikon D70,0.0,True
+Nikon D7100,,Nikon D850,0.0874,False
+Nikon D7200,,Nikon D850,0.0874,False
+Nikon D750,,Nikon D810,0.0747,False
+Nikon D7500,,Nikon D850,0.0992,False
+Nikon D780,,Nikon D810,0.0867,False
+Nikon D80,,Nikon D200,0.0579,False
+Nikon D800,,Nikon D800E,0.0,True
+Nikon D800E,Nikon D800E,Nikon D5100,0.0542,False
+Nikon D810,Nikon D810,Nikon Z f,0.1502,False
+Nikon D810A,,Nikon Z f,0.3265,False
+Nikon D850,Nikon D850,Nikon Z f,0.1459,False
+Nikon D90,,Nikon D700,0.1774,False
+Nikon Df,,Nikon D810,0.1226,False
+Nikon Z 30,,Nikon Z f,0.0533,False
+Nikon Z 5,,Nikon D5100,0.0383,False
+Nikon Z 50,,Nikon Z f,0.14,False
+Nikon Z 6,,Nikon D810,0.0867,False
+Nikon Z 6II,,Nikon D810,0.0867,False
+Nikon Z 7,,Nikon D850,0.2549,False
+Nikon Z 7II,,Nikon D850,0.2549,False
+Nikon Z 8,,Nikon Z f,0.1008,False
+Nikon Z 9,,Nikon D850,0.3357,False
+Nikon Z f,Nikon Z f,Nikon D850,0.1459,False
+Nikon Z fc,,Nikon Z f,0.14,False
+Nikon Z6III,,Nikon Z f,0.0406,False
