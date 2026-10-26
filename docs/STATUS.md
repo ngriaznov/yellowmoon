@@ -12,6 +12,8 @@ The current state of Yellowmoon: release, milestone, what is built, gate results
 
 ## Current release and milestone
 
+**On `main`, not released (2026-10-26, the owner: "Merge all to master, but no release yet").** Pipeline 0.6.0: lens character (the Lens tab, `docs/21`), the R1 red chroma step (`docs/02`), the ALEXA estimate pushed 4.5 degrees (profiles and target 1.2.0, `docs/03`), and three branches merged with it: the Cube++ check of the light estimator (`m1-06-cubepp`, `.github/workflows/cubepp.yml`), the Canon and Nikon curves research (`research/canon-nikon-curves-2026-10-19.md`) and the egui and GPUI port research (`research/egui-port-2026-10-19.md`, `research/gpui-port-2026-10-19.md`). The version stays 0.1.15 until the owner asks for a release; the last test build is pre-release #9 (`lens-character` at 0c5bc30).
+
 **Released: 0.1.15** (pipeline 0.5.2, 2026-10-23, the owner's "Great, release 0.1.15" after trying the test build; `CHANGELOG.md`; 0.1.14 was the number of the two Auto crop test builds and was not released; before it 0.1.13, pipeline 0.5.2):
 
 - Auto crop (`docs/20-auto-crop.md`): the Crop panel's Auto toggle levels a tilted horizon or tilted verticals and proposes a frame for each aspect from a learned crop model (`data/models/crop/`, 1.1 M parameters, run in Rust by `ym_ml::crop_net`); `ym info --suggest-crop` and `ym render --auto-crop` give the same answer. Shipped without the blind A/B (question 21).
