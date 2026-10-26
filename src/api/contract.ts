@@ -43,7 +43,7 @@ export type FromCore = AllTrue<{
   developSettings: Assignable<B.DevelopSettings, T.DevelopSettings>;
   autoEstimates: Assignable<B.AutoEstimates, T.AutoEstimates>;
   appleAuto: Assignable<B.AppleAuto, T.AppleAuto>;
-  appleAutoStatus: Assignable<B.AppleAutoStatus, T.AppleAutoStatus>;
+  autoStatus: Assignable<B.AutoStatus, T.AutoStatus>;
   look: Assignable<B.Look, T.Look>;
   looksImportResult: Assignable<B.LooksImportResult, T.LooksImportResult>;
   sourceRecognition: Assignable<B.SourceRecognition, T.SourceRecognition>;
@@ -104,14 +104,17 @@ export type Both = AllTrue<{
   autoSource: Same<T.AutoSource, B.AutoSource>;
   appleAutoReason: Same<T.AppleAutoReason, B.AppleAutoReason>;
   appleAutoFailure: Same<T.AppleAutoFailure, B.AppleAutoFailure>;
-  appleAutoMode: Same<T.AppleAutoMode, B.AppleAutoMode>;
+  autoProvider: Same<T.AutoProvider, B.AutoProvider>;
+  autoConsent: Same<T.AutoConsent, B.AutoConsent>;
+  providerState: Same<T.ProviderState, B.ProviderState>;
+  providerStatus: Same<T.ProviderStatus, B.ProviderStatus>;
   appleAutoInfo: Same<T.AppleAutoInfo, B.AppleAutoInfo>;
   appleAutoSteps: Same<T.AppleAutoSteps, B.AppleAutoSteps>;
   appleAutoAnswer: Same<T.AppleAutoAnswer, B.AppleAutoAnswer>;
   appleAutoInstructions: Same<T.AppleAutoInstructions, B.AppleAutoInstructions>;
   appleShadowColor: Same<T.AppleShadowColor, B.AppleShadowColor>;
   appleHighlightColor: Same<T.AppleHighlightColor, B.AppleHighlightColor>;
-  appleAutoStatus: Same<T.AppleAutoStatus, B.AppleAutoStatus>;
+  autoStatus: Same<T.AutoStatus, B.AutoStatus>;
   lookInput: Same<T.LookInput, B.LookInput>;
   lookGroup: Same<T.LookGroup, B.LookGroup>;
   lookLibrary: Same<T.LookLibrary, B.LookLibrary>;

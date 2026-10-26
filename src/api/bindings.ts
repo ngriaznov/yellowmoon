@@ -163,11 +163,8 @@ export const commands = {
 	preferencesGet: () => __TAURI_INVOKE<Preferences>("preferences_get"),
 	/**  `preferences_set(patch)`: applies a patch and returns the new preferences. */
 	preferencesSet: (patch: PreferencesPatch) => __TAURI_INVOKE<Preferences>("preferences_set", { patch }),
-	/**
-	 *  `apple_auto_status()`: whether Apple Auto is available on this computer (read again now) and
-	 *  whether it acts; Preferences asks when it opens (`docs/19` sections 1 and 2).
-	 */
-	appleAutoStatus: () => __TAURI_INVOKE<AppleAutoStatus>("apple_auto_status"),
+	/**  `auto_status()` (hand edit: regenerate with the bindings test). */
+	autoStatus: () => __TAURI_INVOKE<AutoStatus>("auto_status"),
 	/**  `install_cli_link()`: the "Install Command-Line Tool…" menu item. */
 	installCliLink: () => __TAURI_INVOKE<CliLinkResult>("install_cli_link"),
 	/**  `cli_link_status()`. */
@@ -178,6 +175,7 @@ export const commands = {
 
 /** Events */
 export const events = {
+	autoStatusChanged: makeEvent<AutoStatusChanged>("auto_status_changed"),
 	downloadFound: makeEvent<DownloadFound>("download_found"),
 	error: makeEvent<ErrorEvent>("error"),
 	exportBusy: makeEvent<ExportBusy>("export_busy"),
@@ -212,6 +210,8 @@ export type AppInfo = {
 	version: string,
 	/**  The pipeline version written into exports. */
 	pipeline_version: string,
+	/**  The operating system. */
+	os: string,
 };
 
 /**  Where a photo stands with Apple Auto (the core's `AppleAuto`), tagged by `state`. */
@@ -271,15 +271,21 @@ export type AppleAutoFailure =
 "concurrent_requests" | 
 /**  The answer could not be read. */
 "bad_answer" | 
+/**  The program is not signed in. */
+"not_signed_in" | 
+/**  The program reported an error. */
+"cli_failed" | 
 /**  Anything else; the message says what. */
 "other";
 
 /**  Which model answers, and with which instructions (the core's `AdvisorInfo`). */
 export type AppleAutoInfo = {
-	/**  The model variant's display name: "AFM 3 Core". */
+	provider: AutoProvider,
 	model: string,
-	/**  The macOS version and build: "27.0.1 (27A404)". */
 	os: string,
+	tool_version: string | null,
+	api: string | null,
+	prompt: number,
 	/**  The default instructions or the person's own. */
 	instructions: AppleAutoInstructions,
 	/**  The first 12 hex digits of the SHA-256 of the instructions. */
@@ -292,18 +298,6 @@ export type AppleAutoInstructions =
 "default" | 
 /**  The person's own. */
 "edited";
-
-/**
- *  How a run decides whether Apple Auto is used (the core's `AppleAutoMode`); the app always
- *  follows the preference.
- */
-export type AppleAutoMode = 
-/**  The `apple_auto` preference decides. */
-"from_preference" | 
-/**  On for this run. */
-"on" | 
-/**  Off for this run. */
-"off";
 
 /**
  *  Why Apple Auto is not available on this computer (`docs/19` section 1; the core's
@@ -327,41 +321,14 @@ export type AppleAutoReason =
 /**  Any other unavailability Apple reports. */
 "unavailable" | 
 /**  The model on this Mac cannot take pictures. */
-"no_image_input";
-
-/**
- *  `apple_auto_status()`: whether Apple Auto is available on this computer (read again for the
- *  answer), and whether it acts (`docs/19` sections 1 and 2; the core's `AppleAutoStatus`).
- *  Preferences shows its row only while `available`.
- */
-export type AppleAutoStatus = {
-	/**  Apple Auto is available on this computer now. */
-	available: boolean,
-	/**  Why it is not; null when it is, and when the app has no advisor. */
-	reason: AppleAutoReason | null,
-	/**  Which model answers, when it is available. */
-	info: AppleAutoInfo | null,
-	/**  The `apple_auto` preference. */
-	preference: boolean,
-	/**  How the run decides (always `from_preference` in the app). */
-	mode: AppleAutoMode,
-	/**  Apple Auto acts for the session now. */
-	active: boolean,
-	/**  The prompt's version. */
-	prompt: number,
-	/**  The table's version. */
-	table: number,
-	/**  The default instructions or the person's own. */
-	instructions: AppleAutoInstructions,
-	/**  The first 12 hex digits of the SHA-256 of the instructions. */
-	instructions_sha256: string,
-	/**  The person's own instructions, `""` for the default. */
-	own_instructions: string,
-	/**  The default instructions, for Preferences' text field and its Reset to default. */
-	default_instructions: string,
-	/**  The longest instructions the model is given, in characters. */
-	instructions_max_chars: number,
-};
+"no_image_input" | 
+"not_installed" | 
+"too_old" | 
+"signed_out" | 
+"probe_failed" | 
+"unsafe_launcher" | 
+"checking" | 
+"not_consented";
 
 /**
  *  The steps of an answer (the core's `AutoSteps`), each null when the model left the field empty:
@@ -431,6 +398,45 @@ export type ApplyScope =
 "picked" | 
 /**  Every photo. */
 "all";
+
+export type AutoConsent = {
+	claude: boolean,
+	agy: boolean,
+};
+
+export type AutoProvider = "yellowmoon" | "apple" | "claude" | "agy";
+
+export type AutoStatus = {
+	providers: ProviderStatus[],
+	preference: AutoProvider,
+	chosen: AutoProvider,
+	effective: AutoProvider,
+	active: boolean,
+	visible: boolean,
+	consent: AutoConsent,
+	table: number,
+	instructions: AppleAutoInstructions,
+	instructions_sha256: string,
+	own_instructions: string,
+	default_instructions: string,
+	instructions_max_chars: number,
+};
+
+export type AutoStatusChanged = null;
+
+export type ProviderState = "available" | "not_installed" | "too_old" | "signed_out" | "unavailable" | "checking";
+
+export type ProviderStatus = {
+	provider: AutoProvider,
+	state: ProviderState,
+	reason: AppleAutoReason | null,
+	info: AppleAutoInfo | null,
+	tool_version: string | null,
+	consent: boolean,
+	experimental: boolean,
+	listed: boolean,
+	selectable: boolean,
+};
 
 /**  Per-photo automatic estimates (`AutoEstimates` in `types.ts`; the core's `AutoSummary`). */
 export type AutoEstimates = {
@@ -510,7 +516,9 @@ export type AutoSource =
 /**  Yellowmoon's own Auto. */
 "rule" | 
 /**  Apple Auto's answer (the photo's own or its burst's). */
-"apple";
+"apple" | 
+"claude" | 
+"agy";
 
 /**
  *  A shadows or highlights wheel in a patch: either form of [`BalanceSetting`], or a plain point,
@@ -1582,12 +1590,8 @@ export type Preferences = {
 	watch_downloads_during_import: boolean,
 	/**  Folders remembered between runs. */
 	last_used_folders: LastUsedFolders,
-	/**  Auto with Apple Intelligence (`docs/19` section 2); acts only where Apple Auto is available. */
-	apple_auto: boolean,
-	/**
-	 *  Instructions for Apple Intelligence (`docs/19` section 2): the person's own, at most 2000
-	 *  characters; `""` is the default.
-	 */
+	auto_provider: AutoProvider,
+	auto_consent: AutoConsent,
 	apple_auto_instructions: string,
 };
 
@@ -1607,12 +1611,8 @@ export type PreferencesPatch = {
 	watch_downloads_during_import?: boolean | null,
 	/**  New remembered folders. */
 	last_used_folders?: LastUsedFolders | null,
-	/**  New value of "Auto with Apple Intelligence". */
-	apple_auto?: boolean | null,
-	/**
-	 *  New instructions for Apple Intelligence (`""` or the default text: the default); at most
-	 *  2000 characters, longer text is refused.
-	 */
+	auto_provider?: AutoProvider | null,
+	auto_consent?: AutoConsent | null,
 	apple_auto_instructions?: string | null,
 };
 

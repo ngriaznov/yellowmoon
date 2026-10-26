@@ -255,9 +255,12 @@ fn choosing_a_destination_remembers_the_folder_in_the_preferences_and_nothing_el
         "check_for_updates_automatically",
         "watch_downloads_during_import",
         "last_used_folders",
-        // "Auto with Apple Intelligence", the eighth (the owner's agreement of 2026-10-19, docs/19).
-        "apple_auto",
-        // "Instructions for Apple Intelligence", the ninth (the owner's request of 2026-10-19).
+        // "Auto grading", the eighth and ninth: the provider and the consent to send photos through
+        // a program (the owner's decisions of 2026-10-26, docs/22 section 10); the old `apple_auto`
+        // switch is read for the migration and never written again.
+        "auto_provider",
+        "auto_consent",
+        // "Instructions", the tenth, one text for every provider (the owner's request of 2026-10-19).
         "apple_auto_instructions",
     ]
     .into_iter()
@@ -823,8 +826,11 @@ fn the_export_preferences_and_looks_types_have_the_fields_of_the_typescript_inte
         .expect("json"),
     );
     let prefs = Preferences::default();
-    // `apple_auto` (docs/19 section 2) is a field on both sides.
-    assert!(ts_interface_keys(&source, "Preferences").contains("apple_auto"));
+    // `auto_provider` and `auto_consent` (docs/22 section 10) are fields on both sides, and the
+    // old `apple_auto` is on neither.
+    let ts = ts_interface_keys(&source, "Preferences");
+    assert!(ts.contains("auto_provider") && ts.contains("auto_consent"));
+    assert!(!ts.contains("apple_auto"));
     check("Preferences", serde_json::to_value(&prefs).expect("json"));
     check(
         "LastUsedFolders",
@@ -876,8 +882,10 @@ fn the_export_preferences_and_looks_types_have_the_fields_of_the_typescript_inte
 
 #[test]
 fn the_apple_auto_types_have_the_fields_of_the_typescript_interfaces() {
-    // `apple_auto_status` and the photo's Apple Auto state (`docs/19` sections 10 and 12) as the
-    // webview reads them.
+    // The photo's Apple Auto state (`docs/19` section 12) as the webview reads it. The status and
+    // the info are not checked here: since `docs/22` the app's wire types for them (`AutoStatus`,
+    // `ProviderStatus`, `AppleAutoInfo`) are the shell's own, flatter than the core's (`src-tauri`'s
+    // `wire.rs` and `src/api/contract.ts` check them).
     use ym_core::apple_auto::{AdvisorAnswer, AdvisorInfo, AppleAuto, AutoSteps};
     let path = repo_root().join("src/api/types.ts");
     let Ok(source) = std::fs::read_to_string(&path) else {
@@ -891,18 +899,12 @@ fn the_apple_auto_types_have_the_fields_of_the_typescript_interfaces() {
             "interface {name} against its Rust type"
         );
     };
-    let r = rig();
-    let status = r.core.apple_auto_status();
-    check(
-        "AppleAutoStatus",
-        serde_json::to_value(&status).expect("json"),
-    );
     let info = AdvisorInfo::new("AFM 3 Core", "27.0.1 (27A404)");
-    check("AppleAutoInfo", serde_json::to_value(&info).expect("json"));
     let answer = AdvisorAnswer {
         steps: AutoSteps::keep(),
         scene: "A street".into(),
         plan: "Soft and warm".into(),
+        served_model: None,
     };
     check(
         "AppleAutoAnswer",

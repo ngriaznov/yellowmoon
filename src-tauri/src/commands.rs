@@ -16,7 +16,7 @@ use tauri_specta::{Builder, collect_commands, collect_events};
 use crate::api::AppApi;
 use crate::system;
 use crate::wire::{
-    self, AppError, AppInfo, AppleAutoStatus, ApplyScope, ChromaSample, ChromaScatter,
+    self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter,
     CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DisplayLut, ErrorScope,
     ExportEstimate, ExportJob, ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput,
     LooksImportResult, MenuState, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample,
@@ -631,12 +631,14 @@ pub async fn preferences_set(
     run(&state, move |api| api.preferences_set(&patch)).await
 }
 
-/// `apple_auto_status()`: whether Apple Auto is available on this computer (read again now) and
-/// whether it acts; Preferences asks when it opens (`docs/19` sections 1 and 2).
+/// `auto_status()` (`docs/22` sections 11 and 12.6; it replaces `apple_auto_status()`): the four
+/// providers and which one grades now. The core refreshes every provider's availability in the
+/// background and answers what it has cached, so this never waits for a program; Preferences asks
+/// when it opens and again on `auto_status_changed`.
 #[tauri::command]
 #[specta::specta]
-pub async fn apple_auto_status(state: State<'_, AppState>) -> Result<AppleAutoStatus, AppError> {
-    run(&state, |api| api.apple_auto_status()).await
+pub async fn auto_status(state: State<'_, AppState>) -> Result<AutoStatus, AppError> {
+    run(&state, |api| api.auto_status()).await
 }
 
 /// `install_cli_link()`: the "Install Command-Line Tool…" menu item.
@@ -721,7 +723,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             trash_path,
             preferences_get,
             preferences_set,
-            apple_auto_status,
+            auto_status,
             install_cli_link,
             cli_link_status,
             app_info,
@@ -732,6 +734,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             wire::RenderStats,
             wire::ExportProgress,
             wire::LooksChanged,
+            wire::AutoStatusChanged,
             wire::UpdateState,
             wire::ErrorEvent,
             wire::LooksImportProgress,
@@ -778,7 +781,7 @@ mod tests {
                 export_busy,
                 looks_recognise,
                 preferences_get,
-                apple_auto_status,
+                auto_status,
                 app_info,
             ])
             .manage(state)
@@ -934,10 +937,18 @@ mod tests {
         assert_eq!(plain["estimates"]["source"], json!("rule"));
         assert_eq!(plain["estimates"]["apple"], json!({ "state": "off" }));
         assert_eq!(
-            call(&window, "apple_auto_status", json!({})).expect("apple_auto_status"),
+            call(&window, "auto_status", json!({})).expect("auto_status"),
             json!({
-                "available": false, "reason": null, "info": null, "preference": true,
-                "mode": "from_preference", "active": false, "prompt": 3, "table": 2,
+                "providers": [
+                    provider_json("yellowmoon", "available", None, true, true),
+                    provider_json("apple", "not_installed", Some("not_installed"), false, false),
+                    provider_json("claude", "not_installed", Some("not_installed"), false, false),
+                    provider_json("agy", "not_installed", Some("not_installed"), false, false),
+                ],
+                "preference": "apple", "chosen": "apple", "effective": "yellowmoon",
+                "active": false, "visible": false,
+                "consent": { "claude": false, "agy": false },
+                "table": 2,
                 "instructions": "default",
                 "instructions_sha256": ym_core::apple_auto::InstructionsId::default().instructions_sha256,
                 "own_instructions": "",
@@ -1003,7 +1014,7 @@ mod tests {
         for cmd in [
             "session_state",
             "preferences_get",
-            "apple_auto_status",
+            "auto_status",
             "app_info",
             "export_busy",
         ] {

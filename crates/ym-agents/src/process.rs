@@ -1,0 +1,845 @@
+//! Starting the person's programs (`docs/22` section 5): the one place a child process is made.
+//!
+//! [`run`] starts a program in its own process group (Unix) or job object (Windows), feeds it standard
+//! input from its own thread, reads standard output and standard error from two more with caps, and
+//! polls the child against a deadline and a [`CancelToken`]. On expiry or cancel it ends the whole tree
+//! and always reaps it. Nothing here goes through a shell, and no `.cmd` file is ever started.
+
+use std::ffi::{OsStr, OsString};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant, SystemTime};
+
+use process_wrap::std::{ChildWrapper, CommandWrap};
+
+/// The most a program may write to standard output before it is killed (`docs/22` section 5).
+pub const STDOUT_CAP_BYTES: usize = 4 * 1024 * 1024;
+
+/// The longest single line of standard output.
+pub const LINE_CAP_BYTES: usize = 1024 * 1024;
+
+/// How much of the end of standard error is kept.
+pub const STDERR_TAIL_BYTES: usize = 4 * 1024;
+
+/// The longest message that reaches a log or a person, in characters.
+pub const MESSAGE_MAX_CHARS: usize = 300;
+
+/// How often the main loop looks at the child, the deadline and the cancel token.
+const POLL: Duration = Duration::from_millis(20);
+
+/// How long a program that was asked to stop (`SIGTERM`) has before the group is killed.
+#[cfg(unix)]
+const TERM_GRACE: Duration = Duration::from_secs(2);
+
+/// How long to wait for a pipe that a grandchild may still hold after the child is gone.
+const PIPE_GRACE: Duration = Duration::from_secs(1);
+
+/// The age after which a leftover `ym-auto-*` folder is swept (`docs/22` section 2.1).
+pub const STALE_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// The prefix of every temporary folder this crate makes.
+pub const WORKDIR_PREFIX: &str = "ym-auto-";
+
+/// `SIGTERM` on every Unix Yellowmoon runs on (Linux and macOS agree).
+#[cfg(unix)]
+const SIGTERM: i32 = 15;
+
+// ---------------------------------------------------------------------------------------------
+// Cancelling
+// ---------------------------------------------------------------------------------------------
+
+/// Whoever may cancel the runs that took a token from it: one per advisor. Cancelling ends every run
+/// that was started before it and leaves later runs alone.
+#[derive(Debug, Clone, Default)]
+pub struct CancelSource {
+    epoch: Arc<AtomicU64>,
+}
+
+impl CancelSource {
+    /// A new source that has cancelled nothing.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A token for a run that starts now.
+    #[must_use]
+    pub fn token(&self) -> CancelToken {
+        CancelToken {
+            source: Some(Arc::clone(&self.epoch)),
+            started: self.epoch.load(Ordering::SeqCst),
+        }
+    }
+
+    /// Cancels every run that took its token before this call.
+    pub fn cancel(&self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// Tells a run that it was cancelled. Cheap to clone and to poll.
+#[derive(Debug, Clone, Default)]
+pub struct CancelToken {
+    source: Option<Arc<AtomicU64>>,
+    started: u64,
+}
+
+impl CancelToken {
+    /// A token that is never cancelled.
+    #[must_use]
+    pub fn never() -> Self {
+        Self::default()
+    }
+
+    /// Whether the source cancelled since this token was made.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.source
+            .as_ref()
+            .is_some_and(|epoch| epoch.load(Ordering::SeqCst) != self.started)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The request
+// ---------------------------------------------------------------------------------------------
+
+/// Which environment changes a child gets (`docs/22` section 5). The environment is inherited; these
+/// are the changes on top of it, and nothing is read from it or printed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvProfile {
+    /// No change: the person's shell lookup.
+    Inherit,
+    /// Claude Code: its telemetry and update switches off, `NO_COLOR`, and the variables that
+    /// describe a parent Claude Code session removed.
+    Claude,
+    /// Antigravity: `NO_COLOR` only (no telemetry switch is documented for it).
+    Agy,
+}
+
+/// What to start and how (`docs/22` section 5).
+#[derive(Debug, Clone)]
+pub struct RunSpec {
+    /// The executable: an absolute path, never a script.
+    pub program: PathBuf,
+    /// The arguments, one by one; never through a shell.
+    pub args: Vec<OsString>,
+    /// The environment changes.
+    pub env: EnvProfile,
+    /// Further variables set last: the tests' scenario for a test double, nothing in production.
+    pub extra_env: Vec<(OsString, OsString)>,
+    /// The working folder.
+    pub cwd: PathBuf,
+    /// The bytes written to standard input, which is then closed.
+    pub stdin: Vec<u8>,
+    /// The time limit; the tree is killed at expiry.
+    pub timeout: Duration,
+    /// Ends the run early.
+    pub cancel: CancelToken,
+    /// The cap on standard output.
+    pub stdout_cap: usize,
+    /// The cap on one line of standard output.
+    pub line_cap: usize,
+}
+
+impl RunSpec {
+    /// A run of `program` in `cwd` with no arguments, no input, a minute to finish and the usual caps.
+    #[must_use]
+    pub fn new(program: impl Into<PathBuf>, cwd: impl Into<PathBuf>, env: EnvProfile) -> Self {
+        Self {
+            program: program.into(),
+            args: Vec::new(),
+            env,
+            extra_env: Vec::new(),
+            cwd: cwd.into(),
+            stdin: Vec::new(),
+            timeout: Duration::from_secs(60),
+            cancel: CancelToken::never(),
+            stdout_cap: STDOUT_CAP_BYTES,
+            line_cap: LINE_CAP_BYTES,
+        }
+    }
+
+    /// Adds arguments.
+    #[must_use]
+    pub fn args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.args
+            .extend(args.into_iter().map(|a| a.as_ref().to_os_string()));
+        self
+    }
+
+    /// Sets the time limit.
+    #[must_use]
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Sets the bytes written to standard input.
+    #[must_use]
+    pub fn stdin(mut self, bytes: Vec<u8>) -> Self {
+        self.stdin = bytes;
+        self
+    }
+
+    /// Sets the token that ends the run early.
+    #[must_use]
+    pub fn cancel(mut self, cancel: CancelToken) -> Self {
+        self.cancel = cancel;
+        self
+    }
+
+    /// Sets the variables added after every other environment change.
+    #[must_use]
+    pub fn extra_env(mut self, vars: Vec<(OsString, OsString)>) -> Self {
+        self.extra_env = vars;
+        self
+    }
+}
+
+/// How a run ended (`docs/22` section 5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// The program ended by itself; its code is in [`RunOutput::exit_code`] (`None` when a signal
+    /// ended it).
+    Exited,
+    /// The time limit ran out and the tree was killed.
+    TimedOut,
+    /// The cancel token fired and the tree was killed.
+    Cancelled,
+    /// Standard output grew past its cap (or a line past its cap) and the tree was killed.
+    OutputTooLarge,
+    /// The program could not be started; the system's message, redacted and cut.
+    SpawnFailed(String),
+}
+
+/// What a run produced.
+#[derive(Debug, Clone)]
+pub struct RunOutput {
+    /// How it ended.
+    pub outcome: Outcome,
+    /// The exit code, when the program ended by itself with one.
+    pub exit_code: Option<i32>,
+    /// Standard output, up to the cap.
+    pub stdout: Vec<u8>,
+    /// The end of standard error, at most [`STDERR_TAIL_BYTES`].
+    pub stderr: Vec<u8>,
+    /// How long the run took.
+    pub elapsed: Duration,
+}
+
+impl RunOutput {
+    /// Whether the program ended by itself with exit code 0.
+    #[must_use]
+    pub fn success(&self) -> bool {
+        self.outcome == Outcome::Exited && self.exit_code == Some(0)
+    }
+
+    /// Standard output as text (lossy).
+    #[must_use]
+    pub fn stdout_text(&self) -> String {
+        String::from_utf8_lossy(&self.stdout).into_owned()
+    }
+
+    /// The end of standard error as text, redacted and cut to [`MESSAGE_MAX_CHARS`] characters from
+    /// its end (the last words are the useful ones).
+    #[must_use]
+    pub fn stderr_message(&self) -> String {
+        tail_message(&String::from_utf8_lossy(&self.stderr))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Redaction
+// ---------------------------------------------------------------------------------------------
+
+/// `text` with anything that looks like a token replaced by `…` (`docs/22` section 5): `sk-…`,
+/// `sk-ant-…`, `AIza…`, `ya29.…`, the word after `Bearer`, and any run of 40 or more letters, digits,
+/// `-` and `_` (a long hex or base64 value).
+#[must_use]
+pub fn redact(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut after_bearer = false;
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String, after_bearer: &mut bool| {
+        if word.is_empty() {
+            return;
+        }
+        let secret = *after_bearer || looks_like_token(word);
+        *after_bearer = word.eq_ignore_ascii_case("bearer");
+        if secret {
+            out.push('…');
+        } else {
+            out.push_str(word);
+        }
+        word.clear();
+    };
+    for c in text.chars() {
+        // A word is a run of what tokens are made of; a path separator or a space ends it.
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+' | '=') {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out, &mut after_bearer);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out, &mut after_bearer);
+    out
+}
+
+/// Whether one word looks like a credential.
+fn looks_like_token(word: &str) -> bool {
+    const PREFIXES: [&str; 3] = ["sk-", "AIza", "ya29."];
+    if PREFIXES.iter().any(|p| word.starts_with(p)) {
+        return true;
+    }
+    let run = word
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .count();
+    run >= 40 && word.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+' | '='))
+}
+
+/// `text` cut to `max` characters, with `…` at the cut.
+#[must_use]
+pub fn clip(text: &str, max: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(max.saturating_sub(1)).collect();
+    cut.push('…');
+    cut
+}
+
+/// A message for a log or a person: redacted, trimmed, at most [`MESSAGE_MAX_CHARS`] characters.
+#[must_use]
+pub fn message(text: &str) -> String {
+    clip(&redact(text), MESSAGE_MAX_CHARS)
+}
+
+/// The last [`MESSAGE_MAX_CHARS`] characters of `text`, redacted.
+#[must_use]
+pub fn tail_message(text: &str) -> String {
+    let redacted = redact(text);
+    let trimmed = redacted.trim();
+    let count = trimmed.chars().count();
+    if count <= MESSAGE_MAX_CHARS {
+        return trimmed.to_owned();
+    }
+    let tail: String = trimmed.chars().skip(count - (MESSAGE_MAX_CHARS - 1)).collect();
+    format!("…{tail}")
+}
+
+// ---------------------------------------------------------------------------------------------
+// The temporary folder
+// ---------------------------------------------------------------------------------------------
+
+/// The private folder of one request (`docs/22` section 5): `cwd/` is the working folder and `in/` holds
+/// the files the program is told about. Deleted when dropped, on every path including a panic.
+#[derive(Debug)]
+pub struct Workdir {
+    dir: tempfile::TempDir,
+    cwd: PathBuf,
+    input: PathBuf,
+}
+
+impl Workdir {
+    /// Makes `ym-auto-*` in the operating system's temporary folder (mode 0700 on Unix) with its two
+    /// empty subfolders.
+    pub fn new() -> std::io::Result<Self> {
+        Self::new_in(&std::env::temp_dir())
+    }
+
+    /// As [`Workdir::new`], in another folder (the tests'sweep).
+    pub fn new_in(parent: &Path) -> std::io::Result<Self> {
+        let dir = tempfile::Builder::new()
+            .prefix(WORKDIR_PREFIX)
+            .tempdir_in(parent)?;
+        let cwd = dir.path().join("cwd");
+        let input = dir.path().join("in");
+        std::fs::create_dir(&cwd)?;
+        std::fs::create_dir(&input)?;
+        Ok(Self { dir, cwd, input })
+    }
+
+    /// The folder itself.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// The working folder: empty for Claude Code, only `photo.jpg` for `agy`.
+    #[must_use]
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
+    /// The folder for the files the program is told about (`instructions.txt`, `schema.json`).
+    #[must_use]
+    pub fn input(&self) -> &Path {
+        &self.input
+    }
+}
+
+/// Deletes the `ym-auto-*` folders of `parent` whose last change is older than `older_than`, which
+/// only a crash can leave behind; a newer one and any other folder stay. Returns how many it removed.
+/// Errors (a folder of another user, one that vanished) are ignored.
+pub fn sweep_stale_in(parent: &Path, older_than: Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return 0;
+    };
+    let now = SystemTime::now();
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(WORKDIR_PREFIX) {
+            continue;
+        }
+        // A link is never followed: only a real folder is ours.
+        let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if !meta.is_dir() {
+            continue;
+        }
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let age = now.duration_since(modified).unwrap_or(Duration::ZERO);
+        if age >= older_than && std::fs::remove_dir_all(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// [`sweep_stale_in`] for the operating system's temporary folder and [`STALE_AFTER`].
+pub fn sweep_stale() -> usize {
+    sweep_stale_in(&std::env::temp_dir(), STALE_AFTER)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Running
+// ---------------------------------------------------------------------------------------------
+
+/// Owns the child so that dropping it, on any path including a panic, ends the whole tree and reaps
+/// it (`docs/22` section 5, *Panics*). `process-wrap`'s standard-library API has no kill-on-drop of
+/// its own (its `KillOnDrop` is for Tokio).
+struct Running {
+    child: Box<dyn ChildWrapper>,
+    /// The tree was killed and reaped: dropping has nothing left to do (and must not signal a group
+    /// whose number may have been reused).
+    finished: bool,
+}
+
+impl Running {
+    /// Looks at the child without blocking: its status when it has exited. This asks the native child
+    /// (the innermost wrapper): the group wrapper's own `try_wait` waits for the whole group.
+    fn exited(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.child.inner_mut().try_wait()
+    }
+
+    /// Kills every process of the tree at once.
+    fn kill_tree(&mut self) {
+        let _ = self.child.start_kill();
+    }
+
+    /// Asks the tree to stop politely where the system has such a thing (`SIGTERM` to the group).
+    fn ask_to_stop(&mut self) {
+        #[cfg(unix)]
+        {
+            let _ = self.child.signal(SIGTERM);
+        }
+        #[cfg(not(unix))]
+        {
+            self.kill_tree();
+        }
+    }
+
+    /// Reaps the child and the rest of its tree, after it was killed or has exited.
+    fn reap(&mut self) -> Option<std::process::ExitStatus> {
+        let status = self.child.wait().ok();
+        self.finished = true;
+        status
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = self.child.start_kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+/// Shared state of one run's reader threads.
+struct Pipes {
+    stdout: Arc<Mutex<Vec<u8>>>,
+    stderr: Arc<Mutex<Vec<u8>>>,
+    too_large: Arc<AtomicBool>,
+    done: [Arc<AtomicBool>; 3],
+}
+
+/// Starts the program and waits for it (`docs/22` section 5). Never panics; every way a run can end is an
+/// [`Outcome`].
+#[must_use]
+pub fn run(spec: RunSpec) -> RunOutput {
+    let started = Instant::now();
+    let fail = |outcome| RunOutput {
+        outcome,
+        exit_code: None,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+        elapsed: started.elapsed(),
+    };
+
+    let mut wrap = CommandWrap::with_new(&spec.program, |command| {
+        command
+            .args(&spec.args)
+            .current_dir(&spec.cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        apply_env(command, spec.env, &spec.extra_env);
+    });
+    wrap_for_platform(&mut wrap);
+
+    let mut child = match wrap.spawn() {
+        Ok(child) => child,
+        Err(error) => return fail(Outcome::SpawnFailed(message(&error.to_string()))),
+    };
+    let stdin = child.stdin().take();
+    let stdout = child.stdout().take();
+    let stderr = child.stderr().take();
+    let mut running = Running {
+        child,
+        finished: false,
+    };
+
+    let pipes = Pipes {
+        stdout: Arc::new(Mutex::new(Vec::new())),
+        stderr: Arc::new(Mutex::new(Vec::new())),
+        too_large: Arc::new(AtomicBool::new(false)),
+        done: [
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        ],
+    };
+
+    // Standard input from its own thread: a program that fails early never reads it, and a full pipe
+    // must not stop us from reading the output (a broken pipe is not an error).
+    {
+        let input = spec.stdin.clone();
+        let done = Arc::clone(&pipes.done[0]);
+        std::thread::spawn(move || {
+            if let Some(mut stdin) = stdin {
+                let _ = stdin.write_all(&input);
+                let _ = stdin.flush();
+            }
+            done.store(true, Ordering::SeqCst);
+        });
+    }
+    {
+        let buffer = Arc::clone(&pipes.stdout);
+        let too_large = Arc::clone(&pipes.too_large);
+        let done = Arc::clone(&pipes.done[1]);
+        let (cap, line_cap) = (spec.stdout_cap, spec.line_cap);
+        std::thread::spawn(move || {
+            if let Some(stdout) = stdout {
+                read_capped(stdout, &buffer, cap, line_cap, &too_large);
+            }
+            done.store(true, Ordering::SeqCst);
+        });
+    }
+    {
+        let buffer = Arc::clone(&pipes.stderr);
+        let done = Arc::clone(&pipes.done[2]);
+        std::thread::spawn(move || {
+            if let Some(stderr) = stderr {
+                read_tail(stderr, &buffer, STDERR_TAIL_BYTES);
+            }
+            done.store(true, Ordering::SeqCst);
+        });
+    }
+
+    let deadline = started + spec.timeout;
+    let mut status = None;
+    let outcome = loop {
+        if pipes.too_large.load(Ordering::SeqCst) {
+            break Outcome::OutputTooLarge;
+        }
+        match running.exited() {
+            Ok(Some(exit)) => {
+                status = Some(exit);
+                break Outcome::Exited;
+            }
+            Ok(None) => {}
+            // The child cannot be looked at: treat it as gone and let the reaping say the rest.
+            Err(_) => break Outcome::Exited,
+        }
+        if spec.cancel.is_cancelled() {
+            break Outcome::Cancelled;
+        }
+        if Instant::now() >= deadline {
+            break Outcome::TimedOut;
+        }
+        std::thread::sleep(POLL);
+    };
+
+    match outcome {
+        Outcome::Exited => {
+            // Anything the program left behind in its group would hold our pipes open.
+            running.kill_tree();
+        }
+        _ => stop_tree(&mut running),
+    }
+    let reaped = running.reap();
+    let exit = status.or(reaped);
+    drop(running);
+
+    // Give the readers a moment to hit end-of-file; a pipe a grandchild escaped with is left alone.
+    let wait_until = Instant::now() + PIPE_GRACE;
+    while pipes.done.iter().any(|d| !d.load(Ordering::SeqCst)) && Instant::now() < wait_until {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let stdout = lock(&pipes.stdout).clone();
+    let stderr = lock(&pipes.stderr).clone();
+    let outcome = if pipes.too_large.load(Ordering::SeqCst) {
+        Outcome::OutputTooLarge
+    } else {
+        outcome
+    };
+    RunOutput {
+        exit_code: if outcome == Outcome::Exited {
+            exit.and_then(|s| s.code())
+        } else {
+            None
+        },
+        outcome,
+        stdout,
+        stderr,
+        elapsed: started.elapsed(),
+    }
+}
+
+/// Ends the tree after a time-out, a cancel or an oversized output: `SIGTERM` to the group, up to two
+/// seconds for it to leave, then `SIGKILL` to the group (Windows: the job is terminated at once).
+fn stop_tree(running: &mut Running) {
+    running.ask_to_stop();
+    #[cfg(unix)]
+    {
+        let until = Instant::now() + TERM_GRACE;
+        while Instant::now() < until {
+            if matches!(running.exited(), Ok(Some(_)) | Err(_)) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    running.kill_tree();
+}
+
+#[cfg(unix)]
+fn wrap_for_platform(wrap: &mut CommandWrap) {
+    wrap.wrap(process_wrap::std::ProcessGroup::leader());
+}
+
+#[cfg(windows)]
+fn wrap_for_platform(wrap: &mut CommandWrap) {
+    use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+    // The flags are registered with the wrapper, so the job object's own start flag does not
+    // overwrite them (the crate merges them in whichever order they were added).
+    wrap.wrap(process_wrap::std::CreationFlags(CREATE_NO_WINDOW));
+    wrap.wrap(process_wrap::std::JobObject);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn wrap_for_platform(_wrap: &mut CommandWrap) {}
+
+/// Applies the environment changes of `profile` and then `extra` to `command`.
+fn apply_env(command: &mut std::process::Command, profile: EnvProfile, extra: &[(OsString, OsString)]) {
+    match profile {
+        EnvProfile::Inherit => {}
+        EnvProfile::Claude => {
+            for (name, value) in [
+                ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+                // The next three are for versions that predate the first.
+                ("DISABLE_TELEMETRY", "1"),
+                ("DISABLE_ERROR_REPORTING", "1"),
+                ("DISABLE_AUTOUPDATER", "1"),
+                ("NO_COLOR", "1"),
+            ] {
+                command.env(name, value);
+            }
+            // Variables that describe a parent Claude Code session, when `ym` runs inside one. Only the
+            // names are looked at; no value is read.
+            for name in PARENT_SESSION_VARS {
+                command.env_remove(name);
+            }
+            for (name, _) in std::env::vars_os() {
+                if name.to_string_lossy().starts_with("CLAUDE_CODE_REMOTE") {
+                    command.env_remove(&name);
+                }
+            }
+        }
+        EnvProfile::Agy => {
+            command.env("NO_COLOR", "1");
+        }
+    }
+    for (name, value) in extra {
+        command.env(name, value);
+    }
+}
+
+/// The variables of a parent Claude Code session that a child must not inherit (`docs/22` section 5;
+/// the list is unverified, section 19).
+const PARENT_SESSION_VARS: [&str; 4] = [
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+];
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Reads `source` into `buffer` up to `cap` bytes and `line_cap` bytes per line; sets `too_large` and
+/// stops when either is passed.
+fn read_capped(
+    mut source: impl Read,
+    buffer: &Mutex<Vec<u8>>,
+    cap: usize,
+    line_cap: usize,
+    too_large: &AtomicBool,
+) {
+    let mut chunk = [0_u8; 16 * 1024];
+    let mut line = 0_usize;
+    loop {
+        let n = match source.read(&mut chunk) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => n,
+        };
+        let mut guard = lock(buffer);
+        for &byte in &chunk[..n] {
+            if byte == b'\n' {
+                line = 0;
+            } else {
+                line += 1;
+                if line > line_cap {
+                    too_large.store(true, Ordering::SeqCst);
+                    return;
+                }
+            }
+        }
+        let room = cap.saturating_sub(guard.len());
+        if n > room {
+            guard.extend_from_slice(&chunk[..room]);
+            too_large.store(true, Ordering::SeqCst);
+            return;
+        }
+        guard.extend_from_slice(&chunk[..n]);
+    }
+}
+
+/// Reads `source` to its end keeping only the last `keep` bytes.
+fn read_tail(mut source: impl Read, buffer: &Mutex<Vec<u8>>, keep: usize) {
+    let mut chunk = [0_u8; 4 * 1024];
+    loop {
+        let n = match source.read(&mut chunk) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => n,
+        };
+        let mut guard = lock(buffer);
+        guard.extend_from_slice(&chunk[..n]);
+        if guard.len() > keep {
+            let excess = guard.len() - keep;
+            guard.drain(..excess);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokens_are_redacted() {
+        let text = "failed with sk-ant-api03-ABCDEFG and Bearer abc.def.ghi, key AIzaSyA1234 \
+                    and ya29.a0AbC and 0123456789abcdef0123456789abcdef01234567 ok";
+        let out = redact(text);
+        assert!(!out.contains("ABCDEFG"), "{out}");
+        assert!(!out.contains("abc.def.ghi"), "{out}");
+        assert!(!out.contains("AIzaSyA1234"), "{out}");
+        assert!(!out.contains("a0AbC"), "{out}");
+        assert!(!out.contains("0123456789abcdef"), "{out}");
+        assert!(out.contains("failed with"), "{out}");
+        assert!(out.ends_with(" ok"), "{out}");
+    }
+
+    #[test]
+    fn ordinary_words_and_paths_survive() {
+        let text = "Claude Code could not be started: No such file or directory (os error 2) in /var/folders/ab/cd/T/ym-auto-x1";
+        assert_eq!(redact(text), text);
+    }
+
+    #[test]
+    fn messages_are_cut() {
+        let long = "word ".repeat(200);
+        assert!(message(&long).chars().count() <= MESSAGE_MAX_CHARS);
+        let tail = tail_message(&format!("{}END", "x y ".repeat(300)));
+        assert!(tail.chars().count() <= MESSAGE_MAX_CHARS);
+        assert!(tail.ends_with("END"));
+    }
+
+    #[test]
+    fn a_cancel_source_cancels_earlier_tokens_only() {
+        let source = CancelSource::new();
+        let before = source.token();
+        assert!(!before.is_cancelled());
+        source.cancel();
+        assert!(before.is_cancelled());
+        assert!(!source.token().is_cancelled());
+        assert!(!CancelToken::never().is_cancelled());
+    }
+
+    #[test]
+    fn sweeping_removes_only_old_ym_auto_folders() {
+        let parent = tempfile::tempdir().unwrap();
+        let old = Workdir::new_in(parent.path()).unwrap();
+        let other = parent.path().join("keep-me");
+        std::fs::create_dir(&other).unwrap();
+        // Nothing is old enough yet.
+        assert_eq!(sweep_stale_in(parent.path(), Duration::from_secs(600)), 0);
+        assert!(old.path().exists());
+        // With a zero age everything of ours is old; the other folder is left alone.
+        let old_path = old.path().to_path_buf();
+        std::mem::forget(old);
+        assert_eq!(sweep_stale_in(parent.path(), Duration::ZERO), 1);
+        assert!(!old_path.exists());
+        assert!(other.exists());
+    }
+
+    #[test]
+    fn the_workdir_is_deleted_on_drop() {
+        let parent = tempfile::tempdir().unwrap();
+        let path = {
+            let dir = Workdir::new_in(parent.path()).unwrap();
+            assert!(dir.cwd().is_dir() && dir.input().is_dir());
+            assert_eq!(std::fs::read_dir(dir.cwd()).unwrap().count(), 0);
+            dir.path().to_path_buf()
+        };
+        assert!(!path.exists());
+    }
+}

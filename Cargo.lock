@@ -11158,6 +11158,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wgpu",
+ "ym-agents",
  "ym-apple",
  "ym-color",
  "ym-core",
@@ -11184,6 +11185,8 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "which 8.0.6",
+ "windows",
+ "ym-agents",
  "ym-core",
  "zune-jpeg",
 ]

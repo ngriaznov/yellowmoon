@@ -2,7 +2,11 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderApp } from "../test/harness";
 import type { Harness } from "../test/harness";
-import { APPLE_GRADING_HINT, APPLE_GRADING_NOTE } from "./Start";
+import { gradedByNote, gradingHint } from "../state/autoProviders";
+
+/** The Start screen's sentences while Apple Intelligence grades (`docs/22` section 12.5 with its name). */
+const APPLE_GRADING_NOTE = gradedByNote("apple");
+const APPLE_GRADING_HINT = gradingHint("apple");
 
 let h: Harness | undefined;
 afterEach(() => {
@@ -215,15 +219,34 @@ describe("Start, developing", () => {
     expect(within(screen.getByRole("list", { name: "Photos being developed" })).getAllByText("Ready")).toHaveLength(12);
   });
 
-  it("with Apple Auto switched off while photos wait, stops waiting for it", async () => {
+  it("with Yellowmoon's own Auto chosen while photos wait, stops waiting for the provider", async () => {
     h = renderApp({ appleAuto: "pending" });
     await h.user.click(await screen.findByRole("button", { name: "Open files…" }));
     h.api.flush();
     expect(await screen.findByRole("heading", { level: 2, name: "Grading 12 photos with Apple Intelligence" })).toBeInTheDocument();
     await act(async () => {
-      await h!.api.preferencesSet({ apple_auto: false });
+      await h!.api.preferencesSet({ auto_provider: "yellowmoon" });
     });
     expect(await screen.findByRole("heading", { level: 2, name: "12 photos ready" })).toBeInTheDocument();
+  });
+
+  it("names the program that grades: Claude Code or Antigravity, in the title, the hint and the notes (docs/22 section 12.5)", async () => {
+    for (const [provider, name] of [
+      ["claude", "Claude Code"],
+      ["agy", "Antigravity"],
+    ] as const) {
+      h = renderApp({ appleAuto: "pending", providers: { [provider]: "available" }, autoProvider: provider, consent: { claude: true, agy: true } });
+      await h.user.click(await screen.findByRole("button", { name: "Open files…" }));
+      h.api.flush();
+      expect(await screen.findByRole("heading", { level: 2, name: `Grading 12 photos with ${name}` })).toBeInTheDocument();
+      expect(screen.getByText(`${name} is looking at each photo. You can start looking while it finishes.`)).toBeInTheDocument();
+      const list = within(screen.getByRole("list", { name: "Photos being developed" }));
+      expect(list.getAllByText(`Graded by ${name}…`)).toHaveLength(12);
+      act(() => h!.api.setAppleAuto("answered"));
+      expect(await screen.findByRole("heading", { level: 2, name: "12 photos ready" })).toBeInTheDocument();
+      h.unmount();
+      h = undefined;
+    }
   });
 
   it("lists a file that can't be developed as Skipped, with its reason, and says how many", async () => {

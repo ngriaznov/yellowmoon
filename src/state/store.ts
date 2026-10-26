@@ -20,8 +20,9 @@ import type { Api, Unsubscribe } from "../api";
 import { toAppError } from "../api";
 import type {
   ApplyScope,
+  AutoProvider,
+  AutoStatus,
   AppError,
-  AppleAutoStatus,
   BalanceSetting,
   ChromaSample,
   ChromaScatter,
@@ -212,10 +213,17 @@ export interface AppState {
   /** Whether the command-line tool is linked onto the PATH, once asked for (Preferences). */
   cliLink: CliLinkStatus | null;
   /**
-   * Whether Apple Auto is available on this computer and acts (`apple_auto_status`, `docs/19`), asked for each time Preferences opens;
-   * null before the first answer. Preferences shows "Auto with Apple Intelligence" only while it is available.
+   * The providers of Auto and which one grades (`auto_status`, `docs/22` section 12.7), asked for each time Preferences opens and again
+   * while it is open when a provider changes; null before the first answer. Preferences shows "Auto grading" only while `visible`.
    */
-  appleAuto: AppleAutoStatus | null;
+  auto: AutoStatus | null;
+  /**
+   * The program whose consent dialog is open over Preferences (`docs/22` section 12.3): chosen in the dropdown before the person agreed to
+   * send photos through it. The dropdown keeps showing the previous provider until they say yes.
+   */
+  consentFor: "claude" | "agy" | null;
+  /** The operating system the app runs on (`app_info`: "macos", "windows", "linux"), asked for when Preferences opens; null before the answer. */
+  os: string | null;
   /** Which panel Photos shows. */
   panel: Panel;
   /** The Export panel's options: the remembered defaults, changed by the person (`docs/09` §Options). */
@@ -279,7 +287,9 @@ export function initialState(): AppState {
     preferences: null,
     displayLuts: null,
     cliLink: null,
-    appleAuto: null,
+    auto: null,
+    consentFor: null,
+    os: null,
     panel: "tools",
     exportOptions: defaultExportOptions(),
     exportScope: "this",
@@ -584,6 +594,11 @@ export class AppStore {
         void this.refreshLooks();
         void this.refreshDisplayLuts();
         void this.refreshPreferences();
+      }),
+      // A provider was found, signed in or out, or a check ended. Only Preferences shows the providers, and asking again makes the core
+      // refresh every one of them (`agy`'s sign-in check contacts its service, `docs/22` D7), so nothing is asked unless Preferences is open.
+      api.on("auto_status_changed", () => {
+        if (this.state.overlay === "preferences") void this.refreshAuto();
       }),
       api.on("error", (error) => this.set({ error })),
       api.on("export_progress", (e) => this.onExportProgress(e)),
@@ -930,7 +945,8 @@ export class AppStore {
       preferences: this.state.preferences,
       displayLuts: this.state.displayLuts,
       cliLink: this.state.cliLink,
-      appleAuto: this.state.appleAuto,
+      auto: this.state.auto,
+      os: this.state.os,
       exportOptions: this.state.exportOptions,
       // A run still writing files outlives the session; a finished one has been seen.
       exportRun: this.state.exportRun?.phase === "running" ? this.state.exportRun : null,
@@ -1284,9 +1300,11 @@ export class AppStore {
     try {
       const preferences = await this.api.preferencesSet(patch);
       this.set({ preferences });
-      // Apple Auto acts, or stops, with its preference, and asks every photo again with new instructions; the photos' own news comes
-      // as `settings_changed`.
-      if (patch.apple_auto !== undefined || patch.apple_auto_instructions !== undefined) void this.refreshAppleAuto();
+      // The provider acts, or stops, with the choice and the consent, and every photo is asked again with new instructions; the photos' own
+      // news comes as `settings_changed`.
+      if (patch.auto_provider !== undefined || patch.auto_consent !== undefined || patch.apple_auto_instructions !== undefined) {
+        void this.refreshAuto();
+      }
     } catch (error) {
       if (before) this.set({ preferences: before });
       this.fail(error);
@@ -1294,15 +1312,51 @@ export class AppStore {
   }
 
   /**
-   * Asks whether Apple Auto is available on this computer (the core reads it again: Apple Intelligence may have been switched on, or its
-   * model finished downloading) and whether it acts.
+   * Asks which providers this computer has and which one grades (the core reads their availability again: Apple Intelligence may have been
+   * switched on, a program installed or signed in). The core never waits for a program, so this answers at once with what it knows;
+   * `auto_status_changed` says when that moved.
    */
-  async refreshAppleAuto(): Promise<void> {
+  async refreshAuto(): Promise<void> {
     try {
-      this.set({ appleAuto: await this.api.appleAutoStatus() });
+      this.set({ auto: await this.api.autoStatus() });
     } catch (error) {
       this.fail(error);
     }
+  }
+
+  /** Asks which operating system the app runs on, for the sentences that differ on Windows. */
+  async refreshOs(): Promise<void> {
+    try {
+      this.set({ os: (await this.api.appInfo()).os });
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /**
+   * The dropdown's choice of a provider (`docs/22` section 12.1). Yellowmoon's own Auto, Apple Intelligence and a program the person
+   * already agreed to are saved at once; a program they have not agreed to opens the consent dialog and changes nothing until they say yes
+   * ({@link AppStore.answerConsent}).
+   */
+  async chooseProvider(provider: AutoProvider): Promise<void> {
+    if ((provider === "claude" || provider === "agy") && this.state.preferences?.auto_consent[provider] !== true) {
+      this.set({ consentFor: provider });
+      return;
+    }
+    await this.setPreferences({ auto_provider: provider });
+  }
+
+  /**
+   * The consent dialog's answer: yes saves the choice and the consent in one patch (so a program is never saved without its consent) and
+   * closes the dialog; no closes it and keeps the previous choice.
+   */
+  async answerConsent(agree: boolean): Promise<void> {
+    const provider = this.state.consentFor;
+    if (provider === null) return;
+    this.set({ consentFor: null });
+    if (!agree) return;
+    const saved = this.state.preferences?.auto_consent ?? { claude: false, agy: false };
+    await this.setPreferences({ auto_provider: provider, auto_consent: { ...saved, [provider]: true } });
   }
 
   async refreshCliLink(): Promise<void> {
@@ -1329,13 +1383,14 @@ export class AppStore {
     if (overlay === "preferences") {
       void this.refreshCliLink();
       void this.refreshDisplayLuts();
-      void this.refreshAppleAuto();
+      void this.refreshAuto();
+      void this.refreshOs();
     }
   }
 
   closeOverlay(): void {
     if (this.state.overlay === "import-cube") this.set({ overlay: null, cubeImport: null });
-    else this.set({ overlay: null });
+    else this.set({ overlay: null, consentFor: null });
   }
 
   /** A short message that is not an error. */

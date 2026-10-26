@@ -1177,22 +1177,50 @@ pub struct NoiseModel {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Apple Auto (`docs/19`)
+// Auto providers (`docs/19`, `docs/22`)
 // ---------------------------------------------------------------------------------------------
 
-/// Which Auto made a photo's automatic values: Yellowmoon's own (`rule`) or Apple Auto's answer
-/// (`apple`).
+/// Which Auto made a photo's automatic values: Yellowmoon's own (`rule`), or the answer of Apple
+/// Intelligence (`apple`), Claude Code (`claude`) or Antigravity (`agy`, `docs/22` section 14.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum AutoSource {
     /// Yellowmoon's own Auto.
     Rule,
-    /// Apple Auto's answer (the photo's own or its burst's).
+    /// Apple Intelligence's answer (the photo's own or its burst's).
     Apple,
+    /// Claude Code's answer.
+    Claude,
+    /// Antigravity's answer.
+    Agy,
 }
 
-/// Why Apple Auto is not available on this computer (`docs/19` section 1; the core's
-/// `UnavailableReason`).
+/// Who grades (`docs/22` section 1; the core's `AutoProvider`). The order is the dropdown's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoProvider {
+    /// Yellowmoon's own Auto, the rule.
+    Yellowmoon,
+    /// Apple Intelligence, the on-device model.
+    Apple,
+    /// Claude Code, a program the person installed and signed in to.
+    Claude,
+    /// Antigravity (`agy`), the same.
+    Agy,
+}
+
+/// Whether the person agreed to send photos through each program (`docs/22` section 10.2; the
+/// core's `AutoConsent`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AutoConsent {
+    /// Claude Code.
+    pub claude: bool,
+    /// Antigravity.
+    pub agy: bool,
+}
+
+/// Why a provider is not available on this computer (`docs/19` section 1 and `docs/22` section 3;
+/// the core's `UnavailableReason`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum AppleAutoReason {
@@ -1214,6 +1242,20 @@ pub enum AppleAutoReason {
     Unavailable,
     /// The model on this Mac cannot take pictures.
     NoImageInput,
+    /// No usable program was found.
+    NotInstalled,
+    /// The program runs but its version is below the minimum.
+    TooOld,
+    /// The program runs and is not signed in.
+    SignedOut,
+    /// The program was found but its check failed or timed out.
+    ProbeFailed,
+    /// Windows: only a script was found, which Yellowmoon does not run.
+    UnsafeLauncher,
+    /// The first check has not finished.
+    Checking,
+    /// A program is chosen and available but the person has not agreed to send photos through it.
+    NotConsented,
 }
 
 /// Why one request to Apple's model failed (`docs/19` sections 6 and 8; the core's `FailureKind`).
@@ -1240,6 +1282,10 @@ pub enum AppleAutoFailure {
     ConcurrentRequests,
     /// The answer could not be read.
     BadAnswer,
+    /// The program is not signed in.
+    NotSignedIn,
+    /// The program reported an error.
+    CliFailed,
     /// Anything else; the message says what.
     Other,
 }
@@ -1255,16 +1301,70 @@ pub enum AppleAutoInstructions {
 }
 
 /// Which model answers, and with which instructions (the core's `AdvisorInfo`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+///
+/// The core writes what a program says about itself as `tool: { version, api, auth }`; the webview
+/// reads `tool_version` and `api` (`docs/22` section 12.6), so this type reads either shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct AppleAutoInfo {
-    /// The model variant's display name: "AFM 3 Core".
+    /// Whose grading it is.
+    pub provider: AutoProvider,
+    /// The model: Apple's variant display name ("AFM 3 Core"), or for the programs the id that
+    /// answered, the alias asked for until one answered, or `default`.
     pub model: String,
-    /// The macOS version and build: "27.0.1 (27A404)".
+    /// The macOS version and build: "27.0.1 (27A404)"; `""` for the programs.
     pub os: String,
+    /// The version the program printed ("2.1.310"); null for Apple Intelligence.
+    pub tool_version: Option<String>,
+    /// Where Claude Code's requests go (`firstParty`: Anthropic); null for the others.
+    pub api: Option<String>,
+    /// The version of the prompt the provider is asked with.
+    pub prompt: u32,
     /// The default instructions or the person's own.
     pub instructions: AppleAutoInstructions,
     /// The first 12 hex digits of the SHA-256 of the instructions.
     pub instructions_sha256: String,
+}
+
+impl<'de> Deserialize<'de> for AppleAutoInfo {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// What a program says about itself, as the core writes it.
+        #[derive(Deserialize)]
+        struct Tool {
+            version: String,
+            #[serde(default)]
+            api: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct Raw {
+            provider: AutoProvider,
+            model: String,
+            os: String,
+            #[serde(default)]
+            tool: Option<Tool>,
+            #[serde(default)]
+            tool_version: Option<String>,
+            #[serde(default)]
+            api: Option<String>,
+            prompt: u32,
+            instructions: AppleAutoInstructions,
+            instructions_sha256: String,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let (tool_version, api) = match raw.tool {
+            Some(tool) => (Some(tool.version), tool.api),
+            None => (raw.tool_version, raw.api),
+        };
+        Ok(Self {
+            provider: raw.provider,
+            model: raw.model,
+            os: raw.os,
+            tool_version,
+            api,
+            prompt: raw.prompt,
+            instructions: raw.instructions,
+            instructions_sha256: raw.instructions_sha256,
+        })
+    }
 }
 
 /// The colour Apple Auto gives the shadows (the core's `ShadowColor`).
@@ -1374,38 +1474,68 @@ pub enum AppleAuto {
     },
 }
 
-/// How a run decides whether Apple Auto is used (the core's `AppleAutoMode`); the app always
-/// follows the preference.
+/// Where one provider stands (`docs/22` section 3.1; the core's `ProviderState`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
-pub enum AppleAutoMode {
-    /// The `apple_auto` preference decides.
-    FromPreference,
-    /// On for this run.
-    On,
-    /// Off for this run.
-    Off,
+pub enum ProviderState {
+    /// It can answer now.
+    Available,
+    /// No usable program was found.
+    NotInstalled,
+    /// The program runs but its version is below the minimum.
+    TooOld,
+    /// It runs and is not signed in.
+    SignedOut,
+    /// It cannot answer, for a reason.
+    Unavailable,
+    /// The first check has not finished.
+    Checking,
 }
 
-/// `apple_auto_status()`: whether Apple Auto is available on this computer (read again for the
-/// answer), and whether it acts (`docs/19` sections 1 and 2; the core's `AppleAutoStatus`).
-/// Preferences shows its row only while `available`.
+/// One provider of [`AutoStatus`] (the core's `ProviderStatus`, without the program's path, which
+/// never leaves the core).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub struct AppleAutoStatus {
-    /// Apple Auto is available on this computer now.
-    pub available: bool,
-    /// Why it is not; null when it is, and when the app has no advisor.
+pub struct ProviderStatus {
+    /// Which provider.
+    pub provider: AutoProvider,
+    /// Where it stands.
+    pub state: ProviderState,
+    /// Why it is not available; null when it is.
     pub reason: Option<AppleAutoReason>,
     /// Which model answers, when it is available.
     pub info: Option<AppleAutoInfo>,
-    /// The `apple_auto` preference.
-    pub preference: bool,
-    /// How the run decides (always `from_preference` in the app).
-    pub mode: AppleAutoMode,
-    /// Apple Auto acts for the session now.
+    /// The program's version, also while it is too old or signed out.
+    pub tool_version: Option<String>,
+    /// Whether the person agreed to send photos through it.
+    pub consent: bool,
+    /// Whether the interface marks it Experimental (Antigravity).
+    pub experimental: bool,
+    /// Whether the dropdown lists it.
+    pub listed: bool,
+    /// Whether the dropdown lets the person choose it.
+    pub selectable: bool,
+}
+
+/// `auto_status()`: the four providers and which one grades now (`docs/22` sections 11 and 12.6; the
+/// core's `AutoStatus`, which replaces `AppleAutoStatus`). Preferences shows its "Auto grading" row
+/// only while `visible`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AutoStatus {
+    /// Every provider, in the dropdown's order.
+    pub providers: Vec<ProviderStatus>,
+    /// The saved choice (`auto_provider`).
+    pub preference: AutoProvider,
+    /// The provider chosen for the session: the saved choice in the app.
+    pub chosen: AutoProvider,
+    /// The provider that grades now: the chosen one while it is available and agreed to, else
+    /// `yellowmoon`.
+    pub effective: AutoProvider,
+    /// `effective` is not `yellowmoon`.
     pub active: bool,
-    /// The prompt's version.
-    pub prompt: u32,
+    /// The dropdown and the instructions show.
+    pub visible: bool,
+    /// The saved consent.
+    pub consent: AutoConsent,
     /// The table's version.
     pub table: u32,
     /// The default instructions or the person's own.
@@ -1416,7 +1546,7 @@ pub struct AppleAutoStatus {
     pub own_instructions: String,
     /// The default instructions, for Preferences' text field and its Reset to default.
     pub default_instructions: String,
-    /// The longest instructions the model is given, in characters.
+    /// The longest instructions the models are given, in characters.
     pub instructions_max_chars: u32,
 }
 
@@ -2173,10 +2303,13 @@ pub struct Preferences {
     pub watch_downloads_during_import: bool,
     /// Folders remembered between runs.
     pub last_used_folders: LastUsedFolders,
-    /// Auto with Apple Intelligence (`docs/19` section 2); acts only where Apple Auto is available.
-    pub apple_auto: bool,
-    /// Instructions for Apple Intelligence (`docs/19` section 2): the person's own, at most 2000
-    /// characters; `""` is the default.
+    /// Who grades (`docs/22` section 10.1): Apple Intelligence by default. A provider that is not
+    /// available, or a program the person has not agreed to yet, acts as Yellowmoon's own Auto.
+    pub auto_provider: AutoProvider,
+    /// Whether the person agreed to send photos through Claude Code and through Antigravity.
+    pub auto_consent: AutoConsent,
+    /// Instructions for the grading model (`docs/19` section 2, `docs/22` D1): the person's own, at
+    /// most 2000 characters, one text for every provider; `""` is the default.
     pub apple_auto_instructions: String,
 }
 
@@ -2205,11 +2338,15 @@ pub struct PreferencesPatch {
     /// New remembered folders.
     #[serde(default)]
     pub last_used_folders: Option<LastUsedFolders>,
-    /// New value of "Auto with Apple Intelligence".
+    /// New value of "Auto grading". A program is refused unless `auto_consent` (in the same patch
+    /// or already saved) says the person agreed.
     #[serde(default)]
-    pub apple_auto: Option<bool>,
-    /// New instructions for Apple Intelligence (`""` or the default text: the default); at most
-    /// 2000 characters, longer text is refused.
+    pub auto_provider: Option<AutoProvider>,
+    /// New consent for the two programs; replaces the saved one whole.
+    #[serde(default)]
+    pub auto_consent: Option<AutoConsent>,
+    /// New instructions (`""` or the default text: the default); at most 2000 characters, longer
+    /// text is refused.
     #[serde(default)]
     pub apple_auto_instructions: Option<String>,
 }
@@ -2241,6 +2378,9 @@ pub struct AppInfo {
     pub version: String,
     /// The pipeline version written into exports.
     pub pipeline_version: String,
+    /// The operating system, as Rust names it (`std::env::consts::OS`): "macos", "windows" or
+    /// "linux". Preferences words a few sentences differently on Windows (`docs/22` section 12.3).
+    pub os: String,
 }
 
 /// What `open_dialog` offers.
@@ -2428,6 +2568,12 @@ pub struct ExportProgress {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
 #[tauri_specta(event_name = "looks_changed")]
 pub struct LooksChanged;
+
+/// `auto_status_changed` (`docs/22` section 12.6): a provider's availability changed (a program was
+/// found, signed in or out, or a check ended). No data; the webview asks `auto_status()` again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "auto_status_changed")]
+pub struct AutoStatusChanged;
 
 /// `update_state { phase, version?, percent?, message? }` (the updater's phases, `docs/12`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]

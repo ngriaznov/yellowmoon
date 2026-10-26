@@ -85,7 +85,7 @@ const calls: Row[] = [
   ["preferencesGet", () => tauriApi.preferencesGet(), "preferences_get", undefined],
   ["preferencesSet", () => tauriApi.preferencesSet({ remove_location_from_exports: true }), "preferences_set", { patch: { remove_location_from_exports: true } }],
   ["installCliLink", () => tauriApi.installCliLink(), "install_cli_link", undefined],
-  ["appleAutoStatus", () => tauriApi.appleAutoStatus(), "apple_auto_status", undefined],
+  ["autoStatus", () => tauriApi.autoStatus(), "auto_status", undefined],
   ["cliLinkStatus", () => tauriApi.cliLinkStatus(), "cli_link_status", undefined],
   ["appInfo", () => tauriApi.appInfo(), "app_info", undefined],
 ];
@@ -105,7 +105,7 @@ describe("tauriApi commands", () => {
   });
 
   it("covers every method of the mock, so the two can't drift apart", () => {
-    const mockOnly = ["options", "configure", "reset", "flush", "failNext", "cancelNextDialog", "fixtureUrl", "viewport", "menuState", "system", "queueChoice", "addSource", "removeSource", "simulateDownload", "emitEvent", "setAppleAuto"];
+    const mockOnly = ["options", "configure", "reset", "flush", "failNext", "cancelNextDialog", "fixtureUrl", "viewport", "menuState", "system", "queueChoice", "addSource", "removeSource", "simulateDownload", "emitEvent", "setAppleAuto", "setProviders"];
     const mock = createMockApi();
     const contract = Object.keys(mock).filter((k) => !mockOnly.includes(k)).sort();
     expect(Object.keys(tauriApi).sort()).toEqual(contract);

@@ -26,12 +26,20 @@
  * returns to a fresh app.
  */
 import type { Api, Unsubscribe } from "./api";
+import { APPLE_TABLE, MOCK_DEFAULT_INSTRUCTIONS, MOCK_INSTRUCTIONS_MAX_CHARS } from "./api/appleAutoMock";
 import {
-  APPLE_TABLE,
-  MOCK_DEFAULT_INSTRUCTIONS,
-  MOCK_DEFAULT_INSTRUCTIONS_SHA256,
-  MOCK_INSTRUCTIONS_MAX_CHARS,
-} from "./api/appleAutoMock";
+  consentRefusal,
+  MOCK_AGY_INFO,
+  MOCK_APPLE_INFO,
+  MOCK_CLAUDE_INFO,
+  mockActivity,
+  mockAutoStatus,
+  mockInstructionsId,
+  mockPhotoState,
+  parseMockConsent,
+  parseMockProviders,
+} from "./api/providersMock";
+import type { MockActivity, MockProviders } from "./api/providersMock";
 import type {
   ApiEventName,
   ApiEvents,
@@ -39,10 +47,11 @@ import type {
   AppInfo,
   AppleAuto,
   AppleAutoAnswer,
-  AppleAutoInfo,
-  AppleAutoStatus,
   ApplyScope,
+  AutoConsent,
   AutoEstimates,
+  AutoProvider,
+  AutoStatus,
   BalanceSetting,
   ChromaSample,
   ChromaScatter,
@@ -162,40 +171,23 @@ export const MOCK_ESTIMATES: AutoEstimates = {
 };
 
 /**
- * How the mock plays Apple Auto (`docs/19`; `?mockAppleAuto=…`). `none` (the default) is the browser build and every computer the app
- * has no advisor on: not available, no reason, every photo `off`, so every screen is the one without Apple Auto. `unavailable` is a
- * Mac where Apple Intelligence is off. `pending`, `answered` and `failed` are a Mac where it is available: with the preference on,
- * every developed photo is waiting for its answer, has the answer of {@link MOCK_APPLE_ANSWER}, or failed (no answer within 30
- * seconds); with the preference off every photo is `off`.
+ * How the mock plays the photos' Auto states (`docs/19`; `?mockAppleAuto=…`), now of the provider that grades (`docs/22` section 12.8).
+ * `none` (the default) is the browser build and every computer the app has no advisor on: no provider, no reason, every photo `off`, so
+ * every screen is the one without a provider. `unavailable` is a Mac where Apple Intelligence is off. `pending`, `answered` and `failed`
+ * are a Mac where Apple Intelligence is available: with it chosen, every developed photo is waiting for its answer, has the answer of
+ * {@link MOCK_APPLE_ANSWER}, or failed (no answer within 30 seconds); with Yellowmoon's own Auto chosen every photo is `off`. Where
+ * `providers` names the computer's providers (`?mockProviders=`) the mode applies to the one that grades, and `none` or `unavailable`
+ * then read as `answered`.
  */
 export { APPLE_TABLE, MOCK_DEFAULT_INSTRUCTIONS, MOCK_INSTRUCTIONS_MAX_CHARS };
+export { MOCK_AGY_INFO, MOCK_APPLE_INFO, MOCK_CLAUDE_INFO, mockInstructionsId };
 
 export type MockAppleAuto = "none" | "unavailable" | "pending" | "answered" | "failed";
 
 const APPLE_AUTO_MODES: readonly MockAppleAuto[] = ["none", "unavailable", "pending", "answered", "failed"];
 
 /**
- * Which instructions the mock's model reads: the default, or the person's own with a stand-in digest (12 hex digits of an FNV-1a
- * hash: the browser has no synchronous SHA-256, and the mock only needs two texts to read apart).
- */
-export function mockInstructionsId(own: string): Pick<AppleAutoInfo, "instructions" | "instructions_sha256"> {
-  if (own.trim() === "" || own === MOCK_DEFAULT_INSTRUCTIONS) {
-    return { instructions: "default", instructions_sha256: MOCK_DEFAULT_INSTRUCTIONS_SHA256 };
-  }
-  let h = 0xcbf29ce484222325n;
-  for (const byte of new TextEncoder().encode(own)) h = BigInt.asUintN(64, (h ^ BigInt(byte)) * 0x100000001b3n);
-  return { instructions: "edited", instructions_sha256: h.toString(16).padStart(16, "0").slice(0, 12) };
-}
-
-/** The model the mock's Apple Auto says it is (the example of `docs/19` section 7), with the default instructions. */
-export const MOCK_APPLE_INFO: AppleAutoInfo = {
-  model: "AFM 3 Core",
-  os: "27.0.1 (27A404)",
-  ...mockInstructionsId(""),
-};
-
-/**
- * The answer every photo gets while the mock's Apple Auto answers: a little brighter and warmer, darker highlights, deeper blacks,
+ * The answer every photo gets while the mock's provider answers: a little brighter and warmer, darker highlights, deeper blacks,
  * more contrast, less saturation, teal shadows and warm highlights; it leaves the shadows and the tint empty (nothing set).
  */
 export const MOCK_APPLE_ANSWER: AppleAutoAnswer = {
@@ -224,28 +216,31 @@ function colorPoint(direction: ColorBalancePoint | undefined, strength: number |
   return [r * direction[0], r * direction[1]];
 }
 
-/** Where a photo stands with the mock's Apple Auto, given the mode and the `apple_auto` preference (the core's `Activity::photo_state`). */
-export function mockAppleState(mode: MockAppleAuto, preference: boolean, ownInstructions = ""): AppleAuto {
-  if (mode === "none") return { state: "off" };
-  if (mode === "unavailable") return { state: "unavailable", reason: "apple_intelligence_off" };
-  if (!preference) return { state: "off" };
-  if (mode === "pending") return { state: "pending" };
-  const info: AppleAutoInfo = { ...MOCK_APPLE_INFO, ...mockInstructionsId(ownInstructions) };
-  if (mode === "failed") return { state: "failed", kind: "timeout", message: "", info };
-  return { state: "answered", answer: MOCK_APPLE_ANSWER, info };
+/** The providers a mock computer has when `providers` is not set: what `appleAuto` says about Apple Intelligence, and nothing else. */
+export function providersOfMode(mode: MockAppleAuto): MockProviders {
+  if (mode === "none") return {};
+  return { apple: mode === "unavailable" ? "unavailable" : "available" };
 }
 
 /**
- * What Auto resolves to for a photo of the mock: {@link MOCK_ESTIMATES}, with the answer's values while Apple Auto has answered
+ * Where a photo stands with the mock's Auto: the activity (who acts, `Activity::decide`) played in the given mode, with the
+ * default instructions or the person's own (the core's `Activity::photo_state`).
+ */
+export function mockAppleState(mode: MockAppleAuto, activity: MockActivity, ownInstructions = ""): AppleAuto {
+  return mockPhotoState(activity, mode, MOCK_APPLE_ANSWER, ownInstructions);
+}
+
+/**
+ * What Auto resolves to for a photo of the mock: {@link MOCK_ESTIMATES}, with the answer's values while a provider has answered
  * (`docs/19` section 5: the exposure added to the rule's, the white made warmer along the locus and read to 50 K, the tint added to
  * the scene's, the sliders and the wheels from the table; a step left empty sets nothing).
  */
-export function mockEstimates(mode: MockAppleAuto, preference: boolean, ownInstructions = ""): AutoEstimates {
-  const apple = mockAppleState(mode, preference, ownInstructions);
+export function mockEstimates(apple: AppleAuto): AutoEstimates {
   if (apple.state !== "answered") return { ...MOCK_ESTIMATES, apple };
   const { steps } = apple.answer;
   const at = (table: Record<number, number>, step: number | null): number => (step === null ? 0 : (table[step] ?? 0));
   const mired = 1e6 / MOCK_ESTIMATES.kelvin - at(APPLE_TABLE.warmer_mired, steps.white);
+  const provider = apple.info.provider;
   return {
     ...MOCK_ESTIMATES,
     exposure_ev: Math.round((MOCK_ESTIMATES.exposure_ev + at(APPLE_TABLE.exposure_ev, steps.exposure)) * 100) / 100,
@@ -264,7 +259,7 @@ export function mockEstimates(mode: MockAppleAuto, preference: boolean, ownInstr
       steps.highlight_color === null ? undefined : APPLE_TABLE.highlight_directions[steps.highlight_color],
       steps.highlight_color === "none" ? 0 : steps.highlight_color_strength,
     ),
-    source: "apple",
+    source: provider === "yellowmoon" ? "rule" : provider,
     apple,
     apple_steps: steps,
   };
@@ -404,8 +399,23 @@ export interface MockOptions {
   importHoldAt?: number;
   /** Keep the preferences in `localStorage` so a reload of the page keeps them (`?mockPersist=1`). Default false. */
   persistPreferences?: boolean;
-  /** How the mock plays Apple Auto (`?mockAppleAuto=none|unavailable|pending|answered|failed`). Default `none`: not available. */
+  /**
+   * How the mock plays the photos' Auto states (`?mockAppleAuto=none|unavailable|pending|answered|failed`). Default `none`: no provider.
+   * Unless `providers` is set it also says whether Apple Intelligence is on this computer: anything but `none` is a Mac with it
+   * (`unavailable`: switched off).
+   */
   appleAuto?: MockAppleAuto;
+  /**
+   * The providers this computer has and in what state (`?mockProviders=apple,claude:signed_out,agy:too_old`, `docs/22` section 12.8): `null`
+   * (the default) is what `appleAuto` says; `{}` is none (the "Auto grading" row is hidden). A provider that is not named is not installed.
+   */
+  providers?: MockProviders | null;
+  /** The saved `auto_provider` a fresh mock starts with (`?mockAutoProvider=claude`). Default `apple`. */
+  autoProvider?: AutoProvider;
+  /** The saved `auto_consent` a fresh mock starts with (`?mockConsent=claude,agy`). Default: none. */
+  consent?: AutoConsent;
+  /** The operating system the mock says it runs on, for the words that differ on Windows (`?mockOs=windows`). Default `macos`. */
+  os?: "macos" | "windows" | "linux";
   /**
    * The viewport backend the mock claims to be (`?mockViewport=native|fallback`). `null` (the default): none, and the Photos screen
    * draws the fixture picture itself, as a browser build does. `native`: the screen leaves the cell transparent, as in the app on a
@@ -473,11 +483,16 @@ export interface MockApi extends Api {
   /** Make a zip "land in Downloads": a `download_found` event when the watcher is on; resolves to whether it was sent. */
   simulateDownload(fileName: string): boolean;
   /**
-   * Change how Apple Auto behaves, as when its answers arrive (`pending` to `answered` or `failed`) or Apple Intelligence is switched on
+   * Change how Auto behaves, as when its answers arrive (`pending` to `answered` or `failed`) or Apple Intelligence is switched on
    * or off: every developed photo whose Auto values or state change gets `settings_changed` and a new thumbnail, as the shell sends for
    * the core's `estimates_changed`.
    */
   setAppleAuto(mode: MockAppleAuto): void;
+  /**
+   * Change the providers the computer has, as when a program is installed, signed in or out, or removed (`docs/22` section 12.8): the
+   * photos' states follow as with `setAppleAuto`, and `auto_status_changed` is sent. `null` goes back to what `appleAuto` says.
+   */
+  setProviders(providers: MockProviders | null): void;
 }
 
 /** What `MockApi.system` has recorded. */
@@ -783,7 +798,7 @@ function defaultExportOptions(): ExportOptions {
   };
 }
 
-function defaultPreferences(): Preferences {
+function defaultPreferences(options: Pick<Required<MockOptions>, "autoProvider" | "consent"> = DEFAULT_OPTIONS): Preferences {
   return {
     default_look: NEUTRAL,
     display_rendering: { kind: "aces2" },
@@ -792,9 +807,17 @@ function defaultPreferences(): Preferences {
     check_for_updates_automatically: true,
     watch_downloads_during_import: false,
     last_used_folders: { open: null, export: null, looks_import: null },
-    apple_auto: true,
+    auto_provider: options.autoProvider,
+    auto_consent: { ...options.consent },
     apple_auto_instructions: "",
   };
+}
+
+/** Stored preferences without `apple_auto`, which `auto_provider` replaced (`docs/22` D15): a page that kept the old file still loads. */
+function withoutRetired(stored: Preferences): Preferences {
+  const { apple_auto: retired, ...rest } = stored as Preferences & { apple_auto?: boolean };
+  void retired;
+  return rest;
 }
 
 const DEFAULT_OPTIONS: Required<MockOptions> = {
@@ -819,6 +842,10 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   importHoldAt: Number.POSITIVE_INFINITY,
   persistPreferences: false,
   appleAuto: "none",
+  providers: null,
+  autoProvider: "apple",
+  consent: { claude: false, agy: false },
+  os: "macos",
   viewport: null,
   cpu: false,
 };
@@ -844,7 +871,9 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
  * `mockExportFails=DSC04204:reason`, `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
  * (preferences survive a reload), `mockViewport=native` or `fallback` (the mock behaves like that viewport backend of the app),
  * `mockAppleAuto=unavailable|pending|answered|failed` (Apple Auto as on a Mac where it is not available, or where every photo is waiting
- * for its answer, has it, or failed; `MockAppleAuto`) and `mockCpu=1` (frames render on the CPU and take 600 ms divided by
+ * for its answer, has it, or failed; `MockAppleAuto`), `mockProviders=apple,claude,agy:signed_out` (the providers of the computer and their
+ * states, `none` for no provider; `docs/22` section 12.8), `mockAutoProvider=claude` (the saved choice), `mockConsent=claude,agy` (the programs
+ * agreed to), `mockOs=windows` and `mockCpu=1` (frames render on the CPU and take 600 ms divided by
  * `mockSpeed`, with `viewport_busy` around them: the photo cell says "Rendering on the CPU"; `MockOptions.cpu`).
  */
 export function optionsFromLocation(search: string | undefined = typeof location === "undefined" ? undefined : location.search): MockOptions {
@@ -906,6 +935,14 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (params.get("mockCpu") === "1") out.cpu = true;
   const appleAuto = params.get("mockAppleAuto");
   if (appleAuto !== null && (APPLE_AUTO_MODES as readonly string[]).includes(appleAuto)) out.appleAuto = appleAuto as MockAppleAuto;
+  const providers = parseMockProviders(params.get("mockProviders"));
+  if (providers) out.providers = providers;
+  const autoProvider = params.get("mockAutoProvider");
+  if (autoProvider === "yellowmoon" || autoProvider === "apple" || autoProvider === "claude" || autoProvider === "agy") out.autoProvider = autoProvider;
+  const consent = parseMockConsent(params.get("mockConsent"));
+  if (consent) out.consent = consent;
+  const os = params.get("mockOs");
+  if (os === "macos" || os === "windows" || os === "linux") out.os = os;
   return out;
 }
 
@@ -1535,37 +1572,42 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
 
   // --- Apple Auto ---------------------------------------------------------------------------
 
-  /** What Auto resolves to now: the same for every photo, with Apple Auto's answer while it has one. */
+  /** The providers this computer has: the option, or what `appleAuto` says about Apple Intelligence. */
+  function providers(): MockProviders {
+    return options.providers ?? providersOfMode(options.appleAuto);
+  }
+
+  /** Who grades now (`Activity::decide`): the saved choice, when it is there, available and agreed to. */
+  function activity(): MockActivity {
+    return mockActivity(providers(), preferences.auto_provider, preferences.auto_consent);
+  }
+
+  /** Where every photo stands: the same for all of them in the mock. */
+  function appleState(): AppleAuto {
+    return mockAppleState(options.appleAuto, activity(), preferences.apple_auto_instructions);
+  }
+
+  /** What Auto resolves to now: the same for every photo, with the answer of the provider that grades while it has one. */
   function estimates(): AutoEstimates {
-    return mockEstimates(options.appleAuto, preferences.apple_auto, preferences.apple_auto_instructions);
+    return mockEstimates(appleState());
   }
 
   /**
-   * Whether the photo waits for Apple Intelligence's answer (the summary's `apple_pending`): the mock's Apple Auto is one state for
-   * every photo, so a photo waits exactly while that state is `pending` (a file that can't be opened never does).
+   * Whether the photo waits for its provider's answer (the summary's `apple_pending`): the mock's Auto is one state for every photo,
+   * so a photo waits exactly while that state is `pending` (a file that can't be opened never does).
    */
   function applePending(rec: PhotoRecord): boolean {
-    return !rec.skipReason && mockAppleState(options.appleAuto, preferences.apple_auto, preferences.apple_auto_instructions).state === "pending";
+    return !rec.skipReason && appleState().state === "pending";
   }
 
-  /** The core's `apple_auto_status`. */
-  function appleAutoStatus(): AppleAutoStatus {
-    const mode = options.appleAuto;
-    const available = mode !== "none" && mode !== "unavailable";
-    return {
-      available,
-      reason: mode === "unavailable" ? "apple_intelligence_off" : null,
-      info: available ? { ...MOCK_APPLE_INFO, ...mockInstructionsId(preferences.apple_auto_instructions) } : null,
-      preference: preferences.apple_auto,
-      mode: "from_preference",
-      active: available && preferences.apple_auto,
-      prompt: 3,
-      table: 2,
-      ...mockInstructionsId(preferences.apple_auto_instructions),
-      own_instructions: preferences.apple_auto_instructions,
-      default_instructions: MOCK_DEFAULT_INSTRUCTIONS,
-      instructions_max_chars: MOCK_INSTRUCTIONS_MAX_CHARS,
-    };
+  /** The core's `auto_status`. */
+  function autoStatus(): AutoStatus {
+    return mockAutoStatus({
+      providers: providers(),
+      preference: preferences.auto_provider,
+      consent: preferences.auto_consent,
+      own: preferences.apple_auto_instructions,
+    });
   }
 
   /**
@@ -2184,7 +2226,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     removal = null;
     developProgress = 0;
     const stored = options.persistPreferences ? readStored() : null;
-    preferences = stored ? { ...defaultPreferences(), ...stored.preferences } : defaultPreferences();
+    preferences = stored ? { ...defaultPreferences(options), ...withoutRetired(stored.preferences) } : defaultPreferences(options);
     importedPackages = stored?.importedPackages ?? [];
     userLooks = (stored?.userLooks ?? []).map(withLibraryFields);
     cliLink = stored?.cliLink ?? null;
@@ -2668,12 +2710,20 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
           if (n > MOCK_INSTRUCTIONS_MAX_CHARS) {
             fail(
               "preferences",
-              `The instructions for Apple Intelligence are ${n} characters long. At most ${MOCK_INSTRUCTIONS_MAX_CHARS} fit, because the model must also see the photo.`,
+              `The instructions are ${n} characters long. At most ${MOCK_INSTRUCTIONS_MAX_CHARS} fit, because the model must also see the photo.`,
             );
           }
         }
+        // The consent is one patch with the choice: a program is never chosen without the person's yes (`docs/22` section 10.2).
+        const consent: AutoConsent = patch.auto_consent
+          ? { claude: patch.auto_consent.claude === true, agy: patch.auto_consent.agy === true }
+          : preferences.auto_consent;
+        if ((patch.auto_provider === "claude" || patch.auto_provider === "agy") && !consent[patch.auto_provider]) {
+          fail("preferences", consentRefusal(patch.auto_provider));
+        }
         const next = { ...preferences } as Record<string, unknown>;
         for (const [key, value] of Object.entries(patch)) if (value !== undefined) next[key] = value;
+        next.auto_consent = consent;
         // Saved as "" when they are empty or the default (the core's `own_instructions`).
         if (patch.apple_auto_instructions !== undefined) {
           const own = patch.apple_auto_instructions;
@@ -2685,7 +2735,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
             fail("preferences", "Those display LUTs aren't imported. Import ARRI's display LUTs first.");
           }
         }
-        // Apple Auto follows its preference at once: off, every photo back to the rule; on, the answers (kept) come back.
+        // Auto follows its preference at once: Yellowmoon's own Auto, every photo back to the rule; a provider, its answers (kept) come back.
         changingEstimates(() => {
           preferences = next as unknown as Preferences;
         });
@@ -2703,8 +2753,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         return { path: cliLink };
       }),
     cliLinkStatus: () => run("cliLinkStatus", (): CliLinkStatus => ({ installed: cliLink !== null, path: cliLink })),
-    appleAutoStatus: () => run("appleAutoStatus", appleAutoStatus),
-    appInfo: () => run("appInfo", (): AppInfo => ({ version: APP_VERSION, pipeline_version: "1.0.0" })),
+    autoStatus: () => run("autoStatus", autoStatus),
+    appInfo: () => run("appInfo", (): AppInfo => ({ version: APP_VERSION, pipeline_version: "1.0.0", os: options.os })),
 
     chooseFolder: (start) =>
       run("chooseFolder", () => {
@@ -2750,6 +2800,12 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       changingEstimates(() => {
         options = withDefaults(options, { appleAuto: mode });
       });
+    },
+    setProviders(next) {
+      changingEstimates(() => {
+        options = { ...options, providers: next };
+      });
+      emitSoon("auto_status_changed", null);
     },
 
     simulateDownload(fileName) {

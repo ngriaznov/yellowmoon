@@ -17,8 +17,9 @@ test-support = []
 ym-core.workspace = true
 # Finding the programs: PATH and PATHEXT (MIT).
 which.workspace = true
-# Starting them: a process group on Unix, a job object on Windows, kill on drop, no console window (Apache-2.0 OR MIT).
-process-wrap = { workspace = true, features = ["std", "process-group", "job-object", "kill-on-drop", "creation-flags"] }
+# Starting them: a process group on Unix, a job object on Windows, no console window (Apache-2.0 OR MIT). Its
+# `kill-on-drop` feature is for Tokio only; src/process.rs has its own guard.
+process-wrap = { workspace = true, features = ["std", "process-group", "job-object", "creation-flags"] }
 # The private temporary folders (MIT OR Apache-2.0).
 tempfile.workspace = true
 # The answer's validation, without its HTTP resolvers (MIT).
@@ -32,6 +33,16 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
-[dev-dependencies]
-# Decodes the picture's JPEG, as ym-export's tests do.
+# The test doubles (src/fakes.rs, src/bin/ym-fake-*.rs) decode the picture they are given to check it is a JPEG and to
+# compute an answer from it. Nothing in the library uses it. MIT OR Apache-2.0 OR Zlib; also a dev-dependency of
+# ym-export and ym-color.
 zune-jpeg = "0.5"
+
+[target.'cfg(windows)'.dependencies]
+# The `CREATE_NO_WINDOW` flag type that process-wrap's `CreationFlags` takes (MIT OR Apache-2.0; already in the lock
+# through process-wrap and Tauri).
+windows = { version = "0.62", default-features = false, features = ["Win32_System_Threading"] }
+
+[dev-dependencies]
+# Turns `test-support` on for this crate's own integration tests, so a plain `cargo test -p ym-agents` runs them.
+ym-agents = { workspace = true, features = ["test-support"] }

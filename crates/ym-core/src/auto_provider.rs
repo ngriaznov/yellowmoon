@@ -671,7 +671,9 @@ pub fn unavailable_hint(
             let (name, cmd, t) = (provider.name(), command(provider), terminal(os));
             match reason {
                 UnavailableReason::SignedOut => {
-                    format!("{name} is installed but not signed in. Open {t}, run {cmd} and sign in.")
+                    format!(
+                        "{name} is installed but not signed in. Open {t}, run {cmd} and sign in."
+                    )
                 }
                 UnavailableReason::TooOld => {
                     let version = tool_version.map_or(String::new(), |v| format!(" {v}"));
@@ -1043,7 +1045,10 @@ mod tests {
             [None, Some(0), Some(1), Some(2)]
         );
         for p in AutoProvider::ALL {
-            assert_eq!(p.slot().and_then(AutoProvider::from_slot), p.slot().map(|_| p));
+            assert_eq!(
+                p.slot().and_then(AutoProvider::from_slot),
+                p.slot().map(|_| p)
+            );
             assert_eq!(
                 serde_json::to_value(p).unwrap(),
                 serde_json::json!(p.id()),
@@ -1058,7 +1063,10 @@ mod tests {
     #[test]
     fn a_choice_follows_the_preference_unless_it_names_a_provider() {
         let pref = AutoProvider::Claude;
-        assert_eq!(AutoChoice::FromPreference.chosen(pref), AutoProvider::Claude);
+        assert_eq!(
+            AutoChoice::FromPreference.chosen(pref),
+            AutoProvider::Claude
+        );
         assert_eq!(
             AutoChoice::Provider(AutoProvider::Apple).chosen(pref),
             AutoProvider::Apple
@@ -1084,13 +1092,22 @@ mod tests {
             serde_json::json!({ "claude": true, "agy": false })
         );
         let read: AutoConsent = serde_json::from_str(r#"{ "agy": true }"#).unwrap();
-        assert_eq!(read, AutoConsent { claude: false, agy: true });
+        assert_eq!(
+            read,
+            AutoConsent {
+                claude: false,
+                agy: true
+            }
+        );
     }
 
     #[test]
     fn a_reading_maps_to_a_state() {
         let state = |r: R| ProviderState::of(&Availability::Unavailable(r));
-        assert_eq!(ProviderState::of(&available(AutoProvider::Claude)), ProviderState::Available);
+        assert_eq!(
+            ProviderState::of(&available(AutoProvider::Claude)),
+            ProviderState::Available
+        );
         assert_eq!(state(R::NotInstalled), ProviderState::NotInstalled);
         assert_eq!(state(R::TooOld), ProviderState::TooOld);
         assert_eq!(state(R::SignedOut), ProviderState::SignedOut);
@@ -1129,7 +1146,11 @@ mod tests {
     #[test]
     fn the_dropdown_shows_when_any_provider_is_there_to_choose() {
         // Nothing registered: hidden, and Yellowmoon's own Auto acts.
-        let s = AutoStatus::build(&input([None, None, None], AutoProvider::Apple, AutoConsent::default()));
+        let s = AutoStatus::build(&input(
+            [None, None, None],
+            AutoProvider::Apple,
+            AutoConsent::default(),
+        ));
         assert!(!s.visible && !s.active);
         assert_eq!(s.effective, AutoProvider::Yellowmoon);
         assert_eq!(s.providers.len(), 4);
@@ -1138,7 +1159,12 @@ mod tests {
         let c = s.provider(AutoProvider::Claude).unwrap();
         assert_eq!(
             (c.state, c.reason, c.listed, c.selectable),
-            (ProviderState::NotInstalled, Some(R::NotInstalled), false, false)
+            (
+                ProviderState::NotInstalled,
+                Some(R::NotInstalled),
+                false,
+                false
+            )
         );
         // Apple alone, available: visible.
         let s = AutoStatus::build(&input(
@@ -1188,7 +1214,12 @@ mod tests {
         assert_eq!(c.tool_version.as_deref(), Some("2.1.310"));
         assert_eq!(c.path.as_deref(), Some(std::path::Path::new("/x/claude")));
         // The path never reaches JSON.
-        assert!(serde_json::to_string(c).unwrap().find("/x/claude").is_none());
+        assert!(
+            serde_json::to_string(c)
+                .unwrap()
+                .find("/x/claude")
+                .is_none()
+        );
         // A checking program is not listed yet.
         let s = AutoStatus::build(&input(
             [None, None, reading(Availability::Unavailable(R::Checking))],
@@ -1201,15 +1232,16 @@ mod tests {
 
     #[test]
     fn a_cloud_choice_acts_only_with_its_consent() {
-        let readings = || {
-            [
-                None,
-                reading(available(AutoProvider::Claude)),
-                None,
-            ]
-        };
-        let s = AutoStatus::build(&input(readings(), AutoProvider::Claude, AutoConsent::default()));
-        assert_eq!((s.chosen, s.effective, s.active), (AutoProvider::Claude, AutoProvider::Yellowmoon, false));
+        let readings = || [None, reading(available(AutoProvider::Claude)), None];
+        let s = AutoStatus::build(&input(
+            readings(),
+            AutoProvider::Claude,
+            AutoConsent::default(),
+        ));
+        assert_eq!(
+            (s.chosen, s.effective, s.active),
+            (AutoProvider::Claude, AutoProvider::Yellowmoon, false)
+        );
         assert!(s.visible);
         let consent = AutoConsent::default().with(AutoProvider::Claude, true);
         let s = AutoStatus::build(&input(readings(), AutoProvider::Claude, consent));
@@ -1218,11 +1250,23 @@ mod tests {
         let mut i = input(readings(), AutoProvider::Yellowmoon, AutoConsent::default());
         i.choice = AutoChoice::Provider(AutoProvider::Claude);
         let s = AutoStatus::build(&i);
-        assert_eq!((s.preference, s.chosen, s.effective), (AutoProvider::Yellowmoon, AutoProvider::Claude, AutoProvider::Claude));
+        assert_eq!(
+            (s.preference, s.chosen, s.effective),
+            (
+                AutoProvider::Yellowmoon,
+                AutoProvider::Claude,
+                AutoProvider::Claude
+            )
+        );
         // The instructions are the models' default unless the person wrote their own.
         assert_eq!(s.instructions, InstructionsId::default());
         assert_eq!(
-            s.provider(AutoProvider::Claude).unwrap().info.as_ref().unwrap().instructions,
+            s.provider(AutoProvider::Claude)
+                .unwrap()
+                .info
+                .as_ref()
+                .unwrap()
+                .instructions,
             InstructionsId::default()
         );
         i.own_instructions = "Moody.";
@@ -1230,7 +1274,12 @@ mod tests {
         assert_eq!(s.instructions, InstructionsId::of("Moody."));
         assert_eq!(s.own_instructions, "Moody.");
         assert_eq!(
-            s.provider(AutoProvider::Claude).unwrap().info.as_ref().unwrap().instructions,
+            s.provider(AutoProvider::Claude)
+                .unwrap()
+                .info
+                .as_ref()
+                .unwrap()
+                .instructions,
             InstructionsId::of("Moody.")
         );
     }
@@ -1282,7 +1331,10 @@ mod tests {
             unavailable_words(Claude, R::TooOld, Some("2.1.100")),
             "Claude Code 2.1.100 is too old"
         );
-        assert_eq!(unavailable_words(Claude, R::TooOld, None), "Claude Code is too old");
+        assert_eq!(
+            unavailable_words(Claude, R::TooOld, None),
+            "Claude Code is too old"
+        );
         assert_eq!(
             unavailable_words(Agy, R::ProbeFailed, None),
             "Antigravity didn't answer its check"
@@ -1291,7 +1343,10 @@ mod tests {
             unavailable_words(Claude, R::UnsafeLauncher, None),
             "Claude Code was found only as a script that Yellowmoon can't run safely"
         );
-        assert_eq!(unavailable_words(Agy, R::NotInstalled, None), "Antigravity isn't installed");
+        assert_eq!(
+            unavailable_words(Agy, R::NotInstalled, None),
+            "Antigravity isn't installed"
+        );
         assert_eq!(
             unavailable_words(Claude, R::Checking, None),
             "Yellowmoon is still checking"
@@ -1309,22 +1364,55 @@ mod tests {
     #[test]
     fn failures_have_words_per_provider() {
         use AutoProvider::{Agy, Apple, Claude};
-        assert_eq!(failure_words(Apple, FailureKind::Timeout), "no answer within 30 seconds");
-        assert_eq!(failure_words(Claude, FailureKind::Timeout), "no answer within 90 seconds");
-        assert_eq!(failure_words(Agy, FailureKind::Timeout), "no answer within 120 seconds");
-        assert_eq!(failure_words(Claude, FailureKind::RateLimited), "Claude Code reported a rate limit");
-        assert_eq!(failure_words(Apple, FailureKind::RateLimited), "macOS asked Yellowmoon to wait");
-        assert_eq!(failure_words(Claude, FailureKind::Refused), "Claude refused");
-        assert_eq!(failure_words(Agy, FailureKind::Refused), "Antigravity refused");
-        assert_eq!(failure_words(Agy, FailureKind::NotSignedIn), "Antigravity isn't signed in");
-        assert_eq!(failure_words(Claude, FailureKind::CliFailed), "Claude Code reported an error");
-        assert_eq!(failure_words(Claude, FailureKind::Unavailable), "Claude Code stopped being available");
+        assert_eq!(
+            failure_words(Apple, FailureKind::Timeout),
+            "no answer within 30 seconds"
+        );
+        assert_eq!(
+            failure_words(Claude, FailureKind::Timeout),
+            "no answer within 90 seconds"
+        );
+        assert_eq!(
+            failure_words(Agy, FailureKind::Timeout),
+            "no answer within 120 seconds"
+        );
+        assert_eq!(
+            failure_words(Claude, FailureKind::RateLimited),
+            "Claude Code reported a rate limit"
+        );
+        assert_eq!(
+            failure_words(Apple, FailureKind::RateLimited),
+            "macOS asked Yellowmoon to wait"
+        );
+        assert_eq!(
+            failure_words(Claude, FailureKind::Refused),
+            "Claude refused"
+        );
+        assert_eq!(
+            failure_words(Agy, FailureKind::Refused),
+            "Antigravity refused"
+        );
+        assert_eq!(
+            failure_words(Agy, FailureKind::NotSignedIn),
+            "Antigravity isn't signed in"
+        );
+        assert_eq!(
+            failure_words(Claude, FailureKind::CliFailed),
+            "Claude Code reported an error"
+        );
+        assert_eq!(
+            failure_words(Claude, FailureKind::Unavailable),
+            "Claude Code stopped being available"
+        );
         assert_eq!(
             failure_words(Apple, FailureKind::Unavailable),
             "Apple Intelligence stopped being available"
         );
         for p in [Apple, Claude, Agy] {
-            assert_eq!(failure_words(p, FailureKind::BadAnswer), "the answer could not be read");
+            assert_eq!(
+                failure_words(p, FailureKind::BadAnswer),
+                "the answer could not be read"
+            );
             assert_eq!(failure_words(p, FailureKind::Other), "an error");
         }
     }
@@ -1333,11 +1421,15 @@ mod tests {
     fn the_cloud_notice_says_where_the_picture_goes() {
         assert_eq!(
             cloud_notice(AutoProvider::Claude, Some("firstParty")).as_deref(),
-            Some("Claude Code will send a 768 px picture of each photo and the instructions to Anthropic.")
+            Some(
+                "Claude Code will send a 768 px picture of each photo and the instructions to Anthropic."
+            )
         );
         assert_eq!(
             cloud_notice(AutoProvider::Claude, Some("bedrock")).as_deref(),
-            Some("Claude Code will send a 768 px picture of each photo and the instructions to the service your Claude Code is set up to use.")
+            Some(
+                "Claude Code will send a 768 px picture of each photo and the instructions to the service your Claude Code is set up to use."
+            )
         );
         assert_eq!(
             cloud_notice(AutoProvider::Claude, None).as_deref(),
@@ -1345,7 +1437,9 @@ mod tests {
         );
         assert_eq!(
             cloud_notice(AutoProvider::Agy, None).as_deref(),
-            Some("Antigravity (agy) will send a 768 px picture of each photo and the instructions to Google.")
+            Some(
+                "Antigravity (agy) will send a 768 px picture of each photo and the instructions to Google."
+            )
         );
         assert_eq!(cloud_notice(AutoProvider::Apple, None), None);
         assert_eq!(cloud_notice(AutoProvider::Yellowmoon, None), None);
@@ -1368,7 +1462,10 @@ mod tests {
         assert!(advisors.get(AutoProvider::Agy).is_none());
         assert!(advisors.get(AutoProvider::Apple).is_some());
         assert_eq!(advisors.max_concurrency(), 2);
-        assert_eq!(format!("{advisors:?}"), "ProviderAdvisors { providers: [\"apple\", \"claude\"] }");
+        assert_eq!(
+            format!("{advisors:?}"),
+            "ProviderAdvisors { providers: [\"apple\", \"claude\"] }"
+        );
         // `on_change` reaches every advisor.
         let count = Arc::new(AtomicUsize::new(0));
         let c = Arc::clone(&count);
@@ -1405,12 +1502,21 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        assert_eq!(FakeProvider::info_for(AutoProvider::Agy).model, "Test Antigravity");
-        assert_eq!(FakeProvider::info_for(AutoProvider::Apple), FakeAdvisor::info());
+        assert_eq!(
+            FakeProvider::info_for(AutoProvider::Agy).model,
+            "Test Antigravity"
+        );
+        assert_eq!(
+            FakeProvider::info_for(AutoProvider::Apple),
+            FakeAdvisor::info()
+        );
         // A scripted failure.
         fake.fail_with(Some((FailureKind::RateLimited, "busy".to_owned())));
         let e = fake.ask(&picture(), "x").unwrap_err();
-        assert_eq!((e.kind, e.message.as_str()), (FailureKind::RateLimited, "busy"));
+        assert_eq!(
+            (e.kind, e.message.as_str()),
+            (FailureKind::RateLimited, "busy")
+        );
         fake.fail_with(None);
         assert!(fake.ask(&picture(), "x").is_ok());
         // The listeners hear of a change, once.
@@ -1441,7 +1547,10 @@ mod tests {
             })
             .collect();
         while fake.peak_concurrency() < 3 {
-            assert!(started.elapsed() < Duration::from_secs(10), "no three at once");
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "no three at once"
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
         fake.cancel();

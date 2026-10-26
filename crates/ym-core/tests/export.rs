@@ -422,7 +422,7 @@ fn the_xmp_records_how_the_file_was_made() {
         assert_eq!(value["exposure"]["kind"], "manual");
         // Which Auto made it (docs/19 section 9): the rule, and no Apple Auto property.
         assert_eq!(xmp_property(&xmp, "ym:Auto").as_deref(), Some("rule"));
-        assert_eq!(xmp_property(&xmp, "ym:AppleAuto"), None);
+        assert_eq!(xmp_property(&xmp, "ym:AutoAdvisor"), None);
     }
 }
 

@@ -322,7 +322,7 @@ describe("the system", () => {
     expect(await api.cliLinkStatus()).toEqual({ installed: false, path: null });
     expect(await api.installCliLink()).toEqual({ path: "/usr/local/bin/ym" });
     expect(await api.cliLinkStatus()).toEqual({ installed: true, path: "/usr/local/bin/ym" });
-    expect(await api.appInfo()).toEqual({ version: expect.stringMatching(/^\d+\.\d+\.\d+/), pipeline_version: "1.0.0" });
+    expect(await api.appInfo()).toEqual({ version: expect.stringMatching(/^\d+\.\d+\.\d+/), pipeline_version: "1.0.0", os: "macos" });
   });
 });
 

@@ -1226,9 +1226,9 @@ fn export_photo_unguarded(
                 look_intensity_pct: Some(rounded_percent(photo.source.settings.look_intensity)),
                 display_transform: Some(display_transform_id(&display, space)),
                 models: lens_models(&ctx.renderer, &photo.source.settings.lens),
-                // Which Auto made the values, and what Apple Auto said (`docs/19` section 9).
+                // Which Auto made the values, and what the provider said (`docs/22` section 14.2).
                 auto: Some(photo.source.estimates.source().name().to_owned()),
-                apple_auto: photo.source.estimates.apple.xmp_json(),
+                auto_advisor: photo.source.estimates.apple.advisor_json(),
                 settings: serde_json::to_value(photo.resolved.pinned_settings()).ok(),
             },
         },

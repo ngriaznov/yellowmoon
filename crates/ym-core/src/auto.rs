@@ -80,6 +80,7 @@ use ym_raw::decode::RawImage;
 use ym_raw::layout::{CfaColor, DecodeKind, Layout, Rect};
 
 use crate::apple_auto::{AppleAuto, AppleValues, AutoSteps};
+use crate::auto_provider::AutoProvider;
 use ym_raw::metadata::RawMetadata;
 
 use crate::settings::{DevelopSettings, NoiseReductionValue, Rolloff, SharpenValue};
@@ -1185,25 +1186,47 @@ pub struct AutoEstimates {
     /// The Apple Auto steps in effect: the photo's answer, or its burst's shared steps (`docs/19`
     /// section 5). `None` when Auto is the rule.
     pub apple_steps: Option<AutoSteps>,
+    /// The provider whose grading `apple` and `apple_steps` are (`docs/22` section 14.1): the
+    /// chosen provider while one acts or is asked about, [`AutoProvider::Yellowmoon`] while the
+    /// state is off.
+    pub provider: AutoProvider,
 }
 
-/// Which Auto made a photo's automatic values (`docs/19` sections 8 and 9: `ym:Auto`, `auto.source`).
+/// Which Auto made a photo's automatic values (`docs/19` sections 8 and 9, `docs/22` section 14:
+/// `ym:Auto`, `auto.source`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AutoSource {
     /// Yellowmoon's own Auto.
     Rule,
-    /// Apple Auto's answer (the photo's own or its burst's).
+    /// Apple Intelligence's answer (the photo's own or its burst's).
     Apple,
+    /// Claude Code's answer (the photo's own or its burst's).
+    Claude,
+    /// Antigravity's answer (the photo's own or its burst's).
+    Agy,
 }
 
 impl AutoSource {
-    /// The wire name: `rule` or `apple`.
+    /// The wire name: `rule`, `apple`, `claude` or `agy`.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Self::Rule => "rule",
             Self::Apple => "apple",
+            Self::Claude => "claude",
+            Self::Agy => "agy",
+        }
+    }
+
+    /// The source of answers from `provider`: Yellowmoon's own Auto is the rule.
+    #[must_use]
+    pub fn of(provider: AutoProvider) -> Self {
+        match provider {
+            AutoProvider::Yellowmoon => Self::Rule,
+            AutoProvider::Apple => Self::Apple,
+            AutoProvider::Claude => Self::Claude,
+            AutoProvider::Agy => Self::Agy,
         }
     }
 }
@@ -1234,9 +1257,11 @@ pub struct AutoSummary {
     pub balance_shadows: [f64; 2],
     /// What the highlights wheel's Auto resolves to: `[0, 0]`, or Apple Auto's highlight colour.
     pub balance_highlights: [f64; 2],
-    /// Which Auto made these values: `rule` or `apple`.
+    /// Which Auto made these values: `rule`, `apple`, `claude` or `agy`.
     pub source: AutoSource,
-    /// Where the photo stands with Apple Auto (`docs/19` section 12).
+    /// The chosen provider's wire name (`docs/22` section 14.1).
+    pub provider: AutoProvider,
+    /// Where the photo stands with the chosen provider's Auto (`docs/19` section 12).
     pub apple: AppleAuto,
     /// Apple Auto's steps in effect (the photo's answer, or its burst's shared steps), `None` when
     /// Auto is the rule. A step the model left empty is `null`: nothing was set for that control.
@@ -1399,6 +1424,7 @@ impl AutoEstimates {
             balance_highlights: [0.0, 0.0],
             apple: AppleAuto::Off,
             apple_steps: None,
+            provider: AutoProvider::Yellowmoon,
         })
     }
 
@@ -1433,10 +1459,12 @@ impl AutoEstimates {
         &self,
         steps: Option<AutoSteps>,
         state: AppleAuto,
+        provider: AutoProvider,
         tables: ProfileTables<'_>,
     ) -> Self {
         let mut s = self.clone();
         s.apple = state;
+        s.provider = provider;
         let Some((steps, values)) = steps.and_then(|st| st.values().map(|v| (st, v))) else {
             s.apple_steps = None;
             return s;
@@ -1481,11 +1509,11 @@ impl AutoEstimates {
         s
     }
 
-    /// Which Auto made the values: Apple Auto's when steps are in effect, else the rule.
+    /// Which Auto made the values: the provider's when steps are in effect, else the rule.
     #[must_use]
     pub fn source(&self) -> AutoSource {
         if self.apple_steps.is_some() {
-            AutoSource::Apple
+            AutoSource::of(self.provider)
         } else {
             AutoSource::Rule
         }
@@ -1547,6 +1575,7 @@ impl AutoEstimates {
             balance_shadows: self.balance_shadows,
             balance_highlights: self.balance_highlights,
             source: self.source(),
+            provider: self.provider,
             apple: self.apple.clone(),
             apple_steps: self.apple_steps,
             light_class,

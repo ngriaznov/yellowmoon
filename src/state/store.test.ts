@@ -845,24 +845,126 @@ describe("closing the session", () => {
   });
 });
 
-describe("Apple Auto (docs/19)", () => {
-  it("asks whether Apple Auto is available each time Preferences opens", async () => {
+describe("Auto providers (docs/19, docs/22)", () => {
+  it("asks which providers there are each time Preferences opens", async () => {
     const { api, store } = await connected({ appleAuto: "answered" });
-    expect(store.getState().appleAuto).toBeNull();
-    const spy = vi.spyOn(api, "appleAutoStatus");
+    expect(store.getState().auto).toBeNull();
+    const spy = vi.spyOn(api, "autoStatus");
     store.openOverlay("preferences");
-    await vi.waitFor(() => expect(store.getState().appleAuto?.available).toBe(true));
-    expect(store.getState().appleAuto).toMatchObject({ preference: true, active: true, reason: null });
+    await vi.waitFor(() => expect(store.getState().auto?.visible).toBe(true));
+    expect(store.getState().auto).toMatchObject({ preference: "apple", effective: "apple", active: true });
     store.closeOverlay();
     store.openOverlay("preferences");
     await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
   });
 
-  it("is not available in the browser build's mock", async () => {
+  it("has no provider in the browser build's mock", async () => {
     const { store } = await connected();
     store.openOverlay("preferences");
-    await vi.waitFor(() => expect(store.getState().appleAuto).not.toBeNull());
-    expect(store.getState().appleAuto).toMatchObject({ available: false, reason: null, active: false });
+    await vi.waitFor(() => expect(store.getState().auto).not.toBeNull());
+    expect(store.getState().auto).toMatchObject({ visible: false, effective: "yellowmoon", active: false });
+  });
+
+  it("asks which operating system it runs on when Preferences opens", async () => {
+    const { store } = await connected({ os: "windows" });
+    expect(store.getState().os).toBeNull();
+    store.openOverlay("preferences");
+    await vi.waitFor(() => expect(store.getState().os).toBe("windows"));
+  });
+
+  it("asks again on auto_status_changed while Preferences is open, and not otherwise (a program is not probed for nothing)", async () => {
+    const { api, store } = await connected({ providers: { claude: "signed_out" } });
+    const spy = vi.spyOn(api, "autoStatus");
+    api.setProviders({ claude: "available" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(spy).not.toHaveBeenCalled();
+    store.openOverlay("preferences");
+    await vi.waitFor(() => expect(store.getState().auto?.providers[2]?.state).toBe("available"));
+    expect(spy).toHaveBeenCalledTimes(1);
+    api.setProviders({ claude: "signed_out" });
+    await vi.waitFor(() => expect(store.getState().auto?.providers[2]?.state).toBe("signed_out"));
+    expect(spy).toHaveBeenCalledTimes(2);
+    store.closeOverlay();
+    api.setProviders({});
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps what it knows of the providers when a session closes", async () => {
+    const { store } = await opened({ providers: { claude: "available" } });
+    store.openOverlay("preferences");
+    await vi.waitFor(() => expect(store.getState().auto?.visible).toBe(true));
+    store.closeOverlay();
+    await store.closeSession();
+    expect(store.getState().auto?.visible).toBe(true);
+  });
+
+  describe("choosing a provider", () => {
+    const provider = (store: AppStore) => store.getState().preferences?.auto_provider;
+
+    it("saves Yellowmoon's own Auto, Apple Intelligence and an agreed program at once", async () => {
+      const { api, store } = await connected({ providers: { apple: "available", claude: "available" }, consent: { claude: true, agy: false } });
+      const spy = vi.spyOn(api, "preferencesSet");
+      await store.chooseProvider("yellowmoon");
+      expect(spy).toHaveBeenLastCalledWith({ auto_provider: "yellowmoon" });
+      expect(provider(store)).toBe("yellowmoon");
+      await store.chooseProvider("claude");
+      expect(spy).toHaveBeenLastCalledWith({ auto_provider: "claude" });
+      expect(provider(store)).toBe("claude");
+      expect(store.getState().consentFor).toBeNull();
+      await store.chooseProvider("apple");
+      expect(provider(store)).toBe("apple");
+    });
+
+    it("asks for consent before a program the person has not agreed to, and changes nothing until they say yes", async () => {
+      const { api, store } = await connected({ providers: { apple: "available", agy: "available" } });
+      const spy = vi.spyOn(api, "preferencesSet");
+      await store.chooseProvider("agy");
+      expect(store.getState().consentFor).toBe("agy");
+      expect(spy).not.toHaveBeenCalled();
+      expect(provider(store)).toBe("apple");
+      // No: the dialog closes, the choice stays.
+      await store.answerConsent(false);
+      expect(store.getState().consentFor).toBeNull();
+      expect(spy).not.toHaveBeenCalled();
+      expect(store.getState().preferences?.auto_consent).toEqual({ claude: false, agy: false });
+      // Yes: one patch with the choice and the consent.
+      await store.chooseProvider("agy");
+      await store.answerConsent(true);
+      expect(store.getState().consentFor).toBeNull();
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledWith({ auto_provider: "agy", auto_consent: { claude: false, agy: true } });
+      expect(store.getState().preferences).toMatchObject({ auto_provider: "agy", auto_consent: { claude: false, agy: true } });
+      await vi.waitFor(() => expect(store.getState().auto).toMatchObject({ preference: "agy", effective: "agy" }));
+    });
+
+    it("keeps the other program's consent when one is given", async () => {
+      const { api, store } = await connected({ providers: { claude: "available" }, consent: { claude: false, agy: true } });
+      const spy = vi.spyOn(api, "preferencesSet");
+      await store.chooseProvider("claude");
+      await store.answerConsent(true);
+      expect(spy).toHaveBeenCalledWith({ auto_provider: "claude", auto_consent: { claude: true, agy: true } });
+    });
+
+    it("an answer with no question open does nothing, and closing Preferences drops the question", async () => {
+      const { api, store } = await connected({ providers: { claude: "available" } });
+      const spy = vi.spyOn(api, "preferencesSet");
+      await store.answerConsent(true);
+      expect(spy).not.toHaveBeenCalled();
+      store.openOverlay("preferences");
+      await store.chooseProvider("claude");
+      expect(store.getState().consentFor).toBe("claude");
+      store.closeOverlay();
+      expect(store.getState().consentFor).toBeNull();
+    });
+
+    it("puts the choice back and shows the reason when the core refuses it", async () => {
+      const { api, store } = await connected({ providers: { claude: "available" }, consent: { claude: true, agy: false } });
+      api.failNext("preferencesSet", { scope: "preferences", message: "The preferences file can't be written. Check its permissions." });
+      await store.chooseProvider("claude");
+      expect(provider(store)).toBe("apple");
+      expect(store.getState().error?.message).toBe("The preferences file can't be written. Check its permissions.");
+    });
   });
 
   it("reads the photo's settings again when the answer arrives, so the Auto values follow", async () => {
@@ -916,16 +1018,28 @@ describe("Apple Auto (docs/19)", () => {
     expect(settingsOf(store).values.contrast).toBe(15);
   });
 
-  it("follows the preference: off puts every photo back to the rule, on brings the answers back", async () => {
+  it("follows the choice: Yellowmoon's own Auto puts every photo back to the rule, Apple Intelligence brings the answers back", async () => {
     const { store } = await opened({ appleAuto: "answered" });
     expect(settingsOf(store).values.contrast).toBe(15);
-    await store.setPreferences({ apple_auto: false });
+    await store.setPreferences({ auto_provider: "yellowmoon" });
     await vi.waitFor(() => expect(settingsOf(store).estimates.apple).toEqual({ state: "off" }));
     expect(settingsOf(store).values.contrast).toBe(0);
-    await vi.waitFor(() => expect(store.getState().appleAuto?.active).toBe(false));
-    await store.setPreferences({ apple_auto: true });
+    await vi.waitFor(() => expect(store.getState().auto?.active).toBe(false));
+    await store.setPreferences({ auto_provider: "apple" });
     await vi.waitFor(() => expect(settingsOf(store).values.contrast).toBe(15));
-    await vi.waitFor(() => expect(store.getState().appleAuto?.active).toBe(true));
+    await vi.waitFor(() => expect(store.getState().auto?.active).toBe(true));
+  });
+
+  it("asks for the status again after a change of the choice, the consent or the instructions, and not after another preference", async () => {
+    const { api, store } = await connected({ appleAuto: "answered" });
+    const spy = vi.spyOn(api, "autoStatus");
+    await store.setPreferences({ remove_location_from_exports: true });
+    await store.setPreferences({ auto_provider: "yellowmoon" });
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    await store.setPreferences({ auto_consent: { claude: true, agy: false } });
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
+    await store.setPreferences({ apple_auto_instructions: "Moody." });
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(3));
   });
 
   it("sends a value equal to the Auto value as Auto, and undoes a manual contrast back to Auto", async () => {

@@ -771,7 +771,41 @@ span.ym-filmstrip__thumb {
   padding: 4px 0 0;
   border-bottom: 1px solid var(--rim);
 }
-/* The instructions for Apple Intelligence under the Apple Auto row (docs/19 section 2): a label, the text area, then the hint and the
+/* "Auto grading" (docs/22 section 12): one muted line under the row for each program that is installed but cannot be used and for a
+   saved choice that is not available. The row above gives up its rule, so the notes read as part of it. */
+.ym-pref:has(+ .ym-pref__notes) {
+  border-bottom: 0;
+}
+.ym-pref__notes {
+  display: grid;
+  gap: 6px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-pref__note.ym-row-note {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+/* Antigravity's Experimental note, under the hint, with its badge. */
+.ym-pref__experimental {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 6px;
+}
+.ym-pref__experimental [data-slot="badge"] {
+  flex: none;
+}
+/* The badge and the tag of an entry of the dropdown, after the name. */
+.ym-pref__badge,
+.ym-pref__tag {
+  flex: none;
+}
+.ym-pref__tag {
+  margin-inline-start: auto;
+}
+/* The instructions for the grading model under the Auto grading row (docs/19 section 2): a label, the text area, then the hint and the
    count beside the Reset to default button. */
 .ym-pref__instructions {
   display: grid;

@@ -37,9 +37,9 @@ use tauri::Runtime;
 use tauri_specta::Event;
 
 use crate::wire::{
-    AppError, DownloadFound, ErrorEvent, ExportBusy, ExportProgress, LooksChanged,
-    LooksImportProgress, PhotoId, PhotoProgress, RenderStats, SettingsChanged, ThumbnailReady,
-    ViewportBusy, ViewportFrame,
+    AppError, AutoStatusChanged, DownloadFound, ErrorEvent, ExportBusy, ExportProgress,
+    LooksChanged, LooksImportProgress, PhotoId, PhotoProgress, RenderStats, SettingsChanged,
+    ThumbnailReady, ViewportBusy, ViewportFrame,
 };
 
 /// The least time between two `render_stats` events, between two `viewport_busy` events, and between
@@ -59,6 +59,8 @@ pub enum AppEvent {
     ExportProgress(ExportProgress),
     /// `looks_changed`.
     LooksChanged,
+    /// `auto_status_changed` (`docs/22` section 12.6): a provider's availability changed.
+    AutoStatusChanged,
     /// `error`.
     Error(AppError),
     /// `looks_import_progress`.
@@ -85,6 +87,7 @@ impl AppEvent {
             Self::RenderStats(_) => "render_stats",
             Self::ExportProgress(_) => "export_progress",
             Self::LooksChanged => "looks_changed",
+            Self::AutoStatusChanged => "auto_status_changed",
             Self::Error(_) => "error",
             Self::LooksImportProgress(_) => "looks_import_progress",
             Self::DownloadFound(_) => "download_found",
@@ -132,6 +135,7 @@ fn send<R: Runtime>(app: &tauri::AppHandle<R>, event: AppEvent) {
         AppEvent::RenderStats(e) => e.emit(app),
         AppEvent::ExportProgress(e) => e.emit(app),
         AppEvent::LooksChanged => LooksChanged.emit(app),
+        AppEvent::AutoStatusChanged => AutoStatusChanged.emit(app),
         AppEvent::Error(e) => ErrorEvent::from(e).emit(app),
         AppEvent::LooksImportProgress(e) => e.emit(app),
         AppEvent::DownloadFound(e) => e.emit(app),

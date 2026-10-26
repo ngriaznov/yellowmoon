@@ -3,6 +3,7 @@ import { Aurora } from "@/components/glass/aurora";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/glass/item";
 import { Button, DevelopList, DropZone, LinkButton, ProgressBar, useWindowDrop } from "../components";
 import type { DevelopItem } from "../components";
+import { gradedByNote, gradingHint, gradingTitle } from "../state/autoProviders";
 import { useAppState, useStore } from "../state/context";
 import { lookLabeller } from "../state/looks";
 import { developFraction, folderSubline, isReady, photoName } from "../state/photo";
@@ -17,11 +18,6 @@ const STEPS = [
 
 const plural = (n: number, one: string, many: string): string => (n === 1 ? one : many);
 
-/** The note of a developed photo that Apple Intelligence has not graded yet (`docs/11` §Start). */
-export const APPLE_GRADING_NOTE = "Graded by Apple Intelligence…";
-/** The hint while every photo is developed and Apple Intelligence still grades some (`docs/11` §Start). */
-export const APPLE_GRADING_HINT = "Apple Intelligence is looking at each photo. You can start looking while it finishes.";
-
 /**
  * The Start screen (`design/mockups/start.html`, `docs/11-ui.md` §Start): a yellow block that
  * says what the app does, the drop zone, and three steps. Files dropped anywhere in the window
@@ -32,6 +28,8 @@ export function Start() {
   const store = useStore();
   const session = useAppState((s) => s.session);
   const looks = useAppState((s) => s.looks);
+  // The provider that grades the waiting photos: the saved choice, which the app follows (a photo only waits while it acts).
+  const grader = useAppState((s) => s.preferences?.auto_provider ?? "apple");
   const notice = useAppState((s) => s.dropNotice);
   const opening = useAppState((s) => s.opening);
   const { dragging } = useWindowDrop({ onDrop: (paths) => void store.openPaths(paths) });
@@ -41,8 +39,8 @@ export function Start() {
   const total = photos.length;
   const ready = photos.filter(isReady).length;
   const skipped = photos.filter((p) => p.status.kind === "skipped").length;
-  // With Apple Auto on, Apple Intelligence grades each photo after it is developed; its values are only final then (`docs/19`
-  // section 6), so the screen waits for it too. A photo counts half when it is developed and whole when it is graded.
+  // With a provider acting (Apple Intelligence, Claude Code or Antigravity), it grades each photo after it is developed; its values are
+  // only final then (`docs/19` section 6, `docs/22` section 12.5), so the screen waits for it too. A photo counts half when it is developed and whole when it is graded.
   const grading = photos.filter((p) => p.apple_pending && p.status.kind !== "skipped").length;
   const appleActs = grading > 0;
   const developed = ready + skipped === total;
@@ -61,10 +59,10 @@ export function Start() {
           id: p.id,
           name: photoName(p.file_name),
           state: waitsForApple ? "developing" : p.status.kind,
-          note: p.status.kind === "skipped" ? p.status.reason : waitsForApple ? APPLE_GRADING_NOTE : undefined,
+          note: p.status.kind === "skipped" ? p.status.reason : waitsForApple ? gradedByNote(grader) : undefined,
         };
       }),
-    [photos],
+    [photos, grader],
   );
 
   const title = !busy
@@ -72,13 +70,13 @@ export function Start() {
     : !developed
       ? `Developing ${total} ${plural(total, "photo", "photos")}`
       : appleActs
-        ? `Grading ${grading} ${plural(grading, "photo", "photos")} with Apple Intelligence`
+        ? gradingTitle(grading, grader)
         : ready === 0
           ? "No photos ready"
           : `${ready} ${plural(ready, "photo", "photos")} ready`;
   const hint = !finished
     ? developed
-      ? APPLE_GRADING_HINT
+      ? gradingHint(grader)
       : "You can start looking while the rest finishes."
     : ready === 0
       ? `${skipped} ${plural(skipped, "file", "files")} skipped. Start over and open other files.`

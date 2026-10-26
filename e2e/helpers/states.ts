@@ -5,7 +5,8 @@ import { configureMock, dropFiles, failNext, lookTilesLoaded, openApp, openPhoto
 // Every page state of the app that can be reached on the mock API: the 30 states of the dark glass interface (C2), the ones its
 // screenshots were taken of and its page audit ran over (`e2e/glass.spec.ts`), the two of Colour › Colour warp (2026-10-17), the three of
 // Apple Auto (`docs/19`: the Automatic card with Apple's answer, Preferences with its row, and the instructions for Apple's model edited,
-// with Reset to default), the one of Auto crop (`docs/20`: the Crop panel with Auto on and its note) and the three of the Lens tab
+// with Reset to default), the two of the Auto providers (`docs/22` section 12.9: Preferences with every provider listed and the dropdown
+// open, and the consent dialog), the one of Auto crop (`docs/20`: the Crop panel with Auto on and its note) and the three of the Lens tab
 // (`docs/21`: no lens, a lens chosen at its start amounts, and the lens data missing). A state is a function that leaves a page in it;
 // the numbers in the names are only an order.
 
@@ -313,8 +314,8 @@ export const STATES: readonly PageState[] = [
     },
   ],
   // Apple Auto (docs/19 sections 2 and 10), on a Mac where it is available: the Automatic card with a row for each value Apple's answer
-  // set, its line and the plan; Preferences with the row "Auto with Apple Intelligence" and the instructions under it; and the instructions
-  // edited, with Reset to default enabled next to the field.
+  // set, its line and the plan; Preferences with the row "Auto grading" and the instructions under it; and the instructions edited, with
+  // Reset to default enabled next to the field.
   [
     "33-tab-look-apple-auto",
     async (p) => {
@@ -327,7 +328,7 @@ export const STATES: readonly PageState[] = [
     async (p) => {
       await photos(p, { ...MOCKUP, mockAppleAuto: "answered" });
       await p.keyboard.press("Meta+,");
-      await expect(p.getByRole("switch", { name: "Auto with Apple Intelligence" })).toBeVisible();
+      await expect(p.getByRole("combobox", { name: "Auto grading" })).toBeVisible();
       await p.waitForTimeout(400);
     },
   ],
@@ -376,6 +377,32 @@ export const STATES: readonly PageState[] = [
       await photos(p, { ...MOCKUP, mockLenses: 0 });
       await tab(p, "Lens");
       await expect(p.getByText("Lens data are missing, so lenses can't be used.")).toBeVisible();
+    },
+  ],
+  // The Auto providers (docs/22 section 12.9): Preferences with every provider listed (Apple Intelligence available, Claude Code
+  // available, Antigravity signed out) and the dropdown open, with Claude Code the saved choice; and the consent dialog over Preferences
+  // when Claude Code is chosen for the first time.
+  [
+    "40-dialog-preferences-providers",
+    async (p) => {
+      await photos(p, { ...MOCKUP, mockProviders: "apple,claude,agy:signed_out", mockAutoProvider: "claude", mockConsent: "claude", mockAppleAuto: "answered" });
+      await p.keyboard.press("Meta+,");
+      const select = p.getByRole("combobox", { name: "Auto grading" });
+      await expect(select).toHaveText("Claude Code");
+      await select.click();
+      await expect(p.getByRole("option", { name: "Antigravity (agy) Experimental, not signed in" })).toBeVisible();
+      await p.waitForTimeout(400);
+    },
+  ],
+  [
+    "41-dialog-consent",
+    async (p) => {
+      await photos(p, { ...MOCKUP, mockProviders: "apple,claude,agy:signed_out", mockAppleAuto: "answered" });
+      await p.keyboard.press("Meta+,");
+      await p.getByRole("combobox", { name: "Auto grading" }).click();
+      await p.getByRole("option", { name: "Claude Code" }).click();
+      await expect(p.getByRole("dialog", { name: "Send photos to Claude Code?" })).toBeVisible();
+      await p.waitForTimeout(400);
     },
   ],
 ];

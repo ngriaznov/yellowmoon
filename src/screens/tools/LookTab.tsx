@@ -4,9 +4,10 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import type { ReactNode } from "react";
 import { AutoRow, AutoToggle, Button, Card, Field, formats, LinkButton, LookTile, ResetLink, RowNote, Rows, SearchField, Segmented, Slider, Tag } from "../../components";
 import type { TabId } from "../../components";
-import type { AppleAuto, AppleAutoSteps, ApplyScope, Look, LookId, LookLibrary, ResolvedSettings } from "../../api/types";
+import type { AppleAuto, AppleAutoSteps, ApplyScope, AutoProvider, Look, LookId, LookLibrary, ResolvedSettings } from "../../api/types";
 import { perfCount } from "../../perf";
 import { useAppState, useStore } from "../../state/context";
+import { autoCardLine } from "../../state/autoProviders";
 import { isArriLook, LOOK_LIBRARIES, looksInDisplayOrder, lookTooltip } from "../../state/looks";
 import type { LookLibraryInfo } from "../../state/looks";
 import type { AppStore } from "../../state/store";
@@ -19,19 +20,14 @@ import type { TabProps } from "./shared";
 /** Said on a tile whose look file is gone or changed (`docs/08-looks.md` §Missing looks). */
 export const MISSING_LOOK_NOTE = "File missing or changed. Import again.";
 
-/** The Automatic card's line under its rows while Apple Auto is on for the session (`docs/19` section 10), by the photo's state. */
-export const APPLE_AUTO_LINES = {
-  answered: "Set with Apple Intelligence.",
-  pending: "Apple Intelligence is looking at this photo…",
-  failed: "Apple Intelligence couldn't look at this photo, so Auto uses Yellowmoon's own settings.",
-} as const;
-
 /**
- * The Automatic card's line for a photo's Apple Auto state, or null while Apple Auto is off or not available: then the card has none
- * of Apple Auto's rows and no line, and is the card it was before Apple Auto.
+ * The Automatic card's line for a photo's Auto state (`docs/19` section 10, `docs/22` section 12.5): "Set with Claude Code.", "Apple
+ * Intelligence is looking at this photo…", the failure, or, for a program that was chosen and is not available, that; null while Auto is
+ * off or not available in a way the card does not say: then the card has none of a provider's rows and no line, and is the card it was
+ * before Apple Auto. `chosen` is the saved choice, the provider the line names while the photo's state names none.
  */
-export function appleAutoLine(apple: AppleAuto): string | null {
-  return apple.state === "answered" || apple.state === "pending" || apple.state === "failed" ? APPLE_AUTO_LINES[apple.state] : null;
+export function appleAutoLine(apple: AppleAuto, chosen: AutoProvider): string | null {
+  return autoCardLine(apple, chosen);
 }
 
 /** The model's plan for the photo, shown under the card's line (`docs/19` section 10); null without an answer or with no words. */
@@ -395,9 +391,10 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
   ];
 
   const noiseValue = `Luminance ${Math.round(values.noise_reduction.luminance)}`;
-  // Apple Auto on for the session: the photo is waiting for its answer, has it, or failed (`docs/19` section 10). Its rows are the
+  // A provider on for the session: the photo is waiting for its answer, has it, or failed (`docs/19` section 10). Its rows are the
   // values the answer in effect set, in the order of the table; a value the model left empty has no row.
-  const appleLine = appleAutoLine(rs.estimates.apple);
+  const chosen = useAppState((s) => s.preferences?.auto_provider ?? "apple");
+  const appleLine = appleAutoLine(rs.estimates.apple, chosen);
   const applePlan = appleAutoPlan(rs.estimates.apple);
   const rows = appleRows(appleLine !== null ? rs.estimates.apple_steps : null);
   const openLight = (): void => onOpenTab("light");

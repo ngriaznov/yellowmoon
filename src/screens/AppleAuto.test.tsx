@@ -1,9 +1,9 @@
 /**
- * Apple Auto in the app (`docs/19` sections 2 and 10, `docs/11-ui.md`): the Preferences row "Auto with Apple Intelligence", shown only
- * while Apple Auto is available, and under it the instructions for Apple's model while the switch is on; the Automatic card's rows for
- * the values the answer set, its line and the model's plan while Apple Auto is on for the session; and the sliders and wheels Apple Auto
- * sets, which behave like Exposure (the detent and Reset at the Auto value, a value equal to it sent as Auto). The mock plays each state
- * (`MockOptions.appleAuto`).
+ * Apple Intelligence's Auto in the app (`docs/19` sections 2 and 10, `docs/22` section 12, `docs/11-ui.md`): the Preferences row "Auto
+ * grading" with Apple Intelligence chosen, shown only while it is available, and under it the instructions for Apple's model; the
+ * Automatic card's rows for the values the answer set, its line and the model's plan while a provider grades the photo; and the
+ * sliders and wheels the provider sets, which behave like Exposure (the detent and Reset at the Auto value, a value equal to it sent as
+ * Auto). The mock plays each state (`MockOptions.appleAuto`). The other providers are in `AutoProviders.test.tsx`.
  */
 import { screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,15 +12,21 @@ import type { SettingsPatch } from "../api/types";
 import { openPhotos, openTab, renderApp, sliderOf, valueOf } from "../test/harness";
 import type { Harness, UpdateSpy } from "../test/harness";
 import { MOCK_APPLE_INFO, MOCK_DEFAULT_INSTRUCTIONS } from "../api.mock";
+import { AUTO_GRADING_TITLE, PROVIDER_HINTS } from "../state/autoProviders";
 import {
-  APPLE_AUTO_HINT,
-  APPLE_AUTO_TITLE,
   APPLE_INSTRUCTIONS_HINT,
   APPLE_INSTRUCTIONS_LABEL,
   APPLE_INSTRUCTIONS_RESET,
   APPLE_INSTRUCTIONS_SAVE_MS,
 } from "./dialogs/Preferences";
-import { APPLE_AUTO_LINES, appleAutoLine, appleColorText, appleRows } from "./tools/LookTab";
+import { appleAutoLine, appleColorText, appleRows } from "./tools/LookTab";
+
+/** The Automatic card's lines with Apple Intelligence grading (`docs/22` section 12.5). */
+const APPLE_AUTO_LINES = {
+  answered: "Set with Apple Intelligence.",
+  pending: "Apple Intelligence is looking at this photo…",
+  failed: "Apple Intelligence couldn't look at this photo, so Auto uses Yellowmoon's own settings.",
+} as const;
 
 let h: Harness | undefined;
 afterEach(() => {
@@ -40,7 +46,7 @@ async function openPreferences(appleAuto: MockAppleAuto): Promise<HTMLElement> {
   await h.user.keyboard("{Meta>},{/Meta}");
   const dialog = await screen.findByRole("dialog", { name: "Preferences" });
   await waitFor(() => expect(within(dialog).queryByText("Loading your preferences…")).toBeNull());
-  await waitFor(() => expect(h!.store.getState().appleAuto).not.toBeNull());
+  await waitFor(() => expect(h!.store.getState().auto).not.toBeNull());
   return dialog;
 }
 
@@ -65,47 +71,51 @@ async function lastPatch(spy: UpdateSpy): Promise<SettingsPatch> {
   return spy.mock.calls.at(-1)?.[1] as SettingsPatch;
 }
 
-describe("Preferences › Auto with Apple Intelligence", () => {
-  it("is there while Apple Auto is available, with the hint of docs/19, after Display rendering", async () => {
+describe("Preferences › Auto grading with Apple Intelligence", () => {
+  it("is there while Apple Intelligence is available, with the hint of docs/22, after Display rendering", async () => {
     const dialog = await openPreferences("answered");
-    const row = within(dialog).getByRole("group", { name: APPLE_AUTO_TITLE });
-    expect(row).toHaveTextContent(APPLE_AUTO_HINT);
-    expect(APPLE_AUTO_HINT).toBe(
-      "Apple's on-device model looks at each photo and grades it: exposure, highlights, shadows, black level, contrast, warmth, tint, saturation and the colours of the shadows and highlights. It runs on this Mac and sends nothing anywhere. Turn it off to use Yellowmoon's own Auto, the same on every computer.",
+    const row = within(dialog).getByRole("group", { name: AUTO_GRADING_TITLE });
+    expect(row).toHaveTextContent(PROVIDER_HINTS.apple);
+    expect(PROVIDER_HINTS.apple).toBe(
+      "Apple's on-device model looks at each photo and grades it: exposure, highlights, shadows, black level, contrast, warmth, tint, saturation and the colours of the shadows and highlights. It runs on this Mac and sends nothing anywhere.",
     );
     // The whole hint shows: it is not cut after two lines like the others.
     expect(row.querySelector(".ym-pref__hint")).toHaveClass("line-clamp-none");
     const groups = within(dialog)
       .getAllByRole("group")
       .map((g) => g.getAttribute("aria-label"));
-    expect(groups.indexOf(APPLE_AUTO_TITLE)).toBe(groups.indexOf("Display rendering") + 1);
-    expect(within(dialog).getByRole("switch", { name: APPLE_AUTO_TITLE })).toHaveAttribute("aria-checked", "true");
+    expect(groups.indexOf(AUTO_GRADING_TITLE)).toBe(groups.indexOf("Display rendering") + 1);
+    expect(within(dialog).getByRole("combobox", { name: AUTO_GRADING_TITLE })).toHaveTextContent("Apple Intelligence");
   });
 
-  it("is absent where Apple Auto is not available, and in the browser build", async () => {
+  it("is absent where Apple Intelligence is not available, and in the browser build", async () => {
     for (const mode of ["none", "unavailable"] as const) {
       const dialog = await openPreferences(mode);
       expect(within(dialog).getByRole("group", { name: "Display rendering" })).toBeInTheDocument();
-      expect(within(dialog).queryByRole("group", { name: APPLE_AUTO_TITLE })).toBeNull();
-      expect(within(dialog).queryByRole("switch", { name: APPLE_AUTO_TITLE })).toBeNull();
+      expect(within(dialog).queryByRole("group", { name: AUTO_GRADING_TITLE })).toBeNull();
+      expect(within(dialog).queryByRole("combobox", { name: AUTO_GRADING_TITLE })).toBeNull();
+      expect(within(dialog).queryByRole("textbox", { name: APPLE_INSTRUCTIONS_LABEL })).toBeNull();
       h!.unmount();
       h = undefined;
     }
   });
 
-  it("writes the preference when the switch is flipped, both ways", async () => {
+  it("writes the preference when Yellowmoon's own Auto is chosen, and when Apple Intelligence is chosen again", async () => {
     const dialog = await openPreferences("answered");
-    const toggle = within(dialog).getByRole("switch", { name: APPLE_AUTO_TITLE });
-    await h!.user.click(toggle);
-    await waitFor(async () => expect((await h!.api.preferencesGet()).apple_auto).toBe(false));
-    expect(toggle).toHaveAttribute("aria-checked", "false");
-    await waitFor(() => expect(h!.store.getState().appleAuto?.active).toBe(false));
-    await h!.user.click(toggle);
-    await waitFor(async () => expect((await h!.api.preferencesGet()).apple_auto).toBe(true));
-    expect(toggle).toHaveAttribute("aria-checked", "true");
+    const select = within(dialog).getByRole("combobox", { name: AUTO_GRADING_TITLE });
+    await h!.user.click(select);
+    await h!.user.click(await screen.findByRole("option", { name: "Yellowmoon's own Auto" }));
+    await waitFor(async () => expect((await h!.api.preferencesGet()).auto_provider).toBe("yellowmoon"));
+    await waitFor(() => expect(select).toHaveTextContent("Yellowmoon's own Auto"));
+    await waitFor(() => expect(h!.store.getState().auto?.active).toBe(false));
+    await h!.user.click(select);
+    await h!.user.click(await screen.findByRole("option", { name: "Apple Intelligence" }));
+    await waitFor(async () => expect((await h!.api.preferencesGet()).auto_provider).toBe("apple"));
+    await waitFor(() => expect(select).toHaveTextContent("Apple Intelligence"));
+    expect(h!.store.getState().consentFor).toBeNull();
   });
 
-  it("shows the instructions for Apple's model under the switch while it is on, the default when none are saved", async () => {
+  it("shows the instructions for Apple's model under the row while Apple grades, the default when none are saved", async () => {
     const dialog = await openPreferences("answered");
     const field = within(dialog).getByRole("textbox", { name: APPLE_INSTRUCTIONS_LABEL });
     expect(field).toHaveValue(MOCK_DEFAULT_INSTRUCTIONS);
@@ -115,11 +125,13 @@ describe("Preferences › Auto with Apple Intelligence", () => {
     // At the default there is nothing to reset: the button is there, and disabled.
     const reset = within(dialog).getByRole("button", { name: APPLE_INSTRUCTIONS_RESET });
     expect(reset).toHaveAttribute("aria-disabled", "true");
-    // Switched off, the field goes; on again, it is back.
-    const toggle = within(dialog).getByRole("switch", { name: APPLE_AUTO_TITLE });
-    await h!.user.click(toggle);
+    // Yellowmoon's own Auto chosen, the field goes; Apple Intelligence again, it is back.
+    const select = within(dialog).getByRole("combobox", { name: AUTO_GRADING_TITLE });
+    await h!.user.click(select);
+    await h!.user.click(await screen.findByRole("option", { name: "Yellowmoon's own Auto" }));
     await waitFor(() => expect(within(dialog).queryByRole("textbox", { name: APPLE_INSTRUCTIONS_LABEL })).toBeNull());
-    await h!.user.click(toggle);
+    await h!.user.click(select);
+    await h!.user.click(await screen.findByRole("option", { name: "Apple Intelligence" }));
     expect(await within(dialog).findByRole("textbox", { name: APPLE_INSTRUCTIONS_LABEL })).toHaveValue(MOCK_DEFAULT_INSTRUCTIONS);
   });
 
@@ -136,7 +148,7 @@ describe("Preferences › Auto with Apple Intelligence", () => {
     });
     expect(spy.mock.calls.filter(([p]) => p.apple_auto_instructions !== undefined)).toHaveLength(1);
     await waitFor(async () => expect((await h!.api.preferencesGet()).apple_auto_instructions).toBe("Moody night grade."));
-    await waitFor(() => expect(h!.store.getState().appleAuto?.instructions).toBe("edited"));
+    await waitFor(() => expect(h!.store.getState().auto?.instructions).toBe("edited"));
     // A blur saves at once.
     spy.mockClear();
     await h!.user.type(field, " Cool.");
@@ -151,17 +163,17 @@ describe("Preferences › Auto with Apple Intelligence", () => {
     await waitFor(() => expect(field).toHaveValue(MOCK_DEFAULT_INSTRUCTIONS));
     await waitFor(async () => expect((await h!.api.preferencesGet()).apple_auto_instructions).toBe(""));
     await waitFor(() => expect(reset).toHaveAttribute("aria-disabled", "true"));
-    await waitFor(() => expect(h!.store.getState().appleAuto?.instructions).toBe("default"));
+    await waitFor(() => expect(h!.store.getState().auto?.instructions).toBe("default"));
   });
 
   it("asks again each time Preferences opens, so a Mac where Apple Intelligence was switched on shows the row", async () => {
     let dialog = await openPreferences("unavailable");
-    expect(within(dialog).queryByRole("group", { name: APPLE_AUTO_TITLE })).toBeNull();
+    expect(within(dialog).queryByRole("group", { name: AUTO_GRADING_TITLE })).toBeNull();
     await h!.user.click(within(dialog).getByRole("button", { name: "Done" }));
     h!.api.configure({ appleAuto: "pending" });
     await h!.user.keyboard("{Meta>},{/Meta}");
     dialog = await screen.findByRole("dialog", { name: "Preferences" });
-    expect(await within(dialog).findByRole("group", { name: APPLE_AUTO_TITLE })).toBeInTheDocument();
+    expect(await within(dialog).findByRole("group", { name: AUTO_GRADING_TITLE })).toBeInTheDocument();
   });
 });
 
@@ -176,9 +188,9 @@ describe("the Automatic card with Apple Auto", () => {
     }
   });
 
-  it("is today's card when the preference is off", async () => {
+  it("is today's card when Yellowmoon's own Auto is chosen", async () => {
     await onPhotos("answered");
-    await h!.store.setPreferences({ apple_auto: false });
+    await h!.store.setPreferences({ auto_provider: "yellowmoon" });
     await waitFor(() => expect(rowLabels()).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]));
     expect(screen.queryByText(APPLE_AUTO_LINES.answered)).toBeNull();
   });
@@ -310,8 +322,8 @@ describe("the Automatic card with Apple Auto", () => {
   });
 
   it("the line for each state, and none while Apple Auto is off or not available", () => {
-    expect(appleAutoLine({ state: "pending" })).toBe("Apple Intelligence is looking at this photo…");
-    expect(appleAutoLine({ state: "failed", kind: "refused", message: "", info: MOCK_APPLE_INFO })).toBe(
+    expect(appleAutoLine({ state: "pending" }, "apple")).toBe("Apple Intelligence is looking at this photo…");
+    expect(appleAutoLine({ state: "failed", kind: "refused", message: "", info: MOCK_APPLE_INFO }, "apple")).toBe(
       "Apple Intelligence couldn't look at this photo, so Auto uses Yellowmoon's own settings.",
     );
     const steps = {
@@ -328,11 +340,11 @@ describe("the Automatic card with Apple Auto", () => {
       highlight_color: null,
       highlight_color_strength: null,
     };
-    expect(appleAutoLine({ state: "answered", answer: { steps, scene: "", plan: "" }, info: MOCK_APPLE_INFO })).toBe(
+    expect(appleAutoLine({ state: "answered", answer: { steps, scene: "", plan: "" }, info: MOCK_APPLE_INFO }, "apple")).toBe(
       "Set with Apple Intelligence.",
     );
-    expect(appleAutoLine({ state: "off" })).toBeNull();
-    expect(appleAutoLine({ state: "unavailable", reason: "not_a_mac" })).toBeNull();
+    expect(appleAutoLine({ state: "off" }, "apple")).toBeNull();
+    expect(appleAutoLine({ state: "unavailable", reason: "not_a_mac" }, "apple")).toBeNull();
   });
 });
 

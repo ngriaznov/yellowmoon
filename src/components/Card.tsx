@@ -71,9 +71,13 @@ export function Rows({ children, spaced = false, className }: RowsProps) {
   );
 }
 
-/** A short paragraph under the rows of a card (the Camera card's explanation). */
-export function RowNote({ children }: { children: ReactNode }) {
-  return <p className="ym-row-note">{children}</p>;
+/** A short paragraph under the rows of a card (the Camera card's explanation) or of a Preferences row (`role="note"`, `docs/22` section 12.2). */
+export function RowNote({ children, role, className }: { children: ReactNode; role?: "note" | "status"; className?: string }) {
+  return (
+    <p role={role} className={className ? `ym-row-note ${className}` : "ym-row-note"}>
+      {children}
+    </p>
+  );
 }
 
 export interface InfoRowProps {

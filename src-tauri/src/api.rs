@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ym_core::app::gpu::{GpuOpener, GpuPolicy, GpuSlot};
 use ym_core::app::{Core, CoreOptions};
-use ym_core::apple_auto::AutoAdvisor;
+use ym_core::auto_provider::ProviderAdvisors;
 use ym_core::export_queue::{ExportEvent, ExportJob as CoreExportJob, ExportSink};
 use ym_core::pipeline::PhotoSource;
 use ym_core::session::{
@@ -33,7 +33,7 @@ use crate::events::{AppEvent, Emitter};
 use crate::thumbs::Thumbnails;
 use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
-    AppError, AppInfo, AppleAutoStatus, ApplyScope, ChromaSample, ChromaScatter, CliLinkResult,
+    AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, CliLinkResult,
     CliLinkStatus, CropAspect, CropSuggestion, DisplayLut, ErrorScope, ExportEstimate, ExportJob,
     ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress,
     LooksImportResult, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample,
@@ -69,21 +69,26 @@ pub struct AppConfig {
     pub decode_threads: Option<usize>,
     /// The Downloads watcher's settings.
     pub watch: WatchConfig,
-    /// What looks at each photo for Apple Auto (`docs/19` sections 11 and 12): `ym_apple`'s system
-    /// advisor in the app (Apple's on-device model where it is available, the fake with
-    /// `YELLOWMOON_TEST_APPLE_AUTO=fake`); `None` in the tests unless they give one, which is the
-    /// same as unavailable.
-    pub advisor: Option<Advisor>,
+    /// What looks at each photo for Auto (`docs/19` sections 11 and 12, `docs/22` section 12.6): in
+    /// the app `ym_apple`'s system advisor (Apple's on-device model where it is available, the fake
+    /// with `YELLOWMOON_TEST_APPLE_AUTO=fake`) and the two programs' `ym_agents::system_advisors`
+    /// (Claude Code and Antigravity, probing in the background from the start; the test hook
+    /// `YELLOWMOON_TEST_AUTO_PROVIDERS` swaps them for fakes). Empty in the tests unless they give
+    /// some, which is the same as every provider unavailable.
+    pub advisors: ProviderAdvisors,
 }
 
-/// An Apple Auto advisor for [`AppConfig`].
-#[derive(Clone)]
-pub struct Advisor(pub Arc<dyn AutoAdvisor>);
-
-impl std::fmt::Debug for Advisor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Advisor")
+/// The advisors of this computer: Apple Intelligence's, and the two programs' (`docs/22` section 12.6).
+/// The programs' probes start here (`StartProbe::Now`), so Preferences finds what they said by the
+/// time it opens; `agy`'s sign-in check, the one that contacts a network, waits until Preferences
+/// asks for the status.
+fn system_advisors() -> ProviderAdvisors {
+    use ym_core::auto_provider::AutoProvider;
+    let mut advisors = ProviderAdvisors::default().with(AutoProvider::Apple, ym_apple::system_advisor());
+    for (provider, advisor) in ym_agents::system_advisors(ym_agents::StartProbe::Now) {
+        advisors = advisors.with(provider, advisor);
     }
+    advisors
 }
 
 impl AppConfig {
@@ -106,7 +111,7 @@ impl AppConfig {
             thumbnails: true,
             decode_threads: None,
             watch: WatchConfig::default(),
-            advisor: Some(Advisor(ym_apple::system_advisor())),
+            advisors: system_advisors(),
         })
     }
 }
@@ -252,7 +257,7 @@ impl AppApi {
         options.export_events = export_events;
         options.home = config.home.clone();
         options.thumbnails = config.thumbnails;
-        options.advisor = config.advisor.as_ref().map(|a| Arc::clone(&a.0));
+        options.advisors = config.advisors.clone();
         if let Some(threads) = config.decode_threads {
             options.decode_threads = threads;
         }
@@ -268,6 +273,13 @@ impl AppApi {
                 emitter.emit(AppEvent::LooksChanged);
                 shared.invalidate();
             });
+        }
+        {
+            // A provider's availability changed (a program found, signed in or out, a probe ended):
+            // the webview asks `auto_status()` again (`docs/22` section 12.6). It runs on the probe's
+            // thread, so it only sends the event.
+            let emitter = Arc::clone(&emitter);
+            core.on_auto_changed(move || emitter.emit(AppEvent::AutoStatusChanged));
         }
         viewport.attach(&core)?;
         let thumbs = Thumbnails::new(Arc::clone(&emitter), Arc::clone(&frames));
@@ -305,8 +317,9 @@ impl AppApi {
         &self.thumbs
     }
 
-    /// Stops what runs in the background (quitting): exports and renders are cancelled and partial
-    /// files are removed.
+    /// Stops what runs in the background (quitting): exports and renders are cancelled, partial
+    /// files are removed and the programs Auto started are killed (`Core::shutdown` calls
+    /// `cancel_auto`, `docs/22` section 9.4: a child is not stopped by its parent's death on Unix).
     pub fn shutdown(&self) {
         self.downloads.set(
             false,
@@ -1105,15 +1118,16 @@ impl AppApi {
         convert(&next)
     }
 
-    /// `apple_auto_status`: whether Apple Auto is available on this computer, read again now, and
-    /// whether it acts (`docs/19` sections 1 and 2). Preferences asks when it opens and shows its
-    /// row only while Apple Auto is available.
+    /// `auto_status`: the four providers and which one grades now (`docs/22` sections 11 and 12.6).
+    /// Every advisor is asked to read its availability again, in the background, and the answer is
+    /// what they last said: nothing here waits for a program. Preferences asks when it opens and
+    /// again on `auto_status_changed`, and shows its "Auto grading" row only while `visible`.
     ///
     /// # Errors
     ///
     /// [`AppError::internal`] when the answer does not cross the bridge (a bug).
-    pub fn apple_auto_status(&self) -> Result<AppleAutoStatus, AppError> {
-        convert(&self.core.apple_auto_status())
+    pub fn auto_status(&self) -> Result<AutoStatus, AppError> {
+        convert(&self.core.auto_status())
     }
 
     /// `install_cli_link`.
@@ -1159,6 +1173,7 @@ impl AppApi {
         AppInfo {
             version: ym_core::version::app_version().to_owned(),
             pipeline_version: ym_core::version::PIPELINE_VERSION.to_owned(),
+            os: std::env::consts::OS.to_owned(),
         }
     }
 

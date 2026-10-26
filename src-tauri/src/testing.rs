@@ -14,6 +14,7 @@ use crate::events::Recorder;
 use crate::events::{AppEvent, Emitter};
 use crate::viewport::{FallbackSink, FrameStore};
 use crate::wire::*;
+use ym_core::auto_provider::ProviderAdvisors;
 use ym_looks::import::watch::WatchConfig;
 
 pub(crate) const WAIT: Duration = Duration::from_secs(90);
@@ -60,16 +61,22 @@ impl Harness {
     }
 
     pub(crate) fn with_watch(watch: WatchConfig) -> Self {
-        Self::with(watch, None)
+        Self::with(watch, ProviderAdvisors::default())
     }
 
-    /// An app whose Apple Auto asks `advisor` (`docs/19` section 12: `FakeAdvisor`, or a scripted
-    /// one); the other harnesses have none, as the golden and parity tests need.
+    /// An app whose Apple Intelligence slot asks `advisor` (`docs/19` section 12: `FakeAdvisor`, or a
+    /// scripted one); the other harnesses have none, as the golden and parity tests need.
     pub(crate) fn with_advisor(advisor: Arc<dyn ym_core::apple_auto::AutoAdvisor>) -> Self {
-        Self::with(WatchConfig::default(), Some(crate::api::Advisor(advisor)))
+        Self::with_advisors(ProviderAdvisors::default().with(ym_core::auto_provider::AutoProvider::Apple, advisor))
     }
 
-    fn with(watch: WatchConfig, advisor: Option<crate::api::Advisor>) -> Self {
+    /// An app with the given providers (`docs/22` section 12.6: scripted or fake ones for Apple
+    /// Intelligence, Claude Code and Antigravity).
+    pub(crate) fn with_advisors(advisors: ProviderAdvisors) -> Self {
+        Self::with(WatchConfig::default(), advisors)
+    }
+
+    fn with(watch: WatchConfig, advisors: ProviderAdvisors) -> Self {
         let photos = tempfile::tempdir().expect("photos");
         let app_root = tempfile::tempdir().expect("app root");
         let home = tempfile::tempdir().expect("home");
@@ -89,7 +96,7 @@ impl Harness {
             thumbnails: true,
             decode_threads: Some(2),
             watch,
-            advisor,
+            advisors,
         };
         // Only the folders of the test: `CliLink::new` also names the real `/usr/local/bin` and
         // `/opt/homebrew/bin` of a Mac, where a test would look at (and replace) the link of the

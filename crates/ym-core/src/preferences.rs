@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::apple_auto::{DEFAULT_INSTRUCTIONS, check_instructions};
+use crate::auto_provider::{AutoConsent, AutoProvider};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -96,11 +97,19 @@ pub struct Preferences {
     pub watch_downloads_during_import: bool,
     /// The folders used last.
     pub last_used_folders: LastUsedFolders,
-    /// "Auto with Apple Intelligence" (`docs/19` section 2): on by default, and a file without the
-    /// field reads as on. Read on every platform; it acts only where Apple Auto is available.
-    pub apple_auto: bool,
-    /// "Instructions for Apple Intelligence" (`docs/19` section 2): the person's own instructions for
-    /// Apple Auto's model, at most [`crate::apple_auto::INSTRUCTIONS_MAX_CHARS`] characters; `""` (absent, empty or only
+    /// "Auto grading" (`docs/22` section 10.1): who grades each photo's Auto, Apple Intelligence by
+    /// default. A provider that is not available (or not agreed to, [`Preferences::auto_consent`]) at
+    /// run time acts as Yellowmoon's own Auto, and the choice stays saved. A file from before
+    /// providers has `apple_auto` instead, which reads as this field (`false` is `yellowmoon`) and is
+    /// never written again.
+    pub auto_provider: AutoProvider,
+    /// Whether the person agreed to send photos through Claude Code and through Antigravity
+    /// (`docs/22` section 10.2). Both false by default; saved together with the choice that needs
+    /// it, and a patch cannot choose a cloud provider without it.
+    pub auto_consent: AutoConsent,
+    /// "Instructions" for the Auto grading (`docs/19` section 2, one text for every provider,
+    /// `docs/22` D1): the person's own instructions for the model, at most
+    /// [`crate::apple_auto::INSTRUCTIONS_MAX_CHARS`] characters; `""` (absent, empty or only
     /// white space) is the default, [`crate::apple_auto::DEFAULT_INSTRUCTIONS`]. Saved as `""` when
     /// it equals the default.
     pub apple_auto_instructions: String,
@@ -116,7 +125,8 @@ impl Default for Preferences {
             check_for_updates_automatically: true,
             watch_downloads_during_import: false,
             last_used_folders: LastUsedFolders::default(),
-            apple_auto: true,
+            auto_provider: AutoProvider::Apple,
+            auto_consent: AutoConsent::default(),
             apple_auto_instructions: String::new(),
         }
     }
@@ -149,9 +159,13 @@ pub struct PreferencesPatch {
     /// Replaces `last_used_folders`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_used_folders: Option<LastUsedFolders>,
-    /// Replaces `apple_auto`.
+    /// Replaces `auto_provider`. Choosing Claude Code or Antigravity needs its `auto_consent` to be
+    /// true after the patch ([`PreferencesPatch::check_against`]).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub apple_auto: Option<bool>,
+    pub auto_provider: Option<AutoProvider>,
+    /// Replaces the whole `auto_consent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_consent: Option<AutoConsent>,
     /// Replaces `apple_auto_instructions` (`""` or the default text: the default). Checked by
     /// [`PreferencesPatch::check`].
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -183,8 +197,11 @@ impl PreferencesPatch {
         if let Some(v) = &self.last_used_folders {
             prefs.last_used_folders = v.clone();
         }
-        if let Some(v) = self.apple_auto {
-            prefs.apple_auto = v;
+        if let Some(v) = self.auto_provider {
+            prefs.auto_provider = v;
+        }
+        if let Some(v) = self.auto_consent {
+            prefs.auto_consent = v;
         }
         if let Some(v) = &self.apple_auto_instructions {
             prefs.apple_auto_instructions = own_instructions(v);
@@ -192,8 +209,9 @@ impl PreferencesPatch {
         *prefs != before
     }
 
-    /// Checks the values the core refuses rather than saves: instructions for Apple Intelligence
-    /// longer than [`crate::apple_auto::INSTRUCTIONS_MAX_CHARS`] characters.
+    /// Checks the values the core refuses rather than saves, those that can be judged from the patch
+    /// alone: instructions longer than [`crate::apple_auto::INSTRUCTIONS_MAX_CHARS`] characters. The
+    /// consent rule needs the saved preferences too ([`PreferencesPatch::check_against`]).
     ///
     /// # Errors
     ///
@@ -203,6 +221,31 @@ impl PreferencesPatch {
             check_instructions(text).map_err(PreferencesError::Invalid)?;
         }
         Ok(())
+    }
+
+    /// [`PreferencesPatch::check`] and the consent rule of `docs/22` section 10.2: a patch that makes
+    /// `auto_provider` Claude Code or Antigravity is refused when `auto_consent` for it is not true
+    /// after the patch is applied to `current` ("Say yes to sending photos to Claude Code first.").
+    /// Choosing Yellowmoon's own Auto or Apple Intelligence is always allowed, available or not.
+    /// [`PreferencesStore::update`] calls this against the file's current content.
+    ///
+    /// # Errors
+    ///
+    /// [`PreferencesError::Invalid`] with the message to show.
+    pub fn check_against(&self, current: &Preferences) -> Result<(), PreferencesError> {
+        self.check()?;
+        let Some(provider) = self.auto_provider.filter(|p| p.is_cloud()) else {
+            return Ok(());
+        };
+        let consent = self.auto_consent.unwrap_or(current.auto_consent);
+        if consent.get(provider) {
+            Ok(())
+        } else {
+            Err(PreferencesError::Invalid(format!(
+                "Say yes to sending photos to {} first.",
+                provider.name()
+            )))
+        }
     }
 
     /// A patch that sets only the default look.
@@ -329,6 +372,33 @@ where
     Some(serde_json::from_value(Value::Object(merged)).unwrap_or_default())
 }
 
+/// Reads `auto_consent` (`docs/22` section 10.1): a missing key is false, keys of other names are
+/// dropped, a value that is not a boolean is false with a warning, and a value that is not an object
+/// is all false with a warning.
+fn parse_consent(value: Value, warnings: &mut Vec<String>) -> AutoConsent {
+    let Value::Object(fields) = value else {
+        warnings.push(
+            "Preference \"auto_consent\" is not a group of settings, so no consent is used."
+                .to_owned(),
+        );
+        return AutoConsent::default();
+    };
+    let mut read = |name: &str| match fields.get(name) {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => {
+            warnings.push(format!(
+                "Preference \"auto_consent.{name}\" has a value that can't be used, so its default is used."
+            ));
+            false
+        }
+    };
+    AutoConsent {
+        claude: read("claude"),
+        agy: read("agy"),
+    }
+}
+
 /// Reads the text of a preferences file (see the module documentation for what is forgiven).
 #[must_use]
 pub fn parse(text: &str) -> ParsedPreferences {
@@ -374,8 +444,37 @@ pub fn parse(text: &str) -> ParsedPreferences {
     if let Some(v) = take(&mut map, "watch_downloads_during_import", &mut warnings) {
         p.watch_downloads_during_import = v;
     }
-    if let Some(v) = take(&mut map, "apple_auto", &mut warnings) {
-        p.apple_auto = v;
+    // The provider: a valid `auto_provider` wins; a file from before providers has `apple_auto`
+    // (`false` is Yellowmoon's own Auto, `true` or absent is Apple); `apple_auto` is never written
+    // again (`docs/22` section 10.1, decision D15).
+    let legacy = map.remove("apple_auto");
+    let provider = match map.remove("auto_provider") {
+        None => None,
+        Some(value) => match serde_json::from_value::<AutoProvider>(value) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                warnings.push(
+                    "Preference \"auto_provider\" can't be used, so the default is used."
+                        .to_owned(),
+                );
+                None
+            }
+        },
+    };
+    p.auto_provider = match (provider, legacy) {
+        (Some(v), _) => v,
+        (None, Some(Value::Bool(false))) => AutoProvider::Yellowmoon,
+        (None, Some(Value::Bool(true)) | None) => AutoProvider::Apple,
+        (None, Some(_)) => {
+            warnings.push(
+                "Preference \"apple_auto\" has a value that can't be used, so its default is used."
+                    .to_owned(),
+            );
+            AutoProvider::Apple
+        }
+    };
+    if let Some(v) = map.remove("auto_consent") {
+        p.auto_consent = parse_consent(v, &mut warnings);
     }
     if let Some(v) = take::<String>(&mut map, "apple_auto_instructions", &mut warnings) {
         // Longer than the model takes (a file edited by hand): the default, with a warning.
@@ -520,12 +619,16 @@ impl PreferencesStore {
     ///
     /// # Errors
     ///
-    /// [`PreferencesError::Invalid`] for export defaults the writers cannot use,
+    /// [`PreferencesError::Invalid`] for export defaults the writers cannot use, for too long
+    /// instructions and for a cloud provider without its consent,
     /// [`PreferencesError::Write`] or [`PreferencesError::Encode`] when the file cannot be saved.
     /// Nothing changes on an error.
     pub fn update(&self, patch: &PreferencesPatch) -> Result<Preferences, PreferencesError> {
         patch.check()?;
         self.modify(|prefs| {
+            // The consent rule reads the file's current consent, which a patch without
+            // `auto_consent` leaves as it is.
+            patch.check_against(prefs)?;
             patch.apply(prefs);
             Ok(())
         })
@@ -601,34 +704,220 @@ mod tests {
         assert!(p.check_for_updates_automatically);
         assert!(!p.watch_downloads_during_import);
         assert_eq!(p.last_used_folders, LastUsedFolders::default());
-        assert!(
-            p.apple_auto,
-            "Apple Auto is on by default (docs/19 section 2)"
+        assert_eq!(
+            p.auto_provider,
+            AutoProvider::Apple,
+            "Apple Intelligence is the default where it is available (docs/22 O3)"
+        );
+        assert_eq!(p.auto_consent, AutoConsent::default());
+        assert_eq!(p.apple_auto_instructions, "");
+    }
+
+    #[test]
+    fn the_provider_migrates_from_the_old_switch() {
+        let provider = |text: &str| parse(text).preferences.auto_provider;
+        // Nothing, or the old switch on: Apple Intelligence. The old switch off: Yellowmoon's own Auto.
+        assert_eq!(provider("{}"), AutoProvider::Apple);
+        assert_eq!(
+            provider(r#"{ "remove_location_from_exports": true }"#),
+            AutoProvider::Apple
+        );
+        assert_eq!(provider(r#"{ "apple_auto": true }"#), AutoProvider::Apple);
+        assert_eq!(
+            provider(r#"{ "apple_auto": false }"#),
+            AutoProvider::Yellowmoon
+        );
+        // A valid `auto_provider` wins over the old switch, which is ignored.
+        for (text, want) in [
+            (
+                r#"{ "auto_provider": "claude", "apple_auto": false }"#,
+                AutoProvider::Claude,
+            ),
+            (r#"{ "auto_provider": "agy" }"#, AutoProvider::Agy),
+            (
+                r#"{ "auto_provider": "yellowmoon", "apple_auto": true }"#,
+                AutoProvider::Yellowmoon,
+            ),
+            (
+                r#"{ "auto_provider": "apple", "apple_auto": "yes" }"#,
+                AutoProvider::Apple,
+            ),
+        ] {
+            let parsed = parse(text);
+            assert_eq!(parsed.preferences.auto_provider, want, "{text}");
+            assert!(parsed.warnings.is_empty(), "{text}: {:?}", parsed.warnings);
+        }
+        // A name that is not a provider is read as absent, with the warning; then the old switch decides.
+        let bad = parse(
+            r#"{ "auto_provider": "gemini", "apple_auto": false, "remove_location_from_exports": true }"#,
+        );
+        assert_eq!(bad.preferences.auto_provider, AutoProvider::Yellowmoon);
+        assert!(bad.preferences.remove_location_from_exports);
+        assert_eq!(
+            bad.warnings,
+            ["Preference \"auto_provider\" can't be used, so the default is used."]
+        );
+        let worse = parse(r#"{ "auto_provider": 7 }"#);
+        assert_eq!(worse.preferences.auto_provider, AutoProvider::Apple);
+        assert_eq!(worse.warnings.len(), 1);
+        // An old switch that is not a switch costs only that value.
+        let odd = parse(r#"{ "apple_auto": "yes", "remove_location_from_exports": true }"#);
+        assert!(odd.preferences.remove_location_from_exports);
+        assert_eq!(odd.preferences.auto_provider, AutoProvider::Apple);
+        assert_eq!(odd.warnings.len(), 1);
+        // The next save writes `auto_provider` and `auto_consent` and drops `apple_auto`.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(FILE_NAME),
+            r#"{ "apple_auto": false, "check_for_updates_automatically": false }"#,
+        )
+        .unwrap();
+        let store = PreferencesStore::open(dir.path());
+        assert_eq!(store.get().auto_provider, AutoProvider::Yellowmoon);
+        store
+            .update(&PreferencesPatch {
+                watch_downloads_during_import: Some(true),
+                ..PreferencesPatch::default()
+            })
+            .unwrap();
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(FILE_NAME)).unwrap())
+                .unwrap();
+        assert!(saved.get("apple_auto").is_none(), "{saved}");
+        assert_eq!(saved["auto_provider"], "yellowmoon");
+        assert_eq!(
+            saved["auto_consent"],
+            serde_json::json!({ "claude": false, "agy": false })
+        );
+        assert_eq!(saved["check_for_updates_automatically"], false);
+        assert_eq!(
+            PreferencesStore::open(dir.path()).get().auto_provider,
+            AutoProvider::Yellowmoon
         );
     }
 
     #[test]
-    fn apple_auto_is_on_unless_the_file_says_off() {
-        // A file from before Apple Auto has no field: on. A value that is not a switch costs only
-        // that value. A patch turns it off and on.
-        assert!(
-            parse(r#"{ "remove_location_from_exports": true }"#)
-                .preferences
-                .apple_auto
+    fn consent_reads_forgivingly() {
+        let consent = |text: &str| parse(text).preferences.auto_consent;
+        assert_eq!(consent("{}"), AutoConsent::default());
+        assert_eq!(
+            consent(r#"{ "auto_consent": { "claude": true, "agy": true } }"#),
+            AutoConsent {
+                claude: true,
+                agy: true
+            }
         );
-        assert!(!parse(r#"{ "apple_auto": false }"#).preferences.apple_auto);
-        let bad = parse(r#"{ "apple_auto": "yes", "remove_location_from_exports": true }"#);
-        assert!(bad.preferences.apple_auto && bad.preferences.remove_location_from_exports);
-        assert_eq!(bad.warnings.len(), 1);
-        let mut p = Preferences::default();
-        let off = PreferencesPatch {
-            apple_auto: Some(false),
+        // A missing key is false; keys of other names are dropped.
+        let parsed = parse(r#"{ "auto_consent": { "claude": true, "gemini": true } }"#);
+        assert_eq!(
+            parsed.preferences.auto_consent,
+            AutoConsent {
+                claude: true,
+                agy: false
+            }
+        );
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        // A value that is not a boolean is false, with a warning; the other key is kept.
+        let parsed = parse(r#"{ "auto_consent": { "claude": "yes", "agy": true } }"#);
+        assert_eq!(
+            parsed.preferences.auto_consent,
+            AutoConsent {
+                claude: false,
+                agy: true
+            }
+        );
+        assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
+        // A value that is not a group is all false, with a warning.
+        let parsed = parse(r#"{ "auto_consent": true, "remove_location_from_exports": true }"#);
+        assert_eq!(parsed.preferences.auto_consent, AutoConsent::default());
+        assert!(parsed.preferences.remove_location_from_exports);
+        assert_eq!(parsed.warnings.len(), 1);
+        // A file with a cloud choice and no consent is kept as it is.
+        let kept = parse(r#"{ "auto_provider": "claude" }"#);
+        assert_eq!(kept.preferences.auto_provider, AutoProvider::Claude);
+        assert_eq!(kept.preferences.auto_consent, AutoConsent::default());
+        assert!(kept.warnings.is_empty());
+    }
+
+    #[test]
+    fn a_patch_cannot_choose_a_cloud_provider_without_its_consent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PreferencesStore::open(dir.path());
+        let choose = |p: AutoProvider| PreferencesPatch {
+            auto_provider: Some(p),
             ..PreferencesPatch::default()
         };
-        assert!(off.apply(&mut p) && !p.apple_auto);
-        assert!(!off.apply(&mut p));
-        let patch: PreferencesPatch = serde_json::from_str(r#"{ "apple_auto": true }"#).unwrap();
-        assert!(patch.apply(&mut p) && p.apple_auto);
+        // Refused: no consent saved, none in the patch; nothing is written.
+        for (p, name) in [
+            (AutoProvider::Claude, "Claude Code"),
+            (AutoProvider::Agy, "Antigravity"),
+        ] {
+            let err = store.update(&choose(p)).expect_err("refused");
+            assert!(
+                matches!(&err, PreferencesError::Invalid(m) if *m == format!("Say yes to sending photos to {name} first.")),
+                "{err}"
+            );
+        }
+        assert!(!dir.path().join(FILE_NAME).exists());
+        // Refused too when the patch's consent is for the other program.
+        let wrong = PreferencesPatch {
+            auto_provider: Some(AutoProvider::Claude),
+            auto_consent: Some(AutoConsent {
+                claude: false,
+                agy: true,
+            }),
+            ..PreferencesPatch::default()
+        };
+        assert!(store.update(&wrong).is_err());
+        // Accepted with its consent in the same patch: one atomic save.
+        let both = PreferencesPatch {
+            auto_provider: Some(AutoProvider::Claude),
+            auto_consent: Some(AutoConsent {
+                claude: true,
+                agy: false,
+            }),
+            ..PreferencesPatch::default()
+        };
+        let saved = store.update(&both).unwrap();
+        assert_eq!(saved.auto_provider, AutoProvider::Claude);
+        assert_eq!(
+            saved.auto_consent,
+            AutoConsent {
+                claude: true,
+                agy: false
+            }
+        );
+        // With the consent saved, a patch that names only the provider is accepted at once.
+        store.update(&choose(AutoProvider::Yellowmoon)).unwrap();
+        assert_eq!(
+            store
+                .update(&choose(AutoProvider::Claude))
+                .unwrap()
+                .auto_provider,
+            AutoProvider::Claude
+        );
+        // Antigravity is still refused: its consent was never given.
+        assert!(store.update(&choose(AutoProvider::Agy)).is_err());
+        assert_eq!(store.get().auto_provider, AutoProvider::Claude);
+        // Yellowmoon's own Auto and Apple Intelligence are always allowed, consent or not.
+        let fresh = PreferencesStore::open(tempfile::tempdir().unwrap().path());
+        for p in [AutoProvider::Yellowmoon, AutoProvider::Apple] {
+            assert!(fresh.update(&choose(p)).is_ok(), "{p:?}");
+        }
+        // The patch alone is judged by `check_against`, not by `check`.
+        assert!(choose(AutoProvider::Agy).check().is_ok());
+        assert!(
+            choose(AutoProvider::Agy)
+                .check_against(&Preferences::default())
+                .is_err()
+        );
+        // A patch with the old switch is an error, so the webview and `ym` never send it.
+        assert!(serde_json::from_str::<PreferencesPatch>(r#"{ "apple_auto": false }"#).is_err());
+        let patch: PreferencesPatch = serde_json::from_str(
+            r#"{ "auto_provider": "agy", "auto_consent": { "claude": false, "agy": true } }"#,
+        )
+        .unwrap();
+        assert!(patch.check_against(&Preferences::default()).is_ok());
     }
 
     #[test]
@@ -659,11 +948,11 @@ mod tests {
         // Too long (a file edited by hand), or not text: the default, with a warning; the rest is kept.
         let long = serde_json::json!({
             "apple_auto_instructions": "x".repeat(2001),
-            "apple_auto": false,
+            "auto_provider": "yellowmoon",
         });
         let parsed = parse(&long.to_string());
         assert_eq!(parsed.preferences.apple_auto_instructions, "");
-        assert!(!parsed.preferences.apple_auto);
+        assert_eq!(parsed.preferences.auto_provider, AutoProvider::Yellowmoon);
         assert_eq!(parsed.warnings.len(), 1);
         assert!(
             parsed.warnings[0].contains("At most 2000"),
@@ -735,7 +1024,8 @@ mod tests {
                 "check_for_updates_automatically": true,
                 "watch_downloads_during_import": false,
                 "last_used_folders": { "open": null, "export": null, "looks_import": null },
-                "apple_auto": true,
+                "auto_provider": "apple",
+                "auto_consent": { "claude": false, "agy": false },
                 "apple_auto_instructions": ""
             })
         );

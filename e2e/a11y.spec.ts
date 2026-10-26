@@ -154,7 +154,7 @@ test.describe("names and landmarks", () => {
 });
 
 test.describe("Apple Auto (docs/19)", () => {
-  test("the Automatic card's rows and line and the Preferences switch are named", async ({ page }) => {
+  test("the Automatic card's rows and line and the Preferences select are named", async ({ page }) => {
     await openApp(page, { ...MOCKUP, mockAppleAuto: "answered" });
     await openPhotos(page);
     let snapshot = await expectNamed(page, "Photos with Apple Auto");
@@ -165,24 +165,84 @@ test.describe("Apple Auto (docs/19)", () => {
     expect(snapshot).toContain("Set with Apple Intelligence.");
     expect(snapshot).toContain("Teal shadows and warm highlights for a cinematic late-sun street");
     await page.keyboard.press("Meta+,");
-    await expect(page.getByRole("switch", { name: "Auto with Apple Intelligence" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Auto grading" })).toBeVisible();
     snapshot = await expectNamed(page, "Preferences with Apple Auto");
-    expect(snapshot).toMatch(/switch "Auto with Apple Intelligence" \[checked\]/);
+    expect(snapshot).toMatch(/combobox "Auto grading"/);
     // The instructions for Apple's model: a named text box and its Reset to default, disabled while the text is the default.
     expect(snapshot).toMatch(/textbox "Instructions for Apple Intelligence"/);
     expect(snapshot).toMatch(/button "Reset to default" \[disabled\]/);
   });
 
-  test("the switch flips from the keyboard, and the rows are Tab stops with the ring", async ({ page }) => {
+  test("the select opens from the keyboard, and the rows are Tab stops with the ring", async ({ page }) => {
     await openApp(page, { ...MOCKUP, mockAppleAuto: "answered" });
     await openPhotos(page);
     await tabTo(page, (el) => el.getAttribute("aria-label") === "Contrast +15, Auto. Open Tone");
     await expect(page.locator(":focus")).toHaveCSS("outline-width", "3px");
     await page.keyboard.press("Meta+,");
-    const toggle = page.getByRole("switch", { name: "Auto with Apple Intelligence" });
-    await toggle.focus();
-    await page.keyboard.press("Space");
-    await expect(toggle).toHaveAttribute("aria-checked", "false");
+    const select = page.getByRole("combobox", { name: "Auto grading" });
+    await select.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("option", { name: "Yellowmoon's own Auto" })).toBeVisible();
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("Enter");
+    await expect(select).toHaveText("Yellowmoon's own Auto");
+  });
+});
+
+test.describe("Auto providers (docs/22 section 12)", () => {
+  /** Preferences with every provider listed: Apple Intelligence and Claude Code available, Antigravity signed out. */
+  async function preferences(page: Page, options: Record<string, string | number> = {}): Promise<void> {
+    await openApp(page, { ...MOCKUP, mockProviders: "apple,claude,agy:signed_out", mockAppleAuto: "answered", ...options });
+    await openPhotos(page);
+    await page.keyboard.press("Meta+,");
+    await expect(page.getByRole("combobox", { name: "Auto grading" })).toBeVisible();
+  }
+
+  test("the select, its entries (a program that cannot be used says why), the notes and the instructions are named", async ({ page }) => {
+    await preferences(page);
+    let snapshot = await expectNamed(page, "Preferences with every provider");
+    expect(snapshot).toMatch(/combobox "Auto grading"/);
+    expect(snapshot).toContain("Antigravity is installed but not signed in. Open Terminal, run agy and sign in.");
+    expect(snapshot).toMatch(/textbox "Instructions for Apple Intelligence"/);
+    await page.getByRole("combobox", { name: "Auto grading" }).click();
+    await expect(page.getByRole("option", { name: "Claude Code" })).toBeVisible();
+    snapshot = await expectNamed(page, "the open list");
+    expect(snapshot).toMatch(/option "Yellowmoon's own Auto"/);
+    expect(snapshot).toMatch(/option "Apple Intelligence" \[selected\]/);
+    expect(snapshot).toMatch(/option "Claude Code"/);
+    // The signed-out program is listed, disabled, and its name says why.
+    expect(snapshot).toMatch(/option "Antigravity \(agy\) Experimental, not signed in" \[disabled\]/);
+  });
+
+  test("the consent dialog is named, its buttons too, focus starts on Cancel, Esc and Tab stay in it", async ({ page }) => {
+    await preferences(page);
+    await page.getByRole("combobox", { name: "Auto grading" }).click();
+    await page.getByRole("option", { name: "Claude Code" }).click();
+    const dialog = page.getByRole("dialog", { name: "Send photos to Claude Code?" });
+    await expect(dialog).toBeVisible();
+    const snapshot = await expectNamed(page, "the consent dialog");
+    expect(snapshot).toMatch(/dialog "Send photos to Claude Code\?"/);
+    expect(snapshot).toMatch(/button "Cancel"/);
+    expect(snapshot).toMatch(/button "Use Claude Code"/);
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+    // Tab goes to the other button and back, never behind the dialog.
+    await page.keyboard.press("Tab");
+    await expect(dialog.getByRole("button", { name: "Use Claude Code" })).toBeFocused();
+    await expect(page.locator(":focus")).toHaveCSS("outline-width", "3px");
+    await page.keyboard.press("Tab");
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+    // Esc closes it, Preferences stays, and the focus goes back to the select.
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole("dialog", { name: "Preferences" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Auto grading" })).toBeFocused();
+  });
+
+  test("the Automatic card's line names the program", async ({ page }) => {
+    await openApp(page, { ...MOCKUP, mockProviders: "claude", mockAutoProvider: "claude", mockConsent: "claude", mockAppleAuto: "answered" });
+    await openPhotos(page);
+    const snapshot = await expectNamed(page, "Photos with Claude Code");
+    expect(snapshot).toContain("Set with Claude Code.");
   });
 });
 

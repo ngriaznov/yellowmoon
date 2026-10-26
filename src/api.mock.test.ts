@@ -7,16 +7,20 @@ import {
   expandNameTemplate,
   libraryOf,
   lookSlug,
+  MOCK_AGY_INFO,
   MOCK_APPLE_ANSWER,
   MOCK_APPLE_INFO,
+  MOCK_CLAUDE_INFO,
   MOCK_DEFAULT_INSTRUCTIONS,
   MOCK_ESTIMATES,
+  mockAppleState,
   mockEstimates,
   optionsFromLocation,
   percentSetting,
   resolveSettings,
   type MockApi,
 } from "./api.mock";
+import type { MockProviders } from "./api/providersMock";
 import type { AppError, ExportJob, ExportOptions, ExportProgress, PhotoProgress, ThumbnailReady } from "./api/types";
 
 /** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
@@ -1364,16 +1368,19 @@ describe("copy and paste settings", () => {
   });
 });
 
-describe("Apple Auto (docs/19)", () => {
-  it("is not available by default, as in the browser build: every photo is off and Auto is the rule", async () => {
-    expect(await api.appleAutoStatus()).toEqual({
-      available: false,
-      reason: null,
-      info: null,
-      preference: true,
-      mode: "from_preference",
+/** What a photo of the mock gets from `provider` answering, as `mockEstimates` makes it. */
+const answeredBy = (provider: "apple" | "claude" | "agy") => mockEstimates(mockAppleState("answered", { kind: "active", provider }));
+
+describe("Auto providers (docs/19, docs/22)", () => {
+  it("has no provider by default, as in the browser build: the row is hidden, every photo is off and Auto is the rule", async () => {
+    const status = await api.autoStatus();
+    expect(status).toMatchObject({
+      preference: "apple",
+      chosen: "apple",
+      effective: "yellowmoon",
       active: false,
-      prompt: 3,
+      visible: false,
+      consent: { claude: false, agy: false },
       table: 2,
       instructions: "default",
       instructions_sha256: "932b96907b63",
@@ -1381,6 +1388,12 @@ describe("Apple Auto (docs/19)", () => {
       default_instructions: MOCK_DEFAULT_INSTRUCTIONS,
       instructions_max_chars: 2000,
     });
+    expect(status.providers.map((p) => [p.provider, p.state, p.listed, p.selectable])).toEqual([
+      ["yellowmoon", "available", true, true],
+      ["apple", "not_installed", false, false],
+      ["claude", "not_installed", false, false],
+      ["agy", "not_installed", false, false],
+    ]);
     await api.openPaths(ARW);
     const rs = await api.getSettings(1);
     expect(rs.estimates).toEqual(MOCK_ESTIMATES);
@@ -1388,14 +1401,17 @@ describe("Apple Auto (docs/19)", () => {
     expect(rs.settings.contrast).toEqual({ kind: "auto" });
   });
 
-  it("says why it is not available on a Mac where Apple Intelligence is off", async () => {
+  it("says why Apple Intelligence is not available on a Mac where it is off, and hides the row", async () => {
     api.reset({ appleAuto: "unavailable" });
-    expect(await api.appleAutoStatus()).toMatchObject({ available: false, reason: "apple_intelligence_off", active: false });
-    expect(mockEstimates("unavailable", true).apple).toEqual({ state: "unavailable", reason: "apple_intelligence_off" });
+    const status = await api.autoStatus();
+    expect(status).toMatchObject({ visible: false, effective: "yellowmoon", active: false });
+    expect(status.providers[1]).toMatchObject({ provider: "apple", state: "unavailable", reason: "apple_intelligence_off", listed: false });
+    await api.openPaths(ARW);
+    expect((await api.getSettings(1)).estimates.apple).toEqual({ state: "unavailable", reason: "apple_intelligence_off" });
   });
 
   it("answers through the table of section 5: +0.3 EV, 10 mired warmer, contrast +15, saturation −15, and the rest", () => {
-    const e = mockEstimates("answered", true);
+    const e = answeredBy("apple");
     expect([e.exposure_ev, e.kelvin, e.contrast, e.saturation, e.source]).toEqual([0.6, 5750, 15, -15, "apple"]);
     // Highlights −20, black −15, the shadows and the tint left empty (nothing set), teal shadows and warm highlights.
     expect([e.highlights, e.shadows, e.black, e.tint]).toEqual([-20, 0, -15, 0]);
@@ -1404,27 +1420,39 @@ describe("Apple Auto (docs/19)", () => {
     expect(e.balance_highlights[0]).toBeCloseTo(0.866 * 0.3, 12);
     expect(e.apple_steps).toEqual(MOCK_APPLE_ANSWER.steps);
     expect(e.apple).toMatchObject({ state: "answered", info: MOCK_APPLE_INFO });
-    // Pending and failed are the rule, as is the preference off.
-    for (const [mode, pref] of [["pending", true], ["failed", true], ["answered", false]] as const) {
-      const rule = mockEstimates(mode, pref);
+    // The programs answer the same way and say who did.
+    expect(answeredBy("claude")).toMatchObject({ source: "claude", contrast: 15, apple: { state: "answered", info: MOCK_CLAUDE_INFO } });
+    expect(answeredBy("agy")).toMatchObject({ source: "agy", apple: { state: "answered", info: MOCK_AGY_INFO } });
+    // Pending and failed are the rule.
+    for (const mode of ["pending", "failed"] as const) {
+      const rule = mockEstimates(mockAppleState(mode, { kind: "active", provider: "apple" }));
       expect([rule.exposure_ev, rule.kelvin, rule.contrast, rule.saturation, rule.source]).toEqual([0.3, 5450, 0, 0, "rule"]);
     }
-    expect(mockEstimates("answered", false).apple).toEqual({ state: "off" });
-    expect(mockEstimates("failed", true).apple).toMatchObject({ state: "failed", kind: "timeout" });
+    expect(mockAppleState("failed", { kind: "active", provider: "claude" })).toMatchObject({ state: "failed", kind: "timeout", info: { provider: "claude" } });
+    expect(mockAppleState("answered", { kind: "off" })).toEqual({ state: "off" });
+  });
+
+  it("names the three providers' answers as docs/22 section 12.8 does", () => {
+    expect(MOCK_CLAUDE_INFO).toMatchObject({ provider: "claude", model: "claude-sonnet-5-5", tool_version: "2.1.310", api: "firstParty", os: "", prompt: 1 });
+    expect(MOCK_AGY_INFO).toMatchObject({ provider: "agy", model: "default", tool_version: "1.4.7", api: null, os: "", prompt: 1 });
+    expect(MOCK_APPLE_INFO).toMatchObject({ provider: "apple", model: "AFM 3 Core", tool_version: null, prompt: 3 });
   });
 
   it("takes instructions of at most 2000 characters, saves the default as empty, and the answers say which were read", async () => {
     api.reset({ appleAuto: "answered" });
     await api.openPaths(ARW);
     api.flush();
-    await expect(api.preferencesSet({ apple_auto_instructions: "x".repeat(2001) })).rejects.toMatchObject({ scope: "preferences" });
+    await expect(api.preferencesSet({ apple_auto_instructions: "x".repeat(2001) })).rejects.toMatchObject({
+      scope: "preferences",
+      message: "The instructions are 2001 characters long. At most 2000 fit, because the model must also see the photo.",
+    });
     expect((await api.preferencesGet()).apple_auto_instructions).toBe("");
     const changed: number[] = [];
     api.on("settings_changed", (e) => changed.push(e.photo_id));
     await api.preferencesSet({ apple_auto_instructions: "Moody night grade." });
     await vi.advanceTimersByTimeAsync(1);
     expect(changed).toHaveLength(12);
-    const status = await api.appleAutoStatus();
+    const status = await api.autoStatus();
     expect(status).toMatchObject({ instructions: "edited", own_instructions: "Moody night grade." });
     expect(status.instructions_sha256).toMatch(/^[0-9a-f]{12}$/);
     expect(status.instructions_sha256).not.toBe("932b96907b63");
@@ -1432,22 +1460,24 @@ describe("Apple Auto (docs/19)", () => {
     expect(rs.estimates.apple).toMatchObject({ state: "answered", info: { instructions: "edited" } });
     const saved = await api.preferencesSet({ apple_auto_instructions: MOCK_DEFAULT_INSTRUCTIONS });
     expect(saved.apple_auto_instructions).toBe("");
-    expect(await api.appleAutoStatus()).toMatchObject({ instructions: "default", instructions_sha256: "932b96907b63" });
+    expect(await api.autoStatus()).toMatchObject({ instructions: "default", instructions_sha256: "932b96907b63" });
   });
 
-  it("follows the preference at once and tells about every developed photo with settings_changed", async () => {
+  it("follows the choice at once and tells about every developed photo with settings_changed", async () => {
     api.reset({ appleAuto: "answered" });
     await api.openPaths(ARW);
     api.flush();
-    expect(await api.appleAutoStatus()).toMatchObject({ available: true, active: true, info: MOCK_APPLE_INFO });
+    const on = await api.autoStatus();
+    expect(on).toMatchObject({ visible: true, active: true, effective: "apple", preference: "apple" });
+    expect(on.providers[1]).toMatchObject({ provider: "apple", state: "available", reason: null, info: MOCK_APPLE_INFO, listed: true, selectable: true });
     expect((await api.getSettings(1)).values.contrast).toBe(15);
     const changed: number[] = [];
     api.on("settings_changed", (e) => changed.push(e.photo_id));
-    await api.preferencesSet({ apple_auto: false });
+    await api.preferencesSet({ auto_provider: "yellowmoon" });
     await vi.advanceTimersByTimeAsync(1);
     expect(changed).toHaveLength(12);
     expect((await api.getSettings(1)).values.contrast).toBe(0);
-    expect(await api.appleAutoStatus()).toMatchObject({ available: true, active: false, preference: false });
+    expect(await api.autoStatus()).toMatchObject({ visible: true, active: false, effective: "yellowmoon", preference: "yellowmoon" });
     // A change that moves nothing says nothing.
     changed.length = 0;
     await api.preferencesSet({ remove_location_from_exports: true });
@@ -1455,23 +1485,23 @@ describe("Apple Auto (docs/19)", () => {
     expect(changed).toEqual([]);
   });
 
-  it("Re-run puts contrast and saturation back to Auto only while Apple Auto acts on the photo", async () => {
+  it("Re-run puts contrast and saturation back to Auto only while a provider acts on the photo", async () => {
     const cases = [
-      ["pending", true, true],
-      ["answered", true, true],
-      ["failed", true, true],
-      ["unavailable", true, false],
-      ["answered", false, false],
-      ["none", true, false],
+      ["pending", "apple", true],
+      ["answered", "apple", true],
+      ["failed", "apple", true],
+      ["unavailable", "apple", false],
+      ["answered", "yellowmoon", false],
+      ["none", "apple", false],
     ] as const;
-    for (const [appleAuto, preference, resets] of cases) {
+    for (const [appleAuto, choice, resets] of cases) {
       api.reset({ appleAuto });
       await api.openPaths(ARW);
       api.flush();
-      await api.preferencesSet({ apple_auto: preference });
+      await api.preferencesSet({ auto_provider: choice });
       await api.updateSettings(1, { exposure: { kind: "manual", ev: 1 }, contrast: manual(20), saturation: manual(-10) });
       const r = await api.rerunAuto(1);
-      const what = `${appleAuto}, preference ${preference ? "on" : "off"}`;
+      const what = `${appleAuto}, choice ${choice}`;
       expect(r.auto.exposure, what).toBe(true);
       expect([r.auto.contrast, r.auto.saturation], what).toEqual([resets, resets]);
       if (!resets) expect([r.values.contrast, r.values.saturation], what).toEqual([20, -10]);
@@ -1496,7 +1526,7 @@ describe("Apple Auto (docs/19)", () => {
     expect(percentSetting(12)).toEqual({ kind: "manual", value: 12 });
     expect(percentSetting({ kind: "manual", value: -400 })).toEqual({ kind: "manual", value: -100 });
     expect(percentSetting({ kind: "auto" })).toEqual({ kind: "auto" });
-    const rs = resolveSettings(1, { ...defaultSettings(), saturation: { kind: "manual", value: 9 } }, mockEstimates("answered", true));
+    const rs = resolveSettings(1, { ...defaultSettings(), saturation: { kind: "manual", value: 9 } }, answeredBy("apple"));
     expect([rs.values.contrast, rs.values.saturation, rs.auto.contrast, rs.auto.saturation]).toEqual([15, 9, true, false]);
   });
 
@@ -1504,5 +1534,148 @@ describe("Apple Auto (docs/19)", () => {
     expect(optionsFromLocation("?mockAppleAuto=answered").appleAuto).toBe("answered");
     expect(optionsFromLocation("?mockAppleAuto=pending").appleAuto).toBe("pending");
     expect(optionsFromLocation("?mockAppleAuto=nonsense").appleAuto).toBeUndefined();
+    expect(optionsFromLocation("?mockProviders=apple,claude:signed_out,agy:too_old")).toMatchObject({
+      providers: { apple: "available", claude: "signed_out", agy: "too_old" },
+    });
+    expect(optionsFromLocation("?mockProviders=none").providers).toEqual({});
+    expect(optionsFromLocation("?mockProviders=claude:nonsense,gemini").providers).toEqual({});
+    expect(optionsFromLocation("?mockAutoProvider=claude").autoProvider).toBe("claude");
+    expect(optionsFromLocation("?mockAutoProvider=gemini").autoProvider).toBeUndefined();
+    expect(optionsFromLocation("?mockConsent=claude,agy").consent).toEqual({ claude: true, agy: true });
+    expect(optionsFromLocation("?mockConsent=agy").consent).toEqual({ claude: false, agy: true });
+    expect(optionsFromLocation("?mockOs=windows").os).toBe("windows");
+    expect(optionsFromLocation("").providers).toBeUndefined();
+  });
+});
+
+describe("Auto providers: what the computer has (docs/22 sections 3.1 and 12.8)", () => {
+  const states = async (providers: MockProviders) => {
+    api.reset({ providers });
+    return (await api.autoStatus()).providers.map((p) => [p.provider, p.state, p.reason, p.listed, p.selectable, p.tool_version]);
+  };
+
+  it("lists an available program, and a program that is signed out, too old or not working disabled with its reason and version", async () => {
+    expect(await states({ claude: "available", agy: "signed_out" })).toEqual([
+      ["yellowmoon", "available", null, true, true, null],
+      ["apple", "not_installed", "not_installed", false, false, null],
+      ["claude", "available", null, true, true, "2.1.310"],
+      ["agy", "signed_out", "signed_out", true, false, "1.4.7"],
+    ]);
+    expect(await states({ claude: "too_old", agy: "unavailable" })).toEqual([
+      ["yellowmoon", "available", null, true, true, null],
+      ["apple", "not_installed", "not_installed", false, false, null],
+      ["claude", "too_old", "too_old", true, false, "2.1.100"],
+      ["agy", "unavailable", "probe_failed", true, false, null],
+    ]);
+  });
+
+  it("does not list a program that is still being checked, and marks Antigravity Experimental and the programs' consent", async () => {
+    api.reset({ providers: { claude: "checking", agy: "available" }, consent: { claude: false, agy: true } });
+    const status = await api.autoStatus();
+    expect(status.providers.find((p) => p.provider === "claude")).toMatchObject({ state: "checking", reason: "checking", listed: false, consent: false });
+    expect(status.providers.find((p) => p.provider === "agy")).toMatchObject({ listed: true, experimental: true, consent: true });
+    expect(status.providers.find((p) => p.provider === "apple")).toMatchObject({ experimental: false, consent: true });
+  });
+
+  it("is visible when Apple Intelligence is available or any program is listed, and hidden otherwise", async () => {
+    const visible = async (providers: MockProviders) => {
+      api.reset({ providers });
+      return (await api.autoStatus()).visible;
+    };
+    expect(await visible({})).toBe(false);
+    expect(await visible({ apple: "unavailable" })).toBe(false);
+    expect(await visible({ claude: "checking" })).toBe(false);
+    expect(await visible({ apple: "available" })).toBe(true);
+    expect(await visible({ claude: "signed_out" })).toBe(true);
+    expect(await visible({ agy: "unavailable" })).toBe(true);
+  });
+
+  it("acts as Yellowmoon's own Auto while the saved choice is not available or not agreed to, and keeps the choice", async () => {
+    api.reset({ providers: { apple: "available", claude: "signed_out", agy: "available" }, autoProvider: "claude", consent: { claude: true, agy: false } });
+    expect(await api.autoStatus()).toMatchObject({ preference: "claude", effective: "yellowmoon", active: false });
+    await api.openPaths(ARW);
+    expect((await api.getSettings(1)).estimates.apple).toEqual({ state: "unavailable", reason: "signed_out" });
+    // Agreed to, available: it acts.
+    api.setProviders({ apple: "available", claude: "available", agy: "available" });
+    expect(await api.autoStatus()).toMatchObject({ preference: "claude", effective: "claude", active: true });
+    // Available but not agreed to (a file edited by hand): Yellowmoon's own Auto, and the photo says why.
+    api.reset({ providers: { claude: "available" }, autoProvider: "claude" });
+    expect(await api.autoStatus()).toMatchObject({ preference: "claude", effective: "yellowmoon" });
+    await api.openPaths(ARW);
+    expect((await api.getSettings(1)).estimates.apple).toEqual({ state: "unavailable", reason: "not_consented" });
+  });
+
+  it("grades with the program that is chosen, agreed to and available, and the answer says who", async () => {
+    api.reset({ appleAuto: "answered", providers: { claude: "available" }, autoProvider: "claude", consent: { claude: true, agy: false } });
+    await api.openPaths(ARW);
+    api.flush();
+    const e = (await api.getSettings(1)).estimates;
+    expect(e).toMatchObject({ source: "claude", contrast: 15, apple: { state: "answered", info: { provider: "claude", model: "claude-sonnet-5-5", tool_version: "2.1.310" } } });
+    expect(await api.autoStatus()).toMatchObject({ effective: "claude", active: true });
+  });
+
+  it("setProviders plays a program appearing, signing out and leaving: auto_status_changed, and the photos follow", async () => {
+    api.reset({ appleAuto: "answered", providers: { claude: "available" }, autoProvider: "claude", consent: { claude: true, agy: false } });
+    await api.openPaths(ARW);
+    api.flush();
+    const heard: string[] = [];
+    api.on("auto_status_changed", () => heard.push("status"));
+    const changed: number[] = [];
+    api.on("settings_changed", (e) => changed.push(e.photo_id));
+    api.setProviders({ claude: "signed_out" });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(heard).toEqual(["status"]);
+    expect(changed).toHaveLength(12);
+    expect((await api.getSettings(1)).estimates.apple).toEqual({ state: "unavailable", reason: "signed_out" });
+    expect((await api.autoStatus()).providers[2]).toMatchObject({ state: "signed_out", selectable: false });
+    api.setProviders({});
+    await vi.advanceTimersByTimeAsync(1);
+    expect(heard).toEqual(["status", "status"]);
+    expect((await api.autoStatus()).visible).toBe(false);
+    // `null` goes back to what `appleAuto` says: Apple Intelligence, as in `appleAuto: "answered"`.
+    api.setProviders(null);
+    expect((await api.autoStatus()).providers[1]).toMatchObject({ provider: "apple", state: "available" });
+  });
+});
+
+describe("Auto providers: the preference and the consent (docs/22 section 10.2)", () => {
+  it("starts from the options: the saved choice and the consents", async () => {
+    expect(await api.preferencesGet()).toMatchObject({ auto_provider: "apple", auto_consent: { claude: false, agy: false }, apple_auto_instructions: "" });
+    expect(await api.preferencesGet()).not.toHaveProperty("apple_auto");
+    api.reset({ autoProvider: "agy", consent: { claude: true, agy: true } });
+    expect(await api.preferencesGet()).toMatchObject({ auto_provider: "agy", auto_consent: { claude: true, agy: true } });
+  });
+
+  it("refuses a patch that chooses a program without its consent, and takes it with the consent in the same patch", async () => {
+    await expect(api.preferencesSet({ auto_provider: "claude" })).rejects.toMatchObject({
+      scope: "preferences",
+      message: "Say yes to sending photos to Claude Code first.",
+    });
+    await expect(api.preferencesSet({ auto_provider: "agy", auto_consent: { claude: true, agy: false } })).rejects.toMatchObject({
+      message: "Say yes to sending photos to Antigravity first.",
+    });
+    expect((await api.preferencesGet()).auto_provider).toBe("apple");
+    const saved = await api.preferencesSet({ auto_provider: "claude", auto_consent: { claude: true, agy: false } });
+    expect(saved).toMatchObject({ auto_provider: "claude", auto_consent: { claude: true, agy: false } });
+    // The consent is saved: the choice alone is enough now.
+    await api.preferencesSet({ auto_provider: "yellowmoon" });
+    expect((await api.preferencesSet({ auto_provider: "claude" })).auto_provider).toBe("claude");
+  });
+
+  it("always takes Yellowmoon's own Auto and Apple Intelligence, available or not", async () => {
+    expect((await api.preferencesSet({ auto_provider: "yellowmoon" })).auto_provider).toBe("yellowmoon");
+    expect((await api.preferencesSet({ auto_provider: "apple" })).auto_provider).toBe("apple");
+  });
+
+  it("replaces the whole consent a patch names, and says so in the status", async () => {
+    await api.preferencesSet({ auto_consent: { claude: true, agy: true } });
+    await api.preferencesSet({ auto_consent: { claude: false, agy: true } });
+    expect((await api.autoStatus()).consent).toEqual({ claude: false, agy: true });
+  });
+
+  it("says what operating system it runs on, for the sentences that differ on Windows", async () => {
+    expect((await api.appInfo()).os).toBe("macos");
+    api.reset({ os: "windows" });
+    expect((await api.appInfo()).os).toBe("windows");
   });
 });

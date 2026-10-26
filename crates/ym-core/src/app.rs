@@ -11,11 +11,14 @@
 //!   the renderer, and then the application's `looks_changed` listener;
 //! * an **export** snapshots the photos and the preference "Remove location from exports" when it is
 //!   queued, and runs through `export_photo`, the function the CLI calls too;
-//! * **Apple Auto** (`docs/19`) acts when the caller gives an advisor ([`CoreOptions::advisor`]: the
-//!   app and `ym` give `ym_apple::system_advisor()`, every other caller none), the preference or the
-//!   run's mode ([`CoreOptions::apple_auto`], [`Core::set_apple_auto_mode`]) is on and the advisor is
-//!   available; the availability is read again when a session opens, when the status is asked
-//!   ([`Core::apple_auto_status`]), when the preferences change and before each export.
+//! * **Auto providers** (`docs/19`, `docs/22`): Apple Intelligence, Claude Code and Antigravity act
+//!   when the caller gives advisors ([`CoreOptions::advisors`]: the app and `ym` give
+//!   `ym_apple::system_advisor()` and `ym_agents::system_advisors()`, every other caller none), the
+//!   chosen provider (the preference, or the run's choice, [`CoreOptions::auto_choice`],
+//!   [`Core::set_auto_choice`]) is available, and for a cloud provider its consent is saved or the
+//!   run named it; the availability is read again when a session opens, when the status is asked
+//!   ([`Core::auto_status`]), when an advisor says it changed ([`Core::on_auto_changed`]), when
+//!   the preferences change and before each export.
 //!
 //! Nothing here persists anything but the preferences and the looks (`docs/01` section
 //! Persistence).
@@ -27,10 +30,11 @@
 pub mod gpu;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
-use crate::apple_auto::{AppleAutoMode, AppleAutoStatus, AutoAdvisor, check_instructions};
+use crate::apple_auto::{Availability, UnavailableReason, check_instructions};
+use crate::auto_provider::{AutoChoice, AutoStatus, ProviderAdvisors};
 
 use ym_color::look::LookInput;
 use ym_lens::{LensInfo, LensLibrary};
@@ -56,6 +60,10 @@ use crate::session::{
     RestoreOutcome, Session, SessionEnv, SessionError, default_decode_threads,
 };
 use crate::settings::SettingsPatch;
+
+/// How long [`Core::export_start`] waits for a provider that still reads `checking` (`docs/22` section
+/// 3.3).
+pub const AUTO_SETTLE_BEFORE_EXPORT: Duration = Duration::from_secs(5);
 
 /// How long [`Core::shutdown`] waits for a cancelled export to delete its partial file. A cancel is
 /// noticed between render tiles and writer bands (a few tenths of a second at 24 MP); this is the
@@ -123,16 +131,17 @@ pub struct CoreOptions {
     /// application wants them; the CLI does not (it would spend the render worker on pictures
     /// nobody sees, and an export waits for such work).
     pub thumbnails: bool,
-    /// What looks at the photos for Apple Auto (`docs/19`): the app and `ym` give
-    /// `ym_apple::system_advisor()`; every other caller (tests, the golden tool, examples) gives none,
-    /// which is Apple Auto off and today's bytes everywhere.
-    pub advisor: Option<Arc<dyn AutoAdvisor>>,
-    /// How this run decides on Apple Auto: the preference ([`AppleAutoMode::FromPreference`], the
-    /// app's and `ym`'s default) or `ym --apple-auto on|off`.
-    pub apple_auto: AppleAutoMode,
-    /// Instructions for Apple Auto's model for this run instead of the `apple_auto_instructions`
-    /// preference (`ym --apple-auto-instructions FILE`, `docs/19` section 8); `None` follows the
-    /// preference. Checked by [`Core::open`].
+    /// What looks at the photos for the Auto providers (`docs/19`, `docs/22`): the app and `ym` give
+    /// Apple's `ym_apple::system_advisor()` and the two programs' `ym_agents::system_advisors()`;
+    /// every other caller (tests, the golden tool, examples) gives none, which is Yellowmoon's own
+    /// Auto and today's bytes everywhere.
+    pub advisors: ProviderAdvisors,
+    /// How this run chooses its provider: the preference ([`AutoChoice::FromPreference`], the app's
+    /// and `ym`'s default) or `ym --auto-provider p` ([`AutoChoice::Provider`]).
+    pub auto_choice: AutoChoice,
+    /// Instructions for the model for this run instead of the `apple_auto_instructions` preference
+    /// (`ym --auto-instructions FILE`, `docs/19` section 8); `None` follows the preference. Checked
+    /// by [`Core::open`].
     pub apple_auto_instructions: Option<String>,
 }
 
@@ -167,8 +176,8 @@ impl CoreOptions {
             forced_profile: None,
             home: None,
             thumbnails: true,
-            advisor: None,
-            apple_auto: AppleAutoMode::FromPreference,
+            advisors: ProviderAdvisors::default(),
+            auto_choice: AutoChoice::FromPreference,
             apple_auto_instructions: None,
         }
     }
@@ -187,9 +196,41 @@ pub struct Core {
     /// The export queue.
     pub exports: ExportQueue,
     data_root: PathBuf,
-    /// Apple Auto's instructions for this run when they override the preference
+    /// The Auto instructions for this run when they override the preference
     /// ([`CoreOptions::apple_auto_instructions`]).
     instructions_override: Option<String>,
+    /// The advisors the core was given (the same ones the session asks).
+    advisors: ProviderAdvisors,
+    /// Who is told when an advisor's availability changed ([`Core::on_auto_changed`]).
+    auto_hub: Arc<AutoHub>,
+}
+
+/// What an advisor's change notification does: the session reads the availability again, then the
+/// application's callbacks run (`docs/22` section 11.2). It exists before the session does, because
+/// the listener is registered first.
+#[derive(Default)]
+struct AutoHub {
+    session: OnceLock<Weak<Session>>,
+    callbacks: Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+impl AutoHub {
+    fn callbacks(&self) -> MutexGuard<'_, Vec<Arc<dyn Fn() + Send + Sync>>> {
+        self.callbacks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The advisor said its availability changed. Runs on its probe thread: it never blocks.
+    fn changed(&self) {
+        if let Some(session) = self.session.get().and_then(Weak::upgrade) {
+            session.refresh_apple_auto();
+        }
+        let callbacks: Vec<_> = self.callbacks().clone();
+        for callback in callbacks {
+            callback();
+        }
+    }
 }
 
 impl std::fmt::Debug for Core {
@@ -217,9 +258,10 @@ impl Core {
             None => None,
         };
         let preferences = Arc::new(PreferencesStore::open(&options.app_root));
+        let prefs = preferences.get();
         let own = instructions_override
             .clone()
-            .unwrap_or_else(|| preferences.get().apple_auto_instructions);
+            .unwrap_or(prefs.apple_auto_instructions.clone());
         let looks = Arc::new(LookService::open(
             &options.app_root,
             &options.data_root,
@@ -260,18 +302,29 @@ impl Core {
             &renderer.options(),
         )?);
         env = env.with_pictures(Arc::clone(&pictures));
-        if let Some(advisor) = options.advisor {
+        // The listener is registered first, then the session is built, then the availability is read
+        // once more, so a probe that finished in between is not missed (`docs/22` section 11.2).
+        let auto_hub = Arc::new(AutoHub::default());
+        let advisors = options.advisors;
+        if !advisors.is_empty() {
+            let hub = Arc::clone(&auto_hub);
+            advisors.on_change(Arc::new(move || hub.changed()));
             env = env.with_apple_auto(AppleAutoEnv {
-                preference: preferences.get().apple_auto,
-                mode: options.apple_auto,
+                preference: prefs.auto_provider,
+                consent: prefs.auto_consent,
+                choice: options.auto_choice,
                 instructions: own.clone(),
-                ..AppleAutoEnv::new(advisor, pictures)
+                ..AppleAutoEnv::new(advisors.clone(), pictures)
             });
         }
         let session = Arc::new(Session::new(env));
-        // The preference is known to the session with or without an advisor (the status says it).
-        session.set_apple_auto_preference(preferences.get().apple_auto);
+        // The switches are known to the session with or without advisors (the status says them).
+        session.set_auto_preference(prefs.auto_provider);
+        session.set_auto_consent(prefs.auto_consent);
+        session.set_auto_choice(options.auto_choice);
         session.set_apple_auto_instructions(&own);
+        let _ = auto_hub.session.set(Arc::downgrade(&session));
+        session.refresh_apple_auto();
 
         let ctx = Arc::new(
             ExportContext::new(renderer.clone())
@@ -300,6 +353,8 @@ impl Core {
             exports,
             data_root: options.data_root,
             instructions_override,
+            advisors,
+            auto_hub,
         })
     }
 
@@ -374,6 +429,7 @@ impl Core {
     /// render tiles and writer bands, a fraction of a second away.
     pub fn shutdown(&self) {
         self.exports.cancel_all();
+        self.cancel_auto();
         self.close_session();
         self.renderer.scheduler().cancel_all();
         if !self.exports.wait_idle(SHUTDOWN_EXPORT_WAIT) {
@@ -405,10 +461,12 @@ impl Core {
         self.session
             .set_default_look(self.looks.effective_default());
         self.renderer.set_display(self.looks.display_choice());
-        // Apple Auto follows its preference at once (off: every photo back to the rule; on: the
-        // photos without an answer are asked), with the availability read again; new instructions
-        // ask every photo again (unless this run overrides them).
-        self.session.set_apple_auto_preference(next.apple_auto);
+        // The Auto providers follow their preferences at once: a provider chosen, or its consent
+        // given or taken away, acts or stops acting with the availability read again, and the photos
+        // without an answer are asked; new instructions ask every photo again (unless this run
+        // overrides them).
+        self.session.set_auto_preference(next.auto_provider);
+        self.session.set_auto_consent(next.auto_consent);
         if self.instructions_override.is_none() {
             self.session
                 .set_apple_auto_instructions(&next.apple_auto_instructions);
@@ -416,20 +474,44 @@ impl Core {
         Ok(next)
     }
 
-    // --- Apple Auto -----------------------------------------------------------------------
+    // --- Auto providers -------------------------------------------------------------------
 
-    /// Apple Auto's status for the app's Preferences (whether to show the row) and `ym doctor`, with
-    /// the availability read again (`docs/19` sections 1, 2 and 8). Without an advisor it is not
-    /// available and has no reason.
+    /// The Auto status for the app's Preferences (the dropdown, its entries and whether to show it)
+    /// and `ym doctor`, with every advisor asked to read its availability again (`docs/22` sections
+    /// 3.3 and 11). It never waits for a process: the advisors probe in the background and the status
+    /// is built from what they last said. Without advisors every program is `not_installed` and the
+    /// dropdown is hidden.
     #[must_use]
-    pub fn apple_auto_status(&self) -> AppleAutoStatus {
-        self.session.apple_auto_status()
+    pub fn auto_status(&self) -> AutoStatus {
+        self.session.auto_status()
     }
 
-    /// Sets how this run decides on Apple Auto (`ym --apple-auto on|off`; the app keeps
-    /// [`AppleAutoMode::FromPreference`]). Takes effect at once, as the preference does.
-    pub fn set_apple_auto_mode(&self, mode: AppleAutoMode) {
-        self.session.set_apple_auto_mode(mode);
+    /// Sets how this run chooses its provider (`ym --auto-provider p`; the app keeps
+    /// [`AutoChoice::FromPreference`]). Takes effect at once, as the preference does.
+    pub fn set_auto_choice(&self, choice: AutoChoice) {
+        self.session.set_auto_choice(choice);
+    }
+
+    /// Registers the application's callback for "an advisor's availability changed" (the shell emits
+    /// `auto_status_changed`; the webview then asks [`Core::auto_status`] again). It runs on the
+    /// advisor's probe thread after the session has read the availability again, so it must not
+    /// block.
+    pub fn on_auto_changed(&self, f: impl Fn() + Send + Sync + 'static) {
+        self.auto_hub.callbacks().push(Arc::new(f));
+    }
+
+    /// Kills the requests the advisors are running (`docs/22` section 9.4): the app calls it when it
+    /// quits, `ym` from its Ctrl-C handler. A child is not stopped by its parent's death on Unix.
+    pub fn cancel_auto(&self) {
+        self.session.cancel_auto();
+    }
+
+    /// Waits until no advisor is probing, or `timeout` has passed, and reads the chosen provider's
+    /// availability again (`ym`, and an export that starts while the chosen provider still reads
+    /// `checking`).
+    pub fn settle_auto(&self, timeout: Duration) {
+        self.advisors.settle(timeout);
+        self.session.refresh_apple_auto();
     }
 
     // --- Lens -------------------------------------------------------------------------------
@@ -592,9 +674,15 @@ impl Core {
         self.looks.reload();
         // A display LUT the user chose and that has since gone is an error, not ACES 2 in its place.
         self.looks.check_display_rendering()?;
-        // Apple Auto may have become available, or stopped being, since the last look (`docs/19`
-        // section 1); the export's photos then wait for their answers.
-        self.session.refresh_apple_auto();
+        // The chosen provider may have become available, or stopped being, since the last look
+        // (`docs/19` section 1, `docs/22` section 3.3); the export's photos then wait for their
+        // answers. An export started in the first seconds waits for a probe that is still running.
+        if matches!(
+            self.session.refresh_apple_auto(),
+            Some(Availability::Unavailable(UnavailableReason::Checking))
+        ) {
+            self.settle_auto(AUTO_SETTLE_BEFORE_EXPORT);
+        }
         let remove_location = self.preferences.get().remove_location_from_exports;
         let id = self.exports.start(&self.session, job, remove_location)?;
         if let Some(folder) = &job.options.destination {

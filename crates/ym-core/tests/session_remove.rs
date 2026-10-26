@@ -11,7 +11,8 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, SystemTime};
 
 use common::{GateThumbnails, Layout, Scene, base_env, light, session_with_events, settle};
-use ym_core::apple_auto::{AdvisorPicture, AppleAuto, AppleAutoMode, FakeAdvisor};
+use ym_core::apple_auto::{AdvisorPicture, AppleAuto, FakeAdvisor};
+use ym_core::auto_provider::{AutoChoice, AutoProvider, ProviderAdvisors};
 use ym_core::auto::NoiseSource;
 use ym_core::session::{
     AppleAutoEnv, EventSink, OpenOptions, PhotoId, PhotoStatus, PictureInput, PictureRenderer,
@@ -565,10 +566,10 @@ impl PictureRenderer for GreyPictures {
     }
 }
 
-/// `n` photos `p0.ARW`, … opened into a session with the fake advisor, in `mode`, and developed.
+/// `n` photos `p0.ARW`, … opened into a session with the fake advisor, with the choice `choice`, and developed.
 fn developed_with_apple(
     n: usize,
-    mode: AppleAutoMode,
+    choice: AutoChoice,
 ) -> (tempfile::TempDir, Session, Vec<PhotoId>) {
     let dir = tempfile::tempdir().unwrap();
     for i in 0..n {
@@ -576,8 +577,11 @@ fn developed_with_apple(
     }
     let (sink, _rx) = EventSink::channel();
     let session = Session::new(base_env().with_events(sink).with_apple_auto(AppleAutoEnv {
-        mode,
-        ..AppleAutoEnv::new(Arc::new(FakeAdvisor), Arc::new(GreyPictures))
+        choice,
+        ..AppleAutoEnv::new(
+            ProviderAdvisors::default().with(AutoProvider::Apple, Arc::new(FakeAdvisor)),
+            Arc::new(GreyPictures),
+        )
     }));
     session.open(&[dir.path().to_path_buf()], OpenOptions::default());
     settle(&session);
@@ -595,7 +599,7 @@ fn answered(session: &Session, id: PhotoId) -> bool {
 
 #[test]
 fn a_removed_photo_keeps_its_answer_for_undo_and_nobody_is_asked_again() {
-    let (_dir, session, ids) = developed_with_apple(3, AppleAutoMode::On);
+    let (_dir, session, ids) = developed_with_apple(3, AutoChoice::Provider(AutoProvider::Apple));
     assert_eq!(session.apple_auto_asks(), 3);
     let before: Vec<_> = ids
         .iter()
@@ -611,8 +615,8 @@ fn a_removed_photo_keeps_its_answer_for_undo_and_nobody_is_asked_again() {
     session.remove(&[ids[0], ids[2]]);
     assert!(session.estimates(ids[0]).is_none() && session.estimates(ids[2]).is_none());
     // Turning Apple Auto off and on while they are out asks only about the photos that are in the session.
-    session.set_apple_auto_mode(AppleAutoMode::Off);
-    session.set_apple_auto_mode(AppleAutoMode::On);
+    session.set_auto_choice(AutoChoice::Provider(AutoProvider::Yellowmoon));
+    session.set_auto_choice(AutoChoice::Provider(AutoProvider::Apple));
     settle(&session);
     assert_eq!(session.apple_auto_asks(), 3);
 
@@ -640,11 +644,11 @@ fn a_removed_photo_keeps_its_answer_for_undo_and_nobody_is_asked_again() {
 #[test]
 fn a_photo_removed_before_it_was_asked_is_asked_once_it_is_back() {
     // Apple Auto is off while the photos develop: nobody has an answer, and the question waits for it to be on.
-    let (_dir, session, ids) = developed_with_apple(3, AppleAutoMode::Off);
+    let (_dir, session, ids) = developed_with_apple(3, AutoChoice::Provider(AutoProvider::Yellowmoon));
     assert_eq!(session.apple_auto_asks(), 0);
     session.remove(&[ids[1]]);
 
-    session.set_apple_auto_mode(AppleAutoMode::On);
+    session.set_auto_choice(AutoChoice::Provider(AutoProvider::Apple));
     settle(&session);
     assert_eq!(
         session.apple_auto_asks(),

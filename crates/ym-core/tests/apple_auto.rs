@@ -18,10 +18,10 @@ use common::*;
 use serde_json::{Value, json};
 use ym_core::app::{Core, CoreOptions};
 use ym_core::apple_auto::{
-    AdvisorAnswer, AdvisorError, AdvisorInfo, AdvisorPicture, AppleAuto, AppleAutoMode,
-    AutoAdvisor, AutoSteps, Availability, FailureKind, FakeAdvisor, PICTURE_LONG_EDGE_PX,
-    UnavailableReason,
+    AdvisorAnswer, AdvisorError, AdvisorInfo, AdvisorPicture, AppleAuto, AutoAdvisor, AutoSteps,
+    Availability, FailureKind, FakeAdvisor, PICTURE_LONG_EDGE_PX, UnavailableReason,
 };
+use ym_core::auto_provider::{AutoChoice, AutoProvider, ProviderAdvisors};
 use ym_core::auto::{AutoSource, tables_of};
 use ym_core::export::ExportContext;
 use ym_core::export_queue::{ExportEvent, ExportJob, ExportQueue, ExportSink};
@@ -40,6 +40,11 @@ const PROFILE: &str = "sony-ilce-7rm4";
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The advisors of a session that has only Apple Intelligence's (the tests of `docs/19`).
+fn apple_only(advisor: Arc<dyn AutoAdvisor>) -> ProviderAdvisors {
+    ProviderAdvisors::default().with(AutoProvider::Apple, advisor)
 }
 
 /// Steps with the four steps of prompt version 1 set and every other step keep (no colours).
@@ -228,6 +233,7 @@ impl AutoAdvisor for Scripted {
                 steps,
                 scene: format!("Photo {photo}"),
                 plan: format!("Plan {photo}"),
+                served_model: None,
             })
             .map_err(|kind| AdvisorError::new(kind, "scripted"))
     }
@@ -285,7 +291,7 @@ impl Rig {
         let (sink, events) = EventSink::channel();
         let mut env = base_env().with_events(sink).with_apple_auto(AppleAutoEnv {
             retry_pause: Duration::from_millis(5),
-            ..AppleAutoEnv::new(advisor, pictures.clone())
+            ..AppleAutoEnv::new(apple_only(advisor), pictures.clone())
         });
         if thumbnails {
             env = env.with_thumbnails(Arc::new(CountingThumbnails::default()));
@@ -479,9 +485,11 @@ fn auto_contrast_and_saturation_resolve_and_pin_to_the_estimates_values() {
                 steps: steps(0, 0, 2, -1),
                 scene: String::new(),
                 plan: String::new(),
+                served_model: None,
             },
             info: Scripted::info(),
         },
+        AutoProvider::Apple,
         tables_of(&profile),
     );
     let s = DevelopSettings {
@@ -535,14 +543,19 @@ fn estimates_without_an_answer_are_the_rule_bit_for_bit() {
             info: Scripted::info(),
         },
     ] {
-        let e = est.with_apple(None, state.clone(), tables_of(&profile));
+        let e = est.with_apple(None, state.clone(), AutoProvider::Apple, tables_of(&profile));
         assert_eq!(e.apple, state);
         assert_eq!(format!("{:?}", e.color), format!("{:?}", est.color));
         assert_eq!(e.exposure, est.exposure);
         assert_eq!(e.readout, est.readout);
         assert_eq!(e.source(), AutoSource::Rule);
         // Keep on every step is Apple's source and the rule's numbers.
-        let keep = est.with_apple(Some(AutoSteps::default()), state, tables_of(&profile));
+        let keep = est.with_apple(
+            Some(AutoSteps::default()),
+            state,
+            AutoProvider::Apple,
+            tables_of(&profile),
+        );
         assert_eq!(keep.source(), AutoSource::Apple);
         assert_eq!(keep.exposure, est.exposure);
         assert_eq!(keep.readout, est.readout);
@@ -557,6 +570,7 @@ fn an_answer_moves_exposure_white_contrast_and_saturation() {
     let warmer = est.with_apple(
         Some(steps(2, 1, 1, -2)),
         AppleAuto::Pending,
+        AutoProvider::Apple,
         tables_of(&profile),
     );
     assert!((warmer.exposure.ev - (est.exposure.ev + 0.6)).abs() < 1e-12);
@@ -574,6 +588,7 @@ fn an_answer_moves_exposure_white_contrast_and_saturation() {
     let cooler = est.with_apple(
         Some(steps(0, -2, 0, 0)),
         AppleAuto::Pending,
+        AutoProvider::Apple,
         tables_of(&profile),
     );
     assert!(cooler.readout.kelvin_k < est.readout.kelvin_k);
@@ -585,6 +600,7 @@ fn an_answer_moves_exposure_white_contrast_and_saturation() {
     assert_eq!(s.exposure_ev, warmer.exposure.ev);
     let v = serde_json::to_value(&s).unwrap();
     assert_eq!(v["source"], json!("apple"));
+    assert_eq!(v["provider"], json!("apple"));
     assert_eq!(v["apple"], json!({ "state": "pending" }));
     assert_eq!(
         (v["contrast"].clone(), v["saturation"].clone()),
@@ -608,7 +624,12 @@ fn an_answer_moves_highlights_shadows_black_the_tint_and_the_wheels() {
         highlight_color_strength: Some(1),
         ..AutoSteps::default()
     };
-    let e = est.with_apple(Some(graded), AppleAuto::Pending, tables_of(&profile));
+    let e = est.with_apple(
+        Some(graded),
+        AppleAuto::Pending,
+        AutoProvider::Apple,
+        tables_of(&profile),
+    );
     assert_eq!((e.highlights, e.shadows, e.black), (-40.0, 15.0, -15.0));
     assert_eq!(e.balance_shadows, [-0.866 * 0.55, -0.5 * 0.55]);
     assert_eq!(e.balance_highlights, [0.866 * 0.3, 0.5 * 0.3]);
@@ -680,7 +701,12 @@ fn steps_the_model_left_empty_set_nothing() {
         contrast: Some(-1),
         ..AutoSteps::default()
     };
-    let e = est.with_apple(Some(only), AppleAuto::Pending, tables_of(&profile));
+    let e = est.with_apple(
+        Some(only),
+        AppleAuto::Pending,
+        AutoProvider::Apple,
+        tables_of(&profile),
+    );
     assert_eq!(e.contrast, -15.0);
     assert_eq!(e.exposure, est.exposure);
     assert_eq!(format!("{:?}", e.color), format!("{:?}", est.color));
@@ -913,7 +939,7 @@ fn failures_use_the_rule_and_say_why_and_only_waiting_is_retried() {
     let five = rig.session.estimates(id(5)).unwrap();
     assert!((five.exposure.ev - (five.exposure.own_ev + 0.3)).abs() < 1e-12);
     // The documented pause between tries.
-    let default = AppleAutoEnv::new(advisor.clone(), Arc::new(StubPictures::default()));
+    let default = AppleAutoEnv::new(apple_only(advisor.clone()), Arc::new(StubPictures::default()));
     assert_eq!(default.retry_pause, Duration::from_secs(2));
 }
 
@@ -936,7 +962,7 @@ fn a_burst_shares_the_median_of_its_answered_steps_and_waits_for_every_frame() {
     let pictures = Arc::new(StubPictures::default());
     let session = Session::new(base_env().with_apple_auto(AppleAutoEnv {
         retry_pause: Duration::from_millis(5),
-        ..AppleAutoEnv::new(advisor.clone(), pictures)
+        ..AppleAutoEnv::new(apple_only(advisor.clone()), pictures)
     }));
     let ids = session
         .open(&[dir.path().to_path_buf()], OpenOptions::default())
@@ -997,14 +1023,14 @@ fn the_preference_switches_both_ways_without_asking_again() {
     assert_eq!(answered.source(), AutoSource::Apple);
     rig.drain();
     // Off: back to the rule at once, the viewers told, nothing asked.
-    rig.session.set_apple_auto_preference(false);
+    rig.session.set_auto_preference(AutoProvider::Yellowmoon);
     let off = rig.session.estimates(id).unwrap();
     assert_eq!(off.apple, AppleAuto::Off);
     assert_eq!(off.source(), AutoSource::Rule);
     assert_eq!(off.exposure.ev, off.exposure.own_ev);
     assert_eq!(off.contrast, 0.0);
     assert_eq!(changed_ids(&rig.drain()), vec![id]);
-    assert!(!rig.session.apple_auto_status().active);
+    assert!(!rig.session.auto_status().active);
     assert!(rig.session.estimates_final(id).unwrap());
     // A photo opened while it is off is not asked.
     let extra = tempfile::tempdir().unwrap();
@@ -1017,7 +1043,7 @@ fn the_preference_switches_both_ways_without_asking_again() {
     assert_eq!(rig.state(e), AppleAuto::Off);
     assert_eq!(advisor.calls().len(), 1);
     // On: the answer kept is used again, and only the photo without one is asked.
-    rig.session.set_apple_auto_preference(true);
+    rig.session.set_auto_preference(AutoProvider::Apple);
     rig.settle();
     assert_eq!(
         rig.session.estimates(id).unwrap().exposure,
@@ -1026,14 +1052,14 @@ fn the_preference_switches_both_ways_without_asking_again() {
     assert!(matches!(rig.state(e), AppleAuto::Answered { .. }));
     assert_eq!(advisor.calls(), vec![id.0 as u8, e.0 as u8]);
     // The run's mode overrides the preference.
-    rig.session.set_apple_auto_preference(false);
-    rig.session.set_apple_auto_mode(AppleAutoMode::On);
+    rig.session.set_auto_preference(AutoProvider::Yellowmoon);
+    rig.session.set_auto_choice(AutoChoice::Provider(AutoProvider::Apple));
     assert!(rig.session.apple_auto_active());
     assert_eq!(
         rig.session.estimates(id).unwrap().source(),
         AutoSource::Apple
     );
-    rig.session.set_apple_auto_mode(AppleAutoMode::Off);
+    rig.session.set_auto_choice(AutoChoice::Provider(AutoProvider::Yellowmoon));
     assert_eq!(rig.state(id), AppleAuto::Off);
 }
 
@@ -1076,11 +1102,11 @@ fn rerun_asks_again_and_resets_contrast_and_saturation() {
         assert_eq!(r.settings.saturation, PercentSetting::manual_value(-5.0));
         assert_eq!((r.values.contrast, r.values.saturation), (40.0, -5.0));
     };
-    rig.session.set_apple_auto_preference(false);
+    rig.session.set_auto_preference(AutoProvider::Yellowmoon);
     assert_eq!(rig.state(id), AppleAuto::Off);
     rig.session.update_settings(id, &edit).unwrap();
     kept(&rig.session.rerun_auto(id).unwrap());
-    rig.session.set_apple_auto_preference(true);
+    rig.session.set_auto_preference(AutoProvider::Apple);
     advisor.set_available(false);
     rig.session.refresh_apple_auto();
     assert!(matches!(rig.state(id), AppleAuto::Unavailable { .. }));
@@ -1179,8 +1205,16 @@ fn without_an_advisor_there_is_no_worker_and_nothing_changes() {
         assert_eq!(e.source(), AutoSource::Rule);
         assert!(session.estimates_final(id).unwrap());
     }
-    let status = session.apple_auto_status();
-    assert!(!status.available && !status.active && status.reason.is_none());
+    let status = session.auto_status();
+    assert!(!status.visible && !status.active);
+    assert_eq!(status.effective, AutoProvider::Yellowmoon);
+    assert!(
+        status
+            .providers
+            .iter()
+            .filter(|p| p.provider != AutoProvider::Yellowmoon)
+            .all(|p| p.reason == Some(UnavailableReason::NotInstalled) && !p.listed)
+    );
     assert_eq!(session.apple_auto_asks(), 0);
 }
 
@@ -1270,6 +1304,13 @@ struct CoreRig {
 }
 
 fn core_rig(advisor: Option<Arc<dyn AutoAdvisor>>, n: usize) -> CoreRig {
+    core_rig_with(
+        advisor.map_or_else(ProviderAdvisors::default, apple_only),
+        n,
+    )
+}
+
+fn core_rig_with(advisors: ProviderAdvisors, n: usize) -> CoreRig {
     let app = tempfile::tempdir().expect("app");
     let home = tempfile::tempdir().expect("home");
     let (sink, events) = ExportSink::channel();
@@ -1278,7 +1319,7 @@ fn core_rig(advisor: Option<Arc<dyn AutoAdvisor>>, n: usize) -> CoreRig {
     options.decode_threads = 2;
     options.thumbnails = false;
     options.home = Some(home.path().to_path_buf());
-    options.advisor = advisor;
+    options.advisors = advisors;
     let core = Core::open(options).expect("core");
     let photos = tempfile::tempdir().expect("photos");
     write_photos(photos.path(), n);
@@ -1352,28 +1393,46 @@ fn unescape(xml: &str) -> String {
 #[test]
 fn the_status_and_the_preference_reach_the_session() {
     let none = core_rig(None, 0);
-    let s = none.core.apple_auto_status();
-    assert!(!s.available && !s.active && s.reason.is_none() && s.info.is_none());
-    assert!(s.preference);
+    let s = none.core.auto_status();
+    assert!(!s.visible && !s.active && s.effective == AutoProvider::Yellowmoon);
+    assert_eq!(s.preference, AutoProvider::Apple);
+    assert_eq!(s.choice, AutoChoice::FromPreference);
     let fake = core_rig(Some(Arc::new(FakeAdvisor)), 1);
-    let s = fake.core.apple_auto_status();
-    assert!(s.available && s.active && s.preference);
-    assert_eq!(s.info, Some(FakeAdvisor::info()));
+    let s = fake.core.auto_status();
+    assert!(s.visible && s.active && s.preference == AutoProvider::Apple);
+    assert_eq!(s.effective, AutoProvider::Apple);
+    let apple = s.provider(AutoProvider::Apple).unwrap();
+    assert!(apple.listed && apple.selectable && apple.consent);
+    assert_eq!(apple.info, Some(FakeAdvisor::info()));
     let sha = ym_core::apple_auto::InstructionsId::default().instructions_sha256;
+    let mut json = serde_json::to_value(&s).unwrap();
+    // The providers are checked on their own; the rest is the status.
+    let providers = json["providers"].take();
+    assert_eq!(providers.as_array().unwrap().len(), 4);
     assert_eq!(
-        serde_json::to_value(&s).unwrap(),
+        json,
         json!({
-            "available": true, "reason": null,
-            "info": {
-                "model": "Test advisor", "os": "test",
-                "instructions": "default", "instructions_sha256": sha,
-            },
-            "preference": true, "mode": "from_preference", "active": true,
-            "prompt": 3, "table": 2,
+            "providers": null,
+            "preference": "apple", "choice": "from_preference", "chosen": "apple",
+            "effective": "apple", "active": true, "visible": true,
+            "consent": { "claude": false, "agy": false },
+            "table": 2,
             "instructions": "default", "instructions_sha256": sha,
             "own_instructions": "",
             "default_instructions": ym_core::apple_auto::DEFAULT_INSTRUCTIONS,
             "instructions_max_chars": 2000,
+        })
+    );
+    assert_eq!(
+        providers[1],
+        json!({
+            "provider": "apple", "state": "available", "reason": null,
+            "info": {
+                "provider": "apple", "model": "Test advisor", "os": "test", "prompt": 3,
+                "instructions": "default", "instructions_sha256": sha,
+            },
+            "tool_version": null, "consent": true, "experimental": false,
+            "listed": true, "selectable": true,
         })
     );
     let id = fake.open()[0];
@@ -1382,30 +1441,40 @@ fn the_status_and_the_preference_reach_the_session() {
         fake.core.session.estimates(id).unwrap().apple,
         AppleAuto::Answered { .. }
     ));
-    // The preference, saved and applied at once.
+    // The choice, saved and applied at once.
     let prefs = fake
         .core
         .preferences_set(&PreferencesPatch {
-            apple_auto: Some(false),
+            auto_provider: Some(AutoProvider::Yellowmoon),
             ..PreferencesPatch::default()
         })
         .unwrap();
-    assert!(!prefs.apple_auto);
-    assert!(!fake.core.apple_auto_status().active);
+    assert_eq!(prefs.auto_provider, AutoProvider::Yellowmoon);
+    assert!(!fake.core.auto_status().active);
     assert_eq!(
         fake.core.session.estimates(id).unwrap().apple,
         AppleAuto::Off
     );
-    // `ym --apple-auto on` for one run.
-    fake.core.set_apple_auto_mode(AppleAutoMode::On);
-    assert!(fake.core.apple_auto_status().active);
-    // A core opened later reads the preference from the file.
+    // `ym --auto-provider apple` for one run.
+    fake.core
+        .set_auto_choice(AutoChoice::Provider(AutoProvider::Apple));
+    let s = fake.core.auto_status();
+    assert!(s.active);
+    assert_eq!(
+        (s.preference, s.chosen, s.effective),
+        (
+            AutoProvider::Yellowmoon,
+            AutoProvider::Apple,
+            AutoProvider::Apple
+        )
+    );
+    // A core opened later reads the saved choice from the file.
     let app = fake._app.path().to_path_buf();
     let mut options = CoreOptions::new(data_root(), app);
-    options.advisor = Some(Arc::new(FakeAdvisor));
+    options.advisors = apple_only(Arc::new(FakeAdvisor));
     let again = Core::open(options).unwrap();
-    let s = again.apple_auto_status();
-    assert!(!s.preference && !s.active);
+    let s = again.auto_status();
+    assert!(s.preference == AutoProvider::Yellowmoon && !s.active);
 }
 
 #[test]
@@ -1439,8 +1508,12 @@ fn exports_with_the_fake_carry_its_answer_and_are_the_same_bytes_twice() {
             "{name}"
         );
         let apple: Value =
-            serde_json::from_str(&unescape(&xmp_property(&xmp, "ym:AppleAuto").unwrap())).unwrap();
+            serde_json::from_str(&unescape(&xmp_property(&xmp, "ym:AutoAdvisor").unwrap())).unwrap();
         assert_eq!(apple["result"], json!("answered"));
+        assert_eq!(apple["provider"], json!("apple"));
+        assert_eq!(apple["reproducible"], json!(true));
+        // `ym:AppleAuto` is no longer written (docs/22 section 14.2).
+        assert!(xmp_property(&xmp, "ym:AppleAuto").is_none());
         assert_eq!(apple["model"], json!("Test advisor"));
         assert_eq!(apple["os"], json!("test"));
         assert_eq!(apple["scene"], json!("Test picture"));
@@ -1462,14 +1535,14 @@ fn exports_with_the_fake_carry_its_answer_and_are_the_same_bytes_twice() {
         assert_eq!(settings["white_balance"], json!({ "kind": "auto" }));
     }
 
-    // Without an advisor: `ym:Auto` is the rule and there is no `ym:AppleAuto`.
+    // Without an advisor: `ym:Auto` is the rule and there is no `ym:AutoAdvisor`.
     let none = core_rig(None, 1);
     none.open();
     assert!(none.core.session.wait_idle(Duration::from_secs(120)));
     let files = none.export(&dest.path().join("rule"));
     let xmp = xmp_of(&files[0].1).unwrap();
     assert_eq!(xmp_property(&xmp, "ym:Auto").as_deref(), Some("rule"));
-    assert!(xmp_property(&xmp, "ym:AppleAuto").is_none());
+    assert!(xmp_property(&xmp, "ym:AutoAdvisor").is_none());
     let models = xmp.find("<ym:DisplayTransform>").unwrap();
     assert!(models < xmp.find("<ym:Auto>").unwrap());
     assert!(xmp.find("<ym:Auto>").unwrap() < xmp.find("<ym:Settings>").unwrap());
@@ -1521,9 +1594,9 @@ fn a_failed_photo_exports_with_the_rule_and_says_why() {
     let xmp = xmp_of(&files[0].1).unwrap();
     assert_eq!(xmp_property(&xmp, "ym:Auto").as_deref(), Some("rule"));
     assert_eq!(
-        unescape(&xmp_property(&xmp, "ym:AppleAuto").unwrap()),
+        unescape(&xmp_property(&xmp, "ym:AutoAdvisor").unwrap()),
         format!(
-            r#"{{"instructions":"default","instructions_sha256":"{}","model":"Scripted","os":"27.0 (27A1)","prompt":3,"reason":"guardrail","result":"failed","table":2}}"#,
+            r#"{{"instructions":"default","instructions_sha256":"{}","model":"Scripted","os":"27.0 (27A1)","prompt":3,"provider":"apple","reason":"guardrail","reproducible":true,"result":"failed","table":2}}"#,
             ym_core::apple_auto::InstructionsId::default().instructions_sha256
         )
     );
@@ -1566,7 +1639,7 @@ fn new_instructions_ask_every_photo_again_and_the_model_reads_them() {
             ("Test plan: Moody".to_owned(), InstructionsKind::Edited)
         );
     }
-    let status = fake.core.apple_auto_status();
+    let status = fake.core.auto_status();
     assert_eq!(status.instructions.instructions, InstructionsKind::Edited);
     assert_eq!(status.own_instructions, "Moody night grade, please.");
     // Back to the default (empty text, or the default text itself): saved as "", asked again.
@@ -1624,7 +1697,7 @@ fn an_exports_photo_moves_up_with_its_burst_so_the_export_waits_for_its_burst_al
     advisor.gate.close(None);
     let session = Arc::new(Session::new(base_env().with_apple_auto(AppleAutoEnv {
         retry_pause: Duration::from_millis(5),
-        ..AppleAutoEnv::new(advisor.clone(), Arc::new(StubPictures::default()))
+        ..AppleAutoEnv::new(apple_only(advisor.clone()), Arc::new(StubPictures::default()))
     })));
     let dir = tempfile::tempdir().unwrap();
     let frame = |name: &str, sec: &str| {
@@ -1727,7 +1800,7 @@ fn a_panic_after_the_answer_fails_that_photo_and_the_worker_goes_on() {
     let (sink, events) = panicking_sink();
     let session = Session::new(base_env().with_events(sink).with_apple_auto(AppleAutoEnv {
         retry_pause: Duration::from_millis(5),
-        ..AppleAutoEnv::new(advisor.clone(), pictures)
+        ..AppleAutoEnv::new(apple_only(advisor.clone()), pictures)
     }));
     let dir = tempfile::tempdir().unwrap();
     write_photos(dir.path(), 2);
@@ -2148,7 +2221,7 @@ fn an_export_waiting_for_a_removed_frame_or_photo_does_not_hang() {
     let advisor = Scripted::new(Ok(steps(1, 0, 0, 0)));
     let session = Arc::new(Session::new(base_env().with_apple_auto(AppleAutoEnv {
         retry_pause: Duration::from_millis(5),
-        ..AppleAutoEnv::new(advisor.clone(), Arc::new(StubPictures::default()))
+        ..AppleAutoEnv::new(apple_only(advisor.clone()), Arc::new(StubPictures::default()))
     })));
     let ids = session
         .open(&[dir.path().to_path_buf()], OpenOptions::default())
@@ -2316,7 +2389,7 @@ fn the_apple_stage_says_which_photos_wait_for_an_answer() {
     rig.session.set_apple_auto_instructions("");
     advisor.gate.wait_parked();
     let _ = rig.drain();
-    rig.session.set_apple_auto_preference(false);
+    rig.session.set_auto_preference(AutoProvider::Yellowmoon);
     let events = rig.drain();
     for &id in &ids {
         assert_eq!(apple_stages(&events, id), vec![true], "photo {}", id.0);
