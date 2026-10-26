@@ -153,6 +153,19 @@ pub fn apply_field(
     field_with(plan, planes, k, input, out, field::Options::default())
 }
 
+/// The samples `data` as the image over `rect` of a frame of `frame` pixels.
+fn over(rect: PixelRect, frame: (usize, usize), data: &[f32]) -> ImageRef<'_> {
+    ImageRef {
+        width: rect.w,
+        height: rect.h,
+        x0: rect.x,
+        y0: rect.y,
+        frame_width: frame.0,
+        frame_height: frame.1,
+        data,
+    }
+}
+
 fn field_with(
     plan: &LensPlan,
     planes: &LensPlanes,
@@ -163,16 +176,31 @@ fn field_with(
 ) -> Result<Vec<f32>, LensError> {
     check_planes(plan, planes, input, out)?;
     let (fw, fh) = (input.frame_width, input.frame_height);
-    // The stages that move light spread the light's colour, not the clip pattern's cast.
+    // L1 spreads the light's colour, not the clip pattern's cast.
     let lit = crate::light::lit_input(plan, input);
-    let input = &lit
+    let lit_image = lit
         .as_deref()
         .map_or(*input, |data| ImageRef { data, ..*input });
     // L1 over what L2 reads, then L2 on `out`.
     let l2_halo = field::Geometry::new(plan, fw, fh, opts).map_or(0, |g| g.halo());
     let want = out.grown(l2_halo, fw, fh);
-    let stage = l1::apply(plan, planes, k, input, want)?;
-    field::apply(plan, &stage.image(), out, opts)
+    let stage = l1::apply(plan, planes, k, &lit_image, want)?;
+    let image = stage.image();
+    // L2 spreads the picture, and besides it the light in its own colour with the headroom of the clipped small
+    // lights, which reaches the pixels the lens moves it to.
+    let moved = matches!(stage, l1::Stage::New { .. });
+    let l2 = crate::light::l2_input(plan, planes, k, input, moved.then_some(&image));
+    match &l2 {
+        Some(l2) => {
+            let extra = over(l2.rect, (fw, fh), &l2.extra);
+            let picture = l2
+                .own
+                .as_deref()
+                .map_or(*input, |own| over(l2.rect, (fw, fh), own));
+            field::apply(plan, &picture, Some(&extra), out, opts)
+        }
+        None => field::apply(plan, &image, None, out, opts),
+    }
 }
 
 /// The flare terms of L3 on `out`, `F (a_g K_g * R + a_v K_v * R + sum a_i G_i[H] + ...)`: the light the

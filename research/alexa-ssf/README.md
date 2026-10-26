@@ -46,7 +46,16 @@ Channel scale is not identifiable from white-balanced matrices, so each channel 
 
 **Ensemble spread.** All 24 variants lie within median 1.7% and max 2.6% RFSE of the recommended curve (the estimate without the push). This includes the prior with all Sony bodies removed, so the curve's closeness to Sony is not an artefact of the Sony-heavy prior. The pushed curve is 2.2% RFSE from the recommended curve, which is inside that spread, and its matrix RMS (0.0092) is inside the ensemble's range (0.0064 to 0.0093); it does leave the band of the 24 variants at 68 of 243 samples, by 0.019 of peak at most (G at 600 nm).
 
-**The leave-one-out numbers belong to the estimate without the push.** The push moves the curve away from the one that agrees best with the matrices, so a held-out camera's curve would be moved away from its measured one by the same recipe: the validation has no counterpart for the pushed estimator, and the numbers above (and `check_loo`, run by `.github/workflows/alexa-curve.yml`) are those of the estimator the push starts from. What the push costs on the 52 known cameras is measured separately (see below).
+**The leave-one-out numbers belong to the estimate without the push.** The push moves the curve away from the one that agrees best with the matrices, so a held-out camera's curve would be moved away from its measured one by the same recipe: the validation has no counterpart for the pushed estimator, and the numbers above (and `check_loo`, run by `.github/workflows/alexa-curve.yml`) are those of the estimator the push starts from. What the push costs on the 52 known cameras is measured separately (next paragraph).
+
+**What the push costs on cameras whose curves are known** (`python3 -m training.alexa.loo_push`, 2026-10-25; not a gate). The leave-one-out recipe run with and without the push, the push's reflectances taken from each held-out camera's own un-pushed estimate:
+
+| 52 held-out cameras | RFSE median / p90 | Emulation ΔE00 median | ΔE00 p95 (median over cameras) | Matrix RMS (median) |
+|---|---|---|---|---|
+| Estimate without the push | 2.17 % / 3.63 % | 0.233 | 0.63 | 0.0021 |
+| With the push (1.5 degrees) | 2.44 % / 3.96 % | 0.519 | 1.38 | 0.0091 |
+
+The push brings the RFSE down for 19 of the 52 cameras and up for 33 (median change +0.21 points, largest +1.66), and the emulation error rises for 49 of the 52 (median 0.519 against the gate's 0.3: the pushed recipe would fail the leave-one-out gate, which is why the gate scores the estimator without it). The same run says how large 1.5 degrees is next to the estimator's own hue error: the measured camera's warm-colour hue differs from its un-pushed estimate by a median of -0.04 degrees (10th to 90th percentile -0.17 to +0.25), within 0.5 degrees for 49 of the 52 cameras. The largest are the ARRI D-21 (−2.93, a camera whose matrices the prior cannot reproduce, RMS 0.10) and the Canon EOS R10 (−2.73, the other poor fit, RMS 0.08), both of the sign opposite to the push; the largest in the push's direction is the Canon PowerShot S90 (+0.98). For cameras with known curves the estimator is already right in hue to a fraction of a degree, so the push is not the correction of a bias that the validation can see: it is a choice about the picture, made inside what ARRI's matrices allow, and the ALEXA is the camera whose curves are not known.
 
 **D-21 check (confirms the earlier report).** ARRI's matrices were applied to each camera on the 99 CES samples under the 9 lights, and the result compared with true scene colour (mean ΔE00):
 

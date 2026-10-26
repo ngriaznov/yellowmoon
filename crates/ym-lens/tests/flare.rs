@@ -1642,7 +1642,9 @@ fn the_streak_saturates_with_the_light_and_a_large_light_is_a_soft_band() {
     big.fill(652, 192, 20, 20, [1.0; 3]);
     let s_small = streak_at(&lib, LensKind::Default, Axis::X, &small, (662, 202));
     let s_big = streak_at(&lib, LensKind::Default, Axis::X, &big, (662, 202));
-    for d in [60isize, 120] {
+    // (Both within the small light's reach, about 120 px of this frame: past it its streak is nothing and no ratio
+    // says anything.)
+    for d in [40isize, 80] {
         // Away from the block's own edge (10 px from its centre) along the axis.
         let a = s_small(-d, 0)[1];
         let b = s_big(-d, 0)[1];

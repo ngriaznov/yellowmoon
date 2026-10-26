@@ -199,22 +199,56 @@ To fit a body or add files: pin the files in a set (a Play Raw file goes into `w
 
 ## Why measured profiles matter
 
-From `research/alexa-ssf/out/sony_profiles.csv`: ΔE00 to the ALEXA rendering, median / p95 over 138 colours under 9 lights, using each body's own profile versus the A7R IV profile.
+From `research/alexa-ssf/out/sony_profiles.csv`: ΔE00 to the ALEXA rendering, median / p95 over 138 colours under 9 lights, using each body's own profile versus the A7R IV profile. The numbers are those of the ALEXA estimate with its hue push (below); the A7R IV itself reads 0.44 / 1.17. Every median read 0.01 to 0.13 lower before the push (A7R IV 0.34 / 0.87), except the RX100 IV's own, which read higher (0.31 / 1.05).
 
 | Camera | Own | A7R IV |
 |---|---|---|
-| A7 IV | 0.34 / 0.84 | 0.37 / 0.82 |
-| A7C II | 0.36 / 0.92 | 0.40 / 0.92 |
-| A7R III | 0.25 / 0.65 | 0.33 / 0.74 |
-| A7 III | 0.27 / 0.72 | 0.44 / 1.05 |
-| A7R II | 0.27 / 0.65 | 0.58 / 1.13 |
-| A7S III | 0.28 / 0.76 | 0.59 / 1.45 |
-| A9 | 0.37 / 0.99 | 0.63 / 1.48 |
-| A6400 | 0.35 / 0.98 | 1.20 / 3.13 |
-| RX100 IV | 0.31 / 1.05 | 1.60 / 3.63 |
-| A7S II | 0.47 / 1.55 | 2.69 / 4.43 |
+| A7 IV | 0.41 / 1.12 | 0.45 / 1.10 |
+| A7C II | 0.44 / 1.19 | 0.46 / 1.16 |
+| A7R III | 0.36 / 0.99 | 0.40 / 1.11 |
+| A7 III | 0.38 / 1.05 | 0.52 / 1.24 |
+| A7R II | 0.37 / 0.99 | 0.64 / 1.41 |
+| A7S III | 0.40 / 1.14 | 0.70 / 1.62 |
+| A9 | 0.46 / 1.23 | 0.69 / 1.58 |
+| A6400 | 0.43 / 1.19 | 1.25 / 3.08 |
+| RX100 IV | 0.26 / 0.68 | 1.62 / 3.67 |
+| A7S II | 0.61 / 1.84 | 2.70 / 4.55 |
 
 Stand-ins come only from shared sensors, and estimated Sony curves are not shipped: curves estimated from two published colour matrices were worse than the A7R IV stand-in for 8 of 10 bodies.
+
+## The ALEXA estimate
+
+The target of every sensor map is an **estimate** of the ALEXA ALEV III's spectral sensitivities (`data/alexa/`, `research/alexa-ssf/`, `training/alexa/`). It is found as the set of curves whose own best Academy P-2013-001-style matrices equal ARRI's published native → AP0 matrices at 17 colour temperatures, inside the span of a 4-component PCA prior of the 52 measured camera curves of rawtoaces-data. Seventeen matrices do not fix such a curve to better than the spread of its 24-variant ensemble (other priors, component counts, penalties and illuminant models): all 24 reproduce the matrices to 0.0064 to 0.0093 RMS per coefficient, and they differ from the recommended curve by 1.7 % RFSE in the median and 2.6 % at most.
+
+**The hue push (owner decision 2026-10-25, "Move ALEXA estimate"; target 1.1.0, profiles 1.1.0).** Yellowmoon's pictures of ochre walls, oranges and reds came out more crimson than the camera's own picture (Neutral against the camera's Before view, on warm patches: the owner's A1 photos a median of −5.5 degrees of CIELAB hue, a photo of a body with its own curves −8.3; the investigation of 2026-10-25 measured −4.8 and −8.9 on 25 and 15 patches). The ALEXA curve is a place where a part of that gap can be closed and where a choice is open: the family of curves that agree with ARRI's matrices contains curves that render warm colours more than a degree differently. The shipped curve is the one in that family that renders the orange, red and ochre training reflectances (47 of the 190: Lab hue 25 to 95 degrees and chroma above 12 under the un-pushed estimate) 1.5 degrees of hue toward yellow at 5200 K through ARRI's matrix, and no further: the push is the largest 0.5 degree step whose matrix RMS stays within the ensemble's maximum.
+
+| Push (degrees) | 0 | 0.5 | 1.0 | **1.5** | 2.0 | 3.0 |
+|---|---|---|---|---|---|---|
+| Matrix RMS per coefficient | 0.0067 | 0.0070 | 0.0081 | **0.0092** | 0.0112 | 0.0166 |
+
+(The ensemble spans 0.0064 to 0.0093; the 52 held-out cameras have a median of 0.0021 and a 90th percentile of 0.0051, and 0.0092 is their 94th percentile, as 0.0067 was.) `python3 -m training.alexa.estimate_alexa` makes the shipped files, seeded and offline: the 24 variants, then the recommended variant with one more residual, `10 · (median hue shift of the 47 reflectances − 1.5)`, and it stops without writing when the matrix RMS exceeds the ensemble's maximum (`--push-deg` changes the amount, `--no-push` writes the estimate of 2026-10-11, which `compare_estimate` reproduces to 0). `variants.csv` and the band of `alexa_alev3_estimate_380_780_5.csv` are of the 24 variants and so without the push; the shipped curve is inside the band except at 68 of 243 samples, by 0.019 of peak at most (G at 600 nm). `python3 -m unittest training.alexa.test_push` checks the committed files against the push's definition.
+
+| The curve | Without the push | **Shipped** |
+|---|---|---|
+| R at 580 nm (of its peak) | 0.597 | **0.494** |
+| R at 650 / 660 / 680 nm | 0.439 / 0.314 / 0.025 | **0.400 / 0.291 / 0.068** |
+| R half-power, long side | 643.5 nm | **639.0 nm** |
+| Peaks R / G / B | 590 / 530 / 460 nm | 590 / 530 / 460 nm |
+| Matrix RMS per coefficient | 0.0067 | **0.0092** |
+| RFSE between the two | | 2.2 % |
+| Mean ΔE00 to scene colour with ARRI's matrices (99 CES, 9 lights; rank among the 52 cameras and the estimate) | 1.455 (1) | 1.548 (2; the best of the real cameras is 1.662) |
+
+It moves R at 550 to 585 nm and G (by 0.12 at 490 nm and 0.05 at 585 nm), and a little of the red tail (R at 670 to 685 nm, which the matrices barely constrain, rises by 0.04).
+
+**What it does to pictures** (the investigation of 2026-10-25, then real `ym render` pictures of seven photos at 1500 px, the CPU, before and after: five A1 photos of the owner, a photo of an A7 IV and a portrait of an A6000): on warm patches (Neutral hue 15 to 100 degrees, C* above 10) the hue moves 1.3 degrees toward the camera's picture in the median, in both looks (Neutral on the A1: 5.5 degrees redder than Before, 25 patches, now 4.1; Signature 7.1 now 5.9; against the camera's own JPEG −1.5 now −0.1 and −3.5 now −2.2; the A7 IV photo, Neutral, 4 patches: −8.3 now −6.7, +1.6 degrees), skin-like pixels change by ΔE00 0.36 to 0.59 on average (hue +1.2 to +1.4 degrees), greys by 0.03 to 0.08 (95th percentile at most 0.11) and reds do not move. On the owner's sunlit orange wall of A1M03159 (Neutral) the hue goes from 62.2 to 63.6 degrees, the camera's JPEG has 63.7 and Before 67.7; the chroma (C* 23 against the JPEG's 32) is not touched. It is a step of a degree and a half out of a gap of five to nine, not the whole gap.
+
+**What it costs** (the owner was told before choosing):
+
+- **The sensor-map gate fails on more lights.** Thresholds unchanged (median 0.5, p95 1.2). A7R IV: 3 of 9 lights pass, where 8 did (over now: blackbody 2850 K 0.464 / 1.505, D 5250 K 0.453 / 1.441, D 6750 K 0.502 / 1.448, FL3.15 0.520 / 1.367, LED-B3 0.420 / 1.245 and LED-V2 0.846 / 1.681; before, only LED-V2, 0.759 / 1.515); no body of the 11 passes all nine lights, where A7R II, A7R III and A7S III did. The 3×3 fitted at the light itself is over for the same six, so it is the white-preserving 3×3's reach and not the table blend; the root-polynomial map of `docs/02` §C2 would bring five of the six back under (`training/sensor_map/README.md`). CI expects exactly these six (`--expect-failing`).
+- **The research table of `sony_profiles.csv` reads higher:** the A7R IV's own error is 0.44 / 1.17 against 0.34 / 0.87, the median over the 11 bodies' own profiles 0.41 / 1.14 against 0.34 / 0.87 (above, *Why measured profiles matter*).
+- **The leave-one-out validation has no counterpart for a pushed estimator.** A held-out camera's curve would be moved away from its measured one by the same recipe, so `validate_loo` and `check_loo` run the estimator the push starts from and their numbers are unchanged (median RFSE 2.17 %, emulation ΔE00 median 0.233); they are not a validation of the shipped curve. What the push costs on the 52 known cameras (`python3 -m training.alexa.loo_push`, not a gate): RFSE median 2.17 to 2.44 %, emulation ΔE00 median 0.233 to 0.519 (above the gate's 0.3 for all 52 cameras, and higher than without the push for 49), and the measured cameras' own warm-colour hue is within 0.5 degrees of their un-pushed estimates for 49 of 52 (median −0.04, 10th to 90th percentile −0.17 to +0.25): the push is a choice about the picture, not a correction the validation can see (`research/alexa-ssf/README.md`).
+- **Every synthetic golden picture moves** (re-baselined with a note in `tools/golden/expected.json`: 61 of 61 changed, ΔE00 against the old picture at most 2.51 at the largest pixel of a file, 1.61 at the 99th percentile and 0.43 at the median, `docs/13`).
+- The Kelvin settings and the Auto white are almost unchanged: for a D 5500 K scene balanced to 3200 K the AWG4 white is `[0.6789, 0.9478, 1.6629]` against `[0.6747, 0.9488, 1.6434]`.
 
 ## Lookup
 
@@ -238,7 +272,7 @@ data/cameras/
 ```json
 {
   "id": "sony-ilce-7rm4",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "display_name": "A7R IV",
   "spectral_curves": "sony/Sony_ILCE-7RM4_380_780_5.json",
   "sensor_map": {
@@ -311,7 +345,7 @@ What the tables hold, and how the runtime reads them (full rules in `training/se
 
   The same staircase makes a temperature read back up to 10 K off above 20000 K (two temperatures share a camera RGB); below 16000 K a locus point reads back to 1e-6 K. All of this is above the UI's Kelvin range (2000 to 11000 K); a readout used above 14000 K should treat the tint as approximate.
 - *The 4000 K junction.* The blackbody and daylight branches meet at 4000 K but are not collinear: the D series sits about 0.04 log-chroma units (0.011 in ln R/G, 0.039 in ln B/G) on the green side of the Planckian locus there. The readout takes the branch with the smaller distance, so a light between the two branches can be read from the other one, and a tinted light whose perpendicular foot would lie beyond the end of the branch it is nearest to is clamped to that end and projected on the end chord alone. Measured on the A7R IV profile (the other ten show the same pattern), as readout Duv / (tint × scale) and the CCT error: a 1.5% green excess on a 3894 K light reads as 4000 K with Duv +0.0009 instead of a CCT near 3890 K and a Duv near −0.0017; a magenta tint of 0.03 log-chroma units (Duv about +0.0025) on a 4100 K light reads 4000 K with a Duv of −0.14 times the tint (wrong sign), and 0.05 on a 4200 K light 0.29 times with the CCT 200 K low; green tints on 3800 to 3950 K lights read −0.1 times (0.03, wrong sign) or 0.33 to 0.37 times (0.05) with the CCT 80 to 200 K high. Tints of 0.01 (Duv about 0.0008) and anything below 3700 K or above 4300 K (checked up to 0.05) read correctly. CCT and Duv are continuous within a branch, not across 4000 K, and in the band of about 3800 to 4300 K a Duv beyond ±0.002 is not trustworthy, so the illuminant estimator and the tint readout do not rely on Duv being continuous or exact there. This is a property of the specified readout (nearest chord of two tables that meet at 4000 K), not of the port: `runtime_ref.py` gives the same numbers, and `tests/spectral.rs::the_4000_k_junction_is_documented_behaviour` pins the 3894 K and 4100 K examples.
-- *`w_A` at 4000 K.* The same rule makes `w_A` step at 4000 K: the blackbody table gives `[0.9415, 1, 0.7355]` at 4000 K and the daylight table `[0.9306, 1, 0.7103]` (red 1.2% and blue 3.4% lower; the ALEXA estimate is the same for every profile). `user_white` and the daylight and tungsten classes of `scene_white` therefore jump by that much when the CCT crosses 4000 K, which a Kelvin slider dragged across 4000 K shows as a small step in blue (about 0.05 stop). It is the rawtoaces convention the ALEXA curve was fitted with.
+- *`w_A` at 4000 K.* The same rule makes `w_A` step at 4000 K: the blackbody table gives `[0.8506, 1, 0.6680]` at 4000 K and the daylight table `[0.8422, 1, 0.6441]` (red 1.0% and blue 3.6% lower; the ALEXA estimate is the same for every profile). `user_white` and the daylight and tungsten classes of `scene_white` therefore jump by that much when the CCT crosses 4000 K, which a Kelvin slider dragged across 4000 K shows as a small step in blue (about 0.05 stop). It is the rawtoaces convention the ALEXA curve was fitted with.
 - *Validation.* Loading checks what the schema cannot express (`Profile::validate`, the Rust twin of `validate_profiles.py` without the file hashes): grid ranges and steps, green exactly 1 in every `w_A`, strictly increasing mired in every class list, rows of every matrix summing to 1 within 1e-12, reference-light names equal to the sensor-map entries and mired of formula lights equal to `1e6 / T`, the locus running the right way, `decode.quirks` empty. A profile that fails is refused with its id in the message.
 
 `registry.json` has `default_profile`, `profiles` (id → file), `bodies` (one entry per model ID in the table above: `model_id`, `model`, `body`, `profile`, `match` = `exact` | `sensor_family` | `default`, `via` = the measured body for `sensor_family` and `null` otherwise, `notes`, the sensor geometry fields, and `white_scale` with `white_scale_source`, registry 1.3.0) and `model_strings` (IFD0 Model string → model ID, for files without a usable 0xB001). A model ID that is not in `bodies` gets `default_profile` with `match = default`.
@@ -370,6 +404,6 @@ Results (Rust against the published CSV and the Python reference; the research o
 | Python `expected.json`, every per-light median and p95 | 8.2e-10 |
 | Sensor-map gate with the shipped tables (11 bodies × 9 lights) against the Python `shipped_fit` columns | 1.2e-9 (asserted to 1e-6) |
 | Lab-optimal fit redone in Rust (Levenberg–Marquardt, started from the research objective) against the shipped matrices, 3 bodies × 45 lights | 5.3e-9 per matrix element |
-| Gate with the Rust refit (LED-B3, LED-RGB1, LED-V2 held out), 11 bodies × 9 lights, against `gate.json` | 5.3e-9 (asserted to 1e-5); A7R IV worst median 0.759 and p95 1.515, both LED-V2, the one accepted failure |
+| Gate with the Rust refit (LED-B3, LED-RGB1, LED-V2 held out), 11 bodies × 9 lights, against `gate.json` | 5.3e-9 (asserted to 1e-5; measured before the ALEXA estimate moved and asserted since: the suite passes); A7R IV worst median 0.846 and p95 1.681, both LED-V2, and exactly the six accepted lights over (LED-V2 since 2026-10-12; blackbody 2850 K, D 5250 K, D 6750 K, FL3.15 and LED-B3 since 2026-10-25), the test's list `accepted_failures` |
 
 `crates/ym-color/tests/` holds the runtime checks: `spectral.rs` (the reference file: the `interpolated` fields to 1e-9, the exact fields within the recorded tolerances, CCT/Duv readout and inverse, the size and sign of Duv on all 11 profiles by an independent construction, the 4000 K junction as documented, every profile's tables), `spectral_fixtures.rs` (the tables against the spectra they were computed from, 11 profiles × 45 lights, 5e-10), `sensor_map.rs` (the blend against `runtime_ref` to 2e-16, white preservation to 6.7e-16 over 44000 random cases).

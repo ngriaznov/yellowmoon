@@ -10,7 +10,9 @@
 //! white balance, not the light's: it happens only with highlight recovery switched off) is restored as a
 //! neutral of the same total, so a clipped white light is white in the flares whatever `g0` is.
 
-use crate::consts::{CLIP_PATTERN_SPREAD, KNEE_START, LENS_HEADROOM_EV, LIGHT_SATURATION_RAMP};
+use crate::consts::{
+    CLIP_PATTERN_SPREAD, KNEE_START, LENS_HEADROOM_EV, LIGHT_SATURATION_RAMP, LIGHT_WHITE_RAMP,
+};
 use crate::l3::profile::smoothstep;
 use crate::plan::LensPlan;
 
@@ -107,6 +109,18 @@ impl Restore {
     /// frame agree.
     #[inline]
     pub(crate) fn light_colour(&self, x: [f64; 3]) -> [f64; 3] {
+        self.light(x).0
+    }
+
+    /// [`Restore::light_colour`] and the *white light weight* of the pixel `x`, 0 to 1: how much the pixel is a
+    /// clipped light of a white colour, which holds more light than it records. A channel that is saturated
+    /// counts by how saturated it is (`s`), by the share of the others that measure (`0.5 weight`, at most 1) and
+    /// by how far the others' mean lies above it, from 0 at its own value to 1 at [`LIGHT_WHITE_RAMP`] above it:
+    /// the largest over the channels. The star of 60855 `(1.36, 1.08, 1.67)` against `g0 = (2.61, 1, 1.95)` is 1;
+    /// a white wall that just clips green, a coloured lamp (the others under the saturated channel), a pixel
+    /// with nothing saturated and a recovered neutral core (all channels saturated, no others to measure) are 0.
+    #[inline]
+    pub(crate) fn light(&self, x: [f64; 3]) -> ([f64; 3], f64) {
         let y = self.without_clip_cast(x);
         let (from, to) = LIGHT_SATURATION_RAMP;
         let mut s = [0.0; 3];
@@ -118,9 +132,10 @@ impl Restore {
             }
         }
         if !any {
-            return y;
+            return (y, 0.0);
         }
         let mut out = y;
+        let mut white = 0.0f64;
         for c in 0..3 {
             if s[c] <= 0.0 {
                 continue;
@@ -137,9 +152,14 @@ impl Restore {
                 continue;
             }
             let estimate = sum / weight;
-            out[c] = y[c] + s[c] * 0.5 * weight * (estimate - y[c]).max(0.0);
+            let lift = (estimate - y[c]).max(0.0);
+            out[c] = y[c] + s[c] * 0.5 * weight * lift;
+            if y[c] > 0.0 {
+                let above = (lift / (LIGHT_WHITE_RAMP * y[c])).clamp(0.0, 1.0);
+                white = white.max(s[c] * (0.5 * weight).min(1.0) * above);
+            }
         }
-        out
+        (out, white)
     }
 
     /// The factor `1 + f (2^h - 1)` the pixel `x` is raised by.
@@ -296,6 +316,37 @@ mod tests {
             assert!(y[1] - last < 0.03, "smooth at g = {g}");
             last = y[1];
         }
+    }
+
+    #[test]
+    fn the_white_light_weight_is_a_saturated_channel_under_the_light_of_the_others() {
+        let rs = restore_with_clip([2.61, 1.0, 1.95]);
+        // The star of 60855: green at its clip level, red and blue measuring above it.
+        assert_eq!(rs.light([1.36, 1.08, 1.67]).1, 1.0);
+        // A pixel with nothing saturated, a recovered neutral core (every channel saturated: nothing measures),
+        // a coloured lamp (the others' mean under the saturated channel) and a green leaf are not white lights.
+        for x in [
+            [0.3, 0.2, 0.1],
+            [3.1, 3.0, 3.0],
+            [2.0, 1.2, 0.2],
+            [0.3, 1.1, 0.2],
+        ] {
+            assert_eq!(rs.light(x).1, 0.0, "{x:?}");
+        }
+        // A white wall that only just clips green (red and blue at its level) is none either, and the weight
+        // rises with how far the others are above the clipped channel, to 1 at 10 % above it.
+        assert_eq!(rs.light([1.0, 1.0, 1.0]).1, 0.0);
+        let mut last = 0.0;
+        for i in 0..=40 {
+            let r = 1.0 + 0.005 * f64::from(i);
+            let w = rs.light([r, 1.0, r]).1;
+            assert!(w >= last - 1e-12, "monotone at {r}");
+            last = w;
+        }
+        assert_eq!(rs.light([1.1, 1.0, 1.1]).1, 1.0);
+        // The colour of the light is `light_colour`'s.
+        let x = [1.36, 1.08, 1.67];
+        assert_eq!(rs.light(x).0, rs.light_colour(x));
     }
 
     #[test]

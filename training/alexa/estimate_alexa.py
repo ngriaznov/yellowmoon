@@ -11,11 +11,11 @@ Compare with ``python3 -m training.alexa.compare_estimate``. ~15 min on 4 cores.
 
 The hue push (owner decision 2026-10-25, "Move ALEXA estimate")
 ---------------------------------------------------------------
-The photographs of ochre walls, oranges and reds that Yellowmoon rendered more crimson than the
-camera's own picture are explained, in part, by the ALEXA curve: the matrices of ARRI fix the curve
-only up to what a 4-component prior and 17 matrices can tell, and the family of curves that agree
-with them equally well moves the hue of warm colours by more than a degree. The push picks, inside
-that family, the curve that renders orange, red and ochre reflectances ``PUSH["deg"]`` degrees of
+Yellowmoon rendered photographs of ochre walls, oranges and reds more crimson than the camera's own
+picture. The ALEXA curve is a place where a small part of that gap can be closed: ARRI's matrices fix
+the curve only up to what a 4-component prior and 17 matrices can tell, and the family of curves that
+agree with them about equally well moves the hue of warm colours by more than a degree. The push picks,
+inside that family, the curve that renders orange, red and ochre reflectances ``PUSH["deg"]`` degrees of
 CIELAB hue toward yellow (less crimson), and no further than the matrices allow:
 
 * the reflectances: the training reflectances whose Lab hue is between 25 and 95 degrees with

@@ -602,8 +602,29 @@ fn lr_cover_main(gid: vec3<u32>) {
     cnt[gid.y * u32(r.z) + gid.x] = n;
 }
 
+// The square root of the luminance of the picture at a pixel (the reference's `lum_root_field`).
+fn lr_u(x: i32, y: i32) -> f32 {
+    return sqrt(max(lr_lum(x, y), 0.0));
+}
+
+// The same field `a` pixels (fractional) along the gather from (x, y), bilinear.
+fn lr_u_along(x: i32, y: i32, a: f32) -> f32 {
+    let f = floor(a);
+    let t = a - f;
+    let k = i32(f);
+    if (pu.ints.z == 1) {
+        let p = lr_u(x, y + k);
+        let q = lr_u(x, y + k + 1);
+        return p + t * (q - p);
+    }
+    let p = lr_u(x + k, y);
+    let q = lr_u(x + k + 1, y);
+    return p + t * (q - p);
+}
+
 // The ramp: the share of the window that has a blur, from 0 at one half to 1 at one half plus LR_RAMP_SPAN, smoothed; in a ball's
-// disc at least the ball's weight. What is stored is the gathers' blur: the map's, held at the cap, times the ramp.
+// disc at least the ball's weight. What is stored is the gathers' blur: the map's, held at the cap, times the ramp, times what a
+// thin bright thing in the wedge beside a sharp subject is held back (the reference's `thin_holds`).
 fn lr_ramp_main(gid: vec3<u32>) {
     let r = pu.r0;
     if (gid.x >= u32(r.z) || gid.y >= u32(r.w)) {
@@ -641,7 +662,16 @@ fn lr_ramp_main(gid: vec3<u32>) {
         }
         v = max(v, w);
     }
-    rmp[gid.y * u32(r.z) + gid.x] = lr_opaque(min(bt[lr_at(pu.rb, x, y)], LR_B_CAP) * v);
+    let braw = bt[lr_at(pu.rb, x, y)];
+    var hold = 0.0;
+    if (pu.mode.x == 1 && f > 0 && v < 1.0 && braw >= LR_B_MIN) {
+        let line = lr_opaque(lr_opaque(pu.par.x * lr_opaque(min(braw, LR_B_CAP) * v)) * pu.frame.z);
+        let s = min(max(LR_THIN_SCALE * line, LR_THIN_MIN), f32(f));
+        let lo = max(LR_THIN_FROM, LR_THIN_NOISE * pu.frame.w);
+        let ridge = lr_opaque(lr_u(x, y) - max(lr_u_along(x, y, -s), lr_u_along(x, y, s)));
+        hold = lr_ss(lo, LR_THIN_SPAN * lo, ridge) * (1.0 - v);
+    }
+    rmp[gid.y * u32(r.z) + gid.x] = lr_opaque(lr_opaque(min(braw, LR_B_CAP) * v) * (1.0 - hold));
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -706,6 +736,45 @@ fn lr_wk(p: vec2<i32>) -> vec3<f32> {
     return vec3<f32>(scr[i], scr[plane + i], scr[2u * plane + i]);
 }
 
+// The grain a gather gives back (the reference's `grain_share` and `grain_back`): the amplitude that keeps the noise of
+// the result at the photo's own, `sqrt(1 / W^2 + 1 - f) - 1 / W` for the sum of the weights W and the line's noise `f` (the
+// weights' squares by the noise each tap carries over W^2), where the pixel's own grain is part of the line's mean ...
+fn lr_grain_share(w2sum: f32, wsum: f32) -> f32 {
+    let own = 1.0 / wsum;
+    return sqrt(own * own + max(1.0 - w2sum / (wsum * wsum), 0.0)) - own;
+}
+
+// ... and what is left of the pixel once its own grain is back: `m`, the line's mean, with the residual of the pixel's
+// square roots against the mean of its window `res`, held to the photo's noise (`pu.frame.w` units), times `share`,
+// added in square roots.
+fn lr_grain_apply(m: vec3<f32>, res: vec3<f32>, share: f32) -> vec3<f32> {
+    var out = m;
+    for (var c = 0; c < 3; c = c + 1) {
+        let keep = 1.0 - lr_ss(LR_GRAIN_FROM * pu.frame.w, LR_GRAIN_TO * pu.frame.w, abs(res[c]));
+        let s = sqrt(max(m[c], 0.0));
+        let t = max(s + share * keep * res[c], 0.0);
+        out[c] = m[c] + (t * t - s * s);
+    }
+    return out;
+}
+
+// The residual of the square roots of the taken-out picture at (x, y) against their mean over the grain's window, the
+// window held inside r0.
+fn lr_grain_wk(x: i32, y: i32) -> vec3<f32> {
+    var sum = vec3<f32>(0.0);
+    for (var dy = -LR_GRAIN_HALF; dy <= LR_GRAIN_HALF; dy = dy + 1) {
+        for (var dx = -LR_GRAIN_HALF; dx <= LR_GRAIN_HALF; dx = dx + 1) {
+            let p = vec2<i32>(
+                clamp(x + dx, pu.r0.x, pu.r0.x + pu.r0.z - 1),
+                clamp(y + dy, pu.r0.y, pu.r0.y + pu.r0.w - 1),
+            );
+            sum = sum + sqrt(max(lr_wk(p), vec3<f32>(0.0)));
+        }
+    }
+    let side = f32(2 * LR_GRAIN_HALF + 1);
+    return sqrt(max(lr_wk(vec2<i32>(x, y)), vec3<f32>(0.0))) - sum / (side * side);
+}
+
 fn lr_vgather_main(gid: vec3<u32>) {
     let r = pu.r1;
     if (gid.x >= u32(r.z) || gid.y >= u32(r.w)) {
@@ -727,6 +796,7 @@ fn lr_vgather_main(gid: vec3<u32>) {
         // times the sample rule's smoothstep of its blur over the pixel's own.
         var acc = own;
         var wsum = 1.0;
+        var w2sum = 1.0;
         for (var side = 0; side < 2; side = side + 1) {
             let sign = select(-1.0, 1.0, side == 1);
             for (var k = 1; k <= half; k = k + 1) {
@@ -750,9 +820,10 @@ fn lr_vgather_main(gid: vec3<u32>) {
                 let vb = lr_wk(pb);
                 acc = acc + wt * (va + fr * (vb - va));
                 wsum = wsum + wt;
+                w2sum = w2sum + wt * wt * ((1.0 - fr) * (1.0 - fr) + fr * fr);
             }
         }
-        out = acc / wsum;
+        out = lr_grain_apply(acc / wsum, lr_grain_wk(x, y), lr_grain_share(w2sum, wsum));
     }
     o1[at] = out.x;
     o1[plane1 + at] = out.y;
@@ -791,6 +862,18 @@ fn lr_o1(x: i32, y: i32) -> vec3<f32> {
     let plane = u32(r.z * r.w);
     let i = lr_at(r, clamp(x, r.x, r.x + r.z - 1), clamp(y, r.y, r.y + r.w - 1));
     return vec3<f32>(o1[i], o1[plane + i], o1[2u * plane + i]);
+}
+
+// The same residual for the vertical gather's output `o1` (over r1), the window held inside r1.
+fn lr_grain_o1(x: i32, y: i32) -> vec3<f32> {
+    var sum = vec3<f32>(0.0);
+    for (var dy = -LR_GRAIN_HALF; dy <= LR_GRAIN_HALF; dy = dy + 1) {
+        for (var dx = -LR_GRAIN_HALF; dx <= LR_GRAIN_HALF; dx = dx + 1) {
+            sum = sum + sqrt(max(lr_o1(x + dx, y + dy), vec3<f32>(0.0)));
+        }
+    }
+    let side = f32(2 * LR_GRAIN_HALF + 1);
+    return sqrt(max(lr_o1(x, y), vec3<f32>(0.0))) - sum / (side * side);
 }
 
 // The gathers' blur at a frame pixel, the coordinates held inside r0.
@@ -922,6 +1005,7 @@ fn lr_final_main(gid: vec3<u32>) {
             let step = len / f32(half);
             var acc = col;
             var wsum = 1.0;
+            var w2sum = 1.0;
             for (var side = 0; side < 2; side = side + 1) {
                 let sign = select(-1.0, 1.0, side == 1);
                 for (var k = 1; k <= half; k = k + 1) {
@@ -958,9 +1042,11 @@ fn lr_final_main(gid: vec3<u32>) {
                     let bot = p01 + tx * (p11 - p01);
                     acc = acc + wt * (top + ty * (bot - top));
                     wsum = wsum + wt;
+                    w2sum = w2sum + wt * wt
+                        * (((1.0 - tx) * (1.0 - tx) + tx * tx) * ((1.0 - ty) * (1.0 - ty) + ty * ty));
                 }
             }
-            col = acc / wsum;
+            col = lr_grain_apply(acc / wsum, lr_grain_o1(x, y), lr_grain_share(w2sum, wsum));
         }
     }
     // The balls' light drawn back, in list order, except where a sharp subject (or a strand) has no blur of its own.

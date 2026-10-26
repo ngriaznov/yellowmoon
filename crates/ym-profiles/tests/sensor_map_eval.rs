@@ -452,12 +452,31 @@ fn shipped_tables_reproduce_the_gate_numbers() {
         }
     }
     eprintln!("max |difference| to the Python 'shipped_fit' numbers: {max_diff:.2e}");
-    // Mykyta's decision of 2026-10-12: the gate stays as specified and LED-V2 is a reported failure.
+    // Mykyta's decisions: the gate stays as specified (thresholds unchanged). 2026-10-12: LED-V2 is a
+    // reported failure. 2026-10-25, "Move ALEXA estimate": the estimate the gate scores against carries
+    // a hue push, and five more lights are over (docs/03, docs/STATUS.md have the numbers before and after).
     assert_eq!(
         a7r4_over,
-        vec!["LED-V2".to_string()],
-        "the A7R IV gate: exactly the accepted LED-V2 failure"
+        accepted_failures(),
+        "the A7R IV gate: exactly the reported failures"
     );
+}
+
+/// The lights of the A7R IV gate that are over, as the owner accepted them: LED-V2 (2026-10-12) and, with
+/// the ALEXA estimate moved (2026-10-25), blackbody 2850 K, D 5250 K, D 6750 K, FL3.15 and LED-B3. The same
+/// list is `--expect-failing` in `.github/workflows/ci.yml`.
+fn accepted_failures() -> Vec<String> {
+    [
+        "blackbody-2850K",
+        "daylight-5250K",
+        "daylight-6750K",
+        "FL3.15",
+        "LED-B3",
+        "LED-V2",
+    ]
+    .iter()
+    .map(ToString::to_string)
+    .collect()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -750,16 +769,21 @@ fn the_gate_with_a_rust_refit_reproduces_the_gate_numbers() {
             if r.over() { "   <-- over" } else { "" }
         );
     }
-    // The M1-05 gate for the A7R IV profile: thresholds unchanged, LED-V2 the one accepted failure.
+    // The M1-05 gate for the A7R IV profile: thresholds unchanged, the failures the owner accepted
+    // (LED-V2 on 2026-10-12; five more with the ALEXA estimate moved on 2026-10-25).
     let over: Vec<&str> = a7r4
         .iter()
         .filter(|r| r.over())
         .map(|r| r.name.as_str())
         .collect();
-    assert_eq!(over, vec!["LED-V2"]);
+    let accepted = accepted_failures();
+    assert_eq!(
+        over,
+        accepted.iter().map(String::as_str).collect::<Vec<_>>()
+    );
     assert!(
         a7r4.iter()
-            .filter(|r| r.name != "LED-V2")
+            .filter(|r| !accepted.contains(&r.name))
             .all(|r| r.median <= MEDIAN_MAX && r.p95 <= P95_MAX)
     );
     assert!(

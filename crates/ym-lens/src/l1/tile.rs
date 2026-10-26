@@ -22,10 +22,11 @@ use rayon::prelude::*;
 
 use crate::consts::{
     ACCEPT_COLOUR, ACCEPT_CONFIDENCE, B_CAP, B_MIN, BALL_RIM_REACH_PX, FEATHER_FRACTION,
-    FEATHER_MAX_PX, FEATHER_MIN_PX, GATHER_PAD, GUIDE_SIGMA_MIN, GUIDE_SIGMA_NOISE,
-    MAX_STRETCH_TAPS, MIN_LINE_PX, NOISE_FLOOR, RAMP_SHARE_TO, SAMPLE_RATIO_FROM, SAMPLE_RATIO_TO,
-    SHARP_DILATE, SHARP_GATE, SHARP_RATIO, SHARP_SOFT_FROM, SHARP_SOFT_HALF, SHARP_SOFT_TO,
-    SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE, STRAND_VALLEY, SUBJECT_SHARE, UPSAMPLE_RADIUS_PX,
+    FEATHER_MAX_PX, FEATHER_MIN_PX, GATHER_PAD, GRAIN_GATE_FROM, GRAIN_GATE_TO, GRAIN_HALF,
+    GUIDE_SIGMA_MIN, GUIDE_SIGMA_NOISE, MAX_STRETCH_TAPS, MIN_LINE_PX, NOISE_FLOOR, RAMP_SHARE_TO,
+    SAMPLE_RATIO_FROM, SAMPLE_RATIO_TO, SHARP_DILATE, SHARP_GATE, SHARP_RATIO, SHARP_SOFT_FROM,
+    SHARP_SOFT_HALF, SHARP_SOFT_TO, SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE, STRAND_VALLEY,
+    SUBJECT_SHARE, THIN_FROM, THIN_MIN_PX, THIN_NOISE, THIN_SCALE, THIN_SPAN, UPSAMPLE_RADIUS_PX,
 };
 use crate::device::{BokehCells, BokehPass, BokehTile};
 use crate::error::LensError;
@@ -693,18 +694,84 @@ impl<'a> Pass<'a> {
                 }
             }
         }
+        // A thin bright thing in the wedge beside a sharp one (the pale end of a leaf whose body is in focus) is held
+        // back: the map's blur there is the ramp's, not the picture's (the tip is a few pixels thick, the lines
+        // many), and stretched it would stand out as a spur.
+        let hold = self.thin_holds(input, rbs, r0, &bt, &ramp);
         // What the gathers use as every pixel's blur: the map's, held at the cap and faded out towards its border,
         // so that the stretch of a pixel and what it takes from the others both die away at the border.
         let be: Vec<f32> = bt
             .iter()
             .zip(&ramp)
-            .map(|(b, r)| (f64::from(*b).min(B_CAP) * f64::from(*r)) as f32)
+            .zip(&hold)
+            .map(|((b, r), h)| {
+                (f64::from(*b).min(B_CAP) * f64::from(*r) * (1.0 - f64::from(*h))) as f32
+            })
             .collect();
         (
             crop_scalar(&bt, r0, out),
             crop_scalar(&be, r0, out),
             crop_bool(&occ, r0, out),
         )
+    }
+
+    /// How much each pixel of `r0` is held back as a thin bright thing in the wedge beside a sharp one (0 to 1).
+    ///
+    /// A pixel the ramp fades (it is within the feather of a place the map calls sharp: the ramp `r` is under 1) is a
+    /// thin bright thing when its square-root luminance stands above the picture on *both* sides of it along the
+    /// gather, `s` pixels away (`s` is [`THIN_SCALE`] of its line, at least [`THIN_MIN_PX`] and at most the feather),
+    /// by more than the noise: a ridge narrower than its line, which a blurred picture does not have (what the map
+    /// says there is the wedge's, not a reading of the picture). The excess is over the brighter of the two, so an
+    /// edge, the bright side of a blurred patch, is not a ridge. The hold is a smoothstep of the excess times
+    /// `1 - r`, so it fades out with the wedge and is nothing where the ramp is full; a dark strand is not held (the
+    /// sharp-edge test has it) and neither is a ridge away from a sharp subject.
+    fn thin_holds(
+        &self,
+        input: &ImageRef,
+        rbs: PixelRect,
+        r0: PixelRect,
+        bt: &[f32],
+        ramp: &[f32],
+    ) -> Vec<f32> {
+        let mut hold = vec![0.0f32; r0.w * r0.h];
+        if !self.v_on || self.feather == 0 {
+            return hold;
+        }
+        let u = lum_root_field(input, rbs);
+        let lo = THIN_FROM.max(THIN_NOISE * self.noise_t());
+        let hi = THIN_SPAN * lo;
+        let along_y = self.axis == Axis::X;
+        let reach = self.feather as f64;
+        let hk = self.hk;
+        // The field at `a` pixels (fractional) along the gather from `(x, y)`, bilinear.
+        let at = |x: i64, y: i64, a: f64| -> f64 {
+            let f = a.floor();
+            let t = a - f;
+            let (p, q) = if along_y {
+                (u.get(x, y + f as i64), u.get(x, y + f as i64 + 1))
+            } else {
+                (u.get(x + f as i64, y), u.get(x + f as i64 + 1, y))
+            };
+            f64::from(p) + t * (f64::from(q) - f64::from(p))
+        };
+        hold.par_chunks_mut(r0.w)
+            .enumerate()
+            .for_each(|(row, out)| {
+                let y = (r0.y + row) as i64;
+                for (col, o) in out.iter_mut().enumerate() {
+                    let i = row * r0.w + col;
+                    let r = f64::from(ramp[i]);
+                    if r >= 1.0 || f64::from(bt[i]) < B_MIN {
+                        continue;
+                    }
+                    let x = (r0.x + col) as i64;
+                    let line = self.stretch * f64::from(bt[i]).min(B_CAP) * r * hk;
+                    let s = (THIN_SCALE * line).max(THIN_MIN_PX).min(reach);
+                    let ridge = f64::from(u.get(x, y)) - at(x, y, -s).max(at(x, y, s));
+                    *o = (smoothstep(lo, hi, ridge) * (1.0 - r)) as f32;
+                }
+            });
+        hold
     }
 
     /// Pixels of `rs` next to an edge sharper than their blur.
@@ -757,6 +824,7 @@ impl<'a> Pass<'a> {
         let mut out = vec![0.0f32; 3 * plane1];
         let (a, rest) = out.split_at_mut(plane1);
         let (b, c) = rest.split_at_mut(plane1);
+        let root = root_planes(wk);
         let along_y = self.axis == Axis::X;
         let (lo, hi) = if along_y {
             (r0.y as i64, r0.y1() as i64 - 1)
@@ -795,6 +863,8 @@ impl<'a> Pass<'a> {
                     let pos = pos as f64;
                     let mut acc = [0.0f64; 3];
                     let mut wsum = 0.0f64;
+                    // The weights' squares (by the noise each tap carries), for the grain the line takes out.
+                    let mut w2sum = 1.0f64;
                     // The pixel's own value (weight 1), then the taps outwards on each side.
                     let own = [wk[i0], wk[plane0 + i0], wk[2 * plane0 + i0]];
                     for ch in 0..3 {
@@ -824,12 +894,23 @@ impl<'a> Pass<'a> {
                                 acc[ch] += wt * (v0 + fr * (v1 - v0));
                             }
                             wsum += wt;
+                            w2sum += wt * wt * ((1.0 - fr) * (1.0 - fr) + fr * fr);
                         }
                     }
                     if wsum > 0.0 {
-                        ra[col] = (acc[0] / wsum) as f32;
-                        rb[col] = (acc[1] / wsum) as f32;
-                        rc[col] = (acc[2] / wsum) as f32;
+                        let mean = [acc[0] / wsum, acc[1] / wsum, acc[2] / wsum];
+                        // The line took the picture's own grain out; the pixel's grain goes back.
+                        let g = grain_back(
+                            &root,
+                            (plane0, r0),
+                            (x, y),
+                            mean,
+                            grain_share(w2sum, wsum),
+                            self.dev.noise,
+                        );
+                        ra[col] = g[0] as f32;
+                        rb[col] = g[1] as f32;
+                        rc[col] = g[2] as f32;
                     } else {
                         ra[col] = wk[i0];
                         rb[col] = wk[plane0 + i0];
@@ -852,6 +933,7 @@ impl<'a> Pass<'a> {
         let plane1 = r1.w * r1.h;
         let plane_w = want.w * want.h;
         let mut out = vec![0.0f32; 3 * plane_w];
+        let root = root_planes(o1);
         let lens = self.plan.lens();
         let (radii, swirl, astigmatism) = (
             &lens.field.radii,
@@ -896,6 +978,7 @@ impl<'a> Pass<'a> {
                     let step = len / half as f64;
                     let mut acc = [0.0f64; 3];
                     let mut wsum = 0.0f64;
+                    let mut w2sum = 1.0f64;
                     for ch in 0..3 {
                         acc[ch] = f64::from(o1[ch * plane1 + i1]);
                     }
@@ -951,12 +1034,25 @@ impl<'a> Pass<'a> {
                                 acc[ch] += wt * (top + ty * (bot - top));
                             }
                             wsum += wt;
+                            w2sum += wt
+                                * wt
+                                * (((1.0 - tx) * (1.0 - tx) + tx * tx)
+                                    * ((1.0 - ty) * (1.0 - ty) + ty * ty));
                         }
                     }
                     if wsum > 0.0 {
-                        ra[col] = (acc[0] / wsum) as f32;
-                        rb[col] = (acc[1] / wsum) as f32;
-                        rc[col] = (acc[2] / wsum) as f32;
+                        let mean = [acc[0] / wsum, acc[1] / wsum, acc[2] / wsum];
+                        let g = grain_back(
+                            &root,
+                            (plane1, r1),
+                            (x, y),
+                            mean,
+                            grain_share(w2sum, wsum),
+                            self.dev.noise,
+                        );
+                        ra[col] = g[0] as f32;
+                        rb[col] = g[1] as f32;
+                        rc[col] = g[2] as f32;
                     } else {
                         copy(ra, rb, rc);
                     }
@@ -964,6 +1060,69 @@ impl<'a> Pass<'a> {
             });
         out
     }
+}
+
+/// The amplitude of the grain to give back to a pixel a line has smoothed: what keeps the noise of the result at the
+/// photo's own. The line's noise is `f = sum w^2 / (sum w)^2` of the pixel's (the weights' squares counted by the noise
+/// each tap carries, the pixel's own weight 1 among them), and the pixel's own grain is part of the line's mean (by
+/// `1 / sum w`, so the two are correlated), so `a` solves `f + a^2 + 2 a / sum w = 1`. It is 0 where the line did
+/// nothing (`sum w` = 1) and tends to `sqrt(1 - f)` where the line is long.
+fn grain_share(w2sum: f64, wsum: f64) -> f64 {
+    let own = 1.0 / wsum;
+    (own * own + (1.0 - w2sum / (wsum * wsum)).max(0.0)).sqrt() - own
+}
+
+/// What a gather leaves of a pixel once the grain is back: `mean`, the line's average, plus the pixel's own grain
+/// (`docs/21` section 4, L1, *As built (the grain)*). The grain is the residual of the square roots of the field
+/// around the pixel against their mean over `2 GRAIN_HALF + 1` pixels a side, held to what the photo's noise can
+/// make (nothing beyond `GRAIN_GATE_TO` noise units: a crisp rim is detail, and detail is what the line is meant to
+/// smooth), times `share` (the part of the noise the line took out); it is added in square roots, where the noise of
+/// every level is the same, and the square is taken back (the value is not changed where `share` is 0). `root`
+/// holds the square roots ([`root_planes`]) of three planes of `plane` values over `rect`, whose edge the window is
+/// held to.
+fn grain_back(
+    root: &[f32],
+    (plane, rect): (usize, PixelRect),
+    (x, y): (usize, usize),
+    mean: [f64; 3],
+    share: f64,
+    sigma: f64,
+) -> [f64; 3] {
+    if share <= 0.0 {
+        return mean;
+    }
+    let half = GRAIN_HALF as i64;
+    let side = (2 * GRAIN_HALF + 1) as f64;
+    let (lo_x, hi_x) = (rect.x as i64, rect.x1() as i64 - 1);
+    let (lo_y, hi_y) = (rect.y as i64, rect.y1() as i64 - 1);
+    let mut out = mean;
+    for (ch, m) in mean.iter().enumerate() {
+        let mut sum = 0.0f64;
+        for dy in -half..=half {
+            let yy = (y as i64 + dy).clamp(lo_y, hi_y) as usize - rect.y;
+            for dx in -half..=half {
+                let xx = (x as i64 + dx).clamp(lo_x, hi_x) as usize - rect.x;
+                sum += f64::from(root[ch * plane + yy * rect.w + xx]);
+            }
+        }
+        let own = f64::from(root[ch * plane + (y - rect.y) * rect.w + (x - rect.x)]);
+        let residual = own - sum / (side * side);
+        let keep = 1.0
+            - smoothstep(
+                GRAIN_GATE_FROM * sigma,
+                GRAIN_GATE_TO * sigma,
+                residual.abs(),
+            );
+        let s = m.max(0.0).sqrt();
+        let t = (s + share * keep * residual).max(0.0);
+        out[ch] = m + (t * t - s * s);
+    }
+    out
+}
+
+/// The square roots (negative values as 0) of three planes, as the grain's windows read them.
+fn root_planes(field: &[f32]) -> Vec<f32> {
+    field.par_iter().map(|v| v.max(0.0).sqrt()).collect()
 }
 
 /// The weight of a tap at `u` (its offset over the line's half-length, -1 to 1): a biweight, `(1 - u^2)^2`.

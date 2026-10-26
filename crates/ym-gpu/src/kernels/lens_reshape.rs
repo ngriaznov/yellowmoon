@@ -37,9 +37,11 @@ use bytemuck::{Pod, Zeroable};
 use ym_lens::PixelRect;
 use ym_lens::consts::{
     ACCEPT_COLOUR, ACCEPT_CONFIDENCE, B_CAP, B_MIN, BALL_GLOW_FADE, BALL_RIM_REACH_PX,
-    MAX_STRETCH_TAPS, MIN_LINE_PX, PROFILE_SCALE, RAMP_SHARE_TO, RIM_FADE_RADII, SAMPLE_RATIO_FROM,
-    SAMPLE_RATIO_TO, SHARP_DILATE, SHARP_RATIO, SHARP_SOFT_FROM, SHARP_SOFT_HALF, SHARP_SOFT_TO,
-    SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE, STRAND_VALLEY, SUBJECT_SHARE, TANGENT_REACH_MAX,
+    GRAIN_GATE_FROM, GRAIN_GATE_TO, GRAIN_HALF, MAX_STRETCH_TAPS, MIN_LINE_PX, PROFILE_SCALE,
+    RAMP_SHARE_TO, RIM_FADE_RADII, SAMPLE_RATIO_FROM, SAMPLE_RATIO_TO, SHARP_DILATE, SHARP_RATIO,
+    SHARP_SOFT_FROM, SHARP_SOFT_HALF, SHARP_SOFT_TO, SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE,
+    STRAND_VALLEY, SUBJECT_SHARE, TANGENT_REACH_MAX, THIN_FROM, THIN_MIN_PX, THIN_NOISE,
+    THIN_SCALE, THIN_SPAN,
 };
 use ym_lens::device::{
     BOKEH_BIN_PX, BOKEH_HEADER, BOKEH_SHAPE_VECTORS, BokehPass, BokehPlaneData, BokehScaleData,
@@ -580,6 +582,7 @@ pub fn encode_reshape(
         KernelId::LensReshapeRamp,
         "lens bokeh ramp",
         &[
+            (1, src.buf.binding()),
             (2, bt.binding()),
             (3, info.binding()),
             (7, ramp.binding()),
@@ -698,7 +701,15 @@ fn constants() -> String {
          const LR_GLOW_FADE: f32 = {};\n\
          const LR_RIM_FADE: f32 = {};\n\
          const LR_TAN_MAX: f32 = {};\n\
-         const LR_RAMP_SPAN: f32 = {};\n",
+         const LR_RAMP_SPAN: f32 = {};\n\
+         const LR_GRAIN_HALF: i32 = {GRAIN_HALF};\n\
+         const LR_GRAIN_FROM: f32 = {};\n\
+         const LR_GRAIN_TO: f32 = {};\n\
+         const LR_THIN_SCALE: f32 = {};\n\
+         const LR_THIN_MIN: f32 = {};\n\
+         const LR_THIN_FROM: f32 = {};\n\
+         const LR_THIN_NOISE: f32 = {};\n\
+         const LR_THIN_SPAN: f32 = {};\n",
         f(B_MIN),
         f(B_CAP),
         f(MIN_LINE_PX),
@@ -720,6 +731,13 @@ fn constants() -> String {
         f(RIM_FADE_RADII),
         f(TANGENT_REACH_MAX),
         f(RAMP_SHARE_TO - 0.5),
+        f(GRAIN_GATE_FROM),
+        f(GRAIN_GATE_TO),
+        f(THIN_SCALE),
+        f(THIN_MIN_PX),
+        f(THIN_FROM),
+        f(THIN_NOISE),
+        f(THIN_SPAN),
     )
 }
 

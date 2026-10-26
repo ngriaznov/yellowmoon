@@ -45,7 +45,7 @@ use ym_gpu::kernels::lens_field::{FieldTablesBuffer, encode_field};
 use ym_gpu::kernels::lens_flare::{
     FlareLensBuffer, FlarePlaneBuffer, FlareScaleBuffers, encode_flare,
 };
-use ym_gpu::kernels::lens_light::encode_light;
+use ym_gpu::kernels::lens_light::{LightMapBuffer, encode_headroom, encode_light};
 use ym_gpu::kernels::lens_reshape::{BokehPlaneBuffer, BokehScaleBuffers, encode_reshape};
 use ym_gpu::stream::PassList;
 use ym_lens::device::{FieldPass, FlareMix};
@@ -82,6 +82,8 @@ pub(crate) struct LensDevice {
     bokeh_planes: Option<(Arc<LensPlanes>, BokehPlaneBuffer)>,
     /// The balls' shapes of recent plan shapes and scales, newest last, with their key.
     bokeh_scales: Vec<(String, BokehScaleBuffers)>,
+    /// The photo's clipped lights (the EV of the lens plane), with the planes they were made from.
+    light_map: Option<(Arc<LensPlanes>, LightMapBuffer)>,
 }
 
 /// The pieces of a raw picture, on the device or the host, that a tile reads.
@@ -152,6 +154,10 @@ struct TilePlan {
     bokeh: Option<(BokehPlaneBuffer, BokehScaleBuffers, Rect)>,
     /// The pass that gives L1 and L2 the colour of the light they move, when they run (`ym_lens::lit_input`).
     light: Option<LightPass>,
+    /// The photo's clipped lights, for the headroom L2 spreads (`ym_lens::light::l2_input`), when L2 runs.
+    light_map: Option<LightMapBuffer>,
+    /// The scale `k` of the picture the tile belongs to.
+    k: usize,
 }
 
 /// What a tile job gives back.
@@ -192,16 +198,6 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
     } else {
         None
     };
-    // The picture L1 and L2 spread: the light in its own colour (L3 reads the raw window as it is).
-    let lit = match (&input, tile.light) {
-        (Some(raw), Some(pass)) if tile.field.is_some() => {
-            let lit = Arc::new(encode_light(&mut passes, raw, pass)?);
-            held.push(Arc::clone(&lit));
-            Some(lit)
-        }
-        _ => None,
-    };
-    let field_input = lit.as_ref().or(input.as_ref());
     // Z: cached, or L2 over the raw window (or over L1's output).
     let mut made_z = None;
     let (z, z_at): (Arc<GpuImage>, (usize, usize)) =
@@ -215,32 +211,81 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
                 (z, (tile.out.x, tile.out.y))
             }
             (None, None, Some((tables, pass))) => {
-                let Some(input) = field_input else {
+                let Some(raw_in) = &input else {
                     return Err(GpuError::InvalidInput(
                         "lens tile: the field stage has no input".into(),
                     ));
                 };
+                let at = (want.x, want.y);
                 let z = if let Some((planes, scale, l2_rect)) = &tile.bokeh {
-                    // L1 over what L2 reads, from the raw window; L2 reads its output.
+                    // L1 over what L2 reads, from the raw window with the light's colour.
+                    let lit = match tile.light {
+                        Some(lpass) => {
+                            let lit = Arc::new(encode_light(&mut passes, raw_in, lpass)?);
+                            held.push(Arc::clone(&lit));
+                            Some(lit)
+                        }
+                        None => None,
+                    };
                     let reshaped = Arc::new(encode_reshape(
                         &mut passes,
                         planes,
                         scale,
-                        input,
-                        (want.x, want.y),
+                        lit.as_ref().unwrap_or(raw_in),
+                        at,
                         *l2_rect,
                     )?);
                     held.push(Arc::clone(&reshaped));
-                    encode_field(
-                        &mut passes,
-                        tables,
-                        pass,
-                        &reshaped,
-                        (l2_rect.x, l2_rect.y),
-                        tile.out,
-                    )?
+                    let l2_at = (l2_rect.x, l2_rect.y);
+                    // L2 spreads L1's output, and besides it the extra light: the light's colour and the headroom
+                    // of the clipped lights.
+                    match (tile.light, &tile.light_map) {
+                        (Some(lpass), Some(map)) => {
+                            let h = encode_headroom(
+                                &mut passes,
+                                raw_in,
+                                at,
+                                Some((&*reshaped, l2_at)),
+                                lpass,
+                                map,
+                                tile.k,
+                            )?;
+                            let extra = Arc::new(h.extra);
+                            held.push(Arc::clone(&extra));
+                            let own = h.own.map(Arc::new);
+                            held.extend(own.iter().cloned());
+                            let picture = own.as_ref().unwrap_or(&reshaped);
+                            encode_field(
+                                &mut passes,
+                                tables,
+                                pass,
+                                picture,
+                                l2_at,
+                                Some((&*extra, l2_at)),
+                                tile.out,
+                            )?
+                        }
+                        _ => encode_field(&mut passes, tables, pass, &reshaped, l2_at, None, tile.out)?,
+                    }
                 } else {
-                    encode_field(&mut passes, tables, pass, input, (want.x, want.y), tile.out)?
+                    match (tile.light, &tile.light_map) {
+                        (Some(lpass), Some(map)) => {
+                            // The extra light from the raw window; L2 gathers the raw picture beside it.
+                            let h = encode_headroom(&mut passes, raw_in, at, None, lpass, map, tile.k)?;
+                            let extra = Arc::new(h.extra);
+                            held.push(Arc::clone(&extra));
+                            encode_field(
+                                &mut passes,
+                                tables,
+                                pass,
+                                raw_in,
+                                at,
+                                Some((&*extra, at)),
+                                tile.out,
+                            )?
+                        }
+                        _ => encode_field(&mut passes, tables, pass, raw_in, at, None, tile.out)?,
+                    }
                 };
                 let z = Arc::new(z);
                 made_z = Some(Arc::clone(&z));
@@ -436,6 +481,7 @@ impl Job<'_> {
                 FlareScaleBuffers,
                 FlareMix,
             )>,
+            Option<LightMapBuffer>,
         ),
         GpuError,
     > {
@@ -590,7 +636,21 @@ impl Job<'_> {
             } else {
                 None
             };
-            Ok((field, bokeh, flare))
+            // The photo's clipped lights, for the headroom L2 spreads.
+            let light_map = if field.is_some() && ctx.plan.light_pass().is_some() {
+                match &device.light_map {
+                    Some((p, b)) if Arc::ptr_eq(p, planes) => Some(b.clone()),
+                    _ => {
+                        let d = planes.light_map_data();
+                        let b = route.run_job(move |c, _| LightMapBuffer::upload(c, &d))?;
+                        device.light_map = Some((Arc::clone(planes), b.clone()));
+                        Some(b)
+                    }
+                }
+            } else {
+                None
+            };
+            Ok((field, bokeh, flare, light_map))
         })();
         self.put_lens_device(device);
         result
@@ -650,7 +710,7 @@ impl Job<'_> {
         let (z_device, z_host) = Self::lens_z_for(z, out);
         let z_cached = z_device.is_some() || z_host.is_some();
         let need_flare = ctx.plan.flares() > 0.0;
-        let (field, bokeh, flare) = match self.lens_device_buffers(
+        let (field, bokeh, flare, light_map) = match self.lens_device_buffers(
             route,
             ctx,
             planes,
@@ -703,6 +763,8 @@ impl Job<'_> {
             } else {
                 None
             },
+            light_map,
+            k,
         };
         let t = std::time::Instant::now();
         let made = route.run_job(move |c, _| run_tile(c, raw, &tile));

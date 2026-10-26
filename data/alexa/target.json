@@ -40,7 +40,7 @@
       "Assumes ARRI made its matrices the P-2013-001 way; a different recipe adds error not captured by the leave-one-out test."
     ],
     "sha256": {
-      "alexa_alev3_estimate_380_780_5.json": "227c85c1ff746e3fb2d597594508c0664fd7e14ecba47479d17fe85319d0b9d9",
+      "alexa_alev3_estimate_380_780_5.json": "a4886749ba2cecc8b8fbc29987618e3a79c995628b1cfea17de3d07e2d06be77",
       "alexa_alev3_estimate_380_780_5.csv": "a6d0a8a4d8f9d44ccf4f698267c943685b5250ed607e46590d5ff33a2c1178c4",
       "variants.csv": "41aca43b9215b8b50dcaca9310f56862880205981aec3ab31c270ac015606066"
     }

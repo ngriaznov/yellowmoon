@@ -48,6 +48,7 @@ use rayon::prelude::*;
 use crate::consts::{
     COPY_BELOW_PX, LATERAL_COLOR_SCALE, MAX_TAPS_SIDE, PSF_SIZE, PSF_WAVELENGTHS, RADII,
     SIDE_TABLE_RADIUS, T_OVERSHOOT, TAP_SPACING_MAX_PX, W_KNEE, W_MAX,
+    EXTRA_INFLOW_FLOOR, EXTRA_INFLOW_RAMP,
 };
 use crate::data::LensData;
 use crate::error::LensError;
@@ -980,9 +981,19 @@ fn sample<const CLAMP: bool>(lv: &Level, ux: i64, uy: i64) -> F4 {
 ///
 /// `input` must cover `out` grown by [`Geometry::halo`] and clamped to the frame. With no field optics
 /// (`plan.field_tables()` is `None`) the result is the input's `out` rectangle, bit for bit.
+///
+/// `extra` is light the picture does not record and the stage spreads (`light::l2_input`: the headroom of a
+/// clipped light, and the light's colour where a channel clipped), an image of the rectangle of `input` or
+/// more. It is gathered with the same spread functions and added to the gather of `input` by the share
+/// `mu` of how much of it the lens moves to the pixel ([`EXTRA_INFLOW_RAMP`]: the largest over the channels of the
+/// extra that reaches the pixel over the light the pixel gets from the picture): a pixel whose picture the
+/// spread changes by a few per cent at most is as the picture alone gives it, where the extra only moves
+/// from pixel to pixel of a bright area, and a pixel beside a clipped star has it. A pixel with no kernel (a
+/// copy) is never given any.
 pub(crate) fn apply(
     plan: &LensPlan,
     input: &ImageRef,
+    extra: Option<&ImageRef>,
     out: PixelRect,
     opts: Options,
 ) -> Result<Vec<f32>, LensError> {
@@ -1003,6 +1014,15 @@ pub(crate) fn apply(
             have: input.rect().to_string(),
         });
     }
+    if let Some(extra) = extra {
+        extra.validate()?;
+        if !extra.rect().contains(&need) {
+            return Err(LensError::InputTooSmall {
+                needed: need.to_string(),
+                have: extra.rect().to_string(),
+            });
+        }
+    }
     if out.w == 0 || out.h == 0 {
         return Ok(Vec::new());
     }
@@ -1017,14 +1037,108 @@ pub(crate) fn apply(
         gathered_rect.y1() as i64 + halo,
     ];
     let pyramid = Pyramid::build(input, region, geo.lmax);
-    let gathered = gather_region(&geo, &pyramid, gathered_rect);
+    let mut gathered = gather_region(&geo, &pyramid, gathered_rect, None);
+    if let Some(extra) = extra {
+        let pyramid = Pyramid::build(extra, region, geo.lmax);
+        let occupancy = Occupancy::build(extra);
+        let more = gather_region(&geo, &pyramid, gathered_rect, Some(&occupancy));
+        add_inflow(&geo, &mut gathered, &more, gathered_rect);
+    }
 
     // Pass 2: the fringe shift of each channel and the gain.
     Ok(finish(&geo, &gathered, gathered_rect, out))
 }
 
+/// A summed-area table of the pixels of an image that hold any light, to tell whether a window of it holds some.
+struct Occupancy {
+    x0: i64,
+    y0: i64,
+    w: usize,
+    h: usize,
+    /// `(w + 1) * (h + 1)` counts.
+    sat: Vec<u32>,
+}
+
+impl Occupancy {
+    fn build(img: &ImageRef) -> Self {
+        let (w, h) = (img.width, img.height);
+        let n = w * h;
+        let mut sat = vec![0u32; (w + 1) * (h + 1)];
+        for y in 0..h {
+            let mut row = 0u32;
+            for x in 0..w {
+                let any = (0..3).any(|c| img.data[c * n + y * w + x] != 0.0);
+                row += u32::from(any);
+                sat[(y + 1) * (w + 1) + x + 1] = sat[y * (w + 1) + x + 1] + row;
+            }
+        }
+        Occupancy {
+            x0: img.x0 as i64,
+            y0: img.y0 as i64,
+            w,
+            h,
+            sat,
+        }
+    }
+
+    /// True when some pixel in `[x0, x1) x [y0, y1)` (frame coordinates, clamped to the image) holds light.
+    fn any(&self, x0: i64, y0: i64, x1: i64, y1: i64) -> bool {
+        let clamp = |v: i64, o: i64, n: usize| (v - o).clamp(0, n as i64) as usize;
+        let (a, b) = (clamp(x0, self.x0, self.w), clamp(x1, self.x0, self.w));
+        let (c, d) = (clamp(y0, self.y0, self.h), clamp(y1, self.y0, self.h));
+        let at = |x: usize, y: usize| self.sat[y * (self.w + 1) + x];
+        at(b, d) + at(a, c) > at(a, d) + at(b, c)
+    }
+}
+
+/// Adds to the gather `gathered` of the picture the share of the gather `more` of the extra light that reaches
+/// each pixel, over `rect` (see [`apply`]).
+fn add_inflow(geo: &Geometry, gathered: &mut [f32], more: &[f32], rect: PixelRect) {
+    let plane = rect.w * rect.h;
+    let (from, to) = EXTRA_INFLOW_RAMP;
+    let (r, rest) = gathered.split_at_mut(plane);
+    let (g, b) = rest.split_at_mut(plane);
+    r.par_chunks_mut(rect.w)
+        .zip(g.par_chunks_mut(rect.w))
+        .zip(b.par_chunks_mut(rect.w))
+        .enumerate()
+        .for_each(|(row, ((rr, gr), br))| {
+            let j = rect.y + row;
+            for col in 0..rect.w {
+                if geo.pixel(rect.x + col, j).omega == 0.0 {
+                    continue;
+                }
+                let at = row * rect.w + col;
+                let e = [more[at], more[plane + at], more[2 * plane + at]];
+                if e == [0.0; 3] {
+                    continue;
+                }
+                let base = [rr[col], gr[col], br[col]];
+                let mut ratio = 0.0f64;
+                for c in 0..3 {
+                    ratio = ratio.max(f64::from(e[c]) / f64::from(base[c]).max(EXTRA_INFLOW_FLOOR));
+                }
+                let t = ((ratio - from) / (to - from)).clamp(0.0, 1.0);
+                let mu = t * t * (3.0 - 2.0 * t);
+                if mu > 0.0 {
+                    rr[col] = (f64::from(base[0]) + mu * f64::from(e[0])) as f32;
+                    gr[col] = (f64::from(base[1]) + mu * f64::from(e[1])) as f32;
+                    br[col] = (f64::from(base[2]) + mu * f64::from(e[2])) as f32;
+                }
+            }
+        });
+}
+
 /// The gather (without the gain) of every pixel of `rect`: planar, `3 * rect.w * rect.h` samples.
-fn gather_region(geo: &Geometry, pyr: &Pyramid, rect: PixelRect) -> Vec<f32> {
+///
+/// With an occupancy (the gather of the extra light) a pixel whose window holds none, and a pixel with no kernel,
+/// is 0 without gathering.
+fn gather_region(
+    geo: &Geometry,
+    pyr: &Pyramid,
+    rect: PixelRect,
+    occupancy: Option<&Occupancy>,
+) -> Vec<f32> {
     let plane = rect.w * rect.h;
     let mut result = vec![0.0f32; 3 * plane];
     let (r, rest) = result.split_at_mut(plane);
@@ -1036,7 +1150,22 @@ fn gather_region(geo: &Geometry, pyr: &Pyramid, rect: PixelRect) -> Vec<f32> {
         .for_each(|(row, ((rr, gr), br))| {
             let j = rect.y + row;
             for col in 0..rect.w {
-                let px = gather(geo, pyr, rect.x + col, j);
+                let i = rect.x + col;
+                if let Some(occ) = occupancy {
+                    let k = geo.pixel(i, j);
+                    if k.omega == 0.0 {
+                        continue;
+                    }
+                    // A tap lies within sqrt(2) omega of the pixel and reads texels 1.5 blocks wide.
+                    let level = level_for(k.omega, geo.opts.spacing_max).min(geo.lmax);
+                    let reach = (k.omega * std::f64::consts::SQRT_2).ceil() as i64
+                        + (1.5 * f64::from(1u32 << level)).ceil() as i64
+                        + 3;
+                    if !occ.any(i as i64 - reach, j as i64 - reach, i as i64 + reach + 1, j as i64 + reach + 1) {
+                        continue;
+                    }
+                }
+                let px = gather(geo, pyr, i, j);
                 rr[col] = px[0] as f32;
                 gr[col] = px[1] as f32;
                 br[col] = px[2] as f32;
@@ -2042,7 +2171,7 @@ mod tests {
 
     fn check_against_reference(p: &LensPlan, w: usize, h: usize, opts: Options, tol: f64) {
         let data = noise(w, h, 7);
-        let out = apply(p, &whole(w, h, &data), PixelRect::new(0, 0, w, h), opts).unwrap();
+        let out = apply(p, &whole(w, h, &data), None, PixelRect::new(0, 0, w, h), opts).unwrap();
         let geo = Geometry::new(p, w, h, opts).unwrap();
         let mut compared = 0;
         let mut wide = 0;
@@ -2137,6 +2266,7 @@ mod tests {
         let out = apply(
             &p,
             &whole(600, 400, &data),
+            None,
             PixelRect::new(290, 190, 20, 20),
             Options::default(),
         )

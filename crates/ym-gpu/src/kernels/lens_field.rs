@@ -33,7 +33,10 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use ym_lens::consts::{COPY_BELOW_PX, MAX_TAPS_SIDE, RADII, TAP_SPACING_MAX_PX, W_KNEE, W_MAX};
+use ym_lens::consts::{
+    COPY_BELOW_PX, EXTRA_INFLOW_FLOOR, EXTRA_INFLOW_RAMP, MAX_TAPS_SIDE, RADII, TAP_SPACING_MAX_PX,
+    W_KNEE, W_MAX,
+};
 use ym_lens::device::{FIELD_HEADER, FIELD_TABLE_SIZES, field_table_offset};
 pub use ym_lens::device::{FieldPass, FieldTablesData};
 
@@ -77,6 +80,8 @@ struct FieldU {
     lvl: [[i32; 4]; MAX_LEVELS],
     /// Per level: column and row of the first texel in blocks of that level.
     org: [[i32; 4]; MAX_LEVELS],
+    /// 2 when the gather is the extra light, added to the output planes; 0 otherwise.
+    ex: [u32; 4],
 }
 
 /// The lens's spread functions on the device: uploaded once per lens and camera, shared by every amount
@@ -210,16 +215,24 @@ fn grown(r: Rect, px: usize, fw: usize, fh: usize) -> Rect {
 /// `place` is not read: a window gathered from pieces has none.) The result is `out.w x out.h`, placed
 /// at `(out.x, out.y)` in that frame.
 ///
+/// `extra` is light the picture does not record and L2 spreads (`ym_lens::l2_input`: the headroom of a clipped
+/// light, and the light's colour where a channel clipped): an image and its first frame pixel, covering what `src`
+/// does (`out` grown by [`FieldPass::halo`]). It is gathered with the same spread functions and added to the
+/// gather of `src` by the share of how much of it the lens moves to the pixel (`EXTRA_INFLOW_RAMP`); a pixel with
+/// no kernel gets none.
+///
 /// # Errors
 ///
-/// [`GpuError::InvalidInput`] for a source that is not three planes or does not cover the halo, or an
-/// empty output or one outside the frame; the pool's errors; shader errors.
+/// [`GpuError::InvalidInput`] for a source that is not three planes or does not cover the halo, an extra light
+/// that does not, or an empty output or one outside the frame; the pool's errors; shader errors.
+#[allow(clippy::too_many_arguments)]
 pub fn encode_field(
     passes: &mut PassList<'_>,
     tables: &FieldTablesBuffer,
     pass: &FieldPass,
     src: &GpuImage,
     at: (usize, usize),
+    extra: Option<(&GpuImage, (usize, usize))>,
     out: Rect,
 ) -> Result<GpuImage, GpuError> {
     let ctx = passes.context();
@@ -250,6 +263,21 @@ pub fn encode_field(
         )));
     }
     let gathered = grown(out, pass.pad, fw, fh);
+    if let Some((img, o)) = extra {
+        let have = Rect::new(o.0, o.1, img.width, img.height);
+        if img.planes != 3
+            || need.x < have.x
+            || need.y < have.y
+            || need.x1() > have.x1()
+            || need.y1() > have.y1()
+        {
+            return Err(GpuError::InvalidInput(format!(
+                "lens field: the extra light {have:?} ({} planes) does not cover the output {out:?} grown by {} px",
+                img.planes,
+                pass.halo()
+            )));
+        }
+    }
     let pyramid = pyramid_layout(pass, gathered);
     let pyr = passes.scratch("lens field pyramid", pyramid.vectors as u64 * 16)?;
     let dst = GpuImage::alloc(
@@ -265,8 +293,9 @@ pub fn encode_field(
             frame_height: fh,
         },
     )?;
-    // With no fringe reading beyond the output the gather writes the result itself.
-    let fused = pass.pad == 0;
+    // With no fringe reading beyond the output, and no extra light to add to the gather, the gather writes the
+    // result itself.
+    let fused = pass.pad == 0 && extra.is_none();
     let mid = if fused {
         None
     } else {
@@ -366,6 +395,57 @@ pub fn encode_field(
             1,
         ),
     )?;
+    // The extra light: its own pyramid and gather, added to the picture's gather by the share the lens moves.
+    if let Some((img, o)) = extra {
+        let pyr_e = passes.scratch("lens field extra pyramid", pyramid.vectors as u64 * 16)?;
+        let mut eb = base;
+        eb.src = [o.0 as i32, o.1 as i32, img.width as i32, img.height as i32];
+        eb.srcs = [img.stride as u32, img.plane_len() as u32, 0, 0];
+        for (l, lv) in pyramid.levels.iter().enumerate() {
+            let mut u = eb;
+            u.dst[3] = l as u32;
+            let ub = passes.uniform("lens field extra pyramid uniform", &u)?;
+            passes.dispatch(
+                KernelId::LensFieldPyramid,
+                "lens field extra pyramid",
+                &[
+                    (0, ub.binding()),
+                    (2, pyr_e.binding()),
+                    (3, img.buf.binding()),
+                ],
+                (
+                    (lv[1] as u32).div_ceil(GROUP),
+                    (lv[2] as u32).div_ceil(GROUP),
+                    1,
+                ),
+            )?;
+        }
+        let mut u = base;
+        u.win = [
+            region.x as i32,
+            region.y as i32,
+            region.w as i32,
+            region.h as i32,
+        ];
+        u.dst = [target.stride as u32, target.plane_len() as u32, 0, 0];
+        u.ex = [2, 0, 0, 0];
+        let ub = passes.uniform("lens field extra gather uniform", &u)?;
+        passes.dispatch(
+            KernelId::LensFieldGather,
+            "lens field extra gather",
+            &[
+                (0, ub.binding()),
+                (1, tables.buf.binding()),
+                (2, pyr_e.binding()),
+                (4, target.buf.binding()),
+            ],
+            (
+                (region.w as u32).div_ceil(GROUP),
+                (region.h as u32).div_ceil(GROUP),
+                1,
+            ),
+        )?;
+    }
     passes.hold(Arc::clone(&tables.buf));
     // The fringe shift and the gain.
     if let Some(mid) = &mid {
@@ -432,7 +512,47 @@ pub fn field(
         },
     )?;
     let mut passes = PassList::new(ctx, "lens field");
-    let img = encode_field(&mut passes, tables, pass, &src, at, out)?;
+    let img = encode_field(&mut passes, tables, pass, &src, at, None, out)?;
+    let read = img.encode_read(&mut passes)?;
+    let done = passes.submit()?.finish()?;
+    img.take(&done, read)
+}
+
+/// L2 with an extra light on the host's behalf: as [`field`], with `extra` (three planes, its size, its first
+/// frame pixel) spread besides `input` ([`encode_field`]). For tests.
+///
+/// # Errors
+///
+/// As [`encode_field`], plus the readback's.
+#[allow(clippy::too_many_arguments)]
+pub fn field_with_extra(
+    ctx: &GpuContext,
+    tables: &FieldTablesBuffer,
+    pass: &FieldPass,
+    input: &[f32],
+    size: (usize, usize),
+    at: (usize, usize),
+    extra: (&[f32], (usize, usize), (usize, usize)),
+    out: Rect,
+) -> Result<Vec<f32>, GpuError> {
+    let place = |at: (usize, usize)| Placement {
+        x0: at.0,
+        y0: at.1,
+        frame_width: pass.width,
+        frame_height: pass.height,
+    };
+    let src = GpuImage::upload(ctx, "lens field source", size.0, size.1, 3, input, place(at))?;
+    let more = GpuImage::upload(
+        ctx,
+        "lens field extra light",
+        extra.1.0,
+        extra.1.1,
+        3,
+        extra.0,
+        place(extra.2),
+    )?;
+    let mut passes = PassList::new(ctx, "lens field");
+    let img = encode_field(&mut passes, tables, pass, &src, at, Some((&more, extra.2)), out)?;
     let read = img.encode_read(&mut passes)?;
     let done = passes.submit()?.finish()?;
     img.take(&done, read)
@@ -450,6 +570,9 @@ fn constants() -> String {
          const LF_MAX_TAPS: u32 = {}u;\n\
          const LF_SPACING_MAX: f32 = {:?};\n\
          const LF_HEADER: u32 = {}u;\n\
+         const LF_INFLOW_FROM: f32 = {:?};\n\
+         const LF_INFLOW_TO: f32 = {:?};\n\
+         const LF_INFLOW_FLOOR: f32 = {:?};\n\
          var<private> LF_OFF: array<u32, {}> = array<u32, {}>({});\n",
         RADII,
         W_MAX as f32,
@@ -458,6 +581,9 @@ fn constants() -> String {
         MAX_TAPS_SIDE,
         TAP_SPACING_MAX_PX as f32,
         FIELD_HEADER,
+        EXTRA_INFLOW_RAMP.0 as f32,
+        EXTRA_INFLOW_RAMP.1 as f32,
+        EXTRA_INFLOW_FLOOR as f32,
         FIELD_TABLE_SIZES,
         FIELD_TABLE_SIZES,
         offsets.join(", "),
@@ -508,6 +634,7 @@ mod tests {
                 ("gs", offset_of!(FieldU, gs)),
                 ("lvl", offset_of!(FieldU, lvl)),
                 ("org", offset_of!(FieldU, org)),
+                ("ex", offset_of!(FieldU, ex)),
             ];
             assert_eq!(fields.len(), want.len(), "{id:?}");
             for ((name, offset), (want_name, want_offset)) in fields.iter().zip(want) {

@@ -42,7 +42,7 @@ use ym_gpu::cpu::tiling::Rect;
 use ym_gpu::device::GpuError;
 use ym_gpu::kernels::lens_reshape::reshape;
 use ym_gpu::queue::{JobSpec, Priority};
-use ym_lens::{Axis, ImageRef, LensKind, LensPlan, LensPlanes, PixelRect};
+use ym_lens::{Axis, BlurMapInput, ImageRef, LensKind, LensPlan, LensPlanes, PixelRect};
 
 /// The largest difference between the kernel and the CPU reference over the pixels that did not decide a blur,
 /// a length or a flag the other way (see the module notes).
@@ -390,6 +390,111 @@ fn the_kernel_matches_the_cpu_reference() {
     );
 }
 
+/// A map of the frame whose cells (2 x 2 pixels) left of `split_x` are in focus and right of it blurred by
+/// `radius_px`.
+fn split_map(split_x: usize, radius_px: f64) -> BlurMapInput {
+    let hd = 0.5 * ((W * W + H * H) as f64).sqrt();
+    let (cw, ch) = (W.div_ceil(2), H.div_ceil(2));
+    let (mut b, mut p) = (vec![0.0f32; cw * ch], vec![0.0f32; cw * ch]);
+    for y in 0..ch {
+        for x in 0..cw {
+            let sharp = 2 * x + 1 < split_x;
+            b[y * cw + x] = if sharp { 0.0 } else { (radius_px / hd) as f32 };
+            p[y * cw + x] = if sharp { 0.02 } else { 0.95 };
+        }
+    }
+    BlurMapInput {
+        width: cw,
+        height: ch,
+        plane_width: W,
+        plane_height: H,
+        b,
+        p,
+    }
+}
+
+#[test]
+fn the_kernel_matches_the_reference_on_the_grain_and_a_thin_bright_end() {
+    // Two scenes of the grain and thin-end rules (L1, round 4): a smooth field with sensor grain (the grain a gather
+    // takes out is given back, in square roots, gated by the noise) and a pale bar whose body is in focus and whose
+    // end lies in the wedge (the stretch is held back on a thin bright thing there), both beside a sharp part.
+    let _guard = serial();
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
+    let n = W * H;
+    let mut rng = scenes::Rng::new(77);
+    let mut field = vec![0.0f32; 3 * n];
+    for c in 0..3 {
+        for y in 0..H {
+            for x in 0..W {
+                let smooth = 0.25 + 0.03 * (x as f64 / 110.0).sin() * (y as f64 / 80.0).cos();
+                field[c * n + y * W + x] = (smooth + 0.01 * rng.normal()).max(0.0) as f32;
+            }
+        }
+    }
+    let mut bar = vec![0.1f32; 3 * n];
+    for c in 0..3 {
+        for y in 318..349 {
+            let across = (-(((y as f64 + 0.5) - 333.5) / 3.0).powi(2) / 2.0).exp();
+            for x in 200..350 {
+                let along = if x < 330 {
+                    1.0
+                } else {
+                    0.5 * (1.0 + (std::f64::consts::PI * (x as f64 - 330.0) / 20.0).cos())
+                };
+                bar[c * n + y * W + x] += (0.5 * across * along) as f32;
+            }
+        }
+    }
+    let mut cases = 0;
+    let mut worst_all = 0.0f32;
+    for (name, image) in [("grain", &field), ("thin end", &bar)] {
+        for (kind, edges) in [(LensKind::Default, 0.0), (LensKind::Petzval, 70.0)] {
+            let p = plan(amounts(kind, 0.0, edges, 100.0), W, H, Axis::X);
+            let planes = LensPlanes::build_with_map(
+                &p,
+                &ImageRef {
+                    width: W,
+                    height: H,
+                    x0: 0,
+                    y0: 0,
+                    frame_width: W,
+                    frame_height: H,
+                    data: image,
+                },
+                None,
+                Some(&split_map(330, 12.0)),
+                &|| false,
+            )
+            .expect("planes");
+            let Some(cell) = compare_case(dev, &p, &planes, 1, image, (W, H)) else {
+                continue;
+            };
+            cases += 1;
+            worst_all = worst_all.max(cell.found.worst);
+            note!(
+                "L1 {name} {kind} edges {edges}: worst {:e}, {} over {:e}; the picture moved by up to {:.3}",
+                cell.found.worst,
+                cell.found.over,
+                bound(dev),
+                cell.changed
+            );
+            assert!(
+                cell.found.over as f64 <= FLIP_SHARE * cell.found.total as f64
+                    && cell.found.worst <= FLIP_BOUND,
+                "{name} {kind}: {} of {} samples differ by more than {} (worst {})",
+                cell.found.over,
+                cell.found.total,
+                bound(dev),
+                cell.found.worst
+            );
+        }
+    }
+    assert_eq!(cases, 4);
+    note!("L1 grain and thin end parity: {cases} cases, worst difference {worst_all:e}");
+}
+
 /// A larger scene (1400 x 900, whose lens plane is its half) for the tiles: balls over a blurred texture, some
 /// of which lie across the 512 and 1024 px tile boundaries.
 fn big() -> &'static Scene {
@@ -538,11 +643,23 @@ fn tiles_equal_the_whole_frame_bit_for_bit() {
         assert!(exact::max_abs_diff(&whole, &scene.img.data) > 1e-2);
         let want = cpu_reshape(&p, &planes, 1, &scene.img.data, (w, h), Rect::whole(w, h));
         let f = compare(&whole, &want, bound(dev));
+        // Where the worst difference lies, and how large the value there is (the flipped decisions are at the balls).
+        let (at, _) = whole
+            .iter()
+            .zip(&want)
+            .enumerate()
+            .map(|(i, (g, r))| (i, (g - r).abs()))
+            .fold((0, 0.0f32), |a, b| if b.1 > a.1 { b } else { a });
+        let (plane, within) = (at / (w * h), at % (w * h));
         note!(
-            "L1 {kind} {w}x{h}: tiles of 512 and 1024 equal the whole frame; against the reference worst {:e}, {} over {:e}",
+            "L1 {kind} {w}x{h}: tiles of 512 and 1024 equal the whole frame; against the reference worst {:e}, {} over {:e}; the worst at channel {plane}, ({}, {}), value {:.3} (the reference's), the input's {:.3}",
             f.worst,
             f.over,
-            bound(dev)
+            bound(dev),
+            within % w,
+            within / w,
+            want[at],
+            scene.img.data[at]
         );
         assert!(f.over as f64 <= FLIP_SHARE * f.total as f64 && f.worst <= FLIP_BOUND);
     }
@@ -763,7 +880,7 @@ fn the_binding_stays_inside_the_design_size_at_the_blur_cap_of_a_50_mp_frame() {
             / f64::from(1u32 << 20),
     );
     assert!(
-        pass.t_halo as f64 <= reach + 2.0,
+        pass.t_halo as f64 <= reach + ym_lens::consts::GATHER_PAD as f64 + 1.0,
         "the tangential halo {} is held to the reach {reach}",
         pass.t_halo
     );

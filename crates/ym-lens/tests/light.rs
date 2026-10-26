@@ -194,6 +194,19 @@ fn tiles_of_the_field_stages_equal_the_whole_frame_with_saturated_lights() {
             data[2 * n + y * W + x] = 0.2;
         }
     }
+    // Two stars the headroom reaches: one clipped in every channel, one in green alone.
+    for (cx, cy, v) in [(250.0, 70.0, [3.1f32, 3.0, 3.0]), (330.0, 140.0, [1.4, 1.1, 1.7])] {
+        for y in 0..H {
+            for x in 0..W {
+                let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
+                if dx * dx + dy * dy <= 2.0 * 2.0 {
+                    for c in 0..3 {
+                        data[c * n + y * W + x] = v[c];
+                    }
+                }
+            }
+        }
+    }
     let plan = plan_with_clip(LensKind::Petzval, 0.0, 80.0, 30.0, G0, W, H);
     let planes = LensPlanes::build(&plan, &whole(W, H, &data), None, &|| false).expect("planes");
     let whole_out = apply_tile(&plan, &planes, 1, &data, W, H, PixelRect::new(0, 0, W, H));
@@ -249,4 +262,128 @@ fn balls_at_the_clip_pattern_are_redrawn_in_neutral_light() {
         }
     }
     assert!(checked >= 4, "found the balls of {checked} lights");
+}
+
+/// The light the stars' scene adds over the ground-only scene to the field stages' output, per channel, summed
+/// over the annulus `lo..hi` pixels from `(cx, cy)`. The planes are built from each scene (the clipped lights'
+/// headroom is made from the photo).
+fn annulus_light(plan: &LensPlan, scene: &[f32], ground: &[f32], c: (f64, f64), lo: f64, hi: f64) -> [f64; 3] {
+    let run = |data: &[f32]| {
+        let planes = LensPlanes::build(plan, &whole(W, H, data), None, &|| false).expect("planes");
+        apply_field(
+            plan,
+            &planes,
+            1,
+            &whole(W, H, data),
+            PixelRect::new(0, 0, W, H),
+        )
+        .expect("field")
+    };
+    let (a, b) = (run(scene), run(ground));
+    let n = W * H;
+    let mut sum = [0.0f64; 3];
+    for y in 0..H {
+        for x in 0..W {
+            let r = (x as f64 + 0.5 - c.0).hypot(y as f64 + 0.5 - c.1);
+            if r >= lo && r < hi {
+                for ch in 0..3 {
+                    sum[ch] += f64::from(a[ch * n + y * W + x]) - f64::from(b[ch * n + y * W + x]);
+                }
+            }
+        }
+    }
+    sum
+}
+
+/// A small clipped light with a violet fringe: a core of 9 pixels at the neutral level a recovered clipped
+/// photosite has, a ring of unclipped violet pixels round it that holds more light than the core does.
+fn violet_star(cx: f64, cy: f64) -> Vec<f32> {
+    let n = W * H;
+    let mut data = vec![0.02f32; 3 * n];
+    for y in 0..H {
+        for x in 0..W {
+            let r = (x as f64 + 0.5 - cx).hypot(y as f64 + 0.5 - cy);
+            let v = if r <= 1.6 {
+                [3.1, 3.0, 3.0]
+            } else if r <= 4.0 {
+                // The fringe: blue and red over green, 1.2 to 1.6 clip levels of green's.
+                [1.1, 0.35, 1.8]
+            } else {
+                continue;
+            };
+            for c in 0..3 {
+                data[c * n + y * W + x] = v[c];
+            }
+        }
+    }
+    data
+}
+
+#[test]
+fn a_small_clipped_light_with_a_violet_fringe_spreads_white_light() {
+    // The star of 60855: the fringe's pixels hold more light than the core's, in violet. Spread as the picture
+    // records it the halo is mostly the fringe's colour; with the headroom of the clipped core, which is
+    // neutral, the halo is the core's. At 6 to 30 px, where the lens's spread is wide near the frame's edge.
+    let (cx, cy) = (500.5, 170.5);
+    let star = violet_star(cx, cy);
+    let ground = vec![0.02f32; 3 * W * H];
+    for (kind, edges, anamorphic) in [
+        (LensKind::Vintage, 100.0, 0.0),
+        (LensKind::Petzval, 100.0, 0.0),
+        (LensKind::Vintage, 100.0, 100.0),
+    ] {
+        let plan = plan_with_clip(kind, 0.0, edges, anamorphic, G0, W, H);
+        let got = chroma(annulus_light(&plan, &star, &ground, (cx, cy), 6.0, 30.0));
+        for (c, v) in got.iter().enumerate() {
+            assert!(
+                (v - 1.0).abs() < 0.05,
+                "{kind} {edges}/{anamorphic}: the added light is {got:?}, channel {c}"
+            );
+        }
+    }
+    // Without a clipped core the fringe's colour spreads: the test would not tell the two apart otherwise.
+    let ring_only = {
+        let mut d = star.clone();
+        let n = W * H;
+        for y in 0..H {
+            for x in 0..W {
+                if (x as f64 + 0.5 - cx).hypot(y as f64 + 0.5 - cy) <= 1.6 {
+                    for c in 0..3 {
+                        d[c * n + y * W + x] = 1.1 * [1.0, 0.32, 1.64][c];
+                    }
+                }
+            }
+        }
+        d
+    };
+    let plan = plan_with_clip(LensKind::Vintage, 0.0, 100.0, 0.0, G0, W, H);
+    let got = chroma(annulus_light(&plan, &ring_only, &ground, (cx, cy), 6.0, 30.0));
+    assert!(
+        got[1] < 0.8 && got[2] > 1.2,
+        "a violet light spreads violet: {got:?}"
+    );
+}
+
+#[test]
+fn a_clipped_light_gets_no_headroom_where_the_lens_does_not_move_it_and_none_in_a_surface() {
+    // The planes of a photo with a window 120 pixels across at the clip pattern: no headroom, the light
+    // spreads as the picture records it, so a pixel's output cannot exceed the brightest value near it.
+    let mut data = vec![0.02f32; 3 * W * H];
+    let n = W * H;
+    for y in 100..220 {
+        for x in 300..420 {
+            for c in 0..3 {
+                data[c * n + y * W + x] = G0[c];
+            }
+        }
+    }
+    let plan = plan_with_clip(LensKind::Vintage, 0.0, 100.0, 0.0, G0, W, H);
+    let planes = LensPlanes::build(&plan, &whole(W, H, &data), None, &|| false).expect("planes");
+    let out = apply_field(&plan, &planes, 1, &whole(W, H, &data), PixelRect::new(0, 0, W, H))
+        .expect("field");
+    let most = G0.iter().fold(0.0f32, |m, v| m.max(*v));
+    assert!(
+        out.iter().all(|v| *v <= most * 1.001),
+        "the window is a surface: nothing in the output exceeds its own level"
+    );
 }

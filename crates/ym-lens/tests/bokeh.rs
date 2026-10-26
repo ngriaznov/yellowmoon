@@ -1148,9 +1148,10 @@ fn response_moments(
 
 #[test]
 fn the_gather_smears_a_blurred_field_along_the_tangent_by_the_swirl_plus_the_astigmatism() {
-    // A smooth bump (a Gaussian of 3 px, too faint to be a ball) on a field the map calls blurred everywhere: the
-    // response of the tangential gather. A biweight line of half-length L adds a variance of L^2 / 7 along the
-    // tangent and nothing across it, with L = e (k sigma b + a H) (`tangent_half_length`).
+    // A smooth bump (a Gaussian of 3 px, 0.3 above the field: too faint in light to be a ball, and far above the
+    // noise, so that what the gather smooths of it is not given back as grain) on a field the map calls blurred
+    // everywhere: the response of the tangential gather. A biweight line of half-length L adds a variance of L^2 / 7
+    // along the tangent and nothing across it, with L = e (k sigma b + a H) (`tangent_half_length`).
     let at: (f64, f64) = (948.0, 628.0);
     let hd = 600.97;
     let rho = (at.0 - 500.0).hypot(at.1 - 333.5) / hd;
@@ -1163,7 +1164,7 @@ fn the_gather_smears_a_blurred_field_along_the_tangent_by_the_swirl_plus_the_ast
         for y in 0..H {
             for x in 0..W {
                 let d2 = (x as f64 + 0.5 - at.0).powi(2) + (y as f64 + 0.5 - at.1).powi(2);
-                data[c * n + y * W + x] += (0.12 * (-d2 / (2.0 * 9.0)).exp()) as f32;
+                data[c * n + y * W + x] += (0.3 * (-d2 / (2.0 * 9.0)).exp()) as f32;
             }
         }
     }
@@ -2003,5 +2004,230 @@ fn a_sharp_bright_subject_beside_a_blurred_field_is_not_dragged_into_it() {
             (got - was).abs() < 0.03,
             "({x}, {y}): {was:.3} became {got:.3}"
         );
+    }
+}
+
+/// A map of the 1000 x 667 frame whose cells (2 x 2 pixels) left of `split_x` are in focus (a sure subject, radius 0)
+/// and right of it blurred by `radius_px`.
+fn split_map(split_x: usize, radius_px: f64) -> BlurMapInput {
+    let hd = 0.5 * ((W * W + H * H) as f64).sqrt();
+    let (cw, ch) = (W.div_ceil(2), H.div_ceil(2));
+    let (mut b, mut pr) = (vec![0.0f32; cw * ch], vec![0.0f32; cw * ch]);
+    for y in 0..ch {
+        for x in 0..cw {
+            let sharp = 2 * x + 1 < split_x;
+            b[y * cw + x] = if sharp { 0.0 } else { (radius_px / hd) as f32 };
+            pr[y * cw + x] = if sharp { 0.02 } else { 0.95 };
+        }
+    }
+    BlurMapInput {
+        width: cw,
+        height: ch,
+        plane_width: W,
+        plane_height: H,
+        b,
+        p: pr,
+    }
+}
+
+/// The standard deviation of the square-root grain of the green channel: the residual of each pixel against the
+/// mean of the 7 x 7 pixels around it, over `[x0, x1) x [y0, y1)`.
+fn grain_std(data: &[f32], (x0, x1, y0, y1): (usize, usize, usize, usize)) -> f64 {
+    let n = W * H;
+    let root = |x: usize, y: usize| f64::from(data[n + y * W + x]).max(0.0).sqrt();
+    let (mut sum, mut sum2, mut count) = (0.0f64, 0.0f64, 0.0f64);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let mut mean = 0.0;
+            for dy in 0..7 {
+                for dx in 0..7 {
+                    mean += root(x + dx - 3, y + dy - 3);
+                }
+            }
+            let r = root(x, y) - mean / 49.0;
+            sum += r;
+            sum2 += r * r;
+            count += 1.0;
+        }
+    }
+    (sum2 / count - (sum / count).powi(2)).sqrt()
+}
+
+/// Smooth light of `base` with a slow ripple and sensor grain of `sigma` in light per channel (seeded).
+fn grainy_field(base: f64, sigma: f64, seed: u64) -> Vec<f32> {
+    let n = W * H;
+    let mut rng = scenes::Rng::new(seed);
+    let mut data = vec![0.0f32; 3 * n];
+    for c in 0..3 {
+        for y in 0..H {
+            for x in 0..W {
+                let smooth = base + 0.03 * (x as f64 / 110.0).sin() * (y as f64 / 80.0).cos();
+                data[c * n + y * W + x] = (smooth + sigma * rng.normal()).max(0.0) as f32;
+            }
+        }
+    }
+    data
+}
+
+#[test]
+fn a_stretched_field_keeps_the_pictures_grain_so_no_band_shows_where_the_stretch_stops() {
+    // Grain, light of 0.25 with sigma 0.01 per channel (0.01 in square roots). The left third of the frame is in
+    // focus and keeps its grain; the rest is blurred by 12 px, so its lines are 27 px long and take the grain
+    // out: the first build left it 0.2 of what the sharp part had (a line of `n` samples averages its noise by
+    // about `sqrt n`), and the edge of the sharp part showed as a band. The pixel's own grain goes back, in
+    // square roots, by the share of it the line took out.
+    let data = grainy_field(0.25, 0.01, 41);
+    let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
+    let map = split_map(330, 12.0);
+    let planes = LensPlanes::build_with_map(&p, &whole(W, H, &data), None, Some(&map), &|| false)
+        .expect("planes");
+    assert!(planes.bokeh().is_some_and(|b| b.active()));
+    let out = reshape_tile(&p, &planes, 1, &data, (W, H), PixelRect::new(0, 0, W, H));
+    let sharp = (40, 290, 80, 590);
+    let stretched = (520, 940, 80, 590);
+    let (g_in, g_sharp, g_stretched) = (
+        grain_std(&data, stretched),
+        grain_std(&out, sharp),
+        grain_std(&out, stretched),
+    );
+    // The sharp part is untouched.
+    assert_eq!(out[W * H + 300 * W + 100], data[W * H + 300 * W + 100]);
+    // The stretched part has its input's grain, as the sharp part has its own.
+    let ratio = g_stretched / g_in;
+    eprintln!(
+        "grain (square-root units): the picture {g_in:.5}, stretched {g_stretched:.5} ({ratio:.2}), sharp part {g_sharp:.5}"
+    );
+    assert!(
+        (0.85..=1.15).contains(&ratio),
+        "the stretched field has {g_stretched:.5} of grain against {g_in:.5} in the picture ({ratio:.2})"
+    );
+    let between = g_stretched / g_sharp;
+    assert!(
+        (0.85..=1.15).contains(&between),
+        "the stretched field has {g_stretched:.5} of grain, the sharp part {g_sharp:.5} ({between:.2})"
+    );
+}
+
+#[test]
+fn a_rim_in_a_stretched_field_is_not_given_back_as_grain() {
+    // A bright line (a Gaussian of 2.5 px, 0.55 above a ground of 0.25: soft enough that the sharp-edge test does not
+    // hold it, as the rim of a defocused disc is) in a field blurred by 12 px: the lines smear it into a faint
+    // tall smudge. Its residual against its neighbours is 20 noise units and more, so it is detail and not grain,
+    // and the gate does not give it back: the line does not stand out again where it was.
+    let n = W * H;
+    let mut data = grainy_field(0.25, 0.01, 42);
+    for c in 0..3 {
+        for y in 310..352 {
+            let across = (-(((y as f64 + 0.5) - 331.0) / 2.5).powi(2) / 2.0).exp();
+            for x in 560..760 {
+                data[c * n + y * W + x] += (0.55 * across) as f32;
+            }
+        }
+    }
+    let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
+    let planes = planes_all_blurred(&p, &data, 12.0);
+    let out = reshape_tile(&p, &planes, 1, &data, (W, H), PixelRect::new(0, 0, W, H));
+    let was = data[n + 331 * W + 660];
+    let at = out[n + 331 * W + 660];
+    eprintln!("the line: was {was:.3}, is {at:.3} (the field is 0.25)");
+    assert!(
+        at < 0.45,
+        "the line came back at {at:.3} (the field is 0.25, the line was {was:.3})"
+    );
+}
+
+/// A pale bar on a ground of `ground`: a soft line (a Gaussian of 3 px across, `peak` high) along row 333 from x = 200
+/// to 330, then fading out by 350 (the soft end of a leaf, not a crisp edge: the sharp-edge test must not be the one
+/// that holds it).
+fn soft_bar(ground: f32, peak: f32) -> Vec<f32> {
+    let n = W * H;
+    let mut data = vec![ground; 3 * n];
+    for c in 0..3 {
+        for y in 318..349 {
+            let across = (-(((y as f64 + 0.5) - 333.5) / 3.0).powi(2) / 2.0).exp();
+            for x in 200..350 {
+                let along = if x < 330 {
+                    1.0
+                } else {
+                    0.5 * (1.0 + (std::f64::consts::PI * (x as f64 - 330.0) / 20.0).cos())
+                };
+                data[c * n + y * W + x] += (f64::from(peak) * across * along) as f32;
+            }
+        }
+    }
+    data
+}
+
+#[test]
+fn a_thin_bright_end_beside_a_sharp_subject_is_not_stretched_into_a_spur() {
+    // The pale end of a leaf: a soft bar 7 px across on a dark ground, whose body is in focus (the map reads 0 left
+    // of x = 330) and whose last 20 px lie in the wedge where the map reads a blur of 12 px, fading in with the
+    // distance from the sharp part. The lines there are up to 27 px long, many times the bar's thickness, so each
+    // of its columns became a faint tall spur, the last one the clearest. A ridge narrower than its line, in the
+    // wedge, is held back: the end keeps its light and the ground beside it keeps its own.
+    let data = soft_bar(0.1, 0.5);
+    let n = W * H;
+    let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
+    let map = split_map(330, 12.0);
+    let planes = LensPlanes::build_with_map(&p, &whole(W, H, &data), None, Some(&map), &|| false)
+        .expect("planes");
+    assert!(planes.bokeh().is_some_and(|b| b.active()));
+    let out = reshape_tile(&p, &planes, 1, &data, (W, H), PixelRect::new(0, 0, W, H));
+    // The end of the bar keeps its light ...
+    let end = out[n + 333 * W + 338];
+    let was = data[n + 333 * W + 338];
+    assert!(
+        end > 0.9 * was,
+        "the end of the bar is {end:.3}, it was {was:.3}"
+    );
+    // ... and the ground above and below it has none of it.
+    for y in [310usize, 316, 351, 357] {
+        let got = out[n + y * W + 338];
+        assert!(
+            got < 0.115,
+            "the ground {} rows from the bar is {got:.3}, it was 0.1",
+            y.abs_diff(333)
+        );
+    }
+}
+
+#[test]
+fn tiles_equal_the_whole_frame_with_grain_and_a_thin_end_in_the_wedge() {
+    // The grain a gather gives back and the hold on a thin bright thing in the wedge read the picture around a
+    // pixel (a 7 x 7 window, a pixel either side of it along the gather, up to the feather away): any tiling has
+    // to give the whole frame's bits where those reads cross a tile's edge. The bar's end lies in the wedge of the
+    // sharp part, which the tile boundaries cross: y = 333 of the 2 x 2 tiles and x = 333 of the 3 x 3.
+    let n = W * H;
+    let mut data = grainy_field(0.2, 0.01, 43);
+    let bar = soft_bar(0.0, 0.5);
+    for (d, b) in data.iter_mut().zip(&bar) {
+        *d += *b;
+    }
+    let map = split_map(330, 12.0);
+    for (kind, edges) in [(LensKind::Default, 0.0), (LensKind::Petzval, 70.0)] {
+        let p = plan(kind, 0.0, edges, 100.0, W, H, Axis::X);
+        let planes =
+            LensPlanes::build_with_map(&p, &whole(W, H, &data), None, Some(&map), &|| false)
+                .expect("planes");
+        let full = reshape_tile(&p, &planes, 1, &data, (W, H), PixelRect::new(0, 0, W, H));
+        for (nx, ny) in [(2usize, 2usize), (3, 3)] {
+            let mut got = vec![0.0f32; 3 * n];
+            for rect in common::tiles(W, H, nx, ny) {
+                let a = reshape_tile(&p, &planes, 1, &data, (W, H), rect);
+                for c in 0..3 {
+                    for y in 0..rect.h {
+                        let dst = c * n + (rect.y + y) * W + rect.x;
+                        let src = c * rect.w * rect.h + y * rect.w;
+                        got[dst..dst + rect.w].copy_from_slice(&a[src..src + rect.w]);
+                    }
+                }
+            }
+            assert!(
+                got.iter()
+                    .zip(&full)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "{kind:?}: {nx}x{ny} tiles differ from the whole frame"
+            );
+        }
     }
 }

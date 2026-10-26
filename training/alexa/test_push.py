@@ -32,7 +32,8 @@ def _shipped() -> np.ndarray:
 
 
 def _variants() -> list[dict]:
-    rows = list(csv.DictReader(open(paths.ALEXA_DIR / "variants.csv", newline="")))
+    with open(paths.ALEXA_DIR / "variants.csv", newline="") as fh:
+        rows = list(csv.DictReader(fh))
     out: dict[tuple, dict] = {}
     for r in rows:
         key = (r["prior"], int(r["K"]), float(r["lam"]), r["conv"])

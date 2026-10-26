@@ -36,6 +36,8 @@ pub struct LensPlanes {
     flare: crate::l3::FlarePlanes,
     /// L1's blur map and ball list, when the plan needs them ([`LensPlan::needs_blur_map`]).
     bokeh: Option<crate::l1::BokehPlanes>,
+    /// The clipped lights as L2 spreads them (`light.rs`).
+    light: crate::light::LightMap,
 }
 
 impl LensPlanes {
@@ -94,6 +96,7 @@ impl LensPlanes {
                 lens_plane_size: (0, 0),
                 flare: crate::l3::FlarePlanes::empty(),
                 bokeh: None,
+                light: crate::light::LightMap::empty(),
             });
         }
         lens_plane.validate()?;
@@ -146,13 +149,16 @@ impl LensPlanes {
         if cancel() {
             return Err(LensError::Cancelled);
         }
+        let flare = crate::l3::FlarePlanes::build(plan, lens_plane, cancel)?;
+        let light = crate::light::LightMap::build(plan, lens_plane, flare.boost_scale(), cancel)?;
         Ok(LensPlanes {
             key: planes_key,
             focus,
             report,
             lens_plane_size: (lens_plane.width, lens_plane.height),
-            flare: crate::l3::FlarePlanes::build(plan, lens_plane, cancel)?,
+            flare,
             bokeh,
+            light,
         })
     }
 
@@ -183,12 +189,18 @@ impl LensPlanes {
         std::mem::size_of::<Self>()
             + self.key.len()
             + self.flare.bytes()
+            + self.light.bytes()
             + self.bokeh.as_ref().map_or(0, crate::l1::BokehPlanes::bytes)
     }
 
     /// L3's data: the tail plane, the source list and the kernels.
     pub(crate) fn flare(&self) -> &crate::l3::FlarePlanes {
         &self.flare
+    }
+
+    /// The clipped lights as the field stages spread them.
+    pub(crate) fn light(&self) -> &crate::light::LightMap {
+        &self.light
     }
 
     /// The [`LensPlan::planes_key`] these planes were built for.

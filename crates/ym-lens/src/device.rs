@@ -190,7 +190,29 @@ impl FlareScaleData {
     }
 }
 
+/// The clipped lights of a photo for the device: the extra headroom in EV of every pixel of the lens plane
+/// (`light.rs`, `LightMap`), the plane's size and scale, and the cap's scale.
+#[derive(Clone, Debug)]
+pub struct LightMapData {
+    /// The EV of every pixel of the lens plane, row-major; empty when no pixel is part of a light.
+    pub ev: Vec<f32>,
+    /// The lens plane's width in pixels.
+    pub width: usize,
+    /// The lens plane's height in pixels.
+    pub height: usize,
+    /// The lens plane's scale `k_L`.
+    pub plane_scale: usize,
+    /// The share of the extra headroom the photo keeps.
+    pub scale: f64,
+}
+
 impl crate::planes::LensPlanes {
+    /// The clipped lights of the photo for the device (`LightMapData`).
+    #[must_use]
+    pub fn light_map_data(&self) -> LightMapData {
+        self.light().data()
+    }
+
     /// The share, 0 to 1, of the extra headroom of the small clipped lights that this photo keeps: 1 unless its
     /// lights would add more than `consts::LIGHT_BOOST_ENERGY_CAP` of flare light, in which case every light's
     /// extra is reduced by this factor (`docs/21` section 4, L3, *As built (flare strength)*).

@@ -191,6 +191,44 @@ pub const CLIP_PATTERN_SPREAD: f64 = 0.1;
 /// light's colour is then the others' with the saturated channel raised (`l3::restore`, *the light's colour*).
 pub const LIGHT_SATURATION_RAMP: (f64, f64) = (0.90, 1.0);
 
+/// A pixel with a saturated channel counts as a clipped *white* light (it can hold light the sensor did not
+/// record: [`FIELD_HEADROOM_SHARE`]) when the mean of the channels that measure is above the saturated channel by
+/// this share of it or more, with a ramp from 0 up to it. A white surface that only just clips green (the
+/// others at its level) and a coloured lamp (the others under it) are not.
+pub const LIGHT_WHITE_RAMP: f64 = 0.1;
+
+/// The share, in EV, of the boost a small clipped light is assumed to hold above its clip level
+/// ([`LIGHT_BOOST_MAX_EV`] and `l3::lights::boost_ev` give it by the size of the light, and
+/// [`LIGHT_BOOST_ENERGY_CAP`] reduces it for a photo of many lights) that L1 and L2 spread: the light the glow
+/// takes ([`GLOW_BOOST_SHARE`]), since they spread it wide. A star the sensor clipped holds far more light than
+/// its clipped core says, and the ring of unclipped, fringed pixels round it would otherwise carry more of
+/// it than the core does (`docs/21`, *As built (the light's colour, the headroom of a clipped light)*).
+pub const FIELD_HEADROOM_SHARE: f64 = GLOW_BOOST_SHARE;
+
+/// The field stages read L3's estimate of a light's boost ([`LIGHT_BOOST_FULL_HD`], [`LIGHT_BOOST_NONE_HD`]) at
+/// this many times the patch's diameter: L2 spreads the light of a patch by the lens's spread functions, which
+/// reach tens of pixels, so only a patch of a few pixels (a star, a lamp, a glint) is a point whose clipped
+/// core hides light that the spread would carry, and a window or a flower of a few tens of pixels is a surface
+/// whose interior the spread does not change (full boost up to 0.006 half-diagonals across, none from 0.1).
+pub const FIELD_LIGHT_SIZE_FACTOR: f64 = 4.0;
+
+/// How much of the extra light the field stage spreads (the headroom of a clipped light and the light's colour,
+/// `light::l2_input`) a pixel is given: the largest over the channels of the extra that the spread brings to the
+/// pixel over the light it gets from the picture itself, none up to the first number, all of it from the second, a
+/// smoothstep between. The extra light only moves from pixel to pixel of a flat bright area (a clipped window, the
+/// fur of a white dog), where it would change the pixel by a per cent or two and the lens leaves the pixel as the
+/// picture gives it; beside a star, or on a dark ground round a window, it is a large share and arrives whole.
+pub const EXTRA_INFLOW_RAMP: (f64, f64) = (0.05, 0.25);
+
+/// The least light, in clip levels of the lens plane, that the share of [`EXTRA_INFLOW_RAMP`] divides by (a black
+/// pixel is not given every faint tail of a light).
+pub const EXTRA_INFLOW_FLOOR: f64 = 1e-3;
+
+/// L1 left a pixel as it is when its output is within this share of a clip level of its input in every
+/// channel (1 at the first number, 0 from the second, a smoothstep between): the pixel's own light stays where
+/// it is, and the headroom of a clipped light is spread from it (`light.rs`).
+pub const L1_UNCHANGED_RAMP: (f64, f64) = (1e-4, 1e-3);
+
 /// The highlights `H` are the restored light weighted by a soft knee that is 0 at this fraction of the clip
 /// level and 1 at the clip level.
 pub const KNEE_START: f64 = 0.5;
@@ -341,12 +379,16 @@ pub const STREAK_HALO_WIDTH: f64 = 4.0;
 
 /// The reach of a streak grows with the logarithm of the light's energy: `STREAK_REACH_AT_E0` (of the attachment's
 /// reach) at the energy `STREAK_REACH_E0`, `STREAK_REACH_PER_DECADE` more for every factor 10, at least
-/// `STREAK_REACH_MIN` and at most 1.
+/// `STREAK_REACH_MIN` and at most 1. The law passes through the smallest star that draws one (0.3 at an energy of
+/// 0.014) and the moon of a dark night sky (0.82 at 0.5), and reaches 1 at an energy of 2.6, a sun or a lit tree:
+/// before (0.5 and 0.5 per decade) every light above 0.45 had the full reach, and the moon's streak added 2 codes
+/// or more over 57 % of the frame's width at Anamorphic 100 (60 % at Vintage 100 / 100 / 100), now 48 % (49 %)
+/// (`docs/21`, *As built (the moon's reach)*).
 pub const STREAK_REACH_E0: f64 = 0.045;
 /// See [`STREAK_REACH_E0`].
-pub const STREAK_REACH_AT_E0: f64 = 0.5;
+pub const STREAK_REACH_AT_E0: f64 = 0.47;
 /// See [`STREAK_REACH_E0`].
-pub const STREAK_REACH_PER_DECADE: f64 = 0.5;
+pub const STREAK_REACH_PER_DECADE: f64 = 0.33;
 /// See [`STREAK_REACH_E0`].
 pub const STREAK_REACH_MIN: f64 = 0.3;
 
@@ -569,8 +611,45 @@ pub const FEATHER_MIN_PX: usize = 2;
 pub const FEATHER_MAX_PX: usize = 96;
 
 /// Pixels farther than this from the edge of a gather's reach are not read: a safety margin for the bilinear
-/// neighbour of the last sample.
-pub const GATHER_PAD: usize = 1;
+/// neighbour of the last sample and the window of the restored grain ([`GRAIN_HALF`]).
+pub const GATHER_PAD: usize = 5;
+
+/// Half-width of the window of the grain a gather gives back: a pixel's own grain is its picture minus the mean of the
+/// `2 GRAIN_HALF + 1` pixels around it, square roots (`docs/21` section 4, L1, *As built (round 4)*). The grain of a
+/// photo is correlated over two or three pixels (demosaicing and the reduction), and what the eye reads is the grain
+/// of the output, which is the lens plane averaged by its reduction (a plane of twice the frame's size shows only
+/// its coarser half), so the window has to be wide for the residual to hold all of it. Of the water of 39211, on
+/// the output scale, 7 x 7 gives back 0.89 of the grain, 9 x 9 0.96, 11 x 11 0.99 and 13 x 13 1.00.
+pub const GRAIN_HALF: usize = 5;
+
+/// The grain a gather gives back is held to the noise the photo has: a residual of up to this many noise units
+/// (the detector's estimate, the noise of the square-root luminance, which is a mean of the channels: one
+/// channel's is about 1.6 times as large, a white-balanced red or blue more) is grain and goes back whole, ...
+pub const GRAIN_GATE_FROM: f64 = 6.0;
+
+/// ... and a larger one (the crisp rim of a defocused disc, a speck of detail: not grain) goes back less, none from
+/// this many units on (a smoothstep between).
+pub const GRAIN_GATE_TO: f64 = 12.0;
+
+/// A pixel in the wedge beside a sharp subject (the ramp under 1) whose square-root luminance stands above the picture
+/// on both sides of it, this share of its own line away along the gather, is a thin bright thing, narrower than its
+/// line, and is held back (`docs/21` section 4, L1, *As built (round 4)*): at least [`THIN_MIN_PX`] and at most the
+/// feather. (Above the mean of the two sides, the bright side of every blurred edge near a subject was held back
+/// as well and gained a crisp rim; 0.35 of the line left a hook at the end of the leaf of 59499, 0.5 does not.)
+pub const THIN_SCALE: f64 = 0.5;
+
+/// See [`THIN_SCALE`]: the least distance, in pixels of the tile's scale.
+pub const THIN_MIN_PX: f64 = 2.0;
+
+/// See [`THIN_SCALE`]: the excess over the brighter side (square-root units) from which a pixel starts to be held back,
+/// at least [`THIN_NOISE`] noise units (the end of the leaf of 59499 stands 0.05 above its ground) ...
+pub const THIN_FROM: f64 = 0.009;
+
+/// ... and the noise units that make the least start of the hold (the detector's estimate, see [`GRAIN_GATE_FROM`]).
+pub const THIN_NOISE: f64 = 6.0;
+
+/// ... and the hold is complete at this many times the start.
+pub const THIN_SPAN: f64 = 4.0;
 
 /// The least colour noise, in square-root units, the upsampling and the sharp-edge test assume.
 pub const NOISE_FLOOR: f64 = 0.0015;

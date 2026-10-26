@@ -387,11 +387,11 @@ fn files_named_by_the_profiles_exist_and_match_their_provenance() {
         assert_eq!(curves.len(), 81);
         let exact = s.registry().exact_body(&p.id).unwrap();
         assert_eq!(curves.model(), exact.model, "{}", p.id);
-        assert_eq!(p.version, semver::Version::new(1, 0, 0));
+        assert_eq!(p.version, semver::Version::new(1, 1, 0));
     }
     // The target's files exist and match the hashes it records.
     let t = s.target();
-    assert_eq!(t.version, semver::Version::new(1, 0, 0));
+    assert_eq!(t.version, semver::Version::new(1, 1, 0));
     for (name, digest) in &t.provenance.sha256 {
         assert_eq!(
             &sha256_file(&root.join("alexa").join(name)),

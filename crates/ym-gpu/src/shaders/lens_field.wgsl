@@ -20,7 +20,9 @@
 // two windows build equal texels where they overlap.
 //
 // Bindings: 0 uniform, 1 tables (header and cell tables, `ym_lens::device::FieldTablesData`), 2 pyramid,
-// 3 the input planes, 4 the output planes, 5 the gather (read by lf_finish).
+// 3 the input planes, 4 the output planes, 5 the gather (read by lf_finish). With `ex.x` 2 the gather kernel
+// reads the pyramid of the extra light (*As built (the headroom of a clipped light)*) and adds it to what the
+// output planes hold, by the share the lens moves to the pixel.
 
 struct FieldU {
     zero: vec4<u32>,            // x: always 0 (the opaque word of the barrier)
@@ -35,6 +37,7 @@ struct FieldU {
     gs: vec4<u32>,              // the gather: row stride, plane length
     lvl: array<vec4<i32>, 13>,  // per level: offset in the pyramid (vec4 units), width, height
     org: array<vec4<i32>, 13>,  // per level: column and row of its first texel (blocks of that level)
+    ex: vec4<u32>,              // x: 2 when the gather is the extra light, added to the output planes; 0 otherwise
 };
 
 @group(0) @binding(0) var<uniform> pu: FieldU;
@@ -313,6 +316,31 @@ fn lf_gather_pixel(i: i32, j: i32, k: LfPix) -> vec3<f32> {
     return acc;
 }
 
+// True when the reach of the pixel's gather holds any of the extra light: the coarsest level of its pyramid has
+// the means of blocks of 2^lmax pixels of a picture that is never negative, which are 0 over a block with no
+// light (the CPU reference tests the pixels themselves, `ym_lens::field::Occupancy`; a pixel skipped here is 0
+// there too).
+fn lf_has_light(i: i32, j: i32, k: LfPix) -> bool {
+    let lmax = u32(pu.ints.z);
+    let level = lf_level(k.omega, lmax);
+    let reach = i32(ceil(k.omega * 1.4142135)) + i32(ceil(1.5 * f32(1u << level))) + 3;
+    let l = pu.lvl[lmax];
+    let o = pu.org[lmax];
+    let tx0 = max((i - reach) >> lmax, o.x);
+    let tx1 = min((i + reach) >> lmax, o.x + l.y - 1);
+    let ty0 = max((j - reach) >> lmax, o.y);
+    let ty1 = min((j + reach) >> lmax, o.y + l.z - 1);
+    for (var ty = ty0; ty <= ty1; ty = ty + 1) {
+        for (var tx = tx0; tx <= tx1; tx = tx + 1) {
+            let t = pyr[u32(l.x) + u32(ty - o.y) * u32(l.y) + u32(tx - o.x)];
+            if (t.x != 0.0 || t.y != 0.0 || t.z != 0.0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 fn lf_pyramid_main(gid: vec3<u32>) {
     let lev = dst_level();
     let l = pu.lvl[lev];
@@ -352,8 +380,33 @@ fn lf_gather_main(gid: vec3<u32>) {
     let i = pu.win.x + i32(gid.x);
     let j = pu.win.y + i32(gid.y);
     let k = lf_pixel(i, j);
-    let px = lf_gather_pixel(i, j, k);
     let at = gid.y * pu.dst.x + gid.x;
+    if (pu.ex.x == 2u) {
+        // The extra light: its gather, added to the picture's gather the output planes hold by the share mu of how
+        // much of it the lens moves to the pixel (ym_lens::field::add_inflow). A pixel with no kernel gets none.
+        if (k.omega == 0.0 || !lf_has_light(i, j, k)) {
+            return;
+        }
+        let more = lf_gather_pixel(i, j, k);
+        if (all(more == vec3<f32>(0.0))) {
+            return;
+        }
+        let base = vec3<f32>(dst[at], dst[pu.dst.y + at], dst[2u * pu.dst.y + at]);
+        var ratio = 0.0;
+        for (var c = 0u; c < 3u; c = c + 1u) {
+            ratio = max(ratio, more[c] / max(base[c], LF_INFLOW_FLOOR));
+        }
+        let t = clamp((ratio - LF_INFLOW_FROM) / (LF_INFLOW_TO - LF_INFLOW_FROM), 0.0, 1.0);
+        let mu = t * t * (3.0 - 2.0 * t);
+        if (mu > 0.0) {
+            let sum = base + mu * more;
+            dst[at] = sum.x;
+            dst[pu.dst.y + at] = sum.y;
+            dst[2u * pu.dst.y + at] = sum.z;
+        }
+        return;
+    }
+    let px = lf_gather_pixel(i, j, k);
     if (pu.dst.z == 1u) {
         dst[at] = px.x * k.gain;
         dst[pu.dst.y + at] = px.y * k.gain;

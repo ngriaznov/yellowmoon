@@ -7,15 +7,21 @@
 // its own clip level, a smoothstep) raised to the mean of the channels that are not (weighted by how unsaturated
 // they are), by the share it is saturated and the share of the others that are measuring, never lowered.
 //
-// Generated before this text (kernels/lens_light.rs): LL_CLIP_PATTERN, LL_SAT_FROM, LL_SAT_TO.
+// Also the white light weight of the pixel (0 to 1: how much it is a clipped light of a white colour that holds
+// more light than it records), `ym_lens::l3::Restore::light`: a saturated channel counts by how saturated it is,
+// by the share of the others that measure (0.5 of their weight, at most 1) and by how far the others' mean lies
+// above it, from 0 at its own value to 1 at LL_WHITE_RAMP above it; the largest over the channels.
+//
+// Generated before this text (kernels/lens_light.rs): LL_CLIP_PATTERN, LL_SAT_FROM, LL_SAT_TO, LL_WHITE_RAMP.
 
 fn ll_smooth(t: f32) -> f32 {
     let u = clamp(t, 0.0, 1.0);
     return u * u * (3.0 - 2.0 * u);
 }
 
-// `clip` is g0 of each channel (0: no clip level), `ramp` the clip test's ramp (from, to).
-fn ll_light_colour(v: vec3<f32>, clip: vec3<f32>, ramp: vec2<f32>) -> vec3<f32> {
+// `clip` is g0 of each channel (0: no clip level), `ramp` the clip test's ramp (from, to). The colour of the
+// light in xyz and the white light weight in w.
+fn ll_light(v: vec3<f32>, clip: vec3<f32>, ramp: vec2<f32>) -> vec4<f32> {
     var m = 1.0e30;
     var hi = -1.0e30;
     var lo = 1.0e30;
@@ -44,9 +50,10 @@ fn ll_light_colour(v: vec3<f32>, clip: vec3<f32>, ramp: vec2<f32>) -> vec3<f32> 
         }
     }
     if (!any_sat) {
-        return y;
+        return vec4<f32>(y, 0.0);
     }
     var out = y;
+    var white = 0.0;
     for (var c = 0u; c < 3u; c = c + 1u) {
         if (s[c] <= 0.0) {
             continue;
@@ -64,7 +71,17 @@ fn ll_light_colour(v: vec3<f32>, clip: vec3<f32>, ramp: vec2<f32>) -> vec3<f32> 
             continue;
         }
         let estimate = sum / weight;
-        out[c] = y[c] + s[c] * 0.5 * weight * max(estimate - y[c], 0.0);
+        let lift = max(estimate - y[c], 0.0);
+        out[c] = y[c] + s[c] * 0.5 * weight * lift;
+        if (y[c] > 0.0) {
+            let above = clamp(lift / (LL_WHITE_RAMP * y[c]), 0.0, 1.0);
+            white = max(white, s[c] * min(0.5 * weight, 1.0) * above);
+        }
     }
-    return out;
+    return vec4<f32>(out, white);
+}
+
+// The colour of the light of one pixel (the first three lanes of ll_light).
+fn ll_light_colour(v: vec3<f32>, clip: vec3<f32>, ramp: vec2<f32>) -> vec3<f32> {
+    return ll_light(v, clip, ramp).xyz;
 }
