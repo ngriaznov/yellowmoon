@@ -76,7 +76,7 @@ Every JPEG, TIFF and PNG embeds an ICC profile for its colour space: sRGB (IEC 6
 | Property | Example |
 |---|---|
 | `ym:PipelineVersion` | `0.5.1` |
-| `ym:Profile`, `ym:ProfileVersion`, `ym:ProfileMatch` | `sony-ilce-7rm4`, `1.1.0`, `default` |
+| `ym:Profile`, `ym:ProfileVersion`, `ym:ProfileMatch` | `sony-ilce-7rm4`, `1.2.0`, `default` |
 | `ym:Look`, `ym:LookSHA256`, `ym:LookIntensity` | `arri:3000:…`, `…`, `100` |
 | `ym:DisplayTransform` | `aces2-sdr100-p3lim` or `arri-display:…` |
 | `ym:Models` | `jdd 1.2.0 (sha256…)`; with a lens (`docs/21`) `lens vintage 1 (sha256:0123456789ab)`, and `, anamorphic 1 (sha256:…)` after it when Anamorphic is above 0: the lens, its data version and the first 12 hex digits of the SHA-256 of its `lens.json` (and of `anamorphic.json`) from the shipped `data/lenses/SHA256SUMS`, so a file says which lens data made it. Entries are joined with `, `. Absent without a lens (all three amounts at 0, or no lens data), and while the classical demosaic is the only model. |

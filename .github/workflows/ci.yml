@@ -252,10 +252,12 @@ jobs:
       - run: python3 -m training.sensor_map.check_reference
       - run: python3 -m training.sensor_map.evaluate
       - run: python3 -m training.sensor_map.build_profiles --check
-      # The thresholds are unchanged (median 0.5, p95 1.2). Exactly these six lights of the A7R IV are over: LED-V2 (owner,
-      # 2026-10-12) and, with the ALEXA estimate moved (owner, 2026-10-25), the other five. A seventh, or one fewer, fails.
-      - run: python3 -m training.sensor_map.gate --expect-failing blackbody-2850K daylight-5250K daylight-6750K FL3.15 LED-B3 LED-V2
-      # The hue push of the shipped ALEXA curve: its numbers against the committed data (docs/03, The ALEXA estimate).
+      # The thresholds are unchanged (median 0.5, p95 1.2). Exactly these seven lights of the A7R IV are over: LED-V2 (owner,
+      # 2026-10-12), with the ALEXA estimate moved (owner, 2026-10-25) blackbody 2850 K, D 5250 K, D 6750 K, FL3.15 and
+      # LED-B3, and with the push taken to 4.5 degrees (owner, 2026-10-26) LED-RGB1. An eighth, or one fewer, fails.
+      - run: python3 -m training.sensor_map.gate --expect-failing blackbody-2850K daylight-5250K daylight-6750K FL3.15 LED-B3 LED-RGB1 LED-V2
+      # The hue push of the shipped ALEXA curve (4.5 degrees, past the matrix limit by the owner's decision of 2026-10-26):
+      # its numbers against the committed data (docs/03, The ALEXA estimate).
       - run: python3 -m unittest training.alexa.test_push
       - run: python3 -I tools/vectors/lut_vectors.py --check
       - run: python3 -I tools/vectors/aces2_vectors.py --check

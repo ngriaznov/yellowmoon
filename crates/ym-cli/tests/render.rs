@@ -136,7 +136,7 @@ fn json_has_one_object_per_file_in_the_documented_shape_and_order() {
     assert_eq!(v["camera"]["body"], "Sony A7R IV");
     assert_eq!(v["camera"]["model_id"], 375);
     assert_eq!(v["camera"]["profile"], "sony-ilce-7rm4");
-    assert_eq!(v["camera"]["profile_version"], "1.1.0");
+    assert_eq!(v["camera"]["profile_version"], "1.2.0");
     assert_eq!(v["camera"]["match"], "exact");
     assert_eq!(
         v["look"],

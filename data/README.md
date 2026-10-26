@@ -4,7 +4,7 @@ Data that ships inside the app bundle (via `bundle.resources` in `tauri.conf.jso
 
 | Path | What | Licence | Source |
 |---|---|---|---|
-| `alexa/alexa_alev3_estimate_380_780_5.json` | ALEXA ALEV III spectral sensitivity **estimate**, 380–780 nm at 5 nm, rawtoaces-data JSON format; the estimate with a hue push (owner decision 2026-10-25, `docs/03`) | ours, Apache-2.0; derived from AMPAS and Apache data (`NOTICE`) | `research/alexa-ssf/`, `training/alexa/estimate_alexa.py` |
+| `alexa/alexa_alev3_estimate_380_780_5.json` | ALEXA ALEV III spectral sensitivity **estimate**, 380–780 nm at 5 nm, rawtoaces-data JSON format; the estimate with a hue push of 4.5 degrees (owner decisions 2026-10-25 and 2026-10-26, `docs/03`) | ours, Apache-2.0; derived from AMPAS and Apache data (`NOTICE`) | `research/alexa-ssf/`, `training/alexa/estimate_alexa.py` |
 | `alexa/alexa_alev3_estimate_380_780_5.csv` | same curve with min/max/std over the 24-variant ensemble (the variants are without the push) | as above | as above |
 | `alexa/variants.csv` | all 24 ensemble members, without the push (sensitivity tests, training augmentation) | as above | as above |
 | `arri/Alexa_aces_matrix.txt` | ARRI's camera-native → ACES AP0 matrices at 17 CCTs, 13 Nov 2013 | AMPAS licence (`arri/AMPAS-LICENSE.md`); keep the notice | aces-dev v1.3.1 |

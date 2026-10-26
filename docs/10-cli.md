@@ -187,7 +187,7 @@ One object per input file, written when that file finishes, in completion order:
   "input": "/Volumes/A1/DSC04204.ARW",
   "output": "/Users/me/Pictures/Lisbon export/DSC04204_neutral.jpg",
   "status": "ok",
-  "camera": { "body": "Sony A1", "model_id": 384, "profile": "sony-ilce-7rm4", "profile_version": "1.1.0", "match": "default" },
+  "camera": { "body": "Sony A1", "model_id": 384, "profile": "sony-ilce-7rm4", "profile_version": "1.2.0", "match": "default" },
   "look": { "id": "builtin:neutral", "intensity": 100 },
   "auto": { "exposure_ev": 0.81, "white_ev": 0.77, "kelvin": 5450, "tint": 0, "contrast": 15, "saturation": 0,
             "highlights": -20, "shadows": 0, "black": 0, "balance_shadows": [-0.476, -0.275], "balance_highlights": [0, 0],

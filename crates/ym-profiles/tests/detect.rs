@@ -107,7 +107,7 @@ fn the_a1_gets_the_default_profile() {
     assert_eq!(m.profile.as_str(), "sony-ilce-7rm4");
     assert_eq!(m.how, MatchKind::Default);
     assert!(m.is_stand_in());
-    assert_eq!(m.profile_version, semver::Version::new(1, 1, 0));
+    assert_eq!(m.profile_version, semver::Version::new(1, 2, 0));
 }
 
 #[test]
@@ -298,7 +298,7 @@ fn matches_serialise_for_info_json() {
     let m = s.detect("SONY", "ILCE-7C", Some(381));
     let json = serde_json::to_value(&m).unwrap();
     assert_eq!(json["profile"], "sony-ilce-7m3");
-    assert_eq!(json["profile_version"], "1.1.0");
+    assert_eq!(json["profile_version"], "1.2.0");
     assert_eq!(json["how"]["kind"], "sensor_family");
     assert_eq!(json["how"]["via"], "Sony A7 III");
     assert_eq!(json["model_id"], 381);

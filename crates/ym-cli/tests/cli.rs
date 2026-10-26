@@ -135,7 +135,7 @@ fn doctor_says_what_it_includes_and_lists_the_parts() {
         "Render path",
         "Model weights",
         "Camera profiles",
-        "sony-ilce-7rm4 1.1.0",
+        "sony-ilce-7rm4 1.2.0",
         "Looks",
         "2 built in, 0 imported",
         "Preferences",

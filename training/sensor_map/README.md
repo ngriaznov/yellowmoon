@@ -39,7 +39,7 @@ Checks and reports:
 ```bash
 python3 -m training.sensor_map.evaluate            # must PASS: reproduces research/alexa-ssf/out/sony_profiles.csv (research objective)
 python3 -m training.sensor_map.gate                # the M1-05 gate, 11 profiles; exit 1 while any light of the A7R IV is over
-python3 -m training.sensor_map.gate --expect-failing blackbody-2850K daylight-5250K daylight-6750K FL3.15 LED-B3 LED-V2   # exit 0 iff exactly these six are over (the reported failures, below)
+python3 -m training.sensor_map.gate --expect-failing blackbody-2850K daylight-5250K daylight-6750K FL3.15 LED-B3 LED-RGB1 LED-V2   # exit 0 iff exactly these seven are over (the reported failures, below)
 python3 -m training.sensor_map.gate --objective weighted_rgb  # the same run with the superseded objective
 python3 -m training.sensor_map.gate_diagnostics    # capacity of the map families per gate light
 python3 -m training.sensor_map.fit --stability     # reproducibility of the Lab fit (495 fits)
@@ -199,70 +199,74 @@ spectra (`ssf_core` conventions) and the values the interpolation above gives fr
 
 Gate: median ≤ 0.5 and p95 ≤ 1.2 for the A7R IV profile (reported, never loosened). The thresholds were not touched by the decision of 2026-10-12.
 
-**Result for A7R IV (`sony-ilce-7rm4`), shipped Lab objective: three of nine lights pass and six are over, so the gate reports FAIL.**
-LED-V2 is the reported failure the product owner accepted on 2026-10-12 (it was the only light over). The other five came with the owner's decision of
-2026-10-25, "Move ALEXA estimate": the ALEXA estimate the gate scores against now carries a hue push (`training/alexa/estimate_alexa.py`, `docs/03`
-*The ALEXA estimate*), and a white-preserving 3×3 reaches that curve less well. The thresholds are unchanged and CI expects exactly these six lights
-(`--expect-failing`). ΔE00, median / p95 over the 99 CES; "before the move" is the estimate of 2026-10-11 (version 1.0.0 of the profiles):
+**Result for A7R IV (`sony-ilce-7rm4`), shipped Lab objective: two of nine lights pass and seven are over, so the gate reports FAIL.**
+LED-V2 is the reported failure the product owner accepted on 2026-10-12 (it was the only light over). Five more came with the owner's decision of
+2026-10-25, "Move ALEXA estimate", and LED-RGB1 with the decision of 2026-10-26, "4.5°": the ALEXA estimate the gate scores against now carries a hue push
+of 4.5 degrees (1.5 degrees on 2026-10-25; `training/alexa/estimate_alexa.py`, `docs/03` *The ALEXA estimate*), and a white-preserving 3×3 reaches that curve
+less well the further the push goes. The thresholds are unchanged and CI expects exactly these seven lights (`--expect-failing`). ΔE00, median / p95 over the
+99 CES; "before the move" is the estimate of 2026-10-11 (version 1.0.0 of the profiles), "1.5 degrees" the push of 2026-10-25 (1.1.0):
 
-| Light | Class | CCT (K) | **Gate fit (Lab)** | | Before the move | Previous (weighted RGB) | No mapping | Lab 3×3 fitted at the light |
-|---|---|---|---|---|---|---|---|---|
-| blackbody 2850 K | tungsten | 2850.0 | **0.464 / 1.505** | **FAIL** | 0.300 / 1.045 | 0.519 / 1.363 (over) | 1.214 / 2.473 | 0.464 / 1.505 |
-| D 5250 K | daylight | 5250.0 | **0.453 / 1.441** | **FAIL** | 0.372 / 1.108 | 0.598 / 1.296 (over) | 1.348 / 3.267 | 0.453 / 1.441 |
-| D 6750 K | daylight | 6750.0 | **0.502 / 1.448** | **FAIL** | 0.417 / 1.170 | 0.637 / 1.334 (over) | 1.734 / 3.665 | 0.502 / 1.448 |
-| FL3.1 | fluorescent | 2931.5 | **0.375 / 1.093** | pass | 0.312 / 0.997 | 0.426 / 1.013 | 1.204 / 2.349 | 0.360 / 1.103 |
-| FL3.8 | fluorescent | 4005.5 | **0.282 / 0.745** | pass | 0.206 / 0.593 | 0.289 / 0.753 | 1.100 / 2.012 | 0.267 / 0.756 |
-| FL3.15 | fluorescent | 6507.8 | **0.520 / 1.367** | **FAIL** | 0.304 / 1.098 | 0.589 / 1.367 (over) | 1.631 / 3.481 | 0.532 / 1.381 |
-| LED-B3 | led | 4102.5 | **0.420 / 1.245** | **FAIL** | 0.235 / 1.015 | 0.477 / 1.171 | 1.379 / 2.813 | 0.410 / 1.259 |
-| LED-RGB1 | led | 2839.8 | **0.447 / 1.005** | pass | 0.316 / 0.984 | 0.484 / 0.980 | 1.000 / 2.016 | 0.284 / 0.981 |
-| LED-V2 | led | 4069.5 | **0.846 / 1.681** | **FAIL** | 0.759 / 1.515 | 0.934 / 1.546 (over) | 1.197 / 2.841 | 0.634 / 1.651 |
+| Light | Class | CCT (K) | **Gate fit (Lab), 4.5 degrees** | | Before the move | 1.5 degrees | Previous (weighted RGB), 4.5 degrees | No mapping | Lab 3×3 fitted at the light |
+|---|---|---|---|---|---|---|---|---|---|
+| blackbody 2850 K | tungsten | 2850.0 | **0.662 / 2.103** | **FAIL** | 0.300 / 1.045 | 0.464 / 1.505 | 0.758 / 1.987 (over) | 1.142 / 2.783 | 0.664 / 2.103 |
+| D 5250 K | daylight | 5250.0 | **0.715 / 2.010** | **FAIL** | 0.372 / 1.108 | 0.453 / 1.441 | 0.791 / 1.883 (over) | 1.663 / 3.804 | 0.714 / 2.009 |
+| D 6750 K | daylight | 6750.0 | **0.715 / 1.962** | **FAIL** | 0.417 / 1.170 | 0.502 / 1.448 | 0.799 / 1.816 (over) | 1.894 / 4.072 | 0.715 / 1.962 |
+| FL3.1 | fluorescent | 2931.5 | **0.402 / 1.188** | pass | 0.312 / 0.997 | 0.375 / 1.093 | 0.443 / 1.253 (over) | 1.352 / 2.832 | 0.416 / 1.205 |
+| FL3.8 | fluorescent | 4005.5 | **0.401 / 1.082** | pass | 0.206 / 0.593 | 0.282 / 0.745 | 0.383 / 1.151 | 1.079 / 2.714 | 0.388 / 1.072 |
+| FL3.15 | fluorescent | 6507.8 | **0.687 / 1.878** | **FAIL** | 0.304 / 1.098 | 0.520 / 1.367 | 0.768 / 1.756 (over) | 1.750 / 3.804 | 0.697 / 1.889 |
+| LED-B3 | led | 4102.5 | **0.521 / 1.499** | **FAIL** | 0.235 / 1.015 | 0.420 / 1.245 | 0.574 / 1.428 (over) | 1.674 / 3.554 | 0.483 / 1.527 |
+| LED-RGB1 | led | 2839.8 | **0.555 / 1.369** | **FAIL** | 0.316 / 0.984 | 0.447 / 1.005 | 0.637 / 1.361 (over) | 0.732 / 1.759 | 0.362 / 1.084 |
+| LED-V2 | led | 4069.5 | **0.806 / 1.894** | **FAIL** | 0.759 / 1.515 | 0.846 / 1.681 | 0.801 / 1.699 (over) | 1.337 / 3.078 | 0.637 / 1.862 |
 
-Worst median 0.846, worst p95 1.681 (both LED-V2; 0.759 / 1.515 before the move). Four things to know:
+Worst median 0.806 (LED-V2), worst p95 2.103 (blackbody 2850 K); 0.846 / 1.681 at 1.5 degrees (both LED-V2) and 0.759 / 1.515 before the move. Four things to know:
 
-- **The new failures are a capacity limit of the white-preserving 3×3, not an interpolation error.** The 3×3 fitted at the gate light itself is over the gate too
-  (last column): blackbody 2850 K 0.464 / 1.505, D 5250 K 0.453 / 1.441, D 6750 K 0.502 / 1.448, FL3.15 0.532 / 1.381, LED-B3 0.410 / 1.259, LED-V2 0.634 / 1.651.
-  For tungsten and daylight the blend equals that map to 0.001. A map that is not white-preserving does better on the same data (table below).
-- **The same six lights fail under the superseded weighted-RGB objective** except LED-B3 (0.477 / 1.171, a pass); its LED-V2 is 0.934 / 1.546.
-- **The Lab objective still buys median at the expense of p95.** It minimises the Euclidean Lab error (ΔE76-like) while the gate scores ΔE00: the median falls on all
-  nine lights (by 0.006 to 0.144) and the p95 rises on seven (by 0.02 to 0.15), stays on FL3.15 and falls by 0.007 on FL3.8.
-- **Table blend vs a fit at the light for LED.** LED-RGB1 (+0.163 in the median) and LED-V2 (+0.213) pay for the gate refit leaving the LED class with six lights, which is
-  also why the shipped tables (all nine on grid, `shipped_fit` in `gate.json`) are better than the gate numbers for these two.
+- **The failures are a capacity limit of the white-preserving 3×3, not an interpolation error.** The 3×3 fitted at the gate light itself is over the gate too for six of the seven
+  (last column): blackbody 2850 K 0.664 / 2.103, D 5250 K 0.714 / 2.009, D 6750 K 0.715 / 1.962, FL3.15 0.697 / 1.889, LED-B3 0.483 / 1.527, LED-V2 0.637 / 1.862
+  (and FL3.1 by 0.005 of p95, 0.416 / 1.205, which the table blend passes). LED-RGB1 is the exception: its own 3×3 passes (0.362 / 1.084), so the table blend of the gate refit counts for it (below).
+  For tungsten and daylight the blend equals that map to 0.003. A map that is not white-preserving does better on the same data (table below).
+- **Eight of the nine lights fail under the superseded weighted-RGB objective** (all but FL3.8: 0.383 / 1.151), with LED-V2 at 0.801 / 1.699.
+- **The Lab objective still buys median at the expense of p95.** It minimises the Euclidean Lab error (ΔE76-like) while the gate scores ΔE00: the median falls on seven of the
+  nine lights (by 0.04 to 0.10) and rises on FL3.8 (by 0.018) and LED-V2 (by 0.005); the p95 rises on seven (by 0.008 to 0.195) and falls on FL3.1 (by 0.064) and FL3.8 (by 0.069).
+- **Table blend vs a fit at the light for LED.** LED-RGB1 (+0.193 in the median) and LED-V2 (+0.169) pay for the gate refit leaving the LED class with six lights, which is
+  also why the shipped tables (all nine on grid, `shipped_fit` in `gate.json`) are better than the gate numbers for these two: LED-RGB1 passes through them (0.362 / 1.084), LED-V2 does not (0.637 / 1.862).
 
 `gate_diagnostics.py` shows what other families would do on the same data (median / p95, fitted at the light):
 
 | Light | **Lab-optimal white-preserving 3×3 (shipped)** | weighted RGB white-preserving 3×3 (previous) | free 3×3 (white not preserved) | root-polynomial (white not preserved) |
 |---|---|---|---|---|
-| blackbody 2850 K | 0.464 / 1.505 | 0.517 / 1.363 | 0.504 / 1.086 | 0.432 / 1.165 |
-| D 5250 K | 0.453 / 1.441 | 0.597 / 1.296 | 0.498 / 1.072 | 0.453 / 1.158 |
-| D 6750 K | 0.502 / 1.448 | 0.637 / 1.334 | 0.500 / 1.078 | 0.431 / 1.121 |
-| FL3.1 | 0.360 / 1.103 | 0.434 / 1.027 | 0.398 / 0.964 | 0.331 / 0.934 |
-| FL3.8 | 0.267 / 0.756 | 0.291 / 0.730 | 0.279 / 0.857 | 0.217 / 0.694 |
-| FL3.15 | 0.532 / 1.381 | 0.559 / 1.278 | 0.521 / 1.082 | 0.408 / 1.097 |
-| LED-B3 | 0.410 / 1.259 | 0.449 / 1.111 | 0.472 / 0.957 | 0.359 / 0.992 |
-| LED-RGB1 | 0.284 / 0.981 | 0.321 / 0.845 | 0.354 / 0.735 | 0.273 / 0.815 |
-| LED-V2 | 0.634 / 1.651 | 0.790 / 1.487 | 0.512 / 1.188 | 0.513 / 1.512 |
+| blackbody 2850 K | 0.664 / 2.103 | 0.758 / 1.987 | 0.754 / 1.557 | 0.533 / 1.585 |
+| D 5250 K | 0.714 / 2.009 | 0.790 / 1.882 | 0.741 / 1.365 | 0.530 / 1.376 |
+| D 6750 K | 0.715 / 1.962 | 0.799 / 1.816 | 0.718 / 1.462 | 0.540 / 1.368 |
+| FL3.1 | 0.416 / 1.205 | 0.438 / 1.241 | 0.416 / 1.218 | 0.343 / 1.120 |
+| FL3.8 | 0.388 / 1.072 | 0.381 / 1.166 | 0.380 / 1.318 | 0.300 / 1.007 |
+| FL3.15 | 0.697 / 1.889 | 0.731 / 1.664 | 0.700 / 1.424 | 0.523 / 1.284 |
+| LED-B3 | 0.483 / 1.527 | 0.554 / 1.373 | 0.577 / 1.160 | 0.423 / 1.166 |
+| LED-RGB1 | 0.362 / 1.084 | 0.369 / 0.949 | 0.430 / 0.899 | 0.299 / 0.911 |
+| LED-V2 | 0.637 / 1.862 | 0.748 / 1.726 | 0.686 / 1.306 | 0.527 / 1.340 |
 
-The root-polynomial map (not white-preserving) would bring five of the six lights back under the gate (blackbody 2850 K 0.432 / 1.165, D 5250 K 0.453 / 1.158,
-D 6750 K 0.431 / 1.121, FL3.15 0.408 / 1.097, LED-B3 0.359 / 0.992) and leave LED-V2 at 0.513 / 1.512. That is the optional upgrade of `docs/02` §C2 (a tiny model
-predicting the coefficients of a non-linear map); it is not applied, and it is the owner's decision whether to build it.
+The root-polynomial map (not white-preserving) would now bring only two of the seven lights back under the gate (LED-B3 0.423 / 1.166 and LED-RGB1 0.299 / 0.911) and leave blackbody 2850 K at
+0.533 / 1.585, D 5250 K at 0.530 / 1.376, D 6750 K at 0.540 / 1.368, FL3.15 at 0.523 / 1.284 and LED-V2 at 0.527 / 1.340 (at 1.5 degrees it would have cleared five of six). A free 3×3 would clear only
+LED-RGB1. That is the optional upgrade of `docs/02` §C2 (a tiny model predicting the coefficients of a non-linear map); it is not
+applied, and it no longer closes the gap the push opened: that is the owner's decision (`docs/STATUS.md`, Question 27).
 
 **Other ten profiles** (worst median / worst p95 over the nine gate lights, with the lights over the gate; the gate itself applies
-to A7R IV only). Full tables in `testdata/out/sensor_map/gate.json` after running the gate. "Before the move" is the estimate of 2026-10-11.
+to A7R IV only). Full tables in `testdata/out/sensor_map/gate.json` after running the gate. "Before the move" is the estimate of 2026-10-11; "1.5 degrees" the push of 2026-10-25 (with the number of lights over).
 
-| Body | Before the move (Lab) | Previous (weighted RGB) | **Shipped (Lab)** | Lights over the gate |
-|---|---|---|---|---|
-| A7 III | 0.551 / 1.202 (over: LED-V2) | 0.782 / 1.366 | **0.718 / 1.380** | 5 of 9: blackbody 2850 K, D 5250 K, D 6750 K, FL3.15, LED-V2 |
-| A7 IV | 0.767 / 1.484 (over: LED-V2) | 0.933 / 1.554 | **0.870 / 1.649** | 5 of 9: blackbody 2850 K, D 5250 K, D 6750 K, FL3.15, LED-V2 |
-| A7C II | 0.898 / 1.673 (over: D 6750 K, LED-V2) | 1.063 / 1.751 | **0.987 / 1.835** | 6 of 9: blackbody 2850 K, D 5250 K, D 6750 K, FL3.15, LED-B3, LED-V2 |
-| A7R II | 0.492 / 1.030 (over: none) | 0.674 / 1.222 | **0.651 / 1.239** | LED-V2 (0.651 / 1.239) |
-| A7R III | 0.337 / 0.981 (over: none) | 0.633 / 1.284 | **0.591 / 1.220** | FL3.15 (0.468 / 1.220), LED-V2 (0.591 / 1.185) |
-| A7S II | 0.622 / 1.868 (over: 8 of 9) | 0.787 / 2.022 | **0.779 / 1.905** | all 9 |
-| A7S III | 0.443 / 1.199 (over: none) | 0.740 / 1.401 | **0.645 / 1.378** | 5 of 9: blackbody 2850 K, D 5250 K, D 6750 K, FL3.15, LED-V2 |
-| A9 | 1.159 / 2.208 (over: D 5250 K, D 6750 K, LED-V2) | 1.288 / 2.390 | **1.245 / 2.414** | 6 of 9: blackbody 2850 K, D 5250 K, D 6750 K, FL3.1, FL3.15, LED-V2 |
-| A6400 | 0.677 / 1.685 (over: LED-V2) | 0.902 / 1.718 | **0.797 / 1.758** | 4 of 9: D 6750 K, FL3.15, LED-B3, LED-V2 |
-| RX100 IV | 1.012 / 2.526 (over: 6 of 9) | 0.862 / 2.044 | **0.832 / 1.993** | LED-RGB1 (0.531 / 1.218), LED-V2 (0.832 / 1.993) |
+| Body | Before the move (Lab) | 1.5 degrees (Lab) | Previous (weighted RGB), 4.5 degrees | **Shipped (Lab), 4.5 degrees** | Lights over the gate |
+|---|---|---|---|---|---|
+| A7 III | 0.551 / 1.202 (over: LED-V2) | 0.718 / 1.380 (5 of 9) | 0.837 / 1.811 | **0.848 / 1.846** | 8 of 9: blackbody 2850 K, D 5250 K, D 6750 K, FL3.8, FL3.15, LED-B3, LED-RGB1, LED-V2 |
+| A7 IV | 0.767 / 1.484 (over: LED-V2) | 0.870 / 1.649 (5 of 9) | 0.784 / 1.904 | **0.763 / 1.950** | 7 of 9: blackbody 2850 K, D 5250 K, D 6750 K, FL3.15, LED-B3, LED-RGB1, LED-V2 |
+| A7C II | 0.898 / 1.673 (over: D 6750 K, LED-V2) | 0.987 / 1.835 (6 of 9) | 0.833 / 1.836 | **0.799 / 1.882** | 8 of 9: blackbody 2850 K, D 5250 K, D 6750 K, FL3.1, FL3.15, LED-B3, LED-RGB1, LED-V2 |
+| A7R II | 0.492 / 1.030 (over: none) | 0.651 / 1.239 (LED-V2) | 0.724 / 1.878 | **0.751 / 2.008** | all 9 |
+| A7R III | 0.337 / 0.981 (over: none) | 0.591 / 1.220 (FL3.15, LED-V2) | 0.886 / 2.062 | **0.892 / 2.169** | 8 of 9: blackbody 2850 K, D 5250 K, D 6750 K, FL3.8, FL3.15, LED-B3, LED-RGB1, LED-V2 |
+| A7S II | 0.622 / 1.868 (over: 8 of 9) | 0.779 / 1.905 (all 9) | 1.160 / 2.450 | **1.167 / 2.261** | all 9 |
+| A7S III | 0.443 / 1.199 (over: none) | 0.645 / 1.378 (5 of 9) | 0.843 / 1.961 | **0.884 / 1.991** | 8 of 9: blackbody 2850 K, D 5250 K, D 6750 K, FL3.8, FL3.15, LED-B3, LED-RGB1, LED-V2 |
+| A9 | 1.159 / 2.208 (over: D 5250 K, D 6750 K, LED-V2) | 1.245 / 2.414 (6 of 9) | 1.032 / 1.845 | **0.938 / 1.900** | 8 of 9: blackbody 2850 K, D 5250 K, D 6750 K, FL3.1, FL3.15, LED-B3, LED-RGB1, LED-V2 |
+| A6400 | 0.677 / 1.685 (over: LED-V2) | 0.797 / 1.758 (4 of 9) | 0.813 / 1.779 | **0.829 / 1.694** | 7 of 9: blackbody 2850 K, D 5250 K, D 6750 K, FL3.15, LED-B3, LED-RGB1, LED-V2 |
+| RX100 IV | 1.012 / 2.526 (over: 6 of 9) | 0.832 / 1.993 (LED-RGB1, LED-V2) | 1.294 / 2.854 | **1.286 / 2.835** | D 6750 K (0.555 / 1.209), LED-V2 (1.286 / 2.835) |
 
-The worst median is LED-V2 for every body. No body passes all nine lights (A7R II, A7R III and A7S III did before the move; so did none of the other eight).
+The worst median is LED-V2 for every body; the worst p95 is LED-V2 for six, blackbody 2850 K for four and D 5250 K for the A6400.
+No body passes all nine lights (A7R II, A7R III and A7S III did before the move; none did at 1.5 degrees either).
 
 ## Reproducing the "own" and "A7R IV" numbers
 

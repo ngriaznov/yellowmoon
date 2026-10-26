@@ -416,8 +416,8 @@ fn user_white_follows_the_four_thousand_kelvin_rule() {
     assert_eq!(above, p.white.daylight_white(4000.0));
     let red_step = above[0] / below[0] - 1.0;
     let blue_step = above[2] / below[2] - 1.0;
-    assert!((red_step + 0.010).abs() < 0.002, "red {red_step}");
-    assert!((blue_step + 0.036).abs() < 0.003, "blue {blue_step}");
+    assert!((red_step + 0.0075).abs() < 0.002, "red {red_step}");
+    assert!((blue_step + 0.040).abs() < 0.003, "blue {blue_step}");
 }
 
 #[test]

@@ -12,9 +12,12 @@ import argparse
 import hashlib
 import sys
 
+from training.alexa import push_decisions as pd
 from training.common import jsonfmt, paths
 
-TARGET_VERSION = "1.1.0"  # 1.0.0: the estimate without the hue push (owner decision 2026-10-25 moved it)
+#: 1.0.0: the estimate without the hue push; 1.1.0: the push of 1.5 degrees (owner decision 2026-10-25, "Move ALEXA
+#: estimate"); 1.2.0: the push of 4.5 degrees, past the matrix limit (owner decision 2026-10-26, "4.5°").
+TARGET_VERSION = "1.2.0"
 
 
 def sha256(path) -> str:
@@ -23,6 +26,11 @@ def sha256(path) -> str:
 
 def build() -> dict:
     d = paths.ALEXA_DIR
+    deg = pd.DEFAULT_PUSH_DEG
+    record = pd.DECISIONS[deg]
+    beyond = record["beyond_matrix_limit"]
+    assert beyond is not None, "the shipped push is past the matrix limit: its decision must be recorded"
+    lo, hi = beyond["ensemble_matrix_rms_range"]
     return {
         "id": "alexa-alev3-estimate",
         "version": TARGET_VERSION,
@@ -37,13 +45,17 @@ def build() -> dict:
             "method": "Curves whose own optimal Academy P-2013-001-style matrices equal ARRI's published "
                       "native-to-ACES AP0 matrices at 17 CCTs (2000-11000 K), under a 4-component PCA prior "
                       "built from the 52 measured camera curves in rawtoaces-data (all 52, penalty 1, "
-                      "rawtoaces illuminants), moved by a hue push (owner decision 2026-10-25, \"Move ALEXA "
-                      "estimate\"): of the curves in that family, the one that renders the 47 orange, red and "
-                      "ochre training reflectances (Lab hue 25-95 degrees, chroma above 12) 1.5 degrees of "
-                      "CIELAB hue toward yellow at 5200 K through ARRI's matrix, with the matrix RMS (0.0092 per "
-                      "coefficient, 0.0067 without the push) within the maximum of the 24-variant ensemble "
-                      "(0.0064 to 0.0093). The 24 variants in variants.csv and the band in the ensemble CSV are "
-                      "without the push; the estimate without it is `estimate_alexa --no-push`.",
+                      "rawtoaces illuminants), moved by a hue push of " + f"{deg:g}" + " degrees (" + record["decision"] + ", " + record["reason"] + "): the "
+                      "curve that renders the 47 orange, red and ochre training reflectances (Lab hue 25-95 "
+                      "degrees, chroma above 12) " + f"{deg:g}" + " degrees of CIELAB hue toward yellow at 5200 K through "
+                      "ARRI's matrix. Its matrix RMS is " + f"{beyond['matrix_rms']:.4f}" + " per coefficient (0.0067 without the "
+                      "push), past the maximum of the 24-variant ensemble (" + f"{lo:.4f} to {hi:.4f}" + "): "
+                      "beyond_matrix_limit, the owner's recorded decision (" + beyond["decision"] + ", matrix RMS "
+                      "accepted " + f"{beyond['matrix_rms']:.4f}" + "; training/alexa/push_decisions.py), not a fit that ARRI's "
+                      "matrices ask for. The "
+                      "24 variants in variants.csv and the band in the ensemble CSV are without the push; the "
+                      "estimate without it is `estimate_alexa --no-push`, the one with the push of 1.5 degrees "
+                      "`estimate_alexa --push-deg 1.5`.",
             "inputs": [
                 "ARRI ALEXA SUP 3.x native-to-ACES AP0 matrices, 17 CCTs, 13 Nov 2013 "
                 "(aces-dev v1.3.1, ARRI-supplied, AMPAS licence, data/arri/AMPAS-LICENSE.md)",
@@ -70,12 +82,16 @@ def build() -> dict:
             "caveats": [
                 "Expected accuracy 3-5 % RFSE for this camera, not the 2.2 % LOO median "
                 "(research/alexa-ssf/README.md).",
-                "The shipped curve is the estimate plus a hue push (owner decision 2026-10-25), 2.2 % RFSE from "
-                "the estimate without it: the red channel is lowered at 550-585 nm (0.49 against 0.60 of peak at "
-                "580 nm) and by 0.02 to 0.04 at 615-660 nm, the green channel raised (by 0.12 at 490 nm and 0.05 at "
-                "585 nm), so that oranges, reds and ochres render less crimson. ARRI's matrices allow it and do "
-                "not ask for it; the curve lies outside the 24-variant band at 68 of 243 samples, by at most 0.019 "
-                "of peak (G at 600 nm). It is a choice, not a measurement.",
+                "The shipped curve is the estimate plus a hue push of 4.5 degrees (owner decision 2026-10-26, "
+                "beyond_matrix_limit), 3.7 % RFSE from the estimate without it, and past the ensemble's "
+                "matrix-consistency limit: it reproduces ARRI's published matrices less well (matrix RMS 0.0241 "
+                "per coefficient, the ensemble 0.0064 to 0.0093; mean dE00 to scene colour with ARRI's matrices "
+                "2.02, 14th of the 52 cameras and the estimate, against 1.46 and first without the push). The red channel is "
+                "lowered at 560-585 nm (0.46 against 0.60 of peak at 580 nm) and by 0.02 to 0.05 at 615-660 nm "
+                "and raised at 665-690 nm (0.11 against 0.03 at 680 nm), the green channel raised (by 0.22 at "
+                "490 nm and 0.12 at 580-590 nm), so that oranges, reds and ochres render less crimson. The "
+                "curve lies outside the 24-variant band at 146 of 243 samples, by at most 0.14 of peak (B at "
+                "415 nm). It is a choice, not a measurement.",
                 "Beyond about 660 nm the curve is mostly the prior; treat 660-720 nm as unknown.",
                 "Represents ALEXA SUP 3.x / ALEV III processing; not the ALEXA 35 or REVEAL.",
                 "Assumes ARRI made its matrices the P-2013-001 way; a different recipe adds error not "

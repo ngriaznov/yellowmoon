@@ -2,7 +2,7 @@
 
 The leave-one-out recipe of ``validate_loo`` (case rta/rta, K=4, lam=1, one start) run twice per
 held-out camera, without and with the hue push of ``estimate_alexa`` (the push's reflectances are
-chosen from the camera's own un-pushed estimate, the push is ``PUSH["deg"]`` degrees). Both estimates
+chosen from the camera's own un-pushed estimate, the push is ``--push-deg`` degrees, default ``PUSH["deg"]``). Both estimates
 are scored against the measured curves. This is **not a gate**: the push leaves the curve that agrees
 best with the matrices on purpose, so a pushed estimate of a known camera is expected to be farther
 from it than the plain one (``docs/03`` *The ALEXA estimate*, ``research/alexa-ssf/README.md``). It
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
 import os
 import sys
 from multiprocessing import Pool
@@ -33,7 +34,7 @@ R_TEST = ea.R_TEST["CIE 2017 CES (99)"]
 ILLUMS = ea.ILLUMS
 
 
-def one(name: str) -> dict:
+def one(name: str, deg: float) -> dict:
     truth = ea.CAMS[name]
     others = [ea.CAMS[n] for n in ea.NAMES if n != name]
     pub = sc.camera_matrices(truth, ea.CCTS, ea.R_TRAIN, convention="rta")
@@ -42,7 +43,7 @@ def one(name: str) -> dict:
     ref = ea.push_reference(plain)
     pushed, _ = ea.PushedEstimator(
         prior, ea.CCTS, pub, ea.R_TRAIN, convention="rta", objective="consistency", lam=1.0,
-        ref=ref, deg=ea.PUSH["deg"], weight=ea.PUSH["weight"],
+        ref=ref, deg=deg, weight=ea.PUSH["weight"],
     ).fit(n_starts=1)
     row = {"camera": name, "n_warm": int(ref["sel"].sum())}
     for tag, S in (("plain", plain), ("push", pushed)):
@@ -62,11 +63,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--jobs", type=int, default=min(3, os.cpu_count() or 1), help="worker processes")
     ap.add_argument("--only", default=None, help="only cameras whose name contains this text")
+    ap.add_argument("--push-deg", type=float, default=ea.PUSH["deg"], help="the push in degrees (default %(default)s, the shipped one)")
     ap.add_argument("--out", default=str(OUT))
     args = ap.parse_args(argv)
     names = [n for n in ea.NAMES if not args.only or args.only in n]
     with Pool(args.jobs) as pool:
-        rows = pool.map(one, names, chunksize=1)
+        rows = pool.map(functools.partial(one, deg=args.push_deg), names, chunksize=1)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))
