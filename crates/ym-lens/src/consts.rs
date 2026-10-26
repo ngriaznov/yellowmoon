@@ -254,8 +254,12 @@ pub const EXTRA_CHANGE_FLOOR: f64 = 1e-3;
 
 /// L1 left a pixel as it is when its output is within this share of a clip level of its input in every
 /// channel (1 at the first number, 0 from the second, a smoothstep between): the pixel's own light stays where
-/// it is, and the headroom of a clipped light is spread from it (`light.rs`).
-pub const L1_UNCHANGED_RAMP: (f64, f64) = (1e-4, 1e-3);
+/// it is, and the headroom of a clipped light is spread from it (`light.rs`). The ramp lies just above what an
+/// untouched pixel differs by (nothing: L1 passes it on bit for bit, on the CPU and on the device alike): the
+/// CPU and the device reshape the pixels L1 does change within a few per cent of each other, and a wider ramp
+/// gives the two different shares of the headroom there (3 codes of the lens picture against the limit of 2
+/// at 1e-4 to 1e-3, 40 at 1e-3 to 3e-2; 1 at this ramp).
+pub const L1_UNCHANGED_RAMP: (f64, f64) = (1e-5, 1e-4);
 
 /// The highlights `H` are the restored light weighted by a soft knee that is 0 at this fraction of the clip
 /// level and 1 at the clip level.

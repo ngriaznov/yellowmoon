@@ -17,8 +17,8 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 pub use ym_lens::LightPass;
 use ym_lens::consts::{
-    CLIP_PATTERN_SPREAD, FIELD_HEADROOM_MAX, FIELD_HEADROOM_SHARE, L1_UNCHANGED_RAMP, LIGHT_SATURATION_RAMP,
-    LIGHT_WHITE_RAMP,
+    CLIP_PATTERN_SPREAD, FIELD_HEADROOM_MAX, FIELD_HEADROOM_SHARE, L1_UNCHANGED_RAMP,
+    LIGHT_SATURATION_RAMP, LIGHT_WHITE_RAMP,
 };
 pub use ym_lens::device::LightMapData;
 

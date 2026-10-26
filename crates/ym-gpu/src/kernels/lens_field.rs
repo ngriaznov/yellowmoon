@@ -34,8 +34,8 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use ym_lens::consts::{
-    COPY_BELOW_PX, EXTRA_CHANGE_FLOOR, EXTRA_CHANGE_RAMP, EXTRA_INFLOW_RAMP, EXTRA_KERNEL_RAMP, MAX_TAPS_SIDE, RADII, TAP_SPACING_MAX_PX,
-    W_KNEE, W_MAX,
+    COPY_BELOW_PX, EXTRA_CHANGE_FLOOR, EXTRA_CHANGE_RAMP, EXTRA_INFLOW_RAMP, EXTRA_KERNEL_RAMP,
+    MAX_TAPS_SIDE, RADII, TAP_SPACING_MAX_PX, W_KNEE, W_MAX,
 };
 use ym_lens::device::{FIELD_HEADER, FIELD_TABLE_SIZES, field_table_offset};
 pub use ym_lens::device::{FieldPass, FieldTablesData};
@@ -544,7 +544,15 @@ pub fn field_with_extra(
         frame_width: pass.width,
         frame_height: pass.height,
     };
-    let src = GpuImage::upload(ctx, "lens field source", size.0, size.1, 3, input, place(at))?;
+    let src = GpuImage::upload(
+        ctx,
+        "lens field source",
+        size.0,
+        size.1,
+        3,
+        input,
+        place(at),
+    )?;
     let more = GpuImage::upload(
         ctx,
         "lens field extra light",
@@ -555,7 +563,15 @@ pub fn field_with_extra(
         place(extra.2),
     )?;
     let mut passes = PassList::new(ctx, "lens field");
-    let img = encode_field(&mut passes, tables, pass, &src, at, Some((&more, extra.2)), out)?;
+    let img = encode_field(
+        &mut passes,
+        tables,
+        pass,
+        &src,
+        at,
+        Some((&more, extra.2)),
+        out,
+    )?;
     let read = img.encode_read(&mut passes)?;
     let done = passes.submit()?.finish()?;
     img.take(&done, read)

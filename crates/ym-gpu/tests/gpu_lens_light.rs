@@ -220,12 +220,6 @@ use ym_lens::{LensPlanes, PixelRect, apply_field, l2_input};
 /// is in the test's output; the bound is a few times it and is never loosened.
 const HEADROOM_BOUND: f32 = 2e-6;
 
-/// The same for the pass after L1 (mode 2). Where L1 changed a pixel by about a thousandth of a clip level the
-/// share `m` of the pixels L1 left as they are is a smoothstep over `L1_UNCHANGED_RAMP` (1e-4 to 1e-3), whose
-/// slope is 1700 per unit: an `f32` rounding of the change (1e-7 of values up to 5) moves `m` by up to 5e-4. The
-/// first measurement on Mesa lavapipe was 2.2e-4 of the largest value.
-const HEADROOM_AFTER_L1_BOUND: f32 = 5e-4;
-
 /// The frame of the headroom tests: a plan with the light's clip levels, shipped Vintage with Edges 70.
 const HW: usize = 300;
 const HH: usize = 200;
@@ -312,7 +306,8 @@ fn the_headroom_kernel_matches_the_cpu_reference() {
     let map = planes.light_map_data();
     assert!(map.ev.iter().any(|v| *v > 0.0), "the stars are lights");
     // Mode 1: the raw picture, at the scale of the lens plane.
-    let want = l2_input(&plan, &planes, plan.lens_plane_scale(), &raw, None).expect("a headroom input");
+    let want =
+        l2_input(&plan, &planes, plan.lens_plane_scale(), &raw, None).expect("a headroom input");
     let (got, got_own) = {
         let data = data.clone();
         let map = map.clone();
@@ -322,7 +317,11 @@ fn the_headroom_kernel_matches_the_cpu_reference() {
         })
     };
     let largest = want.extra.iter().fold(0.0f32, |m, v| m.max(v.abs()));
-    let diff = |a: &[f32], b: &[f32]| a.iter().zip(b).fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
+    let diff = |a: &[f32], b: &[f32]| {
+        a.iter()
+            .zip(b)
+            .fold(0.0f32, |m, (x, y)| m.max((x - y).abs()))
+    };
     let (worst, worst_own) = (diff(&got, &want.extra), diff(&got_own, &want.own));
     println!(
         "extra light, mode 1: worst difference {worst:e} (extra) and {worst_own:e} (picture) of values up to {largest:e} ({:e} relative)",
@@ -365,8 +364,14 @@ fn the_headroom_kernel_matches_the_cpu_reference() {
         frame_height: HH,
         data: &l1,
     };
-    let want = l2_input(&plan, &planes, plan.lens_plane_scale(), &raw, Some(&l1_image))
-        .expect("a headroom input after L1");
+    let want = l2_input(
+        &plan,
+        &planes,
+        plan.lens_plane_scale(),
+        &raw,
+        Some(&l1_image),
+    )
+    .expect("a headroom input after L1");
     let want_own = &want.own;
     let (got, got_own) = {
         let (data, l1, map) = (data.clone(), l1.clone(), map.clone());
@@ -386,16 +391,15 @@ fn the_headroom_kernel_matches_the_cpu_reference() {
         })
     };
     let largest = want.extra.iter().fold(0.0f32, |m, v| m.max(v.abs()));
-    let diff = |a: &[f32], b: &[f32]| a.iter().zip(b).fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
+    let diff = |a: &[f32], b: &[f32]| {
+        a.iter()
+            .zip(b)
+            .fold(0.0f32, |m, (x, y)| m.max((x - y).abs()))
+    };
     let (wy, wo) = (diff(&got, &want.extra), diff(&got_own, want_own));
     println!(
         "extra light, mode 2: worst difference {wy:e} (extra) and {wo:e} (picture) of values up to {largest:e}"
     );
-    let bound = if dev.gpu.info().is_software {
-        HEADROOM_AFTER_L1_BOUND
-    } else {
-        10.0 * HEADROOM_AFTER_L1_BOUND
-    };
     assert!(wy <= bound * largest && wo <= bound * largest);
 }
 
@@ -411,14 +415,16 @@ fn l2_with_an_extra_light_matches_the_cpu_reference() {
     let raw = image(HW, HH, &data);
     let planes = LensPlanes::build(&plan, &raw, None, &|| false).expect("planes");
     let k = plan.lens_plane_scale();
-    let want = apply_field(&plan, &planes, k, &raw, PixelRect::new(0, 0, HW, HH)).expect("the CPU lens");
+    let want =
+        apply_field(&plan, &planes, k, &raw, PixelRect::new(0, 0, HW, HH)).expect("the CPU lens");
     let map = planes.light_map_data();
     let field_pass = plan.field_pass(HW, HH).expect("a field pass");
     let tables_data = plan.field_tables_data().expect("tables");
     let whole = {
         let (data, map) = (data.clone(), map.clone());
         run(dev, move |ctx| {
-            let (extra, own) = headroom(ctx, &data, (HW, HH), (0, 0), None, pass, &map, k).expect("headroom");
+            let (extra, own) =
+                headroom(ctx, &data, (HW, HH), (0, 0), None, pass, &map, k).expect("headroom");
             let tables = FieldTablesBuffer::upload(ctx, &tables_data).expect("tables");
             field_with_extra(
                 ctx,
@@ -446,8 +452,14 @@ fn l2_with_an_extra_light_matches_the_cpu_reference() {
         "L2 with an extra light: worst difference {worst:e} (sample {at}) of values up to {largest:e} ({:e} relative)",
         worst / largest
     );
-    assert!(largest > 3.0, "the stars' headroom reaches the output: {largest}");
-    assert!(worst <= 2e-4 * largest, "worst difference {worst} of values up to {largest}");
+    assert!(
+        largest > 3.0,
+        "the stars' headroom reaches the output: {largest}"
+    );
+    assert!(
+        worst <= 2e-4 * largest,
+        "worst difference {worst} of values up to {largest}"
+    );
 }
 
 #[test]
@@ -476,12 +488,14 @@ fn a_tile_of_the_headroom_and_l2_equals_the_frame_bit_for_bit_and_poison_changes
         let mut window = Vec::with_capacity(3 * ww * wh);
         for c in 0..3 {
             for y in y0..y1 {
-                window.extend_from_slice(&data[c * HW * HH + y * HW + x0..c * HW * HH + y * HW + x1]);
+                window
+                    .extend_from_slice(&data[c * HW * HH + y * HW + x0..c * HW * HH + y * HW + x1]);
             }
         }
-        let (map, field_pass, tables_data) = (map.clone(), field_pass.clone(), tables_data.clone());
+        let (map, field_pass, tables_data) = (map.clone(), field_pass, tables_data.clone());
         gpu.run(JobSpec::new(Priority::Viewport), move |ctx, _| {
-            let (extra, own) = headroom(ctx, &window, (ww, wh), (x0, y0), None, pass, &map, k).expect("headroom");
+            let (extra, own) =
+                headroom(ctx, &window, (ww, wh), (x0, y0), None, pass, &map, k).expect("headroom");
             let tables = FieldTablesBuffer::upload(ctx, &tables_data).expect("tables");
             field_with_extra(
                 ctx,
@@ -508,7 +522,11 @@ fn a_tile_of_the_headroom_and_l2_equals_the_frame_bit_for_bit_and_poison_changes
                 for x in 0..out.w {
                     let a = tile[c * out.w * out.h + y * out.w + x];
                     let b = whole[c * HW * HH + (out.y + y) * HW + out.x + x];
-                    assert_eq!(a.to_bits(), b.to_bits(), "tile {out:?}: channel {c} at ({x}, {y})");
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "tile {out:?}: channel {c} at ({x}, {y})"
+                    );
                 }
             }
         }

@@ -264,13 +264,22 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
                                 tile.out,
                             )?
                         }
-                        _ => encode_field(&mut passes, tables, pass, &reshaped, l2_at, None, tile.out)?,
+                        _ => encode_field(
+                            &mut passes,
+                            tables,
+                            pass,
+                            &reshaped,
+                            l2_at,
+                            None,
+                            tile.out,
+                        )?,
                     }
                 } else {
                     match (tile.light, &tile.light_map) {
                         (Some(lpass), Some(map)) => {
                             // The extra light from the raw window; L2 gathers the picture beside it.
-                            let h = encode_headroom(&mut passes, raw_in, at, None, lpass, map, tile.k)?;
+                            let h =
+                                encode_headroom(&mut passes, raw_in, at, None, lpass, map, tile.k)?;
                             let extra = Arc::new(h.extra);
                             held.push(Arc::clone(&extra));
                             let own = Arc::new(h.own);

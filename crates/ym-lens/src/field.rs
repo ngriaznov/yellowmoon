@@ -46,9 +46,9 @@
 use rayon::prelude::*;
 
 use crate::consts::{
-    COPY_BELOW_PX, LATERAL_COLOR_SCALE, MAX_TAPS_SIDE, PSF_SIZE, PSF_WAVELENGTHS, RADII,
-    SIDE_TABLE_RADIUS, T_OVERSHOOT, TAP_SPACING_MAX_PX, W_KNEE, W_MAX,
-    EXTRA_CHANGE_FLOOR, EXTRA_CHANGE_RAMP, EXTRA_INFLOW_RAMP, EXTRA_KERNEL_RAMP,
+    COPY_BELOW_PX, EXTRA_CHANGE_FLOOR, EXTRA_CHANGE_RAMP, EXTRA_INFLOW_RAMP, EXTRA_KERNEL_RAMP,
+    LATERAL_COLOR_SCALE, MAX_TAPS_SIDE, PSF_SIZE, PSF_WAVELENGTHS, RADII, SIDE_TABLE_RADIUS,
+    T_OVERSHOOT, TAP_SPACING_MAX_PX, W_KNEE, W_MAX,
 };
 use crate::data::LensData;
 use crate::error::LensError;
@@ -1135,7 +1135,8 @@ fn add_extra(
                     change = change.max((got - own).abs() / own.max(EXTRA_CHANGE_FLOOR));
                 }
                 let width = smooth(geo.pixel(i, j).omega / geo.h, EXTRA_KERNEL_RAMP);
-                let mu = smooth(inflow, EXTRA_INFLOW_RAMP).max(smooth(change, EXTRA_CHANGE_RAMP)) * width;
+                let mu = smooth(inflow, EXTRA_INFLOW_RAMP).max(smooth(change, EXTRA_CHANGE_RAMP))
+                    * width;
                 if mu > 0.0 {
                     rr[col] = (f64::from(base[0]) + mu * f64::from(e[0])) as f32;
                     gr[col] = (f64::from(base[1]) + mu * f64::from(e[1])) as f32;
@@ -1177,7 +1178,12 @@ fn gather_region(
                     let reach = (k.omega * std::f64::consts::SQRT_2).ceil() as i64
                         + (1.5 * f64::from(1u32 << level)).ceil() as i64
                         + 3;
-                    if !occ.any(i as i64 - reach, j as i64 - reach, i as i64 + reach + 1, j as i64 + reach + 1) {
+                    if !occ.any(
+                        i as i64 - reach,
+                        j as i64 - reach,
+                        i as i64 + reach + 1,
+                        j as i64 + reach + 1,
+                    ) {
                         continue;
                     }
                 }
@@ -2187,7 +2193,14 @@ mod tests {
 
     fn check_against_reference(p: &LensPlan, w: usize, h: usize, opts: Options, tol: f64) {
         let data = noise(w, h, 7);
-        let out = apply(p, &whole(w, h, &data), None, PixelRect::new(0, 0, w, h), opts).unwrap();
+        let out = apply(
+            p,
+            &whole(w, h, &data),
+            None,
+            PixelRect::new(0, 0, w, h),
+            opts,
+        )
+        .unwrap();
         let geo = Geometry::new(p, w, h, opts).unwrap();
         let mut compared = 0;
         let mut wide = 0;
@@ -2355,7 +2368,14 @@ mod tests {
         let (data, _) = picture_and_extra(w, h, 0.0, 0.0, 0.0, 0.0);
         let extra: Vec<f32> = data.iter().map(|v| v * 0.01).collect();
         let rect = PixelRect::new(0, 0, w, h);
-        let plain = apply(&p, &whole_image(w, h, &data), None, rect, Options::default()).unwrap();
+        let plain = apply(
+            &p,
+            &whole_image(w, h, &data),
+            None,
+            rect,
+            Options::default(),
+        )
+        .unwrap();
         let with = apply(
             &p,
             &whole_image(w, h, &data),
@@ -2370,9 +2390,16 @@ mod tests {
             for y in 0..h {
                 for x in 0..w {
                     let i = c * n + y * w + x;
-                    assert!(with[i] >= plain[i] && with[i] <= plain[i] * 1.0101, "sample {i}");
+                    assert!(
+                        with[i] >= plain[i] && with[i] <= plain[i] * 1.0101,
+                        "sample {i}"
+                    );
                     if (120..w - 120).contains(&x) && (120..h - 120).contains(&y) {
-                        assert_eq!(with[i].to_bits(), plain[i].to_bits(), "sample {i} at ({x}, {y})");
+                        assert_eq!(
+                            with[i].to_bits(),
+                            plain[i].to_bits(),
+                            "sample {i} at ({x}, {y})"
+                        );
                         inner += 1;
                     }
                 }
@@ -2396,7 +2423,14 @@ mod tests {
             let p = plan(kind, edges, 0.0, w, h, Axis::X);
             let geo = Geometry::new(&p, w, h, Options::default()).unwrap();
             let (data, extra) = picture_and_extra(w, h, cx, cy, 1.5, 30.0);
-            let plain = apply(&p, &whole_image(w, h, &data), None, rect, Options::default()).unwrap();
+            let plain = apply(
+                &p,
+                &whole_image(w, h, &data),
+                None,
+                rect,
+                Options::default(),
+            )
+            .unwrap();
             let with = apply(
                 &p,
                 &whole_image(w, h, &data),
@@ -2415,7 +2449,10 @@ mod tests {
             let (ix, iy) = (cx as usize, cy as usize);
             if wide {
                 assert!(geo.pixel(ix, iy).omega > 0.0);
-                assert!(changed > 50, "the star reaches its neighbours: {changed} samples");
+                assert!(
+                    changed > 50,
+                    "the star reaches its neighbours: {changed} samples"
+                );
                 // Over three channels: the light of the disc (9 pixels at 30) spread by the lens's weights, of
                 // which what the share leaves out near the disc is a fraction.
                 assert!(added > 0.2 * 3.0 * 9.0 * 30.0, "added {added}");

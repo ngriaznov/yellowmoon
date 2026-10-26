@@ -50,7 +50,11 @@ fn main() {
             }
             "--edges" => edges = args.next().expect("--edges N").parse().expect("number"),
             "--anamorphic" => {
-                anamorphic = args.next().expect("--anamorphic N").parse().expect("number");
+                anamorphic = args
+                    .next()
+                    .expect("--anamorphic N")
+                    .parse()
+                    .expect("number");
             }
             "--star" => {
                 let v: Vec<usize> = args
@@ -71,7 +75,9 @@ fn main() {
                     .collect();
                 window = Some((v[0], v[1], v[2]));
             }
-            "--neutral" => neutral = Some(args.next().expect("--neutral R").parse().expect("number")),
+            "--neutral" => {
+                neutral = Some(args.next().expect("--neutral R").parse().expect("number"))
+            }
             d => dir = Some(PathBuf::from(d)),
         }
     }
@@ -156,14 +162,28 @@ fn main() {
         std::fs::write(path, bytes).expect("dump");
     }
     let bad = out.iter().filter(|v| !v.is_finite() || **v < 0.0).count();
-    println!("output samples negative or not finite: {bad} of {}", out.len());
-    for (i, v) in out.iter().enumerate().filter(|(_, v)| !v.is_finite() || **v < 0.0).take(12) {
+    println!(
+        "output samples negative or not finite: {bad} of {}",
+        out.len()
+    );
+    for (i, v) in out
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| !v.is_finite() || **v < 0.0)
+        .take(12)
+    {
         let (c, rest) = (i / plane, i % plane);
         println!("  channel {c} at ({}, {}): {v}", rest % w, rest / w);
     }
     if let Some((px, py, r)) = window {
         for (c, name) in ["R", "G", "B"].iter().enumerate() {
-            println!("channel {name}: picture | output (x {}..{}, y {}..{})", px - r, px + r, py - r, py + r);
+            println!(
+                "channel {name}: picture | output (x {}..{}, y {}..{})",
+                px - r,
+                px + r,
+                py - r,
+                py + r
+            );
             for y in py - r..=py + r {
                 let row = |d: &[f32]| {
                     (px - r..=px + r)
@@ -179,7 +199,13 @@ fn main() {
         "{kind} Edges {edges} Anamorphic {anamorphic}, star at {star:?}{}",
         neutral.map_or(String::new(), |r| format!(" made neutral within {r} px"))
     );
-    for (lo, hi) in [(0.0, 3.0), (3.0, 6.0), (6.0, 30.0), (6.0, 60.0), (0.0, 60.0)] {
+    for (lo, hi) in [
+        (0.0, 3.0),
+        (3.0, 6.0),
+        (6.0, 30.0),
+        (6.0, 60.0),
+        (0.0, 60.0),
+    ] {
         let (mut add, mut inp) = ([0.0f64; 3], [0.0f64; 3]);
         for y in 0..h {
             for x in 0..w {
@@ -189,7 +215,10 @@ fn main() {
                 }
                 let i = y * w + x;
                 for c in 0..3 {
-                    let (a, b) = (f64::from(out[c * plane + i]), f64::from(data[c * plane + i]));
+                    let (a, b) = (
+                        f64::from(out[c * plane + i]),
+                        f64::from(data[c * plane + i]),
+                    );
                     add[c] += (a - b).max(0.0);
                     inp[c] += b;
                 }

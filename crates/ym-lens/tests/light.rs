@@ -92,7 +92,9 @@ fn spread_light(plan: &LensPlan, value: [f32; 3], cx: f64, cy: f64, r: f64) -> [
                 continue;
             }
             let at = y * SW + x;
-            let added = (0..3).map(|c| a[c * n + at] - b[c * n + at]).fold(0.0f32, f32::max);
+            let added = (0..3)
+                .map(|c| a[c * n + at] - b[c * n + at])
+                .fold(0.0f32, f32::max);
             if added < 0.02 {
                 continue;
             }
@@ -220,7 +222,10 @@ fn tiles_of_the_field_stages_equal_the_whole_frame_with_saturated_lights() {
         }
     }
     // Two stars the headroom reaches: one clipped in every channel, one in green alone.
-    for (cx, cy, v) in [(250.0, 70.0, [3.1f32, 3.0, 3.0]), (330.0, 140.0, [1.4, 1.1, 1.7])] {
+    for (cx, cy, v) in [
+        (250.0, 70.0, [3.1f32, 3.0, 3.0]),
+        (330.0, 140.0, [1.4, 1.1, 1.7]),
+    ] {
         for y in 0..H {
             for x in 0..W {
                 let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
@@ -292,9 +297,17 @@ fn balls_at_the_clip_pattern_are_redrawn_in_neutral_light() {
 /// The light the star's scene adds over the ground-only scene to the field stages' output in a frame of
 /// `SW` x `SH`, per channel, summed over the annulus `lo..hi` pixels from `(cx, cy)`. The planes are built from
 /// each scene (the clipped lights' headroom is made from the photo).
-fn annulus_light(plan: &LensPlan, scene: &[f32], ground: &[f32], c: (f64, f64), lo: f64, hi: f64) -> [f64; 3] {
+fn annulus_light(
+    plan: &LensPlan,
+    scene: &[f32],
+    ground: &[f32],
+    c: (f64, f64),
+    lo: f64,
+    hi: f64,
+) -> [f64; 3] {
     let run = |data: &[f32]| {
-        let planes = LensPlanes::build(plan, &whole(SW, SH, data), None, &|| false).expect("planes");
+        let planes =
+            LensPlanes::build(plan, &whole(SW, SH, data), None, &|| false).expect("planes");
         apply_field(
             plan,
             &planes,
@@ -312,7 +325,8 @@ fn annulus_light(plan: &LensPlan, scene: &[f32], ground: &[f32], c: (f64, f64), 
             let r = (x as f64 + 0.5 - c.0).hypot(y as f64 + 0.5 - c.1);
             if r >= lo && r < hi {
                 for ch in 0..3 {
-                    sum[ch] += f64::from(a[ch * n + y * SW + x]) - f64::from(b[ch * n + y * SW + x]);
+                    sum[ch] +=
+                        f64::from(a[ch * n + y * SW + x]) - f64::from(b[ch * n + y * SW + x]);
                 }
             }
         }
@@ -331,13 +345,13 @@ fn violet_star(cx: f64, cy: f64, ring_only: bool) -> Vec<f32> {
             let r = (x as f64 + 0.5 - cx).hypot(y as f64 + 0.5 - cy);
             let v = if r <= 1.2 {
                 if ring_only {
-                    [1.21, 0.385, 1.98]
+                    [0.99, 0.31, 1.6]
                 } else {
                     [3.1, 3.0, 3.0]
                 }
             } else if r <= 2.0 {
-                // The fringe: blue and red over green, 1.2 to 1.6 clip levels of green's.
-                [1.1, 0.35, 1.8]
+                // The fringe: blue and red over green, 1 to 1.5 clip levels of green's.
+                [0.9, 0.28, 1.45]
             } else {
                 continue;
             };
@@ -374,7 +388,14 @@ fn a_small_clipped_light_with_a_violet_fringe_spreads_white_light() {
     // Without a clipped core the fringe's colour spreads: the test would not tell the two apart otherwise.
     let ring_only = violet_star(cx, cy, true);
     let plan = plan_with_clip(LensKind::Vintage, 0.0, 100.0, 0.0, G0, SW, SH);
-    let got = chroma(annulus_light(&plan, &ring_only, &ground, (cx, cy), 4.0, 20.0));
+    let got = chroma(annulus_light(
+        &plan,
+        &ring_only,
+        &ground,
+        (cx, cy),
+        4.0,
+        20.0,
+    ));
     assert!(
         got[1] < 0.8 && got[2] > 1.2,
         "a violet light spreads violet: {got:?}"
@@ -396,8 +417,14 @@ fn a_clipped_light_gets_no_headroom_where_the_lens_does_not_move_it_and_none_in_
     }
     let plan = plan_with_clip(LensKind::Vintage, 0.0, 100.0, 0.0, G0, W, H);
     let planes = LensPlanes::build(&plan, &whole(W, H, &data), None, &|| false).expect("planes");
-    let out = apply_field(&plan, &planes, 1, &whole(W, H, &data), PixelRect::new(0, 0, W, H))
-        .expect("field");
+    let out = apply_field(
+        &plan,
+        &planes,
+        1,
+        &whole(W, H, &data),
+        PixelRect::new(0, 0, W, H),
+    )
+    .expect("field");
     let most = G0.iter().fold(0.0f32, |m, v| m.max(*v));
     assert!(
         out.iter().all(|v| *v <= most * 1.001),

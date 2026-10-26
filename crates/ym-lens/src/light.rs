@@ -23,8 +23,8 @@
 use rayon::prelude::*;
 
 use crate::consts::{
-    CLIP_RAMP, CLIP_RAMP_PLANE, FIELD_HEADROOM_MAX, FIELD_HEADROOM_SHARE, FIELD_LIGHT_SIZE_FACTOR, L1_UNCHANGED_RAMP,
-    LIGHT_SATURATION_RAMP,
+    CLIP_RAMP, CLIP_RAMP_PLANE, FIELD_HEADROOM_MAX, FIELD_HEADROOM_SHARE, FIELD_LIGHT_SIZE_FACTOR,
+    L1_UNCHANGED_RAMP, LIGHT_SATURATION_RAMP,
 };
 use crate::error::LensError;
 use crate::image::{ImageRef, PixelRect};
@@ -377,65 +377,69 @@ pub(crate) fn l2_input_with(
         .zip(or.par_chunks_mut(w))
         .zip(og.par_chunks_mut(w))
         .zip(ob.par_chunks_mut(w));
-    rows.enumerate().for_each(|(row, (((((er, eg), eb), or), og), ob))| {
-        let j = rect.y + row;
-        for col in 0..w {
-            let i = rect.x + col;
-            let at = (j - raw.y0) * raw.width + (i - raw.x0);
-            let x = [
-                f64::from(raw.data[at]),
-                f64::from(raw.data[rn + at]),
-                f64::from(raw.data[2 * rn + at]),
-            ];
-            let ev = map.ev_at(i, j, k);
-            let (lit, headroom) = pixel_light(&rs, map, x, ev);
-            // Without L1: the picture gathers as it is, and the light in its own colour less the picture, with
-            // the headroom, is spread beside it.
-            let (picture, more) = (
-                x,
-                [
-                    lit[0] - x[0] + headroom,
-                    lit[1] - x[1] + headroom,
-                    lit[2] - x[2] + headroom,
-                ],
-            );
-            let (picture, more) = match l1 {
-                None => (picture, more),
-                Some(l1) => {
-                    let li = (j - l1.y0) * l1.width + (i - l1.x0);
-                    let ln = l1.width * l1.height;
-                    let v = [
-                        f64::from(l1.data[li]),
-                        f64::from(l1.data[ln + li]),
-                        f64::from(l1.data[2 * ln + li]),
-                    ];
-                    // How much L1 left the pixel as it is, in clip levels.
-                    let mut d = 0.0f64;
-                    for c in 0..3 {
-                        let g0 = f64::from(clip[c]);
-                        let g0 = if g0 > 0.0 { g0 } else { 1.0 };
-                        d = d.max((v[c] - lit[c]).abs() / g0);
+    rows.enumerate()
+        .for_each(|(row, (((((er, eg), eb), or), og), ob))| {
+            let j = rect.y + row;
+            for col in 0..w {
+                let i = rect.x + col;
+                let at = (j - raw.y0) * raw.width + (i - raw.x0);
+                let x = [
+                    f64::from(raw.data[at]),
+                    f64::from(raw.data[rn + at]),
+                    f64::from(raw.data[2 * rn + at]),
+                ];
+                let ev = map.ev_at(i, j, k);
+                let (lit, headroom) = pixel_light(&rs, map, x, ev);
+                // Without L1: the picture gathers as it is, and the light in its own colour less the picture, with
+                // the headroom, is spread beside it.
+                let (picture, more) = (
+                    x,
+                    [
+                        lit[0] - x[0] + headroom,
+                        lit[1] - x[1] + headroom,
+                        lit[2] - x[2] + headroom,
+                    ],
+                );
+                let (picture, more) = match l1 {
+                    None => (picture, more),
+                    Some(l1) => {
+                        let li = (j - l1.y0) * l1.width + (i - l1.x0);
+                        let ln = l1.width * l1.height;
+                        let v = [
+                            f64::from(l1.data[li]),
+                            f64::from(l1.data[ln + li]),
+                            f64::from(l1.data[2 * ln + li]),
+                        ];
+                        // How much L1 left the pixel as it is, in clip levels.
+                        let mut d = 0.0f64;
+                        for c in 0..3 {
+                            let g0 = f64::from(clip[c]);
+                            let g0 = if g0 > 0.0 { g0 } else { 1.0 };
+                            d = d.max((v[c] - lit[c]).abs() / g0);
+                        }
+                        let m = 1.0
+                            - smooth(
+                                (d - L1_UNCHANGED_RAMP.0)
+                                    / (L1_UNCHANGED_RAMP.1 - L1_UNCHANGED_RAMP.0),
+                            );
+                        (
+                            [
+                                m * picture[0] + (1.0 - m) * v[0],
+                                m * picture[1] + (1.0 - m) * v[1],
+                                m * picture[2] + (1.0 - m) * v[2],
+                            ],
+                            [m * more[0], m * more[1], m * more[2]],
+                        )
                     }
-                    let m = 1.0
-                        - smooth((d - L1_UNCHANGED_RAMP.0) / (L1_UNCHANGED_RAMP.1 - L1_UNCHANGED_RAMP.0));
-                    (
-                        [
-                            m * picture[0] + (1.0 - m) * v[0],
-                            m * picture[1] + (1.0 - m) * v[1],
-                            m * picture[2] + (1.0 - m) * v[2],
-                        ],
-                        [m * more[0], m * more[1], m * more[2]],
-                    )
-                }
-            };
-            er[col] = more[0] as f32;
-            eg[col] = more[1] as f32;
-            eb[col] = more[2] as f32;
-            or[col] = picture[0] as f32;
-            og[col] = picture[1] as f32;
-            ob[col] = picture[2] as f32;
-        }
-    });
+                };
+                er[col] = more[0] as f32;
+                eg[col] = more[1] as f32;
+                eb[col] = more[2] as f32;
+                or[col] = picture[0] as f32;
+                og[col] = picture[1] as f32;
+                ob[col] = picture[2] as f32;
+            }
+        });
     Some(L2Input { rect, extra, own })
 }
 
@@ -470,7 +474,13 @@ mod tests {
             f_number: None,
             clip: G0,
         };
-        LensPlan::new(&lib, &amounts, frame, &crate::spectral::CameraResponse::neutral()).unwrap()
+        LensPlan::new(
+            &lib,
+            &amounts,
+            frame,
+            &crate::spectral::CameraResponse::neutral(),
+        )
+        .unwrap()
     }
 
     fn whole(data: &[f32]) -> ImageRef<'_> {
@@ -529,7 +539,10 @@ mod tests {
             "a light clipped in green alone, 9 pixels: {nine}"
         );
         let fifty = map.ev_at(200, 250, 1);
-        assert!((fifty - want(49.0)).abs() < 0.6 && fifty < nine, "a disc of 49 pixels: {fifty}");
+        assert!(
+            (fifty - want(49.0)).abs() < 0.6 && fifty < nine,
+            "a disc of 49 pixels: {fifty}"
+        );
         assert_eq!(map.ev_at(400, 300, 1), 0.0, "a window is a surface");
         assert_eq!(map.ev_at(10, 10, 1), 0.0, "the ground");
         // The same place at a scale of 2 reads the plane pixel under the scale's pixel centre.
@@ -562,14 +575,20 @@ mod tests {
                 let same = (0..3).all(|c| with[c * n + j * W + i] == without[c * n + j * W + i]);
                 if geo.pixel(i, j).omega == 0.0 {
                     copies += 1;
-                    assert!(same, "the copy pixel ({i}, {j}) has the bits it has without the rule");
+                    assert!(
+                        same,
+                        "the copy pixel ({i}, {j}) has the bits it has without the rule"
+                    );
                 } else if !same {
                     moved += 1;
                 }
             }
         }
         assert!(copies > 1000, "{copies} copy pixels");
-        assert!(moved > 20, "the rule changes the light the lens moves: {moved} pixels");
+        assert!(
+            moved > 20,
+            "the rule changes the light the lens moves: {moved} pixels"
+        );
     }
 
     #[test]
