@@ -616,9 +616,6 @@ fn rim_profile(
     let reach = TAKE_OUT_MAX_RADII * r + TAKE_OUT_MARGIN_PX;
     let mut tail = None;
     for (i, ring) in rings.iter_mut().enumerate() {
-        if r > SMALL_BALL_RADIUS_HD * hd_of(inp) {
-            break;
-        }
         let d = 0.5 * (i as f64 + 0.5);
         if d <= r || ring.is_empty() {
             continue;

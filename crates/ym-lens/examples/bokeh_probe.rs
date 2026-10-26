@@ -1,7 +1,7 @@
 //! Runs the bokeh detector and L1 on a dumped lens plane (a developer tool for local review; never shipped).
 //!
 //! ```text
-//! cargo run -p ym-lens --example bokeh_probe -- [--out DIR] [--anamorphic 100] [--no-l1] [--map DIR] [--crop NAME]... <dump-dir>...
+//! cargo run -p ym-lens --example bokeh_probe -- [--out DIR] [--anamorphic 100] [--lens default] [--edges 0] [--no-l1] [--map DIR] [--crop NAME]... <dump-dir>...
 //! ```
 //!
 //! A dump folder holds `lens_plane.f32` (planar R, G, B, little-endian f32, camera RGB balanced with g0) and
@@ -63,6 +63,8 @@ fn write_f32(path: &Path, data: &[f32]) -> Fallible<()> {
 fn main() -> Fallible<()> {
     let mut out = PathBuf::from("bokeh-probe");
     let mut anamorphic = 100.0;
+    let mut edges = 0.0;
+    let mut kind = LensKind::Default;
     let mut run_l1 = true;
     let mut crops: Vec<String> = Vec::new();
     let mut map_dir: Option<PathBuf> = None;
@@ -74,6 +76,8 @@ fn main() -> Fallible<()> {
             "--anamorphic" => {
                 anamorphic = it.next().ok_or("--anamorphic needs a value")?.parse()?
             }
+            "--edges" => edges = it.next().ok_or("--edges needs a value")?.parse()?,
+            "--lens" => kind = it.next().ok_or("--lens needs a name")?.parse()?,
             "--no-l1" => run_l1 = false,
             "--map" => map_dir = Some(PathBuf::from(it.next().ok_or("--map needs a folder")?)),
             "--crop" => crops.push(it.next().ok_or("--crop needs a name")?),
@@ -122,9 +126,9 @@ fn main() -> Fallible<()> {
             data: &plane,
         };
         let amounts = LensAmounts {
-            kind: LensKind::Default,
+            kind,
             flares: 0.0,
-            edges: 0.0,
+            edges,
             anamorphic,
         };
         let plan = LensPlan::new(
