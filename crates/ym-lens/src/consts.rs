@@ -213,19 +213,19 @@ pub const FIELD_HEADROOM_SHARE: f64 = GLOW_BOOST_SHARE;
 pub const FIELD_LIGHT_SIZE_FACTOR: f64 = 4.0;
 
 /// How much of the extra light the field stage spreads (the headroom of a clipped light and the light's colour,
-/// `light::l2_input`) a pixel is given: the largest over the channels of the extra that the spread brings to the
-/// pixel over the light it gets from the picture itself, none up to the first number, all of it from the second, a
-/// smoothstep between. The extra light only moves from pixel to pixel of a flat bright area (a clipped window, the
-/// fur of a white dog, a sky), where the lens leaves the pixel as the picture gives it; beside a star, or on a
-/// dark ground round a window, the extra the spread brings is a large multiple of the picture's and arrives whole
-/// (a star's headroom is 20 to 400 times its clipped core). Measured on four photos at Flares 0 (Default with
-/// Edges 40, Vintage with Edges 100): 0.5 and 2 leave 99.9 % or more of the bright pixels the lens does not move
-/// as `off` has them, the 0.05 and 0.25 of the first build 97 to 99.8 %.
-pub const EXTRA_INFLOW_RAMP: (f64, f64) = (0.5, 2.0);
+/// `light::l2_input`) a pixel is given: the largest over the channels of how much the spread changes the pixel's
+/// light with the extra in it, `|gather(picture + extra) - (picture + extra)| / (picture + extra)`, none up to the
+/// first number, all of it from the second, a smoothstep between. Where the spread changes the light of a pixel
+/// by a few per cent at most (a flat bright area: a clipped window, the fur of a white dog, a sky) the lens
+/// leaves the pixel as the picture gives it, as it is without the rule; where it changes it by a tenth or more
+/// (a star and its halo, the edge of a window, the pixels of a small lamp) the pixel has the extra light that
+/// reaches it. Measured on four photos at Flares 0 (Default with Edges 40, Vintage with Edges 100): 99.8 % or
+/// more of the bright pixels the lens does not move are as `off` has them.
+pub const EXTRA_CHANGE_RAMP: (f64, f64) = (0.02, 0.10);
 
-/// The least light, in clip levels of the lens plane, that the share of [`EXTRA_INFLOW_RAMP`] divides by (a black
-/// pixel is not given every faint tail of a light).
-pub const EXTRA_INFLOW_FLOOR: f64 = 1e-3;
+/// The least light, in clip levels of the lens plane, that the change of [`EXTRA_CHANGE_RAMP`] divides by (a
+/// black pixel is not given every faint tail of a light).
+pub const EXTRA_CHANGE_FLOOR: f64 = 1e-3;
 
 /// L1 left a pixel as it is when its output is within this share of a clip level of its input in every
 /// channel (1 at the first number, 0 from the second, a smoothstep between): the pixel's own light stays where
