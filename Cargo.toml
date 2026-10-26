@@ -16,6 +16,7 @@ members = [
     "crates/ym-export",
     "crates/ym-cli",
     "crates/ym-apple",
+    "crates/ym-agents",
     "crates/ym-compose",
     "src-tauri",
     "tools/oracle",
@@ -45,6 +46,7 @@ ym-looks = { path = "crates/ym-looks", version = "0.1.15" }
 ym-export = { path = "crates/ym-export", version = "0.1.15" }
 ym-cli = { path = "crates/ym-cli", version = "0.1.15" }
 ym-apple = { path = "crates/ym-apple", version = "0.1.15" }
+ym-agents = { path = "crates/ym-agents", version = "0.1.15" }
 ym-compose = { path = "crates/ym-compose", version = "0.1.15" }
 
 # Errors, serialization, numerics.
@@ -80,6 +82,14 @@ tiff = "0.11"
 png = "0.18"
 jpeg-encoder = "0.7"
 fs4 = "1"
+
+# Auto providers (docs/22): starting the person's own `claude` and `agy` (crates/ym-agents). None of these opens a
+# network connection; no HTTP client may enter the tree (crates/ym-agents/tests/no_network.rs).
+which = "8"
+process-wrap = { version = "10", default-features = false }
+base64 = "0.22"
+# The answer's validation. No default features: they pull an HTTP client for remote $ref resolution.
+jsonschema = { version = "0.58", default-features = false }
 
 # Tests.
 approx = "0.5"

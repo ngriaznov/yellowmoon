@@ -22,9 +22,9 @@ import type {
   ApiEventName,
   ApiEvents,
   AppError,
-  AppleAutoStatus,
   ApplyScope,
   AppInfo,
+  AutoStatus,
   ChromaSample,
   ChromaScatter,
   CliLinkResult,
@@ -259,11 +259,11 @@ export interface Api {
   /** `preferences_set`: apply a patch and return the new preferences. */
   preferencesSet(patch: PreferencesPatch): Promise<Preferences>;
   /**
-   * `apple_auto_status`: whether Apple Auto is available on this computer (read again for the answer) and whether it acts
-   * (`docs/19` sections 1 and 2). Preferences asks when it opens and shows "Auto with Apple Intelligence" only while it is available.
-   * Addition.
+   * `auto_status` (`docs/22` sections 11 and 12.6; it replaces `apple_auto_status`): the four providers, which one grades now and whether
+   * Preferences shows its "Auto grading" row. The core refreshes every provider's availability (in the background: the call never waits
+   * for a program) and answers what it has cached, so Preferences asks when it opens and again on `auto_status_changed`. Addition.
    */
-  appleAutoStatus(): Promise<AppleAutoStatus>;
+  autoStatus(): Promise<AutoStatus>;
   /** `install_cli_link`: the "Install Command-Line Tool…" menu item. */
   installCliLink(): Promise<CliLinkResult>;
   /** `cli_link_status`: whether the link exists and where (Preferences › Command-line tool). Addition. */
@@ -365,7 +365,7 @@ export const tauriApi: Api = {
 
   preferencesGet: () => commands.preferencesGet(),
   preferencesSet: (patch) => commands.preferencesSet(patch),
-  appleAutoStatus: () => commands.appleAutoStatus(),
+  autoStatus: () => commands.autoStatus(),
   installCliLink: () => commands.installCliLink(),
   cliLinkStatus: () => commands.cliLinkStatus(),
   appInfo: () => commands.appInfo(),

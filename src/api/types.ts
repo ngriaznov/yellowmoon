@@ -441,10 +441,17 @@ export interface AutoFlags {
 /** Light classes of the illuminant estimate (`docs/02`). */
 export type LightClass = "daylight" | "tungsten" | "fluorescent" | "led";
 
-/** Which Auto made a photo's automatic values: Yellowmoon's own (`rule`) or Apple Auto's answer (`apple`, `docs/19`). */
-export type AutoSource = "rule" | "apple";
+/**
+ * Which Auto made a photo's automatic values: Yellowmoon's own (`rule`), or the answer of Apple Intelligence (`apple`, `docs/19`), Claude
+ * Code (`claude`) or Antigravity (`agy`, `docs/22` section 14.1).
+ */
+export type AutoSource = "rule" | "apple" | "claude" | "agy";
 
-/** Why Apple Auto is not available on this computer (`docs/19` section 1), in the order the conditions are checked. */
+/**
+ * Why a provider is not available on this computer: Apple's nine reasons in the order `docs/19` section 1 checks them, then the seven
+ * of `docs/22` section 3 that the two programs (and the consent) add. `not_consented` is never a provider's own state: only a photo's
+ * (`AppleAuto`) says it, when a cloud provider is chosen and available but the person has not agreed yet.
+ */
 export type AppleAutoReason =
   | "not_a_mac"
   | "intel_mac"
@@ -454,7 +461,14 @@ export type AppleAutoReason =
   | "apple_intelligence_off"
   | "model_not_ready"
   | "unavailable"
-  | "no_image_input";
+  | "no_image_input"
+  | "not_installed"
+  | "too_old"
+  | "signed_out"
+  | "probe_failed"
+  | "unsafe_launcher"
+  | "checking"
+  | "not_consented";
 
 /** Why one request to Apple's model failed (`docs/19` sections 6 and 8). A failed photo uses Yellowmoon's own Auto. */
 export type AppleAutoFailure =
@@ -468,15 +482,37 @@ export type AppleAutoFailure =
   | "assets_unavailable"
   | "concurrent_requests"
   | "bad_answer"
+  | "not_signed_in"
+  | "cli_failed"
   | "other";
 
 /** Whether Apple's model read the default instructions or the person's own (`docs/19` section 2). */
 export type AppleAutoInstructions = "default" | "edited";
 
-/** Which model answers: "AFM 3 Core" on macOS "27.0.1 (27A404)", with which instructions (the first 12 hex digits of their SHA-256). */
+/**
+ * Who grades: Yellowmoon's own Auto (the rule, `docs/02`), Apple Intelligence (`docs/19`), or Claude Code or Antigravity (the `agy` program),
+ * which the person installed and signed in to themselves (`docs/22` section 1). The order is the dropdown's.
+ */
+export type AutoProvider = "yellowmoon" | "apple" | "claude" | "agy";
+
+/** Whether the person agreed to send photos through a program (`docs/22` section 10.2). Apple and Yellowmoon's own Auto need none. */
+export interface AutoConsent {
+  claude: boolean;
+  agy: boolean;
+}
+
+/**
+ * Which model answers: "AFM 3 Core" on macOS "27.0.1 (27A404)", or Claude Code 2.1.310 (`tool_version`) with `claude-sonnet-5-5` (`os` is ""
+ * for the programs), with which prompt and instructions (the first 12 hex digits of their SHA-256). `api` says where Claude Code's
+ * pictures go (`firstParty`: Anthropic).
+ */
 export interface AppleAutoInfo {
+  provider: AutoProvider;
   model: string;
   os: string;
+  tool_version: string | null;
+  api: string | null;
+  prompt: number;
   instructions: AppleAutoInstructions;
   instructions_sha256: string;
 }
@@ -528,25 +564,47 @@ export type AppleAuto =
   | { state: "answered"; answer: AppleAutoAnswer; info: AppleAutoInfo }
   | { state: "failed"; kind: AppleAutoFailure; message: string; info: AppleAutoInfo };
 
-/** How a run decides whether Apple Auto is used; the app always follows the preference (`from_preference`). */
-export type AppleAutoMode = "from_preference" | "on" | "off";
+/** Where one provider stands (`docs/22` section 3.1). */
+export type ProviderState = "available" | "not_installed" | "too_old" | "signed_out" | "unavailable" | "checking";
 
 /**
- * `apple_auto_status()` (addition, `docs/19` sections 1, 2 and 10): whether Apple Auto is available on this computer, read again for
- * the answer, and whether it acts. Preferences shows its row "Auto with Apple Intelligence" only while `available`.
+ * One provider of `auto_status()` (`docs/22` sections 3.1 and 11). `listed`: the dropdown shows it; `selectable`: it can be chosen
+ * (`false` for a listed program that is signed out, too old or not working: shown disabled with a note). `consent` is whether the person
+ * agreed to send photos through it; `experimental` marks Antigravity. `info` is there while it is available.
  */
-export interface AppleAutoStatus {
-  available: boolean;
-  /** Why it is not available; null when it is, and when the app has no advisor (the browser build). */
+export interface ProviderStatus {
+  provider: AutoProvider;
+  state: ProviderState;
+  /** Why it is not available (`null` while it is). */
   reason: AppleAutoReason | null;
   info: AppleAutoInfo | null;
-  /** The `apple_auto` preference. */
-  preference: boolean;
-  mode: AppleAutoMode;
-  /** Apple Auto acts for the session now: available, and the preference on. */
+  /** The version the program printed, also while it is too old or signed out. */
+  tool_version: string | null;
+  consent: boolean;
+  experimental: boolean;
+  listed: boolean;
+  selectable: boolean;
+}
+
+/**
+ * `auto_status()` (`docs/22` sections 11 and 12.6; it replaces `apple_auto_status()`): the four providers in the dropdown's order, the saved
+ * choice, the one that grades now (`effective`: the chosen one while it is available and agreed to, else `yellowmoon`) and whether the
+ * "Auto grading" row and the instructions show at all (`visible`: Apple Intelligence is available, or one of the programs is listed).
+ */
+export interface AutoStatus {
+  providers: ProviderStatus[];
+  /** The saved choice (`Preferences.auto_provider`). */
+  preference: AutoProvider;
+  /** The provider the session asks: the saved choice in the app. */
+  chosen: AutoProvider;
+  /** The provider that grades now. */
+  effective: AutoProvider;
+  /** `effective` is not `yellowmoon`. */
   active: boolean;
-  /** The prompt's and the table's versions (`docs/19` sections 4 and 5). */
-  prompt: number;
+  /** Preferences shows its "Auto grading" row and the instructions. */
+  visible: boolean;
+  consent: AutoConsent;
+  /** The table's version (`docs/19` section 5). */
   table: number;
   /** Which instructions the model reads: the default or the person's own, and the first 12 hex digits of their SHA-256. */
   instructions: AppleAutoInstructions;
@@ -1058,11 +1116,16 @@ export interface Preferences {
   check_for_updates_automatically: boolean;
   watch_downloads_during_import: boolean;
   last_used_folders: LastUsedFolders;
-  /** Auto with Apple Intelligence (`docs/19` section 2): on by default; it acts only where Apple Auto is available. */
-  apple_auto: boolean;
   /**
-   * Instructions for Apple Intelligence (`docs/19` section 2): the person's own instructions for Apple Auto's model, at most 2000
-   * characters; "" (the default) means `AppleAutoStatus.default_instructions`.
+   * Who grades (`docs/22` section 10.1): Apple Intelligence by default. A provider that is not available, or a program the person has not
+   * agreed to yet, acts as `yellowmoon`; the choice stays saved.
+   */
+  auto_provider: AutoProvider;
+  /** Whether the person agreed to send photos through Claude Code and through Antigravity (`docs/22` section 10.2). */
+  auto_consent: AutoConsent;
+  /**
+   * Instructions for the grading model (`docs/19` section 2, `docs/22` D1): the person's own instructions, at most 2000 characters, one
+   * text for every provider; "" (the default) means `AutoStatus.default_instructions`.
    */
   apple_auto_instructions: string;
 }
@@ -1148,6 +1211,8 @@ export interface AppInfo {
   version: string;
   /** The pipeline version written into exports (`docs/01` §Versions written into outputs). */
   pipeline_version: string;
+  /** The operating system the app runs on, as Rust names it (`std::env::consts::OS`): "macos", "windows" or "linux" (`docs/22` section 12.3). */
+  os: string;
 }
 
 /** `cli_link_status`: whether "Install Command-Line Tool…" has been done (addition, Preferences). */
@@ -1214,6 +1279,8 @@ export interface ApiEvents {
   render_stats: RenderStats;
   export_progress: ExportProgress;
   looks_changed: null;
+  /** A provider's availability changed (a program found, signed in or out, a probe ended): ask `auto_status()` again (`docs/22` section 12.6). */
+  auto_status_changed: null;
   update_state: UpdateState;
   error: AppError;
   /** Files of one source copied so far during `looks_import` (the wizard's Import step). */
