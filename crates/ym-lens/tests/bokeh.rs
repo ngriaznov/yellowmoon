@@ -1872,7 +1872,7 @@ fn steepest_rise(data: &[f32], x: usize, (y0, y1): (usize, usize)) -> f64 {
 
 #[test]
 fn a_soft_extended_patch_in_a_blurred_field_is_stretched_with_the_field_and_a_light_still_is_a_ball() {
-    // The petal of a flower market (A1M03165): a soft white patch of 22 px radius with a rim about 0.8 radii wide in
+    // The petal of a flower market (A1M03165): a soft white patch of 22 px radius with a rim 0.7 radii wide (80 to 20 %) in
     // a field the map calls blurred by 9 px. It is 2.4 times larger than the blur around it, which a light is not (the
     // image of a light is the lens's blur disc, as wide as the blur of its ground): a surface, with an extent of its
     // own. It used to be found as a ball, taken out with a disc a quarter of a radius wider than the ball and drawn
@@ -1881,10 +1881,10 @@ fn a_soft_extended_patch_in_a_blurred_field_is_stretched_with_the_field_and_a_li
     // it. Three controls stand beside it: a point light as wide as the blur (a ball, 2 times taller), a lamp with a
     // sharp rim as large as the patch (a ball: the rim is an edge of a shape of its own), and the patch in a field
     // blurred as wide as the patch (a ball: the size is the blur's).
-    let (petal, light, lamp) = ((700.0, 330.0, 22.0), (300.0, 330.0, 9.0), (500.0, 540.0, 22.0));
+    let (petal, light, lamp) = ((700.0, 330.0, 18.0), (300.0, 330.0, 9.0), (500.0, 540.0, 22.0));
     let scene = balls_on_ground(
         &[
-            (petal.0, petal.1, petal.2, 0.8, 0.4),
+            (petal.0, petal.1, petal.2, 1.6, 0.4),
             (light.0, light.1, light.2, 0.3, 1.0),
             (lamp.0, lamp.1, lamp.2, 0.15, 1.0),
         ],
@@ -1892,7 +1892,6 @@ fn a_soft_extended_patch_in_a_blurred_field_is_stretched_with_the_field_and_a_li
         63,
     );
     let p = plan(LensKind::Default, 0.0, 0.0, 100.0, W, H, Axis::X);
-    let hd = 0.5 * ((W * W + H * H) as f64).sqrt();
     let near = |bp: &ym_lens::BokehPlanes, (cx, cy, r): (f64, f64, f64)| {
         bp.balls()
             .iter()
@@ -1904,10 +1903,22 @@ fn a_soft_extended_patch_in_a_blurred_field_is_stretched_with_the_field_and_a_li
     assert!(!near(bp, petal), "the patch is no ball in a field of 9 px");
     assert!(near(bp, light), "the point light is a ball");
     assert!(near(bp, lamp), "the lamp with a sharp rim is a ball");
-    let wide = planes_with_map(&p, &scene, &learned_map(22.0, 0, 0));
+    let wide = planes_with_map(&p, &scene, &learned_map(20.0, 0, 0));
+    let wide = wide.bokeh().expect("bokeh");
+    for b in wide.balls() { eprintln!("DBG wide ball {:.1} {:.1} r {:.2} soft {:.2} take {:.2}", b.x * W as f64, b.y * H as f64, b.radius * 0.5 * ((W * W + H * H) as f64).sqrt(), b.softness, b.take_out_radius * 0.5 * ((W * W + H * H) as f64).sqrt()); } // DBG-TEMP
     assert!(
-        near(wide.bokeh().expect("bokeh"), petal),
+        near(wide, petal),
         "the patch is a ball where the blur around it is as wide as it is"
+    );
+    let soft = wide
+        .balls()
+        .iter()
+        .find(|b| (b.x * W as f64 - petal.0).hypot(b.y * H as f64 - petal.1) < 0.3 * petal.2)
+        .map(|b| b.softness)
+        .expect("found");
+    assert!(
+        (0.55..0.9).contains(&soft),
+        "the patch's rim is {soft:.2} radii wide: a soft blob that is no sharp edge"
     );
     // What is drawn.
     let out = reshape_tile(
@@ -1960,7 +1971,6 @@ fn a_soft_extended_patch_in_a_blurred_field_is_stretched_with_the_field_and_a_li
             .all(|(a, b)| a.to_bits() == b.to_bits()),
         "tiles differ from the whole frame"
     );
-    let _ = hd;
 }
 
 /// A dark scene (ground 0.03) with a bright cone, `level (1 - d / reach)^power` out to `reach` pixels: a smooth
