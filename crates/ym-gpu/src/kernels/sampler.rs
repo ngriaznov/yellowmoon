@@ -26,7 +26,7 @@
 //!
 //! # The lens's bend
 //!
-//! A grid with a [`SamplerWarp`](crate::cpu::sampler::SamplerWarp) (L4, `docs/21` section 4) is not
+//! A grid with a [`SamplerWarp`] (L4, `docs/21` section 4) is not
 //! separable: the photo position a canvas position reads is the root of a nonlinear map. The tables
 //! stay what they are (the chain *without* the warp, exact), and the kernel adds the warp's
 //! displacement to that position: it takes the canvas offset from the centre in half-diagonal units

@@ -330,8 +330,8 @@ pub struct L2Input {
 /// when L1 leaves the picture alone), or `None` when nothing in the picture is saturated (L2 reads `l1`, or `raw`,
 /// as they are).
 ///
-/// Every pixel's light is in its own colour ([`Restore::light`]) and a clipped small light holds its headroom
-/// ([`pixel_light`]); the extra is that light less the picture, the head is the headroom. L2 gathers the picture and the extra apart and
+/// Every pixel's light is in its own colour (`Restore::light`) and a clipped small light holds its headroom
+/// (`pixel_light`); the extra is that light less the picture, the head is the headroom. L2 gathers the picture and the extra apart and
 /// adds the extra only where the lens moves light (`EXTRA_INFLOW_RAMP`, `EXTRA_CHANGE_RAMP`,
 /// `EXTRA_KERNEL_RAMP`), so a pixel the lens leaves alone is the picture's. The pixels L1 left as they are (its
 /// output within [`L1_UNCHANGED_RAMP`] of the picture with the light's colour, a smoothstep) get the extra, the

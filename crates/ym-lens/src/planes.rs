@@ -61,7 +61,7 @@ impl LensPlanes {
     }
 
     /// [`LensPlanes::build`] with the blur map of another source (the learned model) in place of the classical
-    /// detector's edge measure: see [`BlurMapInput`]. The balls, the subject anchor and the cleaning of the map
+    /// detector's edge measure: see [`BlurMapInput`](crate::BlurMapInput). The balls, the subject anchor and the cleaning of the map
     /// are the same. With `None` it is `build`.
     ///
     /// # Errors

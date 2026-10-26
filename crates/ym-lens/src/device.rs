@@ -140,7 +140,7 @@ pub struct FlareRestore {
 
 /// The flare kernel's data for one plan shape at one scale (`LensPlan::flare_scale_data`): the glow core's
 /// taps, the streak's profile and the drawn items with the bins that cull them. It does not depend on
-/// Flares: [`LensPlan::flare_mix`] gives the weights of the sum.
+/// Flares: [`LensPlan::flare_mix`](crate::LensPlan::flare_mix) gives the weights of the sum.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FlareScaleData {
     /// Width of the frame at this scale in pixels.
@@ -258,7 +258,7 @@ impl crate::plan::LensPlan {
         FlareMix { f, keep }
     }
 
-    /// What [`flare_scale_data`](LensPlan::flare_scale_data) depends on besides the planes and the frame
+    /// What [`flare_scale_data`](crate::LensPlan::flare_scale_data) depends on besides the planes and the frame
     /// size: the lens, its data versions, the camera, the axis, the clip levels, the f-number and Anamorphic
     /// (ghosts widen, streaks reach). Not Flares and not Edges.
     #[must_use]
