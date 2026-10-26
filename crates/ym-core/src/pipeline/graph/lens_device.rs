@@ -252,6 +252,8 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
                             )?;
                             let extra = Arc::new(h.extra);
                             held.push(Arc::clone(&extra));
+                            let head = Arc::new(h.head);
+                            held.push(Arc::clone(&head));
                             let own = Arc::new(h.own);
                             held.push(Arc::clone(&own));
                             encode_field(
@@ -261,6 +263,7 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
                                 &own,
                                 l2_at,
                                 Some((&*extra, l2_at)),
+                                Some((&*head, l2_at)),
                                 tile.out,
                             )?
                         }
@@ -270,6 +273,7 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
                             pass,
                             &reshaped,
                             l2_at,
+                            None,
                             None,
                             tile.out,
                         )?,
@@ -282,6 +286,8 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
                                 encode_headroom(&mut passes, raw_in, at, None, lpass, map, tile.k)?;
                             let extra = Arc::new(h.extra);
                             held.push(Arc::clone(&extra));
+                            let head = Arc::new(h.head);
+                            held.push(Arc::clone(&head));
                             let own = Arc::new(h.own);
                             held.push(Arc::clone(&own));
                             encode_field(
@@ -291,10 +297,20 @@ fn run_tile(ctx: &GpuContext, raw: RawIn, tile: &TilePlan) -> Result<TileOut, Gp
                                 &own,
                                 at,
                                 Some((&*extra, at)),
+                                Some((&*head, at)),
                                 tile.out,
                             )?
                         }
-                        _ => encode_field(&mut passes, tables, pass, raw_in, at, None, tile.out)?,
+                        _ => encode_field(
+                            &mut passes,
+                            tables,
+                            pass,
+                            raw_in,
+                            at,
+                            None,
+                            None,
+                            tile.out,
+                        )?,
                     }
                 };
                 let z = Arc::new(z);

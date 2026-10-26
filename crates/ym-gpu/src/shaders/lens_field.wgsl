@@ -38,7 +38,7 @@ struct FieldU {
     gs: vec4<u32>,              // the gather: row stride, plane length
     lvl: array<vec4<i32>, 13>,  // per level: offset in the pyramid (vec4 units), width, height
     org: array<vec4<i32>, 13>,  // per level: column and row of its first texel (blocks of that level)
-    ex: vec4<u32>,              // x: 2 when the gather is the extra light, added to the output planes; 0 otherwise
+    ex: vec4<u32>,              // x: 2 when the gather is the extra light, 3 the headroom, added to the output planes; 0 otherwise; y: its level bias
 };
 
 @group(0) @binding(0) var<uniform> pu: FieldU;
@@ -274,7 +274,7 @@ fn lf_gather_pixel(i: i32, j: i32, k: LfPix) -> vec3<f32> {
         let p = pyr[u32(l.x) + u32(j - o.y) * u32(l.y) + u32(i - o.x)];
         return p.xyz;
     }
-    let level = lf_level(k.omega, u32(pu.ints.z));
+    let level = min(lf_level(k.omega, u32(pu.ints.z)) + pu.ex.y, u32(pu.ints.z));
     let lv = i32(level);
     let inv = 1.0 / f32(1u << level);
     let n = lf_taps(k.omega * inv);
@@ -324,7 +324,7 @@ fn lf_gather_pixel(i: i32, j: i32, k: LfPix) -> vec3<f32> {
 // there too).
 fn lf_has_light(i: i32, j: i32, k: LfPix) -> bool {
     let lmax = u32(pu.ints.z);
-    let level = lf_level(k.omega, lmax);
+    let level = min(lf_level(k.omega, lmax) + pu.ex.y, lmax);
     let reach = i32(ceil(k.omega * 1.4142135)) + i32(ceil(1.5 * f32(1u << level))) + 3;
     let l = pu.lvl[lmax];
     let o = pu.org[lmax];
@@ -383,6 +383,20 @@ fn lf_gather_main(gid: vec3<u32>) {
     let j = pu.win.y + i32(gid.y);
     let k = lf_pixel(i, j);
     let at = gid.y * pu.dst.x + gid.x;
+    if (pu.ex.x == 3u) {
+        // The headroom: its gather, read from the levels pu.ex.y above the kernel's, added to the output planes by
+        // the kernel's width (ym_lens::field::add_head). A pixel with no kernel gets none.
+        if (k.omega == 0.0 || !lf_has_light(i, j, k)) {
+            return;
+        }
+        let more = lf_gather_pixel(i, j, k);
+        let tk = clamp((k.omega / pu.frame.z - LF_KERNEL_FROM) / (LF_KERNEL_TO - LF_KERNEL_FROM), 0.0, 1.0);
+        let width = tk * tk * (3.0 - 2.0 * tk);
+        dst[at] = dst[at] + width * more.x;
+        dst[pu.dst.y + at] = dst[pu.dst.y + at] + width * more.y;
+        dst[2u * pu.dst.y + at] = dst[2u * pu.dst.y + at] + width * more.z;
+        return;
+    }
     if (pu.ex.x == 2u) {
         // The extra light: its gather, added to the picture's gather the output planes hold by the share mu of how
         // much of the picture's inflow the extra is and how much the lens changes the pixel (ym_lens::field::add_extra). A pixel

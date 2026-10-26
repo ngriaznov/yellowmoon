@@ -248,6 +248,15 @@ pub const EXTRA_CHANGE_RAMP: (f64, f64) = (0.25, 1.0);
 /// a black or coloured pixel in a white light. There the lens leaves the light as the picture records it.
 pub const EXTRA_KERNEL_RAMP: (f64, f64) = (0.001, 0.003);
 
+/// How soft the headroom is, as a share of the half-diagonal: it is read from the pyramid level whose texels are the
+/// largest power of two of pixels not above this (at least 1 px) above the lens's own kernel's. A light's headroom
+/// is a peak of a few pixels; spread by the kernel alone it keeps that peak where the kernel is small, a hard white
+/// sprite whose edge falls from clipped to sky in a pixel or two and whose steepness the resampling after the lens
+/// rings below zero (black pixels inside and round it); read from texels of a few pixels it is spread over them
+/// first, the same light in a wider, softer halo (`field::extra_level_bias`). The light's colour is not read
+/// softer: it cancels the clip pattern's cast pixel by pixel against the picture's own spread.
+pub const EXTRA_SOFTNESS: f64 = 0.005;
+
 /// The least light, in clip levels of the lens plane, that the shares of [`EXTRA_INFLOW_RAMP`] and
 /// [`EXTRA_CHANGE_RAMP`] divide by (a black pixel is not given every faint tail of a light).
 pub const EXTRA_CHANGE_FLOOR: f64 = 1e-3;

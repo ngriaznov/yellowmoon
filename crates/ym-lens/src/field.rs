@@ -47,8 +47,8 @@ use rayon::prelude::*;
 
 use crate::consts::{
     COPY_BELOW_PX, EXTRA_CHANGE_FLOOR, EXTRA_CHANGE_RAMP, EXTRA_INFLOW_RAMP, EXTRA_KERNEL_RAMP,
-    LATERAL_COLOR_SCALE, MAX_TAPS_SIDE, PSF_SIZE, PSF_WAVELENGTHS, RADII, SIDE_TABLE_RADIUS,
-    T_OVERSHOOT, TAP_SPACING_MAX_PX, W_KNEE, W_MAX,
+    EXTRA_SOFTNESS, LATERAL_COLOR_SCALE, MAX_TAPS_SIDE, PSF_SIZE, PSF_WAVELENGTHS, RADII,
+    SIDE_TABLE_RADIUS, T_OVERSHOOT, TAP_SPACING_MAX_PX, W_KNEE, W_MAX,
 };
 use crate::data::LensData;
 use crate::error::LensError;
@@ -666,6 +666,10 @@ impl<'a> Geometry<'a> {
             lmax = lmax.max(level_for(o.min(omega_max), opts.spacing_max));
             o += 0.25;
         }
+        if omega_max >= COPY_BELOW_PX {
+            // The extra light is read above the kernel's own level ([`extra_level_bias`]).
+            lmax = lmax.max(extra_level_bias(h));
+        }
         let (gather_halo, pad) = if omega_max < COPY_BELOW_PX {
             (0, 0)
         } else {
@@ -982,17 +986,20 @@ fn sample<const CLAMP: bool>(lv: &Level, ux: i64, uy: i64) -> F4 {
 /// `input` must cover `out` grown by [`Geometry::halo`] and clamped to the frame. With no field optics
 /// (`plan.field_tables()` is `None`) the result is the input's `out` rectangle, bit for bit.
 ///
-/// `extra` is light the picture does not record and the stage spreads (`light::l2_input`: the headroom of a
-/// clipped light, and the light's colour where a channel clipped), an image of the rectangle of `input` or
-/// more. It is gathered with the same spread functions and added to the gather of `input` by the share `mu`
-/// of [`EXTRA_INFLOW_RAMP`] and [`EXTRA_CHANGE_RAMP`] (the larger of how much of the picture's inflow the extra
-/// is, and how much the lens changes the pixel's picture): a pixel in a flat bright area, where the extra only
-/// moves from pixel to pixel and the lens changes nothing, is as the picture alone gives it, and one beside a
-/// clipped star has the extra whole. A pixel with no kernel (a copy) is never given any.
+/// `extra` is the light the picture does not record that the stage spreads, the light's colour less the picture
+/// (`light::l2_input`), an image of the rectangle of `input` or more. It is gathered with the same spread
+/// functions and added to the gather of `input` by the share `mu` of [`EXTRA_INFLOW_RAMP`] and
+/// [`EXTRA_CHANGE_RAMP`] (the larger of how much of the picture's inflow the extra is, and how much the lens
+/// changes the pixel's picture), times the kernel's width ([`EXTRA_KERNEL_RAMP`]): a pixel in a flat bright
+/// area, where the extra only moves from pixel to pixel and the lens changes nothing, is as the picture alone
+/// gives it, and one beside a clipped star has the extra whole. `head` is the headroom of the clipped small
+/// lights, neutral: read from the pyramid levels [`extra_level_bias`] above the kernel's (a softer halo), and
+/// added with the kernel's width alone. A pixel with no kernel (a copy) is never given any of either.
 pub(crate) fn apply(
     plan: &LensPlan,
     input: &ImageRef,
     extra: Option<&ImageRef>,
+    head: Option<&ImageRef>,
     out: PixelRect,
     opts: Options,
 ) -> Result<Vec<f32>, LensError> {
@@ -1013,12 +1020,12 @@ pub(crate) fn apply(
             have: input.rect().to_string(),
         });
     }
-    if let Some(extra) = extra {
-        extra.validate()?;
-        if !extra.rect().contains(&need) {
+    for more in extra.into_iter().chain(head) {
+        more.validate()?;
+        if !more.rect().contains(&need) {
             return Err(LensError::InputTooSmall {
                 needed: need.to_string(),
-                have: extra.rect().to_string(),
+                have: more.rect().to_string(),
             });
         }
     }
@@ -1036,12 +1043,19 @@ pub(crate) fn apply(
         gathered_rect.y1() as i64 + halo,
     ];
     let pyramid = Pyramid::build(input, region, geo.lmax);
-    let mut gathered = gather_region(&geo, &pyramid, gathered_rect, None);
+    let mut gathered = gather_region(&geo, &pyramid, gathered_rect, None, 0);
     if let Some(extra) = extra {
         let pyramid = Pyramid::build(extra, region, geo.lmax);
         let occupancy = Occupancy::build(extra);
-        let more = gather_region(&geo, &pyramid, gathered_rect, Some(&occupancy));
+        let more = gather_region(&geo, &pyramid, gathered_rect, Some(&occupancy), 0);
         add_extra(&geo, input, &mut gathered, &more, gathered_rect);
+    }
+    if let Some(head) = head {
+        let pyramid = Pyramid::build(head, region, geo.lmax);
+        let occupancy = Occupancy::build(head);
+        let bias = extra_level_bias(geo.h);
+        let more = gather_region(&geo, &pyramid, gathered_rect, Some(&occupancy), bias);
+        add_head(&geo, &mut gathered, &more, gathered_rect);
     }
 
     // Pass 2: the fringe shift of each channel and the gain.
@@ -1088,6 +1102,14 @@ impl Occupancy {
         let at = |x: usize, y: usize| self.sat[y * (self.w + 1) + x];
         at(b, d) + at(a, c) > at(a, d) + at(b, c)
     }
+}
+
+/// The pyramid levels above the kernel's own that the extra light is read at, for a frame of half-diagonal
+/// `half_diag_px` pixels at the scale of the pass ([`EXTRA_SOFTNESS`]): the same function of the frame on the CPU and
+/// on the device, so a tile and the whole frame agree.
+#[must_use]
+pub fn extra_level_bias(half_diag_px: f64) -> u32 {
+    (half_diag_px * EXTRA_SOFTNESS).max(1.0).log2().floor() as u32
 }
 
 /// Adds to the gather `gathered` of the picture the share `mu` of the gather `more` of the extra light, over `rect`
@@ -1146,6 +1168,35 @@ fn add_extra(
         });
 }
 
+/// Adds to the gather `gathered` of the picture the gather `more` of the headroom, over `rect` (see [`apply`]),
+/// by the smoothstep of the kernel's half-width over the half-diagonal over [`EXTRA_KERNEL_RAMP`].
+fn add_head(geo: &Geometry, gathered: &mut [f32], more: &[f32], rect: PixelRect) {
+    let plane = rect.w * rect.h;
+    let (r, rest) = gathered.split_at_mut(plane);
+    let (g, b) = rest.split_at_mut(plane);
+    r.par_chunks_mut(rect.w)
+        .zip(g.par_chunks_mut(rect.w))
+        .zip(b.par_chunks_mut(rect.w))
+        .enumerate()
+        .for_each(|(row, ((rr, gr), br))| {
+            let j = rect.y + row;
+            for col in 0..rect.w {
+                let omega = geo.pixel(rect.x + col, j).omega;
+                if omega == 0.0 {
+                    continue;
+                }
+                let t = ((omega / geo.h - EXTRA_KERNEL_RAMP.0)
+                    / (EXTRA_KERNEL_RAMP.1 - EXTRA_KERNEL_RAMP.0))
+                    .clamp(0.0, 1.0);
+                let width = t * t * (3.0 - 2.0 * t);
+                let at = row * rect.w + col;
+                rr[col] = (f64::from(rr[col]) + width * f64::from(more[at])) as f32;
+                gr[col] = (f64::from(gr[col]) + width * f64::from(more[plane + at])) as f32;
+                br[col] = (f64::from(br[col]) + width * f64::from(more[2 * plane + at])) as f32;
+            }
+        });
+}
+
 /// The gather (without the gain) of every pixel of `rect`: planar, `3 * rect.w * rect.h` samples.
 ///
 /// With an occupancy (the gather of the extra light) a pixel whose window holds none, and a pixel with no kernel,
@@ -1155,6 +1206,7 @@ fn gather_region(
     pyr: &Pyramid,
     rect: PixelRect,
     occupancy: Option<&Occupancy>,
+    bias: u32,
 ) -> Vec<f32> {
     let plane = rect.w * rect.h;
     let mut result = vec![0.0f32; 3 * plane];
@@ -1174,7 +1226,7 @@ fn gather_region(
                         continue;
                     }
                     // A tap lies within sqrt(2) omega of the pixel and reads texels 1.5 blocks wide.
-                    let level = level_for(k.omega, geo.opts.spacing_max).min(geo.lmax);
+                    let level = (level_for(k.omega, geo.opts.spacing_max) + bias).min(geo.lmax);
                     let reach = (k.omega * std::f64::consts::SQRT_2).ceil() as i64
                         + (1.5 * f64::from(1u32 << level)).ceil() as i64
                         + 3;
@@ -1187,7 +1239,7 @@ fn gather_region(
                         continue;
                     }
                 }
-                let px = gather(geo, pyr, i, j);
+                let px = gather(geo, pyr, i, j, bias);
                 rr[col] = px[0] as f32;
                 gr[col] = px[1] as f32;
                 br[col] = px[2] as f32;
@@ -1268,7 +1320,7 @@ pub(crate) fn copy_rect(input: &ImageRef, out: PixelRect) -> Result<Vec<f32>, Le
 }
 
 /// One pixel's gather (all three channels), without the gain.
-fn gather(geo: &Geometry, pyr: &Pyramid, i: usize, j: usize) -> [f64; 3] {
+fn gather(geo: &Geometry, pyr: &Pyramid, i: usize, j: usize, bias: u32) -> [f64; 3] {
     let k = geo.pixel(i, j);
     let base_lv = &pyr.levels[0];
     if k.omega == 0.0 {
@@ -1278,7 +1330,7 @@ fn gather(geo: &Geometry, pyr: &Pyramid, i: usize, j: usize) -> [f64; 3] {
         return [f64::from(px[0]), f64::from(px[1]), f64::from(px[2])];
     }
     let (cx, cy) = (i as f64 + 0.5, j as f64 + 0.5);
-    let level = level_for(k.omega, geo.opts.spacing_max).min(geo.lmax);
+    let level = (level_for(k.omega, geo.opts.spacing_max) + bias).min(geo.lmax);
     let scale = f64::from(1u32 << level);
     let inv = 1.0 / scale;
     let n = taps_for(k.omega * inv);
@@ -2197,6 +2249,7 @@ mod tests {
             p,
             &whole(w, h, &data),
             None,
+            None,
             PixelRect::new(0, 0, w, h),
             opts,
         )
@@ -2283,9 +2336,11 @@ mod tests {
     fn wide_kernels_use_reduced_levels_at_full_budget() {
         let p = plan(LensKind::Petzval, 100.0, 0.0, 6000, 4000, Axis::X);
         let geo = Geometry::new(&p, 6000, 4000, Options::default()).unwrap();
-        // w_max = 0.012 half-diagonals of 3606 px is 43 px; level 3 brings its cells within a texel.
-        assert_eq!(geo.lmax, 3);
-        assert!(geo.halo() > 50 && geo.halo() < 80, "halo {}", geo.halo());
+        // w_max = 0.012 half-diagonals of 3606 px is 43 px; level 3 brings its cells within a texel; the extra
+        // light is read at level 4 there (`extra_level_bias`: 0.5 % of the half-diagonal is 18 px).
+        assert_eq!(geo.lmax, 4);
+        assert_eq!(extra_level_bias(3605.5), 4);
+        assert!(geo.halo() > 50 && geo.halo() < 100, "halo {}", geo.halo());
     }
 
     #[test]
@@ -2295,6 +2350,7 @@ mod tests {
         let out = apply(
             &p,
             &whole(600, 400, &data),
+            None,
             None,
             PixelRect::new(290, 190, 20, 20),
             Options::default(),
@@ -2372,6 +2428,7 @@ mod tests {
             &p,
             &whole_image(w, h, &data),
             None,
+            None,
             rect,
             Options::default(),
         )
@@ -2380,6 +2437,7 @@ mod tests {
             &p,
             &whole_image(w, h, &data),
             Some(&whole_image(w, h, &extra)),
+            None,
             rect,
             Options::default(),
         )
@@ -2427,6 +2485,7 @@ mod tests {
                 &p,
                 &whole_image(w, h, &data),
                 None,
+                None,
                 rect,
                 Options::default(),
             )
@@ -2435,6 +2494,7 @@ mod tests {
                 &p,
                 &whole_image(w, h, &data),
                 Some(&whole_image(w, h, &extra)),
+                None,
                 rect,
                 Options::default(),
             )
@@ -2459,6 +2519,56 @@ mod tests {
                 assert!(added < 1.01 * 3.0 * 9.0 * 30.0 * 1.2, "added {added}");
             } else {
                 assert_eq!(geo.pixel(ix, iy).omega, 0.0);
+                assert_eq!(added, 0.0, "a copy is given none");
+            }
+        }
+    }
+
+    #[test]
+    fn the_headroom_of_a_star_reaches_its_neighbours_with_the_light_it_holds() {
+        // 30 clip levels on a disc of 1.5 px near the right edge, where the spread is wide: what the lens moves
+        // of it (by the kernel's width) lands round the star and nowhere is a peak as high as the star's own
+        // headroom; at the centre, where the kernel is a copy, none of it is given.
+        let (w, h) = (600, 400);
+        let rect = PixelRect::new(0, 0, w, h);
+        let n = w * h;
+        for (kind, edges, cx, cy, wide) in [
+            (LensKind::Vintage, 100.0, 520.0, 200.0, true),
+            (LensKind::Default, 50.0, 300.0, 200.0, false),
+        ] {
+            let p = plan(kind, edges, 0.0, w, h, Axis::X);
+            let (data, star) = picture_and_extra(w, h, cx, cy, 1.5, 30.0);
+            let plain = apply(
+                &p,
+                &whole_image(w, h, &data),
+                None,
+                None,
+                rect,
+                Options::default(),
+            )
+            .unwrap();
+            let with = apply(
+                &p,
+                &whole_image(w, h, &data),
+                None,
+                Some(&whole_image(w, h, &star)),
+                rect,
+                Options::default(),
+            )
+            .unwrap();
+            let (mut added, mut peak) = (0.0f64, 0.0f64);
+            for i in 0..3 * n {
+                assert!(with[i] >= plain[i], "the headroom only adds");
+                let d = f64::from(with[i] - plain[i]);
+                added += d;
+                peak = peak.max(d);
+            }
+            if wide {
+                // Three channels of nine pixels at 30, less what the width and the gain leave out.
+                assert!(added > 0.3 * 3.0 * 9.0 * 30.0, "added {added}");
+                assert!(added < 1.05 * 3.0 * 9.0 * 30.0, "added {added}");
+                assert!(peak < 15.0, "the peak is {peak}");
+            } else {
                 assert_eq!(added, 0.0, "a copy is given none");
             }
         }

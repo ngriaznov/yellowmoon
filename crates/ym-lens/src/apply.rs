@@ -193,10 +193,11 @@ fn field_with(
     match &l2 {
         Some(l2) => {
             let extra = over(l2.rect, (fw, fh), &l2.extra);
+            let head = over(l2.rect, (fw, fh), &l2.head);
             let picture = over(l2.rect, (fw, fh), &l2.own);
-            field::apply(plan, &picture, Some(&extra), out, opts)
+            field::apply(plan, &picture, Some(&extra), Some(&head), out, opts)
         }
-        None => field::apply(plan, &image, None, out, opts),
+        None => field::apply(plan, &image, None, None, out, opts),
     }
 }
 

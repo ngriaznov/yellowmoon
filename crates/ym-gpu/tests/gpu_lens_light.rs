@@ -308,7 +308,7 @@ fn the_headroom_kernel_matches_the_cpu_reference() {
     // Mode 1: the raw picture, at the scale of the lens plane.
     let want =
         l2_input(&plan, &planes, plan.lens_plane_scale(), &raw, None).expect("a headroom input");
-    let (got, got_own) = {
+    let (got, got_head, got_own) = {
         let data = data.clone();
         let map = map.clone();
         let k = plan.lens_plane_scale();
@@ -322,16 +322,32 @@ fn the_headroom_kernel_matches_the_cpu_reference() {
             .zip(b)
             .fold(0.0f32, |m, (x, y)| m.max((x - y).abs()))
     };
-    let (worst, worst_own) = (diff(&got, &want.extra), diff(&got_own, &want.own));
+    let (worst, worst_own, worst_head) = (
+        diff(&got, &want.extra),
+        diff(&got_own, &want.own),
+        diff(&got_head, &want.head),
+    );
+    let head_largest = want.head.iter().fold(0.0f32, |m, v| m.max(*v));
     println!(
-        "extra light, mode 1: worst difference {worst:e} (extra) and {worst_own:e} (picture) of values up to {largest:e} ({:e} relative)",
+        "extra light, mode 1: worst difference {worst:e} (extra), {worst_head:e} (headroom, of values up to {head_largest:e}) and {worst_own:e} (picture) of values up to {largest:e} ({:e} relative)",
         worst / largest
     );
-    assert!(got.iter().chain(&got_own).all(|v| v.is_finite()));
-    assert!(largest > 5.0, "the clipped stars hold headroom: {largest}");
     assert!(
-        worst <= bound * largest && worst_own <= bound * largest,
-        "worst {worst} and {worst_own} of {largest}"
+        got.iter()
+            .chain(&got_own)
+            .chain(&got_head)
+            .all(|v| v.is_finite())
+    );
+    assert!(
+        head_largest > 5.0,
+        "the clipped stars hold headroom: {head_largest}"
+    );
+    assert!(want.head.iter().all(|v| *v >= 0.0));
+    assert!(
+        worst <= bound * largest.max(1.0)
+            && worst_own <= bound * largest.max(1.0)
+            && worst_head <= bound * head_largest,
+        "worst {worst}, {worst_head} and {worst_own} of {largest} and {head_largest}"
     );
     // Mode 2: after L1, which changed a block of pixels (a blurred patch) and left the others as they are.
     let lit = lit_input(&plan, &raw).expect("saturated pixels");
@@ -373,7 +389,7 @@ fn the_headroom_kernel_matches_the_cpu_reference() {
     )
     .expect("a headroom input after L1");
     let want_own = &want.own;
-    let (got, got_own) = {
+    let (got, got_head, got_own) = {
         let (data, l1, map) = (data.clone(), l1.clone(), map.clone());
         let k = plan.lens_plane_scale();
         run(dev, move |ctx| {
@@ -396,11 +412,17 @@ fn the_headroom_kernel_matches_the_cpu_reference() {
             .zip(b)
             .fold(0.0f32, |m, (x, y)| m.max((x - y).abs()))
     };
-    let (wy, wo) = (diff(&got, &want.extra), diff(&got_own, want_own));
-    println!(
-        "extra light, mode 2: worst difference {wy:e} (extra) and {wo:e} (picture) of values up to {largest:e}"
+    let (wy, wo, wh) = (
+        diff(&got, &want.extra),
+        diff(&got_own, want_own),
+        diff(&got_head, &want.head),
     );
-    assert!(wy <= bound * largest && wo <= bound * largest);
+    let head_largest = want.head.iter().fold(0.0f32, |m, v| m.max(*v));
+    println!(
+        "extra light, mode 2: worst difference {wy:e} (extra), {wh:e} (headroom) and {wo:e} (picture) of values up to {largest:e} and {head_largest:e}"
+    );
+    assert!(wy <= bound * largest.max(1.0) && wo <= bound * largest.max(1.0));
+    assert!(wh <= bound * head_largest.max(1.0));
 }
 
 #[test]
@@ -423,7 +445,7 @@ fn l2_with_an_extra_light_matches_the_cpu_reference() {
     let whole = {
         let (data, map) = (data.clone(), map.clone());
         run(dev, move |ctx| {
-            let (extra, own) =
+            let (extra, head, own) =
                 headroom(ctx, &data, (HW, HH), (0, 0), None, pass, &map, k).expect("headroom");
             let tables = FieldTablesBuffer::upload(ctx, &tables_data).expect("tables");
             field_with_extra(
@@ -434,6 +456,7 @@ fn l2_with_an_extra_light_matches_the_cpu_reference() {
                 (HW, HH),
                 (0, 0),
                 (&extra, (HW, HH), (0, 0)),
+                (&head, (HW, HH), (0, 0)),
                 Rect::new(0, 0, HW, HH),
             )
             .expect("L2 with an extra light")
@@ -494,7 +517,7 @@ fn a_tile_of_the_headroom_and_l2_equals_the_frame_bit_for_bit_and_poison_changes
         }
         let (map, field_pass, tables_data) = (map.clone(), field_pass, tables_data.clone());
         gpu.run(JobSpec::new(Priority::Viewport), move |ctx, _| {
-            let (extra, own) =
+            let (extra, head, own) =
                 headroom(ctx, &window, (ww, wh), (x0, y0), None, pass, &map, k).expect("headroom");
             let tables = FieldTablesBuffer::upload(ctx, &tables_data).expect("tables");
             field_with_extra(
@@ -505,6 +528,7 @@ fn a_tile_of_the_headroom_and_l2_equals_the_frame_bit_for_bit_and_poison_changes
                 (ww, wh),
                 (x0, y0),
                 (&extra, (ww, wh), (x0, y0)),
+                (&head, (ww, wh), (x0, y0)),
                 out,
             )
         })

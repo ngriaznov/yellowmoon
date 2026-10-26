@@ -308,17 +308,19 @@ fn any_saturated(plan: &LensPlan, input: &ImageRef) -> bool {
     !(below(0) && below(1) && below(2))
 }
 
-/// What L2 reads: the picture it gathers and the extra light it spreads beside it ([`l2_input`]).
+/// What L2 reads: the picture it gathers and the light it spreads beside it ([`l2_input`]).
 #[derive(Clone, Debug)]
 pub struct L2Input {
-    /// The rectangle `extra` and `own` cover.
+    /// The rectangle `extra`, `head` and `own` cover.
     pub rect: PixelRect,
     /// The light L2 spreads that the picture does not record, per pixel of `rect`: planar, `3 * rect.w * rect.h`
     /// samples. The pixel's light in its own colour less the picture (the saturated channel raised to the others'
     /// mean, the clip pattern's cast taken off: a channel above its light's colour is lowered, so a sample can be
-    /// negative) and the headroom of a clipped small light (neutral, never negative). 0 for the pixels L1
-    /// changed.
+    /// negative). 0 for the pixels L1 changed.
     pub extra: Vec<f32>,
+    /// The headroom of the clipped small lights (neutral, never negative), in the three planes alike. 0 for the
+    /// pixels L1 changed.
+    pub head: Vec<f32>,
     /// The picture L2 gathers over `rect`, planar like `extra`: the raw picture, and L1's output at the pixels L1
     /// changed.
     pub own: Vec<f32>,
@@ -329,7 +331,7 @@ pub struct L2Input {
 /// as they are).
 ///
 /// Every pixel's light is in its own colour ([`Restore::light`]) and a clipped small light holds its headroom
-/// ([`pixel_light`]); the extra is that light less the picture. L2 gathers the picture and the extra apart and
+/// ([`pixel_light`]); the extra is that light less the picture, the head is the headroom. L2 gathers the picture and the extra apart and
 /// adds the extra only where the lens moves light (`EXTRA_INFLOW_RAMP`, `EXTRA_CHANGE_RAMP`,
 /// `EXTRA_KERNEL_RAMP`), so a pixel the lens leaves alone is the picture's. The pixels L1 left as they are (its
 /// output within [`L1_UNCHANGED_RAMP`] of the picture with the light's colour, a smoothstep) get the extra, the
@@ -366,6 +368,7 @@ pub(crate) fn l2_input_with(
     let rn = raw.width * raw.height;
     let mut extra = vec![0.0f32; 3 * n];
     let mut own = vec![0.0f32; 3 * n];
+    let mut head = vec![0.0f32; n];
     let (er, erest) = extra.split_at_mut(n);
     let (eg, eb) = erest.split_at_mut(n);
     let (or, orest) = own.split_at_mut(n);
@@ -376,9 +379,10 @@ pub(crate) fn l2_input_with(
         .zip(eb.par_chunks_mut(w))
         .zip(or.par_chunks_mut(w))
         .zip(og.par_chunks_mut(w))
-        .zip(ob.par_chunks_mut(w));
+        .zip(ob.par_chunks_mut(w))
+        .zip(head.par_chunks_mut(w));
     rows.enumerate()
-        .for_each(|(row, (((((er, eg), eb), or), og), ob))| {
+        .for_each(|(row, ((((((er, eg), eb), or), og), ob), hd))| {
             let j = rect.y + row;
             for col in 0..w {
                 let i = rect.x + col;
@@ -390,18 +394,11 @@ pub(crate) fn l2_input_with(
                 ];
                 let ev = map.ev_at(i, j, k);
                 let (lit, headroom) = pixel_light(&rs, map, x, ev);
-                // Without L1: the picture gathers as it is, and the light in its own colour less the picture, with
-                // the headroom, is spread beside it.
-                let (picture, more) = (
-                    x,
-                    [
-                        lit[0] - x[0] + headroom,
-                        lit[1] - x[1] + headroom,
-                        lit[2] - x[2] + headroom,
-                    ],
-                );
-                let (picture, more) = match l1 {
-                    None => (picture, more),
+                // Without L1: the picture gathers as it is, and the light in its own colour less the picture, and
+                // the headroom, are spread beside it.
+                let more = [lit[0] - x[0], lit[1] - x[1], lit[2] - x[2]];
+                let (picture, more, headroom) = match l1 {
+                    None => (x, more, headroom),
                     Some(l1) => {
                         let li = (j - l1.y0) * l1.width + (i - l1.x0);
                         let ln = l1.width * l1.height;
@@ -424,23 +421,31 @@ pub(crate) fn l2_input_with(
                             );
                         (
                             [
-                                m * picture[0] + (1.0 - m) * v[0],
-                                m * picture[1] + (1.0 - m) * v[1],
-                                m * picture[2] + (1.0 - m) * v[2],
+                                m * x[0] + (1.0 - m) * v[0],
+                                m * x[1] + (1.0 - m) * v[1],
+                                m * x[2] + (1.0 - m) * v[2],
                             ],
                             [m * more[0], m * more[1], m * more[2]],
+                            m * headroom,
                         )
                     }
                 };
                 er[col] = more[0] as f32;
                 eg[col] = more[1] as f32;
                 eb[col] = more[2] as f32;
+                hd[col] = headroom as f32;
                 or[col] = picture[0] as f32;
                 og[col] = picture[1] as f32;
                 ob[col] = picture[2] as f32;
             }
         });
-    Some(L2Input { rect, extra, own })
+    let head = [head.as_slice(); 3].concat();
+    Some(L2Input {
+        rect,
+        extra,
+        head,
+        own,
+    })
 }
 
 #[cfg(test)]
@@ -566,7 +571,8 @@ mod tests {
         let planes = LensPlanes::build(&p, &whole(&data), None, &|| false).unwrap();
         let rect = PixelRect::new(0, 0, W, H);
         let with = crate::apply_field(&p, &planes, 1, &whole(&data), rect).unwrap();
-        let without = field::apply(&p, &whole(&data), None, rect, Options::default()).unwrap();
+        let without =
+            field::apply(&p, &whole(&data), None, None, rect, Options::default()).unwrap();
         let geo = Geometry::new(&p, W, H, Options::default()).unwrap();
         let n = W * H;
         let (mut copies, mut moved) = (0, 0);

@@ -37,7 +37,7 @@ use ym_lens::consts::{
     COPY_BELOW_PX, EXTRA_CHANGE_FLOOR, EXTRA_CHANGE_RAMP, EXTRA_INFLOW_RAMP, EXTRA_KERNEL_RAMP,
     MAX_TAPS_SIDE, RADII, TAP_SPACING_MAX_PX, W_KNEE, W_MAX,
 };
-use ym_lens::device::{FIELD_HEADER, FIELD_TABLE_SIZES, field_table_offset};
+use ym_lens::device::{FIELD_HEADER, FIELD_TABLE_SIZES, extra_level_bias, field_table_offset};
 pub use ym_lens::device::{FieldPass, FieldTablesData};
 
 use super::shader::KernelId;
@@ -80,7 +80,8 @@ struct FieldU {
     lvl: [[i32; 4]; MAX_LEVELS],
     /// Per level: column and row of the first texel in blocks of that level.
     org: [[i32; 4]; MAX_LEVELS],
-    /// 2 when the gather is the extra light, added to the output planes; 0 otherwise.
+    /// 2 when the gather is the extra light, 3 the headroom, added to the output planes, with the level bias second; 0
+    /// otherwise.
     ex: [u32; 4],
 }
 
@@ -233,6 +234,7 @@ pub fn encode_field(
     src: &GpuImage,
     at: (usize, usize),
     extra: Option<(&GpuImage, (usize, usize))>,
+    head: Option<(&GpuImage, (usize, usize))>,
     out: Rect,
 ) -> Result<GpuImage, GpuError> {
     let ctx = passes.context();
@@ -263,7 +265,7 @@ pub fn encode_field(
         )));
     }
     let gathered = grown(out, pass.pad, fw, fh);
-    if let Some((img, o)) = extra {
+    for (img, o) in extra.into_iter().chain(head) {
         let have = Rect::new(o.0, o.1, img.width, img.height);
         if img.planes != 3
             || need.x < have.x
@@ -295,7 +297,7 @@ pub fn encode_field(
     )?;
     // With no fringe reading beyond the output, and no extra light to add to the gather, the gather writes the
     // result itself.
-    let fused = pass.pad == 0 && extra.is_none();
+    let fused = pass.pad == 0 && extra.is_none() && head.is_none();
     let mid = if fused {
         None
     } else {
@@ -397,8 +399,11 @@ pub fn encode_field(
             1,
         ),
     )?;
-    // The extra light: its own pyramid and gather, added to the picture's gather by the share the lens moves.
-    if let Some((img, o)) = extra {
+    // The extra light and the headroom: each its own pyramid and gather, added to the picture's gather, the first
+    // by the share the lens moves (mode 2), the second by the kernel's width, read from softer levels (mode 3).
+    let bias = extra_level_bias(pass.half_diag);
+    for (mode, more) in [(2u32, extra), (3u32, head)] {
+        let Some((img, o)) = more else { continue };
         let pyr_e = passes.scratch("lens field extra pyramid", pyramid.vectors as u64 * 16)?;
         let mut eb = base;
         eb.src = [o.0 as i32, o.1 as i32, img.width as i32, img.height as i32];
@@ -430,7 +435,7 @@ pub fn encode_field(
             region.h as i32,
         ];
         u.dst = [target.stride as u32, target.plane_len() as u32, 0, 0];
-        u.ex = [2, 0, 0, 0];
+        u.ex = [mode, if mode == 3 { bias } else { 0 }, 0, 0];
         let ub = passes.uniform("lens field extra gather uniform", &u)?;
         passes.dispatch(
             KernelId::LensFieldGather,
@@ -515,7 +520,7 @@ pub fn field(
         },
     )?;
     let mut passes = PassList::new(ctx, "lens field");
-    let img = encode_field(&mut passes, tables, pass, &src, at, None, out)?;
+    let img = encode_field(&mut passes, tables, pass, &src, at, None, None, out)?;
     let read = img.encode_read(&mut passes)?;
     let done = passes.submit()?.finish()?;
     img.take(&done, read)
@@ -536,6 +541,7 @@ pub fn field_with_extra(
     size: (usize, usize),
     at: (usize, usize),
     extra: (&[f32], (usize, usize), (usize, usize)),
+    head: (&[f32], (usize, usize), (usize, usize)),
     out: Rect,
 ) -> Result<Vec<f32>, GpuError> {
     let place = |at: (usize, usize)| Placement {
@@ -562,6 +568,15 @@ pub fn field_with_extra(
         extra.0,
         place(extra.2),
     )?;
+    let heads = GpuImage::upload(
+        ctx,
+        "lens field headroom",
+        head.1.0,
+        head.1.1,
+        3,
+        head.0,
+        place(head.2),
+    )?;
     let mut passes = PassList::new(ctx, "lens field");
     let img = encode_field(
         &mut passes,
@@ -570,6 +585,7 @@ pub fn field_with_extra(
         &src,
         at,
         Some((&more, extra.2)),
+        Some((&heads, head.2)),
         out,
     )?;
     let read = img.encode_read(&mut passes)?;

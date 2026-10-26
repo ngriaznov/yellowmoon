@@ -173,6 +173,7 @@ pub fn encode_light(
     let dummy_a = passes.scratch("lens light unused", 16)?;
     let dummy_b = passes.scratch("lens light unused", 16)?;
     let dummy_c = passes.scratch("lens light unused", 16)?;
+    let dummy_d = passes.scratch("lens light unused", 16)?;
     passes.dispatch(
         KernelId::LensLight,
         "lens light",
@@ -183,6 +184,7 @@ pub fn encode_light(
             (3, dummy_a.binding()),
             (4, dummy_b.binding()),
             (5, dummy_c.binding()),
+            (6, dummy_d.binding()),
         ],
         (
             (input.width as u32).div_ceil(GROUP),
@@ -193,10 +195,12 @@ pub fn encode_light(
     Ok(dst)
 }
 
-/// L2's extra light and the picture it gathers, on the device.
+/// L2's extra light, the headroom and the picture it gathers, on the device.
 pub struct HeadroomImages {
     /// The light L2 spreads that the picture does not record (`ym_lens::L2Input::extra`).
     pub extra: GpuImage,
+    /// The headroom of the clipped small lights, in the three planes alike (`ym_lens::L2Input::head`).
+    pub head: GpuImage,
     /// The picture L2 gathers (`ym_lens::L2Input::own`): the raw picture, and L1's output where L1 changed a pixel.
     pub own: GpuImage,
 }
@@ -205,8 +209,8 @@ pub struct HeadroomImages {
 /// frame pixel `raw_at`), and, when L1 reshaped, L1's output `l1` (an image whose first pixel is `l1_at`; the
 /// pass runs over it). `k` is the scale of the picture the window belongs to.
 ///
-/// Without `l1` the pass runs over the raw window (mode 1); with it, over L1's output (mode 2). It gives `extra`
-/// and `own` either way.
+/// Without `l1` the pass runs over the raw window (mode 1); with it, over L1's output (mode 2). It gives `extra`,
+/// `head` and `own` either way.
 ///
 /// # Errors
 ///
@@ -243,6 +247,14 @@ pub fn encode_headroom(
     let extra = GpuImage::alloc(
         ctx,
         "lens extra light",
+        rect.w,
+        rect.h,
+        3,
+        Placement::whole(rect.w, rect.h),
+    )?;
+    let head = GpuImage::alloc(
+        ctx,
+        "lens headroom",
         rect.w,
         rect.h,
         3,
@@ -293,6 +305,7 @@ pub fn encode_headroom(
             (3, y_in),
             (4, own.buf.binding()),
             (5, map.buf.binding()),
+            (6, head.buf.binding()),
         ],
         (
             (rect.w as u32).div_ceil(GROUP),
@@ -301,7 +314,7 @@ pub fn encode_headroom(
         ),
     )?;
     passes.hold(Arc::clone(&map.buf));
-    Ok(HeadroomImages { extra, own })
+    Ok(HeadroomImages { extra, head, own })
 }
 
 /// The colour pass on the host's behalf: uploads `input` (three planes, `width x height`), runs it and reads the
@@ -335,7 +348,7 @@ pub fn light(
 
 /// The headroom pass on the host's behalf: uploads `raw` (three planes, `size`, whose first pixel is the frame
 /// pixel `raw_at`) and, when given, L1's output (`l1`: its samples, size and first frame pixel), runs the pass
-/// and reads back `extra` and `own`. The GPU counterpart of `ym_lens::l2_input`; for tests.
+/// and reads back `extra`, `head` and `own`. The GPU counterpart of `ym_lens::l2_input`; for tests.
 ///
 /// # Errors
 ///
@@ -350,7 +363,7 @@ pub fn headroom(
     pass: LightPass,
     map: &LightMapData,
     k: usize,
-) -> Result<(Vec<f32>, Vec<f32>), GpuError> {
+) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>), GpuError> {
     let src = GpuImage::upload(
         ctx,
         "lens headroom raw",
@@ -380,11 +393,13 @@ pub fn headroom(
     };
     let out = encode_headroom(&mut passes, &src, raw_at, l1_arg, pass, &map, k)?;
     let read_extra = out.extra.encode_read(&mut passes)?;
+    let read_head = out.head.encode_read(&mut passes)?;
     let read_own = out.own.encode_read(&mut passes)?;
     let done = passes.submit()?.finish()?;
     let extra = out.extra.take(&done, read_extra)?;
+    let head = out.head.take(&done, read_head)?;
     let own = out.own.take(&done, read_own)?;
-    Ok((extra, own))
+    Ok((extra, head, own))
 }
 
 /// The constants the colour function of `lens_light_colour.wgsl` reads, from the CPU reference's.

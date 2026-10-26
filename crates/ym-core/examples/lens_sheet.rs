@@ -9,6 +9,8 @@
 //!   --out DIR          output folder (default ./lens-sheets)
 //!   --long-edge N      long edge of the fit frames in pixels (default 1500)
 //!   --quality Q        JPEG quality, 50 to 100 (default 90)
+//!   --sharpen S        the Output sharpening amount, 0 to 200 (default: the photo's, 100)
+//!   --png              write lossless `<variant>.png` frames instead of JPEG (for pixel-level checks)
 //!   --only a,b,c       render only these variants (names below, and the custom ones)
 //!   --variant N=K,F,E,A  add a variant named N: lens K (`default`, `vintage`, ...) with Flares F, Edges E
 //!                      and Anamorphic A; repeat for several (rendered after the built-in ones)
@@ -171,6 +173,8 @@ struct Args {
     out: PathBuf,
     long_edge: usize,
     quality: u8,
+    png: bool,
+    sharpen: Option<f64>,
     only: Option<Vec<String>>,
     resume: bool,
     dump_planes: bool,
@@ -180,11 +184,20 @@ struct Args {
     files: Vec<PathBuf>,
 }
 
+impl Args {
+    /// The extension of the frames written.
+    fn ext(&self) -> &'static str {
+        if self.png { "png" } else { "jpg" }
+    }
+}
+
 fn parse_args() -> Fallible<Args> {
     let mut a = Args {
         out: PathBuf::from("lens-sheets"),
         long_edge: 1500,
         quality: 90,
+        png: false,
+        sharpen: None,
         only: None,
         resume: false,
         dump_planes: false,
@@ -200,6 +213,8 @@ fn parse_args() -> Fallible<Args> {
             "--out" => a.out = PathBuf::from(value("--out")?),
             "--long-edge" => a.long_edge = value("--long-edge")?.parse()?,
             "--quality" => a.quality = value("--quality")?.parse()?,
+            "--png" => a.png = true,
+            "--sharpen" => a.sharpen = Some(value("--sharpen")?.parse()?),
             "--only" => {
                 a.only = Some(
                     value("--only")?
@@ -785,20 +800,27 @@ fn render_photo(cx: &Context<'_>, file: &Path, stem: &str, dir: &Path) -> Fallib
             {
                 continue;
             }
-            let target = dir.join(format!("{}.jpg", v.name));
+            let target = dir.join(format!("{}.{}", v.name, cx.args.ext()));
             if cx.args.resume && target.exists() {
                 continue;
             }
             let src = base.with_settings({
                 let mut st = base.settings.clone();
                 st.lens = v.lens;
+                if let Some(amount) = cx.args.sharpen {
+                    st.output_sharpening = amount;
+                }
                 st
             });
             let t = Instant::now();
             let frame = renderer.viewport_frame(&src, &state, &FrameOptions::default(), &cancel)?;
             let wall_ms = t.elapsed().as_secs_f64() * 1000.0;
             let (w, h, rgb) = frame_to_srgb(&frame, image);
-            write_jpeg_file(&target, w, h, &rgb, cx.args.quality)?;
+            if cx.args.png {
+                write_png_rgb(&target, w, h, &rgb)?;
+            } else {
+                write_jpeg_file(&target, w, h, &rgb, cx.args.quality)?;
+            }
             let report = &frame.report;
             writeln!(
                 lines,
@@ -866,7 +888,7 @@ fn main() -> Fallible<()> {
         let all_done = variants
             .iter()
             .filter(|v| wanted(v.name))
-            .all(|v| dir.join(format!("{}.jpg", v.name)).exists())
+            .all(|v| dir.join(format!("{}.{}", v.name, args.ext())).exists())
             && (!args.dump_planes || dir.join("bokeh.json").exists());
         if args.resume && all_done {
             log(

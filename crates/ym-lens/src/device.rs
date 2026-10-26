@@ -5,6 +5,8 @@
 //! source: plain data (no references into the plan), flat tables the device uploads once per photo, and the
 //! constants of the CPU planners ([`crate::consts`]), which the kernels' WGSL is written from.
 
+pub use crate::field::extra_level_bias;
+
 /// Four-lane vectors in the header of the field tables (`FieldTablesData::data`): the radii, `w(rho)` and
 /// `T(rho)` padded to 12 values each (3 vectors apiece), then 27 centroids `(x, y, 0, 0)` indexed
 /// `[radius * 3 + channel]`, then the slopes of the monotone cubics through `w` and through `T` (3 vectors
