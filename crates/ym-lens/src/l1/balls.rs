@@ -200,6 +200,19 @@ const EVIDENCE_MIN: f64 = 1.5;
 const GROUND_SHARP_PX: f64 = 1.0;
 /// A ball whose ground is this much blurrier than the ball is not a ball of that ground.
 const BLURRIER_THAN: f64 = 3.0;
+/// A soft blob (rim at least [`SURFACE_SOFTNESS`] of its radius wide) that is at least this many times larger than the
+/// blur around it is a surface, not a light: a petal, a white flower, a lit leaf. The image of a light is the lens's
+/// blur disc, which is as wide as the blur of the ground it lies on (up to about 1.5 times, for a light a little
+/// nearer or farther), whereas a surface has an extent of its own, so its radius is the blur's plus its size.
+/// (Measured over the balls the learned map has an opinion about: 1.1 to 1.6 for the soft ones the lens keeps, 2.0 and
+/// 2.2 for a sunlit patch and a petal; the midpoint in the log is 1.75.)
+const SURFACE_OVER_BLUR: f64 = 1.75;
+/// The rim width, over the radius, from which a blob that is large against the blur around it is a surface: a sharp
+/// rim (a hole in the leaves, a lamp) is the edge of a shape of its own that the lens stretches as it does a light.
+const SURFACE_SOFTNESS: f64 = 0.55;
+/// The blur around a ball needs this much evidence (the sum of the weights in its ring) to judge its size against it:
+/// a few pixels of a map in a mostly empty ring say nothing.
+const SURFACE_EVIDENCE_MIN: f64 = 10.0;
 /// A scene needs this many balls, or balls the edges confirm.
 const MIN_CLUSTER: usize = 3;
 /// The ring of a ball needs this many pixels for a plane fit.
@@ -616,6 +629,9 @@ fn rim_profile(
     let reach = TAKE_OUT_MAX_RADII * r + TAKE_OUT_MARGIN_PX;
     let mut tail = None;
     for (i, ring) in rings.iter_mut().enumerate() {
+        if r > SMALL_BALL_RADIUS_HD * hd_of(inp) {
+            break;
+        }
         let d = 0.5 * (i as f64 + 0.5);
         if d <= r || ring.is_empty() {
             continue;
@@ -923,6 +939,13 @@ pub(super) fn find_balls(
             // focus; a ground much blurrier is not this ball's ground.
             let ground = libm::exp(es / ew);
             if ground < GROUND_SHARP_PX || ground > BLURRIER_THAN * b.r {
+                continue;
+            }
+            // A soft blob much larger than the blur around it is a surface (a petal), not a defocused light.
+            if ew >= SURFACE_EVIDENCE_MIN
+                && b.softness >= SURFACE_SOFTNESS
+                && b.r >= SURFACE_OVER_BLUR * ground
+            {
                 continue;
             }
         } else if b.r < UNSUPPORTED_R_MIN_PX {
