@@ -6,20 +6,20 @@
 # also train the illuminant estimator (`docs/14`); attribution goes into NOTICE when weights trained on it ship.
 # V1 uses it as an evaluation set only: the test split.
 #
-# STATUS: UNVERIFIED. zenodo.org is not reachable from the environment that wrote this script
-# (`curl: (56) CONNECT tunnel failed, response 403`), so the file names, sizes and SHA-256 below were never checked
-# against the real record. The layout it expects (a `PNG/` folder of linear 16-bit images, `gt.csv` with the
-# ground-truth illuminant per image, a list of the test images) is the one the dataset paper describes. On a machine
-# that can reach Zenodo:
+# zenodo.org is not reachable from the agents' cloud containers (`curl: (56) CONNECT tunnel failed, response 403`); the
+# Cube++ check runs on GitHub Actions instead (`.github/workflows/cubepp.yml`). The whole record is about 200 GB; the
+# check needs only `SimpleCube++.zip` (about 2 GB: `SimpleCube++/{train,test}/PNG/*.png`, `gt.csv`, `auxiliary/`),
+# so pass `--only=SimpleCube++.zip`. On a machine that can reach Zenodo:
 #
 #   tools/fetch/cubepp.sh --list                  # show the record's files and sizes (no download)
-#   tools/fetch/cubepp.sh --accept-new            # download, print the SHA-256 of every file, store them in
-#                                                 # testdata/cubepp/SHA256SUMS; copy the values into PINS below
-#   tools/fetch/cubepp.sh                         # later runs refuse a file whose SHA-256 differs from PINS
+#   tools/fetch/cubepp.sh --accept-new --only=SimpleCube++.zip
+#                                                 # download, print the SHA-256, store it in testdata/cubepp/SHA256SUMS;
+#                                                 # copy the line into PINS below
+#   tools/fetch/cubepp.sh --only=SimpleCube++.zip # later runs refuse a file whose SHA-256 differs from PINS
 #
 # While PINS is empty a plain run stops with exit code 3 and says so (nothing is downloaded unpinned by accident).
 #
-# Usage: tools/fetch/cubepp.sh [--list] [--accept-new]      (YM_TESTDATA=/path moves testdata/)
+# Usage: tools/fetch/cubepp.sh [--list] [--accept-new] [--only=NAME]      (YM_TESTDATA=/path moves testdata/)
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -28,15 +28,17 @@ dest="$testdata/cubepp"
 RECORD=4153431
 API="https://zenodo.org/api/records/$RECORD"
 
-# --- pins: "<sha256>  <file name on Zenodo>", one per line. Empty until someone has run --accept-new. -----------------
-PINS=""
+# --- pins: "<sha256>  <file name on Zenodo>", one per line (SimpleCube++.zip: the cubepp workflow, 2026-10-23). ------
+PINS="7a78d80830afdf4b982cf19be8b6351d4f96deda12607dfc5d4802467c30129e  SimpleCube++.zip"
 # ---------------------------------------------------------------------------------------------------------------------
 
 mode="fetch"
+only=""
 for arg in "$@"; do
   case "$arg" in
     --list) mode="list" ;;
     --accept-new) mode="accept" ;;
+    --only=*) only="${arg#--only=}" ;;
     -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "cubepp.sh: unknown argument $arg" >&2; exit 2 ;;
   esac
@@ -75,8 +77,11 @@ fi
 mkdir -p "$dest"
 sums="$dest/SHA256SUMS"
 : > "$sums"
+found=0
 while IFS=$'\t' read -r name size url; do
   [ -n "$name" ] || continue
+  if [ -n "$only" ] && [ "$name" != "$only" ]; then continue; fi
+  found=1
   out="$dest/$name"
   if [ ! -f "$out" ] || [ "$(size_of "$out" 2>/dev/null || echo 0)" != "$size" ]; then
     echo "cubepp.sh: downloading $name ($size bytes)"
@@ -95,6 +100,9 @@ while IFS=$'\t' read -r name size url; do
     fi
   fi
 done <<< "$files"
+if [ "$found" = 0 ]; then
+  echo "cubepp.sh: ${only:-no file} is not in the record (see --list)" >&2; exit 1
+fi
 
 # Unpack archives next to the files (the test split is selected by the evaluation script).
 for z in "$dest"/*.zip; do

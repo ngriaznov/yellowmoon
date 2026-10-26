@@ -1,0 +1,123 @@
+# The Cube++ check of the illuminant estimator (M1-06, docs/13): median angular error at most 3 degrees on real photos.
+# zenodo.org is not reachable from the agents' cloud containers, so it runs here. It downloads only SimpleCube++ (about
+# 2 GB of the 200 GB record; Ershov et al. 2020, CC BY 4.0), evaluates every shipped profile's model on the test split
+# with the Canon photos mapped to the profile's camera RGB (training/illum/eval_cubepp.py), adds the train split for
+# one profile as a larger sample (the estimator never trained on Cube++, so both splits are unseen), and reports.
+# A failed gate fails the job and is reported, never hidden. Nothing is committed; the data stays on the runner.
+name: cubepp
+
+on:
+  push:
+    branches: [m1-06-cubepp]
+    paths:
+      - "training/illum/**"
+      - "data/models/illum/**"
+      - "tools/fetch/cubepp.sh"
+      - ".github/workflows/cubepp.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cubepp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      D: testdata/cubepp/SimpleCube++
+      OUT: testdata/out/cubepp
+      ARGS: --src-camera Canon_EOS_600D --black-level 2048 --preview-factor 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      # opencv-python-headless (Apache-2.0) reads the 16-bit PNGs; test tooling only.
+      - run: pip install -r training/requirements.txt opencv-python-headless==4.10.0.84
+      - run: tools/fetch/spectral.sh
+      - name: The Cube++ record
+        run: tools/fetch/cubepp.sh --list
+      # Only the zip is cached (2 GB); cubepp.sh skips a file of the right size and checks its pinned SHA-256 either way.
+      - uses: actions/cache@v4
+        with:
+          path: testdata/cubepp/SimpleCube++.zip
+          key: cubepp-simplecube-7a78d808
+      - name: SimpleCube++
+        run: tools/fetch/cubepp.sh --only=SimpleCube++.zip
+      - name: Layout
+        run: |
+          ls testdata/cubepp "$D" "$D/test" "$D/auxiliary"
+          echo "test: $(ls "$D/test/PNG" | wc -l) PNGs; train: $(ls "$D/train/PNG" | wc -l) PNGs"
+          head -3 "$D/test/gt.csv"
+          head -3 "$D/auxiliary/test_properties.csv"
+          python3 - <<'PY'
+          import os, cv2, numpy as np
+          d = os.environ["D"] + "/test/PNG"
+          for f in sorted(os.listdir(d))[:3]:
+              a = cv2.imread(os.path.join(d, f), cv2.IMREAD_UNCHANGED)
+              print(f, a.dtype, a.shape, "min", a.min(), "p1", np.percentile(a, 1), "p99", np.percentile(a, 99), "max", a.max(),
+                    "zeros", int((a == 0).all(axis=-1).sum()))
+          PY
+      - name: Every profile on the test split
+        run: |
+          mkdir -p "$OUT"
+          props=(); [ -f "$D/auxiliary/test_properties.csv" ] && props=(--properties "$D/auxiliary/test_properties.csv")
+          status=0
+          for m in data/models/illum/sony-*.json; do
+            id="$(basename "$m" .json)"
+            rc=0
+            python3 -m training.illum.eval_cubepp --model "$m" --root "$D/test" $ARGS "${props[@]}" \
+              --out "$OUT/test-$id.json" > "$OUT/test-$id.txt" || rc=$?
+            [ "$rc" = 0 ] || status=$rc
+            echo "$id: exit $rc"
+          done
+          echo "status=$status" >> "$GITHUB_ENV"
+      - name: The train split, one profile
+        run: |
+          props=(); [ -f "$D/auxiliary/train_properties.csv" ] && props=(--properties "$D/auxiliary/train_properties.csv")
+          python3 -m training.illum.eval_cubepp --model data/models/illum/sony-ilce-7rm4.json --root "$D/train" $ARGS \
+            "${props[@]}" --out "$OUT/train-sony-ilce-7rm4.json" || true
+      # The train split's median offset subtracted from the estimate, scored on the test split: how much of the error is
+      # a constant calibration between the synthetic training scenes and real photos.
+      - name: Calibrated on the train split, scored on the test split
+        run: |
+          off="$(python3 -c "import json; b = json.load(open('$OUT/train-sony-ilce-7rm4.json'))['bias']; print(f\"{b['du_median']},{b['dv_median']}\")")"
+          echo "offset (du, dv) from the train split: $off"
+          props=(); [ -f "$D/auxiliary/test_properties.csv" ] && props=(--properties "$D/auxiliary/test_properties.csv")
+          python3 -m training.illum.eval_cubepp --model data/models/illum/sony-ilce-7rm4.json --root "$D/test" $ARGS \
+            "${props[@]}" --uv-offset="$off" --out "$OUT/calibrated-sony-ilce-7rm4.json" || true
+      - name: Report
+        if: always()
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob, json, os
+          rows = []
+          for p in sorted(glob.glob(os.environ["OUT"] + "/*.json")):
+              r = json.load(open(p))
+              split = os.path.basename(p).split("-")[0]
+              rows.append((split, r["profile"], r))
+          print("| split | profile | n | median | mean | p90 | p95 | max | gate (median <= 3) |")
+          print("|---|---|---|---|---|---|---|---|---|")
+          for split, pid, r in rows:
+              print(f"| {split} | {pid} | {r['n']} | {r['median']:.2f} | {r['mean']:.2f} | {r['p90']:.2f} | {r['p95']:.2f} | "
+                    f"{r['max']:.1f} | {'pass' if r['pass'] else 'FAIL'} |")
+          for split, pid, r in rows:
+              if pid in ("sony-ilce-7rm4", "sony-ilce-7m4"):
+                  print(f"\n{split} {pid} by label:")
+                  for label, groups in r.get("by_label", {}).items():
+                      print("  " + label + ": " + ", ".join(f"{g} n={v['n']} median={v['median']:.2f} p90={v['p90']:.2f}"
+                                                             for g, v in groups.items()))
+                  print("  white check:", json.dumps(r.get("white_check")))
+                  print("  classical estimators: " + ", ".join(f"{k} median={v['median']:.2f} p90={v['p90']:.2f}"
+                                                                for k, v in r.get("baselines", {}).items()))
+                  print("  bias:", json.dumps(r.get("bias")))
+                  b = r.get("blend_white_patch")
+                  if b:
+                      print(f"  blend with white patch: median={b['median']:.2f} p90={b['p90']:.2f} p95={b['p95']:.2f}")
+          PY
+          exit "${status:-1}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cubepp-results
+          path: testdata/out/cubepp
+          retention-days: 30
