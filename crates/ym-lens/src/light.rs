@@ -64,7 +64,7 @@ impl LensPlan {
 /// The result has the samples of `input` (planar, `3 * width * height`).
 #[must_use]
 pub fn lit_input(plan: &LensPlan, input: &ImageRef) -> Option<Vec<f32>> {
-    if plan.field_is_identity() || !any_saturated(plan, input) || switched_off() {
+    if plan.field_is_identity() || !any_saturated(plan, input) {
         return None;
     }
     let n = input.width * input.height;
@@ -251,7 +251,7 @@ impl LightMap {
         if ev <= 0.0 {
             return 0.0;
         }
-        self.scale * (libm::exp2(headroom_share() * ev) - 1.0)
+        self.scale * (libm::exp2(FIELD_HEADROOM_SHARE * ev) - 1.0)
     }
 
     /// True when no pixel of the photo is part of a light.
@@ -275,19 +275,6 @@ impl LightMap {
     pub(crate) fn bytes(&self) -> usize {
         std::mem::size_of::<Self>() + self.ev.len() * 4
     }
-}
-
-/// TEMPORARY: the light rule switched off from the environment, for the comparison with the lens without it.
-fn switched_off() -> bool {
-    std::env::var_os("YM_NO_LIGHT").is_some()
-}
-
-/// TEMPORARY tuning hook: the share of the boost, from the environment.
-fn headroom_share() -> f64 {
-    std::env::var("YM_FIELD_SHARE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(FIELD_HEADROOM_SHARE)
 }
 
 /// The light a pixel holds for L2: its colour (the shared rule), and the neutral extra light it holds above
@@ -364,7 +351,7 @@ pub(crate) fn l2_input_with(
     raw: &ImageRef,
     l1: Option<&ImageRef>,
 ) -> Option<L2Input> {
-    if plan.field_is_identity() || !any_saturated(plan, raw) || switched_off() {
+    if plan.field_is_identity() || !any_saturated(plan, raw) {
         return None;
     }
     let clip = plan.frame().clip;

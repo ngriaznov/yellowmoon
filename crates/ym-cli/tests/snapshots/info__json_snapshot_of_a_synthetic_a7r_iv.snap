@@ -49,8 +49,8 @@ expression: v
       "radius_px": 0.8
     },
     "source": "rule",
-    "tint": -24.96,
-    "white_ev": 0.4827
+    "tint": -24.97,
+    "white_ev": 0.4749
   },
   "auto_source": "rule",
   "black": [

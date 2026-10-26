@@ -2287,6 +2287,143 @@ mod tests {
         }
     }
 
+    /// A whole frame of `w` x `h` pixels.
+    fn whole_image(w: usize, h: usize, data: &[f32]) -> ImageRef<'_> {
+        ImageRef {
+            width: w,
+            height: h,
+            x0: 0,
+            y0: 0,
+            frame_width: w,
+            frame_height: h,
+            data,
+        }
+    }
+
+    /// A smooth picture of 0.3 to 1 with a lit patch of the extra light `value` at `(cx, cy)`, radius `r`, and the
+    /// extra light alone.
+    fn picture_and_extra(
+        w: usize,
+        h: usize,
+        cx: f64,
+        cy: f64,
+        r: f64,
+        value: f64,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let n = w * h;
+        let mut data = vec![0.0f32; 3 * n];
+        let mut extra = vec![0.0f32; 3 * n];
+        for y in 0..h {
+            for x in 0..w {
+                for c in 0..3 {
+                    let t = (x as f64 / w as f64 + y as f64 / h as f64) * 0.5;
+                    data[c * n + y * w + x] = (0.3 + 0.7 * t) as f32;
+                    let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
+                    if dx * dx + dy * dy <= r * r {
+                        extra[c * n + y * w + x] = value as f32;
+                    }
+                }
+            }
+        }
+        (data, extra)
+    }
+
+    #[test]
+    fn an_extra_light_the_lens_barely_moves_leaves_the_picture_as_it_is() {
+        // A flat extra light of 1 % of the picture where the lens spreads (Vintage, Edges 100, near the right
+        // edge): the share the spread brings to a pixel is under the ramp's start, so every output pixel is the
+        // picture's alone, bit for bit; and a pixel with no kernel never gets any.
+        let (w, h) = (600, 400);
+        let p = plan(LensKind::Vintage, 100.0, 0.0, w, h, Axis::X);
+        let (data, _) = picture_and_extra(w, h, 0.0, 0.0, 0.0, 0.0);
+        let extra: Vec<f32> = data.iter().map(|v| v * 0.01).collect();
+        let rect = PixelRect::new(0, 0, w, h);
+        let plain = apply(&p, &whole_image(w, h, &data), None, rect, Options::default()).unwrap();
+        let with = apply(
+            &p,
+            &whole_image(w, h, &data),
+            Some(&whole_image(w, h, &extra)),
+            rect,
+            Options::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            plain.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            with.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_isolated_extra_light_reaches_the_pixels_round_it_and_not_the_ones_without_a_kernel() {
+        // A star's headroom: 30 clip levels on a disc of 1.5 px near the right edge, where the spread is wide,
+        // and the same at the centre, where the kernels are a copy. The first reaches its neighbours and
+        // adds up to the light it holds times the weight the lens gives them; the second changes nothing.
+        let (w, h) = (600, 400);
+        let rect = PixelRect::new(0, 0, w, h);
+        let n = w * h;
+        for (kind, edges, cx, cy, wide) in [
+            (LensKind::Vintage, 100.0, 520.0, 200.0, true),
+            (LensKind::Default, 50.0, 300.0, 200.0, false),
+        ] {
+            let p = plan(kind, edges, 0.0, w, h, Axis::X);
+            let geo = Geometry::new(&p, w, h, Options::default()).unwrap();
+            let (data, extra) = picture_and_extra(w, h, cx, cy, 1.5, 30.0);
+            let plain = apply(&p, &whole_image(w, h, &data), None, rect, Options::default()).unwrap();
+            let with = apply(
+                &p,
+                &whole_image(w, h, &data),
+                Some(&whole_image(w, h, &extra)),
+                rect,
+                Options::default(),
+            )
+            .unwrap();
+            let (mut added, mut changed) = (0.0f64, 0usize);
+            for i in 0..3 * n {
+                assert!(with[i] >= plain[i], "the extra light only adds");
+                let d = f64::from(with[i] - plain[i]);
+                added += d;
+                changed += usize::from(d > 0.0);
+            }
+            let (ix, iy) = (cx as usize, cy as usize);
+            if wide {
+                assert!(geo.pixel(ix, iy).omega > 0.0);
+                assert!(changed > 50, "the star reaches its neighbours: {changed} samples");
+                // Over three channels: the light of the disc (9 pixels at 30) spread by the lens's weights, of
+                // which what the share leaves out near the disc is a fraction.
+                assert!(added > 0.2 * 3.0 * 9.0 * 30.0, "added {added}");
+                assert!(added < 1.01 * 3.0 * 9.0 * 30.0 * 1.2, "added {added}");
+            } else {
+                assert_eq!(geo.pixel(ix, iy).omega, 0.0);
+                assert_eq!(added, 0.0, "a copy is given none");
+            }
+        }
+    }
+
+    #[test]
+    fn the_occupancy_tells_a_window_with_light_from_one_without() {
+        let (w, h) = (40, 30);
+        let mut data = vec![0.0f32; 3 * w * h];
+        data[2 * w * h + 12 * w + 25] = 0.5;
+        let img = ImageRef {
+            width: w,
+            height: h,
+            x0: 10,
+            y0: 100,
+            frame_width: 200,
+            frame_height: 200,
+            data: &data,
+        };
+        let occ = Occupancy::build(&img);
+        // The pixel is at frame (35, 112).
+        assert!(occ.any(35, 112, 36, 113));
+        assert!(occ.any(0, 0, 200, 200));
+        assert!(occ.any(30, 108, 40, 118));
+        assert!(!occ.any(36, 112, 60, 113));
+        assert!(!occ.any(10, 100, 35, 130));
+        assert!(!occ.any(35, 113, 36, 130));
+        assert!(!occ.any(-50, -50, 5, 5), "outside the image");
+    }
+
     #[test]
     fn mean_tap_count_is_reported() {
         // Not an assertion about speed: a guard that the tap budget holds (at most 17 x 17 a pixel).

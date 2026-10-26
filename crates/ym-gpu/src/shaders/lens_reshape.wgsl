@@ -745,34 +745,45 @@ fn lr_grain_share(w2sum: f32, wsum: f32) -> f32 {
 }
 
 // ... and what is left of the pixel once its own grain is back: `m`, the line's mean, with the residual of the pixel's
-// square roots against the mean of its window `res`, held to the photo's noise (`pu.frame.w` units), times `share`,
-// added in square roots.
-fn lr_grain_apply(m: vec3<f32>, res: vec3<f32>, share: f32) -> vec3<f32> {
+// square root against the mean of its window, held to the photo's noise (`pu.frame.w` units) and to windows of no more
+// spread than grain, times `share`, added in square roots (the reference's `grain_back`).
+struct LrGrain {
+    res: vec3<f32>,
+    sd: vec3<f32>,
+}
+
+fn lr_grain_apply(m: vec3<f32>, g: LrGrain, share: f32) -> vec3<f32> {
     var out = m;
     for (var c = 0; c < 3; c = c + 1) {
-        let keep = 1.0 - lr_ss(LR_GRAIN_FROM * pu.frame.w, LR_GRAIN_TO * pu.frame.w, abs(res[c]));
+        let keep = (1.0 - lr_ss(LR_GRAIN_FROM * pu.frame.w, LR_GRAIN_TO * pu.frame.w, abs(g.res[c])))
+            * (1.0 - lr_ss(LR_GRAIN_SD_FROM * pu.frame.w, LR_GRAIN_SD_TO * pu.frame.w, g.sd[c]));
         let s = sqrt(max(m[c], 0.0));
-        let t = max(s + share * keep * res[c], 0.0);
+        let t = max(s + share * keep * g.res[c], 0.0);
         out[c] = m[c] + (t * t - s * s);
     }
     return out;
 }
 
-// The residual of the square roots of the taken-out picture at (x, y) against their mean over the grain's window, the
-// window held inside r0.
-fn lr_grain_wk(x: i32, y: i32) -> vec3<f32> {
+// The residual and the spread of the square roots of the taken-out picture over the grain's window around (x, y), the
+// window held inside r0; sums of the differences from the pixel's own value.
+fn lr_grain_wk(x: i32, y: i32) -> LrGrain {
+    let own = sqrt(max(lr_wk(vec2<i32>(x, y)), vec3<f32>(0.0)));
     var sum = vec3<f32>(0.0);
+    var sum2 = vec3<f32>(0.0);
     for (var dy = -LR_GRAIN_HALF; dy <= LR_GRAIN_HALF; dy = dy + 1) {
         for (var dx = -LR_GRAIN_HALF; dx <= LR_GRAIN_HALF; dx = dx + 1) {
             let p = vec2<i32>(
                 clamp(x + dx, pu.r0.x, pu.r0.x + pu.r0.z - 1),
                 clamp(y + dy, pu.r0.y, pu.r0.y + pu.r0.w - 1),
             );
-            sum = sum + sqrt(max(lr_wk(p), vec3<f32>(0.0)));
+            let d = sqrt(max(lr_wk(p), vec3<f32>(0.0))) - own;
+            sum = sum + d;
+            sum2 = sum2 + d * d;
         }
     }
-    let side = f32(2 * LR_GRAIN_HALF + 1);
-    return sqrt(max(lr_wk(vec2<i32>(x, y)), vec3<f32>(0.0))) - sum / (side * side);
+    let n = f32((2 * LR_GRAIN_HALF + 1) * (2 * LR_GRAIN_HALF + 1));
+    let res = -sum / n;
+    return LrGrain(res, sqrt(max(sum2 / n - res * res, vec3<f32>(0.0))));
 }
 
 fn lr_vgather_main(gid: vec3<u32>) {
@@ -864,16 +875,21 @@ fn lr_o1(x: i32, y: i32) -> vec3<f32> {
     return vec3<f32>(o1[i], o1[plane + i], o1[2u * plane + i]);
 }
 
-// The same residual for the vertical gather's output `o1` (over r1), the window held inside r1.
-fn lr_grain_o1(x: i32, y: i32) -> vec3<f32> {
+// The same for the vertical gather's output `o1` (over r1), the window held inside r1.
+fn lr_grain_o1(x: i32, y: i32) -> LrGrain {
+    let own = sqrt(max(lr_o1(x, y), vec3<f32>(0.0)));
     var sum = vec3<f32>(0.0);
+    var sum2 = vec3<f32>(0.0);
     for (var dy = -LR_GRAIN_HALF; dy <= LR_GRAIN_HALF; dy = dy + 1) {
         for (var dx = -LR_GRAIN_HALF; dx <= LR_GRAIN_HALF; dx = dx + 1) {
-            sum = sum + sqrt(max(lr_o1(x + dx, y + dy), vec3<f32>(0.0)));
+            let d = sqrt(max(lr_o1(x + dx, y + dy), vec3<f32>(0.0))) - own;
+            sum = sum + d;
+            sum2 = sum2 + d * d;
         }
     }
-    let side = f32(2 * LR_GRAIN_HALF + 1);
-    return sqrt(max(lr_o1(x, y), vec3<f32>(0.0))) - sum / (side * side);
+    let n = f32((2 * LR_GRAIN_HALF + 1) * (2 * LR_GRAIN_HALF + 1));
+    let res = -sum / n;
+    return LrGrain(res, sqrt(max(sum2 / n - res * res, vec3<f32>(0.0))));
 }
 
 // The gathers' blur at a frame pixel, the coordinates held inside r0.

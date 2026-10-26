@@ -11,9 +11,6 @@
 //!   --star X,Y        the light's pixel on the lens plane (default 169,650)
 //!   --neutral R       replace the plane within R px of the star by its mean over the channels (a neutral
 //!                     light of the same brightness): the colour the lens's own spread gives a white light
-//!   --patch X,Y,R     print the picture and the stage's output with and without the light rule over the
-//!                     square of half-side R at (X, Y), channel by channel (the rule is switched off through
-//!                     `YM_NO_LIGHT`, which the library reads)
 //! ```
 //!
 //! `<plane dir>` is a folder with `lens_plane.f32` and `lens_plane.json`, as `lens_sheet --dump-planes`
@@ -34,7 +31,6 @@ fn main() {
     let (mut edges, mut anamorphic) = (100.0f64, 0.0f64);
     let mut star = (169usize, 650usize);
     let mut neutral: Option<f64> = None;
-    let mut window: Option<(usize, usize, usize)> = None;
     let mut dir = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -59,15 +55,6 @@ fn main() {
                     .map(|n| n.parse().expect("number"))
                     .collect();
                 star = (v[0], v[1]);
-            }
-            "--patch" => {
-                let v: Vec<usize> = args
-                    .next()
-                    .expect("--patch X,Y,R")
-                    .split(',')
-                    .map(|n| n.parse().expect("number"))
-                    .collect();
-                window = Some((v[0], v[1], v[2]));
             }
             "--neutral" => neutral = Some(args.next().expect("--neutral R").parse().expect("number")),
             d => dir = Some(PathBuf::from(d)),
@@ -149,24 +136,6 @@ fn main() {
         map.ev.get(star.1 * w + star.0).copied().unwrap_or(0.0)
     );
     let out = apply_field(&plan, &planes, k, &input, PixelRect::new(0, 0, w, h)).expect("field");
-    if let Some((px, py, r)) = window {
-        // SAFETY: single-threaded here; the library reads the variable on every call.
-        unsafe { std::env::set_var("YM_NO_LIGHT", "1") };
-        let plain = apply_field(&plan, &planes, k, &input, PixelRect::new(0, 0, w, h)).expect("field");
-        unsafe { std::env::remove_var("YM_NO_LIGHT") };
-        for (c, name) in ["R", "G", "B"].iter().enumerate() {
-            println!("channel {name}: picture | without the rule | with the rule (x {}..{}, y {}..{})", px - r, px + r, py - r, py + r);
-            for y in py - r..=py + r {
-                let row = |d: &[f32]| {
-                    (px - r..=px + r)
-                        .map(|x| format!("{:6.3}", d[c * plane + y * w + x]))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                };
-                println!("{y:4} {} | {} | {}", row(&data), row(&plain), row(&out));
-            }
-        }
-    }
     println!(
         "{kind} Edges {edges} Anamorphic {anamorphic}, star at {star:?}{}",
         neutral.map_or(String::new(), |r| format!(" made neutral within {r} px"))

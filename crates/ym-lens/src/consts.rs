@@ -216,9 +216,12 @@ pub const FIELD_LIGHT_SIZE_FACTOR: f64 = 4.0;
 /// `light::l2_input`) a pixel is given: the largest over the channels of the extra that the spread brings to the
 /// pixel over the light it gets from the picture itself, none up to the first number, all of it from the second, a
 /// smoothstep between. The extra light only moves from pixel to pixel of a flat bright area (a clipped window, the
-/// fur of a white dog), where it would change the pixel by a per cent or two and the lens leaves the pixel as the
-/// picture gives it; beside a star, or on a dark ground round a window, it is a large share and arrives whole.
-pub const EXTRA_INFLOW_RAMP: (f64, f64) = (0.05, 0.25);
+/// fur of a white dog, a sky), where the lens leaves the pixel as the picture gives it; beside a star, or on a
+/// dark ground round a window, the extra the spread brings is a large multiple of the picture's and arrives whole
+/// (a star's headroom is 20 to 400 times its clipped core). Measured on four photos at Flares 0 (Default with
+/// Edges 40, Vintage with Edges 100): 0.5 and 2 leave 99.9 % or more of the bright pixels the lens does not move
+/// as `off` has them, the 0.05 and 0.25 of the first build 97 to 99.8 %.
+pub const EXTRA_INFLOW_RAMP: (f64, f64) = (0.5, 2.0);
 
 /// The least light, in clip levels of the lens plane, that the share of [`EXTRA_INFLOW_RAMP`] divides by (a black
 /// pixel is not given every faint tail of a light).
@@ -630,6 +633,16 @@ pub const GRAIN_GATE_FROM: f64 = 6.0;
 /// ... and a larger one (the crisp rim of a defocused disc, a speck of detail: not grain) goes back less, none from
 /// this many units on (a smoothstep between).
 pub const GRAIN_GATE_TO: f64 = 12.0;
+
+/// Nor is grain given back where the window around the pixel holds structure: a window whose pixels spread (standard
+/// deviation of the square roots) by this many noise units or more is no longer grain alone, and the residual
+/// against its mean, which a bump or a sharp detail beside it pulls to the other side (a dark dash along the edge of
+/// a bright sharp thing), is not given back; nothing from [`GRAIN_SPREAD_TO`] on (a smoothstep between). The grain of a
+/// photo spreads by one to two and a half units.
+pub const GRAIN_SPREAD_FROM: f64 = 4.0;
+
+/// See [`GRAIN_SPREAD_FROM`].
+pub const GRAIN_SPREAD_TO: f64 = 8.0;
 
 /// A pixel in the wedge beside a sharp subject (the ramp under 1) whose square-root luminance stands above the picture
 /// on both sides of it, this share of its own line away along the gather, is a thin bright thing, narrower than its

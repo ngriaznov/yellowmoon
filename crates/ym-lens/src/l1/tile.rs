@@ -23,10 +23,11 @@ use rayon::prelude::*;
 use crate::consts::{
     ACCEPT_COLOUR, ACCEPT_CONFIDENCE, B_CAP, B_MIN, BALL_RIM_REACH_PX, FEATHER_FRACTION,
     FEATHER_MAX_PX, FEATHER_MIN_PX, GATHER_PAD, GRAIN_GATE_FROM, GRAIN_GATE_TO, GRAIN_HALF,
-    GUIDE_SIGMA_MIN, GUIDE_SIGMA_NOISE, MAX_STRETCH_TAPS, MIN_LINE_PX, NOISE_FLOOR, RAMP_SHARE_TO,
-    SAMPLE_RATIO_FROM, SAMPLE_RATIO_TO, SHARP_DILATE, SHARP_GATE, SHARP_RATIO, SHARP_SOFT_FROM,
-    SHARP_SOFT_HALF, SHARP_SOFT_TO, SHARP_TEST_FROM_PX, STRAND_MARGIN_NOISE, STRAND_VALLEY,
-    SUBJECT_SHARE, THIN_FROM, THIN_MIN_PX, THIN_NOISE, THIN_SCALE, THIN_SPAN, UPSAMPLE_RADIUS_PX,
+    GRAIN_SPREAD_FROM, GRAIN_SPREAD_TO, GUIDE_SIGMA_MIN, GUIDE_SIGMA_NOISE, MAX_STRETCH_TAPS,
+    MIN_LINE_PX, NOISE_FLOOR, RAMP_SHARE_TO, SAMPLE_RATIO_FROM, SAMPLE_RATIO_TO, SHARP_DILATE,
+    SHARP_GATE, SHARP_RATIO, SHARP_SOFT_FROM, SHARP_SOFT_HALF, SHARP_SOFT_TO, SHARP_TEST_FROM_PX,
+    STRAND_MARGIN_NOISE, STRAND_VALLEY, SUBJECT_SHARE, THIN_FROM, THIN_MIN_PX, THIN_NOISE,
+    THIN_SCALE, THIN_SPAN, UPSAMPLE_RADIUS_PX,
 };
 use crate::device::{BokehCells, BokehPass, BokehTile};
 use crate::error::LensError;
@@ -1073,13 +1074,15 @@ fn grain_share(w2sum: f64, wsum: f64) -> f64 {
 }
 
 /// What a gather leaves of a pixel once the grain is back: `mean`, the line's average, plus the pixel's own grain
-/// (`docs/21` section 4, L1, *As built (the grain)*). The grain is the residual of the square roots of the field
-/// around the pixel against their mean over `2 GRAIN_HALF + 1` pixels a side, held to what the photo's noise can
-/// make (nothing beyond `GRAIN_GATE_TO` noise units: a crisp rim is detail, and detail is what the line is meant to
-/// smooth), times `share` (the part of the noise the line took out); it is added in square roots, where the noise of
-/// every level is the same, and the square is taken back (the value is not changed where `share` is 0). `root`
-/// holds the square roots ([`root_planes`]) of three planes of `plane` values over `rect`, whose edge the window is
-/// held to.
+/// (`docs/21` section 4, L1, *As built (round 4)*). The grain is the residual of the square root of the field at
+/// the pixel against the mean of the square roots over the `2 GRAIN_HALF + 1` pixels around it, held to what the
+/// photo's noise can make: nothing beyond `GRAIN_GATE_TO` noise units (a crisp rim is detail, and detail is what the
+/// line is meant to smooth), and nothing where the window's own spread, its standard deviation, reaches
+/// `GRAIN_SPREAD_TO` (a bump or a sharp detail in the window pulls the residual of the pixels around it to the other
+/// side: a dark dash along its edge). It is times `share` (the part of the noise the line took out), added in square
+/// roots, where the noise of every level is the same, and the square is taken back (the value is not changed where
+/// `share` is 0). `root` holds the square roots ([`root_planes`]) of three planes of `plane` values over `rect`,
+/// whose edge the window is held to.
 fn grain_back(
     root: &[f32],
     (plane, rect): (usize, PixelRect),
@@ -1093,26 +1096,31 @@ fn grain_back(
     }
     let half = GRAIN_HALF as i64;
     let side = (2 * GRAIN_HALF + 1) as f64;
+    let count = side * side;
     let (lo_x, hi_x) = (rect.x as i64, rect.x1() as i64 - 1);
     let (lo_y, hi_y) = (rect.y as i64, rect.y1() as i64 - 1);
     let mut out = mean;
     for (ch, m) in mean.iter().enumerate() {
-        let mut sum = 0.0f64;
+        let own = f64::from(root[ch * plane + (y - rect.y) * rect.w + (x - rect.x)]);
+        // Sums of the differences from the pixel's own value: the spread has no cancelling large terms.
+        let (mut sum, mut sum2) = (0.0f64, 0.0f64);
         for dy in -half..=half {
             let yy = (y as i64 + dy).clamp(lo_y, hi_y) as usize - rect.y;
             for dx in -half..=half {
                 let xx = (x as i64 + dx).clamp(lo_x, hi_x) as usize - rect.x;
-                sum += f64::from(root[ch * plane + yy * rect.w + xx]);
+                let d = f64::from(root[ch * plane + yy * rect.w + xx]) - own;
+                sum += d;
+                sum2 += d * d;
             }
         }
-        let own = f64::from(root[ch * plane + (y - rect.y) * rect.w + (x - rect.x)]);
-        let residual = own - sum / (side * side);
-        let keep = 1.0
-            - smoothstep(
+        let residual = -sum / count;
+        let spread = (sum2 / count - residual * residual).max(0.0).sqrt();
+        let keep =
+            (1.0 - smoothstep(
                 GRAIN_GATE_FROM * sigma,
                 GRAIN_GATE_TO * sigma,
                 residual.abs(),
-            );
+            )) * (1.0 - smoothstep(GRAIN_SPREAD_FROM * sigma, GRAIN_SPREAD_TO * sigma, spread));
         let s = m.max(0.0).sqrt();
         let t = (s + share * keep * residual).max(0.0);
         out[ch] = m + (t * t - s * s);

@@ -1151,7 +1151,8 @@ fn the_gather_smears_a_blurred_field_along_the_tangent_by_the_swirl_plus_the_ast
     // A smooth bump (a Gaussian of 3 px, 0.3 above the field: too faint in light to be a ball, and far above the
     // noise, so that what the gather smooths of it is not given back as grain) on a field the map calls blurred
     // everywhere: the response of the tangential gather. A biweight line of half-length L adds a variance of L^2 / 7
-    // along the tangent and nothing across it, with L = e (k sigma b + a H) (`tangent_half_length`).
+    // along the tangent and nothing across it, with L = e (k sigma b + a H) (`tangent_half_length`). (A bump just
+    // above the noise gets a faint ring back, at most the grain gate, around the place the line took it from.)
     let at: (f64, f64) = (948.0, 628.0);
     let hd = 600.97;
     let rho = (at.0 - 500.0).hypot(at.1 - 333.5) / hd;
@@ -1195,8 +1196,11 @@ fn the_gather_smears_a_blurred_field_along_the_tangent_by_the_swirl_plus_the_ast
         (r20 - 1.0).abs() < 0.03,
         "astigmatism at a blur of 16 px: {r20:.4} of L^2/7"
     );
+    // (Across, the bump's own 9 px^2, give or take the faint skirts, which weigh by the square of their distance: the
+    // grain the gather took out of them goes back, a mass of 1 % of the bump's at 10 to 16 px, which moves this
+    // moment by a sixth.)
     assert!(
-        (across12 - 9.0).abs() < 0.5 && (across20 - 9.0).abs() < 0.5,
+        (across12 - 9.0).abs() < 2.0 && (across20 - 9.0).abs() < 2.0,
         "across: {across12} {across20}"
     );
     // The swirl alone grows with the blur; the two together add; Anamorphic scales both.
