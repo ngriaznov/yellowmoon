@@ -646,7 +646,7 @@ fn a_reader_that_goes_away_does_not_make_a_looks_command_panic() {
             .env("YELLOWMOON_HOME", sb.home())
             .env("YELLOWMOON_DATA", common::data_dir())
             .env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1)
-        .env(common::NO_AUTO_PROVIDERS.0, common::NO_AUTO_PROVIDERS.1)
+            .env(common::NO_AUTO_PROVIDERS.0, common::NO_AUTO_PROVIDERS.1)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()

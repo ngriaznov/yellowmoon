@@ -143,7 +143,13 @@ pub enum AppleAutoField {
 }
 
 /// The state, the reason and the info of a photo's Auto state, as `--json` words them.
-fn state_reason_info(apple: &AppleAuto) -> (&'static str, Value, Option<&ym_core::apple_auto::AdvisorInfo>) {
+fn state_reason_info(
+    apple: &AppleAuto,
+) -> (
+    &'static str,
+    Value,
+    Option<&ym_core::apple_auto::AdvisorInfo>,
+) {
     match apple {
         AppleAuto::Off => ("off", Value::Null, None),
         AppleAuto::Unavailable { reason } => (
@@ -357,7 +363,10 @@ pub fn auto_text(
             text
         }
         AppleAuto::Failed {
-            kind, message, info, ..
+            kind,
+            message,
+            info,
+            ..
         } => {
             let why = failure_text(info.provider, *kind, message);
             match in_effect {
@@ -623,14 +632,20 @@ mod tests {
             auto_text(&AppleAuto::Pending, None, apple, None),
             "Waiting for Apple Intelligence"
         );
-        let failed = |info: ym_core::apple_auto::AdvisorInfo, kind, message: &str| AppleAuto::Failed {
-            kind,
-            message: message.to_owned(),
-            info,
-        };
+        let failed =
+            |info: ym_core::apple_auto::AdvisorInfo, kind, message: &str| AppleAuto::Failed {
+                kind,
+                message: message.to_owned(),
+                info,
+            };
         let apple_info = || ym_core::apple_auto::AdvisorInfo::new("m", "o");
         assert_eq!(
-            auto_text(&failed(apple_info(), FailureKind::RateLimited, "busy"), None, apple, None),
+            auto_text(
+                &failed(apple_info(), FailureKind::RateLimited, "busy"),
+                None,
+                apple,
+                None
+            ),
             "Failed (macOS asked Yellowmoon to wait); Yellowmoon's own Auto"
         );
         assert_eq!(
@@ -663,7 +678,11 @@ mod tests {
         );
         assert_eq!(
             auto_text(
-                &failed(claude_info(), FailureKind::CliFailed, "it exited with code 1"),
+                &failed(
+                    claude_info(),
+                    FailureKind::CliFailed,
+                    "it exited with code 1"
+                ),
                 None,
                 AutoProvider::Claude,
                 None
@@ -751,7 +770,11 @@ mod tests {
         );
         // For every other provider the old object is `{ "state": "off" }`, so a script that looks for
         // `state == "answered"` finds only what Apple graded.
-        for provider in [AutoProvider::Yellowmoon, AutoProvider::Claude, AutoProvider::Agy] {
+        for provider in [
+            AutoProvider::Yellowmoon,
+            AutoProvider::Claude,
+            AutoProvider::Agy,
+        ] {
             let answered = AppleAuto::Answered {
                 answer: ym_core::apple_auto::AdvisorAnswer {
                     steps: AutoSteps::keep(),
@@ -761,7 +784,10 @@ mod tests {
                 },
                 info: claude_info(),
             };
-            assert_eq!(apple_auto_value(&answered, provider), json!({ "state": "off" }));
+            assert_eq!(
+                apple_auto_value(&answered, provider),
+                json!({ "state": "off" })
+            );
         }
     }
 
@@ -783,13 +809,32 @@ mod tests {
         assert_eq!(
             keys,
             [
-                "api", "image", "instructions", "instructions_sha256", "model", "os", "plan",
-                "prompt", "provider", "reason", "reproducible", "scene", "schema", "state",
-                "steps", "table", "tool_version"
+                "api",
+                "image",
+                "instructions",
+                "instructions_sha256",
+                "model",
+                "os",
+                "plan",
+                "prompt",
+                "provider",
+                "reason",
+                "reproducible",
+                "scene",
+                "schema",
+                "state",
+                "steps",
+                "table",
+                "tool_version"
             ]
         );
         assert_eq!(
-            (v["api"].clone(), v["image"].clone(), v["model"].clone(), v["os"].clone()),
+            (
+                v["api"].clone(),
+                v["image"].clone(),
+                v["model"].clone(),
+                v["os"].clone()
+            ),
             (
                 json!("firstParty"),
                 json!("jpeg444q92@768"),
@@ -871,13 +916,27 @@ mod tests {
             AutoProvider::Claude,
         );
         assert_eq!(
-            (v["provider"].clone(), v["state"].clone(), v["reason"].clone(), v["prompt"].clone()),
-            (json!("claude"), json!("unavailable"), json!("signed_out"), json!(1))
+            (
+                v["provider"].clone(),
+                v["state"].clone(),
+                v["reason"].clone(),
+                v["prompt"].clone()
+            ),
+            (
+                json!("claude"),
+                json!("unavailable"),
+                json!("signed_out"),
+                json!(1)
+            )
         );
         assert!(v.get("steps").is_none());
         let v = auto_advisor_value(&AppleAuto::Pending, AutoProvider::Agy);
         assert_eq!(
-            (v["provider"].clone(), v["state"].clone(), v["schema"].clone()),
+            (
+                v["provider"].clone(),
+                v["state"].clone(),
+                v["schema"].clone()
+            ),
             (json!("agy"), json!("pending"), json!(1))
         );
         let failed = AppleAuto::Failed {

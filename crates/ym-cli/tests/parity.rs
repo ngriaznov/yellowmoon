@@ -137,13 +137,12 @@ impl App {
             Auto::ClaudeFake => {
                 options.advisors = ProviderAdvisors::default().with(
                     AutoProvider::Claude,
-                    Arc::new(
-                        FakeProvider::available(AutoProvider::Claude)
-                            .with_details(ym_core::auto_provider::AdvisorDetails {
-                                tool_version: Some("0.0.0-test".to_owned()),
-                                ..Default::default()
-                            }),
-                    ),
+                    Arc::new(FakeProvider::available(AutoProvider::Claude).with_details(
+                        ym_core::auto_provider::AdvisorDetails {
+                            tool_version: Some("0.0.0-test".to_owned()),
+                            ..Default::default()
+                        },
+                    )),
                 );
                 // Naming the provider is the consent for the run, as `--auto-provider claude` is.
                 options.auto_choice = AutoChoice::Provider(AutoProvider::Claude);

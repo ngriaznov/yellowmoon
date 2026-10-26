@@ -939,7 +939,9 @@ mod tests {
             Err("Use --auto-provider or --apple-auto, not both.".to_owned())
         );
         // A name that is no provider, or no name, is a usage error.
-        assert!(Cli::try_parse_from(["ym", "render", "a.ARW", "--auto-provider", "gemini"]).is_err());
+        assert!(
+            Cli::try_parse_from(["ym", "render", "a.ARW", "--auto-provider", "gemini"]).is_err()
+        );
         assert!(Cli::try_parse_from(["ym", "render", "a.ARW", "--auto-provider"]).is_err());
         assert!(Cli::try_parse_from(["ym", "render", "a.ARW", "--apple-auto", "maybe"]).is_err());
         assert!(Cli::try_parse_from(["ym", "render", "a.ARW", "--apple-auto"]).is_err());

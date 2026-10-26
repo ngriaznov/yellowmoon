@@ -21,8 +21,8 @@ use ym_core::apple_auto::{
     AdvisorAnswer, AdvisorError, AdvisorInfo, AdvisorPicture, AppleAuto, AutoAdvisor, AutoSteps,
     Availability, FailureKind, FakeAdvisor, PICTURE_LONG_EDGE_PX, UnavailableReason,
 };
-use ym_core::auto_provider::{AutoChoice, AutoProvider, ProviderAdvisors};
 use ym_core::auto::{AutoSource, tables_of};
+use ym_core::auto_provider::{AutoChoice, AutoProvider, ProviderAdvisors};
 use ym_core::export::ExportContext;
 use ym_core::export_queue::{ExportEvent, ExportJob, ExportQueue, ExportSink};
 use ym_core::pipeline::{AdvisorPictures, PhotoSource, RenderOptions, Renderer};
@@ -543,7 +543,12 @@ fn estimates_without_an_answer_are_the_rule_bit_for_bit() {
             info: Scripted::info(),
         },
     ] {
-        let e = est.with_apple(None, state.clone(), AutoProvider::Apple, tables_of(&profile));
+        let e = est.with_apple(
+            None,
+            state.clone(),
+            AutoProvider::Apple,
+            tables_of(&profile),
+        );
         assert_eq!(e.apple, state);
         assert_eq!(format!("{:?}", e.color), format!("{:?}", est.color));
         assert_eq!(e.exposure, est.exposure);
@@ -939,7 +944,10 @@ fn failures_use_the_rule_and_say_why_and_only_waiting_is_retried() {
     let five = rig.session.estimates(id(5)).unwrap();
     assert!((five.exposure.ev - (five.exposure.own_ev + 0.3)).abs() < 1e-12);
     // The documented pause between tries.
-    let default = AppleAutoEnv::new(apple_only(advisor.clone()), Arc::new(StubPictures::default()));
+    let default = AppleAutoEnv::new(
+        apple_only(advisor.clone()),
+        Arc::new(StubPictures::default()),
+    );
     assert_eq!(default.retry_pause, Duration::from_secs(2));
 }
 
@@ -1053,13 +1061,15 @@ fn the_preference_switches_both_ways_without_asking_again() {
     assert_eq!(advisor.calls(), vec![id.0 as u8, e.0 as u8]);
     // The run's mode overrides the preference.
     rig.session.set_auto_preference(AutoProvider::Yellowmoon);
-    rig.session.set_auto_choice(AutoChoice::Provider(AutoProvider::Apple));
+    rig.session
+        .set_auto_choice(AutoChoice::Provider(AutoProvider::Apple));
     assert!(rig.session.apple_auto_active());
     assert_eq!(
         rig.session.estimates(id).unwrap().source(),
         AutoSource::Apple
     );
-    rig.session.set_auto_choice(AutoChoice::Provider(AutoProvider::Yellowmoon));
+    rig.session
+        .set_auto_choice(AutoChoice::Provider(AutoProvider::Yellowmoon));
     assert_eq!(rig.state(id), AppleAuto::Off);
 }
 
@@ -1508,7 +1518,8 @@ fn exports_with_the_fake_carry_its_answer_and_are_the_same_bytes_twice() {
             "{name}"
         );
         let apple: Value =
-            serde_json::from_str(&unescape(&xmp_property(&xmp, "ym:AutoAdvisor").unwrap())).unwrap();
+            serde_json::from_str(&unescape(&xmp_property(&xmp, "ym:AutoAdvisor").unwrap()))
+                .unwrap();
         assert_eq!(apple["result"], json!("answered"));
         assert_eq!(apple["provider"], json!("apple"));
         assert_eq!(apple["reproducible"], json!(true));
@@ -1697,7 +1708,10 @@ fn an_exports_photo_moves_up_with_its_burst_so_the_export_waits_for_its_burst_al
     advisor.gate.close(None);
     let session = Arc::new(Session::new(base_env().with_apple_auto(AppleAutoEnv {
         retry_pause: Duration::from_millis(5),
-        ..AppleAutoEnv::new(apple_only(advisor.clone()), Arc::new(StubPictures::default()))
+        ..AppleAutoEnv::new(
+            apple_only(advisor.clone()),
+            Arc::new(StubPictures::default()),
+        )
     })));
     let dir = tempfile::tempdir().unwrap();
     let frame = |name: &str, sec: &str| {
@@ -2223,7 +2237,10 @@ fn an_export_waiting_for_a_removed_frame_or_photo_does_not_hang() {
     let advisor = Scripted::new(Ok(steps(1, 0, 0, 0)));
     let session = Arc::new(Session::new(base_env().with_apple_auto(AppleAutoEnv {
         retry_pause: Duration::from_millis(5),
-        ..AppleAutoEnv::new(apple_only(advisor.clone()), Arc::new(StubPictures::default()))
+        ..AppleAutoEnv::new(
+            apple_only(advisor.clone()),
+            Arc::new(StubPictures::default()),
+        )
     })));
     let ids = session
         .open(&[dir.path().to_path_buf()], OpenOptions::default())

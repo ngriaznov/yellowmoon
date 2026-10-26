@@ -150,8 +150,8 @@ test.describe("the consent dialog", () => {
     await expect(consent).toContainText(CLAUDE_BODY);
     await expect(consent.getByRole("button", { name: "Cancel" })).toBeFocused();
     await expect(consent.getByRole("button", { name: "Use Claude Code" })).toHaveAttribute("data-slot", "button");
-    const box = await consent.boundingBox();
-    expect(Math.abs(box!.width - 480)).toBeLessThanOrEqual(1);
+    // The layout width, not the box on screen: the dialog is still scaling up while it opens.
+    expect(await consent.evaluate((el) => (el as HTMLElement).offsetWidth)).toBe(480);
     // Nothing has changed.
     expect(await saved(page)).toBe("apple");
     expect(problems).toEqual([]);

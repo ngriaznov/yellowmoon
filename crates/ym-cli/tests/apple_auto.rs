@@ -62,11 +62,19 @@ fn render_json_says_apple_made_the_auto_values_and_what_it_answered() {
     // The new object says the same, with the provider and that the answer repeats on one Mac.
     let adv = &v["auto_advisor"];
     assert_eq!(
-        (adv["provider"].clone(), adv["state"].clone(), adv["model"].clone()),
+        (
+            adv["provider"].clone(),
+            adv["state"].clone(),
+            adv["model"].clone()
+        ),
         (json!("apple"), json!("answered"), json!("Test advisor"))
     );
     assert_eq!(
-        (adv["reproducible"].clone(), adv["prompt"].clone(), adv["schema"].clone()),
+        (
+            adv["reproducible"].clone(),
+            adv["prompt"].clone(),
+            adv["schema"].clone()
+        ),
         (json!(true), json!(3), Value::Null)
     );
     assert_eq!(adv["steps"], v["apple_auto"]["steps"]);
@@ -324,7 +332,13 @@ fn info_json_has_the_apple_auto_object_and_the_auto_values_in_effect() {
     assert_eq!(v["auto"]["apple"]["answer"]["steps"], a["steps"]);
     // `info` and `render` report the same photo the same way.
     let render = render_json(sb.ym_fake(), &arw, &[], &sb.root().join("out"));
-    for key in ["auto", "auto_source", "apple_auto", "auto_advisor", "settings"] {
+    for key in [
+        "auto",
+        "auto_source",
+        "apple_auto",
+        "auto_advisor",
+        "settings",
+    ] {
         assert_eq!(v[key], render[key], "{key}");
     }
     // Off, and where it is not available, the object says so with no steps and no scene.
@@ -431,7 +445,10 @@ fn doctor_reports_apple_auto_and_the_model() {
         row("Apple Intelligence"),
         "available · Apple Intelligence · Test advisor · macOS test · prompt 3 · table 2"
     );
-    assert_eq!(row("Auto grading"), "Apple Intelligence (saved in Preferences)");
+    assert_eq!(
+        row("Auto grading"),
+        "Apple Intelligence (saved in Preferences)"
+    );
     assert_eq!(row("Claude Code"), "not installed");
     assert_eq!(row("Antigravity (agy)"), "not installed");
     assert!(
@@ -464,9 +481,8 @@ fn doctor_reports_apple_auto_and_the_model() {
         let out = sb.ym().arg("doctor").assert().success();
         let report = text(&out.get_output().stdout);
         assert!(
-            report
-                .lines()
-                .any(|l| l.starts_with("Apple Intelligence") && l.ends_with("not available (this is not a Mac)")),
+            report.lines().any(|l| l.starts_with("Apple Intelligence")
+                && l.ends_with("not available (this is not a Mac)")),
             "{report}"
         );
     }
@@ -601,10 +617,11 @@ fn the_json_of_a_file_with_apple_auto_has_this_shape() {
     let arw = photo(&sb);
     let v = render_json(sb.ym_fake(), &arw, &[], &sb.root().join("out"));
     let keep = |key: &str| (key.to_owned(), common::shape(&v[key]));
-    let picked: serde_json::Map<String, Value> = ["auto", "auto_source", "apple_auto", "auto_advisor"]
-        .map(keep)
-        .into_iter()
-        .collect();
+    let picked: serde_json::Map<String, Value> =
+        ["auto", "auto_source", "apple_auto", "auto_advisor"]
+            .map(keep)
+            .into_iter()
+            .collect();
     insta::assert_json_snapshot!("render_json_shape_apple_auto", Value::Object(picked));
 }
 

@@ -50,10 +50,7 @@ fn info(mut cmd: assert_cmd::Command, arw: &Path, flags: &[&str]) -> (Value, Str
         .assert()
         .success();
     let stderr = text(&assert.get_output().stderr);
-    (
-        json_lines(&assert.get_output().stdout).remove(0),
-        stderr,
-    )
+    (json_lines(&assert.get_output().stdout).remove(0), stderr)
 }
 
 fn bytes(path: &Path) -> Vec<u8> {
@@ -107,7 +104,12 @@ fn the_provider_is_named_in_any_case_and_the_old_name_is_an_alias() {
         assert_eq!(v["auto_source"], source, "{flags:?}");
     }
     // `--apple-auto on` is `--auto-provider apple`: with the test advisor it answers.
-    let (v, _) = render(sb.ym_fake(), &arw, &["--apple-auto", "on"], &sb.root().join("out"));
+    let (v, _) = render(
+        sb.ym_fake(),
+        &arw,
+        &["--apple-auto", "on"],
+        &sb.root().join("out"),
+    );
     assert_eq!(v["auto_source"], "apple");
     // Both names together are a usage error with the sentence of the spec; so is a name that is no provider.
     let out = sb
@@ -184,8 +186,14 @@ fn the_saved_choice_acts_only_with_its_consent_and_naming_it_is_the_consent_for_
         json!({ "state": "unavailable", "reason": "not_consented" }),
         "{v}"
     );
-    assert!(!stderr.contains(cloud) && !stderr.contains("not available"), "{stderr}");
-    assert!(v.get("apple_auto").is_none() && v.get("auto_advisor").is_none(), "{v}");
+    assert!(
+        !stderr.contains(cloud) && !stderr.contains("not available"),
+        "{stderr}"
+    );
+    assert!(
+        v.get("apple_auto").is_none() && v.get("auto_advisor").is_none(),
+        "{v}"
+    );
     let (i, _) = info(sb.ym_provider("claude=available"), &arw, &[]);
     assert_eq!(i["auto_advisor"]["state"], "unavailable");
     assert_eq!(i["auto_advisor"]["reason"], "not_consented");
@@ -224,7 +232,10 @@ fn the_saved_choice_acts_only_with_its_consent_and_naming_it_is_the_consent_for_
         "nothing was saved"
     );
     let saved: Value = serde_json::from_slice(&before).expect("JSON");
-    assert_eq!(saved["auto_consent"], json!({ "claude": false, "agy": false }));
+    assert_eq!(
+        saved["auto_consent"],
+        json!({ "claude": false, "agy": false })
+    );
     // With the consent saved, the saved choice acts without the option, and says the same once.
     sb.set_auto_provider("claude", &["claude"]);
     let (v, stderr) = render(
@@ -302,7 +313,11 @@ fn a_provider_the_run_named_that_is_not_available_says_why_once_and_the_run_goes
         (
             "claude",
             "claude=too_old",
-            hint(AutoProvider::Claude, UnavailableReason::TooOld, Some("0.0.0-test")),
+            hint(
+                AutoProvider::Claude,
+                UnavailableReason::TooOld,
+                Some("0.0.0-test"),
+            ),
         ),
         (
             "claude",
@@ -328,7 +343,11 @@ fn a_provider_the_run_named_that_is_not_available_says_why_once_and_the_run_goes
             &["--auto-provider", provider],
             &sb.root().join("out"),
         );
-        assert_eq!(stderr.matches(&want).count(), 1, "{hook}: once per run:\n{stderr}");
+        assert_eq!(
+            stderr.matches(&want).count(),
+            1,
+            "{hook}: once per run:\n{stderr}"
+        );
         assert_eq!(v["auto_source"], "rule", "{hook}");
         assert_eq!(v["status"], "ok");
         // `ym info` says it too; `--quiet` says nothing.
@@ -423,12 +442,31 @@ fn the_json_names_the_provider_and_the_old_object_is_apples_view() {
     assert_eq!(v["auto"]["provider"], "claude");
     // The new object, every key, sorted; the answers of a program are not reproducible.
     let a = &v["auto_advisor"];
-    let keys: Vec<&str> = a.as_object().expect("object").keys().map(String::as_str).collect();
+    let keys: Vec<&str> = a
+        .as_object()
+        .expect("object")
+        .keys()
+        .map(String::as_str)
+        .collect();
     assert_eq!(
         keys,
         [
-            "api", "image", "instructions", "instructions_sha256", "model", "os", "plan", "prompt",
-            "provider", "reason", "reproducible", "scene", "schema", "state", "steps", "table",
+            "api",
+            "image",
+            "instructions",
+            "instructions_sha256",
+            "model",
+            "os",
+            "plan",
+            "prompt",
+            "provider",
+            "reason",
+            "reproducible",
+            "scene",
+            "schema",
+            "state",
+            "steps",
+            "table",
             "tool_version"
         ],
         "{a}"
@@ -472,7 +510,11 @@ fn the_json_names_the_provider_and_the_old_object_is_apples_view() {
     assert_eq!(a["steps"].as_object().expect("steps").len(), 12);
     // The old object is Apple's view: for any other provider it says `off`, so a script that looks for
     // `answered` finds only what Apple graded.
-    assert_eq!(v["apple_auto"], Value::Null, "render writes it only for Apple's photos: {v}");
+    assert_eq!(
+        v["apple_auto"],
+        Value::Null,
+        "render writes it only for Apple's photos: {v}"
+    );
     let (i, _) = info(
         sb.ym_provider("claude=available"),
         &arw,
@@ -560,7 +602,10 @@ fn an_export_records_the_provider_in_its_xmp() {
     );
     let xmp = xmp_of(&rule);
     assert!(xmp.contains("<ym:Auto>rule</ym:Auto>") && !xmp.contains("ym:AutoAdvisor"));
-    assert_ne!(bytes(&PathBuf::from(v["output"].as_str().unwrap())), bytes(&PathBuf::from(rule["output"].as_str().unwrap())));
+    assert_ne!(
+        bytes(&PathBuf::from(v["output"].as_str().unwrap())),
+        bytes(&PathBuf::from(rule["output"].as_str().unwrap()))
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -597,7 +642,10 @@ fn doctor_reports_each_provider_in_each_state() {
     assert_eq!(auto["consent"], json!({ "claude": false, "agy": false }));
     assert_eq!(auto["table"], 2);
     let providers = &auto["providers"];
-    assert_eq!(providers["yellowmoon"], json!({ "state": "available", "reason": null }));
+    assert_eq!(
+        providers["yellowmoon"],
+        json!({ "state": "available", "reason": null })
+    );
     assert_eq!(providers["claude"]["state"], "available");
     assert_eq!(providers["claude"]["model"], "Test Claude Code");
     assert_eq!(providers["claude"]["tool_version"], "0.0.0-test");
@@ -616,8 +664,14 @@ fn doctor_reports_each_provider_in_each_state() {
         row(&text_report, "Claude Code"),
         "available · Claude Code 0.0.0-test · Test Claude Code · prompt 1 · schema 1 · table 2"
     );
-    assert_eq!(row(&text_report, "Antigravity (agy)"), "installed but not signed in · 0.0.0-test");
-    assert_eq!(row(&text_report, "Auto grading"), "Apple Intelligence (saved in Preferences)");
+    assert_eq!(
+        row(&text_report, "Antigravity (agy)"),
+        "installed but not signed in · 0.0.0-test"
+    );
+    assert_eq!(
+        row(&text_report, "Auto grading"),
+        "Apple Intelligence (saved in Preferences)"
+    );
     // The rows of the other states.
     for (hook, label, want) in [
         ("claude=not_installed", "Claude Code", "not installed"),
@@ -627,22 +681,45 @@ fn doctor_reports_each_provider_in_each_state() {
             "Claude Code",
             "too old (0.0.0-test; 2.1.169 or later is needed)",
         ),
-        ("agy=unavailable", "Antigravity (agy)", "didn't answer its check"),
-        ("agy=too_old", "Antigravity (agy)", "too old (0.0.0-test; 1.2.14 or later is needed)"),
+        (
+            "agy=unavailable",
+            "Antigravity (agy)",
+            "didn't answer its check",
+        ),
+        (
+            "agy=too_old",
+            "Antigravity (agy)",
+            "too old (0.0.0-test; 1.2.14 or later is needed)",
+        ),
         ("none", "Antigravity (agy)", "not installed"),
     ] {
         assert_eq!(row(&report(hook), label), want, "{hook}");
     }
-    assert_eq!(json("claude=not_installed")["auto"]["providers"]["claude"]["state"], "not_installed");
-    assert_eq!(json("claude=too_old")["auto"]["providers"]["claude"]["reason"], "too_old");
-    assert_eq!(json("agy=unavailable")["auto"]["providers"]["agy"]["reason"], "probe_failed");
-    assert_eq!(json("claude=checking")["auto"]["providers"]["claude"]["state"], "checking");
+    assert_eq!(
+        json("claude=not_installed")["auto"]["providers"]["claude"]["state"],
+        "not_installed"
+    );
+    assert_eq!(
+        json("claude=too_old")["auto"]["providers"]["claude"]["reason"],
+        "too_old"
+    );
+    assert_eq!(
+        json("agy=unavailable")["auto"]["providers"]["agy"]["reason"],
+        "probe_failed"
+    );
+    assert_eq!(
+        json("claude=checking")["auto"]["providers"]["claude"]["state"],
+        "checking"
+    );
     // The saved choice and its consent.
     sb.set_auto_provider("agy", &["agy"]);
     let v = json("agy=available");
     assert_eq!(v["auto"]["preference"], "agy");
     assert_eq!(v["auto"]["effective"], "agy");
-    assert_eq!(v["auto"]["consent"], json!({ "claude": false, "agy": true }));
+    assert_eq!(
+        v["auto"]["consent"],
+        json!({ "claude": false, "agy": true })
+    );
     assert_eq!(v["apple_auto"]["preference"], false);
     assert_eq!(
         row(&report("agy=available"), "Auto grading"),
@@ -651,7 +728,10 @@ fn doctor_reports_each_provider_in_each_state() {
     // Reading the report writes nothing new.
     let saved = std::fs::read(sb.home().join("preferences.json")).expect("preferences");
     let _ = json("agy=available");
-    assert_eq!(std::fs::read(sb.home().join("preferences.json")).expect("preferences"), saved);
+    assert_eq!(
+        std::fs::read(sb.home().join("preferences.json")).expect("preferences"),
+        saved
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -674,7 +754,14 @@ fn a_render_through_the_test_double_of_claude_code_answers_both_photos() {
         .ym_provider(&format!("claude={}", exec(&claude)))
         .env("YM_FAKE_RECORD", &record)
         .env("YM_FAKE_DELAY_MS", "300")
-        .args(["render", "--json", "--cpu", "--auto-provider", "claude", "--out"])
+        .args([
+            "render",
+            "--json",
+            "--cpu",
+            "--auto-provider",
+            "claude",
+            "--out",
+        ])
         .arg(sb.root().join("out"))
         .arg(sb.photos())
         .assert()
@@ -695,14 +782,23 @@ fn a_render_through_the_test_double_of_claude_code_answers_both_photos() {
         let a = &v["auto_advisor"];
         assert_eq!(a["state"], "answered", "{a}");
         assert_eq!(a["provider"], "claude");
-        assert_eq!(a["model"], "claude-fake-1", "the model the program says answered");
+        assert_eq!(
+            a["model"], "claude-fake-1",
+            "the model the program says answered"
+        );
         assert_eq!(a["api"], "firstParty");
         assert_eq!(a["tool_version"], "2.1.310");
         let xmp = xmp_of(v);
         assert!(xmp.contains("<ym:Auto>claude</ym:Auto>"), "{xmp}");
-        assert!(xmp.contains("&quot;model&quot;:&quot;claude-fake-1&quot;"), "{xmp}");
+        assert!(
+            xmp.contains("&quot;model&quot;:&quot;claude-fake-1&quot;"),
+            "{xmp}"
+        );
         // The picture the double was given is the request of `docs/22` section 7: no path of ours.
-        assert!(!xmp.contains(sb.root().to_str().expect("utf-8")), "no path in the file");
+        assert!(
+            !xmp.contains(sb.root().to_str().expect("utf-8")),
+            "no path in the file"
+        );
     }
     // Two requests ran at the same time: the double saw two runs that overlapped (each sleeps 300 ms).
     let runs: Vec<_> = std::fs::read_dir(&record)
@@ -723,7 +819,12 @@ fn a_render_through_the_test_double_of_claude_code_answers_both_photos() {
     assert_eq!(c["state"], "available", "{c}");
     assert_eq!(c["tool_version"], "2.1.310");
     assert_eq!(c["api"], "firstParty");
-    assert!(c["path"].as_str().is_some_and(|p| p.contains("ym-fake-claude")), "{c}");
+    assert!(
+        c["path"]
+            .as_str()
+            .is_some_and(|p| p.contains("ym-fake-claude")),
+        "{c}"
+    );
 }
 
 #[test]
@@ -747,7 +848,12 @@ fn a_signed_out_test_double_is_listed_and_a_run_that_names_it_says_so() {
     );
     let want = format!(
         "{}{OWN_AUTO}",
-        unavailable_hint(AutoProvider::Claude, UnavailableReason::SignedOut, None, std::env::consts::OS)
+        unavailable_hint(
+            AutoProvider::Claude,
+            UnavailableReason::SignedOut,
+            None,
+            std::env::consts::OS
+        )
     );
     assert_eq!(stderr.matches(&want).count(), 1, "{stderr}");
     assert_eq!(v["auto_source"], "rule");
@@ -758,7 +864,10 @@ fn a_signed_out_test_double_is_listed_and_a_run_that_names_it_says_so() {
         &["--auto-provider", "claude"],
         &sb.root().join("out"),
     );
-    assert!(stderr.contains("Claude Code 2.1.100 is too old."), "{stderr}");
+    assert!(
+        stderr.contains("Claude Code 2.1.100 is too old."),
+        "{stderr}"
+    );
 }
 
 /// Three failures in a row open the advisor's breaker: the photos it did not answer use the rule and `ym` says so,
@@ -773,14 +882,30 @@ fn three_failures_in_a_row_open_the_breaker_and_ym_says_so_once() {
         // Taken a day apart: no two of them are a burst.
         let path = sb.photos().join(format!("p{k}.ARW"));
         ym_raw::testgen::ArwBuilder::new("ILCE-7RM4", 96, 64)
-            .capture_time(&format!("2026:10:{:02} 18:30:00", 5 + k), "000", Some("+02:00"))
-            .write_to(&path, &ym_raw::testgen::gradient_mosaic(96, 64, 512, 16_000, 21 + k))
+            .capture_time(
+                &format!("2026:10:{:02} 18:30:00", 5 + k),
+                "000",
+                Some("+02:00"),
+            )
+            .write_to(
+                &path,
+                &ym_raw::testgen::gradient_mosaic(96, 64, 512, 16_000, 21 + k),
+            )
             .expect("write synthetic ARW");
     }
     let out = sb
         .ym_provider(&format!("claude={}", exec(&claude)))
         .env("YM_FAKE_SCENARIO", "rate_limit")
-        .args(["render", "--json", "--cpu", "--jobs", "1", "--auto-provider", "claude", "--out"])
+        .args([
+            "render",
+            "--json",
+            "--cpu",
+            "--jobs",
+            "1",
+            "--auto-provider",
+            "claude",
+            "--out",
+        ])
         .arg(sb.root().join("out"))
         .arg(sb.photos())
         .assert()
@@ -797,15 +922,37 @@ fn three_failures_in_a_row_open_the_breaker_and_ym_says_so_once() {
     }
     let reasons: Vec<_> = objects
         .iter()
-        .map(|v| v["auto_advisor"]["reason"].as_str().unwrap_or("").to_owned())
+        .map(|v| {
+            v["auto_advisor"]["reason"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned()
+        })
         .collect();
-    assert!(reasons.iter().filter(|r| *r == "rate_limited").count() >= 3, "{reasons:?}");
-    assert!(reasons.iter().any(|r| r == "unavailable"), "the breaker refused the rest: {reasons:?}");
+    assert!(
+        reasons.iter().filter(|r| *r == "rate_limited").count() >= 3,
+        "{reasons:?}"
+    );
+    assert!(
+        reasons.iter().any(|r| r == "unavailable"),
+        "the breaker refused the rest: {reasons:?}"
+    );
     // `--quiet` hides the sentence.
     let out = sb
         .ym_provider(&format!("claude={}", exec(&claude)))
         .env("YM_FAKE_SCENARIO", "rate_limit")
-        .args(["render", "--json", "--quiet", "--cpu", "--overwrite", "--jobs", "1", "--auto-provider", "claude", "--out"])
+        .args([
+            "render",
+            "--json",
+            "--quiet",
+            "--cpu",
+            "--overwrite",
+            "--jobs",
+            "1",
+            "--auto-provider",
+            "claude",
+            "--out",
+        ])
         .arg(sb.root().join("out"))
         .arg(sb.photos())
         .assert()
@@ -833,7 +980,10 @@ fn ctrl_c_leaves_no_child_running() {
         .env("HOME", sb.root())
         .env_remove("RUST_LOG")
         .env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1)
-        .env(common::AUTO_PROVIDERS_ENV, format!("claude={}", exec(&claude)))
+        .env(
+            common::AUTO_PROVIDERS_ENV,
+            format!("claude={}", exec(&claude)),
+        )
         .env("YM_FAKE_SCENARIO", "slow")
         .env("YM_FAKE_PIDFILE", &pidfile)
         .args(["render", "--cpu", "--auto-provider", "claude", "--out"])
@@ -855,7 +1005,10 @@ fn ctrl_c_leaves_no_child_running() {
         if pids.len() >= 2 {
             break pids;
         }
-        assert!(Instant::now() < deadline, "the request never started: {text:?}");
+        assert!(
+            Instant::now() < deadline,
+            "the request never started: {text:?}"
+        );
         std::thread::sleep(Duration::from_millis(50));
     };
     let alive = |pid: i32| {
@@ -865,7 +1018,10 @@ fn ctrl_c_leaves_no_child_running() {
             .status()
             .is_ok_and(|s| s.success())
     };
-    assert!(pids.iter().all(|p| alive(*p)), "the double and its grandchild run: {pids:?}");
+    assert!(
+        pids.iter().all(|p| alive(*p)),
+        "the double and its grandchild run: {pids:?}"
+    );
     Command::new("kill")
         .args(["-INT", &child.id().to_string()])
         .status()
@@ -875,7 +1031,10 @@ fn ctrl_c_leaves_no_child_running() {
     // Both are gone (a killed child may be a zombie for a moment until its parent reaps it).
     let deadline = Instant::now() + Duration::from_secs(10);
     while pids.iter().any(|p| alive(*p)) {
-        assert!(Instant::now() < deadline, "a child of ym is still running: {pids:?}");
+        assert!(
+            Instant::now() < deadline,
+            "a child of ym is still running: {pids:?}"
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
 }

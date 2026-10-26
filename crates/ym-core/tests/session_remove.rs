@@ -12,8 +12,8 @@ use std::time::{Duration, SystemTime};
 
 use common::{GateThumbnails, Layout, Scene, base_env, light, session_with_events, settle};
 use ym_core::apple_auto::{AdvisorPicture, AppleAuto, FakeAdvisor};
-use ym_core::auto_provider::{AutoChoice, AutoProvider, ProviderAdvisors};
 use ym_core::auto::NoiseSource;
+use ym_core::auto_provider::{AutoChoice, AutoProvider, ProviderAdvisors};
 use ym_core::session::{
     AppleAutoEnv, EventSink, OpenOptions, PhotoId, PhotoStatus, PictureInput, PictureRenderer,
     Session, SessionError, SessionEvent,
@@ -644,7 +644,8 @@ fn a_removed_photo_keeps_its_answer_for_undo_and_nobody_is_asked_again() {
 #[test]
 fn a_photo_removed_before_it_was_asked_is_asked_once_it_is_back() {
     // Apple Auto is off while the photos develop: nobody has an answer, and the question waits for it to be on.
-    let (_dir, session, ids) = developed_with_apple(3, AutoChoice::Provider(AutoProvider::Yellowmoon));
+    let (_dir, session, ids) =
+        developed_with_apple(3, AutoChoice::Provider(AutoProvider::Yellowmoon));
     assert_eq!(session.apple_auto_asks(), 0);
     session.remove(&[ids[1]]);
 

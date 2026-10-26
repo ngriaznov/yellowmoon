@@ -286,7 +286,9 @@ fn auto_report(prefs: &ym_core::preferences::Preferences) -> AutoReport {
     advisors.refresh(None);
     advisors.settle(crate::runtime::AUTO_SETTLE);
     let details: [Option<AdvisorDetails>; 3] = std::array::from_fn(|slot| {
-        AutoProvider::from_slot(slot).and_then(|p| advisors.get(p)).map(|a| a.details())
+        AutoProvider::from_slot(slot)
+            .and_then(|p| advisors.get(p))
+            .map(|a| a.details())
     });
     let readings = std::array::from_fn(|slot| {
         let advisor = AutoProvider::from_slot(slot).and_then(|p| advisors.get(p))?;
@@ -806,9 +808,7 @@ mod tests {
     #[test]
     fn the_provider_rows_name_the_model_the_program_and_where_it_is() {
         use UnavailableReason as R;
-        let apple = Availability::Available(
-            AdvisorInfo::new("AFM 3 Core", "27.0.1 (27A404)"),
-        );
+        let apple = Availability::Available(AdvisorInfo::new("AFM 3 Core", "27.0.1 (27A404)"));
         let ok = (
             Availability::Available(claude_info()),
             details("2.1.310", "/Users/me/.local/bin/claude"),
@@ -819,7 +819,10 @@ mod tests {
             ok.clone(),
             out(R::SignedOut, details("1.4.7", "/Users/me/.local/bin/agy")),
             AutoProvider::Claude,
-            AutoConsent { claude: true, agy: false },
+            AutoConsent {
+                claude: true,
+                agy: false,
+            },
             "",
         );
         assert_eq!(
@@ -834,7 +837,10 @@ mod tests {
             row(&r, AutoProvider::Agy),
             "installed but not signed in · 1.4.7 · /Users/me/.local/bin/agy"
         );
-        assert_eq!(auto_grading_text(&r.status), "Claude Code (saved in Preferences)");
+        assert_eq!(
+            auto_grading_text(&r.status),
+            "Claude Code (saved in Preferences)"
+        );
         // Edited instructions are in the version string, before the path.
         let edited = InstructionsId::of("Moody.").instructions_sha256;
         let r = report(
@@ -847,7 +853,9 @@ mod tests {
         );
         assert_eq!(
             row(&r, AutoProvider::Claude),
-            format!("available · Claude Code 2.1.310 · sonnet · prompt 1 · schema 1 · table 2 · edited instructions ({edited}) · /Users/me/.local/bin/claude")
+            format!(
+                "available · Claude Code 2.1.310 · sonnet · prompt 1 · schema 1 · table 2 · edited instructions ({edited}) · /Users/me/.local/bin/claude"
+            )
         );
         assert_eq!(row(&r, AutoProvider::Agy), "not installed");
         // A saved program that was not agreed to yet says how `ym` can use it all the same.
@@ -865,12 +873,18 @@ mod tests {
             AutoConsent::default(),
             "",
         );
-        assert_eq!(row(&r, AutoProvider::Apple), "not available (this is not a Mac)");
+        assert_eq!(
+            row(&r, AutoProvider::Apple),
+            "not available (this is not a Mac)"
+        );
         assert_eq!(
             row(&r, AutoProvider::Claude),
             "too old (2.1.100; 2.1.169 or later is needed) · /opt/claude"
         );
-        assert_eq!(row(&r, AutoProvider::Agy), "didn't answer its check · /opt/agy");
+        assert_eq!(
+            row(&r, AutoProvider::Agy),
+            "didn't answer its check · /opt/agy"
+        );
         assert_eq!(auto_grading_text(&r.status), "Yellowmoon's own Auto");
         let r = report(
             Availability::Unavailable(R::NotAMac),
@@ -902,7 +916,10 @@ mod tests {
                 details("1.4.7", "/Users/me/.local/bin/agy"),
             ),
             AutoProvider::Claude,
-            AutoConsent { claude: true, agy: false },
+            AutoConsent {
+                claude: true,
+                agy: false,
+            },
             "",
         );
         let sha = InstructionsId::default().instructions_sha256;

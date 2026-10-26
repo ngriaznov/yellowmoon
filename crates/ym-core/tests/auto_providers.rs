@@ -49,7 +49,10 @@ fn write_photos(n: usize) -> tempfile::TempDir {
         .noise(2e-4, 1e-6);
         s.builder(MODEL)
             .capture_time(&format!("2026:10:04 12:{:02}:00", k % 60), "00", None)
-            .write_to(&dir.path().join(format!("DSC{:05}.ARW", k + 1)), &s.mosaic())
+            .write_to(
+                &dir.path().join(format!("DSC{:05}.ARW", k + 1)),
+                &s.mosaic(),
+            )
             .expect("write the photo");
     }
     dir
@@ -130,7 +133,9 @@ impl Lab {
     }
 
     fn with_concurrency(provider: AutoProvider, exposure: i8, concurrency: usize) -> Arc<Self> {
-        let mut lab = Arc::try_unwrap(Self::new(provider, exposure)).ok().expect("one owner");
+        let mut lab = Arc::try_unwrap(Self::new(provider, exposure))
+            .ok()
+            .expect("one owner");
         lab.concurrency = concurrency;
         Arc::new(lab)
     }
@@ -320,15 +325,26 @@ fn switching_provider_asks_the_photos_without_an_answer_and_keeps_the_others() {
     let apple = Lab::new(AutoProvider::Apple, -1);
     // One at a time, so that "the photo on screen first" is the first and only request in flight.
     let claude = Lab::with_concurrency(AutoProvider::Claude, 2, 1);
-    let rig = Rig::new(advisors(&apple, &claude, None), AutoProvider::Apple, CLAUDE_OK, 3);
+    let rig = Rig::new(
+        advisors(&apple, &claude, None),
+        AutoProvider::Apple,
+        CLAUDE_OK,
+        3,
+    );
     let ids = rig.open();
     rig.settle();
     assert_eq!(apple.calls().len(), 3);
-    assert!(claude.calls().is_empty(), "a provider that is not chosen is not asked");
+    assert!(
+        claude.calls().is_empty(),
+        "a provider that is not chosen is not asked"
+    );
     for id in &ids {
         assert_eq!(rig.exposure_step(*id), Some(-1), "Apple's answer");
         assert_eq!(rig.session.estimates(*id).unwrap().source().name(), "apple");
-        assert_eq!(rig.session.estimates(*id).unwrap().provider, AutoProvider::Apple);
+        assert_eq!(
+            rig.session.estimates(*id).unwrap().provider,
+            AutoProvider::Apple
+        );
     }
     // Choose Claude Code, the photo on screen being the last one: it is asked first, then the others in
     // order, and Apple's answers stay.
@@ -337,7 +353,11 @@ fn switching_provider_asks_the_photos_without_an_answer_and_keeps_the_others() {
     claude.close();
     rig.session.set_auto_preference(AutoProvider::Claude);
     claude.wait_running(1);
-    assert_eq!(claude.calls(), vec![ids[2].0 as u8], "the photo on screen first");
+    assert_eq!(
+        claude.calls(),
+        vec![ids[2].0 as u8],
+        "the photo on screen first"
+    );
     // Meanwhile the photos show Claude's state, pending, with the rule's values.
     assert_eq!(rig.state(ids[0]), AppleAuto::Pending);
     assert_eq!(rig.exposure_step(ids[0]), None);
@@ -349,7 +369,10 @@ fn switching_provider_asks_the_photos_without_an_answer_and_keeps_the_others() {
     );
     for id in &ids {
         assert_eq!(rig.exposure_step(*id), Some(2), "Claude's answer");
-        assert_eq!(rig.session.estimates(*id).unwrap().source().name(), "claude");
+        assert_eq!(
+            rig.session.estimates(*id).unwrap().source().name(),
+            "claude"
+        );
         match rig.state(*id) {
             AppleAuto::Answered { info, .. } => assert_eq!(info.provider, AutoProvider::Claude),
             other => panic!("{other:?}"),
@@ -369,8 +392,14 @@ fn switching_provider_asks_the_photos_without_an_answer_and_keeps_the_others() {
     // And Yellowmoon's own Auto shows the rule while both answers stay.
     rig.session.set_auto_preference(AutoProvider::Yellowmoon);
     assert_eq!(rig.state(ids[0]), AppleAuto::Off);
-    assert_eq!(rig.session.estimates(ids[0]).unwrap().source().name(), "rule");
-    assert_eq!(rig.session.estimates(ids[0]).unwrap().provider, AutoProvider::Yellowmoon);
+    assert_eq!(
+        rig.session.estimates(ids[0]).unwrap().source().name(),
+        "rule"
+    );
+    assert_eq!(
+        rig.session.estimates(ids[0]).unwrap().provider,
+        AutoProvider::Yellowmoon
+    );
     rig.session.set_auto_preference(AutoProvider::Claude);
     rig.settle();
     assert_eq!(claude.calls().len(), 3);
@@ -381,7 +410,12 @@ fn switching_provider_asks_the_photos_without_an_answer_and_keeps_the_others() {
 fn new_instructions_drop_every_providers_answers_and_cancel_running_requests() {
     let apple = Lab::new(AutoProvider::Apple, -1);
     let claude = Lab::new(AutoProvider::Claude, 2);
-    let rig = Rig::new(advisors(&apple, &claude, None), AutoProvider::Apple, CLAUDE_OK, 2);
+    let rig = Rig::new(
+        advisors(&apple, &claude, None),
+        AutoProvider::Apple,
+        CLAUDE_OK,
+        2,
+    );
     let ids = rig.open();
     rig.settle();
     rig.session.set_auto_preference(AutoProvider::Claude);
@@ -391,11 +425,18 @@ fn new_instructions_drop_every_providers_answers_and_cancel_running_requests() {
     claude.close();
     rig.session.set_apple_auto_instructions("Make it moody.");
     claude.wait_running(2);
-    assert_eq!(claude.calls().len(), 4, "both photos asked again, two at once");
+    assert_eq!(
+        claude.calls().len(),
+        4,
+        "both photos asked again, two at once"
+    );
     // New instructions while that request runs: it is cancelled, and its answer dropped.
     let cancels = claude.cancels.load(Ordering::SeqCst);
     rig.session.set_apple_auto_instructions("Make it bright.");
-    assert!(claude.cancels.load(Ordering::SeqCst) > cancels, "running requests are cancelled");
+    assert!(
+        claude.cancels.load(Ordering::SeqCst) > cancels,
+        "running requests are cancelled"
+    );
     claude.open();
     rig.settle();
     let seen = lock(&claude.instructions).clone();
@@ -414,14 +455,23 @@ fn new_instructions_drop_every_providers_answers_and_cancel_running_requests() {
     rig.session.set_auto_preference(AutoProvider::Apple);
     rig.settle();
     assert_eq!(apple.calls().len(), before + 2);
-    assert!(lock(&apple.instructions)[before..].iter().all(|i| i == "Make it bright."));
+    assert!(
+        lock(&apple.instructions)[before..]
+            .iter()
+            .all(|i| i == "Make it bright.")
+    );
 }
 
 #[test]
 fn an_answer_that_arrives_after_the_provider_changed_is_kept_for_the_provider_asked() {
     let apple = Lab::new(AutoProvider::Apple, -1);
     let claude = Lab::new(AutoProvider::Claude, 2);
-    let rig = Rig::new(advisors(&apple, &claude, None), AutoProvider::Claude, CLAUDE_OK, 1);
+    let rig = Rig::new(
+        advisors(&apple, &claude, None),
+        AutoProvider::Claude,
+        CLAUDE_OK,
+        1,
+    );
     claude.close();
     let id = rig.open()[0];
     claude.wait_running(1);
@@ -462,7 +512,12 @@ fn two_workers_ask_two_photos_at_once_and_never_the_same_one_twice() {
     let claude = Lab::with_concurrency(AutoProvider::Claude, 1, 2);
     assert_eq!(advisors(&apple, &claude, None).max_concurrency(), 2);
     claude.close();
-    let rig = Rig::new(advisors(&apple, &claude, None), AutoProvider::Claude, CLAUDE_OK, 4);
+    let rig = Rig::new(
+        advisors(&apple, &claude, None),
+        AutoProvider::Claude,
+        CLAUDE_OK,
+        4,
+    );
     let ids = rig.open();
     claude.wait_running(2);
     // Exactly two are in flight, and they are two different photos; no third is started while they wait.
@@ -478,7 +533,11 @@ fn two_workers_ask_two_photos_at_once_and_never_the_same_one_twice() {
     let mut want: Vec<u8> = ids.iter().map(|i| i.0 as u8).collect();
     want.sort_unstable();
     assert_eq!(all, want, "one request per photo");
-    assert_eq!(claude.peak.load(Ordering::SeqCst), 2, "never more than the advisor takes");
+    assert_eq!(
+        claude.peak.load(Ordering::SeqCst),
+        2,
+        "never more than the advisor takes"
+    );
     // Apple's advisor takes one at a time even in a session whose largest advisor takes two.
     rig.session.set_auto_preference(AutoProvider::Apple);
     rig.settle();
@@ -492,7 +551,12 @@ fn only_apple_is_retried() {
     let claude = Lab::new(AutoProvider::Claude, 2);
     apple.fail_next([FailureKind::RateLimited, FailureKind::RateLimited]);
     claude.fail_next([FailureKind::RateLimited]);
-    let rig = Rig::new(advisors(&apple, &claude, None), AutoProvider::Apple, CLAUDE_OK, 1);
+    let rig = Rig::new(
+        advisors(&apple, &claude, None),
+        AutoProvider::Apple,
+        CLAUDE_OK,
+        1,
+    );
     let id = rig.open()[0];
     rig.settle();
     // Apple: two waits and then the answer.
@@ -523,7 +587,12 @@ fn a_sign_out_during_a_request_abandons_it_and_fails_nothing() {
     let apple = Lab::new(AutoProvider::Apple, -1);
     let claude = Lab::new(AutoProvider::Claude, 2);
     claude.fail_next([FailureKind::NotSignedIn]);
-    let rig = Rig::new(advisors(&apple, &claude, None), AutoProvider::Claude, CLAUDE_OK, 2);
+    let rig = Rig::new(
+        advisors(&apple, &claude, None),
+        AutoProvider::Claude,
+        CLAUDE_OK,
+        2,
+    );
     let ids = rig.open();
     rig.settle();
     // The advisor said it is signed out: the photo that met the sign-out is not failed, nothing more is
@@ -539,7 +608,10 @@ fn a_sign_out_during_a_request_abandons_it_and_fails_nothing() {
         assert!(rig.session.estimates_final(*id).unwrap());
     }
     let status = rig.session.auto_status();
-    assert_eq!(status.provider(AutoProvider::Claude).unwrap().state, ProviderState::SignedOut);
+    assert_eq!(
+        status.provider(AutoProvider::Claude).unwrap().state,
+        ProviderState::SignedOut
+    );
     assert_eq!(status.effective, AutoProvider::Yellowmoon);
     // Signed in again: the advisor tells, the session reads it again, and the photos are asked.
     claude.set_availability(Availability::Available(Lab::info(AutoProvider::Claude)));
@@ -547,18 +619,29 @@ fn a_sign_out_during_a_request_abandons_it_and_fails_nothing() {
     rig.settle();
     assert_eq!(claude.calls().len(), 3);
     for id in &ids {
-        assert!(matches!(rig.state(*id), AppleAuto::Answered { .. }), "{:?}", rig.state(*id));
+        assert!(
+            matches!(rig.state(*id), AppleAuto::Answered { .. }),
+            "{:?}",
+            rig.state(*id)
+        );
     }
 }
 
 #[test]
 fn a_not_signed_in_failure_with_the_provider_still_available_fails_the_photo() {
     let apple = Lab::new(AutoProvider::Apple, -1);
-    let mut claude = Arc::try_unwrap(Lab::new(AutoProvider::Claude, 2)).ok().expect("owner");
+    let mut claude = Arc::try_unwrap(Lab::new(AutoProvider::Claude, 2))
+        .ok()
+        .expect("owner");
     claude.sign_out_on_not_signed_in = false;
     let claude = Arc::new(claude);
     claude.fail_next([FailureKind::NotSignedIn]);
-    let rig = Rig::new(advisors(&apple, &claude, None), AutoProvider::Claude, CLAUDE_OK, 1);
+    let rig = Rig::new(
+        advisors(&apple, &claude, None),
+        AutoProvider::Claude,
+        CLAUDE_OK,
+        1,
+    );
     let id = rig.open()[0];
     rig.settle();
     assert!(matches!(
@@ -574,7 +657,12 @@ fn a_not_signed_in_failure_with_the_provider_still_available_fails_the_photo() {
 fn the_model_that_answered_is_the_photos_model() {
     let apple = Lab::new(AutoProvider::Apple, -1);
     let claude = Lab::new(AutoProvider::Claude, 2);
-    let rig = Rig::new(advisors(&apple, &claude, None), AutoProvider::Claude, CLAUDE_OK, 2);
+    let rig = Rig::new(
+        advisors(&apple, &claude, None),
+        AutoProvider::Claude,
+        CLAUDE_OK,
+        2,
+    );
     let ids = rig.open();
     rig.settle();
     // Until a request names a model, the alias asked for is the info's model.
@@ -590,8 +678,14 @@ fn the_model_that_answered_is_the_photos_model() {
             assert_eq!(info.model, "claude-sonnet-5-5");
             assert_eq!(answer.served_model.as_deref(), Some("claude-sonnet-5-5"));
             assert_eq!(info.provider, AutoProvider::Claude);
-            assert_eq!(info.tool.as_ref().map(|t| t.version.as_str()), Some("2.1.310"));
-            assert!(info.version_string().starts_with("Claude Code 2.1.310 · claude-sonnet-5-5"));
+            assert_eq!(
+                info.tool.as_ref().map(|t| t.version.as_str()),
+                Some("2.1.310")
+            );
+            assert!(
+                info.version_string()
+                    .starts_with("Claude Code 2.1.310 · claude-sonnet-5-5")
+            );
         }
         other => panic!("{other:?}"),
     }
@@ -618,7 +712,10 @@ fn a_cloud_provider_acts_only_with_its_consent_or_when_the_run_names_it() {
     );
     assert!(claude.calls().is_empty());
     assert!(!rig.session.apple_auto_active());
-    assert_eq!(rig.session.auto_status().effective, AutoProvider::Yellowmoon);
+    assert_eq!(
+        rig.session.auto_status().effective,
+        AutoProvider::Yellowmoon
+    );
     // Consent saved: it acts and asks.
     rig.session.set_auto_consent(CLAUDE_OK);
     rig.settle();
@@ -633,13 +730,18 @@ fn a_cloud_provider_acts_only_with_its_consent_or_when_the_run_names_it() {
         }
     );
     // A run that names the provider is the consent.
-    rig.session.set_auto_choice(AutoChoice::Provider(AutoProvider::Claude));
+    rig.session
+        .set_auto_choice(AutoChoice::Provider(AutoProvider::Claude));
     assert!(matches!(rig.state(id), AppleAuto::Answered { .. }));
     assert_eq!(claude.calls().len(), 1, "the kept answer was used");
     let status = rig.session.auto_status();
     assert_eq!(
         (status.preference, status.chosen, status.effective),
-        (AutoProvider::Claude, AutoProvider::Claude, AutoProvider::Claude)
+        (
+            AutoProvider::Claude,
+            AutoProvider::Claude,
+            AutoProvider::Claude
+        )
     );
     // The apple lab never ran.
     assert!(apple.calls().is_empty());
@@ -649,7 +751,15 @@ fn a_cloud_provider_acts_only_with_its_consent_or_when_the_run_names_it() {
 fn a_provider_without_an_advisor_reads_as_not_installed() {
     let apple = Lab::new(AutoProvider::Apple, -1);
     let advisors = ProviderAdvisors::default().with(AutoProvider::Apple, apple.clone());
-    let rig = Rig::new(advisors, AutoProvider::Agy, AutoConsent { claude: true, agy: true }, 1);
+    let rig = Rig::new(
+        advisors,
+        AutoProvider::Agy,
+        AutoConsent {
+            claude: true,
+            agy: true,
+        },
+        1,
+    );
     let id = rig.open()[0];
     rig.settle();
     assert_eq!(
@@ -660,7 +770,10 @@ fn a_provider_without_an_advisor_reads_as_not_installed() {
     );
     let status = rig.session.auto_status();
     assert!(status.visible, "Apple is available, so the dropdown shows");
-    assert_eq!(status.provider(AutoProvider::Agy).unwrap().state, ProviderState::NotInstalled);
+    assert_eq!(
+        status.provider(AutoProvider::Agy).unwrap().state,
+        ProviderState::NotInstalled
+    );
     assert!(status.provider(AutoProvider::Agy).unwrap().experimental);
     assert_eq!(status.effective, AutoProvider::Yellowmoon);
     // Apple's answers were not asked for: the chosen provider is Antigravity.
@@ -691,18 +804,32 @@ fn the_status_has_the_four_providers_in_order() {
     let state = |p| s.provider(p).unwrap();
     assert_eq!(state(AutoProvider::Apple).state, ProviderState::Available);
     assert_eq!(state(AutoProvider::Claude).state, ProviderState::SignedOut);
-    assert_eq!(state(AutoProvider::Claude).tool_version.as_deref(), Some("2.1.200"));
-    assert_eq!(state(AutoProvider::Claude).path.as_deref(), Some(Path::new("/x/claude")));
+    assert_eq!(
+        state(AutoProvider::Claude).tool_version.as_deref(),
+        Some("2.1.200")
+    );
+    assert_eq!(
+        state(AutoProvider::Claude).path.as_deref(),
+        Some(Path::new("/x/claude"))
+    );
     assert!(state(AutoProvider::Claude).listed && !state(AutoProvider::Claude).selectable);
     assert_eq!(state(AutoProvider::Agy).state, ProviderState::TooOld);
     assert!(s.visible && s.active && s.effective == AutoProvider::Apple);
     // The same through the session's own readers.
     assert_eq!(
-        rig.session.advisor_details(AutoProvider::Claude).unwrap().tool_version.as_deref(),
+        rig.session
+            .advisor_details(AutoProvider::Claude)
+            .unwrap()
+            .tool_version
+            .as_deref(),
         Some("2.1.200")
     );
     assert_eq!(rig.session.chosen_provider(), AutoProvider::Apple);
-    assert!(rig.session.advisor_details(AutoProvider::Yellowmoon).is_none());
+    assert!(
+        rig.session
+            .advisor_details(AutoProvider::Yellowmoon)
+            .is_none()
+    );
 }
 
 #[test]
@@ -710,12 +837,20 @@ fn cancel_auto_and_the_sessions_end_cancel_running_requests() {
     let apple = Lab::new(AutoProvider::Apple, -1);
     let claude = Lab::new(AutoProvider::Claude, 2);
     claude.close();
-    let rig = Rig::new(advisors(&apple, &claude, None), AutoProvider::Claude, CLAUDE_OK, 1);
+    let rig = Rig::new(
+        advisors(&apple, &claude, None),
+        AutoProvider::Claude,
+        CLAUDE_OK,
+        1,
+    );
     rig.open();
     claude.wait_running(1);
     let before = claude.cancels.load(Ordering::SeqCst);
     rig.session.cancel_auto();
-    assert!(claude.cancels.load(Ordering::SeqCst) > before, "cancel_auto reaches the advisor");
+    assert!(
+        claude.cancels.load(Ordering::SeqCst) > before,
+        "cancel_auto reaches the advisor"
+    );
     // The held request ends and its answer is a failure of the cancel, which the session stores: nobody
     // asked for it to be dropped, but the viewer shows the rule meanwhile.
     claude.open();
@@ -727,22 +862,38 @@ fn cancel_auto_and_the_sessions_end_cancel_running_requests() {
     // Closing the session cancels as well.
     let claude2 = Lab::new(AutoProvider::Claude, 2);
     claude2.close();
-    let rig2 = Rig::new(advisors(&apple, &claude2, None), AutoProvider::Claude, CLAUDE_OK, 1);
+    let rig2 = Rig::new(
+        advisors(&apple, &claude2, None),
+        AutoProvider::Claude,
+        CLAUDE_OK,
+        1,
+    );
     rig2.open();
     claude2.wait_running(1);
     let before = claude2.cancels.load(Ordering::SeqCst);
     rig2.session.close();
-    assert!(claude2.cancels.load(Ordering::SeqCst) > before, "close cancels");
+    assert!(
+        claude2.cancels.load(Ordering::SeqCst) > before,
+        "close cancels"
+    );
     // So does dropping it.
     let claude3 = Lab::new(AutoProvider::Claude, 2);
     claude3.close();
     let before = claude3.cancels.load(Ordering::SeqCst);
     {
-        let rig3 = Rig::new(advisors(&apple, &claude3, None), AutoProvider::Claude, CLAUDE_OK, 1);
+        let rig3 = Rig::new(
+            advisors(&apple, &claude3, None),
+            AutoProvider::Claude,
+            CLAUDE_OK,
+            1,
+        );
         rig3.open();
         claude3.wait_running(1);
     }
-    assert!(claude3.cancels.load(Ordering::SeqCst) > before, "drop cancels");
+    assert!(
+        claude3.cancels.load(Ordering::SeqCst) > before,
+        "drop cancels"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -786,7 +937,11 @@ fn patch(provider: AutoProvider, consent: Option<AutoConsent>) -> PreferencesPat
 fn the_preference_patch_reaches_the_session_and_the_consent_rule_holds() {
     let apple = Lab::new(AutoProvider::Apple, -1);
     let claude = Lab::new(AutoProvider::Claude, 2);
-    let rig = core_rig(advisors(&apple, &claude, None), AutoChoice::FromPreference, None);
+    let rig = core_rig(
+        advisors(&apple, &claude, None),
+        AutoChoice::FromPreference,
+        None,
+    );
     let core = &rig.core;
     let dir = write_photos(1);
     core.session
@@ -805,16 +960,28 @@ fn the_preference_patch_reaches_the_session_and_the_consent_rule_holds() {
     let saved = core
         .preferences_set(&patch(AutoProvider::Claude, Some(CLAUDE_OK)))
         .unwrap();
-    assert_eq!((saved.auto_provider, saved.auto_consent), (AutoProvider::Claude, CLAUDE_OK));
+    assert_eq!(
+        (saved.auto_provider, saved.auto_consent),
+        (AutoProvider::Claude, CLAUDE_OK)
+    );
     assert!(core.session.wait_idle(Duration::from_secs(120)));
     let s = core.auto_status();
-    assert_eq!((s.preference, s.chosen, s.effective), (AutoProvider::Claude, AutoProvider::Claude, AutoProvider::Claude));
+    assert_eq!(
+        (s.preference, s.chosen, s.effective),
+        (
+            AutoProvider::Claude,
+            AutoProvider::Claude,
+            AutoProvider::Claude
+        )
+    );
     assert_eq!(s.consent, CLAUDE_OK);
     assert_eq!(claude.calls().len(), 1);
     // Choosing Yellowmoon's own Auto or Apple is always allowed.
-    core.preferences_set(&patch(AutoProvider::Yellowmoon, None)).unwrap();
+    core.preferences_set(&patch(AutoProvider::Yellowmoon, None))
+        .unwrap();
     assert!(!core.auto_status().active);
-    core.preferences_set(&patch(AutoProvider::Apple, None)).unwrap();
+    core.preferences_set(&patch(AutoProvider::Apple, None))
+        .unwrap();
     assert_eq!(core.auto_status().effective, AutoProvider::Apple);
     // A file with a cloud choice and no consent acts as Yellowmoon's own Auto.
     let from_file = core_rig(
@@ -832,7 +999,10 @@ fn the_preference_patch_reaches_the_session_and_the_consent_rule_holds() {
         AutoChoice::FromPreference,
         Some(r#"{ "apple_auto": false }"#),
     );
-    assert_eq!(migrated.core.auto_status().preference, AutoProvider::Yellowmoon);
+    assert_eq!(
+        migrated.core.auto_status().preference,
+        AutoProvider::Yellowmoon
+    );
 }
 
 #[test]
@@ -848,9 +1018,13 @@ fn a_run_that_names_the_provider_does_not_need_the_saved_consent() {
     assert_eq!(s.choice, AutoChoice::Provider(AutoProvider::Claude));
     assert_eq!(s.effective, AutoProvider::Claude);
     assert_eq!(s.preference, AutoProvider::Apple, "nothing was saved");
-    assert_eq!(rig.core.preferences_get().auto_consent, AutoConsent::default());
+    assert_eq!(
+        rig.core.preferences_get().auto_consent,
+        AutoConsent::default()
+    );
     // Changing the run's choice acts at once.
-    rig.core.set_auto_choice(AutoChoice::Provider(AutoProvider::Yellowmoon));
+    rig.core
+        .set_auto_choice(AutoChoice::Provider(AutoProvider::Yellowmoon));
     assert_eq!(rig.core.auto_status().effective, AutoProvider::Yellowmoon);
     rig.core.set_auto_choice(AutoChoice::FromPreference);
     assert_eq!(rig.core.auto_status().effective, AutoProvider::Apple);
@@ -872,7 +1046,11 @@ fn a_change_notification_reaches_the_session_and_the_cores_callbacks() {
     core.on_auto_changed(move || {
         t.fetch_add(1, Ordering::SeqCst);
     });
-    assert_eq!(core.auto_status().effective, AutoProvider::Yellowmoon, "still checking");
+    assert_eq!(
+        core.auto_status().effective,
+        AutoProvider::Yellowmoon,
+        "still checking"
+    );
     assert!(!core.session.apple_auto_active());
     // The probe finishes: the advisor tells, the session reads the availability again before the callback
     // runs, so a webview that asks the status then sees the change.
@@ -884,9 +1062,15 @@ fn a_change_notification_reaches_the_session_and_the_cores_callbacks() {
     claude.set_availability(Availability::Available(Lab::info(AutoProvider::Claude)));
     assert_eq!(told.load(Ordering::SeqCst), 1);
     assert!(lock(&seen).is_some());
-    assert!(core.session.apple_auto_active(), "the session read it without being asked");
+    assert!(
+        core.session.apple_auto_active(),
+        "the session read it without being asked"
+    );
     let s = core.auto_status();
-    assert_eq!(s.provider(AutoProvider::Claude).unwrap().state, ProviderState::Available);
+    assert_eq!(
+        s.provider(AutoProvider::Claude).unwrap().state,
+        ProviderState::Available
+    );
     assert_eq!(s.effective, AutoProvider::Claude);
     // And a photo opened now is asked at once.
     let dir = write_photos(1);
@@ -928,7 +1112,11 @@ fn the_core_cancels_and_settles() {
 
 #[test]
 fn without_advisors_the_core_says_so_and_changes_nothing() {
-    let rig = core_rig(ProviderAdvisors::default(), AutoChoice::FromPreference, None);
+    let rig = core_rig(
+        ProviderAdvisors::default(),
+        AutoChoice::FromPreference,
+        None,
+    );
     let s = rig.core.auto_status();
     assert!(!s.visible && !s.active);
     assert_eq!(s.effective, AutoProvider::Yellowmoon);

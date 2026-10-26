@@ -562,7 +562,10 @@ mod tests {
             "{hint}"
         );
         let old = unavailable_notice(&status(R::TooOld), AutoProvider::Claude);
-        assert!(old.starts_with("Claude Code 2.1.100 is too old. Update it: "), "{old}");
+        assert!(
+            old.starts_with("Claude Code 2.1.100 is too old. Update it: "),
+            "{old}"
+        );
         // A reason with no hint falls back to the sentence with the reason in words.
         assert_eq!(
             unavailable_notice(&status(R::Checking), AutoProvider::Claude),
@@ -609,8 +612,7 @@ mod tests {
         options.thumbnails = false;
         options.export_events = sink;
         options.decode_threads = 1;
-        options.advisors =
-            ProviderAdvisors::default().with(AutoProvider::Apple, advisor.clone());
+        options.advisors = ProviderAdvisors::default().with(AutoProvider::Apple, advisor.clone());
         options.auto_choice = choice;
         Runtime::over(Core::open(options).expect("core"), events, choice)
     }

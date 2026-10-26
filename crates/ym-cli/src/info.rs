@@ -266,14 +266,10 @@ impl AutoNote {
 fn auto_note(rt: &Runtime) -> AutoNote {
     let status = rt.auto_status();
     let chosen = status.chosen;
-    let tool_version = status
-        .provider(chosen)
-        .and_then(|p| p.tool_version.clone());
+    let tool_version = status.provider(chosen).and_then(|p| p.tool_version.clone());
     AutoNote {
         tool_version,
-        not_consented: chosen.is_cloud()
-            && !rt.explicit_choice()
-            && !status.consent.get(chosen),
+        not_consented: chosen.is_cloud() && !rt.explicit_choice() && !status.consent.get(chosen),
     }
 }
 

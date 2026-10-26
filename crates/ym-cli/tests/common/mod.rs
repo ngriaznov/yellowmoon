@@ -175,8 +175,11 @@ impl Sandbox {
 
     /// Writes the app's `preferences.json` as given.
     pub fn write_preferences(&self, preferences: &Value) {
-        std::fs::write(self.home().join("preferences.json"), preferences.to_string())
-            .expect("write preferences");
+        std::fs::write(
+            self.home().join("preferences.json"),
+            preferences.to_string(),
+        )
+        .expect("write preferences");
     }
 }
 
