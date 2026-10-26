@@ -2,6 +2,8 @@
 
 Apple Auto lets the on-device model of Apple Intelligence grade each photo on Macs where that model can look at a picture. This file covers when it runs, what the model sees and is asked, how its answer becomes Auto's values, when photos wait for it, the command line, the app, the export metadata, the Swift bridge, the core's API and the tests.
 
+> **Providers (2026-10-26, `docs/22-auto-providers.md`).** Apple Intelligence is now one of three graders besides Yellowmoon's own Auto; Claude Code and Antigravity (agy) are the other two. This file stays the spec of Apple's model, of the picture every provider sees (section 3), of the steps and the table (sections 4 and 5) and of the worker's order and waits (section 6). `docs/22` **replaces** the preference and its switch (section 2: now `auto_provider` and the Auto grading dropdown, `docs/22` sections 10 and 12), `--apple-auto` (section 8: an alias of `--auto-provider`, `docs/22` section 13), `ym:AppleAuto` (section 9: now `ym:AutoAdvisor`, `docs/22` section 14) and the Preferences row (section 10: `docs/22` section 12). The instructions' rules of section 2 (the limit, saving, Reset to default, new instructions) hold unchanged for every provider. The names in the code keep "apple" (`docs/22` D3).
+
 On such a Mac the model sets Auto's exposure, highlights, shadows, black level, contrast and saturation, nudges the estimated white warmer or cooler and greener or more magenta, and can colour the shadows and the highlights (the shadows and highlights colour-balance wheels). It is an app setting, on by default where the model is available and absent everywhere else. Off, or on any other computer, Auto is the rule: the Auto exposure and the illuminant estimate of `docs/02`, every other value at 0 and the wheels at the centre.
 
 The white is a nudge of the estimate: the model never picks the kelvin itself. Results may differ between Macs and after macOS updates (section 7).
@@ -23,6 +25,8 @@ Apple Auto is **available** when all of these hold. They are checked in this ord
 Availability can change while the app runs (Apple Intelligence switched on, the model finishing its download), so it is read again when the app starts, when Preferences opens, when a session opens, when the preferences change and before each export starts. The worker reads it again before each request: a photo is not failed when Apple Auto stopped being available before its call; it waits for Apple Auto to be back. The read is cheap (property reads, no model call). The app's `Core::export_start` and `ym render` read it at the same point, just before the export is queued. macOS downloads the model itself when the user turns Apple Intelligence on; Yellowmoon cannot start that download and adds no network access (hard rule 7).
 
 ## 2. The preference
+
+*Replaced by `docs/22` sections 10 and 12 as far as the switch, its default and the row are concerned (a dropdown, `auto_provider`, a consent); the instructions below hold for every provider.*
 
 `preferences.json` holds two Apple Auto fields. `apple_auto: bool` defaults to `true` (a file without it reads as `true`). `apple_auto_instructions: string` is the person's own instructions for the model and defaults to `""`: absent, empty or only white space means the default instructions of section 4, and the default text itself is saved as `""`. `docs/01` §Persistence lists both. They are read on every platform and act only where Apple Auto is available; elsewhere they are kept as they are and ignored.
 
@@ -185,6 +189,8 @@ Apple's model is part of "version" under rule 8: the same photo, settings, Yello
 
 ## 8. The command line
 
+*`--apple-auto on|off` is kept as an alias of `--auto-provider apple|yellowmoon` and `--apple-auto-instructions` is also called `--auto-instructions` (`docs/22` section 13); the JSON key `apple_auto` stays for one version next to `auto_advisor` (`docs/22` section 14.1).*
+
 `ym render` and `ym info` develop photos, so they take the Apple Auto options; `ym doctor` reports the status.
 
 | Option | Meaning |
@@ -221,6 +227,8 @@ Apple's model is part of "version" under rule 8: the same photo, settings, Yello
 
 ## 9. Export metadata
 
+*`ym:AppleAuto` is replaced by `ym:AutoAdvisor`, which carries a `provider` (`docs/22` section 14.2); `ym:Auto` also takes `claude` and `agy`. The text below describes what is written for the provider `apple`, plus `provider` and `reproducible`.*
+
 Two `ym:` properties after `ym:Models`, in this order (`docs/09` table):
 
 | Property | Example |
@@ -231,6 +239,8 @@ Two `ym:` properties after `ym:Models`, in this order (`docs/09` table):
 With Apple Auto off the XMP carries `ym:Auto` = `rule` and no `ym:AppleAuto`, and `ym:Settings` writes contrast, saturation, highlights, shadows and black pinned to the numbers they resolved to (`{"kind":"manual","value":0}`) and the shadows and highlights wheels as `{"kind":"manual","point":[0,0]}`. `reason` is the failure's wire name (`timeout`, `rate_limited`, `refused`, …); Apple's message is not written. A photo whose answer had not arrived when its session closed under its export is written without `ym:AppleAuto`.
 
 ## 10. The app
+
+*The Preferences row is the Auto grading dropdown of `docs/22` section 12; the Automatic card's lines name the provider (`docs/22` section 12.5). The rest of this section holds.*
 
 - **Preferences:** the row of section 2, and the instructions under it while it is on.
 - **Automatic card** (Look tab): while Apple Auto is on for the session, a row between White balance and Noise for each value the answer in effect set, in the table's order: **Highlights**, **Shadows**, **Black** (`-20`, `0`, signed with no unit; the arrow opens the Light tab), **Contrast** and **Saturation** (the arrow opens the Look tab's Tone card), **Shadows colour** and **Highlights colour** (`Teal · medium`, `Warm · subtle`, `None`; `Custom` while the wheel is set by hand; the arrow opens the Colour tab), each with the AUTO tag while the setting is Auto and EDITED otherwise. A value the model left empty, or a colour without a strength, has no row. The exposure, the warmth and the tint are in the Exposure and White balance rows the card always has. Under the rows one muted line: "Set with Apple Intelligence." (answered), "Apple Intelligence is looking at this photo…" (asked or waiting), "Apple Intelligence couldn't look at this photo, so Auto uses Yellowmoon's own settings." (failed); while answered, a second muted line with the model's plan in quotes (“Teal shadows and warm highlights for a cinematic late-sun street”). Pending and failed photos have no rows of Apple's (the values are the rule's). With Apple Auto off or unavailable the card shows only the rule's rows.
@@ -263,6 +273,8 @@ With Apple Auto off the XMP carries `ym:Auto` = `rule` and no `ym:AppleAuto`, an
 - **Stripping on `xcode-27`.** On that image macOS 27's dyld refuses the dylibs that Rust 1.97 strips in release builds ("mis-aligned LINKEDIT string pool": proc macros fail to load, so nothing builds), while 1.97 without stripping and Rust 1.99 work (a print-only step shows it at every run). The `apple-bridge.yml`, `build.yml` and `release.yml` workflows therefore set `CARGO_PROFILE_RELEASE_STRIP` and `CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP` to `none`, until the pinned Rust moves on. The build and release workflows run on `xcode-27`, so the published app carries the bridge; the x86_64 half of the universal binary gets the stub.
 
 ## 12. The core (`ym_core::apple_auto`)
+
+*Extended by `docs/22` section 11: a provider in `AdvisorInfo`, new reasons and failure kinds, new methods of `AutoAdvisor` (all with defaults), `ProviderAdvisors`, and `AutoChoice` and `AutoStatus` in place of `AppleAutoMode` and `AppleAutoStatus`. What follows is Apple's part and still holds.*
 
 ```text
 trait AutoAdvisor: Send + Sync {

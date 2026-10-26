@@ -24,7 +24,7 @@ This document describes how Yellowmoon is built: the workspace and its crates, t
       └────────────── ym-gpu (wgpu device, tiling, WGSL kernels) ──────────────┘
 ```
 
-All image processing happens in `ym-*` crates. `src-tauri` and `ym-cli` are thin front ends: they translate user actions into `ym-core` calls and show results. `ym-apple` is the bridge to Apple's on-device model for Apple Auto (`docs/19-apple-auto.md`); both front ends link it and hand its advisor to `ym-core`.
+All image processing happens in `ym-*` crates. `src-tauri` and `ym-cli` are thin front ends: they translate user actions into `ym-core` calls and show results. `ym-apple` is the bridge to Apple's on-device model for Apple Auto (`docs/19-apple-auto.md`) and `ym-agents` runs the person's own Claude Code and Antigravity (`agy`) programs as graders (`docs/22-auto-providers.md`); both front ends link both crates and hand their advisors to `ym-core`. Yellowmoon's own code opens no network connection for any of them.
 
 Data flow:
 
@@ -54,6 +54,8 @@ crates/
   ym-compose/              Auto crop: the straightener and the frame proposer (docs/20-auto-crop.md; pure Rust, CPU; the crop model is ym-ml's)
   ym-apple/                Apple Auto's bridge to Apple's on-device model (Swift, compiled only for Apple silicon
                            with the macOS 27 SDK or later; a stub elsewhere)
+  ym-agents/               Auto providers that are programs: finds, starts and reads the person's own `claude` and `agy`
+                           (process handling for Linux, macOS and Windows; no HTTP client; docs/22-auto-providers.md)
   ym-cli/                  the `ym` binary
 src/                       React + TypeScript frontend (Vite, Vitest, Playwright)
 src-tauri/                 Tauri app crate (window, commands, events, updater, native viewport)
@@ -98,7 +100,7 @@ Script-only folders under `tools/` are not workspace members.
 
 ### Dependency rules
 
-- `ym-core` depends on all other `ym-*` library crates except `ym-apple`. Nothing depends on `ym-core` except `src-tauri`, `ym-cli` and `ym-apple` (which implements the advisor trait of `ym-core`).
+- `ym-core` depends on all other `ym-*` library crates except `ym-apple` and `ym-agents`. Nothing depends on `ym-core` except `src-tauri`, `ym-cli`, `ym-apple` and `ym-agents` (which implement the advisor trait of `ym-core`).
 - `ym-color` is pure maths with no GPU dependency. `ym-gpu` depends on `ym-color` for constants and CPU reference functions used in parity tests, and on `ym-noise` for the noise model the raw algorithms take (`docs/algorithms/INTEGRATION.md` §3).
 - `ym-raw` has no GPU dependency; it returns CPU buffers.
 - `ym-ml` reaches the shared wgpu device through an optional `ml` feature of `ym-gpu`.
@@ -865,8 +867,9 @@ preferences.json                  default look, display rendering (ACES 2 or an 
                                   export defaults (format, quality, bits, compression, colour space, size,
                                   destination, name template, if-exists), remove location from exports,
                                   check for updates automatically, watch Downloads during import,
-                                  last-used folders, Auto with Apple Intelligence and its instructions
-                                  (docs/19)
+                                  last-used folders, the Auto grading provider (Yellowmoon's own Auto,
+                                  Apple Intelligence, Claude Code or Antigravity), the consent to send photos
+                                  through each of the last two, and the instructions (docs/22, docs/19)
 looks/
   manifest.json                   imported looks and display LUTs: id, name, group, input encoding,
                                   source URL, import date, SHA-256 per file (no preferences)
@@ -878,11 +881,12 @@ logs/yellowmoon.log               local only, rotated at 5 MB × 3
 
 This list is exhaustive (hard rule 4 of `AGENTS.md`): nothing else persists. Plus `~/Library/Caches/app.yellowmoon/` for the wgpu pipeline cache only (`$XDG_CACHE_HOME/app.yellowmoon` or `~/.cache/app.yellowmoon` on Linux). No image data is cached on disk. The CLI uses the same folders and takes a file lock (`looks/.lock`) when importing. `YELLOWMOON_HOME` replaces the application-support folder.
 
-Code: `ym-core`'s `preferences.rs` and `looks.rs`. `PreferencesStore` reads and writes `preferences.json` (*Export, preferences and looks* above); `LookService` owns `looks/` and its lock. The file has exactly the nine fields of the list: `default_look`, `display_rendering`, `export_defaults`, `remove_location_from_exports`, `check_for_updates_automatically`, `watch_downloads_during_import`, `last_used_folders`, `apple_auto` and `apple_auto_instructions`. A field of a newer version is ignored when reading and dropped when the file is next written.
+Code: `ym-core`'s `preferences.rs` and `looks.rs`. `PreferencesStore` reads and writes `preferences.json` (*Export, preferences and looks* above); `LookService` owns `looks/` and its lock. The file has exactly the ten fields of the list: `default_look`, `display_rendering`, `export_defaults`, `remove_location_from_exports`, `check_for_updates_automatically`, `watch_downloads_during_import`, `last_used_folders`, `auto_provider`, `auto_consent` and `apple_auto_instructions`. A field of a newer version is ignored when reading and dropped when the file is next written.
 
-- `apple_auto` ("Auto with Apple Intelligence", `docs/19-apple-auto.md` section 2) is an app setting: default on, a file without it reads as on, read on every platform and acting only where Apple Auto is available.
-- `apple_auto_instructions` is the instructions Apple's model reads, edited in Preferences under that switch (`docs/19-apple-auto.md` section 2): a string of at most 2000 characters. `""` (also absent) means the default instructions, and the default text itself is saved as `""`; longer text in a file edited by hand gives the default, with a warning.
-- Both are app settings like the others, not data about a photo.
+- `auto_provider` ("Auto grading", `docs/22-auto-providers.md` section 10) is who grades each photo: `"yellowmoon"` (the rule), `"apple"`, `"claude"` or `"agy"`. Default `"apple"`; a provider that is not available at run time (or a cloud provider whose consent is not saved) acts as `yellowmoon` and the choice stays saved. It is read on every platform. **Migration:** a file without a valid `auto_provider` reads as `"yellowmoon"` when it has `apple_auto: false` and as `"apple"` otherwise; the old boolean `apple_auto` is read for that and never written again.
+- `auto_consent` is `{ "claude": bool, "agy": bool }`, default both `false`: whether the person agreed to send a 768 px copy of each photo and the instructions through that program (`docs/22` section 10.2). It is saved in the same patch as the choice; a cloud provider is never saved without it.
+- `apple_auto_instructions` is the instructions the chosen provider reads, edited in Preferences under the dropdown (`docs/19-apple-auto.md` section 2, `docs/22` section 12.4): one text for every provider, a string of at most 2000 characters. `""` (also absent) means the default instructions, and the default text itself is saved as `""`; longer text in a file edited by hand gives the default, with a warning. The key keeps its name from before the other providers existed.
+- All three are app settings like the others, not data about a photo. Nothing else about Auto persists: the answers of the providers live in the session's memory only.
 - `logs/` is the application's (`ym-core` writes no log file; it logs through `tracing`).
 
 ## Finding `data/`

@@ -79,13 +79,13 @@ These are fixed unless new evidence turns up. The reasoning is in `research/`.
 | Working space | Linear AWG4 and LogC4. LogC3 looks run in LogC3 (EI 800) through an exact conversion. |
 | Display transform | ACES 2 output transform ported to WGSL as the default. ARRI's display LUTs only after the user imports them. |
 | Looks | ASC CDL then 3D LUT in LogC4, intensity 0–100%. Built-in Signature (default; a luma curve and saturation, parametric, ours) and Neutral (the identity). |
-| Auto | Yellowmoon's own rule-based Auto everywhere. Where Apple's on-device model is available, Apple Auto can set Auto's values per photo (`docs/19-apple-auto.md`); it is an app setting, on by default there. |
+| Auto | Yellowmoon's own rule-based Auto everywhere. A provider can set Auto's values per photo instead (`docs/19-apple-auto.md`, `docs/22-auto-providers.md`): Apple's on-device model where it is available (on by default there), or the Claude Code or Antigravity program the person installed and signed in to, chosen in Preferences after a consent. Yellowmoon opens no network connection for them; the programs do. |
 | ML | Joint demosaic+denoise U-Net, 0.2–1 M parameters. Runtime: burn on the shared wgpu device or ort, decided by a benchmark on Apple hardware (`docs/07-ml-models.md`). Training in PyTorch; weights only from CC0/CC BY/Apache data (no own captures in V1). Until weights are trained, the classical demosaic and denoise run everywhere. |
 | Noise | Per-image Poisson–Gaussian estimate for every body, with priors fitted from public files. No calibration shoots in V1. Nothing stored. |
 | Lens | Sony's embedded correction tags (vignetting, distortion, CA). No Lensfun. |
 | Export | JPEG, TIFF, PNG; DNG as LinearRaw AWG4 with the look baked into pixels and a profile fitted to ACES 2. |
 | CLI | `ym` binary in the same workspace, shipped inside the app bundle, bit-identical to app exports. |
-| Persistence | Nothing per photo. Only imported looks and preferences (default look, display rendering choice, export defaults, watch-Downloads permission, Apple Auto switch and instructions). |
+| Persistence | Nothing per photo. Only imported looks and preferences (default look, display rendering choice, export defaults, watch-Downloads permission, the Auto grading provider with its consent, and the instructions). |
 | UI | Dark glass: glasscn components on Tailwind 4 and Radix, Figtree, yellow `#FFC20E` only as a button accent, a still cool aurora, dark only, photo edge to edge. The visual reference is `design/screenshots-c2/`; layout, size and copy come from `design/mockups/`; see `docs/11-ui.md` and `docs/16-risks-and-decisions.md`. |
 | Distribution | Version bump on main → signed updater artefacts → GitHub release → cask update (`docs/12-distribution.md`). |
 
@@ -110,6 +110,7 @@ These are fixed unless new evidence turns up. The reasoning is in `research/`.
 | RFSE | Relative RMS error of a spectral curve, as a percentage of its peak. |
 | Stand-in profile | A camera profile used for a body that has none of its own (A7R IV by default). |
 | Apple Auto | Optional per-photo Auto values from Apple's on-device model, on Macs where that model can look at a picture (`docs/19-apple-auto.md`). |
+| Auto provider | Who grades each photo: Yellowmoon's own Auto, Apple Intelligence, Claude Code or Antigravity (agy); the last two are the person's own programs, which Yellowmoon starts (`docs/22-auto-providers.md`). |
 | [HUMAN] | A task only the owner can do (emails, legal checks, design decisions, reviews and blind tests). |
 
 ## Where to find things
@@ -132,6 +133,7 @@ These are fixed unless new evidence turns up. The reasoning is in `research/`.
 | Licences | `docs/14-licensing.md`, `NOTICE` |
 | The GPU path | `docs/17-gpu.md` |
 | Apple Auto | `docs/19-apple-auto.md` |
+| Auto providers (Claude Code, Antigravity) | `docs/22-auto-providers.md` |
 | Auto crop | `docs/20-auto-crop.md` |
 | Lens character (specified, not built) | `docs/21-lens-character.md`, `research/lens-character-2026-10-23.md` |
 | Task plan | `docs/15-milestones.md` |
