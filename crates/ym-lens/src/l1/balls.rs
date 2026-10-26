@@ -25,6 +25,8 @@
 //!    about as much (within 1.8 times smaller to 3 times larger) is supported. A ball with no edges around
 //!    (flat ground) counts only when it is big enough not to be a point light in focus and the scene has at
 //!    least three such balls: a lone round light (the moon, a lamp) is more likely sharp than blurred.
+//!    With a learned map, a ball with a soft rim that is much larger than the blur around it is a surface (a petal, a
+//!    lit leaf), not a light: the image of a light is as wide as the blur of its ground ([`SURFACE_OVER_BLUR`]).
 //! 5. **Order and cap.** Brightest first, of two closer than 1.2 radii the dimmer is dropped, at most
 //!    [`MAX_BALLS`].
 //!
@@ -211,7 +213,8 @@ const SURFACE_OVER_BLUR: f64 = 1.75;
 /// rim (a hole in the leaves, a lamp) is the edge of a shape of its own that the lens stretches as it does a light.
 const SURFACE_SOFTNESS: f64 = 0.55;
 /// The blur around a ball needs this much evidence (the sum of the weights in its ring) to judge its size against it:
-/// a few pixels of a map in a mostly empty ring say nothing.
+/// a few pixels of a map in a mostly empty ring say nothing. (A learned map weighs 0.05 a cell pixel, so 10 is 200
+/// pixels of the ring; the rule is for a learned map only, see [`BallInput::blurred`].)
 const SURFACE_EVIDENCE_MIN: f64 = 10.0;
 /// A scene needs this many balls, or balls the edges confirm.
 const MIN_CLUSTER: usize = 3;
@@ -941,8 +944,11 @@ pub(super) fn find_balls(
             if ground < GROUND_SHARP_PX || ground > BLURRIER_THAN * b.r {
                 continue;
             }
-            // A soft blob much larger than the blur around it is a surface (a petal), not a defocused light.
-            if ew >= SURFACE_EVIDENCE_MIN
+            // A soft blob much larger than the blur around it is a surface (a petal), not a defocused light. Only a
+            // dense map says how wide the blur is around a ball: the classical detector's sparse edges read the fine
+            // texture of foliage (a pixel or two), so its ground is no measure of a light's blur disc.
+            if inp.blurred.is_some()
+                && ew >= SURFACE_EVIDENCE_MIN
                 && b.softness >= SURFACE_SOFTNESS
                 && b.r >= SURFACE_OVER_BLUR * ground
             {
