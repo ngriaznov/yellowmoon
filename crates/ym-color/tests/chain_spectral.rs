@@ -415,12 +415,13 @@ fn colored_patches_follow_the_simulation_up_to_the_sensor_map_error() {
                     s.median, s.p95, s.max
                 );
                 // The sensor map's gate is 0.5 median / 1.2 p95 on the CES. Measured here (24 patches, three
-                // bodies, twelve lights and settings): median at most 0.42, p95 at most 1.33, max at most 1.80.
-                // Before the ALEXA estimate moved (owner decision 2026-10-25, docs/03) the median was at most 0.47
-                // and the max at most 1.4, and the p95 bound was 1.3; it is 1.4 now, for the same cause as the
-                // sensor-map gate (the hue-pushed target is harder for a white-preserving 3x3 to reach).
+                // bodies, twelve lights and settings) with the estimate pushed 4.5 degrees (the owner's decision
+                // of 2026-10-26, docs/03): median at most 0.54, p95 at most 1.73, max at most 2.24. The bounds
+                // follow the pushes with the owner's agreement, for the same cause as the sensor-map gate (the
+                // hue-pushed target is harder for a white-preserving 3x3 to reach): p95 1.3 before any push,
+                // 1.4 for 1.5 degrees (measured 1.33), 1.8 now; max 1.8 until 1.5 degrees (measured 1.80), 2.3 now.
                 assert!(
-                    s.median < 0.6 && s.p95 < 1.4 && s.max < 1.8,
+                    s.median < 0.6 && s.p95 < 1.8 && s.max < 2.3,
                     "{id} {name} WB {k:?}: median {:.3} p95 {:.3} max {:.3}",
                     s.median,
                     s.p95,
