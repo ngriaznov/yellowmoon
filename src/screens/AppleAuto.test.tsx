@@ -25,7 +25,7 @@ import { appleAutoLine, appleColorText, appleRows } from "./tools/LookTab";
 const APPLE_AUTO_LINES = {
   answered: "Set with Apple Intelligence.",
   pending: "Apple Intelligence is looking at this photo…",
-  failed: "Apple Intelligence couldn't look at this photo, so Auto uses Yellowmoon's own settings.",
+  failed: "Apple Intelligence couldn't look at this photo, so Default Auto is used.",
 } as const;
 
 let h: Harness | undefined;
@@ -266,7 +266,7 @@ describe("the Automatic card with Apple Auto", () => {
     await onPhotos("failed");
     expect(rowLabels()).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
     expect(valueOf("Saturation")).toBe("0");
-    expect(automatic().getByText("Apple Intelligence couldn't look at this photo, so Auto uses Yellowmoon's own settings.")).toBeInTheDocument();
+    expect(automatic().getByText("Apple Intelligence couldn't look at this photo, so Default Auto is used.")).toBeInTheDocument();
   });
 
   it("lists only the values that were set, and names the colours with their strengths", () => {
@@ -339,7 +339,7 @@ describe("the Automatic card with Apple Auto", () => {
   it("the line for each state, and none while Apple Auto is off or not available", () => {
     expect(appleAutoLine({ state: "pending" }, "apple")).toBe("Apple Intelligence is looking at this photo…");
     expect(appleAutoLine({ state: "failed", kind: "refused", message: "", info: MOCK_APPLE_INFO }, "apple")).toBe(
-      "Apple Intelligence couldn't look at this photo, so Auto uses Yellowmoon's own settings.",
+      "Apple Intelligence couldn't look at this photo, so Default Auto is used.",
     );
     const steps = {
       exposure: 0,

@@ -242,10 +242,10 @@ export function autoCardLine(apple: AppleAuto, chosen: AutoProvider): string | n
     case "pending":
       return `${name} is looking at this photo…`;
     case "failed":
-      return `${name} couldn't look at this photo, so Auto uses Yellowmoon's own settings.`;
+      return `${name} couldn't look at this photo, so Default Auto is used.`;
     case "unavailable":
       return isCloud(chosen) && CARD_UNAVAILABLE_REASONS.includes(apple.reason)
-        ? `${name} isn't available right now, so Auto uses Yellowmoon's own settings.`
+        ? `${name} isn't available right now, so Default Auto is used.`
         : null;
     default:
       return null;

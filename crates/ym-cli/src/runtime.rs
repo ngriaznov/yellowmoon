@@ -440,10 +440,10 @@ fn chosen_state(status: &AutoStatus) -> ProviderState {
 }
 
 /// The sentence a run that named a provider prints where it is not available (`docs/22` section 13.2).
-/// Apple Intelligence: "Apple Auto is not available on this computer (<reason in words>). Auto uses
-/// Yellowmoon's own settings." The two programs: "Claude Code is not available on this computer (it
-/// isn't installed). Auto uses Yellowmoon's own settings.", or for a program that is there but cannot
-/// be used the hint of `docs/22` section 3.4 followed by " Auto uses Yellowmoon's own settings.".
+/// Apple Intelligence: "Apple Auto is not available on this computer (<reason in words>). Default
+/// Auto is used." The two programs: "Claude Code is not available on this computer (it isn't
+/// installed). Default Auto is used.", or for a program that is there but cannot be used the hint of
+/// `docs/22` section 3.4 followed by " Default Auto is used.".
 #[must_use]
 pub fn unavailable_notice(status: &AutoStatus, provider: AutoProvider) -> String {
     let provider_status = status.provider(provider);
@@ -453,14 +453,14 @@ pub fn unavailable_notice(status: &AutoStatus, provider: AutoProvider) -> String
     let version = provider_status.and_then(|p| p.tool_version.as_deref());
     let hint = unavailable_hint(provider, reason, version, std::env::consts::OS);
     if provider.is_cloud() && !hint.is_empty() && reason != UnavailableReason::NotInstalled {
-        return format!("{hint} Auto uses Yellowmoon's own settings.");
+        return format!("{hint} Default Auto is used.");
     }
     let what = match provider {
         AutoProvider::Apple => "Apple Auto",
         other => other.name(),
     };
     format!(
-        "{what} is not available on this computer ({}). Auto uses Yellowmoon's own settings.",
+        "{what} is not available on this computer ({}). Default Auto is used.",
         reason.words()
     )
 }
@@ -587,22 +587,22 @@ mod tests {
         let s = status(R::NotInstalled);
         assert_eq!(
             unavailable_notice(&s, AutoProvider::Apple),
-            "Apple Auto is not available on this computer (Apple Intelligence is off in System Settings). Auto uses Yellowmoon's own settings."
+            "Apple Auto is not available on this computer (Apple Intelligence is off in System Settings). Default Auto is used."
         );
         assert_eq!(
             unavailable_notice(&s, AutoProvider::Claude),
-            "Claude Code is not available on this computer (it isn't installed). Auto uses Yellowmoon's own settings."
+            "Claude Code is not available on this computer (it isn't installed). Default Auto is used."
         );
         // Not installed at all (no advisor registered): the same words.
         assert_eq!(
             unavailable_notice(&s, AutoProvider::Agy),
-            "Antigravity is not available on this computer (it isn't installed). Auto uses Yellowmoon's own settings."
+            "Antigravity is not available on this computer (it isn't installed). Default Auto is used."
         );
         let signed_out = status(R::SignedOut);
         let hint = unavailable_notice(&signed_out, AutoProvider::Claude);
         assert!(
             hint.starts_with("Claude Code is installed but not signed in. Open ")
-                && hint.ends_with(" Auto uses Yellowmoon's own settings."),
+                && hint.ends_with(" Default Auto is used."),
             "{hint}"
         );
         let old = unavailable_notice(&status(R::TooOld), AutoProvider::Claude);
@@ -613,7 +613,7 @@ mod tests {
         // A reason with no hint falls back to the sentence with the reason in words.
         assert_eq!(
             unavailable_notice(&status(R::Checking), AutoProvider::Claude),
-            "Claude Code is not available on this computer (Yellowmoon is still checking). Auto uses Yellowmoon's own settings."
+            "Claude Code is not available on this computer (Yellowmoon is still checking). Default Auto is used."
         );
     }
 
@@ -663,7 +663,7 @@ mod tests {
 
     #[test]
     fn a_provider_is_read_again_before_the_export_and_its_loss_is_said_once() {
-        let sentence = "Apple Auto is not available on this computer (Apple Intelligence is off in System Settings). Auto uses Yellowmoon's own settings.";
+        let sentence = "Apple Auto is not available on this computer (Apple Intelligence is off in System Settings). Default Auto is used.";
         let apple = AutoChoice::Provider(AutoProvider::Apple);
         let app = tempfile::tempdir().expect("app folder");
         let advisor = std::sync::Arc::new(Switch(AtomicBool::new(true)));

@@ -376,14 +376,14 @@ test.describe("the Automatic card and the Start screen", () => {
     await page.evaluate(() => window.__yellowmoon!.mockApi.setAppleAuto("answered"));
     await expect(card.getByText("Set with Claude Code.")).toBeVisible();
     await page.evaluate(() => window.__yellowmoon!.mockApi.setAppleAuto("failed"));
-    await expect(card.getByText("Claude Code couldn't look at this photo, so Auto uses Yellowmoon's own settings.")).toBeVisible();
+    await expect(card.getByText("Claude Code couldn't look at this photo, so Default Auto is used.")).toBeVisible();
   });
 
   test("say a program that was chosen is not available right now", async ({ page }) => {
     await openApp(page, { ...MOCKUP, mockProviders: "claude:signed_out", mockAutoProvider: "claude", mockConsent: "claude" });
     await openPhotos(page);
     const card = page.getByRole("region", { name: "Automatic" });
-    await expect(card.getByText("Claude Code isn't available right now, so Auto uses Yellowmoon's own settings.")).toBeVisible();
+    await expect(card.getByText("Claude Code isn't available right now, so Default Auto is used.")).toBeVisible();
     expect(await card.locator(".ym-auto-row__label").allTextContents()).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
     await page.evaluate(() => window.__yellowmoon!.mockApi.setProviders({ claude: "available" }));
     await expect(card.getByText("Set with Claude Code.")).toBeVisible();

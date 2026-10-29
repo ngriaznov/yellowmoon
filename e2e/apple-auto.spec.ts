@@ -32,7 +32,7 @@ const PLAN = "\u201cTeal shadows and warm highlights for a cinematic late-sun st
 const LINES = {
   answered: "Set with Apple Intelligence.",
   pending: "Apple Intelligence is looking at this photo…",
-  failed: "Apple Intelligence couldn't look at this photo, so Auto uses Yellowmoon's own settings.",
+  failed: "Apple Intelligence couldn't look at this photo, so Default Auto is used.",
 } as const;
 
 async function preferences(page: Page, options: Record<string, string | number>) {

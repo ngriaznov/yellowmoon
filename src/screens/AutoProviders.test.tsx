@@ -666,8 +666,8 @@ describe("the instructions follow the provider that grades", () => {
 describe("the Automatic card names the provider", () => {
   const automatic = () => within(screen.getByRole("region", { name: "Automatic" }));
   const lines = {
-    claude: ["Claude Code", "Claude Code is looking at this photo…", "Set with Claude Code.", "Claude Code couldn't look at this photo, so Auto uses Yellowmoon's own settings."],
-    agy: ["Antigravity", "Antigravity is looking at this photo…", "Set with Antigravity.", "Antigravity couldn't look at this photo, so Auto uses Yellowmoon's own settings."],
+    claude: ["Claude Code", "Claude Code is looking at this photo…", "Set with Claude Code.", "Claude Code couldn't look at this photo, so Default Auto is used."],
+    agy: ["Antigravity", "Antigravity is looking at this photo…", "Set with Antigravity.", "Antigravity couldn't look at this photo, so Default Auto is used."],
   } as const;
 
   for (const provider of ["claude", "agy"] as const) {
@@ -687,7 +687,7 @@ describe("the Automatic card names the provider", () => {
     });
   }
 
-  it("says a program that was chosen is not available right now, and Auto is Yellowmoon's own", async () => {
+  it("says a program that was chosen is not available right now, and Default Auto is used", async () => {
     const consent = { claude: true, agy: true };
     for (const [provider, state, name] of [
       ["claude", "signed_out", "Claude Code"],
@@ -696,7 +696,7 @@ describe("the Automatic card names the provider", () => {
     ] as const) {
       h = renderApp({ current: 3, providers: { [provider]: state }, autoProvider: provider, consent });
       await openPhotos(h);
-      expect(automatic().getByText(`${name} isn't available right now, so Auto uses Yellowmoon's own settings.`)).toBeInTheDocument();
+      expect(automatic().getByText(`${name} isn't available right now, so Default Auto is used.`)).toBeInTheDocument();
       const labels = automatic().getAllByRole("button").map((b) => b.querySelector(".ym-auto-row__label")?.textContent ?? "").filter(Boolean);
       expect(labels).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
       h.unmount();
@@ -722,7 +722,7 @@ describe("the Automatic card names the provider", () => {
   it("says a program that was chosen and is gone (uninstalled since) is not available right now", async () => {
     h = renderApp({ current: 3, providers: { apple: "available" }, autoProvider: "agy", consent: { claude: false, agy: true } });
     await openPhotos(h);
-    expect(automatic().getByText("Antigravity isn't available right now, so Auto uses Yellowmoon's own settings.")).toBeInTheDocument();
+    expect(automatic().getByText("Antigravity isn't available right now, so Default Auto is used.")).toBeInTheDocument();
   });
 
   it("follows a program that signs out: the line appears, and goes when it is back", async () => {
@@ -730,7 +730,7 @@ describe("the Automatic card names the provider", () => {
     await openPhotos(h);
     expect(automatic().getByText("Set with Claude Code.")).toBeInTheDocument();
     h.api.setProviders({ claude: "signed_out" });
-    await waitFor(() => expect(automatic().getByText("Claude Code isn't available right now, so Auto uses Yellowmoon's own settings.")).toBeInTheDocument());
+    await waitFor(() => expect(automatic().getByText("Claude Code isn't available right now, so Default Auto is used.")).toBeInTheDocument());
     h.api.setProviders({ claude: "available" });
     await waitFor(() => expect(automatic().getByText("Set with Claude Code.")).toBeInTheDocument());
   });

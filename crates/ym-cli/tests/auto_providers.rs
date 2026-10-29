@@ -111,7 +111,7 @@ fn gap(starts: &[std::time::SystemTime]) -> std::time::Duration {
     }
 }
 
-const OWN_AUTO: &str = " Auto uses Yellowmoon's own settings.";
+const DEFAULT_AUTO_USED: &str = " Default Auto is used.";
 
 // ---------------------------------------------------------------------------------------------
 // The options
@@ -450,7 +450,7 @@ fn a_provider_the_run_named_that_is_not_available_says_why_once_and_the_run_goes
         ),
     ];
     for (provider, hook, sentence) in cases {
-        let want = format!("{sentence}{OWN_AUTO}");
+        let want = format!("{sentence}{DEFAULT_AUTO_USED}");
         let (v, stderr) = render(
             sb.ym_provider(hook),
             &arw,
@@ -498,7 +498,7 @@ fn a_provider_the_run_named_that_is_not_available_says_why_once_and_the_run_goes
         );
         assert!(
             stderr.contains(
-                "Warning: Apple Auto is not available on this computer (this is not a Mac). Auto uses Yellowmoon's own settings."
+                "Warning: Apple Auto is not available on this computer (this is not a Mac). Default Auto is used."
             ),
             "{stderr}"
         );
@@ -1007,7 +1007,7 @@ fn a_signed_out_test_double_is_listed_and_a_run_that_names_it_says_so() {
         &sb.root().join("out"),
     );
     let want = format!(
-        "{}{OWN_AUTO}",
+        "{}{DEFAULT_AUTO_USED}",
         unavailable_hint(
             AutoProvider::Claude,
             UnavailableReason::SignedOut,

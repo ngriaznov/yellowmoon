@@ -218,13 +218,13 @@ fn apple_auto_on_where_it_is_not_available_says_so_once_and_uses_the_rule() {
     let notice = "Apple Auto is not available on this computer (";
     assert_eq!(stderr.matches(notice).count(), 1, "once per run: {stderr}");
     assert!(
-        stderr.contains("). Auto uses Yellowmoon's own settings."),
+        stderr.contains("). Default Auto is used."),
         "{stderr}"
     );
     if cfg!(not(target_os = "macos")) {
         assert!(
             stderr.contains(
-                "Warning: Apple Auto is not available on this computer (this is not a Mac). Auto uses Yellowmoon's own settings."
+                "Warning: Apple Auto is not available on this computer (this is not a Mac). Default Auto is used."
             ),
             "{stderr}"
         );

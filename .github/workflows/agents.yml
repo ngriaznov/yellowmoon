@@ -1,19 +1,19 @@
 # Auto providers: the crate that starts the person's own Claude Code and Antigravity programs (docs/22-auto-providers.md,
-# section 15.4) on Linux, macOS and Windows.
+# section 15.4) on Linux and macOS.
 #
-# Why three systems: the crate's job is process handling that differs by system (a process group on Unix, a job object and
-# CREATE_NO_WINDOW on Windows, the login shell on macOS and Linux, `.cmd` shims on Windows, other known install folders).
-# No runner has a Claude or Google account, so nothing here starts a real `claude` or `agy`: the tests start the crate's two
-# test doubles, `ym-fake-claude` and `ym-fake-agy` (built by `cargo test -p ym-agents`), which check the request
-# they are given. What a signed-in machine must still check is docs/22 section 19, listed in docs/STATUS.md.
+# Windows is not run for now (the owner, 2026-10-29: "no windows for now"). The crate keeps its Windows code paths (a job
+# object and CREATE_NO_WINDOW, `.cmd` shims, other known install folders); they are compiled and tested nowhere for now.
+#
+# Why two systems: the crate's job is process handling that differs by system (a process group on Unix, the login shell on
+# macOS and Linux, other known install folders). No runner has a Claude or Google account, so nothing here starts a real
+# `claude` or `agy`: the tests start the crate's two test doubles, `ym-fake-claude` and `ym-fake-agy` (built by
+# `cargo test -p ym-agents`), which check the request they are given. What a signed-in machine must still check is docs/22
+# section 19, listed in docs/STATUS.md.
 #
 # YM_REQUIRE_FAKE_CLI turns "the test double is not built" from a printed SKIPPED into a failure, as the other YM_REQUIRE_*
 # variables of ci.yml do. The main `rust` job (macOS) still runs the whole workspace, this crate included.
 #
-# The ym-cli step runs ym's own Auto-provider tests against the doubles. The render stack (ym-gpu, ym-raw, ...) was never built
-# on Windows before this workflow; `cargo check --target x86_64-pc-windows-msvc -p ym-cli` passes (2026-10-26), but no Windows
-# runner has run that step yet. If it fails there for a reason outside this feature, docs/22 section 15.4 says what to do: that
-# leg runs ym-agents alone, the cause goes to docs/STATUS.md under Known issues, and a task is opened. It is not hidden here.
+# The ym-cli step runs ym's own Auto-provider tests against the doubles.
 name: Auto providers
 
 on:
@@ -54,7 +54,7 @@ env:
 
 defaults:
   run:
-    # One script serves the three systems (Git Bash on Windows).
+    # One script serves both systems.
     shell: bash
 
 jobs:
@@ -65,7 +65,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+        os: [ubuntu-latest, macos-15]
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain from rust-toolchain.toml

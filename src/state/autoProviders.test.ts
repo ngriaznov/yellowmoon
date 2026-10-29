@@ -195,7 +195,7 @@ describe("the Automatic card's line (docs/22 section 12.5)", () => {
     expect(autoCardLine(answered(MOCK_CLAUDE_INFO), "apple")).toBe("Set with Claude Code.");
     expect(autoCardLine(answered(MOCK_APPLE_INFO), "claude")).toBe("Set with Apple Intelligence.");
     expect(autoCardLine({ state: "failed", kind: "cli_failed", message: "x", info: MOCK_CLAUDE_INFO }, "claude")).toBe(
-      "Claude Code couldn't look at this photo, so Auto uses Yellowmoon's own settings.",
+      "Claude Code couldn't look at this photo, so Default Auto is used.",
     );
     expect(stateProvider(answered(MOCK_CLAUDE_INFO), "apple")).toBe("claude");
   });
@@ -208,9 +208,9 @@ describe("the Automatic card's line (docs/22 section 12.5)", () => {
 
   it("says a program that was chosen is not available, for the reasons of a program, and nothing for the rest", () => {
     for (const reason of ["not_installed", "too_old", "signed_out", "probe_failed", "unsafe_launcher"] as const) {
-      expect(autoCardLine({ state: "unavailable", reason }, "claude")).toBe("Claude Code isn't available right now, so Auto uses Yellowmoon's own settings.");
+      expect(autoCardLine({ state: "unavailable", reason }, "claude")).toBe("Claude Code isn't available right now, so Default Auto is used.");
     }
-    expect(autoCardLine({ state: "unavailable", reason: "signed_out" }, "agy")).toBe("Antigravity isn't available right now, so Auto uses Yellowmoon's own settings.");
+    expect(autoCardLine({ state: "unavailable", reason: "signed_out" }, "agy")).toBe("Antigravity isn't available right now, so Default Auto is used.");
     for (const reason of ["checking", "not_consented", "not_a_mac", "apple_intelligence_off"] as const) {
       expect(autoCardLine({ state: "unavailable", reason }, "claude")).toBeNull();
     }
