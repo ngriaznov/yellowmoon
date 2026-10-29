@@ -178,6 +178,10 @@ impl Lab {
 
     fn set_availability(&self, availability: Availability) {
         *lock(&self.availability) = availability;
+        self.tell_listeners();
+    }
+
+    fn tell_listeners(&self) {
         let listeners: Vec<ChangeListener> = lock(&self.listeners).clone();
         for l in listeners {
             l();
@@ -233,10 +237,37 @@ impl AutoAdvisor for Lab {
         if cancelled {
             return Err(AdvisorError::new(FailureKind::Other, "cancelled"));
         }
-        if let Some(kind) = lock(&self.failures).pop_front() {
-            if kind == FailureKind::NotSignedIn && self.sign_out_on_not_signed_in {
-                self.set_availability(Availability::Unavailable(UnavailableReason::SignedOut));
+        // The scripted failures go first, in order. A program that is signed out fails every request, and
+        // so does this one while its availability reads signed out: whichever of two requests that run at
+        // once is the first to meet the sign-out, the other meets it too. Both are decided under the
+        // failures lock, so that no request slips in between the first one's failure and the sign-out it
+        // causes.
+        let (failure, signed_out_now) = {
+            let mut failures = lock(&self.failures);
+            match failures.pop_front() {
+                Some(kind) => {
+                    let sign_out =
+                        kind == FailureKind::NotSignedIn && self.sign_out_on_not_signed_in;
+                    if sign_out {
+                        *lock(&self.availability) =
+                            Availability::Unavailable(UnavailableReason::SignedOut);
+                    }
+                    (Some(kind), sign_out)
+                }
+                None if matches!(
+                    *lock(&self.availability),
+                    Availability::Unavailable(UnavailableReason::SignedOut)
+                ) =>
+                {
+                    (Some(FailureKind::NotSignedIn), false)
+                }
+                None => (None, false),
             }
+        };
+        if signed_out_now {
+            self.tell_listeners();
+        }
+        if let Some(kind) = failure {
             return Err(AdvisorError::new(kind, "scripted"));
         }
         Ok(AdvisorAnswer {
@@ -635,6 +666,9 @@ fn only_apple_is_retried() {
 fn a_sign_out_during_a_request_abandons_it_and_fails_nothing() {
     let apple = Lab::new(AutoProvider::Apple, -1);
     let claude = Lab::new(AutoProvider::Claude, 2);
+    // The first request meets the sign-out. Claude Code runs two requests at once, so the second photo
+    // may be asked at the same moment, before or after the sign-out is read; the Lab fails it too, as a
+    // program that is signed out fails every request. Whatever the order, the rule below holds.
     claude.fail_next([FailureKind::NotSignedIn]);
     let rig = Rig::new(
         advisors(&apple, &claude, None),
@@ -644,9 +678,15 @@ fn a_sign_out_during_a_request_abandons_it_and_fails_nothing() {
     );
     let ids = rig.open();
     rig.settle();
-    // The advisor said it is signed out: the photo that met the sign-out is not failed, nothing more is
-    // asked, and every photo reads as unavailable (the rule's values), so nothing waits.
-    assert_eq!(claude.calls().len(), 1, "{:?}", claude.calls());
+    // The advisor said it is signed out: the photos that met the sign-out are not failed, nothing more is
+    // asked (one request, or two when both were asked before the sign-out was read; never one photo twice),
+    // and every photo reads as unavailable (the rule's values), so nothing waits.
+    let asked_before: Vec<usize> = ids.iter().map(|id| claude.asks_about(*id)).collect();
+    assert!(
+        (1..=2).contains(&claude.calls().len()) && asked_before.iter().all(|n| *n <= 1),
+        "{:?}",
+        claude.calls()
+    );
     for id in &ids {
         assert_eq!(
             rig.state(*id),
@@ -662,12 +702,18 @@ fn a_sign_out_during_a_request_abandons_it_and_fails_nothing() {
         ProviderState::SignedOut
     );
     assert_eq!(status.effective, AutoProvider::Yellowmoon);
-    // Signed in again: the advisor tells, the session reads it again, and the photos are asked.
+    // Signed in again: the advisor tells, the session reads it again, and every photo is asked exactly
+    // once more than it was before (a photo never asked until now is asked for the first time).
     claude.set_availability(Availability::Available(Lab::info(AutoProvider::Claude)));
     rig.session.refresh_apple_auto();
     rig.settle();
-    assert_eq!(claude.calls().len(), 3);
-    for id in &ids {
+    for (id, before) in ids.iter().zip(&asked_before) {
+        assert_eq!(
+            claude.asks_about(*id),
+            before + 1,
+            "photo {id:?}: {:?}",
+            claude.calls()
+        );
         assert!(
             matches!(rig.state(*id), AppleAuto::Answered { .. }),
             "{:?}",
@@ -982,7 +1028,7 @@ fn cancel_auto_waits_for_the_programs_and_asks_nothing_more() {
     let waits = lock(&claude.idle_waits).clone();
     assert_eq!(waits.len(), 1, "{waits:?}");
     assert!(
-        waits[0].0 <= Duration::from_secs(3),
+        waits[0].0 <= ym_core::session::AUTO_CANCEL_WAIT,
         "the wait is bounded: {waits:?}"
     );
     assert!(waits[0].1 >= 1, "it was asked after the cancel: {waits:?}");
@@ -1019,7 +1065,9 @@ fn cancel_auto_gives_up_when_a_program_does_not_stop() {
     assert!(started.elapsed() < Duration::from_secs(3), "it returned");
     let waits = lock(&claude.idle_waits).clone();
     assert_eq!(waits.len(), 1);
-    // The bound is `AUTO_CANCEL_WAIT`, less the time that went before the advisor was asked.
+    // The bound is `AUTO_CANCEL_WAIT`, less the time that went before the advisor was asked. It covers
+    // the 2 s of grace a program that ignores `SIGTERM` has (`ym-agents`' `TERM_GRACE`) plus 2 s.
+    assert!(ym_core::session::AUTO_CANCEL_WAIT >= Duration::from_secs(2) + Duration::from_secs(2));
     assert!(
         waits[0].0 <= ym_core::session::AUTO_CANCEL_WAIT
             && waits[0].0 > ym_core::session::AUTO_CANCEL_WAIT - Duration::from_millis(500),

@@ -38,8 +38,11 @@ pub fn register_advisors(advisors: &ProviderAdvisors) {
 
 /// How long the Ctrl-C handler waits for the programs of the Auto advisors to be reaped and their
 /// temporary folders removed (`docs/22` section 9.4). A program that ignores the polite stop is killed
-/// after 2 s; the handler's own bound is a little longer, and `ym` ends with 130 either way.
-pub const INTERRUPT_WAIT: Duration = Duration::from_millis(2_500);
+/// after 2 s of grace (`ym-agents`, `process.rs`, `TERM_GRACE`) and is gone a few milliseconds later;
+/// the handler's own bound is that grace plus 2 s, so a loaded machine has a whole 2 s of margin. A
+/// program that stops on `SIGTERM` is not waited for any longer than it takes to be reaped, and `ym`
+/// ends with 130 either way.
+pub const INTERRUPT_WAIT: Duration = Duration::from_secs(4);
 
 /// Stops the programs the Auto advisors of this run started and waits for them (up to
 /// [`INTERRUPT_WAIT`]): every request and probe is cancelled, each program is told to stop before
@@ -519,6 +522,13 @@ mod tests {
     use ym_core::apple_auto::Availability;
     use ym_core::auto_provider::{AdvisorDetails, AutoConsent, StatusInput};
     use ym_core::data_dir::DataDirError;
+
+    /// The wait covers the 2 s of grace a program that ignores `SIGTERM` has before the `SIGKILL`
+    /// (`ym-agents`' `TERM_GRACE`), plus 2 s for a loaded machine (`docs/22` section 9.4).
+    #[test]
+    fn the_interrupt_wait_is_the_sigterm_grace_plus_two_seconds() {
+        assert!(INTERRUPT_WAIT >= Duration::from_secs(2) + Duration::from_secs(2));
+    }
 
     #[test]
     fn a_missing_data_folder_is_a_usage_error_with_the_message_of_docs_01() {

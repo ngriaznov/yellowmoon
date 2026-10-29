@@ -1074,8 +1074,11 @@ const PICTURES_HELD: usize = 64;
 
 /// How long [`Session::cancel_auto`] waits for the programs the Auto advisors started to be reaped and
 /// their temporary folders removed (`docs/22` section 9.4). A program that ignores the polite stop is
-/// killed after 2 s, so this leaves room for that and for the reaping.
-pub const AUTO_CANCEL_WAIT: Duration = Duration::from_secs(3);
+/// killed after 2 s of grace (`ym-agents`, `process.rs`, `TERM_GRACE`; this crate does not depend on
+/// `ym-agents`, so the number is written here) and is gone a few milliseconds later, so this is that
+/// grace plus 2 s: a loaded machine has a whole 2 s of margin. A program that stops on `SIGTERM` is
+/// not waited for any longer than it takes to be reaped.
+pub const AUTO_CANCEL_WAIT: Duration = Duration::from_secs(4);
 
 struct Photo {
     id: PhotoId,
