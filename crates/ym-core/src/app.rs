@@ -245,7 +245,9 @@ impl std::fmt::Debug for Core {
 
 impl Core {
     /// Builds the core: opens the preferences and the look library, starts the render engine, the
-    /// decode pool and the export queue. Nothing is written to disk.
+    /// decode pool and the export queue. Nothing is written to disk, and **no Auto program is
+    /// started**: the advisors it was given are only read (`docs/22` section 3.3); the chosen one is
+    /// checked when photos are opened or an export starts.
     ///
     /// # Errors
     ///
@@ -326,7 +328,11 @@ impl Core {
         session.set_auto_choice(options.auto_choice);
         session.set_apple_auto_instructions(&own);
         let _ = auto_hub.session.set(Arc::downgrade(&session));
-        session.refresh_apple_auto();
+        // What the advisors last said is read, and **no program is started**: nothing runs at launch
+        // (`docs/22` section 3.3, owner 2026-10-29). The chosen program is checked when photos are
+        // opened or an export starts (`Session::open`, `Core::export_start`), and every program when
+        // Preferences opens (`Core::auto_status`).
+        session.read_auto_availability();
 
         let ctx = Arc::new(
             ExportContext::new(renderer.clone())
@@ -692,11 +698,11 @@ impl Core {
         self.looks.reload();
         // A display LUT the user chose and that has since gone is an error, not ACES 2 in its place.
         self.looks.check_display_rendering()?;
-        // The chosen provider may have become available, or stopped being, since the last look
-        // (`docs/19` section 1, `docs/22` section 3.3); the export's photos then wait for their
-        // answers. An export started in the first seconds waits for a probe that is still running.
+        // The chosen provider is read again (`docs/19` section 1, `docs/22` section 3.3); the export's
+        // photos then wait for their answers. The program is asked to check only when it was never
+        // checked, and an export started in the first seconds waits for a check that is still running.
         if matches!(
-            self.session.refresh_apple_auto(),
+            self.session.refresh_auto_for_export(),
             Some(Availability::Unavailable(UnavailableReason::Checking))
         ) {
             self.settle_auto(AUTO_SETTLE_BEFORE_EXPORT);

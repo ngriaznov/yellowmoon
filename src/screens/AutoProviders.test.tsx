@@ -255,9 +255,13 @@ describe("the notes under the row", () => {
     ]);
   });
 
-  it("have none for a program that is available, not installed or still being checked", async () => {
-    const dialog = await openPreferences({ providers: { apple: "available", claude: "available", agy: "checking" } });
+  it("have none for a program that is available or not installed, and only the line that says it is being checked for one that is", async () => {
+    let dialog = await openPreferences({ providers: { apple: "available", claude: "available" } });
     expect(within(dialog).queryAllByRole("note")).toEqual([]);
+    h!.unmount();
+    h = undefined;
+    dialog = await openPreferences({ providers: { apple: "available", claude: "available", agy: "checking" } });
+    expect(within(dialog).getAllByRole("note").map((n) => n.textContent)).toEqual(["Checking Antigravity…"]);
   });
 
   it("follow a program that signs in while Preferences is open (auto_status_changed)", async () => {
@@ -267,6 +271,69 @@ describe("the notes under the row", () => {
     await waitFor(() => expect(within(dialog).queryAllByRole("note")).toEqual([]));
     await entries(dialog);
     expect(screen.getByRole("option", { name: "Claude Code" })).not.toHaveAttribute("aria-disabled");
+  });
+});
+
+describe("while a program is being checked for the first time (the app starts no program at launch)", () => {
+  it("shows the saved program with Checking…, says it is being checked, and does not say it is not available", async () => {
+    const dialog = await openPreferences({ providers: { claude: "checking" }, autoProvider: "claude", consent: { claude: true, agy: false } });
+    // The row is there (the saved choice is a program), and shows the saved program, not a Default Auto nobody chose.
+    expect(within(dialog).getByRole("group", { name: AUTO_GRADING_TITLE })).toBeInTheDocument();
+    expect(select(dialog)).toHaveTextContent("Claude Code Checking…");
+    expect(within(dialog).getByText("Checking Claude Code…")).toHaveAttribute("role", "note");
+    // Nothing is wrong yet: no saved-choice note, no Use Default Auto button, no instructions (Default Auto grades until it answers).
+    expect(within(dialog).queryByText(/isn't available now/)).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: USE_DEFAULT_AUTO })).toBeNull();
+    expect(within(dialog).queryByRole("textbox")).toBeNull();
+    // The entry is disabled and says why; Default Auto can still be chosen, and that is a real change.
+    const options = await entries(dialog);
+    expect(options.map((o) => o.getAttribute("aria-label"))).toEqual(["Default Auto", "Claude Code, checking…"]);
+    expect(options[1]).toHaveAttribute("aria-disabled", "true");
+    expect(options[0]).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("settles when the check ends: the program is chosen and the line goes, or it says what is wrong", async () => {
+    const dialog = await openPreferences({ providers: { claude: "checking" }, autoProvider: "claude", consent: { claude: true, agy: false } });
+    h!.api.setProviders({ claude: "available" });
+    await waitFor(() => expect(within(dialog).queryByText("Checking Claude Code…")).toBeNull());
+    expect(select(dialog)).toHaveTextContent("Claude Code");
+    expect(select(dialog)).not.toHaveTextContent("Checking…");
+    expect(within(dialog).getByRole("textbox", { name: INSTRUCTIONS_COPY.claude.label })).toBeInTheDocument();
+    h!.unmount();
+    h = undefined;
+    const second = await openPreferences({ providers: { claude: "checking" }, autoProvider: "claude", consent: { claude: true, agy: false } });
+    h!.api.setProviders({ claude: "signed_out" });
+    await waitFor(() => expect(within(second).getByText("Your saved choice, Claude Code, isn't available now, so Default Auto is used until it is.")).toBeInTheDocument());
+    expect(select(second)).toHaveTextContent("Claude Code Not signed in");
+    expect(within(second).queryByText(/^Checking/)).toBeNull();
+  });
+
+  it("keeps the row that is there and adds a line while the other programs are checked; the entries come as they are found", async () => {
+    const dialog = await openPreferences({ providers: { apple: "available", claude: "checking", agy: "checking" } });
+    expect(select(dialog)).toHaveTextContent("Apple Intelligence");
+    expect(within(dialog).getByText("Checking Claude Code and Antigravity…")).toHaveAttribute("role", "note");
+    expect((await entries(dialog)).map((o) => o.textContent)).toEqual(["Default Auto", "Apple Intelligence"]);
+    await h!.user.keyboard("{Escape}");
+    h!.api.setProviders({ apple: "available", claude: "available", agy: "checking" });
+    await waitFor(() => expect(within(dialog).getByText("Checking Antigravity…")).toBeInTheDocument());
+    h!.api.setProviders({ apple: "available", claude: "available", agy: "signed_out" });
+    await waitFor(() => expect(within(dialog).queryByText(/^Checking/)).toBeNull());
+    expect((await entries(dialog)).map((o) => o.getAttribute("aria-label"))).toEqual([
+      "Default Auto",
+      "Apple Intelligence",
+      "Claude Code",
+      "Antigravity (agy), experimental, not signed in",
+    ]);
+  });
+
+  it("does not show the row for a program that is only being checked: a computer with none would see it come and go", async () => {
+    for (const providers of [{ claude: "checking" }, { agy: "checking" }, { claude: "checking", agy: "checking", apple: "unavailable" }] as const) {
+      const dialog = await openPreferences({ providers });
+      expect(within(dialog).queryByRole("group", { name: AUTO_GRADING_TITLE })).toBeNull();
+      expect(within(dialog).queryByText(/^Checking/)).toBeNull();
+      h!.unmount();
+      h = undefined;
+    }
   });
 });
 

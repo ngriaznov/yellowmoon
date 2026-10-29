@@ -7,8 +7,10 @@ import {
   autoCardLine,
   AUTO_PROVIDERS,
   autoRowShown,
+  checkingNote,
   consentBody,
   CONSENT_COPY,
+  dropdownEntries,
   dropdownValue,
   gradedByNote,
   gradingHint,
@@ -18,6 +20,7 @@ import {
   PROVIDER_NAMES,
   providerNote,
   savedChoiceNote,
+  savedProgramChecking,
   stateProvider,
   unavailableHint,
   unavailableTag,
@@ -32,11 +35,12 @@ describe("the words of the Auto providers (docs/22 sections 3.4 and 12)", () => 
     expect(AUTO_PROVIDERS.filter(isCloud)).toEqual(["claude", "agy"]);
   });
 
-  it("gives the tag of an entry that is listed but cannot be chosen", () => {
+  it("gives the tag of an entry that cannot be chosen: a program that was found and cannot be used, or the saved one still being checked", () => {
     expect(unavailableTag("signed_out")).toBe("Not signed in");
     expect(unavailableTag("too_old")).toBe("Update needed");
     expect(unavailableTag("unavailable")).toBe("Not working");
-    for (const state of ["available", "not_installed", "checking"] as const) expect(unavailableTag(state)).toBeNull();
+    expect(unavailableTag("checking")).toBe("Checking…");
+    for (const state of ["available", "not_installed"] as const) expect(unavailableTag(state)).toBeNull();
   });
 
   it("has the hint of every state of Claude Code, with the version and the operating system", () => {
@@ -114,17 +118,54 @@ describe("the words of the Auto providers (docs/22 sections 3.4 and 12)", () => 
     expect(value({ claude: "signed_out" }, "claude")).toBe("claude");
     expect(value({ claude: "too_old" }, "claude")).toBe("claude");
     expect(value({ agy: "unavailable" }, "agy")).toBe("agy");
-    // Usable: who grades. Not listed (gone, or still being checked): Default Auto grades, and the note's button withdraws it.
+    // Usable: who grades. Not listed (gone): Default Auto grades, and the note's button withdraws it.
     expect(value({ claude: "available" }, "claude")).toBe("claude");
     expect(value({ apple: "available" }, "apple")).toBe("apple");
     expect(value({ apple: "unavailable" }, "claude")).toBe("yellowmoon");
-    expect(value({ claude: "checking" }, "claude")).toBe("yellowmoon");
+    expect(value({ apple: "unavailable" }, "agy")).toBe("yellowmoon");
+    // Still being checked for the first time (the app starts no program at launch): the saved program itself, as the disabled entry with
+    // "Checking…", not a Default Auto it has not been told to use.
+    expect(value({ claude: "checking" }, "claude")).toBe("claude");
+    expect(value({ agy: "checking" }, "agy")).toBe("agy");
+    expect(value({ apple: "available", claude: "checking" }, "apple")).toBe("apple");
+    expect(value({ claude: "checking" }, "yellowmoon")).toBe("yellowmoon");
     // Available but never agreed to: Default Auto grades and is shown.
     expect(value({ claude: "available" }, "claude", { claude: false, agy: false })).toBe("yellowmoon");
     // A saved choice that is not a program shows who grades.
     expect(value({ claude: "signed_out" }, "yellowmoon")).toBe("yellowmoon");
     expect(value({ claude: "signed_out", apple: "available" }, "apple")).toBe("apple");
     expect(USE_DEFAULT_AUTO).toBe("Use Default Auto");
+  });
+
+  it("says a program is being checked, and shows the saved one, while its first check has not ended (the app starts no program at launch)", () => {
+    const status = (providers: MockProviders, preference: AutoProvider, consent: AutoConsent = { claude: true, agy: true }) =>
+      mockAutoStatus({ providers, preference, consent, own: "" });
+    // The line under the row names the programs that are being checked, in the dropdown's order.
+    expect(checkingNote(status({ claude: "checking" }, "apple"))).toBe("Checking Claude Code…");
+    expect(checkingNote(status({ agy: "checking" }, "apple"))).toBe("Checking Antigravity…");
+    expect(checkingNote(status({ claude: "checking", agy: "checking" }, "apple"))).toBe("Checking Claude Code and Antigravity…");
+    expect(checkingNote(status({ apple: "available", claude: "available", agy: "checking" }, "apple"))).toBe("Checking Antigravity…");
+    // Apple Intelligence is an operating-system call: it is never "being checked".
+    expect(checkingNote(status({ apple: "checking" }, "apple"))).toBeNull();
+    for (const providers of [{}, { claude: "available" }, { claude: "signed_out", agy: "too_old" }, { agy: "unavailable" }] as const) {
+      expect(checkingNote(status(providers, "apple"))).toBeNull();
+    }
+    // Only a saved program counts: it is the one whose row must not say "isn't available now" yet.
+    expect(savedProgramChecking(status({ claude: "checking" }, "claude"))).toBe(true);
+    expect(savedProgramChecking(status({ agy: "checking" }, "agy"))).toBe(true);
+    expect(savedProgramChecking(status({ agy: "checking" }, "claude"))).toBe(false);
+    expect(savedProgramChecking(status({ claude: "checking" }, "apple"))).toBe(false);
+    expect(savedProgramChecking(status({ claude: "signed_out" }, "claude"))).toBe(false);
+    expect(savedProgramChecking(status({ claude: "available" }, "claude"))).toBe(false);
+    // The dropdown lists the saved program while it is being checked, and no other program that is.
+    const entries = (providers: MockProviders, preference: AutoProvider) => dropdownEntries(status(providers, preference)).map((p) => p.provider);
+    expect(entries({ claude: "checking" }, "claude")).toEqual(["yellowmoon", "claude"]);
+    expect(entries({ claude: "checking", agy: "checking" }, "agy")).toEqual(["yellowmoon", "agy"]);
+    expect(entries({ apple: "available", claude: "checking" }, "apple")).toEqual(["yellowmoon", "apple"]);
+    expect(entries({ apple: "available", claude: "available", agy: "signed_out" }, "agy")).toEqual(["yellowmoon", "apple", "claude", "agy"]);
+    // The row is not shown just because a program is being checked: a computer with none would see it come and go.
+    expect(autoRowShown(status({ claude: "checking" }, "apple"))).toBe(false);
+    expect(autoRowShown(status({ claude: "checking" }, "claude"))).toBe(true);
   });
 
   it("has the consent dialog's text for each program, with the Windows sentence only on Windows", () => {

@@ -271,13 +271,9 @@ fn ignore_sigterm() {
     }
 }
 
-/// The `slow` scenarios: starts a grandchild, writes both pids to `YM_FAKE_PIDFILE` and sleeps for ten
-/// minutes. `slow_deaf` ignores `SIGTERM` first (Unix), so that only `SIGKILL` ends it.
-pub fn slow() -> ! {
-    #[cfg(unix)]
-    if scenario() == "slow_deaf" {
-        ignore_sigterm();
-    }
+/// Starts a grandchild that sleeps and writes both pids to `YM_FAKE_PIDFILE` (when it is set). The
+/// grandchild is left running: it is the process group's to end.
+fn start_grandchild() {
     if let Some(pidfile) = std::env::var_os("YM_FAKE_PIDFILE").map(PathBuf::from) {
         let beat = PathBuf::from(format!("{}.beat", pidfile.display()));
         let me = std::env::current_exe().unwrap_or_default();
@@ -287,16 +283,25 @@ pub fn slow() -> ! {
             .spawn();
         let grandchild = child.as_ref().map(std::process::Child::id).unwrap_or(0);
         let _ = fs::write(&pidfile, format!("{}\n{grandchild}\n", std::process::id()));
-        // The grandchild is left running: it is the process group's to end.
         std::mem::forget(child);
     }
+}
+
+/// The `slow` scenarios: starts a grandchild, writes both pids to `YM_FAKE_PIDFILE` and sleeps for ten
+/// minutes. `slow_deaf` ignores `SIGTERM` first (Unix), so that only `SIGKILL` ends it.
+pub fn slow() -> ! {
+    #[cfg(unix)]
+    if scenario() == "slow_deaf" {
+        ignore_sigterm();
+    }
+    start_grandchild();
     std::thread::sleep(Duration::from_secs(600));
     std::process::exit(0)
 }
 
 /// The argument of the raw mode: the scenario's behaviour at once, with no check of the request. The
 /// tests of the process runner use it to start the behaviours (`slow`, `backpressure`, `huge`,
-/// `early_exit`) without making a valid request.
+/// `early_exit`, `leaves_child`) without making a valid request.
 pub const RAW_ARG: &str = "--ym-fake-raw";
 
 /// Runs the raw mode when the first argument asks for it; does not return in that case.
@@ -306,6 +311,8 @@ pub fn maybe_raw(recorder: &Recorder, scenario: &str) {
     }
     match scenario {
         "slow" | "slow_deaf" => slow(),
+        // Answers and exits at once, leaving a grandchild running: the runner ends it with the group.
+        "leaves_child" => start_grandchild(),
         "backpressure" => {
             flood(2);
             let stdin = read_stdin();

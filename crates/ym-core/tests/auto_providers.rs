@@ -97,6 +97,11 @@ struct Lab {
     details: Mutex<AdvisorDetails>,
     /// How many times the core asked it to probe.
     refreshes: AtomicUsize,
+    /// What a probe finds, once [`Lab::finish_probe`] lets it end: a program that was never checked reads
+    /// `checking` until its first check ends, a second or two after it was asked.
+    probe_finds: Mutex<Option<Availability>>,
+    /// A probe was asked for and has not ended.
+    probing: std::sync::atomic::AtomicBool,
     /// How many times the core settled it, and how long each settle blocks (up to its timeout).
     settles: AtomicUsize,
     settle_block: Mutex<Duration>,
@@ -143,6 +148,8 @@ impl Lab {
             listeners: Mutex::new(Vec::new()),
             details: Mutex::new(AdvisorDetails::default()),
             refreshes: AtomicUsize::new(0),
+            probe_finds: Mutex::new(None),
+            probing: std::sync::atomic::AtomicBool::new(false),
             settles: AtomicUsize::new(0),
             settle_block: Mutex::new(Duration::ZERO),
             wind_down: Mutex::new(Duration::ZERO),
@@ -179,6 +186,26 @@ impl Lab {
     fn set_availability(&self, availability: Availability) {
         *lock(&self.availability) = availability;
         self.tell_listeners();
+    }
+
+    /// A program that was never checked: it reads `checking`, and its first check finds `finds` when
+    /// [`Lab::finish_probe`] ends it (the listeners are told, as a real probe's thread does).
+    fn unchecked(&self, finds: Availability) {
+        *lock(&self.availability) = Availability::Unavailable(UnavailableReason::Checking);
+        *lock(&self.probe_finds) = Some(finds);
+    }
+
+    /// The probe the core asked for ends: the advisor says what it found, and tells its listeners.
+    /// False when no probe was asked for.
+    fn finish_probe(&self) -> bool {
+        if !self.probing.swap(false, Ordering::SeqCst) {
+            return false;
+        }
+        let finds = lock(&self.probe_finds).clone();
+        if let Some(finds) = finds {
+            self.set_availability(finds);
+        }
+        true
     }
 
     fn tell_listeners(&self) {
@@ -293,6 +320,7 @@ impl AutoAdvisor for Lab {
 
     fn refresh(&self) {
         self.refreshes.fetch_add(1, Ordering::SeqCst);
+        self.probing.store(true, Ordering::SeqCst);
     }
 
     fn settle(&self, timeout: Duration) {
@@ -394,6 +422,11 @@ fn advisors(apple: &Arc<Lab>, claude: &Arc<Lab>, agy: Option<&Arc<Lab>>) -> Prov
     }
     a
 }
+
+const CLAUDE_AND_AGY: AutoConsent = AutoConsent {
+    claude: true,
+    agy: true,
+};
 
 const CLAUDE_OK: AutoConsent = AutoConsent {
     claude: true,
@@ -1214,26 +1247,39 @@ fn a_saved_cloud_choice_nobody_agreed_to_is_never_probed() {
     // Opening Preferences is the one place that asks every advisor.
     let _ = core.auto_status();
     assert_eq!(claude.refreshes.load(Ordering::SeqCst), 1);
-    // The consent is saved: the program is probed from then on.
+    // The consent is saved in Preferences, which has just checked every program: that starts no check of
+    // its own. The program is checked when photos are opened, from then on.
     let before = claude.refreshes.load(Ordering::SeqCst);
     core.preferences_set(&patch(AutoProvider::Claude, Some(CLAUDE_OK)))
         .expect("consent");
-    assert!(claude.refreshes.load(Ordering::SeqCst) > before);
+    assert_eq!(claude.refreshes.load(Ordering::SeqCst), before);
+    let more = write_photos(1);
+    core.session
+        .open(&[more.path().to_path_buf()], OpenOptions::default());
+    assert_eq!(claude.refreshes.load(Ordering::SeqCst), before + 1);
 }
 
 #[test]
-fn a_run_that_names_the_provider_probes_it() {
+fn a_run_that_names_the_provider_checks_it_when_photos_open_not_before() {
     let apple = Lab::new(AutoProvider::Apple, -1);
     let claude = Lab::new(AutoProvider::Claude, 2);
+    claude.unchecked(Availability::Available(Lab::info(AutoProvider::Claude)));
     let rig = core_rig(
         advisors(&apple, &claude, None),
         AutoChoice::Provider(AutoProvider::Claude),
         None,
     );
-    assert!(
-        claude.refreshes.load(Ordering::SeqCst) >= 1,
-        "naming it is the consent for the run"
+    assert_eq!(
+        claude.refreshes.load(Ordering::SeqCst),
+        0,
+        "Core::open starts no program (`ym` checks the one it names before the core opens)"
     );
+    // Naming it is the consent for the run: it is checked when photos are opened.
+    let dir = write_photos(1);
+    rig.core
+        .session
+        .open(&[dir.path().to_path_buf()], OpenOptions::default());
+    assert_eq!(claude.refreshes.load(Ordering::SeqCst), 1);
     assert_eq!(apple.refreshes.load(Ordering::SeqCst), 0);
     // Default Auto, named: nobody is probed.
     let (before, apple_before) = (
@@ -1244,6 +1290,182 @@ fn a_run_that_names_the_provider_probes_it() {
         .set_auto_choice(AutoChoice::Provider(AutoProvider::Yellowmoon));
     assert_eq!(claude.refreshes.load(Ordering::SeqCst), before);
     assert_eq!(apple.refreshes.load(Ordering::SeqCst), apple_before);
+}
+
+/// Queues an export of every photo into a new folder and waits until it is done.
+fn run_export(core: &Core) {
+    let out = tempfile::tempdir().expect("out");
+    core.export_start(&ExportJob {
+        scope: ApplyScope::All,
+        options: ExportOptions {
+            destination: Some(out.path().to_path_buf()),
+            ..ExportOptions::default()
+        },
+    })
+    .expect("export queued");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while core.export_busy() {
+        assert!(Instant::now() < deadline, "the export finished");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Nothing runs at launch (owner, 2026-10-29; `docs/22` section 3.3). Opening the core with a saved,
+/// consented program, changing the choice or the consent and reading the status start no check; opening
+/// photos checks the chosen program (once, and no other), and the photos wait for the check as they
+/// wait for any `checking` provider, instead of taking Default Auto's values for good. After that the
+/// cached reading serves: a second opening and an export start no check. Opening Preferences
+/// (`Core::auto_status`) is the person's own check of every program.
+#[test]
+fn nothing_is_checked_at_launch_the_chosen_program_when_photos_open_and_every_program_for_preferences()
+ {
+    let apple = Lab::new(AutoProvider::Apple, -1);
+    let claude = Lab::new(AutoProvider::Claude, 2);
+    let agy = Lab::new(AutoProvider::Agy, 3);
+    claude.unchecked(Availability::Available(Lab::info(AutoProvider::Claude)));
+    agy.unchecked(Availability::Available(Lab::info(AutoProvider::Agy)));
+    let rig = core_rig(
+        advisors(&apple, &claude, Some(&agy)),
+        AutoChoice::FromPreference,
+        Some(r#"{ "auto_provider": "claude", "auto_consent": { "claude": true, "agy": true } }"#),
+    );
+    let core = &rig.core;
+    let counts = || {
+        (
+            apple.refreshes.load(Ordering::SeqCst),
+            claude.refreshes.load(Ordering::SeqCst),
+            agy.refreshes.load(Ordering::SeqCst),
+        )
+    };
+    // Launch: the core is open with the saved choice and its consent. No program was asked to check.
+    assert_eq!(counts(), (0, 0, 0), "Core::open");
+    core.preferences_set(&PreferencesPatch {
+        remove_location_from_exports: Some(true),
+        ..PreferencesPatch::default()
+    })
+    .expect("preferences");
+    // The choice and the consent change in Preferences, which has just checked every program: no check
+    // of their own.
+    core.preferences_set(&patch(AutoProvider::Agy, Some(CLAUDE_AND_AGY)))
+        .expect("agy");
+    core.preferences_set(&patch(AutoProvider::Claude, Some(CLAUDE_AND_AGY)))
+        .expect("claude");
+    core.set_auto_choice(AutoChoice::FromPreference);
+    let status = core.auto_status_cached();
+    assert_eq!(
+        counts(),
+        (0, 0, 0),
+        "the choice, the consent and the cached status"
+    );
+    // A program that was never checked reads `checking`, not unavailable.
+    let state_of = |p: AutoProvider| status.provider(p).expect("provider").state;
+    assert_eq!(state_of(AutoProvider::Claude), ProviderState::Checking);
+    assert_eq!(state_of(AutoProvider::Agy), ProviderState::Checking);
+
+    // Photos are opened: the chosen program is checked, once, and no other.
+    let dir = write_photos(2);
+    let ids = core
+        .session
+        .open(&[dir.path().to_path_buf()], OpenOptions::default())
+        .added;
+    assert_eq!(
+        counts(),
+        (0, 1, 0),
+        "the chosen program is checked, and only it"
+    );
+    assert!(core.session.wait_idle(Duration::from_secs(120)));
+    for id in &ids {
+        // Waiting for the check, not given up on: not `off`, not `not_installed`, not `not_consented`.
+        assert_eq!(
+            core.session.estimates(*id).expect("estimates").apple,
+            AppleAuto::Unavailable {
+                reason: UnavailableReason::Checking
+            }
+        );
+    }
+    assert!(
+        claude.calls().is_empty(),
+        "nothing is asked before the check ends"
+    );
+    // The check ends: the photos are asked, and answered by Claude Code.
+    assert!(claude.finish_probe());
+    assert!(core.session.wait_idle(Duration::from_secs(120)));
+    for id in &ids {
+        assert!(matches!(
+            core.session.estimates(*id).expect("estimates").apple,
+            AppleAuto::Answered { .. }
+        ));
+        assert_eq!(
+            core.session
+                .estimates(*id)
+                .expect("estimates")
+                .apple_steps
+                .and_then(|s| s.exposure),
+            Some(2),
+            "Claude Code's answer, not Default Auto's values"
+        );
+    }
+    assert_eq!(claude.calls().len(), 2);
+    assert_eq!(counts(), (0, 1, 0));
+
+    // A second opening while it reads `available`, and an export: the cached reading serves.
+    let more = write_photos(1);
+    core.session
+        .open(&[more.path().to_path_buf()], OpenOptions::default());
+    assert!(core.session.wait_idle(Duration::from_secs(120)));
+    run_export(core);
+    assert_eq!(counts(), (0, 1, 0), "no new check while it reads available");
+    assert_eq!(
+        claude.settles.load(Ordering::SeqCst),
+        0,
+        "an export settles nothing"
+    );
+
+    // Opening Preferences is the person's own check of every program.
+    let _ = core.auto_status();
+    assert_eq!(counts(), (1, 2, 1));
+}
+
+/// A program last found signed out, missing or failing is checked again when photos open (the person
+/// may have fixed it), but an export checks a program only when it was **never** checked: the export
+/// starts at once with what is known.
+#[test]
+fn a_program_found_unavailable_is_checked_again_for_photos_but_not_for_an_export() {
+    let apple = Lab::new(AutoProvider::Apple, -1);
+    let claude = Lab::new(AutoProvider::Claude, 2);
+    claude.set_availability(Availability::Unavailable(UnavailableReason::SignedOut));
+    let rig = core_rig(
+        advisors(&apple, &claude, None),
+        AutoChoice::FromPreference,
+        Some(r#"{ "auto_provider": "claude", "auto_consent": { "claude": true } }"#),
+    );
+    let core = &rig.core;
+    let refreshes = || claude.refreshes.load(Ordering::SeqCst);
+    assert_eq!(refreshes(), 0, "Core::open");
+    // The folders stay until the test ends: the photos are developed from their files.
+    let folders = [write_photos(1), write_photos(1)];
+    for (expected, dir) in (1..).zip(&folders) {
+        core.session
+            .open(&[dir.path().to_path_buf()], OpenOptions::default());
+        assert_eq!(
+            refreshes(),
+            expected,
+            "one check per opening while it is not available"
+        );
+    }
+    assert!(core.session.wait_idle(Duration::from_secs(120)));
+    run_export(core);
+    assert_eq!(
+        refreshes(),
+        2,
+        "an export does not check a program that was checked"
+    );
+    assert_eq!(claude.settles.load(Ordering::SeqCst), 0);
+    // A program that was never checked reads `checking`: the export checks it and waits (up to 5 s).
+    claude.set_availability(Availability::Unavailable(UnavailableReason::Checking));
+    run_export(core);
+    assert_eq!(refreshes(), 3);
+    assert_eq!(claude.settles.load(Ordering::SeqCst), 1);
 }
 
 /// An advisor that says its availability changed makes the core read what the advisors say. It does not
@@ -1269,7 +1491,7 @@ fn a_change_notification_starts_no_probe_and_no_loop() {
         claude.refreshes.load(Ordering::SeqCst),
         apple.refreshes.load(Ordering::SeqCst),
     );
-    assert!(claude_before >= 1, "Core::open probes the chosen provider");
+    assert_eq!(claude_before, 0, "Core::open starts no check");
     // The probe finishes: the listener reads the answer, and starts nothing.
     claude.set_availability(Availability::Available(Lab::info(AutoProvider::Claude)));
     assert_eq!(told.load(Ordering::SeqCst), 1);

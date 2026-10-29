@@ -111,7 +111,8 @@ use ym_raw::metadata::RawMetadata;
 
 use crate::apple_auto::{
     Activity, AdvisorAnswer, AdvisorError, AdvisorPicture, AppleAuto, AutoAdvisor, AutoSteps,
-    Availability, FailureKind, RETRIES, RETRY_PAUSE_MS, effective_instructions, share_burst_steps,
+    Availability, FailureKind, RETRIES, RETRY_PAUSE_MS, UnavailableReason, effective_instructions,
+    share_burst_steps,
 };
 use crate::auto::{
     AutoError, AutoEstimates, AutoInputs, IlluminantModels, NoisePool, POOL_MAX_FILES, burst_frame,
@@ -3196,17 +3197,44 @@ impl Session {
 
     // --- Auto providers ------------------------------------------------------------------------
 
-    /// Reads the chosen provider's availability again (`docs/19` section 1, `docs/22` section 3.3:
-    /// when a session opens, when the preferences change, before each export) and brings every photo in
-    /// step with it. Asks the chosen advisor to probe again ([`AutoAdvisor::refresh`]: a background
-    /// thread, never waited for) and reads what it has cached. Returns that; `None` without an advisor
-    /// for the chosen provider (Default Auto included), once the workers are gone (they could not
-    /// start, or one stopped), which is the same, and when the chosen provider could not act: a cloud
-    /// program the run did not name and whose consent is not saved is not asked to probe at all
-    /// (`docs/22` sections 10.2 and 13.1), so nothing is returned for the caller to wait for. No
-    /// process runs on the caller's thread. When an advisor *says* that its availability changed, the
-    /// core reads it with [`Session::read_auto_availability`] instead, which starts no probe.
+    /// Photos are about to be graded (a session opens): reads the chosen provider's availability
+    /// again and brings every photo in step with it (`docs/19` section 1, `docs/22` section 3.3). A
+    /// program is started **only here and at an export, never at launch** (owner, 2026-10-29): the
+    /// chosen advisor is asked to check ([`AutoAdvisor::refresh`]: a background thread, never waited
+    /// for) when what it last said is not `available`, which is the case before its first check (it
+    /// reads `checking`) and after a check that found it signed out, missing or failing. Once it
+    /// said `available` the cached reading serves: a later session opening starts no check, and the
+    /// requests renew it. Returns what it says now; `None` without an advisor for the chosen provider
+    /// (Default Auto included), once the workers are gone (they could not start, or one stopped),
+    /// which is the same, and when the chosen provider could not act: a cloud program the run did not
+    /// name and whose consent is not saved is not asked to check at all (`docs/22` sections 10.2 and
+    /// 13.1), so nothing is returned for the caller to wait for. No process runs on the caller's
+    /// thread. When an advisor *says* that its availability changed, the core reads it with
+    /// [`Session::read_auto_availability`] instead, which starts no check.
     pub fn refresh_apple_auto(&self) -> Option<Availability> {
+        self.read_chosen_auto(|availability| !availability.is_available())
+    }
+
+    /// An export is about to start (`Core::export_start`, `ym render`): as [`Session::refresh_apple_auto`],
+    /// but the chosen program is asked to check **only when it was never checked** (it still reads
+    /// `checking`; a check that is running serves every caller), so an export started at once does
+    /// not skip the provider by accident. A program that was checked and found signed out, missing or
+    /// failing is not checked again for an export (`docs/22` section 3.3).
+    pub fn refresh_auto_for_export(&self) -> Option<Availability> {
+        self.read_chosen_auto(|availability| {
+            matches!(
+                availability,
+                Availability::Unavailable(UnavailableReason::Checking)
+            )
+        })
+    }
+
+    /// Reads the chosen advisor's availability, asks it to check when it could act, the run is not
+    /// halted and `wants_check` says so of what it last said, and brings the photos in step.
+    fn read_chosen_auto(
+        &self,
+        wants_check: impl Fn(&Availability) -> bool,
+    ) -> Option<Availability> {
         let apple = self.inner.env.apple_auto.as_ref()?;
         let (chosen, may_act) = {
             let st = lock(&self.inner.state);
@@ -3217,12 +3245,13 @@ impl Session {
             (st.apple.chosen(), st.apple.chosen_may_act())
         };
         let advisor = apple.advisors.get(chosen)?;
+        let mut availability = advisor.availability();
         // After the run was halted nothing probes either: a new probe would start a program that
         // nobody is left to stop.
-        if may_act && !apple.advisors.is_halted() {
+        if may_act && !apple.advisors.is_halted() && wants_check(&availability) {
             advisor.refresh();
+            availability = advisor.availability();
         }
-        let availability = advisor.availability();
         self.inner.read_availability(chosen, availability.clone());
         may_act.then_some(availability)
     }
@@ -3265,8 +3294,11 @@ impl Session {
         self.change_choice(|a| a.consent = consent);
     }
 
-    /// Changes one of the switches that decide which provider acts, reads the availability of the
-    /// provider chosen afterwards, and brings every photo in step.
+    /// Changes one of the switches that decide which provider acts, reads what the advisor of the
+    /// provider chosen afterwards last said, and brings every photo in step. It starts **no check**
+    /// (`docs/22` section 3.3): a change of the choice or the consent is made in Preferences, which has
+    /// just asked every program to check, and the run's own choice (`ym`) was checked before the core
+    /// opened. What a program that was never checked reads is `checking`.
     fn change_choice(&self, change: impl Fn(&mut AppleState)) {
         let Some(apple) = self.inner.env.apple_auto.as_ref() else {
             // The switches are known with or without advisors (the status says them).
@@ -3278,15 +3310,10 @@ impl Session {
         let mut next = lock(&self.inner.state).apple.clone();
         change(&mut next);
         let chosen = next.chosen();
-        let may_act = next.chosen_may_act() && !apple.advisors.is_halted();
-        let read = apple.advisors.get(chosen).map(|advisor| {
-            // A program that could not act (a cloud program with no consent saved, not named by the
-            // run) is not probed: only what it last said is read.
-            if may_act {
-                advisor.refresh();
-            }
-            (chosen, advisor.availability())
-        });
+        let read = apple
+            .advisors
+            .get(chosen)
+            .map(|advisor| (chosen, advisor.availability()));
         self.inner.change_apple(move |a| {
             change(a);
             if let Some((provider, availability)) = read

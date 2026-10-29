@@ -13,14 +13,19 @@ use crate::env_hook;
 pub const TEST_PROVIDERS_ENV: &str = "YELLOWMOON_TEST_AUTO_PROVIDERS";
 
 /// Whether [`system_advisors`] starts the first probe.
+///
+/// Both front ends pass [`StartProbe::Never`] (owner, 2026-10-29: a program is started only when
+/// grading needs it, `docs/22` section 3.3): the core asks the chosen program to check when photos are
+/// opened or an export starts, and every program when Preferences opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartProbe {
-    /// The app: each advisor is already probing in the background when it is returned (Claude Code
-    /// fully; Antigravity up to its version, because its sign-in check is the one probe known to make
-    /// its program contact a network, so it runs only when asked for).
+    /// Each advisor is already probing in the background when it is returned (Claude Code fully;
+    /// Antigravity up to its version, because its sign-in check is the one probe known to make its
+    /// program contact a network, so it runs only when asked for). **No shipped front end uses it
+    /// any more**: it would start a program at every launch whatever the person chose.
     Now,
-    /// `ym`: no probe starts, so a run that does not use a program never starts one; `ym` refreshes the
-    /// one it uses.
+    /// The app and `ym`: no probe starts, so a run that does not use a program never starts one; the
+    /// core asks the program it uses (or Preferences, every program) to check, when it needs to.
     Never,
 }
 

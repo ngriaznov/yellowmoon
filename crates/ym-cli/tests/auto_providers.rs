@@ -92,6 +92,17 @@ fn request_starts(record: &Path) -> Vec<std::time::SystemTime> {
     starts
 }
 
+/// How many runs of the double were not requests: the checks (`--version`, `auth status`, `-p /usage`).
+fn check_runs(record: &Path) -> usize {
+    std::fs::read_dir(record)
+        .expect("the record folder")
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("run-"))
+        .filter_map(|e| std::fs::read_to_string(e.path().join("argv.txt")).ok())
+        .filter(|text| !text.lines().any(|l| l == "--json-schema"))
+        .count()
+}
+
 /// How far apart the first and the last of `starts` are.
 fn gap(starts: &[std::time::SystemTime]) -> std::time::Duration {
     match (starts.first(), starts.last()) {
@@ -912,6 +923,14 @@ fn a_render_through_the_test_double_of_claude_code_answers_both_photos() {
         gap(&starts) < std::time::Duration::from_millis(400),
         "the two requests did not overlap: they started {:?} apart",
         gap(&starts)
+    );
+    // The program the run named was checked once, before the core opened (`--version`, then its sign-in
+    // check), and opening the photos and starting the export asked for no second check while it read
+    // available (`docs/22` sections 3.3 and 13.1, O7).
+    assert_eq!(
+        check_runs(&record),
+        2,
+        "one --version and one sign-in check, nothing more"
     );
     // The program's own state is used: `ym info` of a signed-in double is available, and `doctor` says
     // where it was found and how it is signed in.

@@ -2463,6 +2463,211 @@ fn process_exists(pid: i32) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// What one run of a test double was, from its record (`YM_FAKE_RECORD/run-NNNN/argv.txt`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DoubleRun {
+    /// `--version`.
+    Version,
+    /// `claude auth status`, or `agy -p /usage` (the sign-in check).
+    SignInCheck,
+    /// A request for a photo's grading.
+    Request,
+}
+
+/// The runs a double has made so far, oldest first.
+fn double_runs(record: &Path) -> Vec<DoubleRun> {
+    let mut names: Vec<_> = std::fs::read_dir(record)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .filter(|name| name.starts_with("run-"))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+        .iter()
+        .map(|name| {
+            let argv =
+                std::fs::read_to_string(record.join(name).join("argv.txt")).unwrap_or_default();
+            let argv: Vec<&str> = argv.lines().collect();
+            if argv == ["--version"] {
+                DoubleRun::Version
+            } else if argv == ["auth", "status"] || argv.starts_with(&["-p", "/usage"]) {
+                DoubleRun::SignInCheck
+            } else {
+                DoubleRun::Request
+            }
+        })
+        .collect()
+}
+
+/// `ym-auto-*` folders in `temp`: what a request leaves behind until it has ended.
+fn request_folders(temp: &Path) -> usize {
+    std::fs::read_dir(temp)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .filter(|name| name.starts_with("ym-auto-"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[test]
+fn the_app_builds_its_advisors_without_starting_a_probe() {
+    // Owner, 2026-10-29: "only instantiate CLIs when we need grading and immediately close them after
+    // finish" (`docs/22` sections 0 and 3.3). Launching the app builds the programs' advisors with
+    // `StartProbe::Never`: `StartProbe::Now` would run `claude --version`, `claude auth status` and
+    // `agy --version` at every launch, whatever the person chose.
+    assert_eq!(LAUNCH_PROBE, ym_agents::StartProbe::Never);
+    // What the app hands the core: nothing has checked anything, so nothing is known.
+    let advisors = system_advisors();
+    for provider in [
+        ym_core::auto_provider::AutoProvider::Claude,
+        ym_core::auto_provider::AutoProvider::Agy,
+    ] {
+        let advisor = advisors.get(provider).expect("the program's advisor");
+        assert_eq!(
+            advisor.availability(),
+            ym_core::apple_auto::Availability::Unavailable(
+                ym_core::apple_auto::UnavailableReason::Checking
+            ),
+            "{provider:?} reads checking until something asks it to check"
+        );
+        assert_eq!(
+            advisor.details().path,
+            None,
+            "{provider:?} was not even looked for"
+        );
+    }
+}
+
+#[test]
+fn a_program_is_started_when_photos_need_grading_and_when_preferences_opens_and_not_at_launch() {
+    // The owner's choice of 2026-10-29, "Preferences + before grading": launching the app starts no
+    // program; opening photos checks the chosen one (version, sign-in), then asks it once per photo;
+    // opening Preferences checks every program; a program is closed when it has answered
+    // (`docs/22` section 3.3). The doubles record every run.
+    use ym_agents::advisor::Source;
+    use ym_agents::tool::{Tool, Tuning};
+    use ym_core::auto_provider::{AutoProvider as Core, ProviderAdvisors};
+    let (Some(claude_double), Some(agy_double)) = (
+        ym_agents::testing::require_fake_cli(Tool::Claude),
+        ym_agents::testing::require_fake_cli(Tool::Agy),
+    ) else {
+        return;
+    };
+    let scratch = tempfile::tempdir().expect("scratch");
+    let temp = scratch.path().join("tmp");
+    std::fs::create_dir(&temp).expect("temporary folder");
+    let (claude_record, agy_record) = (scratch.path().join("claude"), scratch.path().join("agy"));
+    // No minimum interval between two checks, so that a check the core should not have asked for would
+    // be a run of the double, not swallowed by the advisor.
+    let tuning_for = |tool: Tool, record: &Path| {
+        let mut tuning =
+            Tuning::for_tool(tool).with_env("YM_FAKE_RECORD", &record.to_string_lossy());
+        tuning.temp_dir = Some(temp.clone());
+        tuning.min_interval = Duration::ZERO;
+        tuning
+    };
+    let claude = ym_agents::ClaudeAdvisor::custom(
+        Source::Program(claude_double),
+        tuning_for(Tool::Claude, &claude_record),
+    );
+    let agy = ym_agents::AgyAdvisor::custom(
+        Source::Program(agy_double),
+        tuning_for(Tool::Agy, &agy_record),
+    );
+    // The saved choice is Claude Code, agreed to: the person who quits and starts the app again.
+    let h = Harness::with_preferences_file(
+        ProviderAdvisors::default()
+            .with(Core::Claude, claude)
+            .with(Core::Agy, agy),
+        r#"{ "auto_provider": "claude", "auto_consent": { "claude": true, "agy": false } }"#,
+    );
+    let runs = |record: &Path| double_runs(record);
+    let nothing: Vec<DoubleRun> = Vec::new();
+
+    // Launch: the core is open with the saved choice. Nothing was started, and reading the status the
+    // webview reads after the preferences change starts nothing either.
+    assert_eq!(runs(&claude_record), nothing);
+    assert_eq!(runs(&agy_record), nothing);
+    h.api.auto_status_cached().expect("cached status");
+    h.api
+        .preferences_set(&prefs_patch(
+            json!({ "apple_auto_instructions": "Moodier." }),
+        ))
+        .expect("instructions");
+    h.api.auto_status_cached().expect("cached status");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(runs(&claude_record), nothing, "nothing runs at launch");
+    assert_eq!(runs(&agy_record), nothing);
+
+    // Photos are opened: the chosen program is checked (its version, its sign-in), then asked about
+    // the photo. The program the person did not choose is left alone.
+    h.open(1);
+    h.develop();
+    let id = h.first();
+    wait_until("Claude Code to answer", || {
+        matches!(apple_state(&h, id), AppleAuto::Answered { .. })
+    });
+    assert_eq!(
+        runs(&claude_record),
+        [
+            DoubleRun::Version,
+            DoubleRun::SignInCheck,
+            DoubleRun::Request
+        ],
+        "the check first, then one request"
+    );
+    assert_eq!(
+        runs(&agy_record),
+        nothing,
+        "only the chosen program is started"
+    );
+    // Closed when it has answered: its temporary folder is gone, and (the double exited by itself) so
+    // is the program: its record holds no run that is still going.
+    wait_until("the request's folder to go", || request_folders(&temp) == 0);
+
+    // More photos while it reads available: the cached reading serves, so no new check, only the
+    // request for the new photo.
+    crate::testing::write_arw(h.photos.path(), "DSC00002.ARW", 2);
+    h.api
+        .open_paths(&[h.photos.path().to_string_lossy().into_owned()])
+        .expect("open the folder again");
+    wait_until("the second photo's answer", || {
+        double_runs(&claude_record)
+            .iter()
+            .filter(|r| **r == DoubleRun::Request)
+            .count()
+            == 2
+    });
+    assert_eq!(
+        runs(&claude_record),
+        [
+            DoubleRun::Version,
+            DoubleRun::SignInCheck,
+            DoubleRun::Request,
+            DoubleRun::Request
+        ],
+        "no second check while it reads available"
+    );
+    wait_until("the request's folder to go", || request_folders(&temp) == 0);
+
+    // Opening Preferences is the person's own check of every program: Antigravity is started now, for
+    // its version and its sign-in check, and no photo is asked about.
+    h.api.auto_status().expect("status");
+    wait_until("Antigravity to be checked", || {
+        runs(&agy_record) == [DoubleRun::Version, DoubleRun::SignInCheck]
+    });
+    assert!(
+        !runs(&agy_record).contains(&DoubleRun::Request),
+        "a check sends no picture"
+    );
+    wait_until("the checks to end", || request_folders(&temp) == 0);
+}
+
 #[cfg(unix)]
 #[test]
 fn quitting_stops_a_request_that_is_running_and_leaves_no_program_and_no_folder() {

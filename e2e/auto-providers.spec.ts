@@ -183,6 +183,35 @@ test.describe("the row", () => {
     expect(await triggerFits(trigger)).toBe(true);
   });
 
+  test("shows the saved program with Checking… while its first check has not ended, and settles when it ends", async ({ page }) => {
+    // Nothing runs when the app starts: Preferences opens before the first check of a program has answered (a second or two).
+    const problems = watchErrors(page);
+    const dialog = await preferences(page, { mockProviders: "claude:checking", mockAutoProvider: "claude", mockConsent: "claude" });
+    const trigger = dialog.getByRole("combobox", { name: TITLE });
+    // The row is there with the saved program, not a Default Auto nobody chose; nothing says it is not available.
+    await expect(trigger).toHaveText("Claude Code Checking…");
+    expect(await triggerFits(trigger)).toBe(true);
+    await expect(dialog.getByRole("note")).toHaveText("Checking Claude Code…");
+    await expect(dialog.getByText(/isn't available now/)).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Use Default Auto" })).toHaveCount(0);
+    // The check ends: signed in, and the row is the ordinary one.
+    await page.evaluate(() => window.__yellowmoon!.mockApi.setProviders({ claude: "available" }));
+    await expect(trigger).toHaveText("Claude Code");
+    await expect(dialog.getByRole("note")).toHaveCount(0);
+    await expect(dialog.getByRole("textbox", { name: "Instructions for Claude Code" })).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
+  test("adds a line, and the entries as they are found, while the other programs are being checked", async ({ page }) => {
+    const dialog = await preferences(page, { mockProviders: "apple,claude:checking,agy:checking" });
+    await expect(dialog.getByRole("combobox", { name: TITLE })).toHaveText("Apple Intelligence");
+    await expect(dialog.getByRole("note")).toHaveText("Checking Claude Code and Antigravity…");
+    await page.evaluate(() => window.__yellowmoon!.mockApi.setProviders({ apple: "available", claude: "available", agy: "signed_out" }));
+    await expect(dialog.getByRole("note")).toHaveText("Antigravity is installed but not signed in. Open Terminal, run agy and sign in.");
+    await dialog.getByRole("combobox", { name: TITLE }).click();
+    await expect(page.getByRole("option")).toHaveCount(4);
+  });
+
   test("keeps the row when the saved program is gone and nothing else is listed, and Use Default Auto withdraws the choice", async ({ page }) => {
     // Claude Code was saved and agreed to, then uninstalled; Apple Intelligence is not available: no provider is listed, but the choice is a program.
     const dialog = await preferences(page, { mockProviders: "apple:unavailable", mockAutoProvider: "claude", mockConsent: "claude" });

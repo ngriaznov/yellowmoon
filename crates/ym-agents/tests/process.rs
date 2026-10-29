@@ -64,6 +64,18 @@ fn a_slow_program_is_killed_together_with_its_grandchild() {
 }
 
 #[test]
+fn a_program_that_exits_leaves_nothing_of_its_tree_behind() {
+    // "Immediately close them after finish" (owner, 2026-10-29): a program that answers and exits but
+    // leaves a child running is ended with its group when the run is over, not left for the system.
+    let dir = TempDir::new().unwrap();
+    let pidfile = dir.path().join("pids");
+    let out = run(raw("leaves_child", &[("YM_FAKE_PIDFILE", &pidfile)]));
+    assert_eq!(out.outcome, Outcome::Exited, "{out:?}");
+    assert!(out.success(), "{out:?}");
+    assert_tree_dead(&pidfile);
+}
+
+#[test]
 fn cancelling_ends_a_running_request_within_three_seconds() {
     let dir = TempDir::new().unwrap();
     let pidfile = dir.path().join("pids");

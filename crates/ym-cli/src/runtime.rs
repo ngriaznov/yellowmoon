@@ -313,16 +313,17 @@ impl Runtime {
     }
 
     /// Reads the chosen provider's availability again just before the export starts (`docs/19`
-    /// section 1, `docs/22` section 3.3), with the same refresh the app's `Core::export_start` makes
-    /// (and the same wait of up to 5 s while it still reads `checking`), so the export's photos wait
-    /// for the answers of a provider that is available now and use the rule where it no longer is.
+    /// section 1, `docs/22` section 3.3), with the same read the app's `Core::export_start` makes (the
+    /// program is asked to check only when it was never checked, and the same wait of up to 5 s while
+    /// it still reads `checking`), so the export's photos wait for the answers of a provider that is
+    /// available now and use the rule where it no longer is.
     /// Returns the sentence of [`Runtime::auto_notices`] when the run wanted a provider (named, or
     /// saved with its consent), it was available and is not any more, and the run has not said so yet:
     /// once per run.
     #[must_use]
     pub fn auto_notice_before_export(&self) -> Option<String> {
         if matches!(
-            self.core.session.refresh_apple_auto(),
+            self.core.session.refresh_auto_for_export(),
             Some(ym_core::apple_auto::Availability::Unavailable(
                 UnavailableReason::Checking
             ))

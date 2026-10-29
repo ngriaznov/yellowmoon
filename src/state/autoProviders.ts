@@ -50,7 +50,11 @@ export const EXPERIMENTAL_NOTE =
 /** The badge's text. */
 export const EXPERIMENTAL_LABEL = "Experimental";
 
-/** The muted tag after the name of an entry that is listed but cannot be chosen (`docs/22` section 12.1), by the provider's state. */
+/**
+ * The muted tag after the name of an entry that cannot be chosen (`docs/22` section 12.1), by the provider's state: the three states of a
+ * program that was found but cannot be used, and "Checking…" for the saved program while its first check has not ended (12.1, *While a
+ * program is being checked*).
+ */
 export function unavailableTag(state: ProviderState): string | null {
   switch (state) {
     case "signed_out":
@@ -59,6 +63,8 @@ export function unavailableTag(state: ProviderState): string | null {
       return "Update needed";
     case "unavailable":
       return "Not working";
+    case "checking":
+      return "Checking…";
     default:
       return null;
   }
@@ -112,13 +118,45 @@ export function autoRowShown(auto: AutoStatus): boolean {
 }
 
 /**
+ * Whether the saved choice is a program whose first check has not ended (`docs/22` section 12.1, *While a program is being checked*): the
+ * app starts no program at launch, so right after Preferences opens a program still reads `checking`. It is not known to be unavailable
+ * yet, so nothing says so.
+ */
+export function savedProgramChecking(auto: AutoStatus): boolean {
+  return isCloud(auto.preference) && auto.providers.find((p) => p.provider === auto.preference)?.state === "checking";
+}
+
+/**
+ * The entries of the dropdown (`docs/22` section 12.1): Default Auto, and the providers that are listed, and the saved program while its
+ * first check has not ended (disabled, with the tag "Checking…"), so that the dropdown shows the saved choice and not a Default Auto it
+ * has not been told to use.
+ */
+export function dropdownEntries(auto: AutoStatus): ProviderStatus[] {
+  return auto.providers.filter(
+    (p) => p.provider === "yellowmoon" || p.listed || (savedProgramChecking(auto) && p.provider === auto.preference),
+  );
+}
+
+/**
  * The provider the dropdown shows (`docs/22` section 12.1): the one that grades now, except that a saved program that is listed but cannot
- * be chosen (signed out, too old, not working) shows as itself, as the disabled entry with its tag. Otherwise Default Auto would already
- * be the value and choosing it would be no change, so the person could not withdraw the saved program.
+ * be chosen (signed out, too old, not working), or whose first check has not ended, shows as itself, as the disabled entry with its tag.
+ * Otherwise Default Auto would already be the value and choosing it would be no change, so the person could not withdraw the saved
+ * program, and a program that is merely being checked would read as "not available".
  */
 export function dropdownValue(auto: AutoStatus): AutoProvider {
   const saved = auto.providers.find((p) => p.provider === auto.preference);
+  if (savedProgramChecking(auto)) return auto.preference;
   return saved !== undefined && saved.listed && !saved.selectable ? saved.provider : auto.effective;
+}
+
+/**
+ * The line under the row while a program is being checked for the first time (`docs/22` section 12.1): "Checking Claude Code…",
+ * "Checking Antigravity…" or "Checking Claude Code and Antigravity…". Null when no program is being checked. Nothing runs when the app
+ * starts, so this is what Preferences shows in the second or two after it opens, while the entries that are known are already there.
+ */
+export function checkingNote(auto: AutoStatus): string | null {
+  const names = auto.providers.filter((p) => isCloud(p.provider) && p.state === "checking").map((p) => PROVIDER_NAMES[p.provider]);
+  return names.length === 0 ? null : `Checking ${names.join(" and ")}…`;
 }
 
 /** The text button beside the saved-choice note: it saves Default Auto as the choice, with no consent involved (`docs/22` section 12.2). */

@@ -11,6 +11,8 @@ import { exportModel } from "../../export/model";
 import {
   AUTO_GRADING_TITLE,
   autoRowShown,
+  checkingNote,
+  dropdownEntries,
   dropdownValue,
   EXPERIMENTAL_LABEL,
   EXPERIMENTAL_NOTE,
@@ -20,6 +22,7 @@ import {
   PROVIDER_NAMES,
   providerNote,
   savedChoiceNote,
+  savedProgramChecking,
   unavailableTag,
   USE_DEFAULT_AUTO,
 } from "../../state/autoProviders";
@@ -225,9 +228,11 @@ function AutoGrading({ store, auto, saved, os }: { store: AppStore; auto: AutoSt
       trigger.current?.focus({ preventScroll: true });
     }
   }, [consentFor]);
-  const entries = auto.providers.filter((p) => p.provider === "yellowmoon" || p.listed);
-  const notes = auto.providers.map((p) => providerNote(p, os ?? "")).filter((note): note is string => note !== null);
-  const saveNote = savedChoiceNote(auto.preference, auto.effective);
+  const entries = dropdownEntries(auto);
+  const checking = checkingNote(auto);
+  const notes = [...auto.providers.map((p) => providerNote(p, os ?? "")), checking].filter((note): note is string => note !== null);
+  // A saved program that is still being checked for the first time is not known to be unavailable: no "isn't available now" until it is.
+  const saveNote = savedProgramChecking(auto) ? null : savedChoiceNote(auto.preference, auto.effective);
   const experimental = auto.effective === "agy";
   // The dropdown's value: the saved program itself while it is listed but not usable, else who grades. In the trigger that entry says why
   // it is not usable (its tag) in place of the Experimental badge, which would not fit beside it in 220 px.

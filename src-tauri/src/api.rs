@@ -72,21 +72,28 @@ pub struct AppConfig {
     /// What looks at each photo for Auto (`docs/19` sections 11 and 12, `docs/22` section 12.6): in
     /// the app `ym_apple`'s system advisor (Apple's on-device model where it is available, the fake
     /// with `YELLOWMOON_TEST_APPLE_AUTO=fake`) and the two programs' `ym_agents::system_advisors`
-    /// (Claude Code and Antigravity, probing in the background from the start; the test hook
+    /// (Claude Code and Antigravity, **not started**: `LAUNCH_PROBE`; the test hook
     /// `YELLOWMOON_TEST_AUTO_PROVIDERS` swaps them for fakes). Empty in the tests unless they give
     /// some, which is the same as every provider unavailable.
     pub advisors: ProviderAdvisors,
 }
 
-/// The advisors of this computer: Apple Intelligence's, and the two programs' (`docs/22` section 12.6).
-/// The programs' probes start here (`StartProbe::Now`), so Preferences finds what they said by the
-/// time it opens; `agy`'s sign-in check, the one that contacts a network, waits until Preferences
-/// asks for the status.
+/// What the app starts when it launches: **no probe**. The programs' advisors are built with
+/// `StartProbe::Never`, so launching the app runs neither `claude` nor `agy` (owner, 2026-10-29:
+/// "only instantiate CLIs when we need grading and immediately close them after finish"; `docs/22`
+/// sections 0 and 3.3). The chosen program is checked when photos are opened or an export starts
+/// (`Session::open`, `Core::export_start`), and every program when Preferences opens
+/// (`Core::auto_status`).
+pub(crate) const LAUNCH_PROBE: ym_agents::StartProbe = ym_agents::StartProbe::Never;
+
+/// The advisors of this computer: Apple Intelligence's, and the two programs' (`docs/22` section 12.6),
+/// none of them started ([`LAUNCH_PROBE`]). Apple's availability is an operating-system call, not a
+/// program, and is read as before.
 fn system_advisors() -> ProviderAdvisors {
     use ym_core::auto_provider::AutoProvider;
     let mut advisors =
         ProviderAdvisors::default().with(AutoProvider::Apple, ym_apple::system_advisor());
-    for (provider, advisor) in ym_agents::system_advisors(ym_agents::StartProbe::Now) {
+    for (provider, advisor) in ym_agents::system_advisors(LAUNCH_PROBE) {
         advisors = advisors.with(provider, advisor);
     }
     advisors
