@@ -8,7 +8,7 @@
 //! and the status Preferences shows ([`AutoStatus`]), the registry of advisors ([`ProviderAdvisors`])
 //! and the words every front end uses ([`unavailable_hint`], [`unavailable_words`],
 //! [`failure_words`], [`cloud_notice`]). The advisors themselves are
-//! [`AutoAdvisor`](crate::apple_auto::AutoAdvisor)s: `ym-apple` is one, `ym-agents` has two more.
+//! [`AutoAdvisor`]s: `ym-apple` is one, `ym-agents` has two more.
 //!
 //! **A word on names** (`docs/22` decision D3). In the code and on the wire the grading is still
 //! called "apple" (`apple_auto`, `AppleAuto`, `AutoEstimates::apple`, `apple_steps`, the `apple`
@@ -742,7 +742,7 @@ pub fn unavailable_hint(
     }
 }
 
-/// The clause `ym doctor` and `ym info` put in "Not available (<clause>)" (`docs/22` section 3.4):
+/// The clause `ym doctor` and `ym info` put in "Not available (`<clause>`)" (`docs/22` section 3.4):
 /// "Claude Code isn't signed in", "Antigravity 1.0.9 is too old", ... For Apple Intelligence it is
 /// [`UnavailableReason::words`]. Empty for Default Auto.
 #[must_use]
@@ -777,7 +777,7 @@ pub fn unavailable_words(
     }
 }
 
-/// A failure in words, as `ym info` prints "Failed (<words>)" and the logs say it (`docs/22` section
+/// A failure in words, as `ym info` prints "Failed (`<words>`)" and the logs say it (`docs/22` section
 /// 9.1). Apple Intelligence's are [`FailureKind::words`]; the two programs have their own for the
 /// kinds they use, and the kinds they do not use read as Apple's.
 #[must_use]

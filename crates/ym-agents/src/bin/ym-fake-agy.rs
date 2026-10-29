@@ -142,7 +142,7 @@ fn request(args: &[String], prompt: &str, scenario: &str, recorder: &Recorder) {
         0
     };
 
-    fakes::delay();
+    fakes::delay(recorder);
     // What `YM_FAKE_PLAN` says this request does comes before the scenario.
     match planned(index).as_deref() {
         Some("fail") => {
@@ -215,7 +215,6 @@ fn request(args: &[String], prompt: &str, scenario: &str, recorder: &Recorder) {
             envelope("SUCCESS", Some(answer), None, &[]);
         }
     }
-    let _ = recorder;
 }
 
 /// The envelope on standard output, after a banner line (which the reader must skip), and exit 0.

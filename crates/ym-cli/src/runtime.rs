@@ -26,6 +26,12 @@ use crate::exit::{self, Failure};
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 /// The running command looks at [`interrupted`] itself and cleans up after itself.
 static POLLING: AtomicBool = AtomicBool::new(false);
+/// The Ctrl-C handler has begun and has not yet ended the process or handed the interruption to the
+/// command: it is stopping the Auto programs and waiting for them. A command that was waiting for one of
+/// them (`ym doctor`'s probes) returns as soon as the handler has cancelled it, which is before the
+/// handler has done, so `main` waits on this flag ([`wait_for_interrupt_handler`]) rather than end
+/// the process with its own status.
+static HANDLING: AtomicBool = AtomicBool::new(false);
 /// The advisors of the run, so that Ctrl-C can kill the programs they started: a child is not
 /// stopped by its parent's death on Unix (`docs/22` section 9.4).
 static RUNNING_ADVISORS: OnceLock<ProviderAdvisors> = OnceLock::new();
@@ -79,6 +85,9 @@ fn auto_programs_stopping() -> bool {
 /// waits for them ([`stop_auto_programs`]): a program is not stopped by its parent's death on Unix.
 pub fn install_interrupt_handler() {
     let result = ctrlc::set_handler(|| {
+        // Before anything that can wake the command up (stopping the programs cancels the probe a
+        // command waits for): `main` must see that a signal is being handled.
+        HANDLING.store(true, Ordering::SeqCst);
         // First of all: the programs a request or a probe started must not outlive `ym`, and the
         // process must not end, or tell the command to end, before they are gone.
         stop_auto_programs();
@@ -86,9 +95,22 @@ pub fn install_interrupt_handler() {
         if again || !POLLING.load(Ordering::SeqCst) {
             std::process::exit(i32::from(exit::INTERRUPTED));
         }
+        HANDLING.store(false, Ordering::SeqCst);
     });
     if let Err(error) = result {
         tracing::warn!(%error, "could not install the Ctrl-C handler");
+    }
+}
+
+/// Called by `main` when the command has returned: while the Ctrl-C handler is still stopping the Auto
+/// programs, waits for it. A command that does not poll [`interrupted`] (`ym doctor`) is ended by the
+/// handler with 130, so this does not return in that case; for one that polls, the handler hands the
+/// interruption over and this returns. Without it a command that returned because the handler had
+/// cancelled its probes would end the process with 0 before the handler reached its `exit(130)`
+/// (`docs/22` section 9.4).
+pub fn wait_for_interrupt_handler() {
+    while HANDLING.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -344,8 +366,8 @@ impl Runtime {
     }
 
     /// The breaker's sentence (`docs/22` section 9.2), once, when an advisor stopped asking after three
-    /// failures in a row during the run: "Claude Code failed three times in a row (<the last failure in
-    /// words>). Photos it doesn't answer use Default Auto." Read it after the run's waits.
+    /// failures in a row during the run: "Claude Code failed three times in a row (`<the last failure
+    /// in words>`). Photos it doesn't answer use Default Auto." Read it after the run's waits.
     #[must_use]
     pub fn breaker_notice(&self) -> Option<String> {
         let mut watch = self.watch();
@@ -440,7 +462,7 @@ fn chosen_state(status: &AutoStatus) -> ProviderState {
 }
 
 /// The sentence a run that named a provider prints where it is not available (`docs/22` section 13.2).
-/// Apple Intelligence: "Apple Auto is not available on this computer (<reason in words>). Default
+/// Apple Intelligence: "Apple Auto is not available on this computer (`<reason in words>`). Default
 /// Auto is used." The two programs: "Claude Code is not available on this computer (it isn't
 /// installed). Default Auto is used.", or for a program that is there but cannot be used the hint of
 /// `docs/22` section 3.4 followed by " Default Auto is used.".

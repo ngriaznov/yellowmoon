@@ -8,7 +8,7 @@
 //! | Variable | Meaning |
 //! |---|---|
 //! | `YM_FAKE_SCENARIO` | the behaviour, default `signed_in` |
-//! | `YM_FAKE_RECORD=<folder>` | what the double saw: `argv.txt` (and `argv.json`), `cwd.txt`, `stdin.bin`, `env.txt`, `files.txt` of the last run, and the same in `run-<n>/` for every run |
+//! | `YM_FAKE_RECORD=<folder>` | what the double saw: `argv.txt` (and `argv.json`), `cwd.txt`, `stdin.bin`, `env.txt`, `files.txt` of the last run, and the same in `run-<n>/` for every run; a request that gets as far as answering also writes `end.txt` (after its delay), so the times of `argv.txt` and `end.txt` are when it began and when it was about to answer |
 //! | `YM_FAKE_PIDFILE=<file>` | the `slow` and `slow_deaf` scenarios write their own pid and a grandchild's, the hanging probes their own; the grandchild beats in `<file>.beat` |
 //! | `YM_FAKE_VERSION` | replaces the version it prints |
 //! | `YM_FAKE_FAILS=<n>` | the first n requests fail (for the breaker) |
@@ -53,14 +53,18 @@ pub fn version(default: &str) -> String {
         .unwrap_or_else(|| default.to_owned())
 }
 
-/// Sleeps for `YM_FAKE_DELAY_MS` milliseconds, when it is set (a request that takes time).
-pub fn delay() {
+/// Sleeps for `YM_FAKE_DELAY_MS` milliseconds, when it is set (a request that takes time), then writes
+/// `end.txt` into the record folders: the request's last act before it answers. With `argv.txt`, written
+/// when the run began, the two files' times are the interval in which the request ran, which is what a
+/// test needs to tell two requests that ran at the same time from two that ran one after the other.
+pub fn delay(recorder: &Recorder) {
     if let Some(ms) = std::env::var("YM_FAKE_DELAY_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
     {
         std::thread::sleep(Duration::from_millis(ms));
     }
+    recorder.write("end.txt", b"");
 }
 
 /// Blocks for ever (a probe that never ends). Writes its pid to `YM_FAKE_PIDFILE` first, when it is set.

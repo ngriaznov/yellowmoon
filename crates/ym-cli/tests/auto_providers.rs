@@ -71,25 +71,53 @@ fn exec(path: &Path) -> String {
     format!("exec:{}", path.display())
 }
 
-/// When each *request* the double saw started, from what it already writes: the time it wrote
-/// `argv.txt` into its `run-NNNN` folder. A run is a request when its arguments name a `--json-schema`;
-/// the probes (`--version`, `auth status`, `-p /usage`) do not.
-fn request_starts(record: &Path) -> Vec<std::time::SystemTime> {
-    let mut starts: Vec<_> = std::fs::read_dir(record)
+/// The interval in which a request ran: when the double began it and when it was about to answer.
+type Span = (std::time::SystemTime, std::time::SystemTime);
+
+/// The time of the file `name` in `run`, if it is there.
+fn written_at(run: &Path, name: &str) -> Option<std::time::SystemTime> {
+    std::fs::metadata(run.join(name))
+        .and_then(|m| m.modified())
+        .ok()
+}
+
+/// The interval of each *request* the double saw, by when it began: the time of `argv.txt` (written when
+/// the run began) to the time of `end.txt` (written when its `YM_FAKE_DELAY_MS` was over, just before it
+/// answers), both in its `run-NNNN` folder. A run is a request when its arguments name a
+/// `--json-schema`; the probes (`--version`, `auth status`, `-p /usage`) do not.
+fn request_spans(record: &Path) -> Vec<Span> {
+    let mut spans: Vec<_> = std::fs::read_dir(record)
         .expect("the record folder")
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with("run-"))
         .filter_map(|e| {
-            let argv = e.path().join("argv.txt");
-            let text = std::fs::read_to_string(&argv).ok()?;
-            text.lines()
-                .any(|l| l == "--json-schema")
-                .then(|| std::fs::metadata(&argv).and_then(|m| m.modified()).ok())
-                .flatten()
+            let run = e.path();
+            let text = std::fs::read_to_string(run.join("argv.txt")).ok()?;
+            if !text.lines().any(|l| l == "--json-schema") {
+                return None;
+            }
+            Some((written_at(&run, "argv.txt")?, written_at(&run, "end.txt")?))
         })
         .collect();
-    starts.sort();
-    starts
+    spans.sort();
+    spans
+}
+
+/// Whether some request began before an earlier one had ended: two requests that ran at the same time.
+/// This is what "at the same time" means, whatever the machine does to the time between their starts.
+fn overlapped(spans: &[Span]) -> bool {
+    spans.windows(2).any(|pair| pair[1].0 < pair[0].1)
+}
+
+/// How long a request of `spans` took, at the least (the request has `delay` of sleep in it; the file
+/// times of a kernel are not finer than a few milliseconds).
+fn spans_last_at_least(spans: &[Span], delay: std::time::Duration) -> bool {
+    let slack = std::time::Duration::from_millis(50);
+    spans.iter().all(|(began, ended)| {
+        ended
+            .duration_since(*began)
+            .is_ok_and(|took| took + slack >= delay)
+    })
 }
 
 /// How many runs of the double were not requests: the checks (`--version`, `auth status`, `-p /usage`).
@@ -103,15 +131,12 @@ fn check_runs(record: &Path) -> usize {
         .count()
 }
 
-/// How far apart the first and the last of `starts` are.
-fn gap(starts: &[std::time::SystemTime]) -> std::time::Duration {
-    match (starts.first(), starts.last()) {
-        (Some(first), Some(last)) => last.duration_since(*first).unwrap_or_default(),
-        _ => std::time::Duration::ZERO,
-    }
-}
-
 const DEFAULT_AUTO_USED: &str = " Default Auto is used.";
+
+/// How long each request of the test that shows two requests running at the same time takes. Long
+/// enough for a loaded machine to start the second one before the first is over: the two begin within a
+/// few hundred milliseconds of each other, even on a runner that is busy with other tests.
+const CONCURRENT_REQUEST_MS: u64 = 3000;
 
 // ---------------------------------------------------------------------------------------------
 // The options
@@ -867,7 +892,7 @@ fn a_render_through_the_test_double_of_claude_code_answers_both_photos() {
     let out = sb
         .ym_provider(&format!("claude={}", exec(&claude)))
         .env("YM_FAKE_RECORD", &record)
-        .env("YM_FAKE_DELAY_MS", "800")
+        .env("YM_FAKE_DELAY_MS", CONCURRENT_REQUEST_MS.to_string())
         .args([
             "render",
             "--json",
@@ -915,14 +940,27 @@ fn a_render_through_the_test_double_of_claude_code_answers_both_photos() {
         );
     }
     // Two requests ran at the same time: the double saw two *requests* (not the probes, which it
-    // records as runs too) and each sleeps 800 ms, so they overlap only if the second started within
-    // that of the first.
-    let starts = request_starts(&record);
-    assert_eq!(starts.len(), 2, "two requests were made: {starts:?}");
+    // records as runs too), each from the moment it began to the moment it was about to answer, and
+    // the second began before the first had ended. Each sleeps for `CONCURRENT_REQUEST_MS`, so the
+    // second has that long to start however slow the machine is; started one after the other, they
+    // could never overlap, whatever the delay.
+    let spans = request_spans(&record);
+    assert_eq!(
+        spans.len(),
+        2,
+        "two requests were made and ended: {spans:?}"
+    );
     assert!(
-        gap(&starts) < std::time::Duration::from_millis(400),
-        "the two requests did not overlap: they started {:?} apart",
-        gap(&starts)
+        spans_last_at_least(
+            &spans,
+            std::time::Duration::from_millis(CONCURRENT_REQUEST_MS)
+        ),
+        "the requests did not sleep for their delay: {spans:?}"
+    );
+    assert!(
+        overlapped(&spans),
+        "the two requests did not overlap: the second began at {:?} after the first had ended: {spans:?}",
+        spans[1].0.duration_since(spans[0].1).unwrap_or_default()
     );
     // The program the run named was checked once, before the core opened (`--version`, then its sign-in
     // check), and opening the photos and starting the export asked for no second check while it read
@@ -978,12 +1016,19 @@ fn antigravity_asks_two_photos_one_after_the_other() {
         .arg(sb.photos())
         .assert()
         .success();
-    let starts = request_starts(&record);
-    assert_eq!(starts.len(), 2, "two requests were made: {starts:?}");
+    let spans = request_spans(&record);
+    assert_eq!(
+        spans.len(),
+        2,
+        "two requests were made and ended: {spans:?}"
+    );
     assert!(
-        gap(&starts) >= std::time::Duration::from_millis(700),
-        "the requests overlapped: they started {:?} apart",
-        gap(&starts)
+        spans_last_at_least(&spans, std::time::Duration::from_millis(800)),
+        "the requests did not sleep for their delay: {spans:?}"
+    );
+    assert!(
+        !overlapped(&spans),
+        "the requests overlapped: the second began before the first had ended: {spans:?}"
     );
 }
 
@@ -1329,6 +1374,16 @@ mod interrupt {
     /// at once, and **when it has ended** no program of the run is still running (a program that ignores
     /// the polite stop is killed by then, not left for ever) and no `ym-auto-*` folder is left.
     pub fn interrupt_and_check(mut child: Child, pids: &[i32], tmp: &Path) {
+        // Ctrl-C has to reach a `ym` that is still waiting for its program. One that ended on its own
+        // (a program that hangs is stopped at its time limit) was not interrupted by anything, and its
+        // status would say nothing about Ctrl-C: that is a test that was too slow, not a `ym` that
+        // ignores the signal.
+        if let Some(status) = child.try_wait().expect("ask whether ym ended") {
+            panic!(
+                "ym ended on its own ({status:?}) before Ctrl-C was sent; the test was too slow\n{}",
+                said(tmp)
+            );
+        }
         let sent = Instant::now();
         Command::new("kill")
             .args(["-INT", &child.id().to_string()])
@@ -1383,7 +1438,12 @@ mod interrupt {
     }
 
     /// Ctrl-C during `ym doctor`, which probes every program and waits for them: a probe that never ends
-    /// is stopped too.
+    /// is stopped too, and `ym` ends with 130, not with the report of a doctor whose probe was cut short.
+    ///
+    /// The probe hangs until `ym` stops it. `ym` itself would end the probe at its own limit for
+    /// `--version` (5 s) and finish with 0, so the signal has to arrive while the probe is still being
+    /// waited for: it is sent as soon as the double's pid file shows the probe started, and
+    /// [`interrupt_and_check`] checks that `ym` had not ended before it was sent.
     pub fn during_doctor() {
         let Some(claude) = double(Tool::Claude) else {
             return;

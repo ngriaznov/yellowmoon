@@ -180,7 +180,7 @@ fn request(args: &[String], scenario: &str, recorder: &Recorder) {
         Err(why) => reject(&why),
     };
 
-    fakes::delay();
+    fakes::delay(recorder);
     // What `YM_FAKE_PLAN` says this request does comes before the scenario.
     match planned(index).as_deref() {
         Some("fail") => error_result("fake failure", Some(500), &[]),

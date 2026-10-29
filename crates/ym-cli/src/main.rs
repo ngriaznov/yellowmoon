@@ -30,7 +30,10 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     init_logging(cli.quiet, cli.verbose);
     runtime::install_interrupt_handler();
-    exit::code(run(cli))
+    let code = run(cli);
+    // A Ctrl-C that cancelled what the command was waiting for is the handler's to finish (130).
+    runtime::wait_for_interrupt_handler();
+    exit::code(code)
 }
 
 /// The crates of this workspace. The log is about what Yellowmoon does: the graphics stack and the
