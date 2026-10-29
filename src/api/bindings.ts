@@ -166,10 +166,16 @@ export const commands = {
 	/**
 	 *  `auto_status()` (`docs/22` sections 11 and 12.6; it replaces `apple_auto_status()`): the four
 	 *  providers and which one grades now. The core refreshes every provider's availability in the
-	 *  background and answers what it has cached, so this never waits for a program; Preferences asks
-	 *  when it opens and again on `auto_status_changed`.
+	 *  background and answers what it has cached, so this never waits for a program. Only Preferences
+	 *  opening asks for it: it makes `agy` check its sign-in, which contacts its service.
 	 */
 	autoStatus: () => __TAURI_INVOKE<AutoStatus>("auto_status"),
+	/**
+	 *  `auto_status_cached()` (`docs/22` sections 3.3 and 12.6): the same status as each provider last
+	 *  said it, and no program is asked to check anything. The webview reads it after a change of the
+	 *  choice, the consent or the instructions and on `auto_status_changed`.
+	 */
+	autoStatusCached: () => __TAURI_INVOKE<AutoStatus>("auto_status_cached"),
 	/**  `install_cli_link()`: the "Install Command-Line Tool…" menu item. */
 	installCliLink: () => __TAURI_INVOKE<CliLinkResult>("install_cli_link"),
 	/**  `cli_link_status()`. */
@@ -540,9 +546,9 @@ export type AutoSource =
 "agy";
 
 /**
- *  `auto_status()`: the four providers and which one grades now (`docs/22` sections 11 and 12.6; the
- *  core's `AutoStatus`, which replaces `AppleAutoStatus`). Preferences shows its "Auto grading" row
- *  only while `visible`.
+ *  `auto_status()` and `auto_status_cached()`: the four providers and which one grades now (`docs/22`
+ *  sections 11 and 12.6; the core's `AutoStatus`, which replaces `AppleAutoStatus`). Preferences
+ *  shows its "Auto grading" row while `visible`, or while the saved choice is a program.
  */
 export type AutoStatus = {
 	/**  Every provider, in the dropdown's order. */
@@ -558,7 +564,10 @@ export type AutoStatus = {
 	effective: AutoProvider,
 	/**  `effective` is not `yellowmoon`. */
 	active: boolean,
-	/**  The dropdown and the instructions show. */
+	/**
+	 *  A provider is there: the dropdown and the instructions show (they also show while the saved
+	 *  choice is a program, so that it can be withdrawn).
+	 */
 	visible: boolean,
 	/**  The saved consent. */
 	consent: AutoConsent,
@@ -578,7 +587,7 @@ export type AutoStatus = {
 
 /**
  *  `auto_status_changed` (`docs/22` section 12.6): a provider's availability changed (a program was
- *  found, signed in or out, or a check ended). No data; the webview asks `auto_status()` again.
+ *  found, signed in or out, or a check ended). No data; the webview reads `auto_status_cached()`.
  */
 export type AutoStatusChanged = null;
 

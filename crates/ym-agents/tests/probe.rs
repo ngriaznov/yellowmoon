@@ -8,11 +8,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use common::{Rig, install, known_path, locations_in, read_runs};
+use common::{Rig, install, known_path, locations_in};
 use tempfile::TempDir;
+use ym_agents::ClaudeAdvisor;
 use ym_agents::advisor::Source;
 use ym_agents::tool::{Tool, Tuning};
-use ym_agents::{AgyAdvisor, ClaudeAdvisor};
 use ym_core::apple_auto::{AutoAdvisor, Availability, UnavailableReason};
 
 #[test]
@@ -213,10 +213,23 @@ fn not_installed_is_searched_again_by_refresh() {
 
 #[test]
 fn a_start_of_either_kind_makes_no_request() {
-    let rig = Rig::claude("signed_in");
-    rig.advisor.start();
-    rig.advisor.settle(Duration::from_secs(20));
-    assert!(rig.requests().is_empty());
-    let _ = AgyAdvisor::with_program(common::double(Tool::Agy));
-    assert!(read_runs(rig.record.path()).iter().all(|r| !r.is_request()));
+    // The first probe of both advisors (`StartProbe::Now`) finds the program and asks its version; it
+    // sends no picture, and for `agy` it does not even make the program contact its service.
+    let claude = Rig::claude("signed_in");
+    claude.advisor.start();
+    claude.advisor.settle(Duration::from_secs(20));
+    assert!(claude.requests().is_empty());
+    assert_eq!(claude.runs().len(), 2, "claude: --version, auth status");
+    assert!(claude.advisor.availability().is_available());
+
+    let agy = Rig::agy("signed_in");
+    agy.advisor.start();
+    agy.advisor.settle(Duration::from_secs(20));
+    assert!(agy.requests().is_empty());
+    assert!(
+        agy.runs().iter().all(|r| r.is_version()),
+        "agy: --version only"
+    );
+    assert_eq!(agy.runs().len(), 1);
+    assert_eq!(agy.advisor.details().tool_version.as_deref(), Some("1.4.7"));
 }

@@ -23,6 +23,10 @@ pub enum Level {
 
 type Job<T> = Box<dyn FnOnce() -> T + Send>;
 
+/// What a probe's result becomes before it replaces the reading, applied under the cache's lock (the
+/// advisor holds a sign-out that a request found: [`crate::advisor`]).
+pub type Merge<T> = Box<dyn Fn(T) -> T + Send + Sync>;
+
 struct State<T> {
     current: T,
     /// The level of the probe that runs now.
@@ -38,6 +42,7 @@ struct Shared<T> {
     idle: Condvar,
     listeners: Mutex<Vec<Listener>>,
     min_interval: Duration,
+    merge: Option<Merge<T>>,
 }
 
 /// The cached reading of one program with the machinery around it. Cheap to clone; every clone is the
@@ -61,7 +66,20 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 impl<T: Clone + PartialEq + Send + 'static> Prober<T> {
     /// A cache holding `initial`, whose full probes are at least `min_interval` apart.
     #[must_use]
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     pub fn new(initial: T, min_interval: Duration) -> Self {
+        Self::build(initial, min_interval, None)
+    }
+
+    /// As [`Prober::new`], with `merge` applied to each probe's result before it becomes the reading.
+    /// It runs under the cache's lock, so it sees every [`Prober::set`] and [`Prober::modify`] that
+    /// came before it and none half-way.
+    #[must_use]
+    pub fn with_merge(initial: T, min_interval: Duration, merge: Merge<T>) -> Self {
+        Self::build(initial, min_interval, Some(merge))
+    }
+
+    fn build(initial: T, min_interval: Duration, merge: Option<Merge<T>>) -> Self {
         Self {
             shared: Arc::new(Shared {
                 state: Mutex::new(State {
@@ -73,6 +91,7 @@ impl<T: Clone + PartialEq + Send + 'static> Prober<T> {
                 idle: Condvar::new(),
                 listeners: Mutex::new(Vec::new()),
                 min_interval,
+                merge,
             }),
         }
     }
@@ -85,18 +104,34 @@ impl<T: Clone + PartialEq + Send + 'static> Prober<T> {
 
     /// Whether a probe runs now.
     #[must_use]
-    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     pub fn is_running(&self) -> bool {
         lock(&self.shared.state).running.is_some()
     }
 
-    /// Replaces the reading (a request's outcome: a success renews `available`, a sign-out is
-    /// `signed_out`) and calls the listeners when it differs.
+    /// Replaces the reading and calls the listeners when it differs. (The advisors change the reading
+    /// with [`Prober::modify`], which looks at what it is now.)
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     pub fn set(&self, value: T) {
         let changed = {
             let mut state = lock(&self.shared.state);
             let changed = state.current != value;
             state.current = value;
+            changed
+        };
+        if changed {
+            self.notify();
+        }
+    }
+
+    /// Changes the reading in place, atomically (a request's outcome that depends on what the reading
+    /// is now), and calls the listeners when it differs.
+    pub fn modify(&self, change: impl FnOnce(&mut T)) {
+        let changed = {
+            let mut state = lock(&self.shared.state);
+            let mut next = state.current.clone();
+            change(&mut next);
+            let changed = state.current != next;
+            state.current = next;
             changed
         };
         if changed {
@@ -157,6 +192,10 @@ impl<T: Clone + PartialEq + Send + 'static> Prober<T> {
                 let mut state = lock(&self.shared.state);
                 let changed = match result {
                     Ok(value) => {
+                        let value = match &self.shared.merge {
+                            Some(merge) => merge(value),
+                            None => value,
+                        };
                         let changed = state.current != value;
                         state.current = value;
                         changed

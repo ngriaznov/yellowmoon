@@ -589,9 +589,10 @@ export interface ProviderStatus {
 }
 
 /**
- * `auto_status()` (`docs/22` sections 11 and 12.6; it replaces `apple_auto_status()`): the four providers in the dropdown's order, the saved
- * choice, the one that grades now (`effective`: the chosen one while it is available and agreed to, else `yellowmoon`) and whether the
- * "Auto grading" row and the instructions show at all (`visible`: Apple Intelligence is available, or one of the programs is listed).
+ * `auto_status()` and `auto_status_cached()` (`docs/22` sections 11 and 12.6; they replace `apple_auto_status()`): the four providers in the
+ * dropdown's order, the saved choice, the one that grades now (`effective`: the chosen one while it is available and agreed to, else
+ * `yellowmoon`) and whether any provider calls for the "Auto grading" row and the instructions (`visible`: Apple Intelligence is available,
+ * or one of the programs is listed). Preferences shows the row while `visible` or while the saved choice is a program (`autoRowShown`).
  */
 export interface AutoStatus {
   providers: ProviderStatus[];
@@ -603,7 +604,7 @@ export interface AutoStatus {
   effective: AutoProvider;
   /** `effective` is not `yellowmoon`. */
   active: boolean;
-  /** Preferences shows its "Auto grading" row and the instructions. */
+  /** A provider is there: Preferences shows its "Auto grading" row and the instructions (also while the saved choice is a program). */
   visible: boolean;
   consent: AutoConsent;
   /** The table's version (`docs/19` section 5). */
@@ -1286,7 +1287,7 @@ export interface ApiEvents {
   render_stats: RenderStats;
   export_progress: ExportProgress;
   looks_changed: null;
-  /** A provider's availability changed (a program found, signed in or out, a probe ended): ask `auto_status()` again (`docs/22` section 12.6). */
+  /** A provider's availability changed (a program found, signed in or out, a probe ended): read `auto_status_cached()` again (`docs/22` section 12.6). */
   auto_status_changed: null;
   update_state: UpdateState;
   error: AppError;

@@ -252,3 +252,104 @@ fn a_program_that_writes_two_megabytes_before_it_answers_still_answers() {
     rig.probe();
     assert!(rig.advisor.ask(&halves(), "Plain.").is_ok());
 }
+
+#[test]
+fn after_cancel_wait_idle_sees_every_child_reaped_and_every_folder_gone() {
+    let pids = tempfile::TempDir::new().unwrap();
+    let pidfile = pids.path().join("pids");
+    let p = pidfile.clone();
+    let rig = Rig::agy_with("slow", move |t| {
+        t.extra_env
+            .push(("YM_FAKE_PIDFILE".into(), p.into_os_string()));
+    });
+    rig.probe();
+    let advisor = Arc::clone(&rig.advisor);
+    let worker = std::thread::spawn(move || advisor.ask(&dark_flat(), "Plain."));
+    wait_for_slow(&pidfile);
+    assert_eq!(rig.leftovers(), 1, "the folder with the copy of the photo");
+    assert!(
+        !rig.advisor.wait_idle(Duration::from_millis(300)),
+        "a request runs"
+    );
+    rig.advisor.cancel();
+    assert!(rig.advisor.wait_idle(Duration::from_secs(3)));
+    assert_tree_dead(&pidfile);
+    assert_eq!(rig.leftovers(), 0, "the photo's copy is gone");
+    assert!(
+        worker
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .message
+            .contains("cancelled")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_program_that_ignores_sigterm_is_gone_after_wait_idle() {
+    let pids = tempfile::TempDir::new().unwrap();
+    let pidfile = pids.path().join("pids");
+    let p = pidfile.clone();
+    let rig = Rig::agy_with("slow_deaf", move |t| {
+        t.extra_env
+            .push(("YM_FAKE_PIDFILE".into(), p.into_os_string()));
+    });
+    rig.probe();
+    let advisor = Arc::clone(&rig.advisor);
+    let worker = std::thread::spawn(move || advisor.ask(&dark_flat(), "Plain."));
+    wait_for_slow(&pidfile);
+    let leader = common::pids_in(&pidfile)[0].clone();
+    rig.advisor.cancel();
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(common::pid_running(&leader), "it ignores SIGTERM");
+    assert!(rig.advisor.wait_idle(Duration::from_secs(6)));
+    assert_tree_dead(&pidfile);
+    assert_eq!(rig.leftovers(), 0);
+    assert!(worker.join().unwrap().is_err());
+}
+
+#[test]
+fn cancel_stops_a_hanging_sign_in_check_too() {
+    let pids = tempfile::TempDir::new().unwrap();
+    let pidfile = pids.path().join("pids");
+    let p = pidfile.clone();
+    let rig = Rig::agy_with("signin_hang", move |t| {
+        t.probe.agy_usage = Duration::from_secs(60);
+        t.extra_env
+            .push(("YM_FAKE_PIDFILE".into(), p.into_os_string()));
+    });
+    rig.advisor.refresh();
+    let until = Instant::now() + Duration::from_secs(20);
+    while !pidfile.is_file() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(pidfile.is_file(), "the sign-in check did not start");
+    let before = rig.advisor.availability();
+    let cancelled_at = Instant::now();
+    rig.advisor.cancel();
+    assert!(rig.advisor.wait_idle(Duration::from_secs(3)));
+    assert!(cancelled_at.elapsed() < Duration::from_secs(3));
+    assert_tree_dead(&pidfile);
+    assert_eq!(rig.leftovers(), 0);
+    assert_eq!(rig.advisor.availability(), before);
+}
+
+#[test]
+fn an_automatic_probe_does_not_undo_a_sign_out_that_a_request_found() {
+    // `agy -p /usage` exits 0 while the requests answer 401.
+    let rig = Rig::agy("unauthenticated");
+    rig.probe();
+    assert!(rig.advisor.availability().is_available());
+    assert_eq!(
+        rig.advisor.ask(&dark_flat(), "Plain.").unwrap_err().kind,
+        FailureKind::NotSignedIn
+    );
+    let signed_out = Availability::Unavailable(UnavailableReason::SignedOut);
+    assert_eq!(rig.advisor.availability(), signed_out);
+    rig.probe();
+    rig.probe();
+    assert_eq!(rig.advisor.availability(), signed_out);
+    rig.probe_asked();
+    assert!(rig.advisor.availability().is_available());
+}

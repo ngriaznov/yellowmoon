@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { MOCK_APPLE_INFO, MOCK_CLAUDE_INFO } from "../api.mock";
-import { mockProviderStatus } from "../api/providersMock";
-import type { AppleAuto, AutoConsent } from "../api/types";
+import { mockAutoStatus, mockProviderStatus } from "../api/providersMock";
+import type { MockProviders } from "../api/providersMock";
+import type { AppleAuto, AutoConsent, AutoProvider } from "../api/types";
 import {
   autoCardLine,
   AUTO_PROVIDERS,
+  autoRowShown,
   consentBody,
   CONSENT_COPY,
+  dropdownValue,
   gradedByNote,
   gradingHint,
   gradingTitle,
@@ -18,6 +21,7 @@ import {
   stateProvider,
   unavailableHint,
   unavailableTag,
+  USE_DEFAULT_AUTO,
 } from "./autoProviders";
 
 describe("the words of the Auto providers (docs/22 sections 3.4 and 12)", () => {
@@ -86,6 +90,41 @@ describe("the words of the Auto providers (docs/22 sections 3.4 and 12)", () => 
     expect(savedChoiceNote("claude", "apple")).toBeNull();
     expect(savedChoiceNote("apple", "yellowmoon")).toBeNull();
     expect(savedChoiceNote("yellowmoon", "yellowmoon")).toBeNull();
+  });
+
+  it("shows the row while a provider is there or the saved choice is a program, and not for a saved Apple Intelligence that is gone", () => {
+    const status = (providers: MockProviders, preference: AutoProvider, consent: AutoConsent = { claude: true, agy: true }) =>
+      mockAutoStatus({ providers, preference, consent, own: "" });
+    // A provider is there.
+    expect(autoRowShown(status({ apple: "available" }, "apple"))).toBe(true);
+    expect(autoRowShown(status({ claude: "signed_out" }, "yellowmoon"))).toBe(true);
+    // Nothing is there: the default (a saved Apple Intelligence) and Default Auto hide the row, as the browser build does.
+    expect(autoRowShown(status({}, "apple"))).toBe(false);
+    expect(autoRowShown(status({ apple: "unavailable" }, "apple"))).toBe(false);
+    expect(autoRowShown(status({ apple: "unavailable" }, "yellowmoon"))).toBe(false);
+    // A saved program keeps it, so the choice can always be seen and withdrawn.
+    expect(autoRowShown(status({ apple: "unavailable" }, "claude"))).toBe(true);
+    expect(autoRowShown(status({ apple: "unavailable" }, "agy"))).toBe(true);
+  });
+
+  it("shows a saved program in the dropdown only while it is listed and cannot be chosen, so that Default Auto is a change", () => {
+    const value = (providers: MockProviders, preference: AutoProvider, consent: AutoConsent = { claude: true, agy: true }) =>
+      dropdownValue(mockAutoStatus({ providers, preference, consent, own: "" }));
+    // Listed but not usable: the program itself (a disabled entry with its tag).
+    expect(value({ claude: "signed_out" }, "claude")).toBe("claude");
+    expect(value({ claude: "too_old" }, "claude")).toBe("claude");
+    expect(value({ agy: "unavailable" }, "agy")).toBe("agy");
+    // Usable: who grades. Not listed (gone, or still being checked): Default Auto grades, and the note's button withdraws it.
+    expect(value({ claude: "available" }, "claude")).toBe("claude");
+    expect(value({ apple: "available" }, "apple")).toBe("apple");
+    expect(value({ apple: "unavailable" }, "claude")).toBe("yellowmoon");
+    expect(value({ claude: "checking" }, "claude")).toBe("yellowmoon");
+    // Available but never agreed to: Default Auto grades and is shown.
+    expect(value({ claude: "available" }, "claude", { claude: false, agy: false })).toBe("yellowmoon");
+    // A saved choice that is not a program shows who grades.
+    expect(value({ claude: "signed_out" }, "yellowmoon")).toBe("yellowmoon");
+    expect(value({ claude: "signed_out", apple: "available" }, "apple")).toBe("apple");
+    expect(USE_DEFAULT_AUTO).toBe("Use Default Auto");
   });
 
   it("has the consent dialog's text for each program, with the Windows sentence only on Windows", () => {

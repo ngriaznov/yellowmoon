@@ -7,8 +7,9 @@
 mod fakes;
 
 use fakes::{
-    Recorder, answer_for, decode_jpeg, first_word, flood, hang, has, maybe_sleeper, must_fail, out,
-    reject, request_index, requests_so_far, require, scenario, slow, twist, value_of, version,
+    Recorder, answer_for, counting, decode_jpeg, first_word, flood, hang, has, maybe_sleeper,
+    must_fail, out, planned, reject, request_index, requests_so_far, require, scenario, slow,
+    twist, value_of, version,
 };
 use serde_json::{Value, json};
 
@@ -128,17 +129,43 @@ fn request(args: &[String], prompt: &str, scenario: &str, recorder: &Recorder) {
         eprintln!("fatal: key sk-ant-FAKE0123456789 was rejected");
         std::process::exit(3);
     }
-    if scenario == "slow" {
+    if matches!(scenario, "slow" | "slow_deaf") {
         slow();
     }
     if scenario == "backpressure" {
         flood(2);
     }
 
-    let counting = scenario == "late_signout" || std::env::var_os("YM_FAKE_FAILS").is_some();
-    let index = if counting { request_index() } else { 0 };
+    let index = if counting(scenario) {
+        request_index()
+    } else {
+        0
+    };
 
     fakes::delay();
+    // What `YM_FAKE_PLAN` says this request does comes before the scenario.
+    match planned(index).as_deref() {
+        Some("fail") => {
+            eprintln!("Error: fake failure");
+            std::process::exit(1);
+        }
+        Some("rate") => {
+            eprintln!(
+                "AGY_ERROR: {{\"status\":\"RESOURCE_EXHAUSTED\",\"code\":429,\"retryable\":true,\"id\":\"fake\"}}"
+            );
+            std::process::exit(3);
+        }
+        Some("bad") => {
+            let answer = Value::Object(twist(answer_for(&picture, &word), "malformed"));
+            envelope("SUCCESS", Some(answer), None, &[]);
+            return;
+        }
+        Some("signedout") => signed_out(),
+        Some("refused") => {
+            reject("the agy double has no refusal: use fail, rate, bad or signedout")
+        }
+        _ => {}
+    }
     match scenario {
         "signed_out" => signed_out(),
         "late_signout" if index >= 1 => signed_out(),

@@ -786,6 +786,20 @@ span.ym-filmstrip__thumb {
   padding: 0 0 12px;
   border-bottom: 1px solid var(--rim);
 }
+/* The saved-choice note with its "Use Default Auto" button beside it, at the right end as the row's control is; the note wraps to give it room. */
+.ym-pref__saved {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ym-pref__saved .ym-pref__note {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.ym-pref__saved [data-slot="button"] {
+  flex: none;
+}
 .ym-pref__note.ym-row-note {
   margin: 0;
   font-size: 0.8125rem;
@@ -808,6 +822,11 @@ span.ym-filmstrip__thumb {
 }
 .ym-pref__tag {
   margin-inline-start: auto;
+}
+/* The same tag in the trigger, after the name of a saved program that cannot be chosen: tighter, so that the longest name and tag
+   ("Claude Code" and "Update needed") fit its 220 px whole. */
+.ym-pref__tag.ym-pref__tag--trigger {
+  padding-inline: 4px;
 }
 /* The instructions for the grading model under the Auto grading row (docs/19 section 2): a label, the text area, then the hint and the
    count beside the Reset to default button. */

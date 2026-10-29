@@ -166,6 +166,21 @@ describe("Preferences › Auto grading with Apple Intelligence", () => {
     await waitFor(() => expect(h!.store.getState().auto?.instructions).toBe("default"));
   });
 
+  it("reads the cached status after each save of the instructions, never the full one that makes the programs check (docs/22 D7)", async () => {
+    const dialog = await openPreferences("answered");
+    const full = vi.spyOn(h!.api, "autoStatus");
+    const cached = vi.spyOn(h!.api, "autoStatusCached");
+    const field = within(dialog).getByRole("textbox", { name: APPLE_INSTRUCTIONS_LABEL });
+    await h!.user.clear(field);
+    await h!.user.type(field, "Moody night grade.");
+    await waitFor(() => expect(cached).toHaveBeenCalledTimes(1), { timeout: APPLE_INSTRUCTIONS_SAVE_MS + 2000 });
+    await waitFor(() => expect(h!.store.getState().auto?.instructions).toBe("edited"));
+    await h!.user.type(field, " Cool.");
+    await h!.user.tab();
+    await waitFor(() => expect(cached).toHaveBeenCalledTimes(2));
+    expect(full).not.toHaveBeenCalled();
+  });
+
   it("asks again each time Preferences opens, so a Mac where Apple Intelligence was switched on shows the row", async () => {
     let dialog = await openPreferences("unavailable");
     expect(within(dialog).queryByRole("group", { name: AUTO_GRADING_TITLE })).toBeNull();

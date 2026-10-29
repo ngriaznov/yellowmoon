@@ -162,6 +162,12 @@ impl<A: AutoAdvisor> Rig<A> {
         self.advisor.settle(Duration::from_secs(30));
     }
 
+    /// As [`Rig::probe`], for a check the person asked for (Preferences opening).
+    pub fn probe_asked(&self) {
+        self.advisor.refresh_asked();
+        self.advisor.settle(Duration::from_secs(30));
+    }
+
     /// Every run the double saw, in the order they started.
     pub fn runs(&self) -> Vec<Run> {
         read_runs(self.record.path())
@@ -272,6 +278,15 @@ pub fn assert_tree_dead(pidfile: &Path) {
     for pid in std::fs::read_to_string(pidfile).unwrap_or_default().lines() {
         assert!(!pid_running(pid), "pid {pid} is still running");
     }
+}
+
+/// The pids a double wrote to `pidfile`: its own first, then its grandchild's when it has one.
+pub fn pids_in(pidfile: &Path) -> Vec<String> {
+    std::fs::read_to_string(pidfile)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Waits for the `slow` double to have written its pid file and its grandchild's first heartbeat.

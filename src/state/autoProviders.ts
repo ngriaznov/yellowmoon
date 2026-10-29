@@ -5,7 +5,7 @@
  * tests use one copy of every sentence. The core has the same table for `ym` (`ym_core::auto_provider::unavailable_hint`); a sentence
  * changes in both places.
  */
-import type { AppleAuto, AppleAutoReason, AutoProvider, ProviderState, ProviderStatus } from "../api/types";
+import type { AppleAuto, AppleAutoReason, AutoProvider, AutoStatus, ProviderState, ProviderStatus } from "../api/types";
 
 /** The providers in the dropdown's order (`AutoProvider::ALL`). */
 export const AUTO_PROVIDERS: readonly AutoProvider[] = ["yellowmoon", "apple", "claude", "agy"];
@@ -100,6 +100,29 @@ export function providerNote(status: ProviderStatus, os: string): string | null 
   if (!status.listed || status.selectable) return null;
   return unavailableHint(status.provider, status.reason, status.tool_version, os);
 }
+
+/**
+ * Whether Preferences shows the "Auto grading" row (`docs/22` section 12.1): while a provider is there (`visible`), and also while the
+ * saved choice is a program, so that the person can always see it and withdraw it ("Use Default Auto", `docs/22` section 12.2) even when
+ * the program was uninstalled and nothing else is listed. A saved Apple Intelligence (the default) does not keep the row: it sends
+ * nothing anywhere, and the row hides where Apple Intelligence is not available.
+ */
+export function autoRowShown(auto: AutoStatus): boolean {
+  return auto.visible || isCloud(auto.preference);
+}
+
+/**
+ * The provider the dropdown shows (`docs/22` section 12.1): the one that grades now, except that a saved program that is listed but cannot
+ * be chosen (signed out, too old, not working) shows as itself, as the disabled entry with its tag. Otherwise Default Auto would already
+ * be the value and choosing it would be no change, so the person could not withdraw the saved program.
+ */
+export function dropdownValue(auto: AutoStatus): AutoProvider {
+  const saved = auto.providers.find((p) => p.provider === auto.preference);
+  return saved !== undefined && saved.listed && !saved.selectable ? saved.provider : auto.effective;
+}
+
+/** The text button beside the saved-choice note: it saves Default Auto as the choice, with no consent involved (`docs/22` section 12.2). */
+export const USE_DEFAULT_AUTO = "Use Default Auto";
 
 /** The saved-choice note (`docs/22` section 12.2): the saved program is not the one that grades now. */
 export function savedChoiceNote(saved: AutoProvider, effective: AutoProvider): string | null {

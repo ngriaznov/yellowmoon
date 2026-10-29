@@ -276,12 +276,20 @@ impl AutoAdvisor for ClaudeAdvisor {
         self.core.refresh(Level::Full);
     }
 
+    fn refresh_asked(&self) {
+        self.core.refresh_asked();
+    }
+
     fn settle(&self, timeout: Duration) {
         self.core.settle(timeout);
     }
 
     fn cancel(&self) {
         self.core.cancel();
+    }
+
+    fn wait_idle(&self, timeout: Duration) -> bool {
+        self.core.wait_idle(timeout)
     }
 
     fn on_change(&self, listener: ChangeListener) {

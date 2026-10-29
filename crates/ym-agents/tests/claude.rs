@@ -227,7 +227,8 @@ fn a_late_sign_out_ends_as_not_signed_in_and_flips_the_state() {
         Availability::Unavailable(UnavailableReason::SignedOut)
     );
     assert_eq!(heard.load(Ordering::SeqCst), 1);
-    // A not_signed_in does not count toward the breaker: the third request still goes through.
+    // The flipped state does not stop `ask` itself (the core decides whether to ask); the breaker's
+    // count is the next test's.
     assert_eq!(
         rig.advisor.ask(&dark_flat(), "Plain.").unwrap_err().kind,
         FailureKind::NotSignedIn
@@ -404,4 +405,284 @@ fn a_program_that_writes_two_megabytes_before_reading_still_answers() {
     let answer = rig.advisor.ask(&halves(), "Plain.").unwrap();
     assert_eq!(answer.scene, "Test picture");
     assert_eq!(rig.leftovers(), 0);
+}
+
+#[test]
+fn not_signed_in_does_not_count_toward_the_breaker() {
+    // Two failures the breaker counts, a request that finds the program signed out, two more: five
+    // requests, four failures, never three in a row. Were `not_signed_in` counted (or ignored, which
+    // leaves the count where it was) the fifth request would find the breaker open.
+    let rig = Rig::claude_with("signed_in", |t| {
+        t.extra_env.push((
+            "YM_FAKE_PLAN".into(),
+            "fail,fail,signedout,fail,fail,ok".into(),
+        ));
+        t.breaker_cooldown = Duration::from_secs(60);
+    });
+    rig.probe();
+    let kinds: Vec<Option<FailureKind>> = (0..6)
+        .map(|_| {
+            rig.advisor
+                .ask(&dark_flat(), "Plain.")
+                .err()
+                .map(|e| e.kind)
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            Some(FailureKind::CliFailed),
+            Some(FailureKind::CliFailed),
+            Some(FailureKind::NotSignedIn),
+            Some(FailureKind::CliFailed),
+            Some(FailureKind::CliFailed),
+            None,
+        ]
+    );
+    assert!(rig.advisor.details().breaker.is_none());
+    assert_eq!(rig.requests().len(), 6, "every request reached the program");
+}
+
+// ----- cancel() and wait_idle -----
+
+/// A request on its own thread against the `slow` double (`scenario`), started and waiting on its pid file.
+fn slow_request(
+    scenario: &str,
+    adjust: impl FnOnce(&mut ym_agents::tool::Tuning),
+) -> (
+    Rig<ym_agents::ClaudeAdvisor>,
+    std::path::PathBuf,
+    tempfile::TempDir,
+    std::thread::JoinHandle<
+        Result<ym_core::apple_auto::AdvisorAnswer, ym_core::apple_auto::AdvisorError>,
+    >,
+) {
+    let pids = tempfile::TempDir::new().unwrap();
+    let pidfile = pids.path().join("pids");
+    let p = pidfile.clone();
+    let rig = Rig::claude_with(scenario, move |t| {
+        t.extra_env
+            .push(("YM_FAKE_PIDFILE".into(), p.into_os_string()));
+        adjust(t);
+    });
+    rig.probe();
+    let advisor = Arc::clone(&rig.advisor);
+    let worker = std::thread::spawn(move || advisor.ask(&dark_flat(), "Plain."));
+    wait_for_slow(&pidfile);
+    (rig, pidfile, pids, worker)
+}
+
+#[test]
+fn after_cancel_wait_idle_sees_every_child_reaped_and_every_folder_gone() {
+    let (rig, pidfile, _pids, worker) = slow_request("slow", |_| {});
+    assert_eq!(
+        rig.leftovers(),
+        1,
+        "the request's folder exists while it runs"
+    );
+    // `cancel` does not wait for the request's thread, which reaps the child and drops the folder;
+    // `wait_idle` does. The caller may be about to exit and wants both.
+    let cancelled_at = Instant::now();
+    rig.advisor.cancel();
+    assert!(rig.advisor.wait_idle(Duration::from_secs(3)));
+    assert!(cancelled_at.elapsed() < Duration::from_secs(3));
+    assert_tree_dead(&pidfile);
+    assert_eq!(
+        rig.leftovers(),
+        0,
+        "no ym-auto-* folder of that run remains"
+    );
+    let error = worker.join().unwrap().unwrap_err();
+    assert!(error.message.contains("cancelled"), "{error:?}");
+}
+
+#[test]
+fn wait_idle_is_true_when_nothing_runs_and_false_at_its_timeout_while_a_request_does() {
+    let (rig, pidfile, _pids, worker) = slow_request("slow", |_| {});
+    let started = Instant::now();
+    assert!(!rig.advisor.wait_idle(Duration::from_millis(400)));
+    let waited = started.elapsed();
+    assert!(
+        waited >= Duration::from_millis(350) && waited < Duration::from_secs(3),
+        "{waited:?}"
+    );
+    rig.advisor.cancel();
+    assert!(rig.advisor.wait_idle(Duration::from_secs(3)));
+    assert!(rig.advisor.wait_idle(Duration::ZERO), "and it stays idle");
+    assert_tree_dead(&pidfile);
+    let _ = worker.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_program_that_ignores_sigterm_is_gone_after_wait_idle() {
+    let (rig, pidfile, _pids, worker) = slow_request("slow_deaf", |_| {});
+    let leader = common::pids_in(&pidfile)[0].clone();
+    rig.advisor.cancel();
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(
+        common::pid_running(&leader),
+        "the double ignores SIGTERM: it must still be there"
+    );
+    // The request's thread sends the SIGKILL after its 2 s of grace.
+    assert!(rig.advisor.wait_idle(Duration::from_secs(6)));
+    assert!(!common::pid_running(&leader));
+    assert_tree_dead(&pidfile);
+    assert_eq!(rig.leftovers(), 0);
+    assert!(worker.join().unwrap().is_err());
+}
+
+#[test]
+fn cancel_stops_a_hanging_probe_too() {
+    let pids = tempfile::TempDir::new().unwrap();
+    let pidfile = pids.path().join("pids");
+    let p = pidfile.clone();
+    let rig = Rig::claude_with("signin_hang", move |t| {
+        t.probe.claude_auth = Duration::from_secs(60);
+        t.extra_env
+            .push(("YM_FAKE_PIDFILE".into(), p.into_os_string()));
+    });
+    rig.advisor.refresh();
+    // `claude auth status` hangs (the double writes its pid when it starts to).
+    let until = Instant::now() + Duration::from_secs(20);
+    while !pidfile.is_file() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(pidfile.is_file(), "the sign-in check did not start");
+    let before = rig.advisor.availability();
+    assert!(
+        !rig.advisor.wait_idle(Duration::from_millis(200)),
+        "the probe runs"
+    );
+
+    let cancelled_at = Instant::now();
+    rig.advisor.cancel();
+    assert!(rig.advisor.wait_idle(Duration::from_secs(3)));
+    assert!(cancelled_at.elapsed() < Duration::from_secs(3));
+    assert_tree_dead(&pidfile);
+    assert_eq!(rig.leftovers(), 0);
+    assert_eq!(
+        rig.advisor.availability(),
+        before,
+        "a probe that was stopped half-way says nothing"
+    );
+    assert!(rig.advisor.wait_idle(Duration::ZERO), "and it stays idle");
+}
+
+// ----- a sign-out that a request found -----
+
+#[test]
+fn an_automatic_probe_does_not_undo_a_sign_out_that_a_request_found() {
+    // `auth status` reads the stored credentials and says signed in while the service answers 401.
+    let rig = Rig::claude("unauthenticated");
+    rig.probe();
+    assert!(rig.advisor.availability().is_available());
+    let heard = Arc::new(AtomicUsize::new(0));
+    let h = Arc::clone(&heard);
+    rig.advisor.on_change(Arc::new(move || {
+        h.fetch_add(1, Ordering::SeqCst);
+    }));
+    assert_eq!(
+        rig.advisor.ask(&dark_flat(), "Plain.").unwrap_err().kind,
+        FailureKind::NotSignedIn
+    );
+    let signed_out = Availability::Unavailable(UnavailableReason::SignedOut);
+    assert_eq!(rig.advisor.availability(), signed_out);
+    assert_eq!(heard.load(Ordering::SeqCst), 1);
+
+    // The core's refreshes (a session opening, a change of the preferences, before an export) are
+    // automatic: the program still says `loggedIn`, and it is not believed.
+    for _ in 0..3 {
+        rig.probe();
+        assert_eq!(rig.advisor.availability(), signed_out);
+    }
+    assert!(
+        rig.runs().iter().filter(|r| r.is_sign_in_check()).count() >= 4,
+        "the probes did run"
+    );
+    assert_eq!(
+        heard.load(Ordering::SeqCst),
+        1,
+        "and told nobody of a change"
+    );
+    assert_eq!(rig.advisor.details().auth.as_deref(), Some("oauth_token"));
+
+    // The person opens Preferences: that check is believed.
+    rig.probe_asked();
+    assert!(rig.advisor.availability().is_available());
+    assert_eq!(heard.load(Ordering::SeqCst), 2);
+    // If the service still says 401, the next request finds out again, once.
+    assert_eq!(
+        rig.advisor.ask(&dark_flat(), "Plain.").unwrap_err().kind,
+        FailureKind::NotSignedIn
+    );
+    rig.probe();
+    assert_eq!(rig.advisor.availability(), signed_out);
+}
+
+#[test]
+fn a_held_sign_out_ends_with_a_success_or_when_its_hold_has_passed() {
+    // A success clears it: the plan fails the first request as signed out and answers the second.
+    let rig = Rig::claude_with("signed_in", |t| {
+        t.extra_env
+            .push(("YM_FAKE_PLAN".into(), "signedout,ok".into()));
+    });
+    rig.probe();
+    assert!(rig.advisor.ask(&dark_flat(), "Plain.").is_err());
+    assert!(!rig.advisor.availability().is_available());
+    rig.probe();
+    assert!(!rig.advisor.availability().is_available(), "held");
+    assert!(rig.advisor.ask(&dark_flat(), "Plain.").is_ok());
+    assert!(rig.advisor.availability().is_available());
+    rig.probe();
+    assert!(
+        rig.advisor.availability().is_available(),
+        "a success ended the hold: a later probe is believed"
+    );
+
+    // Time clears it: the hold is shortened for the test.
+    let rig = Rig::claude_with("unauthenticated", |t| {
+        t.signed_out_hold = Duration::from_secs(1);
+    });
+    rig.probe();
+    assert!(rig.advisor.ask(&dark_flat(), "Plain.").is_err());
+    rig.probe();
+    assert!(
+        !rig.advisor.availability().is_available(),
+        "within the hold"
+    );
+    std::thread::sleep(Duration::from_millis(1100));
+    rig.probe();
+    assert!(
+        rig.advisor.availability().is_available(),
+        "the hold has passed: the probe is believed"
+    );
+}
+
+#[test]
+fn only_the_registrys_check_of_every_advisor_is_the_persons_own() {
+    // Preferences opening and `ym doctor` refresh every advisor at once (`ProviderAdvisors::refresh(None)`
+    // calls `refresh_asked`); every other read refreshes the chosen provider's (`Some`), which is automatic.
+    use ym_core::auto_provider::ProviderAdvisors;
+    let rig = Rig::claude("unauthenticated");
+    rig.probe();
+    let advisor: Arc<dyn AutoAdvisor> = rig.advisor.clone();
+    let advisors = ProviderAdvisors::default().with(AutoProvider::Claude, advisor);
+    assert!(rig.advisor.ask(&dark_flat(), "Plain.").is_err());
+    let signed_out = Availability::Unavailable(UnavailableReason::SignedOut);
+    assert_eq!(rig.advisor.availability(), signed_out);
+
+    advisors.refresh(Some(AutoProvider::Claude));
+    advisors.settle(Duration::from_secs(30));
+    assert_eq!(
+        rig.advisor.availability(),
+        signed_out,
+        "automatic: not believed"
+    );
+    advisors.refresh(None);
+    advisors.settle(Duration::from_secs(30));
+    assert!(
+        rig.advisor.availability().is_available(),
+        "the person's: believed"
+    );
 }

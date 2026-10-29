@@ -213,13 +213,16 @@ export interface AppState {
   /** Whether the command-line tool is linked onto the PATH, once asked for (Preferences). */
   cliLink: CliLinkStatus | null;
   /**
-   * The providers of Auto and which one grades (`auto_status`, `docs/22` section 12.7), asked for each time Preferences opens and again
-   * while it is open when a provider changes; null before the first answer. Preferences shows "Auto grading" only while `visible`.
+   * The providers of Auto and which one grades (`auto_status`, `docs/22` section 12.7), asked for each time Preferences opens (the one
+   * read that makes the programs check) and read again from the cache after a change of the choice, the consent or the instructions and
+   * when a provider changes; null before the first answer. Preferences shows "Auto grading" while `visible` or while the saved choice is
+   * a program.
    */
   auto: AutoStatus | null;
   /**
    * The program whose consent dialog is open over Preferences (`docs/22` section 12.3): chosen in the dropdown before the person agreed to
-   * send photos through it. The dropdown keeps showing the previous provider until they say yes.
+   * send photos through it. The dropdown keeps showing the previous provider until they say yes. It lives only while Preferences is the
+   * dialog: every other overlay, and none, clears it (`set`).
    */
   consentFor: "claude" | "agy" | null;
   /** The operating system the app runs on (`app_info`: "macos", "windows", "linux"), asked for when Preferences opens; null before the answer. */
@@ -520,7 +523,10 @@ export class AppStore {
   readonly getState = (): AppState => this.state;
 
   private set(patch: Partial<AppState>): void {
-    this.state = { ...this.state, ...patch };
+    // The consent question (`docs/22` section 12.3) belongs to Preferences: whatever dialog takes its place (About from the native menu, the
+    // close question, the .cube import, or no dialog at all) drops it, so the next ⌘, never opens Preferences with it already showing.
+    const dropsConsent = patch.overlay !== undefined && patch.overlay !== "preferences" && patch.consentFor === undefined;
+    this.state = { ...this.state, ...patch, ...(dropsConsent ? { consentFor: null } : {}) };
     this.notify();
   }
 
@@ -595,11 +601,10 @@ export class AppStore {
         void this.refreshDisplayLuts();
         void this.refreshPreferences();
       }),
-      // A provider was found, signed in or out, or a check ended. Only Preferences shows the providers, and asking again makes the core
-      // refresh every one of them (`agy`'s sign-in check contacts its service, `docs/22` D7), so nothing is asked unless Preferences is open.
-      api.on("auto_status_changed", () => {
-        if (this.state.overlay === "preferences") void this.refreshAuto();
-      }),
+      // A provider was found, signed in or out, or a check ended. The cached read asks no program to check anything (`docs/22` section
+      // 12.6), so it is safe at any time; only Preferences opening makes them check (`refreshAuto`, `agy`'s sign-in check contacts its
+      // service, D7).
+      api.on("auto_status_changed", () => void this.refreshAutoCached()),
       api.on("error", (error) => this.set({ error })),
       api.on("export_progress", (e) => this.onExportProgress(e)),
       api.on("menu_action", (e) => this.menuHandler?.(e.action)),
@@ -1301,9 +1306,10 @@ export class AppStore {
       const preferences = await this.api.preferencesSet(patch);
       this.set({ preferences });
       // The provider acts, or stops, with the choice and the consent, and every photo is asked again with new instructions; the photos' own
-      // news comes as `settings_changed`.
+      // news comes as `settings_changed`. The cached read: typing instructions saves a preference every few seconds, and none of those
+      // may make a program check its sign-in (`docs/22` D7).
       if (patch.auto_provider !== undefined || patch.auto_consent !== undefined || patch.apple_auto_instructions !== undefined) {
-        void this.refreshAuto();
+        void this.refreshAutoCached();
       }
     } catch (error) {
       if (before) this.set({ preferences: before });
@@ -1312,13 +1318,26 @@ export class AppStore {
   }
 
   /**
-   * Asks which providers this computer has and which one grades (the core reads their availability again: Apple Intelligence may have been
-   * switched on, a program installed or signed in). The core never waits for a program, so this answers at once with what it knows;
-   * `auto_status_changed` says when that moved.
+   * Asks which providers this computer has and which one grades, and makes the core check every one of them again (Apple Intelligence may
+   * have been switched on, a program installed or signed in; `agy`'s sign-in check contacts its service). Only Preferences opening calls
+   * it (`docs/22` section 3.3 and D7); everything else reads {@link AppStore.refreshAutoCached}. The core never waits for a program, so
+   * this answers at once with what it knows; `auto_status_changed` says when that moved.
    */
   async refreshAuto(): Promise<void> {
     try {
       this.set({ auto: await this.api.autoStatus() });
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /**
+   * The same status as each provider last said it, and no program is asked to check anything (`auto_status_cached`, `docs/22` section
+   * 12.6): what the store reads after a change of the choice, the consent or the instructions and on `auto_status_changed`.
+   */
+  async refreshAutoCached(): Promise<void> {
+    try {
+      this.set({ auto: await this.api.autoStatusCached() });
     } catch (error) {
       this.fail(error);
     }
@@ -1389,8 +1408,8 @@ export class AppStore {
   }
 
   closeOverlay(): void {
-    if (this.state.overlay === "import-cube") this.set({ overlay: null, cubeImport: null });
-    else this.set({ overlay: null, consentFor: null });
+    // Closing any dialog drops the consent question too (`set`).
+    this.set(this.state.overlay === "import-cube" ? { overlay: null, cubeImport: null } : { overlay: null });
   }
 
   /** A short message that is not an error. */

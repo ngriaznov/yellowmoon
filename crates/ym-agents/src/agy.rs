@@ -248,23 +248,56 @@ fn exit_three(stderr: &str) -> Fail {
             format!("exit code 3: {}", crate::process::tail_message(stderr)),
         );
     };
-    let upper = line.to_uppercase();
-    let has_word = |word: &str| {
-        upper
-            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .any(|w| w == word)
-    };
-    if upper.contains("RESOURCE_EXHAUSTED") || has_word("429") || upper.contains("RATE LIMIT") {
+    let words = words_of(line);
+    let has = |phrase: &str| words.contains(&format!(" {phrase} "));
+    if has("RESOURCE EXHAUSTED")
+        || has("RATE LIMIT")
+        || has("RATELIMIT")
+        || has("TOO MANY REQUESTS")
+        || has("QUOTA")
+        || has("429")
+    {
         Fail::new(FailureKind::RateLimited, "")
-    } else if upper.contains("UNAUTHENTICATED")
-        || has_word("401")
-        || has_word("403")
-        || upper.contains("AUTHENTICATION")
+    } else if has("UNAUTHENTICATED")
+        || has("401")
+        || has("403")
+        || has("AUTHENTICATION REQUIRED")
+        || has("AUTHENTICATION FAILED")
+        || has("NOT SIGNED IN")
+        || has("NOT LOGGED IN")
+        || has("LOGIN REQUIRED")
     {
         Fail::new(FailureKind::NotSignedIn, "")
     } else {
         Fail::new(FailureKind::CliFailed, message(line))
     }
+}
+
+/// `text` as upper case words, each between single spaces, the whole between two more: `_`, `-`,
+/// punctuation and a change from a lower case letter or digit to an upper case one all separate words
+/// (`RESOURCE_EXHAUSTED`, `rateLimitExceeded` and `Rate-Limit` all give ` RATE LIMIT `), so that a
+/// phrase is found as whole words (`" QUOTA "` is not in `QUOTAS`).
+fn words_of(text: &str) -> String {
+    let mut out = String::from(" ");
+    let mut previous: Option<char> = None;
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            if previous.is_some_and(|p| (p.is_lowercase() || p.is_ascii_digit()) && c.is_uppercase()) {
+                out.push(' ');
+            }
+            out.extend(c.to_uppercase());
+            previous = Some(c);
+        } else {
+            if !out.ends_with(' ') {
+                out.push(' ');
+            }
+            previous = None;
+        }
+    }
+    if !out.ends_with(' ') {
+        out.push(' ');
+    }
+    out
 }
 
 impl AutoAdvisor for AgyAdvisor {
@@ -289,12 +322,20 @@ impl AutoAdvisor for AgyAdvisor {
         self.core.refresh(Level::Full);
     }
 
+    fn refresh_asked(&self) {
+        self.core.refresh_asked();
+    }
+
     fn settle(&self, timeout: Duration) {
         self.core.settle(timeout);
     }
 
     fn cancel(&self) {
         self.core.cancel();
+    }
+
+    fn wait_idle(&self, timeout: Duration) -> bool {
+        self.core.wait_idle(timeout)
     }
 
     fn on_change(&self, listener: ChangeListener) {
@@ -396,6 +437,55 @@ mod tests {
         assert_eq!(kind(run_of("", 3, "AGY_ERROR: {\"status\":\"INTERNAL\",\"code\":500}")), FailureKind::CliFailed);
         assert_eq!(kind(run_of("", 3, "no line")), FailureKind::CliFailed);
         assert_eq!(kind(run_of("", 7, "weird")), FailureKind::CliFailed);
+    }
+
+    #[test]
+    fn the_error_line_is_matched_by_words() {
+        use FailureKind::{CliFailed, NotSignedIn, RateLimited};
+        for (text, want) in [
+            // Rate limits, in the spellings a service uses.
+            (r#"{"status":"RESOURCE_EXHAUSTED","code":429}"#, RateLimited),
+            (r#"{"error":"RATE_LIMIT_EXCEEDED"}"#, RateLimited),
+            (r#"{"reason":"rateLimitExceeded"}"#, RateLimited),
+            (r#"{"reason":"RateLimit"}"#, RateLimited),
+            (r#"{"reason":"ratelimit"}"#, RateLimited),
+            (r#"{"message":"Rate-limit reached, retry later"}"#, RateLimited),
+            (r#"{"message":"Too Many Requests"}"#, RateLimited),
+            (r#"{"error":"TOO_MANY_REQUESTS"}"#, RateLimited),
+            (r#"{"message":"Quota exceeded for this project"}"#, RateLimited),
+            (r#"{"error":"quota-exceeded"}"#, RateLimited),
+            (r#"{"error":"quotaExceeded"}"#, RateLimited),
+            (r#"{"message":"HTTP 429"}"#, RateLimited),
+            // Signed out.
+            (r#"{"status":"UNAUTHENTICATED","code":401}"#, NotSignedIn),
+            (r#"{"code":401}"#, NotSignedIn),
+            (r#"{"message":"HTTP 403 Forbidden"}"#, NotSignedIn),
+            (r#"{"error":"authentication required"}"#, NotSignedIn),
+            (r#"{"error":"AUTHENTICATION_REQUIRED"}"#, NotSignedIn),
+            (r#"{"error":"authenticationFailed"}"#, NotSignedIn),
+            (r#"{"message":"Authentication failed: token expired"}"#, NotSignedIn),
+            (r#"{"message":"You are not signed in"}"#, NotSignedIn),
+            (r#"{"message":"not_logged_in"}"#, NotSignedIn),
+            (r#"{"message":"Login required"}"#, NotSignedIn),
+            // The rate limit is read first.
+            (r#"{"message":"quota exceeded (403)"}"#, RateLimited),
+            // Neither: a word that holds one of the phrases, a number that holds one of the codes.
+            (r#"{"message":"authentication service unavailable"}"#, CliFailed),
+            (r#"{"status":"UNAVAILABLE","detail":"the authentication backend timed out"}"#, CliFailed),
+            (r#"{"message":"AUTHENTICATION_SERVICE_UNAVAILABLE"}"#, CliFailed),
+            (r#"{"status":"INTERNAL","code":500}"#, CliFailed),
+            (r#"{"message":"quotas are listed in the console"}"#, CliFailed),
+            (r#"{"message":"generate limited output"}"#, CliFailed),
+            (r#"{"code":4290,"id":"a4010b"}"#, CliFailed),
+            (r#"{"message":"login page unreachable"}"#, CliFailed),
+        ] {
+            let got = kind(run_of("", 3, &format!("AGY_ERROR: {text}")));
+            assert_eq!(got, want, "{text}");
+        }
+        // The last AGY_ERROR line decides, and a line without the marker is not read.
+        let stderr = "AGY_ERROR: {\"code\":500}\nAGY_ERROR: {\"code\":429}\nquota everywhere";
+        assert_eq!(kind(run_of("", 3, stderr)), RateLimited);
+        assert_eq!(kind(run_of("", 3, "quota 429 unauthenticated")), CliFailed);
     }
 
     #[test]

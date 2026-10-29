@@ -16,6 +16,7 @@ import {
   EXPERIMENTAL_NOTE,
   INSTRUCTIONS_COPY,
   PROVIDER_HINTS,
+  USE_DEFAULT_AUTO,
   WINDOWS_CONSENT_SENTENCE,
 } from "../state/autoProviders";
 
@@ -272,7 +273,10 @@ describe("the notes under the row", () => {
 describe("the saved choice's note", () => {
   it("says the saved program is not available now and Default Auto is used until it is", async () => {
     const dialog = await openPreferences({ providers: { apple: "available", claude: "signed_out" }, autoProvider: "claude", consent: { claude: true, agy: false } });
-    expect(select(dialog)).toHaveTextContent("Default Auto");
+    // The dropdown shows the saved program as the disabled entry it is (so that Default Auto can be chosen); Default Auto grades.
+    expect(select(dialog)).toHaveTextContent("Claude Code Not signed in");
+    const row = within(dialog).getByRole("group", { name: AUTO_GRADING_TITLE });
+    expect(row.querySelector(".ym-pref__hint")).toHaveTextContent(PROVIDER_HINTS.yellowmoon);
     expect(within(dialog).getByText("Your saved choice, Claude Code, isn't available now, so Default Auto is used until it is.")).toHaveAttribute("role", "note");
     // Under Yellowmoon's own hint, with no instructions field: nothing grades.
     expect(within(dialog).queryByRole("textbox")).toBeNull();
@@ -296,6 +300,7 @@ describe("the saved choice's note", () => {
     ] as const) {
       const dialog = await openPreferences(options as MockOptions);
       expect(within(dialog).queryByText(/Your saved choice/)).toBeNull();
+      expect(within(dialog).queryByRole("button", { name: USE_DEFAULT_AUTO })).toBeNull();
       h!.unmount();
       h = undefined;
     }
@@ -307,6 +312,98 @@ describe("the saved choice's note", () => {
     h!.api.setProviders({ claude: "available" });
     await waitFor(() => expect(within(dialog).queryByText(/Your saved choice/)).toBeNull());
     expect(select(dialog)).toHaveTextContent("Claude Code");
+    expect(within(dialog).queryByRole("button", { name: USE_DEFAULT_AUTO })).toBeNull();
+  });
+});
+
+describe("withdrawing a saved program that is listed but cannot be used (docs/22 sections 10.2, 12.1, 12.2)", () => {
+  const saved = { autoProvider: "claude", consent: { claude: true, agy: false } } as const;
+
+  it("lets Default Auto be chosen in the dropdown while the saved program is signed out and nothing else can be chosen", async () => {
+    // The normal case on a Mac without Apple Intelligence: Claude Code is saved, installed and signed out.
+    const dialog = await openPreferences({ providers: { claude: "signed_out" }, ...saved });
+    expect(select(dialog)).toHaveTextContent("Claude Code Not signed in");
+    const spy = vi.spyOn(h!.api, "preferencesSet");
+    await entries(dialog);
+    // The saved program is the shown value, and it stays disabled.
+    expect(screen.getByRole("option", { name: "Claude Code, not signed in" })).toHaveAttribute("aria-disabled", "true");
+    await h!.user.click(screen.getByRole("option", { name: "Default Auto" }));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith({ auto_provider: "yellowmoon" });
+    await waitFor(() => expect(select(dialog)).toHaveTextContent("Default Auto"));
+    expect(h!.store.getState().consentFor).toBeNull();
+    expect((await h!.api.preferencesGet()).auto_provider).toBe("yellowmoon");
+    // The saved choice is gone, so is its note and its button; the unusable program still has its own note and its entry.
+    expect(within(dialog).queryByText(/Your saved choice/)).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: USE_DEFAULT_AUTO })).toBeNull();
+    expect(within(dialog).getByText(/^Claude Code is installed but not signed in/)).toBeInTheDocument();
+  });
+
+  it("shows a saved program that is too old or not working in the dropdown too", async () => {
+    for (const [state, tag] of [
+      ["too_old", "Update needed"],
+      ["unavailable", "Not working"],
+    ] as const) {
+      const dialog = await openPreferences({ providers: { claude: state }, ...saved });
+      expect(select(dialog)).toHaveTextContent(`Claude Code ${tag}`);
+      h!.unmount();
+      h = undefined;
+    }
+    const dialog = await openPreferences({ providers: { agy: "signed_out" }, autoProvider: "agy", consent: { claude: false, agy: true } });
+    expect(select(dialog)).toHaveTextContent("Antigravity Not signed in");
+  });
+
+  it("has a text button, Use Default Auto, beside the saved-choice note that saves Default Auto with no consent question", async () => {
+    const dialog = await openPreferences({ providers: { apple: "available", claude: "signed_out" }, ...saved });
+    const note = within(dialog).getByText("Your saved choice, Claude Code, isn't available now, so Default Auto is used until it is.");
+    const button = within(dialog).getByRole("button", { name: USE_DEFAULT_AUTO });
+    expect(USE_DEFAULT_AUTO).toBe("Use Default Auto");
+    // Beside the note: the same line group, after it.
+    expect(note.parentElement).toBe(button.closest(".ym-pref__saved"));
+    expect(note.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(button).toHaveAttribute("data-slot", "button");
+    const spy = vi.spyOn(h!.api, "preferencesSet");
+    await h!.user.click(button);
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ auto_provider: "yellowmoon" }));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(h!.store.getState().consentFor).toBeNull();
+    await waitFor(() => expect(within(dialog).queryByText(/Your saved choice/)).toBeNull());
+    expect(select(dialog)).toHaveTextContent("Default Auto");
+    // The button went with the note; the focus stays in the row, on the dropdown.
+    expect(select(dialog)).toHaveFocus();
+    expect((await h!.api.preferencesGet()).auto_provider).toBe("yellowmoon");
+  });
+
+  it("keeps the row, with the note and the button, when the saved program was uninstalled and nothing else is listed", async () => {
+    // An Intel Mac: Apple Intelligence is not there, and Claude Code was removed. `visible` is false; the saved choice is still a program.
+    const dialog = await openPreferences({ providers: { apple: "unavailable" }, ...saved });
+    expect(h!.store.getState().auto).toMatchObject({ visible: false, preference: "claude", effective: "yellowmoon" });
+    const row = within(dialog).getByRole("group", { name: AUTO_GRADING_TITLE });
+    expect(select(dialog)).toHaveTextContent("Default Auto");
+    expect(within(dialog).getByText("Your saved choice, Claude Code, isn't available now, so Default Auto is used until it is.")).toBeInTheDocument();
+    expect(row).toBeInTheDocument();
+    const spy = vi.spyOn(h!.api, "preferencesSet");
+    await h!.user.click(within(dialog).getByRole("button", { name: USE_DEFAULT_AUTO }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ auto_provider: "yellowmoon" }));
+    // Withdrawn: nothing is saved that names a program, and nothing else is left to show, so the row goes.
+    await waitFor(() => expect(within(dialog).queryByRole("group", { name: AUTO_GRADING_TITLE })).toBeNull());
+    expect(within(dialog).queryByRole("button", { name: USE_DEFAULT_AUTO })).toBeNull();
+    expect((await h!.api.preferencesGet()).auto_provider).toBe("yellowmoon");
+  });
+
+  it("does not keep the row for a saved Apple Intelligence that is not available (the default sends nothing anywhere)", async () => {
+    const dialog = await openPreferences({ providers: { apple: "unavailable" } });
+    expect(h!.store.getState().auto).toMatchObject({ visible: false, preference: "apple" });
+    expect(within(dialog).queryByRole("group", { name: AUTO_GRADING_TITLE })).toBeNull();
+  });
+
+  it("offers the button for a saved program that is available but was never agreed to, too", async () => {
+    const dialog = await openPreferences({ providers: { claude: "available" }, autoProvider: "claude" });
+    const spy = vi.spyOn(h!.api, "preferencesSet");
+    await h!.user.click(within(dialog).getByRole("button", { name: USE_DEFAULT_AUTO }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ auto_provider: "yellowmoon" }));
+    expect(h!.store.getState().consentFor).toBeNull();
+    await waitFor(() => expect(within(dialog).queryByText(/Your saved choice/)).toBeNull());
   });
 });
 

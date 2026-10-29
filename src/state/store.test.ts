@@ -872,22 +872,25 @@ describe("Auto providers (docs/19, docs/22)", () => {
     await vi.waitFor(() => expect(store.getState().os).toBe("windows"));
   });
 
-  it("asks again on auto_status_changed while Preferences is open, and not otherwise (a program is not probed for nothing)", async () => {
+  it("reads the cached status on auto_status_changed, and the full one (the programs check) only when Preferences opens", async () => {
     const { api, store } = await connected({ providers: { claude: "signed_out" } });
-    const spy = vi.spyOn(api, "autoStatus");
+    const full = vi.spyOn(api, "autoStatus");
+    const cached = vi.spyOn(api, "autoStatusCached");
+    // A change before Preferences was ever opened: read from the cache, asking no program to check anything.
     api.setProviders({ claude: "available" });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(spy).not.toHaveBeenCalled();
-    store.openOverlay("preferences");
+    await vi.waitFor(() => expect(cached).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(store.getState().auto?.providers[2]?.state).toBe("available"));
-    expect(spy).toHaveBeenCalledTimes(1);
+    expect(full).not.toHaveBeenCalled();
+    store.openOverlay("preferences");
+    await vi.waitFor(() => expect(full).toHaveBeenCalledTimes(1));
+    // Changes while it is open, and after it closed: the cached read each time, never the full one again.
     api.setProviders({ claude: "signed_out" });
     await vi.waitFor(() => expect(store.getState().auto?.providers[2]?.state).toBe("signed_out"));
-    expect(spy).toHaveBeenCalledTimes(2);
     store.closeOverlay();
     api.setProviders({});
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(spy).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(store.getState().auto?.visible).toBe(false));
+    expect(cached).toHaveBeenCalledTimes(3);
+    expect(full).toHaveBeenCalledTimes(1);
   });
 
   it("keeps what it knows of the providers when a session closes", async () => {
@@ -1030,16 +1033,32 @@ describe("Auto providers (docs/19, docs/22)", () => {
     await vi.waitFor(() => expect(store.getState().auto?.active).toBe(true));
   });
 
-  it("asks for the status again after a change of the choice, the consent or the instructions, and not after another preference", async () => {
+  it("reads the cached status after a change of the choice, the consent or the instructions, never the full one, and nothing after another preference", async () => {
     const { api, store } = await connected({ appleAuto: "answered" });
-    const spy = vi.spyOn(api, "autoStatus");
+    const cached = vi.spyOn(api, "autoStatusCached");
+    const full = vi.spyOn(api, "autoStatus");
     await store.setPreferences({ remove_location_from_exports: true });
     await store.setPreferences({ auto_provider: "yellowmoon" });
-    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(cached).toHaveBeenCalledTimes(1));
     await store.setPreferences({ auto_consent: { claude: true, agy: false } });
-    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(cached).toHaveBeenCalledTimes(2));
     await store.setPreferences({ apple_auto_instructions: "Moody." });
-    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(cached).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(store.getState().auto?.own_instructions).toBe("Moody."));
+    // Typing instructions, a save every few seconds, makes no program check its sign-in: the full read is Preferences opening's alone.
+    expect(full).not.toHaveBeenCalled();
+  });
+
+  it("changing the choice with Preferences open reads the cached status, not the full one", async () => {
+    const { api, store } = await connected({ providers: { apple: "available", claude: "available" }, consent: { claude: true, agy: false } });
+    store.openOverlay("preferences");
+    await vi.waitFor(() => expect(store.getState().auto?.visible).toBe(true));
+    const cached = vi.spyOn(api, "autoStatusCached");
+    const full = vi.spyOn(api, "autoStatus");
+    await store.chooseProvider("claude");
+    await vi.waitFor(() => expect(store.getState().auto).toMatchObject({ preference: "claude", effective: "claude" }));
+    expect(cached).toHaveBeenCalled();
+    expect(full).not.toHaveBeenCalled();
   });
 
   it("sends a value equal to the Auto value as Auto, and undoes a manual contrast back to Auto", async () => {

@@ -1121,14 +1121,28 @@ impl AppApi {
 
     /// `auto_status`: the four providers and which one grades now (`docs/22` sections 11 and 12.6).
     /// Every advisor is asked to read its availability again, in the background, and the answer is
-    /// what they last said: nothing here waits for a program. Preferences asks when it opens and
-    /// again on `auto_status_changed`, and shows its "Auto grading" row only while `visible`.
+    /// what they last said: nothing here waits for a program. Only Preferences opening asks for it
+    /// (the person looking at the providers is the request: `agy`'s sign-in check, which contacts
+    /// its service, runs then and never otherwise, `docs/22` section 3.3 and D7), and the row is
+    /// shown only while `visible` or while the saved choice is a program.
     ///
     /// # Errors
     ///
     /// [`AppError::internal`] when the answer does not cross the bridge (a bug).
     pub fn auto_status(&self) -> Result<AutoStatus, AppError> {
         convert(&self.core.auto_status())
+    }
+
+    /// `auto_status_cached`: the same status as each advisor last said it, and no advisor is asked
+    /// to probe (`docs/22` section 12.6). The webview reads this after it changes the choice, the
+    /// consent or the instructions and on `auto_status_changed`, so typing instructions never makes
+    /// a program contact its service.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::internal`] when the answer does not cross the bridge (a bug).
+    pub fn auto_status_cached(&self) -> Result<AutoStatus, AppError> {
+        convert(&self.core.auto_status_cached())
     }
 
     /// `install_cli_link`.

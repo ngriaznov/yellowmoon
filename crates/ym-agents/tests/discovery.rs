@@ -233,6 +233,68 @@ mod shell {
         assert_eq!(found_path(&found), program);
     }
 
+    /// The login shell is started in a session of its own: with no controlling terminal an interactive
+    /// zsh or bash cannot find itself in a background group of one and stop itself (`SIGTTIN`), which
+    /// made `ym doctor` wait out the limit of 3 s and then the 2 s of grace for each program.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_login_shell_has_a_session_of_its_own() {
+        let home = TempDir::new().unwrap();
+        let tools = TempDir::new().unwrap();
+        let program = install(Tool::Claude, tools.path(), "claude");
+        let marker = tools.path().join("ids");
+        // The script is the shell: it writes its pid, its group and its session, then answers.
+        let shell = script(
+            tools.path(),
+            "zsh",
+            &format!(
+                "read pid comm state ppid pgrp sid rest < /proc/$$/stat\n\
+                 echo \"$$ $pgrp $sid\" >> {}\necho {}",
+                marker.display(),
+                program.display()
+            ),
+        );
+        let found = locate(Tool::Claude, &locations(home.path(), shell), &tuning());
+        assert_eq!(found_path(&found), program);
+        let text = std::fs::read_to_string(&marker).unwrap();
+        let first: Vec<u32> = text
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .map(|n| n.parse().unwrap())
+            .collect();
+        assert_eq!(
+            (first[1], first[2]),
+            (first[0], first[0]),
+            "the shell leads its group and its session"
+        );
+    }
+
+    #[test]
+    fn a_cancel_ends_the_shell_lookup() {
+        let home = TempDir::new().unwrap();
+        let tools = TempDir::new().unwrap();
+        let shell = script(tools.path(), "sh", "sleep 30");
+        let source = ym_agents::process::CancelSource::new();
+        let mut t = tuning();
+        t.probe.shell = Duration::from_secs(20);
+        t.cancel = source.token();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            source.cancel();
+        });
+        let started = std::time::Instant::now();
+        let found = locate(Tool::Claude, &locations(home.path(), shell), &t);
+        canceller.join().unwrap();
+        assert_eq!(found, Discovery::NotInstalled);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the lookup went on for {:?}",
+            started.elapsed()
+        );
+    }
+
     #[test]
     fn an_unknown_shell_is_not_asked() {
         let home = TempDir::new().unwrap();

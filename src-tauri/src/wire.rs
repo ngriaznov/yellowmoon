@@ -1516,9 +1516,9 @@ pub struct ProviderStatus {
     pub selectable: bool,
 }
 
-/// `auto_status()`: the four providers and which one grades now (`docs/22` sections 11 and 12.6; the
-/// core's `AutoStatus`, which replaces `AppleAutoStatus`). Preferences shows its "Auto grading" row
-/// only while `visible`.
+/// `auto_status()` and `auto_status_cached()`: the four providers and which one grades now (`docs/22`
+/// sections 11 and 12.6; the core's `AutoStatus`, which replaces `AppleAutoStatus`). Preferences
+/// shows its "Auto grading" row while `visible`, or while the saved choice is a program.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct AutoStatus {
     /// Every provider, in the dropdown's order.
@@ -1532,7 +1532,8 @@ pub struct AutoStatus {
     pub effective: AutoProvider,
     /// `effective` is not `yellowmoon`.
     pub active: bool,
-    /// The dropdown and the instructions show.
+    /// A provider is there: the dropdown and the instructions show (they also show while the saved
+    /// choice is a program, so that it can be withdrawn).
     pub visible: bool,
     /// The saved consent.
     pub consent: AutoConsent,
@@ -2573,7 +2574,7 @@ pub struct ExportProgress {
 pub struct LooksChanged;
 
 /// `auto_status_changed` (`docs/22` section 12.6): a provider's availability changed (a program was
-/// found, signed in or out, or a check ended). No data; the webview asks `auto_status()` again.
+/// found, signed in or out, or a check ended). No data; the webview reads `auto_status_cached()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
 #[tauri_specta(event_name = "auto_status_changed")]
 pub struct AutoStatusChanged;

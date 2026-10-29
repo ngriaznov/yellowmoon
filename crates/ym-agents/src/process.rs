@@ -3,7 +3,9 @@
 //! [`run`] starts a program in its own process group (Unix) or job object (Windows), feeds it standard
 //! input from its own thread, reads standard output and standard error from two more with caps, and
 //! polls the child against a deadline and a [`CancelToken`]. On expiry or cancel it ends the whole tree
-//! and always reaps it. Nothing here goes through a shell, and no `.cmd` file is ever started.
+//! and always reaps it. A [`CancelSource`] also keeps the children that took its tokens, so that
+//! [`CancelSource::cancel`] tells them to stop before it returns, whatever their own threads are doing.
+//! Nothing here goes through a shell, and no `.cmd` file is ever started.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
@@ -47,15 +49,37 @@ pub const WORKDIR_PREFIX: &str = "ym-auto-";
 #[cfg(unix)]
 const SIGTERM: i32 = 15;
 
+/// `SIGCONT`: 18 on Linux, 19 on macOS and the BSDs. A stopped process group does not act on a pending
+/// `SIGTERM` until it is continued, so every `SIGTERM` is followed by this one.
+#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
+const SIGCONT: i32 = 18;
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+const SIGCONT: i32 = 19;
+
 // ---------------------------------------------------------------------------------------------
 // Cancelling
 // ---------------------------------------------------------------------------------------------
 
+/// A running child, shared between the run that started it (which polls and reaps it) and the
+/// [`CancelSource`] whose token it took (which may tell it to stop).
+type SharedChild = Arc<Mutex<Box<dyn ChildWrapper>>>;
+
+/// What a [`CancelSource`] knows: how often it cancelled, and the children that are running now.
+#[derive(Debug, Default)]
+struct SourceState {
+    epoch: AtomicU64,
+    next_id: AtomicU64,
+    children: Mutex<Vec<(u64, SharedChild)>>,
+}
+
 /// Whoever may cancel the runs that took a token from it: one per advisor. Cancelling ends every run
 /// that was started before it and leaves later runs alone.
+///
+/// The source also keeps the children of its runs, from their spawn to their reaping, so that
+/// [`CancelSource::cancel`] does not depend on the thread of each run to get round to it.
 #[derive(Debug, Clone, Default)]
 pub struct CancelSource {
-    epoch: Arc<AtomicU64>,
+    state: Arc<SourceState>,
 }
 
 impl CancelSource {
@@ -69,21 +93,36 @@ impl CancelSource {
     #[must_use]
     pub fn token(&self) -> CancelToken {
         CancelToken {
-            source: Some(Arc::clone(&self.epoch)),
-            started: self.epoch.load(Ordering::SeqCst),
+            source: Some(Arc::clone(&self.state)),
+            started: self.state.epoch.load(Ordering::SeqCst),
         }
     }
 
-    /// Cancels every run that took its token before this call.
+    /// Cancels every run that took its token before this call, and tells their children to stop
+    /// **before it returns**: `SIGTERM` and `SIGCONT` to each process group on Unix (the `SIGCONT` so
+    /// that a stopped group acts on the `SIGTERM`), `TerminateJobObject` on Windows. A caller that exits
+    /// right after, the app quitting or `ym`'s Ctrl-C handler, has thereby told every child to go.
+    ///
+    /// What follows is the runs' own: each notices the cancel within 20 ms, sends `SIGKILL` to a group
+    /// that has not gone 2 s after the `SIGTERM`, reaps it and removes its temporary folder.
+    /// [`AutoAdvisor::wait_idle`](ym_core::apple_auto::AutoAdvisor::wait_idle) waits for that.
+    ///
+    /// A run that has not started its child yet starts none: its token says it is cancelled.
     pub fn cancel(&self) {
-        self.epoch.fetch_add(1, Ordering::SeqCst);
+        // The epoch moves first. A run takes the list's lock to check its token and spawn, so it is
+        // either already in the list below, or sees the new epoch and spawns nothing.
+        self.state.epoch.fetch_add(1, Ordering::SeqCst);
+        let children = lock(&self.state.children);
+        for (_, child) in children.iter() {
+            signal_stop(lock(child).as_mut());
+        }
     }
 }
 
 /// Tells a run that it was cancelled. Cheap to clone and to poll.
 #[derive(Debug, Clone, Default)]
 pub struct CancelToken {
-    source: Option<Arc<AtomicU64>>,
+    source: Option<Arc<SourceState>>,
     started: u64,
 }
 
@@ -99,7 +138,35 @@ impl CancelToken {
     pub fn is_cancelled(&self) -> bool {
         self.source
             .as_ref()
-            .is_some_and(|epoch| epoch.load(Ordering::SeqCst) != self.started)
+            .is_some_and(|state| state.epoch.load(Ordering::SeqCst) != self.started)
+    }
+}
+
+/// The entry of a running child in its source's list. Dropping it takes the child out: after that
+/// [`CancelSource::cancel`] cannot reach it, which is what makes it safe to reap (a reaped group's
+/// number may be reused).
+struct Registration {
+    state: Arc<SourceState>,
+    id: u64,
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        lock(&self.state.children).retain(|(id, _)| *id != self.id);
+    }
+}
+
+/// Tells a child to stop: `SIGTERM` then `SIGCONT` to its group (Unix), the job's termination
+/// (Windows). Errors (the group is gone already) are ignored.
+fn signal_stop(child: &mut dyn ChildWrapper) {
+    #[cfg(unix)]
+    {
+        let _ = child.signal(SIGTERM);
+        let _ = child.signal(SIGCONT);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.start_kill();
     }
 }
 
@@ -143,6 +210,11 @@ pub struct RunSpec {
     pub stdout_cap: usize,
     /// The cap on one line of standard output.
     pub line_cap: usize,
+    /// Unix: start the program in a new session (`setsid`), so that it has no controlling terminal.
+    /// The person's shell, asked where a program is, needs it: an interactive zsh or bash that finds
+    /// itself in a background process group of a terminal stops itself (`SIGTTIN`) and waits for a
+    /// foreground that never comes. Ignored on Windows; the program is still in a group of its own.
+    pub new_session: bool,
 }
 
 impl RunSpec {
@@ -160,6 +232,7 @@ impl RunSpec {
             cancel: CancelToken::never(),
             stdout_cap: STDOUT_CAP_BYTES,
             line_cap: LINE_CAP_BYTES,
+            new_session: false,
         }
     }
 
@@ -262,8 +335,10 @@ impl RunOutput {
 // ---------------------------------------------------------------------------------------------
 
 /// `text` with anything that looks like a token replaced by `…` (`docs/22` section 5): `sk-…`,
-/// `sk-ant-…`, `AIza…`, `ya29.…`, the word after `Bearer`, and any run of 40 or more letters, digits,
-/// `-` and `_` (a long hex or base64 value).
+/// `sk-ant-…`, `AIza…`, `ya29.…`, the word after `Bearer`, a JWT (`eyJ…` with two dots), and any run of
+/// 40 or more base64 characters (letters, digits, `-`, `_`, `+`, `=` and `/`): a hex or base64 value, or
+/// an AWS-style secret key. A run that holds a `/` must also have upper and lower case letters and a
+/// digit, so that an ordinary path of 40 characters or more survives.
 #[must_use]
 pub fn redact(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -283,8 +358,9 @@ pub fn redact(text: &str) -> String {
         word.clear();
     };
     for c in text.chars() {
-        // A word is a run of what tokens are made of; a path separator or a space ends it.
-        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+' | '=') {
+        // A word is a run of what tokens are made of, a `/` and a `.` included (a secret key has
+        // slashes, a JWT and `ya29.` have dots); a space, a quote or a comma ends it.
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+' | '=' | '/') {
             word.push(c);
         } else {
             flush(&mut word, &mut out, &mut after_bearer);
@@ -295,17 +371,34 @@ pub fn redact(text: &str) -> String {
     out
 }
 
+/// The shortest run of base64 characters that is taken for a credential.
+const SECRET_RUN: usize = 40;
+
 /// Whether one word looks like a credential.
 fn looks_like_token(word: &str) -> bool {
     const PREFIXES: [&str; 3] = ["sk-", "AIza", "ya29."];
-    if PREFIXES.iter().any(|p| word.starts_with(p)) {
-        return true;
+    // What follows an `=` is a value of its own (`API_KEY=sk-ant-…`).
+    for part in word.split('=') {
+        if PREFIXES.iter().any(|p| part.starts_with(p)) {
+            return true;
+        }
+        // A JWT: three base64url parts joined by dots, the first of which is `{"` encoded.
+        if part.starts_with("eyJ") && part.matches('.').count() >= 2 {
+            return true;
+        }
     }
-    let run = word
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-        .count();
-    run >= 40 && word.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+' | '='))
+    // A long run, between dots: hex or base64 (any letters), or, when it holds a slash, one that is no
+    // path (it has both cases and a digit).
+    word.split('.').any(|run| {
+        run.len() >= SECRET_RUN && (!run.contains('/') || has_upper_lower_and_digit(run))
+    })
+}
+
+/// Whether `run` has an upper case letter, a lower case letter and a digit.
+fn has_upper_lower_and_digit(run: &str) -> bool {
+    run.bytes().any(|b| b.is_ascii_uppercase())
+        && run.bytes().any(|b| b.is_ascii_lowercase())
+        && run.bytes().any(|b| b.is_ascii_digit())
 }
 
 /// `text` cut to `max` characters, with `…` at the cut.
@@ -339,20 +432,16 @@ pub fn tail_message(text: &str) -> String {
     format!("…{tail}")
 }
 
-/// The JSON object a program printed: the whole output when it is one object (also when it is printed
-/// over several lines), else the last line that starts an object and parses to the end of the output (a
-/// banner or a warning may come before it).
+/// The JSON object a program printed (`docs/22` section 8.3): the last line that starts an object at
+/// its beginning and holds one, an object that is printed over several lines (from its `{` line on)
+/// included. What follows the object is not read: a banner or a warning before it, and a notice or
+/// "Done" after it, do not matter. A line that starts like an object but is none is passed over.
 #[must_use]
 pub fn last_json_object(output: &[u8]) -> Option<serde_json::Value> {
     let text = String::from_utf8_lossy(output);
     let text = text.trim();
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text)
-        && value.is_object()
-    {
-        return Some(value);
-    }
-    // Every line that could start the object, from the last: the one-line envelope after a banner is
-    // the last line; a pretty-printed one starts earlier and runs to the end.
+    // Every line that could start the object: at its first column, as the programs print it (an
+    // object nested in a pretty-printed one is indented).
     let mut starts: Vec<usize> = text
         .match_indices('\n')
         .map(|(at, _)| at + 1)
@@ -362,15 +451,14 @@ pub fn last_json_object(output: &[u8]) -> Option<serde_json::Value> {
         starts.insert(0, 0);
     }
     for &start in starts.iter().rev() {
-        let tail = &text[start..];
-        // The last line alone first (a one-line envelope), then everything from here.
-        let last_line = tail.lines().last().unwrap_or("");
-        for candidate in [last_line, tail] {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate)
-                && value.is_object()
-            {
-                return Some(value);
-            }
+        // The first value of what follows; the lines after it are left unread.
+        let first = serde_json::Deserializer::from_str(&text[start..])
+            .into_iter::<serde_json::Value>()
+            .next();
+        if let Some(Ok(value)) = first
+            && value.is_object()
+        {
+            return Some(value);
         }
     }
     None
@@ -492,7 +580,9 @@ pub fn sweep_stale() -> usize {
 /// it (`docs/22` section 5, *Panics*). `process-wrap`'s standard-library API has no kill-on-drop of
 /// its own (its `KillOnDrop` is for Tokio).
 struct Running {
-    child: Box<dyn ChildWrapper>,
+    child: SharedChild,
+    /// The entry in the cancel source's list, until the child is about to be reaped.
+    registration: Option<Registration>,
     /// The tree was killed and reaped: dropping has nothing left to do (and must not signal a group
     /// whose number may have been reused).
     finished: bool,
@@ -501,30 +591,26 @@ struct Running {
 impl Running {
     /// Looks at the child without blocking: its status when it has exited. This asks the native child
     /// (the innermost wrapper): the group wrapper's own `try_wait` waits for the whole group.
-    fn exited(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
-        self.child.inner_mut().try_wait()
+    fn exited(&self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        lock(&self.child).inner_mut().try_wait()
     }
 
     /// Kills every process of the tree at once.
     fn kill_tree(&mut self) {
-        let _ = self.child.start_kill();
+        let _ = lock(&self.child).start_kill();
     }
 
-    /// Asks the tree to stop politely where the system has such a thing (`SIGTERM` to the group).
+    /// Asks the tree to stop politely where the system has such a thing (`SIGTERM` to the group, then
+    /// `SIGCONT` so that a stopped group acts on it).
     fn ask_to_stop(&mut self) {
-        #[cfg(unix)]
-        {
-            let _ = self.child.signal(SIGTERM);
-        }
-        #[cfg(not(unix))]
-        {
-            self.kill_tree();
-        }
+        signal_stop(lock(&self.child).as_mut());
     }
 
-    /// Reaps the child and the rest of its tree, after it was killed or has exited.
+    /// Reaps the child and the rest of its tree, after it was killed or has exited. The child leaves
+    /// the cancel source's list first: from then on nobody may signal its group.
     fn reap(&mut self) -> Option<std::process::ExitStatus> {
-        let status = self.child.wait().ok();
+        self.registration.take();
+        let status = lock(&self.child).wait().ok();
         self.finished = true;
         status
     }
@@ -533,10 +619,20 @@ impl Running {
 impl Drop for Running {
     fn drop(&mut self) {
         if !self.finished {
-            let _ = self.child.start_kill();
-            let _ = self.child.wait();
+            self.registration.take();
+            let mut child = lock(&self.child);
+            let _ = child.start_kill();
+            let _ = child.wait();
         }
     }
+}
+
+/// Why a child was not started.
+enum StartError {
+    /// The token was cancelled before the start: nothing was spawned.
+    Cancelled,
+    /// The system could not start the program.
+    Failed(std::io::Error),
 }
 
 /// Shared state of one run's reader threads.
@@ -576,7 +672,7 @@ pub fn run_with(spec: RunSpec, after_spawn: impl FnOnce()) -> RunOutput {
             .stderr(Stdio::piped());
         apply_env(command, spec.env, &spec.extra_env);
     });
-    wrap_for_platform(&mut wrap);
+    wrap_for_platform(&mut wrap, spec.new_session);
 
     // Argument lists and standard error are logged at debug level only, with anything that looks like a
     // token cut out (`docs/22` section 2.1).
@@ -585,15 +681,24 @@ pub fn run_with(spec: RunSpec, after_spawn: impl FnOnce()) -> RunOutput {
         args = %message(&spec.args.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ")),
         "starting a program"
     );
-    let mut child = match spawn_with_retry(&mut wrap) {
-        Ok(child) => child,
-        Err(error) => return fail(Outcome::SpawnFailed(message(&error.to_string()))),
+    let (child, registration) = match start_child(&mut wrap, &spec.cancel) {
+        Ok(started) => started,
+        Err(StartError::Cancelled) => return fail(Outcome::Cancelled),
+        Err(StartError::Failed(error)) => {
+            return fail(Outcome::SpawnFailed(message(&error.to_string())));
+        }
     };
-    let stdin = child.stdin().take();
-    let stdout = child.stdout().take();
-    let stderr = child.stderr().take();
+    let (stdin, stdout, stderr) = {
+        let mut child = lock(&child);
+        (
+            child.stdin().take(),
+            child.stdout().take(),
+            child.stderr().take(),
+        )
+    };
     let mut running = Running {
         child,
+        registration,
         finished: false,
     };
 
@@ -649,20 +754,28 @@ pub fn run_with(spec: RunSpec, after_spawn: impl FnOnce()) -> RunOutput {
     let deadline = started + spec.timeout;
     let mut status = None;
     let outcome = loop {
+        // The cancel comes first: `CancelSource::cancel` has already told the child to stop, so a
+        // child that is gone may have been ended by it, and that is a cancel, not an exit.
+        if spec.cancel.is_cancelled() {
+            break Outcome::Cancelled;
+        }
         if pipes.too_large.load(Ordering::SeqCst) {
             break Outcome::OutputTooLarge;
         }
         match running.exited() {
             Ok(Some(exit)) => {
                 status = Some(exit);
-                break Outcome::Exited;
+                // The epoch moves before the signal is sent, so a child that the cancel ended shows
+                // the cancel here.
+                break if spec.cancel.is_cancelled() {
+                    Outcome::Cancelled
+                } else {
+                    Outcome::Exited
+                };
             }
             Ok(None) => {}
             // The child cannot be looked at: treat it as gone and let the reaping say the rest.
             Err(_) => break Outcome::Exited,
-        }
-        if spec.cancel.is_cancelled() {
-            break Outcome::Cancelled;
         }
         if Instant::now() >= deadline {
             break Outcome::TimedOut;
@@ -715,24 +828,55 @@ pub fn run_with(spec: RunSpec, after_spawn: impl FnOnce()) -> RunOutput {
     output
 }
 
-/// Starts the child; a program whose file is still open for writing ("text file busy", `ETXTBSY`) is tried
-/// again for up to half a second. It happens while a program is being updated by its own updater, and
-/// whenever another thread of this process forks while the file was being written.
-fn spawn_with_retry(wrap: &mut CommandWrap) -> std::io::Result<Box<dyn ChildWrapper>> {
+/// Starts the child and, when `cancel` has a source, puts it in the source's list before anything
+/// else can look at that list. The list's lock is held from the check of the token to the entry, so
+/// [`CancelSource::cancel`] either finds the child there or has moved the epoch first, in which case
+/// nothing is started.
+///
+/// A program whose file is still open for writing ("text file busy", `ETXTBSY`) is tried again for up
+/// to half a second. It happens while a program is being updated by its own updater, and whenever
+/// another thread of this process forks while the file was being written.
+fn start_child(
+    wrap: &mut CommandWrap,
+    cancel: &CancelToken,
+) -> Result<(SharedChild, Option<Registration>), StartError> {
     let mut attempts = 0;
     loop {
+        let mut list = cancel.source.as_ref().map(|state| lock(&state.children));
+        if cancel.is_cancelled() {
+            return Err(StartError::Cancelled);
+        }
         match wrap.spawn() {
-            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 10 => {
+            Ok(child) => {
+                let child: SharedChild = Arc::new(Mutex::new(child));
+                let registration = match (cancel.source.as_ref(), list.as_mut()) {
+                    (Some(state), Some(list)) => {
+                        let id = state.next_id.fetch_add(1, Ordering::SeqCst);
+                        list.push((id, Arc::clone(&child)));
+                        Some(Registration {
+                            state: Arc::clone(state),
+                            id,
+                        })
+                    }
+                    _ => None,
+                };
+                return Ok((child, registration));
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 10 =>
+            {
                 attempts += 1;
+                drop(list);
                 std::thread::sleep(Duration::from_millis(50));
             }
-            other => return other,
+            Err(error) => return Err(StartError::Failed(error)),
         }
     }
 }
 
-/// Ends the tree after a time-out, a cancel or an oversized output: `SIGTERM` to the group, up to two
-/// seconds for it to leave, then `SIGKILL` to the group (Windows: the job is terminated at once).
+/// Ends the tree after a time-out, a cancel or an oversized output: `SIGTERM` (and `SIGCONT`, for a
+/// stopped group) to the group, up to two seconds for it to leave, then `SIGKILL` to the group
+/// (Windows: the job is terminated at once).
 fn stop_tree(running: &mut Running) {
     running.ask_to_stop();
     #[cfg(unix)]
@@ -749,12 +893,17 @@ fn stop_tree(running: &mut Running) {
 }
 
 #[cfg(unix)]
-fn wrap_for_platform(wrap: &mut CommandWrap) {
-    wrap.wrap(process_wrap::std::ProcessGroup::leader());
+fn wrap_for_platform(wrap: &mut CommandWrap, new_session: bool) {
+    if new_session {
+        // A session of its own is a group of its own, with no controlling terminal.
+        wrap.wrap(process_wrap::std::ProcessSession);
+    } else {
+        wrap.wrap(process_wrap::std::ProcessGroup::leader());
+    }
 }
 
 #[cfg(windows)]
-fn wrap_for_platform(wrap: &mut CommandWrap) {
+fn wrap_for_platform(wrap: &mut CommandWrap, _new_session: bool) {
     use windows::Win32::System::Threading::CREATE_NO_WINDOW;
     // The flags are registered with the wrapper, so the job object's own start flag does not
     // overwrite them (the crate merges them in whichever order they were added).
@@ -763,7 +912,7 @@ fn wrap_for_platform(wrap: &mut CommandWrap) {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn wrap_for_platform(_wrap: &mut CommandWrap) {}
+fn wrap_for_platform(_wrap: &mut CommandWrap, _new_session: bool) {}
 
 /// Applies the environment changes of `profile` and then `extra` to `command`.
 fn apply_env(command: &mut std::process::Command, profile: EnvProfile, extra: &[(OsString, OsString)]) {
@@ -912,6 +1061,71 @@ mod tests {
         assert_eq!(last_json_object(b"{\"a\":1}\n{\"a\":6}\n").unwrap()["a"], 6);
         assert!(last_json_object(b"").is_none());
         assert!(last_json_object(b"no json here\n[1,2]\n").is_none());
+    }
+
+    #[test]
+    fn secret_shapes_that_are_not_prefixed_are_redacted() {
+        // An AWS-style secret key: 40 base64 characters with slashes.
+        let aws = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        assert_eq!(aws.len(), 40);
+        let out = redact(&format!("denied: secret {aws} for user"));
+        assert_eq!(out, "denied: secret … for user");
+        let out = redact(&format!("aws_secret_access_key={aws}\n"));
+        assert!(!out.contains("EXAMPLEKEY") && !out.contains("wJalr"), "{out}");
+        // A JWT, with its dots, alone and after a header name or an equals sign.
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl";
+        assert_eq!(redact(&format!("Authorization: {jwt}")), "Authorization: …");
+        assert_eq!(redact(&format!("token={jwt}!")), "…!");
+        assert!(!redact(&format!("jwt {jwt}")).contains("c2lnbmF0"));
+        // Two dots without the `eyJ` start are a version or a host name.
+        assert_eq!(redact("com.yellowmoon.app 2.1.310"), "com.yellowmoon.app 2.1.310");
+        // A key after an equals sign.
+        assert_eq!(redact("ANTHROPIC_API_KEY=sk-ant-abc"), "…");
+        // A long value without slashes (hex, base64url) goes as before, whatever its case.
+        assert_eq!(redact(&"a".repeat(40)), "…");
+        assert_eq!(redact(&"a".repeat(39)), "a".repeat(39));
+    }
+
+    #[test]
+    fn ordinary_paths_survive_however_long() {
+        for path in [
+            "/usr/local/bin/claude",
+            "/opt/homebrew/bin/claude",
+            // Long, lower case, with digits: no upper case, no secret.
+            "/home/runner/work/yellowmoon/yellowmoon/target/debug/build/ym-agents-1234567890abcdef",
+            // Long, mixed case, no digit.
+            "/Users/Nikita/Library/Application/Support/Yellowmoon/Caches/Previews",
+        ] {
+            assert_eq!(redact(path), path);
+            assert_eq!(redact(&format!("spawn {path}: not found")), format!("spawn {path}: not found"));
+        }
+    }
+
+    #[test]
+    fn the_json_object_is_the_last_one_whatever_follows_it() {
+        // A trailing line (a notice, "Done") after a one-line object.
+        let envelope = br#"{"status":"SUCCESS","n":1}"#;
+        let mut with_notice = b"banner\n".to_vec();
+        with_notice.extend_from_slice(envelope);
+        with_notice.extend_from_slice(b"\nDone\n");
+        assert_eq!(last_json_object(&with_notice).unwrap()["n"], 1);
+        with_notice.extend_from_slice(b"A new version is available: 1.5.0\n\n");
+        assert_eq!(last_json_object(&with_notice).unwrap()["n"], 1);
+        // `claude auth status`: its JSON, then a line.
+        assert_eq!(
+            last_json_object(b"{\"loggedIn\":true}\nrun claude update\n").unwrap()["loggedIn"],
+            true
+        );
+        // The last object wins, a line that only looks like one is passed over.
+        assert_eq!(last_json_object(b"{\"n\":1}\n{\"n\":2}\n{not json\nDone\n").unwrap()["n"], 2);
+        // Printed over several lines, then a trailing line.
+        let pretty = b"banner\n{\n  \"n\": 3,\n  \"list\": [\n    {\"x\": 1}\n  ]\n}\nDone\n";
+        assert_eq!(last_json_object(pretty).unwrap()["n"], 3);
+        // An earlier one-line object and a later pretty-printed one: the later one.
+        assert_eq!(last_json_object(b"{\"n\":1}\n{\n \"n\": 4\n}\n").unwrap()["n"], 4);
+        // Nothing that is an object.
+        assert!(last_json_object(b"Done\n[1,2]\n\"text\"\n").is_none());
+        assert!(last_json_object(b"{not json\nDone\n").is_none());
     }
 
     #[test]

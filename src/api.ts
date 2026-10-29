@@ -260,10 +260,17 @@ export interface Api {
   preferencesSet(patch: PreferencesPatch): Promise<Preferences>;
   /**
    * `auto_status` (`docs/22` sections 11 and 12.6; it replaces `apple_auto_status`): the four providers, which one grades now and whether
-   * Preferences shows its "Auto grading" row. The core refreshes every provider's availability (in the background: the call never waits
-   * for a program) and answers what it has cached, so Preferences asks when it opens and again on `auto_status_changed`. Addition.
+   * Preferences shows its "Auto grading" row. The core asks every provider to check its availability again (in the background: the call
+   * never waits for a program, and `agy`'s sign-in check contacts its service) and answers what it has cached. Only Preferences opening
+   * asks for it (`docs/22` D7); everything else reads `autoStatusCached`. Addition.
    */
   autoStatus(): Promise<AutoStatus>;
+  /**
+   * `auto_status_cached` (`docs/22` sections 3.3 and 12.6): the same status as each provider last said it, and no program is asked to
+   * check anything. The store reads it after a change of the choice, the consent or the instructions and on `auto_status_changed`, so
+   * typing instructions never makes a program contact its service. Addition.
+   */
+  autoStatusCached(): Promise<AutoStatus>;
   /** `install_cli_link`: the "Install Command-Line Tool…" menu item. */
   installCliLink(): Promise<CliLinkResult>;
   /** `cli_link_status`: whether the link exists and where (Preferences › Command-line tool). Addition. */
@@ -366,6 +373,7 @@ export const tauriApi: Api = {
   preferencesGet: () => commands.preferencesGet(),
   preferencesSet: (patch) => commands.preferencesSet(patch),
   autoStatus: () => commands.autoStatus(),
+  autoStatusCached: () => commands.autoStatusCached(),
   installCliLink: () => commands.installCliLink(),
   cliLinkStatus: () => commands.cliLinkStatus(),
   appInfo: () => commands.appInfo(),

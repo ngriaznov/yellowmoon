@@ -67,6 +67,9 @@ zip.workspace = true
 regex = "1"
 # Synthetic ARW files for the command tests.
 ym-raw = { workspace = true, features = ["testgen"] }
+# The test doubles of Claude Code and `agy` and the paths to them, for the test that quitting stops a running request
+# (`docs/22` sections 12.10 and 15.2; only in tests: `ym-agents` itself is already a dependency).
+ym-agents = { workspace = true, features = ["test-support"] }
 # The native viewport's two pipelines (`src/present.rs`) drawn on any adapter by `tests/present.rs`
 # (MIT OR Apache-2.0; both already in the tree through ym-gpu, so nothing new is built).
 wgpu.workspace = true

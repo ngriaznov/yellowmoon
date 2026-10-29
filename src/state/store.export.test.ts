@@ -260,6 +260,53 @@ describe("running an export", () => {
   });
 });
 
+describe("the consent question over Preferences (docs/22 section 12.3)", () => {
+  /** Preferences with "Send photos to Claude Code?" open over it. */
+  async function asking(options: MockOptions = {}) {
+    const ctx = await opened({ providers: { apple: "available", claude: "available" }, ...options });
+    ctx.store.openOverlay("preferences");
+    await ctx.store.chooseProvider("claude");
+    expect(ctx.store.getState()).toMatchObject({ overlay: "preferences", consentFor: "claude" });
+    return ctx;
+  }
+
+  it("is dropped when About replaces Preferences, so the next ⌘, opens Preferences without it", async () => {
+    const { store } = await asking();
+    store.openOverlay("about");
+    expect(store.getState()).toMatchObject({ overlay: "about", consentFor: null });
+    store.openOverlay("preferences");
+    expect(store.getState()).toMatchObject({ overlay: "preferences", consentFor: null });
+  });
+
+  it("is dropped when the close question takes its place (⌘W while an export runs)", async () => {
+    const { store } = await asking({ speed: 1 });
+    await store.startExport(["DSC04203_neutral.jpg", "DSC04204_neutral.jpg", "DSC04205_neutral.jpg"], "~/x");
+    await store.requestCloseSession();
+    expect(store.getState()).toMatchObject({ overlay: "confirm-close", consentFor: null });
+    store.closeOverlay();
+    store.openOverlay("preferences");
+    expect(store.getState().consentFor).toBeNull();
+  });
+
+  it("is dropped when the .cube import takes its place", async () => {
+    const { api, store } = await asking();
+    api.queueChoice("files", ["~/LUTs/Warm_Film.cube"]);
+    await store.startCubeImport();
+    expect(store.getState()).toMatchObject({ overlay: "import-cube", consentFor: null });
+    store.closeOverlay();
+    store.openOverlay("preferences");
+    expect(store.getState().consentFor).toBeNull();
+  });
+
+  it("stays while Preferences itself is shown again, and Cancel still closes only the question", async () => {
+    const { store } = await asking();
+    store.openOverlay("preferences");
+    expect(store.getState().consentFor).toBe("claude");
+    await store.answerConsent(false);
+    expect(store.getState()).toMatchObject({ overlay: "preferences", consentFor: null });
+  });
+});
+
 describe("the .cube import", () => {
   it("opens the dialog with what the chooser returned, and imports after the answers", async () => {
     const api = createMockApi({ speed: Number.POSITIVE_INFINITY, looksImported: false });

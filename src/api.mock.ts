@@ -2759,6 +2759,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       }),
     cliLinkStatus: () => run("cliLinkStatus", (): CliLinkStatus => ({ installed: cliLink !== null, path: cliLink })),
     autoStatus: () => run("autoStatus", autoStatus),
+    // The mock probes nothing, so the cached read is the same answer; the store's tests tell the two calls apart by spying on them.
+    autoStatusCached: () => run("autoStatusCached", autoStatus),
     appInfo: () => run("appInfo", (): AppInfo => ({ version: APP_VERSION, pipeline_version: "1.0.0", os: options.os })),
 
     chooseFolder: (start) =>

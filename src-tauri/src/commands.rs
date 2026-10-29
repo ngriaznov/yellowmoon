@@ -632,12 +632,21 @@ pub async fn preferences_set(
 
 /// `auto_status()` (`docs/22` sections 11 and 12.6; it replaces `apple_auto_status()`): the four
 /// providers and which one grades now. The core refreshes every provider's availability in the
-/// background and answers what it has cached, so this never waits for a program; Preferences asks
-/// when it opens and again on `auto_status_changed`.
+/// background and answers what it has cached, so this never waits for a program. Only Preferences
+/// opening asks for it: it makes `agy` check its sign-in, which contacts its service.
 #[tauri::command]
 #[specta::specta]
 pub async fn auto_status(state: State<'_, AppState>) -> Result<AutoStatus, AppError> {
     run(&state, |api| api.auto_status()).await
+}
+
+/// `auto_status_cached()` (`docs/22` sections 3.3 and 12.6): the same status as each provider last
+/// said it, and no program is asked to check anything. The webview reads it after a change of the
+/// choice, the consent or the instructions and on `auto_status_changed`.
+#[tauri::command]
+#[specta::specta]
+pub async fn auto_status_cached(state: State<'_, AppState>) -> Result<AutoStatus, AppError> {
+    run(&state, |api| api.auto_status_cached()).await
 }
 
 /// `install_cli_link()`: the "Install Command-Line Tool…" menu item.
@@ -723,6 +732,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             preferences_get,
             preferences_set,
             auto_status,
+            auto_status_cached,
             install_cli_link,
             cli_link_status,
             app_info,
@@ -781,6 +791,7 @@ mod tests {
                 looks_recognise,
                 preferences_get,
                 auto_status,
+                auto_status_cached,
                 app_info,
             ])
             .manage(state)
@@ -951,8 +962,14 @@ mod tests {
         assert_eq!(plain["estimates"]["contrast"], json!(0.0));
         assert_eq!(plain["estimates"]["source"], json!("rule"));
         assert_eq!(plain["estimates"]["apple"], json!({ "state": "off" }));
+        let status = call(&window, "auto_status", json!({})).expect("auto_status");
+        // The cached read has the same shape and, with nothing changed, the same content.
         assert_eq!(
-            call(&window, "auto_status", json!({})).expect("auto_status"),
+            call(&window, "auto_status_cached", json!({})).expect("auto_status_cached"),
+            status
+        );
+        assert_eq!(
+            status,
             json!({
                 "providers": [
                     provider_json("yellowmoon", "available", None, true, true),
@@ -1042,6 +1059,7 @@ mod tests {
             "session_state",
             "preferences_get",
             "auto_status",
+            "auto_status_cached",
             "app_info",
             "export_busy",
         ] {

@@ -221,10 +221,12 @@ impl AutoHub {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The advisor said its availability changed. Runs on its probe thread: it never blocks.
+    /// The advisor said its availability changed. Runs on its probe thread: it never blocks, and it
+    /// starts no probe (`docs/22` section 3.3: the re-read on a change notification is "no
+    /// process"): the session reads what the advisors say and brings the photos in step.
     fn changed(&self) {
         if let Some(session) = self.session.get().and_then(Weak::upgrade) {
-            session.refresh_apple_auto();
+            session.read_auto_availability();
         }
         let callbacks: Vec<_> = self.callbacks().clone();
         for callback in callbacks {
@@ -420,8 +422,9 @@ impl Core {
         self.session.restore_removed()
     }
 
-    /// Quitting: cancels exports and renders, and waits (up to [`SHUTDOWN_EXPORT_WAIT`]) for the
-    /// export queue to stop.
+    /// Quitting: cancels exports and renders, kills the programs Auto started and waits for them
+    /// ([`Core::cancel_auto`]), and waits (up to [`SHUTDOWN_EXPORT_WAIT`]) for the export queue to
+    /// stop.
     ///
     /// The process ends as soon as this returns, so a worker that was still writing would never
     /// get to delete its temporary file, and a hidden `.yellowmoon-*.tmp` of tens or hundreds of
@@ -486,6 +489,15 @@ impl Core {
         self.session.auto_status()
     }
 
+    /// The Auto status as each advisor last said it, with no probe started. This is what the
+    /// webview reads after a change of the choice, the consent or the instructions, and on
+    /// `auto_status_changed`; only Preferences opening uses [`Core::auto_status`], which refreshes
+    /// every advisor (`docs/22` section 3.3 and decision D7).
+    #[must_use]
+    pub fn auto_status_cached(&self) -> AutoStatus {
+        self.session.auto_status_cached()
+    }
+
     /// Sets how this run chooses its provider (`ym --auto-provider p`; the app keeps
     /// [`AutoChoice::FromPreference`]). Takes effect at once, as the preference does.
     pub fn set_auto_choice(&self, choice: AutoChoice) {
@@ -500,18 +512,24 @@ impl Core {
         self.auto_hub.callbacks().push(Arc::new(f));
     }
 
-    /// Kills the requests the advisors are running (`docs/22` section 9.4): the app calls it when it
-    /// quits, `ym` from its Ctrl-C handler. A child is not stopped by its parent's death on Unix.
+    /// Kills the requests and probes the advisors are running, stops the session asking, and waits
+    /// (up to [`crate::session::AUTO_CANCEL_WAIT`]) until the programs were reaped and their
+    /// temporary folders removed (`docs/22` section 9.4): the app calls it when it quits (through
+    /// [`Core::shutdown`]), so the process may end as soon as it returns. A child is not stopped by its
+    /// parent's death on Unix. It cannot be undone: nothing is asked afterwards.
     pub fn cancel_auto(&self) {
         self.session.cancel_auto();
     }
 
-    /// Waits until no advisor is probing, or `timeout` has passed, and reads the chosen provider's
-    /// availability again (`ym`, and an export that starts while the chosen provider still reads
-    /// `checking`).
+    /// Waits until the **chosen** provider's advisor is not probing, or `timeout` has passed, and
+    /// reads what it said (`ym`, and an export that starts while the chosen provider still reads
+    /// `checking`). The other advisors are not waited for: right after launch an export with one
+    /// program chosen must not spend its 5 s on another program's start-up probe (`docs/22`
+    /// section 3.3). It starts no probe of its own.
     pub fn settle_auto(&self, timeout: Duration) {
-        self.advisors.settle(timeout);
-        self.session.refresh_apple_auto();
+        self.advisors
+            .settle_provider(self.session.chosen_provider(), timeout);
+        self.session.read_auto_availability();
     }
 
     // --- Lens -------------------------------------------------------------------------------

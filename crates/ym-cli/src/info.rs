@@ -242,8 +242,9 @@ pub struct AutoNote {
     /// The version the chosen provider's program printed, for "Claude Code 2.1.100 is too old".
     pub tool_version: Option<String>,
     /// The saved choice is a program whose consent is not saved and the run did not name it: it was
-    /// not asked to probe (a run touches no program it does not use), so its photos read `checking`
-    /// and the row says what is true instead.
+    /// not asked to probe (a run touches no program it does not use). The core reads that as
+    /// `not_consented` itself (`Activity::decide`); the row keeps the mapping below for a photo
+    /// whose state was read before the core knew.
     pub not_consented: bool,
 }
 

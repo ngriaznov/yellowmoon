@@ -17,9 +17,10 @@ test-support = []
 ym-core.workspace = true
 # Finding the programs: PATH and PATHEXT (MIT).
 which.workspace = true
-# Starting them: a process group on Unix, a job object on Windows, no console window (Apache-2.0 OR MIT). Its
+# Starting them: a process group on Unix (a session of its own for the login-shell lookup, `process-session`), a job
+# object on Windows, no console window (Apache-2.0 OR MIT). Its
 # `kill-on-drop` feature is for Tokio only; src/process.rs has its own guard.
-process-wrap = { workspace = true, features = ["std", "process-group", "job-object", "creation-flags"] }
+process-wrap = { workspace = true, features = ["std", "process-group", "process-session", "job-object", "creation-flags"] }
 # The private temporary folders (MIT OR Apache-2.0).
 tempfile.workspace = true
 # The answer's validation, without its HTTP resolvers (MIT).

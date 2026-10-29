@@ -1072,6 +1072,11 @@ struct Refresh {
 /// the file again (the same bytes: the picture depends on the photo alone).
 const PICTURES_HELD: usize = 64;
 
+/// How long [`Session::cancel_auto`] waits for the programs the Auto advisors started to be reaped and
+/// their temporary folders removed (`docs/22` section 9.4). A program that ignores the polite stop is
+/// killed after 2 s, so this leaves room for that and for the reaping.
+pub const AUTO_CANCEL_WAIT: Duration = Duration::from_secs(3);
+
 struct Photo {
     id: PhotoId,
     path: PathBuf,
@@ -1169,6 +1174,16 @@ impl AppleState {
     /// The provider chosen for this run: the preference, or the one the run named.
     fn chosen(&self) -> AutoProvider {
         self.choice.chosen(self.preference)
+    }
+
+    /// Whether the chosen provider could act if it were available: it is not a cloud program, the run
+    /// named it (which is the consent for the run), or its consent is saved (`docs/22` sections 10.2
+    /// and 10.4). A provider that could not act is never asked to probe: a run touches no program it
+    /// does not use (`docs/22` section 13.1), and the app asks nothing of a program the person has
+    /// not agreed to use.
+    fn chosen_may_act(&self) -> bool {
+        let chosen = self.chosen();
+        !chosen.is_cloud() || self.choice.is_explicit() || self.consent.get(chosen)
     }
 
     /// The last availability read of the chosen provider's advisor.
@@ -1668,11 +1683,13 @@ impl State {
     }
 
     /// Whether the Auto workers have work: a request in flight, or a photo to ask about while a
-    /// provider acts.
-    fn apple_busy(&self) -> bool {
+    /// provider acts (and the run is not halted: a halted run asks nothing more, so the photos that
+    /// were not asked are not work).
+    fn apple_busy(&self, halted: bool) -> bool {
         let provider = self.apple.chosen();
         self.in_flight_of(provider) > 0
-            || (self.apple.activity().is_active()
+            || (!halted
+                && self.apple.activity().is_active()
                 && self.photos.iter().any(|p| self.apple_wanted(p, provider)))
     }
 
@@ -3122,7 +3139,7 @@ impl Session {
     /// Waits until the Apple Auto worker has nothing to do; false at `deadline`.
     fn wait_apple(&self, deadline: Instant) -> bool {
         let mut st = lock(&self.inner.state);
-        while st.apple_busy() {
+        while st.apple_busy(self.inner.auto_halted()) {
             let now = Instant::now();
             if now >= deadline {
                 return false;
@@ -3177,27 +3194,52 @@ impl Session {
     // --- Auto providers ------------------------------------------------------------------------
 
     /// Reads the chosen provider's availability again (`docs/19` section 1, `docs/22` section 3.3:
-    /// when a session opens, when the preferences change, before each export, and when an advisor
-    /// says its availability changed) and brings every photo in step with it. Asks the chosen
-    /// advisor to probe again ([`AutoAdvisor::refresh`]: a background thread, never waited for) and
-    /// reads what it has cached. Returns that; `None` without an advisor for the chosen provider
-    /// (Default Auto included), and once the workers are gone (they could not start, or
-    /// one stopped), which is the same. No process runs on the caller's thread.
+    /// when a session opens, when the preferences change, before each export) and brings every photo in
+    /// step with it. Asks the chosen advisor to probe again ([`AutoAdvisor::refresh`]: a background
+    /// thread, never waited for) and reads what it has cached. Returns that; `None` without an advisor
+    /// for the chosen provider (Default Auto included), once the workers are gone (they could not
+    /// start, or one stopped), which is the same, and when the chosen provider could not act: a cloud
+    /// program the run did not name and whose consent is not saved is not asked to probe at all
+    /// (`docs/22` sections 10.2 and 13.1), so nothing is returned for the caller to wait for. No
+    /// process runs on the caller's thread. When an advisor *says* that its availability changed, the
+    /// core reads it with [`Session::read_auto_availability`] instead, which starts no probe.
     pub fn refresh_apple_auto(&self) -> Option<Availability> {
         let apple = self.inner.env.apple_auto.as_ref()?;
-        let chosen = {
+        let (chosen, may_act) = {
             let st = lock(&self.inner.state);
             if !st.apple.has_advisors {
                 // The workers are gone (they could not start, or one stopped): as without advisors.
                 return None;
             }
-            st.apple.chosen()
+            (st.apple.chosen(), st.apple.chosen_may_act())
         };
         let advisor = apple.advisors.get(chosen)?;
-        advisor.refresh();
+        // After the run was halted nothing probes either: a new probe would start a program that
+        // nobody is left to stop.
+        if may_act && !apple.advisors.is_halted() {
+            advisor.refresh();
+        }
         let availability = advisor.availability();
         self.inner.read_availability(chosen, availability.clone());
-        Some(availability)
+        may_act.then_some(availability)
+    }
+
+    /// Reads what every advisor last said about its availability and brings every photo in step with
+    /// it, **without** asking any advisor to probe (`docs/22` section 3.3: what the core does when an
+    /// advisor says its availability changed, and after a probe it waited for). A change notification
+    /// that started a probe would let a request-time sign-out and the probe that undoes it feed each
+    /// other: the request fails, the listener probes, the probe says available, the photo is asked
+    /// again.
+    pub fn read_auto_availability(&self) {
+        let Some(apple) = self.inner.env.apple_auto.as_ref() else {
+            return;
+        };
+        for provider in [AutoProvider::Apple, AutoProvider::Claude, AutoProvider::Agy] {
+            if let Some(advisor) = apple.advisors.get(provider) {
+                self.inner
+                    .read_availability(provider, advisor.availability());
+            }
+        }
     }
 
     /// Sets the saved `auto_provider` (`docs/22` section 10) and reads the new chosen provider's
@@ -3233,8 +3275,13 @@ impl Session {
         let mut next = lock(&self.inner.state).apple.clone();
         change(&mut next);
         let chosen = next.chosen();
+        let may_act = next.chosen_may_act() && !apple.advisors.is_halted();
         let read = apple.advisors.get(chosen).map(|advisor| {
-            advisor.refresh();
+            // A program that could not act (a cloud program with no consent saved, not named by the
+            // run) is not probed: only what it last said is read.
+            if may_act {
+                advisor.refresh();
+            }
             (chosen, advisor.availability())
         });
         self.inner.change_apple(move |a| {
@@ -3282,12 +3329,28 @@ impl Session {
         lock(&self.inner.state).apple.instructions.to_string()
     }
 
-    /// Kills the running requests of every advisor (`docs/22` section 9.4): what the app does when
-    /// it quits and `ym` does from its Ctrl-C handler, since a child is not stopped by its parent's
-    /// death on Unix.
+    /// The run is ending: kills the running requests and probes of every advisor, makes the session
+    /// ask and probe nothing more (the registry is [halted](ProviderAdvisors::halt), for good), and
+    /// waits (up to [`AUTO_CANCEL_WAIT`]) until the programs were reaped and their temporary folders
+    /// removed (`docs/22` section 9.4). What the app does when it quits (`Core::shutdown`) and what
+    /// `ym` does from its Ctrl-C handler, since a child is not stopped by its parent's death on Unix.
+    /// A request that ends with it stores nothing; the photos it was asked about stay unasked.
     pub fn cancel_auto(&self) {
-        if let Some(apple) = &self.inner.env.apple_auto {
-            apple.advisors.cancel_all();
+        let Some(apple) = &self.inner.env.apple_auto else {
+            return;
+        };
+        // Halted first, so that a worker whose request ends with the cancel does not start the next
+        // one; then every advisor is told to stop its programs and waited for, so that when this
+        // returns the programs were reaped and their temporary folders removed. The process may end
+        // right after (the app quitting, `ym` on Ctrl-C), and a program is not stopped by its
+        // parent's death on Unix.
+        apple.advisors.halt();
+        self.inner.apple_wake.notify_all();
+        if !apple.advisors.wait_idle(AUTO_CANCEL_WAIT) {
+            tracing::warn!(
+                "an Auto program did not stop within {} s; quitting anyway",
+                AUTO_CANCEL_WAIT.as_secs()
+            );
         }
     }
 
@@ -3416,6 +3479,17 @@ impl Drop for Session {
             if w.handle.thread().id() != me && !w.asking.load(Ordering::SeqCst) {
                 let _ = w.handle.join();
             }
+        }
+        // The programs the cancel told to stop are reaped, and their temporary folders removed, before
+        // the session is gone (`ym` ends the process right after it): bounded, as `cancel_auto` is.
+        // `close()` does not wait: the person is at the keyboard there.
+        if let Some(apple) = &self.inner.env.apple_auto
+            && !apple.advisors.wait_idle(AUTO_CANCEL_WAIT)
+        {
+            tracing::warn!(
+                "an Auto program did not stop within {} s; the session is gone anyway",
+                AUTO_CANCEL_WAIT.as_secs()
+            );
         }
     }
 }
@@ -4154,6 +4228,21 @@ impl Inner {
         }
     }
 
+    /// Whether the run was halted ([`ProviderAdvisors::halt`]: the app is quitting, `ym` got Ctrl-C):
+    /// nothing is asked or probed from then on.
+    fn auto_halted(&self) -> bool {
+        self.env
+            .apple_auto
+            .as_ref()
+            .is_some_and(|a| a.advisors.is_halted())
+    }
+
+    /// Whether the session is ending: halted, or being dropped. A request that fails now was cancelled
+    /// by that and stores nothing (`docs/01`: "a cancelled request stores nothing").
+    fn auto_stopping(&self) -> bool {
+        self.shutdown.load(Ordering::SeqCst) || self.auto_halted()
+    }
+
     /// The body of an Auto worker (see the module documentation). A request is panic-safe as a
     /// whole: a panic anywhere in it (the advisor, the picture, storing the result, refreshing the
     /// served estimates, the event sink) fails that photo with kind `other` and the worker goes on
@@ -4188,7 +4277,9 @@ impl Inner {
             if self.shutdown.load(Ordering::SeqCst) {
                 return None;
             }
-            if let Some(i) = st.next_apple_task() {
+            if !self.auto_halted()
+                && let Some(i) = st.next_apple_task()
+            {
                 let provider = st.apple.chosen();
                 let advisor = self
                     .env
@@ -4329,7 +4420,9 @@ impl Inner {
         let mut retries = 0;
         loop {
             // A photo that was removed while the request waited (to be rendered, between two tries) is not asked about.
+            // Nor is any, once the run is ending: the request would only be cancelled.
             if !self.live(task.epoch)
+                || self.auto_stopping()
                 || !lock(&self.state).has_photo(task.id, Some(task.incarnation))
             {
                 return None;
@@ -4341,6 +4434,12 @@ impl Inner {
                     .and_then(AdvisorAnswer::checked)
                     .map_err(|e: AdvisorError| AnswerError::Advisor((e.kind, e.message)))
             });
+            // A request that failed because the run is ending was cancelled: it stores nothing, not
+            // even "the request was cancelled" as the photo's failure (`docs/01`). (A cancel for new
+            // instructions or a closed session is dropped when it arrives, as before.)
+            if answer.is_err() && self.auto_stopping() {
+                return None;
+            }
             match answer {
                 Ok(answer) => {
                     // A program says which model answered; that is the photo's `info.model`.

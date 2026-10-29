@@ -10,6 +10,8 @@ import { Button, LinkButton, RowNote, Segmented, Switch } from "../../components
 import { exportModel } from "../../export/model";
 import {
   AUTO_GRADING_TITLE,
+  autoRowShown,
+  dropdownValue,
   EXPERIMENTAL_LABEL,
   EXPERIMENTAL_NOTE,
   INSTRUCTIONS_COPY,
@@ -19,6 +21,7 @@ import {
   providerNote,
   savedChoiceNote,
   unavailableTag,
+  USE_DEFAULT_AUTO,
 } from "../../state/autoProviders";
 import { useAppState, useStore } from "../../state/context";
 import type { AppStore } from "../../state/store";
@@ -204,8 +207,10 @@ function EntryName({ status }: { status: ProviderStatus }) {
  * The "Auto grading" row and what belongs to it (`docs/22` section 12): a glasscn `Select` of Default Auto, Apple Intelligence
  * (while available), Claude Code and Antigravity (while listed; a program that is installed but cannot be used is listed disabled, with
  * a tag), the hint of the provider that grades, Antigravity's Experimental note, a note under the row for each program that cannot be
- * used and for a saved choice that is not available, and the instructions. The select shows who grades now (`effective`); choosing a
- * program the person has not agreed to opens the consent dialog and changes nothing until they say yes (`AppStore.chooseProvider`).
+ * used and for a saved choice that is not available (with a "Use Default Auto" button that withdraws it), and the instructions. The
+ * select shows who grades now (`effective`), or the saved program itself while that is listed but cannot be chosen, so that choosing
+ * Default Auto is a real change (`dropdownValue`); choosing a program the person has not agreed to opens the consent dialog and changes
+ * nothing until they say yes (`AppStore.chooseProvider`).
  */
 function AutoGrading({ store, auto, saved, os }: { store: AppStore; auto: AutoStatus; saved: string; os: string | null }) {
   // When the consent dialog closes the focus goes back to the dropdown that opened it (Radix cannot: the list had already closed when
@@ -224,6 +229,12 @@ function AutoGrading({ store, auto, saved, os }: { store: AppStore; auto: AutoSt
   const notes = auto.providers.map((p) => providerNote(p, os ?? "")).filter((note): note is string => note !== null);
   const saveNote = savedChoiceNote(auto.preference, auto.effective);
   const experimental = auto.effective === "agy";
+  // The dropdown's value: the saved program itself while it is listed but not usable, else who grades. In the trigger that entry says why
+  // it is not usable (its tag) in place of the Experimental badge, which would not fit beside it in 220 px.
+  const shown = dropdownValue(auto);
+  const shownStatus = auto.providers.find((p) => p.provider === shown);
+  const shownTag = shownStatus !== undefined && !shownStatus.selectable && shown !== "yellowmoon" ? unavailableTag(shownStatus.state) : null;
+  const shownBadge = shown === "agy" && shownTag === null;
   return (
     <>
       <Row
@@ -240,16 +251,24 @@ function AutoGrading({ store, auto, saved, os }: { store: AppStore; auto: AutoSt
           ) : null
         }
       >
-        <Select value={auto.effective} onValueChange={(next) => void store.chooseProvider(next as AutoProvider)}>
+        <Select value={shown} onValueChange={(next) => void store.chooseProvider(next as AutoProvider)}>
           <SelectTrigger ref={trigger} aria-label={AUTO_GRADING_TITLE} className="w-[220px]">
             {/* Antigravity's name is short here ("Antigravity (agy)" is in the list) so that its badge fits the 220 px of the trigger. */}
             <SelectValue>
-              {PROVIDER_NAMES[auto.effective]}
-              {experimental ? (
+              {PROVIDER_NAMES[shown]}
+              {shownBadge ? (
                 <>
                   {" "}
                   <Badge variant="outline" className="ym-pref__badge h-4 px-1.5 text-[0.625rem]">
                     {EXPERIMENTAL_LABEL}
+                  </Badge>
+                </>
+              ) : null}
+              {shownTag !== null ? (
+                <>
+                  {" "}
+                  <Badge variant="secondary" className="ym-pref__tag ym-pref__tag--trigger text-[0.625rem]">
+                    {shownTag}
                   </Badge>
                 </>
               ) : null}
@@ -279,9 +298,23 @@ function AutoGrading({ store, auto, saved, os }: { store: AppStore; auto: AutoSt
             </RowNote>
           ))}
           {saveNote !== null ? (
-            <RowNote role="note" className="ym-pref__note">
-              {saveNote}
-            </RowNote>
+            <div className="ym-pref__saved">
+              <RowNote role="note" className="ym-pref__note">
+                {saveNote}
+              </RowNote>
+              {/* Choosing Default Auto in the dropdown is no change while it is the value shown, and a saved program that is not listed
+                  cannot be shown there at all: this always withdraws the saved choice. No consent is involved. */}
+              <LinkButton
+                size="sm"
+                onClick={() => {
+                  void store.chooseProvider("yellowmoon");
+                  // The button goes with the note: the focus stays in the row (the dropdown), unless the row goes too.
+                  trigger.current?.focus({ preventScroll: true });
+                }}
+              >
+                {USE_DEFAULT_AUTO}
+              </LinkButton>
+            </div>
           ) : null}
         </div>
       ) : null}
@@ -375,7 +408,7 @@ export function Preferences() {
               ]}
             />
           </Row>
-          {auto?.visible ? <AutoGrading store={store} auto={auto} saved={prefs.apple_auto_instructions} os={os} /> : null}
+          {auto !== null && autoRowShown(auto) ? <AutoGrading store={store} auto={auto} saved={prefs.apple_auto_instructions} os={os} /> : null}
           <Row title="Export defaults" hint="Format, quality, size, where files go and how they are named.">
             <LinkButton aria-expanded={editing} onClick={() => setEditing((on) => !on)}>
               {editing ? "Hide" : "Edit…"}

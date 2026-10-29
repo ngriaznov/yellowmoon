@@ -2,7 +2,8 @@
 //! that fill it, the breaker, cancelling, and the skeleton of one request.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use ym_core::apple_auto::{
@@ -14,7 +15,7 @@ use ym_core::auto_provider::{
 
 use crate::breaker::{Breaker, Record};
 use crate::discovery::{Discovery, Locations, check_program, locate};
-use crate::probe::{Level, Prober};
+use crate::probe::{Level, Merge, Prober};
 use crate::process::{
     CancelSource, CancelToken, EnvProfile, Outcome, RunSpec, last_json_object, run,
 };
@@ -68,6 +69,47 @@ impl Fail {
     }
 }
 
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// How many requests of an advisor are in flight, and the wait for none.
+#[derive(Default)]
+struct InFlight {
+    count: Mutex<usize>,
+    idle: Condvar,
+}
+
+/// One request in flight; dropping it (on every way out, a panic included) takes it off the count.
+struct Busy<'a>(&'a InFlight);
+
+impl InFlight {
+    fn enter(&self) -> Busy<'_> {
+        *lock(&self.count) += 1;
+        Busy(self)
+    }
+
+    /// Waits until no request is in flight or `timeout` is up; whether none is.
+    fn wait_none(&self, timeout: Duration) -> bool {
+        let count = lock(&self.count);
+        let (count, _) = self
+            .idle
+            .wait_timeout_while(count, timeout, |n| *n > 0)
+            .unwrap_or_else(PoisonError::into_inner);
+        *count == 0
+    }
+}
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        let mut count = lock(&self.0.count);
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            self.0.idle.notify_all();
+        }
+    }
+}
+
 /// The state shared by an advisor's requests and probes.
 pub struct Core {
     tool: Tool,
@@ -76,6 +118,12 @@ pub struct Core {
     prober: Prober<Reading>,
     breaker: Breaker,
     cancel: CancelSource,
+    /// The requests that run now, for [`Core::wait_idle`].
+    requests: InFlight,
+    /// When a request last found the program signed out (`docs/22` sections 3.3 and 9.2): a probe's
+    /// `available` does not undo it until a request succeeds, the hold has passed, or the person asks
+    /// for a new check ([`Core::refresh_asked`]). Shared with the probes' merge.
+    signed_out: Arc<Mutex<Option<Instant>>>,
 }
 
 impl Core {
@@ -84,13 +132,32 @@ impl Core {
     pub fn new(tool: Tool, source: Source, tuning: Tuning) -> Self {
         let min_interval = tuning.min_interval;
         let breaker = Breaker::with(tuning.breaker_failures, tuning.breaker_cooldown);
+        let signed_out: Arc<Mutex<Option<Instant>>> = Arc::default();
+        let held = Arc::clone(&signed_out);
+        let hold = tuning.signed_out_hold;
+        // A probe only reads the local sign-in state (`claude auth status` says `loggedIn` from stored
+        // credentials while the service answers 401; `agy`'s `/usage` exits 0 while requests answer
+        // 403), so while a sign-out that a request found is held, its `available` is not believed.
+        let merge: Merge<Reading> = Box::new(move |mut probed: Reading| {
+            let holding = lock(&held).is_some_and(|at| at.elapsed() < hold);
+            if holding && probed.availability.is_available() {
+                probed.availability = Availability::Unavailable(UnavailableReason::SignedOut);
+            }
+            probed
+        });
         Self {
             tool,
             source,
             tuning,
-            prober: Prober::new(Reading::unavailable(UnavailableReason::Checking), min_interval),
+            prober: Prober::with_merge(
+                Reading::unavailable(UnavailableReason::Checking),
+                min_interval,
+                merge,
+            ),
             breaker,
             cancel: CancelSource::new(),
+            requests: InFlight::default(),
+            signed_out,
         }
     }
 
@@ -171,13 +238,33 @@ impl Core {
         }
     }
 
-    /// Starts a probe of `level` in the background; see [`Prober::refresh`].
+    /// Starts a probe of `level` in the background; see [`Prober::refresh`]. The probe's programs obey
+    /// [`Core::cancel`] like a request's, and a probe that was cancelled leaves the reading as it was.
     pub fn refresh(&self, level: Level) {
-        let (tool, source, tuning) = (self.tool, self.source.clone(), self.tuning.clone());
+        let (tool, source) = (self.tool, self.source.clone());
+        let mut tuning = self.tuning.clone();
+        let token = self.cancel.token();
+        tuning.cancel = token.clone();
         let model = self.model_alias();
+        let prober = self.prober.clone();
         self.prober.refresh(level, move || {
-            probe_tool(tool, &source, &tuning, level, &model)
+            let reading = probe_tool(tool, &source, &tuning, level, &model);
+            if token.is_cancelled() {
+                // The programs were stopped half-way: what they printed says nothing.
+                prober.current()
+            } else {
+                reading
+            }
         });
+    }
+
+    /// A full probe that the person asked for (Preferences opening, `ym doctor`): also forgets a
+    /// sign-out that a request found, so that the probe's reading is believed (`docs/22` section 3.3).
+    /// The automatic refreshes (a session opening, a change of the preferences, before an export) use
+    /// [`Core::refresh`] and leave it standing.
+    pub fn refresh_asked(&self) {
+        *lock(&self.signed_out) = None;
+        self.refresh(Level::Full);
     }
 
     /// Waits until no probe runs or `timeout` is up.
@@ -185,9 +272,30 @@ impl Core {
         self.prober.settle(timeout);
     }
 
-    /// Ends the requests that run now.
+    /// Ends the requests and the probes that run now: every program they started has been told to stop
+    /// when this returns (see [`CancelSource::cancel`]); their threads finish the work, which
+    /// [`Core::wait_idle`] waits for.
     pub fn cancel(&self) {
         self.cancel.cancel();
+    }
+
+    /// Waits until no request and no probe of this advisor is running, every program they started
+    /// reaped and every temporary folder removed, or until `timeout` has passed; whether it is idle.
+    /// After [`Core::cancel`] allow for the 2 s that a program which ignores `SIGTERM` is given.
+    #[must_use]
+    pub fn wait_idle(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = || deadline.saturating_duration_since(Instant::now());
+            let none = self.requests.wait_none(left());
+            self.prober.settle(left());
+            if none && self.requests.wait_none(Duration::ZERO) && !self.prober.is_running() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+        }
     }
 
     /// Registers the listener of availability changes.
@@ -195,24 +303,26 @@ impl Core {
         self.prober.on_change(listener);
     }
 
-    /// A request found the program signed out: the cached state says so at once (`docs/22` section 3.3).
+    /// A request found the program signed out: the cached state says so at once (`docs/22` section
+    /// 3.3), and keeps saying so against the probes for [`Tuning::signed_out_hold`].
     fn mark_signed_out(&self) {
-        let mut reading = self.prober.current();
-        reading.availability = Availability::Unavailable(UnavailableReason::SignedOut);
-        self.prober.set(reading);
+        *lock(&self.signed_out) = Some(Instant::now());
+        self.prober.modify(|reading| {
+            reading.availability = Availability::Unavailable(UnavailableReason::SignedOut);
+        });
     }
 
-    /// A request answered: the cached state is `available` again.
+    /// A request answered: the sign-out is over and the cached state is `available` again.
     fn mark_available(&self) {
-        let mut reading = self.prober.current();
-        if reading.availability.is_available() {
-            return;
-        }
-        let Some(tool) = reading.tool.clone() else {
-            return;
-        };
-        reading.availability = Availability::Available(self.info(tool));
-        self.prober.set(reading);
+        *lock(&self.signed_out) = None;
+        self.prober.modify(|reading| {
+            if reading.availability.is_available() {
+                return;
+            }
+            if let Some(tool) = reading.tool.clone() {
+                reading.availability = Availability::Available(self.info(tool));
+            }
+        });
     }
 
     /// The skeleton of one request (`docs/22` sections 9.2 and 3.3): the breaker's say, the program's
@@ -223,6 +333,8 @@ impl Core {
         request: impl FnOnce(&Path, CancelToken) -> Result<AdvisorAnswer, Fail>,
     ) -> Result<AdvisorAnswer, AdvisorError> {
         let provider = self.tool.provider();
+        // Counted until this function returns, which is after the request has dropped its folder.
+        let _busy = self.requests.enter();
         let ticket = self.breaker.check().map_err(|last| {
             AdvisorError::new(
                 FailureKind::Unavailable,
@@ -340,6 +452,7 @@ fn claude_sign_in(path: &Path, version: &semver::Version, tuning: &Tuning, model
         RunSpec::new(path, workdir.cwd(), EnvProfile::Claude)
             .args(["auth", "status"])
             .timeout(tuning.probe.claude_auth)
+            .cancel(tuning.cancel.clone())
             .extra_env(tuning.extra_env.clone()),
     );
     if output.outcome != Outcome::Exited {
@@ -397,6 +510,7 @@ fn agy_sign_in(path: &Path, version: &semver::Version, tuning: &Tuning, model: &
         RunSpec::new(path, workdir.cwd(), EnvProfile::Agy)
             .args(["-p", "/usage", "--output-format", "json"])
             .timeout(tuning.probe.agy_usage)
+            .cancel(tuning.cancel.clone())
             .extra_env(tuning.extra_env.clone()),
     );
     if output.outcome != Outcome::Exited {

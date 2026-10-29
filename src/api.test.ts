@@ -86,6 +86,7 @@ const calls: Row[] = [
   ["preferencesSet", () => tauriApi.preferencesSet({ remove_location_from_exports: true }), "preferences_set", { patch: { remove_location_from_exports: true } }],
   ["installCliLink", () => tauriApi.installCliLink(), "install_cli_link", undefined],
   ["autoStatus", () => tauriApi.autoStatus(), "auto_status", undefined],
+  ["autoStatusCached", () => tauriApi.autoStatusCached(), "auto_status_cached", undefined],
   ["cliLinkStatus", () => tauriApi.cliLinkStatus(), "cli_link_status", undefined],
   ["appInfo", () => tauriApi.appInfo(), "app_info", undefined],
 ];

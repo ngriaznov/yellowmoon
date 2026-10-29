@@ -9,9 +9,10 @@
 //! |---|---|
 //! | `YM_FAKE_SCENARIO` | the behaviour, default `signed_in` |
 //! | `YM_FAKE_RECORD=<folder>` | what the double saw: `argv.txt` (and `argv.json`), `cwd.txt`, `stdin.bin`, `env.txt`, `files.txt` of the last run, and the same in `run-<n>/` for every run |
-//! | `YM_FAKE_PIDFILE=<file>` | the `slow` scenarios write their own pid and a grandchild's; the grandchild beats in `<file>.beat` |
+//! | `YM_FAKE_PIDFILE=<file>` | the `slow` and `slow_deaf` scenarios write their own pid and a grandchild's, the hanging probes their own; the grandchild beats in `<file>.beat` |
 //! | `YM_FAKE_VERSION` | replaces the version it prints |
 //! | `YM_FAKE_FAILS=<n>` | the first n requests fail (for the breaker) |
+//! | `YM_FAKE_PLAN=<steps>` | a comma list of what each request does, by its index: `ok`, `fail` (a failure the breaker counts: `cli_failed`), `rate` (`rate_limited`), `bad` (an answer that does not validate), `refused` (Claude Code only), `signedout` (`not_signed_in`); requests after the list are `ok` |
 //! | `YM_FAKE_COUNTER=<folder>` | where requests are counted, for `YM_FAKE_FAILS` and `late_signout` (default: the record folder) |
 //! | `YM_FAKE_DELAY_MS` | a request sleeps this long before it answers |
 //! | `version.txt` | next to the double: its first line is the version it prints (a copy per version) |
@@ -62,8 +63,11 @@ pub fn delay() {
     }
 }
 
-/// Blocks for ever (a probe that never ends).
+/// Blocks for ever (a probe that never ends). Writes its pid to `YM_FAKE_PIDFILE` first, when it is set.
 pub fn hang() -> ! {
+    if let Some(pidfile) = std::env::var_os("YM_FAKE_PIDFILE") {
+        let _ = fs::write(pidfile, format!("{}\n", std::process::id()));
+    }
     loop {
         std::thread::sleep(Duration::from_secs(3600));
     }
@@ -110,6 +114,24 @@ pub fn requests_so_far() -> usize {
             .unwrap_or(0),
         None => 0,
     }
+}
+
+/// What request number `index` must do according to `YM_FAKE_PLAN` (`ok`, `fail`, `rate`, `bad`,
+/// `refused` or `signedout`); `None` when the variable is not set or the list has ended.
+pub fn planned(index: usize) -> Option<String> {
+    let plan = std::env::var("YM_FAKE_PLAN").ok()?;
+    let step = plan.split(',').nth(index)?.trim().to_owned();
+    match step.as_str() {
+        "ok" | "fail" | "rate" | "bad" | "refused" | "signedout" => Some(step),
+        other => reject(&format!("YM_FAKE_PLAN has the step {other:?}")),
+    }
+}
+
+/// Whether requests are counted: `late_signout`, `YM_FAKE_FAILS` and `YM_FAKE_PLAN` need their index.
+pub fn counting(scenario: &str) -> bool {
+    scenario == "late_signout"
+        || std::env::var_os("YM_FAKE_FAILS").is_some()
+        || std::env::var_os("YM_FAKE_PLAN").is_some()
 }
 
 /// Whether this request is one of the first `YM_FAKE_FAILS` and must fail.
@@ -236,9 +258,26 @@ pub fn maybe_sleeper() {
     }
 }
 
+/// Ignores `SIGTERM`, as a program that never got round to handling it does. The disposition is kept
+/// by a program that is started afterwards, so a grandchild ignores it too. Only `SIGKILL` ends it.
+#[cfg(unix)]
+fn ignore_sigterm() {
+    unsafe extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+    // SAFETY: `signal` is the C library's; 15 is SIGTERM and 1 is SIG_IGN on Linux and macOS.
+    unsafe {
+        signal(15, 1);
+    }
+}
+
 /// The `slow` scenarios: starts a grandchild, writes both pids to `YM_FAKE_PIDFILE` and sleeps for ten
-/// minutes.
+/// minutes. `slow_deaf` ignores `SIGTERM` first (Unix), so that only `SIGKILL` ends it.
 pub fn slow() -> ! {
+    #[cfg(unix)]
+    if scenario() == "slow_deaf" {
+        ignore_sigterm();
+    }
     if let Some(pidfile) = std::env::var_os("YM_FAKE_PIDFILE").map(PathBuf::from) {
         let beat = PathBuf::from(format!("{}.beat", pidfile.display()));
         let me = std::env::current_exe().unwrap_or_default();
@@ -266,7 +305,7 @@ pub fn maybe_raw(recorder: &Recorder, scenario: &str) {
         return;
     }
     match scenario {
-        "slow" => slow(),
+        "slow" | "slow_deaf" => slow(),
         "backpressure" => {
             flood(2);
             let stdin = read_stdin();

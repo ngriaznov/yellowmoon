@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { openApp, openPhotos, watchErrors } from "./helpers/app";
 
 // The Auto providers in the app (docs/22 section 12) in a real browser against the mocked API. The mock plays a computer with Apple
@@ -21,6 +21,15 @@ async function preferences(page: Page, options: Record<string, string | number>)
   await expect(dialog.getByRole("group", { name: "Display rendering" })).toBeVisible();
   return dialog;
 }
+
+/** Whether everything in the dropdown's trigger shows: the text is not cut off and nothing reaches the chevron. */
+const triggerFits = (trigger: Locator) =>
+  trigger.evaluate((el) => {
+    const value = el.querySelector<HTMLElement>('[data-slot="select-value"]')!;
+    const inside = el.getBoundingClientRect();
+    const shown = [...value.children].every((child) => child.getBoundingClientRect().right <= inside.right - 8);
+    return value.scrollWidth - value.clientWidth <= 1 && shown;
+  });
 
 const saved = (page: Page) => page.evaluate(async () => (await window.__yellowmoon!.mockApi.preferencesGet()).auto_provider);
 
@@ -45,8 +54,16 @@ test.describe("the row", () => {
 
   test("lists the providers in order, a program that cannot be used disabled with its tag, and Antigravity Experimental", async ({ page }) => {
     const problems = watchErrors(page);
-    const dialog = await preferences(page, { mockProviders: "apple,claude:too_old,agy:signed_out", mockAutoProvider: "yellowmoon" });
-    await dialog.getByRole("combobox", { name: TITLE }).click();
+    // Both programs are agreed to, so an entry that could be chosen would be saved at once: the check below can fail.
+    const dialog = await preferences(page, {
+      mockProviders: "apple,claude:too_old,agy:signed_out",
+      mockAutoProvider: "yellowmoon",
+      mockConsent: "claude,agy",
+    });
+    // While the list is open Radix hides the rest of the page from assistive technology, the trigger included.
+    await expect(dialog.getByRole("combobox", { name: TITLE })).toHaveText("Default Auto");
+    const trigger = page.getByRole("combobox", { name: TITLE, includeHidden: true });
+    await trigger.click();
     const options = page.getByRole("option");
     await expect(options).toHaveCount(4);
     await expect(options.nth(0)).toContainText("Default Auto");
@@ -62,9 +79,16 @@ test.describe("the row", () => {
     // The badges are glasscn's, and a disabled entry is not chosen by a click.
     await expect(options.nth(2).locator('[data-slot="badge"]')).toHaveCount(1);
     await expect(options.nth(3).locator('[data-slot="badge"]')).toHaveCount(2);
-    await options.nth(2).click({ force: true });
-    expect(await saved(page)).toBe("yellowmoon");
+    for (const index of [2, 3]) {
+      await options.nth(index).click({ force: true });
+      // Nothing was chosen: the choice is not saved, no question opened, and the dropdown still shows what it showed.
+      expect(await saved(page)).toBe("yellowmoon");
+      await expect(page.getByRole("dialog", { name: /^Send photos/ })).toHaveCount(0);
+      await expect(trigger).toHaveText("Default Auto");
+      await expect(options).toHaveCount(4);
+    }
     await page.keyboard.press("Escape");
+    await expect(trigger).toHaveText("Default Auto");
     expect(problems).toEqual([]);
   });
 
@@ -122,11 +146,75 @@ test.describe("the row", () => {
     const dialog = await preferences(page, { mockProviders: "apple,claude:signed_out", mockAutoProvider: "claude", mockConsent: "claude" });
     const note = dialog.getByText("Your saved choice, Claude Code, isn't available now, so Default Auto is used until it is.");
     await expect(note).toBeVisible();
-    await expect(dialog.getByRole("combobox", { name: TITLE })).toHaveText("Default Auto");
+    // The dropdown shows the saved program as the disabled entry it is, with its tag; Default Auto grades.
+    await expect(dialog.getByRole("combobox", { name: TITLE })).toHaveText("Claude Code Not signed in");
+    await expect(dialog.getByRole("textbox")).toHaveCount(0);
     await page.evaluate(() => window.__yellowmoon!.mockApi.setProviders({ apple: "available", claude: "available" }));
     await expect(note).toHaveCount(0);
     await expect(dialog.getByRole("combobox", { name: TITLE })).toHaveText("Claude Code");
     await expect(dialog.getByRole("textbox", { name: "Instructions for Claude Code" })).toBeVisible();
+  });
+
+  test("lets Default Auto be chosen while the saved program is signed out (the dropdown shows the program, so choosing Default Auto is a change)", async ({ page }) => {
+    const problems = watchErrors(page);
+    // Claude Code is saved, agreed to, installed and signed out; nothing else can be chosen: an Intel Mac, or one before macOS 27.
+    const dialog = await preferences(page, { mockProviders: "apple:unavailable,claude:signed_out", mockAutoProvider: "claude", mockConsent: "claude" });
+    const trigger = dialog.getByRole("combobox", { name: TITLE });
+    await expect(trigger).toHaveText("Claude Code Not signed in");
+    // The tag fits the 220 px of the trigger whole.
+    expect(await triggerFits(trigger)).toBe(true);
+    await trigger.click();
+    const options = page.getByRole("option");
+    await expect(options).toHaveCount(2);
+    await expect(options.nth(1)).toHaveAttribute("aria-disabled", "true");
+    await options.nth(0).click();
+    await expect.poll(() => saved(page)).toBe("yellowmoon");
+    await expect(page.getByRole("dialog", { name: /^Send photos/ })).toHaveCount(0);
+    await expect(trigger).toHaveText("Default Auto");
+    await expect(dialog.getByText(/^Your saved choice/)).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Use Default Auto" })).toHaveCount(0);
+    expect(problems).toEqual([]);
+  });
+
+  test("fits Antigravity's name and tag in the trigger when it is the saved choice and signed out", async ({ page }) => {
+    const dialog = await preferences(page, { mockProviders: "agy:signed_out", mockAutoProvider: "agy", mockConsent: "agy" });
+    const trigger = dialog.getByRole("combobox", { name: TITLE });
+    await expect(trigger).toHaveText("Antigravity Not signed in");
+    expect(await triggerFits(trigger)).toBe(true);
+  });
+
+  test("keeps the row when the saved program is gone and nothing else is listed, and Use Default Auto withdraws the choice", async ({ page }) => {
+    // Claude Code was saved and agreed to, then uninstalled; Apple Intelligence is not available: no provider is listed, but the choice is a program.
+    const dialog = await preferences(page, { mockProviders: "apple:unavailable", mockAutoProvider: "claude", mockConsent: "claude" });
+    await expect.poll(() => page.evaluate(() => window.__yellowmoon!.mockApi.autoStatus().then((s) => s.visible))).toBe(false);
+    const row = dialog.getByRole("group", { name: TITLE });
+    await expect(row).toBeVisible();
+    await expect(dialog.getByRole("combobox", { name: TITLE })).toHaveText("Default Auto");
+    const note = dialog.getByText("Your saved choice, Claude Code, isn't available now, so Default Auto is used until it is.");
+    await expect(note).toBeVisible();
+    const button = dialog.getByRole("button", { name: "Use Default Auto" });
+    await expect(button).toBeVisible();
+    // Beside the note: the same line.
+    const [noteBox, buttonBox] = await Promise.all([note.boundingBox(), button.boundingBox()]);
+    expect(buttonBox!.x).toBeGreaterThanOrEqual(noteBox!.x + noteBox!.width - 1);
+    expect(Math.abs(buttonBox!.y + buttonBox!.height / 2 - (noteBox!.y + noteBox!.height / 2))).toBeLessThan(buttonBox!.height);
+    await button.click();
+    await expect.poll(() => saved(page)).toBe("yellowmoon");
+    await expect(page.getByRole("dialog", { name: /^Send photos/ })).toHaveCount(0);
+    // Withdrawn: nothing is left to show, so the row goes with its note.
+    await expect(row).toHaveCount(0);
+    await expect(note).toHaveCount(0);
+    expect(await page.evaluate(async () => (await window.__yellowmoon!.mockApi.preferencesGet()).auto_consent)).toEqual({ claude: true, agy: false });
+  });
+
+  test("keeps the Use Default Auto button for a saved program that is signed out, beside the dropdown that shows it", async ({ page }) => {
+    const dialog = await preferences(page, { mockProviders: "apple,claude:signed_out", mockAutoProvider: "claude", mockConsent: "claude" });
+    await dialog.getByRole("button", { name: "Use Default Auto" }).click();
+    await expect.poll(() => saved(page)).toBe("yellowmoon");
+    await expect(dialog.getByRole("combobox", { name: TITLE })).toHaveText("Default Auto");
+    await expect(dialog.getByRole("button", { name: "Use Default Auto" })).toHaveCount(0);
+    // The row stays: Apple Intelligence and the unusable program are still listed.
+    await expect(dialog.getByRole("group", { name: TITLE })).toBeVisible();
   });
 
   test("goes when the last provider leaves while Preferences is open", async ({ page }) => {
@@ -204,6 +292,26 @@ test.describe("the consent dialog", () => {
     await expect(dialog).toBeVisible();
     expect(await saved(page)).toBe("apple");
     expect(await page.evaluate(async () => (await window.__yellowmoon!.mockApi.preferencesGet()).auto_consent)).toEqual({ claude: false, agy: false });
+  });
+
+  test("does not come back unasked when About from the native menu took its place", async ({ page }) => {
+    const dialog = await preferences(page, options);
+    await dialog.getByRole("combobox", { name: TITLE }).click();
+    await page.getByRole("option", { name: "Claude Code" }).click();
+    const consent = page.getByRole("dialog", { name: "Send photos to Claude Code?" });
+    await expect(consent).toBeVisible();
+    // The menu's About Yellowmoon: another dialog replaces Preferences, and the question goes with it.
+    await page.evaluate(() => window.__yellowmoon!.mockApi.emitEvent("menu_action", { action: "about" } as never));
+    const about = page.getByRole("dialog", { name: "About Yellowmoon" });
+    await expect(about).toBeVisible();
+    await expect(consent).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(about).toHaveCount(0);
+    // The next ⌘, opens Preferences alone, and nothing was saved.
+    await page.keyboard.press("Meta+,");
+    await expect(page.getByRole("dialog", { name: "Preferences" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: /^Send photos/ })).toHaveCount(0);
+    expect(await saved(page)).toBe("apple");
   });
 
   test("Antigravity's dialog says it is experimental, and a Windows build adds its sentence", async ({ page }) => {

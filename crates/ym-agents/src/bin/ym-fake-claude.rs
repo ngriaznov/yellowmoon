@@ -8,9 +8,9 @@ mod fakes;
 
 use base64::Engine;
 use fakes::{
-    Recorder, answer_for, decode_jpeg, first_word, flood, hang, has, maybe_sleeper, must_fail, out,
-    read_stdin, reject, request_index, requests_so_far, require, scenario, slow, twist, value_of,
-    version,
+    Recorder, answer_for, counting, decode_jpeg, first_word, flood, hang, has, maybe_sleeper,
+    must_fail, out, planned, read_stdin, reject, request_index, requests_so_far, require, scenario,
+    slow, twist, value_of, version,
 };
 use serde_json::{Value, json};
 
@@ -127,7 +127,7 @@ fn request(args: &[String], scenario: &str, recorder: &Recorder) {
         eprintln!("fatal: key sk-ant-FAKE0123456789 was rejected");
         std::process::exit(3);
     }
-    if scenario == "slow" {
+    if matches!(scenario, "slow" | "slow_deaf") {
         slow();
     }
     // `backpressure`: write 2 MB before reading a byte of standard input.
@@ -135,8 +135,11 @@ fn request(args: &[String], scenario: &str, recorder: &Recorder) {
         flood(2);
     }
 
-    let counting = scenario == "late_signout" || std::env::var_os("YM_FAKE_FAILS").is_some();
-    let index = if counting { request_index() } else { 0 };
+    let index = if counting(scenario) {
+        request_index()
+    } else {
+        0
+    };
 
     let stdin = read_stdin();
     recorder.write("stdin.bin", &stdin);
@@ -178,6 +181,31 @@ fn request(args: &[String], scenario: &str, recorder: &Recorder) {
     };
 
     fakes::delay();
+    // What `YM_FAKE_PLAN` says this request does comes before the scenario.
+    match planned(index).as_deref() {
+        Some("fail") => error_result("fake failure", Some(500), &[]),
+        Some("rate") => error_result(
+            "API Error: rate limited",
+            Some(429),
+            &[
+                json!({"type": "system", "subtype": "api_retry", "attempt": 1, "error": "rate_limit"}),
+            ],
+        ),
+        Some("bad") => {
+            let answer = Value::Object(twist(
+                answer_for(&picture, &first_word(&instructions)),
+                "malformed",
+            ));
+            success(Some(answer), "", "end_turn");
+            return;
+        }
+        Some("refused") => {
+            success(None, "I can't help with that.", "refusal");
+            return;
+        }
+        Some("signedout") => error_result("Not logged in · Please run /login", None, &[]),
+        _ => {}
+    }
     match scenario {
         "signed_out" => error_result("Not logged in · Please run /login", None, &[]),
         "late_signout" if index >= 1 => {

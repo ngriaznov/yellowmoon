@@ -71,6 +71,35 @@ fn exec(path: &Path) -> String {
     format!("exec:{}", path.display())
 }
 
+/// When each *request* the double saw started, from what it already writes: the time it wrote
+/// `argv.txt` into its `run-NNNN` folder. A run is a request when its arguments name a `--json-schema`;
+/// the probes (`--version`, `auth status`, `-p /usage`) do not.
+fn request_starts(record: &Path) -> Vec<std::time::SystemTime> {
+    let mut starts: Vec<_> = std::fs::read_dir(record)
+        .expect("the record folder")
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("run-"))
+        .filter_map(|e| {
+            let argv = e.path().join("argv.txt");
+            let text = std::fs::read_to_string(&argv).ok()?;
+            text.lines()
+                .any(|l| l == "--json-schema")
+                .then(|| std::fs::metadata(&argv).and_then(|m| m.modified()).ok())
+                .flatten()
+        })
+        .collect();
+    starts.sort();
+    starts
+}
+
+/// How far apart the first and the last of `starts` are.
+fn gap(starts: &[std::time::SystemTime]) -> std::time::Duration {
+    match (starts.first(), starts.last()) {
+        (Some(first), Some(last)) => last.duration_since(*first).unwrap_or_default(),
+        _ => std::time::Duration::ZERO,
+    }
+}
+
 const OWN_AUTO: &str = " Auto uses Yellowmoon's own settings.";
 
 // ---------------------------------------------------------------------------------------------
@@ -262,6 +291,80 @@ fn the_saved_choice_acts_only_with_its_consent_and_naming_it_is_the_consent_for_
     );
     assert_eq!(v["auto_source"], "rule");
     assert!(!stderr.contains(cloud), "{stderr}");
+}
+
+/// A saved cloud choice that nothing agreed to (the file says `claude`, the consent is not saved) touches
+/// no program, whatever the command: no `--version`, no `auth status`, no request (`docs/22` sections
+/// 10.2 and 13.1). The double records every invocation, so a probe would show. The photo says
+/// `not_consented` every time, not `checking` or `not_consented` by the luck of the timing.
+#[test]
+fn a_saved_cloud_choice_nobody_agreed_to_starts_no_program() {
+    let Some(claude) = double(Tool::Claude) else {
+        return;
+    };
+    let sb = Sandbox::new();
+    let arw = photo(&sb);
+    let record = sb.root().join("record");
+    sb.set_auto_provider("claude", &[]);
+    let hook = format!("claude={}", exec(&claude));
+    for round in 0..3 {
+        let (i, _) = info(
+            {
+                let mut cmd = sb.ym_provider(&hook);
+                cmd.env("YM_FAKE_RECORD", &record);
+                cmd
+            },
+            &arw,
+            &[],
+        );
+        assert_eq!(i["auto_advisor"]["state"], "unavailable", "round {round}");
+        assert_eq!(
+            i["auto_advisor"]["reason"], "not_consented",
+            "round {round}"
+        );
+        assert_eq!(i["auto_advisor"]["provider"], "claude", "round {round}");
+    }
+    let (v, stderr) = render(
+        {
+            let mut cmd = sb.ym_provider(&hook);
+            cmd.env("YM_FAKE_RECORD", &record);
+            cmd
+        },
+        &arw,
+        &[],
+        &sb.root().join("out"),
+    );
+    assert_eq!(v["auto_source"], "rule");
+    assert_eq!(
+        v["auto"]["apple"],
+        json!({ "state": "unavailable", "reason": "not_consented" }),
+        "{v}"
+    );
+    assert!(!stderr.contains("Claude Code"), "{stderr}");
+    // The double was never started, not even for `--version`.
+    let runs = std::fs::read_dir(&record)
+        .map(|d| d.flatten().count())
+        .unwrap_or(0);
+    assert_eq!(runs, 0, "a program that was not agreed to was started");
+    // The control: naming the program is the consent, and the double is started (and recorded).
+    let (v, _) = render(
+        {
+            let mut cmd = sb.ym_provider(&hook);
+            cmd.env("YM_FAKE_RECORD", &record);
+            cmd
+        },
+        &arw,
+        &["--auto-provider", "claude"],
+        &sb.root().join("named"),
+    );
+    assert_eq!(v["auto_source"], "claude", "{v}");
+    assert!(
+        std::fs::read_dir(record.join("claims"))
+            .map(|d| d.flatten().count())
+            .unwrap_or(0)
+            > 0,
+        "naming the program starts it"
+    );
 }
 
 /// The text of the **Auto grading** row of `ym info` with `hook` and `flags`.
@@ -753,7 +856,7 @@ fn a_render_through_the_test_double_of_claude_code_answers_both_photos() {
     let out = sb
         .ym_provider(&format!("claude={}", exec(&claude)))
         .env("YM_FAKE_RECORD", &record)
-        .env("YM_FAKE_DELAY_MS", "300")
+        .env("YM_FAKE_DELAY_MS", "800")
         .args([
             "render",
             "--json",
@@ -800,13 +903,16 @@ fn a_render_through_the_test_double_of_claude_code_answers_both_photos() {
             "no path in the file"
         );
     }
-    // Two requests ran at the same time: the double saw two runs that overlapped (each sleeps 300 ms).
-    let runs: Vec<_> = std::fs::read_dir(&record)
-        .expect("record")
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("run-"))
-        .collect();
-    assert!(runs.len() >= 2, "two requests were made: {runs:?}");
+    // Two requests ran at the same time: the double saw two *requests* (not the probes, which it
+    // records as runs too) and each sleeps 800 ms, so they overlap only if the second started within
+    // that of the first.
+    let starts = request_starts(&record);
+    assert_eq!(starts.len(), 2, "two requests were made: {starts:?}");
+    assert!(
+        gap(&starts) < std::time::Duration::from_millis(400),
+        "the two requests did not overlap: they started {:?} apart",
+        gap(&starts)
+    );
     // The program's own state is used: `ym info` of a signed-in double is available, and `doctor` says
     // where it was found and how it is signed in.
     let out = sb
@@ -824,6 +930,41 @@ fn a_render_through_the_test_double_of_claude_code_answers_both_photos() {
             .as_str()
             .is_some_and(|p| p.contains("ym-fake-claude")),
         "{c}"
+    );
+}
+
+/// The helper above can tell a request that overlaps from one that does not: Antigravity takes one
+/// request at a time (`docs/22` D6), so its two requests start a request's length apart.
+#[test]
+fn antigravity_asks_two_photos_one_after_the_other() {
+    let Some(agy) = double(Tool::Agy) else {
+        return;
+    };
+    let sb = Sandbox::new();
+    sb.arw("a.ARW");
+    sb.arw_sized("b.ARW", 128, 96, 7);
+    let record = sb.root().join("record");
+    sb.ym_provider(&format!("agy={}", exec(&agy)))
+        .env("YM_FAKE_RECORD", &record)
+        .env("YM_FAKE_DELAY_MS", "800")
+        .args([
+            "render",
+            "--json",
+            "--cpu",
+            "--auto-provider",
+            "agy",
+            "--out",
+        ])
+        .arg(sb.root().join("out"))
+        .arg(sb.photos())
+        .assert()
+        .success();
+    let starts = request_starts(&record);
+    assert_eq!(starts.len(), 2, "two requests were made: {starts:?}");
+    assert!(
+        gap(&starts) >= std::time::Duration::from_millis(700),
+        "the requests overlapped: they started {:?} apart",
+        gap(&starts)
     );
 }
 
@@ -1043,4 +1184,232 @@ fn ctrl_c_leaves_no_child_running() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Ctrl-C: the programs are gone, and their folders, when `ym` has ended
+// ---------------------------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod interrupt {
+    //! `ym` over `ym-fake-claude` with its temporary folders in a folder of the test's own (`TMPDIR`), so
+    //! that "no `ym-auto-*` folder of that run" can be told from another test's.
+
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use super::{Sandbox, common, double, exec, photo};
+    use ym_agents::Tool;
+
+    /// Whether the process `pid` is running. A zombie is not: it is dead and waits for whoever is its
+    /// parent now to reap it (the grandchild of the double, whose parent is gone, waits for the
+    /// container's init, which may be slow).
+    pub fn alive(pid: i32) -> bool {
+        let state = Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .stderr(Stdio::null())
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .unwrap_or_default();
+        !state.is_empty() && !state.starts_with('Z')
+    }
+
+    /// `ym render --auto-provider claude` over the double with `scenario`; the double writes its pids to
+    /// `pidfile`, and `ym`'s temporary folders are in `tmp`.
+    pub fn start(sb: &Sandbox, claude: &Path, scenario: &str, pidfile: &Path, tmp: &Path) -> Child {
+        let args = ["render", "--cpu", "--auto-provider", "claude", "--out"];
+        let out = sb.root().join("out");
+        start_with(
+            sb,
+            claude,
+            scenario,
+            pidfile,
+            tmp,
+            &args,
+            &[&out, &photo(sb)],
+        )
+    }
+
+    /// `ym` with `args` and then `paths` over the double with `scenario` (as [`start`]).
+    pub fn start_with(
+        sb: &Sandbox,
+        claude: &Path,
+        scenario: &str,
+        pidfile: &Path,
+        tmp: &Path,
+        args: &[&str],
+        paths: &[&Path],
+    ) -> Child {
+        std::fs::create_dir_all(tmp).expect("tmp");
+        let ym = assert_cmd::cargo::cargo_bin_cmd!("ym");
+        Command::new(ym.get_program())
+            .env("YELLOWMOON_HOME", sb.home())
+            .env("YELLOWMOON_DATA", common::data_dir())
+            .env("HOME", sb.root())
+            .env("TMPDIR", tmp)
+            .env_remove("RUST_LOG")
+            .env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1)
+            .env(
+                common::AUTO_PROVIDERS_ENV,
+                format!("claude={}", exec(claude)),
+            )
+            .env("YM_FAKE_SCENARIO", scenario)
+            .env("YM_FAKE_PIDFILE", pidfile)
+            .args(args)
+            .args(paths)
+            .current_dir(sb.root())
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(sb.root().join("ym.stderr")).expect("stderr file"))
+            .spawn()
+            .expect("start ym")
+    }
+
+    /// What `ym` said on stderr (for a failure's message).
+    fn said(tmp: &Path) -> String {
+        let file = tmp.parent().unwrap_or(tmp).join("ym.stderr");
+        std::fs::read_to_string(file).unwrap_or_default()
+    }
+
+    /// The pids the double wrote, once there are `n` of them.
+    pub fn wait_for_pids(pidfile: &Path, n: usize) -> Vec<i32> {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            let text = std::fs::read_to_string(pidfile).unwrap_or_default();
+            let pids: Vec<i32> = text
+                .split_whitespace()
+                .filter_map(|p| p.parse().ok())
+                .collect();
+            if pids.len() >= n {
+                return pids;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the double never started: {text:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// The `ym-auto-*` folders in `tmp`.
+    pub fn folders(tmp: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(tmp)
+            .map(|d| {
+                d.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.file_name()
+                            .is_some_and(|n| n.to_string_lossy().starts_with("ym-auto-"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Sends Ctrl-C to `ym` and checks what the spec promises (`docs/22` section 9.4): it ends with 130
+    /// at once, and **when it has ended** no program of the run is still running (a program that ignores
+    /// the polite stop is killed by then, not left for ever) and no `ym-auto-*` folder is left.
+    pub fn interrupt_and_check(mut child: Child, pids: &[i32], tmp: &Path) {
+        let sent = Instant::now();
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .expect("send Ctrl-C");
+        let status = child.wait().expect("ym ends");
+        assert_eq!(status.code(), Some(130), "{status:?}");
+        assert!(
+            sent.elapsed() < Duration::from_secs(10),
+            "ym took {:?} to end",
+            sent.elapsed()
+        );
+        // `ym` reaped what it started before it ended; only a short allowance for the process table of a
+        // container whose init is slow to reap, nothing like the 2 s a program that ignores SIGTERM lives.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while pids.iter().any(|p| alive(*p)) {
+            assert!(
+                Instant::now() < deadline,
+                "a program of ym is still running after ym ended ({:?} after Ctrl-C): {pids:?}\n{}",
+                sent.elapsed(),
+                said(tmp)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            folders(tmp).is_empty(),
+            "ym left a temporary folder: {:?}\n{}",
+            folders(tmp),
+            said(tmp)
+        );
+    }
+
+    /// Ctrl-C during a request to a program that ignores `SIGTERM` (only `SIGKILL` ends it, and a
+    /// grandchild of it): `ym` waits for the program to be killed and reaped and its folder removed.
+    pub fn during_a_request_that_ignores_sigterm() {
+        let Some(claude) = double(Tool::Claude) else {
+            return;
+        };
+        let sb = Sandbox::new();
+        let (pidfile, tmp) = (sb.root().join("pids"), sb.root().join("tmp"));
+        let child = start(&sb, &claude, "slow_deaf", &pidfile, &tmp);
+        let pids = wait_for_pids(&pidfile, 2);
+        assert!(
+            pids.iter().all(|p| alive(*p)),
+            "the double and its grandchild run: {pids:?}"
+        );
+        assert!(
+            !folders(&tmp).is_empty(),
+            "the request has its temporary folder"
+        );
+        interrupt_and_check(child, &pids, &tmp);
+    }
+
+    /// Ctrl-C during `ym doctor`, which probes every program and waits for them: a probe that never ends
+    /// is stopped too.
+    pub fn during_doctor() {
+        let Some(claude) = double(Tool::Claude) else {
+            return;
+        };
+        let sb = Sandbox::new();
+        let (pidfile, tmp) = (sb.root().join("pids"), sb.root().join("tmp"));
+        let child = start_with(&sb, &claude, "probe_hang", &pidfile, &tmp, &["doctor"], &[]);
+        let pids = wait_for_pids(&pidfile, 1);
+        assert!(pids.iter().all(|p| alive(*p)), "the probe runs: {pids:?}");
+        interrupt_and_check(child, &pids, &tmp);
+    }
+
+    /// Ctrl-C while `ym` waits for the start-up probe of the program it will use (a probe that never ends):
+    /// the probe is stopped as well.
+    pub fn during_the_startup_probe() {
+        let Some(claude) = double(Tool::Claude) else {
+            return;
+        };
+        let sb = Sandbox::new();
+        let (pidfile, tmp) = (sb.root().join("pids"), sb.root().join("tmp"));
+        let child = start(&sb, &claude, "probe_hang", &pidfile, &tmp);
+        let pids = wait_for_pids(&pidfile, 1);
+        assert!(pids.iter().all(|p| alive(*p)), "the probe runs: {pids:?}");
+        interrupt_and_check(child, &pids, &tmp);
+    }
+}
+
+/// Ctrl-C during a request to a program that ignores `SIGTERM` leaves no program and no folder behind,
+/// at the moment `ym` has ended.
+#[cfg(unix)]
+#[test]
+fn ctrl_c_during_a_request_waits_for_a_program_that_ignores_sigterm() {
+    interrupt::during_a_request_that_ignores_sigterm();
+}
+
+/// Ctrl-C during the start-up probe (the wait before the core opens) stops the probe too.
+#[cfg(unix)]
+#[test]
+fn ctrl_c_during_the_startup_probe_stops_the_probe() {
+    interrupt::during_the_startup_probe();
+}
+
+/// `ym doctor` probes every program and waits; Ctrl-C stops the probes too.
+#[cfg(unix)]
+#[test]
+fn ctrl_c_during_doctor_stops_the_probes() {
+    interrupt::during_doctor();
 }

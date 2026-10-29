@@ -2356,6 +2356,190 @@ fn a_computer_with_claude_signed_in() -> (
     (advisors, claude, agy)
 }
 
+/// A program's advisor that is always available and counts how often the core asked it to probe:
+/// `refreshes` for a check the app started by itself, `asked` for the one a person's Preferences
+/// opening asks for (`AutoAdvisor::refresh_asked`; for `agy` the check that contacts its service).
+struct Probing {
+    refreshes: std::sync::atomic::AtomicUsize,
+    asked: std::sync::atomic::AtomicUsize,
+}
+
+impl Probing {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            refreshes: 0.into(),
+            asked: 0.into(),
+        })
+    }
+
+    fn probes(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::SeqCst;
+        (self.refreshes.load(SeqCst), self.asked.load(SeqCst))
+    }
+}
+
+impl ym_core::apple_auto::AutoAdvisor for Probing {
+    fn availability(&self) -> ym_core::apple_auto::Availability {
+        ym_core::apple_auto::Availability::Available(
+            ym_core::auto_provider::FakeProvider::info_for(
+                ym_core::auto_provider::AutoProvider::Claude,
+            ),
+        )
+    }
+
+    fn ask(
+        &self,
+        _: &ym_core::apple_auto::AdvisorPicture,
+        _: &str,
+    ) -> Result<ym_core::apple_auto::AdvisorAnswer, ym_core::apple_auto::AdvisorError> {
+        Err(ym_core::apple_auto::AdvisorError::new(
+            ym_core::apple_auto::FailureKind::CliFailed,
+            "not asked in this test",
+        ))
+    }
+
+    fn refresh(&self) {
+        self.refreshes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn refresh_asked(&self) {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn the_cached_status_asks_no_program_to_check_anything_and_only_the_full_one_does() {
+    // `docs/22` section 3.3 and D7: only Preferences opening makes the programs probe (`agy`'s
+    // sign-in check contacts its service). Typing instructions saves a preference about every five
+    // seconds, and the webview reads the cached status after each save and on every
+    // `auto_status_changed`: none of that may start a probe of a program nobody chose.
+    use ym_core::auto_provider::{AutoProvider as Core, ProviderAdvisors};
+    let (claude, agy) = (Probing::new(), Probing::new());
+    let advisors = ProviderAdvisors::default()
+        .with(Core::Claude, claude.clone())
+        .with(Core::Agy, agy.clone());
+    let h = Harness::with_advisors(advisors);
+    let (claude_before, agy_before) = (claude.probes(), agy.probes());
+
+    let cached = h.api.auto_status_cached().expect("cached status");
+    assert_eq!(cached.providers.len(), 4);
+    assert!(cached.visible, "a program is there: {cached:?}");
+    for text in ["Make it warmer.", "Make it warmer and brighter.", ""] {
+        h.api
+            .preferences_set(&prefs_patch(json!({ "apple_auto_instructions": text })))
+            .expect("instructions");
+        h.api.auto_status_cached().expect("cached status");
+    }
+    h.api
+        .preferences_set(&prefs_patch(json!({ "auto_provider": "yellowmoon" })))
+        .expect("choice");
+    let after = h.api.auto_status_cached().expect("cached status");
+    assert_eq!(after.preference, AutoProvider::Yellowmoon);
+    assert_eq!(
+        (claude.probes(), agy.probes()),
+        (claude_before, agy_before),
+        "no program was asked to check anything"
+    );
+
+    // The full status is what Preferences opening asks for: every program checks, once each.
+    let full = h.api.auto_status().expect("status");
+    assert_eq!(full.preference, AutoProvider::Yellowmoon);
+    assert_eq!(claude.probes().1, claude_before.1 + 1);
+    assert_eq!(agy.probes().1, agy_before.1 + 1);
+    // Reading it from the cache afterwards says the same and asks nothing more.
+    assert_eq!(h.api.auto_status_cached().expect("cached status"), full);
+    assert_eq!(claude.probes().1, claude_before.1 + 1);
+    assert_eq!(agy.probes().1, agy_before.1 + 1);
+}
+
+/// Whether a process of this id still exists (a zombie that was not reaped yet counts).
+#[cfg(unix)]
+fn process_exists(pid: i32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[cfg(unix)]
+#[test]
+fn quitting_stops_a_request_that_is_running_and_leaves_no_program_and_no_folder() {
+    // `docs/22` sections 9.4 and 12.10: a child is not stopped by its parent's death on Unix, so the
+    // quit path (`AppApi::shutdown`) ends the programs Auto started and returns only after they are
+    // reaped and their temporary folders removed: the process ends as soon as it returns.
+    use ym_agents::advisor::Source;
+    use ym_agents::tool::{Tool, Tuning};
+    use ym_core::auto_provider::{AutoProvider as Core, ProviderAdvisors};
+    let Some(double) = ym_agents::testing::require_fake_cli(Tool::Claude) else {
+        return;
+    };
+    let scratch = tempfile::tempdir().expect("scratch");
+    let temp = scratch.path().join("tmp");
+    std::fs::create_dir(&temp).expect("temporary folder");
+    let pidfile = scratch.path().join("pids");
+    // The double's `slow` scenario: it starts a grandchild, writes both pids and sleeps for ten minutes.
+    let mut tuning = Tuning::for_tool(Tool::Claude)
+        .with_env("YM_FAKE_SCENARIO", "slow")
+        .with_env("YM_FAKE_PIDFILE", &pidfile.to_string_lossy());
+    tuning.temp_dir = Some(temp.clone());
+    let claude = ym_agents::ClaudeAdvisor::custom(Source::Program(double), tuning);
+    let h = Harness::with_advisors(ProviderAdvisors::default().with(Core::Claude, claude));
+    h.api
+        .preferences_set(&prefs_patch(json!({
+            "auto_provider": "claude", "auto_consent": { "claude": true, "agy": false }
+        })))
+        .expect("agreed");
+    h.open(1);
+    let pids = || -> Vec<i32> {
+        std::fs::read_to_string(&pidfile)
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter_map(|p| p.parse().ok())
+            .collect()
+    };
+    wait_until("the request to start", || pids().len() >= 2);
+    let pids = pids();
+    assert!(
+        pids.iter().all(|p| process_exists(*p)),
+        "the double and its grandchild run: {pids:?}"
+    );
+    let folders = || -> Vec<String> {
+        std::fs::read_dir(&temp)
+            .expect("temporary folder")
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|name| name.starts_with("ym-auto-"))
+            .collect()
+    };
+    assert!(
+        !folders().is_empty(),
+        "the request works in a folder of its own"
+    );
+
+    h.api.shutdown();
+
+    // Nothing is left when it returns: the double is reaped (not even a zombie) and its folder is gone.
+    assert!(
+        !process_exists(pids[0]),
+        "the program is still there after shutdown: {pids:?}"
+    );
+    assert_eq!(
+        folders(),
+        Vec::<String>::new(),
+        "the request's folder is left"
+    );
+    // Its grandchild is killed with the group; init reaps it, which may take a moment.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while process_exists(pids[1]) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the grandchild is still running: {pids:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
 fn auto_status_lists_every_provider_the_way_the_dropdown_shows_them() {
     let (advisors, _claude, _agy) = a_computer_with_claude_signed_in();

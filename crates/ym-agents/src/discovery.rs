@@ -242,11 +242,7 @@ pub fn locate(tool: Tool, loc: &Locations, tuning: &Tuning) -> Discovery {
         .into_iter()
         .filter(|p| p.is_file())
         .collect::<Vec<_>>();
-    if let Some(found) = loc.path.as_ref().and_then(|path| {
-        which::which_in_global(tool.program(), Some(path))
-            .ok()
-            .and_then(|mut matches| matches.next())
-    }) {
+    if let Some(found) = loc.path.as_ref().and_then(|path| path_lookup(tool, path)) {
         candidates.push(found);
     }
     for candidate in candidates {
@@ -266,10 +262,27 @@ pub fn locate(tool: Tool, loc: &Locations, tuning: &Tuning) -> Discovery {
     finish(tally)
 }
 
+/// The first match for `tool` on `path` that is an absolute path (`docs/22` section 4, step 2). A
+/// relative entry of `PATH` (`.`, or an empty one on Unix) would make the match depend on the folder
+/// `ym` was started in, and on Windows put `.\claude.exe` of that folder first: such a match is passed
+/// over, and the search goes on with the entries after it.
+fn path_lookup(tool: Tool, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    which::which_in_global(tool.program(), Some(path))
+        .ok()?
+        .find(|found| found.is_absolute())
+}
+
 /// The result for one program that is already known (`ClaudeAdvisor::with_program`, `exec:`): its
-/// `--version` is run and judged as in [`locate`], with no search.
+/// `--version` is run and judged as in [`locate`], with no search, by the rules of this system (on
+/// Windows only an `.exe` is started).
 #[must_use]
 pub fn check_program(tool: Tool, program: &Path, tuning: &Tuning) -> Discovery {
+    check_program_on(Os::current(), tool, program, tuning)
+}
+
+/// [`check_program`] by the rules of `os` (the tests run Windows' on any system).
+#[must_use]
+pub fn check_program_on(os: Os, tool: Tool, program: &Path, tuning: &Tuning) -> Discovery {
     if !program.is_file() {
         return Discovery::NotInstalled;
     }
@@ -281,7 +294,7 @@ pub fn check_program(tool: Tool, program: &Path, tuning: &Tuning) -> Discovery {
     let mut tally = Tally::default();
     if let Some(found) = try_candidate(
         tool,
-        Os::Unix,
+        os,
         tuning,
         &workdir,
         &mut tally,
@@ -332,6 +345,7 @@ fn try_candidate(
         RunSpec::new(&program, workdir.cwd(), profile_for(tool))
             .args(["--version"])
             .timeout(tuning.probe.version)
+            .cancel(tuning.cancel.clone())
             .extra_env(tuning.extra_env.clone()),
     );
     let version = (output.outcome == Outcome::Exited)
@@ -393,8 +407,11 @@ fn shell_candidates(tool: Tool, loc: &Locations, tuning: &Tuning, workdir: &Work
     for flags in attempts {
         let mut spec = RunSpec::new(&shell, workdir.cwd(), EnvProfile::Inherit)
             .args(flags.iter().copied().chain([command.as_str()]))
-            .timeout(tuning.probe.shell);
+            .timeout(tuning.probe.shell)
+            .cancel(tuning.cancel.clone());
         spec.stdout_cap = 64 * 1024;
+        // No controlling terminal: an interactive shell in a background group of one stops itself.
+        spec.new_session = true;
         let output = run(spec);
         if output.outcome != Outcome::Exited {
             continue;
@@ -511,6 +528,44 @@ mod tests {
             resolve_launcher(Tool::Claude, &shim),
             Launcher::Program(real.join("claude.exe"))
         );
+    }
+
+    #[test]
+    fn a_program_given_directly_is_judged_by_the_rules_of_its_system() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim = dir.path().join("claude.cmd");
+        std::fs::write(&shim, b"@echo off\r\n").unwrap();
+        let tuning = Tuning::for_tool(Tool::Claude);
+        // Windows' rule: only an `.exe` is started, a `.cmd` is a script that is never run.
+        assert_eq!(
+            check_program_on(Os::Windows, Tool::Claude, &shim, &tuning),
+            Discovery::UnsafeLauncher
+        );
+        // A file that is not there is not installed, whatever its name.
+        assert_eq!(
+            check_program_on(Os::Windows, Tool::Claude, &dir.path().join("nope.exe"), &tuning),
+            Discovery::NotInstalled
+        );
+        // `check_program` takes the rules of the system it runs on.
+        assert_eq!(
+            check_program(Tool::Claude, &shim, &tuning),
+            check_program_on(Os::current(), Tool::Claude, &shim, &tuning)
+        );
+        // Unix has no such rule: the same file is run (here it is a script that prints a version).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&shim, b"#!/bin/sh\necho 2.1.310\n").unwrap();
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(matches!(
+                check_program_on(Os::Unix, Tool::Claude, &shim, &tuning),
+                Discovery::Found { .. }
+            ));
+            assert_eq!(
+                check_program_on(Os::Windows, Tool::Claude, &shim, &tuning),
+                Discovery::UnsafeLauncher
+            );
+        }
     }
 
     #[test]

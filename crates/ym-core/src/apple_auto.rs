@@ -951,11 +951,29 @@ pub trait AutoAdvisor: Send + Sync {
     /// end, or while one runs, does nothing.
     fn refresh(&self) {}
 
+    /// As [`AutoAdvisor::refresh`], for a check that the person asked for (Preferences opening, `ym
+    /// doctor`) and not one the app started by itself (a session opening, a change of the
+    /// preferences, before an export). The difference: an advisor that holds a sign-out its own
+    /// request found, against probes that only read the local sign-in state, lets go of it now
+    /// (`docs/22` sections 3.3 and 9.2). The default is [`AutoAdvisor::refresh`].
+    fn refresh_asked(&self) {
+        self.refresh();
+    }
+
     /// Waits until no probe runs, or `timeout` has passed. Only `ym` uses it.
     fn settle(&self, _timeout: Duration) {}
 
     /// Kills the requests that are running; they return without a result (`docs/22` section 9.4).
     fn cancel(&self) {}
+
+    /// Waits until no request or probe this advisor started is still running, that is every child it
+    /// started has been reaped and its temporary folder removed, or until `timeout` has passed;
+    /// returns whether it became idle. The core calls it after [`AutoAdvisor::cancel`] when the app
+    /// quits, and `ym`'s Ctrl-C handler does too. The default returns `true` (an advisor that runs no
+    /// process is always idle).
+    fn wait_idle(&self, _timeout: Duration) -> bool {
+        true
+    }
 
     /// Registers the listener to call when the cached availability changes (`docs/22` section 3.3).
     /// It runs on the advisor's probe thread and must not block.
@@ -1132,7 +1150,9 @@ impl Activity {
     /// 3. the chosen provider has no advisor, or its availability has not been read (`availability`
     ///    is `None`): unavailable, reason `not_installed`;
     /// 4. its availability is `Unavailable(reason)`: unavailable with that reason (the choice is
-    ///    kept and ignored, `docs/19` section 2);
+    ///    kept and ignored, `docs/19` section 2); except that a cloud provider the run did not name
+    ///    and whose consent is not saved is never probed (`docs/22` section 13.1), so it still reads
+    ///    `checking` and no answer is coming: that reads `not_consented`, as the next rule says;
     /// 5. the provider is a cloud one, the run did not name it (`explicit` false) and the saved
     ///    consent does not cover it: unavailable, reason `not_consented`;
     /// 6. otherwise it acts.
@@ -1149,6 +1169,11 @@ impl Activity {
         }
         match availability {
             None => Self::Unavailable(UnavailableReason::NotInstalled),
+            Some(Availability::Unavailable(UnavailableReason::Checking))
+                if chosen.is_cloud() && !explicit && !consent.get(chosen) =>
+            {
+                Self::Unavailable(UnavailableReason::NotConsented)
+            }
             Some(Availability::Unavailable(reason)) => Self::Unavailable(*reason),
             Some(Availability::Available(info)) => {
                 if chosen.is_cloud() && !explicit && !consent.get(chosen) {
@@ -2059,15 +2084,40 @@ mod tests {
                 Activity::Unavailable(UnavailableReason::SignedOut)
             );
         }
+        let checking = Availability::Unavailable(UnavailableReason::Checking);
+        let agy_ok = AutoConsent {
+            claude: false,
+            agy: true,
+        };
+        assert_eq!(
+            Activity::decide(true, Agy, false, &agy_ok, Some(&checking)),
+            Activity::Unavailable(UnavailableReason::Checking)
+        );
+        // A cloud provider that was never probed because nothing allows it to act (no consent saved,
+        // the run did not name it) reads `checking` for ever: that is `not_consented`, every time.
+        for chosen in [Claude, Agy] {
+            assert_eq!(
+                Activity::decide(true, chosen, false, &none, Some(&checking)),
+                Activity::Unavailable(UnavailableReason::NotConsented),
+                "{chosen:?}"
+            );
+            // Named by the run: it is being probed, so it is `checking`.
+            assert_eq!(
+                Activity::decide(true, chosen, true, &none, Some(&checking)),
+                Activity::Unavailable(UnavailableReason::Checking),
+                "{chosen:?}"
+            );
+        }
+        // Other reasons keep their words, consent or not (the program was probed).
         assert_eq!(
             Activity::decide(
                 true,
-                Agy,
+                Claude,
                 false,
                 &none,
-                Some(&Availability::Unavailable(UnavailableReason::Checking))
+                Some(&Availability::Unavailable(UnavailableReason::SignedOut))
             ),
-            Activity::Unavailable(UnavailableReason::Checking)
+            Activity::Unavailable(UnavailableReason::SignedOut)
         );
         // 5. A cloud provider needs its saved consent unless the run named it.
         assert_eq!(

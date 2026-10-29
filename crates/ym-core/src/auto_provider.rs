@@ -22,7 +22,7 @@
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -548,6 +548,9 @@ fn provider_status(
 #[derive(Clone, Default)]
 pub struct ProviderAdvisors {
     slots: [Option<Arc<dyn AutoAdvisor>>; 3],
+    /// Set by [`ProviderAdvisors::halt`], shared by every clone: the run is ending and nothing is
+    /// to be asked or probed any more.
+    halted: Arc<AtomicBool>,
 }
 
 impl fmt::Debug for ProviderAdvisors {
@@ -599,19 +602,29 @@ impl ProviderAdvisors {
     }
 
     /// Asks the advisor of `only`, or every advisor, to read its availability again. Never blocks
-    /// (`AutoAdvisor::refresh`).
+    /// (`AutoAdvisor::refresh`). Does nothing once the registry is halted. Every advisor at once is the
+    /// person's own request (Preferences opening, `ym doctor`): `AutoAdvisor::refresh_asked`.
     pub fn refresh(&self, only: Option<AutoProvider>) {
+        if self.is_halted() {
+            return;
+        }
         for p in AutoProvider::ALL {
             if only.is_some_and(|o| o != p) {
                 continue;
             }
             if let Some(advisor) = self.get(p) {
-                advisor.refresh();
+                if only.is_none() {
+                    advisor.refresh_asked();
+                } else {
+                    advisor.refresh();
+                }
             }
         }
     }
 
-    /// Waits until no advisor probes, or `timeout` has passed in all (`ym` only).
+    /// Waits until no advisor probes, or `timeout` has passed in all (`ym doctor` only: it refreshes
+    /// every advisor). A run that uses one provider settles only that one
+    /// ([`ProviderAdvisors::settle_provider`]).
     pub fn settle(&self, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         for advisor in self.slots.iter().flatten() {
@@ -619,11 +632,49 @@ impl ProviderAdvisors {
         }
     }
 
-    /// Cancels the running requests of every advisor (`AutoAdvisor::cancel`).
+    /// Waits until the advisor of `provider` is not probing, or `timeout` has passed. The other
+    /// advisors are not waited for: a probe that is slow for a provider this run does not use never
+    /// delays the one it does (`docs/22` section 3.3). Nothing for a provider without an advisor.
+    pub fn settle_provider(&self, provider: AutoProvider, timeout: Duration) {
+        if let Some(advisor) = self.get(provider) {
+            advisor.settle(timeout);
+        }
+    }
+
+    /// Cancels the running requests and probes of every advisor ([`AutoAdvisor::cancel`]). Each
+    /// advisor tells its children to stop before this returns; use [`ProviderAdvisors::wait_idle`]
+    /// to wait until they are gone.
     pub fn cancel_all(&self) {
         for advisor in self.slots.iter().flatten() {
             advisor.cancel();
         }
+    }
+
+    /// Waits until every advisor has no request or probe running, so that the programs they started
+    /// were reaped and their temporary folders removed ([`AutoAdvisor::wait_idle`]), or until
+    /// `timeout` has passed. The advisors share one deadline. Returns whether all became idle.
+    pub fn wait_idle(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut idle = true;
+        for advisor in self.slots.iter().flatten() {
+            idle &= advisor.wait_idle(deadline.saturating_duration_since(Instant::now()));
+        }
+        idle
+    }
+
+    /// The run is ending (the app quits, `ym` got Ctrl-C): cancels every request and probe
+    /// ([`ProviderAdvisors::cancel_all`]) and makes every session that holds this registry ask
+    /// and probe nothing more, so a request cancelled now is not asked again and stores nothing
+    /// (`docs/22` section 9.4). It cannot be undone: the registry belongs to the run that is ending.
+    pub fn halt(&self) {
+        self.halted.store(true, Ordering::SeqCst);
+        self.cancel_all();
+    }
+
+    /// Whether [`ProviderAdvisors::halt`] was called on this registry or a clone of it.
+    #[must_use]
+    pub fn is_halted(&self) -> bool {
+        self.halted.load(Ordering::SeqCst)
     }
 
     /// Registers `listener` on every advisor (`AutoAdvisor::on_change`).

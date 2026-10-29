@@ -36,6 +36,35 @@ pub fn register_advisors(advisors: &ProviderAdvisors) {
     let _ = RUNNING_ADVISORS.set(advisors.clone());
 }
 
+/// How long the Ctrl-C handler waits for the programs of the Auto advisors to be reaped and their
+/// temporary folders removed (`docs/22` section 9.4). A program that ignores the polite stop is killed
+/// after 2 s; the handler's own bound is a little longer, and `ym` ends with 130 either way.
+pub const INTERRUPT_WAIT: Duration = Duration::from_millis(2_500);
+
+/// Stops the programs the Auto advisors of this run started and waits for them (up to
+/// [`INTERRUPT_WAIT`]): every request and probe is cancelled, each program is told to stop before
+/// this returns, no new one is started, and the temporary folders are gone when it returns, so that
+/// `ym` may end the process at once. Does nothing before [`register_advisors`].
+fn stop_auto_programs() {
+    let Some(advisors) = RUNNING_ADVISORS.get() else {
+        return;
+    };
+    advisors.halt();
+    if !advisors.wait_idle(INTERRUPT_WAIT) {
+        tracing::warn!(
+            "an Auto program did not stop within {} s; quitting anyway",
+            INTERRUPT_WAIT.as_secs_f64()
+        );
+    }
+}
+
+/// Whether the Ctrl-C handler has begun to stop the Auto programs (the registered advisors are halted).
+fn auto_programs_stopping() -> bool {
+    RUNNING_ADVISORS
+        .get()
+        .is_some_and(ProviderAdvisors::is_halted)
+}
+
 /// Installs the Ctrl-C handler (and SIGTERM and SIGHUP).
 ///
 /// What the first signal does depends on the command. One that calls [`handle_interrupts`] (an
@@ -43,13 +72,13 @@ pub fn register_advisors(advisors: &ProviderAdvisors) {
 /// partial file and exits 130. Everywhere else (waiting for a list on stdin, opening the library,
 /// `doctor`) nothing would ever look at the flag and Ctrl-C would seem dead until it was pressed
 /// again, so the process ends at once with 130: nothing is half-written there. A second signal
-/// always ends the process at once.
+/// always ends the process at once. Before any of that the handler stops the Auto programs and
+/// waits for them ([`stop_auto_programs`]): a program is not stopped by its parent's death on Unix.
 pub fn install_interrupt_handler() {
     let result = ctrlc::set_handler(|| {
-        // First of all: the programs a request started must not outlive `ym`.
-        if let Some(advisors) = RUNNING_ADVISORS.get() {
-            advisors.cancel_all();
-        }
+        // First of all: the programs a request or a probe started must not outlive `ym`, and the
+        // process must not end, or tell the command to end, before they are gone.
+        stop_auto_programs();
         let again = INTERRUPTED.swap(true, Ordering::SeqCst);
         if again || !POLLING.load(Ordering::SeqCst) {
             std::process::exit(i32::from(exit::INTERRUPTED));
@@ -198,14 +227,15 @@ impl Runtime {
             // everywhere else, the test advisor with `YELLOWMOON_TEST_APPLE_AUTO=fake`; the two
             // programs, or what `YELLOWMOON_TEST_AUTO_PROVIDERS` says they are.
             let advisors = system_provider_advisors();
+            // Ctrl-C kills the programs a request or a probe started: registered before the start-up
+            // probe below, so a Ctrl-C while it runs stops it too.
+            register_advisors(&advisors);
             let prefs = PreferencesStore::open(&options.app_root).get();
             let chosen = choice.chosen(prefs.auto_provider);
             if chosen.is_cloud() && (choice.is_explicit() || prefs.auto_consent.get(chosen)) {
                 advisors.refresh(Some(chosen));
-                advisors.settle(AUTO_SETTLE);
+                advisors.settle_provider(chosen, AUTO_SETTLE);
             }
-            // Ctrl-C kills the programs a request started.
-            register_advisors(&advisors);
             options.advisors = advisors;
             options.auto_choice = choice;
         }
@@ -345,7 +375,10 @@ impl Runtime {
         handle_interrupts();
         loop {
             if self.core.session.wait_idle(Duration::from_millis(100)) {
-                return true;
+                // Ctrl-C halted the Auto advisors: the session reads as idle because it asks nothing
+                // more, not because every photo has its answer. The flag follows as soon as the
+                // programs are gone (`stop_auto_programs`).
+                return !(interrupted() || auto_programs_stopping());
             }
             if interrupted() {
                 return false;

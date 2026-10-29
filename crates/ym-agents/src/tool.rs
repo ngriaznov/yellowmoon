@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use semver::Version;
-use crate::process::Workdir;
+use crate::process::{CancelToken, Workdir};
 use ym_core::auto_provider::{
     AGY_TIMEOUT_S, AutoProvider, BREAKER_COOLDOWN_S, BREAKER_FAILURES, CLAUDE_TIMEOUT_S,
     PROBE_MIN_INTERVAL_S,
@@ -127,6 +127,14 @@ pub struct Tuning {
     /// Where the temporary folders are made, instead of the operating system's (the tests look for
     /// leftovers in a folder of their own).
     pub temp_dir: Option<PathBuf>,
+    /// How long a sign-out that a request found is held against the probes (10 minutes, `docs/22`
+    /// section 9.2): a probe's `available` does not undo it sooner, unless the person asks for a new
+    /// check.
+    pub signed_out_hold: Duration,
+    /// The token the programs of a probe obey (the discovery's `--version` runs, the login shell, the
+    /// sign-in check). The advisor sets it from its cancel source for each probe it starts; it is
+    /// never cancelled otherwise, and a request does not read it (its token is the request's own).
+    pub cancel: CancelToken,
 }
 
 impl Tuning {
@@ -148,6 +156,8 @@ impl Tuning {
             model: None,
             effort: None,
             temp_dir: None,
+            signed_out_hold: Duration::from_secs(10 * 60),
+            cancel: CancelToken::never(),
         }
     }
 

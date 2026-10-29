@@ -105,20 +105,110 @@ fn a_failed_trial_opens_it_again() {
     );
 }
 
-#[test]
-fn a_bad_answer_resets_the_count() {
-    // Two failures, then answers the breaker does not count against the program: never three in a row.
-    let rig = Rig::claude_with("malformed", |t| {
+/// What each of `n` requests ends as: `None` for an answer, else the failure's kind.
+fn outcomes<A: AutoAdvisor>(advisor: &A, n: usize) -> Vec<Option<FailureKind>> {
+    (0..n)
+        .map(|_| advisor.ask(&dark_flat(), "Plain.").err().map(|e| e.kind))
+        .collect()
+}
+
+fn claude_with_plan(plan: &str) -> Rig<ym_agents::ClaudeAdvisor> {
+    let plan = plan.to_owned();
+    let rig = Rig::claude_with("signed_in", move |t| {
+        t.extra_env.push(("YM_FAKE_PLAN".into(), plan.into()));
         t.breaker_cooldown = Duration::from_secs(60);
     });
     rig.probe();
-    for _ in 0..6 {
+    rig
+}
+
+fn agy_with_plan(plan: &str) -> Rig<ym_agents::AgyAdvisor> {
+    let plan = plan.to_owned();
+    let rig = Rig::agy_with("signed_in", move |t| {
+        t.extra_env.push(("YM_FAKE_PLAN".into(), plan.into()));
+        t.breaker_cooldown = Duration::from_secs(60);
+    });
+    rig.probe();
+    rig
+}
+
+#[test]
+fn an_answer_the_breaker_does_not_count_resets_the_count() {
+    // Two failures, one answer that is not the program's fault, two failures, then an answer: five
+    // requests with four failures in all and never three in a row, so the breaker stays closed and the
+    // sixth request goes through. Were the middle one counted as a failure, or merely ignored, the
+    // fifth request would find the breaker open.
+    let cli = Some(FailureKind::CliFailed);
+    for (step, kind) in [
+        ("bad", FailureKind::BadAnswer),
+        ("refused", FailureKind::Refused),
+        ("signedout", FailureKind::NotSignedIn),
+    ] {
+        let rig = claude_with_plan(&format!("fail,fail,{step},fail,fail,ok"));
         assert_eq!(
-            rig.advisor.ask(&dark_flat(), "Plain.").unwrap_err().kind,
-            FailureKind::BadAnswer
+            outcomes(&*rig.advisor, 6),
+            [cli, cli, Some(kind), cli, cli, None],
+            "claude, {step}"
+        );
+        assert!(rig.advisor.details().breaker.is_none(), "claude, {step}");
+        assert_eq!(
+            rig.requests().len(),
+            6,
+            "claude, {step}: all reached the program"
         );
     }
-    assert!(rig.advisor.details().breaker.is_none());
+    // The agy double has no refusal.
+    for (step, kind) in [
+        ("bad", FailureKind::BadAnswer),
+        ("signedout", FailureKind::NotSignedIn),
+    ] {
+        let rig = agy_with_plan(&format!("fail,fail,{step},fail,fail,ok"));
+        assert_eq!(
+            outcomes(&*rig.advisor, 6),
+            [cli, cli, Some(kind), cli, cli, None],
+            "agy, {step}"
+        );
+        assert!(rig.advisor.details().breaker.is_none(), "agy, {step}");
+    }
+}
+
+#[test]
+fn the_same_requests_with_a_counted_failure_in_the_middle_open_it() {
+    // The control of the test above: the middle request is a failure the breaker counts (a failure, a
+    // rate limit), so the third in a row opens it and the fourth request is refused without a process.
+    let cli = Some(FailureKind::CliFailed);
+    for (step, kind) in [
+        ("fail", FailureKind::CliFailed),
+        ("rate", FailureKind::RateLimited),
+    ] {
+        let rig = claude_with_plan(&format!("fail,fail,{step},fail,fail,ok"));
+        assert_eq!(
+            outcomes(&*rig.advisor, 6),
+            [
+                cli,
+                cli,
+                Some(kind),
+                Some(FailureKind::Unavailable),
+                Some(FailureKind::Unavailable),
+                Some(FailureKind::Unavailable)
+            ],
+            "claude, {step}"
+        );
+        assert!(rig.advisor.details().breaker.is_some(), "claude, {step}");
+        assert_eq!(
+            rig.requests().len(),
+            3,
+            "claude, {step}: the open breaker starts nothing"
+        );
+
+        let rig = agy_with_plan(&format!("fail,fail,{step},fail,fail,ok"));
+        assert_eq!(
+            outcomes(&*rig.advisor, 4),
+            [cli, cli, Some(kind), Some(FailureKind::Unavailable)],
+            "agy, {step}"
+        );
+        assert!(rig.advisor.details().breaker.is_some(), "agy, {step}");
+    }
 }
 
 #[test]
