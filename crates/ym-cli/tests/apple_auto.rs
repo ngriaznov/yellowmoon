@@ -217,10 +217,7 @@ fn apple_auto_on_where_it_is_not_available_says_so_once_and_uses_the_rule() {
     let stderr = text(&assert.get_output().stderr);
     let notice = "Apple Auto is not available on this computer (";
     assert_eq!(stderr.matches(notice).count(), 1, "once per run: {stderr}");
-    assert!(
-        stderr.contains("). Default Auto is used."),
-        "{stderr}"
-    );
+    assert!(stderr.contains("). Default Auto is used."), "{stderr}");
     if cfg!(not(target_os = "macos")) {
         assert!(
             stderr.contains(

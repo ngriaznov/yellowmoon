@@ -175,13 +175,13 @@ jobs:
             echo "ym links FoundationModels strongly: it would not start before macOS 26"
             exit 1
           fi
-      - name: ym doctor (Apple Auto's row; a virtual Mac is expected to report it unavailable)
+      - name: ym doctor (Apple Intelligence's row; a virtual Mac is expected to report it unavailable)
         env:
           YELLOWMOON_DATA: ${{ github.workspace }}/data
         run: |
           target/release/ym doctor | tee doctor.txt || echo "::warning title=ym doctor::exited with $? (informational)"
-          grep 'Apple Auto' doctor.txt
-          target/release/ym doctor --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["apple_auto"])'
+          grep 'Apple Intelligence' doctor.txt
+          target/release/ym doctor --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["auto"]["providers"]["apple"]); print(d["apple_auto"])'
       # rustc links for macOS 11.0 when MACOSX_DEPLOYMENT_TARGET is not set (a plain cargo build, the sidecar of
       # `npm run tauri dev`), and below macOS 12 the Swift concurrency runtime is loaded through @rpath: ym must
       # still start, through the /usr/lib/swift run path its build.rs adds (docs/19 section 11).
@@ -241,4 +241,4 @@ jobs:
         run: |
           ./ym --version
           ./ym doctor --json > doctor.json || echo "::warning title=ym doctor::exited with $? (informational)"
-          python3 -c 'import json; a = json.load(open("doctor.json"))["apple_auto"]; print(a); assert a["reason"] == "macos_too_old", a'
+          python3 -c 'import json; d = json.load(open("doctor.json")); p = d["auto"]["providers"]["apple"]; a = d["apple_auto"]; print(p); print(a); assert p["reason"] == "macos_too_old", p; assert a["reason"] == "macos_too_old", a'
