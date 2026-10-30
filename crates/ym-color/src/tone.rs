@@ -11,17 +11,17 @@
 //! An ALEXA (ALEV III) at EI 800 clips 7.64 stops over middle grey; a Sony body at the camera's
 //! exposure clips about 3.6 stops over it. Below the Sony's clip the chain already holds what an
 //! ALEXA exposed for the same grey would record, so the one difference is where the clip lands. The
-//! range maps the Sony's top stop onto the ALEXA's: nothing changes below a knee one stop under the
-//! Sony clip, the Sony clip lands on a target between where it was recorded (`r = 0`) and the ALEXA's
-//! EI 800 clip (`r = 1`), and nothing goes past the ALEXA's clip.
+//! range maps the Sony's top two stops onto the ALEXA's: nothing changes below a knee two stops under
+//! the Sony clip, the Sony clip lands on a target between where it was recorded (`r = 0`) and the
+//! ALEXA's EI 800 clip (`r = 1`), and nothing goes past the ALEXA's clip.
 //!
 //! ```text
 //! Y    = 0.2126 R + 0.7152 G + 0.0722 B          luma of the linear AWG4 pixel ([`luma`])
 //! s    = log2(Y / 0.18)                          stops over middle grey
 //! h_S  = log2(Y_clip / 0.18)                     the Sony clip: Y_clip = ClipLevel::luma()
 //! h_A  = log2((1 - 256/65535) * 800 / 4)         the ALEXA clip at EI 800 (HIGHLIGHT_CAP_STOPS)
-//! s_k  = max(1, h_S - 1)                         the knee
-//! w    = clamp((h_S - s_k - 0.25) / 0.75, 0, 1)  the fade at low clip levels
+//! s_k  = max(1, h_S - 2)                         the knee
+//! w    = clamp((h_S - s_k - 0.25) / 1.75, 0, 1)  the fade at low clip levels
 //! E    = w * r * max(h_A - h_S, 0)               how far the Sony clip moves, in stops
 //! u    = (s - s_k) / (h_S - s_k)                 only where E > 0 (then h_S - s_k >= 0.25)
 //! phi  = u^2 (u <= 1), 2u - 1 (u > 1)
@@ -32,7 +32,7 @@
 //! gain = 2^(s' - s); rgb' = gain * rgb
 //! ```
 //!
-//! `r = rolloff.highlights` (0 to 1, default 1). `E`, `s_k` and `h_S` are computed once per chain
+//! `r = rolloff.highlights` (0 to 1, default 0.6). `E`, `s_k` and `h_S` are computed once per chain
 //! ([`ToneParams::range`]). The gain is exactly 1 for `s <= s_k` (and below the cap), and then the pixel
 //! is returned unchanged, bit for bit. `s'` is continuous with a continuous slope at the knee and at
 //! `u = 1`, non-decreasing in `s`, and the Sony clip lands on `min(h_S + E, h_A)`. All three channels are
@@ -85,8 +85,11 @@ pub fn alexa_clip_stops(ei: f64) -> f64 {
 /// [`ALEXA_CLIP_EI`]. Nothing leaves the range above it.
 pub const HIGHLIGHT_CAP_STOPS: f64 = 7.638_209_540_303_716;
 
-/// How far the knee sits under the Sony clip, in stops.
-pub const HIGHLIGHT_KNEE_DEPTH_STOPS: f64 = 1.0;
+/// How far the knee sits under the Sony clip, in stops. One stop until pipeline 0.8.0; two since 0.8.1
+/// (the owner's "gentler range", 2026-10-30: with one stop and the full range the last stop before the
+/// clip was stretched about 3.5 times, which turned the texture of bright skin into a hard edge, then a
+/// flat white).
+pub const HIGHLIGHT_KNEE_DEPTH_STOPS: f64 = 2.0;
 
 /// The lowest the knee goes, in stops over middle grey: mid grey and everything under +1 stop never move.
 pub const HIGHLIGHT_KNEE_FLOOR_STOPS: f64 = 1.0;
@@ -372,7 +375,7 @@ impl HighlightRange {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ToneParams {
     /// `rolloff.highlights`, `r`: the highlight range, clamped to `[0, 1]`. 0 keeps the clip where it
-    /// was recorded, 1 takes it to the ALEXA's EI 800 clip.
+    /// was recorded, 1 takes it to the ALEXA's EI 800 clip (the default setting is 0.6).
     pub highlights: f64,
     /// `rolloff.low_light`, `r_l`, clamped to `[0, 1]`. Zero disables the toe.
     pub low_light: f64,

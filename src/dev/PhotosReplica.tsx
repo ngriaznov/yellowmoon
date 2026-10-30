@@ -99,7 +99,7 @@ const LENS_AMOUNTS = reg(
   S("edg", "Edges", 0, 100, 1, 0, formats.integer),
   S("ana", "Anamorphic", 0, 100, 1, 0, formats.integer),
 );
-const ROLL = reg(S("hro", "Highlights", 0, 1, 0.01, 1, formats.fixed2), S("lro", "Low light", 0, 1, 0.01, 0.5, formats.fixed2));
+const ROLL = reg(S("hro", "Highlights", 0, 1, 0.01, 0.6, formats.fixed2), S("lro", "Low light", 0, 1, 0.01, 0.5, formats.fixed2));
 
 const LIGHTS = [
   { value: "auto", label: "Auto" },

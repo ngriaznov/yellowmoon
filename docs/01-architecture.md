@@ -285,7 +285,7 @@ Every control in the UI and every CLI flag maps to one field. Defaults reproduce
 | `noise_reduction` | `Auto` or `{ luminance, color, detail }` 0–100 | Auto | Detail › Noise reduction |
 | `curve` | luma + R, G, B: up to 16 control points each in [0,1]² | identity | Curve |
 | `decode` | `{ neural_demosaic, highlight_recovery, lens_corrections, chromatic_aberration }` bools | all true | RAW › Decode |
-| `rolloff` | `{ highlights 0–1, low_light 0–1 }` | 1, 0.5 | RAW › Range: `highlights` is the highlight range of C7 (`docs/02-colour-pipeline.md`: where the camera's clip lands, 0 as recorded, 1 at the ALEXA's EI 800 clip), `low_light` the toe. It works alongside the white lift (`white_offset_ev`) |
+| `rolloff` | `{ highlights 0–1, low_light 0–1 }` | 0.6, 0.5 | RAW › Range: `highlights` is the highlight range of C7 (`docs/02-colour-pipeline.md`: where the camera's clip lands, 0 as recorded, 1 at the ALEXA's EI 800 clip), `low_light` the toe. A document without `highlights` reads as 0.6 (1 until pipeline 0.8.1); an explicit value, 1 included, is kept. |
 | `crop` | `Option<{ rect in [0,1]², angle_deg −45…45, aspect: Free/Original/1:1/4:5/16:9 }>` | None | Crop (header) |
 | `orientation` | 0, 90, 180, 270 degrees, applied after the camera's EXIF orientation | 0 | Crop › Rotate 90° |
 | `white_pick` | `Option<(x, y)>` sampled point | None | Pick white (header) |

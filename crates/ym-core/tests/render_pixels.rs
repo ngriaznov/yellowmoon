@@ -122,7 +122,8 @@ fn the_exposed_signal_of_a_neutral_field_is_two_to_the_ev_times_the_balanced_val
 /// The highlight range (`rolloff.highlights`, `docs/02` C7) on a neutral ramp whose top third clips on
 /// the sensor, at a manual EV of +1 (the clip is then `log2(2 / 0.18)` = 3.47 stops over grey, about
 /// where a Sony photo at Auto has it): 0 against 1 moves the clipped highlights a long way, 0.5 lands
-/// between them, and every pixel under the knee (one stop below the clip) is the same bit for bit. The
+/// between them, and every pixel under the knee (two stops below the clip since the gentler range of
+/// 2026-10-30; it was one) is the same bit for bit. The
 /// DNG's pixels carry it: at 1 the clip lands on the ALEXA's EI 800 clip, `HIGHLIGHT_CAP_STOPS` over
 /// grey, and nothing goes past it.
 #[test]
@@ -133,7 +134,7 @@ fn the_highlight_range_moves_the_clipped_highlights_and_nothing_under_the_knee()
     let white = light(PROFILE, 5500.0);
     // `Layout::Ramp`: luminance from 0.1 to 1 of the level along x. The balanced neutral is
     // `0.9 * lum / max(white)` and clips at 1, so with a level of 1.6 the clip is at t = 0.66 and the
-    // knee (half the clip) at t = 0.27.
+    // knee (a quarter of the clip, two stops under it) at t = 0.08.
     let level = 1.6;
     let scene = Scene::new(640, 48, white, Layout::Ramp, level);
     let d = Developed::new(&scene, MODEL);
@@ -150,7 +151,7 @@ fn the_highlight_range_moves_the_clipped_highlights_and_nothing_under_the_knee()
         0.9 * level * (0.1 + 0.9 * t) / peak
     };
     // The mean of a band of columns, per channel; and the columns under the knee with a margin
-    // (balanced under 0.45, 0.15 stop under the knee, for the demosaic's reach across the ramp).
+    // (balanced under 0.225, 0.15 stop under the knee at 0.25, for the demosaic's reach across the ramp).
     let band = |img: &ym_core::pipeline::FullImage, x0: usize, x1: usize| {
         let mut sum = [0.0f64; 3];
         for y in 0..img.height {
@@ -170,8 +171,8 @@ fn the_highlight_range_moves_the_clipped_highlights_and_nothing_under_the_knee()
         render(1.0, display),
     );
     let w = lo.width;
-    let under = (0..w).take_while(|&x| balanced_at(x, w) < 0.45).count();
-    assert!(under > w / 5, "{under} columns under the knee");
+    let under = (0..w).take_while(|&x| balanced_at(x, w) < 0.225).count();
+    assert!(under > w / 20, "{under} columns under the knee");
     for img in [&mid, &hi] {
         for y in 0..img.height {
             let row = (y * w) * 3;

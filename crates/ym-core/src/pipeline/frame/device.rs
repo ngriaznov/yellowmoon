@@ -281,8 +281,9 @@ pub(super) enum DeviceInput {
         source: CameraSource,
         /// Where the window starts in the buffer the grid maps into.
         origin: (usize, usize),
-        /// The geometry.
-        grid: SamplerGrid,
+        /// The geometry (boxed: with the lens's ten-constant bend a grid is some 250 bytes, and the other
+        /// variant is a few dozen).
+        grid: Box<SamplerGrid>,
         /// Width of the sampled picture.
         width: usize,
         /// Height of the sampled picture.

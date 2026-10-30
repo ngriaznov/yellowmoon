@@ -6,6 +6,10 @@
 pub const PROVENANCE_STATEMENT: &str =
     "Synthetic, computed from public lens designs, not measured.";
 
+/// The sentence the attachment file (`anamorphic.json`) carries as `provenance.statement` (`docs/21` section 6):
+/// its bend is fitted to measured distortion maps of real lenses, so it cannot say "not measured".
+pub const ATTACHMENT_PROVENANCE_STATEMENT: &str = "Computed from public lens designs, except the bend, which is fitted to measured distortion maps of real anamorphic cinema lenses.";
+
 /// Number of field radii (`rho` = 0, 1/8, ..., 1) the spread functions are given at.
 pub const RADII: usize = 9;
 
@@ -111,6 +115,27 @@ pub const ZOOM_MAX: f64 = 4.0;
 
 /// Newton steps of the inverse map (`docs/21` section 4, L4).
 pub const NEWTON_STEPS: usize = 3;
+
+/// Largest absolute value of one of the ten bend constants (`anamorphic.json`, `bend.x` and `bend.y`).
+pub const BEND_COEFFICIENT_MAX: f64 = 0.5;
+
+/// The smallest determinant of the bend's Jacobian the loader accepts over the photo plus
+/// [`BEND_CHECK_MARGIN`], at every slider position (`docs/21` section 4, L4): the map folds nowhere near the
+/// frame and the Newton steps of the inverse start from a well-conditioned map.
+pub const BEND_MIN_JACOBIAN: f64 = 0.5;
+
+/// The margin the Jacobian check adds around the photo, as a fraction of the photo's half-sides.
+pub const BEND_CHECK_MARGIN: f64 = 0.25;
+
+/// The half-sides of the 3:2 photo the Jacobian check uses, in half-diagonals of the canvas (`3 / sqrt(13)` and
+/// `2 / sqrt(13)`); the check covers the photo as it is and turned a quarter turn.
+pub const BEND_CHECK_HALF_SIDES: (f64, f64) = (0.832_050_294_337_843_7, 0.554_700_196_225_229_1);
+
+/// Slider positions (steps from 0 to `q_max - 1`) the Jacobian check looks at.
+pub const BEND_CHECK_STEPS: usize = 8;
+
+/// Points per side of the lattice the Jacobian check looks at.
+pub const BEND_CHECK_LATTICE: usize = 41;
 
 /// Tolerance of "each slice sums to 1" in the lens files.
 pub const UNIT_SUM_TOLERANCE: f64 = 1e-4;

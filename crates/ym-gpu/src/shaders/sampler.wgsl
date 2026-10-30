@@ -32,6 +32,13 @@
 // the CPU clamps the sensor fraction. Everything is a function of the absolute column and row
 // through the tables, so a tile and the whole frame agree bit for bit (D5).
 //
+// The map is the CPU's (`SamplerWarp`, `ym_lens::LensWarp`): the lens's radial distortion, then the
+// bend x' = x1 (1 + Gx), y' = y1 (1 + Gy) with Gx = a1 x^2 + a2 y^2 + a3 x^4 + a4 x^2 y^2 + a5 y^4 (b
+// for Gy), written with the same grouping and in the same order, and its Jacobian as the product of
+// the two stages'. No decision depends on a rounding (K8 of docs/17-gpu.md): the one branch is the
+// guard on a determinant of exactly 0, the CPU's, which the data checks keep far from the map's range
+// (the determinant is at least 0.5 over the photo and a margin).
+//
 // The arithmetic of the samples follows the CPU port operation by operation: the Catmull-Rom
 // weights, `acc += wy_k (wx_0 r_0 + wx_1 r_1 + wx_2 r_2 + wx_3 r_3)` row by row, the bilinear blend
 // and the division of the box by the number of sub-samples that fell inside.
@@ -41,7 +48,9 @@ struct SamplerU {
     src: vec4<u32>,     // x: source width, y: source height, z: source stride, w: source plane length
     mode: vec4<u32>,    // x: kernel (0 copy, 1 Catmull-Rom, 2 box), y: sub-samples per axis (1 unless box), z: 1 with a warp
     wk: vec4<u32>,      // x: Newton steps, y: 1 when the anamorphic axis is the canvas's y
-    wa: vec4<f32>,      // mu, beta, d1, d2
+    wx: vec4<f32>,      // a1 .. a4: the terms of x' for x^2, y^2, x^4, x^2 y^2 (a5, for y^4, is wc.x)
+    wy: vec4<f32>,      // b1 .. b4: the same for y' (b5 is wc.y)
+    wc: vec4<f32>,      // a5, b5, d1, d2
     wb: vec4<f32>,      // x: zoom, y: zoom - 1, z: half-diagonal (canvas px), w: 1 / half-diagonal
     sl: vec4<f32>,      // canvas displacement -> buffer displacement, row-major (s00, s01, s10, s11)
     si: vec4<f32>,      // its inverse, row-major
@@ -151,10 +160,12 @@ fn warp_pos(pi: vec2<i32>, pf: vec2<f32>) -> Pos {
         n = n.yx;
     }
     let t = n / su.wb.x;
-    let mu = su.wa.x;
-    let beta = su.wa.y;
-    let d1 = su.wa.z;
-    let d2 = su.wa.w;
+    let ax = su.wx;
+    let ay = su.wy;
+    let ax5 = su.wc.x;
+    let ay5 = su.wc.y;
+    let d1 = su.wc.z;
+    let d2 = su.wc.w;
     var e = vec2<f32>(0.0);
     for (var it = 0u; it < su.wk.x; it = it + 1u) {
         let x = t.x + e.x;
@@ -166,19 +177,25 @@ fn warp_pos(pi: vec2<i32>, pf: vec2<f32>) -> Pos {
         let x1 = x * g;
         let y1 = y * g;
         let xx = x1 * x1;
+        let yy = y1 * y1;
+        // The bend's G of each axis, as the CPU writes it: xx (c0 + c2 xx + c3 yy) + yy (c1 + c4 yy).
+        let gx = xx * (ax.x + ax.z * xx + ax.w * yy) + yy * (ax.y + ax5 * yy);
+        let gy = xx * (ay.x + ay.z * xx + ay.w * yy) + yy * (ay.y + ay5 * yy);
         // F(x) - x, and the residual F(x) - t = e + (F(x) - x).
-        let rx = e.x + (x * gm + mu * x1 * xx);
-        let ry = e.y + (y * gm - beta * y1 * xx);
+        let rx = e.x + (x * gm + x1 * gx);
+        let ry = e.y + (y * gm + y1 * gy);
         let a = g + 2.0 * x * x * gp;
         let b = 2.0 * x * y * gp;
         let d = g + 2.0 * y * y * gp;
-        let dfx_dx1 = 1.0 + 3.0 * mu * xx;
-        let dfy_dx1 = -2.0 * beta * x1 * y1;
-        let dfy_dy1 = 1.0 - beta * xx;
-        let j00 = dfx_dx1 * a;
-        let j01 = dfx_dx1 * b;
-        let j10 = dfy_dx1 * a + dfy_dy1 * b;
-        let j11 = dfy_dx1 * b + dfy_dy1 * d;
+        // The second stage's Jacobian at (x1, y1).
+        let k00 = 1.0 + gx + xx * (2.0 * (ax.x + 2.0 * ax.z * xx + ax.w * yy));
+        let k01 = x1 * y1 * (2.0 * (ax.y + ax.w * xx + 2.0 * ax5 * yy));
+        let k10 = y1 * x1 * (2.0 * (ay.x + 2.0 * ay.z * xx + ay.w * yy));
+        let k11 = 1.0 + gy + yy * (2.0 * (ay.y + ay.w * xx + 2.0 * ay5 * yy));
+        let j00 = k00 * a + k01 * b;
+        let j01 = k00 * b + k01 * d;
+        let j10 = k10 * a + k11 * b;
+        let j11 = k10 * b + k11 * d;
         let det = j00 * j11 - j01 * j10;
         if (det != 0.0) {
             e = e - vec2<f32>((j11 * rx - j01 * ry) / det, (-j10 * rx + j00 * ry) / det);

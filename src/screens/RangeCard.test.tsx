@@ -49,7 +49,7 @@ describe("the Range card on the RAW tab", () => {
     expect(screen.queryByRole("region", { name: "Roll-off" })).toBeNull();
   });
 
-  it("has Highlights and Low light, 0 to 1, at 1.00 and 0.50 out of the box", async () => {
+  it("has Highlights and Low light, 0 to 1, at 0.60 and 0.50 out of the box (the gentler range of 2026-10-30)", async () => {
     await setup();
     const sliders = range().getAllByRole("slider");
     expect(sliders.map((s: HTMLElement) => sliderName(s))).toEqual(["Highlights", "Low light"]);
@@ -57,7 +57,7 @@ describe("the Range card on the RAW tab", () => {
       const slider = sliderOf(label);
       expect([slider.getAttribute("aria-valuemin"), slider.getAttribute("aria-valuemax")], label).toEqual(["0", "1"]);
     }
-    expect(valueOf("Highlights")).toBe("1.00");
+    expect(valueOf("Highlights")).toBe("0.60");
     expect(valueOf("Low light")).toBe("0.50");
   });
 
@@ -74,7 +74,7 @@ describe("the Range card on the RAW tab", () => {
     expect(screen.getByRole("region", { name: "Range" }).textContent).not.toMatch(/ARRI|ALEXA/i);
   });
 
-  it("a typed value is a rolloff patch that keeps the other slider, and Reset sends them back to 1 and 0.5", async () => {
+  it("a typed value is a rolloff patch that keeps the other slider, and Reset sends them back to 0.6 and 0.5", async () => {
     const spy = await setup();
     await type("Highlights", "0");
     expect(await lastPatch(spy)).toEqual({ rolloff: { highlights: 0, low_light: 0.5 } });
@@ -87,8 +87,8 @@ describe("the Range card on the RAW tab", () => {
 
     spy.mockClear();
     await h.user.click(range().getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy)).toEqual({ rolloff: { highlights: 1, low_light: 0.5 } });
-    await waitFor(() => expect(valueOf("Highlights")).toBe("1.00"));
+    expect(await lastPatch(spy)).toEqual({ rolloff: { highlights: 0.6, low_light: 0.5 } });
+    await waitFor(() => expect(valueOf("Highlights")).toBe("0.60"));
     expect(valueOf("Low light")).toBe("0.50");
   });
 
@@ -119,7 +119,7 @@ describe("the Range card on the RAW tab", () => {
       raf.restore();
     }
     await h.user.keyboard("{Meta>}z{/Meta}");
-    await waitFor(() => expect(valueOf("Highlights")).toBe("1.00"));
+    await waitFor(() => expect(valueOf("Highlights")).toBe("0.60"));
     expect(h.store.getState().canUndo).toBe(false);
   });
 });
@@ -142,11 +142,11 @@ describe("the white lift is gone (owner's decision of 2026-10-30)", () => {
     expect(rows[1]).toHaveAccessibleName(/^White balance /);
   });
 
-  it("the settings carry the range at 1 and 0.5 and nothing of the lift", async () => {
+  it("the settings carry the range at 0.6 and 0.5 and nothing of the lift", async () => {
     await setup();
     const rs = h.store.currentSettings();
     expect(rs?.settings).not.toHaveProperty("white_offset_ev");
-    expect(rs?.settings.rolloff).toEqual({ highlights: 1, low_light: 0.5 });
+    expect(rs?.settings.rolloff).toEqual({ highlights: 0.6, low_light: 0.5 });
     expect(rs?.values).not.toHaveProperty("white_ev");
     expect(rs?.estimates).not.toHaveProperty("white_ev");
   });

@@ -56,7 +56,7 @@ use crate::image::GpuImage;
 use crate::pool::PooledBuffer;
 use crate::stream::{PassList, upload_bytes};
 
-/// The uniform block of `sampler.wgsl` (`SamplerU`): 176 bytes. The last seven members are the lens's
+/// The uniform block of `sampler.wgsl` (`SamplerU`): 208 bytes. The last ten members are the lens's
 /// bend and are zero without one.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Default)]
@@ -67,8 +67,12 @@ struct SamplerU {
     mode: [u32; 4],
     /// Newton steps, 1 when the anamorphic axis is the canvas's y.
     wk: [u32; 4],
-    /// `mu`, `beta`, `d1`, `d2`.
-    wa: [f32; 4],
+    /// `a1 .. a4`: the first four terms of `x'` (`x^2, y^2, x^4, x^2 y^2`).
+    wx: [f32; 4],
+    /// `b1 .. b4`: the first four terms of `y'`.
+    wy: [f32; 4],
+    /// `a5`, `b5` (the `y^4` terms), `d1`, `d2`.
+    wc: [f32; 4],
     /// Zoom, zoom - 1, half-diagonal in canvas pixels, its inverse.
     wb: [f32; 4],
     /// Canvas displacement to buffer displacement, row-major.
@@ -96,7 +100,10 @@ impl SamplerU {
         let (cyi, cyf) = split(frame.centre.1 - oy);
         self.mode[2] = 1;
         self.wk = [u32::from(w.steps), u32::from(w.axis_y), 0, 0];
-        self.wa = [w.mu as f32, w.beta as f32, w.d1 as f32, w.d2 as f32];
+        let (a, b) = (w.bend_x, w.bend_y);
+        self.wx = [a[0] as f32, a[1] as f32, a[2] as f32, a[3] as f32];
+        self.wy = [b[0] as f32, b[1] as f32, b[2] as f32, b[3] as f32];
+        self.wc = [a[4] as f32, b[4] as f32, w.d1 as f32, w.d2 as f32];
         self.wb = [
             w.zoom as f32,
             (w.zoom - 1.0) as f32,
@@ -349,12 +356,14 @@ mod tests {
         let naga::TypeInner::Struct { members, span } = &module.types[var.ty].inner else {
             panic!("su is not a struct");
         };
-        let fields: [(&str, usize); 11] = [
+        let fields: [(&str, usize); 13] = [
             ("dims", offset_of!(SamplerU, dims)),
             ("src", offset_of!(SamplerU, src)),
             ("mode", offset_of!(SamplerU, mode)),
             ("wk", offset_of!(SamplerU, wk)),
-            ("wa", offset_of!(SamplerU, wa)),
+            ("wx", offset_of!(SamplerU, wx)),
+            ("wy", offset_of!(SamplerU, wy)),
+            ("wc", offset_of!(SamplerU, wc)),
             ("wb", offset_of!(SamplerU, wb)),
             ("sl", offset_of!(SamplerU, sl)),
             ("si", offset_of!(SamplerU, si)),

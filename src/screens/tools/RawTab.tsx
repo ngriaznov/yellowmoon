@@ -66,14 +66,14 @@ export const RawTab = memo(function RawTab({ store, photo, rs }: TabProps) {
           ))}
         </Rows>
       </Card>
-      <Card title="Range" action={<ResetLink size="card" onClick={() => void store.update({ rolloff: { highlights: 1, low_light: 0.5 } })} />}>
+      <Card title="Range" action={<ResetLink size="card" onClick={() => void store.update({ rolloff: { highlights: 0.6, low_light: 0.5 } })} />}>
         <Slider
           label="Highlights"
           value={rolloff.highlights}
           min={0}
           max={1}
           step={0.01}
-          defaultValue={1}
+          defaultValue={0.6}
           format={formats.fixed2}
           onChange={(highlights, final) => void store.update({ rolloff: { ...rolloff, highlights } }, final, rs.photo_id)}
         />

@@ -189,7 +189,7 @@ pub struct RenderArgs {
     /// Switch the chromatic-aberration correction off.
     #[arg(long, help_heading = H_RAW)]
     pub no_ca: bool,
-    /// Highlight range and low-light toe, 0 to 1 each, as `1,0.5` (the defaults). Highlights: where the camera's
+    /// Highlight range and low-light toe, 0 to 1 each, as `0.6,0.5` (the defaults). Highlights: where the camera's
     /// clipping point lands, from where it was recorded (0) to white, the clip of an ALEXA at EI 800 (1).
     #[arg(long, value_name = "HIGHLIGHTS,LOW-LIGHT", value_parser = rolloff, help_heading = H_RAW)]
     pub rolloff: Option<RolloffArg>,

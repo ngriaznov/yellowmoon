@@ -125,7 +125,7 @@ RAW:
           Switch the chromatic-aberration correction off
 
       --rolloff <HIGHLIGHTS,LOW-LIGHT>
-          Highlight range and low-light toe, 0 to 1 each, as `1,0.5` (the defaults). Highlights: where the camera's clipping point lands, from where it was recorded (0) to white, the clip of an ALEXA at EI 800 (1)
+          Highlight range and low-light toe, 0 to 1 each, as `0.6,0.5` (the defaults). Highlights: where the camera's clipping point lands, from where it was recorded (0) to white, the clip of an ALEXA at EI 800 (1)
 
       --profile <ID>
           Force a camera profile, for comparisons (for example `sony-ilce-7rm4`)

@@ -143,7 +143,7 @@ cargo run -p golden --release -- truth [--set synthetic] [--filter TEXT] [--patc
 For every scene of the set (one ARW per sidecar: the plain mosaic is preferred over cRAW and Lossless M/S) the real `ym`
 writes a DNG with default settings, except that the look is Neutral and the highlight range is 0, "as recorded"
 (`rolloff.highlights`). The default look is Signature since pipeline 0.3.0, and since pipeline 0.4.0 the default
-range of 1 places the camera's clip at white (`docs/02` C7); the truth is the colour of the scene, not a look, and the DNG
+range places the camera's clip toward white (1 until pipeline 0.8.1, 0.6 since; `docs/02` C7); the truth is the colour of the scene, not a look, and the DNG
 carries both. At 0 the range is the identity below the ALEXA's clip, so the `rolloff` probes (the scenes' six-stop
 highlight ramps) measure the colour of bright, unclipped tones with no tone stage in between. An entry's own `look` or
 `rolloff` is kept.

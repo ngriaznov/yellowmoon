@@ -57,8 +57,8 @@ fn reference_gate(rgb: [f64; 3]) -> f64 {
 fn reference_stops(r: f64, clip_luma: f64, s: f64, g: f64) -> f64 {
     let h_s = (clip_luma / 0.18).log2();
     let h_a = ((1.0_f64 - 256.0 / 65535.0) * 800.0 / 4.0).log2();
-    let s_k = f64::max(1.0, h_s - 1.0);
-    let w = ((h_s - s_k - 0.25) / 0.75).clamp(0.0, 1.0);
+    let s_k = f64::max(1.0, h_s - 2.0);
+    let w = ((h_s - s_k - 0.25) / 1.75).clamp(0.0, 1.0);
     let e = w * r.clamp(0.0, 1.0) * f64::max(h_a - h_s, 0.0);
     let mut out = s;
     if s > s_k && e > 0.0 {
@@ -120,7 +120,7 @@ fn the_cap_is_the_alexa_clip_at_ei_800_and_the_constants_are_the_spec() {
     // Linear 35.86 over black: ARRI's LogC3 EI 800 clip.
     assert!((clip_at(HIGHLIGHT_CAP_STOPS) - 35.86).abs() < 0.005);
     assert_eq!(HIGHLIGHT_GREY, 0.18);
-    assert_eq!(HIGHLIGHT_KNEE_DEPTH_STOPS, 1.0);
+    assert_eq!(HIGHLIGHT_KNEE_DEPTH_STOPS, 2.0);
     assert_eq!(HIGHLIGHT_KNEE_FLOOR_STOPS, 1.0);
     assert_eq!(HIGHLIGHT_MIN_SPAN_STOPS, 0.25);
     assert!(HIGHLIGHT_OFF_STOPS.is_finite() && (HIGHLIGHT_OFF_STOPS as f32).is_finite());
@@ -205,6 +205,52 @@ fn below_the_knee_the_pixel_is_returned_bit_for_bit() {
             assert_eq!(t.apply_rgb(grey(0.0)), grey(0.0));
             assert_eq!(t.apply_rgb(grey(1.0)), grey(1.0));
         }
+    }
+}
+
+#[test]
+fn the_knee_sits_two_stops_under_the_clip_and_grey_under_it_does_not_move() {
+    // The owner's "gentler range" (2026-10-30): `s_k = max(1, h_S - 2)`.
+    for h in [3.0, 3.25, 3.58, 3.88, 5.0, 7.0] {
+        let range = HighlightRange::new(DEFAULT_RANGE, clip_at(h));
+        assert!((range.knee_stops - (h - 2.0)).abs() < 1e-12, "h {h}");
+        assert!(range.expansion_stops > 0.0);
+    }
+    for h in [1.4, 2.0, 2.5, 2.99] {
+        assert_eq!(
+            HighlightRange::new(DEFAULT_RANGE, clip_at(h)).knee_stops,
+            1.0,
+            "h {h}"
+        );
+    }
+    // At Auto (3.58) the knee is at +1.58. A grey pixel under it comes out of C7 with the bits it went in
+    // with, at the default amount and at every other, and renders as it does with the range off (r = 0);
+    // just over it the pixel gains.
+    let knee = 3.58 - 2.0;
+    for r in [DEFAULT_RANGE, 0.25, 1.0] {
+        let t = p(r, 0.0, clip_at(3.58), 0.0);
+        assert!((t.range().knee_stops - knee).abs() < 1e-12);
+        let mut s = -10.0;
+        while s < knee - 1e-9 {
+            assert_eq!(bits(t.apply_rgb(grey(s))), bits(grey(s)), "r {r} s {s}");
+            // The cine rendering sees the same value, so the display code is the one of the range off (r = 0).
+            let shown = |tone: ToneParams| {
+                let mut params = ChainParams::new(IDENTITY, tone);
+                params.output = OutputTarget::Srgb;
+                params.dither = false;
+                ColorChain::new(&params).unwrap().apply_pixel(grey(s))[1]
+            };
+            assert_eq!(
+                shown(t).to_bits(),
+                shown(p(0.0, 0.0, clip_at(3.58), 0.0)).to_bits(),
+                "r {r} s {s}"
+            );
+            s += 0.0173;
+        }
+        assert!(
+            t.apply_rgb(grey(knee + 0.2))[0] > grey(knee + 0.2)[0],
+            "r {r}"
+        );
     }
 }
 
@@ -312,7 +358,7 @@ fn the_sony_clip_lands_on_its_target() {
                 );
             }
             // r = 1 with a full fade puts the clip on the ALEXA clip.
-            if r == 1.0 && h >= 2.0 {
+            if r == 1.0 && h >= 3.0 {
                 assert!((range.target_stops() - HIGHLIGHT_CAP_STOPS).abs() < 1e-12);
             }
         }
@@ -375,7 +421,8 @@ fn r_zero_is_the_identity_below_the_cap() {
 #[test]
 fn the_expansion_fades_out_as_the_clip_nears_middle_grey() {
     let span = HIGHLIGHT_CAP_STOPS;
-    // Nothing at or under 1.25 stops, all of it from 2 stops, linear in between.
+    // Nothing at or under 1.25 stops, all of it from 3 stops (the knee depth, 2, over the knee's floor, 1),
+    // linear in between.
     for h in [0.0, 0.5, 1.0, 1.1, 1.25] {
         assert_eq!(
             HighlightRange::new(1.0, clip_at(h)).expansion_stops,
@@ -383,13 +430,13 @@ fn the_expansion_fades_out_as_the_clip_nears_middle_grey() {
             "h {h}"
         );
     }
-    for h in [2.0, 2.5, 3.58, 5.0] {
+    for h in [3.0, 3.58, 5.0] {
         let e = HighlightRange::new(1.0, clip_at(h)).expansion_stops;
         assert!((e - (span - h)).abs() < 1e-12, "h {h}: {e}");
     }
-    for h in [1.4, 1.625, 1.9] {
+    for h in [1.4, 1.625, 1.9, 2.0, 2.5, 2.9] {
         let range = HighlightRange::new(1.0, clip_at(h));
-        let w = (h - 1.0 - 0.25) / 0.75;
+        let w = (h - 1.0 - 0.25) / 1.75;
         assert!(
             (range.expansion_stops - w * (span - h)).abs() < 1e-12,
             "h {h}"
@@ -511,12 +558,14 @@ fn the_identity_changes_no_bit_of_any_finite_pixel() {
 #[test]
 fn the_display_codes_of_docs_02_are_reproduced() {
     // docs/02 C7, Display result: a neutral at Auto (the clip 3.58 stops over grey), the cine rendering, no
-    // look, sRGB codes, at r = 0, 0.5 and 1, exactly as docs/02 quotes them.
-    let stops = [1.0, 2.0, 2.58, 3.08, 3.33, 3.58];
-    let want: [(f64, [i32; 6]); 3] = [
-        (0.0, [131, 166, 184, 198, 205, 210]),
-        (0.5, [131, 166, 184, 211, 228, 244]),
-        (1.0, [131, 166, 184, 221, 244, 254]),
+    // look, sRGB codes, at r = 0, 0.3, 0.6 (the default) and 1, exactly as docs/02 quotes them. The knee is
+    // at +1.58 stops, so the +1 stop column is untouched at every amount.
+    let stops = [1.0, 1.58, 2.0, 2.58, 3.08, 3.33, 3.58];
+    let want: [(f64, [i32; 7]); 4] = [
+        (0.0, [131, 152, 166, 184, 198, 205, 210]),
+        (0.3, [131, 152, 168, 193, 215, 225, 234]),
+        (0.6, [131, 152, 170, 201, 228, 240, 247]),
+        (1.0, [131, 152, 172, 211, 242, 250, 254]),
     ];
     for (r, codes) in want {
         let mut params = ChainParams::new(IDENTITY, p(r, 0.0, clip_at(3.58), 0.0));
@@ -529,6 +578,80 @@ fn the_display_codes_of_docs_02_are_reproduced() {
             .collect();
         println!("r = {r}: codes {got:?} (docs/02: {codes:?})");
         assert_eq!(got, codes, "r = {r}");
+    }
+}
+
+/// The shipped default of `rolloff.highlights` (`ym_core::settings::ROLLOFF_HIGHLIGHTS_DEFAULT`; the owner,
+/// 2026-10-30, "gentler range").
+const DEFAULT_RANGE: f64 = 0.6;
+
+/// The display code (0 to 255, not rounded) of the green channel of a pixel `stops` over middle grey in luma,
+/// of colour `ratios` (scaled to luma 1), through C7 at amount `r` and the cine rendering, sRGB, no look.
+fn display_code(r: f64, clip_stops: f64, ratios: [f64; 3], stops: f64) -> f64 {
+    let mut params = ChainParams::new(IDENTITY, p(r, 0.0, clip_at(clip_stops), 0.0));
+    params.output = OutputTarget::Srgb;
+    params.dither = false;
+    let chain = ColorChain::new(&params).unwrap();
+    let k = clip_at(stops) / luma(ratios);
+    chain.apply_pixel(ratios.map(|c| c * k))[1] * 255.0
+}
+
+/// Peak display slope (codes per stop) and the largest second difference (codes per 0.02 stop squared) of the
+/// green channel along an exposure ramp of one colour, from +1.5 to +6 stops in luma in steps of 0.02.
+fn ramp_slope(r: f64, clip_stops: f64, ratios: [f64; 3]) -> (f64, f64) {
+    const STEP: f64 = 0.02;
+    let g: Vec<f64> = (0..)
+        .map(|i| 1.5 + STEP * f64::from(i))
+        .take_while(|&s| s <= 6.0)
+        .map(|s| display_code(r, clip_stops, ratios, s))
+        .collect();
+    let peak = g
+        .windows(2)
+        .map(|w| (w[1] - w[0]) / STEP)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let kink = g
+        .windows(3)
+        .map(|w| (w[2] - 2.0 * w[1] + w[0]).abs())
+        .fold(0.0, f64::max);
+    (peak, kink)
+}
+
+#[test]
+fn bright_skin_keeps_its_texture_at_the_default_range() {
+    // The banding report of 2026-10-30 (the owner's "gentler range"): with the knee one stop under the camera's
+    // clip and the full range, the last stop before the clip was stretched about 3.5 times, so a skin texture
+    // turned into a hard edge and then a flat white. On the report's photo (the clip 3.88 stops over grey) the
+    // display slope of the neutral axis peaked at 88 codes per stop and that of the forehead colour at 91; the
+    // knee two stops under the clip and the amount 0.6 bring them to 50 and 52. At the clip of the local photos
+    // (3.58) the old setting peaked at 100 and 104, the new one at 56 and 58. The old knee with the new amount
+    // is still over (69 to 81), so the bound is 60 codes per stop: under it with both changes, over it with the
+    // old knee or the old amount.
+    const PEAK_BOUND_CODES_PER_STOP: f64 = 60.0;
+    let report_clip = (2.657_371_628_193_014_4_f64 / 0.18).log2();
+    // The forehead of the report, camera colour ratios scaled to luma 1 (purity 0.30), and a neutral.
+    let skin = [1.216, 0.951, 0.846];
+    for clip in [report_clip, 3.58] {
+        for (name, ratios) in [("neutral", [1.0; 3]), ("skin", skin)] {
+            let (peak, kink) = ramp_slope(DEFAULT_RANGE, clip, ratios);
+            println!(
+                "clip {clip:.2}, {name}: peak slope {peak:.1} codes per stop, largest second difference {kink:.3}"
+            );
+            assert!(
+                peak < PEAK_BOUND_CODES_PER_STOP,
+                "clip {clip:.2}, {name}: the display slope peaks at {peak:.1} codes per stop"
+            );
+            assert!(
+                kink < 0.2,
+                "clip {clip:.2}, {name}: a kink of {kink:.3} codes"
+            );
+        }
+        // A clipped neutral lands under pure white: about 247 to 248 of 255, not 253.5.
+        let clipped = display_code(DEFAULT_RANGE, clip, [1.0; 3], clip);
+        println!("clip {clip:.2}: the clipped neutral lands at {clipped:.1}");
+        assert!(
+            (244.0..250.0).contains(&clipped),
+            "clip {clip:.2}: the clip lands at {clipped}"
+        );
     }
 }
 

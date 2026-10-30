@@ -160,7 +160,7 @@ fn clip_segment(
 }
 
 /// The lens's bend as the sampler reads it (L4, `docs/21` section 4): the anamorphic attachment's
-/// stretch and bowing, the lens's own radial distortion and the zoom that keeps the corners filled.
+/// bend (ten constants), the lens's own radial distortion and the zoom that keeps the corners filled.
 /// A few numbers of plain data, `Copy`, so it can sit in a grid and in a cache key.
 ///
 /// The map `F` takes a photo position to a canvas position, in half-diagonal units about the canvas
@@ -169,7 +169,8 @@ fn clip_segment(
 ///
 /// ```text
 /// r' = r (1 + d1 r^2 + d2 r^4)        (x1, y1) = (x, y) r'/r
-/// x2 = x1 (1 + mu x1^2)               y2 = y1 (1 - beta x1^2)
+/// x2 = x1 (1 + a1 x1^2 + a2 y1^2 + a3 x1^4 + a4 x1^2 y1^2 + a5 y1^4)
+/// y2 = y1 (1 + b1 x1^2 + b2 y1^2 + b3 x1^4 + b4 x1^2 y1^2 + b5 y1^4)
 /// ```
 ///
 /// and the canvas is `z F(p)`. Sampling needs the inverse: a canvas position `c` reads the photo at
@@ -179,10 +180,10 @@ fn clip_segment(
 /// them equal.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SamplerWarp {
-    /// `mu`: the edge stretch.
-    pub mu: f64,
-    /// `beta`: the bowing of horizontal lines.
-    pub beta: f64,
+    /// `a1 .. a5` (already times `q - 1`): the terms of `x2` for `x^2, y^2, x^4, x^2 y^2, y^4`.
+    pub bend_x: [f64; 5],
+    /// `b1 .. b5` (already times `q - 1`): the terms of `y2` for `x^2, y^2, x^4, x^2 y^2, y^4`.
+    pub bend_y: [f64; 5],
     /// `e k1`: the distortion's `r^2` coefficient, already scaled by Edges.
     pub d1: f64,
     /// `e k2`: the distortion's `r^4` coefficient, already scaled by Edges.
@@ -196,13 +197,29 @@ pub struct SamplerWarp {
     pub axis_y: bool,
 }
 
+/// `G` of one axis for the ten constants' half: `c[0] x^2 + c[1] y^2 + c[2] x^4 + c[3] x^2 y^2 + c[4] y^4`,
+/// from `xx = x^2` and `yy = y^2` (the same expression as `ym_lens`'s, operation by operation).
+fn bend_poly(c: &[f64; 5], xx: f64, yy: f64) -> f64 {
+    xx * (c[0] + c[2] * xx + c[3] * yy) + yy * (c[1] + c[4] * yy)
+}
+
+/// `(dG/dx) / x`: `2 (c0 + 2 c2 x^2 + c3 y^2)`.
+fn bend_poly_dx_over_x(c: &[f64; 5], xx: f64, yy: f64) -> f64 {
+    2.0 * (c[0] + 2.0 * c[2] * xx + c[3] * yy)
+}
+
+/// `(dG/dy) / y`: `2 (c1 + c3 x^2 + 2 c4 y^2)`.
+fn bend_poly_dy_over_y(c: &[f64; 5], xx: f64, yy: f64) -> f64 {
+    2.0 * (c[1] + c[3] * xx + 2.0 * c[4] * yy)
+}
+
 impl SamplerWarp {
     /// A warp along the canvas's horizontal.
     #[must_use]
-    pub fn new(mu: f64, beta: f64, d1: f64, d2: f64, zoom: f64, steps: u8) -> Self {
+    pub fn new(bend_x: [f64; 5], bend_y: [f64; 5], d1: f64, d2: f64, zoom: f64, steps: u8) -> Self {
         Self {
-            mu,
-            beta,
+            bend_x,
+            bend_y,
             d1,
             d2,
             zoom,
@@ -219,10 +236,13 @@ impl SamplerWarp {
         self
     }
 
-    /// True when the map is the identity: the bend and the distortion are both 0.
+    /// True when the map is the identity: the ten bend constants and the distortion are all 0.
     #[must_use]
     pub fn is_identity(&self) -> bool {
-        self.mu == 0.0 && self.beta == 0.0 && self.d1 == 0.0 && self.d2 == 0.0
+        self.bend_x.iter().all(|&c| c == 0.0)
+            && self.bend_y.iter().all(|&c| c == 0.0)
+            && self.d1 == 0.0
+            && self.d2 == 0.0
     }
 
     /// The half-diagonal of a canvas: the unit of the map.
@@ -236,8 +256,10 @@ impl SamplerWarp {
         let r2 = x * x + y * y;
         let g = 1.0 + self.d1 * r2 + self.d2 * r2 * r2;
         let (x1, y1) = (x * g, y * g);
-        let xx = x1 * x1;
-        (x1 * (1.0 + self.mu * xx), y1 * (1.0 - self.beta * xx))
+        let (xx, yy) = (x1 * x1, y1 * y1);
+        let gx = bend_poly(&self.bend_x, xx, yy);
+        let gy = bend_poly(&self.bend_y, xx, yy);
+        (x1 * (1.0 + gx), y1 * (1.0 + gy))
     }
 
     /// `F` and its Jacobian `[[dX/dx, dX/dy], [dY/dx, dY/dy]]`.
@@ -251,16 +273,19 @@ impl SamplerWarp {
         let a = g + 2.0 * x * x * gp;
         let b = 2.0 * x * y * gp;
         let d = g + 2.0 * y * y * gp;
-        // Second stage.
-        let xx = x1 * x1;
-        let fx = x1 * (1.0 + self.mu * xx);
-        let fy = y1 * (1.0 - self.beta * xx);
-        let dfx_dx1 = 1.0 + 3.0 * self.mu * xx;
-        let dfy_dx1 = -2.0 * self.beta * x1 * y1;
-        let dfy_dy1 = 1.0 - self.beta * xx;
+        // Second stage: X = x1 (1 + Gx), Y = y1 (1 + Gy), at (x1, y1).
+        let (xx, yy) = (x1 * x1, y1 * y1);
+        let gx = bend_poly(&self.bend_x, xx, yy);
+        let gy = bend_poly(&self.bend_y, xx, yy);
+        let fx = x1 * (1.0 + gx);
+        let fy = y1 * (1.0 + gy);
+        let j00 = 1.0 + gx + xx * bend_poly_dx_over_x(&self.bend_x, xx, yy);
+        let j01 = x1 * y1 * bend_poly_dy_over_y(&self.bend_x, xx, yy);
+        let j10 = y1 * x1 * bend_poly_dx_over_x(&self.bend_y, xx, yy);
+        let j11 = 1.0 + gy + yy * bend_poly_dy_over_y(&self.bend_y, xx, yy);
         let j = [
-            [dfx_dx1 * a, dfx_dx1 * b],
-            [dfy_dx1 * a + dfy_dy1 * b, dfy_dx1 * b + dfy_dy1 * d],
+            [j00 * a + j01 * b, j00 * b + j01 * d],
+            [j10 * a + j11 * b, j10 * b + j11 * d],
         ];
         ((fx, fy), j)
     }
@@ -1124,10 +1149,21 @@ mod tests {
     // The lens's bend (L4)
     // -----------------------------------------------------------------------------------------
 
+    /// The attachment's shipped constants (data version 5, per unit of `q - 1`).
+    const SHIPPED_X: [f64; 5] = [-0.0402, -0.0494, 0.0069, 0.0128, 0.0329];
+    const SHIPPED_Y: [f64; 5] = [-0.1157, -0.0196, 0.0294, 0.0297, -0.0529];
+
     /// The attachment's shipped constants at `q - 1 = extra`, with the zoom fitted on `canvas` as
     /// `ym_lens` does it (200 samples a side of the edge, 1 px margin).
     fn fitted(extra: f64, d1: f64, d2: f64, canvas: (f64, f64)) -> SamplerWarp {
-        let mut w = SamplerWarp::new(-0.0768375 * extra, 0.0702585 * extra, d1, d2, 1.0, 3);
+        let mut w = SamplerWarp::new(
+            SHIPPED_X.map(|c| c * extra),
+            SHIPPED_Y.map(|c| c * extra),
+            d1,
+            d2,
+            1.0,
+            3,
+        );
         let inside = |w: &SamplerWarp| {
             (0..=200).all(|i| {
                 let t = f64::from(i) / 200.0;
@@ -1195,6 +1231,35 @@ mod tests {
     }
 
     #[test]
+    fn the_map_is_odd_in_each_axis_bit_for_bit() {
+        // No decentre, shear or twist term: a mirrored position reads the mirrored photo position, forward
+        // and inverse, in the normalised frame (the sampler needs nothing for the mirrors and the half turns
+        // of the orientations).
+        let canvas = (600.0, 400.0);
+        for warp in [
+            fitted(1.0, 0.0, 0.0, canvas),
+            fitted(0.4, -0.04, 0.01, canvas),
+        ] {
+            for (tx, ty) in [(0.31, 0.12), (0.8, 0.55), (0.02, 0.4), (0.7, 0.01)] {
+                let (x, y) = warp.inverse(tx, ty);
+                let (fx, fy) = warp.forward(tx, ty);
+                for (sx, sy) in [(-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
+                    let (mx, my) = warp.inverse(sx * tx, sy * ty);
+                    assert_eq!(
+                        (mx.to_bits(), my.to_bits()),
+                        ((sx * x).to_bits(), (sy * y).to_bits())
+                    );
+                    let (mx, my) = warp.forward(sx * tx, sy * ty);
+                    assert_eq!(
+                        (mx.to_bits(), my.to_bits()),
+                        ((sx * fx).to_bits(), (sy * fy).to_bits())
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_transposed_warp_is_the_warp_of_the_transposed_canvas() {
         // The DNG's geometry: the canvas is the buffer, the picture's horizontal is the buffer's
         // vertical. Swapping x and y of the canvas and of the point swaps the answer.
@@ -1220,7 +1285,7 @@ mod tests {
             1,
             false,
         );
-        let same = plain.with_warp(Some(SamplerWarp::new(0.0, 0.0, 0.0, 0.0, 1.0, 3)));
+        let same = plain.with_warp(Some(SamplerWarp::new([0.0; 5], [0.0; 5], 0.0, 0.0, 1.0, 3)));
         assert_eq!(same, plain);
         assert_eq!(same.warp, None);
     }
@@ -1316,8 +1381,9 @@ mod tests {
             true,
         );
         assert_eq!(plain.kernel(), Kernel::Copy);
-        // The shipped attachment at full strength: the worst shrink is the sides' (about 1.12), so a
-        // 1:1 grid is Catmull-Rom, not a copy and not a box.
+        // The shipped attachment at full strength: the worst shrink is the sides' and corners' (about
+        // 1.02: the sides are drawn in by 2.5 % and the zoom takes most of it back), so a 1:1 grid is
+        // Catmull-Rom, not a copy and not a box.
         let bent = plain.with_warp(Some(fitted(1.0, 0.0, 0.0, canvas)));
         assert!(!bent.is_pixel_copy());
         assert_eq!(bent.kernel(), Kernel::Bicubic);
@@ -1325,11 +1391,11 @@ mod tests {
             .warp
             .expect("a warp")
             .max_shrink(canvas, &[(1.0, 0.0), (0.0, 1.0)]);
-        assert!(worst > 1.10 && worst < 1.15, "worst shrink {worst}");
-        // The same grid shrunk by 1.15: alone that is Catmull-Rom (1.15 <= 1.25), but the sides
-        // shrink 1.15 x 1.12 through the bend, so the whole grid is a box.
+        assert!(worst > 1.01 && worst < 1.05, "worst shrink {worst}");
+        // The same grid shrunk by 1.24: alone that is Catmull-Rom (1.24 <= 1.25), but the worst places
+        // shrink 1.24 x 1.018 through the bend, so the whole grid is a box.
         let shrunk = SamplerGrid::new(
-            [[1.15, 0.0, 0.0], [0.0, 1.15, 0.0]],
+            [[1.24, 0.0, 0.0], [0.0, 1.24, 0.0]],
             canvas,
             canvas,
             1,
@@ -1339,7 +1405,7 @@ mod tests {
         assert_eq!(
             shrunk.kernel(),
             Kernel::Bicubic,
-            "1.15 alone is Catmull-Rom"
+            "1.24 alone is Catmull-Rom"
         );
         let both = shrunk.with_warp(Some(fitted(1.0, 0.0, 0.0, canvas)));
         assert!(

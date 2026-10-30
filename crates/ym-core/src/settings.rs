@@ -82,6 +82,12 @@ pub const OUTPUT_SHARPENING_DEFAULT: f64 = 100.0;
 pub const NOISE_REDUCTION_RANGE: (f64, f64) = (0.0, 100.0);
 /// Range of both amounts of RAW › Range (`rolloff`): the highlight range and the low-light toe.
 pub const ROLLOFF_RANGE: (f64, f64) = (0.0, 1.0);
+/// Default highlight range (`rolloff.highlights`): 0.6. It was 1 until pipeline 0.8.0; the owner chose 0.6 on
+/// 2026-10-30 ("gentler range", `docs/02` C7) together with a knee two stops under the camera's clip. A
+/// document without the field reads as this; a document with an explicit value keeps it.
+pub const ROLLOFF_HIGHLIGHTS_DEFAULT: f64 = 0.6;
+/// Default low-light toe (`rolloff.low_light`): 0.5.
+pub const ROLLOFF_LOW_LIGHT_DEFAULT: f64 = 0.5;
 /// Range of the three lens amounts, Flares, Edges and Anamorphic (`docs/21` section 2).
 pub const LENS_AMOUNT_RANGE: (f64, f64) = (0.0, 100.0);
 /// Range of the crop's straighten angle (degrees).
@@ -835,14 +841,15 @@ impl Default for DecodeOptions {
     }
 }
 
-/// RAW › Range (`docs/02` C7), each 0 to 1: Highlights 1 and Low light 0.5 by default. The JSON name
-/// `rolloff` is kept from the earlier roll-off card.
+/// RAW › Range (`docs/02` C7), each 0 to 1: Highlights 0.6 ([`ROLLOFF_HIGHLIGHTS_DEFAULT`]) and Low light 0.5
+/// by default. The JSON name `rolloff` is kept from the earlier roll-off card. A document that leaves
+/// `highlights` out reads as 0.6 (`default` on the struct); an explicit value, 1 included, is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Rolloff {
     /// The highlight range of C7 (`docs/02`): where the camera's clipping point lands, from where
-    /// it was recorded (0) to white, the clip of an ALEXA at EI 800 (1); default 1. Mid grey and
-    /// everything under the knee, one stop below the camera's clip, never move.
+    /// it was recorded (0) to white, the clip of an ALEXA at EI 800 (1); default 0.6. Mid grey and
+    /// everything under the knee, two stops below the camera's clip, never move.
     pub highlights: f64,
     /// Low-light toe strength (C7).
     pub low_light: f64,
@@ -851,8 +858,8 @@ pub struct Rolloff {
 impl Default for Rolloff {
     fn default() -> Self {
         Self {
-            highlights: 1.0,
-            low_light: 0.5,
+            highlights: ROLLOFF_HIGHLIGHTS_DEFAULT,
+            low_light: ROLLOFF_LOW_LIGHT_DEFAULT,
         }
     }
 }
@@ -2676,7 +2683,7 @@ mod tests {
         assert_eq!(
             s.rolloff,
             Rolloff {
-                highlights: 1.0,
+                highlights: 0.6,
                 low_light: 0.5
             }
         );

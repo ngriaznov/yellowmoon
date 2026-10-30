@@ -89,7 +89,7 @@ The Look tab's Lens card (`docs/21-lens-character.md` §1 and §8). They are the
 | `--no-highlight-recovery` | flag | switch highlight reconstruction off |
 | `--no-lens` | flag | switch the lens corrections (vignetting, distortion) off |
 | `--no-ca` | flag | switch the chromatic-aberration correction off |
-| `--rolloff <highlights>,<low-light>` | 0–1 each, default 1,0.5 | RAW › Range (`docs/02-colour-pipeline.md` C7). Highlights is the **highlight range**: where the camera's clipping point lands, from where it was recorded (0) to white, the clip of an ALEXA at EI 800 (1); mid grey and everything under the knee one stop below the clip never move. Low light is the toe near black |
+| `--rolloff <highlights>,<low-light>` | 0–1 each, default 0.6,0.5 | RAW › Range (`docs/02-colour-pipeline.md` C7). Highlights is the **highlight range**: where the camera's clipping point lands, from where it was recorded (0) to white, the clip of an ALEXA at EI 800 (1); mid grey and everything under the knee two stops below the clip never move. Low light is the toe near black |
 | `--profile <id>` | camera profile id, e.g. `sony-ilce-7rm4` | forces a profile, for comparisons |
 
 ### Output
@@ -203,7 +203,7 @@ One object per input file, written when that file finishes, in completion order:
   "settings": { "...": "resolved settings, same as ym:Settings" },
   "device": "cpu",
   "timings_ms": { "decode": 310, "develop": 2410, "encode": 180 },
-  "pipeline_version": "0.8.0",
+  "pipeline_version": "0.8.1",
   "error": null
 }
 ```

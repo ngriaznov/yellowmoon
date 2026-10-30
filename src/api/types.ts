@@ -247,11 +247,11 @@ export interface DecodeOptions {
   chromatic_aberration: boolean;
 }
 
-/** RAW › Range, each 0–1: Highlights 1 and Low light 0.5 by default (`docs/02` C7). */
+/** RAW › Range, each 0–1: Highlights 0.6 and Low light 0.5 by default (`docs/02` C7). */
 export interface Rolloff {
   /**
    * The highlight range: where the camera's clipping point lands, from where it was recorded (0) to white (1, the clip of an
-   * ALEXA at EI 800). Mid grey and everything up to a stop under the clip stay where they are.
+   * ALEXA at EI 800). Mid grey and everything up to two stops under the clip stay where they are.
    */
   highlights: number;
   /** The low-light toe: how much the noise near black is softened. */

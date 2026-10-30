@@ -21,8 +21,9 @@ use sha2::{Digest, Sha256};
 
 use crate::amounts::LensKind;
 use crate::consts::{
-    GRID_SAMPLES, GRID_START_NM, GRID_STEP_NM, PROVENANCE_STATEMENT, PSF_SIZE, PSF_WAVELENGTHS,
-    PSF_WAVELENGTHS_NM, RADII, RIM_SAMPLES, SPIKE_SIZE,
+    ATTACHMENT_PROVENANCE_STATEMENT, GRID_SAMPLES, GRID_START_NM, GRID_STEP_NM,
+    PROVENANCE_STATEMENT, PSF_SIZE, PSF_WAVELENGTHS, PSF_WAVELENGTHS_NM, RADII, RIM_SAMPLES,
+    SPIKE_SIZE,
 };
 
 /// How one synthetic lens differs from the others.
@@ -327,9 +328,10 @@ pub fn attachment_json() -> Value {
     json!({
         "id": "anamorphic",
         "version": 1,
-        "provenance": { "statement": PROVENANCE_STATEMENT },
+        "provenance": { "statement": ATTACHMENT_PROVENANCE_STATEMENT },
         "q_max": 2.0,
-        "bend": { "mu0": 0.08, "beta0": 0.06 },
+        // The synthetic bend is the plain two-term one: the sides stretched (`a1`), horizontal lines bowing (`b1`).
+        "bend": { "frame_share": 1.0, "x": [0.08, 0.0, 0.0, 0.0, 0.0], "y": [-0.06, 0.0, 0.0, 0.0, 0.0] },
         "field": { "kappa": 0.15, "side_softness": 0.8, "fringe": 1.0 },
         "ghost_stretch": 0.6,
         "streak": { "fraction": 0.05, "reach": 1.0, "core": 0.002, "power": 1.5, "tint": coating(470.0) },

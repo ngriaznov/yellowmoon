@@ -554,7 +554,7 @@ impl PreparedView {
                     DeviceInput::Camera {
                         source,
                         origin,
-                        grid: grid.sampler_grid(),
+                        grid: Box::new(grid.sampler_grid()),
                         width: w,
                         height: h,
                     },

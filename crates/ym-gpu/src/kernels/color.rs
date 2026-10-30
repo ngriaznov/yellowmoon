@@ -1546,7 +1546,7 @@ mod tests {
     #[test]
     fn the_tone_rows_carry_the_highlight_range_and_no_range_is_finite() {
         use ym_color::tone::{HIGHLIGHT_CAP_STOPS, HIGHLIGHT_OFF_STOPS};
-        // The Auto clip of a Sony body, 3.58 stops over grey: knee 2.58, expansion half the way to the cap.
+        // The Auto clip of a Sony body, 3.58 stops over grey: knee 1.58 (two stops under the clip), expansion half the way to the cap.
         let tone = ToneParams::new(0.5, 0.5, 0.18 * 3.58_f64.exp2(), 0.002).expect("tone");
         let mut u = ChainU::default();
         tone_uniform(&mut u, &tone);
@@ -1560,7 +1560,7 @@ mod tests {
                 r.expansion_stops as f32
             ]
         );
-        assert!((f64::from(u.tone[0]) - 2.58).abs() < 1e-6);
+        assert!((f64::from(u.tone[0]) - 1.58).abs() < 1e-6);
         assert!((f64::from(u.tone[3]) - 0.5 * (HIGHLIGHT_CAP_STOPS - 3.58)).abs() < 1e-6);
         assert_eq!(u.fl, [0.0, 0.0, HIGHLIGHT_CAP_STOPS as f32, 0.0]);
         // C7 off: knee and cap 1e30, finite in f32 (Metal's fast-math assumes no infinity), no

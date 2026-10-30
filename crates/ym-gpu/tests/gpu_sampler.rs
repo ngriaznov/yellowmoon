@@ -73,12 +73,23 @@ const WARP_FAR_CORNER_BOUND: f64 = 1e-5;
 /// The far corner on a hardware adapter, until the Metal run gives a number.
 const WARP_FAR_CORNER_BOUND_HARDWARE: f64 = 2e-5;
 
+/// The attachment's shipped bend (data version 5, the ten constants per unit of `q - 1`).
+const SHIPPED_X: [f64; 5] = [-0.0402, -0.0494, 0.0069, 0.0128, 0.0329];
+const SHIPPED_Y: [f64; 5] = [-0.1157, -0.0196, 0.0294, 0.0297, -0.0529];
+
 /// The warp of the attachment at `q - 1 = extra` (the shipped constants) with a lens distortion of
 /// `(d1, d2)`, its zoom fitted on a canvas of `canvas` pixels as `ym_lens` does it: the smallest zoom
 /// of at least 1 for which 200 samples a side of the canvas edge, divided by it, map inside the photo
 /// with a 1 px margin.
 fn fitted_warp(extra: f64, d1: f64, d2: f64, canvas: (f64, f64)) -> SamplerWarp {
-    let mut w = SamplerWarp::new(-0.0768375 * extra, 0.0702585 * extra, d1, d2, 1.0, 3);
+    let mut w = SamplerWarp::new(
+        SHIPPED_X.map(|c| c * extra),
+        SHIPPED_Y.map(|c| c * extra),
+        d1,
+        d2,
+        1.0,
+        3,
+    );
     let inside = |w: &SamplerWarp| {
         let n = 200;
         (0..=n).all(|i| {
@@ -531,12 +542,15 @@ fn the_far_corner_of_a_50_mp_frame_is_as_exact_as_the_near_one() {
     );
 }
 
-/// The warps the matrix runs: the shipped attachment at full and at half strength, the lens's
+/// The warps the matrix runs: the shipped attachment at full, half and one and a half times the strength, the lens's
 /// distortion alone (a barrel and a pincushion) and both together, with the axis on x and on y.
 fn warp_cases(canvas: (f64, f64)) -> Vec<(&'static str, SamplerWarp)> {
     let mut v = vec![
         ("bend 100", fitted_warp(1.0, 0.0, 0.0, canvas)),
         ("bend 50", fitted_warp(0.5, 0.0, 0.0, canvas)),
+        // Past the shipped strength, so that all ten terms are large (the mustache's quartic terms
+        // reverse the curvature of the lines inside the frame).
+        ("bend 150", fitted_warp(1.5, 0.0, 0.0, canvas)),
         ("barrel", fitted_warp(0.0, -0.05, 0.02, canvas)),
         ("pincushion", fitted_warp(0.0, 0.04, -0.015, canvas)),
         ("bend and barrel", fitted_warp(1.0, -0.04, 0.01, canvas)),
@@ -630,7 +644,7 @@ fn a_warp_moves_the_picture_and_the_identity_warp_does_not() {
     let warp = fitted_warp(1.0, 0.0, 0.0, (cw as f64, ch as f64));
     assert!(warp.zoom > 1.0);
     let bent = plain.with_warp(Some(warp));
-    let identity = plain.with_warp(Some(SamplerWarp::new(0.0, 0.0, 0.0, 0.0, 1.0, 3)));
+    let identity = plain.with_warp(Some(SamplerWarp::new([0.0; 5], [0.0; 5], 0.0, 0.0, 1.0, 3)));
     assert_eq!(identity, plain, "the identity warp is no warp");
     let a = gpu_sample(dev, &img, (0, 0), plain, (0, 0), cw, ch);
     let b = gpu_sample(dev, &img, (0, 0), bent, (0, 0), cw, ch);
@@ -730,19 +744,46 @@ fn the_far_corner_of_a_50_mp_frame_is_as_exact_through_a_warp() {
         false,
     )
     .with_warp(Some(warp));
+    // The zoom crops the photo, so the output's corners read a few hundred pixels in from the buffer's: the
+    // pieces sit where the output's near and far corners read (the bend, the zoom and the grid's rotation).
+    let mut reads = Vec::new();
+    for oy in (0..bh).step_by(8) {
+        for ox in (0..bw).step_by(8) {
+            if let Some(p) = grid.source(ox, oy) {
+                reads.push(p);
+            }
+        }
+    }
+    let by_sum = |a: &&(f64, f64), b: &&(f64, f64)| (a.0 + a.1).total_cmp(&(b.0 + b.1));
+    let (nx, ny) = *reads.iter().min_by(by_sum).expect("pixels on the canvas");
+    let (fx, fy) = *reads.iter().max_by(by_sum).expect("pixels on the canvas");
+    let (pw, ph) = (320usize, 260usize);
+    let near = (0usize, 0usize);
+    let far = (bw - pw, bh - ph);
     let mut errors = Vec::new();
-    for corner in [(0usize, 0usize), (bw - 240, bh - 200)] {
-        let img = scene(240, 200, 16);
+    for (corner, (bx0, by0)) in [
+        (near, (nx + 20.0, ny + 20.0)),
+        (far, (fx - 80.0, fy - 60.0)),
+    ] {
+        let img = scene(pw, ph, 16);
         let origin = corner;
+        assert!(
+            bx0 > (corner.0 + 8) as f64 && bx0 + 60.0 < (corner.0 + pw - 8) as f64,
+            "{bx0}"
+        );
+        assert!(
+            by0 > (corner.1 + 8) as f64 && by0 + 40.0 < (corner.1 + ph - 8) as f64,
+            "{by0}"
+        );
         // The output window whose positions fall in the piece: found from the CPU grid.
         let mut found = None;
         'search: for oy in (0..bh).step_by(8) {
             for ox in (0..bw).step_by(8) {
                 if let Some((bx, by)) = grid.source(ox, oy)
-                    && bx > (corner.0 + 60) as f64
-                    && by > (corner.1 + 60) as f64
-                    && bx < (corner.0 + 120) as f64
-                    && by < (corner.1 + 100) as f64
+                    && bx > bx0
+                    && by > by0
+                    && bx < bx0 + 60.0
+                    && by < by0 + 40.0
                 {
                     found = Some((ox, oy));
                     break 'search;

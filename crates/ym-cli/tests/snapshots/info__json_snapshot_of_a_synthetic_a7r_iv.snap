@@ -118,7 +118,7 @@ expression: v
     "intensity": 100
   },
   "notes": [],
-  "pipeline_version": "0.8.0",
+  "pipeline_version": "0.8.1",
   "preview": "[preview location]",
   "raw": {
     "bits_per_sample": 14,
@@ -239,7 +239,7 @@ expression: v
     "orientation": 0,
     "output_sharpening": 100.0,
     "rolloff": {
-      "highlights": 1.0,
+      "highlights": 0.6,
       "low_light": 0.5
     },
     "saturation": {

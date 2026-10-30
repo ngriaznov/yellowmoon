@@ -1,17 +1,23 @@
 //! LogC3-to-Rec.709 looks keep working when the cine rendering replaces ACES 2 as the display transform
 //! (owner, 2026-10-29 and 2026-10-30, `docs/02` C12: "Keep them working").
 //!
-//! The 100 % display-linear picture is the look's own LUT output and does not involve the rendering at all:
-//! its numbers are the ones taken from the chain before ARRI's display LUT was removed (commit `b2c352d`),
-//! with the same synthetic look, grade and curves as below, and they are still pinned **bit for bit** (1e-9
-//! leaves room for another maths library). Three columns legitimately moved with the cine rendering and were
-//! re-baselined (2026-10-30), each for a stated reason:
+//! The 100 % display-linear picture is the look's own LUT output and does not involve the rendering at all.
+//! Its numbers were taken from the chain before ARRI's display LUT was removed (commit `b2c352d`), with the
+//! same synthetic look, grade and curves as below, and pinned **bit for bit** (1e-9 leaves room for another
+//! maths library). Three columns legitimately moved with the cine rendering and were re-baselined
+//! (2026-10-30), each for a stated reason:
 //!
 //! * the picture of a look at 60 %: the intensity blend runs in display-linear between the rendering and the
 //!   look's picture, and the rendering is about three quarters of a stop darker than the placed ACES 2 it replaces;
 //! * the DNG of a look at any intensity above 0: it holds the scene values the rendering turns into the
 //!   picture (the inverse of the cine rendering, without the +0.85 EV placement the ACES 2 inverse divided out),
 //!   so the numbers are those of the new inverse.
+//!
+//! Then every column moved once more, the same day (pipeline 0.8.1, the owner's "gentler range", `docs/02`
+//! C7): the knee of the highlight range sits two stops under the camera's clip instead of one, at +1.58 stops
+//! here, so brighter pixels among the ten now lie over it and C7 gives them a gain they did not have. All sixteen
+//! numbers were recomputed from the new chain; the look's LUT, the grade and the curves are the same, and the
+//! numbers no longer match the chain of commit `b2c352d` (C7 is in every one of them).
 //!
 //! Every number is a weighted sum over the same ten camera pixels, so one number stands for ten pixels of three
 //! channels each; a look at 100 % takes the place of C12, one at 60 % blends with it. The LUT is our own
@@ -132,57 +138,56 @@ fn sums(intensity_pct: f64, output: OutputTarget) -> (f64, f64) {
     (display, dng)
 }
 
-/// `(look intensity %, output, display-linear sum, DNG sum)`. The display sums at 100 % are those of the chain
-/// before the removal of ARRI's display LUT (they do not involve the rendering); the display sums at 60 % and
-/// every DNG sum are those of the cine rendering (2026-10-30), see the module notes.
+/// `(look intensity %, output, display-linear sum, DNG sum)`: the chain with the cine rendering and the knee
+/// two stops under the clip (2026-10-30, pipeline 0.8.1), see the module notes.
 const EXPECTED: [(f64, OutputTarget, f64, f64); 8] = [
     (
         100.0,
         OutputTarget::Viewport,
-        55.87828240964409,
-        366.08224011437704,
+        59.08551342736147,
+        381.62938891939467,
     ),
     (
         100.0,
         OutputTarget::Srgb,
-        56.26786257306631,
-        366.0822401143773,
+        59.515115415146376,
+        381.6293889193949,
     ),
     (
         100.0,
         OutputTarget::DisplayP3,
-        55.87828240964409,
-        366.08224011437704,
+        59.08551342736147,
+        381.62938891939467,
     ),
     (
         100.0,
         OutputTarget::Rec2020,
-        55.3218921985454,
-        366.0822401143773,
+        58.47405454052406,
+        381.629388919395,
     ),
     (
         60.0,
         OutputTarget::Viewport,
-        62.71630125400795,
-        471.8487904348414,
+        66.2666397590346,
+        497.87655904625973,
     ),
     (
         60.0,
         OutputTarget::Srgb,
-        63.212960533931934,
-        472.843462050988,
+        66.79472529158289,
+        498.9850781724646,
     ),
     (
         60.0,
         OutputTarget::DisplayP3,
-        62.71630125400795,
-        471.8487904348414,
+        66.2666397590346,
+        497.87655904625973,
     ),
     (
         60.0,
         OutputTarget::Rec2020,
-        61.91336828967983,
-        472.2146648970814,
+        65.50461125214888,
+        499.62736684255333,
     ),
 ];
 

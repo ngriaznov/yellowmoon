@@ -93,11 +93,11 @@
       "additionalProperties": false,
       "properties": {
         "highlights": {
-          "description": "The highlight range: where the camera's clipping point lands, from where it was recorded (0) to white, the clip of an ALEXA at EI 800 (1). Mid grey and everything under the knee, one stop below the camera's clip, never move.",
+          "description": "The highlight range: where the camera's clipping point lands, from where it was recorded (0) to white, the clip of an ALEXA at EI 800 (1). Mid grey and everything under the knee, two stops below the camera's clip, never move. A document without this field reads as 0.6; an explicit value is kept.",
           "type": "number",
           "minimum": 0,
           "maximum": 1,
-          "default": 1
+          "default": 0.6
         },
         "low_light": {
           "description": "The low-light toe: softens the noise near black (0 is off).",

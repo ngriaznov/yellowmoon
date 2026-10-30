@@ -201,6 +201,111 @@ fn the_provenance_statement_must_be_exact() {
 }
 
 #[test]
+fn each_file_carries_its_own_provenance_statement() {
+    use ym_lens::consts::{ATTACHMENT_PROVENANCE_STATEMENT, PROVENANCE_STATEMENT};
+    // The attachment's bend is fitted to measured maps, so its sentence is not the lenses' ...
+    assert_ne!(ATTACHMENT_PROVENANCE_STATEMENT, PROVENANCE_STATEMENT);
+    // ... and a file may not carry the other's.
+    let dir = folder();
+    damage_json(dir.path(), "anamorphic.json", |v| {
+        v["provenance"]["statement"] = json!(PROVENANCE_STATEMENT);
+    });
+    assert!(
+        matches!(load(dir.path()), Err(LensError::Invalid { file, .. }) if file == "anamorphic.json")
+    );
+    let dir = folder();
+    damage_json(dir.path(), "sonnar/lens.json", |v| {
+        v["provenance"]["statement"] = json!(ATTACHMENT_PROVENANCE_STATEMENT);
+    });
+    assert!(
+        matches!(load(dir.path()), Err(LensError::Invalid { file, .. }) if file == "sonnar/lens.json")
+    );
+    // A statement that is nearly the right one is refused too.
+    let dir = folder();
+    damage_json(dir.path(), "anamorphic.json", |v| {
+        v["provenance"]["statement"] = json!(ATTACHMENT_PROVENANCE_STATEMENT.trim_end_matches('.'));
+    });
+    assert!(matches!(load(dir.path()), Err(LensError::Invalid { .. })));
+}
+
+#[test]
+fn a_bend_that_folds_is_refused_for_its_jacobian() {
+    for (what, x, y) in [
+        (
+            "the sides",
+            [-0.5, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0],
+        ),
+        (
+            "the top and bottom",
+            [0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, -0.5, 0.0, 0.0, 0.0],
+        ),
+        (
+            "the cross terms",
+            [0.0, 0.0, 0.0, -0.5, 0.0],
+            [0.0, 0.0, 0.0, 0.0, -0.5],
+        ),
+    ] {
+        let dir = folder();
+        damage_json(dir.path(), "anamorphic.json", |v| {
+            v["bend"]["x"] = json!(x);
+            v["bend"]["y"] = json!(y);
+        });
+        let err = load(dir.path()).expect_err(what).to_string();
+        assert!(
+            err.contains("folds") && err.contains("Jacobian"),
+            "{what}: {err}"
+        );
+    }
+    // Weaker by a little, the same shape loads.
+    let dir = folder();
+    damage_json(dir.path(), "anamorphic.json", |v| {
+        v["bend"]["x"] = json!([-0.1, 0.0, 0.0, 0.0, 0.0]);
+    });
+    load(dir.path()).expect("a weaker barrel loads");
+}
+
+#[test]
+fn a_bend_that_keeps_the_map_unfolded_loads() {
+    // The Jacobian rule is about the determinant, not the sign of the constants: the mustache set, its
+    // mirror image in the sign of every constant at the weaker end, and a plain barrel all load.
+    for (x, y) in [
+        (
+            json!([-0.0402, -0.0494, 0.0069, 0.0128, 0.0329]),
+            json!([-0.1157, -0.0196, 0.0294, 0.0297, -0.0529]),
+        ),
+        (
+            json!([0.08, 0.0, 0.0, 0.0, 0.0]),
+            json!([-0.06, 0.0, 0.0, 0.0, 0.0]),
+        ),
+        (
+            json!([0.0, 0.0, 0.0, 0.0, 0.0]),
+            json!([0.0, 0.0, 0.0, 0.0, 0.0]),
+        ),
+        (
+            json!([-0.1, 0.0, 0.0, 0.0, 0.0]),
+            json!([0.1, 0.0, 0.0, 0.0, 0.0]),
+        ),
+    ] {
+        let dir = folder();
+        damage_json(dir.path(), "anamorphic.json", |v| {
+            v["bend"]["x"] = x.clone();
+            v["bend"]["y"] = y.clone();
+        });
+        let lib = load(dir.path()).expect("loads");
+        assert_eq!(
+            lib.attachment().bend.x.to_vec(),
+            x.as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n.as_f64().unwrap())
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
 fn the_lens_id_must_match_its_folder() {
     let dir = folder();
     damage_json(dir.path(), "triplet/lens.json", |v| {
@@ -315,8 +420,45 @@ fn bad_numbers_are_refused() {
         ("a negative kappa", "anamorphic.json", |v| {
             v["field"]["kappa"] = json!(-0.1)
         }),
-        ("a bend past the bounds", "anamorphic.json", |v| {
-            v["bend"]["mu0"] = json!(3.0)
+        ("a bend constant past the bounds", "anamorphic.json", |v| {
+            v["bend"]["x"][0] = json!(3.0)
+        }),
+        (
+            "a bend constant just past the bounds",
+            "anamorphic.json",
+            |v| v["bend"]["y"][4] = json!(-0.51),
+        ),
+        ("a null bend constant", "anamorphic.json", |v| {
+            v["bend"]["x"][2] = Value::Null
+        }),
+        ("four bend constants", "anamorphic.json", |v| {
+            v["bend"]["x"].as_array_mut().unwrap().pop();
+        }),
+        ("six bend constants", "anamorphic.json", |v| {
+            v["bend"]["y"].as_array_mut().unwrap().push(json!(0.0));
+        }),
+        ("the old two-term bend", "anamorphic.json", |v| {
+            v["bend"] = json!({ "mu0": -0.0768375, "beta0": 0.0702585 })
+        }),
+        ("a frame share of 1.2", "anamorphic.json", |v| {
+            v["bend"]["frame_share"] = json!(1.2)
+        }),
+        ("a frame share of 0.4", "anamorphic.json", |v| {
+            v["bend"]["frame_share"] = json!(0.4)
+        }),
+        (
+            "a map that folds inside the frame",
+            "anamorphic.json",
+            |v| v["bend"]["x"] = json!([-0.5, 0.0, 0.0, 0.0, 0.0]),
+        ),
+        (
+            "a map that folds at the top and bottom",
+            "anamorphic.json",
+            |v| v["bend"]["y"] = json!([0.0, -0.5, 0.0, 0.0, 0.0]),
+        ),
+        ("a map whose cross terms fold it", "anamorphic.json", |v| {
+            v["bend"]["x"] = json!([0.0, 0.0, 0.0, -0.5, 0.0]);
+            v["bend"]["y"] = json!([0.0, 0.0, 0.0, 0.0, -0.5]);
         }),
     ];
     for (what, file, edit) in cases {
@@ -499,4 +641,43 @@ fn the_real_data_loads_when_it_exists() {
             ym_lens::consts::PROVENANCE_STATEMENT
         );
     }
+    // The attachment has its own sentence: the bend is fitted to measured maps.
+    let attachment = lib.attachment();
+    assert_eq!(
+        attachment.provenance.statement,
+        ym_lens::consts::ATTACHMENT_PROVENANCE_STATEMENT
+    );
+    assert!(
+        attachment.version >= 5,
+        "the mustache bend is data version 5"
+    );
+}
+
+/// The constants the owner chose on 2026-10-30: the median of the real 2x lenses whose lines reverse
+/// curvature inside the frame, per unit of `q - 1`, for a photo whose half-width stands for 0.875 of a
+/// lens frame's half-width.
+#[test]
+fn the_shipped_bend_is_the_mustache_set() {
+    let root = common::repo_root().join("data");
+    let lib = LensLibrary::load(&root).expect("data/lenses loads");
+    let bend = lib.attachment().bend;
+    assert_eq!(bend.frame_share, 0.875);
+    assert_eq!(bend.x, [-0.0402, -0.0494, 0.0069, 0.0128, 0.0329]);
+    assert_eq!(bend.y, [-0.1157, -0.0196, 0.0294, 0.0297, -0.0529]);
+    assert_eq!(lib.attachment().q_max, 2.0);
+}
+
+/// The provenance of the attachment says in general words what the bend is fitted to, and names no
+/// map, maker or source (`data/lenses/README.md`).
+#[test]
+fn the_attachments_provenance_is_true_in_general_words() {
+    let root = common::repo_root().join("data/lenses");
+    let text = std::fs::read_to_string(root.join("anamorphic.json")).expect("read");
+    let v: Value = serde_json::from_str(&text).expect("json");
+    let method = v["provenance"]["method"].as_str().expect("a method");
+    assert!(method.contains("except the bend"));
+    assert!(method.contains("the maps are not in it"));
+    assert_eq!(v["provenance"]["design"]["bend"], "not from this design");
+    let readme = std::fs::read_to_string(root.join("README.md")).expect("read");
+    assert!(readme.contains(ym_lens::consts::ATTACHMENT_PROVENANCE_STATEMENT));
 }

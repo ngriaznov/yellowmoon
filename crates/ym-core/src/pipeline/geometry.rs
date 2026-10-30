@@ -41,8 +41,8 @@ const ANGLE_EPS_DEG: f64 = 1e-9;
 pub fn sampler_warp(warp: &ym_lens::LensWarp) -> Option<SamplerWarp> {
     (!warp.is_identity()).then(|| {
         SamplerWarp::new(
-            warp.mu(),
-            warp.beta(),
+            warp.bend_x(),
+            warp.bend_y(),
             warp.distortion_k1(),
             warp.distortion_k2(),
             warp.zoom(),
@@ -713,6 +713,11 @@ mod tests {
     use super::*;
     use crate::settings::DevelopSettings;
 
+    /// The attachment's shipped bend (data version 5, per unit of `q - 1`), as the tests below use it at
+    /// Anamorphic 100.
+    const SHIPPED_BEND_X: [f64; 5] = [-0.0402, -0.0494, 0.0069, 0.0128, 0.0329];
+    const SHIPPED_BEND_Y: [f64; 5] = [-0.1157, -0.0196, 0.0294, 0.0297, -0.0529];
+
     /// Independent forward maps of the 8 EXIF orientations on a w x h buffer, as the pixel
     /// coordinates in the oriented image of buffer pixel (x, y). The oriented image has size
     /// (ow, oh).
@@ -945,7 +950,12 @@ mod tests {
         for warp in [
             None,
             Some(SamplerWarp::new(
-                -0.0768375, 0.0702585, -0.02, 0.01, 1.06, 3,
+                SHIPPED_BEND_X,
+                SHIPPED_BEND_Y,
+                -0.02,
+                0.01,
+                1.06,
+                3,
             )),
         ] {
             for exif in 1..=8u16 {
@@ -1087,7 +1097,12 @@ mod tests {
         for warp in [
             None,
             Some(SamplerWarp::new(
-                -0.0768375, 0.0702585, -0.02, 0.01, 1.06, 3,
+                SHIPPED_BEND_X,
+                SHIPPED_BEND_Y,
+                -0.02,
+                0.01,
+                1.06,
+                3,
             )),
         ] {
             for exif in 1..=8u16 {
@@ -1155,7 +1170,12 @@ mod tests {
         // orientation, turn and straighten angle.
         let (w, h) = (64usize, 48usize);
         let warp = Some(SamplerWarp::new(
-            -0.0768375, 0.0702585, -0.02, 0.01, 1.06, 3,
+            SHIPPED_BEND_X,
+            SHIPPED_BEND_Y,
+            -0.02,
+            0.01,
+            1.06,
+            3,
         ));
         for exif in 1..=8u16 {
             for turns in 0..4u8 {

@@ -1,24 +1,26 @@
 {
   "id": "anamorphic",
-  "version": 4,
+  "version": 5,
   "provenance": {
-    "statement": "Synthetic, computed from public lens designs, not measured.",
+    "statement": "Computed from public lens designs, except the bend, which is fitted to measured distortion maps of real anamorphic cinema lenses.",
     "design": {
       "type": "four-member cylindrical afocal front attachment, squeeze about 1.9, used in front of the Default lens",
       "source": "US 3,002,427 (P. Schaefter and K. Kirchhoff, Isco Optische Werke)",
       "year": 1961,
       "focal_mm": 50,
       "f_number": 2.4,
-      "format": "36 x 24 mm"
+      "format": "36 x 24 mm",
+      "bend": "not from this design"
     },
     "coatings": "assumed single quarter-wave MgF2 layer centred on 640 nm on the cylinder surfaces (reflects more blue); Default's coatings behind it",
-    "generated": "2026-10-24",
-    "method": "Real rays were traced through the transcribed attachment in front of the Default lens and the numbers of this file were fitted from the traces; the values marked as tuned in README.md were set by hand."
+    "generated": "2026-10-30",
+    "method": "Real rays were traced through the transcribed attachment in front of the Default lens and the numbers of this file were fitted from the traces, except the bend: its ten constants are the median, over the 7 real 2x anamorphic lenses of 40 to 60 mm focal length (of 26 examined) whose lines reverse curvature inside the frame, of per-lens fits of an even polynomial to distortion maps of those lenses, made outside the repository (the maps are not in it); the values marked as tuned in README.md were set by hand."
   },
   "q_max": 2,
   "bend": {
-    "mu0": -0.0768375,
-    "beta0": 0.0702585
+    "frame_share": 0.875,
+    "x": [-0.0402, -0.0494, 0.0069, 0.0128, 0.0329],
+    "y": [-0.1157, -0.0196, 0.0294, 0.0297, -0.0529]
   },
   "field": {
     "kappa": 0.3,

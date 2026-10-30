@@ -5,8 +5,9 @@
 //! * The sampler's warp is `ym_lens::LensWarp` bit for bit, and the geometry of a photo carries it.
 //! * At every Anamorphic amount, on the four quarter turns, at three straighten angles and at full
 //!   resolution and 3, 8 and 16 times smaller, no pixel of the canvas reads outside the photo.
-//! * A synthetic photo of lines: a horizontal line near the top bows as the map says, a vertical line
-//!   stays within 0.5 px of straight, in the finished picture.
+//! * A synthetic photo of lines: a horizontal line near the top bows as the map says, the vertical line
+//!   through the centre stays within 0.5 px of straight and the others are where the map puts them, in
+//!   the finished picture.
 //! * Pick (`pick_point_at`) goes through the map and back.
 //! * Anamorphic 0 on a lens without distortion is no bend at all (the geometry is the plain one and a
 //!   full-resolution grid is still a pixel copy); the Before view has none.
@@ -230,7 +231,8 @@ fn the_geometry_of_a_photo_carries_the_zoom_of_its_full_resolution_canvas() {
     .expect("plan");
     let own = plan.warp(640.0, 480.0);
     assert_eq!(warp.zoom, own.zoom());
-    assert_eq!(warp.mu, own.mu());
+    assert_eq!(warp.bend_x, own.bend_x());
+    assert_eq!(warp.bend_y, own.bend_y());
     // A quarter turn swaps the canvas: the zoom is fitted on the 480 x 640 canvas, with the axis
     // along its horizontal.
     let t = geometry_of(&r, &turned(&src, 1));
@@ -448,15 +450,16 @@ fn span(values: &[f64]) -> (f64, f64) {
         })
 }
 
-/// In the finished picture of a photo of lines, at Anamorphic 100 and Edges 0, a vertical line is
-/// straight to 0.5 px, at the place the map puts it, and a horizontal line near the top bows as the
-/// map says (and by a few pixels, so the check means something).
+/// In the finished picture of a photo of lines, at Anamorphic 100 and Edges 0, the vertical line through
+/// the centre is straight to 0.5 px, the verticals away from it are where the map puts them (they bend
+/// by a couple of pixels: the top and bottom of the line are drawn nearer the centre), and a horizontal
+/// line near the top bows as the map says (and by a few pixels, so the check means something).
 ///
 /// The map's input is the photo as the lens stage gets it, not the mosaic: the raw stages move the
 /// lines by a fraction of a pixel (R9 resamples the frame), so the lines are first measured in the
 /// picture of the same photo without a lens, and those are the places the map is applied to.
 #[test]
-fn a_horizontal_line_near_the_top_bows_and_a_vertical_stays_straight() {
+fn a_horizontal_line_near_the_top_bows_and_the_central_vertical_stays_straight() {
     let r = renderer();
     let d = lines();
     let src = with_lens(&d.source(), lens(LensKind::Default, 0.0, 0.0, 100.0));
@@ -484,28 +487,85 @@ fn a_horizontal_line_near_the_top_bows_and_a_vertical_stays_straight() {
             .map(|&row| centroid(&base, row, true, line_x, 10).expect("the line, no lens"))
             .sum::<f64>()
             / rows.len() as f64;
-        let want = warp.photo_to_canvas(canvas, in_photo, 240.0).0;
-        // The map keeps a vertical line vertical: the canvas x does not depend on the photo's y.
-        for y in [0.0, 120.0, 479.0] {
-            assert!((warp.photo_to_canvas(canvas, in_photo, y).0 - want).abs() < 1e-9);
-        }
-        let found: Vec<f64> = rows
+        // Where the map puts the line on each row of the picture: the canvas x whose photo is the line there.
+        // The photo's own line is not quite vertical (the raw stages bow it by a few tenths of a pixel), so
+        // the line's x is the unbent picture's at the photo row that canvas position reads.
+        // The map is odd in x and in y, and its x depends on the photo's y by the terms in y^2 (the
+        // top and bottom of a vertical line are drawn at another distance from the centre than its
+        // middle), so only the line through the centre stays a vertical line.
+        let crossing = |row: usize| -> f64 {
+            let y = row as f64 + 0.5;
+            let mut line = in_photo;
+            let mut x = in_photo;
+            for _ in 0..3 {
+                let (mut lo, mut hi) = (in_photo - 40.0, in_photo + 40.0);
+                for _ in 0..60 {
+                    let mid = 0.5 * (lo + hi);
+                    if warp.canvas_to_photo(canvas, mid, y).0 < line {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                x = 0.5 * (lo + hi);
+                let photo_row = (warp.canvas_to_photo(canvas, x, y).1 - 0.5)
+                    .round()
+                    .clamp(0.0, 479.0);
+                line = centroid(&base, photo_row as usize, true, in_photo, 10)
+                    .expect("the line, no lens");
+            }
+            x
+        };
+        // The rows the unbent picture measures, and the rows at the top and bottom of the picture (clear of
+        // the horizontal lines), where the bend of a vertical line is largest.
+        let all_rows: Vec<usize> = rows
             .iter()
-            .map(|&row| centroid(&img, row, true, want, 10).expect("the line is in the picture"))
+            .copied()
+            .chain([8, 12, 16, 20, 460, 464, 468, 472])
             .collect();
+        let expected: Vec<f64> = all_rows.iter().map(|&row| crossing(row)).collect();
+        let found: Vec<f64> = all_rows
+            .iter()
+            .zip(&expected)
+            .map(|(&row, &want)| {
+                centroid(&img, row, true, want, 10).expect("the line is in the picture")
+            })
+            .collect();
+        let mut worst = 0.0f64;
+        for (f, e) in found.iter().zip(&expected) {
+            worst = worst.max((f - e).abs());
+        }
+        assert!(
+            worst <= 0.5,
+            "the vertical line at {line_x} is {worst:.3} px from where the map puts it"
+        );
         let (lo, hi) = span(&found);
-        assert!(
-            hi - lo <= 0.5,
-            "the vertical line at {line_x} is not straight: {lo:.3} to {hi:.3}"
-        );
-        let mean = found.iter().sum::<f64>() / found.len() as f64;
-        assert!(
-            (mean - want).abs() <= 0.5,
-            "the vertical line at {line_x} is at {mean:.3}, the map says {want:.3} (it was at {in_photo:.3} without the lens)"
-        );
+        let (elo, ehi) = span(&expected);
+        if (in_photo - 320.0).abs() < 1.0 {
+            // The line through the centre is straight: the map's x there is 0 at every height.
+            assert!(
+                hi - lo <= 0.5 && ehi - elo <= 0.01,
+                "the central vertical line is not straight: {lo:.3} to {hi:.3}"
+            );
+        } else {
+            // Away from the centre it bends by a few pixels, as the map says (the top and bottom
+            // are drawn nearer the centre than the middle).
+            assert!(
+                ehi - elo >= 1.0,
+                "the vertical line at {line_x} should bend, the map spans {:.3} px",
+                ehi - elo
+            );
+            assert!(
+                hi - lo >= 1.0,
+                "the vertical line at {line_x} spans {:.3} px in the picture, the map {:.3}",
+                hi - lo,
+                ehi - elo
+            );
+        }
         eprintln!(
-            "lens bend: vertical {line_x}: {in_photo:.3} -> {mean:.3} (map {want:.3}), spread {:.3}",
-            hi - lo
+            "lens bend: vertical {line_x}: in the photo {in_photo:.3}, spans {:.3} px in the picture (map {:.3}), worst {worst:.3} from the map",
+            hi - lo,
+            ehi - elo
         );
     }
 

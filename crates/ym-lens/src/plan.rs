@@ -107,8 +107,8 @@ impl LensPlan {
         let extra = q - 1.0;
         let e_field = e + (1.0 - e) * attachment.field.kappa * extra;
         let bend = BendMap {
-            mu: attachment.bend.mu0 * extra,
-            beta: attachment.bend.beta0 * extra,
+            bx: attachment.bend.x.map(|c| c * extra),
+            by: attachment.bend.y.map(|c| c * extra),
             d1: e * lens.field.distortion.k1,
             d2: e * lens.field.distortion.k2,
         };

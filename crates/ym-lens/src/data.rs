@@ -16,10 +16,13 @@ use sha2::{Digest, Sha256};
 
 use crate::amounts::LensKind;
 use crate::consts::{
-    GRID_SAMPLES, PROVENANCE_STATEMENT, PSF_SIZE, PSF_WAVELENGTHS, RADII, RIM_SAMPLES, SPIKE_SIZE,
-    STARBURST_MAX_RADIUS, UNIT_SUM_TOLERANCE,
+    ATTACHMENT_PROVENANCE_STATEMENT, BEND_CHECK_HALF_SIDES, BEND_CHECK_LATTICE, BEND_CHECK_MARGIN,
+    BEND_CHECK_STEPS, BEND_COEFFICIENT_MAX, BEND_MIN_JACOBIAN, GRID_SAMPLES, PROVENANCE_STATEMENT,
+    PSF_SIZE, PSF_WAVELENGTHS, RADII, RIM_SAMPLES, SPIKE_SIZE, STARBURST_MAX_RADIUS,
+    UNIT_SUM_TOLERANCE,
 };
 use crate::error::LensError;
+use crate::warp::BendMap;
 
 /// What the menu shows about a lens (`ym lenses list`, the `lens_list` command).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -305,17 +308,30 @@ impl LensData {
 /// The attachment's provenance (only the statement is required).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct AttachmentProvenance {
-    /// Exactly [`PROVENANCE_STATEMENT`].
+    /// Exactly [`ATTACHMENT_PROVENANCE_STATEMENT`].
     pub statement: String,
 }
 
-/// The attachment's bend constants (`bend`).
+/// The attachment's bend constants (`bend`), per unit of `q - 1` (`docs/21` section 4, L4).
+///
+/// The bend takes a photo position `(x, y)` (half-diagonal units about the canvas centre, `x` along the
+/// anamorphic axis) to `x' = x (1 + s G_x)` and `y' = y (1 + s G_y)` with `s = q - 1` and
+///
+/// ```text
+/// G_x = a1 x^2 + a2 y^2 + a3 x^4 + a4 x^2 y^2 + a5 y^4        G_y = b1 x^2 + b2 y^2 + b3 x^4 + b4 x^2 y^2 + b5 y^4
+/// ```
+///
+/// `x` holds `a1 .. a5` and `y` holds `b1 .. b5`, in the order of the terms above.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
 pub struct Bend {
-    /// `mu_0`: the edge stretch `x' = x (1 + mu x^2)` at Anamorphic 100 is `mu_0 (q_max - 1)`.
-    pub mu0: f64,
-    /// `beta_0`: the bowing `y' = y (1 - beta x^2)` at Anamorphic 100 is `beta_0 (q_max - 1)`.
-    pub beta0: f64,
+    /// The share of a real lens frame's half-width that the photo's half-width stands for; the constants are
+    /// for that share. The runtime does not read it (it is how the numbers are to be understood, and how to
+    /// rescale them for another share).
+    pub frame_share: f64,
+    /// `a1 .. a5`: the terms of `x'` for `x^2, y^2, x^4, x^2 y^2, y^4`.
+    pub x: [f64; 5],
+    /// `b1 .. b5`: the terms of `y'` for `x^2, y^2, x^4, x^2 y^2, y^4`.
+    pub y: [f64; 5],
 }
 
 /// The attachment's field terms (`field`).
@@ -703,15 +719,44 @@ impl Check<'_> {
         Ok(())
     }
 
-    fn statement(&self, s: &str) -> Result<(), LensError> {
-        if s == PROVENANCE_STATEMENT {
+    /// The statement of a lens file ([`PROVENANCE_STATEMENT`]) or of the attachment file
+    /// ([`ATTACHMENT_PROVENANCE_STATEMENT`]), `expected` being the one the file must carry.
+    fn statement(&self, s: &str, expected: &str) -> Result<(), LensError> {
+        if s == expected {
             Ok(())
         } else {
             Err(self.err(
                 "provenance.statement",
-                format!("must be exactly {PROVENANCE_STATEMENT:?}, found {s:?}"),
+                format!("must be exactly {expected:?}, found {s:?}"),
             ))
         }
+    }
+
+    /// The bend: ten finite constants within the bound, a frame share from 0.5 to 1, and a Jacobian that stays
+    /// at least [`BEND_MIN_JACOBIAN`] over the photo plus its margin at every slider position.
+    fn bend(&self, bend: &Bend, q_max: f64) -> Result<(), LensError> {
+        self.range("bend.frame_share", bend.frame_share, 0.5, 1.0)?;
+        for (name, values) in [("bend.x", &bend.x), ("bend.y", &bend.y)] {
+            for (i, v) in values.iter().enumerate() {
+                self.range(
+                    &format!("{name}[{i}]"),
+                    *v,
+                    -BEND_COEFFICIENT_MAX,
+                    BEND_COEFFICIENT_MAX,
+                )?;
+            }
+        }
+        let worst = bend_min_jacobian(bend, q_max);
+        if worst.is_nan() || worst < BEND_MIN_JACOBIAN {
+            return Err(self.err(
+                "bend",
+                format!(
+                    "the map folds: its Jacobian determinant falls to {worst:.3} over the photo and a margin of {} %, at least {BEND_MIN_JACOBIAN} is needed",
+                    BEND_CHECK_MARGIN * 100.0
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn ghost(&self, what: &str, g: &GhostData) -> Result<(), LensError> {
@@ -745,7 +790,7 @@ fn load_lens(files: &mut Files, kind: LensKind) -> Result<LensData, LensError> {
     c.range("start.flares", raw.start.flares, 0.0, 100.0)?;
     c.range("start.edges", raw.start.edges, 0.0, 100.0)?;
 
-    c.statement(&raw.provenance.statement)?;
+    c.statement(&raw.provenance.statement, PROVENANCE_STATEMENT)?;
     let d = &raw.provenance.design;
     if d.kind.trim().is_empty() || d.source.trim().is_empty() || d.format.trim().is_empty() {
         return Err(c.err(
@@ -878,6 +923,39 @@ fn load_lens(files: &mut Files, kind: LensKind) -> Result<LensData, LensError> {
     })
 }
 
+/// The smallest determinant of the bend's Jacobian over the photo plus [`BEND_CHECK_MARGIN`], as the photo is
+/// (3:2) and turned a quarter turn, at the slider positions `s = k (q_max - 1) / BEND_CHECK_STEPS` for `k` from 0
+/// to [`BEND_CHECK_STEPS`], on a lattice of [`BEND_CHECK_LATTICE`] points a side. At `s = 0` the map is the
+/// identity and the determinant 1. `NaN` when a constant is not finite.
+fn bend_min_jacobian(bend: &Bend, q_max: f64) -> f64 {
+    let (hx, hy) = BEND_CHECK_HALF_SIDES;
+    let grow = 1.0 + BEND_CHECK_MARGIN;
+    let mut worst = f64::INFINITY;
+    for k in 0..=BEND_CHECK_STEPS {
+        let s = (q_max - 1.0) * k as f64 / BEND_CHECK_STEPS as f64;
+        let map = BendMap {
+            bx: bend.x.map(|c| c * s),
+            by: bend.y.map(|c| c * s),
+            d1: 0.0,
+            d2: 0.0,
+        };
+        for (wx, wy) in [(hx, hy), (hy, hx)] {
+            let (wx, wy) = (wx * grow, wy * grow);
+            let t = |n: usize| 2.0 * n as f64 / (BEND_CHECK_LATTICE - 1) as f64 - 1.0;
+            for j in 0..BEND_CHECK_LATTICE {
+                for i in 0..BEND_CHECK_LATTICE {
+                    let det = map.determinant(wx * t(i), wy * t(j));
+                    if det.is_nan() {
+                        return f64::NAN;
+                    }
+                    worst = worst.min(det);
+                }
+            }
+        }
+    }
+    worst
+}
+
 fn load_attachment(files: &mut Files, name: &str) -> Result<AttachmentData, LensError> {
     let raw: RawAttachment = files.json(name)?;
     let c = Check { file: name };
@@ -887,10 +965,9 @@ fn load_attachment(files: &mut Files, name: &str) -> Result<AttachmentData, Lens
     if raw.version == 0 {
         return Err(c.err("version", "must be an integer from 1"));
     }
-    c.statement(&raw.provenance.statement)?;
+    c.statement(&raw.provenance.statement, ATTACHMENT_PROVENANCE_STATEMENT)?;
     c.range("q_max", raw.q_max, 1.0 + f64::EPSILON, 4.0)?;
-    c.range("bend.mu0", raw.bend.mu0, -0.5, 0.5)?;
-    c.range("bend.beta0", raw.bend.beta0, -0.5, 0.5)?;
+    c.bend(&raw.bend, raw.q_max)?;
     c.at_least("field.kappa", raw.field.kappa, 0.0)?;
     if raw.field.kappa * (raw.q_max - 1.0) > 1.0 {
         return Err(c.err("field.kappa", "kappa (q_max - 1) must be at most 1"));

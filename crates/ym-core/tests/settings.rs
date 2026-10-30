@@ -163,7 +163,7 @@ fn typescript_defaults() -> Value {
             "neural_demosaic": true, "highlight_recovery": true,
             "lens_corrections": true, "chromatic_aberration": true
         },
-        "rolloff": { "highlights": 1, "low_light": 0.5 },
+        "rolloff": { "highlights": 0.6, "low_light": 0.5 },
         "crop": null,
         "orientation": 0,
         "white_pick": null
@@ -840,7 +840,66 @@ fn the_schema_ranges_are_the_ranges_the_core_clamps_to() {
     assert_eq!(props["look_intensity"]["default"], json!(100));
     assert_eq!(
         props["rolloff"]["properties"]["highlights"]["default"],
-        json!(1)
+        json!(0.6)
+    );
+    assert_eq!(
+        props["rolloff"]["properties"]["low_light"]["default"],
+        json!(0.5)
+    );
+}
+
+/// The owner's "gentler range" (2026-10-30, `docs/02` C7): the default highlight range is 0.6. A document
+/// that leaves the field out, or the whole `rolloff` object, reads as the new default; an explicit 1 (a
+/// document written before the change, which always carried it) keeps its 1.
+#[test]
+fn the_highlight_range_defaults_to_0_6_and_an_explicit_value_is_kept() {
+    assert_eq!(ym_core::settings::ROLLOFF_HIGHLIGHTS_DEFAULT, 0.6);
+    assert_eq!(DevelopSettings::default().rolloff.highlights, 0.6);
+    let neutral = LookId::builtin("neutral");
+    let read = |text: &str| {
+        DevelopSettings::from_json(text, &neutral)
+            .expect("reads")
+            .0
+            .rolloff
+    };
+    // Absent: the new default, with the toe at its own.
+    assert_eq!(
+        read("{}"),
+        Rolloff {
+            highlights: 0.6,
+            low_light: 0.5
+        }
+    );
+    assert_eq!(
+        read(r#"{ "rolloff": { "low_light": 0.2 } }"#),
+        Rolloff {
+            highlights: 0.6,
+            low_light: 0.2
+        }
+    );
+    assert_eq!(read(r#"{ "rolloff": {} }"#), Rolloff::default());
+    // Explicit: kept, 1 included.
+    assert_eq!(
+        read(r#"{ "rolloff": { "highlights": 1.0, "low_light": 0.5 } }"#),
+        Rolloff {
+            highlights: 1.0,
+            low_light: 0.5
+        }
+    );
+    assert_eq!(
+        read(r#"{ "rolloff": { "highlights": 0 } }"#).highlights,
+        0.0
+    );
+    // A patch that leaves the field out does not move it, and the Reset patch sends the new default.
+    let mut s = DevelopSettings::default();
+    s.rolloff.highlights = 1.0;
+    apply(&mut s, parse_patch(r#"{"rolloff": {"low_light": 0.9}}"#));
+    assert_eq!(
+        s.rolloff,
+        Rolloff {
+            highlights: 1.0,
+            low_light: 0.9
+        }
     );
 }
 
@@ -1109,7 +1168,7 @@ fn nested_objects_may_carry_only_the_parts_to_change() {
     assert_eq!(
         s.rolloff,
         Rolloff {
-            highlights: 1.0,
+            highlights: 0.6,
             low_light: 0.9
         }
     );
