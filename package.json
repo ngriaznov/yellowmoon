@@ -1,7 +1,7 @@
 {
   "name": "yellowmoon",
   "private": true,
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "Yellowmoon: a macOS raw processor for Sony ARW files (frontend)",
   "license": "Apache-2.0",
   "type": "module",

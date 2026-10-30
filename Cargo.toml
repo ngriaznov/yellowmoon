@@ -25,7 +25,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.15"
+version = "0.1.16"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/ngriaznov/yellowmoon"
@@ -34,20 +34,20 @@ authors = ["Yellowmoon contributors"]
 
 [workspace.dependencies]
 # Internal crates.
-ym-core = { path = "crates/ym-core", version = "0.1.15" }
-ym-raw = { path = "crates/ym-raw", version = "0.1.15" }
-ym-profiles = { path = "crates/ym-profiles", version = "0.1.15" }
-ym-color = { path = "crates/ym-color", version = "0.1.15" }
-ym-gpu = { path = "crates/ym-gpu", version = "0.1.15" }
-ym-noise = { path = "crates/ym-noise", version = "0.1.15" }
-ym-ml = { path = "crates/ym-ml", version = "0.1.15" }
-ym-lens = { path = "crates/ym-lens", version = "0.1.15" }
-ym-looks = { path = "crates/ym-looks", version = "0.1.15" }
-ym-export = { path = "crates/ym-export", version = "0.1.15" }
-ym-cli = { path = "crates/ym-cli", version = "0.1.15" }
-ym-apple = { path = "crates/ym-apple", version = "0.1.15" }
-ym-agents = { path = "crates/ym-agents", version = "0.1.15" }
-ym-compose = { path = "crates/ym-compose", version = "0.1.15" }
+ym-core = { path = "crates/ym-core", version = "0.1.16" }
+ym-raw = { path = "crates/ym-raw", version = "0.1.16" }
+ym-profiles = { path = "crates/ym-profiles", version = "0.1.16" }
+ym-color = { path = "crates/ym-color", version = "0.1.16" }
+ym-gpu = { path = "crates/ym-gpu", version = "0.1.16" }
+ym-noise = { path = "crates/ym-noise", version = "0.1.16" }
+ym-ml = { path = "crates/ym-ml", version = "0.1.16" }
+ym-lens = { path = "crates/ym-lens", version = "0.1.16" }
+ym-looks = { path = "crates/ym-looks", version = "0.1.16" }
+ym-export = { path = "crates/ym-export", version = "0.1.16" }
+ym-cli = { path = "crates/ym-cli", version = "0.1.16" }
+ym-apple = { path = "crates/ym-apple", version = "0.1.16" }
+ym-agents = { path = "crates/ym-agents", version = "0.1.16" }
+ym-compose = { path = "crates/ym-compose", version = "0.1.16" }
 
 # Errors, serialization, numerics.
 thiserror = "2"
