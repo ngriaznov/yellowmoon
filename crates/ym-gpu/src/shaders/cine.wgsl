@@ -14,7 +14,11 @@
 //     sample), so X / (XN Ys) is at most about 1e15 and its square 1e30 is inside f32; the chroma limit brings chi to
 //     at most chi_m before anything else uses it (the tanh argument is held to 20); after that the largest
 //     intermediate is (1 + ca2)^3, at most 2.3e3 in magnitude;
-//   * the smooth maximum of the luminance floor is written in the cancellation-free form for Y < Yf.
+//   * the smooth maximum of the luminance floor is written in the cancellation-free form for Y < Yf;
+//   * the chromatic distance of the luminance floor is formed from the channel differences, never from X, Y, Z of a
+//     large triple: dX and dZ of a neutral colour are exactly 0 (see step 2), whatever the sign and size of the
+//     neutral and whether the compiler fuses or re-associates, instead of rounding noise of about 1e-7 |x| that
+//     decides the luminance (docs/02 C12, GPU notes).
 
 fn cine_soft_clip(z: f32, w: f32) -> f32 {
     let lo = 1.0 - w;
@@ -47,9 +51,18 @@ fn cine_display_linear(awg4: vec3<f32>) -> vec3<f32> {
     let x = clamp(awg4, vec3<f32>(-CINE_SCENE_LIMIT), vec3<f32>(CINE_SCENE_LIMIT));
     let xyz = mv3(AWG4_TO_XYZ_0, AWG4_TO_XYZ_1, AWG4_TO_XYZ_2, x);
     // 2. The luminance floor: a smooth maximum of Y and rho times the distance of the chromaticity from the
-    // neutral axis.
-    let dx = xyz.x - CINE_XN * xyz.y;
-    let dz = xyz.z - CINE_ZN * xyz.y;
+    // neutral axis. dX = X - XN Y and dZ = Z - ZN Y are linear in x, with the rows DX = row_X - XN row_Y and
+    // DZ = row_Z - ZN row_Y (CINE_DX, CINE_DZ, formed in f64 on the host). AWG4's white maps to (XN, 1, ZN), so
+    // each row sums to 0 (to 2e-16 in f64) and DX . x = DX . (x - x_g 1): only the differences to the green
+    // channel enter, and the green entry is not needed. Taken from X, Y and Z, the two terms of dX are numbers of
+    // size |x| whose difference is rounding noise of about 1e-7 |x| for a neutral (1e-2 at -1e5), different
+    // for every order of the sums and for every fusion into a multiply-add; yf and then Ys would be that noise.
+    // From the differences a neutral gives exactly 0 (x - x is 0, a product or sum of zeros is 0, whatever the
+    // compiler does with the products and sums), and any other colour gives dX with an error relative to its
+    // own differences.
+    let d = vec2<f32>(x.x - x.y, x.z - x.y);
+    let dx = dot(CINE_DX, d);
+    let dz = dot(CINE_DZ, d);
     let yf = CINE_RHO * sqrt(dx * dx + dz * dz + CINE_EPS_FLOOR);
     let w = CINE_WFRAC * yf;
     let dy = xyz.y - yf;

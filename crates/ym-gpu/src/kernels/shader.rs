@@ -4,7 +4,8 @@
 use std::fmt::Write as _;
 
 use ym_color::consts::{
-    LOGC3_EI800, LOGC4, LOGC4_GRAY, LOGC4_STOP, REC709_LUMA_WEIGHTS, linalg::Mat3,
+    D65_XY, LOGC3_EI800, LOGC4, LOGC4_GRAY, LOGC4_STOP, REC709_LUMA_WEIGHTS, linalg::Mat3,
+    xy_to_xyz,
 };
 use ym_color::display::cine;
 use ym_color::gamut::{awg4_luminance_row, matrices};
@@ -668,6 +669,20 @@ fn rows(name: &str, m: &Mat3) -> String {
     s
 }
 
+/// The rows of the chromatic distance of the cine rendering's luminance floor (step 2 of C12): `dX = X - XN Y`
+/// and `dZ = Z - ZN Y` as linear functions of the linear AWG4 triple `x`, `DX = row_X - XN row_Y` and
+/// `DZ = row_Z - ZN row_Y`, formed in f64. Returned as `[[DX_r, DX_b], [DZ_r, DZ_b]]`: AWG4's white maps to
+/// `(XN, 1, ZN)`, so each full row sums to 0 (to 2e-16) and `D . x = D . (x - x_g 1)` has no green entry. The
+/// kernel applies them to the channel differences `(r - g, b - g)`, so that a neutral gives exactly 0.
+pub(crate) fn cine_floor_rows() -> [[f64; 2]; 2] {
+    let m = matrices().awg4_to_xyz;
+    let d65 = xy_to_xyz(D65_XY);
+    // The same two quotients as `ym_color::display::cine` (`XN`, `ZN` of `kernel_scalars`).
+    let (xn, zn) = (d65[0] / d65[1], d65[2] / d65[1]);
+    let row = |k: usize, n: f64| [m[k][0] - n * m[1][0], m[k][2] - n * m[1][2]];
+    [row(0, xn), row(2, zn)]
+}
+
 /// The generated constants block.
 fn constants() -> String {
     let m = matrices();
@@ -747,6 +762,15 @@ fn constants() -> String {
             f(k[3]),
             f(k[4]),
             f(k[5])
+        );
+    }
+    // The rows of the cine luminance floor's chromatic distance, on the differences to the green channel.
+    for (n, r) in ["DX", "DZ"].into_iter().zip(cine_floor_rows()) {
+        let _ = writeln!(
+            s,
+            "const CINE_{n}: vec2<f32> = vec2<f32>({}, {});",
+            f(r[0]),
+            f(r[1])
         );
     }
     s.push_str(&rows("AWG4_TO_XYZ", &m.awg4_to_xyz));
@@ -829,4 +853,265 @@ pub fn shader_source(mode: StorageMode, id: KernelId) -> String {
     s.push('\n');
     s.push_str(&expand(&id.body(), mode));
     s
+}
+
+#[cfg(test)]
+mod tests {
+    //! The luminance floor of the cine rendering (step 2 of C12, `cine.wgsl`) in a CPU model of the kernel's f32
+    //! arithmetic, with the constants parsed from the generated shader text. Metal fuses `a * b + c` into a
+    //! multiply-add and re-associates sums (`docs/17-gpu.md` section 13); the model rounds the sums of products
+    //! three ways (`Fuse`) to show that the result of the new form does not depend on which one the compiler
+    //! picks.
+
+    use super::*;
+    use crate::device::StorageMode;
+
+    /// The numbers of `const NAME: type = value;` in the generated text (a scalar or the arguments of a vector).
+    fn numbers(src: &str, name: &str) -> Vec<f32> {
+        let head = format!("const {name}: ");
+        let at = src
+            .find(&head)
+            .unwrap_or_else(|| panic!("{name} is not generated"));
+        let value = src[at + head.len()..]
+            .split_once('=')
+            .and_then(|(_, v)| v.split_once(';'))
+            .map(|(v, _)| v.trim())
+            .expect("a constant with a value");
+        let inner = value
+            .split_once('(')
+            .map_or(value, |(_, r)| r.trim_end_matches(')'));
+        inner
+            .split(',')
+            .map(|t| t.trim().parse().expect("a float literal"))
+            .collect()
+    }
+
+    /// How the compiler rounds a sum of products.
+    #[derive(Clone, Copy, Debug)]
+    enum Fuse {
+        /// Every product and every sum rounded (IEEE, lavapipe).
+        Strict,
+        /// A chain of multiply-adds from the first term to the last.
+        Forward,
+        /// A chain of multiply-adds from the last term to the first.
+        Backward,
+    }
+
+    const FUSES: [Fuse; 3] = [Fuse::Strict, Fuse::Forward, Fuse::Backward];
+
+    fn dot<const N: usize>(r: [f32; N], v: [f32; N], fuse: Fuse) -> f32 {
+        match fuse {
+            Fuse::Strict => r.iter().zip(v).fold(0.0, |acc, (a, b)| acc + a * b),
+            Fuse::Forward => (1..N).fold(r[0] * v[0], |acc, i| r[i].mul_add(v[i], acc)),
+            Fuse::Backward => (0..N - 1)
+                .rev()
+                .fold(r[N - 1] * v[N - 1], |acc, i| r[i].mul_add(v[i], acc)),
+        }
+    }
+
+    /// The f32 constants the kernel uses for step 2.
+    struct Step2 {
+        rows: [[f32; 3]; 3],
+        xn: f32,
+        zn: f32,
+        dx: [f32; 2],
+        dz: [f32; 2],
+        rho: f32,
+        wfrac: f32,
+        eps_floor: f32,
+        y_min: f32,
+    }
+
+    impl Step2 {
+        fn new() -> Self {
+            let src = constants();
+            let one = |n: &str| numbers(&src, n)[0];
+            let pair = |n: &str| <[f32; 2]>::try_from(numbers(&src, n)).expect("two numbers");
+            let row = |n: &str| <[f32; 3]>::try_from(numbers(&src, n)).expect("three numbers");
+            Self {
+                rows: [
+                    row("AWG4_TO_XYZ_0"),
+                    row("AWG4_TO_XYZ_1"),
+                    row("AWG4_TO_XYZ_2"),
+                ],
+                xn: one("CINE_XN"),
+                zn: one("CINE_ZN"),
+                dx: pair("CINE_DX"),
+                dz: pair("CINE_DZ"),
+                rho: one("CINE_RHO"),
+                wfrac: one("CINE_WFRAC"),
+                eps_floor: one("CINE_EPS_FLOOR"),
+                y_min: one("CINE_Y_MIN"),
+            }
+        }
+
+        /// The smooth maximum and the clamp of the kernel, from `Y` and the floor `yf`.
+        fn ys(&self, y: f32, yf: f32) -> f32 {
+            let w = self.wfrac * yf;
+            let dy = y - yf;
+            let root = (dy * dy + w * w).sqrt();
+            let smooth_max = if dy < 0.0 {
+                yf + 0.5 * w * w / (root - dy)
+            } else {
+                0.5 * (y + yf + root)
+            };
+            smooth_max.max(self.y_min)
+        }
+
+        fn yf(&self, dx: f32, dz: f32) -> f32 {
+            self.rho * (dx * dx + dz * dz + self.eps_floor).sqrt()
+        }
+
+        /// The form before the fix: `dX = X - XN Y` from the triple's XYZ. `(dX, dZ, Ys)`.
+        fn old(&self, x: [f32; 3], fuse: Fuse) -> (f32, f32, f32) {
+            let [xx, y, zz] = self.rows.map(|r| dot(r, x, fuse));
+            let (dx, dz) = match fuse {
+                Fuse::Strict => (xx - self.xn * y, zz - self.zn * y),
+                _ => ((-self.xn).mul_add(y, xx), (-self.zn).mul_add(y, zz)),
+            };
+            (dx, dz, self.ys(y, self.yf(dx, dz)))
+        }
+
+        /// The kernel's form: the rows `DX`, `DZ` on the differences to the green channel.
+        fn new_form(&self, x: [f32; 3], fuse: Fuse) -> (f32, f32, f32) {
+            let d = [x[0] - x[1], x[2] - x[1]];
+            let (dx, dz) = (dot(self.dx, d, fuse), dot(self.dz, d, fuse));
+            let y = dot(self.rows[1], x, fuse);
+            (dx, dz, self.ys(y, self.yf(dx, dz)))
+        }
+    }
+
+    const MAGNITUDES: [f32; 4] = [1e3, 1e4, 1e5, 1e6];
+
+    #[test]
+    fn the_floor_rows_sum_to_zero_and_are_the_chromatic_distance() {
+        let m = matrices().awg4_to_xyz;
+        let d65 = xy_to_xyz(D65_XY);
+        let (xn, zn) = (d65[0] / d65[1], d65[2] / d65[1]);
+        let scalars = cine::kernel_scalars();
+        let scalar = |n: &str| scalars.iter().find(|(k, _)| *k == n).expect("a scalar").1;
+        assert_eq!(scalar("XN"), xn);
+        assert_eq!(scalar("ZN"), zn);
+        // AWG4's white is D65: the full rows (with the green entry) sum to 0, so dropping the green entry costs
+        // at most 2e-16 of the green channel, under the f64 reference's own rounding at the scene limit.
+        let full = |k: usize, n: f64| [0, 1, 2].map(|j| m[k][j] - n * m[1][j]);
+        for (row, rows) in [(full(0, xn), 0), (full(2, zn), 1)] {
+            let sum: f64 = row.iter().sum();
+            assert!(sum.abs() < 1e-15, "row {rows} sums to {sum:e}");
+            assert_eq!(cine_floor_rows()[rows], [row[0], row[2]]);
+        }
+        // dX and dZ of a colour, from the differences and from X - XN Y.
+        for x in [[0.18, 0.2, 0.05], [-3.0, 0.4, 7.0], [1e5, -2e4, 3e3]] {
+            let g = x[1];
+            let rows = cine_floor_rows();
+            let (xyz_x, xyz_y, xyz_z) = (
+                (0..3).map(|j| m[0][j] * x[j]).sum::<f64>(),
+                (0..3).map(|j| m[1][j] * x[j]).sum::<f64>(),
+                (0..3).map(|j| m[2][j] * x[j]).sum::<f64>(),
+            );
+            let scale = x.iter().map(|v| v.abs()).fold(0.0, f64::max);
+            let from_diff = |r: [f64; 2]| r[0] * (x[0] - g) + r[1] * (x[2] - g);
+            assert!((from_diff(rows[0]) - (xyz_x - xn * xyz_y)).abs() < 1e-15 * scale);
+            assert!((from_diff(rows[1]) - (xyz_z - zn * xyz_y)).abs() < 1e-15 * scale);
+        }
+        // The kernel text uses them.
+        let src = shader_source(StorageMode::F32, KernelId::Color);
+        assert!(
+            src.contains("let dx = dot(CINE_DX, d);") && src.contains("let dz = dot(CINE_DZ, d);")
+        );
+        assert!(!src.contains("CINE_XN * xyz.y"));
+    }
+
+    #[test]
+    fn a_neutral_gives_exactly_zero_in_every_rounding_of_step_2() {
+        let k = Step2::new();
+        for sign in [-1.0f32, 1.0] {
+            for mag in MAGNITUDES {
+                let v = sign * mag;
+                for fuse in FUSES {
+                    let (dx, dz, ys) = k.new_form([v, v, v], fuse);
+                    assert!(
+                        dx == 0.0 && dz == 0.0,
+                        "{v:e} {fuse:?}: dX {dx:e}, dZ {dz:e}"
+                    );
+                    // A negative neutral is at the bottom of the tone curve, a positive one keeps its luminance.
+                    let y = dot(k.rows[1], [v; 3], fuse);
+                    assert_eq!(ys, if v < 0.0 { k.y_min } else { y }, "{v:e} {fuse:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_old_form_left_rounding_noise_that_decided_the_luminance() {
+        // The model of the form before the fix: for a negative neutral Ys is the floor yf = rho * noise, which
+        // is above Y_MIN by orders of magnitude as soon as the products are fused or the sums ordered
+        // differently. (The strict model happens to cancel at -1e3 to -1e5 and not at -1e6; lavapipe's own sums
+        // are not the model's, and it passed the gate at the fixture's -1e5.) This test keeps the model
+        // honest: it must show the failure.
+        let k = Step2::new();
+        for mag in MAGNITUDES {
+            let v = -mag;
+            for fuse in FUSES {
+                let (dx, dz, ys) = k.old([v, v, v], fuse);
+                eprintln!(
+                    "old form, neutral {v:+.0e} {fuse:?}: dX {dx:+.2e} dZ {dz:+.2e} Ys {ys:.2e} (Y_MIN {:.0e})",
+                    k.y_min
+                );
+                if !matches!(fuse, Fuse::Strict) {
+                    assert!(ys > 100.0 * k.y_min, "{v:e} {fuse:?}: Ys {ys:e}");
+                }
+            }
+        }
+        assert!(k.old([-1e6; 3], Fuse::Strict).2 > 1e-3);
+        // At -1e5 the noise puts Ys at 2e-4 to 5e-4, the luminance behind the 1.6e-8 of the Mac failure
+        // (the tone curve there is about Ys^4.3).
+        assert!(k.old([-1e5; 3], Fuse::Forward).2 > 1e-4);
+    }
+
+    #[test]
+    fn a_near_neutral_has_dx_and_dz_with_an_error_relative_to_its_own_differences() {
+        let k = Step2::new();
+        let m = matrices().awg4_to_xyz;
+        let d65 = xy_to_xyz(D65_XY);
+        let (xn, zn) = (d65[0] / d65[1], d65[2] / d65[1]);
+        let mut worst = 0.0f64;
+        for sign in [-1.0f32, 1.0] {
+            for mag in MAGNITUDES {
+                let v = sign * mag;
+                for e in [1e-2f32, 1e-3, 1e-5, 1e-7] {
+                    let triples = [
+                        [v, v * (1.0 + e), v],
+                        [v, v, v * (1.0 - e)],
+                        [v * (1.0 + e), v, v * (1.0 - 2.0 * e)],
+                        [v * (1.0 - e), v * (1.0 + e), v * (1.0 + 3.0 * e)],
+                    ];
+                    for x in triples {
+                        let xd = x.map(f64::from);
+                        let xyz = m.map(|r| (0..3).map(|j| r[j] * xd[j]).sum::<f64>());
+                        let want = [xyz[0] - xn * xyz[1], xyz[2] - zn * xyz[1]];
+                        // The size of the two terms the kernel adds: the error is relative to them.
+                        let d = [xd[0] - xd[1], xd[2] - xd[1]];
+                        let rows = cine_floor_rows();
+                        let scale = [0, 1]
+                            .map(|i| rows[i][0].abs() * d[0].abs() + rows[i][1].abs() * d[1].abs());
+                        for fuse in FUSES {
+                            let (dx, dz, _) = k.new_form(x, fuse);
+                            for (got, want, scale) in
+                                [(dx, want[0], scale[0]), (dz, want[1], scale[1])]
+                            {
+                                let err = (f64::from(got) - want).abs();
+                                worst = worst.max(err / scale.max(f64::MIN_POSITIVE));
+                                assert!(
+                                    err <= 5e-7 * scale + 1e-15 * mag as f64,
+                                    "{x:?} {fuse:?}: {got:e} against {want:e} (terms {scale:e})"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("near-neutrals: worst error {worst:.2e} of the size of the terms of dX and dZ");
+    }
 }
