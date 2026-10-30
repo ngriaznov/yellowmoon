@@ -11,9 +11,9 @@ use ym_color::look::{LookInput, LookTransform};
 use ym_color::warp::{WarpPin, chroma_of};
 use ym_core::pipeline::color::{GradeRequest, color_plan, grade_key, grade_plan};
 use ym_core::pipeline::{
-    ChromaSample, DisplayChoice, FrameOptions, FullRequest, FullTarget, LookProblem, LookProvider,
-    NeutralOnly, PhotoSource, RenderError, RenderOptions, Renderer, ResolvedLook, ViewportMode,
-    ViewportRect, ViewportState,
+    ChromaSample, FrameOptions, FullRequest, FullTarget, LookProblem, LookProvider, NeutralOnly,
+    PhotoSource, RenderError, RenderOptions, Renderer, ResolvedLook, ViewportMode, ViewportRect,
+    ViewportState,
 };
 use ym_core::scheduler::MemoryBudget;
 use ym_core::session::{EventSink, OpenOptions, Session, SessionEvent};
@@ -335,13 +335,6 @@ impl LookProvider for TestLooks {
                 "File missing or changed. Import again.".to_owned(),
             )),
         }
-    }
-
-    fn display_transform(
-        &self,
-        id: &LookId,
-    ) -> Result<(ym_color::display::DisplayTransform, String), LookProblem> {
-        NeutralOnly.display_transform(id)
     }
 }
 
@@ -797,13 +790,12 @@ fn moving_pin(c: [f64; 2]) -> WarpPin {
     WarpPin::moving(c, [c[0] - 0.05 * c[1] / r, c[1] + 0.05 * c[0] / r])
 }
 
-/// The grade chain the renderer makes for `src` (Neutral-only looks, ACES 2), built here.
+/// The grade chain the renderer makes for `src` (Neutral-only looks, the cine rendering), built here.
 fn chain_of(src: &PhotoSource) -> std::sync::Arc<ym_color::display::ColorChain> {
     let color = color_plan(src).expect("colour plan");
     let req = GradeRequest {
         target: OutputTarget::Viewport,
         dither: false,
-        display: &DisplayChoice::Aces2,
         looks: &NeutralOnly,
     };
     grade_plan(src, &color, &req).expect("grade plan").chain
@@ -869,7 +861,6 @@ fn the_grade_key_follows_the_warp_as_the_chain_prepares_it() {
     let req = GradeRequest {
         target: OutputTarget::Viewport,
         dither: true,
-        display: &DisplayChoice::Aces2,
         looks: &NeutralOnly,
     };
     let key = |pins: &[WarpPin]| grade_key(&with_pins(&src, pins), &color, &req);

@@ -285,12 +285,9 @@ pub fn write_dng_image_with(
         height,
         pixels,
         profile,
-        // The fit is against the unplaced ACES 2 transform; the product adds the display placement
-        // (`DISPLAY_PLACEMENT_EV`) to the written exposure on top of the fitted profile (docs/09).
-        BaselineExposure::Auto {
-            fit_offset_ev,
-            placement_ev: 0.0,
-        },
+        // The fit is against the cine rendering as the app shows it, with nothing in front of it: the written
+        // exposure is the fitted profile's own (docs/09).
+        BaselineExposure::Auto { fit_offset_ev },
         1,
         metadata,
     )

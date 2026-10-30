@@ -1207,13 +1207,6 @@ impl ym_core::pipeline::LookProvider for OneLook {
             ym_core::pipeline::LookProblem("File missing or changed. Import again.".to_owned())
         })
     }
-
-    fn display_transform(
-        &self,
-        id: &ym_looks::library::LookId,
-    ) -> Result<(ym_color::display::DisplayTransform, String), ym_core::pipeline::LookProblem> {
-        NeutralOnly.display_transform(id)
-    }
 }
 
 #[test]

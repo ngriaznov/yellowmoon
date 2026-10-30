@@ -38,7 +38,7 @@ use std::collections::{HashMap, HashSet};
 use serde::Serialize;
 use ym_color::look::LookInput;
 
-use crate::library::{DisplayInput, LookFormat, slugify};
+use crate::library::LookFormat;
 
 mod explain;
 pub mod names;
@@ -51,8 +51,8 @@ pub use packages::{
 };
 
 use names::{
-    display_target, file_name, file_stem, fold_alnum, folder_components, group_of,
-    has_display_rendering, look_code, look_name, parse_group_folder, split_strength,
+    file_name, file_stem, fold_alnum, folder_components, group_of, has_display_rendering,
+    look_code, look_name, parse_group_folder, split_strength,
 };
 
 /// What kind of thing the user chose to import.
@@ -163,16 +163,11 @@ pub enum Outcome {
         /// How it was identified.
         evidence: Evidence,
     },
-    /// An ARRI display LUT.
+    /// An ARRI display LUT. It is recognised so that the source can be explained, and it is never
+    /// imported: Yellowmoon uses its own display rendering (`docs/02-colour-pipeline.md`, C12).
     ArriDisplay {
         /// The package's id.
         package: String,
-        /// What it expects as input.
-        input: DisplayInput,
-        /// The display it renders to (`rec709-g24`).
-        target: String,
-        /// The file name the copy in the library gets (see [`Outcome::ArriLook`]).
-        file_name: String,
         /// How it was identified.
         evidence: Evidence,
     },
@@ -218,13 +213,20 @@ pub struct RecognizedFile {
 }
 
 impl RecognizedFile {
-    /// Whether the importer can take the file without being told anything.
+    /// Whether the importer can take the file without being told anything. An ARRI display LUT is
+    /// recognised too, but it is not taken: see [`RecognizedFile::is_display_lut`].
     #[must_use]
     pub fn is_recognized(&self) -> bool {
         matches!(
             self.outcome,
-            Outcome::ArriLook { .. } | Outcome::ArriDisplay { .. } | Outcome::OwnLookFile { .. }
+            Outcome::ArriLook { .. } | Outcome::OwnLookFile { .. }
         )
+    }
+
+    /// Whether the file is one of ARRI's display LUTs, which are left out of every import.
+    #[must_use]
+    pub fn is_display_lut(&self) -> bool {
+        matches!(self.outcome, Outcome::ArriDisplay { .. })
     }
 
     /// Whether the file is one of the person's own look files (`.alf4`, `.alf4c`, `.aml`).
@@ -313,6 +315,9 @@ pub enum IssueKind {
     UnknownArriPackage,
     /// `.alf4c` files whose display transforms are not used.
     DisplayTransformsIgnored,
+    /// ARRI display LUTs, which are never imported: Yellowmoon uses its own display rendering. A
+    /// problem when the source holds nothing else that can be imported, else a remark.
+    DisplayRenderings,
 }
 
 /// Something the wizard or CLI should tell the user, in plain words.
@@ -368,10 +373,19 @@ impl Recognition {
         self.files.iter().filter(|f| f.needs_answer()).count()
     }
 
+    /// ARRI display LUTs, which are recognised and left out of every import.
+    #[must_use]
+    pub fn display_lut_count(&self) -> usize {
+        self.files.iter().filter(|f| f.is_display_lut()).count()
+    }
+
     /// Files that were rejected.
     #[must_use]
     pub fn rejected_count(&self) -> usize {
-        self.files.len() - self.recognized_count() - self.needs_answer_count()
+        self.files.len()
+            - self.recognized_count()
+            - self.needs_answer_count()
+            - self.display_lut_count()
     }
 
     /// Whether any file needs the generic question answered before import.
@@ -600,19 +614,9 @@ fn outcome_in_group(
     group: Option<(u32, String)>,
 ) -> Outcome {
     let stem = file_stem(path);
-    if let Some(input) = package.display_input() {
-        // The display is named after the part of the file name that follows `-to-`; when the file
-        // name does not say (the display is named by a folder or the zip), after the file itself.
-        let target = display_target(stem, &db.display_names)
-            .or_else(|| {
-                Some(slugify(&look_name(stem, &db.display_names))).filter(|t| !t.is_empty())
-            })
-            .unwrap_or_else(|| "display".to_string());
+    if package.role == PackageRole::DisplayLuts {
         Outcome::ArriDisplay {
             package: package.id.clone(),
-            input,
-            target,
-            file_name: file_name(path).to_string(),
             evidence,
         }
     } else {
@@ -790,9 +794,6 @@ fn identified_by_hash(file: &RecognizedFile) -> bool {
     matches!(
         file.outcome,
         Outcome::ArriLook {
-            evidence: Evidence::Fingerprint,
-            ..
-        } | Outcome::ArriDisplay {
             evidence: Evidence::Fingerprint,
             ..
         }
@@ -1050,6 +1051,10 @@ fn findings(
 ) -> Vec<PackageFinding> {
     let mut out = Vec::new();
     for (index, package) in db.packages.iter().enumerate() {
+        // A display-LUT package is recognised but not offered: `issues_for` says so in one sentence.
+        if package.role == PackageRole::DisplayLuts {
+            continue;
+        }
         let members: Vec<&RecognizedFile> = files
             .iter()
             .zip(package_of)
@@ -1065,9 +1070,6 @@ fn findings(
                 matches!(
                     &f.outcome,
                     Outcome::ArriLook {
-                        evidence: Evidence::Pattern,
-                        ..
-                    } | Outcome::ArriDisplay {
                         evidence: Evidence::Pattern,
                         ..
                     }
@@ -1168,6 +1170,27 @@ fn issues_for(
             explain::all_rejected(source, files, &example),
         );
         return issues;
+    }
+    // ARRI's display LUTs are recognised and never imported (Yellowmoon uses its own rendering).
+    let display_luts = files.iter().filter(|f| f.is_display_lut()).count();
+    if display_luts > 0 {
+        let importable = files
+            .iter()
+            .filter(|f| f.is_recognized() || f.needs_answer())
+            .count();
+        if importable == 0 {
+            push(
+                Severity::Problem,
+                IssueKind::DisplayRenderings,
+                explain::display_renderings_only(source),
+            );
+        } else {
+            push(
+                Severity::Info,
+                IssueKind::DisplayRenderings,
+                explain::display_renderings_left_out(display_luts),
+            );
+        }
     }
     for (file, reason) in rejected.iter().take(MAX_REJECTED_MESSAGES) {
         push(
@@ -1420,14 +1443,80 @@ mod tests {
             &files,
             &Ignored::default(),
         );
+        assert!(
+            matches!(&r.files[0].outcome, Outcome::ArriDisplay { package, .. } if package == "dl4"),
+            "{:?}",
+            r.files[0].outcome
+        );
+        assert_eq!(r.display_lut_count(), 2);
+    }
+
+    #[test]
+    fn a_package_of_display_luts_has_nothing_to_import() {
+        let files = vec![
+            facts("LogC4_to_Gamma24_Rec709.cube", 5, None, 1),
+            facts("LogC4_to_P3_D65.cube", 5, None, 2),
+        ];
+        let r = recognize(
+            &db(),
+            &zip("Display_LUTs_LogC4.zip"),
+            &files,
+            &Ignored::default(),
+        );
+        // Recognised, and said in one sentence; not a package of looks, and not rejected.
+        assert_eq!(r.verdict(), Verdict::Blocked);
+        assert!(r.packages.is_empty());
+        assert_eq!((r.recognized_count(), r.rejected_count()), (0, 0));
+        let problem = r.problems().next().expect("a problem");
+        assert_eq!(problem.kind, IssueKind::DisplayRenderings);
+        assert_eq!(
+            problem.message,
+            "This package has only display renderings. Yellowmoon uses its own rendering, so there is nothing to import."
+        );
+        // A single display LUT chosen by itself.
+        let one = recognize(
+            &db(),
+            &SourceInfo {
+                kind: SourceKind::File,
+                name: "LogC4_to_Gamma24_Rec709.cube".to_string(),
+            },
+            &files[..1],
+            &Ignored::default(),
+        );
+        assert_eq!(one.verdict(), Verdict::Blocked);
+        assert_eq!(
+            one.problems().next().map(|i| i.message.as_str()),
+            Some(
+                "This file is a display rendering. Yellowmoon uses its own rendering, so there is nothing to import."
+            )
+        );
+    }
+
+    #[test]
+    fn display_luts_beside_looks_are_left_out_with_a_remark() {
+        let files = vec![
+            facts("3000 Film/Warm_LogC4.cube", 5, None, 1),
+            facts("3000 Film/Cool_LogC4.cube", 5, None, 4),
+            facts("1000 Colour/Plain_LogC4.cube", 5, None, 5),
+            facts("LogC4_to_Gamma24_Rec709.cube", 5, None, 2),
+            facts("LogC4_to_P3_D65.cube", 5, None, 3),
+        ];
+        let r = recognize(&db(), &zip("everything.zip"), &files, &Ignored::default());
+        assert_eq!(r.display_lut_count(), 2, "{:?}", r.files);
+        assert_eq!(r.recognized_count(), 3);
         assert_eq!(r.verdict(), Verdict::Ready);
-        match &r.files[0].outcome {
-            Outcome::ArriDisplay { input, target, .. } => {
-                assert_eq!(*input, DisplayInput::LogC4);
-                assert_eq!(target, "rec709-g24");
-            }
-            other => panic!("{other:?}"),
-        }
+        assert!(r.problems().next().is_none(), "{:?}", r.issues);
+        let remark = r
+            .issues
+            .iter()
+            .find(|i| i.kind == IssueKind::DisplayRenderings)
+            .expect("a remark");
+        assert_eq!(remark.severity, Severity::Info);
+        assert_eq!(
+            remark.message,
+            "2 files are display renderings, so they were left out. Yellowmoon uses its own rendering."
+        );
+        assert!(r.packages.iter().all(|p| p.role == PackageRole::Looks));
     }
 
     #[test]

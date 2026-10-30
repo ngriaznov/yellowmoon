@@ -287,23 +287,20 @@ fn ap1_matches_the_printed_acescg_matrix() {
     );
 }
 
-/// The ACES 2 module names its gamuts `Primaries::AP0` and so on; they are the crate's constants
-/// (one table of chromaticities), and `ym_color::aces2::Primaries` is the same type.
+/// The gamuts are also named `Primaries::AP0` and so on; they are the crate's constants (one table of
+/// chromaticities).
 #[test]
-fn the_aces2_gamut_names_are_the_crate_constants() {
-    use ym_color::aces2::Primaries as Aces2Primaries;
+fn the_primaries_names_are_the_crate_constants() {
     use ym_color::consts::{AP1, Primaries};
-    let same_type: Primaries = Aces2Primaries::AP1;
-    assert_eq!(same_type, AP1);
     assert_eq!(Primaries::AP0, AP0);
     assert_eq!(Primaries::AP1, AP1);
     assert_eq!(Primaries::REC709, REC709);
     assert_eq!(Primaries::P3_D65, DISPLAY_P3);
     assert_eq!(Primaries::REC2020, REC2020);
-    // The published chromaticities, bit for bit as the ACES 2 module has always had them.
+    // The published chromaticities.
     assert_eq!(
-        Aces2Primaries::AP1,
-        Aces2Primaries {
+        Primaries::AP1,
+        Primaries {
             red: [0.713, 0.293],
             green: [0.165, 0.830],
             blue: [0.128, 0.044],
@@ -311,14 +308,14 @@ fn the_aces2_gamut_names_are_the_crate_constants() {
         }
     );
     assert_eq!(
-        Aces2Primaries::P3_D65,
-        Aces2Primaries {
+        Primaries::P3_D65,
+        Primaries {
             red: [0.68, 0.32],
             green: [0.265, 0.69],
             blue: [0.15, 0.06],
             white: [0.3127, 0.3290],
         }
     );
-    assert_eq!(Aces2Primaries::AP0.white, ACES_WHITE_XY);
-    assert_eq!(Aces2Primaries::REC709.white, D65_XY);
+    assert_eq!(Primaries::AP0.white, ACES_WHITE_XY);
+    assert_eq!(Primaries::REC709.white, D65_XY);
 }

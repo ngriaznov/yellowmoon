@@ -20,7 +20,7 @@ This document describes how Yellowmoon is built: the workspace and its crates, t
       ▼         ▼         ▼          ▼          ▼          ▼          ▼
    ym-raw   ym-profiles ym-color   ym-noise    ym-ml     ym-looks   ym-export
    decode   registry    LogC/AWG   estimate    U-Net     library    JPEG/TIFF/
-   detect   + data      ACES2,LUT  σ map       runtime   import     PNG/DNG
+   detect   + data      cine DRT,LUT σ map      runtime   import     PNG/DNG
       └────────────── ym-gpu (wgpu device, tiling, WGSL kernels) ──────────────┘
 ```
 
@@ -44,7 +44,7 @@ crates/
   ym-raw/                  ARW container, SR2, decoders, camera detection, metadata
   ym-profiles/             camera profile registry; loads data/cameras/**
   ym-color/                LogC3/4, AWG3/4, ARRI matrices, WB from curves, sensor map, illuminant estimator,
-                           CDL, cube LUTs, ACES 2 output transform (CPU reference)
+                           CDL, cube LUTs, the cine display rendering (CPU reference)
   ym-gpu/                  wgpu device/queue ownership, tiling, buffer pools, WGSL kernels + parity tests,
                            the CPU reference implementations of the raw and output stages
   ym-noise/                per-image noise estimation, priors, σ maps
@@ -285,13 +285,14 @@ Every control in the UI and every CLI flag maps to one field. Defaults reproduce
 | `noise_reduction` | `Auto` or `{ luminance, color, detail }` 0–100 | Auto | Detail › Noise reduction |
 | `curve` | luma + R, G, B: up to 16 control points each in [0,1]² | identity | Curve |
 | `decode` | `{ neural_demosaic, highlight_recovery, lens_corrections, chromatic_aberration }` bools | all true | RAW › Decode |
-| `white_offset_ev` | stops, −3…+3, step 0.05; a plain number (not Auto) | 0 | Light › White › Offset: added to the photo's **automatic white lift** (`docs/02-colour-pipeline.md` C12 step 1b); 0 is the automatic amount, and a negative offset of the amount or more gives no lift. A document without the field reads as 0. It belongs to the Grade group (the lift sits in front of ACES 2). Only the built-in ACES 2 display rendering has the lift. `ResolvedValues` also carries `white_ev`, the lift in effect (`auto.white_ev + offset`, never below 0), and `AutoEstimates.white_ev` the automatic amount |
 | `rolloff` | `{ highlights 0–1, low_light 0–1 }` | 1, 0.5 | RAW › Range: `highlights` is the highlight range of C7 (`docs/02-colour-pipeline.md`: where the camera's clip lands, 0 as recorded, 1 at the ALEXA's EI 800 clip), `low_light` the toe. It works alongside the white lift (`white_offset_ev`) |
 | `crop` | `Option<{ rect in [0,1]², angle_deg −45…45, aspect: Free/Original/1:1/4:5/16:9 }>` | None | Crop (header) |
 | `orientation` | 0, 90, 180, 270 degrees, applied after the camera's EXIF orientation | 0 | Crop › Rotate 90° |
 | `white_pick` | `Option<(x, y)>` sampled point | None | Pick white (header) |
 
-"Auto" values resolve against `AutoEstimates` at render time. The UI shows the resolved value with an AUTO tag; moving a slider turns it to `Manual`, and a slider dropped on the Auto value sends Auto. "Reset" restores `Auto`. "Re-run" on the Automatic card recomputes `AutoEstimates` and resets exposure, the white lift's offset, white balance and noise reduction to Auto, and while Apple Auto acts on the photo also contrast, saturation, highlights, shadows, black and the shadows and highlights wheels (`docs/19-apple-auto.md` section 5).
+"Auto" values resolve against `AutoEstimates` at render time. The UI shows the resolved value with an AUTO tag; moving a slider turns it to `Manual`, and a slider dropped on the Auto value sends Auto. "Reset" restores `Auto`. "Re-run" on the Automatic card recomputes `AutoEstimates` and resets exposure, white balance and noise reduction to Auto, and while Apple Auto acts on the photo also contrast, saturation, highlights, shadows, black and the shadows and highlights wheels (`docs/19-apple-auto.md` section 5).
+
+**Retired field.** `white_offset_ev` (the white lift's offset, Light › White › Offset) went with the white lift (pipeline 0.8.0, `docs/02` C12). A settings document, a copied set or an XMP that still holds it loads: the field is read, whatever it holds, and dropped (`RetiredField` in `settings.rs`, on `DevelopSettings` and on `SettingsPatch`); it is never written, and the JSON schema marks it deprecated.
 
 #### Applying to several photos
 
@@ -350,11 +351,11 @@ Each photo's render is a fixed chain of stages (`docs/02-colour-pipeline.md` and
 | Stage group | Invalidated by |
 |---|---|
 | Decode, black/white, clip mask | never within a session |
-| Noise estimate, illuminant estimate, auto exposure, white lift estimate | Re-run |
+| Noise estimate, illuminant estimate, auto exposure | Re-run |
 | Vignetting, highlights, demosaic+denoise, detail controls, sharpening, lens resample (R3–R9) | `decode.*`, `noise_reduction`, `sharpen` |
 | Lens (L1–L3; the bend L4 is geometry) | `lens`, and everything that invalidates the raw group; the quarter turns, which set the anamorphic axis (the canvas's horizontal) that the streaks, the starbursts and the bokeh ovals follow |
 | WB, sensor map, ARRI matrix, AWG4, exposure, highlight range and toe, LogC4 (C1–C8) | `light_source`, `white_balance`, `white_pick`, `exposure`, `rolloff.*` |
-| Primary grade, look, curve, white lift and ACES 2 (DRT), display encode (C9–C13) | everything else (except `output_sharpening`); the white lift's amount is the photo's automatic one plus `white_offset_ev` |
+| Primary grade, look, curve, the cine rendering (DRT), display encode (C9–C13) | everything else (except `output_sharpening`) |
 | Geometry (crop, straighten, orientation) | `crop`, `orientation`: applied when sampling for display and export; no pixel stage re-runs |
 | Output sharpening (the last stage: the display-linear picture at the size it is shown or written, then C13) | `output_sharpening`; it also re-runs after every change above, because it sharpens what they made. Moving its slider re-runs only this stage on the display-linear frame already rendered. |
 
@@ -515,7 +516,7 @@ The numbers (readbacks, submissions, the ledger) are in `docs/05-raw-processing.
 
 #### Look and display sources
 
-`LookProvider` (implemented for `ym_looks::library::Library`, `RwLock<Library>` and `Mutex<Library>`; `NeutralOnly` for tests) returns a look with a fingerprint. A look that cannot be loaded renders as Neutral in the viewport, with the library's words ("File missing or changed. Import again.") in `RenderReport::notes` of **every** request that uses the plan (a cached plan or frame carries its notes too, as does a cached lens plan with its "table ignored" lines). For a look tile it is an error (`RenderError::Look`). `Renderer::set_display(DisplayChoice::{Aces2, ArriLut(id)})` is Preferences › Display rendering.
+`LookProvider` (implemented for `ym_looks::library::Library`, `RwLock<Library>` and `Mutex<Library>`; `NeutralOnly` for tests) returns a look with a fingerprint. A look that cannot be loaded renders as Neutral in the viewport, with the library's words ("File missing or changed. Import again.") in `RenderReport::notes` of **every** request that uses the plan (a cached plan or frame carries its notes too, as does a cached lens plan with its "table ignored" lines). For a look tile it is an error (`RenderError::Look`). There is no choice of display rendering: the chain always uses ours, and ARRI's display LUTs are not imported (`docs/02` C12).
 
 #### Noise floor of C7
 
@@ -624,9 +625,9 @@ Code: `ym-core`'s `export.rs`, `export_queue.rs`, `cli_preview.rs`, `preferences
 
 #### What `export_photo` does
 
-1. **Look and display LUT.** The look and the chosen display LUT must load. **An export never falls back to Neutral or ACES 2 the way the viewport does**, because the file's XMP says which look and transform made it. A look that is gone is `ExportError::Look("File missing or changed. Import again.")` (CLI exit 3).
-   - A DNG of a look with its own display rendering is made, approximately (`docs/09-export.md` "What a DNG carries"): its pixels are the scene values that ACES 2 turns into the look's picture. `ExportEstimate::dng_approximate` tells the panel when a job has such a DNG.
-   - The look's and the display LUT's fingerprints are taken again once the pixels are rendered (a render takes seconds to minutes, and a DNG's two renders even longer). A look replaced, removed or switched, or a Display rendering preference changed in between, fails that photo with "The look or the display rendering changed while this photo was exporting. Export it again." (`CHANGED_DURING_EXPORT_MESSAGE`, kind `look`, CLI exit 3), instead of writing a file whose XMP names a look or transform it was not made with.
+1. **Look.** The look must load. **An export never falls back to Neutral the way the viewport does**, because the file's XMP says which look and transform made it. A look that is gone is `ExportError::Look("File missing or changed. Import again.")` (CLI exit 3).
+   - A DNG of a look with its own display rendering is made, approximately (`docs/09-export.md` "What a DNG carries"): its pixels are the scene values that the cine rendering turns into the look's picture. `ExportEstimate::dng_approximate` tells the panel when a job has such a DNG.
+   - The look's fingerprint is taken again once the pixels are rendered (a render takes seconds to minutes, and a DNG's two renders even longer). A look replaced, removed or switched in between fails that photo with "The look changed while this photo was exporting. Export it again." (`CHANGED_DURING_EXPORT_MESSAGE`, kind `look`, CLI exit 3), instead of writing a file whose XMP names a look it was not made with.
    - A panic below `export_photo` (a writer, a look provider) is that photo's `ExportError::Render` ("This photo can't be exported because of an unexpected problem…", logged with the panic text), never an unwinding queue thread.
 2. **Name and folder.** `{name}`, `{look}` (the slug of the photo's look id, also when the look is gone), `{date}` (capture date), `{seq}`, `{camera}` (slug of the body); the folder from `ym_export::naming`. With "If the file exists: Skip" and a file in the way, **nothing is rendered**.
 3. **Render**, on the render scheduler's export worker (`Renderer::spawn_full_reporting`: gives way to the viewport between tiles, reports the fraction of tiles done).
@@ -636,7 +637,7 @@ Code: `ym-core`'s `export.rs`, `export_queue.rs`, `cli_preview.rs`, `preferences
 4. **Metadata.** EXIF from the probe (`exif_of`: never copied from the file; GPS left out when the preference is on, both here and in the writer). XMP with the `ym:` properties, all dates the capture time:
    - `PipelineVersion`; `Profile` and `ProfileVersion` of the profile the render used; `ProfileMatch` (`exact`, `sensor family`, `default`, `forced`).
    - `Look`; `LookSHA256` (the hash of the look's file; for a built-in look the hash of `data/looks/builtin/<slug>.json`, absent for a look with no file); `LookIntensity`.
-   - `DisplayTransform`: `aces2-sdr100-rec709lim` for sRGB, `aces2-sdr100-p3lim` for Display P3, `aces2-sdr100-p3lim-rec2020` for Rec.2020, or the id of the imported display LUT (`arri-display:logc4:rec709-g24`). A DNG records the sRGB one, which is what its preview is.
+   - `DisplayTransform`: `cine-rec709` for sRGB, `cine-p3` for Display P3, `cine-rec2020` for Rec.2020. A DNG records the sRGB one, which is what its preview is.
    - `Models` (absent: the classical demosaic has none; `docs/07-ml-models.md` fills it when the network runs).
    - `Auto` (which Auto made the photo's automatic values: `rule`, `apple`, `claude` or `agy`) and `AutoAdvisor` (what the provider said about the photo, only when one acted on it; it replaces `AppleAuto`; `docs/22-auto-providers.md` section 14.2).
    - `Settings` (`ResolvedSettings::pinned_settings()`, *DevelopSettings* above).
@@ -681,22 +682,22 @@ Code: `ym-core`'s `export.rs`, `export_queue.rs`, `cli_preview.rs`, `preferences
 
 - **Reading never fails.** A missing file is the defaults and creates nothing. A missing or unknown field is ignored. A value that does not fit takes its default while the rest is kept (field by field, also inside `export_defaults`). A file that is not JSON is all defaults. Each case logs a warning and is in `warnings()`.
 - **Writing.** A change re-reads the file first (the CLI may have changed another field), validates the export defaults, and writes atomically (temp file, fsync, rename, fsync of the folder). A patch that changes nothing writes nothing, and a failed write changes nothing.
-- **Defaults:** the Signature look, ACES 2, the export defaults of `docs/09-export.md`, location kept in exports, update check on, Downloads watch off, Auto grading by Apple Intelligence where it is available (`auto_provider` `apple`, no cloud consent).
+- **Defaults:** the Signature look, the cine rendering, the export defaults of `docs/09-export.md`, location kept in exports, update check on, Downloads watch off, Auto grading by Apple Intelligence where it is available (`auto_provider` `apple`, no cloud consent).
 - A full open, edit and export cycle writes **no file** unless a preference changes (`tests/core.rs` compares the trees). Choosing an export folder remembers it in `last_used_folders` and writes `preferences.json`, which is on the list.
 
 #### Looks
 
 `LookService` keeps one `ym_looks::Library` behind a lock; the renderer reads through `LookService::provider()` (a `LookProvider` that also gives `look_sha256`). An import or a removal works on a second `Library` over the same folder, under `looks/.lock`, and takes the write lock only to re-read the manifest, so a slow import (or a CLI import holding the lock) never stalls a frame (`tests/looks_service.rs`).
 
-- **Operations.** `list()` is `looks_list` (flags `is_default` and `missing`); `display_luts()`; `import(path, ImportRequest { input, cancel }, progress)` is the wizard's importer (same recognition, hashes and library folder as `ym looks import`; the result has the looks added or replaced, display LUTs added and files unchanged); `remove(id)`; `set_default(id)`; `set_display_rendering`; `apply_look(session, scope, id, intensity)`; `resolve(query)` (`--look`, exit 2 or 3); `verify()`; `reload()`.
-- **Missing looks.** A look whose file is gone or changed stays in the list, flagged `missing`, and cannot be made the default or applied ("File missing or changed. Import again."). A default look that is gone is not used (new photos get Neutral, `effective_default()`), but the preference is kept until the look is removed or the user chooses another. Removing the default look or the chosen display LUT resets the preference to Neutral or ACES 2.
-- **Display rendering.** The one in effect is `display_choice()`: the chosen display LUT while it is imported and its file is there, else ACES 2 (the viewport falls back; **an export with a chosen display LUT that is gone is refused**, `check_display_rendering`).
+- **Operations.** `list()` is `looks_list` (flags `is_default` and `missing`); `import(path, ImportRequest { input, cancel }, progress)` is the wizard's importer (same recognition, hashes and library folder as `ym looks import`; the result has the looks added or replaced and files unchanged; a source that holds only ARRI's display LUTs is refused with "This package has only display renderings. Yellowmoon uses its own rendering, so there is nothing to import.", and display LUTs beside looks are left out and said in `notes`); `remove(id)`; `set_default(id)`; `apply_look(session, scope, id, intensity)`; `resolve(query)` (`--look`, exit 2 or 3); `verify()`; `reload()`.
+- **Missing looks.** A look whose file is gone or changed stays in the list, flagged `missing`, and cannot be made the default or applied ("File missing or changed. Import again."). A default look that is gone is not used (new photos get Neutral, `effective_default()`), but the preference is kept until the look is removed or the user chooses another. Removing the default look resets the preference to Signature.
+- **Display rendering.** There is none to choose (owner, 2026-10-29, `docs/02` C12): the preferences have no such field, the library lists no display LUT, and the importer leaves ARRI's display LUTs out. A library or preferences file of an earlier version that still holds them is read without a word (*Persistence* below).
 - **`on_change(f)`** is `looks_changed`. It runs after an import, a removal, a new default, or a `reload`/`verify` that found a different list, outside every lock. "Different" is judged from before `reload` re-reads the preferences and the manifest: the ids, whether each can be used, the SHA-256 of each file (an ARRI look replaced in place by a newer file) and the default look (the CLI chooses it through the preferences file).
-- `Core::looks_list` reloads first, so an import made by the CLI shows up. So does `Core::export_start`, so that a look or display LUT whose file has gone since the last look at the library is noticed when the job is queued (a display LUT refuses the job; a look fails the photos that use it).
+- `Core::looks_list` reloads first, so an import made by the CLI shows up. So does `Core::export_start`, so that a look whose file has gone since the last look at the library is noticed when the job is queued (a look fails the photos that use it).
 
 #### `Core`
 
-`Core::open(CoreOptions)` (`app.rs`) builds the preferences, the look service, the renderer (reading looks through the library and showing the preferred display rendering), the session (new photos get the effective default look), the export context and the queue, and keeps the session and the renderer in step with `looks_changed`. It writes nothing. All of it is `Send + Sync`. `CoreError::scope()` is the `AppError` scope.
+`Core::open(CoreOptions)` (`app.rs`) builds the preferences, the look service, the renderer (reading looks through the library), the session (new photos get the effective default look), the export context and the queue, and keeps the session and the renderer in step with `looks_changed`. It writes nothing. All of it is `Send + Sync`. `CoreError::scope()` is the `AppError` scope.
 
 Its methods are the IPC commands of the table below: `preferences_get/set` (validated against the library, then the session and renderer follow), `looks_list/import/remove/set_default`, `apply_look`, `export_estimate/start/cancel`, `cli_preview`, plus `export_summary`, `export_reveal_path`, `export_busy`, `close_session` and `shutdown`.
 
@@ -796,7 +797,6 @@ Tauri commands carry requests and Tauri events carry progress. The TypeScript ty
 | `look_thumbnail(photo_id, look_id)` → address (string) | The Look tab's tiles: the photo as it is developed now through one look at 100 %, at most 240 px on the long edge, sRGB, rendered lazily as tiles scroll into view. The answer is the address of the PNG on the `ym-frame` scheme (below). Rejects with scope `looks` and "File missing or changed. Import again." when the look's file is gone |
 | `looks_list()`, `looks_import(path)`, `looks_set_default(id)`, `looks_remove(id)` | Look library |
 | `looks_recognise(path)` | What a zip, a folder or a `.cube` file is, before anything is copied (`docs/08-looks.md` §Recognition rules). Never rejects for a bad file: it answers `unusable` or `missing` |
-| `looks_display_luts()` | The display LUTs imported so far (Preferences › Display rendering, the wizard's Finish step) |
 | `looks_watch_downloads(enabled)` | Start or stop the Downloads watcher (FSEvents, `docs/08-looks.md` §Wizard step 2). Asks macOS for access the first time; `problem` says so when it is refused. Found zips arrive as `download_found` |
 | `export_estimate(job)` → bytes and seconds | Size and time estimate in Export |
 | `export_start(job)`, `export_cancel(job_id)` | Export queue |
@@ -860,14 +860,14 @@ Each event the shell sends costs the main thread a message that runs a script in
 
 Code: `ym-core`'s `app.rs`. `Core` has one method per command above (`export_estimate`, `export_start`, `export_cancel`, `cli_preview`, `preferences_get`, `preferences_set`, `looks_list`, `looks_import`, `looks_set_default`, `looks_remove`, `apply_look`; the session commands are `Core::session`'s) and takes the events as callbacks: `CoreOptions::session_events` (`photo_progress`, `thumbnail_ready`, `estimates_changed`), `CoreOptions::export_events` (`ExportEvent::Progress` is `export_progress`, `ExportEvent::Busy` tells the updater when the queue starts and stops) and `Core::on_looks_changed` (`looks_changed`).
 
-The wire types the export, preferences and looks commands use serialise to the interfaces of `src/api/types.ts`. A test compares the field names of `ExportOptions`, `ExportJob`, `ExportEstimate`, `ExportProgress`, `Preferences`, `LastUsedFolders`, `Look`, `DisplayLut` and `LooksImportResult` with the interface text, so a drift fails in CI. `cli_preview` answers with the command as the CLI is named (`ym`); `ExportEstimate::adjusted_photos` and `CliPreview::note()` carry "N photos have adjustments this command doesn't include."
+The wire types the export, preferences and looks commands use serialise to the interfaces of `src/api/types.ts`. A test compares the field names of `ExportOptions`, `ExportJob`, `ExportEstimate`, `ExportProgress`, `Preferences`, `LastUsedFolders`, `Look` and `LooksImportResult` with the interface text, so a drift fails in CI. `cli_preview` answers with the command as the CLI is named (`ym`); `ExportEstimate::adjusted_photos` and `CliPreview::note()` carry "N photos have adjustments this command doesn't include."
 
 ## Persistence
 
 Only these persist, under `~/Library/Application Support/app.yellowmoon/`:
 
 ```
-preferences.json                  default look, display rendering (ACES 2 or an imported ARRI display LUT),
+preferences.json                  default look,
                                   export defaults (format, quality, bits, compression, colour space, size,
                                   destination, name template, if-exists), remove location from exports,
                                   check for updates automatically, watch Downloads during import,
@@ -875,18 +875,18 @@ preferences.json                  default look, display rendering (ACES 2 or an 
                                   Apple Intelligence, Claude Code or Antigravity), the consent to send photos
                                   through each of the last two, and the instructions (docs/22, docs/19)
 looks/
-  manifest.json                   imported looks and display LUTs: id, name, group, input encoding,
+  manifest.json                   imported looks: id, name, group, input encoding,
                                   source URL, import date, SHA-256 per file (no preferences)
   arri/<group_no>-<group_slug>/   imported ARRI look files (copied, never modified)
-  arri-display/                   imported ARRI display LUTs
   user/                           other imported .cube files
 logs/yellowmoon.log               local only, rotated at 5 MB × 3
 ```
 
 This list is exhaustive (hard rule 4 of `AGENTS.md`): nothing else persists. Plus `~/Library/Caches/app.yellowmoon/` for the wgpu pipeline cache only (`$XDG_CACHE_HOME/app.yellowmoon` or `~/.cache/app.yellowmoon` on Linux). No image data is cached on disk. The CLI uses the same folders and takes a file lock (`looks/.lock`) when importing. `YELLOWMOON_HOME` replaces the application-support folder.
 
-Code: `ym-core`'s `preferences.rs` and `looks.rs`. `PreferencesStore` reads and writes `preferences.json` (*Export, preferences and looks* above); `LookService` owns `looks/` and its lock. The file has exactly the ten fields of the list: `default_look`, `display_rendering`, `export_defaults`, `remove_location_from_exports`, `check_for_updates_automatically`, `watch_downloads_during_import`, `last_used_folders`, `auto_provider`, `auto_consent` and `apple_auto_instructions`. A field of a newer version is ignored when reading and dropped when the file is next written.
+Code: `ym-core`'s `preferences.rs` and `looks.rs`. `PreferencesStore` reads and writes `preferences.json` (*Export, preferences and looks* above); `LookService` owns `looks/` and its lock. The file has exactly the nine fields of the list: `default_look`, `export_defaults`, `remove_location_from_exports`, `check_for_updates_automatically`, `watch_downloads_during_import`, `last_used_folders`, `auto_provider`, `auto_consent` and `apple_auto_instructions`. A field of a newer version is ignored when reading and dropped when the file is next written.
 
+- **ARRI's display LUTs of an earlier version.** Yellowmoon no longer imports or uses them (owner, 2026-10-29, `docs/02` C12), but a library or a `preferences.json` made by an earlier version may still hold some: a `display_luts` list in `manifest.json`, files in `looks/arri-display/`, a saved `display_rendering` (an imported ARRI display LUT chosen as the rendering). They are ignored, with no error and no dialog, and **left on disk untouched**: nothing is deleted or moved, and the person can delete the `arri-display` folder by hand to get the space back. A write of `manifest.json` (an import, a removal) leaves the `display_luts` list out and a write of `preferences.json` leaves `display_rendering` out, as for any other field this version does not know; the files stay. Tests: `ym-looks` (`display_luts_imported_by_an_older_version_are_ignored_and_left_on_disk`), `ym-core` (`an_older_choice_of_arris_display_rendering_and_its_imported_luts_are_ignored`).
 - `auto_provider` ("Auto grading", `docs/22-auto-providers.md` section 10) is who grades each photo: `"yellowmoon"` (the rule), `"apple"`, `"claude"` or `"agy"`. Default `"apple"`; a provider that is not available at run time (or a cloud provider whose consent is not saved) acts as `yellowmoon` and the choice stays saved. It is read on every platform. **Migration:** a file without a valid `auto_provider` reads as `"yellowmoon"` when it has `apple_auto: false` and as `"apple"` otherwise; the old boolean `apple_auto` is read for that and never written again.
 - `auto_consent` is `{ "claude": bool, "agy": bool }`, default both `false`: whether the person agreed to send a 768 px copy of each photo and the instructions through that program (`docs/22` section 10.2). It is saved in the same patch as the choice; a cloud provider is never saved without it.
 - `apple_auto_instructions` is the instructions the chosen provider reads, edited in Preferences under the dropdown (`docs/19-apple-auto.md` section 2, `docs/22` section 12.4): one text for every provider, a string of at most 2000 characters. `""` (also absent) means the default instructions, and the default text itself is saved as `""`; longer text in a file edited by hand gives the default, with a warning. The key keeps its name from before the other providers existed.

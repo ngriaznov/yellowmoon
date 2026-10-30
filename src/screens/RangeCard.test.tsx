@@ -124,33 +124,30 @@ describe("the Range card on the RAW tab", () => {
   });
 });
 
-describe("the white lift is back beside the Range card (owner's decision of 2026-10-17)", () => {
-  it("the Light tab has its three cards again: Exposure, White and High dynamic range, with the Offset slider and its AUTO button", async () => {
+describe("the white lift is gone (owner's decision of 2026-10-30)", () => {
+  it("the Light tab has two cards: Exposure and High dynamic range, and no Offset slider", async () => {
     await setup();
     await openTab(h, "Light");
     const regions = screen.getAllByRole("region");
-    expect(regions.map((r) => within(r).getAllByRole("heading", { level: 3 })[0]?.textContent)).toEqual(["Exposure", "White", "High dynamic range"]);
-    const white = within(screen.getByRole("region", { name: "White" }));
-    expect(white.getAllByRole("slider").map((s: HTMLElement) => sliderName(s))).toEqual(["Offset"]);
-    expect(valueOf("Offset")).toBe("0.00");
-    expect(white.getByRole("button", { name: "Auto white" })).toHaveAttribute("aria-pressed", "true");
+    expect(regions.map((r) => within(r).getAllByRole("heading", { level: 3 })[0]?.textContent)).toEqual(["Exposure", "High dynamic range"]);
+    expect(screen.queryByRole("slider", { name: "Offset" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Auto white" })).toBeNull();
   });
 
-  it("the Automatic card has its five rows again: Exposure, White, White balance, Noise and Camera", async () => {
+  it("the Automatic card has four rows: Exposure, White balance, Noise and Camera", async () => {
     await setup();
     await openTab(h, "Look");
     const rows = within(screen.getByRole("region", { name: "Automatic" })).getAllByRole("button", { name: /Open / });
-    expect(rows.map((r) => r.getAttribute("aria-label")?.replace(/ .*$/, ""))).toEqual(["Exposure", "White", "White", "Noise", "Camera"]);
-    expect(rows[1]).toHaveAccessibleName("White +0.80 EV, Auto. Open Light");
-    expect(rows[2]).toHaveAccessibleName(/^White balance /);
+    expect(rows.map((r) => r.getAttribute("aria-label")?.replace(/ .*$/, ""))).toEqual(["Exposure", "White", "Noise", "Camera"]);
+    expect(rows[1]).toHaveAccessibleName(/^White balance /);
   });
 
-  it("the settings carry both: the white lift's offset at 0 and the range at 1 and 0.5", async () => {
+  it("the settings carry the range at 1 and 0.5 and nothing of the lift", async () => {
     await setup();
     const rs = h.store.currentSettings();
-    expect(rs?.settings.white_offset_ev).toBe(0);
+    expect(rs?.settings).not.toHaveProperty("white_offset_ev");
     expect(rs?.settings.rolloff).toEqual({ highlights: 1, low_light: 0.5 });
-    expect(rs?.values.white_ev).toBe(0.8);
-    expect(rs?.estimates.white_ev).toBe(0.8);
+    expect(rs?.values).not.toHaveProperty("white_ev");
+    expect(rs?.estimates).not.toHaveProperty("white_ev");
   });
 });

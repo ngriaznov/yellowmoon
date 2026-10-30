@@ -66,7 +66,6 @@ const calls: Row[] = [
   ["looksImport", () => tauriApi.looksImport("/x.zip"), "looks_import", { path: "/x.zip", input: null }],
   ["looksImport (answered)", () => tauriApi.looksImport("/x.cube", "logc3_ei800"), "looks_import", { path: "/x.cube", input: "logc3_ei800" }],
   ["looksRecognise", () => tauriApi.looksRecognise("/x.zip"), "looks_recognise", { path: "/x.zip" }],
-  ["looksDisplayLuts", () => tauriApi.looksDisplayLuts(), "looks_display_luts", undefined],
   ["looksWatchDownloads", () => tauriApi.looksWatchDownloads(true), "looks_watch_downloads", { enabled: true }],
   ["chooseFolder", () => tauriApi.chooseFolder("~/Pictures"), "choose_folder", { start: "~/Pictures" }],
   ["chooseLookFiles", () => tauriApi.chooseLookFiles(), "choose_look_files", undefined],

@@ -69,8 +69,6 @@ pub struct Overrides {
     pub shadows: Option<PercentArg>,
     /// `--white`.
     pub white: Option<f64>,
-    /// `--white-offset`.
-    pub white_offset: Option<f64>,
     /// `--black`.
     pub black: Option<PercentArg>,
     /// `--saturation`.
@@ -119,7 +117,6 @@ impl Overrides {
             highlights: args.highlights,
             shadows: args.shadows,
             white: args.white,
-            white_offset: args.white_offset,
             black: args.black,
             saturation: args.saturation,
             wb: args.wb,
@@ -169,7 +166,6 @@ impl Overrides {
             highlights: self.highlights.map(percent_setting),
             shadows: self.shadows.map(percent_setting),
             white: self.white,
-            white_offset_ev: self.white_offset,
             black: self.black.map(percent_setting),
             saturation: self.saturation.map(percent_setting),
             output_sharpening: self.output_sharpening,

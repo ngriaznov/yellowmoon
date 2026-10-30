@@ -54,8 +54,8 @@ use ym_lens::{CameraResponse, LensLibrary, LensPlanes, ReshapeReport};
 use ym_ml::bokeh_net::BokehNet;
 
 use super::color::{
-    ColorKey, ColorPlan, DisplayChoice, GradeKey, GradePlan, GradeRequest, LookProvider,
-    PhotoSource, color_key, color_plan, grade_plan,
+    ColorKey, ColorPlan, GradeKey, GradePlan, GradeRequest, LookProvider, PhotoSource, color_key,
+    color_plan, grade_plan,
 };
 use super::geometry::Geometry;
 use super::raw::{
@@ -766,7 +766,6 @@ struct Inner {
     /// The photo the user is looking at (for [`Renderer::navigate`]).
     current: Mutex<Option<PhotoId>>,
     looks: Arc<dyn LookProvider>,
-    display: RwLock<DisplayChoice>,
     /// The options, replaced as a whole when the GPU or the memory budget is attached later
     /// ([`Renderer::set_gpu`], [`Renderer::set_budget`]); readers take the `Arc`.
     options: RwLock<Arc<RenderOptions>>,
@@ -893,7 +892,6 @@ impl Renderer {
             inner: Arc::new(Inner {
                 current: Mutex::new(None),
                 looks,
-                display: RwLock::new(DisplayChoice::Aces2),
                 options: RwLock::new(Arc::new(options)),
                 graphs: Mutex::new(Vec::new()),
                 thumbnail_details: Mutex::new(HashMap::new()),
@@ -1005,26 +1003,6 @@ impl Renderer {
     #[must_use]
     pub fn looks(&self) -> &Arc<dyn LookProvider> {
         &self.inner.looks
-    }
-
-    /// Chooses the display rendering (Preferences). Cached grade plans of the other choice stop
-    /// matching and are rebuilt on the next request.
-    pub fn set_display(&self, choice: DisplayChoice) {
-        *self
-            .inner
-            .display
-            .write()
-            .unwrap_or_else(PoisonError::into_inner) = choice;
-    }
-
-    /// The display rendering in effect.
-    #[must_use]
-    pub fn display(&self) -> DisplayChoice {
-        self.inner
-            .display
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
     }
 
     /// The GPU in use, if any.
@@ -2932,11 +2910,9 @@ impl<'a> Job<'a> {
         dither: bool,
     ) -> Result<Arc<GradePlan>, RenderError> {
         let color = self.color()?;
-        let display = self.r.display();
         let req = GradeRequest {
             target,
             dither,
-            display: &display,
             looks: self.r.inner.looks.as_ref(),
         };
         // Build the plan's key without building the chain: the key is part of the plan, so the

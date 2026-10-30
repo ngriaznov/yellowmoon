@@ -4,13 +4,17 @@
 //! * the gain alone (stop C7 of a chain with an identity matrix and no toe): the ratio of output to
 //!   input against `HighlightRange::gain` at the input's luma;
 //! * C7, C8, C11, the DNG stop, C12 and C13 of the range chains (`chains::range_cases`: r 0, 0.5 and 1
-//!   at the Auto clip, everything on, a clip inside the fade, a clip over the cap, a display-baked look,
-//!   a display LUT) against the CPU trace, in every storage mode;
+//!   at the Auto clip, everything on, a clip inside the fade, a clip over the cap, a display-baked look)
+//!   against the CPU trace, in every storage mode;
 //! * no bit changes below the knee (r = 1 against r = 0 at the same clip and toe), and r = 0 changes no
 //!   bit below the cap (against C7 off);
 //! * a range that moves nothing (r = 0, a NaN amount, a clip where the fade is 0, a clip at or over the
 //!   ALEXA's) leaves every output bit-identical to C7 off, as the colour warp's test does for pins;
-//! * tiles of a render with the range equal the whole image, bit for bit.
+//! * tiles of a render with the range equal the whole image, bit for bit;
+//! * the achromatic gate (owner decision 2026-10-29; the edges ride in the uniform block): saturated
+//!   colours, a sweep of purity 0 to 1.5 at +1 to +8 stops, against the CPU with the default edges, other
+//!   edges and the gate off; a grey pixel and every pixel of purity up to 0.6 come out with the bits of
+//!   the gate off; the output rises along an exposure ramp of one colour.
 //!
 //! **Stated errors**, measured on Mesa lavapipe (f32 maths against the f64 reference), the same in all
 //! three storage modes; Metal gets its own column in the CI log:
@@ -27,7 +31,7 @@ use common::{Rng, TestGpu, f16_round, gpus};
 use ym_color::consts::Vec3;
 use ym_color::consts::linalg::IDENTITY;
 use ym_color::display::{ChainParams, ColorChain, OutputTarget};
-use ym_color::tone::{HIGHLIGHT_CAP_STOPS, ToneParams, luma};
+use ym_color::tone::{AchromaticGate, HIGHLIGHT_CAP_STOPS, ToneParams, luma};
 use ym_gpu::cpu::RgbImage;
 use ym_gpu::kernels::PixelData;
 use ym_gpu::kernels::color::{ColorImage, ColorOutput, PreparedChain, Stop};
@@ -178,7 +182,7 @@ fn the_gain_matches_the_cpu() {
             let got = planar(&out[0]);
             for i in 0..n {
                 let input = pixel(&img, i);
-                let want_gain = range.gain(luma(input));
+                let want_gain = range.gain_for(input, &t.gate);
                 acted += usize::from(want_gain != 1.0);
                 for c in 0..3 {
                     if input[c] < 1e-3 {
@@ -205,12 +209,28 @@ fn the_gain_matches_the_cpu() {
 
 #[test]
 fn every_stage_of_a_range_chain_matches_the_cpu_trace() {
+    check_range_chains(|_| true);
+}
+
+/// The range chains with the achromatic gate at other edges and off (`chains::range_cases`, the names
+/// that start with `range/custom-gate` and `range/gate-off`): their own test, so that they are compared
+/// with the CPU trace on their own.
+#[test]
+fn every_stage_of_a_gated_range_chain_matches_the_cpu_trace() {
+    check_range_chains(|name| {
+        name.starts_with("range/custom-gate") || name.starts_with("range/gate-off")
+    });
+}
+
+fn check_range_chains(wanted: impl Fn(&str) -> bool) {
     let (w, h) = (67usize, 41usize);
     let img = camera_image(w, h, 0x7A6E);
     let n = w * h;
     let cams: Vec<Vec3> = (0..n).map(|i| pixel(&img, i)).collect();
-    let cases = chains::range_cases();
+    let mut cases = chains::range_cases();
     assert!(cases.len() >= 9, "{} range cases", cases.len());
+    cases.retain(|(name, _)| wanted(name));
+    assert!(!cases.is_empty());
     let outputs = [
         ColorOutput::Stage(Stop::C7),
         ColorOutput::Stage(Stop::C8),
@@ -231,7 +251,7 @@ fn every_stage_of_a_range_chain_matches_the_cpu_trace() {
             // except where r = 0 below the cap is the identity by design.
             let moved = traces
                 .iter()
-                .filter(|t| range.gain(luma(t.c6_linear_awg4)) != 1.0)
+                .filter(|t| range.gain_for(t.c6_linear_awg4, &params.tone.gate) != 1.0)
                 .count();
             if range.expansion_stops > 0.0 || name.contains("over-the-cap") {
                 assert!(
@@ -283,7 +303,7 @@ fn every_stage_of_a_range_chain_matches_the_cpu_trace() {
                         );
                     }
                     // The device's DNG stop is C11 decoded; the inverse of a display rendering that is
-                    // not ours (a display-baked look above 0 %, a display LUT) is the CPU's alone.
+                    // not ours (a display-baked look above 0 %) is the CPU's alone.
                     if !chain.dng_inverts_display() {
                         let scale = want_dng[ch].abs().max(0.01);
                         let e = (f64::from(dng[ch * n + i]) - want_dng[ch]).abs();
@@ -332,6 +352,169 @@ fn every_stage_of_a_range_chain_matches_the_cpu_trace() {
     }
 }
 
+/// A colour of purity `p` (its largest channel 1, its smallest `1 - p`) with its luma `stops` over grey,
+/// rounded to f16 so that the device reads what the CPU does.
+fn coloured(p: f64, stops: f64) -> Vec3 {
+    let base = [1.0, 1.0 - 0.5 * p, 1.0 - p];
+    let k = 0.18 * stops.exp2() / luma(base);
+    base.map(|c| f64::from(f16_round((c * k) as f32)))
+}
+
+/// 31 purities (0 to 1.5, a negative smallest channel above 1) by 29 luma levels (+1 to +8 stops).
+fn purity_sweep_image() -> RgbImage {
+    let (w, h) = (31usize, 29usize);
+    let mut rgb = Vec::with_capacity(3 * w * h);
+    for si in 0..h {
+        for pi in 0..w {
+            let px = coloured(0.05 * pi as f64, 1.0 + 0.25 * si as f64);
+            rgb.extend(px.map(|c| c as f32));
+        }
+    }
+    RgbImage::from_interleaved(w, h, &rgb).expect("image")
+}
+
+/// The achromatic gate on the device: the gain of a saturated colour against the CPU's, over a sweep of
+/// purity 0 to 1.5 at +1 to +8 stops, for the default edges (0.6, 0.9), other edges and the gate off,
+/// at the Auto clip and a high one, at two amounts (the cap acts on the brightest rows).
+#[test]
+fn the_gate_matches_the_cpu_on_saturated_colours() {
+    let img = purity_sweep_image();
+    let n = img.width * img.height;
+    let gates = [
+        ("default", AchromaticGate::DEFAULT),
+        ("0.2 to 0.9", AchromaticGate::new(0.2, 0.9).expect("gate")),
+        ("0 to 0.5", AchromaticGate::new(0.0, 0.5).expect("gate")),
+        ("off", AchromaticGate::OFF),
+    ];
+    for dev in gpus() {
+        let mut worst = 0.0f64;
+        let mut gated = 0usize;
+        for (name, gate) in gates {
+            for (r, clip_stops) in [(1.0, AUTO_CLIP_STOPS), (0.6, 5.0)] {
+                let t = tone(r, clip_stops).with_gate(gate);
+                let range = t.range();
+                let chain = ColorChain::new(&ChainParams::new(IDENTITY, t)).expect("chain");
+                let out = render(dev, &chain, &img, &[ColorOutput::Stage(Stop::C7)]);
+                let got = planar(&out[0]);
+                for i in 0..n {
+                    let input = pixel(&img, i);
+                    let want = range.gain_for(input, &gate);
+                    let ungated = range.gain(luma(input));
+                    gated += usize::from((want - ungated).abs() > 1e-3 * ungated);
+                    for c in 0..3 {
+                        if input[c] < 1e-3 {
+                            continue;
+                        }
+                        let ratio = f64::from(got[c * n + i]) / input[c];
+                        let err = (ratio / want - 1.0).abs();
+                        worst = worst.max(err);
+                        assert!(
+                            err <= GAIN_TOLERANCE,
+                            "{:?} gate {name} r {r} clip {clip_stops}: pixel {i} {input:?} ch {c}: gain {ratio} vs {want} (rel {err:.2e})",
+                            dev.mode
+                        );
+                    }
+                }
+            }
+        }
+        assert!(gated > n, "{gated} pixel-sets in the gate's transition");
+        eprintln!(
+            "{:?}: worst relative error of the gated highlight range's gain on saturated colours {worst:.2e} (tolerance {GAIN_TOLERANCE:.0e})",
+            dev.mode
+        );
+    }
+}
+
+/// Grey, almost grey and a colour of purity 0.5 (the gate is 1 up to 0.6) come out of the device with the
+/// bits of the same chain with the gate off, at every stop from -8 to +10, in every output; a saturated red
+/// does not (it keeps its scene exposure).
+#[test]
+fn a_grey_pixel_is_bit_identical_to_the_gate_off_on_the_device() {
+    let (w, h) = (64usize, 36usize);
+    let mut rgb = Vec::new();
+    for i in 0..w * h {
+        let s = -8.0 + 18.0 * i as f64 / (w * h - 1) as f64;
+        let y = f64::from(f16_round((0.18 * s.exp2()) as f32));
+        let px = match i % 4 {
+            0 => [y; 3],
+            1 => [y, y * (1.0 + 1e-3), y * (1.0 - 1e-3)],
+            2 => coloured(0.5, s),
+            _ => coloured(0.95, s),
+        };
+        rgb.extend(px.map(|c| f16_round(c as f32)));
+    }
+    let img = RgbImage::from_interleaved(w, h, &rgb).expect("image");
+    let n = w * h;
+    for dev in gpus() {
+        for target in [OutputTarget::Viewport, OutputTarget::Srgb] {
+            let mut on = ChainParams::new(IDENTITY, tone(1.0, AUTO_CLIP_STOPS));
+            on.output = target;
+            let mut off = on.clone();
+            off.tone = on.tone.with_gate(AchromaticGate::OFF);
+            let a = render(dev, &ColorChain::new(&on).expect("chain"), &img, &WITNESS);
+            let b = render(dev, &ColorChain::new(&off).expect("chain"), &img, &WITNESS);
+            let (mut same, mut reds_moved) = (0, 0);
+            for i in 0..n {
+                if i % 4 < 3 {
+                    same += 1;
+                    for (k, (p, q)) in a.iter().zip(&b).enumerate() {
+                        assert_eq!(
+                            pixel_bits(p, i),
+                            pixel_bits(q, i),
+                            "{:?} {target:?}: pixel {i} {:?}, output {k}",
+                            dev.mode,
+                            pixel(&img, i)
+                        );
+                    }
+                } else if pixel_bits(&a[1], i) != pixel_bits(&b[1], i) {
+                    reds_moved += 1;
+                }
+            }
+            assert!(same > n / 2);
+            assert!(reds_moved > n / 16, "{reds_moved} saturated pixels differ");
+        }
+    }
+}
+
+/// Along an exposure ramp of one colour the gate is constant and the device's output rises: every channel
+/// that is not negative, to the f32 wiggle of `log2` and `exp2` (the ramp's step is 0.3 %). In f32 storage
+/// only: an f16 image rounds every channel of every step on its own, which jitters the purity of the
+/// "same" colour by 5e-4 and the gate, which is steep, with it (the parity tests above compare the device
+/// with the CPU on those very inputs).
+#[test]
+fn an_exposure_ramp_of_one_colour_rises_on_the_device() {
+    let steps = 4000usize;
+    for dev in gpus()
+        .iter()
+        .filter(|d| d.mode == ym_gpu::device::StorageMode::F32)
+    {
+        for q in [0.0, 0.3, 0.45, 0.6, 0.9, 1.0] {
+            let base = coloured(q, 0.0);
+            let mut rgb = Vec::with_capacity(3 * steps);
+            for i in 0..steps {
+                let s = -4.0 + 16.0 * i as f64 / (steps - 1) as f64;
+                let k = s.exp2();
+                rgb.extend(base.map(|c| (c * k) as f32));
+            }
+            let img = RgbImage::from_interleaved(steps, 1, &rgb).expect("image");
+            let t = tone(1.0, AUTO_CLIP_STOPS);
+            let chain = ColorChain::new(&ChainParams::new(IDENTITY, t)).expect("chain");
+            let out = render(dev, &chain, &img, &[ColorOutput::Stage(Stop::C7)]);
+            let got = planar(&out[0]);
+            for c in 0..3 {
+                for i in 1..steps {
+                    let (a, b) = (got[c * steps + i - 1], got[c * steps + i]);
+                    assert!(
+                        b >= a - 2e-5 * a.abs(),
+                        "{:?} purity {q} ch {c}: output fell from {a} to {b} at step {i}",
+                        dev.mode
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// r = 1 against r = 0 at the same clip and toe: every pixel under the knee comes out of the device with
 /// the same bits in every output, every pixel well above it (and under the cap) differs at C7.
 #[test]
@@ -365,8 +548,16 @@ fn below_the_knee_no_bit_changes_on_the_device() {
                             dev.mode
                         );
                     }
-                } else if s > knee + 0.1 && s < HIGHLIGHT_CAP_STOPS - 0.05 {
-                    // Over the cap both hold the pixel at the ALEXA clip.
+                } else if s > knee + 0.1
+                    && s < HIGHLIGHT_CAP_STOPS - 0.05
+                    && high
+                        .tone
+                        .gate
+                        .weight(a.trace(pixel(&img, i)).c6_linear_awg4)
+                        > 0.01
+                {
+                    // Over the cap both hold the pixel at the ALEXA clip. (A pixel of high purity is out of
+                    // the achromatic gate and keeps its scene exposure: it does not move either.)
                     above += 1;
                     assert_ne!(
                         pixel_bits(&x[1], i),

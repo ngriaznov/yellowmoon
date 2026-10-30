@@ -19,6 +19,5 @@
     { "x": 0.653582, "y": 0.70412 },
     { "x": 1.0, "y": 1.0 }
   ],
-  "cdl": { "slope": [1, 1, 1], "offset": [0, 0, 0], "power": [1, 1, 1], "saturation": 1.45 },
-  "red_chroma": { "up": 0, "dark_relief": 0 }
+  "cdl": { "slope": [1, 1, 1], "offset": [0, 0, 0], "power": [1, 1, 1], "saturation": 1.45 }
 }

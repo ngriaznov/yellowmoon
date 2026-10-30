@@ -22,10 +22,9 @@ pub const IJG_NOTICE: &str =
 pub const TRADEMARK_NOTICE: &str = "Not affiliated with ARRI or Sony. ARRI and ALEXA are trademarks of ARRI AG; Sony is a trademark of Sony Group Corporation.";
 
 /// Third-party components and their licences, as in `NOTICE`.
-pub const CREDITS: [&str; 4] = [
+pub const CREDITS: [&str; 3] = [
     "ALEXA colour matrices from the Academy's aces-dev (AMPAS licence).",
     "Sony camera spectral measurements by Weta Digital, from rawtoaces-data (Apache License 2.0).",
-    "ACES 2.0 output transform from aces-output (Apache License 2.0).",
     "The Figtree typeface (SIL Open Font License 1.1).",
 ];
 

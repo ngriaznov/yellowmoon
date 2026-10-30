@@ -236,7 +236,7 @@ jobs:
   # Data, fits and test vectors stay reproducible: camera profiles and registry (M1-04), the spectral
   # reference for the Rust runtime (M1-02), the research reproduction and the sensor-map gate with its
   # reported failures (M1-05: LED-V2 since 2026-10-12; five more lights since the owner's decision of 2026-10-25,
-  # "Move ALEXA estimate", docs/STATUS.md), LUT and ACES 2 vectors against OpenColorIO (M1-10, M1-11),
+  # "Move ALEXA estimate", docs/STATUS.md), LUT vectors against OpenColorIO (M1-10),
   # the illuminant estimator (M1-06) and the noise-prior fitting (M2-01).
   data-checks:
     if: github.event_name != 'schedule'
@@ -260,8 +260,6 @@ jobs:
       # its numbers against the committed data (docs/03, The ALEXA estimate).
       - run: python3 -m unittest training.alexa.test_push
       - run: python3 -I tools/vectors/lut_vectors.py --check
-      - run: python3 -I tools/vectors/aces2_vectors.py --check
-      - run: python3 -I tools/vectors/red_chroma_vectors.py --check --cmax-check
       - run: pip install -r training/illum/requirements.txt && python3 -m unittest training.illum.test_illum
       - run: python3 -m unittest training.noise.test_public_priors
       # The white scale of stand-in bodies (docs/03): our SR2 reader, the two references, the fit, and that registry.json carries
@@ -578,7 +576,7 @@ jobs:
       - run: pip install numpy pillow tifffile
       - run: python3 -I -m unittest discover -s tools/eval -p 'test_*.py'
 
-  # THIRD-PARTY.md (NOTICE item 9, the About dialog): the licence texts of the Rust crates, npm packages and fonts that ship.
+  # THIRD-PARTY.md (NOTICE item 8, the About dialog): the licence texts of the Rust crates, npm packages and fonts that ship.
   # The release workflow generates it before `tauri build`; this job runs the same generator on every change, so a new
   # dependency without a licence text, a broken cargo-about config or a bundle that stops carrying the file fails here and not on
   # the day of a release. `check_bundle.py` also holds NOTICE to the BSD 3-Clause conditions of the ported Menon demosaic.

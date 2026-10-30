@@ -140,7 +140,7 @@ proptest! {
 
 // ---- Recognition on arbitrary facts ---------------------------------------------------------
 
-use ym_looks::library::{LookFormat, is_valid_slug};
+use ym_looks::library::LookFormat;
 use ym_looks::recognize::{
     CubeSummary, FileFacts, Fingerprint, Ignored, LookFileFacts, Outcome, SourceInfo, SourceKind,
     recognize,
@@ -278,8 +278,7 @@ proptest! {
                     prop_assert!(*group_no <= 9999);
                     prop_assert!(input.check.is_ok());
                 }
-                Outcome::ArriDisplay { target, .. } => {
-                    prop_assert!(is_valid_slug(target), "{target:?}");
+                Outcome::ArriDisplay { .. } => {
                     prop_assert!(input.check.is_ok());
                 }
                 Outcome::OwnLookFile { .. } => {
@@ -294,6 +293,7 @@ proptest! {
         prop_assert_eq!(
             recognition.recognized_count()
                 + recognition.needs_answer_count()
+                + recognition.display_lut_count()
                 + recognition.rejected_count(),
             files.len()
         );

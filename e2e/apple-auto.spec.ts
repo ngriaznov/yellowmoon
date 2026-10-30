@@ -17,7 +17,6 @@ const INSTRUCTIONS_HINT = "Apple's model reads these before each photo. The answ
 /** The rows of the Automatic card with the mock's answer (it leaves the shadows and the tint empty: no row for them). */
 const ANSWERED_ROWS = [
   "Exposure",
-  "White",
   "White balance",
   "Highlights",
   "Black",
@@ -39,7 +38,7 @@ async function preferences(page: Page, options: Record<string, string | number>)
   await openApp(page, options);
   await page.keyboard.press("Meta+,");
   const dialog = page.getByRole("dialog", { name: "Preferences" });
-  await expect(dialog.getByRole("group", { name: "Display rendering" })).toBeVisible();
+  await expect(dialog.getByRole("group", { name: "Default look" })).toBeVisible();
   return dialog;
 }
 
@@ -47,14 +46,14 @@ async function preferences(page: Page, options: Record<string, string | number>)
 const rows = (page: Page): Promise<string[]> => page.getByRole("region", { name: "Automatic" }).locator(".ym-auto-row__label").allTextContents();
 
 test.describe("Preferences", () => {
-  test("with Apple Intelligence available: the row after Display rendering, its whole hint and a glasscn select", async ({ page }) => {
+  test("with Apple Intelligence available: the row after Default look, its whole hint and a glasscn select", async ({ page }) => {
     const problems = watchErrors(page);
     const dialog = await preferences(page, { mockAppleAuto: "answered" });
     const row = dialog.getByRole("group", { name: TITLE });
     await expect(row).toBeVisible();
     await expect(row).toContainText(HINT);
     const groups = await dialog.getByRole("group").evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")));
-    expect(groups.indexOf(TITLE)).toBe(groups.indexOf("Display rendering") + 1);
+    expect(groups.indexOf(TITLE)).toBe(groups.indexOf("Default look") + 1);
     const select = dialog.getByRole("combobox", { name: TITLE });
     await expect(select).toHaveText("Apple Intelligence");
     await expect(select).toHaveAttribute("data-slot", "select-trigger");
@@ -117,7 +116,7 @@ test.describe("Preferences", () => {
   test("without Apple Intelligence: no row, in the browser build and on a Mac where it is not available", async ({ page }) => {
     for (const options of [{}, { mockAppleAuto: "unavailable" }] as Array<Record<string, string>>) {
       const dialog = await preferences(page, options);
-      for (const row of ["Default look", "Display rendering", "Export defaults", "Remove location from exports", "Watch Downloads during import", "Check for updates automatically", "Command-line tool"]) {
+      for (const row of ["Default look", "Export defaults", "Remove location from exports", "Watch Downloads during import", "Check for updates automatically", "Command-line tool"]) {
         await expect(dialog.getByRole("group", { name: row })).toBeVisible();
       }
       // The status has been asked for by now: the row stays away.
@@ -133,7 +132,7 @@ test.describe("the Automatic card", () => {
   test("is today's card without Apple Auto", async ({ page }) => {
     await openApp(page, MOCKUP);
     await openPhotos(page);
-    expect(await rows(page)).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
+    expect(await rows(page)).toEqual(["Exposure", "White balance", "Noise", "Camera"]);
     for (const line of Object.values(LINES)) await expect(page.getByText(line)).toHaveCount(0);
   });
 
@@ -167,7 +166,7 @@ test.describe("the Automatic card", () => {
   test("pending, then the answer: the rule's values and no rows of Apple's until it arrives, and the line follows", async ({ page }) => {
     await openApp(page, { ...MOCKUP, mockAppleAuto: "pending" });
     await openPhotos(page);
-    expect(await rows(page)).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
+    expect(await rows(page)).toEqual(["Exposure", "White balance", "Noise", "Camera"]);
     await expect(page.getByRole("textbox", { name: "Contrast value" })).toHaveValue("0");
     await expect(page.getByText(LINES.pending)).toBeVisible();
     await page.evaluate(() => window.__yellowmoon!.mockApi.setAppleAuto("answered"));
@@ -181,7 +180,7 @@ test.describe("the Automatic card", () => {
   test("failed: Yellowmoon's own values and the line that says so", async ({ page }) => {
     await openApp(page, { ...MOCKUP, mockAppleAuto: "failed" });
     await openPhotos(page);
-    expect(await rows(page)).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
+    expect(await rows(page)).toEqual(["Exposure", "White balance", "Noise", "Camera"]);
     await expect(page.getByRole("textbox", { name: "Saturation value" })).toHaveValue("0");
     await expect(page.getByText(LINES.failed)).toBeVisible();
   });
@@ -193,7 +192,7 @@ test.describe("the Automatic card", () => {
     await page.getByRole("combobox", { name: TITLE }).click();
     await page.getByRole("option", { name: "Default Auto" }).click();
     await page.keyboard.press("Escape");
-    await expect.poll(() => rows(page)).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
+    await expect.poll(() => rows(page)).toEqual(["Exposure", "White balance", "Noise", "Camera"]);
     await expect(page.getByText(LINES.answered)).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Contrast value" })).toHaveValue("0");
   });

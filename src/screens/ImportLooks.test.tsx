@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 const LL4 = PACKAGE_ZIPS.look_library_logc4;
-const DL4 = PACKAGE_ZIPS.display_luts_logc4;
+const DL4 = FAILURE_ZIPS.displayLutsLogc4;
 const LL3 = PACKAGE_ZIPS.look_library_logc3;
 
 const drop = (...names: string[]): void => {
@@ -69,20 +69,23 @@ describe("step 1 · Choose", () => {
     expect(ll4).toHaveAttribute("aria-checked", "true");
     expect(ll4).toHaveAccessibleDescription(/87 creative looks, log to log.*87 looks · 65-point · 181 MB/);
     expect(within(ll4).getByText("Recommended")).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Display LUTs · LogC4" })).toHaveAttribute("aria-checked", "false");
     expect(screen.queryByRole("checkbox", { name: "Look Library · LogC3" })).toBeNull();
+    // ARRI's display LUTs are not offered: Yellowmoon uses its own display rendering.
+    expect(screen.queryByRole("checkbox", { name: /Display LUTs/ })).toBeNull();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
     expect(screen.getByText("Download total: 181 MB")).toBeInTheDocument();
   });
 
-  it("shows the three older packages when asked, and sums the download", async () => {
+  it("shows the two older packages when asked, and sums the download", async () => {
     await wizard();
-    await h!.user.click(screen.getByRole("checkbox", { name: "Display LUTs · LogC4" }));
-    expect(screen.getByText("Download total: 213 MB")).toBeInTheDocument();
-    await h!.user.click(screen.getByRole("button", { name: "Show 3 older LogC3 packages" }));
-    for (const name of ["Look Library · LogC3", "Look Library · LogC3 to Rec.709", "Display LUTs · LogC3"]) {
+    await h!.user.click(screen.getByRole("button", { name: "Show 2 older LogC3 packages" }));
+    for (const name of ["Look Library · LogC3", "Look Library · LogC3 to Rec.709"]) {
       expect(screen.getByRole("checkbox", { name })).toHaveAttribute("aria-checked", "false");
     }
+    expect(screen.queryByRole("checkbox", { name: /Display LUTs/ })).toBeNull();
     await h!.user.click(screen.getByRole("checkbox", { name: "Look Library · LogC3" }));
+    expect(screen.getByText("Download total: 211 MB")).toBeInTheDocument();
+    await h!.user.click(screen.getByRole("checkbox", { name: "Look Library · LogC3 to Rec.709" }));
     expect(screen.getByText("Download total: 243 MB")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Hide the older LogC3 packages" })).toBeInTheDocument();
   });
@@ -153,7 +156,7 @@ describe("step 2 · Get the files", () => {
     await waitFor(() => expect(next()).not.toHaveAttribute("aria-disabled"));
     // Switching off stops watching.
     await h!.user.click(screen.getByRole("switch", { name: "Watch my Downloads folder" }));
-    expect(h!.api.simulateDownload(DL4)).toBe(false);
+    expect(h!.api.simulateDownload(LL3)).toBe(false);
   });
 
   it("starts with the switch on when the preference says so, and stops watching when the step is left", async () => {
@@ -201,15 +204,16 @@ describe("step 2 · Get the files", () => {
 
   it("needs a file for each chosen package", async () => {
     await wizard();
-    await h!.user.click(screen.getByRole("checkbox", { name: "Display LUTs · LogC4" }));
+    await h!.user.click(screen.getByRole("button", { name: "Show 2 older LogC3 packages" }));
+    await h!.user.click(screen.getByRole("checkbox", { name: "Look Library · LogC3" }));
     await h!.user.click(next());
-    expect(screen.getByText("Opens in your browser. Download Look Library · LogC4 and Display LUTs · LogC4 there.")).toBeInTheDocument();
+    expect(screen.getByText("Opens in your browser. Download Look Library · LogC4 and Look Library · LogC3 there.")).toBeInTheDocument();
     expect(foot()).toHaveTextContent("Next unlocks when all 2 files have arrived.");
     expect(next()).toHaveAccessibleDescription("Next unlocks when all 2 files have arrived.");
     drop(LL4);
     await screen.findByRole("list", { name: "Files that arrived" });
     expect(next()).toHaveAttribute("aria-disabled", "true");
-    drop(DL4);
+    drop(LL3);
     await waitFor(() => expect(next()).not.toHaveAttribute("aria-disabled"));
   });
 });
@@ -382,10 +386,11 @@ describe("step 3 · Recognise", () => {
 
   it("lets Import go ahead when a chosen package did not arrive but something else can be imported", async () => {
     await wizard();
-    await h!.user.click(screen.getByRole("checkbox", { name: "Display LUTs · LogC4" }));
+    await h!.user.click(screen.getByRole("button", { name: "Show 2 older LogC3 packages" }));
+    await h!.user.click(screen.getByRole("checkbox", { name: "Look Library · LogC3" }));
     await toRecognise(LL4, FAILURE_ZIPS.noLuts);
     expect(within(screen.getAllByRole("row")[1] as HTMLElement).getByText("Match")).toBeInTheDocument();
-    expect(screen.getByText("Display LUTs · LogC4 isn't here. You can import the rest now and add it later.")).toBeInTheDocument();
+    expect(screen.getByText("Look Library · LogC3 isn't here. You can import the rest now and add it later.")).toBeInTheDocument();
     expect(screen.queryByText(/is missing\. Go back and add it\./)).toBeNull();
     expect(screen.getByRole("heading", { level: 1, name: "Check what arrived" })).toBeInTheDocument();
     expect(next()).not.toHaveAttribute("aria-disabled");
@@ -553,23 +558,37 @@ describe("steps 4 and 5 · Import and Finish", () => {
     expect(screen.getByText("87 looks imported")).toBeInTheDocument();
   }, 30_000);
 
-  it("offers ARRI's display rendering when display LUTs were imported, and saves the choice", async () => {
+  // Owner's decision of 2026-10-29: the wizard imports looks and no display LUT, and the Finish step asks nothing about the display.
+  it("says ARRI's display LUT package has nothing to import, imports the looks beside it, and asks nothing about the display", async () => {
     await wizard({ looksImported: false });
-    await h!.user.click(screen.getByRole("checkbox", { name: "Display LUTs · LogC4" }));
     await toRecognise(LL4, DL4);
-    expect(screen.getAllByRole("row")).toHaveLength(3);
+    const rows = screen.getAllByRole("row");
+    expect(rows).toHaveLength(3);
+    expect(within(rows[1] as HTMLElement).getByText("Match")).toBeInTheDocument();
+    expect(rows[2]).toHaveTextContent(DL4);
+    expect(rows[2]).toHaveTextContent("This package has only display renderings. Yellowmoon uses its own rendering, so there is nothing to import.");
+    expect(within(rows[2] as HTMLElement).queryByText("Match")).toBeNull();
     await h!.user.click(next());
     await screen.findByRole("heading", { level: 1, name: "Imported" }, { timeout: 8000 });
     await h!.user.click(next());
     await screen.findByRole("heading", { level: 1, name: "87 looks ready" });
-    const display = screen.getByRole("radiogroup", { name: "Display rendering" });
-    expect(within(display).getByRole("radio", { name: "Ours · ACES 2" })).toHaveAttribute("aria-checked", "true");
-    await h!.user.click(within(display).getByRole("radio", { name: "ARRI's" }));
+    expect(screen.queryByRole("radiogroup", { name: "Display rendering" })).toBeNull();
     await h!.user.click(next());
     await screen.findByRole("heading", { level: 1, name: "Drop Sony ARW files." });
-    expect((await h!.api.preferencesGet()).display_rendering).toEqual({ kind: "arri_display", id: "arri-display:logc4:rec709-g24" });
-    expect(h!.api.system.trashed).toHaveLength(2);
+    // Nothing about the display was stored, and only the zip that was imported is offered to the Trash.
+    expect(await h!.api.preferencesGet()).not.toHaveProperty("display_rendering");
+    expect(h!.api.system.trashed).toEqual([LL4]);
+    expect((await h!.api.looksList()).filter((l) => l.group.kind === "arri")).toHaveLength(87);
   }, 40_000);
+
+  it("has nothing to import when only a display LUT package arrived, and Import stays locked", async () => {
+    await wizard({ looksImported: false });
+    await toRecognise(DL4);
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    expect(screen.getByText("This package has only display renderings. Yellowmoon uses its own rendering, so there is nothing to import.")).toBeInTheDocument();
+    expect(next()).toHaveAttribute("aria-disabled", "true");
+    expect(foot()).toHaveTextContent("Look Library · LogC4 is missing. Go back and add it.");
+  });
 
   it("imports a loose .cube with the answer that was given", async () => {
     await wizard({ looksImported: false });

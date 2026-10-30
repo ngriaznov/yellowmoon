@@ -32,7 +32,7 @@ Availability can change while the app runs (Apple Intelligence switched on, the 
 
 | Item | Value |
 |---|---|
-| Place | Preferences, a `Switch` row after Display rendering |
+| Place | Preferences, a `Switch` row after Default look |
 | Shown | only while Apple Auto is available (section 1); hidden otherwise, including in the browser build |
 | Title | **Auto with Apple Intelligence** |
 | Hint | "Apple's on-device model looks at each photo and grades it: exposure, highlights, shadows, black level, contrast, warmth, tint, saturation and the colours of the shadows and highlights. It runs on this Mac and sends nothing anywhere. Turn it off to use Default Auto, the same on every computer." |
@@ -60,12 +60,12 @@ Only the instructions are the person's. The request line ("Grade this photo.") a
 The model sees **the photo as Auto renders it without Apple**: one sRGB picture per photo, independent of everything the user has set, so that editing a photo never asks a new question.
 
 - The photo's settings at their defaults: exposure, white balance, highlights, shadows, black, contrast, saturation and the shadows and highlights wheels at Auto (the rule: no Apple values), every other field at its default, no crop, no straightening, no quarter turn by the user; the camera's orientation applied, so the picture is upright.
-- The look is the built-in Signature at 100 % (the white lift's reference look, `docs/02` C12 step 1b), whatever the photo's look and the default look are; Neutral when the data folder has no Signature file. The display rendering is ours (ACES 2, SDR), whatever Preferences says.
+- The look is the built-in Signature at 100 % (the look new photos get out of the box), whatever the photo's look and the default look are; Neutral when the data folder has no Signature file. The display rendering is the cine rendering (`docs/02` C12) on Rec.709 primaries, SDR, at its own brightness: scene 0.18 is at display 0.111 (sRGB code 94), as in the viewport, with no display placement and no white lift (both are gone since pipeline 0.8.0; the lift was why Signature used to be the reference look here). Moving from ACES 2 with its placement to the cine rendering changed the bytes of every picture, and so what the model sees: it sees a picture about three quarters of a stop darker than before at middle grey (0.189 to 0.111).
 - The reduced raw path (the thumbnail's, `docs/01`) at **768 px on the long edge** (`PICTURE_LONG_EDGE_PX`; a photo smaller than that is not enlarged; the size follows the thumbnail's rule, `round(side × 768 / long side)`), rendered on the **CPU reference path** whatever the GPU policy, so the app and `ym` give the model the same bytes on every Mac. The picture is 8-bit sRGB, 3 bytes per pixel, rows top to bottom.
 
 "The rule" here is the photo's **own** estimates: its own exposure after the highlight guard and its own noise estimate, not the burst median or the pooled noise, which depend on which other photos have developed so far. The picture therefore depends on the photo alone, and the app and `ym` send the same bytes whatever order the photos develop in.
 
-The pictures come from a renderer of their own (`ym_core::pipeline::AdvisorPictures`) that has no graphics device, no display LUT and only the Signature look (`<data>/looks/builtin/signature.json`, the white lift's reference) and Neutral. Neither the GPU policy, nor Preferences › Display rendering, nor the look library can change them; the renderer's caches are dropped after each picture.
+The pictures come from a renderer of their own (`ym_core::pipeline::AdvisorPictures`) that has no graphics device and only the Signature look (`<data>/looks/builtin/signature.json`) and Neutral. Neither the GPU policy nor the look library can change them; the renderer's caches are dropped after each picture.
 
 A picture is rendered when the photo's estimates are first ready, and again on Re-run (whose estimates can differ only after a light preset or Pick white, which do not change the picture, so in practice it is the same picture). The development job renders it after the thumbnail while at most 64 pictures (about 1.2 MB each) wait in memory. A photo developed beyond that, or while Apple Auto was off, has its picture rendered by the worker when its turn comes, from the file again (the same bytes). A picture lives in memory until the answer arrives and is then dropped (hard rule 4).
 

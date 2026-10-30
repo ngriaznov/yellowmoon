@@ -1,8 +1,8 @@
 //! `dngfit`: fits the DNG profile of the baked-look export and checks the DNG gates (`docs/09-export.md`).
 //!
-//! * `dngfit fit`: fit the tone curve, the `BaselineExposure` offset and the look table to ACES 2 with Adobe's renderer
+//! * `dngfit fit`: fit the tone curve, the `BaselineExposure` offset and the look table to the cine rendering with Adobe's renderer
 //!   (`dng_validate`) and write `data/dng/profile.json`.
-//! * `dngfit eval`: how close Adobe's render with a profile is to ACES 2 on the test sets.
+//! * `dngfit eval`: how close Adobe's render with a profile is to the cine rendering on the test sets.
 //! * `dngfit gate`: the DNG gates on the golden set (`dng_validate` passes; render against our JPEG, ΔE00 median).
 //! * `dngfit validate`: `dng_validate` on DNG files.
 
@@ -33,9 +33,9 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Fit the profile to ACES 2 and write it (default: data/dng/profile.json).
+    /// Fit the profile to the cine rendering and write it (default: data/dng/profile.json).
     Fit(FitArgs),
-    /// Evaluate a profile file against ACES 2 on the test sets.
+    /// Evaluate a profile file against the cine rendering on the test sets.
     Eval(EvalArgs),
     /// The DNG gates on the golden set: dng_validate passes, and its render matches our JPEG.
     Gate(GateArgs),
@@ -156,7 +156,12 @@ fn default_scenes() -> Option<PathBuf> {
 fn print_sets(results: &[SetResult]) {
     println!(
         "{:<62} {:>6} {:>7} {:>7} {:>7} {:>7}",
-        "set (ΔE00 of Adobe's render against ACES 2)", "n", "median", "p95", "p99", "max"
+        "set (ΔE00 of Adobe's render against the cine rendering)",
+        "n",
+        "median",
+        "p95",
+        "p99",
+        "max"
     );
     for r in results {
         println!(
@@ -232,13 +237,13 @@ fn run_fit(adobe: &Adobe, a: FitArgs) -> Result<ExitCode> {
         },
         "tone": tone_report,
         "look": look_report,
-        "delta_e_2000_against_aces2_via_dng_validate": results,
+        "delta_e_2000_against_cine_via_dng_validate": results,
     });
     dngfit::profile_file::round_numbers(&mut summary, 6);
     let file = ProfileFile::from_profile(
         &profile,
         cfg.offset_ev(),
-        "ACES 2 output transform, sRGB, 100 nit (aces2-sdr100-rec709lim)",
+        "the cine rendering, sRGB (cine-rec709)",
         summary.clone(),
     );
     let out = a.out.unwrap_or_else(default_profile_path);

@@ -116,8 +116,6 @@ export const commands = {
 "logc3_to_rec709" | null) => __TAURI_INVOKE<LooksImportResult>("looks_import", { path, input }),
 	/**  `looks_recognise(path)`: what a zip, a folder or a `.cube` file is. Never fails. */
 	looksRecognise: (path: string) => __TAURI_INVOKE<SourceRecognition>("looks_recognise", { path }),
-	/**  `looks_display_luts()`. */
-	looksDisplayLuts: () => __TAURI_INVOKE<DisplayLut[]>("looks_display_luts"),
 	/**  `looks_watch_downloads(enabled)`: starts or stops the Downloads watcher. */
 	looksWatchDownloads: (enabled: boolean) => __TAURI_INVOKE<WatchStatus>("looks_watch_downloads", { enabled }),
 	/**  `looks_set_default(id)`. */
@@ -449,8 +447,6 @@ export type AutoConsent = {
 export type AutoEstimates = {
 	/**  `EV_auto` (with Apple Auto's change, when there is one). */
 	exposure_ev: number,
-	/**  The automatic white lift in stops (0 when nothing is above +1 stop). */
-	white_ev: number,
 	/**  The Auto Kelvin (with Apple Auto's nudge, when there is one). */
 	kelvin: number,
 	/**  The Auto tint. */
@@ -863,11 +859,6 @@ export type DevelopSettings = {
 	shadows: PercentSetting,
 	/**  -100 to 100. */
 	white: number,
-	/**
-	 *  Light › White › Offset: stops added to the automatic white lift, -3 to +3, default 0 (the
-	 *  automatic amount; a plain number, not Auto).
-	 */
-	white_offset_ev: number,
 	/**  Light › High dynamic range › Black: Auto or a value, -100 to 100. */
 	black: PercentSetting,
 	/**  Colour › White balance, the light presets. */
@@ -907,34 +898,6 @@ export type DevelopSettings = {
 	 */
 	white_pick: [number, number] | null,
 };
-
-/**  An imported display LUT (ARRI's display rendering). */
-export type DisplayLut = {
-	/**  "arri-display:logc4:rec709-g24". */
-	id: string,
-	/**  "Rec.709 · Gamma 2.4". */
-	name: string,
-	/**  What it expects as input. */
-	input: DisplayLutInput,
-	/**  "rec709-g24", "p3-d65", "rec2020", "hlg", "pq". */
-	target: string,
-};
-
-/**  What a display LUT expects as input. */
-export type DisplayLutInput = 
-/**  LogC4. */
-"logc4" | 
-/**  LogC3 (EI 800). */
-"logc3_ei800";
-
-/**  Display rendering: our ACES 2 transform, or an imported ARRI display LUT. */
-export type DisplayRendering = 
-/**  Our ACES 2 output transform. */
-{ kind: "aces2" } | 
-/**  An imported ARRI display LUT. */
-{ kind: "arri_display"; 
-/**  The display LUT. */
-id: string };
 
 /**
  *  `download_found`: a zip whose name matches one of the packages has landed in Downloads and its
@@ -997,7 +960,7 @@ export type ExportEstimate = {
 	adjusted_photos: number,
 	/**
 	 *  A DNG of the job is close to, not the same as, the picture in the app: a photo uses a look with
-	 *  its own display rendering, or ARRI's display rendering is chosen.
+	 *  its own display rendering.
 	 */
 	dng_approximate: boolean,
 };
@@ -1319,9 +1282,7 @@ export type LooksImportProgress = {
 export type LooksImportResult = {
 	/**  Looks added by this import; empty when everything was already there. */
 	added: Look[],
-	/**  Display LUTs added. */
-	display_luts_added: number,
-	/**  Files whose hash matched a look or display LUT that was already imported. */
+	/**  Files whose hash matched a look that was already imported. */
 	unchanged: number,
 };
 
@@ -1489,22 +1450,20 @@ export type OpenSummary = {
 };
 
 /**
- *  The five free packages ARRI publishes (the ids of `data/looks/arri-packages.json`, with
+ *  The three free look packages ARRI publishes (the ids of `data/looks/arri-packages.json`, with
  *  underscores). The two look libraries that also come as ARRI Look Files (the LogC4 one as
  *  `.alf4`, the LogC3 to Rec.709 one as `.aml`) are the same package here: a person who downloads
- *  the look files has what they chose.
+ *  the look files has what they chose. ARRI's two display LUT packages are not offered: Yellowmoon
+ *  uses its own display rendering, and a display package that is chosen anyway is `unusable` with a
+ *  sentence that says so.
  */
 export type PackageId = 
 /**  Look Library, LogC4 log-to-log. */
 "look_library_logc4" | 
-/**  Display LUTs, LogC4. */
-"display_luts_logc4" | 
 /**  Look Library, LogC3 log-to-log. */
 "look_library_logc3" | 
 /**  Look Library, LogC3 to Rec.709. */
-"look_library_logc3_to_rec709" | 
-/**  Display LUTs, LogC3. */
-"display_luts_logc3";
+"look_library_logc3_to_rec709";
 
 /**  The answer of `paste_settings`. */
 export type PasteReport = {
@@ -1649,8 +1608,6 @@ export type PixelSample = {
 export type Preferences = {
 	/**  The look new photos get. */
 	default_look: LookId,
-	/**  ACES 2, or an imported ARRI display LUT. */
-	display_rendering: DisplayRendering,
 	/**  Export defaults. */
 	export_defaults: ExportOptions,
 	/**  Leave the location out of exported files. */
@@ -1679,8 +1636,6 @@ export type Preferences = {
 export type PreferencesPatch = {
 	/**  New default look. */
 	default_look?: LookId | null,
-	/**  New display rendering. */
-	display_rendering?: DisplayRendering | null,
 	/**  New export defaults. */
 	export_defaults?: ExportOptions | null,
 	/**  New value of "Remove location from exports". */
@@ -1871,10 +1826,6 @@ export type ResolvedValues = {
 	shadows: number,
 	/**  `white`. */
 	white: number,
-	/**  `white_offset_ev`. */
-	white_offset_ev: number,
-	/**  The white lift in effect in stops: the automatic amount plus the offset, never below 0. */
-	white_ev: number,
 	/**  The black in effect. */
 	black: number,
 	/**  `light_source`. */
@@ -2012,8 +1963,6 @@ export type SettingsPatch = {
 	shadows?: PercentPatch | null,
 	/**  New white. */
 	white?: number | null,
-	/**  New white lift offset, in stops. */
-	white_offset_ev?: number | null,
 	/**  New black: Auto, a manual value, or a plain number (0 is Auto). */
 	black?: PercentPatch | null,
 	/**  New light preset. */

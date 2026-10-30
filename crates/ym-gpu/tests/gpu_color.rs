@@ -102,7 +102,7 @@ fn every_stage_matches_the_cpu_trace() {
                         || name.starts_with("saturation")
                         || name.starts_with("contrast")
                         || name.starts_with("baked-look/srgb/25")
-                        || name.starts_with("display-lut/p3")
+                        || name.starts_with("baked-look/viewport/25")
                         || name.starts_with("logc3-look/35")
                         || name.starts_with("warp/full")
                 })
@@ -1010,12 +1010,11 @@ fn the_camera_default_before_view_ignores_every_setting_on_the_device_too() {
     let img = camera_image(w, h, 0xB3F0);
     for dev in gpus() {
         // Everything on against nothing on: another fused matrix, tone (the highlight range at full
-        // strength), grade, look, curves, white lift.
+        // strength), grade, look, curves.
         let rich = chains::full(OutputTarget::Viewport);
         let mut bare = chains::base(OutputTarget::Viewport);
         bare.matrix = chains::fused_matrix().map(|r| r.map(|v| v * 3.0));
         bare.tone = chains::range_tone(1.0, chains::AUTO_CLIP_STOPS);
-        bare.white_lift = ym_color::exposure::white::WhiteLift::new(0.8, 0.5).expect("lift");
         let outs = [
             ColorOutput::Stage(Stop::Before),
             ColorOutput::BeforeRgba8 { dither: true },
@@ -1072,8 +1071,16 @@ fn non_finite_input_is_sanitised_like_the_cpu() {
                     got.is_finite() && (0.0..=1.0).contains(&got),
                     "{target:?} px {i}: {got}"
                 );
+                // The sanitised inputs are +-1e30 and C12 clamps a scene channel to +-1e6 (cine rendering,
+                // step 0): far outside any real colour, and on or next to the neutral axis the luminance
+                // floor there depends on a rounding of 0.06 in f32 (the chroma offset of a neutral colour,
+                // Yf = rho * |offset|), where f64 sees 1e-10. The device then renders a black a few 1e-5
+                // above the CPU's, which BT.1886 encodes as 3 8-bit codes. Such a pixel is black either way
+                // and must stay inside the display; it is held to that.
+                let all_black = want.iter().all(|&v| v < 0.01);
+                let tolerance = if all_black { 0.02 } else { 2.0 * CODE10 };
                 assert!(
-                    (got - want[ch]).abs() <= 2.0 * CODE10,
+                    (got - want[ch]).abs() <= tolerance,
                     "{target:?} px {i} ch {ch}: GPU {got} vs CPU {}",
                     want[ch]
                 );
@@ -1148,8 +1155,8 @@ use ym_gpu::image::GpuImage;
 use ym_gpu::kernels::color::{ChainTables, release_tables};
 use ym_gpu::stream::PassList;
 
-/// Chains of different shape for the device-API tests: ACES 2, a log-to-log look, a baked look, a
-/// display LUT with a shaper-less cube, curves.
+/// Chains of different shape for the device-API tests: the cine rendering, a log-to-log look, a baked look,
+/// curves.
 fn view_chains() -> Vec<(String, ym_color::display::ChainParams)> {
     chains::cases()
         .into_iter()
@@ -1157,7 +1164,7 @@ fn view_chains() -> Vec<(String, ym_color::display::ChainParams)> {
             name.starts_with("full/viewport")
                 || name.starts_with("auto/srgb")
                 || name.starts_with("baked-look/srgb/25")
-                || name.starts_with("display-lut/p3")
+                || name.starts_with("baked-look/viewport/25")
                 || name.starts_with("logc3-look/35")
                 || name.starts_with("saturation+full/+60")
         })

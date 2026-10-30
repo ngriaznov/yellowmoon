@@ -14,7 +14,7 @@ use ym_color::look::LookInput;
 use ym_looks::import::{
     CancelToken, ImportError, ImportOptions, Progress, Stage, import, import_path, inspect,
 };
-use ym_looks::library::{DisplayInput, LookGroup, LookId, LookStatus};
+use ym_looks::library::{LookGroup, LookId, LookStatus};
 use ym_looks::manifest::sha256_hex;
 use ym_looks::recognize::{
     Evidence, Fingerprint, IssueKind, Outcome, PackageStatus, Severity, Verdict,
@@ -43,7 +43,8 @@ fn leftovers(dir: &Path) -> Vec<String> {
 
 #[test]
 fn happy_path_for_every_package_kind() {
-    for kind in Kind::ALL {
+    // ARRI's display packages are not looks: they have a test of their own below.
+    for kind in Kind::ALL.into_iter().filter(|k| !k.is_display()) {
         let work = tempfile::tempdir().unwrap();
         let root = work.path().join("app");
         let zip = write_package_zip(work.path(), kind, 4);
@@ -107,106 +108,246 @@ fn happy_path_for_every_package_kind() {
             "{kind:?}: copies differ from the originals"
         );
 
-        if kind.is_display() {
-            assert!(library.looks().iter().all(|l| l.id.prefix() == "builtin"));
-            assert_eq!(library.display_luts().len(), 4);
-            let input = if kind == Kind::DisplayLogC4 {
-                DisplayInput::LogC4
-            } else {
-                DisplayInput::LogC3
-            };
-            let first = &library.display_luts()[0];
-            assert_eq!(first.input, input);
+        let imported: Vec<_> = library
+            .looks()
+            .iter()
+            .filter(|l| l.id.prefix() == "arri")
+            .collect();
+        assert_eq!(imported.len(), 4);
+        let expected_input = match kind {
+            Kind::LookLogC4 => LookInput::LogC4,
+            Kind::LookLogC3 => LookInput::LogC3Ei800,
+            _ => LookInput::LogC3ToRec709,
+        };
+        for look in &imported {
+            assert_eq!(look.input, expected_input);
             assert!(
-                first
-                    .id
-                    .as_str()
-                    .starts_with(&format!("arri-display:{}:", input.slug()))
+                matches!(&look.group, LookGroup::Arri { group_no, .. } if [1000, 3000, 4000].contains(group_no))
             );
-            assert!(
-                library
-                    .display_luts()
-                    .iter()
-                    .any(|d| d.target == "rec709-g24"),
-                "{:?}",
-                library
-                    .display_luts()
-                    .iter()
-                    .map(|d| &d.target)
-                    .collect::<Vec<_>>()
-            );
-            assert!(
-                tree(&looks_dir)
-                    .iter()
-                    .any(|f| f.starts_with("arri-display/"))
-            );
-            // And a display LUT loads and samples.
-            let lut = library.display_lut(&first.id).unwrap();
-            assert_eq!(lut.cube.size(), kind.lut_size());
-        } else {
-            let imported: Vec<_> = library
-                .looks()
-                .iter()
-                .filter(|l| l.id.prefix() == "arri")
-                .collect();
-            assert_eq!(imported.len(), 4);
-            let expected_input = match kind {
-                Kind::LookLogC4 => LookInput::LogC4,
-                Kind::LookLogC3 => LookInput::LogC3Ei800,
-                _ => LookInput::LogC3ToRec709,
-            };
-            for look in &imported {
-                assert_eq!(look.input, expected_input);
-                assert!(
-                    matches!(&look.group, LookGroup::Arri { group_no, .. } if [1000, 3000, 4000].contains(group_no))
-                );
-                let source = look.source.as_ref().unwrap();
-                assert_eq!(source.package.as_deref(), Some(kind.package_id()));
-                assert_eq!(source.url.as_deref(), Some(db.page_url()));
-                assert_eq!(source.imported, "2026-11-02T10:14:00Z");
-                assert!(look.is_enabled());
-            }
-            // Layout: arri/<group_no>-<group_slug>/<file>.cube
-            let files = tree(&looks_dir);
-            assert!(
-                files.iter().any(|f| f.starts_with("arri/3000-film/")),
-                "{files:?}"
-            );
-            assert!(
-                files.iter().any(|f| f.starts_with("arri/1000-colour/")),
-                "{files:?}"
-            );
-            // Ids carry the encoding for the older packages so the three libraries never collide.
-            let suffix = match kind {
-                Kind::LookLogC4 => "",
-                Kind::LookLogC3 => "-logc3",
-                _ => "-logc3-rec709",
-            };
-            assert!(
-                imported
-                    .iter()
-                    .any(|l| l.id.as_str() == format!("arri:1000:look-01{suffix}")),
-                "{:?}",
-                imported
-                    .iter()
-                    .map(|l| l.id.to_string())
-                    .collect::<Vec<_>>()
-            );
-            // Each look loads lazily and has the encoding it was imported with.
-            let transform = library.transform(&imported[0].id).unwrap();
-            assert_eq!(transform.input(), expected_input);
-            assert_eq!(
-                transform.includes_display_rendering(),
-                kind == Kind::LookLogC3Rec709
-            );
+            let source = look.source.as_ref().unwrap();
+            assert_eq!(source.package.as_deref(), Some(kind.package_id()));
+            assert_eq!(source.url.as_deref(), Some(db.page_url()));
+            assert_eq!(source.imported, "2026-11-02T10:14:00Z");
+            assert!(look.is_enabled());
         }
+        // Layout: arri/<group_no>-<group_slug>/<file>.cube
+        let files = tree(&looks_dir);
+        assert!(
+            files.iter().any(|f| f.starts_with("arri/3000-film/")),
+            "{files:?}"
+        );
+        assert!(
+            files.iter().any(|f| f.starts_with("arri/1000-colour/")),
+            "{files:?}"
+        );
+        // Ids carry the encoding for the older packages so the three libraries never collide.
+        let suffix = match kind {
+            Kind::LookLogC4 => "",
+            Kind::LookLogC3 => "-logc3",
+            _ => "-logc3-rec709",
+        };
+        assert!(
+            imported
+                .iter()
+                .any(|l| l.id.as_str() == format!("arri:1000:look-01{suffix}")),
+            "{:?}",
+            imported
+                .iter()
+                .map(|l| l.id.to_string())
+                .collect::<Vec<_>>()
+        );
+        // Each look loads lazily and has the encoding it was imported with.
+        let transform = library.transform(&imported[0].id).unwrap();
+        assert_eq!(transform.input(), expected_input);
+        assert_eq!(
+            transform.includes_display_rendering(),
+            kind == Kind::LookLogC3Rec709
+        );
         assert!(library.verify(&mut no_progress()).unwrap().is_clean());
         assert!(leftovers(&root).is_empty());
         // A fresh process (a second Library over the same folder) sees the same thing.
         let again = open_library(&root);
         assert_eq!(again.looks().len(), library.looks().len());
-        assert_eq!(again.display_luts().len(), library.display_luts().len());
     }
+}
+
+/// ARRI's display packages are recognised, and said in one sentence, and never imported: the
+/// library keeps no display LUT and writes no `arri-display` folder (owner's decision of 2026-10-29,
+/// `docs/02-colour-pipeline.md` C12).
+#[test]
+fn a_package_of_display_luts_has_nothing_to_import_and_nothing_is_written() {
+    for kind in [Kind::DisplayLogC4, Kind::DisplayLogC3] {
+        let work = tempfile::tempdir().unwrap();
+        let root = work.path().join("app");
+        let zip = write_package_zip(work.path(), kind, 4);
+        let db = small_db(4);
+        let mut library = open_library(&root);
+
+        let recognition = inspect(&zip, &db, None, &mut no_progress()).unwrap();
+        assert_eq!(recognition.verdict(), Verdict::Blocked, "{kind:?}");
+        assert!(recognition.packages.is_empty(), "{kind:?}");
+        assert_eq!(recognition.display_lut_count(), 4, "{kind:?}");
+        assert!(
+            recognition
+                .files
+                .iter()
+                .all(|f| matches!(f.outcome, Outcome::ArriDisplay { .. })),
+            "{kind:?}"
+        );
+        let sentence = "This package has only display renderings. Yellowmoon uses its own rendering, so there is nothing to import.";
+        assert_eq!(
+            recognition.problems().map(|i| i.message.as_str()).next(),
+            Some(sentence),
+            "{kind:?}"
+        );
+
+        let err = import(
+            &mut library,
+            &db,
+            &zip,
+            &recognition,
+            &options(),
+            &mut no_progress(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, ImportError::NothingToImport(message) if message == sentence),
+            "{kind:?}: {err:?}"
+        );
+        assert!(err.to_string().contains("nothing to import"), "{err}");
+        // Through the one-call path the CLI uses, too.
+        let err = import_path(&mut library, &db, &zip, &options(), &mut no_progress()).unwrap_err();
+        assert!(matches!(err, ImportError::NothingToImport(_)), "{err:?}");
+        assert_eq!(err.exit_code(), 1);
+        assert!(library.looks().iter().all(|l| l.id.prefix() == "builtin"));
+        assert!(
+            !library.looks_dir().join("arri-display").exists(),
+            "{:?}",
+            tree(&library.looks_dir())
+        );
+        assert!(!library.paths().manifest_path().exists());
+    }
+}
+
+/// A source that holds looks and display LUTs imports the looks, says the others were left out,
+/// and writes nothing for them.
+#[test]
+fn display_luts_beside_looks_are_left_out_and_the_looks_come_in() {
+    let work = tempfile::tempdir().unwrap();
+    let root = work.path().join("app");
+    let db = small_db(4);
+    // One folder holding both packages, as ARRI's downloads unpack side by side.
+    let folder = work.path().join("downloads");
+    for kind in [Kind::LookLogC4, Kind::DisplayLogC4] {
+        for (path, text) in package_files(kind, 4) {
+            let dest = folder
+                .join(kind.zip_name().trim_end_matches(".zip"))
+                .join(path);
+            fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            fs::write(dest, text).unwrap();
+        }
+    }
+    let mut library = open_library(&root);
+    let recognition = inspect(&folder, &db, None, &mut no_progress()).unwrap();
+    assert_ne!(
+        recognition.verdict(),
+        Verdict::Blocked,
+        "{:?}",
+        recognition.issues
+    );
+    assert_eq!(
+        recognition.display_lut_count(),
+        4,
+        "{:?}",
+        recognition.files
+    );
+    assert!(
+        recognition.problems().next().is_none(),
+        "{:?}",
+        recognition.issues
+    );
+    assert!(
+        recognition.issues.iter().any(|i| i.kind == IssueKind::DisplayRenderings
+            && i.severity == Severity::Info
+            && i.message
+                == "4 files are display renderings, so they were left out. Yellowmoon uses its own rendering."),
+        "{:?}",
+        recognition.issues
+    );
+    let report = import(
+        &mut library,
+        &db,
+        &folder,
+        &recognition,
+        &options(),
+        &mut no_progress(),
+    )
+    .unwrap();
+    assert_eq!(report.added.len(), 4);
+    assert!(report.added.iter().all(|i| i.id.prefix() == "arri"));
+    assert!(report.rejected.is_empty());
+    assert!(!library.looks_dir().join("arri-display").exists());
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(library.paths().manifest_path()).unwrap())
+            .unwrap();
+    assert!(value.get("display_luts").is_none());
+    assert!(library.verify(&mut no_progress()).unwrap().is_clean());
+}
+
+/// A library made by an older version holds display LUTs: nothing complains, nothing lists them,
+/// the looks keep working, and the files they name are left alone on disk.
+#[test]
+fn display_luts_imported_by_an_older_version_are_ignored_and_left_on_disk() {
+    let work = tempfile::tempdir().unwrap();
+    let root = work.path().join("app");
+    let db = small_db(2);
+    let mut library = open_library(&root);
+    let zip = write_package_zip(work.path(), Kind::LookLogC4, 2);
+    import_path(&mut library, &db, &zip, &options(), &mut no_progress()).unwrap();
+    // What 0.1.x left: a `display_luts` list in the manifest and the files in `arri-display/`.
+    let manifest_path = library.paths().manifest_path();
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    let old_file = library.looks_dir().join("arri-display").join("Rec709.cube");
+    fs::create_dir_all(old_file.parent().unwrap()).unwrap();
+    fs::write(&old_file, cube_text(5, 1, "Rec709")).unwrap();
+    value["display_luts"] = serde_json::json!([
+        { "id": "arri-display:logc4:rec709-g24", "input": "logc4", "target": "rec709-g24",
+          "file": "arri-display/Rec709.cube", "sha256": sha256_hex(&fs::read(&old_file).unwrap()) }
+    ]);
+    fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&value).unwrap(),
+    )
+    .unwrap();
+
+    let mut library = open_library(&root);
+    assert!(library.problems().is_empty(), "{:?}", library.problems());
+    assert_eq!(
+        library
+            .looks()
+            .iter()
+            .filter(|l| l.id.prefix() == "arri")
+            .count(),
+        2
+    );
+    let report = library.verify(&mut no_progress()).unwrap();
+    assert!(report.is_clean());
+    assert_eq!(report.entries.len(), 2, "only looks are checked");
+    // The next write drops the list; the files stay.
+    let zip = write_package_zip(work.path(), Kind::LookLogC3, 2);
+    import_path(&mut library, &db, &zip, &options(), &mut no_progress()).unwrap();
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert!(after.get("display_luts").is_none(), "{after}");
+    assert!(
+        old_file.is_file(),
+        "the old display LUT file is not deleted"
+    );
+    assert_eq!(
+        fs::read(&old_file).unwrap(),
+        cube_text(5, 1, "Rec709").into_bytes()
+    );
 }
 
 #[test]
@@ -1257,10 +1398,8 @@ fn the_documented_manifest_shape_is_what_lands_on_disk() {
     let root = work.path().join("app");
     let db = small_db(2);
     let mut library = open_library(&root);
-    for kind in [Kind::LookLogC4, Kind::DisplayLogC4] {
-        let zip = write_package_zip(work.path(), kind, 2);
-        import_path(&mut library, &db, &zip, &options(), &mut no_progress()).unwrap();
-    }
+    let zip = write_package_zip(work.path(), Kind::LookLogC4, 2);
+    import_path(&mut library, &db, &zip, &options(), &mut no_progress()).unwrap();
     let value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(library.paths().manifest_path()).unwrap())
             .unwrap();
@@ -1285,24 +1424,8 @@ fn the_documented_manifest_shape_is_what_lands_on_disk() {
             .unwrap()
             .ends_with(".cube")
     );
-    let display = &value["display_luts"][0];
-    assert_eq!(display["input"], "logc4");
-    assert!(
-        display["id"]
-            .as_str()
-            .unwrap()
-            .starts_with("arri-display:logc4:")
-    );
-    assert_eq!(
-        display["target"].as_str().unwrap(),
-        display["id"].as_str().unwrap().rsplit(':').next().unwrap()
-    );
-    assert!(
-        display["file"]
-            .as_str()
-            .unwrap()
-            .starts_with("arri-display/")
-    );
+    // ARRI's display LUTs are not imported: the list has no such entries.
+    assert!(value.get("display_luts").is_none(), "{value}");
 }
 
 /// The whole LogC3 look library at the real size and with the real patterns (87 files of 33

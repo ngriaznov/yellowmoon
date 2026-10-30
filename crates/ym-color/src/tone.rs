@@ -25,8 +25,10 @@
 //! E    = w * r * max(h_A - h_S, 0)               how far the Sony clip moves, in stops
 //! u    = (s - s_k) / (h_S - s_k)                 only where E > 0 (then h_S - s_k >= 0.25)
 //! phi  = u^2 (u <= 1), 2u - 1 (u > 1)
-//! s'   = s + E * phi  where s > s_k and E > 0, else s
-//! s'   = min(s', h_A)
+//! p    = (max(R, G, B) - min(R, G, B)) / max(R, G, B)   purity of the pixel ([`purity`]), 0 for a grey
+//! g    = 1 - smoothstep(0.6, 0.9, p)             the achromatic gate ([`AchromaticGate`]), 1 up to p = 0.6
+//! s'   = s + g * E * phi  where s > s_k and E > 0, else s
+//! s'   = min(s', h_A)                            the ALEXA's hard clip, after the gate
 //! gain = 2^(s' - s); rgb' = gain * rgb
 //! ```
 //!
@@ -34,15 +36,17 @@
 //! ([`ToneParams::range`]). The gain is exactly 1 for `s <= s_k` (and below the cap), and then the pixel
 //! is returned unchanged, bit for bit. `s'` is continuous with a continuous slope at the knee and at
 //! `u = 1`, non-decreasing in `s`, and the Sony clip lands on `min(h_S + E, h_A)`. All three channels are
-//! multiplied by the same gain, so a pixel's colour ratios are kept exactly, and because the luma
-//! weights are positive, every output channel is non-decreasing in each non-negative input channel
-//! below the cap.
+//! multiplied by the same gain, so a pixel's colour ratios are kept exactly. The gate is 1 for a grey
+//! pixel (`p = 0`) and for every pixel up to `p = 0.6`, so those get the expansion exactly as before,
+//! bit for bit; a pixel of purity `0.9` or more gets none and keeps its scene exposure, only the
+//! ALEXA's clip still acts on it. Purity does not change when a pixel is scaled, so along an exposure ramp
+//! of one colour the gate is constant and the output stays non-decreasing. Across colours the gate trades
+//! against the luma weights: because the weights are positive, every output channel is non-decreasing in
+//! each non-negative input channel below the cap **only when the gate is 1** (a grey pixel); a channel
+//! that raises the purity of a pixel can lower its gain by more than the channel rises.
 //!
-//! The range works alongside the per-photo **white lift** of C12 step 1b ([`crate::exposure::white`]):
-//! the range moves where the camera's clip lands, on the scene side before LogC4; the lift, after C11 and
-//! on the ACES 2 path only, lifts the photo's own brightest tones from +1 stop over grey, and is sized
-//! through this stage at its default amounts, so highlights the range already took to white get less of
-//! it.
+//! The range moves where the camera's clip lands, on the scene side before LogC4; the display transform
+//! (the cine rendering, C12) reaches white by itself at +10.4 stops over grey.
 //!
 //! # The low-light toe
 //!
@@ -103,6 +107,140 @@ pub enum ToneError {
     /// The noise floor must be finite and not negative.
     #[error("noise floor must be finite and not negative, got {0}")]
     InvalidNoiseFloor(f64),
+    /// The achromatic gate needs finite edges with `0 <= from < to <= 3` and `to - from >= MIN_GATE_SPAN`.
+    #[error(
+        "achromatic gate edges must be finite with 0 <= from < to <= 3 and at least 1e-6 apart, got {from} and {to}"
+    )]
+    InvalidGate {
+        /// The purity at which the gate starts to close.
+        from: f64,
+        /// The purity from which it is closed.
+        to: f64,
+    },
+}
+
+/// The purity at which the achromatic gate starts to close (owner decision 2026-10-29).
+pub const ACHROMATIC_GATE_FROM: f64 = 0.6;
+
+/// The purity from which the achromatic gate is closed (owner decision 2026-10-29).
+pub const ACHROMATIC_GATE_TO: f64 = 0.9;
+
+/// The smallest distance between the two edges of an [`AchromaticGate`]. The kernel multiplies by the inverse
+/// of the span, which must stay finite in f32 (a span near 1e-39 overflows it, and `0 * infinity` at the `from`
+/// edge is a NaN); 1e-6 is far below any gate that means something (the owner's is 0.3 wide).
+pub const MIN_GATE_SPAN: f64 = 1e-6;
+
+/// The largest purity the gate looks at: a pixel with a negative channel has `p >= 1`, and a pixel with a
+/// tiny positive maximum can have an enormous one. Purity is held to this (finite for Metal's fast-math, K8).
+pub const PURITY_MAX: f64 = 2.0;
+
+/// Purity of a linear AWG4 pixel, `p = (max(R, G, B) - min(R, G, B)) / max(R, G, B)`, held to
+/// [`PURITY_MAX`]: 0 for a grey pixel (`R == G == B`, exactly), 1 for a pixel whose smallest channel is 0,
+/// above 1 when a channel is negative. Scaling a pixel by a positive number does not change it.
+///
+/// A pixel whose largest channel is not above 0 (or not a number) gets 0: its luma is not above 0
+/// either, and every stage that uses the gate is the identity there.
+#[must_use]
+pub fn purity(rgb: Vec3) -> f64 {
+    let max = rgb[0].max(rgb[1]).max(rgb[2]);
+    let min = rgb[0].min(rgb[1]).min(rgb[2]);
+    if max.is_nan() || max <= 0.0 {
+        return 0.0;
+    }
+    ((max - min) / max).min(PURITY_MAX)
+}
+
+/// The achromatic gate: a weight `g = 1 - smoothstep(from, to, p)` of a pixel's [`purity`], 1 for a grey
+/// pixel and for every purity up to `from`, 0 from `to`. The highlight range of C7 multiplies its
+/// expansion in stops by it (so did the white lift, until the cine rendering replaced it), so near-neutral highlights expand as designed and
+/// high-purity colours (saturated reds) stay near their scene exposure (owner decision 2026-10-29,
+/// `docs/02`).
+///
+/// The edges are numbers to tune: [`AchromaticGate::DEFAULT`] is `0.6` and `0.9`;
+/// [`AchromaticGate::OFF`] is a gate that is always 1 (the stages as they were before the gate, for tests
+/// and for comparisons).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AchromaticGate {
+    from: f64,
+    to: f64,
+}
+
+impl Default for AchromaticGate {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl AchromaticGate {
+    /// The owner's gate, [`ACHROMATIC_GATE_FROM`] to [`ACHROMATIC_GATE_TO`].
+    pub const DEFAULT: Self = Self {
+        from: ACHROMATIC_GATE_FROM,
+        to: ACHROMATIC_GATE_TO,
+    };
+
+    /// A gate that is 1 for every pixel: its edges lie above [`PURITY_MAX`].
+    pub const OFF: Self = Self {
+        from: PURITY_MAX,
+        to: PURITY_MAX + 1.0,
+    };
+
+    /// A gate that closes between the purities `from` and `to`.
+    ///
+    /// # Errors
+    ///
+    /// [`ToneError::InvalidGate`] unless both are finite with `0 <= from < to <= 3` and `to - from` is at
+    /// least [`MIN_GATE_SPAN`].
+    pub fn new(from: f64, to: f64) -> Result<Self, ToneError> {
+        if from.is_finite()
+            && to.is_finite()
+            && 0.0 <= from
+            && from < to
+            && to <= PURITY_MAX + 1.0
+            && to - from >= MIN_GATE_SPAN
+        {
+            Ok(Self { from, to })
+        } else {
+            Err(ToneError::InvalidGate { from, to })
+        }
+    }
+
+    /// The purity at which the gate starts to close.
+    #[must_use]
+    pub fn from(&self) -> f64 {
+        self.from
+    }
+
+    /// The purity from which the gate is closed.
+    #[must_use]
+    pub fn to(&self) -> f64 {
+        self.to
+    }
+
+    /// `1 / (to - from)`, what the GPU kernel multiplies by.
+    #[must_use]
+    pub fn inv_span(&self) -> f64 {
+        1.0 / (self.to - self.from)
+    }
+
+    /// Whether the gate is 1 for every pixel ([`AchromaticGate::OFF`]).
+    #[must_use]
+    pub fn is_off(&self) -> bool {
+        self.from >= PURITY_MAX
+    }
+
+    /// The weight for a purity `p`: `1 - smoothstep(from, to, p)`. Exactly 1 for `p <= from`.
+    #[must_use]
+    pub fn weight_of_purity(&self, p: f64) -> f64 {
+        let t = ((p - self.from) / (self.to - self.from)).clamp(0.0, 1.0);
+        1.0 - t * t * (3.0 - 2.0 * t)
+    }
+
+    /// The weight of a linear AWG4 pixel, [`AchromaticGate::weight_of_purity`] of its [`purity`]. Exactly
+    /// 1.0 for a grey pixel.
+    #[must_use]
+    pub fn weight(&self, rgb: Vec3) -> f64 {
+        self.weight_of_purity(purity(rgb))
+    }
 }
 
 /// The luma of a linear AWG4 triple with the Rec.709 weights ([`REC709_LUMA_WEIGHTS`]): the norm the
@@ -166,16 +304,24 @@ impl HighlightRange {
         }
     }
 
-    /// `s'`: where a tone `s` stops over middle grey goes. `s` itself up to the knee, the expansion
-    /// above it, never above the cap. NaN stays NaN.
+    /// `s'`: where a tone `s` stops over middle grey goes for a grey pixel (gate 1): `s` itself up to the
+    /// knee, the expansion above it, never above the cap. NaN stays NaN.
     #[must_use]
     pub fn stops(&self, s: f64) -> f64 {
+        self.stops_gated(s, 1.0)
+    }
+
+    /// As [`HighlightRange::stops`] with the expansion weighted by the achromatic gate `weight` (0 to 1,
+    /// [`AchromaticGate::weight`]): `s + weight * E * phi` above the knee, then the cap. A weight of 1 is
+    /// [`HighlightRange::stops`] to the last bit.
+    #[must_use]
+    pub fn stops_gated(&self, s: f64, weight: f64) -> f64 {
         let mut out = s;
         if self.expansion_stops > 0.0 && s > self.knee_stops {
             // E > 0 only when the span is at least HIGHLIGHT_MIN_SPAN_STOPS, so the division is safe.
             let u = (s - self.knee_stops) / (self.clip_stops - self.knee_stops);
             let phi = if u <= 1.0 { u * u } else { 2.0 * u - 1.0 };
-            out = s + self.expansion_stops * phi;
+            out = s + (weight * self.expansion_stops) * phi;
         }
         if out > self.cap_stops {
             self.cap_stops
@@ -184,15 +330,34 @@ impl HighlightRange {
         }
     }
 
-    /// The gain `2^(s' - s)` for a pixel of luma `luma`: exactly 1.0 where `s' == s`, and 1.0 for a luma
-    /// at or below zero or not finite.
+    /// The gain `2^(s' - s)` for a pixel of luma `luma` and gate 1 (a grey pixel): exactly 1.0 where
+    /// `s' == s`, and 1.0 for a luma at or below zero or not finite. A coloured pixel is
+    /// [`HighlightRange::gain_for`].
     #[must_use]
     pub fn gain(&self, luma: f64) -> f64 {
+        self.gain_with(luma, || 1.0)
+    }
+
+    /// The gain of a linear AWG4 pixel: the luma's gain with the expansion weighted by `gate` of the
+    /// pixel's purity. A grey pixel gets [`HighlightRange::gain`] of its luma, bit for bit.
+    #[must_use]
+    pub fn gain_for(&self, rgb: Vec3, gate: &AchromaticGate) -> f64 {
+        self.gain_with(luma(rgb), || gate.weight(rgb))
+    }
+
+    /// The gain for a luma, with the gate's weight asked for only where the expansion acts (above the
+    /// knee), so the purity is never computed for the pixels that are returned unchanged.
+    fn gain_with(&self, luma: f64, weight: impl FnOnce() -> f64) -> f64 {
         if !luma.is_finite() || luma <= 0.0 {
             return 1.0;
         }
         let s = stops_over_grey(luma);
-        let t = self.stops(s);
+        let w = if self.expansion_stops > 0.0 && s > self.knee_stops {
+            weight()
+        } else {
+            1.0
+        };
+        let t = self.stops_gated(s, w);
         if t == s { 1.0 } else { (t - s).exp2() }
     }
 
@@ -216,6 +381,9 @@ pub struct ToneParams {
     pub clip_level: f64,
     /// `sigma_floor`: read noise of the noise model mapped to linear AWG4 at this exposure.
     pub noise_floor: f64,
+    /// The achromatic gate on the highlight range's expansion ([`AchromaticGate::DEFAULT`] unless a test
+    /// or a tool sets another with [`ToneParams::with_gate`]).
+    pub gate: AchromaticGate,
 }
 
 impl ToneParams {
@@ -227,6 +395,7 @@ impl ToneParams {
         low_light: 0.0,
         clip_level: f64::INFINITY,
         noise_floor: 0.0,
+        gate: AchromaticGate::DEFAULT,
     };
 
     /// Builds parameters, clamping the two amounts to `[0, 1]` (NaN counts as 0).
@@ -254,7 +423,16 @@ impl ToneParams {
             low_light: clamp_unit(low_light),
             clip_level,
             noise_floor,
+            gate: AchromaticGate::DEFAULT,
         })
+    }
+
+    /// These parameters with another achromatic gate ([`AchromaticGate::OFF`] is the highlight range as it
+    /// was before the gate).
+    #[must_use]
+    pub fn with_gate(mut self, gate: AchromaticGate) -> Self {
+        self.gate = gate;
+        self
     }
 
     /// The prepared highlight range: [`HighlightRange::new`] of the highlight amount and the clip
@@ -264,10 +442,11 @@ impl ToneParams {
         HighlightRange::new(self.highlights, self.clip_level)
     }
 
-    /// The highlight range's gain for a linear AWG4 triple: `range().gain(luma(rgb))`.
+    /// The highlight range's gain for a linear AWG4 triple: `range().gain_for(rgb, &gate)`, the luma's
+    /// gain with the expansion weighted by the achromatic gate.
     #[must_use]
     pub fn highlight_gain(&self, rgb: Vec3) -> f64 {
-        self.range().gain(luma(rgb))
+        self.range().gain_for(rgb, &self.gate)
     }
 
     /// The toe width `tau = 4 r_l sigma_floor`.
@@ -298,6 +477,7 @@ impl ToneParams {
     pub(crate) fn prepare(&self) -> PreparedTone {
         PreparedTone {
             range: self.range(),
+            gate: self.gate,
             tau: self.toe_tau(),
         }
     }
@@ -307,6 +487,7 @@ impl ToneParams {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct PreparedTone {
     range: HighlightRange,
+    gate: AchromaticGate,
     tau: f64,
 }
 
@@ -316,7 +497,7 @@ impl PreparedTone {
         if rgb.iter().any(|c| !c.is_finite()) {
             return rgb;
         }
-        let gain = self.range.gain(luma(rgb));
+        let gain = self.range.gain_for(rgb, &self.gate);
         let ranged = if gain == 1.0 {
             rgb
         } else {

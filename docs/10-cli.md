@@ -43,7 +43,6 @@ The options mirror the app's controls and are grouped as in `ym render --help`. 
 |---|---|---|
 | `--look <look>` | full id (`builtin:neutral`), its slug after the colon (`neutral`), or the display name, case-insensitive | ambiguous: exit 2 listing the matches; missing: exit 3 |
 | `--intensity <0–100>` | percent | default 100 |
-| `--display aces2 or arri` | | display rendering; `arri` needs an imported ARRI display LUT: the one chosen in the app's preferences, else the only one imported, or a full display LUT id |
 | `--settings <file or ->` | JSON with the `ym:Settings` schema (the resolved `DevelopSettings`, `docs/01-architecture.md`) | covers everything the flags can't: colour balance (`{ "kind": "auto" }` puts a shadows or highlights wheel back to Auto), colour warp, curve, crop, orientation, white pick. Flags given alongside it override it. A file with several photos' settings is an object keyed by file name |
 | `--auto-crop[=<aspect>]` | `original` (the default), `free`, `1:1` or `square`, `4:5`, `16:9` | crops each photo as the Crop panel's Auto does (`docs/20-auto-crop.md` §8): the proposal's straighten angle and first frame for the aspect, at the photo's orientation, with `auto: true`; the whole photo at 0° is no crop. Replaces a crop from `--settings`. `--json` adds `auto_crop`, the proposal (below) |
 
@@ -56,7 +55,6 @@ The options mirror the app's controls and are grouped as in `ym render --help`. 
 | `--contrast auto or <N>` | −100…100, or `auto` | `auto` is the photo's Auto value: 0, or the value the provider chose (`docs/19-apple-auto.md` section 5); it is the default, and it puts back a value a `--settings` file set by hand. A number is a manual value. Bends the tones around mid grey and keeps black and the top code value (`docs/02-colour-pipeline.md` C9) |
 | `--highlights auto or <N>`, `--shadows auto or <N>`, `--black auto or <N>` | −100…100, or `auto` | as `--contrast`: `auto` is the photo's Auto value, 0 or the value the provider chose, and the default. The shadows and highlights colour-balance wheels take Auto in a `--settings` file (`{ "kind": "auto" }`) |
 | `--brightness <N>`, `--white <N>` | −100…100 | |
-| `--white-offset <EV>` | −3…3 stops, default 0 | Light › White › Offset (`docs/02-colour-pipeline.md` C12 step 1b): stops added to each photo's **automatic white lift**, the per-photo gain on the tones above +1 stop over middle grey that gives the brightest tones of a high-key photo a real white. The automatic amount is sized from the photo's own highlights when it is opened and reported as `auto.white_ev` in the JSON (0 for a low-key photo). 0 is that amount; a negative offset lowers it; an offset that takes it to 0 or below switches the lift off (`--white-offset -3` always does); a positive one adds to it (up to 3 stops in all). The lift acts only with the built-in ACES 2 display rendering (an imported ARRI display LUT and a LogC3-to-Rec.709 look keep ARRI's own highlights), and **a DNG carries it** (it is a scene-linear gain, baked into the DNG's pixels like the look, `docs/09-export.md`). It is the field `white_offset_ev` of the settings object, and the lift in effect is `values.white_ev` of the panel's state |
 
 ### Colour
 
@@ -91,7 +89,7 @@ The Look tab's Lens card (`docs/21-lens-character.md` §1 and §8). They are the
 | `--no-highlight-recovery` | flag | switch highlight reconstruction off |
 | `--no-lens` | flag | switch the lens corrections (vignetting, distortion) off |
 | `--no-ca` | flag | switch the chromatic-aberration correction off |
-| `--rolloff <highlights>,<low-light>` | 0–1 each, default 1,0.5 | RAW › Range (`docs/02-colour-pipeline.md` C7). Highlights is the **highlight range**: where the camera's clipping point lands, from where it was recorded (0) to white, the clip of an ALEXA at EI 800 (1); mid grey and everything under the knee one stop below the clip never move. Low light is the toe near black. It works alongside the white lift (`--white-offset`) |
+| `--rolloff <highlights>,<low-light>` | 0–1 each, default 1,0.5 | RAW › Range (`docs/02-colour-pipeline.md` C7). Highlights is the **highlight range**: where the camera's clipping point lands, from where it was recorded (0) to white, the clip of an ALEXA at EI 800 (1); mid grey and everything under the knee one stop below the clip never move. Low light is the toe near black |
 | `--profile <id>` | camera profile id, e.g. `sony-ilce-7rm4` | forces a profile, for comparisons |
 
 ### Output
@@ -144,11 +142,11 @@ Nothing is saved per photo: the settings live with the photo for this run, and e
 
 Only `--format` takes its default from the preferences. The others start from the defaults of `docs/09-export.md` (`--quality` 92, `--bits` 16, `--compression` lzw, `--colour-space` srgb, `{name}_{look}`, keep both), so the command `cli_preview` prints, which leaves those defaults out, does what the panel does whatever the preferences say. The preference "Remove location from exports" applies to the CLI too. The CLI never writes the preferences: `--out` is not remembered as the app's last-used folder, and `--look` does not change the default look (`ym looks default` does).
 
-## `--look` and `--display`
+## `--look`
 
 `--look` resolves through the look library (`LookService::resolve`) before anything is opened: a name that matches nothing exits 3, one that matches several exits 2 and lists them, a look whose file is gone exits 3. A look named in a settings file that turns out to be missing fails that photo only (`error.kind` `look`); when every failure of a run is a missing look, the exit code is 3.
 
-`--display aces2` forces ACES 2. `--display arri` uses the ARRI display LUT chosen in the app's preferences, else the only one imported; otherwise it says which exist (exit 2) or that none is imported (exit 3). A full display LUT id is accepted too. Without `--display` the preference applies, and an export with a chosen display LUT that is gone is refused (exit 3), not rendered with ACES 2.
+**`--display` is gone.** It chose ARRI's display LUT (`arri`, or a display LUT id) as the rendering instead of the default one. Yellowmoon always uses its own display rendering now (owner, 2026-10-29, `docs/02` C12), so there is nothing to choose. The option is still read, hidden from `--help`, so that a script that passes it gets a usage error that says what to do and not clap's "unexpected argument": exit 2, before any photo is read, "--display was removed. Yellowmoon always uses its own display rendering, so there is nothing to choose. Leave the option out. To change how photos look, use --look." (`ym_cli::render::DISPLAY_REMOVED`). A display LUT that an earlier version imported, or an earlier choice of one in the app's preferences, is ignored (`docs/01` Persistence).
 
 ## Running
 
@@ -190,7 +188,7 @@ One object per input file, written when that file finishes, in completion order:
   "status": "ok",
   "camera": { "body": "Sony A1", "model_id": 384, "profile": "sony-ilce-7rm4", "profile_version": "1.2.0", "match": "default" },
   "look": { "id": "builtin:neutral", "intensity": 100 },
-  "auto": { "exposure_ev": 0.81, "white_ev": 0.77, "kelvin": 5450, "tint": 0, "contrast": 15, "saturation": 0,
+  "auto": { "exposure_ev": 0.81, "kelvin": 5450, "tint": 0, "contrast": 15, "saturation": 0,
             "highlights": -20, "shadows": 0, "black": 0, "balance_shadows": [-0.476, -0.275], "balance_highlights": [0, 0],
             "source": "apple", "apple": { "state": "answered", "...": "…" }, "apple_steps": { "...": "…" },
             "light_class": "daylight", "light_confidence": 0.82, "noise": { "a": 1.9e-5, "b": 3.1e-7 } },
@@ -205,7 +203,7 @@ One object per input file, written when that file finishes, in completion order:
   "settings": { "...": "resolved settings, same as ym:Settings" },
   "device": "cpu",
   "timings_ms": { "decode": 310, "develop": 2410, "encode": 180 },
-  "pipeline_version": "0.5.1",
+  "pipeline_version": "0.8.0",
   "error": null
 }
 ```
@@ -253,11 +251,12 @@ In `--json` the values keep the exact characters and are escaped the way JSON do
 
 ## `looks`
 
-- **`list`** prints a table with the columns ID, NAME, GROUP, LIBRARY, INPUT and a last one for `default` and `missing: import again`. `--json` prints an object with `looks` and `display_luts`, the shapes of `looks_list` and `looks_display_luts`. LIBRARY is the library the Look tab lists the look under, in its short word: `Built in`, `LogC4`, `LogC3`, `LogC3 to Rec.709`, `ALF2` or `Your LUTs` (`docs/08-looks.md`, Look model, Library). A look in `--json` has `library` (`built_in`, `arri_logc4`, `arri_logc3`, `arri_logc3_to_rec709`, `arri_alf2` or `user`), `format` (`cube`, `alf4`, `alf4c` or `aml`; `null` for a built-in look) and `lut_size` (points per axis; `null` for a built-in look) next to `group` and `input`. The rows are in the core's order (built-in looks, ARRI's by group number and name, then the person's own by name), so ARRI's libraries are mixed there; the Look tab groups them by library.
+- **`list`** prints a table with the columns ID, NAME, GROUP, LIBRARY, INPUT and a last one for `default` and `missing: import again`. `--json` prints an object with `looks`, the shape of `looks_list` (earlier versions also listed ARRI's display LUTs, in a second table and under `display_luts`; they are not imported any more, `docs/02` C12). LIBRARY is the library the Look tab lists the look under, in its short word: `Built in`, `LogC4`, `LogC3`, `LogC3 to Rec.709`, `ALF2` or `Your LUTs` (`docs/08-looks.md`, Look model, Library). A look in `--json` has `library` (`built_in`, `arri_logc4`, `arri_logc3`, `arri_logc3_to_rec709`, `arri_alf2` or `user`), `format` (`cube`, `alf4`, `alf4c` or `aml`; `null` for a built-in look) and `lut_size` (points per axis; `null` for a built-in look) next to `group` and `input`. The rows are in the core's order (built-in looks, ARRI's by group number and name, then the person's own by name), so ARRI's libraries are mixed there; the Look tab groups them by library.
 - **`import`** prints the id of every look it added (stdout) and a summary (stderr).
   - A `.cube` that no known package claims needs `--input` (exit 2 otherwise; the message names the three words). An ARRI Look File does not need it (it says what it expects).
   - A file that cannot be used (damaged, an `.alf4c` with no creative look, an `.aml` made for another display) is refused in plain words, exit 1.
   - In a folder or zip the other files are still imported. Each refused file is named on stderr with its reason ("`<source>`: Torn.alf4 cannot be used. Its checksum does not match, so the file is damaged. Download it again.", also with `--quiet`) and the exit code is 1, so a script can tell that not everything arrived.
+  - ARRI's display LUTs are not imported (`docs/08`): a package or file that holds only those is refused in one sentence, exit 1, nothing written ("This package has only display renderings. Yellowmoon uses its own rendering, so there is nothing to import."); beside looks they are left out and one note says so ("2 files are display renderings, so they were left out. Yellowmoon uses its own rendering."). The summary no longer counts display LUTs.
   - Notes about what an import did print on stderr too: an `.alf4c`'s display transforms are not used; looks that stayed or became the 3D-LUT version of a library; own LUTs that turned out to be ARRI's files, with their old and new ids, and the default look moved along with its id; files that are the same as a LUT already imported under another name.
   - Importing again never duplicates a look, so a repeat import prints no ids and leaves the looks list untouched. Ctrl-C stops between files.
 - **`verify`** prints one line per missing or changed file and exits 1 when there is one.

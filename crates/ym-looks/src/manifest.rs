@@ -1,7 +1,7 @@
-//! `manifest.json` model: imported looks and display LUTs with SHA-256 per file; atomic writes (`docs/08-looks.md` section Library folder).
+//! `manifest.json` model: imported looks with SHA-256 per file; atomic writes (`docs/08-looks.md` section Library folder).
 //!
-//! The manifest lists what the user has imported; it holds no preferences (the default look and the
-//! display rendering choice live in `preferences.json`). Layout, exactly as in the spec:
+//! The manifest lists what the user has imported; it holds no preferences (the default look lives in
+//! `preferences.json`). Layout, exactly as in the spec:
 //!
 //! ```json
 //! {
@@ -11,13 +11,13 @@
 //!       "input": "logc4", "file": "arri/3000-film/Film.cube", "sha256": "…", "lut_size": 65,
 //!       "source": { "package": "look-library-logc4", "url": "https://www.arri.com/…",
 //!                   "imported": "2026-11-02T10:14:00Z", "original_name": "Film.cube" } }
-//!   ],
-//!   "display_luts": [
-//!     { "id": "arri-display:logc4:rec709-g24", "input": "logc4", "target": "rec709-g24",
-//!       "file": "arri-display/….cube", "sha256": "…" }
 //!   ]
 //! }
 //! ```
+//!
+//! A manifest written by an older version may also carry a `display_luts` list (ARRI's display LUTs,
+//! which Yellowmoon no longer imports or uses). It is read without complaint, ignored, and left out
+//! of the next file this build writes; the files it names stay on disk.
 //!
 //! Two additions the spec leaves open: a user LUT's group is `{ "kind": "user" }`, and `package`
 //! and `url` are left out of `source` for files that did not come from a known package.
@@ -36,7 +36,7 @@ use sha2::{Digest, Sha256};
 use ym_color::cube::{MAX_3D_SIZE, MIN_3D_SIZE};
 use ym_color::look::LookInput;
 
-use crate::library::{DisplayInput, IdKind, LookFormat, LookId};
+use crate::library::{IdKind, LookFormat, LookId};
 
 /// The manifest format version this build reads and writes.
 pub const MANIFEST_VERSION: u32 = 1;
@@ -101,21 +101,6 @@ pub struct ManifestLook {
     pub source: Option<Source>,
 }
 
-/// One imported ARRI display LUT.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManifestDisplayLut {
-    /// `arri-display:<input>:<target>`.
-    pub id: LookId,
-    /// The encoding it expects.
-    pub input: DisplayInput,
-    /// The display it renders to (`rec709-g24`, `p3-d65`, …).
-    pub target: String,
-    /// Path relative to the `looks` folder, with `/` separators.
-    pub file: String,
-    /// SHA-256 of the file, lower-case hex.
-    pub sha256: String,
-}
-
 /// The whole manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
@@ -124,9 +109,6 @@ pub struct Manifest {
     /// Imported looks.
     #[serde(default)]
     pub looks: Vec<ManifestLook>,
-    /// Imported display LUTs.
-    #[serde(default)]
-    pub display_luts: Vec<ManifestDisplayLut>,
 }
 
 impl Default for Manifest {
@@ -134,7 +116,6 @@ impl Default for Manifest {
         Self {
             version: MANIFEST_VERSION,
             looks: Vec::new(),
-            display_luts: Vec::new(),
         }
     }
 }
@@ -262,19 +243,12 @@ impl Manifest {
                 return Err(format!("{} has an impossible LUT size", look.id));
             }
         }
-        for display in &self.display_luts {
-            check_common(&display.id, &display.file, &display.sha256)?;
-            if !matches!(display.id.kind(), IdKind::ArriDisplay { .. }) {
-                return Err(format!("{} cannot be a display LUT", display.id));
-            }
-        }
         Ok(())
     }
 
     /// Orders entries by id so the file is stable between runs.
     pub fn sort(&mut self) {
         self.looks.sort_by(|a, b| a.id.cmp(&b.id));
-        self.display_luts.sort_by(|a, b| a.id.cmp(&b.id));
     }
 
     /// The manifest as pretty JSON with a final newline.
@@ -307,14 +281,6 @@ impl Manifest {
         self.looks
             .iter()
             .find(|l| l.id.as_str().eq_ignore_ascii_case(id.as_str()))
-    }
-
-    /// The imported display LUT with this id (compared without regard to case).
-    #[must_use]
-    pub fn display_lut(&self, id: &LookId) -> Option<&ManifestDisplayLut> {
-        self.display_luts
-            .iter()
-            .find(|d| d.id.as_str().eq_ignore_ascii_case(id.as_str()))
     }
 }
 
@@ -476,13 +442,6 @@ mod tests {
                     original_name: "Film.cube".into(),
                 }),
             }],
-            display_luts: vec![ManifestDisplayLut {
-                id: LookId::arri_display(DisplayInput::LogC4, "rec709-g24"),
-                input: DisplayInput::LogC4,
-                target: "rec709-g24".into(),
-                file: "arri-display/Rec709.cube".into(),
-                sha256: "b".repeat(64),
-            }],
         }
     }
 
@@ -497,11 +456,26 @@ mod tests {
         assert_eq!(look["group"]["no"], 3000);
         assert_eq!(look["input"], "logc4");
         assert_eq!(look["source"]["package"], "look-library-logc4");
-        let display = &value["display_luts"][0];
-        assert_eq!(display["id"], "arri-display:logc4:rec709-g24");
-        assert_eq!(display["input"], "logc4");
-        assert_eq!(display["target"], "rec709-g24");
+        assert!(value.get("display_luts").is_none());
         assert!(json.ends_with("}\n"));
+    }
+
+    #[test]
+    fn a_list_with_display_luts_from_an_older_version_is_read_and_the_list_is_dropped_on_save() {
+        // What an older version wrote when the person had imported ARRI's display LUTs. The entries
+        // are not checked (they may name anything), nothing is reported, and the next write leaves
+        // them out.
+        let mut value: serde_json::Value = serde_json::from_str(&sample().to_json()).unwrap();
+        value["display_luts"] = serde_json::json!([
+            { "id": "arri-display:logc4:rec709-g24", "input": "logc4", "target": "rec709-g24",
+              "file": "arri-display/Rec709.cube", "sha256": "b".repeat(64) },
+            { "id": "not even an id", "file": "../../outside.cube" }
+        ]);
+        let old = serde_json::to_string_pretty(&value).unwrap();
+        let read = Manifest::parse(&old, Path::new("m.json")).unwrap();
+        assert_eq!(read, sample());
+        assert!(!read.to_json().contains("display_luts"));
+        assert!(!read.to_json().contains("arri-display"));
     }
 
     #[test]

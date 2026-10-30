@@ -33,7 +33,7 @@ pub struct YmInfo {
     pub look_sha256: Option<String>,
     /// `ym:LookIntensity`, 0 to 100.
     pub look_intensity_pct: Option<u32>,
-    /// `ym:DisplayTransform` (`aces2-sdr100-p3lim`, `arri-display:…`).
+    /// `ym:DisplayTransform` (`cine-p3`).
     pub display_transform: Option<String>,
     /// `ym:Models`, the networks used (`jdd 1.2.0 (sha256…)`).
     pub models: Option<String>,
@@ -180,7 +180,7 @@ mod tests {
                 look: Some("arri:3000:film <warm> & \"cool\"".into()),
                 look_sha256: Some("ab".repeat(32)),
                 look_intensity_pct: Some(100),
-                display_transform: Some("aces2-sdr100-p3lim".into()),
+                display_transform: Some("cine-p3".into()),
                 models: Some("jdd 1.2.0 (sha256:ff)".into()),
                 auto: Some("apple".into()),
                 auto_advisor: Some(

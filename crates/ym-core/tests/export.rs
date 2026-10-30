@@ -399,7 +399,7 @@ fn the_xmp_records_how_the_file_was_made() {
         assert_eq!(xmp_property(&xmp, "ym:LookSHA256"), None);
         assert_eq!(
             xmp_property(&xmp, "ym:DisplayTransform").as_deref(),
-            Some("aces2-sdr100-rec709lim")
+            Some("cine-rec709")
         );
         assert_eq!(xmp_property(&xmp, "ym:Models"), None, "no network ran");
         // The capture time, never "now".
@@ -438,9 +438,9 @@ fn the_display_transform_follows_the_color_space() {
     let ctx = export_context(home.path());
     let photo = photo_of(&d);
     for (space, id) in [
-        (ColorSpace::Srgb, "aces2-sdr100-rec709lim"),
-        (ColorSpace::DisplayP3, "aces2-sdr100-p3lim"),
-        (ColorSpace::Rec2020, "aces2-sdr100-p3lim-rec2020"),
+        (ColorSpace::Srgb, "cine-rec709"),
+        (ColorSpace::DisplayP3, "cine-p3"),
+        (ColorSpace::Rec2020, "cine-rec2020"),
     ] {
         let report = export_ok(
             &ctx,
@@ -1209,15 +1209,6 @@ impl LookProvider for TestLooks {
                 "File missing or changed. Import again.".to_owned(),
             )),
         }
-    }
-
-    fn display_transform(
-        &self,
-        id: &LookId,
-    ) -> Result<(ym_color::display::DisplayTransform, String), LookProblem> {
-        Err(LookProblem(format!(
-            "The display LUT {id} is not in the library."
-        )))
     }
 
     fn look_sha256(&self, id: &LookId) -> Option<String> {

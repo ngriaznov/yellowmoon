@@ -306,8 +306,8 @@ pub enum FullTarget {
     /// angle, cropped: the user's crop is then [`FullImage::window`] for the writer to put in the
     /// default crop tags. With a straighten angle the angle and the crop are baked in (a DNG has no
     /// rotated crop), still unturned, and `window` is `None`. Made without R8 capture sharpening (a
-    /// DNG carries none). With a look that includes its own display rendering, or an imported display
-    /// LUT, the pixels are instead the scene values that ACES 2 turns into that picture
+    /// DNG carries none). With a look that includes its own display rendering, the pixels are instead
+    /// the scene values that the cine rendering turns into that picture
     /// ([`ym_color::display::ColorChain::apply_dng_pixel`]).
     DngLinearAwg4,
     /// The DNG's preview: the exact render in sRGB (display-linear, Rec.709 primaries) in the
@@ -2868,8 +2868,8 @@ impl Renderer {
             .try_reserve(output + working + frame_extra + sigma_map)
             .map_err(|_| RenderError::Memory)?;
         // The DNG's pixels and preview are made for sRGB, the display its fitted profile emulates: a
-        // chain whose display rendering is not ours (a look with its own, an imported display LUT)
-        // inverts it from sRGB for the pixels.
+        // chain whose display rendering is not ours (a look with its own) inverts it from sRGB for the
+        // pixels.
         let target_out = match request.target {
             FullTarget::DisplayLinear(t) => t,
             FullTarget::DngLinearAwg4 | FullTarget::DngPreview => OutputTarget::Srgb,

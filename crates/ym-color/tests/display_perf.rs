@@ -5,7 +5,7 @@
 //! ```
 //!
 //! Prints microseconds per pixel on one thread and megapixels per second on all cores for the full
-//! chain with ACES 2 (camera RGB in, dithered 8-bit sRGB-encoded P3 out), in two settings: Auto
+//! chain with the cine rendering (camera RGB in, dithered 8-bit sRGB-encoded P3 out), in two settings: Auto
 //! (zero grade, Neutral look, identity curves) and everything on (grade, a LogC4 look with a 33-point
 //! cube, curves). The numbers are printed rather than asserted because timing depends on the machine
 //! and on what else is running; the results of the last run are recorded in `docs/02`.

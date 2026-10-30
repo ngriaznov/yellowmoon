@@ -1,5 +1,5 @@
-//! `preferences.json` under the app data folder: the default look, the display rendering, the
-//! export defaults and the other persisted choices. This list is exhaustive (`docs/01-architecture.md`
+//! `preferences.json` under the app data folder: the default look, the export defaults and the
+//! other persisted choices. This list is exhaustive (`docs/01-architecture.md`
 //! section Persistence, hard rule 4 of `AGENTS.md`): nothing about a photo is ever saved.
 //!
 //! # Where
@@ -14,7 +14,10 @@
 //! Reading never fails and never crashes the app:
 //!
 //! * a missing file is the defaults (and is not created until something is changed);
-//! * a field that is missing takes its default; a field this version does not know is ignored;
+//! * a field that is missing takes its default; a field this version does not know is ignored,
+//!   without a warning (a file written by an earlier version may hold `display_rendering`, the
+//!   choice of ARRI's display LUT that Yellowmoon no longer offers: it is read as nothing and left
+//!   out of the file the next time a preference changes);
 //! * a field with a value that does not fit (a JPEG quality of 12, a look id that is not an id) takes
 //!   its default and the rest of the file is kept;
 //! * a file that is not JSON, or not an object, is all defaults.
@@ -51,21 +54,6 @@ pub const DEFAULT_LOOK: &str = "builtin:signature";
 /// the look to fall back on when the default look cannot be used.
 pub const NEUTRAL_LOOK: &str = "builtin:neutral";
 
-/// Preferences › Display rendering: our ACES 2 output transform, or an imported ARRI display LUT
-/// (`src/api/types.ts`: `DisplayRendering`).
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DisplayRendering {
-    /// Ours: the ACES 2 output transform.
-    #[default]
-    Aces2,
-    /// An imported ARRI display LUT, by its id (`arri-display:logc4:rec709-g24`).
-    ArriDisplay {
-        /// The display LUT.
-        id: LookId,
-    },
-}
-
 /// Folders remembered between runs (`LastUsedFolders` in `src/api/types.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -84,8 +72,6 @@ pub struct LastUsedFolders {
 pub struct Preferences {
     /// The look new photos get ([`DEFAULT_LOOK`], Signature, out of the box).
     pub default_look: LookId,
-    /// ACES 2 or an imported ARRI display LUT.
-    pub display_rendering: DisplayRendering,
     /// Format, quality, bits, compression, colour space, size, destination, name template and
     /// what to do when the file exists.
     pub export_defaults: ExportOptions,
@@ -119,7 +105,6 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             default_look: LookId::factory_default(),
-            display_rendering: DisplayRendering::Aces2,
             export_defaults: ExportOptions::default(),
             remove_location_from_exports: false,
             check_for_updates_automatically: true,
@@ -141,9 +126,6 @@ pub struct PreferencesPatch {
     /// Replaces `default_look`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_look: Option<LookId>,
-    /// Replaces `display_rendering`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_rendering: Option<DisplayRendering>,
     /// Replaces `export_defaults`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub export_defaults: Option<ExportOptions>,
@@ -178,9 +160,6 @@ impl PreferencesPatch {
         let before = prefs.clone();
         if let Some(v) = &self.default_look {
             prefs.default_look = v.clone();
-        }
-        if let Some(v) = &self.display_rendering {
-            prefs.display_rendering = v.clone();
         }
         if let Some(v) = &self.export_defaults {
             prefs.export_defaults = v.clone();
@@ -428,9 +407,6 @@ pub fn parse(text: &str) -> ParsedPreferences {
     let mut p = Preferences::default();
     if let Some(v) = take(&mut map, "default_look", &mut warnings) {
         p.default_look = v;
-    }
-    if let Some(v) = take(&mut map, "display_rendering", &mut warnings) {
-        p.display_rendering = v;
     }
     if let Some(v) = take_struct(&mut map, "export_defaults", &mut warnings) {
         p.export_defaults = v;
@@ -698,7 +674,6 @@ mod tests {
         assert_eq!(p.default_look.as_str(), DEFAULT_LOOK);
         assert_eq!(DEFAULT_LOOK, "builtin:signature");
         assert_eq!(NEUTRAL_LOOK, "builtin:neutral");
-        assert_eq!(p.display_rendering, DisplayRendering::Aces2);
         assert_eq!(p.export_defaults, ExportOptions::default());
         assert!(!p.remove_location_from_exports);
         assert!(p.check_for_updates_automatically);
@@ -1014,7 +989,6 @@ mod tests {
             json,
             serde_json::json!({
                 "default_look": "builtin:signature",
-                "display_rendering": { "kind": "aces2" },
                 "export_defaults": {
                     "format": "jpeg", "jpeg_quality": 92, "bit_depth": 16, "tiff_compression": "lzw",
                     "color_space": "srgb", "size": { "kind": "full" }, "destination": null,
@@ -1029,13 +1003,49 @@ mod tests {
                 "apple_auto_instructions": ""
             })
         );
-        let arri = DisplayRendering::ArriDisplay {
-            id: LookId::parse("arri-display:logc4:rec709-g24").expect("id"),
-        };
-        assert_eq!(
-            serde_json::to_value(&arri).expect("json"),
-            serde_json::json!({ "kind": "arri_display", "id": "arri-display:logc4:rec709-g24" })
+    }
+
+    /// Yellowmoon no longer offers ARRI's display LUT as the rendering (owner's decision of
+    /// 2026-10-29). A file saved by an earlier version still holds the choice: it is read as
+    /// nothing, with no warning, and the next change leaves it out of the file.
+    #[test]
+    fn a_saved_choice_of_arris_display_rendering_is_ignored_and_dropped_on_the_next_change() {
+        let dir = root();
+        let path = dir.path().join(FILE_NAME);
+        std::fs::write(
+            &path,
+            r#"{
+                "default_look": "arri:3000:film",
+                "display_rendering": { "kind": "arri_display", "id": "arri-display:logc4:rec709-g24" },
+                "check_for_updates_automatically": false
+            }"#,
+        )
+        .expect("write");
+        let before = std::fs::read(&path).expect("read");
+        let store = PreferencesStore::open(dir.path());
+        assert!(store.warnings().is_empty(), "{:?}", store.warnings());
+        let read = store.get();
+        assert_eq!(read.default_look.as_str(), "arri:3000:film");
+        assert!(!read.check_for_updates_automatically);
+        // Reading changes nothing on disk.
+        assert_eq!(std::fs::read(&path).expect("read"), before);
+
+        let next = store
+            .update(&PreferencesPatch {
+                remove_location_from_exports: Some(true),
+                ..PreferencesPatch::default()
+            })
+            .expect("saved");
+        assert!(next.remove_location_from_exports);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("json");
+        assert!(saved.get("display_rendering").is_none(), "{saved}");
+        assert_eq!(saved["default_look"], "arri:3000:film");
+        // The patch type has no such field any more: a script that still sends one is told.
+        let patch: Result<PreferencesPatch, _> = serde_json::from_str(
+            r#"{ "display_rendering": { "kind": "arri_display", "id": "arri-display:logc4:rec709-g24" } }"#,
         );
+        assert!(patch.is_err());
     }
 
     #[test]
@@ -1120,8 +1130,7 @@ mod tests {
                 "default_look": "not a look id",
                 "check_for_updates_automatically": false,
                 "export_defaults": { "format": "tiff", "jpeg_quality": 12, "bit_depth": 8 },
-                "last_used_folders": { "open": 5, "export": "/tmp/x" },
-                "display_rendering": { "kind": "mystery" }
+                "last_used_folders": { "open": 5, "export": "/tmp/x" }
             }"#,
         );
         assert_eq!(
@@ -1137,8 +1146,7 @@ mod tests {
             p.preferences.last_used_folders.export,
             Some(PathBuf::from("/tmp/x"))
         );
-        assert_eq!(p.preferences.display_rendering, DisplayRendering::Aces2);
-        assert_eq!(p.warnings.len(), 4, "{:?}", p.warnings);
+        assert_eq!(p.warnings.len(), 3, "{:?}", p.warnings);
         assert!(p.warnings.iter().any(|w| w.contains("jpeg_quality")));
     }
 

@@ -449,7 +449,13 @@ mod tests {
                 "zip_name": [ { "all_of": ["look", "logc4"], "none_of": ["logc3"] } ],
                 "expected": { "cube_files": 3, "lut_sizes": [5] },
                 "markers": { "encoding": { "any_of": ["logc4"], "none_of": ["logc3"] },
-                             "display_rendering": "absent", "group_folders": "required" } }
+                             "display_rendering": "absent", "group_folders": "required" } },
+              { "id": "display-luts-logc4", "title": "Display LUTs · LogC4", "role": "display_luts",
+                "input": "logc4",
+                "zip_name": [ { "all_of": ["display", "logc4"], "none_of": ["logc3"] } ],
+                "expected": { "cube_files": 2 },
+                "markers": { "encoding": { "any_of": ["logc4"], "none_of": ["logc3"] },
+                             "display_rendering": "required", "group_folders": "absent" } }
             ] }"#,
         )
         .expect("package list")
@@ -545,6 +551,67 @@ mod tests {
                 ..
             } => assert!(note.is_none(), "{note:?}"),
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// Owner's decision of 2026-10-29: ARRI's display LUTs are not imported. A person who chooses
+    /// the package anyway is told in one sentence, and the wizard never offers it as a package.
+    #[test]
+    fn a_package_of_display_luts_is_unusable_and_the_row_says_why() {
+        let dir = tempfile::tempdir().expect("dir");
+        let folder = dir.path().join("Display_LUTs_LogC4");
+        write_cube(&folder, "LogC4_to_Gamma24_Rec709.cube", "a");
+        write_cube(&folder, "LogC4_to_P3_D65.cube", "b");
+        match recognise(&db(), &folder).recognition {
+            Recognition::Unusable { reason, package_id } => {
+                assert_eq!(
+                    reason,
+                    "This package has only display renderings. Yellowmoon uses its own rendering, so there is nothing to import."
+                );
+                // Not a package of the wizard: nothing for it to ask to download again.
+                assert_eq!(package_id, None);
+            }
+            other => panic!("expected an unusable source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn display_luts_beside_the_looks_are_left_out_and_the_row_says_so() {
+        let dir = tempfile::tempdir().expect("dir");
+        let folder = dir.path().join("ARRI downloads");
+        for (group, name) in [
+            ("Look_Library_LogC4/3000 Film", "Film_Warm_LogC4.cube"),
+            ("Look_Library_LogC4/3000 Film", "Film_Cool_LogC4.cube"),
+            ("Look_Library_LogC4/4000 Mono", "Mono_LogC4.cube"),
+        ] {
+            write_cube(&folder.join(group), name, name);
+        }
+        write_cube(
+            &folder.join("Display_LUTs_LogC4"),
+            "LogC4_to_Gamma24_Rec709.cube",
+            "a",
+        );
+        write_cube(
+            &folder.join("Display_LUTs_LogC4"),
+            "LogC4_to_P3_D65.cube",
+            "b",
+        );
+        match recognise(&db(), &folder).recognition {
+            Recognition::Package {
+                package_id: PackageId::LookLibraryLogc4,
+                file_count: 3,
+                note: Some(note),
+                ..
+            } => {
+                assert!(
+                    note.contains(
+                        "2 files are display renderings, so they were left out. Yellowmoon uses its own rendering."
+                    ),
+                    "{note}"
+                );
+                assert!(!note.contains("other package"), "{note}");
+            }
+            other => panic!("expected the look package with a note, got {other:?}"),
         }
     }
 

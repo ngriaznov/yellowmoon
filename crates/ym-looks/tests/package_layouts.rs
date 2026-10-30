@@ -449,15 +449,19 @@ fn display_luts_named_the_way_arri_names_them() {
         write_zip(&zip, &entries);
         let db = small_db(4);
         let r = inspect(&zip, &db, None, &mut no_progress()).unwrap();
-        assert_eq!(r.verdict(), Verdict::Ready, "{zip_name}: {:?}", r.issues);
-        assert_eq!(r.packages[0].id, "display-luts-logc4", "{zip_name}");
+        // Recognised as the display package by its name (all four files, both meshes of a
+        // target), and said to hold nothing to import: no package is listed, no entry is made.
+        assert_eq!(r.verdict(), Verdict::Blocked, "{zip_name}: {:?}", r.issues);
+        assert!(r.packages.is_empty(), "{zip_name}: {:?}", r.packages);
+        assert_eq!(r.display_lut_count(), 4, "{zip_name}");
         assert!(
             r.files
                 .iter()
-                .all(|f| matches!(f.outcome, Outcome::ArriDisplay { .. }))
+                .all(|f| matches!(&f.outcome, Outcome::ArriDisplay { package, .. } if package == "display-luts-logc4")),
+            "{zip_name}"
         );
         let mut library = open_library(&work.path().join(format!("app-{zip_name}")));
-        let report = import(
+        let err = import(
             &mut library,
             &db,
             &zip,
@@ -465,13 +469,9 @@ fn display_luts_named_the_way_arri_names_them() {
             &ImportOptions::default(),
             &mut no_progress(),
         )
-        .unwrap();
-        assert_eq!(
-            report.added.len(),
-            4,
-            "{zip_name}: both meshes of a target are kept"
-        );
-        assert_eq!(library.display_luts().len(), 4);
+        .unwrap_err();
+        assert!(err.to_string().contains("only display renderings"), "{err}");
+        assert!(library.looks().iter().all(|l| l.id.prefix() == "builtin"));
     }
 }
 

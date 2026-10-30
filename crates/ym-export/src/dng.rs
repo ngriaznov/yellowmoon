@@ -30,10 +30,9 @@
 //! sharpening is off for both renders of a DNG (the raw pixels and the preview), and output sharpening is
 //! never applied; `BaselineSharpness` is 1.0, the state of any camera's raw data, so the converter's own
 //! sharpening is the only sharpening the photo gets. The display rendering is not in the pixels: Adobe's
-//! renderer applies the fitted profile (ACES 2) and the display placement carried by `BaselineExposure`.
-//! The exception is a picture whose display rendering is not ours (a look with its own, or an imported
-//! display LUT): its pixels are the scene values that ACES 2 turns into that picture, approximately
-//! ([`OWN_DISPLAY_NOTE`]).
+//! renderer applies the fitted profile (the cine rendering) and the white level carried by `BaselineExposure`.
+//! The exception is a picture whose display rendering is not ours (a look with its own): its pixels
+//! are the scene values that the cine rendering turns into that picture, approximately ([`OWN_DISPLAY_NOTE`]).
 //!
 //! # Pixel scaling
 //!
@@ -44,17 +43,16 @@
 //! edge of the matching bin of a histogram with 2048 bins per octave (a relative resolution of
 //! 0.05 %), so at least 99.99 % of the pixels are at or below it and the result does not depend on
 //! the thread count. Negative values are clipped to 0 and the clipped fractions are reported in
-//! [`DngReport`]. `BaselineExposure` is `log2(x_white)` plus a fitted offset plus the display placement
-//! ([`BaselineExposure`]), so Adobe's renderer sees the original scene-linear values, brightened by
-//! the placement the app applies before ACES 2 (`docs/02` C12 step 1a). A reader that
+//! [`DngReport`]. `BaselineExposure` is `log2(x_white)` plus a fitted offset ([`BaselineExposure`]; the
+//! rendering has no display placement), so Adobe's renderer sees the original scene-linear values. A reader that
 //! ignores `BaselineExposure` and the profile shows the stored image darker by the white level (4 EV for
 //! the usual 16).
 //!
 //! # The fitted profile
 //!
 //! [`fitted::FittedProfile::embedded`] is `data/dng/profile.json`, compiled into the binary: the tone curve
-//! and look table fitted to ACES 2 with Adobe's renderer, and the offset `-4`. The app and the CLI both
-//! write it, with `BaselineExposure::Auto { fit_offset_ev, placement_ev }` (see
+//! and look table fitted to the cine rendering with Adobe's renderer, and the offset `-4`. The app and the CLI both
+//! write it, with `BaselineExposure::Auto { fit_offset_ev }` (see
 //! [`fitted::FittedProfile::baseline_exposure`]).
 //!
 //! The 90-degree orientation steps go into the TIFF `Orientation` tag; pixels are not rotated, and
@@ -94,9 +92,9 @@ pub const OTHER_APPS_NOTE: &str = "Apps other than Adobe's show the stored linea
 /// One sentence for the DNG export help text (the CLI's `--format dng` help and the export panel, shown
 /// by the panel when the job has such a look), `docs/09`.
 ///
-/// A look that includes its own display rendering (LogC3 to Rec.709), or an imported ARRI display LUT,
-/// has no scene-linear form: the DNG's pixels are the scene values that ACES 2 turns into that picture,
-/// which Adobe's renderer shows approximately (`ym_color::display::ColorChain::apply_dng_pixel`).
+/// A look that includes its own display rendering (LogC3 to Rec.709) has no scene-linear form: the
+/// DNG's pixels are the scene values that the cine rendering turns into that picture, which Adobe's renderer
+/// shows approximately (`ym_color::display::ColorChain::apply_dng_pixel`).
 pub const OWN_DISPLAY_NOTE: &str = "With a look that includes its own display rendering, the DNG is close to, not the same as, the picture you see.";
 
 /// `UniqueCameraModel`: keeps Lightroom from substituting Adobe's Sony profiles.
@@ -345,9 +343,6 @@ fn check_baseline_exposure(b: BaselineExposure) -> Result<(), ExportError> {
                 FIT_OFFSET_RANGE_EV.end()
             )))
         }
-        BaselineExposure::Auto { placement_ev, .. } if !placement_ev.is_finite() => Err(
-            ExportError::invalid("the baseline exposure placement isn't a number"),
-        ),
         _ => Ok(()),
     }
 }
@@ -769,7 +764,6 @@ mod tests {
         let (w, h) = (100_u32, 100_u32);
         let fitted = BaselineExposure::Auto {
             fit_offset_ev: -4.0,
-            placement_ev: 0.0,
         };
         // A dim photo: x_white is the floor, 16, and BaselineExposure log2(16) - 4 = 0.
         let dim = raw_image(w, h, |x, _| [x as f32 / 200.0, 0.1, 0.0]);
@@ -793,18 +787,9 @@ mod tests {
         assert!(fitted.resolve_ev(x) > 1.3);
         // An offset the writer cannot use is refused.
         for bad in [f64::NAN, f64::INFINITY, -30.0, 9.0] {
-            let b = BaselineExposure::Auto {
-                fit_offset_ev: bad,
-                placement_ev: 0.0,
-            };
+            let b = BaselineExposure::Auto { fit_offset_ev: bad };
             assert!(white_level(&img, b).is_err(), "{bad}");
         }
-        // A placement that is not a number is refused too.
-        let b = BaselineExposure::Auto {
-            fit_offset_ev: -4.0,
-            placement_ev: f64::NAN,
-        };
-        assert!(white_level(&img, b).is_err());
     }
 
     #[test]

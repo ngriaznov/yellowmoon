@@ -34,10 +34,10 @@ use crate::thumbs::Thumbnails;
 use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
     AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, CliLinkResult,
-    CliLinkStatus, CropAspect, CropSuggestion, DisplayLut, ErrorScope, ExportEstimate, ExportJob,
-    ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress,
-    LooksImportResult, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample,
-    Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
+    CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate, ExportJob, ExportJobId,
+    HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress, LooksImportResult,
+    OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample, Preferences,
+    PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
     SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
     WatchStatus, convert,
 };
@@ -936,15 +936,6 @@ impl AppApi {
         recognise(self.core.looks.packages(), Path::new(path))
     }
 
-    /// `looks_display_luts`.
-    ///
-    /// # Errors
-    ///
-    /// [`AppError`] only if the shapes disagree (a bug).
-    pub fn looks_display_luts(&self) -> Result<Vec<DisplayLut>, AppError> {
-        convert(&self.core.looks_display_luts())
-    }
-
     /// `looks_watch_downloads`: starts or stops the Downloads watcher.
     #[must_use]
     pub fn looks_watch_downloads(&self, enabled: bool) -> WatchStatus {
@@ -1021,7 +1012,7 @@ impl AppApi {
     /// # Errors
     ///
     /// [`AppError`] with a plain sentence: no photos in the scope, photos of the scope that have
-    /// no estimates yet ("Some photos are still being developed…"), a display LUT that is gone.
+    /// no estimates yet ("Some photos are still being developed…").
     pub fn export_start(&self, job: &ExportJob) -> Result<ExportJobId, AppError> {
         let job: CoreExportJob = convert(job)?;
         // Held while the job is queued: a restart that has begun (and found no export) is not
@@ -1116,13 +1107,11 @@ impl AppApi {
     ///
     /// # Errors
     ///
-    /// [`AppError`] for a default look that isn't in the library, a display LUT that isn't
-    /// imported, or a file that cannot be saved; nothing changes then.
+    /// [`AppError`] for a default look that isn't in the library or a file that cannot be saved;
+    /// nothing changes then.
     pub fn preferences_set(&self, patch: &PreferencesPatch) -> Result<Preferences, AppError> {
         let patch: ym_core::preferences::PreferencesPatch = convert(patch)?;
         let next = self.core.preferences_set(&patch).map_err(AppError::from)?;
-        // The display rendering may have changed what the viewport shows.
-        self.viewport.invalidate();
         convert(&next)
     }
 

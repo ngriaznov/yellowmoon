@@ -92,7 +92,51 @@ fn list_shows_the_built_in_looks_with_signature_as_the_default() {
             "{look}"
         );
     }
-    assert_eq!(v["display_luts"], serde_json::json!([]));
+    // ARRI's display LUTs are not imported any more: the list has no such section.
+    assert!(v.get("display_luts").is_none(), "{v}");
+}
+
+#[test]
+fn a_folder_of_arris_display_luts_has_nothing_to_import_and_writes_nothing() {
+    let sb = Sandbox::new();
+    let dir = sb.root().join("LogC4 Display LUTs");
+    std::fs::create_dir_all(&dir).expect("folder");
+    for name in ["LogC4_to_Gamma24_Rec709.cube", "LogC4_to_P3_D65.cube"] {
+        std::fs::write(dir.join(name), cube(name, 1.0)).expect("write");
+    }
+    sb.ym()
+        .args(["looks", "import"])
+        .arg(&dir)
+        .assert()
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "This package has only display renderings. Yellowmoon uses its own rendering, so there is nothing to import.",
+        ));
+    assert!(
+        names_in(&sb.home()).is_empty(),
+        "nothing was written: {:?}",
+        names_in(&sb.home())
+    );
+
+    // With a look beside them, the look comes in and the others are left out, said once.
+    let mixed = sb.root().join("mixed");
+    std::fs::create_dir_all(&mixed).expect("folder");
+    for name in ["LogC4_to_Gamma24_Rec709.cube", "LogC4_to_P3_D65.cube"] {
+        std::fs::write(mixed.join(name), cube(name, 1.0)).expect("write");
+    }
+    std::fs::write(mixed.join("warm.cube"), cube("Warm", 0.9)).expect("write");
+    sb.ym()
+        .args(["looks", "import", "--input", "logc4"])
+        .arg(&mixed)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"^user:warm\n$").expect("regex"))
+        .stderr(predicate::str::contains(
+            "2 files are display renderings, so they were left out. Yellowmoon uses its own rendering.",
+        ))
+        .stderr(predicate::str::contains("Imported 1 look."));
+    assert!(!sb.home().join("looks").join("arri-display").exists());
 }
 
 #[test]

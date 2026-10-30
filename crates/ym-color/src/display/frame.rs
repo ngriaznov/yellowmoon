@@ -341,8 +341,8 @@ impl ColorChain {
     }
 
     /// Renders the DNG's pixels ([`ColorChain::apply_dng_pixel`]): C1 to C11 decoded back to linear
-    /// AWG4 (f32, unclipped), or, when C12 is not our ACES 2 ([`ColorChain::dng_inverts_display`]),
-    /// the scene values that ACES 2 turns into the chain's picture.
+    /// AWG4 (f32, unclipped), or, when C12 is not the cine rendering ([`ColorChain::dng_inverts_display`]),
+    /// the scene values that the cine rendering turns into the chain's picture.
     ///
     /// # Errors
     ///

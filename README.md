@@ -57,7 +57,7 @@ In short: estimate the light, translate what the Sony sensor recorded into what 
 3. **Sensor map.** A 3×3 matrix built for that light (blended by light type and colour temperature) turns white-balanced Sony RGB into the RGB an ALEV III sensor would have recorded. It is fitted from Weta's measured Sony spectral sensitivities and my own estimate of the ALEV III curves, which I publish.
 4. **ALEXA colour.** From there it follows the ALEXA's own path: ARRI's published camera matrices for 17 colour temperatures (interpolated in mired) into ARRI Wide Gamut 3, then Wide Gamut 4 and exposure. White balance, the sensor map and this step fold into one 3×3 matrix per photo, so colour changes are instant.
 5. **Grade and look.** The highlight range (where the camera's clipping point lands, up to an ALEXA's at EI 800), then LogC4 (ARRI's log encoding), where contrast, colour balance, curves and looks work as in a grading suite. A look is a CDL plus a 3D LUT; ARRI's free Look Library imports directly.
-6. **Display.** The ACES 2.0 output transform (or ARRI's own display LUT, once imported) renders the result for your screen or the export colour space.
+6. **Display.** Our own display rendering (a tone curve and a few colour terms, written as plain formulas) renders the result for your screen or the export colour space.
 
 The details, with every constant and gate, are in `docs/02-colour-pipeline.md`.
 

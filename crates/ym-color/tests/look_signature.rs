@@ -508,15 +508,12 @@ fn intensity_zero_is_neutral_and_one_hundred_is_the_look_exactly() {
 
 fn plain_chain(look: Option<LookSetting>) -> ColorChain {
     // Camera RGB is linear AWG4 (identity matrix), C7 off, no grade, no curves: only the look and the
-    // display transform (ACES 2 with the placement) act, sRGB output, no dither.
+    // display transform (the cine rendering) act, sRGB output, no dither.
     let identity: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let tone = ToneParams::IDENTITY;
     let mut p = ChainParams::new(identity, tone);
     p.look = look;
     p.output = OutputTarget::Srgb;
-    // These tests are about the cube and the look's LogC4 values: the red chroma step (C12 step 1c; Signature
-    // lets none of it through, Neutral all of it) is off for both sides.
-    p.red_chroma = false;
     p.dither = false;
     ColorChain::new(&p).expect("chain")
 }
@@ -726,53 +723,5 @@ fn the_look_curve_is_the_curve_tab_spline() {
     for i in 0..=1000 {
         let x = f64::from(i) / 1000.0;
         assert_eq!(again.eval(x), from_look.eval(x));
-    }
-}
-
-/// Signature lets none of the red chroma step (C12 step 1c) through (`red_chroma` up 0 and dark relief 0 in
-/// its file, an owner decision pending for its dark reds): its pictures are bit for bit the plain ACES 2
-/// chain's of before the step existed, and Neutral's are not.
-#[test]
-fn signature_renders_bit_for_bit_as_before_the_red_chroma_step() {
-    let look = signature();
-    assert!(look.red_chroma().is_off(), "{:?}", look.red_chroma());
-    let transform = Arc::new(look.to_transform().expect("bakes"));
-    assert!(transform.red_chroma().is_off());
-    for output in [
-        OutputTarget::Srgb,
-        OutputTarget::Viewport,
-        OutputTarget::Rec2020,
-    ] {
-        let mk = |red_chroma: bool| {
-            let identity: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-            let mut p = ChainParams::new(identity, ToneParams::IDENTITY);
-            p.look = Some(LookSetting::new(Arc::clone(&transform), 100.0));
-            p.output = output;
-            p.red_chroma = red_chroma;
-            ColorChain::new(&p).expect("chain")
-        };
-        let (with_step, without) = (mk(true), mk(false));
-        assert_eq!(with_step.red_chroma(), None);
-        let mut scenes = neutral_ramp();
-        scenes.extend(colour_sweep());
-        scenes.extend(random_scene(3000, 0x51_68));
-        let mut reds_moved_for_neutral = 0;
-        let neutral = {
-            let identity: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-            let mut p = ChainParams::new(identity, ToneParams::IDENTITY);
-            p.output = output;
-            ColorChain::new(&p).expect("chain")
-        };
-        for &px in &scenes {
-            assert_eq!(with_step.trace(px), without.trace(px), "{output:?} {px:?}");
-            let plain = Arc::new(LookTransform::neutral());
-            let _ = plain;
-            reds_moved_for_neutral += usize::from(
-                neutral.trace(px).c12_display_linear
-                    != plain_chain(None).trace(px).c12_display_linear,
-            );
-        }
-        // Neutral gets the step: it moves colours (the helper `plain_chain` has it off).
-        assert!(reds_moved_for_neutral > 100, "{reds_moved_for_neutral}");
     }
 }

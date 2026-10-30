@@ -6,7 +6,7 @@ import { Label } from "@/components/glass/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/glass/select";
 import { Textarea } from "@/components/glass/textarea";
 import type { AutoProvider, AutoStatus, ProviderStatus } from "../../api/types";
-import { Button, LinkButton, RowNote, Segmented, Switch } from "../../components";
+import { Button, LinkButton, RowNote, Switch } from "../../components";
 import { exportModel } from "../../export/model";
 import {
   AUTO_GRADING_TITLE,
@@ -29,7 +29,6 @@ import {
 import { useAppState, useStore } from "../../state/context";
 import type { AppStore } from "../../state/store";
 import { lookLabeller } from "../../state/looks";
-import { preferredDisplayLut } from "../../wizard/model";
 import { ExportOptionsForm } from "../export/ExportOptionsForm";
 import { Dialog } from "./Dialog";
 
@@ -338,7 +337,6 @@ export function Preferences() {
   const store = useStore();
   const prefs = useAppState((s) => s.preferences);
   const looks = useAppState((s) => s.looks);
-  const luts = useAppState((s) => s.displayLuts);
   const cli = useAppState((s) => s.cliLink);
   const auto = useAppState((s) => s.auto);
   const os = useAppState((s) => s.os);
@@ -356,8 +354,6 @@ export function Preferences() {
   // A title that two libraries share says which one it is ("Film · LogC3"), since the list stands without its sections.
   const label = lookLabeller(looks ?? []);
   const lookOptions = (looks ?? []).filter((l) => !l.missing).map((l) => ({ value: l.id, label: label(l) }));
-  const arriLut = preferredDisplayLut(luts);
-  const usingArri = prefs?.display_rendering.kind === "arri_display";
 
   return (
     <Dialog
@@ -392,26 +388,6 @@ export function Preferences() {
                 ))}
               </SelectContent>
             </Select>
-          </Row>
-          <Row
-            title="Display rendering"
-            hint={arriLut ? "How log becomes a picture." : "Import ARRI's display LUTs to use them here."}
-          >
-            <Segmented
-              fit
-              label="Display rendering"
-              size="md"
-              value={usingArri ? "arri" : "ours"}
-              onChange={(next) =>
-                void store.setPreferences({
-                  display_rendering: next === "arri" && arriLut ? { kind: "arri_display", id: arriLut.id } : { kind: "aces2" },
-                })
-              }
-              options={[
-                { value: "ours", label: "Ours · ACES 2" },
-                { value: "arri", label: "ARRI's", disabled: !arriLut, ariaLabel: arriLut ? "ARRI's display rendering" : "ARRI's display rendering, not imported" },
-              ]}
-            />
           </Row>
           {auto !== null && autoRowShown(auto) ? <AutoGrading store={store} auto={auto} saved={prefs.apple_auto_instructions} os={os} /> : null}
           <Row title="Export defaults" hint="Format, quality, size, where files go and how they are named.">

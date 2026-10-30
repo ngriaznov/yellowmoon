@@ -60,14 +60,6 @@
 //! exposure, [`jpeg_median_luminance`] the median `Y` of the decoded JPEG (sRGB decoded to linear light,
 //! Rec.709 luminance), [`exposure_error_ev`] their ratio in stops and [`evaluate_gate`] the pass rate and
 //! the outliers for review. Decoding the JPEG and reading the files is the caller's job.
-//!
-//! # The white lift
-//!
-//! [`white`] holds the other automatic estimate that is made on the same preview: the per-photo lift of
-//! the tones above +1 stop over middle grey (`docs/02`, C12 step 1b), its scene-linear stage
-//! ([`white::WhiteLift`]) and its estimator ([`white::estimate_white`]).
-
-pub mod white;
 
 use serde::{Deserialize, Serialize};
 

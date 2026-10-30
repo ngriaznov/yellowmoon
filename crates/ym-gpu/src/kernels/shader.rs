@@ -6,10 +6,7 @@ use std::fmt::Write as _;
 use ym_color::consts::{
     LOGC3_EI800, LOGC4, LOGC4_GRAY, LOGC4_STOP, REC709_LUMA_WEIGHTS, linalg::Mat3,
 };
-use ym_color::display::aces2_input_matrix;
-use ym_color::display::red_chroma as rc;
-use ym_color::exposure::TARGET_GREY;
-use ym_color::exposure::white;
+use ym_color::display::cine;
 use ym_color::gamut::{awg4_luminance_row, matrices};
 use ym_color::grade::{
     BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, CONTRAST_BLACK, CONTRAST_COLOR,
@@ -21,7 +18,6 @@ use ym_color::warp::{
     WARP_EXP_LIMIT, WARP_MAX_PINS, WARP_MAX_STEPS, WARP_NEUTRAL_GUARD, WARP_TONE_HALF_WIDTH,
 };
 
-use super::aces;
 use super::color::{WARP_LOCK_ROWS, WARP_MOVE_ROWS};
 use crate::device::StorageMode;
 
@@ -643,32 +639,14 @@ fn placeholder_body(id: KernelId) -> String {
     )
 }
 
-/// Offsets (in f32 elements) of the sections of the `tables` storage buffer of the colour kernel
-/// (the dither thresholds, then the ACES 2 tables of one output).
+/// Offsets (in f32 elements) of the sections of the `tables` storage buffer of the colour kernel (the dither
+/// thresholds; the four 1024-entry curve tables are a buffer of their own, so that a curve edit refills 16 KB
+/// and nothing else).
 pub(crate) mod table {
     /// Dither thresholds, 64 x 64.
     pub const DITHER: usize = 0;
     /// Entries of the dither section.
     pub const DITHER_ENTRIES: usize = 64 * 64;
-    /// First ACES 2 table: reach M. (The four 1024-entry curve tables are a buffer of their own, so
-    /// that a curve edit refills 16 KB and nothing else.)
-    pub const ACES: usize = DITHER_ENTRIES;
-    /// Entries per ACES 2 hue table (`ym_color`'s `TOTAL_TABLE_SIZE`: wrap entries included).
-    pub const ACES_ENTRIES: usize = ym_color::aces2::TOTAL_TABLE_SIZE;
-    /// The red chroma step's tables (`ym_color::display::red_chroma`), after the ACES 2 tables: one set per
-    /// limiting gamut, Rec.709 then P3-D65 (`RedGamut::index`), each the neutral-axis table `YD`
-    /// followed by the gamut edge table `CMAX`. Every output's buffer holds both sets, because the pixels
-    /// of a DNG use P3-D65 whatever the output.
-    pub const RC: usize = ACES + 5 * ACES_ENTRIES;
-    /// Entries of the neutral-axis table in a set.
-    pub const RC_YD_ENTRIES: usize = ym_color::display::red_chroma::YD_LEN;
-    /// Entries of the gamut edge table in a set: 41 rows of 72.
-    pub const RC_CMAX_ENTRIES: usize =
-        ym_color::display::red_chroma::CMAX_L_ROWS * ym_color::display::red_chroma::CMAX_H_COLS;
-    /// Entries of one set.
-    pub const RC_SET: usize = RC_YD_ENTRIES + RC_CMAX_ENTRIES;
-    /// Total f32 elements.
-    pub const TOTAL: usize = RC + 2 * RC_SET;
 }
 
 fn f(x: f64) -> String {
@@ -721,8 +699,6 @@ fn constants() -> String {
         ("CONTRAST_NEUTRAL", CONTRAST_NEUTRAL_CHROMA),
         ("SAT_CODE_LIMIT", SATURATION_CODE_LIMIT),
         ("HIGHLIGHT_GREY", HIGHLIGHT_GREY),
-        ("WHITE_LIFT_KNEE", white::KNEE_EV),
-        ("WHITE_LIFT_GREY", TARGET_GREY),
         ("WARP_NEUTRAL_GUARD", WARP_NEUTRAL_GUARD),
         ("WARP_TONE_HALF_WIDTH", WARP_TONE_HALF_WIDTH),
         ("WARP_EXP_LIMIT", WARP_EXP_LIMIT),
@@ -739,8 +715,7 @@ fn constants() -> String {
     ] {
         let _ = writeln!(s, "const {n}: u32 = {v}u;");
     }
-    // The luma of C7's highlight range (`ym_color::tone::luma`) and of the white lift
-    // (`ym_color::exposure::white::drive_luma`, the same weights).
+    // The luma of C7's highlight range (`ym_color::tone::luma`).
     let _ = writeln!(
         s,
         "const LUMA_709: vec3<f32> = {};",
@@ -753,81 +728,32 @@ fn constants() -> String {
         "const Y_AWG4: vec3<f32> = {};",
         vec3_row(&awg4_luminance_row())
     );
-    // The red chroma step (C12 step 1c, `ym_color::display::red_chroma`): its constants, the Lab white, the
-    // AWG4 and XYZ matrices and the sizes of its tables.
-    for (n, v) in [
-        ("RC_GREY", rc::GREY),
-        ("RC_Y_MIN", rc::Y_MIN),
-        ("RC_S_MAX", rc::S_MAX),
-        ("RC_YD_S_MIN", rc::YD_S_MIN),
-        ("RC_YD_STEP", rc::YD_STEP),
-        ("RC_YD_FLOOR", rc::YD_FLOOR),
-        ("RC_CMAX_L_STEP", rc::CMAX_L_STEP),
-        ("RC_CMAX_H_STEP", rc::CMAX_H_STEP),
-        ("RC_FADE_LO", rc::FADE_LO),
-        ("RC_FADE_HI", rc::FADE_HI),
-        ("RC_WIN_A", rc::WINDOW_A),
-        ("RC_WIN_B", rc::WINDOW_B),
-        ("RC_WIN_E_LO", rc::WINDOW_E_LO),
-        ("RC_WIN_E_HI", rc::WINDOW_E_HI),
-        ("RC_S0", rc::PROFILE_S0),
-        ("RC_UP", rc::PROFILE_UP),
-        ("RC_DARK", rc::PROFILE_DARK),
-        ("RC_TAU", rc::PROFILE_TAU),
-        ("RC_K_MAX", rc::K_MAX),
-        ("RC_KNEE", rc::KNEE),
-        ("RC_KAPPA_C0", rc::KAPPA_C0),
-        ("RC_KAPPA_CMIN", rc::KAPPA_CMIN),
-        ("RC_KAPPA_POW", rc::KAPPA_POW),
-        ("RC_KAPPA_LO", rc::KAPPA_LO),
-        ("RC_KAPPA_HI", rc::KAPPA_HI),
-        ("RC_CAP_AT", rc::CAP_KAPPA_AT),
-        ("RC_CMAX_FLOOR", rc::CMAX_FLOOR),
-        ("RC_RAMP_EPS", rc::RAMP_EPS),
-        ("RC_C_TINY", rc::C_TINY),
-        ("RC_LAB_EPS", rc::LAB_EPSILON),
-        ("RC_LAB_KAPPA", rc::LAB_KAPPA),
-    ] {
-        let _ = writeln!(s, "const {n}: f32 = {};", f(v));
+    // The cine rendering (C12, `ym_color::display::cine`): its constants from the generated Rust table, the numeric
+    // settings and the values the equations derive from them, and the six hue-harmonic arrays as two vec3 each.
+    for (n, v) in cine::kernel_scalars() {
+        let _ = writeln!(s, "const CINE_{n}: f32 = {};", f(v));
     }
-    for (n, v) in [
-        ("RC_YD_LEN", rc::YD_LEN),
-        ("RC_CMAX_L_ROWS", rc::CMAX_L_ROWS),
-        ("RC_CMAX_H_COLS", rc::CMAX_H_COLS),
-        ("T_RC", table::RC),
-        ("RC_SET", table::RC_SET),
-    ] {
-        let _ = writeln!(s, "const {n}: u32 = {v}u;");
+    for (n, k) in cine::kernel_harmonics() {
+        let _ = writeln!(
+            s,
+            "const CINE_{n}_A: vec3<f32> = vec3<f32>({}, {}, {});",
+            f(k[0]),
+            f(k[1]),
+            f(k[2])
+        );
+        let _ = writeln!(
+            s,
+            "const CINE_{n}_B: vec3<f32> = vec3<f32>({}, {}, {});",
+            f(k[3]),
+            f(k[4]),
+            f(k[5])
+        );
     }
-    let _ = writeln!(
-        s,
-        "const RC_WHITE: vec3<f32> = {};",
-        vec3_row(&rc::LAB_WHITE)
-    );
     s.push_str(&rows("AWG4_TO_XYZ", &m.awg4_to_xyz));
     s.push_str(&rows("XYZ_TO_AWG4", &m.xyz_to_awg4));
     s.push_str(&rows("AWG4_TO_AWG3", &m.awg4_to_awg3));
     s.push_str(&rows("AWG3_TO_AWG4", &m.awg3_to_awg4));
-    // The ACES 2 path's input matrix: AWG4 to AP0 with the display placement 2^k folded in
-    // (`docs/02` C12 step 1a). The only use of this constant is `display_ours`, so the CPU reference
-    // (`PreparedDisplay`) and the kernel apply the same numbers from one Rust constant.
-    s.push_str(&rows("AWG4_TO_AP0", &aces2_input_matrix()));
-    s.push_str(&rows("AP0_TO_AP1", &aces::ap0_to_ap1()));
-    s.push_str(&rows("AP1_TO_AP0", &aces::ap1_to_ap0()));
     let _ = writeln!(s, "const T_DITHER: u32 = {}u;", table::DITHER);
-    let _ = writeln!(s, "const T_ACES: u32 = {}u;", table::ACES);
-    let _ = writeln!(s, "const T_ACES_N: u32 = {}u;", table::ACES_ENTRIES);
-    // The geometry of the ACES 2 hue tables, from the CPU reference that builds them.
-    let _ = writeln!(
-        s,
-        "const BASE_INDEX: u32 = {}u;",
-        ym_color::aces2::BASE_INDEX
-    );
-    let _ = writeln!(
-        s,
-        "const UPPER_WRAP_INDEX: u32 = {}u;",
-        ym_color::aces2::UPPER_WRAP_INDEX
-    );
     s
 }
 

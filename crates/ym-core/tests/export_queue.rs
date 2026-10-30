@@ -434,13 +434,6 @@ impl LookProvider for Looks {
             )),
         }
     }
-
-    fn display_transform(
-        &self,
-        id: &LookId,
-    ) -> Result<(ym_color::display::DisplayTransform, String), LookProblem> {
-        NeutralOnly.display_transform(id)
-    }
 }
 
 #[test]

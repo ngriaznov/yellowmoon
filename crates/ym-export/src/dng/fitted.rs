@@ -1,14 +1,14 @@
 //! The fitted DNG profile: `data/dng/profile.json`, embedded in the binary (`docs/09-export.md`, Profile).
 //!
-//! `tools/dngfit` fits the tone curve, the look table and the `BaselineExposure` offset to the ACES 2 output transform
+//! `tools/dngfit` fits the tone curve, the look table and the `BaselineExposure` offset to the cine rendering (C12)
 //! with Adobe's reference renderer and writes the result as `data/dng/profile.json`. This module is the schema of that
 //! file (shared by the fitting tool and the product, so there is one reader and one writer of the format) and the copy
 //! of it that `ym` embeds with `include_str!`: [`FittedProfile::embedded`].
 //!
-//! The profile is the same for every photo: it depends only on the display transform (ACES 2). What differs per photo
-//! is `BaselineExposure`, `log2(x_white)` plus [`FittedProfile::fit_offset_ev`] plus the display placement (the profile is
-//! fitted to the plain ACES 2 transform, the app brightens the scene before it), and the writer floors `x_white` so that
-//! it is never negative ([`BaselineExposure::white_floor`]).
+//! The profile is the same for every photo: it depends only on the display transform (the cine rendering). What differs
+//! per photo is `BaselineExposure`, `log2(x_white)` plus [`FittedProfile::fit_offset_ev`] (there is no display placement:
+//! the app shows the scene through the rendering as it is), and the writer floors `x_white` so that it is never negative
+//! ([`BaselineExposure::white_floor`]).
 
 use std::fmt;
 use std::sync::OnceLock;
@@ -230,19 +230,15 @@ impl FittedProfile {
         ProfileFile::from_json_str(EMBEDDED_PROFILE_JSON).map(|f| f.to_fitted())
     }
 
-    /// `BaselineExposure::Auto` with this profile's offset and the display placement
-    /// ([`ym_color::display::DISPLAY_PLACEMENT_EV`]): what the writer is given with this profile.
+    /// `BaselineExposure::Auto` with this profile's offset: what the writer is given with this profile.
     ///
-    /// The profile is fitted to the plain ACES 2 transform and the app's ACES 2 path multiplies the scene by
-    /// `2^DISPLAY_PLACEMENT_EV` first (`docs/02` C12 step 1a). Adobe's renderer applies `2^BaselineExposure` to the
-    /// linear values before the profile, so adding the placement to `BaselineExposure` makes the DNG show what the
-    /// app shows. For a photo whose 99.99th percentile is below the white floor the value is the placement itself
-    /// (0.85 EV), not zero.
+    /// The profile is fitted to the cine rendering as the app shows it, with nothing in front of it. Adobe's
+    /// renderer applies `2^BaselineExposure` to the linear values before the profile, which undoes the scaling of the
+    /// stored values. For a photo whose 99.99th percentile is below the white floor the value is zero.
     #[must_use]
     pub fn baseline_exposure(&self) -> BaselineExposure {
         BaselineExposure::Auto {
             fit_offset_ev: self.fit_offset_ev,
-            placement_ev: ym_color::display::DISPLAY_PLACEMENT_EV,
         }
     }
 }
@@ -289,23 +285,19 @@ mod tests {
     }
 
     #[test]
-    fn the_embedded_profile_gives_a_baseline_exposure_of_the_placement_for_ordinary_photos() {
+    fn the_embedded_profile_gives_a_baseline_exposure_of_zero_for_ordinary_photos() {
         let fitted = FittedProfile::embedded();
         let baseline = fitted.baseline_exposure();
         assert_eq!(
             baseline,
             BaselineExposure::Auto {
-                fit_offset_ev: fitted.fit_offset_ev,
-                placement_ev: ym_color::display::DISPLAY_PLACEMENT_EV
+                fit_offset_ev: fitted.fit_offset_ev
             }
         );
-        // x_white is floored at 2^-offset (16), where the offset cancels it: what is left is the placement.
+        // x_white is floored at 2^-offset (16), where the offset cancels it: nothing is left.
         let floor = baseline.white_floor();
         assert_eq!(floor, 16.0);
-        assert_eq!(
-            baseline.resolve_ev(floor),
-            ym_color::display::DISPLAY_PLACEMENT_EV
-        );
+        assert_eq!(baseline.resolve_ev(floor), 0.0);
     }
 
     #[test]
@@ -371,10 +363,9 @@ mod tests {
         assert!(file.validate().is_err(), "one value division with sRGB");
     }
 
-    /// The writer, given the embedded profile and a dim photo, writes a `BaselineExposure` of the placement and a white
-    /// level of 16.
+    /// The writer, given the embedded profile and a dim photo, writes a `BaselineExposure` of zero and a white level of 16.
     #[test]
-    fn a_dim_photo_is_written_with_a_baseline_exposure_of_the_placement() {
+    fn a_dim_photo_is_written_with_a_baseline_exposure_of_zero() {
         use crate::pixels::{ExportHooks, ImageRef, PixelEncoding};
         use crate::request::{DngInputs, ExportRequest, encode_to_vec};
         let (w, h) = (24_u32, 16_u32);
@@ -402,9 +393,6 @@ mod tests {
         let (_, summary) = encode_to_vec(&request, &ExportHooks::none()).unwrap();
         let report: DngReport = summary.dng.expect("a DNG report");
         assert_eq!(report.x_white, 16.0);
-        assert_eq!(
-            report.baseline_exposure_ev,
-            ym_color::display::DISPLAY_PLACEMENT_EV
-        );
+        assert_eq!(report.baseline_exposure_ev, 0.0);
     }
 }

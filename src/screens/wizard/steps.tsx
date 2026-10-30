@@ -15,7 +15,6 @@ import {
   copiedLabel,
   formatSize,
   joinList,
-  offersDisplayChoice,
   trashCandidates,
   unmatchedPackages,
   verdictFor,
@@ -70,7 +69,7 @@ export function ChooseStep({ wizard }: { wizard: Wizard }) {
         );
       })}
       <LinkButton className="ym-wizard__older" onClick={() => dispatch({ type: "toggle-older" })}>
-        {state.showOlder ? "Hide the older LogC3 packages" : "Show 3 older LogC3 packages"}
+        {state.showOlder ? "Hide the older LogC3 packages" : "Show 2 older LogC3 packages"}
       </LinkButton>
     </div>
   );
@@ -337,7 +336,7 @@ function WizardTile({ look, photoId }: { look: Look; photoId: number | null }) {
 /** How many looks the tile grid shows before "And N more". */
 export const TILES_SHOWN = 7;
 
-/** Step 5: the imported looks on the current photo, the default look, the display rendering, and the zip. */
+/** Step 5: the imported looks on the current photo, the default look, and the zip. */
 export function FinishStep({ wizard }: { wizard: Wizard }) {
   const { state, dispatch } = wizard;
   const looks = useAppState((s) => s.looks);
@@ -389,24 +388,6 @@ export function FinishStep({ wizard }: { wizard: Wizard }) {
               value={defaultValue}
               onChange={(id) => dispatch({ type: "finish", patch: { defaultLook: id } })}
               options={defaultOptions.map((l) => ({ value: l.id, label: label(l) }))}
-            />
-          </Item>
-        ) : null}
-        {offersDisplayChoice(state) ? (
-          <Item size="sm" role="listitem" className="ym-wizard__option">
-            <ItemContent className="ym-wizard__option-text">
-              <ItemTitle className="ym-wizard__option-title">Display rendering</ItemTitle>
-              <ItemDescription>How log becomes a picture</ItemDescription>
-            </ItemContent>
-            <Segmented
-              label="Display rendering"
-              size="lg"
-              value={state.finish.display}
-              onChange={(display) => dispatch({ type: "finish", patch: { display } })}
-              options={[
-                { value: "ours", label: "Ours · ACES 2" },
-                { value: "arri", label: "ARRI's" },
-              ]}
             />
           </Item>
         ) : null}

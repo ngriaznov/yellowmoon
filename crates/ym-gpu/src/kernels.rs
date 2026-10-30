@@ -17,8 +17,8 @@
 //!   of the colour of 4 x 4 cells within the photo's noise (three passes), GPU against
 //!   `cpu::coarse_chroma::CoarseChroma::apply`.
 //! * [`color`]: the whole per-pixel colour chain C1 to C13 as one compute pass (fused matrix, C7
-//!   highlight range and toe, C8 LogC4, C9 grade, C10 CDL and tetrahedral LUT, C11 curves, C12 ACES 2
-//!   or an ARRI display LUT, C13 encode and dither), mirroring `ym_color::display::ColorChain` stage
+//!   highlight range and toe, C8 LogC4, C9 grade, C10 CDL and tetrahedral LUT, C11 curves, C12 the cine rendering,
+//!   C13 encode and dither), mirroring `ym_color::display::ColorChain` stage
 //!   by stage.
 //! * [`diffraction`]: the R8 diffraction deconvolution (nine passes of `diffraction.wgsl`,
 //!   f32 planes in every storage mode, the planner stays on the CPU), GPU against
@@ -73,7 +73,6 @@ pub mod sampler;
 pub mod sigma;
 pub mod spike;
 
-mod aces;
 mod shader;
 pub(crate) mod util;
 

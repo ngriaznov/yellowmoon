@@ -13,14 +13,12 @@
 //! | C9 primary grade | [`crate::grade`] |
 //! | C10 look (CDL, LUT, intensity) | [`crate::look`] |
 //! | C11 curve | [`crate::curve`] |
-//! | C12 display transform | [`DisplayTransform`]: [`crate::aces2`] (behind the white lift and the [`red_chroma`] step) or an imported ARRI display LUT |
+//! | C12 display transform | [`cine::CineRendering`], the cine rendering |
 //! | C13 display encode and dither | [`crate::encode`] |
 //!
 //! # Pieces
 //!
-//! * [`DisplayTransform`] (C12): [`DisplayTransform::Aces2`], or [`DisplayTransform::ArriDisplayLut`]
-//!   with the LUT's input encoding ([`DisplayLutInput`]) and output ([`DisplayLutOutput`]: primaries
-//!   and transfer, parsed from the LUT's documented target such as `rec709-g24`).
+//! * [`cine::CineRendering`] (C12): the cine rendering, forward and inverse.
 //! * [`OutputTarget`]: Viewport (Display P3), sRGB, Display P3 or Rec.2020, the rows of the C12 table.
 //! * [`ChainParams`] and [`ColorChain`]: an immutable, prepared per-photo chain. Methods work on one
 //!   pixel ([`ColorChain::apply_pixel`], [`ColorChain::apply_to_display_linear`],
@@ -54,42 +52,23 @@
 //!   [`crate::camera_default`] and [`ColorChain::apply_before_pixel`].
 
 mod chain;
+pub mod cine;
 mod dng_inverse;
 mod frame;
-pub mod red_chroma;
 mod transform;
 
 pub use chain::{BeforePoint, ChainParams, ColorChain, LookSetting, StageTrace, View};
 pub use dng_inverse::DNG_SCENE_LIMIT;
 pub use frame::{Frame, Layout};
-pub use red_chroma::{
-    RedChroma, RedChromaError, RedChromaLch, RedChromaStep, RedChromaTables, RedGamut,
-};
-pub use transform::{
-    ArriDisplayLut, DISPLAY_PLACEMENT_EV, DisplayLutInput, DisplayLutOutput, DisplayLutPrimaries,
-    DisplayLutTransfer, DisplayTransform, aces2_input_matrix,
-};
 
-use crate::aces2::Aces2Output;
 use crate::encode::OutputSpace;
 
-/// Why a chain, a display LUT description or a buffer was rejected.
+/// Why a chain or a buffer was rejected.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum DisplayError {
     /// The fused colour matrix has a NaN or infinite entry.
     #[error("the fused colour matrix contains a value that is not a finite number")]
     NonFiniteMatrix,
-    /// The display LUT's target is not one the viewport and export paths can render.
-    #[error("display LUT target {target:?} is not supported: {reason}")]
-    UnsupportedTarget {
-        /// The target text that was parsed.
-        target: String,
-        /// What is not supported.
-        reason: &'static str,
-    },
-    /// A display LUT's gamma is outside 1 to 4 or not a number.
-    #[error("display LUT gamma {0} is outside 1 to 4")]
-    BadGamma(f64),
     /// A buffer does not hold three samples per pixel.
     #[error("buffer holds {got} samples but {width} x {height} pixels need {expected}")]
     BadBuffer {
@@ -114,9 +93,9 @@ pub enum DisplayError {
 
 /// One of the four display outputs of the table in `docs/02` section C12.
 ///
-/// `Viewport` and `DisplayP3` are the same colours (P3-D65 limited, Display P3 primaries, sRGB
-/// transfer); they differ only in what the caller means by them (the on-screen viewport against a
-/// P3 export file).
+/// `Viewport` and `DisplayP3` are the same colours (Display P3 primaries, sRGB transfer); they differ only
+/// in what the caller means by them (the on-screen viewport against a P3 export file). The cine rendering
+/// runs its gamut stage on each output's own primaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OutputTarget {
     /// The viewport: Display P3 primaries, sRGB transfer.
@@ -138,17 +117,6 @@ impl OutputTarget {
         OutputTarget::Rec2020,
     ];
 
-    /// The ACES 2 output with the same limiting primaries, encoding primaries and transfer.
-    #[must_use]
-    pub fn aces2(self) -> Aces2Output {
-        match self {
-            Self::Viewport => Aces2Output::Viewport,
-            Self::Srgb => Aces2Output::Srgb,
-            Self::DisplayP3 => Aces2Output::DisplayP3,
-            Self::Rec2020 => Aces2Output::Rec2020,
-        }
-    }
-
     /// The C13 colour space (primaries and transfer) this target is encoded in.
     #[must_use]
     pub fn space(self) -> OutputSpace {
@@ -162,17 +130,11 @@ impl OutputTarget {
     /// A stable lower-case name (`viewport`, `srgb`, `display_p3`, `rec2020`).
     #[must_use]
     pub fn name(self) -> &'static str {
-        self.aces2().name()
-    }
-}
-
-impl From<Aces2Output> for OutputTarget {
-    fn from(output: Aces2Output) -> Self {
-        match output {
-            Aces2Output::Viewport => Self::Viewport,
-            Aces2Output::Srgb => Self::Srgb,
-            Aces2Output::DisplayP3 => Self::DisplayP3,
-            Aces2Output::Rec2020 => Self::Rec2020,
+        match self {
+            Self::Viewport => "viewport",
+            Self::Srgb => "srgb",
+            Self::DisplayP3 => "display_p3",
+            Self::Rec2020 => "rec2020",
         }
     }
 }
@@ -182,14 +144,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn targets_map_to_the_matching_aces2_output_and_space() {
-        for t in OutputTarget::ALL {
-            assert_eq!(OutputTarget::from(t.aces2()), t);
-        }
+    fn targets_map_to_the_matching_space_and_name() {
         assert_eq!(OutputTarget::Viewport.space(), OutputSpace::DisplayP3);
         assert_eq!(OutputTarget::DisplayP3.space(), OutputSpace::DisplayP3);
         assert_eq!(OutputTarget::Srgb.space(), OutputSpace::Srgb);
         assert_eq!(OutputTarget::Rec2020.space(), OutputSpace::Rec2020);
         assert_eq!(OutputTarget::Rec2020.name(), "rec2020");
+        assert_eq!(OutputTarget::Viewport.name(), "viewport");
+        assert_eq!(OutputTarget::Srgb.name(), "srgb");
+        assert_eq!(OutputTarget::DisplayP3.name(), "display_p3");
     }
 }

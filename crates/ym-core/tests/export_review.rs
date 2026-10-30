@@ -314,13 +314,6 @@ impl LookProvider for PanickingLooks {
         })
     }
 
-    fn display_transform(
-        &self,
-        id: &LookId,
-    ) -> Result<(ym_color::display::DisplayTransform, String), LookProblem> {
-        NeutralOnly.display_transform(id)
-    }
-
     fn look_sha256(&self, id: &LookId) -> Option<String> {
         assert_ne!(id.as_str(), "user:boom", "a bug in a look provider");
         None
@@ -404,13 +397,6 @@ impl LookProvider for ChangingLook {
             l.fingerprint = format!("{id}-{}", if n == 0 { "v1" } else { "v2" });
             l
         })
-    }
-
-    fn display_transform(
-        &self,
-        id: &LookId,
-    ) -> Result<(ym_color::display::DisplayTransform, String), LookProblem> {
-        NeutralOnly.display_transform(id)
     }
 }
 

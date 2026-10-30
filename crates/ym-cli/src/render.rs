@@ -26,8 +26,7 @@ use ym_core::app::gpu::{
 };
 use ym_core::export_queue::{ExportEvent, ExportJob, FileDone, QueueError};
 use ym_core::looks::{LookService, LooksError};
-use ym_core::pipeline::{ComputeDevice, DisplayChoice};
-use ym_core::preferences::DisplayRendering;
+use ym_core::pipeline::ComputeDevice;
 use ym_core::session::{ApplyScope, OpenOptions, PhotoId, PhotoStatus};
 use ym_core::settings::{Crop, CropAspect, LensKind, SettingsPatch};
 use ym_export::{ExportOptions, FormatKind, IfExists, JpegQuality, Size};
@@ -115,61 +114,10 @@ pub fn resolve_look(looks: &LookService, query: &str) -> Result<LookId, Failure>
     Ok(id)
 }
 
-/// `--display`: which display rendering this run uses.
-fn resolve_display(looks: &LookService, query: &str) -> Result<DisplayChoice, Failure> {
-    let word = query.trim();
-    if word.eq_ignore_ascii_case("aces2") {
-        return Ok(DisplayChoice::Aces2);
-    }
-    let luts = looks.display_luts();
-    let id = if word.eq_ignore_ascii_case("arri") {
-        let chosen = match looks.preferences().get().display_rendering {
-            DisplayRendering::ArriDisplay { id } => {
-                luts.iter().find(|l| l.id == id).map(|l| l.id.clone())
-            }
-            DisplayRendering::Aces2 => None,
-        };
-        match (chosen, luts.as_slice()) {
-            (Some(id), _) => id,
-            (None, [only]) => only.id.clone(),
-            (None, []) => {
-                return Err(Failure::new(
-                    exit::LOOK_MISSING,
-                    "No ARRI display LUTs are imported. Import ARRI's look package first (ym looks import <package>).",
-                ));
-            }
-            (None, many) => {
-                let list = many
-                    .iter()
-                    .map(|l| format!("{} ({})", l.id, l.name))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(Failure::usage(format!(
-                    "Several ARRI display LUTs are imported: {list}. Choose one in the app's Preferences, or name it: --display <id>."
-                )));
-            }
-        }
-    } else {
-        let id = LookId::parse(word).map_err(|_| {
-            Failure::usage(format!(
-                "`{word}` is not a display rendering. Use aces2, arri, or the id of an imported display LUT."
-            ))
-        })?;
-        if luts.iter().all(|l| l.id != id) {
-            return Err(Failure::new(
-                exit::LOOK_MISSING,
-                format!("There is no imported display LUT with the id {id}."),
-            ));
-        }
-        id
-    };
-    // The file must still be there and make a usable transform.
-    looks
-        .provider()
-        .display_transform(&id)
-        .map_err(|e| Failure::new(exit::LOOK_MISSING, e.to_string()))?;
-    Ok(DisplayChoice::ArriLut(id))
-}
+/// What `--display` says now. The option chose ARRI's display LUT as the rendering; Yellowmoon
+/// always uses its own (`docs/02-colour-pipeline.md`, C12), so it is a usage error (exit 2) that
+/// names the way out. `--look` is where a photo's look is chosen.
+pub const DISPLAY_REMOVED: &str = "--display was removed. Yellowmoon always uses its own display rendering, so there is nothing to choose. Leave the option out. To change how photos look, use --look.";
 
 /// The export options of a run: the table of `docs/09` as defaults, the user's format preference,
 /// then the options of the command line.
@@ -357,6 +305,10 @@ fn skip_kind(path: &Path) -> &'static str {
 }
 
 fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> {
+    // Before anything is read or opened: the option is gone, and saying so costs nothing.
+    if args.display.is_some() {
+        return Err(Failure::usage(DISPLAY_REMOVED));
+    }
     let inputs_from_stdin = args.inputs.iter().any(|p| p.as_os_str() == "-");
     let settings_from_stdin = args.settings.as_deref() == Some(Path::new("-"));
     if inputs_from_stdin && settings_from_stdin {
@@ -416,16 +368,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         gpu_slot = Some(GpuSlot::off(budget));
     }
 
-    // Display rendering and look.
-    match args.display.as_deref() {
-        Some(query) => core
-            .renderer
-            .set_display(resolve_display(&core.looks, query)?),
-        None => core
-            .looks
-            .check_display_rendering()
-            .map_err(|e| look_failure(&e))?,
-    }
+    // The look.
     let look = args
         .look
         .as_deref()

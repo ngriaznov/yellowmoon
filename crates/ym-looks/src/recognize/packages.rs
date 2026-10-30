@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 use ym_color::look::LookInput;
 
 use super::names::fold_alnum;
-use crate::library::{DisplayInput, LookFormat};
+use crate::library::LookFormat;
 use crate::manifest::is_sha256_hex;
 
 /// The format version of `arri-packages.json` this build reads.
@@ -69,7 +69,8 @@ fn default_display_names() -> Vec<String> {
 pub enum PackageRole {
     /// Looks: creative LUTs, listed in the Look tab.
     Looks,
-    /// Display LUTs: ARRI's display rendering, chosen in the display setting.
+    /// Display LUTs: ARRI's own display rendering. They are recognised so that the importer can say
+    /// there is nothing to import; Yellowmoon uses its own rendering and never imports them.
     DisplayLuts,
 }
 
@@ -245,19 +246,6 @@ impl Package {
             PackageInput::LogC3 => LookInput::LogC3Ei800,
             PackageInput::LogC3ToRec709 => LookInput::LogC3ToRec709,
         })
-    }
-
-    /// The display input for a display-LUT package.
-    #[must_use]
-    pub fn display_input(&self) -> Option<DisplayInput> {
-        if self.role != PackageRole::DisplayLuts {
-            return None;
-        }
-        match self.input {
-            PackageInput::LogC4 => Some(DisplayInput::LogC4),
-            PackageInput::LogC3 => Some(DisplayInput::LogC3),
-            PackageInput::LogC3ToRec709 => None,
-        }
     }
 
     /// The name ARRI gives the download, so the person can find it on ARRI's page.
@@ -501,8 +489,8 @@ mod tests {
         assert_eq!(db.note.as_deref(), Some("keep me"));
         assert_eq!(db.packages.len(), 2);
         assert_eq!(db.packages[0].look_input(), Some(LookInput::LogC3ToRec709));
-        assert_eq!(db.packages[0].display_input(), None);
-        assert_eq!(db.packages[1].display_input(), Some(DisplayInput::LogC4));
+        assert_eq!(db.packages[1].look_input(), None);
+        assert_eq!(db.packages[1].role, PackageRole::DisplayLuts);
         assert!(!db.packages[0].is_fingerprinted());
         assert!(db.display_names.contains(&"hlg".to_string()));
         assert_eq!(db.page_url(), ARRI_LOOK_FILES_URL);

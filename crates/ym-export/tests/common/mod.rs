@@ -125,7 +125,7 @@ pub fn metadata() -> Metadata {
                 look: Some("builtin:neutral".into()),
                 look_sha256: Some("0".repeat(64)),
                 look_intensity_pct: Some(100),
-                display_transform: Some("aces2-sdr100-p3lim".into()),
+                display_transform: Some("cine-p3".into()),
                 models: Some("jdd 1.2.0 (sha256:abc)".into()),
                 // Left out, so the golden files keep their bytes; `src/xmp.rs` tests them.
                 auto: None,

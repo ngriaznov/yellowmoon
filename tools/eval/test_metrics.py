@@ -295,14 +295,5 @@ class Errors(unittest.TestCase):
         self.assertAlmostEqual(m.shrunk_ev(1.6, 0.8, 0.5), 1.2)
 
 
-class Display(unittest.TestCase):
-    def test_aces2_places_scene_grey_at_a_tenth(self):
-        y = m.aces2_neutral_display_y([0.18, 0.36])
-        if y is None:
-            self.skipTest("OpenColorIO is not installed")
-        self.assertAlmostEqual(float(y[0]), 0.100, delta=0.001)
-        self.assertGreater(float(y[1]), float(y[0]))
-
-
 if __name__ == "__main__":
     unittest.main()

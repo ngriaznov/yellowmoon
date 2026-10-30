@@ -821,7 +821,7 @@ impl Shared {
         perf::viewport().request();
     }
 
-    /// Something about the photo changed (settings, look, display rendering): draw it again.
+    /// Something about the photo changed (settings, look): draw it again.
     pub fn invalidate(&self) {
         let mut st = lock(&self.state);
         self.request(&mut st);

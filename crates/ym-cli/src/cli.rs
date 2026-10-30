@@ -100,9 +100,11 @@ pub struct RenderArgs {
     /// How strongly the look applies, in percent (default 100).
     #[arg(long, value_name = "PERCENT", value_parser = percent, help_heading = H_LOOK)]
     pub intensity: Option<f64>,
-    /// Display rendering: `aces2`, or `arri` (an imported ARRI display LUT: the one chosen in the
-    /// app, else the only one imported; or give its id).
-    #[arg(long, value_name = "aces2|arri", help_heading = H_LOOK)]
+    /// Removed: Yellowmoon always uses its own display rendering. The option is still read, and
+    /// hidden from the help, so that a script that passes it gets a usage error that says what to
+    /// do instead of "unexpected argument" ([`crate::render::DISPLAY_REMOVED`]). A value needs `=`,
+    /// so that `--display aces2 photo.ARW` is read whole and the usage error comes before any photo.
+    #[arg(long, value_name = "WORD", num_args = 0..=1, require_equals = true, default_missing_value = "", hide = true, help_heading = H_LOOK)]
     pub display: Option<String>,
     /// A JSON file of settings (the `ym:Settings` schema), or `-` for stdin. It covers what these
     /// options can't: colour balance (`{ "kind": "auto" }` puts a shadows or highlights wheel back
@@ -135,11 +137,6 @@ pub struct RenderArgs {
     /// Black point, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose).
     #[arg(long, value_name = "auto|N", value_parser = percent_or_auto, allow_negative_numbers = true, help_heading = H_LIGHT)]
     pub black: Option<PercentArg>,
-    /// Stops added to each photo's automatic white lift, -3 to 3. 0 is the automatic amount; an
-    /// offset that takes the lift to 0 or below switches it off (`--white-offset -3` always does).
-    /// The lift only acts with the built-in ACES 2 display rendering, and a DNG carries it.
-    #[arg(long, value_name = "EV", value_parser = white_offset, allow_negative_numbers = true, help_heading = H_LIGHT)]
-    pub white_offset: Option<f64>,
 
     /// White balance: `auto`, or a temperature in kelvin (2000 to 11000) with an optional tint
     /// (-50 to 50), as `5200` or `5200,4`.
@@ -652,10 +649,6 @@ fn lens_amount(text: &str) -> Result<f64, String> {
 
 fn output_sharpening(text: &str) -> Result<f64, String> {
     in_range(text, "the output sharpening", 0.0, 200.0)
-}
-
-fn white_offset(text: &str) -> Result<f64, String> {
-    in_range(text, "the white offset", -3.0, 3.0)
 }
 
 fn rolloff(text: &str) -> Result<RolloffArg, String> {

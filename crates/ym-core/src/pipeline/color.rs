@@ -16,10 +16,8 @@
 //!   "the noise model's read noise mapped to linear AWG4 at this exposure");
 //! * `contrast` to `color_balance` become `GradeParams`, the pins of `color_warp` a `WarpParams`
 //!   (stage C9b), the four curves a `CurveSet`;
-//! * the photo's automatic white lift and `white_offset_ev` become the `WhiteLift` of C12 step 1b
-//!   ([`white_lift`]), which acts after C11, alongside the highlight range of C7;
-//! * the look comes from a [`LookProvider`] (the looks library in the app, [`NeutralOnly`] in tests)
-//!   and the display transform from a [`DisplayChoice`] (ACES 2, or an imported ARRI display LUT).
+//! * the look comes from a [`LookProvider`] (the looks library in the app, [`NeutralOnly`] in tests);
+//!   the display transform is always Yellowmoon's own, the cine rendering (C12), with nothing in front of it.
 //!
 //! Every plan has a key made of the numbers that go into it, so the render graph can tell whether a
 //! cached plan is still the plan the settings ask for.
@@ -31,16 +29,12 @@ use ym_color::camera_default::CameraDefault;
 use ym_color::chain::FusedChain;
 use ym_color::consts::Vec3;
 use ym_color::curve::{Curve, CurveSet};
-use ym_color::display::{
-    ArriDisplayLut, BeforePoint, ChainParams, ColorChain, DisplayLutInput, DisplayLutOutput,
-    DisplayTransform, LookSetting, OutputTarget,
-};
-use ym_color::exposure::white::WhiteLift;
+use ym_color::display::{BeforePoint, ChainParams, ColorChain, LookSetting, OutputTarget};
 use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
 use ym_color::tone::ToneParams;
 use ym_color::warp::{Warp, WarpParams};
-use ym_looks::library::{DisplayInput, Library, LookId};
+use ym_looks::library::{Library, LookId};
 use ym_profiles::color_matrices::ColorMatrices;
 use ym_profiles::profile::Profile;
 use ym_profiles::registry::SensorGeometry;
@@ -53,7 +47,7 @@ use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
 use crate::settings::{AutoOr, CurvePoint, DevelopSettings, LensSettings};
 
 // ---------------------------------------------------------------------------------------------
-// Looks and the display transform
+// Looks
 // ---------------------------------------------------------------------------------------------
 
 /// A look that could not be used, in plain words ("File missing or changed. Import again.").
@@ -70,7 +64,7 @@ pub struct ResolvedLook {
     pub fingerprint: String,
 }
 
-/// Where the render graph gets looks and display LUTs from.
+/// Where the render graph gets looks from.
 pub trait LookProvider: Send + Sync {
     /// The look with this id.
     ///
@@ -78,14 +72,6 @@ pub trait LookProvider: Send + Sync {
     ///
     /// [`LookProblem`] when the look is unknown or its file is missing or changed.
     fn look(&self, id: &LookId) -> Result<ResolvedLook, LookProblem>;
-
-    /// The imported display LUT with this id, as the C12 transform.
-    ///
-    /// # Errors
-    ///
-    /// [`LookProblem`] when the LUT is unknown, unusable or renders to a display the viewport cannot
-    /// show.
-    fn display_transform(&self, id: &LookId) -> Result<(DisplayTransform, String), LookProblem>;
 
     /// The SHA-256 (lower-case hex) of the look's file: the `ym:LookSHA256` an export records, so a
     /// file can be traced to the exact LUT that made it. `None` for a look that has no file of its
@@ -95,7 +81,7 @@ pub trait LookProvider: Send + Sync {
     }
 }
 
-/// Only the built-in Neutral look, no display LUTs (tests, and a core with no library).
+/// Only the built-in Neutral look (tests, and a core with no library).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NeutralOnly;
 
@@ -109,12 +95,6 @@ impl LookProvider for NeutralOnly {
         } else {
             Err(LookProblem(format!("The look {id} is not in the library.")))
         }
-    }
-
-    fn display_transform(&self, id: &LookId) -> Result<(DisplayTransform, String), LookProblem> {
-        Err(LookProblem(format!(
-            "The display LUT {id} is not in the library."
-        )))
     }
 }
 
@@ -135,24 +115,6 @@ impl LookProvider for Library {
             fingerprint,
         })
     }
-
-    fn display_transform(&self, id: &LookId) -> Result<(DisplayTransform, String), LookProblem> {
-        let info = self
-            .display_lut_info(id)
-            .ok_or_else(|| LookProblem(format!("The display LUT {id} is not in the library.")))?;
-        let lut = self
-            .display_lut(id)
-            .map_err(|e| LookProblem(e.to_string()))?;
-        let input = match info.input {
-            DisplayInput::LogC4 => DisplayLutInput::LogC4,
-            DisplayInput::LogC3 => DisplayLutInput::LogC3Ei800,
-        };
-        let output = DisplayLutOutput::from_target(&info.target)
-            .map_err(|e| LookProblem(format!("This display LUT can't be used: {e}.")))?;
-        let transform = ArriDisplayLut::new(lut, input, output)
-            .map_err(|e| LookProblem(format!("This display LUT can't be used: {e}.")))?;
-        Ok((DisplayTransform::arri(transform), info.lut.sha256.clone()))
-    }
 }
 
 impl<T: LookProvider + ?Sized> LookProvider for Arc<T> {
@@ -162,10 +124,6 @@ impl<T: LookProvider + ?Sized> LookProvider for Arc<T> {
 
     fn look(&self, id: &LookId) -> Result<ResolvedLook, LookProblem> {
         (**self).look(id)
-    }
-
-    fn display_transform(&self, id: &LookId) -> Result<(DisplayTransform, String), LookProblem> {
-        (**self).display_transform(id)
     }
 }
 
@@ -179,12 +137,6 @@ impl LookProvider for RwLock<Library> {
     fn look(&self, id: &LookId) -> Result<ResolvedLook, LookProblem> {
         self.read().unwrap_or_else(PoisonError::into_inner).look(id)
     }
-
-    fn display_transform(&self, id: &LookId) -> Result<(DisplayTransform, String), LookProblem> {
-        self.read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .display_transform(id)
-    }
 }
 
 impl LookProvider for Mutex<Library> {
@@ -197,22 +149,6 @@ impl LookProvider for Mutex<Library> {
     fn look(&self, id: &LookId) -> Result<ResolvedLook, LookProblem> {
         self.lock().unwrap_or_else(PoisonError::into_inner).look(id)
     }
-
-    fn display_transform(&self, id: &LookId) -> Result<(DisplayTransform, String), LookProblem> {
-        self.lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .display_transform(id)
-    }
-}
-
-/// Which display rendering C12 uses (Preferences › Display rendering).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum DisplayChoice {
-    /// Ours: the ACES 2 output transform.
-    #[default]
-    Aces2,
-    /// An imported ARRI display LUT.
-    ArriLut(LookId),
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -548,8 +484,6 @@ pub struct GradeRequest<'a> {
     pub target: OutputTarget,
     /// Whether 8-bit outputs are dithered.
     pub dither: bool,
-    /// ACES 2 or an imported display LUT.
-    pub display: &'a DisplayChoice,
     /// Where looks come from.
     pub looks: &'a dyn LookProvider,
 }
@@ -561,14 +495,13 @@ pub struct GradePlan {
     pub chain: Arc<ColorChain>,
     /// What the plan was made from.
     pub key: GradeKey,
-    /// Plain-words notes: a look or display LUT that could not be used and was replaced.
+    /// Plain-words notes: a look that could not be used and was replaced.
     pub warnings: Vec<String>,
 }
 
-/// The look and the display transform as the provider answers for them now.
+/// The look as the provider answers for it now.
 struct Pieces {
     look: Option<ResolvedLook>,
-    display: Option<(DisplayTransform, String)>,
     warnings: Vec<String>,
 }
 
@@ -581,30 +514,7 @@ fn pieces(src: &PhotoSource, req: &GradeRequest<'_>) -> Pieces {
             None
         }
     };
-    let display = match req.display {
-        DisplayChoice::Aces2 => None,
-        DisplayChoice::ArriLut(id) => match req.looks.display_transform(id) {
-            Ok(d) => Some(d),
-            Err(e) => {
-                warnings.push(e.to_string());
-                None
-            }
-        },
-    };
-    Pieces {
-        look,
-        display,
-        warnings,
-    }
-}
-
-/// The white lift a photo renders with: the automatic amount and anchor of its estimates plus the
-/// user's offset (`white_offset_ev`), `docs/02` C12 step 1b. It acts after C11, alongside C7's
-/// highlight range (which [`color_plan`] puts in the tone), and has an effect on the ACES 2 path only;
-/// the chain ignores it for an imported ARRI display LUT.
-#[must_use]
-pub fn white_lift(src: &PhotoSource) -> WhiteLift {
-    src.estimates.white.lift(src.settings.white_offset_ev)
+    Pieces { look, warnings }
 }
 
 fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Pieces) -> GradeKey {
@@ -612,7 +522,7 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
     let mut key = String::with_capacity(768);
     let _ = write!(
         key,
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|",
         color.key,
         grade_params(s, &src.estimates),
         // The warp as the chain prepares it: pins that change nothing (locked pins with no pin that
@@ -622,8 +532,6 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
         req.target,
         req.dither,
         s.look_intensity,
-        white_lift(src),
-        req.display,
         s.look,
         // The Before view's parameters: the as-shot white balance and the body's matrix (never a
         // setting), so that a frame of the Before view is not served for another body or white.
@@ -632,12 +540,6 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
     match &p.look {
         Some(l) => key.push_str(&l.fingerprint),
         None => key.push_str("neutral-fallback"),
-    }
-    key.push('|');
-    match (&p.display, req.display) {
-        (Some((_, fp)), _) => key.push_str(fp),
-        (None, DisplayChoice::ArriLut(_)) => key.push_str("aces2-fallback"),
-        (None, DisplayChoice::Aces2) => key.push_str("aces2"),
     }
     GradeKey(key)
 }
@@ -648,8 +550,8 @@ pub fn grade_key(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>) -
     key_of(src, color, req, &pieces(src, req))
 }
 
-/// Builds the grade plan: the look and the display transform are fetched from the provider (a
-/// missing look renders as Neutral and says so in [`GradePlan::warnings`]).
+/// Builds the grade plan: the look is fetched from the provider (a missing look renders as Neutral
+/// and says so in [`GradePlan::warnings`]).
 ///
 /// # Errors
 ///
@@ -670,12 +572,8 @@ pub fn grade_plan(
     params.dither = req.dither;
     params.before = BeforePoint::CameraDefault;
     params.camera_default = color.camera_default;
-    params.white_lift = white_lift(src);
     if let Some(look) = p.look {
         params.look = Some(LookSetting::new(look.transform, s.look_intensity));
-    }
-    if let Some((transform, _)) = p.display {
-        params.display = transform;
     }
     let chain = ColorChain::new(&params).map_err(|e| RenderError::Color(e.to_string()))?;
     Ok(GradePlan {

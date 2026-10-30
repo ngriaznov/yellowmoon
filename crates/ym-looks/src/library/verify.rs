@@ -23,7 +23,7 @@ pub enum VerifyOutcome {
     },
 }
 
-/// The result for one look or display LUT.
+/// The result for one imported look.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyEntry {
     /// Its id.
@@ -37,7 +37,7 @@ pub struct VerifyEntry {
 /// The result of re-hashing the whole library.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct VerifyReport {
-    /// One entry per imported look and display LUT, in manifest order.
+    /// One entry per imported look, in manifest order.
     pub entries: Vec<VerifyEntry>,
 }
 

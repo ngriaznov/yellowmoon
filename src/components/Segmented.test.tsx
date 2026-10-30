@@ -89,7 +89,7 @@ describe("Segmented", () => {
         initial="ours"
         onChange={onChange}
         options={[
-          { value: "ours", label: "Ours · ACES 2" },
+          { value: "ours", label: "Ours" },
           { value: "arri", label: "ARRI's", disabled: true },
           { value: "other", label: "Other" },
         ]}

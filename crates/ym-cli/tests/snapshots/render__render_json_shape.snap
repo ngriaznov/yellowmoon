@@ -38,8 +38,7 @@ expression: shape(&v)
       "radius_px": "number"
     },
     "source": "string",
-    "tint": "number",
-    "white_ev": "number"
+    "tint": "number"
   },
   "auto_source": "string",
   "camera": {
@@ -173,7 +172,6 @@ expression: shape(&v)
     "white_balance": {
       "kind": "string"
     },
-    "white_offset_ev": "number",
     "white_pick": "null"
   },
   "status": "string",

@@ -17,9 +17,9 @@ use crate::api::AppApi;
 use crate::system;
 use crate::wire::{
     self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, CliLinkResult,
-    CliLinkStatus, CropAspect, CropSuggestion, DisplayLut, ErrorScope, ExportEstimate, ExportJob,
-    ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput, LooksImportResult, MenuState,
-    Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample, Preferences, PreferencesPatch,
+    CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate, ExportJob, ExportJobId,
+    HistogramData, LensInfo, Look, LookId, LookInput, LooksImportResult, MenuState, Num, OpenKind,
+    Orientation, PasteReport, PhotoId, PixelSample, Preferences, PreferencesPatch,
     ResolvedSettings, SessionChange, SessionState, SettingsPatch, SourceRecognition,
     ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, WatchStatus,
 };
@@ -423,13 +423,6 @@ pub async fn looks_recognise(
     run(&state, move |api| Ok(api.looks_recognise(&path))).await
 }
 
-/// `looks_display_luts()`.
-#[tauri::command]
-#[specta::specta]
-pub async fn looks_display_luts(state: State<'_, AppState>) -> Result<Vec<DisplayLut>, AppError> {
-    run(&state, |api| api.looks_display_luts()).await
-}
-
 /// `looks_watch_downloads(enabled)`: starts or stops the Downloads watcher.
 #[tauri::command]
 #[specta::specta]
@@ -713,7 +706,6 @@ pub fn builder() -> Builder<tauri::Wry> {
             look_thumbnail,
             looks_import,
             looks_recognise,
-            looks_display_luts,
             looks_watch_downloads,
             looks_set_default,
             looks_remove,

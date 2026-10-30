@@ -109,7 +109,7 @@ pub(crate) fn table(rows: &[Vec<String>]) -> String {
 }
 
 /// The text of `ym looks list`.
-fn list_text(looks: &[LookEntry], luts: &[ym_core::looks::DisplayLutEntry]) -> String {
+fn list_text(looks: &[LookEntry]) -> String {
     let mut rows = vec![vec![
         "ID".to_owned(),
         "NAME".to_owned(),
@@ -136,32 +136,18 @@ fn list_text(looks: &[LookEntry], luts: &[ym_core::looks::DisplayLutEntry]) -> S
             flags.join(", "),
         ]);
     }
-    let mut text = table(&rows);
-    if !luts.is_empty() {
-        text.push_str("\nDisplay LUTs\n");
-        let mut rows = vec![vec!["ID".to_owned(), "NAME".to_owned(), "INPUT".to_owned()]];
-        for d in luts {
-            rows.push(vec![
-                d.id.to_string(),
-                line_text(&d.name),
-                input_word(d.input).to_owned(),
-            ]);
-        }
-        text.push_str(&table(&rows));
-    }
-    text
+    table(&rows)
 }
 
 fn list(args: &LooksListArgs) -> Result<u8, Failure> {
     let service = open_service()?;
     let looks = service.list();
-    let luts = service.display_luts();
     let mut out = io::stdout().lock();
     let written = if args.json {
-        let value = json!({ "looks": looks, "display_luts": luts });
+        let value = json!({ "looks": looks });
         writeln!(out, "{}", json_line(&value))
     } else {
-        write!(out, "{}", list_text(&looks, &luts))
+        write!(out, "{}", list_text(&looks))
     };
     match written.and_then(|()| out.flush()) {
         Ok(()) => Ok(exit::OK),
@@ -200,7 +186,6 @@ fn import(args: &LooksImportArgs, console: &mut Console) -> Result<u8, Failure> 
     };
     let mut first_failure: Option<Failure> = None;
     let mut added = 0usize;
-    let mut luts = 0usize;
     let mut unchanged = 0usize;
     let mut refused = false;
     for path in &args.paths {
@@ -227,7 +212,6 @@ fn import(args: &LooksImportArgs, console: &mut Console) -> Result<u8, Failure> 
         match result {
             Ok(r) => {
                 added += r.added.len();
-                luts += r.display_luts_added;
                 unchanged += r.unchanged;
                 refused |= !r.refusals.is_empty();
                 for look in &r.added {
@@ -239,15 +223,14 @@ fn import(args: &LooksImportArgs, console: &mut Console) -> Result<u8, Failure> 
                     console.error(&format!("{}: {}", path_text(path), line_text(refusal)));
                 }
                 // What else the person should know: an .alf4c's display transforms are not used,
-                // a look that stayed the 3D-LUT version.
+                // ARRI's display LUTs were left out, a look that stayed the 3D-LUT version.
                 for note in &r.notes {
                     console.info(&line_text(note));
                 }
                 console.detail(&format!(
-                    "{}: {} looks, {} display LUTs, {} unchanged.",
+                    "{}: {} looks, {} unchanged.",
                     path_text(path),
                     r.added.len(),
-                    r.display_luts_added,
                     r.unchanged
                 ));
             }
@@ -269,16 +252,10 @@ fn import(args: &LooksImportArgs, console: &mut Console) -> Result<u8, Failure> 
         added,
         if added == 1 { "look" } else { "looks" }
     )];
-    if luts > 0 {
-        parts.push(format!(
-            "{luts} display {}",
-            if luts == 1 { "LUT" } else { "LUTs" }
-        ));
-    }
     if unchanged > 0 {
         parts.push(format!("{unchanged} already imported"));
     }
-    if first_failure.is_none() || added + luts + unchanged > 0 {
+    if first_failure.is_none() || added + unchanged > 0 {
         console.info(&format!("{}.", parts.join(", ")));
     }
     // Files that were refused while the others came in are "some files failed" (`docs/10`).
@@ -360,13 +337,6 @@ impl LookProvider for BakeProvider {
         } else {
             NeutralOnly.look(id)
         }
-    }
-
-    fn display_transform(
-        &self,
-        id: &LookId,
-    ) -> Result<(ym_color::display::DisplayTransform, String), LookProblem> {
-        NeutralOnly.display_transform(id)
     }
 }
 
@@ -638,7 +608,7 @@ mod tests {
                 missing: true,
             },
         ];
-        let text = list_text(&looks, &[]);
+        let text = list_text(&looks);
         let lines: Vec<&str> = text.lines().collect();
         assert!(lines[0].starts_with("ID"), "{text}");
         assert!(
@@ -682,7 +652,7 @@ mod tests {
             entry(LookLibrary::ArriAlf2, arri(), "arri:3000:film-high"),
             entry(LookLibrary::User, LookGroupInfo::User, "user:film"),
         ];
-        let text = list_text(&looks, &[]);
+        let text = list_text(&looks);
         let rows: Vec<Vec<&str>> = text
             .lines()
             .map(|l| l.split("  ").filter(|c| !c.is_empty()).collect())

@@ -437,15 +437,22 @@ fn a_folder_named_with_a_year_is_not_a_look_group() {
             fs::write(src.join(path), text).unwrap();
         }
         let recognition = inspect(&src, &db, None, &mut no_progress()).unwrap();
+        // Still recognised as the display package (and so not taken for a look group): its three
+        // files are display LUTs, which have nothing to import.
         assert_eq!(
             recognition.verdict(),
-            Verdict::Ready,
+            Verdict::Blocked,
             "{root_name}: {:?}",
             recognition.issues
         );
-        assert_eq!(
-            recognition.packages[0].id, "display-luts-logc4",
-            "{root_name}"
+        assert_eq!(recognition.display_lut_count(), 3, "{root_name}");
+        assert!(
+            recognition.files.iter().all(|f| matches!(
+                &f.outcome,
+                Outcome::ArriDisplay { package, .. } if package == "display-luts-logc4"
+            )),
+            "{root_name}: {:?}",
+            recognition.files
         );
         // Paths are relative to the chosen folder, as inside a zip.
         assert!(

@@ -1,12 +1,11 @@
 //! The looks of the DNG tests, all of our own (never an ARRI file): a look with a LogC3 to Rec.709
-//! rendering baked in, a log-to-log look, and a display LUT.
+//! rendering baked in, and a log-to-log look.
 #![allow(dead_code)]
 
 use std::sync::Arc;
 
 use ym_color::cdl::Cdl;
 use ym_color::consts::linalg;
-use ym_color::display::{ArriDisplayLut, DisplayLutInput, DisplayLutOutput, DisplayTransform};
 use ym_color::logc::logc3_ei800_decode_rgb;
 use ym_color::look::{LookInput, LookTransform};
 use ym_color::lut::{Lut, Lut3d};
@@ -45,27 +44,7 @@ pub fn logc3_to_rec709_lut_with(gain: f64) -> Lut {
     Lut::from_cube(lut)
 }
 
-/// A display LUT of our own (LogC4 in, Rec.709 gamma 2.4 out) for the Preferences choice.
-pub fn display_lut() -> ArriDisplayLut {
-    let m = ym_color::gamut::matrices();
-    let lut = Lut3d::bake(33, [0.0; 3], [1.0; 3], |code| {
-        let scene = ym_color::logc::logc4_decode_rgb(code);
-        let rec709 = linalg::mul_vec(&m.awg4_to_rec709, scene);
-        rec709.map(|c| {
-            let x = (c * 0.7).max(0.0);
-            (x / (x + 0.18)).clamp(0.0, 1.0).powf(1.0 / 2.4)
-        })
-    })
-    .expect("a LUT");
-    ArriDisplayLut::new(
-        Arc::new(Lut::from_cube(lut)),
-        DisplayLutInput::LogC4,
-        DisplayLutOutput::REC709_G24,
-    )
-    .expect("a display LUT")
-}
-
-/// Neutral, a warm look, the LogC3 to Rec.709 look, and a display LUT.
+/// Neutral, a warm look and the LogC3 to Rec.709 looks.
 pub struct Looks;
 
 impl LookProvider for Looks {
@@ -94,17 +73,4 @@ impl LookProvider for Looks {
             fingerprint: id.to_string(),
         })
     }
-
-    fn display_transform(&self, id: &LookId) -> Result<(DisplayTransform, String), LookProblem> {
-        if id.as_str() == "arri-display:logc4:rec709-g24" {
-            Ok((DisplayTransform::arri(display_lut()), "test".to_owned()))
-        } else {
-            Err(LookProblem(format!(
-                "The display LUT {id} is not in the library."
-            )))
-        }
-    }
 }
-
-/// The id of the display LUT [`Looks`] knows.
-pub const DISPLAY_LUT_ID: &str = "arri-display:logc4:rec709-g24";

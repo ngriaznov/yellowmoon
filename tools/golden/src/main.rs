@@ -651,7 +651,7 @@ fn run_truth(a: TruthArgs) -> Result<ExitCode> {
         "med, p95, max in scene-linear AWG4 (the colour chain up to the look and curve); b.* the baseline, Sony camera RGB"
     );
     println!(
-        "through the same ARRI matrix with no sensor map; d.* the render after the ACES 2 display transform on both sides;"
+        "through the same ARRI matrix with no sensor map; d.* the render after the cine display rendering on both sides;"
     );
     println!("neutr the median of the neutral ramp.");
     let lights = truth::pool(&results, |r| {

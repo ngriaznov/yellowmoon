@@ -6,15 +6,22 @@
 //! identity below the cap, the fade at low clip levels, channel ratios kept, every output channel
 //! non-decreasing in each input channel below the cap (proptest), non-finite and non-positive values,
 //! and the display codes `docs/02` quotes. The toe: as before (formula, `r = 0` exact, tiny values).
+//!
+//! The achromatic gate (owner decision 2026-10-29): the gate itself, a grey pixel (and every pixel up to
+//! purity 0.6) getting the old result bit for bit against a copy of the old formula kept in this file, a
+//! saturated pixel getting less gain, the ALEXA's clip still holding for every pixel, the output staying
+//! monotone along an exposure ramp of one colour, the gain continuous in the pixel, and the kernel's
+//! inputs (the gate's edges) finite.
 
 use proptest::prelude::*;
 use ym_color::consts::linalg::IDENTITY;
 use ym_color::display::{ChainParams, ColorChain, OutputTarget};
 use ym_color::gamut::LinearAwg4;
 use ym_color::tone::{
-    ALEXA_CLIP_EI, HIGHLIGHT_CAP_STOPS, HIGHLIGHT_GREY, HIGHLIGHT_KNEE_DEPTH_STOPS,
-    HIGHLIGHT_KNEE_FLOOR_STOPS, HIGHLIGHT_MIN_SPAN_STOPS, HIGHLIGHT_OFF_STOPS, HighlightRange,
-    ToneError, ToneParams, alexa_clip_stops, luma,
+    ACHROMATIC_GATE_FROM, ACHROMATIC_GATE_TO, ALEXA_CLIP_EI, AchromaticGate, HIGHLIGHT_CAP_STOPS,
+    HIGHLIGHT_GREY, HIGHLIGHT_KNEE_DEPTH_STOPS, HIGHLIGHT_KNEE_FLOOR_STOPS,
+    HIGHLIGHT_MIN_SPAN_STOPS, HIGHLIGHT_OFF_STOPS, HighlightRange, MIN_GATE_SPAN, PURITY_MAX,
+    ToneError, ToneParams, alexa_clip_stops, luma, purity,
 };
 
 fn p(h: f64, l: f64, c: f64, sigma: f64) -> ToneParams {
@@ -31,9 +38,23 @@ fn grey(stops: f64) -> [f64; 3] {
     [clip_at(stops); 3]
 }
 
+/// The gate written out again from `docs/02` C7: `1 - smoothstep(0.6, 0.9, p)` with
+/// `p = (max - min) / max` of the pixel (no shared code with the crate).
+fn reference_gate(rgb: [f64; 3]) -> f64 {
+    let max = rgb.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let min = rgb.iter().copied().fold(f64::INFINITY, f64::min);
+    let p = if max > 0.0 {
+        ((max - min) / max).min(2.0)
+    } else {
+        0.0
+    };
+    let t = ((p - 0.6) / (0.9 - 0.6)).clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
+}
+
 /// The documented formula, written out again from `docs/02` C7 (division form of the logarithm, no
-/// shared code with the crate).
-fn reference_stops(r: f64, clip_luma: f64, s: f64) -> f64 {
+/// shared code with the crate). `g` is the achromatic gate of the pixel (1 for a grey one).
+fn reference_stops(r: f64, clip_luma: f64, s: f64, g: f64) -> f64 {
     let h_s = (clip_luma / 0.18).log2();
     let h_a = ((1.0_f64 - 256.0 / 65535.0) * 800.0 / 4.0).log2();
     let s_k = f64::max(1.0, h_s - 1.0);
@@ -43,7 +64,7 @@ fn reference_stops(r: f64, clip_luma: f64, s: f64) -> f64 {
     if s > s_k && e > 0.0 {
         let u = (s - s_k) / (h_s - s_k);
         let phi = if u <= 1.0 { u * u } else { 2.0 * u - 1.0 };
-        out = s + e * phi;
+        out = s + g * e * phi;
     }
     out.min(h_a)
 }
@@ -54,8 +75,37 @@ fn reference_apply(r: f64, clip_luma: f64, rgb: [f64; 3]) -> [f64; 3] {
         return rgb;
     }
     let s = (y / 0.18).log2();
-    let gain = (reference_stops(r, clip_luma, s) - s).exp2();
+    let gain = (reference_stops(r, clip_luma, s, reference_gate(rgb)) - s).exp2();
     rgb.map(|c| c * gain)
+}
+
+/// The stage as it was before the gate, copied from the code of that day (`HighlightRange::stops` and
+/// `gain`, `PreparedTone::apply_rgb` with the toe off): what a grey pixel must still get, bit for bit.
+fn legacy_apply(r: f64, clip_luma: f64, rgb: [f64; 3]) -> [f64; 3] {
+    let range = HighlightRange::new(r, clip_luma);
+    let y = luma(rgb);
+    let gain = if !y.is_finite() || y <= 0.0 {
+        1.0
+    } else {
+        let s = y.log2() - HIGHLIGHT_GREY.log2();
+        let mut out = s;
+        if range.expansion_stops > 0.0 && s > range.knee_stops {
+            let u = (s - range.knee_stops) / (range.clip_stops - range.knee_stops);
+            let phi = if u <= 1.0 { u * u } else { 2.0 * u - 1.0 };
+            out = s + range.expansion_stops * phi;
+        }
+        let t = if out > range.cap_stops {
+            range.cap_stops
+        } else {
+            out
+        };
+        if t == s { 1.0 } else { (t - s).exp2() }
+    };
+    if gain == 1.0 {
+        rgb
+    } else {
+        rgb.map(|c| c * gain)
+    }
 }
 
 /// Clip levels over the whole useful span: inside the fade, at its ends, the Auto clip, near and over
@@ -90,22 +140,37 @@ fn the_range_matches_the_documented_formula() {
             assert_eq!(range.cap_stops, HIGHLIGHT_CAP_STOPS);
             let mut s = -6.0;
             while s < 14.0 {
-                let want = reference_stops(r, c, s);
+                let want = reference_stops(r, c, s, 1.0);
                 let got = range.stops(s);
                 worst = worst.max((got - want).abs());
                 assert!(
                     (got - want).abs() < 1e-12,
                     "r {r} h {h} s {s}: {got} vs {want}"
                 );
-                // The pixel: gain against the reference, three channels.
-                let rgb = [clip_at(s) * 1.3, clip_at(s) * 0.9, clip_at(s) * 0.7];
-                let want = reference_apply(r, c, rgb);
-                let got = p(r, 0.0, c, 0.0).apply_rgb(rgb);
-                for k in 0..3 {
+                // The gated tone against the reference, for a few gate weights.
+                for g in [0.0, 0.25, 0.5, 1.0] {
+                    let want = reference_stops(r, c, s, g);
+                    let got = range.stops_gated(s, g);
                     assert!(
-                        (got[k] - want[k]).abs() <= 1e-12 * want[k].abs(),
-                        "r {r} h {h} s {s}: {got:?} vs {want:?}"
+                        (got - want).abs() < 1e-12,
+                        "r {r} h {h} s {s} g {g}: {got} vs {want}"
                     );
+                }
+                // The pixel: gain against the reference (the gate of its purity included), three channels,
+                // for a pixel the gate leaves alone, one it half closes and one it closes.
+                for rgb in [
+                    [clip_at(s) * 1.3, clip_at(s) * 0.9, clip_at(s) * 0.7],
+                    [clip_at(s) * 1.5, clip_at(s) * 0.9, clip_at(s) * 0.3],
+                    [clip_at(s) * 2.0, clip_at(s) * 0.3, clip_at(s) * 0.1],
+                ] {
+                    let want = reference_apply(r, c, rgb);
+                    let got = p(r, 0.0, c, 0.0).apply_rgb(rgb);
+                    for k in 0..3 {
+                        assert!(
+                            (got[k] - want[k]).abs() <= 1e-12 * want[k].abs(),
+                            "r {r} h {h} s {s}: {got:?} vs {want:?}"
+                        );
+                    }
                 }
                 s += 0.0371;
             }
@@ -345,12 +410,13 @@ fn the_expansion_fades_out_as_the_clip_nears_middle_grey() {
 #[test]
 fn the_gain_keeps_the_channel_ratios_and_the_toe_follows_it() {
     let t = p(0.8, 0.0, clip_at(3.58), 0.0);
+    // Pixels of purity under 0.9, which the achromatic gate does not close.
     for rgb in [
-        [4.0, 3.0, 0.5],
-        [12.0, 9.0, 2.0],
-        [0.4, 2.5, 1.0],
-        [30.0, 28.0, 2.0],
-        [3.0, 1.5, -0.05],
+        [4.0, 3.4, 2.8],
+        [12.0, 10.0, 7.5],
+        [1.2, 2.5, 1.9],
+        [30.0, 28.0, 22.0],
+        [3.0, 2.2, 1.8],
     ] {
         let g = t.highlight_gain(rgb);
         assert!(g > 1.0, "{rgb:?} is above the knee");
@@ -361,8 +427,9 @@ fn the_gain_keeps_the_channel_ratios_and_the_toe_follows_it() {
     }
     // The toe acts on the gained pixel: its norm after the range.
     let tt = p(0.8, 1.0, clip_at(3.58), 0.5);
-    let rgb = [6.0, 4.0, 1.0];
+    let rgb = [6.0, 5.0, 3.5];
     let g = tt.highlight_gain(rgb);
+    assert!(g > 1.0);
     let gained = rgb.map(|c| c * g);
     let n = gained[0];
     let tau = tt.toe_tau();
@@ -443,13 +510,13 @@ fn the_identity_changes_no_bit_of_any_finite_pixel() {
 
 #[test]
 fn the_display_codes_of_docs_02_are_reproduced() {
-    // docs/02 C7, Display result: a neutral at Auto (the clip 3.58 stops over grey), ACES 2 with the
-    // placement, no look, sRGB codes, at r = 0, 0.5 and 1, exactly as docs/02 quotes them.
+    // docs/02 C7, Display result: a neutral at Auto (the clip 3.58 stops over grey), the cine rendering, no
+    // look, sRGB codes, at r = 0, 0.5 and 1, exactly as docs/02 quotes them.
     let stops = [1.0, 2.0, 2.58, 3.08, 3.33, 3.58];
     let want: [(f64, [i32; 6]); 3] = [
-        (0.0, [158, 192, 208, 220, 224, 229]),
-        (0.5, [158, 192, 208, 229, 240, 248]),
-        (1.0, [158, 192, 208, 236, 249, 254]),
+        (0.0, [131, 166, 184, 198, 205, 210]),
+        (0.5, [131, 166, 184, 211, 228, 244]),
+        (1.0, [131, 166, 184, 221, 244, 254]),
     ];
     for (r, codes) in want {
         let mut params = ChainParams::new(IDENTITY, p(r, 0.0, clip_at(3.58), 0.0));
@@ -561,10 +628,453 @@ fn constructor_validates() {
     assert_eq!((t.highlights, t.low_light), (0.0, 1.0));
 }
 
+// ---- The achromatic gate (owner decision 2026-10-29) ------------------------------------------------
+
+fn bits(v: [f64; 3]) -> [u64; 3] {
+    v.map(f64::to_bits)
+}
+
+/// A colour of purity `p` (its largest channel 1, its smallest `1 - p`), scaled so its luma is `stops` over
+/// middle grey. Purity is exactly `p` for `p` in 0..=1 and above 1 for a negative smallest channel.
+fn coloured(p: f64, stops: f64) -> [f64; 3] {
+    let base = [1.0, 1.0 - 0.5 * p, 1.0 - p];
+    let k = clip_at(stops) / luma(base);
+    base.map(|c| c * k)
+}
+
+#[test]
+fn the_gate_is_a_smoothstep_of_the_purity() {
+    assert_eq!((ACHROMATIC_GATE_FROM, ACHROMATIC_GATE_TO), (0.6, 0.9));
+    let gate = AchromaticGate::DEFAULT;
+    assert_eq!(AchromaticGate::default(), gate);
+    assert_eq!((gate.from(), gate.to()), (0.6, 0.9));
+    assert!((gate.inv_span() - 1.0 / 0.3).abs() < 1e-12);
+
+    // Purity: 0 for a grey pixel, 1 when the smallest channel is 0, above 1 for a negative channel,
+    // held to PURITY_MAX, and scale-invariant.
+    assert_eq!(purity([0.18; 3]), 0.0);
+    assert_eq!(purity([5.0; 3]), 0.0);
+    assert_eq!(purity([1.0, 0.0, 0.0]), 1.0);
+    assert_eq!(purity([2.0, 1.0, 1.0]), 0.5);
+    assert!((purity([1.0, -0.1, 0.5]) - 1.1).abs() < 1e-15);
+    assert_eq!(purity([1.0, -3.0, 0.5]), PURITY_MAX);
+    assert_eq!(PURITY_MAX, 2.0);
+    for rgb in [[0.8, 0.07, 0.04], [1.0, 0.8, 0.6], [3.0, 2.9, -0.2]] {
+        for k in [1e-3, 0.37, 1.0, 5.0, 1e3] {
+            assert!(
+                (purity(rgb.map(|c| c * k)) - purity(rgb)).abs() < 1e-14,
+                "{rgb:?} x {k}"
+            );
+        }
+    }
+    // Where the largest channel is not above 0 (or not a number) the purity is 0: the luma is not above 0
+    // either, and the stages that use the gate are the identity there.
+    for rgb in [
+        [0.0; 3],
+        [-1.0, -2.0, -3.0],
+        [f64::NAN, -1.0, -1.0],
+        [-0.0, -0.0, -0.0],
+    ] {
+        assert_eq!(purity(rgb), 0.0, "{rgb:?}");
+    }
+    // Every input a stage can see gives a finite purity.
+    for rgb in [
+        [f64::MAX, -f64::MAX, 0.0],
+        [1e-300, -1e300, 0.0],
+        [f64::MIN_POSITIVE, -1.0, 0.0],
+        [1e30, 1e-30, 0.0],
+    ] {
+        assert!(purity(rgb).is_finite() && purity(rgb) >= 0.0, "{rgb:?}");
+    }
+
+    // The weight: 1 up to the first edge (bit for bit), 0 from the second, the smoothstep between.
+    assert_eq!(gate.weight_of_purity(0.0).to_bits(), 1.0_f64.to_bits());
+    assert_eq!(gate.weight_of_purity(0.6).to_bits(), 1.0_f64.to_bits());
+    assert_eq!(gate.weight_of_purity(0.9), 0.0);
+    assert_eq!(gate.weight_of_purity(PURITY_MAX), 0.0);
+    assert!((gate.weight_of_purity(0.75) - 0.5).abs() < 1e-15);
+    let mut prev = 1.0;
+    let mut q = 0.0;
+    while q <= PURITY_MAX {
+        let w = gate.weight_of_purity(q);
+        assert!(
+            (0.0..=1.0).contains(&w) && w <= prev,
+            "p {q}: {w} after {prev}"
+        );
+        let t = ((q - 0.6) / 0.3_f64).clamp(0.0, 1.0);
+        assert!((w - (1.0 - t * t * (3.0 - 2.0 * t))).abs() < 1e-15);
+        prev = w;
+        q += 0.001;
+    }
+    // The pixel's weight is the weight of its purity, and 1.0 exactly for grey.
+    for rgb in [
+        [0.8, 0.07, 0.04],
+        [1.0, 0.8, 0.6],
+        [1.0, 0.5, 0.3],
+        [1.0, 0.9, 0.2],
+        [2.0, 1.0, -0.3],
+    ] {
+        assert_eq!(gate.weight(rgb), gate.weight_of_purity(purity(rgb)));
+        assert!(
+            (gate.weight(rgb) - reference_gate(rgb)).abs() < 1e-14,
+            "{rgb:?}"
+        );
+    }
+    for y in [1e-9, 0.18, 1.0, 36.0, 1e6] {
+        assert_eq!(gate.weight([y; 3]).to_bits(), 1.0_f64.to_bits());
+    }
+
+    // OFF is 1 for every pixel; the constructor refuses nonsense.
+    assert!(AchromaticGate::OFF.is_off() && !gate.is_off());
+    let mut q = 0.0;
+    while q <= PURITY_MAX {
+        assert_eq!(
+            AchromaticGate::OFF.weight_of_purity(q).to_bits(),
+            1.0_f64.to_bits()
+        );
+        q += 0.01;
+    }
+    assert_eq!(AchromaticGate::new(0.6, 0.9), Ok(gate));
+    assert!(AchromaticGate::new(0.0, 0.5).is_ok());
+    for (a, b) in [
+        (0.5, 0.5),
+        (0.9, 0.6),
+        (-0.1, 0.5),
+        (0.1, f64::NAN),
+        (f64::NAN, 0.5),
+        (0.1, f64::INFINITY),
+        (0.1, 3.5),
+    ] {
+        assert!(
+            matches!(
+                AchromaticGate::new(a, b),
+                Err(ToneError::InvalidGate { .. })
+            ),
+            "{a} {b}"
+        );
+    }
+    // The tone parameters carry it.
+    assert_eq!(p(1.0, 0.0, 2.0, 0.0).gate, gate);
+    assert_eq!(ToneParams::IDENTITY.gate, gate);
+    assert_eq!(
+        p(1.0, 0.0, 2.0, 0.0).with_gate(AchromaticGate::OFF).gate,
+        AchromaticGate::OFF
+    );
+}
+
+#[test]
+fn a_gate_with_a_tiny_span_is_refused_so_the_kernels_inverse_span_stays_finite() {
+    // `inv_span` is what the GPU kernel multiplies by: a span near 1e-39 overflows f32 to infinity, and the
+    // purity at the `from` edge would then give 0 * infinity = NaN. The span must be at least MIN_GATE_SPAN.
+    assert_eq!(MIN_GATE_SPAN, 1e-6);
+    for (a, b) in [
+        (0.5, 0.5 + 5e-7),
+        (0.5, 0.5 + 1e-9),
+        (0.9, 0.9 + 1e-12),
+        (0.0, 1e-30),
+        (0.5, f64::from_bits(0.5_f64.to_bits() + 1)),
+    ] {
+        assert!(
+            matches!(
+                AchromaticGate::new(a, b),
+                Err(ToneError::InvalidGate { .. })
+            ),
+            "{a} {b} (span {:e})",
+            b - a
+        );
+    }
+    // From the smallest span that is accepted on, the inverse span is finite in f32, and so is the weight at
+    // the `from` edge worked out the way the kernel does it.
+    for (a, b) in [(0.5, 0.5 + 2e-6), (0.0, 1e-6), (0.6, 0.9), (0.0, 3.0)] {
+        let gate = AchromaticGate::new(a, b).expect("accepted");
+        let inv = gate.inv_span() as f32;
+        assert!(inv.is_finite() && inv > 0.0, "{a} {b}: {inv}");
+        let at_from = (a as f32 - a as f32) * inv;
+        assert!(at_from.is_finite(), "{a} {b}");
+    }
+}
+
+#[test]
+fn a_grey_pixel_gets_the_old_result_bit_for_bit_at_every_exposure() {
+    // The grey ramp from -8 to +10 stops, every highlight amount and clip level, against a copy of the
+    // stage as it was before the gate (`legacy_apply`); and the same for a pixel that is grey to the last
+    // digit of the fused matrix, and for one of purity 0.5 (the gate is 1 up to 0.6).
+    let mut checked = 0_u64;
+    for r in [0.0, 0.3, 0.5, 1.0] {
+        for h in CLIP_STOPS {
+            let c = clip_at(h);
+            let t = p(r, 0.0, c, 0.0);
+            let mut s = -8.0;
+            while s <= 10.0 {
+                let y = clip_at(s);
+                for rgb in [
+                    grey(s),
+                    [y, y * (1.0 + 1e-15), y * (1.0 - 1e-15)],
+                    [y * 1.2, y, y * 0.6],
+                ] {
+                    assert_eq!(
+                        bits(t.apply_rgb(rgb)),
+                        bits(legacy_apply(r, c, rgb)),
+                        "r {r} h {h} s {s} {rgb:?}"
+                    );
+                    checked += 1;
+                }
+                s += 0.0137;
+            }
+        }
+    }
+    println!("C7 gate: {checked} grey and near-grey pixels equal the old stage bit for bit");
+}
+
+#[test]
+fn with_the_gate_off_the_stage_is_the_old_one_for_every_colour() {
+    let mut checked = 0_u64;
+    for r in [0.5, 1.0] {
+        for h in [2.0, 3.58, 5.0] {
+            let c = clip_at(h);
+            let t = p(r, 0.0, c, 0.0).with_gate(AchromaticGate::OFF);
+            let mut s = -4.0;
+            while s <= 12.0 {
+                for q in [0.0, 0.2, 0.5, 0.8, 0.95, 1.0, 1.3] {
+                    let rgb = coloured(q, s);
+                    assert_eq!(
+                        bits(t.apply_rgb(rgb)),
+                        bits(legacy_apply(r, c, rgb)),
+                        "q {q} s {s}"
+                    );
+                    checked += 1;
+                }
+                s += 0.0331;
+            }
+        }
+    }
+    println!("C7 gate off: {checked} coloured pixels equal the old stage bit for bit");
+}
+
+#[test]
+fn a_saturated_red_gets_less_gain_than_before_and_a_neutral_the_same() {
+    // Auto: the Sony clip 3.58 stops over grey, the knee 2.58; both pixels at +3 stops over grey.
+    let t = p(1.0, 0.0, clip_at(3.58), 0.0);
+    let before = t.with_gate(AchromaticGate::OFF);
+    let neutral = grey(3.0);
+    let red = {
+        let k = clip_at(3.0) / luma([0.80, 0.07, 0.04]);
+        [0.80 * k, 0.07 * k, 0.04 * k]
+    };
+    assert!(purity(red) > 0.9);
+    let gain_before = before.highlight_gain(neutral);
+    assert!(
+        gain_before > 1.2,
+        "the old gain of a neutral at +3 stops: {gain_before}"
+    );
+    assert_eq!(t.highlight_gain(neutral).to_bits(), gain_before.to_bits());
+    assert!(before.highlight_gain(red) > 1.2);
+    // A purity of 0.9 or more is out of the gate: the red keeps its scene exposure, exactly.
+    assert_eq!(t.highlight_gain(red), 1.0);
+    assert_eq!(bits(t.apply_rgb(red)), bits(red));
+    // In between: a gain between the two, falling with the purity.
+    let mut prev = f64::INFINITY;
+    for q in [0.0, 0.3, 0.5, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95] {
+        let g = t.highlight_gain(coloured(q, 3.0));
+        assert!(
+            g <= prev && g >= 1.0 && g <= gain_before * (1.0 + 1e-12),
+            "q {q}: {g}"
+        );
+        if q > 0.6 && q < 0.9 {
+            assert!(g < gain_before && g > 1.0, "q {q}: {g}");
+        }
+        prev = g;
+    }
+    println!(
+        "C7 at +3 stops, clip 3.58: neutral gain {gain_before:.4}, purity 0.5 {:.4}, saturated red {:.4}",
+        t.highlight_gain(coloured(0.5, 3.0)),
+        t.highlight_gain(red)
+    );
+}
+
+#[test]
+fn the_gain_falls_with_the_purity_from_plus_one_to_plus_eight_stops() {
+    // A sweep of purity 0 to 1.5 (a negative smallest channel above 1) at fixed luma, +1 to +8 stops, for
+    // the Auto clip and a high one: the gain never rises with the purity, is the old gain up to 0.6 and 1
+    // (nothing but the cap) from 0.9.
+    for h in [3.58, 5.0] {
+        let c = clip_at(h);
+        let t = p(1.0, 0.0, c, 0.0);
+        let old = t.with_gate(AchromaticGate::OFF);
+        for si in 0..=14 {
+            let s = 1.0 + 0.5 * f64::from(si);
+            let mut prev = f64::INFINITY;
+            let mut q = 0.0;
+            while q <= 1.5 {
+                let rgb = coloured(q, s);
+                let g = t.highlight_gain(rgb);
+                assert!(
+                    g <= prev * (1.0 + 1e-14),
+                    "h {h} s {s} q {q}: {g} after {prev}"
+                );
+                if q <= 0.6 {
+                    assert_eq!(
+                        g.to_bits(),
+                        old.highlight_gain(rgb).to_bits(),
+                        "h {h} s {s} q {q}"
+                    );
+                }
+                if q >= 0.9 - 1e-9 {
+                    // Only the ALEXA's clip is left: the gain is 1 below the cap, the cap's hold above.
+                    let want = if s > HIGHLIGHT_CAP_STOPS {
+                        (HIGHLIGHT_CAP_STOPS - s).exp2()
+                    } else {
+                        1.0
+                    };
+                    assert!((g - want).abs() < 1e-12, "h {h} s {s} q {q}: {g} vs {want}");
+                }
+                prev = g;
+                q += 0.0125;
+            }
+        }
+    }
+}
+
+#[test]
+fn the_alexa_clip_holds_for_every_pixel_whatever_its_purity() {
+    // The cap acts after the gate: no output luma is above 0.18 * 2^h_A, however saturated the pixel,
+    // with a negative channel too, and a pixel above the clip is held on it with its ratios kept.
+    let cap = clip_at(HIGHLIGHT_CAP_STOPS);
+    for r in [0.0, 0.5, 1.0] {
+        for h in [2.0, 3.58, 6.0, 9.0] {
+            let t = p(r, 0.0, clip_at(h), 0.0);
+            for si in 0..=70 {
+                let s = -2.0 + 0.5 * f64::from(si);
+                for q in [0.0, 0.3, 0.5, 0.7, 0.8, 0.95, 1.0, 1.4, 1.9] {
+                    let rgb = coloured(q, s);
+                    let out = t.apply_rgb(rgb);
+                    let y = luma(out);
+                    assert!(
+                        y <= cap * (1.0 + 1e-12),
+                        "r {r} h {h} s {s} q {q}: luma {y}"
+                    );
+                    if s > HIGHLIGHT_CAP_STOPS + 1e-9 {
+                        assert!((y - cap).abs() <= 1e-12 * cap, "held at the cap: {y}");
+                        // ratios kept
+                        assert!((out[1] / out[0] - rgb[1] / rgb[0]).abs() < 1e-12);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn along_an_exposure_ramp_of_one_colour_the_gate_is_constant_and_the_output_rises() {
+    // Purity does not change when a pixel is scaled, so the gate is the same at every exposure and the
+    // output only ever rises with it: every channel, the luma, and the stage's stops.
+    for r in [0.5, 1.0] {
+        for h in [2.0, 3.58, 5.0] {
+            let c = clip_at(h);
+            let t = p(r, 0.0, c, 0.0);
+            for q in [0.0, 0.2, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0, 1.4] {
+                let base = coloured(q, 0.0);
+                let w0 = t.gate.weight(base);
+                let mut prev = [f64::NEG_INFINITY; 3];
+                let mut prev_luma = f64::NEG_INFINITY;
+                let mut s = -6.0;
+                while s <= 14.0 {
+                    let k = clip_at(s) / clip_at(0.0);
+                    let rgb = base.map(|v| v * k);
+                    assert!((t.gate.weight(rgb) - w0).abs() < 1e-12, "q {q} s {s}");
+                    let out = t.apply_rgb(rgb);
+                    // (A negative channel grows more negative with the exposure, as it must.)
+                    for ch in (0..3).filter(|&ch| base[ch] >= 0.0) {
+                        assert!(
+                            out[ch] >= prev[ch] - 1e-12 * prev[ch].abs().max(1e-30),
+                            "r {r} h {h} q {q} s {s} channel {ch}: {} after {}",
+                            out[ch],
+                            prev[ch]
+                        );
+                    }
+                    assert!(luma(out) >= prev_luma - 1e-12 * prev_luma.abs().max(1e-30));
+                    prev = out;
+                    prev_luma = luma(out);
+                    s += 0.0173;
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_gain_is_continuous_in_the_pixel() {
+    // From grey to saturated at a fixed luma, across the knee and the clip: no step anywhere on a fine
+    // sweep (the steepest part of the gate is 5 per unit of purity; times the expansion in stops).
+    for h in [3.58, 6.0] {
+        let t = p(1.0, 0.0, clip_at(h), 0.0);
+        for s in [2.0, 2.6, 3.0, 3.58, 4.5, 7.0, 8.0] {
+            let mut prev = t.highlight_gain(coloured(0.0, s));
+            let mut worst = 0.0f64;
+            let mut q = 0.0;
+            while q <= 1.6 {
+                q += 1e-4;
+                let g = t.highlight_gain(coloured(q, s));
+                worst = worst.max((g - prev).abs() / prev);
+                prev = g;
+            }
+            assert!(worst < 6e-3, "h {h} s {s}: a relative step of {worst}");
+        }
+    }
+}
+
+#[test]
+fn with_the_gate_a_channel_can_lower_the_output_but_never_where_the_gate_is_one() {
+    // docs/02 C7: the per-channel monotonicity across colours no longer holds exactly. A channel that
+    // raises the purity of a pixel closes the gate, and the gain it loses can be more than the channel
+    // gains. Found by a search on a grid; the same search with the gate off, or between pixels the gate
+    // leaves alone, finds nothing.
+    let t = p(1.0, 0.0, clip_at(3.58), 0.0);
+    let off = t.with_gate(AchromaticGate::OFF);
+    let mut falls = 0_u32;
+    let mut falls_off = 0_u32;
+    let mut falls_in_one = 0_u32;
+    let mut worst = 0.0f64;
+    for si in 0..=30 {
+        let y = clip_at(2.0 + 0.1 * f64::from(si));
+        for a in 0..=10 {
+            for b in 0..=10 {
+                let rgb = [
+                    y * 1.5,
+                    y * (0.5 + 0.05 * f64::from(a)),
+                    y * (0.3 + 0.07 * f64::from(b)),
+                ];
+                let up = [rgb[0] * 1.0005, rgb[1], rgb[2]];
+                let (o1, o2) = (t.apply_rgb(rgb), t.apply_rgb(up));
+                if o2[0] < o1[0] * (1.0 - 1e-12) && luma(o1) < clip_at(HIGHLIGHT_CAP_STOPS) * 0.99 {
+                    falls += 1;
+                    worst = worst.max(1.0 - o2[0] / o1[0]);
+                    if purity(rgb) <= ACHROMATIC_GATE_FROM && purity(up) <= ACHROMATIC_GATE_FROM {
+                        falls_in_one += 1;
+                    }
+                }
+                let (f1, f2) = (off.apply_rgb(rgb), off.apply_rgb(up));
+                if f2[0] < f1[0] * (1.0 - 1e-12) && luma(f1) < clip_at(HIGHLIGHT_CAP_STOPS) * 0.99 {
+                    falls_off += 1;
+                }
+            }
+        }
+    }
+    println!(
+        "C7 gate: {falls} grid pixels lose output when their red rises (worst {worst:.2e}); gate off {falls_off}"
+    );
+    assert!(falls > 0, "the documented trade-off exists");
+    assert_eq!(falls_off, 0);
+    assert_eq!(falls_in_one, 0);
+}
+
 proptest! {
     /// Below the cap, raising one channel never lowers any output channel (a channel times a
     /// non-negative, non-decreasing function of a luma with positive weights, then the toe); at the
-    /// cap, the raised channel's own output still never falls.
+    /// cap, the raised channel's own output still never falls. This holds for a gate that is 1
+    /// (`AchromaticGate::OFF`, and the default gate for a grey pixel); with the default gate a channel
+    /// that raises the purity of a pixel can lower its gain by more than the channel rises, see
+    /// `with_the_gate_a_channel_can_lower_the_output_but_never_where_the_gate_is_one`.
     #[test]
     fn every_output_channel_is_monotone_in_each_input_below_the_cap(
         r in 0.0f64..40.0, g in 0.0f64..40.0, b in 0.0f64..40.0,
@@ -572,7 +1082,7 @@ proptest! {
         hi in 0.0f64..=1.0, lo in 0.0f64..=1.0, sigma in 0.0f64..0.05,
         clip_stops in 0.5f64..9.0,
     ) {
-        let t = ToneParams::new(hi, lo, clip_at(clip_stops), sigma).unwrap();
+        let t = ToneParams::new(hi, lo, clip_at(clip_stops), sigma).unwrap().with_gate(AchromaticGate::OFF);
         let rgb = [r, g, b];
         let mut rgb2 = rgb;
         rgb2[ch] += d;
@@ -581,7 +1091,29 @@ proptest! {
         prop_assert!(o2[ch] >= o1[ch] - 1e-12 * o1[ch].abs().max(1.0), "{o1:?} -> {o2:?}");
         let cap = clip_at(HIGHLIGHT_CAP_STOPS) * (1.0 - 1e-9);
         let range = t.range();
-        if luma(rgb2.map(|c| c * range.gain(luma(rgb2)))) < cap {
+        if luma(rgb2.map(|c| c * range.gain_for(rgb2, &t.gate))) < cap {
+            for k in 0..3 {
+                prop_assert!(o2[k] >= o1[k] - 1e-12 * o1[k].abs().max(1.0), "channel {k}: {o1:?} -> {o2:?}");
+            }
+        }
+    }
+
+    /// Between pixels the gate leaves alone (purity up to 0.6 for both) every output channel is
+    /// monotone in each input channel below the cap, as before the gate.
+    #[test]
+    fn where_the_gate_is_one_every_output_channel_is_monotone_in_each_input(
+        y in 0.05f64..60.0, a in 0.65f64..1.35, b in 0.65f64..1.35,
+        d in 0.0f64..0.02, ch in 0usize..3,
+        hi in 0.0f64..=1.0, clip_stops in 0.5f64..9.0,
+    ) {
+        let t = ToneParams::new(hi, 0.0, clip_at(clip_stops), 0.0).unwrap();
+        let rgb = [y, y * a, y * b];
+        let mut rgb2 = rgb;
+        rgb2[ch] += d * y;
+        prop_assert!(purity(rgb) <= ACHROMATIC_GATE_FROM && purity(rgb2) <= ACHROMATIC_GATE_FROM);
+        let (o1, o2) = (t.apply_rgb(rgb), t.apply_rgb(rgb2));
+        let cap = clip_at(HIGHLIGHT_CAP_STOPS) * (1.0 - 1e-9);
+        if luma(o2) < cap {
             for k in 0..3 {
                 prop_assert!(o2[k] >= o1[k] - 1e-12 * o1[k].abs().max(1.0), "channel {k}: {o1:?} -> {o2:?}");
             }

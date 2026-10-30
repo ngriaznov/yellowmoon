@@ -113,6 +113,28 @@ pub(super) fn display_transforms_ignored(names: &[&str]) -> String {
     }
 }
 
+/// Every file is one of ARRI's display LUTs: nothing to import.
+pub(super) fn display_renderings_only(source: &SourceInfo) -> String {
+    let what = if source.kind == SourceKind::File {
+        "This file is a display rendering."
+    } else {
+        "This package has only display renderings."
+    };
+    format!("{what} Yellowmoon uses its own rendering, so there is nothing to import.")
+}
+
+/// Some files are ARRI's display LUTs; the others are imported.
+pub(super) fn display_renderings_left_out(n: usize) -> String {
+    if n == 1 {
+        "1 file is a display rendering, so it was left out. Yellowmoon uses its own rendering."
+            .to_string()
+    } else {
+        format!(
+            "{n} files are display renderings, so they were left out. Yellowmoon uses its own rendering."
+        )
+    }
+}
+
 /// A package with fewer files than it should have.
 pub(super) fn incomplete(
     source: &SourceInfo,

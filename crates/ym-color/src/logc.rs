@@ -100,7 +100,7 @@ pub fn logc3_ei800_decode_rgb(rgb: Vec3) -> Vec3 {
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct LogC4(pub Vec3);
 
-/// A LogC3 (EI 800) encoded AWG3 RGB triple (the input encoding of LogC3 looks and display LUTs).
+/// A LogC3 (EI 800) encoded AWG3 RGB triple (the input encoding of LogC3 looks).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct LogC3Ei800(pub Vec3);
 

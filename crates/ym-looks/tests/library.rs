@@ -24,11 +24,11 @@ fn options() -> ImportOptions {
     }
 }
 
-/// A library with a LogC4 and a LogC3 look package, a LogC4 display package and two user LUTs.
+/// A library with a LogC4 and a LogC3 look package and two user LUTs.
 fn populated(work: &Path) -> (Library, PackageDb) {
     let db = small_db(4);
     let mut library = open_library(&work.join("app"));
-    for kind in [Kind::LookLogC4, Kind::LookLogC3, Kind::DisplayLogC4] {
+    for kind in [Kind::LookLogC4, Kind::LookLogC3] {
         let zip = write_package_zip(work, kind, 4);
         import_path(&mut library, &db, &zip, &options(), &mut no_progress()).unwrap();
     }
@@ -163,7 +163,6 @@ fn looks_are_listed_built_in_first_then_arri_by_group_then_yours() {
     assert!(arri.windows(2).all(|w| w[0] <= w[1]), "{arri:?}");
     let tail: Vec<_> = list.iter().rev().take(2).rev().cloned().collect();
     assert_eq!(tail, vec!["user:alpha-look", "user:zed-look"]);
-    assert_eq!(library.display_luts().len(), 4);
 }
 
 #[test]
@@ -172,12 +171,11 @@ fn verify_reports_missing_and_changed_files_and_disables_those_looks() {
     let (mut library, _) = populated(work.path());
     let clean = library.verify(&mut no_progress()).unwrap();
     assert!(clean.is_clean());
-    assert_eq!(clean.checked(), 8 + 4 + 2);
+    assert_eq!(clean.checked(), 8 + 2);
     assert_eq!(clean.ok_count(), clean.checked());
 
     let missing = LookId::user("zed-look");
     let changed = LookId::user("alpha-look");
-    let changed_display = library.display_luts()[0].id.clone();
     let missing_path = library
         .get(&missing)
         .unwrap()
@@ -201,20 +199,14 @@ fn verify_reports_missing_and_changed_files_and_disables_those_looks() {
         [original.as_slice(), b"\n# edited\n"].concat(),
     )
     .unwrap();
-    let display_path = library.display_luts()[0].lut.path.clone();
-    fs::write(&display_path, "tampered").unwrap();
 
     let report = library.verify(&mut no_progress()).unwrap();
     assert!(!report.is_clean());
     assert_eq!(report.missing(), vec![&missing]);
-    let mut changed_ids = report.changed();
-    changed_ids.sort();
-    let mut want = vec![&changed, &changed_display];
-    want.sort();
-    assert_eq!(changed_ids, want);
+    assert_eq!(report.changed(), vec![&changed]);
     assert!(report.entries.iter().any(|e| e.id == changed
         && matches!(&e.outcome, VerifyOutcome::Changed { expected, actual } if expected != actual)));
-    assert_eq!(report.problems().count(), 3);
+    assert_eq!(report.problems().count(), 2);
 
     // Both are listed, disabled, with the documented words; the rest are unaffected.
     for id in [&missing, &changed] {
@@ -228,10 +220,6 @@ fn verify_reports_missing_and_changed_files_and_disables_those_looks() {
     }
     assert_eq!(library.get(&missing).unwrap().status, LookStatus::Missing);
     assert_eq!(library.get(&changed).unwrap().status, LookStatus::Changed);
-    assert_eq!(
-        library.display_lut_info(&changed_display).unwrap().status,
-        LookStatus::Changed
-    );
     assert_eq!(
         library.looks().iter().filter(|l| !l.is_enabled()).count(),
         2,
@@ -265,7 +253,6 @@ fn verify_reports_missing_and_changed_files_and_disables_those_looks() {
         ),
         "{err}"
     );
-    assert!(library.display_lut(&changed_display).is_err());
     let healthy = library
         .looks()
         .iter()
@@ -285,8 +272,7 @@ fn verify_reports_missing_and_changed_files_and_disables_those_looks() {
     fs::write(&changed_path, &original).unwrap();
     fs::write(&missing_path, cube_text(5, 1, "Zed Look")).unwrap();
     let healed = library.verify(&mut no_progress()).unwrap();
-    // The display LUT is still tampered with; the two looks are fine.
-    assert_eq!(healed.problems().count(), 1);
+    assert!(healed.is_clean());
     assert!(library.get(&missing).unwrap().is_enabled());
     assert!(library.get(&changed).unwrap().is_enabled());
     assert!(library.transform(&changed).is_ok());
@@ -443,11 +429,6 @@ fn removing_a_look_deletes_its_entry_file_and_empty_group_folder() {
     let fresh = open_library(&work.path().join("app"));
     assert!(fresh.get(&id).is_none());
     assert_eq!(fresh.looks().len(), library.looks().len());
-
-    // Display LUTs go the same way.
-    let display = library.display_luts()[0].id.clone();
-    library.remove(&display).unwrap();
-    assert_eq!(library.display_luts().len(), 3);
 
     // Errors.
     assert!(matches!(

@@ -1151,14 +1151,6 @@ mod view {
                 )),
             }
         }
-
-        fn display_transform(
-            &self,
-            id: &ym_looks::library::LookId,
-        ) -> Result<(ym_color::display::DisplayTransform, String), ym_core::pipeline::LookProblem>
-        {
-            NeutralOnly.display_transform(id)
-        }
     }
 
     #[test]

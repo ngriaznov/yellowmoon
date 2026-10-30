@@ -1,5 +1,5 @@
 //! The look library as the app and the CLI use it: listing, importing, removing, the default look
-//! and the display rendering, with a `looks_changed` notification (`docs/08-looks.md`,
+//! with a `looks_changed` notification (`docs/08-looks.md`,
 //! `docs/01-architecture.md` IPC commands `looks_list`, `looks_import`, `looks_set_default`,
 //! `looks_remove`, `apply_look`).
 //!
@@ -7,14 +7,15 @@
 //!
 //! The library itself (manifest, files, hashes, import, recognition) is `ym-looks`; this module wraps
 //! one [`Library`] behind a lock so that the render graph can read it while the UI changes it, and
-//! ties it to the two preferences that belong to looks:
+//! ties it to the preference that belongs to looks, the **default look**
+//! (`Preferences::default_look`): the look new photos get, Signature out of the box. A default that
+//! has been removed or whose file is gone is not used; new photos get Signature again (Neutral when
+//! the built-in Signature file is missing too) until another is chosen
+//! ([`LookService::effective_default`]).
 //!
-//! * the **default look** (`Preferences::default_look`): the look new photos get, Signature out of
-//!   the box. A default that has been removed or whose file is gone is not used; new photos get
-//!   Signature again (Neutral when the built-in Signature file is missing too) until another is
-//!   chosen ([`LookService::effective_default`]).
-//! * the **display rendering** (`Preferences::display_rendering`): ACES 2 or an imported ARRI display
-//!   LUT ([`LookService::display_choice`]).
+//! There is no choice of display rendering: Yellowmoon always renders with its own. ARRI's display
+//! LUTs are not imported (`docs/02-colour-pipeline.md`, C12), and a library that an older version
+//! filled with them is read without them.
 //!
 //! # Missing looks
 //!
@@ -41,16 +42,15 @@ use serde::{Deserialize, Serialize};
 use ym_color::look::LookInput;
 use ym_looks::import::{CancelToken, ImportError, ImportOptions, ImportReport, Progress};
 use ym_looks::library::{
-    DISABLED_MESSAGE, DisplayInput, DisplayLut, Library, LibraryError, LibraryProblem, LoadError,
-    Look, LookFormat, LookGroup, LookId, LookLibrary, ResolveError, VerifyReport,
+    DISABLED_MESSAGE, Library, LibraryError, LibraryProblem, LoadError, Look, LookFormat,
+    LookGroup, LookId, LookLibrary, ResolveError, VerifyReport,
 };
 use ym_looks::manifest::hash_file;
 use ym_looks::recognize::PackageDb;
 
-use crate::pipeline::color::{DisplayChoice, LookProblem, LookProvider, ResolvedLook};
+use crate::pipeline::color::{LookProblem, LookProvider, ResolvedLook};
 use crate::preferences::{
-    DisplayRendering, NEUTRAL_LOOK, Preferences, PreferencesError, PreferencesPatch,
-    PreferencesStore,
+    NEUTRAL_LOOK, Preferences, PreferencesError, PreferencesPatch, PreferencesStore,
 };
 use crate::session::{ApplyScope, PhotoId, Session, SessionError};
 
@@ -81,9 +81,6 @@ pub enum LooksError {
     /// The look's file is gone or changed.
     #[error("{}", DISABLED_MESSAGE)]
     Missing(LookId),
-    /// The display LUT is not imported.
-    #[error("Those display LUTs aren't imported. Import ARRI's display LUTs first.")]
-    NoDisplayLut(LookId),
 }
 
 impl LooksError {
@@ -94,7 +91,6 @@ impl LooksError {
             Self::NotFound(_) | Self::Missing(_) | Self::Load(_) => 3,
             Self::Resolve(e) => e.exit_code(),
             Self::Import(e) => e.exit_code(),
-            Self::NoDisplayLut(_) => 2,
             _ => 1,
         }
     }
@@ -157,31 +153,17 @@ pub struct LookEntry {
     pub missing: bool,
 }
 
-/// An imported display LUT (`DisplayLut` in `src/api/types.ts`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DisplayLutEntry {
-    /// `arri-display:logc4:rec709-g24`.
-    pub id: LookId,
-    /// A readable name ("Rec.709 · Gamma 2.4").
-    pub name: String,
-    /// What it expects as input.
-    pub input: LookInput,
-    /// The display it renders to (`rec709-g24`).
-    pub target: String,
-}
-
 /// What an import reports (`LooksImportResult` in `src/api/types.ts`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LooksImportResult {
     /// Looks added or replaced by this import; empty when everything was already there.
     pub added: Vec<LookEntry>,
-    /// Display LUTs added (ARRI's display rendering, not looks).
-    pub display_luts_added: usize,
-    /// Files whose hash matched a look or display LUT that was already imported.
+    /// Files whose hash matched a look that was already imported.
     pub unchanged: usize,
     /// Things worth telling the person, in plain words: an `.alf4c`'s display transforms are not
-    /// used; looks that stayed or became the 3D-LUT version of a library; a damaged list that was
-    /// set aside. Empty (and left out of the JSON) when there is nothing to say.
+    /// used; ARRI's display LUTs in the source were left out; looks that stayed or became the 3D-LUT
+    /// version of a library; a damaged list that was set aside. Empty (and left out of the JSON)
+    /// when there is nothing to say.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
     /// One sentence for each file of the source that could not be used (damaged, made for another
@@ -203,48 +185,6 @@ pub struct ImportRequest {
     pub cancel: Option<CancelToken>,
 }
 
-/// A readable name for a display LUT target: `rec709-g24` is "Rec.709 · Gamma 2.4".
-#[must_use]
-pub fn display_lut_name(target: &str) -> String {
-    let word = |w: &str| -> String {
-        match w {
-            "rec709" | "bt709" => "Rec.709".to_owned(),
-            "rec2020" | "bt2020" => "Rec.2020".to_owned(),
-            "g22" => "Gamma 2.2".to_owned(),
-            "g24" => "Gamma 2.4".to_owned(),
-            "g26" => "Gamma 2.6".to_owned(),
-            "p3" => "P3".to_owned(),
-            "dcip3" => "DCI-P3".to_owned(),
-            "d65" => "D65".to_owned(),
-            "d60" => "D60".to_owned(),
-            "hlg" => "HLG".to_owned(),
-            "pq" => "PQ".to_owned(),
-            "srgb" => "sRGB".to_owned(),
-            other => match other.strip_suffix("nits") {
-                Some(n) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => {
-                    format!("{n} nits")
-                }
-                _ => {
-                    let mut chars = other.chars();
-                    chars.next().map_or_else(String::new, |c| {
-                        c.to_uppercase().collect::<String>() + chars.as_str()
-                    })
-                }
-            },
-        }
-    };
-    let words: Vec<String> = target
-        .split('-')
-        .filter(|w| !w.is_empty())
-        .map(word)
-        .collect();
-    if words.is_empty() {
-        target.to_owned()
-    } else {
-        words.join(" · ")
-    }
-}
-
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -262,13 +202,6 @@ impl LookProvider for LibraryProvider {
         self.library.look(id)
     }
 
-    fn display_transform(
-        &self,
-        id: &LookId,
-    ) -> Result<(ym_color::display::DisplayTransform, String), LookProblem> {
-        self.library.display_transform(id)
-    }
-
     fn look_sha256(&self, id: &LookId) -> Option<String> {
         if let Some(sha) = self.library.look_sha256(id) {
             return Some(sha);
@@ -283,16 +216,15 @@ impl LookProvider for LibraryProvider {
 
 type Listener = Arc<dyn Fn() + Send + Sync>;
 
-/// What a look or display LUT is from outside: its id, whether it can be used, and the SHA-256 of
-/// its file (so a look replaced by another file under the same id is a change too).
+/// What a look is from outside: its id, whether it can be used, and the SHA-256 of its file (so a
+/// look replaced by another file under the same id is a change too).
 type ListedFile = (LookId, bool, Option<String>);
 
-/// What a change of the library looks like from outside: which looks and display LUTs there are,
-/// whether each can be used, which file each is, and which look is the default.
+/// What a change of the library looks like from outside: which looks there are, whether each can
+/// be used, which file each is, and which look is the default.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Listing {
     looks: Vec<ListedFile>,
-    display_luts: Vec<ListedFile>,
     default: LookId,
 }
 
@@ -359,7 +291,7 @@ impl LookService {
         })
     }
 
-    /// The preferences the default look and the display rendering are kept in.
+    /// The preferences the default look is kept in.
     #[must_use]
     pub fn preferences(&self) -> &Arc<PreferencesStore> {
         &self.prefs
@@ -383,7 +315,7 @@ impl LookService {
         &self.app_root
     }
 
-    /// Where the render graph gets looks and display LUTs from.
+    /// Where the render graph gets looks from.
     #[must_use]
     pub fn provider(&self) -> Arc<dyn LookProvider> {
         Arc::new(LibraryProvider {
@@ -410,16 +342,6 @@ impl LookService {
             .collect()
     }
 
-    /// `looks_display_luts`: the imported display LUTs.
-    #[must_use]
-    pub fn display_luts(&self) -> Vec<DisplayLutEntry> {
-        self.read()
-            .display_luts()
-            .iter()
-            .map(display_entry)
-            .collect()
-    }
-
     /// The look new photos get: the preference if that look exists and its file is there, else
     /// Signature (the default out of the box), else Neutral, which exists in code even when the
     /// data folder has no look files.
@@ -436,26 +358,6 @@ impl LookService {
             factory
         } else {
             LookId::neutral()
-        }
-    }
-
-    /// The display rendering in effect: the chosen ARRI display LUT if it is still imported and
-    /// its file is there, else ACES 2.
-    #[must_use]
-    pub fn display_choice(&self) -> DisplayChoice {
-        match self.prefs.get().display_rendering {
-            DisplayRendering::Aces2 => DisplayChoice::Aces2,
-            DisplayRendering::ArriDisplay { id } => {
-                let usable = self
-                    .read()
-                    .display_lut_info(&id)
-                    .is_some_and(|d| d.status.is_ok());
-                if usable {
-                    DisplayChoice::ArriLut(id)
-                } else {
-                    DisplayChoice::Aces2
-                }
-            }
         }
     }
 
@@ -510,11 +412,6 @@ impl LookService {
                         l.lut.as_ref().map(|r| r.sha256.clone()),
                     )
                 })
-                .collect(),
-            display_luts: lib
-                .display_luts()
-                .iter()
-                .map(|d| (d.id.clone(), d.status.is_ok(), Some(d.lut.sha256.clone())))
                 .collect(),
             default: self.prefs.get().default_look,
         }
@@ -587,8 +484,8 @@ impl LookService {
         self.reload();
         let mut result = self.result_of(&report);
         // What the recognition found worth saying (the display transforms of an `.alf4c` that are
-        // not used, and the files that were refused while the rest came in, each with its
-        // reason), then what the import did.
+        // not used, ARRI's display LUTs that were left out, and the files that were refused while
+        // the rest came in, each with its reason), then what the import did.
         use ym_looks::recognize::IssueKind;
         let said = |kind: IssueKind| {
             recognition
@@ -599,6 +496,7 @@ impl LookService {
         };
         result.refusals = said(IssueKind::Rejected).collect();
         result.notes = said(IssueKind::DisplayTransformsIgnored)
+            .chain(said(IssueKind::DisplayRenderings))
             .chain(report.notes.iter().cloned())
             .chain(followed)
             .collect();
@@ -635,27 +533,19 @@ impl LookService {
             .added
             .iter()
             .chain(&report.updated)
-            .filter(|i| !i.display_lut)
             .filter_map(|i| lib.get(&i.id))
             .map(|l| entry_of(l, &default))
             .collect();
         LooksImportResult {
             added,
-            display_luts_added: report
-                .added
-                .iter()
-                .chain(&report.updated)
-                .filter(|i| i.display_lut)
-                .count(),
             unchanged: report.unchanged.len(),
             notes: Vec::new(),
             refusals: Vec::new(),
         }
     }
 
-    /// `looks_remove`: removes an imported look or display LUT and its file. If it was the default
-    /// look, new photos get Signature again (the default out of the box); if it was the chosen
-    /// display rendering, ACES 2 is used again.
+    /// `looks_remove`: removes an imported look and its file. If it was the default look, new photos
+    /// get Signature again (the default out of the box).
     ///
     /// # Errors
     ///
@@ -669,17 +559,14 @@ impl LookService {
         if &prefs.default_look == id {
             patch.default_look = Some(LookId::factory_default());
         }
-        if matches!(&prefs.display_rendering, DisplayRendering::ArriDisplay { id: d } if d == id) {
-            patch.display_rendering = Some(DisplayRendering::Aces2);
-        }
         if patch != PreferencesPatch::default() {
             // Failing to save a preference must not undo a removal that has happened.
             if let Err(e) = self.prefs.update(&patch) {
                 tracing::warn!(
                     kind = e.kind(),
-                    "could not reset a preference after removing {id}"
+                    "could not reset the default look after removing {id}"
                 );
-                tracing::debug!(error = %e, "could not reset a preference: details");
+                tracing::debug!(error = %e, "could not reset the default look: details");
             }
         }
         // The removal is done; the shared library re-reads it and `looks_changed` fires.
@@ -708,67 +595,15 @@ impl LookService {
         Ok(())
     }
 
-    /// Chooses the display rendering (`Preferences › Display rendering`).
-    ///
-    /// # Errors
-    ///
-    /// [`LooksError::NoDisplayLut`] when the display LUT is not imported or its file is gone, or the
-    /// preferences could not be saved.
-    pub fn set_display_rendering(&self, choice: DisplayRendering) -> Result<(), LooksError> {
-        if let DisplayRendering::ArriDisplay { id } = &choice {
-            let usable = self
-                .read()
-                .display_lut_info(id)
-                .is_some_and(|d| d.status.is_ok());
-            if !usable {
-                return Err(LooksError::NoDisplayLut(id.clone()));
-            }
-        }
-        self.prefs.update(&PreferencesPatch {
-            display_rendering: Some(choice),
-            ..PreferencesPatch::default()
-        })?;
-        Ok(())
-    }
-
-    /// Checks that the display rendering the preferences ask for can be used: ACES 2 always can; an
-    /// ARRI display LUT must be imported and its file there. [`LookService::display_choice`] falls
-    /// back to ACES 2 for the viewport; an export calls this first so that it does not quietly
-    /// render with a transform the user did not choose.
-    ///
-    /// # Errors
-    ///
-    /// [`LooksError::NoDisplayLut`] when the LUT is not imported, [`LooksError::Missing`] when its
-    /// file is gone or changed.
-    pub fn check_display_rendering(&self) -> Result<(), LooksError> {
-        let DisplayRendering::ArriDisplay { id } = self.prefs.get().display_rendering else {
-            return Ok(());
-        };
-        match self.read().display_lut_info(&id) {
-            None => Err(LooksError::NoDisplayLut(id)),
-            Some(d) if !d.status.is_ok() => Err(LooksError::Missing(id)),
-            Some(_) => Ok(()),
-        }
-    }
-
     /// Checks the parts of a preferences value that depend on the library: the default look exists
-    /// and is usable, the display LUT is imported.
+    /// and is usable.
     ///
     /// # Errors
     ///
-    /// The error [`LookService::check_usable`] or [`LookService::set_display_rendering`] would give.
+    /// The error [`LookService::check_usable`] would give.
     pub fn validate_preferences(&self, patch: &PreferencesPatch) -> Result<(), LooksError> {
         if let Some(id) = &patch.default_look {
             self.check_usable(id)?;
-        }
-        if let Some(DisplayRendering::ArriDisplay { id }) = &patch.display_rendering {
-            let usable = self
-                .read()
-                .display_lut_info(id)
-                .is_some_and(|d| d.status.is_ok());
-            if !usable {
-                return Err(LooksError::NoDisplayLut(id.clone()));
-            }
         }
         Ok(())
     }
@@ -822,18 +657,6 @@ fn entry_of(look: &Look, default: &LookId) -> LookEntry {
     }
 }
 
-fn display_entry(d: &DisplayLut) -> DisplayLutEntry {
-    DisplayLutEntry {
-        id: d.id.clone(),
-        name: display_lut_name(&d.target),
-        input: match d.input {
-            DisplayInput::LogC4 => LookInput::LogC4,
-            DisplayInput::LogC3 => LookInput::LogC3Ei800,
-        },
-        target: d.target.clone(),
-    }
-}
-
 /// The id of Neutral, for callers that need a fallback look.
 #[must_use]
 pub fn neutral() -> LookId {
@@ -843,20 +666,6 @@ pub fn neutral() -> LookId {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn display_lut_names_read_as_words() {
-        assert_eq!(display_lut_name("rec709-g24"), "Rec.709 · Gamma 2.4");
-        assert_eq!(display_lut_name("p3-d65"), "P3 · D65");
-        assert_eq!(display_lut_name("rec2020"), "Rec.2020");
-        assert_eq!(
-            display_lut_name("rec2020-pq-1000nits"),
-            "Rec.2020 · PQ · 1000 nits"
-        );
-        assert_eq!(display_lut_name("hlg"), "HLG");
-        assert_eq!(display_lut_name("mystery-view"), "Mystery · View");
-        assert_eq!(display_lut_name(""), "");
-    }
 
     #[test]
     fn the_group_and_entry_json_follow_the_typescript_types() {

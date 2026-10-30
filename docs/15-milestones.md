@@ -107,6 +107,7 @@ CDL, `.cube` parser (fuzzed), tetrahedral interpolation on CPU and GPU, intensit
 **M1-11 · ACES 2 display transform** (M1-01)
 Port the output transform (CPU reference, then WGSL) for the four outputs in `docs/02`; ARRI display-LUT path.
 *Done when:* DRT gate vs OCIO vectors (≤ 1 code value at 10 bits).
+*Later:* the ACES 2 transform was replaced by the cine rendering (`docs/02` C12, pipeline 0.8.0); the DRT gate is now the cine fixture and the kernel parity test (`docs/13`).
 
 **M1-12 · Classical raw processing** (M0-07)
 R1 normalise and clip mask, R3 vignetting, R4 gains, R5 highlight reconstruction, R6 classical demosaic (Menon or LMMSE, pick by PSNR) + light denoise, R8 RL sharpening, R9 lens resample + auto crop; CPU + WGSL; a `lens-oracle` CI job that installs darktable on Ubuntu and compares with `darktable-cli`. *Current defaults (`docs/05`, `docs/algorithms/`): R6 is the adaptive ratio demosaic (Menon, LMMSE, bilinear and log-guided stay selectable through a test-only switch) followed by the single-frame denoise; R8 is Richardson–Lucy (diffraction deconvolution is available); output sharpening is a per-photo setting, default 100 %.*

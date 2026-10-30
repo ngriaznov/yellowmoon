@@ -4,11 +4,11 @@
 //! The Tauri application builds one [`Core`] at start and forwards each command to it; the CLI builds
 //! one per run. What the parts need from each other is settled here once:
 //!
-//! * the **renderer** reads looks through the look library and shows the display rendering the
-//!   preferences choose;
+//! * the **renderer** reads looks through the look library (the display rendering is always
+//!   Yellowmoon's own: there is no choice of it);
 //! * new photos get the **default look** from the preferences (or Neutral when that look is gone);
-//! * a change of the default look, the display rendering or the look list reaches the session and
-//!   the renderer, and then the application's `looks_changed` listener;
+//! * a change of the default look or the look list reaches the session, and then the application's
+//!   `looks_changed` listener;
 //! * an **export** snapshots the photos and the preference "Remove location from exports" when it is
 //!   queued, and runs through `export_photo`, the function the CLI calls too;
 //! * **Auto providers** (`docs/19`, `docs/22`): Apple Intelligence, Claude Code and Antigravity act
@@ -47,13 +47,11 @@ use crate::export::ExportContext;
 use crate::export_queue::{
     ExportEstimate, ExportJob, ExportJobId, ExportQueue, ExportSink, JobSummary, QueueError,
 };
-use crate::looks::{
-    DisplayLutEntry, ImportRequest, LookEntry, LookService, LooksError, LooksImportResult,
-};
+use crate::looks::{ImportRequest, LookEntry, LookService, LooksError, LooksImportResult};
 use crate::pipeline::{AdvisorPictures, RenderError, RenderOptions, Renderer};
 use crate::preferences::{
-    DisplayRendering, LastUsedFolders, Preferences, PreferencesError, PreferencesPatch,
-    PreferencesStore, own_instructions,
+    LastUsedFolders, Preferences, PreferencesError, PreferencesPatch, PreferencesStore,
+    own_instructions,
 };
 use crate::session::{
     AppleAutoEnv, ApplyScope, EventSink, PasteReport, PhotoId, PictureRenderer, RemoveOutcome,
@@ -286,7 +284,6 @@ impl Core {
             render.data_root = Some(options.data_root.clone());
         }
         let renderer = Renderer::new(looks.provider(), render)?;
-        renderer.set_display(looks.display_choice());
 
         let mut env = env
             .with_events(options.session_events)
@@ -345,11 +342,9 @@ impl Core {
         {
             let looks_weak = Arc::downgrade(&looks);
             let session = Arc::clone(&session);
-            let renderer = renderer.clone();
             looks.on_change(move || {
                 if let Some(looks) = looks_weak.upgrade() {
                     session.set_default_look(looks.effective_default());
-                    renderer.set_display(looks.display_choice());
                 }
             });
         }
@@ -463,13 +458,12 @@ impl Core {
     /// # Errors
     ///
     /// [`CoreError::Looks`] with "That look isn't in the library." or "File missing or changed.
-    /// Import again." or "Those display LUTs aren't imported…", [`CoreError::Preferences`] when the
+    /// Import again.", [`CoreError::Preferences`] when the
     /// file cannot be saved. Nothing changes on an error.
     pub fn preferences_set(&self, patch: &PreferencesPatch) -> Result<Preferences, CoreError> {
         let next = self.looks.preferences_set(patch)?;
         self.session
             .set_default_look(self.looks.effective_default());
-        self.renderer.set_display(self.looks.display_choice());
         // The Auto providers follow their preferences at once: a provider chosen, or its consent
         // given or taken away, acts or stops acting with the availability read again, and the photos
         // without an answer are asked; new instructions ask every photo again (unless this run
@@ -569,13 +563,6 @@ impl Core {
     pub fn looks_list(&self) -> Vec<LookEntry> {
         self.looks.reload();
         self.looks.list()
-    }
-
-    /// `looks_display_luts`.
-    #[must_use]
-    pub fn looks_display_luts(&self) -> Vec<DisplayLutEntry> {
-        self.looks.reload();
-        self.looks.display_luts()
     }
 
     /// `looks_import`: a zip, a folder or a `.cube` file; `input` answers the generic question.
@@ -679,7 +666,7 @@ impl Core {
     /// `export_start`: snapshots the photos and the preference "Remove location from exports" and
     /// queues the job. Remembers the destination folder when one was chosen. Looks at the library
     /// folder first, as [`Core::looks_list`] does (and fires `looks_changed` if that changed the
-    /// list), so a look or display LUT whose file has gone is noticed now.
+    /// list), so a look whose file has gone is noticed now.
     ///
     /// The session need not have finished developing: the burst median exposure and the pooled
     /// noise of a photo depend on the photos of its burst and of its noise pool, and a photo whose
@@ -689,15 +676,12 @@ impl Core {
     ///
     /// # Errors
     ///
-    /// [`CoreError::Looks`] when the display LUT chosen in the preferences is gone,
-    /// [`CoreError::Export`] for the rest (`QueueError::Developing` when photos of the scope have
-    /// no estimates yet).
+    /// [`CoreError::Export`] (`QueueError::Developing` when photos of the scope have no estimates
+    /// yet).
     pub fn export_start(&self, job: &ExportJob) -> Result<ExportJobId, CoreError> {
-        // Look at the library folder first: a look or display LUT whose file has gone since the
-        // last look at it is noticed now, and a look the CLI imported is known.
+        // Look at the library folder first: a look whose file has gone since the last look at it is
+        // noticed now, and a look the CLI imported is known.
         self.looks.reload();
-        // A display LUT the user chose and that has since gone is an error, not ACES 2 in its place.
-        self.looks.check_display_rendering()?;
         // The chosen provider is read again (`docs/19` section 1, `docs/22` section 3.3); the export's
         // photos then wait for their answers. The program is asked to check only when it was never
         // checked, and an export started in the first seconds waits for a check that is still running.
@@ -768,10 +752,4 @@ impl Core {
             tracing::debug!(error = %e, "could not remember the folder: details");
         }
     }
-}
-
-/// Makes a [`DisplayRendering`] from a display LUT id, for callers that build patches.
-#[must_use]
-pub fn arri_display(id: LookId) -> DisplayRendering {
-    DisplayRendering::ArriDisplay { id }
 }

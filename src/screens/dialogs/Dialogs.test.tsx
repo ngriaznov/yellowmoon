@@ -31,10 +31,14 @@ const sw = (dialog: HTMLElement, name: string): HTMLElement => within(dialog).ge
 describe("Preferences (⌘,)", () => {
   it("opens from Start with one row for each preference of docs/11", async () => {
     const dialog = await openPreferences();
-    for (const row of ["Default look", "Display rendering", "Export defaults", "Remove location from exports", "Watch Downloads during import", "Check for updates automatically", "Command-line tool"]) {
+    for (const row of ["Default look", "Export defaults", "Remove location from exports", "Watch Downloads during import", "Check for updates automatically", "Command-line tool"]) {
       expect(within(dialog).getByRole("group", { name: row })).toBeInTheDocument();
     }
     expect(within(dialog).getByRole("heading", { level: 2, name: "Preferences" })).toBeInTheDocument();
+    // ARRI's display LUT is not a rendering Yellowmoon offers (owner's decision of 2026-10-29): no row, no choice.
+    expect(within(dialog).queryByRole("group", { name: "Display rendering" })).toBeNull();
+    expect(within(dialog).queryByRole("radiogroup", { name: "Display rendering" })).toBeNull();
+    expect(within(dialog).queryByText(/display LUT/i)).toBeNull();
     expect(within(dialog).getByRole("combobox", { name: "Default look" })).toHaveTextContent("Neutral");
     expect(sw(dialog, "Remove location from exports")).toHaveAttribute("aria-checked", "false");
     expect(sw(dialog, "Watch Downloads during import")).toHaveAttribute("aria-checked", "false");
@@ -149,23 +153,6 @@ describe("Preferences (⌘,)", () => {
     await h!.user.click(screen.getByRole("option", { name: "Film warm · LogC3" }));
     await waitFor(async () => expect((await h!.api.preferencesGet()).default_look).toBe("arri:3000:film-warm-logc3"));
   });
-
-  it("offers ARRI's display rendering only once display LUTs are imported", async () => {
-    const dialog = await openPreferences({ looksImported: false });
-    const group = within(dialog).getByRole("radiogroup", { name: "Display rendering" });
-    expect(within(group).getByRole("radio", { name: "ARRI's display rendering, not imported" })).toBeDisabled();
-    expect(within(dialog).getByText("Import ARRI's display LUTs to use them here.")).toBeInTheDocument();
-    await act(async () => {
-      await h!.api.looksImport(`~/Downloads/${PACKAGE_ZIPS.display_luts_logc4}`);
-    });
-    await h!.store.refreshDisplayLuts();
-    const arri = await within(dialog).findByRole("radio", { name: "ARRI's display rendering" });
-    expect(arri).toBeEnabled();
-    await h!.user.click(arri);
-    await waitFor(async () => expect((await h!.api.preferencesGet()).display_rendering).toEqual({ kind: "arri_display", id: "arri-display:logc4:rec709-g24" }));
-    await h!.user.click(within(dialog).getByRole("radio", { name: "Ours · ACES 2" }));
-    await waitFor(async () => expect((await h!.api.preferencesGet()).display_rendering).toEqual({ kind: "aces2" }));
-  }, 20_000);
 
   it("edits the export defaults with the options of the Export panel, without photos or a command line", async () => {
     const dialog = await openPreferences();
@@ -405,19 +392,27 @@ describe("Import .cube…", () => {
   });
 
   it("starts on the Import button once there is nothing left to answer", async () => {
-    const dialog = await chooseCube(PACKAGE_ZIPS.display_luts_logc4);
+    const dialog = await chooseCube(PACKAGE_ZIPS.look_library_logc4);
     expect(within(dialog).getByRole("button", { name: "Import" })).toHaveFocus();
   });
 
   it("imports an ARRI package without asking, and lists a file that can't be used with the reason", async () => {
-    const dialog = await chooseCube(PACKAGE_ZIPS.display_luts_logc4, FAILURE_ZIPS.damagedLookFile);
-    expect(within(dialog).getByText(/Display LUTs · LogC4 · 22 \.cube\. It is imported as it comes\./)).toBeInTheDocument();
+    const dialog = await chooseCube(PACKAGE_ZIPS.look_library_logc4, FAILURE_ZIPS.damagedLookFile);
+    expect(within(dialog).getByText(/Look Library · LogC4 · log to log · 87 \.cube · 65-point\. It is imported as it comes\./)).toBeInTheDocument();
     expect(within(dialog).getByText("Damaged_Look.alf4 cannot be used. Its checksum does not match, so the file is damaged. Download it again.")).toBeInTheDocument();
     expect(within(dialog).queryByRole("radiogroup")).toBeNull();
     await h!.user.click(within(dialog).getByRole("button", { name: "Import" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), { timeout: 8000 });
-    expect(await h!.api.looksDisplayLuts()).toHaveLength(22);
+    expect((await h!.api.looksList()).filter((l) => l.group.kind === "arri")).toHaveLength(87);
   }, 20_000);
+
+  it("says ARRI's display LUT package has nothing to import, and imports nothing from it", async () => {
+    const dialog = await chooseCube(FAILURE_ZIPS.displayLutsLogc4);
+    expect(within(dialog).getByText("This package has only display renderings. Yellowmoon uses its own rendering, so there is nothing to import.")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("radiogroup")).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Import" })).toHaveAttribute("aria-disabled", "true");
+    expect(await h!.api.looksList()).toHaveLength(2);
+  });
 
   it("takes an ARRI Look File without a question: it says what it expects", async () => {
     const dialog = await chooseCube(FAILURE_ZIPS.ownAlf4c);

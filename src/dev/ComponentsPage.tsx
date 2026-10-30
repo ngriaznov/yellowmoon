@@ -427,15 +427,15 @@ function SegmentedSection() {
           />
         </Field>
       </Demo>
-      <Demo title="A disabled option (Display rendering without ARRI display LUTs)">
+      <Demo title="A disabled option">
         <Segmented
-          label="Display rendering"
+          label="Downloaded zip"
           size="lg"
-          value="ours"
+          value="keep"
           onChange={() => undefined}
           options={[
-            { value: "ours", label: "Ours · ACES 2" },
-            { value: "arri", label: "ARRI's", disabled: true },
+            { value: "keep", label: "Keep it" },
+            { value: "trash", label: "Move to Trash", disabled: true },
           ]}
         />
       </Demo>

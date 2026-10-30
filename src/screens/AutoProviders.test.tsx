@@ -53,7 +53,7 @@ describe("the Auto grading row is shown while a provider is there", () => {
   it("is hidden with no provider (the browser build) and with only Apple Intelligence switched off or a program still checked", async () => {
     for (const providers of [{}, { apple: "unavailable" }, { claude: "checking" }, { agy: "checking", apple: "checking" }] as const) {
       const dialog = await openPreferences({ providers });
-      expect(within(dialog).getByRole("group", { name: "Display rendering" })).toBeInTheDocument();
+      expect(within(dialog).getByRole("group", { name: "Default look" })).toBeInTheDocument();
       expect(within(dialog).queryByRole("group", { name: AUTO_GRADING_TITLE })).toBeNull();
       expect(within(dialog).queryByRole("combobox", { name: AUTO_GRADING_TITLE })).toBeNull();
       expect(within(dialog).queryByRole("textbox")).toBeNull();
@@ -71,12 +71,12 @@ describe("the Auto grading row is shown while a provider is there", () => {
     }
   });
 
-  it("sits after Display rendering, where the Apple row was, and before Export defaults", async () => {
+  it("sits after Default look, where the Apple row was, and before Export defaults", async () => {
     const dialog = await openPreferences({ providers: ALL });
     const groups = within(dialog)
       .getAllByRole("group")
       .map((g) => g.getAttribute("aria-label"));
-    expect(groups.indexOf(AUTO_GRADING_TITLE)).toBe(groups.indexOf("Display rendering") + 1);
+    expect(groups.indexOf(AUTO_GRADING_TITLE)).toBe(groups.indexOf("Default look") + 1);
     expect(groups.indexOf("Export defaults")).toBeGreaterThan(groups.indexOf(AUTO_GRADING_TITLE));
   });
 });
@@ -698,7 +698,7 @@ describe("the Automatic card names the provider", () => {
       await openPhotos(h);
       expect(automatic().getByText(`${name} isn't available right now, so Default Auto is used.`)).toBeInTheDocument();
       const labels = automatic().getAllByRole("button").map((b) => b.querySelector(".ym-auto-row__label")?.textContent ?? "").filter(Boolean);
-      expect(labels).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
+      expect(labels).toEqual(["Exposure", "White balance", "Noise", "Camera"]);
       h.unmount();
       h = undefined;
     }

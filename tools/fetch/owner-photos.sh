@@ -7,7 +7,7 @@
 #
 # The photos are © Mykyta Griaznov, all rights reserved, not Apache-2.0. He permits them in this
 # repository (that branch), as test and evaluation data, in CI, and in images made from them that the
-# repository may publish (NOTICE item 10). They are never bundled with the app.
+# repository may publish (NOTICE item 9). They are never bundled with the app.
 # Exit codes: 0 ok, 1 verification failure, 2 usage, 127 a required tool is missing.
 set -euo pipefail
 

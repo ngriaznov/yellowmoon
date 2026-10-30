@@ -5,12 +5,16 @@
 //!
 //! ```text
 //! <root>/looks/
-//!   manifest.json                    imported looks and display LUTs, with SHA-256 per file
+//!   manifest.json                    imported looks, with SHA-256 per file
 //!   .lock                            held while importing or removing
 //!   arri/<group_no>-<group_slug>/    imported ARRI look files (copied, never modified)
-//!   arri-display/                    imported ARRI display LUTs
 //!   user/                            other imported .cube files
 //! ```
+//!
+//! Yellowmoon no longer imports ARRI's display LUTs (`docs/02-colour-pipeline.md`, C12). A library
+//! made by an older version may still hold an `arri-display/` folder and a `display_luts` list in
+//! `manifest.json`: nothing reads them, the list is dropped the next time the manifest is written,
+//! and the files stay where they are.
 //!
 //! Built-in looks come from a data folder (`data/looks/builtin/*.json`, parametric look files as in `docs/08-looks.md`); Neutral
 //! exists even without one. Imported looks come from `manifest.json`. A look whose file is gone or
@@ -37,7 +41,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ym_color::look::{LookInput, LookTransform};
-use ym_color::lut::Lut;
 
 pub use builtin::BuiltinProblem;
 pub use ids::{
@@ -45,8 +48,8 @@ pub use ids::{
     is_valid_slug, numbered_slug, sanitize_file_stem, slugify, truncate_to_bytes,
 };
 pub use model::{
-    DISABLED_MESSAGE, DisplayInput, DisplayLut, LoadedLook, Look, LookFormat, LookGroup,
-    LookLibrary, LookStatus, LutLoadError, LutRef, cube_error_text,
+    DISABLED_MESSAGE, LoadedLook, Look, LookFormat, LookGroup, LookLibrary, LookStatus,
+    LutLoadError, LutRef, cube_error_text,
 };
 pub use resolve::{Candidate, EXIT_LOOK_MISSING, EXIT_USAGE, ResolveError, resolve};
 pub use verify::{VerifyEntry, VerifyOutcome, VerifyReport};
@@ -146,7 +149,7 @@ pub enum LibraryError {
     /// The library lock could not be taken.
     #[error(transparent)]
     Lock(#[from] LockError),
-    /// The id names no imported look or display LUT.
+    /// The id names no imported look.
     #[error("There is no imported look with the id {0}.")]
     UnknownLook(LookId),
     /// Built-in looks cannot be removed.
@@ -298,7 +301,6 @@ impl LibraryPaths {
 #[derive(Default)]
 struct Cache {
     looks: HashMap<LookId, (String, Arc<LookTransform>)>,
-    displays: HashMap<LookId, (String, Arc<Lut>)>,
 }
 
 /// The look library (see the module documentation).
@@ -309,7 +311,6 @@ pub struct Library {
     manifest: Manifest,
     manifest_problem: Option<String>,
     looks: Vec<Look>,
-    display_luts: Vec<DisplayLut>,
     cache: Mutex<Cache>,
 }
 
@@ -318,7 +319,6 @@ impl std::fmt::Debug for Library {
         f.debug_struct("Library")
             .field("root", &self.paths.root)
             .field("looks", &self.looks.len())
-            .field("display_luts", &self.display_luts.len())
             .finish()
     }
 }
@@ -345,7 +345,6 @@ impl Library {
             manifest: Manifest::default(),
             manifest_problem: None,
             looks: Vec::new(),
-            display_luts: Vec::new(),
             cache: Mutex::new(Cache::default()),
         };
         library.reload();
@@ -439,57 +438,22 @@ impl Library {
         looks.extend(imported);
         self.looks = looks;
 
-        self.display_luts = self
-            .manifest
-            .display_luts
-            .iter()
-            .map(|m| {
-                let path = self.paths.file(&m.file);
-                let status = if path.is_file() {
-                    LookStatus::Ok
-                } else {
-                    LookStatus::Missing
-                };
-                DisplayLut {
-                    id: m.id.clone(),
-                    input: m.input,
-                    target: m.target.clone(),
-                    lut: LutRef {
-                        path,
-                        sha256: m.sha256.clone(),
-                        lut_size: 0,
-                        format: LookFormat::Cube,
-                    },
-                    status,
-                }
-            })
-            .collect();
-
         // Forget cached LUTs that no longer match the manifest (removed, replaced or re-imported).
         let known: HashMap<&LookId, &str> = self
             .manifest
             .looks
             .iter()
             .map(|m| (&m.id, m.sha256.as_str()))
-            .chain(
-                self.manifest
-                    .display_luts
-                    .iter()
-                    .map(|m| (&m.id, m.sha256.as_str())),
-            )
             .collect();
         let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
         cache
             .looks
             .retain(|id, (sha, _)| !is_imported(id) || known.get(id) == Some(&sha.as_str()));
-        cache
-            .displays
-            .retain(|id, (sha, _)| known.get(id) == Some(&sha.as_str()));
         drop(cache);
         self.evict_disabled();
     }
 
-    /// Drops cached LUTs of looks and display LUTs that are disabled (file missing or changed), so
+    /// Drops cached LUTs of looks that are disabled (file missing or changed), so
     /// that a disabled look is never applied from memory: the next load reads the file again,
     /// checks its checksum and fails with [`LoadError::Unavailable`] if it is still wrong.
     fn evict_disabled(&self) {
@@ -499,15 +463,8 @@ impl Library {
             .iter()
             .filter(|l| !l.status.is_ok())
             .map(|l| &l.id)
-            .chain(
-                self.display_luts
-                    .iter()
-                    .filter(|d| !d.status.is_ok())
-                    .map(|d| &d.id),
-            )
             .collect();
         cache.looks.retain(|id, _| !disabled.contains(id));
-        cache.displays.retain(|id, _| !disabled.contains(id));
     }
 
     /// The app folder this library lives in.
@@ -535,22 +492,10 @@ impl Library {
         &self.looks
     }
 
-    /// Imported ARRI display LUTs, in manifest order.
-    #[must_use]
-    pub fn display_luts(&self) -> &[DisplayLut] {
-        &self.display_luts
-    }
-
     /// The look with this id.
     #[must_use]
     pub fn get(&self, id: &LookId) -> Option<&Look> {
         self.looks.iter().find(|l| &l.id == id)
-    }
-
-    /// The display LUT with this id.
-    #[must_use]
-    pub fn display_lut_info(&self, id: &LookId) -> Option<&DisplayLut> {
-        self.display_luts.iter().find(|d| &d.id == id)
     }
 
     /// Finds a look from a `--look` argument: full id, slug after the colon, or display name,
@@ -650,34 +595,6 @@ impl Library {
         Ok(transform)
     }
 
-    /// An imported display LUT, loaded on first use (checksum-checked) and kept in memory.
-    ///
-    /// # Errors
-    ///
-    /// As [`Library::transform`].
-    pub fn display_lut(&self, id: &LookId) -> Result<Arc<Lut>, LoadError> {
-        let info = self
-            .display_lut_info(id)
-            .ok_or_else(|| LoadError::NotFound(id.clone()))?;
-        if let Some((sha, hit)) = self
-            .cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .displays
-            .get(id)
-            && *sha == info.lut.sha256
-        {
-            return Ok(Arc::clone(hit));
-        }
-        let lut = Arc::new(info.lut.load().map_err(|e| LoadError::from_lut(id, e))?);
-        self.cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .displays
-            .insert(id.clone(), (info.lut.sha256.clone(), Arc::clone(&lut)));
-        Ok(lut)
-    }
-
     /// Re-reads the manifest, re-hashes every imported file and updates each look's
     /// [`LookStatus`]: missing and changed looks become disabled.
     ///
@@ -697,20 +614,14 @@ impl Library {
             Manifest::load(&self.paths.looks_dir())?;
             self.reload();
         }
-        let total = self.manifest.looks.len() + self.manifest.display_luts.len();
+        let total = self.manifest.looks.len();
         let mut report = VerifyReport::default();
         let mut statuses: HashMap<LookId, LookStatus> = HashMap::new();
         let files = self
             .manifest
             .looks
             .iter()
-            .map(|m| (&m.id, &m.file, &m.sha256))
-            .chain(
-                self.manifest
-                    .display_luts
-                    .iter()
-                    .map(|m| (&m.id, &m.file, &m.sha256)),
-            );
+            .map(|m| (&m.id, &m.file, &m.sha256));
         for (done, (id, file, expected)) in files.enumerate() {
             progress(Progress {
                 stage: Stage::Verify,
@@ -755,16 +666,11 @@ impl Library {
                 look.status = *status;
             }
         }
-        for display in &mut self.display_luts {
-            if let Some(status) = statuses.get(&display.id) {
-                display.status = *status;
-            }
-        }
         self.evict_disabled();
         Ok(report)
     }
 
-    /// Removes an imported look or display LUT: takes the library lock, drops its manifest entry
+    /// Removes an imported look: takes the library lock, drops its manifest entry
     /// (atomically), then deletes its file and its group folder if that is now empty.
     ///
     /// # Errors
@@ -780,8 +686,6 @@ impl Library {
         let mut manifest = Manifest::load(&looks_dir)?;
         let file = if let Some(i) = manifest.looks.iter().position(|l| &l.id == id) {
             manifest.looks.remove(i).file
-        } else if let Some(i) = manifest.display_luts.iter().position(|l| &l.id == id) {
-            manifest.display_luts.remove(i).file
         } else {
             return Err(LibraryError::UnknownLook(id.clone()));
         };
@@ -791,7 +695,6 @@ impl Library {
             .looks
             .iter()
             .map(|l| &l.file)
-            .chain(manifest.display_luts.iter().map(|d| &d.file))
             .any(|f| f.eq_ignore_ascii_case(&file));
         let path = self.paths.file(&file);
         let mut file_deleted = false;
@@ -834,7 +737,7 @@ fn is_imported(id: &LookId) -> bool {
 }
 
 /// Removes `dir` (a group folder such as `arri/3000-film`) when it is empty. Only folders below
-/// `looks/arri/` go; `looks/arri`, `looks/arri-display` and `looks/user` stay.
+/// `looks/arri/` go; `looks/arri` and `looks/user` stay.
 fn remove_group_folder_if_empty(dir: &Path, looks_dir: &Path) {
     let Ok(relative) = dir.strip_prefix(looks_dir) else {
         return;

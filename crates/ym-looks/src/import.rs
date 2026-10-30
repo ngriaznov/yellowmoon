@@ -11,6 +11,10 @@
 //! 2. [`import`] (step 4, "Import") copies only those files into the library, grouped as ARRI
 //!    groups them, hashes each, and writes the manifest. [`import_path`] does both for the CLI.
 //!
+//! ARRI's display LUTs are recognised but never imported: Yellowmoon uses its own display rendering
+//! (`docs/02-colour-pipeline.md`, C12), so [`inspect`] says there is nothing to import for a
+//! source that holds only those, and [`import`] leaves them out of a source that also holds looks.
+//!
 //! What import guarantees:
 //!
 //! * **Originals are read-only** and the copies are byte-for-byte identical (the SHA-256 recorded
@@ -65,7 +69,7 @@ use crate::manifest::{
 use crate::recognize::{
     CubeSummary, FileFacts, LookFileFacts, Outcome, PackageDb, Recognition, Verdict, recognize,
 };
-use plan::{EntryData, Slot, Spec, SpecKind, apply, assign};
+use plan::{EntryData, Slot, Spec, apply, assign};
 use source::{ReadFailure, Source};
 
 /// Which phase a [`Progress`] report belongs to.
@@ -226,7 +230,7 @@ pub struct RejectedFile {
     pub reason: String,
 }
 
-/// A look or display LUT touched by an import.
+/// A look touched by an import.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ImportedItem {
     /// Its id in the library.
@@ -235,14 +239,12 @@ pub struct ImportedItem {
     pub name: String,
     /// File, relative to the `looks` folder.
     pub file: String,
-    /// Whether it is a display LUT rather than a look.
-    pub display_lut: bool,
 }
 
 /// What an import did.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct ImportReport {
-    /// New looks and display LUTs.
+    /// New looks.
     pub added: Vec<ImportedItem>,
     /// Entries whose file was replaced, repaired, or whose input answer changed.
     pub updated: Vec<ImportedItem>,
@@ -252,8 +254,7 @@ pub struct ImportReport {
     pub rejected: Vec<RejectedFile>,
     /// The person's own looks that an ARRI package has claimed: (the id they had, the ARRI id
     /// they have now). The old id is gone from the library, so whatever still names it (the
-    /// default look, a script's `--look`) has to follow. Display LUTs are not listed: a claimed
-    /// own LUT that becomes a display LUT is not a look any more.
+    /// default look, a script's `--look`) has to follow.
     pub renamed: Vec<(LookId, LookId)>,
     /// Things worth telling the user, for example a damaged looks list that was set aside.
     pub notes: Vec<String>,
@@ -731,16 +732,12 @@ pub fn import(
                     id,
                     name: spec.name.clone(),
                     file,
-                    display_lut: false,
                 });
                 continue;
             }
             // These bytes are in the library already, under another name or group: the entry
             // stays as it is (a missing or altered file is written again, like for any entry).
-            if let Slot::Same {
-                name, display_lut, ..
-            } = &slot
-            {
+            if let Slot::Same { name, .. } = &slot {
                 let dest = paths.file(&file);
                 // A file staged by this import is not on disk yet and is not damaged either.
                 let repair = !staged_dests.contains(&dest)
@@ -768,7 +765,6 @@ pub fn import(
                     id,
                     name: name.clone(),
                     file,
-                    display_lut: *display_lut,
                 };
                 if repair {
                     report.updated.push(item);
@@ -792,9 +788,7 @@ pub fn import(
                     replaced_files.push(old.file.clone());
                     replaces = Some(old.id.clone());
                     claimed += 1;
-                    if matches!(spec.kind, SpecKind::Look { .. }) {
-                        report.renamed.push((old.id.clone(), id.clone()));
-                    }
+                    report.renamed.push((old.id.clone(), id.clone()));
                 }
                 _ => {}
             }
@@ -844,7 +838,6 @@ pub fn import(
                 id,
                 name: spec.name.clone(),
                 file,
-                display_lut: matches!(spec.kind, SpecKind::Display { .. }),
             };
             if matches!(slot, Slot::Claim { .. }) {
                 // Not a new look: the person's entry became ARRI's.
@@ -912,7 +905,6 @@ pub fn import(
             .looks
             .iter()
             .map(|l| l.file.as_str())
-            .chain(manifest.display_luts.iter().map(|d| d.file.as_str()))
             .any(|f| f.eq_ignore_ascii_case(old))
         {
             let path = paths.file(old);

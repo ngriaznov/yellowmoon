@@ -61,7 +61,6 @@ import type {
   CropAspect,
   CropSuggestion,
   DevelopSettings,
-  DisplayLut,
   DownloadFound,
   ExportEstimate,
   ExportJob,
@@ -150,7 +149,6 @@ const RENDER_STATS: RenderStats = { ms: 42, path: "neural", space: "display_p3",
 /** What "Auto" resolves to for every photo in the mock, with Apple Auto off (Default Auto, "the rule"). */
 export const MOCK_ESTIMATES: AutoEstimates = {
   exposure_ev: 0.3,
-  white_ev: 0.8,
   kelvin: 5450,
   tint: 0,
   contrast: 0,
@@ -521,7 +519,6 @@ export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
     highlights: { kind: "auto" },
     shadows: { kind: "auto" },
     white: 0,
-    white_offset_ev: 0,
     black: { kind: "auto" },
     light_source: "auto",
     white_balance: { kind: "auto" },
@@ -627,7 +624,6 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
     highlights: percentSetting(s.highlights),
     shadows: percentSetting(s.shadows),
     white: pct(s.white),
-    white_offset_ev: clamp(s.white_offset_ev, -3, 3),
     black: percentSetting(s.black),
     saturation: percentSetting(s.saturation),
     output_sharpening: clamp(s.output_sharpening, 0, 200),
@@ -704,7 +700,6 @@ export function resolveSettings(photoId: PhotoId, settings: DevelopSettings, est
       highlights: point(color_balance.highlights, estimates.balance_highlights),
     },
     saturation: percent(saturation, estimates.saturation),
-    white_ev: clamp(estimates.white_ev + settings.white_offset_ev, 0, 3),
     kelvin: white_balance.kind === "manual" ? white_balance.kelvin : (preset?.kelvin ?? estimates.kelvin),
     tint: white_balance.kind === "manual" ? white_balance.tint : (preset?.tint ?? estimates.tint),
     sharpen:
@@ -803,7 +798,6 @@ function defaultExportOptions(): ExportOptions {
 function defaultPreferences(options: Pick<Required<MockOptions>, "autoProvider" | "consent"> = DEFAULT_OPTIONS): Preferences {
   return {
     default_look: NEUTRAL,
-    display_rendering: { kind: "aces2" },
     export_defaults: defaultExportOptions(),
     remove_location_from_exports: false,
     check_for_updates_automatically: true,
@@ -815,10 +809,15 @@ function defaultPreferences(options: Pick<Required<MockOptions>, "autoProvider" 
   };
 }
 
-/** Stored preferences without `apple_auto`, which `auto_provider` replaced (`docs/22` D15): a page that kept the old file still loads. */
+/**
+ * Stored preferences without `apple_auto`, which `auto_provider` replaced (`docs/22` D15), and without `display_rendering`, the
+ * choice of ARRI's display LUT that Yellowmoon no longer offers: a page that kept the old file still loads, and the old choice is
+ * read as nothing, without a word, as the core reads `preferences.json`.
+ */
 function withoutRetired(stored: Preferences): Preferences {
-  const { apple_auto: retired, ...rest } = stored as Preferences & { apple_auto?: boolean };
+  const { apple_auto: retired, display_rendering: retiredDisplay, ...rest } = stored as Preferences & { apple_auto?: boolean; display_rendering?: unknown };
   void retired;
+  void retiredDisplay;
   return rest;
 }
 
@@ -968,10 +967,9 @@ interface PackageFact {
   fileCount: number;
   megabytes: number;
   input: LookInput;
-  role: "looks" | "display";
 }
 
-/** The five packages as the mock "downloads" them: file names, sizes and counts of `docs/08`. */
+/** The three look packages as the mock "downloads" them: file names, sizes and counts of `docs/08`. */
 export const PACKAGE_FACTS: Readonly<Record<PackageId, PackageFact>> = {
   look_library_logc4: {
     zip: "ARRI_LookLibrary_LogC4.zip",
@@ -981,17 +979,6 @@ export const PACKAGE_FACTS: Readonly<Record<PackageId, PackageFact>> = {
     fileCount: 87,
     megabytes: 181,
     input: "logc4",
-    role: "looks",
-  },
-  display_luts_logc4: {
-    zip: "ARRI_DisplayLUTs_LogC4.zip",
-    title: "Display LUTs · LogC4",
-    what: "Display LUTs · LogC4",
-    contents: "22 .cube",
-    fileCount: 22,
-    megabytes: 32,
-    input: "logc4",
-    role: "display",
   },
   look_library_logc3: {
     zip: "ARRI_LookLibrary_LogC3.zip",
@@ -1001,7 +988,6 @@ export const PACKAGE_FACTS: Readonly<Record<PackageId, PackageFact>> = {
     fileCount: 87,
     megabytes: 30,
     input: "logc3_ei800",
-    role: "looks",
   },
   look_library_logc3_to_rec709: {
     zip: "ARRI_LookLibrary_LogC3_to_Rec709.zip",
@@ -1011,19 +997,11 @@ export const PACKAGE_FACTS: Readonly<Record<PackageId, PackageFact>> = {
     fileCount: 87,
     megabytes: 32,
     input: "logc3_to_rec709",
-    role: "looks",
-  },
-  display_luts_logc3: {
-    zip: "ARRI_DisplayLUTs_LogC3.zip",
-    title: "Display LUTs · LogC3",
-    what: "Display LUTs · LogC3",
-    contents: "48 .cube",
-    fileCount: 48,
-    megabytes: 46,
-    input: "logc3_ei800",
-    role: "display",
   },
 };
+
+/** The words the core uses for a source that holds only ARRI's display LUTs (`ym-looks`, `explain.rs`). */
+export const DISPLAY_ONLY_REASON = "This package has only display renderings. Yellowmoon uses its own rendering, so there is nothing to import.";
 
 /** The zip file name of each package, for tests and the Playwright flows. */
 export const PACKAGE_ZIPS = Object.fromEntries(Object.entries(PACKAGE_FACTS).map(([id, f]) => [id, f.zip])) as Record<PackageId, string>;
@@ -1039,8 +1017,12 @@ export const LOOK_FILE_ZIPS = {
   amlLibrary: "ARRI Look Library LogC3 (log-to-Rec709) ALF2_data.zip",
 } as const;
 
-/** Zips the mock knows that are not one of the five packages: the failure cases of the wizard. */
+/** Zips the mock knows that are not one of the three packages: the failure cases of the wizard. */
 export const FAILURE_ZIPS = {
+  /** ARRI's LogC4 display LUT package (Technical Downloads page): recognised, and said to hold nothing to import. */
+  displayLutsLogc4: "ARRI_DisplayLUTs_LogC4.zip",
+  /** ARRI's LogC3 display LUT package. */
+  displayLutsLogc3: "ARRI_DisplayLUTs_LogC3.zip",
   /** One ARRI Look File that is damaged (its checksum does not match). */
   damagedLookFile: "Damaged_Look.alf4",
   /** One loose `.alf4` of the person's own: it says what it expects, so nothing is asked. */
@@ -1067,6 +1049,17 @@ function defaultSources(): Map<string, SourceFixture> {
       source: "zip",
       size_bytes: f.megabytes * 1_000_000,
       recognition: { kind: "package", package_id: id, title: f.title, what: f.what, contents: f.contents, file_count: f.fileCount, note: null },
+    });
+  }
+  // ARRI's display LUT packages are recognised and not offered: Yellowmoon uses its own display rendering.
+  for (const [name, mb] of [
+    [FAILURE_ZIPS.displayLutsLogc4, 32],
+    [FAILURE_ZIPS.displayLutsLogc3, 46],
+  ] as const) {
+    map.set(name.toLowerCase(), {
+      source: "zip",
+      size_bytes: mb * 1_000_000,
+      recognition: { kind: "unusable", package_id: null, reason: DISPLAY_ONLY_REASON },
     });
   }
   // The same package unpacked into a folder.
@@ -1197,39 +1190,11 @@ const LOOK_FAMILIES = ["Print", "Fade", "Noir", "Dusk", "Dawn", "Bloom", "Haze",
  */
 function packageLooks(id: PackageId): Look[] {
   const fact = PACKAGE_FACTS[id];
-  if (fact.role !== "looks") return [];
   const suffix = id === "look_library_logc4" ? "" : id === "look_library_logc3" ? "-logc3" : "-logc3-rec709";
   const lutSize = id === "look_library_logc4" ? 65 : 33;
   const names = [...NAMED_LOOKS];
   for (let i = 0; names.length < fact.fileCount; i++) names.push(`${LOOK_FAMILIES[i % LOOK_FAMILIES.length]} ${Math.floor(i / LOOK_FAMILIES.length) + 1}`);
   return names.map((name) => importedLook(`arri:3000:${slugify(name)}${suffix}`, name, ARRI_FILM, fact.input, "cube", lutSize));
-}
-
-/** The display LUTs a package adds. The first is ARRI's Rec.709 rendering, `arri-display:logc4:rec709-g24`. */
-function packageDisplayLuts(id: PackageId): DisplayLut[] {
-  const fact = PACKAGE_FACTS[id];
-  if (fact.role !== "display") return [];
-  const generation = id === "display_luts_logc4" ? "logc4" : "logc3";
-  const targets: Array<[string, string]> = [
-    ["rec709-g24", "Rec.709 · Gamma 2.4"],
-    ["rec709-g22", "Rec.709 · Gamma 2.2"],
-    ["p3-d65", "P3 · D65"],
-    ["rec2020", "Rec.2020"],
-    ["hlg", "HLG"],
-    ["pq", "PQ"],
-  ];
-  const out: DisplayLut[] = [];
-  for (let i = 0; out.length < fact.fileCount; i++) {
-    const [target, label] = targets[i % targets.length] as [string, string];
-    const round = Math.floor(i / targets.length);
-    out.push({
-      id: `arri-display:${generation}:${target}${round === 0 ? "" : `-${round + 1}`}`,
-      name: round === 0 ? label : `${label} · ${round + 1}`,
-      input: fact.input === "logc4" ? "logc4" : "logc3_ei800",
-      target,
-    });
-  }
-  return out;
 }
 
 /** "Warm_Film.cube" gives "Warm Film". */
@@ -1406,8 +1371,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   let looks: Look[] = [];
   let importedPackages: PackageId[] = [];
   let userLooks: Look[] = [];
-  let displayLuts: DisplayLut[] = [];
-  let sources = defaultSources();
+    let sources = defaultSources();
   let watching = false;
   let downloadTimers: Array<ReturnType<typeof setTimeout>> = [];
   const importRuns = new Set<ImportRun>();
@@ -2072,9 +2036,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     return { files, skips, errors };
   }
 
-  /** A DNG of the job is close to, not the same as, the picture: a photo has a look with its own display rendering (at an intensity above 0), or ARRI's display rendering is chosen. */
+  /** A DNG of the job is close to, not the same as, the picture: a photo has a look with its own display rendering (at an intensity above 0). */
   function dngApproximate(job: ExportJob): boolean {
-    if (preferences.display_rendering.kind === "arri_display") return true;
     return targets(job.scope).some((rec) => rec.settings.look_intensity > 0 && findLook(rec.settings.look)?.input === "logc3_to_rec709");
   }
 
@@ -2232,10 +2195,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     developProgress = 0;
     const stored = options.persistPreferences ? readStored() : null;
     preferences = stored ? { ...defaultPreferences(options), ...withoutRetired(stored.preferences) } : defaultPreferences(options);
-    importedPackages = stored?.importedPackages ?? [];
+    // A package id this version does not know (the display LUT packages an earlier mock kept) is ignored, as the core ignores a library's display LUTs.
+    importedPackages = (stored?.importedPackages ?? []).filter((id): id is PackageId => id in PACKAGE_FACTS);
     userLooks = (stored?.userLooks ?? []).map(withLibraryFields);
     cliLink = stored?.cliLink ?? null;
-    displayLuts = importedPackages.flatMap(packageDisplayLuts);
     sources = defaultSources();
     choices.folder = [];
     choices.files = [];
@@ -2404,7 +2367,6 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
                 color_balance: { ...rec.settings.color_balance, shadows: { kind: "auto" }, highlights: { kind: "auto" } },
               }
             : {}),
-          white_offset_ev: 0,
           light_source: "auto",
           white_balance: { kind: "auto" },
           white_pick: null,
@@ -2572,10 +2534,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         }
         await copyFiles(path, r.kind === "package" ? r.file_count : r.file_count);
         const before = new Set(looks.map((l) => l.id));
-        const lutsBefore = displayLuts.length;
         if (r.kind === "package") {
           if (!importedPackages.includes(r.package_id)) importedPackages = [...importedPackages, r.package_id];
-          displayLuts = importedPackages.flatMap(packageDisplayLuts);
         } else {
           const base = cubeName(found.name);
           const slug = slugify(base);
@@ -2599,12 +2559,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         rebuildLooks();
         persist();
         const added = looks.filter((l) => !before.has(l.id));
-        const displayAdded = displayLuts.length - lutsBefore;
         emitSoon("looks_changed", null);
-        return { added, display_luts_added: displayAdded, unchanged: Math.max(0, r.file_count - added.length - displayAdded) };
+        return { added, unchanged: Math.max(0, r.file_count - added.length) };
       }),
     looksRecognise: (path) => run("looksRecognise", () => recognise(path)),
-    looksDisplayLuts: () => run("looksDisplayLuts", () => displayLuts),
     looksWatchDownloads: (enabled) =>
       run("looksWatchDownloads", (): WatchStatus => {
         for (const timer of downloadTimers) clearTimeout(timer);
@@ -2733,12 +2691,6 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         if (patch.apple_auto_instructions !== undefined) {
           const own = patch.apple_auto_instructions;
           next.apple_auto_instructions = own.trim() === "" || own === MOCK_DEFAULT_INSTRUCTIONS ? "" : own;
-        }
-        if (patch.display_rendering?.kind === "arri_display") {
-          const wanted = patch.display_rendering.id;
-          if (!displayLuts.some((l) => l.id === wanted)) {
-            fail("preferences", "Those display LUTs aren't imported. Import ARRI's display LUTs first.");
-          }
         }
         // Auto follows its preference at once: Default Auto, every photo back to the rule; a provider, its answers (kept) come back.
         changingEstimates(() => {

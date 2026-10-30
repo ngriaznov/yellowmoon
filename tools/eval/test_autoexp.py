@@ -125,21 +125,11 @@ class FittedProfile(unittest.TestCase):
             with self.assertRaises(autoexp.StudyError):
                 autoexp.fitted_profile_offset_ev(dng_curve, Path(d) / "missing.json")
 
-    def test_the_display_placement_is_read_from_the_rust_constant_and_taken_off_the_baseline_exposure(self):
-        # `BaselineExposure = log2(x_white) + fit_offset_ev + placement` of a fitted DNG: the placement comes from the source
-        # of `ym-color`, so the two cannot drift apart.
-        self.assertEqual(autoexp.display_placement_ev(), 0.85)
-        with tempfile.TemporaryDirectory() as d:
-            src = Path(d) / "transform.rs"
-            src.write_text("/// doc\npub const DISPLAY_PLACEMENT_EV: f64 = 0.5;\n")
-            self.assertEqual(autoexp.display_placement_ev(src), 0.5)
-            src.write_text("pub const OTHER: f64 = 0.5;\n")
-            with self.assertRaises(autoexp.StudyError):
-                autoexp.display_placement_ev(src)
-            with self.assertRaises(autoexp.StudyError):
-                autoexp.display_placement_ev(Path(d) / "missing.rs")
-        # a photo with x_white 16 (the floor): BaselineExposure is the placement alone, and the scene value is stored * 16
-        x_white_ev = 0.85 - (-4.0) - 0.85
+    def test_the_baseline_exposure_of_a_fitted_dng_has_no_display_placement(self):
+        # `BaselineExposure = log2(x_white) + fit_offset_ev` of a fitted DNG (pipeline 0.8.0): a photo with x_white 16
+        # (the floor) has the fit offset alone, and the scene value is stored * 16.
+        self.assertFalse(hasattr(autoexp, "display_placement_ev"))
+        x_white_ev = -4.0 - (-4.0) + 4.0
         self.assertAlmostEqual(2.0**x_white_ev, 16.0, places=9)
 
     def test_the_embedded_profile_of_the_repository_is_readable(self):
@@ -155,7 +145,7 @@ class Runner(unittest.TestCase):
             binary = root / "ym"
             binary.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then echo "ym 9.9 (test)"; else echo "{\\"home\\": \\"$YELLOWMOON_HOME\\"}"; fi\n')
             binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
-            ym = autoexp.Ym(binary, root / "home", "aces2")
+            ym = autoexp.Ym(binary, root / "home", "own")
             self.assertEqual(ym.version(), "ym 9.9 (test)")
             self.assertEqual(ym.commands, [])
             proc = ym.run(["info", "x.ARW"])
@@ -169,7 +159,7 @@ class Runner(unittest.TestCase):
             binary = root / "ym"
             binary.write_text("#!/bin/sh\necho first\n")
             binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
-            ym = autoexp.Ym(binary, root / "home", "aces2")
+            ym = autoexp.Ym(binary, root / "home", "own")
             self.assertEqual(ym.run(["info", "x.ARW"]).stdout.strip(), "first")
             # What `cargo build` does: write a new file and move it over the old one.
             new = root / "ym.new"
@@ -195,11 +185,11 @@ class Cache(unittest.TestCase):
 
     def write_cache(self, **key_changes):
         st = self.arw.stat()
-        key = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "schema": autoexp.CACHE_SCHEMA, "display": "aces2", **key_changes}
+        key = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "schema": autoexp.CACHE_SCHEMA, "display": "own", **key_changes}
         (self.work / "cache").mkdir(parents=True, exist_ok=True)
         autoexp.save_cache(self.work / "cache" / "IMG_0001.npz", self.red, {"key": key, "info": self.info, "exif": self.exif, "extras": self.extras})
 
-    def analyse(self, display="aces2"):
+    def analyse(self, display="own"):
         return autoexp.analyse(None, self.arw, self.work, True, False, display)
 
     def test_a_cache_that_fits_is_reused(self):
@@ -212,7 +202,7 @@ class Cache(unittest.TestCase):
     def test_a_cache_of_another_display_schema_or_file_is_not(self):
         self.write_cache()
         with self.assertRaises(autoexp.StudyError):
-            self.analyse(display="arri")  # numbers made with ACES 2 must not stand for an ARRI display
+            self.analyse(display="arri")  # numbers made with our own rendering must not stand for another display
         self.write_cache(schema=autoexp.CACHE_SCHEMA - 1)
         with self.assertRaises(autoexp.StudyError):
             self.analyse()
@@ -412,7 +402,7 @@ class GateCommand(unittest.TestCase):
             arw.write_bytes(b"not a real raw file %d" % i)
             info, exif, extras, red = fake_inputs(1.0 + g3, 0.08, seed=i + 1)
             st = arw.stat()
-            key = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "schema": autoexp.CACHE_SCHEMA, "display": "aces2"}
+            key = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "schema": autoexp.CACHE_SCHEMA, "display": "own"}
             (self.work / "cache").mkdir(parents=True, exist_ok=True)
             autoexp.save_cache(self.work / "cache" / f"{arw.stem}.npz", red, {"key": key, "info": info, "exif": exif, "extras": extras})
 

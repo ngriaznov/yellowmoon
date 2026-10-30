@@ -226,7 +226,7 @@ fn old_metric_median_luminance_against_the_embedded_jpegs_of_the_real_files_info
     // Mykyta's decision of 2026-10-13 (`docs/16`): the median luminance in linear light of our
     // render at `EV_auto` against the median of the camera's embedded JPEG. That metric mixes in
     // the camera's tone curve and the scene's key, so its errors are not all exposure errors
-    // (nine real files under the metered rule and ACES 2 without the placement: median -0.28 EV,
+    // (nine real files under the metered rule and the old ACES 2 display transform without its placement: median -0.28 EV,
     // `docs/02` Evaluation; since 2026-10-14 `EV_auto` is the camera's gain, +1.11 EV, and this
     // test reads 9 of 9 within +-0.5 EV on the nine files of `testdata/real/files`, errors -0.45
     // (DSLR-A300) to +0.41 (A7 II); `autoexp.py` G1 on the twelve local files of `docs/02` Gate

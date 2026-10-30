@@ -103,8 +103,7 @@ expression: "Value::Object(picked)"
       "radius_px": "number"
     },
     "source": "string",
-    "tint": "number",
-    "white_ev": "number"
+    "tint": "number"
   },
   "auto_advisor": {
     "api": "null",

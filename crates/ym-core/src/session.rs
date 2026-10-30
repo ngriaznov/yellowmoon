@@ -608,7 +608,7 @@ pub struct PictureInput<'a> {
 }
 
 /// The hook that renders the picture Apple Auto's model sees (`docs/19` section 3): the photo at its
-/// default settings through the Signature look and ACES 2, at 768 px on the long edge, on the CPU
+/// default settings through the Signature look and the cine rendering, at 768 px on the long edge, on the CPU
 /// reference path, 8-bit sRGB. Implemented by the render graph
 /// ([`crate::pipeline::AdvisorPictures`]); tests may give a cheaper one.
 pub trait PictureRenderer: Send + Sync {
@@ -691,10 +691,9 @@ pub struct SessionEnv {
     pub thumbnails: Option<Arc<dyn ThumbnailRenderer>>,
     /// The user's default look: the look of every photo opened from now on.
     pub default_look: LookId,
-    /// The look the white lift is sized for: Signature, read from `<data>/looks/builtin/signature.json`
-    /// by [`SessionEnv::load`] (`None`, the identity look, when the file is missing or unusable). It
-    /// does not follow the user's default look: the lift of a photo is what the picture needs on top
-    /// of the Signature look (`docs/02` C12 step 1b).
+    /// The look Apple Auto's pictures are rendered with: Signature, read from
+    /// `<data>/looks/builtin/signature.json` by [`SessionEnv::load`] (`None`, the identity look, when the
+    /// file is missing or unusable). It does not follow the user's default look.
     pub reference_look: Option<Arc<LookTransform>>,
     /// Threads of the decode pool.
     pub decode_threads: usize,
@@ -756,9 +755,9 @@ pub fn default_decode_threads() -> usize {
     cpus.saturating_sub(2).clamp(1, 6)
 }
 
-/// The Signature look the white lift is sized for: `<data_root>/looks/builtin/signature.json`, baked
-/// like any built-in look. `None` when there is no such file or it cannot be used (the lift is then
-/// sized for the bare ACES 2 picture).
+/// The Signature look Apple Auto's pictures are rendered with: `<data_root>/looks/builtin/signature.json`,
+/// baked like any built-in look. `None` when there is no such file or it cannot be used (the pictures are
+/// then rendered with the identity look).
 fn load_reference_look(data_root: &Path) -> Option<Arc<LookTransform>> {
     let text = std::fs::read_to_string(
         data_root
@@ -2950,7 +2949,7 @@ impl Session {
     }
 
     /// `rerun_auto`: recomputes a photo's automatic estimates from its pixels and sets exposure,
-    /// white balance (the light preset, Kelvin and tint and a picked white), the white lift's offset
+    /// white balance (the light preset, Kelvin and tint and a picked white)
     /// and noise reduction back to Auto, and contrast and saturation too while Apple Auto acts on
     /// the photo ([`DevelopSettings::reset_automatic`]). Runs on the calling thread and decodes the
     /// photo again when its mosaic is not cached.
@@ -2963,7 +2962,7 @@ impl Session {
         let view = self.view(id)?;
         let raw = self.raw_image(id)?;
         let model = self.inner.env.illuminants.get(view.profile.id.as_str());
-        let estimates = AutoEstimates::compute_with_look(
+        let estimates = AutoEstimates::compute_scaled(
             &raw,
             &AutoInputs {
                 profile: &view.profile,
@@ -2971,7 +2970,6 @@ impl Session {
                 priors: &self.inner.env.priors,
             },
             view.camera.matched.white_scale,
-            self.inner.env.reference_look.as_deref(),
         )?;
         let estimates = Arc::new(estimates);
         let changed = {
@@ -3948,7 +3946,7 @@ impl Inner {
         // Estimates.
         let started = Instant::now();
         let model = self.env.illuminants.get(profile.id.as_str());
-        let estimates = match AutoEstimates::compute_with_look(
+        let estimates = match AutoEstimates::compute_scaled(
             &raw,
             &AutoInputs {
                 profile: &profile,
@@ -3956,7 +3954,6 @@ impl Inner {
                 priors: &self.env.priors,
             },
             camera.matched.white_scale,
-            self.env.reference_look.as_deref(),
         ) {
             Ok(e) => Arc::new(e),
             Err(e) => return fail(PhotoStage::Estimate, e.to_string()),

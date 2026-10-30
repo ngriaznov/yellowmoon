@@ -80,12 +80,12 @@ fn the_committed_profile_loads_and_is_in_the_form_the_tool_writes() {
         );
     }
     // the fit metrics it records are the ones the tool measured
-    assert!(file.fit["delta_e_2000_against_aces2_via_dng_validate"].is_array());
+    assert!(file.fit["delta_e_2000_against_cine_via_dng_validate"].is_array());
     assert!(file.fit["dng_validate"].as_str().unwrap().contains("1.7"));
 }
 
 #[test]
-fn the_committed_profile_matches_aces_2_through_adobes_renderer() {
+fn the_committed_profile_matches_the_cine_rendering_through_adobes_renderer() {
     let Some(adobe) = adobe() else { return };
     let file = profile_file::load(&profile_path()).unwrap();
     let profile = file.to_profile();

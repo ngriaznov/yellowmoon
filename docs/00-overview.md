@@ -39,7 +39,7 @@ A desktop raw processor for photos from Sony cameras. It reads ARW files, develo
 - Camera detection on every file. Eleven measured Sony profiles; same-sensor bodies share them; every other body uses the A7R IV profile.
 - ALEXA ALEV III colour: illuminant-conditioned sensor map, ARRI's CCT matrices, LogC4/AWG4 working space.
 - Learned joint demosaic and denoise, with a classical fallback. Per-image noise estimation for every body.
-- Looks: Signature (default) and Neutral (the identity) built in; ARRI Look Library and display LUTs imported by the user through a wizard; any other `.cube` with one question.
+- Looks: Signature (default) and Neutral (the identity) built in; ARRI Look Library looks imported by the user through a wizard (ARRI's display LUTs are not imported); any other `.cube` with one question.
 - Export: JPEG, TIFF, PNG, and DNG with the look baked in.
 - Command-line tool with the same features.
 - Auto-update, Homebrew cask, `.dmg`.
@@ -77,15 +77,15 @@ These are fixed unless new evidence turns up. The reasoning is in `research/`.
 | Sensor map | White balance first, then a per-illuminant 3×3 from the illuminant estimate, white-preserving and exposure-invariant. No static LUT; no per-pixel spectral reconstruction. |
 | ARRI colour step | ARRI's 17-CCT matrices (aces-dev v1.3.1, AMPAS licence) interpolated in mired, to AWG3, then exactly to AWG4. |
 | Working space | Linear AWG4 and LogC4. LogC3 looks run in LogC3 (EI 800) through an exact conversion. |
-| Display transform | ACES 2 output transform ported to WGSL as the default. ARRI's display LUTs only after the user imports them. |
+| Display transform | **The cine rendering** (`docs/02` C12; the owner, 2026-10-29 and 2026-10-30): our own analytic display transform, 57 constants, in Rust and WGSL, fitted locally to ARRI's LogC4-to-Rec.709 rendering as it is (its overall brightness included) with no ARRI data in the repository (`docs/14` rule 9). It replaced ACES 2 (pipeline 0.8.0), together with the display placement, the white lift and the red chroma and red density steps, which are gone. Display P3 and Rec.2020 outputs run the gamut stage on their own primaries. ARRI's display LUTs are not offered; ARRI Look Library creative looks import as before. |
 | Looks | ASC CDL then 3D LUT in LogC4, intensity 0–100%. Built-in Signature (default; a luma curve and saturation, parametric, ours) and Neutral (the identity). |
 | Auto | Yellowmoon's own rule-based Auto everywhere. A provider can set Auto's values per photo instead (`docs/19-apple-auto.md`, `docs/22-auto-providers.md`): Apple's on-device model where it is available (on by default there), or the Claude Code or Antigravity program the person installed and signed in to, chosen in Preferences after a consent. Yellowmoon opens no network connection for them; the programs do. |
 | ML | Joint demosaic+denoise U-Net, 0.2–1 M parameters. Runtime: burn on the shared wgpu device or ort, decided by a benchmark on Apple hardware (`docs/07-ml-models.md`). Training in PyTorch; weights only from CC0/CC BY/Apache data (no own captures in V1). Until weights are trained, the classical demosaic and denoise run everywhere. |
 | Noise | Per-image Poisson–Gaussian estimate for every body, with priors fitted from public files. No calibration shoots in V1. Nothing stored. |
 | Lens | Sony's embedded correction tags (vignetting, distortion, CA). No Lensfun. |
-| Export | JPEG, TIFF, PNG; DNG as LinearRaw AWG4 with the look baked into pixels and a profile fitted to ACES 2. |
+| Export | JPEG, TIFF, PNG; DNG as LinearRaw AWG4 with the look baked into pixels and a profile fitted to the cine rendering. |
 | CLI | `ym` binary in the same workspace, shipped inside the app bundle, bit-identical to app exports. |
-| Persistence | Nothing per photo. Only imported looks and preferences (default look, display rendering choice, export defaults, watch-Downloads permission, the Auto grading provider with its consent, and the instructions). |
+| Persistence | Nothing per photo. Only imported looks and preferences (default look, export defaults, watch-Downloads permission, the Auto grading provider with its consent, and the instructions). |
 | UI | Dark glass: glasscn components on Tailwind 4 and Radix, Figtree, yellow `#FFC20E` only as a button accent, a still cool aurora, dark only, photo edge to edge. The visual reference is `design/screenshots-c2/`; layout, size and copy come from `design/mockups/`; see `docs/11-ui.md` and `docs/16-risks-and-decisions.md`. |
 | Distribution | Version bump on main → signed updater artefacts → GitHub release → cask update (`docs/12-distribution.md`). |
 
@@ -102,7 +102,7 @@ These are fixed unless new evidence turns up. The reasoning is in `research/`.
 | CCT, mired | Correlated colour temperature in kelvin; mired = 10⁶ / CCT. Matrices interpolate linearly in mired. |
 | Illuminant estimate | Our per-photo estimate of the scene light: chromaticity plus class probabilities (daylight, tungsten, LED, fluorescent…). |
 | Sensor map | The 3×3 that turns white-balanced Sony RGB into emulated ALEV III RGB for the estimated light. |
-| DRT | Display rendering transform: scene-linear to display (tone mapping and gamut mapping). Default: ACES 2. |
+| DRT | Display rendering transform: scene-linear to display (tone mapping and gamut mapping). Ours: the cine rendering (`docs/02` C12; before pipeline 0.8.0, ACES 2). |
 | CDL | ASC Color Decision List: slope, offset, power, saturation. |
 | Look / LUT | A creative colour transform. ARRI's looks are 3D `.cube` LUTs, log-to-log. |
 | σ map | Per-pixel noise standard deviation, an input to the denoise network. |

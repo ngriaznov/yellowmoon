@@ -72,7 +72,7 @@ async function lastPatch(spy: UpdateSpy): Promise<SettingsPatch> {
 }
 
 describe("Preferences › Auto grading with Apple Intelligence", () => {
-  it("is there while Apple Intelligence is available, with the hint of docs/22, after Display rendering", async () => {
+  it("is there while Apple Intelligence is available, with the hint of docs/22, after Default look", async () => {
     const dialog = await openPreferences("answered");
     const row = within(dialog).getByRole("group", { name: AUTO_GRADING_TITLE });
     expect(row).toHaveTextContent(PROVIDER_HINTS.apple);
@@ -84,14 +84,14 @@ describe("Preferences › Auto grading with Apple Intelligence", () => {
     const groups = within(dialog)
       .getAllByRole("group")
       .map((g) => g.getAttribute("aria-label"));
-    expect(groups.indexOf(AUTO_GRADING_TITLE)).toBe(groups.indexOf("Display rendering") + 1);
+    expect(groups.indexOf(AUTO_GRADING_TITLE)).toBe(groups.indexOf("Default look") + 1);
     expect(within(dialog).getByRole("combobox", { name: AUTO_GRADING_TITLE })).toHaveTextContent("Apple Intelligence");
   });
 
   it("is absent where Apple Intelligence is not available, and in the browser build", async () => {
     for (const mode of ["none", "unavailable"] as const) {
       const dialog = await openPreferences(mode);
-      expect(within(dialog).getByRole("group", { name: "Display rendering" })).toBeInTheDocument();
+      expect(within(dialog).getByRole("group", { name: "Default look" })).toBeInTheDocument();
       expect(within(dialog).queryByRole("group", { name: AUTO_GRADING_TITLE })).toBeNull();
       expect(within(dialog).queryByRole("combobox", { name: AUTO_GRADING_TITLE })).toBeNull();
       expect(within(dialog).queryByRole("textbox", { name: APPLE_INSTRUCTIONS_LABEL })).toBeNull();
@@ -196,7 +196,7 @@ describe("the Automatic card with Apple Auto", () => {
   it("is today's card while Apple Auto is off or not available", async () => {
     for (const mode of ["none", "unavailable"] as const) {
       await onPhotos(mode);
-      expect(rowLabels()).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
+      expect(rowLabels()).toEqual(["Exposure", "White balance", "Noise", "Camera"]);
       for (const line of Object.values(APPLE_AUTO_LINES)) expect(screen.queryByText(line)).toBeNull();
       h!.unmount();
       h = undefined;
@@ -206,7 +206,7 @@ describe("the Automatic card with Apple Auto", () => {
   it("is today's card when Default Auto is chosen", async () => {
     await onPhotos("answered");
     await h!.store.setPreferences({ auto_provider: "yellowmoon" });
-    await waitFor(() => expect(rowLabels()).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]));
+    await waitFor(() => expect(rowLabels()).toEqual(["Exposure", "White balance", "Noise", "Camera"]));
     expect(screen.queryByText(APPLE_AUTO_LINES.answered)).toBeNull();
   });
 
@@ -215,7 +215,6 @@ describe("the Automatic card with Apple Auto", () => {
     // The mock's answer leaves the shadows and the tint empty: no row for them.
     expect(rowLabels()).toEqual([
       "Exposure",
-      "White",
       "White balance",
       "Highlights",
       "Black",
@@ -241,7 +240,7 @@ describe("the Automatic card with Apple Auto", () => {
 
   it("pending: no rows of Apple's yet and the line that says Apple Intelligence is looking; the answer brings them", async () => {
     await onPhotos("pending");
-    expect(rowLabels()).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
+    expect(rowLabels()).toEqual(["Exposure", "White balance", "Noise", "Camera"]);
     expect(automatic().getByText("Apple Intelligence is looking at this photo…")).toBeInTheDocument();
     h!.api.setAppleAuto("answered");
     await waitFor(() => expect(screen.getByRole("button", { name: "Contrast +15, Auto. Open Tone" })).toBeInTheDocument());
@@ -264,7 +263,7 @@ describe("the Automatic card with Apple Auto", () => {
 
   it("failed: the rule's values, no rows of Apple's, and the line that says so", async () => {
     await onPhotos("failed");
-    expect(rowLabels()).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
+    expect(rowLabels()).toEqual(["Exposure", "White balance", "Noise", "Camera"]);
     expect(valueOf("Saturation")).toBe("0");
     expect(automatic().getByText("Apple Intelligence couldn't look at this photo, so Default Auto is used.")).toBeInTheDocument();
   });

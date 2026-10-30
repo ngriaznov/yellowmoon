@@ -1845,13 +1845,14 @@ fn the_look_file_libraries_are_the_packages_they_are_the_looks_of() {
     assert_eq!(PackageId::from_data_id("look-library-logc5"), None);
     for id in [
         PackageId::LookLibraryLogc4,
-        PackageId::DisplayLutsLogc4,
         PackageId::LookLibraryLogc3,
         PackageId::LookLibraryLogc3ToRec709,
-        PackageId::DisplayLutsLogc3,
     ] {
         assert_eq!(PackageId::from_data_id(id.data_id()), Some(id));
     }
+    // ARRI's display LUT packages are not offered: they are no package of the wizard.
+    assert_eq!(PackageId::from_data_id("display-luts-logc4"), None);
+    assert_eq!(PackageId::from_data_id("display-luts-logc3"), None);
 }
 
 #[test]
@@ -1980,7 +1981,6 @@ fn preferences_round_trip_and_nothing_else_is_written() {
     let h = Harness::new();
     let prefs = h.api.preferences_get().expect("prefs");
     assert_eq!(prefs.default_look.0, "builtin:signature");
-    assert_eq!(prefs.display_rendering, DisplayRendering::Aces2);
     assert!(prefs.check_for_updates_automatically && !prefs.remove_location_from_exports);
     // Reading creates nothing.
     assert_eq!(
@@ -3909,11 +3909,6 @@ fn core_types_convert_without_loss() {
         "looks_list",
         &core.looks_list(),
         &h.api.looks_list().expect("looks"),
-    );
-    assert_same(
-        "looks_display_luts",
-        &core.looks_display_luts(),
-        &h.api.looks_display_luts().expect("luts"),
     );
     assert_same(
         "preferences",

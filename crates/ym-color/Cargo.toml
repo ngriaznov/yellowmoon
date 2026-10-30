@@ -1,6 +1,6 @@
 [package]
 name = "ym-color"
-description = "Colour maths: LogC, ARRI Wide Gamut, sensor map, looks, LUTs and the ACES 2 output transform (CPU reference)."
+description = "Colour maths: LogC, ARRI Wide Gamut, sensor map, looks, LUTs and the cine display rendering (CPU reference)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

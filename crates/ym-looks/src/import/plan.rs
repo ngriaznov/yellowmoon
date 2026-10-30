@@ -37,24 +37,10 @@ use std::collections::HashSet;
 
 use ym_color::look::LookInput;
 
-use crate::library::{
-    DisplayInput, LookFormat, LookId, sanitize_file_stem, slugify, truncate_to_bytes,
-};
-use crate::manifest::{Manifest, ManifestDisplayLut, ManifestGroup, ManifestLook, Source};
+use crate::library::{LookFormat, LookId, sanitize_file_stem, slugify, truncate_to_bytes};
+use crate::manifest::{Manifest, ManifestGroup, ManifestLook, Source};
 use crate::recognize::names::{file_name, file_stem};
 use crate::recognize::{Evidence, Outcome};
-
-/// What kind of entry an incoming file becomes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SpecKind {
-    /// An entry in `looks`.
-    Look {
-        group: ManifestGroup,
-        input: LookInput,
-    },
-    /// An entry in `display_luts`.
-    Display { input: DisplayInput, target: String },
-}
 
 /// What the recogniser (or the user's answer) says an incoming file is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,8 +49,11 @@ pub(crate) struct Spec {
     pub(crate) id: LookId,
     /// Display name.
     pub(crate) name: String,
-    pub(crate) kind: SpecKind,
-    /// Folder below `looks/`: `arri/3000-film`, `arri-display` or `user`.
+    /// The group it is listed under.
+    pub(crate) group: ManifestGroup,
+    /// What the LUT expects as input.
+    pub(crate) input: LookInput,
+    /// Folder below `looks/`: `arri/3000-film` or `user`.
     pub(crate) folder: String,
     /// File stem to write, already sanitised and including any encoding suffix.
     pub(crate) stem: String,
@@ -136,43 +125,12 @@ impl Spec {
                 Some(Self {
                     id: LookId::arri(*group_no, &format!("{slug}{suffix}")),
                     name: name.clone(),
-                    kind: SpecKind::Look {
-                        group: ManifestGroup::Arri {
-                            no: *group_no,
-                            name: group_name.clone(),
-                        },
-                        input: *input,
+                    group: ManifestGroup::Arri {
+                        no: *group_no,
+                        name: group_name.clone(),
                     },
+                    input: *input,
                     folder: format!("arri/{group_no:04}-{group_slug}"),
-                    stem: format!("{}{suffix}", sanitize_file_stem(raw_stem)),
-                    format,
-                    package: Some(package.clone()),
-                    arri: true,
-                    by_hash: *evidence == Evidence::Fingerprint,
-                    original_name,
-                })
-            }
-            Outcome::ArriDisplay {
-                package,
-                input,
-                target,
-                file_name: library_name,
-                evidence,
-                ..
-            } => {
-                let raw_stem = file_stem(library_name);
-                let suffix = match input {
-                    DisplayInput::LogC4 => "",
-                    DisplayInput::LogC3 => "-logc3",
-                };
-                Some(Self {
-                    id: LookId::arri_display(*input, target),
-                    name: target.clone(),
-                    kind: SpecKind::Display {
-                        input: *input,
-                        target: target.clone(),
-                    },
-                    folder: "arri-display".to_string(),
                     stem: format!("{}{suffix}", sanitize_file_stem(raw_stem)),
                     format,
                     package: Some(package.clone()),
@@ -188,10 +146,8 @@ impl Spec {
                 Some(Self {
                     id: LookId::user(&slugify(name)),
                     name: name.to_string(),
-                    kind: SpecKind::Look {
-                        group: ManifestGroup::User,
-                        input,
-                    },
+                    group: ManifestGroup::User,
+                    input,
                     folder: "user".to_string(),
                     stem: sanitize_file_stem(raw_stem),
                     format,
@@ -208,10 +164,8 @@ impl Spec {
                 Some(Self {
                     id: LookId::user(&slugify(name)),
                     name: name.to_string(),
-                    kind: SpecKind::Look {
-                        group: ManifestGroup::User,
-                        input: *input,
-                    },
+                    group: ManifestGroup::User,
+                    input: *input,
                     folder: "user".to_string(),
                     stem: sanitize_file_stem(raw_stem),
                     format,
@@ -221,7 +175,8 @@ impl Spec {
                     original_name,
                 })
             }
-            Outcome::Rejected { .. } => None,
+            // Display LUTs are not imported: Yellowmoon uses its own display rendering.
+            Outcome::ArriDisplay { .. } | Outcome::Rejected { .. } => None,
         }
     }
 }
@@ -269,8 +224,6 @@ pub(crate) enum Slot {
         file: String,
         /// The entry's own name, for the report.
         name: String,
-        /// Whether the entry is a display LUT.
-        display_lut: bool,
     },
     /// An ARRI package claims bytes that an earlier import put under "Your LUTs": that entry
     /// becomes the ARRI one (`id` and `file` are the ARRI ones) and `old` is the entry that goes.
@@ -303,11 +256,6 @@ fn existing<'a>(manifest: &'a Manifest, id: &LookId) -> Option<(&'a str, &'a str
     manifest
         .look(id)
         .map(|l| (l.sha256.as_str(), l.file.as_str(), l.format))
-        .or_else(|| {
-            manifest
-                .display_lut(id)
-                .map(|d| (d.sha256.as_str(), d.file.as_str(), LookFormat::Cube))
-        })
 }
 
 fn file_taken(manifest: &Manifest, file: &str) -> bool {
@@ -315,22 +263,11 @@ fn file_taken(manifest: &Manifest, file: &str) -> bool {
         .looks
         .iter()
         .map(|l| l.file.as_str())
-        .chain(manifest.display_luts.iter().map(|d| d.file.as_str()))
         .any(|f| f.eq_ignore_ascii_case(file))
 }
 
 /// Most collision numbers tried before falling back to a hash-based name.
 const MAX_COLLISION_NUMBER: u32 = 10_000;
-
-/// The display input that a look input corresponds to: what a LUT made for LogC4 or for LogC3
-/// takes in. A look that already has Rec.709 baked in has none.
-fn display_input_of(input: LookInput) -> Option<DisplayInput> {
-    match input {
-        LookInput::LogC4 => Some(DisplayInput::LogC4),
-        LookInput::LogC3Ei800 => Some(DisplayInput::LogC3),
-        LookInput::LogC3ToRec709 => None,
-    }
-}
 
 /// The entry that already holds these exact bytes for the same input, if `spec` should be folded
 /// into it (the rules are in the module documentation), as the slot to use for a file that would
@@ -359,62 +296,30 @@ fn same_bytes(
         id: l.id.clone(),
         file: l.file.clone(),
         name: l.name.clone(),
-        display_lut: false,
     };
-    let same_display = |d: &ManifestDisplayLut| Slot::Same {
-        id: d.id.clone(),
-        file: d.file.clone(),
-        name: d.target.clone(),
-        display_lut: true,
-    };
-    let looks = || {
-        manifest
-            .looks
-            .iter()
-            .filter(|l| l.sha256 == sha256 && usable(&l.id))
-    };
-    match &spec.kind {
-        SpecKind::Look { input, .. } => {
-            let mut same = looks().filter(|l| l.input == *input);
-            if spec.arri {
-                // A look of ARRI's that is there already, whatever its name (unless this file's
-                // own id is ARRI's: it was identified by its hash, so it is the look its id says
-                // and not another look that happens to hold the same LUT); else the person's own
-                // entry that this package now claims.
-                let all: Vec<&ManifestLook> = same.collect();
-                let arri = if spec.by_hash {
-                    None
-                } else {
-                    all.iter().find(|l| l.group != ManifestGroup::User)
-                };
-                arri.map(|l| same_look(l)).or_else(|| {
-                    all.iter()
-                        .find(|l| l.group == ManifestGroup::User)
-                        .map(|l| claim(l))
-                })
-            } else if let Some(l) = same.next() {
-                Some(same_look(l))
-            } else {
-                // The person's file is one of ARRI's display LUTs that is already imported.
-                manifest
-                    .display_luts
-                    .iter()
-                    .find(|d| d.sha256 == sha256 && display_input_of(*input) == Some(d.input))
-                    .map(same_display)
-            }
-        }
-        SpecKind::Display { input, .. } => manifest
-            .display_luts
-            .iter()
-            .find(|d| d.sha256 == sha256 && d.input == *input && usable(&d.id) && !spec.by_hash)
-            .map(same_display)
-            .or_else(|| {
-                looks()
-                    .find(|l| {
-                        l.group == ManifestGroup::User && display_input_of(l.input) == Some(*input)
-                    })
-                    .map(claim)
-            }),
+    let mut same = manifest
+        .looks
+        .iter()
+        .filter(|l| l.sha256 == sha256 && usable(&l.id))
+        .filter(|l| l.input == spec.input);
+    if spec.arri {
+        // A look of ARRI's that is there already, whatever its name (unless this file's own id is
+        // ARRI's: it was identified by its hash, so it is the look its id says and not another
+        // look that happens to hold the same LUT); else the person's own entry that this package
+        // now claims.
+        let all: Vec<&ManifestLook> = same.collect();
+        let arri = if spec.by_hash {
+            None
+        } else {
+            all.iter().find(|l| l.group != ManifestGroup::User)
+        };
+        arri.map(|l| same_look(l)).or_else(|| {
+            all.iter()
+                .find(|l| l.group == ManifestGroup::User)
+                .map(|l| claim(l))
+        })
+    } else {
+        same.next().map(same_look)
     }
 }
 
@@ -525,59 +430,33 @@ pub(crate) fn apply(manifest: &mut Manifest, data: &EntryData<'_>) -> bool {
         imported: data.imported.to_string(),
         original_name: data.spec.original_name.clone(),
     });
-    match &data.spec.kind {
-        SpecKind::Look { group, input } => {
-            let entry = ManifestLook {
-                id: data.id.clone(),
-                name: data.spec.name.clone(),
-                group: group.clone(),
-                input: *input,
-                file: data.file.clone(),
-                format: data.spec.format,
-                sha256: data.sha256.clone(),
-                lut_size: data.lut_size,
-                source,
-            };
-            match manifest.looks.iter_mut().find(|l| l.id == data.id) {
-                Some(slot) => {
-                    if slot.sha256 == entry.sha256 {
-                        // The same file again keeps its import date and source, but takes a
-                        // changed answer to the input question.
-                        let changed = slot.input != entry.input;
-                        slot.input = entry.input;
-                        changed
-                    } else {
-                        *slot = entry;
-                        true
-                    }
-                }
-                None => {
-                    manifest.looks.push(entry);
-                    true
-                }
+    let entry = ManifestLook {
+        id: data.id.clone(),
+        name: data.spec.name.clone(),
+        group: data.spec.group.clone(),
+        input: data.spec.input,
+        file: data.file.clone(),
+        format: data.spec.format,
+        sha256: data.sha256.clone(),
+        lut_size: data.lut_size,
+        source,
+    };
+    match manifest.looks.iter_mut().find(|l| l.id == data.id) {
+        Some(slot) => {
+            if slot.sha256 == entry.sha256 {
+                // The same file again keeps its import date and source, but takes a changed answer
+                // to the input question.
+                let changed = slot.input != entry.input;
+                slot.input = entry.input;
+                changed
+            } else {
+                *slot = entry;
+                true
             }
         }
-        SpecKind::Display { input, target } => {
-            let entry = ManifestDisplayLut {
-                id: data.id.clone(),
-                input: *input,
-                target: target.clone(),
-                file: data.file.clone(),
-                sha256: data.sha256.clone(),
-            };
-            match manifest.display_luts.iter_mut().find(|d| d.id == data.id) {
-                Some(slot) => {
-                    let changed = slot.sha256 != entry.sha256;
-                    if changed {
-                        *slot = entry;
-                    }
-                    changed
-                }
-                None => {
-                    manifest.display_luts.push(entry);
-                    true
-                }
-            }
+        None => {
+            manifest.looks.push(entry);
+            true
         }
     }
 }
@@ -687,6 +566,27 @@ mod tests {
     }
 
     #[test]
+    fn an_arri_display_lut_has_no_spec_because_it_is_never_imported() {
+        let outcome = Outcome::ArriDisplay {
+            package: "d".into(),
+            evidence: crate::recognize::Evidence::Pattern,
+        };
+        assert!(
+            Spec::from_outcome(&outcome, "LogC4_to_Rec709.cube", None, LookFormat::Cube).is_none()
+        );
+        assert!(
+            Spec::from_outcome(
+                &outcome,
+                "LogC4_to_Rec709.cube",
+                Some(LookInput::LogC4),
+                LookFormat::Cube
+            )
+            .is_none(),
+            "an answer to the question does not make it a look"
+        );
+    }
+
+    #[test]
     fn same_content_is_idempotent() {
         let mut m = Manifest::default();
         let spec = arri_spec(LookInput::LogC4, "Film");
@@ -787,9 +687,7 @@ mod tests {
             assert_eq!(spec.folder, "user");
             assert_eq!(spec.format, format);
             assert!(!spec.arri);
-            assert!(
-                matches!(&spec.kind, SpecKind::Look { group: ManifestGroup::User, input: i } if *i == input)
-            );
+            assert!(spec.group == ManifestGroup::User && spec.input == input);
             // The file keeps its kind's extension and is never overwritten by another.
             let mut m = Manifest::default();
             let first = put(&mut m, &spec, &sha(1));
@@ -960,10 +858,7 @@ mod tests {
         let spec = user_spec("look");
         put(&mut m, &spec, &sha(1));
         let mut again = spec.clone();
-        again.kind = SpecKind::Look {
-            group: ManifestGroup::User,
-            input: LookInput::LogC3Ei800,
-        };
+        again.input = LookInput::LogC3Ei800;
         let slot = assign(&m, &again, &sha(1), &HashSet::new());
         assert!(matches!(slot, Slot::Existing { .. }));
         let (id, file) = match slot {
@@ -991,30 +886,9 @@ mod tests {
         );
     }
 
-    fn display_spec(input: DisplayInput, target: &str) -> Spec {
-        Spec::from_outcome(
-            &Outcome::ArriDisplay {
-                package: "d".into(),
-                input,
-                target: target.into(),
-                file_name: format!("LogC4_to_{target}.cube"),
-                evidence: crate::recognize::Evidence::Pattern,
-            },
-            &format!("LogC4_to_{target}.cube"),
-            None,
-            LookFormat::Cube,
-        )
-        .unwrap()
-    }
-
     fn with_input(spec: &Spec, input: LookInput) -> Spec {
         let mut spec = spec.clone();
-        if let SpecKind::Look { group, .. } = &spec.kind {
-            spec.kind = SpecKind::Look {
-                group: group.clone(),
-                input,
-            };
-        }
+        spec.input = input;
         spec
     }
 
@@ -1024,7 +898,7 @@ mod tests {
         put(&mut m, &user_spec("mine"), &sha(1));
         let slot = assign(&m, &user_spec("renamed"), &sha(1), &HashSet::new());
         assert!(
-            matches!(&slot, Slot::Same { id, file, name, display_lut: false }
+            matches!(&slot, Slot::Same { id, file, name }
                 if id.as_str() == "user:mine" && file == "user/mine.cube" && name == "mine"),
             "{slot:?}"
         );
@@ -1136,78 +1010,6 @@ mod tests {
             matches!(&slot, Slot::Same { id, .. } if id.as_str() == "arri:3000:alpha"),
             "{slot:?}"
         );
-    }
-
-    #[test]
-    fn display_luts_follow_the_same_rules() {
-        let rec709 = display_spec(DisplayInput::LogC4, "rec709");
-        // The package claims the person's copy (the same input), and not another input's.
-        let mut m = Manifest::default();
-        put(&mut m, &user_spec("my display"), &sha(1));
-        put(
-            &mut m,
-            &with_input(&user_spec("my c3"), LookInput::LogC3Ei800),
-            &sha(2),
-        );
-        let slot = assign(&m, &rec709, &sha(1), &HashSet::new());
-        let Slot::Claim { id, file, old } = &slot else {
-            panic!("{slot:?}")
-        };
-        assert_eq!(id.as_str(), "arri-display:logc4:rec709");
-        assert_eq!(old.id.as_str(), "user:my-display");
-        apply(
-            &mut m,
-            &EntryData {
-                spec: &rec709,
-                id: id.clone(),
-                file: file.clone(),
-                sha256: sha(1),
-                lut_size: 0,
-                imported: "later",
-                url: None,
-                replaces: Some(&old.id),
-            },
-        );
-        assert_eq!((m.looks.len(), m.display_luts.len()), (1, 1));
-        assert_eq!(m.display_luts[0].file, "arri-display/LogC4_to_rec709.cube");
-        // Each input finds its own: LogC3 claims the LogC3 copy, and the LogC4 bytes are not
-        // taken for a LogC3 display LUT.
-        let c3 = display_spec(DisplayInput::LogC3, "rec709");
-        assert!(matches!(
-            assign(&m, &c3, &sha(2), &HashSet::new()),
-            Slot::Claim { .. }
-        ));
-        assert!(matches!(
-            assign(&m, &c3, &sha(1), &HashSet::new()),
-            Slot::Add { .. }
-        ));
-
-        // The package's file again, and the same bytes under another name or from the person.
-        let slot = assign(&m, &rec709, &sha(1), &HashSet::new());
-        assert!(matches!(slot, Slot::Existing { .. }), "{slot:?}");
-        let renamed = display_spec(DisplayInput::LogC4, "mine");
-        let slot = assign(&m, &renamed, &sha(1), &HashSet::new());
-        assert!(
-            matches!(&slot, Slot::Same { id, name, display_lut: true, .. } if id.as_str() == "arri-display:logc4:rec709" && name == "rec709"),
-            "{slot:?}"
-        );
-        let slot = assign(&m, &user_spec("copy"), &sha(1), &HashSet::new());
-        assert!(
-            matches!(
-                &slot,
-                Slot::Same {
-                    display_lut: true,
-                    ..
-                }
-            ),
-            "{slot:?}"
-        );
-        // A look that already has Rec.709 baked in is not a display LUT's copy.
-        let baked = with_input(&user_spec("copy"), LookInput::LogC3ToRec709);
-        assert!(matches!(
-            assign(&m, &baked, &sha(1), &HashSet::new()),
-            Slot::Add { .. }
-        ));
     }
 
     #[test]

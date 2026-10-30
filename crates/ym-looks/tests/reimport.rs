@@ -218,15 +218,10 @@ fn manifest_bytes(library: &Library) -> Vec<u8> {
 struct Counts {
     arri: usize,
     user: usize,
-    display: usize,
 }
 
 fn counts(library: &Library) -> Counts {
-    let mut c = Counts {
-        arri: 0,
-        user: 0,
-        display: library.display_luts().len(),
-    };
+    let mut c = Counts { arri: 0, user: 0 };
     for look in library.looks() {
         match look.id.prefix() {
             "arri" => c.arri += 1,
@@ -249,16 +244,10 @@ fn check_library(library: &Library, expected: &Counts, label: &str) {
             "{label}: {id} carries a collision number"
         );
     }
-    for display in library.display_luts() {
-        let id = display.id.to_string();
-        assert!(!id.ends_with("-2"), "{label}: {id}");
-    }
-    let entries = expected.arri + expected.user + expected.display;
+    let entries = expected.arri + expected.user;
     let files: Vec<String> = tree(&library.looks_dir())
         .into_iter()
-        .filter(|f| {
-            f.starts_with("arri/") || f.starts_with("user/") || f.starts_with("arri-display/")
-        })
+        .filter(|f| f.starts_with("arri/") || f.starts_with("user/"))
         .collect();
     assert_eq!(
         files.len(),
@@ -310,11 +299,7 @@ fn the_owners_sequence_of_imports_never_duplicates_a_look() {
     let rec709_zip = zip_of(work.path(), &rec709);
     let alf2_zip = zip_of(work.path(), &alf2);
 
-    let c = |arri, user| Counts {
-        arri,
-        user,
-        display: 0,
-    };
+    let c = |arri, user| Counts { arri, user };
 
     // 1. The LogC4 3D-LUT zip.
     let r = import_source(&mut library, &db, &logc4_zip, None);
@@ -483,11 +468,7 @@ fn look_files_first_and_then_the_cubes_leave_one_entry_per_look() {
     let work = tempfile::tempdir().unwrap();
     let db = small_db(N);
     let mut library = open_library(&work.path().join("app"));
-    let c = |arri| Counts {
-        arri,
-        user: 0,
-        display: 0,
-    };
+    let c = |arri| Counts { arri, user: 0 };
 
     // 12. The ALF4 zip into an empty library, then the LogC4 cubes: they take the entries over.
     let r = import_source(&mut library, &db, &zip_of(work.path(), &alf4_files()), None);
@@ -576,11 +557,7 @@ fn a_folder_with_both_libraries_gives_one_entry_per_look_the_cubes_winning() {
         "{:?}",
         r.notes
     );
-    let c = Counts {
-        arri: N,
-        user: 0,
-        display: 0,
-    };
+    let c = Counts { arri: N, user: 0 };
     check_library(&library, &c, "a folder with both libraries");
     assert!(
         library
@@ -619,14 +596,7 @@ fn a_package_claims_an_own_lut_that_is_its_file_and_keeps_one_entry() {
     fs::write(&cool, &alf4[3].1).unwrap(); // 2110 Studio Sample
     import_source(&mut library, &db, &warm, Some(LookInput::LogC4));
     import_source(&mut library, &db, &cool, None);
-    assert_eq!(
-        counts(&library),
-        Counts {
-            arri: 0,
-            user: 2,
-            display: 0
-        }
-    );
+    assert_eq!(counts(&library), Counts { arri: 0, user: 2 });
     let before = tree(&library.looks_dir());
     assert!(before.contains(&"user/Warm.cube".to_string()), "{before:?}");
     assert!(before.contains(&"user/Cool.alf4".to_string()), "{before:?}");
@@ -666,11 +636,7 @@ fn a_package_claims_an_own_lut_that_is_its_file_and_keeps_one_entry() {
     );
     check_library(
         &library,
-        &Counts {
-            arri: N,
-            user: 1,
-            display: 0,
-        },
+        &Counts { arri: N, user: 1 },
         "the cubes claim Warm",
     );
     let claimed = library
@@ -696,11 +662,7 @@ fn a_package_claims_an_own_lut_that_is_its_file_and_keeps_one_entry() {
     assert!(r.added.is_empty() && r.updated.is_empty(), "{r:?}");
     check_library(
         &library,
-        &Counts {
-            arri: N,
-            user: 1,
-            display: 0,
-        },
+        &Counts { arri: N, user: 1 },
         "the look files after the cubes",
     );
     assert_eq!(manifest_bytes(&library), manifest);
@@ -728,11 +690,7 @@ fn an_own_look_file_that_is_one_of_the_alf4_libraries_looks_becomes_that_look() 
     assert_eq!(r.updated.len(), 1, "{r:?}");
     check_library(
         &library,
-        &Counts {
-            arri: N,
-            user: 0,
-            display: 0,
-        },
+        &Counts { arri: N, user: 0 },
         "the look files claim Cool",
     );
     let files = tree(&library.looks_dir());
@@ -744,7 +702,7 @@ fn an_own_look_file_that_is_one_of_the_alf4_libraries_looks_becomes_that_look() 
 }
 
 #[test]
-fn display_luts_follow_the_same_rules() {
+fn display_luts_are_never_imported_and_a_copy_of_one_is_the_persons_own_lut() {
     use support::Kind;
     let work = tempfile::tempdir().unwrap();
     let n = 4;
@@ -757,8 +715,7 @@ fn display_luts_follow_the_same_rules() {
         }
     }
 
-    // ARRI's display package, made up with titles that say nothing about ARRI (a loose copy of
-    // one of its files is then the person's own LUT until it is asked).
+    // ARRI's display package, made up with titles that say nothing about ARRI.
     let displays: Entries = ["Gamma24_Rec709", "P3_D65", "Rec2020_PQ", "HLG"]
         .iter()
         .enumerate()
@@ -774,48 +731,45 @@ fn display_luts_follow_the_same_rules() {
         &(Kind::DisplayLogC4.zip_name(), displays.clone()),
     );
 
-    // The display package twice: nothing new.
+    // The display package has nothing to import, however often it is chosen: no entry, no file,
+    // no manifest.
     let mut library = open_library(&work.path().join("app"));
-    let r = import_source(&mut library, &db, &zip, None);
-    assert_eq!(r.added.len(), n, "{r:?}");
-    let shown = counts(&library);
-    assert_eq!(shown.display, n);
-    let manifest = manifest_bytes(&library);
-    let r = import_source(&mut library, &db, &zip, None);
-    assert!(r.added.is_empty() && r.updated.is_empty(), "{r:?}");
-    assert_eq!(manifest_bytes(&library), manifest);
+    for _ in 0..2 {
+        let err = import_path(&mut library, &db, &zip, &options(None), &mut no_progress())
+            .expect_err("a package of display LUTs imports nothing");
+        assert!(err.to_string().contains("only display renderings"), "{err}");
+    }
+    check_library(
+        &library,
+        &Counts { arri: 0, user: 0 },
+        "the display package",
+    );
+    assert!(manifest_bytes(&library).is_empty());
+    assert!(
+        !tree(&library.looks_dir())
+            .iter()
+            .any(|f| f.starts_with("arri-display/"))
+    );
 
-    // A copy of one of the display LUTs, named as the person likes, is the same LUT.
+    // A copy of one of its files, chosen on its own and named as the person likes, is only a file
+    // of unknown origin: the person's own LUT, with the answer they give. The package that comes
+    // later changes nothing about it.
     let mine = work.path().join("mine");
     fs::create_dir_all(&mine).unwrap();
     let copy = mine.join("Mine.cube");
     fs::write(&copy, &displays[1].1).unwrap();
     let r = import_source(&mut library, &db, &copy, Some(LookInput::LogC4));
-    assert!(r.added.is_empty() && r.updated.is_empty(), "{r:?}");
-    assert_eq!(r.unchanged.len(), 1);
-    assert!(r.unchanged[0].display_lut, "{r:?}");
-    assert_eq!(counts(&library).user, 0);
-    assert_eq!(manifest_bytes(&library), manifest);
-
-    // The other way round: the person's copy came first, the package claims it.
-    let mut library = open_library(&work.path().join("app2"));
-    import_source(&mut library, &db, &copy, Some(LookInput::LogC4));
+    assert_eq!(r.added.len(), 1, "{r:?}");
     assert_eq!(counts(&library).user, 1);
-    let r = import_source(&mut library, &db, &zip, None);
-    assert_eq!(r.added.len(), n - 1, "{r:?}");
-    assert_eq!(r.updated.len(), 1, "{r:?}");
-    assert!(r.updated[0].display_lut, "{r:?}");
+    let manifest = manifest_bytes(&library);
+    import_path(&mut library, &db, &zip, &options(None), &mut no_progress())
+        .expect_err("still nothing to import");
+    assert_eq!(manifest_bytes(&library), manifest);
     check_library(
         &library,
-        &Counts {
-            arri: 0,
-            user: 0,
-            display: n,
-        },
-        "the package claims the copy",
+        &Counts { arri: 0, user: 1 },
+        "the person's copy stays theirs",
     );
-    let files = tree(&library.looks_dir());
-    assert!(!files.iter().any(|f| f.starts_with("user/")), "{files:?}");
 }
 
 #[test]
@@ -842,11 +796,7 @@ fn two_arri_files_with_the_same_bytes_stay_two_looks() {
     assert_eq!(r.added.len(), 2, "{r:?}");
     check_library(
         &library,
-        &Counts {
-            arri: 2,
-            user: 0,
-            display: 0,
-        },
+        &Counts { arri: 2, user: 0 },
         "same bytes, two looks",
     );
 }
@@ -872,11 +822,7 @@ fn a_file_that_is_in_the_library_twice_in_one_import_is_added_once() {
     );
     check_library(
         &library,
-        &Counts {
-            arri: 0,
-            user: 2,
-            display: 0,
-        },
+        &Counts { arri: 0, user: 2 },
         "a copy within one import",
     );
 }
@@ -932,11 +878,7 @@ fn a_look_file_replaced_by_its_cube_and_an_own_lut_claimed_in_one_import_are_cou
     assert_eq!(r.renamed.len(), 1, "{:?}", r.renamed);
     check_library(
         &library,
-        &Counts {
-            arri: N,
-            user: 0,
-            display: 0,
-        },
+        &Counts { arri: N, user: 0 },
         "look files and a claim in one import",
     );
 }
@@ -946,11 +888,7 @@ fn look_files_do_not_keep_a_cube_that_is_gone_or_altered_and_the_cubes_bring_it_
     let work = tempfile::tempdir().unwrap();
     let db = small_db(N);
     let mut library = open_library(&work.path().join("app"));
-    let c = Counts {
-        arri: N,
-        user: 0,
-        display: 0,
-    };
+    let c = Counts { arri: N, user: 0 };
     import_source(
         &mut library,
         &db,
@@ -1107,11 +1045,7 @@ fn a_loose_cube_after_the_look_files_takes_the_look_over_and_a_loose_look_file_a
  {
     let work = tempfile::tempdir().unwrap();
     let (db, cubes, alf4) = known_logc4();
-    let c = |arri| Counts {
-        arri,
-        user: 0,
-        display: 0,
-    };
+    let c = |arri| Counts { arri, user: 0 };
 
     // The ALF4 zip, then the one cube of a look that shares its title with another.
     let mut library = open_library(&work.path().join("app"));
@@ -1189,11 +1123,7 @@ fn a_file_with_the_bytes_of_an_earlier_arri_look_is_still_the_look_its_own_name_
     );
     check_library(
         &library,
-        &Counts {
-            arri: N,
-            user: 0,
-            display: 0,
-        },
+        &Counts { arri: N, user: 0 },
         "both files of the pair",
     );
     // And once more: nothing changes.

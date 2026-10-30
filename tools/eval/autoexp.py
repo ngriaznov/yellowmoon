@@ -19,22 +19,22 @@ a release build is not needed), takes the camera's embedded JPEG and computes, p
 
 * **G1** the gate as `ym_color::exposure` implements it: the median of our scene-linear luminance at `EV_auto` against
   the median linear luminance of the JPEG (sRGB or Adobe RGB decoded);
-* **G2** the same with our *display-referred* render (sRGB 16-bit TIFF through ACES 2): what a user sees;
+* **G2** the same with our *display-referred* render (sRGB 16-bit TIFF through the cine rendering): what a user sees;
 * **G3** the DRT-neutral comparison: the camera's own scene-referred gain, read from its own raw-to-JPEG tone curve
   (quantile matching of the JPEG against our scene-linear image at the JPEG's spatial scale, no registration), against our `EV_auto`;
-* the placement of mid grey by our display transform (ACES 2, from the render and from OpenColorIO) and what G2 would
-  read for other placements ("ARRI-style" is a parameter here: no ARRI file is read);
+* the display level of mid grey in our renders (the cine rendering puts scene 0.18 at 0.1109) and what G2 would read
+  for other levels of mid grey (a parameter here: no ARRI file is read);
 * the camera's own exposure decision from the EXIF triple (EV100, program mode, flash), a nominal ISO 2720 / 12232
   figure, and which statistic of the raw scene the camera's meter seems to hold constant;
 * sweeps: a constant exposure offset, the metering target, other meters, and keeping part of the camera's placement.
 
 `ym render --format dng --exposure 0` is the scene-linear picture (C1 to C11, linear AWG4, before the display transform;
 the EV scale is exact because C7 is the identity below the ALEXA's clip with the highlight range at 0, `docs/02`).
-`ym render --format tiff` is the display render. Both are made with the Neutral look, the highlights as recorded and no
-white lift (`--look builtin:neutral --rolloff 0,0.5 --white-offset -3`: the highlight range at 0, the low-light toe at
-its default, the lift off): the study measures the exposure, and the default look (Signature) and the automatic white
-lift (both since pipeline 0.3.0) and the default highlight range (1, since pipeline 0.4.0) change the contrast and the
-highlights on purpose, and the DNG carries all three, which would move the quantile match of G3. Every call passes
+`ym render --format tiff` is the display render. Both are made with the Neutral look and the highlights as recorded
+(`--look builtin:neutral --rolloff 0,0.5`: the highlight range at 0, the low-light toe at its default; there is no
+white lift since pipeline 0.8.0): the study measures the exposure, and the default look (Signature, since
+pipeline 0.3.0) and the default highlight range (1, since pipeline 0.4.0) change the contrast and the highlights on
+purpose, and the DNG carries both, which would move the quantile match of G3. Every call passes
 `--apple-auto off`: the study measures Yellowmoon's own Auto, the same on every machine, and Apple's answers never tune
 anything of ours (`docs/19` section 7). The photos are never modified: renders go to `--out`, big files are deleted after reduction unless
 `--keep-renders`, and a small cache (`<out>/cache/`) lets `--reuse` redo the arithmetic without rendering again.
@@ -84,15 +84,12 @@ FITTED_PROFILE = REPO / "data" / "dng" / "profile.json"
 DNG_BLOCK = 8  # the 1/8 preview's binning
 #: Version of the reduction a cache file holds (bump it when `reduce_photo` stores something else): an older cache
 #: is not reused, so `--reuse` cannot mix numbers from two versions of the arithmetic.
-CACHE_SCHEMA = 3
+CACHE_SCHEMA = 4
 # The raw level at which the synthetic JPEG (training/synth/preview.py `tone`: gain 2.133, soft shoulder, sRGB, mild S-curve)
 # reads 0.18 in linear light, as a gain: 1.0654 EV (the nominal gain log2(2.133) is 1.093; the S-curve darkens grey). The gain was
 # calibrated so that this estimator reads the tier's median at `ym_color::exposure::CAMERA_GAIN_EV` (+1.11 EV, the camera gain
 # `EV_auto` is, docs/02, 2026-10-14): it reads this engine +0.039 EV above its own gain (std 0.03): median 1.104 EV over the 37 scenes.
 SYNTH_GAIN_EV = 1.0654
-#: `ym_color::display::DISPLAY_PLACEMENT_EV`, read from the source so that the two cannot drift apart: the ACES 2 path brightens
-#: the scene by this many stops before the transform and the DNG's `BaselineExposure` carries it.
-PLACEMENT_SOURCE = REPO / "crates" / "ym-color" / "src" / "display" / "transform.rs"
 VARIANT_ORDER = ("uncompressed14", "packed12", "lossless-l", "craw", "lossless-ms")
 AE_PROGRAMS = {2, 3, 4, 5, 6, 7, 8}  # EXIF ExposureProgram: the camera metered (not manual, not undefined)
 #: The M1-08 gate (docs/13 gate table, docs/15, decision 2026-10-13): `EV_auto` within this many EV of the camera engine's gain (G3) ...
@@ -106,8 +103,8 @@ EXIT_GATE_NOT_MET = 3
 #: The three `ym` calls made for each photo (what a report built from the cache shows instead of recorded commands).
 COMMAND_TEMPLATES = [
     "ym info <file> --json --quiet --apple-auto off",
-    "ym render <file> --json --quiet --overwrite --out <work>/renders --format dng --name {name}_eval_dng_ev0 --look builtin:neutral --rolloff 0,0.5 --white-offset -3 --apple-auto off --exposure 0",
-    "ym render <file> --json --quiet --overwrite --out <work>/renders --format tiff --name {name}_eval_tiff --bits 16 --compression none --colour-space srgb --look builtin:neutral --rolloff 0,0.5 --white-offset -3 --apple-auto off",
+    "ym render <file> --json --quiet --overwrite --out <work>/renders --format dng --name {name}_eval_dng_ev0 --look builtin:neutral --rolloff 0,0.5 --apple-auto off --exposure 0",
+    "ym render <file> --json --quiet --overwrite --out <work>/renders --format tiff --name {name}_eval_tiff --bits 16 --compression none --colour-space srgb --look builtin:neutral --rolloff 0,0.5 --apple-auto off",
 ]
 
 
@@ -217,15 +214,14 @@ class Ym:
         args = ["render", str(path), "--json", "--quiet", "--overwrite", "--out", str(out), "--format", fmt, "--name", "{name}_eval_" + (fmt if exposure is None else f"{fmt}_ev{exposure}")]
         if fmt == "tiff":
             args += ["--bits", "16", "--compression", "none", "--colour-space", "srgb"]
-        # The study is about the exposure: the Neutral look, the highlights as recorded and no white lift (the default
-        # look, the default highlight range and the automatic lift change the picture on purpose, and the DNG carries
-        # all three).
-        args += ["--look", "builtin:neutral", "--rolloff", "0,0.5", "--white-offset", "-3"]
+        # The study is about the exposure: the Neutral look and the highlights as recorded (the default look and the
+        # default highlight range change the picture on purpose, and the DNG carries both).
+        args += ["--look", "builtin:neutral", "--rolloff", "0,0.5"]
         # Yellowmoon's own Auto: Apple's answers would differ between Macs and never tune anything of ours (docs/19).
         args += ["--apple-auto", "off"]
         if exposure is not None:
             args += ["--exposure", exposure]
-        if self.display != "aces2":
+        if self.display != "own":
             args += ["--display", self.display]
         proc = self.run(args)
         doc = _last_json(proc.stdout)
@@ -284,8 +280,8 @@ def read_linear_dng(path: Path) -> tuple[np.ndarray, float, dict[str, Any]]:
     Without a fitted profile the scene-linear value is `stored / 65535 * 2^BaselineExposure` (`ym-export` `dng.rs`,
     "Pixel scaling": the baseline exposure undoes the scaling by `x_white`). With one (`tags["fitted_profile"]`, which is
     what `ym` writes since the DNG got its Adobe profile) `BaselineExposure` is `log2(x_white)` plus the profile's fit
-    offset plus the display placement, so the caller must take `fitted_profile_offset_ev(tags["tone_curve"])` and
-    `display_placement_ev()` off it first.
+    offset (there is no display placement since pipeline 0.8.0), so the caller must take
+    `fitted_profile_offset_ev(tags["tone_curve"])` off it first.
     """
     tifffile = _tifffile()
     with tifffile.TiffFile(str(path)) as tf:
@@ -328,24 +324,6 @@ def fitted_profile_offset_ev(tone_curve: Sequence[float], profile_path: Path = F
     if dng_curve.shape != curve.shape or not np.allclose(dng_curve, curve, rtol=1e-5, atol=1e-9) or not math.isfinite(offset):
         raise StudyError(f"the DNG's profile is not {profile_path} (build `ym` from this checkout): the fit offset in its BaselineExposure cannot be undone")
     return offset
-
-
-def display_placement_ev(source: Path = PLACEMENT_SOURCE) -> float:
-    """`DISPLAY_PLACEMENT_EV` of `ym-color` (`pub const DISPLAY_PLACEMENT_EV: f64 = 0.85;`), read from its source.
-
-    A DNG with the fitted profile carries it in `BaselineExposure` (`log2(x_white) + fit_offset_ev + placement`), so the study
-    has to take it off to undo the `x_white` scaling.
-    """
-    import re
-
-    try:
-        text = source.read_text()
-    except OSError as err:
-        raise StudyError(f"cannot read {source} to find the display placement: {err}") from err
-    found = re.search(r"pub const DISPLAY_PLACEMENT_EV: f64 = (-?[0-9.]+);", text)
-    if found is None:
-        raise StudyError(f"{source} has no `pub const DISPLAY_PLACEMENT_EV: f64 = ...;`: the DNG's BaselineExposure cannot be undone")
-    return float(found.group(1))
 
 
 def read_tiff16(path: Path) -> np.ndarray:
@@ -493,13 +471,10 @@ def reduce_photo(ym: Ym, path: Path, info: dict[str, Any], exif: dict[str, Any],
     raw16, baseline_ev, dng_tags = read_linear_dng(dng_path)
     extras["dng_baseline_ev"] = baseline_ev
     extras["dng_fitted_profile"] = dng_tags["fitted_profile"]
-    # The stored values are x / x_white; BaselineExposure is log2(x_white), plus the fit offset and the display placement
-    # of a fitted profile.
+    # The stored values are x / x_white; BaselineExposure is log2(x_white), plus the fit offset of a fitted profile.
     fit_offset_ev = fitted_profile_offset_ev(dng_tags["tone_curve"]) if dng_tags["fitted_profile"] else 0.0
-    placement_ev = display_placement_ev() if dng_tags["fitted_profile"] else 0.0
     extras["dng_fit_offset_ev"] = fit_offset_ev
-    extras["dng_placement_ev"] = placement_ev
-    x_white_ev = baseline_ev - fit_offset_ev - placement_ev
+    x_white_ev = baseline_ev - fit_offset_ev
     y0 = _scene_luminance(raw16, x_white_ev)
     extras["dng_size"] = [int(raw16.shape[1]), int(raw16.shape[0])]
     extras["dng_clipped_fraction"] = float((raw16.max(axis=2) == 65535).mean())
@@ -568,7 +543,7 @@ def load_cache(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 # --------------------------------------------------------------------------------------------------------------
 
 
-def analyse(ym: Ym | None, path: Path, work: Path, reuse: bool, keep_renders: bool, display: str = "aces2") -> dict[str, Any]:
+def analyse(ym: Ym | None, path: Path, work: Path, reuse: bool, keep_renders: bool, display: str = "own") -> dict[str, Any]:
     """Everything the study says about one photo (a dict that goes into the JSON; keys starting with `_` do not).
 
     `display` is the `ym --display` of the run: a cache made with another display rendering, another schema or another
@@ -678,12 +653,6 @@ def summarise(entries: list[dict[str, Any]], tolerance_ev: float) -> dict[str, A
     s["best_offset_ev"] = {k: study.best_offset(entries, k) for k in ("g1", "g2", "g3")}
     s["offset_sweep"] = study.offset_sweep(entries, [x / 4 for x in range(-4, 9)], tolerance_ev)
     s["placement_sweep"] = study.placement_sweep(entries, tolerance_ev=tolerance_ev)
-    aces = m.aces2_neutral_display_y([m.MID_GREY])
-    s["aces2_grey_display"] = None if aces is None else float(aces[0])
-    placement = display_placement_ev()
-    s["display_placement_ev"] = placement
-    placed = m.aces2_neutral_display_y([m.MID_GREY * 2.0**placement])
-    s["aces2_grey_display_placed"] = None if placed is None else float(placed[0])
     s["display_of_grey_median"] = float(np.median([e["display_of_grey"] for e in entries]))
     s["tolerance_sweep"] = [{"tolerance_ev": t, **{k: dict(zip(("within", "evaluated"), m.pass_rate([e[k] for e in entries], t))) for k in ("g1_gate_ev", "g2_display_ev", "g3_scene_ev")}} for t in (0.25, 0.5, 0.75, 1.0)]
     s["target_sweep"] = study.target_sweep(entries, (0.10, 0.14, 0.18, 0.22, 0.26, 0.32), tolerance_ev)
@@ -908,11 +877,9 @@ def markdown(meta: dict[str, Any], entries: list[dict[str, Any]], failures: list
     L += ["## Offset sweep (every photo moved by the same offset)", "", "| offset EV | G1 median | G1 within | G2 median | G2 within | G3 median | G3 within |", "|---|---|---|---|---|---|---|"]
     for r in s["offset_sweep"]:
         L.append(f"| {_f(r['offset_ev'], 2, True)} | {_f(r['g1_median'], 2, True)} | {r['g1_within']}/{r['g1_evaluated']} | {_f(r['g2_median'], 2, True)} | {r['g2_within']}/{r['g2_evaluated']} | {_f(r['g3_median'], 2, True)} | {r['g3_within']}/{r['g3_evaluated']} |")
-    L += ["", "## Display placement of mid grey", ""]
-    aces = s["aces2_grey_display"]
-    L += [(f"ACES 2 (OpenColorIO neutral axis, without the display placement of +{_f(s['display_placement_ev'], 2)} EV that `ym` applies before it): scene 0.18 -> display-linear {_f(aces, 4)}; "
-           f"with the placement {_f(s['aces2_grey_display_placed'], 4)}; in our renders (median over photos) {_f(s['display_of_grey_median'], 4)}. "
-          "Other placements scale the display median by `g / D(0.18)`. The 0.12 to 0.14 values stand for an ARRI-style placement (assumed, not measured: no ARRI LUT is read); "
+    L += ["", "## Display level of mid grey", ""]
+    L += [(f"The cine rendering puts scene 0.18 at display-linear 0.1109; in our renders (median over photos) {_f(s['display_of_grey_median'], 4)}. "
+          "Other levels scale the display median by `g / D(0.18)`. The 0.12 to 0.14 values stand for an ARRI-style level (assumed, not measured: no ARRI LUT is read); "
           "0.18 is the ISO 12232 convention that camera JPEGs follow."), ""]
     L += ["| mid grey at | G2 median | G2 within |", "|---|---|---|"]
     for r in s["placement_sweep"]:
@@ -995,8 +962,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--filter", default=None, help="only files whose name contains this text")
     ap.add_argument("--reuse", action="store_true", help="use the cache of an earlier run where it matches the file")
     ap.add_argument("--keep-renders", action="store_true", help="keep the DNG and TIFF renders (they are big)")
-    ap.add_argument("--display", default="aces2", help="ym --display (aces2, or arri with an imported display LUT and --ym-home)")
-    ap.add_argument("--ym-home", type=Path, default=None, help="YELLOWMOON_HOME for ym (default: an empty folder; needed for --display arri)")
+    ap.add_argument("--display", default="own", help="the display rendering the study labels its numbers with (own: Yellowmoon's cine rendering)")
+    ap.add_argument("--ym-home", type=Path, default=None, help="YELLOWMOON_HOME for ym (default: an empty folder)")
     ap.add_argument("--tolerance-ev", "--tolerance", dest="tolerance", type=float, default=GATE_TOLERANCE_EV, help="the tolerance in EV: for the tallies, and for --gate the bound of |G3| (default %(default)s)")
     ap.add_argument("--gate", action="store_true", help="run as the M1-08 gate: exit 3 when fewer than --min-fraction of the files have |G3| <= --tolerance-ev; print the outliers")
     ap.add_argument("--min-fraction", type=float, default=GATE_MIN_FRACTION, help="--gate: the share of files that must be within the tolerance, in (0, 1] (default %(default)s)")

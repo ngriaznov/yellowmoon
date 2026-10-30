@@ -93,12 +93,16 @@ fn render_json_says_apple_made_the_auto_values_and_what_it_answered() {
         ym_core::apple_auto::InstructionsId::default().instructions_sha256
     );
     let steps = steps_of(a);
-    // The test advisor's answer on this photo: darker, darker highlights, more contrast, teal
-    // shadows; it leaves the blacks, the tint and the highlights' colour empty.
+    // The test advisor's answer on this photo: darker highlights, more contrast, teal shadows; it leaves
+    // the exposure, the blacks, the tint and the highlights' colour alone. (Its exposure follows the mean
+    // luma of the picture: with ACES 2 and its placement this photo's picture was over 0.65 and the
+    // advisor said "darker" (-1); the cine rendering shows it about three quarters of a stop darker, so
+    // the advisor leaves the exposure at 0. The picture's bytes are not pinned anywhere; this answer is
+    // what pinned them.)
     assert_eq!(
         steps,
         AutoSteps {
-            exposure: Some(-1),
+            exposure: Some(0),
             highlights: Some(-1),
             shadows: Some(0),
             blacks: None,
@@ -151,7 +155,7 @@ fn render_json_says_apple_made_the_auto_values_and_what_it_answered() {
         rule["auto"]["exposure_ev"].as_f64().expect("ev"),
     );
     assert!(
-        (apple_ev - (rule_ev + TABLE.exposure_ev[2])).abs() < 1e-9,
+        (apple_ev - (rule_ev + TABLE.exposure_ev[3])).abs() < 1e-9,
         "{apple_ev} against {rule_ev}"
     );
     // The white was kept, so the Kelvin and the tint are the rule's.
@@ -392,7 +396,7 @@ fn info_text_has_an_auto_grading_row() {
     };
     assert_eq!(
         row(sb.ym_fake(), &[]),
-        "Apple Intelligence · Darker -0.3 EV · highlights -20 · contrast +15 · teal shadows (subtle) · scene \"Test picture\" · plan \"Test plan: You\""
+        "Apple Intelligence · Highlights -20 · contrast +15 · teal shadows (subtle) · scene \"Test picture\" · plan \"Test plan: You\""
     );
     assert_eq!(row(sb.ym_fake(), &["--apple-auto", "off"]), "Default Auto");
     assert_eq!(
@@ -564,7 +568,7 @@ fn an_export_records_which_auto_made_it_in_its_xmp() {
     assert!(xmp.contains("<ym:Auto>apple</ym:Auto>"), "ym:Auto");
     let sha = ym_core::apple_auto::InstructionsId::default().instructions_sha256;
     let want = format!(
-        r#"{{"instructions":"default","instructions_sha256":"{sha}","model":"Test advisor","os":"test","plan":"Test plan: You","prompt":3,"provider":"apple","reproducible":true,"result":"answered","scene":"Test picture","steps":{{"blacks":null,"contrast":1,"exposure":-1,"highlight_color":null,"highlight_color_strength":null,"highlights":-1,"saturation":0,"shadow_color":"teal","shadow_color_strength":1,"shadows":0,"tint":null,"white":0}},"table":2}}"#
+        r#"{{"instructions":"default","instructions_sha256":"{sha}","model":"Test advisor","os":"test","plan":"Test plan: You","prompt":3,"provider":"apple","reproducible":true,"result":"answered","scene":"Test picture","steps":{{"blacks":null,"contrast":1,"exposure":0,"highlight_color":null,"highlight_color_strength":null,"highlights":-1,"saturation":0,"shadow_color":"teal","shadow_color_strength":1,"shadows":0,"tint":null,"white":0}},"table":2}}"#
     )
     .replace('"', "&quot;");
     assert!(

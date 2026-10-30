@@ -3,9 +3,8 @@
 //!
 //! # The scale of the DNG
 //!
-//! Adobe's renderer clips what reaches its tone curve at 1 after the exposure gain. ACES 2 reaches display white only
-//! at scene values far above 100 and is already at 94 % of display light at 16, so the curve has to cover scene values up
-//! to about 16: the stored values are divided by `x_white` and `BaselineExposure` is `log2(x_white)` plus the profile's
+//! Adobe's renderer clips what reaches its tone curve at 1 after the exposure gain. The cine rendering reaches display white exactly at scene 243 (+10.4 stops) and is already at
+//! 94 % of display light at 16, so the curve covers scene values up to 16 (the limit of `ym_color::display::DNG_SCENE_LIMIT`): the stored values are divided by `x_white` and `BaselineExposure` is `log2(x_white)` plus the profile's
 //! offset (`-log2(x_min)`, -4 for `x_min` 16), which puts the renderer's input at `x / x_min`.
 //!
 //! **That is only right while the exposure is zero or positive.** For a negative `BaselineExposure` the DNG SDK's
@@ -26,7 +25,7 @@ use ym_export::dng::{DngProfile, LookTable};
 
 use crate::adobe::Adobe;
 use crate::model::{Matrices, ToneTable, before_tone, hsv_to_rgb, rgb_to_hsv};
-use crate::target::{aces2_srgb, delta_e_codes};
+use crate::target::{cine_srgb, delta_e_codes};
 
 /// The renderer samples its tone curve into a table of this many intervals.
 pub const TONE_GRID: usize = 4096;
@@ -89,10 +88,10 @@ impl FitConfig {
     }
 }
 
-/// The ACES 2 neutral axis as the tone curve's target: the linear light of sRGB code `d(x)` for the grey `x`.
+/// The cine rendering's neutral axis as the tone curve's target: the linear light of sRGB code `d(x)` for the grey `x`.
 #[must_use]
 pub fn neutral_target_linear(x: f64) -> f64 {
-    srgb_decode(aces2_srgb([x; 3])[1])
+    srgb_decode(cine_srgb([x; 3])[1])
 }
 
 /// The curve's knot positions: 0, then knots that are geometric through the shadows (the renderer samples the curve at
@@ -111,7 +110,7 @@ pub fn knot_positions(points: usize) -> Vec<f64> {
     }
     for k in 0..n_high {
         let t = (k + 1) as f64 / n_high as f64;
-        // a little denser just above the split, where ACES 2 is still bending hard
+        // a little denser just above the split, where the cine rendering is still bending hard
         u.push(split + (1.0 - split) * (0.5 * t + 0.5 * t * t));
     }
     if let Some(last) = u.last_mut() {
@@ -151,7 +150,7 @@ pub struct ToneReport {
     pub points: usize,
     /// Iterations run.
     pub iterations: usize,
-    /// The largest ΔE00 between Adobe's neutral and ACES 2 over the grid above `floor_scene`, per iteration.
+    /// The largest ΔE00 between Adobe's neutral and the cine rendering over the grid above `floor_scene`, per iteration.
     pub max_delta_e_by_iteration: Vec<f64>,
     /// Median ΔE00 over the same grid after the last iteration.
     pub median_delta_e: f64,
@@ -163,7 +162,7 @@ pub struct ToneReport {
     pub floor_scene: f64,
 }
 
-/// ΔE00 of Adobe's neutral against ACES 2 along the measured grid.
+/// ΔE00 of Adobe's neutral against the cine rendering along the measured grid.
 #[must_use]
 pub fn neutral_errors(tone: &ToneTable, x_min: f64) -> Vec<(f64, f64, f64)> {
     let n = TONE_GRID;
@@ -171,7 +170,7 @@ pub fn neutral_errors(tone: &ToneTable, x_min: f64) -> Vec<(f64, f64, f64)> {
         .map(|i| {
             let u = i as f64 / n as f64;
             let x = u * x_min;
-            let want = aces2_srgb([x; 3]);
+            let want = cine_srgb([x; 3]);
             let got = srgb_encode(tone.samples[i].clamp(0.0, 1.0));
             (
                 x,
@@ -182,7 +181,7 @@ pub fn neutral_errors(tone: &ToneTable, x_min: f64) -> Vec<(f64, f64, f64)> {
         .collect()
 }
 
-/// Fits the tone curve on the neutral axis by correcting the knots until Adobe's output matches ACES 2.
+/// Fits the tone curve on the neutral axis by correcting the knots until Adobe's output matches the cine rendering.
 pub fn fit_tone(adobe: &Adobe, cfg: &FitConfig) -> Result<(Vec<[f32; 2]>, ToneTable, ToneReport)> {
     let u = knot_positions(cfg.tone_points);
     let target_at = |uk: f64| neutral_target_linear(uk * cfg.x_min);
@@ -292,9 +291,9 @@ pub struct LookReport {
     pub value_scale_range: [f64; 2],
 }
 
-/// The look table that turns the renderer's HSV colours into the colours ACES 2 gives, solved analytically at every
+/// The look table that turns the renderer's HSV colours into the colours the cine rendering gives, solved analytically at every
 /// node with the model of the renderer ([`crate::model`]): the node's colour is a point on the grid, so the entry there
-/// acts alone, and the table has to produce the colour that the tone curve then maps to ACES 2's output. The nodes whose
+/// acts alone, and the table has to produce the colour that the tone curve then maps to the cine rendering's output. The nodes whose
 /// colour lies outside the AWG4 gamut (the scene data has no such colour) are filled from their neighbours.
 #[must_use]
 pub fn solve_look(cfg: &FitConfig, tone: &ToneTable) -> (LookTable, LookReport) {
@@ -322,7 +321,7 @@ pub fn solve_look(cfg: &FitConfig, tone: &ToneTable) -> (LookTable, LookReport) 
                     outside += 1;
                     continue;
                 }
-                let target = aces2_srgb(x.map(|c| c.max(0.0)));
+                let target = cine_srgb(x.map(|c| c.max(0.0)));
                 let q = before_tone(target, tone, &m);
                 let [h2, s2, v2] = rgb_to_hsv(q);
                 let dh = if s2 < 1e-9 {
@@ -425,7 +424,7 @@ fn fill_from_neighbours(entries: &mut [Option<[f64; 3]>], dims: [u32; 3]) {
     }
 }
 
-/// Colour differences of Adobe's rendering against ACES 2 over a set of colours.
+/// Colour differences of Adobe's rendering against the cine rendering over a set of colours.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Stats {
     /// Colours compared.
@@ -468,7 +467,7 @@ impl Stats {
     }
 }
 
-/// ΔE00 between what Adobe's renderer makes of each colour (scene-linear AWG4) with `profile` and what ACES 2 makes of it.
+/// ΔE00 between what Adobe's renderer makes of each colour (scene-linear AWG4) with `profile` and what the cine rendering makes of it.
 pub fn evaluate(
     adobe: &Adobe,
     profile: &DngProfile,
@@ -487,7 +486,7 @@ pub fn evaluate(
             .par_iter()
             .zip(r.srgb.par_iter())
             .map(|(c, got)| {
-                let want = aces2_srgb(c.map(f64::from));
+                let want = cine_srgb(c.map(f64::from));
                 delta_e_codes(want, got.map(f64::from))
             })
             .collect();
@@ -597,7 +596,7 @@ pub fn test_sets(scenes_dir: Option<&std::path::Path>) -> Vec<TestSet> {
 pub struct SetResult {
     /// The set's name.
     pub name: String,
-    /// ΔE00 of Adobe's render against ACES 2.
+    /// ΔE00 of Adobe's render against the cine rendering.
     pub stats: Stats,
 }
 
@@ -661,12 +660,13 @@ mod tests {
     }
 
     #[test]
-    fn the_neutral_target_is_the_aces_axis() {
-        assert_eq!(neutral_target_linear(0.0), 0.0);
+    fn the_neutral_target_is_the_cine_axis() {
+        // The cine rendering's black is 8e-14 at scene 0 (its soft floor), not exactly 0.
+        assert!(neutral_target_linear(0.0) < 1e-12);
         let mid = neutral_target_linear(0.18);
         assert!(
-            (mid - 0.1).abs() < 5e-3,
-            "18 % grey lands at about 10 % display light: {mid}"
+            (mid - 0.1109).abs() < 5e-4,
+            "18 % grey lands at about 11 % display light: {mid}"
         );
         assert!(neutral_target_linear(16.0) > 0.9 && neutral_target_linear(16.0) < 1.0);
     }
@@ -708,7 +708,7 @@ mod tests {
             }
             assert!(e.iter().all(|v| v.is_finite()));
         }
-        // ACES 2 compresses chroma and the tone curve darkens: the table cannot be the identity
+        // the cine rendering changes chroma and the tone curve darkens: the table cannot be the identity
         assert!(
             table
                 .data

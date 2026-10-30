@@ -53,7 +53,7 @@ pub const AP0: Primaries = Primaries {
     white: ACES_WHITE_XY,
 };
 
-/// ACES AP1 primaries with the ACES white. Also the "reach" gamut of the ACES 2 output transform.
+/// ACES AP1 primaries with the ACES white.
 pub const AP1: Primaries = Primaries {
     red: [0.713, 0.293],
     green: [0.165, 0.830],
@@ -101,9 +101,8 @@ pub fn xy_to_xyz(xy: [f64; 2]) -> Vec3 {
     [xy[0] / xy[1], 1.0, (1.0 - xy[0] - xy[1]) / xy[1]]
 }
 
-/// The gamuts above under the `Primaries::NAME` spelling the ACES 2 output transform uses
-/// (`ym_color::aces2::Primaries` is this type). They are the same values, not copies: there is one
-/// table of chromaticities, in this module.
+/// The gamuts above under the `Primaries::NAME` spelling. They are the same values, not copies: there is
+/// one table of chromaticities, in this module.
 impl Primaries {
     /// [`AP0`].
     pub const AP0: Primaries = AP0;

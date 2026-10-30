@@ -1,6 +1,6 @@
 [package]
 name = "dngfit"
-description = "Fits the DNG profile (tone curve, look table, BaselineExposure offset) of the baked-look LinearRaw export against ACES 2 with Adobe's reference renderer, and checks the DNG gates."
+description = "Fits the DNG profile (tone curve, look table, BaselineExposure offset) of the baked-look LinearRaw export against the cine rendering with Adobe's reference renderer, and checks the DNG gates."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

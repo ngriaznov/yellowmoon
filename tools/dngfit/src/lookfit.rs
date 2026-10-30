@@ -2,7 +2,7 @@
 //!
 //! The renderer's table stage turns a colour with HSV `(h, s, v)` into `(h + dh, s * ds, v * dv)`, with `(dh, ds, dv)`
 //! interpolated trilinearly from the grid nodes (value scale in the encoded domain). What the table has to produce at a
-//! colour does not depend on the table: it is the colour that the tone curve then maps to ACES 2's output
+//! colour does not depend on the table: it is the colour that the tone curve then maps to the cine rendering's output
 //! ([`crate::model::before_tone`]). So each test colour `p` gives a *required modifier* `(dh, ds, dv)` at its position
 //! `(h, s, encoded v)`, and the table is the trilinear field that fits those requirements best: a *linear* least-squares
 //! problem in the entries, which this module solves by conjugate gradients with a weight that follows how much a
@@ -10,14 +10,14 @@
 //! (outside the scene data's gamut) stay sensible.
 //!
 //! Fitting the nodes alone (a colour on every node) is exact at the nodes and leaves the error of the interpolation
-//! between them, which is large in the first value division, where ACES 2's toe bends fast.
+//! between them, which is large in the first value division, where the cine rendering's toe bends fast.
 
 use rayon::prelude::*;
 use ym_color::consts::linalg;
 use ym_color::encode::{srgb_decode, srgb_encode};
 
 use crate::model::{Matrices, ToneTable, before_tone, hsv_to_rgb, rgb_to_hsv};
-use crate::target::aces2_srgb;
+use crate::target::cine_srgb;
 
 /// One required modifier at a position of the table's grid.
 #[derive(Clone, Copy, Debug)]
@@ -87,7 +87,7 @@ pub fn grid_samples(dims: [u32; 3], gain: f64, tone: &ToneTable, density: usize)
             if x.iter().any(|&c| c < 0.0) {
                 return None;
             }
-            let target = aces2_srgb(x);
+            let target = cine_srgb(x);
             let q = before_tone(target, tone, &m);
             let [h2, s2, v2] = rgb_to_hsv(q);
             let dh_sixths = {

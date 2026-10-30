@@ -31,7 +31,6 @@ import type {
   CliLinkStatus,
   CropAspect,
   CropSuggestion,
-  DisplayLut,
   ExportEstimate,
   ExportJob,
   ExportJobId,
@@ -199,8 +198,6 @@ export interface Api {
    * Addition to `docs/01`.
    */
   looksRecognise(path: string): Promise<SourceRecognition>;
-  /** `looks_display_luts`: the display LUTs imported so far (Preferences › Display rendering, the wizard's Finish step). Addition. */
-  looksDisplayLuts(): Promise<DisplayLut[]>;
   /**
    * `looks_watch_downloads`: start or stop the Downloads watcher (FSEvents, `docs/08` §Wizard step 2). Asks
    * macOS for access the first time; `problem` says so when it is refused. Found zips arrive as `download_found`.
@@ -351,7 +348,6 @@ export const tauriApi: Api = {
   lookThumbnail: (photoId, lookId) => commands.lookThumbnail(photoId, lookId),
   looksImport: (path, input) => commands.looksImport(path, input ?? null),
   looksRecognise: (path) => commands.looksRecognise(path),
-  looksDisplayLuts: () => commands.looksDisplayLuts(),
   looksWatchDownloads: (enabled) => commands.looksWatchDownloads(enabled),
   looksSetDefault: (id) => unit(commands.looksSetDefault(id)),
   looksRemove: (id) => unit(commands.looksRemove(id)),

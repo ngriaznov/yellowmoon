@@ -274,7 +274,6 @@ fn output_is_deterministic_and_baseline_exposure_can_be_fixed() {
         None,
         BaselineExposure::Auto {
             fit_offset_ev: -0.5,
-            placement_ev: 0.0,
         },
         &DngProfile::identity(),
         false,
@@ -497,7 +496,6 @@ fn libraw_exiftool_and_tifffile_agree_with_the_writer() {
         }),
         BaselineExposure::Auto {
             fit_offset_ev: 0.25,
-            placement_ev: 0.0,
         },
         &DngProfile {
             tone_curve: vec![[0.0, 0.0], [0.3, 0.45], [1.0, 1.0]],
@@ -555,23 +553,17 @@ fn with_embedded_profile(w: u32, h: u32, scene: Option<Vec<f32>>) -> Built {
 }
 
 /// A DNG with the embedded profile and a photo that stays below the white floor: `x_white` is 16 and
-/// `BaselineExposure` is the display placement (`log2(16) - 4 + 0.85`), positive, so Adobe's renderer applies a plain
-/// gain of `2^0.85` and no highlight shoulder, and the DNG is as bright as the app.
+/// `BaselineExposure` is `log2(16) - 4`, zero: Adobe's renderer applies no gain and no highlight shoulder, and the
+/// profile does the rest (there is no display placement).
 #[test]
-fn a_dim_photo_with_the_embedded_profile_has_a_baseline_exposure_of_the_placement() {
+fn a_dim_photo_with_the_embedded_profile_has_a_baseline_exposure_of_zero() {
     let built = with_embedded_profile(128, 96, None);
     assert_eq!(built.report.x_white, 16.0, "the floor of the fitted offset");
-    assert_eq!(
-        built.report.baseline_exposure_ev,
-        ym_color::display::DISPLAY_PLACEMENT_EV
-    );
+    assert_eq!(built.report.baseline_exposure_ev, 0.0);
     let ifd0 = common::ifd0(&built.bytes);
     let be = ifd0.get(50730).f64s();
     assert_eq!(be.len(), 1);
-    assert!(
-        (be[0] - ym_color::display::DISPLAY_PLACEMENT_EV).abs() < 1e-6,
-        "BaselineExposure {be:?}"
-    );
+    assert!(be[0].abs() < 1e-6, "BaselineExposure {be:?}");
     // The profile that went in is the one the file carries.
     let fitted = FittedProfile::embedded();
     assert_eq!(
@@ -634,13 +626,13 @@ fn render_srgb(binary: &std::path::Path, bytes: &[u8], name: &str) -> Vec<f32> {
     pixels
 }
 
-/// The product's DNG, rendered by Adobe's reference renderer, shows what Yellowmoon shows (ACES 2 with the display
-/// placement): flat patches of a photo below the white floor (`BaselineExposure` the placement, 0.85) and of a photo above
-/// it (`BaselineExposure` more) land within a CIEDE2000 of 1.5 of the placed ACES 2 output transform, greys up to scene 8.9
-/// (`16 / 2^0.85`, where the tone curve's input range ends after the placement) within 0.2. This is the end-to-end check of
-/// the white floor, the embedded profile and `BaselineExposure::Auto`; the full fit report is `dngfit eval`.
+/// The product's DNG, rendered by Adobe's reference renderer, shows what Yellowmoon shows (the cine rendering): flat
+/// patches of a photo below the white floor (`BaselineExposure` zero) and of a photo above it (`BaselineExposure`
+/// positive) land within a CIEDE2000 of 1.5 of the cine rendering for sRGB, greys up to scene 16 (where the tone curve's
+/// input range ends) within 0.2. This is the end-to-end check of the white floor, the embedded profile and
+/// `BaselineExposure::Auto`; the full fit report is `dngfit eval`.
 #[test]
-fn adobes_renderer_shows_the_product_dng_as_aces_2_does() {
+fn adobes_renderer_shows_the_product_dng_as_the_cine_rendering_does() {
     use ym_color::consts::linalg;
     use ym_color::deltae::{d65_white_xyz, delta_e_2000, xyz_to_lab};
     use ym_color::encode::srgb_decode;
@@ -671,10 +663,9 @@ fn adobes_renderer_shows_the_product_dng_as_aces_2_does() {
             d65_white_xyz(),
         )
     };
-    let aces2 = ym_color::aces2::Aces2Transform::shared(ym_color::aces2::Aces2Output::Srgb);
-    let placement = ym_color::display::DISPLAY_PLACEMENT_EV;
-    // Scene value at which Adobe's renderer reaches the end of the tone curve's input: `x * 2^placement / 16 = 1`.
-    let clip_scene = 16.0 / placement.exp2();
+    let cine = ym_color::display::cine::CineRendering::new(ym_color::display::OutputTarget::Srgb);
+    // Scene value at which Adobe's renderer reaches the end of the tone curve's input: `x / 16 = 1`.
+    let clip_scene = 16.0;
     // (name, the brightest patch, the BaselineExposure that follows)
     for (name, brightest, bright_baseline) in [
         ("below the floor", 10.0_f32, false),
@@ -697,43 +688,42 @@ fn adobes_renderer_shows_the_product_dng_as_aces_2_does() {
         let built = with_embedded_profile(w, h, Some(raw));
         if bright_baseline {
             assert!(
-                built.report.baseline_exposure_ev > 1.0 + placement,
+                built.report.baseline_exposure_ev > 1.0,
                 "{name}: {}",
                 built.report.baseline_exposure_ev
             );
         } else {
-            assert_eq!(built.report.baseline_exposure_ev, placement, "{name}");
+            assert_eq!(built.report.baseline_exposure_ev, 0.0, "{name}");
         }
         let pixels = render_srgb(&binary, &built.bytes, "product");
         let (mut worst_grey, mut worst_color) = (0.0_f64, 0.0_f64);
         for (i, p) in patches.iter().enumerate() {
             let (px, py) = ((i % 4) * 8 + 4, (i / 4) * 8 + 4);
             let got = &pixels[(py * w as usize + px) * 3..][..3];
-            // What the app shows: the placed ACES 2 path (the scene times 2^0.85 before the transform).
-            let ap0 = linalg::mul_vec(&ym_color::display::aces2_input_matrix(), p.map(f64::from));
-            let want = aces2.transform_ap0(ap0);
+            // What the app shows: the cine rendering, sRGB-encoded.
+            let want = ym_color::encode::OutputSpace::Srgb
+                .encode_clamped(cine.forward(ym_color::gamut::LinearAwg4(p.map(f64::from))));
             let d = delta_e_2000(lab([got[0], got[1], got[2]].map(f64::from)), lab(want));
-            // The profile's tone curve covers the plain transform's input up to 16 (`2^-fit_offset_ev`), which
-            // is scene `16 / 2^0.85` with the placement: a patch above that is clipped to the display value of
-            // scene 16 / 2^0.85 placed (the plain transform's code at 16 is 0.975, against ACES 2's 0.992 at
-            // 40), a dE00 of about 0.9 at most.
+            // The profile's tone curve covers the scene up to 16 (`2^-fit_offset_ev`): a patch above that is
+            // clipped to the display value of scene 16 (code 0.975 against 1.0 at scene 243), a CIEDE2000 of
+            // about 1 at most.
             let in_range = p.iter().all(|&v| f64::from(v) <= clip_scene);
             if i < n_grey && in_range {
                 worst_grey = worst_grey.max(d);
                 assert!(
                     d < 0.2,
-                    "{name}: grey {p:?}: Adobe {got:?}, ACES 2 {want:?}, dE00 {d}"
+                    "{name}: grey {p:?}: Adobe {got:?}, cine {want:?}, dE00 {d}"
                 );
             } else {
                 worst_color = worst_color.max(d);
                 assert!(
                     d < 1.5,
-                    "{name}: patch {p:?}: Adobe {got:?}, ACES 2 {want:?}, dE00 {d}"
+                    "{name}: patch {p:?}: Adobe {got:?}, cine {want:?}, dE00 {d}"
                 );
             }
         }
         eprintln!(
-            "product DNG, {name} (x_white {:.3}, BaselineExposure {:.3} EV): worst dE00 against ACES 2 {worst_grey:.3} for greys, {worst_color:.3} for colours",
+            "product DNG, {name} (x_white {:.3}, BaselineExposure {:.3} EV): worst dE00 against the cine rendering {worst_grey:.3} for greys, {worst_color:.3} for colours",
             built.report.x_white, built.report.baseline_exposure_ev
         );
     }
@@ -777,9 +767,9 @@ fn independent_readers_accept_a_dng_with_the_embedded_profile() {
         &[
             "--preview-size",
             "192x128",
-            // `BaselineExposure = log2(x_white) + offset`, with the display placement part of the offset.
+            // `BaselineExposure = log2(x_white) + offset`.
             "--baseline-offset-ev",
-            &(fitted.fit_offset_ev + ym_color::display::DISPLAY_PLACEMENT_EV).to_string(),
+            &fitted.fit_offset_ev.to_string(),
             "--white-floor",
             &fitted.baseline_exposure().white_floor().to_string(),
             "--tone-curve",
@@ -845,7 +835,6 @@ fn adobes_dng_validate_accepts_every_variant() {
                 }),
                 BaselineExposure::Auto {
                     fit_offset_ev: -0.3,
-                    placement_ev: 0.0,
                 },
                 &tone,
                 true,
@@ -1086,7 +1075,6 @@ fn adobes_renderer_undoes_the_white_level_scaling_with_the_baseline_exposure() {
                 crop: None,
                 baseline_exposure: BaselineExposure::Auto {
                     fit_offset_ev: offset_ev,
-                    placement_ev: 0.0,
                 },
                 profile: &profile,
             }),

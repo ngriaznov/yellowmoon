@@ -93,8 +93,8 @@ fn a_dng_carries_the_fitted_profile_and_a_baseline_exposure_that_is_never_negati
     assert_eq!(table.count as usize, fitted.profile.look_table.data.len());
 
     // The white level is floored at 2^-offset, so BaselineExposure is never negative; it is
-    // log2(x_white) + offset + the display placement (the app's ACES 2 path brightens the scene by
-    // 2^DISPLAY_PLACEMENT_EV before the transform that the profile was fitted to).
+    // log2(x_white) + offset (there is no display placement: the profile was fitted to the cine rendering
+    // as the app shows it).
     let dng = report.dng.expect("a DNG report");
     let floor = f64::from(fitted.baseline_exposure().white_floor());
     assert_eq!(floor, 16.0);
@@ -104,9 +104,7 @@ fn a_dng_carries_the_fitted_profile_and_a_baseline_exposure_that_is_never_negati
         "{}",
         dng.baseline_exposure_ev
     );
-    let want = f64::from(dng.x_white).log2()
-        + fitted.fit_offset_ev
-        + ym_color::display::DISPLAY_PLACEMENT_EV;
+    let want = f64::from(dng.x_white).log2() + fitted.fit_offset_ev;
     assert!((dng.baseline_exposure_ev - want).abs() < 1e-9);
     let written = srational(&tiff, ifd0, 50730);
     assert!(
@@ -131,9 +129,9 @@ fn another_profile_can_still_be_given_to_the_context() {
     let tiff = Tiff::new(&bytes).expect("a DNG");
     let dims = tiff.uints(&tiff.find(tiff.ifd0(), 50981).expect("dims"));
     assert_eq!(dims, vec![2, 2, 2]);
-    // With no offset the floor is 1.0 and the exposure is log2(x_white) plus the display placement.
+    // With no offset the floor is 1.0 and the exposure is log2(x_white).
     let dng = report.dng.expect("a DNG report");
     assert!(dng.x_white >= 1.0);
-    let want = f64::from(dng.x_white).log2() + ym_color::display::DISPLAY_PLACEMENT_EV;
+    let want = f64::from(dng.x_white).log2();
     assert!((dng.baseline_exposure_ev - want).abs() < 1e-9);
 }

@@ -22,8 +22,7 @@ python3 -I tools/eval/autoexp.py testdata/synthetic/arw --label synthetic --one-
 python3 -I -m unittest discover -s tools/eval -p 'test_*.py'                  # the unit tests (no ARW needed)
 ```
 
-Needs `numpy`, `Pillow` and `tifffile` (`pip install numpy pillow tifffile`). `PyOpenColorIO` (ACES 2 placement of mid grey
-as an independent number) and `exiftool` (DRO and picture style of the camera, descriptive only) are optional. The `ym` used
+Needs `numpy`, `Pillow` and `tifffile` (`pip install numpy pillow tifffile`). `exiftool` (DRO and picture style of the camera, descriptive only) is optional. The `ym` used
 is the dev build, `cargo build -p ym-cli` (`target/debug/ym`; the dev profile is optimised, a release build is not needed and
 would cost a second profile of disk). Each photo costs two renders (40 to 180 s per photo for 10 to 33 MP on four shared cores, dev build).
 The real files (`testdata/real/files`, local evaluation only) are never copied: renders go to `testdata/eval/<label>/`
@@ -45,7 +44,7 @@ python3 -I tools/eval/autoexp.py <folder or files> --label <name> --gate [--tole
 ## What is run
 
 One `ym` process per photo (a photo's automatic exposure depends on the other photos of a run through the burst median, so
-batches would change the numbers), with an empty `YELLOWMOON_HOME` (default look Neutral, ACES 2, no imported looks):
+batches would change the numbers), with an empty `YELLOWMOON_HOME` (default look Neutral, the cine rendering, no imported looks):
 
 ```
 ym info   <file> --json --quiet
@@ -56,13 +55,12 @@ ym render <file> --json --quiet --overwrite --out <work>/renders --format tiff -
 * The **DNG at EV 0** is the scene-linear picture: linear AWG4 after C1 to C11 (the look is Neutral, the curve identity), before
   the display transform C12. Stored values are `round(65535 x / x_white)`, undone by `BaselineExposure = log2 x_white`
   (`ym-export` `dng.rs`, "Pixel scaling"). A DNG with the fitted Adobe profile (what `ym` writes since the DNG got its profile) has
-  `BaselineExposure = log2(x_white) + fit_offset_ev + k`: the tool takes the offset from `data/dng/profile.json`, after checking that the DNG's
-  `ProfileToneCurve` is that file's curve, and refuses the DNG otherwise (a `ym` built from another profile); `k` is the display placement
-  (`DISPLAY_PLACEMENT_EV`, +0.85), read from `crates/ym-color/src/display/transform.rs` so that the two cannot drift apart. The
-  exposure scales it exactly (C7's knee and toe scale with the exposure; checked on a synthetic chart, DNGs at +1.2 and -0.8 EV against
+  `BaselineExposure = log2(x_white) + fit_offset_ev`: the tool takes the offset from `data/dng/profile.json`, after checking that the DNG's
+  `ProfileToneCurve` is that file's curve, and refuses the DNG otherwise (a `ym` built from another profile). There is no display
+  placement in it since pipeline 0.8.0. The exposure scales it exactly (C7's knee and toe scale with the exposure; checked on a synthetic chart, DNGs at +1.2 and -0.8 EV against
   the one at 0: the per-pixel ratio is the gain to 0.0006), so every exposure is `x 2^EV` of this one render. `ym render` has no scene-linear
   TIFF or PNG (those are C1 to C13, display-referred); the DNG is the scene-linear export.
-* The **16-bit sRGB TIFF at the automatic exposure** is what the user sees: C1 to C13 through ACES 2.
+* The **16-bit sRGB TIFF at the automatic exposure** is what the user sees: C1 to C13 through the cine rendering.
 * The **JPEG** is the one `ym info` reports (offset and length in the ARW, not the largest one in the file), decoded as sRGB, or
   as Adobe RGB (1998) when the ARW's Exif says `InteroperabilityIndex R03` (A7 II and A7 III here).
 
@@ -74,7 +72,7 @@ scene picture, Rec.709 for the JPEG and our display render), medians over every 
 | name | definition | what it mixes in |
 |---|---|---|
 | **G1** (the gate as built) | median `Y` of our scene-linear picture at `EV_auto` against the median `Y` of the JPEG | the camera's tone curve (contrast, DRO) and the scene's key; no display transform |
-| **G2** | median `Y` of our display render (ACES 2 with the +0.85 EV display placement) against the JPEG's | everything of G1, plus the display's placement of mid grey (0.18 to 0.189 with the placement; it was 0.10 without) |
+| **G2** | median `Y` of our display render (the cine rendering) against the JPEG's | everything of G1, plus the display's level of mid grey (0.1109 in the cine rendering) |
 | **G3** | `EV_auto` minus the camera's *engine gain* | nothing of the display transform or of the camera's curve shape; only the camera's anchor |
 
 The **camera engine gain** is the scene-referred exposure the camera's own rendering applies to the raw data: the raw level `x`
@@ -94,10 +92,8 @@ checked against the gain the synthetic JPEG was made with (`camera_gain_minus_sy
 
 Other outputs, per photo and in `report.md`:
 
-* `display_of_grey`: our display luminance of scene 0.18 in this render (from its own pixels), and OpenColorIO's ACES 2
-  neutral axis (0.100 for the plain transform, 0.189 for `0.18 * 2^0.85`, the placement `ym` applies; both are in the report). The *placement sweep* scales the display median to other placements of mid grey. The ARRI-style values
-  are parameters, not measurements: no ARRI file is read (`AGENTS.md` rule 2). To measure a real ARRI display LUT, import it into
-  a home folder and run with `--display arri --ym-home <that folder>`: `D(0.18)` then comes from the ARRI render.
+* `display_of_grey`: our display luminance of scene 0.18 in this render (from its own pixels; 0.1109 for the cine rendering, which is in the report). The *placement sweep* scales the display median to other levels of mid grey. The ARRI-style values
+  are parameters, not measurements: no ARRI file is read (`AGENTS.md` rule 2).
 * The camera's decision from the EXIF triple: `ev100`, program mode, flash, and `nominal_camera_gain_ev`, the figure for a
   camera that meters an average scene exactly (ISO 2720 meter constant 12.5 and ISO 12232 saturation speed 78 with a lens factor of
   0.65 put the grey at 0.104 of the white level, +0.79 EV). A reference line only.
@@ -132,7 +128,7 @@ our luminance is taken at the JPEG's scale) and says nothing about Sony's render
 | file | what |
 |---|---|
 | `autoexp.py` | the command: finds files, runs `ym`, reads DNG, TIFF and JPEG, writes `results.json`, `results.csv`, `report.md`; `--gate` evaluates the M1-08 gate (`evaluate_gate`) |
-| `metrics.py` | pure numpy: colour decoding, the algorithm replica, quantile curves, ACES 2 neutral axis |
+| `metrics.py` | pure numpy: colour decoding, the algorithm replica, quantile curves |
 | `study.py` | the per-photo numbers and the sweeps over photos |
-| `test_metrics.py`, `test_study.py`, `test_autoexp.py` | unit tests (31, 17 and 36; the gate logic and its exit codes and the guard check included), run without any ARW; one end-to-end test runs `ym` on a synthetic scene when `target/debug/ym` and `testdata/synthetic` exist, and is skipped otherwise (the `eval-tools` job of `ci.yml` runs them) |
+| `test_metrics.py`, `test_study.py`, `test_autoexp.py` | unit tests (30, 17 and 36; the gate logic and its exit codes and the guard check included), run without any ARW; one end-to-end test runs `ym` on a synthetic scene when `target/debug/ym` and `testdata/synthetic` exist, and is skipped otherwise (the `eval-tools` job of `ci.yml` runs them) |
 | `run.sh` | builds `ym`, runs the tests and both sets |

@@ -85,18 +85,23 @@ test.describe("the happy path", () => {
     await expect(page.locator(".ym-look-group__count").nth(1)).toHaveText("87");
   });
 
-  test("display LUTs bring the display rendering choice, which is saved", async ({ page }) => {
+  // Owner's decision of 2026-10-29: ARRI's display LUT is not a rendering Yellowmoon offers. The wizard imports looks only.
+  test("ARRI's display LUTs are not offered; a display package that is dropped says it has nothing to import and nothing about the display is asked or saved", async ({ page }) => {
     await wizard(page);
-    await page.getByRole("checkbox", { name: "Display LUTs · LogC4" }).click();
+    await expect(page.getByRole("checkbox")).toHaveCount(1);
+    await expect(page.getByRole("checkbox", { name: /Display LUTs/ })).toHaveCount(0);
     await toRecognise(page, LL4, DL4);
+    const row = page.getByRole("row").filter({ hasText: DL4 });
+    await expect(row).toContainText("This package has only display renderings. Yellowmoon uses its own rendering, so there is nothing to import.");
     await next(page).click();
     await expect(page.getByRole("heading", { level: 1, name: "Imported" })).toBeVisible({ timeout: 15_000 });
     await next(page).click();
-    await page.getByRole("radiogroup", { name: "Display rendering" }).getByRole("radio", { name: "ARRI's" }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "87 looks ready" })).toBeVisible();
+    await expect(page.getByRole("radiogroup", { name: "Display rendering" })).toHaveCount(0);
     await next(page).click();
     await expect(page.getByRole("heading", { level: 1, name: "Drop Sony ARW files." })).toBeVisible();
-    const display = await page.evaluate(async () => (await window.__yellowmoon!.mockApi.preferencesGet()).display_rendering);
-    expect(display).toEqual({ kind: "arri_display", id: "arri-display:logc4:rec709-g24" });
+    const preferences = await page.evaluate(async () => window.__yellowmoon!.mockApi.preferencesGet());
+    expect(preferences).not.toHaveProperty("display_rendering");
   });
 });
 

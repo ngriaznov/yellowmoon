@@ -1251,7 +1251,6 @@ fn edit_everything() -> SettingsPatch {
         highlights: Some(ym_core::settings::PercentSetting::manual_value(-30.0)),
         shadows: Some(ym_core::settings::PercentSetting::manual_value(25.0)),
         white: Some(5.0),
-        white_offset_ev: Some(0.5),
         black: Some(ym_core::settings::PercentSetting::manual_value(-4.0)),
         light_source: Some(LightSource::Day),
         white_balance: Some(AutoOr::Manual(WhiteBalanceManualPatch {
@@ -1312,6 +1311,7 @@ fn edit_everything() -> SettingsPatch {
         })),
         orientation: Some(Orientation::Deg90),
         white_pick: Some(Some([0.4167, 0.125])),
+        ..SettingsPatch::default()
     }
 }
 
@@ -1456,7 +1456,6 @@ fn auto_stays_auto_and_each_photo_keeps_its_own_estimates() {
     );
     assert_eq!(r.values.exposure_ev, 0.7);
     assert_eq!((r.values.kelvin, r.values.tint), (4300.0, 7.0));
-    assert_eq!(r.settings.white_offset_ev, 0.5);
     assert_eq!(
         (r.settings.rolloff.highlights, r.settings.rolloff.low_light),
         (0.7, 0.3),

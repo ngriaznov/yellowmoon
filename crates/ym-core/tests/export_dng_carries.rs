@@ -5,25 +5,24 @@
 //!   DNG, whatever the photo's Sharpening setting says, and stays on for JPEG, TIFF and PNG (decision of
 //!   2026-10-14; output sharpening was never applied to a DNG). The renders of a DNG do not leak into
 //!   the others through the caches.
-//! * For every look the DNG's pixels, through ACES 2 with the display placement (the transform the fitted
-//!   profile emulates, with the placement in `BaselineExposure`), are the picture the app makes: for a
-//!   log-to-log look because the DNG holds the C11 output as it is, for a look with its own display
-//!   rendering (LogC3 to Rec.709) and for an imported display LUT because the DNG holds the scene values
-//!   that ACES 2 turns into that picture.
+//! * For every look the DNG's pixels, through the cine rendering (the transform the fitted profile emulates),
+//!   are the picture the app makes: for a log-to-log look because the DNG holds the C11 output as it is, for
+//!   a look with its own display rendering (LogC3 to Rec.709) because the DNG holds the scene values that
+//!   the cine rendering turns into that picture.
 mod common;
 
 use std::path::Path;
 use std::sync::Arc;
 
-use common::dng_looks::{DISPLAY_LUT_ID, Looks};
+use common::dng_looks::Looks;
 use common::*;
-use ym_color::aces2::{Aces2Output, Aces2Transform};
-use ym_color::consts::linalg;
-use ym_color::display::{DISPLAY_PLACEMENT_EV, DNG_SCENE_LIMIT, OutputTarget, aces2_input_matrix};
+use ym_color::display::cine::CineRendering;
+use ym_color::display::{DNG_SCENE_LIMIT, OutputTarget};
+use ym_color::gamut::LinearAwg4;
 use ym_core::export::{ExportControl, ExportParams, ExportPhoto, export_photo};
 use ym_core::pipeline::{
-    DisplayChoice, FullImage, FullRequest, FullTarget, LookProvider, NeutralOnly, PhotoSource,
-    RenderOptions, Renderer,
+    FullImage, FullRequest, FullTarget, LookProvider, NeutralOnly, PhotoSource, RenderOptions,
+    Renderer,
 };
 use ym_core::session::{OpenOptions, Session};
 use ym_core::settings::{AutoOr, DevelopSettings, SharpenValue};
@@ -176,7 +175,7 @@ fn a_dng_export_leaves_the_other_formats_as_they_were() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The DNG's pixels are the app's picture through ACES 2
+// The DNG's pixels are the app's picture through the cine rendering
 // ---------------------------------------------------------------------------------------------
 
 fn with_look(src: &PhotoSource, look: &str, intensity: f64) -> PhotoSource {
@@ -186,31 +185,25 @@ fn with_look(src: &PhotoSource, look: &str, intensity: f64) -> PhotoSource {
     src.with_settings(s)
 }
 
-/// What Adobe's renderer is made to show: the DNG's scene-linear AWG4 pixels, with the display placement
-/// (carried by `BaselineExposure`), through ACES 2. Display-linear in the output's primaries.
+/// What Adobe's renderer is made to show: the DNG's scene-linear AWG4 pixels through the cine rendering.
+/// Display-linear in the output's primaries.
 ///
-/// `ours` is a DNG of the app's own ACES 2 rendering: its pixels carry the white lift and the red chroma
-/// step with the P3-D65 tables (`docs/09`), so the picture to compare with is the app's Display P3 one
-/// and the transform is the P3-limited one. Otherwise the pixels are the inverse of a display rendering
-/// that is not ours (a look with its own rendering above 0 %, a display LUT), made with the sRGB
-/// transform (`DngDisplayInverse`), and the picture is the sRGB one.
-fn the_dng_through_aces2(raw: &FullImage, ours: bool) -> Vec<f64> {
-    let t = Aces2Transform::shared(if ours {
-        Aces2Output::DisplayP3
-    } else {
-        Aces2Output::Srgb
-    });
-    let m = aces2_input_matrix();
+/// `ours` is a DNG of the app's own rendering: its pixels are the C11 output as it is, so the picture to
+/// compare with is the app's Display P3 one, through the Display P3 rendering. Otherwise the pixels are the
+/// inverse of a display rendering that is not ours (a look with its own rendering above 0 %), made with the
+/// sRGB rendering (`DngDisplayInverse`), and the picture is the sRGB one.
+fn the_dng_through_the_rendering(raw: &FullImage, ours: bool) -> Vec<f64> {
+    let rendering = CineRendering::new(picture_target(ours));
     raw.rgb
         .chunks_exact(3)
         .flat_map(|p| {
             let awg4 = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
-            t.transform_ap0_linear(linalg::mul_vec(&m, awg4))
+            rendering.forward(LinearAwg4(awg4))
         })
         .collect()
 }
 
-/// The output the picture to compare a DNG with is rendered for (see [`the_dng_through_aces2`]).
+/// The output the picture to compare a DNG with is rendered for (see [`the_dng_through_the_rendering`]).
 fn picture_target(ours: bool) -> OutputTarget {
     if ours {
         OutputTarget::DisplayP3
@@ -219,13 +212,14 @@ fn picture_target(ours: bool) -> OutputTarget {
     }
 }
 
-/// How the DNG's pixels, through ACES 2, differ from the app's picture where the picture is inside the
-/// range ACES 2 reaches (display values to 0.9, the DNG pixel below the profile's limit): the largest
-/// difference and the number of pixels compared.
+/// How the DNG's pixels, through the cine rendering, differ from the app's picture where the picture is inside
+/// the range the inverse reaches (display values from 2e-6 to 0.9, a colour the rendering can make, the DNG
+/// pixel below the profile's limit): the largest difference and the number of pixels compared.
 fn dng_against_picture(raw: &FullImage, picture: &FullImage, ours: bool) -> (f64, usize) {
     assert_eq!((raw.width, raw.height), (picture.width, picture.height));
-    let shown = the_dng_through_aces2(raw, ours);
-    let limit = DNG_SCENE_LIMIT / DISPLAY_PLACEMENT_EV.exp2();
+    let shown = the_dng_through_the_rendering(raw, ours);
+    let rendering = CineRendering::new(picture_target(ours));
+    let limit = DNG_SCENE_LIMIT;
     let (mut worst, mut n) = (0.0_f64, 0usize);
     for (i, (p, raw_px)) in picture
         .rgb
@@ -233,9 +227,18 @@ fn dng_against_picture(raw: &FullImage, picture: &FullImage, ours: bool) -> (f64
         .zip(raw.rgb.chunks_exact(3))
         .enumerate()
     {
-        let in_range = p.iter().all(|&c| (0.0..=0.9).contains(&c))
+        let in_range = p.iter().all(|&c| (2e-6..=0.9).contains(&c))
             && raw_px.iter().all(|&c| f64::from(c) < limit * 0.99);
         if !in_range {
+            continue;
+        }
+        // A display colour the rendering cannot make is replaced by the nearest one it can (`docs/02`, Inverse).
+        if !ours
+            && rendering
+                .inverse([p[0], p[1], p[2]].map(f64::from))
+                .chroma_fraction
+                < 1.0
+        {
             continue;
         }
         for k in 0..3 {
@@ -247,12 +250,11 @@ fn dng_against_picture(raw: &FullImage, picture: &FullImage, ours: bool) -> (f64
 }
 
 #[test]
-fn for_every_look_the_dngs_pixels_through_aces2_are_the_apps_picture() {
+fn for_every_look_the_dngs_pixels_through_the_rendering_are_the_apps_picture() {
     // The photo's R8 is set to 0, so the app's picture has none either (a DNG never has any).
     let src = with_sharpening(&source_of(&detailed_scene()), 0.0, 1.0);
     let r = cpu_renderer(Arc::new(Looks));
-    // The last field: the picture is our ACES 2 rendering (with the red chroma step), not the inverse of a
-    // display rendering that is not ours.
+    // The last field: the picture is our own rendering, not the inverse of a display rendering that is not ours.
     for (name, look, intensity, ours) in [
         ("neutral", "builtin:neutral", 100.0, true),
         ("a log-to-log look", "user:warm", 100.0, true),
@@ -265,10 +267,12 @@ fn for_every_look_the_dngs_pixels_through_aces2_are_the_apps_picture() {
         let raw = render(&r, &s, FullTarget::DngLinearAwg4);
         let picture = render(&r, &s, FullTarget::DisplayLinear(picture_target(ours)));
         let (worst, n) = dng_against_picture(&raw, &picture, ours);
-        eprintln!("{name}: {n} pixels compared, the DNG through ACES 2 differs by {worst:.2e}");
+        eprintln!(
+            "{name}: {n} pixels compared, the DNG through the rendering differs by {worst:.2e}"
+        );
         assert!(n > raw.width * raw.height / 10, "{name}: {n} pixels");
-        // f32 pixels through a transform that is steep in the shadows: measured 9e-8 of display light.
-        assert!(worst < 1e-5, "{name}: {worst}");
+        // f32 pixels through a transform that is steep in the shadows, and the inverse's residual of 1e-7.
+        assert!(worst < 2e-5, "{name}: {worst}");
         // The preview is the picture of the app (sRGB, display-linear), not the DNG's own render.
         let preview = render(&r, &s, FullTarget::DngPreview);
         let srgb = render(&r, &s, FullTarget::DisplayLinear(OutputTarget::Srgb));
@@ -277,52 +281,28 @@ fn for_every_look_the_dngs_pixels_through_aces2_are_the_apps_picture() {
 }
 
 #[test]
-fn only_a_display_rendering_of_arri_changes_the_dng_pixels_of_a_look_of_ours() {
-    // The DNG of a log-to-log look is the C11 output decoded from LogC4: nothing in it depends on the
-    // look's display rendering. A look with its own rendering at 0 % is our C12 exactly (the same DNG
-    // as Neutral), and an imported display LUT is the one other thing that moves the pixels.
+fn only_a_look_with_its_own_display_rendering_changes_the_dng_pixels_through_the_inverse() {
+    // The DNG of a log-to-log look is the C11 output decoded from LogC4: nothing in it depends on a
+    // display rendering. A look with its own rendering at 0 % is our C12 exactly (the same DNG as
+    // Neutral); above 0 % its picture goes into the DNG through the inverse of the cine rendering.
     let src = source_of(&detailed_scene());
     let r = cpu_renderer(Arc::new(Looks));
     let neutral = with_look(&src, "builtin:neutral", 100.0);
     let zero = with_look(&src, "user:rec709", 0.0);
+    let neutral_pixels = render(&r, &neutral, FullTarget::DngLinearAwg4);
     assert_eq!(
-        render(&r, &neutral, FullTarget::DngLinearAwg4).rgb,
+        neutral_pixels.rgb,
         render(&r, &zero, FullTarget::DngLinearAwg4).rgb,
         "a look with its own rendering at 0 % is Neutral"
     );
-    for look in ["builtin:neutral", "user:warm"] {
-        let s = with_look(&src, look, 100.0);
-        let ours = render(&r, &s, FullTarget::DngLinearAwg4);
-        r.set_display(DisplayChoice::ArriLut(
-            LookId::parse(DISPLAY_LUT_ID).expect("id"),
-        ));
-        let theirs = render(&r, &s, FullTarget::DngLinearAwg4);
-        r.set_display(DisplayChoice::Aces2);
-        assert!(max_diff(&ours, &theirs) > 1e-2, "{look}");
-        assert_eq!(
-            render(&r, &s, FullTarget::DngLinearAwg4).rgb,
-            ours.rgb,
-            "{look}: back to ACES 2 gives the same pixels"
-        );
-    }
-}
-
-#[test]
-fn an_imported_display_lut_goes_into_the_dng_through_the_same_inverse() {
-    let src = with_sharpening(&source_of(&detailed_scene()), 0.0, 1.0);
-    let r = cpu_renderer(Arc::new(Looks));
-    r.set_display(DisplayChoice::ArriLut(
-        LookId::parse(DISPLAY_LUT_ID).expect("id"),
-    ));
-    let raw = render(&r, &src, FullTarget::DngLinearAwg4);
-    let picture = render(&r, &src, FullTarget::DisplayLinear(OutputTarget::Srgb));
-    let (worst, n) = dng_against_picture(&raw, &picture, false);
-    eprintln!("display LUT: {n} pixels compared, the DNG through ACES 2 differs by {worst:.2e}");
-    assert!(n > raw.width * raw.height / 4, "{n}");
-    assert!(worst < 1e-5, "{worst}");
-    // The values stay inside what the profile covers: no channel above the profile's limit.
-    let limit = (DNG_SCENE_LIMIT / DISPLAY_PLACEMENT_EV.exp2()) as f32;
-    assert!(raw.rgb.iter().all(|&c| c <= limit * (1.0 + 1e-6)));
+    let own = with_look(&src, "user:rec709", 100.0);
+    let own_pixels = render(&r, &own, FullTarget::DngLinearAwg4);
+    assert!(max_diff(&neutral_pixels, &own_pixels) > 1e-2);
+    // Rendering again gives the same pixels: nothing about the render depends on what came before.
+    assert_eq!(
+        render(&r, &own, FullTarget::DngLinearAwg4).rgb,
+        own_pixels.rgb
+    );
 }
 
 #[test]
@@ -334,7 +314,6 @@ fn the_scene_limit_of_the_inverse_is_the_top_of_the_profile_the_dng_embeds() {
         f64::from(fitted.baseline_exposure().white_floor()),
         DNG_SCENE_LIMIT
     );
-    // And with the placement the largest AWG4 channel the inverse gives is `limit / 2^k`, the stored headroom a user
-    // who lowers the exposure in the other editor has above it (`docs/09`).
-    assert!((DNG_SCENE_LIMIT / DISPLAY_PLACEMENT_EV.exp2() - 8.9).abs() < 0.05);
+    // The largest AWG4 channel the inverse gives is the limit itself (there is no placement to divide out).
+    assert_eq!(DNG_SCENE_LIMIT, 16.0);
 }

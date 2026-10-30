@@ -47,7 +47,6 @@ export type FromCore = AllTrue<{
   look: Assignable<B.Look, T.Look>;
   looksImportResult: Assignable<B.LooksImportResult, T.LooksImportResult>;
   sourceRecognition: Assignable<B.SourceRecognition, T.SourceRecognition>;
-  displayLut: Assignable<B.DisplayLut, T.DisplayLut>;
   watchStatus: Assignable<B.WatchStatus, T.WatchStatus>;
   pixelSample: Assignable<B.PixelSample, T.PixelSample>;
   histogramData: Assignable<B.HistogramData, T.HistogramData>;
@@ -83,7 +82,6 @@ export type Both = AllTrue<{
   exportJob: Same<T.ExportJob, B.ExportJob>;
   preferences: Same<T.Preferences, B.Preferences>;
   lastUsedFolders: Same<T.LastUsedFolders, B.LastUsedFolders>;
-  displayRendering: Same<T.DisplayRendering, B.DisplayRendering>;
   crop: Same<T.Crop, B.Crop>;
   curves: Same<T.Curves, B.Curves>;
   colorBalance: Same<T.ColorBalance, B.ColorBalance>;

@@ -16,8 +16,8 @@ use ym_color::look::LookInput;
 use ym_color::lut::Lut3d;
 use ym_core::app::{Core, CoreOptions};
 use ym_core::export_queue::{ExportEstimate, ExportEvent, ExportJob, ExportProgress, ExportSink};
-use ym_core::looks::{DisplayLutEntry, LookEntry, LooksImportResult};
-use ym_core::preferences::{DisplayRendering, Preferences, PreferencesPatch};
+use ym_core::looks::{LookEntry, LooksImportResult};
+use ym_core::preferences::{Preferences, PreferencesPatch};
 use ym_core::session::{ApplyScope, OpenOptions, PhotoId};
 use ym_core::settings::SettingsPatch;
 use ym_export::{ExportOptions, FormatKind};
@@ -35,7 +35,11 @@ struct Rig {
 }
 
 fn rig() -> Rig {
-    let app = tempfile::tempdir().expect("app root");
+    rig_in(tempfile::tempdir().expect("app root"))
+}
+
+/// A core over an app folder that already holds something (an earlier version's files).
+fn rig_in(app: tempfile::TempDir) -> Rig {
     let home = tempfile::tempdir().expect("home");
     let (sink, events) = ExportSink::channel();
     let mut options = CoreOptions::new(data_root(), app.path().to_path_buf());
@@ -249,7 +253,6 @@ fn choosing_a_destination_remembers_the_folder_in_the_preferences_and_nothing_el
     let keys: BTreeSet<_> = json.as_object().expect("object").keys().cloned().collect();
     let want: BTreeSet<String> = [
         "default_look",
-        "display_rendering",
         "export_defaults",
         "remove_location_from_exports",
         "check_for_updates_automatically",
@@ -452,97 +455,99 @@ fn a_new_session_gets_signature_and_neutral_is_still_the_identity() {
     }
 }
 
+/// Owner's decision of 2026-10-29: ARRI's display LUT is no longer a rendering Yellowmoon offers
+/// ("Display LUT only", `docs/02-colour-pipeline.md` C12). A person who chose it, and imported
+/// ARRI's display LUTs, with an earlier version meets no error and no dialog: the choice is read as
+/// nothing, the LUTs are not listed, the picture is Yellowmoon's own, and what is on disk is left
+/// alone (the preference is dropped from `preferences.json` the next time one is saved).
 #[test]
-fn the_display_rendering_preference_chooses_the_transform_and_is_written_to_the_xmp() {
+fn an_older_choice_of_arris_display_rendering_and_its_imported_luts_are_ignored() {
+    let app = tempfile::tempdir().expect("app root");
+    let display_dir = app.path().join("looks").join("arri-display");
+    std::fs::create_dir_all(&display_dir).expect("folder");
+    let lut_file = write_cube(&display_dir, "Rec709.cube");
+    let lut_bytes = std::fs::read(&lut_file).expect("read");
+    let manifest = serde_json::json!({
+        "version": 1,
+        "looks": [],
+        "display_luts": [{
+            "id": "arri-display:logc4:rec709-g24", "input": "logc4", "target": "rec709-g24",
+            "file": "arri-display/Rec709.cube", "sha256": ym_looks::manifest::sha256_hex(&lut_bytes)
+        }]
+    });
+    let manifest_text = serde_json::to_string_pretty(&manifest).expect("json");
+    std::fs::write(
+        app.path().join("looks").join("manifest.json"),
+        &manifest_text,
+    )
+    .expect("manifest");
+    std::fs::write(
+        app.path().join("preferences.json"),
+        r#"{ "display_rendering": { "kind": "arri_display", "id": "arri-display:logc4:rec709-g24" },
+             "remove_location_from_exports": false }"#,
+    )
+    .expect("preferences");
+
+    let r = rig_in(app);
+    // No error, no warning to the person: the list is the built-in looks and the preferences are
+    // the defaults for what the file does not say.
+    assert!(
+        r.core
+            .looks_list()
+            .iter()
+            .all(|l| l.id.as_str().starts_with("builtin:")),
+        "{:?}",
+        r.core.looks_list()
+    );
+    assert_eq!(r.core.preferences_get(), Preferences::default());
+
+    // The picture is Yellowmoon's own, and an export says so.
+    let (_root, shoot_folder) = shoot(1);
+    open_all(&r.core, &shoot_folder);
+    let out = tempfile::tempdir().expect("out");
+    r.core
+        .export_start(&jpeg_job(ApplyScope::All, Some(out.path())))
+        .expect("queued");
+    wait_export(&r);
+    let bytes = std::fs::read(out.path().join("DSC00001_signature.jpg")).expect("export");
+    assert_eq!(
+        xmp_property(&xmp_of(&bytes).expect("xmp"), "ym:DisplayTransform").as_deref(),
+        Some("cine-rec709")
+    );
+
+    // Saving the export folder rewrote the preferences without the old choice; the LUT and the list
+    // that named it were not touched.
+    let saved: Value = serde_json::from_str(
+        &std::fs::read_to_string(r.app.path().join("preferences.json")).expect("read"),
+    )
+    .expect("json");
+    assert!(saved.get("display_rendering").is_none(), "{saved}");
+    assert_eq!(std::fs::read(&lut_file).expect("read"), lut_bytes);
+    assert_eq!(
+        std::fs::read_to_string(r.app.path().join("looks").join("manifest.json")).expect("read"),
+        manifest_text
+    );
+}
+
+/// ARRI's display LUTs cannot be imported any more: the person is told in one sentence, and
+/// nothing is written.
+#[test]
+fn a_folder_of_arris_display_luts_has_nothing_to_import_and_writes_nothing() {
     let r = rig();
     let src = tempfile::tempdir().expect("src");
     let folder = src.path().join("LogC4 Display LUTs");
     std::fs::create_dir_all(&folder).expect("folder");
     write_cube(&folder, "LogC4_to_Gamma24_Rec709.cube");
-    let imported = r
-        .core
-        .looks_import(&folder, None, &mut |_| {})
-        .expect("import display LUTs");
-    assert_eq!(imported.display_luts_added, 1);
-    let lut = r.core.looks_display_luts()[0].id.clone();
-
-    let (_root, shoot_folder) = shoot(1);
-    open_all(&r.core, &shoot_folder);
-    let (aces, arri) = (
-        tempfile::tempdir().expect("a"),
-        tempfile::tempdir().expect("b"),
-    );
-    r.core
-        .export_start(&jpeg_job(ApplyScope::All, Some(aces.path())))
-        .expect("queued");
-    wait_export(&r);
-
-    r.core
-        .preferences_set(&PreferencesPatch {
-            display_rendering: Some(DisplayRendering::ArriDisplay { id: lut.clone() }),
-            ..PreferencesPatch::default()
-        })
-        .expect("set");
-    assert_eq!(
-        r.core.renderer.display(),
-        ym_core::pipeline::DisplayChoice::ArriLut(lut.clone())
-    );
-    r.core
-        .export_start(&jpeg_job(ApplyScope::All, Some(arri.path())))
-        .expect("queued");
-    wait_export(&r);
-    let name = "DSC00001_signature.jpg";
-    let (bytes_aces, bytes_arri) = (
-        std::fs::read(aces.path().join(name)).expect("aces"),
-        std::fs::read(arri.path().join(name)).expect("arri"),
-    );
-    assert_ne!(
-        bytes_aces, bytes_arri,
-        "another display transform, another picture"
-    );
-    assert_eq!(
-        xmp_property(&xmp_of(&bytes_aces).expect("xmp"), "ym:DisplayTransform").as_deref(),
-        Some("aces2-sdr100-rec709lim")
-    );
-    assert_eq!(
-        xmp_property(&xmp_of(&bytes_arri).expect("xmp"), "ym:DisplayTransform").as_deref(),
-        Some(lut.as_str())
-    );
-    // Neutral is a built-in look with a description file: its hash is recorded.
-    let sha = xmp_property(&xmp_of(&bytes_aces).expect("xmp"), "ym:LookSHA256").expect("sha");
-    assert_eq!(sha.len(), 64);
-
-    // The LUT's file vanishes. Once the library notices (a verify, a reload), the export refuses
-    // instead of quietly using ACES 2 under a preference that says the LUT.
-    let stored = r.app.path().join("looks").join("arri-display");
-    for e in std::fs::read_dir(&stored).expect("dir").flatten() {
-        std::fs::remove_file(e.path()).expect("rm");
-    }
-    r.core.looks.verify().expect("verify");
-    let c = tempfile::tempdir().expect("c");
+    write_cube(&folder, "LogC4_to_P3_D65.cube");
     let err = r
         .core
-        .export_start(&jpeg_job(ApplyScope::All, Some(c.path())))
-        .expect_err("refused");
-    assert_eq!(err.scope(), "looks");
-    assert_eq!(err.to_string(), "File missing or changed. Import again.");
-    assert!(tree(c.path()).is_empty());
-    // The viewport meanwhile uses ACES 2, and choosing ACES 2 again makes exports work.
+        .looks_import(&folder, None, &mut |_| {})
+        .expect_err("nothing to import");
     assert_eq!(
-        r.core.renderer.display(),
-        ym_core::pipeline::DisplayChoice::Aces2
+        err.to_string(),
+        "This package has only display renderings. Yellowmoon uses its own rendering, so there is nothing to import."
     );
-    r.core
-        .preferences_set(&PreferencesPatch {
-            display_rendering: Some(DisplayRendering::Aces2),
-            ..PreferencesPatch::default()
-        })
-        .expect("set");
-    r.core
-        .export_start(&jpeg_job(ApplyScope::All, Some(c.path())))
-        .expect("queued");
-    wait_export(&r);
-    assert_eq!(names_in(c.path()).len(), 1);
+    assert!(tree(r.app.path()).is_empty(), "{:?}", tree(r.app.path()));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -852,31 +857,14 @@ fn the_export_preferences_and_looks_types_have_the_fields_of_the_typescript_inte
         .expect("json"),
     );
     check(
-        "DisplayLut",
-        serde_json::to_value(DisplayLutEntry {
-            id: LookId::parse("arri-display:logc4:rec709-g24").expect("id"),
-            name: "x".into(),
-            input: LookInput::LogC4,
-            target: "rec709-g24".into(),
-        })
-        .expect("json"),
-    );
-    check(
         "LooksImportResult",
         serde_json::to_value(LooksImportResult {
             added: vec![],
-            display_luts_added: 0,
             unchanged: 0,
             notes: vec![],
             refusals: vec![],
         })
         .expect("json"),
-    );
-    // And the union members spelled the way the frontend spells them.
-    assert!(source.contains("\"aces2\"") && source.contains("\"arri_display\""));
-    assert_eq!(
-        serde_json::to_value(DisplayRendering::Aces2).expect("json"),
-        serde_json::json!({ "kind": "aces2" })
     );
 }
 

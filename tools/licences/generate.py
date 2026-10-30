@@ -5,7 +5,7 @@
     python3 tools/licences/generate.py --out FILE
     python3 tools/licences/generate.py --verify FILE    # only check an existing file (a development stub fails)
 
-NOTICE item 9 and the About dialog promise this file; the app bundle ships it next to NOTICE and LICENSE
+NOTICE item 8 and the About dialog promise this file; the app bundle ships it next to NOTICE and LICENSE
 (src-tauri/tauri.conf.json, ``bundle.resources``), and ``release.yml`` and the CI job ``licences`` run this script, so the
 promise cannot rot. Sources, all read from the files cargo and npm already have:
 

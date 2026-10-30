@@ -73,7 +73,7 @@ CropFrame { rect: NormRect, score: f64 }   // its intersection over union with t
 
 ## 4. What the analysis looks at
 
-**The picture.** Apple Auto's picture (`docs/19` §3, `AdvisorPictures`): the photo at its default settings, the Signature look, our ACES 2 display rendering, 768 px on the long edge, the camera's orientation applied, no turn, straightening or crop of the user's, rendered on the CPU reference path. The session makes its own `AdvisorPictures` on first use, on every platform; it does not need Apple Auto. Its bytes are the same in the app and `ym` (`docs/19` §7), so the proposal is too.
+**The picture.** Apple Auto's picture (`docs/19` §3, `AdvisorPictures`): the photo at its default settings, the Signature look, our cine display rendering, 768 px on the long edge, the camera's orientation applied, no turn, straightening or crop of the user's, rendered on the CPU reference path. The session makes its own `AdvisorPictures` on first use, on every platform; it does not need Apple Auto. Its bytes are the same in the app and `ym` (`docs/19` §7), so the proposal is too.
 
 **The camera's focus point** (`ym_raw::makernote::SonyFocus`: FocusLocation `0x2027`/`0x204a`, FocusFrameSize `0x2037`, AFAreaModeSetting `0x201c`, `docs/04` §Container) is still read from the maker note but no longer used: the classical proposer weighted its subject map with it, and the crop model looks at the picture alone. A model that also reads the point is a later step (section 11).
 

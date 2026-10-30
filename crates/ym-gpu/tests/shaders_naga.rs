@@ -106,32 +106,50 @@ fn constants_are_generated_from_ym_color_not_typed() {
         src.contains(&format!("const LC4_A: f32 = {a};")),
         "LC4_A missing"
     );
-    assert!(src.contains("const AWG4_TO_AP0_0: vec3<f32>"));
+    assert!(src.contains("const AWG4_TO_XYZ_0: vec3<f32>"));
 }
 
 #[test]
-fn the_aces2_input_matrix_constant_is_the_cpu_matrix_with_the_display_placement() {
-    // docs/02 C12 step 1a: the kernel's AWG4 to AP0 constant is the CPU reference's placed matrix
-    // (`2^DISPLAY_PLACEMENT_EV` folded in), written from the one Rust constant, rounded to f32.
+fn the_cine_constants_are_the_rust_table_rounded_to_f32() {
+    // docs/02 C12: every number of the kernel is written from `ym_color::display::cine` (the table generated
+    // from `training/cine/constants.json` and the values derived from it), so a refit changes the kernel with
+    // no edit here. No ACES 2 table, no placement matrix and no red step is left in the module.
+    use ym_color::display::cine::{self, consts};
     let src = shader_source(StorageMode::F32, KernelId::Color);
-    let placed = ym_color::display::aces2_input_matrix();
-    let plain = ym_color::gamut::matrices().awg4_to_ap0;
-    let line = |name: &str, row: &[f64; 3]| {
-        format!(
-            "const {name}: vec3<f32> = vec3<f32>({:?}, {:?}, {:?});",
-            row[0] as f32, row[1] as f32, row[2] as f32
-        )
-    };
-    for i in 0..3 {
-        let name = format!("AWG4_TO_AP0_{i}");
-        assert!(
-            src.contains(&line(&name, &placed[i])),
-            "{name} is not the placed matrix"
+    for (name, value) in cine::kernel_scalars() {
+        let line = format!("const CINE_{name}: f32 = {:?};", value as f32);
+        assert!(src.contains(&line), "{line} is missing");
+    }
+    // The table itself: the fitted constants are among the scalars the kernel reads.
+    let scalars = cine::kernel_scalars();
+    for (name, value) in [
+        ("KAP", consts::KAP),
+        ("WC", consts::WC),
+        ("RP", consts::RP),
+        ("RHO", consts::RHO),
+    ] {
+        assert_eq!(
+            scalars.iter().find(|(n, _)| *n == name).map(|(_, v)| *v),
+            Some(value)
         );
-        assert!(
-            !src.contains(&line(&name, &plain[i])),
-            "{name} is the plain gamut matrix: the placement is missing"
+    }
+    for (name, k) in cine::kernel_harmonics() {
+        let line = format!(
+            "const CINE_{name}_B: vec3<f32> = vec3<f32>({:?}, {:?}, {:?});",
+            k[3] as f32, k[4] as f32, k[5] as f32
         );
+        assert!(src.contains(&line), "{line} is missing");
+    }
+    for gone in [
+        "AWG4_TO_AP0",
+        "T_ACES",
+        "aces2_display_linear",
+        "red_chroma",
+        "red_density",
+        "white_lift",
+        "disp_luts",
+    ] {
+        assert!(!src.contains(gone), "{gone} is still in the colour kernel");
     }
 }
 

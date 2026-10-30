@@ -629,7 +629,7 @@ What was built follows sections 10, 11, 13, 14 and 17. Where the text was silent
 
 ### 12.1 The Preferences row
 
-Placed after Display rendering, where the Apple row was. Built from glasscn's `Select`, `Badge` and `Button` and the existing `Row` (`docs/11` §Preferences).
+Placed after Default look, where the Apple row was. Built from glasscn's `Select`, `Badge` and `Button` and the existing `Row` (`docs/11` §Preferences).
 
 | Item | Value |
 |---|---|

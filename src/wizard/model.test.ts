@@ -15,9 +15,7 @@ import {
   joinList,
   lead,
   matchedPackages,
-  offersDisplayChoice,
   PACKAGES,
-  preferredDisplayLut,
   recogniseBlocker,
   recogniseNote,
   reduceWizard,
@@ -160,10 +158,10 @@ describe("ARRI Look Files", () => {
 
   it("are named with ARRI's two titles when a library is the wrong package", () => {
     const [ll4] = PACKAGES.filter((p) => p.id === "look_library_logc4");
-    const [dl4] = PACKAGES.filter((p) => p.id === "display_luts_logc4");
+    const [ll3] = PACKAGES.filter((p) => p.id === "look_library_logc3");
     expect(downloadList([ll4!])).toBe("'Look Library for LogC4 (3D-LUTs)' (or 'Look Library for LogC4 (ALF4 Look Files)')");
-    expect(downloadList([dl4!])).toBe("'LogC4 LUT Package'");
-    expect(downloadList([ll4!, dl4!])).toBe("'Look Library for LogC4 (3D-LUTs)' (or 'Look Library for LogC4 (ALF4 Look Files)') and 'LogC4 LUT Package'");
+    expect(downloadList([ll3!])).toBe("'ARRI Look Library LogC3 (3D-LUTs)'");
+    expect(downloadList([ll4!, ll3!])).toBe("'Look Library for LogC4 (3D-LUTs)' (or 'Look Library for LogC4 (ALF4 Look Files)') and 'ARRI Look Library LogC3 (3D-LUTs)'");
     // Only the two look libraries that ARRI also publishes as look files name both.
     expect(PACKAGES.filter((p) => p.lookFilesTitle).map((p) => p.id)).toEqual(["look_library_logc4", "look_library_logc3_to_rec709"]);
   });
@@ -173,26 +171,36 @@ describe("Choose", () => {
   it("starts with the recommended package ticked and the older ones hidden", () => {
     const state = initialWizard();
     expect(state.chosen).toEqual(["look_library_logc4"]);
-    expect(visiblePackages(state).map((p) => p.id)).toEqual(["look_library_logc4", "display_luts_logc4"]);
+    expect(visiblePackages(state).map((p) => p.id)).toEqual(["look_library_logc4"]);
     expect(PACKAGES.filter((p) => p.recommended).map((p) => p.id)).toEqual(["look_library_logc4"]);
+    expect(visiblePackages(run([{ type: "toggle-older" }], state)).map((p) => p.id)).toEqual(["look_library_logc4", "look_library_logc3", "look_library_logc3_to_rec709"]);
+  });
+
+  // Owner's decision of 2026-10-29: ARRI's display LUT is not a rendering Yellowmoon offers. The wizard imports looks only.
+  it("offers looks and no display LUTs", () => {
+    expect(PACKAGES.map((p) => p.id)).toEqual(["look_library_logc4", "look_library_logc3", "look_library_logc3_to_rec709"]);
+    const everything = PACKAGES.map((p) => `${p.name} ${p.description} ${p.meta} ${p.arriTitle}`).join(" ");
+    expect(everything).not.toMatch(/display lut/i);
+    expect(everything).not.toMatch(/LUT Package/);
+    expect(PACKAGES.every((p) => typeof p.input === "string")).toBe(true);
   });
 
   it("toggles packages and keeps them in the order of the list", () => {
-    let state = run([{ type: "toggle-package", id: "display_luts_logc4" }]);
-    expect(state.chosen).toEqual(["look_library_logc4", "display_luts_logc4"]);
+    let state = run([{ type: "toggle-package", id: "look_library_logc3" }]);
+    expect(state.chosen).toEqual(["look_library_logc4", "look_library_logc3"]);
     state = run([{ type: "toggle-package", id: "look_library_logc4" }], state);
-    expect(state.chosen).toEqual(["display_luts_logc4"]);
+    expect(state.chosen).toEqual(["look_library_logc3"]);
     state = run([{ type: "toggle-package", id: "look_library_logc4" }], state);
-    expect(state.chosen).toEqual(["look_library_logc4", "display_luts_logc4"]);
+    expect(state.chosen).toEqual(["look_library_logc4", "look_library_logc3"]);
   });
 
   it("sums the download and says so in the footer", () => {
     let state = initialWizard();
     expect(downloadTotalMb(state)).toBe(181);
     expect(footNote(state)).toBe("Download total: 181 MB");
-    state = run([{ type: "toggle-package", id: "display_luts_logc4" }], state);
-    expect(downloadTotalMb(state)).toBe(213);
-    expect(footNote(state)).toBe("Download total: 213 MB");
+    state = run([{ type: "toggle-package", id: "look_library_logc3" }], state);
+    expect(downloadTotalMb(state)).toBe(211);
+    expect(footNote(state)).toBe("Download total: 211 MB");
   });
 
   it("locks Next until a package is chosen", () => {
@@ -202,9 +210,9 @@ describe("Choose", () => {
     expect(run([{ type: "advance" }], none).step).toBe(0);
   });
 
-  it("shows three older packages when asked, and unchooses them when they are hidden again", () => {
+  it("shows two older packages when asked, and unchooses them when they are hidden again", () => {
     let state = run([{ type: "toggle-older" }]);
-    expect(visiblePackages(state)).toHaveLength(5);
+    expect(visiblePackages(state)).toHaveLength(3);
     state = run([{ type: "toggle-package", id: "look_library_logc3" }], state);
     expect(state.chosen).toContain("look_library_logc3");
     state = run([{ type: "toggle-older" }], state);
@@ -250,11 +258,11 @@ describe("step locking", () => {
 
 describe("Get the files", () => {
   it("unlocks Next when a file has arrived for each chosen package", () => {
-    let state: WizardState = { ...initialWizard(), step: 1, chosen: ["look_library_logc4", "display_luts_logc4"] };
+    let state: WizardState = { ...initialWizard(), step: 1, chosen: ["look_library_logc4", "look_library_logc3"] };
     expect(footNote(state)).toBe("Next unlocks when all 2 files have arrived.");
     state = run([{ type: "received", path: LL4 }], state);
     expect(canAdvance(state)).toBe(false);
-    state = run([{ type: "received", path: "~/Downloads/ARRI_DisplayLUTs_LogC4.zip" }], state);
+    state = run([{ type: "received", path: "~/Downloads/ARRI_LookLibrary_LogC3.zip" }], state);
     expect(canAdvance(state)).toBe(true);
     expect(footNote(state)).toBe("Everything has arrived.");
   });
@@ -327,21 +335,21 @@ describe("Recognise", () => {
   });
 
   it("imports what is there when only some of the chosen packages arrived, and says what is not here", () => {
-    const state = at(2, [pkg(LL4, "look_library_logc4")], ["look_library_logc4", "display_luts_logc4"]);
-    expect(unmatchedPackages(state).map((p) => p.id)).toEqual(["display_luts_logc4"]);
+    const state = at(2, [pkg(LL4, "look_library_logc4")], ["look_library_logc4", "look_library_logc3"]);
+    expect(unmatchedPackages(state).map((p) => p.id)).toEqual(["look_library_logc3"]);
     expect(recogniseBlocker(state)).toBeNull();
     expect(canAdvance(state)).toBe(true);
-    expect(recogniseNote(state)).toBe("Display LUTs · LogC4 isn't here. You can import the rest now and add it later.");
-    expect(footNote(state)).toBe("Display LUTs · LogC4 isn't here. You can import the rest now and add it later.");
+    expect(recogniseNote(state)).toBe("Look Library · LogC3 isn't here. You can import the rest now and add it later.");
+    expect(footNote(state)).toBe("Look Library · LogC3 isn't here. You can import the rest now and add it later.");
     expect(heading(state)).toBe("Check what arrived");
     expect(importPlan(state)).toEqual([{ path: LL4, files: 87, kind: "package", packageId: "look_library_logc4" }]);
-    const three = at(2, [pkg(LL4, "look_library_logc4")], ["look_library_logc4", "display_luts_logc4", "look_library_logc3"]);
+    const three = at(2, [pkg(LL4, "look_library_logc4")], ["look_library_logc4", "look_library_logc3_to_rec709", "look_library_logc3"]);
     expect(canAdvance(three)).toBe(true);
     expect(footNote(three)).toBe("Some of the packages you chose aren't here. You can import the rest now and add them later.");
   });
 
   it("blocks Import only when there is nothing to import", () => {
-    const none = at(2, [], ["look_library_logc4", "display_luts_logc4"]);
+    const none = at(2, [], ["look_library_logc4", "look_library_logc3"]);
     expect(canAdvance(none)).toBe(false);
     expect(footNote(none)).toBe("Some packages are missing. Go back and add them.");
     const unusableOnly = at(2, [unusable("~/Downloads/notes.zip", "No cube files.")]);
@@ -385,10 +393,10 @@ describe("Recognise", () => {
     expect(unmatchedPackages(state).map((p) => p.id)).toEqual(["look_library_logc4"]);
     expect(canAdvance(state)).toBe(true);
     expect(footNote(state)).toBe("Look Library · LogC4 isn't here. You can import the rest now and add it later.");
-    // Display LUTs cannot be answered for: an answer is always about looks.
-    const display = at(2, [unknownSet("~/Downloads/d.zip", "logc4")], ["display_luts_logc4"]);
-    expect(standsInFor(display, display.sources[0]!)).toBeNull();
-    expect(footNote(display)).toBe("Display LUTs · LogC4 isn't here. You can import the rest now and add it later.");
+    // A set answered as LogC4 does not stand in for a LogC3 package either.
+    const other = at(2, [unknownSet("~/Downloads/d.zip", "logc4")], ["look_library_logc3"]);
+    expect(standsInFor(other, other.sources[0]!)).toBeNull();
+    expect(footNote(other)).toBe("Look Library · LogC3 isn't here. You can import the rest now and add it later.");
     // One loose .cube is not a set.
     const loose = at(2, [cube("~/Downloads/a.cube", "logc4")]);
     expect(standsInFor(loose, loose.sources[0]!)).toBeNull();
@@ -404,7 +412,7 @@ describe("Recognise", () => {
     expect(footNote(state)).toBe("Say what the other LUTs expect as input.");
     expect(run([{ type: "answer", path: LL4, input: "logc4" }], state)).toSatisfy((next: WizardState) => canAdvance(next));
     // With the chosen package also unmatched, the question still comes first.
-    const both = at(2, [unknownSet(LL4, null), pkg("~/Downloads/dl.zip", "display_luts_logc4", "Display LUTs · LogC4", 22)], ["look_library_logc3", "display_luts_logc4"]);
+    const both = at(2, [unknownSet(LL4, null), pkg("~/Downloads/ll3.zip", "look_library_logc3", "Look Library · LogC3", 87)], ["look_library_logc3", "look_library_logc3_to_rec709"]);
     expect(recogniseBlocker(both)).toBe("Say what the other LUTs expect as input.");
   });
 
@@ -442,6 +450,28 @@ describe("Recognise", () => {
   });
 });
 
+describe("ARRI's display LUT packages", () => {
+  // The core recognises a display package and says it holds nothing to import (`ym-looks`); the wizard shows that sentence and
+  // never plans the source, whichever packages were chosen.
+  const SENTENCE = "This package has only display renderings. Yellowmoon uses its own rendering, so there is nothing to import.";
+
+  it("are unusable, with the core's sentence, and are not imported", () => {
+    const state = at(2, [unusable("~/Downloads/ARRI_DisplayLUTs_LogC4.zip", SENTENCE)]);
+    expect(verdictFor(state, state.sources[0]!)).toEqual({ kind: "unusable", explanation: SENTENCE });
+    expect(importPlan(state)).toEqual([]);
+    expect(matchedPackages(state)).toEqual([]);
+    expect(canAdvance(state)).toBe(false);
+    expect(footNote(state)).toBe("Look Library · LogC4 is missing. Go back and add it.");
+  });
+
+  it("do not hold back the looks that arrived with them", () => {
+    const state = at(2, [pkg(LL4, "look_library_logc4"), unusable("~/Downloads/ARRI_DisplayLUTs_LogC4.zip", SENTENCE)]);
+    expect(importPlan(state)).toEqual([{ path: LL4, files: 87, kind: "package", packageId: "look_library_logc4" }]);
+    expect(canAdvance(state)).toBe(true);
+    expect(recogniseNote(state)).toBeNull();
+  });
+});
+
 describe("Import and Finish", () => {
   it("counts files and waits for the copy before Next unlocks", () => {
     let state = run([{ type: "import-start", total: 87 }], at(3, [pkg(LL4, "look_library_logc4")]));
@@ -452,7 +482,7 @@ describe("Import and Finish", () => {
     expect(state.import).toMatchObject({ done: 40, total: 87, status: "running" });
     state = run([{ type: "import-progress", done: 500 }], state);
     expect(state.import.done).toBe(87);
-    state = run([{ type: "import-done", outcome: { looks: 87, displayLuts: 0, zips: [LL4] } }], state);
+    state = run([{ type: "import-done", outcome: { looks: 87, zips: [LL4] } }], state);
     expect(canAdvance(state)).toBe(true);
     expect(heading(state)).toBe("Imported");
     expect(footNote(state)).toBe("All files copied and checked");
@@ -474,21 +504,21 @@ describe("Import and Finish", () => {
   it("names what was imported on the last step", () => {
     const base = at(4, [pkg(LL4, "look_library_logc4")]);
     expect(heading(base)).toBe("Done");
-    const looks = run([{ type: "import-done", outcome: { looks: 87, displayLuts: 22, zips: [LL4] } }], base);
+    const looks = run([{ type: "import-done", outcome: { looks: 87, zips: [LL4] } }], base);
     expect(heading(looks)).toBe("87 looks ready");
     expect(lead(looks)).toBe("Here they are on your current photo. Pick a default and you are done.");
-    expect(offersDisplayChoice(looks)).toBe(true);
     expect(footNote(looks)).toBe("You can change the default look any time");
-    const displayOnly = run([{ type: "import-done", outcome: { looks: 0, displayLuts: 22, zips: [] } }], base);
-    expect(heading(displayOnly)).toBe("22 display LUTs ready");
-    const one = run([{ type: "import-done", outcome: { looks: 1, displayLuts: 0, zips: [] } }], base);
+    const one = run([{ type: "import-done", outcome: { looks: 1, zips: [] } }], base);
     expect(heading(one)).toBe("1 look ready");
-    expect(offersDisplayChoice(one)).toBe(false);
+    // Nothing to show of what was imported (none of it was looks): no count to name.
+    const none = run([{ type: "import-done", outcome: { looks: 0, zips: [] } }], base);
+    expect(heading(none)).toBe("Done");
+    expect(lead(none)).toBe("You are done.");
   });
 
-  it("starts with Neutral kept, ours as the display and the zip going to the Trash", () => {
+  it("starts with the default look kept and the zip going to the Trash, and asks nothing about the display rendering", () => {
     const state = initialWizard();
-    expect(state.finish).toEqual({ defaultLook: null, display: "ours", zip: "trash" });
+    expect(state.finish).toEqual({ defaultLook: null, zip: "trash" });
     expect(run([{ type: "finish", patch: { zip: "keep" } }], state).finish.zip).toBe("keep");
   });
 
@@ -511,17 +541,5 @@ describe("copy", () => {
   it("never shouts", () => {
     const texts = [lead(initialWizard()), footNote(initialWizard()), ...PACKAGES.map((p) => p.description)];
     for (const text of texts) expect(text).not.toContain("!");
-  });
-});
-
-describe("preferredDisplayLut", () => {
-  const lut = (id: string, input: "logc4" | "logc3_ei800", target: string) => ({ id, name: id, input, target });
-  it("prefers LogC4, then Rec.709 at gamma 2.4", () => {
-    expect(preferredDisplayLut(null)).toBeNull();
-    expect(preferredDisplayLut([])).toBeNull();
-    const luts = [lut("p3", "logc4", "p3-d65"), lut("c3", "logc3_ei800", "rec709-g24"), lut("g22", "logc4", "rec709-g22"), lut("g24", "logc4", "rec709-g24")];
-    expect(preferredDisplayLut(luts)?.id).toBe("g24");
-    expect(preferredDisplayLut(luts.slice(0, 3))?.id).toBe("g22");
-    expect(preferredDisplayLut([lut("c3", "logc3_ei800", "rec709-g24"), lut("p3", "logc4", "p3-d65")])?.id).toBe("p3");
   });
 });

@@ -90,7 +90,6 @@ expression: shape(&v)
   "includes": "string",
   "looks": {
     "built_in": "number",
-    "display_luts": "number",
     "imported": "number",
     "missing": "number"
   },

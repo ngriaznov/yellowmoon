@@ -6,25 +6,25 @@ Test and build tooling: never shipped. It renders with Adobe's own reference ren
 
 | Command | What it does |
 |---|---|
-| `dngfit fit` | fit the tone curve, the `BaselineExposure` offset and the look table to ACES 2 and write `data/dng/profile.json` (about 2 s) |
-| `dngfit eval` | how close Adobe's render with that profile is to ACES 2 on the test sets |
+| `dngfit fit` | fit the tone curve, the `BaselineExposure` offset and the look table to the cine rendering and write `data/dng/profile.json` (about 2 s) |
+| `dngfit eval` | how close Adobe's render with that profile is to the cine rendering on the test sets |
 | `dngfit gate` | the DNG gates on the golden set: `dng_validate` passes, and its render is within a median ΔE00 of 1.5 of our JPEG |
 | `dngfit validate FILE.dng...` | `dng_validate` on DNG files; prints what it complains about |
 
 ## The problem
 
-A DNG pixel is scene-linear AWG4 after the look and curve (C1 to C11, `docs/02`). Yellowmoon shows it through the ACES 2
-output transform (C12) and the sRGB encode. Other raw editors know nothing of ACES 2: they apply the tags of the DNG
-profile (`docs/09`). So the profile has to make Adobe's pipeline produce what ACES 2 produces:
+A DNG pixel is scene-linear AWG4 after the look and curve (C1 to C11, `docs/02`). Yellowmoon shows it through the the cine rendering
+output transform (C12) and the sRGB encode. Other raw editors know nothing of the cine rendering: they apply the tags of the DNG
+profile (`docs/09`). So the profile has to make Adobe's pipeline produce what the cine rendering produces:
 
 ```text
 x * 2^offset --ForwardMatrix1--> linear ProPhoto --> HSV --ProfileLookTable--> --ProfileToneCurve (RGB tone)--> sRGB
-                                                                      target:  x --ACES 2--> sRGB
+                                                                      target:  x --the cine rendering--> sRGB
 ```
 
 ## What the fit does
 
-1. **Scale.** The tone curve's input range is `[0, 1]` after the exposure gain, and ACES 2 reaches 94 % of display light
+1. **Scale.** The tone curve's input range is `[0, 1]` after the exposure gain, and the cine rendering reaches 94 % of display light
    only at a scene value of 16 (it reaches white asymptotically). The curve therefore covers scene values `0` to `x_min = 16`:
    `fit_offset_ev` is `-log2(x_min)` = -4, and the stored values are divided by `x_white`, with `BaselineExposure` =
    `log2(x_white) + fit_offset_ev`. **`x_white` must be at least `x_min`** (the writer floors it at `2^-fit_offset_ev`,
@@ -33,24 +33,24 @@ x * 2^offset --ForwardMatrix1--> linear ProPhoto --> HSV --ProfileLookTable--> -
    from one with `x_white` 8. Measured with `b = -3` and an identity profile: scene 0.40 renders at 0.086 of display
    light instead of 0.050, and 0.84 at 0.654 instead of 0.105. With the floor, `BaselineExposure` is zero for nearly
    every photo and positive for the few whose 99.99th percentile is above 16.
-2. **Tone curve** (neutral axis). The target is ACES 2's response to greys, `T(u) = srgb_decode(aces2(u * x_min))`. The
+2. **Tone curve** (neutral axis). The target is the cine rendering's response to greys, `T(u) = srgb_decode(cine(u * x_min))`. The
    renderer evaluates a spline through the profile's points into a table of 4096 steps and interpolates linearly, so the
    fit measures the table with `dng_validate` (4097 greys), corrects each knot by the difference to the target, and repeats
-   (8 rounds, 0.2 s). 64 knots, geometric through the shadows. The result matches ACES 2 on the neutral axis to ΔE00
+   (8 rounds, 0.2 s). 64 knots, geometric through the shadows. The result matches the cine rendering on the neutral axis to ΔE00
    0.015 at worst.
 3. **Look table** (chroma). The renderer applies the table in HSV of linear ProPhoto before the tone curve: a colour
    `(h, s, v)` becomes `(h + dh, s * ds, v * dv)` with the three modifiers interpolated trilinearly from the grid (hue wraps;
    the value scale multiplies the *encoded* value, which is then decoded). `src/model.rs` is a model of the whole pipeline
    (checked against `dng_validate` on 4000 random colours with random tables: median 1.4e-4, worst 1.9e-3 in encoded values).
-   What the table must produce at a colour does not depend on the table: it is the colour the tone curve maps to ACES 2's
+   What the table must produce at a colour does not depend on the table: it is the colour the tone curve maps to the cine rendering's
    output, found by inverting the tone stage exactly. Each test colour on a regular HSV grid (3 samples per grid cell and
    direction, 213k colours, only those the scene data can hold: no negative AWG4 component) gives a required modifier,
    and the table is the trilinear field that fits them (`src/lookfit.rs`: weighted linear least squares by conjugate
    gradients, the weight following how far each modifier moves the colour, a pull towards the node-exact solution where
    no colour is near). The value scale at zero saturation is fixed at 1 (the DNG specification). Fitting the nodes alone is
    exact at the nodes but leaves the error of the interpolation between them, large in the first value division where
-   ACES 2's toe bends fast; the least-squares fit cuts the 95th percentile of random colours from 1.4 to 0.5.
-4. **Report.** Four test sets that the fit does not use, rendered with `dng_validate` and compared with ACES 2 in CIEDE2000
+   the cine rendering's toe bends fast; the least-squares fit cuts the 95th percentile of random colours from 1.4 to 0.5.
+4. **Report.** Four test sets that the fit does not use, rendered with `dng_validate` and compared with the cine rendering in CIEDE2000
    (printed, and kept in the `fit` object of the profile file).
 
 The profile file (`data/dng/profile.json`) holds `fit_offset_ev`, `tone_curve`, `look_table` (`dims`, `encoding` 1,
@@ -89,7 +89,7 @@ error: re-profiling would scale its pixels by the wrong exposure). `--require-al
 solver (a linear field recovered from scattered samples, fixed entries), the node-exact solve, the knot layout, the
 profile file (round trip, validation, the committed file loads and is in the form the tool writes), the gate's maths
 (orientations, comparison, mask). With `dng_validate`: the model against the renderer, the committed profile against
-ACES 2 on the test sets (and a negative control without the look table), a DNG with the profile passing `dng_validate`
+the cine rendering on the test sets (and a negative control without the look table), a DNG with the profile passing `dng_validate`
 without a warning, the fit repeating bit for bit. With python3 (numpy, tifffile, Pillow, rawpy) and exiftool: a DNG with
 the fitted profile through `tools/dng/check_dng.py`. Tests that need a tool say `SKIPPED` without it and fail instead when
 `YM_REQUIRE_EXTERNAL_TOOLS` is set.

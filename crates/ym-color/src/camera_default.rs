@@ -20,8 +20,8 @@
 //! ```
 //!
 //! The chain then converts display-linear Rec.709 to the output primaries and applies C13, as for the
-//! final picture. There is no sensor map, look, grade, curve, display transform, highlight range (C7),
-//! white lift or output sharpening, and no user setting reaches this path.
+//! final picture. There is no sensor map, look, grade, curve, display transform, highlight range (C7)
+//! or output sharpening, and no user setting reaches this path.
 //!
 //! The curve is a normalised Naka-Rushton hyperbola, fitted to the embedded JPEGs of nine Standard-style
 //! photos from nine Sony bodies and checked on 12 photos from 10 bodies

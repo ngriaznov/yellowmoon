@@ -878,13 +878,6 @@ impl LookProvider for ChangingLook {
             l
         })
     }
-
-    fn display_transform(
-        &self,
-        id: &LookId,
-    ) -> Result<(ym_color::display::DisplayTransform, String), LookProblem> {
-        NeutralOnly.display_transform(id)
-    }
 }
 
 #[test]
@@ -937,24 +930,16 @@ impl LookProvider for CubeLook {
             fingerprint: format!("{id}"),
         })
     }
-
-    fn display_transform(
-        &self,
-        id: &LookId,
-    ) -> Result<(ym_color::display::DisplayTransform, String), LookProblem> {
-        NeutralOnly.display_transform(id)
-    }
 }
 
 /// The picture the user sees is the export's picture: with a look that is a cube and a CDL (the
-/// shape of the default look), a look intensity below 100, a white offset (the white lift's manual
-/// part, C12 step 1b), the highlight range at 1 (the camera's clip on the ALEXA's, C7), contrast,
+/// shape of the default look), a look intensity below 100, the highlight range at 1 (the camera's clip on the ALEXA's, C7), contrast,
 /// saturation and a curve edit, the tail's export is the CPU export. These are
 /// stages of the colour chain, which the tail runs from the very chain object the CPU path uses; the
 /// test is the end-to-end proof, with the persistent tables of the device (the look's cube is
 /// uploaded once for the twelve tiles of the picture, not per tile).
 #[test]
-fn a_look_a_white_offset_the_range_and_a_curve_come_out_of_the_tail_as_on_the_cpu() {
+fn a_look_the_range_and_a_curve_come_out_of_the_tail_as_on_the_cpu() {
     let Some(gpu) = gpu() else { return };
     let shot = Shot::new();
     let home = tempfile::tempdir().expect("home");
@@ -972,7 +957,6 @@ fn a_look_a_white_offset_the_range_and_a_curve_come_out_of_the_tail_as_on_the_cp
     shot.edit(SettingsPatch {
         look: Some(LookId::parse("user:cube").expect("look id")),
         look_intensity: Some(70.0),
-        white_offset_ev: Some(0.4),
         rolloff: Some(RolloffPatch {
             highlights: Some(1.0),
             low_light: None,
@@ -1075,13 +1059,6 @@ impl LookProvider for FileAppears {
             l.fingerprint = format!("{id}");
             l
         })
-    }
-
-    fn display_transform(
-        &self,
-        id: &LookId,
-    ) -> Result<(ym_color::display::DisplayTransform, String), LookProblem> {
-        NeutralOnly.display_transform(id)
     }
 }
 

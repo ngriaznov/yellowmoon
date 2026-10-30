@@ -107,9 +107,9 @@ pub struct ExportEstimate {
     /// carry.
     pub adjusted_photos: usize,
     /// A DNG of this job is close to, not the same as, the picture in the app: a photo in the job uses a
-    /// look with its own display rendering (LogC3 to Rec.709) at an intensity above 0, or ARRI's display
-    /// rendering is chosen in Preferences. A DNG then holds the scene values that ACES 2 turns into that
-    /// picture (`docs/09`, "What a DNG carries"), which Adobe's renderer shows approximately.
+    /// look with its own display rendering (LogC3 to Rec.709) at an intensity above 0. A DNG then holds
+    /// the scene values that the cine rendering turns into that picture (`docs/09`, "What a DNG carries"), which
+    /// Adobe's renderer shows approximately.
     pub dng_approximate: bool,
 }
 
@@ -457,10 +457,7 @@ impl ExportQueue {
                 command_intensity,
                 command_output_sharpening,
             ),
-            dng_approximate: matches!(
-                self.ctx.renderer().display(),
-                crate::pipeline::DisplayChoice::ArriLut(_)
-            ) || views.iter().any(|v| {
+            dng_approximate: views.iter().any(|v| {
                 v.settings.look_intensity > 0.0
                     && looks
                         .look(&v.settings.look)

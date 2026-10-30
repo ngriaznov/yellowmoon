@@ -219,39 +219,6 @@ pub fn has_display_rendering(stem: &str, display_names: &[String]) -> bool {
     display_split(&words(&cleaned), display_names).is_some()
 }
 
-/// The display a stem renders to, as an id-friendly slug: `LogC4_to_Gamma24_Rec709` gives
-/// `rec709-g24`, `LogC3-to-P3-D65` gives `p3-d65`. The gamma word moves to the end so
-/// `Gamma24_Rec709` and `Rec709_Gamma24` agree. `None` when the stem names no display.
-#[must_use]
-pub fn display_target(stem: &str, display_names: &[String]) -> Option<String> {
-    let cleaned = stem.replace('.', "");
-    let all = words(&cleaned);
-    let at = display_split(&all, display_names)?;
-    let mut main: Vec<String> = Vec::new();
-    let mut gamma: Vec<String> = Vec::new();
-    let mut rest = all[at + 1..].iter().map(|w| w.to_lowercase()).peekable();
-    while let Some(word) = rest.next() {
-        if word == "gamma"
-            && rest
-                .peek()
-                .is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
-        {
-            let digits = rest.next().unwrap_or_default();
-            gamma.push(format!("g{digits}"));
-        } else if let Some(digits) = word.strip_prefix("gamma")
-            && !digits.is_empty()
-            && digits.bytes().all(|b| b.is_ascii_digit())
-        {
-            gamma.push(format!("g{digits}"));
-        } else {
-            main.push(word);
-        }
-    }
-    main.extend(gamma);
-    let slug = crate::library::slugify(&main.join("-"));
-    (!slug.is_empty()).then_some(slug)
-}
-
 /// Words that are dropped from the start and end of a look's display name: they say which package
 /// it is from, not what the look is.
 const LEADING_NOISE: [&str; 6] = ["arri", "logc4", "logc3", "awg4", "awg3", "ei800"];
@@ -478,7 +445,6 @@ mod tests {
             let _ = parse_group_folder(&text);
             let _ = group_of(&text);
             let _ = has_display_rendering(&text, &d);
-            let _ = display_target(&text, &d);
             proptest::prop_assert!(!look_name(&text, &d).trim().is_empty());
         }
     }
@@ -544,32 +510,6 @@ mod tests {
         }
         assert!(has_display_rendering("Sepia to PQ", &d));
         assert!(has_display_rendering("Sepia_to_Rec_709", &d));
-    }
-
-    #[test]
-    fn display_targets_are_canonical() {
-        let d = display();
-        assert_eq!(
-            display_target("LogC4_to_Gamma24_Rec709", &d).as_deref(),
-            Some("rec709-g24")
-        );
-        assert_eq!(
-            display_target("LogC4_to_Rec709_Gamma24", &d).as_deref(),
-            Some("rec709-g24")
-        );
-        assert_eq!(
-            display_target("LogC3-to-Gamma-24-Rec.709", &d).as_deref(),
-            Some("rec709-g24")
-        );
-        assert_eq!(
-            display_target("LogC4_to_P3_D65", &d).as_deref(),
-            Some("p3-d65")
-        );
-        assert_eq!(
-            display_target("LogC4_to_Rec2020_PQ_1000nits", &d).as_deref(),
-            Some("rec2020-pq-1000nits")
-        );
-        assert_eq!(display_target("LogC4_Film", &d), None);
     }
 
     #[test]

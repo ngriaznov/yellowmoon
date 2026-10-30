@@ -361,13 +361,6 @@ export interface DevelopSettings {
   highlights: PercentSetting;
   shadows: PercentSetting;
   white: number;
-  /**
-   * Light › White › Offset: stops added to the automatic white lift (`AutoEstimates.white_ev`), the
-   * per-photo gain on the tones above +1 stop over middle grey (`docs/02` C12 step 1b). −3…+3, step
-   * 0.05, default 0 = the automatic amount; a negative offset of the automatic amount or more gives no
-   * lift. A plain number, not Auto. Only the built-in ACES 2 display rendering has the lift.
-   */
-  white_offset_ev: number;
   /** Light › High dynamic range › Black: `Auto` (the default: 0, or Apple Auto's black level) or a value in −100…100. */
   black: PercentSetting;
   /** Colour › White balance, segmented control. */
@@ -628,8 +621,6 @@ export interface AutoStatus {
  */
 export interface AutoEstimates {
   exposure_ev: number;
-  /** The automatic white lift in stops, 0 for a photo with nothing above +1 stop to lift (the Automatic card's White row). */
-  white_ev: number;
   kelvin: number;
   tint: number;
   /** What `contrast: Auto` resolves to: 0, or Apple Auto's contrast (the Contrast slider's detent). */
@@ -684,8 +675,6 @@ export type ResolvedValues = Omit<
   color_balance: ColorBalancePoints;
   /** The saturation in effect: the manual value, or the photo's Auto saturation. */
   saturation: number;
-  /** The white lift in effect in stops: the automatic amount plus `white_offset_ev`, never below 0. */
-  white_ev: number;
   kelvin: number;
   tint: number;
   sharpen: { amount: number; radius_px: number };
@@ -750,9 +739,7 @@ export interface Look {
 export interface LooksImportResult {
   /** Looks added by this import; empty when everything was already there. */
   added: Look[];
-  /** Display LUTs added (ARRI's display rendering, not looks). */
-  display_luts_added: number;
-  /** Files whose hash matched a look or display LUT that was already imported (a re-import adds nothing, `docs/08`). */
+  /** Files whose hash matched a look that was already imported (a re-import adds nothing, `docs/08`). */
   unchanged: number;
 }
 
@@ -762,16 +749,13 @@ export interface LooksImportResult {
 // ---------------------------------------------------------------------------
 
 /**
- * The five free packages ARRI publishes (`docs/08` §What users can import). The ids are the ones
+ * The three free look packages ARRI publishes (`docs/08` §What users can import). The ids are the ones
  * of `data/looks/arri-packages.json`, except that the two look libraries that also come as ARRI Look Files
- * (the LogC4 one as `.alf4`, the LogC3 to Rec.709 one as `.aml`) are the same package here.
+ * (the LogC4 one as `.alf4`, the LogC3 to Rec.709 one as `.aml`) are the same package here. ARRI's two display
+ * LUT packages are not offered: Yellowmoon uses its own display rendering, and a display package that is chosen
+ * anyway comes back `unusable` with a sentence that says so.
  */
-export type PackageId =
-  | "look_library_logc4"
-  | "display_luts_logc4"
-  | "look_library_logc3"
-  | "look_library_logc3_to_rec709"
-  | "display_luts_logc3";
+export type PackageId = "look_library_logc4" | "look_library_logc3" | "look_library_logc3_to_rec709";
 
 /** What a chosen source is: a zip, an unpacked folder, or a single `.cube` or look file. */
 export type SourceKind = "zip" | "folder" | "file";
@@ -852,16 +836,6 @@ export interface LooksImportProgress {
   total: number;
   /** The file just copied, when known. */
   file: string | null;
-}
-
-/** An imported display LUT (ARRI's display rendering). Looks are `Look`s; these are chosen in Preferences. */
-export interface DisplayLut {
-  /** "arri-display:logc4:rec709-g24". */
-  id: string;
-  name: string;
-  input: "logc4" | "logc3_ei800";
-  /** "rec709-g24", "p3-d65", "rec2020", "hlg", "pq". */
-  target: string;
 }
 
 /** `looks_watch_downloads(enabled)`: whether the watcher is running, and why not when it was asked to. */
@@ -1075,8 +1049,8 @@ export interface ExportEstimate {
   adjusted_photos: number;
   /**
    * A DNG of this job is close to, not the same as, the picture in the app: a photo in the job uses a look
-   * with its own display rendering (LogC3 to Rec.709) at an intensity above 0, or ARRI's display rendering is
-   * chosen. The panel then adds one sentence to the DNG note (addition, `docs/09` §What a DNG carries).
+   * with its own display rendering (LogC3 to Rec.709) at an intensity above 0. The panel then adds one sentence
+   * to the DNG note (addition, `docs/09` §What a DNG carries).
    */
   dng_approximate: boolean;
 }
@@ -1104,9 +1078,6 @@ export interface ExportProgress {
 // Preferences (docs/01 §Persistence)
 // ---------------------------------------------------------------------------
 
-/** Display rendering: our ACES 2 transform, or an imported ARRI display LUT. */
-export type DisplayRendering = { kind: "aces2" } | { kind: "arri_display"; id: string };
-
 /** Folders remembered between runs. */
 export interface LastUsedFolders {
   open: string | null;
@@ -1117,7 +1088,6 @@ export interface LastUsedFolders {
 /** Everything that persists besides imported looks. The list is exhaustive (hard rule 4). */
 export interface Preferences {
   default_look: LookId;
-  display_rendering: DisplayRendering;
   /** Export defaults: format, quality, bits, compression, colour space, size, destination, name template, if-exists. */
   export_defaults: ExportOptions;
   remove_location_from_exports: boolean;

@@ -4,7 +4,7 @@
 //! committed file and writes it into every DNG: the tool that fits the profile and the product that uses it share one
 //! reader and one writer of the format. This module adds the file system: [`load`] and [`save`].
 //!
-//! The profile is the same for every photo: it depends only on the display transform (ACES 2). What differs per photo
+//! The profile is the same for every photo: it depends only on the display transform (the cine rendering). What differs per photo
 //! is `BaselineExposure`, `log2(x_white)` plus `fit_offset_ev`, which is part of the fit and therefore of this file.
 
 use std::fs;

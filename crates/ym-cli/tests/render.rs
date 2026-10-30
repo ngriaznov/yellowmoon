@@ -477,8 +477,6 @@ fn the_remaining_flags_of_docs_10_reach_the_settings_of_the_file() {
             "22",
             "--white",
             "33",
-            "--white-offset",
-            "-0.5",
             "--no-neural",
             "--no-highlight-recovery",
             "--no-lens",
@@ -493,7 +491,6 @@ fn the_remaining_flags_of_docs_10_reach_the_settings_of_the_file() {
     // Shadows is Auto or a manual value (`docs/19` section 5): a number is Manual.
     assert_eq!(s["shadows"], json!({ "kind": "manual", "value": 22.0 }));
     assert_eq!(s["white"], 33.0);
-    assert_eq!(s["white_offset_ev"], -0.5);
     assert_eq!(
         s["decode"],
         json!({
@@ -699,8 +696,7 @@ fn exit_code_2_for_usage_errors() {
         (vec!["--output-sharpening", "-5"], "between 0 and 200"),
         (vec!["--output-sharpening", "a lot"], "is not a number"),
         (vec!["--no-such-flag"], "unexpected argument"),
-        (vec!["--white-offset", "3.5"], "between -3 and 3"),
-        (vec!["--white-offset", "a lot"], "is not a number"),
+        (vec!["--white-offset", "0.5"], "unexpected argument"),
         (vec!["--rolloff", "1.5,0.5"], "the highlight range"),
         (vec!["--rolloff", "0.5,-1"], "the low-light toe"),
     ];
@@ -1432,35 +1428,47 @@ fn a_photo_whose_settings_are_refused_is_reported_and_not_exported_with_its_defa
     assert_eq!(names_in(&sb.default_export()), ["good_signature.jpg"]);
 }
 
+/// Owner's decision of 2026-10-29: ARRI's display LUT is not a rendering Yellowmoon offers, so
+/// `--display` is gone. It is a usage error that says what to do, not clap's "unexpected argument",
+/// whatever it was given and before any photo is read.
 #[test]
-fn display_options_that_cannot_be_met_say_so() {
+fn the_display_option_is_gone_and_the_error_says_what_to_do() {
     let sb = Sandbox::new();
     let arw = sb.arw("a.ARW");
-    // No ARRI display LUT is imported: a look that is missing, exit code 3.
+    for words in [
+        vec!["--display", "aces2"],
+        vec!["--display", "arri"],
+        vec!["--display", "arri-display:logc4:rec709-g24"],
+        vec!["--display=bogus"],
+    ] {
+        sb.ym()
+            .arg("render")
+            .args(&words)
+            .arg(&arw)
+            .assert()
+            .code(2)
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "--display was removed. Yellowmoon always uses its own display rendering, so there is nothing to choose. Leave the option out. To change how photos look, use --look.",
+            ));
+    }
+    // With no value at all, the photo that follows is still a photo, and it is not read either.
     sb.ym()
-        .args(["render", "--display", "arri"])
-        .arg(&arw)
-        .assert()
-        .code(3)
-        .stderr(predicate::str::contains(
-            "No ARRI display LUTs are imported",
-        ));
-    sb.ym()
-        .args(["render", "--display", "arri-display:logc4:rec709-g24"])
-        .arg(&arw)
-        .assert()
-        .code(3)
-        .stderr(predicate::str::contains("no imported display LUT"));
-    sb.ym()
-        .args(["render", "--display", "bogus"])
+        .args(["render", "--display"])
         .arg(&arw)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("is not a display rendering"));
-    assert!(!sb.default_export().exists());
-    // ACES 2 is the default and can be asked for.
+        .stderr(predicate::str::contains("--display was removed"));
+    assert!(!sb.default_export().exists(), "nothing was rendered");
+    // The option is not in the help any more.
     sb.ym()
-        .args(["render", "--display", "ACES2", "--jobs", "1"])
+        .args(["render", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--display").not());
+    // Without it the run is the same as ever.
+    sb.ym()
+        .args(["render", "--jobs", "1"])
         .arg(&arw)
         .assert()
         .success();

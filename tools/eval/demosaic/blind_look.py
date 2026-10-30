@@ -25,7 +25,7 @@ What `render` writes under `--out` (git-ignored, never committed):
   runner renders with default settings (`testdata/synthetic/arw`, the `default` set of
   `tools/golden/manifest.json`).
 * **Renders.** One `ym render` per photo and method, defaults as the app has them (an empty
-  `YELLOWMOON_HOME`: the Neutral look, ACES 2, automatic development with Yellowmoon's own Auto, `--apple-auto off`,
+  `YELLOWMOON_HOME`: the Neutral look, the cine rendering, automatic development with Yellowmoon's own Auto, `--apple-auto off`,
   so that a Mac with Apple Intelligence makes the same pictures, `docs/19`), the classical demosaic forced
   (`--no-neural`), PNG with 8 bits, the method picked by `YM_FORCE_DEMOSAIC`. The two renders of a photo
   differ in the R6 method only; the exposure and colour estimates do not read the demosaic.

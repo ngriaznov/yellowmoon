@@ -17,7 +17,7 @@
 //! * **Scheduled calls**: `spawn_*` put a request on the render queue at the priority `docs/01`
 //!   gives it and return a handle.
 //! * **Apple Auto's picture** (`docs/19` section 3): the photo at its default settings through the
-//!   Signature look at 100 % and ACES 2, at 768 px on the long edge, 8-bit sRGB, on the CPU reference
+//!   Signature look at 100 % and the cine rendering, at 768 px on the long edge, 8-bit sRGB, on the CPU reference
 //!   path ([`AdvisorPictures`], the session's [`PictureRenderer`] hook).
 
 use std::sync::Arc;
@@ -45,7 +45,6 @@ use super::viewport::ViewportState;
 use crate::apple_auto::{AdvisorPicture, PICTURE_LONG_EDGE_PX};
 use crate::session::{PhotoId, PictureInput, PictureRenderer, ThumbnailInput, ThumbnailRenderer};
 use crate::settings::DevelopSettings;
-use ym_color::display::DisplayTransform;
 use ym_color::look::LookTransform;
 
 /// Bins of the histogram.
@@ -593,9 +592,9 @@ impl Renderer {
     }
 }
 
-/// The looks Apple Auto's picture is rendered with: the Signature look the white lift is sized for
-/// (`<data>/looks/builtin/signature.json`, `SessionEnv::reference_look`), and Neutral. No display LUT:
-/// the picture's display rendering is ours, ACES 2.
+/// The looks Apple Auto's picture is rendered with: the Signature look
+/// (`<data>/looks/builtin/signature.json`, `SessionEnv::reference_look`), and Neutral. The picture's
+/// display rendering is ours, the cine rendering.
 struct PictureLooks {
     signature: Option<Arc<LookTransform>>,
 }
@@ -614,21 +613,15 @@ impl LookProvider for PictureLooks {
             _ => Err(LookProblem(format!("The look {id} is not in the library."))),
         }
     }
-
-    fn display_transform(&self, id: &LookId) -> Result<(DisplayTransform, String), LookProblem> {
-        Err(LookProblem(format!(
-            "The display LUT {id} is not in the library."
-        )))
-    }
 }
 
 /// The session's [`PictureRenderer`] hook: Apple Auto's pictures (`docs/19` section 3), made by a
-/// renderer of their own that has no graphics device, no display LUT and only the Signature and
-/// Neutral looks, so the app and `ym` give the model the same bytes on every Mac whatever the GPU
-/// policy, the display rendering and the look library say. Each picture is the photo at its default
+/// renderer of their own that has no graphics device and only the Signature and Neutral looks, so the
+/// app and `ym` give the model the same bytes on every Mac whatever the GPU policy and the look
+/// library say. Each picture is the photo at its default
 /// settings (every Auto the rule's: the photo's own estimates), no crop, no straightening, no turn by
 /// the user and the camera's orientation applied, through the Signature look at 100 % (Neutral when
-/// the data folder has none) and ACES 2. Its caches are dropped after each picture.
+/// the data folder has none) and the cine rendering. Its caches are dropped after each picture.
 pub struct AdvisorPictures {
     renderer: Renderer,
     look: LookId,

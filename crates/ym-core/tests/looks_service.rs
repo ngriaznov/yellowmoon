@@ -1,5 +1,5 @@
-//! The look library service: listing, importing, removing, the default look, missing looks, the
-//! display rendering, `apply_look` scopes and the `looks_changed` notification.
+//! The look library service: listing, importing, removing, the default look, missing looks,
+//! `apply_look` scopes and the `looks_changed` notification.
 mod common;
 
 use std::path::{Path, PathBuf};
@@ -11,8 +11,8 @@ use common::*;
 use ym_color::look::LookInput;
 use ym_color::lut::Lut3d;
 use ym_core::looks::{ImportRequest, LookService, LooksError};
-use ym_core::pipeline::{DisplayChoice, LookProvider};
-use ym_core::preferences::{DisplayRendering, PreferencesPatch, PreferencesStore};
+use ym_core::pipeline::LookProvider;
+use ym_core::preferences::{PreferencesPatch, PreferencesStore};
 use ym_core::session::{ApplyScope, OpenOptions, Session};
 use ym_looks::library::LookId;
 use ym_looks::lock::LibraryLock;
@@ -80,9 +80,7 @@ fn the_built_in_looks_are_listed_and_signature_is_the_default() {
     assert!(signature.is_default && !signature.missing);
     assert_eq!(signature.input, LookInput::LogC4);
     assert_eq!(list.iter().filter(|l| l.is_default).count(), 1);
-    assert!(f.service.display_luts().is_empty());
     assert_eq!(f.service.effective_default().as_str(), "builtin:signature");
-    assert_eq!(f.service.display_choice(), DisplayChoice::Aces2);
     // Both built-in looks load: Neutral is the identity, Signature moves colour but not mid grey.
     let provider = f.service.provider();
     let neutral_look = provider.look(&LookId::neutral()).expect("Neutral loads");
@@ -149,7 +147,7 @@ fn importing_a_cube_adds_a_look_notifies_once_and_is_idempotent() {
 
     let result = import_cube(&f, &cube).expect("import");
     assert_eq!(result.added.len(), 1);
-    assert_eq!((result.display_luts_added, result.unchanged), (0, 0));
+    assert_eq!(result.unchanged, 0);
     let look = &result.added[0];
     assert_eq!(look.id.as_str(), "user:warm-film");
     assert_eq!(look.name, "Warm Film");
@@ -499,37 +497,15 @@ fn reading_looks_does_not_wait_for_an_import_that_waits_for_the_library_lock() {
 }
 
 #[test]
-fn the_display_rendering_is_a_preference_that_needs_an_imported_display_lut() {
+fn a_default_look_that_is_not_in_the_library_is_refused() {
     let f = fixture();
-    let err = f
-        .service
-        .set_display_rendering(DisplayRendering::ArriDisplay {
-            id: LookId::parse("arri-display:logc4:rec709-g24").expect("id"),
-        })
-        .expect_err("not imported");
-    assert_eq!(
-        err.to_string(),
-        "Those display LUTs aren't imported. Import ARRI's display LUTs first."
-    );
-    assert_eq!(f.service.display_choice(), DisplayChoice::Aces2);
-    // Through the preferences patch as well.
-    let patch = PreferencesPatch {
-        display_rendering: Some(DisplayRendering::ArriDisplay {
-            id: LookId::parse("arri-display:logc4:rec709-g24").expect("id"),
-        }),
-        ..PreferencesPatch::default()
-    };
-    assert!(f.service.preferences_set(&patch).is_err());
-    assert_eq!(
-        PreferencesStore::open(f.root.path())
-            .get()
-            .display_rendering,
-        DisplayRendering::Aces2
-    );
-    // And a default look that is not in the library.
     let patch = PreferencesPatch::default_look(LookId::parse("user:nope").expect("id"));
     let err = f.service.preferences_set(&patch).expect_err("unknown look");
     assert!(matches!(err, LooksError::NotFound(_)));
+    assert_eq!(
+        PreferencesStore::open(f.root.path()).get().default_look,
+        LookId::factory_default()
+    );
 }
 
 /// A folder with two display LUTs the way ARRI names them.
@@ -543,68 +519,130 @@ fn display_luts_folder(root: &Path) -> PathBuf {
 }
 
 #[test]
-fn imported_display_luts_can_be_chosen_as_the_display_rendering() {
+fn arris_display_luts_are_not_imported_and_the_person_is_told_so() {
     let f = fixture();
     let src = tempfile::tempdir().expect("src");
     let folder = display_luts_folder(src.path());
-    let result = f
+    let err = f
         .service
         .import(&folder, &ImportRequest::default(), &mut |_| {})
-        .expect("import");
-    assert!(result.added.is_empty(), "display LUTs are not looks");
-    assert_eq!((result.display_luts_added, result.unchanged), (2, 0));
-    assert_eq!(changes(&f), 1);
-    let luts = f.service.display_luts();
-    let names: Vec<_> = luts.iter().map(|d| d.name.as_str()).collect();
-    assert_eq!(names, vec!["P3 · D65", "Rec.709 · Gamma 2.4"]);
-    assert!(luts.iter().all(|d| d.input == LookInput::LogC4));
+        .expect_err("nothing to import");
+    assert_eq!(
+        err.to_string(),
+        "This package has only display renderings. Yellowmoon uses its own rendering, so there is nothing to import."
+    );
+    assert_eq!(err.exit_code(), 1);
+    // Nothing was written or changed.
+    assert_eq!(changes(&f), 0);
+    assert!(
+        std::fs::read_dir(f.root.path())
+            .expect("dir")
+            .next()
+            .is_none()
+    );
     assert!(
         f.service
             .list()
             .iter()
-            .all(|l| !l.id.as_str().starts_with("arri-display"))
+            .all(|l| l.id.as_str().starts_with("builtin:"))
     );
+}
 
-    let id = luts[1].id.clone();
-    assert_eq!(id.as_str(), "arri-display:logc4:rec709-g24");
-    f.service
-        .set_display_rendering(DisplayRendering::ArriDisplay { id: id.clone() })
-        .expect("chosen");
+#[test]
+fn display_luts_beside_looks_are_left_out_and_the_result_says_so() {
+    let f = fixture();
+    let src = tempfile::tempdir().expect("src");
+    // One folder: a loose look the person answers for, and ARRI's display LUTs beside it.
+    let folder = display_luts_folder(src.path());
+    write_cube(&folder, "Mine.cube", 5);
+    let result = f
+        .service
+        .import(
+            &folder,
+            &ImportRequest {
+                input: Some(LookInput::LogC4),
+                cancel: None,
+            },
+            &mut |_| {},
+        )
+        .expect("the look comes in");
     assert_eq!(
-        f.service.display_choice(),
-        DisplayChoice::ArriLut(id.clone())
+        result
+            .added
+            .iter()
+            .map(|l| l.id.as_str())
+            .collect::<Vec<_>>(),
+        ["user:mine"]
     );
-    assert!(f.service.provider().display_transform(&id).is_ok());
-    assert_eq!(
-        PreferencesStore::open(f.root.path())
-            .get()
-            .display_rendering,
-        DisplayRendering::ArriDisplay { id: id.clone() }
+    assert!(
+        result.notes.iter().any(|n| n
+            == "2 files are display renderings, so they were left out. Yellowmoon uses its own rendering."),
+        "{:?}",
+        result.notes
     );
+    assert!(
+        !f.root.path().join("looks").join("arri-display").exists(),
+        "no display LUT is stored"
+    );
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(f.root.path().join("looks").join("manifest.json")).expect("read"),
+    )
+    .expect("json");
+    assert!(manifest.get("display_luts").is_none(), "{manifest}");
+}
 
-    // If its file goes away the ACES 2 transform is used again (the preference is kept until the
-    // LUT is removed or the user changes it).
-    let stored = f.root.path().join("looks").join("arri-display");
-    let file = std::fs::read_dir(&stored)
-        .expect("display dir")
-        .flatten()
-        .map(|e| e.path())
-        .find(|p| p.to_string_lossy().contains("Gamma24"))
-        .expect("the stored LUT");
-    std::fs::remove_file(file).expect("rm");
-    f.service.verify().expect("verify");
-    assert_eq!(f.service.display_choice(), DisplayChoice::Aces2);
-    assert!(f.service.provider().display_transform(&id).is_err());
+/// A library that an earlier version filled with display LUTs, and a preferences file that chose
+/// one: both are read without an error and without effect, and the files stay where they are.
+#[test]
+fn display_luts_and_a_display_choice_from_an_earlier_version_are_ignored() {
+    let root = tempfile::tempdir().expect("app root");
+    let looks = root.path().join("looks");
+    let stored = looks.join("arri-display");
+    std::fs::create_dir_all(&stored).expect("folder");
+    let lut = write_cube(&stored, "Rec709.cube", 5);
+    let sha = ym_looks::manifest::sha256_hex(&std::fs::read(&lut).expect("read"));
+    std::fs::write(
+        looks.join("manifest.json"),
+        serde_json::json!({
+            "version": 1,
+            "looks": [],
+            "display_luts": [{
+                "id": "arri-display:logc4:rec709-g24", "input": "logc4", "target": "rec709-g24",
+                "file": "arri-display/Rec709.cube", "sha256": sha
+            }]
+        })
+        .to_string(),
+    )
+    .expect("manifest");
+    std::fs::write(
+        root.path().join("preferences.json"),
+        r#"{ "display_rendering": { "kind": "arri_display", "id": "arri-display:logc4:rec709-g24" } }"#,
+    )
+    .expect("preferences");
 
-    // Removing the LUT resets the preference.
-    f.service.remove(&id).expect("removed");
-    assert_eq!(
-        PreferencesStore::open(f.root.path())
-            .get()
-            .display_rendering,
-        DisplayRendering::Aces2
+    let service = service_in(root.path());
+    assert!(
+        service
+            .library()
+            .read()
+            .expect("lock")
+            .problems()
+            .is_empty()
     );
-    assert_eq!(f.service.display_luts().len(), 1);
+    assert!(
+        service
+            .list()
+            .iter()
+            .all(|l| l.id.as_str().starts_with("builtin:"))
+    );
+    assert!(service.preferences().warnings().is_empty());
+    // Verifying, reloading and removing a look go on as before, and the old file is not touched.
+    assert!(service.verify().expect("verify").is_clean());
+    assert!(!service.reload());
+    assert!(lut.is_file());
+    // The id of a display LUT is not an id any more: it names no look and cannot be applied.
+    assert!(LookId::parse("arri-display:logc4:rec709-g24").is_err());
+    assert!(service.resolve("arri-display:logc4:rec709-g24").is_err());
 }
 
 #[test]

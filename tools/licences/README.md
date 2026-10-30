@@ -1,6 +1,6 @@
 # Licence texts of the dependencies
 
-NOTICE item 9 and the About window promise the licence texts of everything we build on, and a binary release has to carry
+NOTICE item 8 and the About window promise the licence texts of everything we build on, and a binary release has to carry
 them (BSD, MIT, ISC, Apache-2.0 and the OFL all make that a condition). This folder produces them.
 
 | File | What it is |
@@ -35,5 +35,5 @@ writes the stub when `tauri.conf.json` lists the file and no real one exists.
 for them (and only for `@tauri-apps/plugin-*`) the texts of the Rust crate of the same repository are used, and the file says so
 (`rust_counterpart` in `generate.py`). Another package needs the same kind of explicit rule, or its text added by hand: save the repository's LICENSE in `texts/<package>.LICENSE` and name the package in `HAND_ADDED_TEXTS`.
 
-**What is not covered here.** Data and ported code are attributed in `NOTICE` (AMPAS terms, rawtoaces-data, the ACES 2 port,
+**What is not covered here.** Data and ported code are attributed in `NOTICE` (AMPAS terms, rawtoaces-data,
 the Menon demosaic). Fonts other than Figtree, if one is ever added, need a line in `collect_fonts`.

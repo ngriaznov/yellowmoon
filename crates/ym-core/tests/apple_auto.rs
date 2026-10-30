@@ -597,8 +597,6 @@ fn an_answer_moves_exposure_white_contrast_and_saturation() {
         tables_of(&profile),
     );
     assert!(cooler.readout.kelvin_k < est.readout.kelvin_k);
-    // The white lift is not sized again.
-    assert_eq!(warmer.white, est.white);
     // The summary.
     let s = warmer.summary();
     assert_eq!(s.kelvin, warmer.readout.kelvin_k);

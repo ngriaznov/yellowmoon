@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import type { LookInput, PreferencesPatch } from "../../api/types";
+import type { LookInput } from "../../api/types";
 import { useWindowDrop } from "../../components";
 import { useAppState } from "../../state/context";
 import type { AppStore } from "../../state/store";
@@ -8,9 +8,6 @@ import {
   canAdvance,
   importPlan,
   initialWizard,
-  offersDisplayChoice,
-  packageDef,
-  preferredDisplayLut,
   reduceWizard,
   STEP_FINISH,
   STEP_GET,
@@ -129,23 +126,22 @@ export function useWizard(store: AppStore): Wizard {
       const stop = store.api.on("looks_import_progress", (e) => {
         if (current && e.path === current.path) dispatch({ type: "import-progress", done: before + Math.min(e.done, current.files) });
       });
-      const outcome: ImportOutcome = { looks: 0, displayLuts: 0, zips: [] };
+      const outcome: ImportOutcome = { looks: 0, zips: [] };
       try {
         for (const item of plan) {
           current = item;
           await store.api.looksImport(item.path, item.input);
           before += item.files;
           dispatch({ type: "import-progress", done: before });
-          if (item.kind === "package" && item.packageId && packageDef(item.packageId).role === "display") outcome.displayLuts += item.files;
-          else outcome.looks += item.files;
+          outcome.looks += item.files;
         }
         outcome.zips = trashCandidates(stateRef.current);
-        await Promise.all([store.refreshLooks(), store.refreshDisplayLuts()]);
+        await store.refreshLooks();
         dispatch({ type: "import-done", outcome });
       } catch (error) {
         const message = (error as { message?: string } | null)?.message;
         dispatch({ type: "import-failed", error: message ?? "The import did not finish. Go back and try again." });
-        await Promise.all([store.refreshLooks(), store.refreshDisplayLuts()]);
+        await store.refreshLooks();
       } finally {
         stop();
       }
@@ -159,13 +155,6 @@ export function useWizard(store: AppStore): Wizard {
       const looks = store.getState().looks ?? [];
       const currentDefault = looks.find((l) => l.is_default)?.id;
       if (cur.finish.defaultLook && cur.finish.defaultLook !== currentDefault) await store.makeDefault(cur.finish.defaultLook);
-      if (offersDisplayChoice(cur)) {
-        const lut = preferredDisplayLut(store.getState().displayLuts);
-        const patch: PreferencesPatch = {
-          display_rendering: cur.finish.display === "arri" && lut ? { kind: "arri_display", id: lut.id } : { kind: "aces2" },
-        };
-        await store.setPreferences(patch);
-      }
       if (cur.finish.zip === "trash") {
         for (const path of trashCandidates(cur)) await store.api.trashPath(path);
       }

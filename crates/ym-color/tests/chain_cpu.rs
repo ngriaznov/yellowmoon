@@ -5,30 +5,28 @@
 //! * log-to-log looks (LogC4, LogC3 with an identity LUT) and the Rec.709-baked look blend;
 //! * the DNG stop point and the Before view;
 //! * encode and dither determinism, thread counts, layouts and tiling;
-//! * a neutral ramp through ACES 2 (monotone, neutral stays neutral).
+//! * a neutral ramp through the cine rendering (monotone, neutral stays neutral).
 //!
-//! Display LUT (C12) specifics live in `display_transform.rs`. All LUTs here are our own synthetic
+//! The cine rendering (C12) itself is tested in `cine.rs` and `display_transform.rs`. All LUTs here are our own synthetic
 //! cubes. Pixel values are fixed or seeded; nothing depends on the machine.
 
 use std::sync::Arc;
 
-use ym_color::aces2::{Aces2Output, Aces2Transform};
 use ym_color::camera_default::{CameraDefault, CameraTone};
 use ym_color::cdl::Cdl;
 use ym_color::consts::Vec3;
 use ym_color::consts::linalg::{self, Mat3};
 use ym_color::curve::{Curve, CurveSet};
 use ym_color::deltae::{d65_white_xyz, delta_e_2000, xyz_to_lab};
+use ym_color::display::cine::CineRendering;
 use ym_color::display::{
-    BeforePoint, ChainParams, ColorChain, DISPLAY_PLACEMENT_EV, DNG_SCENE_LIMIT, DisplayError,
-    Frame, Layout, LookSetting, OutputTarget, RedChroma, RedChromaStep, RedGamut, View,
-    aces2_input_matrix,
+    BeforePoint, ChainParams, ColorChain, DNG_SCENE_LIMIT, DisplayError, Frame, Layout,
+    LookSetting, OutputTarget, View,
 };
 use ym_color::encode::{self, OutputSpace};
-use ym_color::exposure::white::WhiteLift;
 use ym_color::gamut::{LinearAwg4, LinearRec709, matrices};
 use ym_color::grade::{ColorBalance, Grade, GradeParams, grade_luma};
-use ym_color::logc::{LogC4, logc4_decode_rgb, logc4_encode_rgb};
+use ym_color::logc::{LogC3Ei800, LogC4, logc4_decode_rgb, logc4_encode_rgb};
 use ym_color::look::{
     LookInput, LookTransform, blend_display_linear, blend_logc4, rec709_gamma24_decode,
 };
@@ -165,7 +163,7 @@ fn curves() -> CurveSet {
     }
 }
 
-/// Everything switched on: grade, a LogC4 look at 80 %, curves, ACES 2, viewport.
+/// Everything switched on: grade, a LogC4 look at 80 %, curves, the cine rendering, viewport.
 fn rich_params() -> ChainParams {
     let mut p = ChainParams::new(fused_matrix(), tone());
     p.grade = grade_params();
@@ -200,16 +198,11 @@ fn chain(p: &ChainParams) -> ColorChain {
     ColorChain::new(p).unwrap()
 }
 
-/// Independent composition of C12 and C13 for an ACES 2 output, from the finished modules:
-/// the port's display-linear output, then C13's transfer from `encode` (IEC 61966-2-1 sRGB; the
-/// port's own `transform_ap0` uses the reference's continuous "moncurve" instead, which differs by
-/// up to 9.8e-6, see `c13_srgb_differs_from_the_aces2_references_moncurve_by_under_1e5`).
-fn aces2_of_linear_awg4(linear: Vec3, output: Aces2Output) -> Vec3 {
-    let ap0 = linalg::mul_vec(&aces2_input_matrix(), linear);
-    let display_linear = Aces2Transform::new(output).transform_ap0_linear(ap0);
-    OutputTarget::from(output)
-        .space()
-        .encode_clamped(display_linear)
+/// Independent composition of C12 and C13 for an output, from the finished modules: the cine
+/// rendering's display-linear output, then C13's transfer from `encode` (IEC 61966-2-1 sRGB).
+fn cine_of_linear_awg4(linear: Vec3, output: OutputTarget) -> Vec3 {
+    let display_linear = CineRendering::new(output).forward(LinearAwg4(linear));
+    output.space().encode_clamped(display_linear)
 }
 
 // ---- stage order -------------------------------------------------------------------------------
@@ -223,10 +216,7 @@ fn trace_equals_an_independent_composition_of_the_stage_modules() {
     let warp = Warp::new(&p.warp);
     let baked = p.curves.bake();
     let look = logc4_look();
-    let aces = Aces2Transform::new(Aces2Output::Viewport);
-    // The red chroma step sits in front of the placement (C12 step 1c); this look sets no strengths, so
-    // it is Neutral's.
-    let red = RedChromaStep::new(OutputTarget::Viewport, RedChroma::DEFAULT);
+    let cine = CineRendering::new(OutputTarget::Viewport);
     for px in pixels() {
         let t = c.trace(px);
         let c6 = linalg::mul_vec(&p.matrix, px);
@@ -237,8 +227,7 @@ fn trace_equals_an_independent_composition_of_the_stage_modules() {
         let c9b = warp.apply(c9);
         let c10 = blend_logc4(c9b, look.eval_logc4(c9b).unwrap(), 80.0);
         let c11 = baked.apply(c10);
-        let ap0 = linalg::mul_vec(&aces2_input_matrix(), red.apply(logc4_decode_rgb(c11.0)));
-        let c12 = aces.transform_ap0_linear(ap0);
+        let c12 = cine.forward(LinearAwg4(logc4_decode_rgb(c11.0)));
         let c13 = OutputSpace::DisplayP3.encode_clamped(c12);
         assert_close(t.c6_linear_awg4, c6, 1e-14, "c6");
         assert_close(t.c7_linear_awg4, c7, 1e-14, "c7");
@@ -331,22 +320,6 @@ fn each_stage_changed_alone_moves_only_itself_and_what_follows() {
 }
 
 #[test]
-fn display_transform_change_leaves_every_logc4_stage_alone() {
-    use ym_color::display::{ArriDisplayLut, DisplayLutInput, DisplayLutOutput, DisplayTransform};
-    let lut = ArriDisplayLut::new(
-        cube_lut(17, tweak),
-        DisplayLutInput::LogC4,
-        DisplayLutOutput::REC709_G24,
-    )
-    .unwrap();
-    check_toggle(
-        "display transform (C12)",
-        |p| p.display = DisplayTransform::arri(lut),
-        7,
-    );
-}
-
-#[test]
 fn dither_changes_only_the_quantised_bytes() {
     let mut off = rich_params();
     off.dither = false;
@@ -413,16 +386,14 @@ fn auto_everything_is_c12_of_c8_of_c7_of_m_x_for_every_output() {
     for target in OutputTarget::ALL {
         let mut p = ChainParams::new(fused_matrix(), tone());
         p.output = target;
-        // Plain ACES 2: the red chroma step (C12 step 1c) has its own tests below.
-        p.red_chroma = false;
         let c = chain(&p);
         for px in pixels() {
             let c7 = tone().apply_rgb(linalg::mul_vec(&fused_matrix(), px));
             let linear_again = logc4_decode_rgb(logc4_encode_rgb(c7));
-            let want = aces2_of_linear_awg4(linear_again, target.aces2());
+            let want = cine_of_linear_awg4(linear_again, target);
             assert_close(c.apply_pixel(px), want, 1e-9, &format!("{target:?} {px:?}"));
-            // The same through Aces2Transform on the exact linear value: only the log round trip differs.
-            let direct = aces2_of_linear_awg4(c7, target.aces2());
+            // The same through the cine rendering on the exact linear value: only the log round trip differs.
+            let direct = cine_of_linear_awg4(c7, target);
             assert_close(c.apply_pixel(px), direct, 1e-8, "direct");
         }
     }
@@ -612,38 +583,12 @@ fn rec709_baked_look_blends_between_c12_and_the_lut_in_display_linear() {
 }
 
 #[test]
-fn rec709_baked_look_blends_with_an_arri_display_lut_as_c12_too() {
-    use ym_color::display::{ArriDisplayLut, DisplayLutInput, DisplayLutOutput, DisplayTransform};
-    let arri = ArriDisplayLut::new(
-        cube_lut(17, |c| [c[0].powf(1.05), c[1], c[2] * 0.97]),
-        DisplayLutInput::LogC4,
-        DisplayLutOutput::REC709_G24,
-    )
-    .unwrap();
-    let look = rec709_baked_look();
-    let mut p = ChainParams::new(fused_matrix(), tone());
-    p.display = DisplayTransform::arri(arri);
-    let own = chain(&p);
-    p.look = Some(LookSetting::new(Arc::clone(&look), 40.0));
-    let mixed = chain(&p);
-    p.look = Some(LookSetting::new(look, 100.0));
-    let full = chain(&p);
-    for px in pixels() {
-        let want = blend_display_linear(
-            own.trace(px).c12_display_linear,
-            full.trace(px).c12_display_linear,
-            40.0,
-        );
-        assert_eq!(mixed.trace(px).c12_display_linear, want);
-    }
-}
-
-#[test]
-fn rec709_baked_look_goes_into_a_dng_as_the_scene_values_aces2_turns_into_its_picture() {
+fn rec709_baked_look_goes_into_a_dng_as_the_scene_values_the_cine_rendering_turns_into_its_picture()
+{
     // Owner's decision of 2026-10-14: a look with its own display rendering is allowed in a DNG,
-    // approximately. The pixels are the scene-linear AWG4 values that ACES 2 (with the display
-    // placement, the transform the DNG's fitted profile emulates) turns into the picture the chain
-    // makes, so Adobe's renderer shows about that picture.
+    // approximately. The pixels are the scene-linear AWG4 values that the cine rendering (the transform the
+    // DNG's fitted profile emulates) turns into the picture the chain makes, so Adobe's renderer shows
+    // about that picture.
     let look = rec709_baked_look();
     let mut p = ChainParams::new(fused_matrix(), tone());
     p.grade = grade_params();
@@ -652,27 +597,25 @@ fn rec709_baked_look_goes_into_a_dng_as_the_scene_values_aces2_turns_into_its_pi
     p.look = Some(LookSetting::new(Arc::clone(&look), 100.0));
     let c = chain(&p);
     assert!(c.dng_inverts_display());
-    let aces2 = Aces2Transform::shared(Aces2Output::Srgb);
+    let cine = CineRendering::new(OutputTarget::Srgb);
     let mut checked = 0;
     for px in pixels() {
         let dng = c.apply_dng_pixel(px);
         assert!(dng.iter().all(|v| v.is_finite()), "{px:?}: {dng:?}");
-        // The largest channel is held to the top of the profile's range, placement included.
+        // The largest channel is held to the top of the profile's range.
         let top = dng[0].max(dng[1]).max(dng[2]);
-        assert!(
-            top <= DNG_SCENE_LIMIT / DISPLAY_PLACEMENT_EV.exp2() * (1.0 + 1e-12),
-            "{px:?}: {dng:?}"
-        );
-        // Through our ACES 2 (placement included) the DNG gives the picture of the chain, where
-        // the picture is inside what ACES 2 reaches (display white and the display's gamut edge
-        // are clamped by the inverse).
+        assert!(top <= DNG_SCENE_LIMIT * (1.0 + 1e-12), "{px:?}: {dng:?}");
+        // Through the cine rendering the DNG gives the picture of the chain, where the picture is inside
+        // what the rendering reaches (display white is dimmed by the inverse, a colour the rendering
+        // cannot make is replaced by the nearest one it can, display channels are held to 1e-6).
         let picture = c.apply_to_display_linear(px);
-        let in_range = picture.iter().all(|&v| (0.0..=0.9).contains(&v));
-        if in_range && top < DNG_SCENE_LIMIT / DISPLAY_PLACEMENT_EV.exp2() * 0.99 {
-            let back = aces2.transform_ap0_linear(linalg::mul_vec(&aces2_input_matrix(), dng));
+        let in_range = picture.iter().all(|&v| (1e-6..=0.9).contains(&v));
+        if in_range && top < DNG_SCENE_LIMIT * 0.99 && cine.inverse(picture).chroma_fraction >= 1.0
+        {
+            let back = cine.forward(LinearAwg4(dng));
             for k in 0..3 {
                 assert!(
-                    (back[k] - picture[k]).abs() <= 1e-6,
+                    (back[k] - picture[k]).abs() <= 2e-6,
                     "{px:?}: picture {picture:?}, the DNG renders {back:?}"
                 );
             }
@@ -695,12 +638,11 @@ fn rec709_baked_look_goes_into_a_dng_as_the_scene_values_aces2_turns_into_its_pi
 }
 
 #[test]
-fn a_baked_look_at_intensity_zero_and_an_aces2_chain_keep_the_plain_dng() {
+fn a_baked_look_at_intensity_zero_and_a_plain_chain_keep_the_plain_dng() {
     // At 0 % the chain is our C12 exactly, so nothing is inverted: the DNG is the decoded C11 output.
     let mut p = ChainParams::new(fused_matrix(), tone());
     p.curves = curves();
     p.output = OutputTarget::Srgb;
-    p.red_chroma = false; // the step is in a DNG too; this test is about the inverse
     let plain = chain(&p);
     assert!(!plain.dng_inverts_display());
     p.look = Some(LookSetting::new(rec709_baked_look(), 0.0));
@@ -719,63 +661,31 @@ fn a_baked_look_at_intensity_zero_and_an_aces2_chain_keep_the_plain_dng() {
 }
 
 #[test]
-fn an_imported_display_lut_is_inverted_for_the_dng_too() {
-    use ym_color::display::{ArriDisplayLut, DisplayLutInput, DisplayLutOutput, DisplayTransform};
-    // The DNG's profile renders ACES 2; with a display LUT chosen as C12 the pixels are the scene
-    // values ACES 2 turns into the LUT's picture (the preview of the DNG already shows it).
-    let lut = cube_lut(33, |c| {
-        let t = tweak(c);
-        [t[0].powf(1.05), t[1] * 0.97 + 0.01, t[2].powf(0.95)]
-    });
-    let display = DisplayTransform::arri(
-        ArriDisplayLut::new(lut, DisplayLutInput::LogC4, DisplayLutOutput::REC709_G24).unwrap(),
-    );
-    let mut p = ChainParams::new(fused_matrix(), tone());
-    p.output = OutputTarget::Srgb;
-    p.display = display;
-    let c = chain(&p);
-    assert!(c.dng_inverts_display());
-    let aces2 = Aces2Transform::shared(Aces2Output::Srgb);
-    for px in [[0.18, 0.18, 0.18], [0.5, 0.3, 0.2], [0.02, 0.03, 0.08]] {
-        let dng = c.apply_dng_pixel(px);
-        let picture = c.apply_to_display_linear(px);
-        let back = aces2.transform_ap0_linear(linalg::mul_vec(&aces2_input_matrix(), dng));
-        for k in 0..3 {
-            assert!(
-                (back[k] - picture[k]).abs() <= 1e-6,
-                "{px:?}: picture {picture:?}, the DNG renders {back:?}"
-            );
-        }
-    }
-}
-
-#[test]
 fn near_display_white_a_tinted_colour_keeps_its_tint_in_the_dng() {
-    use ym_color::display::{ArriDisplayLut, DisplayLutInput, DisplayLutOutput, DisplayTransform};
     // Found in review: a display colour near white has a scene value above the top of the DNG profile.
     // Scaling that scene value down with its ratios kept turns a slightly tinted highlight into a strong
-    // cast (the forward transform compresses chroma more the lighter the colour): (1, 1, 0.95) came back
-    // as (1, 0.99, 0.63), CIE76 20 away. The display colour is dimmed instead, so its hue and saturation
+    // cast (the forward transform changes chroma with the level): with the ACES 2 transform this module first used, (1, 1, 0.95) came back as
+    // (1, 0.99, 0.63), CIE76 20 away. The display colour is dimmed instead, so its hue and saturation
     // stay and it loses a few percent of light (what a white loses anyway: linear 0.9435).
     //
-    // An identity display LUT in LogC4 and Rec.709 gamma 2.4: the display colour of a camera pixel is
-    // its LogC4 code to the power 2.4, so any display colour can be asked for.
-    let display = DisplayTransform::arri(
-        ArriDisplayLut::new(
-            cube_lut(17, |c| c),
-            DisplayLutInput::LogC4,
-            DisplayLutOutput::REC709_G24,
+    // An identity LogC3-to-Rec.709 look at 100 %: the display colour of a camera pixel is its LogC3 code
+    // to the power 2.4, so any display colour can be asked for.
+    let identity_look = Arc::new(
+        LookTransform::new(
+            LookInput::LogC3ToRec709,
+            None,
+            Some((*cube_lut(17, |c| c)).clone()),
         )
         .unwrap(),
     );
     let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let mut p = ChainParams::new(identity, ToneParams::IDENTITY);
     p.output = OutputTarget::Srgb;
-    p.display = display;
+    p.look = Some(LookSetting::new(identity_look, 100.0));
     let c = chain(&p);
     assert!(c.dng_inverts_display());
-    let aces2 = Aces2Transform::shared(Aces2Output::Srgb);
-    let limit = DNG_SCENE_LIMIT / DISPLAY_PLACEMENT_EV.exp2();
+    let cine = CineRendering::new(OutputTarget::Srgb);
+    let limit = DNG_SCENE_LIMIT;
     let lab = |rgb: Vec3| {
         xyz_to_lab(
             linalg::mul_vec(&matrices().rec709_to_xyz, rgb),
@@ -783,7 +693,10 @@ fn near_display_white_a_tinted_colour_keeps_its_tint_in_the_dng() {
         )
     };
     let shown = |display: Vec3| {
-        let px = logc4_decode_rgb(display.map(|v| v.powf(1.0 / 2.4)));
+        let px = LogC3Ei800(display.map(|v| v.powf(1.0 / 2.4)))
+            .to_logc4()
+            .to_linear()
+            .0;
         let dng = c.apply_dng_pixel(px);
         assert!(dng.iter().all(|v| v.is_finite()), "{display:?}: {dng:?}");
         assert!(
@@ -797,7 +710,7 @@ fn near_display_white_a_tinted_colour_keeps_its_tint_in_the_dng() {
             1e-9,
             "the asked colour",
         );
-        aces2.transform_ap0_linear(linalg::mul_vec(&aces2_input_matrix(), dng))
+        cine.forward(LinearAwg4(dng))
     };
     // The colours that were wrong: tinted near-whites, warm and cool.
     for display in [
@@ -812,9 +725,12 @@ fn near_display_white_a_tinted_colour_keeps_its_tint_in_the_dng() {
         assert!(d < 2.5, "{display:?} comes out as {back:?}, CIEDE2000 {d}");
     }
     // The top of the display cube: the DNG shows the colour, dimmed by one factor (same ratios), by
-    // 10 % at most, and never a cast.
+    // 16 % at most (a bright, bluish colour; a white by 5 %), and never a strong cast. Bright, strongly coloured colours next to the edge of the
+    // display (a cyan-green with a channel at the top) have a pre-image at the edge of what the rendering
+    // makes, where a few percent of dimming moves the nearest reachable colour: a dozen of them come out
+    // with a CIEDE2000 of 1.3 to 4.9 and are not counted as dimmed by one factor.
     let steps = 11;
-    let (mut n, mut worst_e, mut least_s) = (0, 0.0_f64, 1.0_f64);
+    let (mut n, mut worst_e, mut least_s, mut unreachable, mut exact) = (0, 0.0_f64, 1.0_f64, 0, 0);
     for i in 0..steps {
         for j in 0..steps {
             for k in 0..steps {
@@ -822,37 +738,45 @@ fn near_display_white_a_tinted_colour_keeps_its_tint_in_the_dng() {
                 if display.iter().copied().fold(0.0, f64::max) < 0.9 {
                     continue;
                 }
+                // The rendering darkens saturated colours, so some bright, strongly coloured display
+                // colours (a bright cyan with a channel near the edge) cannot be produced by any scene
+                // colour: the inverse then keeps the luminance and hue and lowers the chroma
+                // (`docs/02`, Inverse, step 4). They are not about the dimming and are counted apart.
+                if cine.inverse(display).chroma_fraction < 1.0 {
+                    unreachable += 1;
+                    continue;
+                }
                 let back = shown(display);
                 let s = back.iter().sum::<f64>() / display.iter().sum::<f64>();
-                for ch in 0..3 {
-                    // (A colour on the gamut edge, a channel at 1 and another well below, round-trips to a few
-                    // 1e-4: the inverse clamps what the forward transform cannot reach. The cast it replaces
-                    // was 0.3.)
-                    assert!(
-                        (back[ch] - s * display[ch]).abs() < 1e-3,
-                        "{display:?} comes out as {back:?}: not the same colour dimmed (factor {s})"
-                    );
+                // (A colour on the gamut edge, a channel at 1 and another well below, round-trips to a few
+                // 1e-4: the inverse clamps what the forward transform cannot reach. The cast the dimming
+                // replaces was 0.3.)
+                if (0..3).all(|ch| (back[ch] - s * display[ch]).abs() < 1e-3) {
+                    exact += 1;
+                    least_s = least_s.min(s);
                 }
-                least_s = least_s.min(s);
                 worst_e = worst_e.max(delta_e_2000(lab(display), lab(back)));
                 n += 1;
             }
         }
     }
-    assert!(n >= 500, "{n} colours");
-    assert!(least_s > 0.9, "dimmed by {least_s}");
-    assert!(worst_e < 2.5, "worst CIEDE2000 {worst_e}");
+    assert!(
+        n >= 400,
+        "{n} colours ({unreachable} not producible by the rendering)"
+    );
+    assert!(least_s > 0.8, "dimmed by {least_s}");
+    assert!(
+        f64::from(exact) >= 0.9 * f64::from(n),
+        "only {exact} of {n} colours are the same colour dimmed"
+    );
+    assert!(worst_e < 5.5, "worst CIEDE2000 {worst_e}");
 }
 
 // ---- the DNG stop point --------------------------------------------------------------------------
 
 #[test]
 fn dng_stop_point_applies_grade_look_and_curve_then_decodes_to_linear_awg4() {
-    // The red chroma step is in a DNG too (`a_dng_carries_the_red_chroma_step_with_the_p3_tables`): it is
-    // off here, the stop point is about grade, look and curve.
-    let mut p = rich_params();
-    p.red_chroma = false;
-    let c = chain(&p);
+    let c = chain(&rich_params());
     assert!(!c.dng_inverts_display());
     for px in pixels() {
         let t = c.trace(px);
@@ -863,9 +787,7 @@ fn dng_stop_point_applies_grade_look_and_curve_then_decodes_to_linear_awg4() {
         assert_close(logc4_encode_rgb(dng), t.c11_logc4.0, 1e-9, "re-encode");
     }
     // Look and curve really are in it: without them the values differ.
-    let mut plain_params = ChainParams::new(fused_matrix(), tone());
-    plain_params.red_chroma = false;
-    let plain = chain(&plain_params);
+    let plain = chain(&ChainParams::new(fused_matrix(), tone()));
     let moved = pixels()
         .into_iter()
         .filter(|px| {
@@ -881,11 +803,8 @@ fn dng_stop_point_applies_grade_look_and_curve_then_decodes_to_linear_awg4() {
 
 #[test]
 fn dng_stop_point_of_a_neutral_chain_is_the_tone_mapped_linear_awg4() {
-    // Identity grade, Neutral look, identity curves: the DNG holds C7's output, up to the log round trip
-    // (the red chroma step, which a DNG carries, is off here).
-    let mut p = ChainParams::new(fused_matrix(), tone());
-    p.red_chroma = false;
-    let c = chain(&p);
+    // Identity grade, Neutral look, identity curves: the DNG holds C7's output, up to the log round trip.
+    let c = chain(&ChainParams::new(fused_matrix(), tone()));
     for px in pixels() {
         let want = tone().apply_rgb(linalg::mul_vec(&fused_matrix(), px));
         let got = c.apply_dng_pixel(px);
@@ -998,7 +917,7 @@ fn the_before_view_is_the_camera_default_matrix_curve_and_encode() {
 fn the_before_view_ignores_every_setting_of_the_chain() {
     let rich = chain(&before_params());
     // Another fused matrix (exposure and white balance), tone (the highlight range among it), grade,
-    // look, curves, display and white lift: the Before view is bit-identical, for every output it is
+    // look and curves: the Before view is bit-identical, for every output it is
     // asked for.
     for target in OutputTarget::ALL {
         let mut a = before_params();
@@ -1010,8 +929,6 @@ fn the_before_view_ignores_every_setting_of_the_chain() {
         );
         b.camera_default = camera_default();
         b.output = target;
-        b.display = ym_color::display::DisplayTransform::Aces2;
-        b.white_lift = WhiteLift::new(0.8, 0.5).unwrap();
         b.dither = false;
         let (a, b) = (chain(&a), chain(&b));
         for px in pixels() {
@@ -1309,7 +1226,7 @@ fn chain_is_send_sync_and_cheap_to_share() {
     assert_send_sync::<ChainParams>();
 }
 
-// ---- ACES 2 neutral ramp (Delta E 2000 smoke test) -------------------------------------------------
+// ---- cine rendering neutral ramp (Delta E 2000 smoke test) -------------------------------------------------
 
 fn lab_of_display_p3(encoded: Vec3) -> Vec3 {
     let linear = encoded.map(|v| OutputSpace::DisplayP3.decode_channel(v));
@@ -1318,7 +1235,7 @@ fn lab_of_display_p3(encoded: Vec3) -> Vec3 {
 }
 
 #[test]
-fn neutral_ramp_through_aces2_is_monotone_and_stays_neutral() {
+fn neutral_ramp_through_the_cine_rendering_is_monotone_and_stays_neutral() {
     let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let tone_off = ToneParams::IDENTITY;
     let c = chain(&ChainParams::new(identity, tone_off));
@@ -1366,7 +1283,7 @@ fn neutral_ramp_through_aces2_is_monotone_and_stays_neutral() {
     assert!(worst_chroma < 0.05, "neutral drifted: C* {worst_chroma}");
     assert!(worst_de_to_neutral < 0.05);
     assert!(smallest_step > 0.0);
-    // ACES 2 puts mid grey at a plausible display lightness and highlights at (almost) white.
+    // The rendering puts mid grey at a plausible display lightness and highlights at (almost) white.
     assert!((30.0..55.0).contains(&l_at_grey), "L* at grey {l_at_grey}");
     assert!(top_l > 97.0, "L* at +7 stops {top_l}");
     // Black stays black.
@@ -1374,41 +1291,28 @@ fn neutral_ramp_through_aces2_is_monotone_and_stays_neutral() {
 }
 
 #[test]
-fn aces2_white_point_matches_the_encoding_white() {
-    // A D65-neutral AWG4 white lands on the display's D65 white: equal channels, near 1.
+fn the_white_level_lands_on_the_encoding_white_exactly() {
+    // A D65-neutral AWG4 white lands on the display's D65 white: equal channels; from +10.4 stops over grey
+    // (scene 243) every output is exactly 1.
     let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let c = chain(&ChainParams::new(identity, ToneParams::IDENTITY));
-    let white = c.apply_pixel([16.0, 16.0, 16.0]);
-    assert!(
-        white
-            .iter()
-            .all(|v| (*v - white[0]).abs() < 1e-9 && *v > 0.97)
-    );
-}
-
-#[test]
-fn c13_srgb_differs_from_the_aces2_references_moncurve_by_under_1e5() {
-    // The chain encodes with IEC 61966-2-1 (docs/02, C13); the ACES 2 port's own display encode uses the
-    // reference's continuous moncurve (slope 12.9232 below 0.0030399). Bound the difference, which peaks
-    // near linear 0.00304 at 9.8e-6 (0.0025 of an 8-bit code, 0.64 of a 16-bit code).
-    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let tone_off = ToneParams::IDENTITY;
     for target in OutputTarget::ALL {
-        let mut p = ChainParams::new(identity, tone_off);
+        let mut p = ChainParams::new(identity, ToneParams::IDENTITY);
         p.output = target;
         let c = chain(&p);
-        let reference = Aces2Transform::new(target.aces2());
-        let mut worst = 0.0_f64;
-        for stops in -140..=30 {
-            let g = 0.18 * (f64::from(stops) / 10.0).exp2();
-            let ap0 = linalg::mul_vec(&aces2_input_matrix(), [g, g * 0.9, g * 0.7]);
-            worst = worst.max(max_diff(
-                c.apply_pixel([g, g * 0.9, g * 0.7]),
-                reference.transform_ap0(ap0),
-            ));
+        // (The pixel goes through the LogC4 round trip, which leaves it neutral to a rounding.)
+        for v in c.apply_to_display_linear([300.0; 3]) {
+            assert!((v - 1.0).abs() < 1e-12, "{target:?}: {v}");
         }
-        println!("{target:?}: chain vs transform_ap0 worst {worst:.2e}");
-        assert!(worst < 1.0e-5, "{target:?}: {worst}");
+        for v in c.apply_pixel([300.0; 3]) {
+            assert!((v - 1.0).abs() < 1e-12, "{target:?}: {v}");
+        }
+        // Below it the white is short of 1 and still neutral.
+        let white = c.apply_pixel([16.0; 3]);
+        assert!(
+            white
+                .iter()
+                .all(|v| (*v - white[0]).abs() < 1e-9 && *v > 0.95 && *v < 1.0)
+        );
     }
 }
 
@@ -1564,186 +1468,4 @@ fn debug_output_stays_small_for_big_inputs() {
     let frame = Frame::planar(256, 256, &data).unwrap();
     let text = format!("{frame:?}");
     assert!(text.len() < 200 && text.contains("256"), "{text}");
-    let lut = ym_color::display::ArriDisplayLut::new(
-        cube_lut(33, tweak),
-        ym_color::display::DisplayLutInput::LogC4,
-        ym_color::display::DisplayLutOutput::REC709_G24,
-    )
-    .unwrap();
-    let text = format!("{lut:?}");
-    assert!(text.len() < 400 && text.contains("33"), "{text}");
-}
-
-// ---- C12 step 1c: the red chroma step ---------------------------------------------------------------
-
-/// [`pixels`] and a few more reds, mid-tone to light, where the step acts.
-fn pixels_with_reds() -> Vec<Vec3> {
-    let mut v = pixels();
-    v.extend([
-        [0.5, 0.2, 0.12],
-        [0.35, 0.1, 0.07],
-        [0.9, 0.3, 0.2],
-        [0.2, 0.06, 0.04],
-        [1.5, 0.5, 0.3],
-        [0.12, 0.04, 0.03],
-    ]);
-    v
-}
-
-#[test]
-fn the_red_chroma_step_follows_the_white_lift_and_precedes_the_placement() {
-    for target in OutputTarget::ALL {
-        let mut p = ChainParams::new(fused_matrix(), tone());
-        p.output = target;
-        p.white_lift = WhiteLift::new(1.2, 2.5).unwrap();
-        let c = chain(&p);
-        assert_eq!(c.red_chroma(), Some(RedChroma::DEFAULT));
-        let aces = Aces2Transform::new(target.aces2());
-        let red = RedChromaStep::new(target, RedChroma::DEFAULT);
-        let mut moved = 0;
-        for px in pixels_with_reds() {
-            let t = c.trace(px);
-            // Independent composition: C11 decoded, lifted, the red chroma step, then the placement
-            // (the matrix `aces2_input_matrix`) and ACES 2.
-            let lifted = p.white_lift.apply(logc4_decode_rgb(t.c11_logc4.0));
-            let scene = red.apply(lifted);
-            moved += usize::from(scene != lifted);
-            let want = aces.transform_ap0_linear(linalg::mul_vec(&aces2_input_matrix(), scene));
-            assert_close(
-                t.c12_display_linear,
-                want,
-                1e-14,
-                &format!("{target:?} {px:?}"),
-            );
-        }
-        assert!(
-            moved >= 3,
-            "{target:?}: the step moved only {moved} test pixels"
-        );
-    }
-}
-
-#[test]
-fn the_looks_strengths_reach_the_chain_and_blend_with_the_intensity() {
-    use ym_color::display::{ArriDisplayLut, DisplayLutInput, DisplayLutOutput, DisplayTransform};
-    let strength = |up, dn| RedChroma::new(up, dn).unwrap();
-    let look = |up, dn| Arc::new(LookTransform::neutral().with_red_chroma(strength(up, dn)));
-    let with = |look: Arc<LookTransform>, pct: f64| {
-        let mut p = ChainParams::new(fused_matrix(), tone());
-        p.look = Some(LookSetting::new(look, pct));
-        chain(&p)
-    };
-    // No look, Neutral and a look that sets nothing: the full up side, no dark relief.
-    let base = ChainParams::new(fused_matrix(), tone());
-    assert_eq!(chain(&base).red_chroma(), Some(RedChroma::DEFAULT));
-    assert_eq!(
-        with(Arc::new(LookTransform::neutral()), 100.0).red_chroma(),
-        Some(RedChroma::DEFAULT)
-    );
-    assert_eq!(
-        with(logc4_look(), 100.0).red_chroma(),
-        Some(RedChroma::DEFAULT)
-    );
-    // The look's own strengths at 100 %, Neutral's at 0 %, and a blend between.
-    assert_eq!(
-        with(look(0.0, 0.5), 100.0).red_chroma(),
-        Some(strength(0.0, 0.5))
-    );
-    assert_eq!(
-        with(look(0.0, 0.5), 0.0).red_chroma(),
-        Some(RedChroma::DEFAULT)
-    );
-    assert_eq!(
-        with(look(0.0, 0.5), 50.0).red_chroma(),
-        Some(strength(0.5, 0.25))
-    );
-    // Both 0: the step is skipped, bit for bit the plain ACES 2 chain.
-    let skipped = with(look(0.0, 0.0), 100.0);
-    assert_eq!(skipped.red_chroma(), None);
-    let mut off = base.clone();
-    off.red_chroma = false;
-    let off = chain(&off);
-    assert_eq!(off.red_chroma(), None);
-    let on = chain(&base);
-    let mut differ = 0;
-    for px in pixels_with_reds() {
-        assert_eq!(skipped.trace(px), off.trace(px));
-        differ += usize::from(on.trace(px).c12_display_linear != off.trace(px).c12_display_linear);
-    }
-    assert!(differ >= 3, "the step changed only {differ} test pixels");
-    // An imported ARRI display LUT has ARRI's reds: no step. A look with its own display rendering
-    // is blended with our C12, which has Neutral's step.
-    let arri = ArriDisplayLut::new(
-        cube_lut(17, |c| [c[0].powf(1.05), c[1], c[2] * 0.97]),
-        DisplayLutInput::LogC4,
-        DisplayLutOutput::REC709_G24,
-    )
-    .unwrap();
-    let mut p = base.clone();
-    p.display = DisplayTransform::arri(arri);
-    assert_eq!(chain(&p).red_chroma(), None);
-    assert_eq!(
-        with(rec709_baked_look(), 40.0).red_chroma(),
-        Some(RedChroma::DEFAULT)
-    );
-}
-
-#[test]
-fn a_dng_carries_the_red_chroma_step_with_the_p3_tables() {
-    // The DNG holds the scene values the app feeds the placement and ACES 2: C11 decoded, lifted, and
-    // through the red chroma step with the look's strengths. A DNG has no output gamut of its own: the
-    // step uses the P3-D65 tables for every output (`docs/09`).
-    let mut off_params = ChainParams::new(fused_matrix(), tone());
-    off_params.white_lift = WhiteLift::new(0.8, 2.2).unwrap();
-    off_params.red_chroma = false;
-    let off = chain(&off_params);
-    let p3 = RedChromaStep::for_gamut(RedGamut::P3D65, RedChroma::DEFAULT);
-    for target in OutputTarget::ALL {
-        let mut p = off_params.clone();
-        p.red_chroma = true;
-        p.output = target;
-        let on = chain(&p);
-        let mut differ = 0;
-        for px in pixels_with_reds() {
-            let plain = off.apply_dng_pixel(px);
-            let got = on.apply_dng_pixel(px);
-            assert_eq!(got, p3.apply(plain), "{target:?} {px:?}");
-            differ += usize::from(got != plain);
-        }
-        assert!(
-            differ >= 3,
-            "{target:?}: the DNG changed only {differ} test pixels"
-        );
-    }
-    // A look that lets none of it through (Signature) gives the plain DNG, bit for bit.
-    let mut p = off_params.clone();
-    p.red_chroma = true;
-    p.look = Some(LookSetting::new(
-        Arc::new(LookTransform::neutral().with_red_chroma(RedChroma::OFF)),
-        100.0,
-    ));
-    let none = chain(&p);
-    for px in pixels_with_reds() {
-        assert_eq!(none.apply_dng_pixel(px), off.apply_dng_pixel(px));
-    }
-    // A look with its own display rendering, above 0 %, is inverted from its picture (plain ACES 2):
-    // no step in front of the inverse. At 0 % the DNG is ours, with the step.
-    let look = rec709_baked_look();
-    let mut q = off_params.clone();
-    q.red_chroma = true;
-    q.look = Some(LookSetting::new(Arc::clone(&look), 100.0));
-    let inverse = chain(&q);
-    assert!(inverse.dng_inverts_display());
-    let mut q_off = q.clone();
-    q_off.red_chroma = false;
-    let inverse_off = chain(&q_off);
-    q.look = Some(LookSetting::new(look, 0.0));
-    let zero = chain(&q);
-    assert!(!zero.dng_inverts_display());
-    for px in pixels_with_reds() {
-        // The inverse of the picture: the picture itself has our C12 only in the blend, which at 100 %
-        // is the look's alone, so the step makes no difference.
-        assert_eq!(inverse.apply_dng_pixel(px), inverse_off.apply_dng_pixel(px));
-        assert_eq!(zero.apply_dng_pixel(px), p3.apply(off.apply_dng_pixel(px)));
-    }
 }

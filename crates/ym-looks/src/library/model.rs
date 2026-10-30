@@ -17,38 +17,6 @@ use crate::manifest::{Source, sha256_hex};
 /// What the user is told next to a look whose file is gone or changed.
 pub const DISABLED_MESSAGE: &str = "File missing or changed. Import again.";
 
-/// The encoding an ARRI display LUT expects as input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum DisplayInput {
-    /// LogC4 / ARRI Wide Gamut 4.
-    #[serde(rename = "logc4")]
-    LogC4,
-    /// LogC3 EI 800 / ARRI Wide Gamut 3.
-    #[serde(rename = "logc3")]
-    LogC3,
-}
-
-impl DisplayInput {
-    /// The text used in ids and the manifest: `logc4` or `logc3`.
-    #[must_use]
-    pub fn slug(self) -> &'static str {
-        match self {
-            Self::LogC4 => "logc4",
-            Self::LogC3 => "logc3",
-        }
-    }
-
-    /// The inverse of [`DisplayInput::slug`].
-    #[must_use]
-    pub fn from_slug(slug: &str) -> Option<Self> {
-        match slug {
-            "logc4" => Some(Self::LogC4),
-            "logc3" => Some(Self::LogC3),
-            _ => None,
-        }
-    }
-}
-
 /// Where a look is listed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LookGroup {
@@ -461,29 +429,6 @@ impl Look {
     }
 }
 
-/// An imported ARRI display LUT: ARRI's own display rendering, used instead of ACES 2.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DisplayLut {
-    /// `arri-display:<input>:<target>`.
-    pub id: LookId,
-    /// The encoding it expects.
-    pub input: DisplayInput,
-    /// The display it renders to (`rec709-g24`, …).
-    pub target: String,
-    /// The file.
-    pub lut: LutRef,
-    /// Whether its file is usable.
-    pub status: LookStatus,
-}
-
-impl DisplayLut {
-    /// "File missing or changed. Import again." for a disabled LUT.
-    #[must_use]
-    pub fn disabled_reason(&self) -> Option<&'static str> {
-        (!self.status.is_ok()).then_some(DISABLED_MESSAGE)
-    }
-}
-
 /// A `.cube` parse error as a short sentence for the person importing the file.
 #[must_use]
 pub fn cube_error_text(error: &CubeError) -> String {
@@ -708,18 +653,6 @@ mod tests {
             );
         }
         assert_eq!(LookLibrary::from_slug("arri"), None);
-    }
-
-    #[test]
-    fn display_input_slugs_round_trip() {
-        for input in [DisplayInput::LogC4, DisplayInput::LogC3] {
-            assert_eq!(DisplayInput::from_slug(input.slug()), Some(input));
-        }
-        assert_eq!(DisplayInput::from_slug("logc5"), None);
-        assert_eq!(
-            serde_json::to_string(&DisplayInput::LogC3).unwrap(),
-            "\"logc3\""
-        );
     }
 
     #[test]

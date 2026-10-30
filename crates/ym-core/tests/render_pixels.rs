@@ -183,7 +183,7 @@ fn the_highlight_range_moves_the_clipped_highlights_and_nothing_under_the_knee()
         }
     }
     // The clipped band: brighter with each step of the range (measured: about 0.809, 0.985 and 0.992;
-    // ACES 2 compresses the last step, sRGB codes 232, 253 and 254).
+    // the cine rendering compresses the last step, sRGB codes 232, 253 and 254 under the former display transform).
     let clipped = (0..w)
         .find(|&x| balanced_at(x, w) > 1.1)
         .expect("a clipped band");

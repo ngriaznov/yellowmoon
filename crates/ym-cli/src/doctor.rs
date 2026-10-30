@@ -82,7 +82,6 @@ struct Report {
     looks_built_in: usize,
     looks_imported: usize,
     looks_missing: usize,
-    display_luts: usize,
     preferences_path: PathBuf,
     preferences_exist: bool,
     preference_warnings: usize,
@@ -231,7 +230,6 @@ fn build() -> Result<Report, Failure> {
             .filter(|l| !matches!(l.group, LookGroupInfo::BuiltIn))
             .count(),
         looks_missing: looks.iter().filter(|l| l.missing).count(),
-        display_luts: service.display_luts().len(),
         preferences_exist: preferences_path.exists(),
         preferences_path,
         preference_warnings,
@@ -548,7 +546,6 @@ fn to_json(r: &Report) -> Value {
             "built_in": r.looks_built_in,
             "imported": r.looks_imported,
             "missing": r.looks_missing,
-            "display_luts": r.display_luts,
         },
         "preferences": {
             "path": lossy(&r.preferences_path),
@@ -705,16 +702,14 @@ fn to_text(r: &Report) -> String {
     row(
         "Looks",
         format!(
-            "{} built in, {} imported{}, {} display {}",
+            "{} built in, {} imported{}",
             r.looks_built_in,
             r.looks_imported,
             if r.looks_missing > 0 {
                 format!(" ({} need importing again)", r.looks_missing)
             } else {
                 String::new()
-            },
-            r.display_luts,
-            if r.display_luts == 1 { "LUT" } else { "LUTs" }
+            }
         ),
     );
     row(

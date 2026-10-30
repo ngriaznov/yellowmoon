@@ -3,7 +3,7 @@
 //! balance, the body's D65 colour matrix, the camera gain and the camera tone curve, and nothing else.
 //!
 //! * it is bit-identical across any edit of the user's settings (light, colour, look, tone, curve, the
-//!   highlight range, white lift, detail), on the CPU and on the device;
+//!   highlight range, detail), on the CPU and on the device;
 //! * a scene the camera got right (as-shot white balance of the true light) renders R = G = B, for bodies
 //!   with different matrices;
 //! * middle grey after the camera gain lands on sRGB code 119.7;
@@ -137,7 +137,6 @@ fn edits() -> Vec<Edit> {
             Box::new(|s| s.black = ym_core::settings::PercentSetting::manual_value(30.0)),
         ),
         ("white", Box::new(|s| s.white = -30.0)),
-        ("white offset", Box::new(|s| s.white_offset_ev = 2.0)),
         (
             "saturation",
             Box::new(|s| s.saturation = ym_core::settings::PercentSetting::manual_value(80.0)),

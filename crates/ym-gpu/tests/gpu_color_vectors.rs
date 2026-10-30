@@ -1,9 +1,5 @@
 //! The GPU colour kernel against the committed OpenColorIO vectors (`crates/ym-color/tests/data`).
 //!
-//! * M1-11, DRT gate: ACES 2 for all four outputs, AP0 in, display code values out, at most one code
-//!   value at 10 bits against OpenColorIO 2.6's float32 output. The vectors are AP0, so the fused
-//!   matrix is AP0 to AWG4 and the chain runs LogC4 encode, decode and the AWG4 to AP0 step: the
-//!   whole C8 to C13 path is exercised, not just the transform.
 //! * M1-10, LUT gate: tetrahedral interpolation of our own synthetic cubes against OpenColorIO's
 //!   tetrahedral result, in the kernel's f32 arithmetic (and with it the kernel's CDL-free LUT path,
 //!   shapers and domains).
@@ -19,11 +15,9 @@ use common::chains::identity_tone;
 use common::gpus;
 use serde_json::Value;
 use std::sync::Arc;
-use ym_color::aces2::Aces2Output;
 use ym_color::consts::linalg::IDENTITY;
 use ym_color::cube::parse_lut;
-use ym_color::display::{ChainParams, ColorChain, DISPLAY_PLACEMENT_EV, LookSetting, OutputTarget};
-use ym_color::gamut::matrices;
+use ym_color::display::{ChainParams, ColorChain, LookSetting};
 use ym_color::logc::logc4_decode_rgb;
 use ym_color::look::{LookInput, LookTransform};
 use ym_gpu::cpu::RgbImage;
@@ -73,117 +67,6 @@ fn render_stage(
     match out.data {
         PixelData::F32Planar(v) => v,
         other => panic!("{other:?}"),
-    }
-}
-
-#[test]
-fn drt_gate_against_opencolorio_for_all_four_outputs() {
-    for dev in gpus() {
-        for output in Aces2Output::ALL {
-            let path = data_dir().join(format!("aces2/{}.json", output.name()));
-            let doc: Value =
-                serde_json::from_str(&std::fs::read_to_string(&path).expect("vectors"))
-                    .expect("json");
-            let input = triplets(&doc["input_ap0"]);
-            let expected = triplets(&doc["expected_encoded"]);
-            let groups: Vec<(String, usize, usize)> = doc["groups"]
-                .as_array()
-                .expect("groups")
-                .iter()
-                .map(|g| {
-                    (
-                        g["name"].as_str().expect("name").to_string(),
-                        g["start"].as_u64().expect("start") as usize,
-                        g["count"].as_u64().expect("count") as usize,
-                    )
-                })
-                .collect();
-            // The chain's matrix takes AP0 to AWG4; C7 off, zero grade, Neutral, curves
-            // identity: C8 to C13 only.
-            // The ACES 2 path applies the display placement 2^k before the transform (docs/02 C12
-            // step 1a) and the vectors do not include it: scale the input matrix by 2^-k so it cancels.
-            let unplace = (-DISPLAY_PLACEMENT_EV).exp2();
-            let ap0_to_awg4 = matrices().ap0_to_awg4.map(|row| row.map(|v| v * unplace));
-            let mut params = ChainParams::new(ap0_to_awg4, identity_tone());
-            params.output = OutputTarget::from(output);
-            // OpenColorIO's vectors are the plain transform: the red chroma step (C12 step 1c) is off.
-            params.red_chroma = false;
-            // f16 devices hold the image in f16, which rounds the AP0 inputs themselves (a relative
-            // 2.4e-4 on saturated, very bright wheel colours is a few 10-bit codes after the gamut
-            // compression). They are checked against the CPU chain fed the rounded values, and
-            // against OpenColorIO only as a sanity bound; the f32 device takes the exact gate.
-            let strict = dev.mode == StorageMode::F32;
-            let rounded: Vec<[f64; 3]> = if strict {
-                input.clone()
-            } else {
-                input
-                    .iter()
-                    .map(|p| p.map(|v| f64::from(common::f16_round(v as f32))))
-                    .collect()
-            };
-            let img = image_of(&rounded);
-            let chain = ColorChain::new(&params).expect("chain");
-            let g = render_stage(dev, &params, &img, Stop::C13);
-            let n = input.len();
-            let mut worst = 0.0f64;
-            let mut worst_at = 0;
-            let mut over: Vec<usize> = Vec::new();
-            let mut worst_vs_cpu = 0.0f64;
-            for i in 0..n {
-                let cpu = chain.apply_pixel(rounded[i]);
-                for ch in 0..3 {
-                    let d = (f64::from(g[ch * n + i]) - expected[i][ch]).abs();
-                    if d > worst {
-                        worst = d;
-                        worst_at = i;
-                    }
-                    if d > CODE10 {
-                        over.push(i);
-                    }
-                    worst_vs_cpu = worst_vs_cpu.max((f64::from(g[ch * n + i]) - cpu[ch]).abs());
-                }
-            }
-            let group = groups
-                .iter()
-                .find(|(_, s, c)| worst_at >= *s && worst_at < s + c)
-                .map_or("?", |g| g.0.as_str());
-            eprintln!(
-                "{:?} {}: {n} vectors, vs OpenColorIO worst {:.4} codes at 10 bits (vector {worst_at}, group {group}), {} over one code; vs the CPU chain on the same inputs {:.5} codes",
-                dev.mode,
-                output.name(),
-                worst * 1023.0,
-                over.len(),
-                worst_vs_cpu * 1023.0
-            );
-            assert!(
-                worst_vs_cpu <= CODE10,
-                "{:?} {}: GPU differs from the CPU chain by {:.3} codes",
-                dev.mode,
-                output.name(),
-                worst_vs_cpu * 1023.0
-            );
-            if strict {
-                assert!(
-                    over.is_empty(),
-                    "{:?} {}: {} vectors exceed one 10-bit code value; worst {:.3} codes at vector {worst_at} ({group}): input {:?}, GPU {:?}, OCIO {:?}",
-                    dev.mode,
-                    output.name(),
-                    over.len(),
-                    worst * 1023.0,
-                    input[worst_at],
-                    [g[worst_at], g[n + worst_at], g[2 * n + worst_at]],
-                    expected[worst_at]
-                );
-            } else {
-                assert!(
-                    worst * 1023.0 <= 8.0,
-                    "{:?} {}: {:.2} codes from OpenColorIO",
-                    dev.mode,
-                    output.name(),
-                    worst * 1023.0
-                );
-            }
-        }
     }
 }
 

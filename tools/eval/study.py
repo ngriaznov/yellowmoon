@@ -33,8 +33,8 @@ import numpy as np
 QUANTILE_GRID = np.linspace(0.001, 0.999, 999)
 INNER = (QUANTILE_GRID >= 0.02) & (QUANTILE_GRID <= 0.98)
 
-#: Mid-grey placements (display-linear luminance of scene 0.18) the sweep tries. ACES 2 is measured (0.100); the
-#: others are parameters, not measurements of any product.
+#: Mid-grey placements (display-linear luminance of scene 0.18) the sweep tries. The cine rendering puts it at
+#: 0.1109; the others are parameters, not measurements of any product.
 PLACEMENTS = (0.10, 0.12, 0.14, 0.16, 0.18, 0.20)
 
 #: Scene-brightness statistics tried as "the camera's meter".
@@ -167,7 +167,7 @@ def placement_sweep(entries: Sequence[Mapping[str, Any]], placements: Sequence[f
     """G2 if the display transform placed scene 0.18 at `g` instead of where ours does.
 
     The display luminance is scaled by `g / D(0.18)` with `D(0.18)` this render's own value (the shape of the
-    transform is kept; only its mid-grey placement moves). `g = 0.10` is ACES 2.
+    transform is kept; only its mid-grey placement moves). Our own rendering has `g = 0.1109`.
     """
     rows = []
     for g in placements:

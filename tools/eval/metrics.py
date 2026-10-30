@@ -7,8 +7,7 @@ Nothing here touches a file or a process, so every function is unit tested (`tes
   the reported key statistic) with switches for the what-if variants of the previous metering rule (other target, other
   statistic, flat weights, shrinking towards a fixed gain);
 * tone-curve estimation by quantile matching: the camera's own raw-to-JPEG curve (no registration needed) and our
-  display transform's curve, read from the pictures themselves;
-* the exposure placed by a display transform (ACES 2 neutral axis through OpenColorIO, when it is installed).
+  display transform's curve, read from the pictures themselves.
 
 Conventions: luminances are linear light, "EV" is log2 of a ratio, a positive error means *we* are brighter than the
 reference.
@@ -384,32 +383,6 @@ def shrunk_ev(ev_auto: float, anchor_ev: float, weight: float) -> float:
     """`anchor + weight (ev_auto - anchor)`: the what-if that keeps part of the camera's own placement (weight 1 is
     the current algorithm, 0 a fixed gain)."""
     return anchor_ev + weight * (ev_auto - anchor_ev)
-
-
-# --------------------------------------------------------------------------------------------------------------
-# The display transform's placement of mid grey
-# --------------------------------------------------------------------------------------------------------------
-
-ACES_WHITE_XY = (0.32168, 0.33767)
-
-
-def aces2_neutral_display_y(scene_values: Sequence[float]) -> np.ndarray | None:
-    """Display-linear luminance (100 nit = 1) of neutral scene-linear values through the ACES 2.0 SDR 100 nit
-    Rec.709-limited output transform, computed by OpenColorIO's built-in transform (the same one
-    `tools/vectors/aces2_vectors.py` uses for the vectors our own port is tested against). `None` when
-    OpenColorIO is not installed. A neutral AWG4 value `s` is the neutral AP0 value `s` (both white points map to
-    each other), so the ACES input is `[s, s, s]`."""
-    try:
-        import PyOpenColorIO as ocio  # type: ignore[import-not-found]
-    except ImportError:
-        return None
-    t = ocio.BuiltinTransform()
-    t.setStyle("ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-REC709_2.0")
-    config = ocio.Config.CreateRaw()
-    cpu = config.getProcessor(t).getDefaultCPUProcessor()
-    rgb = np.repeat(np.asarray(scene_values, dtype=np.float32)[:, None], 3, axis=1).copy()
-    cpu.applyRGB(rgb)
-    return rgb[:, 1].astype(np.float64)  # XYZ output: Y is the second component
 
 
 def with_target(cfg: MeterConfig, target: float) -> MeterConfig:

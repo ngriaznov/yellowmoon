@@ -11,9 +11,8 @@
 //!
 //! # What an export does
 //!
-//! 1. **Checks** that the look (and the imported display LUT, if one is chosen) can be loaded: an
-//!    export never quietly falls back to Neutral the way the viewport does, because the file's XMP
-//!    says which look made it.
+//! 1. **Checks** that the look can be loaded: an export never quietly falls back to Neutral the way
+//!    the viewport does, because the file's XMP says which look made it.
 //! 2. **Names** the file from the template and resolves the destination folder (`docs/09` Options).
 //!    With "If the file exists: Skip" and a file in the way nothing is rendered at all.
 //! 3. **Renders** at full resolution, tile by tile, on the render scheduler's export worker, which
@@ -31,9 +30,9 @@
 //!      orientation ([`FullTarget::DngLinearAwg4`]) and the sRGB preview of what the user sees
 //!      ([`FullTarget::DngPreview`]). The `Orientation` tag carries the camera's and the user's
 //!      turns, the default crop tags the user's crop, so other editors can undo both. With a look
-//!      that carries its own display rendering (LogC3 to Rec.709), or an imported display LUT, the
-//!      pixels are the scene values ACES 2 turns into that picture, so the DNG is close to, not the
-//!      same as, the picture of the app (`docs/09`, "What a DNG carries").
+//!      that carries its own display rendering (LogC3 to Rec.709), the pixels are the scene values
+//!      the cine rendering turns into that picture, so the DNG is close to, not the same as, the picture of the
+//!      app (`docs/09`, "What a DNG carries").
 //! 4. **Writes** through `ym_export::write_export`: a temporary file in the destination folder, then
 //!    a rename; a cancel or an error deletes the temporary file.
 //!
@@ -85,8 +84,8 @@ use crate::auto::meta_image_size;
 use crate::camera::PhotoCamera;
 use crate::pipeline::frame::TailRequest;
 use crate::pipeline::{
-    ComputeDevice, DisplayChoice, FullImage, FullRequest, FullTarget, PhotoSource, RenderError,
-    RenderReport, Renderer,
+    ComputeDevice, FullImage, FullRequest, FullTarget, PhotoSource, RenderError, RenderReport,
+    Renderer,
 };
 use crate::session::{PhotoId, PhotoView, Session, SessionError};
 use crate::settings::{DevelopSettings, LensSettings, ResolvedSettings, SettingsError};
@@ -107,7 +106,7 @@ pub enum ExportError {
     /// The job was cancelled; the partial file was removed.
     #[error("The export was cancelled and the partial file was removed.")]
     Cancelled,
-    /// The look or the display LUT cannot be used ("File missing or changed. Import again.").
+    /// The look cannot be used ("File missing or changed. Import again.").
     #[error("{0}")]
     Look(String),
     /// The photo could not be rendered.
@@ -428,7 +427,7 @@ impl ExportContext {
             renderer,
             home: naming::home_dir(),
             app_version: app_version().to_owned(),
-            // The tone curve and look table `tools/dngfit` fitted to ACES 2 (`data/dng/profile.json`,
+            // The tone curve and look table `tools/dngfit` fitted to the cine rendering (`data/dng/profile.json`,
             // embedded in `ym-export`), and the `BaselineExposure` offset they were fitted with.
             // The app and the CLI both come through here, so their DNGs are the same bytes.
             dng_profile: FittedProfile::embedded().clone(),
@@ -946,19 +945,15 @@ pub fn profile_match_text(kind: &MatchKind) -> &'static str {
     }
 }
 
-/// The id of the display transform that makes the picture: `aces2-sdr100-rec709lim` for sRGB,
-/// `aces2-sdr100-p3lim` for Display P3, `aces2-sdr100-p3lim-rec2020` for Rec.2020 (the limiting
-/// primaries and, where it differs from them, the encoding), or the id of the imported ARRI
-/// display LUT (`arri-display:logc4:rec709-g24`).
+/// The id of the display transform that makes the picture: `cine-rec709` for sRGB,
+/// `cine-p3` for Display P3, `cine-rec2020` for Rec.2020: the cine rendering, whose gamut stage runs on the
+/// output's own primaries.
 #[must_use]
-pub fn display_transform_id(choice: &DisplayChoice, space: ColorSpace) -> String {
-    match choice {
-        DisplayChoice::ArriLut(id) => id.to_string(),
-        DisplayChoice::Aces2 => match space {
-            ColorSpace::Srgb => "aces2-sdr100-rec709lim".to_owned(),
-            ColorSpace::DisplayP3 => "aces2-sdr100-p3lim".to_owned(),
-            ColorSpace::Rec2020 => "aces2-sdr100-p3lim-rec2020".to_owned(),
-        },
+pub fn display_transform_id(space: ColorSpace) -> String {
+    match space {
+        ColorSpace::Srgb => "cine-rec709".to_owned(),
+        ColorSpace::DisplayP3 => "cine-p3".to_owned(),
+        ColorSpace::Rec2020 => "cine-rec2020".to_owned(),
     }
 }
 
@@ -1047,9 +1042,9 @@ fn render(
 ///
 /// # Errors
 ///
-/// [`ExportError::Look`] for a look or display LUT that cannot be loaded, or that was replaced,
-/// removed or switched while the photo was rendering ([`CHANGED_DURING_EXPORT_MESSAGE`]; nothing is
-/// written under a look the pixels were not made with),
+/// [`ExportError::Look`] for a look that cannot be loaded, or that was replaced, removed or
+/// switched while the photo was rendering ([`CHANGED_DURING_EXPORT_MESSAGE`]; nothing is written
+/// under a look the pixels were not made with),
 /// [`ExportError::Render`] (memory, an unusable photo, a panic
 /// below this function, which is caught and logged),
 /// [`ExportError::Write`] (the folder, the disk, the original in the way), and
@@ -1081,45 +1076,20 @@ pub fn export_photo(
     })
 }
 
-/// The message of a photo whose look or display rendering changed while it was exporting.
+/// The message of a photo whose look changed while it was exporting.
 pub const CHANGED_DURING_EXPORT_MESSAGE: &str =
-    "The look or the display rendering changed while this photo was exporting. Export it again.";
+    "The look changed while this photo was exporting. Export it again.";
 
-/// What the render reads from the look library and from Preferences › Display rendering, for
-/// noticing that either changed between the start of an export and the file being written: the
-/// file's XMP says which look and transform made it, so it must say it truthfully.
-#[derive(Debug, PartialEq, Eq)]
-struct RenderInputs {
-    /// The look's fingerprint (the SHA-256 of its LUT, or its id for a built-in look).
-    look: String,
-    /// The display rendering in effect.
-    display: DisplayChoice,
-    /// The fingerprint of the chosen display LUT.
-    display_lut: Option<String>,
-}
-
-/// The look and display rendering as they are now. An error when either cannot be loaded: an
-/// export never falls back.
-fn render_inputs(ctx: &ExportContext, photo: &ExportPhoto) -> Result<RenderInputs, ExportError> {
-    let looks = ctx.renderer.looks();
-    let look = looks
+/// The look's fingerprint as the library has it now (the SHA-256 of its LUT, or its id for a
+/// built-in look), for noticing that it changed between the start of an export and the file being
+/// written: the file's XMP says which look made it, so it must say it truthfully. An error when the
+/// look cannot be loaded: an export never falls back.
+fn look_fingerprint(ctx: &ExportContext, photo: &ExportPhoto) -> Result<String, ExportError> {
+    ctx.renderer
+        .looks()
         .look(photo.look())
-        .map_err(|e| ExportError::Look(e.to_string()))?;
-    let display = ctx.renderer.display();
-    let display_lut = match &display {
-        DisplayChoice::ArriLut(id) => Some(
-            looks
-                .display_transform(id)
-                .map_err(|e| ExportError::Look(e.to_string()))?
-                .1,
-        ),
-        DisplayChoice::Aces2 => None,
-    };
-    Ok(RenderInputs {
-        look: look.fingerprint,
-        display,
-        display_lut,
-    })
+        .map(|look| look.fingerprint)
+        .map_err(|e| ExportError::Look(e.to_string()))
 }
 
 fn export_photo_unguarded(
@@ -1151,15 +1121,14 @@ fn export_photo_unguarded(
         progress: Some(&monotone),
     };
 
-    // 1. The look and the display rendering must be usable: an export does not fall back.
+    // 1. The look must be usable: an export does not fall back.
     let looks = ctx.renderer.looks();
-    let inputs = render_inputs(ctx, photo)?;
-    let display = inputs.display.clone();
+    let fingerprint = look_fingerprint(ctx, photo)?;
     let is_dng = options.format == FormatKind::Dng;
     let look_sha256 = looks.look_sha256(photo.look());
     // Checked again once the pixels are rendered (which takes seconds to minutes).
     let still_the_same = || -> Result<(), ExportError> {
-        if render_inputs(ctx, photo)? == inputs {
+        if look_fingerprint(ctx, photo)? == fingerprint {
             Ok(())
         } else {
             Err(ExportError::Look(CHANGED_DURING_EXPORT_MESSAGE.to_owned()))
@@ -1224,7 +1193,7 @@ fn export_photo_unguarded(
                 look: Some(photo.look().to_string()),
                 look_sha256,
                 look_intensity_pct: Some(rounded_percent(photo.source.settings.look_intensity)),
-                display_transform: Some(display_transform_id(&display, space)),
+                display_transform: Some(display_transform_id(space)),
                 models: lens_models(&ctx.renderer, &photo.source.settings.lens),
                 // Which Auto made the values, and what the provider said (`docs/22` section 14.2).
                 auto: Some(photo.source.estimates.source().name().to_owned()),

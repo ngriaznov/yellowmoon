@@ -20,7 +20,6 @@ export const TRADEMARK_NOTICE =
 export const CREDITS: ReadonlyArray<string> = [
   "ALEXA colour matrices from the Academy's aces-dev (AMPAS licence).",
   "Sony camera spectral measurements by Weta Digital, from rawtoaces-data (Apache License 2.0).",
-  "ACES 2.0 output transform from aces-output (Apache License 2.0).",
   "The Figtree typeface (SIL Open Font License 1.1).",
 ];
 

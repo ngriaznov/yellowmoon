@@ -1,7 +1,7 @@
 // The mock's side of the ARRI wizard, the export extras and Preferences: synthetic packages, recognition, the simulated
-// import, the Downloads watcher, the system commands, display LUTs, the estimate's extra fields and the preferences store.
+// import, the Downloads watcher, the system commands, the estimate's extra fields and the preferences store.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createMockApi, FAILURE_ZIPS, LOOK_FILE_ZIPS, PACKAGE_FACTS, PACKAGE_ZIPS } from "./api.mock";
+import { createMockApi, DISPLAY_ONLY_REASON, FAILURE_ZIPS, LOOK_FILE_ZIPS, PACKAGE_FACTS, PACKAGE_ZIPS } from "./api.mock";
 import type { MockApi } from "./api.mock";
 import type { AppError, DownloadFound, ExportJob, ExportOptions, ExportProgress, LooksImportProgress } from "./api/types";
 
@@ -49,9 +49,9 @@ afterEach(() => {
 });
 
 describe("recognising synthetic packages", () => {
-  it("knows the five packages by their zips, with the counts of docs/08", async () => {
+  it("knows the three look packages by their zips, with the counts of docs/08", async () => {
     const found = await Promise.all(Object.values(PACKAGE_ZIPS).map((name) => api.looksRecognise(downloads(name))));
-    expect(found.map((f) => f.recognition.kind)).toEqual(["package", "package", "package", "package", "package"]);
+    expect(found.map((f) => f.recognition.kind)).toEqual(["package", "package", "package"]);
     const ll4 = found[0]!;
     expect(ll4).toMatchObject({
       name: "ARRI_LookLibrary_LogC4.zip",
@@ -59,7 +59,7 @@ describe("recognising synthetic packages", () => {
       size_bytes: 181_000_000,
       recognition: { package_id: "look_library_logc4", title: "Look Library · LogC4", what: "Look Library · LogC4 · log to log", contents: "87 .cube · 65-point", file_count: 87 },
     });
-    expect(found.map((f) => (f.recognition.kind === "package" ? f.recognition.file_count : 0))).toEqual([87, 22, 87, 87, 48]);
+    expect(found.map((f) => (f.recognition.kind === "package" ? f.recognition.file_count : 0))).toEqual([87, 87, 87]);
   });
 
   it("finds a name by its last part only, ignoring case, so a dropped name works as well as a full path", async () => {
@@ -143,7 +143,7 @@ describe("importing", () => {
     expect(events.at(-1)).toMatchObject({ done: 87, total: 87 });
     expect(result.added).toHaveLength(87);
     expect(result.added[0]).toMatchObject({ id: "arri:3000:film-warm", name: "Film warm", input: "logc4" });
-    expect(result.display_luts_added).toBe(0);
+    expect(result).not.toHaveProperty("display_luts_added");
   });
 
   it("names the seven looks of the mockup first and groups the library", async () => {
@@ -169,22 +169,20 @@ describe("importing", () => {
     expect(events.at(-1)).toMatchObject({ done: 87, total: 87 });
   });
 
-  it("adds ARRI's display LUTs, which the wizard offers as the display rendering", async () => {
-    expect(await api.looksDisplayLuts()).toEqual([]);
-    const importing = api.looksImport(downloads(PACKAGE_ZIPS.display_luts_logc4));
-    await vi.advanceTimersByTimeAsync(4000);
-    const result = await importing;
-    expect(result).toMatchObject({ added: [], display_luts_added: 22 });
-    const luts = await api.looksDisplayLuts();
-    expect(luts).toHaveLength(22);
-    expect(luts[0]).toEqual({ id: "arri-display:logc4:rec709-g24", name: "Rec.709 · Gamma 2.4", input: "logc4", target: "rec709-g24" });
-    await api.preferencesSet({ display_rendering: { kind: "arri_display", id: luts[0]!.id } });
-    expect((await api.preferencesGet()).display_rendering).toEqual({ kind: "arri_display", id: "arri-display:logc4:rec709-g24" });
+  it("recognises ARRI's display LUT packages, says there is nothing to import, and imports nothing", async () => {
+    const before = await api.looksList();
+    for (const zip of [FAILURE_ZIPS.displayLutsLogc4, FAILURE_ZIPS.displayLutsLogc3]) {
+      const found = await api.looksRecognise(downloads(zip));
+      expect(found.recognition).toEqual({ kind: "unusable", package_id: null, reason: DISPLAY_ONLY_REASON });
+      const error = await rejection(api.looksImport(downloads(zip)));
+      expect(error).toMatchObject({ scope: "looks", message: DISPLAY_ONLY_REASON });
+    }
+    expect(await api.looksList()).toEqual(before);
   });
 
-  it("refuses a display rendering that is not imported", async () => {
-    const error = await rejection(api.preferencesSet({ display_rendering: { kind: "arri_display", id: "arri-display:logc4:nope" } }));
-    expect(error.scope).toBe("preferences");
+  it("has no display rendering to choose and no display LUTs to list", async () => {
+    expect(await api.preferencesGet()).not.toHaveProperty("display_rendering");
+    expect(api).not.toHaveProperty("looksDisplayLuts");
   });
 
   it("gives LogC3 looks their own ids and inputs", async () => {
@@ -271,14 +269,14 @@ describe("watching Downloads", () => {
   });
 
   it("delivers the zips named in the options one after the other", async () => {
-    api.reset({ downloads: [PACKAGE_ZIPS.look_library_logc4, PACKAGE_ZIPS.display_luts_logc4] });
+    api.reset({ downloads: [PACKAGE_ZIPS.look_library_logc4, PACKAGE_ZIPS.look_library_logc3] });
     const found: string[] = [];
     api.on("download_found", (e) => found.push(e.file_name));
     await api.looksWatchDownloads(true);
     await vi.advanceTimersByTimeAsync(2600);
     expect(found).toEqual(["ARRI_LookLibrary_LogC4.zip"]);
     await vi.advanceTimersByTimeAsync(2600);
-    expect(found).toEqual(["ARRI_LookLibrary_LogC4.zip", "ARRI_DisplayLUTs_LogC4.zip"]);
+    expect(found).toEqual(["ARRI_LookLibrary_LogC4.zip", "ARRI_LookLibrary_LogC3.zip"]);
     await api.looksWatchDownloads(false);
   });
 
@@ -459,7 +457,6 @@ describe("preferences", () => {
 describe("package facts", () => {
   it("match the mockup's choose step", () => {
     expect(PACKAGE_FACTS.look_library_logc4).toMatchObject({ fileCount: 87, megabytes: 181, contents: "87 .cube · 65-point" });
-    expect(PACKAGE_FACTS.display_luts_logc4).toMatchObject({ fileCount: 22, megabytes: 32 });
-    expect(PACKAGE_FACTS.display_luts_logc3).toMatchObject({ fileCount: 48, megabytes: 46 });
+    expect(Object.keys(PACKAGE_FACTS)).toEqual(["look_library_logc4", "look_library_logc3", "look_library_logc3_to_rec709"]);
   });
 });

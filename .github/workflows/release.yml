@@ -110,7 +110,7 @@ jobs:
         if: steps.check_tag.outputs.exists == 'false'
         run: npm ci
 
-      # NOTICE item 9 and the About dialog promise the licence texts of every dependency, and a binary release must carry them.
+      # NOTICE item 8 and the About dialog promise the licence texts of every dependency, and a binary release must carry them.
       # The generator reads Cargo.lock and the npm package folders (hence after `npm ci`), fails when a package has no text, and
       # check_bundle.py fails when src-tauri/tauri.conf.json would not put the file (and NOTICE with the BSD conditions) into the
       # bundle. The CI job `licences` runs the same two commands on every change. tools/licences/README.md.

@@ -2,7 +2,7 @@
 //! section Stage order).
 //!
 //! [`ChainParams`] collects what the chain needs; [`ColorChain::new`] prepares it once (bakes the four
-//! curves, multiplies out matrices, fetches the shared ACES 2 tables and classifies the look) and the
+//! curves, multiplies out matrices, sets up the cine rendering and classifies the look) and the
 //! result is immutable, `Send` and `Sync`, so any number of threads can call it. To change one
 //! setting, clone [`ColorChain::params`], edit it and build a new chain (the LUTs are shared, not
 //! copied).
@@ -37,15 +37,13 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::dng_inverse::DngDisplayInverse;
-use super::red_chroma::RedChroma;
-use super::transform::{DisplayTransform, PreparedDisplay};
+use super::transform::PreparedDisplay;
 use super::{DisplayError, OutputTarget};
 use crate::camera_default::CameraDefault;
 use crate::consts::Vec3;
 use crate::consts::linalg::{self, Mat3};
 use crate::curve::{BakedCurves, CurveSet};
 use crate::encode::{OutputSpace, dither_8bit, quantize};
-use crate::exposure::white::WhiteLift;
 use crate::gamut::{LinearAwg4, LinearRec709};
 use crate::grade::{Grade, GradeParams, grade_luma};
 use crate::logc::LogC4;
@@ -132,21 +130,6 @@ pub struct ChainParams {
     pub look: Option<LookSetting>,
     /// Stage C11: the four curves (baked into 1024-entry tables by [`ColorChain::new`]).
     pub curves: CurveSet,
-    /// Stage C12: ACES 2 or an imported ARRI display LUT.
-    pub display: DisplayTransform,
-    /// Stage C12 step 1b: the white lift, a scene-linear gain on the tones above +1 stop over middle
-    /// grey, before the display placement and ACES 2 (`docs/02`). Only the ACES 2 path has it: an
-    /// imported ARRI display LUT keeps ARRI's highlights and ignores the lift. It works alongside C7's
-    /// highlight range ([`ChainParams::tone`]), which acts on the scene side before LogC4; both run.
-    /// [`WhiteLift::NONE`] is the identity.
-    pub white_lift: WhiteLift,
-    /// Stage C12 step 1c: the red chroma step, a hue-preserving chroma gain on the reds in front of the
-    /// display placement and ACES 2 (`docs/02`). `true` (the default) runs it with the look's strengths
-    /// ([`RedChroma`]: `up` 1 and `dark_relief` 0 for Neutral and for a look that does not set them, both
-    /// 0 for Signature, which skips it); `false` is plain ACES 2, for tests and tools. Only the ACES 2
-    /// path has it: an imported ARRI display LUT keeps ARRI's reds and ignores it. A DNG carries it in
-    /// its pixels, like the white lift (with the P3-D65 tables; `docs/09`).
-    pub red_chroma: bool,
     /// Stage C13: which output the display-linear values are encoded for.
     pub output: OutputTarget,
     /// Whether 8-bit outputs are dithered (`docs/02`, C13). 10 and 16-bit outputs never are.
@@ -160,8 +143,8 @@ pub struct ChainParams {
 }
 
 impl ChainParams {
-    /// Defaults for everything after C7: zero grade, Neutral look, identity curves, ACES 2, the
-    /// viewport output, dither on, the Before view showing the camera default (with the neutral
+    /// Defaults for everything after C7: zero grade, Neutral look, identity curves, the cine rendering,
+    /// the viewport output, dither on, the Before view showing the camera default (with the neutral
     /// placeholder for the body: set [`ChainParams::camera_default`]).
     #[must_use]
     pub fn new(matrix: Mat3, tone: ToneParams) -> Self {
@@ -172,9 +155,6 @@ impl ChainParams {
             warp: WarpParams::default(),
             look: None,
             curves: CurveSet::default(),
-            display: DisplayTransform::Aces2,
-            white_lift: WhiteLift::NONE,
-            red_chroma: true,
             output: OutputTarget::Viewport,
             dither: true,
             before: BeforePoint::CameraDefault,
@@ -241,8 +221,8 @@ struct UpToC11 {
 ///
 /// Build it once per photo and settings change, then call it from as many threads as you like.
 ///
-/// `Debug` prints the [`ChainParams`] it was built from (with the look and display LUT
-/// summarised), not the baked tables.
+/// `Debug` prints the [`ChainParams`] it was built from (with the look summarised), not the baked
+/// tables.
 #[derive(Clone)]
 pub struct ColorChain {
     params: ChainParams,
@@ -258,8 +238,8 @@ pub struct ColorChain {
     dither: bool,
     before: BeforePoint,
     camera_default: CameraDefault,
-    /// Set when C12 is not our ACES 2, so the DNG holds the scene values ACES 2 turns into this
-    /// chain's picture (see [`ColorChain::dng_inverts_display`]).
+    /// Set when C12 is not our cine rendering, so the DNG holds the scene values the cine rendering turns
+    /// into this chain's picture (see [`ColorChain::dng_inverts_display`]).
     dng_inverse: Option<DngDisplayInverse>,
 }
 
@@ -269,25 +249,6 @@ impl fmt::Debug for ColorChain {
             .field("params", &self.params)
             .finish_non_exhaustive()
     }
-}
-
-/// The strengths of the red chroma step for `params`: `None` when it is off.
-///
-/// Neutral's strengths ([`RedChroma::DEFAULT`]) when there is no look, for a look with its own display
-/// rendering (our C12 is then only the part that blends with the look's) and at intensity 0; otherwise the
-/// look's own strengths blended in by the look intensity, as its colours are
-/// (`neutral + k (look - neutral)`).
-fn red_chroma_of(params: &ChainParams) -> Option<RedChroma> {
-    if !params.red_chroma {
-        return None;
-    }
-    let strength = match &params.look {
-        Some(s) if !s.look.includes_display_rendering() => {
-            RedChroma::DEFAULT.blend(s.look.red_chroma(), intensity_fraction(s.intensity_pct))
-        }
-        _ => RedChroma::DEFAULT,
-    };
-    Some(strength)
 }
 
 fn sanitize(c: f64) -> f64 {
@@ -305,9 +266,7 @@ fn unit(x: f64) -> f64 {
 impl ColorChain {
     /// Prepares the chain.
     ///
-    /// Bakes the four curves into their 1024-entry tables, multiplies out the display transform's
-    /// matrices, fetches the shared ACES 2 tables for the output (10 to 35 ms the first time in a
-    /// process) and classifies the look.
+    /// Bakes the four curves into their 1024-entry tables, sets up the cine rendering for the output and classifies the look.
     ///
     /// # Errors
     ///
@@ -330,10 +289,9 @@ impl ColorChain {
                 intensity_pct: s.intensity_pct,
             },
         };
-        // C12 is not our ACES 2 for an imported ARRI display LUT, and for a look that includes its
-        // own display rendering at any intensity above 0 (at 0 the chain is our C12 exactly).
-        let own_rendering = matches!(params.display, DisplayTransform::ArriDisplayLut(_))
-            || matches!(&look, LookStage::Baked { intensity_pct, .. } if intensity_fraction(*intensity_pct) > 0.0);
+        // C12 is not our cine rendering for a look that includes its own display rendering at any
+        // intensity above 0 (at 0 the chain is our C12 exactly).
+        let own_rendering = matches!(&look, LookStage::Baked { intensity_pct, .. } if intensity_fraction(*intensity_pct) > 0.0);
         Ok(Self {
             params: params.clone(),
             matrix: params.matrix,
@@ -342,12 +300,7 @@ impl ColorChain {
             warp: Warp::new(&params.warp),
             look,
             curves: params.curves.bake(),
-            display: PreparedDisplay::new(
-                &params.display,
-                params.output,
-                params.white_lift,
-                red_chroma_of(params),
-            ),
+            display: PreparedDisplay::new(params.output),
             output: params.output,
             space: params.output.space(),
             dither: params.dither,
@@ -393,22 +346,6 @@ impl ColorChain {
         &self.camera_default
     }
 
-    /// The white lift this chain applies in front of ACES 2: the lift it was built with when C12 is
-    /// our ACES 2, [`WhiteLift::NONE`] for an imported ARRI display LUT (which ignores it).
-    #[must_use]
-    pub fn white_lift(&self) -> WhiteLift {
-        self.display.white_lift()
-    }
-
-    /// The strengths of the red chroma step this chain applies in front of ACES 2: `None` when the step
-    /// is off in the parameters, both strengths are 0 (a look such as Signature), or C12 is an imported
-    /// ARRI display LUT. At a look intensity between 0 and 100 the strengths are blended from Neutral's
-    /// to the look's.
-    #[must_use]
-    pub fn red_chroma(&self) -> Option<RedChroma> {
-        self.display.red_chroma()
-    }
-
     /// Whether the look includes its own display rendering (LogC3 to Rec.709), which replaces C12.
     #[must_use]
     pub fn look_includes_display_rendering(&self) -> bool {
@@ -416,9 +353,9 @@ impl ColorChain {
     }
 
     /// Whether a DNG of this chain holds the picture through the inverse of our display transform
-    /// instead of the C11 output itself: true when C12 is not our ACES 2 (an imported ARRI display LUT,
-    /// or a look that includes its own display rendering at an intensity above 0). The DNG's fitted
-    /// profile renders ACES 2, so the pixels are the scene values that ACES 2 turns into the picture
+    /// instead of the C11 output itself: true when C12 is not our cine rendering (a look that includes its
+    /// own display rendering at an intensity above 0). The DNG's fitted profile renders the cine
+    /// rendering, so the pixels are the scene values that the cine rendering turns into the picture
     /// this chain makes, and Adobe's renderer shows approximately that picture
     /// ([`ColorChain::apply_dng_pixel`], `docs/09`).
     #[must_use]
@@ -542,25 +479,21 @@ impl ColorChain {
     }
 
     /// The DNG path (`docs/09`, Pixel pipeline per format): C1 to C11, then LogC4 decoded back to
-    /// linear AWG4, with the white lift (C12 step 1b) and the red chroma step (step 1c, with the look's
-    /// strengths and the P3-D65 gamut tables: a DNG has no output gamut of its own) when C12 is our ACES 2.
-    /// Negative values are not clipped here (the writer clips and counts them).
+    /// linear AWG4 when C12 is our cine rendering. Negative values are not clipped here (the writer clips
+    /// and counts them).
     ///
-    /// When C12 is not our ACES 2 ([`ColorChain::dng_inverts_display`]) the result is instead the
-    /// scene-linear AWG4 triple that ACES 2 with the display placement turns into this chain's
-    /// display-linear picture (look, intensity blend and all), limited to the range of the DNG
-    /// profile ([`DNG_SCENE_LIMIT`](super::DNG_SCENE_LIMIT)): with the placement in `BaselineExposure`, Adobe's renderer shows
-    /// approximately that picture. Build the chain for [`OutputTarget::Srgb`], the display the DNG
-    /// profile was fitted to; for another output the display value is first converted to Rec.709
-    /// primaries.
+    /// When C12 is not our cine rendering ([`ColorChain::dng_inverts_display`]) the result is instead the
+    /// scene-linear AWG4 triple that the cine rendering turns into this chain's display-linear picture
+    /// (look, intensity blend and all), limited to the range of the DNG profile
+    /// ([`DNG_SCENE_LIMIT`](super::DNG_SCENE_LIMIT)): Adobe's renderer shows approximately that picture.
+    /// Build the chain for [`OutputTarget::Srgb`], the display the DNG profile was fitted to; for another
+    /// output the display value is first converted to Rec.709 primaries.
     #[must_use]
     pub fn apply_dng_pixel(&self, camera_rgb: Vec3) -> Vec3 {
         let c11 = self.up_to_c11(camera_rgb).c11;
         match &self.dng_inverse {
-            // C12 is our ACES 2: the pixels are the scene values it takes in, with the white lift
-            // (a scene-linear gain) and the red chroma step (P3-D65 tables), in front of the placement
-            // that `BaselineExposure` carries.
-            None => self.display.dng_scene(c11.to_linear().0),
+            // C12 is our cine rendering: the pixels are the scene values it takes in.
+            None => c11.to_linear().0,
             Some(inverse) => inverse.scene_awg4(self.c12(c11)),
         }
     }

@@ -768,7 +768,7 @@ describe("preferences", () => {
   it("has the defaults of docs/09 and docs/12", async () => {
     const p = await api.preferencesGet();
     expect(p.default_look).toBe("builtin:neutral");
-    expect(p.display_rendering).toEqual({ kind: "aces2" });
+    expect(p).not.toHaveProperty("display_rendering");
     expect(p.check_for_updates_automatically).toBe(true);
     expect(p.remove_location_from_exports).toBe(false);
     expect(p.export_defaults).toEqual(job("this").options);

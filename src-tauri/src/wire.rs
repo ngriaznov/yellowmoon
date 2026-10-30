@@ -808,9 +808,6 @@ pub struct DevelopSettings {
     pub shadows: PercentSetting,
     /// -100 to 100.
     pub white: Num,
-    /// Light › White › Offset: stops added to the automatic white lift, -3 to +3, default 0 (the
-    /// automatic amount; a plain number, not Auto).
-    pub white_offset_ev: Num,
     /// Light › High dynamic range › Black: Auto or a value, -100 to 100.
     pub black: PercentSetting,
     /// Colour › White balance, the light presets.
@@ -1024,9 +1021,6 @@ pub struct SettingsPatch {
     /// New white.
     #[serde(default)]
     pub white: Option<Num>,
-    /// New white lift offset, in stops.
-    #[serde(default)]
-    pub white_offset_ev: Option<Num>,
     /// New black: Auto, a manual value, or a plain number (0 is Auto).
     #[serde(default)]
     pub black: Option<PercentPatch>,
@@ -1103,7 +1097,6 @@ impl Serialize for SettingsPatch {
         entry(&mut map, "highlights", &self.highlights)?;
         entry(&mut map, "shadows", &self.shadows)?;
         entry(&mut map, "white", &self.white)?;
-        entry(&mut map, "white_offset_ev", &self.white_offset_ev)?;
         entry(&mut map, "black", &self.black)?;
         entry(&mut map, "light_source", &self.light_source)?;
         entry(&mut map, "white_balance", &self.white_balance)?;
@@ -1556,8 +1549,6 @@ pub struct AutoStatus {
 pub struct AutoEstimates {
     /// `EV_auto` (with Apple Auto's change, when there is one).
     pub exposure_ev: Num,
-    /// The automatic white lift in stops (0 when nothing is above +1 stop).
-    pub white_ev: Num,
     /// The Auto Kelvin (with Apple Auto's nudge, when there is one).
     pub kelvin: Num,
     /// The Auto tint.
@@ -1616,10 +1607,6 @@ pub struct ResolvedValues {
     pub shadows: Num,
     /// `white`.
     pub white: Num,
-    /// `white_offset_ev`.
-    pub white_offset_ev: Num,
-    /// The white lift in effect in stops: the automatic amount plus the offset, never below 0.
-    pub white_ev: Num,
     /// The black in effect.
     pub black: Num,
     /// `light_source`.
@@ -1805,29 +1792,25 @@ pub struct Look {
 pub struct LooksImportResult {
     /// Looks added by this import; empty when everything was already there.
     pub added: Vec<Look>,
-    /// Display LUTs added.
-    pub display_luts_added: u32,
-    /// Files whose hash matched a look or display LUT that was already imported.
+    /// Files whose hash matched a look that was already imported.
     pub unchanged: u32,
 }
 
-/// The five free packages ARRI publishes (the ids of `data/looks/arri-packages.json`, with
+/// The three free look packages ARRI publishes (the ids of `data/looks/arri-packages.json`, with
 /// underscores). The two look libraries that also come as ARRI Look Files (the LogC4 one as
 /// `.alf4`, the LogC3 to Rec.709 one as `.aml`) are the same package here: a person who downloads
-/// the look files has what they chose.
+/// the look files has what they chose. ARRI's two display LUT packages are not offered: Yellowmoon
+/// uses its own display rendering, and a display package that is chosen anyway is `unusable` with a
+/// sentence that says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageId {
     /// Look Library, LogC4 log-to-log.
     LookLibraryLogc4,
-    /// Display LUTs, LogC4.
-    DisplayLutsLogc4,
     /// Look Library, LogC3 log-to-log.
     LookLibraryLogc3,
     /// Look Library, LogC3 to Rec.709.
     LookLibraryLogc3ToRec709,
-    /// Display LUTs, LogC3.
-    DisplayLutsLogc3,
 }
 
 impl PackageId {
@@ -1836,10 +1819,8 @@ impl PackageId {
     pub fn data_id(self) -> &'static str {
         match self {
             Self::LookLibraryLogc4 => "look-library-logc4",
-            Self::DisplayLutsLogc4 => "display-luts-logc4",
             Self::LookLibraryLogc3 => "look-library-logc3",
             Self::LookLibraryLogc3ToRec709 => "look-library-logc3-rec709",
-            Self::DisplayLutsLogc3 => "display-luts-logc3",
         }
     }
 
@@ -1855,10 +1836,8 @@ impl PackageId {
         };
         [
             Self::LookLibraryLogc4,
-            Self::DisplayLutsLogc4,
             Self::LookLibraryLogc3,
             Self::LookLibraryLogc3ToRec709,
-            Self::DisplayLutsLogc3,
         ]
         .into_iter()
         .find(|p| p.data_id() == id)
@@ -1970,29 +1949,6 @@ pub struct LooksImportProgress {
     pub total: u32,
     /// The file just copied, when known.
     pub file: Option<String>,
-}
-
-/// What a display LUT expects as input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "snake_case")]
-pub enum DisplayLutInput {
-    /// LogC4.
-    Logc4,
-    /// LogC3 (EI 800).
-    Logc3Ei800,
-}
-
-/// An imported display LUT (ARRI's display rendering).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub struct DisplayLut {
-    /// "arri-display:logc4:rec709-g24".
-    pub id: String,
-    /// "Rec.709 · Gamma 2.4".
-    pub name: String,
-    /// What it expects as input.
-    pub input: DisplayLutInput,
-    /// "rec709-g24", "p3-d65", "rec2020", "hlg", "pq".
-    pub target: String,
 }
 
 /// `looks_watch_downloads(enabled)`: whether the watcher is running, and why not when it was asked to.
@@ -2258,26 +2214,13 @@ pub struct ExportEstimate {
     /// Photos with adjustments beyond the look.
     pub adjusted_photos: u32,
     /// A DNG of the job is close to, not the same as, the picture in the app: a photo uses a look with
-    /// its own display rendering, or ARRI's display rendering is chosen.
+    /// its own display rendering.
     pub dng_approximate: bool,
 }
 
 // ---------------------------------------------------------------------------------------------
 // Preferences
 // ---------------------------------------------------------------------------------------------
-
-/// Display rendering: our ACES 2 transform, or an imported ARRI display LUT.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DisplayRendering {
-    /// Our ACES 2 output transform.
-    Aces2,
-    /// An imported ARRI display LUT.
-    ArriDisplay {
-        /// The display LUT.
-        id: String,
-    },
-}
 
 /// Folders remembered between runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -2295,8 +2238,6 @@ pub struct LastUsedFolders {
 pub struct Preferences {
     /// The look new photos get.
     pub default_look: LookId,
-    /// ACES 2, or an imported ARRI display LUT.
-    pub display_rendering: DisplayRendering,
     /// Export defaults.
     pub export_defaults: ExportOptions,
     /// Leave the location out of exported files.
@@ -2324,9 +2265,6 @@ pub struct PreferencesPatch {
     /// New default look.
     #[serde(default)]
     pub default_look: Option<LookId>,
-    /// New display rendering.
-    #[serde(default)]
-    pub display_rendering: Option<DisplayRendering>,
     /// New export defaults.
     #[serde(default)]
     pub export_defaults: Option<ExportOptions>,

@@ -683,7 +683,7 @@ fn the_json_names_the_provider_and_the_old_object_is_apples_view() {
     // The row names the provider first.
     assert_eq!(
         info_row(&sb, "claude=available", &["--auto-provider", "claude"]),
-        "Claude Code · Darker -0.3 EV · highlights -20 · contrast +15 · teal shadows (subtle) · scene \"Test picture\" · plan \"Test plan: You\""
+        "Claude Code · Highlights -20 · contrast +15 · teal shadows (subtle) · scene \"Test picture\" · plan \"Test plan: You\""
     );
     // Default Auto: the rule, and no object for a render.
     let (v, _) = render(
@@ -723,7 +723,7 @@ fn an_export_records_the_provider_in_its_xmp() {
     assert!(xmp.contains("<ym:Auto>claude</ym:Auto>"), "{xmp}");
     let sha = ym_core::apple_auto::InstructionsId::default().instructions_sha256;
     let want = format!(
-        r#"{{"image":"jpeg444q92@768","instructions":"default","instructions_sha256":"{sha}","model":"Test Claude Code","plan":"Test plan: You","prompt":1,"provider":"claude","reproducible":false,"result":"answered","scene":"Test picture","schema":1,"steps":{{"blacks":null,"contrast":1,"exposure":-1,"highlight_color":null,"highlight_color_strength":null,"highlights":-1,"saturation":0,"shadow_color":"teal","shadow_color_strength":1,"shadows":0,"tint":null,"white":0}},"table":2,"tool_version":"0.0.0-test"}}"#
+        r#"{{"image":"jpeg444q92@768","instructions":"default","instructions_sha256":"{sha}","model":"Test Claude Code","plan":"Test plan: You","prompt":1,"provider":"claude","reproducible":false,"result":"answered","scene":"Test picture","schema":1,"steps":{{"blacks":null,"contrast":1,"exposure":0,"highlight_color":null,"highlight_color_strength":null,"highlights":-1,"saturation":0,"shadow_color":"teal","shadow_color_strength":1,"shadows":0,"tint":null,"white":0}},"table":2,"tool_version":"0.0.0-test"}}"#
     )
     .replace('"', "&quot;");
     assert!(

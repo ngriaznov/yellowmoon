@@ -30,9 +30,6 @@ Look and display:
       --intensity <PERCENT>
           How strongly the look applies, in percent (default 100)
 
-      --display <aces2|arri>
-          Display rendering: `aces2`, or `arri` (an imported ARRI display LUT: the one chosen in the app, else the only one imported; or give its id)
-
       --settings <FILE>
           A JSON file of settings (the `ym:Settings` schema), or `-` for stdin. It covers what these options can't: colour balance (`{ "kind": "auto" }` puts a shadows or highlights wheel back to Auto), curves, crop, orientation, white pick
 
@@ -63,9 +60,6 @@ Light:
 
       --black <auto|N>
           Black point, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose)
-
-      --white-offset <EV>
-          Stops added to each photo's automatic white lift, -3 to 3. 0 is the automatic amount; an offset that takes the lift to 0 or below switches it off (`--white-offset -3` always does). The lift only acts with the built-in ACES 2 display rendering, and a DNG carries it
 
 Colour:
       --wb <auto|K[,TINT]>

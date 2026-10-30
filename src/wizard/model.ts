@@ -4,10 +4,10 @@
  * the files that arrived are judged, and the words the screen shows. `ImportLooks.tsx` draws the state; the
  * tests in `model.test.ts` drive it directly.
  */
-import type { DisplayLut, LookId, LookInput, PackageId, SourceRecognition } from "../api/types";
+import type { LookId, LookInput, PackageId, SourceRecognition } from "../api/types";
 
 // ---------------------------------------------------------------------------
-// The five packages
+// The three packages
 // ---------------------------------------------------------------------------
 
 /** What the Choose step shows for one package. The copy is the mockup's. */
@@ -21,21 +21,23 @@ export interface PackageDef {
   recommended: boolean;
   /** Hidden until "Show 3 older LogC3 packages". */
   older: boolean;
-  /** Looks run before the display transform; display LUTs replace it. */
-  role: "looks" | "display";
   /** Download size in megabytes. */
   megabytes: number;
   /** Files the package holds. */
   fileCount: number;
-  /** What the LUTs of a looks package expect as input; null for display LUTs, which no answer can stand in for. */
-  input: LookInput | null;
+  /** What the LUTs of the package expect as input. */
+  input: LookInput;
   /** The title of the download on ARRI's page, for the words that say what to download (`data/looks/arri-packages.json`, `arri_title`). */
   arriTitle: string;
   /** The title of the same looks as ARRI Look Files, when ARRI has them that way (the two look libraries that run in LogC4 and LogC3 to Rec.709). */
   lookFilesTitle?: string;
 }
 
-/** ARRI's five free packages, in the order of the Choose step (`docs/08` §What users can import). */
+/**
+ * ARRI's three free look packages, in the order of the Choose step (`docs/08` §What users can import). ARRI's two display LUT
+ * packages are not here: Yellowmoon uses its own display rendering and imports no display LUT, so the wizard neither offers nor
+ * stores them (a display package that is dropped anyway is `unusable`, with a sentence that says so).
+ */
 export const PACKAGES: readonly PackageDef[] = [
   {
     id: "look_library_logc4",
@@ -44,25 +46,11 @@ export const PACKAGES: readonly PackageDef[] = [
     meta: "87 looks · 65-point · 181 MB",
     recommended: true,
     older: false,
-    role: "looks",
     megabytes: 181,
     fileCount: 87,
     input: "logc4",
     arriTitle: "Look Library for LogC4 (3D-LUTs)",
     lookFilesTitle: "Look Library for LogC4 (ALF4 Look Files)",
-  },
-  {
-    id: "display_luts_logc4",
-    name: "Display LUTs · LogC4",
-    description: "ARRI's own display rendering for Rec.709, P3, Rec.2020, HLG and PQ. Optional: use it instead of our display transform.",
-    meta: "22 LUTs · 32 MB",
-    recommended: false,
-    older: false,
-    role: "display",
-    megabytes: 32,
-    fileCount: 22,
-    input: null,
-    arriTitle: "LogC4 LUT Package",
   },
   {
     id: "look_library_logc3",
@@ -71,7 +59,6 @@ export const PACKAGES: readonly PackageDef[] = [
     meta: "87 looks · 33-point · 30 MB",
     recommended: false,
     older: true,
-    role: "looks",
     megabytes: 30,
     fileCount: 87,
     input: "logc3_ei800",
@@ -84,25 +71,11 @@ export const PACKAGES: readonly PackageDef[] = [
     meta: "87 looks · 32 MB",
     recommended: false,
     older: true,
-    role: "looks",
     megabytes: 32,
     fileCount: 87,
     input: "logc3_to_rec709",
     arriTitle: "ARRI Look Library LogC3 (to Rec709) 3D-LUTs",
     lookFilesTitle: "ARRI Look Library LogC3 (Look Files)",
-  },
-  {
-    id: "display_luts_logc3",
-    name: "Display LUTs · LogC3",
-    description: "Classic ALEXA display rendering, including the classic Rec.709.",
-    meta: "48 LUTs · 46 MB",
-    recommended: false,
-    older: true,
-    role: "display",
-    megabytes: 46,
-    fileCount: 48,
-    input: null,
-    arriTitle: "LogC3 LUT Package",
   },
 ];
 
@@ -166,7 +139,6 @@ export interface ImportState {
 export interface ImportOutcome {
   /** Looks the packages provide ("87 looks ready"). */
   looks: number;
-  displayLuts: number;
   /** Sources that were imported, for the Trash question. */
   zips: string[];
 }
@@ -175,7 +147,6 @@ export interface ImportOutcome {
 export interface FinishState {
   /** The default look; null keeps the current one. */
   defaultLook: LookId | null;
-  display: "ours" | "arri";
   zip: "keep" | "trash";
 }
 
@@ -202,7 +173,7 @@ export function initialWizard(): WizardState {
     checking: false,
     import: { status: "idle", done: 0, total: 0, error: null },
     outcome: null,
-    finish: { defaultLook: null, display: "ours", zip: "trash" },
+    finish: { defaultLook: null, zip: "trash" },
   };
 }
 
@@ -289,7 +260,7 @@ export function reduceWizard(state: WizardState, action: WizardAction): WizardSt
 // Selectors
 // ---------------------------------------------------------------------------
 
-/** The packages shown on the Choose step: the first two, and the older three when asked. */
+/** The packages shown on the Choose step: the LogC4 library, and the older two when asked. */
 export const visiblePackages = (state: WizardState): PackageDef[] => PACKAGES.filter((p) => !p.older || state.showOlder);
 
 /** The chosen packages, in the order of the Choose step. */
@@ -304,7 +275,7 @@ export function joinList(items: readonly string[]): string {
   return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
 
-/** The chosen packages as a sentence: "Look Library · LogC4 and Display LUTs · LogC4"; "the packages you chose" when none. */
+/** The chosen packages as a sentence: "Look Library · LogC4 and Look Library · LogC3"; "the packages you chose" when none. */
 export const wantList = (state: WizardState): string => joinList(chosenPackages(state).map((p) => p.name)) || "the packages you chose";
 
 /** How the Recognise step judges one source. */
@@ -341,7 +312,7 @@ export function standsInFor(state: WizardState, source: Received): PackageDef | 
   const r = found.recognition;
   const input = r.kind === "needs_answer" ? source.answer : r.kind === "look_files" ? r.input : null;
   if (!input) return null;
-  return chosenPackages(state).find((p) => p.role === "looks" && p.input === input) ?? null;
+  return chosenPackages(state).find((p) => p.input === input) ?? null;
 }
 
 /** What the recogniser found, set against what was chosen. */
@@ -557,9 +528,8 @@ export function heading(state: WizardState): string {
       return state.import.status === "done" ? "Imported" : state.import.status === "failed" ? "Not imported" : "Importing";
     default: {
       const o = state.outcome;
-      if (!o) return "Done";
-      if (o.looks > 0) return `${o.looks} ${o.looks === 1 ? "look" : "looks"} ready`;
-      return `${o.displayLuts} display ${o.displayLuts === 1 ? "LUT" : "LUTs"} ready`;
+      if (!o || o.looks === 0) return "Done";
+      return `${o.looks} ${o.looks === 1 ? "look" : "looks"} ready`;
     }
   }
 }
@@ -576,14 +546,9 @@ export function lead(state: WizardState): string {
     case STEP_IMPORT:
       return "Nothing leaves this Mac. The looks are ready the moment this finishes.";
     default:
-      return state.outcome && state.outcome.looks > 0
-        ? "Here they are on your current photo. Pick a default and you are done."
-        : "Pick how the display should look and you are done.";
+      return state.outcome && state.outcome.looks > 0 ? "Here they are on your current photo. Pick a default and you are done." : "You are done.";
   }
 }
-
-/** Whether the Finish step offers the display rendering choice: display LUTs were imported now. */
-export const offersDisplayChoice = (state: WizardState): boolean => (state.outcome?.displayLuts ?? 0) > 0;
 
 /** Zips (and other files) that the Trash question is about. */
 export const trashCandidates = (state: WizardState): string[] => {
@@ -605,13 +570,3 @@ export const INPUT_CHOICES: ReadonlyArray<{ value: LookInput; label: string; det
   { value: "logc3_ei800", label: "LogC3", detail: "LogC3 (EI 800) with ARRI Wide Gamut 3." },
   { value: "logc3_to_rec709", label: "LogC3 · Rec.709", detail: "LogC3 in, Rec.709 out. It replaces our display rendering." },
 ];
-
-/**
- * The display LUT "ARRI's" stands for in the display rendering choice: the LogC4 Rec.709 one when it is imported, else the
- * first of the LogC4 ones, else the first of the LogC3 ones. Null when none are imported.
- */
-export function preferredDisplayLut(luts: readonly DisplayLut[] | null): DisplayLut | null {
-  if (!luts || luts.length === 0) return null;
-  const rank = (l: DisplayLut): number => (l.input === "logc4" ? 0 : 10) + (l.target.startsWith("rec709-g24") ? 0 : l.target.startsWith("rec709") ? 1 : 2);
-  return [...luts].sort((a, b) => rank(a) - rank(b))[0] ?? null;
-}

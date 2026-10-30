@@ -2,7 +2,7 @@
 //! section DNG with the look baked in).
 //!
 //! * [`adobe`] is Adobe's reference renderer (`dng_validate`) as a function from scene-linear AWG4 colours to sRGB.
-//! * [`target`] is what Yellowmoon shows: the ACES 2 output transform for sRGB.
+//! * [`target`] is what Yellowmoon shows: the cine rendering for sRGB.
 //! * [`profile_file`] is `data/dng/profile.json`, the fitted profile `ym-export` embeds.
 
 #![warn(missing_docs)]

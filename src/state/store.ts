@@ -32,7 +32,6 @@ import type {
   CropAspect,
   CropSuggestion,
   DevelopSettings,
-  DisplayLut,
   ExportJob,
   ExportOptions,
   ExportProgress,
@@ -208,8 +207,6 @@ export interface AppState {
   canRedo: boolean;
   /** The preferences, once loaded (`docs/01` §Persistence). */
   preferences: Preferences | null;
-  /** Imported display LUTs, once asked for. */
-  displayLuts: readonly DisplayLut[] | null;
   /** Whether the command-line tool is linked onto the PATH, once asked for (Preferences). */
   cliLink: CliLinkStatus | null;
   /**
@@ -288,7 +285,6 @@ export function initialState(): AppState {
     canUndo: false,
     canRedo: false,
     preferences: null,
-    displayLuts: null,
     cliLink: null,
     auto: null,
     consentFor: null,
@@ -316,7 +312,6 @@ const DIRECT_KEYS: ReadonlySet<string> = new Set([
   "look_intensity",
   "brightness",
   "white",
-  "white_offset_ev",
   "light_source",
   "color_warp",
   "lens",
@@ -366,8 +361,6 @@ export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): Resolve
     settings[key] = value;
     values[key] = value;
     if (key === "light_source") auto = { ...auto, light_source: value === "auto" };
-    // The lift in effect follows the offset at once: the automatic amount plus the offset, never below 0 (the core's rule).
-    if (key === "white_offset_ev") values.white_ev = Math.min(3, Math.max(0, rs.estimates.white_ev + (value as number)));
   }
   return { ...rs, settings: settings as unknown as DevelopSettings, values: values as unknown as ResolvedSettings["values"], auto };
 }
@@ -598,7 +591,6 @@ export class AppStore {
       }),
       api.on("looks_changed", () => {
         void this.refreshLooks();
-        void this.refreshDisplayLuts();
         void this.refreshPreferences();
       }),
       // A provider was found, signed in or out, or a check ended. The cached read asks no program to check anything (`docs/22` section
@@ -629,7 +621,6 @@ export class AppStore {
       this.refreshLenses(),
       this.refreshSession(),
       this.refreshPreferences(),
-      this.refreshDisplayLuts(),
       this.refreshViewportInfo(),
       this.refreshExportBusy(),
     ]);
@@ -948,7 +939,6 @@ export class AppStore {
       stats: null,
       // What belongs to the app rather than the session stays: the preferences, the export in flight, the dialogs.
       preferences: this.state.preferences,
-      displayLuts: this.state.displayLuts,
       cliLink: this.state.cliLink,
       auto: this.state.auto,
       os: this.state.os,
@@ -1287,14 +1277,6 @@ export class AppStore {
     }
   }
 
-  async refreshDisplayLuts(): Promise<void> {
-    try {
-      this.set({ displayLuts: await this.api.looksDisplayLuts() });
-    } catch (error) {
-      this.fail(error);
-    }
-  }
-
   /**
    * Changes a preference. The screen shows the change at once; the core's answer replaces it, and a refusal
    * puts the old values back and shows the reason.
@@ -1401,7 +1383,6 @@ export class AppStore {
     this.set({ overlay });
     if (overlay === "preferences") {
       void this.refreshCliLink();
-      void this.refreshDisplayLuts();
       void this.refreshAuto();
       void this.refreshOs();
     }

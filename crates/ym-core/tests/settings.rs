@@ -52,7 +52,6 @@ fn rich() -> DevelopSettings {
     s.highlights = ym_core::settings::PercentSetting::manual_value(-30.0);
     s.shadows = ym_core::settings::PercentSetting::manual_value(25.0);
     s.white = 4.0;
-    s.white_offset_ev = 0.4;
     s.black = ym_core::settings::PercentSetting::manual_value(-9.0);
     s.light_source = LightSource::Tungsten;
     s.white_balance = AutoOr::Manual(ym_core::settings::WhiteBalanceValue {
@@ -143,7 +142,6 @@ fn typescript_defaults() -> Value {
         "shadows": { "kind": "auto" },
         "white": 0,
         "black": { "kind": "auto" },
-        "white_offset_ev": 0,
         "light_source": "auto",
         "white_balance": { "kind": "auto" },
         "color_balance": {
@@ -414,7 +412,6 @@ fn resolved_settings_have_the_shape_of_the_typescript_type() {
             "exposure_ev",
             "contrast",
             "saturation",
-            "white_ev",
             "kelvin",
             "tint",
             "sharpen",
@@ -1317,10 +1314,6 @@ fn reset_restores_every_field_to_its_default() {
     assert!(s.exposure.is_auto() && s.white_balance.is_auto() && s.noise_reduction.is_auto());
     assert_eq!(s.light_source, LightSource::Auto);
     assert!(s.white_pick.is_none());
-    assert_eq!(
-        s.white_offset_ev, 0.0,
-        "the White row of the Automatic card is Auto again"
-    );
     assert_eq!(
         s.rolloff,
         rich().rolloff,
@@ -2286,7 +2279,7 @@ fn reset_gives_the_default_lens_and_re_run_leaves_it() {
     assert_eq!(SettingsField::Lens.name(), "lens");
     assert_eq!(SettingsField::Lens.group(), StageGroup::Lens);
     assert!(SettingsField::ALL.contains(&SettingsField::Lens));
-    assert_eq!(SettingsField::ALL.len(), 25);
+    assert_eq!(SettingsField::ALL.len(), 24);
     let mut s = rich();
     assert_ne!(s.lens, LensSettings::default());
     // The Reset patch and `reset_field` agree.

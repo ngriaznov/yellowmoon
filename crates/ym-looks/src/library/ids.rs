@@ -6,14 +6,11 @@
 //! |---|---|
 //! | `builtin:<slug>` | a built-in look (`builtin:neutral`, `builtin:signature`) |
 //! | `arri:<group_no>:<slug>` | an imported ARRI look; `<slug>` carries `-logc3` or `-logc3-rec709` for the older packages so the three Look Library packages never collide |
-//! | `arri-display:<input>:<target>` | an imported ARRI display LUT, for example `arri-display:logc4:rec709-g24` |
 //! | `user:<slug>` | any other imported `.cube` |
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-
-use super::model::DisplayInput;
 
 /// Longest slug, in characters. Longer names are cut.
 pub const MAX_SLUG_CHARS: usize = 80;
@@ -143,16 +140,11 @@ pub enum IdKind {
         /// The ARRI group number (for example 3000).
         group_no: u32,
     },
-    /// `arri-display:<input>:<target>`.
-    ArriDisplay {
-        /// The encoding the display LUT expects.
-        input: DisplayInput,
-    },
     /// `user:<slug>`.
     User,
 }
 
-/// A look (or display LUT) id such as `builtin:neutral`. Always well formed: use
+/// A look id such as `builtin:neutral`. Always well formed: use
 /// [`LookId::parse`] for text from outside, the constructors for ids we build.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -186,16 +178,6 @@ impl LookId {
         Self(format!("arri:{group_no}:{}", slug_or(slug, "look")))
     }
 
-    /// `arri-display:<input>:<target>`.
-    #[must_use]
-    pub fn arri_display(input: DisplayInput, target: &str) -> Self {
-        Self(format!(
-            "arri-display:{}:{}",
-            input.slug(),
-            slug_or(target, "display")
-        ))
-    }
-
     /// `user:<slug>`.
     #[must_use]
     pub fn user(slug: &str) -> Self {
@@ -206,7 +188,7 @@ impl LookId {
     ///
     /// # Errors
     ///
-    /// [`IdError`] when the text is not one of the four id shapes.
+    /// [`IdError`] when the text is not one of the three id shapes.
     pub fn parse(text: &str) -> Result<Self, IdError> {
         let bad = || IdError(text.to_string());
         let parts: Vec<&str> = text.split(':').collect();
@@ -217,9 +199,6 @@ impl LookId {
                     && group.bytes().all(|b| b.is_ascii_digit())
                     && group.parse::<u32>().is_ok()
                     && is_valid_slug(slug)
-            }
-            ["arri-display", input, target] => {
-                DisplayInput::from_slug(input).is_some() && is_valid_slug(target)
             }
             _ => false,
         };
@@ -243,13 +222,13 @@ impl LookId {
         &self.0
     }
 
-    /// The part before the first colon: `builtin`, `arri`, `arri-display` or `user`.
+    /// The part before the first colon: `builtin`, `arri` or `user`.
     #[must_use]
     pub fn prefix(&self) -> &str {
         self.0.split(':').next().unwrap_or("")
     }
 
-    /// The part after the last colon: the slug (for display LUTs, the target).
+    /// The part after the last colon: the slug.
     #[must_use]
     pub fn slug(&self) -> &str {
         self.0.rsplit(':').next().unwrap_or("")
@@ -270,14 +249,11 @@ impl LookId {
             (Some("arri"), Some(group)) => IdKind::Arri {
                 group_no: group.parse().unwrap_or(0),
             },
-            (Some("arri-display"), Some(input)) => IdKind::ArriDisplay {
-                input: DisplayInput::from_slug(input).unwrap_or(DisplayInput::LogC4),
-            },
             _ => IdKind::User,
         }
     }
 
-    /// The same id with its slug (target for display LUTs) replaced.
+    /// The same id with its slug replaced.
     #[must_use]
     pub fn with_slug(&self, slug: &str) -> Self {
         let slug = slug_or(slug, "look");
@@ -376,14 +352,6 @@ mod tests {
         assert_eq!(a.slug(), "film-warm");
         assert_eq!(a.remainder(), "3000:film-warm");
         assert_eq!(a.kind(), IdKind::Arri { group_no: 3000 });
-        let d = LookId::arri_display(DisplayInput::LogC4, "Rec709 G24");
-        assert_eq!(d.as_str(), "arri-display:logc4:rec709-g24");
-        assert_eq!(
-            d.kind(),
-            IdKind::ArriDisplay {
-                input: DisplayInput::LogC4
-            }
-        );
         assert_eq!(LookId::user("My LUT").as_str(), "user:my-lut");
         assert_eq!(LookId::builtin("neutral").kind(), IdKind::BuiltIn);
         assert_eq!(LookId::user("").as_str(), "user:lut");
@@ -394,8 +362,8 @@ mod tests {
         let a = LookId::arri(3000, "film");
         assert_eq!(a.numbered(1), a);
         assert_eq!(a.numbered(2).as_str(), "arri:3000:film-2");
-        let d = LookId::arri_display(DisplayInput::LogC3, "p3");
-        assert_eq!(d.numbered(3).as_str(), "arri-display:logc3:p3-3");
+        let u = LookId::user("warm");
+        assert_eq!(u.numbered(3).as_str(), "user:warm-3");
     }
 
     #[test]
@@ -403,7 +371,6 @@ mod tests {
         for good in [
             "builtin:neutral",
             "arri:3000:film-warm",
-            "arri-display:logc4:rec709-g24",
             "user:my-lut",
             "arri:0:x",
         ] {
@@ -417,7 +384,8 @@ mod tests {
             "arri:film",
             "arri:03000:film",
             "arri:x:film",
-            "arri-display:logc5:p3",
+            // The ids of ARRI's display LUTs, which Yellowmoon no longer imports.
+            "arri-display:logc4:rec709-g24",
             "user:a:b",
             "other:a",
             "user:-a",
@@ -455,7 +423,6 @@ mod tests {
                 LookId::user(&text),
                 LookId::builtin(&text),
                 LookId::arri(group, &text),
-                LookId::arri_display(DisplayInput::LogC3, &text),
             ];
             for id in ids {
                 proptest::prop_assert_eq!(LookId::parse(id.as_str()).unwrap(), id.clone());

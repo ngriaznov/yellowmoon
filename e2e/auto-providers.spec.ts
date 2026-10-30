@@ -18,7 +18,7 @@ async function preferences(page: Page, options: Record<string, string | number>)
   await openApp(page, options);
   await page.keyboard.press("Meta+,");
   const dialog = page.getByRole("dialog", { name: "Preferences" });
-  await expect(dialog.getByRole("group", { name: "Display rendering" })).toBeVisible();
+  await expect(dialog.getByRole("group", { name: "Default look" })).toBeVisible();
   return dialog;
 }
 
@@ -384,7 +384,7 @@ test.describe("the Automatic card and the Start screen", () => {
     await openPhotos(page);
     const card = page.getByRole("region", { name: "Automatic" });
     await expect(card.getByText("Claude Code isn't available right now, so Default Auto is used.")).toBeVisible();
-    expect(await card.locator(".ym-auto-row__label").allTextContents()).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
+    expect(await card.locator(".ym-auto-row__label").allTextContents()).toEqual(["Exposure", "White balance", "Noise", "Camera"]);
     await page.evaluate(() => window.__yellowmoon!.mockApi.setProviders({ claude: "available" }));
     await expect(card.getByText("Set with Claude Code.")).toBeVisible();
   });

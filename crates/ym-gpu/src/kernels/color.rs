@@ -2,16 +2,14 @@
 //!
 //! [`PreparedChain::new`] turns an immutable `ym_color::display::ColorChain` into the GPU form: the
 //! per-frame uniform block (fused matrix, C7 (the highlight range and the toe), C9, C9b, C10 and C12
-//! parameters (the white lift of step 1b among them), the ACES 2 scalars and the flags, about 2 KB),
-//! and four **persistent tables** that [`ChainTables`] keeps on the device and refills only when their
+//! parameters (the cine rendering's matrix from XYZ to the output) and the flags, under 2 KB),
+//! and three **persistent tables** that [`ChainTables`] keeps on the device and refills only when their
 //! content changes:
 //!
 //! * the 64 x 64 dither thresholds, once per device;
-//! * the ACES 2 tables, once per device and output, with the red chroma step's two tables (C12 step 1c:
-//!   the neutral axis and the gamut edge of the output's limiting gamut) after them;
 //! * the four 1024-entry curve tables (16 KB), once per distinct set of curves;
-//! * the look and the display cubes (f32, never rounded to f16, never hardware-filtered), in an LRU
-//!   keyed by the content of the LUT (a 65-point cube is 4.4 MB, a 129-point one 34 MB).
+//! * the look cube (f32, never rounded to f16, never hardware-filtered), in an LRU keyed by the content
+//!   of the LUT (a 65-point cube is 4.4 MB, a 129-point one 34 MB).
 //!
 //! Nothing here computes colour: every number comes from the `ym_color` modules the CPU chain uses, so
 //! the kernel and `ColorChain` cannot drift apart without a parity test failing.
@@ -24,8 +22,8 @@
 //! microseconds; a curve edit uploads the 16 KB of the curves; a look change uploads the new cube once
 //! and finds it again later. The keys are *contents*, never identities that could go stale: the
 //! curves by `CurveSet` equality, a LUT by a 128-bit hash of its entries (with the address of the
-//! `Lut` as a shortcut, valid while the cache holds the `Arc` the `Lut` lives in), the ACES 2 tables
-//! by the output. [`release_tables`] drops the whole set (the pool ledger counts it as resident until
+//! `Lut` as a shortcut, valid while the cache holds the `Arc` the `Lut` lives in).
+//! [`release_tables`] drops the whole set (the pool ledger counts it as resident until
 //! then).
 //!
 //! # Precision decision (LUTs and curves)
@@ -67,16 +65,12 @@ use std::cell::RefCell;
 use std::sync::{Arc, Weak};
 
 use bytemuck::{Pod, Zeroable};
-use ym_color::aces2::{Aces2Transform, REF_LUMINANCE};
 use ym_color::consts::Vec3;
 use ym_color::consts::linalg::{self, Mat3};
 use ym_color::curve::{CurveSet, TABLE_SIZE};
-use ym_color::display::{
-    BeforePoint, ChainParams, ColorChain, DisplayLutPrimaries, DisplayLutTransfer,
-    DisplayTransform, OutputTarget, RedChromaTables, RedGamut,
-};
+use ym_color::display::cine::CineRendering;
+use ym_color::display::{BeforePoint, ChainParams, ColorChain, OutputTarget};
 use ym_color::encode::{OutputSpace, dither_threshold};
-use ym_color::exposure::white::WhiteLift;
 use ym_color::gamut::matrices;
 use ym_color::grade::{
     BALANCE_CENTER_STOPS, GradeParams, ZONE_CENTER_STOPS, contrast_slope, logc4_at_stops,
@@ -116,8 +110,7 @@ pub enum Stop {
     C10,
     /// After the curves: the DNG stop point, in LogC4.
     C11,
-    /// C11 decoded back to linear AWG4 with the white lift and the red chroma step (P3-D65 tables) when
-    /// C12 is our ACES 2 (what the DNG writer takes).
+    /// C11 decoded back to linear AWG4 (what the DNG writer takes when C12 is our cine rendering).
     DngLinearAwg4,
     /// Display-linear RGB in the output's primaries (C12).
     C12,
@@ -203,11 +196,11 @@ pub(crate) const WARP_MOVE_ROWS: usize = WARP_ROWS_PER_MOVE * WARP_MAX_PINS;
 /// the sixteenth row keeps the arithmetic of the sizes plain.
 pub(crate) const WARP_LOCK_ROWS: usize = WARP_MAX_PINS;
 
-/// The per-frame uniform block of `color.wgsl` (`ChainU`), 2112 bytes: window and mode, the chain's
-/// parameters, the Before view's camera default (`cam0` to `cam2`: the 3x3 rows, `camt`: the tone curve's
-/// `n`, `s`, `k` and white level), the red chroma step's two strengths (`rc`), the ACES 2 scalars and the colour warp's pins (`warp_n`: the moving
-/// and locked counts and the flow's steps, `warp_mv`, `warp_lk`: module notes). Field for field the WGSL struct (a test pins
-/// the offsets).
+/// The per-frame uniform block of `color.wgsl` (`ChainU`), 1664 bytes: window and mode, the chain's
+/// parameters, the cine rendering's matrix from XYZ to the output's primaries (`cine_m0` to `cine_m2`), the
+/// Before view's camera default (`cam0` to `cam2`: the 3x3 rows, `camt`: the tone curve's `n`, `s`, `k` and white
+/// level) and the colour warp's pins (`warp_n`: the moving and locked counts and the flow's steps, `warp_mv`,
+/// `warp_lk`: module notes). Field for field the WGSL struct (a test pins the offsets).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ChainU {
@@ -234,10 +227,9 @@ struct ChainU {
     cdl_offset: [f32; 4],
     cdl_power: [f32; 4],
     look_lut: LutDescU,
-    disp_lut: LutDescU,
-    disp_m0: [f32; 4],
-    disp_m1: [f32; 4],
-    disp_m2: [f32; 4],
+    cine_m0: [f32; 4],
+    cine_m1: [f32; 4],
+    cine_m2: [f32; 4],
     look_m0: [f32; 4],
     look_m1: [f32; 4],
     look_m2: [f32; 4],
@@ -245,8 +237,7 @@ struct ChainU {
     cam1: [f32; 4],
     cam2: [f32; 4],
     camt: [f32; 4],
-    rc: [f32; 4],
-    aces: AcesU,
+    gate: [f32; 4],
     warp_n: [u32; 4],
     warp_mv: [[f32; 4]; WARP_MOVE_ROWS],
     warp_lk: [[f32; 4]; WARP_LOCK_ROWS],
@@ -259,34 +250,8 @@ impl Default for ChainU {
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Default)]
-struct AcesU {
-    in_cam: [[f32; 4]; 3],
-    in_aab: [[f32; 4]; 3],
-    lim_aab: [[f32; 4]; 3],
-    lim_cam: [[f32; 4]; 3],
-    l2d: [[f32; 4]; 3],
-    in_p: [f32; 4],
-    in_q: [f32; 4],
-    lim_p: [f32; 4],
-    ts0: [f32; 4],
-    ts1: [f32; 4],
-    cc: [f32; 4],
-    hue: [i32; 4],
-}
-
 fn f4(v: [f64; 3], w: f64) -> [f32; 4] {
     [v[0] as f32, v[1] as f32, v[2] as f32, w as f32]
-}
-
-fn rows4(m: &Mat3) -> [[f32; 4]; 3] {
-    [f4(m[0], 0.0), f4(m[1], 0.0), f4(m[2], 0.0)]
-}
-
-/// The columns of a row-vector matrix (`v * M`) as three rows to dot with `v`.
-fn cols4(m: &[[f64; 3]; 3]) -> [[f32; 4]; 3] {
-    std::array::from_fn(|j| f4([m[0][j], m[1][j], m[2][j]], 0.0))
 }
 
 fn clamp_control(x: f64) -> f64 {
@@ -316,15 +281,11 @@ fn classify_look(params: &ChainParams) -> LookKind {
     }
 }
 
-/// Matrix from linear primaries `from` (as Rec.709, P3-D65 or Rec.2020) to the output space.
-fn primaries_matrix(from: DisplayLutPrimaries, to: OutputSpace) -> Option<Mat3> {
+/// Matrix from linear Rec.709 primaries (a display-baked look's LUT output) to the output space,
+/// `None` when the output is Rec.709.
+fn rec709_to_output(to: OutputSpace) -> Option<Mat3> {
     let m = matrices();
-    let (from_xyz, same) = match from {
-        DisplayLutPrimaries::Rec709 => (m.rec709_to_xyz, to == OutputSpace::Srgb),
-        DisplayLutPrimaries::P3D65 => (m.p3_to_xyz, to == OutputSpace::DisplayP3),
-        DisplayLutPrimaries::Rec2020 => (m.rec2020_to_xyz, to == OutputSpace::Rec2020),
-    };
-    if same {
+    if to == OutputSpace::Srgb {
         return None;
     }
     let xyz_to = match to {
@@ -332,7 +293,7 @@ fn primaries_matrix(from: DisplayLutPrimaries, to: OutputSpace) -> Option<Mat3> 
         OutputSpace::DisplayP3 => m.xyz_to_p3,
         OutputSpace::Rec2020 => m.xyz_to_rec2020,
     };
-    Some(linalg::mul(&xyz_to, &from_xyz))
+    Some(linalg::mul(&xyz_to, &m.rec709_to_xyz))
 }
 
 /// The cube of `lut` (shaper first, then the cube) as the vec4 entries of a LUT buffer, and the
@@ -359,8 +320,8 @@ fn lut_data(lut: &Lut) -> (Vec<f32>, LutDescU) {
 /// C7 into the block: the highlight range's knee, Sony clip and expansion (stops over grey) and the toe's
 /// width in `tone` (`[knee, clip, tau, expansion]`), the ALEXA cap in `fl.z`. No range
 /// (`HighlightRange::NONE`, from `ToneParams::IDENTITY`) is a knee, clip and cap of
-/// `HIGHLIGHT_OFF_STOPS` (1e30, a finite f32: K8) and an expansion of 0. `fl.w` is the white lift's
-/// ([`white_lift_uniform`]).
+/// `HIGHLIGHT_OFF_STOPS` (1e30, a finite f32: K8) and an expansion of 0. The achromatic gate of the range (`ToneParams::gate`) goes into `gate.xy`: its
+/// first edge and the reciprocal of its span.
 fn tone_uniform(u: &mut ChainU, tone: &ToneParams) {
     let range = tone.range();
     u.tone = [
@@ -370,46 +331,14 @@ fn tone_uniform(u: &mut ChainU, tone: &ToneParams) {
         range.expansion_stops as f32,
     ];
     u.fl[2] = range.cap_stops as f32;
-}
-
-/// C12 step 1b into the block: the white lift's amount in stops in `fl.w` and the reciprocal of its
-/// ramp's span in `grade0.w` (the two lanes the range and the grade leave free). No lift
-/// ([`WhiteLift::NONE`], the exact identity, and what `ColorChain::white_lift` gives for a display LUT) is
-/// 0 in both, and the shader then skips the stage; with a lift the span is at least `MIN_SPAN_EV`, so the
-/// reciprocal is at most 4 (finite: K8). Written after [`grade_uniform`], which fills the whole of
-/// `grade0`.
-fn white_lift_uniform(u: &mut ChainU, lift: WhiteLift) {
-    if lift.is_identity() {
-        u.fl[3] = 0.0;
-        u.grade0[3] = 0.0;
-    } else {
-        u.fl[3] = lift.amount_ev() as f32;
-        u.grade0[3] = (1.0 / lift.span_ev()) as f32;
-    }
-}
-
-/// C12 step 1c into the block: the red chroma step's two strengths in `rc` (`x` the up side, `y` the dark
-/// side, `ColorChain::red_chroma`) and the table set of the output's limiting gamut in `rc.z` (0 Rec.709,
-/// 1 P3-D65: `RedGamut::index`). Both strengths are 0 when the step is skipped, and the shader then returns
-/// the scene value untouched. The tables are in the persistent `tables` buffer of the output; the DNG stop
-/// always reads the P3-D65 set.
-fn red_chroma_uniform(u: &mut ChainU, chain: &ColorChain) {
-    u.rc = match chain.red_chroma() {
-        Some(r) => [
-            r.up() as f32,
-            r.dark_relief() as f32,
-            RedGamut::of(chain.output()).index() as f32,
-            0.0,
-        ],
-        None => [0.0; 4],
-    };
+    u.gate[0] = tone.gate.from() as f32;
+    u.gate[1] = tone.gate.inv_span() as f32;
 }
 
 /// The grade parameters as the kernel wants them (the same preparation as `Grade::new`): the
 /// contrast curve's slope at grey `k` in `grade0.x`, the brightness in `grade0.y` and the saturation
 /// factor in `grade0.z` (below 1 the blend toward grey, above 1 the boost `F`; `saturation_factor`).
-/// A control at 0 clears its flag bit, and the kernel skips it. `grade0.w` is the white lift's
-/// ([`white_lift_uniform`]), written after this.
+/// A control at 0 clears its flag bit, and the kernel skips it. `grade0.w` is not used.
 fn grade_uniform(u: &mut ChainU, g: &GradeParams) {
     let slope = contrast_slope(g.contrast);
     let saturation = saturation_factor(g.saturation);
@@ -490,86 +419,6 @@ fn warp_uniform(u: &mut ChainU, params: &WarpParams) {
         warp.steps(),
         0,
     ];
-}
-
-/// Limiting RGB to encoding RGB for the ACES 2 output (`None` when they are the same primaries).
-fn limit_to_display(target: OutputTarget) -> Option<Mat3> {
-    let out = target.aces2();
-    if out.limiting_primaries() == out.encoding_primaries() {
-        return None;
-    }
-    let m = matrices();
-    // Only the Rec.2020 output differs: P3-D65 limited, Rec.2020 encoded.
-    Some(linalg::mul(&m.xyz_to_rec2020, &m.p3_to_xyz))
-}
-
-fn aces_uniform(target: OutputTarget) -> AcesU {
-    let t = Aces2Transform::shared(target.aces2());
-    let p = t.params();
-    let mut u = AcesU {
-        in_cam: cols4(&p.input.rgb_to_cam16_c),
-        in_aab: cols4(&p.input.cone_response_to_aab),
-        lim_aab: cols4(&p.limit.aab_to_cone_response),
-        lim_cam: cols4(&p.limit.cam16_c_to_rgb),
-        ..AcesU::default()
-    };
-    u.in_p = [
-        p.input.f_l_n as f32,
-        p.input.cz as f32,
-        p.input.inv_cz as f32,
-        p.input.a_w_j as f32,
-    ];
-    u.in_q = [
-        p.input.inv_a_w_j as f32,
-        p.limit_j_max as f32,
-        p.model_gamma_inv as f32,
-        p.tone_scale.forward_limit as f32,
-    ];
-    u.lim_p = [
-        p.limit.inv_cz as f32,
-        p.mid_j as f32,
-        p.focus_dist as f32,
-        p.lower_hull_gamma_inv as f32,
-    ];
-    u.ts0 = [
-        p.tone_scale.n_r as f32,
-        p.tone_scale.g as f32,
-        p.tone_scale.t_1 as f32,
-        p.tone_scale.s_2 as f32,
-    ];
-    u.ts1 = [
-        p.tone_scale.m_2 as f32,
-        (p.peak_luminance_nits / REF_LUMINANCE) as f32,
-        0.0,
-        0.0,
-    ];
-    u.cc = [
-        p.sat as f32,
-        p.sat_thr as f32,
-        p.compr as f32,
-        p.chroma_compress_scale as f32,
-    ];
-    let range = p.hue_linearity_search_range;
-    match limit_to_display(target) {
-        Some(m) => {
-            u.l2d = rows4(&m);
-            u.hue = [range[0], range[1], 1, 0];
-        }
-        None => u.hue = [range[0], range[1], 0, 0],
-    }
-    u
-}
-
-/// The ACES 2 tables, in the order of the shader: reach M, hue, cusp J, cusp M, upper hull gamma.
-fn aces_tables(target: OutputTarget) -> [Vec<f64>; 5] {
-    let p = Aces2Transform::shared(target.aces2()).params();
-    [
-        p.reach_m_table.clone(),
-        p.hue_table.clone(),
-        p.cusp_j_table.clone(),
-        p.cusp_m_table.clone(),
-        p.upper_hull_gamma_inv_table.clone(),
-    ]
 }
 
 /// The 64 x 64 dither thresholds as the `tables` section the shaders read (`y * 64 + x`).
@@ -675,7 +524,6 @@ struct LutEntry {
 pub struct ChainTables {
     dither: Option<Arc<PooledBuffer>>,
     empty: Option<Arc<PooledBuffer>>,
-    aces: Vec<(OutputTarget, AcesU, Arc<PooledBuffer>)>,
     curves: Vec<CurveEntry>,
     luts: Vec<LutEntry>,
 }
@@ -683,7 +531,6 @@ pub struct ChainTables {
 impl std::fmt::Debug for ChainTables {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChainTables")
-            .field("aces_outputs", &self.aces.len())
             .field("curve_sets", &self.curves.len())
             .field("luts", &self.luts.len())
             .finish_non_exhaustive()
@@ -720,7 +567,7 @@ impl ChainTables {
         Ok(buf)
     }
 
-    /// The stand-in bound where a chain has no look or display LUT (never read).
+    /// The stand-in bound where a chain has no look (never read).
     fn empty(&mut self, ctx: &GpuContext) -> Result<Arc<PooledBuffer>, GpuError> {
         if let Some(b) = &self.empty {
             return Ok(Arc::clone(b));
@@ -732,54 +579,6 @@ impl ChainTables {
         )?);
         self.empty = Some(Arc::clone(&buf));
         Ok(buf)
-    }
-
-    /// The ACES 2 scalars and the table buffer (dither, then the five hue tables) of an output.
-    fn aces(
-        &mut self,
-        ctx: &GpuContext,
-        target: OutputTarget,
-    ) -> Result<(AcesU, Arc<PooledBuffer>), GpuError> {
-        if let Some((_, u, b)) = self.aces.iter().find(|(t, _, _)| *t == target) {
-            return Ok((*u, Arc::clone(b)));
-        }
-        let tables = aces_tables(target);
-        let mut data = vec![0.0f32; table::TOTAL];
-        data[..table::DITHER_ENTRIES].copy_from_slice(&dither_section());
-        for (k, t) in tables.iter().enumerate() {
-            if t.len() != table::ACES_ENTRIES {
-                return Err(GpuError::Chain(format!(
-                    "ACES 2 table {k} has {} entries, the kernel is laid out for {}",
-                    t.len(),
-                    table::ACES_ENTRIES
-                )));
-            }
-            let start = table::ACES + k * table::ACES_ENTRIES;
-            for (i, v) in t.iter().enumerate() {
-                data[start + i] = *v as f32;
-            }
-        }
-        // The red chroma step's tables (C12 step 1c): the neutral axis and the gamut edge of both limiting
-        // gamuts, the numbers the CPU step reads. The set of the output's own gamut serves the picture,
-        // the P3-D65 set the pixels of a DNG.
-        for gamut in [RedGamut::Rec709, RedGamut::P3D65] {
-            let red = RedChromaTables::shared(gamut);
-            let start = table::RC + gamut.index() * table::RC_SET;
-            for (i, v) in red.yd().iter().enumerate() {
-                data[start + i] = *v as f32;
-            }
-            for (i, v) in red.cmax().iter().enumerate() {
-                data[start + table::RC_YD_ENTRIES + i] = *v as f32;
-            }
-        }
-        let buf = Arc::new(storage_buffer(
-            ctx,
-            "aces2 tables",
-            bytemuck::cast_slice(&data),
-        )?);
-        let u = aces_uniform(target);
-        self.aces.push((target, u, Arc::clone(&buf)));
-        Ok((u, buf))
     }
 
     /// The curve tables of `set` and the bits of the tables that are not the identity.
@@ -928,7 +727,7 @@ impl ChainTables {
             }
             if look_kind == LookKind::Baked {
                 // Rec.709 (the look's LUT output) to the output primaries.
-                if let Some(m) = primaries_matrix(DisplayLutPrimaries::Rec709, space) {
+                if let Some(m) = rec709_to_output(space) {
                     u.look_m0 = f4(m[0], 0.0);
                     u.look_m1 = f4(m[1], 0.0);
                     u.look_m2 = f4(m[2], 0.0);
@@ -941,51 +740,13 @@ impl ChainTables {
         let (curves, curve_flags) = self.curves(ctx, &params.curves)?;
         u.flags[1] = curve_flags;
 
-        // C12.
-        let mut disp_luts = self.empty(ctx)?;
-        let tables;
-        match &params.display {
-            DisplayTransform::Aces2 => {
-                u.flags[3] = 0;
-                let (aces, buf) = self.aces(ctx, params.output)?;
-                u.aces = aces;
-                tables = buf;
-            }
-            DisplayTransform::ArriDisplayLut(arri) => {
-                u.flags[3] = 1;
-                u.dp[0] = u32::from(matches!(
-                    arri.input(),
-                    ym_color::display::DisplayLutInput::LogC3Ei800
-                ));
-                match arri.output().transfer {
-                    DisplayLutTransfer::Gamma(g) => {
-                        u.dp[1] = 1;
-                        u.fl[1] = g as f32;
-                    }
-                    DisplayLutTransfer::Srgb => u.dp[1] = 0,
-                }
-                if let Some(m) = primaries_matrix(arri.output().primaries, space) {
-                    u.disp_m0 = f4(m[0], 0.0);
-                    u.disp_m1 = f4(m[1], 0.0);
-                    u.disp_m2 = f4(m[2], 0.0);
-                    u.dp[2] = 1;
-                }
-                let lut = arri.lut();
-                let owner = Arc::clone(lut);
-                let owner: Arc<dyn Any + Send + Sync> = owner;
-                let (buf, desc) = self.lut(ctx, lut, owner)?;
-                u.disp_lut = desc;
-                disp_luts = buf;
-                // The ACES 2 section is never read; the dither section is all this chain needs.
-                tables = self.dither(ctx)?;
-            }
-        }
-        // C12 step 1b: the white lift (ACES 2 path only: `ColorChain::white_lift` is the identity for a
-        // display LUT), after the grade, whose row it shares.
-        white_lift_uniform(&mut u, chain.white_lift());
-        // C12 step 1c: the red chroma step's strengths (ACES 2 path only: `ColorChain::red_chroma` is
-        // `None` for a display LUT, for a look whose strengths are both 0 and when the step is off).
-        red_chroma_uniform(&mut u, chain);
+        // C12: the cine rendering needs the matrix from XYZ to the output's own primaries and nothing else
+        // (its constants are written into the shader).
+        let xyz_to_output = CineRendering::new(params.output).xyz_to_output();
+        u.cine_m0 = f4(xyz_to_output[0], 0.0);
+        u.cine_m1 = f4(xyz_to_output[1], 0.0);
+        u.cine_m2 = f4(xyz_to_output[2], 0.0);
+        let tables = self.dither(ctx)?;
         // C13.
         u.sp[0] = u32::from(space == OutputSpace::Rec2020);
         // The Before view: its reading point, the camera default (the 3x3 from the camera RGB entering the
@@ -1008,7 +769,7 @@ impl ChainTables {
             tone.k() as f32,
             tone.white() as f32,
         ];
-        if let Some(m) = primaries_matrix(DisplayLutPrimaries::Rec709, space) {
+        if let Some(m) = rec709_to_output(space) {
             u.look_m0 = f4(m[0], 0.0);
             u.look_m1 = f4(m[1], 0.0);
             u.look_m2 = f4(m[2], 0.0);
@@ -1020,7 +781,6 @@ impl ChainTables {
             tables,
             curves,
             look_luts,
-            disp_luts,
             output: params.output,
             look: look_kind,
             before: chain.before_point(),
@@ -1056,8 +816,7 @@ fn with_tables<R>(
     })
 }
 
-/// Drops the persistent tables of `ctx`'s device (the dither thresholds, the ACES 2 tables, the
-/// curves and the cached LUTs): their buffers go back to the pool and are created again by the next
+/// Drops the persistent tables of `ctx`'s device (the dither thresholds, the curves and the cached LUTs): their buffers go back to the pool and are created again by the next
 /// chain. Call from the device thread; a chain prepared earlier keeps working (it holds its own
 /// references). The pool ledger counts the tables as in use until then, which a test about "the
 /// ledger returns to its baseline" must account for.
@@ -1075,8 +834,8 @@ pub(crate) fn dither_table(ctx: &GpuContext) -> Result<Arc<PooledBuffer>, GpuErr
     with_tables(ctx, |t| t.dither(ctx))
 }
 
-/// The WGSL of the colour kernel: the ACES 2 transform, the chain, the C13 helpers, with the LUT
-/// functions written once for the look cube and once for the display cube.
+/// The WGSL of the colour kernel: the cine rendering, the chain, the C13 helpers, with the LUT
+/// functions written for the look cube.
 pub(super) fn body() -> String {
     let color = include_str!("../shaders/color.wgsl");
     let (before, rest) = color
@@ -1084,14 +843,12 @@ pub(super) fn body() -> String {
         .unwrap_or((color, ""));
     let (template, after) = rest.split_once("//@END_LUT_FUNCS\n").unwrap_or(("", ""));
     let mut s = String::with_capacity(color.len() * 2);
-    s.push_str(include_str!("../shaders/aces2.wgsl"));
+    s.push_str(include_str!("../shaders/cine.wgsl"));
     s.push('\n');
     s.push_str(include_str!("../shaders/c13.wgsl"));
     s.push('\n');
     s.push_str(before);
-    for (suffix, buffer) in [("_look", "look_luts"), ("_disp", "disp_luts")] {
-        s.push_str(&template.replace("@P@", suffix).replace("@L@", buffer));
-    }
+    s.push_str(&template.replace("@P@", "_look").replace("@L@", "look_luts"));
     s.push_str(after);
     s
 }
@@ -1109,7 +866,6 @@ pub struct PreparedChain {
     tables: Arc<PooledBuffer>,
     curves: Arc<PooledBuffer>,
     look_luts: Arc<PooledBuffer>,
-    disp_luts: Arc<PooledBuffer>,
     output: OutputTarget,
     look: LookKind,
     before: BeforePoint,
@@ -1244,15 +1000,14 @@ impl PreparedChain {
         ub: &'a PooledBuffer,
         src: &'a PooledBuffer,
         out: &'a PooledBuffer,
-    ) -> [(u32, wgpu::BindingResource<'a>); 7] {
+    ) -> [(u32, wgpu::BindingResource<'a>); 6] {
         [
             (0, ub.binding()),
             (1, self.tables.binding()),
             (2, self.curves.binding()),
             (3, self.look_luts.binding()),
-            (4, self.disp_luts.binding()),
-            (5, src.binding()),
-            (6, out.binding()),
+            (4, src.binding()),
+            (5, out.binding()),
         ]
     }
 
@@ -1671,15 +1426,16 @@ mod tests {
 
     #[test]
     fn the_per_frame_block_is_about_2_kb() {
-        // The per-frame `ChainU` (`docs/17-gpu.md` section 11) was meant to be about 1 KB: the
-        // ACES 2 scalars live in the one uniform block (K3 allows one), so the block holds the
-        // whole chain's parameters. It was 992 bytes; the Before view's camera default added 64
-        // (the 3x3 rows and the curve constants), and the colour warp (C9b) 1040: the counts (16),
-        // three rows for each of 16 moving pins (768) and one row for each of 16 locks (256). Still
+        // The per-frame `ChainU` (`docs/17-gpu.md` section 11) was meant to be about 1 KB: the one uniform
+        // block (K3 allows one) holds the whole chain's parameters. It was 992 bytes with the ACES 2
+        // scalars; the Before view's camera default added 64 (the 3x3 rows and the curve constants), and
+        // the colour warp (C9b) 1040: the counts (16), three rows for each of 16 moving pins (768) and one
+        // row for each of 16 locks (256). The cine rendering needs three rows (XYZ to the output) in place
+        // of the ACES 2 scalars, the red steps' rows and the display LUT's descriptor, which went. Still
         // far below the 64 KiB uniform binding the device asks for
         // (`max_uniform_buffer_binding_size` of `wgpu::Limits::default()`) and the 16 KiB of wgpu's
         // downlevel limits.
-        assert_eq!(size_of::<ChainU>(), 2112);
+        assert_eq!(size_of::<ChainU>(), 1664);
         assert_eq!(size_of::<ChainU>() % 16, 0);
         assert_eq!(
             size_of::<ChainU>() - offset_of!(ChainU, warp_n),
@@ -1823,57 +1579,43 @@ mod tests {
     }
 
     #[test]
-    fn the_white_lift_takes_the_lanes_the_range_and_the_grade_leave_free() {
-        use ym_color::exposure::white::MIN_SPAN_EV;
-        use ym_color::tone::HIGHLIGHT_CAP_STOPS;
-        // Everything a chain writes into the rows the lift shares: the range (`fl.z`), the look and the
-        // display LUT (`fl.x`, `fl.y`) and a grade (`grade0.xyz`).
+    fn the_gate_lanes_carry_the_edges_of_the_highlight_range() {
+        use ym_color::tone::{ACHROMATIC_GATE_FROM, ACHROMATIC_GATE_TO, AchromaticGate};
         let tone = ToneParams::new(1.0, 0.5, 0.18 * 3.58_f64.exp2(), 0.002).expect("tone");
-        let grade = GradeParams {
-            contrast: 20.0,
-            brightness: -10.0,
-            saturation: 15.0,
-            ..GradeParams::default()
-        };
-        let base = || {
-            let mut u = ChainU::default();
-            tone_uniform(&mut u, &tone);
-            grade_uniform(&mut u, &grade);
-            u.fl[0] = 0.7;
-            u.fl[1] = 2.4;
-            u
-        };
-        let lift = WhiteLift::new(1.15, 2.78).expect("lift");
-        let mut u = base();
-        let (fl, grade0) = (u.fl, u.grade0);
-        white_lift_uniform(&mut u, lift);
-        assert_eq!(u.fl, [fl[0], fl[1], HIGHLIGHT_CAP_STOPS as f32, 1.15]);
-        assert_eq!(u.fl[2], fl[2], "the range's cap is kept");
-        assert_eq!(&u.grade0[..3], &grade0[..3], "the grade is kept");
-        assert_eq!(u.grade0[3], (1.0 / lift.span_ev()) as f32);
-        assert_eq!(u.tone, base().tone, "the range's row is not touched");
-        // A narrow ramp is at least MIN_SPAN_EV wide: the reciprocal is at most 4.
-        let mut u = base();
-        white_lift_uniform(&mut u, WhiteLift::new(3.0, 0.0).expect("lift"));
-        assert_eq!(u.grade0[3], (1.0 / MIN_SPAN_EV) as f32);
-        assert_eq!(u.grade0[3], 4.0);
-        // No lift is 0 in both lanes (the shader skips the stage), whatever was there.
-        let mut u = base();
-        u.fl[3] = 9.0;
-        u.grade0[3] = 9.0;
-        white_lift_uniform(&mut u, WhiteLift::NONE);
-        assert_eq!((u.fl[3], u.grade0[3]), (0.0, 0.0));
-        assert_eq!(u.fl[2], HIGHLIGHT_CAP_STOPS as f32);
-        // Every lane finite (K8), with the range off too.
+        let custom = AchromaticGate::new(0.2, 0.9).expect("gate");
         let mut u = ChainU::default();
-        tone_uniform(&mut u, &ToneParams::IDENTITY);
-        grade_uniform(&mut u, &GradeParams::default());
-        white_lift_uniform(&mut u, WhiteLift::new(3.0, 1.0).expect("lift"));
-        assert!(
-            bytemuck::cast_slice::<ChainU, f32>(std::slice::from_ref(&u))
-                .iter()
-                .all(|v| v.is_finite())
-        );
+        tone_uniform(&mut u, &tone.with_gate(custom));
+        assert_eq!(u.gate, [0.2_f32, (1.0 / 0.7) as f32, 0.0, 0.0]);
+        // The default edges (0.6 and 0.9: a span of 0.3).
+        let mut u = ChainU::default();
+        tone_uniform(&mut u, &tone);
+        let inv = (1.0 / (ACHROMATIC_GATE_TO - ACHROMATIC_GATE_FROM)) as f32;
+        let from = ACHROMATIC_GATE_FROM as f32;
+        assert_eq!(u.gate, [from, inv, 0.0, 0.0]);
+        assert_eq!(from, 0.6);
+        // A gate that is off has edges over the largest purity (2) and every lane stays finite (K8).
+        let mut u = ChainU::default();
+        tone_uniform(&mut u, &tone.with_gate(AchromaticGate::OFF));
+        assert_eq!(u.gate, [2.0, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_cine_rows_are_the_matrix_from_xyz_to_the_output() {
+        // The row-major rows of `CineRendering::xyz_to_output`, one per output, in f32.
+        for target in OutputTarget::ALL {
+            let m = CineRendering::new(target).xyz_to_output();
+            let rows = [f4(m[0], 0.0), f4(m[1], 0.0), f4(m[2], 0.0)];
+            for row in rows {
+                assert_eq!(row[3], 0.0);
+                assert!(row[..3].iter().all(|v| v.is_finite()));
+            }
+            // D65 white maps to (1, 1, 1) in every output: the rows sum to the white's coordinates.
+            let d65 = ym_color::consts::xy_to_xyz(ym_color::consts::D65_XY);
+            for row in rows {
+                let w: f32 = (0..3).map(|k| row[k] * d65[k] as f32).sum();
+                assert!((w - 1.0).abs() < 1e-5, "{target:?}: {w}");
+            }
+        }
     }
 
     #[test]
@@ -1903,7 +1645,7 @@ mod tests {
             let naga::TypeInner::Struct { members, span } = &module.types[var.ty].inner else {
                 panic!("CU is not a struct");
             };
-            let fields: [(&str, usize); 39] = [
+            let fields: [(&str, usize); 37] = [
                 ("dims", offset_of!(ChainU, dims)),
                 ("src", offset_of!(ChainU, src)),
                 ("origin", offset_of!(ChainU, origin)),
@@ -1927,10 +1669,9 @@ mod tests {
                 ("cdl_offset", offset_of!(ChainU, cdl_offset)),
                 ("cdl_power", offset_of!(ChainU, cdl_power)),
                 ("look_lut", offset_of!(ChainU, look_lut)),
-                ("disp_lut", offset_of!(ChainU, disp_lut)),
-                ("disp_m0", offset_of!(ChainU, disp_m0)),
-                ("disp_m1", offset_of!(ChainU, disp_m1)),
-                ("disp_m2", offset_of!(ChainU, disp_m2)),
+                ("cine_m0", offset_of!(ChainU, cine_m0)),
+                ("cine_m1", offset_of!(ChainU, cine_m1)),
+                ("cine_m2", offset_of!(ChainU, cine_m2)),
                 ("look_m0", offset_of!(ChainU, look_m0)),
                 ("look_m1", offset_of!(ChainU, look_m1)),
                 ("look_m2", offset_of!(ChainU, look_m2)),
@@ -1938,8 +1679,7 @@ mod tests {
                 ("cam1", offset_of!(ChainU, cam1)),
                 ("cam2", offset_of!(ChainU, cam2)),
                 ("camt", offset_of!(ChainU, camt)),
-                ("rc", offset_of!(ChainU, rc)),
-                ("aces", offset_of!(ChainU, aces)),
+                ("gate", offset_of!(ChainU, gate)),
                 ("warp_n", offset_of!(ChainU, warp_n)),
                 ("warp_mv", offset_of!(ChainU, warp_mv)),
                 ("warp_lk", offset_of!(ChainU, warp_lk)),
@@ -1981,7 +1721,7 @@ mod tests {
 
     #[test]
     fn the_kernel_binds_the_buffers_the_host_binds() {
-        // Bindings 0 to 6, one uniform and six storage buffers: the table of `entries`.
+        // Bindings 0 to 5, one uniform and five storage buffers: the table of `entries`.
         let source = shader_source(StorageMode::F32, KernelId::Color);
         let module = naga::front::wgsl::parse_str(&source).expect("color.wgsl");
         let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
@@ -1997,7 +1737,7 @@ mod tests {
                 bindings.insert(b.binding);
             }
         }
-        assert_eq!(bindings, (0..7).collect());
+        assert_eq!(bindings, (0..6).collect());
     }
 
     #[test]
