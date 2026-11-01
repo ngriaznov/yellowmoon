@@ -1980,7 +1980,14 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
     assert!(a.source[0].hypot(a.source[1]) <= 0.5);
     assert!((a.target[1] - 0.5).abs() < 1e-12 && a.target[0] == 0.0);
     assert_eq!(
-        (a.range, a.shadows, a.highlights, a.pivot_ev, a.exposure_ev, a.saturation),
+        (
+            a.range,
+            a.shadows,
+            a.highlights,
+            a.pivot_ev,
+            a.exposure_ev,
+            a.saturation
+        ),
         (0.25, 0.0, 1.0, -6.0, 2.0, -1.0)
     );
     assert_eq!(
@@ -2002,8 +2009,22 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
         let c = WarpPin::from(*p).clamped();
         assert_eq!(c.locked, p.locked);
         assert_eq!(
-            (c.range, c.shadows, c.highlights, c.pivot_ev, c.exposure_ev, c.saturation),
-            (p.range, p.shadows, p.highlights, p.pivot_ev, p.exposure_ev, p.saturation)
+            (
+                c.range,
+                c.shadows,
+                c.highlights,
+                c.pivot_ev,
+                c.exposure_ev,
+                c.saturation
+            ),
+            (
+                p.range,
+                p.shadows,
+                p.highlights,
+                p.pivot_ev,
+                p.exposure_ev,
+                p.saturation
+            )
         );
         for (x, y) in c
             .source

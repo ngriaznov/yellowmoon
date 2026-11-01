@@ -139,7 +139,11 @@ test("Pick colour ends when another tab is shown, by a click on the tab or by âŒ
     // The layer is gone, the hint with it, and the pointer is the ordinary one over the photo.
     await expect(layer, how).toHaveCount(0);
     await expect(page.getByText("Click a colour in the photo."), how).toHaveCount(0);
-    expect(await page.locator(".ym-photo-cell").first().evaluate((el) => getComputedStyle(el).cursor), how).not.toBe("crosshair");
+    const cursor = await page.evaluate(([x, y]) => getComputedStyle(document.elementFromPoint(x as number, y as number) as Element).cursor, [
+      box.x + box.width / 2,
+      box.y + box.height / 2,
+    ]);
+    expect(cursor, how).not.toBe("crosshair");
     // A click on the photo now adds no pin.
     await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.15);
     await page.waitForTimeout(200);

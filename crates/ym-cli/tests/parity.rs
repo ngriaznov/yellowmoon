@@ -810,6 +810,13 @@ fn a_colour_warp_is_the_same_picture_through_the_app_and_the_binary() {
             &sb.root().join(format!("cli-{name}")),
         );
         assert_same_files(&from_app, &from_cli, &format!("colour warp, {name}"));
+        // The pins, saturation included, are in the file's `ym:Settings`, as every setting is.
+        if name == "jpeg" {
+            let xmp = String::from_utf8_lossy(&bytes(&from_app[0])).replace("&quot;", "\"");
+            for saturation in ["\"saturation\":-0.6", "\"saturation\":0.5"] {
+                assert!(xmp.contains(saturation), "ym:Settings holds {saturation}");
+            }
+        }
     }
 }
 

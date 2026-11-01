@@ -125,9 +125,10 @@ fn every_stage_matches_the_cpu_trace() {
             // would be compared where it is the identity. The four `warp/` cases (the flow's 12
             // steps), measured on Mesa lavapipe in all three storage modes (with the contrast and
             // saturation of 2026-10-19, the contrast's colour step and the saturation boost 1.5
-            // included): C9b 4.2e-7, C10 4.5e-7, C11 4.9e-7 (gate 2e-4), C13 at most 4.2e-5 (gate one
-            // 10-bit code). The `contrast/` and `saturation/` cases (alone and on the full chain, -100
-            // to 100) are in the per-stage line printed below: C9 8.4e-7 on every chain.
+            // included, and the pins' saturation of 2026-11-01): C9b 5.1e-7, C10 5.2e-7, C11 5.3e-7
+            // (gate 2e-4), C13 at most 1.1e-6 (gate one 10-bit code). The `contrast/` and
+            // `saturation/` cases (alone and on the full chain, -100 to 100) are in the per-stage
+            // line printed below: C9 8.8e-7 on every chain.
             let warped = traces
                 .iter()
                 .filter(|t| {
@@ -233,9 +234,11 @@ fn every_stage_matches_the_cpu_trace() {
 /// the warp existed), for all four outputs, checked at C9, C9b, C10, C11 and C13.
 ///
 /// Measured on Mesa lavapipe, the same in all three storage modes (with the contrast and saturation of
-/// 2026-10-19, the contrast's colour step and the saturation boost 1.5 included): C9 4.3e-7, C9b
-/// 6.6e-7, C10 6.4e-7, C11 6.2e-7 against the 2e-4 gate, C13 2.0e-5 against one 10-bit code
-/// (9.8e-4); 57 of the 60 sets have a warp that acts, and 29 % of all pixels move by more than 1e-3.
+/// 2026-10-19, the contrast's colour step and the saturation boost 1.5 included, and about half the
+/// moving pins with a saturation of their own, 2026-11-01): C9 4.5e-7, C9b 9.1e-7, C10 8.2e-7, C11
+/// 8.3e-7 against the 2e-4 gate, C13 2.4e-5 against one 10-bit code (9.8e-4); 57 of the 60 sets have a
+/// warp that acts, and 31 % of all pixels move by more than 1e-3. With the kernel's saturation step
+/// off the same test fails (C9b 6.6e-2).
 #[test]
 fn random_parameter_sets_match_the_cpu_trace() {
     use std::sync::Arc;
@@ -507,8 +510,9 @@ fn a_warp_that_moves_nothing_leaves_every_output_bit_identical() {
 /// its own.
 ///
 /// Measured on Mesa lavapipe, the same in all three storage modes (with the contrast and saturation of
-/// 2026-10-19, the contrast's colour step and the saturation boost 1.5 included): C9b 9.1e-7, C10
-/// 8.7e-7, C11 8.2e-7 (gate 2e-4), C13 4.4e-6 (gate one 10-bit code, 9.8e-4).
+/// 2026-10-19, the contrast's colour step and the saturation boost 1.5 included, and saturations of
+/// -80 %, 0 and +80 % on the moving pins in turn): C9b 8.6e-7, C10 9.7e-7, C11 1.1e-6 (gate 2e-4), C13
+/// 4.2e-6 (gate one 10-bit code, 9.8e-4); the least a pin moved its own pixel: 1.2e-2.
 #[test]
 fn the_most_pins_the_uniform_holds_match_the_cpu() {
     use ym_color::warp::{WARP_MAX_PINS, WarpParams, WarpPin, chroma_of};
@@ -625,7 +629,7 @@ fn the_most_pins_the_uniform_holds_match_the_cpu() {
                     );
                 } else {
                     // Overlapping pins share: the least moved is a short move whose neighbours
-                    // dilute it (6.1e-3 on Mesa lavapipe); a pin read from the wrong row would
+                    // dilute it (1.2e-2 with the saturations on Mesa lavapipe); a pin read from the wrong row would
                     // leave its pixel where it was.
                     assert!(
                         shift > 1e-3,

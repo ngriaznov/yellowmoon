@@ -455,7 +455,7 @@ impl Warp {
         let e = gamma / reach.max(1.0) * exposure;
         // |K| <= 1 already (the weights are in [0, 1], gamma too, and every pin's saturation is in
         // [-1, 1]); the clamp keeps 1 + K >= 0 whatever else.
-        let k = (gamma / reach.max(1.0) * saturation).max(-1.0);
+        let sat_k = (gamma / reach.max(1.0) * saturation).max(-1.0);
         // The flow: each pin's centre slides from its source by the pixel's share of its move,
         // `s + tau gamma w delta`, and the pixel follows in N steps (so a pixel on a source lands on
         // `s + gamma w delta`, as in one step). The move is gathered in `d`, so one step is the
@@ -484,8 +484,8 @@ impl Warp {
             d[1] += s * v1;
         }
         // Saturation scales the chroma the pixel ends on, `(1 + K) (c + D)`. K = 0 leaves D as it is.
-        if k != 0.0 {
-            d = [d[0] + k * (c[0] + d[0]), d[1] + k * (c[1] + d[1])];
+        if sat_k != 0.0 {
+            d = [d[0] + sat_k * (c[0] + d[0]), d[1] + sat_k * (c[1] + d[1])];
         }
         (d, e)
     }

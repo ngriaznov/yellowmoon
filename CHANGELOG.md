@@ -9,7 +9,13 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Added
+
+- **A Saturation slider for each pin in Colour warp.** A pin now has a Saturation slider after Exposure, from −100 %, which turns the colours it reaches grey, to +100 %, which puts them twice as far from grey; 0 % changes nothing. It follows the pin's Range, Shadows and Highlights like the rest of the pin, never touches greys, and two pins on one colour share the effect rather than add it up. A locked pin has no Saturation. Photos and copied settings made before this open as they were, and a picture whose pins have Saturation at 0 comes out exactly as before (the pipeline version stays 0.8.2). In a `ym render --settings` file a pin takes `saturation` from −1 to 1 (`docs/02`, `docs/11`).
+
 ### Changed
+
+- **Pick colour turns off when you switch to another tab.** Pick colour now ends as soon as the Colour tab is no longer the one you see, whether you click another tab or press ⌘1 to ⌘7, and also when you open Export, change photo or leave the photos. The photo takes clicks as usual straight away, and Colour shows Pick colour off when you come back. Pick white is unchanged.
 
 - **Edges follows the aperture and no longer turns bright detail into white blobs.** A photo full of small bright things, such as a cherry tree in bloom, came out of the Lens tab with its blossoms turned into flat white blobs: every small clipped patch was treated as a lone light and given a glow of its own, and in a crowd those glows filled the gaps. Now only a light that stands alone (a star, a lamp, the sun) gets that extra light; a crowd of bright patches is treated as a surface. Edges also follows the aperture the photo was taken at: a photo taken at f/8 stays nearly sharp, a photo taken wide open keeps the full look of the lens, and a photo with no aperture recorded is treated as wide open. Pictures with the Lens off are unchanged. A picture made with Edges or Anamorphic above 0 changes when its photo was taken stopped down or holds many small bright areas, and the pipeline version is 0.8.2.
 
