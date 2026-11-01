@@ -38,7 +38,7 @@ The same screens as pages that open in a browser at 1440 × 900, so an agent can
 - **The "Graph · List" switch.** The toolbar of screens 05 to 12 and of the pages has a **Graph · List** switch after Delete. It was **dropped with the list view** (the owner, 2026-11-01). The node toolbar has no such switch: Add node ▾ · Bypass · Delete on the left; the photo switcher, Show mask and Expand on the right (`docs/23` §7.3).
 - **The list view itself** (screen 13, "Option: list view of the graph") was dropped by the owner. Its picture is not in this folder; nothing refers to it.
 - **A third segment "Off"** in the View card (and the tooltip "M steps through the three"). The View card has two segments, Overlay and Mask only; the toolbar's Show mask and the key M turn the view on and off (`docs/23` §7.6).
-- **The graph as a chain.** The screens draw a chain with straight links. The data is a real graph (nodes, typed ports and links, `docs/23` §3); screen 12 shows what that allows later. In this version the links cannot be drawn by hand.
+- **The graph as a chain.** The screens draw a chain with straight links. The data is a real graph (nodes, typed ports and links, `docs/23` §3); screen 12 shows what that allows later. Links are drawn by hand, from an output port to an input port, as in Resolve (`docs/23` §7.2); the screens do not show a drag.
 - **Screen 12** as a whole, and the "Later" tag in its toolbar.
 
 ## Copy

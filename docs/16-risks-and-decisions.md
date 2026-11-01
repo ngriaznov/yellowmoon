@@ -104,7 +104,8 @@ The plan was approved on 2026-11-01 and is milestone N (`docs/15`), specified in
 | Way in | A **Nodes** button in the header; today's view is the default |
 | Layout | **A**: the photo on top, the node graph below (about 45 % of the height), today's 400 px panel on the right |
 | Graph | Resolve-style: Input and Output as fixed markers, cards with name, thumbnail and number, picture and key ports on every node |
-| Data | **A real graph from the start** ("we need to operate a real graph, yes, not it will be mostly linear, but then it will evolve, choose graph-based approach from the beginning"): nodes, typed ports and links; absent `nodes` is Input → Main → Output; the engine compiles a plan. The interface of 0.2.0 inserts, deletes, reorders and moves nodes; links are drawn by hand when the mixers arrive (to be confirmed) |
+| Data | **A real graph from the start** ("we need to operate a real graph, yes, not it will be mostly linear, but then it will evolve, choose graph-based approach from the beginning"): nodes, typed ports and links; absent `nodes` is Input → Main → Output; the engine compiles a plan. The interface of 0.2.0 inserts, deletes, reorders and moves nodes |
+| Links | **Drawn by hand** ("Links needs to be drawn by hand, drag from output to input, as it is done in Resolve and many other node editing-based applications"): drag from an output port to an input port; an input has one link and a drop replaces it; Input → Main is fixed; the Output's link can be replaced, not removed (`docs/23` §7.2) |
 | Colour space | Fixed: nodes work in LogC4 / AWG4 between a fixed Input and a fixed Output |
 | Tabs | Input: RAW · Lens · Light · Colour · Detail. Corrector: Light · Colour · Curve · Mask. Output: Look · Detail |
 | Look | On the Output node, once per photo |

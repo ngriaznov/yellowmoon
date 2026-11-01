@@ -284,7 +284,7 @@ Goal: a node view behind a Nodes button, with a real graph of corrector nodes be
 **N-05 · Node thumbnails** (N-04) — core, IPC, cache. *Done when:* thumbnails match truncated renders.
 **N-06 · Pick white into the Colour tab** (N-01) — header button gone; the card row, the hint pill, W, off when the Colour tab is left. *Done when:* e2e passes and the screenshots are retaken.
 **N-07 · Node view shell** (N-02, N-06) — Nodes button and N, layout A, divider and Expand, the viewport follows, the switcher, the simple-view notice and glyph. *Done when:* e2e passes; the native viewport check is listed for the Mac.
-**N-08 · The graph** (N-05, N-07) — `@xyflow/react`: markers, cards with thumbnails, ports and links, select, add, delete, bypass, rename, move and reorder, zoom and Fit, keys, a11y. *Done when:* e2e, a11y and the glass audit pass.
+**N-08 · The graph** (N-05, N-07) — `@xyflow/react`: markers, cards with thumbnails, ports and links, select, add, delete, bypass, rename, move and reorder, links drawn by hand (connect, replace, pick up, remove, the refusals, the keyboard path), zoom and Fit, keys, a11y. *Done when:* e2e, a11y and the glass audit pass.
 **N-09 · The panel** (N-08) — compact head, tabs by node kind, trim cards, per-node histogram, undo, copy and paste. *Done when:* e2e passes and the screenshots are reviewed.
 **[HUMAN] N-H2** Checkpoint 1: a test DMG of nodes without masks.
 **N-10 · Shapes and ranges** (N-04, N-09) — Linear, Radial, Colour range, Brightness range, key input and output, invert, opacity, feather; CPU and GPU. *Done when:* parity, preview against export and the smooth-edge rule pass.

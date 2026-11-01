@@ -16,10 +16,10 @@ The maths is in `docs/algorithms/06-masks.md` (the node's order, the two trims, 
 - **Corrector nodes** in a graph between a fixed Input and a fixed Output, up to 64 nodes per photo, Main included.
 - **Masks in every corrector.** Shapes, ranges and AI masks add up; each row can be subtracted or inverted, and so can the node's whole mask.
 - **AI masks.** Object (SAM 2.1 small, from a click or a box), Subject and People (Apple Vision, macOS 14 or later, only where this Mac supports them), Background (our blur map).
-- **A real graph in the data and the engine.** Nodes, typed ports and links are the format from version 1, and the core evaluates a compiled plan (section 5.2). The interface of this version edits the graph by inserting, deleting, reordering and moving nodes; it does not draw links by hand (decision 1 of section 14).
+- **A real graph in the data and the engine.** Nodes, typed ports and links are the format from version 1, and the core evaluates a compiled plan (section 5.2). The interface edits the graph by inserting, deleting, reordering and moving nodes, and by **drawing links by hand**: drag from an output port to an input port, as in Resolve and other node editors (the owner, 2026-11-01; section 7.2).
 - **Pick white moves** from the header into the Colour tab (section 8).
 
-**Not in this version.** Parallel, Layer, Splitter and combiner, and Outside nodes (the Add node menu shows them as "Later"; the format, the validator and the plan are built so they can be added as new node kinds without changing the format); DCTL and OpenFX; presets and nodes shared across photos; the list view (dropped by the owner); a "pick neutral" in a corrector; drawing links by hand.
+**Not in this version.** Parallel, Layer, Splitter and combiner, and Outside nodes (the Add node menu shows them as "Later"; the format, the validator and the plan are built so they can be added as new node kinds without changing the format); DCTL and OpenFX; presets and nodes shared across photos; the list view (dropped by the owner); a "pick neutral" in a corrector.
 
 ### 1.2 The three zones
 
@@ -468,7 +468,7 @@ The graph component is **`@xyflow/react`** (MIT, on our licence allow list), wit
 
 A card's **number** is its place in the flow: the order of section 5.2 over all nodes. **Main is always 01.** Numbers update on insert and delete. The names are not numbers: "Corrector" is the default name and several nodes may have it.
 
-**Ports and links.** Drawn on every node, as decided ("fine with clutter for now"). A picture input is a light grey triangle at the card's left, a picture output a light grey square at its right (at the thumbnail's mid height); a **key** input is a triangle and a key output a square in the mask accent (orchid pink), at the left and right of the footer row. Picture links are grey lines with a double arrowhead into the next input; key links are dashed in the mask accent. In this version **links cannot be drawn or dragged by hand** (decision 1 of section 14); they follow the operations below.
+**Ports and links.** Drawn on every node, as decided ("fine with clutter for now"). A picture input is a light grey triangle at the card's left, a picture output a light grey square at its right (at the thumbnail's mid height); a **key** input is a triangle and a key output a square in the mask accent (orchid pink), at the left and right of the footer row. Picture links are grey lines with a double arrowhead into the next input; key links are dashed in the mask accent. **Links are drawn by hand** (the owner, 2026-11-01: "Links needs to be drawn by hand, drag from output to input, as it is done in Resolve and many other node editing-based applications"); the rules are under *Links by hand* below, and the node operations that follow also rewire.
 
 **What you can do in the graph.**
 
@@ -482,7 +482,21 @@ A card's **number** is its place in the flow: the order of section 5.2 over all 
 - **Zoom, pan and Fit.** The canvas has a zoom control at the bottom right ("−", "100%", "+", "Fit"; accessible names "Zoom out", "Zoom in", "Fit the graph"), from 25 % to 200 %; drag on empty canvas to pan; a two-finger scroll pans and a pinch or ⌘-scroll zooms (the page never scrolls, `docs/11` desktop feel). At 100 % four cards fit in the editor with 63 px between them; more need zoom or Expand.
 - With only Main in the graph the canvas says, under the Main → Output link, "Add a node to change only part of the photo."
 
-Each operation is one `nodes` patch and one undo step, built by pure functions of the graph (`src/state/graphOps.ts`: `insertAfter`, `remove`, `reorder`, `moveCard`, `toggleBypass`, `rename`), tested without a screen; the core validates what they send.
+**Links by hand.** As in Resolve:
+
+- **Connect.** Press on an output port (a picture square or a key square) and drag: a link follows the pointer, the input ports that can take it light up (the same type, and no circle would result) and the others dim. Release over a lit input to link them. Release anywhere else and nothing changes. Picture goes to picture and key to key; a port of the other type never lights.
+- **An input has one link.** Dropping onto an input that already has one **replaces** it (the old link goes, in the same step). An output may feed any number of inputs: a node's picture can go on to its next node and to a branch.
+- **Pick up a link's end.** Press on an input port that has a link and drag: its end comes away from the port. Drop it on another input of the same type to move it there; drop it on empty canvas to **remove the link**.
+- **Select and delete.** A click on a link selects it (it thickens, in yellow); Delete or Backspace removes it; a right click on a link offers Delete link.
+- **What stays fixed, and what is refused** (the link is not made, nothing changes, and the error bar says why):
+  - the link **Input → Main** cannot be moved or removed: "Main always takes its picture from the input.";
+  - **the Output's picture link** can be replaced (drop another node's picture output on the Output) but not removed: "The output needs a picture. Link another node to it instead.";
+  - a link that would make a circle, counting picture and key links together: "That would link the nodes in a circle.".
+- **Dead branches.** A node whose picture no longer reaches the Output (and whose key feeds no live node) is kept and dimmed, with the tooltip "Not connected to the output."; linking it again brings it back.
+- **The keyboard path.** With a card focused, More › **Link picture to ▸** and **Link key to ▸** list the inputs it can be linked to (by node number and name; the Output for a picture), and More › **Remove link ▸** lists its links. The same rules apply.
+- Each connect, move or removal of a link is **one `nodes` patch and one undo step**.
+
+Each operation is one `nodes` patch and one undo step, built by pure functions of the graph (`src/state/graphOps.ts`: `insertAfter`, `remove`, `reorder`, `moveCard`, `toggleBypass`, `rename`, `connect`, `disconnect`), tested without a screen; the same functions say which inputs light up during a drag and why a link is refused; the core validates what they send.
 
 ### 7.3 The toolbar
 
@@ -540,7 +554,7 @@ What each tab holds. Where a tab matches today's, its cards are today's.
 - **On Main** the Contrast, Highlights, Shadows, Black, Saturation and wheel controls keep their Auto semantics (a value equal to Auto *is* Auto; the detent and Reset are at the Auto value, `docs/11` *Auto semantics*). On every other node they are plain numbers with the detent and Reset at 0.
 - **The Automatic card, the Tone card and Re-run** belong to the simple view. The Input's Reset puts every Input field to its default, Auto where there is Auto; Re-run itself is not in the node view.
 - **Reset this node** (the head) puts the node's trim and grade back at their defaults (for Main, its top-level grade fields too, at Auto and zero); **masks stay** (the Masks card has its own Reset). One undo step.
-- **More** (correctors): Rename · Move earlier · Move later · Delete node (off for Main, which also has no Move items).
+- **More** (correctors): Rename · Move earlier · Move later · Link picture to ▸ · Link key to ▸ · Remove link ▸ · Delete node (Delete node is off for Main, which also has no Move items; Main's picture input cannot be relinked). The Input's More has Link picture to ▸ (an extra branch from the Input).
 - **Tab memory.** Entering the node view with the simple view on a tab selects the matching node and tab: Look → Output › Look; Lens → Input › Lens; Light → Main › Light; Colour → Main › Colour; Detail → Input › Detail; Curve → Main › Curve; RAW → Input › RAW. Nodes of one kind share a remembered tab. ⌘1 to ⌘5 switch tabs in the order of the row (⌘1 to ⌘4 on a corrector, ⌘1 and ⌘2 on the Output).
 - **Pick white** is on the Input's Colour tab (section 8). In the node view the key W selects the Input and opens that tab.
 - **The histogram and the Curve plot** read the signal at the selected node: its curve's input for a corrector, the Input's output for the Input (`histogram`, `chroma_scatter` and `sample_chroma` take the node, section 9). The pixel readout (⌥) is the final picture.
@@ -615,7 +629,7 @@ Sliders are the standard slider; Refine edges and Opacity show percent, the othe
 |---|---|
 | N | Switch between the simple view and the node view (not in a text box); the tooltip of the Nodes button says "Nodes (N)" |
 | M | Show or hide the selected node's mask (node view) |
-| Delete or Backspace | In the node view: removes the selected node (never Main, the Input or the Output) and **never a photo**; with a mask row selected and focus in the Masks card, removes that row. Not in a text box, on a slider, in a menu or a dialog |
+| Delete or Backspace | In the node view: removes the selected link if a link is selected, else the selected node (never Main, the Input or the Output), and **never a photo**; with a mask row selected and focus in the Masks card, removes that row. Not in a text box, on a slider, in a menu or a dialog |
 | B | Bypass the selected node (node view) |
 | W | Pick white: opens the Colour tab and starts picking (section 8); in the node view it selects the Input first |
 | Esc | Ends a pick or a mask tool first, as now |
@@ -629,7 +643,7 @@ Sliders are the standard slider; Refine edges and Opacity show percent, the othe
 ### 7.8 Accessibility
 
 - The graph is **one Tab stop**; the arrows move between nodes; Return or Space selects (selection follows focus).
-- **Every card has a name:** "Node 2, Mountain, masked by Object and Radial" (the number as a plain number, the name, the kinds of its masks; "Node 1, Main" with none), with ", bypassed", ", not connected" and "selected" (`aria-pressed`) where they apply. The Input and the Output are "Input" and "Output". The links and ports are decorative (`aria-hidden`): the order is in the numbers.
+- **Every card has a name:** "Node 2, Mountain, masked by Object and Radial" (the number as a plain number, the name, the kinds of its masks; "Node 1, Main" with none), with ", bypassed", ", not connected" and "selected" (`aria-pressed`) where they apply. The Input and the Output are "Input" and "Output". The ports and links are drawn for the pointer and are not Tab stops; every link can be made, moved and removed from the keyboard through the card's More menu (Link picture to, Link key to, Remove link), and a card's name says what feeds it (", picture from node 1, key from node 5").
 - The divider, the zoom buttons, the toolbar toggles (`aria-pressed`) and the menu items have names; the Later items are `aria-disabled`.
 - The mask handles are focusable and nudged by the arrows (section 7.6); the sliders of section 7.6 give every number a keyboard control.
 - The existing a11y and glass audits gain the new page states (section 11): the glass audit's `STATES` grow from 41 to 50 and `HAS_COUNTERPART` and `NO_COUNTERPART` are updated; `a11y.spec.ts` walks the node view (graph, menus, each node kind's tabs, the Mask tab) and fails on any control without a name.
@@ -689,7 +703,7 @@ Every gate below must pass in CI before a phase is done. **A failed gate is repo
 | Masks | preview against export: the same mask at k = 4 and k = 1 within a stated bound; a photo cropped or turned keeps its mask on the subject | *starting* largest 0.1, mean 0.005 after reducing the export | N-10, N-13 |
 | Copy and paste | Object clicks are not copied, the others are; Subject, People and Background are worked out again; a paste is one undo step | tested | N-02, N-12 |
 | Pick white | the header has no Pick white; the card row, the hint pill, W and "turns off when the Colour tab is left"; e2e and the screenshots retaken | e2e | N-06 |
-| Interface | unit tests for the store (graph operations: insert, delete with reconnection, reorder, key links on delete, undo of each, the copy rules); **Playwright** for the node view, the menus, the keys, Pick white and the mask rows; the **glass audit and a11y** gain the new states; new reference screenshots, which the owner looks at before they are committed | green | N-06 to N-12 |
+| Interface | unit tests for the store (graph operations: insert, delete with reconnection, reorder, key links on delete, **connect, replace an input's link, pick up and move a link's end, remove a link, the refusals (Main's input, the Output's link, circles, port types)**, undo of each, the copy rules); Playwright drags a link from an output to an input, onto an occupied input, and off an input onto the canvas; **Playwright** for the node view, the menus, the keys, Pick white and the mask rows; the **glass audit and a11y** gain the new states; new reference screenshots, which the owner looks at before they are committed | green | N-06 to N-12 |
 | Vision | on a Mac: Subject and People make a mask twice with equal bytes; **Linux and older-Mac builds show no Vision items** | Mac CI | N-19 |
 | Licences | `cargo deny check`; the npm licence check with `@xyflow/react`; `check_bundle.py` knows the SAM weights and their notice | pass | N-08, N-16 |
 | Speed (on a Mac) | a slider move in the fit view with 8 nodes; a click on an Object mask once the encoder has run | ≤ 100 ms; ≤ 300 ms | N-20 |
@@ -706,7 +720,7 @@ Every gate below must pass in CI before a phase is done. **A failed gate is repo
 - **The fused kernel** is already large. A plan of 16 nodes with masks may cost time on older Macs; N-04 and N-10 measure it.
 - **Bit-identity** of the default graph is guaranteed on the CPU reference. On the GPU it is within today's gates and identical on lavapipe where possible.
 - **Memory.** SAM features about 16 MB a photo and raster masks 4 to 8 MB each, in a small in-memory cache, never on disk. Undo entries hold `nodes` before and after; unchanged nodes are shared, and N-02 checks that 100 steps over a graph with a 100,000-point brush stay within a stated size.
-- **Hand-written graphs.** A settings file may hold fan-outs, dead branches and key links that no screen of this version can draw. The validator and the compiler treat them as first-class; a graph that needs more than 8 pictures at once takes the several-pass path, which is tested.
+- **Hand-written graphs.** A settings file, and now the person drawing links, may make fan-outs, dead branches and key links. The validator and the compiler treat them as first-class; a graph that needs more than 8 pictures at once takes the several-pass path, which is tested.
 - **`@xyflow/react`** is a new dependency (MIT, with `@xyflow/system`, `classcat` and `zustand`, all MIT on their repositories); the graph could be hard to make accessible. N-08 checks the licences with the npm gate and the keyboard path with the a11y audit.
 - **JPEG XMP** holds 65,502 bytes: a large brush document does not fit (section 3.9).
 
@@ -721,7 +735,7 @@ Task format of `docs/15`. Each task updates the specs it touches and `docs/STATU
 **N-05 · Node thumbnails** (N-04): core, IPC, cache. *Done when:* thumbnails match truncated renders.
 **N-06 · Pick white into the Colour tab** (N-01): the header button and hint gone, the card row, the hint pill, W, off when the Colour tab is left (section 8). *Done when:* e2e passes and the screenshots are retaken.
 **N-07 · Node view shell** (N-02, N-06): the Nodes button and N, layout A, the divider and Expand, the viewport follows, the switcher, the simple-view notice and glyph, the mask accent token. *Done when:* e2e passes and the native viewport check on a Mac is listed.
-**N-08 · The graph** (N-05, N-07): `@xyflow/react`, markers, cards with thumbnails, ports and links, select, add, delete, bypass, rename, move and reorder (`graphOps`), zoom and Fit, keys, a11y. *Done when:* e2e, a11y and the glass audit pass and the licence check includes the new package.
+**N-08 · The graph** (N-05, N-07): `@xyflow/react`, markers, cards with thumbnails, ports and links, select, add, delete, bypass, rename, move and reorder, **links drawn by hand** (connect, replace, pick up, remove, the refusals and the More menu's keyboard path) (`graphOps`), zoom and Fit, keys, a11y. *Done when:* e2e, a11y and the glass audit pass and the licence check includes the new package.
 **N-09 · The panel** (N-08): the compact head, the tabs of each node kind, the trim cards, the histogram per node, undo, copy and paste. *Done when:* e2e passes and the screenshots are reviewed.
 **[HUMAN] N-H2 · Checkpoint 1:** a test DMG of nodes without masks. *You test it.*
 **N-10 · Shapes and ranges** (N-04, N-09): Linear, Radial, Colour range, Brightness range, the key input and output, invert, opacity, feather; CPU and GPU in the fused pass. *Done when:* parity, preview against export and the smooth-edge rule pass.
@@ -743,9 +757,9 @@ Task format of `docs/15`. Each task updates the specs it touches and `docs/STATU
 
 ## 14. Decisions made while writing the spec
 
-The plan and the owner's later answers fixed the product; these are the readings made where they were silent or where they and the code differed. The owner is asked about the first.
+The plan and the owner's later answers fixed the product; these are the readings made where they were silent or where they and the code differed. The owner answered the first (section 7.2).
 
-1. **No hand-drawn links in this version.** The data, the validator and the engine are a real graph, but the interface only inserts, deletes, reorders and moves nodes; before the mixers and Outside exist, no rewiring gives a useful new picture. Links are drawn by hand when they arrive. *For the owner to confirm.* (A hand-written settings file can already hold any valid graph, and `ym` renders it.)
+1. **Links are drawn by hand** (the owner's answer of 2026-11-01 to the question this item first asked): drag from an output port to an input port, as in Resolve; an input has one link and a drop replaces it; a link's end is picked up from its input and moved or dropped on the canvas to remove it; Input → Main is fixed and the Output's link can be replaced but not removed (section 7.2).
 2. **The photo frame.** The plan says masks use "the frame `white_pick` uses", after the lens geometry. `white_pick` is in the oriented image area *before* the lens crop (`Renderer::pick_point_at`). Masks use the frame the plan describes in words: oriented, after R9, before L4, crop, straightening and turn (section 3.6). It is the Input's own picture, which the AI masks read, so a raster mask needs no un-distortion.
 3. **`trim` on every node.** The plan's example put the exposure, temperature and tint inside a node's `grade`. They are a node's `trim`, as Main's are, so that Main and the others have one shape; a node without `grade` is all defaults.
 4. **The trims' maths.** The photo's resolved white after the Input is AWG4's own white (D65), so the temperature and tint trim starts there and depends on nothing else: ±100 temperature is ±50 mired on the CIE daylight locus, ±100 tint is ±0.01 in `(u, v)` across it, and the gain is a von Kries gain in AWG4 with green 1. Using `ym_color::wb`'s ALEXA-native helpers would make a node's gain follow the Input's Kelvin, the scene's class mix and the camera, which breaks copy and paste between photos (`docs/algorithms/06` section 2.2).
@@ -756,7 +770,7 @@ The plan and the owner's later answers fixed the product; these are the readings
 9. **Plan limits.** `PLAN_REGISTERS` 8 and `PLAN_KEYS` 16; a graph that needs more splits into passes (a path that v1 only reaches from hand-written files, and that the mixers will use).
 10. **Commands the plan did not list:** `mask_kinds` (the menu must know what to hide), an `at` argument on `histogram`, `chroma_scatter` and `sample_chroma` (a node's Light, Curve and Colour tabs read their own node), and `viewport_set_mode`'s second argument `mask_view`. The `at` default is Main.
 11. **The View card has two segments**, Overlay and Mask only. The mockups draw a third, "Off" (and a tooltip "M steps through the three"); the plan says the toolbar toggle and M turn the view on and off and the card chooses the style. Choosing a segment turns the view on.
-12. **Keys and menus the plan did not list:** B (the head's tooltip says "Bypass this node (B)"), the More menu (Rename, Move earlier, Move later, Delete node), ⌥← and ⌥→ for reorder (a keyboard path), Delete on a selected mask row, a row's context menu (Move up, Move down, Delete mask: the mockup's row has no remove control). The head's Reset leaves the masks and the Masks card's Reset clears them.
+12. **Keys and menus the plan did not list:** B (the head's tooltip says "Bypass this node (B)"), the More menu (Rename, Move earlier, Move later, Link picture to, Link key to, Remove link, Delete node), ⌥← and ⌥→ for reorder (a keyboard path), Delete on a selected mask row, a row's context menu (Move up, Move down, Delete mask: the mockup's row has no remove control). The head's Reset leaves the masks and the Masks card's Reset clears them.
 13. **Thumbnails** are the picture after the node *through the Output* (look and rendering), so they look like the photo; one for every node, dead ones included; about 160 px.
 14. **Mask rows.** The subtitles of section 7.6; the sliders for Angle, Width, Height, Low and High; the Object-found pill stays 3 s; a stroke is sent when the pointer is released and stored simplified.
 15. **The simple view's notice** also shows for a Main that has a trim, masks or a bypass (with its own sentence), and the filmstrip glyph follows the same rule, so the simple view never hides what changes the picture.
