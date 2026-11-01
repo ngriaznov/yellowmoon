@@ -95,6 +95,40 @@ This file lists the open risks of the project with their mitigations, then the s
 - **The Look tab has a Tone card** with Temperature, Contrast and Saturation, the same settings as Colour › White balance › Kelvin, Light › Contrast and Colour › Saturation. Moving Temperature makes the white balance manual and Reset returns it to Auto; Tint stays on the Colour tab.
 - **Colour warp is a Chroma Warp with pins** (stage C9b), a card on the Colour tab with Pick colour on the photo and a scatter of the photo's colours on the plane. Range is the range: a pin's Range is kept as set and the pixel moves along a flow in steps, so a small Range moves only nearby colours. A new pin's Range is 2 (`WARP_RANGE_DEFAULT` 0.02). `docs/02` C9b, `docs/11`.
 
+### Nodes and masks (owner, 2026-11-01)
+
+The plan was approved on 2026-11-01 and is milestone N (`docs/15`), specified in `docs/23-nodes.md`; released once as 0.2.0. The decisions:
+
+| Topic | Decision |
+|---|---|
+| Way in | A **Nodes** button in the header; today's view is the default |
+| Layout | **A**: the photo on top, the node graph below (about 45 % of the height), today's 400 px panel on the right |
+| Graph | Resolve-style: Input and Output as fixed markers, cards with name, thumbnail and number, picture and key ports on every node |
+| Data | **A real graph from the start** ("we need to operate a real graph, yes, not it will be mostly linear, but then it will evolve, choose graph-based approach from the beginning"): nodes, typed ports and links; absent `nodes` is Input → Main → Output; the engine compiles a plan. The interface of 0.2.0 inserts, deletes, reorders and moves nodes; links are drawn by hand when the mixers arrive (to be confirmed) |
+| Colour space | Fixed: nodes work in LogC4 / AWG4 between a fixed Input and a fixed Output |
+| Tabs | Input: RAW · Lens · Light · Colour · Detail. Corrector: Light · Colour · Curve · Mask. Output: Look · Detail |
+| Look | On the Output node, once per photo |
+| Curve and look | The curve, in each node, comes before the look, which is in the Output; `PIPELINE_VERSION` 0.9.0 |
+| Node head | One line with a smaller name |
+| Key ports | Drawn on every node ("fine with clutter for now") and part of the format: a node's key input feeds its mask as one more region, its key output carries its final mask |
+| Masks | Add up as in Resolve; Subtract cuts; ranges keep only their part; Invert per mask and per node |
+| Overlapping soft edges | Screen: 1 − (1 − a)(1 − b) |
+| AI masks | SAM 2 for Object (code and weights Apache-2.0, checked); SAM 3 is out (custom licence, `docs/14`) |
+| SAM 2 | Size: SAM 2.1 **small**; weights **bundled** in the app (about 95 MB more; the build fetches them from our own release) |
+| SAM finds nothing | Nothing changes; the error bar says so |
+| Subject and People | Apple Vision, macOS only, and only where this Mac supports them: hidden elsewhere, a plain error in `ym` |
+| Copying masks | Linear, Radial and Brush copy as they are; Subject, People and Background are worked out again; Object clicks are not copied |
+| Main | Node 1, **cannot be deleted or moved**, only bypassed; it can carry masks like any corrector; it stays first |
+| Numbers | Follow the flow and update on insert or delete |
+| Export, Copy, Paste | Act on the whole photo in the node view too |
+| Show mask | The toolbar toggle (M) turns it on and off; the View card chooses Overlay or Mask only |
+| Output Detail tab | Stays, with Output sharpening |
+| Pick white | Moves into the Colour tab, as part of this feature |
+| `ym` with a mask this machine cannot make | Stops on that photo with a plain error |
+| Limits | Up to **64 nodes** per photo, Main included; otherwise only a sanity bound on what a settings file may hold (64 masks a node, 100,000 brush points a mask) |
+| Release | The whole plan is built, then released once as **0.2.0**; the checkpoints are test builds |
+| Dropped | DCTL (for now), the list view |
+
 ### Colour and rendering
 
 - **The default look is Signature.** A LogC4 luma curve pivoting at mid grey (the departure from the identity scaled by 1.6, slope at mid grey about 1.40, with a soft toe and shoulder) followed by CDL saturation 1.45; mid grey is unchanged. Parametric looks are baked into 65-point cubes because the steeper curve needs a finer cube. Neutral stays as the identity. The default look comes from the preferences (`DEFAULT_LOOK` is `builtin:signature`); `DevelopSettings::default()` stays Neutral. It is a built-in look made for the app, not derived from any ARRI or commercial LUT. `docs/08`.
@@ -108,7 +142,7 @@ This file lists the open risks of the project with their mitigations, then the s
 - **The sensor map is a table blend of Lab-optimal, white-preserving 3×3 matrices per reference light.** The Lab objective passes 8 of 9 held-out lights for the A7R IV (LED-V2 stays a reported failure: 0.759 median, 1.515 p95); a tiny MLP is not used, because free and root-polynomial maps reach only LED-V2 ≈ 0.51. `docs/02` C2.
 - **Locus and Duv tables use the published raw-scale curves; the sensor maps and ALEXA white tables use per-channel peak-normalised curves** (scale-invariant there), because the scene white at run time is raw data. `docs/03`.
 - **Tint is our green-gain mapping (±0.5 stop at ±50)**, because ARRI's tint mapping is unpublished. `docs/02` C3–C4.
-- **The tone curve (C11) acts in LogC4 after the look (C10).** It travels into the DNG export and behaves the same under every display transform. `docs/02` C11.
+- **The tone curve (C11) acts in LogC4 inside each node, before the look (C10).** It travels into the DNG export and behaves the same under every display transform and every look. Until pipeline 0.9.0 it followed the look; the owner moved it on 2026-11-01 with the nodes, because the look is set once per photo on the Output and acts after every node. A photo with a custom curve and a look other than Neutral renders a little differently; no golden entry has a curve. `docs/02` C10 and C11, `docs/23` §1.4.
 
 ### Raw processing
 

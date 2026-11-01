@@ -211,8 +211,20 @@ The README's pictures are screenshots of the real app on real photos, made by `t
 | Golden images | fixed files through the CLI | no unexplained ΔE00 > 0.5 change | from M1 |
 | App and CLI | same job through both | byte-identical | M3 |
 | DNG | `dng_validate` render vs our JPEG | passes validation; ΔE00 median ≤ 1.5 | M3 |
+| Nodes: old documents | a document without `nodes` reads as the default graph; the default graph against the bytes of 0.8.2 on the CPU reference for every golden entry and settings fixture, except the case of a curve with a look other than Neutral (own test; `docs/23` §1.4) | byte-identical | N (N-02, N-03) |
+| Nodes: graph and plan | each graph rule with its error text, cycles through picture and key links, a graph with a dead branch, a key link into a live node, the order and the compile-to-passes plan (a graph that needs 9 registers) | exact | N (N-02 to N-04) |
+| Nodes: parity | CPU against GPU (lavapipe) for 1, 4 and 16 nodes with up to 8 masks each of every kind, inverted and subtracted, key links | 2e-4 in LogC4; one 10-bit code after C12 and C13; raster masks within a bound set in N-13 | N (N-04, N-10, N-13) |
+| Nodes: determinism and tiles | repeat renders, tiles against the whole frame (raster-mask halos included) | bit for bit | N |
+| Nodes: app and CLI | same graph and masks through both, Object included | byte-identical | N (N-18) |
+| SAM 2.1 small | our runtime against Meta's code (`tools/oracle/sam2`) on 20 public photos, 3 prompts each | mask IoU ≥ 0.99; logits within a stated bound; the encoder's time measured | N (N-17) |
+| Masks | preview against export (k = 4 and k = 1); a cropped or turned photo keeps its mask on the subject | within a stated bound | N (N-10, N-13) |
+| Nodes: speed (on a Mac) | a slider move in the fit view with 8 nodes; an Object click once the encoder has run | ≤ 100 ms; ≤ 300 ms | N (N-20) |
 | Performance | `docs/05` targets on M1 and M3 machines | report; regressions > 20% fail | every gate |
 | Whole app | blind A/B of 50 A1 photos vs Capture One, Lightroom, DxO exports | ours preferred or tied in ≥ 50% of pairs | M4 [HUMAN] |
+
+### Nodes and masks: the SAM fixtures
+
+`tools/oracle/sam2` (Python, test tooling only, never a dependency of a shipped crate; Meta's `sam2` package at a pinned commit, CPU, f32) writes the fixtures the SAM gate reads: for 20 public photos from `docs/test-photo-sources.md` (CC0 and public-domain, a fixed list with SHA-256), the 8-bit picture, the 1024² tensor Meta's preprocessing makes, the encoder's three feature maps, and for three prompts each (one click, three clicks of which one negative, one box) the 256 × 256 logits, the IoU and object scores and the mask. `tools/fetch/` makes them into `testdata/` (git-ignored); the Rust test (`crates/ym-ml/tests/sam2.rs`) compares. The Vision tests run on the Mac CI job. `docs/23` §11 has the full list of gates and `docs/algorithms/06` §6.5 the SAM bounds. Python here only writes data, as `docs/00` allows.
 
 ## Golden images
 

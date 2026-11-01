@@ -20,7 +20,7 @@ A desktop raw processor for photos from Sony cameras. It reads ARW files, develo
 ## Principles
 
 1. **Automatic first.** Every photo opens already developed: exposure, white balance, noise reduction, lens corrections and the default look. Controls are offsets from the automatic result.
-2. **Few controls.** Six tabs (Look, Light, Colour, Detail, Curve, RAW) with a handful of sliders each. No masks, layers or retouching.
+2. **Few controls.** Six tabs (Look, Light, Colour, Detail, Curve, RAW) with a handful of sliders each. Masks only in the optional node view (`docs/23-nodes.md`, from 0.2.0), never in the simple one; no layers or retouching.
 3. **Open, adjust, export, done.** No catalogue, no sidecars, no edit history. Closing the app forgets the session.
 4. **Light-aware colour.** The scene's light is estimated per photo and drives how the Sony sensor's response is mapped to the ALEXA's. That is what a static LUT can't do.
 5. **Honest about estimates.** Where we use an estimate (the ALEXA curves, a stand-in camera profile, a reduced decode path), the app says so in plain words.
@@ -42,6 +42,7 @@ A desktop raw processor for photos from Sony cameras. It reads ARW files, develo
 - Looks: Signature (default) and Neutral (the identity) built in; ARRI Look Library looks imported by the user through a wizard (ARRI's display LUTs are not imported); any other `.cube` with one question.
 - Export: JPEG, TIFF, PNG, and DNG with the look baked in.
 - Command-line tool with the same features.
+- Nodes and masks (milestone N, 0.2.0, `docs/23-nodes.md`): an optional node view with a graph of corrector nodes and masks (shapes, ranges, brush, Object from SAM 2.1 small, Subject and People from Apple Vision, Background from blur). The simple view stays the default.
 - Auto-update, Homebrew cask, `.dmg`.
 
 **V2 (not in this plan)**
@@ -56,7 +57,7 @@ A desktop raw processor for photos from Sony cameras. It reads ARW files, develo
 **Out of scope**
 
 - ALEXA 35 and REVEAL colour science (unpublished; a different sensor).
-- Video, tethering, catalogue or library management, saved edits, sidecar files, local masks, retouching, panoramas, HDR merge.
+- Video, tethering, catalogue or library management, saved edits, sidecar files, retouching, panoramas, HDR merge.
 - ARQ pixel-shift files, SRF and SR2 (pre-ARW formats).
 - Non-Sony raw files.
 

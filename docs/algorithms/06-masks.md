@@ -5,8 +5,8 @@ This file is the maths of `docs/23-nodes.md`: what a corrector node computes in 
 | | |
 |---|---|
 | Spec | `docs/23-nodes.md` |
-| CPU reference | `ym_color::display` (the node loop and the trims), `ym_color::mask` (shapes, keys, combination), `ym_gpu::cpu::mask_raster` (resample, grow, feather, guided filter) |
-| GPU kernels | the fused colour kernel `ym-gpu/src/shaders/color.wgsl` (nodes, trims, shapes, keys), `ym-gpu/src/shaders/mask_raster.wgsl` (the raster pass) |
+| CPU reference | `ym_color::display` (the node loop and the trims), `ym_color::mask` (shapes, ranges, combination), `ym_color::plan` (the compiled plan), `ym_gpu::cpu::mask_raster` (resample, grow, feather, guided filter) |
+| GPU kernels | the fused colour kernel `ym-gpu/src/shaders/color.wgsl` (the plan's steps, trims, shapes, ranges), `ym-gpu/src/shaders/mask_raster.wgsl` (the raster pass) |
 | SAM 2.1 small | `ym_ml::sam2` (CPU, f32), weights in `data/models/sam2/` |
 | Ships | on: a photo without nodes beyond Main, with no trim and no mask renders the bytes of pipeline 0.8.2 (section 1.4) |
 
@@ -16,7 +16,7 @@ Notation. `v` is a LogC4 triple, `lin = decode(v)` linear AWG4 (`docs/02` Consta
 
 ### 1.1 Order
 
-A node takes the LogC4 value `v_in` that the node before it (or C8, for Main) made, and gives `v_out`:
+A node takes the LogC4 value `v_in` that its picture source made (C8, for Main, whose source is the Input) and gives `v_out`:
 
 ```
 1. trims        lin  = decode(v_in) ⊙ g          g = 2^ev · d(temperature, tint)        (section 2)
@@ -88,19 +88,22 @@ Temperature and tint are `t` and `n`, each −100 to +100 (`TRIM_TEMPERATURE_RAN
 A node's mask rows are, in list order, `i = 1 … N`. Each has a kind (section 4), a `mode` (add or subtract), `invert`, `enabled` and `opacity`. Rows with `enabled = false` are absent: they are dropped before anything below.
 
 1. **One mask's value.** The kind gives `s_i` in [0, 1] at the pixel (sections 4 and 5). Then `a_i = o_i · (inv_i ? 1 − s_i : s_i)` with `o_i` the opacity.
-2. **Regions** are the Object, Subject, People, Background, Linear, Radial and Brush rows; **keys** are the Colour range and Brightness range rows. Each group is folded in list order: `acc ← 1 − (1 − acc)(1 − a)` for an add and `acc ← acc · (1 − a)` for a subtract. The first `acc` is 0, except that when the group's first row is a subtract it is 1 (the group then reads "the whole photo, minus this"). The two accumulators are `R` and `K`.
-3. **No group, no mask.** With no region rows `R = 1`; with no key rows `K = 1`; with no rows at all `m = 1`, the whole photo.
-4. **The node's mask** is `m = R · K` (the keys keep only their part of what the regions gave), and the node's Invert gives `m ← 1 − m`.
+2. **The key input.** A corrector has a key input port (`docs/23` section 3.4). When a key link ends on it, the linked node's key output carries that node's final mask `m` at this pixel (step 5), and the key input is an **implicit first region row**: mode add, opacity 1, no invert, `s` = that `m`. When no link ends on it, there is no such row. (The word *key* names the ports and links; the Colour range and Brightness range rows, the "Keys" group of the Add mask menu, are called **ranges** in this file.)
+3. **Regions** are the key input, if any, and the Object, Subject, People, Background, Linear, Radial and Brush rows; **ranges** are the Colour range and Brightness range rows. Each group is folded in list order, the key input first: `acc ← 1 − (1 − acc)(1 − a)` for an add and `acc ← acc · (1 − a)` for a subtract. The first `acc` is 0, except that when the group's first row is a subtract it is 1 (the group then reads "the whole photo, minus this"). The two accumulators are `R` and `K`.
+4. **No group, no mask.** With no region rows (and no key input) `R = 1`; with no range rows `K = 1`; with no rows at all and no key input `m = 1`, the whole photo.
+5. **The node's mask** is `m = R · K` (the ranges keep only their part of what the regions and the key input gave), and the node's Invert gives `m ← 1 − m`. This `m` is what the node's **key output** carries to the nodes whose key inputs it feeds, and what the mask view shows. It does not depend on the node's Bypass: a bypassed node still has its mask.
+
+A node with a key input and no rows of its own is therefore `m = m_source`; with the Radial subtracted from it, `m_source · (1 − a)`; with a Colour range, `m_source · K`. Because `m` is made per pixel from this node's `v_in` and the sources' `m`, key links add no spatial step.
 
 The screen rule `1 − (1 − R)(1 − a)` is the owner's choice for overlapping soft edges (2026-11-01): two half-covered pixels give three quarters, nothing exceeds 1, and the order of adds does not matter. A subtract multiplies by `1 − a`, so it cuts exactly its own coverage. A row that selects nothing (an Object mask with no points, a Subject mask the Mac cannot make) is `s = 0`, an enabled row in the fold: with add it adds nothing, so `m` can be 0 and the node changes nothing.
 
-**Cost and evaluation order.** The rows run in list order in the kernel (`MaskOp` records, `docs/23` section 5.3). Keys read `v_in`; shapes read the pixel's photo-frame position; raster rows read a plane (section 5).
+**Cost and evaluation order.** The rows run in list order in the kernel (`MaskOp` records, `docs/23` section 5.4). Ranges read `v_in`; shapes read the pixel's photo-frame position; raster rows read a plane (section 5).
 
-## 4. The shapes and the keys
+## 4. The shapes and the ranges
 
-All positions are fractions of the photo frame (`docs/23` section 3.5): `(px, py)` is a pixel's place in [0, 1]², and the frame is `W × H` photo pixels with long edge `L_photo`. Lengths are fractions of `L_photo`. For shapes the pixel is taken in an isotropic frame, `p = ((px − cx)·W, (py − cy)·H) / L_photo`, so a circle is a circle on any photo.
+All positions are fractions of the photo frame (`docs/23` section 3.6): `(px, py)` is a pixel's place in [0, 1]², and the frame is `W × H` photo pixels with long edge `L_photo`. Lengths are fractions of `L_photo`. For shapes the pixel is taken in an isotropic frame, `p = ((px − cx)·W, (py − cy)·H) / L_photo`, so a circle is a circle on any photo.
 
-**The smooth-edge rule.** Every edge, shape or key, is a smooth ramp at least one output pixel wide, also with Feather 0 (`docs/17` K8: no result depends on a rounding that Metal's fast maths may do differently). In the output grid `u_px` is the number of output pixels along the photo frame's long edge (the render's scale; `docs/23` section 3.5), so one output pixel is `1/u_px` in `L_photo` units; `ε_px = 1/u_px`. A shape's ramp is `max(its feather, ε_px)`; a key's is `max(its softness band, KEY_RAMP_MIN)` in code units. Two renders of one photo at different scales therefore differ at an edge by the width of one pixel of the coarser one, which the gate of section 7 states.
+**The smooth-edge rule.** Every edge, of a shape or of a range, is a smooth ramp at least one output pixel wide, also with Feather 0 (`docs/17` K8: no result depends on a rounding that Metal's fast maths may do differently). In the output grid `u_px` is the number of output pixels along the photo frame's long edge (the render's scale; `docs/23` section 3.6), so one output pixel is `1/u_px` in `L_photo` units; `ε_px = 1/u_px`. A shape's ramp is `max(its feather, ε_px)`; a range's is `max(its softness band, RANGE_RAMP_MIN)` in code units. Two renders of one photo at different scales therefore differ at an edge by the width of one pixel of the coarser one, which the gate of section 7 states.
 
 ### 4.1 Linear
 
@@ -120,21 +123,21 @@ The outline (`d = 1`) is where the mask reaches 0; the feather extends inwards, 
 
 ### 4.3 Colour range
 
-A key on chroma, read from the node's input. `center` `c₀ = (a₀, b₀)` in the plane of `e₁, e₂`, `width` `w` in [0.005, 0.3] (the plane the Colour warp draws reaches 0.30), `softness` `σ` in [0, 1]. With `d = |c(v_in) − c₀|` and `q = max(σ·w, KEY_RAMP_MIN)`:
+A range on chroma, read from the node's input. `center` `c₀ = (a₀, b₀)` in the plane of `e₁, e₂`, `width` `w` in [0.005, 0.3] (the plane the Colour warp draws reaches 0.30), `softness` `σ` in [0, 1]. With `d = |c(v_in) − c₀|` and `q = max(σ·w, RANGE_RAMP_MIN)`:
 
 `s_col = 1 − S((d − w) / q)` (1 for `d ≤ w`, 0 for `d ≥ w + q`).
 
-The Colour range reads chroma only: it does not look at tone, so a neutral shadow and a neutral highlight have the same `s`. Picking a colour (`sample_chroma`, `docs/23` section 7.8) sets `c₀` to the picked pixel's `c(v_in)` at the node's input.
+The Colour range reads chroma only: it does not look at tone, so a neutral shadow and a neutral highlight have the same `s`. Picking a colour (`sample_chroma`, `docs/23` section 7.6) sets `c₀` to the picked pixel's `c(v_in)` at the node's input.
 
 ### 4.4 Brightness range
 
-A key on tone, read from the node's input. `low` ≤ `high` in [0, 1] (LogC4 code values of the luma `L_in`; mid grey is 0.2784, the top code value 1), `softness` `σ` in [0, 1], `q = max(0.25·σ, KEY_RAMP_MIN)`:
+A range on tone, read from the node's input. `low` ≤ `high` in [0, 1] (LogC4 code values of the luma `L_in`; mid grey is 0.2784, the top code value 1), `softness` `σ` in [0, 1], `q = max(0.25·σ, RANGE_RAMP_MIN)`:
 
 `s_bri = S((L_in − (low − q)) / q) · (1 − S((L_in − high) / q))`
 
 a trapezoid: it rises over `[low − q, low]`, is 1 up to `high` and falls over `[high, high + q]`. A document with `low > high` is read with both set to their mean. Numbers outside [0, 1] are clamped.
 
-`KEY_RAMP_MIN = 0.02` (about a third of a stop in LogC4; a key edge is then at most `1.5/0.02 = 75` steep, so a GPU input that differs from the CPU's by `1e-5` moves `m` by at most `7.5e-4`).
+`RANGE_RAMP_MIN = 0.02` (about a third of a stop in LogC4; a range's edge is then at most `1.5/0.02 = 75` steep, so a GPU input that differs from the CPU's by `1e-5` moves `m` by at most `7.5e-4`).
 
 ### 4.5 The masks' sizes in the UI
 
@@ -146,7 +149,7 @@ Object, Subject, People, Background and Brush are **raster masks**: a picture ma
 
 ### 5.1 Step by step
 
-1. **The photo-frame raster `S₀`.** A plane of f32 values in [0, 1] over the photo frame (`docs/23` section 3.5), made at the working size of its kind: Object 1024 px on the long edge (SAM's input, section 6), Subject and People the size of Vision's mask, from a 1024 px picture (section 5.3), Background 512 px (the blur map's cells, section 5.4), Brush 2048 px (section 5.5). The plane is kept per photo in a small in-memory cache (4 to 8 MB each) and never on disk. It does not depend on the node's grade, Feather, Grow, Opacity, Invert or mode, so changing those re-runs steps 2 to 5 only.
+1. **The photo-frame raster `S₀`.** A plane of f32 values in [0, 1] over the photo frame (`docs/23` section 3.6), made at the working size of its kind: Object 1024 px on the long edge (SAM's input, section 6), Subject and People the size of Vision's mask, from a 1024 px picture (section 5.3), Background 512 px (the blur map's cells, section 5.4), Brush 2048 px (section 5.5). The plane is kept per photo in a small in-memory cache (4 to 8 MB each) and never on disk. It does not depend on the node's grade, Feather, Grow, Opacity, Invert or mode, so changing those re-runs steps 2 to 5 only.
 2. **Resample to the output grid.** The output pixel `(i, j)` of the render (a viewport frame, a 100 % tile, a thumbnail or an export tile) maps to a photo-frame position through the same geometry the picture uses (the inverse of crop, straightening, the quarter turn and the lens's bend, `docs/01` *Geometry*), and `S₀` is sampled there. Bilinear when `S₀` is as coarse as the grid or coarser; when the grid is coarser than `S₀` by more than 1.25 the sample is the box-filtered bilinear the picture uses when shrinking. Never Catmull-Rom: a mask must not overshoot. The result is clamped to [0, 1]. Where the position lies outside the photo frame (the empty corner of a straightened photo) the value is 0.
 3. **Grow.** `g ∈ [−1, 1]`. The radius is `r_g = round(|g| · 0.01 · u_px)` output pixels (`GROW_MAX = 0.01` of the long edge at |Grow| = 100). Positive `g` is a grey-scale dilation, negative an erosion, with a **square** structuring element of half-side `r_g` (a separable maximum or minimum). `r_g = 0` skips the step. The square is a choice for cost and exactness (section 5.6); it is visible only at |Grow| above about 50, and the feather and the guided filter that follow soften it.
 4. **Feather.** `f ∈ [0, 1]`. A Gaussian blur of `σ_f = f · 0.02 · u_px` output pixels (`FEATHER_MAX = 0.02` of the long edge at Feather 100), made as three cascaded box filters whose widths are the standard ones for that variance (sum of the three variances `σ_f²`). `σ_f < 0.5` px skips the step.
@@ -195,13 +198,13 @@ The strokes of the row, in list order, drawn into a plane of 2048 px on the long
 
 `w(d) = 1` for `d ≤ h·D/2`, `1 − S((d − h·D/2) / ((1 − h)·D/2))` up to `D/2`, 0 beyond
 
-(a hard disc at `h = 1`, and at least the plane's one pixel of ramp). A paint stamp makes `S ← 1 − (1 − S)(1 − w)`, an erase stamp `S ← S·(1 − w)`. The plane is made on the CPU in f32 in this order and is the same on every machine. A stroke's `points` are stored simplified (the page drops the points nearer than `D/8` to the line between their neighbours when it ends the stroke, `docs/23` section 7.9).
+(a hard disc at `h = 1`, and at least the plane's one pixel of ramp). A paint stamp makes `S ← 1 − (1 − S)(1 − w)`, an erase stamp `S ← S·(1 − w)`. The plane is made on the CPU in f32 in this order and is the same on every machine. A stroke's `points` are stored simplified (the page drops the points nearer than `D/8` to the line between their neighbours when it ends the stroke, `docs/23` section 7.6).
 
 ### 5.6 Choices and their reasons
 
 - **Order of steps 3 to 5.** Grow acts on the mask as the model made it, Feather then softens the outline the way a person expects ("make it softer"), and the guided filter last pulls the result to the picture's edges, so a feathered Object mask with Refine edges up still ends on the object's edge where the picture has one.
 - **Box-based filters.** Every filter of the pass is a (cascade of) box filter or a separable maximum, so it costs a few operations a pixel at any radius, and with absolute block origins it is exactly tile-independent (`docs/17` D4). A true Gaussian or disc would cost its radius in taps a pixel at 24 MP.
-- **Photo-relative sizes.** Sizes are fractions of the long edge so a thumbnail, a fit view and an export agree (`docs/23` section 3.5).
+- **Photo-relative sizes.** Sizes are fractions of the long edge so a thumbnail, a fit view and an export agree (`docs/23` section 3.6).
 
 ### 5.7 What the AI masks look at
 
@@ -217,7 +220,7 @@ SAM 2 is built for video, and its image mode uses only a part of it. We implemen
 
 - **The image encoder**: Hiera-S (embedding dimension 96, 1 head at the first stage, stages of 1, 2, 11 and 2 blocks, global attention in blocks 7, 10 and 13, windowed attention elsewhere with the windows of Meta's configuration, query pooling by 2 at the start of stages 2 to 4, channel widths 96, 192, 384, 768 at strides 4, 8, 16, 32) and the FPN neck (256 channels, `fpn_top_down_levels` 2 and 3, nearest-neighbour upsampling, `scalp` 1, sine position encoding), as in `sam2.1_hiera_s.yaml`. Its outputs are the image embedding (64 × 64 × 256, stride 16) plus the learned `no_mem_embed` added to it (`directly_add_no_mem_embed`), and the two high-resolution maps for the decoder (256 × 256 × 32 and 128 × 128 × 64, after the 1 × 1 convolutions `conv_s0` and `conv_s1`). The positional embedding of the trunk (7 × 7 background plus the 8 × 8 window embedding, bicubic to the feature size with PyTorch's kernel `a = −0.75`) is computed once when the weights are loaded.
 - **The prompt encoder**: positive and negative point embeddings, the two box-corner embeddings, the random-Fourier positional encoding of coordinates (`(x + 0.5)/1024`), and the dense positional encoding of the 64 × 64 grid. No mask prompt is given: **a mask is a function of the points and the box alone**, so settings that hold only the points reproduce it.
-- **The mask decoder**: the two-way transformer (depth 2, 256 dimensions, 8 heads, MLP 2048, downsampling rate 2), the output upscaling with the high-resolution features (`use_high_res_features_in_sam`), the hypernetwork MLPs for 3 + 1 mask tokens, the IoU head (sigmoid) and the object-score head (`pred_obj_scores`). A single positive point is decoded with `multimask_output` on and the mask with the highest predicted IoU is taken; two or more points, or a box, with it off (Meta's own advice for unambiguous prompts), with the dynamic fall-back to the best multimask output where the single mask's stability is below 0.98 (`dynamic_multimask_via_stability`, delta 0.05).
+- **The mask decoder**: the two-way transformer (depth 2, 256 dimensions, 8 heads, MLP 2048, downsampling rate 2), the output upscaling with the high-resolution features (`use_high_res_features_in_sam`), the hypernetwork MLPs for 3 + 1 mask tokens, the IoU head (sigmoid) and the object-score head (`pred_obj_scores`). A single positive point is decoded with `multimask_output` on and the mask with the highest predicted IoU is taken; two or more points, or a box, with it off (Meta's own advice for unambiguous prompts), with the dynamic fall-back to the best multimask output where the single mask's stability is below Meta's threshold (`dynamic_multimask_via_stability`; Meta's configuration uses 0.98 with delta 0.05, to be checked against the checkpoint's own configuration by N-17).
 - **Not implemented**: memory attention, the memory encoder, the video predictor and its propagation, mask prompts, the mask-input path.
 
 ### 6.2 Input and preprocessing
@@ -241,8 +244,9 @@ Everything is f32 in a fixed order, with no fused multiply-add and with `libm` f
 
 - **Trims.** `ev = 0`, `t = n = 0` are skipped and change no bit; `ev` is `encode(decode(v)·2^ev)` exactly (f64, 1e-13); `d` for the named properties of section 2.2; `t = n = 0` gives `[1, 1, 1]`; the red-to-blue ratio is monotone in `t`, the (red, blue) to green ratio in `n`; `d_g = 1`; `t = +100` and `t = −100` are inverse in the sense `d(t)·d(−t) ≈ [1, 1, 1]` to 5e-3.
 - **Node order.** A node with each step on its own equals the same step in the chain it replaced (C9, C9b and C11 of 0.8.2) bit for bit; Main with a curve and Neutral equals 0.8.2; the curve-and-look case differs and is pinned by its own vectors.
-- **Combination.** Add and subtract against hand-worked cases (including the lone subtract), screen on overlapping soft edges, the keys' product, Invert per mask and per node, Opacity, a row with the eye off is absent, an empty Object row gives `m = 0`, no rows gives `m = 1`; the fold is independent of the order of two adds.
-- **Shapes and keys.** Linear and Radial against an independent f64 evaluation on a grid; the ramp is never narrower than one output pixel at Feather 0, at k = 4, 2 and 1; the value at the centre line is 0.5; keys against the formulas, the plane's colour at the picked pixel gives 1; GPU against CPU within 2e-4 in LogC4 on the blended output for nodes whose effect is at most 0.25 in LogC4 (the starting bound; a larger `KEY_RAMP_MIN` is the remedy if it fails, a decision of the owner).
+- **Combination.** Add and subtract against hand-worked cases (including the lone subtract and a key input as the first row: `m = m_source`, minus a Radial, times a Colour range), screen on overlapping soft edges, the ranges' product, Invert per mask and per node, Opacity, a row with the eye off is absent, an empty Object row gives `m = 0`, no rows gives `m = 1`; the fold is independent of the order of two adds.
+- **The plan.** The default graph compiles to `[Main]` in one pass; a chain of 6 nodes to 6 steps in one pass with one register; the order is the topological order with Main first and the ties of section 1.3 (two orders of the same graph in a file give one plan); a graph with a dead branch (a node whose picture output goes nowhere and whose key output is unlinked) leaves that node out of the plan and renders the bytes of the same graph without it; the same branch with its key output linked to a live node's key input puts it in the plan (its mask is used, its picture is not); a graph whose steps need 9 pictures alive compiles to two passes with an f32 buffer between them, and renders the same picture as the one-pass evaluation of the CPU reference within the gate of `docs/23` section 11; a thumbnail stop and a mask-view stop compile to the right prefix of the plan; every graph the validator refuses (a cycle through picture and key links, a link between ports of different types, a second link on an input) never reaches the compiler.
+- **Shapes and ranges.** Linear and Radial against an independent f64 evaluation on a grid; the ramp is never narrower than one output pixel at Feather 0, at k = 4, 2 and 1; the value at the centre line is 0.5; ranges against the formulas, the plane's colour at the picked pixel gives 1; GPU against CPU within 2e-4 in LogC4 on the blended output for nodes whose effect is at most 0.25 in LogC4 (the starting bound; a larger `RANGE_RAMP_MIN` is the remedy if it fails, a decision of the owner).
 - **Raster pass.** Resample, grow, feather and the guided filter against independent f64 references on synthetic masks and pictures; Refine edges 0 and Grow 0 and Feather 0 are exact skips; the guided filter on a step edge with a matching guide returns a step to within 1e-3; **tiles equal the whole frame bit for bit** at two tile sizes with halos from `H`; the same mask at k = 4 and k = 1 agrees after the larger grid is reduced by the same box (largest difference 0.1, mean 0.005, starting bounds, set in N-10 and N-13); a photo cropped and turned keeps its mask on the subject (the mask's centroid moves with the subject's within one output pixel).
 - **SAM 2.** Section 6.5.
 - **Vision.** On a Mac (`mac-gpu.yml`-style job): the two requests give a mask for a synthetic subject and for a rendered person, twice with equal bytes; on an older system or a Mac that cannot run them the probe says no and the kinds are not offered.

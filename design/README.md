@@ -4,6 +4,8 @@
 
 Interactive mockups of the Yellowmoon V1 screens, designed at 1440 × 900 (desktop app window).
 
+**The node view** (milestone N, `docs/23-nodes.md`) has its own approved references in `nodes/`: pictures of the screens, the same screens as pages, drawing notes and a README that says what each shows and what is not built. They are in the dark glass look.
+
 ## Pages
 
 | Page | Source board | What it shows |

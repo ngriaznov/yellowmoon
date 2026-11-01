@@ -1,6 +1,6 @@
 # 15 · Milestones and tasks
 
-Five milestones run in sequence; each ends at a gate that can be measured. Work in task order within a milestone unless dependencies allow parallel work. The UI design is in `design/`; M0 and M1 don't wait for UI work.
+Five milestones run in sequence; each ends at a gate that can be measured. Milestone N (nodes and masks, released as 0.2.0) was added on 2026-11-01 and sits between M3 and M4; its full spec is `docs/23-nodes.md`. Work in task order within a milestone unless dependencies allow parallel work. The UI design is in `design/`; M0 and M1 don't wait for UI work.
 
 Task format: **ID · title** (depends on) — what to build. *Done when:* acceptance criteria. [HUMAN] tasks are the owner's (`AGENTS.md` rule 9): prepare around them and list them in `docs/STATUS.md`.
 
@@ -270,6 +270,39 @@ The Look tab with hundreds of looks stays quick: one `IntersectionObserver` for 
 **[HUMAN] M3-H1** Design the Signature look and name it. **M3-H2** Download the five ARRI packages by hand and run the fingerprint script. **M3-H3** Email ARRI about in-app download (optional). **M3-H4** Review the app on a Mac against the mockups; import the real ARRI packages. **M3-H5** Use the app for one real shoot and report friction. **M3-H6** Check DNGs in Lightroom, RawTherapee, darktable, Capture One and Apple Photos.
 
 **Gate M3:** every mocked state implemented; app/CLI parity; DNG gates; the owner's review.
+
+---
+
+## N · Nodes and masks (0.2.0)
+
+Goal: a node view behind a Nodes button, with a real graph of corrector nodes between a fixed Input and Output, masks in every corrector (shapes, ranges, Brush, and AI masks: Object from SAM 2.1 small, Subject and People from Apple Vision, Background from the blur map), and Pick white moved into the Colour tab. The spec is `docs/23-nodes.md` and the maths `docs/algorithms/06-masks.md`; the owner approved the plan on 2026-11-01. The work happens on one branch, `nodes`, from `main`: one reviewed commit per task with its checks green; at each checkpoint the owner gets a test DMG (checkpoints are not releases); when the whole plan is built and the last test build is approved, the branch is merged and released once as **0.2.0**. `PIPELINE_VERSION` goes to 0.9.0 (the curve moves in front of the look). Phases: B core (N-02 to N-05), C interface (N-06 to N-09), D masks (N-10 to N-12), E raster masks (N-13 to N-15), F SAM 2 (N-16 to N-18), G Vision (N-19), H finish (N-20). B before C before D; E and F alongside once D is done; G any time after E.
+
+**N-01 · Spec** () — `docs/23-nodes.md`, `docs/algorithms/06-masks.md`, the changes to other specs, `design/nodes/README.md`, `research/nodes-masks-2026-11-01.md`. *Done when:* the owner approves it (N-H1).
+**N-02 · The `nodes` setting** (N-01) — the graph (`items`, `links`, masks), validation with plain errors, schema, patch (whole), reset, copy rules, XMP, `ym --settings`, wire types, bindings, mock. *Done when:* round trip, absent = the default graph, every rule, the limits and the copy rules are tested.
+**N-03 · The plan and the CPU reference** (N-02) — `ym_color::plan` (live and dead nodes, order, registers, passes), nodes in plan order, trims, bypass, the curve before the look, identity skipping, `PIPELINE_VERSION` 0.9.0. *Done when:* the default graph is byte-identical to 0.8.2 (the curve-and-look case has its own test) and the plan and node tests pass.
+**N-04 · The GPU plan loop** (N-03) — the node storage buffer and plan loop in the fused colour kernel, per-node curves and pins, the multi-pass split, DNG bakes nodes. *Done when:* parity (2e-4, one 10-bit code), tiles, determinism, app/`ym` parity and the goldens pass.
+**N-05 · Node thumbnails** (N-04) — core, IPC, cache. *Done when:* thumbnails match truncated renders.
+**N-06 · Pick white into the Colour tab** (N-01) — header button gone; the card row, the hint pill, W, off when the Colour tab is left. *Done when:* e2e passes and the screenshots are retaken.
+**N-07 · Node view shell** (N-02, N-06) — Nodes button and N, layout A, divider and Expand, the viewport follows, the switcher, the simple-view notice and glyph. *Done when:* e2e passes; the native viewport check is listed for the Mac.
+**N-08 · The graph** (N-05, N-07) — `@xyflow/react`: markers, cards with thumbnails, ports and links, select, add, delete, bypass, rename, move and reorder, zoom and Fit, keys, a11y. *Done when:* e2e, a11y and the glass audit pass.
+**N-09 · The panel** (N-08) — compact head, tabs by node kind, trim cards, per-node histogram, undo, copy and paste. *Done when:* e2e passes and the screenshots are reviewed.
+**[HUMAN] N-H2** Checkpoint 1: a test DMG of nodes without masks.
+**N-10 · Shapes and ranges** (N-04, N-09) — Linear, Radial, Colour range, Brightness range, key input and output, invert, opacity, feather; CPU and GPU. *Done when:* parity, preview against export and the smooth-edge rule pass.
+**N-11 · Show mask** (N-10) — Overlay and Mask only rendered by the core, M, the toolbar toggle, the View card. *Done when:* e2e passes; the Mac check is listed.
+**N-12 · The Mask tab** (N-10, N-11) — Add mask menu, rows, cards, handles, range picking, copy rules. *Done when:* e2e passes and the screenshots are reviewed.
+**[HUMAN] N-H3** Checkpoint 2: a test DMG with shapes and ranges.
+**N-13 · Raster masks** (N-12) — photo-frame raster, resample, grow, feather, guided-filter Refine edges; CPU and GPU; tile halos; the memory cache. *Done when:* parity, tiles and preview against export pass.
+**N-14 · Brush** (N-13) — strokes, erase, size, hardness, drawing on the photo. *Done when:* e2e and parity pass.
+**N-15 · Background from blur** (N-13) — the blur map as a mask. *Done when:* the tests on the blur-map fixtures pass.
+**N-16 · SAM 2 weights** (N-01) — conversion script, safetensors f16, our release asset, the fetch with SHA-256, bundled in the app and in `data/` for `ym`, model card, notice, `docs/14`. *Done when:* the licence check passes and the build bundles the weights.
+**N-17 · SAM 2 runtime** (N-16) — encoder, prompt encoder, decoder; deterministic; oracle fixtures from Meta's code. *Done when:* the IoU (≥ 0.99) and logit gates pass and the timing is measured.
+**N-18 · Object in the app** (N-13, N-17) — `mask_find`, encoder in the background, feature cache, points and box, the "Object found" pill and the nothing-found error. *Done when:* e2e passes and the app and `ym` agree on an Object mask.
+**[HUMAN] N-H4** Checkpoint 3: a test DMG with SAM 2, timed on the owner's Mac.
+**N-19 · Subject and People** (N-13) — Vision through `ym-apple` behind the macOS gate, a cached run-time probe, the items hidden where unsupported, the row message and the `ym` error for a document that has one anyway. *Done when:* the Mac CI and the parity on a Mac pass; Linux and older-Mac builds show no Vision items.
+**N-20 · Finish** (N-12 to N-19) — speed checks on a Mac, docs, `STATUS`, `CHANGELOG`, README, screenshots; then the 0.2.0 release after N-H5. *Done when:* the gates are in `docs/STATUS.md`.
+**[HUMAN] N-H5** Checkpoint 4: the final test of the whole plan; the owner's OK releases 0.2.0. **N-H1** (approve the spec) closes N-01.
+
+**Gate N (0.2.0):** the gates of `docs/23` §11 pass (old documents byte-identical, parity, determinism and tiles, app and CLI, SAM 2, masks, speed on a Mac); the owner's approval of the last test build.
 
 ---
 
