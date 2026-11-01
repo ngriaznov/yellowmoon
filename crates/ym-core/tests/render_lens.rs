@@ -143,6 +143,12 @@ fn device_everything(gpu: &Arc<Gpu>) -> Renderer {
 /// the field optics; and three small lights the sensor clipped, for the flares (a photo's lights are
 /// small and few, and a big bright patch would be hundreds of sources).
 fn developed(w: u32, h: u32) -> Developed {
+    developed_at(w, h, (40, 10))
+}
+
+/// [`developed`] for a photo taken at the f-number `f_number` as a fraction (`(40, 10)` is f/4; the lens follows
+/// the aperture the photo was taken at, `docs/21` section 4, L2, *As built (the aperture)*).
+fn developed_at(w: u32, h: u32, f_number: (u32, u32)) -> Developed {
     let scene = Scene::new(w, h, light(PROFILE, 5500.0), Layout::Patchwork, 0.35).noise(2e-4, 1e-6);
     let mut mosaic = scene.mosaic();
     let scale = f64::from(w) / 800.0;
@@ -160,6 +166,7 @@ fn developed(w: u32, h: u32) -> Developed {
     let dir = tempfile::tempdir().expect("temp dir");
     scene
         .builder(MODEL)
+        .f_number(f_number.0, f_number.1)
         .write_to(&dir.path().join("DSC00001.ARW"), &mosaic)
         .expect("write the synthetic ARW");
     Developed::open(dir)
@@ -1297,6 +1304,63 @@ fn a_lens_render_is_the_same_bytes_whatever_was_looked_at_first() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The aperture the photo was taken at
+// ---------------------------------------------------------------------------------------------
+
+/// The mean absolute difference of two frames, in codes, over every sample.
+fn mean_difference(a: &RenderedFrame, b: &RenderedFrame) -> f64 {
+    assert_eq!((a.width, a.height), (b.width, b.height));
+    a.rgba
+        .iter()
+        .zip(&b.rgba)
+        .map(|(&x, &y)| f64::from((i32::from(x) - i32::from(y)).abs()))
+        .sum::<f64>()
+        / a.rgba.len() as f64
+}
+
+/// The lens follows the photo's f-number (`docs/21` section 4, L2, *As built (the aperture)*): Vintage is designed
+/// at f/2, so a photo taken at f/8 is moved by the lens much less than one taken at f/2 (`ym-lens` has the bits
+/// of the law: at or wider than the design's f-number the lens is the traced one).
+#[test]
+fn a_photo_taken_stopped_down_is_moved_less_by_the_lens() {
+    let state = cell(576.0, 384.0);
+    let r = cpu();
+    let lens = LensSettings {
+        flares: 0.0,
+        edges: 60.0,
+        anamorphic: 0.0,
+        ..VINTAGE
+    };
+    // The same photo at four f-numbers: the lens against no lens at the same f-number (the rest of the
+    // render reads the f-number too).
+    let render = |f_number: (u32, u32)| {
+        let d = developed_at(1200, 800, f_number);
+        let plain_src = plain(&d.source());
+        let off = fresh_frame(&r, &plain_src, &state);
+        let on = fresh_frame(&r, &with_lens(&plain_src, lens), &state);
+        mean_difference(&on, &off)
+    };
+    let wide = render((10, 10));
+    let design = render((20, 10));
+    let f4 = render((40, 10));
+    let f8 = render((80, 10));
+    let _ = writeln!(
+        std::io::stderr(),
+        "[lens] mean change by the lens: f/1 {wide:.3}, f/2 {design:.3}, f/4 {f4:.3}, f/8 {f8:.3} codes"
+    );
+    assert!(design > 0.5, "the lens changes the picture: {design}");
+    // At the design's f-number and wider the lens is the traced one: the same change.
+    assert!(
+        (wide - design).abs() < 1e-9,
+        "f/1 {wide} against f/2 {design}"
+    );
+    assert!(
+        design > f4 && f4 > f8 && f8 > 0.0,
+        "the lens moves the picture less with the aperture: f/2 {design}, f/4 {f4}, f/8 {f8}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
 // The lens on the device
 // ---------------------------------------------------------------------------------------------
 
@@ -1309,7 +1373,11 @@ fn bokeh_developed(w: u32, h: u32) -> Developed {
 /// tolerances of the kernels and of the colour pass; the device lens runs kernels (the counters say so) and
 /// reads nothing back that the CPU lens would read.
 fn the_device_lens_matches_the_cpu_lens_with(device: &Renderer, label: &str) {
-    let d = developed(1200, 800);
+    the_device_lens_matches_the_cpu_lens_of(device, label, &developed(1200, 800));
+}
+
+/// [`the_device_lens_matches_the_cpu_lens_with`] for the photo `d`.
+fn the_device_lens_matches_the_cpu_lens_of(device: &Renderer, label: &str, d: &Developed) {
     let src = plain(&d.source());
     let lensed = with_lens(&src, VINTAGE);
     let reference = cpu();
@@ -1345,6 +1413,21 @@ fn the_device_lens_matches_the_cpu_lens_with(device: &Renderer, label: &str) {
 fn the_lens_on_the_device_matches_the_cpu_lens() {
     let Some(gpu) = gpu() else { return };
     the_device_lens_matches_the_cpu_lens_with(&device_lens(&gpu), "lens on the device");
+}
+
+/// The aperture the photo was taken at reaches the device lens as it reaches the CPU lens: the same picture at
+/// f/8 (the lens's width and darkening cut to a fraction), at the design's f/2, and wide open at f/1.4.
+#[test]
+fn the_lens_on_the_device_follows_the_photos_aperture_as_the_cpu_lens_does() {
+    let Some(gpu) = gpu() else { return };
+    let device = device_lens(&gpu);
+    for (f_number, label) in [
+        ((80, 10), "device lens at f/8"),
+        ((20, 10), "device lens at f/2"),
+        ((14, 10), "device lens at f/1.4"),
+    ] {
+        the_device_lens_matches_the_cpu_lens_of(&device, label, &developed_at(1200, 800, f_number));
+    }
 }
 
 #[test]

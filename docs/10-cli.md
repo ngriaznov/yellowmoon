@@ -203,7 +203,7 @@ One object per input file, written when that file finishes, in completion order:
   "settings": { "...": "resolved settings, same as ym:Settings" },
   "device": "cpu",
   "timings_ms": { "decode": 310, "develop": 2410, "encode": 180 },
-  "pipeline_version": "0.8.1",
+  "pipeline_version": "0.8.2",
   "error": null
 }
 ```

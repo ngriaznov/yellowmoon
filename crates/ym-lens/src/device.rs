@@ -58,6 +58,12 @@ pub struct FieldPass {
     pub axis_y: bool,
     /// The edge amount `e'`.
     pub e: f64,
+    /// The aperture law's factor on the kernels' width (`LensPlan::aperture_width_factor`): the width runs at
+    /// `e' * width_factor`. 1 when the photo has no f-number or is at or wider than the design's aperture.
+    pub width_factor: f64,
+    /// The aperture law's factor on the darkening (`LensPlan::aperture_darkening_factor`): the gain is
+    /// `1 - e' * darkening_factor * (1 - T)`. Computed on the host, so the kernel has no `pow`.
+    pub darkening_factor: f64,
     /// `alpha`: the stretch of the field radius along the axis.
     pub alpha: f64,
     /// What the oval field radius is divided by to read the relative illumination (1 without the

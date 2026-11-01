@@ -14,9 +14,12 @@
 //!   the frame meets a corner or a plateau and the falloff of a flat field has no inflection;
 //! * the **edge amount** `e' = e + (1 - e) kappa (q - 1)`: Edges, plus the attachment's own share, so that at
 //!   Edges 0 the anamorphic terms act alone (`docs/21` section 4, L2);
-//! * the **half-width** `omega = cap(e' (1 + S) w(rho')) H` pixels, with the side softness
-//!   `S = a_s (q - 1) x_a^2` and [`soft_cap`] bending the width towards `w_max` without a corner;
-//! * the **gain** `1 - e' (1 - T(rho' / n))`.
+//! * the **half-width** `omega = cap(e' f_w (1 + S) w(rho')) H` pixels, with the side softness
+//!   `S = a_s (q - 1) x_a^2`, [`soft_cap`] bending the width towards `w_max` without a corner and `f_w` the
+//!   aperture law's factor ([`LensPlan::aperture_width_factor`]: 1 for a photo at or wider than the lens's
+//!   design aperture, smaller for a photo taken stopped down);
+//! * the **gain** `1 - e' f_d (1 - T(rho' / n))`, `f_d` the aperture law's darkening factor
+//!   ([`LensPlan::aperture_darkening_factor`]).
 //!
 //! The kernel is the projected channel table (`sum_j w_c(l_j) P_j`), blended linearly between the two
 //! neighbouring radii, resampled area-weighted to `n x n` cells (`n = min(17, 2 ceil(omega) + 1)`), turned so
@@ -590,6 +593,10 @@ pub(crate) struct Geometry<'a> {
     gather_halo: usize,
     /// Pixels the fringe shift reads beyond the output (0 without the attachment's fringe).
     pad: usize,
+    /// The aperture law's factor on the width ([`LensPlan::aperture_width_factor`]).
+    width_factor: f64,
+    /// The aperture law's factor on the darkening ([`LensPlan::aperture_darkening_factor`]).
+    darkening_factor: f64,
 }
 
 /// One pixel's kernel parameters.
@@ -643,6 +650,10 @@ impl<'a> Geometry<'a> {
         let h = 0.5 * (fwf * fwf + fhf * fhf).sqrt();
         let axis = plan.frame().axis;
         let (alpha, side, fringe) = (plan.alpha(), plan.side_softness(), plan.fringe_factor());
+        let (width_factor, darkening_factor) = (
+            plan.aperture_width_factor(),
+            plan.aperture_darkening_factor(),
+        );
         // Upper bounds on the half-width, over the whole frame.
         let along = match axis {
             Axis::X => fwf,
@@ -659,7 +670,7 @@ impl<'a> Geometry<'a> {
         let rho_far = ((alpha * xa_max) * (alpha * xa_max) + ya_max * ya_max).sqrt();
         let (seg_far, t_far) = tables.segment(rho_far);
         let w_far = tables.half_width_at(seg_far, t_far, rho_far);
-        let omega_max = soft_cap(e * (1.0 + side * xa_max * xa_max) * w_far) * h;
+        let omega_max = soft_cap(e * width_factor * (1.0 + side * xa_max * xa_max) * w_far) * h;
         let mut lmax = 0;
         let mut o = COPY_BELOW_PX;
         while o < omega_max + 0.25 {
@@ -702,6 +713,8 @@ impl<'a> Geometry<'a> {
             lmax,
             gather_halo,
             pad,
+            width_factor,
+            darkening_factor,
         })
     }
 
@@ -718,6 +731,8 @@ impl<'a> Geometry<'a> {
             half_diag: self.h,
             axis_y: self.axis == Axis::Y,
             e: self.e,
+            width_factor: self.width_factor,
+            darkening_factor: self.darkening_factor,
             alpha: self.alpha,
             radius_scale: self.radius_scale,
             side: self.side,
@@ -757,10 +772,10 @@ impl<'a> Geometry<'a> {
         let rho_t = rho / self.radius_scale;
         let (seg_t, t_t) = tb.segment(rho_t);
         let illum = tb.illumination_at(seg_t, t_t, rho_t);
-        let gain = 1.0 - self.e * (1.0 - illum);
+        let gain = 1.0 - self.e * self.darkening_factor * (1.0 - illum);
         let w = tb.half_width_at(seg, t, rho);
         let softness = 1.0 + self.side * xa * xa;
-        let omega = soft_cap(self.e * softness * w) * self.h;
+        let omega = soft_cap(self.e * self.width_factor * softness * w) * self.h;
         let rr = (u * u + v * v).sqrt();
         let (cs, sn) = if rr > 1e-12 {
             (u / rr, v / rr)
@@ -1746,6 +1761,19 @@ mod tests {
         h: usize,
         axis: Axis,
     ) -> LensPlan {
+        shipped_plan_at(kind, edges, anamorphic, w, h, axis, None)
+    }
+
+    /// [`shipped_plan`] for a photo taken at the f-number `f_number`.
+    fn shipped_plan_at(
+        kind: LensKind,
+        edges: f64,
+        anamorphic: f64,
+        w: usize,
+        h: usize,
+        axis: Axis,
+        f_number: Option<f64>,
+    ) -> LensPlan {
         let amounts = LensAmounts {
             kind,
             flares: 0.0,
@@ -1756,10 +1784,117 @@ mod tests {
             width: w,
             height: h,
             axis,
-            f_number: None,
+            f_number,
             clip: [1.0; 3],
         };
         LensPlan::new(shipped(), &amounts, frame, camera()).expect("plan")
+    }
+
+    /// The aperture law (`docs/21` section 4, L2, *As built (the aperture)*): Classic is designed at f/2, so a
+    /// photo at f/8 has `(2 / 8)^1.5 = 1/8` of the width and `(2 / 8)^0.5 = 1/2` of the darkening, floor 0.1 on
+    /// the width; at f/2, wider, and without an f-number the kernel is the traced lens's, bit for bit.
+    #[test]
+    fn the_aperture_scales_the_width_and_the_darkening_and_leaves_a_wide_open_photo_alone() {
+        let (w, h) = (1500, 1000);
+        let at = |f: Option<f64>| shipped_plan_at(LensKind::Classic, 30.0, 0.0, w, h, Axis::X, f);
+        let (p_none, p8, p64) = (at(None), at(Some(8.0)), at(Some(64.0)));
+        fn geo(p: &LensPlan, w: usize, h: usize) -> Geometry<'_> {
+            Geometry::new(p, w, h, Options::default()).unwrap()
+        }
+        let (none, eight, far) = (geo(&p_none, w, h), geo(&p8, w, h), geo(&p64, w, h));
+        let angle = (h as f64 / w as f64).atan();
+        let mut checked = 0;
+        for r in [0.3, 0.5, 0.7, 0.9] {
+            let (u, v) = (r * angle.cos(), r * angle.sin());
+            let (k0, k8, k64) = (
+                none.kernel_at(u, v),
+                eight.kernel_at(u, v),
+                far.kernel_at(u, v),
+            );
+            // The cap does not engage here, so the factor is the kernel's own.
+            assert!(k0.omega > 0.0 && k0.omega < W_KNEE * none.h, "{}", k0.omega);
+            assert!((k8.omega / k0.omega - 0.125).abs() < 1e-12, "width at {r}");
+            assert!(
+                (k64.omega / k0.omega - 0.1).abs() < 1e-12,
+                "the floor at {r}"
+            );
+            let fall = 1.0 - k0.gain;
+            assert!(fall > 1e-4, "the lens falls off at {r}");
+            assert!(
+                ((1.0 - k8.gain) / fall - 0.5).abs() < 1e-12,
+                "darkening at {r}"
+            );
+            let want = (2.0f64 / 64.0).sqrt();
+            assert!(((1.0 - k64.gain) / fall - want).abs() < 1e-12);
+            checked += 1;
+        }
+        assert_eq!(checked, 4);
+        // At the design's f-number, wider and without one: the bits of the traced lens, and the same pass.
+        for f in [Some(2.0), Some(1.4), Some(0.8)] {
+            let p = at(f);
+            assert_eq!(p.aperture_width_factor().to_bits(), 1.0f64.to_bits());
+            assert_eq!(p.aperture_darkening_factor().to_bits(), 1.0f64.to_bits());
+            let g = geo(&p, w, h);
+            for (u, v) in [(0.0, 0.0), (0.2, 0.1), (0.5, 0.3), (0.9, 0.55), (-0.7, 0.4)] {
+                let (a, b) = (g.kernel_at(u, v), none.kernel_at(u, v));
+                assert_eq!(a.omega.to_bits(), b.omega.to_bits(), "{f:?} at ({u}, {v})");
+                assert_eq!(a.gain.to_bits(), b.gain.to_bits(), "{f:?} at ({u}, {v})");
+            }
+            assert_eq!(g.halo(), none.halo());
+            assert_eq!(g.pass(), none.pass());
+        }
+        // The pass carries the factors for the device.
+        let pass = eight.pass();
+        assert!((pass.width_factor - 0.125).abs() < 1e-12);
+        assert!((pass.darkening_factor - 0.5).abs() < 1e-12);
+    }
+
+    /// Both factors are at most 1, so a photo stopped down never has a wider kernel, a longer gather or a
+    /// larger halo than the same lens at its design aperture: the halo bounds of the CPU reference and the
+    /// device hold.
+    #[test]
+    fn the_aperture_never_widens_a_kernel_and_its_halo_still_covers_the_gather() {
+        let (w, h) = (1500, 1000);
+        let mut checked = 0;
+        for kind in LensKind::ALL {
+            for (edges, anamorphic, axis) in [
+                (100.0, 100.0, Axis::X),
+                (100.0, 0.0, Axis::X),
+                (60.0, 100.0, Axis::Y),
+                (0.0, 100.0, Axis::X),
+            ] {
+                let plan_at =
+                    |f: Option<f64>| shipped_plan_at(kind, edges, anamorphic, w, h, axis, f);
+                let p_none = plan_at(None);
+                let none = Geometry::new(&p_none, w, h, Options::default()).unwrap();
+                for f in [1.4, 2.8, 5.6, 11.0, 32.0] {
+                    let p = plan_at(Some(f));
+                    let geo = Geometry::new(&p, w, h, Options::default()).unwrap();
+                    assert!(geo.halo() <= none.halo(), "{kind} {f}: the halo grew");
+                    assert!(geo.lmax <= none.lmax, "{kind} {f}: more levels");
+                    for j in (0..h).step_by(37) {
+                        for i in (0..w).step_by(41) {
+                            let (k, k0) = (geo.pixel(i, j), none.pixel(i, j));
+                            assert!(
+                                k.omega <= k0.omega + 1e-12,
+                                "{kind} {f} at ({i}, {j}): {} against {}",
+                                k.omega,
+                                k0.omega
+                            );
+                            // A tap lies within sqrt(2) omega of the pixel; the halo covers it and the mip margin.
+                            assert!(
+                                k.omega == 0.0
+                                    || k.omega * std::f64::consts::SQRT_2 + 3.0
+                                        <= geo.gather_halo as f64,
+                                "{kind} {f} at ({i}, {j})"
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 10_000, "{checked} pixels checked");
     }
 
     /// The gain and the width `omega / W_MAX` along the ray at `angle` from the frame's centre to its edge,

@@ -13,7 +13,7 @@
 //! | `sigma` | the half-resolution noise sigma | the noise model and the gains `g0` |
 //! | `groups` | the raw group's image at 1/k | [`RawParams`] (all of `decode.*`, whether R3 runs, noise reduction, sharpening, `g0`, noise) and k |
 //! | `lens_planes` | the lens's planes and lists of the photo (`docs/21` section 3), kept outside the evictable caches | [`RawParams`], the lens, its data version, the camera, the frame, the axis, `g0`, the focus point; not the three amounts |
-//! | `lens_field_groups` | the raw group at 1/k after the lens's field stage only, `Z = L2(L1(X))` | [`RawParams`], the lens, its data versions, Edges, Anamorphic, the camera, the frame, the axis, the focus point (`LensPlan::field_key`: not Flares), and k |
+//! | `lens_field_groups` | the raw group at 1/k after the lens's field stage only, `Z = L2(L1(X))` | [`RawParams`], the lens, its data versions, Edges, Anamorphic, the camera, the frame, the axis, the f-number, the focus point (`LensPlan::field_key`: not Flares), and k |
 //! | `lens_flare_groups` | the flare terms of L3 at 1/k, `f64` planes | [`RawParams`], the lens, its data versions, Flares, Anamorphic, the camera, the frame, the axis, `g0`, the f-number (`LensPlan::flares_key`: not Edges), and k |
 //! | `lens_groups` | the raw group at 1/k after the lens (L1 to L3) | [`RawParams`], the lens setting and its inputs, and k |
 //! | `full` | the prepared full-resolution chain; one for the final picture and one for the Before view | [`RawParams`] |

@@ -24,7 +24,7 @@ use rayon::prelude::*;
 
 use crate::consts::{
     CLIP_RAMP, CLIP_RAMP_PLANE, FIELD_HEADROOM_MAX, FIELD_HEADROOM_SHARE, FIELD_LIGHT_SIZE_FACTOR,
-    L1_UNCHANGED_RAMP, LIGHT_SATURATION_RAMP,
+    HEADROOM_DENSITY_RADIUS, HEADROOM_DENSITY_RAMP, L1_UNCHANGED_RAMP, LIGHT_SATURATION_RAMP,
 };
 use crate::error::LensError;
 use crate::image::{ImageRef, PixelRect};
@@ -96,6 +96,67 @@ fn smooth(t: f64) -> f64 {
     u * u * (3.0 - 2.0 * u)
 }
 
+/// How many pixels of the lens plane are part of a clipped patch or a white light, in any rectangle, from a
+/// summed-area table of the mask: the crowd round a patch (`HEADROOM_DENSITY_RAMP`). Integers only, so the
+/// counts are exact and the same on every platform and for every tiling (the map is made once per photo).
+struct ClippedCounts {
+    /// `(width + 1) * (height + 1)` counts: entry `(x, y)` is the number of mask pixels in columns `< x` and
+    /// rows `< y`.
+    sum: Vec<u32>,
+    width: usize,
+    height: usize,
+}
+
+impl ClippedCounts {
+    fn new(mask: &[bool], width: usize, height: usize) -> Self {
+        let stride = width + 1;
+        let mut sum = vec![0u32; stride * (height + 1)];
+        for y in 0..height {
+            let mut run = 0u32;
+            for x in 0..width {
+                run += u32::from(mask[y * width + x]);
+                sum[(y + 1) * stride + x + 1] = sum[y * stride + x + 1] + run;
+            }
+        }
+        ClippedCounts { sum, width, height }
+    }
+
+    /// The share of the headroom a patch keeps: `1 - smoothstep(from, to, density)` of
+    /// [`HEADROOM_DENSITY_RAMP`], `density` the number of mask pixels that are not the patch's own, over the
+    /// pixels, in the square of [`HEADROOM_DENSITY_RADIUS`] half-diagonals (at least 4 pixels) round the
+    /// patch's centre, rounded to a pixel, the square cut at the plane's edge. 1 for a patch alone in its
+    /// neighbourhood (a star, a lamp, the sun), 0 for one in a crowd of clipped patches (petals, leaves, panes).
+    fn isolation(&self, members: &[usize], width: usize, half_diag: f64) -> f64 {
+        debug_assert_eq!(width, self.width);
+        let m = members.len() as u64;
+        let (mut sx, mut sy) = (0u64, 0u64);
+        for p in members {
+            sx += (*p % width) as u64;
+            sy += (*p / width) as u64;
+        }
+        // The centre in whole pixels, the mean rounded half up, in integers.
+        let (cx, cy) = (((sx + m / 2) / m) as i64, ((sy + m / 2) / m) as i64);
+        let reach = ((HEADROOM_DENSITY_RADIUS * half_diag).round() as i64).max(4);
+        let x0 = (cx - reach).max(0);
+        let x1 = (cx + reach).min(self.width as i64 - 1);
+        let y0 = (cy - reach).max(0);
+        let y1 = (cy + reach).min(self.height as i64 - 1);
+        let at = |x: i64, y: i64| i64::from(self.sum[y as usize * (self.width + 1) + x as usize]);
+        let inside = at(x1 + 1, y1 + 1) + at(x0, y0) - at(x0, y1 + 1) - at(x1 + 1, y0);
+        let own = members
+            .iter()
+            .filter(|p| {
+                let (x, y) = ((**p % width) as i64, (**p / width) as i64);
+                (x0..=x1).contains(&x) && (y0..=y1).contains(&y)
+            })
+            .count() as i64;
+        let others = (inside - own).max(0) as f64;
+        let pixels = ((x1 - x0 + 1) * (y1 - y0 + 1)) as f64;
+        let (from, to) = HEADROOM_DENSITY_RAMP;
+        1.0 - smooth((others / pixels - from) / (to - from))
+    }
+}
+
 /// The clipped lights of a photo as L2 spreads them: how much light a small clipped light holds above what
 /// the picture records, by the size of its patch on the lens plane, once per photo.
 ///
@@ -104,9 +165,14 @@ fn smooth(t: f64) -> f64 {
 /// headroom in EV is L3's estimate for the size of the patch ([`boost_ev`]: 9 EV for a patch of at most 0.025
 /// half-diagonals across, nothing from 0.4) read at [`FIELD_LIGHT_SIZE_FACTOR`] times its diameter (the field
 /// stages spread light far, so only a patch of a few pixels is a point), and the photo's cap scale ([`LIGHT_BOOST_ENERGY_CAP`](crate::consts))
-/// is L3's. The map holds the EV per pixel of the lens plane, the largest within one pixel of it (a pixel
-/// clipped at a finer scale lies in the plane pixel beside the patch's), and every scale reads it at its pixel's
-/// place ([`LightMap::ev_at`]).
+/// is L3's. A patch is a light only if it stands alone: its EV is multiplied by the share
+/// `1 - smoothstep(from, to, density)` of [`HEADROOM_DENSITY_RAMP`], `density` the share of other clipped pixels
+/// in the square of [`HEADROOM_DENSITY_RADIUS`] half-diagonals round it (`ClippedCounts::isolation`). A crowd of
+/// clipped petals or leaves is a surface: given the headroom of a star each, it lifted the dark gaps between
+/// them to two or three times the clip level and the picture showed flat white blobs (`docs/21` section 4, L2,
+/// *As built (the aperture)*). The map holds the EV per pixel of the lens plane, the largest within one pixel of
+/// it (a pixel clipped at a finer scale lies in the plane pixel beside the patch's), and every scale reads it at
+/// its pixel's place ([`LightMap::ev_at`]).
 #[derive(Clone, Debug)]
 pub(crate) struct LightMap {
     /// The EV of every lens-plane pixel, row-major; empty when no pixel is part of a light.
@@ -174,6 +240,7 @@ impl LightMap {
             });
         }
         let half_diag = 0.5 * ((w * w + h * h) as f64).sqrt();
+        let crowd = ClippedCounts::new(&mask, w, h);
         let mut ev = vec![0.0f32; n];
         let mut seen = vec![false; n];
         let mut stack: Vec<usize> = Vec::new();
@@ -203,7 +270,10 @@ impl LightMap {
             }
             let area = members.len() as f64 / (half_diag * half_diag);
             let diameter = 2.0 * (area / std::f64::consts::PI).sqrt();
-            let patch_ev = boost_ev(FIELD_LIGHT_SIZE_FACTOR * diameter) as f32;
+            let mut patch_ev = boost_ev(FIELD_LIGHT_SIZE_FACTOR * diameter) as f32;
+            if patch_ev > 0.0 {
+                patch_ev *= crowd.isolation(&members, w, half_diag) as f32;
+            }
             for p in &members {
                 ev[*p] = patch_ev;
             }
@@ -452,6 +522,7 @@ pub(crate) fn l2_input_with(
 mod tests {
     use super::*;
     use crate::amounts::{LensAmounts, LensKind};
+    use crate::consts::{HEADROOM_DENSITY_RADIUS, HEADROOM_DENSITY_RAMP};
     use crate::field::{self, Geometry, Options};
     use crate::plan::{Axis, FrameInfo};
     use crate::planes::LensPlanes;
@@ -558,6 +629,143 @@ mod tests {
         assert!(map.gain(9.0) > map.gain(4.0));
         let capped = LightMap::build(&p, &whole(&data), 0.25, &|| false).unwrap();
         assert!((capped.gain(9.0) - 0.25 * map.gain(9.0)).abs() < 1e-12);
+    }
+
+    /// A lattice of `n_x` x `n_y` patches of 3 x 3 clipped pixels, 7 px apart, from the pixel `(x0, y0)`: a crowd
+    /// of petals.
+    fn paint_crowd(data: &mut [f32], x0: usize, y0: usize, n_x: usize, n_y: usize) {
+        let n = W * H;
+        for j in 0..n_y {
+            for i in 0..n_x {
+                for dy in 0..3 {
+                    for dx in 0..3 {
+                        let at = (y0 + 7 * j + dy) * W + x0 + 7 * i + dx;
+                        for c in 0..3 {
+                            data[c * n + at] = 3.0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// One clipped pixel at `(x, y)`.
+    fn clip_pixel(data: &mut [f32], x: usize, y: usize) {
+        let n = W * H;
+        for c in 0..3 {
+            data[c * n + y * W + x] = 3.0;
+        }
+    }
+
+    #[test]
+    fn a_crowd_of_clipped_patches_gets_no_headroom_and_a_patch_alone_keeps_it() {
+        let p = plan(LensKind::Vintage, 100.0, 0.0);
+        let half_diag = 0.5 * ((W * W + H * H) as f64).sqrt();
+        let want = |pixels: f64| {
+            let d = 2.0 * (pixels / std::f64::consts::PI).sqrt() / half_diag;
+            f64::from(boost_ev(FIELD_LIGHT_SIZE_FACTOR * d) as f32)
+        };
+        // One patch of 9 pixels alone has L3's estimate for its size.
+        let mut alone = ground();
+        paint_crowd(&mut alone, 300, 100, 1, 1);
+        let map = LightMap::build(&p, &whole(&alone), 1.0, &|| false).unwrap();
+        let single = map.ev_at(301, 101, 1);
+        assert!(
+            single > 6.0 && (single - want(9.0)).abs() < 1e-5,
+            "a patch of 9 pixels alone: {single} EV"
+        );
+        // The same patches in a crowd (a lattice of 20 x 15, each patch with 8 neighbours within the square)
+        // are a surface: no headroom, whatever the size of each. A star far from the crowd keeps all of its.
+        let mut crowd = ground();
+        paint_crowd(&mut crowd, 100, 60, 20, 15);
+        clip_pixel(&mut crowd, 500, 340);
+        clip_pixel(&mut crowd, 0, 0);
+        let map = LightMap::build(&p, &whole(&crowd), 1.0, &|| false).unwrap();
+        for j in 0..15 {
+            for i in 0..20 {
+                let (x, y) = (101 + 7 * i, 61 + 7 * j);
+                assert_eq!(
+                    map.ev_at(x, y, 1),
+                    0.0,
+                    "the patch of the crowd at ({x}, {y})"
+                );
+            }
+        }
+        assert_eq!(map.ev_at(500, 340, 1), 9.0, "a star alone");
+        assert_eq!(
+            map.ev_at(0, 0, 1),
+            9.0,
+            "a star alone in the corner of the plane"
+        );
+    }
+
+    #[test]
+    fn the_headroom_falls_with_the_crowd_round_a_patch_by_the_ramp_and_counts_the_square_only() {
+        let p = plan(LensKind::Vintage, 100.0, 0.0);
+        let half_diag = 0.5 * ((W * W + H * H) as f64).sqrt();
+        let reach = (HEADROOM_DENSITY_RADIUS * half_diag).round() as usize;
+        assert_eq!(reach, 18, "the square is 37 x 37 pixels on this plane");
+        let pixels = ((2 * reach + 1) * (2 * reach + 1)) as f64;
+        let (from, to) = HEADROOM_DENSITY_RAMP;
+        let star = (300usize, 200usize);
+        // Other lights, one pixel each and 4 px apart, on a grid inside the star's square (the star's own
+        // place left out).
+        let grid: Vec<(usize, usize)> = (0..9)
+            .flat_map(|j| (0..9).map(move |i| (284 + 4 * i, 184 + 4 * j)))
+            .filter(|at| *at != star)
+            .collect();
+        let mut seen = Vec::new();
+        for count in [0usize, 5, 15, 20, 40] {
+            let mut data = ground();
+            clip_pixel(&mut data, star.0, star.1);
+            for (x, y) in &grid[..count] {
+                clip_pixel(&mut data, *x, *y);
+            }
+            let map = LightMap::build(&p, &whole(&data), 1.0, &|| false).unwrap();
+            let got = map.ev_at(star.0, star.1, 1);
+            let share = 1.0 - smooth((count as f64 / pixels - from) / (to - from));
+            assert!(
+                (got - 9.0 * share).abs() < 1e-4,
+                "{count} other lights in the square: {got} EV, expected {}",
+                9.0 * share
+            );
+            seen.push(got);
+        }
+        // Up to 0.5 % of the square nothing is taken, from 2 % all of it, and in between some.
+        assert_eq!(seen[0], 9.0);
+        assert_eq!(seen[1], 9.0, "5 of 1369 pixels is under the ramp");
+        assert!(seen[2] > 0.0 && seen[2] < 9.0, "15 pixels: {}", seen[2]);
+        assert!(seen[3] < seen[2], "20 pixels: {}", seen[3]);
+        assert_eq!(seen[4], 0.0, "40 pixels is over the ramp");
+        // The same 38 lights just outside the square (columns reach + 1 away) take nothing, just inside all.
+        for (offset, want) in [(reach + 1, 9.0), (reach, 0.0)] {
+            let mut data = ground();
+            clip_pixel(&mut data, star.0, star.1);
+            for y in (star.1 - reach..=star.1 + reach).step_by(2) {
+                clip_pixel(&mut data, star.0 - offset, y);
+                clip_pixel(&mut data, star.0 + offset, y);
+            }
+            let map = LightMap::build(&p, &whole(&data), 1.0, &|| false).unwrap();
+            assert_eq!(
+                map.ev_at(star.0, star.1, 1),
+                want,
+                "lights {offset} columns away"
+            );
+        }
+    }
+
+    #[test]
+    fn the_map_is_the_same_bits_every_time() {
+        let mut data = ground();
+        paint_crowd(&mut data, 100, 60, 12, 9);
+        paint(&mut data, [3.0, 3.0, 3.0], 450.5, 300.5, 1.2);
+        paint(&mut data, [1.4, 1.1, 1.7], 520.5, 120.5, 2.2);
+        let p = plan(LensKind::Vintage, 100.0, 0.0);
+        let a = LightMap::build(&p, &whole(&data), 1.0, &|| false).unwrap();
+        let b = LightMap::build(&p, &whole(&data), 1.0, &|| false).unwrap();
+        assert!(!a.is_empty());
+        let bits = |m: &LightMap| m.data().ev.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&a), bits(&b));
     }
 
     #[test]

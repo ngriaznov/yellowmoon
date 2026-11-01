@@ -5,7 +5,9 @@
 //! `n x n` taps, turned to the radial direction and scaled to a half-width of `omega` pixels, from a
 //! box-reduced pyramid of the input; the channels' own centroids are the lateral colour, the attachment
 //! reads each channel further along the axis, and the gain `1 - e (1 - T)` is applied last. This module
-//! is the same computation in `f32`.
+//! is the same computation in `f32`. The aperture law (the photo's f-number against the design's, `docs/21`
+//! section 4, L2, *As built (the aperture)*) reaches the kernel as two numbers made on the host, `e` times the
+//! width factor and `e` times the darkening factor, so the WGSL has no `pow`.
 //!
 //! # Passes
 //!
@@ -60,7 +62,7 @@ struct FieldU {
     zero: [u32; 4],
     /// Frame width, height, half-diagonal in pixels, 0.
     frame: [f32; 4],
-    /// `e'`, `alpha`, side softness, fringe boost.
+    /// `e'` (the kernel reads the aperture-scaled products of `ap`), `alpha`, side softness, fringe boost.
     plan: [f32; 4],
     /// Frame width, height, `lmax`, 1 when the axis is the buffer's y.
     ints: [i32; 4],
@@ -83,6 +85,9 @@ struct FieldU {
     /// 2 when the gather is the extra light, 3 the headroom, added to the output planes, with the level bias second; 0
     /// otherwise.
     ex: [u32; 4],
+    /// The aperture law (`FieldPass::width_factor`, `FieldPass::darkening_factor`), made on the host: `e'` times
+    /// the width factor, `e'` times the darkening factor, 0, 0.
+    ap: [f32; 4],
 }
 
 /// The lens's spread functions on the device: uploaded once per lens and camera, shared by every amount
@@ -327,6 +332,12 @@ pub fn encode_field(
         pass.alpha as f32,
         pass.side as f32,
         pass.fringe_boost as f32,
+    ];
+    base.ap = [
+        (pass.e * pass.width_factor) as f32,
+        (pass.e * pass.darkening_factor) as f32,
+        0.0,
+        0.0,
     ];
     base.ints = [
         fw as i32,
@@ -678,6 +689,7 @@ mod tests {
                 ("lvl", offset_of!(FieldU, lvl)),
                 ("org", offset_of!(FieldU, org)),
                 ("ex", offset_of!(FieldU, ex)),
+                ("ap", offset_of!(FieldU, ap)),
             ];
             assert_eq!(fields.len(), want.len(), "{id:?}");
             for ((name, offset), (want_name, want_offset)) in fields.iter().zip(want) {
@@ -704,6 +716,8 @@ mod tests {
             half_diag: 3605.5,
             axis_y: false,
             e: 1.0,
+            width_factor: 1.0,
+            darkening_factor: 1.0,
             alpha: 1.0,
             radius_scale: 1.0,
             side: 0.0,

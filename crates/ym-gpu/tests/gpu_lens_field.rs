@@ -29,7 +29,7 @@ macro_rules! note {
     }};
 }
 
-use common::lens::{amounts, crop, noise, plan, planes_of, serial, texture};
+use common::lens::{amounts, crop, noise, plan, plan_at, planes_of, serial, texture};
 use common::{TestGpu, exact};
 use ym_gpu::cpu::tiling::Rect;
 use ym_gpu::device::GpuError;
@@ -236,6 +236,100 @@ fn the_kernel_matches_the_cpu_reference() {
     );
     note!(
         "L2 parity: {cases} cases, {total_all} samples, worst difference {worst_all:e}, {over_all} over {bound:e} (flipped decisions)"
+    );
+}
+
+/// The aperture law (`docs/21` section 4, L2, *As built (the aperture)*) on the device: the kernel takes the
+/// width and darkening factors from the host (`FieldPass`), so it matches the CPU reference within the same
+/// bound at every f-number, from none through the design's to far stopped down (the floor), including where the
+/// width is bent towards its cap. At or below the design's f-number the device's bytes are those without an
+/// f-number (the factors are exactly 1), and a stopped-down photo is moved less.
+#[test]
+fn the_kernel_follows_the_aperture_as_the_cpu_reference_does() {
+    let _guard = serial();
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
+    let bound = if dev.gpu.info().is_software {
+        PARITY_BOUND
+    } else {
+        PARITY_BOUND_HARDWARE
+    };
+    let (w, h) = (600usize, 400usize);
+    let image = noise(w, h, 11);
+    let mut cases = 0;
+    let (mut worst_all, mut over_all, mut total_all) = (0.0f32, 0usize, 0usize);
+    // Vintage (designed at f/2) at its maximum has the width bent towards the cap; Default (f/2.4) and Triplet
+    // (f/4) have their own design apertures.
+    for (kind, edges, anamorphic) in [
+        (LensKind::Vintage, 100.0, 100.0),
+        (LensKind::Default, 60.0, 0.0),
+        (LensKind::Triplet, 100.0, 40.0),
+    ] {
+        let design = plan_at(amounts(kind, 0.0, edges, anamorphic), w, h, Axis::X, None)
+            .lens()
+            .provenance
+            .design
+            .f_number;
+        let mut outputs: Vec<(Option<f64>, Vec<f32>)> = Vec::new();
+        for f_number in [
+            None,
+            Some(1.4),
+            Some(design),
+            Some(2.8),
+            Some(8.0),
+            Some(32.0),
+        ] {
+            let p = plan_at(
+                amounts(kind, 0.0, edges, anamorphic),
+                w,
+                h,
+                Axis::X,
+                f_number,
+            );
+            let planes = planes_of(&p);
+            let out = Rect::whole(w, h);
+            let want = cpu_field(&p, &planes, &image, (w, h), (0, 0), (w, h), out);
+            let got = gpu_field(dev, &p, &image, (w, h), (0, 0), out);
+            let f = compare(&got, &want, bound);
+            worst_all = worst_all.max(f.worst);
+            over_all += f.over;
+            total_all += f.total;
+            cases += 1;
+            assert!(
+                f.over as f64 <= FLIP_SHARE * f.total as f64,
+                "{kind} f/{f_number:?} edges {edges} anamorphic {anamorphic}: {} of {} samples differ by more than {bound} (worst {})",
+                f.over,
+                f.total,
+                f.worst
+            );
+            outputs.push((f_number, got));
+        }
+        let by_f = |f: Option<f64>| &outputs.iter().find(|(g, _)| *g == f).expect("rendered").1;
+        // At or below the design's aperture the device renders the traced lens, bit for bit.
+        exact::assert_bit_equal(&format!("{kind} at f/1.4"), by_f(Some(1.4)), by_f(None));
+        exact::assert_bit_equal(
+            &format!("{kind} at f/{design}"),
+            by_f(Some(design)),
+            by_f(None),
+        );
+        // Stopped down, the photo is moved less by the lens: closer to the input, and less each stop.
+        let moved = |f: Option<f64>| {
+            by_f(f)
+                .iter()
+                .zip(&image)
+                .map(|(a, b)| f64::from((a - b).abs()))
+                .sum::<f64>()
+                / image.len() as f64
+        };
+        let (open, f8, f32_) = (moved(None), moved(Some(8.0)), moved(Some(32.0)));
+        assert!(
+            open > f8 && f8 > f32_,
+            "{kind}: wide open {open}, f/8 {f8}, f/32 {f32_}"
+        );
+    }
+    note!(
+        "L2 aperture parity: {cases} cases, {total_all} samples, worst difference {worst_all:e}, {over_all} over {bound:e}"
     );
 }
 

@@ -37,11 +37,23 @@ pub fn camera() -> &'static CameraResponse {
 /// A plan for a frame of `w x h` pixels. The clip levels are far above any value of the test images, so
 /// no pixel is a source of light and the planes of L3 are empty: the tests of L1 and L2 see no flares.
 pub fn plan(amounts: LensAmounts, w: usize, h: usize, axis: Axis) -> LensPlan {
+    plan_at(amounts, w, h, axis, Some(5.6))
+}
+
+/// [`plan`] for a photo taken at the f-number `f_number` (the field optics follow the aperture the photo was
+/// taken at: `docs/21` section 4, L2, *As built (the aperture)*).
+pub fn plan_at(
+    amounts: LensAmounts,
+    w: usize,
+    h: usize,
+    axis: Axis,
+    f_number: Option<f64>,
+) -> LensPlan {
     let frame = FrameInfo {
         width: w,
         height: h,
         axis,
-        f_number: Some(5.6),
+        f_number,
         clip: [1.0e6; 3],
     };
     LensPlan::new(library(), &amounts, frame, camera()).expect("plan")

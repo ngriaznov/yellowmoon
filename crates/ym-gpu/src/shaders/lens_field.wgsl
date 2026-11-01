@@ -39,6 +39,7 @@ struct FieldU {
     lvl: array<vec4<i32>, 13>,  // per level: offset in the pyramid (vec4 units), width, height
     org: array<vec4<i32>, 13>,  // per level: column and row of its first texel (blocks of that level)
     ex: vec4<u32>,              // x: 2 when the gather is the extra light, 3 the headroom, added to the output planes; 0 otherwise; y: its level bias
+    ap: vec4<f32>,              // the aperture law, made on the host: e' times the width factor, e' times the darkening factor
 };
 
 @group(0) @binding(0) var<uniform> pu: FieldU;
@@ -204,9 +205,9 @@ fn lf_pixel(i: i32, j: i32) -> LfPix {
         let at_edge = LF_RADII - 1u;
         w = w + lf_half_width_slope(at_edge) * (rho_raw - 1.0);
     }
-    let gain = 1.0 - pu.plan.x * (1.0 - illum);
+    let gain = 1.0 - pu.ap.y * (1.0 - illum);
     let softness = 1.0 + pu.plan.z * xa * xa;
-    let ew = lf_opaque(pu.plan.x * softness);
+    let ew = lf_opaque(pu.ap.x * softness);
     let omega = lf_soft_cap(lf_opaque(ew * w)) * h;
     let rr = sqrt(u * u + v * v);
     var cs = 1.0;

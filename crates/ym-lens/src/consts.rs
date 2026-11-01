@@ -52,6 +52,25 @@ pub const W_MAX: f64 = 0.012;
 /// (`docs/21` section 4, L2, *As built (the field law)*).
 pub const W_KNEE: f64 = 0.75 * W_MAX;
 
+/// The power `p` of the aperture law for the kernel's width: the width is multiplied by
+/// `clamp((N_d / N)^p, APERTURE_WIDTH_FLOOR, 1)`, `N` the photo's f-number (EXIF) and `N_d` the f-number of
+/// the lens's design (`provenance.design.f_number`). The spread widths are traced at the design's full
+/// aperture and ignore the aperture of the photo, so a sharp photo taken at f/8 came out as soft as one taken
+/// wide open. At or below `N_d`, and without an f-number, the factor is 1. The law is the owner's choice
+/// (2026-11-01, "Follow aperture (Recommended)"): with `N_d` 2 a photo at f/8 keeps 1/8 of the width
+/// (`docs/21` section 4, L2, *As built (the aperture)*).
+pub const APERTURE_WIDTH_POWER: f64 = 1.5;
+
+/// The least share of its width the aperture law leaves a kernel (the owner, 2026-11-01): a photo stopped down
+/// far keeps a tenth of the lens's spread, never less, so the lens does not drop out of a picture by the
+/// aperture alone.
+pub const APERTURE_WIDTH_FLOOR: f64 = 0.1;
+
+/// The power `q` of the aperture law for the darkening `e (1 - T)` (the falloff towards the corners): it is
+/// multiplied by `(N_d / N)^q`, at most 1 (the owner, 2026-11-01). It is smaller than [`APERTURE_WIDTH_POWER`]:
+/// the aperture takes more of the blur than of the darkening.
+pub const APERTURE_DARKENING_POWER: f64 = 0.5;
+
 /// The share of the traced lateral colour the field optics keep (`docs/21` section 4, L2, *As built (the
 /// field law)*; `data/lenses/README.md`, *Tuned by hand*).
 ///
@@ -243,6 +262,24 @@ pub const FIELD_HEADROOM_MAX: f64 = 40.0;
 /// core hides light that the spread would carry, and a window or a flower of a few tens of pixels is a surface
 /// whose interior the spread does not change (full boost up to 0.006 half-diagonals across, none from 0.1).
 pub const FIELD_LIGHT_SIZE_FACTOR: f64 = 4.0;
+
+/// The ramp, from none to all, of the density of other clipped pixels round a clipped patch that takes its
+/// headroom away (`light::LightMap::build`): the headroom of a patch is multiplied by
+/// `1 - smoothstep(from, to, density)`, `density` the share of other clipped pixels in the square of
+/// [`HEADROOM_DENSITY_RADIUS`] half-diagonals round the patch's centre. A crowd of clipped petals, leaves or
+/// window panes is a surface, not a set of lights: each patch gets the headroom of a star, and the dark gaps
+/// between them are lifted to two or three times the clip level and turn flat white (a cherry tree in bloom
+/// became white blobs). An isolated star, lamp or sun has no other clipped pixel near it and keeps all of its
+/// headroom (the owner, 2026-11-01, "Follow aperture (Recommended)", the E of C + E; `docs/21` section 4, L2,
+/// *As built (the aperture)*). Up to 0.5 % of the square clipped the patch keeps all of its headroom, from
+/// 2 % none.
+pub const HEADROOM_DENSITY_RAMP: (f64, f64) = (0.005, 0.02);
+
+/// Half the side of the square, in half-diagonals, in which [`HEADROOM_DENSITY_RAMP`] counts the other clipped
+/// pixels round a clipped patch (the owner, 2026-11-01), at least 4 pixels of the lens plane. The square is as
+/// wide as the largest patch that still has a headroom (0.1 half-diagonals across: [`FIELD_LIGHT_SIZE_FACTOR`]
+/// times that is [`LIGHT_BOOST_NONE_HD`]).
+pub const HEADROOM_DENSITY_RADIUS: f64 = 0.05;
 
 /// How much of the extra light the field stage spreads (the headroom of a clipped light and the light's colour,
 /// `light::l2_input`) a pixel is given, the larger of two shares, each a smoothstep (none up to the first number,

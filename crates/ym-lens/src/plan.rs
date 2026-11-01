@@ -7,7 +7,9 @@
 use std::sync::Arc;
 
 use crate::amounts::{LensAmounts, LensKind};
-use crate::consts::LENS_PLANE_LONG_EDGE;
+use crate::consts::{
+    APERTURE_DARKENING_POWER, APERTURE_WIDTH_FLOOR, APERTURE_WIDTH_POWER, LENS_PLANE_LONG_EDGE,
+};
 use crate::data::{AttachmentData, LensData, LensLibrary};
 use crate::error::LensError;
 use crate::field::FieldTables;
@@ -32,10 +34,27 @@ pub struct FrameInfo {
     pub height: usize,
     /// The anamorphic axis in the buffer.
     pub axis: Axis,
-    /// The photo's f-number from EXIF; the starburst assumes f/4 without one.
+    /// The photo's f-number from EXIF; the starburst assumes f/4 without one, and the field optics (L2) run at
+    /// the lens design's aperture (no softening by the aperture, `LensPlan::aperture_width_factor`).
     pub f_number: Option<f64>,
     /// The clip level `g0` of each channel in the lens group's scale.
     pub clip: [f32; 3],
+}
+
+/// The aperture law (`docs/21` section 4, L2, *As built (the aperture)*): the factors on the kernels' width and
+/// on the darkening for the design's f-number `design` and the photo's `photo`.
+///
+/// Both are exactly 1 without a photo f-number and when `photo <= design` (a photo taken at or wider than the
+/// design's aperture has the traced lens). The powers are evaluated with `libm`, so that every platform gets
+/// the same bits.
+fn aperture_factors(design: f64, photo: Option<f64>) -> (f64, f64) {
+    let ratio = match photo {
+        Some(n) if n > design => design / n,
+        _ => return (1.0, 1.0),
+    };
+    let width = libm::pow(ratio, APERTURE_WIDTH_POWER).clamp(APERTURE_WIDTH_FLOOR, 1.0);
+    let darkening = libm::pow(ratio, APERTURE_DARKENING_POWER).clamp(0.0, 1.0);
+    (width, darkening)
 }
 
 /// One photo's lens: lens data on the camera's channels, amounts, frame and axis.
@@ -62,6 +81,10 @@ pub struct LensPlan {
     side: f64,
     /// `1 + h (q - 1)`: the factor on the axis part of the channels' centroid offsets.
     fringe: f64,
+    /// The aperture law's factor on the kernels' width (1 without an f-number or at or below the design's).
+    aperture_width: f64,
+    /// The aperture law's factor on the darkening (1 without an f-number or at or below the design's).
+    aperture_darkening: f64,
     /// The bend and distortion of L4.
     bend: BendMap,
     /// The spread functions on the camera's channels, when the field optics can act.
@@ -112,6 +135,8 @@ impl LensPlan {
             d1: e * lens.field.distortion.k1,
             d2: e * lens.field.distortion.k2,
         };
+        let (aperture_width, aperture_darkening) =
+            aperture_factors(lens.provenance.design.f_number, frame.f_number);
         let field = if !amounts.is_identity() && e_field > 0.0 {
             Some(FieldTables::new(&lens, camera))
         } else {
@@ -123,6 +148,8 @@ impl LensPlan {
             alpha: 1.0 + attachment.field.kappa * extra,
             side: attachment.field.side_softness * extra,
             fringe: 1.0 + attachment.field.fringe * extra,
+            aperture_width,
+            aperture_darkening,
             lens,
             attachment,
             camera: camera.clone(),
@@ -243,6 +270,24 @@ impl LensPlan {
         self.fringe
     }
 
+    /// The factor the photo's aperture puts on the field optics' kernel widths:
+    /// `clamp((N_d / N)^1.5, 0.1, 1)` for the photo's f-number `N` and the lens design's `N_d`
+    /// ([`APERTURE_WIDTH_POWER`], [`APERTURE_WIDTH_FLOOR`]), so a photo taken stopped down gets the smaller
+    /// spread of a stopped-down lens. Exactly 1 without an f-number and at or below `N_d` (`docs/21` section 4,
+    /// L2, *As built (the aperture)*).
+    #[must_use]
+    pub fn aperture_width_factor(&self) -> f64 {
+        self.aperture_width
+    }
+
+    /// The factor the photo's aperture puts on the darkening `e (1 - T)` of the field optics:
+    /// `(N_d / N)^0.5`, at most 1 ([`APERTURE_DARKENING_POWER`]). Exactly 1 without an f-number and at or below
+    /// `N_d`.
+    #[must_use]
+    pub fn aperture_darkening_factor(&self) -> f64 {
+        self.aperture_darkening
+    }
+
     /// The fraction `a` of light the flare terms take from the picture, `a` of `docs/21` section 4, L3: the
     /// sum of the fractions in use (the streak's with its Anamorphic factor `(q - 1) / (Q_max - 1)`) times `F`,
     /// the fractions being the lens's after the floors of [`FlareStrengths`](crate::FlareStrengths).
@@ -317,8 +362,9 @@ impl LensPlan {
     }
 
     /// What `Z = L2(L1(X))` ([`apply_field`](crate::apply_field)) depends on besides its input and the planes: the
-    /// lens, its data versions, Edges and Anamorphic, the camera, the frame size and the axis. Not Flares and
-    /// not the f-number (L3 alone reads them), so a Flares move keeps `Z` and runs L3 only.
+    /// lens, its data versions, Edges and Anamorphic, the camera, the frame size, the axis and the f-number (the
+    /// field optics follow the aperture the photo was taken at, [`LensPlan::aperture_width_factor`]). Not
+    /// Flares, so a Flares move keeps `Z` and runs L3 only.
     ///
     /// Like [`LensPlan::key`], all-zero amounts share one key whatever the lens.
     #[must_use]
@@ -331,7 +377,7 @@ impl LensPlan {
         }
         let f = &self.frame;
         format!(
-            "lens-field:{}:v{}:att{}:{:?}:{:?}:{}:{}x{}:{:?}",
+            "lens-field:{}:v{}:att{}:{:?}:{:?}:{}:{}x{}:{:?}:fn{:?}",
             self.amounts.kind,
             self.lens.info.version,
             self.attachment.version,
@@ -341,6 +387,7 @@ impl LensPlan {
             f.width,
             f.height,
             f.axis,
+            f.f_number,
         )
     }
 

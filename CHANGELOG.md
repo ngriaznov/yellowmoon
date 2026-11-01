@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Changed
+
+- **Edges follows the aperture and no longer turns bright detail into white blobs.** A photo full of small bright things, such as a cherry tree in bloom, came out of the Lens tab with its blossoms turned into flat white blobs: every small clipped patch was treated as a lone light and given a glow of its own, and in a crowd those glows filled the gaps. Now only a light that stands alone (a star, a lamp, the sun) gets that extra light; a crowd of bright patches is treated as a surface. Edges also follows the aperture the photo was taken at: a photo taken at f/8 stays nearly sharp, a photo taken wide open keeps the full look of the lens, and a photo with no aperture recorded is treated as wide open. Pictures with the Lens off are unchanged. A picture made with Edges or Anamorphic above 0 changes when its photo was taken stopped down or holds many small bright areas, and the pipeline version is 0.8.2.
+
 ## [0.1.16] - 2026-10-30
 
 A display rendering of our own in place of ACES 2, with ARRI's brightness and reds; the Lens tab with a learned bokeh map and anamorphic lines with the mustache shape; a gentler highlight range; Claude Code and Antigravity as Auto grading; the white lift removed. Every photo renders differently (pipeline 0.8.1, was 0.5.2).
