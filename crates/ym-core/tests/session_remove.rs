@@ -19,6 +19,7 @@ use ym_core::session::{
     Session, SessionError, SessionEvent,
 };
 use ym_core::settings::{PercentSetting, SettingsPatch};
+use ym_core::settings::{GradePatch, NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -195,11 +196,24 @@ fn undo_puts_the_photos_back_where_they_were_with_their_settings_picks_and_estim
     session
         .update_settings(
             ids[3],
-            &SettingsPatch {
-                contrast: Some(PercentSetting::manual_value(25.0)),
-                look_intensity: Some(60.0),
-                ..Default::default()
-            },
+            &SettingsPatch::default()
+                .and(
+                    NodeId::MAIN,
+                    NodePatch {
+                        grade: Some(GradePatch {
+                            contrast: Some(PercentSetting::manual_value(25.0)),
+                            ..GradePatch::default()
+                        }),
+                        ..NodePatch::default()
+                    },
+                )
+                .and(
+                    NodeId::Output,
+                    NodePatch {
+                        look_intensity: Some(60.0),
+                        ..NodePatch::default()
+                    },
+                ),
         )
         .unwrap();
     session.set_picked(ids[1], true).unwrap();
@@ -241,8 +255,8 @@ fn undo_puts_the_photos_back_where_they_were_with_their_settings_picks_and_estim
         );
     }
     let r = session.settings(ids[3]).unwrap();
-    assert_eq!((r.values.kelvin, r.values.contrast), (4300.0, 25.0));
-    assert!(!r.auto.white_balance);
+    assert_eq!((r.values.input.kelvin, r.values.main.grade.contrast), (4300.0, 25.0));
+    assert!(!r.auto.input.white_balance);
     assert_eq!(session.status(ids[1]), Some(PhotoStatus::Ready));
     // Undo is for the last removal, once.
     assert!(session.restorable().is_empty());

@@ -74,7 +74,7 @@ fn run(
     ));
     (
         angle_deg(est.color.w_scene_initial, truth),
-        est.summary().kelvin,
+        est.summary().input.kelvin,
         used_prior,
     )
 }

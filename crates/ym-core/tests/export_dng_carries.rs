@@ -44,7 +44,7 @@ fn source_of(scene: &Scene) -> PhotoSource {
 
 fn with_sharpening(src: &PhotoSource, amount: f64, radius_px: f64) -> PhotoSource {
     let mut s: DevelopSettings = src.settings.clone();
-    s.sharpen = AutoOr::Manual(SharpenValue { amount, radius_px });
+    s.input_mut().sharpen = AutoOr::Manual(SharpenValue { amount, radius_px });
     src.with_settings(s)
 }
 
@@ -180,8 +180,8 @@ fn a_dng_export_leaves_the_other_formats_as_they_were() {
 
 fn with_look(src: &PhotoSource, look: &str, intensity: f64) -> PhotoSource {
     let mut s = src.settings.clone();
-    s.look = LookId::parse(look).expect("look id");
-    s.look_intensity = intensity;
+    s.output_mut().look = LookId::parse(look).expect("look id");
+    s.output_mut().look_intensity = intensity;
     src.with_settings(s)
 }
 

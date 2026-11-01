@@ -173,9 +173,9 @@ fn a_fit_frame_from_a_resident_group_is_the_host_round_trip_bit_for_bit() {
         (
             "graded and straightened",
             edit(&src, |s| {
-                s.contrast = ym_core::settings::PercentSetting::manual_value(30.0);
-                s.saturation = ym_core::settings::PercentSetting::manual_value(20.0);
-                s.crop = Some(ym_core::settings::Crop {
+                s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(30.0);
+                s.main_grade_mut().saturation = ym_core::settings::PercentSetting::manual_value(20.0);
+                s.input_mut().crop = Some(ym_core::settings::Crop {
                     rect: ym_core::settings::NormRect {
                         x: 0.05,
                         y: 0.05,
@@ -247,7 +247,7 @@ fn a_resident_fit_frame_reads_back_the_frame_and_nothing_else() {
     let r = renderer(Some(&gpu), true);
     let _ = fresh(&r, &src, &st);
     let graded = edit(&src, |s| {
-        s.contrast = ym_core::settings::PercentSetting::manual_value(25.0)
+        s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(25.0)
     });
     let before = gpu.counters();
     let again = fresh(&r, &graded, &st);
@@ -277,7 +277,7 @@ fn a_100_percent_frame_from_resident_tiles_is_the_host_round_trip_bit_for_bit() 
         (
             "straightened",
             edit(&src, |s| {
-                s.crop = Some(ym_core::settings::Crop {
+                s.input_mut().crop = Some(ym_core::settings::Crop {
                     rect: ym_core::settings::NormRect {
                         x: 0.05,
                         y: 0.05,
@@ -324,7 +324,7 @@ fn a_pan_over_cached_resident_tiles_makes_no_tile_and_reads_back_the_frame_only(
     assert!(first.report.runs.tiles > 0, "the first frame makes tiles");
     assert_eq!(first.report.device, ComputeDevice::Gpu);
     // The same window under another grade: every tile is cached, on the device.
-    let graded = edit(&src, |s| s.brightness = 12.0);
+    let graded = edit(&src, |s| s.main_grade_mut().brightness = 12.0);
     let before = gpu.counters();
     let again = fresh(&r, &graded, &st);
     let resident_ran = gpu.counters().since(before);
@@ -435,7 +435,7 @@ fn a_pixel_readout_leaves_the_resident_caches_on_the_device() {
         );
         // The next frame, another grade over the same group, reads back its frame and nothing else
         // and uploads no window.
-        let graded = edit(&src, |s| s.brightness = 9.0);
+        let graded = edit(&src, |s| s.main_grade_mut().brightness = 9.0);
         let before = gpu.counters();
         let again = fresh(&resident, &graded, &st);
         let ran = gpu.counters().since(before);

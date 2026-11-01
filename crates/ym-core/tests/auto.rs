@@ -57,13 +57,13 @@ fn the_as_shot_fallback_reads_the_light_back_from_the_white_balance() {
         let s = est.summary();
         // The as-shot levels are stored as integers, the readout is rounded to 50 K.
         assert!(
-            (s.kelvin - cct).abs() <= 50.0,
+            (s.input.kelvin - cct).abs() <= 50.0,
             "{cct} K read back as {} K",
-            s.kelvin
+            s.input.kelvin
         );
         assert_eq!(s.light_class, class, "{cct} K");
         assert_eq!(s.light_confidence, 0.5);
-        assert!(s.tint.abs() < 3.0, "tint {}", s.tint);
+        assert!(s.input.tint.abs() < 3.0, "tint {}", s.input.tint);
         // The white the mosaic is balanced with is the true light (green = 1).
         let w = est.color.w_scene_initial;
         for c in 0..3 {
@@ -112,7 +112,7 @@ fn a_file_with_no_white_balance_gets_daylight_with_no_confidence() {
     let est = estimates_of(&raw, &env);
     assert_eq!(est.illuminant.source, IlluminantSource::DefaultDaylight);
     assert_eq!(est.summary().light_confidence, 0.0);
-    assert!((est.summary().kelvin - 5500.0).abs() <= 50.0);
+    assert!((est.summary().input.kelvin - 5500.0).abs() <= 50.0);
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn auto_exposure_is_the_cameras_gain_whatever_the_scene() {
         let raw = decode(&scene.write(dir.path(), "e.ARW", MODEL));
         let est = estimates_of(&raw, &env);
         assert_eq!(
-            est.summary().exposure_ev,
+            est.summary().input.exposure_ev,
             ym_color::exposure::CAMERA_GAIN_EV,
             "level {level}"
         );
@@ -164,7 +164,7 @@ fn auto_exposure_leaves_the_cameras_exposure_compensation_in_the_picture_in_full
         assert!(
             (raw.meta.exposure_comp_ev.unwrap() - f64::from(num) / f64::from(den)).abs() < 1e-12
         );
-        let ev = estimates_of(&raw, &env).summary().exposure_ev;
+        let ev = estimates_of(&raw, &env).summary().input.exposure_ev;
         assert_eq!(
             ev,
             ym_color::exposure::CAMERA_GAIN_EV,

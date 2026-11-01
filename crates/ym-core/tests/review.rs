@@ -10,6 +10,7 @@ use common::{Layout, Scene, estimates_of_file, light};
 use ym_color::exposure::CAMERA_GAIN_EV;
 use ym_core::auto::{build_preview, pick_white_sample};
 use ym_raw::layout::{CfaPattern, Layout as Layout2, Rect};
+use ym_core::settings::{GradePatch, NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -215,10 +216,13 @@ mod concurrency {
                     session
                         .update_settings(
                             big,
-                            &SettingsPatch {
-                                white_pick: Some(Some(point)),
-                                ..SettingsPatch::default()
-                            },
+                            &SettingsPatch::default().and(
+                                NodeId::Input,
+                                NodePatch {
+                                    white_pick: Some(Some(point)),
+                                    ..NodePatch::default()
+                                },
+                            ),
                         )
                         .unwrap();
                 })
@@ -231,15 +235,30 @@ mod concurrency {
                     session
                         .update_settings(
                             big,
-                            &SettingsPatch {
-                                contrast: Some(ym_core::settings::PercentSetting::manual_value(
-                                    contrast,
-                                )),
-                                exposure: Some(AutoOr::Manual(ym_core::settings::ExposureValue {
-                                    ev: 0.5,
-                                })),
-                                ..SettingsPatch::default()
-                            },
+                            &SettingsPatch::default()
+                                .and(
+                                    NodeId::Input,
+                                    NodePatch {
+                                        exposure: Some(AutoOr::Manual(
+                                            ym_core::settings::ExposureValue { ev: 0.5 },
+                                        )),
+                                        ..NodePatch::default()
+                                    },
+                                )
+                                .and(
+                                    NodeId::MAIN,
+                                    NodePatch {
+                                        grade: Some(GradePatch {
+                                            contrast: Some(
+                                                ym_core::settings::PercentSetting::manual_value(
+                                                    contrast,
+                                                ),
+                                            ),
+                                            ..GradePatch::default()
+                                        }),
+                                        ..NodePatch::default()
+                                    },
+                                ),
                         )
                         .unwrap();
                 })
@@ -247,14 +266,14 @@ mod concurrency {
             pick.join().unwrap();
             slider.join().unwrap();
             let settings = session.settings(big).unwrap();
-            assert_eq!(settings.settings.white_pick, Some(point), "round {round}");
+            assert_eq!(settings.settings.input().white_pick, Some(point), "round {round}");
             assert_eq!(
-                settings.settings.contrast,
+                settings.settings.main_grade().contrast,
                 ym_core::settings::PercentSetting::manual_value(contrast),
                 "round {round}"
             );
             assert_eq!(
-                settings.settings.exposure,
+                settings.settings.input().exposure,
                 AutoOr::Manual(ym_core::settings::ExposureValue { ev: 0.5 }),
                 "round {round}"
             );
@@ -336,7 +355,7 @@ mod extreme_frames {
                     Ok(est) => {
                         let s = est.summary();
                         assert!(
-                            s.exposure_ev.is_finite() && s.kelvin.is_finite() && s.tint.is_finite(),
+                            s.input.exposure_ev.is_finite() && s.input.kelvin.is_finite() && s.input.tint.is_finite(),
                             "{w}x{h} {name}"
                         );
                         assert!(
@@ -393,7 +412,7 @@ mod session_lifecycle {
             matches!(err, SessionError::UnknownPhoto(id) if id == old),
             "{err}"
         );
-        assert!(session.settings(new).unwrap().settings.exposure.is_auto());
+        assert!(session.settings(new).unwrap().settings.input().exposure.is_auto());
         assert!(matches!(
             session.rerun_auto(old),
             Err(SessionError::UnknownPhoto(_))
@@ -483,9 +502,9 @@ mod session_lifecycle {
                     let e = session.estimates(id).unwrap();
                     let s = e.summary();
                     (
-                        s.exposure_ev.to_bits(),
-                        s.kelvin.to_bits(),
-                        s.tint.to_bits(),
+                        s.input.exposure_ev.to_bits(),
+                        s.input.kelvin.to_bits(),
+                        s.input.tint.to_bits(),
                         s.noise.a.to_bits(),
                         s.noise.b.to_bits(),
                         e.noise.source,
@@ -566,8 +585,8 @@ mod session_lifecycle {
         fn render(&self, input: &ThumbnailInput<'_>) -> Result<Vec<u8>, String> {
             self.0.lock().unwrap().push((
                 input.id,
-                input.settings.look.clone(),
-                input.settings.look_intensity,
+                input.settings.output().look.clone(),
+                input.settings.output().look_intensity,
             ));
             Ok(vec![0x89, b'P', b'N', b'G'])
         }
@@ -659,34 +678,52 @@ mod session_lifecycle {
 }
 
 mod reading_settings {
-    use ym_core::settings::{DevelopSettings, SettingsError, SettingsField};
+    use ym_core::settings::{
+        DevelopSettings, FieldRef, NodeId, SettingsError, SettingsField,
+    };
     use ym_looks::library::LookId;
 
     #[test]
     fn a_settings_file_without_a_look_gets_the_users_default_look() {
         let signature = LookId::builtin("signature");
-        let (s, clamped) =
-            DevelopSettings::from_json(r#"{ "contrast": 20, "saturation": 250 }"#, &signature)
-                .unwrap();
-        assert_eq!(s.look, signature);
+        let (s, clamped) = DevelopSettings::from_json(
+            r#"{ "nodes": { "items": [ { "id": 1, "grade": {
+                "contrast": { "kind": "manual", "value": 20 },
+                "saturation": { "kind": "manual", "value": 250 } } } ] } }"#,
+            &signature,
+        )
+        .unwrap();
+        assert_eq!(s.output().look, signature);
         assert_eq!(
-            s.contrast,
+            s.main_grade().contrast,
             ym_core::settings::PercentSetting::manual_value(20.0)
         );
         assert_eq!(
-            s.saturation,
+            s.main_grade().saturation,
             ym_core::settings::PercentSetting::manual_value(100.0)
         );
-        assert_eq!(clamped, vec![SettingsField::Saturation]);
+        assert_eq!(
+            clamped,
+            vec![FieldRef {
+                node: NodeId::MAIN,
+                field: SettingsField::Saturation
+            }]
+        );
         // A look the document names wins, and so does an empty document's default.
-        let (s, _) =
-            DevelopSettings::from_json(r#"{ "look": "builtin:neutral" }"#, &signature).unwrap();
-        assert_eq!(s.look, LookId::builtin("neutral"));
+        let (s, _) = DevelopSettings::from_json(
+            r#"{ "nodes": { "items": [ { "id": "output", "look": "builtin:neutral" } ] } }"#,
+            &signature,
+        )
+        .unwrap();
+        assert_eq!(s.output().look, LookId::builtin("neutral"));
         let (s, _) = DevelopSettings::from_json("{}", &signature).unwrap();
         assert_eq!(s, DevelopSettings::with_look(signature.clone()));
         // Typos and broken JSON are errors in plain words.
-        let err = DevelopSettings::from_json(r#"{ "exposur": { "kind": "auto" } }"#, &signature)
-            .unwrap_err();
+        let err = DevelopSettings::from_json(
+            r#"{ "nodes": { "items": [ { "id": "input", "exposur": { "kind": "auto" } } ] } }"#,
+            &signature,
+        )
+        .unwrap_err();
         assert!(
             matches!(err, SettingsError::Parse(ref m) if m.contains("exposur")),
             "{err}"
@@ -696,7 +733,10 @@ mod reading_settings {
             Err(SettingsError::Parse(_))
         ));
         assert!(matches!(
-            DevelopSettings::from_json(r#"{ "contrast": "high" }"#, &signature),
+            DevelopSettings::from_json(
+                r#"{ "nodes": { "items": [ { "id": 1, "grade": { "contrast": "high" } } ] } }"#,
+                &signature
+            ),
             Err(SettingsError::Parse(_))
         ));
     }
@@ -756,12 +796,20 @@ mod stress {
                             0 => {
                                 let _ = session.update_settings(
                                     id,
-                                    &SettingsPatch {
-                                        contrast: Some(
-                                            ym_core::settings::PercentSetting::manual_value(v),
-                                        ),
-                                        ..SettingsPatch::default()
-                                    },
+                                    &SettingsPatch::default().and(
+                                        NodeId::MAIN,
+                                        NodePatch {
+                                            grade: Some(GradePatch {
+                                                contrast: Some(
+                                                    ym_core::settings::PercentSetting::manual_value(
+                                                        v,
+                                                    ),
+                                                ),
+                                                ..GradePatch::default()
+                                            }),
+                                            ..NodePatch::default()
+                                        },
+                                    ),
                                 );
                             }
                             1 => {
@@ -771,10 +819,16 @@ mod stress {
                             2 => {
                                 let _ = session.update_settings(
                                     id,
-                                    &SettingsPatch {
-                                        white_pick: Some(Some([0.1 + 0.004 * (v + 100.0), 0.3])),
-                                        ..SettingsPatch::default()
-                                    },
+                                    &SettingsPatch::default().and(
+                                        NodeId::Input,
+                                        NodePatch {
+                                            white_pick: Some(Some([
+                                                0.1 + 0.004 * (v + 100.0),
+                                                0.3,
+                                            ])),
+                                            ..NodePatch::default()
+                                        },
+                                    ),
                                 );
                             }
                             3 => {
@@ -928,7 +982,7 @@ mod other_layouts {
         // the key statistic that is still reported meters middle grey / 0.339 (it used to meter the
         // camera's own balance on top of its own, and the colour estimate saw a strong cast).
         let estimates = session.estimates(id).unwrap();
-        assert_eq!(estimates.summary().exposure_ev, CAMERA_GAIN_EV);
+        assert_eq!(estimates.summary().input.exposure_ev, CAMERA_GAIN_EV);
         assert_eq!(estimates.exposure.own_ev, CAMERA_GAIN_EV);
         let key = (0.18 / estimates.exposure.meter.mean_luminance).log2();
         let want = (0.18f64 / (0.4 * 14000.0 / 16512.0)).log2();
@@ -936,20 +990,23 @@ mod other_layouts {
         let picked = session
             .update_settings(
                 id,
-                &SettingsPatch {
-                    white_pick: Some(Some([0.5, 0.5])),
-                    ..SettingsPatch::default()
-                },
+                &SettingsPatch::default().and(
+                    NodeId::Input,
+                    NodePatch {
+                        white_pick: Some(Some([0.5, 0.5])),
+                        ..NodePatch::default()
+                    },
+                ),
             )
             .expect("a grey spot of a camera-processed file can be picked");
         // The scene is neutral under a 5200 K light: the picked light reads about that.
         assert!(
-            (picked.values.kelvin - 5200.0).abs() < 100.0,
+            (picked.values.input.kelvin - 5200.0).abs() < 100.0,
             "{} K",
-            picked.values.kelvin
+            picked.values.input.kelvin
         );
         let again = session.rerun_auto(id).unwrap();
-        assert!(again.settings.white_pick.is_none());
+        assert!(again.settings.input().white_pick.is_none());
     }
 }
 

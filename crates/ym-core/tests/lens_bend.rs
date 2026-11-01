@@ -72,12 +72,12 @@ fn edit(src: &PhotoSource, f: impl FnOnce(&mut DevelopSettings)) -> PhotoSource 
 }
 
 fn with_lens(src: &PhotoSource, l: LensSettings) -> PhotoSource {
-    edit(src, |s| s.lens = l)
+    edit(src, |s| s.input_mut().lens = l)
 }
 
 fn turned(src: &PhotoSource, quarter_turns: u8) -> PhotoSource {
     edit(src, |s| {
-        s.orientation = match quarter_turns % 4 {
+        s.input_mut().orientation = match quarter_turns % 4 {
             0 => Orientation::Deg0,
             1 => Orientation::Deg90,
             2 => Orientation::Deg180,
@@ -224,7 +224,7 @@ fn the_geometry_of_a_photo_carries_the_zoom_of_its_full_resolution_canvas() {
     };
     let plan = LensPlan::new(
         &library(),
-        &LensAmounts::from(src.settings.lens),
+        &LensAmounts::from(src.settings.input().lens),
         frame,
         &CameraResponse::neutral(),
     )
@@ -243,7 +243,7 @@ fn the_geometry_of_a_photo_carries_the_zoom_of_its_full_resolution_canvas() {
     };
     let plan_y = LensPlan::new(
         &library(),
-        &LensAmounts::from(src.settings.lens),
+        &LensAmounts::from(src.settings.input().lens),
         frame_y,
         &CameraResponse::neutral(),
     )
@@ -802,7 +802,7 @@ fn the_dng_preview_is_the_baked_picture_unturned() {
         let d = textured(320, 240, exif);
         // No capture sharpening on either side: a DNG's renders are made without R8.
         let mut src = edit(&d.source(), |s| {
-            s.sharpen = ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
+            s.input_mut().sharpen = ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
                 amount: 0.0,
                 radius_px: 1.0,
             });
@@ -813,7 +813,7 @@ fn the_dng_preview_is_the_baked_picture_unturned() {
         );
         if angle != 0.0 {
             src = edit(&src, |s| {
-                s.crop = Some(ym_core::settings::Crop {
+                s.input_mut().crop = Some(ym_core::settings::Crop {
                     rect: ym_core::settings::NormRect::FULL,
                     angle_deg: angle,
                     aspect: ym_core::settings::CropAspect::Free,

@@ -116,8 +116,8 @@ fn every_layout_with_lens_tables_and_a_turn_renders() {
             .expect("write");
         let d = Developed::open(dir);
         let mut s = d.source().settings.clone();
-        s.orientation = Orientation::Deg270;
-        s.crop = Some(Crop {
+        s.input_mut().orientation = Orientation::Deg270;
+        s.input_mut().crop = Some(Crop {
             rect: NormRect {
                 x: 0.05,
                 y: 0.1,
@@ -177,7 +177,7 @@ fn an_extreme_straighten_and_a_sliver_of_a_crop_still_render() {
         ),
     ] {
         let mut s = d.source().settings.clone();
-        s.crop = Some(Crop {
+        s.input_mut().crop = Some(Crop {
             rect,
             angle_deg: angle,
             aspect: CropAspect::Free,

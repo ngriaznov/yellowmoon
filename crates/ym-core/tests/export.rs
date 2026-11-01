@@ -29,6 +29,7 @@ use ym_gpu::cpu::output_sharpen::OutputSharpen;
 use ym_gpu::queue::CancelToken;
 use ym_looks::library::LookId;
 use ym_raw::testgen::{ArwBuilder, GpsSpec};
+use ym_core::settings::{GradePatch, NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -144,27 +145,33 @@ fn edit(session: &Session, id: PhotoId, patch: SettingsPatch) {
 }
 
 fn output_sharpening(pct: f64) -> SettingsPatch {
-    SettingsPatch {
-        output_sharpening: Some(pct),
-        ..SettingsPatch::default()
-    }
+    SettingsPatch::default().and(
+        NodeId::Output,
+        NodePatch {
+            output_sharpening: Some(pct),
+            ..NodePatch::default()
+        },
+    )
 }
 
 fn crop_of(x: f64, y: f64, w: f64, h: f64) -> SettingsPatch {
-    SettingsPatch {
-        crop: Some(Some(Crop {
-            rect: NormRect {
-                x,
-                y,
-                width: w,
-                height: h,
-            },
-            angle_deg: 0.0,
-            aspect: CropAspect::Free,
-            auto: false,
-        })),
-        ..SettingsPatch::default()
-    }
+    SettingsPatch::default().and(
+        NodeId::Input,
+        NodePatch {
+            crop: Some(Some(Crop {
+                rect: NormRect {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                },
+                angle_deg: 0.0,
+                aspect: CropAspect::Free,
+                auto: false,
+            })),
+            ..NodePatch::default()
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -201,7 +208,7 @@ fn a_16_bit_tiff_is_the_full_render_encoded_without_a_dither() {
             &CancelToken::new(),
         )
         .expect("render");
-    assert_eq!(photo.source.settings.output_sharpening, 100.0);
+    assert_eq!(photo.source.settings.output().output_sharpening, 100.0);
     let sharpened = OutputSharpen::screen()
         .with_amount_pct(100.0)
         .apply_interleaved(rendered.width, rendered.height, &rendered.rgb, 1.0)
@@ -350,10 +357,16 @@ fn the_xmp_records_how_the_file_was_made() {
     edit(
         &d.session,
         d.id,
-        SettingsPatch {
-            saturation: Some(ym_core::settings::PercentSetting::manual_value(15.0)),
-            ..SettingsPatch::exposure_ev(0.5)
-        },
+        SettingsPatch::exposure_ev(0.5).and(
+            NodeId::MAIN,
+            NodePatch {
+                grade: Some(GradePatch {
+                    saturation: Some(ym_core::settings::PercentSetting::manual_value(15.0)),
+                    ..GradePatch::default()
+                }),
+                ..NodePatch::default()
+            },
+        ),
     );
     let (home, out) = (
         tempfile::tempdir().expect("h"),
@@ -498,10 +511,16 @@ fn exports_are_byte_identical_across_threads_contexts_and_processes() {
     edit(
         &d.session,
         d.id,
-        SettingsPatch {
-            contrast: Some(ym_core::settings::PercentSetting::manual_value(12.0)),
-            ..crop_of(0.1, 0.1, 0.7, 0.6)
-        },
+        crop_of(0.1, 0.1, 0.7, 0.6).and(
+            NodeId::MAIN,
+            NodePatch {
+                grade: Some(GradePatch {
+                    contrast: Some(ym_core::settings::PercentSetting::manual_value(12.0)),
+                    ..GradePatch::default()
+                }),
+                ..NodePatch::default()
+            },
+        ),
     );
     let (home, out) = (
         tempfile::tempdir().expect("h"),
@@ -633,10 +652,13 @@ fn a_crop_is_a_window_on_the_uncropped_export() {
     edit(
         &d.session,
         d.id,
-        SettingsPatch {
-            crop: Some(None),
-            ..SettingsPatch::default()
-        },
+        SettingsPatch::default().and(
+            NodeId::Input,
+            NodePatch {
+                crop: Some(None),
+                ..NodePatch::default()
+            },
+        ),
     );
     let full = export_ok(&ctx, &photo_of(&d), tiff16(&out.path().join("full-sharp")));
     edit(&d.session, d.id, crop_of(0.25, 0.125, 0.5, 0.5));
@@ -669,10 +691,13 @@ fn the_cameras_and_the_users_turns_are_baked_into_a_jpeg() {
         edit(
             &d.session,
             d.id,
-            SettingsPatch {
-                orientation: Some(turn),
-                ..SettingsPatch::default()
-            },
+            SettingsPatch::default().and(
+                NodeId::Input,
+                NodePatch {
+                    orientation: Some(turn),
+                    ..NodePatch::default()
+                },
+            ),
         );
         let report = export_ok(
             &ctx,
@@ -704,10 +729,13 @@ fn a_dng_keeps_the_crop_and_the_turns_in_tags_and_the_pixels_unturned() {
     edit(
         &d.session,
         d.id,
-        SettingsPatch {
-            orientation: Some(Orientation::Deg90),
-            ..crop_of(0.0, 0.0, 0.5, 0.5)
-        },
+        crop_of(0.0, 0.0, 0.5, 0.5).and(
+            NodeId::Input,
+            NodePatch {
+                orientation: Some(Orientation::Deg90),
+                ..NodePatch::default()
+            },
+        ),
     );
     let (home, out) = (
         tempfile::tempdir().expect("h"),
@@ -755,20 +783,23 @@ fn a_dng_with_a_straighten_angle_bakes_the_angle_and_the_crop_into_the_pixels() 
     edit(
         &d.session,
         d.id,
-        SettingsPatch {
-            crop: Some(Some(Crop {
-                rect: NormRect {
-                    x: 0.1,
-                    y: 0.1,
-                    width: 0.6,
-                    height: 0.6,
-                },
-                angle_deg: 3.0,
-                aspect: CropAspect::Free,
-                auto: false,
-            })),
-            ..SettingsPatch::default()
-        },
+        SettingsPatch::default().and(
+            NodeId::Input,
+            NodePatch {
+                crop: Some(Some(Crop {
+                    rect: NormRect {
+                        x: 0.1,
+                        y: 0.1,
+                        width: 0.6,
+                        height: 0.6,
+                    },
+                    angle_deg: 3.0,
+                    aspect: CropAspect::Free,
+                    auto: false,
+                })),
+                ..NodePatch::default()
+            },
+        ),
     );
     let (home, out) = (
         tempfile::tempdir().expect("h"),
@@ -1229,10 +1260,13 @@ fn photo_with_look(d: &Opened, look: &str) -> ExportPhoto {
     edit(
         &d.session,
         d.id,
-        SettingsPatch {
-            look: Some(LookId::parse(look).expect("look id")),
-            ..SettingsPatch::default()
-        },
+        SettingsPatch::default().and(
+            NodeId::Output,
+            NodePatch {
+                look: Some(LookId::parse(look).expect("look id")),
+                ..NodePatch::default()
+            },
+        ),
     );
     photo_of(d)
 }
@@ -1250,10 +1284,13 @@ fn the_look_and_its_hash_are_recorded() {
     edit(
         &d.session,
         d.id,
-        SettingsPatch {
-            look_intensity: Some(60.0),
-            ..SettingsPatch::default()
-        },
+        SettingsPatch::default().and(
+            NodeId::Output,
+            NodePatch {
+                look_intensity: Some(60.0),
+                ..NodePatch::default()
+            },
+        ),
     );
     let photo = photo_with_look(&d, "user:warm");
     let report = export_ok(&ctx, &photo, options_in(out.path(), FormatKind::Jpeg));
@@ -1581,10 +1618,13 @@ fn samples_for_external_tools() {
     edit(
         &d.session,
         d.id,
-        SettingsPatch {
-            orientation: Some(Orientation::Deg90),
-            ..crop_of(0.0, 0.0, 0.5, 0.5)
-        },
+        crop_of(0.0, 0.0, 0.5, 0.5).and(
+            NodeId::Input,
+            NodePatch {
+                orientation: Some(Orientation::Deg90),
+                ..NodePatch::default()
+            },
+        ),
     );
     let home = tempfile::tempdir().expect("h");
     let ctx = export_context(home.path());

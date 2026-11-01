@@ -456,9 +456,10 @@ fn contact_sheet(
             .and_then(|src| {
                 let mut with_look = src.settings.clone();
                 with_look.look = id.clone();
-                let neutral = DevelopSettings {
-                    look: LookId::builtin("neutral"),
-                    ..src.settings.clone()
+                let neutral = {
+                    let mut s = src.settings.clone();
+                    s.output_mut().look = LookId::builtin("neutral");
+                    s
                 };
                 let left = renderer
                     .thumbnail_png(&src.with_settings(neutral), &cancel)

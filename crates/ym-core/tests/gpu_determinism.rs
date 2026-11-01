@@ -37,6 +37,7 @@ use ym_core::settings::{Crop, CropAspect, NormRect, SettingsPatch};
 use ym_export::{BitDepth, ExportOptions, FormatKind, IfExists, Size, TiffCompression};
 use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
+use ym_core::settings::{NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 
@@ -248,21 +249,31 @@ fn a_then_b_then_a(gpu: &Arc<Gpu>, resident: bool) {
     b.session
         .update_settings(
             b.id,
-            &SettingsPatch {
-                output_sharpening: Some(0.0),
-                crop: Some(Some(Crop {
-                    rect: NormRect {
-                        x: 0.05,
-                        y: 0.05,
-                        width: 0.9,
-                        height: 0.9,
+            &SettingsPatch::default()
+                .and(
+                    NodeId::Input,
+                    NodePatch {
+                        crop: Some(Some(Crop {
+                            rect: NormRect {
+                                x: 0.05,
+                                y: 0.05,
+                                width: 0.9,
+                                height: 0.9,
+                            },
+                            angle_deg: 4.0,
+                            aspect: CropAspect::Free,
+                            auto: false,
+                        })),
+                        ..NodePatch::default()
                     },
-                    angle_deg: 4.0,
-                    aspect: CropAspect::Free,
-                    auto: false,
-                })),
-                ..SettingsPatch::default()
-            },
+                )
+                .and(
+                    NodeId::Output,
+                    NodePatch {
+                        output_sharpening: Some(0.0),
+                        ..NodePatch::default()
+                    },
+                ),
         )
         .expect("settings of B");
     let (pa, pb) = (export_photo_of(&a), export_photo_of(&b));

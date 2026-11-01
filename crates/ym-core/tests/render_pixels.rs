@@ -54,7 +54,7 @@ fn centre(frame: &RenderedFrame) -> [f64; 3] {
 }
 
 fn manual_ev(src: &PhotoSource, ev: f64) -> PhotoSource {
-    edit(src, |s| s.exposure = AutoOr::Manual(ExposureValue { ev }))
+    edit(src, |s| s.input_mut().exposure = AutoOr::Manual(ExposureValue { ev }))
 }
 
 /// The balanced camera value of a neutral field of luminance `level` under `white` (green = 1):
@@ -139,9 +139,9 @@ fn the_highlight_range_moves_the_clipped_highlights_and_nothing_under_the_knee()
     let scene = Scene::new(640, 48, white, Layout::Ramp, level);
     let d = Developed::new(&scene, MODEL);
     let r = Renderer::neutral_only().expect("render thread");
-    let base = edit(&manual_ev(&d.source(), 1.0), |s| s.output_sharpening = 0.0);
+    let base = edit(&manual_ev(&d.source(), 1.0), |s| s.output_mut().output_sharpening = 0.0);
     let render = |highlights: f64, target: FullTarget| {
-        let src = edit(&base, |s| s.rolloff.highlights = highlights);
+        let src = edit(&base, |s| s.input_mut().rolloff.highlights = highlights);
         r.render_full(&src, &FullRequest { target }, &CancelToken::new())
             .expect("render")
     };
@@ -371,7 +371,7 @@ fn exif_orientation_and_the_users_turn_put_every_patch_where_it_belongs() {
                 .write_to(&dir.path().join("DSC00001.ARW"), &scene.mosaic())
                 .expect("write");
             let d = Developed::open(dir);
-            let rot = edit(&d.source(), |s| s.orientation = orientation);
+            let rot = edit(&d.source(), |s| s.input_mut().orientation = orientation);
             let swapped = (5..=8).contains(&exif) != (turns % 2 == 1);
             let (cw, ch) = if swapped {
                 (200.0, 300.0)
@@ -415,7 +415,7 @@ fn straightening_rotates_about_the_centre_and_leaves_the_corners_empty() {
     let tilted = render(
         &r,
         &edit(&src, |s| {
-            s.crop = Some(Crop {
+            s.input_mut().crop = Some(Crop {
                 rect: NormRect::FULL,
                 angle_deg: 12.0,
                 aspect: CropAspect::Original,
@@ -455,7 +455,7 @@ fn a_crop_renders_exactly_the_pixels_of_that_part_of_the_photo_at_100_percent() 
     let src = d.source();
     // A crop of the middle half of the photo, viewed in a cell the size of the crop.
     let cropped = edit(&src, |s| {
-        s.crop = Some(Crop {
+        s.input_mut().crop = Some(Crop {
             rect: NormRect {
                 x: 0.25,
                 y: 0.25,
@@ -576,7 +576,7 @@ fn vignetting_is_corrected_when_the_switch_is_on_and_only_then() {
         corner / mid
     };
     let on = ratio(&src);
-    let off = ratio(&edit(&src, |s| s.decode.lens_corrections = false));
+    let off = ratio(&edit(&src, |s| s.input_mut().decode.lens_corrections = false));
     assert!((on - 1.0).abs() < 0.02, "corrected corner/centre {on:.3}");
     assert!(off < 0.975, "uncorrected corner/centre {off:.3}");
     // The 100 % tiles agree with the half-resolution image on the correction too.
@@ -610,7 +610,7 @@ fn distortion_tables_crop_the_image_and_the_switch_restores_it() {
         (w as f64 / h as f64 - 4.0 / 3.0).abs() < 0.01,
         "aspect kept: {w}x{h}"
     );
-    let off = edit(&src, |s| s.decode.lens_corrections = false);
+    let off = edit(&src, |s| s.input_mut().decode.lens_corrections = false);
     assert_eq!(
         r.final_size(&off, &CancelToken::new()).expect("size"),
         (800, 600)
@@ -785,7 +785,7 @@ fn an_exported_full_render_matches_the_viewport_pixel_for_pixel_at_100_percent()
     let r = Renderer::neutral_only().expect("render thread");
     // With the output sharpening off: the same camera pixels through the same chain. (With it on,
     // the viewport shows the sharpened picture the export writes; `tests/render_sharpen.rs`.)
-    let src = edit(&d.source(), |s| s.output_sharpening = 0.0);
+    let src = edit(&d.source(), |s| s.output_mut().output_sharpening = 0.0);
     let full = r
         .render_full(
             &src,

@@ -102,14 +102,14 @@ fn gpu_and_cpu_frames_agree_within_the_parity_tolerance() {
         (
             "graded",
             edit(&src, |s| {
-                s.contrast = ym_core::settings::PercentSetting::manual_value(30.0);
-                s.brightness = 10.0;
-                s.saturation = ym_core::settings::PercentSetting::manual_value(20.0);
-                s.color_balance.highlights =
+                s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(30.0);
+                s.main_grade_mut().brightness = 10.0;
+                s.main_grade_mut().saturation = ym_core::settings::PercentSetting::manual_value(20.0);
+                s.main_grade_mut().color_balance.highlights =
                     ym_core::settings::BalanceSetting::manual_point([0.4, -0.3]);
-                s.curve.luma = vec![[0.0, 0.0], [0.4, 0.5], [1.0, 1.0]];
-                s.curve.blue = vec![[0.0, 0.05], [1.0, 0.95]];
-                s.crop = Some(ym_core::settings::Crop {
+                s.main_grade_mut().curve.luma = vec![[0.0, 0.0], [0.4, 0.5], [1.0, 1.0]];
+                s.main_grade_mut().curve.blue = vec![[0.0, 0.05], [1.0, 0.95]];
+                s.input_mut().crop = Some(ym_core::settings::Crop {
                     rect: ym_core::settings::NormRect {
                         x: 0.05,
                         y: 0.05,
@@ -369,7 +369,7 @@ fn the_renders_of_a_dng_have_no_capture_sharpening_on_the_device_and_match_the_c
     let Some(gpu) = gpu() else { return };
     let src = scene();
     let off = edit(&src, |s| {
-        s.sharpen = ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
+        s.input_mut().sharpen = ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
             amount: 0.0,
             radius_px: 1.0,
         });
@@ -827,7 +827,7 @@ mod view {
     }
 
     fn with_amount(src: &PhotoSource, pct: f64) -> PhotoSource {
-        edit(src, |s| s.output_sharpening = pct)
+        edit(src, |s| s.output_mut().output_sharpening = pct)
     }
 
     /// The comparison of the golden runner (`tools/golden/src/image.rs`): CIEDE2000 per pixel on a
@@ -899,7 +899,7 @@ mod view {
     }
 
     fn crop_and_straighten(s: &mut DevelopSettings) {
-        s.crop = Some(Crop {
+        s.input_mut().crop = Some(Crop {
             rect: NormRect {
                 x: 0.05,
                 y: 0.08,
@@ -931,13 +931,13 @@ mod view {
                 crop_and_straighten(s);
             }),
             ("rotated", cell(300.0, 200.0, 1.0), |s| {
-                s.orientation = Orientation::Deg90;
+                s.input_mut().orientation = Orientation::Deg90;
             }),
             ("amount 200", cell(300.0, 200.0, 1.0), |s| {
-                s.output_sharpening = 200.0;
+                s.output_mut().output_sharpening = 200.0;
             }),
             ("amount 0", cell(300.0, 200.0, 1.0), |s| {
-                s.output_sharpening = 0.0;
+                s.output_mut().output_sharpening = 0.0;
             }),
             (
                 "magnified",
@@ -990,9 +990,9 @@ mod view {
             // the white lift alongside the range, 1.214e-5 at 100 % on lavapipe against the 1e-5 of
             // every other frame, 4.3e-6 with the lift off.
             let (worst_allowed, over_allowed) = if (worst > CODE_BOUND || over > 1e-5)
-                && src.settings.output_sharpening > 0.0
+                && src.settings.output().output_sharpening > 0.0
             {
-                let unsharpened = edit(&src, |s| s.output_sharpening = 0.0);
+                let unsharpened = edit(&src, |s| s.output_mut().output_sharpening = 0.0);
                 let (bare, bare_over, _) = codes(
                     &frame(&cpu, &unsharpened, &st),
                     &frame(&dev, &unsharpened, &st),
@@ -1168,7 +1168,7 @@ mod view {
         )
         .expect("render thread");
         let look = ym_looks::library::LookId::parse("user:cube").expect("id");
-        let src = edit(&picture(600, 400), |s| s.look = look.clone());
+        let src = edit(&picture(600, 400), |s| s.output_mut().look = look.clone());
         let st = cell(300.0, 200.0, 1.0);
         let c0 = gpu.counters();
         let cold = frame(&r, &src, &st);
@@ -1189,17 +1189,17 @@ mod view {
         let edits: Vec<(&str, Edit)> = vec![
             (
                 "contrast",
-                Box::new(|s| s.contrast = ym_core::settings::PercentSetting::manual_value(30.0)),
+                Box::new(|s| s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(30.0)),
             ),
             (
                 "saturation",
-                Box::new(|s| s.saturation = ym_core::settings::PercentSetting::manual_value(-25.0)),
+                Box::new(|s| s.main_grade_mut().saturation = ym_core::settings::PercentSetting::manual_value(-25.0)),
             ),
             (
                 "curve",
-                Box::new(|s| s.curve.luma = vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]),
+                Box::new(|s| s.main_grade_mut().curve.luma = vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]),
             ),
-            ("look intensity", Box::new(|s| s.look_intensity = 60.0)),
+            ("look intensity", Box::new(|s| s.output_mut().look_intensity = 60.0)),
         ];
         for (name, change) in edits {
             let edited = edit(&src, |s| change(s));
@@ -1573,7 +1573,7 @@ mod view {
         ];
         for (angle, (w, h), bytes) in cases {
             let tilted = edit(&src, |s| {
-                s.crop = Some(Crop {
+                s.input_mut().crop = Some(Crop {
                     rect: NormRect {
                         x: 0.0,
                         y: 0.0,

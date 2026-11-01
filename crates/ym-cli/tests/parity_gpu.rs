@@ -24,6 +24,7 @@ use ym_core::session::{ApplyScope, OpenOptions};
 use ym_core::settings::{LensKind, LensPatch, SettingsPatch};
 use ym_export::{BitDepth, ExportOptions, FormatKind};
 use ym_gpu::device::gpu_required_by_env;
+use ym_core::settings::{NodeId, NodePatch};
 
 /// The tests of this file run one at a time: they share a software rasteriser on a CI runner, and a lens export is
 /// heavy enough to push the others past the device's hang limit when they run beside it (a render that fell back
@@ -376,15 +377,18 @@ fn lens_parity(sb: &Sandbox, data: &Path, name: &str, arw: &Path) -> Option<u64>
         .session
         .update_settings(
             app.photo,
-            &SettingsPatch {
-                lens: Some(LensPatch {
-                    kind: Some(LensKind::Vintage),
-                    flares: Some(60.0),
-                    edges: Some(50.0),
-                    anamorphic: Some(50.0),
-                }),
-                ..SettingsPatch::default()
-            },
+            &SettingsPatch::default().and(
+                NodeId::Input,
+                NodePatch {
+                    lens: Some(LensPatch {
+                        kind: Some(LensKind::Vintage),
+                        flares: Some(60.0),
+                        edges: Some(50.0),
+                        anamorphic: Some(50.0),
+                    }),
+                    ..NodePatch::default()
+                },
+            ),
         )
         .expect("patch");
     let flags = [

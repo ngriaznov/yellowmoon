@@ -288,10 +288,10 @@ impl PhotoSource {
     #[must_use]
     pub fn for_before_view(&self) -> Self {
         let mut settings = self.settings.clone();
-        settings.noise_reduction = AutoOr::Auto;
-        settings.sharpen = AutoOr::Auto;
+        settings.input_mut().noise_reduction = AutoOr::Auto;
+        settings.input_mut().sharpen = AutoOr::Auto;
         // The camera default has no lens effect at all (`docs/21` section 1).
-        settings.lens = LensSettings::default();
+        settings.input_mut().lens = LensSettings::default();
         Self {
             before_view: true,
             ..self.with_settings(settings)
@@ -308,7 +308,7 @@ impl PhotoSource {
     #[must_use]
     pub fn picked_white(&self) -> Option<Vec3> {
         self.pick
-            .filter(|p| Some(p.point) == self.settings.white_pick)
+            .filter(|p| Some(p.point) == self.settings.input().white_pick)
             .map(|p| p.sample)
     }
 }
@@ -336,12 +336,12 @@ pub fn color_key(src: &PhotoSource) -> ColorKey {
         k,
         "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         src.estimates.color,
-        s.light_source,
-        s.white_balance,
-        s.exposure,
-        s.white_pick,
+        s.input().light_source,
+        s.input().white_balance,
+        s.input().exposure,
+        s.input().white_pick,
         src.picked_white(),
-        s.rolloff,
+        s.input().rolloff,
         (src.estimates.noise.model, src.profile.id.to_string()),
     );
     ColorKey(k)
@@ -413,7 +413,7 @@ pub fn color_plan(src: &PhotoSource) -> Result<ColorPlan, RenderError> {
         })
         .sum::<f64>()
         / 3.0;
-    let r = &src.settings.rolloff;
+    let r = &src.settings.input().rolloff;
     let tone = ToneParams::new(r.highlights, r.low_light, fused.clip().luma(), floor)
         .map_err(|e| RenderError::Color(e.to_string()))?;
     Ok(ColorPlan {
@@ -435,26 +435,31 @@ pub fn color_plan(src: &PhotoSource) -> Result<ColorPlan, RenderError> {
 pub fn grade_params(s: &DevelopSettings, estimates: &AutoEstimates) -> GradeParams {
     let b = |p: [f64; 2]| ColorBalance { a: p[0], b: p[1] };
     GradeParams {
-        contrast: s.contrast.resolve(estimates.contrast),
-        brightness: s.brightness,
-        shadows: s.shadows.resolve(estimates.shadows),
-        highlights: s.highlights.resolve(estimates.highlights),
-        black: s.black.resolve(estimates.black),
-        white: s.white,
-        balance_shadows: b(s.color_balance.shadows.resolve(estimates.balance_shadows)),
-        balance_midtones: b(s.color_balance.midtones),
+        contrast: s.main_grade().contrast.resolve(estimates.contrast),
+        brightness: s.main_grade().brightness,
+        shadows: s.main_grade().shadows.resolve(estimates.shadows),
+        highlights: s.main_grade().highlights.resolve(estimates.highlights),
+        black: s.main_grade().black.resolve(estimates.black),
+        white: s.main_grade().white,
+        balance_shadows: b(s
+            .main_grade()
+            .color_balance
+            .shadows
+            .resolve(estimates.balance_shadows)),
+        balance_midtones: b(s.main_grade().color_balance.midtones),
         balance_highlights: b(s
+            .main_grade()
             .color_balance
             .highlights
             .resolve(estimates.balance_highlights)),
-        saturation: s.saturation.resolve(estimates.saturation),
+        saturation: s.main_grade().saturation.resolve(estimates.saturation),
     }
 }
 
 /// The colour warp's pins as `ym_color`'s parameters (stage C9b). No pins is the identity.
 #[must_use]
 pub fn warp_params(s: &DevelopSettings) -> WarpParams {
-    s.color_warp.to_color()
+    s.main_grade().color_warp.to_color()
 }
 
 fn curve_of(points: &[CurvePoint]) -> Result<Curve, RenderError> {
@@ -470,10 +475,10 @@ fn curve_of(points: &[CurvePoint]) -> Result<Curve, RenderError> {
 /// these earlier).
 pub fn curve_set(s: &DevelopSettings) -> Result<CurveSet, RenderError> {
     Ok(CurveSet {
-        luma: curve_of(&s.curve.luma)?,
-        r: curve_of(&s.curve.red)?,
-        g: curve_of(&s.curve.green)?,
-        b: curve_of(&s.curve.blue)?,
+        luma: curve_of(&s.main_grade().curve.luma)?,
+        r: curve_of(&s.main_grade().curve.red)?,
+        g: curve_of(&s.main_grade().curve.green)?,
+        b: curve_of(&s.main_grade().curve.blue)?,
     })
 }
 
@@ -507,7 +512,7 @@ struct Pieces {
 
 fn pieces(src: &PhotoSource, req: &GradeRequest<'_>) -> Pieces {
     let mut warnings = Vec::new();
-    let look = match req.looks.look(&src.settings.look) {
+    let look = match req.looks.look(&src.settings.output().look) {
         Ok(l) => Some(l),
         Err(e) => {
             warnings.push(e.to_string());
@@ -529,11 +534,11 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
         // acts, a pin whose target is its source and that changes neither exposure nor saturation)
         // leave the key, and the frame, as without them.
         Warp::new(&warp_params(s)),
-        s.curve,
+        s.main_grade().curve,
         req.target,
         req.dither,
-        s.look_intensity,
-        s.look,
+        s.output().look_intensity,
+        s.output().look,
         // The Before view's parameters: the as-shot white balance and the body's matrix (never a
         // setting), so that a frame of the Before view is not served for another body or white.
         color.camera_default,
@@ -574,7 +579,7 @@ pub fn grade_plan(
     params.before = BeforePoint::CameraDefault;
     params.camera_default = color.camera_default;
     if let Some(look) = p.look {
-        params.look = Some(LookSetting::new(look.transform, s.look_intensity));
+        params.look = Some(LookSetting::new(look.transform, s.output().look_intensity));
     }
     let chain = ColorChain::new(&params).map_err(|e| RenderError::Color(e.to_string()))?;
     Ok(GradePlan {
@@ -588,7 +593,7 @@ pub fn grade_plan(
 #[must_use]
 pub fn with_look(settings: &DevelopSettings, look: &LookId) -> DevelopSettings {
     let mut s = settings.clone();
-    s.look = look.clone();
-    s.look_intensity = 100.0;
+    s.output_mut().look = look.clone();
+    s.output_mut().look_intensity = 100.0;
     s
 }

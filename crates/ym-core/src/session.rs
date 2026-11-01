@@ -2076,7 +2076,7 @@ impl PhotoView {
     #[must_use]
     pub fn picked_white(&self) -> Option<Vec3> {
         self.pick
-            .filter(|p| Some(p.point) == self.settings.white_pick)
+            .filter(|p| Some(p.point) == self.settings.input().white_pick)
             .map(|p| p.sample)
     }
 
@@ -2782,7 +2782,7 @@ impl Session {
     ) -> Result<Option<ResolvedSettings>, SessionError> {
         let id = view.id;
         let mut pick = view.pick;
-        match next.white_pick {
+        match next.input().white_pick {
             None => pick = None,
             Some(point) => {
                 if pick.map(|p| p.point) != Some(point) {
@@ -2812,7 +2812,7 @@ impl Session {
             }
         }
         let picked_white = pick
-            .filter(|p| Some(p.point) == next.white_pick)
+            .filter(|p| Some(p.point) == next.input().white_pick)
             .map(|p| p.sample);
         let resolved =
             ResolvedSettings::resolve(id, &next, &view.estimates, &view.profile, picked_white)?;
@@ -2847,7 +2847,7 @@ impl Session {
         intensity: f64,
     ) -> Result<Vec<PhotoId>, SessionError> {
         if !intensity.is_finite() {
-            return Err(SettingsError::NotFinite("look_intensity").into());
+            return Err(SettingsError::NotFinite("look_intensity".to_owned()).into());
         }
         let intensity = intensity.clamp(
             crate::settings::LOOK_INTENSITY_RANGE.0,
@@ -2859,9 +2859,9 @@ impl Session {
         for id in ids {
             if let Some(&i) = st.index.get(&id) {
                 let s = &mut st.photos[i].settings;
-                if s.look != *look || s.look_intensity != intensity {
-                    s.look = look.clone();
-                    s.look_intensity = intensity;
+                if s.output().look != *look || s.output().look_intensity != intensity {
+                    s.output_mut().look = look.clone();
+                    s.output_mut().look_intensity = intensity;
                     changed.push(id);
                 }
             }
@@ -2902,15 +2902,10 @@ impl Session {
         ids: &[PhotoId],
         patch: &SettingsPatch,
     ) -> Result<PasteReport, SessionError> {
-        let mut patch = patch.clone();
-        patch.crop = None;
-        patch.orientation = None;
-        patch.white_pick = None;
         let mut st = lock(&self.inner.state);
         let mut report = PasteReport::default();
         let mut seen = HashSet::new();
-        let mut apply: Vec<(usize, DevelopSettings, Vec<crate::settings::SettingsField>)> =
-            Vec::new();
+        let mut apply: Vec<(usize, DevelopSettings)> = Vec::new();
         for &id in ids {
             if !seen.insert(id) {
                 continue;
@@ -2927,16 +2922,19 @@ impl Session {
                 report.skipped.push(id);
                 continue;
             };
+            // The graph the patch carries replaces the photo's own; the Input's crop, orientation
+            // and white pick are never touched (`SettingsPatch::pasted_onto`).
             let mut next = st.photos[i].settings.clone();
-            let done = next.apply_patch(&patch, None)?;
-            apply.push((i, next, done.changed));
+            let for_photo = patch.pasted_onto(&next);
+            next.apply_patch(&for_photo, None)?;
+            apply.push((i, next));
         }
-        for (i, next, changed) in apply {
+        for (i, next) in apply {
             let p = &mut st.photos[i];
             report.pasted.push(PastedPhoto {
                 id: p.id,
-                before: SettingsPatch::of_fields(&p.settings, &changed),
-                after: SettingsPatch::of_fields(&next, &changed),
+                before: SettingsPatch::between(&next, &p.settings),
+                after: SettingsPatch::between(&p.settings, &next),
             });
             p.settings = next;
         }

@@ -24,6 +24,7 @@ use ym_core::settings::{
     SettingsField, SettingsPatch, SharpenValue, StageGroup,
 };
 use ym_looks::library::LookId;
+use ym_core::settings::{GradePatch, NodeId, NodePatch};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -45,26 +46,26 @@ fn norm(v: Value) -> Value {
 
 fn rich() -> DevelopSettings {
     let mut s = DevelopSettings::with_look(LookId::parse("arri:3000:film-warm").unwrap());
-    s.look_intensity = 62.5;
-    s.exposure = AutoOr::Manual(ym_core::settings::ExposureValue { ev: -1.25 });
-    s.contrast = ym_core::settings::PercentSetting::manual_value(12.0);
-    s.brightness = -7.5;
-    s.highlights = ym_core::settings::PercentSetting::manual_value(-30.0);
-    s.shadows = ym_core::settings::PercentSetting::manual_value(25.0);
-    s.white = 4.0;
-    s.black = ym_core::settings::PercentSetting::manual_value(-9.0);
-    s.light_source = LightSource::Tungsten;
-    s.white_balance = AutoOr::Manual(ym_core::settings::WhiteBalanceValue {
+    s.output_mut().look_intensity = 62.5;
+    s.input_mut().exposure = AutoOr::Manual(ym_core::settings::ExposureValue { ev: -1.25 });
+    s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(12.0);
+    s.main_grade_mut().brightness = -7.5;
+    s.main_grade_mut().highlights = ym_core::settings::PercentSetting::manual_value(-30.0);
+    s.main_grade_mut().shadows = ym_core::settings::PercentSetting::manual_value(25.0);
+    s.main_grade_mut().white = 4.0;
+    s.main_grade_mut().black = ym_core::settings::PercentSetting::manual_value(-9.0);
+    s.input_mut().light_source = LightSource::Tungsten;
+    s.input_mut().white_balance = AutoOr::Manual(ym_core::settings::WhiteBalanceValue {
         kelvin: 3250.0,
         tint: -4.5,
     });
-    s.color_balance = ColorBalance {
+    s.main_grade_mut().color_balance = ColorBalance {
         shadows: ym_core::settings::BalanceSetting::manual_point([0.2, -0.3]),
         midtones: [0.0, 0.0],
         highlights: ym_core::settings::BalanceSetting::manual_point([-0.5, 0.5]),
     };
-    s.saturation = ym_core::settings::PercentSetting::manual_value(15.0);
-    s.color_warp = ColorWarp {
+    s.main_grade_mut().saturation = ym_core::settings::PercentSetting::manual_value(15.0);
+    s.main_grade_mut().color_warp = ColorWarp {
         pins: vec![
             ColorWarpPin {
                 source: [0.12, 0.03],
@@ -80,35 +81,35 @@ fn rich() -> DevelopSettings {
             ColorWarpPin::from(WarpPin::locked_at([-0.05, -0.1])),
         ],
     };
-    s.lens = LensSettings {
+    s.input_mut().lens = LensSettings {
         kind: LensKind::Vintage,
         flares: 60.0,
         edges: 45.0,
         anamorphic: 30.0,
     };
-    s.sharpen = AutoOr::Manual(SharpenValue {
+    s.input_mut().sharpen = AutoOr::Manual(SharpenValue {
         amount: 150.0,
         radius_px: 1.1,
     });
-    s.output_sharpening = 140.0;
-    s.noise_reduction = AutoOr::Manual(NoiseReductionValue {
+    s.output_mut().output_sharpening = 140.0;
+    s.input_mut().noise_reduction = AutoOr::Manual(NoiseReductionValue {
         luminance: 35.0,
         color: 60.0,
         detail: 20.0,
     });
-    s.curve = Curves {
+    s.main_grade_mut().curve = Curves {
         luma: vec![[0.0, 0.0], [0.25, 0.2], [0.75, 0.82], [1.0, 1.0]],
         red: vec![[0.0, 0.02], [1.0, 1.0]],
         green: vec![[0.0, 0.0], [1.0, 1.0]],
         blue: vec![[0.0, 0.0], [0.5, 0.45], [1.0, 0.98]],
     };
-    s.decode.neural_demosaic = false;
-    s.decode.chromatic_aberration = false;
-    s.rolloff = Rolloff {
+    s.input_mut().decode.neural_demosaic = false;
+    s.input_mut().decode.chromatic_aberration = false;
+    s.input_mut().rolloff = Rolloff {
         highlights: 0.8,
         low_light: 0.1,
     };
-    s.crop = Some(Crop {
+    s.input_mut().crop = Some(Crop {
         rect: NormRect {
             x: 0.1,
             y: 0.2,
@@ -120,8 +121,8 @@ fn rich() -> DevelopSettings {
         // On, so the JSON carries the field (`false` is left out).
         auto: true,
     });
-    s.orientation = Orientation::Deg90;
-    s.white_pick = Some([0.25, 0.75]);
+    s.input_mut().orientation = Orientation::Deg90;
+    s.input_mut().white_pick = Some([0.25, 0.75]);
     s
 }
 
@@ -228,30 +229,30 @@ fn the_rust_types_have_the_fields_of_the_typescript_interfaces() {
     check("DevelopSettings", serde_json::to_value(&settings).unwrap());
     check(
         "ColorBalance",
-        serde_json::to_value(settings.color_balance).unwrap(),
+        serde_json::to_value(settings.main_grade().color_balance).unwrap(),
     );
     check(
         "ColorWarp",
-        serde_json::to_value(&settings.color_warp).unwrap(),
+        serde_json::to_value(&settings.main_grade().color_warp).unwrap(),
     );
     check(
         "ColorWarpPin",
-        serde_json::to_value(settings.color_warp.pins[0]).unwrap(),
+        serde_json::to_value(settings.main_grade().color_warp.pins[0]).unwrap(),
     );
-    check("LensSettings", serde_json::to_value(settings.lens).unwrap());
-    check("Curves", serde_json::to_value(&settings.curve).unwrap());
+    check("LensSettings", serde_json::to_value(settings.input().lens).unwrap());
+    check("Curves", serde_json::to_value(&settings.main_grade().curve).unwrap());
     check(
         "DecodeOptions",
-        serde_json::to_value(settings.decode).unwrap(),
+        serde_json::to_value(settings.input().decode).unwrap(),
     );
-    check("Rolloff", serde_json::to_value(settings.rolloff).unwrap());
+    check("Rolloff", serde_json::to_value(settings.input().rolloff).unwrap());
     check(
         "Crop",
-        serde_json::to_value(settings.crop.unwrap()).unwrap(),
+        serde_json::to_value(settings.input().crop.unwrap()).unwrap(),
     );
     check(
         "NormRect",
-        serde_json::to_value(settings.crop.unwrap().rect).unwrap(),
+        serde_json::to_value(settings.input().crop.unwrap().rect).unwrap(),
     );
     let summary = PhotoSummary {
         id: PhotoId(1),
@@ -479,10 +480,10 @@ fn unknown_fields_and_malformed_values_are_refused() {
     let partial: DevelopSettings =
         serde_json::from_str(r#"{"contrast": 10, "decode": {"lens_corrections": false}}"#).unwrap();
     assert_eq!(
-        partial.contrast,
+        partial.main_grade().contrast,
         ym_core::settings::PercentSetting::manual_value(10.0)
     );
-    assert!(!partial.decode.lens_corrections && partial.decode.neural_demosaic);
+    assert!(!partial.input().decode.lens_corrections && partial.input().decode.neural_demosaic);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -524,7 +525,7 @@ fn what_the_core_writes_validates_against_the_schema() {
         LightSource::Fluorescent,
     ] {
         let mut s = rich();
-        s.light_source = light_source;
+        s.input_mut().light_source = light_source;
         let doc = serde_json::to_value(&s).unwrap();
         assert!(problems(&v, &doc).is_empty(), "{light_source:?}");
     }
@@ -536,7 +537,7 @@ fn what_the_core_writes_validates_against_the_schema() {
         CropAspect::SixteenByNine,
     ] {
         let mut s = rich();
-        s.crop.as_mut().unwrap().aspect = aspect;
+        s.input_mut().crop.as_mut().unwrap().aspect = aspect;
         assert!(
             problems(&v, &serde_json::to_value(&s).unwrap()).is_empty(),
             "{aspect:?}"
@@ -549,7 +550,7 @@ fn what_the_core_writes_validates_against_the_schema() {
         Orientation::Deg270,
     ] {
         let mut s = rich();
-        s.orientation = o;
+        s.input_mut().orientation = o;
         assert!(
             problems(&v, &serde_json::to_value(&s).unwrap()).is_empty(),
             "{o:?}"
@@ -860,13 +861,13 @@ fn the_schema_ranges_are_the_ranges_the_core_clamps_to() {
 #[test]
 fn the_highlight_range_defaults_to_0_6_and_an_explicit_value_is_kept() {
     assert_eq!(ym_core::settings::ROLLOFF_HIGHLIGHTS_DEFAULT, 0.6);
-    assert_eq!(DevelopSettings::default().rolloff.highlights, 0.6);
+    assert_eq!(DevelopSettings::default().input().rolloff.highlights, 0.6);
     let neutral = LookId::builtin("neutral");
     let read = |text: &str| {
         DevelopSettings::from_json(text, &neutral)
             .expect("reads")
             .0
-            .rolloff
+            .input().rolloff
     };
     // Absent: the new default, with the toe at its own.
     assert_eq!(
@@ -898,10 +899,10 @@ fn the_highlight_range_defaults_to_0_6_and_an_explicit_value_is_kept() {
     );
     // A patch that leaves the field out does not move it, and the Reset patch sends the new default.
     let mut s = DevelopSettings::default();
-    s.rolloff.highlights = 1.0;
+    s.input_mut().rolloff.highlights = 1.0;
     apply(&mut s, parse_patch(r#"{"rolloff": {"low_light": 0.9}}"#));
     assert_eq!(
-        s.rolloff,
+        s.input().rolloff,
         Rolloff {
             highlights: 1.0,
             low_light: 0.9
@@ -938,7 +939,7 @@ fn moving_a_slider_sends_a_manual_value_and_reset_sends_auto() {
     let mut s = DevelopSettings::default();
     let report = apply(&mut s, SettingsPatch::exposure_ev(0.3));
     assert_eq!(
-        s.exposure,
+        s.input().exposure,
         ym_core::settings::ExposureSetting::manual_ev(0.3)
     );
     assert_eq!(report.changed, vec![SettingsField::Exposure]);
@@ -954,7 +955,7 @@ fn moving_a_slider_sends_a_manual_value_and_reset_sends_auto() {
         &mut s,
         SettingsPatch::reset(SettingsField::Exposure, &LookId::builtin("neutral")),
     );
-    assert!(s.exposure.is_auto());
+    assert!(s.input().exposure.is_auto());
 }
 
 #[test]
@@ -971,37 +972,37 @@ fn values_out_of_range_are_clamped_and_reported() {
         ),
     );
     assert_eq!(
-        s.exposure,
+        s.input().exposure,
         ym_core::settings::ExposureSetting::manual_ev(4.0)
     );
     assert_eq!(
-        s.contrast,
+        s.main_grade().contrast,
         ym_core::settings::PercentSetting::manual_value(-100.0)
     );
-    assert_eq!(s.look_intensity, 100.0);
+    assert_eq!(s.output().look_intensity, 100.0);
     assert_eq!(
-        s.rolloff,
+        s.input().rolloff,
         Rolloff {
             highlights: 1.0,
             low_light: 0.0
         }
     );
     assert_eq!(
-        s.white_balance,
+        s.input().white_balance,
         AutoOr::Manual(ym_core::settings::WhiteBalanceValue {
             kelvin: 11000.0,
             tint: -50.0
         })
     );
     assert_eq!(
-        s.sharpen,
+        s.input().sharpen,
         AutoOr::Manual(SharpenValue {
             amount: 300.0,
             radius_px: 0.3
         })
     );
     assert_eq!(
-        s.noise_reduction,
+        s.input().noise_reduction,
         AutoOr::Manual(NoiseReductionValue {
             luminance: 100.0,
             color: 0.0,
@@ -1029,11 +1030,17 @@ fn a_patch_that_cannot_be_applied_changes_nothing() {
     let mut s = rich();
     let before = s.clone();
     // A valid change next to a value that is not a number.
-    let patch = SettingsPatch {
-        contrast: Some(ym_core::settings::PercentSetting::manual_value(10.0)),
-        saturation: Some(ym_core::settings::PercentSetting::manual_value(f64::NAN)),
-        ..SettingsPatch::default()
-    };
+    let patch = SettingsPatch::default().and(
+        NodeId::MAIN,
+        NodePatch {
+            grade: Some(GradePatch {
+                contrast: Some(ym_core::settings::PercentSetting::manual_value(10.0)),
+                saturation: Some(ym_core::settings::PercentSetting::manual_value(f64::NAN)),
+                ..GradePatch::default()
+            }),
+            ..NodePatch::default()
+        },
+    );
     let err = s.apply_patch(&patch, None).unwrap_err();
     assert_eq!(err, SettingsError::NotFinite("saturation"));
     assert_eq!(s, before, "atomic: contrast must not have changed");
@@ -1045,16 +1052,22 @@ fn a_patch_that_cannot_be_applied_changes_nothing() {
         ("NaN exposure", SettingsPatch::exposure_ev(f64::NAN)),
         (
             "NaN colour balance",
-            SettingsPatch {
-                color_balance: Some(ym_core::settings::ColorBalancePatch {
-                    shadows: Some(ym_core::settings::BalanceSetting::manual_point([
-                        f64::NAN,
-                        0.0,
-                    ])),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
+            SettingsPatch::default().and(
+                NodeId::MAIN,
+                NodePatch {
+                    grade: Some(GradePatch {
+                        color_balance: Some(ym_core::settings::ColorBalancePatch {
+                            shadows: Some(ym_core::settings::BalanceSetting::manual_point([
+                                f64::NAN,
+                                0.0,
+                            ])),
+                            ..Default::default()
+                        }),
+                        ..GradePatch::default()
+                    }),
+                    ..NodePatch::default()
+                },
+            ),
         ),
     ] {
         assert!(s.apply_patch(&patch, None).is_err(), "{label}");
@@ -1070,11 +1083,11 @@ fn color_balance_points_are_scaled_back_into_the_unit_disc() {
         parse_patch(r#"{"color_balance": {"shadows": [3, 4], "highlights": [0.6, 0.8]}}"#),
     );
     let point = |w: &ym_core::settings::BalanceSetting| w.manual().expect("manual").point;
-    assert!((point(&s.color_balance.shadows)[0] - 0.6).abs() < 1e-12);
-    assert!((point(&s.color_balance.shadows)[1] - 0.8).abs() < 1e-12);
+    assert!((point(&s.main_grade().color_balance.shadows)[0] - 0.6).abs() < 1e-12);
+    assert!((point(&s.main_grade().color_balance.shadows)[1] - 0.8).abs() < 1e-12);
     // Exactly on the circle stays as it is; the untouched wheel stays zero.
-    assert_eq!(point(&s.color_balance.highlights), [0.6, 0.8]);
-    assert_eq!(s.color_balance.midtones, [0.0, 0.0]);
+    assert_eq!(point(&s.main_grade().color_balance.highlights), [0.6, 0.8]);
+    assert_eq!(s.main_grade().color_balance.midtones, [0.0, 0.0]);
     assert!(report.clamped.contains(&SettingsField::ColorBalance));
 }
 
@@ -1087,25 +1100,33 @@ fn curves_are_checked_and_sorted() {
         parse_patch(r#"{"curve": {"luma": [[1, 1], [0.5, 0.4], [0, 0], [0.7, 1.4]]}}"#),
     );
     assert_eq!(
-        s.curve.luma,
+        s.main_grade().curve.luma,
         vec![[0.0, 0.0], [0.5, 0.4], [0.7, 1.0], [1.0, 1.0]]
     );
     assert!(report.changed.contains(&SettingsField::Curve));
     assert!(report.clamped.contains(&SettingsField::Curve));
     // The other channels were not named and are untouched.
-    assert_eq!(s.curve.red, vec![[0.0, 0.0], [1.0, 1.0]]);
+    assert_eq!(s.main_grade().curve.red, vec![[0.0, 0.0], [1.0, 1.0]]);
     // Up to 16 points; 17 is refused; fewer than 2 and duplicates are refused.
     let points = |n: usize| -> Vec<[f64; 2]> {
         (0..n)
             .map(|i| [i as f64 / (n - 1) as f64, i as f64 / (n - 1) as f64])
             .collect()
     };
-    let with = |p: Vec<[f64; 2]>| SettingsPatch {
-        curve: Some(ym_core::settings::CurvesPatch {
-            green: Some(p),
-            ..Default::default()
-        }),
-        ..Default::default()
+    let with = |p: Vec<[f64; 2]>| {
+        SettingsPatch::default().and(
+            NodeId::MAIN,
+            NodePatch {
+                grade: Some(GradePatch {
+                    curve: Some(ym_core::settings::CurvesPatch {
+                        green: Some(p),
+                        ..Default::default()
+                    }),
+                    ..GradePatch::default()
+                }),
+                ..NodePatch::default()
+            },
+        )
     };
     assert!(s.apply_patch(&with(points(16)), None).is_ok());
     let before = s.clone();
@@ -1128,10 +1149,10 @@ fn crop_and_white_pick_distinguish_absent_from_null() {
     let mut s = rich();
     // Absent: untouched.
     apply(&mut s, parse_patch(r#"{"contrast": 1}"#));
-    assert!(s.crop.is_some() && s.white_pick.is_some());
+    assert!(s.input().crop.is_some() && s.input().white_pick.is_some());
     // null clears.
     let report = apply(&mut s, parse_patch(r#"{"crop": null, "white_pick": null}"#));
-    assert!(s.crop.is_none() && s.white_pick.is_none());
+    assert!(s.input().crop.is_none() && s.input().white_pick.is_none());
     assert!(report.changed.contains(&SettingsField::Crop));
     assert!(report.changed.contains(&SettingsField::WhitePick));
     // A value sets.
@@ -1142,7 +1163,7 @@ fn crop_and_white_pick_distinguish_absent_from_null() {
                           "angle_deg": 80, "aspect": "free"}}"#,
         ),
     );
-    let crop = s.crop.unwrap();
+    let crop = s.input().crop.unwrap();
     // The rectangle is moved and shrunk to fit the photo, the angle clamped.
     assert!((crop.rect.x - 0.5).abs() < 1e-12 && (crop.rect.width - 0.5).abs() < 1e-12);
     assert_eq!((crop.rect.y, crop.rect.height), (0.0, 1.0));
@@ -1169,10 +1190,10 @@ fn nested_objects_may_carry_only_the_parts_to_change() {
         &mut s,
         parse_patch(r#"{"decode": {"neural_demosaic": false}}"#),
     );
-    assert!(!s.decode.neural_demosaic && s.decode.highlight_recovery);
+    assert!(!s.input().decode.neural_demosaic && s.input().decode.highlight_recovery);
     apply(&mut s, parse_patch(r#"{"rolloff": {"low_light": 0.9}}"#));
     assert_eq!(
-        s.rolloff,
+        s.input().rolloff,
         Rolloff {
             highlights: 0.6,
             low_light: 0.9
@@ -1186,7 +1207,7 @@ fn nested_objects_may_carry_only_the_parts_to_change() {
                            "lens_corrections": true, "chromatic_aberration": true}}"#,
         ),
     );
-    assert!(s.decode.neural_demosaic && !s.decode.highlight_recovery);
+    assert!(s.input().decode.neural_demosaic && !s.input().decode.highlight_recovery);
     let report = apply(
         &mut s,
         parse_patch(r#"{"decode": {"lens_corrections": false}}"#),
@@ -1215,7 +1236,7 @@ fn a_manual_value_with_parts_left_out_keeps_the_rest_of_what_the_panel_shows() {
     s.apply_patch(&SettingsPatch::kelvin(4200.0), Some(&seeds))
         .unwrap();
     assert_eq!(
-        s.white_balance,
+        s.input().white_balance,
         AutoOr::Manual(ym_core::settings::WhiteBalanceValue {
             kelvin: 4200.0,
             tint: 3.0
@@ -1228,7 +1249,7 @@ fn a_manual_value_with_parts_left_out_keeps_the_rest_of_what_the_panel_shows() {
     )
     .unwrap();
     assert_eq!(
-        s.white_balance,
+        s.input().white_balance,
         AutoOr::Manual(ym_core::settings::WhiteBalanceValue {
             kelvin: 4200.0,
             tint: -8.0
@@ -1241,7 +1262,7 @@ fn a_manual_value_with_parts_left_out_keeps_the_rest_of_what_the_panel_shows() {
     )
     .unwrap();
     assert_eq!(
-        s.sharpen,
+        s.input().sharpen,
         AutoOr::Manual(SharpenValue {
             amount: 200.0,
             radius_px: 0.8
@@ -1253,7 +1274,7 @@ fn a_manual_value_with_parts_left_out_keeps_the_rest_of_what_the_panel_shows() {
     )
     .unwrap();
     assert_eq!(
-        s.noise_reduction,
+        s.input().noise_reduction,
         AutoOr::Manual(NoiseReductionValue {
             luminance: 30.0,
             color: 10.0,
@@ -1277,15 +1298,15 @@ fn a_manual_value_with_parts_left_out_keeps_the_rest_of_what_the_panel_shows() {
 #[test]
 fn a_white_pick_resets_the_white_balance_unless_the_patch_says_otherwise() {
     let mut s = DevelopSettings::default();
-    s.light_source = LightSource::Shade;
-    s.white_balance = AutoOr::Manual(ym_core::settings::WhiteBalanceValue {
+    s.input().light_source = LightSource::Shade;
+    s.input().white_balance = AutoOr::Manual(ym_core::settings::WhiteBalanceValue {
         kelvin: 4000.0,
         tint: 2.0,
     });
     let report = apply(&mut s, parse_patch(r#"{"white_pick": [2, -1]}"#));
-    assert_eq!(s.white_pick, Some([1.0, 0.0]), "clamped into the photo");
-    assert_eq!(s.light_source, LightSource::Auto);
-    assert!(s.white_balance.is_auto());
+    assert_eq!(s.input().white_pick, Some([1.0, 0.0]), "clamped into the photo");
+    assert_eq!(s.input().light_source, LightSource::Auto);
+    assert!(s.input().white_balance.is_auto());
     for f in [
         SettingsField::WhitePick,
         SettingsField::LightSource,
@@ -1299,23 +1320,23 @@ fn a_white_pick_resets_the_white_balance_unless_the_patch_says_otherwise() {
         &mut s,
         parse_patch(r#"{"white_pick": [0.5, 0.5], "light_source": "led"}"#),
     );
-    assert_eq!(s.light_source, LightSource::Led);
+    assert_eq!(s.input().light_source, LightSource::Led);
     // Clearing the pick leaves the white balance alone.
-    s.white_balance = AutoOr::Manual(ym_core::settings::WhiteBalanceValue {
+    s.input().white_balance = AutoOr::Manual(ym_core::settings::WhiteBalanceValue {
         kelvin: 4000.0,
         tint: 2.0,
     });
     apply(&mut s, parse_patch(r#"{"white_pick": null}"#));
-    assert!(!s.white_balance.is_auto());
+    assert!(!s.input().white_balance.is_auto());
 }
 
 #[test]
 fn orientation_patches_normalise_quarter_turns() {
     let mut s = DevelopSettings::default();
     apply(&mut s, parse_patch(r#"{"orientation": -90}"#));
-    assert_eq!(s.orientation, Orientation::Deg270);
+    assert_eq!(s.input().orientation, Orientation::Deg270);
     apply(&mut s, parse_patch(r#"{"orientation": 450}"#));
-    assert_eq!(s.orientation, Orientation::Deg90);
+    assert_eq!(s.input().orientation, Orientation::Deg90);
     assert!(serde_json::from_str::<SettingsPatch>(r#"{"orientation": 45}"#).is_err());
     let report = apply(&mut s, parse_patch(r#"{"orientation": 180}"#));
     assert_eq!(report.first_group(), Some(StageGroup::Geometry));
@@ -1345,8 +1366,8 @@ fn the_frontends_patches_deserialise_and_apply() {
         s.apply_patch(&patch, None)
             .unwrap_or_else(|e| panic!("{text}: {e}"));
     }
-    assert_eq!(s.look.as_str(), "builtin:signature");
-    assert_eq!(s.crop.unwrap().aspect, CropAspect::SixteenByNine);
+    assert_eq!(s.output().look.as_str(), "builtin:signature");
+    assert_eq!(s.input().crop.unwrap().aspect, CropAspect::SixteenByNine);
 }
 
 #[test]
@@ -1376,43 +1397,43 @@ fn reset_restores_every_field_to_its_default() {
     // Re-run resets exposure, white balance (with preset and pick) and noise reduction only.
     let mut s = rich();
     s.reset_automatic(false);
-    assert!(s.exposure.is_auto() && s.white_balance.is_auto() && s.noise_reduction.is_auto());
-    assert_eq!(s.light_source, LightSource::Auto);
-    assert!(s.white_pick.is_none());
+    assert!(s.input().exposure.is_auto() && s.input().white_balance.is_auto() && s.input().noise_reduction.is_auto());
+    assert_eq!(s.input().light_source, LightSource::Auto);
+    assert!(s.input().white_pick.is_none());
     assert_eq!(
-        s.rolloff,
-        rich().rolloff,
+        s.input().rolloff,
+        rich().input().rolloff,
         "the highlight range is not part of Re-run"
     );
-    assert!(!s.sharpen.is_auto(), "sharpening is not part of Re-run");
+    assert!(!s.input().sharpen.is_auto(), "sharpening is not part of Re-run");
     // Without Apple Auto acting on the photo, contrast and saturation are not part of Re-run.
-    assert_eq!(s.contrast, rich().contrast);
-    assert_eq!(s.saturation, rich().saturation);
-    assert!(!rich().contrast.is_auto(), "the test edits contrast");
+    assert_eq!(s.main_grade().contrast, rich().main_grade().contrast);
+    assert_eq!(s.main_grade().saturation, rich().main_grade().saturation);
+    assert!(!rich().main_grade().contrast.is_auto(), "the test edits contrast");
     // While Apple Auto acts on it they are on the Automatic card, and Re-run returns them to Auto
     // too (`docs/19` section 5).
     let mut s = rich();
     s.reset_automatic(true);
-    assert_eq!(s.contrast, AutoOr::Auto);
-    assert_eq!(s.saturation, AutoOr::Auto);
+    assert_eq!(s.main_grade().contrast, AutoOr::Auto);
+    assert_eq!(s.main_grade().saturation, AutoOr::Auto);
     // So do the other values Apple Auto sets (`docs/19` prompt version 2).
     assert_eq!(
-        (s.highlights, s.shadows, s.black),
+        (s.main_grade().highlights, s.main_grade().shadows, s.main_grade().black),
         (AutoOr::Auto, AutoOr::Auto, AutoOr::Auto)
     );
-    assert!(s.color_balance.shadows.is_auto() && s.color_balance.highlights.is_auto());
-    assert!(s.exposure.is_auto() && s.white_balance.is_auto() && s.noise_reduction.is_auto());
-    assert!(!s.sharpen.is_auto(), "sharpening is not part of Re-run");
+    assert!(s.main_grade().color_balance.shadows.is_auto() && s.main_grade().color_balance.highlights.is_auto());
+    assert!(s.input().exposure.is_auto() && s.input().white_balance.is_auto() && s.input().noise_reduction.is_auto());
+    assert!(!s.input().sharpen.is_auto(), "sharpening is not part of Re-run");
     // Without Apple Auto acting, they stay as they were.
     let mut s = rich();
     s.reset_automatic(false);
     assert_eq!(
-        (s.highlights, s.shadows, s.black, s.color_balance),
+        (s.main_grade().highlights, s.main_grade().shadows, s.main_grade().black, s.main_grade().color_balance),
         (
-            rich().highlights,
-            rich().shadows,
-            rich().black,
-            rich().color_balance
+            rich().main_grade().highlights,
+            rich().main_grade().shadows,
+            rich().main_grade().black,
+            rich().main_grade().color_balance
         )
     );
 }
@@ -1437,16 +1458,16 @@ fn highlights_shadows_black_and_the_wheels_are_auto_or_manual_and_read_old_value
         &neutral,
     )
     .unwrap();
-    assert_eq!(s.highlights, PercentSetting::manual_value(-30.0));
-    assert_eq!(s.shadows, AutoOr::Auto);
-    assert_eq!(s.black, PercentSetting::manual_value(100.0));
+    assert_eq!(s.main_grade().highlights, PercentSetting::manual_value(-30.0));
+    assert_eq!(s.main_grade().shadows, AutoOr::Auto);
+    assert_eq!(s.main_grade().black, PercentSetting::manual_value(100.0));
     assert!(clamped.contains(&SettingsField::Black));
     assert_eq!(
-        s.color_balance.shadows,
+        s.main_grade().color_balance.shadows,
         BalanceSetting::manual_point([0.2, -0.1])
     );
-    assert_eq!(s.color_balance.highlights, AutoOr::Auto);
-    assert_eq!(s.color_balance.midtones, [0.1, 0.0]);
+    assert_eq!(s.main_grade().color_balance.highlights, AutoOr::Auto);
+    assert_eq!(s.main_grade().color_balance.midtones, [0.1, 0.0]);
     // The new forms.
     let (s, _) = DevelopSettings::from_json(
         r#"{ "highlights": { "kind": "manual", "value": 12 },
@@ -1454,11 +1475,11 @@ fn highlights_shadows_black_and_the_wheels_are_auto_or_manual_and_read_old_value
         &neutral,
     )
     .unwrap();
-    assert_eq!(s.highlights, PercentSetting::manual_value(12.0));
-    let p = s.color_balance.highlights.manual().unwrap().point;
+    assert_eq!(s.main_grade().highlights, PercentSetting::manual_value(12.0));
+    let p = s.main_grade().color_balance.highlights.manual().unwrap().point;
     assert!((p[0] - 0.6).abs() < 1e-12 && (p[1] - 0.8).abs() < 1e-12);
     assert_eq!(
-        s.color_balance.shadows,
+        s.main_grade().color_balance.shadows,
         AutoOr::Auto,
         "a wheel left out is Auto"
     );
@@ -1506,14 +1527,14 @@ fn highlights_shadows_black_and_the_wheels_are_auto_or_manual_and_read_old_value
     ] {
         s.apply_patch(&parse_patch(text), None).unwrap();
         assert_eq!(
-            (s.highlights, s.color_balance.shadows),
+            (s.main_grade().highlights, s.main_grade().color_balance.shadows),
             (highlights, wheel),
             "{text}"
         );
     }
     // Copy and paste carries Auto as Auto, and a manual value as it is.
     let mut from = DevelopSettings::default();
-    from.shadows = PercentSetting::manual_value(-15.0);
+    from.main_grade().shadows = PercentSetting::manual_value(-15.0);
     let copied = SettingsPatch::of_fields(
         &from,
         &[
@@ -1527,11 +1548,11 @@ fn highlights_shadows_black_and_the_wheels_are_auto_or_manual_and_read_old_value
     assert_eq!(v["shadows"], json!({ "kind": "manual", "value": -15.0 }));
     assert_eq!(v["color_balance"]["shadows"], json!({ "kind": "auto" }));
     let mut onto = DevelopSettings::default();
-    onto.highlights = PercentSetting::manual_value(30.0);
+    onto.main_grade().highlights = PercentSetting::manual_value(30.0);
     onto.apply_patch(&copied, None).unwrap();
     assert_eq!(
-        (onto.highlights, onto.shadows),
-        (AutoOr::Auto, from.shadows)
+        (onto.main_grade().highlights, onto.main_grade().shadows),
+        (AutoOr::Auto, from.main_grade().shadows)
     );
 }
 
@@ -1539,11 +1560,11 @@ fn highlights_shadows_black_and_the_wheels_are_auto_or_manual_and_read_old_value
 fn output_sharpening_is_a_plain_number_in_a_patch_with_its_own_stage_group() {
     let look = LookId::builtin("neutral");
     let mut s = DevelopSettings::default();
-    assert_eq!(s.output_sharpening, 100.0);
+    assert_eq!(s.output().output_sharpening, 100.0);
     // Moving the slider sends a number; only that field changes, and only the last stage group
     // is affected, so nothing before it re-runs.
     let report = apply(&mut s, parse_patch(r#"{"output_sharpening": 35}"#));
-    assert_eq!(s.output_sharpening, 35.0);
+    assert_eq!(s.output().output_sharpening, 35.0);
     assert_eq!(report.changed, vec![SettingsField::OutputSharpening]);
     assert_eq!(report.first_group(), Some(StageGroup::Output));
     // The same patch again changes nothing.
@@ -1554,19 +1575,22 @@ fn output_sharpening_is_a_plain_number_in_a_patch_with_its_own_stage_group() {
     );
     // 0 is a value (no stage), not a reset.
     apply(&mut s, parse_patch(r#"{"output_sharpening": 0}"#));
-    assert_eq!(s.output_sharpening, 0.0);
+    assert_eq!(s.output().output_sharpening, 0.0);
     // Out of range is clamped and reported, in both directions.
     let report = apply(&mut s, parse_patch(r#"{"output_sharpening": 900}"#));
-    assert_eq!(s.output_sharpening, 200.0);
+    assert_eq!(s.output().output_sharpening, 200.0);
     assert!(report.clamped.contains(&SettingsField::OutputSharpening));
     apply(&mut s, parse_patch(r#"{"output_sharpening": -20}"#));
-    assert_eq!(s.output_sharpening, 0.0);
+    assert_eq!(s.output().output_sharpening, 0.0);
     // NaN is refused and changes nothing.
     let before = s.clone();
-    let nan = SettingsPatch {
-        output_sharpening: Some(f64::NAN),
-        ..SettingsPatch::default()
-    };
+    let nan = SettingsPatch::default().and(
+        NodeId::Output,
+        NodePatch {
+            output_sharpening: Some(f64::NAN),
+            ..NodePatch::default()
+        },
+    );
     assert_eq!(
         s.apply_patch(&nan, None).unwrap_err(),
         SettingsError::NotFinite("output_sharpening")
@@ -1577,7 +1601,7 @@ fn output_sharpening_is_a_plain_number_in_a_patch_with_its_own_stage_group() {
         &mut s,
         SettingsPatch::reset(SettingsField::OutputSharpening, &look),
     );
-    assert_eq!(s.output_sharpening, 100.0);
+    assert_eq!(s.output().output_sharpening, 100.0);
     assert_eq!(report.changed, vec![SettingsField::OutputSharpening]);
     // It changes with a Grade field: the first group is the earliest of them.
     let report = apply(
@@ -1591,8 +1615,8 @@ fn output_sharpening_is_a_plain_number_in_a_patch_with_its_own_stage_group() {
         &mut other,
         SettingsPatch::of_field(&s, SettingsField::OutputSharpening),
     );
-    assert_eq!(other.output_sharpening, 50.0);
-    assert_eq!(other.contrast, AutoOr::Auto);
+    assert_eq!(other.output().output_sharpening, 50.0);
+    assert_eq!(other.main_grade().contrast, AutoOr::Auto);
 }
 
 #[test]
@@ -1602,7 +1626,7 @@ fn an_older_document_without_output_sharpening_reads_as_100() {
     doc.as_object_mut().unwrap().remove("output_sharpening");
     let (s, clamped) =
         DevelopSettings::from_value(doc, &LookId::builtin("neutral")).expect("reads");
-    assert_eq!(s.output_sharpening, 100.0);
+    assert_eq!(s.output().output_sharpening, 100.0);
     assert!(!clamped.contains(&SettingsField::OutputSharpening));
     // And the full document writes it back.
     let text = serde_json::to_string(&s).unwrap();
@@ -1612,16 +1636,16 @@ fn an_older_document_without_output_sharpening_reads_as_100() {
 #[test]
 fn settings_read_from_a_file_are_clamped_and_checked() {
     let mut s = rich();
-    s.contrast = ym_core::settings::PercentSetting::manual_value(400.0);
-    s.rolloff.highlights = -3.0;
-    s.curve.red = vec![[0.9, 0.1], [0.1, 0.9]];
+    s.main_grade().contrast = ym_core::settings::PercentSetting::manual_value(400.0);
+    s.input().rolloff.highlights = -3.0;
+    s.main_grade().curve.red = vec![[0.9, 0.1], [0.1, 0.9]];
     let (clean, clamped) = s.validated().unwrap();
     assert_eq!(
-        clean.contrast,
+        clean.main_grade().contrast,
         ym_core::settings::PercentSetting::manual_value(100.0)
     );
-    assert_eq!(clean.rolloff.highlights, 0.0);
-    assert_eq!(clean.curve.red, vec![[0.1, 0.9], [0.9, 0.1]]);
+    assert_eq!(clean.input().rolloff.highlights, 0.0);
+    assert_eq!(clean.main_grade().curve.red, vec![[0.1, 0.9], [0.9, 0.1]]);
     for f in [
         SettingsField::Contrast,
         SettingsField::Rolloff,
@@ -1630,7 +1654,7 @@ fn settings_read_from_a_file_are_clamped_and_checked() {
         assert!(clamped.contains(&f), "{f:?}");
     }
     let mut bad = rich();
-    bad.curve.luma = vec![[0.0, 0.0]];
+    bad.main_grade().curve.luma = vec![[0.0, 0.0]];
     assert!(bad.validated().is_err());
 }
 
@@ -1658,23 +1682,23 @@ fn auto_values_resolve_against_the_estimates_and_say_so() {
     let (_, est, profile) = estimates_of_file(&scene.write(dir.path(), "a.ARW", MODEL));
     let summary = est.summary();
     let r = resolve_with(&DevelopSettings::default(), &est, &profile, None);
-    assert!(r.auto.exposure && r.auto.light_source && r.auto.white_balance);
-    assert!(r.auto.sharpen && r.auto.noise_reduction);
-    assert_eq!(r.values.exposure_ev, summary.exposure_ev);
+    assert!(r.auto.input.exposure && r.auto.input.light_source && r.auto.input.white_balance);
+    assert!(r.auto.input.sharpen && r.auto.input.noise_reduction);
+    assert_eq!(r.values.input.exposure_ev, summary.input.exposure_ev);
     assert_eq!(
-        (r.values.kelvin, r.values.tint),
-        (summary.kelvin, summary.tint)
+        (r.values.input.kelvin, r.values.input.tint),
+        (summary.input.kelvin, summary.input.tint)
     );
     assert!(
-        (r.values.kelvin - 4300.0).abs() <= 50.0,
+        (r.values.input.kelvin - 4300.0).abs() <= 50.0,
         "{}",
-        r.values.kelvin
+        r.values.input.kelvin
     );
-    assert_eq!(r.values.sharpen, est.sharpen);
-    assert_eq!(r.values.noise_reduction, est.noise_reduction);
+    assert_eq!(r.values.input.sharpen, est.sharpen);
+    assert_eq!(r.values.input.noise_reduction, est.noise_reduction);
     assert_eq!(r.estimates, summary);
     // ISO 400: L_auto = 10 (1 + 2) = 30, as the Automatic card's "Luminance 30".
-    assert!((r.values.noise_reduction.luminance - 30.0).abs() < 1e-4);
+    assert!((r.values.input.noise_reduction.luminance - 30.0).abs() < 1e-4);
     assert_eq!(
         r.settings,
         DevelopSettings::default(),
@@ -1690,11 +1714,11 @@ fn auto_values_resolve_against_the_estimates_and_say_so() {
     s.apply_patch(&SettingsPatch::white_balance(3300.0, 4.0), None)
         .unwrap();
     let r = resolve_with(&s, &est, &profile, None);
-    assert!(!r.auto.exposure && !r.auto.noise_reduction && !r.auto.white_balance);
-    assert!(r.auto.sharpen && r.auto.light_source);
-    assert_eq!(r.values.exposure_ev, -0.5);
-    assert_eq!((r.values.kelvin, r.values.tint), (3300.0, 4.0));
-    assert_eq!(r.values.noise_reduction.luminance, 70.0);
+    assert!(!r.auto.input.exposure && !r.auto.input.noise_reduction && !r.auto.input.white_balance);
+    assert!(r.auto.input.sharpen && r.auto.input.light_source);
+    assert_eq!(r.values.input.exposure_ev, -0.5);
+    assert_eq!((r.values.input.kelvin, r.values.input.tint), (3300.0, 4.0));
+    assert_eq!(r.values.input.noise_reduction.luminance, 70.0);
 }
 
 #[test]
@@ -1704,7 +1728,7 @@ fn a_light_preset_shows_its_kelvin_while_white_balance_is_auto() {
     let (_, est, profile) = estimates_of_file(&scene.write(dir.path(), "a.ARW", MODEL));
     let with = |l: LightSource| {
         let mut s = DevelopSettings::default();
-        s.light_source = l;
+        s.input_mut().light_source = l;
         resolve_with(&s, &est, &profile, None)
     };
     for (preset, kelvin) in [
@@ -1713,26 +1737,26 @@ fn a_light_preset_shows_its_kelvin_while_white_balance_is_auto() {
         (LightSource::Tungsten, 3200.0),
     ] {
         let r = with(preset);
-        assert_eq!(r.values.kelvin, kelvin, "{preset:?}");
-        assert_eq!(r.values.tint, 0.0, "{preset:?}");
-        assert!(!r.auto.light_source && r.auto.white_balance);
+        assert_eq!(r.values.input.kelvin, kelvin, "{preset:?}");
+        assert_eq!(r.values.input.tint, 0.0, "{preset:?}");
+        assert!(!r.auto.input.light_source && r.auto.input.white_balance);
     }
     // LED and fluorescent keep the estimated chromaticity.
     let auto = with(LightSource::Auto);
     for preset in [LightSource::Led, LightSource::Fluorescent] {
         let r = with(preset);
         assert!(
-            (r.values.kelvin - auto.values.kelvin).abs() < 1e-9,
+            (r.values.input.kelvin - auto.values.input.kelvin).abs() < 1e-9,
             "{preset:?}"
         );
     }
     // A manual white balance wins over the readout of any preset.
     let mut s = DevelopSettings::default();
-    s.light_source = LightSource::Tungsten;
+    s.input_mut().light_source = LightSource::Tungsten;
     s.apply_patch(&SettingsPatch::white_balance(6000.0, -3.0), None)
         .unwrap();
     let r = resolve_with(&s, &est, &profile, None);
-    assert_eq!((r.values.kelvin, r.values.tint), (6000.0, -3.0));
+    assert_eq!((r.values.input.kelvin, r.values.input.tint), (6000.0, -3.0));
 }
 
 #[test]
@@ -1750,9 +1774,9 @@ fn a_picked_white_shows_the_picked_light_while_white_balance_is_auto() {
     let (raw, est, profile) = estimates_of_file(&path);
     let before = resolve_with(&DevelopSettings::default(), &est, &profile, None);
     assert!(
-        (before.values.kelvin - 6500.0).abs() <= 50.0,
+        (before.values.input.kelvin - 6500.0).abs() <= 50.0,
         "{}",
-        before.values.kelvin
+        before.values.input.kelvin
     );
     let point = [0.4167, 0.125];
     let sample = pick_white_sample(&raw, point, est.initial_gains().unwrap()).unwrap();
@@ -1767,17 +1791,17 @@ fn a_picked_white_shows_the_picked_light_while_white_balance_is_auto() {
     .unwrap();
     let after = resolve_with(&s, &est, &profile, Some(sample));
     assert!(
-        after.auto.white_balance,
+        after.auto.input.white_balance,
         "the pick leaves white_balance on Auto"
     );
     assert!(
-        (after.values.kelvin - 3000.0).abs() <= 100.0,
+        (after.values.input.kelvin - 3000.0).abs() <= 100.0,
         "{}",
-        after.values.kelvin
+        after.values.input.kelvin
     );
     // Without the sample the pick has no effect on the readout.
     let ignored = resolve_with(&s, &est, &profile, None);
-    assert_eq!(ignored.values.kelvin, before.values.kelvin);
+    assert_eq!(ignored.values.input.kelvin, before.values.input.kelvin);
 }
 
 #[test]
@@ -1786,7 +1810,7 @@ fn a_pick_on_a_blown_out_spot_is_refused_with_the_message_of_the_spec() {
     let scene = Scene::new(256, 192, light(PROFILE, 5200.0), Layout::Uniform, 0.3);
     let (_, est, profile) = estimates_of_file(&scene.write(dir.path(), "a.ARW", MODEL));
     let mut s = DevelopSettings::default();
-    s.white_pick = Some([0.5, 0.5]);
+    s.input_mut().white_pick = Some([0.5, 0.5]);
     // A sample at 95 percent of the clip level of green.
     let err = ResolvedSettings::resolve(PhotoId(1), &s, &est, &profile, Some([0.2, 0.95, 0.3]))
         .unwrap_err();
@@ -1806,16 +1830,16 @@ fn pinned_settings_record_the_numbers_without_changing_the_picture() {
     let r = resolve_with(&s, &est, &profile, None);
     let pinned = r.pinned_settings();
     assert_eq!(
-        pinned.exposure,
-        ym_core::settings::ExposureSetting::manual_ev(r.values.exposure_ev)
+        pinned.input().exposure,
+        ym_core::settings::ExposureSetting::manual_ev(r.values.input.exposure_ev)
     );
-    assert_eq!(pinned.sharpen, AutoOr::Manual(r.values.sharpen));
+    assert_eq!(pinned.input().sharpen, AutoOr::Manual(r.values.input.sharpen));
     assert_eq!(
-        pinned.noise_reduction,
-        AutoOr::Manual(r.values.noise_reduction)
+        pinned.input().noise_reduction,
+        AutoOr::Manual(r.values.input.noise_reduction)
     );
     assert!(
-        pinned.white_balance.is_auto(),
+        pinned.input().white_balance.is_auto(),
         "a manual white balance would not render like Auto"
     );
     // Same fused chain, same resolved values.
@@ -1832,7 +1856,7 @@ fn pinned_settings_record_the_numbers_without_changing_the_picture() {
     // differs by the tint's green gain (so Auto stays Auto in the pinned document).
     let mut manual = s.clone();
     manual
-        .apply_patch(&SettingsPatch::white_balance(r.values.kelvin, 25.0), None)
+        .apply_patch(&SettingsPatch::white_balance(r.values.input.kelvin, 25.0), None)
         .unwrap();
     let m = est.fused_chain(&profile, &manual, None).unwrap();
     assert_ne!(a.matrix(), m.matrix());
@@ -1894,7 +1918,7 @@ fn a_warp_pin_may_leave_out_everything_but_its_source_and_is_written_whole() {
     // A settings document round-trips with and without the optional fields.
     let s = rich();
     let back: DevelopSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
-    assert_eq!(back.color_warp, s.color_warp);
+    assert_eq!(back.main_grade().color_warp, s.main_grade().color_warp);
     let (short, clamped) = DevelopSettings::from_json(
         r#"{ "color_warp": { "pins": [{ "source": [0.1, 0.0], "target": [0.1, 0.05] }, { "source": [0.0, -0.1], "locked": true }] } }"#,
         &LookId::builtin("neutral"),
@@ -1902,7 +1926,7 @@ fn a_warp_pin_may_leave_out_everything_but_its_source_and_is_written_whole() {
     .unwrap();
     assert!(clamped.is_empty(), "{clamped:?}");
     assert_eq!(
-        short.color_warp.pins,
+        short.main_grade().color_warp.pins,
         vec![
             pin_at([0.1, 0.0], [0.1, 0.05]),
             ColorWarpPin::from(WarpPin::locked_at([0.0, -0.1]))
@@ -1910,11 +1934,11 @@ fn a_warp_pin_may_leave_out_everything_but_its_source_and_is_written_whole() {
     );
     // A document without the field, or with an empty object, has no pins.
     let (none, _) = DevelopSettings::from_json("{}", &LookId::builtin("neutral")).unwrap();
-    assert!(none.color_warp.pins.is_empty());
+    assert!(none.main_grade().color_warp.pins.is_empty());
     assert_eq!(
         serde_json::from_str::<DevelopSettings>(r#"{ "color_warp": {} }"#)
             .unwrap()
-            .color_warp,
+            .main_grade().color_warp,
         ColorWarp::default()
     );
     // Strict about what is not a pin.
@@ -1938,12 +1962,12 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
     let neutral = LookId::builtin("neutral");
     // 17 pins: the 17th is cut, and the field is reported.
     let mut s = DevelopSettings::default();
-    s.color_warp.pins = (0..17)
+    s.main_grade().color_warp.pins = (0..17)
         .map(|i| pin_at([0.01 * f64::from(i), 0.1], [0.01 * f64::from(i), 0.12]))
         .collect();
     let (v, clamped) = s.clone().validated().unwrap();
-    assert_eq!(v.color_warp.pins.len(), 16);
-    assert_eq!(v.color_warp.pins[..], s.color_warp.pins[..16]);
+    assert_eq!(v.main_grade().color_warp.pins.len(), 16);
+    assert_eq!(v.main_grade().color_warp.pins[..], s.main_grade().color_warp.pins[..16]);
     assert_eq!(clamped, vec![SettingsField::ColorWarp]);
     // Points scaled back to |c| <= 0.5, ranges and weights clamped, a locked pin's target is its
     // source and its weights, pivot and exposure the defaults: what `WarpPin::clamped` does.
@@ -1975,7 +1999,7 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
     )
     .unwrap();
     assert_eq!(clamped, vec![SettingsField::ColorWarp]);
-    let [a, b] = [v.color_warp.pins[0], v.color_warp.pins[1]];
+    let [a, b] = [v.main_grade().color_warp.pins[0], v.main_grade().color_warp.pins[1]];
     assert!((a.source[0] - 0.3).abs() < 1e-12 && (a.source[1] + 0.4).abs() < 1e-12);
     assert!(a.source[0].hypot(a.source[1]) <= 0.5);
     assert!((a.target[1] - 0.5).abs() < 1e-12 && a.target[0] == 0.0);
@@ -2005,7 +2029,7 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
         }
     );
     // The settings are what the stage renders: clamping them again is the stage's own clamp.
-    for p in &v.color_warp.pins {
+    for p in &v.main_grade().color_warp.pins {
         let c = WarpPin::from(*p).clamped();
         assert_eq!(c.locked, p.locked);
         assert_eq!(
@@ -2045,7 +2069,7 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
         (rng >> 11) as f64 / (1u64 << 53) as f64 * 6.0 - 3.0
     };
     let mut s = DevelopSettings::default();
-    s.color_warp.pins = (0..16)
+    s.main_grade().color_warp.pins = (0..16)
         .map(|_| pin_at([next(), next()], [next(), next()]))
         .collect();
     for _ in 0..200 {
@@ -2053,11 +2077,11 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
         let (twice, again) = once.clone().validated().unwrap();
         assert_eq!(twice, once);
         assert!(again.is_empty(), "{again:?}");
-        for p in &once.color_warp.pins {
+        for p in &once.main_grade().color_warp.pins {
             assert!(p.source[0].hypot(p.source[1]) <= 0.5);
             assert!(p.target[0].hypot(p.target[1]) <= 0.5);
         }
-        for p in &mut s.color_warp.pins {
+        for p in &mut s.main_grade().color_warp.pins {
             *p = pin_at([next(), next()], [next(), next()]);
         }
     }
@@ -2073,16 +2097,22 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
         let mut s = DevelopSettings::default();
         let mut p = pin_at([0.1, 0.0], [0.1, 0.1]);
         broken(&mut p);
-        s.color_warp.pins.push(p);
+        s.main_grade().color_warp.pins.push(p);
         assert!(
             matches!(s.clone().validated(), Err(SettingsError::NotFinite(n)) if n.starts_with("color_warp")),
             "{p:?}"
         );
         let mut t = DevelopSettings::default();
-        let patch = SettingsPatch {
-            color_warp: Some(s.color_warp.clone()),
-            ..SettingsPatch::default()
-        };
+        let patch = SettingsPatch::default().and(
+            NodeId::MAIN,
+            NodePatch {
+                grade: Some(GradePatch {
+                    color_warp: Some(s.main_grade().color_warp.clone()),
+                    ..GradePatch::default()
+                }),
+                ..NodePatch::default()
+            },
+        );
         assert!(t.apply_patch(&patch, None).is_err());
         assert_eq!(t, DevelopSettings::default());
     }
@@ -2100,7 +2130,7 @@ fn a_pins_saturation_reads_as_zero_when_absent_and_is_clamped_and_kept() {
     )
     .unwrap();
     assert!(clamped.is_empty(), "{clamped:?}");
-    assert_eq!(old.color_warp.pins[0].saturation, 0.0);
+    assert_eq!(old.main_grade().color_warp.pins[0].saturation, 0.0);
     // `null` is not a number.
     assert!(
         serde_json::from_str::<DevelopSettings>(
@@ -2115,7 +2145,7 @@ fn a_pins_saturation_reads_as_zero_when_absent_and_is_clamped_and_kept() {
     )
     .unwrap();
     assert!(clamped.is_empty(), "{clamped:?}");
-    assert_eq!(kept.color_warp.pins[0].saturation, -0.5);
+    assert_eq!(kept.main_grade().color_warp.pins[0].saturation, -0.5);
     assert_eq!(
         serde_json::to_value(&kept).unwrap()["color_warp"]["pins"][0]["saturation"],
         json!(-0.5)
@@ -2126,9 +2156,9 @@ fn a_pins_saturation_reads_as_zero_when_absent_and_is_clamped_and_kept() {
     )
     .unwrap();
     assert_eq!(clamped, vec![SettingsField::ColorWarp]);
-    assert_eq!(wild.color_warp.pins[0].saturation, 1.0);
+    assert_eq!(wild.main_grade().color_warp.pins[0].saturation, 1.0);
     // It reaches the stage's own parameters, and a pin that only has saturation acts there.
-    let params = kept.color_warp.to_color();
+    let params = kept.main_grade().color_warp.to_color();
     assert_eq!(params.pins[0].saturation, -0.5);
     assert!(!params.is_identity());
     // A locked pin has none.
@@ -2137,17 +2167,23 @@ fn a_pins_saturation_reads_as_zero_when_absent_and_is_clamped_and_kept() {
         &neutral,
     )
     .unwrap();
-    assert_eq!(locked.color_warp.pins[0].saturation, 0.0);
+    assert_eq!(locked.main_grade().color_warp.pins[0].saturation, 0.0);
     // A copy of the colour warp's settings carries it (the patch holds the whole list).
     let mut s = DevelopSettings::default();
-    s.color_warp = kept.color_warp.clone();
-    let patch = SettingsPatch {
-        color_warp: Some(s.color_warp.clone()),
-        ..SettingsPatch::default()
-    };
+    s.main_grade().color_warp = kept.main_grade().color_warp.clone();
+    let patch = SettingsPatch::default().and(
+        NodeId::MAIN,
+        NodePatch {
+            grade: Some(GradePatch {
+                color_warp: Some(s.main_grade().color_warp.clone()),
+                ..GradePatch::default()
+            }),
+            ..NodePatch::default()
+        },
+    );
     let json = serde_json::to_string(&patch).unwrap();
     let back: SettingsPatch = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.color_warp, Some(kept.color_warp));
+    assert_eq!(back.color_warp, Some(kept.main_grade().color_warp));
 }
 
 #[test]
@@ -2163,30 +2199,30 @@ fn a_warp_patch_replaces_the_whole_list_and_reset_removes_the_pins() {
     let report = apply(&mut s, two);
     assert_eq!(report.changed, vec![SettingsField::ColorWarp]);
     assert_eq!(report.first_group(), Some(StageGroup::Grade));
-    assert_eq!(s.color_warp.pins.len(), 2);
+    assert_eq!(s.main_grade().color_warp.pins.len(), 2);
     // A patch is the whole list: one pin replaces the two.
     let one = parse_patch(
         r#"{ "color_warp": { "pins": [{ "source": [-0.1, 0.0], "target": [-0.12, 0.0] }] } }"#,
     );
     apply(&mut s, one);
-    assert_eq!(s.color_warp.pins, vec![pin_at([-0.1, 0.0], [-0.12, 0.0])]);
+    assert_eq!(s.main_grade().color_warp.pins, vec![pin_at([-0.1, 0.0], [-0.12, 0.0])]);
     // A patch that leaves the warp out keeps it, and reports nothing about it.
     let report = apply(&mut s, parse_patch(r#"{ "contrast": 10 }"#));
     assert_eq!(report.changed, vec![SettingsField::Contrast]);
-    assert_eq!(s.color_warp.pins.len(), 1);
+    assert_eq!(s.main_grade().color_warp.pins.len(), 1);
     // A value out of range in the patch is clamped and reported.
     let report = apply(
         &mut s,
         parse_patch(r#"{ "color_warp": { "pins": [{ "source": [0.1, 0.0], "range": 9 }] } }"#),
     );
     assert_eq!(report.clamped, vec![SettingsField::ColorWarp]);
-    assert_eq!(s.color_warp.pins[0].range, 0.25);
+    assert_eq!(s.main_grade().color_warp.pins[0].range, 0.25);
     // The same list again changes nothing.
     let same = SettingsPatch::of_field(&s, SettingsField::ColorWarp);
     assert!(apply(&mut s, same.clone()).changed.is_empty());
     assert_eq!(
         serde_json::to_value(&same).unwrap(),
-        json!({ "color_warp": serde_json::to_value(&s.color_warp).unwrap() })
+        json!({ "color_warp": serde_json::to_value(&s.main_grade().color_warp).unwrap() })
     );
     // The card's Reset sends no pins; `reset_field` and the Reset patch agree.
     let mut by_patch = s.clone();
@@ -2202,7 +2238,7 @@ fn a_warp_patch_replaces_the_whole_list_and_reset_removes_the_pins() {
         SettingsPatch::reset(SettingsField::ColorWarp, &neutral),
     );
     for t in [&by_patch, &by_reset, &by_reset_patch] {
-        assert!(t.color_warp.pins.is_empty());
+        assert!(t.main_grade().color_warp.pins.is_empty());
         assert_eq!(t.diff(&s), vec![SettingsField::ColorWarp]);
     }
 }
@@ -2222,15 +2258,15 @@ fn copy_settings_takes_the_warp_and_resolved_values_carry_it() {
     let (_, est, profile) = estimates_of_file(&scene.write(dir.path(), "a.ARW", "ILCE-7RM4"));
     let s = rich();
     let resolved = ResolvedSettings::resolve(PhotoId(3), &s, &est, &profile, None).unwrap();
-    assert_eq!(resolved.values.color_warp, s.color_warp);
-    assert_eq!(resolved.pinned_settings().color_warp, s.color_warp);
+    assert_eq!(resolved.values.main.grade.color_warp, s.main_grade().color_warp);
+    assert_eq!(resolved.pinned_settings().main_grade().color_warp, s.main_grade().color_warp);
     let patch = SettingsPatch::copied_from(&resolved);
-    assert_eq!(patch.color_warp.as_ref(), Some(&s.color_warp));
+    assert_eq!(patch.color_warp.as_ref(), Some(&s.main_grade().color_warp));
     // Pasted onto a photo with pins of its own, the copied list replaces them.
     let mut other = DevelopSettings::default();
-    other.color_warp.pins = vec![pin_at([0.0, -0.2], [0.05, -0.2])];
+    other.main_grade().color_warp.pins = vec![pin_at([0.0, -0.2], [0.05, -0.2])];
     other.apply_patch(&patch, None).unwrap();
-    assert_eq!(other.color_warp, s.color_warp);
+    assert_eq!(other.main_grade().color_warp, s.main_grade().color_warp);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2251,20 +2287,20 @@ fn a_document_reads_with_and_without_a_lens() {
     let neutral = LookId::builtin("neutral");
     // Without the field: the default lens, nothing clamped (older settings, older XMP).
     let (s, clamped) = DevelopSettings::from_json("{}", &neutral).expect("reads");
-    assert_eq!(s.lens, lens(LensKind::Default, 0.0, 0.0, 0.0));
-    assert!(s.lens.is_identity() && clamped.is_empty());
+    assert_eq!(s.input().lens, lens(LensKind::Default, 0.0, 0.0, 0.0));
+    assert!(s.input().lens.is_identity() && clamped.is_empty());
     // With every field, with some of them (the others take the defaults), and as written.
     let (s, _) = DevelopSettings::from_json(
         r#"{ "lens": { "kind": "petzval", "flares": 40, "edges": 55, "anamorphic": 20 } }"#,
         &neutral,
     )
     .expect("reads");
-    assert_eq!(s.lens, lens(LensKind::Petzval, 40.0, 55.0, 20.0));
+    assert_eq!(s.input().lens, lens(LensKind::Petzval, 40.0, 55.0, 20.0));
     let (s, _) =
         DevelopSettings::from_json(r#"{ "lens": { "flares": 40 } }"#, &neutral).expect("reads");
-    assert_eq!(s.lens, lens(LensKind::Default, 40.0, 0.0, 0.0));
-    assert!(!s.lens.is_identity());
-    let written = serde_json::to_value(s.lens).unwrap();
+    assert_eq!(s.input().lens, lens(LensKind::Default, 40.0, 0.0, 0.0));
+    assert!(!s.input().lens.is_identity());
+    let written = serde_json::to_value(s.input().lens).unwrap();
     assert_eq!(
         written,
         json!({ "kind": "default", "flares": 40.0, "edges": 0.0, "anamorphic": 0.0 }),
@@ -2274,9 +2310,9 @@ fn a_document_reads_with_and_without_a_lens() {
     for kind in LensKind::ALL {
         let doc = json!({ "lens": { "kind": kind.as_str() } });
         let (s, _) = DevelopSettings::from_value(doc, &neutral).expect("reads");
-        assert_eq!(s.lens.kind, kind);
+        assert_eq!(s.input().lens.kind, kind);
         assert_eq!(
-            serde_json::to_value(s.lens).unwrap()["kind"],
+            serde_json::to_value(s.input().lens).unwrap()["kind"],
             json!(kind.as_str())
         );
     }
@@ -2313,12 +2349,12 @@ fn the_amounts_clamp_and_a_value_that_is_not_a_number_is_refused() {
         &neutral,
     )
     .expect("reads");
-    assert_eq!(s.lens, lens(LensKind::Sonnar, 100.0, 0.0, 100.0));
+    assert_eq!(s.input().lens, lens(LensKind::Sonnar, 100.0, 0.0, 100.0));
     assert_eq!(clamped, vec![SettingsField::Lens]);
     // From a patch: reported only in the fields the patch touched.
     let mut s = DevelopSettings::default();
     let report = apply(&mut s, parse_patch(r#"{ "lens": { "edges": 250 } }"#));
-    assert_eq!(s.lens.edges, 100.0);
+    assert_eq!(s.input().lens.edges, 100.0);
     assert_eq!(report.changed, vec![SettingsField::Lens]);
     assert_eq!(report.clamped, vec![SettingsField::Lens]);
     let report = apply(&mut s, parse_patch(r#"{ "contrast": 10 }"#));
@@ -2326,7 +2362,7 @@ fn the_amounts_clamp_and_a_value_that_is_not_a_number_is_refused() {
     // Negative zero is zero.
     let report = apply(&mut s, parse_patch(r#"{ "lens": { "flares": -0.0 } }"#));
     assert!(report.changed.is_empty(), "{report:?}");
-    assert!(s.lens.flares.is_sign_positive());
+    assert!(s.input().lens.flares.is_sign_positive());
     // Not finite: an error that names the field, and nothing is applied.
     for (field, patch) in [
         (
@@ -2354,11 +2390,26 @@ fn the_amounts_clamp_and_a_value_that_is_not_a_number_is_refused() {
         let mut t = s.clone();
         let err = t
             .apply_patch(
-                &SettingsPatch {
-                    lens: Some(patch),
-                    contrast: Some(ym_core::settings::PercentSetting::manual_value(30.0)),
-                    ..SettingsPatch::default()
-                },
+                &SettingsPatch::default()
+                    .and(
+                        NodeId::Input,
+                        NodePatch {
+                            lens: Some(patch),
+                            ..NodePatch::default()
+                        },
+                    )
+                    .and(
+                        NodeId::MAIN,
+                        NodePatch {
+                            grade: Some(GradePatch {
+                                contrast: Some(ym_core::settings::PercentSetting::manual_value(
+                                    30.0,
+                                )),
+                                ..GradePatch::default()
+                            }),
+                            ..NodePatch::default()
+                        },
+                    ),
                 None,
             )
             .unwrap_err();
@@ -2367,7 +2418,7 @@ fn the_amounts_clamp_and_a_value_that_is_not_a_number_is_refused() {
     }
     let doc = serde_json::from_value::<DevelopSettings>(json!({ "lens": { "flares": 1 } }))
         .map(|mut d| {
-            d.lens.edges = f64::NAN;
+            d.input().lens.edges = f64::NAN;
             d
         })
         .unwrap();
@@ -2382,7 +2433,7 @@ fn a_lens_patch_may_carry_only_the_parts_it_changes() {
     let mut s = DevelopSettings::default();
     // Choosing a lens does not move the amounts by itself.
     let report = apply(&mut s, parse_patch(r#"{ "lens": { "kind": "triplet" } }"#));
-    assert_eq!(s.lens, lens(LensKind::Triplet, 0.0, 0.0, 0.0));
+    assert_eq!(s.input().lens, lens(LensKind::Triplet, 0.0, 0.0, 0.0));
     assert_eq!(report.changed, vec![SettingsField::Lens]);
     assert_eq!(
         report.first_group(),
@@ -2392,13 +2443,13 @@ fn a_lens_patch_may_carry_only_the_parts_it_changes() {
     // One amount at a time, the rest as they were.
     apply(&mut s, parse_patch(r#"{ "lens": { "flares": 40 } }"#));
     apply(&mut s, parse_patch(r#"{ "lens": { "anamorphic": 25.5 } }"#));
-    assert_eq!(s.lens, lens(LensKind::Triplet, 40.0, 0.0, 25.5));
+    assert_eq!(s.input().lens, lens(LensKind::Triplet, 40.0, 0.0, 25.5));
     // What the card sends on choosing a lens: the kind and its starting amounts, in one patch.
     let report = apply(
         &mut s,
         parse_patch(r#"{ "lens": { "kind": "vintage", "flares": 35, "edges": 50 } }"#),
     );
-    assert_eq!(s.lens, lens(LensKind::Vintage, 35.0, 50.0, 25.5));
+    assert_eq!(s.input().lens, lens(LensKind::Vintage, 35.0, 50.0, 25.5));
     assert_eq!(report.changed, vec![SettingsField::Lens]);
     // The whole object, as the frontend sends it, works the same; the same value again is no change.
     let same = parse_patch(
@@ -2412,7 +2463,7 @@ fn a_lens_patch_may_carry_only_the_parts_it_changes() {
             .is_empty()
     );
     apply(&mut s, parse_patch(r#"{ "exposure": { "kind": "auto" } }"#));
-    assert_eq!(s.lens.kind, LensKind::Vintage);
+    assert_eq!(s.input().lens.kind, LensKind::Vintage);
     // The patch serialises with only the parts it carries, and an unknown part is refused.
     let p = parse_patch(r#"{ "lens": { "edges": 10 } }"#);
     assert_eq!(
@@ -2436,7 +2487,7 @@ fn reset_gives_the_default_lens_and_re_run_leaves_it() {
     assert!(SettingsField::ALL.contains(&SettingsField::Lens));
     assert_eq!(SettingsField::ALL.len(), 24);
     let mut s = rich();
-    assert_ne!(s.lens, LensSettings::default());
+    assert_ne!(s.input().lens, LensSettings::default());
     // The Reset patch and `reset_field` agree.
     let mut by_patch = s.clone();
     apply(
@@ -2445,15 +2496,15 @@ fn reset_gives_the_default_lens_and_re_run_leaves_it() {
     );
     s.reset_field(SettingsField::Lens, &look);
     assert_eq!(by_patch, s);
-    assert_eq!(s.lens, lens(LensKind::Default, 0.0, 0.0, 0.0));
+    assert_eq!(s.input().lens, lens(LensKind::Default, 0.0, 0.0, 0.0));
     assert_eq!(s.diff(&rich()), vec![SettingsField::Lens]);
     // Re-run (the Automatic card) does not touch the lens.
     let mut s = rich();
     s.reset_automatic(true);
-    assert_eq!(s.lens, rich().lens);
+    assert_eq!(s.input().lens, rich().input().lens);
     // A fresh photo (`with_look`) has no lens.
     assert_eq!(
-        DevelopSettings::with_look(look.clone()).lens,
+        DevelopSettings::with_look(look.clone()).input().lens,
         LensSettings::default()
     );
 }
@@ -2472,10 +2523,10 @@ fn copy_settings_takes_the_lens_and_resolved_values_and_exports_carry_it() {
     let (_, est, profile) = estimates_of_file(&scene.write(dir.path(), "a.ARW", "ILCE-7RM4"));
     let s = rich();
     let resolved = ResolvedSettings::resolve(PhotoId(3), &s, &est, &profile, None).unwrap();
-    assert_eq!(resolved.values.lens, s.lens);
+    assert_eq!(resolved.values.input.lens, s.input().lens);
     // `ym:Settings` of an export is the pinned settings: it gains the lens object, as stored.
     let pinned = resolved.pinned_settings();
-    assert_eq!(pinned.lens, s.lens);
+    assert_eq!(pinned.input().lens, s.input().lens);
     let doc = serde_json::to_value(&pinned).unwrap();
     assert_eq!(
         doc["lens"],
@@ -2493,9 +2544,9 @@ fn copy_settings_takes_the_lens_and_resolved_values_and_exports_carry_it() {
         })
     );
     let mut other = DevelopSettings::default();
-    other.lens = lens(LensKind::Detuned, 5.0, 6.0, 7.0);
+    other.input().lens = lens(LensKind::Detuned, 5.0, 6.0, 7.0);
     let report = other.apply_patch(&patch, None).unwrap();
-    assert_eq!(other.lens, s.lens);
+    assert_eq!(other.input().lens, s.input().lens);
     assert!(report.changed.contains(&SettingsField::Lens));
     // A photo with the default lens copies the default, which clears the lens on the target.
     let plain = ResolvedSettings::resolve(
@@ -2509,7 +2560,7 @@ fn copy_settings_takes_the_lens_and_resolved_values_and_exports_carry_it() {
     other
         .apply_patch(&SettingsPatch::copied_from(&plain), None)
         .unwrap();
-    assert_eq!(other.lens, LensSettings::default());
+    assert_eq!(other.input().lens, LensSettings::default());
 }
 
 #[test]

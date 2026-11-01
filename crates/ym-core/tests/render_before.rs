@@ -113,39 +113,39 @@ fn edits() -> Vec<Edit> {
     vec![
         (
             "exposure",
-            Box::new(|s| s.exposure = AutoOr::manual_ev(2.0)),
+            Box::new(|s| s.input_mut().exposure = AutoOr::manual_ev(2.0)),
         ),
         (
             "white balance",
-            Box::new(|s| s.white_balance = AutoOr::manual_kelvin(3200.0, 20.0)),
+            Box::new(|s| s.input_mut().white_balance = AutoOr::manual_kelvin(3200.0, 20.0)),
         ),
         (
             "contrast",
-            Box::new(|s| s.contrast = ym_core::settings::PercentSetting::manual_value(60.0)),
+            Box::new(|s| s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(60.0)),
         ),
-        ("brightness", Box::new(|s| s.brightness = -40.0)),
+        ("brightness", Box::new(|s| s.main_grade_mut().brightness = -40.0)),
         (
             "highlights",
-            Box::new(|s| s.highlights = ym_core::settings::PercentSetting::manual_value(-50.0)),
+            Box::new(|s| s.main_grade_mut().highlights = ym_core::settings::PercentSetting::manual_value(-50.0)),
         ),
         (
             "shadows",
-            Box::new(|s| s.shadows = ym_core::settings::PercentSetting::manual_value(50.0)),
+            Box::new(|s| s.main_grade_mut().shadows = ym_core::settings::PercentSetting::manual_value(50.0)),
         ),
         (
             "black",
-            Box::new(|s| s.black = ym_core::settings::PercentSetting::manual_value(30.0)),
+            Box::new(|s| s.main_grade_mut().black = ym_core::settings::PercentSetting::manual_value(30.0)),
         ),
-        ("white", Box::new(|s| s.white = -30.0)),
+        ("white", Box::new(|s| s.main_grade_mut().white = -30.0)),
         (
             "saturation",
-            Box::new(|s| s.saturation = ym_core::settings::PercentSetting::manual_value(80.0)),
+            Box::new(|s| s.main_grade_mut().saturation = ym_core::settings::PercentSetting::manual_value(80.0)),
         ),
-        ("look intensity", Box::new(|s| s.look_intensity = 20.0)),
+        ("look intensity", Box::new(|s| s.output_mut().look_intensity = 20.0)),
         (
             "lens",
             Box::new(|s| {
-                s.lens = ym_core::settings::LensSettings {
+                s.input_mut().lens = ym_core::settings::LensSettings {
                     kind: ym_core::settings::LensKind::Vintage,
                     flares: 60.0,
                     edges: 50.0,
@@ -156,16 +156,16 @@ fn edits() -> Vec<Edit> {
         (
             "curve",
             Box::new(|s| {
-                s.curve.luma = vec![[0.0, 0.1], [0.3, 0.2], [0.7, 0.9], [1.0, 1.0]];
-                s.curve.red = vec![[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]];
+                s.main_grade_mut().curve.luma = vec![[0.0, 0.1], [0.3, 0.2], [0.7, 0.9], [1.0, 1.0]];
+                s.main_grade_mut().curve.red = vec![[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]];
             }),
         ),
-        ("highlight range", Box::new(|s| s.rolloff.highlights = 0.0)),
-        ("low light", Box::new(|s| s.rolloff.low_light = 1.0)),
+        ("highlight range", Box::new(|s| s.input_mut().rolloff.highlights = 0.0)),
+        ("low light", Box::new(|s| s.input_mut().rolloff.low_light = 1.0)),
         (
             "noise reduction",
             Box::new(|s| {
-                s.noise_reduction = AutoOr::Manual(ym_core::settings::NoiseReductionValue {
+                s.input_mut().noise_reduction = AutoOr::Manual(ym_core::settings::NoiseReductionValue {
                     luminance: 90.0,
                     color: 90.0,
                     detail: 10.0,
@@ -175,7 +175,7 @@ fn edits() -> Vec<Edit> {
         (
             "sharpening",
             Box::new(|s| {
-                s.sharpen = AutoOr::Manual(ym_core::settings::SharpenValue {
+                s.input_mut().sharpen = AutoOr::Manual(ym_core::settings::SharpenValue {
                     amount: 250.0,
                     radius_px: 2.0,
                 })
@@ -183,7 +183,7 @@ fn edits() -> Vec<Edit> {
         ),
         (
             "output sharpening",
-            Box::new(|s| s.output_sharpening = 200.0),
+            Box::new(|s| s.output_mut().output_sharpening = 200.0),
         ),
     ]
 }
@@ -212,7 +212,7 @@ fn the_before_view_is_bit_identical_across_every_edit() {
         let moved = view(
             r,
             &edit(&src, |s| {
-                s.contrast = ym_core::settings::PercentSetting::manual_value(60.0)
+                s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(60.0)
             }),
             false,
         );
@@ -411,7 +411,7 @@ fn the_pixel_readout_follows_the_before_view() {
         }
         // The readout also ignores the settings.
         let edited = edit(&src, |s| {
-            s.contrast = ym_core::settings::PercentSetting::manual_value(70.0)
+            s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(70.0)
         });
         let t = r
             .sample_pixel(&edited, &st, (x, y), &CancelToken::new())
@@ -547,7 +547,7 @@ fn before_at_the_corners_is_not_brightened_by_the_correction() {
                 // With only a vignetting table in the file, the lens switch does one thing, R3, so
                 // the Before view is bit-identical with the switch on and off. (A decode switch
                 // changes the Before view where it moves pixels, as `docs/02` says.)
-                let off = edit(&src, |s| s.decode.lens_corrections = false);
+                let off = edit(&src, |s| s.input_mut().decode.lens_corrections = false);
                 let bef_off = frame_in(&r, &off, &fit_state(true));
                 assert!(
                     bef_frame.rgba == bef_off.rgba,
@@ -677,7 +677,7 @@ fn flipping_to_before_never_mixes_the_raw_fronts() {
             // was mixed. (`the_detail_settings_do_not_reach_the_before_view` shows that Detail does move
             // the final picture of a noisy photo; this flat field has no noise to reduce.)
             let edited = edit(&src, |s| {
-                s.noise_reduction = AutoOr::Manual(ym_core::settings::NoiseReductionValue {
+                s.input_mut().noise_reduction = AutoOr::Manual(ym_core::settings::NoiseReductionValue {
                     luminance: 80.0,
                     color: 50.0,
                     detail: 30.0,
@@ -724,7 +724,7 @@ fn a_photo_with_no_vignetting_to_apply_shares_its_raw_front_with_the_before_view
         .write_to(&dir.path().join("DSC00001.ARW"), &scene.mosaic())
         .expect("write");
     let without_table = Developed::open(dir).source();
-    let switched_off = edit(&vignetted(false), |s| s.decode.lens_corrections = false);
+    let switched_off = edit(&vignetted(false), |s| s.input_mut().decode.lens_corrections = false);
     let (w, h) = (800, 600);
     for (what, src) in [("no table", &without_table), ("switch off", &switched_off)] {
         for zoom in [None, Some(100.0)] {
@@ -765,23 +765,23 @@ fn the_detail_settings_do_not_reach_the_before_view() {
         .seed(7);
     let src = Developed::new(&scene, "ILCE-7M3").source();
     let strong = edit(&src, |s| {
-        s.noise_reduction = AutoOr::Manual(ym_core::settings::NoiseReductionValue {
+        s.input_mut().noise_reduction = AutoOr::Manual(ym_core::settings::NoiseReductionValue {
             luminance: 100.0,
             color: 100.0,
             detail: 0.0,
         });
-        s.sharpen = AutoOr::Manual(ym_core::settings::SharpenValue {
+        s.input_mut().sharpen = AutoOr::Manual(ym_core::settings::SharpenValue {
             amount: 300.0,
             radius_px: 2.5,
         });
     });
     let none = edit(&src, |s| {
-        s.noise_reduction = AutoOr::Manual(ym_core::settings::NoiseReductionValue {
+        s.input_mut().noise_reduction = AutoOr::Manual(ym_core::settings::NoiseReductionValue {
             luminance: 0.0,
             color: 0.0,
             detail: 100.0,
         });
-        s.sharpen = AutoOr::Manual(ym_core::settings::SharpenValue {
+        s.input_mut().sharpen = AutoOr::Manual(ym_core::settings::SharpenValue {
             amount: 0.0,
             radius_px: 0.5,
         });
@@ -820,8 +820,8 @@ fn a_source_made_for_the_before_view_says_so() {
     let src = patchwork("ILCE-7M3");
     assert!(!src.before_view);
     let strong = edit(&src, |s| {
-        s.contrast = ym_core::settings::PercentSetting::manual_value(40.0);
-        s.sharpen = AutoOr::Manual(ym_core::settings::SharpenValue {
+        s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(40.0);
+        s.input_mut().sharpen = AutoOr::Manual(ym_core::settings::SharpenValue {
             amount: 300.0,
             radius_px: 2.5,
         });
@@ -829,14 +829,14 @@ fn a_source_made_for_the_before_view_says_so() {
     let b = strong.for_before_view();
     assert!(b.before_view);
     // Detail is at Auto; everything else of the settings is as it was (no setting reaches the view anyway).
-    assert!(b.settings.noise_reduction.is_auto() && b.settings.sharpen.is_auto());
+    assert!(b.settings.input().noise_reduction.is_auto() && b.settings.input().sharpen.is_auto());
     assert_eq!(
-        b.settings.contrast,
+        b.settings.main_grade().contrast,
         ym_core::settings::PercentSetting::manual_value(40.0)
     );
     // The flag survives an edit of the settings, and the original is not marked.
     assert!(
-        edit(&b, |s| s.contrast =
+        edit(&b, |s| s.main_grade_mut().contrast =
             ym_core::settings::PercentSetting::manual_value(10.0))
         .before_view
     );

@@ -267,8 +267,8 @@ fn the_front_is_the_cpus_to_the_bit_where_it_has_no_lens_to_correct() {
     let base = source(&clipped_scene(1300, 900, 5));
     let edit = |lens: bool, ca: bool| {
         let mut st = base.settings.clone();
-        st.decode.lens_corrections = lens;
-        st.decode.chromatic_aberration = ca;
+        st.input_mut().decode.lens_corrections = lens;
+        st.input_mut().decode.chromatic_aberration = ca;
         base.with_settings(st)
     };
     let cpu = renderer(None, GpuStages::NONE);
@@ -350,7 +350,7 @@ fn two_photos_stay_on_the_device_and_the_third_pushes_the_oldest_out() {
         let n = count[i].get();
         count[i].set(n + 1);
         let mut st = sources[i].settings.clone();
-        st.noise_reduction = AutoOr::Manual(NoiseReductionValue {
+        st.input_mut().noise_reduction = AutoOr::Manual(NoiseReductionValue {
             luminance: 20.0 + 5.0 * n as f64,
             color: 50.0,
             detail: 50.0,

@@ -26,6 +26,7 @@ use ym_looks::library::LookId;
 use crate::cli::{
     ExposureArg, LightArg, NrArg, PercentArg, RenderArgs, RolloffArg, SharpenArg, WbArg,
 };
+use ym_core::settings::{GradePatch, NodeId, NodePatch};
 
 /// `--contrast`, `--saturation`, `--highlights`, `--shadows` or `--black` as a setting: `auto` is
 /// Auto (0, or Apple Auto's value for the photo, `docs/19` section 5), a number is a manual value.
@@ -154,13 +155,20 @@ impl Overrides {
         })
     }
 
-    /// The patch for one photo whose automatic exposure is `auto_exposure_ev`.
+    /// The patch for one photo whose automatic exposure is `auto_exposure_ev`. Each option sets a
+    /// field of one node (`docs/10` *Where the flags land*): the Input, Main (node 1) or the
+    /// Output.
     #[must_use]
     pub fn patch(&self, auto_exposure_ev: f64) -> SettingsPatch {
-        let mut p = SettingsPatch {
+        // The Output: the look and the output sharpening.
+        let output = NodePatch {
             look: self.look.clone(),
             look_intensity: self.intensity,
-            // `auto` is Auto, a number a manual value (`docs/19` section 8).
+            output_sharpening: self.output_sharpening,
+            ..NodePatch::default()
+        };
+        // Main: the grade. `auto` is Auto, a number a manual value (`docs/19` section 8).
+        let grade = GradePatch {
             contrast: self.contrast.map(percent_setting),
             brightness: self.brightness,
             highlights: self.highlights.map(percent_setting),
@@ -168,49 +176,57 @@ impl Overrides {
             white: self.white,
             black: self.black.map(percent_setting),
             saturation: self.saturation.map(percent_setting),
-            output_sharpening: self.output_sharpening,
-            ..SettingsPatch::default()
+            ..GradePatch::default()
         };
-        p.exposure = match (self.exposure, self.exposure_offset) {
+        // The Input: the raw, light, lens and detail settings.
+        let mut input = NodePatch {
+            white_balance: self.wb.map(|wb| match wb {
+                WbArg::Auto => AutoOr::Auto,
+                WbArg::Manual { kelvin, tint } => AutoOr::Manual(WhiteBalanceManualPatch {
+                    kelvin: Some(kelvin),
+                    tint,
+                }),
+            }),
+            light_source: self.light.map(|l| match l {
+                LightArg::Auto => LightSource::Auto,
+                LightArg::Day => LightSource::Day,
+                LightArg::Shade => LightSource::Shade,
+                LightArg::Tungsten => LightSource::Tungsten,
+                LightArg::Led => LightSource::Led,
+                LightArg::Fluorescent => LightSource::Fluorescent,
+            }),
+            noise_reduction: self.nr.map(|nr| match nr {
+                NrArg::Auto => AutoOr::Auto,
+                NrArg::Manual {
+                    luminance,
+                    color,
+                    detail,
+                } => AutoOr::Manual(NoiseReductionManualPatch {
+                    luminance: Some(luminance),
+                    color: Some(color),
+                    detail: Some(detail),
+                }),
+            }),
+            sharpen: self.sharpen.map(|s| match s {
+                SharpenArg::Auto => AutoOr::Auto,
+                SharpenArg::Manual { amount, radius_px } => AutoOr::Manual(SharpenManualPatch {
+                    amount: Some(amount),
+                    radius_px: Some(radius_px),
+                }),
+            }),
+            rolloff: self.rolloff.map(|r| RolloffPatch {
+                highlights: Some(r.highlights),
+                low_light: Some(r.low_light),
+            }),
+            lens: self.lens_patch(),
+            ..NodePatch::default()
+        };
+        input.exposure = match (self.exposure, self.exposure_offset) {
             (Some(ExposureArg::Auto), _) => Some(AutoOr::Auto),
             (Some(ExposureArg::Ev(ev)), _) => Some(ExposureSetting::manual_ev(ev)),
             (None, Some(offset)) => Some(ExposureSetting::manual_ev(auto_exposure_ev + offset)),
             (None, None) => None,
         };
-        p.white_balance = self.wb.map(|wb| match wb {
-            WbArg::Auto => AutoOr::Auto,
-            WbArg::Manual { kelvin, tint } => AutoOr::Manual(WhiteBalanceManualPatch {
-                kelvin: Some(kelvin),
-                tint,
-            }),
-        });
-        p.light_source = self.light.map(|l| match l {
-            LightArg::Auto => LightSource::Auto,
-            LightArg::Day => LightSource::Day,
-            LightArg::Shade => LightSource::Shade,
-            LightArg::Tungsten => LightSource::Tungsten,
-            LightArg::Led => LightSource::Led,
-            LightArg::Fluorescent => LightSource::Fluorescent,
-        });
-        p.noise_reduction = self.nr.map(|nr| match nr {
-            NrArg::Auto => AutoOr::Auto,
-            NrArg::Manual {
-                luminance,
-                color,
-                detail,
-            } => AutoOr::Manual(NoiseReductionManualPatch {
-                luminance: Some(luminance),
-                color: Some(color),
-                detail: Some(detail),
-            }),
-        });
-        p.sharpen = self.sharpen.map(|s| match s {
-            SharpenArg::Auto => AutoOr::Auto,
-            SharpenArg::Manual { amount, radius_px } => AutoOr::Manual(SharpenManualPatch {
-                amount: Some(amount),
-                radius_px: Some(radius_px),
-            }),
-        });
         let decode = DecodePatch {
             neural_demosaic: self.no_neural.then_some(false),
             highlight_recovery: self.no_highlight_recovery.then_some(false),
@@ -218,14 +234,25 @@ impl Overrides {
             chromatic_aberration: self.no_ca.then_some(false),
         };
         if decode != DecodePatch::default() {
-            p.decode = Some(decode);
+            input.decode = Some(decode);
         }
-        p.rolloff = self.rolloff.map(|r| RolloffPatch {
-            highlights: Some(r.highlights),
-            low_light: Some(r.low_light),
-        });
-        p.lens = self.lens_patch();
-        p
+        let mut patch = SettingsPatch::default();
+        if input != NodePatch::default() {
+            patch.nodes.insert(NodeId::Input, input);
+        }
+        if grade != GradePatch::default() {
+            patch.nodes.insert(
+                NodeId::MAIN,
+                NodePatch {
+                    grade: Some(grade),
+                    ..NodePatch::default()
+                },
+            );
+        }
+        if output != NodePatch::default() {
+            patch.nodes.insert(NodeId::Output, output);
+        }
+        patch
     }
 
     /// True when no option changes a photo's settings.
@@ -611,9 +638,14 @@ mod tests {
     fn each_option_changes_its_own_setting_and_nothing_else() {
         // Every flag alone: the patch holds exactly the field it names (a swapped pair, such as
         // `--no-neural` feeding `highlight_recovery`, would otherwise go unnoticed).
-        let decode = |d: DecodePatch| SettingsPatch {
-            decode: Some(d),
-            ..SettingsPatch::default()
+        let decode = |d: DecodePatch| {
+            SettingsPatch::default().and(
+                NodeId::Input,
+                NodePatch {
+                    decode: Some(d),
+                    ..NodePatch::default()
+                },
+            )
         };
         let cases: Vec<(&str, Overrides, SettingsPatch)> = vec![
             (
@@ -622,10 +654,13 @@ mod tests {
                     intensity: Some(80.0),
                     ..Overrides::default()
                 },
-                SettingsPatch {
-                    look_intensity: Some(80.0),
-                    ..SettingsPatch::default()
-                },
+                SettingsPatch::default().and(
+                    NodeId::Output,
+                    NodePatch {
+                        look_intensity: Some(80.0),
+                        ..NodePatch::default()
+                    },
+                ),
             ),
             (
                 "--contrast",
@@ -633,10 +668,16 @@ mod tests {
                     contrast: Some(PercentArg::Value(21.0)),
                     ..Overrides::default()
                 },
-                SettingsPatch {
-                    contrast: Some(PercentSetting::manual_value(21.0)),
-                    ..SettingsPatch::default()
-                },
+                SettingsPatch::default().and(
+                    NodeId::MAIN,
+                    NodePatch {
+                        grade: Some(GradePatch {
+                            contrast: Some(PercentSetting::manual_value(21.0)),
+                            ..GradePatch::default()
+                        }),
+                        ..NodePatch::default()
+                    },
+                ),
             ),
             (
                 "--brightness",
@@ -644,10 +685,16 @@ mod tests {
                     brightness: Some(11.0),
                     ..Overrides::default()
                 },
-                SettingsPatch {
-                    brightness: Some(11.0),
-                    ..SettingsPatch::default()
-                },
+                SettingsPatch::default().and(
+                    NodeId::MAIN,
+                    NodePatch {
+                        grade: Some(GradePatch {
+                            brightness: Some(11.0),
+                            ..GradePatch::default()
+                        }),
+                        ..NodePatch::default()
+                    },
+                ),
             ),
             (
                 "--highlights",
@@ -655,10 +702,16 @@ mod tests {
                     highlights: Some(PercentArg::Value(-12.0)),
                     ..Overrides::default()
                 },
-                SettingsPatch {
-                    highlights: Some(PercentSetting::manual_value(-12.0)),
-                    ..SettingsPatch::default()
-                },
+                SettingsPatch::default().and(
+                    NodeId::MAIN,
+                    NodePatch {
+                        grade: Some(GradePatch {
+                            highlights: Some(PercentSetting::manual_value(-12.0)),
+                            ..GradePatch::default()
+                        }),
+                        ..NodePatch::default()
+                    },
+                ),
             ),
             (
                 "--shadows",
@@ -666,10 +719,16 @@ mod tests {
                     shadows: Some(PercentArg::Value(22.0)),
                     ..Overrides::default()
                 },
-                SettingsPatch {
-                    shadows: Some(PercentSetting::manual_value(22.0)),
-                    ..SettingsPatch::default()
-                },
+                SettingsPatch::default().and(
+                    NodeId::MAIN,
+                    NodePatch {
+                        grade: Some(GradePatch {
+                            shadows: Some(PercentSetting::manual_value(22.0)),
+                            ..GradePatch::default()
+                        }),
+                        ..NodePatch::default()
+                    },
+                ),
             ),
             (
                 "--white",
@@ -677,10 +736,16 @@ mod tests {
                     white: Some(33.0),
                     ..Overrides::default()
                 },
-                SettingsPatch {
-                    white: Some(33.0),
-                    ..SettingsPatch::default()
-                },
+                SettingsPatch::default().and(
+                    NodeId::MAIN,
+                    NodePatch {
+                        grade: Some(GradePatch {
+                            white: Some(33.0),
+                            ..GradePatch::default()
+                        }),
+                        ..NodePatch::default()
+                    },
+                ),
             ),
             (
                 "--black",
@@ -688,10 +753,16 @@ mod tests {
                     black: Some(PercentArg::Auto),
                     ..Overrides::default()
                 },
-                SettingsPatch {
-                    black: Some(AutoOr::Auto),
-                    ..SettingsPatch::default()
-                },
+                SettingsPatch::default().and(
+                    NodeId::MAIN,
+                    NodePatch {
+                        grade: Some(GradePatch {
+                            black: Some(AutoOr::Auto),
+                            ..GradePatch::default()
+                        }),
+                        ..NodePatch::default()
+                    },
+                ),
             ),
             (
                 "--saturation",
@@ -699,10 +770,16 @@ mod tests {
                     saturation: Some(PercentArg::Value(-15.0)),
                     ..Overrides::default()
                 },
-                SettingsPatch {
-                    saturation: Some(PercentSetting::manual_value(-15.0)),
-                    ..SettingsPatch::default()
-                },
+                SettingsPatch::default().and(
+                    NodeId::MAIN,
+                    NodePatch {
+                        grade: Some(GradePatch {
+                            saturation: Some(PercentSetting::manual_value(-15.0)),
+                            ..GradePatch::default()
+                        }),
+                        ..NodePatch::default()
+                    },
+                ),
             ),
             (
                 "--no-neural",

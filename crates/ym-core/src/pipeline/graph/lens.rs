@@ -271,7 +271,7 @@ impl Job<'_> {
     }
 
     fn make_lens_ctx(&mut self) -> Result<Option<Arc<LensCtx>>, RenderError> {
-        let settings = self.src.settings.lens;
+        let settings = self.src.settings.input().lens;
         if settings.is_identity() {
             return Ok(None);
         }
@@ -379,7 +379,7 @@ impl Job<'_> {
     /// What the finished request says about the lens: what this request's planes said, else what the
     /// photo's planes in the graph say (a frame served from the cache made none).
     pub(super) fn lens_report_for_finish(&mut self) -> Option<ReshapeReport> {
-        if self.src.settings.lens.is_identity() || self.opts.lens.is_none() {
+        if self.src.settings.input().lens.is_identity() || self.opts.lens.is_none() {
             return None;
         }
         if self.lens_report.is_some() {

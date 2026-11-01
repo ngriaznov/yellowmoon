@@ -44,6 +44,7 @@ use crate::runtime::{
     BackgroundGpu, CoreSettings, Runtime, gpu_line, interrupted, read_instructions,
 };
 use crate::text::{data_path, line_text, lossy, path_text};
+use ym_core::settings::{NodeId, NodePatch};
 
 /// The longest file name the progress line shows. With the bar and the counts the line is then
 /// about 70 columns, which fits the 80 of a default terminal window; a longer line would wrap and
@@ -735,10 +736,13 @@ fn apply_settings(
                         auto: true,
                     })
                 });
-                let patch = SettingsPatch {
-                    crop: Some(crop),
-                    ..SettingsPatch::default()
-                };
+                let patch = SettingsPatch::default().and(
+                    NodeId::Input,
+                    NodePatch {
+                        crop: Some(crop),
+                        ..NodePatch::default()
+                    },
+                );
                 resolved = session
                     .update_settings(id, &patch)
                     .map_err(|e| e.to_string())?;

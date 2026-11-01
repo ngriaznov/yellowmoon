@@ -189,7 +189,7 @@ fn a_curve_change_does_not_rerun_demosaic_or_the_color_group_with(rig: Rig) {
     let src = rig.source();
     rig.runs(&src);
     let curved = edit(&src, |s| {
-        s.curve.luma = vec![[0.0, 0.0], [0.5, 0.62], [1.0, 1.0]];
+        s.main_grade_mut().curve.luma = vec![[0.0, 0.0], [0.5, 0.62], [1.0, 1.0]];
     });
     let r = rig.runs(&curved);
     assert_eq!(r.raw_work(), 0, "no raw stage ran: {r:?}");
@@ -218,44 +218,44 @@ fn every_grade_control_and_the_look_only_rebuild_the_grade_group_with(rig: Rig) 
     let edits: Vec<(&str, Edit)> = vec![
         (
             "contrast",
-            Box::new(|s| s.contrast = ym_core::settings::PercentSetting::manual_value(20.0)),
+            Box::new(|s| s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(20.0)),
         ),
-        ("brightness", Box::new(|s| s.brightness = -20.0)),
+        ("brightness", Box::new(|s| s.main_grade_mut().brightness = -20.0)),
         (
             "highlights",
-            Box::new(|s| s.highlights = ym_core::settings::PercentSetting::manual_value(30.0)),
+            Box::new(|s| s.main_grade_mut().highlights = ym_core::settings::PercentSetting::manual_value(30.0)),
         ),
         (
             "shadows",
-            Box::new(|s| s.shadows = ym_core::settings::PercentSetting::manual_value(30.0)),
+            Box::new(|s| s.main_grade_mut().shadows = ym_core::settings::PercentSetting::manual_value(30.0)),
         ),
-        ("white", Box::new(|s| s.white = 10.0)),
+        ("white", Box::new(|s| s.main_grade_mut().white = 10.0)),
         (
             "black",
-            Box::new(|s| s.black = ym_core::settings::PercentSetting::manual_value(10.0)),
+            Box::new(|s| s.main_grade_mut().black = ym_core::settings::PercentSetting::manual_value(10.0)),
         ),
         (
             "saturation",
-            Box::new(|s| s.saturation = ym_core::settings::PercentSetting::manual_value(25.0)),
+            Box::new(|s| s.main_grade_mut().saturation = ym_core::settings::PercentSetting::manual_value(25.0)),
         ),
         (
             "color_balance",
             Box::new(|s| {
-                s.color_balance.shadows =
+                s.main_grade_mut().color_balance.shadows =
                     ym_core::settings::BalanceSetting::manual_point([0.3, -0.2])
             }),
         ),
         (
             "color_warp",
             Box::new(|s| {
-                s.color_warp.pins =
+                s.main_grade_mut().color_warp.pins =
                     vec![ym_color::warp::WarpPin::moving([0.1, 0.02], [0.06, 0.08]).into()];
             }),
         ),
-        ("look_intensity", Box::new(|s| s.look_intensity = 40.0)),
+        ("look_intensity", Box::new(|s| s.output_mut().look_intensity = 40.0)),
         (
             "curve red",
-            Box::new(|s| s.curve.red = vec![[0.0, 0.0], [0.4, 0.5], [1.0, 1.0]]),
+            Box::new(|s| s.main_grade_mut().curve.red = vec![[0.0, 0.0], [0.4, 0.5], [1.0, 1.0]]),
         ),
     ];
     for (name, f) in edits {
@@ -284,7 +284,7 @@ fn a_white_balance_change_does_not_rerun_r3_to_r9_with(rig: Rig) {
         (
             "kelvin",
             Box::new(|s| {
-                s.white_balance =
+                s.input_mut().white_balance =
                     ym_core::settings::AutoOr::Manual(ym_core::settings::WhiteBalanceValue {
                         kelvin: 3200.0,
                         tint: 10.0,
@@ -294,16 +294,16 @@ fn a_white_balance_change_does_not_rerun_r3_to_r9_with(rig: Rig) {
         (
             "exposure",
             Box::new(|s| {
-                s.exposure =
+                s.input_mut().exposure =
                     ym_core::settings::AutoOr::Manual(ym_core::settings::ExposureValue { ev: 1.25 })
             }),
         ),
         (
             "light source",
-            Box::new(|s| s.light_source = ym_color::wb::LightSource::Tungsten),
+            Box::new(|s| s.input_mut().light_source = ym_color::wb::LightSource::Tungsten),
         ),
-        ("highlight range", Box::new(|s| s.rolloff.highlights = 0.9)),
-        ("low-light toe", Box::new(|s| s.rolloff.low_light = 0.1)),
+        ("highlight range", Box::new(|s| s.input_mut().rolloff.highlights = 0.9)),
+        ("low-light toe", Box::new(|s| s.input_mut().rolloff.low_light = 0.1)),
     ];
     for (name, f) in edits {
         let r = rig.runs(&edit(&src, f));
@@ -332,24 +332,24 @@ fn a_decode_switch_noise_reduction_or_sharpening_reruns_the_raw_group_with(rig: 
     let edits: Vec<(&str, Edit)> = vec![
         (
             "highlight recovery",
-            Box::new(|s| s.decode.highlight_recovery = false),
+            Box::new(|s| s.input_mut().decode.highlight_recovery = false),
         ),
         (
             "lens corrections",
-            Box::new(|s| s.decode.lens_corrections = false),
+            Box::new(|s| s.input_mut().decode.lens_corrections = false),
         ),
         (
             "chromatic aberration",
-            Box::new(|s| s.decode.chromatic_aberration = false),
+            Box::new(|s| s.input_mut().decode.chromatic_aberration = false),
         ),
         (
             "neural demosaic",
-            Box::new(|s| s.decode.neural_demosaic = false),
+            Box::new(|s| s.input_mut().decode.neural_demosaic = false),
         ),
         (
             "noise reduction",
             Box::new(|s| {
-                s.noise_reduction =
+                s.input_mut().noise_reduction =
                     ym_core::settings::AutoOr::Manual(ym_core::settings::NoiseReductionValue {
                         luminance: 70.0,
                         color: 20.0,
@@ -360,7 +360,7 @@ fn a_decode_switch_noise_reduction_or_sharpening_reruns_the_raw_group_with(rig: 
         (
             "sharpen",
             Box::new(|s| {
-                s.sharpen = ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
+                s.input_mut().sharpen = ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
                     amount: 200.0,
                     radius_px: 1.2,
                 })
@@ -405,12 +405,12 @@ fn crop_straighten_and_orientation_re_run_nothing_but_the_pixel_pass_with(rig: R
     let edits: Vec<(&str, Edit)> = vec![
         (
             "orientation",
-            Box::new(|s| s.orientation = Orientation::Deg90),
+            Box::new(|s| s.input_mut().orientation = Orientation::Deg90),
         ),
         (
             "crop",
             Box::new(|s| {
-                s.crop = Some(Crop {
+                s.input_mut().crop = Some(Crop {
                     rect: NormRect {
                         x: 0.1,
                         y: 0.1,
@@ -426,7 +426,7 @@ fn crop_straighten_and_orientation_re_run_nothing_but_the_pixel_pass_with(rig: R
         (
             "straighten",
             Box::new(|s| {
-                s.crop = Some(Crop {
+                s.input_mut().crop = Some(Crop {
                     rect: NormRect::FULL,
                     angle_deg: 3.5,
                     aspect: CropAspect::Original,
@@ -467,7 +467,7 @@ fn a_crop_that_needs_a_finer_image_runs_the_raw_group_once_at_the_new_scale_with
     // zoom changing, not the crop invalidating a group.
     assert_eq!(rig.runs(&src).raw_groups, 1);
     let cropped = edit(&src, |s| {
-        s.crop = Some(Crop {
+        s.input_mut().crop = Some(Crop {
             rect: NormRect {
                 x: 0.0,
                 y: 0.0,
@@ -581,7 +581,7 @@ fn at_100_percent_tiles_are_cached_across_pans_and_color_edits_with(rig: Rig) {
     assert_eq!((first.full_chains, first.raw_groups), (1, 0), "{first:?}");
     // A colour-only edit finds every tile, and the full chain, cached.
     let edited = edit(&src, |s| {
-        s.contrast = ym_core::settings::PercentSetting::manual_value(15.0)
+        s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(15.0)
     });
     let r = rig.runs_with(&edited, &state, FrameOptions::default());
     assert_eq!((r.tiles, r.full_chains, r.raw_work()), (0, 0, 0), "{r:?}");
@@ -592,7 +592,7 @@ fn at_100_percent_tiles_are_cached_across_pans_and_color_edits_with(rig: Rig) {
     assert_eq!((r.tiles, r.full_chains), (0, 0), "{r:?}");
     // A raw-group change drops the tiles: they are recomputed.
     let r = rig.runs_with(
-        &edit(&src, |s| s.decode.highlight_recovery = false),
+        &edit(&src, |s| s.input_mut().decode.highlight_recovery = false),
         &state,
         FrameOptions::default(),
     );

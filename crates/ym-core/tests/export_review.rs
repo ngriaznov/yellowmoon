@@ -31,6 +31,7 @@ use ym_core::session::{ApplyScope, OpenOptions, PhotoId, Session};
 use ym_core::settings::SettingsPatch;
 use ym_export::{ExportOptions, FormatKind};
 use ym_looks::library::LookId;
+use ym_core::settings::{GradePatch, NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -329,10 +330,13 @@ fn a_panic_while_exporting_a_photo_fails_that_photo_and_the_job_goes_on() {
     session
         .update_settings(
             out.added[0],
-            &SettingsPatch {
-                look: Some(LookId::parse("user:boom").expect("id")),
-                ..SettingsPatch::default()
-            },
+            &SettingsPatch::default().and(
+                NodeId::Output,
+                NodePatch {
+                    look: Some(LookId::parse("user:boom").expect("id")),
+                    ..NodePatch::default()
+                },
+            ),
         )
         .expect("look");
     let renderer = Renderer::new(Arc::new(PanickingLooks), RenderOptions::default()).expect("r");
@@ -442,11 +446,17 @@ fn export_bytes_do_not_depend_on_the_number_of_threads() {
     session
         .update_settings(
             out.added[0],
-            &SettingsPatch {
-                contrast: Some(ym_core::settings::PercentSetting::manual_value(15.0)),
-                saturation: Some(ym_core::settings::PercentSetting::manual_value(10.0)),
-                ..SettingsPatch::default()
-            },
+            &SettingsPatch::default().and(
+                NodeId::MAIN,
+                NodePatch {
+                    grade: Some(GradePatch {
+                        contrast: Some(ym_core::settings::PercentSetting::manual_value(15.0)),
+                        saturation: Some(ym_core::settings::PercentSetting::manual_value(10.0)),
+                        ..GradePatch::default()
+                    }),
+                    ..NodePatch::default()
+                },
+            ),
         )
         .expect("settings");
     let photo = ExportPhoto::from_session(&session, out.added[0]).expect("photo");
@@ -608,28 +618,36 @@ fn a_dngs_window_preview_and_orientation_tag_agree_with_the_baked_export_for_eve
             session
                 .update_settings(
                     out.added[0],
-                    &SettingsPatch {
-                        // A DNG carries no sharpening (docs/09), so the JPEG it is compared with
-                        // has none either: this test is about where the pixels are, not how sharp.
-                        sharpen: Some(AutoOr::Manual(SharpenManualPatch {
-                            amount: Some(0.0),
-                            radius_px: Some(1.0),
-                        })),
-                        output_sharpening: Some(0.0),
-                        orientation: Some(turn),
-                        crop: Some(Some(Crop {
-                            rect: NormRect {
-                                x: 0.1,
-                                y: 0.3,
-                                width: 0.5,
-                                height: 0.4,
+                    &SettingsPatch::default()
+                        .and(
+                            NodeId::Input,
+                            NodePatch {
+                                sharpen: Some(AutoOr::Manual(SharpenManualPatch {
+                                    amount: Some(0.0),
+                                    radius_px: Some(1.0),
+                                })),
+                                orientation: Some(turn),
+                                crop: Some(Some(Crop {
+                                    rect: NormRect {
+                                        x: 0.1,
+                                        y: 0.3,
+                                        width: 0.5,
+                                        height: 0.4,
+                                    },
+                                    angle_deg: 0.0,
+                                    aspect: CropAspect::Free,
+                                    auto: false,
+                                })),
+                                ..NodePatch::default()
                             },
-                            angle_deg: 0.0,
-                            aspect: CropAspect::Free,
-                            auto: false,
-                        })),
-                        ..SettingsPatch::default()
-                    },
+                        )
+                        .and(
+                            NodeId::Output,
+                            NodePatch {
+                                output_sharpening: Some(0.0),
+                                ..NodePatch::default()
+                            },
+                        ),
                 )
                 .expect("settings");
             let photo = ExportPhoto::from_session(&session, out.added[0]).expect("photo");

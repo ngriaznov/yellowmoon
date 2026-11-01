@@ -529,7 +529,14 @@ impl PhotoSnapshot {
     #[must_use]
     pub fn planned_file_name(&self, options: &ExportOptions, seq: u32) -> String {
         let v = &self.view;
-        planned_file_name_of(&v.path, &v.meta, &v.camera, &v.settings.look, options, seq)
+        planned_file_name_of(
+            &v.path,
+            &v.meta,
+            &v.camera,
+            &v.settings.output().look,
+            options,
+            seq,
+        )
     }
 
     /// The snapshot with the decoded image attached.
@@ -581,7 +588,7 @@ impl ExportPhoto {
     /// The look the photo is exported with.
     #[must_use]
     pub fn look(&self) -> &LookId {
-        &self.source.settings.look
+        &self.source.settings.output().look
     }
 }
 
@@ -1192,9 +1199,11 @@ fn export_photo_unguarded(
                 profile_match: Some(profile_match_text(&camera.matched.how).to_owned()),
                 look: Some(photo.look().to_string()),
                 look_sha256,
-                look_intensity_pct: Some(rounded_percent(photo.source.settings.look_intensity)),
+                look_intensity_pct: Some(rounded_percent(
+                    photo.source.settings.output().look_intensity,
+                )),
                 display_transform: Some(display_transform_id(space)),
-                models: lens_models(&ctx.renderer, &photo.source.settings.lens),
+                models: lens_models(&ctx.renderer, &photo.source.settings.input().lens),
                 // Which Auto made the values, and what the provider said (`docs/22` section 14.2).
                 auto: Some(photo.source.estimates.source().name().to_owned()),
                 auto_advisor: photo.source.estimates.apple.advisor_json(),
@@ -1280,7 +1289,7 @@ fn export_photo_unguarded(
         rendered = (raw.width as u32, raw.height as u32);
         let orientation = compose_orientation(
             photo.source.exif_orientation(),
-            photo.source.settings.orientation.degrees(),
+            photo.source.settings.input().orientation.degrees(),
         )
         .unwrap_or(1);
         let crop = raw.window.map(|w| CropRect {
@@ -1322,8 +1331,9 @@ fn export_photo_unguarded(
     } else {
         // Output sharpening (Detail › Sharpening › Output) runs right after the Lanczos-3 resize, on
         // the picture at the size it is written. Never for a DNG.
-        let stages =
-            PictureStages::output_sharpening(photo.source.settings.output_sharpening as f32);
+        let stages = PictureStages::output_sharpening(
+            photo.source.settings.output().output_sharpening as f32,
+        );
         // With the export tail on the device the picture is never a host frame: the device makes
         // the encoded rows and the writer pulls them (`pipeline::frame::export_tail`). A device
         // error ends that attempt, and the whole photo is made again on the CPU reference path.
@@ -1597,10 +1607,10 @@ fn megapixels(w: usize, h: usize) -> f64 {
 #[must_use]
 pub fn estimated_output_size(meta: &RawMetadata, settings: &DevelopSettings) -> (u32, u32) {
     let (mut w, mut h) = meta_image_size(meta);
-    if matches!(settings.orientation.degrees(), 90 | 270) {
+    if matches!(settings.input().orientation.degrees(), 90 | 270) {
         std::mem::swap(&mut w, &mut h);
     }
-    if let Some(crop) = &settings.crop {
+    if let Some(crop) = &settings.input().crop {
         w = ((w as f64 * crop.rect.width).round() as usize).max(1);
         h = ((h as f64 * crop.rect.height).round() as usize).max(1);
     }

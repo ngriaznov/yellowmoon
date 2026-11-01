@@ -1216,15 +1216,25 @@ impl AutoSource {
     }
 }
 
-/// The `auto` object of `src/api/types.ts` (`AutoEstimates` there) and of `ym render --json`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AutoSummary {
+/// What Auto resolves to for the Input (`docs/23` section 3.9): the exposure, the Kelvin and tint
+/// and what Auto sharpening and noise reduction resolve to.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct InputAuto {
     /// `EV_auto` (with Apple Auto's change, when there is one).
     pub exposure_ev: f64,
     /// The Auto Kelvin (a multiple of 50; with Apple Auto's nudge, when there is one).
     pub kelvin: f64,
     /// The Auto tint.
     pub tint: f64,
+    /// What `sharpen: Auto` resolves to.
+    pub sharpen: SharpenValue,
+    /// What `noise_reduction: Auto` resolves to.
+    pub noise_reduction: NoiseReductionValue,
+}
+
+/// What Auto resolves to for Main (`docs/23` section 3.9): only Main can be Auto.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MainAuto {
     /// What `contrast: Auto` resolves to: 0, or Apple Auto's contrast.
     pub contrast: f64,
     /// What `saturation: Auto` resolves to: 0, or Apple Auto's saturation.
@@ -1239,6 +1249,17 @@ pub struct AutoSummary {
     pub balance_shadows: [f64; 2],
     /// What the highlights wheel's Auto resolves to: `[0, 0]`, or Apple Auto's highlight colour.
     pub balance_highlights: [f64; 2],
+}
+
+/// The `auto` object of `ym render --json` and the `estimates` of the resolved settings
+/// (`AutoEstimates` of `src/api/types.ts`), **grouped by the node each number is for**
+/// (`docs/23` section 3.9): `input` and `main`, and beside them what belongs to the photo.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutoSummary {
+    /// What Auto resolves to for the Input.
+    pub input: InputAuto,
+    /// What Auto resolves to for Main.
+    pub main: MainAuto,
     /// Which Auto made these values: `rule`, `apple`, `claude` or `agy`.
     pub source: AutoSource,
     /// The chosen provider's wire name (`docs/22` section 14.1).
@@ -1254,10 +1275,6 @@ pub struct AutoSummary {
     pub light_confidence: f64,
     /// The noise model `variance = a * signal + b`.
     pub noise: NoiseAb,
-    /// What `sharpen: Auto` resolves to.
-    pub sharpen: SharpenValue,
-    /// What `noise_reduction: Auto` resolves to.
-    pub noise_reduction: NoiseReductionValue,
 }
 
 /// The shot-noise gain and read-noise variance, in normalised units.
@@ -1505,13 +1522,40 @@ impl AutoEstimates {
         settings: &DevelopSettings,
         picked_white: Option<Vec3>,
     ) -> Result<FusedChain, ChainError> {
+        let input = settings.input();
         self.color.chain(
             tables_of(profile),
-            settings.light_source,
-            settings.white_balance.to_color(),
-            settings.exposure.to_color(),
-            picked_white.filter(|_| settings.white_pick.is_some()),
+            input.light_source,
+            input.white_balance.to_color(),
+            input.exposure.to_color(),
+            picked_white.filter(|_| input.white_pick.is_some()),
         )
+    }
+
+    /// What Auto resolves to for the Input.
+    #[must_use]
+    pub fn input_auto(&self) -> InputAuto {
+        InputAuto {
+            exposure_ev: self.exposure.ev,
+            kelvin: self.readout.kelvin_k,
+            tint: self.readout.tint,
+            sharpen: self.sharpen,
+            noise_reduction: self.noise_reduction,
+        }
+    }
+
+    /// What Auto resolves to for Main.
+    #[must_use]
+    pub fn main_auto(&self) -> MainAuto {
+        MainAuto {
+            contrast: self.contrast,
+            saturation: self.saturation,
+            highlights: self.highlights,
+            shadows: self.shadows,
+            black: self.black,
+            balance_shadows: self.balance_shadows,
+            balance_highlights: self.balance_highlights,
+        }
     }
 
     /// The summary the UI and `--json` show.
@@ -1526,16 +1570,8 @@ impl AutoEstimates {
             })
             .0;
         AutoSummary {
-            exposure_ev: self.exposure.ev,
-            kelvin: self.readout.kelvin_k,
-            tint: self.readout.tint,
-            contrast: self.contrast,
-            saturation: self.saturation,
-            highlights: self.highlights,
-            shadows: self.shadows,
-            black: self.black,
-            balance_shadows: self.balance_shadows,
-            balance_highlights: self.balance_highlights,
+            input: self.input_auto(),
+            main: self.main_auto(),
             source: self.source(),
             provider: self.provider,
             apple: self.apple.clone(),
@@ -1546,8 +1582,6 @@ impl AutoEstimates {
                 a: self.noise.model.a,
                 b: self.noise.model.b,
             },
-            sharpen: self.sharpen,
-            noise_reduction: self.noise_reduction,
         }
     }
 }

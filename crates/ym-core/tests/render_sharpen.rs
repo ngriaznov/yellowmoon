@@ -81,7 +81,7 @@ fn edit(src: &PhotoSource, f: impl FnOnce(&mut DevelopSettings)) -> PhotoSource 
 }
 
 fn with_amount(src: &PhotoSource, pct: f64) -> PhotoSource {
-    edit(src, |s| s.output_sharpening = pct)
+    edit(src, |s| s.output_mut().output_sharpening = pct)
 }
 
 fn frame(r: &Renderer, src: &PhotoSource, state: &ViewportState) -> RenderedFrame {
@@ -141,7 +141,7 @@ fn local_contrast(f: &RenderedFrame) -> f64 {
 fn moving_the_slider_re_runs_only_the_stage_and_zero_runs_no_stage_with(r: &Renderer) {
     let d = developed(1200, 800);
     let src = d.source();
-    assert_eq!(src.settings.output_sharpening, 100.0);
+    assert_eq!(src.settings.output().output_sharpening, 100.0);
     let state = cell(576.0, 384.0);
     let runs = |src: &PhotoSource| frame(r, src, &state).report.runs;
 

@@ -20,6 +20,7 @@ use ym_core::session::{ApplyScope, OpenOptions, PhotoId, Session};
 use ym_core::settings::SettingsPatch;
 use ym_export::{ExportOptions, IfExists};
 use ym_looks::library::LookId;
+use ym_core::settings::{GradePatch, NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -258,11 +259,17 @@ fn settings_are_snapshotted_when_the_job_is_queued() {
         f.session
             .update_settings(
                 *id,
-                &SettingsPatch {
-                    saturation: Some(ym_core::settings::PercentSetting::manual_value(60.0)),
-                    contrast: Some(ym_core::settings::PercentSetting::manual_value(-30.0)),
-                    ..SettingsPatch::exposure_ev(1.5)
-                },
+                &SettingsPatch::exposure_ev(1.5).and(
+                    NodeId::MAIN,
+                    NodePatch {
+                        grade: Some(GradePatch {
+                            saturation: Some(ym_core::settings::PercentSetting::manual_value(60.0)),
+                            contrast: Some(ym_core::settings::PercentSetting::manual_value(-30.0)),
+                            ..GradePatch::default()
+                        }),
+                        ..NodePatch::default()
+                    },
+                ),
             )
             .expect("edit");
     }
@@ -449,10 +456,13 @@ fn one_photo_that_fails_does_not_stop_the_job() {
     f.session
         .update_settings(
             f.ids[1],
-            &SettingsPatch {
-                look: Some(LookId::parse("arri:3000:gone").expect("id")),
-                ..SettingsPatch::default()
-            },
+            &SettingsPatch::default().and(
+                NodeId::Output,
+                NodePatch {
+                    look: Some(LookId::parse("arri:3000:gone").expect("id")),
+                    ..NodePatch::default()
+                },
+            ),
         )
         .expect("edit");
     let id = queue
@@ -666,10 +676,16 @@ fn the_estimate_counts_bytes_seconds_and_what_a_command_cannot_carry() {
     f.session
         .update_settings(
             f.ids[0],
-            &SettingsPatch {
-                saturation: Some(ym_core::settings::PercentSetting::manual_value(10.0)),
-                ..SettingsPatch::default()
-            },
+            &SettingsPatch::default().and(
+                NodeId::MAIN,
+                NodePatch {
+                    grade: Some(GradePatch {
+                        saturation: Some(ym_core::settings::PercentSetting::manual_value(10.0)),
+                        ..GradePatch::default()
+                    }),
+                    ..NodePatch::default()
+                },
+            ),
         )
         .expect("edit");
     assert_eq!(queue.estimate(&f.session, &jpeg).adjusted_photos, 1);
@@ -993,10 +1009,13 @@ fn each_photo_gets_a_file_event_with_the_report_for_the_clis_json() {
     f.session
         .update_settings(
             f.ids[1],
-            &SettingsPatch {
-                look: Some(LookId::parse("arri:3000:gone").expect("id")),
-                ..SettingsPatch::default()
-            },
+            &SettingsPatch::default().and(
+                NodeId::Output,
+                NodePatch {
+                    look: Some(LookId::parse("arri:3000:gone").expect("id")),
+                    ..NodePatch::default()
+                },
+            ),
         )
         .expect("edit");
     let mut j = job(ApplyScope::All, out.path());

@@ -1,6 +1,19 @@
-//! `DevelopSettings`: every control in the UI and every CLI flag as one field, the patch that
-//! `update_settings` applies, and `ResolvedSettings`, the settings with every `Auto` resolved
-//! against the photo's automatic estimates (`docs/01-architecture.md` section DevelopSettings).
+//! `DevelopSettings`: the settings of a photo, which are **a graph of nodes** (`docs/23-nodes.md`
+//! section 3, the owner's decision of 2026-11-01), the node patch that `update_settings` applies,
+//! and `ResolvedSettings`, the settings with every `Auto` resolved against the photo's automatic
+//! estimates (`docs/01-architecture.md` section DevelopSettings).
+//!
+//! # The graph
+//!
+//! `DevelopSettings` has one field, `nodes`, a [`NodeGraph`]: the Input (`"input"`), Main (the
+//! corrector with id 1), any other correctors and the Output (`"output"`), with typed links between
+//! them. Every field that used to be a top-level setting is a field of one node under the same name
+//! and with the same type: the Input holds the raw, light and framing settings, the Output the look
+//! and the output sharpening, a corrector (Main included) its grade, trims and masks. The rest of
+//! the core reads them through [`DevelopSettings::input`], [`DevelopSettings::main_grade`],
+//! [`DevelopSettings::output`] and their `_mut` twins. Making the settings node-first moved fields
+//! and changed no pixel: the render still uses the Input, Main and the Output as it used the flat
+//! fields (the other nodes render from N-03 on).
 //!
 //! # One JSON shape
 //!
@@ -13,19 +26,22 @@
 //!   JSON Schema), and
 //! * what the golden-image manifest stores.
 //!
-//! Reading is lenient about *missing* fields (they take their defaults, so a settings file may
-//! hold only the fields it changes) and strict about *unknown* ones (a typo such as `exposur` is an
-//! error, not a silent no-op). Writing always writes every field.
+//! Reading is lenient about *missing* fields (a document is read over the default graph: the three
+//! fixed nodes need not be listed, a listed node's missing fields take their defaults, `links` left
+//! out are the default links) and strict about *unknown* ones (a typo such as `exposur` is an error,
+//! not a silent no-op). A document in the flat form of Yellowmoon 0.1 is refused
+//! ([`SettingsError::OldForm`]). Writing always writes every field.
 //!
 //! # Auto and Manual
 //!
-//! `exposure`, `contrast`, `highlights`, `shadows`, `black`, `white_balance`, `saturation`, the
-//! shadows and highlights colour-balance wheels, `sharpen` and `noise_reduction` are [`AutoOr`]:
-//! `Auto` resolves against [`AutoEstimates`] when the photo is rendered, `Manual` is the user's
-//! value. Auto contrast, highlights, shadows, black and saturation are 0, and the wheels `[0, 0]`,
-//! unless Apple Auto answered for the photo (`docs/19` section 5); a plain number (or point) in an
-//! older document reads as Manual, and 0 (or `[0, 0]`) as Auto. A patch that carries a `Manual`
-//! value is what "moving a slider" sends; a patch that carries `Auto` is Reset.
+//! The Input's `exposure`, `white_balance`, `sharpen` and `noise_reduction`, and Main's `contrast`,
+//! `highlights`, `shadows`, `black`, `saturation` and shadows and highlights colour-balance wheels
+//! are [`AutoOr`]: `Auto` resolves against [`AutoEstimates`] when the photo is rendered, `Manual` is
+//! the user's value. **Auto belongs to Main**: in any other corrector Auto reads as a manual 0 and is
+//! written as one. Auto contrast, highlights, shadows, black and saturation are 0, and the wheels
+//! `[0, 0]`, unless Apple Auto answered for the photo (`docs/19` section 5); a plain number (or
+//! point) in a document reads as Manual, and 0 (or `[0, 0]`) as Auto. A patch that carries a
+//! `Manual` value is what "moving a slider" sends; a patch that carries `Auto` is Reset.
 //! [`ResolvedSettings`] answers what the panel shows: every `Auto` replaced by the number it
 //! resolves to, and which fields are still automatic (the AUTO and EDITED tags).
 //!
@@ -38,9 +54,11 @@
 //! The colour warp keeps at most [`WARP_MAX_PINS`] pins (later ones are cut) and clamps each pin the
 //! way `ym_color::warp::WarpPin::clamped` does ([`ColorWarp`]). The lens (`docs/21` section 2,
 //! [`LensSettings`]) is a kind and three amounts, each clamped to [`LENS_AMOUNT_RANGE`]; a patch may
-//! carry only the parts it changes ([`LensPatch`]).
+//! carry only the parts it changes ([`LensPatch`]). The rules of the graph itself (`docs/23`
+//! section 3.5) are [`GraphError`].
 
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use ym_color::chain::ChainError;
 use ym_color::exposure::ExposureSetting as ColorExposure;
 use ym_color::warp::{WARP_COORD_LIMIT, WARP_MAX_PINS, WARP_RANGE_DEFAULT, WarpParams, WarpPin};
@@ -53,8 +71,24 @@ pub use ym_lens::LensKind;
 use ym_looks::library::LookId;
 use ym_profiles::profile::Profile;
 
-use crate::auto::{AutoEstimates, AutoSummary};
+use crate::auto::{AutoEstimates, AutoSummary, MainAuto};
 use crate::session::PhotoId;
+
+mod graph;
+mod masks;
+mod patch;
+
+pub use graph::{
+    CorrectorNode, DEFAULT_NAME, GraphError, INPUT_POS, InputNode, MAIN_ID, MAIN_NAME,
+    MAX_CORRECTORS, MAX_NAME_CHARS, NodeGrade, NodeGraph, NodeId, NodeKind, NodeLink, NodePos,
+    NodeRef, NodeTrim, OUTPUT_POS, OutputNode, POS_RANGE, Port, TRIM_EXPOSURE_RANGE_EV, TRIM_RANGE,
+};
+pub use masks::{
+    BackgroundMask, BrightnessRangeMask, BrushMask, BrushStroke, ColorRangeMask, FindMask,
+    LinearMask, MASK_KINDS, MAX_BRUSH_POINTS, MAX_MASKS_PER_NODE, MAX_OBJECT_POINTS, MaskItem,
+    MaskMode, MaskRowPatch, MaskSettings, MaskShape, MasksPatch, ObjectMask, RadialMask,
+};
+pub use patch::{COPY_LEAVES_OUT, GradePatch, NodePatch, PatchReport, SettingsPatch, TrimPatch};
 
 // ---------------------------------------------------------------------------------------------
 // Ranges (docs/01 table)
@@ -106,9 +140,10 @@ pub const MIN_CROP_SIDE: f64 = 1e-3;
 /// Why a settings document or a patch was refused. Nothing is applied when this is returned.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum SettingsError {
-    /// A number is not finite.
+    /// A number is not finite. The text names the field as a path from the document
+    /// (`nodes.items[2].trim.tint`).
     #[error("The value for {0} is not a number.")]
-    NotFinite(&'static str),
+    NotFinite(String),
     /// A curve cannot be used.
     #[error("The {channel} curve {problem}.")]
     Curve {
@@ -139,22 +174,68 @@ pub enum SettingsError {
     /// A settings document is not valid JSON of the right shape (a misspelt field included).
     #[error("The settings can't be read: {0}")]
     Parse(String),
+    /// A rule of the graph is broken (`docs/23` section 3.5).
+    #[error(transparent)]
+    Graph(#[from] GraphError),
+    /// A flat settings document of Yellowmoon 0.1 (`docs/23` section 3.12). Nothing was saved in 0.1,
+    /// so there is nothing to carry over.
+    #[error(
+        "This settings file is in the old form of Yellowmoon 0.1. Settings are now a graph of nodes: `ym render --help` shows the new form, and `ym render --json` prints a photo's settings in it."
+    )]
+    OldForm,
+    /// A mask row patch names another kind than the row's.
+    #[error("A mask can't change its kind. Add a new mask instead.")]
+    MaskKind,
+    /// A mask row has no such field.
+    #[error("{mask} mask has no field called “{field}”.")]
+    UnknownMaskField {
+        /// "A Radial", "An Object".
+        mask: String,
+        /// The field.
+        field: String,
+    },
+    /// A row patch names a row the node does not have.
+    #[error("Node {node} has no mask number {index}.")]
+    NoMaskRow {
+        /// The node.
+        node: String,
+        /// The index as the patch gave it.
+        index: String,
+    },
 }
 
-/// A field that older versions wrote and nothing reads any more (`white_offset_ev`, the white lift's offset,
-/// which went with the cine rendering, `docs/02` C12).
-///
-/// It reads any JSON value and drops it, so a settings document or a copied set of an older version still loads;
-/// a struct that holds one never writes it back (`skip_serializing`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct RetiredField;
+/// The sentence a flat document of Yellowmoon 0.1 is refused with.
+pub const OLD_FORM_SENTENCE: &str = "This settings file is in the old form of Yellowmoon 0.1. Settings are now a graph of nodes: `ym render --help` shows the new form, and `ym render --json` prints a photo's settings in it.";
 
-impl<'de> Deserialize<'de> for RetiredField {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        serde::de::IgnoredAny::deserialize(deserializer)?;
-        Ok(Self)
-    }
-}
+/// The top-level names of a settings document of Yellowmoon 0.1 (`docs/23` section 3.12). A
+/// document that has no `nodes` and only these keys is refused with [`SettingsError::OldForm`].
+pub const OLD_FORM_KEYS: [&str; 25] = [
+    "look",
+    "look_intensity",
+    "exposure",
+    "contrast",
+    "brightness",
+    "highlights",
+    "shadows",
+    "white",
+    "black",
+    "light_source",
+    "white_balance",
+    "color_balance",
+    "saturation",
+    "color_warp",
+    "lens",
+    "sharpen",
+    "output_sharpening",
+    "noise_reduction",
+    "curve",
+    "decode",
+    "rolloff",
+    "crop",
+    "orientation",
+    "white_pick",
+    "white_offset_ev",
+];
 
 // ---------------------------------------------------------------------------------------------
 // Fields and stage groups
@@ -189,63 +270,75 @@ pub enum StageGroup {
     Output,
 }
 
-/// One field of [`DevelopSettings`], for change reports and Reset.
+/// One field of a node, for change reports and Reset. The same name can belong to the nodes of
+/// several kinds (`pos` belongs to every node); [`SettingsField::belongs_to`] says which.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingsField {
-    /// `look`.
+    /// The Output's `look`.
     Look,
-    /// `look_intensity`.
+    /// The Output's `look_intensity`.
     LookIntensity,
-    /// `exposure`.
+    /// The Input's `exposure`.
     Exposure,
-    /// `contrast`.
+    /// The grade's `contrast`.
     Contrast,
-    /// `brightness`.
+    /// The grade's `brightness`.
     Brightness,
-    /// `highlights`.
+    /// The grade's `highlights`.
     Highlights,
-    /// `shadows`.
+    /// The grade's `shadows`.
     Shadows,
-    /// `white`.
+    /// The grade's `white`.
     White,
-    /// `black`.
+    /// The grade's `black`.
     Black,
-    /// `light_source`.
+    /// The Input's `light_source`.
     LightSource,
-    /// `white_balance`.
+    /// The Input's `white_balance`.
     WhiteBalance,
-    /// `color_balance`.
+    /// The grade's `color_balance`.
     ColorBalance,
-    /// `saturation`.
+    /// The grade's `saturation`.
     Saturation,
-    /// `color_warp`.
+    /// The grade's `color_warp`.
     ColorWarp,
-    /// `lens`.
+    /// The Input's `lens`.
     Lens,
-    /// `sharpen`.
+    /// The Input's `sharpen`.
     Sharpen,
-    /// `output_sharpening`.
+    /// The Output's `output_sharpening`.
     OutputSharpening,
-    /// `noise_reduction`.
+    /// The Input's `noise_reduction`.
     NoiseReduction,
-    /// `curve`.
+    /// The grade's `curve`.
     Curve,
-    /// `decode`.
+    /// The Input's `decode`.
     Decode,
-    /// `rolloff`.
+    /// The Input's `rolloff`.
     Rolloff,
-    /// `crop`.
+    /// The Input's `crop`.
     Crop,
-    /// `orientation`.
+    /// The Input's `orientation`.
     Orientation,
-    /// `white_pick`.
+    /// The Input's `white_pick`.
     WhitePick,
+    /// A corrector's `name`.
+    Name,
+    /// A corrector's `bypass`.
+    Bypass,
+    /// A node's `pos`.
+    Pos,
+    /// A corrector's `trim`.
+    Trim,
+    /// A corrector's `masks`.
+    Masks,
 }
 
 impl SettingsField {
-    /// Every field, in the order of the settings table.
-    pub const ALL: [SettingsField; 24] = [
+    /// Every field, in the order of the settings table (the Output's and the Input's, then the grade's,
+    /// then the corrector's own).
+    pub const ALL: [SettingsField; 29] = [
         SettingsField::Look,
         SettingsField::LookIntensity,
         SettingsField::Exposure,
@@ -270,6 +363,11 @@ impl SettingsField {
         SettingsField::Crop,
         SettingsField::Orientation,
         SettingsField::WhitePick,
+        SettingsField::Name,
+        SettingsField::Bypass,
+        SettingsField::Pos,
+        SettingsField::Trim,
+        SettingsField::Masks,
     ];
 
     /// The JSON name of the field.
@@ -300,13 +398,81 @@ impl SettingsField {
             Self::Crop => "crop",
             Self::Orientation => "orientation",
             Self::WhitePick => "white_pick",
+            Self::Name => "name",
+            Self::Bypass => "bypass",
+            Self::Pos => "pos",
+            Self::Trim => "trim",
+            Self::Masks => "masks",
         }
     }
 
-    /// The first group of render stages this field affects (`docs/01` section Render graph).
+    /// True for the fields of a corrector's grade (`contrast`, `brightness`, `highlights`,
+    /// `shadows`, `white`, `black`, `color_balance`, `saturation`, `color_warp`, `curve`).
     #[must_use]
-    pub fn group(self) -> StageGroup {
-        match self {
+    pub fn is_grade(self) -> bool {
+        matches!(
+            self,
+            Self::Contrast
+                | Self::Brightness
+                | Self::Highlights
+                | Self::Shadows
+                | Self::White
+                | Self::Black
+                | Self::ColorBalance
+                | Self::Saturation
+                | Self::ColorWarp
+                | Self::Curve
+        )
+    }
+
+    /// The field's path in its node's JSON: `grade.contrast` for a grade field, else its name.
+    #[must_use]
+    pub fn path(self) -> String {
+        if self.is_grade() {
+            format!("grade.{}", self.name())
+        } else {
+            self.name().to_owned()
+        }
+    }
+
+    /// Whether a node of this kind has the field.
+    #[must_use]
+    pub fn belongs_to(self, kind: NodeKind) -> bool {
+        match kind {
+            NodeKind::Input => matches!(
+                self,
+                Self::Exposure
+                    | Self::LightSource
+                    | Self::WhiteBalance
+                    | Self::WhitePick
+                    | Self::Rolloff
+                    | Self::Decode
+                    | Self::NoiseReduction
+                    | Self::Sharpen
+                    | Self::Lens
+                    | Self::Crop
+                    | Self::Orientation
+                    | Self::Pos
+            ),
+            NodeKind::Output => matches!(
+                self,
+                Self::Look | Self::LookIntensity | Self::OutputSharpening | Self::Pos
+            ),
+            NodeKind::Corrector => {
+                self.is_grade()
+                    || matches!(
+                        self,
+                        Self::Name | Self::Bypass | Self::Pos | Self::Trim | Self::Masks
+                    )
+            }
+        }
+    }
+
+    /// The first group of render stages this field affects (`docs/01` section Render graph);
+    /// `None` for the fields that re-run nothing (`name` and `pos`).
+    #[must_use]
+    pub fn group(self) -> Option<StageGroup> {
+        Some(match self {
             Self::Decode | Self::NoiseReduction | Self::Sharpen => StageGroup::Raw,
             Self::Lens => StageGroup::Lens,
             Self::LightSource
@@ -316,8 +482,12 @@ impl SettingsField {
             | Self::Rolloff => StageGroup::Color,
             Self::Crop | Self::Orientation => StageGroup::Geometry,
             Self::OutputSharpening => StageGroup::Output,
+            Self::Name | Self::Pos => return None,
             Self::Look
             | Self::LookIntensity
+            | Self::Bypass
+            | Self::Trim
+            | Self::Masks
             | Self::Contrast
             | Self::Brightness
             | Self::Highlights
@@ -328,7 +498,23 @@ impl SettingsField {
             | Self::Saturation
             | Self::ColorWarp
             | Self::Curve => StageGroup::Grade,
-        }
+        })
+    }
+}
+
+/// A field of a node: what [`PatchReport`] names. Written `<node>.<field path>`, for example
+/// `1.grade.contrast` or `input.exposure`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FieldRef {
+    /// The node.
+    pub node: NodeId,
+    /// The field.
+    pub field: SettingsField,
+}
+
+impl std::fmt::Display for FieldRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.node, self.field.path())
     }
 }
 
@@ -1060,240 +1246,127 @@ impl From<Orientation> for u16 {
 // DevelopSettings
 // ---------------------------------------------------------------------------------------------
 
-/// Every control in the UI and every CLI flag maps to one field. Defaults reproduce the automatic
-/// development (`docs/01-architecture.md` section DevelopSettings).
+/// The settings of one photo: the graph of its nodes (`docs/23-nodes.md` section 3). Every control
+/// in the UI and every CLI flag is a field of one node (`docs/01-architecture.md` section
+/// DevelopSettings). Defaults reproduce the automatic development.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DevelopSettings {
-    /// Look tab. The user's default look (Signature out of the box; a photo a session opens gets it
-    /// through [`DevelopSettings::with_look`]).
-    pub look: LookId,
-    /// 0 to 100 percent.
-    pub look_intensity: f64,
-    /// Light › Exposure: Auto or an absolute value, -4 to +4 EV.
-    pub exposure: ExposureSetting,
-    /// Light › Exposure and Look › Tone: Auto (0, or Apple Auto's contrast, `docs/19` section 5) or a
-    /// manual value, -100 to 100: a tone curve on the luma about mid grey that keeps black and the top
-    /// code value (docs/02 C9). Auto is the default; a plain number in an older document reads as
-    /// Manual with that value, and 0 as Auto.
-    #[serde(deserialize_with = "percent_document")]
-    pub contrast: ContrastSetting,
-    /// -100 to 100.
-    pub brightness: f64,
-    /// Light › High dynamic range: Auto (0, or Apple Auto's highlights, `docs/19` section 5) or a
-    /// manual value, -100 to 100. Read like `contrast`.
-    #[serde(deserialize_with = "percent_document")]
-    pub highlights: PercentSetting,
-    /// Auto (0, or Apple Auto's shadows) or a manual value, -100 to 100. Read like `contrast`.
-    #[serde(deserialize_with = "percent_document")]
-    pub shadows: PercentSetting,
-    /// -100 to 100.
-    pub white: f64,
-    /// `white_offset_ev` of the settings of older versions (Light › White lift). The lift went with the
-    /// cine rendering (`docs/02` C12): a document that has the field is still read, and the value is
-    /// ignored and not written back.
-    #[serde(rename = "white_offset_ev", skip_serializing)]
-    pub retired_white_offset: RetiredField,
-    /// Auto (0, or Apple Auto's black level) or a manual value, -100 to 100. Read like `contrast`.
-    #[serde(deserialize_with = "percent_document")]
-    pub black: PercentSetting,
-    /// Colour › White balance, the light presets.
-    pub light_source: LightSource,
-    /// Colour › White balance: Auto or Kelvin and tint (the Kelvin also as Look › Tone › Temperature).
-    pub white_balance: WhiteBalanceSetting,
-    /// The three colour-balance wheels; the shadows and highlights wheels are Auto (`[0, 0]`, or the
-    /// colour Apple Auto gave that zone) or a point.
-    pub color_balance: ColorBalance,
-    /// Colour › Colour balance and Look › Tone: Auto (0, or Apple Auto's saturation, `docs/19` section
-    /// 5) or a manual value, -100 to 100; the chroma scaled about the luminance, which stays (docs/02
-    /// C9). Read like `contrast`.
-    #[serde(deserialize_with = "percent_document")]
-    pub saturation: SaturationSetting,
-    /// Colour › Colour warp: the pins of stage C9b (docs/02); none by default.
-    pub color_warp: ColorWarp,
-    /// Look › Lens: the lens and its three amounts (`docs/21`); no lens by default. A document
-    /// without the field reads as the default.
-    pub lens: LensSettings,
-    /// Detail › Sharpening: Auto or amount and radius.
-    pub sharpen: SharpenSetting,
-    /// Detail › Sharpening › Output: the strength of the output sharpening in percent, 0 to 200,
-    /// default 100 (a plain number, not Auto; 0 is off). A document without the field reads as 100.
-    pub output_sharpening: f64,
-    /// Detail › Noise reduction: Auto or luminance, colour and detail.
-    pub noise_reduction: NoiseReductionSetting,
-    /// Luma, red, green and blue curves.
-    pub curve: Curves,
-    /// RAW › Decode switches.
-    pub decode: DecodeOptions,
-    /// RAW › Range: the highlight range and the low-light toe (C7).
-    pub rolloff: Rolloff,
-    /// Crop; `null` when the photo is not cropped.
-    pub crop: Option<Crop>,
-    /// Orientation after the camera's EXIF orientation.
-    pub orientation: Orientation,
-    /// Pick white: the sampled point `[x, y]` in [0, 1]², measured on the photo as the camera
-    /// oriented it (EXIF orientation applied, before the user's crop, straighten and
-    /// `orientation`), so it keeps pointing at the same spot when those change. See
-    /// [`crate::auto::display_to_sensor`].
-    pub white_pick: Option<[f64; 2]>,
+    /// The graph: the Input, Main, any other correctors, the Output and the links.
+    pub nodes: NodeGraph,
 }
 
 impl Default for DevelopSettings {
     /// Auto everywhere and the identity look, Neutral: the blank development, which needs no look
-    /// library to render (tests, a core without one) and is what the frontend's `defaultSettings()`
-    /// and `settings.schema.json` call the default. It is not what a user sees first: a photo a
-    /// session opens starts from [`DevelopSettings::with_look`] with the user's default look
-    /// (Signature out of the box, `ym_core::preferences::DEFAULT_LOOK`), and a settings document
-    /// that names no look reads as that look too ([`DevelopSettings::from_json`]).
+    /// library to render (tests, a core without one) and is what `settings.schema.json` calls the
+    /// default. It is not what a user sees first: a photo a session opens starts from
+    /// [`DevelopSettings::with_look`] with the user's default look (Signature out of the box,
+    /// `ym_core::preferences::DEFAULT_LOOK`), and a settings document that names no look reads as
+    /// that look too ([`DevelopSettings::from_json`]).
     fn default() -> Self {
         Self::with_look(LookId::neutral())
     }
 }
 
 impl DevelopSettings {
-    /// The settings of a photo nobody has touched: Auto everywhere and `look` at 100 percent.
+    /// The settings of a photo nobody has touched: the default graph, Auto everywhere, `look` at 100
+    /// percent on the Output.
     #[must_use]
     pub fn with_look(look: LookId) -> Self {
         Self {
-            look,
-            look_intensity: 100.0,
-            exposure: AutoOr::Auto,
-            contrast: AutoOr::Auto,
-            brightness: 0.0,
-            highlights: AutoOr::Auto,
-            shadows: AutoOr::Auto,
-            white: 0.0,
-            retired_white_offset: RetiredField,
-            black: AutoOr::Auto,
-            light_source: LightSource::Auto,
-            white_balance: AutoOr::Auto,
-            color_balance: ColorBalance::default(),
-            saturation: AutoOr::Auto,
-            color_warp: ColorWarp::default(),
-            lens: LensSettings::default(),
-            sharpen: AutoOr::Auto,
-            output_sharpening: OUTPUT_SHARPENING_DEFAULT,
-            noise_reduction: AutoOr::Auto,
-            curve: Curves::default(),
-            decode: DecodeOptions::default(),
-            rolloff: Rolloff::default(),
-            crop: None,
-            orientation: Orientation::Deg0,
-            white_pick: None,
+            nodes: NodeGraph::with_look(look),
         }
     }
 
-    /// The fields that differ from `other`.
+    /// The Input: the raw, light and framing settings.
     #[must_use]
-    pub fn diff(&self, other: &DevelopSettings) -> Vec<SettingsField> {
-        SettingsField::ALL
-            .into_iter()
-            .filter(|f| !self.field_equals(other, *f))
-            .collect()
+    pub fn input(&self) -> &InputNode {
+        &self.nodes.input
     }
 
-    fn field_equals(&self, o: &DevelopSettings, field: SettingsField) -> bool {
-        match field {
-            SettingsField::Look => self.look == o.look,
-            SettingsField::LookIntensity => self.look_intensity == o.look_intensity,
-            SettingsField::Exposure => self.exposure == o.exposure,
-            SettingsField::Contrast => self.contrast == o.contrast,
-            SettingsField::Brightness => self.brightness == o.brightness,
-            SettingsField::Highlights => self.highlights == o.highlights,
-            SettingsField::Shadows => self.shadows == o.shadows,
-            SettingsField::White => self.white == o.white,
-            SettingsField::Black => self.black == o.black,
-            SettingsField::LightSource => self.light_source == o.light_source,
-            SettingsField::WhiteBalance => self.white_balance == o.white_balance,
-            SettingsField::ColorBalance => self.color_balance == o.color_balance,
-            SettingsField::Saturation => self.saturation == o.saturation,
-            SettingsField::ColorWarp => self.color_warp == o.color_warp,
-            SettingsField::Lens => self.lens == o.lens,
-            SettingsField::Sharpen => self.sharpen == o.sharpen,
-            SettingsField::OutputSharpening => self.output_sharpening == o.output_sharpening,
-            SettingsField::NoiseReduction => self.noise_reduction == o.noise_reduction,
-            SettingsField::Curve => self.curve == o.curve,
-            SettingsField::Decode => self.decode == o.decode,
-            SettingsField::Rolloff => self.rolloff == o.rolloff,
-            SettingsField::Crop => self.crop == o.crop,
-            SettingsField::Orientation => self.orientation == o.orientation,
-            SettingsField::WhitePick => self.white_pick == o.white_pick,
-        }
+    /// The Input, to change.
+    pub fn input_mut(&mut self) -> &mut InputNode {
+        &mut self.nodes.input
     }
 
-    /// Restores `field` to its default (Auto for the automatic ones). `default_look` is the user's
-    /// default look, which Reset on the Look card restores.
-    pub fn reset_field(&mut self, field: SettingsField, default_look: &LookId) {
-        let d = DevelopSettings::with_look(default_look.clone());
-        match field {
-            SettingsField::Look => self.look = d.look,
-            SettingsField::LookIntensity => self.look_intensity = d.look_intensity,
-            SettingsField::Exposure => self.exposure = d.exposure,
-            SettingsField::Contrast => self.contrast = d.contrast,
-            SettingsField::Brightness => self.brightness = d.brightness,
-            SettingsField::Highlights => self.highlights = d.highlights,
-            SettingsField::Shadows => self.shadows = d.shadows,
-            SettingsField::White => self.white = d.white,
-            SettingsField::Black => self.black = d.black,
-            SettingsField::LightSource => self.light_source = d.light_source,
-            SettingsField::WhiteBalance => self.white_balance = d.white_balance,
-            SettingsField::ColorBalance => self.color_balance = d.color_balance,
-            SettingsField::Saturation => self.saturation = d.saturation,
-            SettingsField::ColorWarp => self.color_warp = d.color_warp,
-            SettingsField::Lens => self.lens = d.lens,
-            SettingsField::Sharpen => self.sharpen = d.sharpen,
-            SettingsField::OutputSharpening => self.output_sharpening = d.output_sharpening,
-            SettingsField::NoiseReduction => self.noise_reduction = d.noise_reduction,
-            SettingsField::Curve => self.curve = d.curve,
-            SettingsField::Decode => self.decode = d.decode,
-            SettingsField::Rolloff => self.rolloff = d.rolloff,
-            SettingsField::Crop => self.crop = d.crop,
-            SettingsField::Orientation => self.orientation = d.orientation,
-            SettingsField::WhitePick => self.white_pick = d.white_pick,
-        }
+    /// Main, node 1: the corrector the simple view's grade controls and Auto belong to.
+    #[must_use]
+    pub fn main(&self) -> &CorrectorNode {
+        &self.nodes.main
     }
 
-    /// What "Re-run" on the Automatic card resets: exposure, white balance (the light preset, the
-    /// Kelvin and tint and a picked white) and noise reduction go back to Auto. The values Apple
-    /// Auto sets besides those (highlights, shadows, black, contrast, saturation and the shadows and
-    /// highlights wheels) go back to Auto only when `apple_auto` says Apple Auto acts on the photo
-    /// (its state is pending, answered or failed: the card then shows their rows,
+    /// Main, to change.
+    pub fn main_mut(&mut self) -> &mut CorrectorNode {
+        &mut self.nodes.main
+    }
+
+    /// Main's grade.
+    #[must_use]
+    pub fn main_grade(&self) -> &NodeGrade {
+        &self.nodes.main.grade
+    }
+
+    /// Main's grade, to change.
+    pub fn main_grade_mut(&mut self) -> &mut NodeGrade {
+        &mut self.nodes.main.grade
+    }
+
+    /// The Output: the look and the output sharpening.
+    #[must_use]
+    pub fn output(&self) -> &OutputNode {
+        &self.nodes.output
+    }
+
+    /// The Output, to change.
+    pub fn output_mut(&mut self) -> &mut OutputNode {
+        &mut self.nodes.output
+    }
+
+    /// What "Re-run" on the Automatic card resets: the Input's exposure, white balance (the light
+    /// preset, the Kelvin and tint and a picked white) and noise reduction go back to Auto. The
+    /// values Apple Auto sets besides those (Main's highlights, shadows, black, contrast, saturation
+    /// and the shadows and highlights wheels) go back to Auto only when `apple_auto` says Apple Auto
+    /// acts on the photo (its state is pending, answered or failed: the card then shows their rows,
     /// [`AppleAuto::acts`]); otherwise they stay as they are, as before Apple Auto (`docs/19`
-    /// section 5).
+    /// section 5). The rest of the graph is left alone.
     ///
     /// [`AppleAuto::acts`]: crate::apple_auto::AppleAuto::acts
     pub fn reset_automatic(&mut self, apple_auto: bool) {
-        self.exposure = AutoOr::Auto;
+        let input = &mut self.nodes.input;
+        input.exposure = AutoOr::Auto;
+        input.light_source = LightSource::Auto;
+        input.white_balance = AutoOr::Auto;
+        input.white_pick = None;
+        input.noise_reduction = AutoOr::Auto;
         if apple_auto {
-            self.contrast = AutoOr::Auto;
-            self.saturation = AutoOr::Auto;
-            self.highlights = AutoOr::Auto;
-            self.shadows = AutoOr::Auto;
-            self.black = AutoOr::Auto;
-            self.color_balance.shadows = AutoOr::Auto;
-            self.color_balance.highlights = AutoOr::Auto;
+            let g = &mut self.nodes.main.grade;
+            g.contrast = AutoOr::Auto;
+            g.saturation = AutoOr::Auto;
+            g.highlights = AutoOr::Auto;
+            g.shadows = AutoOr::Auto;
+            g.black = AutoOr::Auto;
+            g.color_balance.shadows = AutoOr::Auto;
+            g.color_balance.highlights = AutoOr::Auto;
         }
-        self.light_source = LightSource::Auto;
-        self.white_balance = AutoOr::Auto;
-        self.white_pick = None;
-        self.noise_reduction = AutoOr::Auto;
     }
 
     /// Reads a settings document (the `ym:Settings` JSON, `ym render --settings`, a golden
-    /// manifest) the way a photo that was just opened would take it: fields the document leaves
-    /// out have their defaults, and a document without `look` gets `default_look`, the user's
-    /// default look (`Default` alone would say Neutral). Values are then clamped like
-    /// [`DevelopSettings::validated`] does; the fields that were changed are returned.
+    /// manifest) over the default graph the way a photo that was just opened would take it: fields
+    /// the document leaves out have their defaults, and a document without an Output `look` gets
+    /// `default_look`, the user's default look (`Default` alone would say Neutral). Values are then
+    /// clamped like [`DevelopSettings::validated`] does; the fields that were changed are
+    /// returned.
     ///
     /// # Errors
     ///
-    /// [`SettingsError::Parse`] for text that is not JSON, a field that does not exist or a value
-    /// of the wrong type, and the errors of [`DevelopSettings::validated`].
+    /// [`SettingsError::OldForm`] for a flat document of Yellowmoon 0.1, [`SettingsError::Parse`]
+    /// for text that is not JSON, a field that does not exist or a value of the wrong type, and the
+    /// errors of [`DevelopSettings::validated`] and of the rules of the graph.
     pub fn from_json(
         text: &str,
         default_look: &LookId,
-    ) -> Result<(Self, Vec<SettingsField>), SettingsError> {
-        let value: serde_json::Value =
+    ) -> Result<(Self, Vec<FieldRef>), SettingsError> {
+        let value: Value =
             serde_json::from_str(text).map_err(|e| SettingsError::Parse(e.to_string()))?;
         Self::from_value(value, default_look)
     }
@@ -1305,198 +1378,64 @@ impl DevelopSettings {
     ///
     /// As [`DevelopSettings::from_json`].
     pub fn from_value(
-        value: serde_json::Value,
+        value: Value,
         default_look: &LookId,
-    ) -> Result<(Self, Vec<SettingsField>), SettingsError> {
-        let names_a_look = value.get("look").is_some();
-        let mut settings: DevelopSettings =
-            serde_json::from_value(value).map_err(|e| SettingsError::Parse(e.to_string()))?;
-        if !names_a_look {
-            settings.look = default_look.clone();
+    ) -> Result<(Self, Vec<FieldRef>), SettingsError> {
+        let Value::Object(mut map) = value else {
+            return Err(SettingsError::Parse(
+                "the settings must be a JSON object".to_owned(),
+            ));
+        };
+        let nodes = map.remove("nodes");
+        if nodes.is_none()
+            && !map.is_empty()
+            && map.keys().all(|k| OLD_FORM_KEYS.contains(&k.as_str()))
+        {
+            return Err(SettingsError::OldForm);
         }
-        settings.validated()
+        if let Some(key) = map.keys().next() {
+            return Err(SettingsError::Parse(format!(
+                "unknown field `{key}`, expected `nodes`"
+            )));
+        }
+        let graph = match nodes {
+            Some(v) => NodeGraph::read(v, default_look)?,
+            None => NodeGraph::with_look(default_look.clone()),
+        };
+        Self { nodes: graph }.validated()
     }
 
-    /// The settings after clamping every value to its range and normalising curves and the crop.
+    /// The settings after clamping every value to its range and normalising curves and the crop,
+    /// and after checking the rules of the graph.
     ///
     /// Settings read from a file (`--settings`, a golden manifest) go through this before use;
     /// patches are checked by [`DevelopSettings::apply_patch`].
     ///
     /// # Errors
     ///
-    /// [`SettingsError`] for a value that is not a number, a curve that cannot be used or a crop
-    /// without area.
-    pub fn validated(mut self) -> Result<(Self, Vec<SettingsField>), SettingsError> {
-        let mut clamped = Vec::new();
-        self.sanitise(&mut clamped)?;
-        Ok((self, clamped))
-    }
-
-    /// Clamps and normalises in place; `clamped` collects the fields that were changed.
-    fn sanitise(&mut self, clamped: &mut Vec<SettingsField>) -> Result<(), SettingsError> {
-        let mut note = |field: SettingsField, changed: bool| {
-            if changed && !clamped.contains(&field) {
-                clamped.push(field);
-            }
-        };
-        let (v, c) = clamp_to("look_intensity", self.look_intensity, LOOK_INTENSITY_RANGE)?;
-        self.look_intensity = v;
-        note(SettingsField::LookIntensity, c);
-        for (name, field, setting) in [
-            ("contrast", SettingsField::Contrast, &mut self.contrast),
-            (
-                "saturation",
-                SettingsField::Saturation,
-                &mut self.saturation,
-            ),
-            (
-                "highlights",
-                SettingsField::Highlights,
-                &mut self.highlights,
-            ),
-            ("shadows", SettingsField::Shadows, &mut self.shadows),
-            ("black", SettingsField::Black, &mut self.black),
-        ] {
-            if let AutoOr::Manual(m) = setting {
-                let (v, c) = clamp_to(name, m.value, PERCENT_RANGE)?;
-                m.value = v;
-                note(field, c);
-            }
-        }
-        for (name, field, value) in [
-            (
-                "brightness",
-                SettingsField::Brightness,
-                &mut self.brightness,
-            ),
-            ("white", SettingsField::White, &mut self.white),
-        ] {
-            let (v, c) = clamp_to(name, *value, PERCENT_RANGE)?;
-            *value = v;
-            note(field, c);
-        }
-        if let AutoOr::Manual(m) = &mut self.exposure {
-            let (v, c) = clamp_to("exposure", m.ev, EXPOSURE_RANGE_EV)?;
-            m.ev = v;
-            note(SettingsField::Exposure, c);
-        }
-        if let AutoOr::Manual(m) = &mut self.white_balance {
-            let (k, ck) = clamp_to("white_balance.kelvin", m.kelvin, KELVIN_RANGE_K)?;
-            let (t, ct) = clamp_to("white_balance.tint", m.tint, TINT_RANGE)?;
-            (m.kelvin, m.tint) = (k, t);
-            note(SettingsField::WhiteBalance, ck || ct);
-        }
-        if let AutoOr::Manual(m) = &mut self.sharpen {
-            let (a, ca) = clamp_to("sharpen.amount", m.amount, SHARPEN_AMOUNT_RANGE)?;
-            let (r, cr) = clamp_to("sharpen.radius_px", m.radius_px, SHARPEN_RADIUS_RANGE_PX)?;
-            (m.amount, m.radius_px) = (a, r);
-            note(SettingsField::Sharpen, ca || cr);
-        }
-        let (v, c) = clamp_to(
-            "output_sharpening",
-            self.output_sharpening,
-            OUTPUT_SHARPENING_RANGE,
-        )?;
-        self.output_sharpening = v;
-        note(SettingsField::OutputSharpening, c);
-        if let AutoOr::Manual(m) = &mut self.noise_reduction {
-            let mut changed = false;
-            for (name, v) in [
-                ("noise_reduction.luminance", &mut m.luminance),
-                ("noise_reduction.color", &mut m.color),
-                ("noise_reduction.detail", &mut m.detail),
-            ] {
-                let (x, c) = clamp_to(name, *v, NOISE_REDUCTION_RANGE)?;
-                *v = x;
-                changed |= c;
-            }
-            note(SettingsField::NoiseReduction, changed);
-        }
-        let mut changed = false;
-        let cb = &mut self.color_balance;
-        let mut points: Vec<(&'static str, &mut ColorBalancePoint)> =
-            vec![("color_balance.midtones", &mut cb.midtones)];
-        if let AutoOr::Manual(m) = &mut cb.shadows {
-            points.push(("color_balance.shadows", &mut m.point));
-        }
-        if let AutoOr::Manual(m) = &mut cb.highlights {
-            points.push(("color_balance.highlights", &mut m.point));
-        }
-        for (name, point) in points {
-            let (p, c) = clamp_to_disc(name, *point)?;
-            *point = p;
-            changed |= c;
-        }
-        note(SettingsField::ColorBalance, changed);
-        note(
-            SettingsField::ColorWarp,
-            normalise_warp(&mut self.color_warp)?,
-        );
-        let mut changed = false;
-        for (name, v) in [
-            ("rolloff.highlights", &mut self.rolloff.highlights),
-            ("rolloff.low_light", &mut self.rolloff.low_light),
-        ] {
-            let (x, c) = clamp_to(name, *v, ROLLOFF_RANGE)?;
-            *v = x;
-            changed |= c;
-        }
-        note(SettingsField::Rolloff, changed);
-        let mut changed = false;
-        for (name, v) in [
-            ("lens.flares", &mut self.lens.flares),
-            ("lens.edges", &mut self.lens.edges),
-            ("lens.anamorphic", &mut self.lens.anamorphic),
-        ] {
-            let (x, c) = clamp_to(name, *v, LENS_AMOUNT_RANGE)?;
-            *v = x;
-            changed |= c;
-        }
-        note(SettingsField::Lens, changed);
-        let mut changed = false;
-        for (channel, points) in [
-            ("luma", &mut self.curve.luma),
-            ("red", &mut self.curve.red),
-            ("green", &mut self.curve.green),
-            ("blue", &mut self.curve.blue),
-        ] {
-            changed |= normalise_curve(channel, points)?;
-        }
-        note(SettingsField::Curve, changed);
-        if let Some(crop) = &mut self.crop {
-            note(SettingsField::Crop, normalise_crop(crop)?);
-        }
-        if let Some(p) = &mut self.white_pick {
-            let mut changed = false;
-            for v in p.iter_mut() {
-                let (x, c) = clamp_to("white_pick", *v, (0.0, 1.0))?;
-                *v = x;
-                changed |= c;
-            }
-            note(SettingsField::WhitePick, changed);
-        }
-        Ok(())
+    /// [`SettingsError`] for a value that is not a number, a curve that cannot be used, a crop
+    /// without area or a rule of the graph that is broken.
+    pub fn validated(mut self) -> Result<(Self, Vec<FieldRef>), SettingsError> {
+        let mut s = graph::Sanitiser::default();
+        self.nodes.sanitise(&mut s)?;
+        Ok((self, s.clamped))
     }
 }
 
 /// Clamps a number to a range; a value that is not finite is an error. The flag says whether the
 /// value was changed.
-fn clamp_to(
-    name: &'static str,
-    v: f64,
-    (lo, hi): (f64, f64),
-) -> Result<(f64, bool), SettingsError> {
+fn clamp_to(name: &str, v: f64, (lo, hi): (f64, f64)) -> Result<(f64, bool), SettingsError> {
     if !v.is_finite() {
-        return Err(SettingsError::NotFinite(name));
+        return Err(SettingsError::NotFinite(name.to_owned()));
     }
     let c = v.clamp(lo, hi);
     Ok((c + 0.0, c != v))
 }
 
 /// Scales a point back into the unit disc.
-fn clamp_to_disc(name: &'static str, [a, b]: [f64; 2]) -> Result<([f64; 2], bool), SettingsError> {
+fn clamp_to_disc(name: &str, [a, b]: [f64; 2]) -> Result<([f64; 2], bool), SettingsError> {
     if !a.is_finite() || !b.is_finite() {
-        return Err(SettingsError::NotFinite(name));
+        return Err(SettingsError::NotFinite(name.to_owned()));
     }
     let r = a.hypot(b);
     if r > 1.0 {
@@ -1508,20 +1447,22 @@ fn clamp_to_disc(name: &'static str, [a, b]: [f64; 2]) -> Result<([f64; 2], bool
 
 /// Cuts the colour warp to [`WARP_MAX_PINS`] pins and clamps each one as `WarpPin::clamped` does.
 /// A number that is not finite, in any pin, is an error. Returns whether anything changed.
-fn normalise_warp(warp: &mut ColorWarp) -> Result<bool, SettingsError> {
+fn normalise_warp(warp: &mut ColorWarp, prefix: &str) -> Result<bool, SettingsError> {
     for pin in &warp.pins {
         for (name, values) in [
-            ("color_warp.source", &pin.source[..]),
-            ("color_warp.target", &pin.target[..]),
-            ("color_warp.range", &[pin.range][..]),
-            ("color_warp.shadows", &[pin.shadows][..]),
-            ("color_warp.highlights", &[pin.highlights][..]),
-            ("color_warp.pivot_ev", &[pin.pivot_ev][..]),
-            ("color_warp.exposure_ev", &[pin.exposure_ev][..]),
-            ("color_warp.saturation", &[pin.saturation][..]),
+            ("source", &pin.source[..]),
+            ("target", &pin.target[..]),
+            ("range", &[pin.range][..]),
+            ("shadows", &[pin.shadows][..]),
+            ("highlights", &[pin.highlights][..]),
+            ("pivot_ev", &[pin.pivot_ev][..]),
+            ("exposure_ev", &[pin.exposure_ev][..]),
+            ("saturation", &[pin.saturation][..]),
         ] {
             if !values.iter().all(|v| v.is_finite()) {
-                return Err(SettingsError::NotFinite(name));
+                return Err(SettingsError::NotFinite(format!(
+                    "{prefix}.color_warp.{name}"
+                )));
             }
         }
     }
@@ -1564,6 +1505,7 @@ fn within_warp_disc(p: ChromaPoint) -> ChromaPoint {
 fn normalise_curve(
     channel: &'static str,
     points: &mut Vec<CurvePoint>,
+    prefix: &str,
 ) -> Result<bool, SettingsError> {
     let bad = |problem: String| SettingsError::Curve { channel, problem };
     if points.len() < MIN_CURVE_POINTS {
@@ -1581,7 +1523,9 @@ fn normalise_curve(
     let before = points.clone();
     for p in points.iter_mut() {
         if !p[0].is_finite() || !p[1].is_finite() {
-            return Err(SettingsError::NotFinite("curve"));
+            return Err(SettingsError::NotFinite(format!(
+                "{prefix}.curve.{channel}"
+            )));
         }
         *p = [p[0].clamp(0.0, 1.0) + 0.0, p[1].clamp(0.0, 1.0) + 0.0];
     }
@@ -1593,14 +1537,14 @@ fn normalise_curve(
 }
 
 /// Brings a crop into the unit square and its angle into range. Returns whether anything changed.
-fn normalise_crop(crop: &mut Crop) -> Result<bool, SettingsError> {
+fn normalise_crop(crop: &mut Crop, prefix: &str) -> Result<bool, SettingsError> {
     let before = *crop;
     let r = &mut crop.rect;
     if ![r.x, r.y, r.width, r.height, crop.angle_deg]
         .iter()
         .all(|v| v.is_finite())
     {
-        return Err(SettingsError::NotFinite("crop"));
+        return Err(SettingsError::NotFinite(format!("{prefix}.crop")));
     }
     if r.width < MIN_CROP_SIDE || r.height < MIN_CROP_SIDE {
         return Err(SettingsError::EmptyCrop);
@@ -1760,128 +1704,6 @@ pub struct CurvesPatch {
     pub blue: Option<Vec<CurvePoint>>,
 }
 
-/// A partial update of [`DevelopSettings`] (`update_settings(photo_id, patch)`): only the fields
-/// present change.
-///
-/// The JSON is `Partial<DevelopSettings>` of `src/api/types.ts`, with two generosities: the nested
-/// objects (`decode`, `rolloff`, `lens`, `color_balance`, `curve`) may carry only the parts to change, and
-/// a manual `white_balance`, `sharpen` or `noise_reduction` may leave out a part, which then keeps
-/// its current (resolved) value. `crop: null` and `white_pick: null` clear the field. `color_warp`
-/// replaces the whole list of pins (`{ "pins": [] }` removes them all).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SettingsPatch {
-    /// New look.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub look: Option<LookId>,
-    /// New look intensity.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub look_intensity: Option<f64>,
-    /// New exposure (Manual to set it, Auto to reset it).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exposure: Option<ExposureSetting>,
-    /// New contrast: Auto (Reset), or Manual with its value. A plain number reads as Manual with that
-    /// value, and 0 as Auto.
-    #[serde(
-        default,
-        deserialize_with = "percent_patch",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub contrast: Option<ContrastSetting>,
-    /// New brightness.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub brightness: Option<f64>,
-    /// New highlights: Auto (Reset), or Manual with its value. A plain number reads as Manual with
-    /// that value, and 0 as Auto.
-    #[serde(
-        default,
-        deserialize_with = "percent_patch",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub highlights: Option<PercentSetting>,
-    /// New shadows, read like `highlights`.
-    #[serde(
-        default,
-        deserialize_with = "percent_patch",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub shadows: Option<PercentSetting>,
-    /// New white.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub white: Option<f64>,
-    /// `white_offset_ev` of a patch an older version made (a copied set): read and ignored, never
-    /// written (the white lift went with the cine rendering, `docs/02` C12).
-    #[serde(default, rename = "white_offset_ev", skip_serializing)]
-    pub retired_white_offset: RetiredField,
-    /// New black, read like `highlights`.
-    #[serde(
-        default,
-        deserialize_with = "percent_patch",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub black: Option<PercentSetting>,
-    /// New light preset.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub light_source: Option<LightSource>,
-    /// New white balance.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub white_balance: Option<AutoOr<WhiteBalanceManualPatch>>,
-    /// Colour-balance wheels to change.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color_balance: Option<ColorBalancePatch>,
-    /// New saturation: Auto (Reset), or Manual with its value. A plain number reads as Manual with
-    /// that value, and 0 as Auto.
-    #[serde(
-        default,
-        deserialize_with = "percent_patch",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub saturation: Option<SaturationSetting>,
-    /// New colour warp: the whole list of pins.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color_warp: Option<ColorWarp>,
-    /// Lens parts to change.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lens: Option<LensPatch>,
-    /// New sharpening.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sharpen: Option<AutoOr<SharpenManualPatch>>,
-    /// New output sharpening amount, percent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_sharpening: Option<f64>,
-    /// New noise reduction.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub noise_reduction: Option<AutoOr<NoiseReductionManualPatch>>,
-    /// Curves to replace.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub curve: Option<CurvesPatch>,
-    /// Decode switches to change.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decode: Option<DecodePatch>,
-    /// RAW › Range amounts to change.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rolloff: Option<RolloffPatch>,
-    /// New crop; `Some(None)` (JSON `null`) removes it.
-    #[serde(
-        default,
-        deserialize_with = "double_option",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub crop: Option<Option<Crop>>,
-    /// New orientation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub orientation: Option<Orientation>,
-    /// New white pick; `Some(None)` (JSON `null`) clears it. A pick also sets `light_source` and
-    /// `white_balance` to Auto unless the same patch says otherwise: the picked spot then renders
-    /// neutral, and the Kelvin and tint rows show the picked light (`docs/11` section Pick white).
-    #[serde(
-        default,
-        deserialize_with = "double_option",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub white_pick: Option<Option<[f64; 2]>>,
-}
-
 /// The automatic values that fill the missing part of a partial manual patch.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AutoSeeds {
@@ -1897,533 +1719,29 @@ pub struct AutoSeeds {
     pub noise_reduction: NoiseReductionValue,
 }
 
-/// What [`DevelopSettings::apply_patch`] did.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PatchReport {
-    /// The fields whose value changed (including `light_source` and `white_balance` when a white
-    /// pick reset them).
-    pub changed: Vec<SettingsField>,
-    /// The fields in which a number was out of range and was clamped.
-    pub clamped: Vec<SettingsField>,
-}
-
-impl PatchReport {
-    /// The first render stage group any changed field affects, if anything changed.
-    #[must_use]
-    pub fn first_group(&self) -> Option<StageGroup> {
-        self.changed.iter().map(|f| f.group()).min()
-    }
-}
-
-impl SettingsPatch {
-    /// True when the patch carries no change.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        *self == SettingsPatch::default()
-    }
-
-    /// A patch that moves the exposure slider: Manual at `ev`.
-    #[must_use]
-    pub fn exposure_ev(ev: f64) -> Self {
-        Self {
-            exposure: Some(ExposureSetting::manual_ev(ev)),
-            ..Self::default()
-        }
-    }
-
-    /// A patch that sets the Kelvin and tint by hand.
-    #[must_use]
-    pub fn white_balance(kelvin: f64, tint: f64) -> Self {
-        Self {
-            white_balance: Some(AutoOr::Manual(WhiteBalanceManualPatch {
-                kelvin: Some(kelvin),
-                tint: Some(tint),
-            })),
-            ..Self::default()
-        }
-    }
-
-    /// A patch that moves only the Kelvin slider (the tint keeps its current value).
-    #[must_use]
-    pub fn kelvin(kelvin: f64) -> Self {
-        Self {
-            white_balance: Some(AutoOr::Manual(WhiteBalanceManualPatch {
-                kelvin: Some(kelvin),
-                tint: None,
-            })),
-            ..Self::default()
-        }
-    }
-
-    /// A patch that sets the sharpening by hand.
-    #[must_use]
-    pub fn sharpen(amount: f64, radius_px: f64) -> Self {
-        Self {
-            sharpen: Some(AutoOr::Manual(SharpenManualPatch {
-                amount: Some(amount),
-                radius_px: Some(radius_px),
-            })),
-            ..Self::default()
-        }
-    }
-
-    /// A patch that sets the noise reduction by hand.
-    #[must_use]
-    pub fn noise_reduction(luminance: f64, color: f64, detail: f64) -> Self {
-        Self {
-            noise_reduction: Some(AutoOr::Manual(NoiseReductionManualPatch {
-                luminance: Some(luminance),
-                color: Some(color),
-                detail: Some(detail),
-            })),
-            ..Self::default()
-        }
-    }
-
-    /// The patch that takes `field` of `from` (every part of it).
-    #[must_use]
-    pub fn of_field(from: &DevelopSettings, field: SettingsField) -> Self {
-        let mut p = Self::default();
-        match field {
-            SettingsField::Look => p.look = Some(from.look.clone()),
-            SettingsField::LookIntensity => p.look_intensity = Some(from.look_intensity),
-            SettingsField::Exposure => p.exposure = Some(from.exposure),
-            SettingsField::Contrast => p.contrast = Some(from.contrast),
-            SettingsField::Brightness => p.brightness = Some(from.brightness),
-            SettingsField::Highlights => p.highlights = Some(from.highlights),
-            SettingsField::Shadows => p.shadows = Some(from.shadows),
-            SettingsField::White => p.white = Some(from.white),
-            SettingsField::Black => p.black = Some(from.black),
-            SettingsField::LightSource => p.light_source = Some(from.light_source),
-            SettingsField::WhiteBalance => {
-                p.white_balance = Some(match from.white_balance {
-                    AutoOr::Auto => AutoOr::Auto,
-                    AutoOr::Manual(m) => AutoOr::Manual(WhiteBalanceManualPatch {
-                        kelvin: Some(m.kelvin),
-                        tint: Some(m.tint),
-                    }),
-                });
-            }
-            SettingsField::ColorBalance => {
-                p.color_balance = Some(ColorBalancePatch {
-                    shadows: Some(from.color_balance.shadows),
-                    midtones: Some(from.color_balance.midtones),
-                    highlights: Some(from.color_balance.highlights),
-                });
-            }
-            SettingsField::Saturation => p.saturation = Some(from.saturation),
-            SettingsField::ColorWarp => p.color_warp = Some(from.color_warp.clone()),
-            SettingsField::Lens => {
-                p.lens = Some(LensPatch {
-                    kind: Some(from.lens.kind),
-                    flares: Some(from.lens.flares),
-                    edges: Some(from.lens.edges),
-                    anamorphic: Some(from.lens.anamorphic),
-                });
-            }
-            SettingsField::Sharpen => {
-                p.sharpen = Some(match from.sharpen {
-                    AutoOr::Auto => AutoOr::Auto,
-                    AutoOr::Manual(m) => AutoOr::Manual(SharpenManualPatch {
-                        amount: Some(m.amount),
-                        radius_px: Some(m.radius_px),
-                    }),
-                });
-            }
-            SettingsField::OutputSharpening => p.output_sharpening = Some(from.output_sharpening),
-            SettingsField::NoiseReduction => {
-                p.noise_reduction = Some(match from.noise_reduction {
-                    AutoOr::Auto => AutoOr::Auto,
-                    AutoOr::Manual(m) => AutoOr::Manual(NoiseReductionManualPatch {
-                        luminance: Some(m.luminance),
-                        color: Some(m.color),
-                        detail: Some(m.detail),
-                    }),
-                });
-            }
-            SettingsField::Curve => {
-                p.curve = Some(CurvesPatch {
-                    luma: Some(from.curve.luma.clone()),
-                    red: Some(from.curve.red.clone()),
-                    green: Some(from.curve.green.clone()),
-                    blue: Some(from.curve.blue.clone()),
-                });
-            }
-            SettingsField::Decode => {
-                p.decode = Some(DecodePatch {
-                    neural_demosaic: Some(from.decode.neural_demosaic),
-                    highlight_recovery: Some(from.decode.highlight_recovery),
-                    lens_corrections: Some(from.decode.lens_corrections),
-                    chromatic_aberration: Some(from.decode.chromatic_aberration),
-                });
-            }
-            SettingsField::Rolloff => {
-                p.rolloff = Some(RolloffPatch {
-                    highlights: Some(from.rolloff.highlights),
-                    low_light: Some(from.rolloff.low_light),
-                });
-            }
-            SettingsField::Crop => p.crop = Some(from.crop),
-            SettingsField::Orientation => p.orientation = Some(from.orientation),
-            SettingsField::WhitePick => p.white_pick = Some(from.white_pick),
-        }
-        p
-    }
-
-    /// The Reset patch for `field`: restores its default (Auto for the automatic ones).
-    #[must_use]
-    pub fn reset(field: SettingsField, default_look: &LookId) -> Self {
-        Self::of_field(&DevelopSettings::with_look(default_look.clone()), field)
-    }
-
-    /// The patch that takes every field of `from` that is in `fields` (every part of each).
-    #[must_use]
-    pub fn of_fields(from: &DevelopSettings, fields: &[SettingsField]) -> Self {
-        let mut patch = Self::default();
-        for field in fields {
-            patch.absorb(Self::of_field(from, *field));
-        }
-        patch
-    }
-
-    /// Takes over the fields `other` sets. Each field of a patch built by [`SettingsPatch::of_field`]
-    /// belongs to one field only, so nothing is overwritten.
-    fn absorb(&mut self, other: Self) {
-        macro_rules! take {
-            ($($field:ident),* $(,)?) => {
-                $(if other.$field.is_some() { self.$field = other.$field; })*
-            };
-        }
-        take!(
-            look,
-            look_intensity,
-            exposure,
-            contrast,
-            brightness,
-            highlights,
-            shadows,
-            white,
-            black,
-            light_source,
-            white_balance,
-            color_balance,
-            saturation,
-            color_warp,
-            lens,
-            sharpen,
-            output_sharpening,
-            noise_reduction,
-            curve,
-            decode,
-            rolloff,
-            crop,
-            orientation,
-            white_pick,
-        );
-    }
-
-    /// What Copy settings takes from a photo, to paste onto others (`docs/11` §Copy and paste
-    /// settings): every field of the photo's settings but [`COPY_LEAVES_OUT`], which belong to
-    /// the photo's own geometry and pixels (the crop and the turn, and the point of Pick white).
-    ///
-    /// * Auto stays Auto (exposure, contrast, highlights, shadows, black, light preset, white balance,
-    ///   the shadows and highlights wheels, saturation, sharpening, noise reduction): each photo gets
-    ///   its own automatic values (with Apple Auto, its own answer). Manual values are taken as they are.
-    /// * A white balance that came from a picked white (a white picked, the light preset and the
-    ///   white balance both Auto) becomes a manual white balance at the Kelvin and tint the pick
-    ///   resolved to: the point is not meaningful on another photo, the light it found is.
-    ///
-    /// Every part of every manual value is in the patch, so it applies to a photo that has no
-    /// automatic estimates yet.
-    #[must_use]
-    pub fn copied_from(source: &ResolvedSettings) -> Self {
-        let settings = &source.settings;
-        let fields: Vec<SettingsField> = SettingsField::ALL
-            .into_iter()
-            .filter(|f| !COPY_LEAVES_OUT.contains(f))
-            .collect();
-        let mut patch = Self::of_fields(settings, &fields);
-        let white_came_from_pick = settings.white_pick.is_some()
-            && settings.light_source == LightSource::Auto
-            && settings.white_balance.is_auto();
-        if white_came_from_pick {
-            patch.white_balance = Some(AutoOr::Manual(WhiteBalanceManualPatch {
-                kelvin: Some(source.values.kelvin),
-                tint: Some(source.values.tint),
-            }));
-        }
-        patch
-    }
-}
-
-/// The fields Copy settings leaves out: the crop and the orientation (the photo's own geometry)
-/// and the Pick white point (a spot of that photo's pixels). See [`SettingsPatch::copied_from`].
-pub const COPY_LEAVES_OUT: [SettingsField; 3] = [
-    SettingsField::Crop,
-    SettingsField::Orientation,
-    SettingsField::WhitePick,
-];
-
-impl DevelopSettings {
-    /// Applies a patch with the rules of the module documentation.
-    ///
-    /// The patch is applied atomically: on `Err` the settings are untouched. Numbers out of range
-    /// are clamped and reported in [`PatchReport::clamped`]. `seeds` are the photo's resolved
-    /// automatic values; they fill the missing part of a partial manual `white_balance`,
-    /// `sharpen` or `noise_reduction` while the setting is `Auto` (a patch with only `kelvin` on
-    /// an Auto white balance is Manual at that Kelvin and the automatic tint).
-    ///
-    /// # Errors
-    ///
-    /// [`SettingsError`] for a value that is not a number, an unusable curve or crop, and a
-    /// partial manual patch that needs `seeds` when there are none.
-    pub fn apply_patch(
-        &mut self,
-        patch: &SettingsPatch,
-        seeds: Option<&AutoSeeds>,
-    ) -> Result<PatchReport, SettingsError> {
-        let mut next = self.clone();
-        if let Some(v) = &patch.look {
-            next.look = v.clone();
-        }
-        if let Some(v) = patch.look_intensity {
-            next.look_intensity = v;
-        }
-        if let Some(v) = patch.exposure {
-            next.exposure = v;
-        }
-        if let Some(v) = patch.contrast {
-            next.contrast = v;
-        }
-        if let Some(v) = patch.brightness {
-            next.brightness = v;
-        }
-        if let Some(v) = patch.highlights {
-            next.highlights = v;
-        }
-        if let Some(v) = patch.shadows {
-            next.shadows = v;
-        }
-        if let Some(v) = patch.white {
-            next.white = v;
-        }
-        if let Some(v) = patch.black {
-            next.black = v;
-        }
-        if let Some(v) = patch.light_source {
-            next.light_source = v;
-        }
-        if let Some(wb) = &patch.white_balance {
-            next.white_balance = match wb {
-                AutoOr::Auto => AutoOr::Auto,
-                AutoOr::Manual(p) => {
-                    let base = match self.white_balance {
-                        AutoOr::Manual(m) => m,
-                        AutoOr::Auto => match (seeds, p.kelvin, p.tint) {
-                            (_, Some(k), Some(t)) => WhiteBalanceValue { kelvin: k, tint: t },
-                            (Some(s), _, _) => WhiteBalanceValue {
-                                kelvin: s.kelvin,
-                                tint: s.tint,
-                            },
-                            (None, _, _) => {
-                                return Err(SettingsError::NeedsEstimates("white_balance"));
-                            }
-                        },
-                    };
-                    AutoOr::Manual(WhiteBalanceValue {
-                        kelvin: p.kelvin.unwrap_or(base.kelvin),
-                        tint: p.tint.unwrap_or(base.tint),
-                    })
-                }
-            };
-        }
-        if let Some(cb) = &patch.color_balance {
-            if let Some(v) = cb.shadows {
-                next.color_balance.shadows = v;
-            }
-            if let Some(v) = cb.midtones {
-                next.color_balance.midtones = v;
-            }
-            if let Some(v) = cb.highlights {
-                next.color_balance.highlights = v;
-            }
-        }
-        if let Some(v) = patch.saturation {
-            next.saturation = v;
-        }
-        if let Some(v) = &patch.color_warp {
-            next.color_warp = v.clone();
-        }
-        if let Some(l) = &patch.lens {
-            if let Some(v) = l.kind {
-                next.lens.kind = v;
-            }
-            if let Some(v) = l.flares {
-                next.lens.flares = v;
-            }
-            if let Some(v) = l.edges {
-                next.lens.edges = v;
-            }
-            if let Some(v) = l.anamorphic {
-                next.lens.anamorphic = v;
-            }
-        }
-        if let Some(s) = &patch.sharpen {
-            next.sharpen = match s {
-                AutoOr::Auto => AutoOr::Auto,
-                AutoOr::Manual(p) => {
-                    let base = match self.sharpen {
-                        AutoOr::Manual(m) => m,
-                        AutoOr::Auto => match (seeds, p.amount, p.radius_px) {
-                            (_, Some(a), Some(r)) => SharpenValue {
-                                amount: a,
-                                radius_px: r,
-                            },
-                            (Some(s), _, _) => s.sharpen,
-                            (None, _, _) => return Err(SettingsError::NeedsEstimates("sharpen")),
-                        },
-                    };
-                    AutoOr::Manual(SharpenValue {
-                        amount: p.amount.unwrap_or(base.amount),
-                        radius_px: p.radius_px.unwrap_or(base.radius_px),
-                    })
-                }
-            };
-        }
-        if let Some(v) = patch.output_sharpening {
-            next.output_sharpening = v;
-        }
-        if let Some(n) = &patch.noise_reduction {
-            next.noise_reduction = match n {
-                AutoOr::Auto => AutoOr::Auto,
-                AutoOr::Manual(p) => {
-                    let base = match self.noise_reduction {
-                        AutoOr::Manual(m) => m,
-                        AutoOr::Auto => match (seeds, p.luminance, p.color, p.detail) {
-                            (_, Some(l), Some(c), Some(d)) => NoiseReductionValue {
-                                luminance: l,
-                                color: c,
-                                detail: d,
-                            },
-                            (Some(s), _, _, _) => s.noise_reduction,
-                            (None, ..) => {
-                                return Err(SettingsError::NeedsEstimates("noise_reduction"));
-                            }
-                        },
-                    };
-                    AutoOr::Manual(NoiseReductionValue {
-                        luminance: p.luminance.unwrap_or(base.luminance),
-                        color: p.color.unwrap_or(base.color),
-                        detail: p.detail.unwrap_or(base.detail),
-                    })
-                }
-            };
-        }
-        if let Some(c) = &patch.curve {
-            if let Some(v) = &c.luma {
-                next.curve.luma = v.clone();
-            }
-            if let Some(v) = &c.red {
-                next.curve.red = v.clone();
-            }
-            if let Some(v) = &c.green {
-                next.curve.green = v.clone();
-            }
-            if let Some(v) = &c.blue {
-                next.curve.blue = v.clone();
-            }
-        }
-        if let Some(d) = &patch.decode {
-            if let Some(v) = d.neural_demosaic {
-                next.decode.neural_demosaic = v;
-            }
-            if let Some(v) = d.highlight_recovery {
-                next.decode.highlight_recovery = v;
-            }
-            if let Some(v) = d.lens_corrections {
-                next.decode.lens_corrections = v;
-            }
-            if let Some(v) = d.chromatic_aberration {
-                next.decode.chromatic_aberration = v;
-            }
-        }
-        if let Some(r) = &patch.rolloff {
-            if let Some(v) = r.highlights {
-                next.rolloff.highlights = v;
-            }
-            if let Some(v) = r.low_light {
-                next.rolloff.low_light = v;
-            }
-        }
-        if let Some(v) = patch.crop {
-            next.crop = v;
-        }
-        if let Some(v) = patch.orientation {
-            next.orientation = v;
-        }
-        if let Some(v) = patch.white_pick {
-            next.white_pick = v;
-            if v.is_some() {
-                // A picked white sets the white balance: the spot renders neutral and the Kelvin
-                // and tint rows show the picked light.
-                if patch.light_source.is_none() {
-                    next.light_source = LightSource::Auto;
-                }
-                if patch.white_balance.is_none() {
-                    next.white_balance = AutoOr::Auto;
-                }
-            }
-        }
-        let mut clamped = Vec::new();
-        next.sanitise(&mut clamped)?;
-        let changed = self.diff(&next);
-        // Only report clamping in fields the patch touched: a stored value is always in range.
-        clamped.retain(|f| changed.contains(f) || patch_touches(patch, *f));
-        *self = next;
-        Ok(PatchReport { changed, clamped })
-    }
-}
-
-/// Whether the patch names `field`.
-fn patch_touches(p: &SettingsPatch, field: SettingsField) -> bool {
-    match field {
-        SettingsField::Look => p.look.is_some(),
-        SettingsField::LookIntensity => p.look_intensity.is_some(),
-        SettingsField::Exposure => p.exposure.is_some(),
-        SettingsField::Contrast => p.contrast.is_some(),
-        SettingsField::Brightness => p.brightness.is_some(),
-        SettingsField::Highlights => p.highlights.is_some(),
-        SettingsField::Shadows => p.shadows.is_some(),
-        SettingsField::White => p.white.is_some(),
-        SettingsField::Black => p.black.is_some(),
-        SettingsField::LightSource => p.light_source.is_some(),
-        SettingsField::WhiteBalance => p.white_balance.is_some(),
-        SettingsField::ColorBalance => p.color_balance.is_some(),
-        SettingsField::Saturation => p.saturation.is_some(),
-        SettingsField::ColorWarp => p.color_warp.is_some(),
-        SettingsField::Lens => p.lens.is_some(),
-        SettingsField::Sharpen => p.sharpen.is_some(),
-        SettingsField::OutputSharpening => p.output_sharpening.is_some(),
-        SettingsField::NoiseReduction => p.noise_reduction.is_some(),
-        SettingsField::Curve => p.curve.is_some(),
-        SettingsField::Decode => p.decode.is_some(),
-        SettingsField::Rolloff => p.rolloff.is_some(),
-        SettingsField::Crop => p.crop.is_some(),
-        SettingsField::Orientation => p.orientation.is_some(),
-        SettingsField::WhitePick => p.white_pick.is_some(),
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
 // Resolved settings
 // ---------------------------------------------------------------------------------------------
 
-/// Which `Auto` fields are still automatic; the UI shows the AUTO tag for these and EDITED for the
-/// others.
+/// Which of the Input's `Auto` fields are still automatic; the UI shows the AUTO tag for these and
+/// EDITED for the others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AutoFlags {
+pub struct InputAutoFlags {
     /// `exposure` is Auto.
     pub exposure: bool,
+    /// `light_source` is Auto.
+    pub light_source: bool,
+    /// `white_balance` is Auto.
+    pub white_balance: bool,
+    /// `sharpen` is Auto.
+    pub sharpen: bool,
+    /// `noise_reduction` is Auto.
+    pub noise_reduction: bool,
+}
+
+/// Which of Main's `Auto` fields are still automatic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MainAutoFlags {
     /// `contrast` is Auto.
     pub contrast: bool,
     /// `highlights` is Auto.
@@ -2438,27 +1756,68 @@ pub struct AutoFlags {
     pub balance_highlights: bool,
     /// `saturation` is Auto.
     pub saturation: bool,
-    /// `light_source` is Auto.
-    pub light_source: bool,
-    /// `white_balance` is Auto.
-    pub white_balance: bool,
-    /// `sharpen` is Auto.
-    pub sharpen: bool,
-    /// `noise_reduction` is Auto.
-    pub noise_reduction: bool,
 }
 
-/// [`DevelopSettings`] with every `Auto` replaced by the number it resolves to.
+/// Which `Auto` fields are still automatic, grouped by node: only the Input and Main can be Auto
+/// (`docs/23` section 3.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoFlags {
+    /// The Input's.
+    pub input: InputAutoFlags,
+    /// Main's.
+    pub main: MainAutoFlags,
+}
+
+/// The Input with every `Auto` replaced by the number it resolves to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ResolvedValues {
+pub struct ResolvedInput {
+    /// The card's place.
+    pub pos: NodePos,
+    /// The exposure in stops (`EV_auto` while `exposure` is Auto).
+    pub exposure_ev: f64,
+    /// `light_source`.
+    pub light_source: LightSource,
+    /// The Kelvin the White balance row shows: the user's value, or the scene light's readout
+    /// (the preset's temperature while a preset is chosen).
+    pub kelvin: f64,
+    /// The tint the White balance row shows.
+    pub tint: f64,
+    /// The sharpening in effect.
+    pub sharpen: SharpenValue,
+    /// The noise reduction in effect.
+    pub noise_reduction: NoiseReductionValue,
+    /// `lens`.
+    pub lens: LensSettings,
+    /// `decode`.
+    pub decode: DecodeOptions,
+    /// `rolloff`.
+    pub rolloff: Rolloff,
+    /// `crop`.
+    pub crop: Option<Crop>,
+    /// `orientation`.
+    pub orientation: Orientation,
+    /// `white_pick`.
+    pub white_pick: Option<[f64; 2]>,
+}
+
+/// The Output (it has no Auto, so its values are its fields).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedOutput {
+    /// The card's place.
+    pub pos: NodePos,
     /// `look`.
     pub look: LookId,
     /// `look_intensity`.
     pub look_intensity: f64,
-    /// The exposure in stops (`EV_auto` while `exposure` is Auto).
-    pub exposure_ev: f64,
-    /// The contrast in effect: the manual value, or the photo's Auto contrast while `contrast` is Auto
-    /// (0 without Apple Auto, `docs/19` section 5).
+    /// `output_sharpening`.
+    pub output_sharpening: f64,
+}
+
+/// A corrector's grade with every `Auto` replaced by the number it resolves to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GradeValues {
+    /// The contrast in effect: the manual value, or the photo's Auto contrast while `contrast` is
+    /// Auto (0 without Apple Auto, `docs/19` section 5).
     pub contrast: f64,
     /// `brightness`.
     pub brightness: f64,
@@ -2470,41 +1829,71 @@ pub struct ResolvedValues {
     pub white: f64,
     /// The black in effect, as `highlights`.
     pub black: f64,
-    /// `light_source`.
-    pub light_source: LightSource,
-    /// The Kelvin the White balance row shows: the user's value, or the scene light's readout
-    /// (the preset's temperature while a preset is chosen).
-    pub kelvin: f64,
-    /// The tint the White balance row shows.
-    pub tint: f64,
     /// The wheels' points in effect: the manual points, or the photo's Auto points (`[0, 0]` without
     /// Apple Auto) for the shadows and highlights wheels while they are Auto.
     pub color_balance: ColorBalancePoints,
-    /// The saturation in effect: the manual value, or the photo's Auto saturation while `saturation` is
-    /// Auto (0 without Apple Auto).
+    /// The saturation in effect.
     pub saturation: f64,
     /// `color_warp`.
     pub color_warp: ColorWarp,
-    /// `lens`.
-    pub lens: LensSettings,
-    /// The sharpening in effect.
-    pub sharpen: SharpenValue,
-    /// `output_sharpening`.
-    pub output_sharpening: f64,
-    /// The noise reduction in effect.
-    pub noise_reduction: NoiseReductionValue,
     /// `curve`.
     pub curve: Curves,
-    /// `decode`.
-    pub decode: DecodeOptions,
-    /// `rolloff`.
-    pub rolloff: Rolloff,
-    /// `crop`.
-    pub crop: Option<Crop>,
-    /// `orientation`.
-    pub orientation: Orientation,
-    /// `white_pick`.
-    pub white_pick: Option<[f64; 2]>,
+}
+
+impl GradeValues {
+    /// The grade with its Auto resolved against `auto`.
+    #[must_use]
+    pub fn of(g: &NodeGrade, auto: &MainAuto) -> Self {
+        Self {
+            contrast: g.contrast.resolve(auto.contrast),
+            brightness: g.brightness,
+            highlights: g.highlights.resolve(auto.highlights),
+            shadows: g.shadows.resolve(auto.shadows),
+            white: g.white,
+            black: g.black.resolve(auto.black),
+            color_balance: ColorBalancePoints {
+                shadows: g.color_balance.shadows.resolve(auto.balance_shadows),
+                midtones: g.color_balance.midtones,
+                highlights: g.color_balance.highlights.resolve(auto.balance_highlights),
+            },
+            saturation: g.saturation.resolve(auto.saturation),
+            color_warp: g.color_warp.clone(),
+            curve: g.curve.clone(),
+        }
+    }
+}
+
+/// A corrector with its grade resolved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedCorrector {
+    /// The node's id (Main is 1).
+    pub id: u32,
+    /// `name`.
+    pub name: String,
+    /// `bypass`.
+    pub bypass: bool,
+    /// The card's place.
+    pub pos: NodePos,
+    /// `trim`.
+    pub trim: NodeTrim,
+    /// The grade with its Auto resolved (only Main has Auto).
+    pub grade: GradeValues,
+    /// `masks`.
+    pub masks: MaskSettings,
+}
+
+/// The settings with every `Auto` replaced by the number it resolves to, node by node
+/// (`docs/23` section 3.9): the Input, Main, the Output and the other correctors as they are.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedValues {
+    /// The Input.
+    pub input: ResolvedInput,
+    /// Main, node 1.
+    pub main: ResolvedCorrector,
+    /// The other correctors, by id (their values are their fields: they have no Auto).
+    pub nodes: Vec<ResolvedCorrector>,
+    /// The Output.
+    pub output: ResolvedOutput,
 }
 
 /// What `get_settings` and `update_settings` return: the panel's whole state for one photo.
@@ -2518,7 +1907,7 @@ pub struct ResolvedSettings {
     pub values: ResolvedValues,
     /// Which fields are still automatic.
     pub auto: AutoFlags,
-    /// The automatic estimates the `Auto`s resolved against.
+    /// The automatic estimates the `Auto`s resolved against, grouped by node.
     pub estimates: AutoSummary,
 }
 
@@ -2527,7 +1916,7 @@ impl ResolvedSettings {
     ///
     /// The Kelvin and tint come from the colour chain, so they follow a light preset or a picked
     /// white while `white_balance` is Auto (`docs/02` C1 and C3-C4). `picked_white` is the sample
-    /// that belongs to `settings.white_pick` ([`crate::auto::pick_white_sample`]); without it a
+    /// that belongs to the Input's `white_pick` ([`crate::auto::pick_white_sample`]); without it a
     /// white pick has no effect on the readout.
     ///
     /// # Errors
@@ -2547,66 +1936,87 @@ impl ResolvedSettings {
                 other => SettingsError::Chain(other.to_string()),
             })?;
         let WbReadout { kelvin_k, tint } = chain.readout();
-        let auto_sharpen = estimates.sharpen;
-        let auto_nr = estimates.noise_reduction;
-        let values = ResolvedValues {
-            look: settings.look.clone(),
-            look_intensity: settings.look_intensity,
-            exposure_ev: chain.exposure_ev(),
-            contrast: settings.contrast.resolve(estimates.contrast),
-            brightness: settings.brightness,
-            highlights: settings.highlights.resolve(estimates.highlights),
-            shadows: settings.shadows.resolve(estimates.shadows),
-            white: settings.white,
-            black: settings.black.resolve(estimates.black),
-            light_source: settings.light_source,
-            kelvin: kelvin_k,
-            tint,
-            color_balance: ColorBalancePoints {
-                shadows: settings
-                    .color_balance
-                    .shadows
-                    .resolve(estimates.balance_shadows),
-                midtones: settings.color_balance.midtones,
-                highlights: settings
-                    .color_balance
-                    .highlights
-                    .resolve(estimates.balance_highlights),
-            },
-            saturation: settings.saturation.resolve(estimates.saturation),
-            color_warp: settings.color_warp.clone(),
-            lens: settings.lens,
-            sharpen: settings.sharpen.manual().copied().unwrap_or(auto_sharpen),
-            output_sharpening: settings.output_sharpening,
-            noise_reduction: settings
-                .noise_reduction
-                .manual()
-                .copied()
-                .unwrap_or(auto_nr),
-            curve: settings.curve.clone(),
-            decode: settings.decode,
-            rolloff: settings.rolloff,
-            crop: settings.crop,
-            orientation: settings.orientation,
-            white_pick: settings.white_pick,
+        let input = settings.input();
+        let auto_input = estimates.input_auto();
+        let main_auto = estimates.main_auto();
+        let none = MainAuto {
+            contrast: 0.0,
+            saturation: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
+            black: 0.0,
+            balance_shadows: [0.0, 0.0],
+            balance_highlights: [0.0, 0.0],
         };
+        let corrector = |id: u32, c: &CorrectorNode, auto: &MainAuto| ResolvedCorrector {
+            id,
+            name: c.name.clone(),
+            bypass: c.bypass,
+            pos: c.pos,
+            trim: c.trim,
+            grade: GradeValues::of(&c.grade, auto),
+            masks: c.masks.clone(),
+        };
+        let values = ResolvedValues {
+            input: ResolvedInput {
+                pos: input.pos,
+                exposure_ev: chain.exposure_ev(),
+                light_source: input.light_source,
+                kelvin: kelvin_k,
+                tint,
+                sharpen: input
+                    .sharpen
+                    .manual()
+                    .copied()
+                    .unwrap_or(auto_input.sharpen),
+                noise_reduction: input
+                    .noise_reduction
+                    .manual()
+                    .copied()
+                    .unwrap_or(auto_input.noise_reduction),
+                lens: input.lens,
+                decode: input.decode,
+                rolloff: input.rolloff,
+                crop: input.crop,
+                orientation: input.orientation,
+                white_pick: input.white_pick,
+            },
+            main: corrector(MAIN_ID, settings.main(), &main_auto),
+            nodes: settings
+                .nodes
+                .extra
+                .iter()
+                .map(|(id, c)| corrector(*id, c, &none))
+                .collect(),
+            output: ResolvedOutput {
+                pos: settings.output().pos,
+                look: settings.output().look.clone(),
+                look_intensity: settings.output().look_intensity,
+                output_sharpening: settings.output().output_sharpening,
+            },
+        };
+        let g = settings.main_grade();
         Ok(Self {
             photo_id,
             settings: settings.clone(),
             values,
             auto: AutoFlags {
-                exposure: settings.exposure.is_auto(),
-                contrast: settings.contrast.is_auto(),
-                highlights: settings.highlights.is_auto(),
-                shadows: settings.shadows.is_auto(),
-                black: settings.black.is_auto(),
-                balance_shadows: settings.color_balance.shadows.is_auto(),
-                balance_highlights: settings.color_balance.highlights.is_auto(),
-                saturation: settings.saturation.is_auto(),
-                light_source: settings.light_source == LightSource::Auto,
-                white_balance: settings.white_balance.is_auto(),
-                sharpen: settings.sharpen.is_auto(),
-                noise_reduction: settings.noise_reduction.is_auto(),
+                input: InputAutoFlags {
+                    exposure: input.exposure.is_auto(),
+                    light_source: input.light_source == LightSource::Auto,
+                    white_balance: input.white_balance.is_auto(),
+                    sharpen: input.sharpen.is_auto(),
+                    noise_reduction: input.noise_reduction.is_auto(),
+                },
+                main: MainAutoFlags {
+                    contrast: g.contrast.is_auto(),
+                    highlights: g.highlights.is_auto(),
+                    shadows: g.shadows.is_auto(),
+                    black: g.black.is_auto(),
+                    balance_shadows: g.color_balance.shadows.is_auto(),
+                    balance_highlights: g.color_balance.highlights.is_auto(),
+                    saturation: g.saturation.is_auto(),
+                },
             },
             estimates: estimates.summary(),
         })
@@ -2615,64 +2025,60 @@ impl ResolvedSettings {
     /// The numbers that fill the missing part of a partial manual patch: what the panel shows.
     #[must_use]
     pub fn seeds(&self) -> AutoSeeds {
+        let v = &self.values.input;
         AutoSeeds {
-            exposure_ev: self.values.exposure_ev,
-            kelvin: self.values.kelvin,
-            tint: self.values.tint,
-            sharpen: self.values.sharpen,
-            noise_reduction: self.values.noise_reduction,
+            exposure_ev: v.exposure_ev,
+            kelvin: v.kelvin,
+            tint: v.tint,
+            sharpen: v.sharpen,
+            noise_reduction: v.noise_reduction,
         }
     }
 
     /// The settings as an export records them (`ym:Settings`, the CLI's `settings` object).
     ///
-    /// Exposure, contrast, highlights, shadows, black, saturation, the shadows and highlights wheels,
-    /// sharpening and noise reduction that are Auto are written as the manual values they resolved to: a Manual value renders exactly like the Auto it came from, and
-    /// the file then says which numbers were used (which Auto chose them is in `ym:Auto` and
-    /// `ym:AppleAuto`, `docs/19` section 9). White balance is left as it is: a manual white balance
-    /// at the Kelvin and tint shown does *not* render like Auto (the tint scales the green gain,
-    /// and Kelvin is rounded to 50 K), so an Auto white balance stays Auto here and the numbers it
-    /// resolved to are in the `auto` object of the CLI output.
+    /// The Input's exposure, sharpening and noise reduction, and Main's contrast, highlights,
+    /// shadows, black, saturation and shadows and highlights wheels that are Auto are written as
+    /// the manual values they resolved to: a Manual value renders exactly like the Auto it came
+    /// from, and the file then says which numbers were used (which Auto chose them is in `ym:Auto`
+    /// and `ym:AppleAuto`, `docs/19` section 9). White balance is left as it is: a manual white
+    /// balance at the Kelvin and tint shown does *not* render like Auto (the tint scales the green
+    /// gain, and Kelvin is rounded to 50 K), so an Auto white balance stays Auto here and the
+    /// numbers it resolved to are in the `auto` object of the CLI output. Nothing else is pinned:
+    /// only the Input and Main can be Auto.
     #[must_use]
     pub fn pinned_settings(&self) -> DevelopSettings {
         let mut s = self.settings.clone();
-        if s.exposure.is_auto() {
-            s.exposure = ExposureSetting::manual_ev(self.values.exposure_ev);
+        let input = &self.values.input;
+        if s.input().exposure.is_auto() {
+            s.input_mut().exposure = ExposureSetting::manual_ev(input.exposure_ev);
         }
-        if s.contrast.is_auto() {
-            s.contrast = PercentSetting::manual_value(self.values.contrast);
+        if s.input().sharpen.is_auto() {
+            s.input_mut().sharpen = AutoOr::Manual(input.sharpen);
         }
-        if s.saturation.is_auto() {
-            s.saturation = PercentSetting::manual_value(self.values.saturation);
+        if s.input().noise_reduction.is_auto() {
+            s.input_mut().noise_reduction = AutoOr::Manual(input.noise_reduction);
         }
+        let v = &self.values.main.grade;
+        let g = s.main_grade_mut();
         for (setting, value) in [
-            (&mut s.highlights, self.values.highlights),
-            (&mut s.shadows, self.values.shadows),
-            (&mut s.black, self.values.black),
+            (&mut g.contrast, v.contrast),
+            (&mut g.saturation, v.saturation),
+            (&mut g.highlights, v.highlights),
+            (&mut g.shadows, v.shadows),
+            (&mut g.black, v.black),
         ] {
             if setting.is_auto() {
                 *setting = PercentSetting::manual_value(value);
             }
         }
         for (setting, point) in [
-            (
-                &mut s.color_balance.shadows,
-                self.values.color_balance.shadows,
-            ),
-            (
-                &mut s.color_balance.highlights,
-                self.values.color_balance.highlights,
-            ),
+            (&mut g.color_balance.shadows, v.color_balance.shadows),
+            (&mut g.color_balance.highlights, v.color_balance.highlights),
         ] {
             if setting.is_auto() {
                 *setting = BalanceSetting::manual_point(point);
             }
-        }
-        if s.sharpen.is_auto() {
-            s.sharpen = AutoOr::Manual(self.values.sharpen);
-        }
-        if s.noise_reduction.is_auto() {
-            s.noise_reduction = AutoOr::Manual(self.values.noise_reduction);
         }
         s
     }
@@ -2683,97 +2089,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_settings_are_the_automatic_development() {
+    fn default_settings_are_the_default_graph() {
         let s = DevelopSettings::default();
-        assert_eq!(s.look.as_str(), "builtin:neutral");
-        assert_eq!(s.look_intensity, 100.0);
-        assert!(s.exposure.is_auto() && s.white_balance.is_auto());
-        assert!(s.sharpen.is_auto() && s.noise_reduction.is_auto());
-        assert_eq!(s.light_source, LightSource::Auto);
-        assert_eq!(s.curve.luma, identity_curve());
+        assert_eq!(s.output().look.as_str(), "builtin:neutral");
+        assert_eq!(s.output().look_intensity, 100.0);
+        assert!(s.input().exposure.is_auto() && s.input().white_balance.is_auto());
+        assert!(s.input().sharpen.is_auto() && s.input().noise_reduction.is_auto());
+        assert_eq!(s.input().light_source, LightSource::Auto);
+        assert_eq!(s.main_grade().curve.luma, identity_curve());
         assert_eq!(
-            s.rolloff,
+            s.input().rolloff,
             Rolloff {
                 highlights: 0.6,
                 low_light: 0.5
             }
         );
-        assert!(s.decode.neural_demosaic && s.decode.chromatic_aberration);
-        assert!(s.crop.is_none() && s.white_pick.is_none());
-        assert_eq!(s.orientation, Orientation::Deg0);
-        assert_eq!(s.output_sharpening, 100.0);
-    }
-
-    #[test]
-    fn output_sharpening_is_a_plain_number_that_clamps_and_defaults_to_100() {
-        // A document without the field reads as 100 (older settings, older XMP).
-        let (s, clamped) =
-            DevelopSettings::from_json("{}", &LookId::builtin("neutral")).expect("reads");
-        assert_eq!(s.output_sharpening, 100.0);
-        assert!(clamped.is_empty());
-        let (s, clamped) = DevelopSettings::from_json(
-            r#"{ "output_sharpening": 250 }"#,
-            &LookId::builtin("neutral"),
-        )
-        .expect("reads");
-        assert_eq!(s.output_sharpening, 200.0);
-        assert_eq!(clamped, vec![SettingsField::OutputSharpening]);
-        let (s, _) = DevelopSettings::from_json(
-            r#"{ "output_sharpening": -5 }"#,
-            &LookId::builtin("neutral"),
-        )
-        .expect("reads");
-        assert_eq!(s.output_sharpening, 0.0);
-        // A value that is not a number is refused, like every other field.
-        assert!(
-            DevelopSettings::from_json(
-                r#"{ "output_sharpening": "a lot" }"#,
-                &LookId::builtin("neutral")
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn the_retired_white_offset_is_read_ignored_and_never_written() {
-        let neutral = LookId::builtin("neutral");
-        // Settings of an older version (a saved document, an older XMP, a golden manifest) have the field:
-        // they still load, the value is ignored whatever it is, nothing is clamped and nothing is written back.
-        let (plain, _) = DevelopSettings::from_json("{}", &neutral).expect("reads");
-        for text in [
-            r#"{ "white_offset_ev": 0 }"#,
-            r#"{ "white_offset_ev": 5 }"#,
-            r#"{ "white_offset_ev": -9.5 }"#,
-            r#"{ "white_offset_ev": "a lot" }"#,
-            r#"{ "white_offset_ev": null }"#,
-        ] {
-            let (s, clamped) = DevelopSettings::from_json(text, &neutral)
-                .unwrap_or_else(|e| panic!("{text}: {e}"));
-            assert_eq!(s, plain, "{text}");
-            assert!(clamped.is_empty(), "{text}");
-            let json = serde_json::to_value(&s).expect("json");
-            assert!(json.get("white_offset_ev").is_none(), "{text}");
-        }
-        // A copied set of an older version (a patch) still parses and applies, the field ignored.
-        let patch: SettingsPatch =
-            serde_json::from_str(r#"{ "brightness": 12, "white_offset_ev": 0.5 }"#).expect("patch");
-        let mut s = DevelopSettings::default();
-        let report = s.apply_patch(&patch, None).expect("patch");
-        assert_eq!(s.brightness, 12.0);
-        assert_eq!(report.changed, vec![SettingsField::Brightness]);
-        assert!(
-            serde_json::to_value(&patch)
-                .expect("json")
-                .get("white_offset_ev")
-                .is_none()
-        );
-        // The field is not a setting any more.
-        assert!(
-            SettingsField::ALL
-                .iter()
-                .all(|f| f.name() != "white_offset_ev")
-        );
-        assert_eq!(SettingsField::ALL.len(), 24);
+        assert!(s.input().decode.neural_demosaic && s.input().decode.chromatic_aberration);
+        assert!(s.input().crop.is_none() && s.input().white_pick.is_none());
+        assert_eq!(s.input().orientation, Orientation::Deg0);
+        assert_eq!(s.output().output_sharpening, 100.0);
+        assert_eq!(s.nodes.links, NodeGraph::default_links());
+        assert_eq!(s.main().name, "Main");
     }
 
     #[test]
@@ -2799,28 +2135,35 @@ mod tests {
 
     #[test]
     fn stage_groups_follow_the_render_graph_table() {
-        assert_eq!(SettingsField::Decode.group(), StageGroup::Raw);
-        assert_eq!(SettingsField::NoiseReduction.group(), StageGroup::Raw);
-        assert_eq!(SettingsField::Sharpen.group(), StageGroup::Raw);
+        use SettingsField as F;
+        assert_eq!(F::Decode.group(), Some(StageGroup::Raw));
+        assert_eq!(F::NoiseReduction.group(), Some(StageGroup::Raw));
+        assert_eq!(F::Sharpen.group(), Some(StageGroup::Raw));
         for f in [
-            SettingsField::LightSource,
-            SettingsField::WhiteBalance,
-            SettingsField::WhitePick,
-            SettingsField::Exposure,
-            SettingsField::Rolloff,
+            F::LightSource,
+            F::WhiteBalance,
+            F::WhitePick,
+            F::Exposure,
+            F::Rolloff,
         ] {
-            assert_eq!(f.group(), StageGroup::Color, "{f:?}");
+            assert_eq!(f.group(), Some(StageGroup::Color), "{f:?}");
         }
-        for f in [SettingsField::Crop, SettingsField::Orientation] {
-            assert_eq!(f.group(), StageGroup::Geometry);
+        for f in [F::Crop, F::Orientation] {
+            assert_eq!(f.group(), Some(StageGroup::Geometry));
         }
         // Output sharpening is the last stage: it follows geometry and re-runs nothing before it.
-        assert_eq!(SettingsField::OutputSharpening.group(), StageGroup::Output);
+        assert_eq!(F::OutputSharpening.group(), Some(StageGroup::Output));
         assert!(StageGroup::Geometry < StageGroup::Output);
-        assert_eq!(SettingsField::Contrast.group(), StageGroup::Grade);
-        assert_eq!(SettingsField::Look.group(), StageGroup::Grade);
+        assert_eq!(F::Contrast.group(), Some(StageGroup::Grade));
+        assert_eq!(F::Look.group(), Some(StageGroup::Grade));
+        // A corrector's trim, bypass and masks are the nodes' group; its name and place re-run nothing.
+        for f in [F::Trim, F::Bypass, F::Masks] {
+            assert_eq!(f.group(), Some(StageGroup::Grade), "{f:?}");
+        }
+        assert_eq!(F::Name.group(), None);
+        assert_eq!(F::Pos.group(), None);
         // The lens sits between the raw group and the colour group (`docs/21` section 3).
-        assert_eq!(SettingsField::Lens.group(), StageGroup::Lens);
+        assert_eq!(F::Lens.group(), Some(StageGroup::Lens));
         assert!(StageGroup::Raw < StageGroup::Lens && StageGroup::Lens < StageGroup::Color);
         assert!(StageGroup::Raw < StageGroup::Color && StageGroup::Color < StageGroup::Grade);
         // Every field has a name that is the serde name.
@@ -2830,5 +2173,6 @@ mod tests {
                 format!("\"{}\"", f.name())
             );
         }
+        assert_eq!(SettingsField::ALL.len(), 29);
     }
 }

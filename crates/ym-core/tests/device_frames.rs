@@ -93,12 +93,12 @@ fn edit(src: &PhotoSource, f: impl FnOnce(&mut DevelopSettings)) -> PhotoSource 
 }
 
 fn with_amount(src: &PhotoSource, pct: f64) -> PhotoSource {
-    edit(src, |s| s.output_sharpening = pct)
+    edit(src, |s| s.output_mut().output_sharpening = pct)
 }
 
 fn tilted(src: &PhotoSource) -> PhotoSource {
     edit(src, |s| {
-        s.crop = Some(Crop {
+        s.input_mut().crop = Some(Crop {
             rect: NormRect {
                 x: 0.05,
                 y: 0.08,
@@ -115,7 +115,7 @@ fn tilted(src: &PhotoSource) -> PhotoSource {
 /// The whole photo straightened by `angle_deg`: the final image has empty corners, outside the photo.
 fn straightened(src: &PhotoSource, angle_deg: f64) -> PhotoSource {
     edit(src, |s| {
-        s.crop = Some(Crop {
+        s.input_mut().crop = Some(Crop {
             rect: NormRect {
                 x: 0.0,
                 y: 0.0,

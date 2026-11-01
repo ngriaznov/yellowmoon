@@ -1,0 +1,955 @@
+//! The masks of a corrector node (`docs/23-nodes.md` section 3.3): rows of nine kinds that add up
+//! into the node's mask, their ranges, their checking and the row patches (`masks.edit`,
+//! `strokes_append`, `strokes_keep`).
+//!
+//! N-02 reads, checks, patches, copies and writes masks; it renders none of them (N-03 on).
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::{Map, Value};
+
+use super::{SettingsError, clamp_to};
+
+/// The most mask rows one node may hold.
+pub const MAX_MASKS_PER_NODE: usize = 64;
+/// The most points a Brush mask may hold in all its strokes.
+pub const MAX_BRUSH_POINTS: usize = 100_000;
+/// The most points an Object mask may hold.
+pub const MAX_OBJECT_POINTS: usize = 256;
+
+/// Range of every opacity, feather, refine, level, softness, hardness and low/high value.
+pub const UNIT_RANGE: (f64, f64) = (0.0, 1.0);
+/// Range of Grow.
+pub const GROW_RANGE: (f64, f64) = (-1.0, 1.0);
+/// Range of a Radial mask's radii (fractions of the photo's long edge).
+pub const RADII_RANGE: (f64, f64) = (0.002, 1.0);
+/// Range of a Linear or Radial mask's angle (degrees).
+pub const MASK_ANGLE_RANGE_DEG: (f64, f64) = (-180.0, 180.0);
+/// Range of a brush stroke's size (fraction of the long edge).
+pub const STROKE_SIZE_RANGE: (f64, f64) = (0.001, 0.25);
+/// Range of a Colour range mask's width.
+pub const COLOR_RANGE_WIDTH_RANGE: (f64, f64) = (0.005, 0.3);
+/// The longest centre of a Colour range mask, in the chroma plane of C9.
+pub const COLOR_RANGE_CENTER_LIMIT: f64 = 0.5;
+
+/// How a mask row combines with the rows before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskMode {
+    /// The row adds to the mask.
+    #[default]
+    Add,
+    /// The row takes away from the mask.
+    Subtract,
+}
+
+/// The kinds of mask row, as their JSON names.
+pub const MASK_KINDS: [&str; 9] = [
+    "object",
+    "subject",
+    "people",
+    "background",
+    "linear",
+    "radial",
+    "brush",
+    "color_range",
+    "brightness_range",
+];
+
+/// An Object mask: SAM 2.1 from clicks or a box (`docs/23` section 4.4). With no point and no box it
+/// selects nothing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ObjectMask {
+    /// Clicks `[x, y, positive]` in the photo frame, at most [`MAX_OBJECT_POINTS`].
+    pub points: Vec<(f64, f64, bool)>,
+    /// A box `[x0, y0, x1, y1]` in the photo frame, or `None`.
+    #[serde(rename = "box")]
+    pub box_: Option<[f64; 4]>,
+    /// Feather, 0 to 1.
+    pub feather: f64,
+    /// Grow, -1 to 1.
+    pub grow: f64,
+    /// Refine edges, 0 to 1.
+    pub refine: f64,
+}
+
+impl Default for ObjectMask {
+    fn default() -> Self {
+        Self {
+            points: Vec::new(),
+            box_: None,
+            feather: 0.0,
+            grow: 0.0,
+            refine: 0.5,
+        }
+    }
+}
+
+/// A Subject or People mask: Apple Vision (`docs/23` section 4.5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct FindMask {
+    /// Feather, 0 to 1.
+    pub feather: f64,
+    /// Grow, -1 to 1.
+    pub grow: f64,
+    /// Refine edges, 0 to 1.
+    pub refine: f64,
+}
+
+impl Default for FindMask {
+    fn default() -> Self {
+        Self {
+            feather: 0.0,
+            grow: 0.0,
+            refine: 0.5,
+        }
+    }
+}
+
+/// A Background mask: the blur map with a level and a softness (`docs/23` section 4.6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct BackgroundMask {
+    /// Where the blur map's own decision falls, 0 to 1.
+    pub level: f64,
+    /// Softness of the threshold, 0 to 1.
+    pub softness: f64,
+    /// Feather, 0 to 1.
+    pub feather: f64,
+    /// Grow, -1 to 1.
+    pub grow: f64,
+    /// Refine edges, 0 to 1.
+    pub refine: f64,
+}
+
+impl Default for BackgroundMask {
+    fn default() -> Self {
+        Self {
+            level: 0.5,
+            softness: 0.5,
+            feather: 0.0,
+            grow: 0.0,
+            refine: 0.5,
+        }
+    }
+}
+
+/// A Linear mask: a line, an angle and a feather.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LinearMask {
+    /// A point of the line in the photo frame.
+    pub center: [f64; 2],
+    /// The line's angle in degrees, -180 to 180.
+    pub angle_deg: f64,
+    /// Feather, 0 to 1.
+    pub feather: f64,
+}
+
+impl Default for LinearMask {
+    fn default() -> Self {
+        Self {
+            center: [0.5, 0.5],
+            angle_deg: 0.0,
+            feather: 0.2,
+        }
+    }
+}
+
+/// A Radial mask: an ellipse.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct RadialMask {
+    /// The centre in the photo frame.
+    pub center: [f64; 2],
+    /// The two radii, 0.002 to 1 of the long edge.
+    pub radii: [f64; 2],
+    /// The angle in degrees, -180 to 180.
+    pub angle_deg: f64,
+    /// Feather, 0 to 1.
+    pub feather: f64,
+}
+
+impl Default for RadialMask {
+    fn default() -> Self {
+        Self {
+            center: [0.5, 0.5],
+            radii: [0.25, 0.18],
+            angle_deg: 0.0,
+            feather: 0.3,
+        }
+    }
+}
+
+/// One stroke of a Brush mask.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct BrushStroke {
+    /// The brush's size, 0.001 to 0.25 of the long edge.
+    pub size: f64,
+    /// The brush's hardness, 0 to 1.
+    pub hardness: f64,
+    /// An eraser stroke.
+    pub erase: bool,
+    /// The stroke's points in the photo frame.
+    pub points: Vec<[f64; 2]>,
+}
+
+impl Default for BrushStroke {
+    fn default() -> Self {
+        Self {
+            size: 0.03,
+            hardness: 0.5,
+            erase: false,
+            points: Vec::new(),
+        }
+    }
+}
+
+/// A Brush mask: strokes drawn into a raster.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct BrushMask {
+    /// The strokes in the order they were drawn, at most [`MAX_BRUSH_POINTS`] points in all.
+    pub strokes: Vec<BrushStroke>,
+    /// Feather, 0 to 1.
+    pub feather: f64,
+    /// Grow, -1 to 1.
+    pub grow: f64,
+    /// Refine edges, 0 to 1.
+    pub refine: f64,
+}
+
+impl Default for BrushMask {
+    fn default() -> Self {
+        Self {
+            strokes: Vec::new(),
+            feather: 0.0,
+            grow: 0.0,
+            refine: 0.0,
+        }
+    }
+}
+
+impl BrushMask {
+    /// The number of points in all the strokes.
+    #[must_use]
+    pub fn point_count(&self) -> usize {
+        self.strokes.iter().map(|s| s.points.len()).sum()
+    }
+}
+
+/// A Colour range mask: a chroma centre, a width and a softness.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ColorRangeMask {
+    /// The centre in the chroma plane of C9, at most 0.5 long.
+    pub center: [f64; 2],
+    /// The width, 0.005 to 0.3.
+    pub width: f64,
+    /// The softness, 0 to 1.
+    pub softness: f64,
+}
+
+impl Default for ColorRangeMask {
+    fn default() -> Self {
+        Self {
+            center: [0.0, 0.0],
+            width: 0.05,
+            softness: 0.5,
+        }
+    }
+}
+
+/// A Brightness range mask: a low, a high and a softness.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct BrightnessRangeMask {
+    /// The low end, 0 to 1.
+    pub low: f64,
+    /// The high end, 0 to 1. A `low` above `high` is read as both at their mean.
+    pub high: f64,
+    /// The softness, 0 to 1.
+    pub softness: f64,
+}
+
+impl Default for BrightnessRangeMask {
+    fn default() -> Self {
+        Self {
+            low: 0.35,
+            high: 1.0,
+            softness: 0.5,
+        }
+    }
+}
+
+/// What a mask row finds or draws: the fields that depend on its kind.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MaskShape {
+    /// SAM 2.1 from clicks or a box.
+    Object(ObjectMask),
+    /// Apple Vision's foreground.
+    Subject(FindMask),
+    /// Apple Vision's people.
+    People(FindMask),
+    /// The blur map.
+    Background(BackgroundMask),
+    /// A line and a feather.
+    Linear(LinearMask),
+    /// An ellipse.
+    Radial(RadialMask),
+    /// Strokes.
+    Brush(BrushMask),
+    /// A chroma range.
+    ColorRange(ColorRangeMask),
+    /// A brightness range.
+    BrightnessRange(BrightnessRangeMask),
+}
+
+impl MaskShape {
+    /// The kind's JSON name (`"color_range"`).
+    #[must_use]
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Object(_) => "object",
+            Self::Subject(_) => "subject",
+            Self::People(_) => "people",
+            Self::Background(_) => "background",
+            Self::Linear(_) => "linear",
+            Self::Radial(_) => "radial",
+            Self::Brush(_) => "brush",
+            Self::ColorRange(_) => "color_range",
+            Self::BrightnessRange(_) => "brightness_range",
+        }
+    }
+
+    /// The kind as the person reads it in a sentence ("an Object mask").
+    #[must_use]
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Object(_) => "an Object",
+            Self::Subject(_) => "a Subject",
+            Self::People(_) => "a People",
+            Self::Background(_) => "a Background",
+            Self::Linear(_) => "a Linear",
+            Self::Radial(_) => "a Radial",
+            Self::Brush(_) => "a Brush",
+            Self::ColorRange(_) => "a Colour range",
+            Self::BrightnessRange(_) => "a Brightness range",
+        }
+    }
+
+    /// The default shape of a kind named by its JSON name, if it is one.
+    #[must_use]
+    pub fn default_of(kind: &str) -> Option<Self> {
+        Some(match kind {
+            "object" => Self::Object(ObjectMask::default()),
+            "subject" => Self::Subject(FindMask::default()),
+            "people" => Self::People(FindMask::default()),
+            "background" => Self::Background(BackgroundMask::default()),
+            "linear" => Self::Linear(LinearMask::default()),
+            "radial" => Self::Radial(RadialMask::default()),
+            "brush" => Self::Brush(BrushMask::default()),
+            "color_range" => Self::ColorRange(ColorRangeMask::default()),
+            "brightness_range" => Self::BrightnessRange(BrightnessRangeMask::default()),
+            _ => return None,
+        })
+    }
+
+    /// The names of the fields a row of this kind has besides `kind`, `mode`, `invert`, `enabled`
+    /// and `opacity`.
+    #[must_use]
+    pub fn own_fields(&self) -> &'static [&'static str] {
+        match self {
+            Self::Object(_) => &["points", "box", "feather", "grow", "refine"],
+            Self::Subject(_) | Self::People(_) => &["feather", "grow", "refine"],
+            Self::Background(_) => &["level", "softness", "feather", "grow", "refine"],
+            Self::Linear(_) => &["center", "angle_deg", "feather"],
+            Self::Radial(_) => &["center", "radii", "angle_deg", "feather"],
+            Self::Brush(_) => &["strokes", "feather", "grow", "refine"],
+            Self::ColorRange(_) => &["center", "width", "softness"],
+            Self::BrightnessRange(_) => &["low", "high", "softness"],
+        }
+    }
+
+    /// The same shape from a kind's JSON name and the row's other fields (the common ones already
+    /// taken out). Unknown fields are refused.
+    fn read(kind: &str, fields: Map<String, Value>) -> Result<Self, SettingsError> {
+        let value = Value::Object(fields);
+        let parse = |e: serde_json::Error| SettingsError::Parse(e.to_string());
+        Ok(match kind {
+            "object" => Self::Object(serde_json::from_value(value).map_err(parse)?),
+            "subject" => Self::Subject(serde_json::from_value(value).map_err(parse)?),
+            "people" => Self::People(serde_json::from_value(value).map_err(parse)?),
+            "background" => Self::Background(serde_json::from_value(value).map_err(parse)?),
+            "linear" => Self::Linear(serde_json::from_value(value).map_err(parse)?),
+            "radial" => Self::Radial(serde_json::from_value(value).map_err(parse)?),
+            "brush" => Self::Brush(serde_json::from_value(value).map_err(parse)?),
+            "color_range" => Self::ColorRange(serde_json::from_value(value).map_err(parse)?),
+            "brightness_range" => {
+                Self::BrightnessRange(serde_json::from_value(value).map_err(parse)?)
+            }
+            other => {
+                return Err(SettingsError::Parse(format!(
+                    "a mask can't be of the kind “{other}”; the kinds are {}",
+                    MASK_KINDS.join(", ")
+                )));
+            }
+        })
+    }
+}
+
+/// One row of a node's masks (`docs/23` section 3.3). JSON: one flat object, `kind` and the
+/// common fields beside the kind's own.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaskItem {
+    /// Add or subtract.
+    pub mode: MaskMode,
+    /// This mask alone is inverted.
+    pub invert: bool,
+    /// Off (the eye) counts as absent.
+    pub enabled: bool,
+    /// 0 to 1.
+    pub opacity: f64,
+    /// The kind and its fields.
+    pub shape: MaskShape,
+}
+
+impl MaskItem {
+    /// A row of this shape with the other fields at their defaults.
+    #[must_use]
+    pub fn new(shape: MaskShape) -> Self {
+        Self {
+            mode: MaskMode::Add,
+            invert: false,
+            enabled: true,
+            opacity: 1.0,
+            shape,
+        }
+    }
+
+    /// An Object row with no point and no box: it selects nothing.
+    #[must_use]
+    pub fn emptied(&self) -> Self {
+        let mut item = self.clone();
+        if let MaskShape::Object(o) = &mut item.shape {
+            o.points.clear();
+            o.box_ = None;
+        }
+        item
+    }
+
+    /// Reads a row from its JSON object.
+    ///
+    /// # Errors
+    ///
+    /// [`SettingsError::Parse`] for a kind that is not one of the nine, a missing `kind`, a field
+    /// the kind does not have, or a value of the wrong type.
+    pub fn from_map(mut map: Map<String, Value>) -> Result<Self, SettingsError> {
+        let parse = |e: serde_json::Error| SettingsError::Parse(e.to_string());
+        let kind = match map.remove("kind") {
+            Some(Value::String(k)) => k,
+            _ => {
+                return Err(SettingsError::Parse(
+                    "a mask needs a `kind` (object, subject, people, background, linear, radial, brush, color_range or brightness_range)"
+                        .to_owned(),
+                ));
+            }
+        };
+        let mode = match map.remove("mode") {
+            Some(v) => serde_json::from_value(v).map_err(parse)?,
+            None => MaskMode::Add,
+        };
+        let invert = match map.remove("invert") {
+            Some(v) => serde_json::from_value(v).map_err(parse)?,
+            None => false,
+        };
+        let enabled = match map.remove("enabled") {
+            Some(v) => serde_json::from_value(v).map_err(parse)?,
+            None => true,
+        };
+        let opacity = match map.remove("opacity") {
+            Some(v) => serde_json::from_value(v).map_err(parse)?,
+            None => 1.0,
+        };
+        let shape = MaskShape::read(&kind, map)?;
+        Ok(Self {
+            mode,
+            invert,
+            enabled,
+            opacity,
+            shape,
+        })
+    }
+}
+
+impl Serialize for MaskItem {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut value = serde_json::to_value(&self.shape).map_err(serde::ser::Error::custom)?;
+        if let Value::Object(map) = &mut value {
+            map.insert(
+                "mode".to_owned(),
+                serde_json::to_value(self.mode).map_err(serde::ser::Error::custom)?,
+            );
+            map.insert("invert".to_owned(), Value::Bool(self.invert));
+            map.insert("enabled".to_owned(), Value::Bool(self.enabled));
+            map.insert(
+                "opacity".to_owned(),
+                serde_json::to_value(self.opacity).map_err(serde::ser::Error::custom)?,
+            );
+        }
+        value.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for MaskItem {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match Value::deserialize(deserializer)? {
+            Value::Object(map) => Self::from_map(map).map_err(serde::de::Error::custom),
+            other => Err(serde::de::Error::custom(format!(
+                "a mask must be an object, not {other}"
+            ))),
+        }
+    }
+}
+
+/// A node's masks: the rows and the node's own Invert.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct MaskSettings {
+    /// The node's Invert: `m = 1 - m`.
+    pub invert: bool,
+    /// The rows, in the order they are drawn and combined, at most [`MAX_MASKS_PER_NODE`].
+    pub items: Vec<MaskItem>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Checking
+// ---------------------------------------------------------------------------------------------
+
+/// The clamping state of one mask row: whether anything was changed.
+#[derive(Default)]
+struct Changed(bool);
+
+impl Changed {
+    fn number(
+        &mut self,
+        prefix: &str,
+        name: &str,
+        value: &mut f64,
+        range: (f64, f64),
+    ) -> Result<(), SettingsError> {
+        let (v, c) = clamp_to(&format!("{prefix}.{name}"), *value, range)?;
+        *value = v;
+        self.0 |= c;
+        Ok(())
+    }
+
+    fn point(
+        &mut self,
+        prefix: &str,
+        name: &str,
+        p: &mut [f64; 2],
+        range: (f64, f64),
+    ) -> Result<(), SettingsError> {
+        for (i, v) in p.iter_mut().enumerate() {
+            self.number(prefix, &format!("{name}[{i}]"), v, range)?;
+        }
+        Ok(())
+    }
+}
+
+impl MaskSettings {
+    /// Clamps every number of every row to its range (`docs/23` section 3.5), counts the limits
+    /// and returns whether anything was changed. `prefix` names the masks for an error
+    /// ("nodes.items[2].masks").
+    ///
+    /// # Errors
+    ///
+    /// [`SettingsError::NotFinite`] for a number that is not a number,
+    /// [`SettingsError::Graph`] for more rows or points than the limits allow.
+    pub(crate) fn sanitise(&mut self, prefix: &str) -> Result<bool, SettingsError> {
+        use super::graph::GraphError;
+        if self.items.len() > MAX_MASKS_PER_NODE {
+            return Err(GraphError::TooManyMasks.into());
+        }
+        let mut changed = Changed::default();
+        for (i, item) in self.items.iter_mut().enumerate() {
+            let p = format!("{prefix}.items[{i}]");
+            changed.number(&p, "opacity", &mut item.opacity, UNIT_RANGE)?;
+            match &mut item.shape {
+                MaskShape::Object(o) => {
+                    if o.points.len() > MAX_OBJECT_POINTS {
+                        return Err(GraphError::TooManyObjectPoints.into());
+                    }
+                    for (j, pt) in o.points.iter_mut().enumerate() {
+                        let mut xy = [pt.0, pt.1];
+                        changed.point(&p, &format!("points[{j}]"), &mut xy, UNIT_RANGE)?;
+                        (pt.0, pt.1) = (xy[0], xy[1]);
+                    }
+                    if let Some(b) = &mut o.box_ {
+                        let mut lo = [b[0], b[1]];
+                        let mut hi = [b[2], b[3]];
+                        changed.point(&p, "box", &mut lo, UNIT_RANGE)?;
+                        changed.point(&p, "box", &mut hi, UNIT_RANGE)?;
+                        // A box is read corner to corner, whichever corner came first.
+                        let ordered = [
+                            lo[0].min(hi[0]),
+                            lo[1].min(hi[1]),
+                            lo[0].max(hi[0]),
+                            lo[1].max(hi[1]),
+                        ];
+                        changed.0 |= ordered != *b;
+                        *b = ordered;
+                    }
+                    changed.number(&p, "feather", &mut o.feather, UNIT_RANGE)?;
+                    changed.number(&p, "grow", &mut o.grow, GROW_RANGE)?;
+                    changed.number(&p, "refine", &mut o.refine, UNIT_RANGE)?;
+                }
+                MaskShape::Subject(f) | MaskShape::People(f) => {
+                    changed.number(&p, "feather", &mut f.feather, UNIT_RANGE)?;
+                    changed.number(&p, "grow", &mut f.grow, GROW_RANGE)?;
+                    changed.number(&p, "refine", &mut f.refine, UNIT_RANGE)?;
+                }
+                MaskShape::Background(b) => {
+                    changed.number(&p, "level", &mut b.level, UNIT_RANGE)?;
+                    changed.number(&p, "softness", &mut b.softness, UNIT_RANGE)?;
+                    changed.number(&p, "feather", &mut b.feather, UNIT_RANGE)?;
+                    changed.number(&p, "grow", &mut b.grow, GROW_RANGE)?;
+                    changed.number(&p, "refine", &mut b.refine, UNIT_RANGE)?;
+                }
+                MaskShape::Linear(l) => {
+                    changed.point(&p, "center", &mut l.center, UNIT_RANGE)?;
+                    changed.number(&p, "angle_deg", &mut l.angle_deg, MASK_ANGLE_RANGE_DEG)?;
+                    changed.number(&p, "feather", &mut l.feather, UNIT_RANGE)?;
+                }
+                MaskShape::Radial(r) => {
+                    changed.point(&p, "center", &mut r.center, UNIT_RANGE)?;
+                    changed.point(&p, "radii", &mut r.radii, RADII_RANGE)?;
+                    changed.number(&p, "angle_deg", &mut r.angle_deg, MASK_ANGLE_RANGE_DEG)?;
+                    changed.number(&p, "feather", &mut r.feather, UNIT_RANGE)?;
+                }
+                MaskShape::Brush(b) => {
+                    if b.point_count() > MAX_BRUSH_POINTS {
+                        return Err(GraphError::TooManyBrushPoints.into());
+                    }
+                    for (j, s) in b.strokes.iter_mut().enumerate() {
+                        let sp = format!("{p}.strokes[{j}]");
+                        changed.number(&sp, "size", &mut s.size, STROKE_SIZE_RANGE)?;
+                        changed.number(&sp, "hardness", &mut s.hardness, UNIT_RANGE)?;
+                        for (k, pt) in s.points.iter_mut().enumerate() {
+                            changed.point(&sp, &format!("points[{k}]"), pt, UNIT_RANGE)?;
+                        }
+                    }
+                    changed.number(&p, "feather", &mut b.feather, UNIT_RANGE)?;
+                    changed.number(&p, "grow", &mut b.grow, GROW_RANGE)?;
+                    changed.number(&p, "refine", &mut b.refine, UNIT_RANGE)?;
+                }
+                MaskShape::ColorRange(c) => {
+                    for (k, v) in c.center.iter().enumerate() {
+                        if !v.is_finite() {
+                            return Err(SettingsError::NotFinite(format!("{p}.center[{k}]")));
+                        }
+                    }
+                    let len = c.center[0].hypot(c.center[1]);
+                    if len > COLOR_RANGE_CENTER_LIMIT {
+                        let k = COLOR_RANGE_CENTER_LIMIT / len;
+                        c.center = [c.center[0] * k, c.center[1] * k];
+                        changed.0 = true;
+                    }
+                    c.center = [c.center[0] + 0.0, c.center[1] + 0.0];
+                    changed.number(&p, "width", &mut c.width, COLOR_RANGE_WIDTH_RANGE)?;
+                    changed.number(&p, "softness", &mut c.softness, UNIT_RANGE)?;
+                }
+                MaskShape::BrightnessRange(r) => {
+                    changed.number(&p, "low", &mut r.low, UNIT_RANGE)?;
+                    changed.number(&p, "high", &mut r.high, UNIT_RANGE)?;
+                    if r.low > r.high {
+                        // Read as both at their mean (`docs/23` section 3.3): not clamping.
+                        let mean = (r.low + r.high) / 2.0;
+                        (r.low, r.high) = (mean, mean);
+                    }
+                    changed.number(&p, "softness", &mut r.softness, UNIT_RANGE)?;
+                }
+            }
+        }
+        Ok(changed.0)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Row patches
+// ---------------------------------------------------------------------------------------------
+
+/// Reads a field that may be absent (leave it), `null` (clear it) or a value (set it).
+fn double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// A partial of one mask row's fields (`masks.edit`, `docs/23` section 3.7). It cannot change the
+/// row's kind. `strokes_append` and `strokes_keep` are for a Brush row.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MaskRowPatch {
+    /// The row's kind: allowed only when it is the row's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Add or subtract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<MaskMode>,
+    /// This mask alone is inverted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invert: Option<bool>,
+    /// The eye.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// 0 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f64>,
+    /// Feather.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feather: Option<f64>,
+    /// Grow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grow: Option<f64>,
+    /// Refine edges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refine: Option<f64>,
+    /// An Object row's clicks, replaced whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub points: Option<Vec<(f64, f64, bool)>>,
+    /// An Object row's box; `null` takes it away.
+    #[serde(
+        default,
+        rename = "box",
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub box_: Option<Option<[f64; 4]>>,
+    /// A Background row's level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<f64>,
+    /// The softness of a Background, Colour range or Brightness range row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub softness: Option<f64>,
+    /// A Linear, Radial or Colour range row's centre.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub center: Option<[f64; 2]>,
+    /// A Linear or Radial row's angle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle_deg: Option<f64>,
+    /// A Radial row's radii.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radii: Option<[f64; 2]>,
+    /// A Brush row's strokes, replaced whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strokes: Option<Vec<BrushStroke>>,
+    /// Strokes added after the existing ones (a Brush row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strokes_append: Option<Vec<BrushStroke>>,
+    /// Keep only the first n strokes (a Brush row; the inverse of an append).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strokes_keep: Option<usize>,
+    /// A Colour range row's width.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f64>,
+    /// A Brightness range row's low end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub low: Option<f64>,
+    /// A Brightness range row's high end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub high: Option<f64>,
+}
+
+impl MaskRowPatch {
+    /// The names of the fields the patch carries, in the order of the struct.
+    fn names(&self) -> Vec<&'static str> {
+        let mut v = Vec::new();
+        macro_rules! has {
+            ($($f:ident => $n:expr),* $(,)?) => { $(if self.$f.is_some() { v.push($n); })* };
+        }
+        has!(
+            kind => "kind", mode => "mode", invert => "invert", enabled => "enabled",
+            opacity => "opacity", feather => "feather", grow => "grow", refine => "refine",
+            points => "points", box_ => "box", level => "level", softness => "softness",
+            center => "center", angle_deg => "angle_deg", radii => "radii", strokes => "strokes",
+            strokes_append => "strokes_append", strokes_keep => "strokes_keep", width => "width",
+            low => "low", high => "high",
+        );
+        v
+    }
+
+    /// Applies the patch to a row.
+    ///
+    /// # Errors
+    ///
+    /// [`SettingsError::MaskKind`] when the patch names another kind than the row's and
+    /// [`SettingsError::UnknownMaskField`] for a field the row's kind does not have.
+    pub(crate) fn apply(&self, row: &mut MaskItem) -> Result<(), SettingsError> {
+        if let Some(kind) = &self.kind
+            && kind != row.shape.kind_name()
+        {
+            return Err(SettingsError::MaskKind);
+        }
+        let own = row.shape.own_fields();
+        let common = ["kind", "mode", "invert", "enabled", "opacity"];
+        let brush = matches!(row.shape, MaskShape::Brush(_));
+        for name in self.names() {
+            let stroke_op = matches!(name, "strokes_append" | "strokes_keep");
+            let ok = common.contains(&name) || own.contains(&name) || (brush && stroke_op);
+            if !ok {
+                let mut mask = row.shape.display_name().to_owned();
+                if let Some(first) = mask.get_mut(0..1) {
+                    first.make_ascii_uppercase();
+                }
+                return Err(SettingsError::UnknownMaskField {
+                    mask,
+                    field: name.to_owned(),
+                });
+            }
+        }
+        if let Some(v) = self.mode {
+            row.mode = v;
+        }
+        if let Some(v) = self.invert {
+            row.invert = v;
+        }
+        if let Some(v) = self.enabled {
+            row.enabled = v;
+        }
+        if let Some(v) = self.opacity {
+            row.opacity = v;
+        }
+        macro_rules! set {
+            ($target:expr, $field:ident) => {
+                if let Some(v) = self.$field.clone() {
+                    $target.$field = v;
+                }
+            };
+        }
+        match &mut row.shape {
+            MaskShape::Object(o) => {
+                set!(o, feather);
+                set!(o, grow);
+                set!(o, refine);
+                if let Some(v) = &self.points {
+                    o.points.clone_from(v);
+                }
+                if let Some(v) = self.box_ {
+                    o.box_ = v;
+                }
+            }
+            MaskShape::Subject(f) | MaskShape::People(f) => {
+                set!(f, feather);
+                set!(f, grow);
+                set!(f, refine);
+            }
+            MaskShape::Background(b) => {
+                set!(b, level);
+                set!(b, softness);
+                set!(b, feather);
+                set!(b, grow);
+                set!(b, refine);
+            }
+            MaskShape::Linear(l) => {
+                set!(l, center);
+                set!(l, angle_deg);
+                set!(l, feather);
+            }
+            MaskShape::Radial(r) => {
+                set!(r, center);
+                set!(r, radii);
+                set!(r, angle_deg);
+                set!(r, feather);
+            }
+            MaskShape::Brush(b) => {
+                set!(b, feather);
+                set!(b, grow);
+                set!(b, refine);
+                if let Some(v) = &self.strokes {
+                    b.strokes.clone_from(v);
+                }
+                // Keep first, then append: an undo of an append is a keep, and a redo an append.
+                if let Some(n) = self.strokes_keep {
+                    b.strokes.truncate(n);
+                }
+                if let Some(v) = &self.strokes_append {
+                    b.strokes.extend(v.iter().cloned());
+                }
+            }
+            MaskShape::ColorRange(c) => {
+                set!(c, center);
+                set!(c, width);
+                set!(c, softness);
+            }
+            MaskShape::BrightnessRange(r) => {
+                set!(r, low);
+                set!(r, high);
+                set!(r, softness);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A node's masks to change (`docs/23` section 3.7): the node's Invert, the whole list, and rows
+/// by index.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MasksPatch {
+    /// The node's Invert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invert: Option<bool>,
+    /// The whole list of rows: add, remove or reorder rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<MaskItem>>,
+    /// Row patches by the row's index (a string), applied after `items`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit: Option<std::collections::BTreeMap<String, MaskRowPatch>>,
+}
+
+impl MasksPatch {
+    /// Applies the patch to a node's masks.
+    ///
+    /// # Errors
+    ///
+    /// [`SettingsError::NoMaskRow`] for an index the list does not have or that is not a number,
+    /// and the errors of [`MaskRowPatch`].
+    pub(crate) fn apply(&self, masks: &mut MaskSettings, node: &str) -> Result<(), SettingsError> {
+        if let Some(v) = self.invert {
+            masks.invert = v;
+        }
+        if let Some(items) = &self.items {
+            masks.items.clone_from(items);
+        }
+        if let Some(edit) = &self.edit {
+            // Row indices are numbers written as strings; apply them in numeric order.
+            let mut rows: Vec<(usize, &MaskRowPatch)> = Vec::with_capacity(edit.len());
+            for (key, patch) in edit {
+                let index = key.parse::<usize>().map_err(|_| SettingsError::NoMaskRow {
+                    node: node.to_owned(),
+                    index: key.clone(),
+                })?;
+                rows.push((index, patch));
+            }
+            rows.sort_by_key(|(i, _)| *i);
+            for (index, patch) in rows {
+                let row = masks
+                    .items
+                    .get_mut(index)
+                    .ok_or_else(|| SettingsError::NoMaskRow {
+                        node: node.to_owned(),
+                        index: index.to_string(),
+                    })?;
+                patch.apply(row)?;
+            }
+        }
+        Ok(())
+    }
+}

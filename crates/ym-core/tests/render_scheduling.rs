@@ -311,7 +311,7 @@ fn photos_that_share_an_id_across_sessions_never_share_pixels() {
         );
         // Auto exposure would put both fields at mid-grey: fix the exposure.
         let mut settings = d.source().settings.clone();
-        settings.exposure =
+        settings.input_mut().exposure =
             ym_core::settings::AutoOr::Manual(ym_core::settings::ExposureValue { ev: 0.0 });
         let src = d.source().with_settings(settings);
         assert_eq!(src.id.0, 1);

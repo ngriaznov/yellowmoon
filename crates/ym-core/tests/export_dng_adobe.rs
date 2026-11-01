@@ -24,6 +24,7 @@ use ym_core::session::{OpenOptions, Session};
 use ym_core::settings::{AutoOr, SettingsPatch, SharpenManualPatch};
 use ym_export::{BitDepth, ExportOptions, FormatKind, TiffCompression};
 use ym_looks::library::LookId;
+use ym_core::settings::{NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -153,23 +154,36 @@ fn adobes_renderer_shows_a_look_with_its_own_display_rendering_close_to_the_apps
             .expect("export");
             std::fs::read(report.path).expect("read")
         };
-        let look = SettingsPatch {
-            look: Some(LookId::parse(look).expect("look id")),
-            look_intensity: Some(100.0),
-            ..SettingsPatch::default()
-        };
+        let look = SettingsPatch::default().and(
+            NodeId::Output,
+            NodePatch {
+                look: Some(LookId::parse(look).expect("look id")),
+                look_intensity: Some(100.0),
+                ..NodePatch::default()
+            },
+        );
         // The DNG and the JPEG as the app writes them (R8 and output sharpening at their defaults) ...
         let dng = export(look.clone(), FormatKind::Dng);
         let jpeg = export(look.clone(), FormatKind::Jpeg);
         // ... and the same picture without any sharpening, which isolates what the DNG model costs.
-        let unsharpened = SettingsPatch {
-            sharpen: Some(AutoOr::Manual(SharpenManualPatch {
-                amount: Some(0.0),
-                radius_px: Some(1.0),
-            })),
-            output_sharpening: Some(0.0),
-            ..look
-        };
+        let unsharpened = look
+            .and(
+                NodeId::Input,
+                NodePatch {
+                    sharpen: Some(AutoOr::Manual(SharpenManualPatch {
+                        amount: Some(0.0),
+                        radius_px: Some(1.0),
+                    })),
+                    ..NodePatch::default()
+                },
+            )
+            .and(
+                NodeId::Output,
+                NodePatch {
+                    output_sharpening: Some(0.0),
+                    ..NodePatch::default()
+                },
+            );
         let tiff = export(unsharpened, FormatKind::Tiff);
         let tiff_ifd = Tiff::new(&tiff).expect("a TIFF");
         let (tw, th, t16) = tiff_ifd.uncompressed_u16_rgb(tiff_ifd.ifd0());
@@ -256,16 +270,26 @@ fn adobes_renderer_keeps_the_tint_of_the_highlights_of_a_look_that_reaches_displ
         .expect("export");
         std::fs::read(report.path).expect("read")
     };
-    let patch = SettingsPatch {
-        look: Some(LookId::parse("user:rec709bright").expect("look id")),
-        look_intensity: Some(100.0),
-        sharpen: Some(AutoOr::Manual(SharpenManualPatch {
-            amount: Some(0.0),
-            radius_px: Some(1.0),
-        })),
-        output_sharpening: Some(0.0),
-        ..SettingsPatch::default()
-    };
+    let patch = SettingsPatch::default()
+        .and(
+            NodeId::Input,
+            NodePatch {
+                sharpen: Some(AutoOr::Manual(SharpenManualPatch {
+                    amount: Some(0.0),
+                    radius_px: Some(1.0),
+                })),
+                ..NodePatch::default()
+            },
+        )
+        .and(
+            NodeId::Output,
+            NodePatch {
+                look: Some(LookId::parse("user:rec709bright").expect("look id")),
+                look_intensity: Some(100.0),
+                output_sharpening: Some(0.0),
+                ..NodePatch::default()
+            },
+        );
     let dng = export(patch.clone(), FormatKind::Dng);
     let tiff = export(patch, FormatKind::Tiff);
     let tiff_ifd = Tiff::new(&tiff).expect("a TIFF");

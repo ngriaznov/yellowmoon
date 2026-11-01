@@ -46,6 +46,7 @@ use ym_export::{BitDepth, ExportOptions, FormatKind, IfExists, Size, TiffCompres
 use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_looks::library::LookId;
+use ym_core::settings::{GradePatch, NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 
@@ -322,11 +323,23 @@ fn apply_variant(shot: &Shot, pct: f64, straighten: bool) {
         aspect: CropAspect::Free,
         auto: false,
     });
-    shot.edit(SettingsPatch {
-        output_sharpening: Some(pct),
-        crop: Some(crop),
-        ..SettingsPatch::default()
-    });
+    shot.edit(
+        SettingsPatch::default()
+            .and(
+                NodeId::Input,
+                NodePatch {
+                    crop: Some(crop),
+                    ..NodePatch::default()
+                },
+            )
+            .and(
+                NodeId::Output,
+                NodePatch {
+                    output_sharpening: Some(pct),
+                    ..NodePatch::default()
+                },
+            ),
+    );
 }
 
 /// What [`the_tail_writes_the_cpu_pixels_in_every_format`] allows of the sharpened and the JPEG
@@ -954,18 +967,39 @@ fn a_look_the_range_and_a_curve_come_out_of_the_tail_as_on_the_cpu() {
         );
         decode_png(&read(&r.path)).3
     };
-    shot.edit(SettingsPatch {
-        look: Some(LookId::parse("user:cube").expect("look id")),
-        look_intensity: Some(70.0),
-        rolloff: Some(RolloffPatch {
-            highlights: Some(1.0),
-            low_light: None,
-        }),
-        contrast: Some(ym_core::settings::PercentSetting::manual_value(15.0)),
-        saturation: Some(ym_core::settings::PercentSetting::manual_value(10.0)),
-        output_sharpening: Some(0.0),
-        ..SettingsPatch::default()
-    });
+    shot.edit(
+        SettingsPatch::default()
+            .and(
+                NodeId::Input,
+                NodePatch {
+                    rolloff: Some(RolloffPatch {
+                        highlights: Some(1.0),
+                        low_light: None,
+                    }),
+                    ..NodePatch::default()
+                },
+            )
+            .and(
+                NodeId::MAIN,
+                NodePatch {
+                    grade: Some(GradePatch {
+                        contrast: Some(ym_core::settings::PercentSetting::manual_value(15.0)),
+                        saturation: Some(ym_core::settings::PercentSetting::manual_value(10.0)),
+                        ..GradePatch::default()
+                    }),
+                    ..NodePatch::default()
+                },
+            )
+            .and(
+                NodeId::Output,
+                NodePatch {
+                    look: Some(LookId::parse("user:cube").expect("look id")),
+                    look_intensity: Some(70.0),
+                    output_sharpening: Some(0.0),
+                    ..NodePatch::default()
+                },
+            ),
+    );
     let photo = shot.photo();
     let make = |gpu: Option<Arc<Gpu>>, stages: GpuStages| {
         context(

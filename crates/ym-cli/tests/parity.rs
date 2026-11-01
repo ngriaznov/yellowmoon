@@ -42,6 +42,7 @@ use ym_core::settings::{AutoOr, DevelopSettings, SettingsPatch};
 use ym_export::{BitDepth, ColorSpace, ExportOptions, FormatKind, Size, TiffCompression};
 use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
 use ym_gpu::device::gpu_required_by_env;
+use ym_core::settings::{NodeId, NodePatch};
 
 /// What the app's core is given to grade with.
 #[derive(Clone, Copy)]
@@ -658,10 +659,13 @@ fn output_sharpening_is_byte_identical_through_the_app_path_and_the_binary() {
             .session
             .update_settings(
                 app.photo,
-                &SettingsPatch {
-                    output_sharpening: Some(amount),
-                    ..SettingsPatch::default()
-                },
+                &SettingsPatch::default().and(
+                    NodeId::Output,
+                    NodePatch {
+                        output_sharpening: Some(amount),
+                        ..NodePatch::default()
+                    },
+                ),
             )
             .expect("settings");
         let png = ExportOptions {
@@ -837,15 +841,18 @@ fn a_lens_is_the_same_file_through_the_app_the_options_and_a_settings_file() {
         .expect("vintage")
         .start_edges;
     let app = App::open_in(&[&arw], &data);
-    let patch = SettingsPatch {
-        lens: Some(ym_core::settings::LensPatch {
-            kind: Some(ym_core::settings::LensKind::Vintage),
-            flares: Some(60.0),
-            edges: Some(start_edges),
-            anamorphic: Some(50.0),
-        }),
-        ..SettingsPatch::default()
-    };
+    let patch = SettingsPatch::default().and(
+        NodeId::Input,
+        NodePatch {
+            lens: Some(ym_core::settings::LensPatch {
+                kind: Some(ym_core::settings::LensKind::Vintage),
+                flares: Some(60.0),
+                edges: Some(start_edges),
+                anamorphic: Some(50.0),
+            }),
+            ..NodePatch::default()
+        },
+    );
     app.core
         .session
         .update_settings(app.photo, &patch)
@@ -917,10 +924,13 @@ fn a_lens_is_the_same_picture_through_the_app_and_the_binary() {
         .session
         .update_settings(
             app.photo,
-            &SettingsPatch {
-                lens: Some(vintage),
-                ..SettingsPatch::default()
-            },
+            &SettingsPatch::default().and(
+                NodeId::Input,
+                NodePatch {
+                    lens: Some(vintage),
+                    ..NodePatch::default()
+                },
+            ),
         )
         .expect("patch");
     for (name, plain) in off {

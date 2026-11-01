@@ -191,7 +191,7 @@ impl Geometry {
     /// The geometry the settings ask for on a file with EXIF orientation `exif_orientation`.
     #[must_use]
     pub fn new(exif_orientation: u16, settings: &DevelopSettings) -> Self {
-        let (angle_deg, crop) = match &settings.crop {
+        let (angle_deg, crop) = match &settings.input().crop {
             Some(Crop {
                 rect, angle_deg, ..
             }) => (*angle_deg, *rect),
@@ -199,7 +199,7 @@ impl Geometry {
         };
         Self {
             exif_orientation,
-            quarter_turns: quarter_turns_of(settings.orientation),
+            quarter_turns: quarter_turns_of(settings.input().orientation),
             angle_deg,
             crop,
             pixel_exact: false,
@@ -744,14 +744,15 @@ mod tests {
         let (w, h) = (7usize, 4usize);
         for exif in 1..=8u16 {
             for turns in 0..4u8 {
-                let settings = DevelopSettings {
-                    orientation: match turns {
+                let settings = {
+                    let mut s = DevelopSettings::default();
+                    s.input_mut().orientation = match turns {
                         0 => Orientation::Deg0,
                         1 => Orientation::Deg90,
                         2 => Orientation::Deg180,
                         _ => Orientation::Deg270,
-                    },
-                    ..DevelopSettings::default()
+                    };
+                    s
                 };
                 let g = Geometry::new(exif, &settings);
                 let (cw, ch) = g.canvas_size(w, h);
@@ -1055,9 +1056,10 @@ mod tests {
 
     #[test]
     fn the_upright_geometry_without_the_crop_is_the_whole_buffer_unturned() {
-        let settings = DevelopSettings {
-            orientation: Orientation::Deg90,
-            crop: Some(Crop {
+        let settings = {
+            let mut s = DevelopSettings::default();
+            s.input_mut().orientation = Orientation::Deg90;
+            s.input_mut().crop = Some(Crop {
                 rect: NormRect {
                     x: 0.1,
                     y: 0.1,
@@ -1067,8 +1069,8 @@ mod tests {
                 angle_deg: 11.0,
                 aspect: crate::settings::CropAspect::Free,
                 auto: false,
-            }),
-            ..DevelopSettings::default()
+            });
+            s
         };
         let g = Geometry::new(6, &settings).at_full_resolution();
         let up = g.upright(60, 40, false);
@@ -1108,14 +1110,15 @@ mod tests {
             for exif in 1..=8u16 {
                 for turns in 0..4u8 {
                     for angle in [0.0, 3.5, -12.0] {
-                        let settings = DevelopSettings {
-                            orientation: match turns {
+                        let settings = {
+                            let mut s = DevelopSettings::default();
+                            s.input_mut().orientation = match turns {
                                 0 => Orientation::Deg0,
                                 1 => Orientation::Deg90,
                                 2 => Orientation::Deg180,
                                 _ => Orientation::Deg270,
-                            },
-                            crop: Some(Crop {
+                            };
+                            s.input_mut().crop = Some(Crop {
                                 rect: NormRect {
                                     x: 0.05,
                                     y: 0.1,
@@ -1125,8 +1128,8 @@ mod tests {
                                 angle_deg: angle,
                                 aspect: crate::settings::CropAspect::Free,
                                 auto: false,
-                            }),
-                            ..DevelopSettings::default()
+                            });
+                            s
                         };
                         let g = Geometry::new(exif, &settings).with_warp(warp);
                         for out in [(40usize, 30usize), (90, 70), (23, 17)] {

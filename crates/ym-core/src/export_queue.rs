@@ -458,9 +458,9 @@ impl ExportQueue {
                 command_output_sharpening,
             ),
             dng_approximate: views.iter().any(|v| {
-                v.settings.look_intensity > 0.0
+                v.settings.output().look_intensity > 0.0
                     && looks
-                        .look(&v.settings.look)
+                        .look(&v.settings.output().look)
                         .is_ok_and(|l| l.transform.includes_display_rendering())
             }),
         }

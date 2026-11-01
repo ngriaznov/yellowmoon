@@ -31,7 +31,7 @@ fn state(w: f64, h: f64) -> ViewportState {
 
 fn with_lens(src: &PhotoSource, lens: LensSettings) -> PhotoSource {
     let mut s: DevelopSettings = src.settings.clone();
-    s.lens = lens;
+    s.input_mut().lens = lens;
     src.with_settings(s)
 }
 
@@ -100,7 +100,7 @@ const LENS_NOTE: &str = "The lens data could not be loaded, so this photo has no
 fn all_three_amounts_at_zero_are_the_render_without_the_field() {
     let d = Developed::new(&patchwork(), MODEL);
     let src = d.source();
-    assert_eq!(src.settings.lens, LensSettings::default());
+    assert_eq!(src.settings.input().lens, LensSettings::default());
     let dir = tempfile::tempdir().expect("dir");
     let library = synthetic_library(dir.path());
     // With the library and without it: the same bytes, whatever the kind says.
@@ -122,7 +122,7 @@ fn all_three_amounts_at_zero_are_the_render_without_the_field() {
                     ..LensSettings::default()
                 },
             );
-            assert!(zero.settings.lens.is_identity());
+            assert!(zero.settings.input().lens.is_identity());
             let got = pictures(&renderer, &zero);
             assert!(
                 got.frame == none.frame,
@@ -153,12 +153,12 @@ fn the_before_view_has_no_lens() {
             anamorphic: 50.0,
         },
     );
-    assert!(!src.settings.lens.is_identity());
+    assert!(!src.settings.input().lens.is_identity());
     // The source the Before view reads has the default lens (`tests/render_before.rs` shows that no
     // setting reaches the Before view's picture); the photo keeps its own.
     let before = src.for_before_view();
-    assert_eq!(before.settings.lens, LensSettings::default());
-    assert_eq!(src.settings.lens.kind, LensKind::Petzval);
+    assert_eq!(before.settings.input().lens, LensSettings::default());
+    assert_eq!(src.settings.input().lens.kind, LensKind::Petzval);
 }
 
 #[test]

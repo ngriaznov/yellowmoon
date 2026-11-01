@@ -2309,7 +2309,7 @@ fn view_sharpening(
     job: &mut Job<'_>,
     spec: &ViewSpec,
 ) -> Result<Option<ViewSharpening>, RenderError> {
-    let amount = job.src.settings.output_sharpening;
+    let amount = job.src.settings.output().output_sharpening;
     if spec.before || amount.is_nan() || amount <= 0.0 {
         return Ok(None);
     }
@@ -2339,7 +2339,10 @@ fn frame_key(
     );
     // The amount belongs to the finished frame, not to the display-linear one under it.
     if sharpening.is_some() {
-        key.push_str(&format!("|os{:?}", job.src.settings.output_sharpening));
+        key.push_str(&format!(
+            "|os{:?}",
+            job.src.settings.output().output_sharpening
+        ));
     }
     // A frame kept on the device and one read back are the same pixels in different places; each
     // request is served the kind it asked for.
@@ -2492,7 +2495,7 @@ impl Renderer {
         let to_final = state.view_to_final(image);
         let (dw, dh) = state.device_size();
         let (to_final, dw, dh) = match ViewSharpening::of_view(
-            src.settings.output_sharpening,
+            src.settings.output().output_sharpening,
             &to_final,
             image,
             state.before,
@@ -3544,14 +3547,15 @@ mod sampler_tests {
         for exif in 1..=8u16 {
             for turns in 0..4u8 {
                 for angle in [0.0, 4.0, -17.5] {
-                    let settings = DevelopSettings {
-                        orientation: match turns {
+                    let settings = {
+                        let mut s = DevelopSettings::default();
+                        s.input_mut().orientation = match turns {
                             0 => Orientation::Deg0,
                             1 => Orientation::Deg90,
                             2 => Orientation::Deg180,
                             _ => Orientation::Deg270,
-                        },
-                        crop: Some(Crop {
+                        };
+                        s.input_mut().crop = Some(Crop {
                             rect: NormRect {
                                 x: 0.04,
                                 y: 0.07,
@@ -3561,8 +3565,8 @@ mod sampler_tests {
                             angle_deg: angle,
                             aspect: CropAspect::Free,
                             auto: false,
-                        }),
-                        ..DevelopSettings::default()
+                        });
+                        s
                     };
                     let g = Geometry::new(exif, &settings);
                     let own = g.at_full_resolution().output_size(bw, bh);

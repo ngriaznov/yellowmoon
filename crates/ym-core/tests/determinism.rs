@@ -113,7 +113,7 @@ fn run(src: &PhotoSource, threads: usize) -> Outputs {
             .map(|v| v.to_bits())
             .collect();
         let mut s = src.settings.clone();
-        s.crop = Some(Crop {
+        s.input_mut().crop = Some(Crop {
             rect: NormRect {
                 x: 0.1,
                 y: 0.1,
@@ -124,7 +124,7 @@ fn run(src: &PhotoSource, threads: usize) -> Outputs {
             aspect: CropAspect::Free,
             auto: false,
         });
-        s.contrast = ym_core::settings::PercentSetting::manual_value(20.0);
+        s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(20.0);
         let tilted = frame(&src.with_settings(s), &cell(300.0, 450.0));
         Outputs {
             fit,

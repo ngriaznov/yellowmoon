@@ -1734,14 +1734,14 @@ impl<'a> Job<'a> {
     ) -> RenderReport {
         self.g.counters.add(&self.runs);
         let neural = &self.opts.neural;
-        if self.src.settings.decode.neural_demosaic
+        if self.src.settings.input().decode.neural_demosaic
             && !neural.available
             && let Some(reason) = &neural.reason
         {
             let reason = reason.clone();
             self.note(&reason);
         }
-        if !self.src.settings.lens.is_identity() && self.opts.lens.is_none() {
+        if !self.src.settings.input().lens.is_identity() && self.opts.lens.is_none() {
             self.note(LENS_UNAVAILABLE_NOTE);
         }
         let lens = self.lens_report_for_finish();
@@ -1797,11 +1797,11 @@ impl<'a> Job<'a> {
         let g0 = e
             .initial_gains()
             .map_err(|err| RenderError::Color(err.to_string()))?;
-        let nr = match s.noise_reduction.manual() {
+        let nr = match s.input().noise_reduction.manual() {
             Some(m) => *m,
             None => e.noise_reduction,
         };
-        let sh = match s.sharpen.manual() {
+        let sh = match s.input().sharpen.manual() {
             Some(m) => *m,
             None => e.sharpen,
         };
@@ -1823,17 +1823,17 @@ impl<'a> Job<'a> {
         }
         let p = RawParams {
             g0: [g0[0] as f32, g0[1] as f32, g0[2] as f32],
-            neural_demosaic: s.decode.neural_demosaic,
-            highlight_recovery: s.decode.highlight_recovery,
-            lens_corrections: s.decode.lens_corrections,
-            chromatic_aberration: s.decode.chromatic_aberration,
+            neural_demosaic: s.input().decode.neural_demosaic,
+            highlight_recovery: s.input().decode.highlight_recovery,
+            lens_corrections: s.input().decode.lens_corrections,
+            chromatic_aberration: s.input().decode.chromatic_aberration,
             // The Before view shows the photo without the lens vignetting correction, as the camera's own
             // picture does (`PhotoSource::for_before_view`); every other render has R3. A photo with no
             // vignetting table to apply (none in the file, the lens switch off, a camera-processed file)
             // is the same with and without R3, so its Before view shares the final picture's raw front
             // and its caches: flipping to Before costs no raw work there.
             vignetting: !(self.src.before_view
-                && has_vignetting_profile(&self.src.raw, s.decode.lens_corrections)),
+                && has_vignetting_profile(&self.src.raw, s.input().decode.lens_corrections)),
             noise_reduction: NoiseReduction {
                 luminance: nr.luminance as f32,
                 color: nr.color as f32,

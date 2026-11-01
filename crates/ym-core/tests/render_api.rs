@@ -20,6 +20,7 @@ use ym_core::session::{EventSink, OpenOptions, Session, SessionEvent};
 use ym_core::settings::{AutoOr, DevelopSettings, ExposureValue, Orientation, SettingsPatch};
 use ym_gpu::queue::CancelToken;
 use ym_looks::library::LookId;
+use ym_core::settings::{NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -137,7 +138,7 @@ fn a_click_maps_back_to_the_pick_white_space_through_orientation_and_turns() {
             );
         }
         // With the user's turn the click is in the turned photo; the pick stays in the camera's.
-        let turned = edit(&src, |s| s.orientation = Orientation::Deg90);
+        let turned = edit(&src, |s| s.input_mut().orientation = Orientation::Deg90);
         let (tw, th) = (ch, cw);
         let p = r
             .pick_point_at(
@@ -201,10 +202,13 @@ fn pick_white_turns_a_wrong_as_shot_balance_neutral_end_to_end() {
     d.session
         .update_settings(
             d.id,
-            &SettingsPatch {
-                white_pick: Some(Some(point)),
-                ..SettingsPatch::default()
-            },
+            &SettingsPatch::default().and(
+                NodeId::Input,
+                NodePatch {
+                    white_pick: Some(Some(point)),
+                    ..NodePatch::default()
+                },
+            ),
         )
         .expect("pick white");
     let src = d.source();
@@ -245,7 +249,7 @@ fn thumbnails_are_small_pngs_with_the_photos_shape() {
     );
     assert_eq!((w, h), (160, 240));
     let cropped = edit(&d.source(), |s| {
-        s.crop = Some(ym_core::settings::Crop {
+        s.input_mut().crop = Some(ym_core::settings::Crop {
             rect: ym_core::settings::NormRect {
                 x: 0.0,
                 y: 0.0,
@@ -377,7 +381,7 @@ fn look_tiles_apply_one_look_to_the_current_render_and_share_the_raw_group() {
     }
     // In the viewport the same missing look renders as Neutral and says so.
     let st = state(300.0, 200.0);
-    let missing = edit(&src, |s| s.look = gone.clone());
+    let missing = edit(&src, |s| s.output_mut().look = gone.clone());
     let f = r
         .viewport_frame(&missing, &st, &FrameOptions::default(), &CancelToken::new())
         .expect("frame");
@@ -425,7 +429,7 @@ fn the_histogram_of_a_flat_field_is_one_spike_per_channel() {
     let lo = r
         .histogram(
             &edit(&src, |s| {
-                s.exposure = AutoOr::Manual(ExposureValue { ev: -1.0 })
+                s.input_mut().exposure = AutoOr::Manual(ExposureValue { ev: -1.0 })
             }),
             &CancelToken::new(),
         )
@@ -433,7 +437,7 @@ fn the_histogram_of_a_flat_field_is_one_spike_per_channel() {
     let hi = r
         .histogram(
             &edit(&src, |s| {
-                s.exposure = AutoOr::Manual(ExposureValue { ev: 1.0 })
+                s.input_mut().exposure = AutoOr::Manual(ExposureValue { ev: 1.0 })
             }),
             &CancelToken::new(),
         )
@@ -472,7 +476,7 @@ fn render_stats_say_which_path_ran_how_long_and_in_which_space() {
         "{:?}",
         f.report.notes
     );
-    let off = edit(&src, |s| s.decode.neural_demosaic = false);
+    let off = edit(&src, |s| s.input_mut().decode.neural_demosaic = false);
     let f = r
         .viewport_frame(
             &off,
@@ -561,8 +565,8 @@ fn full_renders_apply_crop_straighten_and_turns() {
     let d = Developed::new(&patchwork(), MODEL);
     let r = Renderer::neutral_only().expect("render thread");
     let src = edit(&d.source(), |s| {
-        s.orientation = Orientation::Deg90;
-        s.crop = Some(ym_core::settings::Crop {
+        s.input_mut().orientation = Orientation::Deg90;
+        s.input_mut().crop = Some(ym_core::settings::Crop {
             rect: ym_core::settings::NormRect {
                 x: 0.1,
                 y: 0.2,
@@ -587,7 +591,7 @@ fn full_renders_apply_crop_straighten_and_turns() {
     assert_eq!((full.width, full.height), (200, 360));
     // A straightened crop leaves zeros in the empty corners of the canvas.
     let tilted = edit(&d.source(), |s| {
-        s.crop = Some(ym_core::settings::Crop {
+        s.input_mut().crop = Some(ym_core::settings::Crop {
             rect: ym_core::settings::NormRect::FULL,
             angle_deg: 20.0,
             aspect: ym_core::settings::CropAspect::Original,
@@ -681,7 +685,7 @@ fn a_viewport_frame_reports_its_zoom_and_the_fit_zoom_in_the_render_stats() {
 
     // A crop changes the final image and with it the Fit zoom, which the core alone can say.
     let cropped = edit(&src, |s| {
-        s.crop = Some(ym_core::settings::Crop {
+        s.input_mut().crop = Some(ym_core::settings::Crop {
             rect: ym_core::settings::NormRect {
                 x: 0.0,
                 y: 0.0,
@@ -736,7 +740,7 @@ fn a_thumbnail_keeps_its_detail_statistic_for_the_size_estimate_and_a_look_tile_
     // A look tile is the photo through another look: it leaves the figure alone, even for a tile
     // of a picture that differs (here by 2.5 stops more exposure).
     let brighter = edit(&src, |s| {
-        s.exposure = AutoOr::Manual(ExposureValue { ev: 2.5 });
+        s.input_mut().exposure = AutoOr::Manual(ExposureValue { ev: 2.5 });
     });
     let warm = LookId::parse("user:warm").expect("id");
     r.look_thumbnail_png(&brighter, &warm, &CancelToken::new())
@@ -769,7 +773,7 @@ fn a_thumbnail_keeps_its_detail_statistic_for_the_size_estimate_and_a_look_tile_
 
 fn with_pins(src: &PhotoSource, pins: &[WarpPin]) -> PhotoSource {
     edit(src, |s| {
-        s.color_warp.pins = pins.iter().copied().map(Into::into).collect();
+        s.main_grade_mut().color_warp.pins = pins.iter().copied().map(Into::into).collect();
     })
 }
 
@@ -957,7 +961,7 @@ fn the_chroma_scatter_is_a_fixed_sample_of_the_photo_at_the_warps_input() {
         scatter(
             &r,
             &edit(&src, |s| {
-                s.white_balance =
+                s.input_mut().white_balance =
                     AutoOr::Manual(ym_core::settings::WhiteBalanceValue { kelvin, tint: 0.0 });
             }),
         )

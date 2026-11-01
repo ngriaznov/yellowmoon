@@ -23,6 +23,7 @@ use ym_core::settings::SettingsPatch;
 use ym_export::{ExportOptions, FormatKind};
 use ym_looks::library::LookId;
 use ym_raw::testgen::GpsSpec;
+use ym_core::settings::{GradePatch, NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -180,10 +181,16 @@ fn a_whole_open_edit_export_cycle_writes_only_the_export_file() {
         .session
         .update_settings(
             ids[0],
-            &SettingsPatch {
-                saturation: Some(ym_core::settings::PercentSetting::manual_value(25.0)),
-                ..SettingsPatch::exposure_ev(0.4)
-            },
+            &SettingsPatch::exposure_ev(0.4).and(
+                NodeId::MAIN,
+                NodePatch {
+                    grade: Some(GradePatch {
+                        saturation: Some(ym_core::settings::PercentSetting::manual_value(25.0)),
+                        ..GradePatch::default()
+                    }),
+                    ..NodePatch::default()
+                },
+            ),
         )
         .expect("edit");
     r.core.session.set_picked(ids[0], true).expect("pick");
@@ -318,7 +325,7 @@ fn the_default_look_preference_reaches_photos_opened_afterwards() {
     let (_root, folder) = shoot(1);
     let ids = open_all(&r.core, &folder);
     assert_eq!(
-        r.core.session.settings(ids[0]).expect("s").settings.look,
+        r.core.session.settings(ids[0]).expect("s").settings.output().look,
         warm
     );
 
@@ -340,7 +347,7 @@ fn the_default_look_preference_reaches_photos_opened_afterwards() {
             .settings(more[0])
             .expect("s")
             .settings
-            .look
+            .output().look
             .as_str(),
         "builtin:neutral"
     );
@@ -420,8 +427,8 @@ fn a_new_session_gets_signature_and_neutral_is_still_the_identity() {
     let (_root, folder) = shoot(1);
     let ids = open_all(&r.core, &folder);
     let opened = r.core.session.settings(ids[0]).expect("settings").settings;
-    assert_eq!(opened.look.as_str(), "builtin:signature");
-    assert_eq!(opened.look_intensity, 100.0);
+    assert_eq!(opened.output().look.as_str(), "builtin:signature");
+    assert_eq!(opened.output().look_intensity, 100.0);
 
     // The export says which look made it, and Signature changes the picture.
     let (signature_dir, neutral_dir) = (
@@ -655,10 +662,16 @@ fn the_cli_preview_of_a_real_session() {
         .session
         .update_settings(
             ids[0],
-            &SettingsPatch {
-                contrast: Some(ym_core::settings::PercentSetting::manual_value(20.0)),
-                ..SettingsPatch::default()
-            },
+            &SettingsPatch::default().and(
+                NodeId::MAIN,
+                NodePatch {
+                    grade: Some(GradePatch {
+                        contrast: Some(ym_core::settings::PercentSetting::manual_value(20.0)),
+                        ..GradePatch::default()
+                    }),
+                    ..NodePatch::default()
+                },
+            ),
         )
         .expect("edit");
     let this = r.core.cli_preview_detail(&jpeg_job(ApplyScope::This, None));

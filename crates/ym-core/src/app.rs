@@ -649,7 +649,7 @@ impl Core {
         ids: &[PhotoId],
         patch: &SettingsPatch,
     ) -> Result<PasteReport, CoreError> {
-        if let Some(look) = &patch.look {
+        if let Some(look) = patch.look() {
             self.looks.check_usable(look)?;
         }
         Ok(self.session.paste_settings(ids, patch)?)

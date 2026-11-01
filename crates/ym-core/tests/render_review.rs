@@ -18,6 +18,7 @@ use ym_core::session::{OpenOptions, Session};
 use ym_core::settings::{Crop, CropAspect, DevelopSettings, NormRect};
 use ym_gpu::queue::CancelToken;
 use ym_raw::testgen::LensTables;
+use ym_core::settings::{NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -379,7 +380,7 @@ fn a_crop_at_a_fractional_origin_is_a_window_of_whole_pixels_in_the_export_and_a
     assert_eq!((whole.width, whole.height), (1000, 700));
     // x 257.3, y 135.17, width 498.1, height 357.91: none of them is a whole pixel.
     let cropped = edit(&src, |s| {
-        s.crop = Some(Crop {
+        s.input_mut().crop = Some(Crop {
             rect: NormRect {
                 x: 0.2573,
                 y: 0.1931,
@@ -473,7 +474,7 @@ fn a_thumbnail_of_a_small_crop_is_made_from_an_image_that_has_the_detail() {
     // A crop to a quarter of the width shows 600 px: the 240 px thumbnail needs twice that, i.e.
     // the full-resolution image, not the 1/4 image of the whole photo.
     let cropped = edit(&src, |s| {
-        s.crop = Some(Crop {
+        s.input_mut().crop = Some(Crop {
             rect: NormRect {
                 x: 0.3,
                 y: 0.3,
@@ -536,10 +537,13 @@ fn pick_white_sample_has_no_vignetting_gain_in_it() {
         d.session
             .update_settings(
                 d.id,
-                &ym_core::settings::SettingsPatch {
-                    white_pick: Some(Some(point)),
-                    ..ym_core::settings::SettingsPatch::default()
-                },
+                &ym_core::settings::SettingsPatch::default().and(
+                    NodeId::Input,
+                    NodePatch {
+                        white_pick: Some(Some(point)),
+                        ..NodePatch::default()
+                    },
+                ),
             )
             .expect("pick white");
         d.source().pick.expect("the session took a sample").sample
@@ -574,10 +578,13 @@ fn pick_white_on_a_photo_smaller_than_the_window_is_an_answer_not_a_panic() {
     let out = session.open(&[dir.path().to_path_buf()], OpenOptions::default());
     settle(&session);
     let id = out.added[0];
-    let patch = ym_core::settings::SettingsPatch {
-        white_pick: Some(Some([0.5, 0.5])),
-        ..ym_core::settings::SettingsPatch::default()
-    };
+    let patch = ym_core::settings::SettingsPatch::default().and(
+        NodeId::Input,
+        NodePatch {
+            white_pick: Some(Some([0.5, 0.5])),
+            ..NodePatch::default()
+        },
+    );
     // The 5 x 5 window of the sample is kept inside the photo, so a 4 x 4 photo gives a sample of
     // what there is (this is the branch that runs); a pick that cannot be taken is refused in words
     // and leaves no sample behind. (The render's own sample, which refused a photo under 5 x 5, is
@@ -637,7 +644,7 @@ fn pixel(img: &ym_core::pipeline::FullImage, x: usize, y: usize) -> [f32; 3] {
 /// picture of another format that it is compared with has none either: these tests are about where the pixels
 /// are, not how sharp they are.
 fn without_r8(s: &mut DevelopSettings) {
-    s.sharpen = ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
+    s.input_mut().sharpen = ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
         amount: 0.0,
         radius_px: 1.0,
     });
@@ -655,7 +662,7 @@ fn the_dng_raw_pixels_keep_the_cameras_orientation_and_the_crop_becomes_a_window
     use ym_core::settings::Orientation;
     let r = Renderer::neutral_only().expect("render thread");
     let crop = |s: &mut DevelopSettings| {
-        s.crop = Some(Crop {
+        s.input_mut().crop = Some(Crop {
             rect: NormRect {
                 x: 0.1,
                 y: 0.2,
@@ -671,7 +678,7 @@ fn the_dng_raw_pixels_keep_the_cameras_orientation_and_the_crop_becomes_a_window
     // the net turn is a half turn. Canvas 600 x 400, crop (60, 80, 300, 240) on it.
     let d = patchwork_with_exif(6);
     let src = edit(&d.source(), |s| {
-        s.orientation = Orientation::Deg90;
+        s.input_mut().orientation = Orientation::Deg90;
         crop(s);
         without_r8(s);
     });
@@ -750,9 +757,9 @@ fn a_dng_with_a_straighten_angle_bakes_the_angle_and_the_crop_but_not_the_turns(
     // A mirrored camera orientation (EXIF 2) reverses the sense of the angle in the buffer.
     let d = patchwork_with_exif(2);
     let src = edit(&d.source(), |s| {
-        s.orientation = Orientation::Deg180;
+        s.input_mut().orientation = Orientation::Deg180;
         without_r8(s);
-        s.crop = Some(Crop {
+        s.input_mut().crop = Some(Crop {
             rect: NormRect {
                 x: 0.05,
                 y: 0.1,
@@ -794,7 +801,7 @@ fn a_dng_with_a_straighten_angle_bakes_the_angle_and_the_crop_but_not_the_turns(
     // The same without the crop: the canvas keeps its size and the turned corners are empty (zero)
     // in the preview as in the baked picture.
     let whole = edit(&src, |s| {
-        s.crop = Some(Crop {
+        s.input_mut().crop = Some(Crop {
             rect: NormRect::FULL,
             angle_deg: 9.0,
             aspect: CropAspect::Original,
@@ -866,35 +873,35 @@ fn a_renderer_that_remembers_draws_the_pictures_of_one_that_does_not() {
         let what: String;
         match (unit() * 24.0) as u32 {
             0 => {
-                s.contrast = ym_core::settings::PercentSetting::manual_value(unit() * 80.0 - 40.0);
+                s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(unit() * 80.0 - 40.0);
                 what = "contrast".into();
             }
             1 => {
-                s.brightness = unit() * 80.0 - 40.0;
+                s.main_grade_mut().brightness = unit() * 80.0 - 40.0;
                 what = "brightness".into();
             }
             2 => {
-                s.shadows = ym_core::settings::PercentSetting::manual_value(unit() * 100.0 - 50.0);
-                s.highlights =
+                s.main_grade_mut().shadows = ym_core::settings::PercentSetting::manual_value(unit() * 100.0 - 50.0);
+                s.main_grade_mut().highlights =
                     ym_core::settings::PercentSetting::manual_value(unit() * 100.0 - 50.0);
                 what = "shadows and highlights".into();
             }
             3 => {
-                s.saturation =
+                s.main_grade_mut().saturation =
                     ym_core::settings::PercentSetting::manual_value(unit() * 100.0 - 40.0);
                 what = "saturation".into();
             }
             4 => {
-                s.color_balance.midtones = [unit() - 0.5, unit() - 0.5];
+                s.main_grade_mut().color_balance.midtones = [unit() - 0.5, unit() - 0.5];
                 what = "colour balance".into();
             }
             5 => {
-                s.rolloff.highlights = unit();
-                s.rolloff.low_light = unit();
+                s.input_mut().rolloff.highlights = unit();
+                s.input_mut().rolloff.low_light = unit();
                 what = "highlight range and toe".into();
             }
             6 => {
-                s.exposure = if unit() < 0.3 {
+                s.input_mut().exposure = if unit() < 0.3 {
                     AutoOr::Auto
                 } else {
                     AutoOr::Manual(ExposureValue {
@@ -904,7 +911,7 @@ fn a_renderer_that_remembers_draws_the_pictures_of_one_that_does_not() {
                 what = "exposure".into();
             }
             7 => {
-                s.white_balance = if unit() < 0.3 {
+                s.input_mut().white_balance = if unit() < 0.3 {
                     AutoOr::Auto
                 } else {
                     AutoOr::Manual(WhiteBalanceValue {
@@ -916,16 +923,16 @@ fn a_renderer_that_remembers_draws_the_pictures_of_one_that_does_not() {
             }
             8 => {
                 use ym_color::wb::LightSource::*;
-                s.light_source =
+                s.input_mut().light_source =
                     [Auto, Day, Shade, Tungsten, Led, Fluorescent][(unit() * 6.0) as usize % 6];
                 what = "light source".into();
             }
             9 => {
-                s.look_intensity = (unit() * 100.0).round();
+                s.output_mut().look_intensity = (unit() * 100.0).round();
                 what = "look intensity".into();
             }
             10 => {
-                s.curve.luma = vec![
+                s.main_grade_mut().curve.luma = vec![
                     [0.0, 0.0],
                     [0.3 + 0.4 * unit(), 0.2 + 0.6 * unit()],
                     [1.0, 1.0],
@@ -933,23 +940,23 @@ fn a_renderer_that_remembers_draws_the_pictures_of_one_that_does_not() {
                 what = "luma curve".into();
             }
             11 => {
-                s.curve.green = vec![[0.0, 0.0], [0.5, 0.35 + 0.3 * unit()], [1.0, 1.0]];
+                s.main_grade_mut().curve.green = vec![[0.0, 0.0], [0.5, 0.35 + 0.3 * unit()], [1.0, 1.0]];
                 what = "green curve".into();
             }
             12 => {
-                s.decode.highlight_recovery = unit() < 0.5;
+                s.input_mut().decode.highlight_recovery = unit() < 0.5;
                 what = "highlight recovery".into();
             }
             13 => {
-                s.decode.lens_corrections = unit() < 0.5;
+                s.input_mut().decode.lens_corrections = unit() < 0.5;
                 what = "lens corrections".into();
             }
             14 => {
-                s.decode.chromatic_aberration = unit() < 0.5;
+                s.input_mut().decode.chromatic_aberration = unit() < 0.5;
                 what = "chromatic aberration".into();
             }
             15 => {
-                s.noise_reduction = if unit() < 0.3 {
+                s.input_mut().noise_reduction = if unit() < 0.3 {
                     AutoOr::Auto
                 } else {
                     AutoOr::Manual(NoiseReductionValue {
@@ -961,7 +968,7 @@ fn a_renderer_that_remembers_draws_the_pictures_of_one_that_does_not() {
                 what = "noise reduction".into();
             }
             16 => {
-                s.sharpen = if unit() < 0.3 {
+                s.input_mut().sharpen = if unit() < 0.3 {
                     AutoOr::Auto
                 } else {
                     AutoOr::Manual(SharpenValue {
@@ -972,7 +979,7 @@ fn a_renderer_that_remembers_draws_the_pictures_of_one_that_does_not() {
                 what = "sharpening".into();
             }
             17 => {
-                s.orientation = [
+                s.input_mut().orientation = [
                     Orientation::Deg0,
                     Orientation::Deg90,
                     Orientation::Deg180,
@@ -981,7 +988,7 @@ fn a_renderer_that_remembers_draws_the_pictures_of_one_that_does_not() {
                 what = "orientation".into();
             }
             18 => {
-                s.crop = (unit() < 0.7).then(|| Crop {
+                s.input_mut().crop = (unit() < 0.7).then(|| Crop {
                     rect: NormRect {
                         x: 0.3 * unit(),
                         y: 0.3 * unit(),
@@ -1093,15 +1100,15 @@ fn threads_asking_for_different_pictures_of_one_photo_each_get_their_own() {
         .map(|i| {
             let mut s = base.settings.clone();
             match i % 4 {
-                0 => s.contrast = ym_core::settings::PercentSetting::manual_value(10.0 * i as f64),
+                0 => s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(10.0 * i as f64),
                 1 => {
-                    s.exposure = AutoOr::Manual(ym_core::settings::ExposureValue {
+                    s.input_mut().exposure = AutoOr::Manual(ym_core::settings::ExposureValue {
                         ev: 0.25 * i as f64 - 1.0,
                     })
                 }
-                2 => s.decode.highlight_recovery = i % 2 == 0,
+                2 => s.input_mut().decode.highlight_recovery = i % 2 == 0,
                 _ => {
-                    s.crop = Some(Crop {
+                    s.input_mut().crop = Some(Crop {
                         rect: NormRect {
                             x: 0.05 * i as f64,
                             y: 0.1,
@@ -1216,7 +1223,7 @@ fn a_look_that_was_replaced_by_neutral_says_so_on_every_frame_not_only_the_first
         MODEL,
     );
     let gone = ym_looks::library::LookId::parse("user:gone").expect("id");
-    let src = edit(&d.source(), |s| s.look = gone.clone());
+    let src = edit(&d.source(), |s| s.output_mut().look = gone.clone());
     let r = Renderer::new(Arc::new(OneLook), RenderOptions::default()).expect("render thread");
     let st = cell(150.0, 100.0);
     let says = |f: &ym_core::pipeline::RenderedFrame| {

@@ -179,7 +179,7 @@ fn edit(src: &PhotoSource, f: impl FnOnce(&mut DevelopSettings)) -> PhotoSource 
 }
 
 fn with_lens(src: &PhotoSource, lens: LensSettings) -> PhotoSource {
-    edit(src, |s| s.lens = lens)
+    edit(src, |s| s.input_mut().lens = lens)
 }
 
 fn cell(w: f64, h: f64) -> ViewportState {
@@ -235,7 +235,7 @@ fn lens_work(runs: &StageRuns) -> (u64, u64, u64) {
 
 /// A photo without sharpening on the output (the finished frame is then the colour pass alone).
 fn plain(src: &PhotoSource) -> PhotoSource {
-    edit(src, |s| s.output_sharpening = 0.0)
+    edit(src, |s| s.output_mut().output_sharpening = 0.0)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -247,7 +247,7 @@ fn plain(src: &PhotoSource) -> PhotoSource {
 fn zero_amounts_are_the_render_without_the_field_with(r: &Renderer) {
     let d = developed(800, 600);
     let src = d.source();
-    assert_eq!(src.settings.lens, LensSettings::default());
+    assert_eq!(src.settings.input().lens, LensSettings::default());
     let fit = cell(400.0, 300.0);
     let tiles = at_100_percent(560.0, 360.0, (800, 600));
     let token = CancelToken::new();
@@ -400,7 +400,7 @@ fn a_lens_changes_the_fit_view_and_a_slider_move_re_runs_only_the_lens_with(r: &
     assert_eq!(total.lens_groups, 4, "{total:?}");
 
     // A colour edit does not run the lens again: the group's key does not hold it.
-    let warmer = edit(&with_lens(&src, VINTAGE), |s| s.brightness = 20.0);
+    let warmer = edit(&with_lens(&src, VINTAGE), |s| s.main_grade_mut().brightness = 20.0);
     let f = frame(r, &warmer, &state);
     assert_eq!(lens_work(&f.report.runs), (0, 0, 0), "{:?}", f.report.runs);
     assert_eq!(f.report.runs.raw_work(), 0);
@@ -883,7 +883,7 @@ fn an_export_region_is_the_whole_frame_apply_with(r: &Renderer, axis: Axis) {
     let mut src = with_lens(&d.source(), VINTAGE);
     if axis == Axis::Y {
         src = edit(&src, |s| {
-            s.orientation = ym_core::settings::Orientation::Deg90
+            s.input_mut().orientation = ym_core::settings::Orientation::Deg90
         });
     }
     let reference = reference_of(r, &src, VINTAGE, axis);
