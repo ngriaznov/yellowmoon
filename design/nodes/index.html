@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yellowmoon node view, mockups</title>
+<style>
+@font-face { font-family: Figtree; font-weight: 300 900; src: url("assets/fonts/figtree-latin-wght-normal.woff2") format("woff2"); }
+:root { color-scheme: dark; --bg:#0f0f10; --line:rgba(255,255,255,.14); --ink:#f2f2f2; --quiet:#a2a2a6; --mask:#ff6fd2; --yellow:#ffc20e; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 Figtree, system-ui, sans-serif; }
+header.top { position:sticky; top:0; z-index:5; background:rgba(15,15,16,.92); backdrop-filter: blur(10px); border-bottom:1px solid var(--line); padding:12px 16px; display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; }
+header.top h1 { font-size:15px; margin:0 12px 0 0; font-weight:800; }
+header.top small { color:var(--quiet); font-weight:600; margin-right:auto; }
+.chip { display:inline-grid; place-items:center; min-width:34px; height:28px; padding:0 8px; border-radius:9px; border:1px solid var(--line); color:var(--ink); text-decoration:none; font-weight:800; font-size:13px; font-variant-numeric:tabular-nums; }
+.chip:hover { border-color:var(--yellow); }
+main { max-width:1480px; margin:0 auto; padding:24px 16px 80px; }
+section { margin:0 0 72px; scroll-margin-top:64px; }
+.head { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+.head h2 { margin:0; font-size:22px; font-weight:800; letter-spacing:-.01em; }
+.num { display:inline-grid; place-items:center; min-width:38px; height:28px; border-radius:9px; background:rgba(255,255,255,.12); font-weight:800; font-size:14px; }
+.tag { padding:2px 10px; border-radius:99px; border:1px solid var(--mask); color:var(--mask); font-size:12px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+.shot { display:block; border-radius:14px; overflow:hidden; border:1px solid var(--line); cursor:pointer; }
+.shot img { display:block; width:100%; height:auto; }
+section#s07b .shot { max-width:560px; }
+.cap { max-width:960px; padding-top:14px; }
+.cap .what { font-size:17px; margin:0 0 8px; }
+.cap ul { margin:0 0 8px; padding-left:20px; color:#d4d4d8; }
+.cap li { margin:4px 0; }
+.nav { display:flex; gap:20px; margin:14px 0 0; font-weight:700; }
+.nav a { color:var(--ink); text-decoration:none; border-bottom:2px solid var(--line); padding-bottom:2px; }
+.nav a.next { border-color:var(--yellow); }
+@media (max-width: 700px) { .head h2 { font-size:18px; } }
+</style></head>
+<body>
+<header class="top"><h1>Yellowmoon · advanced node view, round 2 (approved 2026-11-01)</h1><small>Mockups, pictures only. Click a picture or use the arrow keys.</small><a href="#s01" class="chip">01</a><a href="#s02" class="chip">02</a><a href="#s03" class="chip">03</a><a href="#s04" class="chip">04</a><a href="#s05" class="chip">05</a><a href="#s06" class="chip">06</a><a href="#s07" class="chip">07</a><a href="#s07b" class="chip">07b</a><a href="#s08" class="chip">08</a><a href="#s09" class="chip">09</a><a href="#s10" class="chip">10</a><a href="#s11" class="chip">11</a><a href="#s12" class="chip">12</a></header>
+<main>
+<section id="s01">
+  <div class="head"><span class="num">01</span><h2>Simple view, Light tab, new header</h2></div>
+  <a href="#s02" class="shot"><img src="01-simple-light.jpg" alt="Simple view, Light tab, new header" loading="lazy"></a>
+  <div class="cap"><p class="what">Today&#x27;s Photos screen on the Light tab. The header is now Before, Crop, Nodes, Add photos, Fit. Pick white has left the header.</p><ul><li>Nodes is the same toggle as Crop. Its tooltip reads &quot;Nodes (N)&quot;. It is pressed in the node view.</li><li>Nothing else in the simple view changes. The folder is called Provence and holds 7 of the owner&#x27;s photos.</li></ul>
+  <p class="nav"><a href="#s02" class="next">Next: 02 →</a></p></div>
+</section>
+<section id="s02">
+  <div class="head"><span class="num">02</span><h2>Simple view, Colour tab: Pick white (off)</h2></div>
+  <a href="#s03" class="shot"><img src="02-simple-colour-pick-white.jpg" alt="Simple view, Colour tab: Pick white (off)" loading="lazy"></a>
+  <div class="cap"><p class="what">The White balance card has a Pick white toggle with an eyedropper, in the style of Colour warp&#x27;s Pick colour.</p><ul><li>Placed on a row of its own, between the light presets and the Kelvin slider. The card header already holds AUTO and Reset, and the row has room for &quot;or press W&quot;.</li><li>W opens the Colour tab and starts picking. Like Pick colour, picking stops when the Colour tab is left.</li></ul>
+  <p class="nav"><a href="#s01">← 01</a><a href="#s03" class="next">Next: 03 →</a></p></div>
+</section>
+<section id="s03">
+  <div class="head"><span class="num">03</span><h2>Simple view, picking white</h2></div>
+  <a href="#s04" class="shot"><img src="03-simple-picking-white.jpg" alt="Simple view, picking white" loading="lazy"></a>
+  <div class="cap"><p class="what">While picking: the toggle is pressed (yellow), the hint is a glass pill at the top centre of the photo, and the cursor is a crosshair over something neutral, here a pale cloud.</p><ul><li>The pill is the &quot;Object found&quot; pill, with the hint that used to sit in the header: &quot;Click something neutral: grey or white. Esc cancels.&quot;</li><li>The crosshair is white with a dark outline so that it reads on light and dark parts of a photo. The spot drawn is a cloud of about R 221, G 224, B 229.</li></ul>
+  <p class="nav"><a href="#s02">← 02</a><a href="#s04" class="next">Next: 04 →</a></p></div>
+</section>
+<section id="s04">
+  <div class="head"><span class="num">04</span><h2>Simple view of a photo with four nodes</h2></div>
+  <a href="#s05" class="shot"><img src="04-simple-photo-has-nodes.jpg" alt="Simple view of a photo with four nodes" loading="lazy"></a>
+  <div class="cap"><p class="what">The notice under the tab row now says what the controls change: &quot;This photo has 4 nodes. These controls change the input, the output and node 1, Main.&quot; with Open nodes. The filmstrip thumbnail has the node glyph.</p><ul><li>Two lines. The link sits at the end of the text, so that the pill does not grow to three lines.</li><li>The photo shows the result of all four nodes.</li></ul>
+  <p class="nav"><a href="#s03">← 03</a><a href="#s05" class="next">Next: 05 →</a></p></div>
+</section>
+<section id="s05">
+  <div class="head"><span class="num">05</span><h2>Node view, untouched photo (layout A)</h2></div>
+  <a href="#s06" class="shot"><img src="05-nodes-default.jpg" alt="Node view, untouched photo (layout A)" loading="lazy"></a>
+  <div class="cap"><p class="what">Input, 01 Main, Output. Main is selected. The simple view is this one-node graph.</p><ul><li>Layout A is decided: the viewer on top (666 × 444), a divider with a grab handle, the editor below it (371 px). The inspector stays 400 px wide and full height.</li><li>The node head is compact: number chip, name at 20 px, a quiet line, and three small icon buttons (Bypass, Reset, More). A corrector has four tabs, Light · Colour · Curve · Mask. There is no 40 px tab title.</li><li>The toolbar has a new Graph · List switch after Delete (screen 13). Key ports stay on every node, in the Mask accent.</li></ul>
+  <p class="nav"><a href="#s04">← 04</a><a href="#s06" class="next">Next: 06 →</a></p></div>
+</section>
+<section id="s06">
+  <div class="head"><span class="num">06</span><h2>Add node menu</h2></div>
+  <a href="#s07" class="shot"><img src="06-nodes-add-node-menu.jpg" alt="Add node menu" loading="lazy"></a>
+  <div class="cap"><p class="what">The graded graph, Input, 01 Main, 02 Mountain, 03 Sky, 04 Warmth, Output, with the Add node menu open: Corrector, a separator, then Parallel, Layer, Splitter and combiner, and Outside, greyed with a Later tag.</p><ul><li>02 Mountain is selected on its Light tab. A node after the first has an exposure trim and no AUTO: Auto belongs to the Input.</li><li>The node cards no longer show a look glyph: the look is set once, on the Output.</li></ul>
+  <p class="nav"><a href="#s05">← 05</a><a href="#s07" class="next">Next: 07 →</a></p></div>
+</section>
+<section id="s07">
+  <div class="head"><span class="num">07</span><h2>Masks add up: Object, minus a Radial</h2></div>
+  <a href="#s07b" class="shot"><img src="07-nodes-object-mask.jpg" alt="Masks add up: Object, minus a Radial" loading="lazy"></a>
+  <div class="cap"><p class="what">02 Mountain on the Mask tab. Two mask rows: Object (Add, selected) and Radial (Subtract). The photo shows the mountain tinted, with a soft hole where the radial is, and the radial&#x27;s outline and centre handle.</p><ul><li>The three Mask cards fit without scrolling at 1440 × 900: 674 px of cards in a 678 px scroll area. A third mask row (about 89 px) would make the panel scroll.</li><li>The Masks card header is Add mask, Invert (the whole node&#x27;s mask) and Reset. Each row has Add or Subtract, an Invert icon toggle for that mask, and the eye. The Object card lost its Invert switch.</li><li>Under the rows, one line: &quot;Masks add up. Subtract cuts a mask out. Colour and brightness ranges keep only their part of the rest.&quot;</li></ul>
+  <p class="nav"><a href="#s06">← 06</a><a href="#s07b" class="next">Next: 07b →</a></p></div>
+</section>
+<section id="s07b">
+  <div class="head"><span class="num">07b</span><h2>The mask rows with one Invert pressed</h2></div>
+  <a href="#s08" class="shot"><img src="07b-mask-rows-invert.jpg" alt="The mask rows with one Invert pressed" loading="lazy"></a>
+  <div class="cap"><p class="what">A crop of the Masks card with the Invert toggle of the Radial row pressed (in the Mask accent).</p><ul><li>Pressed means this mask alone is inverted. The Invert in the card header inverts what all the masks give together.</li></ul>
+  <p class="nav"><a href="#s07">← 07</a><a href="#s08" class="next">Next: 08 →</a></p></div>
+</section>
+<section id="s08">
+  <div class="head"><span class="num">08</span><h2>Add mask menu</h2></div>
+  <a href="#s09" class="shot"><img src="08-nodes-add-mask-menu.jpg" alt="Add mask menu" loading="lazy"></a>
+  <div class="cap"><p class="what">Like 07, with the Add mask menu open: Find (Object, Subject, People, Background), Shapes (Linear, Radial, Brush), Keys (Colour range, Brightness range).</p><ul><li>The menu opens to the left of the panel because it is 520 px tall.</li></ul>
+  <p class="nav"><a href="#s07b">← 07b</a><a href="#s09" class="next">Next: 09 →</a></p></div>
+</section>
+<section id="s09">
+  <div class="head"><span class="num">09</span><h2>Linear mask on 03 Sky</h2></div>
+  <a href="#s10" class="shot"><img src="09-nodes-linear-mask.jpg" alt="Linear mask on 03 Sky" loading="lazy"></a>
+  <div class="cap"><p class="what">03 Sky on the Colour tab with its linear mask on the photo: a solid centre line, a dashed start and end line, and a rotate handle. The overlay is off.</p><ul><li>A corrector&#x27;s Colour tab is a Temperature and tint trim, then Colour balance and Colour warp. There is no Pick white here in this version.</li></ul>
+  <p class="nav"><a href="#s08">← 08</a><a href="#s10" class="next">Next: 10 →</a></p></div>
+</section>
+<section id="s10">
+  <div class="head"><span class="num">10</span><h2>The Input selected, Colour tab</h2></div>
+  <a href="#s11" class="shot"><img src="10-nodes-input-colour.jpg" alt="The Input selected, Colour tab" loading="lazy"></a>
+  <div class="cap"><p class="what">The Input marker is selected. Its tabs are RAW · Lens · Light · Colour · Detail. The Colour tab holds the real white balance, with Pick white.</p><ul><li>Only the White balance card belongs to the Input. Colour balance and Colour warp belong to the correctors, so the tab is short.</li><li>In the node view W selects the Input and opens this tab, then starts picking.</li></ul>
+  <p class="nav"><a href="#s09">← 09</a><a href="#s11" class="next">Next: 11 →</a></p></div>
+</section>
+<section id="s11">
+  <div class="head"><span class="num">11</span><h2>The Output selected, Look tab</h2></div>
+  <a href="#s12" class="shot"><img src="11-nodes-output-look.jpg" alt="The Output selected, Look tab" loading="lazy"></a>
+  <div class="cap"><p class="what">The Output marker is selected. Its tabs are Look · Detail. The Look tab is today&#x27;s Look card: intensity, Apply to, search and the looks, with Signature chosen.</p><ul><li>The look is set once per photo, here. The look chip on the photo stays as it is, and the simple view&#x27;s Look tab writes to the Output.</li><li>Looks with a display rendering are in their own section (a folded imported library here, then Your LUTs). Detail holds only the Output sharpening row; it is not drawn.</li></ul>
+  <p class="nav"><a href="#s10">← 10</a><a href="#s12" class="next">Next: 12 →</a></p></div>
+</section>
+<section id="s12">
+  <div class="head"><span class="num">12</span><h2>Later: branches and mixers</h2><span class="tag">Later</span></div>
+  <a href="#s01" class="shot"><img src="12-later-graph.jpg" alt="Later: branches and mixers" loading="lazy"></a>
+  <div class="cap"><p class="what">A non-linear graph, marked Later. Input, 01 Main, then 02 Skin, 03 Background and 04 Rest (an Outside node fed by 02&#x27;s key output), a Parallel mixer, 05 Warmth, a Layer mixer with 06 Glow, Output.</p><ul><li>The inspector shows the Layer mixer: Mode (Normal), Opacity and the order of its inputs. One link crossing could not be avoided: 02&#x27;s key link crosses Main&#x27;s link to 04.</li></ul>
+  <p class="nav"><a href="#s11">← 11</a><a href="#s01" class="next">Back to 01 →</a></p></div>
+</section>
+</main>
+<script>
+const ids = ['01', '02', '03', '04', '05', '06', '07', '07b', '08', '09', '10', '11', '12', '13'];
+function current() { let best = 0, bd = 1e9; ids.forEach((n, i) => { const r = document.getElementById('s' + n).getBoundingClientRect(); const d = Math.abs(r.top - 56); if (d < bd) { bd = d; best = i; } }); return best; }
+addEventListener('keydown', (e) => { if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === 'ArrowRight') { const i = Math.min(ids.length - 1, current() + 1); location.hash = 's' + ids[i]; e.preventDefault(); }
+  if (e.key === 'ArrowLeft') { const i = Math.max(0, current() - 1); location.hash = 's' + ids[i]; e.preventDefault(); } });
+</script>
+</body></html>
