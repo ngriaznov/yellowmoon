@@ -1,6 +1,6 @@
 # 15 · Milestones and tasks
 
-Five milestones run in sequence; each ends at a gate that can be measured. Milestone N (nodes and masks, released as 0.2.0) was added on 2026-11-01 and sits between M3 and M4; its full spec is `docs/23-nodes.md`. Work in task order within a milestone unless dependencies allow parallel work. The UI design is in `design/`; M0 and M1 don't wait for UI work.
+Five milestones run in sequence; each ends at a gate that can be measured. Milestone N (nodes and masks, released as 0.2.0) was added on 2026-11-01 and sits between M3 and M4; its full spec is `docs/23-nodes.md`. Milestone F (the Film node, `docs/24-film.md`) is planned and not scheduled; it would follow N. Work in task order within a milestone unless dependencies allow parallel work. The UI design is in `design/`; M0 and M1 don't wait for UI work.
 
 Task format: **ID · title** (depends on) — what to build. *Done when:* acceptance criteria. [HUMAN] tasks are the owner's (`AGENTS.md` rule 9): prepare around them and list them in `docs/STATUS.md`.
 
@@ -304,6 +304,16 @@ Goal: a node view behind a Nodes button, with a real graph of corrector nodes be
 **[HUMAN] N-H5** Checkpoint 4: the final test of the whole plan; the owner's OK releases 0.2.0. **N-H1** (approve the spec) closes N-01.
 
 **Gate N (0.2.0):** the gates of `docs/23` §11 pass (old documents byte-identical, parity, determinism and tiles, app and CLI, SAM 2, masks, speed on a Mac); the owner's approval of the last test build.
+
+---
+
+## F · Film node (planned, not scheduled)
+
+A **Film node** that simulates a colour negative, a print and a scan with our own engine (`ym-film`, Apache-2.0) and Andrea Volpato's spektrafilm profiles (CC BY-SA 4.0), shipped as separate credited data. **Comes after milestone N (0.2.0), when the owner schedules it** (F-H0); nothing is built and there are no mockups. The spec is `docs/24-film.md`; the facts are in `research/film-spektrafilm-2026-11-01.md`. It needs the graph, plan and multi-pass loop of N (N-02 to N-04), the panel and masks (N-08 to N-12) and the tile-halo machinery (N-13).
+
+Tasks (details, dependencies and *Done when* in `docs/24` §10): **F-01** mockups and the revised spec · **F-02** data and licences · **F-03** the engine's colour reference · **F-04** baking and the return through the cine rendering · **F-05** the spatial passes on the CPU · **F-06** the oracle and the provenance check · **F-07** the node in the core and `ym` · **F-08** the GPU passes · **F-09** the interface · **F-10** finish. **[HUMAN]** F-H0 schedule · F-H1 approve the mockups and decide variant A or B and the stock names · F-H2 write to the author and to hanatos before F-03 · F-H3 test build on a Mac · F-H4 trademark and data-rights check.
+
+**Gate F:** the gates of `docs/24` §8 pass; the credit lines are in `NOTICE`, About and the node; the owner's approval of the last test build.
 
 ---
 
