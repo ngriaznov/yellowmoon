@@ -61,7 +61,8 @@ const samePin = (a: ColorWarpPin, b: ColorWarpPin): boolean =>
   a.shadows === b.shadows &&
   a.highlights === b.highlights &&
   a.pivot_ev === b.pivot_ev &&
-  a.exposure_ev === b.exposure_ev;
+  a.exposure_ev === b.exposure_ev &&
+  a.saturation === b.saturation;
 const samePins = (a: readonly ColorWarpPin[], b: readonly ColorWarpPin[]): boolean => a.length === b.length && a.every((p, i) => samePin(p, b[i] as ColorWarpPin));
 const copyPin = (p: ColorWarpPin): ColorWarpPin => ({ ...p, source: [p.source[0], p.source[1]], target: [p.target[0], p.target[1]] });
 

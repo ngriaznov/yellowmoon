@@ -27,6 +27,7 @@ import {
   WARP_MAX_PINS,
   WARP_PIVOT_LIMIT_EV,
   WARP_RANGE_MAX,
+  WARP_SATURATION_LIMIT,
   warpDisplacement,
   warpIsIdentity,
 } from "./warpMath";
@@ -187,15 +188,88 @@ describe("the warp (the CPU reference's maths)", () => {
   });
 
   it("clamps every value as the core does", () => {
-    const pin = clampPin({ source: [3, 4], target: [Number.NaN, 0.1], locked: false, range: 9, shadows: -1, highlights: 2, pivot_ev: 40, exposure_ev: -9 });
+    const pin = clampPin({ source: [3, 4], target: [Number.NaN, 0.1], locked: false, range: 9, shadows: -1, highlights: 2, pivot_ev: 40, exposure_ev: -9, saturation: 7 });
     expect(Math.hypot(...pin.source)).toBeCloseTo(WARP_COORD_LIMIT, 12);
     expect(pin.target).toEqual([0, 0.1]);
     expect(pin.range).toBe(WARP_RANGE_MAX);
     expect([pin.shadows, pin.highlights]).toEqual([0, 1]);
     expect(pin.pivot_ev).toBe(WARP_PIVOT_LIMIT_EV);
     expect(pin.exposure_ev).toBe(-WARP_EXPOSURE_LIMIT_EV);
-    const locked = clampPin({ ...movingPin([0.1, 0], [0.2, 0]), locked: true, exposure_ev: 1, shadows: 0.2 });
+    expect(pin.saturation).toBe(WARP_SATURATION_LIMIT);
+    expect(clampPin({ ...movingPin([0.1, 0]), saturation: -3 }).saturation).toBe(-WARP_SATURATION_LIMIT);
+    expect(clampPin({ ...movingPin([0.1, 0]), saturation: Number.NaN }).saturation).toBe(0);
+    const locked = clampPin({ ...movingPin([0.1, 0], [0.2, 0]), locked: true, exposure_ev: 1, saturation: 0.5, shadows: 0.2 });
     expect(locked).toEqual(lockedPin([0.1, 0]));
+    expect(locked.saturation).toBe(0);
+  });
+
+  describe("saturation", () => {
+    const s: ChromaPoint = [0.12, 0.03];
+    const sat = (saturation: number, more: Partial<ColorWarpPin> = {}) => prepareWarp([{ ...movingPin(s), saturation, ...more }]);
+    const dist = (v: [number, number, number]) => Math.hypot(...chromaOf(v));
+
+    it("ends a colour on the source (1 + saturation) times as far from neutral, -100 % on neutral, with the brightness unchanged", () => {
+      for (const [saturation, scale] of [[0.5, 1.5], [1, 2], [-0.5, 0.5], [-1, 0]] as const) {
+        for (const n of [0.2, mid, 0.6]) {
+          const out = applyWarp(sat(saturation), pixelAt(n, s));
+          close(chromaOf(out), [s[0] * scale, s[1] * scale], 12);
+          expect((out[0] + out[1] + out[2]) / 3).toBeCloseTo(n, 12);
+        }
+      }
+      expect(dist(applyWarp(sat(0.5), pixelAt(0.4, s))) / dist(pixelAt(0.4, s))).toBeCloseTo(1.5, 12);
+    });
+
+    it("scales the colour a move lands on: the source ends on 1.5 × the target", () => {
+      const warp = prepareWarp([{ ...movingPin([0.1, 0], [0.1, 0.3]), range: 0.01, saturation: 0.5 }]);
+      expect(warp.steps).toBeGreaterThan(1);
+      close(chromaOf(applyWarp(warp, pixelAt(0.4, [0.1, 0]))), [0.15, 0.45], 12);
+    });
+
+    it("is not skipped as a still pin, and saturation 0 still is", () => {
+      expect(warpIsIdentity(sat(0.3))).toBe(false);
+      expect(sat(0.3).steps).toBe(1);
+      expect(warpIsIdentity(sat(0))).toBe(true);
+      expect(warpIsIdentity(prepareWarp([{ ...lockedPin(s), saturation: 1 }]))).toBe(true);
+      const v = pixelAt(0.4, s);
+      expect(applyWarp(sat(0), v)).toEqual(v);
+    });
+
+    it("never moves a neutral and holds a locked colour", () => {
+      for (const n of [0.1, 0.3, 0.6, 0.9]) expect(applyWarp(sat(1, { range: WARP_RANGE_MAX }), [n, n, n])).toEqual([n, n, n]);
+      const lock: ChromaPoint = [0.1, 0.05];
+      const warp = prepareWarp([{ ...movingPin([0.12, 0.02]), saturation: 1, range: 0.08 }, lockedPin(lock)]);
+      for (const n of [0.15, 0.3, 0.5, 0.8]) {
+        const v = pixelAt(n, lock);
+        expect(applyWarp(warp, v)).toEqual(v);
+      }
+    });
+
+    it("follows the range and the tonal weights", () => {
+      // Three ranges from the source: at most exp(−4.5) of the full effect.
+      const far = pixelAt(0.4, [s[0] + 0.12, s[1]]);
+      const gained = dist(applyWarp(sat(1), far)) / dist(far) - 1;
+      expect(gained).toBeGreaterThan(0);
+      expect(gained).toBeLessThanOrEqual(Math.exp(-4.5) * (1 + 1e-9));
+      // Shadows 0 and Highlights 1: nothing in the deep shadows, all of it in the bright highlights.
+      const split = sat(1, { shadows: 0, highlights: 1 });
+      expect(dist(applyWarp(split, pixelAt(logc4AtStops(-4), s))) / dist(pixelAt(logc4AtStops(-4), s))).toBeCloseTo(1, 2);
+      expect(dist(applyWarp(split, pixelAt(logc4AtStops(4), s))) / dist(pixelAt(logc4AtStops(4), s))).toBeCloseTo(2, 2);
+      // A weight of 0.4 takes 0.4 of it, at every tone.
+      for (const n of [0.2, 0.5, 0.7]) {
+        expect(dist(applyWarp(sat(1, { shadows: 0.4, highlights: 0.4 }), pixelAt(n, s))) / dist(pixelAt(n, s))).toBeCloseTo(1.4, 12);
+      }
+    });
+
+    it("shares overlapping pins rather than adding them, and never flips the chroma", () => {
+      const ratio = (pins: ColorWarpPin[]) => dist(applyWarp(prepareWarp(pins), pixelAt(0.4, s))) / dist(pixelAt(0.4, s));
+      const pin = (saturation: number): ColorWarpPin => ({ ...movingPin(s), saturation });
+      expect(ratio([pin(0.5)])).toBeCloseTo(1.5, 12);
+      expect(ratio([pin(0.5), pin(0.5)])).toBeCloseTo(1.5, 12);
+      expect(ratio([pin(1), pin(-1)])).toBeCloseTo(1, 12);
+      const many = Array.from({ length: WARP_MAX_PINS }, (_, i) => ({ ...pin(-1), range: 0.03 + 0.005 * i }));
+      const out = chromaOf(applyWarp(prepareWarp(many), pixelAt(0.4, s)));
+      expect(out[0] * s[0] + out[1] * s[1]).toBeGreaterThanOrEqual(-1e-12);
+    });
   });
 
   it("measures the tone as the LogC4 code of the luminance", () => {

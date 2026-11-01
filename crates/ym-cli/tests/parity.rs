@@ -768,14 +768,15 @@ fn a_colour_warp_is_the_same_picture_through_the_app_and_the_binary() {
     let app = App::open(&[&arw]);
     // A white balance far from the light gives the photo colours for the pins to move: a moving
     // pin on the neutral axis with the largest range (it reaches every colour of the photo), a
-    // second one with tonal weights, a pivot and an exposure, and a lock. Pins written short, as a
-    // settings file may.
+    // second one with tonal weights, a pivot, an exposure and a saturation, a third that only
+    // changes saturation, and a lock. Pins written short, as a settings file may.
     let doc = serde_json::json!({
         "white_balance": { "kind": "manual", "kelvin": 2500, "tint": 30 },
         "color_warp": { "pins": [
             { "source": [0.0, 0.0], "target": [0.06, 0.04], "range": 0.25 },
             { "source": [-0.1, -0.1], "target": [-0.05, -0.12], "range": 0.1, "shadows": 0.3,
-              "highlights": 0.9, "pivot_ev": -1.0, "exposure_ev": 0.4 },
+              "highlights": 0.9, "pivot_ev": -1.0, "exposure_ev": 0.4, "saturation": -0.6 },
+            { "source": [0.05, 0.1], "range": 0.2, "saturation": 0.5 },
             { "source": [0.15, -0.05], "locked": true }
         ] }
     });
@@ -783,7 +784,7 @@ fn a_colour_warp_is_the_same_picture_through_the_app_and_the_binary() {
         DevelopSettings::from_value(doc.clone(), &app.core.looks.effective_default())
             .expect("settings");
     assert!(clamped.is_empty(), "{clamped:?}");
-    assert_eq!(settings.color_warp.pins.len(), 3);
+    assert_eq!(settings.color_warp.pins.len(), 4);
     app.core
         .session
         .replace_settings(app.photo, settings)
@@ -809,6 +810,13 @@ fn a_colour_warp_is_the_same_picture_through_the_app_and_the_binary() {
             &sb.root().join(format!("cli-{name}")),
         );
         assert_same_files(&from_app, &from_cli, &format!("colour warp, {name}"));
+        // The pins, saturation included, are in the file's `ym:Settings`, as every setting is.
+        if name == "jpeg" {
+            let xmp = String::from_utf8_lossy(&bytes(&from_app[0])).replace("&quot;", "\"");
+            for saturation in ["\"saturation\":-0.6", "\"saturation\":0.5"] {
+                assert!(xmp.contains(saturation), "ym:Settings holds {saturation}");
+            }
+        }
     }
 }
 

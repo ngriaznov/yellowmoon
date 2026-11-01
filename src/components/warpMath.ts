@@ -44,6 +44,8 @@ export const WARP_TONE_HALF_WIDTH_STOPS = 2;
 export const WARP_PIVOT_LIMIT_EV = 6;
 /** A pin's exposure is limited to this many stops either way. */
 export const WARP_EXPOSURE_LIMIT_EV = 2;
+/** A pin's saturation is limited to this either way: −1 turns its colours grey, +1 doubles their distance from neutral. */
+export const WARP_SATURATION_LIMIT = 1;
 
 // ---------------------------------------------------------------------------
 // LogC4 and the plane's axes
@@ -118,7 +120,7 @@ export function clampToDisc(p: ChromaPoint, limit: number): ChromaPoint {
 // ---------------------------------------------------------------------------
 
 /** The fields of a new pin besides its points (`WarpPin::default`). */
-export const PIN_DEFAULTS = { range: WARP_RANGE_DEFAULT, shadows: 1, highlights: 1, pivot_ev: 0, exposure_ev: 0 } as const;
+export const PIN_DEFAULTS = { range: WARP_RANGE_DEFAULT, shadows: 1, highlights: 1, pivot_ev: 0, exposure_ev: 0, saturation: 0 } as const;
 
 /** A moving pin from `source` to `target` (the source itself by default) with the default range and weights. */
 export const movingPin = (source: ChromaPoint, target: ChromaPoint = source): ColorWarpPin => ({
@@ -133,8 +135,8 @@ export const lockedPin = (at: ChromaPoint): ColorWarpPin => ({ source: [at[0], a
 
 /**
  * Every value in its range, as the core keeps it (`WarpPin::clamped`): points scaled back to `WARP_COORD_LIMIT`, the range, weights,
- * pivot and exposure clamped, a value that is not a finite number replaced by its default. A locked pin's target is its source and its
- * weights, pivot and exposure are the defaults.
+ * pivot, exposure and saturation clamped, a value that is not a finite number replaced by its default. A locked pin's target is its
+ * source and its weights, pivot, exposure and saturation are the defaults.
  */
 export function clampPin(pin: ColorWarpPin): ColorWarpPin {
   const source = clampToDisc(pin.source, WARP_COORD_LIMIT);
@@ -149,15 +151,16 @@ export function clampPin(pin: ColorWarpPin): ColorWarpPin {
     highlights: clamp(finiteOr(pin.highlights, 1), 0, 1),
     pivot_ev: clamp(finiteOr(pin.pivot_ev, 0), -WARP_PIVOT_LIMIT_EV, WARP_PIVOT_LIMIT_EV),
     exposure_ev: clamp(finiteOr(pin.exposure_ev, 0), -WARP_EXPOSURE_LIMIT_EV, WARP_EXPOSURE_LIMIT_EV),
+    saturation: clamp(finiteOr(pin.saturation, 0), -WARP_SATURATION_LIMIT, WARP_SATURATION_LIMIT),
   };
 }
 
 /** The pins as the core keeps them: the first sixteen, each clamped. */
 export const clampPins = (pins: readonly ColorWarpPin[]): ColorWarpPin[] => pins.slice(0, WARP_MAX_PINS).map(clampPin);
 
-/** Whether a pin changes anything on its own: it moves its colour or changes its exposure (a locked pin only holds colours). */
+/** Whether a pin changes anything on its own: it moves its colour or changes its exposure or saturation (a locked pin only holds colours). */
 export const pinActs = (pin: ColorWarpPin): boolean =>
-  !pin.locked && (pin.target[0] !== pin.source[0] || pin.target[1] !== pin.source[1] || pin.exposure_ev !== 0);
+  !pin.locked && (pin.target[0] !== pin.source[0] || pin.target[1] !== pin.source[1] || pin.exposure_ev !== 0 || pin.saturation !== 0);
 
 /** A moving pin, ready to evaluate. */
 export interface PreparedMove {
@@ -171,6 +174,8 @@ export interface PreparedMove {
   /** The pivot as a LogC4 code value. */
   pivotCode: number;
   exposureEv: number;
+  /** Saturation, −1…1. */
+  saturation: number;
 }
 
 /** A locked pin, ready to evaluate. */
@@ -202,8 +207,8 @@ export function flowSteps(moves: ReadonlyArray<{ delta: ChromaPoint; range: numb
 }
 
 /**
- * Prepares the pins (`Warp::new`): the first sixteen, clamped. Pins that neither move nor change exposure are left out (they would only
- * dilute their neighbours), and so are the locks when no pin acts. The number of flow steps comes from the moving pins' moves and ranges.
+ * Prepares the pins (`Warp::new`): the first sixteen, clamped. Pins that neither move nor change exposure or saturation are left out
+ * (they would only dilute their neighbours), and so are the locks when no pin acts. The number of flow steps comes from the moving pins' moves and ranges.
  */
 export function prepareWarp(pins: readonly ColorWarpPin[]): PreparedWarp {
   const moves: PreparedMove[] = [];
@@ -223,6 +228,7 @@ export function prepareWarp(pins: readonly ColorWarpPin[]): PreparedWarp {
         highlights: pin.highlights,
         pivotCode: logc4AtStops(pin.pivot_ev),
         exposureEv: pin.exposure_ev,
+        saturation: pin.saturation,
       });
     }
   }
@@ -233,7 +239,10 @@ export function prepareWarp(pins: readonly ColorWarpPin[]): PreparedWarp {
 /** Whether the stage changes nothing (no pin acts). */
 export const warpIsIdentity = (warp: PreparedWarp): boolean => warp.moves.length === 0;
 
-/** What the warp does at a chroma `c` and a tone `l` (a LogC4 code value): the chroma move `d` and the exposure `e` in stops. */
+/**
+ * What the warp does at a chroma `c` and a tone `l` (a LogC4 code value): the chroma move `d` (the flow, then the saturation, so
+ * `c + d` is the final chroma) and the exposure `e` in stops.
+ */
 export interface Displacement {
   d: ChromaPoint;
   e: number;
@@ -249,7 +258,8 @@ const tonalWeight = (m: PreparedMove, l: number): number =>
 /**
  * The displacement of the chroma `c` at the tone `l` (`Warp::displacement`). The pixel follows a flow of `warp.steps` steps while each
  * pin's centre slides from its source by the share of its move this pixel takes, `γ·w·δ` (γ: the neutral guard times the locks' hold at
- * `c`, w: the pin's tonal weight at `l`): `c += (γ/N) · Σ(w φ δ) / max(1, Σφ)`. The exposure is the one-step formula at `c`.
+ * `c`, w: the pin's tonal weight at `l`): `c += (γ/N) · Σ(w φ δ) / max(1, Σφ)`. The exposure and the saturation are one-step formulas
+ * at `c`: `K = γ · Σ(w φ σ) / max(1, Σφ)` (at least −1) scales the chroma the pixel ends on, `d += K (c + d)`.
  */
 export function warpDisplacement(warp: PreparedWarp, c: ChromaPoint, l: number): Displacement {
   const none: Displacement = { d: [0, 0], e: 0 };
@@ -266,12 +276,16 @@ export function warpDisplacement(warp: PreparedWarp, c: ChromaPoint, l: number):
   const shares = weights.map((w) => gamma * w);
   let reach = 0;
   let exposure = 0;
+  let saturation = 0;
   warp.moves.forEach((m, i) => {
     const phi = gauss((c[0] - m.source[0]) ** 2 + (c[1] - m.source[1]) ** 2, m.invTwoSigmaSq);
     reach += phi;
     exposure += (weights[i] as number) * phi * m.exposureEv;
+    saturation += (weights[i] as number) * phi * m.saturation;
   });
   const e = (gamma / Math.max(1, reach)) * exposure;
+  // |K| ≤ 1 already; the floor keeps 1 + K ≥ 0.
+  const k = Math.max((gamma / Math.max(1, reach)) * saturation, -1);
   const n = warp.steps;
   const h = gamma / n;
   let d0 = 0;
@@ -294,6 +308,10 @@ export function warpDisplacement(warp: PreparedWarp, c: ChromaPoint, l: number):
     const step = h / Math.max(1, sum);
     d0 += step * v0;
     d1 += step * v1;
+  }
+  if (k !== 0) {
+    d0 += k * (c[0] + d0);
+    d1 += k * (c[1] + d1);
   }
   return { d: [d0, d1], e };
 }

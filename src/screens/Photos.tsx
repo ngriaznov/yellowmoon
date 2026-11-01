@@ -189,7 +189,8 @@ export function Photos() {
   const overlay = useAppState((s) => s.overlay);
   const [tab, setTab] = useState<TabId>("look");
   // Pick white (the header) or Pick colour (Colour › Colour warp): one crosshair layer over the photo, so the two are exclusive.
-  const [picking, setPicking] = useState<PickMode | null>(null);
+  // `picked` is what was asked for; `picking` (below, once the crop and the tab are known) is what is on.
+  const [picked, setPicking] = useState<PickMode | null>(null);
   // Files dropped anywhere on the window are added to the session, as on Start (`docs/11` §Photos); a dialog takes the drop away.
   const { dragging } = useWindowDrop({ onDrop: (paths) => void store.openPaths(paths), enabled: overlay === null });
   const [cell, setCell] = useState<{ width: number; height: number; scale: number } | null>(null);
@@ -208,6 +209,21 @@ export function Photos() {
 
   const photos = session?.photos ?? [];
   const cropping = crop.active;
+  // Pick colour belongs to the Colour tab (`docs/11` §Colour warp): it is on only while that tab is the one shown, in the tool panel (the
+  // Export and Crop panels replace it). It is read from the tab, not switched off at each way of leaving, so a click on a tab, ⌘1 to ⌘7,
+  // the Look tab's links and the panels all end it in the same render that hides the tab: the layer is gone at once and takes no click.
+  // Pick white is not tied to a tab. Leaving the screen (Start, the wizard) unmounts this one, and with it the mode.
+  const colourShown = panel === "tools" && tab === "color" && !cropping;
+  const picking: PickMode | null = picked === "color" && !colourShown ? null : picked;
+  // What was asked for is forgotten with it, so coming back to Colour finds Pick colour off. A photo that changes, by whatever road (the
+  // filmstrip, the arrows, Delete, an undo of a removal), ends it too, if it is not ended already.
+  useEffect(() => {
+    if (picked === "color" && !colourShown) setPicking(null);
+  }, [picked, colourShown]);
+  const photoId = photo?.id ?? null;
+  useEffect(() => {
+    setPicking((mode) => (mode === "color" ? null : mode));
+  }, [photoId]);
   // Full screen (F): the photo alone. The Export panel and Crop need the panel, so neither shares the window with it.
   const fullScreen = useFullScreen(!cropping && panel !== "export");
 

@@ -88,6 +88,14 @@ describe("formats", () => {
     expect(formats.signed(-17.5)).toBe(`${MINUS}17`);
   });
 
+  it("signedPercent is signed like signed and ends in %, with plain 0% for what rounds to zero", () => {
+    expect(formats.signedPercent(20)).toBe("+20%");
+    expect(formats.signedPercent(-35)).toBe(`${MINUS}35%`);
+    expect(formats.signedPercent(100)).toBe("+100%");
+    expect(formats.signedPercent(-100)).toBe(`${MINUS}100%`);
+    for (const value of [0, 0.3, -0.3, -0.5, -0, 1e-9]) expect(formats.signedPercent(value)).toBe("0%");
+  });
+
   it("ev has two decimals and no sign at zero", () => {
     expect(formats.ev(0.3)).toBe("+0.30");
     expect(formats.ev(-1.25)).toBe(`${MINUS}1.25`);

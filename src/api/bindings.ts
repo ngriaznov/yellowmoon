@@ -736,6 +736,11 @@ export type ColorWarpPin = {
 	pivot_ev: number,
 	/**  A change of brightness of the pin's colours, stops, -2 to +2. */
 	exposure_ev: number,
+	/**
+	 *  A change of saturation of the pin's colours, -1 to +1 (-1 grey, +1 twice as far from
+	 *  neutral); shown as -100 to +100 %.
+	 */
+	saturation: number,
 };
 
 /**

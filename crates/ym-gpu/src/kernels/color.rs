@@ -53,8 +53,9 @@
 //! [`ChainTables::prepare`] packs what `ym_color::warp::Warp::new` prepares (the CPU's own clamping,
 //! pivot code, number of flow steps, and the rule that still pins, and locks without a moving pin,
 //! are left out) into `warp_n` (the moving and locked counts and the flow's steps), `warp_mv` (three
-//! `vec4` rows a moving pin) and `warp_lk` (one row a lock), 1040 bytes for the 16 pins of
-//! `WARP_MAX_PINS`. A pin moves on every frame of a drag, so a
+//! `vec4` rows a moving pin; the third holds the exposure and the saturation, with two lanes to
+//! spare, so the saturation did not grow the block) and `warp_lk` (one row a lock), 1040 bytes for
+//! the 16 pins of `WARP_MAX_PINS`. A pin moves on every frame of a drag, so a
 //! persistent table would be refilled as often as the uniform is written; the uniform needs no
 //! further storage binding (K3), no cache key and no upload of its own. No moving pin gives
 //! `warp_n.x = 0` and the kernel skips the stage, so a chain without a warp renders the bits it
@@ -187,7 +188,7 @@ struct LutDescU {
 }
 
 /// Rows (`vec4<f32>`) of one moving pin of the colour warp in [`ChainU`]: [s.x, s.y, delta.x,
-/// delta.y], [1 / (2 rho^2), shadows, highlights, pivot code], [exposure in stops, 0, 0, 0].
+/// delta.y], [1 / (2 rho^2), shadows, highlights, pivot code], [exposure in stops, saturation, 0, 0].
 pub(crate) const WARP_ROWS_PER_MOVE: usize = 3;
 /// Rows of the moving pins in [`ChainU`] (`WARP_MOVE_ROWS` in `color.wgsl`): room for every pin.
 pub(crate) const WARP_MOVE_ROWS: usize = WARP_ROWS_PER_MOVE * WARP_MAX_PINS;
@@ -403,7 +404,7 @@ fn warp_uniform(u: &mut ChainU, params: &WarpParams) {
             m.highlights as f32,
             m.pivot_code as f32,
         ];
-        rows[2] = [m.exposure_ev as f32, 0.0, 0.0, 0.0];
+        rows[2] = [m.exposure_ev as f32, m.saturation as f32, 0.0, 0.0];
     }
     for (row, l) in u.warp_lk.iter_mut().zip(locks.iter()) {
         *row = [
@@ -1455,6 +1456,7 @@ mod tests {
                 highlights: 0.75,
                 pivot_ev: 1.5,
                 exposure_ev: -0.5,
+                saturation: 0.35,
                 ..WarpPin::moving([0.1, 0.02], [0.04, 0.09])
             },
             // A still pin: left out, so the next moving pin takes the second slot.
@@ -1478,7 +1480,7 @@ mod tests {
             let want = [
                 [m.source[0], m.source[1], m.delta[0], m.delta[1]],
                 [m.inv_two_sigma_sq, m.shadows, m.highlights, m.pivot_code],
-                [m.exposure_ev, 0.0, 0.0, 0.0],
+                [m.exposure_ev, m.saturation, 0.0, 0.0],
             ];
             for (row, w) in rows.iter().zip(want) {
                 assert_eq!(*row, w.map(|x| x as f32), "move {k}");
@@ -1503,6 +1505,22 @@ mod tests {
                 .all(|r| *r == [0.0; 4])
         );
         assert!(u.warp_lk[1..].iter().all(|r| *r == [0.0; 4]));
+        // A pin that only changes saturation is packed (it acts): no move, no exposure, its
+        // saturation in the second lane of the third row. Saturation 0 beside it is a still pin.
+        let params = WarpParams {
+            pins: vec![
+                WarpPin::moving([0.2, 0.2], [0.2, 0.2]),
+                WarpPin {
+                    saturation: -0.6,
+                    ..WarpPin::moving([0.1, 0.0], [0.1, 0.0])
+                },
+            ],
+        };
+        let mut u = ChainU::default();
+        warp_uniform(&mut u, &params);
+        assert_eq!(u.warp_n, [1, 0, 1, 0]);
+        assert_eq!(u.warp_mv[0], [0.1, 0.0, 0.0, 0.0]);
+        assert_eq!(u.warp_mv[2], [0.0, -0.6f32, 0.0, 0.0]);
         // No moving pin: nothing at all, the locks included (the kernel skips the stage).
         for pins in [
             vec![],

@@ -526,7 +526,8 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
         color.key,
         grade_params(s, &src.estimates),
         // The warp as the chain prepares it: pins that change nothing (locked pins with no pin that
-        // moves, a pin whose target is its source) leave the key, and the frame, as without them.
+        // acts, a pin whose target is its source and that changes neither exposure nor saturation)
+        // leave the key, and the frame, as without them.
         Warp::new(&warp_params(s)),
         s.curve,
         req.target,

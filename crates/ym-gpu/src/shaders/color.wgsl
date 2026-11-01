@@ -317,7 +317,7 @@ fn c9_grade(v: vec3<f32>, l: f32) -> vec3<f32> {
 // The pins of ym_color::warp::Warp (docs/02 C9b), prepared on the host by `Warp::new` (clamped, still
 // pins left out, the pivot as a LogC4 code, the number of flow steps): `CU.warp_n.x` moving pins of
 // three rows each in `CU.warp_mv`, [s.x, s.y, delta.x, delta.y], [1 / (2 rho^2), shadows, highlights,
-// pivot code], [exposure in stops, 0, 0, 0], `CU.warp_n.y` locked pins in `CU.warp_lk`, [l.x, l.y,
+// pivot code], [exposure in stops, saturation, 0, 0], `CU.warp_n.y` locked pins in `CU.warp_lk`, [l.x, l.y,
 // 1 / (2 rho^2), 0], and the flow's `CU.warp_n.z` steps. No moving pin skips the stage: the output is
 // then bit for bit what it was before the warp existed.
 //
@@ -325,7 +325,8 @@ fn c9_grade(v: vec3<f32>, l: f32) -> vec3<f32> {
 // pixel takes, to `s + gamma w delta`, and the pixel follows,
 // `c += (gamma / N) sum(w phi delta) / max(1, sum phi)` with the centres at `s + (k / N) gamma w delta`;
 // gamma (the neutral guard times the locks' hold) and the tonal weights w are the pixel's own, taken
-// once. The exposure is the one-step formula at the pixel's own chroma.
+// once. The exposure and the saturation are one-step formulas at the pixel's own chroma; the
+// saturation K then scales the chroma the pixel ends on, (1 + K) (c + dd).
 //
 // Fast-math (K8). Nothing here rests on a rounding (the gate is 2e-4 in LogC4) except in the thin
 // sliver just behind the source of a long, narrow move, which the flow stretches along the path and
@@ -378,19 +379,25 @@ fn c9b_warp(v: vec3<f32>) -> vec3<f32> {
     }
     let gamma = guard * hold;
     let l = logc4_encode(dot(Y_AWG4, logc4_decode3(min(v, vec3<f32>(WARP_LUMA_CEIL)))));
-    // The exposure, at the pixel's own chroma with the pins at their sources.
+    // The exposure and the saturation, at the pixel's own chroma with the pins at their sources.
     var reach = 0.0;
     var exposure = 0.0;
+    var saturation = 0.0;
     for (var i = 0u; i < moves; i++) {
         let a = CU.warp_mv[3u * i];
         let b = CU.warp_mv[3u * i + 1u];
-        let x = CU.warp_mv[3u * i + 2u].x;
+        let x = CU.warp_mv[3u * i + 2u];
         let d = c - a.xy;
         let phi = warp_gauss(dot(d, d), b.x);
         reach = reach + phi;
-        exposure = exposure + warp_tonal_weight(b, l) * phi * x;
+        let wphi = warp_tonal_weight(b, l) * phi;
+        exposure = exposure + wphi * x.x;
+        saturation = saturation + wphi * x.y;
     }
     let e = gamma / max(reach, 1.0) * exposure;
+    // K, kept at -1 or more so that 1 + K >= 0 (|K| <= 1 already: the weights and gamma are in [0, 1],
+    // every pin's saturation in [-1, 1]).
+    let k = max(gamma / max(reach, 1.0) * saturation, -1.0);
     // The flow, the move gathered in `dd`.
     let steps = clamp(CU.warp_n.z, 1u, WARP_MAX_STEPS);
     let n = f32(steps);
@@ -411,6 +418,10 @@ fn c9b_warp(v: vec3<f32>) -> vec3<f32> {
             shift = shift + (w * phi) * a.zw;
         }
         dd = dd + (h / max(sum, 1.0)) * shift;
+    }
+    // Saturation scales the chroma the pixel ends on, (1 + K) (c + dd); K = 0 leaves dd as it is.
+    if (k != 0.0) {
+        dd = dd + k * (c + dd);
     }
     return v + dd.x * E1 + dd.y * E2 + vec3<f32>(e * STOP);
 }

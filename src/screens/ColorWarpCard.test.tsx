@@ -34,6 +34,8 @@ const at = (a: number, b: number) => {
   const p = planeToPx([a, b], 352);
   return { clientX: p.x, clientY: p.y };
 };
+/** The text of a slider's value box in the Colour warp card (the Colour balance card has a Saturation of its own). */
+const cardValue = (label: string): string => (card().getByRole("textbox", { name: `${label} value` }) as HTMLInputElement).value;
 const pins = (): ColorWarpPin[] => h.store.currentSettings()?.settings.color_warp.pins ?? [];
 const photo = (): HTMLElement => screen.getByRole("main", { name: "Photo" });
 const patches = (spy: UpdateSpy): SettingsPatch[] => spy.mock.calls.map((c) => c[1] as SettingsPatch);
@@ -71,7 +73,7 @@ describe("the Colour warp card", () => {
     await waitFor(() => expect(h.store.getState().chromaScatter?.points.length).toBeGreaterThan(0));
   });
 
-  it("a drag on the plane adds a moving pin as one undo step and shows its five sliders at their defaults", async () => {
+  it("a drag on the plane adds a moving pin as one undo step and shows its six sliders at their defaults", async () => {
     const spy = await setup();
     await press([0.1, 0], [0.1, 0.05]);
     await waitFor(() => expect(pins()).toHaveLength(1));
@@ -83,8 +85,15 @@ describe("the Colour warp card", () => {
       .getAllByRole("slider")
       .filter((s) => s.getAttribute("aria-labelledby"))
       .map((s) => sliderName(s));
-    expect(labels).toEqual(["Range", "Shadows", "Highlights", "Pivot", "Exposure"]);
-    expect([valueOf("Range"), valueOf("Shadows"), valueOf("Highlights"), valueOf("Pivot"), valueOf("Exposure")]).toEqual(["2", "100%", "100%", "0.0 EV", "0.00 EV"]);
+    expect(labels).toEqual(["Range", "Shadows", "Highlights", "Pivot", "Exposure", "Saturation"]);
+    expect([valueOf("Range"), valueOf("Shadows"), valueOf("Highlights"), valueOf("Pivot"), valueOf("Exposure"), cardValue("Saturation")]).toEqual([
+      "2",
+      "100%",
+      "100%",
+      "0.0 EV",
+      "0.00 EV",
+      "0%",
+    ]);
     expect(card().getByRole("slider", { name: "Pin 1" })).toHaveAttribute("aria-valuetext", "moves red toward orange");
     expect(card().getByRole("button", { name: "Delete pin" })).not.toHaveAttribute("aria-disabled");
     // One step: undo takes the pin away.
@@ -93,7 +102,7 @@ describe("the Colour warp card", () => {
     expect(card().getByText(WARP_HINT)).toBeInTheDocument();
   });
 
-  it("the sliders change the selected pin: Range ×100, Shadows and Highlights in percent, Pivot and Exposure in stops", async () => {
+  it("the sliders change the selected pin: Range ×100, Shadows and Highlights in percent, Pivot and Exposure in stops, Saturation in signed percent", async () => {
     const spy = await setup([movingPin([0.1, 0], [0.1, 0.05]), movingPin([-0.1, 0])]);
     act(() => card().getByRole("slider", { name: "Pin 2" }).focus());
     await type("Range", "10");
@@ -101,10 +110,15 @@ describe("the Colour warp card", () => {
     await type("Highlights", "75");
     await type("Pivot", "1");
     await type("Exposure", "0.3");
-    await waitFor(() => expect(pins()[1]).toMatchObject({ range: 0.1, shadows: 0.4, highlights: 0.75, pivot_ev: 1, exposure_ev: 0.3 }));
+    await type("Saturation", "-35");
+    await waitFor(() => expect(pins()[1]).toMatchObject({ range: 0.1, shadows: 0.4, highlights: 0.75, pivot_ev: 1, exposure_ev: 0.3, saturation: -0.35 }));
     expect(pins()[0]).toEqual(movingPin([0.1, 0], [0.1, 0.05]));
     expect(valueOf("Pivot")).toBe("+1.0 EV");
     expect(valueOf("Exposure")).toBe("+0.30 EV");
+    expect(cardValue("Saturation")).toBe("−35%");
+    await type("Saturation", "+20");
+    await waitFor(() => expect(pins()[1]?.saturation).toBeCloseTo(0.2, 12));
+    expect(cardValue("Saturation")).toBe("+20%");
     // Each typed value is one whole list.
     expect(patches(spy).at(-1)?.color_warp?.pins).toHaveLength(2);
     // The reset column goes back to the default.
@@ -112,6 +126,30 @@ describe("the Colour warp card", () => {
     await waitFor(() => expect(pins()[1]?.pivot_ev).toBe(0));
     await h.user.click(card().getByRole("button", { name: "Reset Range" }));
     await waitFor(() => expect(pins()[1]?.range).toBe(0.02));
+    await h.user.click(card().getByRole("button", { name: "Reset Saturation" }));
+    await waitFor(() => expect(pins()[1]?.saturation).toBe(0));
+    expect(cardValue("Saturation")).toBe("0%");
+  });
+
+  it("Saturation runs from −100 % to +100 %, starts at 0 and is one undo step, and a locked pin has no such row", async () => {
+    await setup([movingPin([0.1, 0], [0.1, 0.05]), lockedPin([-0.1, 0])]);
+    act(() => card().getByRole("slider", { name: "Pin 1" }).focus());
+    const knob = card().getByRole("slider", { name: "Saturation" });
+    expect([knob.getAttribute("aria-valuemin"), knob.getAttribute("aria-valuemax"), knob.getAttribute("aria-valuenow")]).toEqual(["-100", "100", "0"]);
+    await type("Saturation", "250");
+    await waitFor(() => expect(pins()[0]?.saturation).toBe(1));
+    expect(cardValue("Saturation")).toBe("+100%");
+    await type("Saturation", "-250");
+    await waitFor(() => expect(pins()[0]?.saturation).toBe(-1));
+    expect(cardValue("Saturation")).toBe("−100%");
+    // Each typed value is one undo step.
+    await h.user.keyboard("{Meta>}z{/Meta}");
+    await waitFor(() => expect(pins()[0]?.saturation).toBe(1));
+    // The pin stays what it was in every other field.
+    expect(pins()[0]).toEqual({ ...movingPin([0.1, 0], [0.1, 0.05]), saturation: 1 });
+    act(() => card().getByRole("slider", { name: "Pin 2" }).focus());
+    await waitFor(() => expect(card().queryByRole("slider", { name: "Saturation" })).toBeNull());
+    expect(pins()[1]?.saturation).toBe(0);
   });
 
   it("with Lock a click adds a locked pin, which shows Range only", async () => {
@@ -209,6 +247,86 @@ describe("Pick colour", () => {
     expect(await within(photo()).findByRole("application", { name: /^Pick white\./ })).toBeInTheDocument();
     expect(card().getByRole("button", { name: "Pick colour" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByText("Click something neutral: grey or white.")).toBeInTheDocument();
+  });
+
+  it("ends as soon as another tab is shown, by a click or by ⌘1 to ⌘7: the layer goes at once, a click on the photo adds no pin, and Colour comes back with it off", async () => {
+    await setup();
+    const sample = vi.spyOn(h.api, "sampleChroma");
+    const toggle = () => card().getByRole("button", { name: "Pick colour" });
+    // Look by a click on the tab; every other tab by its key (⌘4 is Colour itself).
+    const elsewhere: Array<[string, () => Promise<void>]> = [
+      ["Look, by a click", () => h.user.click(screen.getByRole("tab", { name: "Look" }))],
+      ["Look, by ⌘1", () => h.user.keyboard("{Meta>}1{/Meta}")],
+      ["Lens, by ⌘2", () => h.user.keyboard("{Meta>}2{/Meta}")],
+      ["Light, by ⌘3", () => h.user.keyboard("{Meta>}3{/Meta}")],
+      ["Detail, by ⌘5", () => h.user.keyboard("{Meta>}5{/Meta}")],
+      ["Curve, by ⌘6", () => h.user.keyboard("{Meta>}6{/Meta}")],
+      ["RAW, by ⌘7", () => h.user.keyboard("{Meta>}7{/Meta}")],
+    ];
+    for (const [what, go] of elsewhere) {
+      await startPicking();
+      expect(screen.getByText("Click a colour in the photo.")).toBeInTheDocument();
+      await go();
+      // At once: no waiting for anything.
+      expect(within(photo()).queryByRole("application"), what).toBeNull();
+      expect(screen.queryByText("Click a colour in the photo."), what).toBeNull();
+      // The photo takes the click as a click on a photo: no colour is asked for, no pin is made.
+      fireEvent.click(photo(), { clientX: 450, clientY: 100 });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(sample, what).not.toHaveBeenCalled();
+      expect(pins(), what).toEqual([]);
+      // Back on Colour (⌘4): Pick colour is off.
+      await h.user.keyboard("{Meta>}4{/Meta}");
+      expect(toggle(), what).toHaveAttribute("aria-pressed", "false");
+      expect(within(photo()).queryByRole("application"), what).toBeNull();
+    }
+    // Staying on Colour keeps it on: ⌘4 and a click on the Colour tab do nothing to it.
+    await startPicking();
+    await h.user.keyboard("{Meta>}4{/Meta}");
+    await h.user.click(screen.getByRole("tab", { name: "Colour" }));
+    expect(toggle()).toHaveAttribute("aria-pressed", "true");
+    expect(within(photo()).getByRole("application")).toBeInTheDocument();
+  });
+
+  it("ends when the Export panel replaces the tools, and when the photo changes by any road", async () => {
+    await setup();
+    const toggle = () => card().getByRole("button", { name: "Pick colour" });
+    await startPicking();
+    act(() => h.store.openExport());
+    await waitFor(() => expect(within(photo()).queryByRole("application")).toBeNull());
+    act(() => h.store.closeExport());
+    await waitFor(() => expect(toggle()).toHaveAttribute("aria-pressed", "false"));
+    expect(within(photo()).queryByRole("application")).toBeNull();
+    // Another photo, from the store (the filmstrip, the arrows and Delete go this way or through the screen).
+    await startPicking();
+    await act(() => h.store.setCurrent(5));
+    await waitFor(() => expect(within(photo()).queryByRole("application")).toBeNull());
+    expect(toggle()).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("leaves Pick white as it was: it outlives a tab, and another photo still ends it", async () => {
+    await setup();
+    await h.user.click(screen.getByRole("button", { name: "Pick white" }));
+    expect(await within(photo()).findByRole("application", { name: /^Pick white\./ })).toBeInTheDocument();
+    await h.user.keyboard("{Meta>}1{/Meta}");
+    expect(within(photo()).getByRole("application", { name: /^Pick white\./ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pick white" })).toHaveAttribute("aria-pressed", "true");
+    // As before, a click on another photo in the filmstrip ends it.
+    await h.user.click(within(screen.getByRole("navigation", { name: "Photos" })).getByRole("button", { name: /^Show DSC04206/ }));
+    await waitFor(() => expect(within(photo()).queryByRole("application")).toBeNull());
+    expect(screen.getByRole("button", { name: "Pick white" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("is off again after the Start screen: leaving the photo view ends it", async () => {
+    await setup();
+    await startPicking();
+    act(() => h.store.go("start"));
+    await waitFor(() => expect(screen.queryByRole("main", { name: "Photo" })).toBeNull());
+    act(() => h.store.go("photos"));
+    await screen.findByRole("main", { name: "Photo" });
+    expect(within(photo()).queryByRole("application")).toBeNull();
+    await openTab(h, "Colour");
+    expect(card().getByRole("button", { name: "Pick colour" })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("a click on the paper around a letterboxed photo adds nothing", async () => {
