@@ -269,7 +269,7 @@ Tests: `crates/ym-core/tests/apple_auto.rs` (section *Removing photos from the f
 - the **Output** holds `look`, `look_intensity` and `output_sharpening`;
 - **every corrector**, Main included, holds `name`, `bypass`, `pos`, `trim`, `masks` and a `grade` with `contrast`, `brightness`, `highlights`, `shadows`, `white`, `black`, `color_balance`, `saturation`, `color_warp` and `curve`. **Auto belongs to Main**: in any other corrector Auto reads as a manual 0.
 
-The simple view reads and writes the Input, Main and the Output through selectors; a CLI flag sets one field of one of them (`docs/10`). A document in the flat form of Yellowmoon 0.1 is refused (`docs/23` §3.12); there is no migration, since 0.1 saved nothing.
+The simple view reads and writes the Input, Main and the Output through selectors; a CLI flag sets one field of one of them (`docs/10`). A document in the flat form of Yellowmoon 0.1 is refused (`docs/23` §3.12); 0.1 saved nothing, so there is nothing to carry over.
 
 Every control in the UI and every CLI flag maps to one field of one node. Defaults reproduce the automatic development.
 
