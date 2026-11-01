@@ -2,8 +2,8 @@
 //!
 //! One entry per input file. The synthetic entries are written by `python3 -m training.synth.make_scenes
 //! --write-manifest tools/golden/manifest.json` and never edited by hand; entries of the other tiers (`cc0`, `free`,
-//! `eval`) are left alone by that command and come with the fetch scripts. `settings` is the `ym:Settings` document
-//! the render uses (`{}` is everything Auto). The manifest's `expected_hash` and `reference` fields stay empty for
+//! `eval`) are left alone by that command and come with the fetch scripts. `settings` is the node-first `ym:Settings`
+//! document the render uses (`{}` is the default graph, everything Auto; `docs/23` section 3). The manifest's `expected_hash` and `reference` fields stay empty for
 //! generated entries: the runner keeps its hashes in `expected.json` and its images under `testdata/golden/refs`
 //! (`docs/13-testing.md`, section Golden images).
 

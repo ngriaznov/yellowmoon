@@ -104,7 +104,8 @@ fn gpu_and_cpu_frames_agree_within_the_parity_tolerance() {
             edit(&src, |s| {
                 s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(30.0);
                 s.main_grade_mut().brightness = 10.0;
-                s.main_grade_mut().saturation = ym_core::settings::PercentSetting::manual_value(20.0);
+                s.main_grade_mut().saturation =
+                    ym_core::settings::PercentSetting::manual_value(20.0);
                 s.main_grade_mut().color_balance.highlights =
                     ym_core::settings::BalanceSetting::manual_point([0.4, -0.3]);
                 s.main_grade_mut().curve.luma = vec![[0.0, 0.0], [0.4, 0.5], [1.0, 1.0]];
@@ -369,10 +370,11 @@ fn the_renders_of_a_dng_have_no_capture_sharpening_on_the_device_and_match_the_c
     let Some(gpu) = gpu() else { return };
     let src = scene();
     let off = edit(&src, |s| {
-        s.input_mut().sharpen = ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
-            amount: 0.0,
-            radius_px: 1.0,
-        });
+        s.input_mut().sharpen =
+            ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
+                amount: 0.0,
+                radius_px: 1.0,
+            });
     });
     // Every stage but the export tail: with `GpuStages::EXPORT_TAIL` the colour stage of the DNG's
     // two renders runs on the device too (`tests/gpu_export.rs` compares it with the CPU's),
@@ -1189,17 +1191,28 @@ mod view {
         let edits: Vec<(&str, Edit)> = vec![
             (
                 "contrast",
-                Box::new(|s| s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(30.0)),
+                Box::new(|s| {
+                    s.main_grade_mut().contrast =
+                        ym_core::settings::PercentSetting::manual_value(30.0)
+                }),
             ),
             (
                 "saturation",
-                Box::new(|s| s.main_grade_mut().saturation = ym_core::settings::PercentSetting::manual_value(-25.0)),
+                Box::new(|s| {
+                    s.main_grade_mut().saturation =
+                        ym_core::settings::PercentSetting::manual_value(-25.0)
+                }),
             ),
             (
                 "curve",
-                Box::new(|s| s.main_grade_mut().curve.luma = vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]),
+                Box::new(|s| {
+                    s.main_grade_mut().curve.luma = vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]
+                }),
             ),
-            ("look intensity", Box::new(|s| s.output_mut().look_intensity = 60.0)),
+            (
+                "look intensity",
+                Box::new(|s| s.output_mut().look_intensity = 60.0),
+            ),
         ];
         for (name, change) in edits {
             let edited = edit(&src, |s| change(s));

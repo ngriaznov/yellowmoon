@@ -16,9 +16,9 @@ use ym_core::pipeline::{
 use ym_core::scheduler::MemoryBudget;
 use ym_core::session::{OpenOptions, Session};
 use ym_core::settings::{Crop, CropAspect, DevelopSettings, NormRect};
+use ym_core::settings::{NodeId, NodePatch};
 use ym_gpu::queue::CancelToken;
 use ym_raw::testgen::LensTables;
-use ym_core::settings::{NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -873,7 +873,8 @@ fn a_renderer_that_remembers_draws_the_pictures_of_one_that_does_not() {
         let what: String;
         match (unit() * 24.0) as u32 {
             0 => {
-                s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(unit() * 80.0 - 40.0);
+                s.main_grade_mut().contrast =
+                    ym_core::settings::PercentSetting::manual_value(unit() * 80.0 - 40.0);
                 what = "contrast".into();
             }
             1 => {
@@ -881,7 +882,8 @@ fn a_renderer_that_remembers_draws_the_pictures_of_one_that_does_not() {
                 what = "brightness".into();
             }
             2 => {
-                s.main_grade_mut().shadows = ym_core::settings::PercentSetting::manual_value(unit() * 100.0 - 50.0);
+                s.main_grade_mut().shadows =
+                    ym_core::settings::PercentSetting::manual_value(unit() * 100.0 - 50.0);
                 s.main_grade_mut().highlights =
                     ym_core::settings::PercentSetting::manual_value(unit() * 100.0 - 50.0);
                 what = "shadows and highlights".into();
@@ -940,7 +942,8 @@ fn a_renderer_that_remembers_draws_the_pictures_of_one_that_does_not() {
                 what = "luma curve".into();
             }
             11 => {
-                s.main_grade_mut().curve.green = vec![[0.0, 0.0], [0.5, 0.35 + 0.3 * unit()], [1.0, 1.0]];
+                s.main_grade_mut().curve.green =
+                    vec![[0.0, 0.0], [0.5, 0.35 + 0.3 * unit()], [1.0, 1.0]];
                 what = "green curve".into();
             }
             12 => {
@@ -1100,7 +1103,10 @@ fn threads_asking_for_different_pictures_of_one_photo_each_get_their_own() {
         .map(|i| {
             let mut s = base.settings.clone();
             match i % 4 {
-                0 => s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(10.0 * i as f64),
+                0 => {
+                    s.main_grade_mut().contrast =
+                        ym_core::settings::PercentSetting::manual_value(10.0 * i as f64)
+                }
                 1 => {
                     s.input_mut().exposure = AutoOr::Manual(ym_core::settings::ExposureValue {
                         ev: 0.25 * i as f64 - 1.0,

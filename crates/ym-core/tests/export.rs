@@ -23,13 +23,13 @@ use ym_core::pipeline::{
 };
 use ym_core::session::{PhotoId, Session};
 use ym_core::settings::{Crop, CropAspect, NormRect, Orientation, SettingsPatch};
+use ym_core::settings::{GradePatch, NodeId, NodePatch};
 use ym_export::naming::Placement;
 use ym_export::{BitDepth, ColorSpace, ExportOptions, FormatKind, IfExists, Size, TiffCompression};
 use ym_gpu::cpu::output_sharpen::OutputSharpen;
 use ym_gpu::queue::CancelToken;
 use ym_looks::library::LookId;
 use ym_raw::testgen::{ArwBuilder, GpsSpec};
-use ym_core::settings::{GradePatch, NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -264,7 +264,10 @@ fn with_the_output_slider_at_zero_the_file_is_the_render_encoded_as_it_was_befor
         .replace("&quot;", "\"")
         .replace("&amp;", "&");
     let json: serde_json::Value = serde_json::from_str(&settings).expect("JSON");
-    assert_eq!(json["output_sharpening"], serde_json::json!(0.0));
+    assert_eq!(
+        json["nodes"]["items"][2]["output_sharpening"],
+        serde_json::json!(0.0)
+    );
 }
 
 #[test]
@@ -286,7 +289,10 @@ fn output_sharpening_is_recorded_in_the_xmp_settings() {
         .replace("&quot;", "\"")
         .replace("&amp;", "&");
     let json: serde_json::Value = serde_json::from_str(&settings).expect("JSON");
-    assert_eq!(json["output_sharpening"], serde_json::json!(35.0));
+    assert_eq!(
+        json["nodes"]["items"][2]["output_sharpening"],
+        serde_json::json!(35.0)
+    );
 }
 
 #[test]
@@ -429,10 +435,10 @@ fn the_xmp_records_how_the_file_was_made() {
             serde_json::to_value(photo.resolved.pinned_settings()).expect("json")
         );
         assert_eq!(
-            value["saturation"],
+            value["nodes"]["items"][1]["grade"]["saturation"],
             serde_json::json!({ "kind": "manual", "value": 15.0 })
         );
-        assert_eq!(value["exposure"]["kind"], "manual");
+        assert_eq!(value["nodes"]["items"][0]["exposure"]["kind"], "manual");
         // Which Auto made it (docs/19 section 9): the rule, and no Apple Auto property.
         assert_eq!(xmp_property(&xmp, "ym:Auto").as_deref(), Some("rule"));
         assert_eq!(xmp_property(&xmp, "ym:AutoAdvisor"), None);

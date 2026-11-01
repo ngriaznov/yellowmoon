@@ -624,7 +624,7 @@ fn lens_photos() -> Vec<(&'static str, Developed, ExportPhoto)> {
 
 fn lens_photo(d: Developed) -> (Developed, ExportPhoto) {
     let patch: SettingsPatch = serde_json::from_str(
-        r#"{ "lens": { "kind": "vintage", "flares": 60, "edges": 50, "anamorphic": 50 } }"#,
+        r#"{ "nodes": { "input": { "lens": { "kind": "vintage", "flares": 60, "edges": 50, "anamorphic": 50 } } } }"#,
     )
     .expect("patch");
     d.session.update_settings(d.id, &patch).expect("settings");

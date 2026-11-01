@@ -308,12 +308,13 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
         let st = ViewportState::new(ViewportRect::cell(1440.0, 960.0, 1.0));
         let base = frame(&src, &st)?;
         let mut s = src.settings.clone();
-        let contrast = s.contrast.resolve(0.0);
-        s.contrast = ym_core::settings::PercentSetting::manual_value(if contrast > 50.0 {
-            5.0
-        } else {
-            contrast + 20.0
-        });
+        let contrast = s.main_grade().contrast.resolve(0.0);
+        s.main_grade_mut().contrast =
+            ym_core::settings::PercentSetting::manual_value(if contrast > 50.0 {
+                5.0
+            } else {
+                contrast + 20.0
+            });
         let edited = frame(&src.with_settings(s), &st)?;
         let mut v = phase.frame(
             "colour-only edit, 1440 x 960 cell",

@@ -218,25 +218,40 @@ fn every_grade_control_and_the_look_only_rebuild_the_grade_group_with(rig: Rig) 
     let edits: Vec<(&str, Edit)> = vec![
         (
             "contrast",
-            Box::new(|s| s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(20.0)),
+            Box::new(|s| {
+                s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(20.0)
+            }),
         ),
-        ("brightness", Box::new(|s| s.main_grade_mut().brightness = -20.0)),
+        (
+            "brightness",
+            Box::new(|s| s.main_grade_mut().brightness = -20.0),
+        ),
         (
             "highlights",
-            Box::new(|s| s.main_grade_mut().highlights = ym_core::settings::PercentSetting::manual_value(30.0)),
+            Box::new(|s| {
+                s.main_grade_mut().highlights =
+                    ym_core::settings::PercentSetting::manual_value(30.0)
+            }),
         ),
         (
             "shadows",
-            Box::new(|s| s.main_grade_mut().shadows = ym_core::settings::PercentSetting::manual_value(30.0)),
+            Box::new(|s| {
+                s.main_grade_mut().shadows = ym_core::settings::PercentSetting::manual_value(30.0)
+            }),
         ),
         ("white", Box::new(|s| s.main_grade_mut().white = 10.0)),
         (
             "black",
-            Box::new(|s| s.main_grade_mut().black = ym_core::settings::PercentSetting::manual_value(10.0)),
+            Box::new(|s| {
+                s.main_grade_mut().black = ym_core::settings::PercentSetting::manual_value(10.0)
+            }),
         ),
         (
             "saturation",
-            Box::new(|s| s.main_grade_mut().saturation = ym_core::settings::PercentSetting::manual_value(25.0)),
+            Box::new(|s| {
+                s.main_grade_mut().saturation =
+                    ym_core::settings::PercentSetting::manual_value(25.0)
+            }),
         ),
         (
             "color_balance",
@@ -252,7 +267,10 @@ fn every_grade_control_and_the_look_only_rebuild_the_grade_group_with(rig: Rig) 
                     vec![ym_color::warp::WarpPin::moving([0.1, 0.02], [0.06, 0.08]).into()];
             }),
         ),
-        ("look_intensity", Box::new(|s| s.output_mut().look_intensity = 40.0)),
+        (
+            "look_intensity",
+            Box::new(|s| s.output_mut().look_intensity = 40.0),
+        ),
         (
             "curve red",
             Box::new(|s| s.main_grade_mut().curve.red = vec![[0.0, 0.0], [0.4, 0.5], [1.0, 1.0]]),
@@ -302,8 +320,14 @@ fn a_white_balance_change_does_not_rerun_r3_to_r9_with(rig: Rig) {
             "light source",
             Box::new(|s| s.input_mut().light_source = ym_color::wb::LightSource::Tungsten),
         ),
-        ("highlight range", Box::new(|s| s.input_mut().rolloff.highlights = 0.9)),
-        ("low-light toe", Box::new(|s| s.input_mut().rolloff.low_light = 0.1)),
+        (
+            "highlight range",
+            Box::new(|s| s.input_mut().rolloff.highlights = 0.9),
+        ),
+        (
+            "low-light toe",
+            Box::new(|s| s.input_mut().rolloff.low_light = 0.1),
+        ),
     ];
     for (name, f) in edits {
         let r = rig.runs(&edit(&src, f));
@@ -360,10 +384,11 @@ fn a_decode_switch_noise_reduction_or_sharpening_reruns_the_raw_group_with(rig: 
         (
             "sharpen",
             Box::new(|s| {
-                s.input_mut().sharpen = ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
-                    amount: 200.0,
-                    radius_px: 1.2,
-                })
+                s.input_mut().sharpen =
+                    ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
+                        amount: 200.0,
+                        radius_px: 1.2,
+                    })
             }),
         ),
     ];

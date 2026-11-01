@@ -130,7 +130,7 @@ FAILURE_WORDS: Mapping[str, str] = {
     "bad_answer": "the answer could not be read",
     "other": "an error",
 }
-#: The Auto values of a render that the plan keeps for the diagnostics (`auto` of `ym render --json`).
+#: The Auto values of a render that the plan keeps for the diagnostics (`auto.input` and `auto.main` of `ym render --json`).
 AUTO_VALUES: Tuple[str, ...] = (
     "exposure_ev",
     "kelvin",
@@ -478,7 +478,14 @@ def auto_values(record: Mapping[str, object]) -> Dict[str, object]:
     auto = record.get("auto")
     if not isinstance(auto, dict):
         return {}
-    return {key: auto.get(key) for key in AUTO_VALUES if key in auto}
+    # `auto` is grouped by the node each number is for (`input` and `main`, `docs/23` section 3.9; a flat `auto` is
+    # the form of Yellowmoon 0.1).
+    flat = dict(auto)
+    for group in ("input", "main"):
+        part = auto.get(group)
+        if isinstance(part, dict):
+            flat.update(part)
+    return {key: flat.get(key) for key in AUTO_VALUES if key in flat}
 
 
 def without_final_break(text: str) -> str:

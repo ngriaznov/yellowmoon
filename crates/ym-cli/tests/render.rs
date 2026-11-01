@@ -142,13 +142,28 @@ fn json_has_one_object_per_file_in_the_documented_shape_and_order() {
         v["look"],
         json!({ "id": "builtin:signature", "intensity": 100 })
     );
+    // The numbers Auto resolves to are grouped by the node they are for (`docs/23` section 3.9).
     for key in [
         "exposure_ev",
         "kelvin",
         "tint",
-        "light_class",
-        "light_confidence",
+        "sharpen",
+        "noise_reduction",
     ] {
+        assert!(!v["auto"]["input"][key].is_null(), "auto.input.{key}");
+    }
+    for key in [
+        "contrast",
+        "saturation",
+        "highlights",
+        "shadows",
+        "black",
+        "balance_shadows",
+        "balance_highlights",
+    ] {
+        assert!(!v["auto"]["main"][key].is_null(), "auto.main.{key}");
+    }
+    for key in ["light_class", "light_confidence"] {
         assert!(!v["auto"][key].is_null(), "auto.{key}");
     }
     assert!(v["auto"]["noise"]["a"].is_number() && v["auto"]["noise"]["b"].is_number());
@@ -157,10 +172,13 @@ fn json_has_one_object_per_file_in_the_documented_shape_and_order() {
     }
     assert!(v["pipeline_version"].is_string());
     // The settings are what the file's `ym:Settings` says: Auto exposure written as its number.
-    assert_eq!(v["settings"]["exposure"]["kind"], "manual");
-    assert_eq!(v["settings"]["exposure"]["ev"], v["auto"]["exposure_ev"]);
-    assert_eq!(v["settings"]["white_balance"]["kind"], "auto");
-    assert_eq!(v["settings"]["look"], "builtin:signature");
+    assert_eq!(common::node(&v, "input")["exposure"]["kind"], "manual");
+    assert_eq!(
+        common::node(&v, "input")["exposure"]["ev"],
+        v["auto"]["input"]["exposure_ev"]
+    );
+    assert_eq!(common::node(&v, "input")["white_balance"]["kind"], "auto");
+    assert_eq!(common::node(&v, "output")["look"], "builtin:signature");
 }
 
 #[test]
@@ -421,39 +439,52 @@ fn flags_become_settings_and_the_exposure_offset_is_relative_to_each_photos_auto
     let objects = json_lines(&out.get_output().stdout);
     assert_eq!(objects.len(), 2);
     for o in &objects {
-        let auto_ev = o["auto"]["exposure_ev"].as_f64().expect("auto ev");
-        let s = &o["settings"];
-        let ev = s["exposure"]["ev"].as_f64().expect("exposure");
+        let auto_ev = o["auto"]["input"]["exposure_ev"].as_f64().expect("auto ev");
+        let (input, grade) = (common::node(o, "input"), &common::node(o, 1)["grade"]);
+        let ev = input["exposure"]["ev"].as_f64().expect("exposure");
         assert!(
             (ev - (auto_ev - 0.5)).abs() < 1e-9,
             "{ev} vs {auto_ev} - 0.5"
         );
         // Contrast and saturation are Auto or manual (docs/19 section 5): a number is manual.
-        assert_eq!(s["contrast"], json!({ "kind": "manual", "value": 20.0 }));
-        assert_eq!(s["saturation"], json!({ "kind": "manual", "value": -15.0 }));
         assert_eq!(
-            s["white_balance"],
+            grade["contrast"],
+            json!({ "kind": "manual", "value": 20.0 })
+        );
+        assert_eq!(
+            grade["saturation"],
+            json!({ "kind": "manual", "value": -15.0 })
+        );
+        assert_eq!(
+            input["white_balance"],
             json!({ "kind": "manual", "kelvin": 5200.0, "tint": 3.0 })
         );
-        assert_eq!(s["light_source"], "day");
+        assert_eq!(input["light_source"], "day");
         assert_eq!(
-            s["sharpen"],
+            input["sharpen"],
             json!({ "kind": "manual", "amount": 120.0, "radius_px": 1.1 })
         );
         assert_eq!(
-            s["noise_reduction"],
+            input["noise_reduction"],
             json!({ "kind": "manual", "luminance": 10.0, "color": 20.0, "detail": 30.0 })
         );
-        assert_eq!(s["decode"]["chromatic_aberration"], false);
-        assert_eq!(s["decode"]["neural_demosaic"], true);
-        assert_eq!(s["rolloff"], json!({ "highlights": 0.3, "low_light": 0.7 }));
+        assert_eq!(input["decode"]["chromatic_aberration"], false);
+        assert_eq!(input["decode"]["neural_demosaic"], true);
+        assert_eq!(
+            input["rolloff"],
+            json!({ "highlights": 0.3, "low_light": 0.7 })
+        );
         assert_eq!(o["look"]["intensity"], 80);
     }
     // Auto exposure is the camera's gain whatever the photo (docs/02, interim rule of 2026-10-14), so the two photos
     // have one automatic exposure and the offset lands on one number: the offset is relative to it, not absolute.
     let evs: Vec<f64> = objects
         .iter()
-        .map(|o| o["settings"]["exposure"]["ev"].as_f64().expect("ev"))
+        .map(|o| {
+            common::node(o, "input")["exposure"]["ev"]
+                .as_f64()
+                .expect("ev")
+        })
         .collect();
     let want = ym_color::exposure::CAMERA_GAIN_EV - 0.5;
     for ev in &evs {
@@ -486,13 +517,16 @@ fn the_remaining_flags_of_docs_10_reach_the_settings_of_the_file() {
         .success();
     let objects = json_lines(&out.get_output().stdout);
     assert_eq!(objects.len(), 1);
-    let s = &objects[0]["settings"];
-    assert_eq!(s["brightness"], 11.0);
+    let (input, grade) = (
+        common::node(&objects[0], "input"),
+        &common::node(&objects[0], 1)["grade"],
+    );
+    assert_eq!(grade["brightness"], 11.0);
     // Shadows is Auto or a manual value (`docs/19` section 5): a number is Manual.
-    assert_eq!(s["shadows"], json!({ "kind": "manual", "value": 22.0 }));
-    assert_eq!(s["white"], 33.0);
+    assert_eq!(grade["shadows"], json!({ "kind": "manual", "value": 22.0 }));
+    assert_eq!(grade["white"], 33.0);
     assert_eq!(
-        s["decode"],
+        input["decode"],
         json!({
             "neural_demosaic": false,
             "highlight_recovery": false,
@@ -504,11 +538,15 @@ fn the_remaining_flags_of_docs_10_reach_the_settings_of_the_file() {
     // saturation are pinned to the 0 they resolve to without Apple Auto, and the shadows and
     // highlights wheels to the centre (docs/19 section 5).
     for key in ["highlights", "black", "contrast", "saturation"] {
-        assert_eq!(s[key], json!({ "kind": "manual", "value": 0.0 }), "{key}");
+        assert_eq!(
+            grade[key],
+            json!({ "kind": "manual", "value": 0.0 }),
+            "{key}"
+        );
     }
     for key in ["shadows", "highlights"] {
         assert_eq!(
-            s["color_balance"][key],
+            grade["color_balance"][key],
             json!({ "kind": "manual", "point": [0.0, 0.0] }),
             "{key}"
         );
@@ -527,15 +565,15 @@ fn an_absolute_exposure_and_a_kelvin_without_a_tint() {
         .success();
     let o = &json_lines(&out.get_output().stdout)[0];
     assert_eq!(
-        o["settings"]["exposure"],
+        common::node(o, "input")["exposure"],
         json!({ "kind": "manual", "ev": -1.25 })
     );
     // The tint keeps the automatic value.
-    assert_eq!(o["settings"]["white_balance"]["kelvin"], 6100.0);
-    let tint = o["settings"]["white_balance"]["tint"]
+    assert_eq!(common::node(o, "input")["white_balance"]["kelvin"], 6100.0);
+    let tint = common::node(o, "input")["white_balance"]["tint"]
         .as_f64()
         .expect("tint");
-    assert!((tint - o["auto"]["tint"].as_f64().expect("auto tint")).abs() < 1e-9);
+    assert!((tint - o["auto"]["input"]["tint"].as_f64().expect("auto tint")).abs() < 1e-9);
 }
 
 #[test]
@@ -546,7 +584,10 @@ fn a_settings_file_applies_to_every_photo_and_flags_override_it() {
     let file = sb.root().join("settings.json");
     std::fs::write(
         &file,
-        r#"{ "contrast": 30, "saturation": 10, "exposure": {"kind": "manual", "ev": 0.25} }"#,
+        r#"{ "nodes": { "items": [
+            { "id": "input", "exposure": {"kind": "manual", "ev": 0.25} },
+            { "id": 1, "grade": { "contrast": {"kind": "manual", "value": 30},
+                                  "saturation": {"kind": "manual", "value": 10} } } ] } }"#,
     )
     .expect("write");
     let out = sb
@@ -557,9 +598,13 @@ fn a_settings_file_applies_to_every_photo_and_flags_override_it() {
         .assert()
         .success();
     for o in json_lines(&out.get_output().stdout) {
-        assert_eq!(o["settings"]["contrast"]["value"], 30.0);
-        assert_eq!(o["settings"]["saturation"]["value"], -20.0, "the flag wins");
-        assert_eq!(o["settings"]["exposure"]["ev"], 0.25);
+        assert_eq!(common::node(&o, 1)["grade"]["contrast"]["value"], 30.0);
+        assert_eq!(
+            common::node(&o, 1)["grade"]["saturation"]["value"],
+            -20.0,
+            "the flag wins"
+        );
+        assert_eq!(common::node(&o, "input")["exposure"]["ev"], 0.25);
     }
 }
 
@@ -572,7 +617,9 @@ fn a_settings_object_keyed_by_file_name_gives_each_photo_its_own() {
     let file = sb.root().join("per-file.json");
     std::fs::write(
         &file,
-        r#"{ "a.ARW": { "contrast": 40 }, "B.arw": { "contrast": -40 }, "z.ARW": { "contrast": 1 } }"#,
+        r#"{ "a.ARW": { "nodes": { "items": [ { "id": 1, "grade": { "contrast": {"kind": "manual", "value": 40} } } ] } },
+            "B.arw": { "nodes": { "items": [ { "id": 1, "grade": { "contrast": {"kind": "manual", "value": -40} } } ] } },
+            "z.ARW": { "nodes": { "items": [ { "id": 1, "grade": { "contrast": {"kind": "manual", "value": 1} } } ] } } }"#,
     )
     .expect("write");
     let out = sb
@@ -591,7 +638,7 @@ fn a_settings_object_keyed_by_file_name_gives_each_photo_its_own() {
             .iter()
             .find(|o| o["input"].as_str().is_some_and(|i| i.ends_with(name)))
             .map(|o| {
-                o["settings"]["contrast"]["value"]
+                common::node(o, 1)["grade"]["contrast"]["value"]
                     .as_f64()
                     .expect("contrast")
             })
@@ -618,12 +665,14 @@ fn settings_can_come_from_stdin_and_values_out_of_range_are_limited_with_a_warni
         .ym()
         .args(["render", "--json", "--settings", "-"])
         .arg(&arw)
-        .write_stdin(r#"{ "contrast": 500 }"#)
+        .write_stdin(r#"{ "nodes": { "items": [ { "id": 1, "grade": { "contrast": { "kind": "manual", "value": 500 } } } ] } }"#)
         .assert()
         .success()
-        .stderr(predicate::str::contains("out-of-range values for contrast"));
+        .stderr(predicate::str::contains(
+            "out-of-range values for 1.grade.contrast",
+        ));
     assert_eq!(
-        json_lines(&out.get_output().stdout)[0]["settings"]["contrast"]["value"],
+        common::node(&json_lines(&out.get_output().stdout)[0], 1)["grade"]["contrast"]["value"],
         100.0
     );
 }
@@ -637,7 +686,16 @@ fn a_settings_file_that_does_not_parse_is_a_usage_error_and_nothing_is_rendered(
         ("{ \"contrsat\": 3 }", "contrsat"),
         ("not json", "not valid JSON"),
         ("[1, 2]", "JSON object"),
-        (r#"{ "contrast": 1, "a.ARW": {} }"#, "mixes"),
+        (r#"{ "nodes": {}, "a.ARW": {} }"#, "mixes"),
+        // A rule of the graph is refused with its plain sentence.
+        (
+            r#"{ "nodes": { "links": [] } }"#,
+            "The output needs one picture link.",
+        ),
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "parallel" } ] } }"#,
+            "This settings file has a node of a kind (“parallel”)",
+        ),
         // A typo whose value is an object must not pass for a photo's file name.
         (
             r#"{ "color_ballance": { "shadows": [0.1, 0.0] } }"#,
@@ -645,7 +703,7 @@ fn a_settings_file_that_does_not_parse_is_a_usage_error_and_nothing_is_rendered(
         ),
         (
             r#"{ "curve2": {} }"#,
-            "not a setting or the name of an ARW file",
+            "not `nodes` or the name of an ARW file",
         ),
     ] {
         std::fs::write(&file, content).expect("write");
@@ -769,11 +827,20 @@ fn the_output_sharpening_option_is_in_the_settings_the_json_reports() {
     };
     // The default is 100, and it is in the settings an export records.
     let default = run(&[], "default");
-    assert_eq!(default["settings"]["output_sharpening"], json!(100.0));
+    assert_eq!(
+        common::node(&default, "output")["output_sharpening"],
+        json!(100.0)
+    );
     let set = run(&["--output-sharpening", "35"], "set");
-    assert_eq!(set["settings"]["output_sharpening"], json!(35.0));
+    assert_eq!(
+        common::node(&set, "output")["output_sharpening"],
+        json!(35.0)
+    );
     let off = run(&["--output-sharpening", "0"], "off");
-    assert_eq!(off["settings"]["output_sharpening"], json!(0.0));
+    assert_eq!(
+        common::node(&off, "output")["output_sharpening"],
+        json!(0.0)
+    );
     // The three files have three different pictures.
     let file = |dir: &str| std::fs::read(sb.root().join(dir).join("a_signature.png")).expect("png");
     let (a, b, c) = (file("default"), file("set"), file("off"));
@@ -806,10 +873,10 @@ fn a_colour_warp_in_a_settings_file_moves_colours_and_locked_pins_alone_do_not()
     // same in every file.
     let render = |warp: Value, dir: &str| {
         let file = sb.root().join(format!("{dir}.json"));
-        let doc = json!({
+        let doc = common::field_doc(json!({
             "white_balance": { "kind": "manual", "kelvin": 2500, "tint": 30 },
             "color_warp": warp,
-        });
+        }));
         std::fs::write(&file, doc.to_string()).expect("write");
         let out = sb
             .ym()
@@ -827,7 +894,10 @@ fn a_colour_warp_in_a_settings_file_moves_colours_and_locked_pins_alone_do_not()
         (o, pixels)
     };
     let (none, plain) = render(json!({ "pins": [] }), "none");
-    assert_eq!(none["settings"]["color_warp"], json!({ "pins": [] }));
+    assert_eq!(
+        common::node(&none, 1)["grade"]["color_warp"],
+        json!({ "pins": [] })
+    );
     // One pin on the neutral axis with the largest range moves every colour of the photo (neutrals
     // themselves never move). The file names only the source, target and range; the settings the
     // JSON reports (and the file records) have every field.
@@ -836,7 +906,7 @@ fn a_colour_warp_in_a_settings_file_moves_colours_and_locked_pins_alone_do_not()
         "moved",
     );
     assert_eq!(
-        moved["settings"]["color_warp"]["pins"][0],
+        common::node(&moved, 1)["grade"]["color_warp"]["pins"][0],
         json!({ "source": [0.0, 0.0], "target": [0.06, 0.04], "locked": false, "range": 0.25,
             "shadows": 1.0, "highlights": 1.0, "pivot_ev": 0.0, "exposure_ev": 0.0,
             "saturation": 0.0 })
@@ -850,7 +920,7 @@ fn a_colour_warp_in_a_settings_file_moves_colours_and_locked_pins_alone_do_not()
         "saturated",
     );
     assert_eq!(
-        saturated["settings"]["color_warp"]["pins"][0]["saturation"],
+        common::node(&saturated, 1)["grade"]["color_warp"]["pins"][0]["saturation"],
         json!(0.6)
     );
     assert_ne!(more, plain, "saturation alone changes the photo's colours");
@@ -869,7 +939,10 @@ fn a_colour_warp_in_a_settings_file_moves_colours_and_locked_pins_alone_do_not()
     let file = sb.root().join("wild.json");
     std::fs::write(
         &file,
-        json!({ "color_warp": { "pins": [{ "source": [0.9, 0.0], "range": 3 }] } }).to_string(),
+        common::field_doc(
+            json!({ "color_warp": { "pins": [{ "source": [0.9, 0.0], "range": 3 }] } }),
+        )
+        .to_string(),
     )
     .expect("write");
     let out = sb
@@ -883,12 +956,15 @@ fn a_colour_warp_in_a_settings_file_moves_colours_and_locked_pins_alone_do_not()
         .success();
     let o = json_lines(&out.get_output().stdout).remove(0);
     assert_eq!(
-        o["settings"]["color_warp"]["pins"][0]["source"],
+        common::node(&o, 1)["grade"]["color_warp"]["pins"][0]["source"],
         json!([0.5, 0.0])
     );
-    assert_eq!(o["settings"]["color_warp"]["pins"][0]["range"], json!(0.25));
+    assert_eq!(
+        common::node(&o, 1)["grade"]["color_warp"]["pins"][0]["range"],
+        json!(0.25)
+    );
     let err = text(&out.get_output().stderr);
-    assert!(err.contains("color_warp"), "{err}");
+    assert!(err.contains("1.grade.color_warp"), "{err}");
 }
 
 #[test]
@@ -906,7 +982,11 @@ fn exit_code_3_when_a_look_is_missing() {
     assert!(!sb.default_export().exists());
     // A look named in the settings file that is not there fails that photo with the look code.
     let file = sb.root().join("s.json");
-    std::fs::write(&file, r#"{ "look": "user:gone" }"#).expect("write");
+    std::fs::write(
+        &file,
+        r#"{ "nodes": { "items": [ { "id": "output", "look": "user:gone" } ] } }"#,
+    )
+    .expect("write");
     let out = sb
         .ym()
         .args(["render", "--json", "--settings"])
@@ -1424,7 +1504,7 @@ fn a_photo_whose_settings_are_refused_is_reported_and_not_exported_with_its_defa
     sb.arw_clipped("white.ARW");
     let file = sb.root().join("pick.json");
     // A white picked on a clipped patch is refused by the colour chain.
-    std::fs::write(&file, r#"{ "white.ARW": { "white_pick": [0.5, 0.5] } }"#).expect("write");
+    std::fs::write(&file, r#"{ "white.ARW": { "nodes": { "items": [ { "id": "input", "white_pick": [0.5, 0.5] } ] } } }"#).expect("write");
     let out = sb
         .ym()
         .args(["render", "--json", "--settings"])
@@ -1545,7 +1625,7 @@ fn an_exposure_offset_that_passes_the_limit_is_limited_and_said_so() {
             "the exposure is limited to +4.00 EV",
         ));
     let o = &json_lines(&out.get_output().stdout)[0];
-    assert_eq!(o["settings"]["exposure"]["ev"], 4.0);
+    assert_eq!(common::node(o, "input")["exposure"]["ev"], 4.0);
     // An offset that fits says nothing.
     sb.ym()
         .args(["render", "--overwrite", "--exposure-offset", "0.25"])
@@ -1604,7 +1684,7 @@ fn choices_are_accepted_in_any_case_like_looks_are() {
         .success();
     let o = &json_lines(&out.get_output().stdout)[0];
     assert!(o["output"].as_str().expect("output").ends_with(".tif"));
-    assert_eq!(o["settings"]["light_source"], "day");
+    assert_eq!(common::node(o, "input")["light_source"], "day");
 }
 
 /// `--auto-crop` (`docs/20-auto-crop.md` section 8): the record carries the proposal, the photo's
@@ -1630,14 +1710,18 @@ fn auto_crop_applies_the_panels_answer_and_reports_it() {
     let frames = proposal["frames"].as_array().expect("frames");
     assert!(!frames.is_empty() && frames.len() <= 3, "{proposal}");
     // Square on a 4:3 photo is never the whole photo, so there is a crop.
-    let crop = &record["settings"]["crop"];
+    let crop = &common::node(&record, "input")["crop"];
     assert_eq!(crop["auto"], true, "{crop}");
     assert_eq!(crop["aspect"], "square");
     assert_eq!(crop["rect"], frames[0]["rect"]);
     assert_eq!(crop["angle_deg"], proposal["angle_deg"]);
 
     let settings = sb.root().join("crop.json");
-    std::fs::write(&settings, json!({ "crop": crop }).to_string()).expect("write");
+    std::fs::write(
+        &settings,
+        common::field_doc(json!({ "crop": crop })).to_string(),
+    )
+    .expect("write");
     let by_settings = sb.root().join("by settings");
     sb.ym()
         .args(["render", "--cpu", "--settings"])
@@ -1662,7 +1746,7 @@ fn auto_crop_keeps_the_whole_photo_as_no_crop_and_replaces_a_crop_from_settings(
     let settings = sb.root().join("crop.json");
     std::fs::write(
         &settings,
-        r#"{ "crop": { "rect": { "x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5 }, "angle_deg": 0, "aspect": "free" } }"#,
+        r#"{ "nodes": { "items": [ { "id": "input", "crop": { "rect": { "x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5 }, "angle_deg": 0, "aspect": "free" } } ] } }"#,
     )
     .expect("write");
     let out = sb
@@ -1682,9 +1766,13 @@ fn auto_crop_keeps_the_whole_photo_as_no_crop_and_replaces_a_crop_from_settings(
         && first["height"].as_f64() == Some(1.0)
         && proposal["angle_deg"].as_f64() == Some(0.0);
     if whole {
-        assert_eq!(record["settings"]["crop"], Value::Null, "{record}");
+        assert_eq!(
+            common::node(&record, "input")["crop"],
+            Value::Null,
+            "{record}"
+        );
     } else {
-        assert_eq!(record["settings"]["crop"]["rect"], *first);
+        assert_eq!(common::node(&record, "input")["crop"]["rect"], *first);
     }
 }
 

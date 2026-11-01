@@ -207,26 +207,60 @@ pub fn group_stats(
         .collect()
 }
 
-/// The settings a scene is developed with for the truth: the entry's own, with the Neutral look and the highlight range
-/// at 0 ("as recorded", `rolloff.highlights`) unless the entry sets them. The
+/// The settings a scene is developed with for the truth: the entry's own (a node-first document, `docs/23`
+/// section 3), with the Output's Neutral look and the Input's highlight range at 0 ("as recorded",
+/// `rolloff.highlights`) unless the entry sets them. The
 /// default look (Signature) and the default highlight range (1, which places the camera's clip at white)
 /// change the picture on purpose; the truth measures the colour of the scene, so a number here
 /// moves only when the sensor map or the white balance does. An entry's own `rolloff.low_light` stays (a `rolloff`
 /// with only `highlights` reads the toe as its default, 0.5).
 #[must_use]
 pub fn truth_settings(base: &serde_json::Value) -> serde_json::Value {
+    use serde_json::{Map, Value, json};
+    /// The object of the item `id`, added when the document does not list the node.
+    fn item<'a>(items: &'a mut Vec<Value>, id: &str) -> Option<&'a mut Map<String, Value>> {
+        let at = items
+            .iter()
+            .position(|i| i.get("id").and_then(Value::as_str) == Some(id))
+            .unwrap_or_else(|| {
+                items.push(json!({ "id": id }));
+                items.len() - 1
+            });
+        items[at].as_object_mut()
+    }
     let mut settings = base.clone();
-    if let Some(map) = settings.as_object_mut() {
-        map.entry("look")
-            .or_insert_with(|| serde_json::Value::from("builtin:neutral"));
-        let rolloff = map
+    // A document that is not an object, a `nodes` that is not one, or items that are not a list are
+    // passed on as they are (ym refuses them, loudly).
+    let Some(map) = settings.as_object_mut() else {
+        return settings;
+    };
+    let Some(nodes) = map
+        .entry("nodes")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+    else {
+        return settings;
+    };
+    let Some(items) = nodes
+        .entry("items")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+    else {
+        return settings;
+    };
+    if let Some(input) = item(items, "input") {
+        let rolloff = input
             .entry("rolloff")
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            .or_insert_with(|| Value::Object(Map::new()));
         // A `rolloff` that is not an object is passed on as it is (ym refuses it, loudly).
         if let Some(r) = rolloff.as_object_mut() {
-            r.entry("highlights")
-                .or_insert_with(|| serde_json::Value::from(0));
+            r.entry("highlights").or_insert_with(|| Value::from(0));
         }
+    }
+    if let Some(output) = item(items, "output") {
+        output
+            .entry("look")
+            .or_insert_with(|| Value::from("builtin:neutral"));
     }
     settings
 }
@@ -535,27 +569,43 @@ mod tests {
     #[test]
     fn the_truth_has_no_default_look_and_the_highlights_as_recorded() {
         use serde_json::json;
-        // An entry with no settings gets the Neutral look and the highlight range at 0; the toe is not
-        // named, so it reads as its default.
+        let input = |s: &serde_json::Value| s["nodes"]["items"][0].clone();
+        let output = |s: &serde_json::Value| s["nodes"]["items"][1].clone();
+        // An entry with no settings gets the Neutral look on the Output and the highlight range at 0 on
+        // the Input; the toe is not named, so it reads as its default.
         let plain = truth_settings(&json!({}));
-        assert_eq!(plain["look"], "builtin:neutral");
-        assert_eq!(plain["rolloff"], json!({"highlights": 0}));
+        assert_eq!(output(&plain)["look"], "builtin:neutral");
+        assert_eq!(input(&plain)["rolloff"], json!({"highlights": 0}));
         // What the entry sets itself stays.
-        let own = truth_settings(&json!({
-            "look": "builtin:signature",
-            "rolloff": {"highlights": 0.5, "low_light": 0.2},
-            "exposure": {"ev": 1.0}
-        }));
-        assert_eq!(own["look"], "builtin:signature");
-        assert_eq!(own["rolloff"], json!({"highlights": 0.5, "low_light": 0.2}));
-        assert_eq!(own["exposure"]["ev"], 1.0);
+        let own = truth_settings(&json!({ "nodes": { "items": [
+            { "id": "output", "look": "builtin:signature" },
+            { "id": "input", "rolloff": {"highlights": 0.5, "low_light": 0.2},
+              "exposure": {"kind": "manual", "ev": 1.0} },
+        ] } }));
+        let items = own["nodes"]["items"].as_array().unwrap();
+        let find = |id: &str| items.iter().find(|i| i["id"] == id).unwrap().clone();
+        assert_eq!(find("output")["look"], "builtin:signature");
+        assert_eq!(
+            find("input")["rolloff"],
+            json!({"highlights": 0.5, "low_light": 0.2})
+        );
+        assert_eq!(find("input")["exposure"]["ev"], 1.0);
         // An entry that sets only the toe keeps it and gets the highlights as recorded.
-        let toe = truth_settings(&json!({"rolloff": {"low_light": 0.0}}));
-        assert_eq!(toe["rolloff"], json!({"highlights": 0, "low_light": 0.0}));
-        // Something that is not an object is passed on as it is (ym refuses it, loudly), and so is a `rolloff` that
-        // is not one.
+        let toe = truth_settings(
+            &json!({ "nodes": { "items": [ { "id": "input", "rolloff": {"low_light": 0.0} } ] } }),
+        );
+        assert_eq!(
+            input(&toe)["rolloff"],
+            json!({"highlights": 0, "low_light": 0.0})
+        );
+        // Something that is not an object is passed on as it is (ym refuses it, loudly), and so is a
+        // `rolloff` that is not one.
         assert_eq!(truth_settings(&json!(3)), json!(3));
-        assert_eq!(truth_settings(&json!({"rolloff": 1}))["rolloff"], json!(1));
+        let bad =
+            truth_settings(&json!({ "nodes": { "items": [ { "id": "input", "rolloff": 1 } ] } }));
+        assert_eq!(input(&bad)["rolloff"], json!(1));
+        let nodes_bad = json!({ "nodes": 3 });
+        assert_eq!(truth_settings(&nodes_bad), nodes_bad);
     }
 
     #[test]

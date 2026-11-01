@@ -9,8 +9,8 @@ mod common;
 use common::{Layout, Scene, estimates_of_file, light};
 use ym_color::exposure::CAMERA_GAIN_EV;
 use ym_core::auto::{build_preview, pick_white_sample};
-use ym_raw::layout::{CfaPattern, Layout as Layout2, Rect};
 use ym_core::settings::{GradePatch, NodeId, NodePatch};
+use ym_raw::layout::{CfaPattern, Layout as Layout2, Rect};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -266,7 +266,11 @@ mod concurrency {
             pick.join().unwrap();
             slider.join().unwrap();
             let settings = session.settings(big).unwrap();
-            assert_eq!(settings.settings.input().white_pick, Some(point), "round {round}");
+            assert_eq!(
+                settings.settings.input().white_pick,
+                Some(point),
+                "round {round}"
+            );
             assert_eq!(
                 settings.settings.main_grade().contrast,
                 ym_core::settings::PercentSetting::manual_value(contrast),
@@ -355,7 +359,9 @@ mod extreme_frames {
                     Ok(est) => {
                         let s = est.summary();
                         assert!(
-                            s.input.exposure_ev.is_finite() && s.input.kelvin.is_finite() && s.input.tint.is_finite(),
+                            s.input.exposure_ev.is_finite()
+                                && s.input.kelvin.is_finite()
+                                && s.input.tint.is_finite(),
                             "{w}x{h} {name}"
                         );
                         assert!(
@@ -412,7 +418,15 @@ mod session_lifecycle {
             matches!(err, SessionError::UnknownPhoto(id) if id == old),
             "{err}"
         );
-        assert!(session.settings(new).unwrap().settings.input().exposure.is_auto());
+        assert!(
+            session
+                .settings(new)
+                .unwrap()
+                .settings
+                .input()
+                .exposure
+                .is_auto()
+        );
         assert!(matches!(
             session.rerun_auto(old),
             Err(SessionError::UnknownPhoto(_))
@@ -678,9 +692,7 @@ mod session_lifecycle {
 }
 
 mod reading_settings {
-    use ym_core::settings::{
-        DevelopSettings, FieldRef, NodeId, SettingsError, SettingsField,
-    };
+    use ym_core::settings::{DevelopSettings, FieldRef, NodeId, SettingsError, SettingsField};
     use ym_looks::library::LookId;
 
     #[test]

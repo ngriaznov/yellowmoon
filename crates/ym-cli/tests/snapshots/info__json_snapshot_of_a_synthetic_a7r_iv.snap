@@ -11,39 +11,43 @@ expression: v
       "state": "off"
     },
     "apple_steps": null,
-    "balance_highlights": [
-      0.0,
-      0.0
-    ],
-    "balance_shadows": [
-      0.0,
-      0.0
-    ],
-    "black": 0.0,
-    "contrast": 0.0,
-    "exposure_ev": 1.11,
-    "highlights": 0.0,
-    "kelvin": 3450.0,
+    "input": {
+      "exposure_ev": 1.11,
+      "kelvin": 3450.0,
+      "noise_reduction": {
+        "color": 50.0,
+        "detail": 50.0,
+        "luminance": 30.0
+      },
+      "sharpen": {
+        "amount": 102.9,
+        "radius_px": 0.8
+      },
+      "tint": -25.0
+    },
     "light_class": "daylight",
     "light_confidence": 0.2839,
+    "main": {
+      "balance_highlights": [
+        0.0,
+        0.0
+      ],
+      "balance_shadows": [
+        0.0,
+        0.0
+      ],
+      "black": 0.0,
+      "contrast": 0.0,
+      "highlights": 0.0,
+      "saturation": 0.0,
+      "shadows": 0.0
+    },
     "noise": {
       "a": 0.00008857,
       "b": 0.00000007845
     },
-    "noise_reduction": {
-      "color": 50.0,
-      "detail": 50.0,
-      "luminance": 30.0
-    },
     "provider": "yellowmoon",
-    "saturation": 0.0,
-    "shadows": 0.0,
-    "sharpen": {
-      "amount": 102.9,
-      "radius_px": 0.8
-    },
-    "source": "rule",
-    "tint": -25.0
+    "source": "rule"
   },
   "auto_advisor": {
     "api": null,
@@ -132,134 +136,197 @@ expression: v
     "supported": true
   },
   "settings": {
-    "black": {
-      "kind": "manual",
-      "value": 0.0
-    },
-    "brightness": 0.0,
-    "color_balance": {
-      "highlights": {
-        "kind": "manual",
-        "point": [
-          0.0,
-          0.0
-        ]
-      },
-      "midtones": [
-        0.0,
-        0.0
+    "nodes": {
+      "items": [
+        {
+          "crop": null,
+          "decode": {
+            "chromatic_aberration": true,
+            "highlight_recovery": true,
+            "lens_corrections": true,
+            "neural_demosaic": true
+          },
+          "exposure": {
+            "ev": 1.11,
+            "kind": "manual"
+          },
+          "id": "input",
+          "kind": "input",
+          "lens": {
+            "anamorphic": 0.0,
+            "edges": 0.0,
+            "flares": 0.0,
+            "kind": "default"
+          },
+          "light_source": "auto",
+          "noise_reduction": {
+            "color": 50.0,
+            "detail": 50.0,
+            "kind": "manual",
+            "luminance": 30.0
+          },
+          "orientation": 0,
+          "pos": [
+            -1.0,
+            0.0
+          ],
+          "rolloff": {
+            "highlights": 0.6,
+            "low_light": 0.5
+          },
+          "sharpen": {
+            "amount": 102.9,
+            "kind": "manual",
+            "radius_px": 0.8
+          },
+          "white_balance": {
+            "kind": "auto"
+          },
+          "white_pick": null
+        },
+        {
+          "bypass": false,
+          "grade": {
+            "black": {
+              "kind": "manual",
+              "value": 0.0
+            },
+            "brightness": 0.0,
+            "color_balance": {
+              "highlights": {
+                "kind": "manual",
+                "point": [
+                  0.0,
+                  0.0
+                ]
+              },
+              "midtones": [
+                0.0,
+                0.0
+              ],
+              "shadows": {
+                "kind": "manual",
+                "point": [
+                  0.0,
+                  0.0
+                ]
+              }
+            },
+            "color_warp": {
+              "pins": []
+            },
+            "contrast": {
+              "kind": "manual",
+              "value": 0.0
+            },
+            "curve": {
+              "blue": [
+                [
+                  0.0,
+                  0.0
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ],
+              "green": [
+                [
+                  0.0,
+                  0.0
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ],
+              "luma": [
+                [
+                  0.0,
+                  0.0
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ],
+              "red": [
+                [
+                  0.0,
+                  0.0
+                ],
+                [
+                  1.0,
+                  1.0
+                ]
+              ]
+            },
+            "highlights": {
+              "kind": "manual",
+              "value": 0.0
+            },
+            "saturation": {
+              "kind": "manual",
+              "value": 0.0
+            },
+            "shadows": {
+              "kind": "manual",
+              "value": 0.0
+            },
+            "white": 0.0
+          },
+          "id": 1,
+          "kind": "corrector",
+          "masks": {
+            "invert": false,
+            "items": []
+          },
+          "name": "Main",
+          "pos": [
+            0.0,
+            0.0
+          ],
+          "trim": {
+            "exposure_ev": 0.0,
+            "temperature": 0.0,
+            "tint": 0.0
+          }
+        },
+        {
+          "id": "output",
+          "kind": "output",
+          "look": "builtin:signature",
+          "look_intensity": 100.0,
+          "output_sharpening": 100.0,
+          "pos": [
+            1.0,
+            0.0
+          ]
+        }
       ],
-      "shadows": {
-        "kind": "manual",
-        "point": [
-          0.0,
-          0.0
-        ]
-      }
-    },
-    "color_warp": {
-      "pins": []
-    },
-    "contrast": {
-      "kind": "manual",
-      "value": 0.0
-    },
-    "crop": null,
-    "curve": {
-      "blue": [
-        [
-          0.0,
-          0.0
-        ],
-        [
-          1.0,
-          1.0
-        ]
-      ],
-      "green": [
-        [
-          0.0,
-          0.0
-        ],
-        [
-          1.0,
-          1.0
-        ]
-      ],
-      "luma": [
-        [
-          0.0,
-          0.0
-        ],
-        [
-          1.0,
-          1.0
-        ]
-      ],
-      "red": [
-        [
-          0.0,
-          0.0
-        ],
-        [
-          1.0,
-          1.0
-        ]
+      "links": [
+        {
+          "from": {
+            "node": "input",
+            "port": "picture"
+          },
+          "to": {
+            "node": 1,
+            "port": "picture"
+          }
+        },
+        {
+          "from": {
+            "node": 1,
+            "port": "picture"
+          },
+          "to": {
+            "node": "output",
+            "port": "picture"
+          }
+        }
       ]
-    },
-    "decode": {
-      "chromatic_aberration": true,
-      "highlight_recovery": true,
-      "lens_corrections": true,
-      "neural_demosaic": true
-    },
-    "exposure": {
-      "ev": 1.11,
-      "kind": "manual"
-    },
-    "highlights": {
-      "kind": "manual",
-      "value": 0.0
-    },
-    "lens": {
-      "anamorphic": 0.0,
-      "edges": 0.0,
-      "flares": 0.0,
-      "kind": "default"
-    },
-    "light_source": "auto",
-    "look": "builtin:signature",
-    "look_intensity": 100.0,
-    "noise_reduction": {
-      "color": 50.0,
-      "detail": 50.0,
-      "kind": "manual",
-      "luminance": 30.0
-    },
-    "orientation": 0,
-    "output_sharpening": 100.0,
-    "rolloff": {
-      "highlights": 0.6,
-      "low_light": 0.5
-    },
-    "saturation": {
-      "kind": "manual",
-      "value": 0.0
-    },
-    "shadows": {
-      "kind": "manual",
-      "value": 0.0
-    },
-    "sharpen": {
-      "amount": 102.9,
-      "kind": "manual",
-      "radius_px": 0.8
-    },
-    "white": 0.0,
-    "white_balance": {
-      "kind": "auto"
-    },
-    "white_pick": null
+    }
   },
   "status": "ok",
   "tone_curve": null,

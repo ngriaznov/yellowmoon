@@ -494,7 +494,7 @@ def reduce_photo(ym: Ym, path: Path, info: dict[str, Any], exif: dict[str, Any],
         dng_path.unlink(missing_ok=True)
 
     tiff_path, doc = ym.render(path, out_dir, "tiff", None)
-    ev_auto = (info.get("auto") or {}).get("exposure_ev")
+    ev_auto = ((info.get("auto") or {}).get("input") or {}).get("exposure_ev")
     if isinstance(ev_auto, (int, float)):
         check_render_exposure(doc, float(ev_auto), "display")
     rgb16 = read_tiff16(tiff_path)
@@ -575,7 +575,7 @@ def _entry(path: Path, info: dict[str, Any], exif: dict[str, Any], extras: dict[
     if not auto:
         raise StudyError("ym gave no automatic estimates for this file")
     ex = info["exposure"]
-    ev_auto = float(auto["exposure_ev"])
+    ev_auto = float(auto["input"]["exposure_ev"])
     ec = float(ex.get("exposure_comp_ev") or 0.0)
     e: dict[str, Any] = {"file": path.name, "path": str(path)}
     e["body"] = info["camera"]["body"]

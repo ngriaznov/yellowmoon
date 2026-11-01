@@ -8,37 +8,41 @@ expression: shape(&v)
       "state": "string"
     },
     "apple_steps": "null",
-    "balance_highlights": [
-      "number"
-    ],
-    "balance_shadows": [
-      "number"
-    ],
-    "black": "number",
-    "contrast": "number",
-    "exposure_ev": "number",
-    "highlights": "number",
-    "kelvin": "number",
+    "input": {
+      "exposure_ev": "number",
+      "kelvin": "number",
+      "noise_reduction": {
+        "color": "number",
+        "detail": "number",
+        "luminance": "number"
+      },
+      "sharpen": {
+        "amount": "number",
+        "radius_px": "number"
+      },
+      "tint": "number"
+    },
     "light_class": "string",
     "light_confidence": "number",
+    "main": {
+      "balance_highlights": [
+        "number"
+      ],
+      "balance_shadows": [
+        "number"
+      ],
+      "black": "number",
+      "contrast": "number",
+      "highlights": "number",
+      "saturation": "number",
+      "shadows": "number"
+    },
     "noise": {
       "a": "number",
       "b": "number"
     },
-    "noise_reduction": {
-      "color": "number",
-      "detail": "number",
-      "luminance": "number"
-    },
     "provider": "string",
-    "saturation": "number",
-    "shadows": "number",
-    "sharpen": {
-      "amount": "number",
-      "radius_px": "number"
-    },
-    "source": "string",
-    "tint": "number"
+    "source": "string"
   },
   "auto_source": "string",
   "camera": {
@@ -68,111 +72,67 @@ expression: shape(&v)
   "output": "string",
   "pipeline_version": "string",
   "settings": {
-    "black": {
-      "kind": "string",
-      "value": "number"
-    },
-    "brightness": "number",
-    "color_balance": {
-      "highlights": {
-        "kind": "string",
-        "point": [
-          "number"
-        ]
-      },
-      "midtones": [
-        "number"
+    "nodes": {
+      "items": [
+        {
+          "crop": "null",
+          "decode": {
+            "chromatic_aberration": "bool",
+            "highlight_recovery": "bool",
+            "lens_corrections": "bool",
+            "neural_demosaic": "bool"
+          },
+          "exposure": {
+            "ev": "number",
+            "kind": "string"
+          },
+          "id": "string",
+          "kind": "string",
+          "lens": {
+            "anamorphic": "number",
+            "edges": "number",
+            "flares": "number",
+            "kind": "string"
+          },
+          "light_source": "string",
+          "noise_reduction": {
+            "color": "number",
+            "detail": "number",
+            "kind": "string",
+            "luminance": "number"
+          },
+          "orientation": "number",
+          "pos": [
+            "number"
+          ],
+          "rolloff": {
+            "highlights": "number",
+            "low_light": "number"
+          },
+          "sharpen": {
+            "amount": "number",
+            "kind": "string",
+            "radius_px": "number"
+          },
+          "white_balance": {
+            "kind": "string"
+          },
+          "white_pick": "null"
+        }
       ],
-      "shadows": {
-        "kind": "string",
-        "point": [
-          "number"
-        ]
-      }
-    },
-    "color_warp": {
-      "pins": []
-    },
-    "contrast": {
-      "kind": "string",
-      "value": "number"
-    },
-    "crop": "null",
-    "curve": {
-      "blue": [
-        [
-          "number"
-        ]
-      ],
-      "green": [
-        [
-          "number"
-        ]
-      ],
-      "luma": [
-        [
-          "number"
-        ]
-      ],
-      "red": [
-        [
-          "number"
-        ]
+      "links": [
+        {
+          "from": {
+            "node": "string",
+            "port": "string"
+          },
+          "to": {
+            "node": "number",
+            "port": "string"
+          }
+        }
       ]
-    },
-    "decode": {
-      "chromatic_aberration": "bool",
-      "highlight_recovery": "bool",
-      "lens_corrections": "bool",
-      "neural_demosaic": "bool"
-    },
-    "exposure": {
-      "ev": "number",
-      "kind": "string"
-    },
-    "highlights": {
-      "kind": "string",
-      "value": "number"
-    },
-    "lens": {
-      "anamorphic": "number",
-      "edges": "number",
-      "flares": "number",
-      "kind": "string"
-    },
-    "light_source": "string",
-    "look": "string",
-    "look_intensity": "number",
-    "noise_reduction": {
-      "color": "number",
-      "detail": "number",
-      "kind": "string",
-      "luminance": "number"
-    },
-    "orientation": "number",
-    "output_sharpening": "number",
-    "rolloff": {
-      "highlights": "number",
-      "low_light": "number"
-    },
-    "saturation": {
-      "kind": "string",
-      "value": "number"
-    },
-    "shadows": {
-      "kind": "string",
-      "value": "number"
-    },
-    "sharpen": {
-      "amount": "number",
-      "kind": "string",
-      "radius_px": "number"
-    },
-    "white": "number",
-    "white_balance": {
-      "kind": "string"
-    },
-    "white_pick": "null"
+    }
   },
   "status": "string",
   "timings_ms": {

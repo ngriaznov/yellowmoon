@@ -434,7 +434,7 @@ MANIFEST_HEADER = {
         "Golden-image manifest (docs/13-testing.md, section Golden images). Entries of tier 'synthetic' are generated "
         "by training/synth + `golden synth` (tools/fetch/synthetic.sh) and need no download: a CI-safe stop-gap "
         "until the CC0 tier is fetchable. Tier 'synthetic-eval' entries contain CIE CES data (CC BY-SA 4.0) and exist "
-        "locally only. `settings` is the ym:Settings JSON ({} = everything Auto). The expected output hashes are kept in "
+        "locally only. `settings` is the node-first ym:Settings JSON ({} = the default graph, everything Auto; docs/23 section 3). The expected output hashes are kept in "
         "tools/golden/expected.json and the reference pictures under testdata/golden/refs (the golden runner, "
         "tools/golden/README.md), so `expected_hash` and `reference` stay empty here on purpose. Do not edit synthetic "
         "entries by hand: `python3 -m training.synth.make_scenes --write-manifest tools/golden/manifest.json`."

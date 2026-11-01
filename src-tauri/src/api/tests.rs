@@ -1,6 +1,57 @@
 //! The command handlers against `ym-core`, with synthetic ARW files and no webview
 //! (`docs/01` §IPC). The harness is in `crate::testing`.
 
+/// A node patch that holds the given fields (a JSON object of field names and values), each on the node it
+/// belongs to: the Input, the Output or Main's grade.
+fn field_patch(fields: serde_json::Value) -> serde_json::Value {
+    let (mut input, mut output, mut grade) = (json!({}), json!({}), json!({}));
+    for (k, v) in fields.as_object().expect("a JSON object of fields") {
+        match k.as_str() {
+            "look" | "look_intensity" | "output_sharpening" => output[k] = v.clone(),
+            "contrast" | "brightness" | "highlights" | "shadows" | "white" | "black"
+            | "color_balance" | "saturation" | "color_warp" | "curve" => grade[k] = v.clone(),
+            _ => input[k] = v.clone(),
+        }
+    }
+    let mut nodes = serde_json::Map::new();
+    for (id, node) in [("input", input), ("output", output)] {
+        if node.as_object().is_some_and(|o| !o.is_empty()) {
+            nodes.insert(id.to_owned(), node);
+        }
+    }
+    if grade.as_object().is_some_and(|o| !o.is_empty()) {
+        nodes.insert("1".to_owned(), json!({ "grade": grade }));
+    }
+    json!({ "nodes": nodes })
+}
+
+/// The Input's part of a patch on the bridge.
+fn input_of(patch: &SettingsPatch) -> &NodePatch {
+    patch.nodes.get("input").expect("an Input patch")
+}
+
+/// Main's grade part of a patch on the bridge.
+fn grade_of(patch: &SettingsPatch) -> &GradePatch {
+    patch
+        .nodes
+        .get("1")
+        .and_then(|n| n.grade.as_ref())
+        .expect("Main's grade patch")
+}
+
+/// The Input's part of a patch of the core.
+fn core_input(patch: &ym_core::settings::SettingsPatch) -> &ym_core::settings::NodePatch {
+    patch.input_patch().expect("an Input patch")
+}
+
+/// Main's grade part of a patch of the core.
+fn core_grade(patch: &ym_core::settings::SettingsPatch) -> &ym_core::settings::GradePatch {
+    patch
+        .main_patch()
+        .and_then(|n| n.grade.as_ref())
+        .expect("Main's grade patch")
+}
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -428,9 +479,9 @@ fn undo_brings_the_photos_their_settings_and_their_thumbnails_back() {
     wait_until("four thumbnails", || h.frames.thumbnail_urls().len() == 4);
     let urls: std::collections::HashMap<u32, String> =
         h.frames.thumbnail_urls().into_iter().collect();
-    let patch: SettingsPatch = serde_json::from_value(
+    let patch: SettingsPatch = serde_json::from_value(field_patch(
         json!({ "contrast": 25, "exposure": { "kind": "manual", "ev": 0.5 } }),
-    )
+    ))
     .expect("patch");
     h.api.update_settings(ids[1], &patch).expect("edit");
     h.api.set_picked(ids[1], true).expect("pick");
@@ -557,8 +608,8 @@ fn the_output_sharpening_crosses_the_bridge_as_a_plain_number() {
     let id = h.first();
     // The default is 100, in the stored settings and in the resolved values.
     let before = h.api.get_settings(id).expect("settings");
-    assert_eq!(before.settings.output_sharpening, Num(100.0));
-    assert_eq!(before.values.output_sharpening, Num(100.0));
+    assert_eq!(before.settings.output().output_sharpening, Num(100.0));
+    assert_eq!(before.values.output.output_sharpening, Num(100.0));
     // Moving the slider sends a number; out of range is clamped by the core; 0 is a value.
     for (sent, shown) in [
         (35.0, 35.0),
@@ -568,22 +619,36 @@ fn the_output_sharpening_crosses_the_bridge_as_a_plain_number() {
         (100.0, 100.0),
     ] {
         let patch: SettingsPatch =
-            serde_json::from_value(json!({ "output_sharpening": sent })).expect("patch");
+            serde_json::from_value(field_patch(json!({ "output_sharpening": sent })))
+                .expect("patch");
         let after = h.api.update_settings(id, &patch).expect("update");
-        assert_eq!(after.settings.output_sharpening, Num(shown), "sent {sent}");
-        assert_eq!(after.values.output_sharpening, Num(shown), "sent {sent}");
+        assert_eq!(
+            after.settings.output().output_sharpening,
+            Num(shown),
+            "sent {sent}"
+        );
+        assert_eq!(
+            after.values.output.output_sharpening,
+            Num(shown),
+            "sent {sent}"
+        );
     }
     // A string is not a number: the bridge refuses it before the core sees it.
     assert!(
-        serde_json::from_value::<SettingsPatch>(json!({ "output_sharpening": "a lot" })).is_err()
+        serde_json::from_value::<SettingsPatch>(field_patch(
+            json!({ "output_sharpening": "a lot" })
+        ))
+        .is_err()
     );
     // The patch of one field leaves the others alone.
-    let patch: SettingsPatch =
-        serde_json::from_value(json!({ "output_sharpening": 60, "contrast": 5 })).expect("patch");
+    let patch: SettingsPatch = serde_json::from_value(field_patch(
+        json!({ "output_sharpening": 60, "contrast": 5 }),
+    ))
+    .expect("patch");
     let after = h.api.update_settings(id, &patch).expect("update");
-    assert_eq!(after.settings.output_sharpening, Num(60.0));
+    assert_eq!(after.settings.output().output_sharpening, Num(60.0));
     assert_eq!(
-        after.settings.contrast,
+        after.settings.main_grade().contrast,
         PercentSetting::Manual { value: Num(5.0) }
     );
 }
@@ -595,10 +660,15 @@ fn settings_round_trip_with_the_json_the_frontend_sends() {
     h.develop();
     let id = h.first();
     let before = h.api.get_settings(id).expect("settings");
-    assert!(before.auto.exposure && before.auto.white_balance && before.auto.sharpen);
-    assert!(matches!(before.settings.exposure, ExposureSetting::Auto));
+    assert!(
+        before.auto.input.exposure && before.auto.input.white_balance && before.auto.input.sharpen
+    );
+    assert!(matches!(
+        before.settings.input().exposure,
+        ExposureSetting::Auto
+    ));
 
-    let patch: SettingsPatch = serde_json::from_value(json!({
+    let patch: SettingsPatch = serde_json::from_value(field_patch(json!({
         "exposure": { "kind": "manual", "ev": 0.5 },
         "contrast": 20,
         "color_balance": { "shadows": [0.2, -0.1] },
@@ -610,56 +680,66 @@ fn settings_round_trip_with_the_json_the_frontend_sends() {
         },
         "orientation": 90,
         "white_pick": [0.5, 0.5]
-    }))
+    })))
     .expect("a patch as the frontend writes it");
     let after = h.api.update_settings(id, &patch).expect("update");
-    assert!((after.values.exposure_ev.0 - 0.5).abs() < 1e-9);
-    assert!(!after.auto.exposure);
+    assert!((after.values.input.exposure_ev.0 - 0.5).abs() < 1e-9);
+    assert!(!after.auto.input.exposure);
     assert_eq!(
-        after.settings.contrast,
+        after.settings.main_grade().contrast,
         PercentSetting::Manual { value: Num(20.0) }
     );
     assert_eq!(
-        after.settings.color_balance.shadows,
+        after.settings.main_grade().color_balance.shadows,
         crate::wire::BalanceSetting::Manual {
             point: [Num(0.2), Num(-0.1)]
         }
     );
-    assert_eq!(after.settings.color_balance.midtones, [Num(0.0), Num(0.0)]);
-    assert_eq!(after.settings.curve.luma.len(), 3);
-    assert_eq!(after.settings.orientation, crate::wire::Orientation(90));
-    assert!(after.settings.crop.is_some());
-    assert!(after.settings.white_pick.is_some());
+    assert_eq!(
+        after.settings.main_grade().color_balance.midtones,
+        [Num(0.0), Num(0.0)]
+    );
+    assert_eq!(after.settings.main_grade().curve.luma.len(), 3);
+    assert_eq!(
+        after.settings.input().orientation,
+        crate::wire::Orientation(90)
+    );
+    assert!(after.settings.input().crop.is_some());
+    assert!(after.settings.input().white_pick.is_some());
     // The same answer comes back from get_settings.
     assert_eq!(h.api.get_settings(id).expect("settings"), after);
 
     // `null` clears the crop and the pick; Auto resets the exposure; nothing else changes.
-    let clear: SettingsPatch = serde_json::from_value(json!({
+    let clear: SettingsPatch = serde_json::from_value(field_patch(json!({
         "exposure": { "kind": "auto" },
         "crop": null,
         "white_pick": null
-    }))
+    })))
     .expect("clearing patch");
     let cleared = h.api.update_settings(id, &clear).expect("clear");
-    assert!(cleared.auto.exposure);
-    assert!(cleared.settings.crop.is_none() && cleared.settings.white_pick.is_none());
+    assert!(cleared.auto.input.exposure);
+    assert!(
+        cleared.settings.input().crop.is_none() && cleared.settings.input().white_pick.is_none()
+    );
     assert_eq!(
-        cleared.settings.contrast,
+        cleared.settings.main_grade().contrast,
         PercentSetting::Manual { value: Num(20.0) }
     );
 
     // A patch without the key leaves the crop alone.
-    let set: SettingsPatch = serde_json::from_value(json!({
+    let set: SettingsPatch = serde_json::from_value(field_patch(json!({
         "crop": { "rect": { "x": 0, "y": 0, "width": 1, "height": 0.5 }, "angle_deg": 0, "aspect": "free" }
-    }))
+    })))
     .expect("crop patch");
     h.api.update_settings(id, &set).expect("crop");
-    let leave: SettingsPatch = serde_json::from_value(json!({ "saturation": 10 })).expect("patch");
+    let leave: SettingsPatch =
+        serde_json::from_value(field_patch(json!({ "saturation": 10 }))).expect("patch");
     assert!(
         h.api
             .update_settings(id, &leave)
             .expect("update")
             .settings
+            .input()
             .crop
             .is_some()
     );
@@ -672,14 +752,20 @@ fn settings_errors_are_plain_sentences_and_change_nothing() {
     h.develop();
     let id = h.first();
     // A curve with one point is not a curve.
-    let bad: SettingsPatch =
-        serde_json::from_value(json!({ "contrast": 5, "curve": { "luma": [[0.5, 0.5]] } }))
-            .expect("parses");
+    let bad: SettingsPatch = serde_json::from_value(field_patch(
+        json!({ "contrast": 5, "curve": { "luma": [[0.5, 0.5]] } }),
+    ))
+    .expect("parses");
     let err = h.api.update_settings(id, &bad).expect_err("refused");
     assert_eq!(err.scope, ErrorScope::Render);
     assert!(!err.message.is_empty());
     assert_eq!(
-        h.api.get_settings(id).expect("settings").settings.contrast,
+        h.api
+            .get_settings(id)
+            .expect("settings")
+            .settings
+            .main_grade()
+            .contrast,
         PercentSetting::Auto
     );
     // A misspelt field is an error, not a patch that silently does nothing (`docs/01`
@@ -700,7 +786,7 @@ fn settings_errors_are_plain_sentences_and_change_nothing() {
         serde_json::from_value::<PreferencesPatch>(json!({ "remove_location": true })).is_err()
     );
     // The same patch spelt right is fine.
-    assert!(serde_json::from_value::<SettingsPatch>(json!({ "contrast": 1 })).is_ok());
+    assert!(serde_json::from_value::<SettingsPatch>(field_patch(json!({ "contrast": 1 }))).is_ok());
 }
 
 #[test]
@@ -718,6 +804,7 @@ fn apply_look_reaches_this_picked_and_all_photos() {
             .get_settings(id)
             .expect("settings")
             .values
+            .output
             .look_intensity
             .0
     };
@@ -804,21 +891,22 @@ fn copy_and_paste_settings_move_a_photos_settings_onto_others() {
     h.open(3);
     let state = h.develop();
     let ids: Vec<_> = state.photos.iter().map(|p| p.id).collect();
-    let edit: SettingsPatch = serde_json::from_value(json!({
+    let edit: SettingsPatch = serde_json::from_value(field_patch(json!({
         "exposure": { "kind": "manual", "ev": 0.6 },
         "contrast": 25,
         "look": "builtin:neutral",
         "look_intensity": 45,
         "crop": { "rect": { "x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5 }, "angle_deg": 2, "aspect": "free" },
         "orientation": 90
-    }))
+    })))
     .expect("patch");
     h.api.update_settings(ids[0], &edit).expect("edit");
 
     let copied = h.api.copy_settings(ids[0]).expect("copy");
-    assert!(copied.crop.is_none() && copied.orientation.is_none() && copied.white_pick.is_none());
+    let input = input_of(&copied);
+    assert!(input.crop.is_none() && input.orientation.is_none() && input.white_pick.is_none());
     assert_eq!(
-        copied.contrast,
+        grade_of(&copied).contrast,
         Some(PercentPatch::Setting(PercentSetting::Manual {
             value: Num(25.0)
         }))
@@ -836,10 +924,10 @@ fn copy_and_paste_settings_move_a_photos_settings_onto_others() {
     );
     for id in [ids[1], ids[2]] {
         let r = h.api.get_settings(id).expect("settings");
-        assert_eq!(r.values.contrast.0, 25.0);
-        assert_eq!(r.values.exposure_ev.0, 0.6);
-        assert_eq!(r.values.look_intensity.0, 45.0);
-        assert!(r.settings.crop.is_none(), "the crop is not pasted");
+        assert_eq!(r.values.main.grade.contrast.0, 25.0);
+        assert_eq!(r.values.input.exposure_ev.0, 0.6);
+        assert_eq!(r.values.output.look_intensity.0, 45.0);
+        assert!(r.settings.input().crop.is_none(), "the crop is not pasted");
     }
     // Every photo that changed is announced, once.
     let events = h.events.events();
@@ -858,9 +946,10 @@ fn copy_and_paste_settings_move_a_photos_settings_onto_others() {
     assert_eq!(h.events.events().len(), after);
 
     // A look that is not in the library is refused as `apply_look` refuses it, and nothing changes.
-    let gone: SettingsPatch =
-        serde_json::from_value(json!({ "look": "arri:3000:nothing", "contrast": -5 }))
-            .expect("patch");
+    let gone: SettingsPatch = serde_json::from_value(field_patch(
+        json!({ "look": "arri:3000:nothing", "contrast": -5 }),
+    ))
+    .expect("patch");
     let err = h
         .api
         .paste_settings(&[ids[1]], &gone)
@@ -871,6 +960,8 @@ fn copy_and_paste_settings_move_a_photos_settings_onto_others() {
             .get_settings(ids[1])
             .expect("settings")
             .values
+            .main
+            .grade
             .contrast
             .0,
         25.0
@@ -884,12 +975,16 @@ fn rerun_histogram_and_look_thumbnails() {
     h.open(1);
     h.develop();
     let id = h.first();
-    let patch: SettingsPatch =
-        serde_json::from_value(json!({ "exposure": { "kind": "manual", "ev": 1.5 } }))
-            .expect("patch");
+    let patch: SettingsPatch = serde_json::from_value(field_patch(
+        json!({ "exposure": { "kind": "manual", "ev": 1.5 } }),
+    ))
+    .expect("patch");
     h.api.update_settings(id, &patch).expect("update");
     let rerun = h.api.rerun_auto(id).expect("rerun");
-    assert!(rerun.auto.exposure, "Re-run sets exposure back to Auto");
+    assert!(
+        rerun.auto.input.exposure,
+        "Re-run sets exposure back to Auto"
+    );
 
     let histogram = h.api.histogram(id).expect("histogram");
     for channel in [&histogram.red, &histogram.green, &histogram.blue] {
@@ -1105,9 +1200,10 @@ fn choosing_photos_while_everything_else_changes_never_stalls_the_viewport() {
                             .expect("zoom"),
                         2 => api.set_before(i % 2 == 0),
                         3 => {
-                            let patch: SettingsPatch =
-                                serde_json::from_value(json!({ "contrast": (i % 40) as i32 - 20 }))
-                                    .expect("patch");
+                            let patch: SettingsPatch = serde_json::from_value(field_patch(
+                                json!({ "contrast": (i % 40) as i32 - 20 }),
+                            ))
+                            .expect("patch");
                             api.update_settings(photo, &patch).expect("update");
                         }
                         4 => api
@@ -1352,10 +1448,14 @@ fn pick_colour_and_the_chroma_scatter_cross_the_bridge() {
         "locked": false, "range": 0.04, "shadows": 1, "highlights": 1, "pivot_ev": 0, "exposure_ev": 0,
         "saturation": 0.5 });
     let patch: SettingsPatch =
-        serde_json::from_value(json!({ "color_warp": { "pins": [pin] } })).expect("patch");
+        serde_json::from_value(field_patch(json!({ "color_warp": { "pins": [pin] } })))
+            .expect("patch");
     let resolved = h.api.update_settings(id, &patch).expect("update");
-    assert_eq!(resolved.settings.color_warp.pins.len(), 1);
-    assert_eq!(resolved.values.color_warp, resolved.settings.color_warp);
+    assert_eq!(resolved.settings.main_grade().color_warp.pins.len(), 1);
+    assert_eq!(
+        resolved.values.main.grade.color_warp,
+        resolved.settings.main_grade().color_warp
+    );
     assert_eq!(
         h.api.sample_chroma(150.0, 150.0).expect("chroma"),
         Some(inside)
@@ -1363,13 +1463,14 @@ fn pick_colour_and_the_chroma_scatter_cross_the_bridge() {
     // The settings travel with Copy settings and come back in `get_settings`.
     let copied = h.api.copy_settings(id).expect("copy");
     assert_eq!(
-        copied.color_warp,
-        Some(resolved.settings.color_warp.clone())
+        grade_of(&copied).color_warp,
+        Some(resolved.settings.main_grade().color_warp.clone())
     );
     let cleared: SettingsPatch =
-        serde_json::from_value(json!({ "color_warp": { "pins": [] } })).expect("patch");
+        serde_json::from_value(field_patch(json!({ "color_warp": { "pins": [] } })))
+            .expect("patch");
     let resolved = h.api.update_settings(id, &cleared).expect("update");
-    assert!(resolved.settings.color_warp.pins.is_empty());
+    assert!(resolved.settings.main_grade().color_warp.pins.is_empty());
 }
 
 #[test]
@@ -1392,6 +1493,7 @@ fn a_pick_white_click_becomes_the_photos_white_pick() {
             .get_settings(id)
             .expect("settings")
             .settings
+            .input()
             .white_pick
             .is_none()
     );
@@ -1403,7 +1505,11 @@ fn a_pick_white_click_becomes_the_photos_white_pick() {
         })
         .expect("a click on the photo");
     let settings = h.api.get_settings(id).expect("settings");
-    let [x, y] = settings.settings.white_pick.expect("the pick is set");
+    let [x, y] = settings
+        .settings
+        .input()
+        .white_pick
+        .expect("the pick is set");
     assert!(
         (x.0 - 0.5).abs() < 0.05 && (y.0 - 0.5).abs() < 0.05,
         "{x:?} {y:?}"
@@ -1549,9 +1655,9 @@ fn the_filmstrip_thumbnail_follows_a_look_change() {
 
     // A crop shows in the thumbnail, so it refreshes it; an exposure change does not.
     let a1 = count_for(a);
-    let crop: SettingsPatch = serde_json::from_value(json!({
+    let crop: SettingsPatch = serde_json::from_value(field_patch(json!({
         "crop": { "rect": { "x": 0, "y": 0, "width": 0.5, "height": 0.5 }, "angle_deg": 0, "aspect": "free" }
-    }))
+    })))
     .expect("crop");
     h.api.update_settings(a, &crop).expect("crop");
     wait_until("a thumbnail of the crop", || count_for(a) > a1);
@@ -1560,9 +1666,10 @@ fn the_filmstrip_thumbnail_follows_a_look_change() {
     // An exposure change is not asked for again: wait longer than the thumbnails collect requests
     // before looking.
     let a2 = count_for(a);
-    let exposure: SettingsPatch =
-        serde_json::from_value(json!({ "exposure": { "kind": "manual", "ev": 1.0 } }))
-            .expect("exposure");
+    let exposure: SettingsPatch = serde_json::from_value(field_patch(
+        json!({ "exposure": { "kind": "manual", "ev": 1.0 } }),
+    ))
+    .expect("exposure");
     h.api.update_settings(a, &exposure).expect("exposure");
     std::thread::sleep(Duration::from_millis(700));
     assert!(h.api.thumbnails().wait_idle(WAIT));
@@ -2136,44 +2243,54 @@ fn apple_auto_reaches_the_webview_through_the_settings_the_status_and_settings_c
     assert_eq!(answer.scene, "A grey gradient");
     assert_eq!(answer.plan, "Teal shadows, more contrast");
     assert_eq!(rs.estimates.apple_steps, Some(answer.steps));
-    assert_eq!(rs.estimates.highlights, Num(-20.0));
-    assert_eq!(rs.values.highlights, Num(-20.0));
-    assert_eq!(rs.settings.highlights, PercentSetting::Auto);
-    assert!(rs.auto.highlights && rs.auto.balance_shadows);
+    assert_eq!(rs.estimates.main.highlights, Num(-20.0));
+    assert_eq!(rs.values.main.grade.highlights, Num(-20.0));
+    assert_eq!(rs.settings.main_grade().highlights, PercentSetting::Auto);
+    assert!(rs.auto.main.highlights && rs.auto.main.balance_shadows);
     assert_eq!(
-        rs.values.color_balance.shadows,
+        rs.values.main.grade.color_balance.shadows,
         [Num(-0.866 * 0.55), Num(-0.5 * 0.55)]
     );
     assert_eq!(info.model, "Scripted");
     assert_eq!(rs.estimates.source, AutoSource::Apple);
     assert_eq!(rs.estimates.provider, AutoProvider::Apple);
     assert_eq!(
-        (rs.estimates.contrast, rs.estimates.saturation),
+        (rs.estimates.main.contrast, rs.estimates.main.saturation),
         (Num(30.0), Num(-15.0))
     );
-    assert_eq!(rs.settings.contrast, PercentSetting::Auto);
-    assert!(rs.auto.contrast && rs.auto.saturation);
+    assert_eq!(rs.settings.main_grade().contrast, PercentSetting::Auto);
+    assert!(rs.auto.main.contrast && rs.auto.main.saturation);
     assert_eq!(
-        (rs.values.contrast, rs.values.saturation),
+        (
+            rs.values.main.grade.contrast,
+            rs.values.main.grade.saturation
+        ),
         (Num(30.0), Num(-15.0))
     );
 
     // A manual value wins over the answer; Re-run puts contrast and saturation back to Auto.
-    let manual: SettingsPatch = serde_json::from_value(json!({
+    let manual: SettingsPatch = serde_json::from_value(field_patch(json!({
         "contrast": { "kind": "manual", "value": -10 },
         "saturation": { "kind": "manual", "value": 5 }
-    }))
+    })))
     .expect("patch");
     let edited = h.api.update_settings(id, &manual).expect("update");
-    assert!(!edited.auto.contrast && !edited.auto.saturation);
+    assert!(!edited.auto.main.contrast && !edited.auto.main.saturation);
     assert_eq!(
-        (edited.values.contrast, edited.values.saturation),
+        (
+            edited.values.main.grade.contrast,
+            edited.values.main.grade.saturation
+        ),
         (Num(-10.0), Num(5.0))
     );
-    assert_eq!(edited.estimates.contrast, Num(30.0), "the Auto value stays");
+    assert_eq!(
+        edited.estimates.main.contrast,
+        Num(30.0),
+        "the Auto value stays"
+    );
     let rerun = h.api.rerun_auto(id).expect("rerun");
-    assert!(rerun.auto.contrast && rerun.auto.saturation);
-    assert_eq!(rerun.settings.saturation, PercentSetting::Auto);
+    assert!(rerun.auto.main.contrast && rerun.auto.main.saturation);
+    assert_eq!(rerun.settings.main_grade().saturation, PercentSetting::Auto);
     wait_until("the answer after Re-run", || {
         matches!(apple_state(&h, id), AppleAuto::Answered { .. })
     });
@@ -2190,7 +2307,10 @@ fn apple_auto_reaches_the_webview_through_the_settings_the_status_and_settings_c
     assert_eq!(off.estimates.apple, AppleAuto::Off);
     assert_eq!(off.estimates.source, AutoSource::Rule);
     assert_eq!(
-        (off.values.contrast, off.values.saturation),
+        (
+            off.values.main.grade.contrast,
+            off.values.main.grade.saturation
+        ),
         (Num(0.0), Num(0.0))
     );
     wait_until("settings_changed for the preference", || {
@@ -2282,7 +2402,7 @@ fn a_failed_question_crosses_the_bridge_and_auto_stays_the_rule() {
     );
     assert_eq!(rs.estimates.source, AutoSource::Rule);
     assert_eq!(
-        (rs.estimates.contrast, rs.estimates.saturation),
+        (rs.estimates.main.contrast, rs.estimates.main.saturation),
         (Num(0.0), Num(0.0))
     );
 }
@@ -2303,8 +2423,8 @@ fn without_an_advisor_every_provider_is_off_and_the_row_stays_hidden() {
     let rs = h.api.get_settings(h.first()).expect("settings");
     assert_eq!(rs.estimates.apple, AppleAuto::Off);
     assert_eq!(rs.estimates.source, AutoSource::Rule);
-    assert_eq!(rs.settings.contrast, PercentSetting::Auto);
-    assert!(rs.auto.contrast && rs.auto.saturation);
+    assert_eq!(rs.settings.main_grade().contrast, PercentSetting::Auto);
+    assert!(rs.auto.main.contrast && rs.auto.main.saturation);
 }
 
 #[test]
@@ -3866,7 +3986,7 @@ fn core_types_convert_without_loss() {
     let state = h.develop();
     let id = state.photos[0].id;
     // Something in every optional field.
-    let patch: SettingsPatch = serde_json::from_value(json!({
+    let patch: SettingsPatch = serde_json::from_value(field_patch(json!({
         "exposure": { "kind": "manual", "ev": -0.7 },
         "white_balance": { "kind": "manual", "kelvin": 4300, "tint": 5 },
         "sharpen": { "kind": "manual", "amount": 120, "radius_px": 1.1 },
@@ -3886,7 +4006,7 @@ fn core_types_convert_without_loss() {
             { "source": [-0.05, -0.1], "target": [-0.05, -0.1], "locked": true, "range": 0.04,
               "shadows": 1, "highlights": 1, "pivot_ev": 0, "exposure_ev": 0, "saturation": 0 }
         ] }
-    }))
+    })))
     .expect("patch");
     h.api.update_settings(id, &patch).expect("update");
 
@@ -3959,14 +4079,24 @@ fn core_types_convert_without_loss() {
     let core_patch: ym_core::settings::SettingsPatch = convert(&patch).expect("core patch");
     assert_same(
         "settings_patch.color_warp",
-        &core_patch.color_warp,
-        &patch.color_warp,
+        &core_grade(&core_patch).color_warp,
+        &grade_of(&patch).color_warp,
     );
-    assert_eq!(core_patch.color_warp.map(|w| w.pins.len()), Some(2));
-    // The lens crosses whole, in the patch and in the settings it made; `lens_list` crosses as the core has it.
-    assert_same("settings_patch.lens", &core_patch.lens, &patch.lens);
     assert_eq!(
-        core_patch.lens,
+        core_grade(&core_patch)
+            .color_warp
+            .as_ref()
+            .map(|w| w.pins.len()),
+        Some(2)
+    );
+    // The lens crosses whole, in the patch and in the settings it made; `lens_list` crosses as the core has it.
+    assert_same(
+        "settings_patch.lens",
+        &core_input(&core_patch).lens,
+        &input_of(&patch).lens,
+    );
+    assert_eq!(
+        core_input(&core_patch).lens,
         Some(ym_core::settings::LensPatch {
             kind: Some(ym_core::settings::LensKind::Petzval),
             flares: Some(35.0),
@@ -3982,11 +4112,15 @@ fn core_types_convert_without_loss() {
             .settings(ym_core::session::PhotoId(id.0))
             .expect("settings")
             .settings
+            .input()
             .lens,
-        &resolved.settings.lens,
+        &resolved.settings.input().lens,
     );
-    assert_eq!(resolved.values.lens, resolved.settings.lens);
-    assert_eq!(resolved.settings.lens.kind, crate::wire::LensKind::Petzval);
+    assert_eq!(resolved.values.input.lens, resolved.settings.input().lens);
+    assert_eq!(
+        resolved.settings.input().lens.kind,
+        crate::wire::LensKind::Petzval
+    );
     assert_same(
         "lens_list",
         &core.lens_list(),
@@ -4029,7 +4163,7 @@ fn the_lenses_cross_the_bridge_by_the_same_word_and_a_lens_patch_redraws_the_thu
     assert_eq!(wire.kind, Wire::Sonnar);
     // A patch that names the lens changes what a thumbnail shows.
     let patch: SettingsPatch =
-        serde_json::from_value(json!({ "lens": { "flares": 10 } })).expect("patch");
+        serde_json::from_value(field_patch(json!({ "lens": { "flares": 10 } }))).expect("patch");
     assert!(touches_thumbnail(&patch));
     assert!(!touches_thumbnail(&SettingsPatch::default()));
 }
@@ -4038,27 +4172,32 @@ fn the_lenses_cross_the_bridge_by_the_same_word_and_a_lens_patch_redraws_the_thu
 fn a_patch_survives_the_bridge_and_a_missing_key_stays_missing() {
     // `crop: null` is a present key and no `crop` is none: the manual `Serialize` keeps them apart.
     let clear: SettingsPatch =
-        serde_json::from_value(json!({ "crop": null, "white_pick": null })).expect("patch");
-    assert_eq!(clear.crop, Some(None));
-    assert_eq!(clear.white_pick, Some(None));
+        serde_json::from_value(field_patch(json!({ "crop": null, "white_pick": null })))
+            .expect("patch");
+    assert_eq!(input_of(&clear).crop, Some(None));
+    assert_eq!(input_of(&clear).white_pick, Some(None));
     let json = serde_json::to_value(&clear).expect("json");
-    assert_eq!(json, json!({ "crop": null, "white_pick": null }));
+    assert_eq!(
+        json,
+        json!({ "nodes": { "input": { "crop": null, "white_pick": null } } })
+    );
     let core: ym_core::settings::SettingsPatch = convert(&clear).expect("core patch");
-    assert_eq!(core.crop, Some(None));
-    assert_eq!(core.white_pick, Some(None));
-    assert_eq!(core.look, None);
+    assert_eq!(core_input(&core).crop, Some(None));
+    assert_eq!(core_input(&core).white_pick, Some(None));
+    assert_eq!(core.look(), None);
 
-    let none: SettingsPatch = serde_json::from_value(json!({})).expect("empty");
+    let none: SettingsPatch = serde_json::from_value(field_patch(json!({}))).expect("empty");
     assert_eq!(serde_json::to_value(&none).expect("json"), json!({}));
     let core: ym_core::settings::SettingsPatch = convert(&none).expect("core");
     assert_eq!(core, ym_core::settings::SettingsPatch::default());
 
     // Parts of a manual white balance may be left out; the core fills them in.
-    let part: SettingsPatch =
-        serde_json::from_value(json!({ "white_balance": { "kind": "manual", "kelvin": 5000 } }))
-            .expect("patch");
+    let part: SettingsPatch = serde_json::from_value(field_patch(
+        json!({ "white_balance": { "kind": "manual", "kelvin": 5000 } }),
+    ))
+    .expect("patch");
     let core: ym_core::settings::SettingsPatch = convert(&part).expect("core");
-    assert!(core.white_balance.is_some());
+    assert!(core_input(&core).white_balance.is_some());
 }
 
 /// An advisor whose exposure answers go +1, +3, +3 in the order it is asked about the photos (the rest keep).

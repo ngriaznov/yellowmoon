@@ -121,27 +121,45 @@ fn edits() -> Vec<Edit> {
         ),
         (
             "contrast",
-            Box::new(|s| s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(60.0)),
+            Box::new(|s| {
+                s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(60.0)
+            }),
         ),
-        ("brightness", Box::new(|s| s.main_grade_mut().brightness = -40.0)),
+        (
+            "brightness",
+            Box::new(|s| s.main_grade_mut().brightness = -40.0),
+        ),
         (
             "highlights",
-            Box::new(|s| s.main_grade_mut().highlights = ym_core::settings::PercentSetting::manual_value(-50.0)),
+            Box::new(|s| {
+                s.main_grade_mut().highlights =
+                    ym_core::settings::PercentSetting::manual_value(-50.0)
+            }),
         ),
         (
             "shadows",
-            Box::new(|s| s.main_grade_mut().shadows = ym_core::settings::PercentSetting::manual_value(50.0)),
+            Box::new(|s| {
+                s.main_grade_mut().shadows = ym_core::settings::PercentSetting::manual_value(50.0)
+            }),
         ),
         (
             "black",
-            Box::new(|s| s.main_grade_mut().black = ym_core::settings::PercentSetting::manual_value(30.0)),
+            Box::new(|s| {
+                s.main_grade_mut().black = ym_core::settings::PercentSetting::manual_value(30.0)
+            }),
         ),
         ("white", Box::new(|s| s.main_grade_mut().white = -30.0)),
         (
             "saturation",
-            Box::new(|s| s.main_grade_mut().saturation = ym_core::settings::PercentSetting::manual_value(80.0)),
+            Box::new(|s| {
+                s.main_grade_mut().saturation =
+                    ym_core::settings::PercentSetting::manual_value(80.0)
+            }),
         ),
-        ("look intensity", Box::new(|s| s.output_mut().look_intensity = 20.0)),
+        (
+            "look intensity",
+            Box::new(|s| s.output_mut().look_intensity = 20.0),
+        ),
         (
             "lens",
             Box::new(|s| {
@@ -156,20 +174,28 @@ fn edits() -> Vec<Edit> {
         (
             "curve",
             Box::new(|s| {
-                s.main_grade_mut().curve.luma = vec![[0.0, 0.1], [0.3, 0.2], [0.7, 0.9], [1.0, 1.0]];
+                s.main_grade_mut().curve.luma =
+                    vec![[0.0, 0.1], [0.3, 0.2], [0.7, 0.9], [1.0, 1.0]];
                 s.main_grade_mut().curve.red = vec![[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]];
             }),
         ),
-        ("highlight range", Box::new(|s| s.input_mut().rolloff.highlights = 0.0)),
-        ("low light", Box::new(|s| s.input_mut().rolloff.low_light = 1.0)),
+        (
+            "highlight range",
+            Box::new(|s| s.input_mut().rolloff.highlights = 0.0),
+        ),
+        (
+            "low light",
+            Box::new(|s| s.input_mut().rolloff.low_light = 1.0),
+        ),
         (
             "noise reduction",
             Box::new(|s| {
-                s.input_mut().noise_reduction = AutoOr::Manual(ym_core::settings::NoiseReductionValue {
-                    luminance: 90.0,
-                    color: 90.0,
-                    detail: 10.0,
-                })
+                s.input_mut().noise_reduction =
+                    AutoOr::Manual(ym_core::settings::NoiseReductionValue {
+                        luminance: 90.0,
+                        color: 90.0,
+                        detail: 10.0,
+                    })
             }),
         ),
         (
@@ -677,11 +703,12 @@ fn flipping_to_before_never_mixes_the_raw_fronts() {
             // was mixed. (`the_detail_settings_do_not_reach_the_before_view` shows that Detail does move
             // the final picture of a noisy photo; this flat field has no noise to reduce.)
             let edited = edit(&src, |s| {
-                s.input_mut().noise_reduction = AutoOr::Manual(ym_core::settings::NoiseReductionValue {
-                    luminance: 80.0,
-                    color: 50.0,
-                    detail: 30.0,
-                });
+                s.input_mut().noise_reduction =
+                    AutoOr::Manual(ym_core::settings::NoiseReductionValue {
+                        luminance: 80.0,
+                        color: 50.0,
+                        detail: 30.0,
+                    });
             });
             let b3 = frame_in(&r, &edited, &bef);
             assert!(
@@ -724,7 +751,9 @@ fn a_photo_with_no_vignetting_to_apply_shares_its_raw_front_with_the_before_view
         .write_to(&dir.path().join("DSC00001.ARW"), &scene.mosaic())
         .expect("write");
     let without_table = Developed::open(dir).source();
-    let switched_off = edit(&vignetted(false), |s| s.input_mut().decode.lens_corrections = false);
+    let switched_off = edit(&vignetted(false), |s| {
+        s.input_mut().decode.lens_corrections = false
+    });
     let (w, h) = (800, 600);
     for (what, src) in [("no table", &without_table), ("switch off", &switched_off)] {
         for zoom in [None, Some(100.0)] {

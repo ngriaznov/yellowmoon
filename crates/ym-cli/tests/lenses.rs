@@ -24,11 +24,11 @@ fn settings_of(sb: &Sandbox, data: &std::path::Path, args: &[&str]) -> Value {
         .success();
     let mut objects = json_lines(&out.get_output().stdout);
     assert_eq!(objects.len(), 1, "{objects:?}");
-    objects.remove(0)["settings"].clone()
+    objects.remove(0)
 }
 
 fn lens_of(sb: &Sandbox, data: &std::path::Path, args: &[&str]) -> Value {
-    settings_of(sb, data, args)["lens"].clone()
+    common::node(&settings_of(sb, data, args), "input")["lens"].clone()
 }
 
 #[test]
@@ -171,8 +171,10 @@ fn the_options_and_a_settings_file_say_the_same_and_the_options_win() {
     let file = sb.root().join("lens.json");
     std::fs::write(
         &file,
-        json!({ "lens": { "kind": "petzval", "flares": 60, "edges": 45, "anamorphic": 30 } })
-            .to_string(),
+        common::field_doc(
+            json!({ "lens": { "kind": "petzval", "flares": 60, "edges": 45, "anamorphic": 30 } }),
+        )
+        .to_string(),
     )
     .expect("write");
     let from_file = lens_of(&sb, &data, &["--settings", file.to_str().expect("utf-8")]);
@@ -207,7 +209,11 @@ fn the_options_and_a_settings_file_say_the_same_and_the_options_win() {
         json!({ "kind": "petzval", "flares": 5.0, "edges": 45.0, "anamorphic": 30.0 })
     );
     // A file may hold only the parts it changes, and an amount out of range is limited with a warning.
-    std::fs::write(&file, r#"{ "lens": { "flares": 250 } }"#).expect("write");
+    std::fs::write(
+        &file,
+        common::field_doc(json!({ "lens": { "flares": 250 } })).to_string(),
+    )
+    .expect("write");
     let arw = sb.photos().join("a.ARW");
     let out = sb
         .ym_data(&data)
@@ -220,16 +226,16 @@ fn the_options_and_a_settings_file_say_the_same_and_the_options_win() {
         .success();
     let o = json_lines(&out.get_output().stdout).remove(0);
     assert_eq!(
-        o["settings"]["lens"],
+        common::node(&o, "input")["lens"],
         json!({ "kind": "default", "flares": 100.0, "edges": 0.0, "anamorphic": 0.0 })
     );
     assert!(text(&out.get_output().stderr).contains("lens"));
     // An unknown lens or field in the file is refused.
     for bad in [
-        r#"{ "lens": { "kind": "leica" } }"#,
-        r#"{ "lens": { "grain": 3 } }"#,
+        json!({ "lens": { "kind": "leica" } }),
+        json!({ "lens": { "grain": 3 } }),
     ] {
-        std::fs::write(&file, bad).expect("write");
+        std::fs::write(&file, common::field_doc(bad).to_string()).expect("write");
         sb.ym_data(&data)
             .args(["render", "--out"])
             .arg(sb.root().join("out"))

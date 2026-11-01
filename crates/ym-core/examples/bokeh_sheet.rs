@@ -443,11 +443,12 @@ fn raw_params(src: &PhotoSource) -> Fallible<RawParams> {
     let e = &src.estimates;
     let g0 = e.initial_gains()?;
     let nr = s
+        .input()
         .noise_reduction
         .manual()
         .copied()
         .unwrap_or(e.noise_reduction);
-    let sh = s.sharpen.manual().copied().unwrap_or(e.sharpen);
+    let sh = s.input().sharpen.manual().copied().unwrap_or(e.sharpen);
     let iso = src
         .raw
         .meta
@@ -470,10 +471,10 @@ fn raw_params(src: &PhotoSource) -> Fallible<RawParams> {
     };
     Ok(RawParams {
         g0: [g0[0] as f32, g0[1] as f32, g0[2] as f32],
-        neural_demosaic: s.decode.neural_demosaic,
-        highlight_recovery: s.decode.highlight_recovery,
-        lens_corrections: s.decode.lens_corrections,
-        chromatic_aberration: s.decode.chromatic_aberration,
+        neural_demosaic: s.input().decode.neural_demosaic,
+        highlight_recovery: s.input().decode.highlight_recovery,
+        lens_corrections: s.input().decode.lens_corrections,
+        chromatic_aberration: s.input().decode.chromatic_aberration,
         vignetting: true,
         noise_reduction: NoiseReduction {
             luminance: nr.luminance as f32,
@@ -804,7 +805,7 @@ fn render_photo(cx: &Context<'_>, file: &Path, stem: &str, dir: &Path) -> Fallib
                 "photo": stem, "event": "open", "open_ms": open_ms,
                 "camera": format!("{:?}", view.camera.info()),
                 "image": [image.0, image.1], "cell": [cw, ch],
-                "look": format!("{:?}", base.settings.look),
+                "look": format!("{:?}", base.settings.output().look),
                 "f_number": base.raw.meta.f_number, "iso": base.raw.meta.iso,
                 "focus": base.raw.meta.focus,
             })
@@ -870,7 +871,7 @@ fn render_photo(cx: &Context<'_>, file: &Path, stem: &str, dir: &Path) -> Fallib
                 }
                 let src = base.with_settings({
                     let mut st = base.settings.clone();
-                    st.lens = v.lens;
+                    st.input_mut().lens = v.lens;
                     st
                 });
                 let t = Instant::now();

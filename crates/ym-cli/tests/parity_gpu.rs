@@ -22,9 +22,9 @@ use ym_core::export_queue::ExportJob;
 use ym_core::scheduler::MemoryBudget;
 use ym_core::session::{ApplyScope, OpenOptions};
 use ym_core::settings::{LensKind, LensPatch, SettingsPatch};
+use ym_core::settings::{NodeId, NodePatch};
 use ym_export::{BitDepth, ExportOptions, FormatKind};
 use ym_gpu::device::gpu_required_by_env;
-use ym_core::settings::{NodeId, NodePatch};
 
 /// The tests of this file run one at a time: they share a software rasteriser on a CI runner, and a lens export is
 /// heavy enough to push the others past the device's hang limit when they run beside it (a render that fell back

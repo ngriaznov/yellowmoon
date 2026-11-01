@@ -285,6 +285,56 @@ pub fn json_lines(bytes: &[u8]) -> Vec<Value> {
         .collect()
 }
 
+/// The node `id` (`"input"`, `"output"` or a number) among the items of the `settings` of a
+/// `--json` record; `null` when the record has no such node.
+pub fn node(record: &Value, id: impl Into<Value>) -> &Value {
+    static NULL: Value = Value::Null;
+    let id = id.into();
+    record["settings"]["nodes"]["items"]
+        .as_array()
+        .and_then(|items| items.iter().find(|i| i["id"] == id))
+        .unwrap_or(&NULL)
+}
+
+/// A node-first settings document that holds the given fields (a JSON object of field names and
+/// values), each in the node it belongs to: the Input's, the Output's or Main's grade.
+pub fn field_doc(fields: Value) -> Value {
+    let (mut input, mut output, mut grade) = (
+        serde_json::json!({ "id": "input" }),
+        serde_json::json!({ "id": "output" }),
+        serde_json::json!({}),
+    );
+    for (k, v) in fields.as_object().expect("a JSON object of fields") {
+        match k.as_str() {
+            "look" | "look_intensity" | "output_sharpening" => output[k] = v.clone(),
+            "contrast" | "brightness" | "highlights" | "shadows" | "white" | "black"
+            | "color_balance" | "saturation" | "color_warp" | "curve" => grade[k] = v.clone(),
+            _ => input[k] = v.clone(),
+        }
+    }
+    serde_json::json!({ "nodes": { "items": [input, { "id": 1, "grade": grade }, output] } })
+}
+
+/// A node patch that holds the given fields (a JSON object of field names and values), each on the
+/// node it belongs to.
+pub fn field_patch(fields: Value) -> Value {
+    let doc = field_doc(fields);
+    let items = doc["nodes"]["items"].as_array().expect("items");
+    let mut nodes = serde_json::Map::new();
+    for (key, item) in [("input", &items[0]), ("output", &items[2])] {
+        let mut node = item.as_object().expect("a node").clone();
+        node.remove("id");
+        if !node.is_empty() {
+            nodes.insert(key.to_owned(), Value::Object(node));
+        }
+    }
+    let grade = items[1]["grade"].clone();
+    if grade.as_object().is_some_and(|g| !g.is_empty()) {
+        nodes.insert("1".to_owned(), serde_json::json!({ "grade": grade }));
+    }
+    serde_json::json!({ "nodes": nodes })
+}
+
 /// The text of a captured stderr.
 pub fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()

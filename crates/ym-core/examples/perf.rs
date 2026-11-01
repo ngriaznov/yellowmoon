@@ -169,7 +169,8 @@ fn main() {
             let mut best = f64::MAX;
             for i in 1..=5 {
                 let mut s = src.settings.clone();
-                s.contrast = ym_core::settings::PercentSetting::manual_value(5.0 * f64::from(i));
+                s.main_grade_mut().contrast =
+                    ym_core::settings::PercentSetting::manual_value(5.0 * f64::from(i));
                 let (t, f) = frame(&src.with_settings(s), &st);
                 assert_eq!(f.report.runs.raw_work(), 0);
                 worst = worst.max(t);
@@ -179,7 +180,7 @@ fn main() {
                 "  colour-only edit (grade group only): best {best:.0} ms, worst {worst:.0} ms"
             );
             let mut s = src.settings.clone();
-            s.white_balance = AutoOr::Manual(WhiteBalanceValue {
+            s.input_mut().white_balance = AutoOr::Manual(WhiteBalanceValue {
                 kelvin: 3800.0,
                 tint: 5.0,
             });
@@ -246,7 +247,7 @@ fn output_sharpening_rows(r: &Renderer, src: &PhotoSource, cancel: &CancelToken)
     println!("\n-- output sharpening (CPU; the stage and C13 on a cached display-linear frame) --");
     let with_amount = |pct: f64| {
         let mut s = src.settings.clone();
-        s.output_sharpening = pct;
+        s.output_mut().output_sharpening = pct;
         src.with_settings(s)
     };
     let cached = |s: &PhotoSource, st: &ViewportState| {

@@ -34,7 +34,7 @@ def fake_inputs(ev_auto: float = 0.9, median: float = 0.08, seed: int = 3, jpeg_
     info = {
         "camera": {"body": "Sony Test", "match": "exact"},
         "exposure": {"iso": 100, "shutter_s": 0.01, "aperture": 4.0, "exposure_comp_ev": 0.0},
-        "auto": {"exposure_ev": ev_auto},
+        "auto": {"input": {"exposure_ev": ev_auto}},
     }
     exif = {"exposure_program": 3, "flash": 0, "dro": "Off"}
     return info, exif, {"ym_version": "ym test", "jpeg_colour_space": "srgb"}, red

@@ -17,7 +17,6 @@ use ym_core::pipeline::thumbs::encode_png_rgb8;
 use ym_core::pipeline::{RenderOptions, Renderer};
 use ym_core::preferences::PreferencesStore;
 use ym_core::session::{OpenOptions, PhotoId, PhotoStatus, Session, SessionEnv};
-use ym_core::settings::DevelopSettings;
 use ym_gpu::queue::CancelToken as RenderCancel;
 use ym_looks::import::{CancelToken, ImportError, Progress, Stage};
 use ym_looks::library::{LookId, LookLibrary, VerifyOutcome};
@@ -455,7 +454,7 @@ fn contact_sheet(
             .map_err(|e| e.to_string())
             .and_then(|src| {
                 let mut with_look = src.settings.clone();
-                with_look.look = id.clone();
+                with_look.output_mut().look = id.clone();
                 let neutral = {
                     let mut s = src.settings.clone();
                     s.output_mut().look = LookId::builtin("neutral");

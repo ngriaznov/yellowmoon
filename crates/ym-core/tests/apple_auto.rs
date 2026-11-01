@@ -32,9 +32,9 @@ use ym_core::session::{
     PictureRenderer, Session, SessionEvent, ThumbnailInput, ThumbnailRenderer,
 };
 use ym_core::settings::{AutoOr, DevelopSettings, PercentSetting, SettingsPatch};
+use ym_core::settings::{GradePatch, NodeId, NodePatch};
 use ym_export::ExportOptions;
 use ym_gpu::queue::CancelToken;
-use ym_core::settings::{GradePatch, NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -353,13 +353,17 @@ fn contrast_and_saturation_are_auto_or_manual_and_read_old_numbers() {
     let neutral = ym_looks::library::LookId::neutral();
     // The default is Auto, written as the tagged form.
     let d = DevelopSettings::default();
-    assert_eq!((d.main_grade().contrast, d.main_grade().saturation), (AutoOr::Auto, AutoOr::Auto));
+    assert_eq!(
+        (d.main_grade().contrast, d.main_grade().saturation),
+        (AutoOr::Auto, AutoOr::Auto)
+    );
     let v = serde_json::to_value(&d).unwrap();
-    assert_eq!(v["contrast"], json!({ "kind": "auto" }));
-    assert_eq!(v["saturation"], json!({ "kind": "auto" }));
+    let grade = &v["nodes"]["items"][1]["grade"];
+    assert_eq!(grade["contrast"], json!({ "kind": "auto" }));
+    assert_eq!(grade["saturation"], json!({ "kind": "auto" }));
     // The new forms.
     let (s, _) = DevelopSettings::from_json(
-        r#"{ "contrast": { "kind": "manual", "value": 12 }, "saturation": { "kind": "auto" } }"#,
+        r#"{"nodes": {"items": [{"id": 1, "grade": {"contrast": {"kind": "manual", "value": 12}, "saturation": {"kind": "auto"}}}]}}"#,
         &neutral,
     )
     .unwrap();
@@ -387,8 +391,16 @@ fn contrast_and_saturation_are_auto_or_manual_and_read_old_numbers() {
             PercentSetting::manual_value(-100.0),
         ),
     ] {
-        let (s, _) = DevelopSettings::from_json(text, &neutral).unwrap();
-        assert_eq!((s.main_grade().contrast, s.main_grade().saturation), (contrast, saturation), "{text}");
+        let (s, _) = DevelopSettings::from_value(
+            common::field_doc(serde_json::from_str(text).unwrap()),
+            &neutral,
+        )
+        .unwrap();
+        assert_eq!(
+            (s.main_grade().contrast, s.main_grade().saturation),
+            (contrast, saturation),
+            "{text}"
+        );
     }
     // Wrong shapes are refused.
     for bad in [
@@ -397,7 +409,14 @@ fn contrast_and_saturation_are_auto_or_manual_and_read_old_numbers() {
         r#"{ "saturation": { "kind": "manual", "value": 1, "ev": 1 } }"#,
         r#"{ "contrast": null }"#,
     ] {
-        assert!(DevelopSettings::from_json(bad, &neutral).is_err(), "{bad}");
+        assert!(
+            DevelopSettings::from_value(
+                common::field_doc(serde_json::from_str(bad).unwrap()),
+                &neutral
+            )
+            .is_err(),
+            "{bad}"
+        );
     }
     // A manual value that is not a number is an error, not a clamp.
     let s = {
@@ -429,17 +448,25 @@ fn patches_take_either_form_and_reset_is_auto() {
             (PercentSetting::manual_value(100.0), AutoOr::Auto),
         ),
     ] {
-        let patch: SettingsPatch = serde_json::from_str(text).unwrap();
+        let patch: SettingsPatch =
+            serde_json::from_value(common::field_patch(serde_json::from_str(text).unwrap()))
+                .unwrap();
         s.apply_patch(&patch, None).unwrap();
-        assert_eq!((s.main_grade().contrast, s.main_grade().saturation), want, "{text}");
+        assert_eq!(
+            (s.main_grade().contrast, s.main_grade().saturation),
+            want,
+            "{text}"
+        );
     }
     // A patch writes the tagged form and an absent field is no change.
-    let patch: SettingsPatch = serde_json::from_str(r#"{ "contrast": 5 }"#).unwrap();
+    let patch: SettingsPatch =
+        serde_json::from_value(common::field_patch(json!({ "contrast": 5 }))).unwrap();
     assert_eq!(
         serde_json::to_value(&patch).unwrap(),
-        json!({ "contrast": { "kind": "manual", "value": 5.0 } })
+        json!({ "nodes": { "1": { "grade": { "contrast": { "kind": "manual", "value": 5.0 } } } } })
     );
-    let none: SettingsPatch = serde_json::from_str(r#"{ "contrast": null }"#).unwrap();
+    let none: SettingsPatch =
+        serde_json::from_value(common::field_patch(json!({ "contrast": null }))).unwrap();
     assert!(none.is_empty());
     // Re-run resets both with exposure and white while Apple Auto acts on the photo, and leaves
     // them alone otherwise.
@@ -452,7 +479,11 @@ fn patches_take_either_form_and_reset_is_auto() {
     };
     let mut s = edited.clone();
     s.reset_automatic(true);
-    assert!(s.main_grade().contrast.is_auto() && s.main_grade().saturation.is_auto() && s.input().exposure.is_auto());
+    assert!(
+        s.main_grade().contrast.is_auto()
+            && s.main_grade().saturation.is_auto()
+            && s.input().exposure.is_auto()
+    );
     let mut s = edited.clone();
     s.reset_automatic(false);
     assert!(s.input().exposure.is_auto());
@@ -475,11 +506,20 @@ fn auto_contrast_and_saturation_resolve_and_pin_to_the_estimates_values() {
         None,
     )
     .unwrap();
-    assert_eq!((r.values.main.grade.contrast, r.values.main.grade.saturation), (0.0, 0.0));
+    assert_eq!(
+        (r.values.main.grade.contrast, r.values.main.grade.saturation),
+        (0.0, 0.0)
+    );
     assert!(r.auto.main.contrast && r.auto.main.saturation);
     let pinned = r.pinned_settings();
-    assert_eq!(pinned.main_grade().contrast, PercentSetting::manual_value(0.0));
-    assert_eq!(pinned.main_grade().saturation, PercentSetting::manual_value(0.0));
+    assert_eq!(
+        pinned.main_grade().contrast,
+        PercentSetting::manual_value(0.0)
+    );
+    assert_eq!(
+        pinned.main_grade().saturation,
+        PercentSetting::manual_value(0.0)
+    );
     // With an answer they resolve to the table's values; a manual value wins.
     let answered = est.with_apple(
         Some(steps(0, 0, 2, -1)),
@@ -502,7 +542,10 @@ fn auto_contrast_and_saturation_resolve_and_pin_to_the_estimates_values() {
     };
     let r = ym_core::settings::ResolvedSettings::resolve(PhotoId(1), &s, &answered, &profile, None)
         .unwrap();
-    assert_eq!((r.values.main.grade.contrast, r.values.main.grade.saturation), (30.0, 7.0));
+    assert_eq!(
+        (r.values.main.grade.contrast, r.values.main.grade.saturation),
+        (30.0, 7.0)
+    );
     assert!(r.auto.main.contrast && !r.auto.main.saturation);
     assert_eq!(
         r.pinned_settings().main_grade().contrast,
@@ -610,7 +653,10 @@ fn an_answer_moves_exposure_white_contrast_and_saturation() {
     assert_eq!(v["provider"], json!("apple"));
     assert_eq!(v["apple"], json!({ "state": "pending" }));
     assert_eq!(
-        (v["contrast"].clone(), v["saturation"].clone()),
+        (
+            v["main"]["contrast"].clone(),
+            v["main"]["saturation"].clone()
+        ),
         (json!(15.0), json!(-30.0))
     );
 }
@@ -658,13 +704,22 @@ fn an_answer_moves_highlights_shadows_black_the_tint_and_the_wheels() {
     let r = ym_core::settings::ResolvedSettings::resolve(PhotoId(1), &settings, &e, &profile, None)
         .unwrap();
     assert_eq!(
-        (r.values.main.grade.highlights, r.values.main.grade.shadows, r.values.main.grade.black),
+        (
+            r.values.main.grade.highlights,
+            r.values.main.grade.shadows,
+            r.values.main.grade.black
+        ),
         (-40.0, 15.0, -15.0)
     );
     assert_eq!(r.values.main.grade.color_balance.shadows, e.balance_shadows);
-    assert_eq!(r.values.main.grade.color_balance.highlights, e.balance_highlights);
+    assert_eq!(
+        r.values.main.grade.color_balance.highlights,
+        e.balance_highlights
+    );
     assert_eq!(r.values.main.grade.color_balance.midtones, [0.0, 0.0]);
-    assert!(r.auto.main.highlights && r.auto.main.balance_shadows && r.auto.main.balance_highlights);
+    assert!(
+        r.auto.main.highlights && r.auto.main.balance_shadows && r.auto.main.balance_highlights
+    );
     let g = ym_core::pipeline::color::grade_params(&settings, &e);
     assert_eq!((g.highlights, g.shadows, g.black), (-40.0, 15.0, -15.0));
     assert_eq!(
@@ -673,13 +728,17 @@ fn an_answer_moves_highlights_shadows_black_the_tint_and_the_wheels() {
     );
     let mut manual = settings.clone();
     manual.main_grade_mut().highlights = PercentSetting::manual_value(5.0);
-    manual.main_grade_mut().color_balance.shadows = ym_core::settings::BalanceSetting::manual_point([0.1, 0.2]);
+    manual.main_grade_mut().color_balance.shadows =
+        ym_core::settings::BalanceSetting::manual_point([0.1, 0.2]);
     let g = ym_core::pipeline::color::grade_params(&manual, &e);
     assert_eq!(g.highlights, 5.0);
     assert_eq!([g.balance_shadows.a, g.balance_shadows.b], [0.1, 0.2]);
     // Pinned settings record the numbers and points they resolved to.
     let pinned = r.pinned_settings();
-    assert_eq!(pinned.main_grade().highlights, PercentSetting::manual_value(-40.0));
+    assert_eq!(
+        pinned.main_grade().highlights,
+        PercentSetting::manual_value(-40.0)
+    );
     assert_eq!(
         pinned.main_grade().color_balance.shadows,
         ym_core::settings::BalanceSetting::manual_point(e.balance_shadows)
@@ -688,9 +747,9 @@ fn an_answer_moves_highlights_shadows_black_the_tint_and_the_wheels() {
     let v = serde_json::to_value(e.summary()).unwrap();
     assert_eq!(
         (
-            v["highlights"].clone(),
-            v["shadows"].clone(),
-            v["black"].clone()
+            v["main"]["highlights"].clone(),
+            v["main"]["shadows"].clone(),
+            v["main"]["black"].clone()
         ),
         (json!(-40.0), json!(15.0), json!(-15.0))
     );
@@ -834,7 +893,10 @@ fn the_viewer_never_waits_and_the_answer_arrives_with_estimates_changed() {
     assert!(after.estimates_version > before.estimates_version);
     assert!(rig.session.estimates_final(id).unwrap());
     let r = rig.session.settings(id).unwrap();
-    assert_eq!((r.values.main.grade.contrast, r.values.main.grade.saturation), (15.0, -15.0));
+    assert_eq!(
+        (r.values.main.grade.contrast, r.values.main.grade.saturation),
+        (15.0, -15.0)
+    );
     assert_eq!(r.values.input.exposure_ev, after.estimates.exposure.ev);
     assert!(r.auto.input.exposure && r.auto.main.contrast && r.auto.main.saturation);
     assert_eq!(changed_ids(&rig.drain()), vec![id]);
@@ -1099,11 +1161,16 @@ fn rerun_asks_again_and_resets_contrast_and_saturation() {
         .unwrap();
     advisor.answer(id, [Ok(steps(0, 0, -1, 0))]);
     let r = rig.session.rerun_auto(id).unwrap();
-    assert!(r.settings.main_grade().contrast.is_auto() && r.settings.main_grade().saturation.is_auto());
+    assert!(
+        r.settings.main_grade().contrast.is_auto() && r.settings.main_grade().saturation.is_auto()
+    );
     rig.settle();
     assert_eq!(advisor.calls_about(id), 2);
     let r = rig.session.settings(id).unwrap();
-    assert_eq!((r.values.main.grade.contrast, r.values.main.grade.saturation), (-15.0, 0.0));
+    assert_eq!(
+        (r.values.main.grade.contrast, r.values.main.grade.saturation),
+        (-15.0, 0.0)
+    );
 
     // While Apple Auto does not act on the photo (the preference off, or not available), the
     // Automatic card has no Contrast and Saturation rows and Re-run leaves them as they are, as
@@ -1129,9 +1196,18 @@ fn rerun_asks_again_and_resets_contrast_and_saturation() {
         );
     let kept = |r: &ym_core::settings::ResolvedSettings| {
         assert!(r.auto.input.exposure);
-        assert_eq!(r.settings.main_grade().contrast, PercentSetting::manual_value(40.0));
-        assert_eq!(r.settings.main_grade().saturation, PercentSetting::manual_value(-5.0));
-        assert_eq!((r.values.main.grade.contrast, r.values.main.grade.saturation), (40.0, -5.0));
+        assert_eq!(
+            r.settings.main_grade().contrast,
+            PercentSetting::manual_value(40.0)
+        );
+        assert_eq!(
+            r.settings.main_grade().saturation,
+            PercentSetting::manual_value(-5.0)
+        );
+        assert_eq!(
+            (r.values.main.grade.contrast, r.values.main.grade.saturation),
+            (40.0, -5.0)
+        );
     };
     rig.session.set_auto_preference(AutoProvider::Yellowmoon);
     assert_eq!(rig.state(id), AppleAuto::Off);
@@ -1152,7 +1228,9 @@ fn rerun_asks_again_and_resets_contrast_and_saturation() {
     assert_eq!(rig.state(id), AppleAuto::Pending);
     rig.session.update_settings(id, &edit).unwrap();
     let r = rig.session.rerun_auto(id).unwrap();
-    assert!(r.settings.main_grade().contrast.is_auto() && r.settings.main_grade().saturation.is_auto());
+    assert!(
+        r.settings.main_grade().contrast.is_auto() && r.settings.main_grade().saturation.is_auto()
+    );
     advisor.gate.open();
     rig.settle();
     assert!(advisor.calls().len() > asked);
@@ -1190,7 +1268,10 @@ fn copy_and_paste_keep_auto_so_each_photo_keeps_its_own_answer() {
     assert_eq!(grade.saturation, Some(PercentSetting::manual_value(12.0)));
     rig.session.paste_settings(&[ids[1]], &patch).unwrap();
     let b = rig.session.settings(ids[1]).unwrap();
-    assert_eq!((b.values.main.grade.contrast, b.values.main.grade.saturation), (-15.0, 12.0));
+    assert_eq!(
+        (b.values.main.grade.contrast, b.values.main.grade.saturation),
+        (-15.0, 12.0)
+    );
 }
 
 #[test]
@@ -1571,10 +1652,13 @@ fn exports_with_the_fake_carry_its_answer_and_are_the_same_bytes_twice() {
         let contrast = [-30.0, -15.0, 0.0, 15.0, 30.0]
             [(apple["steps"]["contrast"].as_i64().unwrap() + 2) as usize];
         assert_eq!(
-            settings["contrast"],
+            settings["nodes"]["items"][1]["grade"]["contrast"],
             json!({ "kind": "manual", "value": contrast })
         );
-        assert_eq!(settings["white_balance"], json!({ "kind": "auto" }));
+        assert_eq!(
+            settings["nodes"]["items"][0]["white_balance"],
+            json!({ "kind": "auto" })
+        );
     }
 
     // Without an advisor: `ym:Auto` is the rule and there is no `ym:AutoAdvisor`.
@@ -1620,7 +1704,10 @@ fn an_export_waits_for_the_answer_and_uses_it() {
         serde_json::from_str(&unescape(&xmp_property(&xmp, "ym:Settings").unwrap())).unwrap();
     let e = rig.core.session.estimates(id).unwrap();
     assert!((e.exposure.ev - (e.exposure.own_ev + 0.6)).abs() < 1e-12);
-    assert_eq!(settings["exposure"]["ev"].as_f64(), Some(e.exposure.ev));
+    assert_eq!(
+        settings["nodes"]["items"][0]["exposure"]["ev"].as_f64(),
+        Some(e.exposure.ev)
+    );
     // The core rendered the picture (the real one, 384 x 288 here) on its own renderer.
     assert_eq!(advisor.calls().len(), 1);
 }

@@ -75,33 +75,6 @@ The other options are not settings and touch no node: `--profile` forces the cam
 | `--look <look>` | full id (`builtin:neutral`), its slug after the colon (`neutral`), or the display name, case-insensitive | ambiguous: exit 2 listing the matches; missing: exit 3 |
 | `--intensity <0–100>` | percent | default 100 |
 | `--settings <file or ->` | a JSON graph of nodes, the `ym:Settings` form (`docs/23` §3; `ym render --json` prints one) | covers everything the flags can't: **the other nodes, their trims, grades, masks and the links between them**, colour balance (`{ "kind": "auto" }` puts a shadows or highlights wheel of Main back to Auto), colour warp (`{ "pins": [...] }` in a node's `grade`; a pin names its `source` and may leave out the rest: `target`, `locked`, `range`, `shadows`, `highlights`, `pivot_ev`, `exposure_ev` and `saturation`, −1 to 1, 0 by default; `docs/01`, `docs/02` C9b), curve, crop, orientation, white pick. Flags given alongside it override it. A file with several photos' settings is an object keyed by file name. A file in the form of Yellowmoon 0.1 is refused (*Settings*) |
-| `--auto-crop[=<aspect>]` | Input | `crop` (the proposal's angle and first frame; `orientation` stays as the file has it) |
-| `--contrast auto or <N>` | Main (node 1) | `grade.contrast` |
-| `--brightness <N>` | Main | `grade.brightness` |
-| `--highlights auto or <N>`, `--shadows auto or <N>`, `--black auto or <N>` | Main | `grade.highlights`, `grade.shadows`, `grade.black` |
-| `--white <N>` | Main | `grade.white` |
-| `--saturation auto or <N>` | Main | `grade.saturation` |
-| `--look <look>` | Output | `look` |
-| `--intensity <0–100>` | Output | `look_intensity` |
-| `--output-sharpening <0–200>` | Output | `output_sharpening` |
-| `--settings <file or ->` | the whole graph | replaces the photo's settings wholesale (*Settings*) |
-
-The other options are not settings and touch no node: `--profile` forces the camera profile of the run, and the Output and Run groups (`--format` … `--overwrite`, `--jobs`, `--json`, `--cpu`, `--require-gpu`, `--auto-provider`, `--apple-auto`, `--auto-instructions`) say how the files are written and who grades; the Auto providers write Auto's values of the Input and Main only (`docs/23` §3.2). `--display` was removed (below). The flag help in `--help` is unchanged flag by flag; its closing paragraph says which nodes the flags set (*The help text*).
-
-### Photos
-
-| Option | Values | Notes |
-|---|---|---|
-| `<files or folders>` | paths, or `-` | `-` is replaced by the paths on stdin |
-| `--recursive` | flag | walk the subfolders of folders too |
-
-### Look and display
-
-| Option | Values | Notes |
-|---|---|---|
-| `--look <look>` | full id (`builtin:neutral`), its slug after the colon (`neutral`), or the display name, case-insensitive | ambiguous: exit 2 listing the matches; missing: exit 3 |
-| `--intensity <0–100>` | percent | default 100 |
-| `--settings <file or ->` | JSON with the `ym:Settings` schema (the resolved `DevelopSettings`, `docs/01-architecture.md`) | covers everything the flags can't: **the node graph** (`nodes`: corrector nodes with their trims, grades and masks, and the links between them; `docs/23-nodes.md` §3; a file without `nodes` is the default graph, Input → Main → Output), colour balance (`{ "kind": "auto" }` puts a shadows or highlights wheel back to Auto), colour warp (`{ "pins": [...] }`; a pin names its `source` and may leave out the rest: `target`, `locked`, `range`, `shadows`, `highlights`, `pivot_ev`, `exposure_ev` and `saturation`, −1 to 1, 0 by default; `docs/01`, `docs/02` C9b), curve, crop, orientation, white pick. Flags given alongside it override it. A file with several photos' settings is an object keyed by file name |
 | `--auto-crop[=<aspect>]` | `original` (the default), `free`, `1:1` or `square`, `4:5`, `16:9` | crops each photo as the Crop panel's Auto does (`docs/20-auto-crop.md` §8): the proposal's straighten angle and first frame for the aspect, at the photo's orientation, with `auto: true`; the whole photo at 0° is no crop. Replaces a crop from `--settings`. `--json` adds `auto_crop`, the proposal (below) |
 
 ### Light

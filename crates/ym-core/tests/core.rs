@@ -20,10 +20,10 @@ use ym_core::looks::{LookEntry, LooksImportResult};
 use ym_core::preferences::{Preferences, PreferencesPatch};
 use ym_core::session::{ApplyScope, OpenOptions, PhotoId};
 use ym_core::settings::SettingsPatch;
+use ym_core::settings::{GradePatch, NodeId, NodePatch};
 use ym_export::{ExportOptions, FormatKind};
 use ym_looks::library::LookId;
 use ym_raw::testgen::GpsSpec;
-use ym_core::settings::{GradePatch, NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -325,7 +325,13 @@ fn the_default_look_preference_reaches_photos_opened_afterwards() {
     let (_root, folder) = shoot(1);
     let ids = open_all(&r.core, &folder);
     assert_eq!(
-        r.core.session.settings(ids[0]).expect("s").settings.output().look,
+        r.core
+            .session
+            .settings(ids[0])
+            .expect("s")
+            .settings
+            .output()
+            .look,
         warm
     );
 
@@ -347,7 +353,8 @@ fn the_default_look_preference_reaches_photos_opened_afterwards() {
             .settings(more[0])
             .expect("s")
             .settings
-            .output().look
+            .output()
+            .look
             .as_str(),
         "builtin:neutral"
     );

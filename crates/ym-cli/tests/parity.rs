@@ -39,10 +39,10 @@ use ym_core::export_queue::ExportJob;
 use ym_core::scheduler::MemoryBudget;
 use ym_core::session::{ApplyScope, OpenOptions, PhotoId};
 use ym_core::settings::{AutoOr, DevelopSettings, SettingsPatch};
+use ym_core::settings::{NodeId, NodePatch};
 use ym_export::{BitDepth, ColorSpace, ExportOptions, FormatKind, Size, TiffCompression};
 use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
 use ym_gpu::device::gpu_required_by_env;
-use ym_core::settings::{NodeId, NodePatch};
 
 /// What the app's core is given to grade with.
 #[derive(Clone, Copy)]
@@ -580,7 +580,7 @@ fn settings_given_as_options_are_the_settings_of_the_app() {
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");
     let app = App::open(&[&arw]);
-    let patch: SettingsPatch = serde_json::from_value(serde_json::json!({
+    let patch: SettingsPatch = serde_json::from_value(common::field_patch(serde_json::json!({
         "look_intensity": 80.0,
         "exposure": { "kind": "manual", "ev": 0.5 },
         "contrast": 20.0,
@@ -592,7 +592,7 @@ fn settings_given_as_options_are_the_settings_of_the_app() {
         "decode": { "chromatic_aberration": false },
         "highlights": 15.0,
         "black": -5.0
-    }))
+    })))
     .expect("patch");
     app.core
         .session
@@ -726,13 +726,13 @@ fn a_settings_file_is_the_same_settings_as_the_apps() {
     let arw = sb.arw("DSC00001.ARW");
     let app = App::open(&[&arw]);
     // A settings document with curves, colour balance and a crop: things no option can say.
-    let doc = serde_json::json!({
+    let doc = common::field_doc(serde_json::json!({
         "exposure": { "kind": "manual", "ev": -0.25 },
         "color_balance": { "shadows": [0.1, -0.1], "midtones": [0.0, 0.0], "highlights": [-0.2, 0.15] },
         "curve": { "luma": [[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]] },
         "crop": { "rect": { "x": 0.1, "y": 0.1, "width": 0.6, "height": 0.7 }, "angle_deg": 2.0, "aspect": "free" },
         "orientation": 90
-    });
+    }));
     let (settings, clamped) =
         DevelopSettings::from_value(doc.clone(), &app.core.looks.effective_default())
             .expect("settings");
@@ -774,7 +774,7 @@ fn a_colour_warp_is_the_same_picture_through_the_app_and_the_binary() {
     // pin on the neutral axis with the largest range (it reaches every colour of the photo), a
     // second one with tonal weights, a pivot, an exposure and a saturation, a third that only
     // changes saturation, and a lock. Pins written short, as a settings file may.
-    let doc = serde_json::json!({
+    let doc = common::field_doc(serde_json::json!({
         "white_balance": { "kind": "manual", "kelvin": 2500, "tint": 30 },
         "color_warp": { "pins": [
             { "source": [0.0, 0.0], "target": [0.06, 0.04], "range": 0.25 },
@@ -783,12 +783,12 @@ fn a_colour_warp_is_the_same_picture_through_the_app_and_the_binary() {
             { "source": [0.05, 0.1], "range": 0.2, "saturation": 0.5 },
             { "source": [0.15, -0.05], "locked": true }
         ] }
-    });
+    }));
     let (settings, clamped) =
         DevelopSettings::from_value(doc.clone(), &app.core.looks.effective_default())
             .expect("settings");
     assert!(clamped.is_empty(), "{clamped:?}");
-    assert_eq!(settings.color_warp.pins.len(), 4);
+    assert_eq!(settings.main_grade().color_warp.pins.len(), 4);
     app.core
         .session
         .replace_settings(app.photo, settings)
@@ -870,7 +870,7 @@ fn a_lens_is_the_same_file_through_the_app_the_options_and_a_settings_file() {
     let file = sb.root().join("lens.json");
     std::fs::write(
         &file,
-        serde_json::json!({ "lens": { "kind": "vintage", "flares": 60, "edges": start_edges, "anamorphic": 50 } })
+        common::field_doc(serde_json::json!({ "lens": { "kind": "vintage", "flares": 60, "edges": start_edges, "anamorphic": 50 } }))
             .to_string(),
     )
     .expect("write");
@@ -990,11 +990,11 @@ fn a_full_anamorphic_bend_is_the_same_picture_through_the_app_and_the_binary() {
     let arw = sb.arw_sized("DSC00001.ARW", 640, 480, 11);
     let app = App::open(&[&arw]);
     let doc = |anamorphic: f64, edges: f64| {
-        serde_json::json!({
+        common::field_doc(serde_json::json!({
             "lens": { "kind": "vintage", "flares": 0, "edges": edges, "anamorphic": anamorphic },
             "crop": { "rect": { "x": 0.04, "y": 0.06, "width": 0.84, "height": 0.86 }, "angle_deg": 3.0, "aspect": "free" },
             "orientation": 90
-        })
+        }))
     };
     let apply = |value: serde_json::Value| {
         let (settings, clamped) =
@@ -1050,9 +1050,9 @@ fn a_full_anamorphic_bend_is_the_same_picture_through_the_app_and_the_binary() {
         );
         // And with the options instead of the file, for the JPEG: the same picture.
         if name == "jpeg" {
-            apply(serde_json::json!({
+            apply(common::field_doc(serde_json::json!({
                 "lens": { "kind": "vintage", "flares": 0, "edges": 50, "anamorphic": 100 },
-            }));
+            })));
             let plain_app = app.export(options(), &sb.root().join("app-options"));
             let plain_cli = cli_export(
                 &sb,
@@ -1132,6 +1132,7 @@ fn the_settings_an_export_records_reproduce_the_file() {
     assert!(matches!(
         serde_json::from_value::<DevelopSettings>(reported["settings"].clone())
             .expect("settings")
+            .input()
             .exposure,
         AutoOr::Manual(_)
     ));

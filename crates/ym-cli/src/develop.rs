@@ -3,9 +3,11 @@
 //! A photo starts as the session opens it: automatic everywhere, with the default look. Then, in
 //! this order,
 //!
-//! 1. `--settings` replaces the settings wholesale (the document is read over the defaults, so it
-//!    may hold only what it changes, and its numbers are clamped like a slider's);
-//! 2. the options of the command line are applied as a patch on top, so an option given alongside
+//! 1. `--settings` replaces the settings wholesale (the document is a graph of nodes read over the
+//!    default graph, so it may hold only what it changes, and its numbers are clamped like a
+//!    slider's; a document in the flat form of Yellowmoon 0.1 is refused);
+//! 2. the options of the command line are applied as a node patch on top (each sets one field of
+//!    the Input, Main or the Output, `docs/10` *Where the flags land*), so an option given alongside
 //!    the file wins. `--exposure-offset` is the one option that depends on the photo: it becomes
 //!    `Manual(EV_auto + offset)` with that photo's own automatic exposure.
 //!
@@ -17,16 +19,15 @@ use std::path::Path;
 use serde_json::Value;
 use ym_color::wb::LightSource;
 use ym_core::settings::{
-    AutoOr, DecodePatch, DevelopSettings, ExposureSetting, LensKind, LensPatch,
-    NoiseReductionManualPatch, PercentSetting, RolloffPatch, SettingsField, SettingsPatch,
-    SharpenManualPatch, WhiteBalanceManualPatch,
+    AutoOr, DecodePatch, DevelopSettings, ExposureSetting, FieldRef, GradePatch, LensKind,
+    LensPatch, NodeId, NodePatch, NoiseReductionManualPatch, PercentSetting, RolloffPatch,
+    SettingsError, SettingsPatch, SharpenManualPatch, WhiteBalanceManualPatch,
 };
 use ym_looks::library::LookId;
 
 use crate::cli::{
     ExposureArg, LightArg, NrArg, PercentArg, RenderArgs, RolloffArg, SharpenArg, WbArg,
 };
-use ym_core::settings::{GradePatch, NodeId, NodePatch};
 
 /// `--contrast`, `--saturation`, `--highlights`, `--shadows` or `--black` as a setting: `auto` is
 /// Auto (0, or Apple Auto's value for the photo, `docs/19` section 5), a number is a manual value.
@@ -277,8 +278,8 @@ pub struct LoadedSettings {
     /// The settings.
     pub file: SettingsFile,
     /// `(entry, field names)` for every document that had values out of range; the entry is empty
-    /// for a global document.
-    pub clamped: Vec<(String, Vec<&'static str>)>,
+    /// for a global document. A field is named `<node>.<field>`, for example `1.grade.contrast`.
+    pub clamped: Vec<(String, Vec<String>)>,
 }
 
 /// Whether a key of a per-file settings object can name a photo: photos are ARW files.
@@ -286,16 +287,14 @@ fn is_file_key(key: &str) -> bool {
     key.to_ascii_lowercase().ends_with(".arw")
 }
 
-fn field_names() -> Vec<&'static str> {
-    SettingsField::ALL.iter().map(|f| f.name()).collect()
-}
-
 impl SettingsFile {
     /// Reads and checks a settings file. `default_look` is the look a document that names none
     /// gets (the user's default look).
     ///
-    /// A JSON object whose keys are all settings fields (or that is empty) is one document for
-    /// every photo; an object whose keys are none of them is a map from file names to documents.
+    /// A JSON object whose only key is `nodes` (or that is empty) is one document for every photo;
+    /// an object whose keys are all names of ARW files is a map from file names to documents. A
+    /// document in the flat form of Yellowmoon 0.1 is refused with its own sentence
+    /// ([`SettingsError::OldForm`]).
     ///
     /// # Errors
     ///
@@ -309,33 +308,41 @@ impl SettingsFile {
                     .to_owned(),
             );
         };
-        let known = field_names();
-        let (fields, others): (Vec<&String>, Vec<&String>) =
-            map.keys().partition(|k| known.contains(&k.as_str()));
-        // A key that is not a settings field is a photo's file name when it looks like one. A
-        // misspelt field (`contrsat`, `color_ballance`) is neither, and must be an error as it is
-        // in a document (docs/01: "a typo is not a silent no-op"): taken for a file name it
-        // would only earn the warning that no photo has that name.
+        let describe = |fields: Vec<FieldRef>| -> Vec<String> {
+            fields.into_iter().map(|f| f.to_string()).collect()
+        };
+        // The form of Yellowmoon 0.1: every key is a field of it. Nothing was saved in 0.1, so the
+        // file is refused, not read.
+        let (graph, others): (Vec<&String>, Vec<&String>) =
+            map.keys().partition(|k| k.as_str() == "nodes");
+        // A key that is not `nodes` is a photo's file name when it looks like one. A misspelt
+        // `nodes` is neither, and must be an error as it is in a document (docs/01: "a typo is
+        // not a silent no-op"): taken for a file name it would only earn the warning that no
+        // photo has that name.
         let (names, unknown): (Vec<&String>, Vec<&String>) =
             others.into_iter().partition(|k| is_file_key(k));
+        if graph.is_empty()
+            && !map.is_empty()
+            && map
+                .keys()
+                .all(|k| ym_core::settings::OLD_FORM_KEYS.contains(&k.as_str()))
+        {
+            return Err(SettingsError::OldForm.to_string());
+        }
         if !unknown.is_empty() {
             return Err(format!(
-                "The settings file has {} that {} not a setting or the name of an ARW file: {}. Check the spelling, or name the photo's file (`DSC00001.ARW`) to give that photo its own settings.",
+                "The settings file has {} that {} not `nodes` or the name of an ARW file: {}. Check the spelling, or name the photo's file (`DSC00001.ARW`) to give that photo its own settings.",
                 if unknown.len() == 1 { "a key" } else { "keys" },
                 if unknown.len() == 1 { "is" } else { "are" },
                 join(&unknown)
             ));
         }
-        if !fields.is_empty() && !names.is_empty() {
+        if !graph.is_empty() && !names.is_empty() {
             return Err(format!(
-                "The settings file mixes settings fields ({}) with file names ({}). Use one document, or an object keyed by file name.",
-                join(&fields),
+                "The settings file mixes `nodes` with file names ({}). Use one document, or an object keyed by file name.",
                 join(&names)
             ));
         }
-        let describe = |fields: Vec<ym_core::settings::SettingsField>| -> Vec<&'static str> {
-            fields.into_iter().map(|f| f.name()).collect()
-        };
         if names.is_empty() {
             let (settings, clamped) = DevelopSettings::from_value(Value::Object(map), default_look)
                 .map_err(|e| format!("The settings file can't be used: {e}"))?;
@@ -430,10 +437,27 @@ mod tests {
         }
     }
 
+    /// The Input's part of a patch (empty when the patch has none).
+    fn input(p: &SettingsPatch) -> NodePatch {
+        p.input_patch().cloned().unwrap_or_default()
+    }
+
+    /// Main's grade part of a patch (empty when the patch has none).
+    fn grade(p: &SettingsPatch) -> GradePatch {
+        p.main_patch()
+            .and_then(|n| n.grade.clone())
+            .unwrap_or_default()
+    }
+
+    /// The Output's part of a patch (empty when the patch has none).
+    fn output(p: &SettingsPatch) -> NodePatch {
+        p.output_patch().cloned().unwrap_or_default()
+    }
+
     #[test]
     fn a_lens_brings_its_starting_amounts_and_an_amount_given_beats_them() {
         // No lens option, no lens in the patch.
-        assert_eq!(Overrides::default().patch(0.0).lens, None);
+        assert_eq!(input(&Overrides::default().patch(0.0)).lens, None);
         assert!(Overrides::default().is_empty());
         // The lens alone: the kind with its starting Flares and Edges, as the card sends them.
         let only_lens = Overrides {
@@ -442,7 +466,7 @@ mod tests {
         };
         assert!(!only_lens.is_empty());
         assert_eq!(
-            only_lens.patch(0.0).lens,
+            input(&only_lens.patch(0.0)).lens,
             Some(LensPatch {
                 kind: Some(LensKind::Vintage),
                 flares: Some(45.0),
@@ -458,7 +482,7 @@ mod tests {
             ..Overrides::default()
         };
         assert_eq!(
-            overridden.patch(0.0).lens,
+            input(&overridden.patch(0.0)).lens,
             Some(LensPatch {
                 kind: Some(LensKind::Vintage),
                 flares: Some(10.0),
@@ -472,7 +496,7 @@ mod tests {
             ..Overrides::default()
         };
         assert_eq!(
-            amount.patch(0.0).lens,
+            input(&amount.patch(0.0)).lens,
             Some(LensPatch {
                 kind: None,
                 flares: None,
@@ -485,37 +509,51 @@ mod tests {
     #[test]
     fn a_settings_file_may_carry_a_lens() {
         let loaded = SettingsFile::parse(
-            r#"{"lens": {"kind": "petzval", "flares": 140, "anamorphic": 20}}"#,
+            r#"{"nodes":{"items":[{"id":"input","lens":{"kind":"petzval","flares":140,"anamorphic":20}}]}}"#,
             &neutral(),
         )
         .expect("parses");
         let SettingsFile::Global(s) = &loaded.file else {
             panic!("global");
         };
-        assert_eq!(s.lens.kind, LensKind::Petzval);
+        let lens = s.input().lens;
+        assert_eq!(lens.kind, LensKind::Petzval);
         assert_eq!(
-            (s.lens.flares, s.lens.edges, s.lens.anamorphic),
+            (lens.flares, lens.edges, lens.anamorphic),
             (100.0, 0.0, 20.0)
         );
-        assert_eq!(loaded.clamped, vec![(String::new(), vec!["lens"])]);
-        assert!(SettingsFile::parse(r#"{"lens": {"kind": "leica"}}"#, &neutral()).is_err());
+        assert_eq!(
+            loaded.clamped,
+            vec![(String::new(), vec!["input.lens".to_owned()])]
+        );
+        assert!(
+            SettingsFile::parse(
+                r#"{"nodes":{"items":[{"id":"input","lens":{"kind":"leica"}}]}}"#,
+                &neutral()
+            )
+            .is_err()
+        );
     }
 
     #[test]
-    fn a_document_of_settings_fields_is_global_and_may_name_only_what_it_changes() {
+    fn a_document_of_nodes_is_global_and_may_name_only_what_it_changes() {
         let loaded = SettingsFile::parse(
-            r#"{"contrast": 20, "exposure": {"kind":"manual","ev":0.5}}"#,
+            r#"{"nodes":{"items":[
+                {"id":1,"grade":{"contrast":{"kind":"manual","value":20}}},
+                {"id":"input","exposure":{"kind":"manual","ev":0.5}}]}}"#,
             &neutral(),
         )
         .expect("parses");
         let SettingsFile::Global(s) = &loaded.file else {
             panic!("global");
         };
-        assert_eq!(s.contrast, PercentSetting::manual_value(20.0));
-        assert_eq!(s.exposure, ExposureSetting::manual_ev(0.5));
-        assert!(s.sharpen.is_auto());
-        assert_eq!(s.look, neutral());
+        assert_eq!(s.main_grade().contrast, PercentSetting::manual_value(20.0));
+        assert_eq!(s.input().exposure, ExposureSetting::manual_ev(0.5));
+        assert!(s.input().sharpen.is_auto());
+        assert_eq!(s.output().look, neutral());
+        assert_eq!(s.nodes.links, ym_core::settings::NodeGraph::default_links());
         assert!(loaded.clamped.is_empty());
+        // An empty file is the default graph, for every photo.
         assert!(matches!(
             SettingsFile::parse("{}", &neutral()).expect("empty").file,
             SettingsFile::Global(_)
@@ -525,24 +563,35 @@ mod tests {
     #[test]
     fn a_document_without_a_look_gets_the_default_look() {
         let sig = LookId::builtin("signature");
-        let SettingsFile::Global(s) = SettingsFile::parse(r#"{"saturation": 5}"#, &sig)
-            .expect("parses")
-            .file
+        let SettingsFile::Global(s) = SettingsFile::parse(
+            r#"{"nodes":{"items":[{"id":1,"grade":{"saturation":{"kind":"manual","value":5}}}]}}"#,
+            &sig,
+        )
+        .expect("parses")
+        .file
         else {
             panic!("global");
         };
-        assert_eq!(s.look, sig);
+        assert_eq!(s.output().look, sig);
     }
 
     #[test]
     fn an_object_keyed_by_file_name_is_a_map_and_matches_ignoring_case() {
-        let text = r#"{"DSC00001.ARW": {"contrast": 10}, "dsc00002.arw": {"saturation": -5}}"#;
+        let text = r#"{
+            "DSC00001.ARW": {"nodes":{"items":[{"id":1,"grade":{"contrast":{"kind":"manual","value":10}}}]}},
+            "dsc00002.arw": {"nodes":{"items":[{"id":1,"grade":{"saturation":{"kind":"manual","value":-5}}}]}}}"#;
         let loaded = SettingsFile::parse(text, &neutral()).expect("parses");
         let file = &loaded.file;
         let one = file.for_file(Path::new("/x/DSC00001.ARW")).expect("entry");
-        assert_eq!(one.contrast, PercentSetting::manual_value(10.0));
+        assert_eq!(
+            one.main_grade().contrast,
+            PercentSetting::manual_value(10.0)
+        );
         let two = file.for_file(Path::new("/x/DSC00002.ARW")).expect("entry");
-        assert_eq!(two.saturation, PercentSetting::manual_value(-5.0));
+        assert_eq!(
+            two.main_grade().saturation,
+            PercentSetting::manual_value(-5.0)
+        );
         assert!(file.for_file(Path::new("/x/DSC00003.ARW")).is_none());
         let unused = file.unused_entries(&[Path::new("/x/DSC00001.ARW").to_path_buf()]);
         assert_eq!(unused, ["dsc00002.arw"]);
@@ -551,13 +600,16 @@ mod tests {
     #[test]
     fn mistakes_in_the_file_are_named() {
         let mixed =
-            SettingsFile::parse(r#"{"contrast": 1, "a.ARW": {}}"#, &neutral()).expect_err("mixed");
+            SettingsFile::parse(r#"{"nodes": {}, "a.ARW": {}}"#, &neutral()).expect_err("mixed");
         assert!(
             mixed.contains("mixes") && mixed.contains("a.ARW"),
             "{mixed}"
         );
-        let typo =
-            SettingsFile::parse(r#"{"a.ARW": {"contrsat": 1}}"#, &neutral()).expect_err("typo");
+        let typo = SettingsFile::parse(
+            r#"{"a.ARW": {"nodes":{"items":[{"id":1,"grade":{"contrsat":1}}]}}}"#,
+            &neutral(),
+        )
+        .expect_err("typo");
         assert!(
             typo.contains("a.ARW") && typo.contains("contrsat"),
             "{typo}"
@@ -566,28 +618,38 @@ mod tests {
         assert!(not_json.contains("not valid JSON"), "{not_json}");
         let array = SettingsFile::parse("[]", &neutral()).expect_err("array");
         assert!(array.contains("JSON object"), "{array}");
+        // A rule of the graph is named with its plain sentence, and the entry that broke it.
+        let cycle = SettingsFile::parse(
+            r#"{"nodes":{"items":[{"id":2,"kind":"corrector"}],"links":[
+                {"from":{"node":"input","port":"picture"},"to":{"node":1,"port":"picture"}},
+                {"from":{"node":1,"port":"picture"},"to":{"node":2,"port":"picture"}},
+                {"from":{"node":2,"port":"picture"},"to":{"node":1,"port":"picture"}},
+                {"from":{"node":2,"port":"picture"},"to":{"node":"output","port":"picture"}}]}}"#,
+            &neutral(),
+        )
+        .expect_err("two links on one input");
+        assert!(cycle.contains("An input can have one link"), "{cycle}");
     }
 
     #[test]
-    fn a_misspelt_field_is_an_error_also_when_its_value_is_an_object() {
-        // `{"curve2": {}}` is a valid settings document for a "file" called curve2; taken for one
-        // it would be a warning that no photo has that name, and the typo would change nothing.
+    fn a_misspelt_nodes_key_is_an_error_also_when_its_value_is_an_object() {
+        // `{"nodez": {}}` is a valid settings document for a "file" called nodez; taken for one it
+        // would be a warning that no photo has that name, and the typo would change nothing.
         for text in [
-            r#"{"color_ballance": {"shadows": [0.1, 0.0]}}"#,
-            r#"{"curve2": {}}"#,
-            r#"{"contrsat": 3}"#,
-            r#"{"DSC00001": {"contrast": 5}}"#,
+            r#"{"nodez": {"items": []}}"#,
+            r#"{"node": {}}"#,
+            r#"{"DSC00001": {"nodes": {}}}"#,
         ] {
             let error = SettingsFile::parse(text, &neutral()).expect_err(text);
             assert!(
-                error.contains("not a setting or the name of an ARW file"),
+                error.contains("not `nodes` or the name of an ARW file"),
                 "{text}: {error}"
             );
         }
-        let error = SettingsFile::parse(r#"{"contrast": 1, "contrsat": 2}"#, &neutral())
-            .expect_err("typo next to a field");
+        let error = SettingsFile::parse(r#"{"nodes": {}, "nodez": {}}"#, &neutral())
+            .expect_err("typo next to nodes");
         assert!(
-            error.contains("contrsat") && !error.contains("mixes"),
+            error.contains("nodez") && !error.contains("mixes"),
             "{error}"
         );
         // A name with any case of the extension is a file name.
@@ -595,13 +657,20 @@ mod tests {
     }
 
     #[test]
-    fn values_out_of_range_are_limited_and_reported() {
-        let loaded = SettingsFile::parse(r#"{"contrast": 500}"#, &neutral()).expect("parses");
+    fn values_out_of_range_are_limited_and_reported_with_their_node() {
+        let loaded = SettingsFile::parse(
+            r#"{"nodes":{"items":[{"id":1,"grade":{"contrast":{"kind":"manual","value":500}}}]}}"#,
+            &neutral(),
+        )
+        .expect("parses");
         let SettingsFile::Global(s) = &loaded.file else {
             panic!("global");
         };
-        assert_eq!(s.contrast, PercentSetting::manual_value(100.0));
-        assert_eq!(loaded.clamped, [(String::new(), vec!["contrast"])]);
+        assert_eq!(s.main_grade().contrast, PercentSetting::manual_value(100.0));
+        assert_eq!(
+            loaded.clamped,
+            [(String::new(), vec!["1.grade.contrast".to_owned()])]
+        );
     }
 
     #[test]
@@ -611,11 +680,11 @@ mod tests {
             ..Overrides::default()
         };
         assert_eq!(
-            o.patch(1.25).exposure,
+            input(&o.patch(1.25)).exposure,
             Some(ExposureSetting::manual_ev(0.75))
         );
         assert_eq!(
-            o.patch(-2.0).exposure,
+            input(&o.patch(-2.0)).exposure,
             Some(ExposureSetting::manual_ev(-2.5))
         );
         let absolute = Overrides {
@@ -623,30 +692,30 @@ mod tests {
             ..Overrides::default()
         };
         assert_eq!(
-            absolute.patch(9.0).exposure,
+            input(&absolute.patch(9.0)).exposure,
             Some(ExposureSetting::manual_ev(1.0))
         );
         let auto = Overrides {
             exposure: Some(ExposureArg::Auto),
             ..Overrides::default()
         };
-        assert_eq!(auto.patch(9.0).exposure, Some(AutoOr::Auto));
+        assert_eq!(input(&auto.patch(9.0)).exposure, Some(AutoOr::Auto));
         assert!(Overrides::default().patch(1.0).is_empty());
     }
 
     #[test]
-    fn each_option_changes_its_own_setting_and_nothing_else() {
-        // Every flag alone: the patch holds exactly the field it names (a swapped pair, such as
-        // `--no-neural` feeding `highlight_recovery`, would otherwise go unnoticed).
+    fn each_option_changes_its_own_field_of_its_own_node_and_nothing_else() {
+        // Every flag alone: the patch holds exactly the field it names, on the node `docs/10`
+        // says (a swapped pair, such as `--no-neural` feeding `highlight_recovery`, or a grade
+        // field landing on the Input, would otherwise go unnoticed).
         let decode = |d: DecodePatch| {
-            SettingsPatch::default().and(
-                NodeId::Input,
-                NodePatch {
-                    decode: Some(d),
-                    ..NodePatch::default()
-                },
-            )
+            SettingsPatch::input(NodePatch {
+                decode: Some(d),
+                ..NodePatch::default()
+            })
         };
+        let main = |g: GradePatch| SettingsPatch::main_grade(g);
+        let out = |n: NodePatch| SettingsPatch::output(n);
         let cases: Vec<(&str, Overrides, SettingsPatch)> = vec![
             (
                 "--intensity",
@@ -654,13 +723,21 @@ mod tests {
                     intensity: Some(80.0),
                     ..Overrides::default()
                 },
-                SettingsPatch::default().and(
-                    NodeId::Output,
-                    NodePatch {
-                        look_intensity: Some(80.0),
-                        ..NodePatch::default()
-                    },
-                ),
+                out(NodePatch {
+                    look_intensity: Some(80.0),
+                    ..NodePatch::default()
+                }),
+            ),
+            (
+                "--look",
+                Overrides {
+                    look: Some(LookId::builtin("signature")),
+                    ..Overrides::default()
+                },
+                out(NodePatch {
+                    look: Some(LookId::builtin("signature")),
+                    ..NodePatch::default()
+                }),
             ),
             (
                 "--contrast",
@@ -668,16 +745,10 @@ mod tests {
                     contrast: Some(PercentArg::Value(21.0)),
                     ..Overrides::default()
                 },
-                SettingsPatch::default().and(
-                    NodeId::MAIN,
-                    NodePatch {
-                        grade: Some(GradePatch {
-                            contrast: Some(PercentSetting::manual_value(21.0)),
-                            ..GradePatch::default()
-                        }),
-                        ..NodePatch::default()
-                    },
-                ),
+                main(GradePatch {
+                    contrast: Some(PercentSetting::manual_value(21.0)),
+                    ..GradePatch::default()
+                }),
             ),
             (
                 "--brightness",
@@ -685,16 +756,10 @@ mod tests {
                     brightness: Some(11.0),
                     ..Overrides::default()
                 },
-                SettingsPatch::default().and(
-                    NodeId::MAIN,
-                    NodePatch {
-                        grade: Some(GradePatch {
-                            brightness: Some(11.0),
-                            ..GradePatch::default()
-                        }),
-                        ..NodePatch::default()
-                    },
-                ),
+                main(GradePatch {
+                    brightness: Some(11.0),
+                    ..GradePatch::default()
+                }),
             ),
             (
                 "--highlights",
@@ -702,16 +767,10 @@ mod tests {
                     highlights: Some(PercentArg::Value(-12.0)),
                     ..Overrides::default()
                 },
-                SettingsPatch::default().and(
-                    NodeId::MAIN,
-                    NodePatch {
-                        grade: Some(GradePatch {
-                            highlights: Some(PercentSetting::manual_value(-12.0)),
-                            ..GradePatch::default()
-                        }),
-                        ..NodePatch::default()
-                    },
-                ),
+                main(GradePatch {
+                    highlights: Some(PercentSetting::manual_value(-12.0)),
+                    ..GradePatch::default()
+                }),
             ),
             (
                 "--shadows",
@@ -719,16 +778,10 @@ mod tests {
                     shadows: Some(PercentArg::Value(22.0)),
                     ..Overrides::default()
                 },
-                SettingsPatch::default().and(
-                    NodeId::MAIN,
-                    NodePatch {
-                        grade: Some(GradePatch {
-                            shadows: Some(PercentSetting::manual_value(22.0)),
-                            ..GradePatch::default()
-                        }),
-                        ..NodePatch::default()
-                    },
-                ),
+                main(GradePatch {
+                    shadows: Some(PercentSetting::manual_value(22.0)),
+                    ..GradePatch::default()
+                }),
             ),
             (
                 "--white",
@@ -736,16 +789,10 @@ mod tests {
                     white: Some(33.0),
                     ..Overrides::default()
                 },
-                SettingsPatch::default().and(
-                    NodeId::MAIN,
-                    NodePatch {
-                        grade: Some(GradePatch {
-                            white: Some(33.0),
-                            ..GradePatch::default()
-                        }),
-                        ..NodePatch::default()
-                    },
-                ),
+                main(GradePatch {
+                    white: Some(33.0),
+                    ..GradePatch::default()
+                }),
             ),
             (
                 "--black",
@@ -753,16 +800,10 @@ mod tests {
                     black: Some(PercentArg::Auto),
                     ..Overrides::default()
                 },
-                SettingsPatch::default().and(
-                    NodeId::MAIN,
-                    NodePatch {
-                        grade: Some(GradePatch {
-                            black: Some(AutoOr::Auto),
-                            ..GradePatch::default()
-                        }),
-                        ..NodePatch::default()
-                    },
-                ),
+                main(GradePatch {
+                    black: Some(AutoOr::Auto),
+                    ..GradePatch::default()
+                }),
             ),
             (
                 "--saturation",
@@ -770,16 +811,49 @@ mod tests {
                     saturation: Some(PercentArg::Value(-15.0)),
                     ..Overrides::default()
                 },
-                SettingsPatch::default().and(
-                    NodeId::MAIN,
-                    NodePatch {
-                        grade: Some(GradePatch {
-                            saturation: Some(PercentSetting::manual_value(-15.0)),
-                            ..GradePatch::default()
-                        }),
-                        ..NodePatch::default()
-                    },
-                ),
+                main(GradePatch {
+                    saturation: Some(PercentSetting::manual_value(-15.0)),
+                    ..GradePatch::default()
+                }),
+            ),
+            (
+                "--output-sharpening",
+                Overrides {
+                    output_sharpening: Some(35.0),
+                    ..Overrides::default()
+                },
+                out(NodePatch {
+                    output_sharpening: Some(35.0),
+                    ..NodePatch::default()
+                }),
+            ),
+            (
+                "--rolloff",
+                Overrides {
+                    rolloff: Some(RolloffArg {
+                        highlights: 0.7,
+                        low_light: 0.2,
+                    }),
+                    ..Overrides::default()
+                },
+                SettingsPatch::input(NodePatch {
+                    rolloff: Some(RolloffPatch {
+                        highlights: Some(0.7),
+                        low_light: Some(0.2),
+                    }),
+                    ..NodePatch::default()
+                }),
+            ),
+            (
+                "--light",
+                Overrides {
+                    light: Some(LightArg::Tungsten),
+                    ..Overrides::default()
+                },
+                SettingsPatch::input(NodePatch {
+                    light_source: Some(LightSource::Tungsten),
+                    ..NodePatch::default()
+                }),
             ),
             (
                 "--no-neural",
@@ -829,27 +903,31 @@ mod tests {
         for (flag, overrides, expected) in cases {
             assert_eq!(overrides.patch(0.0), expected, "{flag}");
         }
-        // Together they add up, field by field.
+        // Together they add up, node by node and field by field.
         let all = Overrides {
             brightness: Some(11.0),
             shadows: Some(PercentArg::Value(22.0)),
             white: Some(33.0),
+            intensity: Some(50.0),
             no_neural: true,
             no_highlight_recovery: true,
             no_lens: true,
             ..Overrides::default()
         };
         let p = all.patch(0.0);
+        assert_eq!(p.nodes.len(), 3, "the Input, Main and the Output");
+        let g = grade(&p);
         assert_eq!(
-            (p.brightness, p.shadows, p.white),
+            (g.brightness, g.shadows, g.white),
             (
                 Some(11.0),
                 Some(PercentSetting::manual_value(22.0)),
                 Some(33.0)
             )
         );
+        assert_eq!(output(&p).look_intensity, Some(50.0));
         assert_eq!(
-            p.decode,
+            input(&p).decode,
             Some(DecodePatch {
                 neural_demosaic: Some(false),
                 highlight_recovery: Some(false),
@@ -867,16 +945,20 @@ mod tests {
             ..Overrides::default()
         };
         let p = o.patch(0.0);
-        assert_eq!(p.contrast, Some(AutoOr::Auto));
-        assert_eq!(p.saturation, Some(AutoOr::Auto));
-        let loaded =
-            SettingsFile::parse(r#"{"contrast": 20, "saturation": -5}"#, &neutral()).expect("file");
+        assert_eq!(grade(&p).contrast, Some(AutoOr::Auto));
+        assert_eq!(grade(&p).saturation, Some(AutoOr::Auto));
+        let loaded = SettingsFile::parse(
+            r#"{"nodes":{"items":[{"id":1,"grade":{
+                "contrast":{"kind":"manual","value":20},"saturation":{"kind":"manual","value":-5}}}]}}"#,
+            &neutral(),
+        )
+        .expect("file");
         let SettingsFile::Global(mut s) = loaded.file else {
             panic!("global");
         };
-        assert_eq!(s.contrast, PercentSetting::manual_value(20.0));
+        assert_eq!(s.main_grade().contrast, PercentSetting::manual_value(20.0));
         s.apply_patch(&p, None).expect("applies");
-        assert!(s.contrast.is_auto() && s.saturation.is_auto());
+        assert!(s.main_grade().contrast.is_auto() && s.main_grade().saturation.is_auto());
     }
 
     #[test]
@@ -889,7 +971,7 @@ mod tests {
             no_ca: true,
             ..Overrides::default()
         };
-        let p = o.patch(0.0);
+        let p = input(&o.patch(0.0));
         assert_eq!(
             p.white_balance,
             Some(AutoOr::Manual(WhiteBalanceManualPatch {
@@ -910,23 +992,27 @@ mod tests {
         };
         assert!(!o.is_empty());
         let p = o.patch(0.0);
-        assert_eq!(p.output_sharpening, Some(35.0));
+        assert_eq!(output(&p).output_sharpening, Some(35.0));
         let mut s = DevelopSettings::default();
         s.apply_patch(&p, None).expect("applies");
-        assert_eq!(s.output_sharpening, 35.0);
+        assert_eq!(s.output().output_sharpening, 35.0);
         // Without the option the patch says nothing and the default 100 stands.
         let none = Overrides::default().patch(0.0);
-        assert_eq!(none.output_sharpening, None);
+        assert_eq!(output(&none).output_sharpening, None);
         let mut d = DevelopSettings::default();
         d.apply_patch(&none, None).expect("applies");
-        assert_eq!(d.output_sharpening, 100.0);
+        assert_eq!(d.output().output_sharpening, 100.0);
         // A settings file may carry it too, and the option wins over it.
-        let loaded = SettingsFile::parse(r#"{"output_sharpening": 60}"#, &neutral()).expect("file");
+        let loaded = SettingsFile::parse(
+            r#"{"nodes":{"items":[{"id":"output","output_sharpening":60}]}}"#,
+            &neutral(),
+        )
+        .expect("file");
         let SettingsFile::Global(mut from_file) = loaded.file else {
             panic!("global");
         };
-        assert_eq!(from_file.output_sharpening, 60.0);
+        assert_eq!(from_file.output().output_sharpening, 60.0);
         from_file.apply_patch(&p, None).expect("applies");
-        assert_eq!(from_file.output_sharpening, 35.0);
+        assert_eq!(from_file.output().output_sharpening, 35.0);
     }
 }

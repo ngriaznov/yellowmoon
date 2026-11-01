@@ -9,17 +9,17 @@ use ym_looks::library::LookId;
 
 use super::graph::Sanitiser;
 use super::graph::{
-    CorrectorNode, DEFAULT_NAME, GraphError, InputNode, MAIN_ID, MAIN_NAME, NodeGraph, NodeId,
-    NodeKind, NodeLink, NodePos, OutputNode, node_fields,
+    CorrectorNode, GraphError, InputNode, MAIN_ID, NodeId, NodeKind, NodeLink, NodePos, OutputNode,
+    node_fields,
 };
-use super::masks::{MaskItem, MaskShape, MasksPatch};
+use super::masks::MasksPatch;
 use super::{
-    AutoOr, AutoSeeds, BalanceSetting, ColorBalancePatch, ColorBalancePoint, ColorWarp,
-    ContrastSetting, Crop, CurvesPatch, DecodePatch, DevelopSettings, ExposureSetting, FieldRef,
-    LensPatch, NoiseReductionManualPatch, NoiseReductionValue, Orientation, PercentSetting,
-    ResolvedSettings, RolloffPatch, SaturationSetting, SettingsError, SettingsField,
-    SharpenManualPatch, SharpenValue, StageGroup, WhiteBalanceManualPatch, WhiteBalanceValue,
-    double_option, percent_patch,
+    AutoOr, AutoSeeds, ColorBalancePatch, ColorWarp, ContrastSetting, Crop, CurvesPatch,
+    DecodePatch, DevelopSettings, ExposureSetting, FieldRef, LensPatch, NoiseReductionManualPatch,
+    NoiseReductionValue, OLD_FORM_KEYS, Orientation, PercentSetting, ResolvedSettings,
+    RolloffPatch, SaturationSetting, SettingsError, SettingsField, SharpenManualPatch,
+    SharpenValue, StageGroup, WhiteBalanceManualPatch, WhiteBalanceValue, double_option,
+    percent_patch,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -286,8 +286,7 @@ pub struct NodePatch {
 /// A node-level patch of a photo's settings (`update_settings(photo_id, patch)`), `docs/23`
 /// section 3.7: `nodes` maps ids to node patches, `remove` lists nodes to delete (their links go
 /// with them) and `links`, when present, replaces the links whole. A patch is atomic.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct SettingsPatch {
     /// Node patches by id (`"input"`, `"output"`, `"1"`, `"2"`, …).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -298,6 +297,38 @@ pub struct SettingsPatch {
     /// The links, replacing the photo's whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub links: Option<Vec<NodeLink>>,
+}
+
+/// The JSON of a [`SettingsPatch`], as serde reads it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatchDocument {
+    #[serde(default)]
+    nodes: BTreeMap<NodeId, NodePatch>,
+    #[serde(default)]
+    remove: Vec<NodeId>,
+    #[serde(default)]
+    links: Option<Vec<NodeLink>>,
+}
+
+impl<'de> Deserialize<'de> for SettingsPatch {
+    /// A patch is `{ nodes, remove, links }`. A flat patch in the form of Yellowmoon 0.1 (every key a
+    /// field of it) is refused with the sentence of [`SettingsError::OldForm`].
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if let serde_json::Value::Object(map) = &value
+            && !map.is_empty()
+            && map.keys().all(|k| OLD_FORM_KEYS.contains(&k.as_str()))
+        {
+            return Err(serde::de::Error::custom(SettingsError::OldForm));
+        }
+        let doc: PatchDocument = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            nodes: doc.nodes,
+            remove: doc.remove,
+            links: doc.links,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -351,6 +382,27 @@ impl NodePatch {
                 .as_ref()
                 .is_some_and(|g| g.names().contains(&grade_field)),
         }
+    }
+
+    /// True when the patch changes nothing: it has no field, or only empty nested patches.
+    fn says_nothing(&self) -> bool {
+        let mut p = self.clone();
+        if p.grade
+            .as_ref()
+            .is_some_and(|g| *g == GradePatch::default())
+        {
+            p.grade = None;
+        }
+        if p.trim.as_ref().is_some_and(|t| *t == TrimPatch::default()) {
+            p.trim = None;
+        }
+        if p.masks
+            .as_ref()
+            .is_some_and(|m| *m == MasksPatch::default())
+        {
+            p.masks = None;
+        }
+        p == NodePatch::default()
     }
 
     /// Takes over the fields `other` sets (grade fields merge one by one).
@@ -969,8 +1021,10 @@ impl DevelopSettings {
                 if np.kind.is_none() {
                     return Err(GraphError::PatchUnknownNode(id.to_string()).into());
                 }
-                let mut node = CorrectorNode::default();
-                node.pos = [next.nodes.corrector_count() as f64, 0.0];
+                let node = CorrectorNode {
+                    pos: [next.nodes.corrector_count() as f64, 0.0],
+                    ..CorrectorNode::default()
+                };
                 next.nodes.extra.insert(n, node);
                 added.push(*id);
             }
@@ -1042,10 +1096,13 @@ impl DevelopSettings {
 // ---------------------------------------------------------------------------------------------
 
 impl SettingsPatch {
-    /// True when the patch carries no change.
+    /// True when the patch carries no change: no node patch that says anything (an empty grade or
+    /// trim says nothing), nothing to remove and no links.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        *self == SettingsPatch::default()
+        self.remove.is_empty()
+            && self.links.is_none()
+            && self.nodes.values().all(NodePatch::says_nothing)
     }
 
     /// A patch of one node.

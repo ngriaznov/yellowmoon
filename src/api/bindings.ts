@@ -443,28 +443,15 @@ export type AutoConsent = {
 	agy: boolean,
 };
 
-/**  Per-photo automatic estimates (`AutoEstimates` in `types.ts`; the core's `AutoSummary`). */
+/**
+ *  Per-photo automatic estimates (`AutoEstimates` in `types.ts`; the core's `AutoSummary`), grouped by
+ *  the node each number is for.
+ */
 export type AutoEstimates = {
-	/**  `EV_auto` (with Apple Auto's change, when there is one). */
-	exposure_ev: number,
-	/**  The Auto Kelvin (with Apple Auto's nudge, when there is one). */
-	kelvin: number,
-	/**  The Auto tint. */
-	tint: number,
-	/**  What `contrast: Auto` resolves to: 0, or Apple Auto's contrast. */
-	contrast: number,
-	/**  What `saturation: Auto` resolves to: 0, or Apple Auto's saturation. */
-	saturation: number,
-	/**  What `highlights: Auto` resolves to: 0, or Apple Auto's highlights. */
-	highlights: number,
-	/**  What `shadows: Auto` resolves to: 0, or Apple Auto's shadows. */
-	shadows: number,
-	/**  What `black: Auto` resolves to: 0, or Apple Auto's black level. */
-	black: number,
-	/**  What the shadows wheel's Auto resolves to: `[0, 0]`, or Apple Auto's shadow colour. */
-	balance_shadows: [number, number],
-	/**  What the highlights wheel's Auto resolves to: `[0, 0]`, or Apple Auto's highlight colour. */
-	balance_highlights: [number, number],
+	/**  What Auto resolves to for the Input. */
+	input: InputEstimates,
+	/**  What Auto resolves to for Main. */
+	main: MainEstimates,
 	/**  Which Auto made these values. */
 	source: AutoSource,
 	/**
@@ -482,38 +469,14 @@ export type AutoEstimates = {
 	light_confidence: number,
 	/**  The noise model. */
 	noise: NoiseModel,
-	/**  What `sharpen: Auto` resolves to. */
-	sharpen: SharpenValue,
-	/**  What `noise_reduction: Auto` resolves to. */
-	noise_reduction: NoiseReductionValue,
 };
 
-/**  Which `Auto` fields are still automatic; the UI shows the AUTO tag for these. */
+/**  Which `Auto` fields are still automatic, by node: only the Input and Main can be Auto. */
 export type AutoFlags = {
-	/**  `exposure` is Auto. */
-	exposure: boolean,
-	/**  `contrast` is Auto. */
-	contrast: boolean,
-	/**  `highlights` is Auto. */
-	highlights: boolean,
-	/**  `shadows` is Auto. */
-	shadows: boolean,
-	/**  `black` is Auto. */
-	black: boolean,
-	/**  The shadows colour-balance wheel is Auto. */
-	balance_shadows: boolean,
-	/**  The highlights colour-balance wheel is Auto. */
-	balance_highlights: boolean,
-	/**  `saturation` is Auto. */
-	saturation: boolean,
-	/**  `light_source` is Auto. */
-	light_source: boolean,
-	/**  `white_balance` is Auto. */
-	white_balance: boolean,
-	/**  `sharpen` is Auto. */
-	sharpen: boolean,
-	/**  `noise_reduction` is Auto. */
-	noise_reduction: boolean,
+	/**  The Input's. */
+	input: InputAutoFlags,
+	/**  Main's. */
+	main: MainAutoFlags,
 };
 
 /**  Who grades (`docs/22` section 1; the core's `AutoProvider`). The order is the dropdown's. */
@@ -611,6 +574,18 @@ export type BalanceSetting =
 { kind: "manual"; 
 /**  `[a, b]` within the unit disc. */
 point: [number, number] };
+
+/**  One stroke of a Brush mask. */
+export type BrushStroke = {
+	/**  The brush's size, 0.001 to 0.25 of the long edge. */
+	size: number,
+	/**  The brush's hardness, 0 to 1. */
+	hardness: number,
+	/**  An eraser stroke. */
+	erase: boolean,
+	/**  The stroke's points in the photo frame. */
+	points: ([number, number])[],
+};
 
 /**  The detected body and the profile used for it. */
 export type CameraInfo = {
@@ -743,6 +718,24 @@ export type ColorWarpPin = {
 	saturation: number,
 };
 
+/**  A corrector node, Main (id 1) included. */
+export type CorrectorNode = {
+	/**  1 to 2147483647 (Main is 1). */
+	id: "input" | "output" | number,
+	/**  The card's name, 1 to 32 characters. */
+	name: string,
+	/**  A bypassed node passes its picture through. */
+	bypass: boolean,
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
+	/**  The trims. */
+	trim: NodeTrim,
+	/**  The grade. */
+	grade: NodeGrade,
+	/**  The masks. */
+	masks: MaskSettings,
+};
+
 /**
  *  The crop (per photo, in memory only): a rectangle, a straighten angle and an aspect.
  * 
@@ -844,64 +837,12 @@ export type DecodePatch = {
 };
 
 /**
- *  Every control in the UI and every CLI flag maps to one field. Defaults reproduce the
- *  automatic development.
+ *  The settings of a photo: the graph of its nodes (`docs/23` section 3). Every control in the UI and every
+ *  CLI flag is a field of one node.
  */
 export type DevelopSettings = {
-	/**  Look tab. */
-	look: LookId,
-	/**  0 to 100 percent. */
-	look_intensity: number,
-	/**  Light › Exposure: Auto or an absolute value, -4 to +4 EV. */
-	exposure: ExposureSetting,
-	/**  Light › Exposure › Contrast: Auto or a value, -100 to 100. */
-	contrast: PercentSetting,
-	/**  -100 to 100. */
-	brightness: number,
-	/**  Light › High dynamic range › Highlights: Auto or a value, -100 to 100. */
-	highlights: PercentSetting,
-	/**  Light › High dynamic range › Shadows: Auto or a value, -100 to 100. */
-	shadows: PercentSetting,
-	/**  -100 to 100. */
-	white: number,
-	/**  Light › High dynamic range › Black: Auto or a value, -100 to 100. */
-	black: PercentSetting,
-	/**  Colour › White balance, the light presets. */
-	light_source: LightSource,
-	/**  Colour › White balance: Auto or Kelvin and tint. */
-	white_balance: WhiteBalanceSetting,
-	/**  The three colour-balance wheels. */
-	color_balance: ColorBalance,
-	/**  Colour › Colour balance › Saturation: Auto or a value, -100 to 100. */
-	saturation: PercentSetting,
-	/**  Colour › Colour warp: its pins. */
-	color_warp: ColorWarp,
-	/**  Look › Lens: the lens and its three amounts. */
-	lens: LensSettings,
-	/**  Detail › Sharpening: Auto or amount and radius. */
-	sharpen: SharpenSetting,
-	/**
-	 *  Detail › Sharpening › Output: the strength of the sharpening of the picture at the size it
-	 *  is shown and written, in percent, 0 to 200, default 100 (a plain number, not Auto).
-	 */
-	output_sharpening: number,
-	/**  Detail › Noise reduction: Auto or the three strengths. */
-	noise_reduction: NoiseReductionSetting,
-	/**  Luma, red, green and blue curves. */
-	curve: Curves,
-	/**  RAW › Decode switches. */
-	decode: DecodeOptions,
-	/**  RAW › Range: the highlight range and the low-light toe. */
-	rolloff: Rolloff,
-	/**  Crop; null when the photo isn't cropped. */
-	crop: Crop | null,
-	/**  Orientation after the camera's EXIF orientation. */
-	orientation: 0 | 90 | 180 | 270,
-	/**
-	 *  Pick white: the sampled point `[x, y]` in [0, 1]², measured on the photo as the camera
-	 *  oriented it.
-	 */
-	white_pick: [number, number] | null,
+	/**  The graph. */
+	nodes: NodesSettings,
 };
 
 /**
@@ -1056,6 +997,57 @@ export type ExposureSetting =
 /**  Absolute exposure in stops, -4 to +4. */
 ev: number };
 
+/**
+ *  A corrector's grade to change: the old patch's fields, under the same names. Serialising leaves
+ *  absent fields out (see [`NodePatch`]).
+ */
+export type GradePatch = {
+	/**  New contrast: Auto, a manual value, or a plain number (0 is Auto). */
+	contrast?: PercentPatch | null,
+	/**  New brightness. */
+	brightness?: number | null,
+	/**  New highlights: Auto, a manual value, or a plain number (0 is Auto). */
+	highlights?: PercentPatch | null,
+	/**  New shadows: Auto, a manual value, or a plain number (0 is Auto). */
+	shadows?: PercentPatch | null,
+	/**  New white. */
+	white?: number | null,
+	/**  New black: Auto, a manual value, or a plain number (0 is Auto). */
+	black?: PercentPatch | null,
+	/**  Colour-balance wheels to change. */
+	color_balance?: ColorBalancePatch | null,
+	/**  New saturation: Auto, a manual value, or a plain number (0 is Auto). */
+	saturation?: PercentPatch | null,
+	/**  New colour warp: the whole list of pins (`{ pins: [] }` removes them all). */
+	color_warp?: ColorWarp | null,
+	/**  Curves to replace. */
+	curve?: CurvesPatch | null,
+};
+
+/**  A corrector's grade with every `Auto` replaced by the number it resolves to. */
+export type GradeValues = {
+	/**  The contrast in effect: the manual value, or the photo's Auto contrast. */
+	contrast: number,
+	/**  `brightness`. */
+	brightness: number,
+	/**  The highlights in effect: the manual value, or the photo's Auto value. */
+	highlights: number,
+	/**  The shadows in effect. */
+	shadows: number,
+	/**  `white`. */
+	white: number,
+	/**  The black in effect. */
+	black: number,
+	/**  The wheels' points in effect. */
+	color_balance: ColorBalancePoints,
+	/**  The saturation in effect: the manual value, or the photo's Auto saturation. */
+	saturation: number,
+	/**  `color_warp`. */
+	color_warp: ColorWarp,
+	/**  `curve`. */
+	curve: Curves,
+};
+
 /**  Per-channel histogram of the current render, for the Light tab and the Curve plot. */
 export type HistogramData = {
 	/**  Red bins, black first. */
@@ -1074,6 +1066,67 @@ export type IfExists =
 "replace" | 
 /**  Keep both: add " 2", " 3" to the new name. */
 "keep_both";
+
+/**  Which of the Input's `Auto` fields are still automatic; the UI shows the AUTO tag for these. */
+export type InputAutoFlags = {
+	/**  `exposure` is Auto. */
+	exposure: boolean,
+	/**  `light_source` is Auto. */
+	light_source: boolean,
+	/**  `white_balance` is Auto. */
+	white_balance: boolean,
+	/**  `sharpen` is Auto. */
+	sharpen: boolean,
+	/**  `noise_reduction` is Auto. */
+	noise_reduction: boolean,
+};
+
+/**  What Auto resolves to for the Input (`estimates.input`). */
+export type InputEstimates = {
+	/**  `EV_auto` (with Apple Auto's change, when there is one). */
+	exposure_ev: number,
+	/**  The Auto Kelvin (with Apple Auto's nudge, when there is one). */
+	kelvin: number,
+	/**  The Auto tint. */
+	tint: number,
+	/**  What `sharpen: Auto` resolves to. */
+	sharpen: SharpenValue,
+	/**  What `noise_reduction: Auto` resolves to. */
+	noise_reduction: NoiseReductionValue,
+};
+
+/**  The Input: the raw, light and framing settings (`docs/23` section 3.2). */
+export type InputNode = {
+	/**  `"input"`. */
+	id: "input" | "output" | number,
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
+	/**  Light › Exposure: Auto or an absolute value, -4 to +4 EV. */
+	exposure: ExposureSetting,
+	/**  Colour › White balance, the light presets. */
+	light_source: LightSource,
+	/**  Colour › White balance: Auto or Kelvin and tint. */
+	white_balance: WhiteBalanceSetting,
+	/**
+	 *  Pick white: the sampled point `[x, y]` in [0, 1]², measured on the photo as the camera
+	 *  oriented it.
+	 */
+	white_pick: [number, number] | null,
+	/**  RAW › Range: the highlight range and the low-light toe. */
+	rolloff: Rolloff,
+	/**  RAW › Decode switches. */
+	decode: DecodeOptions,
+	/**  Detail › Noise reduction: Auto or the three strengths. */
+	noise_reduction: NoiseReductionSetting,
+	/**  Detail › Sharpening: Auto or amount and radius. */
+	sharpen: SharpenSetting,
+	/**  Look › Lens: the lens and its three amounts. */
+	lens: LensSettings,
+	/**  Crop; null when the photo isn't cropped. */
+	crop: Crop | null,
+	/**  Orientation after the camera's EXIF orientation. */
+	orientation: 0 | 90 | 180 | 270,
+};
 
 /**  Folders remembered between runs. */
 export type LastUsedFolders = {
@@ -1291,6 +1344,285 @@ export type LooksImportResult = {
 	unchanged: number,
 };
 
+/**  Which of Main's `Auto` fields are still automatic. */
+export type MainAutoFlags = {
+	/**  `contrast` is Auto. */
+	contrast: boolean,
+	/**  `highlights` is Auto. */
+	highlights: boolean,
+	/**  `shadows` is Auto. */
+	shadows: boolean,
+	/**  `black` is Auto. */
+	black: boolean,
+	/**  The shadows colour-balance wheel is Auto. */
+	balance_shadows: boolean,
+	/**  The highlights colour-balance wheel is Auto. */
+	balance_highlights: boolean,
+	/**  `saturation` is Auto. */
+	saturation: boolean,
+};
+
+/**  What Auto resolves to for Main (`estimates.main`). */
+export type MainEstimates = {
+	/**  What `contrast: Auto` resolves to: 0, or Apple Auto's contrast. */
+	contrast: number,
+	/**  What `saturation: Auto` resolves to: 0, or Apple Auto's saturation. */
+	saturation: number,
+	/**  What `highlights: Auto` resolves to: 0, or Apple Auto's highlights. */
+	highlights: number,
+	/**  What `shadows: Auto` resolves to: 0, or Apple Auto's shadows. */
+	shadows: number,
+	/**  What `black: Auto` resolves to: 0, or Apple Auto's black level. */
+	black: number,
+	/**  What the shadows wheel's Auto resolves to: `[0, 0]`, or Apple Auto's shadow colour. */
+	balance_shadows: [number, number],
+	/**  What the highlights wheel's Auto resolves to: `[0, 0]`, or Apple Auto's highlight colour. */
+	balance_highlights: [number, number],
+};
+
+/**
+ *  One row of a node's masks: `kind` and the fields every row has (`mode`, `invert`, `enabled`,
+ *  `opacity`), then the kind's own (`docs/23` section 3.3).
+ */
+export type MaskItem = 
+/**  SAM 2.1 from clicks or a box. */
+{ kind: "object"; 
+/**  Add or subtract. */
+mode: MaskMode; 
+/**  This mask alone is inverted. */
+invert: boolean; 
+/**  Off (the eye) counts as absent. */
+enabled: boolean; 
+/**  0 to 1. */
+opacity: number; 
+/**  Clicks `[x, y, positive]` in the photo frame, at most 256. */
+points: ([number, number, boolean])[]; 
+/**  A box `[x0, y0, x1, y1]` in the photo frame, or null. */
+box: [number, number, number, number] | null; 
+/**  Feather, 0 to 1. */
+feather: number; 
+/**  Grow, -1 to 1. */
+grow: number; 
+/**  Refine edges, 0 to 1. */
+refine: number } | 
+/**  Apple Vision's foreground. */
+{ kind: "subject"; 
+/**  Add or subtract. */
+mode: MaskMode; 
+/**  This mask alone is inverted. */
+invert: boolean; 
+/**  Off (the eye) counts as absent. */
+enabled: boolean; 
+/**  0 to 1. */
+opacity: number; 
+/**  Feather, 0 to 1. */
+feather: number; 
+/**  Grow, -1 to 1. */
+grow: number; 
+/**  Refine edges, 0 to 1. */
+refine: number } | 
+/**  Apple Vision's people. */
+{ kind: "people"; 
+/**  Add or subtract. */
+mode: MaskMode; 
+/**  This mask alone is inverted. */
+invert: boolean; 
+/**  Off (the eye) counts as absent. */
+enabled: boolean; 
+/**  0 to 1. */
+opacity: number; 
+/**  Feather, 0 to 1. */
+feather: number; 
+/**  Grow, -1 to 1. */
+grow: number; 
+/**  Refine edges, 0 to 1. */
+refine: number } | 
+/**  The blur map with a level and a softness. */
+{ kind: "background"; 
+/**  Add or subtract. */
+mode: MaskMode; 
+/**  This mask alone is inverted. */
+invert: boolean; 
+/**  Off (the eye) counts as absent. */
+enabled: boolean; 
+/**  0 to 1. */
+opacity: number; 
+/**  Where the blur map's own decision falls, 0 to 1. */
+level: number; 
+/**  Softness of the threshold, 0 to 1. */
+softness: number; 
+/**  Feather, 0 to 1. */
+feather: number; 
+/**  Grow, -1 to 1. */
+grow: number; 
+/**  Refine edges, 0 to 1. */
+refine: number } | 
+/**  A line, an angle and a feather. */
+{ kind: "linear"; 
+/**  Add or subtract. */
+mode: MaskMode; 
+/**  This mask alone is inverted. */
+invert: boolean; 
+/**  Off (the eye) counts as absent. */
+enabled: boolean; 
+/**  0 to 1. */
+opacity: number; 
+/**  A point of the line in the photo frame. */
+center: [number, number]; 
+/**  The line's angle in degrees, -180 to 180. */
+angle_deg: number; 
+/**  Feather, 0 to 1. */
+feather: number } | 
+/**  An ellipse. */
+{ kind: "radial"; 
+/**  Add or subtract. */
+mode: MaskMode; 
+/**  This mask alone is inverted. */
+invert: boolean; 
+/**  Off (the eye) counts as absent. */
+enabled: boolean; 
+/**  0 to 1. */
+opacity: number; 
+/**  The centre in the photo frame. */
+center: [number, number]; 
+/**  The two radii, 0.002 to 1 of the long edge. */
+radii: [number, number]; 
+/**  The angle in degrees, -180 to 180. */
+angle_deg: number; 
+/**  Feather, 0 to 1. */
+feather: number } | 
+/**  Strokes. */
+{ kind: "brush"; 
+/**  Add or subtract. */
+mode: MaskMode; 
+/**  This mask alone is inverted. */
+invert: boolean; 
+/**  Off (the eye) counts as absent. */
+enabled: boolean; 
+/**  0 to 1. */
+opacity: number; 
+/**  The strokes in the order they were drawn, at most 100,000 points in all. */
+strokes: BrushStroke[]; 
+/**  Feather, 0 to 1. */
+feather: number; 
+/**  Grow, -1 to 1. */
+grow: number; 
+/**  Refine edges, 0 to 1. */
+refine: number } | 
+/**  A chroma range. */
+{ kind: "color_range"; 
+/**  Add or subtract. */
+mode: MaskMode; 
+/**  This mask alone is inverted. */
+invert: boolean; 
+/**  Off (the eye) counts as absent. */
+enabled: boolean; 
+/**  0 to 1. */
+opacity: number; 
+/**  The centre in the chroma plane of C9, at most 0.5 long. */
+center: [number, number]; 
+/**  The width, 0.005 to 0.3. */
+width: number; 
+/**  The softness, 0 to 1. */
+softness: number } | 
+/**  A brightness range. */
+{ kind: "brightness_range"; 
+/**  Add or subtract. */
+mode: MaskMode; 
+/**  This mask alone is inverted. */
+invert: boolean; 
+/**  Off (the eye) counts as absent. */
+enabled: boolean; 
+/**  0 to 1. */
+opacity: number; 
+/**  The low end, 0 to 1. */
+low: number; 
+/**  The high end, 0 to 1. */
+high: number; 
+/**  The softness, 0 to 1. */
+softness: number };
+
+/**  Add or subtract. */
+export type MaskMode = 
+/**  The row adds to the mask. */
+"add" | 
+/**  The row takes away from the mask. */
+"subtract";
+
+/**
+ *  A partial of one mask row's fields (`masks.edit`, `docs/23` section 3.7). It cannot change the
+ *  row's kind.
+ * 
+ *  Serialising leaves absent fields out, so that `box: null` (which takes the box away) is told apart from no `box`
+ *  at all; the derive cannot do that without `skip_serializing_if`, which the unified TypeScript export refuses,
+ *  hence the manual `Serialize`.
+ */
+export type MaskPatch = {
+	/**  The row's own kind, or nothing. */
+	kind?: string | null,
+	/**  Add or subtract. */
+	mode?: MaskMode | null,
+	/**  This mask alone is inverted. */
+	invert?: boolean | null,
+	/**  The eye. */
+	enabled?: boolean | null,
+	/**  0 to 1. */
+	opacity?: number | null,
+	/**  Feather. */
+	feather?: number | null,
+	/**  Grow. */
+	grow?: number | null,
+	/**  Refine edges. */
+	refine?: number | null,
+	/**  An Object row's clicks, replaced whole. */
+	points?: ([number, number, boolean])[] | null,
+	/**  An Object row's box; `null` takes it away. */
+	box?: [number, number, number, number] | null,
+	/**  A Background row's level. */
+	level?: number | null,
+	/**  The softness of a Background, Colour range or Brightness range row. */
+	softness?: number | null,
+	/**  A Linear, Radial or Colour range row's centre. */
+	center?: [number, number] | null,
+	/**  A Linear or Radial row's angle. */
+	angle_deg?: number | null,
+	/**  A Radial row's radii. */
+	radii?: [number, number] | null,
+	/**  A Brush row's strokes, replaced whole. */
+	strokes?: BrushStroke[] | null,
+	/**  Strokes added after the existing ones (a Brush row). */
+	strokes_append?: BrushStroke[] | null,
+	/**  Keep only the first n strokes (a Brush row; the inverse of an append). */
+	strokes_keep?: number | null,
+	/**  A Colour range row's width. */
+	width?: number | null,
+	/**  A Brightness range row's low end. */
+	low?: number | null,
+	/**  A Brightness range row's high end. */
+	high?: number | null,
+};
+
+/**  A node's masks: its Invert and the rows. */
+export type MaskSettings = {
+	/**  The node's Invert: `m = 1 - m`. */
+	invert: boolean,
+	/**  The rows, in the order they are drawn and combined, at most 64. */
+	items: MaskItem[],
+};
+
+/**
+ *  A node's masks to change: its Invert, the whole list of rows, and rows by index. Serialising
+ *  leaves absent fields out (see [`NodePatch`]).
+ */
+export type MasksPatch = {
+	/**  The node's Invert. */
+	invert?: boolean | null,
+	/**  The whole list of rows: add, remove or reorder rows. */
+	items?: MaskItem[] | null,
+	/**  Row patches by the row's index (a string), applied after `items`. */
+	edit?: { [key in string]: MaskPatch } | null,
+};
+
 /**  Why a camera profile was chosen. Anything but `exact` gets the STAND-IN tag. */
 export type MatchKind = 
 /**  The body's own measured profile. */
@@ -1383,6 +1715,148 @@ export type MenuState = {
 	paste_settings_to_picked: boolean,
 };
 
+/**
+ *  A corrector's grade: the fields the settings had before they were nodes, with the same names and
+ *  types. Auto belongs to Main: in another corrector Auto reads as a manual 0.
+ */
+export type NodeGrade = {
+	/**  Light › Exposure › Contrast: Auto or a value, -100 to 100. */
+	contrast: PercentSetting,
+	/**  -100 to 100. */
+	brightness: number,
+	/**  Light › High dynamic range › Highlights: Auto or a value, -100 to 100. */
+	highlights: PercentSetting,
+	/**  Light › High dynamic range › Shadows: Auto or a value, -100 to 100. */
+	shadows: PercentSetting,
+	/**  -100 to 100. */
+	white: number,
+	/**  Light › High dynamic range › Black: Auto or a value, -100 to 100. */
+	black: PercentSetting,
+	/**  The three colour-balance wheels. */
+	color_balance: ColorBalance,
+	/**  Colour › Colour balance › Saturation: Auto or a value, -100 to 100. */
+	saturation: PercentSetting,
+	/**  Colour › Colour warp: its pins. */
+	color_warp: ColorWarp,
+	/**  Luma, red, green and blue curves. */
+	curve: Curves,
+};
+
+/**  A node of the graph, told by its `kind`. */
+export type NodeItem = 
+/**  The Input. */
+{
+	kind: "input",
+} & InputNode | 
+/**  The Output. */
+{
+	kind: "output",
+} & OutputNode | 
+/**  A corrector. */
+{
+	kind: "corrector",
+} & CorrectorNode;
+
+/**  What a node is. */
+export type NodeKind = 
+/**  The fixed Input. */
+"input" | 
+/**  The fixed Output. */
+"output" | 
+/**  A corrector. */
+"corrector";
+
+/**  A link from an output port to an input port (`docs/23` section 3.4). */
+export type NodeLink = {
+	/**  The output port the link starts at. */
+	from: NodeRef,
+	/**  The input port it ends at. */
+	to: NodeRef,
+};
+
+/**
+ *  A partial of one node's fields (`docs/23` section 3.7), the fields of every kind in one flat
+ *  object: one the node's kind does not have is refused by the core. A node the photo does not
+ *  have is added when `kind` is given.
+ * 
+ *  Serialising leaves absent fields out (so that `crop: null`, which clears the crop, is told apart from
+ *  no `crop` at all); the derive cannot do that without `skip_serializing_if`, which the unified
+ *  TypeScript export refuses, hence the manual `Serialize`.
+ */
+export type NodePatch = {
+	/**  The node's kind: needed to add a node. */
+	kind?: NodeKind | null,
+	/**  The card's place. */
+	pos?: [number, number] | null,
+	/**  New exposure (Manual to set it, Auto to reset it). */
+	exposure?: ExposureSetting | null,
+	/**  New light preset. */
+	light_source?: LightSource | null,
+	/**  New white balance; a manual one may leave out Kelvin or tint. */
+	white_balance?: WhiteBalancePatch | null,
+	/**
+	 *  New white pick; `null` clears it. A pick also sets `light_source` and `white_balance` to
+	 *  Auto unless the same patch says otherwise.
+	 */
+	white_pick?: [number, number] | null,
+	/**  RAW › Range amounts to change. */
+	rolloff?: RolloffPatch | null,
+	/**  Decode switches to change. */
+	decode?: DecodePatch | null,
+	/**  New noise reduction; a manual one may leave out a part. */
+	noise_reduction?: NoiseReductionPatch | null,
+	/**  New sharpening; a manual one may leave out a part. */
+	sharpen?: SharpenPatch | null,
+	/**  Lens parts to change. */
+	lens?: LensPatch | null,
+	/**  New crop; `null` removes it. */
+	crop?: Crop | null,
+	/**  New orientation. */
+	orientation?: 0 | 90 | 180 | 270 | null,
+	/**  New look. */
+	look?: LookId | null,
+	/**  New look intensity. */
+	look_intensity?: number | null,
+	/**  New output sharpening amount, percent. */
+	output_sharpening?: number | null,
+	/**  New name. */
+	name?: string | null,
+	/**  Bypass on or off. */
+	bypass?: boolean | null,
+	/**  Trims to change. */
+	trim?: TrimPatch | null,
+	/**  Grade fields to change. */
+	grade?: GradePatch | null,
+	/**  Masks to change. */
+	masks?: MasksPatch | null,
+};
+
+/**  One end of a link: a node and one of its ports. */
+export type NodeRef = {
+	/**  The node. */
+	node: "input" | "output" | number,
+	/**  The port. */
+	port: Port,
+};
+
+/**  A corrector's trims: an exposure trim in stops and a temperature and tint trim. */
+export type NodeTrim = {
+	/**  Stops, -4 to 4. */
+	exposure_ev: number,
+	/**  -100 to 100. */
+	temperature: number,
+	/**  -100 to 100. */
+	tint: number,
+};
+
+/**  The graph of a photo: its nodes and the links between them (`docs/23` section 3.1). */
+export type NodesSettings = {
+	/**  The nodes: the Input, the correctors by id, the Output. */
+	items: NodeItem[],
+	/**  The links. */
+	links: NodeLink[],
+};
+
 /**  Poisson–Gaussian noise model, `variance = a · signal + b`. */
 export type NoiseModel = {
 	/**  Shot-noise gain. */
@@ -1452,6 +1926,20 @@ export type OpenSummary = {
 	added: number,
 	/**  ARW files that were already in the session and were not added again. */
 	already_open: number,
+};
+
+/**  The Output: the look and the output sharpening. */
+export type OutputNode = {
+	/**  `"output"`. */
+	id: "input" | "output" | number,
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
+	/**  Look tab. */
+	look: LookId,
+	/**  0 to 100 percent. */
+	look_intensity: number,
+	/**  Detail › Sharpening › Output, in percent, 0 to 200, default 100. */
+	output_sharpening: number,
 };
 
 /**
@@ -1608,6 +2096,13 @@ export type PixelSample = {
 	/**  Blue. */
 	b: number,
 };
+
+/**  A port of a node: a picture or a key (a mask). */
+export type Port = 
+/**  The LogC4 picture. */
+"picture" | 
+/**  A mask. */
+"key";
 
 /**  Everything that persists besides imported looks. */
 export type Preferences = {
@@ -1799,6 +2294,66 @@ export type RenderStats = {
 	lens: LensStats | null,
 };
 
+/**  A corrector with its grade resolved. */
+export type ResolvedCorrector = {
+	/**  The node's id (Main is 1). */
+	id: number,
+	/**  `name`. */
+	name: string,
+	/**  `bypass`. */
+	bypass: boolean,
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
+	/**  `trim`. */
+	trim: NodeTrim,
+	/**  The grade with its Auto resolved (only Main has Auto). */
+	grade: GradeValues,
+	/**  `masks`. */
+	masks: MaskSettings,
+};
+
+/**  The Input with every `Auto` replaced by the number it resolves to. */
+export type ResolvedInput = {
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
+	/**  The exposure in stops. */
+	exposure_ev: number,
+	/**  `light_source`. */
+	light_source: LightSource,
+	/**  The Kelvin the White balance row shows. */
+	kelvin: number,
+	/**  The tint the White balance row shows. */
+	tint: number,
+	/**  The sharpening in effect. */
+	sharpen: SharpenValue,
+	/**  The noise reduction in effect. */
+	noise_reduction: NoiseReductionValue,
+	/**  `lens`. */
+	lens: LensSettings,
+	/**  `decode`. */
+	decode: DecodeOptions,
+	/**  `rolloff`. */
+	rolloff: Rolloff,
+	/**  `crop`. */
+	crop: Crop | null,
+	/**  `orientation`. */
+	orientation: 0 | 90 | 180 | 270,
+	/**  `white_pick`. */
+	white_pick: [number, number] | null,
+};
+
+/**  The Output (it has no Auto). */
+export type ResolvedOutput = {
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
+	/**  `look`. */
+	look: LookId,
+	/**  `look_intensity`. */
+	look_intensity: number,
+	/**  `output_sharpening`. */
+	output_sharpening: number,
+};
+
 /**  What `get_settings` and `update_settings` return: the panel's whole state for one photo. */
 export type ResolvedSettings = {
 	/**  The photo. */
@@ -1813,58 +2368,16 @@ export type ResolvedSettings = {
 	estimates: AutoEstimates,
 };
 
-/**  `DevelopSettings` with every `Auto` replaced by the number it resolves to. */
+/**  The settings with every `Auto` replaced by the number it resolves to, node by node. */
 export type ResolvedValues = {
-	/**  `look`. */
-	look: LookId,
-	/**  `look_intensity`. */
-	look_intensity: number,
-	/**  The exposure in stops. */
-	exposure_ev: number,
-	/**  The contrast in effect: the manual value, or the photo's Auto contrast. */
-	contrast: number,
-	/**  `brightness`. */
-	brightness: number,
-	/**  The highlights in effect: the manual value, or the photo's Auto value. */
-	highlights: number,
-	/**  The shadows in effect. */
-	shadows: number,
-	/**  `white`. */
-	white: number,
-	/**  The black in effect. */
-	black: number,
-	/**  `light_source`. */
-	light_source: LightSource,
-	/**  The Kelvin the White balance row shows. */
-	kelvin: number,
-	/**  The tint the White balance row shows. */
-	tint: number,
-	/**  The wheels' points in effect. */
-	color_balance: ColorBalancePoints,
-	/**  The saturation in effect: the manual value, or the photo's Auto saturation. */
-	saturation: number,
-	/**  `color_warp`. */
-	color_warp: ColorWarp,
-	/**  `lens`. */
-	lens: LensSettings,
-	/**  The sharpening in effect. */
-	sharpen: SharpenValue,
-	/**  `output_sharpening`. */
-	output_sharpening: number,
-	/**  The noise reduction in effect. */
-	noise_reduction: NoiseReductionValue,
-	/**  `curve`. */
-	curve: Curves,
-	/**  `decode`. */
-	decode: DecodeOptions,
-	/**  `rolloff`. */
-	rolloff: Rolloff,
-	/**  `crop`. */
-	crop: Crop | null,
-	/**  `orientation`. */
-	orientation: 0 | 90 | 180 | 270,
-	/**  `white_pick`. */
-	white_pick: [number, number] | null,
+	/**  The Input. */
+	input: ResolvedInput,
+	/**  Main, node 1. */
+	main: ResolvedCorrector,
+	/**  The other correctors, by id (their values are their fields: they have no Auto). */
+	nodes: ResolvedCorrector[],
+	/**  The Output. */
+	output: ResolvedOutput,
 };
 
 /**
@@ -1945,64 +2458,19 @@ export type SettingsChanged = {
 };
 
 /**
- *  A partial update: only the fields present change (`update_settings(photo_id, patch)`).
+ *  A node-level partial update of a photo's settings (`update_settings(photo_id, patch)`, `docs/23`
+ *  section 3.7): `nodes` maps node ids (`"input"`, `"output"`, `"1"`, `"2"`, …) to what changes, `remove`
+ *  lists the corrector nodes to delete and `links`, when present, replaces the links whole.
  * 
- *  Serialising leaves absent fields out (so that `crop: null`, which clears the crop, is told
- *  apart from no `crop` at all); the derive cannot do that without `skip_serializing_if`, which
- *  the unified TypeScript export refuses, hence the manual `Serialize`.
+ *  Serialising leaves out what is absent; see [`NodePatch`].
  */
 export type SettingsPatch = {
-	/**  New look. */
-	look?: LookId | null,
-	/**  New look intensity. */
-	look_intensity?: number | null,
-	/**  New exposure (Manual to set it, Auto to reset it). */
-	exposure?: ExposureSetting | null,
-	/**  New contrast: Auto, a manual value, or a plain number (0 is Auto). */
-	contrast?: PercentPatch | null,
-	/**  New brightness. */
-	brightness?: number | null,
-	/**  New highlights: Auto, a manual value, or a plain number (0 is Auto). */
-	highlights?: PercentPatch | null,
-	/**  New shadows: Auto, a manual value, or a plain number (0 is Auto). */
-	shadows?: PercentPatch | null,
-	/**  New white. */
-	white?: number | null,
-	/**  New black: Auto, a manual value, or a plain number (0 is Auto). */
-	black?: PercentPatch | null,
-	/**  New light preset. */
-	light_source?: LightSource | null,
-	/**  New white balance; a manual one may leave out Kelvin or tint. */
-	white_balance?: WhiteBalancePatch | null,
-	/**  Colour-balance wheels to change. */
-	color_balance?: ColorBalancePatch | null,
-	/**  New saturation: Auto, a manual value, or a plain number (0 is Auto). */
-	saturation?: PercentPatch | null,
-	/**  New colour warp: the whole list of pins (`{ pins: [] }` removes them all). */
-	color_warp?: ColorWarp | null,
-	/**  Lens parts to change. */
-	lens?: LensPatch | null,
-	/**  New sharpening; a manual one may leave out a part. */
-	sharpen?: SharpenPatch | null,
-	/**  New output sharpening amount, percent. */
-	output_sharpening?: number | null,
-	/**  New noise reduction; a manual one may leave out a part. */
-	noise_reduction?: NoiseReductionPatch | null,
-	/**  Curves to replace. */
-	curve?: CurvesPatch | null,
-	/**  Decode switches to change. */
-	decode?: DecodePatch | null,
-	/**  RAW › Range amounts to change. */
-	rolloff?: RolloffPatch | null,
-	/**  New crop; `null` removes it. */
-	crop?: Crop | null,
-	/**  New orientation. */
-	orientation?: 0 | 90 | 180 | 270 | null,
-	/**
-	 *  New white pick; `null` clears it. A pick also sets `light_source` and `white_balance` to
-	 *  Auto unless the same patch says otherwise.
-	 */
-	white_pick?: [number, number] | null,
+	/**  Node patches by id. */
+	nodes?: { [key in string]: NodePatch },
+	/**  The corrector nodes to delete. */
+	remove?: ("input" | "output" | number)[],
+	/**  The links, replacing the photo's whole. */
+	links?: NodeLink[] | null,
 };
 
 /**  `sharpen` in a patch: Auto, or a manual value that may leave out a part. */
@@ -2101,6 +2569,16 @@ export type TiffCompression =
 "lzw" | 
 /**  Deflate, shown as "ZIP". */
 "zip";
+
+/**  A corrector's trims to change. Serialising leaves absent fields out (see [`NodePatch`]). */
+export type TrimPatch = {
+	/**  New exposure trim in stops. */
+	exposure_ev?: number | null,
+	/**  New temperature trim. */
+	temperature?: number | null,
+	/**  New tint trim. */
+	tint?: number | null,
+};
 
 /**  `update_state { phase, version?, percent?, message? }` (the updater's phases, `docs/12`). */
 export type UpdateState = 

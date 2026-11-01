@@ -397,8 +397,8 @@ pub fn develop_fields(
     out.insert(
         "look",
         json!({
-            "id": view.settings.look.to_string(),
-            "intensity": number(view.settings.look_intensity),
+            "id": view.settings.output().look.to_string(),
+            "intensity": number(view.settings.output().look_intensity),
         }),
     );
     out.insert(

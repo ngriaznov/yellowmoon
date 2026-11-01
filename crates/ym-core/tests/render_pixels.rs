@@ -54,7 +54,9 @@ fn centre(frame: &RenderedFrame) -> [f64; 3] {
 }
 
 fn manual_ev(src: &PhotoSource, ev: f64) -> PhotoSource {
-    edit(src, |s| s.input_mut().exposure = AutoOr::Manual(ExposureValue { ev }))
+    edit(src, |s| {
+        s.input_mut().exposure = AutoOr::Manual(ExposureValue { ev })
+    })
 }
 
 /// The balanced camera value of a neutral field of luminance `level` under `white` (green = 1):
@@ -139,7 +141,9 @@ fn the_highlight_range_moves_the_clipped_highlights_and_nothing_under_the_knee()
     let scene = Scene::new(640, 48, white, Layout::Ramp, level);
     let d = Developed::new(&scene, MODEL);
     let r = Renderer::neutral_only().expect("render thread");
-    let base = edit(&manual_ev(&d.source(), 1.0), |s| s.output_mut().output_sharpening = 0.0);
+    let base = edit(&manual_ev(&d.source(), 1.0), |s| {
+        s.output_mut().output_sharpening = 0.0
+    });
     let render = |highlights: f64, target: FullTarget| {
         let src = edit(&base, |s| s.input_mut().rolloff.highlights = highlights);
         r.render_full(&src, &FullRequest { target }, &CancelToken::new())
@@ -576,7 +580,9 @@ fn vignetting_is_corrected_when_the_switch_is_on_and_only_then() {
         corner / mid
     };
     let on = ratio(&src);
-    let off = ratio(&edit(&src, |s| s.input_mut().decode.lens_corrections = false));
+    let off = ratio(&edit(&src, |s| {
+        s.input_mut().decode.lens_corrections = false
+    }));
     assert!((on - 1.0).abs() < 0.02, "corrected corner/centre {on:.3}");
     assert!(off < 0.975, "uncorrected corner/centre {off:.3}");
     // The 100 % tiles agree with the half-resolution image on the correction too.

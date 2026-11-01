@@ -174,7 +174,8 @@ fn a_fit_frame_from_a_resident_group_is_the_host_round_trip_bit_for_bit() {
             "graded and straightened",
             edit(&src, |s| {
                 s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(30.0);
-                s.main_grade_mut().saturation = ym_core::settings::PercentSetting::manual_value(20.0);
+                s.main_grade_mut().saturation =
+                    ym_core::settings::PercentSetting::manual_value(20.0);
                 s.input_mut().crop = Some(ym_core::settings::Crop {
                     rect: ym_core::settings::NormRect {
                         x: 0.05,

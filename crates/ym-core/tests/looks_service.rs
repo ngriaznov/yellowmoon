@@ -347,7 +347,15 @@ fn apply_look_goes_to_this_photo_the_picked_photos_or_all_and_refuses_a_missing_
         .open(&[photos.path().to_path_buf()], OpenOptions::default())
         .added;
     settle(&session);
-    let look_of = |i: usize| session.settings(ids[i]).expect("settings").settings.output().look.clone();
+    let look_of = |i: usize| {
+        session
+            .settings(ids[i])
+            .expect("settings")
+            .settings
+            .output()
+            .look
+            .clone()
+    };
     let neutral = LookId::builtin("neutral");
 
     // This photo (the first is current).
@@ -358,7 +366,12 @@ fn apply_look_goes_to_this_photo_the_picked_photos_or_all_and_refuses_a_missing_
     assert_eq!(changed, vec![ids[0]]);
     assert_eq!(look_of(0), warm);
     assert_eq!(
-        session.settings(ids[0]).expect("s").settings.output().look_intensity,
+        session
+            .settings(ids[0])
+            .expect("s")
+            .settings
+            .output()
+            .look_intensity,
         70.0
     );
     assert_eq!(look_of(1), neutral);

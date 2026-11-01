@@ -623,12 +623,6 @@ impl NodeGrade {
             }
         }
     }
-
-    /// The wheel points `[a, b]` of the manual wheels, for tests and the resolved values.
-    #[must_use]
-    pub fn midtones(&self) -> ColorBalancePoint {
-        self.color_balance.midtones
-    }
 }
 
 /// A corrector node, Main included (`docs/23` section 3.2). Rendered from N-03; N-02 reads, checks,
@@ -1085,7 +1079,13 @@ impl NodeGraph {
                 }
                 NodeId::Corrector(n) => {
                     let named = map.contains_key("name");
+                    let graded = map.contains_key("grade");
                     let mut node: CorrectorNode = read_node(map)?;
+                    if n == MAIN_ID && !graded {
+                        // Main's missing grade is Auto where there is Auto (a new corrector's own
+                        // default is a manual 0, `docs/23` section 3.2).
+                        node.grade = NodeGrade::default();
+                    }
                     if !named {
                         node.name = if n == MAIN_ID {
                             MAIN_NAME

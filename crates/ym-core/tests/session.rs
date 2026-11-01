@@ -24,10 +24,10 @@ use ym_core::settings::{
     NoiseReductionManualPatch, NormRect, Orientation, RolloffPatch, SettingsPatch,
     SharpenManualPatch, WhiteBalanceManualPatch, WhiteBalanceValue,
 };
+use ym_core::settings::{GradePatch, NodeId, NodePatch};
 use ym_looks::library::LookId;
 use ym_raw::layout::ChromaSubsampling;
 use ym_raw::testgen::{ArwBuilder, ContainerOnly, CrawEncoder, LosslessL, LosslessMs};
-use ym_core::settings::{GradePatch, NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -998,13 +998,19 @@ fn settings_commands_resolve_clamp_and_stay_in_memory() {
         session.update_settings(ids[0], &bad),
         Err(SessionError::Settings(_))
     ));
-    assert_eq!(session.settings(ids[0]).unwrap().values.input.exposure_ev, 4.0);
+    assert_eq!(
+        session.settings(ids[0]).unwrap().values.input.exposure_ev,
+        4.0
+    );
     // Only Kelvin moved: manual at that Kelvin and the automatic tint.
     let auto_tint = session.settings(ids[1]).unwrap().values.input.tint;
     let r = session
         .update_settings(ids[1], &SettingsPatch::kelvin(4100.0))
         .unwrap();
-    assert_eq!((r.values.input.kelvin, r.values.input.tint), (4100.0, auto_tint));
+    assert_eq!(
+        (r.values.input.kelvin, r.values.input.tint),
+        (4100.0, auto_tint)
+    );
     assert!(!r.auto.input.white_balance);
     // Other photos are untouched.
     assert!(session.settings(ids[2]).unwrap().auto.input.exposure);
@@ -1030,17 +1036,28 @@ fn settings_commands_resolve_clamp_and_stay_in_memory() {
     for id in &ids {
         let r = session.settings(*id).unwrap();
         assert_eq!(
-            (r.values.output.look.as_str(), r.values.output.look_intensity),
+            (
+                r.values.output.look.as_str(),
+                r.values.output.look_intensity
+            ),
             ("builtin:signature", 40.0)
         );
     }
     // Look intensity is clamped; the other settings were not touched by Apply to.
     session.apply_look(ApplyScope::All, &look, 400.0).unwrap();
     assert_eq!(
-        session.settings(ids[1]).unwrap().values.output.look_intensity,
+        session
+            .settings(ids[1])
+            .unwrap()
+            .values
+            .output
+            .look_intensity,
         100.0
     );
-    assert_eq!(session.settings(ids[0]).unwrap().values.input.exposure_ev, 4.0);
+    assert_eq!(
+        session.settings(ids[0]).unwrap().values.input.exposure_ev,
+        4.0
+    );
     assert!(
         session
             .apply_look(ApplyScope::All, &look, f64::NAN)
@@ -1075,7 +1092,8 @@ fn settings_commands_resolve_clamp_and_stay_in_memory() {
             .settings(added.added[0])
             .unwrap()
             .values
-            .output.look
+            .output
+            .look
             .as_str(),
         "builtin:signature"
     );
@@ -1148,7 +1166,10 @@ fn rerun_recomputes_the_estimates_and_resets_exposure_white_balance_and_noise() 
     session.update_settings(id, &patch).unwrap();
     let r = session.rerun_auto(id).unwrap();
     assert!(
-        r.auto.input.exposure && r.auto.input.white_balance && r.auto.input.noise_reduction && r.auto.input.light_source
+        r.auto.input.exposure
+            && r.auto.input.white_balance
+            && r.auto.input.noise_reduction
+            && r.auto.input.light_source
     );
     assert!(r.settings.input().white_pick.is_none());
     // Sharpening and the other controls are not part of Re-run, nor are contrast and saturation
@@ -1214,7 +1235,9 @@ fn a_white_pick_samples_the_photo_and_a_blown_out_spot_is_refused() {
     // The sample is remembered with the photo.
     let view = session.view(id).unwrap();
     assert!(view.picked_white().is_some());
-    assert!((session.settings(id).unwrap().values.input.kelvin - r.values.input.kelvin).abs() < 1e-9);
+    assert!(
+        (session.settings(id).unwrap().values.input.kelvin - r.values.input.kelvin).abs() < 1e-9
+    );
     // Moving Kelvin switches to Manual and keeps the picked scene light for the sensor map.
     let r2 = session
         .update_settings(id, &SettingsPatch::kelvin(4000.0))
@@ -1252,7 +1275,15 @@ fn a_white_pick_samples_the_photo_and_a_blown_out_spot_is_refused() {
     // Re-run also forgets a pick.
     session.update_settings(id, &patch).unwrap();
     session.rerun_auto(id).unwrap();
-    assert!(session.settings(id).unwrap().settings.input().white_pick.is_none());
+    assert!(
+        session
+            .settings(id)
+            .unwrap()
+            .settings
+            .input()
+            .white_pick
+            .is_none()
+    );
 }
 
 /// Three developed photos of one scene at three brightnesses.
@@ -1353,7 +1384,6 @@ fn edit_everything() -> SettingsPatch {
                         luma: Some(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]),
                         ..Default::default()
                     }),
-                    ..GradePatch::default()
                 }),
                 ..NodePatch::default()
             },
@@ -1448,9 +1478,9 @@ fn pasting_takes_every_setting_but_the_crop_the_turn_and_the_white_pick() {
     assert!(report.skipped.is_empty());
     for (id, before) in [b, c].into_iter().zip(own) {
         let mut expected = source.clone();
-        expected.input().crop = before.input().crop;
-        expected.input().orientation = before.input().orientation;
-        expected.input().white_pick = before.input().white_pick;
+        expected.input_mut().crop = before.input().crop;
+        expected.input_mut().orientation = before.input().orientation;
+        expected.input_mut().white_pick = before.input().white_pick;
         assert_eq!(session.settings(id).unwrap().settings, expected);
     }
     // The source itself was not touched.
@@ -1526,7 +1556,10 @@ fn auto_stays_auto_and_each_photo_keeps_its_own_estimates() {
     assert_eq!(r.estimates, estimates_before);
     assert_eq!(r.values.input.exposure_ev, r.estimates.input.exposure_ev);
     assert_eq!(r.values.input.sharpen, r.estimates.input.sharpen);
-    assert_eq!(r.values.input.noise_reduction, r.estimates.input.noise_reduction);
+    assert_eq!(
+        r.values.input.noise_reduction,
+        r.estimates.input.noise_reduction
+    );
 
     // Manual values are pasted as they are, onto a photo that is automatic.
     session.update_settings(a, &edit_everything()).unwrap();
@@ -1534,12 +1567,18 @@ fn auto_stays_auto_and_each_photo_keeps_its_own_estimates() {
     session.paste_settings(&[b], &patch).unwrap();
     let r = session.settings(b).unwrap();
     assert!(
-        !r.auto.input.exposure && !r.auto.input.white_balance && !r.auto.input.sharpen && !r.auto.input.noise_reduction
+        !r.auto.input.exposure
+            && !r.auto.input.white_balance
+            && !r.auto.input.sharpen
+            && !r.auto.input.noise_reduction
     );
     assert_eq!(r.values.input.exposure_ev, 0.7);
     assert_eq!((r.values.input.kelvin, r.values.input.tint), (4300.0, 7.0));
     assert_eq!(
-        (r.settings.input().rolloff.highlights, r.settings.input().rolloff.low_light),
+        (
+            r.settings.input().rolloff.highlights,
+            r.settings.input().rolloff.low_light
+        ),
         (0.7, 0.3),
         "the highlight range is pasted as it is"
     );
@@ -1611,8 +1650,9 @@ fn a_white_balance_from_a_picked_white_is_pasted_as_manual_kelvin_and_tint() {
         )
         .unwrap();
     let patch = session.copy_settings(a).unwrap();
-    assert_eq!(patch.light_source, Some(LightSource::Day));
-    assert_eq!(patch.white_balance, Some(AutoOr::Auto));
+    let input_patch = patch.input_patch().expect("the copy has the Input");
+    assert_eq!(input_patch.light_source, Some(LightSource::Day));
+    assert_eq!(input_patch.white_balance, Some(AutoOr::Auto));
 
     // A manual white balance next to a pick is copied as it is.
     session
@@ -1631,7 +1671,15 @@ fn a_white_balance_from_a_picked_white_is_pasted_as_manual_kelvin_and_tint() {
             ),
         )
         .unwrap();
-    assert!(session.settings(a).unwrap().settings.input().white_pick.is_some());
+    assert!(
+        session
+            .settings(a)
+            .unwrap()
+            .settings
+            .input()
+            .white_pick
+            .is_some()
+    );
     let patch = session.copy_settings(a).unwrap();
     assert_eq!(
         patch.input_patch().and_then(|p| p.white_balance),

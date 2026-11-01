@@ -73,37 +73,41 @@ expression: "Value::Object(picked)"
       "tint": "null",
       "white": "number"
     },
-    "balance_highlights": [
-      "number"
-    ],
-    "balance_shadows": [
-      "number"
-    ],
-    "black": "number",
-    "contrast": "number",
-    "exposure_ev": "number",
-    "highlights": "number",
-    "kelvin": "number",
+    "input": {
+      "exposure_ev": "number",
+      "kelvin": "number",
+      "noise_reduction": {
+        "color": "number",
+        "detail": "number",
+        "luminance": "number"
+      },
+      "sharpen": {
+        "amount": "number",
+        "radius_px": "number"
+      },
+      "tint": "number"
+    },
     "light_class": "string",
     "light_confidence": "number",
+    "main": {
+      "balance_highlights": [
+        "number"
+      ],
+      "balance_shadows": [
+        "number"
+      ],
+      "black": "number",
+      "contrast": "number",
+      "highlights": "number",
+      "saturation": "number",
+      "shadows": "number"
+    },
     "noise": {
       "a": "number",
       "b": "number"
     },
-    "noise_reduction": {
-      "color": "number",
-      "detail": "number",
-      "luminance": "number"
-    },
     "provider": "string",
-    "saturation": "number",
-    "shadows": "number",
-    "sharpen": {
-      "amount": "number",
-      "radius_px": "number"
-    },
-    "source": "string",
-    "tint": "number"
+    "source": "string"
   },
   "auto_advisor": {
     "api": "null",

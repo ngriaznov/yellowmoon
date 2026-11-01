@@ -802,10 +802,11 @@ fn the_dng_preview_is_the_baked_picture_unturned() {
         let d = textured(320, 240, exif);
         // No capture sharpening on either side: a DNG's renders are made without R8.
         let mut src = edit(&d.source(), |s| {
-            s.input_mut().sharpen = ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
-                amount: 0.0,
-                radius_px: 1.0,
-            });
+            s.input_mut().sharpen =
+                ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
+                    amount: 0.0,
+                    radius_px: 1.0,
+                });
         });
         src = turned(
             &with_lens(&src, lens(LensKind::Default, 0.0, 100.0, 100.0)),

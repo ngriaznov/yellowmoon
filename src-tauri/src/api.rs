@@ -179,11 +179,13 @@ fn look_id(id: &LookId) -> Result<CoreLookId, AppError> {
 
 /// The fields of a patch that change what a thumbnail shows.
 fn touches_thumbnail(patch: &SettingsPatch) -> bool {
-    patch.look.is_some()
-        || patch.look_intensity.is_some()
-        || patch.crop.is_some()
-        || patch.orientation.is_some()
-        || patch.lens.is_some()
+    patch.nodes.values().any(|node| {
+        node.look.is_some()
+            || node.look_intensity.is_some()
+            || node.crop.is_some()
+            || node.orientation.is_some()
+            || node.lens.is_some()
+    })
 }
 
 impl AppApi {
@@ -777,10 +779,10 @@ impl AppApi {
             .map_err(AppError::from)?;
         // A click on the paper around the photo picks nothing.
         let Some(point) = point else { return Ok(()) };
-        let patch = ym_core::settings::SettingsPatch {
+        let patch = ym_core::settings::SettingsPatch::input(ym_core::settings::NodePatch {
             white_pick: Some(Some(point)),
-            ..ym_core::settings::SettingsPatch::default()
-        };
+            ..ym_core::settings::NodePatch::default()
+        });
         self.core
             .session
             .update_settings(photo, &patch)

@@ -120,29 +120,32 @@ fn render_json_says_apple_made_the_auto_values_and_what_it_answered() {
     assert_eq!(a["steps"]["blacks"], Value::Null);
     assert_eq!(a["steps"]["shadow_color"], "teal");
     // The new Auto values.
-    assert_eq!(v["auto"]["highlights"], TABLE.highlights[1]);
-    assert_eq!(v["auto"]["black"], 0.0);
+    assert_eq!(v["auto"]["main"]["highlights"], TABLE.highlights[1]);
+    assert_eq!(v["auto"]["main"]["black"], 0.0);
     assert_eq!(
-        v["auto"]["balance_shadows"],
+        v["auto"]["main"]["balance_shadows"],
         json!([-0.866 * 0.3, -0.5 * 0.3])
     );
-    assert_eq!(v["auto"]["balance_highlights"], json!([0.0, 0.0]));
+    assert_eq!(v["auto"]["main"]["balance_highlights"], json!([0.0, 0.0]));
     assert_eq!(
-        v["settings"]["highlights"],
+        common::node(&v, 1)["grade"]["highlights"],
         json!({ "kind": "manual", "value": -20.0 })
     );
     assert_eq!(
-        v["settings"]["color_balance"]["shadows"],
+        common::node(&v, 1)["grade"]["color_balance"]["shadows"],
         json!({ "kind": "manual", "point": [-0.866 * 0.3, -0.5 * 0.3] })
     );
     // The answer is in the Auto values and in the settings the file records, pinned to them.
-    assert_eq!(v["auto"]["contrast"], TABLE.contrast[3]);
-    assert_eq!(v["auto"]["saturation"], 0.0);
+    assert_eq!(v["auto"]["main"]["contrast"], TABLE.contrast[3]);
+    assert_eq!(v["auto"]["main"]["saturation"], 0.0);
     assert_eq!(
-        v["settings"]["contrast"],
+        common::node(&v, 1)["grade"]["contrast"],
         json!({ "kind": "manual", "value": 15.0 })
     );
-    assert_eq!(v["settings"]["exposure"]["ev"], v["auto"]["exposure_ev"]);
+    assert_eq!(
+        common::node(&v, "input")["exposure"]["ev"],
+        v["auto"]["input"]["exposure_ev"]
+    );
     // The same photo with Default Auto: the exposure is the table's step brighter.
     let rule = render_json(
         sb.ym_fake(),
@@ -151,16 +154,19 @@ fn render_json_says_apple_made_the_auto_values_and_what_it_answered() {
         &sb.root().join("rule"),
     );
     let (apple_ev, rule_ev) = (
-        v["auto"]["exposure_ev"].as_f64().expect("ev"),
-        rule["auto"]["exposure_ev"].as_f64().expect("ev"),
+        v["auto"]["input"]["exposure_ev"].as_f64().expect("ev"),
+        rule["auto"]["input"]["exposure_ev"].as_f64().expect("ev"),
     );
     assert!(
         (apple_ev - (rule_ev + TABLE.exposure_ev[3])).abs() < 1e-9,
         "{apple_ev} against {rule_ev}"
     );
     // The white was kept, so the Kelvin and the tint are the rule's.
-    assert_eq!(v["auto"]["kelvin"], rule["auto"]["kelvin"]);
-    assert_eq!(v["auto"]["tint"], rule["auto"]["tint"]);
+    assert_eq!(
+        v["auto"]["input"]["kelvin"],
+        rule["auto"]["input"]["kelvin"]
+    );
+    assert_eq!(v["auto"]["input"]["tint"], rule["auto"]["input"]["tint"]);
     // Keys: `auto_source`, `apple_auto` and `auto_advisor` after `auto`, before `settings`.
     let line = serde_json::to_string(&v).expect("json");
     assert!(line.contains("\"auto_source\":\"apple\""));
@@ -186,9 +192,9 @@ fn apple_auto_off_is_the_rule_and_render_json_has_no_apple_auto() {
     assert_eq!(v["auto_source"], "rule");
     assert_eq!(v["auto"]["apple"], json!({ "state": "off" }));
     assert!(v.get("apple_auto").is_none(), "{v}");
-    assert_eq!(v["auto"]["contrast"], 0.0);
+    assert_eq!(v["auto"]["main"]["contrast"], 0.0);
     assert_eq!(
-        v["settings"]["contrast"],
+        common::node(&v, 1)["grade"]["contrast"],
         json!({ "kind": "manual", "value": 0.0 })
     );
     assert!(v.get("auto_advisor").is_none(), "{v}");
@@ -328,8 +334,8 @@ fn info_json_has_the_apple_auto_object_and_the_auto_values_in_effect() {
     assert_eq!(a["model"], "Test advisor");
     assert_eq!(v["auto_source"], "apple");
     assert_eq!(v["auto"]["source"], "apple");
-    assert_eq!(v["auto"]["contrast"], 15.0);
-    assert_eq!(v["auto"]["saturation"], 0.0);
+    assert_eq!(v["auto"]["main"]["contrast"], 15.0);
+    assert_eq!(v["auto"]["main"]["saturation"], 0.0);
     assert_eq!(v["auto"]["apple"]["answer"]["steps"], a["steps"]);
     // `info` and `render` report the same photo the same way.
     let render = render_json(sb.ym_fake(), &arw, &[], &sb.root().join("out"));
@@ -493,7 +499,11 @@ fn contrast_and_saturation_take_auto() {
     let sb = Sandbox::new();
     let arw = photo(&sb);
     let file = sb.root().join("settings.json");
-    std::fs::write(&file, r#"{ "contrast": 30, "saturation": 10 }"#).expect("write");
+    std::fs::write(
+        &file,
+        common::field_doc(json!({ "contrast": 30, "saturation": 10 })).to_string(),
+    )
+    .expect("write");
     let settings = file.to_str().expect("utf-8");
     // `auto` puts back what a settings file set by hand: the Auto value, pinned in the settings.
     let flags = [
@@ -506,22 +516,22 @@ fn contrast_and_saturation_take_auto() {
     ];
     let apple = render_json(sb.ym_fake(), &arw, &flags, &sb.root().join("apple"));
     assert_eq!(
-        apple["settings"]["contrast"],
+        common::node(&apple, 1)["grade"]["contrast"],
         json!({ "kind": "manual", "value": 15.0 })
     );
     assert_eq!(
-        apple["settings"]["saturation"],
+        common::node(&apple, 1)["grade"]["saturation"],
         json!({ "kind": "manual", "value": 0.0 })
     );
     let mut rule_flags = flags.to_vec();
     rule_flags.extend(["--apple-auto", "off"]);
     let rule = render_json(sb.ym_fake(), &arw, &rule_flags, &sb.root().join("rule"));
     assert_eq!(
-        rule["settings"]["contrast"],
+        common::node(&rule, 1)["grade"]["contrast"],
         json!({ "kind": "manual", "value": 0.0 })
     );
     assert_eq!(
-        rule["settings"]["saturation"],
+        common::node(&rule, 1)["grade"]["saturation"],
         json!({ "kind": "manual", "value": 0.0 })
     );
     // A number stays a manual value, whatever Apple Auto says.
@@ -532,15 +542,15 @@ fn contrast_and_saturation_take_auto() {
         &sb.root().join("manual"),
     );
     assert_eq!(
-        manual["settings"]["contrast"],
+        common::node(&manual, 1)["grade"]["contrast"],
         json!({ "kind": "manual", "value": -20.0 })
     );
     assert_eq!(
-        manual["settings"]["saturation"],
+        common::node(&manual, 1)["grade"]["saturation"],
         json!({ "kind": "manual", "value": 12.0 })
     );
     assert_eq!(
-        manual["auto"]["contrast"], 15.0,
+        manual["auto"]["main"]["contrast"], 15.0,
         "the Auto value is still Apple's"
     );
     // Anything else is a usage error.
@@ -727,19 +737,19 @@ fn highlights_shadows_and_black_take_auto() {
     let settings = sb.root().join("s.json");
     std::fs::write(
         &settings,
-        json!({ "highlights": 30, "shadows": -10, "black": 5,
-                "color_balance": { "shadows": [0.2, 0.1] } })
+        common::field_doc(json!({ "highlights": 30, "shadows": -10, "black": 5,
+                "color_balance": { "shadows": [0.2, 0.1] } }))
         .to_string(),
     )
     .expect("write");
     let s = settings.to_str().expect("utf-8");
     let manual = render_json(sb.ym_fake(), &arw, &["--settings", s], &sb.root().join("m"));
     assert_eq!(
-        manual["settings"]["highlights"],
+        common::node(&manual, 1)["grade"]["highlights"],
         json!({ "kind": "manual", "value": 30.0 })
     );
     assert_eq!(
-        manual["settings"]["color_balance"]["shadows"],
+        common::node(&manual, 1)["grade"]["color_balance"]["shadows"],
         json!({ "kind": "manual", "point": [0.2, 0.1] })
     );
     let auto = render_json(
@@ -759,15 +769,15 @@ fn highlights_shadows_and_black_take_auto() {
     );
     // Pinned to the numbers Apple Auto's answer resolved to.
     assert_eq!(
-        auto["settings"]["highlights"],
+        common::node(&auto, 1)["grade"]["highlights"],
         json!({ "kind": "manual", "value": TABLE.highlights[1] })
     );
     assert_eq!(
-        auto["settings"]["shadows"],
+        common::node(&auto, 1)["grade"]["shadows"],
         json!({ "kind": "manual", "value": 0.0 })
     );
     assert_eq!(
-        auto["settings"]["black"],
+        common::node(&auto, 1)["grade"]["black"],
         json!({ "kind": "manual", "value": 0.0 })
     );
     for bad in ["autos", "101", ""] {

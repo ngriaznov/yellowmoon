@@ -286,8 +286,9 @@ if args[:1] == ["render"]:
     if mode == "on":
         time.sleep(float(os.environ.get("FAKE_YM_SLEEP", "0")))
     record(cmd="rendered", stem=stem, mode=mode, end=time.monotonic())
-    auto = {"apple": auto_apple, "contrast": 15.0 * applied[2], "exposure_ev": 0.5 + 0.3 * applied[0],
-            "kelvin": 5000.0 - 100 * applied[1], "saturation": 15.0 * applied[3], "source": source, "tint": 0.0}
+    auto = {"apple": auto_apple, "source": source,
+            "input": {"exposure_ev": 0.5 + 0.3 * applied[0], "kelvin": 5000.0 - 100 * applied[1], "tint": 0.0},
+            "main": {"contrast": 15.0 * applied[2], "saturation": 15.0 * applied[3]}}
     obj = {"input": src, "output": target, "status": "ok", "auto": auto, "auto_source": source}
     if old:
         if apple_auto is not None:
@@ -297,7 +298,9 @@ if args[:1] == ["render"]:
         obj["auto_advisor"] = advisor
     if crop_flag is not None:
         obj["auto_crop"] = auto_crop
-    obj["settings"] = {"contrast": {"kind": "manual", "value": auto["contrast"]}, "crop": crop_setting}
+    obj["settings"] = {"nodes": {"items": [
+        {"id": "input", "kind": "input", "crop": crop_setting},
+        {"id": 1, "kind": "corrector", "grade": {"contrast": {"kind": "manual", "value": auto["main"]["contrast"]}}}]}}
     obj["error"] = None
     print(json.dumps(obj))
     sys.exit(0)
@@ -2446,9 +2449,9 @@ class CropPrepareTests(PrepareHarness):
         on_disk = json.loads((self.out / "plan.json").read_text(encoding="utf-8"))
         self.assertEqual(on_disk["plan_id"], plan["plan_id"])
         record = json.loads((self.out / "records" / "crop" / "0001_B1.json").read_text(encoding="utf-8"))
-        self.assertEqual(record["settings"]["crop"]["auto"], True)
+        self.assertEqual(record["settings"]["nodes"]["items"][0]["crop"]["auto"], True)
         original = json.loads((self.out / "records" / "original" / "0001_B1.json").read_text(encoding="utf-8"))
-        self.assertIsNone(original["settings"]["crop"])
+        self.assertIsNone(original["settings"]["nodes"]["items"][0]["crop"])
         self.assertNotIn("auto_crop", original)
 
     def test_resume_keeps_the_pictures_and_asks_again_where_auto_crop_failed(self) -> None:

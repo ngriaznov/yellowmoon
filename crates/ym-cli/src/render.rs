@@ -703,7 +703,7 @@ fn apply_settings(
     }
     let mut warning = None;
     if !overrides.is_empty() {
-        let auto_ev = resolved.estimates.exposure_ev;
+        let auto_ev = resolved.estimates.input.exposure_ev;
         let patch = overrides.patch(auto_ev);
         if !patch.is_empty() {
             resolved = session
@@ -712,7 +712,7 @@ fn apply_settings(
         }
         if let (Some(offset), None) = (overrides.exposure_offset, overrides.exposure) {
             let wanted = auto_ev + offset;
-            let got = resolved.values.exposure_ev;
+            let got = resolved.values.input.exposure_ev;
             if (got - wanted).abs() > 1e-9 {
                 warning = Some(format!(
                     "the exposure is limited to {got:+.2} EV (automatic {auto_ev:+.2} plus {offset:+.2} would be {wanted:+.2})."
@@ -725,7 +725,7 @@ fn apply_settings(
     // as the panel's Done sends it.
     let mut auto_crop_field = None;
     if let Some(aspect) = auto_crop {
-        match session.suggest_crop(id, aspect, resolved.settings.orientation) {
+        match session.suggest_crop(id, aspect, resolved.settings.input().orientation) {
             Ok(suggestion) => {
                 let crop = suggestion.frames.first().and_then(|frame| {
                     let whole = frame.rect.width > 1.0 - 1e-6 && frame.rect.height > 1.0 - 1e-6;

@@ -34,10 +34,10 @@ use ym_core::pipeline::{
     ViewportRect, ViewportState,
 };
 use ym_core::settings::{Crop, CropAspect, NormRect, SettingsPatch};
+use ym_core::settings::{NodeId, NodePatch};
 use ym_export::{BitDepth, ExportOptions, FormatKind, IfExists, Size, TiffCompression};
 use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
-use ym_core::settings::{NodeId, NodePatch};
 
 const MODEL: &str = "ILCE-7RM4";
 

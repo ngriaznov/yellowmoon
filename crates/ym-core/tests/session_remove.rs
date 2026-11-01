@@ -18,8 +18,8 @@ use ym_core::session::{
     AppleAutoEnv, EventSink, OpenOptions, PhotoId, PhotoStatus, PictureInput, PictureRenderer,
     Session, SessionError, SessionEvent,
 };
-use ym_core::settings::{PercentSetting, SettingsPatch};
 use ym_core::settings::{GradePatch, NodeId, NodePatch};
+use ym_core::settings::{PercentSetting, SettingsPatch};
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -255,7 +255,10 @@ fn undo_puts_the_photos_back_where_they_were_with_their_settings_picks_and_estim
         );
     }
     let r = session.settings(ids[3]).unwrap();
-    assert_eq!((r.values.input.kelvin, r.values.main.grade.contrast), (4300.0, 25.0));
+    assert_eq!(
+        (r.values.input.kelvin, r.values.main.grade.contrast),
+        (4300.0, 25.0)
+    );
     assert!(!r.auto.input.white_balance);
     assert_eq!(session.status(ids[1]), Some(PhotoStatus::Ready));
     // Undo is for the last removal, once.

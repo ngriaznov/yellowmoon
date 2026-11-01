@@ -400,7 +400,9 @@ fn a_lens_changes_the_fit_view_and_a_slider_move_re_runs_only_the_lens_with(r: &
     assert_eq!(total.lens_groups, 4, "{total:?}");
 
     // A colour edit does not run the lens again: the group's key does not hold it.
-    let warmer = edit(&with_lens(&src, VINTAGE), |s| s.main_grade_mut().brightness = 20.0);
+    let warmer = edit(&with_lens(&src, VINTAGE), |s| {
+        s.main_grade_mut().brightness = 20.0
+    });
     let f = frame(r, &warmer, &state);
     assert_eq!(lens_work(&f.report.runs), (0, 0, 0), "{:?}", f.report.runs);
     assert_eq!(f.report.runs.raw_work(), 0);
@@ -1632,7 +1634,7 @@ fn an_export_of_reshaped_bokeh_with_the_lens_on_the_device_is_the_cpu_export_wit
 fn an_export_with_the_lens_on_the_device_is_the_cpu_export_within_tolerance_with(d: &Developed) {
     let Some(gpu) = gpu() else { return };
     let patch: SettingsPatch = serde_json::from_str(
-        r#"{ "lens": { "kind": "vintage", "flares": 60, "edges": 50, "anamorphic": 50 } }"#,
+        r#"{ "nodes": { "input": { "lens": { "kind": "vintage", "flares": 60, "edges": 50, "anamorphic": 50 } } } }"#,
     )
     .expect("patch");
     d.session.update_settings(d.id, &patch).expect("settings");
@@ -1715,7 +1717,7 @@ fn viewport_jobs_between_the_lens_tiles_of_an_export_of_reshaped_bokeh_change_no
 fn viewport_jobs_between_the_lens_tiles_of_an_export_change_nothing_with(d: &Developed) {
     let Some(gpu) = gpu() else { return };
     let patch: SettingsPatch = serde_json::from_str(
-        r#"{ "lens": { "kind": "vintage", "flares": 60, "edges": 50, "anamorphic": 50 } }"#,
+        r#"{ "nodes": { "input": { "lens": { "kind": "vintage", "flares": 60, "edges": 50, "anamorphic": 50 } } } }"#,
     )
     .expect("patch");
     d.session.update_settings(d.id, &patch).expect("settings");

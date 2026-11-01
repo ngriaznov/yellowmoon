@@ -453,13 +453,13 @@ fn develop_rows(
             "Look",
             format!(
                 "{} at {}%",
-                view.settings.look,
-                trim_number(view.settings.look_intensity, 1)
+                view.settings.output().look,
+                trim_number(view.settings.output().look_intensity, 1)
             ),
         ),
         (
             "Auto exposure",
-            format!("{} EV", format_signed_ev(e.exposure_ev)),
+            format!("{} EV", format_signed_ev(e.input.exposure_ev)),
         ),
         (
             "Auto light",
@@ -473,8 +473,8 @@ fn develop_rows(
             "Auto white",
             format!(
                 "{} K, tint {}",
-                trim_number(e.kelvin, 0),
-                trim_number(e.tint, 1)
+                trim_number(e.input.kelvin, 0),
+                trim_number(e.input.tint, 1)
             ),
         ),
         // What the Auto provider did to the values above (`docs/19` section 8, `docs/22` section 13.4).
@@ -495,17 +495,17 @@ fn develop_rows(
             "Auto sharpen",
             format!(
                 "amount {}, radius {} px",
-                trim_number(e.sharpen.amount, 0),
-                trim_number(e.sharpen.radius_px, 2)
+                trim_number(e.input.sharpen.amount, 0),
+                trim_number(e.input.sharpen.radius_px, 2)
             ),
         ),
         (
             "Auto noise red.",
             format!(
                 "luminance {}, colour {}, detail {}",
-                trim_number(e.noise_reduction.luminance, 0),
-                trim_number(e.noise_reduction.color, 0),
-                trim_number(e.noise_reduction.detail, 0)
+                trim_number(e.input.noise_reduction.luminance, 0),
+                trim_number(e.input.noise_reduction.color, 0),
+                trim_number(e.input.noise_reduction.detail, 0)
             ),
         ),
     ]

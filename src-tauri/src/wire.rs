@@ -13,11 +13,15 @@
 //! * Ids are named numbers and strings (`PhotoId`, `LookId`, `ExportJobId`), as in `types.ts`.
 //! * `Orientation` and `BitDepth` are the literal unions of `types.ts` (`0 | 90 | 180 | 270`,
 //!   `8 | 16`).
-//! * `SettingsPatch` is the core's patch, a little more generous than `Partial<DevelopSettings>`:
-//!   nested objects (`decode`, `rolloff`, `lens`, `color_balance`, `curve`) and a manual `white_balance`,
-//!   `sharpen` or `noise_reduction` may leave parts out, and `crop` and `white_pick` may be `null`
-//!   to clear them. Everything `Partial<DevelopSettings>` accepts is accepted. `color_warp` is the
-//!   whole list of pins, as in `types.ts`.
+//! * Settings are node-first (`docs/23` section 3): `DevelopSettings` is `{ nodes: { items, links } }`
+//!   with the items told by `kind` (`NodeItem`), `NodeId` is `"input" | "output" | number`, and
+//!   `SettingsPatch` is the core's node patch (`{ nodes, remove, links }`), a little more generous
+//!   than a partial of the settings: nested objects (`decode`, `rolloff`, `lens`, `trim`, `grade`,
+//!   `color_balance`, `curve`) and a manual `white_balance`, `sharpen` or `noise_reduction` may leave
+//!   parts out, and `crop`, `white_pick` and a mask row's `box` may be `null` to clear them. Its
+//!   `nodes` are keyed by the id as a string (`"input"`, `"1"`). `color_warp` is the whole list of
+//!   pins. A flat patch of Yellowmoon 0.1 is an unknown field here (`deny_unknown_fields`) and is refused
+//!   with the sentence of `SettingsError::OldForm` by the core's own patch type.
 //! * A colour-warp pin on the bridge has every field (`ColorWarpPin` of `types.ts`); only a settings
 //!   document (`ym render --settings`, `ym:Settings`) may leave out all but `source`.
 //! * `MatchKind` has no `forced` variant (only the CLI's `--profile` makes one).
@@ -791,16 +795,73 @@ impl Type for Orientation {
     }
 }
 
-/// Every control in the UI and every CLI flag maps to one field. Defaults reproduce the
-/// automatic development.
+/// A node's id: `"input"`, `"output"` or a number (Main is 1). The core's [`ym_core::settings::NodeId`] with
+/// the TypeScript type of `types.ts`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct NodeId(pub ym_core::settings::NodeId);
+
+impl Type for NodeId {
+    fn definition(_: &mut specta::Types) -> DataType {
+        DataType::Reference(specta_typescript::define("\"input\" | \"output\" | number"))
+    }
+}
+
+/// What a node is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeKind {
+    /// The fixed Input.
+    Input,
+    /// The fixed Output.
+    Output,
+    /// A corrector.
+    Corrector,
+}
+
+/// A port of a node: a picture or a key (a mask).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum Port {
+    /// The LogC4 picture.
+    Picture,
+    /// A mask.
+    Key,
+}
+
+/// One end of a link: a node and one of its ports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct NodeRef {
+    /// The node.
+    pub node: NodeId,
+    /// The port.
+    pub port: Port,
+}
+
+/// A link from an output port to an input port (`docs/23` section 3.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct NodeLink {
+    /// The output port the link starts at.
+    pub from: NodeRef,
+    /// The input port it ends at.
+    pub to: NodeRef,
+}
+
+/// A corrector's trims: an exposure trim in stops and a temperature and tint trim.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct NodeTrim {
+    /// Stops, -4 to 4.
+    pub exposure_ev: Num,
+    /// -100 to 100.
+    pub temperature: Num,
+    /// -100 to 100.
+    pub tint: Num,
+}
+
+/// A corrector's grade: the fields the settings had before they were nodes, with the same names and
+/// types. Auto belongs to Main: in another corrector Auto reads as a manual 0.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
-pub struct DevelopSettings {
-    /// Look tab.
-    pub look: LookId,
-    /// 0 to 100 percent.
-    pub look_intensity: Num,
-    /// Light › Exposure: Auto or an absolute value, -4 to +4 EV.
-    pub exposure: ExposureSetting,
+pub struct NodeGrade {
     /// Light › Exposure › Contrast: Auto or a value, -100 to 100.
     pub contrast: PercentSetting,
     /// -100 to 100.
@@ -813,38 +874,360 @@ pub struct DevelopSettings {
     pub white: Num,
     /// Light › High dynamic range › Black: Auto or a value, -100 to 100.
     pub black: PercentSetting,
-    /// Colour › White balance, the light presets.
-    pub light_source: LightSource,
-    /// Colour › White balance: Auto or Kelvin and tint.
-    pub white_balance: WhiteBalanceSetting,
     /// The three colour-balance wheels.
     pub color_balance: ColorBalance,
     /// Colour › Colour balance › Saturation: Auto or a value, -100 to 100.
     pub saturation: PercentSetting,
     /// Colour › Colour warp: its pins.
     pub color_warp: ColorWarp,
-    /// Look › Lens: the lens and its three amounts.
-    pub lens: LensSettings,
-    /// Detail › Sharpening: Auto or amount and radius.
-    pub sharpen: SharpenSetting,
-    /// Detail › Sharpening › Output: the strength of the sharpening of the picture at the size it
-    /// is shown and written, in percent, 0 to 200, default 100 (a plain number, not Auto).
-    pub output_sharpening: Num,
-    /// Detail › Noise reduction: Auto or the three strengths.
-    pub noise_reduction: NoiseReductionSetting,
     /// Luma, red, green and blue curves.
     pub curve: Curves,
-    /// RAW › Decode switches.
-    pub decode: DecodeOptions,
+}
+
+/// Add or subtract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskMode {
+    /// The row adds to the mask.
+    Add,
+    /// The row takes away from the mask.
+    Subtract,
+}
+
+/// One stroke of a Brush mask.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct BrushStroke {
+    /// The brush's size, 0.001 to 0.25 of the long edge.
+    pub size: Num,
+    /// The brush's hardness, 0 to 1.
+    pub hardness: Num,
+    /// An eraser stroke.
+    pub erase: bool,
+    /// The stroke's points in the photo frame.
+    pub points: Vec<[Num; 2]>,
+}
+
+/// One row of a node's masks: `kind` and the fields every row has (`mode`, `invert`, `enabled`,
+/// `opacity`), then the kind's own (`docs/23` section 3.3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MaskItem {
+    /// SAM 2.1 from clicks or a box.
+    Object {
+        /// Add or subtract.
+        mode: MaskMode,
+        /// This mask alone is inverted.
+        invert: bool,
+        /// Off (the eye) counts as absent.
+        enabled: bool,
+        /// 0 to 1.
+        opacity: Num,
+        /// Clicks `[x, y, positive]` in the photo frame, at most 256.
+        points: Vec<(Num, Num, bool)>,
+        /// A box `[x0, y0, x1, y1]` in the photo frame, or null.
+        #[serde(rename = "box")]
+        box_: Option<[Num; 4]>,
+        /// Feather, 0 to 1.
+        feather: Num,
+        /// Grow, -1 to 1.
+        grow: Num,
+        /// Refine edges, 0 to 1.
+        refine: Num,
+    },
+    /// Apple Vision's foreground.
+    Subject {
+        /// Add or subtract.
+        mode: MaskMode,
+        /// This mask alone is inverted.
+        invert: bool,
+        /// Off (the eye) counts as absent.
+        enabled: bool,
+        /// 0 to 1.
+        opacity: Num,
+        /// Feather, 0 to 1.
+        feather: Num,
+        /// Grow, -1 to 1.
+        grow: Num,
+        /// Refine edges, 0 to 1.
+        refine: Num,
+    },
+    /// Apple Vision's people.
+    People {
+        /// Add or subtract.
+        mode: MaskMode,
+        /// This mask alone is inverted.
+        invert: bool,
+        /// Off (the eye) counts as absent.
+        enabled: bool,
+        /// 0 to 1.
+        opacity: Num,
+        /// Feather, 0 to 1.
+        feather: Num,
+        /// Grow, -1 to 1.
+        grow: Num,
+        /// Refine edges, 0 to 1.
+        refine: Num,
+    },
+    /// The blur map with a level and a softness.
+    Background {
+        /// Add or subtract.
+        mode: MaskMode,
+        /// This mask alone is inverted.
+        invert: bool,
+        /// Off (the eye) counts as absent.
+        enabled: bool,
+        /// 0 to 1.
+        opacity: Num,
+        /// Where the blur map's own decision falls, 0 to 1.
+        level: Num,
+        /// Softness of the threshold, 0 to 1.
+        softness: Num,
+        /// Feather, 0 to 1.
+        feather: Num,
+        /// Grow, -1 to 1.
+        grow: Num,
+        /// Refine edges, 0 to 1.
+        refine: Num,
+    },
+    /// A line, an angle and a feather.
+    Linear {
+        /// Add or subtract.
+        mode: MaskMode,
+        /// This mask alone is inverted.
+        invert: bool,
+        /// Off (the eye) counts as absent.
+        enabled: bool,
+        /// 0 to 1.
+        opacity: Num,
+        /// A point of the line in the photo frame.
+        center: [Num; 2],
+        /// The line's angle in degrees, -180 to 180.
+        angle_deg: Num,
+        /// Feather, 0 to 1.
+        feather: Num,
+    },
+    /// An ellipse.
+    Radial {
+        /// Add or subtract.
+        mode: MaskMode,
+        /// This mask alone is inverted.
+        invert: bool,
+        /// Off (the eye) counts as absent.
+        enabled: bool,
+        /// 0 to 1.
+        opacity: Num,
+        /// The centre in the photo frame.
+        center: [Num; 2],
+        /// The two radii, 0.002 to 1 of the long edge.
+        radii: [Num; 2],
+        /// The angle in degrees, -180 to 180.
+        angle_deg: Num,
+        /// Feather, 0 to 1.
+        feather: Num,
+    },
+    /// Strokes.
+    Brush {
+        /// Add or subtract.
+        mode: MaskMode,
+        /// This mask alone is inverted.
+        invert: bool,
+        /// Off (the eye) counts as absent.
+        enabled: bool,
+        /// 0 to 1.
+        opacity: Num,
+        /// The strokes in the order they were drawn, at most 100,000 points in all.
+        strokes: Vec<BrushStroke>,
+        /// Feather, 0 to 1.
+        feather: Num,
+        /// Grow, -1 to 1.
+        grow: Num,
+        /// Refine edges, 0 to 1.
+        refine: Num,
+    },
+    /// A chroma range.
+    ColorRange {
+        /// Add or subtract.
+        mode: MaskMode,
+        /// This mask alone is inverted.
+        invert: bool,
+        /// Off (the eye) counts as absent.
+        enabled: bool,
+        /// 0 to 1.
+        opacity: Num,
+        /// The centre in the chroma plane of C9, at most 0.5 long.
+        center: [Num; 2],
+        /// The width, 0.005 to 0.3.
+        width: Num,
+        /// The softness, 0 to 1.
+        softness: Num,
+    },
+    /// A brightness range.
+    BrightnessRange {
+        /// Add or subtract.
+        mode: MaskMode,
+        /// This mask alone is inverted.
+        invert: bool,
+        /// Off (the eye) counts as absent.
+        enabled: bool,
+        /// 0 to 1.
+        opacity: Num,
+        /// The low end, 0 to 1.
+        low: Num,
+        /// The high end, 0 to 1.
+        high: Num,
+        /// The softness, 0 to 1.
+        softness: Num,
+    },
+}
+
+/// A node's masks: its Invert and the rows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct MaskSettings {
+    /// The node's Invert: `m = 1 - m`.
+    pub invert: bool,
+    /// The rows, in the order they are drawn and combined, at most 64.
+    pub items: Vec<MaskItem>,
+}
+
+/// The Input: the raw, light and framing settings (`docs/23` section 3.2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct InputNode {
+    /// `"input"`.
+    pub id: NodeId,
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
+    /// Light › Exposure: Auto or an absolute value, -4 to +4 EV.
+    pub exposure: ExposureSetting,
+    /// Colour › White balance, the light presets.
+    pub light_source: LightSource,
+    /// Colour › White balance: Auto or Kelvin and tint.
+    pub white_balance: WhiteBalanceSetting,
+    /// Pick white: the sampled point `[x, y]` in [0, 1]², measured on the photo as the camera
+    /// oriented it.
+    pub white_pick: Option<[Num; 2]>,
     /// RAW › Range: the highlight range and the low-light toe.
     pub rolloff: Rolloff,
+    /// RAW › Decode switches.
+    pub decode: DecodeOptions,
+    /// Detail › Noise reduction: Auto or the three strengths.
+    pub noise_reduction: NoiseReductionSetting,
+    /// Detail › Sharpening: Auto or amount and radius.
+    pub sharpen: SharpenSetting,
+    /// Look › Lens: the lens and its three amounts.
+    pub lens: LensSettings,
     /// Crop; null when the photo isn't cropped.
     pub crop: Option<Crop>,
     /// Orientation after the camera's EXIF orientation.
     pub orientation: Orientation,
-    /// Pick white: the sampled point `[x, y]` in [0, 1]², measured on the photo as the camera
-    /// oriented it.
-    pub white_pick: Option<[Num; 2]>,
+}
+
+/// The Output: the look and the output sharpening.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct OutputNode {
+    /// `"output"`.
+    pub id: NodeId,
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
+    /// Look tab.
+    pub look: LookId,
+    /// 0 to 100 percent.
+    pub look_intensity: Num,
+    /// Detail › Sharpening › Output, in percent, 0 to 200, default 100.
+    pub output_sharpening: Num,
+}
+
+/// A corrector node, Main (id 1) included.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct CorrectorNode {
+    /// 1 to 2147483647 (Main is 1).
+    pub id: NodeId,
+    /// The card's name, 1 to 32 characters.
+    pub name: String,
+    /// A bypassed node passes its picture through.
+    pub bypass: bool,
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
+    /// The trims.
+    pub trim: NodeTrim,
+    /// The grade.
+    pub grade: NodeGrade,
+    /// The masks.
+    pub masks: MaskSettings,
+}
+
+/// A node of the graph, told by its `kind`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NodeItem {
+    /// The Input.
+    Input(InputNode),
+    /// The Output.
+    Output(OutputNode),
+    /// A corrector.
+    Corrector(CorrectorNode),
+}
+
+/// The graph of a photo: its nodes and the links between them (`docs/23` section 3.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct NodesSettings {
+    /// The nodes: the Input, the correctors by id, the Output.
+    pub items: Vec<NodeItem>,
+    /// The links.
+    pub links: Vec<NodeLink>,
+}
+
+/// The settings of a photo: the graph of its nodes (`docs/23` section 3). Every control in the UI and every
+/// CLI flag is a field of one node.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct DevelopSettings {
+    /// The graph.
+    pub nodes: NodesSettings,
+}
+
+#[cfg(test)]
+impl DevelopSettings {
+    /// The Input (tests).
+    pub fn input(&self) -> &InputNode {
+        self.nodes
+            .items
+            .iter()
+            .find_map(|i| match i {
+                NodeItem::Input(n) => Some(n),
+                _ => None,
+            })
+            .expect("a graph has its Input")
+    }
+
+    /// Main, node 1 (tests).
+    pub fn main(&self) -> &CorrectorNode {
+        self.nodes
+            .items
+            .iter()
+            .find_map(|i| match i {
+                NodeItem::Corrector(n) if n.id == NodeId(ym_core::settings::NodeId::MAIN) => {
+                    Some(n)
+                }
+                _ => None,
+            })
+            .expect("a graph has Main")
+    }
+
+    /// Main's grade (tests).
+    pub fn main_grade(&self) -> &NodeGrade {
+        &self.main().grade
+    }
+
+    /// The Output (tests).
+    pub fn output(&self) -> &OutputNode {
+        self.nodes
+            .items
+            .iter()
+            .find_map(|i| match i {
+                NodeItem::Output(n) => Some(n),
+                _ => None,
+            })
+            .expect("a graph has its Output")
+    }
 }
 
 /// Reads a field that may be absent (leave it), `null` (clear it) or a value (set it).
@@ -992,23 +1375,26 @@ pub struct CurvesPatch {
     pub blue: Option<Vec<[Num; 2]>>,
 }
 
-/// A partial update: only the fields present change (`update_settings(photo_id, patch)`).
-///
-/// Serialising leaves absent fields out (so that `crop: null`, which clears the crop, is told
-/// apart from no `crop` at all); the derive cannot do that without `skip_serializing_if`, which
-/// the unified TypeScript export refuses, hence the manual `Serialize`.
+/// A corrector's trims to change. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct TrimPatch {
+    /// New exposure trim in stops.
+    #[serde(default)]
+    pub exposure_ev: Option<Num>,
+    /// New temperature trim.
+    #[serde(default)]
+    pub temperature: Option<Num>,
+    /// New tint trim.
+    #[serde(default)]
+    pub tint: Option<Num>,
+}
+
+/// A corrector's grade to change: the old patch's fields, under the same names. Serialising leaves
+/// absent fields out (see [`NodePatch`]).
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
-pub struct SettingsPatch {
-    /// New look.
-    #[serde(default)]
-    pub look: Option<LookId>,
-    /// New look intensity.
-    #[serde(default)]
-    pub look_intensity: Option<Num>,
-    /// New exposure (Manual to set it, Auto to reset it).
-    #[serde(default)]
-    pub exposure: Option<ExposureSetting>,
+pub struct GradePatch {
     /// New contrast: Auto, a manual value, or a plain number (0 is Auto).
     #[serde(default)]
     pub contrast: Option<PercentPatch>,
@@ -1027,12 +1413,6 @@ pub struct SettingsPatch {
     /// New black: Auto, a manual value, or a plain number (0 is Auto).
     #[serde(default)]
     pub black: Option<PercentPatch>,
-    /// New light preset.
-    #[serde(default)]
-    pub light_source: Option<LightSource>,
-    /// New white balance; a manual one may leave out Kelvin or tint.
-    #[serde(default)]
-    pub white_balance: Option<WhiteBalancePatch>,
     /// Colour-balance wheels to change.
     #[serde(default)]
     pub color_balance: Option<ColorBalancePatch>,
@@ -1042,27 +1422,221 @@ pub struct SettingsPatch {
     /// New colour warp: the whole list of pins (`{ pins: [] }` removes them all).
     #[serde(default)]
     pub color_warp: Option<ColorWarp>,
-    /// Lens parts to change.
-    #[serde(default)]
-    pub lens: Option<LensPatch>,
-    /// New sharpening; a manual one may leave out a part.
-    #[serde(default)]
-    pub sharpen: Option<SharpenPatch>,
-    /// New output sharpening amount, percent.
-    #[serde(default)]
-    pub output_sharpening: Option<Num>,
-    /// New noise reduction; a manual one may leave out a part.
-    #[serde(default)]
-    pub noise_reduction: Option<NoiseReductionPatch>,
     /// Curves to replace.
     #[serde(default)]
     pub curve: Option<CurvesPatch>,
-    /// Decode switches to change.
+}
+
+impl Serialize for TrimPatch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        macro_rules! put {
+            ($($field:ident),* $(,)?) => {
+                $(if let Some(v) = &self.$field { map.serialize_entry(stringify!($field), v)?; })*
+            };
+        }
+        put!(exposure_ev, temperature, tint);
+        map.end()
+    }
+}
+
+impl Serialize for GradePatch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        macro_rules! put {
+            ($($field:ident),* $(,)?) => {
+                $(if let Some(v) = &self.$field { map.serialize_entry(stringify!($field), v)?; })*
+            };
+        }
+        put!(
+            contrast,
+            brightness,
+            highlights,
+            shadows,
+            white,
+            black,
+            color_balance,
+            saturation,
+            color_warp,
+            curve,
+        );
+        map.end()
+    }
+}
+
+/// A partial of one mask row's fields (`masks.edit`, `docs/23` section 3.7). It cannot change the
+/// row's kind.
+///
+/// Serialising leaves absent fields out, so that `box: null` (which takes the box away) is told apart from no `box`
+/// at all; the derive cannot do that without `skip_serializing_if`, which the unified TypeScript export refuses,
+/// hence the manual `Serialize`.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct MaskPatch {
+    /// The row's own kind, or nothing.
     #[serde(default)]
-    pub decode: Option<DecodePatch>,
+    pub kind: Option<String>,
+    /// Add or subtract.
+    #[serde(default)]
+    pub mode: Option<MaskMode>,
+    /// This mask alone is inverted.
+    #[serde(default)]
+    pub invert: Option<bool>,
+    /// The eye.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// 0 to 1.
+    #[serde(default)]
+    pub opacity: Option<Num>,
+    /// Feather.
+    #[serde(default)]
+    pub feather: Option<Num>,
+    /// Grow.
+    #[serde(default)]
+    pub grow: Option<Num>,
+    /// Refine edges.
+    #[serde(default)]
+    pub refine: Option<Num>,
+    /// An Object row's clicks, replaced whole.
+    #[serde(default)]
+    pub points: Option<Vec<(Num, Num, bool)>>,
+    /// An Object row's box; `null` takes it away.
+    #[serde(default, rename = "box", deserialize_with = "double_option")]
+    #[specta(type = Option<[Num; 4]>)]
+    pub box_: Option<Option<[Num; 4]>>,
+    /// A Background row's level.
+    #[serde(default)]
+    pub level: Option<Num>,
+    /// The softness of a Background, Colour range or Brightness range row.
+    #[serde(default)]
+    pub softness: Option<Num>,
+    /// A Linear, Radial or Colour range row's centre.
+    #[serde(default)]
+    pub center: Option<[Num; 2]>,
+    /// A Linear or Radial row's angle.
+    #[serde(default)]
+    pub angle_deg: Option<Num>,
+    /// A Radial row's radii.
+    #[serde(default)]
+    pub radii: Option<[Num; 2]>,
+    /// A Brush row's strokes, replaced whole.
+    #[serde(default)]
+    pub strokes: Option<Vec<BrushStroke>>,
+    /// Strokes added after the existing ones (a Brush row).
+    #[serde(default)]
+    pub strokes_append: Option<Vec<BrushStroke>>,
+    /// Keep only the first n strokes (a Brush row; the inverse of an append).
+    #[serde(default)]
+    pub strokes_keep: Option<u32>,
+    /// A Colour range row's width.
+    #[serde(default)]
+    pub width: Option<Num>,
+    /// A Brightness range row's low end.
+    #[serde(default)]
+    pub low: Option<Num>,
+    /// A Brightness range row's high end.
+    #[serde(default)]
+    pub high: Option<Num>,
+}
+
+impl Serialize for MaskPatch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        macro_rules! put {
+            ($($field:ident => $key:expr),* $(,)?) => {
+                $(if let Some(v) = &self.$field { map.serialize_entry($key, v)?; })*
+            };
+        }
+        put!(
+            kind => "kind", mode => "mode", invert => "invert", enabled => "enabled",
+            opacity => "opacity", feather => "feather", grow => "grow", refine => "refine",
+            points => "points", box_ => "box", level => "level", softness => "softness",
+            center => "center", angle_deg => "angle_deg", radii => "radii", strokes => "strokes",
+            strokes_append => "strokes_append", strokes_keep => "strokes_keep", width => "width",
+            low => "low", high => "high",
+        );
+        map.end()
+    }
+}
+
+/// A node's masks to change: its Invert, the whole list of rows, and rows by index. Serialising
+/// leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct MasksPatch {
+    /// The node's Invert.
+    #[serde(default)]
+    pub invert: Option<bool>,
+    /// The whole list of rows: add, remove or reorder rows.
+    #[serde(default)]
+    pub items: Option<Vec<MaskItem>>,
+    /// Row patches by the row's index (a string), applied after `items`.
+    #[serde(default)]
+    pub edit: Option<std::collections::BTreeMap<String, MaskPatch>>,
+}
+
+impl Serialize for MasksPatch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        macro_rules! put {
+            ($($field:ident),* $(,)?) => {
+                $(if let Some(v) = &self.$field { map.serialize_entry(stringify!($field), v)?; })*
+            };
+        }
+        put!(invert, items, edit);
+        map.end()
+    }
+}
+
+/// A partial of one node's fields (`docs/23` section 3.7), the fields of every kind in one flat
+/// object: one the node's kind does not have is refused by the core. A node the photo does not
+/// have is added when `kind` is given.
+///
+/// Serialising leaves absent fields out (so that `crop: null`, which clears the crop, is told apart from
+/// no `crop` at all); the derive cannot do that without `skip_serializing_if`, which the unified
+/// TypeScript export refuses, hence the manual `Serialize`.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct NodePatch {
+    /// The node's kind: needed to add a node.
+    #[serde(default)]
+    pub kind: Option<NodeKind>,
+    /// The card's place.
+    #[serde(default)]
+    pub pos: Option<[Num; 2]>,
+    /// New exposure (Manual to set it, Auto to reset it).
+    #[serde(default)]
+    pub exposure: Option<ExposureSetting>,
+    /// New light preset.
+    #[serde(default)]
+    pub light_source: Option<LightSource>,
+    /// New white balance; a manual one may leave out Kelvin or tint.
+    #[serde(default)]
+    pub white_balance: Option<WhiteBalancePatch>,
+    /// New white pick; `null` clears it. A pick also sets `light_source` and `white_balance` to
+    /// Auto unless the same patch says otherwise.
+    #[serde(default, deserialize_with = "double_option")]
+    #[specta(type = Option<[Num; 2]>)]
+    pub white_pick: Option<Option<[Num; 2]>>,
     /// RAW › Range amounts to change.
     #[serde(default)]
     pub rolloff: Option<RolloffPatch>,
+    /// Decode switches to change.
+    #[serde(default)]
+    pub decode: Option<DecodePatch>,
+    /// New noise reduction; a manual one may leave out a part.
+    #[serde(default)]
+    pub noise_reduction: Option<NoiseReductionPatch>,
+    /// New sharpening; a manual one may leave out a part.
+    #[serde(default)]
+    pub sharpen: Option<SharpenPatch>,
+    /// Lens parts to change.
+    #[serde(default)]
+    pub lens: Option<LensPatch>,
     /// New crop; `null` removes it.
     #[serde(default, deserialize_with = "double_option")]
     #[specta(type = Option<Crop>)]
@@ -1070,61 +1644,123 @@ pub struct SettingsPatch {
     /// New orientation.
     #[serde(default)]
     pub orientation: Option<Orientation>,
-    /// New white pick; `null` clears it. A pick also sets `light_source` and `white_balance` to
-    /// Auto unless the same patch says otherwise.
-    #[serde(default, deserialize_with = "double_option")]
-    #[specta(type = Option<[Num; 2]>)]
-    pub white_pick: Option<Option<[Num; 2]>>,
+    /// New look.
+    #[serde(default)]
+    pub look: Option<LookId>,
+    /// New look intensity.
+    #[serde(default)]
+    pub look_intensity: Option<Num>,
+    /// New output sharpening amount, percent.
+    #[serde(default)]
+    pub output_sharpening: Option<Num>,
+    /// New name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Bypass on or off.
+    #[serde(default)]
+    pub bypass: Option<bool>,
+    /// Trims to change.
+    #[serde(default)]
+    pub trim: Option<TrimPatch>,
+    /// Grade fields to change.
+    #[serde(default)]
+    pub grade: Option<GradePatch>,
+    /// Masks to change.
+    #[serde(default)]
+    pub masks: Option<MasksPatch>,
+}
+
+impl Serialize for NodePatch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        // One entry per field that is present; `Some(None)` is a present `null`.
+        macro_rules! put {
+            ($($field:ident),* $(,)?) => {
+                $(if let Some(v) = &self.$field { map.serialize_entry(stringify!($field), v)?; })*
+            };
+        }
+        put!(
+            kind,
+            pos,
+            exposure,
+            light_source,
+            white_balance,
+            white_pick,
+            rolloff,
+            decode,
+            noise_reduction,
+            sharpen,
+            lens,
+            crop,
+            orientation,
+            look,
+            look_intensity,
+            output_sharpening,
+            name,
+            bypass,
+            trim,
+            grade,
+            masks,
+        );
+        map.end()
+    }
+}
+
+/// A node-level partial update of a photo's settings (`update_settings(photo_id, patch)`, `docs/23`
+/// section 3.7): `nodes` maps node ids (`"input"`, `"output"`, `"1"`, `"2"`, …) to what changes, `remove`
+/// lists the corrector nodes to delete and `links`, when present, replaces the links whole.
+///
+/// Serialising leaves out what is absent; see [`NodePatch`].
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsPatch {
+    /// Node patches by id.
+    #[serde(default)]
+    pub nodes: std::collections::BTreeMap<String, NodePatch>,
+    /// The corrector nodes to delete.
+    #[serde(default)]
+    pub remove: Vec<NodeId>,
+    /// The links, replacing the photo's whole.
+    #[serde(default)]
+    pub links: Option<Vec<NodeLink>>,
 }
 
 impl Serialize for SettingsPatch {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        // One entry per field that is present; `Some(None)` is a present `null`.
-        fn entry<M: SerializeMap, T: Serialize>(
-            map: &mut M,
-            key: &str,
-            value: &Option<T>,
-        ) -> Result<(), M::Error> {
-            match value {
-                Some(v) => map.serialize_entry(key, v),
-                None => Ok(()),
-            }
-        }
         let mut map = serializer.serialize_map(None)?;
-        entry(&mut map, "look", &self.look)?;
-        entry(&mut map, "look_intensity", &self.look_intensity)?;
-        entry(&mut map, "exposure", &self.exposure)?;
-        entry(&mut map, "contrast", &self.contrast)?;
-        entry(&mut map, "brightness", &self.brightness)?;
-        entry(&mut map, "highlights", &self.highlights)?;
-        entry(&mut map, "shadows", &self.shadows)?;
-        entry(&mut map, "white", &self.white)?;
-        entry(&mut map, "black", &self.black)?;
-        entry(&mut map, "light_source", &self.light_source)?;
-        entry(&mut map, "white_balance", &self.white_balance)?;
-        entry(&mut map, "color_balance", &self.color_balance)?;
-        entry(&mut map, "saturation", &self.saturation)?;
-        entry(&mut map, "color_warp", &self.color_warp)?;
-        entry(&mut map, "lens", &self.lens)?;
-        entry(&mut map, "sharpen", &self.sharpen)?;
-        entry(&mut map, "output_sharpening", &self.output_sharpening)?;
-        entry(&mut map, "noise_reduction", &self.noise_reduction)?;
-        entry(&mut map, "curve", &self.curve)?;
-        entry(&mut map, "decode", &self.decode)?;
-        entry(&mut map, "rolloff", &self.rolloff)?;
-        entry(&mut map, "crop", &self.crop)?;
-        entry(&mut map, "orientation", &self.orientation)?;
-        entry(&mut map, "white_pick", &self.white_pick)?;
+        if !self.nodes.is_empty() {
+            map.serialize_entry("nodes", &self.nodes)?;
+        }
+        if !self.remove.is_empty() {
+            map.serialize_entry("remove", &self.remove)?;
+        }
+        if let Some(links) = &self.links {
+            map.serialize_entry("links", links)?;
+        }
         map.end()
     }
 }
 
-/// Which `Auto` fields are still automatic; the UI shows the AUTO tag for these.
+/// Which of the Input's `Auto` fields are still automatic; the UI shows the AUTO tag for these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub struct AutoFlags {
+pub struct InputAutoFlags {
     /// `exposure` is Auto.
     pub exposure: bool,
+    /// `light_source` is Auto.
+    pub light_source: bool,
+    /// `white_balance` is Auto.
+    pub white_balance: bool,
+    /// `sharpen` is Auto.
+    pub sharpen: bool,
+    /// `noise_reduction` is Auto.
+    pub noise_reduction: bool,
+}
+
+/// Which of Main's `Auto` fields are still automatic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct MainAutoFlags {
     /// `contrast` is Auto.
     pub contrast: bool,
     /// `highlights` is Auto.
@@ -1139,14 +1775,15 @@ pub struct AutoFlags {
     pub balance_highlights: bool,
     /// `saturation` is Auto.
     pub saturation: bool,
-    /// `light_source` is Auto.
-    pub light_source: bool,
-    /// `white_balance` is Auto.
-    pub white_balance: bool,
-    /// `sharpen` is Auto.
-    pub sharpen: bool,
-    /// `noise_reduction` is Auto.
-    pub noise_reduction: bool,
+}
+
+/// Which `Auto` fields are still automatic, by node: only the Input and Main can be Auto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AutoFlags {
+    /// The Input's.
+    pub input: InputAutoFlags,
+    /// Main's.
+    pub main: MainAutoFlags,
 }
 
 /// Light classes of the illuminant estimate.
@@ -1547,15 +2184,24 @@ pub struct AutoStatus {
     pub instructions_max_chars: u32,
 }
 
-/// Per-photo automatic estimates (`AutoEstimates` in `types.ts`; the core's `AutoSummary`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
-pub struct AutoEstimates {
+/// What Auto resolves to for the Input (`estimates.input`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct InputEstimates {
     /// `EV_auto` (with Apple Auto's change, when there is one).
     pub exposure_ev: Num,
     /// The Auto Kelvin (with Apple Auto's nudge, when there is one).
     pub kelvin: Num,
     /// The Auto tint.
     pub tint: Num,
+    /// What `sharpen: Auto` resolves to.
+    pub sharpen: SharpenValue,
+    /// What `noise_reduction: Auto` resolves to.
+    pub noise_reduction: NoiseReductionValue,
+}
+
+/// What Auto resolves to for Main (`estimates.main`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct MainEstimates {
     /// What `contrast: Auto` resolves to: 0, or Apple Auto's contrast.
     pub contrast: Num,
     /// What `saturation: Auto` resolves to: 0, or Apple Auto's saturation.
@@ -1570,6 +2216,16 @@ pub struct AutoEstimates {
     pub balance_shadows: [Num; 2],
     /// What the highlights wheel's Auto resolves to: `[0, 0]`, or Apple Auto's highlight colour.
     pub balance_highlights: [Num; 2],
+}
+
+/// Per-photo automatic estimates (`AutoEstimates` in `types.ts`; the core's `AutoSummary`), grouped by
+/// the node each number is for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct AutoEstimates {
+    /// What Auto resolves to for the Input.
+    pub input: InputEstimates,
+    /// What Auto resolves to for Main.
+    pub main: MainEstimates,
     /// Which Auto made these values.
     pub source: AutoSource,
     /// The provider the photo's `apple` state belongs to (`docs/22` section 14.1): the chosen provider
@@ -1585,21 +2241,55 @@ pub struct AutoEstimates {
     pub light_confidence: Num,
     /// The noise model.
     pub noise: NoiseModel,
-    /// What `sharpen: Auto` resolves to.
-    pub sharpen: SharpenValue,
-    /// What `noise_reduction: Auto` resolves to.
-    pub noise_reduction: NoiseReductionValue,
 }
 
-/// `DevelopSettings` with every `Auto` replaced by the number it resolves to.
+/// The Input with every `Auto` replaced by the number it resolves to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
-pub struct ResolvedValues {
+pub struct ResolvedInput {
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
+    /// The exposure in stops.
+    pub exposure_ev: Num,
+    /// `light_source`.
+    pub light_source: LightSource,
+    /// The Kelvin the White balance row shows.
+    pub kelvin: Num,
+    /// The tint the White balance row shows.
+    pub tint: Num,
+    /// The sharpening in effect.
+    pub sharpen: SharpenValue,
+    /// The noise reduction in effect.
+    pub noise_reduction: NoiseReductionValue,
+    /// `lens`.
+    pub lens: LensSettings,
+    /// `decode`.
+    pub decode: DecodeOptions,
+    /// `rolloff`.
+    pub rolloff: Rolloff,
+    /// `crop`.
+    pub crop: Option<Crop>,
+    /// `orientation`.
+    pub orientation: Orientation,
+    /// `white_pick`.
+    pub white_pick: Option<[Num; 2]>,
+}
+
+/// The Output (it has no Auto).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ResolvedOutput {
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
     /// `look`.
     pub look: LookId,
     /// `look_intensity`.
     pub look_intensity: Num,
-    /// The exposure in stops.
-    pub exposure_ev: Num,
+    /// `output_sharpening`.
+    pub output_sharpening: Num,
+}
+
+/// A corrector's grade with every `Auto` replaced by the number it resolves to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct GradeValues {
     /// The contrast in effect: the manual value, or the photo's Auto contrast.
     pub contrast: Num,
     /// `brightness`.
@@ -1612,38 +2302,46 @@ pub struct ResolvedValues {
     pub white: Num,
     /// The black in effect.
     pub black: Num,
-    /// `light_source`.
-    pub light_source: LightSource,
-    /// The Kelvin the White balance row shows.
-    pub kelvin: Num,
-    /// The tint the White balance row shows.
-    pub tint: Num,
     /// The wheels' points in effect.
     pub color_balance: ColorBalancePoints,
     /// The saturation in effect: the manual value, or the photo's Auto saturation.
     pub saturation: Num,
     /// `color_warp`.
     pub color_warp: ColorWarp,
-    /// `lens`.
-    pub lens: LensSettings,
-    /// The sharpening in effect.
-    pub sharpen: SharpenValue,
-    /// `output_sharpening`.
-    pub output_sharpening: Num,
-    /// The noise reduction in effect.
-    pub noise_reduction: NoiseReductionValue,
     /// `curve`.
     pub curve: Curves,
-    /// `decode`.
-    pub decode: DecodeOptions,
-    /// `rolloff`.
-    pub rolloff: Rolloff,
-    /// `crop`.
-    pub crop: Option<Crop>,
-    /// `orientation`.
-    pub orientation: Orientation,
-    /// `white_pick`.
-    pub white_pick: Option<[Num; 2]>,
+}
+
+/// A corrector with its grade resolved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ResolvedCorrector {
+    /// The node's id (Main is 1).
+    pub id: u32,
+    /// `name`.
+    pub name: String,
+    /// `bypass`.
+    pub bypass: bool,
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
+    /// `trim`.
+    pub trim: NodeTrim,
+    /// The grade with its Auto resolved (only Main has Auto).
+    pub grade: GradeValues,
+    /// `masks`.
+    pub masks: MaskSettings,
+}
+
+/// The settings with every `Auto` replaced by the number it resolves to, node by node.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ResolvedValues {
+    /// The Input.
+    pub input: ResolvedInput,
+    /// Main, node 1.
+    pub main: ResolvedCorrector,
+    /// The other correctors, by id (their values are their fields: they have no Auto).
+    pub nodes: Vec<ResolvedCorrector>,
+    /// The Output.
+    pub output: ResolvedOutput,
 }
 
 /// What `get_settings` and `update_settings` return: the panel's whole state for one photo.

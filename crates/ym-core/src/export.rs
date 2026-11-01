@@ -100,6 +100,23 @@ pub use ym_export::naming::default_destination;
 /// template gives (see [`WrittenFiles`]).
 pub const SAME_NAME_IN_JOB_NOTE: &str = "Another photo of this export has the same file name, so this one was saved with a number instead of replacing it.";
 
+/// The note on a JPEG whose `ym:Settings` was left out because the XMP packet would not fit a JPEG
+/// segment (`docs/23` section 3.9): a graph with a lot of brush work. TIFF, PNG and DNG have no
+/// such limit.
+pub const SETTINGS_TOO_LONG_NOTE: &str =
+    "The settings of this photo are too long for a JPEG's XMP, so they are not recorded.";
+
+/// The most bytes an XMP packet may have in a JPEG: the segment holds 65,533 bytes, 29 of them the
+/// header (`docs/23` section 3.9 says 65,502). The margin of the packet's few variable bytes is
+/// inside the 65,502.
+const JPEG_XMP_PACKET_MAX: usize = 65_502;
+
+/// Whether the XMP packet of `xmp` would not fit a JPEG segment.
+fn xmp_too_long_for_jpeg(xmp: &ym_export::xmp::XmpInfo) -> bool {
+    ym_export::xmp::build_xmp(xmp, "image/jpeg")
+        .is_ok_and(|packet| packet.len() > JPEG_XMP_PACKET_MAX)
+}
+
 /// Why a photo could not be exported. The text is plain words with a next step.
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
@@ -1188,7 +1205,7 @@ fn export_photo_unguarded(
         options.color_space
     };
     let exif = exif_of(&photo.meta, params.remove_location);
-    let metadata = Metadata {
+    let mut metadata = Metadata {
         xmp: XmpInfo {
             app_version: ctx.app_version.clone(),
             capture_time: exif.capture_time,
@@ -1212,6 +1229,13 @@ fn export_photo_unguarded(
         },
         exif,
     };
+
+    // A JPEG's XMP is one segment of 65,502 bytes: the pinned settings of a graph with a lot of brush
+    // work may not fit. The file then says nothing of them, and the report says so.
+    if options.format == FormatKind::Jpeg && xmp_too_long_for_jpeg(&metadata.xmp) {
+        metadata.xmp.ym.settings = None;
+        notes.push(SETTINGS_TOO_LONG_NOTE.to_owned());
+    }
 
     // 4. Render and write.
     let cancel_flag = || control.cancel.is_cancelled();

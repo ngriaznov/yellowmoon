@@ -512,6 +512,14 @@ pub struct FieldRef {
     pub field: SettingsField,
 }
 
+impl FieldRef {
+    /// A field of a node.
+    #[must_use]
+    pub const fn new(node: NodeId, field: SettingsField) -> Self {
+        Self { node, field }
+    }
+}
+
 impl std::fmt::Display for FieldRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}.{}", self.node, self.field.path())
