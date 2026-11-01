@@ -34,12 +34,12 @@ describe("the setting", () => {
   });
 
   it("is clamped as the core clamps it: sixteen pins, every value in range", () => {
-    const wild: ColorWarpPin = { source: [3, 4], target: [0.1, 0.1], locked: false, range: 1, shadows: 2, highlights: -1, pivot_ev: 9, exposure_ev: 5 };
+    const wild: ColorWarpPin = { source: [3, 4], target: [0.1, 0.1], locked: false, range: 1, shadows: 2, highlights: -1, pivot_ev: 9, exposure_ev: 5, saturation: 3 };
     const pins = [wild, ...Array.from({ length: WARP_MAX_PINS + 3 }, () => lockedPin([0.1, 0]))];
     const out = clampSettings({ ...defaultSettings(), color_warp: { pins } }).color_warp.pins;
     expect(out).toHaveLength(WARP_MAX_PINS);
     expect(Math.hypot(...out[0]!.source)).toBeCloseTo(WARP_COORD_LIMIT, 12);
-    expect(out[0]).toMatchObject({ range: 0.25, shadows: 1, highlights: 0, pivot_ev: 6, exposure_ev: 2 });
+    expect(out[0]).toMatchObject({ range: 0.25, shadows: 1, highlights: 0, pivot_ev: 6, exposure_ev: 2, saturation: 1 });
     // Settings from before the warp have none.
     const { color_warp: _gone, ...older } = defaultSettings();
     expect(clampSettings(older as never).color_warp).toEqual({ pins: [] });
@@ -131,6 +131,18 @@ describe("the picture follows the pins", () => {
     const held = warpScene(SCENE, [movingPin(hexChroma(SCENE.sky), [0.1, 0.1]), lockedPin(hexChroma(SCENE.far))]);
     expect(held.far).toBe(SCENE.far);
     expect(held.sky).not.toBe(SCENE.sky);
+  });
+
+  it("shows a saturation: a pin that only has one changes its colour, and 0 changes nothing", () => {
+    const at = hexChroma(SCENE.sky);
+    const rgb = (hex: string) => [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
+    const spread = (hex: string) => Math.max(...rgb(hex)) - Math.min(...rgb(hex));
+    expect(warpScene(SCENE, [{ ...movingPin(at), saturation: 0 }])).toBe(SCENE);
+    const richer = warpScene(SCENE, [{ ...movingPin(at), saturation: 0.6 }]);
+    const duller = warpScene(SCENE, [{ ...movingPin(at), saturation: -1 }]);
+    expect(spread(richer.sky)).toBeGreaterThan(spread(SCENE.sky));
+    expect(spread(duller.sky)).toBeLessThan(spread(SCENE.sky));
+    expect(spread(duller.sky)).toBeLessThanOrEqual(1);
   });
 
   it("moves the scene after the light changes and before the look", () => {

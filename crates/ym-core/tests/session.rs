@@ -1265,7 +1265,11 @@ fn edit_everything() -> SettingsPatch {
         saturation: Some(ym_core::settings::PercentSetting::manual_value(15.0)),
         color_warp: Some(ym_core::settings::ColorWarp {
             pins: vec![
-                ym_color::warp::WarpPin::moving([0.12, 0.03], [0.08, 0.1]).into(),
+                ym_color::warp::WarpPin {
+                    saturation: 0.4,
+                    ..ym_color::warp::WarpPin::moving([0.12, 0.03], [0.08, 0.1])
+                }
+                .into(),
                 ym_color::warp::WarpPin::locked_at([-0.05, -0.1]).into(),
             ],
         }),
@@ -1362,6 +1366,11 @@ fn pasting_takes_every_setting_but_the_crop_the_turn_and_the_white_pick() {
         patch.color_warp.as_ref().map(|w| w.pins.len()),
         Some(2),
         "the copy takes the colour warp's pins"
+    );
+    assert_eq!(
+        patch.color_warp.as_ref().map(|w| w.pins[0].saturation),
+        Some(0.4),
+        "and each pin's saturation"
     );
     let own: Vec<_> = [b, c]
         .iter()

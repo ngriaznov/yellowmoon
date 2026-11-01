@@ -838,9 +838,27 @@ fn a_colour_warp_in_a_settings_file_moves_colours_and_locked_pins_alone_do_not()
     assert_eq!(
         moved["settings"]["color_warp"]["pins"][0],
         json!({ "source": [0.0, 0.0], "target": [0.06, 0.04], "locked": false, "range": 0.25,
-            "shadows": 1.0, "highlights": 1.0, "pivot_ev": 0.0, "exposure_ev": 0.0 })
+            "shadows": 1.0, "highlights": 1.0, "pivot_ev": 0.0, "exposure_ev": 0.0,
+            "saturation": 0.0 })
     );
     assert_ne!(warped, plain, "the warp moves the photo's colours");
+    // A pin that stays and only changes saturation is not skipped as a still pin: it changes the
+    // photo, and the settings the JSON reports keep the number. At saturation 0 (or left out) it is
+    // a still pin and the picture is the plain one, byte for byte.
+    let (saturated, more) = render(
+        json!({ "pins": [{ "source": [0.0, 0.0], "range": 0.25, "saturation": 0.6 }] }),
+        "saturated",
+    );
+    assert_eq!(
+        saturated["settings"]["color_warp"]["pins"][0]["saturation"],
+        json!(0.6)
+    );
+    assert_ne!(more, plain, "saturation alone changes the photo's colours");
+    let (_, zero) = render(
+        json!({ "pins": [{ "source": [0.0, 0.0], "range": 0.25, "saturation": 0 }] }),
+        "zero",
+    );
+    assert_eq!(zero, plain, "a pin that changes nothing is no warp");
     // Locked pins alone change nothing, byte for byte.
     let (_, locked) = render(
         json!({ "pins": [{ "source": [0.1, 0.0], "locked": true }, { "source": [-0.05, -0.1], "locked": true, "range": 0.2 }] }),

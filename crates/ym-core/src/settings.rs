@@ -652,7 +652,7 @@ pub type ChromaPoint = [f64; 2];
 /// One pin of Colour › Colour warp (`docs/02` C9b): it moves the colours near `source` to `target`.
 ///
 /// JSON: every field but `source` may be left out when reading (`target` is then `source`, `locked`
-/// false, `range` 0.04, `shadows` and `highlights` 1, `pivot_ev` and `exposure_ev` 0); unknown fields
+/// false, `range` 0.02, `shadows` and `highlights` 1, `pivot_ev`, `exposure_ev` and `saturation` 0); unknown fields
 /// are refused, and writing always writes every field. The values are clamped when the settings are
 /// checked ([`ColorWarp`]).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -674,6 +674,9 @@ pub struct ColorWarpPin {
     pub pivot_ev: f64,
     /// A change of brightness of the pin's colours, in stops, -2 to +2.
     pub exposure_ev: f64,
+    /// A change of saturation of the pin's colours, -1 to +1 (shown as -100 to +100 %): -1 turns
+    /// them grey, +1 doubles their distance from neutral.
+    pub saturation: f64,
 }
 
 /// A pin as a document may write it: everything but `source` has a default.
@@ -695,6 +698,8 @@ struct ColorWarpPinDocument {
     pivot_ev: f64,
     #[serde(default)]
     exposure_ev: f64,
+    #[serde(default)]
+    saturation: f64,
 }
 
 /// A field that may be left out but not `null`: present means `Some`.
@@ -725,6 +730,7 @@ impl From<ColorWarpPinDocument> for ColorWarpPin {
             highlights: d.highlights,
             pivot_ev: d.pivot_ev,
             exposure_ev: d.exposure_ev,
+            saturation: d.saturation,
         }
     }
 }
@@ -740,6 +746,7 @@ impl From<ColorWarpPin> for WarpPin {
             highlights: p.highlights,
             pivot_ev: p.pivot_ev,
             exposure_ev: p.exposure_ev,
+            saturation: p.saturation,
         }
     }
 }
@@ -755,6 +762,7 @@ impl From<WarpPin> for ColorWarpPin {
             highlights: p.highlights,
             pivot_ev: p.pivot_ev,
             exposure_ev: p.exposure_ev,
+            saturation: p.saturation,
         }
     }
 }
@@ -763,8 +771,9 @@ impl From<WarpPin> for ColorWarpPin {
 ///
 /// At most [`WARP_MAX_PINS`]: checking the settings cuts the list there and clamps each pin as
 /// `WarpPin::clamped` does (points scaled back to `|c| <= 0.5`, the range to 0.01…0.25, the tonal
-/// weights to 0…1, the pivot to ±6 and the exposure to ±2 stops; a locked pin's target is its source,
-/// and its weights, pivot and exposure are the defaults). A patch replaces the whole list.
+/// weights to 0…1, the pivot to ±6, the exposure to ±2 stops and the saturation to ±1; a locked
+/// pin's target is its source, and its weights, pivot, exposure and saturation are the defaults).
+/// A patch replaces the whole list.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ColorWarp {
@@ -1509,6 +1518,7 @@ fn normalise_warp(warp: &mut ColorWarp) -> Result<bool, SettingsError> {
             ("color_warp.highlights", &[pin.highlights][..]),
             ("color_warp.pivot_ev", &[pin.pivot_ev][..]),
             ("color_warp.exposure_ev", &[pin.exposure_ev][..]),
+            ("color_warp.saturation", &[pin.saturation][..]),
         ] {
             if !values.iter().all(|v| v.is_finite()) {
                 return Err(SettingsError::NotFinite(name));
@@ -1528,6 +1538,7 @@ fn normalise_warp(warp: &mut ColorWarp) -> Result<bool, SettingsError> {
             highlights: c.highlights + 0.0,
             pivot_ev: c.pivot_ev + 0.0,
             exposure_ev: c.exposure_ev + 0.0,
+            saturation: c.saturation + 0.0,
         };
     }
     Ok(warp.pins != before)

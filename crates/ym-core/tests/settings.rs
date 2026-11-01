@@ -75,6 +75,7 @@ fn rich() -> DevelopSettings {
                 highlights: 1.0,
                 pivot_ev: -1.5,
                 exposure_ev: 0.25,
+                saturation: -0.4,
             },
             ColorWarpPin::from(WarpPin::locked_at([-0.05, -0.1])),
         ],
@@ -806,6 +807,10 @@ fn the_schema_ranges_are_the_ranges_the_core_clamps_to() {
             range(&pin["exposure_ev"]),
             (-WARP_EXPOSURE_LIMIT_EV, WARP_EXPOSURE_LIMIT_EV)
         );
+        assert_eq!(
+            range(&pin["saturation"]),
+            (-WARP_SATURATION_LIMIT, WARP_SATURATION_LIMIT)
+        );
         for item in defs["chroma_point"]["prefixItems"].as_array().unwrap() {
             assert_eq!(range(item), (-WARP_COORD_LIMIT, WARP_COORD_LIMIT));
         }
@@ -819,6 +824,7 @@ fn the_schema_ranges_are_the_ranges_the_core_clamps_to() {
             "highlights",
             "pivot_ev",
             "exposure_ev",
+            "saturation",
         ] {
             assert_eq!(
                 norm(pin[key]["default"].clone()),
@@ -1856,6 +1862,7 @@ fn a_warp_pin_may_leave_out_everything_but_its_source_and_is_written_whole() {
             highlights: 1.0,
             pivot_ev: 0.0,
             exposure_ev: 0.0,
+            saturation: 0.0,
         }]
     );
     // The core writes every field, and what it writes reads back as it was.
@@ -1868,6 +1875,7 @@ fn a_warp_pin_may_leave_out_everything_but_its_source_and_is_written_whole() {
             "locked",
             "pivot_ev",
             "range",
+            "saturation",
             "shadows",
             "source",
             "target"
@@ -1879,7 +1887,8 @@ fn a_warp_pin_may_leave_out_everything_but_its_source_and_is_written_whole() {
     assert_eq!(serde_json::from_value::<ColorWarp>(written).unwrap(), warp);
     // Every field given: kept as given.
     let full = json!({ "source": [0.12, 0.03], "target": [0.08, 0.1], "locked": false,
-        "range": 0.06, "shadows": 0.5, "highlights": 0.75, "pivot_ev": -1, "exposure_ev": 0.5 });
+        "range": 0.06, "shadows": 0.5, "highlights": 0.75, "pivot_ev": -1, "exposure_ev": 0.5,
+        "saturation": -0.35 });
     let pin: ColorWarpPin = serde_json::from_value(full.clone()).unwrap();
     assert_eq!(norm(serde_json::to_value(pin).unwrap()), norm(full));
     // A settings document round-trips with and without the optional fields.
@@ -1947,6 +1956,7 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
         highlights: 7.0,
         pivot_ev: -20.0,
         exposure_ev: 9.0,
+        saturation: -4.0,
     };
     let locked = ColorWarpPin {
         source: [0.1, 0.0],
@@ -1957,6 +1967,7 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
         highlights: 0.3,
         pivot_ev: 2.0,
         exposure_ev: 1.0,
+        saturation: 0.5,
     };
     let (v, clamped) = DevelopSettings::from_value(
         json!({ "color_warp": { "pins": [wild, locked] } }),
@@ -1969,8 +1980,8 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
     assert!(a.source[0].hypot(a.source[1]) <= 0.5);
     assert!((a.target[1] - 0.5).abs() < 1e-12 && a.target[0] == 0.0);
     assert_eq!(
-        (a.range, a.shadows, a.highlights, a.pivot_ev, a.exposure_ev),
-        (0.25, 0.0, 1.0, -6.0, 2.0)
+        (a.range, a.shadows, a.highlights, a.pivot_ev, a.exposure_ev, a.saturation),
+        (0.25, 0.0, 1.0, -6.0, 2.0, -1.0)
     );
     assert_eq!(
         b,
@@ -1983,6 +1994,7 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
             highlights: 1.0,
             pivot_ev: 0.0,
             exposure_ev: 0.0,
+            saturation: 0.0,
         }
     );
     // The settings are what the stage renders: clamping them again is the stage's own clamp.
@@ -1990,8 +2002,8 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
         let c = WarpPin::from(*p).clamped();
         assert_eq!(c.locked, p.locked);
         assert_eq!(
-            (c.range, c.shadows, c.highlights, c.pivot_ev, c.exposure_ev),
-            (p.range, p.shadows, p.highlights, p.pivot_ev, p.exposure_ev)
+            (c.range, c.shadows, c.highlights, c.pivot_ev, c.exposure_ev, c.saturation),
+            (p.range, p.shadows, p.highlights, p.pivot_ev, p.exposure_ev, p.saturation)
         );
         for (x, y) in c
             .source
@@ -2029,11 +2041,12 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
         }
     }
     // A number that is not finite is an error, as everywhere else; nothing is applied.
-    let breaks: [fn(&mut ColorWarpPin); 4] = [
+    let breaks: [fn(&mut ColorWarpPin); 5] = [
         |p: &mut ColorWarpPin| p.source[1] = f64::NAN,
         |p: &mut ColorWarpPin| p.target[0] = f64::INFINITY,
         |p: &mut ColorWarpPin| p.range = f64::NAN,
         |p: &mut ColorWarpPin| p.exposure_ev = f64::NEG_INFINITY,
+        |p: &mut ColorWarpPin| p.saturation = f64::NAN,
     ];
     for broken in breaks {
         let mut s = DevelopSettings::default();
@@ -2052,6 +2065,68 @@ fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
         assert!(t.apply_patch(&patch, None).is_err());
         assert_eq!(t, DevelopSettings::default());
     }
+}
+
+#[test]
+fn a_pins_saturation_reads_as_zero_when_absent_and_is_clamped_and_kept() {
+    let neutral = LookId::builtin("neutral");
+    // A document from before the saturation existed: every older field, no `saturation`. It reads as
+    // 0, is not reported as clamped, and renders as it did (the pin does not act on saturation).
+    let (old, clamped) = DevelopSettings::from_json(
+        r#"{ "color_warp": { "pins": [{ "source": [0.1, 0.0], "target": [0.1, 0.05], "locked": false,
+            "range": 0.04, "shadows": 0.5, "highlights": 1, "pivot_ev": 0, "exposure_ev": 0.5 }] } }"#,
+        &neutral,
+    )
+    .unwrap();
+    assert!(clamped.is_empty(), "{clamped:?}");
+    assert_eq!(old.color_warp.pins[0].saturation, 0.0);
+    // `null` is not a number.
+    assert!(
+        serde_json::from_str::<DevelopSettings>(
+            r#"{ "color_warp": { "pins": [{ "source": [0.1, 0.0], "saturation": null }] } }"#
+        )
+        .is_err()
+    );
+    // A value in range is kept as it is and written back; one beyond is clamped and reported.
+    let (kept, clamped) = DevelopSettings::from_json(
+        r#"{ "color_warp": { "pins": [{ "source": [0.1, 0.0], "saturation": -0.5 }] } }"#,
+        &neutral,
+    )
+    .unwrap();
+    assert!(clamped.is_empty(), "{clamped:?}");
+    assert_eq!(kept.color_warp.pins[0].saturation, -0.5);
+    assert_eq!(
+        serde_json::to_value(&kept).unwrap()["color_warp"]["pins"][0]["saturation"],
+        json!(-0.5)
+    );
+    let (wild, clamped) = DevelopSettings::from_json(
+        r#"{ "color_warp": { "pins": [{ "source": [0.1, 0.0], "saturation": 3 }] } }"#,
+        &neutral,
+    )
+    .unwrap();
+    assert_eq!(clamped, vec![SettingsField::ColorWarp]);
+    assert_eq!(wild.color_warp.pins[0].saturation, 1.0);
+    // It reaches the stage's own parameters, and a pin that only has saturation acts there.
+    let params = kept.color_warp.to_color();
+    assert_eq!(params.pins[0].saturation, -0.5);
+    assert!(!params.is_identity());
+    // A locked pin has none.
+    let (locked, _) = DevelopSettings::from_json(
+        r#"{ "color_warp": { "pins": [{ "source": [0.1, 0.0], "locked": true, "saturation": 0.8 }] } }"#,
+        &neutral,
+    )
+    .unwrap();
+    assert_eq!(locked.color_warp.pins[0].saturation, 0.0);
+    // A copy of the colour warp's settings carries it (the patch holds the whole list).
+    let mut s = DevelopSettings::default();
+    s.color_warp = kept.color_warp.clone();
+    let patch = SettingsPatch {
+        color_warp: Some(s.color_warp.clone()),
+        ..SettingsPatch::default()
+    };
+    let json = serde_json::to_string(&patch).unwrap();
+    let back: SettingsPatch = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.color_warp, Some(kept.color_warp));
 }
 
 #[test]

@@ -48,7 +48,7 @@ test("a drag on the plane adds a pin, the photo follows it, and undo takes it ba
   await expect.poll(() => pinsOf(page, 4).then((p) => p.length)).toBe(1);
   await expect.poll(() => photoSrc(page)).not.toBe(before);
   // The pin's own sliders, at their defaults.
-  for (const [label, value] of [["Range", "2"], ["Shadows", "100%"], ["Highlights", "100%"], ["Pivot", "0.0 EV"], ["Exposure", "0.00 EV"]] as const) {
+  for (const [label, value] of [["Range", "2"], ["Shadows", "100%"], ["Highlights", "100%"], ["Pivot", "0.0 EV"], ["Exposure", "0.00 EV"], ["Saturation", "0%"]] as const) {
     await expect(card(page).getByRole("textbox", { name: `${label} value` })).toHaveValue(value);
   }
   // One step back is the whole drag.
@@ -71,6 +71,13 @@ test("a pin moves from the keyboard, its sliders change it, and Delete removes i
   await expect.poll(() => pinsOf(page, 4).then((p) => p[0]?.target[1] ?? 0)).toBeCloseTo(0.09, 4);
   await setValue(page, "Exposure", "0.5");
   await expect(card(page).getByRole("textbox", { name: "Exposure value" })).toHaveValue("+0.50 EV");
+  // The Colour balance card has a Saturation of its own: the pin's is the one in this card.
+  const saturation = card(page).getByRole("textbox", { name: "Saturation value" });
+  await saturation.click();
+  await saturation.fill("-40");
+  await saturation.press("Enter");
+  await expect(saturation).toHaveValue("−40%");
+  await expect.poll(() => pinsOf(page, 4).then((p) => (p[0] as { saturation?: number } | undefined)?.saturation)).toBeCloseTo(-0.4, 6);
   await pin.focus();
   await page.keyboard.press("Delete");
   await expect.poll(() => pinsOf(page, 4).then((p) => p.length)).toBe(0);
@@ -85,6 +92,7 @@ test("Lock adds a locked pin that shows Range only", async ({ page }) => {
   await expect(card(page).getByRole("slider", { name: "Pin 1" })).toHaveAttribute("aria-valuetext", "holds magenta");
   await expect(card(page).getByRole("textbox", { name: "Range value" })).toBeVisible();
   await expect(card(page).getByRole("textbox", { name: "Exposure value" })).toHaveCount(0);
+  await expect(card(page).getByRole("textbox", { name: "Saturation value" })).toHaveCount(0);
 });
 
 test("Pick colour adds a pin from a click on the photo, stays on for the next, and Esc ends it", async ({ page }) => {
@@ -112,6 +120,35 @@ test("Pick colour adds a pin from a click on the photo, stays on for the next, a
   await page.keyboard.press("Escape");
   await expect(layer).toHaveCount(0);
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
+});
+
+test("Pick colour ends when another tab is shown, by a click on the tab or by ⌘1, and Colour comes back with it off", async ({ page }) => {
+  await colourTab(page);
+  const toggle = card(page).getByRole("button", { name: "Pick colour" });
+  const layer = page.getByRole("application", { name: /^Pick colour\./ });
+  const leaves: Array<[string, () => Promise<void>]> = [
+    ["a click on the Look tab", () => page.getByRole("tab", { name: "Look", exact: true }).click()],
+    ["⌘1", () => page.keyboard.press("Meta+1")],
+  ];
+  for (const [how, leave] of leaves) {
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await expect(layer).toBeVisible();
+    const box = (await layer.boundingBox())!;
+    await leave();
+    // The layer is gone, the hint with it, and the pointer is the ordinary one over the photo.
+    await expect(layer, how).toHaveCount(0);
+    await expect(page.getByText("Click a colour in the photo."), how).toHaveCount(0);
+    expect(await page.locator(".ym-photo-cell").first().evaluate((el) => getComputedStyle(el).cursor), how).not.toBe("crosshair");
+    // A click on the photo now adds no pin.
+    await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.15);
+    await page.waitForTimeout(200);
+    expect(await pinsOf(page, 4), how).toHaveLength(0);
+    // Back on Colour (⌘4), Pick colour is off.
+    await page.keyboard.press("Meta+4");
+    await expect(toggle, how).toHaveAttribute("aria-pressed", "false");
+    await expect(layer, how).toHaveCount(0);
+  }
 });
 
 test("Copy settings and Paste carry the pins to another photo", async ({ page }) => {

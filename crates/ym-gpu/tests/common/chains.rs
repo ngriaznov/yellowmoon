@@ -157,14 +157,16 @@ pub fn full(target: OutputTarget) -> ChainParams {
 
 /// Colour warp pins (C9b) placed where the colours of [`camera_image`] are after C9 (half its pixels
 /// have a chroma `|c|` under 0.02, a tenth over 0.06; tones from 3 stops under grey to 4 over): moves
-/// with the default and with split tonal weights, pivots under and over grey, exposure up and down, a
-/// long move with the smallest range (the flow takes 12 steps for the set), an exposure-only pin, a
-/// lock between them and a still pin (left out by the preparation).
+/// with the default and with split tonal weights, pivots under and over grey, exposure up and down,
+/// saturation up and down (also on a pin that moves and changes exposure), a long move with the
+/// smallest range (the flow takes 12 steps for the set), an exposure-only pin, a saturation-only pin,
+/// a lock between them and a still pin (left out by the preparation).
 pub fn warp_pins() -> WarpParams {
     WarpParams {
         pins: vec![
             WarpPin {
                 range: 0.05,
+                saturation: 0.5,
                 ..WarpPin::moving([0.045, 0.015], [0.015, 0.06])
             },
             WarpPin {
@@ -173,6 +175,7 @@ pub fn warp_pins() -> WarpParams {
                 highlights: 0.2,
                 pivot_ev: -2.0,
                 exposure_ev: -0.6,
+                saturation: -0.7,
                 ..WarpPin::moving([-0.03, 0.04], [-0.07, 0.0])
             },
             WarpPin {
@@ -181,7 +184,14 @@ pub fn warp_pins() -> WarpParams {
                 highlights: 1.0,
                 pivot_ev: 1.0,
                 exposure_ev: 0.8,
+                saturation: 1.0,
                 ..WarpPin::moving([-0.02, -0.05], [0.01, -0.08])
+            },
+            WarpPin {
+                range: 0.035,
+                shadows: 0.7,
+                saturation: -1.0,
+                ..WarpPin::moving([-0.05, -0.02], [-0.05, -0.02])
             },
             WarpPin {
                 range: 0.01,
@@ -206,6 +216,9 @@ pub fn warp_pins() -> WarpParams {
 /// beyond the limit of 0.5, and every control drawn a little beyond its range now and then, so the
 /// preparation's clamping is exercised too.
 pub fn random_warp(rng: &mut Rng) -> WarpParams {
+    // The saturations come from a stream of their own, seeded from the state on entry, so the pins
+    // (and everything drawn after them) are those of the sets before saturation existed.
+    let mut sat_rng = Rng(rng.0 ^ 0x5A70_A710_0000_0000);
     let count = (rng.next_u64() % (WARP_MAX_PINS as u64 + 3)) as usize;
     let point = |rng: &mut Rng, reach: f64| {
         let (r, a) = (
@@ -244,6 +257,13 @@ pub fn random_warp(rng: &mut Rng) -> WarpParams {
                 pivot_ev: rng.range(-7.0, 7.0),
                 exposure_ev: if rng.unit() < 0.5 {
                     rng.range(-2.5, 2.5)
+                } else {
+                    0.0
+                },
+                // About half the pins change saturation, drawn a little beyond +-1 now and then; a
+                // pin that stays and changes nothing else is then a saturation-only pin.
+                saturation: if sat_rng.unit() < 0.5 {
+                    sat_rng.range(-1.2, 1.2)
                 } else {
                     0.0
                 },

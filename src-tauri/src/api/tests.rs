@@ -1349,7 +1349,8 @@ fn pick_colour_and_the_chroma_scatter_cross_the_bridge() {
     // A pin on that colour moves the picture there but not what Pick colour reads (the warp's
     // input), and the answer is the core's.
     let pin = json!({ "source": [inside.a.0, inside.b.0], "target": [inside.a.0 + 0.05, inside.b.0],
-        "locked": false, "range": 0.04, "shadows": 1, "highlights": 1, "pivot_ev": 0, "exposure_ev": 0 });
+        "locked": false, "range": 0.04, "shadows": 1, "highlights": 1, "pivot_ev": 0, "exposure_ev": 0,
+        "saturation": 0.5 });
     let patch: SettingsPatch =
         serde_json::from_value(json!({ "color_warp": { "pins": [pin] } })).expect("patch");
     let resolved = h.api.update_settings(id, &patch).expect("update");
@@ -3880,9 +3881,10 @@ fn core_types_convert_without_loss() {
         "lens": { "kind": "petzval", "flares": 35, "edges": 50, "anamorphic": 20 },
         "color_warp": { "pins": [
             { "source": [0.12, 0.03], "target": [0.08, 0.1], "locked": false, "range": 0.06,
-              "shadows": 0.5, "highlights": 1, "pivot_ev": -1.5, "exposure_ev": 0.25 },
+              "shadows": 0.5, "highlights": 1, "pivot_ev": -1.5, "exposure_ev": 0.25,
+              "saturation": -0.4 },
             { "source": [-0.05, -0.1], "target": [-0.05, -0.1], "locked": true, "range": 0.04,
-              "shadows": 1, "highlights": 1, "pivot_ev": 0, "exposure_ev": 0 }
+              "shadows": 1, "highlights": 1, "pivot_ev": 0, "exposure_ev": 0, "saturation": 0 }
         ] }
     }))
     .expect("patch");

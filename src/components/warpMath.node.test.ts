@@ -16,6 +16,7 @@ import {
   WARP_RANGE_DEFAULT,
   WARP_RANGE_MAX,
   WARP_RANGE_MIN,
+  WARP_SATURATION_LIMIT,
   WARP_STEP_SAFETY,
   WARP_TONE_HALF_WIDTH_STOPS,
 } from "./warpMath";
@@ -46,6 +47,7 @@ describe("the colour warp's constants match crates/ym-color/src/warp.rs", () => 
     ["WARP_NEUTRAL_GUARD", WARP_NEUTRAL_GUARD],
     ["WARP_PIVOT_LIMIT_EV", WARP_PIVOT_LIMIT_EV],
     ["WARP_EXPOSURE_LIMIT_EV", WARP_EXPOSURE_LIMIT_EV],
+    ["WARP_SATURATION_LIMIT", WARP_SATURATION_LIMIT],
   ])("%s", (name, value) => {
     expect(Number(rustConst(warp, name))).toBe(value);
   });

@@ -68,6 +68,11 @@ export const formats = {
   kelvin: (value: number): string => `${Math.round(value)} K`,
   /** 100 → "100%". */
   percent: (value: number): string => `${Math.round(value)}%`,
+  /** 20 → "+20%", -20 → "−20%", 0 → "0%". The sign follows the rounded value, so 0.3 and -0.3 are both "0%". */
+  signedPercent: (value: number): string => {
+    const rounded = Math.round(value);
+    return rounded === 0 ? "0%" : `${rounded > 0 ? "+" : MINUS}${Math.abs(rounded)}%`;
+  },
   /** 0.8 → "0.8 px". */
   px1: (value: number): string => `${value.toFixed(1)} px`,
   /** 3000 → "3000 px". */

@@ -155,6 +155,15 @@ export function ColorWarpCard({ store, photo, rs, pickingColor = false, onPickCo
                 format={formatWarpExposure}
                 onChange={(v, final) => setPin({ exposure_ev: v }, final)}
               />
+              <Slider
+                label="Saturation"
+                value={pin.saturation * 100}
+                min={-100}
+                max={100}
+                defaultValue={0}
+                format={formats.signedPercent}
+                onChange={(v, final) => setPin({ saturation: v / 100 }, final)}
+              />
             </>
           )}
         </div>

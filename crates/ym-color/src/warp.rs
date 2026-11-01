@@ -16,8 +16,8 @@
 //! a share `gamma w` of a pin's move (its tonal weight, the neutral guard, the locks) sees that pin's
 //! centre slide by that share of the move, so a colour on the source lands on `s + gamma w delta`, as
 //! in one step. For a pixel of chroma `c0` and tone `L`, the moving pins `i` (source `s`, target `t`,
-//! range `rho`, tonal weights `w_lo`, `w_hi` around the pivot `P`, exposure `x` in stops) and the
-//! locked pins `k` (at `l`, range `rho_k`):
+//! range `rho`, tonal weights `w_lo`, `w_hi` around the pivot `P`, exposure `x` in stops, saturation
+//! `sigma` in [-1, 1]) and the locked pins `k` (at `l`, range `rho_k`):
 //!
 //! ```text
 //! delta_i = t_i - s_i
@@ -32,8 +32,16 @@
 //!   c_{k+1} = c_k + (gamma / N) sum(w_i phi_i delta_i) / max(1, sum phi_i)
 //! D       = c_N - c0
 //! E       = gamma sum(w_i G(|c0 - s_i|^2, rho_i) x_i) / max(1, sum G(|c0 - s_i|^2, rho_i))
-//! v'      = v + D1 e1 + D2 e2 + E S
+//! K       = gamma sum(w_i G(|c0 - s_i|^2, rho_i) sigma_i) / max(1, sum G(|c0 - s_i|^2, rho_i))
+//! c_final = (1 + K) (c0 + D)                             1 + K >= 0 (K is clamped to -1 and up)
+//! D'      = c_final - c0 = D + K (c0 + D)
+//! v'      = v + D'1 e1 + D'2 e2 + E S
 //! ```
+//!
+//! Saturation is one step, like the exposure: the same weights at the pixel's original chroma, and it
+//! scales the chroma the pixel ends on, so the colour a pin moves to is then made more or less
+//! saturated. At `sigma = -1` the pixel ends on neutral, at `sigma = +1` twice as far from it; it acts
+//! on the chroma plane, so the brightness along the neutral axis is unchanged.
 //!
 //! Why it does not fold: at one tone, away from neutral and locks (`gamma = 1`), every pixel follows
 //! the same flow, that of one pin moving `w delta`. Its field `w delta phi(c)` has the Lipschitz
@@ -46,7 +54,8 @@
 //!
 //! # What the tests check
 //!
-//! * No pins, locked pins only, or pins that neither move nor change exposure: the identity, exactly.
+//! * No pins, locked pins only, or pins that neither move nor change exposure or saturation: the
+//!   identity, exactly. A pin that only changes saturation is not skipped.
 //! * One pin, away from neutral and locks, with tonal weights of 1: its source lands on its target
 //!   (to rounding), however long the move; with a weight or a lock's hold below 1, on that share of
 //!   the move.
@@ -62,6 +71,10 @@
 //! * Tonal weights: Shadows 0 leaves the shadows alone, Highlights 0 the highlights.
 //! * Exposure moves all three channels by the same amount, so the chroma of the pin's own colour
 //!   is unchanged.
+//! * Saturation: on the source, +50 % ends 1.5 times as far from neutral and -100 % on neutral (with
+//!   tonal weights of 1); it follows the range and the tonal weights, overlapping pins share it, a
+//!   locked colour holds, `1 + K` stays at 0 or more, and with saturation 0 the displacement is, bit
+//!   for bit, what it was before saturation existed.
 
 use crate::consts::{LOGC4_STOP, Vec3};
 use crate::grade::{E1, E2, logc4_at_stops};
@@ -99,6 +112,9 @@ pub const WARP_TONE_HALF_WIDTH: f64 = 2.0 * LOGC4_STOP;
 pub const WARP_PIVOT_LIMIT_EV: f64 = 6.0;
 /// A pin's exposure is limited to this many stops either way.
 pub const WARP_EXPOSURE_LIMIT_EV: f64 = 2.0;
+/// A pin's saturation is limited to this either way: -1 turns the colours it reaches grey, +1
+/// doubles their distance from neutral.
+pub const WARP_SATURATION_LIMIT: f64 = 1.0;
 
 /// One pin of the warp, as the settings hold it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -119,6 +135,9 @@ pub struct WarpPin {
     pub pivot_ev: f64,
     /// A change of brightness for the pin's colours, in stops. A locked pin ignores it.
     pub exposure_ev: f64,
+    /// A change of saturation for the pin's colours, -1 to +1: -1 turns them grey, +1 doubles their
+    /// distance from neutral. A locked pin ignores it.
+    pub saturation: f64,
 }
 
 impl Default for WarpPin {
@@ -132,6 +151,7 @@ impl Default for WarpPin {
             highlights: 1.0,
             pivot_ev: 0.0,
             exposure_ev: 0.0,
+            saturation: 0.0,
         }
     }
 }
@@ -175,9 +195,9 @@ impl WarpPin {
         }
     }
 
-    /// Every value in its range: points scaled back to [`WARP_COORD_LIMIT`], the range, weights, pivot
-    /// and exposure clamped, a non-finite value replaced by its default. A locked pin's target is its
-    /// source and its weights, pivot and exposure are the defaults.
+    /// Every value in its range: points scaled back to [`WARP_COORD_LIMIT`], the range, weights, pivot,
+    /// exposure and saturation clamped, a non-finite value replaced by its default. A locked pin's
+    /// target is its source and its weights, pivot, exposure and saturation are the defaults.
     #[must_use]
     pub fn clamped(&self) -> Self {
         let source = clamp_to_disc(self.source, WARP_COORD_LIMIT);
@@ -202,14 +222,17 @@ impl WarpPin {
                 .clamp(-WARP_PIVOT_LIMIT_EV, WARP_PIVOT_LIMIT_EV),
             exposure_ev: finite_or(self.exposure_ev, 0.0)
                 .clamp(-WARP_EXPOSURE_LIMIT_EV, WARP_EXPOSURE_LIMIT_EV),
+            saturation: finite_or(self.saturation, 0.0)
+                .clamp(-WARP_SATURATION_LIMIT, WARP_SATURATION_LIMIT),
         }
     }
 
-    /// Whether the pin changes anything on its own: it moves its colour or changes its exposure.
-    /// A locked pin does not (it only holds colours against other pins).
+    /// Whether the pin changes anything on its own: it moves its colour, changes its exposure or
+    /// changes its saturation. A locked pin does not (it only holds colours against other pins).
     #[must_use]
     pub fn acts(&self) -> bool {
-        !self.locked && (self.target != self.source || self.exposure_ev != 0.0)
+        !self.locked
+            && (self.target != self.source || self.exposure_ev != 0.0 || self.saturation != 0.0)
     }
 }
 
@@ -222,7 +245,7 @@ pub struct WarpParams {
 
 impl WarpParams {
     /// Whether the stage changes nothing: no pin, after clamping, moves a colour or changes its
-    /// exposure (locked pins alone hold colours that nothing moves).
+    /// exposure or saturation (locked pins alone hold colours that nothing moves).
     #[must_use]
     pub fn is_identity(&self) -> bool {
         !self
@@ -267,6 +290,8 @@ pub struct PreparedMove {
     pub pivot_code: f64,
     /// Exposure in stops.
     pub exposure_ev: f64,
+    /// Saturation, -1 to +1.
+    pub saturation: f64,
 }
 
 impl PreparedMove {
@@ -330,8 +355,8 @@ pub struct Warp {
 
 impl Warp {
     /// Prepares the pins: the first [`WARP_MAX_PINS`], clamped. Pins that neither move nor change
-    /// exposure are left out (they would only dilute their neighbours), and so are the locks when no
-    /// pin acts. The number of flow steps is [`flow_steps`] of the moving pins.
+    /// exposure or saturation are left out (they would only dilute their neighbours), and so are the
+    /// locks when no pin acts. The number of flow steps is [`flow_steps`] of the moving pins.
     #[must_use]
     pub fn new(params: &WarpParams) -> Self {
         let mut moves = Vec::new();
@@ -354,6 +379,7 @@ impl Warp {
                     highlights: pin.highlights,
                     pivot_code: logc4_at_stops(pin.pivot_ev),
                     exposure_ev: pin.exposure_ev,
+                    saturation: pin.saturation,
                 });
             }
         }
@@ -391,8 +417,9 @@ impl Warp {
         self.steps
     }
 
-    /// The displacement of the chroma `c` at the tone `l` (a LogC4 code value): the chroma move `D`
-    /// and the exposure `E` in stops (module notes).
+    /// The displacement of the chroma `c` at the tone `l` (a LogC4 code value): the chroma move
+    /// (the flow `D`, then the saturation `K`, `D' = D + K (c + D)`, so that `c + D'` is the final
+    /// chroma) and the exposure `E` in stops (module notes).
     #[must_use]
     pub fn displacement(&self, c: ChromaPoint, l: f64) -> (ChromaPoint, f64) {
         if self.moves.is_empty() {
@@ -417,14 +444,18 @@ impl Warp {
             *w = m.tonal_weight(l);
             *b = gamma * *w;
         }
-        // The exposure, at the pixel's own chroma with the pins at their sources.
-        let (mut reach, mut exposure) = (0.0, 0.0);
+        // The exposure and the saturation, at the pixel's own chroma with the pins at their sources.
+        let (mut reach, mut exposure, mut saturation) = (0.0, 0.0, 0.0);
         for (m, w) in self.moves.iter().zip(weights) {
             let phi = gauss(dist2(c, m.source), m.inv_two_sigma_sq);
             reach += phi;
             exposure += w * phi * m.exposure_ev;
+            saturation += w * phi * m.saturation;
         }
         let e = gamma / reach.max(1.0) * exposure;
+        // |K| <= 1 already (the weights are in [0, 1], gamma too, and every pin's saturation is in
+        // [-1, 1]); the clamp keeps 1 + K >= 0 whatever else.
+        let k = (gamma / reach.max(1.0) * saturation).max(-1.0);
         // The flow: each pin's centre slides from its source by the pixel's share of its move,
         // `s + tau gamma w delta`, and the pixel follows in N steps (so a pixel on a source lands on
         // `s + gamma w delta`, as in one step). The move is gathered in `d`, so one step is the
@@ -451,6 +482,10 @@ impl Warp {
             let s = h / reach.max(1.0);
             d[0] += s * v0;
             d[1] += s * v1;
+        }
+        // Saturation scales the chroma the pixel ends on, `(1 + K) (c + D)`. K = 0 leaves D as it is.
+        if k != 0.0 {
+            d = [d[0] + k * (c[0] + d[0]), d[1] + k * (c[1] + d[1])];
         }
         (d, e)
     }
@@ -926,6 +961,432 @@ mod tests {
         }
     }
 
+    /// The distance of a pixel's chroma from neutral.
+    fn chroma_len(v: LogC4) -> f64 {
+        let c = chroma_of(v);
+        c[0].hypot(c[1])
+    }
+
+    /// The mean of the three channels: the pixel's brightness along the neutral axis.
+    fn mean(v: LogC4) -> f64 {
+        (v.0[0] + v.0[1] + v.0[2]) / 3.0
+    }
+
+    #[test]
+    fn saturation_scales_the_distance_from_neutral_at_the_source() {
+        // Tonal weights at 1 (the default), away from neutral and locks: the colour on the source
+        // ends (1 + saturation) times as far from neutral, in the same direction, and the
+        // brightness along the neutral axis is unchanged.
+        let s = [0.12, 0.03];
+        for (saturation, scale) in [(0.5, 1.5), (1.0, 2.0), (0.2, 1.2), (-0.5, 0.5), (-1.0, 0.0)] {
+            let warp = Warp::new(&WarpParams {
+                pins: vec![WarpPin {
+                    saturation,
+                    ..WarpPin::moving(s, s)
+                }],
+            });
+            for n in [0.2, LOGC4_GRAY, 0.5, 0.7] {
+                let out = warp.apply(pixel(n, s));
+                assert!(
+                    close(chroma_of(out), [s[0] * scale, s[1] * scale], 1e-12),
+                    "{saturation}: {:?}",
+                    chroma_of(out)
+                );
+                assert!((mean(out) - n).abs() < 1e-12);
+            }
+        }
+        // And the 50 % case in the words of the owner: 1.5 times as far.
+        let warp = Warp::new(&WarpParams {
+            pins: vec![WarpPin {
+                saturation: 0.5,
+                ..WarpPin::moving(s, s)
+            }],
+        });
+        let ratio = chroma_len(warp.apply(pixel(0.4, s))) / chroma_len(pixel(0.4, s));
+        assert!((ratio - 1.5).abs() < 1e-12, "{ratio}");
+        // With a move too, the colour lands on the target and is then scaled: (1 + K) t.
+        let (from, to) = ([0.1, 0.0], [0.1, 0.3]);
+        let warp = Warp::new(&WarpParams {
+            pins: vec![WarpPin {
+                range: WARP_RANGE_MIN,
+                saturation: 0.5,
+                ..WarpPin::moving(from, to)
+            }],
+        });
+        assert!(warp.steps() > 1);
+        let out = chroma_of(warp.apply(pixel(0.4, from)));
+        assert!(close(out, [1.5 * to[0], 1.5 * to[1]], 1e-12), "{out:?}");
+        // Exposure and saturation together: the three channels move by the stops, the chroma scales.
+        let warp = Warp::new(&WarpParams {
+            pins: vec![WarpPin {
+                exposure_ev: 1.0,
+                saturation: -0.5,
+                ..WarpPin::moving(s, s)
+            }],
+        });
+        let out = warp.apply(pixel(0.4, s));
+        assert!(close(chroma_of(out), [0.5 * s[0], 0.5 * s[1]], 1e-12));
+        assert!((mean(out) - 0.4 - LOGC4_STOP).abs() < 1e-12);
+    }
+
+    #[test]
+    fn saturation_never_moves_a_neutral() {
+        let warp = Warp::new(&WarpParams {
+            pins: vec![WarpPin {
+                range: WARP_RANGE_MAX,
+                saturation: 1.0,
+                ..WarpPin::moving([0.03, 0.0], [0.03, 0.0])
+            }],
+        });
+        for n in [0.1, 0.3, 0.6, 0.9] {
+            let v = LogC4([n; 3]);
+            assert_eq!(warp.apply(v), v);
+        }
+        // And a colour just inside the guard barely moves: it takes the guard's share.
+        let near = pixel(0.4, [0.002, 0.0]);
+        let moved = chroma_len(warp.apply(near)) - chroma_len(near);
+        assert!(moved > 0.0 && moved < 0.002 * 0.05, "{moved}");
+    }
+
+    #[test]
+    fn a_locked_colour_holds_against_saturation() {
+        let lock = [0.10, 0.05];
+        let warp = Warp::new(&WarpParams {
+            pins: vec![
+                WarpPin {
+                    range: 0.08,
+                    saturation: 1.0,
+                    ..WarpPin::moving([0.12, 0.02], [0.12, 0.02])
+                },
+                WarpPin::locked_at(lock),
+            ],
+        });
+        for n in [0.15, 0.3, 0.5, 0.8] {
+            let v = pixel(n, lock);
+            assert_eq!(warp.apply(v), v);
+        }
+        // And the colour on the saturated pin, away from the lock, does change.
+        let v = pixel(0.4, [0.12, 0.02]);
+        assert!(chroma_len(warp.apply(v)) > 1.5 * chroma_len(v));
+    }
+
+    #[test]
+    fn saturation_follows_the_range_and_the_tonal_weights() {
+        let s = [0.1, 0.0];
+        // Range: a colour three ranges from the source changes by at most exp(-4.5) of what the
+        // source's colour would, in the direction of its own chroma.
+        let bound = (-4.5f64).exp();
+        for range in [WARP_RANGE_MIN, WARP_RANGE_DEFAULT, 0.12] {
+            let warp = Warp::new(&WarpParams {
+                pins: vec![WarpPin {
+                    range,
+                    saturation: 1.0,
+                    ..WarpPin::moving(s, s)
+                }],
+            });
+            for angle in [0.0f64, 90.0, 180.0, 270.0] {
+                let (sin, cos) = angle.to_radians().sin_cos();
+                let c = [s[0] + 3.0 * range * cos, s[1] + 3.0 * range * sin];
+                if c[0].hypot(c[1]) < WARP_NEUTRAL_GUARD {
+                    continue;
+                }
+                let v = pixel(0.4, c);
+                let gained = chroma_len(warp.apply(v)) / chroma_len(v) - 1.0;
+                assert!(
+                    (0.0..=bound * (1.0 + 1e-9)).contains(&gained),
+                    "range {range}, {angle} deg: {gained:.3e}"
+                );
+            }
+            // Well away from the pin (nine ranges or more at the two smaller ranges) nothing changes.
+            if range <= WARP_RANGE_DEFAULT {
+                let far = pixel(0.4, [-0.2, 0.2]);
+                let out = warp.apply(far);
+                assert!((0..3).all(|k| (out.0[k] - far.0[k]).abs() < 1e-12));
+            }
+        }
+        // Tonal weights: Shadows 0 leaves the shadows alone, Highlights 1 saturates the highlights.
+        let split = Warp::new(&WarpParams {
+            pins: vec![WarpPin {
+                shadows: 0.0,
+                highlights: 1.0,
+                saturation: 1.0,
+                ..WarpPin::moving(s, s)
+            }],
+        });
+        let dark = pixel(logc4_at_stops(-4.0), s);
+        assert!((chroma_len(split.apply(dark)) / chroma_len(dark) - 1.0).abs() < 2e-3);
+        let bright = pixel(logc4_at_stops(4.0), s);
+        assert!((chroma_len(split.apply(bright)) / chroma_len(bright) - 2.0).abs() < 4e-3);
+        // A weight below 1 takes that share of the effect, at every tone.
+        let partial = Warp::new(&WarpParams {
+            pins: vec![WarpPin {
+                shadows: 0.4,
+                highlights: 0.4,
+                saturation: 1.0,
+                ..WarpPin::moving(s, s)
+            }],
+        });
+        for n in [0.2, 0.5, 0.7] {
+            let v = pixel(n, s);
+            let ratio = chroma_len(partial.apply(v)) / chroma_len(v);
+            assert!((ratio - 1.4).abs() < 1e-12, "{ratio}");
+        }
+    }
+
+    #[test]
+    fn overlapping_pins_share_the_saturation_rather_than_add_it() {
+        let s = [0.1, 0.0];
+        let pin = |saturation: f64| WarpPin {
+            saturation,
+            ..WarpPin::moving(s, s)
+        };
+        let pins = |list: Vec<WarpPin>| Warp::new(&WarpParams { pins: list });
+        let v = pixel(0.4, s);
+        let ratio = |w: &Warp| chroma_len(w.apply(v)) / chroma_len(v);
+        // Two identical pins take the colour where one takes it, not twice as far.
+        assert!((ratio(&pins(vec![pin(0.5)])) - 1.5).abs() < 1e-12);
+        assert!((ratio(&pins(vec![pin(0.5), pin(0.5)])) - 1.5).abs() < 1e-12);
+        assert!((ratio(&pins(vec![pin(1.0); 5])) - 2.0).abs() < 1e-12);
+        // Opposite pins on one colour cancel (the average of +1 and -1).
+        assert_eq!(pins(vec![pin(1.0), pin(-1.0)]).apply(v), v);
+        // A pin that acts but has saturation 0 (it changes exposure) shares the reach: half the effect.
+        let bright = WarpPin {
+            exposure_ev: 0.5,
+            ..pin(0.0)
+        };
+        assert!((ratio(&pins(vec![pin(1.0), bright])) - 1.5).abs() < 1e-12);
+        // A still pin does not act and is left out, so it dilutes nothing.
+        assert!((ratio(&pins(vec![pin(1.0), pin(0.0)])) - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn one_plus_k_never_goes_below_zero() {
+        // Sixteen pins at -100 % on one place, a pixel on each: the chroma shrinks toward neutral
+        // and never flips to the other side.
+        let pins = (0..WARP_MAX_PINS)
+            .map(|i| WarpPin {
+                range: 0.03 + 0.005 * i as f64,
+                saturation: -1.0,
+                ..WarpPin::moving([0.08, 0.04], [0.08, 0.04])
+            })
+            .collect();
+        let warp = Warp::new(&WarpParams { pins });
+        for (n, c) in [
+            (0.4, [0.08, 0.04]),
+            (0.4, [0.1, 0.05]),
+            (0.2, [0.06, 0.03]),
+            (0.8, [0.09, 0.04]),
+        ] {
+            let v = pixel(n, c);
+            let out = chroma_of(warp.apply(v));
+            let dot = out[0] * c[0] + out[1] * c[1];
+            assert!(dot >= -1e-12, "{c:?}: {out:?}");
+            assert!(out[0].hypot(out[1]) <= c[0].hypot(c[1]) + 1e-12);
+        }
+    }
+
+    #[test]
+    fn a_short_move_with_saturation_is_the_one_step_formula_bit_for_bit() {
+        // As the test of the plain one-step formula above, now with the saturation K:
+        // K = g lambda sum(w phi sigma) / max(1, sum phi) at the pixel's original chroma, and the
+        // chroma after the move is scaled, D' = D + K (c0 + D).
+        let pins = vec![
+            WarpPin {
+                shadows: 0.3,
+                exposure_ev: 0.4,
+                saturation: 0.7,
+                range: 0.04,
+                ..WarpPin::moving([0.1, 0.02], [0.12, 0.03])
+            },
+            WarpPin {
+                range: 0.04,
+                saturation: -0.4,
+                ..WarpPin::moving([0.05, -0.1], [0.05, -0.08])
+            },
+            WarpPin {
+                range: 0.04,
+                saturation: 0.5,
+                ..WarpPin::moving([0.1, 0.1], [0.1, 0.1])
+            },
+            WarpPin::locked_at([-0.1, 0.05]),
+        ];
+        let warp = Warp::new(&WarpParams { pins });
+        assert_eq!(warp.steps(), 1);
+        assert_eq!(warp.moves().len(), 3);
+        let one_step = |c: ChromaPoint, l: f64| {
+            let guard = smoothstep(0.0, WARP_NEUTRAL_GUARD, c[0].hypot(c[1]));
+            let mut hold = 1.0;
+            for lock in warp.locks() {
+                hold *= 1.0 - gauss(dist2(c, lock.at), lock.inv_two_sigma_sq);
+            }
+            let (mut reach, mut d0, mut d1, mut x, mut sat) = (0.0, 0.0, 0.0, 0.0, 0.0);
+            for m in warp.moves() {
+                let phi = gauss(dist2(c, m.source), m.inv_two_sigma_sq);
+                reach += phi;
+                let w = m.tonal_weight(l) * phi;
+                d0 += w * m.delta[0];
+                d1 += w * m.delta[1];
+                x += w * m.exposure_ev;
+                sat += w * m.saturation;
+            }
+            let k = guard * hold / reach.max(1.0);
+            let d = [k * d0, k * d1];
+            let scale = (k * sat).max(-1.0);
+            (
+                [d[0] + scale * (c[0] + d[0]), d[1] + scale * (c[1] + d[1])],
+                k * x,
+            )
+        };
+        for (i, c) in [
+            [0.1, 0.02],
+            [0.08, 0.0],
+            [0.03, -0.05],
+            [-0.07, 0.03],
+            [0.011, 0.0],
+            [0.1, 0.1],
+            [0.09, 0.11],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let l = logc4_at_stops(f64::from(i as u8) - 2.0);
+            assert_eq!(warp.displacement(c, l), one_step(c, l), "{c:?}");
+        }
+    }
+
+    #[test]
+    fn a_saturation_only_pin_is_not_skipped() {
+        let s = [0.1, 0.02];
+        let pin = WarpPin {
+            saturation: 0.3,
+            ..WarpPin::moving(s, s)
+        };
+        assert!(pin.acts());
+        let params = WarpParams { pins: vec![pin] };
+        assert!(!params.is_identity());
+        let warp = Warp::new(&params);
+        assert!(!warp.is_identity());
+        assert_eq!(warp.moves().len(), 1);
+        // It adds no steps (nothing moves), so the stage is one pass, like exposure.
+        assert_eq!(warp.steps(), 1);
+        let v = pixel(0.4, s);
+        assert_ne!(warp.apply(v), v);
+        // Still the identity: saturation 0 (a still pin), saturation on a locked pin (ignored) and
+        // a saturation that is not a number (read as 0).
+        for pin in [
+            WarpPin::moving(s, s),
+            WarpPin {
+                locked: true,
+                saturation: 1.0,
+                ..WarpPin::moving(s, s)
+            },
+            WarpPin {
+                saturation: f64::NAN,
+                ..WarpPin::moving(s, s)
+            },
+        ] {
+            let params = WarpParams { pins: vec![pin] };
+            assert!(params.is_identity(), "{pin:?}");
+            assert_eq!(Warp::new(&params).apply(v), v);
+        }
+    }
+
+    /// `Warp::displacement` as it was before saturation existed, copied here: the reference for the
+    /// exactness of a pin with saturation 0.
+    fn displacement_before_saturation(warp: &Warp, c: ChromaPoint, l: f64) -> (ChromaPoint, f64) {
+        if warp.moves.is_empty() {
+            return ([0.0, 0.0], 0.0);
+        }
+        let guard = smoothstep(0.0, WARP_NEUTRAL_GUARD, c[0].hypot(c[1]));
+        if guard == 0.0 {
+            return ([0.0, 0.0], 0.0);
+        }
+        let mut hold = 1.0;
+        for lock in &warp.locks {
+            hold *= 1.0 - gauss(dist2(c, lock.at), lock.inv_two_sigma_sq);
+        }
+        if hold == 0.0 {
+            return ([0.0, 0.0], 0.0);
+        }
+        let gamma = guard * hold;
+        let mut weights = [0.0; WARP_MAX_PINS];
+        let mut shares = [0.0; WARP_MAX_PINS];
+        for ((w, b), m) in weights.iter_mut().zip(&mut shares).zip(&warp.moves) {
+            *w = m.tonal_weight(l);
+            *b = gamma * *w;
+        }
+        let (mut reach, mut exposure) = (0.0, 0.0);
+        for (m, w) in warp.moves.iter().zip(weights) {
+            let phi = gauss(dist2(c, m.source), m.inv_two_sigma_sq);
+            reach += phi;
+            exposure += w * phi * m.exposure_ev;
+        }
+        let e = gamma / reach.max(1.0) * exposure;
+        let n = f64::from(warp.steps);
+        let h = gamma / n;
+        let mut d = [0.0, 0.0];
+        for k in 0..warp.steps {
+            let tau = f64::from(k) / n;
+            let p = [c[0] + d[0], c[1] + d[1]];
+            let (mut reach, mut v0, mut v1) = (0.0, 0.0, 0.0);
+            for ((m, w), b) in warp.moves.iter().zip(weights).zip(shares) {
+                let slide = tau * b;
+                let centre = [
+                    m.source[0] + slide * m.delta[0],
+                    m.source[1] + slide * m.delta[1],
+                ];
+                let phi = gauss(dist2(p, centre), m.inv_two_sigma_sq);
+                reach += phi;
+                let wphi = w * phi;
+                v0 += wphi * m.delta[0];
+                v1 += wphi * m.delta[1];
+            }
+            let s = h / reach.max(1.0);
+            d[0] += s * v0;
+            d[1] += s * v1;
+        }
+        (d, e)
+    }
+
+    #[test]
+    fn saturation_zero_changes_no_bit() {
+        // Pins that move, change exposure, share and are held by a lock, with saturation 0 (the
+        // default, and as written): the displacement is, bit for bit, what it was before saturation
+        // existed (a long move takes several steps), over a spread of tones and colours.
+        let base = vec![
+            WarpPin {
+                range: 0.05,
+                shadows: 0.6,
+                exposure_ev: -0.5,
+                ..WarpPin::moving([0.1, 0.02], [0.04, 0.12])
+            },
+            WarpPin {
+                range: 0.03,
+                ..WarpPin::moving([-0.05, 0.08], [-0.08, 0.02])
+            },
+            WarpPin {
+                range: 0.04,
+                exposure_ev: 1.0,
+                ..WarpPin::moving([0.0, -0.06], [0.0, -0.06])
+            },
+            WarpPin::locked_at([0.0, -0.1]),
+        ];
+        let warp = Warp::new(&WarpParams { pins: base });
+        assert!(warp.steps() > 3, "{}", warp.steps());
+        for i in 0..2000u32 {
+            let t = f64::from(i);
+            let c = [0.15 * (t * 0.37).sin(), 0.15 * (t * 0.61).cos()];
+            let l = 0.1 + 0.8 * ((t * 0.173).sin() * 0.5 + 0.5);
+            let (d, e) = warp.displacement(c, l);
+            let (want_d, want_e) = displacement_before_saturation(&warp, c, l);
+            assert_eq!(
+                (d.map(f64::to_bits), e.to_bits()),
+                (want_d.map(f64::to_bits), want_e.to_bits()),
+                "{c:?} {l}"
+            );
+        }
+    }
+
     #[test]
     fn overlapping_pins_share_rather_than_add() {
         // Two identical pins take their colour where one takes it (not twice as far), for a short
@@ -957,6 +1418,7 @@ mod tests {
             highlights: 2.0,
             pivot_ev: 40.0,
             exposure_ev: -9.0,
+            saturation: 7.0,
         }
         .clamped();
         assert!((pin.source[0].hypot(pin.source[1]) - WARP_COORD_LIMIT).abs() < 1e-12);
@@ -965,14 +1427,27 @@ mod tests {
         assert_eq!((pin.shadows, pin.highlights), (0.0, 1.0));
         assert_eq!(pin.pivot_ev, WARP_PIVOT_LIMIT_EV);
         assert_eq!(pin.exposure_ev, -WARP_EXPOSURE_LIMIT_EV);
+        assert_eq!(pin.saturation, WARP_SATURATION_LIMIT);
+        let below = WarpPin {
+            saturation: -3.0,
+            ..WarpPin::default()
+        };
+        assert_eq!(below.clamped().saturation, -WARP_SATURATION_LIMIT);
+        let not_a_number = WarpPin {
+            saturation: f64::NAN,
+            ..WarpPin::default()
+        };
+        assert_eq!(not_a_number.clamped().saturation, 0.0);
         let locked = WarpPin {
             locked: true,
             exposure_ev: 1.0,
+            saturation: 0.5,
             ..WarpPin::moving([0.1, 0.0], [0.2, 0.0])
         }
         .clamped();
         assert_eq!(locked.target, locked.source);
         assert_eq!(locked.exposure_ev, 0.0);
+        assert_eq!(locked.saturation, 0.0);
     }
 
     #[test]

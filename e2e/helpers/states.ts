@@ -38,9 +38,9 @@ const MOCKUP_SETTINGS = {
  * and a lock in the magentas. `e2e/screenshots.spec.ts` draws the same pins for `photos-color-warp.png`.
  */
 export const WARP_PINS = [
-  { source: [-0.088, -0.064], target: [-0.13, 0.03], locked: false, range: 0.04, shadows: 1, highlights: 1, pivot_ev: 0, exposure_ev: 0 },
-  { source: [0.028, 0.032], target: [0.11, 0.07], locked: false, range: 0.04, shadows: 1, highlights: 1, pivot_ev: 0, exposure_ev: 0 },
-  { source: [0.12, -0.11], target: [0.12, -0.11], locked: true, range: 0.04, shadows: 1, highlights: 1, pivot_ev: 0, exposure_ev: 0 },
+  { source: [-0.088, -0.064], target: [-0.13, 0.03], locked: false, range: 0.04, shadows: 1, highlights: 1, pivot_ev: 0, exposure_ev: 0, saturation: 0 },
+  { source: [0.028, 0.032], target: [0.11, 0.07], locked: false, range: 0.04, shadows: 1, highlights: 1, pivot_ev: 0, exposure_ev: 0, saturation: 0 },
+  { source: [0.12, -0.11], target: [0.12, -0.11], locked: true, range: 0.04, shadows: 1, highlights: 1, pivot_ev: 0, exposure_ev: 0, saturation: 0 },
 ] as const;
 
 type Options = Record<string, string | number>;

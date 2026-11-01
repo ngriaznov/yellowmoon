@@ -473,6 +473,27 @@ fn a_warp_that_moves_nothing_leaves_every_output_bit_identical() {
             for k in 1..got.len() {
                 assert!(!same_bits(&got[k], &plain[k]), "{target:?}: output {k}");
             }
+            // And so does a pin that only changes saturation (it neither moves nor changes
+            // exposure, and is not skipped), while the same pin at saturation 0 is a still pin.
+            for saturation in [0.6, -1.0] {
+                let mut p = params.clone();
+                p.warp = WarpParams {
+                    pins: vec![WarpPin {
+                        range: 0.2,
+                        saturation,
+                        ..WarpPin::moving([0.04, 0.0], [0.04, 0.0])
+                    }],
+                };
+                assert!(!p.warp.is_identity());
+                let got = warp_witness(dev, &ColorChain::new(&p).expect("chain"), &img);
+                assert!(same_bits(&got[0], &plain[0]), "C9 is before the warp");
+                for k in 1..got.len() {
+                    assert!(
+                        !same_bits(&got[k], &plain[k]),
+                        "{target:?} saturation {saturation}: output {k}"
+                    );
+                }
+            }
         }
     }
 }
@@ -523,6 +544,8 @@ fn the_most_pins_the_uniform_holds_match_the_cpu() {
             highlights: 1.0 - 0.1 * (k % 5) as f64,
             pivot_ev: -3.0 + 0.4 * k as f64,
             exposure_ev: 0.1 * (k as f64 - 8.0),
+            // -0.8, 0 and 0.8 in turn: a saturation read from the wrong row is seen.
+            saturation: 0.8 * ((k % 3) as f64 - 1.0),
             ..WarpPin::moving(c, [c[0] + len * a.cos(), c[1] + len * a.sin()])
         }
     };

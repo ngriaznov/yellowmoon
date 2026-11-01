@@ -849,8 +849,25 @@ fn a_colour_warp_moves_the_picture_and_locked_pins_alone_change_nothing() {
     ] {
         assert!(frame(&with_pins(&src, &pins), false) == none, "{what}");
     }
+    // A pin that stays and only changes saturation is not that: it changes the picture, and the
+    // same pin at saturation 0 is byte for byte no warp.
+    let saturated = |saturation: f64| WarpPin {
+        saturation,
+        ..WarpPin::moving(colour, colour)
+    };
+    for saturation in [0.5, -1.0] {
+        let out = frame(&with_pins(&src, &[saturated(saturation)]), false);
+        assert_ne!(out, none, "saturation {saturation} changes the picture");
+        let changed = out.iter().zip(&none).filter(|(a, b)| a != b).count();
+        assert!(
+            changed < none.len() / 2,
+            "only the pin's colours change: {changed}"
+        );
+    }
+    assert!(frame(&with_pins(&src, &[saturated(0.0)]), false) == none);
     // Before is the camera default: the warp is not in it.
     assert!(frame(&with_pins(&src, &[moving_pin(colour)]), true) == frame(&src, true));
+    assert!(frame(&with_pins(&src, &[saturated(0.5)]), true) == frame(&src, true));
 }
 
 #[test]
@@ -877,6 +894,15 @@ fn the_grade_key_follows_the_warp_as_the_chain_prepares_it() {
     // What changes nothing keeps the key, so the cached frame is served.
     assert_eq!(key(&[WarpPin::locked_at([0.1, 0.0])]), none);
     assert_eq!(key(&[WarpPin::moving([0.1, 0.0], [0.1, 0.0])]), none);
+    // A pin that stays but changes saturation (or exposure) is not that: it re-renders, and so does
+    // every other value of it.
+    let sat = |saturation: f64| WarpPin {
+        saturation,
+        ..WarpPin::moving([0.1, 0.0], [0.1, 0.0])
+    };
+    assert_ne!(key(&[sat(0.5)]), none, "a saturation re-renders");
+    assert_ne!(key(&[sat(0.5)]), key(&[sat(0.6)]), "so does changing it");
+    assert_eq!(key(&[sat(0.0)]), none);
     // The plan's chain carries the pins (the device path reads them from its parameters).
     let plan = grade_plan(&with_pins(&src, &[a]), &color, &req).expect("plan");
     assert_eq!(plan.chain.params().warp.pins, vec![a]);

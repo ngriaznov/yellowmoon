@@ -318,7 +318,7 @@
       "default": [0, 0]
     },
     "warp_pin": {
-      "description": "One pin of the colour warp: the colours near `source` move to `target`. Every property but `source` may be left out and takes the default shown (`target`: the source). A locked pin holds the colours within its range in place; its target is its source and its weights, pivot and exposure are the defaults.",
+      "description": "One pin of the colour warp: the colours near `source` move to `target`. Every property but `source` may be left out and takes the default shown (`target`: the source). A locked pin holds the colours within its range in place; its target is its source and its weights, pivot, exposure and saturation are the defaults.",
       "type": "object",
       "additionalProperties": false,
       "required": ["source"],
@@ -330,7 +330,8 @@
         "shadows": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 },
         "highlights": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 },
         "pivot_ev": { "type": "number", "minimum": -6, "maximum": 6, "default": 0 },
-        "exposure_ev": { "type": "number", "minimum": -2, "maximum": 2, "default": 0 }
+        "exposure_ev": { "type": "number", "minimum": -2, "maximum": 2, "default": 0 },
+        "saturation": { "type": "number", "minimum": -1, "maximum": 1, "default": 0 }
       }
     },
     "chroma_point": {

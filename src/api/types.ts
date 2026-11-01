@@ -215,14 +215,14 @@ export type ChromaPoint = [a: number, b: number];
 
 /**
  * One pin of Colour › Colour warp (`docs/02` C9b, `docs/01` `color_warp`). A moving pin takes the colours near `source` to `target`; a
- * locked pin holds the colours within its range in place (its target is its source, its weights, pivot and exposure the defaults).
+ * locked pin holds the colours within its range in place (its target is its source, its weights, pivot, exposure and saturation the defaults).
  */
 export interface ColorWarpPin {
   source: ChromaPoint;
   /** Where the colour goes; equal to `source` for a pin that has not moved and for a locked pin. */
   target: ChromaPoint;
   locked: boolean;
-  /** How far the pin reaches across the plane, 0.01–0.25, default 0.04 (the card shows it ×100). */
+  /** How far the pin reaches across the plane, 0.01–0.25, default 0.02 (the card shows it ×100). */
   range: number;
   /** How much of the move the shadows take, 0–1, default 1. */
   shadows: number;
@@ -232,6 +232,8 @@ export interface ColorWarpPin {
   pivot_ev: number;
   /** A change of brightness for the pin's colours, in stops, −2…2, default 0. */
   exposure_ev: number;
+  /** A change of saturation for the pin's colours, −1…1 (shown as −100…+100 %), default 0: −1 turns them grey, +1 doubles their distance from neutral. */
+  saturation: number;
 }
 
 /** Colour › Colour warp: at most 16 pins; no pins is the identity. A patch replaces the whole list. */
