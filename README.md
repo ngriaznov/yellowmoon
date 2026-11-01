@@ -122,7 +122,11 @@ ym info DSC04204.ARW --json
 ym render DSC04204.ARW --auto-provider yellowmoon   # Default Auto, the same on every computer
 ym render DSC04204.ARW --auto-provider claude       # Claude Code grades it (sends a small copy of the photo to Anthropic)
 ym looks import ~/Downloads/<ARRI look package>.zip
+ym render DSC04204.ARW --json | jq .settings       # a photo's settings: a graph of nodes
+ym render DSC04204.ARW --settings graph.json        # settings that need more than the flags: other nodes, masks, links
 ```
+
+From 0.2.0 a photo's settings are a graph of nodes (the Input, node 1 Main, any other nodes, the Output): each flag sets a field of one of them, and `--settings` takes the whole graph (`docs/10-cli.md` has the form, with an example). A settings file in the form of Yellowmoon 0.1 is refused with a sentence that says so.
 
 ## Licence and credits
 

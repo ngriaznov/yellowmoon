@@ -30,6 +30,64 @@ Folders are walked for `*.ARW` (case-insensitive). `--recursive` walks subfolder
 
 The options mirror the app's controls and are grouped as in `ym render --help`. Anything not given uses the automatic value or the user's preference. Numeric options are checked against the ranges below: a value outside a range is a usage error (exit 2), never a quietly clamped value (a settings *file* is different, see Settings).
 
+### Where the flags land
+
+**A photo's settings are a graph of nodes** (`docs/23-nodes.md`, `docs/01` *DevelopSettings*): the Input, node 1 (Main, the first corrector) and the Output of every photo, and any other nodes a settings file adds. There are **no new flags** and none was removed: **each settings flag sets one field of one node**, as a node patch (`docs/23` §3.7), applied on top of the photo's settings and of `--settings`. The table lists every flag of `RenderArgs` that touches the settings; `crates/ym-cli/tests/docs.rs` checks it against `cli.rs` and the help.
+
+| Flag | Node | Field it sets |
+|---|---|---|
+| `--exposure auto or <EV>` | Input | `exposure` |
+| `--exposure-offset <EV>` | Input | `exposure`, as `Manual(EV_auto + offset)` per photo |
+| `--wb auto or <K>[,<tint>]` | Input | `white_balance` |
+| `--light <preset>` | Input | `light_source` |
+| `--lens <lens>`, `--flares`, `--edges`, `--anamorphic` | Input | `lens` (`kind`, `flares`, `edges`, `anamorphic`) |
+| `--nr auto or <L>,<C>,<D>` | Input | `noise_reduction` |
+| `--sharpen auto or <amount>,<radius>` | Input | `sharpen` |
+| `--rolloff <highlights>,<low-light>` | Input | `rolloff` |
+| `--no-neural` | Input | `decode.neural_demosaic` = false |
+| `--no-highlight-recovery` | Input | `decode.highlight_recovery` = false |
+| `--no-lens` | Input | `decode.lens_corrections` = false |
+| `--no-ca` | Input | `decode.chromatic_aberration` = false |
+| `--auto-crop[=<aspect>]` | Input | `crop` (the proposal's angle and first frame; `orientation` stays as the file has it) |
+| `--contrast auto or <N>` | Main (node 1) | `grade.contrast` |
+| `--brightness <N>` | Main | `grade.brightness` |
+| `--highlights auto or <N>`, `--shadows auto or <N>`, `--black auto or <N>` | Main | `grade.highlights`, `grade.shadows`, `grade.black` |
+| `--white <N>` | Main | `grade.white` |
+| `--saturation auto or <N>` | Main | `grade.saturation` |
+| `--look <look>` | Output | `look` |
+| `--intensity <0–100>` | Output | `look_intensity` |
+| `--output-sharpening <0–200>` | Output | `output_sharpening` |
+| `--settings <file or ->` | the whole graph | replaces the photo's settings wholesale (*Settings*) |
+
+The other options are not settings and touch no node: `--profile` forces the camera profile of the run, and the Output and Run groups (`--format` … `--overwrite`, `--jobs`, `--json`, `--cpu`, `--require-gpu`, `--auto-provider`, `--apple-auto`, `--auto-instructions`) say how the files are written and who grades; the Auto providers write Auto's values of the Input and Main only (`docs/23` §3.2). `--display` was removed (below). The flag help in `--help` is unchanged flag by flag; its closing paragraph says which nodes the flags set (*The help text*).
+
+### Photos
+
+| Option | Values | Notes |
+|---|---|---|
+| `<files or folders>` | paths, or `-` | `-` is replaced by the paths on stdin |
+| `--recursive` | flag | walk the subfolders of folders too |
+
+### Look and display
+
+| Option | Values | Notes |
+|---|---|---|
+| `--look <look>` | full id (`builtin:neutral`), its slug after the colon (`neutral`), or the display name, case-insensitive | ambiguous: exit 2 listing the matches; missing: exit 3 |
+| `--intensity <0–100>` | percent | default 100 |
+| `--settings <file or ->` | a JSON graph of nodes, the `ym:Settings` form (`docs/23` §3; `ym render --json` prints one) | covers everything the flags can't: **the other nodes, their trims, grades, masks and the links between them**, colour balance (`{ "kind": "auto" }` puts a shadows or highlights wheel of Main back to Auto), colour warp (`{ "pins": [...] }` in a node's `grade`; a pin names its `source` and may leave out the rest: `target`, `locked`, `range`, `shadows`, `highlights`, `pivot_ev`, `exposure_ev` and `saturation`, −1 to 1, 0 by default; `docs/01`, `docs/02` C9b), curve, crop, orientation, white pick. Flags given alongside it override it. A file with several photos' settings is an object keyed by file name. A file in the form of Yellowmoon 0.1 is refused (*Settings*) |
+| `--auto-crop[=<aspect>]` | Input | `crop` (the proposal's angle and first frame; `orientation` stays as the file has it) |
+| `--contrast auto or <N>` | Main (node 1) | `grade.contrast` |
+| `--brightness <N>` | Main | `grade.brightness` |
+| `--highlights auto or <N>`, `--shadows auto or <N>`, `--black auto or <N>` | Main | `grade.highlights`, `grade.shadows`, `grade.black` |
+| `--white <N>` | Main | `grade.white` |
+| `--saturation auto or <N>` | Main | `grade.saturation` |
+| `--look <look>` | Output | `look` |
+| `--intensity <0–100>` | Output | `look_intensity` |
+| `--output-sharpening <0–200>` | Output | `output_sharpening` |
+| `--settings <file or ->` | the whole graph | replaces the photo's settings wholesale (*Settings*) |
+
+The other options are not settings and touch no node: `--profile` forces the camera profile of the run, and the Output and Run groups (`--format` … `--overwrite`, `--jobs`, `--json`, `--cpu`, `--require-gpu`, `--auto-provider`, `--apple-auto`, `--auto-instructions`) say how the files are written and who grades; the Auto providers write Auto's values of the Input and Main only (`docs/23` §3.2). `--display` was removed (below). The flag help in `--help` is unchanged flag by flag; its closing paragraph says which nodes the flags set (*The help text*).
+
 ### Photos
 
 | Option | Values | Notes |
@@ -51,7 +109,7 @@ The options mirror the app's controls and are grouped as in `ym render --help`. 
 | Option | Values | Notes |
 |---|---|---|
 | `--exposure auto or <EV>` | absolute EV −4…+4, or `auto` | conflicts with `--exposure-offset` |
-| `--exposure-offset <EV>` | stops | added to each photo's automatic exposure: resolved per file to `Manual(EV_auto + offset)`, so there is no extra settings field. It is relative to the photo's *served* automatic exposure (`auto.exposure_ev` in the JSON: the burst median when the photo has neighbours, `docs/02-colour-pipeline.md`). When automatic exposure plus offset passes the limit of 4 EV, the exposure is limited to it and a warning names the photo |
+| `--exposure-offset <EV>` | stops | added to each photo's automatic exposure: resolved per file to `Manual(EV_auto + offset)`, so there is no extra settings field. It is relative to the photo's *served* automatic exposure (`auto.input.exposure_ev` in the JSON: the burst median when the photo has neighbours, `docs/02-colour-pipeline.md`). When automatic exposure plus offset passes the limit of 4 EV, the exposure is limited to it and a warning names the photo |
 | `--contrast auto or <N>` | −100…100, or `auto` | `auto` is the photo's Auto value: 0, or the value the provider chose (`docs/19-apple-auto.md` section 5); it is the default, and it puts back a value a `--settings` file set by hand. A number is a manual value. Bends the tones around mid grey and keeps black and the top code value (`docs/02-colour-pipeline.md` C9) |
 | `--highlights auto or <N>`, `--shadows auto or <N>`, `--black auto or <N>` | −100…100, or `auto` | as `--contrast`: `auto` is the photo's Auto value, 0 or the value the provider chose, and the default. The shadows and highlights colour-balance wheels take Auto in a `--settings` file (`{ "kind": "auto" }`) |
 | `--brightness <N>`, `--white <N>` | −100…100 | |
@@ -66,7 +124,7 @@ The options mirror the app's controls and are grouped as in `ym render --help`. 
 
 ### Lens
 
-The Look tab's Lens card (`docs/21-lens-character.md` §1 and §8). They are the `lens` field of the settings object (`{ kind, flares, edges, anamorphic }`), which `--settings` takes too.
+The Look tab's Lens card (`docs/21-lens-character.md` §1 and §8). They are the `lens` field of the **Input** node (`{ kind, flares, edges, anamorphic }`), which `--settings` takes too.
 
 | Option | Values | Notes |
 |---|---|---|
@@ -79,7 +137,7 @@ The Look tab's Lens card (`docs/21-lens-character.md` §1 and §8). They are the
 |---|---|---|
 | `--nr auto or <L>,<C>,<D>` | 0–100 each | luminance, colour and detail strengths |
 | `--sharpen auto or <amount>,<radius>` | amount 0–300, radius 0.3–2.5 px | capture sharpening (R8) |
-| `--output-sharpening <0–200>` | percent, default 100 | Detail › Sharpening › Output (`docs/algorithms/04-output-sharpening.md`): sharpens JPEG, TIFF and PNG files at the size they are written, right after the resize. 0 is off and leaves the bytes of an export without the stage. A DNG is never sharpened: `--output-sharpening` and `--sharpen` with `--format dng` are warned about and ignored, because a DNG carries no capture sharpening either (`docs/09-export.md`). It is the field `output_sharpening` of the settings object |
+| `--output-sharpening <0–200>` | percent, default 100 | Detail › Sharpening › Output (`docs/algorithms/04-output-sharpening.md`): sharpens JPEG, TIFF and PNG files at the size they are written, right after the resize. 0 is off and leaves the bytes of an export without the stage. A DNG is never sharpened: `--output-sharpening` and `--sharpen` with `--format dng` are warned about and ignored, because a DNG carries no capture sharpening either (`docs/09-export.md`). It is the field `output_sharpening` of the **Output** node |
 
 ### RAW
 
@@ -130,17 +188,69 @@ A path the user named that cannot be a photo (it does not exist, or is not an AR
 
 ## Settings
 
-1. The photo starts as the session opens it: automatic development and the effective default look.
-2. `--settings` replaces that wholesale. The file is read over the defaults like `DevelopSettings::from_json`, so it may hold only what it changes; unknown fields are an error; out-of-range numbers are limited and a warning names the fields.
-3. The options are applied as a patch.
+1. The photo starts as the session opens it: automatic development and the effective default look (the default graph: Input → Main → Output, `docs/23` §3.1).
+2. `--settings` replaces that wholesale. The file is read over the default graph like `DevelopSettings::from_json`, so it may hold only what it changes (the nodes it names, partially); unknown fields are an error; out-of-range numbers are limited and a warning names the fields (as `<node>.<field>`, for example `1.grade.contrast`).
+3. The options are applied as node patches (*Where the flags land*).
 
-A settings file whose keys are all settings fields (or that is empty) is one document for every photo. One whose keys are all names of ARW files (`DSC00001.ARW`, in any case) is an object keyed by file name: matched exactly, else ignoring case, else by absolute path; a photo without an entry is developed automatically, and an entry that names no photo is a warning. A file that mixes the two is a usage error, and so is a key that is neither (a misspelt field such as `color_ballance` with an object as its value would otherwise pass for a photo's file name and change nothing). All of it is checked before any photo is opened, so a typo costs nothing.
+### The node-first form
 
-**The node graph.** `nodes` is read and checked like every field (`docs/01` *Nodes*): a document that breaks a graph rule (a cycle, a link between ports of different types, two links on one input, no link to the output, an unknown node kind, a node or link that does not exist, more than 64 nodes) is refused for that file with the plain sentence of `docs/23` §3.5, and **a file with a node kind this version does not know is refused with "This settings file has a node of a kind (“parallel”) that this version of Yellowmoon does not have. Update Yellowmoon."** All of the file is checked before any photo is opened, so a graph error costs nothing. **Sanity bounds** on what a file may hold, so that a broken or hostile file cannot hang `ym` or use all its memory: 64 masks in a node, 100,000 brush points in a mask, 256 points in an Object mask, 64 nodes; a number outside a range is limited and a warning names the field, as for any field. There are no new flags: the graph is set by `--settings` only. A hand-written graph may hold key links and branches that no screen draws; `ym` renders them as the app does.
+A settings file is `{ "nodes": { "items": [ … ], "links": [ … ] } }`. The items are the nodes: **`"input"`** (the raw, light and framing fields: `exposure`, `light_source`, `white_balance`, `white_pick`, `rolloff`, `decode`, `noise_reduction`, `sharpen`, `lens`, `crop`, `orientation`), **`"output"`** (`look`, `look_intensity`, `output_sharpening`) and the correctors, **1** (Main) and any others (`name`, `bypass`, `pos`, `trim`, `grade`, `masks`; the grade has the fields `contrast`, `brightness`, `highlights`, `shadows`, `white`, `black`, `color_balance`, `saturation`, `color_warp`, `curve`). Every field has the name and the type it always had in `ym:Settings`; it has moved into its node. The fixed three need not be listed, a listed node may be partial, and `links` left out are the default links (Input → Main → Output). The full rules, the ranges and the Auto rule (**only node 1 can be Auto**; in another corrector Auto reads as a manual 0) are `docs/23` §3.
 
-**A mask this machine cannot make.** A photo whose settings need an Object mask (the SAM weights are missing or damaged), or a Subject or People mask on a computer that is not a Mac that supports them (Linux, an older macOS, a Mac that cannot run Vision), **stops with a plain error** and the other photos go on: `error.kind` `mask`, for example "Node 2 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask." The photo is never written without its mask. The exit code is 1 (*Exit codes*). `ym doctor` prints a **Masks** line with the kinds this machine can make (`docs/23` §9, `mask_kinds`), and `--json` the same list.
+A complete small file: the Input's exposure at +0.3 EV, Main's contrast at 20, a second corrector, Sky, with a Linear mask and a cooler trim, and the Output's Neutral look at 80 %:
+
+```json
+{
+  "nodes": {
+    "items": [
+      { "id": "input", "exposure": { "kind": "manual", "ev": 0.3 } },
+      { "id": 1, "grade": { "contrast": { "kind": "manual", "value": 20 } } },
+      { "id": 2, "kind": "corrector", "name": "Sky", "pos": [1, 0],
+        "trim": { "temperature": -18, "tint": 4 },
+        "masks": { "invert": false, "items": [
+          { "kind": "linear", "center": [0.5, 0.2], "angle_deg": 4, "feather": 0.25 } ] } },
+      { "id": "output", "look": "builtin:neutral", "look_intensity": 80 }
+    ],
+    "links": [
+      { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+      { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+      { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+    ]
+  }
+}
+```
+
+A new node (id 2) needs its `kind`; because it is new, `links` must link it (a node nothing links to is kept and does nothing). `ym render --json` prints a photo's settings in this form, written in full, and feeding them back with `--settings` reproduces the file.
+
+**One document for every photo, or one for each.** A settings file whose only key is `nodes` (or that is empty) is one document for every photo. One whose keys are all names of ARW files (`DSC00001.ARW`, in any case) is an object keyed by file name: each value is a document in the form above, matched exactly, else ignoring case, else by absolute path; a photo without an entry is developed automatically, and an entry that names no photo is a warning:
+
+```json
+{
+  "DSC04204.ARW": { "nodes": { "items": [ { "id": "input", "exposure": { "kind": "manual", "ev": -0.3 } } ] } },
+  "DSC04213.ARW": { "nodes": { "items": [ { "id": "output", "look": "builtin:neutral" } ] } }
+}
+```
+
+A file that mixes the two is a usage error, and so is a key that is neither (a misspelt `nodes` with an object as its value would otherwise pass for a photo's file name and change nothing). All of it is checked before any photo is opened, so a typo costs nothing.
+
+**The form of Yellowmoon 0.1 is refused.** Until 0.1.x a settings document was flat: `{ "look": "builtin:neutral", "contrast": … }`, with every field at the top level. Settings were never saved in 0.1 (they lived in the session, and the only copies were the XMP of an exported file and `ym render --json`), so there is nothing to migrate, and the core reads only the node-first form. A file whose keys are all fields of the 0.1 form is a usage error (exit 2, before any photo is opened) with this sentence:
+
+> This settings file is in the old form of Yellowmoon 0.1. Settings are now a graph of nodes: `ym render --help` shows the new form, and `ym render --json` prints a photo's settings in it.
+
+A file that has `nodes` and also a flat field is refused as having an unknown field. `crates/ym-cli/tests/docs.rs` compares this sentence with the code's and with `docs/23` §3.12.
+
+**Graph rules.** A file that breaks one (a cycle, a link between ports of different types, two links on one input, no link or two to the output, Main not linked to the input, an unknown node kind, a node or link that does not exist, a field the node's kind does not have, more than 64 correctors) is refused for that file with the plain sentence of `docs/23` §3.5, and **a file with a node kind this version does not know is refused with "This settings file has a node of a kind (“parallel”) that this version of Yellowmoon does not have. Update Yellowmoon."** **Sanity bounds** on what a file may hold, so that a broken or hostile file cannot hang `ym` or use all its memory: 64 correctors, 64 masks in a node, 100,000 brush points in a mask, 256 points in an Object mask; a number outside a range is limited and a warning names the field, as for any field. A hand-written graph may hold key links and branches; `ym` renders them as the app does.
+
+**A mask this machine cannot make.** A photo whose settings need an Object mask (the SAM weights are missing or damaged), or a Subject or People mask on a computer that is not a Mac that supports them (Linux, an older macOS, a Mac that cannot run Vision), **stops with a plain error** and the other photos go on: `error.kind` **`mask`**, for example "Node 2 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask." The photo is never written without its mask. The exit code is **1** (some files failed; *Exit codes*), as for every kind of failure after a photo is opened. In the JSON the record has `"status": "error"`, `"output": null` and `"error": { "kind": "mask", "message": "…" }`; it still carries `camera`, `look`, `auto` and `settings`. `ym doctor` prints a **Masks** line with the kinds this machine can make and why it cannot make the others (*`doctor`*).
 
 Nothing is saved per photo: the settings live with the photo for this run, and each run starts from the automatic development and the default look.
+
+### The help text
+
+`ym render --help` changes in three places (the snapshot `crates/ym-cli/tests/snapshots/cli__help_render.snap`; no other `--help` snapshot changes, and the flags' own lines are as they were):
+
+- **The closing paragraph** (`after_help`, after the examples) says what the flags set and where the new form is. It reads: "Settings are a graph of nodes. The options set fields of three of them: the Input (--exposure, --exposure-offset, --wb, --light, --lens, --flares, --edges, --anamorphic, --nr, --sharpen, --rolloff, --no-neural, --no-highlight-recovery, --no-lens, --no-ca, --auto-crop), node 1, Main (--contrast, --brightness, --highlights, --shadows, --white, --black, --saturation) and the Output (--look, --intensity, --output-sharpening). Everything else goes in a JSON file given with --settings: other nodes, masks and links, colour balance, curves, crop, orientation, white pick. The file is a graph, for example {"nodes":{"items":[{"id":1,"grade":{"contrast":{"kind":"manual","value":20}}}]}}; --json prints a photo's settings in that form. A file in the form of Yellowmoon 0.1 is refused. Options given alongside --settings override it. A file with several photos' settings is an object keyed by file name." (It replaces the old "Per-photo settings beyond these options go in a JSON file given with --settings (the `ym:Settings` schema of an exported file)…".)
+- **The `--settings` option** reads: "A JSON file of settings, or `-` for stdin: a graph of nodes (`ym render --json` prints one). It covers what these options can't: other nodes and their masks, links, colour balance (`{ "kind": "auto" }` puts a shadows or highlights wheel of Main back to Auto), curves, crop, orientation, white pick."
+- **`--json`** is described as before; its output changes (below).
 
 ## Export options and preferences
 
@@ -192,8 +302,10 @@ One object per input file, written when that file finishes, in completion order:
   "status": "ok",
   "camera": { "body": "Sony A1", "model_id": 384, "profile": "sony-ilce-7rm4", "profile_version": "1.2.0", "match": "default" },
   "look": { "id": "builtin:neutral", "intensity": 100 },
-  "auto": { "exposure_ev": 0.81, "kelvin": 5450, "tint": 0, "contrast": 15, "saturation": 0,
-            "highlights": -20, "shadows": 0, "black": 0, "balance_shadows": [-0.476, -0.275], "balance_highlights": [0, 0],
+  "auto": { "input": { "exposure_ev": 0.81, "kelvin": 5450, "tint": 0,
+                       "sharpen": { "amount": 80, "radius_px": 0.8 }, "noise_reduction": { "luminance": 20, "color": 30, "detail": 50 } },
+            "main": { "contrast": 15, "saturation": 0, "highlights": -20, "shadows": 0, "black": 0,
+                      "balance_shadows": [-0.476, -0.275], "balance_highlights": [0, 0] },
             "source": "apple", "apple": { "state": "answered", "...": "…" }, "apple_steps": { "...": "…" },
             "light_class": "daylight", "light_confidence": 0.82, "noise": { "a": 1.9e-5, "b": 3.1e-7 } },
   "auto_source": "apple",
@@ -204,10 +316,10 @@ One object per input file, written when that file finishes, in completion order:
                              "highlight_color": "none", "highlight_color_strength": null },
                   "scene": "Harbour in morning light", "plan": "Cool, crisp morning with teal shadows" },
   "auto_advisor": { "provider": "apple", "state": "answered", "...": "docs/22-auto-providers.md section 14.1" },
-  "settings": { "...": "resolved settings, same as ym:Settings" },
+  "settings": { "nodes": { "items": [ "…" ], "links": [ "…" ] } },
   "device": "cpu",
   "timings_ms": { "decode": 310, "develop": 2410, "encode": 180 },
-  "pipeline_version": "0.8.2",
+  "pipeline_version": "0.9.0",
   "error": null
 }
 ```
@@ -220,11 +332,11 @@ On failure: `"status": "error"`, `"output": null`, `"error": { "kind": "unsuppor
 
 - `input` is an absolute path. `status` is `ok`, `skipped` (`--skip-existing` and the file was there: `output` is the existing file, nothing was rendered) or `error`.
 - `camera` has `make`, `model`, `model_id`, `body`, `firmware`, `arw_version`, `profile` (the id), `profile_name` (`A7R IV`), `profile_version`, `match` (`exact`, `sensor_family`, `default` or `forced`), `stand_in` and `reduced`.
-- `auto` is the `AutoEstimates` of `src/api/types.ts`: the exposure, Kelvin and tint, the Auto contrast and saturation, which Auto made them (`source`) and where the photo stands with Apple Auto (`apple`), light class and confidence, the noise model, and what Auto sharpening and noise reduction resolve to. The exposure, Kelvin, tint, contrast and saturation include Apple Auto's answer.
-- `settings` is the document an export records as `ym:Settings`: exposure, contrast, saturation, sharpening and noise reduction that were Auto are written as the numbers they resolved to, white balance stays Auto when it was. Feeding it back with `--settings` reproduces the file byte for byte. The output-sharpening amount is part of it, and a settings file without the field reads as 100. So is `nodes`, the graph with its default written out, and a settings file without it reads as the default graph.
+- `auto` is the `AutoEstimates` of `src/api/types.ts`, **grouped by the node each number is for** (`docs/23` §3.9): `auto.input` has the exposure, Kelvin and tint and what Auto sharpening and noise reduction resolve to (`sharpen`, `noise_reduction`), `auto.main` the Auto contrast, saturation, highlights, shadows and black and the two wheels' points (`balance_shadows`, `balance_highlights`); beside them, for the photo, are which Auto made them (`source`), where the photo stands with Apple Auto (`apple`, `apple_steps`), the light class and confidence and the noise model. The values include Apple Auto's answer. (Until 0.2.0 these keys were flat in `auto`; a script that read `auto.exposure_ev` reads `auto.input.exposure_ev` now.)
+- `settings` is the document an export records as `ym:Settings`, **node-first** (`docs/23` §3): `{ "nodes": { "items": [ … ], "links": [ … ] } }`, with the nodes in the order Input, the correctors by id, Output, the links in the order of their ends, and every default written out. The Input's and Main's exposure, contrast, saturation, highlights, shadows, black, wheels, sharpening and noise reduction that were Auto are written as the numbers they resolved to, and white balance stays Auto when it was. Feeding it back with `--settings` reproduces the file byte for byte (a settings file without a field reads that field at its default). Until 0.2.0 it was flat (`settings.contrast`); it is `settings.nodes.items[…].grade.contrast` now, in the item with `"id": 1`.
 - `device` is where the pictures of the export were made, `cpu` or `gpu` (`ExportReport.device`, the path the export actually took): `gpu` when any stage of it ran on the device (the raw chain of a tile, the export tail), else `cpu`, also for a photo that a device error sent back to the CPU, whose `notes` then carry the reason. A strict job reads both, so a silent fallback cannot pass. `null` for a file that was skipped; a failure object has none.
 - `timings_ms` is `decode` (reading the mosaic, which overlaps the render of the photo before it), `develop` (the render) and `encode`.
-- `notes` are the plain-words notes of the render (today: the classical demosaic).
+- `notes` are the plain-words notes of the render: the classical demosaic, a device error that sent the photo back to the CPU, and, from 0.2.0, **"The settings of this photo are too long for a JPEG's XMP, so they are not recorded."** when a JPEG's XMP packet (65,502 bytes) cannot hold the pinned `ym:Settings` of a graph with a lot of brush work (TIFF, PNG and DNG have no such limit; `docs/09`). A Subject or People mask the machine cannot make is not a note: it fails the photo (`error.kind` `mask`, *Settings*).
 - `info --json` adds the metadata blocks (`exposure`, `dimensions`, `raw`, `black`, `white`, `wb_as_shot`, `levels_source`, `lens_corrections`, `tone_curve`, `preview`, `gps`). For a file that has metadata but cannot be developed yet (ARW 6.0), `look`, `auto`, `auto_source`, `apple_auto` and `settings` are null and `notes` says why.
 - A failure that happens after the photo was developed (a look that is gone) still carries `camera`, `look`, `auto` and `settings`; one before (not an ARW file) has `input`, `output`, `status`, `pipeline_version` and `error` only.
 
@@ -233,8 +345,8 @@ On failure: `"status": "error"`, `"output": null`, `"error": { "kind": "unsuppor
 | Code | Meaning |
 |---|---|
 | 0 | every file rendered |
-| 1 | some files failed (others succeeded); also an import in which some files were refused |
-| 2 | usage error (also a data folder or home folder that can't be found: set `YELLOWMOON_DATA` or `YELLOWMOON_HOME`) |
+| 1 | some files failed (others succeeded), a photo that needs a mask this machine cannot make (`error.kind` `mask`) included; also an import in which some files were refused |
+| 2 | usage error (also a settings file that cannot be used, the form of Yellowmoon 0.1 among them, and a data folder or home folder that can't be found: set `YELLOWMOON_DATA` or `YELLOWMOON_HOME`) |
 | 3 | a requested look is missing |
 | 4 | `--require-gpu` (or `YELLOWMOON_GPU=require`) and no usable GPU |
 | 5 | no input files found |
@@ -276,6 +388,7 @@ In `--json` the values keep the exact characters and are escaped the way JSON do
 A text report whose first sentence says what it includes (the version, the GPU, the render path, whether each Auto provider is available, the model weights and their hashes, the camera profiles, how many looks are imported, the folders and where Claude Code and Antigravity were found) and that it leaves out photos, file names, locations and look names. `--json` prints the same facts as one object. Model weights are everything under `data/models/` except the illuminant models of `models/illum/` (listed separately, each with its SHA-256) and the metrics: today Auto crop's model, `crop/cropnet.safetensors`.
 
 - **GPU.** The section reads "none, CPU fallback (reason)" when no device opens. It reports the adapter whatever the policy does with it (a software adapter that `auto` leaves alone, and the one on a machine where `YELLOWMOON_GPU=off`, are listed), then the policy in force and where it came from (`GPU policy`, for example `auto (default): uses the CPU, only a software adapter was found; YELLOWMOON_GPU=on uses it`), the stages `auto` runs and the ones `on` and `require` run (`GPU stages`) and the memory budgets (`Memory budget`: CPU and GPU, lowered for a GPU that shares the memory of the CPU, `docs/01-architecture.md`). `--json` adds `gpu_policy` (`setting`, `source`, `warning`, `uses_gpu`, `reason`, `stages`, `auto_stages`, `all_stages`) and `memory_budget` (`cpu_bytes`, `gpu_bytes`, `shared_memory`).
+- **Masks** (from 0.2.0, `docs/23` §9). The row `Masks`, after `Model weights`, lists the kinds of mask this machine can make, in the order of the Add mask menu: for example `Object, Subject, People, Background, Linear, Radial, Brush, Colour range, Brightness range`, and on a computer that cannot make some, those it cannot, each with its reason: `Linear, Radial, Brush, Colour range, Brightness range · not available: Object (the SAM weights are missing), Subject and People (this is not a Mac that supports them)`. `--json` has `masks: { "kinds": [ "linear", … ], "unavailable": { "object": "weights_missing", "subject": "not_a_mac", "people": "not_a_mac" } }`, the wire names of the reasons being `weights_missing`, `not_a_mac`, `macos_too_old` and `not_supported`. The list is the one `mask_kinds()` gives the app, and a photo that needs a mask that is not in it fails with `error.kind` `mask`.
 - **Apple Auto** (`docs/19-apple-auto.md` section 8). The row `Apple Auto` after `Render path` reads `available · Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 3 · table 2` (the version string of `docs/19-apple-auto.md` section 7, with ` · edited instructions (<digest>)` when the preference holds the person's own instructions and ` · turned off in Preferences` when the preference is off) or `not available (this is not a Mac)`. `--json` has `apple_auto: { "available", "reason", "model", "os", "preference", "instructions", "instructions_sha256", "prompt", "table" }` (`reason` the wire name, `not_a_mac`, …, or null; `model` and `os` null where it is not available). It is `Core::apple_auto_status` without a session: the advisor `ym` uses (`ym_apple::system_advisor`, read now) and the preference. The report writes nothing.
 
 ### `doctor --bench FILE [--repeat N]`
@@ -317,7 +430,7 @@ It names no file, no folder and no look: the photo is its camera model and size.
   - `model` names the model that answered or was asked (for Claude Code the id the service served, as the alias `sonnet` is not a fixed model); `os` is Apple's macOS build (null for the programs); `tool_version` and `api` come from the program; `instructions` (`default` or `edited`) and `instructions_sha256` (the first 12 hex digits of their SHA-256) name the instructions it read, null when none was; `prompt`, `table`, `schema` and `image` are the provider's constants (null for `yellowmoon`; `schema` and `image` null for Apple); `reproducible` is true for Apple, false for the programs and null for `yellowmoon`. The program's path and messages are never in it.
   - `steps` are the photo's own answer, as `ym:AutoAdvisor` records them (the steps in effect can be its burst's, `docs/19-apple-auto.md` section 5; a program's or Apple's message of a failure is `auto.apple.message`): `exposure` −3…3; `highlights`, `shadows`, `blacks`, `contrast`, `white` (the warmth), `tint`, `saturation` −2…2; `shadow_color` `none`, `teal`, `blue`, `green`, `amber` or `magenta` and `highlight_color` `none`, `warm`, `gold`, `cool` or `pink`, each with a `…_strength` 1…3; `null` for a value the model left empty, which sets nothing.
 - `apple_auto` stays for **one version** and is deprecated: exactly what `docs/19` section 8 described, for the provider `apple` (`{ "state", "reason", "model", "os", "instructions", "instructions_sha256", "prompt", "table" }` with `steps`, `scene` and `plan` when answered); for every other provider it is `{ "state": "off" }` (`info --json` has it for every developed photo; `render --json` only for a photo Apple Intelligence acted on), so a script that looks for `apple_auto.state == "answered"` still finds the photos Apple graded and none of Claude Code's.
-- In every run, whoever acted: `auto` has `provider` (the chosen provider's wire name), `source` (the four values of `auto_source`), `apple` (`{ "state": "off" }`, or `{ "state": "unavailable", "reason": "not_installed" }` and the like, or the provider's answer with its `info`: `provider`, `model`, `os` (`""` for the programs), `prompt`, `instructions`, and for the programs `tool` as `{ "version", "api", "auth" }`; the key keeps the name `apple`), `apple_steps` (null without an answer), `contrast`, `saturation`, `highlights`, `shadows`, `black` (0 without an answer), `balance_shadows`, `balance_highlights` (`[0, 0]`); the object has `auto_source`; `settings.contrast`, `.saturation`, `.highlights`, `.shadows` and `.black` are `{ "kind": "manual", "value": 0 }` and `settings.color_balance.shadows` and `.highlights` are `{ "kind": "manual", "point": [0, 0] }`: Auto pinned to the number or point it resolved to, as for exposure (`docs/19-apple-auto.md` section 5). A script must read those as objects, not as numbers or points.
+- In every run, whoever acted: `auto` has `provider` (the chosen provider's wire name), `source` (the four values of `auto_source`), `apple` (`{ "state": "off" }`, or `{ "state": "unavailable", "reason": "not_installed" }` and the like, or the provider's answer with its `info`: `provider`, `model`, `os` (`""` for the programs), `prompt`, `instructions`, and for the programs `tool` as `{ "version", "api", "auth" }`; the key keeps the name `apple`), `apple_steps` (null without an answer), `auto.main` has `contrast`, `saturation`, `highlights`, `shadows`, `black` (0 without an answer), `balance_shadows`, `balance_highlights` (`[0, 0]`); the object has `auto_source`; in `settings`, Main's `grade.contrast`, `.saturation`, `.highlights`, `.shadows` and `.black` are `{ "kind": "manual", "value": 0 }` and its `grade.color_balance.shadows` and `.highlights` are `{ "kind": "manual", "point": [0, 0] }`: Auto pinned to the number or point it resolved to, as for exposure (`docs/19-apple-auto.md` section 5). A script must read those as objects, not as numbers or points. `auto.contrast` and the rest are `auto.main.contrast` and so on (`auto` is grouped by node, above).
 
 **The text of `ym info`** has a row **Auto grading** after Auto white (where the Automatic card puts the provider's rows). It starts with the provider's name, then says what the steps in effect do, in the order of the table (exposure, highlights, shadows, black, contrast, warmth, tint, saturation, the shadows' colour, the highlights' colour) and only those that were set and change something, then the scene and the plan, joined with ` · `:
 
@@ -348,6 +461,8 @@ ym info DSC04204.ARW --json | jq .auto
 ym info DSC04204.ARW --json | jq .apple_auto
 ym render ~/Pictures/Lisbon --apple-auto off --contrast 10
 ym render DSC04204.ARW --lens vintage --flares 60 --anamorphic 40
+ym render ~/Pictures/Lisbon --settings sky.json --look neutral   # sky.json is a graph of nodes (Settings)
+ym render DSC04204.ARW --json | jq .settings.nodes.items
 ym lenses list --json | jq '.lenses[].kind'
 ```
 
@@ -361,6 +476,8 @@ ym lenses list --json | jq '.lenses[].kind'
 ## Tests
 
 - `assert_cmd` and `insta` snapshot tests for `--help` of every command, `info --json` on fixtures, and the exit code of each failure.
+- **The documentation is tested** (`crates/ym-cli/tests/docs.rs`, `the_cli_documentation_and_the_help_agree`; `docs/23` §11): it reads this file and `ym render --help` and fails on any difference. Every long option of `RenderArgs` that sets a field of a node has a row in *Where the flags land* with the node and field it sets, and every row names a real option; the help's closing paragraph lists the same flags for the Input, Main and the Output; the example file of *The node-first form* is extracted from this file, read with `DevelopSettings::from_value`, validated and written back unchanged; the per-file example parses as `--settings` does; and the sentence for the form of Yellowmoon 0.1 is the same here, in `docs/23` §3.12 and in the error the code returns.
+- **Snapshots and tests that change with node-first settings (N-02)**: `snapshots/cli__help_render.snap` (the closing paragraph and the `--settings` text above; every other `--help` snapshot is unchanged); `snapshots/render__render_json_shape.snap` and `snapshots/apple_auto__render_json_shape_apple_auto.snap` (the `settings` and `auto` objects); `snapshots/info__json_snapshot_of_a_synthetic_a7r_iv.snap` (the same two objects of `info --json`); the tests that read paths such as `["settings"]["exposure"]` or `["auto"]["exposure_ev"]` in `render.rs`, `parity.rs`, `info.rs`, `apple_auto.rs`, `auto_providers.rs` and `lenses.rs` (now `["settings"]["nodes"]["items"]…` through a small helper of `tests/common`, and `["auto"]["input"]["exposure_ev"]`); every settings file the tests write (`render.rs`, `parity.rs`, `lenses.rs`: node-first); and one new test that a flat file is refused with the sentence above (exit 2, nothing rendered). The golden tool's manifest and `truth_settings` are node-first (`tools/golden/README.md`). **Later tasks** change these again where they change `ym`: `pipeline 0.9.0` in `tests/cli.rs`, `cli__doctor_json_shape_no_adapter.snap` and `info__json_snapshot_of_a_synthetic_a7r_iv.snap` (N-03); the Masks line of `doctor` and its snapshot (N-10); the `mask` error (N-18, N-19).
 - App/CLI parity (`tests/parity.rs`): export through `ym-core`'s app path (`Core::export_start`, what the Tauri commands call) and through the binary; the files must be byte-identical. It covers JPEG, TIFF (8 and 16 bit, none, LZW and ZIP), PNG (8 and 16 bit), DNG, the Display P3 and Rec.2020 spaces, a long edge, a folder with a name template, settings given as options, settings given as a file, and a photo of several export tiles exported with different decode-thread counts. It runs with Default Auto on both sides (no advisor in the app's core, `--apple-auto off` for the binary). Its Apple Auto leg gives both sides the test advisor (`FakeAdvisor` in the core, `YELLOWMOON_TEST_APPLE_AUTO=fake` for the binary) and compares a JPEG, a 16-bit TIFF and a DNG of a folder of two photos; its Claude Code leg does the same with the in-process fake provider (`FakeProvider` in the core, `YELLOWMOON_TEST_AUTO_PROVIDERS=claude=available` and `--auto-provider claude` for the binary), and the files record `ym:Auto` `claude` and a `ym:AutoAdvisor` that says the answer is not reproducible.
 - Apple Auto (`tests/apple_auto.rs`, with the test advisor on every machine): `render --json` (`auto_source`, `apple_auto`, the values in the settings), `--apple-auto off` and `on` (the notice where Apple Auto is not available), the saved choice and its migration from the old `apple_auto` field, `info --json` and its text row, `doctor` JSON and text, `--contrast`, `--saturation`, `--highlights`, `--shadows` and `--black auto`, the instructions (the preference, `--auto-instructions` and its old name on `render` and `info`, an empty file, a final line break, a file too long or missing), `ym:Auto` and `ym:AutoAdvisor` in the XMP, two renders byte-identical and their settings reproducing the file.
 - Auto providers (`tests/auto_providers.rs`, on Linux and macOS in `.github/workflows/agents.yml`, `docs/22-auto-providers.md` section 16): `--auto-provider` and its alias, `--auto-instructions`, the saved choice and its consent, the stderr sentences, `auto_advisor` and the legacy `apple_auto` shapes, `doctor` with each provider in each state, and a full `render` against the test double `ym-fake-claude` (the real process route, two photos at once, Ctrl-C leaving no child running and no temporary folder, also with a program that ignores `SIGTERM` and during the start-up probe, a saved program nobody agreed to starting no process, the breaker's sentence) and against in-process fake providers (`YELLOWMOON_TEST_AUTO_PROVIDERS`).

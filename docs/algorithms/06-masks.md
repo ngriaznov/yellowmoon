@@ -51,7 +51,7 @@ The default graph, Input → Main → Output, is the plan `[Main]`. Nodes number
 
 ### 1.4 Bit-identity of the default graph
 
-With `nodes` absent (the default graph: Main with no trim and no masks) the plan is `[Main]` and the chain runs Main's C9, C9b and C11 on the top-level settings, in the order of section 1.1 with steps 1 and 5 skipped, and then C10. For a photo whose curve is the identity or whose look is Neutral this is the sequence of 0.8.2 (a Neutral look and an identity curve are identities, and C10 and C11 commute when either is the identity), so the bytes are equal on the CPU reference. The one case that differs, a curve and a look together, has its own test (section 7). On the device the gates of `docs/17` §12 apply and lavapipe gives the same bytes where the kernel's expressions are unchanged.
+With the default graph (the document without `nodes` reads as it: Main with no trim and no masks, linked Input → Main → Output) the plan is `[Main]` and the chain runs Main's C9, C9b and C11 on Main's `grade` (the fields the settings had at the top level before they were node-first, `docs/23` §3), in the order of section 1.1 with steps 1 and 5 skipped, and then C10. For a photo whose curve is the identity or whose look is Neutral this is the sequence of 0.8.2 (a Neutral look and an identity curve are identities, and C10 and C11 commute when either is the identity), so the bytes are equal on the CPU reference. The one case that differs, a curve and a look together, has its own test (section 7). On the device the gates of `docs/17` §12 apply and lavapipe gives the same bytes where the kernel's expressions are unchanged.
 
 ### 1.5 The Output
 

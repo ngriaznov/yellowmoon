@@ -77,8 +77,7 @@ of a skip.
 **The manifest.** The entries of tier `synthetic` are written by `python3 -m training.synth.make_scenes --write-manifest
 tools/golden/manifest.json` and leave `expected_hash` and `reference` empty on purpose (a test pins that): this runner
 keeps the hashes in `expected.json` and the pictures under `testdata/golden/refs`. An entry's `settings` is the
-`ym:Settings` document passed to `--settings` (`{}` is everything Auto; a field that is not a setting is an error in
-`ym`, so a typo fails loudly).
+`ym:Settings` document passed to `--settings`, **node-first** from 0.2.0 (`docs/10`, `docs/23` §3): `{}` is the default graph (everything Auto, Input → Main → Output), and an entry that changes something names the nodes it changes, for example `{"nodes":{"items":[{"id":"input","exposure":{"kind":"manual","ev":0.3}}]}}`; a field that is not a setting of the node is an error in `ym`, so a typo fails loudly, and a flat document of Yellowmoon 0.1 is refused. N-02 rewrites what holds the old form: no entry has settings (all 114 are `{}`, which stays valid), so the change is in `truth_settings` (`src/truth.rs`), which builds the node-first document of the Neutral look (the Output's `look`) and the highlight range 0 (the Input's `rolloff`), and in the manifest's own description of `settings`.
 
 ## GPU mode: `golden check --device gpu` and `golden device-check`
 
