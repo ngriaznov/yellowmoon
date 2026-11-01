@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-11-01
+
+Saturation for each Colour warp pin; Pick colour turns off when you leave the Colour tab; the Lens tab's Edges follows the aperture and no longer turns bright detail into white blobs (pipeline 0.8.2, was 0.8.1).
+
 ### Added
 
 - **A Saturation slider for each pin in Colour warp.** A pin now has a Saturation slider after Exposure, from −100 %, which turns the colours it reaches grey, to +100 %, which puts them twice as far from grey; 0 % changes nothing. It follows the pin's Range, Shadows and Highlights like the rest of the pin, never touches greys, and two pins on one colour share the effect rather than add it up. A locked pin has no Saturation. Photos and copied settings made before this open as they were, and a picture whose pins have Saturation at 0 comes out exactly as before (the pipeline version stays 0.8.2). In a `ym render --settings` file a pin takes `saturation` from −1 to 1 (`docs/02`, `docs/11`).
