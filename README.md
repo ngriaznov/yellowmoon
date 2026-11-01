@@ -25,6 +25,14 @@ One raw file from a Sony A1: on the left as the camera renders it, on the right 
 |---|---|
 | ![The camera's own rendering of the photo](docs/images/readme/compare-sony.jpg) | ![The same raw file developed by Yellowmoon with the Signature look](docs/images/readme/compare-yellowmoon.jpg) |
 
+## Before and after
+
+Another A1 photo in the app on a Mac. Left: Auto set by Antigravity, with the Signature look. Right: Before (`\`), the camera's default rendering of the same raw file.
+
+| Auto by Antigravity, Signature | Before: camera default |
+|---|---|
+| ![The photo with Auto set by Antigravity and the Signature look](docs/images/readme/before-after-auto.jpg) | ![The same photo in the Before view, the camera's default rendering](docs/images/readme/before-after-before.jpg) |
+
 ## Why
 
 I like how ARRI looks, but I can't afford an ALEXA. I've used LUTs that smart people make, and they're hit-or-miss: a LUT is static, and it can't know what light a photo was taken in.
