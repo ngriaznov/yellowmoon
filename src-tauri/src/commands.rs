@@ -16,13 +16,13 @@ use tauri_specta::{Builder, collect_commands, collect_events};
 use crate::api::AppApi;
 use crate::system;
 use crate::wire::{
-    self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, CliLinkResult,
-    CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate, ExportJob, ExportJobId,
-    HistogramData, LensInfo, Look, LookId, LookInput, LooksImportResult, MapFrom, MaskKind,
-    MaskView, MenuState, NodeId, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample,
-    Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
-    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
-    WatchStatus,
+    self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
+    CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate,
+    ExportJob, ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput, LooksImportResult,
+    MapFrom, MaskKind, MaskView, MenuState, NodeId, Num, OpenKind, Orientation, PasteReport,
+    PhotoId, PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionChange,
+    SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput,
+    ViewportMode, ViewportRect, WatchStatus,
 };
 
 /// The managed state: the command handlers, or why the application could not start.
@@ -367,8 +367,10 @@ pub async fn sample_pixel(
     run(&state, move |api| api.sample_pixel(x.0, y.0)).await
 }
 
-/// `sample_chroma(x, y, at)`: the chroma at the input of a node's colour warp under a point of the
-/// photo cell (Pick colour; `null` for `at` is Main's); `null` on the paper around the photo.
+/// `sample_chroma(x, y, at, tap)`: the chroma under a point of the photo cell (Pick colour; `null` for `at` is Main's).
+/// `tap` is `warp_input` (or `null`): at the input of the node's colour warp, after its trim and grade; or `node_input`:
+/// at the picture the node reads, before its trim and grade, which is what a Colour range selects on. `null` on the paper
+/// around the photo.
 #[tauri::command]
 #[specta::specta]
 pub async fn sample_chroma(
@@ -376,8 +378,9 @@ pub async fn sample_chroma(
     x: Num,
     y: Num,
     at: Option<NodeId>,
+    tap: Option<ChromaTap>,
 ) -> Result<Option<ChromaSample>, AppError> {
-    run(&state, move |api| api.sample_chroma(x.0, y.0, at)).await
+    run(&state, move |api| api.sample_chroma(x.0, y.0, at, tap)).await
 }
 
 /// `viewport_map_points(points, from)` (`docs/23` sections 3.6 and 9): maps points between the photo frame and the cell,

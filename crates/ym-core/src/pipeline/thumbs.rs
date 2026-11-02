@@ -24,7 +24,8 @@
 //! * **`at`** (`docs/01`, `docs/23` sections 7.5 and 9): the histogram, the scatter and Pick colour read the
 //!   signal at a node. Left out it is Main's (as before); `input` is the Input's output; a corrector
 //!   is read by the graph rewrite of the node thumbnails ([`settings_ending_at`], with no look and
-//!   the node's own later stages taken out), so no kernel is involved (`signal_source`).
+//!   the node's own later stages taken out), so no kernel is involved (`signal_source`). Pick colour
+//!   has a second place to read, the node's own input (`ChromaTap::NodeInput`, for a Colour range).
 //! * **Scheduled calls**: `spawn_*` put a request on the render queue at the priority `docs/01`
 //!   gives it and return a handle.
 //! * **Apple Auto's picture** (`docs/19` section 3): the photo at its default settings through the
@@ -59,7 +60,9 @@ use super::graph::{Job, RenderOptions, Renderer};
 use super::viewport::ViewportState;
 use crate::apple_auto::{AdvisorPicture, PICTURE_LONG_EDGE_PX};
 use crate::session::{PhotoId, PictureInput, PictureRenderer, ThumbnailInput, ThumbnailRenderer};
-use crate::settings::{ColorWarp, Curves, DevelopSettings, NodeId, NodeLink, NodeRef};
+use crate::settings::{
+    ColorWarp, Curves, DevelopSettings, NodeGrade, NodeId, NodeLink, NodeRef, NodeTrim,
+};
 use ym_color::look::LookTransform;
 use ym_color::plan::Stop;
 
@@ -209,6 +212,7 @@ pub fn settings_ending_at(settings: &DevelopSettings, node: u32) -> DevelopSetti
 
 /// Where in a node a panel reads its signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // each names an input of a stage of the node; "Input" is the point
 pub(crate) enum Tap {
     /// The input of the node's curve: after its trim, its grade and its colour warp (the histogram,
     /// `docs/02` C11: "the histogram in the Curve tab is of LogC4 values").
@@ -216,6 +220,10 @@ pub(crate) enum Tap {
     /// The input of the node's colour warp: after its trim and its grade (the scatter behind the
     /// pins and Pick colour, whose pins take hold of these colours).
     WarpInput,
+    /// The input of the node itself: the picture it reads, before its trim and its grade (what a
+    /// Colour range selects on, `docs/23` section 4.2). Main reads the Input's output (C8): Main
+    /// always takes its picture from the Input.
+    NodeInput,
 }
 
 /// The stage of a [`StageTrace`] that holds a signal.
@@ -252,9 +260,11 @@ impl Read {
 /// * Another corrector `k` is read through a **graph rewrite**: the photo with the Output reading
 ///   node `k` ([`settings_ending_at`]; the nodes after it are dead branches), the look taken out
 ///   (Neutral, so that C10 is the last node's own value), and the node's later stages made identity
-///   (its curve; for the warp's input also its warp), so that the chain's last value is the signal
-///   at that stage of the node. Nothing in the kernels or the chain changes, and the raw group and
-///   its caches are the photo's own.
+///   (its curve; for the warp's input also its warp; for the node's input also its trim and its
+///   grade), so that the chain's last value is the signal at that stage of the node. Nothing in the
+///   kernels or the chain changes, and the raw group and its caches are the photo's own.
+/// * [`Tap::NodeInput`] reads the picture a node takes in: the Input's output (C8) for Main and the
+///   Input, and for another corrector the rewrite with the node itself at its identity.
 ///
 /// # Errors
 ///
@@ -268,6 +278,7 @@ pub(crate) fn signal_source(
     let main = match tap {
         Tap::CurveInput => Read::MainCurveInput,
         Tap::WarpInput => Read::MainWarpInput,
+        Tap::NodeInput => Read::InputOutput,
     };
     match at {
         None => Ok((Cow::Borrowed(src), main)),
@@ -283,9 +294,18 @@ pub(crate) fn signal_source(
             let mut settings = settings_ending_at(&src.settings, k);
             settings.output_mut().look = LookId::neutral();
             if let Some(node) = settings.nodes.corrector_mut(k) {
-                node.grade.curve = Curves::default();
-                if tap == Tap::WarpInput {
-                    node.grade.color_warp = ColorWarp::default();
+                match tap {
+                    Tap::CurveInput => node.grade.curve = Curves::default(),
+                    Tap::WarpInput => {
+                        node.grade.curve = Curves::default();
+                        node.grade.color_warp = ColorWarp::default();
+                    }
+                    // Every step of the node at its identity: it passes its picture through
+                    // (`PreparedNode::skips`), so the chain's last value is what it reads.
+                    Tap::NodeInput => {
+                        node.trim = NodeTrim::default();
+                        node.grade = NodeGrade::neutral();
+                    }
                 }
             }
             Ok((Cow::Owned(src.with_settings(settings)), Read::Last))

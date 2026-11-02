@@ -127,8 +127,8 @@ describe("Pick colour of a Colour range", () => {
     const { api, store } = await opened();
     const sample = vi.spyOn(api, "sampleChroma");
     await store.pickRange(300, 20, 2, 1);
-    expect(sample).toHaveBeenCalledWith(300, 20, 2);
-    const there = (await api.sampleChroma(300, 20, 2))!;
+    expect(sample).toHaveBeenCalledWith(300, 20, 2, "node_input");
+    const there = (await api.sampleChroma(300, 20, 2, "node_input"))!;
     const scale = Math.min(1, 0.5 / Math.hypot(there.a, there.b));
     const center = (rowsOf(store)[1] as Extract<MaskItem, { kind: "color_range" }>).center;
     expect(center[0]).toBeCloseTo(there.a * scale, 9);

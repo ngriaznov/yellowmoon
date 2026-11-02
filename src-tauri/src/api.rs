@@ -34,13 +34,13 @@ use crate::node_thumbs::NodeThumbnailer;
 use crate::thumbs::Thumbnails;
 use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
-    AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, CliLinkResult,
-    CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate, ExportJob, ExportJobId,
-    HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress, LooksImportResult,
-    MapFrom, MaskKind, MaskView, NodeId, Num, OpenSummary, Orientation, PasteReport, PhotoId,
-    PhotoProgress, PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionChange,
-    SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput,
-    ViewportMode, ViewportRect, WatchStatus, convert,
+    AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
+    CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate,
+    ExportJob, ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress,
+    LooksImportResult, MapFrom, MaskKind, MaskView, NodeId, Num, OpenSummary, Orientation,
+    PasteReport, PhotoId, PhotoProgress, PixelSample, Preferences, PreferencesPatch,
+    ResolvedSettings, SessionChange, SessionState, SettingsPatch, SourceRecognition,
+    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -860,12 +860,14 @@ impl AppApi {
         convert(&sample.ok_or_else(outside)?)
     }
 
-    /// `sample_chroma(x, y, at)`: the chroma at the input of a node's colour warp under a point of the
-    /// cell, in CSS pixels from its corner as `sample_pixel` and Pick white take it
-    /// (`Renderer::sample_chroma_at`: the pixel the readout reads, through the chain to C9, in the
-    /// final picture also while the Before view is shown); left out (`None`) it is Main's. `None`
-    /// (JSON `null`) on the paper around the photo, for a point that is not a number and when no
-    /// photo is shown.
+    /// `sample_chroma(x, y, at, tap)`: the chroma under a point of the cell, in CSS pixels from its
+    /// corner as `sample_pixel` and Pick white take it (`Renderer::sample_chroma_at`: the pixel the
+    /// readout reads, through the chain to the stage `tap` names, in the final picture also while the
+    /// Before view is shown). `tap` left out (`None`) or `warp_input` reads the input of the node's
+    /// colour warp, after its trim and grade (Pick colour of the Colour warp); `node_input` reads the
+    /// picture the node takes in, before its trim and grade (Pick colour of a Colour range). `at`
+    /// left out (`None`) is Main's. `None` (JSON `null`) on the paper around the photo, for a point
+    /// that is not a number and when no photo is shown.
     ///
     /// # Errors
     ///
@@ -875,14 +877,26 @@ impl AppApi {
         x: f64,
         y: f64,
         at: Option<NodeId>,
+        tap: Option<ChromaTap>,
     ) -> Result<Option<ChromaSample>, AppError> {
         let (photo, state) = self.viewport.snapshot_synced();
         let Some(photo) = photo else { return Ok(None) };
         let src = PhotoSource::from_session(&self.core.session, photo).map_err(session_error)?;
+        let tap = match tap {
+            None | Some(ChromaTap::WarpInput) => ym_core::pipeline::ChromaTap::WarpInput,
+            Some(ChromaTap::NodeInput) => ym_core::pipeline::ChromaTap::NodeInput,
+        };
         let sample = self
             .core
             .renderer
-            .sample_chroma_at(&src, at.map(|n| n.0), &state, (x, y), &CancelToken::new())
+            .sample_chroma_at(
+                &src,
+                at.map(|n| n.0),
+                tap,
+                &state,
+                (x, y),
+                &CancelToken::new(),
+            )
             .map_err(AppError::from)?;
         sample.map(|s| convert(&s)).transpose()
     }

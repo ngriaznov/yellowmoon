@@ -524,10 +524,22 @@ test.describe("the ranges", () => {
     const cell = await cellBox(page);
     await page.mouse.click(cell.x + cell.width * 0.5, cell.y + cell.height * 0.1);
     await expect.poll(async () => (await asked()).length).toBe(1);
-    expect((await asked())[0]?.args[2]).toBe(4);
+    // At the node, and at its input: the picture it reads, before its own trim (Warmth has one), which is what the range selects on.
+    const [x, y, at, tap] = (await asked())[0]!.args as [number, number, number, string];
+    expect([at, tap]).toEqual([4, "node_input"]);
     await expect.poll(async () => (await rowsOf(page, 4))[0]?.center).not.toEqual([0, 0]);
     const center = (await rowsOf(page, 4))[0]!.center as number[];
     expect(Math.hypot(center[0]!, center[1]!)).toBeLessThanOrEqual(0.5 + 1e-9);
+    // The centre is the chroma of the clicked pixel at the node's input, and not the one at its warp's input, which its trim has moved.
+    const read = await page.evaluate(
+      async ([px, py]) => {
+        const { mockApi } = window.__yellowmoon!;
+        return { input: await mockApi.sampleChroma(px!, py!, 4, "node_input"), warp: await mockApi.sampleChroma(px!, py!, 4) };
+      },
+      [x, y] as const,
+    );
+    expect(center).toEqual([read.input!.a, read.input!.b]);
+    expect(read.warp).not.toEqual(read.input);
     // It stays on for another click, and Esc ends it.
     await expect(pickLayer).toBeVisible();
     await page.keyboard.press("Escape");

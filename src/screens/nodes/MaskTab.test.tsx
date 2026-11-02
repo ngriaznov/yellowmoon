@@ -652,9 +652,9 @@ describe("Pick colour of a Colour range", () => {
     spy.mockClear();
     // The mock's sky is at the top of the photo: its chroma, at the node (2).
     await h!.user.pointer({ target: pickLayer(), coords: { clientX: 300, clientY: 20 }, keys: "[MouseLeft]" });
-    await waitFor(() => expect(sample).toHaveBeenCalledWith(300, 20, 2));
+    await waitFor(() => expect(sample).toHaveBeenCalledWith(300, 20, 2, "node_input"));
     // The chroma the core gives for that point at this node, held to the plane (at most 0.5 from the middle).
-    const there = (await h!.api.sampleChroma(300, 20, 2))!;
+    const there = (await h!.api.sampleChroma(300, 20, 2, "node_input"))!;
     await waitFor(() => expect(patches(spy)).toHaveLength(1));
     const center = ((patches(spy)[0] as SettingsPatch).nodes?.["2"]?.masks?.edit?.["0"] as { center: [number, number] }).center;
     const scale = Math.min(1, 0.5 / Math.hypot(there.a, there.b));

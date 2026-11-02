@@ -2812,8 +2812,21 @@ pub struct PixelSample {
     pub b: u8,
 }
 
-/// The chroma under a point of the photo at the colour warp's input (`sample_chroma`): a point of
-/// the warp's plane.
+/// Where in a node `sample_chroma` reads the colour (`docs/23` section 9). Left out (`null`) it is
+/// `warp_input`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ChromaTap {
+    /// At the input of the node's colour warp, after the node's own trim and grade: Pick colour of
+    /// the Colour warp.
+    WarpInput,
+    /// At the node's own input, before its trim and its grade: Pick colour of a Colour range,
+    /// which selects on the chroma of exactly this.
+    NodeInput,
+}
+
+/// The chroma under a point of the photo (`sample_chroma`): a point of the plane the colour warp
+/// draws and a Colour range's centre is in, read at the place [`ChromaTap`] names.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
 pub struct ChromaSample {
     /// Along `e1`, red against cyan.

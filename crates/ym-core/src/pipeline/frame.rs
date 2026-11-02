@@ -283,14 +283,31 @@ pub struct PixelSample {
     pub b: u8,
 }
 
-/// The chroma of the colour under a point at the input of the colour warp (`sample_chroma`): the
-/// point of the warp's plane, `(e1·v, e2·v)` of the C9 output (`ym_color::warp::chroma_of`).
+/// The chroma of the colour under a point (`sample_chroma`): the point of the chroma plane,
+/// `(e1·v, e2·v)` of a LogC4 value (`ym_color::warp::chroma_of`), read at the place [`ChromaTap`] names.
+/// The Colour warp's plane and the Colour range's centre are the same plane (the axes of C9,
+/// `ym_color::grade::E1` and `E2`).
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ChromaSample {
     /// Along `e1`, red against cyan.
     pub a: f64,
     /// Along `e2`, green against blue.
     pub b: f64,
+}
+
+/// Where in a node [`Renderer::sample_chroma_at`] reads the chroma (`docs/23` section 9).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ChromaTap {
+    /// At the input of the node's colour warp, after the node's own trim and grade: the colours the
+    /// warp's pins take hold of (Pick colour of the Colour warp).
+    #[default]
+    WarpInput,
+    /// At the node's own input, the picture it reads before its trim and its grade: the colours a
+    /// Colour range on the node selects on (Pick colour of a Colour range).
+    NodeInput,
 }
 
 /// What a full-resolution render produces.
@@ -2888,13 +2905,21 @@ impl Renderer {
         css: (f64, f64),
         cancel: &CancelToken,
     ) -> Result<Option<ChromaSample>, RenderError> {
-        self.sample_chroma_at(src, None, state, css, cancel)
+        self.sample_chroma_at(src, None, ChromaTap::WarpInput, state, css, cancel)
     }
 
-    /// [`Renderer::sample_chroma`] for the colour at the input of a node's colour warp (`docs/01`,
-    /// the `at` argument): after the node's trim and grade, or the Input's output for `Input`;
-    /// `None` is Main. The node's own pins act on these colours, so Pick colour on a corrector
-    /// reads them. See `signal_source` (`pipeline::thumbs`).
+    /// [`Renderer::sample_chroma`] for the colour at a place in a node (`docs/01`, the `at` and
+    /// `tap` arguments); `None` is Main.
+    ///
+    /// * [`ChromaTap::WarpInput`]: the input of the node's colour warp, after the node's trim and
+    ///   grade, or the Input's output for `Input`. The node's own pins act on these colours, so
+    ///   Pick colour on a corrector reads them.
+    /// * [`ChromaTap::NodeInput`]: the picture the node reads, before its trim and its grade (the
+    ///   Input's output for Main and the Input). A Colour range selects on the chroma of exactly
+    ///   this (`docs/algorithms/06` section 4), in the same axes, so a centre picked here selects
+    ///   the pixel that was clicked.
+    ///
+    /// See `signal_source` (`pipeline::thumbs`).
     ///
     /// # Errors
     ///
@@ -2904,11 +2929,16 @@ impl Renderer {
         &self,
         src: &PhotoSource,
         node: Option<NodeId>,
+        tap: ChromaTap,
         state: &ViewportState,
         css: (f64, f64),
         cancel: &CancelToken,
     ) -> Result<Option<ChromaSample>, RenderError> {
-        let (src, stage) = signal_source(src, node, Tap::WarpInput)?;
+        let tap = match tap {
+            ChromaTap::WarpInput => Tap::WarpInput,
+            ChromaTap::NodeInput => Tap::NodeInput,
+        };
+        let (src, stage) = signal_source(src, node, tap)?;
         let Some((rgb, grade, at)) = self.point_reading(&src, state, css, false, cancel)? else {
             return Ok(None);
         };

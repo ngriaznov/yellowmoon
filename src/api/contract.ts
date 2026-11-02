@@ -98,6 +98,7 @@ export type Both = AllTrue<{
   maskStyle: Same<T.MaskStyle, B.MaskStyle>;
   maskKind: Same<T.MaskKind, B.MaskKind>;
   mapFrom: Same<T.MapFrom, B.MapFrom>;
+  chromaTap: Same<T.ChromaTap, B.ChromaTap>;
   maskView: Same<T.MaskView, B.MaskView>;
   viewportFrame: Same<T.ViewportFrame, B.ViewportFrame>;
   viewportBackendKind: Same<T.ViewportBackendKind, B.ViewportBackendKind>;

@@ -27,6 +27,7 @@ import type {
   AutoStatus,
   ChromaSample,
   ChromaScatter,
+  ChromaTap,
   CliLinkResult,
   CliLinkStatus,
   CropAspect,
@@ -170,11 +171,12 @@ export interface Api {
   /** `sample_pixel`: display values under a point, for the readout and Pick white. */
   samplePixel(x: number, y: number): Promise<PixelSample>;
   /**
-   * `sample_chroma` (addition, the colour warp's Pick colour): the chroma of the pixel under a point of the photo cell (CSS pixels from
-   * its corner, as Pick white) at the warp's input. `null` on the paper around a letterboxed photo. `at` is the node whose warp it is
-   * the input of (left out: Main's), as for `histogram`.
+   * `sample_chroma` (addition, Pick colour): the chroma of the pixel under a point of the photo cell (CSS pixels from its corner, as Pick
+   * white). `null` on the paper around a letterboxed photo. `at` is the node it is read at (left out: Main's), as for `histogram`. `tap` is
+   * where in that node: `"warp_input"` (left out) the input of its colour warp, after its own trim and grade, for the warp's Pick colour;
+   * `"node_input"` the picture the node reads, before its trim and grade, for a Colour range's (`docs/23` §7.6, §9).
    */
-  sampleChroma(x: number, y: number, at?: NodeId): Promise<ChromaSample | null>;
+  sampleChroma(x: number, y: number, at?: NodeId, tap?: ChromaTap): Promise<ChromaSample | null>;
   /**
    * `viewport_map_points` (`docs/23` §3.6, §9): maps points between the photo frame and the cell, for the handles and outlines the page draws over
    * the photo. `from` is `"photo"` (points `[x, y]` in the photo frame, answered as CSS pixels from the cell's corner, which may lie outside the
@@ -370,7 +372,7 @@ export const tauriApi: Api = {
   viewportSetMode: (mode, maskView) => unit(commands.viewportSetMode(mode, maskView ?? null)),
   setBefore: (before) => unit(commands.setBefore(before)),
   samplePixel: (x, y) => commands.samplePixel(x, y),
-  sampleChroma: (x, y, at) => commands.sampleChroma(x, y, at ?? null),
+  sampleChroma: (x, y, at, tap) => commands.sampleChroma(x, y, at ?? null, tap ?? null),
   viewportMapPoints: (points, from) => commands.viewportMapPoints(points, from),
   maskKinds: () => commands.maskKinds(),
 

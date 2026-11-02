@@ -350,6 +350,32 @@ describe("the signal at a node (`at` of histogram, chroma_scatter and sample_chr
     expect(await api.sampleChroma(20, 20, "input")).toEqual(await api.sampleChroma(20, 20, "input"));
   });
 
+  it("reads Pick colour at the node's input with tap `node_input`: the picture it reads, before its own trim and grade", async () => {
+    await api.updateSettings(1, trimmed);
+    await api.viewportSetRect({ x: 0, y: 0, width: 1500, height: 1000, scale: 1 });
+    await api.setCurrent(1);
+    const main = await api.sampleChroma(20, 20);
+    const warp = await api.sampleChroma(20, 20, 2);
+    const input = await api.sampleChroma(20, 20, 2, "node_input");
+    // Left out is the warp's input, as before; the trim of node 2 lies between that and its input, which is the photo as Main leaves it.
+    expect(await api.sampleChroma(20, 20, 2, "warp_input")).toEqual(warp);
+    expect(input).not.toEqual(warp);
+    expect(input).toEqual(main);
+    // Nothing node 2 does moves it, a trim or a grade (a node at its defaults reads the same at both taps).
+    await api.updateSettings(1, patchOfNode(2, { trim: { exposure_ev: -2, temperature: -80, tint: 40 }, grade: { saturation: { kind: "manual", value: 60 } } }));
+    expect(await api.sampleChroma(20, 20, 2, "node_input")).toEqual(input);
+    expect(await api.sampleChroma(20, 20, 2)).not.toEqual(warp);
+    await api.updateSettings(1, patchOfNode(2, { trim: { exposure_ev: 0, temperature: 0, tint: 0 }, grade: { saturation: { kind: "manual", value: 0 } } }));
+    expect(await api.sampleChroma(20, 20, 2, "warp_input")).toEqual(input);
+    // Main and the Input read the photo as it is adjusted at the Input at either tap.
+    expect(await api.sampleChroma(20, 20, undefined, "node_input")).toEqual(main);
+    expect(await api.sampleChroma(20, 20, "input", "node_input")).toEqual(main);
+    // Paper has no colour at this tap either, and a node the photo does not have is refused in words.
+    await api.viewportSetRect({ x: 0, y: 0, width: 300, height: 400, scale: 1 });
+    expect(await api.sampleChroma(150, 5, 2, "node_input")).toBeNull();
+    expect(await rejection(api.sampleChroma(150, 200, 7, "node_input"))).toMatchObject({ scope: "render", message: "This photo has no node 7." });
+  });
+
   it("refuses a node the photo does not have and the Output, in words", async () => {
     expect(await rejection(api.histogram(1, 7))).toMatchObject({ scope: "render", message: "This photo has no node 7." });
     expect(await rejection(api.chromaScatter(1, "output"))).toMatchObject({ scope: "render", message: "The output has no picture to read here." });

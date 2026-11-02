@@ -1857,7 +1857,7 @@ fn the_panel_signals_take_a_node_across_the_bridge() {
     assert_eq!(output.message, "The output has no picture to read here.");
     assert!(
         h.api
-            .sample_chroma(150.0, 150.0, wire_node(Core::Corrector(2)))
+            .sample_chroma(150.0, 150.0, wire_node(Core::Corrector(2)), None)
             .is_err()
     );
     // Nodes 2 and 3 (an exposure trim in each): their curves' inputs are not Main's, and Main's
@@ -1889,16 +1889,109 @@ fn the_panel_signals_take_a_node_across_the_bridge() {
     // Pick colour at a node answers a point of the photo, and the paper has none.
     let inside = h
         .api
-        .sample_chroma(150.0, 150.0, wire_node(Core::Corrector(3)))
+        .sample_chroma(150.0, 150.0, wire_node(Core::Corrector(3)), None)
         .expect("chroma")
         .expect("a point of the photo");
     assert!(inside.a.0.is_finite() && inside.b.0.is_finite());
     assert_eq!(
         h.api
-            .sample_chroma(150.0, 5.0, wire_node(Core::Corrector(3)))
+            .sample_chroma(150.0, 5.0, wire_node(Core::Corrector(3)), None)
             .expect("paper"),
         None
     );
+}
+
+#[test]
+fn pick_colour_takes_a_tap_across_the_bridge() {
+    use crate::wire::ChromaTap;
+    use ym_core::settings::NodeId as Core;
+    let h = Harness::new();
+    h.open(1);
+    h.develop();
+    let id = h.first();
+    h.rect(300.0, 300.0);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    // The words of the wire are the core's, and left out is the warp's input.
+    assert_same(
+        "chroma_tap",
+        &ym_core::pipeline::ChromaTap::WarpInput,
+        &ChromaTap::WarpInput,
+    );
+    assert_same(
+        "chroma_tap",
+        &ym_core::pipeline::ChromaTap::NodeInput,
+        &ChromaTap::NodeInput,
+    );
+    assert_eq!(
+        serde_json::to_value(ChromaTap::NodeInput).expect("json"),
+        json!("node_input")
+    );
+    let corrector = wire_node(Core::Corrector(2));
+    let at = |tap: Option<ChromaTap>| {
+        h.api
+            .sample_chroma(150.0, 150.0, corrector, tap)
+            .expect("chroma")
+    };
+    // Node 2, a temperature trim and a saturation after Main: its input is Main's output, whatever
+    // its own trim and grade do, and its warp's input is after them.
+    let patch: SettingsPatch = serde_json::from_value(json!({
+        "nodes": {
+            "2": {
+                "kind": "corrector", "pos": [1.0, 0.0],
+                "trim": { "temperature": 60.0, "tint": -40.0 },
+                "grade": { "saturation": { "kind": "manual", "value": 40.0 } },
+            },
+        },
+        "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } },
+        ],
+    }))
+    .expect("patch");
+    h.api.update_settings(id, &patch).expect("update");
+    let (warp, input) = (
+        at(Some(ChromaTap::WarpInput)),
+        at(Some(ChromaTap::NodeInput)),
+    );
+    assert_eq!(at(None), warp, "left out is the warp's input");
+    assert_ne!(warp, input, "the node's trim and grade are between the two");
+    // Taking the trim and the grade away moves the warp's input onto the node's input, which does
+    // not move.
+    let reset: SettingsPatch = serde_json::from_value(json!({
+        "nodes": { "2": {
+            "trim": { "temperature": 0.0, "tint": 0.0 },
+            "grade": { "saturation": { "kind": "manual", "value": 0.0 } },
+        } },
+    }))
+    .expect("patch");
+    h.api.update_settings(id, &reset).expect("update");
+    assert_eq!(at(Some(ChromaTap::NodeInput)), input);
+    assert_eq!(at(Some(ChromaTap::WarpInput)), input);
+    // Main's input is the Input's output, and the paper has no colour at either tap.
+    assert!(
+        h.api
+            .sample_chroma(150.0, 150.0, None, Some(ChromaTap::NodeInput))
+            .expect("chroma")
+            .is_some()
+    );
+    assert_eq!(
+        h.api
+            .sample_chroma(150.0, 5.0, corrector, Some(ChromaTap::NodeInput))
+            .expect("paper"),
+        None
+    );
+    // A node the photo does not have is refused in words at this tap too.
+    let missing = h
+        .api
+        .sample_chroma(
+            150.0,
+            150.0,
+            wire_node(Core::Corrector(9)),
+            Some(ChromaTap::NodeInput),
+        )
+        .expect_err("no node 9");
+    assert_eq!(missing.message, "This photo has no node 9.");
 }
 
 #[test]
@@ -1925,7 +2018,7 @@ fn pick_colour_and_the_chroma_scatter_cross_the_bridge() {
     assert!(h.api.viewport().wait_idle(WAIT));
     let inside = h
         .api
-        .sample_chroma(150.0, 150.0, None)
+        .sample_chroma(150.0, 150.0, None, None)
         .expect("chroma")
         .expect("a point of the photo");
     assert!(inside.a.0.is_finite() && inside.b.0.is_finite());
@@ -1933,10 +2026,13 @@ fn pick_colour_and_the_chroma_scatter_cross_the_bridge() {
         serde_json::to_value(inside).expect("json"),
         json!({ "a": inside.a.0, "b": inside.b.0 })
     );
-    assert_eq!(h.api.sample_chroma(150.0, 5.0, None).expect("paper"), None);
+    assert_eq!(
+        h.api.sample_chroma(150.0, 5.0, None, None).expect("paper"),
+        None
+    );
     assert_eq!(
         h.api
-            .sample_chroma(f64::NAN, 3.0, None)
+            .sample_chroma(f64::NAN, 3.0, None, None)
             .expect("not a number"),
         None
     );
@@ -1955,7 +2051,9 @@ fn pick_colour_and_the_chroma_scatter_cross_the_bridge() {
         resolved.settings.main_grade().color_warp
     );
     assert_eq!(
-        h.api.sample_chroma(150.0, 150.0, None).expect("chroma"),
+        h.api
+            .sample_chroma(150.0, 150.0, None, None)
+            .expect("chroma"),
         Some(inside)
     );
     // The settings travel with Copy settings and come back in `get_settings`.

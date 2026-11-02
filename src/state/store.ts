@@ -2142,8 +2142,9 @@ export class AppStore {
 
   /**
    * Pick colour of a Colour range row (Mask tab, `docs/23` §7.6): asks the core for the chroma under a click on the photo cell (CSS pixels
-   * from its corner, as Pick white) **at the node** (`sample_chroma`'s `at`) and sets the row's centre to it, held to the plane (at most 0.5
-   * from the middle). One undo step. A click on the paper around the photo changes nothing, and nor does a row that is no longer a Colour
+   * from its corner, as Pick white) **at the node's input** (`sample_chroma`'s `at` and `tap: "node_input"`: the picture the node reads, before
+   * its own trim and grade, which is what a Colour range selects on) and sets the row's centre to it, held to the plane (at most 0.5 from the
+   * middle). One undo step. A click on the paper around the photo changes nothing, and nor does a row that is no longer a Colour
    * range (taken away, or moved, while the reading was on its way).
    */
   async pickRange(x: number, y: number, node: number, row: number): Promise<void> {
@@ -2153,7 +2154,7 @@ export class AppStore {
     await this.whenIdle(id);
     let sample: ChromaSample | null;
     try {
-      sample = await this.api.sampleChroma(x, y, node);
+      sample = await this.api.sampleChroma(x, y, node, "node_input");
     } catch (error) {
       this.fail(error);
       return;

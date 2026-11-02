@@ -2773,7 +2773,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         return { r, g, b };
       }),
 
-    sampleChroma: (x, y, at) =>
+    sampleChroma: (x, y, at, tap) =>
       run("sampleChroma", (): ChromaSample | null => {
         const rec = photos[current];
         if (!rec) fail("viewport", "Open a photo first.");
@@ -2781,7 +2781,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         // On the paper around a letterboxed picture there is no colour to pick.
         const point = photoPointAt(rec, x, y);
         if (!point) return null;
-        const scene = node === null ? warpInput(rec) : signalScene(rec.scene, adjustmentOf(rec, false), pictureChain(rec.settings, node), "warp");
+        // The warp's input is after the node's trim and grade; the node's input (`tap` "node_input", a Colour range's Pick colour) is the
+        // picture it reads, which Main and the Input take from the photo as adjusted at the Input.
+        const stage = tap === "node_input" ? "input" : "warp";
+        const scene = node === null ? warpInput(rec) : signalScene(rec.scene, adjustmentOf(rec, false), pictureChain(rec.settings, node), stage);
         const [a, b] = hexChroma(scene[layerAt(scene, clamp(point[0], 0, 1), clamp(point[1], 0, 1))]);
         return { a, b };
       }),

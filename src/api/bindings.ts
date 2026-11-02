@@ -97,15 +97,27 @@ export const commands = {
 	/**  `sample_pixel(x, y)`: display values under a point of the photo cell. */
 	samplePixel: (x: number, y: number) => __TAURI_INVOKE<PixelSample>("sample_pixel", { x, y }),
 	/**
-	 *  `sample_chroma(x, y, at)`: the chroma at the input of a node's colour warp under a point of the
-	 *  photo cell (Pick colour; `null` for `at` is Main's); `null` on the paper around the photo.
+	 *  `sample_chroma(x, y, at, tap)`: the chroma under a point of the photo cell (Pick colour; `null` for `at` is Main's).
+	 *  `tap` is `warp_input` (or `null`): at the input of the node's colour warp, after its trim and grade; or `node_input`:
+	 *  at the picture the node reads, before its trim and grade, which is what a Colour range selects on. `null` on the paper
+	 *  around the photo.
 	 */
-	sampleChroma: (x: number, y: number, at: "input" | "output" | number | null) => __TAURI_INVOKE<{
+	sampleChroma: (x: number, y: number, at: "input" | "output" | number | null, tap: 
+/**
+ *  At the input of the node's colour warp, after the node's own trim and grade: Pick colour of
+ *  the Colour warp.
+ */
+"warp_input" | 
+/**
+ *  At the node's own input, before its trim and its grade: Pick colour of a Colour range,
+ *  which selects on the chroma of exactly this.
+ */
+"node_input" | null) => __TAURI_INVOKE<{
 	/**  Along `e1`, red against cyan. */
 	a: number,
 	/**  Along `e2`, green against blue. */
 	b: number,
-} | null>("sample_chroma", { x, y, at }),
+} | null>("sample_chroma", { x, y, at, tap }),
 	/**
 	 *  `viewport_map_points(points, from)` (`docs/23` sections 3.6 and 9): maps points between the photo frame and the cell,
 	 *  for the handles and outlines the page draws over the photo. `from` is `photo` (points in the photo frame, answered as
@@ -639,8 +651,8 @@ export type CameraInfo = {
 };
 
 /**
- *  The chroma under a point of the photo at the colour warp's input (`sample_chroma`): a point of
- *  the warp's plane.
+ *  The chroma under a point of the photo (`sample_chroma`): a point of the plane the colour warp
+ *  draws and a Colour range's centre is in, read at the place [`ChromaTap`] names.
  */
 export type ChromaSample = {
 	/**  Along `e1`, red against cyan. */
@@ -660,6 +672,22 @@ export type ChromaScatter = {
 	 */
 	points: number[],
 };
+
+/**
+ *  Where in a node `sample_chroma` reads the colour (`docs/23` section 9). Left out (`null`) it is
+ *  `warp_input`.
+ */
+export type ChromaTap = 
+/**
+ *  At the input of the node's colour warp, after the node's own trim and grade: Pick colour of
+ *  the Colour warp.
+ */
+"warp_input" | 
+/**
+ *  At the node's own input, before its trim and its grade: Pick colour of a Colour range,
+ *  which selects on the chroma of exactly this.
+ */
+"node_input";
 
 /**  `install_cli_link` result: where the `ym` link was created. */
 export type CliLinkResult = {

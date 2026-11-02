@@ -1217,7 +1217,14 @@ export type MaskKind = MaskItem["kind"];
  */
 export type MapFrom = "photo" | "cell";
 
-/** `sample_chroma(x, y)`: the chroma of the pixel under a point of the photo cell, at the warp's input (Pick colour). */
+/**
+ * Where in a node `sample_chroma` reads the colour (`docs/23` §9): `"warp_input"` (left out, or `null`) is the input of the node's colour warp,
+ * after the node's own trim and grade (Pick colour of the Colour warp); `"node_input"` is the picture the node reads, before its trim and
+ * grade, which is what a Colour range selects on (Pick colour of a Colour range).
+ */
+export type ChromaTap = "warp_input" | "node_input";
+
+/** `sample_chroma(x, y, at, tap)`: the chroma of the pixel under a point of the photo cell, in the plane of the colour warp and of a Colour range's centre. */
 export interface ChromaSample {
   a: number;
   b: number;
