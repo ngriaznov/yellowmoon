@@ -1519,6 +1519,17 @@ test.describe("the graph: reordering", () => {
   });
 });
 
+
+/**
+ * Clicks a menu item with the pointer travelling to it, as a hand does. A submenu closes when the pointer jumps from its trigger to an item of
+ * it in one step (Playwright's click moves in one), which no hand does: the node head's More opens its submenus to the left, away from the trigger.
+ */
+async function clickSubItem(page: Page, item: Locator): Promise<void> {
+  const b = (await item.boundingBox())!;
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 12 });
+  await item.click();
+}
+
 test.describe("the graph: the More menu's keyboard path", () => {
   test("Link picture to ▸ lists the inputs the node can be linked to, by number and name, and the Output; choosing one makes the link", async ({ page }) => {
     await fourNodes(page);
@@ -1527,7 +1538,7 @@ test.describe("the graph: the More menu's keyboard path", () => {
     await page.getByRole("menuitem", { name: "Link picture to" }).click();
     const items = page.getByRole("menuitem").filter({ hasText: /^(Node|Output)/ });
     await expect(items).toHaveText(["Node 4, Warmth", "Output"]);
-    await page.getByRole("menuitem", { name: "Output", exact: true }).click();
+    await clickSubItem(page, page.getByRole("menuitem", { name: "Output", exact: true }));
     await expect.poll(() => linkIds(page)).toContain("2.picture>output.picture");
     await expect(card(page, 4)).toHaveAccessibleName(/not connected/);
     await undo(page);
@@ -1540,14 +1551,14 @@ test.describe("the graph: the More menu's keyboard path", () => {
     await page.getByRole("button", { name: "More" }).click();
     await page.getByRole("menuitem", { name: "Link key to" }).click();
     await expect(page.getByRole("menuitem").filter({ hasText: /^Node/ })).toHaveText(["Node 3, Sky", "Node 4, Warmth"]);
-    await page.getByRole("menuitem", { name: "Node 4, Warmth" }).click();
+    await clickSubItem(page, page.getByRole("menuitem", { name: "Node 4, Warmth" }));
     await expect.poll(() => linkIds(page)).toContain("2.key>4.key");
     await expect(card(page, 4)).toHaveAccessibleName("Node 4, Warmth, picture from node 3, key from node 2");
     // Remove link ▸: the picture links of Mountain and its key link.
     await page.getByRole("button", { name: "More" }).click();
     await page.getByRole("menuitem", { name: "Remove link" }).click();
     await expect(page.getByRole("menuitem").filter({ hasText: /^(Picture|Key)/ })).toHaveText(["Picture from Node 1, Main", "Picture to Node 3, Sky", "Key to Node 4, Warmth"]);
-    await page.getByRole("menuitem", { name: "Key to Node 4, Warmth" }).click();
+    await clickSubItem(page, page.getByRole("menuitem", { name: "Key to Node 4, Warmth" }));
     await expect.poll(() => linkIds(page)).toEqual(LINE);
     await expect(card(page, 4)).toHaveAccessibleName("Node 4, Warmth, picture from node 3");
   });
@@ -1557,7 +1568,7 @@ test.describe("the graph: the More menu's keyboard path", () => {
     await card(page, 1).click();
     await page.getByRole("button", { name: "More" }).click();
     await page.getByRole("menuitem", { name: "Remove link" }).click();
-    await page.getByRole("menuitem", { name: "Picture from Input" }).click();
+    await clickSubItem(page, page.getByRole("menuitem", { name: "Picture from Input" }));
     await expect(errorBar(page)).toHaveText(/Main always takes its picture from the input\./);
     expect(await linkIds(page)).toEqual(LINE);
     await page.getByRole("button", { name: "Dismiss" }).click();

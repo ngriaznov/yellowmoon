@@ -125,14 +125,22 @@ function DropdownMenuSubTrigger({ className, inset, children, ...props }: React.
   )
 }
 
+/**
+ * A submenu. It is portaled like the menu it opens from (Radix's own example does the same): the menu is a glass surface with a backdrop
+ * filter and `overflow: hidden`, which makes it the containing block of a fixed descendant and clips it, so an unportaled submenu that
+ * opens beyond its parent's edge (to the left of the node head's More, at the right edge of the window) was drawn nowhere and took no click.
+ * The adaptation of the node panel (docs/11 "The panel").
+ */
 function DropdownMenuSubContent({ className, ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
   return (
-    <DropdownMenuPrimitive.SubContent
-      data-slot="dropdown-menu-sub-content"
-      data-glass-motion=""
-      className={cn(menuSurface, className)}
-      {...props}
-    />
+    <DropdownMenuPrimitive.Portal>
+      <DropdownMenuPrimitive.SubContent
+        data-slot="dropdown-menu-sub-content"
+        data-glass-motion=""
+        className={cn(menuSurface, className)}
+        {...props}
+      />
+    </DropdownMenuPrimitive.Portal>
   )
 }
 
