@@ -104,6 +104,9 @@ pub enum KernelId {
     Encode,
     /// The Catmull-Rom magnification of a view above 100 % with the paper, C13 fused.
     Magnify,
+    /// The mask view's overlay: the accent tinted over a display-linear picture where a node's mask is 1,
+    /// in place, between output sharpening and C13.
+    Tint,
     /// R1 normalise, R3 vignetting and R4 gains of a rectangle, from the resident raw words.
     Prep,
     /// The R1 clip bits of a rectangle (one bit per photosite) from the words and the steps.
@@ -235,7 +238,7 @@ impl KernelId {
     /// no render uses. [`KernelSet::kernels`] and `warm_up` compile in this order, so that what the
     /// first frame of the first photo waits for is compiled before what only a zoomed view or an
     /// export needs.
-    pub const ALL: [KernelId; 92] = [
+    pub const ALL: [KernelId; 93] = [
         // The fit view of a mosaic photo.
         KernelId::Prep,
         KernelId::PrepMask,
@@ -284,6 +287,7 @@ impl KernelId {
         KernelId::OutputSharpenTransfer,
         KernelId::Encode,
         KernelId::Magnify,
+        KernelId::Tint,
         // The full-resolution raw chain (the 100 % view and the exports).
         KernelId::AdaptiveRatioPrepare,
         KernelId::AdaptiveRatioGreen,
@@ -375,6 +379,7 @@ impl KernelId {
             KernelId::Sampler => "sampler",
             KernelId::Encode => "encode",
             KernelId::Magnify => "magnify",
+            KernelId::Tint => "tint",
             KernelId::Prep => "prep",
             KernelId::PrepMask => "prep_mask",
             KernelId::HighlightsSuper => "highlights_super",
@@ -470,6 +475,7 @@ impl KernelId {
             | KernelId::Sampler
             | KernelId::Encode
             | KernelId::Magnify
+            | KernelId::Tint
             | KernelId::LensFieldPyramid
             | KernelId::LensFieldGather
             | KernelId::LensFieldFinish
@@ -583,6 +589,7 @@ impl KernelId {
             KernelId::Bin | KernelId::BinSigma => super::bin::body(self),
             KernelId::Resize => super::resize::body(),
             KernelId::Copy => super::copy::body(),
+            KernelId::Tint => super::tint::body(),
             KernelId::Probe => placeholder_body(self),
         }
     }

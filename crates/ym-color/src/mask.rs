@@ -36,7 +36,8 @@
 //! source's, bit for bit.
 
 use crate::consts::Vec3;
-use crate::gamut::LinearAwg4;
+use crate::encode::{OutputSpace, srgb_decode};
+use crate::gamut::{LinearAwg4, LinearRec709};
 use crate::grade::{E1, E2};
 use crate::logc::{LogC4, logc4_luma_of_linear};
 
@@ -486,6 +487,42 @@ pub fn fold(acc: Option<f64>, subtract: bool, a: f64) -> f64 {
         (Some(acc), false) => 1.0 - (1.0 - acc) * (1.0 - a),
         (Some(acc), true) => acc * (1.0 - a),
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The mask view's overlay
+// ---------------------------------------------------------------------------------------------
+
+/// The mask accent, orchid pink `#FF6FD2`, as the sRGB code values the interface draws it with
+/// (`--mask` in `design/tokens.css`).
+pub const MASK_ACCENT_SRGB: [u8; 3] = [0xFF, 0x6F, 0xD2];
+/// How far the overlay moves a pixel towards the accent where the mask is 1 (`docs/23` section 5.8).
+pub const OVERLAY_WEIGHT: f64 = 0.55;
+
+/// The mask accent as a display-linear triple in the output's primaries: the colour that looks like the
+/// interface's `#FF6FD2` (an sRGB colour) on that output. The three code values are decoded with the sRGB
+/// transfer function to linear Rec.709 and converted to the output's primaries
+/// ([`OutputSpace::from_linear_rec709`]: unchanged for sRGB, Display P3 for the viewport, Rec.2020), so that
+/// a P3 screen shows the same pink as the page does and not a more saturated one. The transfer function of
+/// the output is applied afterwards by C13, as for any pixel.
+#[must_use]
+pub fn accent_display_linear(space: OutputSpace) -> Vec3 {
+    let linear = MASK_ACCENT_SRGB.map(|c| srgb_decode(f64::from(c) / 255.0));
+    space.from_linear_rec709(LinearRec709(linear))
+}
+
+/// The overlay of the mask view on one pixel (`docs/23` section 5.8), in display-linear light, after
+/// output sharpening and before C13: `display + 0.55 m (accent - display)`. `m` outside [0, 1] and a NaN
+/// are held to the nearest end (a NaN is 0). This is the CPU reference of `ym-gpu`'s tint kernel.
+#[must_use]
+pub fn overlay_pixel(display: Vec3, m: f64, accent: Vec3) -> Vec3 {
+    let m = if m.is_nan() { 0.0 } else { m.clamp(0.0, 1.0) };
+    let k = OVERLAY_WEIGHT * m;
+    [
+        display[0] + k * (accent[0] - display[0]),
+        display[1] + k * (accent[1] - display[1]),
+        display[2] + k * (accent[2] - display[2]),
+    ]
 }
 
 /// A node's mask rows ready to evaluate.

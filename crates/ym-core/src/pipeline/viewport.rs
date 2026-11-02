@@ -92,6 +92,28 @@ pub enum ViewportMode {
     },
 }
 
+/// How the mask view shows a node's mask (`docs/23` section 5.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskStyle {
+    /// The mask tinted in the mask accent over the photo as it is.
+    Overlay,
+    /// The mask as grey: the code value after C13 is `m`.
+    MaskOnly,
+}
+
+/// The mask view of the viewport: a corrector's mask shown in the frame instead of, or over, the photo
+/// (`viewport_set_mode`'s second argument). It belongs to the viewport, not to the photo's settings: nothing of
+/// it is saved, exported or copied, and the Before view, thumbnails, look tiles and the pixel readout never show
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MaskView {
+    /// The corrector whose mask is shown (a live or a dead node).
+    pub node: u32,
+    /// Overlay or Mask only.
+    pub style: MaskStyle,
+}
+
 /// Pointer input over the photo (`viewport_input`). Coordinates are CSS pixels in the cell.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -153,6 +175,8 @@ pub struct ViewportState {
     pub centre: [f64; 2],
     /// Whether the photo is shown before the look and the display transform.
     pub before: bool,
+    /// The mask view, when the node view shows a node's mask. Never part of the Before view.
+    pub mask_view: Option<MaskView>,
 }
 
 impl ViewportState {
@@ -164,6 +188,7 @@ impl ViewportState {
             mode: ViewportMode::Fit,
             centre: [0.5, 0.5],
             before: false,
+            mask_view: None,
         }
     }
 

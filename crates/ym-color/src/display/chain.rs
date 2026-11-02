@@ -607,10 +607,41 @@ impl ColorChain {
         self.apply_pixel_at(camera_rgb, None)
     }
 
-    /// [`ColorChain::apply_pixel`] for a pixel at `at` in the photo frame.
+    /// [`ColorChain::apply_pixel`] for a pixel at `at` in the photo frame. For a chain whose plan ends at a
+    /// node's mask ([`ColorChain::shows_mask`]) the code values are that mask, `m` in all three channels.
     #[must_use]
     pub fn apply_pixel_at(&self, camera_rgb: Vec3, at: PixelAt) -> Vec3 {
+        if self.shows_mask() {
+            return self.mask_pixel_at(camera_rgb, at);
+        }
         self.encode(self.apply_to_display_linear_at(camera_rgb, at))
+    }
+
+    /// Whether the plan ends at a node's mask (`Stop::Mask`, the mask view): the picture the chain makes is the
+    /// mask as grey code values, after the look, C12 and C13 have been left out (`docs/23` section 5.8).
+    #[must_use]
+    pub fn shows_mask(&self) -> bool {
+        matches!(self.params.nodes.plan.result, PlanResult::Mask(_))
+    }
+
+    /// The mask view for one pixel: the mask `m` of the node the plan ends at as `[m, m, m]` code values in
+    /// `[0, 1]` (not quantised, not dithered). A chain whose plan does not end at a mask gives 1, the mask of
+    /// a node that has no rows.
+    #[must_use]
+    pub fn mask_pixel_at(&self, camera_rgb: Vec3, at: PixelAt) -> Vec3 {
+        if !self.shows_mask() {
+            return [1.0; 3];
+        }
+        let m = unit(self.last_logc4_unlooked(camera_rgb, at).0[0]);
+        [m; 3]
+    }
+
+    /// The plan's value on a pixel without the look: what the mask view reads.
+    fn last_logc4_unlooked(&self, camera_rgb: Vec3, at: PixelAt) -> LogC4 {
+        let c6 = self.c1_to_c6(camera_rgb);
+        let c7 = self.tone.apply_rgb(c6);
+        let c8 = LinearAwg4(c7).to_logc4();
+        self.run_nodes(c8, c7, at, None)
     }
 
     /// C12 alone: a LogC4 pixel (the C11 output) to display-linear RGB in the output's primaries,

@@ -55,9 +55,10 @@ use ym_ml::bokeh_net::BokehNet;
 
 use super::color::{
     ColorKey, ColorPlan, GradeKey, GradePlan, GradeRequest, LookProvider, PhotoSource, color_key,
-    color_plan, grade_plan,
+    color_plan, grade_key_to, grade_plan_to,
 };
 use super::geometry::Geometry;
+use super::viewport::MaskView;
 use super::raw::{
     CaptureMethod, DEVICE_RANGE, FRONT_RANGE, FrameData, FullChain, GpuRoute, RawParams,
     RawParamsKey, RawPlan, SigmaPlane, diffraction_params, has_vignetting_profile,
@@ -69,6 +70,7 @@ use crate::app::gpu::GpuStages;
 use crate::scheduler::{ByteLru, JobScheduler, MemoryBudget, MemoryLedger};
 use crate::session::PhotoId;
 use ym_color::display::OutputTarget;
+use ym_color::plan::Stop as PlanStop;
 
 mod lens;
 mod lens_device;
@@ -1626,6 +1628,9 @@ pub(crate) struct Job<'a> {
     /// What the device holds of the lens for an export's request (an export keeps its own, as it keeps its
     /// own planes): `lens::LensDevice`.
     lens_job_device: Option<lens::LensDevice>,
+    /// The mask view of a viewport frame ([`Job::with_mask_view`]) and the grade plan that ends at the node's
+    /// mask, once the frame has asked for it ([`Job::mask_grade`]).
+    mask: Option<(MaskView, Option<Arc<GradePlan>>)>,
 }
 
 impl Drop for Job<'_> {
@@ -1699,7 +1704,42 @@ impl<'a> Job<'a> {
             lens_report: None,
             lens_job_planes: None,
             lens_job_device: None,
+            mask: None,
         }
+    }
+
+    /// This request is a viewport frame that shows a node's mask (`docs/23` section 5.8). Nothing else sets
+    /// it: an export, the Before view, a thumbnail, a look tile and a pixel readout are never a mask view.
+    #[must_use]
+    pub fn with_mask_view(mut self, view: Option<MaskView>) -> Self {
+        self.mask = view.map(|v| (v, None));
+        self
+    }
+
+    /// The mask view of this request, when it has one.
+    pub fn mask_view(&self) -> Option<MaskView> {
+        self.mask.as_ref().map(|(v, _)| *v)
+    }
+
+    /// The grade plan that ends at the mask view's node (the plan compiled to its mask, which holds the node
+    /// and what it needs, live or dead), once [`Job::prepare_mask_view`] has made it.
+    pub fn mask_grade(&self) -> Option<Arc<GradePlan>> {
+        self.mask.as_ref().and_then(|(_, g)| g.clone())
+    }
+
+    /// Makes the grade plan of the mask view, if the request has one. Cached with the photo's other grade
+    /// plans.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Job::grade_to`]; [`RenderError::Color`] when the photo has no such node.
+    pub fn prepare_mask_view(&mut self, target: OutputTarget) -> Result<(), RenderError> {
+        let Some((view, _)) = self.mask else {
+            return Ok(());
+        };
+        let plan = self.grade_to(target, true, PlanStop::Mask(view.node))?;
+        self.mask = Some((view, Some(plan)));
+        Ok(())
     }
 
     /// The raw group of this request runs without R8 capture sharpening (neither Richardson-Lucy nor
@@ -2960,6 +3000,16 @@ impl<'a> Job<'a> {
         target: OutputTarget,
         dither: bool,
     ) -> Result<Arc<GradePlan>, RenderError> {
+        self.grade_to(target, dither, PlanStop::Output)
+    }
+
+    /// [`Job::grade`] for the plan that ends at `stop`: the Output, or a node's mask (the mask view).
+    pub fn grade_to(
+        &mut self,
+        target: OutputTarget,
+        dither: bool,
+        stop: PlanStop,
+    ) -> Result<Arc<GradePlan>, RenderError> {
         let color = self.color()?;
         let req = GradeRequest {
             target,
@@ -2968,7 +3018,7 @@ impl<'a> Job<'a> {
         };
         // Build the plan's key without building the chain: the key is part of the plan, so the
         // cheap way to know whether a cached plan matches is to build the key text first.
-        let wanted = super::color::grade_key(self.src, &color, &req);
+        let wanted = grade_key_to(self.src, &color, &req, stop);
         let cached = {
             let mut st = lock(&self.g.state);
             let cache = st.grade.get_or_insert_with(|| ByteLru::new(8));
@@ -2982,7 +3032,7 @@ impl<'a> Job<'a> {
             return Ok(plan);
         }
         let t = Instant::now();
-        let plan = Arc::new(grade_plan(self.src, &color, &req)?);
+        let plan = Arc::new(grade_plan_to(self.src, &color, &req, stop)?);
         self.runs.grade_plans += 1;
         self.timings.plans_ms += t.elapsed().as_secs_f64() * 1000.0;
         for w in &plan.warnings {

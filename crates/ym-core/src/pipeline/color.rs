@@ -567,7 +567,14 @@ pub fn node_masks(m: &MaskSettings) -> NodeMasks {
 /// or a Radial): the render then needs the position of every pixel (`ColorChain::uses_photo_position`).
 #[must_use]
 pub fn uses_photo_position(s: &DevelopSettings) -> bool {
-    let Ok(plan) = node_plan(&s.nodes, Stop::Output) else {
+    uses_photo_position_to(s, Stop::Output)
+}
+
+/// [`uses_photo_position`] for the plan that ends at `stop`: the mask view's plan ends at a node's mask and
+/// includes the node even when the Output does not need it.
+#[must_use]
+pub fn uses_photo_position_to(s: &DevelopSettings, stop: Stop) -> bool {
+    let Ok(plan) = node_plan(&s.nodes, stop) else {
         return false;
     };
     plan.node_ids().into_iter().any(|id| {
@@ -620,10 +627,11 @@ pub fn node_plan(g: &NodeGraph, stop: Stop) -> Result<Plan, RenderError> {
     plan::compile(&plan_graph(g), stop).map_err(|e| RenderError::Color(e.to_string()))
 }
 
-/// The nodes of a photo for the chain: the plan to the Output, Main's trim and bypass, and every other
-/// corrector the plan runs, with its own grade (no Auto), warp, curves and trim.
-fn node_set(s: &DevelopSettings) -> Result<NodeSet, RenderError> {
-    let plan = node_plan(&s.nodes, Stop::Output)?;
+/// The nodes of a photo for the chain: the plan to `stop` (the Output, or a node's mask for the mask view),
+/// Main's trim and bypass, and every other corrector the plan runs, with its own grade (no Auto), warp, curves
+/// and trim.
+fn node_set(s: &DevelopSettings, stop: Stop) -> Result<NodeSet, RenderError> {
+    let plan = node_plan(&s.nodes, stop)?;
     let mut others = std::collections::BTreeMap::new();
     for id in plan.node_ids() {
         if id == plan::MAIN_NODE {
@@ -700,15 +708,16 @@ fn pieces(src: &PhotoSource, req: &GradeRequest<'_>) -> Pieces {
 /// bypass and mask rows and the parameters of every other corrector the plan runs, mask rows included
 /// (the enabled rows as the chain gets them, so a row switched off leaves the key as a row never added).
 /// A dead node is not in it, so a dead branch leaves the key as it was.
-fn nodes_key(s: &DevelopSettings) -> String {
-    let plan = match node_plan(&s.nodes, Stop::Output) {
+fn nodes_key(s: &DevelopSettings, stop: Stop) -> String {
+    let plan = match node_plan(&s.nodes, stop) {
         Ok(plan) => plan,
         Err(e) => return format!("no-plan:{e}"),
     };
     let mut k = String::with_capacity(256);
     let _ = write!(
         k,
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|",
+        plan.stop,
         plan.passes,
         plan.buffers,
         plan.result,
@@ -736,7 +745,13 @@ fn nodes_key(s: &DevelopSettings) -> String {
     k
 }
 
-fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Pieces) -> GradeKey {
+fn key_of(
+    src: &PhotoSource,
+    color: &ColorPlan,
+    req: &GradeRequest<'_>,
+    p: &Pieces,
+    stop: Stop,
+) -> GradeKey {
     let s = &src.settings;
     let mut key = String::with_capacity(768);
     let _ = write!(
@@ -749,7 +764,7 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
         // leave the key, and the frame, as without them.
         Warp::new(&warp_params(s)),
         s.main_grade().curve,
-        nodes_key(s),
+        nodes_key(s, stop),
         req.target,
         req.dither,
         s.output().look_intensity,
@@ -768,7 +783,18 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
 /// The key a grade plan for these inputs has, without building the chain.
 #[must_use]
 pub fn grade_key(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>) -> GradeKey {
-    key_of(src, color, req, &pieces(src, req))
+    grade_key_to(src, color, req, Stop::Output)
+}
+
+/// [`grade_key`] for the plan that ends at `stop`: the Output (the picture), or a node's mask (the mask view).
+#[must_use]
+pub fn grade_key_to(
+    src: &PhotoSource,
+    color: &ColorPlan,
+    req: &GradeRequest<'_>,
+    stop: Stop,
+) -> GradeKey {
+    key_of(src, color, req, &pieces(src, req), stop)
 }
 
 /// Builds the grade plan: the look is fetched from the provider (a missing look renders as Neutral
@@ -782,14 +808,30 @@ pub fn grade_plan(
     color: &ColorPlan,
     req: &GradeRequest<'_>,
 ) -> Result<GradePlan, RenderError> {
+    grade_plan_to(src, color, req, Stop::Output)
+}
+
+/// [`grade_plan`] for the plan that ends at `stop`. With [`Stop::Mask`] the chain's picture is a node's mask
+/// as grey code values (`ColorChain::shows_mask`): the mask view. The plan holds the node and what it needs
+/// even when the Output does not (a dead node has a mask but no picture in the Output's plan).
+///
+/// # Errors
+///
+/// [`RenderError::Color`] when the chain cannot be prepared or `stop` names a node the graph does not have.
+pub fn grade_plan_to(
+    src: &PhotoSource,
+    color: &ColorPlan,
+    req: &GradeRequest<'_>,
+    stop: Stop,
+) -> Result<GradePlan, RenderError> {
     let s = &src.settings;
     let p = pieces(src, req);
-    let key = key_of(src, color, req, &p);
+    let key = key_of(src, color, req, &p, stop);
     let mut params = ChainParams::new(*color.fused.matrix(), color.tone);
     params.grade = grade_params(s, &src.estimates);
     params.warp = warp_params(s);
     params.curves = curve_set(s)?;
-    params.nodes = node_set(s)?;
+    params.nodes = node_set(s, stop)?;
     params.output = req.target;
     params.dither = req.dither;
     params.before = BeforePoint::CameraDefault;

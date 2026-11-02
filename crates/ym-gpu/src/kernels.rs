@@ -72,6 +72,7 @@ pub mod richardson_lucy;
 pub mod sampler;
 pub mod sigma;
 pub mod spike;
+pub mod tint;
 
 mod shader;
 pub(crate) mod util;
