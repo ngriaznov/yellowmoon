@@ -338,7 +338,8 @@ export interface AppState {
   exportBusy: boolean;
   /**
    * The viewport is working on a frame of the photo on screen or on its full-resolution tiles (`busy`), and the raw stages of that
-   * photo run on the CPU (`cpu`), as the core last said (`viewport_busy`). The photo cell says "Rendering on the CPU" from it.
+   * photo run on the CPU (`cpu`), and that the round makes the photo's first blur map (`finding`: the Background rows say "Finding…"), as the
+   * core last said (`viewport_busy`). The photo cell says "Rendering on the CPU" from it.
    */
   viewportBusy: ViewportBusy;
   /** The settings Copy settings took, or null before the first copy; it outlives a session and is never saved. */
@@ -393,7 +394,7 @@ export function initialState(): AppState {
     viewportBackend: null,
     viewportFrame: null,
     exportBusy: false,
-    viewportBusy: { busy: false, cpu: false },
+    viewportBusy: { busy: false, cpu: false, finding: false },
     copied: null,
   };
 }
@@ -1064,8 +1065,8 @@ export class AppStore {
   /** `viewport_busy`: kept as the core said it (a repeat changes nothing). */
   private onViewportBusy(e: ViewportBusy): void {
     const now = this.state.viewportBusy;
-    if (now.busy === e.busy && now.cpu === e.cpu) return;
-    this.set({ viewportBusy: { busy: e.busy, cpu: e.cpu } });
+    if (now.busy === e.busy && now.cpu === e.cpu && now.finding === e.finding) return;
+    this.set({ viewportBusy: { busy: e.busy, cpu: e.cpu, finding: e.finding } });
   }
 
   private onFrame(frame: ViewportFrame): void {

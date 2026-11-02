@@ -1,10 +1,11 @@
 import { EyeIcon, EyeOffIcon } from "lucide-react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/glass/context-menu";
 import { Item } from "@/components/glass/item";
+import { Spinner } from "@/components/glass/spinner";
 import type { MaskItem, MaskMode } from "../../api/types";
 import { Button, Segmented } from "../../components";
 import type { SegmentedOption } from "../../components";
-import { maskRowLabel, maskRowName, maskSubtitle } from "../../state/maskRows";
+import { FINDING, isFinding, maskRowLabel, maskRowName, maskSubtitle } from "../../state/maskRows";
 import { MASK_KIND_ICON } from "./AddMaskMenu";
 
 /** The mockups' Invert glyph: a square split on its diagonal, the lower half filled. */
@@ -34,6 +35,8 @@ export interface MaskRowsProps {
   onRemove: (index: number) => void;
   /** Moves a row up or down the list (the context menu). */
   onMove: (index: number, by: -1 | 1) => void;
+  /** The core is making the photo's first blur map (`viewport_busy.finding`): a Background row with the eye on says "Finding…" with a spinner. */
+  finding?: boolean;
 }
 
 /**
@@ -41,9 +44,10 @@ export interface MaskRowsProps {
  * the **Invert** icon toggle ("Invert this mask", pressed in the mask accent) and the **eye** ("Show this mask"). The selected row has a 2 px ring
  * in the mask accent. A row's name is the kind, "mask" and the subtitle ("Radial mask, Feather 45"). **Delete or Backspace** on a row of the
  * list takes the row out (`MaskTab` handles the key for the whole card), and a right click offers **Move up · Move down · Delete mask**.
- * Choosing a row, or a control in it, selects it.
+ * Choosing a row, or a control in it, selects it. While a raster is being made for the first time on a photo (a Background row's blur map) its
+ * subtitle is a spinner and "Finding…" (`docs/23` §7.6).
  */
-export function MaskRows({ rows, selected, onSelect, onEdit, onRemove, onMove }: MaskRowsProps) {
+export function MaskRows({ rows, selected, onSelect, onEdit, onRemove, onMove, finding = false }: MaskRowsProps) {
   if (rows.length === 0) return null;
   return (
     <ul className="ym-mask-rows" aria-label="Masks of this node" data-mask-rows="">
@@ -55,11 +59,18 @@ export function MaskRows({ rows, selected, onSelect, onEdit, onRemove, onMove }:
               {/* glasscn's `Item`, as the Camera card's rows are. Choosing the row, or a control in it, selects it. */}
               <Item asChild size="sm" className="ym-mask-row" data-selected={selected === i || undefined} data-off={!row.enabled || undefined}>
                 <li data-index={i} onClick={() => onSelect(i)}>
-                  <button type="button" className="ym-mask-row__select" aria-label={maskRowLabel(row)} aria-pressed={selected === i}>
+                  <button type="button" className="ym-mask-row__select" aria-label={maskRowLabel(row, finding)} aria-pressed={selected === i}>
                     <span className="ym-mask-row__icon">{MASK_KIND_ICON[row.kind]}</span>
                     <span className="ym-mask-row__text" aria-hidden="true">
                       <span className="ym-mask-row__name">{name}</span>
-                      <span className="ym-mask-row__sub">{maskSubtitle(row)}</span>
+                      {isFinding(row, finding) ? (
+                        <span className="ym-mask-row__sub" data-finding="">
+                          <Spinner aria-hidden="true" />
+                          {FINDING}
+                        </span>
+                      ) : (
+                        <span className="ym-mask-row__sub">{maskSubtitle(row)}</span>
+                      )}
                     </span>
                   </button>
                   <Segmented label={`${name} mask, add or subtract`} size="sm" fit value={row.mode} options={MODES} onChange={(mode) => onEdit(i, { mode })} />

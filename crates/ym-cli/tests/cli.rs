@@ -216,13 +216,13 @@ fn doctor_lists_the_masks_this_computer_can_make_and_why_not_the_others() {
         .to_owned();
     let (made, not_made) = if cfg!(target_os = "macos") {
         (
-            "Linear, Radial, Brush, Colour range, Brightness range",
-            "Object, Subject, People and Background (this version of Yellowmoon can't make them yet)",
+            "Background, Linear, Radial, Brush, Colour range, Brightness range",
+            "Object, Subject and People (this version of Yellowmoon can't make them yet)",
         )
     } else {
         (
-            "Linear, Radial, Brush, Colour range, Brightness range",
-            "Object and Background (this version of Yellowmoon can't make them yet), Subject and People (this is not a Mac that supports them)",
+            "Background, Linear, Radial, Brush, Colour range, Brightness range",
+            "Object (this version of Yellowmoon can't make it yet), Subject and People (this is not a Mac that supports them)",
         )
     };
     assert_eq!(line, format!("{made} · not available: {not_made}"));
@@ -235,6 +235,7 @@ fn doctor_lists_the_masks_this_computer_can_make_and_why_not_the_others() {
     assert_eq!(
         v["masks"]["kinds"],
         serde_json::json!([
+            "background",
             "linear",
             "radial",
             "brush",
@@ -253,7 +254,6 @@ fn doctor_lists_the_masks_this_computer_can_make_and_why_not_the_others() {
             "object": "not_supported",
             "subject": reason,
             "people": reason,
-            "background": "not_supported",
         })
     );
 }

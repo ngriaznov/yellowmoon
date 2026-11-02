@@ -99,7 +99,6 @@ expression: shape(&v)
       "string"
     ],
     "unavailable": {
-      "background": "string",
       "object": "string",
       "people": "string",
       "subject": "string"

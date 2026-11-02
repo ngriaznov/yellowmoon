@@ -2754,9 +2754,10 @@ export type ViewportBackendKind =
 "fallback";
 
 /**
- *  `viewport_busy { busy, cpu }` (addition): the viewport is working on a frame of the photo on
+ *  `viewport_busy { busy, cpu, finding }` (addition): the viewport is working on a frame of the photo on
  *  screen, or on the full-resolution tiles a frame needs; `cpu`: the raw stages of that photo run on
- *  the CPU, which can take seconds. Sent when it changes, at most about 30 times a second (a round
+ *  the CPU, which can take seconds; `finding`: the round makes the photo's first blur map for a
+ *  Background mask (`docs/23` section 7.6, the rows say "Finding…"). Sent when it changes, at most about 30 times a second (a round
  *  that starts and ends within that time sends nothing new); `busy: false` when the work is done or
  *  was stopped, and when the cell shows no photo. The photo cell says "Rendering on the CPU" once
  *  both have held for a moment.
@@ -2769,6 +2770,12 @@ export type ViewportBusy = {
 	 *  route, the device is lost, or a method the device does not run).
 	 */
 	cpu: boolean,
+	/**
+	 *  The round makes the photo's first blur map for a Background mask (`docs/23` section 7.6): the
+	 *  rows of that kind say "Finding…" until the round ends. False for every other round, and once the
+	 *  photo has its map.
+	 */
+	finding: boolean,
 };
 
 /**

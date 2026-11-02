@@ -34,7 +34,7 @@ function note(): { api: MockApi; unmount: () => void } {
 }
 
 const shown = (): HTMLElement | null => screen.queryByRole("status");
-const busy = (api: MockApi, value: boolean, cpu: boolean): void => act(() => api.emitEvent("viewport_busy", { busy: value, cpu }));
+const busy = (api: MockApi, value: boolean, cpu: boolean): void => act(() => api.emitEvent("viewport_busy", { busy: value, cpu, finding: false }));
 const wait = (ms: number): void =>
   act(() => {
     vi.advanceTimersByTime(ms);
@@ -115,7 +115,7 @@ describe("in the photo cell", () => {
     await openPhotos(h);
     const cell = screen.getByRole("main", { name: "Photo" });
     expect(shown()).toBeNull();
-    act(() => h!.api.emitEvent("viewport_busy", { busy: true, cpu: true }));
+    act(() => h!.api.emitEvent("viewport_busy", { busy: true, cpu: true, finding: false }));
     const status = await screen.findByRole("status", {}, { timeout: 2000 });
     expect(status).toHaveTextContent("Rendering on the CPU");
     expect(cell).toContainElement(status);
@@ -124,7 +124,7 @@ describe("in the photo cell", () => {
     await h.user.click(screen.getByRole("button", { name: "Before" }));
     await waitFor(() => expect(cell.querySelector(".ym-photo-cell__before")).not.toBeNull());
     expect(screen.getByRole("status")).toHaveTextContent("Rendering on the CPU");
-    act(() => h!.api.emitEvent("viewport_busy", { busy: false, cpu: true }));
+    act(() => h!.api.emitEvent("viewport_busy", { busy: false, cpu: true, finding: false }));
     expect(shown()).toBeNull();
   });
 });

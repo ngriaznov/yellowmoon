@@ -181,6 +181,9 @@ pub enum RasterSource {
     /// The strokes of a Brush row: drawn into [`BRUSH_PLANE_PX`] on the long edge for the photo's aspect when
     /// the plane is wanted ([`RasterSource::plane`]) and kept in a small cache.
     Brush(Arc<BrushStrokes>),
+    /// A Background row: the photo's blur map with the row's Level and Softness (`docs/algorithms/06` section
+    /// 5.4), made when the plane is wanted and kept in a small cache under its own key.
+    Background(Arc<BackgroundSource>),
 }
 
 impl PartialEq for RasterSource {
@@ -196,6 +199,7 @@ impl RasterSource {
         match self {
             Self::Plane(p) => p.key,
             Self::Brush(b) => b.key,
+            Self::Background(b) => b.key(),
         }
     }
 
@@ -205,6 +209,7 @@ impl RasterSource {
         match self {
             Self::Plane(p) => Arc::clone(p),
             Self::Brush(b) => brush_plane(b, aspect),
+            Self::Background(b) => background_plane(b),
         }
     }
 }
@@ -1204,4 +1209,135 @@ pub fn brush_cache_len() -> usize {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .len()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Background
+// ---------------------------------------------------------------------------------------------
+
+/// The narrowest ramp of Background's threshold, in probability (`docs/algorithms/06` section 5.4).
+pub const BLUR_RAMP_MIN: f64 = 0.05;
+
+/// The blur map of a photo as Background reads it: `P`, the probability that a cell is out of focus
+/// (`P(b >= 2 b_min)`, `docs/21` section 7), over the **photo frame** (the photo as the camera oriented it), one
+/// f32 in [0, 1] for each cell, row-major. A cell is 2 x 2 pixels of the 1024 px lens plane, so the map is about
+/// 512 px on the long edge.
+#[derive(Clone, PartialEq)]
+pub struct BlurMap {
+    /// What the map was made from: equal keys are the same cells. The core gives every map it makes a key of its
+    /// own, so a new map (another photo, other raw parameters) never reads the old one's planes.
+    pub key: u64,
+    /// Cells across.
+    pub width: usize,
+    /// Cells down.
+    pub height: usize,
+    /// `P` per cell.
+    pub p: Vec<f32>,
+}
+
+impl std::fmt::Debug for BlurMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlurMap")
+            .field("key", &self.key)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What makes a Background row's `S0`: the photo's blur map and the row's Level and Softness.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackgroundSource {
+    /// The photo's blur map.
+    pub map: Arc<BlurMap>,
+    /// Level `lambda`, 0 to 1: where the map's decision falls (0.5 is `P = 0.5`).
+    pub level: f64,
+    /// Softness `sigma`, 0 to 1: the ramp's width in `P`.
+    pub softness: f64,
+}
+
+impl BackgroundSource {
+    /// What identifies the plane: the map and the two numbers (FNV-1a over their bits), never Feather, Grow or
+    /// Refine edges, which act after the plane.
+    #[must_use]
+    pub fn key(&self) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for bits in [
+            self.map.key,
+            unit(self.level).to_bits(),
+            unit(self.softness).to_bits(),
+        ] {
+            for byte in bits.to_le_bytes() {
+                h ^= u64::from(byte);
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        h
+    }
+}
+
+/// `S0` of a Background row from the cells' probabilities (`docs/algorithms/06` section 5.4):
+///
+/// `S0 = S((P - (1 - level) + w / 2) / w)`, `w = max(softness, BLUR_RAMP_MIN)`,
+///
+/// `S` the smoothstep, rounded once to a u16 code. Level 0.5 puts the edge at `P = 0.5`, the map's own decision;
+/// a cell with `P = 0` (an evenly sharp photo) is 0 for any level below 1 and any softness.
+#[must_use]
+pub fn background_s0(p: &[f32], level: f64, softness: f64) -> Vec<u16> {
+    let w = unit(softness).max(BLUR_RAMP_MIN);
+    let edge = 1.0 - unit(level);
+    p.iter()
+        .map(|&v| {
+            let t = (f64::from(v) - edge + 0.5 * w) / w;
+            quantise(crate::mask::smooth_step(t))
+        })
+        .collect()
+}
+
+/// How many Background planes the cache keeps (about 350 KB each).
+const BACKGROUND_CACHE_PLANES: usize = 16;
+
+type BackgroundCache = Mutex<VecDeque<(u64, Arc<SourcePlane>)>>;
+
+fn background_cache() -> &'static BackgroundCache {
+    static CACHE: OnceLock<BackgroundCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+/// The plane of a Background row, from the small in-memory cache (never on disk) when the same map was cut with
+/// the same Level and Softness lately, else made now ([`background_s0`]): moving Level or Softness makes a plane
+/// from the cached map, and Feather, Grow and Refine edges, which are not in the key, never do.
+#[must_use]
+pub fn background_plane(src: &BackgroundSource) -> Arc<SourcePlane> {
+    let key = src.key();
+    {
+        let mut cache = background_cache()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(i) = cache.iter().position(|(k, _)| *k == key)
+            && let Some((k, plane)) = cache.remove(i)
+        {
+            let out = Arc::clone(&plane);
+            cache.push_back((k, plane));
+            return out;
+        }
+    }
+    let plane = Arc::new(SourcePlane {
+        key,
+        width: src.map.width.max(1),
+        height: src.map.height.max(1),
+        data: if src.map.p.len() == src.map.width * src.map.height && !src.map.p.is_empty() {
+            background_s0(&src.map.p, src.level, src.softness)
+        } else {
+            vec![0; src.map.width.max(1) * src.map.height.max(1)]
+        },
+    });
+    let mut cache = background_cache()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    cache.push_back((key, Arc::clone(&plane)));
+    while cache.len() > BACKGROUND_CACHE_PLANES {
+        cache.pop_front();
+    }
+    plane
 }

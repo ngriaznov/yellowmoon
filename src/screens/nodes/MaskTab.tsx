@@ -65,7 +65,7 @@ export interface MaskTabProps {
 /**
  * A corrector's Mask tab (`docs/23` §7.6): the **Masks card** (its header "MASKS", **Add mask ▾**, **Invert**, which is the node's whole
  * combined mask, and **Reset**, which removes every row and un-inverts; then the rows and the line "Masks add up…"), the **selected mask's
- * card** (a Linear, a Radial, a Brush, a Colour range or a Brightness range: the other kinds have theirs with their tasks, and a raster row that a
+ * card** (a Background, a Linear, a Radial, a Brush, a Colour range or a Brightness range: the other kinds have theirs with their tasks, and a raster row that a
  * file or a paste brought shows its row and no card), and the View card. Adding a Brush row, and choosing one, starts the Brush tool. Every change is one node patch: adding, removing and moving a row
  * is `masks.items`, a row's mode, Invert and eye and every slider is a `masks.edit` row patch, the node's Invert is `masks.invert`; each
  * is one undo step (a slider's drag is one).
@@ -77,6 +77,7 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
   const inverted = corrector?.masks.invert ?? false;
   const stored = useAppState((s) => s.maskRow);
   const kinds = useAppState((s) => s.maskKinds);
+  const finding = useAppState((s) => s.viewportBusy.busy && s.viewportBusy.finding);
   const selected = stored !== null && stored < rows.length ? stored : null;
   const row = selected === null ? undefined : rows[selected];
   useEffect(() => store.ensureMaskKinds(), [store]);
@@ -146,7 +147,7 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
             </>
           }
         >
-          <MaskRows rows={rows} selected={selected} onSelect={select} onEdit={edit} onRemove={remove} onMove={move} />
+          <MaskRows rows={rows} selected={selected} onSelect={select} onEdit={edit} onRemove={remove} onMove={move} finding={finding} />
           <RowNote>{MASKS_ADD_UP}</RowNote>
         </Card>
       </div>

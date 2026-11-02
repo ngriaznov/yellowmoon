@@ -129,12 +129,13 @@ impl MaskKind {
 
 /// The kinds of mask this machine can make now, in the order of the Add mask menu (`docs/23` section 9,
 /// `mask_kinds`): what the menu lists, and what a photo may use without being refused. The shapes, Brush and the
-/// ranges that are built always are here; **the later tasks add their kind** when it can be made: Background
-/// (N-15), Object (N-18, where the SAM weights are present) and Subject and People (N-19, where the Vision
-/// probe said yes).
+/// ranges that are built always are here, and so is Background (N-15: the blur map is made on the CPU from the
+/// photo itself, with the learned model or without it); **the later tasks add their kind** when it can be made:
+/// Object (N-18, where the SAM weights are present) and Subject and People (N-19, where the Vision probe said yes).
 #[must_use]
 pub fn mask_kinds() -> Vec<MaskKind> {
     vec![
+        MaskKind::Background,
         MaskKind::Linear,
         MaskKind::Radial,
         MaskKind::Brush,
@@ -155,7 +156,7 @@ pub enum MaskUnavailable {
     /// This Mac's macOS is older than the Vision requests need (Subject and People).
     MacosTooOld,
     /// This version of Yellowmoon has no way to make the kind on this computer: its runtime is not built yet
-    /// (Object until N-18, Background until N-15, Subject and People on a Mac until N-19), or the Mac cannot
+    /// (Object until N-18, Subject and People on a Mac until N-19), or the Mac cannot
     /// run the Vision requests.
     NotSupported,
 }
@@ -172,14 +173,18 @@ impl MaskUnavailable {
         }
     }
 
-    /// The reason in the parentheses of `ym doctor`'s Masks line, for a group of kinds (they are plural there).
+    /// The reason in the parentheses of `ym doctor`'s Masks line, for a group of kinds (`plural`) or for one kind
+    /// that has the reason to itself.
     #[must_use]
-    pub fn doctor_text(self) -> &'static str {
-        match self {
-            Self::WeightsMissing => "the SAM weights are missing",
-            Self::NotAMac => "this is not a Mac that supports them",
-            Self::MacosTooOld => "this Mac's macOS is too old for them",
-            Self::NotSupported => "this version of Yellowmoon can't make them yet",
+    pub fn doctor_text(self, plural: bool) -> &'static str {
+        match (self, plural) {
+            (Self::WeightsMissing, _) => "the SAM weights are missing",
+            (Self::NotAMac, true) => "this is not a Mac that supports them",
+            (Self::NotAMac, false) => "this is not a Mac that supports it",
+            (Self::MacosTooOld, true) => "this Mac's macOS is too old for them",
+            (Self::MacosTooOld, false) => "this Mac's macOS is too old for it",
+            (Self::NotSupported, true) => "this version of Yellowmoon can't make them yet",
+            (Self::NotSupported, false) => "this version of Yellowmoon can't make it yet",
         }
     }
 }

@@ -41,7 +41,8 @@ use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
 use ym_color::mask::{MaskKind, MaskRow, NodeMasks};
 use ym_color::mask_raster::{
-    BrushStrokes, MAX_RASTER_PLANES, RasterRow, RasterSet, RasterSource, Stroke, strokes_key,
+    BackgroundSource, BlurMap, BrushStrokes, MAX_RASTER_PLANES, RasterRow, RasterSet, RasterSource,
+    Stroke, strokes_key,
 };
 use ym_color::plan::{self, PictureSource, Plan, PlanGraph, PlanNode, Stop};
 use ym_color::tone::ToneParams;
@@ -522,10 +523,28 @@ fn trim_of(t: &NodeTrim) -> Trim {
 /// ([`unmakeable_mask`]).
 pub const NO_PLANE: usize = usize::MAX;
 
+/// Whether this machine can make the `S0` of a row of this shape: Brush (drawn from its strokes) and Background (cut
+/// from the photo's blur map). Object, Subject and People are not made yet (N-17 to N-19).
+fn makes_raster(shape: &MaskShape) -> bool {
+    matches!(shape, MaskShape::Brush(_) | MaskShape::Background(_))
+}
+
 /// The raster row a mask row stands for, when this machine can make its `S0`: a Brush row's strokes with its
-/// Grow, Feather and Refine edges. Object, Subject, People and Background are not made yet (N-15, N-17 to N-19).
-fn raster_row_of(shape: &MaskShape) -> Option<RasterRow> {
+/// Grow, Feather and Refine edges, or a Background row's blur map with its Level, Softness and the same three
+/// (`background` is the photo's map, which only the renderer can make: without it a Background row has no
+/// plane and selects nothing). Object, Subject and People are not made yet (N-17 to N-19).
+fn raster_row_of(shape: &MaskShape, background: Option<&Arc<BlurMap>>) -> Option<RasterRow> {
     match shape {
+        MaskShape::Background(b) => background.map(|map| RasterRow {
+            source: RasterSource::Background(Arc::new(BackgroundSource {
+                map: Arc::clone(map),
+                level: b.level,
+                softness: b.softness,
+            })),
+            grow: b.grow,
+            feather: b.feather,
+            refine: b.refine,
+        }),
         MaskShape::Brush(b) => Some(RasterRow {
             source: RasterSource::Brush(Arc::new(BrushStrokes::new(
                 b.strokes
@@ -546,7 +565,11 @@ fn raster_row_of(shape: &MaskShape) -> Option<RasterRow> {
     }
 }
 
-fn mask_rows(m: &MaskSettings, rasters: &mut RasterSet) -> NodeMasks {
+fn mask_rows(
+    m: &MaskSettings,
+    rasters: &mut RasterSet,
+    background: Option<&Arc<BlurMap>>,
+) -> NodeMasks {
     let rows = m
         .items
         .iter()
@@ -578,7 +601,7 @@ fn mask_rows(m: &MaskSettings, rasters: &mut RasterSet) -> NodeMasks {
                 | MaskShape::Subject(_)
                 | MaskShape::People(_)
                 | MaskShape::Background(_)
-                | MaskShape::Brush(_) => match raster_row_of(&row.shape) {
+                | MaskShape::Brush(_) => match raster_row_of(&row.shape, background) {
                     Some(r) if rasters.rows.len() < MAX_RASTER_PLANES => {
                         rasters.rows.push(r);
                         MaskKind::Raster {
@@ -600,13 +623,42 @@ fn mask_rows(m: &MaskSettings, rasters: &mut RasterSet) -> NodeMasks {
 }
 
 /// A node's mask rows as `ym_color`'s: the enabled rows in order (a row with the eye off is absent), each
-/// with its kind, mode, Invert and Opacity, and the node's Invert. A raster row (Brush now; Object, Subject,
-/// People and Background when they are built) is a [`MaskKind::Raster`] whose plane is its place among the
-/// raster rows of a chain; this function numbers them from 0 for itself alone, and the chain's builder numbers them
-/// across the nodes of a plan.
+/// with its kind, mode, Invert and Opacity, and the node's Invert. A raster row (Brush and Background now; Object,
+/// Subject and People when they are built) is a [`MaskKind::Raster`] whose plane is its place among the
+/// raster rows of a chain; this function numbers them from 0 for itself alone (a Background row has no plane here:
+/// it needs the photo's blur map), and the chain's builder numbers them across the nodes of a plan.
 #[must_use]
 pub fn node_masks(m: &MaskSettings) -> NodeMasks {
-    mask_rows(m, &mut RasterSet::default())
+    mask_rows(m, &mut RasterSet::default(), None)
+}
+
+/// Whether the photo's plan that ends at `stop` has a Background row with the eye on: the render then needs the
+/// photo's blur map ([`GradeRequest::background`]), made once per photo.
+#[must_use]
+pub fn uses_background(s: &DevelopSettings, stop: Stop) -> bool {
+    let Ok(plan) = node_plan(&s.nodes, stop) else {
+        return false;
+    };
+    plan.node_ids().into_iter().any(|id| {
+        s.nodes.corrector(id).is_some_and(|c| {
+            c.masks
+                .items
+                .iter()
+                .any(|r| r.enabled && matches!(r.shape, MaskShape::Background(_)))
+        })
+    })
+}
+
+/// Whether the photo has a Background row with the eye on anywhere in its graph, in a node the Output needs or not
+/// (the mask view can show a dead node's mask): the app says "Finding…" while the first blur map is made.
+#[must_use]
+pub fn has_background_row(s: &DevelopSettings) -> bool {
+    s.nodes.correctors().any(|(_, c)| {
+        c.masks
+            .items
+            .iter()
+            .any(|r| r.enabled && matches!(r.shape, MaskShape::Background(_)))
+    })
 }
 
 /// Whether the photo's plan has a node with a mask row that reads the pixel's place in the photo (a Linear
@@ -650,7 +702,7 @@ pub fn unmakeable_mask(s: &DevelopSettings) -> Option<String> {
             ) {
                 return Some(sentence);
             }
-            planes += usize::from(raster_row_of(&row.shape).is_some());
+            planes += usize::from(makes_raster(&row.shape));
         }
     }
     (planes > MAX_RASTER_PLANES).then(|| {
@@ -721,13 +773,17 @@ pub fn node_plan(g: &NodeGraph, stop: Stop) -> Result<Plan, RenderError> {
 /// Main's trim and bypass, and every other corrector the plan runs, with its own grade (no Auto), warp, curves
 /// and trim; and the raster rows of their masks, numbered across the nodes in the plan's order (a node's rows
 /// in list order), which the chain's [`MaskKind::Raster`] rows index.
-fn node_set(s: &DevelopSettings, stop: Stop) -> Result<(NodeSet, RasterSet), RenderError> {
+fn node_set(
+    s: &DevelopSettings,
+    stop: Stop,
+    background: Option<&Arc<BlurMap>>,
+) -> Result<(NodeSet, RasterSet), RenderError> {
     let plan = node_plan(&s.nodes, stop)?;
     let mut rasters = RasterSet::default();
     let mut masks = std::collections::BTreeMap::new();
     for id in plan.node_ids() {
         if let Some(c) = s.nodes.corrector(id) {
-            masks.insert(id, mask_rows(&c.masks, &mut rasters));
+            masks.insert(id, mask_rows(&c.masks, &mut rasters, background));
         }
     }
     let mut others = std::collections::BTreeMap::new();
@@ -778,6 +834,10 @@ pub struct GradeRequest<'a> {
     pub dither: bool,
     /// Where looks come from.
     pub looks: &'a dyn LookProvider,
+    /// The photo's blur map, for the plan's Background rows (`docs/23` section 4.6): made once per photo by the
+    /// renderer ([`Job::background_map`](crate::pipeline::Job)) and `None` for a plan with no Background row (or
+    /// a caller that has no photo to read, whose Background rows select nothing).
+    pub background: Option<&'a Arc<BlurMap>>,
 }
 
 /// A prepared C7 to C13 chain and what to tell the user about it.
@@ -814,7 +874,7 @@ fn pieces(src: &PhotoSource, req: &GradeRequest<'_>) -> Pieces {
 /// bypass and mask rows and the parameters of every other corrector the plan runs, mask rows included
 /// (the enabled rows as the chain gets them, so a row switched off leaves the key as a row never added).
 /// A dead node is not in it, so a dead branch leaves the key as it was.
-fn nodes_key(s: &DevelopSettings, stop: Stop) -> String {
+fn nodes_key(s: &DevelopSettings, stop: Stop, background: Option<&Arc<BlurMap>>) -> String {
     let plan = match node_plan(&s.nodes, stop) {
         Ok(plan) => plan,
         Err(e) => return format!("no-plan:{e}"),
@@ -855,13 +915,30 @@ fn nodes_key(s: &DevelopSettings, stop: Stop) -> String {
             continue;
         };
         for row in c.masks.items.iter().filter(|r| r.enabled) {
-            if let MaskShape::Brush(b) = &row.shape {
-                let key = strokes_key(
-                    b.strokes
-                        .iter()
-                        .map(|s| (s.size, s.hardness, s.erase, s.points.as_slice())),
-                );
-                let _ = write!(k, "raster:{key:x}:{}:{}:{};", b.grow, b.feather, b.refine);
+            match &row.shape {
+                MaskShape::Brush(b) => {
+                    let key = strokes_key(
+                        b.strokes
+                            .iter()
+                            .map(|s| (s.size, s.hardness, s.erase, s.points.as_slice())),
+                    );
+                    let _ = write!(k, "raster:{key:x}:{}:{}:{};", b.grow, b.feather, b.refine);
+                }
+                // The map is named by the renderer's own key for it (a new map is a new key); a row without a map
+                // (no renderer asked for one) selects nothing and says so.
+                MaskShape::Background(b) => {
+                    let _ = write!(
+                        k,
+                        "background:{}:{}:{}:{}:{}:{};",
+                        background.map_or_else(|| "none".to_owned(), |m| format!("{:x}", m.key)),
+                        b.level,
+                        b.softness,
+                        b.grow,
+                        b.feather,
+                        b.refine
+                    );
+                }
+                _ => {}
             }
         }
     }
@@ -887,7 +964,7 @@ fn key_of(
         // leave the key, and the frame, as without them.
         Warp::new(&warp_params(s)),
         s.main_grade().curve,
-        nodes_key(s, stop),
+        nodes_key(s, stop, req.background),
         req.target,
         req.dither,
         s.output().look_intensity,
@@ -954,7 +1031,7 @@ pub fn grade_plan_to(
     params.grade = grade_params(s, &src.estimates);
     params.warp = warp_params(s);
     params.curves = curve_set(s)?;
-    let (nodes, rasters) = node_set(s, stop)?;
+    let (nodes, rasters) = node_set(s, stop, req.background)?;
     params.nodes = nodes;
     params.rasters = rasters;
     params.output = req.target;

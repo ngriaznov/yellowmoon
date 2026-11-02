@@ -806,7 +806,8 @@ fn three_correctors() -> serde_json::Value {
 /// subtracted from it, node 3 a Colour range and a Brightness range (with the node's Invert off), node 4 reads
 /// Main and goes nowhere with its picture but has a Radial, and its key output feeds node 5's key input (node 5
 /// has a Linear subtracted of its own), and node 6 has a Brush row with Grow, Feather and Refine edges (a raster
-/// mask, drawn into a plane and put through the raster pass).
+/// mask, drawn into a plane and put through the raster pass). Node 4's mask, which feeds node 5's key input, is
+/// a Radial added to a Background row (the photo's blur map cut at a level, the same raster pass after it).
 fn masked_nodes() -> serde_json::Value {
     let picture = |from: serde_json::Value, to: serde_json::Value| {
         serde_json::json!({
@@ -832,7 +833,9 @@ fn masked_nodes() -> serde_json::Value {
             { "id": 4, "kind": "corrector", "pos": [1, 1], "trim": { "exposure_ev": 1 },
               "masks": { "invert": false, "items": [
                   { "kind": "radial", "mode": "add", "center": [0.4, 0.5], "radii": [0.3, 0.2],
-                    "angle_deg": 10, "feather": 0.5 }
+                    "angle_deg": 10, "feather": 0.5 },
+                  { "kind": "background", "mode": "add", "level": 0.8, "softness": 0.4,
+                    "feather": 0.15, "grow": 0.1, "refine": 0.5 }
               ] } },
             { "id": 5, "kind": "corrector", "pos": [3, 0], "trim": { "temperature": 40 },
               "grade": { "saturation": { "kind": "manual", "value": 35 } },
@@ -1028,8 +1031,8 @@ fn three_correctors_are_the_same_files_through_the_app_path_and_the_binary() {
 }
 
 /// Masks (N-10, N-13): a Linear and a Radial, a Colour range and a Brightness range, a node that only makes a mask
-/// whose key feeds another, and a Brush row with Grow, Feather and Refine edges: the app and the binary write the
-/// same bytes.
+/// whose key feeds another (with a Background row cut from the photo's blur map, N-15), and a Brush row with Grow,
+/// Feather and Refine edges: the app and the binary write the same bytes.
 #[test]
 fn masked_nodes_are_the_same_files_through_the_app_path_and_the_binary() {
     graph_leg("masked nodes", masked_nodes(), 6, false);

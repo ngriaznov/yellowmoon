@@ -10,6 +10,15 @@ import { MASK_KIND_NAME } from "./graphOps";
 
 export { widthSlider };
 
+/** What the subtitle of a Background row says while the photo's blur map is being made for the first time (`docs/23` §7.6). */
+export const FINDING = "Finding…";
+
+/**
+ * Whether a row is waiting for its raster to be made: a Background row with the eye on while the core says it is making the photo's first
+ * blur map (`viewport_busy.finding`). The row's subtitle is then {@link FINDING}, with a spinner.
+ */
+export const isFinding = (row: MaskItem, finding: boolean): boolean => finding && row.kind === "background" && row.enabled;
+
 /** The row's name in bold: "Object", "Radial", "Colour range". */
 export const maskRowName = (row: MaskItem): string => MASK_KIND_NAME[row.kind] ?? row.kind;
 
@@ -87,8 +96,8 @@ export const selectionAfterRemove = (index: number, count: number): number | nul
 /**
  * The subtitle of a row (`docs/23` §7.6): "2 points", "1 point", "Box", "Box and 2 points" and, with none, "Click the object on this photo"
  * (Object); "Foreground" (Subject); "People"; "Level 50" (Background); "Feather 20" (Linear, Radial); "3 strokes", "1 stroke" and "Paint on the
- * photo" (Brush); "Width 40" (Colour range); "35 to 100" (Brightness range). The states of a mask being made ("Finding…") and of a Mac that
- * cannot make one are the Mask tab's (N-12).
+ * photo" (Brush); "Width 40" (Colour range); "35 to 100" (Brightness range). The state of a mask being made ("Finding…", {@link isFinding}) is the
+ * row's own, and the states of a Mac that cannot make one are the Mask tab's (N-12).
  */
 export function maskSubtitle(row: MaskItem): string {
   switch (row.kind) {
@@ -116,5 +125,8 @@ export function maskSubtitle(row: MaskItem): string {
   }
 }
 
-/** The row's accessible name: the kind, "mask" and the subtitle ("Object mask, 2 points", "Radial mask, Feather 45"). */
-export const maskRowLabel = (row: MaskItem): string => `${maskRowName(row)} mask, ${maskSubtitle(row)}`;
+/**
+ * The row's accessible name: the kind, "mask" and the subtitle ("Object mask, 2 points", "Radial mask, Feather 45"); with `finding`, a Background row
+ * reads "Background mask, Finding…".
+ */
+export const maskRowLabel = (row: MaskItem, finding = false): string => `${maskRowName(row)} mask, ${isFinding(row, finding) ? FINDING : maskSubtitle(row)}`;

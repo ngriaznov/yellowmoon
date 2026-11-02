@@ -801,6 +801,7 @@ fn chain_of(src: &PhotoSource) -> std::sync::Arc<ym_color::display::ColorChain> 
         target: OutputTarget::Viewport,
         dither: false,
         looks: &NeutralOnly,
+        background: None,
     };
     grade_plan(src, &color, &req).expect("grade plan").chain
 }
@@ -883,6 +884,7 @@ fn the_grade_key_follows_the_warp_as_the_chain_prepares_it() {
         target: OutputTarget::Viewport,
         dither: true,
         looks: &NeutralOnly,
+        background: None,
     };
     let key = |pins: &[WarpPin]| grade_key(&with_pins(&src, pins), &color, &req);
     let none = key(&[]);

@@ -128,6 +128,59 @@ impl BlurMapInput {
     }
 }
 
+/// The classical detector's blur map as a [`BlurMapInput`], for a use that has no learned model (the Background mask
+/// of `docs/23` section 4.6 when the network cannot run): the detector of `docs/21` section 7 on the lens plane
+/// (`focus` anchors the subject as in the lens), its work plane pooled 2 x 2 into cells like the network's.
+///
+/// `p` is the detector's confidence where it calls the cell out of focus (`b >= 2 b_min`, the network's own
+/// definition of the probability) and 0 everywhere else, so an evenly sharp plane is all 0; `b` is the radius in
+/// half-diagonals.
+///
+/// # Errors
+///
+/// [`LensError::Cancelled`], or a plane the detector refuses.
+pub fn classical_blur_map(
+    lens_plane: &ImageRef,
+    focus: Option<(f64, f64)>,
+    cancel: &dyn Fn() -> bool,
+) -> Result<BlurMapInput, LensError> {
+    lens_plane.validate()?;
+    let d = detector::detect(lens_plane, focus, cancel)?;
+    let (w, h) = (d.w, d.h);
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let decide = 2.0 * crate::consts::B_MIN;
+    let mut b = vec![0.0f32; cw * ch];
+    let mut p = vec![0.0f32; cw * ch];
+    for cy in 0..ch {
+        for cx in 0..cw {
+            let (mut sb, mut sp, mut n) = (0.0f32, 0.0f32, 0.0f32);
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let (x, y) = (2 * cx + dx, 2 * cy + dy);
+                    if x < w && y < h {
+                        let i = y * w + x;
+                        sb += d.b[i];
+                        if f64::from(d.b[i]) >= decide {
+                            sp += d.conf[i];
+                        }
+                        n += 1.0;
+                    }
+                }
+            }
+            b[cy * cw + cx] = sb / n;
+            p[cy * cw + cx] = (sp / n).clamp(0.0, 1.0);
+        }
+    }
+    Ok(BlurMapInput {
+        width: cw,
+        height: ch,
+        plane_width: w,
+        plane_height: h,
+        b,
+        p,
+    })
+}
+
 /// One level of the blur map's reductions: the mean of weight times blur, of weight, and of the cells known to be
 /// in focus (a subject).
 #[derive(Clone, Debug)]

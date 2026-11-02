@@ -22,7 +22,8 @@ use ym_color::display::{
 use ym_color::grade::GradeParams;
 use ym_color::mask::{MaskKind, MaskRow, NodeMasks, PhotoMap};
 use ym_color::mask_raster::{
-    Area, BrushStrokes, CpuPlanes, PlaneJob, RasterRow, RasterSet, RasterSource, Stroke,
+    Area, BackgroundSource, BlurMap, BrushStrokes, CpuPlanes, PlaneJob, RasterRow, RasterSet,
+    RasterSource, Stroke,
 };
 use ym_color::plan::{self, MAIN_NODE, PictureSource, PlanGraph, PlanNode, Stop as PlanStop};
 use ym_gpu::cpu::RgbImage;
@@ -1614,6 +1615,146 @@ fn an_extent_around_the_window_has_the_windows_planes_and_zero_around_them() {
                         0
                     };
                     assert_eq!(w[y * extent.w + x], want, "({ax}, {ay})");
+                }
+            }
+        }
+    }
+}
+
+// ---- Background (N-15) -----------------------------------------------------------------------------
+
+/// A blur map with structure at several scales, in the proportions of the scene (96 x 64 cells): a sharp subject
+/// (`P` near 0) in an ellipse, a background that is more blurred towards the top, and a patch of the sharpest
+/// blur (`P` 1), so that the plane cut from it at the default Level and Softness runs through every value.
+fn blur_map() -> Arc<BlurMap> {
+    let (w, h) = (96usize, 64usize);
+    let smooth = |a: f32, b: f32, x: f32| {
+        let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let p = (0..w * h)
+        .map(|i| {
+            let (x, y) = ((i % w) as f32 / w as f32, (i / w) as f32 / h as f32);
+            let d = (((x - 0.45) / 0.22).powi(2) + ((y - 0.5) / 0.3).powi(2)).sqrt();
+            let subject = 1.0 - smooth(0.8, 1.2, d);
+            let sky = 0.15 + 0.85 * (1.0 - y).powf(1.5);
+            let patch = 1.0 - smooth(0.0, 0.12, ((x - 0.85).powi(2) + (y - 0.2).powi(2)).sqrt());
+            ((sky * (1.0 - subject)).max(patch)).clamp(0.0, 1.0)
+        })
+        .collect();
+    Arc::new(BlurMap {
+        key: 7_001,
+        width: w,
+        height: h,
+        p,
+    })
+}
+
+fn background_row(level: f64, softness: f64, grow: f64, feather: f64, refine: f64) -> RasterRow {
+    RasterRow {
+        source: RasterSource::Background(Arc::new(BackgroundSource {
+            map: blur_map(),
+            level,
+            softness,
+        })),
+        grow,
+        feather,
+        refine,
+    }
+}
+
+#[test]
+fn a_background_plane_on_the_device_is_the_cpu_plane_within_the_stated_bound() {
+    let buffer = (480usize, 320usize);
+    let img = scene(buffer.0, buffer.1, 0x5EED);
+    let (grid, frame) = export_grid(buffer, 0.2); // 2400 x 1600 output
+    let window = Area {
+        x: 1000,
+        y: 700,
+        w: 150,
+        h: 110,
+    };
+    let mut worst_all = 0.0f64;
+    for dev in gpus() {
+        if dev.mode.is_f16() {
+            continue;
+        }
+        for (name, level, softness, grow, feather, refine) in [
+            ("the default", 0.5, 0.5, 0.0, 0.0, 0.5),
+            ("resample only, a high level", 0.8, 0.3, 0.0, 0.0, 0.0),
+            ("a low level, a narrow ramp", 0.2, 0.0, 0.0, 0.0, 0.0),
+            ("grown and feathered", 0.5, 0.5, 0.4, 0.4, 0.0),
+            ("eroded, refined, subsampled", 0.6, 0.8, -0.3, 0.0, 1.0),
+            ("all", 0.5, 0.5, 0.3, 0.3, 0.6),
+        ] {
+            let chain = chain_with(RasterSet {
+                rows: vec![background_row(level, softness, grow, feather, refine)],
+            });
+            let halo = chain.rasters().halo(1.0 / grid.photo_frame().pixel);
+            let got = device_planes(dev, &chain, &img, &grid, frame, window, halo);
+            let want = cpu_planes(&chain, &img, &grid, frame, window, halo);
+            let (worst, mean) = plane_diff(&got[0], &want.planes[0]);
+            eprintln!(
+                "[background] {name}: halo {halo} px, the device differs from the CPU by {worst:.2e}, mean {mean:.2e}"
+            );
+            assert!(worst < PLANE_GATE, "{name}: {worst}");
+            worst_all = worst_all.max(worst);
+            let (lo, hi) = want.planes[0]
+                .iter()
+                .fold((u16::MAX, 0u16), |(l, h), &c| (l.min(c), h.max(c)));
+            assert!(hi - lo > 8000, "{name}: the plane is flat ({lo} to {hi})");
+        }
+    }
+    eprintln!("[background] the largest difference over the cases: {worst_all:.2e}");
+}
+
+#[test]
+fn background_tiles_equal_the_whole_frame_bit_for_bit_halos_included() {
+    let buffer = (360usize, 240usize);
+    let img = scene(buffer.0, buffer.1, 0x71E5);
+    let (grid, frame) = export_grid(buffer, 0.5); // 720 x 480
+    for (name, rows) in [
+        ("grow, feather", vec![background_row(0.5, 0.5, 0.5, 0.4, 0.0)]),
+        ("refine", vec![background_row(0.6, 0.4, 0.0, 0.0, 0.7)]),
+        (
+            "all, a Background and a Brush",
+            vec![background_row(0.5, 0.5, 0.3, 0.3, 0.5), row(-0.2, 0.0, 1.0)],
+        ),
+    ] {
+        let chain = chain_with(RasterSet { rows });
+        let halo = chain.rasters().halo(1.0 / grid.photo_frame().pixel);
+        assert!(halo >= 3, "{name}: {halo}");
+        for dev in gpus() {
+            if dev.mode.is_f16() {
+                continue;
+            }
+            let whole = device_planes(dev, &chain, &img, &grid, frame, frame, halo);
+            for tile in [96usize, 211] {
+                let mut y = 0;
+                while y < frame.h {
+                    let mut x = 0;
+                    while x < frame.w {
+                        let window = Area {
+                            x: x as i64,
+                            y: y as i64,
+                            w: tile.min(frame.w - x),
+                            h: tile.min(frame.h - y),
+                        };
+                        let got = device_planes(dev, &chain, &img, &grid, frame, window, halo);
+                        for (p, plane) in got.iter().enumerate() {
+                            for j in 0..window.h {
+                                for i in 0..window.w {
+                                    assert_eq!(
+                                        plane[j * window.w + i],
+                                        whole[p][(y + j) * frame.w + x + i],
+                                        "{name}: tile {tile} at ({x}, {y}), plane {p}, pixel ({i}, {j})"
+                                    );
+                                }
+                            }
+                        }
+                        x += tile;
+                    }
+                    y += tile;
                 }
             }
         }

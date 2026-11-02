@@ -55,7 +55,7 @@ use ym_ml::bokeh_net::BokehNet;
 
 use super::color::{
     ColorKey, ColorPlan, GradeKey, GradePlan, GradeRequest, LookProvider, PhotoSource, color_key,
-    color_plan, grade_key_to, grade_plan_to,
+    color_plan, grade_key_to, grade_plan_to, has_background_row,
 };
 use super::geometry::Geometry;
 use super::raw::{
@@ -72,6 +72,7 @@ use crate::session::PhotoId;
 use ym_color::display::OutputTarget;
 use ym_color::plan::Stop as PlanStop;
 
+mod background;
 mod lens;
 mod lens_device;
 
@@ -328,6 +329,9 @@ pub struct StageRuns {
     /// Times the lens's planes and lists were made (`docs/21` section 3): once per photo and
     /// [`RawParams`], lens, camera and focus point, never for a move of an amount.
     pub lens_planes: u64,
+    /// Times the photo's blur map was made (`docs/23` section 4.6): the learned model or the classical detector run
+    /// on the lens plane, once per photo and [`RawParams`], for the lens's bokeh and the Background mask together.
+    pub blur_maps: u64,
     /// Raw-group images at a reduced scale that went through the lens (L1 to L3).
     pub lens_groups: u64,
     /// Times the lens's field stage (`Z = L2(L1(X))`, which Flares does not touch) was made for a
@@ -363,6 +367,7 @@ impl StageRuns {
         self.display_hits += other.display_hits;
         self.frame_hits += other.frame_hits;
         self.lens_planes += other.lens_planes;
+        self.blur_maps += other.blur_maps;
         self.lens_groups += other.lens_groups;
         self.lens_fields += other.lens_fields;
         self.lens_flares += other.lens_flares;
@@ -497,6 +502,8 @@ struct GraphState {
     /// scale of the photo shares them, and a cache that tiles can push them out of would make them
     /// again in the middle of a pan (`docs/21` section 3).
     lens_planes: Option<lens::PlanesEntry>,
+    /// The photo's blur map, made once for the lens's bokeh and the Background mask (`background::BlurEntry`).
+    blur: Option<Arc<background::BlurEntry>>,
     /// Raw groups after the lens, at 1/k: on the host, or on the device when the lens ran there
     /// (`docs/21` section 3, "As built").
     lens_groups: Option<ByteLru<lens::GroupKey, Backing>>,
@@ -611,6 +618,7 @@ impl PhotoGraph {
                 .sum::<usize>()
             + st.display.as_ref().map_or(0, ByteLru::used)
             + st.lens_planes.as_ref().map_or(0, |e| e.planes.bytes())
+            + st.blur.as_ref().map_or(0, |e| e.bytes())
             + st.lens_groups.as_ref().map_or(0, ByteLru::used)
             + st.lens_tiles.as_ref().map_or(0, ByteLru::used)
             + st.lens_field_groups.as_ref().map_or(0, ByteLru::used)
@@ -1060,6 +1068,18 @@ impl Renderer {
             RawDevice::On(_)
         );
         !on_device || !device_runs_demosaic(&opts) || !device_runs_denoise(&opts)
+    }
+
+    /// Whether the photo still has its first blur map to make for a Background row of these settings
+    /// (`docs/23` section 7.6): a row with the eye on and no map in the photo's graph yet. The app says
+    /// "Finding…" under the row while a round that starts now makes it. Asking makes no graph and changes
+    /// nothing.
+    #[must_use]
+    pub fn finding_masks(&self, id: PhotoId, settings: &crate::settings::DevelopSettings) -> bool {
+        has_background_row(settings)
+            && self
+                .existing_graph(id)
+                .is_none_or(|g| lock(&g.state).blur.is_none())
     }
 
     /// The graph of a photo, made on first use. The least recently used graphs beyond
@@ -1625,6 +1645,8 @@ pub(crate) struct Job<'a> {
     /// The planes an export made for itself from the CPU reference group (`lens::planes`): the
     /// graph's cache is the viewer's, and an export must not depend on what the viewer's device made.
     lens_job_planes: Option<Arc<LensPlanes>>,
+    /// The blur map an export made for itself from the CPU reference group (as `lens_job_planes`).
+    blur_job: Option<Arc<background::BlurEntry>>,
     /// What the device holds of the lens for an export's request (an export keeps its own, as it keeps its
     /// own planes): `lens::LensDevice`.
     lens_job_device: Option<lens::LensDevice>,
@@ -1703,6 +1725,7 @@ impl<'a> Job<'a> {
             lens: None,
             lens_report: None,
             lens_job_planes: None,
+            blur_job: None,
             lens_job_device: None,
             mask: None,
         }
@@ -3032,10 +3055,12 @@ impl<'a> Job<'a> {
         dither: bool,
     ) -> Result<GradeKey, RenderError> {
         let color = self.color()?;
+        let background = self.background_for(PlanStop::Output)?;
         let req = GradeRequest {
             target,
             dither,
             looks: self.r.inner.looks.as_ref(),
+            background: background.as_ref(),
         };
         Ok(super::color::grade_key(self.src, &color, &req))
     }
@@ -3057,10 +3082,12 @@ impl<'a> Job<'a> {
         stop: PlanStop,
     ) -> Result<Arc<GradePlan>, RenderError> {
         let color = self.color()?;
+        let background = self.background_for(stop)?;
         let req = GradeRequest {
             target,
             dither,
             looks: self.r.inner.looks.as_ref(),
+            background: background.as_ref(),
         };
         // Build the plan's key without building the chain: the key is part of the plan, so the
         // cheap way to know whether a cached plan matches is to build the key text first.

@@ -1497,6 +1497,16 @@ span.ym-filmstrip__thumb {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* "Finding…" while a raster is being made for the first time on a photo (a Background row's blur map): a small spinner before the words. */
+.ym-mask-row__sub[data-finding] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ym-mask-row__sub[data-finding] svg {
+  width: 12px;
+  height: 12px;
+}
 /* Invert and the eye: 32 px icon toggles with a hairline; Invert pressed is the mask accent itself. */
 .ym-mask-row__tool {
   width: 32px;

@@ -283,29 +283,29 @@ describe("export_busy", () => {
 describe("viewport_busy", () => {
   it("starts not busy and follows the event, the CPU flag included", async () => {
     const { api, store } = await connected();
-    expect(store.getState().viewportBusy).toEqual({ busy: false, cpu: false });
-    api.emitEvent("viewport_busy", { busy: true, cpu: true });
-    expect(store.getState().viewportBusy).toEqual({ busy: true, cpu: true });
-    api.emitEvent("viewport_busy", { busy: false, cpu: true });
-    expect(store.getState().viewportBusy).toEqual({ busy: false, cpu: true });
-    api.emitEvent("viewport_busy", { busy: true, cpu: false });
-    expect(store.getState().viewportBusy).toEqual({ busy: true, cpu: false });
+    expect(store.getState().viewportBusy).toEqual({ busy: false, cpu: false, finding: false });
+    api.emitEvent("viewport_busy", { busy: true, cpu: true, finding: false });
+    expect(store.getState().viewportBusy).toEqual({ busy: true, cpu: true, finding: false });
+    api.emitEvent("viewport_busy", { busy: false, cpu: true, finding: false });
+    expect(store.getState().viewportBusy).toEqual({ busy: false, cpu: true, finding: false });
+    api.emitEvent("viewport_busy", { busy: true, cpu: false, finding: false });
+    expect(store.getState().viewportBusy).toEqual({ busy: true, cpu: false, finding: false });
   });
 
   it("does not tell the screens again when the core repeats itself", async () => {
     const { api, store } = await connected();
-    api.emitEvent("viewport_busy", { busy: true, cpu: true });
+    api.emitEvent("viewport_busy", { busy: true, cpu: true, finding: false });
     const before = store.getState();
     const listener = vi.fn();
     stops.push(store.subscribe(listener));
-    api.emitEvent("viewport_busy", { busy: true, cpu: true });
+    api.emitEvent("viewport_busy", { busy: true, cpu: true, finding: false });
     expect(listener).not.toHaveBeenCalled();
     expect(store.getState()).toBe(before);
   });
 
   it("is not busy once the session closes, as the core says when it stops drawing", async () => {
     const { api, store } = await opened();
-    api.emitEvent("viewport_busy", { busy: true, cpu: true });
+    api.emitEvent("viewport_busy", { busy: true, cpu: true, finding: false });
     await store.closeSession();
     expect(store.getState().viewportBusy.busy).toBe(false);
   });
@@ -320,11 +320,11 @@ describe("viewport_busy", () => {
     await cpu.store.update(mainGradePatch({ brightness: 12 }));
     await vi.waitFor(() =>
       expect(heard).toEqual([
-        { busy: true, cpu: true },
-        { busy: false, cpu: true },
+        { busy: true, cpu: true, finding: false },
+        { busy: false, cpu: true, finding: false },
       ]),
     );
-    expect(cpu.store.getState().viewportBusy).toEqual({ busy: false, cpu: true });
+    expect(cpu.store.getState().viewportBusy).toEqual({ busy: false, cpu: true, finding: false });
 
     // Without the option the mock is a graphics card: nothing is said.
     const gpu = await opened({ speed: 10 });
@@ -333,6 +333,6 @@ describe("viewport_busy", () => {
     await gpu.store.update(mainGradePatch({ brightness: 12 }));
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(none).not.toHaveBeenCalled();
-    expect(gpu.store.getState().viewportBusy).toEqual({ busy: false, cpu: false });
+    expect(gpu.store.getState().viewportBusy).toEqual({ busy: false, cpu: false, finding: false });
   });
 });

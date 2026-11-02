@@ -2942,6 +2942,26 @@ impl Renderer {
         Job::new(self, src, cancel)?.final_size()
     }
 
+    /// The photo's blur map as a Background row reads it (`docs/23` section 4.6): `P`, the probability that a cell
+    /// is out of focus, over the photo frame (the photo as the camera oriented it), made from the raw group's
+    /// lens plane by the learned model (the classical detector when the model cannot run) and kept for the photo.
+    /// It is the map the lens's Anamorphic uses, made once for both, and it does not move with the lens sliders. For
+    /// checks and diagnostics, like [`Renderer::geometry`].
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] when the photo's data cannot be prepared or the request is cancelled.
+    pub fn blur_map(
+        &self,
+        src: &PhotoSource,
+        cancel: &CancelToken,
+    ) -> Result<Arc<ym_color::mask_raster::BlurMap>, RenderError> {
+        let mut job = Job::new(self, src, cancel)?;
+        let map = Arc::clone(&job.blur_entry()?.photo);
+        job.finish(1, ComputeDevice::Cpu, OutputTarget::Srgb);
+        Ok(map)
+    }
+
     /// The geometry the photo is sampled with: the camera's orientation, the user's turns, the
     /// straighten angle and the crop, through the lens's bend when the photo has one (L4, `docs/21`
     /// section 4; [`Geometry::warp`]). The bend is the one every view and export of the photo uses:

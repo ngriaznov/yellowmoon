@@ -91,6 +91,21 @@ pub struct LensPlan {
     field: Option<FieldTables>,
 }
 
+/// `k_L` for a frame of `width x height` pixels, whatever the lens: [`LensPlan::lens_plane_scale`] (the Background
+/// mask of `docs/23` section 4.6 reads the same lens plane, with or without a lens).
+#[must_use]
+pub fn lens_plane_scale_for(width: usize, height: usize) -> usize {
+    let long = width.max(height);
+    if long < LENS_PLANE_LONG_EDGE {
+        return 1;
+    }
+    let mut k = 2usize;
+    while long >= LENS_PLANE_LONG_EDGE.saturating_mul(k.saturating_mul(2)) {
+        k *= 2;
+    }
+    k
+}
+
 impl LensPlan {
     /// Builds the plan of one photo.
     ///
@@ -314,15 +329,7 @@ impl LensPlan {
     /// 2048 px 2). A frame under 1024 px long, which only tiny test frames are, gets 1.
     #[must_use]
     pub fn lens_plane_scale(&self) -> usize {
-        let long = self.frame.width.max(self.frame.height);
-        if long < LENS_PLANE_LONG_EDGE {
-            return 1;
-        }
-        let mut k = 2usize;
-        while long >= LENS_PLANE_LONG_EDGE.saturating_mul(k.saturating_mul(2)) {
-            k *= 2;
-        }
-        k
+        lens_plane_scale_for(self.frame.width, self.frame.height)
     }
 
     /// L4 for a canvas of `canvas_width x canvas_height` pixels (the anamorphic axis is the canvas's x).

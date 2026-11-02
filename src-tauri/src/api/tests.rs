@@ -1768,10 +1768,12 @@ fn a_round_on_a_renderer_without_a_device_says_it_is_busy_on_the_cpu_and_then_th
     let on = ViewportBusy {
         busy: true,
         cpu: true,
+        finding: false,
     };
     let off = ViewportBusy {
         busy: false,
         cpu: true,
+        finding: false,
     };
     h.open(1);
     h.develop();

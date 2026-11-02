@@ -45,9 +45,11 @@
 //!
 //! **Busy.** From just before a round asks for its frame until the round is over (the pass that makes
 //! the sharp tiles included, and whichever way it ends: shown, stopped, failed), the worker holds a
-//! [`BusyGuard`], which tells the webview `viewport_busy { busy: true, cpu }`, where `cpu` says that
+//! [`BusyGuard`], which tells the webview `viewport_busy { busy: true, cpu, finding }`, where `cpu` says that
 //! the renderer runs the photo's raw stages on the CPU (`Renderer::raw_on_cpu`, asked as the round
-//! starts), and `busy: false` when it is dropped. Only a change is sent, and the shell's throttle
+//! starts) and `finding` that the round makes the photo's first blur map for a Background mask
+//! (`Renderer::finding_masks`, asked the same way; the mask rows say "Finding…"), and `busy: false` when
+//! it is dropped. Only a change is sent, and the shell's throttle
 //! merges what a stream of rounds sends. The photo cell shows "Rendering on the CPU" from it.
 
 use std::borrow::Cow;
@@ -922,9 +924,14 @@ struct BusyGuard<'a> {
 }
 
 impl<'a> BusyGuard<'a> {
-    /// Tells the webview the viewport is busy; `cpu`: the photo's raw stages run on the CPU.
-    fn new(shared: &'a Shared, cpu: bool) -> Self {
-        shared.tell_busy(ViewportBusy { busy: true, cpu });
+    /// Tells the webview the viewport is busy; `cpu`: the photo's raw stages run on the CPU; `finding`: the
+    /// round makes the photo's first blur map for a Background mask.
+    fn new(shared: &'a Shared, cpu: bool, finding: bool) -> Self {
+        shared.tell_busy(ViewportBusy {
+            busy: true,
+            cpu,
+            finding,
+        });
         Self { shared, cpu }
     }
 }
@@ -934,6 +941,7 @@ impl Drop for BusyGuard<'_> {
         self.shared.tell_busy(ViewportBusy {
             busy: false,
             cpu: self.cpu,
+            finding: false,
         });
     }
 }
@@ -1250,7 +1258,11 @@ impl Shared {
             FrameOutput::Host
         };
         // Busy from here until the round returns, the tile pass included.
-        let _busy = BusyGuard::new(self, core.renderer.raw_on_cpu(photo));
+        let _busy = BusyGuard::new(
+            self,
+            core.renderer.raw_on_cpu(photo),
+            core.renderer.finding_masks(photo, &src.settings),
+        );
         let handle =
             core.renderer
                 .spawn_viewport_frame_to(src.clone(), vp.clone(), options, output);
@@ -1381,6 +1393,7 @@ impl Viewport {
                 busy_told: Mutex::new(ViewportBusy {
                     busy: false,
                     cpu: false,
+                    finding: false,
                 }),
             }),
             worker: Mutex::new(None),
@@ -2090,7 +2103,11 @@ mod tests {
     }
 
     const fn busy(busy: bool, cpu: bool) -> ViewportBusy {
-        ViewportBusy { busy, cpu }
+        ViewportBusy {
+            busy,
+            cpu,
+            finding: false,
+        }
     }
 
     #[test]
@@ -2101,7 +2118,7 @@ mod tests {
         shared.clear_sink();
         assert!(busy_events(&events).is_empty());
         // A round on the CPU: busy, then not, whichever way it ends.
-        drop(BusyGuard::new(&shared, true));
+        drop(BusyGuard::new(&shared, true, false));
         assert_eq!(busy_events(&events), [busy(true, true), busy(false, true)]);
         // The same state again is not news: a round's end, and a clear while nothing is busy.
         shared.tell_busy(busy(false, true));
@@ -2109,7 +2126,7 @@ mod tests {
         assert_eq!(busy_events(&events).len(), 2);
         // A round that a clear overtakes (the session closed while it drew): the clear ends it and the
         // round's own end has nothing new to say.
-        let round = BusyGuard::new(&shared, false);
+        let round = BusyGuard::new(&shared, false, false);
         shared.clear_sink();
         drop(round);
         assert_eq!(
@@ -2118,7 +2135,7 @@ mod tests {
         );
         // A panic in a round unwinds through the guard.
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _busy = BusyGuard::new(&shared, true);
+            let _busy = BusyGuard::new(&shared, true, false);
             panic!("a render panicked");
         }));
         assert!(caught.is_err());
@@ -2126,6 +2143,14 @@ mod tests {
             busy_events(&events)[4..],
             [busy(true, true), busy(false, true)]
         );
+        // A round that makes the photo's first blur map says so while it runs and not after it (N-15).
+        let finding = ViewportBusy {
+            busy: true,
+            cpu: false,
+            finding: true,
+        };
+        drop(BusyGuard::new(&shared, false, true));
+        assert_eq!(busy_events(&events)[6..], [finding, busy(false, false)]);
     }
 
     #[test]

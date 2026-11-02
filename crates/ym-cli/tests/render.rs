@@ -721,10 +721,6 @@ fn a_photo_that_needs_a_mask_this_computer_cannot_make_fails_with_the_mask_error
             "c_object.ARW",
             "Node 2 has an Object mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon.",
         ),
-        (
-            "d_background.ARW",
-            "Node 2 has a Background mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon.",
-        ),
     ] {
         let o = find(name);
         assert_eq!(o["status"], "error", "{name}");
@@ -745,8 +741,60 @@ fn a_photo_that_needs_a_mask_this_computer_cannot_make_fails_with_the_mask_error
     }
     assert_eq!(find("a_plain.ARW")["status"], "ok");
     assert_eq!(find("e_off.ARW")["status"], "ok");
+    // A Background row is made from the photo's own blur map (N-15): it renders.
+    assert_eq!(find("d_background.ARW")["status"], "ok");
     assert!(sb.default_export().join("a_plain_signature.jpg").exists());
     assert!(sb.default_export().join("e_off_signature.jpg").exists());
+    assert!(
+        sb.default_export()
+            .join("d_background_signature.jpg")
+            .exists()
+    );
+}
+
+/// A Background row renders from `--settings` (`docs/10`, N-15): the blur map is made from the photo itself, the
+/// photo is written, and a Level that lets everything count (the formula gives at least one half at Level 100) is
+/// not the photo without the row. The settings the record prints hold the row.
+#[test]
+fn a_background_row_renders_from_a_settings_file() {
+    let sb = Sandbox::new();
+    let arw = sb.arw_bokeh("lights.ARW", 640, 480, 4);
+    let row = r#"{ "kind": "background", "mode": "add", "level": 1, "softness": 0.4, "feather": 0.1 }"#;
+    let with = sb.root().join("background.json");
+    std::fs::write(&with, masked_file(row)).expect("write");
+    let without = sb.root().join("none.json");
+    std::fs::write(&without, masked_file("")).expect("write");
+    let render = |settings: &std::path::Path, dir: &str| {
+        let out_dir = sb.root().join(dir);
+        let out = sb
+            .ym()
+            .args([
+                "render",
+                "--cpu",
+                "--json",
+                "--format",
+                "tiff",
+                "--settings",
+            ])
+            .arg(settings)
+            .arg("--out")
+            .arg(&out_dir)
+            .arg(&arw)
+            .assert()
+            .success();
+        let o = json_lines(&out.get_output().stdout).remove(0);
+        assert_eq!(o["status"], "ok");
+        let path = o["output"].as_str().expect("output").to_owned();
+        (o, std::fs::read(path).expect("the file"))
+    };
+    let (o, a) = render(&with, "with");
+    let (_, b) = render(&without, "without");
+    assert_ne!(a, b, "the Background row changed no pixel");
+    let rows = &common::node(&o, 2)["masks"]["items"];
+    assert_eq!(rows[0]["kind"], "background");
+    assert_eq!(rows[0]["level"], 1.0);
+    assert_eq!(rows[0]["softness"], 0.4);
+    assert_eq!(rows[0]["refine"], 0.5);
 }
 
 /// A Brush row renders from `--settings` (`docs/10`): the photo is written, and it is not the photo without the

@@ -567,7 +567,11 @@ mod tests {
     }
 
     fn busy(busy: bool, cpu: bool) -> ViewportBusy {
-        ViewportBusy { busy, cpu }
+        ViewportBusy {
+            busy,
+            cpu,
+            finding: false,
+        }
     }
 
     fn busy_of(events: Vec<AppEvent>) -> Vec<ViewportBusy> {

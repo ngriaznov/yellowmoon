@@ -131,7 +131,7 @@ import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
 import { copiedPatch, pastedOnto, refusalOfPatch, validateGraph } from "./fixtures/graph";
-import { maskViewSvg } from "./fixtures/maskView";
+import { hasBackgroundRow, maskViewSvg } from "./fixtures/maskView";
 import { diffSettings } from "./state/history";
 import { cardStates, linkInto } from "./state/graphOps";
 import {
@@ -175,6 +175,8 @@ const DECODE_SHARE = 0.4;
 
 /** How long a frame takes the mock with `cpu` (divided by `speed`): long enough for "Rendering on the CPU" to show. */
 const CPU_FRAME_MS = 600;
+/** How long the mock takes to make a photo's blur map for a Background row the first time (divided by `speed`): long enough for "Finding…" to show. */
+export const FINDING_MS = 400;
 
 // The mock has no zoom of its own to report: the screen estimates it (`fit_percent: null`).
 const RENDER_STATS: RenderStats = { ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null };
@@ -473,13 +475,14 @@ export interface MockOptions {
    * a look, the zoom, the cell, Before) is preceded by `viewport_busy { busy: true, cpu: true }` and followed, `CPU_FRAME_MS` (600 ms)
    * divided by `speed` later, by `viewport_busy { busy: false, cpu: true }`; a frame asked for meanwhile makes the wait start again, as
    * back-to-back rounds of the core do. Default false: no `viewport_busy` at all, as on a graphics card, where a frame takes
-   * milliseconds.
+   * milliseconds. Whatever `cpu` says, the first frame of a photo that has a Background row with the eye on takes `FINDING_MS` (400 ms) divided by `speed`
+   * and is announced the same way with `finding: true` (the core is making the photo's blur map; the rows say "Finding…"), once for each photo.
    */
   cpu?: boolean;
   /**
    * The kinds of mask the mock says this machine can make (`?mockMasks=`, `docs/23` §9, answered by `mask_kinds`). The default is the kinds
-   * that are built (Linear, Radial, Brush, Colour range and Brightness range; Brush has no card until its drawing tool, N-14), `all` is every
-   * kind, `noai` leaves out Object, Subject, People and Background, `nomac` leaves out Subject and People, and a comma list names the kinds.
+   * that are built (Background, Linear, Radial, Brush, Colour range and Brightness range), `all` is every kind, `noai` leaves out Object, Subject
+   * and People, `nomac` leaves out Subject and People, and a comma list names the kinds.
    */
   maskKinds?: readonly MaskKind[];
 }
@@ -919,8 +922,8 @@ function withoutRetired(stored: Preferences): Preferences {
 
 /** Every kind of mask, in the order of the Add mask menu. */
 export const ALL_MASK_KINDS: readonly MaskKind[] = ["object", "subject", "people", "background", "linear", "radial", "brush", "color_range", "brightness_range"];
-/** The kinds the core can make today (`mask_kinds`): the shapes, Brush and the ranges that are built. The later tasks add theirs. */
-export const BUILT_MASK_KINDS: readonly MaskKind[] = ["linear", "radial", "brush", "color_range", "brightness_range"];
+/** The kinds the core can make today (`mask_kinds`): Background, the shapes, Brush and the ranges that are built. The later tasks add theirs. */
+export const BUILT_MASK_KINDS: readonly MaskKind[] = ["background", "linear", "radial", "brush", "color_range", "brightness_range"];
 
 /** The kinds a `?mockMasks=` value names: `all`, `noai`, `nomac`, `built`, or a comma list of kinds; null for anything else. */
 export function parseMockMasks(value: string | null): readonly MaskKind[] | null {
@@ -930,7 +933,8 @@ export function parseMockMasks(value: string | null): readonly MaskKind[] | null
     case "all":
       return ALL_MASK_KINDS;
     case "noai":
-      return without("object", "subject", "people", "background");
+      // Background needs no download and no Mac: the blur map comes from the photo (`docs/23` §4.6).
+      return without("object", "subject", "people");
     case "nomac":
       return without("subject", "people");
     case "built":
@@ -1517,8 +1521,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   let frameShown = false;
   /** Whether an `export_busy` event has said the queue is busy. */
   let busyAnnounced = false;
-  /** With `cpu`, the end of the frame being "rendered" on the CPU (`viewport_busy` false); null while none is. */
+  /** With `cpu` or a Background row to find, the end of the frame being "rendered" (`viewport_busy` false); null while none is. */
   let cpuFrameTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The photos whose blur map the mock has "made" (`viewport_busy.finding` says so once for each photo). */
+  const blurMaps = new Set<PhotoId>();
 
   // --- Events ---------------------------------------------------------------
 
@@ -1650,19 +1656,28 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
 
   /**
    * With `cpu`, a frame of the photo on screen is "rendered" on the CPU, as the core says around a round of its viewport: `viewport_busy`
-   * true now (unless a frame is still under way, which this one follows) and false `CPU_FRAME_MS / speed` later. Nothing without a
-   * developed photo on screen, which the core does not render either.
+   * true now (unless a frame is still under way, which this one follows) and false `CPU_FRAME_MS / speed` later. The first frame of a photo
+   * with a Background row (eye on) is the one that makes its blur map: `finding` is true for `FINDING_MS / speed`, once for each photo, with or
+   * without `cpu`. Nothing without a developed photo on screen, which the core does not render either.
    */
   function renderOnCpu(): void {
-    if (!options.cpu) return;
     const rec = photos[current];
     if (!rec || rec.phase < 3 || rec.skipReason) return;
-    if (cpuFrameTimer === null) emitSoon("viewport_busy", { busy: true, cpu: true });
-    else clearTimeout(cpuFrameTimer);
+    const id = rec.summary.id;
+    const finding = !blurMaps.has(id) && hasBackgroundRow(rec.settings);
+    if (finding) blurMaps.add(id);
+    if (!options.cpu && !finding) return;
+    const cpu = options.cpu;
+    if (cpuFrameTimer === null) emitSoon("viewport_busy", { busy: true, cpu, finding });
+    else {
+      clearTimeout(cpuFrameTimer);
+      if (finding) emitSoon("viewport_busy", { busy: true, cpu, finding });
+    }
+    const ms = Math.max(finding ? FINDING_MS : 0, cpu ? CPU_FRAME_MS : 0);
     cpuFrameTimer = setTimeout(() => {
       cpuFrameTimer = null;
-      emit("viewport_busy", { busy: false, cpu: true });
-    }, CPU_FRAME_MS / options.speed);
+      emit("viewport_busy", { busy: false, cpu, finding: false });
+    }, ms / options.speed);
   }
 
   /**
@@ -2447,6 +2462,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     for (const timer of nodeThumbTimers.values()) clearTimeout(timer);
     nodeThumbTimers.clear();
     nodeThumbs.clear();
+    blurMaps.clear();
     for (const run of exportRuns.values()) stopExport(run);
     exportRuns.clear();
     for (const run of importRuns) {

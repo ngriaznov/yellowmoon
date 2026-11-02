@@ -1314,6 +1314,11 @@ export interface ViewportBusy {
   busy: boolean;
   /** The raw stages of the photo run on the CPU. */
   cpu: boolean;
+  /**
+   * The round makes the photo's first blur map for a Background mask (`docs/23` §7.6): the Background rows say "Finding…" until `busy` goes
+   * false. False for every other round, and once the photo has its map.
+   */
+  finding: boolean;
 }
 
 /**

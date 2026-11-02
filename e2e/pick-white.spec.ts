@@ -138,7 +138,7 @@ test.describe("the pill beside the CPU note", () => {
     await photos(page);
     await page.keyboard.press("w");
     await expect(pill(page)).toBeVisible();
-    await page.evaluate(() => window.__yellowmoon!.mockApi.emitEvent("viewport_busy", { busy: true, cpu: true }));
+    await page.evaluate(() => window.__yellowmoon!.mockApi.emitEvent("viewport_busy", { busy: true, cpu: true, finding: false }));
     const note = page.getByRole("status").filter({ hasText: "Rendering on the CPU" });
     await expect(note).toBeVisible();
     const hint = (await pill(page).boundingBox())!;

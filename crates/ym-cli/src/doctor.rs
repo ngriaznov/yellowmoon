@@ -532,9 +532,9 @@ fn joined(names: &[&str]) -> String {
 }
 
 /// The `Masks` row: the kinds this machine can make in the order of the Add mask menu, and, for the others, the
-/// reason, kinds that share one named together: `Linear, Radial, Brush, Colour range, Brightness range · not
-/// available: Object and Background (this version of Yellowmoon can't make them yet), Subject and People (this is
-/// not a Mac that supports them)`.
+/// reason, kinds that share one named together: `Background, Linear, Radial, Brush, Colour range, Brightness range
+/// · not available: Object (this version of Yellowmoon can't make it yet), Subject and People (this is not a Mac
+/// that supports them)`.
 fn masks_text() -> String {
     let kinds: Vec<&str> = mask_kinds().into_iter().map(MaskKind::label).collect();
     let mut text = kinds.join(", ");
@@ -552,7 +552,13 @@ fn masks_text() -> String {
     }
     let parts: Vec<String> = groups
         .iter()
-        .map(|(why, names)| format!("{} ({})", joined(names), why.doctor_text()))
+        .map(|(why, names)| {
+            format!(
+                "{} ({})",
+                joined(names),
+                why.doctor_text(names.len() > 1)
+            )
+        })
         .collect();
     text.push_str(" · not available: ");
     text.push_str(&parts.join(", "));

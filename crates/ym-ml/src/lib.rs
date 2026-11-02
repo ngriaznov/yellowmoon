@@ -1,5 +1,6 @@
 //! Learned-model runtime: loads the shipped weights and runs them on tiles, the crop student of
-//! Auto crop ([`crop_net`]) and the bokeh map network of lens character ([`bokeh_net`]).
+//! Auto crop ([`crop_net`]), the bokeh map network of lens character ([`bokeh_net`]) and SAM 2.1 small
+//! for Object masks ([`sam2`]).
 //!
 //! Backends sit behind one `TileModel` trait (burn on the shared wgpu device, or ONNX Runtime;
 //! chosen by the M0 benchmark), with a CPU fallback.
@@ -13,4 +14,5 @@ pub mod bokeh_net;
 pub mod cpu_runtime;
 pub mod crop_net;
 pub mod model;
+pub mod sam2;
 pub mod tiles;

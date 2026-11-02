@@ -4,11 +4,12 @@
  * The core draws the real thing (a tint after output sharpening, or the grey code values `m`); the mock draws shapes: a Radial is an
  * ellipse that fades out over its feather, a Linear is a gradient across the photo, a Brush is its strokes (a round-capped line of the stroke's
  * size, softened by its hardness and the row's Feather; an erase stroke is black over the paint before it, and a row's Invert swaps the two),
- * and every other kind selects nothing. That is enough
+ * a Background is the flat scene's blur map cut by the row's Level and Softness (the sky is out of focus, the far hill is sharp, the near ground is
+ * half way), and every other kind selects nothing. That is enough
  * for the interface tests and the reference screenshots, not for pictures. Rows add (a row painted over the others in white) or
  * subtract (in black), the row's Invert and the node's Invert swap the two, and a node with no row shows 1: the whole photo.
  */
-import type { MaskItem, MaskSettings, MaskStyle } from "../api/types";
+import type { DevelopSettings, MaskItem, MaskSettings, MaskStyle } from "../api/types";
 
 /** The mask accent (`--mask` in `design/tokens.css`). */
 export const MASK_ACCENT = "#ff6fd2";
@@ -79,12 +80,78 @@ function brushShape(row: Extract<MaskItem, { kind: "brush" }>, index: number, in
   return `<defs>${blurs.join("")}${mask}</defs><rect data-brush-row="" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="${ink}" fill-opacity="${opacity}" mask="url(#${id})"/>`;
 }
 
+/** The narrowest ramp of a Background's threshold, in probability (`docs/algorithms/06` §5.4). */
+export const BLUR_RAMP_MIN = 0.05;
+
+/** `S(t) = t²(3 − 2t)` for `t` held to [0, 1]. */
+const smooth = (t: number): number => {
+  const x = Number.isNaN(t) ? 0 : Math.max(0, Math.min(1, t));
+  return x * x * (3 - 2 * x);
+};
+
+/**
+ * A Background row's `S₀` for a cell whose probability of being out of focus is `p` (`docs/algorithms/06` §5.4): `S((P − (1 − λ) + w/2) / w)` with
+ * `w = max(σ, 0.05)`, `λ` the row's `level` and `σ` its `softness`. The core does this on the cells of the photo's blur map; the mock on the three
+ * areas of its flat scene.
+ */
+export function backgroundValue(p: number, level: number, softness: number): number {
+  const w = Math.max(softness, BLUR_RAMP_MIN);
+  return smooth((p - (1 - level) + 0.5 * w) / w);
+}
+
+/** The mock's blur map: `P` of the flat scene's three areas (`docs/23` §4.6 — the core's is the photo's own). The sky is out of focus, the far hill is sharp. */
+export const MOCK_BLUR = { sky: 0.95, hill: 0.05, near: 0.55 } as const;
+
+/** Whether the photo's graph has a Background row with the eye on: the mock then "makes" the photo's blur map on its first frame. */
+export const hasBackgroundRow = (settings: DevelopSettings): boolean =>
+  settings.nodes.items.some((node) => node.kind === "corrector" && node.masks.items.some((row) => row.kind === "background" && row.enabled));
+
+/**
+ * A Background row on the flat scene: the scene's three areas (the sky over the frame, the far hill — the half ellipse of `scenes.ts` — and the near
+ * band) painted with their `S₀` as grey into a plane of their own, which paints the row's ink where it is lit, at the row's opacity, like a Brush's.
+ * The map is a little soft (a blur of 0.6 % of the long edge, the map's cells being coarse) and the row's Feather a blur of `feather · 0.02` of it, the
+ * core's σ. Grow and Refine edges are not drawn. A row's Invert draws the plane the other way round.
+ */
+function backgroundShape(row: Extract<MaskItem, { kind: "background" }>, index: number, ink: string, box: MaskRect): string {
+  const long = Math.max(box.width, box.height);
+  const opacity = Math.max(0, Math.min(1, row.opacity));
+  const id = `mvg${index}`;
+  const region = `filterUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}"`;
+  const grey = (p: number): string => {
+    const v = Math.round(255 * backgroundValue(p, row.level, row.softness));
+    return `rgb(${v},${v},${v})`;
+  };
+  const at = (x: number, y: number): [string, string] => [round(box.x + x * box.width), round(box.y + y * box.height)];
+  const [x0, y0] = at(0, 0);
+  const [nx, ny] = at(0, 0.74);
+  const [cx, cy] = at(0.5, 0.82);
+  const rect = (x: string, y: string, h: number, fill: string): string => `<rect x="${x}" y="${y}" width="${round(box.width)}" height="${round(h)}" fill="${fill}"/>`;
+  const map =
+    rect(x0, y0, box.height, grey(MOCK_BLUR.sky)) +
+    `<ellipse cx="${cx}" cy="${cy}" rx="${round(0.6 * box.width)}" ry="${round(0.42 * box.height)}" fill="${grey(MOCK_BLUR.hill)}"/>` +
+    rect(nx, ny, 0.26 * box.height, grey(MOCK_BLUR.near));
+  const blurs: string[] = [];
+  const sigma = 0.006 * long + row.feather * 0.02 * long;
+  let plane = map;
+  if (sigma >= 0.2) {
+    blurs.push(`<filter id="${id}f" ${region}><feGaussianBlur stdDeviation="${round(sigma)}"/></filter>`);
+    plane = `<g filter="url(#${id}f)">${map}</g>`;
+  }
+  if (row.invert) {
+    blurs.push(`<filter id="${id}i" ${region}><feColorMatrix type="matrix" values="-1 0 0 0 1  0 -1 0 0 1  0 0 -1 0 1  0 0 0 1 0"/></filter>`);
+    plane = `<g filter="url(#${id}i)">${plane}</g>`;
+  }
+  const mask = `<mask id="${id}" maskUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}">${plane}</mask>`;
+  return `<defs>${blurs.join("")}${mask}</defs><rect data-background-row="" data-level="${round(row.level)}" data-softness="${round(row.softness)}" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="${ink}" fill-opacity="${opacity}" mask="url(#${id})"/>`;
+}
+
 /** One row's gradient shape painted with `ink` (a luminance, "#fff" or "#000") at `m` and nothing outside; empty for a kind that selects nothing. */
 function rowShape(row: MaskItem, index: number, ink: string, box: MaskRect): string {
   const long = Math.max(box.width, box.height);
   const id = `mv${index}`;
   const opacity = Math.max(0, Math.min(1, row.opacity));
   if (row.kind === "brush") return brushShape(row, index, ink, box);
+  if (row.kind === "background") return backgroundShape(row, index, ink, box);
   if (row.kind === "radial") {
     const [cx, cy] = row.center;
     const [rx, ry] = row.radii;

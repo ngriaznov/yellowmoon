@@ -54,10 +54,10 @@ pub use data::{
 };
 pub use error::LensError;
 pub use image::{ImageRef, PixelRect};
-pub use l1::{Ball, BlurMapInput, BokehPlanes, reshape, reshape_halo};
+pub use l1::{Ball, BlurMapInput, BokehPlanes, classical_blur_map, reshape, reshape_halo};
 pub use l3::boost_ev as light_boost_ev;
 pub use light::{L2Input, LightPass, l2_input, lit_input};
-pub use plan::{Axis, FrameInfo, LensPlan};
+pub use plan::{Axis, FrameInfo, LensPlan, lens_plane_scale_for};
 pub use planes::{LensPlanes, ReshapeReason, ReshapeReport};
 pub use spectral::CameraResponse;
 pub use strength::FlareStrengths;

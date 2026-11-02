@@ -290,14 +290,7 @@ impl Job<'_> {
             .meta
             .f_number
             .filter(|f| f.is_finite() && *f > 0.0);
-        let focus = focus_fraction(
-            self.src.raw.meta.focus,
-            (raw_plan.width, raw_plan.height),
-            raw_plan
-                .lens
-                .as_ref()
-                .map(ym_gpu::cpu::lens::LensGeometry::crop),
-        );
+        let focus = self.focus_point()?;
         let amounts = LensAmounts::from(settings);
         let frame = FrameInfo {
             width: raw_plan.out_w,
@@ -353,6 +346,24 @@ impl Job<'_> {
         });
         lock(&self.g.state).lens_ctx = Some((inputs, Arc::clone(&ctx)));
         Ok(Some(ctx))
+    }
+
+    /// The camera's focus point as fractions of the auto-cropped frame (the frame the lens and the blur map work
+    /// on), in the buffer's orientation, or `None` when the file has none ([`focus_fraction`]).
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Job::plan`].
+    pub(super) fn focus_point(&mut self) -> Result<Option<(f64, f64)>, RenderError> {
+        let raw_plan = self.plan()?;
+        Ok(focus_fraction(
+            self.src.raw.meta.focus,
+            (raw_plan.width, raw_plan.height),
+            raw_plan
+                .lens
+                .as_ref()
+                .map(ym_gpu::cpu::lens::LensGeometry::crop),
+        ))
     }
 
     /// The lens's part of the keys of a frame and of a display frame (`None` without a lens, so
@@ -452,8 +463,11 @@ impl Job<'_> {
         };
         // The learned map of the blur in the photo, only when something reshapes the bokeh (the network costs
         // about as much as the detector it replaces); any failure of it is the classical detector's turn.
-        let blur_map = match &self.opts.bokeh_model {
-            Some(model) if ctx.plan.needs_blur_map() => blur_map_input(model, &image),
+        // The photo's blur map is shared with the Background mask (`background::BlurEntry`): whichever needs it first
+        // runs the network, the other reads the result.
+        let model = self.opts.bokeh_model.clone();
+        let blur_map = match &model {
+            Some(model) if ctx.plan.needs_blur_map() => self.lens_blur_input(model, &image)?,
             _ => None,
         };
         self.check()?;
@@ -462,7 +476,7 @@ impl Job<'_> {
             &ctx.plan,
             &image,
             ctx.focus,
-            blur_map.as_ref(),
+            blur_map.as_deref(),
             &move || cancel.is_cancelled(),
         )
         .map(Arc::new)
@@ -491,7 +505,12 @@ impl Job<'_> {
     /// raw tiles. An export makes the image fresh on the CPU reference, whatever device the renderer
     /// has and whatever the viewer cached.
     fn lens_plane_source(&mut self, ctx: &LensCtx) -> Result<Arc<RgbImage>, RenderError> {
-        let k = ctx.plan.lens_plane_scale();
+        self.plane_source_at(ctx.plan.lens_plane_scale())
+    }
+
+    /// The whole frame at scale `k` as a host image: the lens plane for `k = k_L`
+    /// ([`ym_lens::lens_plane_scale_for`]). The lens and the Background mask read the same plane.
+    pub(super) fn plane_source_at(&mut self, k: usize) -> Result<Arc<RgbImage>, RenderError> {
         let plan = self.plan()?;
         // A camera-processed file's groups are the CPU's at any scale.
         if plan.reduced {

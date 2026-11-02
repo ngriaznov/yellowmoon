@@ -738,7 +738,7 @@ export const STATES: readonly PageState[] = [
       await photos(p);
       await p.keyboard.press("w");
       await expect(p.getByText("Click something neutral: grey or white. Esc cancels.")).toBeVisible();
-      await p.evaluate(() => window.__yellowmoon!.mockApi.emitEvent("viewport_busy", { busy: true, cpu: true }));
+      await p.evaluate(() => window.__yellowmoon!.mockApi.emitEvent("viewport_busy", { busy: true, cpu: true, finding: false }));
       await expect(p.getByText("Rendering on the CPU")).toBeVisible();
       await p.waitForTimeout(300);
     },
