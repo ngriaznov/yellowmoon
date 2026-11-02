@@ -59,7 +59,6 @@ use rayon::prelude::*;
 use ym_color::display::ColorChain;
 use ym_color::encode::OutputSpace;
 use ym_color::mask::{OVERLAY_WEIGHT, PhotoFrame};
-use ym_color::mask_raster::Area;
 use ym_color::plan::Stop as PlanStop;
 use ym_gpu::cpu::magnify::MagnifyMap;
 use ym_gpu::cpu::output_sharpen::OutputSharpen;
@@ -153,9 +152,9 @@ impl ViewRoute {
         } else {
             job.options().view_band_bytes
         };
-        // A chain with raster masks keeps seven f32 planes of the window for them (28 bytes a pixel where the frame
-        // is four planes, 16): a view whose planes would pass the design binding is not made on the device
-        // (`banded`), because its raster planes cannot be made in bands.
+        // A chain with raster masks keeps seven f32 planes of the wider picture they look at for them (28 bytes a
+        // pixel where the frame is four planes, 16): a view whose wider picture would pass the design binding is cut
+        // into bands (`band_split`, each band grown by the masks' receptive field), so that it does.
         if super::super::color::uses_rasters(&job.src.settings) || job.mask_uses_rasters() {
             band_bytes = band_bytes.min(ym_gpu::tiles::DESIGN_BINDING_BYTES / 28 * 16);
         }
@@ -561,6 +560,15 @@ fn input_image(
     }
 }
 
+/// The wider picture the raster masks of a view look at: the view's frame grown by the masks' receptive field and cut
+/// to the photo's extent (`super::RasterRead`), as a device input of its own.
+pub(super) struct GrownInput {
+    /// The pixels of the wider picture.
+    pub input: DeviceInput,
+    /// Where it lies, and where the planes go.
+    pub read: super::RasterRead,
+}
+
 /// The colour chain prepared on the device, with the render's photo frame when the input has the pixels' places in the
 /// photo (the mask shapes of the nodes read them).
 fn prepared_for(
@@ -568,7 +576,7 @@ fn prepared_for(
     passes: &mut PassList<'_>,
     chain: &ColorChain,
     input: &DeviceInput,
-    sampled: &GpuImage,
+    rasters: Option<&GrownInput>,
 ) -> Result<PreparedChain, GpuError> {
     let mut prepared = PreparedChain::new(ctx, chain)?;
     // A chain compiled to a node's mask (the mask view) ends the nodes at that node and writes `m` as grey code
@@ -580,22 +588,29 @@ fn prepared_for(
         return Ok(prepared);
     };
     prepared = prepared.with_photo_frame(frame);
-    // The raster masks of the nodes (`docs/23` section 5.5): a view is its own window and its own frame, so its
-    // planes are made over the picture as it is sampled, with no halo to add.
-    if chain.uses_rasters() {
-        let whole = Area::whole(sampled.width, sampled.height);
+    // The raster masks of the nodes (`docs/23` section 5.5): their planes are made over the picture the colour pass
+    // makes, from a sampled picture that goes on beyond it by the masks' receptive field, as far as the photo does.
+    // The pixels of the picture that are paper have no plane.
+    if chain.uses_rasters()
+        && let Some(grown) = rasters
+    {
+        let wide = input_image(ctx, passes, &grown.input)?;
+        let r = &grown.read;
         let planes = encode_raster_planes(
             passes,
             &prepared,
             chain,
-            sampled,
+            &wide,
             &RasterJob {
-                frame: whole,
-                grown: whole,
-                window: whole,
+                frame: r.frame,
+                grown: r.grown,
+                window: r.window,
+                extent: r.extent,
                 photo: frame,
             },
         )?;
+        // The picture must outlive the submission.
+        let _ = passes.keep(wide.buf);
         prepared = prepared.with_rasters(planes);
     }
     Ok(prepared)
@@ -831,6 +846,8 @@ pub(super) struct PlainJob {
     pub origin: (usize, usize),
     /// Where the finished frame goes.
     pub output: FrameOutput,
+    /// The wider picture the raster masks of the chain look at, when it has any.
+    pub rasters: Option<GrownInput>,
 }
 
 /// The RGBA8 frame of a [`PlainJob`].
@@ -842,7 +859,13 @@ pub(super) fn plain_job(
     token.check()?;
     let mut passes = PassList::new(ctx, "view plain");
     let sampled = input_image(ctx, &mut passes, &job.input)?;
-    let prepared = prepared_for(ctx, &mut passes, &job.chain, &job.input, &sampled)?;
+    let prepared = prepared_for(
+        ctx,
+        &mut passes,
+        &job.chain,
+        &job.input,
+        job.rasters.as_ref(),
+    )?;
     let (w, h) = (sampled.width, sampled.height);
     let bytes = (w * h * 4) as u64;
     let dst = passes.keep(ctx.pool().acquire("view rgba8", bytes, IMAGE_USAGE)?);
@@ -885,6 +908,8 @@ pub(super) struct DisplayJob {
     pub gpu: Weak<Gpu>,
     /// Where the RGBA8 frame of the tail goes.
     pub output: FrameOutput,
+    /// The wider picture the raster masks of the chain (and of the mask chain) look at, when they have any.
+    pub rasters: Option<GrownInput>,
 }
 
 /// What a [`DisplayJob`] made.
@@ -907,7 +932,13 @@ pub(super) fn display_job(
     token.check()?;
     let mut passes = PassList::new(ctx, "view display");
     let sampled = input_image(ctx, &mut passes, &job.input)?;
-    let prepared = prepared_for(ctx, &mut passes, &job.chain, &job.input, &sampled)?;
+    let prepared = prepared_for(
+        ctx,
+        &mut passes,
+        &job.chain,
+        &job.input,
+        job.rasters.as_ref(),
+    )?;
     let (w, h) = (sampled.width, sampled.height);
     // The frame has the pixels and the letterbox mask: the position planes of the sampled picture stay behind.
     let display = GpuImage::alloc(
@@ -931,7 +962,7 @@ pub(super) fn display_job(
         .mask
         .as_ref()
         .map(|chain| -> Result<GpuImage, GpuError> {
-            let prepared = prepared_for(ctx, &mut passes, chain, &job.input, &sampled)?;
+            let prepared = prepared_for(ctx, &mut passes, chain, &job.input, job.rasters.as_ref())?;
             let image = GpuImage::alloc(
                 ctx,
                 "view mask",

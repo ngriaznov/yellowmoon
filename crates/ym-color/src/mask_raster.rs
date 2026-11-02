@@ -23,10 +23,14 @@
 //!
 //! Every plane lives on an [`Area`] of the output grid in **absolute** pixel coordinates. A window mean is
 //! over the pixels of `[x - r, x + r]` that lie inside the **frame** (the whole output image: a window at
-//! its edge is clipped and divided by the number of samples it kept), summed in ascending order. A tile of a
-//! frame is computed over itself grown by [`RasterSet::halo`] pixels (clipped to the frame) and cut: the
-//! value of a pixel then depends only on the absolute pixels of its receptive field, never on where the
-//! tile began, so a tile equals the whole frame bit for bit (`docs/17` D4 and D5).
+//! its edge is clipped and divided by the number of samples it kept). Every window fold, the sums of the box
+//! means and the maximum and minimum of Grow alike, is a **blocked** fold with absolute block origins (van
+//! Herk and Gil-Werman: blocks of the window's width, a suffix of one block joined to a prefix of the next, the
+//! scans restarting at each block boundary, see `fold_line`), so it costs three operations a pixel at any radius
+//! and the value of a window is made from the pixels of the window only, in an order fixed by their absolute
+//! positions. A tile of a frame is computed over itself grown by [`RasterSet::halo`] pixels (clipped to the
+//! frame) and cut: the value of a pixel then depends only on the absolute pixels of its receptive field, never on
+//! where the tile began, so a tile equals the whole frame bit for bit (`docs/17` D4 and D5).
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -490,22 +494,123 @@ enum Fold {
     Min,
 }
 
-/// The window of half-side `r` around column `x` of a row of `g` (absolute), cut to the frame and to the plane:
-/// the first and last indices into the row, or `None` when the pixel is outside the frame.
-fn span(
-    x: usize,
-    g_start: i64,
-    g_len: usize,
-    f_start: i64,
-    f_end: i64,
+impl Fold {
+    /// What a missing half of a window contributes.
+    fn identity(self) -> f64 {
+        match self {
+            Fold::Mean => 0.0,
+            Fold::Max => f64::NEG_INFINITY,
+            Fold::Min => f64::INFINITY,
+        }
+    }
+
+    /// Two partial results joined: the sum (which is exact against the identity 0), the larger or the smaller.
+    fn join(self, a: f64, b: f64) -> f64 {
+        match self {
+            Fold::Mean => a + b,
+            Fold::Max => a.max(b),
+            Fold::Min => a.min(b),
+        }
+    }
+}
+
+/// One line of a window fold: `dst[i]` is the fold of `[i - r, i + r]` (absolute: the line's first sample is at
+/// `a0`) over the samples that lie inside `f0..f1` (the frame) and inside the line, as a *blocked* fold.
+///
+/// The line is cut into blocks of `w = 2 r + 1` samples that start at absolute multiples of `w`. A window of
+/// `w` samples is either one block or the end of one block and the start of the next, so it is a *suffix* of the
+/// first and a *prefix* of the second (van Herk 1992, Gil and Werman 1993): `suffix[i - r] + prefix[i + r]`.
+/// Both are scans that restart at a block boundary, in a fixed order (prefixes upwards, suffixes downwards), so a
+/// window's value is made from the samples of the window only and in an order that depends on their absolute
+/// positions alone: it does not depend on where the line was cut, which is what makes a tile equal the frame bit
+/// for bit (`docs/17` D4). It costs three operations a sample at any radius. The mean divides by the number of
+/// samples that were there.
+fn fold_line(line: &[f64], a0: i64, f0: i64, f1: i64, r: usize, fold: Fold, dst: &mut [f64]) {
+    dst.fill(0.0);
+    let lo_av = a0.max(f0);
+    let hi_av = (a0 + line.len() as i64).min(f1);
+    if lo_av >= hi_av {
+        return;
+    }
+    let w = 2 * r as i64 + 1;
+    let (il, ih) = ((lo_av - a0) as usize, (hi_av - a0) as usize);
+    let mut prefix = vec![0.0; ih];
+    let mut suffix = vec![0.0; ih];
+    for k in il..ih {
+        prefix[k] = if k == il || (a0 + k as i64).rem_euclid(w) == 0 {
+            line[k]
+        } else {
+            fold.join(prefix[k - 1], line[k])
+        };
+    }
+    for k in (il..ih).rev() {
+        suffix[k] = if k == ih - 1 || (a0 + k as i64 + 1).rem_euclid(w) == 0 {
+            line[k]
+        } else {
+            fold.join(suffix[k + 1], line[k])
+        };
+    }
+    let (block_lo, block_hi) = (lo_av.div_euclid(w), (hi_av - 1).div_euclid(w));
+    let id = fold.identity();
+    for (k, d) in dst.iter_mut().enumerate().take(ih).skip(il) {
+        let abs = a0 + k as i64;
+        let (lo_w, hi_w) = (abs - r as i64, abs + r as i64);
+        // The window's end in its second block; past the line it is the line's last prefix when that is the
+        // same block, and nothing otherwise.
+        let upper = if hi_w < hi_av {
+            prefix[(hi_w - a0) as usize]
+        } else if hi_w.div_euclid(w) == block_hi {
+            prefix[ih - 1]
+        } else {
+            id
+        };
+        let total = if lo_w.rem_euclid(w) == 0 {
+            // The window is one whole block.
+            upper
+        } else {
+            let lower = if lo_w >= lo_av {
+                suffix[(lo_w - a0) as usize]
+            } else if lo_w.div_euclid(w) == block_lo {
+                suffix[il]
+            } else {
+                id
+            };
+            fold.join(lower, upper)
+        };
+        *d = if fold == Fold::Mean {
+            total / ((hi_w.min(hi_av - 1) - lo_w.max(lo_av)) + 1) as f64
+        } else {
+            total
+        };
+    }
+}
+
+/// The fold of every row of a plane `width` wide whose first column is the absolute column `a0`.
+fn fold_rows(
+    src: &[f64],
+    width: usize,
+    a0: i64,
+    f0: i64,
+    f1: i64,
     r: usize,
-) -> Option<(usize, usize)> {
-    let abs = g_start + x as i64;
-    let lo = (abs - r as i64).max(f_start).max(g_start);
-    let hi = (abs + r as i64)
-        .min(f_end - 1)
-        .min(g_start + g_len as i64 - 1);
-    (lo <= hi).then(|| ((lo - g_start) as usize, (hi - g_start) as usize))
+    fold: Fold,
+) -> Vec<f64> {
+    let mut out = vec![0.0; src.len()];
+    par_rows(&mut out, width, |y, dst| {
+        fold_line(&src[y * width..(y + 1) * width], a0, f0, f1, r, fold, dst);
+    });
+    out
+}
+
+/// A plane of `w x h` turned over its diagonal (`h x w`).
+fn transpose(src: &[f64], w: usize, h: usize) -> Vec<f64> {
+    let mut out = vec![0.0; src.len()];
+    par_rows(&mut out, h, |x, row| {
+        for (y, d) in row.iter_mut().enumerate() {
+            *d = src[y * w + x];
+        }
+    });
+    out
 }
 
 /// One separable half of a window fold over a plane of area `g` inside `frame`: along x (`horizontal`) or y.
@@ -517,56 +622,19 @@ fn fold_axis(
     horizontal: bool,
     fold: Fold,
 ) -> Vec<f64> {
-    let mut out = vec![0.0; g.w * g.h];
     if g.is_empty() {
-        return out;
+        return vec![0.0; g.w * g.h];
     }
-    let run = |row: usize, dst: &mut [f64]| {
-        for (x, d) in dst.iter_mut().enumerate() {
-            let (y, xx) = (row, x);
-            let (idx, len, f0, f1, start) = if horizontal {
-                (xx, g.w, frame.x, frame.x1(), g.x)
-            } else {
-                (y, g.h, frame.y, frame.y1(), g.y)
-            };
-            let Some((lo, hi)) = span(idx, start, len, f0, f1, r) else {
-                *d = 0.0;
-                continue;
-            };
-            let at = |k: usize| {
-                if horizontal {
-                    src[y * g.w + k]
-                } else {
-                    src[k * g.w + xx]
-                }
-            };
-            *d = match fold {
-                Fold::Mean => {
-                    let mut sum = 0.0;
-                    for k in lo..=hi {
-                        sum += at(k);
-                    }
-                    sum / (hi - lo + 1) as f64
-                }
-                Fold::Max => {
-                    let mut m = at(lo);
-                    for k in lo + 1..=hi {
-                        m = m.max(at(k));
-                    }
-                    m
-                }
-                Fold::Min => {
-                    let mut m = at(lo);
-                    for k in lo + 1..=hi {
-                        m = m.min(at(k));
-                    }
-                    m
-                }
-            };
-        }
-    };
-    par_rows(&mut out, g.w, run);
-    out
+    if horizontal {
+        fold_rows(src, g.w, g.x, frame.x, frame.x1(), r, fold)
+    } else {
+        let t = transpose(src, g.w, g.h);
+        transpose(
+            &fold_rows(&t, g.h, g.y, frame.y, frame.y1(), r, fold),
+            g.h,
+            g.w,
+        )
+    }
 }
 
 /// The mean of the square window of half-side `r` around every pixel (a horizontal pass, then a vertical one),
@@ -827,6 +895,43 @@ pub struct CpuPlanes {
     pub height: usize,
     /// The planes, in the order of [`RasterSet::rows`].
     pub planes: Vec<Vec<u16>>,
+}
+
+impl CpuPlanes {
+    /// These planes (of a window) placed in an `extent_w x extent_h` extent with the window's first pixel at `at`,
+    /// 0 around them: the planes of a view whose frame has paper in it (the photo ends inside the picture).
+    ///
+    /// # Panics
+    ///
+    /// When the window does not fit in the extent at `at`: a mistake of the caller.
+    #[must_use]
+    pub fn placed(&self, at: (usize, usize), extent_w: usize, extent_h: usize) -> CpuPlanes {
+        assert!(
+            at.0 + self.width <= extent_w && at.1 + self.height <= extent_h,
+            "a window of planes lies inside the extent they are placed in"
+        );
+        if (self.width, self.height) == (extent_w, extent_h) {
+            return self.clone();
+        }
+        let planes = self
+            .planes
+            .iter()
+            .map(|p| {
+                let mut out = vec![0u16; extent_w * extent_h];
+                for y in 0..self.height {
+                    let dst = (at.1 + y) * extent_w + at.0;
+                    out[dst..dst + self.width]
+                        .copy_from_slice(&p[y * self.width..(y + 1) * self.width]);
+                }
+                out
+            })
+            .collect();
+        CpuPlanes {
+            width: extent_w,
+            height: extent_h,
+            planes,
+        }
+    }
 }
 
 impl RasterPlanes for CpuPlanes {

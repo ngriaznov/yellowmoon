@@ -423,6 +423,12 @@ fn prepare_tile(
         (off.0 as i64 - grown.x) as usize,
         (off.1 as i64 - grown.y) as usize,
     );
+    let tile = ym_color::mask_raster::Area {
+        x: off.0 as i64,
+        y: off.1 as i64,
+        w,
+        h,
+    };
     let planes = if chain.uses_rasters() {
         Some(encode_raster_planes(
             passes,
@@ -432,12 +438,8 @@ fn prepare_tile(
             &RasterJob {
                 frame: ym_color::mask_raster::Area::whole(frame.0, frame.1),
                 grown,
-                window: ym_color::mask_raster::Area {
-                    x: off.0 as i64,
-                    y: off.1 as i64,
-                    w,
-                    h,
-                },
+                window: tile,
+                extent: tile,
                 photo: grid.photo_frame(),
             },
         )?)

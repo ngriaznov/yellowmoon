@@ -293,6 +293,22 @@ fn device_planes(
     window: Area,
     halo: usize,
 ) -> Vec<Vec<u16>> {
+    device_planes_in(dev, chain, img, grid, frame, window, window, halo)
+}
+
+/// [`device_planes`] over an `extent` that holds the window and more: the planes cover the extent and read 0
+/// outside the window.
+#[allow(clippy::too_many_arguments)]
+fn device_planes_in(
+    dev: &TestGpu,
+    chain: &ColorChain,
+    img: &RgbImage,
+    grid: &SamplerGrid,
+    frame: Area,
+    window: Area,
+    extent: Area,
+    halo: usize,
+) -> Vec<Vec<u16>> {
     let (chain, img, grid) = (chain.clone(), img.clone(), *grid);
     dev.gpu
         .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
@@ -319,6 +335,7 @@ fn device_planes(
                     frame,
                     grown,
                     window,
+                    extent,
                     photo: grid.photo_frame(),
                 },
             )?;
@@ -609,6 +626,7 @@ fn a_tile_coloured_in_two_row_windows_reads_the_planes_of_its_own_rows() {
                     frame,
                     grown,
                     window,
+                    extent: window,
                     photo: g.photo_frame(),
                 },
             )?;
@@ -871,6 +889,7 @@ fn colour_both(
                     frame,
                     grown,
                     window,
+                    extent: window,
                     photo: g.photo_frame(),
                 },
             )?;
@@ -1206,6 +1225,7 @@ fn bands_of_a_plan_of_several_passes_read_the_planes_of_their_own_rows() {
                         frame,
                         grown,
                         window,
+                        extent: window,
                         photo: g.photo_frame(),
                     },
                 )?;
@@ -1484,16 +1504,118 @@ fn the_raster_pass_of_a_24_mp_export_tile_is_timed() {
         return;
     }
     let grown = window.grown(halo, &frame);
-    let mut best = f64::MAX;
+    let (mut best, mut best_cpu) = (f64::MAX, f64::MAX);
     for _ in 0..3 {
-        let t = Instant::now();
+        let (t, c) = (Instant::now(), cpu_seconds());
         let _ = device_planes(dev, &chain, &img, &grid, frame, window, halo);
         best = best.min(t.elapsed().as_secs_f64());
+        if let (Some(c0), Some(c1)) = (c, cpu_seconds()) {
+            best_cpu = best_cpu.min(c1 - c0);
+        }
     }
     eprintln!(
-        "TIMING: two raster rows on a 1024 px tile of a 24 MP export, halo {halo} px, {} x {} grown: {best:.2} s a tile, {:.0} s for the 24 tiles",
+        "TIMING: two raster rows on a 1024 px tile of a 24 MP export, halo {halo} px, {} x {} grown: {best:.2} s a tile, {:.0} s for the 24 tiles ({best_cpu:.2} s of processor time a tile)",
         grown.w,
         grown.h,
         best * 24.0
     );
+}
+
+/// The processor time this process has used, in seconds (Linux; `None` elsewhere).
+fn cpu_seconds() -> Option<f64> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let fields: Vec<&str> = stat[stat.rfind(')')? + 2..].split(' ').collect();
+    let ticks = |i: usize| fields.get(i)?.parse::<f64>().ok();
+    Some((ticks(11)? + ticks(12)?) / 100.0)
+}
+
+#[test]
+#[ignore = "measures processor time, which other tests of the process disturb: cargo test -p ym-gpu --test gpu_raster_masks -- --ignored a_window_fold"]
+fn a_window_fold_costs_the_same_at_any_radius() {
+    // `docs/algorithms/06` section 5.6: every filter of the pass costs a few operations a pixel at any radius. A
+    // Feather whose boxes are 12 pixels and one whose boxes are 120 take the same time to within the noise of a
+    // shared machine (direct sums took ten times as long), measured in processor time over a 1950 px square.
+    if cpu_seconds().is_none() {
+        return;
+    }
+    let buffer = (240usize, 160usize);
+    let img = scene(buffer.0, buffer.1, 0x7144);
+    let (grid, frame) = export_grid(buffer, 0.04);
+    let dev = &gpus()[0];
+    if dev.mode.is_f16() {
+        return;
+    }
+    let window = Area {
+        x: 2000,
+        y: 1000,
+        w: 1950,
+        h: 1950,
+    };
+    let cost = |feather: f64| {
+        let chain = chain_with(RasterSet {
+            rows: vec![row(0.0, feather, 0.0)],
+        });
+        let _ = device_planes(dev, &chain, &img, &grid, frame, window, 0);
+        (0..3)
+            .map(|_| {
+                let c = cpu_seconds().unwrap_or(0.0);
+                let _ = device_planes(dev, &chain, &img, &grid, frame, window, 0);
+                cpu_seconds().unwrap_or(0.0) - c
+            })
+            .fold(f64::MAX, f64::min)
+    };
+    let (none, narrow, wide) = (cost(0.0), cost(0.1), cost(1.0));
+    eprintln!(
+        "processor time over 1950 x 1950 px: no feather {none:.2} s, boxes of about 12 px {narrow:.2} s, of about 120 px {wide:.2} s"
+    );
+    let (narrow, wide) = ((narrow - none).max(0.02), (wide - none).max(0.02));
+    assert!(wide < 2.5 * narrow, "{wide:.2} s against {narrow:.2} s");
+}
+
+#[test]
+fn an_extent_around_the_window_has_the_windows_planes_and_zero_around_them() {
+    // The paper of a view: the planes cover the picture the colour pass makes, and the photo ends inside it.
+    let buffer = (240usize, 160usize);
+    let img = scene(buffer.0, buffer.1, 0x5EED);
+    let (grid, frame) = export_grid(buffer, 0.5);
+    let set = RasterSet {
+        rows: vec![row(0.2, 0.3, 0.3), row(0.0, 0.0, 0.0)],
+    };
+    let chain = chain_with(set);
+    let halo = chain.rasters().halo(1.0 / grid.photo_frame().pixel);
+    let window = Area {
+        x: 40,
+        y: 30,
+        w: 100,
+        h: 70,
+    };
+    let extent = Area {
+        x: 25,
+        y: 20,
+        w: 130,
+        h: 100,
+    };
+    for dev in gpus() {
+        if dev.mode.is_f16() {
+            continue;
+        }
+        let tight = device_planes(dev, &chain, &img, &grid, frame, window, halo);
+        let wide = device_planes_in(dev, &chain, &img, &grid, frame, window, extent, halo);
+        for (t, w) in tight.iter().zip(&wide) {
+            assert_eq!(w.len(), extent.w * extent.h);
+            for y in 0..extent.h {
+                for x in 0..extent.w {
+                    let (ax, ay) = (extent.x + x as i64, extent.y + y as i64);
+                    let inside =
+                        ax >= window.x && ax < window.x1() && ay >= window.y && ay < window.y1();
+                    let want = if inside {
+                        t[(ay - window.y) as usize * window.w + (ax - window.x) as usize]
+                    } else {
+                        0
+                    };
+                    assert_eq!(w[y * extent.w + x], want, "({ax}, {ay})");
+                }
+            }
+        }
+    }
 }

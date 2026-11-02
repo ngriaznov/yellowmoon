@@ -218,6 +218,178 @@ fn a_window_at_the_frame_edge_is_cut_to_the_frame() {
     assert!(m.iter().all(|&v| v == 1.0));
 }
 
+/// Box mean, maximum or minimum of the square window of half-side `r` written as double loops over the pixels that
+/// lie inside both the plane `g` and the `frame` (the independent reference of the blocked folds).
+fn direct_fold(src: &[f64], g: &Area, frame: &Area, r: i64, mode: u8) -> Vec<f64> {
+    let mut out = vec![0.0; g.w * g.h];
+    let inside = g.intersect(frame);
+    for y in 0..g.h {
+        for x in 0..g.w {
+            let (ax, ay) = (g.x + x as i64, g.y + y as i64);
+            if ax < inside.x || ax >= inside.x1() || ay < inside.y || ay >= inside.y1() {
+                continue;
+            }
+            let (mut sum, mut n) = (0.0, 0.0);
+            let mut best = if mode == 1 { f64::MIN } else { f64::MAX };
+            for yy in (ay - r).max(inside.y)..=(ay + r).min(inside.y1() - 1) {
+                for xx in (ax - r).max(inside.x)..=(ax + r).min(inside.x1() - 1) {
+                    let v = src[(yy - g.y) as usize * g.w + (xx - g.x) as usize];
+                    sum += v;
+                    n += 1.0;
+                    best = if mode == 1 { best.max(v) } else { best.min(v) };
+                }
+            }
+            out[y * g.w + x] = if mode == 0 { sum / n } else { best };
+        }
+    }
+    out
+}
+
+#[test]
+fn the_blocked_folds_equal_the_direct_windows_at_any_origin_radius_and_frame() {
+    let mut rnd = noise(11);
+    // Planes at negative and positive origins, a frame that is the plane, bigger than it or cut inside it, and
+    // radii from 0 to wider than the plane.
+    let cases = [
+        (
+            Area {
+                x: 0,
+                y: 0,
+                w: 23,
+                h: 17,
+            },
+            Area::whole(23, 17),
+        ),
+        (
+            Area {
+                x: -37,
+                y: 50,
+                w: 40,
+                h: 21,
+            },
+            Area {
+                x: -50,
+                y: 40,
+                w: 200,
+                h: 100,
+            },
+        ),
+        (
+            Area {
+                x: 101,
+                y: -9,
+                w: 31,
+                h: 29,
+            },
+            Area {
+                x: 90,
+                y: -20,
+                w: 60,
+                h: 60,
+            },
+        ),
+        (
+            Area {
+                x: 5,
+                y: 5,
+                w: 30,
+                h: 30,
+            },
+            Area {
+                x: 12,
+                y: 9,
+                w: 14,
+                h: 11,
+            },
+        ),
+        (
+            Area {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 9,
+            },
+            Area::whole(1, 9),
+        ),
+    ];
+    for (g, frame) in cases {
+        let src: Vec<f64> = (0..g.w * g.h).map(|_| rnd()).collect();
+        for r in [0usize, 1, 2, 3, 7, 8, 16, 40] {
+            let mean = box_mean(&src, &g, &frame, r);
+            let want = direct_fold(&src, &g, &frame, r as i64, 0);
+            for (i, (a, b)) in mean.iter().zip(&want).enumerate() {
+                assert!(
+                    (a - b).abs() < 1e-12,
+                    "mean {g:?} {frame:?} r {r} at {i}: {a} against {b}"
+                );
+            }
+            if r == 0 {
+                continue;
+            }
+            for (radius, mode) in [(r as i64, 1u8), (-(r as i64), 2u8)] {
+                let got = grow(&src, &g, &frame, radius);
+                let want = direct_fold(&src, &g, &frame, r as i64, mode);
+                assert_eq!(got, want, "grow {radius} {g:?} {frame:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_blocked_window_does_not_depend_on_where_the_plane_was_cut() {
+    // The same pixels summed from planes that begin at different columns and rows are the same bits: a window is
+    // made of the pixels of the window in an order that depends only on their absolute positions.
+    let mut rnd = noise(5);
+    let frame = Area::whole(300, 260);
+    let whole: Vec<f64> = (0..frame.w * frame.h).map(|_| rnd()).collect();
+    let r = 23;
+    let want = box_mean(&whole, &frame, &frame, r);
+    let want_max = grow(&whole, &frame, &frame, r as i64);
+    for (x0, y0, w, h) in [(40, 31, 150, 120), (97, 5, 130, 200), (0, 100, 300, 160)] {
+        let g = Area {
+            x: x0,
+            y: y0,
+            w: w as usize,
+            h: h as usize,
+        };
+        let mut cut = Vec::new();
+        for y in 0..g.h {
+            for x in 0..g.w {
+                cut.push(whole[(g.y as usize + y) * frame.w + g.x as usize + x]);
+            }
+        }
+        let got = box_mean(&cut, &g, &frame, r);
+        let got_max = grow(&cut, &g, &frame, r as i64);
+        // The pixels at least `r` from the cut (or at the frame) have their whole window.
+        let inner = Area {
+            x: g.x + r as i64,
+            y: g.y + r as i64,
+            w: g.w - 2 * r,
+            h: g.h - 2 * r,
+        };
+        for y in inner.y..inner.y1() {
+            for x in inner.x..inner.x1() {
+                let a = (y - g.y) as usize * g.w + (x - g.x) as usize;
+                let b = y as usize * frame.w + x as usize;
+                // One box mean is two passes (a horizontal and a vertical one): the second pass reads a pixel
+                // of the first at up to `r` further, so the bits equal only where both windows are whole.
+                if x >= g.x + 2 * r as i64
+                    && y >= g.y + 2 * r as i64
+                    && x < g.x1() - 2 * r as i64
+                    && y < g.y1() - 2 * r as i64
+                {
+                    assert_eq!(got[a].to_bits(), want[b].to_bits(), "mean at ({x}, {y})");
+                }
+                assert_eq!(
+                    got_max[a].to_bits(),
+                    want_max[b].to_bits(),
+                    "max at ({x}, {y})"
+                );
+            }
+        }
+    }
+}
+
 // ---- feather ------------------------------------------------------------------------------------
 
 #[test]

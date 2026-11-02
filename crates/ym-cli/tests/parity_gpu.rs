@@ -275,6 +275,17 @@ fn a_brush_with_grow_feather_and_refine_edges_is_byte_identical_through_the_app_
 #[test]
 #[ignore = "a 24 MP export on lavapipe takes minutes; run by hand for the timings"]
 fn a_24_mp_export_with_two_raster_rows_is_timed_on_the_device() {
+    time_24_mp_exports("on", "the device");
+}
+
+/// The same export on the CPU reference path (`YELLOWMOON_GPU=off`): not a gate, and slower still.
+#[test]
+#[ignore = "a 24 MP export on the CPU takes minutes; run by hand for the timings"]
+fn a_24_mp_export_with_two_raster_rows_is_timed_on_the_cpu() {
+    time_24_mp_exports("off", "the CPU");
+}
+
+fn time_24_mp_exports(gpu: &str, where_: &str) {
     use std::time::Instant;
     let _serial = serial();
     let sb = Sandbox::new();
@@ -309,7 +320,7 @@ fn a_24_mp_export_with_two_raster_rows_is_timed_on_the_device() {
         let t = Instant::now();
         let out = sb
             .ym()
-            .env("YELLOWMOON_GPU", "on")
+            .env("YELLOWMOON_GPU", gpu)
             .args([
                 "render",
                 "--apple-auto",
@@ -326,7 +337,7 @@ fn a_24_mp_export_with_two_raster_rows_is_timed_on_the_device() {
             .success();
         let _ = out;
         eprintln!(
-            "TIMING 24 MP export on the device, {what}: {:.1} s",
+            "TIMING 24 MP export on {where_}, {what}: {:.1} s",
             t.elapsed().as_secs_f64()
         );
     }

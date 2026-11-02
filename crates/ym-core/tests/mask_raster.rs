@@ -657,3 +657,287 @@ fn the_mask_view_shows_the_brush_plane_on_the_cpu_and_on_the_device() {
         .unwrap_or(0);
     assert!(worst <= 3, "{worst}");
 }
+
+// ---- views see the photo beyond their edge --------------------------------------------------------------
+
+/// A viewport state at 100 % whose cell is `w x h` device pixels and whose top left corner is the pixel
+/// `(ox, oy)` of the final image (the origin of a 100 % view is a whole pixel), showing node 2's mask when `mask`.
+fn view_100(
+    image: (usize, usize),
+    (ox, oy): (usize, usize),
+    (w, h): (usize, usize),
+    mask: bool,
+) -> ViewportState {
+    let mut st = ViewportState::new(ViewportRect::cell(w as f64, h as f64, 1.0));
+    st.mode = ym_core::pipeline::ViewportMode::Percent { value: 100.0 };
+    st.centre = [
+        (ox as f64 + w as f64 * 0.5) / image.0 as f64,
+        (oy as f64 + h as f64 * 0.5) / image.1 as f64,
+    ];
+    if mask {
+        st.mask_view = Some(MaskView {
+            node: 2,
+            style: MaskStyle::MaskOnly,
+        });
+    }
+    st
+}
+
+/// The largest difference in codes and the mean of the colour channels of the pixels of `view` against the same
+/// pixels of `whole` (the view's `(0, 0)` is `at` in it), over the rectangle `(x0, y0, x1, y1)` of the view.
+fn crop_difference(
+    whole: &ym_core::pipeline::RenderedFrame,
+    view: &ym_core::pipeline::RenderedFrame,
+    at: (usize, usize),
+    (x0, y0, x1, y1): (usize, usize, usize, usize),
+) -> (u8, f64) {
+    let (mut worst, mut sum, mut n) = (0u8, 0u64, 0u64);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            for c in 0..3 {
+                let a = view.rgba[(y * view.width + x) * 4 + c];
+                let b = whole.rgba[((at.1 + y) * whole.width + at.0 + x) * 4 + c];
+                let d = a.abs_diff(b);
+                worst = worst.max(d);
+                sum += u64::from(d);
+                n += 1;
+            }
+        }
+    }
+    (worst, sum as f64 / n as f64)
+}
+
+/// A photo with a wide, soft, refined dab, so that the masks' receptive field is tens of pixels.
+fn soft_dab_photo() -> (Developed, serde_json::Value) {
+    (
+        photo(),
+        brush(
+            0.22,
+            0.5,
+            &[[0.5, 0.5]],
+            json!({ "grow": 0.5, "feather": 1.0, "refine": 1.0 }),
+        ),
+    )
+}
+
+#[test]
+fn a_zoomed_view_sees_the_photo_beyond_its_edge_like_the_export_of_that_size() {
+    let (d, dab) = soft_dab_photo();
+    let src = d.source();
+    let s = with(&src, graph(vec![node_2(vec![dab])]));
+    let gpu = gpu();
+    let cpu = renderer_with_tile(1024);
+    let cancel = CancelToken::new();
+    let image = cpu.final_size(&s, &cancel).expect("size");
+    let options = FrameOptions {
+        no_cache: true,
+        ..FrameOptions::default()
+    };
+    // The reach of the masks at this size, which the view must see beyond its edge.
+    let device = gpu.map(|g| device_renderer(g, 1024));
+    for mask in [true, false] {
+        for (name, r) in [("CPU", Some(&cpu)), ("device", device.as_ref())] {
+            let Some(r) = r else { continue };
+            let frame =
+                |st: &ViewportState| r.viewport_frame(&s, st, &options, &cancel).expect("frame");
+            // The export of this size: the whole photo at 100 %.
+            let whole = frame(&view_100(image, (0, 0), image, mask));
+            // A view of the right-hand part whose left edge is inside the dab's feather (the dab is at 240 px).
+            let (ox, oy, w, h) = (205, 60, 220, 200);
+            let view = frame(&view_100(image, (ox, oy), (w, h), mask));
+            if name == "device" {
+                assert_eq!(view.report.device, ComputeDevice::Gpu);
+            }
+            // Close to the dab, the edge of the view is inside the feather: the old frame, which ended at the view,
+            // differed by tens of codes there.
+            let (worst, mean) = crop_difference(&whole, &view, (ox, oy), (0, 0, w, h));
+            eprintln!(
+                "{name}, {}: a 100 % view against the export, {worst} codes, mean {mean:.5}",
+                if mask { "the mask" } else { "the picture" }
+            );
+            // The dither counts its texels from the view's own corner, so a pixel can differ by a code of it.
+            let (gate, gate_mean) = if mask { (1, 0.3) } else { (2, 0.5) };
+            assert!(
+                worst <= gate && mean < gate_mean,
+                "{name}: {worst} codes, mean {mean}"
+            );
+        }
+    }
+}
+
+#[test]
+fn two_views_panned_by_a_few_pixels_agree_where_they_overlap() {
+    let (d, dab) = soft_dab_photo();
+    let src = d.source();
+    let s = with(&src, graph(vec![node_2(vec![dab])]));
+    let gpu = gpu();
+    let cpu = renderer_with_tile(1024);
+    let cancel = CancelToken::new();
+    let image = cpu.final_size(&s, &cancel).expect("size");
+    let options = FrameOptions {
+        no_cache: true,
+        ..FrameOptions::default()
+    };
+    let device = gpu.map(|g| device_renderer(g, 1024));
+    for mask in [true, false] {
+        for (name, r) in [("CPU", Some(&cpu)), ("device", device.as_ref())] {
+            let Some(r) = r else { continue };
+            let frame =
+                |st: &ViewportState| r.viewport_frame(&s, st, &options, &cancel).expect("frame");
+            let (w, h) = (180, 150);
+            let a = frame(&view_100(image, (200, 70), (w, h), mask));
+            for (dx, dy) in [(3usize, 0usize), (0, 5), (7, 4)] {
+                let b = frame(&view_100(image, (200 + dx, 70 + dy), (w, h), mask));
+                // `b` shows the pixels of `a` moved by (dx, dy): its (0, 0) is a's (dx, dy).
+                let (worst, mean) = crop_difference(&a, &b, (dx, dy), (0, 0, w - dx, h - dy));
+                eprintln!(
+                    "{name}, {}: panned by ({dx}, {dy}), {worst} codes, mean {mean:.5}",
+                    if mask { "the mask" } else { "the picture" }
+                );
+                // The dither counts its texels from the view's own corner, so a pixel can differ by a code of it.
+                let (gate, gate_mean) = if mask { (1, 0.3) } else { (2, 0.5) };
+                assert!(
+                    worst <= gate && mean < gate_mean,
+                    "{name}: {worst} codes, mean {mean}"
+                );
+            }
+        }
+    }
+}
+
+// ---- views the device cuts into bands ------------------------------------------------------------------
+
+/// A device renderer whose view bands are `band_bytes` of one binding.
+fn banded_renderer(gpu: Arc<Gpu>, band_bytes: u64) -> Renderer {
+    Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            gpu: Some(gpu),
+            gpu_stages: GpuStages::ALL,
+            view_band_bytes: band_bytes,
+            full_tile_px: 1024,
+            ..RenderOptions::default()
+        },
+    )
+    .expect("render thread")
+}
+
+/// The largest difference in codes and the mean of two frames of one size.
+fn frame_difference(
+    a: &ym_core::pipeline::RenderedFrame,
+    b: &ym_core::pipeline::RenderedFrame,
+) -> (u8, f64) {
+    assert_eq!((a.width, a.height), (b.width, b.height));
+    crop_difference(a, b, (0, 0), (0, 0, a.width, a.height))
+}
+
+#[test]
+fn the_bands_of_a_view_with_a_brush_row_are_the_view_in_one_piece_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    let (d, dab) = soft_dab_photo();
+    let src = d.source();
+    let s = with(&src, graph(vec![node_2(vec![dab])]));
+    let one_piece = device_renderer(Arc::clone(&gpu), 1024);
+    // About 160 rows of a 480 px view with its border and the masks' reach (16 bytes a pixel, two thirds of the bytes
+    // for the six planes of a chain that reads the photo's places).
+    let banded = banded_renderer(Arc::clone(&gpu), 2_300_000);
+    let cpu = renderer_with_tile(1024);
+    let cancel = CancelToken::new();
+    let image = cpu.final_size(&s, &cancel).expect("size");
+    let options = FrameOptions {
+        no_cache: true,
+        ..FrameOptions::default()
+    };
+    for (what, st) in [
+        ("the picture", view_100(image, (0, 0), image, false)),
+        ("the mask", view_100(image, (0, 0), image, true)),
+        (
+            "a panned 100 % view",
+            view_100(image, (100, 40), (300, 260), false),
+        ),
+    ] {
+        let frame = |r: &Renderer| r.viewport_frame(&s, &st, &options, &cancel).expect("frame");
+        let a = frame(&one_piece);
+        assert_eq!(a.report.device, ComputeDevice::Gpu, "{what}");
+        let jobs = gpu.counters().submissions;
+        let b = frame(&banded);
+        let ran = gpu.counters().submissions - jobs;
+        assert_eq!(
+            b.report.device,
+            ComputeDevice::Gpu,
+            "{what}: {:?}",
+            b.report.notes
+        );
+        assert!(ran >= 2, "{what}: the view was cut into {ran} jobs");
+        let (worst, mean) = frame_difference(&a, &b);
+        eprintln!(
+            "{what}: {ran} device jobs, the bands against the view in one piece: {worst} codes, mean {mean:.5}"
+        );
+        assert!(
+            worst <= 1 && mean < 0.01,
+            "{what}: {worst} codes, mean {mean}"
+        );
+        // And the CPU makes it within the device's gates.
+        let c = frame(&cpu);
+        let (worst, mean) = frame_difference(&b, &c);
+        eprintln!("{what}: the bands against the CPU: {worst} codes, mean {mean:.5}");
+        assert!(
+            worst <= 3 && mean < 0.3,
+            "{what}: {worst} codes, mean {mean}"
+        );
+    }
+}
+
+#[test]
+fn a_retina_size_view_with_a_brush_row_is_made_on_the_device_in_bands() {
+    let Some(gpu) = gpu() else { return };
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(2880, 1920, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let src = d.source();
+    // A dab the size of a face, softly feathered and refined: the masks reach tens of pixels at this size.
+    let rows = vec![brush(
+        0.2,
+        0.4,
+        &[[0.35, 0.5], [0.6, 0.45]],
+        json!({ "grow": 0.3, "feather": 0.3, "refine": 0.3 }),
+    )];
+    let s = with(&src, graph(vec![node_2(rows)]));
+    let cpu = renderer_with_tile(1024);
+    let on_gpu = device_renderer(Arc::clone(&gpu), 1024);
+    let cancel = CancelToken::new();
+    let options = FrameOptions {
+        no_cache: true,
+        ..FrameOptions::default()
+    };
+    // The cell is the photo at 100 %: 2880 x 1920 device pixels, 88 MB of frame, which passes the band size of a chain
+    // with raster masks.
+    let st = ViewportState::new(ViewportRect::cell(2880.0, 1920.0, 1.0));
+    let frame = |r: &Renderer| r.viewport_frame(&s, &st, &options, &cancel).expect("frame");
+    let jobs = gpu.counters().submissions;
+    let device = frame(&on_gpu);
+    let ran = gpu.counters().submissions - jobs;
+    assert_eq!(
+        device.report.device,
+        ComputeDevice::Gpu,
+        "{:?}",
+        device.report.notes
+    );
+    assert!(ran >= 2, "the view was cut into {ran} jobs");
+    let reference = frame(&cpu);
+    assert_eq!(reference.report.device, ComputeDevice::Cpu);
+    let (worst, mean) = frame_difference(&device, &reference);
+    eprintln!(
+        "a retina-size view: {ran} device jobs, the device against the CPU: {worst} codes, mean {mean:.5}"
+    );
+    assert!(worst <= 3 && mean < 0.3, "{worst} codes, mean {mean}");
+    // Its bands are the same bytes with the cut elsewhere.
+    let finer = banded_renderer(gpu, 60_000_000);
+    let other = frame(&finer);
+    assert_eq!(other.report.device, ComputeDevice::Gpu);
+    let (worst, mean) = frame_difference(&device, &other);
+    eprintln!("a retina-size view cut elsewhere: {worst} codes, mean {mean:.6}");
+    assert!(worst <= 1 && mean < 0.01, "{worst} codes, mean {mean}");
+}

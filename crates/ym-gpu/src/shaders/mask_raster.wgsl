@@ -5,8 +5,11 @@
 //
 // One kernel, one entry point, an `op` in the uniform. Every op is a short, separate dispatch over a window of the output
 // grid, so a plane is computed in the order the host records them and every pixel of every op is the same expression at every
-// tile (docs/17 D4 and D5): window sums are direct sums in ascending order, cut to the frame (the whole output image) and
-// to the plane, and divided by the number of samples they kept.
+// tile (docs/17 D4 and D5): every window fold is a blocked fold with absolute block origins (van Herk and Gil-Werman: blocks
+// of the window's width, a suffix of one block joined to a prefix of the next, the scans restarting at each block boundary
+// in a fixed order), cut to the frame (the whole output image) and to the plane. It costs a few operations a pixel at any
+// radius, and a window's value is made from the pixels of the window only, so a tile is the whole frame bit for bit. The
+// mean is divided by the number of samples the window kept.
 //
 // Bindings: 0 the uniform; 1 `work`, the f32 planes of the pass (read_write); 2 `s0`, a source plane as u16 codes two to a word;
 // 3 `samp`, the sampler's image (planes: colour, the letterbox mask at 3, the photo-frame position at 4 and 5); 4 `guide`,
@@ -15,7 +18,10 @@
 //
 // Ops (the fields of RU a op reads are named in each):
 //   0 RESAMPLE  work[d] = S0 at the place of each pixel of the window (the pixel outside the photo is 0).
-//   1 FOLD      separable window fold of plane A along one axis: mean, max or min over [x - r, x + r].
+//   1 SCAN      the first half of a window fold of plane A along one axis (mean, max or min over [x - r, x + r]): the
+//               prefix and the suffix scans of every block of 2 r + 1 samples, one thread for a (line, block), into
+//               the planes B (prefixes) and C (suffixes).
+//   8 COMB      the second half: window = suffix[x - r] joined to prefix[x + r], into the destination plane.
 //   2 MUL       work[d] = A * B (the guide squared, the guide times the mask).
 //   3 COEF      a and b of the guided filter, in place over the planes of the guided products.
 //   4 BLOCK     a coarse plane: the mean of step x step blocks of plane A.
@@ -24,15 +30,16 @@
 //   7 QUANT     work[a] quantised into outp.
 
 struct RU {
-    op: vec4<u32>,    // x: the op; y: FOLD mode (0 mean, 1 max, 2 min); z: FOLD axis (0 x, 1 y); w: FOLD radius
+    op: vec4<u32>,    // x: the op; y: fold mode (0 mean, 1 max, 2 min); z: fold axis (0 x, 1 y); w: fold radius
     pa: vec4<i32>,    // plane A: x: offset in `work` (elements), y: width, z: height, w: stride
-    pb: vec4<i32>,    // plane B: x: offset in `work`, y: width, z: height, w: stride
-    pc: vec4<i32>,    // plane C: x: offset in `work` (COEF: the products' planes), y: offset of plane D, z: offset of plane E, w: -
+    pb: vec4<i32>,    // plane B: x: offset in `work`, y: width, z: height, w: stride (SCAN, COMB: the prefixes)
+    pc: vec4<i32>,    // plane C: x: offset in `work` (COEF: the products' planes), y: offset of plane D, z: offset of plane E, w: stride (SCAN, COMB: x the suffixes)
     pd: vec4<i32>,    // the destination plane: x: offset in `work`, y: width, z: height, w: stride
     org_a: vec4<i32>, // x, y: the absolute origin of plane A (and of B, C, D, E: planes of one op share it); z: a is the guide (1), b is the guide (2), both (3)
     org_d: vec4<i32>, // x, y: the absolute origin of the destination plane (BLOCK: in cells; UP: the coarse plane's); z: step (BLOCK, UP); w: -
     frame: vec4<i32>, // x0, y0, x1, y1: the frame in the units of plane A (UP: the coarse frame in the units of the coarse plane)
-    win: vec4<i32>,   // x, y: the output window's first pixel in plane A's pixels; z, w: the window's size (FINAL, UP, QUANT)
+    win: vec4<i32>,   // x, y: the output extent's first pixel in plane A's pixels; z, w: the extent's size (FINAL, UP, QUANT)
+    ins: vec4<i32>,   // x0, y0, x1, y1: the part of the extent that has planes, in plane A's pixels (the rest is 0)
     outp: vec4<u32>,  // x: the stride of an output plane (elements), y: its length in words, z: the output plane index, w: -
     samp: vec4<u32>,  // x: the sampler image's stride, y: its plane length, z, w: the window's first pixel in it (RESAMPLE)
     s0: vec4<u32>,    // x: the source plane's width, y: its height, z: the taps of the box average, w: -
@@ -48,13 +55,14 @@ struct RU {
 @group(0) @binding(5) var<storage, read_write> outp: array<u32>;
 
 const OP_RESAMPLE: u32 = 0u;
-const OP_FOLD: u32 = 1u;
+const OP_SCAN: u32 = 1u;
 const OP_MUL: u32 = 2u;
 const OP_COEF: u32 = 3u;
 const OP_BLOCK: u32 = 4u;
 const OP_UP: u32 = 5u;
 const OP_FINAL: u32 = 6u;
 const OP_QUANT: u32 = 7u;
+const OP_COMB: u32 = 8u;
 
 fn unit01(x: f32) -> f32 {
     if (is_nan_f(x)) {
@@ -129,16 +137,42 @@ fn store_d(x: i32, y: i32, v: f32) {
     work[u32(RU_.pd.x + y * RU_.pd.w + x)] = v;
 }
 
-// The window of half-side r around position `at` (a coordinate of the plane) along one axis, cut to the frame and the
-// plane: x is the first index into the plane, y the last, and z is 1 when the window has a sample.
-fn span(at: i32, org: i32, len: i32, f0: i32, f1: i32, r: i32) -> vec3<i32> {
-    let abs_at = org + at;
-    let lo = max(max(abs_at - r, f0), org);
-    let hi = min(min(abs_at + r, f1 - 1), org + len - 1);
-    if (lo > hi) {
-        return vec3<i32>(0, 0, 0);
+// floor(a / b) for a positive b.
+fn floor_div(a: i32, b: i32) -> i32 {
+    let q = a / b;
+    if (a % b < 0) {
+        return q - 1;
     }
-    return vec3<i32>(lo - org, hi - org, 1);
+    return q;
+}
+
+// What a missing half of a window contributes to a fold, and two partial results joined.
+fn fold_identity(mode: u32) -> f32 {
+    if (mode == 0u) {
+        return 0.0;
+    }
+    if (mode == 1u) {
+        return -1.0e30;
+    }
+    return 1.0e30;
+}
+
+fn fold_join(mode: u32, a: f32, b: f32) -> f32 {
+    if (mode == 0u) {
+        return a + b;
+    }
+    if (mode == 1u) {
+        return max(a, b);
+    }
+    return min(a, b);
+}
+
+// The element `k` of line `line` of a plane along the fold's axis (axis 0: the line is a row, 1: a column).
+fn line_index(line: i32, k: i32, stride: i32) -> u32 {
+    if (RU_.op.z == 0u) {
+        return u32(line * stride + k);
+    }
+    return u32(k * stride + line);
 }
 
 fn quantise(q: f32) -> u32 {
@@ -173,57 +207,120 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    if (op == OP_FOLD) {
+    if (op == OP_SCAN) {
+        // A thread is a (line, block): x the line, y the block (counted from the block of the first sample).
+        var lines = RU_.pa.y;
+        var len = RU_.pa.z;
+        var org = RU_.org_a.y;
+        var f0 = RU_.frame.y;
+        var f1 = RU_.frame.w;
+        if (RU_.op.z == 0u) {
+            lines = RU_.pa.z;
+            len = RU_.pa.y;
+            org = RU_.org_a.x;
+            f0 = RU_.frame.x;
+            f1 = RU_.frame.z;
+        }
+        let lo_av = max(org, f0);
+        let hi_av = min(org + len, f1);
+        let w = 2 * i32(RU_.op.w) + 1;
+        if (x >= lines || lo_av >= hi_av) {
+            return;
+        }
+        let start = (floor_div(lo_av, w) + y) * w;
+        let first = max(start, lo_av);
+        let last = min(start + w, hi_av) - 1;
+        if (first > last) {
+            return;
+        }
+        let mode = RU_.op.y;
+        // The prefixes, upwards from the start of the block.
+        var acc = 0.0;
+        for (var k = first; k <= last; k++) {
+            var v = 0.0;
+            if (RU_.op.z == 0u) {
+                v = load_a(k - org, x);
+            } else {
+                v = load_a(x, k - org);
+            }
+            if (k == first) {
+                acc = v;
+            } else {
+                acc = fold_join(mode, acc, v);
+            }
+            work[u32(RU_.pb.x) + line_index(x, k - org, RU_.pb.w)] = acc;
+        }
+        // The suffixes, downwards from the end of the block.
+        for (var k = last; k >= first; k--) {
+            var v = 0.0;
+            if (RU_.op.z == 0u) {
+                v = load_a(k - org, x);
+            } else {
+                v = load_a(x, k - org);
+            }
+            if (k == last) {
+                acc = v;
+            } else {
+                acc = fold_join(mode, acc, v);
+            }
+            work[u32(RU_.pc.x) + line_index(x, k - org, RU_.pc.w)] = acc;
+        }
+        return;
+    }
+
+    if (op == OP_COMB) {
         if (x >= RU_.pa.y || y >= RU_.pa.z) {
             return;
         }
-        let r = i32(RU_.op.w);
-        var lo = 0;
-        var hi = -1;
-        var found = 0;
+        var at = y;
+        var line = x;
+        var len = RU_.pa.z;
+        var org = RU_.org_a.y;
+        var f0 = RU_.frame.y;
+        var f1 = RU_.frame.w;
         if (RU_.op.z == 0u) {
-            let s = span(x, RU_.org_a.x, RU_.pa.y, RU_.frame.x, RU_.frame.z, r);
-            lo = s.x;
-            hi = s.y;
-            found = s.z;
-        } else {
-            let s = span(y, RU_.org_a.y, RU_.pa.z, RU_.frame.y, RU_.frame.w, r);
-            lo = s.x;
-            hi = s.y;
-            found = s.z;
+            at = x;
+            line = y;
+            len = RU_.pa.y;
+            org = RU_.org_a.x;
+            f0 = RU_.frame.x;
+            f1 = RU_.frame.z;
         }
-        if (found == 0) {
+        let lo_av = max(org, f0);
+        let hi_av = min(org + len, f1);
+        let abs_at = org + at;
+        if (abs_at < lo_av || abs_at >= hi_av) {
             store_d(x, y, 0.0);
             return;
         }
-        var acc = 0.0;
-        if (RU_.op.z == 0u) {
-            acc = load_a(lo, y);
-        } else {
-            acc = load_a(x, lo);
+        let mode = RU_.op.y;
+        let r = i32(RU_.op.w);
+        let w = 2 * r + 1;
+        let lo_w = abs_at - r;
+        let hi_w = abs_at + r;
+        let id = fold_identity(mode);
+        // The window's end in its second block: the prefix there (past the plane, the plane's last prefix when it is the
+        // same block, else nothing).
+        var upper = id;
+        if (hi_w < hi_av) {
+            upper = work[u32(RU_.pb.x) + line_index(line, hi_w - org, RU_.pb.w)];
+        } else if (floor_div(hi_w, w) == floor_div(hi_av - 1, w)) {
+            upper = work[u32(RU_.pb.x) + line_index(line, hi_av - 1 - org, RU_.pb.w)];
         }
-        if (RU_.op.y == 0u) {
-            acc = 0.0;
-        }
-        for (var k = lo; k <= hi; k++) {
-            var v = 0.0;
-            if (RU_.op.z == 0u) {
-                v = load_a(k, y);
-            } else {
-                v = load_a(x, k);
+        var total = upper;
+        if (lo_w % w != 0) {
+            var lower = id;
+            if (lo_w >= lo_av) {
+                lower = work[u32(RU_.pc.x) + line_index(line, lo_w - org, RU_.pc.w)];
+            } else if (floor_div(lo_w, w) == floor_div(lo_av, w)) {
+                lower = work[u32(RU_.pc.x) + line_index(line, lo_av - org, RU_.pc.w)];
             }
-            if (RU_.op.y == 0u) {
-                acc += v;
-            } else if (RU_.op.y == 1u) {
-                acc = max(acc, v);
-            } else {
-                acc = min(acc, v);
-            }
+            total = fold_join(mode, lower, upper);
         }
-        if (RU_.op.y == 0u) {
-            acc = acc / f32(hi - lo + 1);
+        if (mode == 0u) {
+            total = total / f32(min(hi_w, hi_av - 1) - max(lo_w, lo_av) + 1);
         }
-        store_d(x, y, acc);
+        store_d(x, y, total);
         return;
     }
 
@@ -297,7 +394,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let wx = RU_.win.x + px + k;
         let wy = RU_.win.y + y;
         var q = 0.0;
-        if (op == OP_QUANT) {
+        if (wx < RU_.ins.x || wx >= RU_.ins.z || wy < RU_.ins.y || wy >= RU_.ins.w) {
+            // Outside the window that has planes (the paper of a view): no plane, no code.
+            q = 0.0;
+        } else if (op == OP_QUANT) {
             q = load_a(wx, wy);
         } else if (op == OP_FINAL) {
             // pa: a-bar, pb: b-bar, the guide at (wx, wy).

@@ -169,19 +169,28 @@ fn doctor_json_has_the_same_parts() {
         assert!(v["gpu"]["reason"].is_string());
     }
     assert_eq!(v["render_path"]["demosaic"], "classical");
-    // The weight files are the bokeh map's and Auto crop's model, each with the hash its SHA256SUMS gives, in path order.
+    // The weight files are the bokeh map's and Auto crop's model, each with the hash its SHA256SUMS gives, in path
+    // order, and SAM 2's when its file is there: it is too big to commit (`data/models/sam2/.gitignore`), so a
+    // checkout has it only after `tools/fetch` or `tools/convert`, and the built app always does.
     let sha256_of = |model: &str| -> String {
         let sums = std::fs::read_to_string(data_dir().join(format!("models/{model}/SHA256SUMS")))
             .expect("sums");
         sums.split_whitespace().next().expect("hash").to_owned()
     };
-    assert_eq!(
-        v["model_weights"],
-        serde_json::json!([
-            { "file": "bokeh/bokehnet.safetensors", "sha256": sha256_of("bokeh") },
-            { "file": "crop/cropnet.safetensors", "sha256": sha256_of("crop") },
-        ])
-    );
+    let mut weights = vec![
+        serde_json::json!({ "file": "bokeh/bokehnet.safetensors", "sha256": sha256_of("bokeh") }),
+        serde_json::json!({ "file": "crop/cropnet.safetensors", "sha256": sha256_of("crop") }),
+    ];
+    if data_dir()
+        .join("models/sam2/sam2.1_hiera_small.f16.safetensors")
+        .is_file()
+    {
+        weights.push(serde_json::json!({
+            "file": "sam2/sam2.1_hiera_small.f16.safetensors",
+            "sha256": sha256_of("sam2"),
+        }));
+    }
+    assert_eq!(v["model_weights"], serde_json::Value::Array(weights));
     assert!(v["illuminant_models"].as_array().expect("models").len() >= 10);
     for model in v["illuminant_models"].as_array().expect("models") {
         assert_eq!(model["sha256"].as_str().expect("hash").len(), 64);
