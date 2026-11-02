@@ -455,11 +455,11 @@ fn parity(dev: &common::TestGpu, chain: &ColorChain, img: &RgbImage) -> Worst {
         ];
         let mut beyond = false;
         for (k, want) in logc4 {
-            for ch in 0..3 {
-                let d = (f64::from(planar(&gpu[k])[ch * n + i]) - want[ch]).abs();
-                if want[ch].abs() > SANE_CODE {
+            for (ch, &want) in want.iter().enumerate() {
+                let d = (f64::from(planar(&gpu[k])[ch * n + i]) - want).abs();
+                if want.abs() > SANE_CODE {
                     beyond = true;
-                    w.beyond_rel = w.beyond_rel.max(d / want[ch].abs());
+                    w.beyond_rel = w.beyond_rel.max(d / want.abs());
                     continue;
                 }
                 let slot = match k {
@@ -476,10 +476,10 @@ fn parity(dev: &common::TestGpu, chain: &ColorChain, img: &RgbImage) -> Worst {
             // The encoded picture and the DNG of such a pixel are clamped or huge: not compared.
             continue;
         }
-        for ch in 0..3 {
+        for (ch, &dng) in dng.iter().enumerate() {
             let d = |k: usize, want: f64| (f64::from(planar(&gpu[k])[ch * n + i]) - want).abs();
             w.c13 = w.c13.max(d(4, t.c13_encoded[ch]));
-            w.dng = w.dng.max(d(5, dng[ch]) / dng[ch].abs().max(0.01));
+            w.dng = w.dng.max(d(5, dng) / dng.abs().max(0.01));
         }
     }
     w
@@ -808,9 +808,8 @@ fn a_stop_after_a_node_is_the_cpu_plan_that_ends_there_and_a_mask_stop_is_grey_o
                 );
                 for i in 0..n {
                     let want = reference.apply_pixel(pixel(&img, i));
-                    for ch in 0..3 {
-                        worst =
-                            worst.max((f64::from(planar(&got[0])[ch * n + i]) - want[ch]).abs());
+                    for (ch, &want) in want.iter().enumerate() {
+                        worst = worst.max((f64::from(planar(&got[0])[ch * n + i]) - want).abs());
                     }
                 }
                 // The 8-bit picture is the same stop quantised.
@@ -1121,8 +1120,15 @@ fn the_colour_pass_of_1_4_and_16_nodes_on_lavapipe_is_timed() {
             .gpu
             .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
                 let p = PreparedChain::new(ctx, &c)?;
-                // Compile the pipeline, then take the best of five.
+                // The first frame compiles the pipeline (once per device and process); then the best of five.
+                let cold = Instant::now();
                 p.render(ctx, &i, (0, 0), ColorOutput::Rgba8 { dither: true })?;
+                if n == 1 {
+                    eprintln!(
+                        "the first frame of the process, pipeline included: {:.0} ms",
+                        cold.elapsed().as_secs_f64() * 1000.0
+                    );
+                }
                 let mut best = f64::MAX;
                 for _ in 0..5 {
                     let t = Instant::now();
@@ -1161,5 +1167,44 @@ fn the_colour_pass_of_1_4_and_16_nodes_on_lavapipe_is_timed() {
             .map(|(n, ms)| format!("{n} node(s) {ms:.1} ms"))
             .collect::<Vec<_>>()
             .join(", ")
+    );
+}
+
+#[test]
+fn the_default_graph_is_timed() {
+    // Not a gate: Main alone, with nothing on and with everything on (grade, colour warp, curves, a look),
+    // 512 x 384 to RGBA8 on lavapipe, the best of seven frames. The numbers of `docs/23` section 15 compare
+    // them with the kernel before the plan loop.
+    let (w, h) = (512usize, 384usize);
+    let img = camera_image(w, h, 0x71E5);
+    let Some(dev) = gpus().first() else { return };
+    let mut all_on = chains::full(OutputTarget::Viewport);
+    all_on.warp = chains::warp_pins();
+    let mut out = Vec::new();
+    for (name, params) in [
+        ("nothing on", chains::base(OutputTarget::Viewport)),
+        ("everything on", all_on),
+    ] {
+        let chain = ColorChain::new(&params).expect("chain");
+        let (c, i) = (chain.clone(), img.clone());
+        let ms = dev
+            .gpu
+            .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+                let p = PreparedChain::new(ctx, &c)?;
+                p.render(ctx, &i, (0, 0), ColorOutput::Rgba8 { dither: true })?;
+                let mut best = f64::MAX;
+                for _ in 0..7 {
+                    let t = Instant::now();
+                    p.render(ctx, &i, (0, 0), ColorOutput::Rgba8 { dither: true })?;
+                    best = best.min(t.elapsed().as_secs_f64() * 1000.0);
+                }
+                Ok(best)
+            })
+            .expect("render");
+        out.push(format!("{name} {ms:.1} ms"));
+    }
+    eprintln!(
+        "default graph, {w}x{h} to RGBA8 on lavapipe: {}",
+        out.join(", ")
     );
 }
