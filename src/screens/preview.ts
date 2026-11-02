@@ -16,20 +16,20 @@ export const lookSlugOf = (id: string): string => id.slice(id.lastIndexOf(":") +
 export function previewUrl(photo: PhotoSummary, rs: ResolvedSettings | null, before: boolean): string | undefined {
   const scene = SCENES.find((s) => s.name === photoName(photo.file_name));
   if (!scene) return undefined;
-  const geometry = rs ? { orientation: rs.values.orientation, angle_deg: rs.values.crop?.angle_deg ?? 0, crop: rs.values.crop?.rect ?? null } : {};
+  const geometry = rs ? { orientation: rs.values.input.orientation, angle_deg: rs.values.input.crop?.angle_deg ?? 0, crop: rs.values.input.crop?.rect ?? null } : {};
   if (!rs || before) return previewDataUrl(before ? flatScene(scene) : scene, geometry);
   const { values, estimates } = rs;
   const graded = developScene(
     scene,
-    { slug: lookSlugOf(values.look), intensity: values.look_intensity },
+    { slug: lookSlugOf(values.output.look), intensity: values.output.look_intensity },
     {
-      ev: values.exposure_ev,
-      autoEv: estimates.exposure_ev,
-      kelvin: values.kelvin,
-      autoKelvin: estimates.kelvin,
-      tint: values.tint,
-      autoTint: estimates.tint,
-      warp: values.color_warp.pins,
+      ev: values.input.exposure_ev,
+      autoEv: estimates.input.exposure_ev,
+      kelvin: values.input.kelvin,
+      autoKelvin: estimates.input.kelvin,
+      tint: values.input.tint,
+      autoTint: estimates.input.tint,
+      warp: values.main.grade.color_warp.pins,
     },
   );
   return previewDataUrl(graded, geometry);

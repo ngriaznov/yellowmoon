@@ -102,6 +102,15 @@ class Reading(unittest.TestCase):
         with self.assertRaises(autoexp.StudyError):
             autoexp.check_render_exposure({"settings": {"exposure": {"ev": float("nan")}}}, 0.0, "DNG")
 
+    def test_the_exposure_is_the_inputs_in_the_node_first_settings(self):
+        def doc(ev):
+            items = [{"id": "input", "kind": "input", "exposure": {"kind": "manual", "ev": ev}}, {"id": 1, "kind": "corrector"}]
+            return {"settings": {"nodes": {"items": items, "links": []}}}
+
+        autoexp.check_render_exposure(doc(0.0), 0.0, "DNG")
+        with self.assertRaises(autoexp.StudyError):
+            autoexp.check_render_exposure(doc(0.4), 0.0, "DNG")
+
 
 class FittedProfile(unittest.TestCase):
     """A `ym` DNG carries the fitted Adobe profile, whose offset is part of its `BaselineExposure`."""

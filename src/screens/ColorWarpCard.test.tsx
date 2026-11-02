@@ -12,13 +12,14 @@ import { openPhotos, openTab, renderApp, sliderName, valueOf } from "../test/har
 import type { Harness, UpdateSpy } from "../test/harness";
 import { mockRect } from "../test/raf";
 import { WARP_HINT, WARP_LIMIT_HINT } from "./tools/ColorWarpCard";
+import { inputPatch, mainGradeOf, mainGradePatch } from "../state/settingsGraph";
 
 let h: Harness;
 afterEach(() => h?.unmount());
 
 /** DSC04204 (the mockup's photo) on the Colour tab. */
 async function setup(initialPins: ColorWarpPin[] = []): Promise<UpdateSpy> {
-  h = renderApp({ current: 3, picked: [2, 3, 4], initialSettings: { DSC04204: { color_warp: { pins: initialPins } } } });
+  h = renderApp({ current: 3, picked: [2, 3, 4], initialSettings: { DSC04204: mainGradePatch({ color_warp: { pins: initialPins } }) } });
   await openPhotos(h);
   await openTab(h, "Colour");
   return vi.spyOn(h.api, "updateSettings");
@@ -36,7 +37,7 @@ const at = (a: number, b: number) => {
 };
 /** The text of a slider's value box in the Colour warp card (the Colour balance card has a Saturation of its own). */
 const cardValue = (label: string): string => (card().getByRole("textbox", { name: `${label} value` }) as HTMLInputElement).value;
-const pins = (): ColorWarpPin[] => h.store.currentSettings()?.settings.color_warp.pins ?? [];
+const pins = (): ColorWarpPin[] => mainGradeOf(h.store.currentSettings()!.settings).color_warp.pins ?? [];
 const photo = (): HTMLElement => screen.getByRole("main", { name: "Photo" });
 const patches = (spy: UpdateSpy): SettingsPatch[] => spy.mock.calls.map((c) => c[1] as SettingsPatch);
 
@@ -80,7 +81,7 @@ describe("the Colour warp card", () => {
     const [pin] = pins();
     expect(pin?.source[0]).toBeCloseTo(0.1, 6);
     expect(pin?.target[1]).toBeCloseTo(0.05, 6);
-    expect(patches(spy).every((p) => Object.keys(p).join() === "color_warp")).toBe(true);
+    expect(patches(spy).every((p) => Object.keys(p.nodes ?? {}).join() === "1" && Object.keys(p.nodes?.["1"]?.grade ?? {}).join() === "color_warp")).toBe(true);
     const labels = card()
       .getAllByRole("slider")
       .filter((s) => s.getAttribute("aria-labelledby"))
@@ -120,7 +121,7 @@ describe("the Colour warp card", () => {
     await waitFor(() => expect(pins()[1]?.saturation).toBeCloseTo(0.2, 12));
     expect(cardValue("Saturation")).toBe("+20%");
     // Each typed value is one whole list.
-    expect(patches(spy).at(-1)?.color_warp?.pins).toHaveLength(2);
+    expect(patches(spy).at(-1)?.nodes?.["1"]?.grade?.color_warp?.pins).toHaveLength(2);
     // The reset column goes back to the default.
     await h.user.click(card().getByRole("button", { name: "Reset Pivot" }));
     await waitFor(() => expect(pins()[1]?.pivot_ev).toBe(0));
@@ -176,7 +177,7 @@ describe("the Colour warp card", () => {
     spy.mockClear();
     await h.user.click(card().getByRole("button", { name: "Reset" }));
     await waitFor(() => expect(pins()).toEqual([]));
-    expect(patches(spy)).toEqual([{ color_warp: { pins: [] } }]);
+    expect(patches(spy)).toEqual([mainGradePatch({ color_warp: { pins: [] } })]);
     expect(card().queryByRole("button", { name: "Reset" })).toBeNull();
   });
 
@@ -331,7 +332,7 @@ describe("Pick colour", () => {
 
   it("a click on the paper around a letterboxed photo adds nothing", async () => {
     const spy = await setup();
-    await h.store.update({ orientation: 90 });
+    await h.store.update(inputPatch({ orientation: 90 }));
     spy.mockClear();
     const sample = vi.spyOn(h.api, "sampleChroma");
     const layer = await startPicking();

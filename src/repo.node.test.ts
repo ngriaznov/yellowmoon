@@ -3,6 +3,7 @@
 // tsconfig (see tsconfig.node.json).
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { GRAPH_TEXT } from "./fixtures/graph";
 
 const root = new URL("../", import.meta.url);
 const read = (path: string): string => readFileSync(new URL(path, root), "utf8");
@@ -154,5 +155,48 @@ describe("the docs agree on the dark glass decision (owner, 2026-10-16)", () => 
     expect(read("docs/STATUS.md")).not.toMatch(/native layer's clear colour/);
     // The native viewport's pass is recorded in present.rs (shared with its test since 2026-10-19).
     expect(read("src-tauri/src/present.rs")).toMatch(/wgpu::Color::BLACK/);
+  });
+});
+
+describe("the mock's rules for the graph (docs/23 section 9)", () => {
+  const rust = read("crates/ym-core/src/settings/graph.rs");
+  /** The sentence of a `#[error("...")]` of the core, as the source writes it. */
+  const sentence = (text: string): string => `#[error("${text}")]`;
+
+  it("say what the core says, word for word", () => {
+    for (const text of [
+      GRAPH_TEXT.missingFixed,
+      GRAPH_TEXT.linkDirection,
+      GRAPH_TEXT.linkPortTypes,
+      GRAPH_TEXT.outputLink,
+      GRAPH_TEXT.mainInput,
+      GRAPH_TEXT.cycle,
+      GRAPH_TEXT.tooManyNodes,
+      GRAPH_TEXT.tooManyMasks,
+      GRAPH_TEXT.tooManyBrushPoints,
+      GRAPH_TEXT.tooManyObjectPoints,
+      GRAPH_TEXT.cannotRemove,
+    ]) {
+      expect(rust, text).toContain(sentence(text));
+    }
+    // The sentences with a hole in them: the mock fills the hole as the core does.
+    expect(rust).toContain(sentence(GRAPH_TEXT.unknownNode("{0}" as never)));
+    expect(rust).toContain(sentence(GRAPH_TEXT.duplicateId("{0}" as never)));
+    expect(rust).toContain(sentence(GRAPH_TEXT.patchUnknownNode("{0}" as never)));
+    expect(rust).toContain(sentence("{node} has no port called “{port}”."));
+    expect(GRAPH_TEXT.unknownPort(7, "mask")).toBe("Node 7 has no port called “mask”.");
+    expect(rust).toContain(sentence("An input can have one link. {node} has two on its {port} input."));
+    expect(GRAPH_TEXT.twoLinks(3, "picture")).toBe("An input can have one link. Node 3 has two on its picture input.");
+    expect(rust).toContain(sentence("{node} is {actual}, not {given}."));
+    expect(GRAPH_TEXT.patchWrongKind(7, "corrector", "input")).toBe("Node 7 is a corrector, not an input.");
+    expect(rust).toContain(sentence("{kind} has no field called “{field}”."));
+    expect(GRAPH_TEXT.unknownField("corrector", "exposure")).toBe("A corrector has no field called “exposure”.");
+  });
+
+  it("are the sentences of docs/23 section 3.5", () => {
+    const doc = read("docs/23-nodes.md");
+    for (const text of [GRAPH_TEXT.missingFixed, GRAPH_TEXT.linkDirection, GRAPH_TEXT.linkPortTypes, GRAPH_TEXT.outputLink, GRAPH_TEXT.mainInput, GRAPH_TEXT.cycle, GRAPH_TEXT.tooManyNodes]) {
+      expect(doc, text).toContain(`"${text}"`);
+    }
   });
 });

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMockApi } from "../api.mock";
 import { checkNotice, runMenuAction } from "./menu";
 import { createStore } from "./store";
+import { mainGradePatch } from "./settingsGraph";
 
 /** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
 const manual = (value: number) => ({ kind: "manual", value }) as const;
@@ -46,7 +47,7 @@ describe("the Edit menu's settings items", () => {
     await vi.waitFor(() => expect(store.getState().session?.photos.every((p) => p.status.kind === "ready")).toBe(true));
     await store.openPhotos();
     await vi.waitFor(() => expect(store.currentSettings()).not.toBeNull());
-    await store.update({ contrast: manual(30) });
+    await store.update(mainGradePatch({ contrast: manual(30) }));
     const copy = vi.spyOn(store, "copySettings");
     const paste = vi.spyOn(store, "pasteSettings");
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CropAspect, CropSuggestion, Orientation, PhotoId, PhotoSummary, ResolvedSettings } from "../../api/types";
+import type { CropAspect, CropSuggestion, InputNode, Orientation, PhotoId, PhotoSummary, ResolvedSettings } from "../../api/types";
 import { isReady } from "../../state/photo";
+import { inputOf, inputPatch } from "../../state/settingsGraph";
 import type { AppStore } from "../../state/store";
 import { canvasOf, constrainFrame, fitInside, fitRatio, FULL_RECT, imageAspectOf, isFullRect, presetRatio, rotateRect90 } from "./cropMath";
 import type { Canvas, Rect } from "./cropMath";
@@ -73,7 +74,7 @@ export function shownFrame(draft: CropDraft, photo: PhotoSummary): Rect {
  * Turns a draft into the `crop` setting: nothing when it is the whole photo, straight. While Auto crop is on the crop says so
  * (`auto: true`); off, the field is left out, as the core leaves `false` out (`docs/20-auto-crop.md` §2).
  */
-export function draftToCrop(draft: CropDraft): ResolvedSettings["settings"]["crop"] {
+export function draftToCrop(draft: CropDraft): InputNode["crop"] {
   if (isFullRect(draft.rect) && Math.abs(draft.angle_deg) < 1e-9) return null;
   const crop = { rect: draft.rect, angle_deg: draft.angle_deg, aspect: draft.aspect };
   return draft.auto ? { ...crop, auto: true } : crop;
@@ -103,7 +104,7 @@ export function useCropSession(
 ): { session: CropSession | null; start: () => void; active: boolean } {
   const [draft, setDraft] = useState<CropDraft | null>(null);
   const [autoNote, setAutoNote] = useState<AutoCropNote>(null);
-  const original = useRef<{ crop: ResolvedSettings["settings"]["crop"]; orientation: Orientation } | null>(null);
+  const original = useRef<{ crop: InputNode["crop"]; orientation: Orientation } | null>(null);
   const touched = useRef(false);
   /** The photo the crop was started on: its changes go there, wherever the person is when they are sent. */
   const target = useRef<PhotoId | undefined>(undefined);
@@ -150,7 +151,7 @@ export function useCropSession(
     (next: CropDraft) => {
       touched.current = true;
       // Not final: the whole session is one gesture, ended by Done or Cancel.
-      void store.update({ crop: { rect: FULL_RECT, angle_deg: next.angle_deg, aspect: next.aspect }, orientation: next.orientation }, false, target.current);
+      void store.update(inputPatch({ crop: { rect: FULL_RECT, angle_deg: next.angle_deg, aspect: next.aspect }, orientation: next.orientation }), false, target.current);
     },
     [store],
   );
@@ -195,8 +196,8 @@ export function useCropSession(
 
   const start = useCallback(() => {
     if (!rs) return;
-    const crop = rs.settings.crop;
-    original.current = { crop, orientation: rs.settings.orientation };
+    const { crop, orientation } = inputOf(rs.settings);
+    original.current = { crop, orientation };
     target.current = rs.photo_id;
     touched.current = false;
     beforeAuto.current = null;
@@ -205,7 +206,7 @@ export function useCropSession(
       rect: crop?.rect ?? FULL_RECT,
       angle_deg: crop?.angle_deg ?? 0,
       aspect: crop?.aspect ?? "original",
-      orientation: rs.settings.orientation,
+      orientation,
       auto: crop?.auto === true,
     };
     // A stored crop that pokes past the straightened photo (an older crop, or one from a settings file) is the base: the panel shows and
@@ -306,12 +307,12 @@ export function useCropSession(
       if (!current) return;
       close();
       const sent = { ...current, rect: shownFrame(current, photo) };
-      void store.update({ crop: draftToCrop(sent), orientation: current.orientation }, true, target.current);
+      void store.update(inputPatch({ crop: draftToCrop(sent), orientation: current.orientation }), true, target.current);
     },
     cancel: () => {
       const before = original.current;
       close();
-      if (before && touched.current) void store.update({ crop: before.crop, orientation: before.orientation }, true, target.current);
+      if (before && touched.current) void store.update(inputPatch({ crop: before.crop, orientation: before.orientation }), true, target.current);
     },
   };
   return { session, start, active: true };

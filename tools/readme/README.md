@@ -61,7 +61,7 @@ The debug app reads the repository's `data/` folder at run time. When the app wa
 
 Without `--warp` the card shows the photo's colours on the plane and no pins. With it, each pin is added the way a person adds one: Pick colour on, a click on the photo at `x,y` (a share of the photo cell's width and height; the photo fills the cell at Fit for a landscape photo), then the arrow keys on the new pin until it has moved by `da,db` on the chroma plane (right and up; one key press is 0.002, with Shift 0.02). The log prints each pin as the core holds it. After the picture the card's Reset removes the pins, so the states after it show the photo as it was.
 
-The plane is 0.6 across and a photo's colours usually sit within 0.05 of its middle, so moves are small: 0.01 to 0.02 is a visible change. A pin on a colour close to grey moves everything near grey with it (the first try of the README picture turned a dry field pink); try a move with `ym render --settings` (a `color_warp` document) before taking the picture. The README picture is one pin on the grass of A1M01749, moved 0.014 to the left: greener, cooler grass, with the sky and the dry field left as they were.
+The plane is 0.6 across and a photo's colours usually sit within 0.05 of its middle, so moves are small: 0.01 to 0.02 is a visible change. A pin on a colour close to grey moves everything near grey with it (the first try of the README picture turned a dry field pink); try a move with `ym render --settings` (a settings document with `color_warp` in node 1's `grade`, `docs/10`) before taking the picture. The README picture is one pin on the grass of A1M01749, moved 0.014 to the left: greener, cooler grass, with the sky and the dry field left as they were.
 
 ## Size
 

@@ -5,6 +5,7 @@
  */
 import type { ApplyScope, ExportOptions, Look, PhotoSummary, Preferences, ResolvedSettings, SessionState } from "../api/types";
 import { captureDate, photoName } from "../state/photo";
+import { outputOf } from "../state/settingsGraph";
 import { fullLongEdge, photosInScope, isExportable } from "./options";
 import { previewFileName, slugify, templateProblem, templateWarning } from "./template";
 import type { TemplateParts } from "./template";
@@ -49,7 +50,8 @@ export interface ExportModel {
 
 /** The look a photo will be exported with: its own when its settings are known, else the default. */
 function lookIdFor(photo: PhotoSummary, input: ExportModelInput): string {
-  const known = input.settings[photo.id]?.settings.look;
+  const rs = input.settings[photo.id];
+  const known = rs ? outputOf(rs.settings).look : undefined;
   if (known) return known;
   return input.looks?.find((l) => l.is_default)?.id ?? input.preferences?.default_look ?? "builtin:neutral";
 }

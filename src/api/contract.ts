@@ -10,8 +10,8 @@
  *    sends no event the webview does not know (`Events`);
  *  - every method of `Api` is a generated command that takes the arguments and answers what the command does (`Commands`).
  *
- * Deliberate differences, each stated where it is excluded: `SettingsPatch` (the core accepts more than `Partial<DevelopSettings>`, so
- * the narrower one is what the screens send), `UpdateState` (the shell never sends it; the updater runs in the webview), the unit
+ * Deliberate differences, each stated where it is excluded: `SettingsPatch` (the generated node patch allows `null` in every field and a
+ * plain number for an Auto-or-value field, so the narrower one is what the screens send), `UpdateState` (the shell never sends it; the updater runs in the webview), the unit
  * commands (`null` on the wire, `void` in `Api`), `looksImport` (an optional `input`), `viewportInfo` (the mock has no viewport) and
  * `copySettings` and `pasteSettings` (they answer patches, which the generated type allows `null` in every field of; `tauriApi` narrows
  * them, see `narrowed` in `api.ts`).
@@ -67,7 +67,7 @@ export type FromCore = AllTrue<{
 
 /** Arguments: what the screens send has to fit the type the core takes. */
 export type ToCore = AllTrue<{
-  // The Rust patch is wider (nested objects may be partial, `null` clears): the screens send the narrower one.
+  // The Rust patch is wider (`null` in every field, plain numbers for contrast and the like): the screens send the narrower one.
   settingsPatch: Assignable<T.SettingsPatch, B.SettingsPatch>;
   preferencesPatch: Assignable<T.PreferencesPatch, B.PreferencesPatch>;
   lookInput: Assignable<T.LookInput, NonNullable<Parameters<typeof commands.looksImport>[1]>>;

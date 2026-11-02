@@ -173,9 +173,9 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
 
   const note = photo ? notReadyNote(photo) : null;
   const frame = backend === "fallback" && sentFrame && !note ? { src: sentFrame.url, widthPx: sentFrame.width, heightPx: sentFrame.height } : undefined;
-  const level = rs ? `${lookName(rs.values.look)} · ${Math.round(rs.values.look_intensity)}%` : undefined;
-  const orientation = rs?.values.orientation ?? 0;
-  const appliedCrop = !crop && rs?.values.crop && !isFullRect(rs.values.crop.rect) ? rs.values.crop.rect : null;
+  const level = rs ? `${lookName(rs.values.output.look)} · ${Math.round(rs.values.output.look_intensity)}%` : undefined;
+  const orientation = rs?.values.input.orientation ?? 0;
+  const appliedCrop = !crop && rs?.values.input.crop && !isFullRect(rs.values.input.crop.rect) ? rs.values.input.crop.rect : null;
   const displayAspect = photo
     ? appliedCrop
       ? (appliedCrop.width / appliedCrop.height) * imageAspectOf(photo.width_px, photo.height_px, orientation)

@@ -9,6 +9,7 @@ import { capturingPointer } from "../../test/pointer";
 import { installManualRaf, mockRect } from "../../test/raf";
 import { openPhotos, renderApp, sliderOf } from "../../test/harness";
 import type { Harness } from "../../test/harness";
+import { outputPatch } from "../../state/settingsGraph";
 
 let h: Harness;
 afterEach(() => h?.unmount());
@@ -56,9 +57,9 @@ describe("the Look tab while the person moves to another photo", () => {
       raf.restore();
     }
     expect(spy.mock.calls.map((c) => c[0])).toEqual(spy.mock.calls.map(() => from));
-    expect(spy.mock.calls.at(-1)?.[1]).toEqual({ look_intensity: 75 });
-    expect((await h.api.getSettings(to)).values.look_intensity).toBe(100);
-    expect((await h.api.getSettings(from)).values.look_intensity).toBe(75);
+    expect(spy.mock.calls.at(-1)?.[1]).toEqual(outputPatch({ look_intensity: 75 }));
+    expect((await h.api.getSettings(to)).values.output.look_intensity).toBe(100);
+    expect((await h.api.getSettings(from)).values.output.look_intensity).toBe(75);
   });
 
   it("puts a look picked from a tile on the photo whose tab it was, and on no other when Apply to is This photo", async () => {
@@ -78,8 +79,8 @@ describe("the Look tab while the person moves to another photo", () => {
       await h.store.setCurrent(to);
     });
     release();
-    await waitFor(async () => expect((await h.api.getSettings(from)).values.look).toBe("builtin:signature"));
-    expect((await h.api.getSettings(to)).values.look).toBe("builtin:neutral");
+    await waitFor(async () => expect((await h.api.getSettings(from)).values.output.look).toBe("builtin:signature"));
+    expect((await h.api.getSettings(to)).values.output.look).toBe("builtin:neutral");
     await waitFor(() => expect(screen.getByRole("button", { name: /^Neutral look/ })).toHaveAttribute("aria-pressed", "true"));
     expect(screen.getByRole("button", { name: /^Signature look/ })).toHaveAttribute("aria-pressed", "false");
   });

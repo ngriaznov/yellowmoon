@@ -93,7 +93,7 @@ test.describe("the Tone card", () => {
     // Auto or a value (docs/19 section 5): a manual value, or Auto where the drag passes the Auto value (0 here).
     type Percent = { kind: "auto" } | { kind: "manual"; value: number };
     const patches = (await calls()).map((c) => {
-      const saturation = (c.args[1] as { saturation: Percent }).saturation;
+      const saturation = (c.args[1] as { nodes: { "1": { grade: { saturation: Percent } } } }).nodes["1"].grade.saturation;
       return saturation.kind === "manual" ? saturation.value : 0;
     });
     expect(patches.length).toBeGreaterThanOrEqual(2);
@@ -117,7 +117,7 @@ test.describe("the Tone card", () => {
     const calls = await recordCalls(page, "updateSettings");
     await page.getByRole("button", { name: "Reset Temperature" }).click();
     await expect(valueBox(page, "Temperature")).toHaveValue("5450 K");
-    expect((await calls()).at(-1)!.args[1]).toEqual({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null });
+    expect((await calls()).at(-1)!.args[1]).toEqual({ nodes: { input: { white_balance: { kind: "auto" }, light_source: "auto", white_pick: null } } });
     await expect(page.getByRole("button", { name: "Auto temperature" })).toHaveAttribute("aria-pressed", "true");
     await openTab(page, "Colour");
     await expect(valueBox(page, "Kelvin")).toHaveValue("5450 K");

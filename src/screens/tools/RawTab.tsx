@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { Card, formats, InfoRow, ResetLink, RowNote, Rows, Slider, SwitchRow } from "../../components";
 import type { CameraInfo, DecodeOptions } from "../../api/types";
+import { inputOf, inputPatch } from "../../state/settingsGraph";
 import type { TabProps } from "./shared";
 
 /** "Sony A1" gives "A1", the name the camera card's sentences use. */
@@ -42,7 +43,7 @@ const SWITCHES: ReadonlyArray<[keyof DecodeOptions, string]> = [
 /** RAW: the camera and its profile, the decode switches and the range sliders. */
 export const RawTab = memo(function RawTab({ store, photo, rs }: TabProps) {
   const { camera } = photo;
-  const { decode, rolloff } = rs.settings;
+  const { decode, rolloff } = inputOf(rs.settings);
   return (
     <>
       <Card title="Camera">
@@ -61,12 +62,12 @@ export const RawTab = memo(function RawTab({ store, photo, rs }: TabProps) {
               key={key}
               label={label}
               checked={decode[key]}
-              onChange={(on) => void store.update({ decode: { ...decode, [key]: on } }, true)}
+              onChange={(on) => void store.update(inputPatch({ decode: { ...decode, [key]: on } }), true)}
             />
           ))}
         </Rows>
       </Card>
-      <Card title="Range" action={<ResetLink size="card" onClick={() => void store.update({ rolloff: { highlights: 0.6, low_light: 0.5 } })} />}>
+      <Card title="Range" action={<ResetLink size="card" onClick={() => void store.update(inputPatch({ rolloff: { highlights: 0.6, low_light: 0.5 } }))} />}>
         <Slider
           label="Highlights"
           value={rolloff.highlights}
@@ -75,7 +76,7 @@ export const RawTab = memo(function RawTab({ store, photo, rs }: TabProps) {
           step={0.01}
           defaultValue={0.6}
           format={formats.fixed2}
-          onChange={(highlights, final) => void store.update({ rolloff: { ...rolloff, highlights } }, final, rs.photo_id)}
+          onChange={(highlights, final) => void store.update(inputPatch({ rolloff: { ...rolloff, highlights } }), final, rs.photo_id)}
         />
         <Slider
           label="Low light"
@@ -85,7 +86,7 @@ export const RawTab = memo(function RawTab({ store, photo, rs }: TabProps) {
           step={0.01}
           defaultValue={0.5}
           format={formats.fixed2}
-          onChange={(low_light, final) => void store.update({ rolloff: { ...rolloff, low_light } }, final, rs.photo_id)}
+          onChange={(low_light, final) => void store.update(inputPatch({ rolloff: { ...rolloff, low_light } }), final, rs.photo_id)}
         />
         <RowNote>{RANGE_NOTE}</RowNote>
       </Card>

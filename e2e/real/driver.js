@@ -132,12 +132,12 @@
     // 4. A setting changed through the shell: a new frame and new numbers in the header.
     const photo = (await invoke("session_state")).photos[(await invoke("session_state")).current_index];
     const frameBefore = frame() ? frame().src : "";
-    await invoke("update_settings", { photoId: photo.id, patch: { exposure: { kind: "manual", ev: 1.0 } } });
+    await invoke("update_settings", { photoId: photo.id, patch: { nodes: { input: { exposure: { kind: "manual", ev: 1.0 } } } } });
     if (backend === "fallback") {
       await waitFor("a frame after the settings changed", () => frame() && loaded(frame()) && frame().src !== frameBefore, config.frameTimeoutMs);
       record("a settings change makes the shell send a new frame", true, frame().src);
     }
-    await invoke("update_settings", { photoId: photo.id, patch: { exposure: { kind: "auto" } } });
+    await invoke("update_settings", { photoId: photo.id, patch: { nodes: { input: { exposure: { kind: "auto" } } } } });
     if (backend === "fallback") await sleep(1500);
 
     // 4a. Before (`\`): the camera view, before the look and the display transform; the label says so, and the shell draws it.
@@ -295,7 +295,7 @@
           return edited ? { picked: true } : bar ? { picked: false } : null;
         }, 60000);
         if (outcome.picked) {
-          const got = (await invoke("get_settings", { photoId: photo.id })).settings.white_pick;
+          const got = (await invoke("get_settings", { photoId: photo.id })).settings.nodes.items.find((n) => n.kind === "input").white_pick;
           const reset = qa("button", region("White balance")).find((b) => /^reset$/i.test(b.textContent.trim()));
           if (reset) reset.click();
           await waitFor("the pick is cleared", () => !qa("[data-slot=badge]", region("White balance")).some((t) => /edited/i.test(t.textContent)), 30000);
@@ -316,10 +316,13 @@
       const off = Math.max(Math.abs(measured.got[0] - want[0]), Math.abs(measured.got[1] - want[1]));
       record(name, off < 0.01, `clicked ${measured.u.toFixed(3)},${measured.v.toFixed(3)}: wanted ${want.map((n) => n.toFixed(3))}, got ${measured.got.map((n) => n.toFixed(3))} (${where})`);
     }
-    /** Changes the photo's settings through the shell, tells the store to read them again, and waits for the picture to follow. */
-    async function change(patch) {
+    /**
+     * Changes the Input's fields (the orientation and the crop: settings are a graph of nodes, `docs/23`) through the shell, tells the
+     * store to read them again, and waits for the picture to follow.
+     */
+    async function change(fields) {
       const frameBefore = frame() ? frame().src : "";
-      await invoke("update_settings", { photoId: photo.id, patch });
+      await invoke("update_settings", { photoId: photo.id, patch: { nodes: { input: fields } } });
       await emit("settings_changed", { photo_id: photo.id });
       if (backend === "fallback") await waitFor("a new frame", () => frame() && loaded(frame()) && frame().src !== frameBefore, config.frameTimeoutMs);
       await sleep(800);

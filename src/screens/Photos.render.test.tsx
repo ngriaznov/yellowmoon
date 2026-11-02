@@ -9,6 +9,7 @@ import type { MockOptions } from "../api.mock";
 import type { RenderStats } from "../api/types";
 import { openPhotos, renderApp } from "../test/harness";
 import type { Harness } from "../test/harness";
+import { inputPatch } from "../state/settingsGraph";
 
 const counts = vi.hoisted(() => new Map<string, number>());
 vi.mock("../perf", async (importOriginal) => {
@@ -128,7 +129,7 @@ describe("a slider that moves", () => {
     const asked = vi.spyOn(api, "lookThumbnail");
     const before = { photos: n("Photos"), tile: n("LazyLookTile") };
     await act(async () => {
-      await store.update({ exposure: { kind: "manual", ev: 1.2 } }, false);
+      await store.update(inputPatch({ exposure: { kind: "manual", ev: 1.2 } }), false);
     });
     await quiet();
     expect(n("Photos")).toBeGreaterThan(before.photos);
@@ -155,7 +156,7 @@ describe("a slider that moves", () => {
     const asked = vi.spyOn(api, "lookThumbnail");
     for (let step = 1; step <= 10; step++) {
       await act(async () => {
-        await store.update({ exposure: { kind: "manual", ev: step / 10 } }, false);
+        await store.update(inputPatch({ exposure: { kind: "manual", ev: step / 10 } }), false);
         await vi.advanceTimersByTimeAsync(300);
       });
     }
@@ -177,7 +178,7 @@ describe("another look", () => {
       await store.chooseLook("builtin:signature");
     });
     await quiet();
-    expect(store.currentSettings()?.values.look).toBe("builtin:signature");
+    expect(store.currentSettings()?.values.output.look).toBe("builtin:signature");
     expect(n("LazyLookTile") - before).toBeLessThanOrEqual(2);
     expect(n("LazyLookTile")).toBeGreaterThan(before);
   });

@@ -232,9 +232,15 @@ class Ym:
 
 def check_render_exposure(doc: dict[str, Any], expected_ev: float, what: str) -> None:
     """Refuses a render whose settings report another exposure than the study assumes (the DNG at 0, the TIFF at the
-    `EV_auto` of `ym info`): every number built on the picture would silently describe another exposure. A render
-    document without the `settings.exposure` field (an older `ym`) is not checked."""
-    exposure = (doc.get("settings") or {}).get("exposure") or {}
+    `EV_auto` of `ym info`): every number built on the picture would silently describe another exposure. The exposure
+    is the Input's (`settings.nodes.items`, the node whose id is "input": the settings are a graph of nodes since
+    `docs/23`); a render document in the flat form of 0.1 has it as `settings.exposure`, and a document with neither
+    is not checked."""
+    settings = doc.get("settings") or {}
+    exposure = settings.get("exposure") or {}
+    for item in (settings.get("nodes") or {}).get("items") or []:
+        if isinstance(item, dict) and item.get("id") == "input":
+            exposure = item.get("exposure") or {}
     ev = exposure.get("ev")
     if isinstance(ev, (int, float)) and not abs(float(ev) - expected_ev) <= 1e-6:
         raise StudyError(f"the {what} render used exposure {float(ev):+.6f} EV, the study needs {expected_ev:+.6f} EV")

@@ -11,6 +11,7 @@ import { capturingPointer } from "../../test/pointer";
 import { installManualRaf, mockRect } from "../../test/raf";
 import { openPhotos, openTab, renderApp, sliderOf, valueOf } from "../../test/harness";
 import type { Harness } from "../../test/harness";
+import { mainGradeOf, mainGradePatch } from "../../state/settingsGraph";
 
 let h: Harness;
 afterEach(() => h?.unmount());
@@ -59,10 +60,10 @@ describe("the controls Apple Auto sets while the person moves to another photo",
       raf.restore();
     }
     expect(spy.mock.calls.map((c) => c[0])).toEqual(spy.mock.calls.map(() => from));
-    expect(spy.mock.calls.at(-1)?.[1]).toEqual({ highlights: { kind: "manual", value: 50 } });
+    expect(spy.mock.calls.at(-1)?.[1]).toEqual(mainGradePatch({ highlights: { kind: "manual", value: 50 } }));
     // The photo moved to keeps its own Auto highlights; the one dragged has the manual value.
-    expect((await h.api.getSettings(to)).settings.highlights).toEqual({ kind: "auto" });
-    expect((await h.api.getSettings(from)).settings.highlights).toEqual({ kind: "manual", value: 50 });
+    expect(mainGradeOf((await h.api.getSettings(to)).settings).highlights).toEqual({ kind: "auto" });
+    expect(mainGradeOf((await h.api.getSettings(from)).settings).highlights).toEqual({ kind: "manual", value: 50 });
   });
 
   it("keeps a shadows wheel drag on the photo it began on, and sends it as Manual there", async () => {
@@ -88,9 +89,9 @@ describe("the controls Apple Auto sets while the person moves to another photo",
       raf.restore();
     }
     expect(spy.mock.calls.map((c) => c[0])).toEqual(spy.mock.calls.map(() => from));
-    expect(spy.mock.calls.at(-1)?.[1].color_balance?.shadows).toMatchObject({ kind: "manual" });
-    expect((await h.api.getSettings(to)).settings.color_balance.shadows).toEqual({ kind: "auto" });
-    expect((await h.api.getSettings(from)).settings.color_balance.shadows).toMatchObject({ kind: "manual" });
+    expect(spy.mock.calls.at(-1)?.[1].nodes?.["1"]?.grade?.color_balance?.shadows).toMatchObject({ kind: "manual" });
+    expect(mainGradeOf((await h.api.getSettings(to)).settings).color_balance.shadows).toEqual({ kind: "auto" });
+    expect(mainGradeOf((await h.api.getSettings(from)).settings).color_balance.shadows).toMatchObject({ kind: "manual" });
   });
 
   it("sends Reset (Auto) to the photo whose controls it is on, and a typed value too", async () => {
@@ -105,14 +106,14 @@ describe("the controls Apple Auto sets while the person moves to another photo",
     await h.user.click(await screen.findByRole("button", { name: "Reset Black" }));
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
     expect(spy.mock.calls.map((c) => [c[0], c[1]])).toEqual([
-      [from, { black: { kind: "manual", value: 5 } }],
-      [from, { black: { kind: "auto" } }],
+      [from, mainGradePatch({ black: { kind: "manual", value: 5 } })],
+      [from, mainGradePatch({ black: { kind: "auto" } })],
     ]);
     // The card's Reset puts Highlights, Shadows and Black back to Auto, on the same photo.
     spy.mockClear();
     await h.user.click(within(screen.getByRole("region", { name: "High dynamic range" })).getByRole("button", { name: "Reset" }));
     await waitFor(() => expect(spy).toHaveBeenCalled());
     expect(spy.mock.calls.at(-1)?.[0]).toBe(from);
-    expect(spy.mock.calls.at(-1)?.[1]).toMatchObject({ highlights: { kind: "auto" }, shadows: { kind: "auto" }, black: { kind: "auto" } });
+    expect(spy.mock.calls.at(-1)?.[1]).toMatchObject(mainGradePatch({ highlights: { kind: "auto" }, shadows: { kind: "auto" }, black: { kind: "auto" } }));
   });
 });

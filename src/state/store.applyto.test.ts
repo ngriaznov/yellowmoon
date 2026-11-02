@@ -10,6 +10,7 @@ import type { MockApi, MockOptions } from "../api.mock";
 import type { PhotoId, SettingsPatch } from "../api/types";
 import { createStore } from "./store";
 import type { AppStore } from "./store";
+import { mainGradeOf, mainGradePatch } from "./settingsGraph";
 
 const stops: Array<() => void> = [];
 afterEach(() => {
@@ -46,9 +47,9 @@ const SIGNATURE = "builtin:signature";
 const TEAL = "arri:3000:teal-and-orange";
 
 /** The look the core holds for a photo. */
-const coreLook = async (api: MockApi, id: PhotoId): Promise<string> => (await api.getSettings(id)).values.look;
+const coreLook = async (api: MockApi, id: PhotoId): Promise<string> => (await api.getSettings(id)).values.output.look;
 /** The look the store believes a photo has, or undefined when it holds nothing for it. */
-const mirrorLook = (store: AppStore, id: PhotoId): string | undefined => store.getState().settings[id]?.values.look;
+const mirrorLook = (store: AppStore, id: PhotoId): string | undefined => store.getState().settings[id]?.values.output.look;
 const currentId = (store: AppStore): PhotoId => store.currentPhoto()?.id ?? -1;
 
 /** Opens a photo and waits for its settings to be in the store. */
@@ -170,11 +171,11 @@ describe("a patch that names its photo", () => {
     const first = currentId(store);
     const second = first + 1;
     await visit(store, second);
-    await store.update({ contrast: { kind: "manual", value: 25 } }, false, first);
-    await store.update({ contrast: { kind: "manual", value: 30 } }, true, first);
-    expect((await api.getSettings(first)).settings.contrast).toEqual({ kind: "manual", value: 30 });
-    expect((await api.getSettings(second)).settings.contrast).toEqual({ kind: "auto" });
-    expect(store.getState().settings[second]?.settings.contrast).toEqual({ kind: "auto" });
+    await store.update(mainGradePatch({ contrast: { kind: "manual", value: 25 } }), false, first);
+    await store.update(mainGradePatch({ contrast: { kind: "manual", value: 30 } }), true, first);
+    expect(mainGradeOf((await api.getSettings(first)).settings).contrast).toEqual({ kind: "manual", value: 30 });
+    expect(mainGradeOf((await api.getSettings(second)).settings).contrast).toEqual({ kind: "auto" });
+    expect(mainGradeOf(store.getState().settings[second]!.settings).contrast).toEqual({ kind: "auto" });
     // The drag is one undo step of the photo it was made on.
     await store.setCurrent(first);
     expect(store.getState().canUndo).toBe(true);
@@ -196,9 +197,9 @@ describe("a patch that names its photo", () => {
     await store.setCurrent(second);
     await store.setLookIntensity(60, true, first);
     expect(apply).toHaveBeenCalledWith("all", SIGNATURE, 60);
-    expect((await api.getSettings(first)).values.look_intensity).toBe(60);
-    expect((await api.getSettings(second)).values).toMatchObject({ look: SIGNATURE, look_intensity: 60 });
-    await vi.waitFor(() => expect(store.getState().settings[second]?.values).toMatchObject({ look: SIGNATURE, look_intensity: 60 }));
+    expect((await api.getSettings(first)).values.output.look_intensity).toBe(60);
+    expect((await api.getSettings(second)).values.output).toMatchObject({ look: SIGNATURE, look_intensity: 60 });
+    await vi.waitFor(() => expect(store.getState().settings[second]?.values.output).toMatchObject({ look: SIGNATURE, look_intensity: 60 }));
   });
 });
 
@@ -206,7 +207,7 @@ describe("Paste settings to Picked", () => {
   it("pastes onto the photos that were picked when it was asked for", async () => {
     const { api, store } = await opened({ picked: [1, 2] }); // photos 2 and 3
     // Copied from photo 1 with a manual white balance, so the paste first has to look at the source's own settings.
-    await store.update({ white_balance: { kind: "manual", kelvin: 4300, tint: 2 }, look: TEAL });
+    await store.update({ nodes: { input: { white_balance: { kind: "manual", kelvin: 4300, tint: 2 } }, output: { look: TEAL } } });
     await store.copySettings();
     const pasted = store.pasteSettings("picked");
     // The picks change while the paste is still finding out what to leave out.

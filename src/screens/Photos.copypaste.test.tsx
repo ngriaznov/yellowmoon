@@ -6,6 +6,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openPhotos, renderApp, tools } from "../test/harness";
 import type { Harness } from "../test/harness";
+import { inputOf, inputPatch, mainGradeOf, mainGradePatch } from "../state/settingsGraph";
 
 /** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
 const manual = (value: number) => ({ kind: "manual", value }) as const;
@@ -27,7 +28,7 @@ const header = (): HTMLElement => screen.getByRole("navigation", { name: "Action
 const foot = (): HTMLElement => within(tools()).getByRole("group", { name: "Copy and paste settings" });
 const copyButton = (): HTMLElement => within(foot()).getByRole("button", { name: "Copy settings" });
 const pasteButton = (): HTMLElement => within(foot()).getByRole("button", { name: "Paste" });
-const contrastOf = (id: number): Promise<number> => h!.api.getSettings(id).then((rs) => rs.values.contrast);
+const contrastOf = (id: number): Promise<number> => h!.api.getSettings(id).then((rs) => rs.values.main.grade.contrast);
 
 const dropOnWindow = (...names: string[]): void => {
   const data = { types: ["Files"], files: names.map((name) => ({ name })), dropEffect: "none" };
@@ -154,7 +155,7 @@ describe("Copy settings and Paste", () => {
 
   it("copy on one photo and paste on another: its settings follow, its crop does not, and Undo puts it back", async () => {
     await setup();
-    await h!.store.update({ contrast: manual(25), exposure: { kind: "manual", ev: 0.9 }, orientation: 90 });
+    await h!.store.update({ nodes: { input: { exposure: { kind: "manual", ev: 0.9 }, orientation: 90 }, "1": { grade: { contrast: manual(25) } } } });
     await h!.user.click(copyButton());
     expect(await screen.findByRole("status")).toHaveTextContent("Copied the settings of DSC04204.");
     expect(pasteButton()).not.toHaveAttribute("aria-disabled");
@@ -162,13 +163,13 @@ describe("Copy settings and Paste", () => {
 
     await h!.user.click(screen.getByRole("button", { name: "Show DSC04206" }));
     await waitFor(() => expect(h!.store.currentSettings()?.photo_id).toBe(6));
-    await h!.store.update({ crop: { rect: { x: 0.2, y: 0.1, width: 0.5, height: 0.7 }, angle_deg: 0, aspect: "free" } });
+    await h!.store.update(inputPatch({ crop: { rect: { x: 0.2, y: 0.1, width: 0.5, height: 0.7 }, angle_deg: 0, aspect: "free" } }));
     await h!.user.click(pasteButton());
-    await waitFor(() => expect(h!.store.currentSettings()?.settings.contrast).toEqual(manual(25)));
+    await waitFor(() => expect(mainGradeOf(h!.store.currentSettings()!.settings).contrast).toEqual(manual(25)));
     const pasted = h!.store.currentSettings()!;
-    expect(pasted.settings.exposure).toEqual({ kind: "manual", ev: 0.9 });
-    expect(pasted.settings.orientation).toBe(0);
-    expect(pasted.settings.crop?.rect.width).toBe(0.5);
+    expect(inputOf(pasted.settings).exposure).toEqual({ kind: "manual", ev: 0.9 });
+    expect(inputOf(pasted.settings).orientation).toBe(0);
+    expect(inputOf(pasted.settings).crop?.rect.width).toBe(0.5);
     expect(screen.getByRole("status")).toHaveTextContent("Pasted the settings of DSC04204.");
     // The sliders show it.
     await waitFor(() => expect(screen.getByRole("tab", { name: "Light" })).toBeInTheDocument());
@@ -176,8 +177,8 @@ describe("Copy settings and Paste", () => {
     await waitFor(() => expect((screen.getByRole("textbox", { name: "Contrast value" }) as HTMLInputElement).value).toBe("+25"));
 
     await h!.user.keyboard("{Meta>}z{/Meta}");
-    await waitFor(() => expect(h!.store.currentSettings()?.settings.contrast).toEqual({ kind: "auto" }));
-    expect(h!.store.currentSettings()?.settings.crop?.rect.width).toBe(0.5);
+    await waitFor(() => expect(mainGradeOf(h!.store.currentSettings()!.settings).contrast).toEqual({ kind: "auto" }));
+    expect(inputOf(h!.store.currentSettings()!.settings).crop?.rect.width).toBe(0.5);
     // The photo it came from kept its settings.
     expect(await contrastOf(4)).toBe(25);
   });
@@ -196,7 +197,7 @@ describe("Copy settings and Paste", () => {
 
   it("⇧⌘C copies and ⇧⌘V pastes, and plain ⌘C and ⌘V are not theirs", async () => {
     await setup();
-    await h!.store.update({ contrast: manual(14) });
+    await h!.store.update(mainGradePatch({ contrast: manual(14) }));
     await h!.user.keyboard("{Meta>}c{/Meta}");
     expect(h!.store.getState().copied).toBeNull();
     await h!.user.keyboard("{Meta>}{Shift>}c{/Shift}{/Meta}");
@@ -211,7 +212,7 @@ describe("Copy settings and Paste", () => {
 
   it("⌥⇧⌘V pastes onto every picked photo", async () => {
     await setup();
-    await h!.store.update({ contrast: manual(18) });
+    await h!.store.update(mainGradePatch({ contrast: manual(18) }));
     await h!.user.keyboard("{Meta>}{Shift>}c{/Shift}{/Meta}");
     await waitFor(() => expect(h!.store.getState().copied).not.toBeNull());
     await h!.user.keyboard("{Meta>}{Alt>}{Shift>}v{/Shift}{/Alt}{/Meta}");

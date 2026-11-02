@@ -8,6 +8,7 @@ import type { MockApi, MockOptions } from "../api.mock";
 import type { PasteReport, PhotoSummary, ResolvedSettings, SessionState, SettingsPatch } from "../api/types";
 import { ALREADY_OPEN_NOTICE, createStore, NO_ARW_NOTICE, openedNotice, pastedNotice } from "./store";
 import type { AppStore } from "./store";
+import { inputOf, inputPatch, mainGradeOf, mainGradePatch, outputOf } from "./settingsGraph";
 
 /** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
 const manual = (value: number) => ({ kind: "manual", value }) as const;
@@ -47,14 +48,7 @@ const names = (store: AppStore): string[] => (store.getState().session?.photos ?
 
 /** Edits the current photo with a patch of every kind: a manual exposure, contrast, a look, a crop and a turn. */
 async function editCurrent(store: AppStore): Promise<void> {
-  await store.update({
-    exposure: { kind: "manual", ev: 0.8 },
-    contrast: manual(20),
-    look: "builtin:signature",
-    look_intensity: 70,
-    crop: { rect: { x: 0.1, y: 0.1, width: 0.6, height: 0.6 }, angle_deg: 2, aspect: "free" },
-    orientation: 90,
-  });
+  await store.update({ nodes: { input: { exposure: { kind: "manual", ev: 0.8 }, crop: { rect: { x: 0.1, y: 0.1, width: 0.6, height: 0.6 }, angle_deg: 2, aspect: "free" }, orientation: 90 }, "1": { grade: { contrast: manual(20) } }, output: { look: "builtin:signature", look_intensity: 70 } } });
 }
 
 describe("the notices", () => {
@@ -208,19 +202,19 @@ describe("Copy settings", () => {
     const copied = store.getState().copied!;
     expect(copied.source).toBe("DSC04201");
     expect(store.getState().notice).toBe("Copied the settings of DSC04201.");
-    expect(copied.patch).toMatchObject({ contrast: manual(20), look: "builtin:signature", look_intensity: 70, exposure: { kind: "manual", ev: 0.8 } });
-    for (const key of ["crop", "orientation", "white_pick"]) expect(copied.patch).not.toHaveProperty(key);
+    expect(copied.patch).toMatchObject({ nodes: { input: { exposure: { kind: "manual", ev: 0.8 } }, "1": { grade: { contrast: manual(20) } }, output: { look: "builtin:signature", look_intensity: 70 } } });
+    for (const key of ["crop", "orientation", "white_pick"]) expect(copied.patch.nodes?.input).not.toHaveProperty(key);
     // Auto stays Auto.
-    expect(copied.patch.white_balance).toEqual({ kind: "auto" });
-    expect(copied.patch.sharpen).toEqual({ kind: "auto" });
+    expect(copied.patch.nodes?.input?.white_balance).toEqual({ kind: "auto" });
+    expect(copied.patch.nodes?.input?.sharpen).toEqual({ kind: "auto" });
   });
 
   it("waits for the patches still on their way, so the copy has the last value", async () => {
     const { store } = await onPhotos();
-    const sending = store.update({ contrast: manual(33) });
+    const sending = store.update(mainGradePatch({ contrast: manual(33) }));
     await store.copySettings();
     await sending;
-    expect(store.getState().copied?.patch.contrast).toEqual(manual(33));
+    expect(store.getState().copied?.patch.nodes?.["1"]?.grade?.contrast).toEqual(manual(33));
   });
 
   it("does nothing for a photo that is not developed", async () => {
@@ -248,24 +242,27 @@ describe("Paste settings", () => {
     await store.setCurrent(2);
     await vi.waitFor(() => expect(store.currentSettings()?.photo_id).toBe(2));
     // This photo has a crop of its own.
-    await store.update({ crop: { rect: { x: 0, y: 0.2, width: 0.9, height: 0.5 }, angle_deg: -1, aspect: "original" } });
+    await store.update(inputPatch({ crop: { rect: { x: 0, y: 0.2, width: 0.9, height: 0.5 }, angle_deg: -1, aspect: "original" } }));
     await store.pasteSettings("this");
 
     const rs = settingsOf(store);
     expect(store.getState().notice).toBe("Pasted the settings of DSC04201.");
-    expect(rs.settings).toMatchObject({ contrast: manual(20), look: "builtin:signature", look_intensity: 70, exposure: { kind: "manual", ev: 0.8 }, orientation: 0 });
-    expect(rs.settings.crop?.angle_deg).toBe(-1);
-    expect(rs.values.exposure_ev).toBe(0.8);
+    expect(mainGradeOf(rs.settings).contrast).toEqual(manual(20));
+    expect(outputOf(rs.settings)).toMatchObject({ look: "builtin:signature", look_intensity: 70 });
+    expect(inputOf(rs.settings)).toMatchObject({ exposure: { kind: "manual", ev: 0.8 }, orientation: 0 });
+    expect(inputOf(rs.settings).crop?.angle_deg).toBe(-1);
+    expect(rs.values.input.exposure_ev).toBe(0.8);
 
     // One Undo takes the whole paste back and leaves the crop alone; Redo does it again.
     expect(store.getState().canUndo).toBe(true);
     await store.undo();
-    await vi.waitFor(() => expect(settingsOf(store).settings.contrast).toEqual({ kind: "auto" }));
-    expect(settingsOf(store).settings).toMatchObject({ exposure: { kind: "auto" }, look_intensity: 100 });
-    expect(settingsOf(store).settings.crop?.angle_deg).toBe(-1);
+    await vi.waitFor(() => expect(mainGradeOf(settingsOf(store).settings).contrast).toEqual({ kind: "auto" }));
+    expect(inputOf(settingsOf(store).settings).exposure).toEqual({ kind: "auto" });
+    expect(outputOf(settingsOf(store).settings).look_intensity).toBe(100);
+    expect(inputOf(settingsOf(store).settings).crop?.angle_deg).toBe(-1);
     await store.redo();
-    await vi.waitFor(() => expect(settingsOf(store).settings.contrast).toEqual(manual(20)));
-    expect(settingsOf(store).values.exposure_ev).toBe(0.8);
+    await vi.waitFor(() => expect(mainGradeOf(settingsOf(store).settings).contrast).toEqual(manual(20)));
+    expect(settingsOf(store).values.input.exposure_ev).toBe(0.8);
   });
 
   it("applies them to every picked photo, the current one too, one undo step in each photo's own history", async () => {
@@ -282,12 +279,12 @@ describe("Paste settings", () => {
     expect(report).toHaveBeenCalledTimes(1);
     expect(report.mock.calls[0]![0]).toEqual([3, 5, 7]);
     expect(store.getState().notice).toBe("Pasted the settings of DSC04201 to 3 photos.");
-    for (const id of [3, 5, 7]) expect((await api.getSettings(id)).settings.contrast).toEqual(manual(20));
-    expect((await api.getSettings(1)).settings.contrast).toEqual(manual(20));
-    expect((await api.getSettings(2)).settings.contrast).toEqual({ kind: "auto" });
+    for (const id of [3, 5, 7]) expect(mainGradeOf((await api.getSettings(id)).settings).contrast).toEqual(manual(20));
+    expect(mainGradeOf((await api.getSettings(1)).settings).contrast).toEqual(manual(20));
+    expect(mainGradeOf((await api.getSettings(2)).settings).contrast).toEqual({ kind: "auto" });
     // The photos that were not shown have no settings in the mirror until they are.
     expect(store.getState().settings[5]).toBeUndefined();
-    expect(settingsOf(store).settings.contrast).toEqual(manual(20));
+    expect(mainGradeOf(settingsOf(store).settings).contrast).toEqual(manual(20));
 
     // Each photo undoes its own paste.
     for (const id of [5, 7, 3]) {
@@ -295,15 +292,15 @@ describe("Paste settings", () => {
       await vi.waitFor(() => expect(store.currentSettings()?.photo_id).toBe(id));
       expect(store.getState().canUndo, `photo ${id}`).toBe(true);
       await store.undo();
-      await vi.waitFor(() => expect(settingsOf(store).settings.contrast).toEqual({ kind: "auto" }));
+      await vi.waitFor(() => expect(mainGradeOf(settingsOf(store).settings).contrast).toEqual({ kind: "auto" }));
     }
-    expect((await api.getSettings(5)).settings.contrast).toEqual({ kind: "auto" });
-    expect((await api.getSettings(1)).settings.contrast).toEqual(manual(20));
+    expect(mainGradeOf((await api.getSettings(5)).settings).contrast).toEqual({ kind: "auto" });
+    expect(mainGradeOf((await api.getSettings(1)).settings).contrast).toEqual(manual(20));
   });
 
   it("counts the photos it had to skip", async () => {
     const { store } = await onPhotos({ picked: [1, 2], skipped: { DSC04203: "This file is not a raw file." } });
-    await store.update({ contrast: manual(15) });
+    await store.update(mainGradePatch({ contrast: manual(15) }));
     await store.copySettings();
     await store.pasteSettings("picked");
     // DSC04202 took it; DSC04203 could not be opened.
@@ -324,7 +321,7 @@ describe("Paste settings", () => {
 
   it("shows the core's refusal and records nothing", async () => {
     const { api, store } = await onPhotos();
-    await store.update({ contrast: manual(9) });
+    await store.update(mainGradePatch({ contrast: manual(9) }));
     await store.copySettings();
     await store.setCurrent(2);
     await vi.waitFor(() => expect(store.currentSettings()?.photo_id).toBe(2));
@@ -332,19 +329,19 @@ describe("Paste settings", () => {
     await store.pasteSettings("this");
     expect(store.getState().error?.message).toBe("That look isn't in the library any more. Import it again.");
     expect(store.getState().canUndo).toBe(false);
-    expect(settingsOf(store).settings.contrast).toEqual({ kind: "auto" });
+    expect(mainGradeOf(settingsOf(store).settings).contrast).toEqual({ kind: "auto" });
   });
 
   it("does not undo a paste on the photo it came from when there was nothing to change", async () => {
     const { store } = await onPhotos();
-    await store.update({ contrast: manual(9) });
+    await store.update(mainGradePatch({ contrast: manual(9) }));
     await store.copySettings();
     const undoDepth = store.getState().canUndo;
     await store.pasteSettings("this");
     expect(store.getState().notice).toBe("Pasted the settings of DSC04201.");
     // The photo already had them: no new step (the one for the contrast edit is still there).
     await store.undo();
-    await vi.waitFor(() => expect(settingsOf(store).settings.contrast).toEqual({ kind: "auto" }));
+    await vi.waitFor(() => expect(mainGradeOf(settingsOf(store).settings).contrast).toEqual({ kind: "auto" }));
     expect(undoDepth).toBe(true);
   });
 });
@@ -352,9 +349,9 @@ describe("Paste settings", () => {
 describe("Paste settings, the edge cases", () => {
   /** A white picked on the current photo with the white balance back on Auto: its white is a picked one. */
   async function pickWhiteOnCurrent(store: AppStore): Promise<void> {
-    await store.update({ white_pick: [0.5, 0.5] });
-    await store.update({ white_balance: { kind: "auto" } });
-    const s = settingsOf(store).settings;
+    await store.update(inputPatch({ white_pick: [0.5, 0.5] }));
+    await store.update(inputPatch({ white_balance: { kind: "auto" } }));
+    const s = inputOf(settingsOf(store).settings);
     expect(s.white_pick).not.toBeNull();
     expect(s.white_balance).toEqual({ kind: "auto" });
     expect(s.light_source).toBe("auto");
@@ -364,7 +361,7 @@ describe("Paste settings, the edge cases", () => {
     const { api, store } = await onPhotos();
     await pickWhiteOnCurrent(store);
     await store.copySettings();
-    const manual = store.getState().copied!.patch.white_balance;
+    const manual = store.getState().copied!.patch.nodes?.input?.white_balance;
     expect(manual?.kind).toBe("manual");
     await store.pickAll();
     const spy = vi.spyOn(api, "pasteSettings");
@@ -375,12 +372,12 @@ describe("Paste settings, the edge cases", () => {
     expect(spy.mock.calls[0]![0]).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     expect(store.getState().notice).toBe("Pasted the settings of DSC04201 to 11 photos.");
     const source = await api.getSettings(1);
-    expect(source.settings.white_balance).toEqual({ kind: "auto" });
-    expect(source.settings.white_pick).not.toBeNull();
-    for (const id of [2, 7, 12]) expect((await api.getSettings(id)).settings.white_balance).toEqual(manual);
+    expect(inputOf(source.settings).white_balance).toEqual({ kind: "auto" });
+    expect(inputOf(source.settings).white_pick).not.toBeNull();
+    for (const id of [2, 7, 12]) expect(inputOf((await api.getSettings(id)).settings).white_balance).toEqual(manual);
     // No new step on the source: one Undo takes back the last edit it had (the white balance going back to Auto), not a paste.
     await store.undo();
-    await vi.waitFor(() => expect(settingsOf(store).settings.white_balance.kind).toBe("manual"));
+    await vi.waitFor(() => expect(inputOf(settingsOf(store).settings).white_balance.kind).toBe("manual"));
   });
 
   it("says so when the source is the only picked photo, and sends nothing", async () => {
@@ -392,21 +389,21 @@ describe("Paste settings, the edge cases", () => {
     await store.pasteSettings("picked");
     expect(spy).not.toHaveBeenCalled();
     expect(store.getState().notice).toBe("No other photos are picked.");
-    expect(settingsOf(store).settings.white_balance).toEqual({ kind: "auto" });
+    expect(inputOf(settingsOf(store).settings).white_balance).toEqual({ kind: "auto" });
   });
 
   it("still pastes onto the source when its white was not a picked one", async () => {
     const { api, store } = await onPhotos();
-    await store.update({ contrast: manual(15) });
+    await store.update(mainGradePatch({ contrast: manual(15) }));
     await store.copySettings();
-    await store.update({ contrast: manual(40) });
+    await store.update(mainGradePatch({ contrast: manual(40) }));
     await store.setPicked(1, true);
     await store.setPicked(2, true);
     const spy = vi.spyOn(api, "pasteSettings");
     await store.pasteSettings("picked");
     // Pasting back onto the source restores it to what was copied.
     expect(spy.mock.calls[0]![0]).toEqual([1, 2]);
-    expect(settingsOf(store).settings.contrast).toEqual(manual(15));
+    expect(mainGradeOf(settingsOf(store).settings).contrast).toEqual(manual(15));
   });
 
   it("forgets which photo the settings came from when the session closes, so another session's photo with that id is not left out", async () => {
@@ -438,47 +435,88 @@ describe("Paste settings, the edge cases", () => {
     await vi.waitFor(() => expect(spy).toHaveBeenCalled());
     await store.setCurrent(5);
     await vi.waitFor(() => expect(store.currentSettings()?.photo_id).toBe(5));
-    expect(settingsOf(store).settings.contrast).toEqual({ kind: "auto" });
+    expect(mainGradeOf(settingsOf(store).settings).contrast).toEqual({ kind: "auto" });
     release();
     await pasting;
 
     // The tool panel of photo 5 has its settings, and they are the pasted ones, not the ones read before the paste.
     await vi.waitFor(() => expect(store.currentSettings()).not.toBeNull());
     expect(settingsOf(store).photo_id).toBe(5);
-    expect(settingsOf(store).settings.contrast).toEqual(manual(20));
+    expect(mainGradeOf(settingsOf(store).settings).contrast).toEqual(manual(20));
     expect(store.getState().notice).toBe("Pasted the settings of DSC04201 to 3 photos.");
   });
 
   it("keeps the paste a step of its own when a crop was open on the photo", async () => {
     const { store } = await onPhotos();
-    await store.update({ contrast: manual(20), look_intensity: 60 });
+    await store.update({ nodes: { "1": { grade: { contrast: manual(20) } }, output: { look_intensity: 60 } } });
     await store.copySettings();
     await store.setCurrent(2);
     await vi.waitFor(() => expect(store.currentSettings()?.photo_id).toBe(2));
     const crop = { rect: { x: 0.1, y: 0.1, width: 0.6, height: 0.6 }, angle_deg: 2, aspect: "free" as const };
     // The crop is being dragged (not final), the paste comes in, and Done ends the crop.
-    await store.update({ crop, orientation: 90 }, false);
+    await store.update(inputPatch({ crop, orientation: 90 }), false);
     await store.pasteSettings("this");
-    expect(settingsOf(store).settings).toMatchObject({ contrast: manual(20), look_intensity: 60 });
-    await store.update({ crop, orientation: 90 }, true);
+    expect(mainGradeOf(settingsOf(store).settings).contrast).toEqual(manual(20));
+    expect(outputOf(settingsOf(store).settings).look_intensity).toBe(60);
+    await store.update(inputPatch({ crop, orientation: 90 }), true);
 
     // Two steps: the crop and the paste. The first Undo takes back the crop and the turn only.
     await store.undo();
-    await vi.waitFor(() => expect(settingsOf(store).settings.orientation).toBe(0));
-    expect(settingsOf(store).settings).toMatchObject({ contrast: manual(20), look_intensity: 60, crop: null });
+    await vi.waitFor(() => expect(inputOf(settingsOf(store).settings).orientation).toBe(0));
+    expect(mainGradeOf(settingsOf(store).settings).contrast).toEqual(manual(20));
+    expect(outputOf(settingsOf(store).settings).look_intensity).toBe(60);
+    expect(inputOf(settingsOf(store).settings).crop).toBeNull();
     // The second takes back the paste.
     expect(store.getState().canUndo).toBe(true);
     await store.undo();
-    await vi.waitFor(() => expect(settingsOf(store).settings.contrast).toEqual({ kind: "auto" }));
-    expect(settingsOf(store).settings.look_intensity).toBe(100);
+    await vi.waitFor(() => expect(mainGradeOf(settingsOf(store).settings).contrast).toEqual({ kind: "auto" }));
+    expect(outputOf(settingsOf(store).settings).look_intensity).toBe(100);
     expect(store.getState().canUndo).toBe(false);
+  });
+});
+
+describe("Copy and Paste carry the graph (docs/23 section 3.8)", () => {
+  const link = (from: number | "input", to: number | "output") => ({ from: { node: from, port: "picture" as const }, to: { node: to, port: "picture" as const } });
+
+  it("copies every node and every link, and a paste replaces the target's graph as one undo step", async () => {
+    const { store } = await onPhotos();
+    // The photo on screen: node 2 after Main with a trim, and Main's contrast.
+    await store.update({
+      nodes: { "2": { kind: "corrector", name: "Warmth", trim: { temperature: 30 } }, "1": { grade: { contrast: manual(20) } } },
+      links: [link("input", 1), link(1, 2), link(2, "output")],
+    });
+    await store.copySettings();
+    expect(Object.keys(store.getState().copied!.patch.nodes ?? {}).sort()).toEqual(["1", "2", "input", "output"]);
+    expect(store.getState().copied!.patch.links).toHaveLength(3);
+
+    // Another photo has a node of its own, a crop and a turn.
+    await store.setCurrent(2);
+    await vi.waitFor(() => expect(store.currentSettings()?.photo_id).toBe(2));
+    await store.update({
+      nodes: { "5": { kind: "corrector", name: "Own" }, input: { orientation: 180 } },
+      links: [link("input", 1), link(1, 5), link(5, "output")],
+    });
+    const own = settingsOf(store).settings;
+    await store.pasteSettings("this");
+    await vi.waitFor(() => expect(settingsOf(store).settings.nodes.items.map((n) => n.id)).toEqual(["input", 1, 2, "output"]));
+    expect(settingsOf(store).settings.nodes.links).toHaveLength(3);
+    expect(mainGradeOf(settingsOf(store).settings).contrast).toEqual(manual(20));
+    expect(settingsOf(store).values.nodes.map((n) => [n.id, n.name])).toEqual([[2, "Warmth"]]);
+    // The photo keeps its own turn.
+    expect(inputOf(settingsOf(store).settings).orientation).toBe(180);
+
+    // One Undo takes the whole paste back (node 5 returns, node 2 goes) and Redo does it again.
+    await store.undo();
+    await vi.waitFor(() => expect(settingsOf(store).settings).toEqual(own));
+    await store.redo();
+    await vi.waitFor(() => expect(settingsOf(store).settings.nodes.items.map((n) => n.id)).toEqual(["input", 1, 2, "output"]));
   });
 });
 
 describe("what is copied stays in memory", () => {
   it("is kept when the session closes, so it can go to another folder", async () => {
     const { store } = await onPhotos();
-    await store.update({ contrast: manual(12) });
+    await store.update(mainGradePatch({ contrast: manual(12) }));
     await store.copySettings();
     await store.closeSession();
     expect(store.getState().session).toBeNull();
@@ -495,7 +533,7 @@ describe("what is copied stays in memory", () => {
     Object.defineProperty(navigator, "clipboard", { value: clipboard, configurable: true });
     const preferences = JSON.stringify(await api.preferencesGet());
     const setPreferences = vi.spyOn(api, "preferencesSet");
-    await store.update({ contrast: manual(12) });
+    await store.update(mainGradePatch({ contrast: manual(12) }));
     await store.copySettings();
     await store.pasteSettings("this");
     expect(JSON.stringify(await api.preferencesGet())).toBe(preferences);
@@ -542,7 +580,7 @@ describe("the native menu's items", () => {
     const spy = vi.spyOn(api, "setMenuState");
     await vi.waitFor(() => expect(api.menuState?.copy_settings).toBe(true));
     spy.mockClear();
-    await store.update({ contrast: manual(5) });
+    await store.update(mainGradePatch({ contrast: manual(5) }));
     await store.setZoom({ kind: "percent", value: 100 });
     await store.toggleBefore();
     expect(spy).not.toHaveBeenCalled();

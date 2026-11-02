@@ -58,7 +58,7 @@ type Lens = { kind: string; flares: number; edges: number; anamorphic: number };
 
 /** The `lens` of every `update_settings` call recorded so far. */
 async function lensPatches(calls: () => Promise<Array<{ args: unknown[] }>>): Promise<Lens[]> {
-  return (await calls()).map((c) => (c.args[1] as { lens: Lens }).lens);
+  return (await calls()).map((c) => (c.args[1] as { nodes: { input: { lens: Lens } } }).nodes.input.lens);
 }
 
 test.describe("the Lens tab", () => {

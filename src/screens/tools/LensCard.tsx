@@ -1,6 +1,7 @@
 import { Card, ChoiceList, formats, ResetLink, RowNote, Slider } from "../../components";
 import type { LensInfo, LensKind, LensSettings, ResolvedSettings } from "../../api/types";
 import { useAppState } from "../../state/context";
+import { inputPatch } from "../../state/settingsGraph";
 import type { AppStore } from "../../state/store";
 
 /** The note under the Lens card's row while the lens data could not be loaded (`docs/21` §1: the list is empty, so nothing can be chosen). */
@@ -27,7 +28,7 @@ interface LensCardProps {
 
 /** Sends the whole `lens` object, the photo's values with the change in them, for the photo the card was drawn for. */
 const sendLens = (store: AppStore, rs: ResolvedSettings, next: LensSettings, final: boolean): void =>
-  void store.update({ lens: next }, final, rs.photo_id);
+  void store.update(inputPatch({ lens: next }), final, rs.photo_id);
 
 /**
  * The Lens tab's Lens card (`docs/21` §1, `docs/11` *Lens card*): the seven lenses as a list, one row each with its name and its line
@@ -40,7 +41,7 @@ const sendLens = (store: AppStore, rs: ResolvedSettings, next: LensSettings, fin
  */
 export function LensCard({ store, rs }: LensCardProps) {
   const lenses = useAppState((s) => s.lenses);
-  const lens = rs.values.lens;
+  const lens = rs.values.input.lens;
   const missing = lenses !== null && lenses.length === 0;
   const unusable = lenses === null || missing;
   const options = unusable
@@ -72,7 +73,7 @@ export function LensCard({ store, rs }: LensCardProps) {
  */
 export function AmountsCard({ store, rs }: LensCardProps) {
   const lenses = useAppState((s) => s.lenses);
-  const lens = rs.values.lens;
+  const lens = rs.values.input.lens;
   const missing = lenses !== null && lenses.length === 0;
   const send = (next: LensSettings, final: boolean): void => sendLens(store, rs, next, final);
 

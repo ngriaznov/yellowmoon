@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SettingsPatch } from "../api/types";
 import { openPhotos, openTab, renderApp, sliderName, sliderOf, valueOf } from "../test/harness";
 import type { Harness, UpdateSpy } from "../test/harness";
+import { inputOf, inputPatch, mainGradeOf, mainGradePatch } from "../state/settingsGraph";
 
 /** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
 const manual = (value: number) => ({ kind: "manual", value }) as const;
@@ -67,31 +68,31 @@ describe("the Tone card on the Look tab", () => {
   it("Saturation: moving either copy moves the other", async () => {
     const spy = await setup();
     await type("Saturation", "40");
-    expect(await lastPatch(spy)).toEqual({ saturation: manual(40) });
+    expect(await lastPatch(spy)).toEqual(mainGradePatch({ saturation: manual(40) }));
     await waitFor(() => expect(valueOf("Saturation")).toBe("+40"));
     await openTab(h, "Colour");
     expect(valueOf("Saturation")).toBe("+40");
     spy.mockClear();
     await type("Saturation", "-25");
-    expect(await lastPatch(spy)).toEqual({ saturation: manual(-25) });
+    expect(await lastPatch(spy)).toEqual(mainGradePatch({ saturation: manual(-25) }));
     await openTab(h, "Look");
     await waitFor(() => expect(valueOf("Saturation")).toBe("−25"));
     // The key steps the slider by one, as it does on the Colour tab.
     sliderOf("Saturation").focus();
     await h.user.keyboard("{ArrowRight}");
     await waitFor(() => expect(valueOf("Saturation")).toBe("−24"));
-    expect(h.store.currentSettings()?.settings.saturation).toEqual(manual(-24));
+    expect(mainGradeOf(h.store.currentSettings()!.settings).saturation).toEqual(manual(-24));
   });
 
   it("Contrast: moving either copy moves the other", async () => {
     const spy = await setup();
     await type("Contrast", "35");
-    expect(await lastPatch(spy)).toEqual({ contrast: manual(35) });
+    expect(await lastPatch(spy)).toEqual(mainGradePatch({ contrast: manual(35) }));
     await openTab(h, "Light");
     await waitFor(() => expect(valueOf("Contrast")).toBe("+35"));
     spy.mockClear();
     await type("Contrast", "-60");
-    expect(await lastPatch(spy)).toEqual({ contrast: manual(-60) });
+    expect(await lastPatch(spy)).toEqual(mainGradePatch({ contrast: manual(-60) }));
     await openTab(h, "Look");
     await waitFor(() => expect(valueOf("Contrast")).toBe("−60"));
   });
@@ -99,7 +100,7 @@ describe("the Tone card on the Look tab", () => {
   it("Temperature: moving it makes the white balance Manual at that Kelvin with the Auto tint, on both tabs", async () => {
     const spy = await setup();
     await type("Temperature", "6500");
-    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "manual", kelvin: 6500, tint: 0 } });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ white_balance: { kind: "manual", kelvin: 6500, tint: 0 } }));
     await waitFor(() => expect(valueOf("Temperature")).toBe("6500 K"));
     expect(autoButton()).toHaveAttribute("aria-pressed", "false");
     // The Automatic card above reads the same light and says it was edited.
@@ -113,7 +114,7 @@ describe("the Tone card on the Look tab", () => {
     // And the other way round: Kelvin and Tint on the Colour tab show on the Look tab (Tint has no row there).
     spy.mockClear();
     await type("Kelvin", "4200");
-    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "manual", kelvin: 4200, tint: 0 } });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ white_balance: { kind: "manual", kelvin: 4200, tint: 0 } }));
     await type("Tint", "9");
     await waitFor(() => expect(valueOf("Tint")).toBe("+9"));
     await openTab(h, "Look");
@@ -121,7 +122,7 @@ describe("the Tone card on the Look tab", () => {
     // Moving Temperature keeps the tint that is set.
     spy.mockClear();
     await type("Temperature", "5000");
-    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "manual", kelvin: 5000, tint: 9 } });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ white_balance: { kind: "manual", kelvin: 5000, tint: 9 } }));
   });
 
   it("Temperature: Reset goes back to Auto, and the Colour tab is Auto again", async () => {
@@ -130,10 +131,10 @@ describe("the Tone card on the Look tab", () => {
     await waitFor(() => expect(valueOf("Temperature")).toBe("7000 K"));
     spy.mockClear();
     await h.user.click(screen.getByRole("button", { name: "Reset Temperature" }));
-    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null }));
     await waitFor(() => expect(valueOf("Temperature")).toBe("5450 K"));
     expect(autoButton()).toHaveAttribute("aria-pressed", "true");
-    expect(h.store.currentSettings()?.settings.white_balance).toEqual({ kind: "auto" });
+    expect(inputOf(h.store.currentSettings()!.settings).white_balance).toEqual({ kind: "auto" });
     await openTab(h, "Colour");
     expect(valueOf("Kelvin")).toBe("5450 K");
     expect(within(screen.getByRole("region", { name: "White balance" })).getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "true");
@@ -145,14 +146,14 @@ describe("the Tone card on the Look tab", () => {
     await waitFor(() => expect(autoButton()).toHaveAttribute("aria-pressed", "false"));
     spy.mockClear();
     await type("Temperature", "5450");
-    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "auto" } });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ white_balance: { kind: "auto" } }));
     await waitFor(() => expect(autoButton()).toHaveAttribute("aria-pressed", "true"));
 
     await type("Temperature", "6100");
     await waitFor(() => expect(autoButton()).toHaveAttribute("aria-pressed", "false"));
     spy.mockClear();
     await h.user.click(autoButton());
-    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null }));
     await waitFor(() => expect(autoButton()).toHaveAttribute("aria-pressed", "true"));
     expect(valueOf("Temperature")).toBe("5450 K");
   });
@@ -207,7 +208,7 @@ describe("the Tone card on the Look tab", () => {
     await waitFor(() => expect(valueOf("Saturation")).toBe("−45"));
     spy.mockClear();
     await h.user.click(screen.getByRole("button", { name: "Reset Saturation" }));
-    expect(await lastPatch(spy)).toEqual({ saturation: { kind: "auto" } });
+    expect(await lastPatch(spy)).toEqual(mainGradePatch({ saturation: { kind: "auto" } }));
     await waitFor(() => expect(valueOf("Saturation")).toBe("0"));
     expect(valueOf("Contrast")).toBe("+20");
     await h.user.click(screen.getByRole("button", { name: "Reset Contrast" }));
@@ -224,7 +225,7 @@ describe("the Tone card on the Look tab", () => {
     await waitFor(() => expect(valueOf("Saturation")).toBe("+18"));
     spy.mockClear();
     await h.user.click(tone().getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null, contrast: { kind: "auto" }, saturation: { kind: "auto" } });
+    expect(await lastPatch(spy)).toEqual({ nodes: { input: { white_balance: { kind: "auto" }, light_source: "auto", white_pick: null }, "1": { grade: { contrast: { kind: "auto" }, saturation: { kind: "auto" } } } } });
     await waitFor(() => expect(valueOf("Temperature")).toBe("5450 K"));
     expect(valueOf("Contrast")).toBe("0");
     expect(valueOf("Saturation")).toBe("0");
@@ -234,7 +235,7 @@ describe("the Tone card on the Look tab", () => {
   it("is also shown with the EDITED tag after a white was picked", async () => {
     await setup();
     expect(tone().queryByText("Edited")).toBeNull();
-    await h.store.update({ white_pick: [0.4, 0.5] });
+    await h.store.update(inputPatch({ white_pick: [0.4, 0.5] }));
     await waitFor(() => expect(tone().getByText("Edited")).toBeInTheDocument());
     expect(autoButton()).toHaveAttribute("aria-pressed", "false");
   });

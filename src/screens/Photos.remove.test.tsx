@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { openPhotos, renderApp } from "../test/harness";
 import type { Harness } from "../test/harness";
 import type { MockOptions } from "../api.mock";
+import { mainGradeOf, mainGradePatch } from "../state/settingsGraph";
 
 let h: Harness | undefined;
 afterEach(() => {
@@ -149,7 +150,7 @@ describe("Delete and Backspace", () => {
 describe("Undo", () => {
   it("is a button of the notice and puts the photos back with their settings", async () => {
     await setup();
-    await h!.store.update({ contrast: { kind: "manual", value: 30 } }, true);
+    await h!.store.update(mainGradePatch({ contrast: { kind: "manual", value: 30 } }), true);
     await h!.user.keyboard("{Delete}");
     await waitFor(() => expect(count()).toBe(11));
     await h!.user.click(within(notice()).getByRole("button", { name: "Undo" }));
@@ -158,7 +159,7 @@ describe("Undo", () => {
     expect(within(strip()).getByText("4 of 12 · 3 picked")).toBeInTheDocument();
     expect(notice()).toHaveTextContent("Put back DSC04204.");
     expect(within(notice()).queryByRole("button", { name: "Undo" })).toBeNull();
-    await waitFor(() => expect(h!.store.currentSettings()?.settings.contrast).toEqual({ kind: "manual", value: 30 }));
+    await waitFor(() => expect(mainGradeOf(h!.store.currentSettings()!.settings).contrast).toEqual({ kind: "manual", value: 30 }));
   });
 
   it("is ⌘Z while nothing changed since", async () => {

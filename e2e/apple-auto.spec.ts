@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { mainGradeOf } from "../src/state/settingsGraph";
 import { openApp, openPhotos, watchErrors } from "./helpers/app";
 
 // Apple Intelligence's Auto in the app (docs/19 sections 2 and 10, docs/22 section 12, docs/11) in a real browser against the mocked API.
@@ -205,7 +206,7 @@ test.describe("the sliders", () => {
     await page.getByRole("tab", { name: "Light" }).click();
     const box = page.getByRole("textbox", { name: "Contrast value" });
     await expect(box).toHaveValue("+15");
-    const settings = () => page.evaluate(async () => (await window.__yellowmoon!.mockApi.getSettings(4)).settings.contrast);
+    const settings = async () => mainGradeOf((await page.evaluate(() => window.__yellowmoon!.mockApi.getSettings(4))).settings).contrast;
     await box.fill("30");
     await box.press("Enter");
     await expect.poll(settings).toEqual({ kind: "manual", value: 30 });

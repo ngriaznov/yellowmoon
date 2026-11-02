@@ -5,6 +5,7 @@ import { mockRect } from "../test/raf";
 import { openPhotos, renderApp, valueOf } from "../test/harness";
 import type { Harness, UpdateSpy } from "../test/harness";
 import { canvasOf, fitInside, FULL_RECT } from "./crop/cropMath";
+import { inputOf, inputPatch } from "../state/settingsGraph";
 
 let h: Harness | undefined;
 afterEach(() => {
@@ -102,7 +103,7 @@ describe("the Crop panel", () => {
     await h!.user.keyboard("{Enter}");
     await screen.findByRole("complementary", { name: "Tools" });
     // Cancel ran (no crop was kept); Done did not also run.
-    expect(settings().values.crop).toBeNull();
+    expect(settings().values.input.crop).toBeNull();
     expect(h!.store.getState().canUndo).toBe(false);
   });
 
@@ -133,9 +134,9 @@ describe("the Crop panel", () => {
     await h!.user.click(box);
     await h!.user.clear(box);
     await h!.user.type(box, "3.5{Enter}");
-    await waitFor(() => expect(settings().values.crop?.angle_deg).toBe(3.5));
+    await waitFor(() => expect(settings().values.input.crop?.angle_deg).toBe(3.5));
     // While the panel is open the core is told the angle with the frame set to the whole photo.
-    expect(patches(spy).at(-1)).toEqual({ crop: { rect: { x: 0, y: 0, width: 1, height: 1 }, angle_deg: 3.5, aspect: "original" }, orientation: 0 });
+    expect(patches(spy).at(-1)).toEqual(inputPatch({ crop: { rect: { x: 0, y: 0, width: 1, height: 1 }, angle_deg: 3.5, aspect: "original" }, orientation: 0 }));
     expect(valueOf("Straighten")).toBe("+3.5°");
     expect(h!.store.getState().canUndo).toBe(false);
     // The photo in the browser shows the straightened picture.
@@ -143,10 +144,10 @@ describe("the Crop panel", () => {
     await h!.user.click(within(crop()).getByRole("button", { name: /^Done/ }));
     await screen.findByRole("complementary", { name: "Tools" });
     // The frame sent is the whole photo fitted inside the photo straightened by 3.5°: the largest 3:2 frame with no empty corner.
-    expect(settings().values.crop).toEqual({ rect: fitInside(FULL_RECT, 3.5, canvasOf(8640, 5760, 0)), angle_deg: 3.5, aspect: "original" });
+    expect(settings().values.input.crop).toEqual({ rect: fitInside(FULL_RECT, 3.5, canvasOf(8640, 5760, 0)), angle_deg: 3.5, aspect: "original" });
     expect(h!.store.getState().canUndo).toBe(true);
     await h!.user.keyboard("{Meta>}z{/Meta}");
-    await waitFor(() => expect(settings().values.crop).toBeNull());
+    await waitFor(() => expect(settings().values.input.crop).toBeNull());
     expect(h!.store.getState().canUndo).toBe(false);
   });
 
@@ -158,7 +159,7 @@ describe("the Crop panel", () => {
     await waitFor(() => expect(pct(frame(), "width")).toBeCloseTo(66.67, 1));
     expect(pct(frame(), "height")).toBeCloseTo(100, 1);
     expect(pct(frame(), "left")).toBeCloseTo(16.67, 1);
-    expect(patches(spy).at(-1)).toMatchObject({ crop: { aspect: "square" } });
+    expect(patches(spy).at(-1)).toMatchObject({ nodes: { input: { crop: { aspect: "square" } } } });
     // 16:9 keeps the shape landscape.
     await h!.user.click(within(crop()).getByRole("radio", { name: "16:9" }));
     await waitFor(() => expect(pct(frame(), "width")).toBeGreaterThan(pct(frame(), "height")));
@@ -172,14 +173,14 @@ describe("the Crop panel", () => {
     await startCrop();
     await h!.user.click(within(crop()).getByRole("radio", { name: "Free" }));
     await h!.user.click(within(crop()).getByRole("button", { name: "Rotate 90°" }));
-    await waitFor(() => expect(settings().values.orientation).toBe(90));
-    expect(patches(spy).at(-1)).toMatchObject({ orientation: 90 });
+    await waitFor(() => expect(settings().values.input.orientation).toBe(90));
+    expect(patches(spy).at(-1)).toMatchObject(inputPatch({ orientation: 90 }));
     // The portrait picture is drawn from a portrait frame.
     expect(photo().querySelector("img")?.getAttribute("src")).toContain("viewBox%3D%220%200%201000%201500%22");
     await h!.user.click(within(crop()).getByRole("button", { name: "Rotate 90°" }));
     await h!.user.click(within(crop()).getByRole("button", { name: "Rotate 90°" }));
     await h!.user.click(within(crop()).getByRole("button", { name: "Rotate 90°" }));
-    await waitFor(() => expect(settings().values.orientation).toBe(0));
+    await waitFor(() => expect(settings().values.input.orientation).toBe(0));
   });
 
   it("Done sends the frame, the angle and the orientation together", async () => {
@@ -194,14 +195,14 @@ describe("the Crop panel", () => {
     spy.mockClear();
     await h!.user.click(within(crop()).getByRole("button", { name: /^Done/ }));
     await waitFor(() => expect(spy).toHaveBeenCalled());
-    const sent = patches(spy).at(-1) as { crop: { rect: { x: number; y: number; width: number; height: number }; angle_deg: number; aspect: string }; orientation: number };
+    const sent = patches(spy).at(-1)?.nodes?.input as { crop: { rect: { x: number; y: number; width: number; height: number }; angle_deg: number; aspect: string }; orientation: number };
     expect(sent.orientation).toBe(0);
     expect(sent.crop.angle_deg).toBe(0);
     expect(sent.crop.aspect).toBe("free");
     expect(sent.crop.rect.x).toBeCloseTo(0, 5);
     expect(sent.crop.rect.width).toBeCloseTo(0.9, 5);
     expect(sent.crop.rect.height).toBeCloseTo(1, 5);
-    await waitFor(() => expect(settings().values.crop?.rect.width).toBeCloseTo(0.9, 5));
+    await waitFor(() => expect(settings().values.input.crop?.rect.width).toBeCloseTo(0.9, 5));
     // The photo is now shown cropped: a 0.9 × 1 piece of the frame.
     expect(photo().querySelector("img")?.getAttribute("src")).toContain("width%3D%221350%22");
   });
@@ -264,13 +265,13 @@ describe("the Crop panel", () => {
     const spy = await setup();
     await startCrop();
     await h!.user.click(within(crop()).getByRole("button", { name: "Rotate 90°" }));
-    await waitFor(() => expect(settings().values.orientation).toBe(90));
+    await waitFor(() => expect(settings().values.input.orientation).toBe(90));
     spy.mockClear();
     await h!.user.click(within(crop()).getByRole("button", { name: /^Cancel/ }));
     await screen.findByRole("complementary", { name: "Tools" });
-    expect(patches(spy).at(-1)).toEqual({ crop: null, orientation: 0 });
-    await waitFor(() => expect(settings().values.orientation).toBe(0));
-    expect(settings().values.crop).toBeNull();
+    expect(patches(spy).at(-1)).toEqual(inputPatch({ crop: null, orientation: 0 }));
+    await waitFor(() => expect(settings().values.input.orientation).toBe(0));
+    expect(settings().values.input.crop).toBeNull();
     expect(h!.store.getState().canUndo).toBe(false);
   });
 
@@ -291,7 +292,7 @@ describe("the Crop panel", () => {
     await h!.user.click(within(crop()).getByRole("button", { name: "Reset" }));
     await waitFor(() => expect(pct(frame(), "width")).toBe(100));
     expect(within(crop()).getByRole("radio", { name: "Original" })).toHaveAttribute("aria-checked", "true");
-    await waitFor(() => expect(settings().values.orientation).toBe(0));
+    await waitFor(() => expect(settings().values.input.orientation).toBe(0));
   });
 
   it("the arrows and the photo strip don't move to another photo mid-crop, and picking one ends the crop", async () => {
@@ -306,7 +307,7 @@ describe("the Crop panel", () => {
 
   it("a crop applied earlier is where the frame starts, and the picture shows it cropped", async () => {
     await setup();
-    await h!.store.update({ crop: { rect: { x: 0.1, y: 0.1, width: 0.5, height: 0.5 }, angle_deg: 0, aspect: "free" } });
+    await h!.store.update(inputPatch({ crop: { rect: { x: 0.1, y: 0.1, width: 0.5, height: 0.5 }, angle_deg: 0, aspect: "free" } }));
     await waitFor(() => expect(photo().querySelector("img")?.getAttribute("src")).toContain("viewBox%3D%22150%20100%20750%20500%22"));
     await startCrop();
     expect(within(crop()).getByRole("radio", { name: "Free" })).toHaveAttribute("aria-checked", "true");
@@ -350,7 +351,7 @@ describe("Pick white", () => {
     expect(input.mock.calls.at(-1)).toEqual([{ kind: "pick_white", x: 450, y: 150 }]);
     await waitFor(() => expect(within(photo()).queryByRole("application")).toBeNull());
     expect(screen.getByRole("tab", { name: "Colour" })).toHaveAttribute("aria-selected", "true");
-    await waitFor(() => expect(settings().settings.white_pick).toEqual([0.5, 0.25]));
+    await waitFor(() => expect(inputOf(settings().settings).white_pick).toEqual([0.5, 0.25]));
     // The screen did not work out the spot itself, and did not send it as a setting: the core set it and the screen read it back.
     expect(spy).not.toHaveBeenCalled();
     const card = within(screen.getByRole("region", { name: "White balance" }));
@@ -361,7 +362,7 @@ describe("Pick white", () => {
     // Reset clears the pick.
     spy.mockClear();
     await h!.user.click(card.getByRole("button", { name: "Reset" }));
-    await waitFor(() => expect(settings().settings.white_pick).toBeNull());
+    await waitFor(() => expect(inputOf(settings().settings).white_pick).toBeNull());
     expect(valueOf("Kelvin")).toBe("5450 K");
   });
 
@@ -385,7 +386,7 @@ describe("Pick white", () => {
   it("ignores a click on the paper around a letterboxed photo", async () => {
     await setup();
     const input = vi.spyOn(h!.api, "viewportInput");
-    await h!.store.update({ orientation: 90 });
+    await h!.store.update(inputPatch({ orientation: 90 }));
     await h!.user.keyboard("w");
     const layer = await within(photo()).findByRole("application");
     mockRect(layer, { left: 0, top: 0, width: 900, height: 600 });
@@ -397,14 +398,14 @@ describe("Pick white", () => {
     expect(within(photo()).getByRole("application")).toBeInTheDocument();
     fireEvent.click(layer, { clientX: 450, clientY: 300 });
     await waitFor(() => expect(input).toHaveBeenCalledWith({ kind: "pick_white", x: 450, y: 300 }));
-    await waitFor(() => expect(settings().settings.white_pick).not.toBeNull());
-    expect(settings().settings.white_pick?.map((v) => Math.round(v * 1000) / 1000)).toEqual([0.5, 0.5]);
+    await waitFor(() => expect(inputOf(settings().settings).white_pick).not.toBeNull());
+    expect(inputOf(settings().settings).white_pick?.map((v) => Math.round(v * 1000) / 1000)).toEqual([0.5, 0.5]);
   });
 
   it("at a fixed zoom the picture fills the cell and every click counts", async () => {
     await setup();
     const input = vi.spyOn(h!.api, "viewportInput");
-    await h!.store.update({ orientation: 90 });
+    await h!.store.update(inputPatch({ orientation: 90 }));
     await h!.store.setZoom({ kind: "percent", value: 100 });
     await h!.user.keyboard("w");
     const layer = await within(photo()).findByRole("application");
@@ -423,7 +424,7 @@ describe("Pick white", () => {
     fireEvent.click(layer, { clientX: 450, clientY: 300 });
     expect(await screen.findByText("That spot is too bright to be a white. Click something grey.")).toBeInTheDocument();
     expect(within(photo()).queryByRole("application")).toBeNull();
-    expect(settings().settings.white_pick).toBeNull();
+    expect(inputOf(settings().settings).white_pick).toBeNull();
     expect(h!.store.getState().canUndo).toBe(false);
   });
 
@@ -441,13 +442,13 @@ describe("Pick white", () => {
     const layer = await within(photo()).findByRole("application");
     mockRect(layer, { left: 0, top: 0, width: 900, height: 600 });
     fireEvent.click(layer, { clientX: 450, clientY: 300 });
-    await waitFor(() => expect(settings().settings.white_pick).not.toBeNull());
+    await waitFor(() => expect(inputOf(settings().settings).white_pick).not.toBeNull());
     expect(h!.store.getState().canUndo).toBe(true);
     await h!.user.keyboard("{Meta>}z{/Meta}");
-    await waitFor(() => expect(settings().settings.white_pick).toBeNull());
-    expect(settings().auto.white_balance).toBe(true);
+    await waitFor(() => expect(inputOf(settings().settings).white_pick).toBeNull());
+    expect(settings().auto.input.white_balance).toBe(true);
     // Redo asks the core for the same pick again.
     await h!.user.keyboard("{Meta>}{Shift>}z{/Shift}{/Meta}");
-    await waitFor(() => expect(settings().settings.white_pick).not.toBeNull());
+    await waitFor(() => expect(inputOf(settings().settings).white_pick).not.toBeNull());
   });
 });

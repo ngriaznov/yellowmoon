@@ -10,6 +10,7 @@ import { capturingPointer } from "../test/pointer";
 import { installManualRaf, mockRect } from "../test/raf";
 import { openPhotos, openTab, renderApp, sliderName, sliderOf, valueOf } from "../test/harness";
 import type { Harness, UpdateSpy } from "../test/harness";
+import { inputOf, inputPatch } from "../state/settingsGraph";
 
 let h: Harness;
 afterEach(() => h?.unmount());
@@ -77,17 +78,17 @@ describe("the Range card on the RAW tab", () => {
   it("a typed value is a rolloff patch that keeps the other slider, and Reset sends them back to 0.6 and 0.5", async () => {
     const spy = await setup();
     await type("Highlights", "0");
-    expect(await lastPatch(spy)).toEqual({ rolloff: { highlights: 0, low_light: 0.5 } });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ rolloff: { highlights: 0, low_light: 0.5 } }));
     await waitFor(() => expect(valueOf("Highlights")).toBe("0.00"));
     spy.mockClear();
     await type("Low light", "0.8");
-    expect(await lastPatch(spy)).toEqual({ rolloff: { highlights: 0, low_light: 0.8 } });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ rolloff: { highlights: 0, low_light: 0.8 } }));
     await waitFor(() => expect(valueOf("Low light")).toBe("0.80"));
-    expect(h.store.currentSettings()?.settings.rolloff).toEqual({ highlights: 0, low_light: 0.8 });
+    expect(inputOf(h.store.currentSettings()!.settings).rolloff).toEqual({ highlights: 0, low_light: 0.8 });
 
     spy.mockClear();
     await h.user.click(range().getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy)).toEqual({ rolloff: { highlights: 0.6, low_light: 0.5 } });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ rolloff: { highlights: 0.6, low_light: 0.5 } }));
     await waitFor(() => expect(valueOf("Highlights")).toBe("0.60"));
     expect(valueOf("Low light")).toBe("0.50");
   });
@@ -109,10 +110,10 @@ describe("the Range card on the RAW tab", () => {
         raf.flush();
       });
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
-      expect(spy.mock.calls[0]?.[1]).toEqual({ rolloff: { highlights: 0.8, low_light: 0.5 } });
+      expect(spy.mock.calls[0]?.[1]).toEqual(inputPatch({ rolloff: { highlights: 0.8, low_light: 0.5 } }));
       pointer.up(260);
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
-      expect(spy.mock.calls[1]?.[1]).toEqual({ rolloff: { highlights: 0.8, low_light: 0.5 } });
+      expect(spy.mock.calls[1]?.[1]).toEqual(inputPatch({ rolloff: { highlights: 0.8, low_light: 0.5 } }));
       await waitFor(() => expect(valueOf("Highlights")).toBe("0.80"));
       expect(h.store.getState().canUndo).toBe(true);
     } finally {
@@ -146,7 +147,7 @@ describe("the white lift is gone (owner's decision of 2026-10-30)", () => {
     await setup();
     const rs = h.store.currentSettings();
     expect(rs?.settings).not.toHaveProperty("white_offset_ev");
-    expect(rs?.settings.rolloff).toEqual({ highlights: 0.6, low_light: 0.5 });
+    expect(inputOf(rs!.settings).rolloff).toEqual({ highlights: 0.6, low_light: 0.5 });
     expect(rs?.values).not.toHaveProperty("white_ev");
     expect(rs?.estimates).not.toHaveProperty("white_ev");
   });

@@ -6,6 +6,7 @@ import { openPhotos, renderApp } from "../test/harness";
 import { capturingPointer } from "../test/pointer";
 import { mockRect } from "../test/raf";
 import type { Harness } from "../test/harness";
+import { mainGradePatch } from "../state/settingsGraph";
 
 /** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
 const manual = (value: number) => ({ kind: "manual", value }) as const;
@@ -283,11 +284,11 @@ describe("the command line", () => {
     expect(screen.queryByText(/adjustments this command doesn't include/)).toBeNull();
     h!.unmount();
     await setup();
-    await h!.store.update({ contrast: manual(25) });
+    await h!.store.update(mainGradePatch({ contrast: manual(25) }));
     await h!.user.keyboard("{Meta>}e{/Meta}");
     expect(await screen.findByText("1 photo has adjustments this command doesn't include.")).toBeInTheDocument();
     await h!.user.click(radio("Photos", "All · 12"));
-    await h!.api.updateSettings(1, { saturation: manual(10) });
+    await h!.api.updateSettings(1, mainGradePatch({ saturation: manual(10) }));
     await h!.user.click(radio("Photos", "This photo"));
     await h!.user.click(radio("Photos", "All · 12"));
     expect(await screen.findByText("2 photos have adjustments this command doesn't include.")).toBeInTheDocument();

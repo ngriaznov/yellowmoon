@@ -20,6 +20,7 @@ import {
   APPLE_INSTRUCTIONS_SAVE_MS,
 } from "./dialogs/Preferences";
 import { appleAutoLine, appleColorText, appleRows } from "./tools/LookTab";
+import { mainGradeOf, mainGradePatch } from "../state/settingsGraph";
 
 /** The Automatic card's lines with Apple Intelligence grading (`docs/22` section 12.5). */
 const APPLE_AUTO_LINES = {
@@ -379,17 +380,17 @@ describe("the Contrast and Saturation sliders with Apple Auto", () => {
   it("send a value equal to the Auto value as Auto, any other value as Manual, and Reset as Auto", async () => {
     const spy = await onPhotos("answered");
     await type("Contrast", "25");
-    expect(await lastPatch(spy)).toEqual({ contrast: { kind: "manual", value: 25 } });
+    expect(await lastPatch(spy)).toEqual(mainGradePatch({ contrast: { kind: "manual", value: 25 } }));
     spy.mockClear();
     await type("Contrast", "15");
-    expect(await lastPatch(spy)).toEqual({ contrast: { kind: "auto" } });
-    await waitFor(() => expect(h!.store.currentSettings()?.auto.contrast).toBe(true));
+    expect(await lastPatch(spy)).toEqual(mainGradePatch({ contrast: { kind: "auto" } }));
+    await waitFor(() => expect(h!.store.currentSettings()?.auto.main.contrast).toBe(true));
     spy.mockClear();
     await type("Saturation", "0");
-    expect(await lastPatch(spy)).toEqual({ saturation: { kind: "manual", value: 0 } });
+    expect(await lastPatch(spy)).toEqual(mainGradePatch({ saturation: { kind: "manual", value: 0 } }));
     spy.mockClear();
     await h!.user.click(await screen.findByRole("button", { name: "Reset Saturation" }));
-    expect(await lastPatch(spy)).toEqual({ saturation: { kind: "auto" } });
+    expect(await lastPatch(spy)).toEqual(mainGradePatch({ saturation: { kind: "auto" } }));
     await waitFor(() => expect(valueOf("Saturation")).toBe("−15"));
   });
 
@@ -397,18 +398,18 @@ describe("the Contrast and Saturation sliders with Apple Auto", () => {
     const spy = await onPhotos("answered");
     sliderOf("Contrast").focus();
     await h!.user.keyboard("{ArrowRight}");
-    expect(await lastPatch(spy)).toEqual({ contrast: { kind: "manual", value: 16 } });
+    expect(await lastPatch(spy)).toEqual(mainGradePatch({ contrast: { kind: "manual", value: 16 } }));
     await waitFor(() => expect(valueOf("Contrast")).toBe("+16"));
     await h!.user.keyboard("{Meta>}z{/Meta}");
     await waitFor(() => expect(valueOf("Contrast")).toBe("+15"));
-    expect(h!.store.currentSettings()?.settings.contrast).toEqual({ kind: "auto" });
+    expect(mainGradeOf(h!.store.currentSettings()!.settings).contrast).toEqual({ kind: "auto" });
   });
 
   it("a whole drag is one undo step", async () => {
     await onPhotos("answered");
-    await h!.store.update({ saturation: { kind: "manual", value: -5 } }, false);
-    await h!.store.update({ saturation: { kind: "manual", value: 10 } }, false);
-    await h!.store.update({ saturation: { kind: "manual", value: 30 } }, true);
+    await h!.store.update(mainGradePatch({ saturation: { kind: "manual", value: -5 } }), false);
+    await h!.store.update(mainGradePatch({ saturation: { kind: "manual", value: 10 } }), false);
+    await h!.store.update(mainGradePatch({ saturation: { kind: "manual", value: 30 } }), true);
     await waitFor(() => expect(valueOf("Saturation")).toBe("+30"));
     await h!.user.keyboard("{Meta>}z{/Meta}");
     await waitFor(() => expect(valueOf("Saturation")).toBe("−15"));
@@ -421,12 +422,12 @@ describe("the Contrast and Saturation sliders with Apple Auto", () => {
     await waitFor(() => expect(valueOf("Saturation")).toBe("+20"));
     await h!.store.copySettings();
     await waitFor(() => expect(h!.store.getState().copied).not.toBeNull());
-    expect(h!.store.getState().copied?.patch).toMatchObject({ contrast: { kind: "auto" }, saturation: { kind: "manual", value: 20 } });
+    expect(h!.store.getState().copied?.patch).toMatchObject(mainGradePatch({ contrast: { kind: "auto" }, saturation: { kind: "manual", value: 20 } }));
     await h!.store.step(1);
     await waitFor(() => expect(h!.store.currentSettings()?.photo_id).toBe(5));
     await h!.store.pasteSettings("this");
-    await waitFor(() => expect(h!.store.currentSettings()?.settings.saturation).toEqual({ kind: "manual", value: 20 }));
-    expect(h!.store.currentSettings()?.settings.contrast).toEqual({ kind: "auto" });
+    await waitFor(() => expect(mainGradeOf(h!.store.currentSettings()!.settings).saturation).toEqual({ kind: "manual", value: 20 }));
+    expect(mainGradeOf(h!.store.currentSettings()!.settings).contrast).toEqual({ kind: "auto" });
     expect(valueOf("Contrast")).toBe("+15");
   });
 });
@@ -439,16 +440,16 @@ describe("the Highlights, Shadows and Black sliders and the wheels with Apple Au
     expect(valueOf("Shadows")).toBe("0");
     expect(valueOf("Black")).toBe("−15");
     await type("Highlights", "-25");
-    expect(await lastPatch(spy)).toEqual({ highlights: { kind: "manual", value: -25 } });
+    expect(await lastPatch(spy)).toEqual(mainGradePatch({ highlights: { kind: "manual", value: -25 } }));
     spy.mockClear();
     await type("Highlights", "-20");
-    expect(await lastPatch(spy)).toEqual({ highlights: { kind: "auto" } });
+    expect(await lastPatch(spy)).toEqual(mainGradePatch({ highlights: { kind: "auto" } }));
     spy.mockClear();
     await type("Black", "5");
-    expect(await lastPatch(spy)).toEqual({ black: { kind: "manual", value: 5 } });
+    expect(await lastPatch(spy)).toEqual(mainGradePatch({ black: { kind: "manual", value: 5 } }));
     spy.mockClear();
     await h!.user.click(await screen.findByRole("button", { name: "Reset Black" }));
-    expect(await lastPatch(spy)).toEqual({ black: { kind: "auto" } });
+    expect(await lastPatch(spy)).toEqual(mainGradePatch({ black: { kind: "auto" } }));
     await waitFor(() => expect(valueOf("Black")).toBe("−15"));
   });
 
@@ -464,10 +465,10 @@ describe("the Highlights, Shadows and Black sliders and the wheels with Apple Au
     // A move makes it Manual; Reset (Home) sends Auto and the puck goes back to Apple's colour.
     shadows.focus();
     await h!.user.keyboard("{ArrowUp}");
-    expect((await lastPatch(spy)).color_balance?.shadows).toMatchObject({ kind: "manual" });
+    expect((await lastPatch(spy)).nodes?.["1"]?.grade?.color_balance?.shadows).toMatchObject({ kind: "manual" });
     spy.mockClear();
     await h!.user.keyboard("{Home}");
-    expect((await lastPatch(spy)).color_balance?.shadows).toEqual({ kind: "auto" });
+    expect((await lastPatch(spy)).nodes?.["1"]?.grade?.color_balance?.shadows).toEqual({ kind: "auto" });
     await waitFor(() => expect(shadows).toHaveAttribute("aria-valuetext", "Strength 55%, hue 240 degrees"));
   });
 });

@@ -1,5 +1,6 @@
 import { formats, Slider } from "../../components";
 import type { ResolvedSettings } from "../../api/types";
+import { inputOf, inputPatch, mainGradePatch } from "../../state/settingsGraph";
 import type { AppStore } from "../../state/store";
 import { AUTO, manualOrAuto } from "./shared";
 
@@ -21,15 +22,15 @@ export interface WhiteBalanceState {
   isAuto: boolean;
 }
 
-/** Whether the white balance is automatic, and whether a white was picked. */
+/** Whether the white balance is automatic, and whether a white was picked (all of it is the Input's: `docs/23` section 2). */
 export function whiteBalanceState(rs: ResolvedSettings): WhiteBalanceState {
-  const picked = rs.settings.white_pick !== null;
-  return { picked, isAuto: rs.auto.white_balance && rs.auto.light_source && !picked };
+  const picked = inputOf(rs.settings).white_pick !== null;
+  return { picked, isAuto: rs.auto.input.white_balance && rs.auto.input.light_source && !picked };
 }
 
 /** Back to Auto: white balance, light preset and picked white (the AUTO button and the cards' Reset). */
 export function whiteBalanceToAuto(store: AppStore): void {
-  void store.update({ white_balance: AUTO, light_source: "auto", white_pick: null });
+  void store.update(inputPatch({ white_balance: AUTO, light_source: "auto", white_pick: null }));
 }
 
 /**
@@ -39,7 +40,7 @@ export function whiteBalanceToAuto(store: AppStore): void {
  */
 export function setWhiteBalance(store: AppStore, rs: ResolvedSettings, kelvin: number, tint: number, final: boolean): void {
   const { estimates } = rs;
-  void store.update({ white_balance: manualOrAuto({ kelvin, tint }, { kelvin: estimates.kelvin, tint: estimates.tint }) }, final, rs.photo_id);
+  void store.update(inputPatch({ white_balance: manualOrAuto({ kelvin, tint }, { kelvin: estimates.input.kelvin, tint: estimates.input.tint }) }), final, rs.photo_id);
 }
 
 interface ControlProps {
@@ -53,7 +54,8 @@ interface ControlProps {
  * the Colour tab and "Temperature" on the Look tab's Tone card.
  */
 export function KelvinSlider({ store, rs, label = "Kelvin" }: ControlProps & { label?: string }) {
-  const { values, estimates } = rs;
+  const { estimates } = rs;
+  const values = rs.values.input;
   return (
     <Slider
       label={label}
@@ -61,15 +63,17 @@ export function KelvinSlider({ store, rs, label = "Kelvin" }: ControlProps & { l
       min={2000}
       max={11000}
       step={50}
-      defaultValue={estimates.kelvin}
+      defaultValue={estimates.input.kelvin}
       format={formats.kelvin}
       onChange={(kelvin, final) => setWhiteBalance(store, rs, kelvin, values.tint, final)}
       onReset={() =>
-        void store.update({
-          white_balance: manualOrAuto({ kelvin: estimates.kelvin, tint: values.tint }, { kelvin: estimates.kelvin, tint: estimates.tint }),
-          light_source: "auto",
-          white_pick: null,
-        })
+        void store.update(
+          inputPatch({
+            white_balance: manualOrAuto({ kelvin: estimates.input.kelvin, tint: values.tint }, { kelvin: estimates.input.kelvin, tint: estimates.input.tint }),
+            light_source: "auto",
+            white_pick: null,
+          }),
+        )
       }
     />
   );
@@ -85,17 +89,17 @@ export type PercentField = "contrast" | "saturation" | "highlights" | "shadows" 
  * Auto value.
  */
 export function PercentSlider({ store, rs, field, label }: ControlProps & { field: PercentField; label: string }) {
-  const auto = rs.estimates[field];
+  const auto = rs.estimates.main[field];
   return (
     <Slider
       label={label}
-      value={rs.values[field]}
+      value={rs.values.main.grade[field]}
       min={-100}
       max={100}
       defaultValue={auto}
       format={formats.signed}
-      onChange={(value, final) => void store.update({ [field]: manualOrAuto({ value }, { value: auto }) }, final, rs.photo_id)}
-      onReset={() => void store.update({ [field]: AUTO }, true, rs.photo_id)}
+      onChange={(value, final) => void store.update(mainGradePatch({ [field]: manualOrAuto({ value }, { value: auto }) }), final, rs.photo_id)}
+      onReset={() => void store.update(mainGradePatch({ [field]: AUTO }), true, rs.photo_id)}
     />
   );
 }

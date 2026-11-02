@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PhotoSummary, SessionState } from "../api/types";
 import { exportModel, FALLBACK_DESTINATION } from "./model";
 import { buildJob, defaultExportOptions, defaultScope, fullLongEdge, isExportable, photosInScope, sameOptions } from "./options";
+import { applyPatch, defaultSettings, outputPatch } from "../state/settingsGraph";
 
 function photo(id: number, patch: Partial<PhotoSummary> = {}): PhotoSummary {
   return {
@@ -113,7 +114,7 @@ describe("exportModel", () => {
   it("names the look a photo has, else the default look", () => {
     const withLook = {
       ...input,
-      settings: { 2: { settings: { look: "arri:3000:film-warm" } } } as never,
+      settings: { 2: { settings: applyPatch(defaultSettings(), outputPatch({ look: "arri:3000:film-warm" })) } } as never,
       looks: [{ id: "builtin:signature", name: "Signature", group: { kind: "built_in" }, input: "logc4", is_default: true, missing: false }] as never,
     };
     const m = exportModel(withLook, "picked", defaultExportOptions());

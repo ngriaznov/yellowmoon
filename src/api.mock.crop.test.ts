@@ -7,6 +7,7 @@ import { createMockApi, mockCropSuggestion } from "./api.mock";
 import type { MockApi, MockOptions } from "./api.mock";
 import type { CropAspect, NormRect, Orientation } from "./api/types";
 import { canvasOf, isInside } from "./screens/crop/cropMath";
+import { inputOf, inputPatch } from "./state/settingsGraph";
 
 const ARW = ["~/Pictures/Lisbon/DSC04201.ARW"];
 
@@ -66,9 +67,9 @@ describe("suggest_crop on the mock", () => {
   it("keeps Crop.auto in the setting, and a crop without it reads as not Auto", async () => {
     const mock = await open();
     const rect = { x: 0.05, y: 0.05, width: 0.8, height: 0.8 };
-    let rs = await mock.updateSettings(1, { crop: { rect, angle_deg: 1.4, aspect: "original", auto: true } });
-    expect(rs.settings.crop?.auto).toBe(true);
-    rs = await mock.updateSettings(1, { crop: { rect, angle_deg: 1.4, aspect: "original" } });
-    expect(rs.settings.crop?.auto ?? false).toBe(false);
+    let rs = await mock.updateSettings(1, inputPatch({ crop: { rect, angle_deg: 1.4, aspect: "original", auto: true } }));
+    expect(inputOf(rs.settings).crop?.auto).toBe(true);
+    rs = await mock.updateSettings(1, inputPatch({ crop: { rect, angle_deg: 1.4, aspect: "original" } }));
+    expect(inputOf(rs.settings).crop?.auto ?? false).toBe(false);
   });
 });

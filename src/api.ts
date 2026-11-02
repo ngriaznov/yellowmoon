@@ -111,9 +111,9 @@ export interface Api {
   /** `rerun_auto`: recompute the automatic estimates and reset exposure, white lift, white balance and noise to Auto. */
   rerunAuto(photoId: PhotoId): Promise<ResolvedSettings>;
   /**
-   * `copy_settings` (addition, 2026-10-16): the settings of a photo as a patch to paste onto other photos: everything but the crop,
-   * the orientation and the Pick white point; Auto stays Auto; a white balance that came from a picked white is the manual Kelvin
-   * and tint it resolved to. The core stores nothing: the caller keeps the patch (`docs/11` §Copy and paste settings). Rejects for a
+   * `copy_settings` (addition, 2026-10-16): the settings of a photo as a patch to paste onto other photos: the whole graph, every node
+   * and every link (`docs/23` §3.8), but the Input's crop, orientation and Pick white point; Auto stays Auto; a white balance that
+   * came from a picked white is the manual Kelvin and tint it resolved to. The core stores nothing: the caller keeps the patch (`docs/11` §Copy and paste settings). Rejects for a
    * photo that is unknown, failed or not developed yet.
    */
   copySettings(photoId: PhotoId): Promise<SettingsPatch>;
@@ -299,9 +299,9 @@ export function toAppError(value: unknown): AppError {
 }
 
 /**
- * An answer that carries patches (`copy_settings`, the steps of `paste_settings`). The generated `SettingsPatch` allows `null` in
+ * An answer that carries patches (`copy_settings`, the steps of `paste_settings`). The generated `NodePatch` allows `null` in
  * every field, because the bridge reads an optional Rust field as `T | null`; the core leaves a field out and writes a `null` only
- * for `crop` and `white_pick`, which `Partial<DevelopSettings>` allows too. The screens read the narrower type: this changes the
+ * for the Input's `crop` and `white_pick`, which the hand-written `NodePatch` allows too. The screens read the narrower type: this changes the
  * type and nothing at run time.
  */
 const narrowed = <T extends B.SettingsPatch | B.PasteReport>(answer: Promise<T>): Promise<T extends B.PasteReport ? PasteReport : SettingsPatch> =>

@@ -1,11 +1,12 @@
 /**
  * Undo and redo for one photo's settings (`docs/11-ui.md` §Keyboard shortcuts: "in memory,
- * 100 steps"). An entry holds only the settings that one change touched, as two patches: the
- * values before and the values after. Undo sends `before`, redo sends `after`. Entries that
- * touch different settings don't disturb each other, and a change made by "Apply to" on another
- * photo never needs an entry of its own.
+ * 100 steps"). An entry holds only what one change touched, as two node patches: the values
+ * before and the values after (`docs/23` section 3.7). Undo sends `before`, redo sends `after`.
+ * Entries that touch different nodes or fields don't disturb each other, and a change made by
+ * "Apply to" on another photo never needs an entry of its own.
  */
 import type { DevelopSettings, SettingsPatch } from "../api/types";
+import { diffGraph } from "./settingsGraph";
 
 /** Steps kept per photo. */
 export const HISTORY_LIMIT = 100;
@@ -16,24 +17,14 @@ export interface HistoryEntry {
   after: SettingsPatch;
 }
 
-const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
-
 /**
- * What changed between two settings, as an entry; null when nothing did. Compares whole top-level
- * fields, so `white_balance` going from Auto to Manual is one change and a colour wheel moving is
- * one `color_balance` change.
+ * What changed between two settings, as an entry; null when nothing did. It diffs per node and for the links: an entry has the nodes
+ * a change touched and, in each, the fields that differ (a field whole, so `white_balance` going from Auto to Manual is one change and
+ * a colour wheel moving is one `color_balance` change; `grade` and `trim` go one field deeper, so a contrast change is a contrast), a
+ * node added whole with its `kind` or taken out in `remove`, and `links` when they differ. See {@link diffGraph}.
  */
 export function diffSettings(before: DevelopSettings, after: DevelopSettings): HistoryEntry | null {
-  const entry: HistoryEntry = { before: {}, after: {} };
-  let changed = false;
-  for (const key of Object.keys(after) as Array<keyof DevelopSettings>) {
-    if (sameValue(before[key], after[key])) continue;
-    (entry.before as Record<string, unknown>)[key] = clone(before[key]);
-    (entry.after as Record<string, unknown>)[key] = clone(after[key]);
-    changed = true;
-  }
-  return changed ? entry : null;
+  return diffGraph(before, after);
 }
 
 /** The two stacks of one photo. */

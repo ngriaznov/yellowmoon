@@ -66,6 +66,7 @@ import type {
   ExportJob,
   ExportJobId,
   ExportOptions,
+  GradeValues,
   HistogramData,
   LensInfo,
   LensKind,
@@ -78,8 +79,11 @@ import type {
   LookInput,
   LookLibrary,
   LooksImportResult,
+  MainEstimates,
   MenuState,
   OpenKind,
+  NodeGrade,
+  NodeItem,
   Orientation,
   PackageId,
   PasteReport,
@@ -93,6 +97,7 @@ import type {
   PreferencesPatch,
   Recognition,
   RenderStats,
+  ResolvedCorrector,
   ResolvedSettings,
   ResolvedValues,
   SessionChange,
@@ -118,7 +123,25 @@ import { sceneHistogram } from "./fixtures/histogram";
 import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
+import { copiedPatch, pastedOnto, refusalOfPatch, validateGraph } from "./fixtures/graph";
 import { diffSettings } from "./state/history";
+import {
+  applyPatch,
+  correctorsOf,
+  defaultSettings,
+  foldPatches,
+  INPUT_ID,
+  inputOf,
+  inputPatch,
+  MAIN_ID,
+  mainGradePatch,
+  mainOf,
+  OUTPUT_ID,
+  outputOf,
+  outputPatch,
+  withoutLook,
+} from "./state/settingsGraph";
+import type { CorrectorItem, InputItem } from "./state/settingsGraph";
 import { bytesToUrl } from "./state/photo";
 
 // ---------------------------------------------------------------------------
@@ -148,16 +171,22 @@ const RENDER_STATS: RenderStats = { ms: 42, path: "neural", space: "display_p3",
 
 /** What "Auto" resolves to for every photo in the mock, with Apple Auto off (Default Auto, "the rule"). */
 export const MOCK_ESTIMATES: AutoEstimates = {
-  exposure_ev: 0.3,
-  kelvin: 5450,
-  tint: 0,
-  contrast: 0,
-  saturation: 0,
-  highlights: 0,
-  shadows: 0,
-  black: 0,
-  balance_shadows: [0, 0],
-  balance_highlights: [0, 0],
+  input: {
+    exposure_ev: 0.3,
+    kelvin: 5450,
+    tint: 0,
+    sharpen: { amount: 120, radius_px: 0.8 },
+    noise_reduction: { luminance: 30, color: 50, detail: 50 },
+  },
+  main: {
+    contrast: 0,
+    saturation: 0,
+    highlights: 0,
+    shadows: 0,
+    black: 0,
+    balance_shadows: [0, 0],
+    balance_highlights: [0, 0],
+  },
   source: "rule",
   provider: "yellowmoon",
   apple: { state: "off" },
@@ -165,8 +194,6 @@ export const MOCK_ESTIMATES: AutoEstimates = {
   light_class: "daylight",
   light_confidence: 0.82,
   noise: { a: 1.9e-5, b: 3.1e-7 },
-  sharpen: { amount: 120, radius_px: 0.8 },
-  noise_reduction: { luminance: 30, color: 50, detail: 50 },
 };
 
 /**
@@ -238,26 +265,31 @@ export function mockEstimates(apple: AppleAuto, provider: AutoProvider = "yellow
   if (apple.state !== "answered") return { ...MOCK_ESTIMATES, apple, provider };
   const { steps } = apple.answer;
   const at = (table: Record<number, number>, step: number | null): number => (step === null ? 0 : (table[step] ?? 0));
-  const mired = 1e6 / MOCK_ESTIMATES.kelvin - at(APPLE_TABLE.warmer_mired, steps.white);
+  const mired = 1e6 / MOCK_ESTIMATES.input.kelvin - at(APPLE_TABLE.warmer_mired, steps.white);
   const answeredBy = apple.info.provider;
   return {
     ...MOCK_ESTIMATES,
-    exposure_ev: Math.round((MOCK_ESTIMATES.exposure_ev + at(APPLE_TABLE.exposure_ev, steps.exposure)) * 100) / 100,
-    kelvin: Math.round(1e6 / mired / 50) * 50,
-    tint: clamp(MOCK_ESTIMATES.tint + at(APPLE_TABLE.tint, steps.tint), -50, 50),
-    contrast: at(APPLE_TABLE.percent, steps.contrast),
-    saturation: at(APPLE_TABLE.percent, steps.saturation),
-    highlights: at(APPLE_TABLE.highlights, steps.highlights),
-    shadows: at(APPLE_TABLE.percent, steps.shadows),
-    black: at(APPLE_TABLE.percent, steps.blacks),
-    balance_shadows: colorPoint(
-      steps.shadow_color === null ? undefined : APPLE_TABLE.shadow_directions[steps.shadow_color],
-      steps.shadow_color === "none" ? 0 : steps.shadow_color_strength,
-    ),
-    balance_highlights: colorPoint(
-      steps.highlight_color === null ? undefined : APPLE_TABLE.highlight_directions[steps.highlight_color],
-      steps.highlight_color === "none" ? 0 : steps.highlight_color_strength,
-    ),
+    input: {
+      ...MOCK_ESTIMATES.input,
+      exposure_ev: Math.round((MOCK_ESTIMATES.input.exposure_ev + at(APPLE_TABLE.exposure_ev, steps.exposure)) * 100) / 100,
+      kelvin: Math.round(1e6 / mired / 50) * 50,
+      tint: clamp(MOCK_ESTIMATES.input.tint + at(APPLE_TABLE.tint, steps.tint), -50, 50),
+    },
+    main: {
+      contrast: at(APPLE_TABLE.percent, steps.contrast),
+      saturation: at(APPLE_TABLE.percent, steps.saturation),
+      highlights: at(APPLE_TABLE.highlights, steps.highlights),
+      shadows: at(APPLE_TABLE.percent, steps.shadows),
+      black: at(APPLE_TABLE.percent, steps.blacks),
+      balance_shadows: colorPoint(
+        steps.shadow_color === null ? undefined : APPLE_TABLE.shadow_directions[steps.shadow_color],
+        steps.shadow_color === "none" ? 0 : steps.shadow_color_strength,
+      ),
+      balance_highlights: colorPoint(
+        steps.highlight_color === null ? undefined : APPLE_TABLE.highlight_directions[steps.highlight_color],
+        steps.highlight_color === "none" ? 0 : steps.highlight_color_strength,
+      ),
+    },
     source: answeredBy === "yellowmoon" ? "rule" : answeredBy,
     provider: answeredBy,
     apple,
@@ -508,42 +540,13 @@ export interface MockSystemLog {
 // Pure helpers (exported for tests)
 // ---------------------------------------------------------------------------
 
-/** The settings of a photo nobody has touched: Auto everywhere, the given look at 100 %. */
-export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
-  return {
-    look,
-    look_intensity: 100,
-    exposure: { kind: "auto" },
-    contrast: { kind: "auto" },
-    brightness: 0,
-    highlights: { kind: "auto" },
-    shadows: { kind: "auto" },
-    white: 0,
-    black: { kind: "auto" },
-    light_source: "auto",
-    white_balance: { kind: "auto" },
-    color_balance: { shadows: { kind: "auto" }, midtones: [0, 0], highlights: { kind: "auto" } },
-    saturation: { kind: "auto" },
-    color_warp: { pins: [] },
-    lens: { kind: "default", flares: 0, edges: 0, anamorphic: 0 },
-    sharpen: { kind: "auto" },
-    output_sharpening: 100,
-    noise_reduction: { kind: "auto" },
-    curve: {
-      luma: [[0, 0], [1, 1]],
-      red: [[0, 0], [1, 1]],
-      green: [[0, 0], [1, 1]],
-      blue: [[0, 0], [1, 1]],
-    },
-    decode: { neural_demosaic: true, highlight_recovery: true, lens_corrections: true, chromatic_aberration: true },
-    rolloff: { highlights: 0.6, low_light: 0.5 },
-    crop: null,
-    orientation: 0,
-    white_pick: null,
-  };
-}
+/** The settings of a photo nobody has touched: the default graph, Auto wherever there is Auto, the given look at 100 % (`docs/23` section 3.1). */
+export { defaultSettings };
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
+
+/** Auto, in a patch. */
+const AUTO = { kind: "auto" } as const;
 
 /** The ids of the seven lenses, in list order (`LensKind`, `docs/21` §1). */
 export const LENS_KINDS: readonly LensKind[] = ["default", "classic", "vintage", "petzval", "triplet", "sonnar", "detuned"];
@@ -613,31 +616,14 @@ export function balanceSetting(value: BalanceSetting | ColorBalancePoint | undef
   return value.kind === "manual" ? { kind: "manual", point: unitDisc(value.point) } : { kind: "auto" };
 }
 
-/** Clamps every value to the ranges of `docs/01` §DevelopSettings, as the core does. */
-export function clampSettings(s: DevelopSettings): DevelopSettings {
-  const pct = (v: number) => clamp(v, -100, 100);
-  const out: DevelopSettings = {
+/** The exposure, white balance, sharpening and noise reduction of the Input in the ranges of `docs/01` §DevelopSettings. */
+function clampInput(s: InputItem): InputItem {
+  const out: InputItem = {
     ...s,
-    look_intensity: clamp(s.look_intensity, 0, 100),
-    contrast: percentSetting(s.contrast),
-    brightness: pct(s.brightness),
-    highlights: percentSetting(s.highlights),
-    shadows: percentSetting(s.shadows),
-    white: pct(s.white),
-    black: percentSetting(s.black),
-    saturation: percentSetting(s.saturation),
-    output_sharpening: clamp(s.output_sharpening, 0, 200),
     rolloff: { highlights: clamp(s.rolloff.highlights, 0, 1), low_light: clamp(s.rolloff.low_light, 0, 1) },
-    color_balance: {
-      shadows: balanceSetting(s.color_balance.shadows),
-      midtones: unitDisc(s.color_balance.midtones),
-      highlights: balanceSetting(s.color_balance.highlights),
-    },
-    // The core's rule (`WarpPin::clamped`): the first sixteen pins, every value in its range. Settings from before the warp have none.
-    color_warp: { pins: clampPins(s.color_warp?.pins ?? []) },
     // Settings from before the lens have none: they read as the default lens.
     lens: lensSettings(s.lens),
-    orientation: (((Math.round(s.orientation / 90) * 90) % 360 + 360) % 360) as DevelopSettings["orientation"],
+    orientation: (((Math.round(s.orientation / 90) * 90) % 360 + 360) % 360) as Orientation,
     white_pick: s.white_pick ? [clamp(s.white_pick[0], 0, 1), clamp(s.white_pick[1], 0, 1)] : null,
     crop: s.crop
       ? {
@@ -678,74 +664,162 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
   return out;
 }
 
-/** Resolves every `Auto` against the estimates and reports which fields are still automatic. */
-export function resolveSettings(photoId: PhotoId, settings: DevelopSettings, estimates: AutoEstimates): ResolvedSettings {
-  const { exposure, contrast, highlights, shadows, black, color_balance, white_balance, saturation, sharpen, noise_reduction, ...rest } =
-    settings;
-  const percent = (setting: PercentSetting, auto: number): number => (setting.kind === "manual" ? setting.value : auto);
-  const point = (setting: BalanceSetting, auto: ColorBalancePoint): ColorBalancePoint =>
-    setting.kind === "manual" ? setting.point : [auto[0], auto[1]];
-  // A light preset stands in for the estimated light while White balance is Auto.
-  const preset = settings.light_source === "auto" ? null : LIGHT_PRESETS[settings.light_source];
-  const values: ResolvedValues = {
-    ...rest,
-    exposure_ev: exposure.kind === "manual" ? exposure.ev : estimates.exposure_ev,
-    contrast: percent(contrast, estimates.contrast),
-    highlights: percent(highlights, estimates.highlights),
-    shadows: percent(shadows, estimates.shadows),
-    black: percent(black, estimates.black),
-    color_balance: {
-      shadows: point(color_balance.shadows, estimates.balance_shadows),
-      midtones: color_balance.midtones,
-      highlights: point(color_balance.highlights, estimates.balance_highlights),
-    },
-    saturation: percent(saturation, estimates.saturation),
-    kelvin: white_balance.kind === "manual" ? white_balance.kelvin : (preset?.kelvin ?? estimates.kelvin),
-    tint: white_balance.kind === "manual" ? white_balance.tint : (preset?.tint ?? estimates.tint),
-    sharpen:
-      sharpen.kind === "manual"
-        ? { amount: sharpen.amount, radius_px: sharpen.radius_px }
-        : { ...estimates.sharpen },
-    noise_reduction:
-      noise_reduction.kind === "manual"
-        ? { luminance: noise_reduction.luminance, color: noise_reduction.color, detail: noise_reduction.detail }
-        : { ...estimates.noise_reduction },
+/** A grade in the ranges of `docs/01` §DevelopSettings; in a corrector other than Main, Auto reads as a manual 0 (`docs/23` section 3.2). */
+function clampGrade(g: NodeGrade, isMain: boolean): NodeGrade {
+  const pct = (v: number) => clamp(v, -100, 100);
+  const read = (value: PercentSetting): PercentSetting => {
+    const setting = percentSetting(value);
+    return !isMain && setting.kind === "auto" ? { kind: "manual", value: 0 } : setting;
   };
+  const wheel = (value: BalanceSetting): BalanceSetting => {
+    const setting = balanceSetting(value);
+    return !isMain && setting.kind === "auto" ? { kind: "manual", point: [0, 0] } : setting;
+  };
+  return {
+    ...g,
+    contrast: read(g.contrast),
+    brightness: pct(g.brightness),
+    highlights: read(g.highlights),
+    shadows: read(g.shadows),
+    white: pct(g.white),
+    black: read(g.black),
+    saturation: read(g.saturation),
+    color_balance: { shadows: wheel(g.color_balance.shadows), midtones: unitDisc(g.color_balance.midtones), highlights: wheel(g.color_balance.highlights) },
+    // The core's rule (`WarpPin::clamped`): the first sixteen pins, every value in its range. Settings from before the warp have none.
+    color_warp: { pins: clampPins(g.color_warp?.pins ?? []) },
+  };
+}
+
+/** A corrector in its ranges: the name trimmed and cut (an empty one reads as the default), the trim, the grade. */
+function clampCorrector(s: CorrectorItem): CorrectorItem {
+  const name = s.name.trim().slice(0, 32);
+  return {
+    ...s,
+    name: name === "" ? (s.id === MAIN_ID ? "Main" : "Corrector") : name,
+    trim: {
+      exposure_ev: clamp(s.trim.exposure_ev, -4, 4),
+      temperature: clamp(s.trim.temperature, -100, 100),
+      tint: clamp(s.trim.tint, -100, 100),
+    },
+    grade: clampGrade(s.grade, s.id === MAIN_ID),
+  };
+}
+
+/** Clamps every value to the ranges of `docs/01` §DevelopSettings, node by node, as the core does. */
+export function clampSettings(s: DevelopSettings): DevelopSettings {
+  const items = s.nodes.items.map((item): NodeItem => {
+    if (item.kind === "input") return clampInput(item);
+    if (item.kind === "output") return { ...item, look_intensity: clamp(item.look_intensity, 0, 100), output_sharpening: clamp(item.output_sharpening, 0, 200) };
+    return clampCorrector(item);
+  });
+  return { nodes: { items, links: s.nodes.links } };
+}
+
+/** What a percent setting resolves to: the manual value, or the photo's Auto value. */
+const percent = (setting: PercentSetting, auto: number): number => (setting.kind === "manual" ? setting.value : auto);
+/** What a wheel resolves to: the manual point, or the photo's Auto point. */
+const wheelPoint = (setting: BalanceSetting, auto: ColorBalancePoint): ColorBalancePoint =>
+  setting.kind === "manual" ? setting.point : [auto[0], auto[1]];
+
+/** A corrector's grade with every `Auto` resolved against Main's estimates (none for a corrector other than Main: it has no Auto). */
+function gradeValues(grade: NodeGrade, estimates: MainEstimates | null): GradeValues {
+  const est = estimates ?? { contrast: 0, saturation: 0, highlights: 0, shadows: 0, black: 0, balance_shadows: [0, 0], balance_highlights: [0, 0] };
+  return {
+    contrast: percent(grade.contrast, est.contrast),
+    brightness: grade.brightness,
+    highlights: percent(grade.highlights, est.highlights),
+    shadows: percent(grade.shadows, est.shadows),
+    white: grade.white,
+    black: percent(grade.black, est.black),
+    color_balance: {
+      shadows: wheelPoint(grade.color_balance.shadows, est.balance_shadows),
+      midtones: grade.color_balance.midtones,
+      highlights: wheelPoint(grade.color_balance.highlights, est.balance_highlights),
+    },
+    saturation: percent(grade.saturation, est.saturation),
+    color_warp: grade.color_warp,
+    curve: grade.curve,
+  };
+}
+
+function resolvedCorrector(item: CorrectorItem, estimates: MainEstimates | null): ResolvedCorrector {
+  return {
+    id: item.id as number,
+    name: item.name,
+    bypass: item.bypass,
+    pos: item.pos,
+    trim: item.trim,
+    grade: gradeValues(item.grade, estimates),
+    masks: item.masks,
+  };
+}
+
+/** Resolves every `Auto` against the estimates and reports which fields are still automatic, node by node (`docs/23` section 3.9). */
+export function resolveSettings(photoId: PhotoId, settings: DevelopSettings, estimates: AutoEstimates): ResolvedSettings {
+  const input = inputOf(settings);
+  const main = mainOf(settings);
+  const output = outputOf(settings);
+  const { exposure, white_balance, sharpen, noise_reduction } = input;
+  // A light preset stands in for the estimated light while White balance is Auto.
+  const preset = input.light_source === "auto" ? null : LIGHT_PRESETS[input.light_source];
+  const values: ResolvedValues = {
+    input: {
+      pos: input.pos,
+      exposure_ev: exposure.kind === "manual" ? exposure.ev : estimates.input.exposure_ev,
+      light_source: input.light_source,
+      kelvin: white_balance.kind === "manual" ? white_balance.kelvin : (preset?.kelvin ?? estimates.input.kelvin),
+      tint: white_balance.kind === "manual" ? white_balance.tint : (preset?.tint ?? estimates.input.tint),
+      sharpen: sharpen.kind === "manual" ? { amount: sharpen.amount, radius_px: sharpen.radius_px } : { ...estimates.input.sharpen },
+      noise_reduction:
+        noise_reduction.kind === "manual"
+          ? { luminance: noise_reduction.luminance, color: noise_reduction.color, detail: noise_reduction.detail }
+          : { ...estimates.input.noise_reduction },
+      lens: input.lens,
+      decode: input.decode,
+      rolloff: input.rolloff,
+      crop: input.crop,
+      orientation: input.orientation,
+      white_pick: input.white_pick,
+    },
+    main: resolvedCorrector(main, estimates.main),
+    nodes: correctorsOf(settings)
+      .filter((item) => item.id !== MAIN_ID)
+      .map((item) => resolvedCorrector(item, null)),
+    output: { pos: output.pos, look: output.look, look_intensity: output.look_intensity, output_sharpening: output.output_sharpening },
+  };
+  const grade = main.grade;
   return {
     photo_id: photoId,
     settings,
     values,
     auto: {
-      exposure: exposure.kind === "auto",
-      contrast: contrast.kind === "auto",
-      highlights: highlights.kind === "auto",
-      shadows: shadows.kind === "auto",
-      black: black.kind === "auto",
-      balance_shadows: color_balance.shadows.kind === "auto",
-      balance_highlights: color_balance.highlights.kind === "auto",
-      saturation: saturation.kind === "auto",
-      light_source: settings.light_source === "auto",
-      white_balance: white_balance.kind === "auto",
-      sharpen: sharpen.kind === "auto",
-      noise_reduction: noise_reduction.kind === "auto",
+      input: {
+        exposure: exposure.kind === "auto",
+        light_source: input.light_source === "auto",
+        white_balance: white_balance.kind === "auto",
+        sharpen: sharpen.kind === "auto",
+        noise_reduction: noise_reduction.kind === "auto",
+      },
+      main: {
+        contrast: grade.contrast.kind === "auto",
+        highlights: grade.highlights.kind === "auto",
+        shadows: grade.shadows.kind === "auto",
+        black: grade.black.kind === "auto",
+        balance_shadows: grade.color_balance.shadows.kind === "auto",
+        balance_highlights: grade.color_balance.highlights.kind === "auto",
+        saturation: grade.saturation.kind === "auto",
+      },
     },
     estimates,
   };
 }
 
 /**
- * What Copy settings takes from a photo (the core's `SettingsPatch::copied_from`): every setting but the crop, the orientation and the
- * Pick white point; Auto stays Auto and manual values stay as they are; a white balance that came from a picked white (a white picked,
- * the light preset and the white balance both Auto) is the manual Kelvin and tint it resolved to.
+ * What Copy settings takes from a photo (the core's `SettingsPatch::copied_from`): the whole graph, every node and every link, but the
+ * Input's crop, orientation and Pick white point; Auto stays Auto and manual values stay as they are; a white balance that came from a
+ * picked white is the manual Kelvin and tint it resolved to (`src/fixtures/graph.ts` has the rules).
  */
-export function copiedPatch(rs: ResolvedSettings): SettingsPatch {
-  const { crop: _crop, orientation: _orientation, white_pick: pick, ...rest } = rs.settings;
-  const patch = JSON.parse(JSON.stringify(rest)) as SettingsPatch;
-  if (pick !== null && rs.settings.light_source === "auto" && rs.settings.white_balance.kind === "auto") {
-    patch.white_balance = { kind: "manual", kelvin: rs.values.kelvin, tint: rs.values.tint };
-  }
-  return patch;
-}
+export { copiedPatch };
 
 /** Slug of a look id: "arri:3000:film-warm" gives "film-warm". */
 export function lookSlug(id: LookId): string {
@@ -774,7 +848,7 @@ function megabytesPerPhoto(o: ExportOptions): number {
 export function whiteFromPick(scene: Scene, point: [number, number]): { kelvin: number; tint: number } {
   const [r, g, b] = hexToRgb(scene[layerAt(scene, clamp(point[0], 0, 1), clamp(point[1], 0, 1))]);
   const warmth = Math.log((r + 1) / (b + 1));
-  const kelvin = clamp(Math.round((MOCK_ESTIMATES.kelvin * Math.exp(-warmth * 0.9)) / 50) * 50, 2000, 11000);
+  const kelvin = clamp(Math.round((MOCK_ESTIMATES.input.kelvin * Math.exp(-warmth * 0.9)) / 50) * 50, 2000, 11000);
   const tint = clamp(Math.round(((g - (r + b) / 2) / 255) * -60), -50, 50);
   return { kelvin, tint };
 }
@@ -1424,7 +1498,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
    */
   function photoPointAt(rec: PhotoRecord, x: number, y: number): [number, number] | null {
     const rect = cellRect();
-    const { orientation, crop } = rec.settings;
+    const { orientation, crop } = inputOf(rec.settings);
     const crossed = crop ? crop.rect.width / crop.rect.height : 1;
     const aspect = imageAspectOf(rec.summary.width_px, rec.summary.height_px, orientation) * crossed;
     const picture = fitInCell(rect.width / rect.height, aspect);
@@ -1454,9 +1528,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const height = Math.round(rect.height * rect.scale);
     const { values } = resolveSettings(rec.summary.id, rec.settings, estimates());
     const picture = previewSvg(developed(rec), {
-      orientation: values.orientation,
-      angle_deg: values.crop?.angle_deg ?? 0,
-      crop: values.crop?.rect ?? null,
+      orientation: values.input.orientation,
+      angle_deg: values.input.crop?.angle_deg ?? 0,
+      crop: values.input.crop?.rect ?? null,
     }).replace(/^<svg ([^>]*?) width="[^"]*" height="[^"]*"/, '<svg $1 width="100%" height="100%"');
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="#FFFFFF"/>${picture}</svg>`;
     return { url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, width, height };
@@ -1665,13 +1739,13 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       reduced: false,
       apple_pending: false,
     };
-    const initial = options.initialSettings[`${scene.name}.ARW`] ?? options.initialSettings[scene.name] ?? {};
+    const initial: SettingsPatch = options.initialSettings[`${scene.name}.ARW`] ?? options.initialSettings[scene.name] ?? {};
     const override = options.photoOverrides[`${scene.name}.ARW`] ?? options.photoOverrides[scene.name];
     if (override) Object.assign(summary, { ...override, camera: { ...summary.camera, ...override.camera } });
     return {
       scene,
       summary,
-      settings: clampSettings({ ...defaultSettings(preferences.default_look), ...initial }),
+      settings: clampSettings(applyPatch(defaultSettings(preferences.default_look), initial)),
       phase: 0,
       skipReason: skipReasonFor(scene),
     };
@@ -1760,18 +1834,18 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     // Against the rule's values, so Apple Auto's answer shows in the picture as the change it is.
     const { values } = resolveSettings(rec.summary.id, rec.settings, estimates());
     return {
-      ev: values.exposure_ev,
-      autoEv: MOCK_ESTIMATES.exposure_ev,
-      kelvin: values.kelvin,
-      autoKelvin: MOCK_ESTIMATES.kelvin,
-      tint: values.tint,
-      autoTint: MOCK_ESTIMATES.tint,
-      warp: warp ? values.color_warp.pins : undefined,
+      ev: values.input.exposure_ev,
+      autoEv: MOCK_ESTIMATES.input.exposure_ev,
+      kelvin: values.input.kelvin,
+      autoKelvin: MOCK_ESTIMATES.input.kelvin,
+      tint: values.input.tint,
+      autoTint: MOCK_ESTIMATES.input.tint,
+      warp: warp ? values.main.grade.color_warp.pins : undefined,
     };
   }
 
   /** The photo as it is developed now: adjusted by what differs from Automatic, moved by its colour warp, then through its look. */
-  function developed(rec: PhotoRecord, lookId: LookId = rec.settings.look, intensity = rec.settings.look_intensity): Scene {
+  function developed(rec: PhotoRecord, lookId: LookId = outputOf(rec.settings).look, intensity = outputOf(rec.settings).look_intensity): Scene {
     return developScene(rec.scene, { slug: lookSlug(lookId), intensity }, adjustmentOf(rec, true));
   }
 
@@ -1985,6 +2059,23 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     return rec;
   }
 
+  /**
+   * The photo's settings with a node patch applied, as the core applies it (`docs/23` section 3.7): the patch is checked first and the
+   * document it makes after, a refusal says why in the core's words and changes nothing, and what is in range is clamped. A pick sets the
+   * white balance by hand from the colour under the point, as the mock has always done.
+   */
+  function patched(rec: PhotoRecord, patch: SettingsPatch): DevelopSettings {
+    const refusal = refusalOfPatch(rec.settings, patch);
+    if (refusal) fail("render", refusal);
+    let next = applyPatch(rec.settings, patch);
+    const pick = patch.nodes?.[INPUT_ID]?.white_pick;
+    if (pick) next = applyPatch(next, inputPatch({ white_balance: { kind: "manual", ...whiteFromPick(rec.scene, pick) } }));
+    const settings = clampSettings(next);
+    const invalid = validateGraph(settings);
+    if (invalid) fail("render", invalid);
+    return settings;
+  }
+
   function targets(scope: ApplyScope): PhotoRecord[] {
     if (scope === "all") return photos.filter((p) => p.skipReason === null);
     if (scope === "picked") return photos.filter((p) => p.summary.picked);
@@ -2017,7 +2108,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       let name = `${sanitizeStem(
         expandNameTemplate(job.options.name_template, {
           name: rec.scene.name,
-          look: lookSlug(rec.settings.look),
+          look: lookSlug(outputOf(rec.settings).look),
           date: rec.summary.captured_at.slice(0, 10),
           seq: i + 1,
           camera: "sony-a1",
@@ -2038,12 +2129,12 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
 
   /** A DNG of the job is close to, not the same as, the picture: a photo has a look with its own display rendering (at an intensity above 0). */
   function dngApproximate(job: ExportJob): boolean {
-    return targets(job.scope).some((rec) => rec.settings.look_intensity > 0 && findLook(rec.settings.look)?.input === "logc3_to_rec709");
+    return targets(job.scope).some((rec) => outputOf(rec.settings).look_intensity > 0 && findLook(outputOf(rec.settings).look)?.input === "logc3_to_rec709");
   }
 
   /** Photos of a job with adjustments beyond their look: what a command line can't carry. */
   function adjustedPhotos(job: ExportJob): number {
-    const plain = (s: DevelopSettings): string => JSON.stringify({ ...s, look: "", look_intensity: 0 });
+    const plain = (s: DevelopSettings): string => JSON.stringify(withoutLook(s));
     const base = plain(defaultSettings());
     return targets(job.scope).filter((rec) => plain(rec.settings) !== base).length;
   }
@@ -2096,7 +2187,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const o = job.options;
     const recs = targets(job.scope);
     const first = recs[0];
-    const look = lookSlug(first?.settings.look ?? preferences.default_look);
+    const look = lookSlug(first ? outputOf(first.settings).look : preferences.default_look);
     const flags = [`--look ${look}`, `--format ${o.format}`];
     if (o.format === "jpeg") flags.push(`--quality ${o.jpeg_quality}`);
     if (o.format === "tiff" || o.format === "png") flags.push(`--bits ${o.bit_depth}`);
@@ -2319,17 +2410,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     updateSettings: (photoId, patch: SettingsPatch) =>
       run("updateSettings", () => {
         const rec = photo(photoId);
-        const merged = { ...rec.settings } as Record<string, unknown>;
-        for (const [key, value] of Object.entries(patch)) if (value !== undefined) merged[key] = value;
-        // The wheels may come as parts (the core's `ColorBalancePatch`): the missing ones keep their value.
-        if (patch.color_balance) merged.color_balance = { ...rec.settings.color_balance, ...patch.color_balance };
-        // The lens may come as parts too (the core's `LensPatch`): the missing ones keep their value.
-        if (patch.lens) merged.lens = { ...rec.settings.lens, ...patch.lens };
-        if (patch.white_pick) {
-          // Picking white sets the white balance by hand from the colour under the point.
-          merged.white_balance = { kind: "manual", ...whiteFromPick(rec.scene, patch.white_pick) };
-        }
-        rec.settings = clampSettings(merged as unknown as DevelopSettings);
+        rec.settings = patched(rec, patch);
         emitSoon("render_stats", RENDER_STATS);
         scheduleThumbnail(rec);
         if (rec === photos[current]) sendFrame();
@@ -2340,7 +2421,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const look = findLook(lookId);
         if (!look || look.missing) fail("looks", "That look isn't in the library any more. Import it again.");
         for (const rec of targets(scope)) {
-          rec.settings = { ...rec.settings, look: lookId, look_intensity: clamp(intensity, 0, 100) };
+          rec.settings = applyPatch(rec.settings, outputPatch({ look: lookId, look_intensity: clamp(intensity, 0, 100) }));
           scheduleThumbnail(rec);
         }
         emitSoon("render_stats", RENDER_STATS);
@@ -2354,24 +2435,24 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         // otherwise they stay as they are (`docs/19` sections 5 and 10).
         const apple = estimates().apple.state;
         const appleActs = apple === "pending" || apple === "answered" || apple === "failed";
-        rec.settings = {
-          ...rec.settings,
-          exposure: { kind: "auto" },
-          ...(appleActs
-            ? {
-                contrast: { kind: "auto" },
-                saturation: { kind: "auto" },
-                highlights: { kind: "auto" },
-                shadows: { kind: "auto" },
-                black: { kind: "auto" },
-                color_balance: { ...rec.settings.color_balance, shadows: { kind: "auto" }, highlights: { kind: "auto" } },
-              }
-            : {}),
+        const input = inputPatch({
+          exposure: AUTO,
           light_source: "auto",
-          white_balance: { kind: "auto" },
+          white_balance: AUTO,
           white_pick: null,
-          noise_reduction: { kind: "auto" },
-        };
+          noise_reduction: AUTO,
+        });
+        const main = appleActs
+          ? mainGradePatch({
+              contrast: AUTO,
+              saturation: AUTO,
+              highlights: AUTO,
+              shadows: AUTO,
+              black: AUTO,
+              color_balance: { shadows: AUTO, highlights: AUTO },
+            })
+          : {};
+        rec.settings = clampSettings(applyPatch(rec.settings, foldPatches(input, main)));
         emitSoon("render_stats", RENDER_STATS);
         scheduleThumbnail(rec);
         if (rec === photos[current]) sendFrame();
@@ -2386,10 +2467,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       }),
     pasteSettings: (photoIds, patch: SettingsPatch) =>
       run("pasteSettings", (): PasteReport => {
-        // The crop, the turn and the white pick are never pasted, whatever the patch says.
-        const { crop: _crop, orientation: _orientation, white_pick: _pick, ...pasteable } = patch;
-        if (pasteable.look !== undefined) {
-          const look = findLook(pasteable.look);
+        const wanted = patch.nodes?.[OUTPUT_ID]?.look;
+        if (wanted !== undefined) {
+          const look = findLook(wanted);
           if (!look || look.missing) fail("looks", "That look isn't in the library any more. Import it again.");
         }
         const report: PasteReport = { pasted: [], skipped: [] };
@@ -2399,10 +2479,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
             report.skipped.push(id);
             continue;
           }
-          const merged = { ...rec.settings } as Record<string, unknown>;
-          for (const [key, value] of Object.entries(pasteable)) if (value !== undefined) merged[key] = value;
-          if (pasteable.lens) merged.lens = { ...rec.settings.lens, ...pasteable.lens };
-          const next = clampSettings(merged as unknown as DevelopSettings);
+          // The crop, the turn and the white pick are never pasted, whatever the patch says; a copy of the whole graph replaces the
+          // target's graph (`pastedOnto`).
+          const next = patched(rec, pastedOnto(rec.settings, patch));
           const step = diffSettings(rec.settings, next);
           report.pasted.push({ id, before: step?.before ?? {}, after: step?.after ?? {} });
           if (step) {
@@ -2425,7 +2504,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const { values } = resolveSettings(photoId, rec.settings, estimates());
         // Exposure moves the plot along the tonal scale. Before does not: the core's histogram is always that of the
         // finished picture (docs/02).
-        const shift = (values.exposure_ev - MOCK_ESTIMATES.exposure_ev) * 0.06;
+        const shift = (values.input.exposure_ev - MOCK_ESTIMATES.input.exposure_ev) * 0.06;
         return sceneHistogram(developed(rec), shift);
       }),
 
@@ -2466,12 +2545,12 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
           // on the paper picks nothing. Like `update_settings` with a pick, the mock sets the white balance by hand from the colour there.
           const point = photoPointAt(rec, event.x, event.y);
           if (point) {
-            rec.settings = clampSettings({
-              ...rec.settings,
-              white_pick: point,
-              light_source: "auto",
-              white_balance: { kind: "manual", ...whiteFromPick(rec.scene, point) },
-            });
+            rec.settings = clampSettings(
+              applyPatch(
+                rec.settings,
+                inputPatch({ white_pick: point, light_source: "auto", white_balance: { kind: "manual", ...whiteFromPick(rec.scene, point) } }),
+              ),
+            );
             emitSoon("settings_changed", { photo_id: rec.summary.id });
             emitSoon("render_stats", RENDER_STATS);
             scheduleThumbnail(rec);
@@ -2600,7 +2679,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         if (look.group.kind === "built_in") fail("looks", "Built-in looks can't be removed.");
         looks = looks.filter((l) => l.id !== id);
         if (preferences.default_look === id) preferences = { ...preferences, default_look: NEUTRAL };
-        for (const rec of photos) if (rec.settings.look === id) rec.settings = { ...rec.settings, look: NEUTRAL };
+        for (const rec of photos) if (outputOf(rec.settings).look === id) rec.settings = applyPatch(rec.settings, outputPatch({ look: NEUTRAL }));
         syncDefaultLook();
         emitSoon("looks_changed", null);
       }),

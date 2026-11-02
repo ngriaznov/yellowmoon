@@ -9,6 +9,7 @@ import type { MockApi, MockOptions } from "../api.mock";
 import { photoName, removedNotice, restoredNotice } from "./photo";
 import { createStore } from "./store";
 import type { AppStore } from "./store";
+import { mainGradeOf, mainGradePatch } from "./settingsGraph";
 
 const stops: Array<() => void> = [];
 afterEach(() => {
@@ -169,7 +170,7 @@ describe("removing photos", () => {
 
   it("waits for the patches on their way to a photo before it takes the photo out, and shows no error", async () => {
     const { store } = await onPhotos();
-    const sent = store.update({ contrast: { kind: "manual", value: 25 } }, false);
+    const sent = store.update(mainGradePatch({ contrast: { kind: "manual", value: 25 } }), false);
     const gone = store.removeCurrentPhoto();
     await Promise.all([sent, gone]);
     expect(store.getState().error).toBeNull();
@@ -240,7 +241,7 @@ describe("Undo", () => {
   it("brings the settings back exactly, and the undo steps with them", async () => {
     const { store } = await onPhotos();
     const edited = idOf(store);
-    await store.update({ exposure: { kind: "manual", ev: 0.8 }, contrast: { kind: "manual", value: 20 } }, true);
+    await store.update({ nodes: { input: { exposure: { kind: "manual", ev: 0.8 } }, "1": { grade: { contrast: { kind: "manual", value: 20 } } } } }, true);
     const before = store.currentSettings();
     await store.removeCurrentPhoto();
     expect(store.getState().settings[edited]).toBeUndefined();
@@ -248,12 +249,12 @@ describe("Undo", () => {
     expect(idOf(store)).toBe(edited);
     await vi.waitFor(() => expect(store.currentSettings()).not.toBeNull());
     expect(store.currentSettings()?.settings).toEqual(before?.settings);
-    expect(store.currentSettings()?.values.exposure_ev).toBe(0.8);
+    expect(store.currentSettings()?.values.input.exposure_ev).toBe(0.8);
     // The change made before the photo left can still be undone (⌘Z on the photo).
     expect(store.getState().canUndo).toBe(true);
     await store.undo();
-    expect(store.currentSettings()?.settings.contrast).toEqual({ kind: "auto" });
-    expect(store.currentSettings()?.auto.exposure).toBe(true);
+    expect(mainGradeOf(store.currentSettings()!.settings).contrast).toEqual({ kind: "auto" });
+    expect(store.currentSettings()?.auto.input.exposure).toBe(true);
   });
 
   it("goes back to Photos from the Start screen after the last photo was removed", async () => {
@@ -340,7 +341,7 @@ describe("⌘Z after a removal", () => {
   it("takes the removal back while nothing was changed since, and the photo's edits after that", async () => {
     const { store } = await onPhotos();
     const all = names(store);
-    await store.update({ contrast: { kind: "manual", value: 30 } }, true);
+    await store.update(mainGradePatch({ contrast: { kind: "manual", value: 30 } }), true);
     expect(store.getState().canUndo).toBe(true);
     await store.setCurrent(ids(store)[1] as number);
     await store.removePhotos([ids(store)[1] as number]);
@@ -354,7 +355,7 @@ describe("⌘Z after a removal", () => {
     await store.setCurrent(ids(store)[0] as number);
     expect(store.getState().canUndo).toBe(true);
     await store.undo();
-    await vi.waitFor(() => expect(store.currentSettings()?.settings.contrast).toEqual({ kind: "auto" }));
+    await vi.waitFor(() => expect(mainGradeOf(store.currentSettings()!.settings).contrast).toEqual({ kind: "auto" }));
   });
 
   it("undoes a change made after the removal first, then the removal", async () => {
@@ -364,10 +365,10 @@ describe("⌘Z after a removal", () => {
     await store.removePhotos([list[0] as number]);
     // A change on the photo now on screen, once its settings have arrived.
     await vi.waitFor(() => expect(store.currentSettings()).not.toBeNull());
-    await store.update({ contrast: { kind: "manual", value: 40 } }, true);
-    expect(store.currentSettings()?.settings.contrast).toEqual({ kind: "manual", value: 40 });
+    await store.update(mainGradePatch({ contrast: { kind: "manual", value: 40 } }), true);
+    expect(mainGradeOf(store.currentSettings()!.settings).contrast).toEqual({ kind: "manual", value: 40 });
     await store.undo();
-    expect(store.currentSettings()?.settings.contrast).toEqual({ kind: "auto" });
+    expect(mainGradeOf(store.currentSettings()!.settings).contrast).toEqual({ kind: "auto" });
     expect(names(store)).toHaveLength(11);
     expect(store.hasRemovalToUndo()).toBe(true);
     // Nothing is left to undo but the removal.

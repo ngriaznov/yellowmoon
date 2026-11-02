@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import type { MockOptions } from "../src/api.mock";
+import type { GradePatch } from "../src/api/types";
 import { configureMock, lookTilesLoaded, openApp, openPhotos, showUpdateReady } from "./helpers/app";
 import { compareScreen } from "./helpers/compare";
 import { WARP_PINS } from "./helpers/states";
@@ -29,19 +30,21 @@ const CURVE_DEMO_POINTS = {
 } satisfies Record<string, Array<[number, number]>>;
 
 /** What the mockup's 4th photo has been given: Light's Highlights and Shadows, Colour's wheels and Saturation, a curve. */
-const MOCKUP_SETTINGS: MockOptions["initialSettings"] = {
-  DSC04204: {
-    highlights: manual(-18),
-    shadows: manual(12),
-    saturation: manual(6),
-    color_balance: {
-      shadows: { kind: "manual", point: [-0.08, -0.12] },
-      midtones: [0, 0],
-      highlights: { kind: "manual", point: [0.12, 0.12] },
-    },
-    curve: { luma: CURVE_DEMO_POINTS.luma, red: CURVE_DEMO_POINTS.red, green: CURVE_DEMO_POINTS.green, blue: CURVE_DEMO_POINTS.blue },
+const MOCKUP_GRADE: GradePatch = {
+  highlights: manual(-18),
+  shadows: manual(12),
+  saturation: manual(6),
+  color_balance: {
+    shadows: { kind: "manual", point: [-0.08, -0.12] },
+    midtones: [0, 0],
+    highlights: { kind: "manual", point: [0.12, 0.12] },
   },
+  curve: { luma: CURVE_DEMO_POINTS.luma, red: CURVE_DEMO_POINTS.red, green: CURVE_DEMO_POINTS.green, blue: CURVE_DEMO_POINTS.blue },
 };
+
+/** The settings of the mockup's 4th photo: node 1, Main, has the grade above (settings are a graph of nodes, `docs/23` section 3). */
+const gradeOfMainOn = (grade: GradePatch): MockOptions["initialSettings"] => ({ DSC04204: { nodes: { "1": { grade } } } });
+const MOCKUP_SETTINGS = gradeOfMainOn(MOCKUP_GRADE);
 
 /** Waits until the dialogs and the list have finished opening: a busy machine stretches their 300 ms, and a picture taken in the middle differs. */
 async function dialogsSettled(page: Page): Promise<void> {
@@ -116,7 +119,7 @@ test.describe("Photos", () => {
   test("Colour warp: two moving pins and a lock, the card in view, its first pin selected (photos-color-warp.png)", async ({ page }) => {
     // The owner's request of 2026-10-17 (docs/11 §Colour warp): the sky's blue moved toward teal, the sun's warm white toward orange, a
     // lock in the magentas. The photo shows the move (the mock warps its flat colours, src/fixtures/warp.ts).
-    await photos(page, { DSC04204: { ...MOCKUP_SETTINGS?.DSC04204, color_warp: { pins: WARP_PINS as never } } });
+    await photos(page, gradeOfMainOn({ ...MOCKUP_GRADE, color_warp: { pins: WARP_PINS as never } }));
     await tab(page, "Colour");
     // The photo's colours have been drawn behind the plane.
     await expect(page.locator('.ym-warp-plane:not([data-scatter-points="0"])')).toBeVisible();
@@ -180,7 +183,7 @@ test.describe("Photos", () => {
     // The photo keeps only the mockup's curve, so every row shows Apple's value as Auto. Without Apple Auto the Look tab is
     // photos-look.png, unchanged.
     await openApp(page, { ...MOCKUP, mockAppleAuto: "answered" });
-    await configureMock(page, { initialSettings: { DSC04204: { curve: MOCKUP_SETTINGS?.DSC04204?.curve } } });
+    await configureMock(page, { initialSettings: gradeOfMainOn({ curve: MOCKUP_GRADE.curve }) });
     await openPhotos(page);
     await showUpdateReady(page);
     await expect(page.getByText("Neural · 42 ms · Display P3")).toBeVisible();

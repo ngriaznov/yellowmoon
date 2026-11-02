@@ -9,6 +9,7 @@ import type { Harness, UpdateSpy } from "../test/harness";
 import { AUTO_CROP_LINES, autoCropLines, autoCropNoteLines, levelledLine } from "./crop/CropPanel";
 import { canvasOf, fitInside } from "./crop/cropMath";
 import { AUTO_CROP_FAILED_MS, draftToCrop } from "./crop/useCropSession";
+import { inputOf, inputPatch } from "../state/settingsGraph";
 
 // Auto crop in the Crop panel (docs/20-auto-crop.md §1): the Frame card's AUTO toggle, what it does to the draft, its note, and the
 // answers it must not use. The mock proposes a 1.4° turn and a 90 % frame a little left of centre, or keeps a "keep" photo whole.
@@ -119,8 +120,8 @@ describe("the Auto toggle of the Frame card", () => {
     expect(valueOf("Straighten")).toBe("+1.4°");
     expect(noteLines()).toEqual(["Cropped to frame the subject.", "Levelled by 1.4°."]);
     // The core is told the angle as Straighten tells it: the whole photo, so the viewport shows it straightened under the frame.
-    expect(patches(spy).at(-1)).toEqual({ crop: { rect: FULL, angle_deg: 1.4, aspect: "original" }, orientation: 0 });
-    await waitFor(() => expect(settings().values.crop?.angle_deg).toBe(1.4));
+    expect(patches(spy).at(-1)).toEqual(inputPatch({ crop: { rect: FULL, angle_deg: 1.4, aspect: "original" }, orientation: 0 }));
+    await waitFor(() => expect(settings().values.input.crop?.angle_deg).toBe(1.4));
     expect(photo().querySelector("img")?.getAttribute("src")).toContain("rotate(1.4");
     // Nothing is a step of the history until Done.
     expect(h!.store.getState().canUndo).toBe(false);
@@ -149,7 +150,7 @@ describe("the Auto toggle of the Frame card", () => {
     await h!.user.click(within(crop()).getByRole("button", { name: "Rotate 90°" }));
     await waitFor(() => expect(ask).toHaveBeenLastCalledWith(currentId(), "original", 90));
     await waitFor(() => expectFrame(firstFrame(proposal("original", 90))));
-    await waitFor(() => expect(settings().values.orientation).toBe(90));
+    await waitFor(() => expect(settings().values.input.orientation).toBe(90));
     expect(isOn()).toBe(true);
   });
 
@@ -202,7 +203,7 @@ describe("the Auto toggle of the Frame card", () => {
     expect(valueOf("Straighten")).toBe("−2.0°");
     expectFrame(firstFrame(proposal("original", 0)));
     expect(noteLines()).toEqual([]);
-    await waitFor(() => expect(patches(spy).at(-1)).toMatchObject({ crop: { angle_deg: -2 } }));
+    await waitFor(() => expect(patches(spy).at(-1)).toMatchObject({ nodes: { input: { crop: { angle_deg: -2 } } } }));
   });
 
   it("turns off with Reset, which goes back to the whole, level, unturned photo in Original", async () => {
@@ -241,7 +242,7 @@ describe("the Auto toggle of the Frame card", () => {
     expect(valueOf("Straighten")).toBe("+2.0°");
     expect(within(crop()).getByRole("radio", { name: "Free" })).toHaveAttribute("aria-checked", "true");
     // The core is told the angle from before, as Straighten would tell it.
-    expect(patches(spy).at(-1)).toEqual({ crop: { rect: FULL, angle_deg: 2, aspect: "free" }, orientation: 0 });
+    expect(patches(spy).at(-1)).toEqual(inputPatch({ crop: { rect: FULL, angle_deg: 2, aspect: "free" }, orientation: 0 }));
   });
 
   it("Done sends the crop with auto: true, one undo step; with Auto off the field is left out", async () => {
@@ -252,11 +253,11 @@ describe("the Auto toggle of the Frame card", () => {
     await h!.user.click(within(crop()).getByRole("button", { name: /^Done/ }));
     await screen.findByRole("complementary", { name: "Tools" });
     const auto = firstFrame(proposal("original", 0));
-    expect(patches(spy).at(-1)).toEqual({ crop: { rect: auto, angle_deg: 1.4, aspect: "original", auto: true }, orientation: 0 });
-    await waitFor(() => expect(settings().settings.crop?.auto).toBe(true));
+    expect(patches(spy).at(-1)).toEqual(inputPatch({ crop: { rect: auto, angle_deg: 1.4, aspect: "original", auto: true }, orientation: 0 }));
+    await waitFor(() => expect(inputOf(settings().settings).crop?.auto).toBe(true));
     expect(h!.store.getState().canUndo).toBe(true);
     await h!.user.keyboard("{Meta>}z{/Meta}");
-    await waitFor(() => expect(settings().settings.crop).toBeNull());
+    await waitFor(() => expect(inputOf(settings().settings).crop).toBeNull());
     // Auto on, then the frame moved by hand: the crop is the person's.
     await startCrop();
     await autoOn();
@@ -265,7 +266,7 @@ describe("the Auto toggle of the Frame card", () => {
     spy.mockClear();
     await h!.user.click(within(crop()).getByRole("button", { name: /^Done/ }));
     await screen.findByRole("complementary", { name: "Tools" });
-    const sent = patches(spy).at(-1)?.crop;
+    const sent = patches(spy).at(-1)?.nodes?.input?.crop;
     expect(sent).not.toBeNull();
     expect(sent).not.toHaveProperty("auto");
   });
@@ -277,15 +278,15 @@ describe("the Auto toggle of the Frame card", () => {
     spy.mockClear();
     await h!.user.click(within(crop()).getByRole("button", { name: /^Cancel/ }));
     await screen.findByRole("complementary", { name: "Tools" });
-    expect(patches(spy).at(-1)).toEqual({ crop: null, orientation: 0 });
-    await waitFor(() => expect(settings().values.crop).toBeNull());
+    expect(patches(spy).at(-1)).toEqual(inputPatch({ crop: null, orientation: 0 }));
+    await waitFor(() => expect(settings().values.input.crop).toBeNull());
     expect(h!.store.getState().canUndo).toBe(false);
   });
 
   it("opens on with an Auto crop, asks again to fill the note, and off goes to the whole photo at 0° in the aspect chosen", async () => {
     await setup();
     const auto = proposal("square", 0);
-    await h!.store.update({ crop: { rect: firstFrame(auto), angle_deg: auto.angle_deg, aspect: "square", auto: true } });
+    await h!.store.update(inputPatch({ crop: { rect: firstFrame(auto), angle_deg: auto.angle_deg, aspect: "square", auto: true } }));
     const ask = vi.spyOn(h!.api, "suggestCrop");
     await startCrop();
     expect(isOn()).toBe(true);
@@ -350,7 +351,7 @@ describe("the note under the Frame card", () => {
     await h!.user.click(within(crop()).getByRole("button", { name: /^Done/ }));
     await screen.findByRole("complementary", { name: "Tools" });
     // The whole photo, straight, is no crop, Auto or not.
-    expect(patches(spy).at(-1)).toEqual({ crop: null, orientation: 0 });
+    expect(patches(spy).at(-1)).toEqual(inputPatch({ crop: null, orientation: 0 }));
   });
 
   it("a photo without a horizon or straight lines is not turned, and the note says so", async () => {
@@ -440,7 +441,7 @@ describe("answers that come too late", () => {
     expect(noteLines()).toEqual([]);
     expectFrame(FULL);
     expect(valueOf("Straighten")).toBe("0°");
-    expect(patches(spy).some((p) => p.crop?.angle_deg === 1.4)).toBe(false);
+    expect(patches(spy).some((p) => p.nodes?.input?.crop?.angle_deg === 1.4)).toBe(false);
   });
 
   it("an answer after the frame was moved by hand is not used", async () => {
@@ -484,7 +485,7 @@ describe("answers that come too late", () => {
     spy.mockClear();
     await held[0]!.answer();
     expect(spy).not.toHaveBeenCalled();
-    expect(settings().values.crop).toBeNull();
+    expect(settings().values.input.crop).toBeNull();
     await startCrop();
     expect(isOn()).toBe(false);
     expect(noteLines()).toEqual([]);

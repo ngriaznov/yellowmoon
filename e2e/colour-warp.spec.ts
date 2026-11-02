@@ -12,7 +12,7 @@ type Pin = { source: [number, number]; target: [number, number]; locked: boolean
 
 /** The pins a photo has in the mock (the core's copy of the settings). */
 const pinsOf = (page: Page, id: number): Promise<Pin[]> =>
-  page.evaluate(`window.__yellowmoon.mockApi.getSettings(${id}).then((rs) => rs.settings.color_warp.pins)`) as Promise<Pin[]>;
+  page.evaluate(`window.__yellowmoon.mockApi.getSettings(${id}).then((rs) => rs.settings.nodes.items.find((n) => n.id === 1).grade.color_warp.pins)`) as Promise<Pin[]>;
 
 async function colourTab(page: Page): Promise<void> {
   await openApp(page, MOCKUP);

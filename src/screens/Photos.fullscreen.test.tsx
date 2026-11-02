@@ -158,9 +158,9 @@ describe("in full screen", () => {
     await h!.user.keyboard("\\");
     await h!.user.keyboard("z");
     await waitFor(() => expect(h!.api.viewport.mode).toEqual({ kind: "percent", value: 100 }));
-    const before = h!.store.currentSettings()?.values.look;
+    const before = h!.store.currentSettings()?.values.output.look;
     await h!.user.keyboard("2");
-    await waitFor(() => expect(h!.store.currentSettings()?.values.look).not.toBe(before));
+    await waitFor(() => expect(h!.store.currentSettings()?.values.output.look).not.toBe(before));
     expectFullScreen();
   });
 

@@ -4,6 +4,7 @@ import { Button, Card, formats, MINUS, ResetLink, RowNote, Slider, WarpPlane, WA
 import type { WarpTool } from "../../components";
 import type { ColorWarpPin } from "../../api/types";
 import { useAppState } from "../../state/context";
+import { mainGradeOf, mainGradePatch } from "../../state/settingsGraph";
 import type { TabProps } from "./shared";
 
 /** What the card says while no pin is selected. */
@@ -33,7 +34,7 @@ export interface ColorWarpCardProps extends TabProps {
  * drag is one undo step. The selected pin is the store's `warpPin`, which is window state and not a setting.
  */
 export function ColorWarpCard({ store, photo, rs, pickingColor = false, onPickColor }: ColorWarpCardProps) {
-  const pins = rs.settings.color_warp.pins;
+  const pins = mainGradeOf(rs.settings).color_warp.pins;
   const stored = useAppState((s) => s.warpPin);
   const selected = stored !== null && stored < pins.length ? stored : null;
   const scatter = useAppState((s) => s.chromaScatter);
@@ -42,7 +43,7 @@ export function ColorWarpCard({ store, photo, rs, pickingColor = false, onPickCo
   // The photo's colours behind the plane follow the frames the viewport draws, at most five times a second (`store.watchChromaScatter`).
   useEffect(() => store.watchChromaScatter(), [store, photo.id]);
 
-  const send = (next: ColorWarpPin[], final: boolean): void => void store.update({ color_warp: { pins: next } }, final, rs.photo_id);
+  const send = (next: ColorWarpPin[], final: boolean): void => void store.update(mainGradePatch({ color_warp: { pins: next } }), final, rs.photo_id);
   const pin = selected === null ? undefined : pins[selected];
   /** Changes a field of the selected pin. */
   const setPin = (patch: Partial<ColorWarpPin>, final: boolean): void => {
@@ -62,7 +63,7 @@ export function ColorWarpCard({ store, photo, rs, pickingColor = false, onPickCo
   };
   const reset = (): void => {
     store.selectWarpPin(null);
-    void store.update({ color_warp: { pins: [] } });
+    void store.update(mainGradePatch({ color_warp: { pins: [] } }));
   };
 
   return (

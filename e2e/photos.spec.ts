@@ -197,7 +197,7 @@ test.describe("controls with the real mouse", () => {
     const calls = await recordCalls(page, "updateSettings");
     await dragSlider(page, "Exposure", 0.8, 8);
     await expect(valueBox(page, "Exposure")).not.toHaveValue("+0.30");
-    const patches = (await calls()).map((c) => c.args[1] as { exposure: { kind: "auto" } | { kind: "manual"; ev: number } });
+    const patches = (await calls()).map((c) => (c.args[1] as { nodes: { input: { exposure: { kind: "auto" } | { kind: "manual"; ev: number } } } }).nodes.input);
     expect(patches.length).toBeGreaterThanOrEqual(2);
     // A value dropped on the detent (+0.30) is Automatic again; every other one is manual and in range.
     expect(patches.every((p) => p.exposure.kind === "auto" || (p.exposure.ev >= -4 && p.exposure.ev <= 4))).toBe(true);
@@ -235,7 +235,7 @@ test.describe("controls with the real mouse", () => {
     await expect(valueBox(page, "Output")).not.toHaveAttribute("data-changed", "true");
     const calls = await recordCalls(page, "updateSettings");
     await dragSlider(page, "Output", 0.2, 6);
-    const patches = (await calls()).map((c) => c.args[1] as { output_sharpening: number });
+    const patches = (await calls()).map((c) => (c.args[1] as { nodes: { output: { output_sharpening: number } } }).nodes.output);
     expect(patches.length).toBeGreaterThanOrEqual(2);
     // Every patch is a plain number on the grid of 5 inside 0 to 200, and the last one is on screen.
     expect(patches.every((p) => Number.isInteger(p.output_sharpening / 5) && p.output_sharpening >= 0 && p.output_sharpening <= 200)).toBe(true);
@@ -246,12 +246,12 @@ test.describe("controls with the real mouse", () => {
     await expect(valueBox(page, "Output")).toHaveValue("35%");
     await page.getByRole("button", { name: "Reset Output" }).click();
     await expect(valueBox(page, "Output")).toHaveValue("100%");
-    expect((await calls()).at(-1)!.args[1]).toEqual({ output_sharpening: 100 });
+    expect((await calls()).at(-1)!.args[1]).toEqual({ nodes: { output: { output_sharpening: 100 } } });
     // The card's Reset puts the whole card back, Output included.
     await setValue(page, "Output", "60");
     await card.getByRole("button", { name: "Reset" }).first().click();
     await expect(valueBox(page, "Output")).toHaveValue("100%");
-    expect((await calls()).at(-1)!.args[1]).toEqual({ sharpen: { kind: "auto" }, output_sharpening: 100 });
+    expect((await calls()).at(-1)!.args[1]).toEqual({ nodes: { input: { sharpen: { kind: "auto" } }, output: { output_sharpening: 100 } } });
   });
 
   test("a change on one tab is shown on the Look tab's Automatic card as EDITED", async ({ page }) => {
@@ -290,9 +290,10 @@ test.describe("controls with the real mouse", () => {
     await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.3, { steps: 6 });
     await page.mouse.up();
     await expect(plot.getByRole("slider")).toHaveCount(3);
-    const last = (await calls()).at(-1)!.args[1] as { curve: { luma: number[][] } };
-    expect(last.curve.luma).toHaveLength(3);
-    expect(last.curve.luma[1]![1]).toBeGreaterThan(0.6);
+    const last = (await calls()).at(-1)!.args[1] as { nodes: { "1": { grade: { curve: { luma: number[][] } } } } };
+    const luma = last.nodes["1"].grade.curve.luma;
+    expect(luma).toHaveLength(3);
+    expect(luma[1]![1]).toBeGreaterThan(0.6);
     // Dragging the point far off the plot removes it.
     const point = plot.getByRole("slider", { name: "Point 2 of 3" });
     const p = (await point.boundingBox())!;
@@ -602,7 +603,7 @@ test("a folder of 500 photos: the first one opens while the rest develop, and th
 
 test("settings made before the session opens come through the mock (initialSettings)", async ({ page }) => {
   await openApp(page, MOCKUP);
-  await configureMock(page, { initialSettings: { DSC04204: { highlights: manual(-18), shadows: manual(12), saturation: manual(6) } } });
+  await configureMock(page, { initialSettings: { DSC04204: { nodes: { "1": { grade: { highlights: manual(-18), shadows: manual(12), saturation: manual(6) } } } } } });
   await openPhotos(page);
   await page.keyboard.press("Meta+3");
   await expect(valueBox(page, "Highlights")).toHaveValue("−18");

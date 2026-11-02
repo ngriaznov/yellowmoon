@@ -23,7 +23,7 @@ async function setup(options: MockOptions = ALL): Promise<Harness> {
 }
 
 const card = () => within(screen.getByRole("region", { name: "Look" }));
-const lookOf = (): string | undefined => h?.store.currentSettings()?.values.look;
+const lookOf = (): string | undefined => h?.store.currentSettings()?.values.output.look;
 const search = (): HTMLElement => screen.getByRole("searchbox", { name: "Search looks" });
 
 /** The header buttons of the sections, in the order they are drawn. */

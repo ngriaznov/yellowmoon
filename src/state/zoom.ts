@@ -1,5 +1,5 @@
 /** The zoom steps of the Fit menu, from smallest to largest (`docs/11-ui.md` §Photos). */
-import type { PhotoSummary, RenderStats, ResolvedValues, ViewportMode, ViewportRect } from "../api/types";
+import type { PhotoSummary, RenderStats, ResolvedInput, ViewportMode, ViewportRect } from "../api/types";
 
 export const ZOOMS: ReadonlyArray<{ key: string; label: string; mode: ViewportMode }> = [
   { key: "fit", label: "Fit", mode: { kind: "fit" } },
@@ -48,7 +48,7 @@ export const MAX_ZOOM_PERCENT = 800;
 export function fitZoomExact(
   cell: Pick<ViewportRect, "width" | "height" | "scale">,
   photo: Pick<PhotoSummary, "width_px" | "height_px">,
-  values: Pick<ResolvedValues, "orientation" | "crop"> | null,
+  values: Pick<ResolvedInput, "orientation" | "crop"> | null,
 ): number | null {
   const turned = (values?.orientation ?? 0) % 180 !== 0;
   const crop = values?.crop?.rect;
@@ -72,7 +72,7 @@ export function fitZoomOf(stats: Pick<RenderStats, "fit_percent"> | null | undef
 export function fitZoomPercent(
   cell: Pick<ViewportRect, "width" | "height" | "scale">,
   photo: Pick<PhotoSummary, "width_px" | "height_px">,
-  values: Pick<ResolvedValues, "orientation" | "crop"> | null,
+  values: Pick<ResolvedInput, "orientation" | "crop"> | null,
 ): number | null {
   const exact = fitZoomExact(cell, photo, values);
   return exact === null ? null : Math.round(exact);

@@ -9,12 +9,13 @@
  * zoom). It is plain TypeScript with a `subscribe`, so it is tested without React; `context.tsx`
  * makes it available to components.
  *
- * Settings changes go out as patches, one at a time per photo. While one is in flight, newer
- * drag patches fold into a single waiting patch, so a slow core is never flooded and the last
- * value always arrives. The reply of a patch replaces the mirrored settings, unless a newer
- * patch is waiting (its reply will carry everything). Final patches (a released drag, a key, a
- * typed value) are recorded for undo as the difference between the settings before the gesture
- * and the core's reply.
+ * Settings are a graph of nodes (`docs/23`), and changes go out as node patches (`patchOf` in
+ * `settingsGraph.ts`), one at a time per photo: a slider drag sends one node's partial. While one
+ * is in flight, newer drag patches fold into a single waiting patch (`foldPatches`), so a slow core
+ * is never flooded and the last value always arrives. The reply of a patch replaces the mirrored
+ * settings, unless a newer patch is waiting (its reply will carry everything). Final patches (a
+ * released drag, a key, a typed value) are recorded for undo as the difference, per node and for
+ * the links, between the settings before the gesture and the core's reply (`diffSettings`).
  */
 import type { Api, Unsubscribe } from "../api";
 import { toAppError } from "../api";
@@ -31,18 +32,26 @@ import type {
   ColorBalancePoint,
   CropAspect,
   CropSuggestion,
+  Curves,
   DevelopSettings,
   ExportJob,
   ExportOptions,
   ExportProgress,
+  GradePatch,
+  GradeValues,
   HistogramData,
   LensInfo,
   Look,
   LookId,
   LookInput,
   LookLibrary,
+  MainAutoFlags,
+  MainEstimates,
   MenuAction,
   MenuState,
+  NodeGrade,
+  NodeId,
+  NodeItem,
   OpenSummary,
   Orientation,
   PasteReport,
@@ -55,6 +64,9 @@ import type {
   Preferences,
   PreferencesPatch,
   RenderStats,
+  ResolvedCorrector,
+  ResolvedInput,
+  ResolvedOutput,
   ResolvedSettings,
   SessionChange,
   SessionState,
@@ -80,6 +92,22 @@ import type { HistoryEntry } from "./history";
 import { perfCount } from "../perf";
 import { isReady, mergeSession, photoName, releaseUrl, removedNotice, restoredNotice, withoutPhotos, withRestoredPhotos } from "./photo";
 import { RequestLimiter } from "./requestLimiter";
+import {
+  applyPatch,
+  foldPatches,
+  INPUT_ID,
+  inputOf,
+  isEmptyPatch,
+  mainGradeOf,
+  MAIN_ID,
+  mainOf,
+  mainGradePatch,
+  nodeIdOfKey,
+  OUTPUT_ID,
+  outputOf,
+  outputPatch,
+} from "./settingsGraph";
+import type { CorrectorItem, InputItem, OutputItem } from "./settingsGraph";
 import { ViewportInputQueue } from "./viewportInputQueue";
 import type { StreamInput } from "./viewportInputQueue";
 import { fitZoomExact, fitZoomOf, showsWhole, zoomAfter } from "./zoom";
@@ -151,7 +179,7 @@ export interface CopiedSettings {
    * id would name another photo). Paste Settings to Picked uses it to leave the source's own picked white alone.
    */
   sourceId: PhotoId | null;
-  /** What `copy_settings` answered: everything but the crop, the orientation and the Pick white point. */
+  /** What `copy_settings` answered: the whole graph, but the Input's crop, orientation and Pick white point. */
   patch: SettingsPatch;
 }
 
@@ -306,63 +334,116 @@ export function initialState(): AppState {
   };
 }
 
-/** Settings whose resolved value is the stored value, so a patch can be shown at once. */
-const DIRECT_KEYS: ReadonlySet<string> = new Set([
-  "look",
-  "look_intensity",
-  "brightness",
-  "white",
-  "light_source",
-  "color_warp",
-  "lens",
-  "output_sharpening",
-  "curve",
-  "decode",
-  "rolloff",
-  "crop",
-  "orientation",
-  "white_pick",
-]);
+/** Fields of the Input whose resolved value is the stored value, so a patch can be shown at once (the others wait for the core's reply). */
+const DIRECT_INPUT: ReadonlySet<string> = new Set(["pos", "light_source", "lens", "rolloff", "decode", "crop", "orientation", "white_pick"]);
+
+/** The same for the Output: all of its fields. */
+const DIRECT_OUTPUT: ReadonlySet<string> = new Set(["pos", "look", "look_intensity", "output_sharpening"]);
+
+/** The same for Main's own fields (its grade is below; its masks wait for the core, a row patch is not a row). */
+const DIRECT_MAIN: ReadonlySet<string> = new Set(["pos", "name", "bypass", "trim"]);
+
+/** The grade fields of Main whose resolved value is the stored value. */
+const DIRECT_GRADE: ReadonlySet<string> = new Set(["brightness", "white", "color_warp", "curve"]);
 
 /** The settings that are Auto or a value from −100 to 100 (`docs/19` section 5), each resolved against the estimate of the same name. */
+type PercentField = "contrast" | "saturation" | "highlights" | "shadows" | "black";
 const PERCENT_KEYS: ReadonlySet<string> = new Set(["contrast", "saturation", "highlights", "shadows", "black"]);
 
+/** Fields of a node patch that are partial objects: they merge into the field they name, as the core merges them. */
+const PARTS: ReadonlySet<string> = new Set(["lens", "rolloff", "decode", "trim"]);
+
+/** Puts the fields of `patch` that are in `direct` into the node's stored and resolved fields. */
+function directFields(stored: object, resolved: object, patch: object, direct: ReadonlySet<string>): { stored: object; resolved: object } {
+  const s: Record<string, unknown> = { ...stored };
+  const r: Record<string, unknown> = { ...resolved };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined || !direct.has(key)) continue;
+    const part = PARTS.has(key) && value !== null && typeof value === "object";
+    s[key] = part ? { ...(s[key] as object), ...value } : value;
+    r[key] = part ? { ...(r[key] as object), ...value } : value;
+  }
+  return { stored: s, resolved: r };
+}
+
 /**
- * The mirrored settings with a patch applied to the fields that need no resolving. Contrast, saturation, highlights, shadows, black
- * and the shadows and highlights wheels are Auto or a value (`docs/19` section 5) and need none either: Auto is the photo's Auto value,
- * which the mirror already has (`estimates`).
+ * The mirrored settings with a patch applied to the fields that need no resolving (`docs/23` section 3.7). A node patch is read node by
+ * node: the Input's light preset, lens, range, switches, crop, turn and white pick; Main's brightness, white, colour warp, curve, name,
+ * bypass, trim and masks; the Output's look, intensity and sharpening. Contrast, saturation, highlights, shadows, black and the shadows
+ * and highlights wheels of Main are Auto or a value (`docs/19` section 5) and need no resolving either: Auto is the photo's Auto value,
+ * which the mirror already has (`estimates`). What waits for the core's reply: the Input's exposure, white balance, sharpening and noise
+ * reduction (their Auto resolves in the core), every other corrector, and a patch that adds or removes a node or gives links.
  */
 export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): ResolvedSettings {
-  const settings = { ...rs.settings } as Record<string, unknown>;
-  const values = { ...rs.values } as Record<string, unknown>;
+  let settings = rs.settings;
+  let values = rs.values;
   let auto = rs.auto;
-  for (const [key, value] of Object.entries(patch)) {
-    if (value !== undefined && PERCENT_KEYS.has(key)) {
-      const field = key as "contrast" | "saturation" | "highlights" | "shadows" | "black";
-      const setting = value as PercentSetting;
-      settings[field] = setting;
-      values[field] = setting.kind === "manual" ? setting.value : rs.estimates[field];
-      auto = { ...auto, [field]: setting.kind === "auto" };
-      continue;
+  const change = (id: NodeId, edit: (item: NodeItem) => NodeItem): void => {
+    settings = { nodes: { ...settings.nodes, items: settings.nodes.items.map((item) => (item.id === id ? edit(item) : item)) } };
+  };
+  for (const [key, node] of Object.entries(patch.nodes ?? {})) {
+    const id = nodeIdOfKey(key);
+    if (id === INPUT_ID) {
+      const { stored, resolved } = directFields(inputOf(settings), values.input, node, DIRECT_INPUT);
+      change(id, () => stored as InputItem);
+      values = { ...values, input: resolved as ResolvedInput };
+      if (node.light_source !== undefined) auto = { ...auto, input: { ...auto.input, light_source: node.light_source === "auto" } };
+    } else if (id === OUTPUT_ID) {
+      const { stored, resolved } = directFields(outputOf(settings), values.output, node, DIRECT_OUTPUT);
+      change(id, () => stored as OutputItem);
+      values = { ...values, output: resolved as ResolvedOutput };
+    } else if (id === MAIN_ID) {
+      const { stored, resolved } = directFields(mainOf(settings), values.main, node, DIRECT_MAIN);
+      const grade = node.grade;
+      const next = grade ? directGrade(stored as CorrectorItem, resolved as ResolvedCorrector, grade, rs.estimates.main, auto.main) : null;
+      change(id, () => (next?.stored ?? stored) as CorrectorItem);
+      values = { ...values, main: (next?.resolved ?? resolved) as ResolvedCorrector };
+      if (next) auto = { ...auto, main: next.auto };
     }
-    if (value !== undefined && key === "color_balance") {
-      const cb = { ...rs.settings.color_balance, ...(value as Partial<ColorBalance>) };
+  }
+  return settings === rs.settings && values === rs.values && auto === rs.auto ? rs : { ...rs, settings, values, auto };
+}
+
+/** Main's grade patch applied to its stored and resolved grade, with the Auto flags that follow. */
+function directGrade(
+  stored: CorrectorItem,
+  resolved: ResolvedCorrector,
+  patch: GradePatch,
+  estimates: MainEstimates,
+  flags: MainAutoFlags,
+): { stored: CorrectorItem; resolved: ResolvedCorrector; auto: MainAutoFlags } {
+  const grade: Record<string, unknown> = { ...stored.grade };
+  const values: Record<string, unknown> = { ...resolved.grade };
+  let auto = flags;
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    if (PERCENT_KEYS.has(key)) {
+      const field = key as PercentField;
+      const setting = value as PercentSetting;
+      grade[field] = setting;
+      values[field] = setting.kind === "manual" ? setting.value : estimates[field];
+      auto = { ...auto, [field]: setting.kind === "auto" };
+    } else if (key === "color_balance") {
+      const cb = { ...stored.grade.color_balance, ...(value as Partial<ColorBalance>) };
       const point = (w: BalanceSetting, est: ColorBalancePoint): ColorBalancePoint => (w.kind === "manual" ? w.point : est);
-      settings.color_balance = cb;
+      grade.color_balance = cb;
       values.color_balance = {
-        shadows: point(cb.shadows, rs.estimates.balance_shadows),
+        shadows: point(cb.shadows, estimates.balance_shadows),
         midtones: cb.midtones,
-        highlights: point(cb.highlights, rs.estimates.balance_highlights),
+        highlights: point(cb.highlights, estimates.balance_highlights),
       };
       auto = { ...auto, balance_shadows: cb.shadows.kind === "auto", balance_highlights: cb.highlights.kind === "auto" };
-      continue;
+    } else if (DIRECT_GRADE.has(key)) {
+      const part = key === "curve" ? { ...stored.grade.curve, ...(value as Partial<Curves>) } : value;
+      grade[key] = part;
+      values[key] = part;
     }
-    if (value === undefined || !DIRECT_KEYS.has(key)) continue;
-    settings[key] = value;
-    values[key] = value;
-    if (key === "light_source") auto = { ...auto, light_source: value === "auto" };
   }
-  return { ...rs, settings: settings as unknown as DevelopSettings, values: values as unknown as ResolvedSettings["values"], auto };
+  return {
+    stored: { ...stored, grade: grade as unknown as NodeGrade },
+    resolved: { ...resolved, grade: values as unknown as GradeValues },
+    auto,
+  };
 }
 
 interface Queued {
@@ -1689,7 +1770,7 @@ export class AppStore {
    */
   fitPercentExact(): number | null {
     const photo = this.currentPhoto();
-    const estimate = this.rect && photo ? fitZoomExact(this.rect, photo, this.currentSettings()?.values ?? null) : null;
+    const estimate = this.rect && photo ? fitZoomExact(this.rect, photo, this.currentSettings()?.values.input ?? null) : null;
     return fitZoomOf(this.state.stats, estimate);
   }
 
@@ -1791,14 +1872,14 @@ export class AppStore {
     }
     const rs = this.state.settings[id];
     if (!sample || !rs || this.currentId() !== id) return;
-    const pins = rs.settings.color_warp.pins;
+    const pins = mainGradeOf(rs.settings).color_warp.pins;
     if (pins.length >= WARP_MAX_PINS) {
       this.selectWarpPin(null);
       return;
     }
     const next = [...pins, movingPin(clampToDisc([sample.a, sample.b], WARP_COORD_LIMIT))];
     this.selectWarpPin(next.length - 1);
-    await this.update({ color_warp: { pins: next } }, true);
+    await this.update(mainGradePatch({ color_warp: { pins: next } }), true);
   }
 
   /** Selects a pin of the colour warp (an index into the current photo's pins), or none. */
@@ -1945,7 +2026,7 @@ export class AppStore {
       const last = sender.queue[sender.queue.length - 1];
       if (last && last.record === null) {
         // The waiting patch belongs to a drag that hasn't ended: fold this one into it.
-        last.patch = { ...last.patch, ...patch };
+        last.patch = foldPatches(last.patch, patch);
         last.record = record;
         last.done.push(resolve);
       } else {
@@ -2018,8 +2099,8 @@ export class AppStore {
   // --- Copy and paste settings --------------------------------------------------------------
 
   /**
-   * Copy settings (⇧⌘C): keeps the current photo's settings for pasting: everything but the crop, the orientation and the Pick white
-   * point, Auto kept as Auto, a white balance that came from a picked white as the manual Kelvin and tint it resolved to. The core
+   * Copy settings (⇧⌘C): keeps the current photo's settings for pasting: the whole graph (every node and every link) but the Input's
+   * crop, orientation and Pick white point, Auto kept as Auto, a white balance that came from a picked white as the manual Kelvin and tint it resolved to. The core
    * makes the patch (`copy_settings`), after the patches still on their way to it have landed. Nothing is saved or put on the system
    * clipboard. Does nothing for a photo that is not developed.
    */
@@ -2088,13 +2169,13 @@ export class AppStore {
         }, 0);
       }
     }
-    const changed = report.pasted.filter((p) => Object.keys(p.before).length > 0 || Object.keys(p.after).length > 0);
+    const changed = report.pasted.filter((p) => !isEmptyPatch(p.before) || !isEmptyPatch(p.after));
     for (const step of changed) {
       this.historyOf(step.id).push({ before: step.before, after: step.after });
       // A crop or a slider drag that was open on the photo when the paste landed records its own step when it ends, from the settings it
       // began with. Those must include the paste, or the step would carry it too and one Undo would take back both.
       const gesture = this.gestures.get(step.id);
-      if (gesture) gesture.base = { ...gesture.base, ...step.after };
+      if (gesture) gesture.base = applyPatch(gesture.base, step.after);
     }
     // What the mirror knew about the other photos is out of date. The photo on screen now (it may not be the one that was when the paste
     // began) and the one that was are read again at once, so neither is left without settings.
@@ -2122,12 +2203,13 @@ export class AppStore {
    */
   private async pickedWhiteSource(copied: CopiedSettings): Promise<PhotoId | null> {
     const id = copied.sourceId;
-    if (id === null || copied.patch.white_balance?.kind !== "manual") return null;
+    if (id === null || copied.patch.nodes?.[INPUT_ID]?.white_balance?.kind !== "manual") return null;
     const photo = this.state.session?.photos.find((p) => p.id === id);
     if (!photo || !isReady(photo)) return null;
     await this.ensureSettings(id);
     const settings = this.state.settings[id]?.settings;
-    const pickedWhite = settings !== undefined && settings.white_pick !== null && settings.light_source === "auto" && settings.white_balance.kind === "auto";
+    const input = settings && inputOf(settings);
+    const pickedWhite = input !== undefined && input.white_pick !== null && input.light_source === "auto" && input.white_balance.kind === "auto";
     return pickedWhite ? id : null;
   }
 
@@ -2147,8 +2229,8 @@ export class AppStore {
     const rs = this.state.settings[photoId];
     const look = this.state.looks?.find((l) => l.id === lookId);
     if (!rs || !look || look.missing) return;
-    const level = intensity ?? rs.values.look_intensity;
-    await this.changeLook(photoId, this.state.applyScope, { look: lookId, look_intensity: level }, true, lookId, level);
+    const level = intensity ?? rs.values.output.look_intensity;
+    await this.changeLook(photoId, this.state.applyScope, outputPatch({ look: lookId, look_intensity: level }), true, lookId, level);
   }
 
   /**
@@ -2159,7 +2241,7 @@ export class AppStore {
     if (photoId === null) return;
     const rs = this.state.settings[photoId];
     if (!rs) return;
-    await this.changeLook(photoId, this.state.applyScope, { look_intensity: level }, final, rs.values.look, level);
+    await this.changeLook(photoId, this.state.applyScope, outputPatch({ look_intensity: level }), final, rs.values.output.look, level);
   }
 
   /** The patch of one photo's look, then (at the end of a gesture) the copy to the photos of the scope. */

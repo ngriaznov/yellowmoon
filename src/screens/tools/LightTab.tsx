@@ -3,6 +3,7 @@ import { AutoToggle, Card, formats, Histogram, ResetLink, Slider } from "../../c
 import type { SettingsPatch } from "../../api/types";
 import { useAppState } from "../../state/context";
 import { shutterLabel } from "../../state/photo";
+import { foldPatches, inputPatch, mainGradePatch } from "../../state/settingsGraph";
 import { ContrastSlider, PercentSlider } from "./controls";
 import { AUTO, manualOrAuto } from "./shared";
 import type { TabProps } from "./shared";
@@ -18,7 +19,9 @@ const EMPTY_HISTOGRAM = { red: [0, 0], green: [0, 0], blue: [0, 0] };
  * puts them back to Auto.
  */
 export const LightTab = memo(function LightTab({ store, photo, rs }: TabProps) {
-  const { values, estimates, auto } = rs;
+  const { estimates, auto } = rs;
+  const input = rs.values.input;
+  const grade = rs.values.main.grade;
   const histogram = useAppState((s) => s.histogram);
   const middle = useAppState((s) => s.middleReadout);
   const readout = middle ? `R ${middle.r}  G ${middle.g}  B ${middle.b}` : null;
@@ -30,7 +33,7 @@ export const LightTab = memo(function LightTab({ store, photo, rs }: TabProps) {
   // A drag names the photo it began on (`store.update`), so moving to another photo before its frame or its release cannot send it there.
   const send = (patch: SettingsPatch) => (final: boolean) => void store.update(patch, final, rs.photo_id);
   const exposure = (ev: number, final: boolean): void =>
-    void store.update({ exposure: manualOrAuto({ ev }, { ev: estimates.exposure_ev }) }, final, rs.photo_id);
+    void store.update(inputPatch({ exposure: manualOrAuto({ ev }, { ev: estimates.input.exposure_ev }) }), final, rs.photo_id);
 
   return (
     <>
@@ -41,40 +44,45 @@ export const LightTab = memo(function LightTab({ store, photo, rs }: TabProps) {
       />
       <Card
         title="Exposure"
-        tag={<AutoToggle isAuto={auto.exposure} onAuto={() => void store.update({ exposure: AUTO })} />}
+        tag={<AutoToggle isAuto={auto.input.exposure} onAuto={() => void store.update(inputPatch({ exposure: AUTO }))} />}
         action={
-          <ResetLink size="card" onClick={() => void store.update({ exposure: AUTO, contrast: AUTO, brightness: 0 }, true, rs.photo_id)} />
+          <ResetLink
+            size="card"
+            onClick={() =>
+              void store.update(foldPatches(inputPatch({ exposure: AUTO }), mainGradePatch({ contrast: AUTO, brightness: 0 })), true, rs.photo_id)
+            }
+          />
         }
       >
         <Slider
           label="Exposure"
-          value={values.exposure_ev}
+          value={input.exposure_ev}
           min={-4}
           max={4}
           step={0.01}
-          defaultValue={estimates.exposure_ev}
+          defaultValue={estimates.input.exposure_ev}
           format={formats.ev}
           onChange={exposure}
-          onReset={() => void store.update({ exposure: AUTO })}
+          onReset={() => void store.update(inputPatch({ exposure: AUTO }))}
         />
         <ContrastSlider store={store} rs={rs} />
         <Slider
           label="Brightness"
-          value={values.brightness}
+          value={grade.brightness}
           min={-100}
           max={100}
           defaultValue={0}
           format={formats.signed}
-          onChange={(v, final) => send({ brightness: v })(final)}
+          onChange={(v, final) => send(mainGradePatch({ brightness: v }))(final)}
         />
       </Card>
       <Card
         title="High dynamic range"
-        action={<ResetLink size="card" onClick={() => void store.update({ highlights: AUTO, shadows: AUTO, white: 0, black: AUTO }, true, rs.photo_id)} />}
+        action={<ResetLink size="card" onClick={() => void store.update(mainGradePatch({ highlights: AUTO, shadows: AUTO, white: 0, black: AUTO }), true, rs.photo_id)} />}
       >
         <PercentSlider store={store} rs={rs} field="highlights" label="Highlights" />
         <PercentSlider store={store} rs={rs} field="shadows" label="Shadows" />
-        <Slider label="White" value={values.white} min={-100} max={100} defaultValue={0} format={formats.signed} onChange={(v, final) => send({ white: v })(final)} />
+        <Slider label="White" value={grade.white} min={-100} max={100} defaultValue={0} format={formats.signed} onChange={(v, final) => send(mainGradePatch({ white: v }))(final)} />
         <PercentSlider store={store} rs={rs} field="black" label="Black" />
       </Card>
     </>

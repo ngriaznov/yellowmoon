@@ -313,10 +313,7 @@ fn keys(v: &Value) -> BTreeSet<String> {
     v.as_object().unwrap().keys().cloned().collect()
 }
 
-// N-02b writes the node-first contract in `src/api/types.ts` (the interfaces named below) and removes
-// this ignore.
 #[test]
-#[ignore = "N-02b"]
 fn the_rust_types_have_the_fields_of_the_typescript_interfaces() {
     // A drift guard: the serde field names of every wire type that crosses the bridge equal the
     // interface in `src/api/types.ts`, so generated bindings line up.
@@ -337,9 +334,16 @@ fn the_rust_types_have_the_fields_of_the_typescript_interfaces() {
     let items = &doc["nodes"]["items"];
     check("DevelopSettings", doc.clone());
     check("NodesSettings", doc["nodes"].clone());
-    check("InputNode", items[0].clone());
-    check("CorrectorNode", items[1].clone());
-    check("OutputNode", items[4].clone());
+    // A node of the document is `{ kind } & <its struct>`: `NodeItem` carries the tag, the interfaces the fields
+    // (the generated bindings say the same, `src/api/types.ts`).
+    let untagged = |item: &Value| {
+        let mut item = item.clone();
+        assert!(item.as_object_mut().unwrap().remove("kind").is_some());
+        item
+    };
+    check("InputNode", untagged(&items[0]));
+    check("CorrectorNode", untagged(&items[1]));
+    check("OutputNode", untagged(&items[4]));
     check("NodeTrim", items[1]["trim"].clone());
     check("NodeGrade", items[1]["grade"].clone());
     check("MaskSettings", items[2]["masks"].clone());
@@ -469,10 +473,7 @@ fn the_rust_types_have_the_fields_of_the_typescript_interfaces() {
     .unwrap();
 }
 
-// N-02b writes the node-first contract in `src/api/types.ts` (the interfaces named below) and removes
-// this ignore.
 #[test]
-#[ignore = "N-02b"]
 fn resolved_settings_have_the_shape_of_the_typescript_type() {
     let path = repo_root().join("src/api/types.ts");
     let Ok(source) = std::fs::read_to_string(&path) else {

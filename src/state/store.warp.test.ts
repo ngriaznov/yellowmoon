@@ -10,6 +10,7 @@ import { hexChroma } from "../fixtures/warp";
 import { SCENES } from "../fixtures/scenes";
 import { applyDirect, createStore, HISTOGRAM_THROTTLE_MS } from "./store";
 import type { AppStore } from "./store";
+import { inputPatch, mainGradeOf, mainGradePatch } from "./settingsGraph";
 
 const stops: Array<() => void> = [];
 afterEach(() => {
@@ -31,7 +32,7 @@ async function opened(): Promise<{ api: MockApi; store: AppStore }> {
   return { api, store };
 }
 
-const pinsOf = (store: AppStore) => store.currentSettings()?.settings.color_warp.pins ?? [];
+const pinsOf = (store: AppStore) => mainGradeOf(store.currentSettings()!.settings).color_warp.pins ?? [];
 const SKY = hexChroma(SCENES[3]!.sky);
 
 describe("color_warp in the store", () => {
@@ -39,15 +40,15 @@ describe("color_warp in the store", () => {
     const { store } = await opened();
     const rs = store.currentSettings()!;
     const pins = [movingPin([0.1, 0], [0.1, 0.05])];
-    const next = applyDirect(rs, { color_warp: { pins } });
-    expect(next.settings.color_warp.pins).toEqual(pins);
-    expect(next.values.color_warp.pins).toEqual(pins);
+    const next = applyDirect(rs, mainGradePatch({ color_warp: { pins } }));
+    expect(mainGradeOf(next.settings).color_warp.pins).toEqual(pins);
+    expect(next.values.main.grade.color_warp.pins).toEqual(pins);
   });
 
   it("a drag of a pin is one undo step: frames without a step, the release with one", async () => {
     const { api, store } = await opened();
     const spy = vi.spyOn(api, "updateSettings");
-    const at = (b: number) => ({ color_warp: { pins: [movingPin([0.1, 0], [0.1, b])] } });
+    const at = (b: number) => mainGradePatch({ color_warp: { pins: [movingPin([0.1, 0], [0.1, b])] } });
     void store.update(at(0), false);
     void store.update(at(0.02), false);
     void store.update(at(0.04), false);
@@ -64,7 +65,7 @@ describe("color_warp in the store", () => {
 
   it("keeps the selected pin as window state: not a setting, and none on another photo", async () => {
     const { store } = await opened();
-    await store.update({ color_warp: { pins: [movingPin([0.1, 0])] } });
+    await store.update(mainGradePatch({ color_warp: { pins: [movingPin([0.1, 0])] } }));
     store.selectWarpPin(0);
     expect(store.getState().warpPin).toBe(0);
     expect(store.currentSettings()?.settings).not.toHaveProperty("warpPin");
@@ -116,12 +117,12 @@ describe("Pick colour", () => {
 
   it("adds nothing on the paper around a letterboxed photo, nor at sixteen pins (where the selection goes)", async () => {
     const { store } = await opened();
-    await store.update({ orientation: 90 });
+    await store.update(inputPatch({ orientation: 90 }));
     store.setViewportRect({ x: 0, y: 0, width: 900, height: 600, scale: 2 });
     await store.pickColor(20, 300);
     expect(pinsOf(store)).toEqual([]);
     const full = Array.from({ length: WARP_MAX_PINS }, (_, i) => lockedPin([0.2 * Math.cos(i), 0.2 * Math.sin(i)]));
-    await store.update({ color_warp: { pins: full } });
+    await store.update(mainGradePatch({ color_warp: { pins: full } }));
     store.selectWarpPin(3);
     await store.pickColor(450, 300);
     expect(pinsOf(store)).toHaveLength(WARP_MAX_PINS);

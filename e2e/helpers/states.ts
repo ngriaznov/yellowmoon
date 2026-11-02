@@ -23,14 +23,12 @@ const CURVES = {
 } satisfies Record<string, Array<[number, number]>>;
 
 /** What the mockup's 4th photo has been given: Light's Highlights and Shadows, Colour's wheels and Saturation, a curve. */
-const MOCKUP_SETTINGS = {
-  DSC04204: {
-    highlights: -18,
-    shadows: 12,
-    saturation: { kind: "manual", value: 6 },
-    color_balance: { shadows: [-0.08, -0.12], midtones: [0, 0], highlights: [0.12, 0.12] },
-    curve: CURVES,
-  },
+const MOCKUP_GRADE = {
+  highlights: -18,
+  shadows: 12,
+  saturation: { kind: "manual", value: 6 },
+  color_balance: { shadows: [-0.08, -0.12], midtones: [0, 0], highlights: [0.12, 0.12] },
+  curve: CURVES,
 } as const;
 
 /**
@@ -55,8 +53,9 @@ async function start(page: Page, options: Options = { mockLooks: 0 }): Promise<v
 async function photos(page: Page, options: Options = MOCKUP, settings: boolean | Record<string, unknown> = true): Promise<void> {
   await openApp(page, options);
   if (settings) {
+    // The settings are a graph of nodes: the grade is node 1's, Main (`docs/23` section 3).
     const extra = settings === true ? {} : settings;
-    await configureMock(page, { initialSettings: { DSC04204: { ...MOCKUP_SETTINGS.DSC04204, ...extra } } as never });
+    await configureMock(page, { initialSettings: { DSC04204: { nodes: { "1": { grade: { ...MOCKUP_GRADE, ...extra } } } } } as never });
   }
   await openPhotos(page);
   await showUpdateReady(page);

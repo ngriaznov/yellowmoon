@@ -1,10 +1,11 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CropSuggestion, NormRect, SettingsPatch } from "../api/types";
+import type { CropSuggestion, NodePatch, NormRect, SettingsPatch } from "../api/types";
 import { mockRect } from "../test/raf";
 import { openPhotos, renderApp, valueOf } from "../test/harness";
 import type { Harness, UpdateSpy } from "../test/harness";
 import { canvasOf, FIT_MARGIN_PX, fitInside, fitRatio, FULL_RECT, isInside, rectRatioPx } from "./crop/cropMath";
+import { inputPatch } from "../state/settingsGraph";
 
 // No border in photos (the owner's decision of 2026-10-22, docs/11-ui.md §Crop): the Crop panel's frame always lies inside the
 // straightened photo. The panel keeps the frame the person set (the base) and shows, draws and sends it fitted inside; drags are kept
@@ -50,11 +51,11 @@ async function straighten(degrees: string): Promise<void> {
 }
 
 /** Presses Done and returns the crop it sent. */
-async function done(spy: UpdateSpy): Promise<SettingsPatch["crop"]> {
+async function done(spy: UpdateSpy): Promise<NodePatch["crop"]> {
   spy.mockClear();
   await h!.user.click(within(crop()).getByRole("button", { name: /^Done/ }));
   await screen.findByRole("complementary", { name: "Tools" });
-  return patches(spy).at(-1)?.crop;
+  return patches(spy).at(-1)?.nodes?.input?.crop;
 }
 
 describe("the frame never shows an empty corner", () => {
@@ -70,7 +71,7 @@ describe("the frame never shows an empty corner", () => {
     const want = Math.min(8640 / (1.5 * Math.cos(t) + Math.sin(t)), 5760 / (1.5 * Math.sin(t) + Math.cos(t)));
     expect(Math.abs(largest.height * 5760 - want)).toBeLessThanOrEqual(2 * FIT_MARGIN_PX);
     // The core is still told the whole photo with the angle, so the viewport shows the whole straightened photo under the frame.
-    expect(patches(spy).at(-1)).toEqual({ crop: { rect: FULL_RECT, angle_deg: 5, aspect: "original" }, orientation: 0 });
+    expect(patches(spy).at(-1)).toEqual(inputPatch({ crop: { rect: FULL_RECT, angle_deg: 5, aspect: "original" }, orientation: 0 }));
     // Halfway back the frame grows; at 0° it is the whole photo again.
     await straighten("2");
     await waitFor(() => expect(valueOf("Straighten")).toBe("+2.0°"));
@@ -80,7 +81,7 @@ describe("the frame never shows an empty corner", () => {
     await waitFor(() => expect(valueOf("Straighten")).toBe("0°"));
     expectFrame(FULL_RECT);
     expect(await done(spy)).toBeNull();
-    expect(settings().values.crop).toBeNull();
+    expect(settings().values.input.crop).toBeNull();
   });
 
   it("Done sends the frame shown: the one set, fitted inside the straightened photo", async () => {
@@ -167,7 +168,7 @@ describe("the frame never shows an empty corner", () => {
     await waitFor(() => expectFrame(shown));
     expect(rectRatioPx(shown, 1.5)).toBeCloseTo(1, 9);
     expect(shown.height).toBeLessThan(1);
-    expect(patches(spy).at(-1)).toEqual({ crop: { rect: FULL_RECT, angle_deg: 6, aspect: "square" }, orientation: 0 });
+    expect(patches(spy).at(-1)).toEqual(inputPatch({ crop: { rect: FULL_RECT, angle_deg: 6, aspect: "square" }, orientation: 0 }));
     await straighten("0");
     await waitFor(() => expect(valueOf("Straighten")).toBe("0°"));
     expectFrame(square);
@@ -179,7 +180,7 @@ describe("the frame never shows an empty corner", () => {
     await straighten("3");
     await waitFor(() => expect(valueOf("Straighten")).toBe("+3.0°"));
     await h!.user.click(within(crop()).getByRole("button", { name: "Rotate 90°" }));
-    await waitFor(() => expect(settings().values.orientation).toBe(90));
+    await waitFor(() => expect(settings().values.input.orientation).toBe(90));
     // The canvas is now 5760 × 8640: the largest portrait frame at 3°.
     const shown = fitInside(FULL_RECT, 3, PORTRAIT);
     expectFrame(shown);
@@ -190,7 +191,7 @@ describe("the frame never shows an empty corner", () => {
   it("opens a stored crop that pokes outside as its fit; Cancel leaves the stored crop as it was, Done sends the fit", async () => {
     const spy = await setup();
     const stored = { rect: { x: 0.02, y: 0.03, width: 0.9, height: 0.9 }, angle_deg: 4, aspect: "free" as const };
-    await h!.store.update({ crop: stored });
+    await h!.store.update(inputPatch({ crop: stored }));
     expect(isInside(stored.rect, 4, LANDSCAPE)).toBe(false);
     const fitted = fitInside(stored.rect, 4, LANDSCAPE);
     await startCrop();
@@ -201,14 +202,14 @@ describe("the frame never shows an empty corner", () => {
     await h!.user.click(within(crop()).getByRole("button", { name: /^Cancel/ }));
     await screen.findByRole("complementary", { name: "Tools" });
     expect(spy).not.toHaveBeenCalled();
-    expect(settings().values.crop).toEqual(stored);
+    expect(settings().values.input.crop).toEqual(stored);
     // Touched (Straighten moved and back), Cancel puts the stored crop back unchanged.
     await startCrop();
     await straighten("1");
-    await waitFor(() => expect(settings().values.crop?.angle_deg).toBe(1));
+    await waitFor(() => expect(settings().values.input.crop?.angle_deg).toBe(1));
     await h!.user.click(within(crop()).getByRole("button", { name: /^Cancel/ }));
     await screen.findByRole("complementary", { name: "Tools" });
-    await waitFor(() => expect(settings().values.crop).toEqual(stored));
+    await waitFor(() => expect(settings().values.input.crop).toEqual(stored));
     // Done without a change sends the frame shown.
     await startCrop();
     expect(await done(spy)).toEqual({ ...stored, rect: fitted });

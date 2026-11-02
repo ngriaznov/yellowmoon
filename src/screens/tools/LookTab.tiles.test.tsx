@@ -9,6 +9,7 @@ import type { MockOptions } from "../../api.mock";
 import { openPhotos, renderApp } from "../../test/harness";
 import type { Harness } from "../../test/harness";
 import { createTileWatch } from "./LookTab";
+import { inputPatch } from "../../state/settingsGraph";
 
 /** An IntersectionObserver the test drives. */
 class FakeObserver {
@@ -140,7 +141,7 @@ describe("the tiles of the Look tab", () => {
     act(() => observer().report([[first, false]]));
     const ask = vi.spyOn(api, "lookThumbnail");
     await act(async () => {
-      await store.update({ exposure: { kind: "manual", ev: 1.1 } });
+      await store.update(inputPatch({ exposure: { kind: "manual", ev: 1.1 } }));
       await vi.advanceTimersByTimeAsync(400);
     });
     await act(async () => {

@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { AutoToggle, Card, formats, ResetLink, Segmented, Slider, Tag, Wheel, WheelGroup } from "../../components";
 import type { ColorBalance, ColorBalancePoint, LightSource } from "../../api/types";
+import { inputOf, inputPatch, mainGradeOf, mainGradePatch } from "../../state/settingsGraph";
 import { ColorWarpCard } from "./ColorWarpCard";
 import type { ColorWarpCardProps } from "./ColorWarpCard";
 import { KelvinSlider, SaturationSlider, setWhiteBalance, whiteBalanceState, whiteBalanceToAuto } from "./controls";
@@ -33,7 +34,8 @@ export type ColorTabProps = ColorWarpCardProps;
  * with its pins and Pick colour). A picked white shows here with the EDITED tag.
  */
 export const ColorTab = memo(function ColorTab({ store, photo, rs, pickingColor, onPickColor }: ColorTabProps) {
-  const { settings, values, estimates } = rs;
+  const { settings, estimates } = rs;
+  const { input: values, main } = rs.values;
   const { picked, isAuto: whiteIsAuto } = whiteBalanceState(rs);
   const toAuto = (): void => whiteBalanceToAuto(store);
 
@@ -52,8 +54,8 @@ export const ColorTab = memo(function ColorTab({ store, photo, rs, pickingColor,
         <div className="ym-stack-12">
           <Segmented
             label="Light type"
-            value={settings.light_source}
-            onChange={(light_source) => void store.update({ light_source }, true)}
+            value={inputOf(settings).light_source}
+            onChange={(light_source) => void store.update(inputPatch({ light_source }), true)}
             options={LIGHT_OPTIONS.map(({ value, label, ariaLabel }) => ({ value, label, ariaLabel }))}
           />
         </div>
@@ -63,34 +65,34 @@ export const ColorTab = memo(function ColorTab({ store, photo, rs, pickingColor,
           value={values.tint}
           min={-50}
           max={50}
-          defaultValue={estimates.tint}
+          defaultValue={estimates.input.tint}
           format={formats.signed}
           onChange={(tint, final) => setWhiteBalance(store, rs, values.kelvin, tint, final)}
-          onReset={() => setWhiteBalance(store, rs, values.kelvin, estimates.tint, true)}
+          onReset={() => setWhiteBalance(store, rs, values.kelvin, estimates.input.tint, true)}
         />
       </Card>
       <Card
         title="Colour balance"
-        action={<ResetLink size="card" onClick={() => void store.update({ color_balance: RESET_BALANCE, saturation: AUTO }, true, rs.photo_id)} />}
+        action={<ResetLink size="card" onClick={() => void store.update(mainGradePatch({ color_balance: RESET_BALANCE, saturation: AUTO }), true, rs.photo_id)} />}
       >
         <WheelGroup>
           {WHEELS.map(([key, label]) => {
             // The shadows and highlights wheels are Auto or a point (`docs/19` section 5): the puck shows the point in effect, a point
             // dropped on the Auto point is sent as Auto, and Reset (double-click, Home) sends Auto. The midtones wheel is a point.
-            const auto: ColorBalancePoint = key === "shadows" ? estimates.balance_shadows : key === "highlights" ? estimates.balance_highlights : [0, 0];
+            const auto: ColorBalancePoint = key === "shadows" ? estimates.main.balance_shadows : key === "highlights" ? estimates.main.balance_highlights : [0, 0];
             const send = (point: ColorBalancePoint, final: boolean): void => {
-              const next: ColorBalance =
-                key === "midtones" ? { ...settings.color_balance, midtones: point } : { ...settings.color_balance, [key]: pointOrAuto(point, auto) };
-              void store.update({ color_balance: next }, final, rs.photo_id);
+              const balance = mainGradeOf(settings).color_balance;
+              const next: ColorBalance = key === "midtones" ? { ...balance, midtones: point } : { ...balance, [key]: pointOrAuto(point, auto) };
+              void store.update(mainGradePatch({ color_balance: next }), final, rs.photo_id);
             };
             return (
               <Wheel
                 key={key}
                 label={label}
-                value={values.color_balance[key]}
+                value={main.grade.color_balance[key]}
                 defaultValue={auto}
                 onChange={send}
-                onReset={key === "midtones" ? undefined : () => void store.update({ color_balance: { ...settings.color_balance, [key]: AUTO } }, true, rs.photo_id)}
+                onReset={key === "midtones" ? undefined : () => void store.update(mainGradePatch({ color_balance: { ...mainGradeOf(settings).color_balance, [key]: AUTO } }), true, rs.photo_id)}
               />
             );
           })}

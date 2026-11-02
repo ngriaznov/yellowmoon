@@ -13,6 +13,7 @@ import { installManualRaf, mockRect } from "../test/raf";
 import { openPhotos, renderApp, sliderName, sliderOf, valueOf } from "../test/harness";
 import type { Harness, UpdateSpy } from "../test/harness";
 import type { MockOptions } from "../api.mock";
+import { inputOf, inputPatch } from "../state/settingsGraph";
 
 let h: Harness;
 afterEach(() => h?.unmount());
@@ -51,7 +52,7 @@ const chosen = (): string | undefined =>
     .find((r) => r.getAttribute("aria-checked") === "true")
     ?.closest("label")
     ?.querySelector(".ym-choice-row__name")?.textContent ?? undefined;
-const currentLens = (): LensSettings => h.store.currentSettings()!.settings.lens;
+const currentLens = (): LensSettings => inputOf(h.store.currentSettings()!.settings).lens;
 
 /** Types a value into a slider's box and presses Return. */
 async function type(label: string, text: string): Promise<void> {
@@ -140,7 +141,7 @@ describe("the Lens tab", () => {
     await waitFor(() => expect(currentLens().kind).toBe("classic"));
     await h.user.keyboard("{/ArrowDown}");
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy.mock.calls[0]?.[1]).toEqual({ lens: { kind: "classic", flares: 35, edges: 30, anamorphic: 0 } });
+    expect(spy.mock.calls[0]?.[1]).toEqual(inputPatch({ lens: { kind: "classic", flares: 35, edges: 30, anamorphic: 0 } }));
     expect(chosen()).toBe("Classic");
     expect(lensRadio("Classic")).toHaveAttribute("tabindex", "0");
   });
@@ -159,11 +160,11 @@ describe("the Lens tab", () => {
   it("choosing Vintage sends one patch with the kind and Vintage's starting amounts, and keeps Anamorphic", async () => {
     const spy = await setup();
     await type("Anamorphic", "25");
-    expect(await lastPatch(spy)).toEqual({ lens: { kind: "default", flares: 0, edges: 0, anamorphic: 25 } });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ lens: { kind: "default", flares: 0, edges: 0, anamorphic: 25 } }));
     spy.mockClear();
     await choose("Vintage");
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
-    expect(spy.mock.calls[0]?.[1]).toEqual({ lens: { kind: "vintage", flares: 45, edges: 40, anamorphic: 25 } });
+    expect(spy.mock.calls[0]?.[1]).toEqual(inputPatch({ lens: { kind: "vintage", flares: 45, edges: 40, anamorphic: 25 } }));
     // The tab follows at once: the chosen row and the amounts.
     await waitFor(() => expect(chosen()).toBe("Vintage"));
     expect(lensRadio("Vintage")).toHaveAttribute("aria-checked", "true");
@@ -176,7 +177,7 @@ describe("the Lens tab", () => {
     spy.mockClear();
     for (const { kind, name, flares, edges } of LENSES) {
       await choose(name);
-      await waitFor(() => expect(spy.mock.calls.at(-1)?.[1]).toEqual({ lens: { kind, flares, edges, anamorphic: 25 } }));
+      await waitFor(() => expect(spy.mock.calls.at(-1)?.[1]).toEqual(inputPatch({ lens: { kind, flares, edges, anamorphic: 25 } })));
     }
     // Vintage was chosen already, so its click was not a change: six patches for the other six.
     expect(spy).toHaveBeenCalledTimes(LENSES.length);
@@ -219,16 +220,16 @@ describe("the Lens tab", () => {
     await waitFor(() => expect(currentLens().kind).toBe("sonnar"));
     spy.mockClear();
     await type("Edges", "80");
-    expect(await lastPatch(spy)).toEqual({ lens: { kind: "sonnar", flares: 40, edges: 80, anamorphic: 0 } });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ lens: { kind: "sonnar", flares: 40, edges: 80, anamorphic: 0 } }));
     await waitFor(() => expect(valueOf("Edges")).toBe("80"));
     spy.mockClear();
     await type("Flares", "100");
-    expect(await lastPatch(spy)).toEqual({ lens: { kind: "sonnar", flares: 100, edges: 80, anamorphic: 0 } });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ lens: { kind: "sonnar", flares: 100, edges: 80, anamorphic: 0 } }));
     // A key steps by one.
     spy.mockClear();
     sliderOf("Anamorphic").focus();
     await h.user.keyboard("{ArrowRight}");
-    expect(await lastPatch(spy)).toEqual({ lens: { kind: "sonnar", flares: 100, edges: 80, anamorphic: 1 } });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ lens: { kind: "sonnar", flares: 100, edges: 80, anamorphic: 1 } }));
     expect(valueOf("Anamorphic")).toBe("1");
   });
 
@@ -250,10 +251,10 @@ describe("the Lens tab", () => {
         raf.flush();
       });
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
-      expect(spy.mock.calls[0]?.[1]).toEqual({ lens: { kind: "classic", flares: 80, edges: 30, anamorphic: 0 } });
+      expect(spy.mock.calls[0]?.[1]).toEqual(inputPatch({ lens: { kind: "classic", flares: 80, edges: 30, anamorphic: 0 } }));
       pointer.up(260);
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
-      expect(spy.mock.calls[1]?.[1]).toEqual({ lens: { kind: "classic", flares: 80, edges: 30, anamorphic: 0 } });
+      expect(spy.mock.calls[1]?.[1]).toEqual(inputPatch({ lens: { kind: "classic", flares: 80, edges: 30, anamorphic: 0 } }));
       await waitFor(() => expect(valueOf("Flares")).toBe("80"));
     } finally {
       raf.restore();
@@ -270,7 +271,7 @@ describe("the Lens tab", () => {
     await waitFor(() => expect(currentLens()).toEqual({ kind: "petzval", flares: 30, edges: 70, anamorphic: 0 }));
     spy.mockClear();
     await h.user.click(amounts().getByRole("button", { name: "Reset Edges" }));
-    expect(await lastPatch(spy)).toEqual({ lens: { kind: "petzval", flares: 30, edges: 0, anamorphic: 0 } });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ lens: { kind: "petzval", flares: 30, edges: 0, anamorphic: 0 } }));
     await waitFor(() => expect(valueOf("Edges")).toBe("0"));
     expect(valueOf("Flares")).toBe("30");
     expect(chosen()).toBe("Petzval");
@@ -283,7 +284,7 @@ describe("the Lens tab", () => {
     await waitFor(() => expect(currentLens()).toEqual({ kind: "detuned", flares: 45, edges: 65, anamorphic: 60 }));
     spy.mockClear();
     await h.user.click(amounts().getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy)).toEqual({ lens: { kind: "default", flares: 0, edges: 0, anamorphic: 0 } });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ lens: { kind: "default", flares: 0, edges: 0, anamorphic: 0 } }));
     await waitFor(() => expect(currentLens()).toEqual(NO_LENS));
     expect(chosen()).toBe("Default");
     for (const label of ["Flares", "Edges", "Anamorphic"]) expect(valueOf(label)).toBe("0");
@@ -344,7 +345,7 @@ describe("the Lens tab while the lens data are missing", () => {
     expect(box).toBeDisabled();
     spy.mockClear();
     await h.user.click(amounts().getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy)).toEqual({ lens: { kind: "default", flares: 0, edges: 0, anamorphic: 0 } });
+    expect(await lastPatch(spy)).toEqual(inputPatch({ lens: { kind: "default", flares: 0, edges: 0, anamorphic: 0 } }));
   });
 
   it("does not ask for the list again when the tab is drawn again", async () => {

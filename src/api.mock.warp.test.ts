@@ -10,6 +10,7 @@ import { lockedPin, movingPin, WARP_COORD_LIMIT, WARP_MAX_PINS } from "./compone
 import { adjustScene, developScene } from "./fixtures/grade";
 import { SCENES } from "./fixtures/scenes";
 import { hexChroma, hexToLogC4, logC4ToHex, sceneScatter, warpScene } from "./fixtures/warp";
+import { applyPatch, inputPatch, mainGradeOf, mainGradePatch, mainOf } from "./state/settingsGraph";
 
 const ARW = ["~/Pictures/Lisbon/DSC04201.ARW"];
 /** DSC04204, the mockup's current photo: sky #7FA6C7, far #E6ECF2, near #3F5468, sun #FFF6E0. */
@@ -28,42 +29,44 @@ afterEach(() => {
 
 describe("the setting", () => {
   it("is no pins by default, and resolves as it is stored", () => {
-    expect(defaultSettings().color_warp).toEqual({ pins: [] });
-    const settings = { ...defaultSettings(), color_warp: { pins: [movingPin([0.1, 0], [0.1, 0.05])] } };
-    expect(resolveSettings(1, settings, MOCK_ESTIMATES).values.color_warp).toEqual(settings.color_warp);
+    expect(mainGradeOf(defaultSettings()).color_warp).toEqual({ pins: [] });
+    const settings = applyPatch(defaultSettings(), mainGradePatch({ color_warp: { pins: [movingPin([0.1, 0], [0.1, 0.05])] } }));
+    expect(resolveSettings(1, settings, MOCK_ESTIMATES).values.main.grade.color_warp).toEqual(mainGradeOf(settings).color_warp);
   });
 
   it("is clamped as the core clamps it: sixteen pins, every value in range", () => {
     const wild: ColorWarpPin = { source: [3, 4], target: [0.1, 0.1], locked: false, range: 1, shadows: 2, highlights: -1, pivot_ev: 9, exposure_ev: 5, saturation: 3 };
     const pins = [wild, ...Array.from({ length: WARP_MAX_PINS + 3 }, () => lockedPin([0.1, 0]))];
-    const out = clampSettings({ ...defaultSettings(), color_warp: { pins } }).color_warp.pins;
+    const out = mainGradeOf(clampSettings(applyPatch(defaultSettings(), mainGradePatch({ color_warp: { pins } })))).color_warp.pins;
     expect(out).toHaveLength(WARP_MAX_PINS);
     expect(Math.hypot(...out[0]!.source)).toBeCloseTo(WARP_COORD_LIMIT, 12);
     expect(out[0]).toMatchObject({ range: 0.25, shadows: 1, highlights: 0, pivot_ev: 6, exposure_ev: 2, saturation: 1 });
     // Settings from before the warp have none.
-    const { color_warp: _gone, ...older } = defaultSettings();
-    expect(clampSettings(older as never).color_warp).toEqual({ pins: [] });
+    const base = defaultSettings();
+    const { color_warp: _gone, ...grade } = mainGradeOf(base);
+    const without = { nodes: { ...base.nodes, items: base.nodes.items.map((item) => (item.id === mainOf(base).id ? { ...item, grade } : item)) } };
+    expect(mainGradeOf(clampSettings(without as never)).color_warp).toEqual({ pins: [] });
   });
 
   it("a patch replaces the whole list", async () => {
     await api.openPaths(ARW);
-    await api.updateSettings(1, { color_warp: { pins: [movingPin([0.1, 0]), lockedPin([0, 0.1])] } });
-    const rs = await api.updateSettings(1, { color_warp: { pins: [movingPin([-0.1, 0], [-0.1, 0.05])] } });
-    expect(rs.settings.color_warp.pins).toEqual([movingPin([-0.1, 0], [-0.1, 0.05])]);
+    await api.updateSettings(1, mainGradePatch({ color_warp: { pins: [movingPin([0.1, 0]), lockedPin([0, 0.1])] } }));
+    const rs = await api.updateSettings(1, mainGradePatch({ color_warp: { pins: [movingPin([-0.1, 0], [-0.1, 0.05])] } }));
+    expect(mainGradeOf(rs.settings).color_warp.pins).toEqual([movingPin([-0.1, 0], [-0.1, 0.05])]);
   });
 
   it("is copied with the rest of the grade and pasted onto other photos as one step", async () => {
     await api.openPaths(ARW);
     api.flush();
     const pins = [movingPin([0.1, 0], [0.1, 0.05]), lockedPin([-0.1, 0])];
-    await api.updateSettings(1, { color_warp: { pins } });
+    await api.updateSettings(1, mainGradePatch({ color_warp: { pins } }));
     const patch = await api.copySettings(1);
-    expect(patch.color_warp).toEqual({ pins });
-    expect(copiedPatch(await api.getSettings(1)).color_warp).toEqual({ pins });
+    expect(patch.nodes?.["1"]?.grade?.color_warp).toEqual({ pins });
+    expect(copiedPatch(await api.getSettings(1)).nodes?.["1"]?.grade?.color_warp).toEqual({ pins });
     const report = await api.pasteSettings([2, 3], patch);
-    expect(report.pasted.map((p) => p.after.color_warp)).toEqual([{ pins }, { pins }]);
-    expect(report.pasted[0]?.before.color_warp).toEqual({ pins: [] });
-    expect((await api.getSettings(3)).settings.color_warp.pins).toEqual(pins);
+    expect(report.pasted.map((p) => p.after.nodes?.["1"]?.grade?.color_warp)).toEqual([{ pins }, { pins }]);
+    expect(report.pasted[0]?.before.nodes?.["1"]?.grade?.color_warp).toEqual({ pins: [] });
+    expect(mainGradeOf((await api.getSettings(3)).settings).color_warp.pins).toEqual(pins);
   });
 });
 
@@ -86,9 +89,9 @@ describe("chroma_scatter", () => {
 
   it("reads the colours at the warp's input: the white balance moves them, the pins do not", async () => {
     const before = (await api.chromaScatter(4)).points;
-    await api.updateSettings(4, { color_warp: { pins: [movingPin(hexChroma(SCENE.sky), [0.1, 0.1])] } });
+    await api.updateSettings(4, mainGradePatch({ color_warp: { pins: [movingPin(hexChroma(SCENE.sky), [0.1, 0.1])] } }));
     expect((await api.chromaScatter(4)).points).toEqual(before);
-    await api.updateSettings(4, { white_balance: { kind: "manual", kelvin: 9000, tint: 0 } });
+    await api.updateSettings(4, inputPatch({ white_balance: { kind: "manual", kelvin: 9000, tint: 0 } }));
     expect((await api.chromaScatter(4)).points).not.toEqual(before);
   });
 });
@@ -108,7 +111,7 @@ describe("sample_chroma", () => {
   });
 
   it("is null on the paper around a letterboxed photo", async () => {
-    await api.updateSettings(4, { orientation: 90 });
+    await api.updateSettings(4, inputPatch({ orientation: 90 }));
     await api.viewportSetRect({ x: 0, y: 0, width: 900, height: 600, scale: 2 });
     expect(await api.sampleChroma(20, 300)).toBeNull();
     expect(await api.sampleChroma(450, 300)).not.toBeNull();
@@ -162,7 +165,7 @@ describe("the picture follows the pins", () => {
     await api.setCurrent(4);
     await api.viewportSetRect({ x: 0, y: 0, width: 600, height: 400, scale: 1 });
     const pins = [movingPin(hexChroma(SCENE.sky), [0.1, 0.1])];
-    await api.updateSettings(4, { color_warp: { pins } });
+    await api.updateSettings(4, mainGradePatch({ color_warp: { pins } }));
     await Promise.resolve();
     const svg = decodeURIComponent(frames.at(-1)!.url);
     expect(svg).toContain(warpScene(SCENE, pins).sky);

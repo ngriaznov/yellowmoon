@@ -3,6 +3,7 @@ import { Card, centralInnerPoint, CurvePlot, CURVE_CHANNEL_LABELS, ResetLink, Se
 import type { CurveChannel } from "../../components";
 import type { Curves } from "../../api/types";
 import { useAppState } from "../../state/context";
+import { mainGradeOf, mainGradePatch } from "../../state/settingsGraph";
 import type { TabProps } from "./shared";
 
 const CHANNELS = Object.keys(CURVE_CHANNEL_LABELS) as CurveChannel[];
@@ -28,10 +29,10 @@ export const CurveTab = memo(function CurveTab({ store, photo, rs }: TabProps) {
   // The histogram behind the plot follows the frames the viewport draws, at most five times a second (`store.watchHistogram`).
   useEffect(() => store.watchHistogram(), [store, photo.id]);
   const background = useMemo(() => plotHistogram(channel, histogram), [channel, histogram]);
-  const curve = rs.settings.curve;
+  const curve = mainGradeOf(rs.settings).curve;
 
   return (
-    <Card title="Curve" action={<ResetLink size="card" onClick={() => void store.update({ curve: IDENTITY })} />}>
+    <Card title="Curve" action={<ResetLink size="card" onClick={() => void store.update(mainGradePatch({ curve: IDENTITY }))} />}>
       <div className="ym-stack">
         <Segmented
           label="Curve channel"
@@ -45,7 +46,7 @@ export const CurveTab = memo(function CurveTab({ store, photo, rs }: TabProps) {
           points={curve[channel]}
           histogram={background}
           defaultSelected={centralInnerPoint(curve[channel])}
-          onChange={(points, final) => void store.update({ curve: { ...curve, [channel]: points } }, final, rs.photo_id)}
+          onChange={(points, final) => void store.update(mainGradePatch({ curve: { ...curve, [channel]: points } }), final, rs.photo_id)}
         />
       </div>
     </Card>

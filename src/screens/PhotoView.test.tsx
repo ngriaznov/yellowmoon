@@ -9,6 +9,7 @@ import { installManualRaf, mockRect } from "../test/raf";
 import { openPhotos, renderApp } from "../test/harness";
 import type { Harness } from "../test/harness";
 import type { MockOptions } from "../api.mock";
+import { inputPatch } from "../state/settingsGraph";
 
 let h: Harness | undefined;
 afterEach(() => {
@@ -104,7 +105,7 @@ describe("the fallback viewport", () => {
     await h!.api.viewportSetRect({ x: 0, y: 75, width: 1020, height: 680, scale: 2 });
     await waitFor(() => expect(cell.querySelector("img.ym-photo-cell__frame")).not.toBeNull());
     const first = cell.querySelector("img.ym-photo-cell__frame")?.getAttribute("src");
-    await h!.store.update({ exposure: { kind: "manual", ev: 1.5 } });
+    await h!.store.update(inputPatch({ exposure: { kind: "manual", ev: 1.5 } }));
     await waitFor(() => expect(cell.querySelector("img.ym-photo-cell__frame")?.getAttribute("src")).not.toBe(first));
   });
 
@@ -183,7 +184,7 @@ describe.each([undefined, "native", "fallback"] as const)("the pointer over the 
     await waitFor(() => expect(cell.querySelector(".ym-photo-cell__readout")).toHaveTextContent(/^R \d+ G \d+ B \d+$/));
     expect(sample).toHaveBeenCalledWith(450, 60);
     // A portrait photo is letterboxed: the left edge is paper and has nothing to read.
-    await h!.store.update({ orientation: 90 });
+    await h!.store.update(inputPatch({ orientation: 90 }));
     fireEvent.pointerMove(cell, { clientX: 5, clientY: 300, altKey: true });
     await waitFor(() => expect(cell.querySelector(".ym-photo-cell__readout")).toBeNull());
     expect(h!.store.getState().error).toBeNull();

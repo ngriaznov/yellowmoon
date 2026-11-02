@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExportJob, ViewportRect } from "./api/types";
+import { mainGradePatch } from "./state/settingsGraph";
 
 /** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
 const manual = (value: number) => ({ kind: "manual", value }) as const;
@@ -43,11 +44,11 @@ const calls: Row[] = [
   ["removePhotos", () => tauriApi.removePhotos([3, 5]), "remove_photos", { photoIds: [3, 5] }],
   ["restorePhotos", () => tauriApi.restorePhotos(), "restore_photos", undefined],
   ["getSettings", () => tauriApi.getSettings(3), "get_settings", { photoId: 3 }],
-  ["updateSettings", () => tauriApi.updateSettings(3, { contrast: manual(4) }), "update_settings", { photoId: 3, patch: { contrast: manual(4) } }],
+  ["updateSettings", () => tauriApi.updateSettings(3, mainGradePatch({ contrast: manual(4) })), "update_settings", { photoId: 3, patch: mainGradePatch({ contrast: manual(4) }) }],
   ["applyLook", () => tauriApi.applyLook("all", "builtin:neutral", 80), "apply_look", { scope: "all", lookId: "builtin:neutral", intensity: 80 }, true],
   ["rerunAuto", () => tauriApi.rerunAuto(3), "rerun_auto", { photoId: 3 }],
   ["copySettings", () => tauriApi.copySettings(3), "copy_settings", { photoId: 3 }],
-  ["pasteSettings", () => tauriApi.pasteSettings([4, 5], { contrast: manual(4) }), "paste_settings", { photoIds: [4, 5], patch: { contrast: manual(4) } }],
+  ["pasteSettings", () => tauriApi.pasteSettings([4, 5], mainGradePatch({ contrast: manual(4) })), "paste_settings", { photoIds: [4, 5], patch: mainGradePatch({ contrast: manual(4) }) }],
   ["setMenuState", () => tauriApi.setMenuState({ copy_settings: true, paste_settings: false, paste_settings_to_picked: false }), "set_menu_state", { state: { copy_settings: true, paste_settings: false, paste_settings_to_picked: false } }, true],
   ["histogram", () => tauriApi.histogram(3), "histogram", { photoId: 3 }],
   ["chromaScatter", () => tauriApi.chromaScatter(3), "chroma_scatter", { photoId: 3 }],

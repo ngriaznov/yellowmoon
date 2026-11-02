@@ -326,7 +326,8 @@
     // The pins as the core has them: each moved by what was asked (a pin stops at the edge of the plane).
     await sleep(500);
     const resolved = await invoke("get_settings", { photoId: photo.id });
-    const pins = resolved.settings.color_warp.pins;
+    // The settings are a graph of nodes (docs/23): the colour warp is a field of node 1's grade (Main).
+    const pins = resolved.settings.nodes.items.find((n) => n.kind === "corrector" && n.id === 1).grade.color_warp.pins;
     note("warp pins: " + pins.map((p) => `[${p.source.map((v) => v.toFixed(3))}] -> [${p.target.map((v) => v.toFixed(3))}]`).join(", "));
     if (pins.length !== config.warp.length) throw new Error(`the core has ${pins.length} warp pins, not ${config.warp.length}`);
     config.warp.forEach((wanted, i) => {

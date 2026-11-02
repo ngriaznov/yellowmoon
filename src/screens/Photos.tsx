@@ -85,7 +85,7 @@ interface ZoomMenuProps {
 
 /** The header's zoom button and menu. It reads the zoom and `render_stats` itself: a wheel zoom or a frame redraws this button only. */
 const ZoomMenu = memo(function ZoomMenu({ store, photo, rs, cell }: ZoomMenuProps) {
-  const estimate = cell && photo ? fitZoomExact(cell, photo, rs?.values ?? null) : null;
+  const estimate = cell && photo ? fitZoomExact(cell, photo, rs?.values.input ?? null) : null;
   const label = useAppState((s) => zoomView(s.zoom, s.stats, estimate).label);
   const key = useAppState((s) => zoomView(s.zoom, s.stats, estimate).key);
   return (

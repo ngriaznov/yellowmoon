@@ -106,7 +106,7 @@ export async function runMenuAction(store: AppStore, action: MenuAction): Promis
       return;
     case "make_default_look": {
       const rs = store.currentSettings();
-      if (rs) await store.makeDefault(rs.values.look);
+      if (rs) await store.makeDefault(rs.values.output.look);
       return;
     }
   }

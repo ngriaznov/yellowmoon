@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { openPhotos, openTab, renderApp, tools } from "../test/harness";
 import type { MockOptions } from "../api.mock";
 import type { Harness } from "../test/harness";
+import { inputPatch, mainGradePatch } from "../state/settingsGraph";
 
 /** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
 const manual = (value: number) => ({ kind: "manual", value }) as const;
@@ -22,7 +23,7 @@ async function setup(options: MockOptions = MOCKUP): Promise<Harness> {
   return h;
 }
 
-const lookOf = (): string | undefined => h?.store.currentSettings()?.values.look;
+const lookOf = (): string | undefined => h?.store.currentSettings()?.values.output.look;
 
 describe("the header", () => {
   it("shows the folder, its date and count, and the actions", async () => {
@@ -234,7 +235,7 @@ describe("the Look tab", () => {
 
   it("flips a row to EDITED when its value is changed, and Re-run brings AUTO back", async () => {
     await setup();
-    await h!.store.update({ exposure: { kind: "manual", ev: 1.5 } });
+    await h!.store.update(inputPatch({ exposure: { kind: "manual", ev: 1.5 } }));
     const card = within(screen.getByRole("region", { name: "Automatic" }));
     expect(await card.findByRole("button", { name: "Exposure +1.50 EV, Edited. Open Light" })).toBeInTheDocument();
     await h!.user.click(card.getByRole("button", { name: "Re-run" }));
@@ -371,7 +372,7 @@ describe("the Look tab", () => {
     await waitFor(() => expect(lookOf()).toBe("arri:3000:night-blue"));
     await h!.user.click(within(screen.getByRole("region", { name: "Look" })).getByRole("button", { name: "Reset" }));
     await waitFor(() => expect(lookOf()).toBe("builtin:neutral"));
-    expect(h!.store.currentSettings()?.values.look_intensity).toBe(100);
+    expect(h!.store.currentSettings()?.values.output.look_intensity).toBe(100);
   });
 
   it("shows a look whose file is missing as disabled, with the reason, and won't pick it", async () => {
@@ -416,7 +417,7 @@ describe("undo, redo and closing", () => {
   it("⌘Z and ⇧⌘Z undo and redo a change for this photo", async () => {
     await setup();
     await openTab(h!, "Light");
-    await h!.store.update({ contrast: manual(30) });
+    await h!.store.update(mainGradePatch({ contrast: manual(30) }));
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Contrast value" })).toHaveValue("+30"));
     await h!.user.keyboard("{Meta>}z{/Meta}");
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Contrast value" })).toHaveValue("0"));

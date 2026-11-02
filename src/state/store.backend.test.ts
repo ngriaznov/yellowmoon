@@ -9,6 +9,7 @@ import type { MockApi, MockOptions } from "../api.mock";
 import type { ViewportBusy, ViewportFrame } from "../api/types";
 import { createStore } from "./store";
 import type { AppStore } from "./store";
+import { inputOf, inputPatch, mainGradeOf, mainGradePatch } from "./settingsGraph";
 
 /** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
 const manual = (value: number) => ({ kind: "manual", value }) as const;
@@ -173,12 +174,12 @@ describe("Pick white", () => {
     expect(input).toHaveBeenCalledWith({ kind: "pick_white", x: 450, y: 150 });
     expect(update).not.toHaveBeenCalled();
     const rs = store.currentSettings()!;
-    expect(rs.settings.white_pick).toEqual([0.5, 0.25]);
-    expect(rs.settings.white_balance.kind).toBe("manual");
+    expect(inputOf(rs.settings).white_pick).toEqual([0.5, 0.25]);
+    expect(inputOf(rs.settings).white_balance.kind).toBe("manual");
     expect(store.getState().canUndo).toBe(true);
     await store.undo();
-    expect(store.currentSettings()!.settings.white_pick).toBeNull();
-    expect(store.currentSettings()!.auto.white_balance).toBe(true);
+    expect(inputOf(store.currentSettings()!.settings).white_pick).toBeNull();
+    expect(store.currentSettings()!.auto.input.white_balance).toBe(true);
     expect(store.getState().canRedo).toBe(true);
   });
 
@@ -186,10 +187,10 @@ describe("Pick white", () => {
     const { api, store } = await opened();
     store.setViewportRect({ x: 0, y: 75, width: 900, height: 600, scale: 2 });
     await vi.waitFor(() => expect(api.viewport.rect?.width).toBe(900));
-    await store.update({ orientation: 90 });
+    await store.update(inputPatch({ orientation: 90 }));
     const undoDepth = store.getState().canUndo;
     await store.pickWhite(10, 300);
-    expect(store.currentSettings()!.settings.white_pick).toBeNull();
+    expect(inputOf(store.currentSettings()!.settings).white_pick).toBeNull();
     expect(store.getState().canUndo).toBe(undoDepth);
   });
 
@@ -198,18 +199,18 @@ describe("Pick white", () => {
     api.failNext("viewportInput", { scope: "render", message: "That spot is too dark to be a white. Click something lighter." });
     await store.pickWhite(450, 300);
     expect(store.getState().error).toEqual({ scope: "render", message: "That spot is too dark to be a white. Click something lighter." });
-    expect(store.currentSettings()!.settings.white_pick).toBeNull();
+    expect(inputOf(store.currentSettings()!.settings).white_pick).toBeNull();
   });
 
   it("waits for the patches in flight, so the undo step starts from the settings the core has", async () => {
     const { store } = await opened();
-    const done = store.update({ contrast: manual(10) }, true);
+    const done = store.update(mainGradePatch({ contrast: manual(10) }), true);
     const pick = store.pickWhite(450, 300);
     await Promise.all([done, pick]);
     await store.undo();
     // The pick is undone; the contrast change before it is still there.
-    expect(store.currentSettings()!.settings.white_pick).toBeNull();
-    expect(store.currentSettings()!.settings.contrast).toEqual(manual(10));
+    expect(inputOf(store.currentSettings()!.settings).white_pick).toBeNull();
+    expect(mainGradeOf(store.currentSettings()!.settings).contrast).toEqual(manual(10));
   });
 });
 
@@ -218,10 +219,10 @@ describe("settings_changed", () => {
     const { api, store } = await opened();
     const id = store.currentPhoto()!.id;
     // The core sets the pick on its own (another window, a menu): the mirror asks.
-    await api.updateSettings(id, { contrast: manual(25) });
-    expect(store.currentSettings()!.values.contrast).toBe(0);
+    await api.updateSettings(id, mainGradePatch({ contrast: manual(25) }));
+    expect(store.currentSettings()!.values.main.grade.contrast).toBe(0);
     api.emitEvent("settings_changed", { photo_id: id });
-    await vi.waitFor(() => expect(store.currentSettings()!.values.contrast).toBe(25));
+    await vi.waitFor(() => expect(store.currentSettings()!.values.main.grade.contrast).toBe(25));
   });
 
   it("is ignored for a photo the screen has not asked about", async () => {
@@ -316,7 +317,7 @@ describe("viewport_busy", () => {
     await vi.waitFor(() => expect(cpu.store.getState().viewportBusy.busy).toBe(false));
     const heard: ViewportBusy[] = [];
     stops.push(cpu.api.on("viewport_busy", (e) => heard.push(e)));
-    await cpu.store.update({ brightness: 12 });
+    await cpu.store.update(mainGradePatch({ brightness: 12 }));
     await vi.waitFor(() =>
       expect(heard).toEqual([
         { busy: true, cpu: true },
@@ -329,7 +330,7 @@ describe("viewport_busy", () => {
     const gpu = await opened({ speed: 10 });
     const none = vi.fn();
     stops.push(gpu.api.on("viewport_busy", none));
-    await gpu.store.update({ brightness: 12 });
+    await gpu.store.update(mainGradePatch({ brightness: 12 }));
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(none).not.toHaveBeenCalled();
     expect(gpu.store.getState().viewportBusy).toEqual({ busy: false, cpu: false });
