@@ -143,7 +143,8 @@ fn brush_and_background_are_kinds_this_computer_can_make_and_the_others_of_the_r
         .map(|(k, why)| (k.label(), why.wire()))
         .collect();
     let mac = cfg!(target_os = "macos");
-    assert_eq!(wire[0], ("Object", "not_supported"));
+    // Object needs the SAM weights (N-18): a machine with no Object model says so.
+    assert_eq!(wire[0], ("Object", "weights_missing"));
     assert_eq!(wire[1].1, if mac { "not_supported" } else { "not_a_mac" });
     assert_eq!(wire.len(), 3, "Object, Subject and People: {wire:?}");
 }
@@ -151,7 +152,8 @@ fn brush_and_background_are_kinds_this_computer_can_make_and_the_others_of_the_r
 #[test]
 fn a_raster_row_of_a_kind_that_cannot_be_made_is_a_mask_error_never_an_empty_mask() {
     let row = json!({ "kind": "object", "points": [[0.5, 0.5, true]] });
-    let sentence = "Node 2 has an Object mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon.";
+    // `unmakeable_mask` is the question of a machine with no Object model (a renderer asks with its own, `mask_object.rs`).
+    let sentence = "This copy of Yellowmoon has no Object model. Reinstall the app.";
     let s = graph(vec![node_2(vec![row])]);
     assert_eq!(unmakeable_mask(&s).as_deref(), Some(sentence));
     if !cfg!(target_os = "macos") {

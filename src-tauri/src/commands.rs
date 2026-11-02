@@ -947,9 +947,13 @@ mod tests {
         );
         // The kinds of mask this machine makes, and points mapped between the photo and the cell: with no photo
         // shown nothing has a place; the side is `photo` or `cell`.
-        // The list is the core's own (`ym_core::settings::mask_kinds`, by the kinds' wire names), so a kind that a
-        // later task makes does not leave this expectation stale.
-        let kinds: Vec<&str> = ym_core::settings::mask_kinds()
+        // The list is the core's own (`ym_core::settings::mask_kinds_with`, by the kinds' wire names), so a kind that a
+        // later task makes does not leave this expectation stale; Object is in it where the SAM weights are.
+        let object = ym_core::pipeline::ObjectModel::probe(
+            &ym_core::data_dir::find_data_dir().expect("the data folder"),
+        )
+        .is_some();
+        let kinds: Vec<&str> = ym_core::settings::mask_kinds_with(object)
             .into_iter()
             .map(|k| k.name())
             .collect();

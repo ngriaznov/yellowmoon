@@ -4928,7 +4928,16 @@ fn object_weights() -> bool {
     .is_some_and(|m| m.sam().is_ok())
 }
 
-fn row_patch(row: serde_json::Value) -> SettingsPatch {
+/// A patch that gives Main one mask row, in the full form of the wire (`MaskItem`: every field of the kind is required there).
+fn row_patch(kind: &str) -> SettingsPatch {
+    let row = match kind {
+        "object" => {
+            json!({ "kind": "object", "mode": "add", "invert": false, "enabled": true, "opacity": 1, "points": [], "box": null, "feather": 0, "grow": 0, "refine": 0.5 })
+        }
+        _ => {
+            json!({ "kind": "radial", "mode": "add", "invert": false, "enabled": true, "opacity": 1, "center": [0.5, 0.5], "radii": [0.25, 0.18], "angle_deg": 0, "feather": 0.3 })
+        }
+    };
     serde_json::from_value(json!({ "nodes": { "1": { "masks": { "items": [row] } } } }))
         .expect("a patch")
 }
@@ -4940,7 +4949,7 @@ fn mask_find_refuses_what_is_not_an_object_row_with_the_scope_mask_and_a_plain_s
     h.open(1);
     let id = h.develop().photos[0].id;
     h.api
-        .update_settings(id, &row_patch(json!({ "kind": "radial" })))
+        .update_settings(id, &row_patch("radial"))
         .expect("a Radial row");
     let click = MaskFindPrompt::Point {
         x: Num(0.5),
@@ -4985,7 +4994,7 @@ fn mask_find_answers_in_the_shapes_of_the_wire_and_object_state_comes_as_events(
     let id = h.develop().photos[0].id;
     h.api.set_current(id).expect("current");
     h.api
-        .update_settings(id, &row_patch(json!({ "kind": "object" })))
+        .update_settings(id, &row_patch("object"))
         .expect("an Object row");
     // The core asked for the features: the page is told that the encoder is working, and that it has stopped.
     let seen = |preparing: bool| {
