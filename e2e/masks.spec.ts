@@ -623,3 +623,238 @@ test.describe("Copy settings and Paste", () => {
     expect((await masksOf(page, 4))?.invert).toBe(true);
   });
 });
+
+// ---- The Brush tool (docs/23 §7.6, task N-14) -------------------------------------------------------------------------------------------------
+
+const brushLayer = (page: Page) => page.locator("[data-brush-layer]");
+const brushCursor = (page: Page) => page.locator("[data-brush-cursor]");
+/** The strokes of a Brush row in the mock's Mask only picture: their ink (white paints, black erases), points and width. */
+async function strokesDrawn(page: Page): Promise<Array<{ ink: string; points: string; width: number }>> {
+  const svg = await picture(page);
+  return [...svg.matchAll(/<polyline points="([^"]+)" fill="none" stroke="(#[0-9a-f]{3})" stroke-width="([\d.]+)"/g)].map((m) => ({ ink: m[2]!, points: m[1]!, width: Number(m[3]) }));
+}
+const brushRows = async (page: Page) => (await rowsOf(page, 4)).filter((r) => r.kind === "brush") as Array<Row & { strokes: Array<{ size: number; hardness: number; erase: boolean; points: number[][] }> }>;
+
+/** A stroke by hand over the photo cell: `from` and `to` are shares of the cell; down, a few moves, up. */
+async function paint(page: Page, from: [number, number], to: [number, number], steps = 6): Promise<void> {
+  const cell = await cellBox(page);
+  await page.mouse.move(cell.x + cell.width * from[0], cell.y + cell.height * from[1]);
+  await page.mouse.down();
+  await page.mouse.move(cell.x + cell.width * to[0], cell.y + cell.height * to[1], { steps });
+  await page.mouse.up();
+}
+
+test.describe("the Brush tool", () => {
+  test("adding a Brush row selects it, shows the BRUSH card and the cursor circle, and a stroke changes the Mask only view", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Brush");
+    await expect(rowButton(page, "Brush mask, Paint on the photo")).toHaveAttribute("aria-pressed", "true");
+    await expect(maskCard(page, "Brush")).toBeVisible();
+    await expect(brushLayer(page)).toBeVisible();
+    await expect(page.getByText("MASK · BRUSH")).toBeVisible();
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await expect.poll(async () => await picture(page)).toContain("data-mask-view");
+    expect(await strokesDrawn(page)).toEqual([]);
+    // The cursor is a circle at the brush's size (0.03 of the long edge, the cell's width here) that follows the pointer.
+    const cell = await cellBox(page);
+    await page.mouse.move(cell.x + cell.width * 0.3, cell.y + cell.height * 0.4);
+    await expect(brushCursor(page)).toBeVisible();
+    await expect.poll(async () => Number(await brushCursor(page).getAttribute("data-radius"))).toBeCloseTo((0.03 * cell.width) / 2, 0);
+    const ring = (await brushCursor(page).boundingBox())!;
+    expect(ring.x + ring.width / 2).toBeCloseTo(cell.x + cell.width * 0.3, 0);
+    expect(ring.y + ring.height / 2).toBeCloseTo(cell.y + cell.height * 0.4, 0);
+    // A stroke: drawn on the page as it goes, sent when the pointer is released.
+    await page.mouse.down();
+    await page.mouse.move(cell.x + cell.width * 0.6, cell.y + cell.height * 0.5, { steps: 6 });
+    await expect(page.locator("[data-brush-layer] polyline[data-live]")).toHaveCount(1);
+    expect(await brushRows(page)).toHaveLength(1);
+    expect((await brushRows(page))[0]!.strokes).toHaveLength(0);
+    await page.mouse.up();
+    await expect.poll(async () => (await brushRows(page))[0]?.strokes.length).toBe(1);
+    const stroke = (await brushRows(page))[0]!.strokes[0]!;
+    expect(stroke).toMatchObject({ size: 0.03, hardness: 0.5, erase: false });
+    expect(stroke.points[0]![0]).toBeCloseTo(0.3, 2);
+    expect(stroke.points[0]![1]).toBeCloseTo(0.4, 2);
+    expect(stroke.points.at(-1)![0]).toBeCloseTo(0.6, 2);
+    expect(stroke.points.at(-1)![1]).toBeCloseTo(0.5, 2);
+    // A straight drag is stored as its two ends.
+    expect(stroke.points).toHaveLength(2);
+    // The mask view shows it: a white line as wide as the brush (30 px of the scene's 1000-wide long edge ... the scene's own units).
+    await expect.poll(async () => (await strokesDrawn(page)).length).toBe(1);
+    expect((await strokesDrawn(page))[0]!.ink).toBe("#fff");
+    await expect(rowButton(page, "Brush mask, 1 stroke")).toBeVisible();
+    // The page's own drawing of the stroke goes once the core has the picture.
+    await expect(page.locator("[data-brush-layer] polyline")).toHaveCount(0);
+  });
+
+  test("Erase takes paint away: the stroke is an erase stroke and the view draws it in black over the paint", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Brush");
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await paint(page, [0.2, 0.5], [0.8, 0.5]);
+    await expect.poll(async () => (await brushRows(page))[0]?.strokes.length).toBe(1);
+    await maskCard(page, "Brush").getByRole("radio", { name: "Erase" }).click();
+    await expect(maskCard(page, "Brush").getByRole("radio", { name: "Erase" })).toBeChecked();
+    await expect(brushCursor(page).or(brushLayer(page))).toBeVisible();
+    await paint(page, [0.45, 0.4], [0.55, 0.6]);
+    await expect.poll(async () => (await brushRows(page))[0]?.strokes.length).toBe(2);
+    expect((await brushRows(page))[0]!.strokes.map((s) => s.erase)).toEqual([false, true]);
+    await expect.poll(async () => (await strokesDrawn(page)).map((s) => s.ink)).toEqual(["#fff", "#000"]);
+    await expect(rowButton(page, "Brush mask, 2 strokes")).toBeVisible();
+    // Back to Paint.
+    await maskCard(page, "Brush").getByRole("radio", { name: "Paint" }).click();
+    await paint(page, [0.2, 0.3], [0.8, 0.3]);
+    await expect.poll(async () => (await brushRows(page))[0]?.strokes.map((s) => s.erase)).toEqual([false, true, false]);
+  });
+
+  test("a stroke is one undo step, redo puts it back, and the view follows", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Brush");
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await paint(page, [0.2, 0.3], [0.8, 0.3]);
+    await paint(page, [0.2, 0.6], [0.8, 0.6]);
+    await expect.poll(async () => (await brushRows(page))[0]?.strokes.length).toBe(2);
+    await expect.poll(async () => (await strokesDrawn(page)).length).toBe(2);
+    await blur(page);
+    await page.keyboard.press("Meta+z");
+    await expect.poll(async () => (await brushRows(page))[0]?.strokes.length).toBe(1);
+    await expect.poll(async () => (await strokesDrawn(page)).length).toBe(1);
+    await expect(rowButton(page, "Brush mask, 1 stroke")).toBeVisible();
+    await page.keyboard.press("Meta+z");
+    await expect.poll(async () => (await brushRows(page))[0]?.strokes.length).toBe(0);
+    await expect(rowButton(page, "Brush mask, Paint on the photo")).toBeVisible();
+    // The row is still there: adding it was a step of its own.
+    expect(await brushRows(page)).toHaveLength(1);
+    await page.keyboard.press("Meta+Shift+z");
+    await page.keyboard.press("Meta+Shift+z");
+    await expect.poll(async () => (await brushRows(page))[0]?.strokes.length).toBe(2);
+    await expect.poll(async () => (await strokesDrawn(page)).length).toBe(2);
+  });
+
+  test("Size and Hardness are for the next strokes: they change the cursor and the next stroke, not the ones drawn", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Brush");
+    await paint(page, [0.2, 0.3], [0.8, 0.3]);
+    await expect.poll(async () => (await brushRows(page))[0]?.strokes.length).toBe(1);
+    await setValue(page, "Size", "100");
+    await setValue(page, "Hardness", "100");
+    const first = (await brushRows(page))[0]!.strokes[0]!;
+    expect(first).toMatchObject({ size: 0.03, hardness: 0.5 });
+    const cell = await cellBox(page);
+    await page.mouse.move(cell.x + cell.width * 0.5, cell.y + cell.height * 0.5);
+    // Size 100 is 0.25 of the long edge: a radius of an eighth of the cell's width.
+    await expect.poll(async () => Number(await brushCursor(page).getAttribute("data-radius"))).toBeCloseTo((0.25 * cell.width) / 2, 0);
+    await expect(brushCursor(page).locator(".ym-brush-cursor__core")).toHaveCount(0);
+    await paint(page, [0.3, 0.7], [0.7, 0.7]);
+    await expect.poll(async () => (await brushRows(page))[0]?.strokes.length).toBe(2);
+    const rows = await brushRows(page);
+    expect(rows[0]!.strokes[0]).toMatchObject({ size: 0.03, hardness: 0.5 });
+    expect(rows[0]!.strokes[1]).toMatchObject({ size: 0.25, hardness: 1 });
+    // No patch for the sliders themselves: the row holds its two strokes and its fields at their defaults.
+    expect(rows[0]).toMatchObject({ feather: 0, grow: 0, refine: 0, opacity: 1 });
+    await expect(page.getByRole("textbox", { name: "Size value" })).toHaveValue("100");
+    // A small brush is within reach: Size 1 is a few pixels.
+    await setValue(page, "Size", "1");
+    await expect.poll(async () => Number(await brushCursor(page).getAttribute("data-radius"))).toBeLessThan(0.0015 * cell.width);
+  });
+
+  test("the raster sliders write the row: Refine edges, Feather, Grow and Opacity, with the view following Feather", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Brush");
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await paint(page, [0.2, 0.5], [0.8, 0.5]);
+    await expect.poll(async () => (await brushRows(page))[0]?.strokes.length).toBe(1);
+    await setValue(page, "Refine edges", "40");
+    await setValue(page, "Feather", "50");
+    await setValue(page, "Grow", "-30");
+    await setValue(page, "Opacity", "80");
+    await expect.poll(async () => (await brushRows(page))[0]).toMatchObject({ refine: 0.4, feather: 0.5, grow: -0.3, opacity: 0.8 });
+    expect((await brushRows(page))[0]!.strokes).toHaveLength(1);
+    await expect.poll(async () => await picture(page)).toContain('fill-opacity="0.8"');
+    await expect.poll(async () => await picture(page)).toContain("feGaussianBlur");
+    // Reset puts the row back as a new Brush row: no strokes, the fields at their defaults.
+    await maskCard(page, "Brush").getByRole("button", { name: "Reset" }).click();
+    await expect.poll(async () => (await brushRows(page))[0]).toMatchObject({ refine: 0, feather: 0, grow: 0, opacity: 1, strokes: [] });
+    await expect(rowButton(page, "Brush mask, Paint on the photo")).toBeVisible();
+    expect(await strokesDrawn(page)).toEqual([]);
+  });
+
+  test("Esc ends the tool, and the row, Paint or Erase starts it again; another row or node ends it", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Brush");
+    await expect(brushLayer(page)).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(brushLayer(page)).toHaveCount(0);
+    await expect(maskCard(page, "Brush").getByText("Choose Paint or Erase to draw on the photo.")).toBeVisible();
+    await maskCard(page, "Brush").getByRole("radio", { name: "Paint" }).click();
+    await expect(brushLayer(page)).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(brushLayer(page)).toHaveCount(0);
+    await rowButton(page, /^Brush mask/).click();
+    await expect(brushLayer(page)).toBeVisible();
+    // Crop hides it; closing Crop brings it back.
+    await page.getByRole("button", { name: "Crop", exact: true }).click();
+    await expect(brushLayer(page)).toHaveCount(0);
+    await page.getByRole("button", { name: "Crop", exact: true }).click();
+    await expect(brushLayer(page)).toBeVisible();
+    // Before hides it.
+    await page.getByRole("button", { name: "Before", exact: true }).click();
+    await expect(brushLayer(page)).toHaveCount(0);
+    await page.getByRole("button", { name: "Before", exact: true }).click();
+    await expect(brushLayer(page)).toBeVisible();
+    // Another node ends it for good.
+    await card(page, 3).click();
+    await expect(brushLayer(page)).toHaveCount(0);
+    await card(page, 4).click();
+    await expect(brushLayer(page)).toHaveCount(0);
+  });
+
+  test("a stroke does not pan the photo, and the wheel and the zoom keys still work", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Brush");
+    const calls = await recordCalls(page, "viewportInput");
+    await blur(page);
+    await page.keyboard.press("z");
+    await expect(page.getByRole("button", { name: /^100%/ })).toBeVisible();
+    const before = (await calls()).length;
+    await paint(page, [0.3, 0.4], [0.6, 0.5]);
+    await expect.poll(async () => (await brushRows(page))[0]?.strokes.length).toBe(1);
+    expect((await calls()).length).toBe(before);
+    // The wheel zooms with ⌘ held, as it does without the tool.
+    const cell = await cellBox(page);
+    await page.mouse.move(cell.x + cell.width / 2, cell.y + cell.height / 2);
+    await page.keyboard.down("Meta");
+    await page.mouse.wheel(0, -200);
+    await page.keyboard.up("Meta");
+    await expect.poll(async () => (await calls()).length).toBeGreaterThan(before);
+    await expect(brushLayer(page)).toBeVisible();
+  });
+
+  test("the drawing surface is not a Tab stop and has no name; the card's controls are", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Brush");
+    await expect(brushLayer(page)).toHaveAttribute("aria-hidden", "true");
+    expect(await brushLayer(page).evaluate((el) => el.querySelectorAll("button, [tabindex], input, a[href]").length)).toBe(0);
+    expect(await brushLayer(page).evaluate((el) => el.hasAttribute("tabindex"))).toBe(false);
+  });
+
+  test("Copy settings and Paste carry the Brush row, strokes and all, to another photo", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Brush");
+    await paint(page, [0.2, 0.3], [0.8, 0.4]);
+    await maskCard(page, "Brush").getByRole("radio", { name: "Erase" }).click();
+    await paint(page, [0.4, 0.2], [0.5, 0.6]);
+    await expect.poll(async () => (await brushRows(page))[0]?.strokes.length).toBe(2);
+    const copied = (await brushRows(page))[0]!;
+    const here = ((await page.getByRole("group", { name: "Photos" }).textContent()) ?? "").trim();
+    await page.getByRole("button", { name: "Copy settings" }).click();
+    await page.getByRole("button", { name: "Previous photo" }).click();
+    await expect(page.getByRole("group", { name: "Photos" })).not.toContainText(here);
+    await page.getByRole("button", { name: "Paste", exact: true }).click();
+    await expect(card(page, 4)).toBeVisible();
+    await card(page, 4).click();
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    await expect(rowButton(page, "Brush mask, 2 strokes")).toBeVisible();
+    expect((await brushRows(page))[0]).toEqual(copied);
+  });
+});
