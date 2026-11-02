@@ -124,5 +124,10 @@ debug = "line-tables-only"
 opt-level = 3
 debug = false
 
+# ym-ml is a workspace member, so the "*" above does not reach it. SAM 2.1's encoder is 180 billion multiply-adds: a debug test run
+# that reaches it (the Object tests of ym-core, ym-cli and the shell) would take about 90 s a photo at opt-level 1.
+[profile.dev.package.ym-ml]
+opt-level = 3
+
 [profile.release]
 lto = "thin"

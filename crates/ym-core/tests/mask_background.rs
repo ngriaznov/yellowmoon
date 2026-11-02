@@ -163,8 +163,7 @@ fn lights(w: u32, h: u32, exif: u16, region: (f64, f64), cols: usize, rows: usiz
     lights_of(w, h, exif, region, cols, rows, 0.45)
 }
 
-/// [`lights`] whose discs are `level` of the sensor's range (0.45 is the other tests'; a dimmer scene has edges the raw
-/// stages cut into tiles without a difference in the last bit).
+/// [`lights`] whose discs are `level` of the sensor's range (0.45 is the other tests').
 fn lights_of(
     w: u32,
     h: u32,
@@ -565,12 +564,11 @@ fn export_image(r: &Renderer, src: &PhotoSource) -> FullImage {
 
 /// Tiles of an export equal the whole frame bit for bit with the halos of Grow, Feather and Refine edges (the planes of the
 /// raster pass are the ones of `crates/ym-color/tests/mask_raster.rs`; a Background plane is one more source for them). The
-/// discs are dim (0.15 of the range): the raw stages of a bright hard-edged disc (0.45) are not tile-independent to the last
-/// bit at a disc's edge, with no mask at all (tiles of 100, 128 and 256 px; 8 pixels of 1e-8), and a Refine edges guide reads
-/// them through its halo.
+/// discs are the bright, hard-edged ones of the other tests (0.45 of the range): their edges are where the raw stages' tiles
+/// would differ in the last bit, and a Refine edges guide reads them through its halo.
 #[test]
 fn tiles_of_an_export_equal_the_whole_frame_with_the_halos_of_grow_feather_and_refine_edges() {
-    let d = lights_of(640, 480, 1, (0.0, 1.0), 5, 4, 0.15);
+    let d = lights(640, 480, 1, (0.0, 1.0), 5, 4);
     let src = d.source();
     let rows = vec![
         background(
