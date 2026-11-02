@@ -520,6 +520,8 @@ The core renders it: the photo is a native layer under a transparent page, and t
 - **Overlay** tints the selected node's mask in the mask accent (orchid pink, `#FF6FD2`) over the photo as it is now: `out = display + 0.55 · m · (accent − display)` in display-linear, after output sharpening and before C13.
 - **Mask only** shows `m` as grey: the code value after C13 is `m`.
 
+The mask view belongs to the node view and to a corrector. While the Input or the Output is selected, Show mask is off (`aria-disabled`, tooltip "The input and the output have no mask.") and the frame is the photo; the view's on or off and its style are kept, and they apply again when a corrector is selected. A corrector without mask rows or a key input shows its `m` of 1: the whole photo tinted, or white. Leaving the node view (or opening Crop or Export) ends the mask view in the core; coming back restores it as it was (lead's decision 2026-11-02: the spec was silent).
+
 The mask view is a view: it is not in an export, the Before view, a thumbnail or the pixel readout. It is made on the device with the colour pass when the renderer's stages allow, and on the CPU otherwise, with the same gates as a view (one 10-bit code). **Shape handles and SAM points are drawn by the page over the photo,** like the crop frame, in the cell's CSS pixels (`viewport_map_points`).
 
 ### 5.9 Speed targets (on a Mac; checked in N-20)
@@ -867,7 +869,7 @@ Task format of `docs/15`. Each task updates the specs it touches and `docs/STATU
 **N-11 · Show mask** (N-10): Overlay and Mask only rendered by the core, M, the toolbar toggle, the View card. *Done when:* e2e passes and the Mac check is listed.
 **N-12 · The Mask tab** (N-10, N-11): the Add mask menu, the rows (Add or Subtract, Invert, eye), the cards, the handles, range picking, the copy rules. *Done when:* e2e passes and the screenshots are reviewed.
 **[HUMAN] N-H3 · Checkpoint 2:** a test DMG with shapes and ranges.
-**N-13 · Raster masks** (N-12): the photo-frame raster, resample, grow, feather and the guided-filter Refine edges; CPU and GPU; tile halos; the memory cache. *Done when:* parity, tiles and preview against export pass. **`ym`:** raster masks render from `--settings` (the app and `ym` give byte-identical files), and `docs/10` and the help are updated in the same commit if anything a person sees changes.
+**N-13 · Raster masks** (N-12): the photo-frame raster, resample, grow, feather and the guided-filter Refine edges; CPU and GPU; tile halos; the memory cache; `ym doctor`'s **Masks** line (`docs/10` *doctor*) and `mask_kinds()`. *Done when:* parity, tiles and preview against export pass. **`ym`:** raster masks render from `--settings` (the app and `ym` give byte-identical files), and `docs/10` and the help are updated in the same commit if anything a person sees changes.
 **N-14 · Brush** (N-13): strokes, erase, size, hardness; drawing on the photo. *Done when:* e2e and parity pass.
 **N-15 · Background from blur** (N-13): the blur map as a mask. *Done when:* the tests on the blur-map fixtures pass.
 **N-16 · SAM 2 weights** (N-01): the conversion script, safetensors f16, the release asset, the fetch with SHA-256, bundled in the app and in `data/` for `ym`, the model card, the notice, `docs/14`. *Done when:* the licence check passes and the build bundles the weights.
