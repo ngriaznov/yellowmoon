@@ -720,6 +720,33 @@ jobs:
           echo "ORT_DYLIB_PATH=$lib" >> "$GITHUB_ENV"
       - run: cargo clippy -p ym-ml --all-targets --features burn,ort -- -D warnings
       - run: cargo test -p ym-ml --features burn,ort
+  # SAM 2.1 small (docs/algorithms/06 section 6.5, N-17): our Rust runtime against Meta's oracle fixtures, on Apple silicon, in
+  # release (the gates take about 90 s a photo in the dev profile, where the rust job skips them and says so). The weights and the
+  # fixtures are our own release assets (models-sam2.1-small-1), fetched by SHA-256 and cached; YM_REQUIRE_SAM2 makes a missing
+  # file a failure. The timing example prints the encoder's and the decoder's times on this runner (print only).
+  sam2:
+    if: github.event_name != 'schedule'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      YM_REQUIRE_SAM2: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            data/models/sam2/sam2.1_hiera_small.f16.safetensors
+            testdata/sam2
+          key: sam2-oracle-${{ hashFiles('data/models/sam2/SHA256SUMS', 'tools/fetch/sam2.sha256') }}
+      - name: zstd for the fixtures' archive
+        run: command -v zstd >/dev/null || brew install zstd
+      - run: tools/fetch/sam2.sh --fixtures
+      - run: cargo test -p ym-ml --release --test sam2 -- --nocapture
+      - name: Encoder and decoder times on this runner (print only)
+        run: cargo run -p ym-ml --release --example sam2_time -- --reps 2
   # Fuzzing (docs/13): every cargo-fuzz target runs for 10 minutes each night (property: no panic, no unbounded allocation, a
   # typed error for any input). One job per target, so a crash names its target and the others still run. The targets are
   # crates/ym-raw/fuzz (the ARW container and the decoders, docs/04) and crates/ym-color/fuzz (the `.cube` parser and the look
