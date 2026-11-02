@@ -1428,7 +1428,8 @@ impl PreparedChain {
     }
 
     /// The same chain for a render with this photo frame (the photo's aspect, and the size of one output pixel
-    /// in units of its long edge: [`ym_color::mask::PhotoFrame`], from the sampler's grid). The mask shapes of
+    /// in units of its long edge, of which the shapes' narrowest edge ramp is a multiple:
+    /// [`ym_color::mask::PhotoFrame`], from the sampler's grid). The mask shapes of
     /// the nodes need it, with a source that has the position planes ([`encode_sample_at`]); a chain with no
     /// shape ignores it.
     ///

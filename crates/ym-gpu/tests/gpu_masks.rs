@@ -1353,7 +1353,8 @@ fn reduced_against_full(rows: &[MaskRow], buffer: (usize, usize)) -> (f64, f64) 
 #[test]
 fn a_reduced_view_agrees_with_the_export_reduced() {
     // docs/23 section 11: the same mask at k = 4 and k = 1 (the larger render reduced by the same box) within
-    // largest 0.1 and mean 0.005 (starting numbers). Feathered shapes; the hard edges are measured below.
+    // largest 0.1 and mean 0.005 (the starting numbers; they are not loosened). Feathered shapes, then hard
+    // edges (Feather 0), whose ramp is the minimum one: a ramp of MIN_RAMP_PIXELS centred on the edge.
     let buffer = (1200usize, 800usize);
     let cases: Vec<(&str, Vec<MaskRow>)> = vec![
         ("Linear, feather 0.2", vec![linear([0.5, 0.5], 20.0, 0.2)]),
@@ -1383,42 +1384,18 @@ fn a_reduced_view_agrees_with_the_export_reduced() {
                 radial([0.7, 0.6], [0.2, 0.2], 0.0, 0.5),
             ],
         ),
-    ];
-    for (what, rows) in cases {
-        let (largest, mean) = reduced_against_full(&rows, buffer);
-        eprintln!(
-            "{what}: the mask at k = 4 against the mask at k = 1 reduced by 4 x 4: largest {largest:.4}, mean {mean:.5} (starting bounds 0.1 and 0.005)"
-        );
-        assert!(largest <= 0.1, "{what}: largest {largest}");
-        assert!(mean <= 0.005, "{what}: mean {mean}");
-    }
-}
-
-#[test]
-fn hard_edges_at_two_scales_are_measured_and_exceed_the_starting_bound() {
-    // Feather 0 is an edge of one output pixel (docs/algorithms/06 section 4: the smooth-edge rule), so the edge
-    // of the render at k = 4 is four times as wide in the photo as the one at k = 1. A Linear's ramp is centred on
-    // its line and the mean is small, but the largest difference is 0.115 to 0.118 at every angle but 45 degrees,
-    // over the starting 0.1; a Radial's ramp runs inwards from its outline (the outline is where the mask reaches
-    // 0), so the edge itself sits half a ramp inside it and moves with the scale: up to 0.6 where a coarse pixel
-    // straddles it. These are the numbers the report to the owner carries (docs/23 section 15); the test holds
-    // them to what was measured, so that a change is seen, and the mean to the starting 0.005.
-    let buffer = (1200usize, 800usize);
-    for (what, rows, bound) in [
-        (
-            "Linear, feather 0",
-            vec![linear([0.4137, 0.5], -35.0, 0.0)],
-            0.125,
-        ),
+        ("Linear, feather 0", vec![linear([0.4137, 0.5], -35.0, 0.0)]),
         (
             "Linear, feather 0, 20 degrees",
             vec![linear([0.5, 0.5], 20.0, 0.0)],
-            0.125,
         ),
         (
             "Radial, feather 0",
             vec![radial([0.45, 0.55], [0.25, 0.15], -40.0, 0.0)],
-            0.65,
+        ),
+        (
+            "Radial, feather 0, a circle",
+            vec![radial([0.5, 0.5], [0.3, 0.3], 0.0, 0.0)],
         ),
         (
             "Radial minus Linear, both feather 0",
@@ -1426,21 +1403,71 @@ fn hard_edges_at_two_scales_are_measured_and_exceed_the_starting_bound() {
                 radial([0.5, 0.5], [0.35, 0.3], 0.0, 0.0),
                 subtract(linear([0.5, 0.5], 60.0, 0.0)),
             ],
-            0.65,
         ),
-    ] {
+    ];
+    let mut failures = Vec::new();
+    for (what, rows) in cases {
         let (largest, mean) = reduced_against_full(&rows, buffer);
         eprintln!(
-            "{what}: the mask at k = 4 against the mask at k = 1 reduced by 4 x 4: largest {largest:.4}, mean {mean:.5} (starting bounds 0.1 and 0.005{})",
-            if largest > 0.1 {
-                "; OVER the starting 0.1"
-            } else {
-                ""
-            }
+            "{what}: the mask at k = 4 against the mask at k = 1 reduced by 4 x 4: largest {largest:.4}, mean {mean:.5} (starting bounds 0.1 and 0.005)"
         );
-        assert!(largest <= bound, "{what}: largest {largest}");
-        assert!(mean <= 0.005, "{what}: mean {mean}");
+        if largest > 0.1 || mean > 0.005 {
+            failures.push(format!("{what}: largest {largest:.4}, mean {mean:.5}"));
+        }
     }
+    assert!(
+        failures.is_empty(),
+        "preview against export is over its starting bounds (largest 0.1, mean 0.005), not loosened: {failures:?}"
+    );
+}
+
+#[test]
+fn hard_edges_agree_at_two_scales_whatever_the_angle_and_the_place() {
+    // The same gate as above over many placements of a hard edge: a Linear at ten angles and three offsets (a
+    // 1200 x 800 photo has pixel phases that no one placement covers), and Radials of different shapes, a circle
+    // and a sliver among them (the ramp across an ellipse's outline is as wide at the end of its long axis as at
+    // the end of its short one).
+    let buffer = (1200usize, 800usize);
+    let (mut worst_linear, mut worst_radial) = (0.0f64, 0.0f64);
+    let mut worst_mean = 0.0f64;
+    let mut failures = Vec::new();
+    for angle in [0.0, 5.0, 10.0, 20.0, 30.0, 35.0, 45.0, 60.0, 80.0, 90.0] {
+        for c in [0.4137, 0.5, 0.5333] {
+            let (largest, mean) = reduced_against_full(&[linear([c, 0.5], angle, 0.0)], buffer);
+            worst_linear = worst_linear.max(largest);
+            worst_mean = worst_mean.max(mean);
+            if largest > 0.1 || mean > 0.005 {
+                failures.push(format!(
+                    "Linear at {angle} degrees through {c}: largest {largest:.4}, mean {mean:.5}"
+                ));
+            }
+        }
+    }
+    for (c, r, a) in [
+        ([0.45, 0.55], [0.25, 0.15], -40.0),
+        ([0.5, 0.5], [0.3, 0.2], 0.0),
+        ([0.37, 0.41], [0.1, 0.07], 25.0),
+        ([0.6, 0.5], [0.04, 0.03], 70.0),
+        ([0.5, 0.5], [0.35, 0.3], 12.0),
+        ([0.5, 0.5], [0.3, 0.3], 0.0),
+        ([0.5, 0.5], [0.45, 0.06], 33.0),
+    ] {
+        let (largest, mean) = reduced_against_full(&[radial(c, r, a, 0.0)], buffer);
+        worst_radial = worst_radial.max(largest);
+        worst_mean = worst_mean.max(mean);
+        if largest > 0.1 || mean > 0.005 {
+            failures.push(format!(
+                "Radial {r:?} at {a} degrees: largest {largest:.4}, mean {mean:.5}"
+            ));
+        }
+    }
+    eprintln!(
+        "hard edges, k = 4 against k = 1 reduced: Linear (30 placements) largest {worst_linear:.4}, Radial (7 placements) largest {worst_radial:.4}, worst mean {worst_mean:.5} (starting bounds 0.1 and 0.005)"
+    );
+    assert!(
+        failures.is_empty(),
+        "a hard edge previews differently from how it exports, over the starting bounds (not loosened): {failures:?}"
+    );
 }
 
 /// A flat picture with a bright dot at `(cx, cy)` of the oriented photo (fractions), sigma `s` of its long edge:

@@ -15,7 +15,7 @@
 //
 // The mask shapes are placed in the photo frame (docs/23 section 3.6): a source with six planes (`CU.sp.w`) carries each
 // pixel's position in the photo, written by the sampler (planes 4 and 5, oriented fractions in [0, 1]); `CU.photo` is the
-// photo's aspect and the size of one output pixel in units of its long edge. Without positions the shapes select nothing.
+// photo's aspect and the narrowest edge ramp (MIN_RAMP_PIXELS output pixels) in units of its long edge. Without positions the shapes select nothing.
 //
 // C7 is the highlight range (docs/02 C7: a gain on the luma's stops over grey above a knee, up to the
 // ALEXA clip; `c7_range`, its numbers in `CU.tone` and `CU.fl.z`, its expansion weighted by the achromatic gate of the
@@ -790,15 +790,17 @@ fn mask_select(kind: u32, p0: vec4<f32>, p1: vec4<f32>, v_in: vec3<f32>, l_in: f
         if (CU.sp.w == 0u) {
             return 0.0;
         }
-        // The pixel rotated by -angle in units of the radii, and the ramp q in units of d: the feather, and at least one
-        // output pixel on the narrower side, centred on the contour the feather alone has (d = 1 - f/2), so that a feather
-        // of a pixel or more runs from 1 - f to the outline and Feather 0 is one pixel centred on the outline.
+        // The pixel rotated by -angle in units of the radii, and the ramp q in units of d: the feather, and at least the
+        // narrowest ramp (CU.photo.z) measured across the outline, which is |grad d| d-units per unit of L (1/r for a circle,
+        // 1/rx to 1/ry round an ellipse). It is centred on the contour the feather alone has (d = 1 - f/2), so that a feather
+        // of a pixel or more runs from 1 - f to the outline and Feather 0 is centred on the outline.
         let x = (pos.x - p0.x) * CU.photo.x;
         let y = (pos.y - p0.y) * CU.photo.y;
         let u = (p0.w * x + p0.z * y) / p1.x;
         let w = (-p0.z * x + p0.w * y) / p1.y;
         let d = sqrt(u * u + w * w);
-        let q = max(p1.z, CU.photo.z / min(p1.x, p1.y));
+        let grad = clamp(sqrt((u / p1.x) * (u / p1.x) + (w / p1.y) * (w / p1.y)) / max(d, 1.0e-9), 1.0 / max(p1.x, p1.y), 1.0 / min(p1.x, p1.y));
+        let q = max(p1.z, CU.photo.z * grad);
         return 1.0 - smooth01((d - (1.0 - 0.5 * p1.z - 0.5 * q)) / q);
     }
     if (kind == MK_COLOR) {

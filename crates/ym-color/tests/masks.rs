@@ -17,8 +17,8 @@ use ym_color::gamut::LinearAwg4;
 use ym_color::grade::{E1, E2, Grade, GradeParams, grade_luma};
 use ym_color::logc::{LogC4, logc4_encode};
 use ym_color::mask::{
-    MaskKind, MaskOp, MaskRow, NodeMasks, OpKind, PhotoFrame, PhotoMap, PhotoSpot, PixelAt,
-    RANGE_RAMP_MIN, fold, smooth_step,
+    MIN_RAMP_PIXELS, MaskKind, MaskOp, MaskRow, NodeMasks, OpKind, PhotoFrame, PhotoMap, PhotoSpot,
+    PixelAt, RANGE_RAMP_MIN, fold, smooth_step,
 };
 use ym_color::plan::{MAIN_NODE, PictureSource, PlanGraph, PlanNode, Stop, compile};
 use ym_color::tone::ToneParams;
@@ -110,8 +110,14 @@ fn linear_ref(
     let t = angle_deg.to_radians();
     let n = (-t.sin(), t.cos());
     let s = p.0 * n.0 + p.1 * n.1;
-    let hw = (0.5 * feather).max(pixel_px / l);
-    1.0 - s_of((s + hw) / (2.0 * hw))
+    // The transition's width, centred on the line: the feather, and at least the narrowest ramp.
+    let width = feather.max(MIN_RAMP_PIXELS * pixel_px / l);
+    1.0 - s_of((s + 0.5 * width) / width)
+}
+
+/// `1 - S(t)`.
+fn s_of_complement(t: f64) -> f64 {
+    1.0 - s_of(t)
 }
 
 /// Section 4.2: the pixel rotated by `-angle`, `d` in units of the radii, the ramp `q`.
@@ -132,14 +138,18 @@ fn radial_ref(
         -p.0 * t.sin() + p.1 * t.cos(),
     );
     let d = ((u / r[0]).powi(2) + (v / r[1]).powi(2)).sqrt();
-    let q = feather.max((pixel_px / l) / r[0].min(r[1]));
-    if d >= 1.0 {
-        0.0
-    } else if d <= 1.0 - q {
-        1.0
-    } else {
-        1.0 - s_of((d - (1.0 - q)) / q)
-    }
+    // |grad d| per unit of L, from the partial derivatives of d(x, y) (the chain rule through the rotation),
+    // held to its bounds 1/rmax and 1/rmin: how many d-units lie across one unit of length at the pixel.
+    let (sn, cs) = (t.sin(), t.cos());
+    let dx = (u * cs / (r[0] * r[0]) - v * sn / (r[1] * r[1])) / d.max(1e-12);
+    let dy = (u * sn / (r[0] * r[0]) + v * cs / (r[1] * r[1])) / d.max(1e-12);
+    let grad = dx
+        .hypot(dy)
+        .clamp(1.0 / r[0].max(r[1]), 1.0 / r[0].min(r[1]));
+    // The ramp: the feather, and at least the narrowest ramp across the outline; centred on the contour the
+    // feather alone has, d = 1 - f/2.
+    let q = feather.max(MIN_RAMP_PIXELS * (pixel_px / l) * grad);
+    s_of_complement((d - (1.0 - 0.5 * feather - 0.5 * q)) / q)
 }
 
 // ---- shapes -------------------------------------------------------------------------------------
@@ -273,33 +283,52 @@ fn radial_has_its_named_values() {
 }
 
 #[test]
-fn an_edge_is_at_least_one_output_pixel_wide_at_feather_0() {
-    // docs/17 K8: no edge depends on a rounding. The ramp of a shape is its feather or one output pixel,
-    // whichever is wider, in the render's own pixels: the same mask at two scales has an edge of one
-    // pixel of each. (k is the reduction of the render: pixel = k photo pixels.)
+fn an_edge_is_a_ramp_across_it_of_the_minimum_width_centred_on_it_at_feather_0() {
+    // docs/17 K8: no edge depends on a rounding. At Feather 0 a shape's edge is a ramp of MIN_RAMP_PIXELS output
+    // pixels across it, centred on the edge, in the render's own pixels: the same mask at two scales has the
+    // ramp of each. (k is the reduction of the render: pixel = k photo pixels.)
+    const { assert!(MIN_RAMP_PIXELS >= 1.0) } // never narrower than one output pixel
     for k in [1.0, 2.0, 4.0] {
         let f = frame(6000.0, 4000.0, k);
-        let eps = k / 6000.0;
-        // Linear: the transition spans [-eps, +eps] around the line, 2 pixels, never less than one.
+        let ramp = MIN_RAMP_PIXELS * k / 6000.0;
+        // Linear: the transition spans [-ramp/2, +ramp/2] around the line, never less than one pixel.
         let row = linear([0.5, 0.5], 0.0, 0.0);
         let at = |dy_l: f64| m_at(vec![row], 0.5, 0.5 + dy_l * 6000.0 / 4000.0, f);
-        assert!(near(at(-eps), 1.0));
-        assert!(near(at(eps), 0.0));
+        assert!(near(at(-0.5 * ramp), 1.0));
+        assert!(near(at(0.5 * ramp), 0.0));
         assert!(near(at(0.0), 0.5));
-        let mid_in = at(-0.5 * eps);
-        let mid_out = at(0.5 * eps);
+        let mid_in = at(-0.25 * ramp);
+        let mid_out = at(0.25 * ramp);
         assert!(mid_in > 0.5 && mid_in < 1.0 && mid_out > 0.0 && mid_out < 0.5);
-        // A pixel centre half a pixel off the line is neither 0 nor 1: a smooth edge.
-        // Radial: the ramp is one pixel on the narrower side, inwards from the outline.
+        // Radial: the same ramp across the outline, centred on it, as wide in length at the ends of both
+        // axes (an ellipse of radii 0.2 and 0.1).
         let r = radial([0.5, 0.5], [0.2, 0.1], 0.0, 0.0);
         let on = |dx_l: f64, dy_l: f64| m_at(vec![r], 0.5 + dx_l, 0.5 + dy_l * 6000.0 / 4000.0, f);
-        // Along the narrow axis (radius 0.1): q = eps / 0.1 in units of d, i.e. eps of length.
-        assert!(near(on(0.0, 0.1), 0.0));
-        assert!(near(on(0.0, 0.1 - eps), 1.0));
-        let inside = on(0.0, 0.1 - 0.5 * eps);
-        assert!(near(inside, 0.5), "{inside}");
-        // Along the wide axis (radius 0.2) the same ramp is eps / 0.1 of d, so eps/2 wide in length.
-        assert!(on(0.2 - eps, 0.0) > 0.0 && on(0.2 - eps, 0.0) < 1.0);
+        for (outline, along_x) in [(0.1, false), (0.2, true)] {
+            let value = |off: f64| {
+                if along_x {
+                    on(outline + off, 0.0)
+                } else {
+                    on(0.0, outline + off)
+                }
+            };
+            assert!(near(value(-0.5 * ramp), 1.0), "k {k}, {outline}");
+            assert!(near(value(0.0), 0.5), "k {k}, {outline}: {}", value(0.0));
+            assert!(near(value(0.5 * ramp), 0.0), "k {k}, {outline}");
+            // Inside and outside the outline the mask is partly on and partly off: half in, half out.
+            assert!(value(-0.25 * ramp) > 0.5 && value(-0.25 * ramp) < 1.0);
+            assert!(value(0.25 * ramp) > 0.0 && value(0.25 * ramp) < 0.5);
+        }
+        // A feather of a pixel or more runs inwards from the outline as before: 1 at the inner ring, 0 at the outline.
+        let soft = radial([0.5, 0.5], [0.2, 0.1], 0.0, 0.5);
+        assert!(near(
+            m_at(vec![soft], 0.5, 0.5 + 0.1 * 6000.0 / 4000.0, f),
+            0.0
+        ));
+        assert!(near(
+            m_at(vec![soft], 0.5, 0.5 + 0.05 * 6000.0 / 4000.0, f),
+            1.0
+        ));
     }
 }
 

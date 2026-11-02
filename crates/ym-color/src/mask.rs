@@ -53,11 +53,14 @@ pub const MAX_MASK_ROWS: usize = 64;
 // The photo frame
 // ---------------------------------------------------------------------------------------------
 
-/// The narrowest a shape's edge is made, in output pixels, **in total and centred on the edge**: the coverage
-/// of a hard edge by one pixel (`docs/algorithms/06` section 4, the lead's decision of 2026-11-02). A shape's
-/// transition is `max(its feather, MIN_RAMP_PIXELS ε_px)` wide, centred on the contour the feather alone would
-/// have, so a hard edge previews as it exports.
-pub const MIN_RAMP_PIXELS: f64 = 1.0;
+/// The narrowest a shape's edge is made, in output pixels, **in total, measured across the edge and centred on
+/// it** (`docs/algorithms/06` section 4): a hard edge is a ramp of this width, so that it previews as it exports.
+/// A shape's transition is `max(its feather, MIN_RAMP_PIXELS ε_px)` wide, centred on the contour the feather
+/// alone would have. One pixel is the coverage of a hard edge by a pixel box, but the same mask at two scales
+/// then differs by 0.114 at most (a Linear) and 0.118 (a Radial) after the larger is reduced, over the
+/// starting 0.1; 1.5 pixels (a half-width of 0.75 ε_px) gives 0.056 for both
+/// (`crates/ym-gpu/tests/gpu_masks.rs`, `docs/23` section 15).
+pub const MIN_RAMP_PIXELS: f64 = 1.5;
 
 /// What a render knows about the photo frame: its aspect and the size of one output pixel in it.
 ///
@@ -416,11 +419,16 @@ impl MaskOp {
                 let u = (p[3] * x + p[2] * y) / p[4];
                 let w = (-p[2] * x + p[3] * y) / p[5];
                 let d = (u * u + w * w).sqrt();
-                // The ramp, in units of d: the feather, and at least one pixel on the narrower side. It is
-                // centred on the contour the feather alone has, d = 1 - f/2 (the feather runs inwards from the
-                // outline), so with a feather of a pixel or more it is [1 - f, 1] and at Feather 0 it is one
-                // pixel centred on the outline.
-                let q = p[6].max(spot.frame.ramp() / p[4].min(p[5]));
+                // The ramp, in units of d: the feather, and at least the narrowest ramp measured across the
+                // outline. `|grad d|` (per unit of L) is the number of d-units across it; it is 1/r for a
+                // circle and runs from 1/rx to 1/ry round an ellipse, so the ramp is as wide in length
+                // everywhere. It is centred on the contour the feather alone has, d = 1 - f/2 (the feather runs
+                // inwards from the outline): with a feather of a pixel or more it is [1 - f, 1], and at
+                // Feather 0 it is centred on the outline.
+                let (rmin, rmax) = (p[4].min(p[5]), p[4].max(p[5]));
+                let grad = (((u / p[4]).powi(2) + (w / p[5]).powi(2)).sqrt() / d.max(1e-12))
+                    .clamp(1.0 / rmax, 1.0 / rmin);
+                let q = p[6].max(spot.frame.ramp() * grad);
                 1.0 - smooth_step((d - (1.0 - 0.5 * p[6] - 0.5 * q)) / q)
             }
             OpKind::Color => {
