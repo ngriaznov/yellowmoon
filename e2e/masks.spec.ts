@@ -753,9 +753,9 @@ test.describe("the Brush tool", () => {
     // No patch for the sliders themselves: the row holds its two strokes and its fields at their defaults.
     expect(rows[0]).toMatchObject({ feather: 0, grow: 0, refine: 0, opacity: 1 });
     await expect(page.getByRole("textbox", { name: "Size value" })).toHaveValue("100");
-    // A small brush is within reach: Size 1 is a few pixels.
+    // A small brush is within reach: Size 1 is 0.001025 of the long edge, under a pixel across on this cell (the circle is drawn at least 2 px wide).
     await setValue(page, "Size", "1");
-    await expect.poll(async () => Number(await brushCursor(page).getAttribute("data-radius"))).toBeLessThan(0.0015 * cell.width);
+    await expect.poll(async () => Number(await brushCursor(page).getAttribute("data-radius"))).toBeLessThanOrEqual(1);
   });
 
   test("the raster sliders write the row: Refine edges, Feather, Grow and Opacity, with the view following Feather", async ({ page }) => {
@@ -773,7 +773,7 @@ test.describe("the Brush tool", () => {
     await expect.poll(async () => await picture(page)).toContain('fill-opacity="0.8"');
     await expect.poll(async () => await picture(page)).toContain("feGaussianBlur");
     // Reset puts the row back as a new Brush row: no strokes, the fields at their defaults.
-    await maskCard(page, "Brush").getByRole("button", { name: "Reset" }).click();
+    await maskCard(page, "Brush").getByRole("button", { name: "Reset", exact: true }).click();
     await expect.poll(async () => (await brushRows(page))[0]).toMatchObject({ refine: 0, feather: 0, grow: 0, opacity: 1, strokes: [] });
     await expect(rowButton(page, "Brush mask, Paint on the photo")).toBeVisible();
     expect(await strokesDrawn(page)).toEqual([]);
