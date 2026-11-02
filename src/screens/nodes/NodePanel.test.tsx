@@ -1,7 +1,7 @@
 /**
  * The panel of the selected node in the node view (`docs/23` §7.5, task N-09): the compact head (the number chip, the name, the quiet line,
  * Bypass, Reset and More), the tabs of each kind of node, the trim cards, Main's controls with their Auto against every other
- * corrector's without, the Mask tab until N-12, W in the node view, and the node `at` that the histogram, the scatter and Pick colour
+ * corrector's without, W in the node view, and the node `at` that the histogram, the scatter and Pick colour
  * name. The screen runs on the mock, as in a browser.
  */
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -507,34 +507,7 @@ describe("Auto belongs to Main", () => {
   });
 });
 
-describe("the Mask tab until N-12", () => {
-  it("lists the node's rows, read only, with the line 'Masks add up…' and Add mask off", async () => {
-    await setup();
-    await select(/^Node 3, Sky/);
-    await openNodeTab("Mask");
-    expect(cardTitles()).toEqual(["Masks", "View"]);
-    const rows = within(within(tools()).getByRole("list", { name: "Masks of this node" })).getAllByRole("listitem");
-    expect(rows.map((r) => r.getAttribute("aria-label"))).toEqual(["Object mask, 2 points", "Radial mask, Feather 45"]);
-    expect(rows[0]).toHaveTextContent("Off");
-    expect(rows[1]).toHaveTextContent("Subtract");
-    expect(within(tools()).getByText("Masks add up. Subtract cuts a mask out. Colour and brightness ranges keep only their part of the rest.")).toBeInTheDocument();
-    const add = within(tools()).getByRole("button", { name: "Add mask" });
-    expect(add).toHaveAttribute("aria-disabled", "true");
-    expect(add).toHaveAccessibleDescription("Masks come in the next step");
-    expect(within(tools()).queryByRole("button", { name: "Invert" })).toBeNull();
-    // Nothing is a control: a row is not a button.
-    expect(within(tools()).queryAllByRole("button", { name: /mask,/ })).toEqual([]);
-  });
-
-  it("has no rows for a node without masks, and still the line and the button", async () => {
-    await setup();
-    await select(/^Node 4, Warmth/);
-    await openNodeTab("Mask");
-    expect(within(tools()).queryByRole("list", { name: "Masks of this node" })).toBeNull();
-    expect(within(tools()).getByText(/^Masks add up\./)).toBeInTheDocument();
-    expect(within(tools()).getByRole("button", { name: "Add mask" })).toHaveAttribute("aria-disabled", "true");
-  });
-});
+// The Mask tab (the Masks card, its rows and the selected mask's card) has its own file: MaskTab.test.tsx.
 
 describe("the View card (N-11)", () => {
   const viewCard = (): HTMLElement => within(tools()).getByRole("region", { name: "View" });

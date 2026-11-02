@@ -445,6 +445,31 @@ impl Geometry {
         };
         Some(canvas_to_oriented(self.quarter_turns, [u, v]))
     }
+
+    /// The inverse of [`Geometry::final_to_oriented`]: a point of the photo as the camera oriented it (fractions of
+    /// the buffer of `buf` pixels, the photo frame of the masks, `docs/23` section 3.6) to the pixel of the final
+    /// image (at the buffer's resolution) where it is drawn: through the user's turn, the lens's bend and its
+    /// zoom, then back through the straightening and the crop. The point may lie outside the final image (the
+    /// photo is larger than the crop, or the turn and the angle move it out of it); `None` only for a point that
+    /// is not a number or a geometry that cannot be inverted.
+    #[must_use]
+    pub fn oriented_to_final(&self, buf: (usize, usize), point: [f64; 2]) -> Option<(f64, f64)> {
+        if !(point[0].is_finite() && point[1].is_finite()) {
+            return None;
+        }
+        let (cw, ch) = self.canvas_size(buf.0, buf.1);
+        let [u, v] = oriented_to_canvas(self.quarter_turns, point);
+        let (px, py) = (u * cw as f64, v * ch as f64);
+        // The lens's bend: a canvas position reads the photo at `F^-1(c / z)`, so the photo point is drawn at
+        // the canvas position `z F(p)`.
+        let (cx, cy) = match &self.warp {
+            Some(w) => w.photo_to_canvas((cw as f64, ch as f64), px, py),
+            None => (px, py),
+        };
+        let (crop, straighten) = self.chains(buf.0, buf.1);
+        let (x, y) = crop.then(&straighten).inverse()?.apply(cx, cy);
+        (x.is_finite() && y.is_finite()).then_some((x, y))
+    }
 }
 
 /// The user's orientation as clockwise quarter turns.
@@ -1229,6 +1254,124 @@ mod tests {
                 assert!((s[0] * w as f64 - bx).abs() < 1e-9 && (s[1] * h as f64 - by).abs() < 1e-9);
             }
         }
+    }
+
+    #[test]
+    fn oriented_to_final_is_the_inverse_of_final_to_oriented() {
+        // The page draws a handle where the core maps the photo's point and puts it back where it is dragged
+        // to: every orientation of the file, every quarter turn, a straightening, a crop and the lens's bend.
+        let (w, h) = (64usize, 48usize);
+        let bend = Some(SamplerWarp::new(
+            SHIPPED_BEND_X,
+            SHIPPED_BEND_Y,
+            -0.02,
+            0.01,
+            1.06,
+            3,
+        ));
+        let crops = [
+            NormRect::FULL,
+            NormRect {
+                x: 0.1,
+                y: 0.15,
+                width: 0.6,
+                height: 0.7,
+            },
+        ];
+        let mut worst: f64 = 0.0;
+        for warp in [None, bend] {
+            for crop in crops {
+                for exif in 1..=8u16 {
+                    for turns in 0..4u8 {
+                        for angle in [0.0, 3.5, -12.0, 30.0] {
+                            let g = Geometry {
+                                exif_orientation: exif,
+                                quarter_turns: turns,
+                                angle_deg: angle,
+                                crop,
+                                pixel_exact: false,
+                                warp,
+                            };
+                            let (ow, oh) = g.output_size(w, h);
+                            for (u, v) in [(0.5, 0.5), (0.13, 0.81), (0.9, 0.2), (0.02, 0.03)] {
+                                let (fx, fy) = (u * ow as f64, v * oh as f64);
+                                let Some(o) = g.final_to_oriented((w, h), fx, fy) else {
+                                    continue;
+                                };
+                                let (bx, by) = g.oriented_to_final((w, h), o).expect("invertible");
+                                // A bend's inverse is Newton's: the clamp of `final_to_oriented` to the
+                                // photo (a point just outside it) does not round-trip, so only the points
+                                // it did not clamp are compared.
+                                let unclamped =
+                                    warp.is_none() || o.iter().all(|c| (0.001..0.999).contains(c));
+                                if unclamped {
+                                    let d = (bx - fx).hypot(by - fy);
+                                    worst = worst.max(d);
+                                    assert!(
+                                        d < 1e-6,
+                                        "exif {exif} turns {turns} angle {angle} crop {crop:?} warp {}: ({fx}, {fy}) came back at ({bx}, {by})",
+                                        warp.is_some()
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("oriented_to_final: the largest round trip is {worst:.2e} final-image pixels");
+    }
+
+    #[test]
+    fn oriented_to_final_puts_the_photo_corners_where_the_turn_and_the_crop_put_them() {
+        // An upright photo, no bend: the photo's own corners are the canvas's, and the crop's origin is
+        // subtracted.
+        let g = Geometry {
+            exif_orientation: 1,
+            quarter_turns: 0,
+            angle_deg: 0.0,
+            crop: NormRect {
+                x: 0.25,
+                y: 0.5,
+                width: 0.5,
+                height: 0.5,
+            },
+            pixel_exact: false,
+            warp: None,
+        };
+        let (x, y) = g
+            .oriented_to_final((100, 80), [0.25, 0.5])
+            .expect("a point");
+        assert!(x.abs() < 1e-9 && y.abs() < 1e-9, "({x}, {y})");
+        let (x, y) = g
+            .oriented_to_final((100, 80), [0.75, 1.0])
+            .expect("a point");
+        assert!(
+            (x - 50.0).abs() < 1e-9 && (y - 40.0).abs() < 1e-9,
+            "({x}, {y})"
+        );
+        // Outside the crop is outside the final image, not refused.
+        let (x, y) = g.oriented_to_final((100, 80), [0.0, 0.0]).expect("a point");
+        assert!(
+            (x + 25.0).abs() < 1e-9 && (y + 40.0).abs() < 1e-9,
+            "({x}, {y})"
+        );
+        // A quarter turn clockwise puts the photo's top-left corner at the canvas's top-right.
+        let turned = Geometry {
+            quarter_turns: 1,
+            crop: NormRect::FULL,
+            ..g
+        };
+        let (x, y) = turned
+            .oriented_to_final((100, 80), [0.0, 0.0])
+            .expect("a point");
+        assert!((x - 80.0).abs() < 1e-9 && y.abs() < 1e-9, "({x}, {y})");
+        // Not a number is no point.
+        assert!(g.oriented_to_final((100, 80), [f64::NAN, 0.5]).is_none());
+        assert!(
+            g.oriented_to_final((100, 80), [0.5, f64::INFINITY])
+                .is_none()
+        );
     }
 
     /// A small fixed-seed generator for the fit's property tests.

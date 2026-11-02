@@ -157,7 +157,7 @@ a trapezoid: it rises over `[low − q, low]`, is 1 up to `high` and falls over 
 
 ### 4.5 The masks' sizes in the UI
 
-The sliders map to the stored numbers as: Feather and Softness 0 to 100 are 0 to 1; Refine edges and Opacity 0 to 100 % are 0 to 1; Grow −100 to 100 is −1 to 1; Width of a Colour range is `0.005 + 0.295·(x/100)²`; Low and High are the code values times 100. The mapping is in `src/screens/tools/maskScales.ts` and tested against the stored ranges.
+The sliders map to the stored numbers as: Feather and Softness 0 to 100 are 0 to 1; Refine edges and Opacity 0 to 100 % are 0 to 1; Grow −100 to 100 is −1 to 1; Width of a Colour range is `0.005 + 0.295·(x/100)²`; Low and High are the code values times 100; a Radial's **Width** and **Height** are the oval's full size as a percent of the long edge, 1 to 200, so the stored radius is half of it (`r = x / 200`), and a Linear's or a Radial's **Angle** is in degrees (N-12: the spec gave no rule for the Radial's sizes). The mapping is in `src/screens/tools/maskScales.ts` and tested against the stored ranges.
 
 ## 5. Raster masks
 

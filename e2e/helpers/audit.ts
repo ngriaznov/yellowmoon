@@ -41,6 +41,8 @@ export const NO_COUNTERPART: ReadonlyArray<readonly [string, string]> = [
   [".ym-filmstrip__nodes", "nodes glyph on a filmstrip thumbnail"],
   // The node's head (N-09): its chip is a small label (the number, or a lock) and its name and line are text; the three buttons are glasscn's.
   [".ym-nodehead__chip", "number chip or lock of the node's head (a small label)"],
+  // The handles of a Linear or a Radial on the photo (N-12): a focusable handle drawn over the cell, like the crop frame's; glasscn has none.
+  [".ym-mask-handles", "mask handles on the photo (the layer, its lines and its handles)"], [".ym-mask-handle", "mask handle (a focusable dot on the photo)"],
   [".ym-wizard__tile-picture img, .ym-look-tile__picture img", "look picture"],
 ];
 

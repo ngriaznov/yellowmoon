@@ -1416,28 +1416,68 @@ span.ym-filmstrip__thumb {
   min-width: 0;
 }
 
-/* The Mask tab until N-12: the node's mask rows, read only. */
+/* The Mask tab (docs/23 section 7.6): the Masks card's rows, the Pick colour row of a Colour range, the Add mask menu and the handles on the photo. */
+.ym-mask-card {
+  display: contents;
+}
 .ym-mask-rows {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   margin: 0 0 12px;
   padding: 0;
   list-style: none;
 }
 .ym-mask-row {
+  position: relative;
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 10px;
-  min-height: 44px;
+  gap: 8px;
+  min-height: 54px;
   box-sizing: border-box;
-  padding: 6px 12px;
+  padding: 6px 8px 6px 12px;
   border: 1px solid var(--rim);
-  border-radius: 12px;
+  border-radius: 14px;
   background: color-mix(in oklch, var(--ink) 6%, transparent);
 }
-.ym-mask-row[data-off] {
+/* The selected row has a 2 px ring in the mask accent. */
+.ym-mask-row[data-selected] {
+  border-color: transparent;
+  box-shadow: 0 0 0 2px var(--mask);
+}
+.ym-mask-row[data-off] .ym-mask-row__select {
   opacity: 0.55;
+}
+.ym-mask-row__select {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  text-align: start;
+  cursor: default;
+}
+.ym-mask-row__select:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+.ym-mask-row__icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--glass-label-secondary);
+}
+.ym-mask-row[data-selected] .ym-mask-row__icon {
+  color: var(--mask);
+}
+.ym-mask-row__icon svg {
+  width: 20px;
+  height: 20px;
 }
 .ym-mask-row__text {
   display: flex;
@@ -1450,14 +1490,166 @@ span.ym-filmstrip__thumb {
   font-weight: var(--fw-heavy);
 }
 .ym-mask-row__sub {
+  overflow: hidden;
   color: var(--glass-label-secondary);
   font-size: 12px;
   font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.ym-mask-row__mode {
+/* Invert and the eye: 32 px icon toggles with a hairline; Invert pressed is the mask accent itself. */
+.ym-mask-row__tool {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px var(--rim);
+}
+.ym-mask-row__tool[data-tool="invert"][aria-pressed="true"] {
+  background: var(--mask);
+  color: var(--mask-ink);
+  box-shadow: none;
+}
+.ym-mask-row__tool[data-tool="eye"][aria-pressed="true"] {
+  background: transparent;
+  color: var(--ink);
+}
+.ym-mask-row__tool[data-tool="eye"][aria-pressed="false"] {
   color: var(--glass-label-secondary);
-  font-size: 12px;
-  font-weight: var(--fw-bold);
+}
+.ym-mask-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px;
+}
+.ym-card__header > .ym-mask-pick {
+  margin: 0;
+}
+
+/* The Add mask menu opens to the left of the panel, over the photo and the graph: up to 520 px tall. */
+.ym-add-mask-menu {
+  min-width: 19rem;
+  max-height: min(520px, var(--radix-dropdown-menu-content-available-height, 520px));
+  overflow-y: auto;
+}
+/* Nine items and three group titles fit in the 520 px without scrolling, and the lines under the names stay readable over a bright photo (the menu is
+   over the photo, not over the dark panel as the other menus are). */
+.ym-add-mask-menu {
+  --glass-liquid-opacity: 82%;
+}
+.ym-add-mask-menu [data-slot="dropdown-menu-item"] {
+  padding-block: 5px;
+}
+.ym-add-mask-menu .ym-menu-line__text {
+  color: var(--glass-label-secondary);
+}
+.ym-menu-group {
+  color: var(--glass-label-tertiary);
+  font-size: 11px;
+  font-weight: var(--fw-heavy);
+  letter-spacing: var(--ls-tag);
+  text-transform: uppercase;
+}
+
+/* The handles of a Linear or a Radial on the photo (MaskHandles): drawn over the cell in the mask accent. The layer takes no pointer; the handles and
+   the centre line's wide hit stroke do. */
+.ym-mask-handles {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ym-mask-handles__svg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+.ym-mask-line polyline {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.ym-mask-line__under {
+  stroke: rgb(0 0 0 / 0.55);
+  stroke-width: 4px;
+}
+.ym-mask-line__ink {
+  stroke: var(--mask);
+  stroke-width: 2px;
+}
+.ym-mask-line[data-dashed] .ym-mask-line__ink {
+  stroke-dasharray: 7 6;
+}
+.ym-mask-line[data-line="centre"] .ym-mask-line__ink {
+  stroke: #fff;
+  stroke-width: 1.6px;
+}
+.ym-mask-line__hit {
+  stroke: transparent;
+  stroke-width: 22px;
+  pointer-events: stroke;
+  cursor: move;
+}
+.ym-mask-handle {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 2px solid var(--mask);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1.5px rgb(0 0 0 / 0.55);
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  touch-action: none;
+  cursor: default;
+}
+/* A hit area wider than the handle is drawn. */
+.ym-mask-handle::after {
+  content: "";
+  position: absolute;
+  inset: -9px;
+}
+.ym-mask-handle:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+.ym-mask-handle[data-kind="move"] {
+  width: 14px;
+  height: 14px;
+  background: var(--mask);
+  cursor: move;
+}
+.ym-mask-handle[data-kind="radius"] {
+  cursor: nesw-resize;
+}
+.ym-mask-handle[data-kind="feather"] {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  /* One transform, so that the diamond turns about its own middle, which is the point it stands on. */
+  transform: translate(-50%, -50%) rotate(45deg);
+  cursor: ns-resize;
+}
+.ym-mask-handle[data-kind="rotate"] {
+  width: 28px;
+  height: 28px;
+  background: var(--mask);
+  color: var(--mask-ink);
+  cursor: grab;
+}
+.ym-mask-handles[data-dragging="true"] .ym-mask-handle {
+  cursor: grabbing;
+}
+.ym-mask-handle[data-kind="rotate"] svg {
+  width: 14px;
+  height: 14px;
 }
 
 /* ---- Export panel ---------------------------------------------------------------------------------------------------------------- */

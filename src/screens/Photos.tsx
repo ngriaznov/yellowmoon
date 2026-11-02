@@ -11,6 +11,7 @@ import { perfCount } from "../perf";
 import { useAppState, useCurrentPhoto, useCurrentSettings, useStore } from "../state/context";
 import { lookLabeller, looksInDisplayOrder } from "../state/looks";
 import { folderSubline, isReady, photoName } from "../state/photo";
+import { MASK_KIND_NAME } from "../state/graphOps";
 import { hiddenByPhoto, hiddenFromSimpleView, INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../state/settingsGraph";
 import type { AppStore } from "../state/store";
 import { useShortcuts } from "../state/useShortcuts";
@@ -22,6 +23,7 @@ import { ExportCell, Header } from "./Header";
 import { Menu } from "./Menu";
 import { Divider } from "./nodes/Divider";
 import { GraphArea } from "./nodes/GraphArea";
+import { hasHandles } from "./nodes/maskGeometry";
 import { NodePanel } from "./nodes/NodePanel";
 import { nodesGlyphText, NodesNotice } from "./nodes/NodesNotice";
 import { useNodeGraph } from "./nodes/useNodeGraph";
@@ -239,7 +241,15 @@ export function Photos() {
   // leaving, so a click on a tab, ⌘1 to ⌘7, the Look tab's links, a click on another card and the panels all end it in the same render that
   // hides the tab: the layer is gone at once and takes no click. Leaving the screen (Start, the wizard) unmounts this one, and with it the mode.
   const colourShown = panel === "tools" && (view === "nodes" ? nodeTab : tab) === "color" && !cropping;
-  const picking: PickMode | null = colourShown && asked !== null && asked.node === onNode ? asked.mode : null;
+  // The Mask tab's pick (Pick colour of a Colour range, `docs/23` §7.6) belongs to the Mask tab of the node view and to the Colour range row
+  // that is selected: it ends with the tab, the node or the photo, as the others do, and with the row.
+  const maskRow = useAppState((s) => s.maskRow);
+  const maskRows = selectedItem?.kind === "corrector" ? selectedItem.masks.items : [];
+  const rowIndex = maskRow !== null && maskRow < maskRows.length ? maskRow : null;
+  const selectedMask = rowIndex === null ? undefined : maskRows[rowIndex];
+  const rangeShown = panel === "tools" && view === "nodes" && nodeTab === "mask" && onKind === "corrector" && !cropping && selectedMask?.kind === "color_range" && selectedMask.enabled;
+  const picking: PickMode | null =
+    asked !== null && asked.node === onNode && (asked.mode === "range" ? rangeShown : colourShown) ? asked.mode : null;
   /** Starts a pick on the selected node, or ends it (null). */
   const setPicking = useCallback((mode: PickMode | null, node?: NodeId): void => {
     setAsked(mode === null ? null : { mode, node: node ?? onNodeNow.current });
@@ -258,6 +268,8 @@ export function Photos() {
   // The selected pin of the colour warp is an index into one node's pins: another node starts with none.
   useEffect(() => {
     store.selectWarpPin(null);
+    // A mask row is an index into one node's rows: another node starts with none selected.
+    store.selectMaskRow(null);
   }, [store, onNode]);
   // Full screen (F): the photo alone. The Export panel and Crop need the panel, so neither shares the window with it.
   const fullScreen = useFullScreen(!cropping && panel !== "export");
@@ -431,6 +443,10 @@ export function Photos() {
   const setPickingColor = useCallback((on: boolean): void => {
     setAsked((was) => (on ? { mode: "color", node: onNodeNow.current } : was?.mode === "color" ? null : was));
   }, [onNodeNow]);
+  // Pick colour of a Colour range, from its card's toggle (or when the row is added). Exclusive with the other two; stays on for several clicks.
+  const setPickingRange = useCallback((on: boolean): void => {
+    setAsked((was) => (on ? { mode: "range", node: onNodeNow.current } : was?.mode === "range" ? null : was));
+  }, [onNodeNow]);
   // A click with Pick colour on reads the chroma at the input of the selected node's warp and puts the pin in that node (`docs/23` §7.5).
   const pickedNode = view === "nodes" && typeof onNode === "number" ? onNode : MAIN_ID;
   const onPicked = useCallback(
@@ -439,11 +455,27 @@ export function Photos() {
         void store.pickColor(point.x, point.y, pickedNode);
         return;
       }
+      if (picking === "range") {
+        // The chroma at the node, set as the centre of the selected Colour range row (`docs/23` §7.6).
+        if (rowIndex !== null && typeof onNode === "number") void store.pickRange(point.x, point.y, onNode, rowIndex);
+        return;
+      }
       setPicking(null);
       void store.pickWhite(point.x, point.y);
     },
-    [store, picking, pickedNode, setPicking],
+    [store, picking, pickedNode, setPicking, rowIndex, onNode],
   );
+  // The handles of the selected row of the selected node (`docs/23` §7.6 *On the photo*): in the node view, whatever tab the panel shows; none
+  // while Crop or Export shows (the graph is read only), none while a pick is on (PhotoView), none for a row that is off or a kind with no handles.
+  const maskHandles = useMemo(
+    () =>
+      nodesOn && !cropping && panel !== "export" && onKind === "corrector" && typeof onNode === "number" && rowIndex !== null && hasHandles(selectedMask)
+        ? { node: onNode, index: rowIndex, row: selectedMask }
+        : null,
+    [nodesOn, cropping, panel, onKind, onNode, rowIndex, selectedMask],
+  );
+  // The look chip says "MASK · LINEAR" while the selected node has a selected mask row (`docs/23` §7.1).
+  const maskChip = nodesOn && !cropping && panel !== "export" && selectedMask ? `MASK · ${(MASK_KIND_NAME[selectedMask.kind] ?? selectedMask.kind).toUpperCase()}` : undefined;
   const onRect = useCallback((rect: { x: number; y: number; width: number; height: number; scale: number }): void => {
     setCell((was) => (was && was.width === rect.width && was.height === rect.height && was.scale === rect.scale ? was : { width: rect.width, height: rect.height, scale: rect.scale }));
     // The aurora behind the glass panes must leave the photo's rectangle clear: with the native viewport the photo is a layer behind
@@ -587,7 +619,7 @@ export function Photos() {
     {
       // The number keys pick looks on the Look tab, which in the node view is the Output's.
       tab: panel === "tools" ? (view === "nodes" ? nodeTab : tab) : undefined,
-      mode: cropping ? "crop" : picking === "white" ? "pick-white" : picking === "color" ? "pick-color" : null,
+      mode: cropping ? "crop" : picking === "white" ? "pick-white" : picking === "color" || picking === "range" ? "pick-color" : null,
       nodeView: view === "nodes",
     },
     overlay === null,
@@ -617,6 +649,8 @@ export function Photos() {
         onPickWhite={setPickingWhite}
         pickingColor={picking === "color"}
         onPickColor={setPickingColor}
+        pickingRange={picking === "range"}
+        onPickRange={setPickingRange}
         foot={copyPaste}
         hidden={fullScreen.on}
       />
@@ -713,8 +747,8 @@ export function Photos() {
             </Button>
             <AddPhotosButton store={store} />
             <ZoomMenu store={store} photo={photo} rs={rs} cell={cell} />
-            {picking === "color" ? (
-              // Pick white's hint is a pill on the photo (`PickWhiteHint`); Pick colour's stays in the header.
+            {picking === "color" || picking === "range" ? (
+              // Pick white's hint is a pill on the photo (`PickWhiteHint`); Pick colour's stays in the header (the Colour range's too).
               <span className="ym-status" data-hint="true" role="status">
                 Click a colour in the photo.
               </span>
@@ -742,6 +776,8 @@ export function Photos() {
           onPicked={onPicked}
           crop={crop.session}
           onRect={onRect}
+          maskHandles={maskHandles}
+          maskChip={maskChip}
         />
       </div>
 

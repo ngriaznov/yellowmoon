@@ -37,10 +37,10 @@ use crate::wire::{
     AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, CliLinkResult,
     CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate, ExportJob, ExportJobId,
     HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress, LooksImportResult,
-    MaskView, NodeId, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample,
-    Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
-    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
-    WatchStatus, convert,
+    MapFrom, MaskKind, MaskView, NodeId, Num, OpenSummary, Orientation, PasteReport, PhotoId,
+    PhotoProgress, PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionChange,
+    SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput,
+    ViewportMode, ViewportRect, WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -885,6 +885,52 @@ impl AppApi {
             .sample_chroma_at(&src, at.map(|n| n.0), &state, (x, y), &CancelToken::new())
             .map_err(AppError::from)?;
         sample.map(|s| convert(&s)).transpose()
+    }
+
+    /// `viewport_map_points(points, from)` (`docs/23` sections 3.6 and 9): maps points between the photo frame
+    /// and the cell, for the handles and outlines the page draws over the photo (`Renderer::map_points`).
+    /// With `photo` the points are `[x, y]` in the photo frame and come back as CSS pixels from the cell's
+    /// corner (they may lie outside the cell); with `cell` they are CSS pixels and come back as photo-frame
+    /// fractions, `null` for a point on the paper. The answer has one entry per point, in order; a point that
+    /// is not a number, and every point while no photo is shown, is `null`.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] for a photo that cannot be read or prepared.
+    pub fn viewport_map_points(
+        &self,
+        points: &[[Num; 2]],
+        from: MapFrom,
+    ) -> Result<Vec<Option<[Num; 2]>>, AppError> {
+        let (photo, state) = self.viewport.snapshot_synced();
+        let Some(photo) = photo else {
+            return Ok(vec![None; points.len()]);
+        };
+        let src = PhotoSource::from_session(&self.core.session, photo).map_err(session_error)?;
+        let flat: Vec<[f64; 2]> = points.iter().map(|[x, y]| [x.0, y.0]).collect();
+        let from = match from {
+            MapFrom::Photo => ym_core::pipeline::MapFrom::Photo,
+            MapFrom::Cell => ym_core::pipeline::MapFrom::Cell,
+        };
+        let mapped = self
+            .core
+            .renderer
+            .map_points(&src, &state, from, &flat, &CancelToken::new())
+            .map_err(AppError::from)?;
+        Ok(mapped
+            .into_iter()
+            .map(|p| p.map(|[x, y]| [Num(x), Num(y)]))
+            .collect())
+    }
+
+    /// `mask_kinds()` (`docs/23` section 9): the kinds of mask this machine can make now, in the order of the
+    /// Add mask menu (`ym_core::settings::mask_kinds`). The menu lists exactly these.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] only if the shapes disagree (a bug).
+    pub fn mask_kinds(&self) -> Result<Vec<MaskKind>, AppError> {
+        convert(&ym_core::settings::mask_kinds())
     }
 
     // --- Lens ---------------------------------------------------------------------------------

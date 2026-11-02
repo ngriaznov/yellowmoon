@@ -2764,6 +2764,43 @@ pub struct MaskView {
     pub style: MaskStyle,
 }
 
+/// A kind of mask row (`docs/23` section 3.3), as the row's `kind` is written: what `mask_kinds` lists and the Add
+/// mask menu offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskKind {
+    /// SAM 2.1 from clicks or a box.
+    Object,
+    /// Apple Vision's foreground.
+    Subject,
+    /// Apple Vision's people.
+    People,
+    /// The blur map's out-of-focus area.
+    Background,
+    /// A gradient across the photo.
+    Linear,
+    /// An oval with a soft edge.
+    Radial,
+    /// Strokes painted on the photo.
+    Brush,
+    /// A chroma centre, width and softness.
+    ColorRange,
+    /// A low, a high and a softness on the tones.
+    BrightnessRange,
+}
+
+/// Which side of `viewport_map_points` the points are given in (`docs/23` section 9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum MapFrom {
+    /// Points `[x, y]` in the photo frame, answered as CSS pixels from the cell's corner (they may lie outside the
+    /// cell).
+    Photo,
+    /// Points in CSS pixels from the cell's corner, answered as photo-frame fractions, `null` for a point on the
+    /// paper.
+    Cell,
+}
+
 /// Display values under the pointer, 0 to 255 per channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct PixelSample {

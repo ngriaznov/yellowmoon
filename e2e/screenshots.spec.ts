@@ -4,7 +4,7 @@ import type { MockOptions } from "../src/api.mock";
 import type { GradePatch } from "../src/api/types";
 import { configureMock, lookTilesLoaded, openApp, openPhotos, showUpdateReady } from "./helpers/app";
 import { compareScreen } from "./helpers/compare";
-import { FOUR_NODES, GRADED_NODES, WARP_PINS } from "./helpers/states";
+import { FOUR_NODES, GRADED_NODES, ROWS_07B, WARP_PINS } from "./helpers/states";
 
 /** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
 const manual = (value: number) => ({ kind: "manual", value }) as const;
@@ -192,6 +192,62 @@ test.describe("Photos", () => {
     // Mask only: white where m is 1, black where it is 0, the paper around the picture as it is.
     await maskView(page, "Mask only");
     await compareScreen(page, "photos-nodes-mask-only");
+  });
+
+  /**
+   * The graded graph (Main with the mockup's grade, then Mountain, Sky and Warmth) on the Mask tab of node `select`, with `rows` in Mountain's masks when given
+   * (screen 07b's two rows) and `kinds` as the mock's `?mockMasks=` (every kind, for the menu of screen 08).
+   */
+  async function maskTab(page: Page, select: number, rows?: readonly object[], kinds?: string): Promise<void> {
+    await openApp(page, kinds ? { ...MOCKUP, mockMasks: kinds } : MOCKUP);
+    const mountain = { ...GRADED_NODES.nodes["2"], ...(rows ? { masks: { invert: false, items: rows } } : {}) };
+    await configureMock(page, {
+      initialSettings: { DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE }, ...GRADED_NODES.nodes, "2": mountain }, links: GRADED_NODES.links } } as never,
+    });
+    await openPhotos(page);
+    await showUpdateReady(page);
+    await expect(page.getByText("Neural · 42 ms · Display P3")).toBeVisible();
+    await page.getByRole("tab", { name: "Light", exact: true }).click();
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    await page.locator(`[data-node-card="${select}"]`).click();
+    await expect(page.locator(`[data-node-card="${select}"]`)).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Masks" })).toBeVisible();
+    await cardPicturesMade(page, 4);
+  }
+
+  test("The node view: Mountain's Mask tab with two rows, one Subtract and one inverted, the Object row selected (photos-nodes-mask-rows.png)", async ({ page }) => {
+    // docs/23 section 7.6, screens 07 and 07b of design/nodes: the Masks card with Add mask, Invert and Reset, the Object row (two points, Add) with the
+    // 2 px ring of the selected row, and the Radial row (Feather 45) that is Subtract and inverted, its Invert pressed in the mask accent; the line under them,
+    // and the View card. The chip says "MASK · OBJECT". An Object row has no card of its own yet (N-18).
+    await maskTab(page, 2, ROWS_07B);
+    await page.getByRole("button", { name: "Object mask, 2 points" }).click();
+    await expect(page.getByRole("button", { name: "Object mask, 2 points" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByText("MASK · OBJECT")).toBeVisible();
+    await compareScreen(page, "photos-nodes-mask-rows");
+  });
+
+  test("The node view: the Add mask menu open to the left of the panel, with every kind (photos-nodes-add-mask-menu.png)", async ({ page }) => {
+    // Screen 08: the menu is 520 px tall at most and opens to the left of the panel over the photo and the graph, in three groups (Find, Shapes, Keys) with a line
+    // under each name. The mock says this machine can make every kind (`?mockMasks=all`), as the mockup's does.
+    await maskTab(page, 2, ROWS_07B, "all");
+    await page.getByRole("button", { name: "Object mask, 2 points" }).click();
+    await page.getByRole("button", { name: "Add mask" }).click();
+    await expect(page.getByRole("menu", { name: "Add mask" })).toBeVisible();
+    await expect(page.getByRole("menuitem")).toHaveCount(9);
+    await dialogsSettled(page);
+    await compareScreen(page, "photos-nodes-add-mask-menu");
+  });
+
+  test("The node view: Sky's Linear mask, its card on the Mask tab and its handles on the photo (photos-nodes-mask-linear.png)", async ({ page }) => {
+    // Screen 09 of design/nodes on the Mask tab: the Linear row selected, its card (Angle, Feather, Opacity) under the Masks card, the solid centre line, the
+    // dashed start and end lines and the rotate handle over the photo, and the chip "MASK · LINEAR".
+    await maskTab(page, 3);
+    await page.getByRole("button", { name: /^Linear mask/ }).click();
+    await expect(page.getByRole("region", { name: "Linear" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Rotate the Linear mask/ })).toBeVisible();
+    await expect(page.getByText("MASK · LINEAR")).toBeVisible();
+    await compareScreen(page, "photos-nodes-mask-linear");
   });
 
   test("The node view: the Input selected, its Colour tab with the White balance card (photos-nodes-input-colour.png)", async ({ page }) => {

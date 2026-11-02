@@ -96,7 +96,7 @@ use super::graph::{
     TileImage,
 };
 use super::thumbs::{Tap, signal_source};
-use super::viewport::{MaskStyle, ViewportState};
+use super::viewport::{MapFrom, MaskStyle, ViewportState};
 use super::{FrameZoom, RenderError};
 use crate::settings::NodeId;
 
@@ -2956,6 +2956,55 @@ impl Renderer {
             (ay / plan.height as f64).clamp(0.0, 1.0),
         ];
         Ok(Some(sensor_to_oriented(geom.exif_orientation, area)))
+    }
+
+    /// Maps points between the photo frame and the cell (`viewport_map_points`, `docs/23` sections 3.6 and 9):
+    /// the handles and outlines the page draws over the photo, and the place a drag lands on.
+    ///
+    /// * [`MapFrom::Photo`]: each point `[x, y]` is in the photo frame (the photo as the camera oriented it,
+    ///   after the camera's own lens corrections, before the lens character's bend, the crop, the
+    ///   straightening and the turn); the answer is where it is drawn, in CSS pixels from the cell's corner,
+    ///   through the user's turn, the lens's bend and its zoom, the straightening, the crop and the view's zoom
+    ///   and pan. It may lie outside the cell, and is `None` only for a point that is not a number.
+    /// * [`MapFrom::Cell`]: each point is a CSS point of the cell; the answer is its place in the photo frame
+    ///   (the same chain the other way), `None` on the paper (outside the picture, or in the empty corner a
+    ///   straightening leaves).
+    ///
+    /// The place is the one the colour pass gives a pixel (`SamplerGrid::photo_at`): a Radial's centre is
+    /// drawn where this answers for it.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data, a lens that cannot be prepared or a cancelled job.
+    pub fn map_points(
+        &self,
+        src: &PhotoSource,
+        state: &ViewportState,
+        from: MapFrom,
+        points: &[[f64; 2]],
+        cancel: &CancelToken,
+    ) -> Result<Vec<Option<[f64; 2]>>, RenderError> {
+        let mut job = Job::new(self, src, cancel)?;
+        let plan = job.plan()?;
+        let buffer = (plan.out_w, plan.out_h);
+        let image = job.final_size()?;
+        let geom = job.geometry()?;
+        Ok(points
+            .iter()
+            .map(|&[x, y]| match from {
+                MapFrom::Photo => {
+                    let at = geom.oriented_to_final(buffer, [x, y])?;
+                    state.css_point_at(image, at).map(|(cx, cy)| [cx, cy])
+                }
+                MapFrom::Cell => {
+                    if !(x.is_finite() && y.is_finite()) {
+                        return None;
+                    }
+                    let at = state.final_point_at(image, (x, y))?;
+                    geom.final_to_oriented(buffer, at.0, at.1)
+                }
+            })
+            .collect())
     }
 
     /// Renders the photo at full resolution (`docs/01` "Export: full resolution"), tile by tile: the

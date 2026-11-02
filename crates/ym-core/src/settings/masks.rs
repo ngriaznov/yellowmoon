@@ -55,6 +55,93 @@ pub const MASK_KINDS: [&str; 9] = [
     "brightness_range",
 ];
 
+/// A kind of mask row (`docs/23` section 3.3), the typed twin of [`MASK_KINDS`]: what the Add mask
+/// menu offers and what [`mask_kinds`] lists. Written as the row's `kind` is (`color_range`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskKind {
+    /// SAM 2.1 from clicks or a box.
+    Object,
+    /// Apple Vision's foreground.
+    Subject,
+    /// Apple Vision's people.
+    People,
+    /// The blur map's out-of-focus area.
+    Background,
+    /// A gradient across the photo.
+    Linear,
+    /// An oval with a soft edge.
+    Radial,
+    /// Strokes painted on the photo.
+    Brush,
+    /// A chroma centre, width and softness.
+    ColorRange,
+    /// A low, a high and a softness on the tones.
+    BrightnessRange,
+}
+
+impl MaskKind {
+    /// Every kind in the order of the Add mask menu (Find, Shapes, Keys).
+    pub const ALL: [MaskKind; 9] = [
+        MaskKind::Object,
+        MaskKind::Subject,
+        MaskKind::People,
+        MaskKind::Background,
+        MaskKind::Linear,
+        MaskKind::Radial,
+        MaskKind::Brush,
+        MaskKind::ColorRange,
+        MaskKind::BrightnessRange,
+    ];
+
+    /// The kind's JSON name: the row's `kind`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            MaskKind::Object => "object",
+            MaskKind::Subject => "subject",
+            MaskKind::People => "people",
+            MaskKind::Background => "background",
+            MaskKind::Linear => "linear",
+            MaskKind::Radial => "radial",
+            MaskKind::Brush => "brush",
+            MaskKind::ColorRange => "color_range",
+            MaskKind::BrightnessRange => "brightness_range",
+        }
+    }
+
+    /// The kind of a row's shape.
+    #[must_use]
+    pub fn of(shape: &MaskShape) -> MaskKind {
+        match shape {
+            MaskShape::Object(_) => MaskKind::Object,
+            MaskShape::Subject(_) => MaskKind::Subject,
+            MaskShape::People(_) => MaskKind::People,
+            MaskShape::Background(_) => MaskKind::Background,
+            MaskShape::Linear(_) => MaskKind::Linear,
+            MaskShape::Radial(_) => MaskKind::Radial,
+            MaskShape::Brush(_) => MaskKind::Brush,
+            MaskShape::ColorRange(_) => MaskKind::ColorRange,
+            MaskShape::BrightnessRange(_) => MaskKind::BrightnessRange,
+        }
+    }
+}
+
+/// The kinds of mask this machine can make now, in the order of the Add mask menu (`docs/23` section 9,
+/// `mask_kinds`): what the menu lists, and what a photo may use without being refused. The shapes and the
+/// ranges that are built always are here; **the later tasks add their kind** when it can be made: Brush
+/// (N-14), Background (N-15), Object (N-18, where the SAM weights are present) and Subject and People
+/// (N-19, where the Vision probe said yes).
+#[must_use]
+pub fn mask_kinds() -> Vec<MaskKind> {
+    vec![
+        MaskKind::Linear,
+        MaskKind::Radial,
+        MaskKind::ColorRange,
+        MaskKind::BrightnessRange,
+    ]
+}
+
 /// An Object mask: SAM 2.1 from clicks or a box (`docs/23` section 4.4). With no point and no box it
 /// selects nothing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

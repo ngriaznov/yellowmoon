@@ -18,9 +18,9 @@ use crate::system;
 use crate::wire::{
     self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, CliLinkResult,
     CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate, ExportJob, ExportJobId,
-    HistogramData, LensInfo, Look, LookId, LookInput, LooksImportResult, MaskView, MenuState,
-    NodeId, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample, Preferences,
-    PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
+    HistogramData, LensInfo, Look, LookId, LookInput, LooksImportResult, MapFrom, MaskKind,
+    MaskView, MenuState, NodeId, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample,
+    Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
     SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
     WatchStatus,
 };
@@ -380,6 +380,28 @@ pub async fn sample_chroma(
     run(&state, move |api| api.sample_chroma(x.0, y.0, at)).await
 }
 
+/// `viewport_map_points(points, from)` (`docs/23` sections 3.6 and 9): maps points between the photo frame and the cell,
+/// for the handles and outlines the page draws over the photo. `from` is `photo` (points in the photo frame, answered as
+/// CSS pixels from the cell's corner, which may lie outside the cell) or `cell` (CSS pixels, answered as photo-frame
+/// fractions, `null` for a point on the paper). One answer per point, in order.
+#[tauri::command]
+#[specta::specta]
+pub async fn viewport_map_points(
+    state: State<'_, AppState>,
+    points: Vec<[Num; 2]>,
+    from: MapFrom,
+) -> Result<Vec<Option<[Num; 2]>>, AppError> {
+    run(&state, move |api| api.viewport_map_points(&points, from)).await
+}
+
+/// `mask_kinds()` (`docs/23` section 9): the kinds of mask this machine can make now. The Add mask menu lists exactly
+/// these.
+#[tauri::command]
+#[specta::specta]
+pub async fn mask_kinds(state: State<'_, AppState>) -> Result<Vec<MaskKind>, AppError> {
+    run(&state, |api| api.mask_kinds()).await
+}
+
 // --- Lens -------------------------------------------------------------------------------------
 
 /// `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
@@ -728,6 +750,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             set_before,
             sample_pixel,
             sample_chroma,
+            viewport_map_points,
+            mask_kinds,
             lens_list,
             looks_list,
             look_thumbnail,
@@ -808,6 +832,8 @@ mod tests {
                 paste_settings,
                 viewport_info,
                 viewport_set_rect,
+                viewport_map_points,
+                mask_kinds,
                 export_busy,
                 node_thumbnails,
                 looks_recognise,
@@ -893,6 +919,34 @@ mod tests {
         assert!(
             call(&window, "viewport_set_rect", json!({ "rect": { "x": 1 } })).is_err(),
             "a rectangle without a size is refused before the handler runs"
+        );
+        // The kinds of mask this machine makes, and points mapped between the photo and the cell: with no photo
+        // shown nothing has a place; the side is `photo` or `cell`.
+        assert_eq!(
+            call(&window, "mask_kinds", json!({})),
+            Ok(json!([
+                "linear",
+                "radial",
+                "color_range",
+                "brightness_range"
+            ]))
+        );
+        assert_eq!(
+            call(
+                &window,
+                "viewport_map_points",
+                json!({ "points": [[0.5, 0.5], [0.1, 0.2]], "from": "photo" })
+            ),
+            Ok(json!([null, null]))
+        );
+        assert!(
+            call(
+                &window,
+                "viewport_map_points",
+                json!({ "points": [[0.5, 0.5]], "from": "sideways" })
+            )
+            .is_err(),
+            "a side that is neither photo nor cell is refused before the handler runs"
         );
         assert_eq!(
             call(&window, "app_info", json!({})).expect("app_info")["version"].as_str(),

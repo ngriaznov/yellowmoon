@@ -66,7 +66,9 @@ pub use thumbs::{
     AdvisorPictures, ChromaScatter, HistogramData, NODE_THUMBNAIL_PX, NodeThumbnail,
     PhotoThumbnails, settings_ending_at,
 };
-pub use viewport::{MaskStyle, MaskView, ViewportInput, ViewportMode, ViewportRect, ViewportState};
+pub use viewport::{
+    MapFrom, MaskStyle, MaskView, ViewportInput, ViewportMode, ViewportRect, ViewportState,
+};
 
 /// Why a render failed. The text is for the person using the app: what went wrong and what to do.
 #[derive(Debug, Clone, thiserror::Error)]

@@ -351,6 +351,22 @@ describe("the shortcut table of docs/11", () => {
     expect(act(key("Delete", {}, item), { nodeView: true })).toBeNull();
     // Not while a mode (crop, Pick white) has its own use of the key.
     expect(act(key("Delete"), { nodeView: true, mode: "pick-white" })).toBeNull();
+    // The Masks card takes the keys itself (they remove the row that has the focus or the selected one), and a mask's handle does nothing with
+    // them: neither removes the node.
+    const card = document.createElement("div");
+    card.setAttribute("data-mask-card", "");
+    const inCard = document.createElement("button");
+    card.append(inCard);
+    expect(act(key("Delete", {}, inCard), { nodeView: true })).toBeNull();
+    expect(act(key("Backspace", {}, inCard), { nodeView: true })).toBeNull();
+    const handles = document.createElement("div");
+    handles.setAttribute("data-mask-handles", "");
+    const handle = document.createElement("button");
+    handles.append(handle);
+    expect(act(key("Delete", {}, handle), { nodeView: true })).toBeNull();
+    // The arrows nudge a handle: they switch no photo from it.
+    expect(act(key("ArrowRight", {}, handle), { nodeView: true })).toBeNull();
+    expect(act(key("ArrowLeft", {}, handle), { nodeView: true })).toBeNull();
     // Outside the photos' own strip, the photo-level keys are as before: P picks, and the arrows switch photos away from the graph.
     expect(act(key("ArrowRight"), { nodeView: true })).toBe("next-photo");
     expect(act(key("ArrowLeft"), { nodeView: true })).toBe("previous-photo");

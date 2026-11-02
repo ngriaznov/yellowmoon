@@ -58,7 +58,7 @@ function sources(): Array<{ file: string; text: string }> {
 }
 
 /** Boxes that scroll on their own: each must keep its scrolling to itself. */
-const SCROLLERS = [".ym-tools__scroll", ".ym-dialog__body", ".ym-menu__list", ".ym-wizard__main", ".ym-develop-list", ".ym-step-rail", ".ym-filmstrip__scroll"];
+const SCROLLERS = [".ym-tools__scroll", ".ym-dialog__body", ".ym-menu__list", ".ym-add-mask-menu", ".ym-wizard__main", ".ym-develop-list", ".ym-step-rail", ".ym-filmstrip__scroll"];
 
 describe("the page does not scroll or bounce as a whole", () => {
   it("locks the root, the body and #root and turns overscroll off", () => {

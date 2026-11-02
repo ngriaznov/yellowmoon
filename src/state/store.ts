@@ -47,6 +47,9 @@ import type {
   LookLibrary,
   MainAutoFlags,
   MainEstimates,
+  MapFrom,
+  MaskKind,
+  MasksPatch,
   MaskStyle,
   MaskView,
   MenuAction,
@@ -85,6 +88,7 @@ import type {
 } from "../api/types";
 import { filterArwPaths } from "../components/useWindowDrop";
 import { clampToDisc, movingPin, WARP_COORD_LIMIT, WARP_MAX_PINS } from "../components/warpMath";
+import { COLOR_RANGE_REACH } from "./maskRows";
 import { isTauri } from "../env";
 import { defaultExportOptions, defaultScope, sameOptions } from "../export/options";
 import { applyProgress, startRun } from "../export/run";
@@ -96,6 +100,7 @@ import { perfCount } from "../perf";
 import { isReady, mergeSession, photoName, releaseUrl, removedNotice, restoredNotice, withoutPhotos, withRestoredPhotos } from "./photo";
 import { RequestLimiter } from "./requestLimiter";
 import {
+  applyMasks,
   applyPatch,
   correctorsOf,
   foldPatches,
@@ -260,6 +265,14 @@ export interface AppState {
    * not to the settings (nothing about it is undone or copied); a new photo starts with none, and an index past the end counts as none.
    */
   warpPin: number | null;
+  /**
+   * The selected mask row of the node the node view is on (`docs/23` §7.6): an index into that node's `masks.items`, or null. It belongs to
+   * the window, like `warpPin`: nothing about it is undone or copied, another node or photo starts with none, and an index past the end
+   * counts as none. Its handles show on the photo, whatever tab the panel is on.
+   */
+  maskRow: number | null;
+  /** The kinds of mask this machine can make, once asked (`mask_kinds`, `ensureMaskKinds`): what the Add mask menu lists. */
+  maskKinds: readonly MaskKind[] | null;
   /** Undo and redo are available for the current photo. */
   canUndo: boolean;
   canRedo: boolean;
@@ -343,6 +356,8 @@ export function initialState(): AppState {
     middleReadout: null,
     chromaScatter: null,
     warpPin: null,
+    maskRow: null,
+    maskKinds: null,
     canUndo: false,
     canRedo: false,
     preferences: null,
@@ -373,7 +388,7 @@ const DIRECT_INPUT: ReadonlySet<string> = new Set(["pos", "light_source", "lens"
 /** The same for the Output: all of its fields. */
 const DIRECT_OUTPUT: ReadonlySet<string> = new Set(["pos", "look", "look_intensity", "output_sharpening"]);
 
-/** The same for Main's own fields (its grade is below; its masks wait for the core, a row patch is not a row). */
+/** The same for Main's own fields (its grade and its masks are below). */
 const DIRECT_MAIN: ReadonlySet<string> = new Set(["pos", "name", "bypass", "trim"]);
 
 /** The grade fields of Main whose resolved value is the stored value. */
@@ -402,11 +417,10 @@ function directFields(stored: object, resolved: object, patch: object, direct: R
 /**
  * The mirrored settings with a patch applied to the fields that need no resolving (`docs/23` section 3.7). A node patch is read node by
  * node: the Input's light preset, lens, range, switches, crop, turn and white pick; Main's brightness, white, colour warp, curve, name,
- * bypass, trim and masks; the Output's look, intensity and sharpening. Contrast, saturation, highlights, shadows, black and the shadows
+ * bypass, trim and masks (a row patch, the node's Invert and the list of rows: the Mask tab shows its edit at once); the Output's look, intensity and sharpening. Contrast, saturation, highlights, shadows, black and the shadows
  * and highlights wheels of Main are Auto or a value (`docs/19` section 5) and need no resolving either: Auto is the photo's Auto value,
  * which the mirror already has (`estimates`). What waits for the core's reply: the Input's exposure, white balance, sharpening and noise
- * reduction (their Auto resolves in the core), the masks of every other corrector, and a patch that adds or removes a node or gives
- * links. Another corrector's place, name, bypass, trim and grade are direct, as Main's are (the node view's cards and panel): it has no
+ * reduction (their Auto resolves in the core), and a patch that adds or removes a node or gives links. Another corrector's place, name, bypass, trim and grade are direct, as Main's are (the node view's cards and panel): it has no
  * Auto, so nothing in its grade waits for the core.
  */
 export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): ResolvedSettings {
@@ -428,7 +442,8 @@ export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): Resolve
       change(id, () => stored as OutputItem);
       values = { ...values, output: resolved as ResolvedOutput };
     } else if (id === MAIN_ID) {
-      const { stored, resolved } = directFields(mainOf(settings), values.main, node, DIRECT_MAIN);
+      const direct = directFields(mainOf(settings), values.main, node, DIRECT_MAIN);
+      const { stored, resolved } = withMasks(direct.stored as CorrectorItem, direct.resolved as ResolvedCorrector, node.masks);
       const grade = node.grade;
       const next = grade ? directGrade(stored as CorrectorItem, resolved as ResolvedCorrector, grade, rs.estimates.main, auto.main) : null;
       change(id, () => (next?.stored ?? stored) as CorrectorItem);
@@ -437,16 +452,27 @@ export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): Resolve
     } else if (typeof id === "number" && nodeOf(settings, id)?.kind === "corrector") {
       // Another corrector (the node view's cards and panel): the fields that need no resolving, so that a card dropped where it was
       // moved, a name typed, a bypass pressed and a slider of its panel show at once. Its grade is plain numbers, with no Auto to
-      // resolve (`docs/23` §3.2: Auto in a corrector other than Main is a manual 0), so it is direct too. Its masks, and a node added
-      // or removed, wait for the core's reply.
+      // resolve (`docs/23` §3.2: Auto in a corrector other than Main is a manual 0), so it is direct too, and so are its masks (a row
+      // patch is a partial of the row). A node added or removed waits for the core's reply.
       const have = values.nodes.find((n) => n.id === id);
-      const { stored, resolved } = directFields(nodeOf(settings, id) as CorrectorItem, have ?? {}, node, DIRECT_MAIN);
+      const direct = directFields(nodeOf(settings, id) as CorrectorItem, have ?? {}, node, DIRECT_MAIN);
+      const { stored, resolved } = withMasks(direct.stored as CorrectorItem, direct.resolved as ResolvedCorrector, node.masks);
       const next = node.grade && have ? directGrade(stored as CorrectorItem, resolved as ResolvedCorrector, withoutAuto(node.grade), NO_ESTIMATES, NO_FLAGS) : null;
       change(id, () => (next?.stored ?? stored) as CorrectorItem);
       if (have) values = { ...values, nodes: values.nodes.map((n) => (n.id === id ? ((next?.resolved ?? resolved) as ResolvedCorrector) : n)) };
     }
   }
   return settings === rs.settings && values === rs.values && auto === rs.auto ? rs : { ...rs, settings, values, auto };
+}
+
+/**
+ * A corrector's stored and resolved masks with a masks patch applied (the node's Invert, the list of rows, row patches): a row patch is a
+ * partial of the row's own fields, so the mirror shows it at once, as it shows a slider (the core's reply, held to the field's range,
+ * replaces it). Nothing changes without a masks part.
+ */
+function withMasks(stored: CorrectorItem, resolved: ResolvedCorrector, masks: MasksPatch | undefined): { stored: object; resolved: object } {
+  if (!masks) return { stored, resolved };
+  return { stored: { ...stored, masks: applyMasks(stored.masks, masks) }, resolved: { ...resolved, masks: applyMasks(resolved.masks, masks) } };
 }
 
 /** What Auto resolves to in a corrector other than Main: nothing, a manual 0 (`docs/23` §3.2). */
@@ -606,6 +632,8 @@ export class AppStore {
   private maskNode: number | null = null;
   /** The mask view the core was last told about, with the photo it was told on (a new photo starts without one in the core). */
   private maskSent: { photo: PhotoId | null; view: MaskView | null } | null = { photo: null, view: null };
+  /** `mask_kinds` has been asked for (or answered): the Add mask menu's list is read once. */
+  private maskKindsAsked = false;
   /**
    * Wheel, pinch and drag input for the photo, collected and sent once per animation frame (`queueViewportInput`). The zoom mirror
    * follows once per frame too, when a zoom is closed.
@@ -1236,6 +1264,7 @@ export class AppStore {
       middleReadout: null,
       chromaScatter: null,
       warpPin: null,
+      maskRow: null,
       zoom: { kind: "fit" },
       before: false,
       stats,
@@ -1469,6 +1498,7 @@ export class AppStore {
       middleReadout: null,
       chromaScatter: null,
       warpPin: null,
+      maskRow: null,
       zoom: { kind: "fit" },
       before: false,
       stats: this.state.stats && { ...this.state.stats, zoom_percent: null, fit_percent: null },
@@ -2108,6 +2138,63 @@ export class AppStore {
   /** Selects a pin of the colour warp (an index into the current photo's pins), or none. */
   selectWarpPin(index: number | null): void {
     if (index !== this.state.warpPin) this.set({ warpPin: index });
+  }
+
+  /**
+   * Pick colour of a Colour range row (Mask tab, `docs/23` §7.6): asks the core for the chroma under a click on the photo cell (CSS pixels
+   * from its corner, as Pick white) **at the node** (`sample_chroma`'s `at`) and sets the row's centre to it, held to the plane (at most 0.5
+   * from the middle). One undo step. A click on the paper around the photo changes nothing, and nor does a row that is no longer a Colour
+   * range (taken away, or moved, while the reading was on its way).
+   */
+  async pickRange(x: number, y: number, node: number, row: number): Promise<void> {
+    const id = this.currentId();
+    if (id === null) return;
+    if (this.viewportQueue.busy) await this.viewportQueue.flush();
+    await this.whenIdle(id);
+    let sample: ChromaSample | null;
+    try {
+      sample = await this.api.sampleChroma(x, y, node);
+    } catch (error) {
+      this.fail(error);
+      return;
+    }
+    if (!sample || this.currentId() !== id) return;
+    const item = this.state.settings[id] ? nodeOf(this.state.settings[id].settings, node) : undefined;
+    const target = item?.kind === "corrector" ? item.masks.items[row] : undefined;
+    if (target?.kind !== "color_range") return;
+    const center = clampToDisc([sample.a, sample.b], COLOR_RANGE_REACH);
+    await this.update(patchOf(node, { masks: { edit: { [String(row)]: { center } } } }), true);
+  }
+
+  /** Selects a row of the selected node's masks (an index into its `masks.items`), or none. */
+  selectMaskRow(index: number | null): void {
+    if (index !== this.state.maskRow) this.set({ maskRow: index });
+  }
+
+  /** Asks which kinds of mask this machine can make, once (`mask_kinds`): the Add mask menu lists exactly these. A failure leaves the menu without items. */
+  ensureMaskKinds(): void {
+    if (this.state.maskKinds !== null || this.maskKindsAsked) return;
+    this.maskKindsAsked = true;
+    void this.api.maskKinds().then(
+      (kinds) => this.set({ maskKinds: kinds }),
+      (error: unknown) => {
+        this.maskKindsAsked = false;
+        this.fail(error);
+      },
+    );
+  }
+
+  /**
+   * Maps points between the photo frame and the cell (`viewport_map_points`, `docs/23` §9): the handles and outlines the page draws over the
+   * photo. The page never converts: the core knows the straightening, the turn, the crop, the lens's bend and the view's zoom and pan. `null`
+   * when the core could not answer (the handles are then left as they were, with no error: the next frame asks again).
+   */
+  async mapPoints(points: Array<[number, number]>, from: MapFrom): Promise<Array<[number, number] | null> | null> {
+    try {
+      return await this.api.viewportMapPoints(points, from);
+    } catch {
+      return null;
+    }
   }
 
   // --- Settings -----------------------------------------------------------------------------

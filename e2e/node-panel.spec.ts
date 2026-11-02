@@ -193,7 +193,8 @@ test.describe("the tabs", () => {
     await panel(page).getByRole("tab", { name: "Mask" }).click();
     expect(await titles()).toEqual(["Masks", "View"]);
     await expect(panel(page).getByRole("list", { name: "Masks of this node" }).getByRole("listitem")).toHaveCount(1);
-    await expect(panel(page).getByRole("button", { name: "Add mask" })).toHaveAttribute("aria-disabled", "true");
+    // The Mask tab is built (N-12): Add mask is a menu button now.
+    await expect(panel(page).getByRole("button", { name: "Add mask" })).not.toHaveAttribute("aria-disabled", "true");
   });
 });
 

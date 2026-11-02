@@ -1207,6 +1207,16 @@ export interface ChromaScatter {
   points: number[];
 }
 
+/** A kind of mask row, as the row's `kind` is written (`docs/23` §3.3). */
+export type MaskKind = MaskItem["kind"];
+
+/**
+ * Which side of `viewport_map_points` the points are given in (`docs/23` §9): `"photo"` (points `[x, y]` in the photo frame, answered as CSS
+ * pixels from the cell's corner, which may lie outside the cell) or `"cell"` (CSS pixels, answered as photo-frame fractions, `null` for a
+ * point on the paper).
+ */
+export type MapFrom = "photo" | "cell";
+
 /** `sample_chroma(x, y)`: the chroma of the pixel under a point of the photo cell, at the warp's input (Pick colour). */
 export interface ChromaSample {
   a: number;

@@ -1408,6 +1408,114 @@ fn a_mask_view_belongs_to_its_photo() {
 }
 
 #[test]
+fn the_kinds_of_mask_this_machine_makes_are_the_cores_and_cross_by_the_same_word() {
+    use crate::wire::MaskKind;
+    let h = Harness::new();
+    let kinds = h.api.mask_kinds().expect("kinds");
+    assert_eq!(
+        kinds,
+        [
+            MaskKind::Linear,
+            MaskKind::Radial,
+            MaskKind::ColorRange,
+            MaskKind::BrightnessRange
+        ],
+        "the shapes and the ranges that are built; the later tasks add theirs"
+    );
+    assert_eq!(
+        serde_json::to_value(&kinds).expect("json"),
+        json!(["linear", "radial", "color_range", "brightness_range"])
+    );
+    // Every kind of the core is a kind of the wire, by the same word.
+    for core in ym_core::settings::MaskKind::ALL {
+        let wire: MaskKind = convert(&core).expect("a kind of the wire");
+        assert_same("mask kind", &core, &wire);
+    }
+}
+
+#[test]
+fn points_are_mapped_between_the_photo_and_the_cell_by_the_core() {
+    use crate::wire::MapFrom;
+    let h = Harness::new();
+    // No photo is shown: nothing has a place.
+    assert_eq!(
+        h.api
+            .viewport_map_points(&[[Num(0.5), Num(0.5)]], MapFrom::Photo)
+            .expect("no photo"),
+        vec![None]
+    );
+    h.open(1);
+    h.develop();
+    h.rect(300.0, 300.0);
+    h.frame_of_size(300, 300);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let (photo, state) = h.api.viewport().snapshot_synced();
+    assert!(photo.is_some());
+    // The photo's middle is the cell's middle, whatever the photo's size; the corners are the picture's.
+    let middle = h
+        .api
+        .viewport_map_points(&[[Num(0.5), Num(0.5)]], MapFrom::Photo)
+        .expect("mapped");
+    let [x, y] = middle[0].expect("a place");
+    assert!(
+        (x.0 - 150.0).abs() < 1e-6 && (y.0 - 150.0).abs() < 1e-6,
+        "{x:?} {y:?}"
+    );
+    // The same through the other direction, and through the state the viewport holds.
+    let back = h
+        .api
+        .viewport_map_points(
+            &[[x, y], [Num(150.0), Num(1.0)], [Num(f64::NAN), Num(4.0)]],
+            MapFrom::Cell,
+        )
+        .expect("mapped");
+    let [u, v] = back[0].expect("a place in the photo");
+    assert!((u.0 - 0.5).abs() < 1e-9 && (v.0 - 0.5).abs() < 1e-9);
+    // The cell is square and the photo 3:2: a point near the top is on the paper, a point that is not a number
+    // has no place, and the answers are in the order of the questions.
+    assert_eq!(back[1], None, "the paper");
+    assert_eq!(back[2], None, "not a number");
+    assert_eq!(back.len(), 3);
+    // It is the renderer's own answer, on the state the viewport holds.
+    let src =
+        PhotoSource::from_session(&h.api.core().session, photo.expect("a photo")).expect("source");
+    let direct = h
+        .api
+        .core()
+        .renderer
+        .map_points(
+            &src,
+            &state,
+            ym_core::pipeline::MapFrom::Photo,
+            &[[0.25, 0.75]],
+            &CancelToken::new(),
+        )
+        .expect("mapped");
+    let wire = h
+        .api
+        .viewport_map_points(&[[Num(0.25), Num(0.75)]], MapFrom::Photo)
+        .expect("mapped");
+    let [dx, dy] = direct[0].expect("a place");
+    let [wx, wy] = wire[0].expect("a place");
+    assert_eq!((dx, dy), (wx.0, wy.0));
+    // The wire's words are the core's.
+    assert_same(
+        "map_from",
+        &ym_core::pipeline::MapFrom::Photo,
+        &MapFrom::Photo,
+    );
+    assert_same(
+        "map_from",
+        &ym_core::pipeline::MapFrom::Cell,
+        &MapFrom::Cell,
+    );
+    assert_eq!(
+        serde_json::to_value(MapFrom::Photo).expect("json"),
+        json!("photo")
+    );
+}
+
+#[test]
 fn a_burst_of_input_is_coalesced_and_never_stalls_the_viewport() {
     let h = Harness::new();
     h.open(1);

@@ -107,6 +107,18 @@ export const commands = {
 	b: number,
 } | null>("sample_chroma", { x, y, at }),
 	/**
+	 *  `viewport_map_points(points, from)` (`docs/23` sections 3.6 and 9): maps points between the photo frame and the cell,
+	 *  for the handles and outlines the page draws over the photo. `from` is `photo` (points in the photo frame, answered as
+	 *  CSS pixels from the cell's corner, which may lie outside the cell) or `cell` (CSS pixels, answered as photo-frame
+	 *  fractions, `null` for a point on the paper). One answer per point, in order.
+	 */
+	viewportMapPoints: (points: ([number, number])[], from: MapFrom) => __TAURI_INVOKE<([number, number] | null)[]>("viewport_map_points", { points, from }),
+	/**
+	 *  `mask_kinds()` (`docs/23` section 9): the kinds of mask this machine can make now. The Add mask menu lists exactly
+	 *  these.
+	 */
+	maskKinds: () => __TAURI_INVOKE<MaskKind[]>("mask_kinds"),
+	/**
 	 *  `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
 	 *  starting amounts. Empty when the lens data could not be loaded.
 	 */
@@ -1401,6 +1413,19 @@ export type MainEstimates = {
 	balance_highlights: [number, number],
 };
 
+/**  Which side of `viewport_map_points` the points are given in (`docs/23` section 9). */
+export type MapFrom = 
+/**
+ *  Points `[x, y]` in the photo frame, answered as CSS pixels from the cell's corner (they may lie outside the
+ *  cell).
+ */
+"photo" | 
+/**
+ *  Points in CSS pixels from the cell's corner, answered as photo-frame fractions, `null` for a point on the
+ *  paper.
+ */
+"cell";
+
 /**
  *  One row of a node's masks: `kind` and the fields every row has (`mode`, `invert`, `enabled`,
  *  `opacity`), then the kind's own (`docs/23` section 3.3).
@@ -1562,6 +1587,30 @@ low: number;
 high: number; 
 /**  The softness, 0 to 1. */
 softness: number };
+
+/**
+ *  A kind of mask row (`docs/23` section 3.3), as the row's `kind` is written: what `mask_kinds` lists and the Add
+ *  mask menu offers.
+ */
+export type MaskKind = 
+/**  SAM 2.1 from clicks or a box. */
+"object" | 
+/**  Apple Vision's foreground. */
+"subject" | 
+/**  Apple Vision's people. */
+"people" | 
+/**  The blur map's out-of-focus area. */
+"background" | 
+/**  A gradient across the photo. */
+"linear" | 
+/**  An oval with a soft edge. */
+"radial" | 
+/**  Strokes painted on the photo. */
+"brush" | 
+/**  A chroma centre, width and softness. */
+"color_range" | 
+/**  A low, a high and a softness on the tones. */
+"brightness_range";
 
 /**  Add or subtract. */
 export type MaskMode = 

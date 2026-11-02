@@ -40,6 +40,8 @@ import type {
   Look,
   LookInput,
   LooksImportResult,
+  MapFrom,
+  MaskKind,
   MaskView,
   MenuState,
   NodeId,
@@ -173,6 +175,17 @@ export interface Api {
    * the input of (left out: Main's), as for `histogram`.
    */
   sampleChroma(x: number, y: number, at?: NodeId): Promise<ChromaSample | null>;
+  /**
+   * `viewport_map_points` (`docs/23` §3.6, §9): maps points between the photo frame and the cell, for the handles and outlines the page draws over
+   * the photo. `from` is `"photo"` (points `[x, y]` in the photo frame, answered as CSS pixels from the cell's corner, which may lie outside the
+   * cell) or `"cell"` (CSS pixels, answered as photo-frame fractions, `null` for a point on the paper). One answer per point, in order. The page
+   * never converts: the straightening, the turn, the crop, the lens's bend and the view's zoom and pan are the core's.
+   */
+  viewportMapPoints(points: Array<[number, number]>, from: MapFrom): Promise<Array<[number, number] | null>>;
+  /**
+   * `mask_kinds` (`docs/23` §9): the kinds of mask this machine can make now, in the order of the Add mask menu. The menu lists exactly these.
+   */
+  maskKinds(): Promise<MaskKind[]>;
 
   // --- Lens ----------------------------------------------------------------
 
@@ -358,6 +371,8 @@ export const tauriApi: Api = {
   setBefore: (before) => unit(commands.setBefore(before)),
   samplePixel: (x, y) => commands.samplePixel(x, y),
   sampleChroma: (x, y, at) => commands.sampleChroma(x, y, at ?? null),
+  viewportMapPoints: (points, from) => commands.viewportMapPoints(points, from),
+  maskKinds: () => commands.maskKinds(),
 
   lensList: () => commands.lensList(),
   looksList: () => commands.looksList(),

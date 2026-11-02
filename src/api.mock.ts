@@ -82,6 +82,8 @@ import type {
   LookLibrary,
   LooksImportResult,
   MainEstimates,
+  MapFrom,
+  MaskKind,
   MaskView,
   MenuState,
   OpenKind,
@@ -474,6 +476,12 @@ export interface MockOptions {
    * milliseconds.
    */
   cpu?: boolean;
+  /**
+   * The kinds of mask the mock says this machine can make (`?mockMasks=`, `docs/23` §9, answered by `mask_kinds`). The default is the kinds
+   * that are built (Linear, Radial, Colour range and Brightness range), so the interface never adds a row that has no card yet; `all` is every
+   * kind, `noai` leaves out Object, Subject, People and Background, `nomac` leaves out Subject and People, and a comma list names the kinds.
+   */
+  maskKinds?: readonly MaskKind[];
 }
 
 /** What the viewport commands have recorded, for tests. */
@@ -909,6 +917,31 @@ function withoutRetired(stored: Preferences): Preferences {
   return rest;
 }
 
+/** Every kind of mask, in the order of the Add mask menu. */
+export const ALL_MASK_KINDS: readonly MaskKind[] = ["object", "subject", "people", "background", "linear", "radial", "brush", "color_range", "brightness_range"];
+/** The kinds the core can make today (`mask_kinds`): the shapes and ranges that are built. The later tasks add theirs. */
+export const BUILT_MASK_KINDS: readonly MaskKind[] = ["linear", "radial", "color_range", "brightness_range"];
+
+/** The kinds a `?mockMasks=` value names: `all`, `noai`, `nomac`, `built`, or a comma list of kinds; null for anything else. */
+export function parseMockMasks(value: string | null): readonly MaskKind[] | null {
+  if (value === null) return null;
+  const without = (...left: MaskKind[]): MaskKind[] => ALL_MASK_KINDS.filter((k) => !left.includes(k));
+  switch (value.trim()) {
+    case "all":
+      return ALL_MASK_KINDS;
+    case "noai":
+      return without("object", "subject", "people", "background");
+    case "nomac":
+      return without("subject", "people");
+    case "built":
+      return BUILT_MASK_KINDS;
+    default: {
+      const named = value.split(",").map((k) => k.trim());
+      return named.length > 0 && named.every((k): k is MaskKind => (ALL_MASK_KINDS as readonly string[]).includes(k)) ? ALL_MASK_KINDS.filter((k) => named.includes(k)) : null;
+    }
+  }
+}
+
 const DEFAULT_OPTIONS: Required<MockOptions> = {
   speed: 1,
   skipped: {},
@@ -937,6 +970,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   os: "macos",
   viewport: null,
   cpu: false,
+  maskKinds: BUILT_MASK_KINDS,
 };
 
 /** Fills in defaults, ignoring `undefined` values and a speed that isn't a positive number. */
@@ -963,7 +997,8 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
  * for its answer, has it, or failed; `MockAppleAuto`), `mockProviders=apple,claude,agy:signed_out` (the providers of the computer and their
  * states, `none` for no provider; `docs/22` section 12.8), `mockAutoProvider=claude` (the saved choice), `mockConsent=claude,agy` (the programs
  * agreed to), `mockOs=windows` and `mockCpu=1` (frames render on the CPU and take 600 ms divided by
- * `mockSpeed`, with `viewport_busy` around them: the photo cell says "Rendering on the CPU"; `MockOptions.cpu`).
+ * `mockSpeed`, with `viewport_busy` around them: the photo cell says "Rendering on the CPU"; `MockOptions.cpu`) and `mockMasks=all|noai|nomac|built`
+ * or a list of kinds (the kinds of mask `mask_kinds` says this machine can make; `MockOptions.maskKinds`).
  */
 export function optionsFromLocation(search: string | undefined = typeof location === "undefined" ? undefined : location.search): MockOptions {
   if (search === undefined) return {};
@@ -1032,6 +1067,8 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (consent) out.consent = consent;
   const os = params.get("mockOs");
   if (os === "macos" || os === "windows" || os === "linux") out.os = os;
+  const masks = parseMockMasks(params.get("mockMasks"));
+  if (masks) out.maskKinds = masks;
   return out;
 }
 
@@ -1543,8 +1580,39 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   }
 
   /**
+   * Where a point of the photo frame (`docs/23` §3.6: the photo as the camera oriented it, before the turn, the straightening and the crop) is
+   * drawn in the cell, as a share of the cell across and down; it may be outside the picture, and the cell. The inverse of `photoPointAt`
+   * (the mock's picture is the photo turned and cut to its crop, fitted in the cell; it does not zoom or straighten).
+   */
+  function photoFrameInCell(rec: PhotoRecord, x: number, y: number, cell: { width: number; height: number }): [number, number] {
+    const { orientation, crop } = inputOf(rec.settings);
+    const crossed = crop ? crop.rect.width / crop.rect.height : 1;
+    const aspect = imageAspectOf(rec.summary.width_px, rec.summary.height_px, orientation) * crossed;
+    const picture = fitInCell(cell.width / cell.height, aspect);
+    // The point of the turned photo: a quarter turn clockwise takes (x, y) to (1 − y, x), so undo it for the way there.
+    let cx = x;
+    let cy = y;
+    switch (((orientation % 360) + 360) % 360) {
+      case 90:
+        [cx, cy] = [1 - y, x];
+        break;
+      case 180:
+        [cx, cy] = [1 - x, 1 - y];
+        break;
+      case 270:
+        [cx, cy] = [y, 1 - x];
+        break;
+      default:
+    }
+    const u = crop ? (cx - crop.rect.x) / crop.rect.width : cx;
+    const v = crop ? (cy - crop.rect.y) / crop.rect.height : cy;
+    return [picture.x + u * picture.width, picture.y + v * picture.height];
+  }
+
+  /**
    * The mask view over the picture, as the core would draw it (`docs/23` §5.8): for the corrector the page named, if the photo has it, and
-   * never in the Before view. The picture's rectangle is the one the frame fits the photo into.
+   * never in the Before view. The picture's rectangle is the one the frame fits the photo into; the shapes are in the photo frame, so they go
+   * through the picture's turn and crop (an affine map from the photo's own pixels, three of its points as the page's mapping gives them).
    */
   function maskLayer(rec: PhotoRecord, width: number, height: number): string {
     const view = viewport.maskView;
@@ -1555,7 +1623,14 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const crossed = crop ? crop.rect.width / crop.rect.height : 1;
     const aspect = imageAspectOf(rec.summary.width_px, rec.summary.height_px, orientation) * crossed;
     const fit = fitInCell(width / height, aspect);
-    return maskViewSvg(view.style, node.masks, { x: fit.x * width, y: fit.y * height, width: fit.width * width, height: fit.height * height });
+    const at = (x: number, y: number): [number, number] => {
+      const [u, v] = photoFrameInCell(rec, x, y, { width, height });
+      return [u * width, v * height];
+    };
+    const [o, ex, ey] = [at(0, 0), at(1, 0), at(0, 1)];
+    const [w, h] = [rec.summary.width_px, rec.summary.height_px];
+    const frame = { width: w, height: h, matrix: [(ex[0] - o[0]) / w, (ex[1] - o[1]) / w, (ey[0] - o[0]) / h, (ey[1] - o[1]) / h, o[0], o[1]] as [number, number, number, number, number, number] };
+    return maskViewSvg(view.style, node.masks, { x: fit.x * width, y: fit.y * height, width: fit.width * width, height: fit.height * height }, frame);
   }
 
   /** The picture of the cell the fallback viewport would send: the developed scene letterboxed on paper, as many pixels as the cell has. */
@@ -2710,6 +2785,20 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const [a, b] = hexChroma(scene[layerAt(scene, clamp(point[0], 0, 1), clamp(point[1], 0, 1))]);
         return { a, b };
       }),
+
+    viewportMapPoints: (points, from: MapFrom) =>
+      run("viewportMapPoints", (): Array<[number, number] | null> => {
+        const rec = photos[current];
+        if (!rec) return points.map(() => null);
+        const rect = cellRect();
+        return points.map(([x, y]) => {
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+          if (from === "cell") return photoPointAt(rec, x, y);
+          const [u, v] = photoFrameInCell(rec, x, y, rect);
+          return [u * rect.width, v * rect.height];
+        });
+      }),
+    maskKinds: () => run("maskKinds", (): MaskKind[] => [...options.maskKinds]),
 
     lensList: () => run("lensList", () => (options.lensesMissing ? [] : MOCK_LENSES.map((lens) => ({ ...lens })))),
     looksList: () => run("looksList", () => looks),

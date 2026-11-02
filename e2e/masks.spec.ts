@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { configureMock, openApp, openPhotos, recordCalls } from "./helpers/app";
+import { configureMock, openApp, openPhotos, recordCalls, setValue } from "./helpers/app";
 import { GRADED_NODES } from "./helpers/states";
 
 // Show mask (docs/23 §5.8, §7.6 View card, §7.7 M; task N-11), in a real browser on the mock API: the toolbar's toggle and M, the View
@@ -148,7 +148,8 @@ test.describe("the View card", () => {
   test("is one Tab stop (the chosen segment), and the arrows choose a segment", async ({ page }) => {
     await nodeView(page);
     const group = page.getByRole("radiogroup", { name: "Show mask" });
-    await page.getByRole("button", { name: "Add mask" }).focus();
+    // The last stop of the Masks card (Main's one row: its eye) is the one before the View card.
+    await page.getByRole("button", { name: "Show this mask" }).focus();
     await page.keyboard.press("Tab");
     await expect(group.getByRole("radio", { name: "Overlay" })).toBeFocused();
     // One stop: the next Tab leaves the group.
@@ -174,5 +175,439 @@ test.describe("what the mock's picture shows", () => {
     await expect.poll(() => picture(page)).not.toContain("data-mask-view");
     await page.getByRole("button", { name: "Before", exact: true }).click();
     await expect.poll(() => picture(page)).toContain('data-mask-view="mask_only"');
+  });
+});
+
+
+// ---- The Mask tab (docs/23 §7.6, task N-12) ----------------------------------------------------------------------------------------------------
+
+/** What the page has set on a node's masks, read from the mock (the very one the app runs on). */
+type Row = Record<string, unknown> & { kind: string; mode: string; invert: boolean; enabled: boolean; opacity: number };
+const masksOf = (page: Page, node: number): Promise<{ invert: boolean; items: Row[] } | null> =>
+  page.evaluate(async (id) => {
+    const { mockApi } = window.__yellowmoon!;
+    const state = await mockApi.sessionState();
+    const rs = await mockApi.getSettings(state.photos[state.current_index!]!.id);
+    const item = rs.settings.nodes.items.find((n) => n.id === id);
+    return item && "masks" in item ? (item.masks as { invert: boolean; items: Row[] }) : null;
+  }, node);
+const rowsOf = async (page: Page, node: number): Promise<Row[]> => (await masksOf(page, node))?.items ?? [];
+
+const rowList = (page: Page) => page.getByRole("list", { name: "Masks of this node" });
+const rowButton = (page: Page, name: RegExp | string) => rowList(page).getByRole("button", { name });
+const handle = (page: Page, name: RegExp | string) => page.getByRole("button", { name });
+const layer = (page: Page) => page.locator("[data-mask-handles]");
+const maskCard = (page: Page, name: string) => page.getByRole("region", { name, exact: true });
+
+/** The mockup's photo with a graph of four nodes; Warmth (4), which has no mask, selected on its Mask tab. */
+async function warmth(page: Page, options: Record<string, string | number> = {}, extra: Record<string, unknown> = {}): Promise<void> {
+  await openApp(page, { ...MOCKUP, ...options });
+  await configureMock(page, { initialSettings: { DSC04204: { nodes: { ...GRADED_NODES.nodes, ...extra }, links: GRADED_NODES.links } } as never });
+  await openPhotos(page);
+  await page.getByRole("tab", { name: "Light", exact: true }).click();
+  await page.getByRole("button", { name: "Nodes", exact: true }).click();
+  await expect(card(page, 4)).toBeVisible();
+  await card(page, 4).click();
+  await expect(card(page, 4)).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("tab", { name: "Mask", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Masks" })).toBeVisible();
+}
+
+async function addMask(page: Page, name: string): Promise<void> {
+  await page.getByRole("button", { name: "Add mask" }).click();
+  await page.getByRole("menuitem", { name: new RegExp(`^${name}`) }).click();
+}
+
+/** The photo cell's box in the page: where a handle's pointer position is a share of the photo. */
+async function cellBox(page: Page): Promise<{ x: number; y: number; width: number; height: number }> {
+  return (await page.locator("[data-viewport]").boundingBox())!;
+}
+
+/** A drag of a handle by `dx`, `dy` CSS pixels, as a hand does it: down on the handle, a few moves, up. */
+async function dragHandle(page: Page, name: RegExp | string, dx: number, dy: number): Promise<void> {
+  const box = (await handle(page, name).boundingBox())!;
+  const [x, y] = [box.x + box.width / 2, box.y + box.height / 2];
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  for (const k of [0.25, 0.5, 0.75, 1]) await page.mouse.move(x + dx * k, y + dy * k);
+  await page.mouse.up();
+}
+
+/** The first `translate(x y)` of the mock's mask picture (a Radial's centre in the photo's own pixels), or null. */
+async function radialAt(page: Page): Promise<[number, number] | null> {
+  const found = /translate\(([-\d.]+) ([-\d.]+)\)/.exec(await picture(page));
+  return found ? [Number(found[1]), Number(found[2])] : null;
+}
+
+/** The first Linear gradient of the mock's picture: the distance in the photo's own pixels between its two ends (the feather's width). */
+async function gradientLength(page: Page): Promise<number> {
+  const g = /x1="([-\d.]+)" y1="([-\d.]+)" x2="([-\d.]+)" y2="([-\d.]+)"/.exec(await picture(page));
+  return g ? Math.hypot(Number(g[3]) - Number(g[1]), Number(g[4]) - Number(g[2])) : 0;
+}
+
+/** Lets go of the focus so that a key press is the window's (a text box leaves ⌘Z to itself). */
+const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+
+test.describe("adding a mask", () => {
+  test("a Linear and a Radial: each is selected as it is added, with its card and its handles, and the chip says what is shown", async ({ page }) => {
+    await warmth(page);
+    await expect(page.getByRole("region", { name: "Masks" }).getByText("Masks add up. Subtract cuts a mask out.", { exact: false })).toBeVisible();
+    await addMask(page, "Linear");
+    await expect(rowList(page).getByRole("listitem")).toHaveCount(1);
+    await expect(rowButton(page, "Linear mask, Feather 20")).toHaveAttribute("aria-pressed", "true");
+    await expect(maskCard(page, "Linear")).toBeVisible();
+    await expect(layer(page)).toBeVisible();
+    for (const name of [/^Move the Linear mask/, /^Linear mask feather, start line/, /^Linear mask feather, end line/, /^Rotate the Linear mask/]) await expect(handle(page, name)).toBeVisible();
+    await expect(page.getByText("MASK · LINEAR")).toBeVisible();
+    await addMask(page, "Radial");
+    await expect(rowList(page).getByRole("listitem")).toHaveCount(2);
+    await expect(rowButton(page, "Radial mask, Feather 30")).toHaveAttribute("aria-pressed", "true");
+    await expect(maskCard(page, "Radial")).toBeVisible();
+    await expect(maskCard(page, "Linear")).toHaveCount(0);
+    for (const name of [/^Move the Radial mask/, /^Radial mask width/, /^Radial mask height/, /^Rotate the Radial mask/]) await expect(handle(page, name)).toBeVisible();
+    await expect(handle(page, /^Move the Linear mask/)).toHaveCount(0);
+    await expect(page.getByText("MASK · RADIAL")).toBeVisible();
+    // The core has them, with their defaults, in the order they were added.
+    expect((await rowsOf(page, 4)).map((r) => r.kind)).toEqual(["linear", "radial"]);
+    expect((await rowsOf(page, 4))[0]).toMatchObject({ mode: "add", invert: false, enabled: true, opacity: 1, center: [0.5, 0.5], angle_deg: 0, feather: 0.2 });
+    // The card's glyph in the node's card: a mask.
+    await expect(card(page, 4).locator('[data-glyph="mask"], svg').first()).toBeVisible();
+  });
+
+  test("the Add mask menu lists the kinds the core says it can make, and no others", async ({ page }) => {
+    await warmth(page);
+    await page.getByRole("button", { name: "Add mask" }).click();
+    const menu = page.getByRole("menu", { name: "Add mask" });
+    await expect(menu.getByRole("menuitem")).toHaveText([/^Linear/, /^Radial/, /^Colour range/, /^Brightness range/]);
+    await expect(menu.getByText("A gradient across the photo")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+  });
+
+  test("with every kind made, it has the groups of the spec; Subject and People are hidden, not greyed, where a Mac cannot make them", async ({ page }) => {
+    await warmth(page, { mockMasks: "all" });
+    await page.getByRole("button", { name: "Add mask" }).click();
+    const menu = page.getByRole("menu", { name: "Add mask" });
+    await expect(menu.getByRole("menuitem")).toHaveCount(9);
+    for (const title of ["Find", "Shapes", "Keys"]) await expect(menu.getByText(title, { exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await page.reload();
+    await warmth(page, { mockMasks: "nomac" });
+    await page.getByRole("button", { name: "Add mask" }).click();
+    const noMac = page.getByRole("menu", { name: "Add mask" });
+    await expect(noMac.getByRole("menuitem")).toHaveCount(7);
+    await expect(noMac.getByRole("menuitem", { name: /^(Subject|People)/ })).toHaveCount(0);
+    await expect(noMac.getByRole("menuitem", { name: /^Object/ })).toBeVisible();
+  });
+
+  test("opens to the left of the panel, over the photo, and is at most 520 px tall", async ({ page }) => {
+    await warmth(page, { mockMasks: "all" });
+    await page.getByRole("button", { name: "Add mask" }).click();
+    const menu = (await page.getByRole("menu", { name: "Add mask" }).boundingBox())!;
+    // A menu hides the page behind it from the accessibility tree, so the panel is found by its class.
+    const panel = (await page.locator("aside.ym-tools").boundingBox())!;
+    expect(menu.x + menu.width).toBeLessThanOrEqual(panel.x + 1);
+    expect(menu.height).toBeLessThanOrEqual(520);
+    expect(menu.height).toBeGreaterThan(400);
+  });
+});
+
+test.describe("the handles on the photo", () => {
+  test("a drag of the Radial's centre handle moves the mask in Mask only, and is one undo step", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Radial");
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await expect.poll(() => radialAt(page)).not.toBeNull();
+    const before = (await radialAt(page))!;
+    const cell = await cellBox(page);
+    await dragHandle(page, /^Move the Radial mask/, 100, 60);
+    await expect.poll(async () => ((await rowsOf(page, 4))[0]?.center as number[])[0]).toBeCloseTo(0.5 + 100 / cell.width, 2);
+    const row = (await rowsOf(page, 4))[0]!;
+    expect((row.center as number[])[1]).toBeCloseTo(0.5 + 60 / cell.height, 2);
+    // The mask view follows: the mock's Radial is drawn at the new place.
+    await expect.poll(async () => (await radialAt(page))![0]).toBeGreaterThan(before[0]);
+    expect((await radialAt(page))![1]).toBeGreaterThan(before[1]);
+    // The handle is where the mask is: the core's mapping of the new centre.
+    const moved = (await handle(page, /^Move the Radial mask/).boundingBox())!;
+    expect(moved.x + moved.width / 2).toBeCloseTo(cell.x + (row.center as number[])[0]! * cell.width, 0);
+    // One step takes it all back.
+    await blur(page);
+    await page.keyboard.press("Meta+z");
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.center).toEqual([0.5, 0.5]);
+    await expect.poll(async () => (await radialAt(page))![0]).toBeCloseTo(before[0], 0);
+  });
+
+  test("a drag of a Radial's radius handle sets the radius, and its rotate handle the angle", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Radial");
+    const cell = await cellBox(page);
+    // Radius 0.25 of the long edge (the cell's width); the handle is 60 px further out.
+    await dragHandle(page, /^Radial mask width/, 60, 0);
+    await expect.poll(async () => ((await rowsOf(page, 4))[0]?.radii as number[])[0]).toBeCloseTo(0.25 + 60 / cell.width, 2);
+    expect(((await rowsOf(page, 4))[0]!.radii as number[])[1]).toBeCloseTo(0.18, 3);
+    // The rotate handle is above the outline: a drag to the right of the centre turns the oval a quarter turn clockwise.
+    const rotate = (await handle(page, /^Rotate the Radial mask/).boundingBox())!;
+    const centre = (await handle(page, /^Move the Radial mask/).boundingBox())!;
+    const [cx, cy] = [centre.x + centre.width / 2, centre.y + centre.height / 2];
+    await page.mouse.move(rotate.x + rotate.width / 2, rotate.y + rotate.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(cx + 40, cy - 30);
+    await page.mouse.move(cx + 150, cy);
+    await page.mouse.up();
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.angle_deg).toBeCloseTo(90, 0);
+  });
+
+  test("a drag of a Linear's feather grip changes the width of the gradient in Mask only, and its rotate handle turns the line", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Linear");
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await expect.poll(() => gradientLength(page)).toBeGreaterThan(0);
+    const before = await gradientLength(page);
+    const cell = await cellBox(page);
+    // The end line is 0.1 of the long edge below the centre line; 60 px further down makes the feather 0.2 + 2 · 60 / 666.
+    await dragHandle(page, /^Linear mask feather, end line/, 0, 60);
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.feather).toBeCloseTo(0.2 + (2 * 60) / cell.width, 2);
+    await expect.poll(() => gradientLength(page)).toBeGreaterThan(before * 1.5);
+    // Straight down from the centre is 90°.
+    const rotate = (await handle(page, /^Rotate the Linear mask/).boundingBox())!;
+    const centre = (await handle(page, /^Move the Linear mask/).boundingBox())!;
+    const [cx, cy] = [centre.x + centre.width / 2, centre.y + centre.height / 2];
+    await page.mouse.move(rotate.x + rotate.width / 2, rotate.y + rotate.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(cx + 80, cy + 60);
+    await page.mouse.move(cx, cy + 120);
+    await page.mouse.up();
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.angle_deg).toBeCloseTo(90, 0);
+  });
+
+  test("they are the selected row's, on whatever tab the panel shows, and hide with the eye, Crop and a pick", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Radial");
+    await page.getByRole("tab", { name: "Colour", exact: true }).click();
+    await expect(layer(page)).toBeVisible();
+    await expect(page.getByText("MASK · RADIAL")).toBeVisible();
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    await page.getByRole("button", { name: "Show this mask" }).click();
+    await expect(layer(page)).toHaveCount(0);
+    await page.getByRole("button", { name: "Show this mask" }).click();
+    await expect(layer(page)).toBeVisible();
+    await page.getByRole("button", { name: "Crop", exact: true }).click();
+    await expect(layer(page)).toHaveCount(0);
+    await page.getByRole("button", { name: "Crop", exact: true }).click();
+    await expect(layer(page)).toBeVisible();
+    // Another node has none of its own selected: no handles.
+    await card(page, 3).click();
+    await expect(layer(page)).toHaveCount(0);
+    await expect(page.getByText(/^MASK · /)).toHaveCount(0);
+  });
+
+  test("a handle is a Tab stop, and the arrows nudge it 1 px, Shift 10 px, each as one undo step", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Linear");
+    const cell = await cellBox(page);
+    const position = ((await page.getByRole("group", { name: "Photos" }).textContent()) ?? "").trim();
+    await handle(page, /^Move the Linear mask/).focus();
+    await expect(handle(page, /^Move the Linear mask/)).toBeFocused();
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(async () => ((await rowsOf(page, 4))[0]?.center as number[])[0]).toBeCloseTo(0.5 + 1 / cell.width, 3);
+    await page.keyboard.press("Shift+ArrowDown");
+    await expect.poll(async () => ((await rowsOf(page, 4))[0]?.center as number[])[1]).toBeCloseTo(0.5 + 10 / cell.height, 3);
+    // The arrows moved the handle, not the photo or the selection.
+    await expect(page.getByRole("group", { name: "Photos" })).toContainText(position);
+    await page.keyboard.press("Meta+z");
+    await expect.poll(async () => ((await rowsOf(page, 4))[0]?.center as number[])[1]).toBeCloseTo(0.5, 3);
+    expect(((await rowsOf(page, 4))[0]!.center as number[])[0]).toBeCloseTo(0.5 + 1 / cell.width, 3);
+  });
+});
+
+test.describe("the rows", () => {
+  test("Subtract, a row's Invert, the node's Invert and the eye each change the mask view, and each is a toggle of the row", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Radial");
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await expect.poll(() => picture(page)).toContain("radialGradient");
+    const row = rowList(page).getByRole("listitem").first();
+    // Subtract: black over the photo, the lone Subtract starts from the whole photo.
+    await row.getByRole("radio", { name: "Subtract" }).click();
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.mode).toBe("subtract");
+    await expect.poll(() => picture(page)).toMatch(/<mask [^>]*><g [^>]*><rect [^>]*fill="#fff"/);
+    await row.getByRole("radio", { name: "Add" }).click();
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.mode).toBe("add");
+    // The row's own Invert.
+    const invertRow = row.getByRole("button", { name: "Invert this mask" });
+    await invertRow.click();
+    await expect(invertRow).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.invert).toBe(true);
+    await invertRow.click();
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.invert).toBe(false);
+    // The node's Invert: the whole picture inverted.
+    expect(await picture(page)).not.toContain("mvinvert)");
+    await page.getByRole("region", { name: "Masks" }).getByRole("button", { name: "Invert", exact: true }).click();
+    await expect.poll(async () => (await masksOf(page, 4))?.invert).toBe(true);
+    await expect.poll(() => picture(page)).toContain('filter="url(#mvinvert)"');
+    await page.getByRole("region", { name: "Masks" }).getByRole("button", { name: "Invert", exact: true }).click();
+    await expect.poll(async () => (await masksOf(page, 4))?.invert).toBe(false);
+    // The eye: a row that is off counts as absent, so the node's mask is the whole photo.
+    await row.getByRole("button", { name: "Show this mask" }).click();
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.enabled).toBe(false);
+    await expect.poll(() => picture(page)).not.toContain("radialGradient");
+    await row.getByRole("button", { name: "Show this mask" }).click();
+    await expect.poll(() => picture(page)).toContain("radialGradient");
+  });
+
+  test("Delete takes out the selected row, and the context menu moves a row and deletes it", async ({ page }) => {
+    await warmth(page);
+    const position = ((await page.getByRole("group", { name: "Photos" }).textContent()) ?? "").trim();
+    await addMask(page, "Linear");
+    await addMask(page, "Radial");
+    await expect(rowList(page).getByRole("listitem")).toHaveCount(2);
+    // A right click: Move up puts the Radial first.
+    await rowButton(page, /^Radial mask/).click({ button: "right" });
+    const menu = page.getByRole("menu", { name: "Radial mask actions" });
+    await expect(menu.getByRole("menuitem")).toHaveText(["Move up", "Move down", "Delete mask"]);
+    await menu.getByRole("menuitem", { name: "Move up" }).click();
+    await expect.poll(async () => (await rowsOf(page, 4)).map((r) => r.kind)).toEqual(["radial", "linear"]);
+    await expect(rowList(page).getByRole("listitem").first()).toContainText("Radial");
+    // The selection followed the Radial: its card is still the one shown.
+    await expect(maskCard(page, "Radial")).toBeVisible();
+    // Delete, with the focus on the selected row's button.
+    await rowButton(page, /^Radial mask/).click();
+    await page.keyboard.press("Delete");
+    await expect.poll(async () => (await rowsOf(page, 4)).map((r) => r.kind)).toEqual(["linear"]);
+    // The node is still there, and so is the photo.
+    await expect(card(page, 4)).toBeVisible();
+    await expect(page.getByRole("group", { name: "Photos" })).toContainText(position);
+    // The menu's Delete mask takes out the last one.
+    await rowButton(page, /^Linear mask/).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Delete mask" }).click();
+    await expect.poll(async () => (await rowsOf(page, 4)).length).toBe(0);
+    await expect(rowList(page)).toHaveCount(0);
+    await expect(layer(page)).toHaveCount(0);
+  });
+
+  test("Reset removes every row and un-inverts; undo and redo bring them back, one step each", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Linear");
+    await addMask(page, "Radial");
+    await page.getByRole("region", { name: "Masks" }).getByRole("button", { name: "Invert", exact: true }).click();
+    await expect.poll(async () => (await masksOf(page, 4))?.invert).toBe(true);
+    await page.getByRole("region", { name: "Masks" }).getByRole("button", { name: "Reset" }).click();
+    await expect.poll(async () => (await masksOf(page, 4))?.items.length).toBe(0);
+    expect((await masksOf(page, 4))?.invert).toBe(false);
+    await blur(page);
+    await page.keyboard.press("Meta+z");
+    await expect.poll(async () => (await masksOf(page, 4))?.items.length).toBe(2);
+    expect((await masksOf(page, 4))?.invert).toBe(true);
+    await page.keyboard.press("Meta+Shift+z");
+    await expect.poll(async () => (await masksOf(page, 4))?.items.length).toBe(0);
+    // Back through the invert and both adds.
+    for (const [rows, invert] of [[2, true], [2, false], [1, false], [0, false]] as const) {
+      await page.keyboard.press("Meta+z");
+      await expect.poll(async () => (await masksOf(page, 4))?.items.length).toBe(rows);
+      expect((await masksOf(page, 4))?.invert).toBe(invert);
+    }
+  });
+});
+
+test.describe("the ranges", () => {
+  test("a Colour range starts with Pick colour on: a click on the photo asks for the chroma at the node and sets the centre; Esc ends the pick", async ({ page }) => {
+    await warmth(page);
+    const asked = await recordCalls(page, "sampleChroma");
+    await addMask(page, "Colour range");
+    const toggle = page.getByRole("region", { name: "Colour range" }).getByRole("button", { name: "Pick colour" });
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    const pickLayer = page.getByRole("application", { name: /^Pick colour for the Colour range mask/ });
+    await expect(pickLayer).toBeVisible();
+    // The handles of a range: none, and the pick is on.
+    await expect(layer(page)).toHaveCount(0);
+    await expect(page.getByText("Click a colour in the photo.")).toBeVisible();
+    const cell = await cellBox(page);
+    await page.mouse.click(cell.x + cell.width * 0.5, cell.y + cell.height * 0.1);
+    await expect.poll(async () => (await asked()).length).toBe(1);
+    expect((await asked())[0]?.args[2]).toBe(4);
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.center).not.toEqual([0, 0]);
+    const center = (await rowsOf(page, 4))[0]!.center as number[];
+    expect(Math.hypot(center[0]!, center[1]!)).toBeLessThanOrEqual(0.5 + 1e-9);
+    // It stays on for another click, and Esc ends it.
+    await expect(pickLayer).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(pickLayer).toHaveCount(0);
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    // The toggle starts it again, and it ends with the tab.
+    await toggle.click();
+    await expect(pickLayer).toBeVisible();
+    await page.getByRole("tab", { name: "Colour", exact: true }).click();
+    await expect(pickLayer).toHaveCount(0);
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  });
+
+  test("the Colour range's sliders: Width on the square scale, Softness and Opacity", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Colour range");
+    await page.keyboard.press("Escape");
+    await setValue(page, "Width", "40");
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.width).toBeCloseTo(0.005 + 0.295 * 0.16, 4);
+    await setValue(page, "Softness", "80");
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.softness).toBeCloseTo(0.8, 3);
+    await setValue(page, "Opacity", "60");
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.opacity).toBeCloseTo(0.6, 3);
+    await expect(rowButton(page, /^Colour range mask, Width 40/)).toBeVisible();
+  });
+
+  test("a Brightness range: Low and High as the code values times 100, and Low stays at or under High", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Brightness range");
+    await expect(rowButton(page, "Brightness range mask, 35 to 100")).toBeVisible();
+    await setValue(page, "High", "70");
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.high).toBeCloseTo(0.7, 3);
+    await setValue(page, "Low", "20");
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.low).toBeCloseTo(0.2, 3);
+    await expect(rowButton(page, "Brightness range mask, 20 to 70")).toBeVisible();
+    await setValue(page, "Low", "90");
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.low).toBeCloseTo(0.7, 3);
+    await blur(page);
+    await page.keyboard.press("Meta+z");
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.low).toBeCloseTo(0.2, 3);
+  });
+
+  test("a slider's drag is one undo step", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Linear");
+    const slider = page.getByRole("slider", { name: "Feather" });
+    const box = (await slider.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 60, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.move(box.x + 100, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.feather).not.toBe(0.2);
+    await blur(page);
+    await page.keyboard.press("Meta+z");
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.feather).toBe(0.2);
+    await expect.poll(async () => (await rowsOf(page, 4)).length).toBe(1);
+  });
+});
+
+test.describe("Copy settings and Paste", () => {
+  test("the rows come to the other photo as the spec says: an Object row arrives empty and reads 'Click the object on this photo'", async ({ page }) => {
+    const object = { kind: "object", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, points: [[0.41, 0.33, true], [0.52, 0.31, true]], box: null };
+    const linear = { kind: "linear", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.5, 0.3], angle_deg: 12, feather: 0.4 };
+    await warmth(page, {}, { "4": { kind: "corrector", name: "Warmth", pos: [3, 0], masks: { invert: true, items: [object, linear] } } });
+    await expect(rowButton(page, "Object mask, 2 points")).toBeVisible();
+    const here = ((await page.getByRole("group", { name: "Photos" }).textContent()) ?? "").trim();
+    await page.getByRole("button", { name: "Copy settings" }).click();
+    await page.getByRole("button", { name: "Previous photo" }).click();
+    await expect(page.getByRole("group", { name: "Photos" })).not.toContainText(here);
+    await page.getByRole("button", { name: "Paste", exact: true }).click();
+    await expect(card(page, 4)).toBeVisible();
+    await card(page, 4).click();
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    await expect(rowButton(page, "Object mask, Click the object on this photo")).toBeVisible();
+    await expect(rowButton(page, "Linear mask, Feather 40")).toBeVisible();
+    const rows = await rowsOf(page, 4);
+    expect(rows[0]).toMatchObject({ kind: "object", points: [], box: null });
+    expect(rows[1]).toEqual(linear);
+    expect((await masksOf(page, 4))?.invert).toBe(true);
   });
 });

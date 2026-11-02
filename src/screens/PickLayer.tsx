@@ -2,17 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { fitInCell } from "./crop/cropMath";
 
-/** What a click on the photo picks: a white for the white balance, or a colour for the colour warp. */
-export type PickMode = "white" | "color";
+/** What a click on the photo picks: a white for the white balance, a colour for the colour warp, or the colour of a Colour range mask. */
+export type PickMode = "white" | "color" | "range";
 
 /** The layer's accessible name in each mode: what to click, and how to do it from the keyboard. */
 const LAYER_LABELS: Readonly<Record<PickMode, string>> = {
   white: "Pick white. Click something neutral, or move the crosshair with the arrow keys and press Return.",
   color: "Pick colour. Click a colour in the photo, or move the crosshair with the arrow keys and press Return.",
+  range: "Pick colour for the Colour range mask. Click a colour in the photo, or move the crosshair with the arrow keys and press Return.",
 };
 
 export interface PickLayerProps {
-  /** Pick white (the default) or Pick colour. Only the accessible name differs: what a click does is the screen's (`onPick`). */
+  /** Pick white (the default), Pick colour or the Colour range's pick. Only the accessible name differs: what a click does is the screen's (`onPick`). */
   mode?: PickMode;
   /** Width ÷ height of the picture as it is shown (the crop, when there is one). */
   displayAspect: number;

@@ -9,7 +9,7 @@ import { configureMock, dropFiles, failNext, lookTilesLoaded, openApp, openPhoto
 // open, and the consent dialog), the one of Auto crop (`docs/20`: the Crop panel with Auto on and its note) and the three of the Lens tab
 // (`docs/21`: no lens, a lens chosen at its start amounts, and the lens data missing), and the one of Pick white with the CPU note under its hint
 // (`docs/23` section 8; state 17 is Pick white alone), the node view with its empty canvas (N-07: the toolbar, the divider, the photo switcher;
-// N-08 to N-12 add 43 to 48: N-08 has 43, the graph with its Add node menu open, and two of its own, 51 and 52, the graph with a bypassed,
+// N-08 to N-12 add 43 to 48 (N-12 adds 58 to 61, the Mask tab): N-08 has 43, the graph with its Add node menu open, and two of its own, 51 and 52, the graph with a bypassed,
 // a dead and a masked card and a key link, and a selected link) and the simple view of a photo that has four nodes, with the notice (state 49). A state is a function that leaves a
 // page in it; the numbers in the names are only an order.
 
@@ -132,6 +132,37 @@ async function nodeViewOfGradedPhoto(page: Page, select: number | "input" | "out
   await expect(page.locator(`[data-node-card="${select}"]`)).toHaveAttribute("aria-pressed", "true");
   await page.waitForTimeout(400);
 }
+
+/**
+ * The graph of `GRADED_NODES` with Mountain's masks replaced by `rows`, on the Mask tab of node `select`, the node view open. `kinds` is the mock's
+ * `?mockMasks=` (the kinds `mask_kinds` says this machine can make; default: the four that are built).
+ */
+async function maskTabOfGradedPhoto(page: Page, select: number, rows?: readonly object[], kinds?: string): Promise<void> {
+  await openApp(page, kinds ? { ...MOCKUP, mockMasks: kinds } : MOCKUP);
+  const mountain = { ...GRADED_NODES.nodes["2"], ...(rows ? { masks: { invert: false, items: rows } } : {}) };
+  await configureMock(page, {
+    initialSettings: { DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE }, ...GRADED_NODES.nodes, "2": mountain }, links: GRADED_NODES.links } } as never,
+  });
+  await openPhotos(page);
+  await showUpdateReady(page);
+  await page.getByRole("tab", { name: "Light", exact: true }).click();
+  await page.getByRole("button", { name: "Nodes", exact: true }).click();
+  await expect(page.locator('[data-node-card="4"]')).toBeVisible();
+  await page.locator(`[data-node-card="${select}"]`).click();
+  await expect(page.locator(`[data-node-card="${select}"]`)).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("tab", { name: "Mask", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Masks" })).toBeVisible();
+  await page.waitForTimeout(400);
+}
+
+/** Screen 07b's rows: an Object (two points, Add) and a Radial that is Subtract and inverted. */
+export const ROWS_07B = [
+  { kind: "object", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, points: [[0.41, 0.33, true], [0.52, 0.31, true]], box: null },
+  { kind: "radial", mode: "subtract", invert: true, enabled: true, opacity: 1, center: [0.55, 0.32], radii: [0.06, 0.03], angle_deg: 0, feather: 0.45 },
+] as const;
+
+/** A Colour range on Warmth (node 4), whose Mask tab it is. */
+export const WARMTH_RANGE = { kind: "color_range", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.06, 0.04], width: 0.05, softness: 0.5 } as const;
 
 /** The Photos screen as `photos` leaves it, on a photo whose graph has four nodes: Main (with the mockup's grade) and three more. */
 async function photosWithNodes(page: Page): Promise<void> {
@@ -601,6 +632,67 @@ export const STATES: readonly PageState[] = [
       await expect(p.getByRole("group", { name: "Graph tools" }).getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-pressed", "true");
       await expect(p.getByRole("region", { name: "View" })).toBeVisible();
       await p.waitForTimeout(300);
+    },
+  ],
+  // The Mask tab (docs/23 section 7.6, N-12). The Masks card with two rows, as screen 07b has them: an Object (Add, selected, so its ring shows) and a Radial that
+  // is Subtract and inverted (its Invert pressed in the mask accent).
+  [
+    "58-nodes-masks-two-rows",
+    async (p) => {
+      await maskTabOfGradedPhoto(p, 2, ROWS_07B);
+      await p.getByRole("button", { name: "Object mask, 2 points" }).click();
+      await expect(p.getByRole("button", { name: "Object mask, 2 points" })).toHaveAttribute("aria-pressed", "true");
+      await expect(p.getByRole("button", { name: "Invert this mask" }).nth(1)).toHaveAttribute("aria-pressed", "true");
+      await p.waitForTimeout(300);
+    },
+  ],
+  // The Add mask menu (screen 08): to the left of the panel, over the photo and the graph, with all three groups (the mock says this machine can make every kind).
+  [
+    "59-nodes-add-mask-menu",
+    async (p) => {
+      await maskTabOfGradedPhoto(p, 2, ROWS_07B, "all");
+      await p.getByRole("button", { name: "Object mask, 2 points" }).click();
+      await p.getByRole("button", { name: "Add mask" }).click();
+      await expect(p.getByRole("menu", { name: "Add mask" })).toBeVisible();
+      await expect(p.getByRole("menuitem")).toHaveCount(9);
+      await p.waitForTimeout(400);
+    },
+  ],
+  // A Linear's card with its handles on the photo (screen 09): Sky's Linear selected, the card with Angle, Feather and Opacity under the Masks card, the centre line,
+  // the dashed start and end lines and the rotate handle over the photo, and the chip "MASK · LINEAR".
+  [
+    "60-nodes-linear-card-handles",
+    async (p) => {
+      await maskTabOfGradedPhoto(p, 3);
+      await p.getByRole("button", { name: /^Linear mask/ }).click();
+      await expect(p.getByRole("region", { name: "Linear" })).toBeVisible();
+      await expect(p.getByRole("button", { name: /^Rotate the Linear mask/ })).toBeVisible();
+      await expect(p.getByText("MASK · LINEAR")).toBeVisible();
+      await p.waitForTimeout(300);
+    },
+  ],
+  // Pick colour of a Colour range: its card with the toggle pressed, the crosshair over the photo and the hint in the header.
+  [
+    "61-nodes-colour-range-picking",
+    async (p) => {
+      await openApp(p, MOCKUP);
+      await configureMock(p, {
+        initialSettings: {
+          DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE }, ...GRADED_NODES.nodes, "4": { ...GRADED_NODES.nodes["4"], masks: { invert: false, items: [WARMTH_RANGE] } } }, links: GRADED_NODES.links },
+        } as never,
+      });
+      await openPhotos(p);
+      await showUpdateReady(p);
+      await p.getByRole("tab", { name: "Light", exact: true }).click();
+      await p.getByRole("button", { name: "Nodes", exact: true }).click();
+      await expect(p.locator('[data-node-card="4"]')).toBeVisible();
+      await p.locator('[data-node-card="4"]').click();
+      await p.getByRole("tab", { name: "Mask", exact: true }).click();
+      await p.getByRole("button", { name: /^Colour range mask/ }).click();
+      await p.getByRole("button", { name: "Pick colour" }).click();
+      await expect(p.getByRole("button", { name: "Pick colour" })).toHaveAttribute("aria-pressed", "true");
+      await expect(p.getByRole("application", { name: /^Pick colour for the Colour range mask/ })).toBeVisible();
+      await p.waitForTimeout(400);
     },
   ],
   // The simple view of a photo that has four nodes (docs/23 section 6, N-07; screen 04 of design/nodes): the notice under the tab row, with

@@ -10,7 +10,7 @@
  * down, and not letters typed into a menu or a list (their type-ahead); F and N are not pressed while cropping. A toggles Auto crop
  * while the Crop panel is open, and is nothing otherwise (⌘A picks all). **In the node view** (`docs/23` §7.7) Delete and Backspace never
  * remove a photo (the photos are out of sight there): they are `delete-node`, which removes the selected link if one is selected, else
- * the selected node; B bypasses the selected node; ⌥← and ⌥→ move the focused node earlier or later; and the arrow keys belong to the
+ * the selected node (but not from the Masks card's rows, where the key removes the selected mask row, nor from a mask's handle); B bypasses the selected node; ⌥← and ⌥→ move the focused node earlier or later; and the arrow keys belong to the
  * graph while it has the focus (they move the selection from card to card), so they switch no photo there.
  */
 import type { TabId } from "../components/tabs";
@@ -128,6 +128,7 @@ function usesHorizontalArrows(target: EventTarget | null): boolean {
   if (role && ["slider", "radio", "tab", "menuitemradio", "menuitem", "application"].includes(role)) return true;
   if (el.closest("[data-photo-id]")) return true; // a filmstrip thumbnail
   if (el.closest(".ym-crop")) return true;
+  if (el.closest("[data-mask-handles]")) return true; // a handle of a mask: the arrows nudge it
   return false;
 }
 
@@ -143,7 +144,8 @@ function usesDeleteKey(target: EventTarget | null): boolean {
   if (el.tagName.toLowerCase() === "input" && (el as HTMLInputElement).type === "range") return true;
   const role = el.getAttribute("role");
   if (role && ["slider", "spinbutton", "textbox", "combobox", "listbox", "option", "menuitem", "menuitemradio", "menuitemcheckbox", "tree", "treeitem", "grid", "gridcell"].includes(role)) return true;
-  return el.closest('.ym-crop, [role="menu"], [role="dialog"], [role="alertdialog"], [role="listbox"]') !== null;
+  // The Masks card takes Delete and Backspace itself (they remove the selected row, `docs/23` §7.7); a mask's handle does nothing with them.
+  return el.closest('.ym-crop, [data-mask-card], [data-mask-handles], [role="menu"], [role="dialog"], [role="alertdialog"], [role="listbox"]') !== null;
 }
 
 /** The shortcut a key event stands for, or null. */

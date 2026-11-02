@@ -460,7 +460,8 @@ export function applyRowPatch(row: MaskItem, edit: MaskPatch): MaskItem {
   return next as MaskItem;
 }
 
-function applyMasks(masks: CorrectorItem["masks"], patch: MasksPatch): CorrectorItem["masks"] {
+/** A node's masks with a masks patch applied: the node's Invert, the whole list of rows, then the row patches (`masks.edit`). */
+export function applyMasks(masks: CorrectorItem["masks"], patch: MasksPatch): CorrectorItem["masks"] {
   let items = patch.items ?? masks.items;
   if (patch.edit) {
     items = items.map((row, index) => {

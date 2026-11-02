@@ -13,6 +13,17 @@ export const MASK_ACCENT = "#ff6fd2";
 /** How far the overlay goes towards the accent where the mask is 1 (the core's 0.55). */
 export const OVERLAY_WEIGHT = 0.55;
 
+/**
+ * The photo frame as the shapes live in it (`docs/23` §3.6), when it is not the picture itself: the photo's size in its own pixels (the
+ * long edge is what sizes are fractions of) and the map `matrix(a b c d e f)` from those pixels to the frame's, which carries the turn and
+ * the crop.
+ */
+export interface MaskPhoto {
+  width: number;
+  height: number;
+  matrix: [number, number, number, number, number, number];
+}
+
 /** The picture's rectangle in the frame, in the frame's own pixels. */
 export interface MaskRect {
   x: number;
@@ -47,7 +58,8 @@ function rowShape(row: MaskItem, index: number, ink: string, box: MaskRect): str
     const x = box.x + cx * box.width;
     const y = box.y + cy * box.height;
     const a = (row.angle_deg * Math.PI) / 180;
-    const [nx, ny] = [Math.cos(a), Math.sin(a)];
+    // The normal of the core's Linear (`docs/algorithms/06` §4.1): for an angle of 0 it points down, so the line is horizontal.
+    const [nx, ny] = [-Math.sin(a), Math.cos(a)];
     const [x1, y1, x2, y2] = row.invert
       ? [x + nx * half, y + ny * half, x - nx * half, y - ny * half]
       : [x - nx * half, y - ny * half, x + nx * half, y + ny * half];
@@ -81,8 +93,12 @@ function maskContent(masks: MaskSettings, box: MaskRect): string {
  * The SVG that draws a mask view over the picture at `box` (in the frame's pixels): `Overlay` tints the accent where the mask is 1,
  * `Mask only` paints the mask as grey over black. An empty string for no view.
  */
-export function maskViewSvg(style: MaskStyle, masks: MaskSettings, box: MaskRect): string {
-  const mask = `<mask id="mvmask" maskUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}">${maskContent(masks, box)}</mask>`;
+export function maskViewSvg(style: MaskStyle, masks: MaskSettings, box: MaskRect, photo?: MaskPhoto): string {
+  // The shapes are in the photo frame: drawn on a rectangle of the photo's own size and carried to the picture by its map (the turn and the crop).
+  const content = photo
+    ? `<g transform="matrix(${photo.matrix.map(round).join(" ")})">${maskContent(masks, { x: 0, y: 0, width: photo.width, height: photo.height })}</g>`
+    : maskContent(masks, box);
+  const mask = `<mask id="mvmask" maskUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}">${content}</mask>`;
   const invert = `<filter id="mvinvert"><feColorMatrix type="matrix" values="-1 0 0 0 1  0 -1 0 0 1  0 0 -1 0 1  0 0 0 1 0"/></filter>`;
   const rect = (fill: string, extra: string): string =>
     `<rect x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="${fill}" ${extra}/>`;
@@ -90,4 +106,21 @@ export function maskViewSvg(style: MaskStyle, masks: MaskSettings, box: MaskRect
     return `<g data-mask-view="overlay"><defs>${invert}${mask}</defs>${rect(MASK_ACCENT, `fill-opacity="${OVERLAY_WEIGHT}" mask="url(#mvmask)"`)}</g>`;
   }
   return `<g data-mask-view="mask_only"><defs>${invert}${mask}</defs>${rect("#000", "")}${rect("#fff", 'mask="url(#mvmask)"')}</g>`;
+}
+
+/**
+ * The map `matrix(a b c d e f)` from the photo's own pixels to a picture that is the photo turned by `orientation` (degrees clockwise, 0, 90, 180 or 270) on a
+ * canvas of `turned` size: what the mock's fixture picture does with the scene (`previewSvg`'s `place`), for the shapes of the photo frame to follow it.
+ */
+export function turnMatrix(orientation: number, width: number, height: number): MaskPhoto["matrix"] {
+  switch (((orientation % 360) + 360) % 360) {
+    case 90:
+      return [0, 1, -1, 0, height, 0];
+    case 180:
+      return [-1, 0, 0, -1, width, height];
+    case 270:
+      return [0, -1, 1, 0, 0, width];
+    default:
+      return [1, 0, 0, 1, 0, 0];
+  }
 }

@@ -150,6 +150,18 @@ pub enum ViewportInput {
     },
 }
 
+/// Which side of `viewport_map_points` the points are given in (`docs/23` section 9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MapFrom {
+    /// Points `[x, y]` in the photo frame (`docs/23` section 3.6), answered as CSS pixels from the cell's corner,
+    /// which may lie outside the cell.
+    Photo,
+    /// Points in CSS pixels from the cell's corner, answered as photo-frame fractions, `None` for a point on the
+    /// paper (outside the photo, or in the empty corner a straightening leaves).
+    Cell,
+}
+
 /// What an input did.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InputOutcome {
@@ -284,6 +296,27 @@ impl ViewportState {
         let (x, y) = self.view_to_final(image).apply(css.0 * s, css.1 * s);
         let inside = x >= 0.0 && y >= 0.0 && x <= image.0 as f64 && y <= image.1 as f64;
         inside.then_some((x, y))
+    }
+
+    /// The CSS point of the cell where a point of the final image (pixels at full resolution) is drawn:
+    /// the inverse of [`ViewportState::final_point_at`], without its inside test, so a point of the image
+    /// that the zoom and pan keep out of the cell (or one outside the image) lies outside the cell. `None`
+    /// for a point that is not a number.
+    #[must_use]
+    pub fn css_point_at(
+        &self,
+        image: (usize, usize),
+        final_point: (f64, f64),
+    ) -> Option<(f64, f64)> {
+        if !(final_point.0.is_finite() && final_point.1.is_finite()) {
+            return None;
+        }
+        let s = self.rect.scale;
+        let (x, y) = self
+            .view_to_final(image)
+            .inverse()?
+            .apply(final_point.0, final_point.1);
+        (s.is_finite() && s > 0.0).then_some((x / s, y / s))
     }
 
     /// Sets the zoom and keeps `image` point `anchor` (final-image pixels) under the device point

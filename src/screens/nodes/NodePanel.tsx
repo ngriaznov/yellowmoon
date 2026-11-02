@@ -26,6 +26,9 @@ export interface NodePanelProps {
   onPickWhite: (on: boolean) => void;
   pickingColor: boolean;
   onPickColor: (on: boolean) => void;
+  /** The Mask tab's pick: Pick colour of a Colour range. */
+  pickingRange: boolean;
+  onPickRange: (on: boolean) => void;
   /** The row at the foot: Copy settings and Paste, which act on the whole photo here too. */
   foot: ReactNode;
   /** Full screen: the panel is not shown. */
@@ -38,7 +41,7 @@ export interface NodePanelProps {
  * · Curve · Mask, the Output Look · Detail), the cards of the tab (`NodeTab`) and the foot row. There is no title block, no Automatic
  * card and no Tone card here, and no notice of what the simple view cannot show. Every control writes the selected node.
  */
-export function NodePanel({ store, photo, rs, node, tab, onTab, graph, pickingWhite, onPickWhite, pickingColor, onPickColor, foot, hidden }: NodePanelProps) {
+export function NodePanel({ store, photo, rs, node, tab, onTab, graph, pickingWhite, onPickWhite, pickingColor, onPickColor, pickingRange, onPickRange, foot, hidden }: NodePanelProps) {
   const item = rs ? nodeOf(rs.settings, node) : undefined;
   if (!photo || !rs || !item || !isReady(photo)) {
     return (
@@ -97,6 +100,8 @@ export function NodePanel({ store, photo, rs, node, tab, onTab, graph, pickingWh
           onPickWhite={onPickWhite}
           pickingColor={pickingColor}
           onPickColor={onPickColor}
+          pickingRange={pickingRange}
+          onPickRange={onPickRange}
         />
       </div>
       <div className="ym-tools__foot" role="group" aria-label="Copy and paste settings">

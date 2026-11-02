@@ -657,13 +657,13 @@ mod faults {
         let st = cell(300.0, 200.0);
         let r = renderer(Some(&gpu), true);
         let graded = edit(&src, |s| {
-            s.contrast = ym_core::settings::PercentSetting::manual_value(30.0)
+            s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(30.0)
         });
         let resident_frame = fresh(&r, &graded, &st);
         assert_eq!(resident_frame.report.device, ComputeDevice::Gpu);
         // The group is resident now; another grade hits it.
         let other = edit(&src, |s| {
-            s.contrast = ym_core::settings::PercentSetting::manual_value(31.0)
+            s.main_grade_mut().contrast = ym_core::settings::PercentSetting::manual_value(31.0)
         });
         let _ = fresh(&r, &src, &st);
         gpu.set_fault(Some(fault));

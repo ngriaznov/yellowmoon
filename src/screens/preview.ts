@@ -7,9 +7,9 @@
 import type { MaskView, PhotoSummary, ResolvedSettings } from "../api/types";
 import { developScene, flatScene, previewDataUrl } from "../fixtures/grade";
 import type { PreviewOptions } from "../fixtures/grade";
-import { maskViewSvg } from "../fixtures/maskView";
+import { maskViewSvg, turnMatrix } from "../fixtures/maskView";
 import { nodeOf } from "../state/settingsGraph";
-import { SCENES } from "../fixtures/scenes";
+import { SCENES, SVG_HEIGHT, SVG_WIDTH } from "../fixtures/scenes";
 import { photoName } from "../state/photo";
 
 /** The last part of a look id: "arri:3000:film-warm" gives "film-warm". */
@@ -23,7 +23,12 @@ export function previewUrl(photo: PhotoSummary, rs: ResolvedSettings | null, bef
   const scene = SCENES.find((s) => s.name === photoName(photo.file_name));
   if (!scene) return undefined;
   const node = mask && rs && !before ? nodeOf(rs.settings, mask.node) : undefined;
-  const over: PreviewOptions["over"] = mask && node?.kind === "corrector" ? (box) => maskViewSvg(mask.style, node.masks, box) : undefined;
+  // The shapes live in the photo frame: the picture draws the photo turned and cropped, so they are carried by the same turn (the crop is the box).
+  const turn = rs?.values.input.orientation ?? 0;
+  const over: PreviewOptions["over"] =
+    mask && node?.kind === "corrector"
+      ? (box) => maskViewSvg(mask.style, node.masks, box, { width: SVG_WIDTH, height: SVG_HEIGHT, matrix: turnMatrix(turn, SVG_WIDTH, SVG_HEIGHT) })
+      : undefined;
   const geometry: PreviewOptions = rs
     ? { orientation: rs.values.input.orientation, angle_deg: rs.values.input.crop?.angle_deg ?? 0, crop: rs.values.input.crop?.rect ?? null, over }
     : {};

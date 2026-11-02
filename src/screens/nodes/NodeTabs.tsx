@@ -177,10 +177,13 @@ export interface NodeTabProps extends TabProps {
   onPickWhite: (on: boolean) => void;
   pickingColor: boolean;
   onPickColor: (on: boolean) => void;
+  /** Pick colour of a Colour range (Mask tab): on, and turns it on or off. */
+  pickingRange: boolean;
+  onPickRange: (on: boolean) => void;
 }
 
 /** The cards of one tab of one node: the Input's (`node` `"input"`), the Output's (`"output"`) or a corrector's. */
-export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite, pickingColor, onPickColor }: NodeTabProps) {
+export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite, pickingColor, onPickColor, pickingRange, onPickRange }: NodeTabProps) {
   if (node === "input") {
     switch (tab) {
       case "lens":
@@ -204,7 +207,7 @@ export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite
     case "curve":
       return <CorrectorCurveTab store={store} photo={photo} rs={rs} node={node} />;
     case "mask":
-      return <MaskTab rs={rs} node={node} />;
+      return <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} />;
     default:
       return <CorrectorLightTab store={store} photo={photo} rs={rs} node={node} />;
   }

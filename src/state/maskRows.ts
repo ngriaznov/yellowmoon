@@ -4,16 +4,85 @@
  * (`docs/algorithms/06` §4.5): Feather and Softness 0 to 100 are 0 to 1, a Colour range's Width is `0.005 + 0.295 · (x / 100)²`, Low and
  * High are the code values times 100.
  */
-import type { MaskItem } from "../api/types";
+import type { MaskItem, MaskKind, MaskMode, MaskPatch, MasksPatch } from "../api/types";
+import { widthSlider } from "../screens/tools/maskScales";
 import { MASK_KIND_NAME } from "./graphOps";
+
+export { widthSlider };
 
 /** The row's name in bold: "Object", "Radial", "Colour range". */
 export const maskRowName = (row: MaskItem): string => MASK_KIND_NAME[row.kind] ?? row.kind;
 
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 
-/** A Colour range's width as its slider shows it: the inverse of `0.005 + 0.295 · (x / 100)²`. */
-export const widthSlider = (width: number): number => Math.round(100 * Math.sqrt(Math.max(0, (width - 0.005) / 0.295)));
+/** The longest centre a Colour range may have: its distance from the middle of the chroma plane (`docs/23` §3.3). */
+export const COLOR_RANGE_REACH = 0.5;
+
+/** The most mask rows a node may hold (`docs/23` §3.5) and the sentence the core gives when it would hold more. */
+export const MAX_MASKS = 64;
+export const MASKS_FULL = "A node can have up to 64 masks.";
+
+/**
+ * A new row of a kind, with its defaults (`docs/23` §3.3): Add mode, not inverted, on, at full opacity. Every kind the settings know has
+ * one, though the Mask tab builds the cards of the shapes and ranges only (the others come with their tasks).
+ */
+export function newMask(kind: MaskKind, mode: MaskMode = "add"): MaskItem {
+  const base = { mode, invert: false, enabled: true, opacity: 1 } as const;
+  const edge = { feather: 0, grow: 0, refine: 0.5 } as const;
+  switch (kind) {
+    case "object":
+      return { ...base, ...edge, kind, points: [], box: null };
+    case "subject":
+    case "people":
+      return { ...base, ...edge, kind };
+    case "background":
+      return { ...base, ...edge, kind, level: 0.5, softness: 0.5 };
+    case "linear":
+      return { ...base, kind, center: [0.5, 0.5], angle_deg: 0, feather: 0.2 };
+    case "radial":
+      return { ...base, kind, center: [0.5, 0.5], radii: [0.25, 0.18], angle_deg: 0, feather: 0.3 };
+    case "brush":
+      return { ...base, ...edge, refine: 0, kind, strokes: [] };
+    case "color_range":
+      return { ...base, kind, center: [0, 0], width: 0.05, softness: 0.5 };
+    case "brightness_range":
+      return { ...base, kind, low: 0.35, high: 1, softness: 0.5 };
+  }
+}
+
+/**
+ * The row patch that puts a row back as a new row of its kind, in the same mode (the selected mask's card's Reset, `docs/23` §7.6): every
+ * field of the kind at its default but the mode. The row's kind is not in it (a row patch cannot change it).
+ */
+export function resetRowPatch(row: MaskItem): MaskPatch {
+  const { kind: _kind, mode: _mode, ...fields } = newMask(row.kind, row.mode);
+  return fields as MaskPatch;
+}
+
+/** A row patch for row `index`: `masks.edit` (`docs/23` §3.7), the small patch a drag sends. */
+export const editRow = (index: number, edit: MaskPatch): MasksPatch => ({ edit: { [String(index)]: edit } });
+
+/** The rows with `row` added at the end, or null when the node holds 64 already. */
+export function withMask(rows: readonly MaskItem[], row: MaskItem): MasksPatch | null {
+  return rows.length >= MAX_MASKS ? null : { items: [...rows, row] };
+}
+
+/** The rows without the one at `index`. */
+export const withoutMask = (rows: readonly MaskItem[], index: number): MasksPatch => ({ items: rows.filter((_, i) => i !== index) });
+
+/** The rows with the one at `index` moved by `by` places (−1 up, 1 down), or null at the end of the list. */
+export function movedMask(rows: readonly MaskItem[], index: number, by: -1 | 1): MasksPatch | null {
+  const to = index + by;
+  const row = rows[index];
+  if (!row || to < 0 || to >= rows.length) return null;
+  const items = [...rows];
+  items.splice(index, 1);
+  items.splice(to, 0, row);
+  return { items };
+}
+
+/** The row to select after the one at `index` is taken out of `count` rows: the next one, else the one before, else none. */
+export const selectionAfterRemove = (index: number, count: number): number | null => (count <= 1 ? null : Math.min(index, count - 2));
 
 /**
  * The subtitle of a row (`docs/23` §7.6): "2 points", "1 point", "Box", "Box and 2 points" and, with none, "Click the object on this photo"

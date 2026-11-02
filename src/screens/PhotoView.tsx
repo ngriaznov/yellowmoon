@@ -11,6 +11,8 @@ import type { AppStore } from "../state/store";
 import { imageAspectOf, isFullRect } from "./crop/cropMath";
 import { CropOverlay } from "./crop/CropOverlay";
 import type { CropSession } from "./crop/useCropSession";
+import { MaskHandles } from "./nodes/MaskHandles";
+import type { MaskHandlesTarget } from "./nodes/MaskHandles";
 import { PickLayer } from "./PickLayer";
 import type { PickMode } from "./PickLayer";
 import { PickWhiteHint } from "./PickWhiteHint";
@@ -33,6 +35,10 @@ export interface PhotoViewProps {
   onRect?: (rect: ViewportRect) => void;
   /** Leave the camera body out of the line under the photo, as the Export screen does. */
   compactCaption?: boolean;
+  /** The handles of the selected mask row (`docs/23` §7.6 *On the photo*): drawn over the cell, except while Crop or a pick shows. */
+  maskHandles?: MaskHandlesTarget | null;
+  /** The chip that stands in for the look's while the selected node has a selected mask row ("MASK · LINEAR", `docs/23` §7.1). */
+  maskChip?: string;
 }
 
 /** The note drawn over a photo that is not ready: still developing, or a file that can't be opened. */
@@ -58,7 +64,7 @@ function notReadyNote(photo: PhotoSummary): { title: string; text: string } | nu
  *
  * The screen draws it again only when what it shows changes (`memo`): a `render_stats` tick or a zoom step elsewhere does not.
  */
-export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false }: PhotoViewProps) {
+export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false, maskHandles = null, maskChip }: PhotoViewProps) {
   const backend = useAppState((s) => s.viewportBackend);
   const sentFrame = useAppState((s) => s.viewportFrame);
   // Only the pick layer needs to know whether the picture is letterboxed; the zoom changes on every wheel step and is not read otherwise.
@@ -103,9 +109,12 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
   const maskShown = useAppState((s) => (drawsFixture ? s.maskShown : null));
   const picture = useMemo(() => (photo && drawsFixture ? previewUrl(photo, rs, before, maskShown) : undefined), [photo, rs, before, drawsFixture, maskShown]);
 
+  // The cell's size, for the handles: a new size is a new place for every point they draw.
+  const [cellSize, setCellSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
   const handleRect = useCallback(
     (next: ViewportRect) => {
       store.setViewportRect(next);
+      setCellSize((was) => (was.width === next.width && was.height === next.height ? was : { width: next.width, height: next.height }));
       onRect?.(next);
     },
     [store, onRect],
@@ -148,6 +157,8 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
   const panning = useRef<{ x: number; y: number } | null>(null);
   const onPointerDown = usePointerDrag({
     start: (event) => {
+      // A handle of a mask is dragged, not the photo (`MaskHandles` takes the press).
+      if ((event.target as HTMLElement).closest?.("[data-mask-handles]")) return false;
       if (store.showsWholePhoto() || crop || picking) return false;
       panning.current = { x: event.clientX, y: event.clientY };
       return true;
@@ -192,7 +203,7 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
       imageSrc={note ? undefined : picture}
       frame={frame}
       imageLabel={photo ? `Photo ${photoName(photo.file_name)}${level ? `, ${level}` : ""}` : "Photo"}
-      lookChip={note || !level ? undefined : level}
+      lookChip={note || !level ? undefined : (maskChip ?? level)}
       cameraLine={photo && !note ? cameraLine(photo, { body: !compactCaption }) : undefined}
       before={before && !note}
       pixelReadout={readout}
@@ -221,6 +232,8 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
         <CropOverlay session={crop} />
       ) : picking ? (
         <PickLayer mode={picking} displayAspect={displayAspect} letterboxed={letterboxed} onPick={onPicked} />
+      ) : maskHandles && photo && rs && !before && cellSize.width > 0 ? (
+        <MaskHandles store={store} photo={photo} rs={rs} cell={cellSize} {...maskHandles} />
       ) : null}
     </PhotoCell>
   );

@@ -1,0 +1,109 @@
+import { EyeIcon, EyeOffIcon } from "lucide-react";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/glass/context-menu";
+import { Item } from "@/components/glass/item";
+import type { MaskItem, MaskMode } from "../../api/types";
+import { Button, Segmented } from "../../components";
+import type { SegmentedOption } from "../../components";
+import { maskRowLabel, maskRowName, maskSubtitle } from "../../state/maskRows";
+import { MASK_KIND_ICON } from "./AddMaskMenu";
+
+/** The mockups' Invert glyph: a square split on its diagonal, the lower half filled. */
+function InvertGlyph() {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+      <rect x="1.5" y="1.5" width="13" height="13" rx="3" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M13 3 3 13h8a2 2 0 0 0 2-2z" fill="currentColor" />
+    </svg>
+  );
+}
+export { InvertGlyph };
+
+const MODES: ReadonlyArray<SegmentedOption<MaskMode>> = [
+  { value: "add", label: "Add" },
+  { value: "subtract", label: "Subtract" },
+];
+
+export interface MaskRowsProps {
+  rows: readonly MaskItem[];
+  /** The selected row, or none. */
+  selected: number | null;
+  onSelect: (index: number) => void;
+  /** A change to a row: its mode, its Invert, its eye. */
+  onEdit: (index: number, edit: { mode?: MaskMode; invert?: boolean; enabled?: boolean }) => void;
+  /** Takes the row out (Delete or Backspace on a selected row, or the context menu's Delete mask). */
+  onRemove: (index: number) => void;
+  /** Moves a row up or down the list (the context menu). */
+  onMove: (index: number, by: -1 | 1) => void;
+}
+
+/**
+ * The rows of the Masks card (`docs/23` §7.6): for each, the kind's icon, the name in bold with its subtitle, the segmented **Add | Subtract**,
+ * the **Invert** icon toggle ("Invert this mask", pressed in the mask accent) and the **eye** ("Show this mask"). The selected row has a 2 px ring
+ * in the mask accent. A row's name is the kind, "mask" and the subtitle ("Radial mask, Feather 45"). **Delete or Backspace** on a row of the
+ * list takes the row out (`MaskTab` handles the key for the whole card), and a right click offers **Move up · Move down · Delete mask**.
+ * Choosing a row, or a control in it, selects it.
+ */
+export function MaskRows({ rows, selected, onSelect, onEdit, onRemove, onMove }: MaskRowsProps) {
+  if (rows.length === 0) return null;
+  return (
+    <ul className="ym-mask-rows" aria-label="Masks of this node" data-mask-rows="">
+      {rows.map((row, i) => {
+        const name = maskRowName(row);
+        return (
+          <ContextMenu key={i}>
+            <ContextMenuTrigger asChild>
+              {/* glasscn's `Item`, as the Camera card's rows are. Choosing the row, or a control in it, selects it. */}
+              <Item asChild size="sm" className="ym-mask-row" data-selected={selected === i || undefined} data-off={!row.enabled || undefined}>
+                <li data-index={i} onClick={() => onSelect(i)}>
+                  <button type="button" className="ym-mask-row__select" aria-label={maskRowLabel(row)} aria-pressed={selected === i}>
+                    <span className="ym-mask-row__icon">{MASK_KIND_ICON[row.kind]}</span>
+                    <span className="ym-mask-row__text" aria-hidden="true">
+                      <span className="ym-mask-row__name">{name}</span>
+                      <span className="ym-mask-row__sub">{maskSubtitle(row)}</span>
+                    </span>
+                  </button>
+                  <Segmented label={`${name} mask, add or subtract`} size="sm" fit value={row.mode} options={MODES} onChange={(mode) => onEdit(i, { mode })} />
+                  <Button
+                    variant="quiet"
+                    size="sm"
+                    className="ym-mask-row__tool"
+                    pressed={row.invert}
+                    data-tool="invert"
+                    aria-label="Invert this mask"
+                    title="Invert this mask"
+                    onClick={() => onEdit(i, { invert: !row.invert })}
+                  >
+                    <InvertGlyph />
+                  </Button>
+                  <Button
+                    variant="quiet"
+                    size="sm"
+                    className="ym-mask-row__tool"
+                    pressed={row.enabled}
+                    data-tool="eye"
+                    aria-label="Show this mask"
+                    title="Show this mask"
+                    onClick={() => onEdit(i, { enabled: !row.enabled })}
+                  >
+                    {row.enabled ? <EyeIcon aria-hidden="true" /> : <EyeOffIcon aria-hidden="true" />}
+                  </Button>
+                </li>
+              </Item>
+            </ContextMenuTrigger>
+            <ContextMenuContent aria-label={`${name} mask actions`}>
+              <ContextMenuItem disabled={i === 0} onSelect={() => onMove(i, -1)}>
+                Move up
+              </ContextMenuItem>
+              <ContextMenuItem disabled={i === rows.length - 1} onSelect={() => onMove(i, 1)}>
+                Move down
+              </ContextMenuItem>
+              <ContextMenuItem variant="destructive" onSelect={() => onRemove(i)}>
+                Delete mask
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
+        );
+      })}
+    </ul>
+  );
+}

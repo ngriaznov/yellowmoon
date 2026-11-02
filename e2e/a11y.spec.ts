@@ -694,32 +694,115 @@ test.describe("the node panel", () => {
     expect(snapshot).toMatch(/- group "Node actions":/);
   });
 
-  test("the Mask tab's rows are named like the cards: kind, 'mask' and what they say", async ({ page }) => {
+  test("the Mask tab's rows are named like the cards: kind, 'mask' and what they say, and each row's controls are named", async ({ page }) => {
     await graded(page, "Light");
     await page.locator('[data-node-card="2"]').click();
     await page.getByRole("tab", { name: "Mask", exact: true }).click();
     const snapshot = await expectNamed(page, "the Mask tab");
-    expect(snapshot).toContain('- listitem "Object mask, 2 points"');
-    expect(snapshot).toContain('- listitem "Radial mask, Feather 45"');
+    expect(snapshot).toContain('- button "Object mask, 2 points"');
+    expect(snapshot).toContain('- button "Radial mask, Feather 45"');
+    expect(snapshot).toContain('- radiogroup "Object mask, add or subtract"');
+    expect(snapshot).toContain('- radiogroup "Radial mask, add or subtract"');
+    expect(snapshot.match(/- button "Invert this mask"/g)).toHaveLength(2);
+    expect(snapshot.match(/- button "Show this mask"/g)).toHaveLength(2);
     expect(snapshot).toMatch(/- button "Add mask"/);
-    await expect(page.getByRole("button", { name: "Add mask" })).toHaveAttribute("aria-disabled", "true");
+    expect(snapshot).toMatch(/- button "Invert"/);
+    await expect(page.getByRole("button", { name: "Add mask" })).not.toHaveAttribute("aria-disabled", "true");
+    // The selected row is the pressed one.
+    await page.getByRole("button", { name: "Radial mask, Feather 45" }).click();
+    await expect(page.getByRole("button", { name: "Radial mask, Feather 45" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Object mask, 2 points" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  test("the Add mask menu, the selected mask's card, the handles and the pick are named", async ({ page }) => {
+    await openApp(page, { ...MOCKUP, mockMasks: "all" });
+    await configureMock(page, { initialSettings: { DSC04204: { nodes: GRADED_NODES.nodes, links: GRADED_NODES.links } } as never });
+    await openPhotos(page);
+    await page.getByRole("tab", { name: "Light", exact: true }).click();
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    await expect(page.locator('[data-node-card="4"]')).toBeVisible();
+    await page.locator('[data-node-card="3"]').click();
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    // The menu: its groups and every item have names.
+    await page.getByRole("button", { name: "Add mask" }).click();
+    let snapshot = await expectNamed(page, "the Add mask menu");
+    expect(snapshot).toMatch(/- menu "Add mask":/);
+    expect(count(snapshot, "menuitem")).toBe(9);
+    await page.keyboard.press("Escape");
+    // A Linear's card and its handles.
+    await page.getByRole("button", { name: /^Linear mask/ }).click();
+    snapshot = await expectNamed(page, "a Linear's card with its handles");
+    expect(snapshot).toMatch(/- region "Linear"/);
+    expect(snapshot).toMatch(/- slider "Angle"/);
+    for (const name of ["Move the Linear mask", "Linear mask feather, start line", "Linear mask feather, end line", "Rotate the Linear mask"]) {
+      expect(snapshot).toContain(`- button "${name}. The arrow keys move it."`);
+    }
+    // A Colour range being picked.
+    await page.locator('[data-node-card="4"]').click();
+    await page.getByRole("button", { name: "Add mask" }).click();
+    await page.getByRole("menuitem", { name: /^Colour range/ }).click();
+    snapshot = await expectNamed(page, "a Colour range being picked");
+    expect(snapshot).toMatch(/- application "Pick colour for the Colour range mask\./);
+    expect(snapshot).toMatch(/- button "Pick colour" \[pressed\]/);
+  });
+
+  test("the handles of a Linear are Tab stops, one each, with the ring", async ({ page }) => {
+    await graded(page, "Light");
+    await page.locator('[data-node-card="3"]').click();
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    await page.getByRole("button", { name: /^Linear mask/ }).click();
+    await expect(page.locator("[data-mask-handles] button")).toHaveCount(4);
+    // From the zoom button (the header's last stop) the next Tab is the first handle: the keyboard's focus has the ring.
+    await page.getByRole("button", { name: /^Fit \d+%/ }).focus();
+    for (let i = 0; i < 6; i++) {
+      await page.keyboard.press("Tab");
+      if (await page.evaluate(() => document.activeElement?.closest("[data-mask-handles]") !== null)) break;
+    }
+    const ring = await page.evaluate(() => {
+      const st = getComputedStyle(document.activeElement as HTMLElement);
+      return { style: st.outlineStyle, width: parseFloat(st.outlineWidth) };
+    });
+    expect(ring.style).not.toBe("none");
+    expect(ring.width).toBeGreaterThanOrEqual(3);
+    // Four stops inside the layer, then the focus leaves it.
+    const seen: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      seen.push((await page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? "")).replace(/\. The arrow keys move it\.$/, ""));
+      await page.keyboard.press("Tab");
+    }
+    expect(seen).toEqual(["Move the Linear mask", "Linear mask feather, start line", "Linear mask feather, end line", "Rotate the Linear mask"]);
+    expect(await page.evaluate(() => document.activeElement?.closest("[data-mask-handles]") !== null)).toBe(false);
   });
 
   // The stops of each state, counted: the head's buttons, the tab row (two: glasscn's tab list, a container that draws no ring and hands the
   // arrows to the tabs, then the selected tab), the cards' controls (a slider is two: its thumb and its value box), and the foot's two buttons.
-  for (const [state, simple, node, tab, stops] of [
-    ["the Input's Colour tab", "Colour", "input", "Colour", 14],
-    ["a corrector's Light tab", "Light", 2, "Light", 25],
-    ["a corrector's Colour tab", "Colour", 2, "Colour", 21],
-    ["the Output's Look tab", "Look", "output", "Look", 23],
-    // The head's buttons, the tab row, Add mask (off, still a stop), the View card's chosen segment, and the foot's two buttons.
-    ["a corrector's Mask tab with the View card", "Light", 2, "Mask", 9],
-  ] as const) {
+  type Stops = { state: string; simple: string; node: number | "input" | "output"; tab: string; stops: number; before?: (page: Page) => Promise<void> };
+  const STOPS: Stops[] = [
+    { state: "the Input's Colour tab", simple: "Colour", node: "input", tab: "Colour", stops: 14 },
+    { state: "a corrector's Light tab", simple: "Light", node: 2, tab: "Light", stops: 25 },
+    { state: "a corrector's Colour tab", simple: "Colour", node: 2, tab: "Colour", stops: 21 },
+    { state: "the Output's Look tab", simple: "Look", node: "output", tab: "Look", stops: 23 },
+    // The head's buttons (3), the tab row (2), the Masks card's Add mask, Invert and Reset (3), the two rows' four stops each (the row's button, the chosen
+    // segment of Add | Subtract, Invert and the eye: 8), the View card's chosen segment, and the foot's two buttons.
+    { state: "a corrector's Mask tab with two rows and the View card", simple: "Light", node: 2, tab: "Mask", stops: 19 },
+    // Sky's one row, selected: its card has Reset and three sliders (Angle, Feather, Opacity; a slider is two stops, and Reset in a row's end is a stop only
+    // while the slider differs from its default, which Sky's Linear does at an angle of 4 and a feather of 25). Counted below, with the ring on every stop.
+    {
+      state: "a Linear's Mask tab with its card",
+      simple: "Light",
+      node: 3,
+      tab: "Mask",
+      stops: 24,
+      before: (page) => page.getByRole("button", { name: /^Linear mask/ }).click(),
+    },
+  ];
+  for (const { state, simple, node, tab, stops, before } of STOPS) {
     test(`${state}: every stop of the panel's Tab order has the ring, and the stops are counted`, async ({ page }) => {
       await graded(page, simple);
       await page.locator(`[data-node-card="${node}"]`).click();
       await page.getByRole("tab", { name: tab, exact: true }).click();
       await expect(page.getByRole("tab", { name: tab, exact: true })).toHaveAttribute("aria-selected", "true");
+      await before?.(page);
       await page.waitForTimeout(300);
       // Walk the panel from the graph's last stop until the focus leaves it, and count what it stopped on.
       await page.getByRole("button", { name: "Fit the graph" }).focus();
@@ -742,7 +825,7 @@ test.describe("the node panel", () => {
       expect(seen.filter((s) => !s.ring).map((s) => s.label)).toEqual(["Tool tabs"]);
       expect(seen.map((s) => s.label)[0]).toMatch(/^(Bypass this node|Reset (input|output))$/);
       expect(seen.map((s) => s.label).slice(-2)).toEqual(["Copy settings", "Paste"]);
-      expect(seen, `the Tab stops of ${state}`).toHaveLength(stops);
+      expect(seen, `the Tab stops of ${state}: ${seen.map((s) => s.label).join(" | ")}`).toHaveLength(stops);
     });
   }
 });
