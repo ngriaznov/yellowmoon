@@ -26,6 +26,19 @@ fn load_average() -> String {
     )
 }
 
+/// CPU seconds this process has used so far (user and system, all threads), from `/proc/self/stat` at 100 ticks a second:
+/// unlike the wall time, the work an encoder run costs does not grow when another program takes some of the cores.
+fn cpu_seconds() -> f64 {
+    std::fs::read_to_string("/proc/self/stat")
+        .ok()
+        .and_then(|s| {
+            let after_name = s.rsplit_once(')')?.1.to_owned();
+            let f: Vec<&str> = after_name.split_whitespace().collect();
+            Some((f.get(11)?.parse::<f64>().ok()? + f.get(12)?.parse::<f64>().ok()?) / 100.0)
+        })
+        .unwrap_or(0.0)
+}
+
 fn peak_rss_mb() -> f64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
@@ -90,16 +103,19 @@ fn main() {
     let picture = Picture::new(w, h, &rgb).expect("picture");
 
     let mut total = Vec::new();
+    let mut cpu = Vec::new();
     let mut stages = Vec::new();
     let mut features = None;
     for rep in 0..=reps {
-        let t = Instant::now();
+        let (t, c) = (Instant::now(), cpu_seconds());
         let (f, s) = model.encode_timed(&picture).expect("encode");
         let ms = t.elapsed().as_secs_f64() * 1e3;
+        let c = cpu_seconds() - c;
         if rep == 0 {
             println!("encoder, first run (warm-up): {ms:.0} ms");
         } else {
             total.push(ms);
+            cpu.push(c);
             stages.push((s.preprocess_ms, s.trunk_ms, s.neck_ms));
         }
         features = Some(f);
@@ -114,6 +130,11 @@ fn main() {
         stages[i].1,
         stages[i].2,
         median(&mut total.clone())
+    );
+    println!(
+        "encoder CPU time (all threads, the work done): least {:.1} s, median {:.1} s per run",
+        cpu.iter().copied().fold(f64::INFINITY, f64::min),
+        median(&mut cpu.clone())
     );
 
     let prompts = [

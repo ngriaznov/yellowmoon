@@ -792,6 +792,25 @@ test.describe("the node panel", () => {
     expect(snapshot).not.toMatch(/brush-layer|Brush layer/i);
   });
 
+  test("the Background card is named, its subtitle reads 'Finding…' while the map is made, and nothing on the photo is a control", async ({ page }) => {
+    await graded(page, "Light");
+    await page.locator('[data-node-card="4"]').click();
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    await page.getByRole("button", { name: "Add mask" }).click();
+    await page.getByRole("menuitem", { name: /^Background/ }).click();
+    await expect(page.getByRole("region", { name: "Background" })).toBeVisible();
+    const finding = await expectNamed(page, "a Background row finding");
+    // The first frame finds the photo's map (the mock: 400 ms): the row's name says so, without the spinner (it is decoration).
+    expect(finding).toMatch(/- button "Background mask, (Finding…|Level 50)" \[pressed\]/);
+    await expect(page.getByRole("button", { name: "Background mask, Level 50" })).toBeVisible();
+    const snapshot = await expectNamed(page, "a Background's card");
+    expect(snapshot).toMatch(/- region "Background"/);
+    for (const name of ["Level", "Softness", "Refine edges", "Feather", "Grow", "Opacity"]) expect(snapshot, name).toMatch(new RegExp(`- slider "${name}"`));
+    // No handles, no layer: the map is the photo's own.
+    await expect(page.locator("[data-mask-handles]")).toHaveCount(0);
+    await expect(page.locator("[data-brush-layer]")).toHaveCount(0);
+  });
+
   // The stops of each state, counted: the head's buttons, the tab row (two: glasscn's tab list, a container that draws no ring and hands the
   // arrows to the tabs, then the selected tab), the cards' controls (a slider is two: its thumb and its value box), and the foot's two buttons.
   type Stops = { state: string; simple: string; node: number | "input" | "output"; tab: string; stops: number; before?: (page: Page) => Promise<void> };
@@ -827,6 +846,22 @@ test.describe("the node panel", () => {
         await page.getByRole("menuitem", { name: /^Brush/ }).click();
         await expect(page.getByRole("region", { name: "Brush" })).toBeVisible();
         await expect(page.locator("[data-brush-layer]")).toBeVisible();
+      },
+    },
+    // A Background row just added, on Warmth (node 4): the head's 3, the tab row's 2, the Masks card's 3, the row's 4, then the BACKGROUND card: its Reset is a stop only
+    // while a field differs from its default (none does), six sliders of two stops each (Level, Softness, Refine edges, Feather, Grow, Opacity), the View card's chosen
+    // segment and the foot's two buttons. Nothing is drawn on the photo.
+    {
+      state: "a Background's Mask tab with its card",
+      simple: "Light",
+      node: 4,
+      tab: "Mask",
+      stops: 27,
+      before: async (page) => {
+        await page.getByRole("button", { name: "Add mask" }).click();
+        await page.getByRole("menuitem", { name: /^Background/ }).click();
+        await expect(page.getByRole("region", { name: "Background" })).toBeVisible();
+        await expect(page.getByRole("button", { name: "Background mask, Level 50" })).toBeVisible();
       },
     },
   ];

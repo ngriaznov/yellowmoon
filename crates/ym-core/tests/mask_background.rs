@@ -156,9 +156,15 @@ fn maps_made(r: &Renderer, src: &PhotoSource) -> u64 {
 /// A night scene of defocused lights (discs of 1.5 % of the width on a dark ground), `cols` x `rows` of them in the
 /// part of the frame `region` (fractions `x0, x1`), as an ARW with this EXIF orientation.
 fn lights(w: u32, h: u32, exif: u16, region: (f64, f64), cols: usize, rows: usize) -> Developed {
+    lights_of(w, h, exif, region, cols, rows, 0.45)
+}
+
+/// [`lights`] whose discs are `level` of the sensor's range (0.45 is the other tests'; a dimmer scene has edges the raw
+/// stages cut into tiles without a difference in the last bit).
+fn lights_of(w: u32, h: u32, exif: u16, region: (f64, f64), cols: usize, rows: usize, level: f64) -> Developed {
     let scene = Scene::new(w, h, light(PROFILE, 5500.0), Layout::Uniform, 0.02).noise(2e-4, 1e-6);
     let mut mosaic = scene.mosaic();
-    let code = (scene.black + 0.45 * (scene.white_level - scene.black)) as u16;
+    let code = (scene.black + level * (scene.white_level - scene.black)) as u16;
     let radius = 0.015 * f64::from(w);
     for r in 0..rows {
         for c in 0..cols {
@@ -570,4 +576,22 @@ fn a_turned_photo_is_the_upright_photo_turned_by_hand_with_a_background_row_on_i
     // The mask has something to follow: the node's effect is not the same everywhere.
     let none = export_image(&r, &with(&src, graph(vec![])));
     assert!(a.rgb != none.rgb);
+}
+
+#[test]
+fn debug_tiles() {
+    for level in [0.15, 0.08] {
+        let d = lights_of(640, 480, 1, (0.0, 1.0), 5, 4, level);
+        let src = d.source();
+        let big = renderer_with(false, 4096);
+        let map = big.blur_map(&src, &CancelToken::new()).expect("map");
+        eprintln!("level {level}: {} cells over 0.9", map.p.iter().filter(|p| **p > 0.9).count());
+        let s = with(&src, graph(vec![]));
+        let a = export_image(&big, &s);
+        for tile in [64usize, 100, 128, 192, 256] {
+            let b = export_image(&renderer_with(false, tile), &s);
+            let n = a.rgb.iter().zip(&b.rgb).filter(|(x, y)| x != y).count();
+            eprintln!("  tile {tile}: {n} samples differ");
+        }
+    }
 }

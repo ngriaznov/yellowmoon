@@ -9,7 +9,7 @@ import { configureMock, dropFiles, failNext, lookTilesLoaded, openApp, openPhoto
 // open, and the consent dialog), the one of Auto crop (`docs/20`: the Crop panel with Auto on and its note) and the three of the Lens tab
 // (`docs/21`: no lens, a lens chosen at its start amounts, and the lens data missing), and the one of Pick white with the CPU note under its hint
 // (`docs/23` section 8; state 17 is Pick white alone), the node view with its empty canvas (N-07: the toolbar, the divider, the photo switcher;
-// N-08 to N-12 add 43 to 48 (N-12 adds 58 to 61, the Mask tab; N-14 adds 62, a Brush's card with a stroke drawn): N-08 has 43, the graph with its Add node menu open, and two of its own, 51 and 52, the graph with a bypassed,
+// N-08 to N-12 add 43 to 48 (N-12 adds 58 to 61, the Mask tab; N-14 adds 62, a Brush's card with a stroke drawn; N-15 adds 63, a Background's card): N-08 has 43, the graph with its Add node menu open, and two of its own, 51 and 52, the graph with a bypassed,
 // a dead and a masked card and a key link, and a selected link) and the simple view of a photo that has four nodes, with the notice (state 49). A state is a function that leaves a
 // page in it; the numbers in the names are only an order.
 
@@ -163,6 +163,9 @@ export const ROWS_07B = [
 
 /** A Brush row with no stroke yet (N-14): the state draws its stroke by hand. */
 export const BRUSH_ROW = { kind: "brush", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0, strokes: [] } as const;
+
+/** A Background row at its defaults (N-15), with the eye on. */
+export const BACKGROUND_ROW = { kind: "background", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, level: 0.5, softness: 0.5 } as const;
 
 /** A Colour range on Warmth (node 4), whose Mask tab it is. */
 export const WARMTH_RANGE = { kind: "color_range", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.06, 0.04], width: 0.05, softness: 0.5 } as const;
@@ -716,6 +719,21 @@ export const STATES: readonly PageState[] = [
       await expect(p.getByRole("button", { name: "Brush mask, 1 stroke" })).toBeVisible();
       await expect(p.locator("[data-brush-layer] polyline")).toHaveCount(0);
       await expect(p.locator("[data-brush-cursor]")).toBeVisible();
+      await p.waitForTimeout(300);
+    },
+  ],
+  // A Background row (docs/23 section 7.6, N-15): its BACKGROUND card (Level, Softness, then Refine edges, Feather, Grow, Opacity) with the row at "Level 50" (the photo's
+  // first frame made its blur map, "Finding…" for 400 ms on the mock, before the state is taken), the mask view on in Overlay (the mock draws the sky as out of focus), and
+  // the chip "MASK · BACKGROUND".
+  [
+    "63-nodes-background-card",
+    async (p) => {
+      await maskTabOfGradedPhoto(p, 2, [BACKGROUND_ROW]);
+      await p.getByRole("button", { name: /^Background mask/ }).click();
+      await expect(p.getByRole("region", { name: "Background" })).toBeVisible();
+      await p.getByRole("radio", { name: "Overlay" }).click();
+      await expect(p.getByRole("button", { name: "Background mask, Level 50" })).toBeVisible();
+      await expect(p.locator(".ym-photo-cell__image")).toHaveAttribute("src", /data-background-row/);
       await p.waitForTimeout(300);
     },
   ],

@@ -262,6 +262,7 @@ describe("the Add mask menu", () => {
     await setup();
     const menu = await openAddMenu();
     expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
+      "BackgroundWhat is out of focus, from blur",
       "LinearA gradient across the photo",
       "RadialAn oval, soft at the edge",
       "BrushPaint where the node acts",
@@ -270,8 +271,9 @@ describe("the Add mask menu", () => {
     ]);
     expect(within(menu).getByText("Shapes")).toBeInTheDocument();
     expect(within(menu).getByText("Keys")).toBeInTheDocument();
-    // The Find group has no item, so it is not there. Brush is made (N-13) and has its card and its drawing tool (N-14: `BrushTool.test.tsx`).
-    expect(within(menu).queryByText("Find")).toBeNull();
+    // Background is the one kind of the Find group that is made without a download or a Mac (N-15), so the group is there with it alone.
+    // Brush is made (N-13) and has its card and its drawing tool (N-14: `BrushTool.test.tsx`).
+    expect(within(menu).getByText("Find")).toBeInTheDocument();
     expect(within(menu).queryByRole("menuitem", { name: /Brush/ })).not.toBeNull();
   });
 
@@ -451,6 +453,93 @@ describe("the selected mask's card: sliders write one field each with the scales
     await setup();
     await h!.user.click(rowButton("Object mask, 2 points"));
     expect(cardTitles()).toEqual(["Masks", "View"]);
+  });
+});
+
+describe("the BACKGROUND card (docs/23 §7.6, task N-15)", () => {
+  const BACKGROUND: SettingsPatch = {
+    nodes: {
+      "2": {
+        kind: "corrector",
+        name: "Sky",
+        pos: [1, 0],
+        masks: { invert: false, items: [newMask("background"), { ...newMask("background"), enabled: false, level: 0.8 } as MaskItem, { ...LINEAR }] },
+      },
+    },
+    links: [picture("input", 1), picture(1, 2), picture(2, "output")],
+  };
+  const busy = (finding: boolean, on = true): void => act(() => h!.api.emitEvent("viewport_busy", { busy: on, cpu: false, finding }));
+
+  it("has Level and Softness, then Refine edges, Feather, Grow and Opacity, at 50, 50, 50 %, 0, 0 and 100 %", async () => {
+    await setup(BACKGROUND, {}, /^Node 2, Sky/);
+    await h!.user.click(rowButton("Background mask, Level 50"));
+    expect(cardTitles()).toEqual(["Masks", "Background", "View"]);
+    expect(within(card("Background")).getAllByRole("slider").map((x) => sliderName(x))).toEqual(["Level", "Softness", "Refine edges", "Feather", "Grow", "Opacity"]);
+    expect(["Level", "Softness", "Refine edges", "Feather", "Grow", "Opacity"].map((name) => valueOf(name))).toEqual(["50", "50", "50%", "0", "0", "100%"]);
+  });
+
+  it("each slider writes one field of the row with the scale of §4.5, as one row patch; the subtitle follows Level", async () => {
+    const spy = await setup(BACKGROUND, {}, /^Node 2, Sky/);
+    await h!.user.click(rowButton("Background mask, Level 50"));
+    spy.mockClear();
+    await type("Level", "70");
+    await waitFor(() => expect(patches(spy).at(-1)).toEqual(edit(2, 0, { level: 0.7 })));
+    expect(rowOf("Background mask, Level 70")).toBeInTheDocument();
+    await type("Softness", "20");
+    await waitFor(() => expect(patches(spy).at(-1)).toEqual(edit(2, 0, { softness: 0.2 })));
+    await type("Refine edges", "80");
+    await waitFor(() => expect(patches(spy).at(-1)).toEqual(edit(2, 0, { refine: 0.8 })));
+    await type("Feather", "35");
+    await waitFor(() => expect(patches(spy).at(-1)).toEqual(edit(2, 0, { feather: 0.35 })));
+    await type("Grow", "-40");
+    await waitFor(() => expect(patches(spy).at(-1)).toEqual(edit(2, 0, { grow: -0.4 })));
+    await type("Opacity", "60");
+    await waitFor(() => expect(patches(spy).at(-1)).toEqual(edit(2, 0, { opacity: 0.6 })));
+    expect(masks(2)[0]).toMatchObject({ kind: "background", level: 0.7, softness: 0.2, refine: 0.8, feather: 0.35, grow: -0.4, opacity: 0.6 });
+    // Each of them is one undo step, and the others stay as they were.
+    await undo();
+    await waitFor(() => expect(masks(2)[0]).toMatchObject({ opacity: 1, grow: -0.4 }));
+  });
+
+  it("the card's Reset puts the row back as a new Background in its mode", async () => {
+    const spy = await setup(BACKGROUND, {}, /^Node 2, Sky/);
+    await h!.user.click(rowButton("Background mask, Level 50"));
+    await type("Level", "90");
+    await type("Grow", "25");
+    spy.mockClear();
+    await h!.user.click(within(card("Background")).getByRole("button", { name: "Reset" }));
+    await waitFor(() => expect(masks(2)[0]).toEqual(newMask("background", "add")));
+    expect(patches(spy).at(-1)).toEqual(edit(2, 0, { invert: false, enabled: true, opacity: 1, level: 0.5, softness: 0.5, feather: 0, grow: 0, refine: 0.5 }));
+  });
+
+  it("Add mask › Background adds a row with its defaults, selects it and shows its card", async () => {
+    const spy = await setup(FOUR, {}, /^Node 4, Warmth/);
+    const menu = await openAddMenu();
+    spy.mockClear();
+    await h!.user.click(within(menu).getByRole("menuitem", { name: /^Background/ }));
+    await waitFor(() => expect(patches(spy)).toEqual([patchOf(4, { masks: { items: [newMask("background")] } })]));
+    expect(cardTitles()).toEqual(["Masks", "Background", "View"]);
+    expect(rowButton("Background mask, Level 50")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("says 'Finding…' with a spinner under the name while the core makes the photo's first blur map, for rows that are on", async () => {
+    await setup(BACKGROUND, {}, /^Node 2, Sky/);
+    expect(rowOf("Background mask, Level 50")).toHaveTextContent("BackgroundLevel 50");
+    busy(true);
+    // The row that is on says it, with its name changed to match; the one with the eye off and the Linear do not.
+    await waitFor(() => expect(rowButton("Background mask, Finding…")).toBeInTheDocument());
+    const sub = within(rowOf("Background mask, Finding…")).getByText("Finding…");
+    expect(sub).toHaveAttribute("data-finding");
+    expect(sub.querySelector("svg")).not.toBeNull();
+    expect(rowButton("Background mask, Level 80")).toBeInTheDocument();
+    expect(rowButton("Linear mask, Feather 20")).toBeInTheDocument();
+    // The round ends: the subtitle is the row's own again.
+    busy(false, false);
+    await waitFor(() => expect(rowButton("Background mask, Level 50")).toBeInTheDocument());
+    expect(screen.queryByText("Finding…")).toBeNull();
+    // A round that is busy but finds nothing (a frame of a photo that has its map) says nothing.
+    busy(false);
+    expect(screen.queryByText("Finding…")).toBeNull();
   });
 });
 

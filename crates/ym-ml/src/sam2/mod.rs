@@ -45,7 +45,7 @@
 //!
 //! Everything is `f32` in a fixed order, with no fused multiply-add, with `libm` for `exp`, `erf`, `sin` and `cos`, and with the
 //! sums of layer norms and softmaxes in `f64` in index order, so the same picture and prompt give the same bits on every run
-//! and on any number of threads (see [`kernels`]); as far as IEEE 754 goes, also on every platform.
+//! and on any number of threads (the kernels of `sam2/kernels.rs`); as far as IEEE 754 goes, also on every platform.
 
 use std::collections::HashMap;
 use std::path::Path;

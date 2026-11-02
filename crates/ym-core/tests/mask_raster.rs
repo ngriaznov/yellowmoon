@@ -114,11 +114,13 @@ fn block(img: &FullImage, x0: f64, y0: f64, w: f64, h: f64) -> [f64; 3] {
 // ---- the kinds -----------------------------------------------------------------------------------
 
 #[test]
-fn brush_is_a_kind_this_computer_can_make_and_the_others_of_the_raster_family_are_not_yet() {
+fn brush_and_background_are_kinds_this_computer_can_make_and_the_others_of_the_raster_family_are_not_yet()
+ {
     let kinds = mask_kinds();
     assert_eq!(
         kinds,
         [
+            MaskKind::Background,
             MaskKind::Linear,
             MaskKind::Radial,
             MaskKind::Brush,
@@ -129,12 +131,7 @@ fn brush_is_a_kind_this_computer_can_make_and_the_others_of_the_raster_family_ar
     let missing: Vec<MaskKind> = mask_unavailable().into_iter().map(|(k, _)| k).collect();
     assert_eq!(
         missing,
-        [
-            MaskKind::Object,
-            MaskKind::Subject,
-            MaskKind::People,
-            MaskKind::Background
-        ]
+        [MaskKind::Object, MaskKind::Subject, MaskKind::People]
     );
     // Every kind is in exactly one of the two lists.
     for k in MaskKind::ALL {
@@ -148,7 +145,7 @@ fn brush_is_a_kind_this_computer_can_make_and_the_others_of_the_raster_family_ar
     let mac = cfg!(target_os = "macos");
     assert_eq!(wire[0], ("Object", "not_supported"));
     assert_eq!(wire[1].1, if mac { "not_supported" } else { "not_a_mac" });
-    assert_eq!(wire[3], ("Background", "not_supported"));
+    assert_eq!(wire.len(), 3, "Object, Subject and People: {wire:?}");
 }
 
 #[test]
@@ -157,10 +154,6 @@ fn a_raster_row_of_a_kind_that_cannot_be_made_is_a_mask_error_never_an_empty_mas
         (
             json!({ "kind": "object", "points": [[0.5, 0.5, true]] }),
             "Node 2 has an Object mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon.",
-        ),
-        (
-            json!({ "kind": "background" }),
-            "Node 2 has a Background mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon.",
         ),
     ] {
         let s = graph(vec![node_2(vec![row])]);
@@ -186,6 +179,9 @@ fn a_raster_row_of_a_kind_that_cannot_be_made_is_a_mask_error_never_an_empty_mas
     let off = json!({ "kind": "object", "enabled": false });
     assert_eq!(unmakeable_mask(&graph(vec![node_2(vec![off])])), None);
     let ok = brush(0.05, 0.5, &[[0.5, 0.5]], json!({}));
+    assert_eq!(unmakeable_mask(&graph(vec![node_2(vec![ok])])), None);
+    // Background is made from the photo's own blur map (N-15).
+    let ok = json!({ "kind": "background" });
     assert_eq!(unmakeable_mask(&graph(vec![node_2(vec![ok])])), None);
     assert_eq!(unmakeable_mask(&DevelopSettings::default()), None);
 }

@@ -26,19 +26,38 @@ use ym_ml::sam2::{
 };
 
 // -------------------------------------------------------------------------------------------------
-// The gates (docs/algorithms/06-masks.md section 6.5; the logit bounds are the measured ones, proposed in the N-17 notes)
+// The gates
 // -------------------------------------------------------------------------------------------------
+//
+// `docs/algorithms/06-masks.md` section 6.5 states the gates and the starting numbers: the resize within 1e-2 (mean 1e-3) of
+// Meta's tensor, the encoder's maps within 2e-3 of their RMS, the logits within 0.05 (mean 0.005), mask IoU at least 0.99. N-17
+// measured the runtime against them (the worst over 20 photos and 60 prompts, on the Linux x86-64 machine of the task) and
+// the bounds below are the ones it proposes: each is 4 to 14 times the measured worst and 20 to 2000 times tighter than the
+// starting number, so a gate that fails here is far inside the starting bound and is still reported, never loosened.
+//
+//                      measured worst       proposed bound      starting bound
+//   resize, largest    7.2e-7               1e-5                1e-2
+//   resize, mean       4.4e-8               1e-6                1e-3
+//   encoder, RMS       3.6e-6 of the RMS    5e-5                2e-3
+//   decoder, largest   2.9e-4               3e-3                0.05
+//   decoder, mean      9.2e-5               5e-4                0.005
+//   whole path, largest 5.1e-4              5e-3                0.05
+//   whole path, mean   1.3e-4               5e-4                0.005
+//   mask IoU, smallest 0.99978              0.999               0.99
 
 /// Our resize against Meta's tensor, in normalised values.
-const RESIZE_MAX_ABS: f64 = 1e-2;
-const RESIZE_MEAN_ABS: f64 = 1e-3;
+const RESIZE_MAX_ABS: f64 = 1e-5;
+const RESIZE_MEAN_ABS: f64 = 1e-6;
 /// The encoder's maps from the same tensor: RMS of the difference over the RMS of Meta's map.
-const ENCODER_REL_RMS: f64 = 2e-3;
-/// The logits from Meta's maps, and the whole path: largest and mean absolute difference.
-const LOGIT_MAX_ABS: f64 = 0.05;
-const LOGIT_MEAN_ABS: f64 = 0.005;
+const ENCODER_REL_RMS: f64 = 5e-5;
+/// The logits from Meta's maps: largest and mean absolute difference.
+const DECODER_MAX_ABS: f64 = 3e-3;
+const DECODER_MEAN_ABS: f64 = 5e-4;
+/// The logits of the whole path (our resize, our encoder, our decoder).
+const WHOLE_MAX_ABS: f64 = 5e-3;
+const WHOLE_MEAN_ABS: f64 = 5e-4;
 /// Mask IoU at logit > 0, 256 x 256.
-const MASK_IOU_MIN: f64 = 0.99;
+const MASK_IOU_MIN: f64 = 0.999;
 
 // -------------------------------------------------------------------------------------------------
 // Fixture files
@@ -551,14 +570,14 @@ fn the_decoder_matches_metas_logits_from_metas_maps() {
     );
     for p in &prompts {
         assert!(
-            p.decoder.max_abs <= LOGIT_MAX_ABS,
+            p.decoder.max_abs <= DECODER_MAX_ABS,
             "{} prompt {}: largest difference {:.3e}",
             p.photo,
             p.prompt,
             p.decoder.max_abs
         );
         assert!(
-            p.decoder.mean_abs <= LOGIT_MEAN_ABS,
+            p.decoder.mean_abs <= DECODER_MEAN_ABS,
             "{} prompt {}: mean difference {:.3e}",
             p.photo,
             p.prompt,
@@ -588,14 +607,14 @@ fn the_whole_path_matches_metas_logits() {
     }
     for p in &prompts {
         assert!(
-            p.whole.max_abs <= LOGIT_MAX_ABS,
+            p.whole.max_abs <= WHOLE_MAX_ABS,
             "{} prompt {}: largest difference {:.3e}",
             p.photo,
             p.prompt,
             p.whole.max_abs
         );
         assert!(
-            p.whole.mean_abs <= LOGIT_MEAN_ABS,
+            p.whole.mean_abs <= WHOLE_MEAN_ABS,
             "{} prompt {}: mean difference {:.3e}",
             p.photo,
             p.prompt,

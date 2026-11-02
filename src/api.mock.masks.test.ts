@@ -27,18 +27,18 @@ async function open(settings: SettingsPatch = {}): Promise<MockApi> {
 }
 
 describe("mask_kinds (the Add mask menu's list)", () => {
-  it("is the five kinds that are built, unless the page URL says otherwise", async () => {
+  it("is the six kinds that are built, unless the page URL says otherwise", async () => {
     const a = createMockApi({ speed: Number.POSITIVE_INFINITY });
     api = a;
-    expect(await a.maskKinds()).toEqual(["linear", "radial", "brush", "color_range", "brightness_range"]);
+    expect(await a.maskKinds()).toEqual(["background", "linear", "radial", "brush", "color_range", "brightness_range"]);
     expect(await a.maskKinds()).toEqual([...BUILT_MASK_KINDS]);
   });
 
   it("is what ?mockMasks= names: all, noai, nomac, built, or a list of kinds, in the menu's order", () => {
     expect(optionsFromLocation("").maskKinds).toBeUndefined();
     expect(optionsFromLocation("?mockMasks=all").maskKinds).toEqual([...ALL_MASK_KINDS]);
-    // No AI: Object, Subject, People and Background are left out.
-    expect(optionsFromLocation("?mockMasks=noai").maskKinds).toEqual(["linear", "radial", "brush", "color_range", "brightness_range"]);
+    // No AI: Object, Subject and People are left out; Background needs no model download and no Mac, the blur map comes from the photo.
+    expect(optionsFromLocation("?mockMasks=noai").maskKinds).toEqual(["background", "linear", "radial", "brush", "color_range", "brightness_range"]);
     // No Mac: Subject and People are left out.
     expect(optionsFromLocation("?mockMasks=nomac").maskKinds).toEqual(["object", "background", "linear", "radial", "brush", "color_range", "brightness_range"]);
     expect(optionsFromLocation("?mockMasks=built").maskKinds).toEqual([...BUILT_MASK_KINDS]);
@@ -132,5 +132,57 @@ describe("Copy settings carries the rows (docs/23 §3.8)", () => {
     expect(node?.items?.slice(1)).toEqual(rows.slice(1));
     // The mock's own rule and the one the page's tests use are the same function.
     expect(copiedPatch(await a.getSettings(id))).toEqual(copied);
+  });
+});
+
+describe("the blur map of a Background row (docs/23 §7.6: \"Finding…\")", () => {
+  const BACKGROUND_ON_4: SettingsPatch = { nodes: { "4": { kind: "corrector", name: "Sky", pos: [1, 0], masks: { invert: false, items: [newMask("background")] } } }, links: [] };
+  const busy = (a: MockApi): Array<{ busy: boolean; cpu: boolean; finding: boolean }> => {
+    const seen: Array<{ busy: boolean; cpu: boolean; finding: boolean }> = [];
+    a.on("viewport_busy", (e) => seen.push(e));
+    return seen;
+  };
+  const tick = (ms = 10): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("is made on the first frame of a photo that has a Background row with the eye on, and said once: finding true while busy, then false", async () => {
+    const a = await open();
+    const seen = busy(a);
+    // No row, no map: a frame says nothing.
+    await a.viewportSetRect({ x: 0, y: 0, width: 640, height: 400, scale: 1 });
+    await tick();
+    expect(seen).toEqual([]);
+    // The row is added: the next frame makes the map.
+    const id = (await a.sessionState()).photos[3]!.id;
+    await a.updateSettings(id, { nodes: { "1": { masks: { items: [newMask("background")] } } } });
+    await tick(20);
+    expect(seen).toEqual([
+      { busy: true, cpu: false, finding: true },
+      { busy: false, cpu: false, finding: false },
+    ]);
+    // The photo has its map now: another change of the row says nothing more.
+    await a.updateSettings(id, { nodes: { "1": { masks: { edit: { "0": { level: 0.8 } } } } } });
+    await tick(20);
+    expect(seen).toHaveLength(2);
+  });
+
+  it("says nothing for a row with the eye off, and with the rows already there it is the photo's first frame that finds", async () => {
+    const off: SettingsPatch = { nodes: { "4": { kind: "corrector", name: "Sky", pos: [1, 0], masks: { invert: false, items: [{ ...newMask("background"), enabled: false }] } } }, links: [] };
+    const a = await open(off);
+    const seen = busy(a);
+    await a.viewportSetRect({ x: 0, y: 0, width: 600, height: 401, scale: 1 });
+    await tick();
+    expect(seen).toEqual([]);
+    a.reset();
+    // With the row already there, the photo's first frame is the one that finds the map.
+    const b = createMockApi({ speed: Number.POSITIVE_INFINITY, initialSettings: { DSC04204: BACKGROUND_ON_4 } });
+    api = b;
+    const found = busy(b);
+    await b.openPaths(["/photos"]);
+    b.flush();
+    await b.setCurrent((await b.sessionState()).photos[3]!.id);
+    await b.viewportSetRect({ x: 0, y: 0, width: 600, height: 402, scale: 1 });
+    await tick(20);
+    expect(found.filter((e) => e.busy)).toEqual([{ busy: true, cpu: false, finding: true }]);
+    expect(found.at(-1)).toEqual({ busy: false, cpu: false, finding: false });
   });
 });

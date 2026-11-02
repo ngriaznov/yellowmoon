@@ -278,7 +278,7 @@ test.describe("adding a mask", () => {
     await warmth(page);
     await page.getByRole("button", { name: "Add mask" }).click();
     const menu = page.getByRole("menu", { name: "Add mask" });
-    await expect(menu.getByRole("menuitem")).toHaveText([/^Linear/, /^Radial/, /^Brush/, /^Colour range/, /^Brightness range/]);
+    await expect(menu.getByRole("menuitem")).toHaveText([/^Background/, /^Linear/, /^Radial/, /^Brush/, /^Colour range/, /^Brightness range/]);
     await expect(menu.getByText("A gradient across the photo")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);
@@ -857,5 +857,129 @@ test.describe("the Brush tool", () => {
     await page.getByRole("tab", { name: "Mask", exact: true }).click();
     await expect(rowButton(page, "Brush mask, 2 strokes")).toBeVisible();
     expect((await brushRows(page))[0]).toEqual(copied);
+  });
+});
+
+// ---- The Background mask (docs/23 §4.6 and §7.6, task N-15) ----------------------------------------------------------------------------------
+
+/** The Background rows of node 4. */
+const backgroundRows = async (page: Page) => (await rowsOf(page, 4)).filter((r) => r.kind === "background") as Array<Row & { level: number; softness: number; feather: number; grow: number; refine: number }>;
+/** The mask the mock draws for a Background row in its Mask only picture: the row's Level and Softness are on the rect, the grey of each area in the map. */
+const backgroundDrawn = async (page: Page): Promise<string> => {
+  const svg = await picture(page);
+  return [...svg.matchAll(/<mask id="mvg\d+"[^>]*>(.*?)<\/mask>/gs)].map((m) => m[1]).join("|");
+};
+
+test.describe("the Background mask", () => {
+  test("adding a Background row selects it and shows the BACKGROUND card; the first frame says 'Finding…' with a spinner and then the row's own subtitle", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Background");
+    await expect(maskCard(page, "Background")).toBeVisible();
+    await expect(page.getByText("MASK · BACKGROUND")).toBeVisible();
+    // The mock takes 400 ms to make the photo's map, once: the row says so while it does.
+    await expect(page.locator(".ym-mask-row__sub[data-finding]")).toBeVisible();
+    await expect(page.locator(".ym-mask-row__sub[data-finding] svg")).toBeVisible();
+    await expect(rowButton(page, "Background mask, Finding…")).toBeVisible();
+    await expect(rowButton(page, "Background mask, Level 50")).toBeVisible();
+    await expect(page.locator(".ym-mask-row__sub[data-finding]")).toHaveCount(0);
+    // The card: Level and Softness, then the four raster sliders, at their defaults.
+    const sliders = maskCard(page, "Background").getByRole("slider");
+    await expect(sliders).toHaveCount(6);
+    expect(await sliders.evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))).toEqual(["Level", "Softness", "Refine edges", "Feather", "Grow", "Opacity"]);
+    expect(await backgroundRows(page)).toHaveLength(1);
+    expect(await backgroundRows(page)).toMatchObject([{ level: 0.5, softness: 0.5, feather: 0, grow: 0, refine: 0.5, opacity: 1, mode: "add" }]);
+    // Switching to another photo's map is a new finding; the same photo says it once.
+    await setValue(page, "Level", "60");
+    await expect.poll(async () => (await backgroundRows(page))[0]?.level).toBeCloseTo(0.6, 3);
+    await expect(page.locator(".ym-mask-row__sub[data-finding]")).toHaveCount(0);
+  });
+
+  test("Level and Softness change the Mask only picture, undo takes the change back, and the raster sliders write their fields", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Background");
+    await expect(rowButton(page, "Background mask, Level 50")).toBeVisible();
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await expect.poll(async () => await picture(page)).toContain("data-background-row");
+    const first = await backgroundDrawn(page);
+    expect(first).not.toBe("");
+    await setValue(page, "Level", "20");
+    await expect.poll(async () => (await backgroundRows(page))[0]?.level).toBeCloseTo(0.2, 3);
+    await expect(rowButton(page, "Background mask, Level 20")).toBeVisible();
+    await expect.poll(async () => await backgroundDrawn(page)).not.toBe(first);
+    const lowLevel = await backgroundDrawn(page);
+    await setValue(page, "Softness", "90");
+    await expect.poll(async () => (await backgroundRows(page))[0]?.softness).toBeCloseTo(0.9, 3);
+    await expect.poll(async () => await backgroundDrawn(page)).not.toBe(lowLevel);
+    // Undo takes the Softness back, then the Level, and the picture follows each.
+    await blur(page);
+    await page.keyboard.press("Meta+z");
+    await expect.poll(async () => (await backgroundRows(page))[0]?.softness).toBeCloseTo(0.5, 3);
+    await expect.poll(async () => await backgroundDrawn(page)).toBe(lowLevel);
+    await page.keyboard.press("Meta+z");
+    await expect.poll(async () => (await backgroundRows(page))[0]?.level).toBeCloseTo(0.5, 3);
+    await expect.poll(async () => await backgroundDrawn(page)).toBe(first);
+    await page.keyboard.press("Meta+Shift+z");
+    await expect.poll(async () => (await backgroundRows(page))[0]?.level).toBeCloseTo(0.2, 3);
+    // The four raster sliders.
+    await setValue(page, "Refine edges", "80");
+    await expect.poll(async () => (await backgroundRows(page))[0]?.refine).toBeCloseTo(0.8, 3);
+    await setValue(page, "Feather", "30");
+    await expect.poll(async () => (await backgroundRows(page))[0]?.feather).toBeCloseTo(0.3, 3);
+    await setValue(page, "Grow", "-25");
+    await expect.poll(async () => (await backgroundRows(page))[0]?.grow).toBeCloseTo(-0.25, 3);
+    await setValue(page, "Opacity", "70");
+    await expect.poll(async () => (await backgroundRows(page))[0]?.opacity).toBeCloseTo(0.7, 3);
+    // Reset puts the row back as a new Background in the same mode.
+    await maskCard(page, "Background").getByRole("button", { name: "Reset" }).click();
+    await expect.poll(async () => (await backgroundRows(page))[0]).toMatchObject({ level: 0.5, softness: 0.5, feather: 0, grow: 0, refine: 0.5, opacity: 1 });
+    await expect(rowButton(page, "Background mask, Level 50")).toBeVisible();
+  });
+
+  test("the mock's map: the sky is background at the default Level, the far hill is not, and a row with the eye off is no mask", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Background");
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await expect.poll(async () => await picture(page)).toContain("data-background-row");
+    // Three areas, in the order sky, hill, near ground: at Level 50 and Softness 50 the sky is lit, the hill dark.
+    const greys = [...(await backgroundDrawn(page)).matchAll(/fill="rgb\((\d+),\d+,\d+\)"/g)].map((m) => Number(m[1]));
+    expect(greys).toHaveLength(3);
+    expect(greys[0]).toBe(255);
+    expect(greys[1]).toBe(0);
+    expect(greys[2]).toBeGreaterThan(100);
+    expect(greys[2]).toBeLessThan(255);
+    // The eye off: the row is absent, so the node (with no row left) shows the whole photo.
+    await rowList(page).getByRole("button", { name: "Show this mask" }).click();
+    await expect.poll(async () => await picture(page)).not.toContain("data-background-row");
+  });
+
+  test("Copy settings and Paste carry the Background row, and the other photo finds its own map", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Background");
+    await setValue(page, "Level", "65");
+    await setValue(page, "Feather", "20");
+    await expect.poll(async () => (await backgroundRows(page))[0]?.feather).toBeCloseTo(0.2, 3);
+    await expect(rowButton(page, "Background mask, Level 65")).toBeVisible();
+    const copied = (await backgroundRows(page))[0]!;
+    const here = ((await page.getByRole("group", { name: "Photos" }).textContent()) ?? "").trim();
+    await page.getByRole("button", { name: "Copy settings" }).click();
+    await page.getByRole("button", { name: "Previous photo" }).click();
+    await expect(page.getByRole("group", { name: "Photos" })).not.toContainText(here);
+    await page.getByRole("button", { name: "Paste", exact: true }).click();
+    await expect(card(page, 4)).toBeVisible();
+    await card(page, 4).click();
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    // The row is the same, and the new photo's map is made for it.
+    await expect(rowButton(page, /^Background mask, (Level 65|Finding…)/)).toBeVisible();
+    await expect(rowButton(page, "Background mask, Level 65")).toBeVisible();
+    expect((await backgroundRows(page))[0]).toEqual(copied);
+  });
+
+  test("the Add mask menu lists Background first, in the Find group, with its line", async ({ page }) => {
+    await warmth(page);
+    await page.getByRole("button", { name: "Add mask" }).click();
+    const menu = page.getByRole("menu", { name: "Add mask" });
+    await expect(menu.getByRole("menuitem").first()).toHaveText(/^Background/);
+    await expect(menu.getByText("What is out of focus, from blur")).toBeVisible();
+    await expect(menu.getByText("Find", { exact: true })).toBeVisible();
   });
 });
