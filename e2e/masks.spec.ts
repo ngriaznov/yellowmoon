@@ -755,6 +755,7 @@ test.describe("the Brush tool", () => {
     await expect(page.getByRole("textbox", { name: "Size value" })).toHaveValue("100");
     // A small brush is within reach: Size 1 is 0.001025 of the long edge, under a pixel across on this cell (the circle is drawn at least 2 px wide).
     await setValue(page, "Size", "1");
+    await page.mouse.move(cell.x + cell.width * 0.4, cell.y + cell.height * 0.5);
     await expect.poll(async () => Number(await brushCursor(page).getAttribute("data-radius"))).toBeLessThanOrEqual(1);
   });
 
