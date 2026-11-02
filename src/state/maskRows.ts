@@ -11,14 +11,41 @@ import { GETTING_READY } from "./objectMask";
 
 export { widthSlider };
 
-/** What the subtitle of a Background row says while the photo's blur map is being made for the first time (`docs/23` §7.6). */
+/** What the subtitle of a raster row says while the core makes its mask for the first time (`docs/23` §7.6). */
 export const FINDING = "Finding…";
 
+/** What the subtitle of a Subject or People row says when Vision found no instance in the photo (`docs/23` §7.6). */
+export const NOTHING_FOUND = "Nothing found";
+
+/** What the subtitle of a Subject or People row says on a computer that cannot make it (`docs/23` §3.10 and §7.6; the core's `unsupported_row_sentence`). */
+export const UNSUPPORTED_ROW: Readonly<Record<"subject" | "people", string>> = {
+  subject: "Subject masks need a Mac that supports them",
+  people: "People masks need a Mac that supports them",
+};
+
 /**
- * Whether a row is waiting for its raster to be made: a Background row with the eye on while the core says it is making the photo's first
- * blur map (`viewport_busy.finding`). The row's subtitle is then {@link FINDING}, with a spinner.
+ * Whether a row is waiting for its raster to be made: a Background, Subject or People row with the eye on while the core says it is making the photo's
+ * first blur map or its Subject and People masks (`viewport_busy.finding`). The row's subtitle is then {@link FINDING}, with a spinner. (The flag is
+ * the photo's, not a row's: while the core finds one kind the other rows of these kinds say it too.)
  */
-export const isFinding = (row: MaskItem, finding: boolean): boolean => finding && row.kind === "background" && row.enabled;
+export const isFinding = (row: MaskItem, finding: boolean): boolean =>
+  finding && row.enabled && (row.kind === "background" || row.kind === "subject" || row.kind === "people");
+
+/** What the Mask tab knows about Subject and People on this computer and on the photo (`docs/23` §7.6). */
+export interface VisionRows {
+  /** The kinds this computer cannot make (the ones `mask_kinds` leaves out): their rows say so. Empty while the kinds are not known. */
+  unsupported: readonly MaskKind[];
+  /** The kinds whose newest mask for the photo found nothing (`vision_state`): their rows say "Nothing found". */
+  nothing: readonly MaskKind[];
+}
+
+/** Whether a Subject or People row is of a kind this computer cannot make: it stays in the list and selects nothing. */
+export const isUnsupported = (row: MaskItem, vision: VisionRows | undefined): boolean =>
+  (row.kind === "subject" || row.kind === "people") && (vision?.unsupported.includes(row.kind) ?? false);
+
+/** Whether a Subject or People row found nothing in the photo (the subtitle says so unless a new mask is being found). */
+export const foundNothing = (row: MaskItem, vision: VisionRows | undefined): boolean =>
+  (row.kind === "subject" || row.kind === "people") && row.enabled && (vision?.nothing.includes(row.kind) ?? false);
 
 /** What the core is doing for the Object rows of the photo on screen: SAM's encoder is getting the photo ready, or a click is being answered (`docs/23` §7.6). */
 export interface ObjectBusy {
@@ -113,10 +140,11 @@ export const selectionAfterRemove = (index: number, count: number): number | nul
 /**
  * The subtitle of a row (`docs/23` §7.6): "2 points", "1 point", "Box", "Box and 2 points" and, with none, "Click the object on this photo"
  * (Object); "Foreground" (Subject); "People"; "Level 50" (Background); "Feather 20" (Linear, Radial); "3 strokes", "1 stroke" and "Paint on the
- * photo" (Brush); "Width 40" (Colour range); "35 to 100" (Brightness range). The state of a mask being made ("Finding…", {@link isFinding}) is the
- * row's own, and the states of a Mac that cannot make one are the Mask tab's (N-12).
+ * photo" (Brush); "Width 40" (Colour range); "35 to 100" (Brightness range). A Subject or People row says "Subject masks need a Mac that supports them"
+ * where this computer cannot make it and "Nothing found" where Vision found no instance (`vision`). The state of a mask being made ("Finding…",
+ * {@link isFinding}) is the row's own.
  */
-export function maskSubtitle(row: MaskItem): string {
+export function maskSubtitle(row: MaskItem, vision?: VisionRows): string {
   switch (row.kind) {
     case "object": {
       const points = row.points.length;
@@ -125,9 +153,9 @@ export function maskSubtitle(row: MaskItem): string {
       return points > 0 ? plural(points, "point", "points") : "Click the object on this photo";
     }
     case "subject":
-      return "Foreground";
+      return isUnsupported(row, vision) ? UNSUPPORTED_ROW.subject : foundNothing(row, vision) ? NOTHING_FOUND : "Foreground";
     case "people":
-      return "People";
+      return isUnsupported(row, vision) ? UNSUPPORTED_ROW.people : foundNothing(row, vision) ? NOTHING_FOUND : "People";
     case "background":
       return `Level ${Math.round(row.level * 100)}`;
     case "linear":
@@ -143,8 +171,11 @@ export function maskSubtitle(row: MaskItem): string {
 }
 
 /**
- * The row's accessible name: the kind, "mask" and the subtitle ("Object mask, 2 points", "Radial mask, Feather 45"); with `finding`, a Background row
- * reads "Background mask, Finding…".
+ * The row's accessible name: the kind, "mask" and the subtitle ("Object mask, 2 points", "Radial mask, Feather 45"); with `finding`, a Background, Subject
+ * or People row reads "Background mask, Finding…"; a Subject row on a computer that cannot make one reads "Subject mask, Subject masks need a Mac that
+ * supports them".
  */
-export const maskRowLabel = (row: MaskItem, finding = false, object?: ObjectBusy): string =>
-  `${maskRowName(row)} mask, ${isFinding(row, finding) ? FINDING : (objectBusyText(row, object) ?? maskSubtitle(row))}`;
+export const maskRowLabel = (row: MaskItem, finding = false, object?: ObjectBusy, vision?: VisionRows): string =>
+  `${maskRowName(row)} mask, ${
+    isUnsupported(row, vision) ? maskSubtitle(row, vision) : isFinding(row, finding) ? FINDING : (objectBusyText(row, object) ?? maskSubtitle(row, vision))
+  }`;

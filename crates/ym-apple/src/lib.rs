@@ -11,6 +11,11 @@
 //! The binaries that depend on it link FoundationModels weakly when the bridge is in (`build.rs`
 //! explains why and how), so they still start on macOS 14 to 26.
 //!
+//! The crate has a second, separate bridge: [`vision`] (`swift/VisionMasks.swift`), Apple's Vision framework for the
+//! Subject and People masks (`docs/23-nodes.md` sections 3.10 and 4.5). It is built for both architectures of the
+//! universal binary wherever the SDK has the macOS 14 requests, with a normal link, and has its own gate in
+//! `build.rs` (`cfg(ym_apple_vision)`).
+//!
 //! The model runs on this Mac and nothing is sent anywhere (hard rule 7). Answers are not stored
 //! (hard rule 4); the core keeps them in the session's memory. Retries are the core's.
 //!
@@ -26,6 +31,14 @@ mod abi;
 mod bridge;
 #[cfg(test)]
 mod source_tests;
+pub mod vision;
+// Without the bridge only the tests use the conversions; they are tested on every platform.
+#[cfg_attr(not(ym_apple_vision), allow(dead_code))]
+mod vision_abi;
+#[cfg(ym_apple_vision)]
+mod vision_bridge;
+
+pub use vision::{AppleVision, system_vision};
 
 use std::sync::Arc;
 

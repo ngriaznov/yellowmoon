@@ -5,8 +5,8 @@ import { Spinner } from "@/components/glass/spinner";
 import type { MaskItem, MaskMode } from "../../api/types";
 import { Button, Segmented } from "../../components";
 import type { SegmentedOption } from "../../components";
-import { FINDING, isFinding, maskRowLabel, maskRowName, maskSubtitle, objectBusyText } from "../../state/maskRows";
-import type { ObjectBusy } from "../../state/maskRows";
+import { FINDING, isFinding, isUnsupported, maskRowLabel, maskRowName, maskSubtitle, objectBusyText } from "../../state/maskRows";
+import type { ObjectBusy, VisionRows } from "../../state/maskRows";
 import { MASK_KIND_ICON } from "./AddMaskMenu";
 
 /** The mockups' Invert glyph: a square split on its diagonal, the lower half filled. */
@@ -36,10 +36,12 @@ export interface MaskRowsProps {
   onRemove: (index: number) => void;
   /** Moves a row up or down the list (the context menu). */
   onMove: (index: number, by: -1 | 1) => void;
-  /** The core is making the photo's first blur map (`viewport_busy.finding`): a Background row with the eye on says "Finding…" with a spinner. */
+  /** The core is making the photo's first blur map or its Subject and People masks (`viewport_busy.finding`): a Background, Subject or People row with the eye on says "Finding…" with a spinner. */
   finding?: boolean;
   /** The core works for the photo's Object rows: SAM's encoder ("Getting ready…") or a click being answered ("Finding…"). */
   object?: ObjectBusy;
+  /** Subject and People on this computer and on this photo: the kinds it cannot make, and the ones that found nothing. */
+  vision?: VisionRows;
 }
 
 /**
@@ -48,22 +50,25 @@ export interface MaskRowsProps {
  * in the mask accent. A row's name is the kind, "mask" and the subtitle ("Radial mask, Feather 45"). **Delete or Backspace** on a row of the
  * list takes the row out (`MaskTab` handles the key for the whole card), and a right click offers **Move up · Move down · Delete mask**.
  * Choosing a row, or a control in it, selects it. While a raster is being made for the first time on a photo (a Background row's blur map) its
- * subtitle is a spinner and "Finding…" (`docs/23` §7.6); an Object row says "Getting ready…" while SAM's encoder runs and "Finding…" while a click is answered.
+ * subtitle is a spinner and "Finding…" (`docs/23` §7.6; so is a Subject or People row's while Vision's masks are made); an Object row says "Getting
+ * ready…" while SAM's encoder runs and "Finding…" while a click is answered. A Subject or People row on a computer that cannot make it says "Subject
+ * masks need a Mac that supports them" and one whose mask found nothing says "Nothing found".
  */
-export function MaskRows({ rows, selected, onSelect, onEdit, onRemove, onMove, finding = false, object }: MaskRowsProps) {
+export function MaskRows({ rows, selected, onSelect, onEdit, onRemove, onMove, finding = false, object, vision }: MaskRowsProps) {
   if (rows.length === 0) return null;
   return (
     <ul className="ym-mask-rows" aria-label="Masks of this node" data-mask-rows="">
       {rows.map((row, i) => {
         const name = maskRowName(row);
-        const busyText = isFinding(row, finding) ? FINDING : objectBusyText(row, object);
+        // A row this computer cannot make says so, whatever else the core is doing; one being made says "Finding…"; one that found nothing says that.
+        const busyText = isUnsupported(row, vision) ? null : isFinding(row, finding) ? FINDING : objectBusyText(row, object);
         return (
           <ContextMenu key={i}>
             <ContextMenuTrigger asChild>
               {/* glasscn's `Item`, as the Camera card's rows are. Choosing the row, or a control in it, selects it. */}
               <Item asChild size="sm" className="ym-mask-row" data-selected={selected === i || undefined} data-off={!row.enabled || undefined}>
                 <li data-index={i} onClick={() => onSelect(i)}>
-                  <button type="button" className="ym-mask-row__select" aria-label={maskRowLabel(row, finding, object)} aria-pressed={selected === i}>
+                  <button type="button" className="ym-mask-row__select" aria-label={maskRowLabel(row, finding, object, vision)} aria-pressed={selected === i}>
                     <span className="ym-mask-row__icon">{MASK_KIND_ICON[row.kind]}</span>
                     <span className="ym-mask-row__text" aria-hidden="true">
                       <span className="ym-mask-row__name">{name}</span>
@@ -73,7 +78,7 @@ export function MaskRows({ rows, selected, onSelect, onEdit, onRemove, onMove, f
                           {busyText}
                         </span>
                       ) : (
-                        <span className="ym-mask-row__sub">{maskSubtitle(row)}</span>
+                        <span className="ym-mask-row__sub">{maskSubtitle(row, vision)}</span>
                       )}
                     </span>
                   </button>

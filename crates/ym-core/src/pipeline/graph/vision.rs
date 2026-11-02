@@ -304,18 +304,16 @@ impl Renderer {
             let mut missing: Vec<VisionKind> = kinds
                 .iter()
                 .copied()
-                .filter(|&k| {
-                    !st.entries
-                        .iter()
-                        .any(|e| e.picture == hash && e.kind == k)
-                })
+                .filter(|&k| !st.entries.iter().any(|e| e.picture == hash && e.kind == k))
                 .collect();
             if missing.is_empty() {
                 return;
             }
-            if st.running.as_ref().is_some_and(|r| {
-                r.hash == hash && missing.iter().all(|k| r.kinds.contains(k))
-            }) {
+            if st
+                .running
+                .as_ref()
+                .is_some_and(|r| r.hash == hash && missing.iter().all(|k| r.kinds.contains(k)))
+            {
                 return;
             }
             if let Some(w) = st.wanted.as_ref().filter(|w| w.hash == hash) {
@@ -420,7 +418,9 @@ impl Renderer {
                     }
                 }
                 Err(RenderError::Cancelled) => {}
-                Err(e) => tracing::warn!(error = %e, "the picture for the Vision masks could not be made"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "the picture for the Vision masks could not be made")
+                }
             }
         }
         self.vision_notify(

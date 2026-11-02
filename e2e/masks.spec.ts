@@ -278,7 +278,7 @@ test.describe("adding a mask", () => {
     await warmth(page);
     await page.getByRole("button", { name: "Add mask" }).click();
     const menu = page.getByRole("menu", { name: "Add mask" });
-    await expect(menu.getByRole("menuitem")).toHaveText([/^Object/, /^Background/, /^Linear/, /^Radial/, /^Brush/, /^Colour range/, /^Brightness range/]);
+    await expect(menu.getByRole("menuitem")).toHaveText([/^Object/, /^Subject/, /^People/, /^Background/, /^Linear/, /^Radial/, /^Brush/, /^Colour range/, /^Brightness range/]);
     await expect(menu.getByText("A gradient across the photo")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);
@@ -991,11 +991,11 @@ test.describe("the Background mask", () => {
     expect((await backgroundRows(page))[0]).toEqual(copied);
   });
 
-  test("the Add mask menu lists Background in the Find group, after Object, with its line", async ({ page }) => {
+  test("the Add mask menu lists Background in the Find group, after Object, Subject and People, with its line", async ({ page }) => {
     await warmth(page);
     await page.getByRole("button", { name: "Add mask" }).click();
     const menu = page.getByRole("menu", { name: "Add mask" });
-    await expect(menu.getByRole("menuitem").nth(1)).toHaveText(/^Background/);
+    await expect(menu.getByRole("menuitem").nth(3)).toHaveText(/^Background/);
     await expect(menu.getByText("What is out of focus, from blur")).toBeVisible();
     await expect(menu.getByText("Find", { exact: true })).toBeVisible();
   });
@@ -1105,5 +1105,103 @@ test.describe("the Object tool", () => {
     await page.getByRole("button", { name: "Add mask" }).click();
     await expect(page.getByRole("menuitem", { name: /^Object/ })).toHaveCount(0);
     await expect(page.getByRole("menuitem", { name: /^Background/ })).toBeVisible();
+  });
+});
+
+// ---- Subject and People (docs/23 §3.10, §4.5 and §7.6, task N-19) -----------------------------------------------------------------------------
+
+const visionRows = async (page: Page) => (await rowsOf(page, 4)).filter((r) => r.kind === "subject" || r.kind === "people");
+/** A Subject or People row as a file or a paste would bring it. */
+const findRow = (kind: "subject" | "people", extra: Record<string, unknown> = {}) => ({ kind, mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, ...extra });
+
+test.describe("Subject and People", () => {
+  test("adding a Subject row says 'Finding…' while the core works, then 'Foreground'; the SUBJECT card has the four raster sliders; the Mask only view draws the far hill; undo takes it all back", async ({ page }) => {
+    // At the speed of a real run, so that "Finding…" is on the screen for the 500 ms the mock's Vision takes.
+    await warmth(page, { mockSpeed: 1 });
+    await addMask(page, "Subject");
+    await expect(rowButton(page, "Subject mask, Finding…")).toBeVisible();
+    await expect(rowList(page).getByText("Finding…")).toHaveAttribute("data-finding", "");
+    await expect(rowButton(page, "Subject mask, Foreground")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByText("Finding…")).toHaveCount(0);
+    // The card: nothing of its own, the sliders every raster card has.
+    await expect(maskCard(page, "Subject")).toBeVisible();
+    await expect(maskCard(page, "Subject").getByRole("slider")).toHaveCount(4);
+    for (const name of ["Refine edges", "Feather", "Grow", "Opacity"]) await expect(maskCard(page, "Subject").getByRole("slider", { name })).toBeVisible();
+    await expect(page.getByText("MASK · SUBJECT")).toBeVisible();
+    expect(await visionRows(page)).toEqual([findRow("subject")]);
+    // The view: a viewer never waits, so the mask is drawn once the core has made it; the mock draws the far hill.
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await expect.poll(async () => await picture(page)).toContain('data-vision-row="subject"');
+    // A slider writes its field and the view follows the Feather.
+    await setValue(page, "Feather", "30");
+    await expect.poll(async () => (await visionRows(page))[0]?.feather).toBe(0.3);
+    // Undo: the Feather, then the row; the picture follows.
+    await page.keyboard.press("ControlOrMeta+z");
+    await expect.poll(async () => (await visionRows(page))[0]?.feather).toBe(0);
+    await page.keyboard.press("ControlOrMeta+z");
+    await expect.poll(async () => (await visionRows(page)).length).toBe(0);
+    await expect.poll(async () => await picture(page)).not.toContain("data-vision-row");
+    await page.keyboard.press("ControlOrMeta+Shift+z");
+    await expect(rowButton(page, /^Subject mask/)).toBeVisible();
+  });
+
+  test("a People row finds a figure in a photo that has one and says 'Nothing found' in one that has none", async ({ page }) => {
+    // DSC04204 (the mockup's photo) has a person on its near ground; DSC04203, the photo before it, has none.
+    await warmth(page, {}, { "4": { kind: "corrector", name: "Warmth", pos: [3, 0], masks: { invert: false, items: [findRow("subject"), findRow("people")] } } });
+    await expect(rowButton(page, "People mask, People")).toBeVisible();
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await expect.poll(async () => await picture(page)).toContain('data-vision-row="people"');
+    expect(await picture(page)).toContain('data-vision-row="subject"');
+    await page.getByRole("button", { name: "Copy settings" }).click();
+    await page.getByRole("button", { name: "Previous photo" }).click();
+    await page.getByRole("button", { name: "Paste", exact: true }).click();
+    await expect(card(page, 4)).toBeVisible();
+    await card(page, 4).click();
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    // The rows came as rows, and the masks are worked out again from this photo's picture: Finding…, then its own words.
+    await expect(rowButton(page, /^Subject mask, (Finding…|Foreground)/)).toBeVisible();
+    await expect(rowButton(page, "People mask, Nothing found")).toBeVisible();
+    await expect(rowButton(page, "Subject mask, Foreground")).toBeVisible();
+    expect((await visionRows(page)).map((r) => r.kind)).toEqual(["subject", "people"]);
+    // Nothing found selects nothing: People is not in the Mask only picture of this photo, Subject is.
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await expect.poll(async () => await picture(page)).toContain('data-vision-row="subject"');
+    expect(await picture(page)).not.toContain('data-vision-row="people"');
+  });
+
+  test("Copy settings and Paste carry the rows to the other photo, which finds its own masks, and the paste is one undo step", async ({ page }) => {
+    await warmth(page, {}, { "4": { kind: "corrector", name: "Warmth", pos: [3, 0], masks: { invert: false, items: [findRow("subject", { feather: 0.2 })] } } });
+    await expect(rowButton(page, "Subject mask, Foreground")).toBeVisible();
+    await page.getByRole("button", { name: "Copy settings" }).click();
+    await page.getByRole("button", { name: "Next photo" }).click();
+    await page.getByRole("button", { name: "Paste", exact: true }).click();
+    await card(page, 4).click();
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    await expect(rowButton(page, /^Subject mask/)).toBeVisible();
+    expect(await visionRows(page)).toEqual([findRow("subject", { feather: 0.2 })]);
+    await page.keyboard.press("ControlOrMeta+z");
+    await expect(card(page, 4)).toHaveCount(0);
+  });
+
+  test("on a Mac that cannot make them (?mockMasks=nomac) the menu hides both; a row that a file brought says the sentence, selects nothing and has no card", async ({ page }) => {
+    await warmth(page, { mockMasks: "nomac" }, { "4": { kind: "corrector", name: "Warmth", pos: [3, 0], masks: { invert: false, items: [findRow("subject"), findRow("people")] } } });
+    await page.getByRole("button", { name: "Add mask" }).click();
+    const menu = page.getByRole("menu", { name: "Add mask" });
+    await expect(menu.getByRole("menuitem", { name: /^Object/ })).toBeVisible();
+    await expect(menu.getByRole("menuitem", { name: /^(Subject|People)/ })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await expect(rowButton(page, "Subject mask, Subject masks need a Mac that supports them")).toBeVisible();
+    await expect(rowButton(page, "People mask, People masks need a Mac that supports them")).toBeVisible();
+    await expect(rowList(page).getByText("Subject masks need a Mac that supports them")).toBeVisible();
+    // Nothing is being found, and no card shows for the row.
+    await expect(page.getByText("Finding…")).toHaveCount(0);
+    await rowButton(page, /^Subject mask/).click();
+    await expect(maskCard(page, "Subject")).toHaveCount(0);
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await expect.poll(async () => await picture(page)).toContain("data-mask-view");
+    expect(await picture(page)).not.toContain("data-vision-row");
+    // The rows are still in the settings: they select nothing, they are not taken out.
+    expect((await visionRows(page)).map((r) => r.kind)).toEqual(["subject", "people"]);
   });
 });

@@ -480,8 +480,9 @@ fn this_machine_makes_the_shapes_brush_and_the_ranges_that_are_built() {
         "Object needs its model, Subject and People the Vision probe"
     );
     assert_eq!(
-        ym_core::settings::mask_kinds_with(ym_core::settings::MaskSupport::bare().with_object(true))
-            [0],
+        ym_core::settings::mask_kinds_with(
+            ym_core::settings::MaskSupport::bare().with_object(true)
+        )[0],
         MaskKind::Object
     );
 }

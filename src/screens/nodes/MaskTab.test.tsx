@@ -258,11 +258,13 @@ describe("removing and moving a row", () => {
 });
 
 describe("the Add mask menu", () => {
-  it("lists exactly the kinds mask_kinds gives (Object, the shapes and the ranges that are built), in the groups of the spec, with their lines", async () => {
+  it("lists exactly the kinds mask_kinds gives (every kind by default), in the groups of the spec, with their lines", async () => {
     await setup();
     const menu = await openAddMenu();
     expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
       "ObjectClick the photo, or draw a box",
+      "SubjectThe main thing in the photo",
+      "PeopleEach person. macOS 14 or later",
       "BackgroundWhat is out of focus, from blur",
       "LinearA gradient across the photo",
       "RadialAn oval, soft at the edge",
@@ -272,8 +274,8 @@ describe("the Add mask menu", () => {
     ]);
     expect(within(menu).getByText("Shapes")).toBeInTheDocument();
     expect(within(menu).getByText("Keys")).toBeInTheDocument();
-    // Subject and People wait for N-19 (a Mac); Object (N-18) and Background (N-15) are made by the core, so the Find group has those two.
-    // Brush is made (N-13) and has its card and its drawing tool (N-14: `BrushTool.test.tsx`).
+    // Subject and People are Vision's, on a Mac that supports them (N-19: the next test and the one for `nomac` hide them); Object (N-18) and Background
+    // (N-15) are made by the core. Brush is made (N-13) and has its card and its drawing tool (N-14: `BrushTool.test.tsx`).
     expect(within(menu).getByText("Find")).toBeInTheDocument();
     expect(within(menu).queryByRole("menuitem", { name: /Brush/ })).not.toBeNull();
   });
@@ -542,6 +544,154 @@ describe("the BACKGROUND card (docs/23 §7.6, task N-15)", () => {
     // A round that is busy but finds nothing (a frame of a photo that has its map) says nothing.
     busy(false);
     expect(screen.queryByText("Finding…")).toBeNull();
+  });
+});
+
+describe("the SUBJECT and PEOPLE cards, rows and menu items (docs/23 §3.10 and §7.6, task N-19)", () => {
+  const VISION: SettingsPatch = {
+    nodes: {
+      "2": {
+        kind: "corrector",
+        name: "Vision",
+        pos: [1, 0],
+        masks: { invert: false, items: [newMask("subject"), { ...newMask("people"), mode: "subtract" } as MaskItem, { ...LINEAR }] },
+      },
+    },
+    links: [picture("input", 1), picture(1, 2), picture(2, "output")],
+  };
+  const busy = (finding: boolean, on = true): void => act(() => h!.api.emitEvent("viewport_busy", { busy: on, cpu: false, finding }));
+  const found = (nothing: Array<"subject" | "people">): void => act(() => h!.api.emitEvent("vision_state", { photo_id: h!.store.currentPhoto()!.id, nothing_found: nothing }));
+  const vision = (n = 2): Promise<UpdateSpy> => setup(VISION, {}, new RegExp(`^Node ${n}, Vision`));
+
+  it("the rows are named Subject and People with the subtitles 'Foreground' and 'People'", async () => {
+    await vision();
+    const rows = within(rowList()).getAllByRole("listitem");
+    expect(within(rows[0]!).getByRole("button", { name: "Subject mask, Foreground" })).toBeInTheDocument();
+    expect(within(rows[1]!).getByRole("button", { name: "People mask, People" })).toBeInTheDocument();
+    expect(rows[0]).toHaveTextContent("SubjectForeground");
+    expect(rows[1]).toHaveTextContent("PeoplePeople");
+  });
+
+  it("the SUBJECT card is the raster sliders, Refine edges at 50 %, Feather, Grow and Opacity, and nothing else", async () => {
+    await vision();
+    await h!.user.click(rowButton("Subject mask, Foreground"));
+    expect(cardTitles()).toEqual(["Masks", "Subject", "View"]);
+    expect(within(card("Subject")).getAllByRole("slider").map((x) => sliderName(x))).toEqual(["Refine edges", "Feather", "Grow", "Opacity"]);
+    expect(["Refine edges", "Feather", "Grow", "Opacity"].map((name) => valueOf(name))).toEqual(["50%", "0", "0", "100%"]);
+    // No tool, no note: Vision's mask has nothing of its own to set.
+    expect(within(card("Subject")).queryByRole("radio")).toBeNull();
+    await h!.user.click(rowButton("People mask, People"));
+    expect(cardTitles()).toEqual(["Masks", "People", "View"]);
+    expect(within(card("People")).getAllByRole("slider").map((x) => sliderName(x))).toEqual(["Refine edges", "Feather", "Grow", "Opacity"]);
+  });
+
+  it("each slider writes one field of the row with the scale of §4.5, as one row patch; Reset puts the row back as a new row of the kind in its mode", async () => {
+    const spy = await vision();
+    await h!.user.click(rowButton("People mask, People"));
+    spy.mockClear();
+    await type("Refine edges", "80");
+    await waitFor(() => expect(patches(spy).at(-1)).toEqual(edit(2, 1, { refine: 0.8 })));
+    await type("Feather", "35");
+    await waitFor(() => expect(patches(spy).at(-1)).toEqual(edit(2, 1, { feather: 0.35 })));
+    await type("Grow", "-40");
+    await waitFor(() => expect(patches(spy).at(-1)).toEqual(edit(2, 1, { grow: -0.4 })));
+    await type("Opacity", "60");
+    await waitFor(() => expect(patches(spy).at(-1)).toEqual(edit(2, 1, { opacity: 0.6 })));
+    expect(masks(2)[1]).toMatchObject({ kind: "people", mode: "subtract", refine: 0.8, feather: 0.35, grow: -0.4, opacity: 0.6 });
+    await undo();
+    await waitFor(() => expect(masks(2)[1]).toMatchObject({ opacity: 1, grow: -0.4 }));
+    await h!.user.click(within(card("People")).getByRole("button", { name: "Reset" }));
+    await waitFor(() => expect(masks(2)[1]).toEqual(newMask("people", "subtract")));
+  });
+
+  it("Add mask › Subject and › People add a row with its defaults, select it and show its card, as one patch", async () => {
+    const spy = await setup(FOUR, {}, /^Node 4, Warmth/);
+    for (const [name, kind, title] of [
+      ["Subject", "subject", "Subject"],
+      ["People", "people", "People"],
+    ] as const) {
+      const menu = await openAddMenu();
+      spy.mockClear();
+      await h!.user.click(within(menu).getByRole("menuitem", { name: new RegExp(`^${name}`) }));
+      await waitFor(() => expect(masks(4).at(-1)?.kind).toBe(kind));
+      expect(patches(spy)).toHaveLength(1);
+      expect(masks(4).at(-1)).toEqual(newMask(kind));
+      expect(cardTitles()).toEqual(["Masks", title, "View"]);
+      expect(h!.store.getState().maskRow).toBe(masks(4).length - 1);
+    }
+  });
+
+  it("says 'Finding…' with a spinner under the name while the core makes the masks (viewport_busy.finding), for rows that are on, and its own words after", async () => {
+    await vision();
+    busy(true);
+    await waitFor(() => expect(rowButton("Subject mask, Finding…")).toBeInTheDocument());
+    expect(rowButton("People mask, Finding…")).toBeInTheDocument();
+    const sub = within(rowOf("Subject mask, Finding…")).getByText("Finding…");
+    expect(sub).toHaveAttribute("data-finding");
+    expect(sub.querySelector("svg")).not.toBeNull();
+    // The Linear next to them says nothing of the sort.
+    expect(rowButton("Linear mask, Feather 20")).toBeInTheDocument();
+    busy(false, false);
+    await waitFor(() => expect(rowButton("Subject mask, Foreground")).toBeInTheDocument());
+    expect(screen.queryByText("Finding…")).toBeNull();
+  });
+
+  it("says 'Nothing found' for the kinds the core's last vision_state names, and goes back to its words when the list is empty", async () => {
+    await vision();
+    found(["people"]);
+    await waitFor(() => expect(rowButton("People mask, Nothing found")).toBeInTheDocument());
+    expect(within(rowOf("People mask, Nothing found")).getByText("Nothing found")).toBeInTheDocument();
+    expect(rowButton("Subject mask, Foreground")).toBeInTheDocument();
+    found(["subject", "people"]);
+    await waitFor(() => expect(rowButton("Subject mask, Nothing found")).toBeInTheDocument());
+    // "Finding…" comes first while the masks are being made again.
+    busy(true);
+    await waitFor(() => expect(rowButton("Subject mask, Finding…")).toBeInTheDocument());
+    busy(false, false);
+    await waitFor(() => expect(rowButton("Subject mask, Nothing found")).toBeInTheDocument());
+    found([]);
+    await waitFor(() => expect(rowButton("Subject mask, Foreground")).toBeInTheDocument());
+    expect(rowButton("People mask, People")).toBeInTheDocument();
+  });
+
+  it("a row with the eye off does not say 'Nothing found'", async () => {
+    await vision();
+    await h!.user.click(within(rowOf("People mask, People")).getByRole("button", { name: "Show this mask" }));
+    await waitFor(() => expect(masks(2)[1]?.enabled).toBe(false));
+    found(["people"]);
+    expect(rowButton("People mask, People")).toBeInTheDocument();
+    expect(screen.queryByText("Nothing found")).toBeNull();
+  });
+
+  it("on a computer that cannot make them (mask_kinds leaves them out) the menu hides both, the rows say so and select nothing, and no card shows", async () => {
+    await setup(VISION, { maskKinds: ["object", "background", "linear", "radial", "brush", "color_range", "brightness_range"] }, /^Node 2, Vision/);
+    // The menu has neither, and no heading was left empty.
+    const menu = await openAddMenu();
+    expect(within(menu).queryByRole("menuitem", { name: /^Subject/ })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: /^People/ })).toBeNull();
+    expect(within(menu).getByRole("menuitem", { name: /^Object/ })).toBeInTheDocument();
+    fireEvent.keyDown(menu, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Add mask" })).toBeNull());
+    // The rows stay, with the sentence of the spec, word for word.
+    await waitFor(() => expect(rowButton("Subject mask, Subject masks need a Mac that supports them")).toBeInTheDocument());
+    expect(rowButton("People mask, People masks need a Mac that supports them")).toBeInTheDocument();
+    expect(rowOf("Subject mask, Subject masks need a Mac that supports them")).toHaveTextContent("SubjectSubject masks need a Mac that supports them");
+    expect(masks(2).map((m) => m.kind)).toEqual(["subject", "people", "linear"]);
+    // They are not "Finding…": nothing is being made.
+    busy(true);
+    expect(screen.queryByText("Finding…")).toBeNull();
+    // A selected row has its row and no card: the sliders would do nothing.
+    await h!.user.click(rowButton("Subject mask, Subject masks need a Mac that supports them"));
+    expect(cardTitles()).toEqual(["Masks", "View"]);
+    // The Linear keeps its card.
+    await h!.user.click(rowButton("Linear mask, Feather 20"));
+    expect(cardTitles()).toEqual(["Masks", "Linear", "View"]);
+  });
+
+  it("does not say a row cannot be made before it knows what the computer can make: the rows' words are their own while the list is not known", async () => {
+    await vision();
+    expect(rowButton("Subject mask, Foreground")).toBeInTheDocument();
+    expect(h!.store.getState().maskKinds).not.toBeNull();
   });
 });
 

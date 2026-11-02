@@ -2850,6 +2850,19 @@ pub struct ObjectState {
     pub preparing: bool,
 }
 
+/// `vision_state { photo_id, nothing_found }` (addition): the core's worker for the Subject and People masks of a photo has ended
+/// its work, and `nothing_found` lists the kinds whose newest mask for the photo found nothing (`docs/23` section 7.6: their rows
+/// say "Nothing found"). Sent each time the worker ends, with the list as it is then; the rows say "Finding…" while it works
+/// (`viewport_busy.finding`), and the photo is drawn again with the masks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "vision_state")]
+pub struct VisionState {
+    /// The photo.
+    pub photo_id: PhotoId,
+    /// `subject` and/or `people`: the requests that found no instance.
+    pub nothing_found: Vec<MaskKind>,
+}
+
 /// Which side of `viewport_map_points` the points are given in (`docs/23` section 9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]

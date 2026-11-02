@@ -201,7 +201,8 @@ fn doctor_json_has_the_same_parts() {
 }
 
 /// The `Masks` row and the `masks` object of `ym doctor` (`docs/10` *doctor*): the kinds `mask_kinds()` gives the app,
-/// in the order of the Add mask menu, and the reason for each that this computer cannot make.
+/// in the order of the Add mask menu, and the reason for each that this computer cannot make. The sandbox's `ym` says
+/// Vision is not supported (`YELLOWMOON_TEST_VISION=none`), so the line is the same on a Mac that supports it.
 #[test]
 fn doctor_lists_the_masks_this_computer_can_make_and_why_not_the_others() {
     let sb = Sandbox::new();
@@ -219,7 +220,7 @@ fn doctor_lists_the_masks_this_computer_can_make_and_why_not_the_others() {
     let object =
         ym_core::pipeline::ObjectModel::probe(&data_dir()).is_some_and(|m| m.sam().is_ok());
     let rest = if cfg!(target_os = "macos") {
-        "Subject and People (this version of Yellowmoon can't make them yet)"
+        "Subject and People (this computer can't make them)"
     } else {
         "Subject and People (this is not a Mac that supports them)"
     };
@@ -264,6 +265,116 @@ fn doctor_lists_the_masks_this_computer_can_make_and_why_not_the_others() {
         unavailable["object"] = serde_json::json!("weights_missing");
     }
     assert_eq!(v["masks"]["unavailable"], unavailable);
+}
+
+/// A computer that supports the Vision requests (the fake: `YELLOWMOON_TEST_VISION=fake`) lists Subject and People after
+/// Object in the Masks line and in `masks.kinds`, as the Add mask menu does, and gives them no reason.
+#[test]
+fn doctor_lists_subject_and_people_where_this_computer_supports_them() {
+    let sb = Sandbox::new();
+    let object =
+        ym_core::pipeline::ObjectModel::probe(&data_dir()).is_some_and(|m| m.sam().is_ok());
+    let out = sb.ym_fake_vision().arg("doctor").assert().success();
+    let text = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("Masks"))
+        .unwrap_or_else(|| panic!("no Masks row in:\n{text}"))
+        .trim_start_matches("Masks")
+        .trim()
+        .to_owned();
+    let all = "Subject, People, Background, Linear, Radial, Brush, Colour range, Brightness range";
+    let expected = if object {
+        format!("Object, {all}")
+    } else {
+        format!("{all} · not available: Object (the SAM weights are missing)")
+    };
+    assert_eq!(line, expected);
+
+    let out = sb
+        .ym_fake_vision()
+        .args(["doctor", "--json"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
+    let mut kinds = vec![];
+    if object {
+        kinds.push("object");
+    }
+    kinds.extend([
+        "subject",
+        "people",
+        "background",
+        "linear",
+        "radial",
+        "brush",
+        "color_range",
+        "brightness_range",
+    ]);
+    assert_eq!(v["masks"]["kinds"], serde_json::json!(kinds));
+    let unavailable = if object {
+        serde_json::json!({})
+    } else {
+        serde_json::json!({ "object": "weights_missing" })
+    };
+    assert_eq!(v["masks"]["unavailable"], unavailable);
+}
+
+/// `ym doctor` reports Subject and People as this machine answers: on a Mac with Vision it asks Vision (the probe runs
+/// each request on a 64 x 64 picture); the answer is one of the four wire names, and Subject and People each have
+/// theirs. On a runner that is a virtual Mac the requests may not run: the test prints the answer plainly and passes.
+#[test]
+fn doctor_reports_subject_and_people_as_this_machine_answers() {
+    let sb = Sandbox::new();
+    let out = sb
+        .ym_system_vision()
+        .args(["doctor", "--json"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
+    let kinds: Vec<&str> = v["masks"]["kinds"]
+        .as_array()
+        .expect("kinds")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    for kind in ["subject", "people"] {
+        let supported = kinds.contains(&kind);
+        let why = v["masks"]["unavailable"][kind].as_str();
+        eprintln!(
+            "[vision] {kind} on this computer: {}",
+            if supported {
+                "supported"
+            } else {
+                why.unwrap_or("?")
+            }
+        );
+        // Exactly one of the two lists has the kind, and a reason is a wire name of the spec.
+        assert_eq!(supported, why.is_none(), "{kind}: {v}");
+        if let Some(why) = why {
+            assert!(
+                ["not_a_mac", "macos_too_old", "not_supported"].contains(&why),
+                "{kind}: {why}"
+            );
+        }
+        if !cfg!(target_os = "macos") {
+            assert_eq!(why, Some("not_a_mac"), "{kind}");
+        }
+    }
+    // The supported ones are after Object and before Background, in the menu's order.
+    if let (Some(s), Some(p), Some(b)) = (
+        kinds.iter().position(|k| *k == "subject"),
+        kinds.iter().position(|k| *k == "people"),
+        kinds.iter().position(|k| *k == "background"),
+    ) {
+        assert!(s < p && p < b, "{kinds:?}");
+    }
+    if std::env::var_os("YM_REQUIRE_VISION").is_some() {
+        assert!(
+            kinds.contains(&"subject") && kinds.contains(&"people"),
+            "YM_REQUIRE_VISION is set and this computer does not support the Vision requests: {v}"
+        );
+    }
 }
 
 #[test]

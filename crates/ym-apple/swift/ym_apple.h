@@ -1,9 +1,13 @@
 /*
- * ym_apple.h: the C interface of Apple Auto's Swift bridge (docs/19-apple-auto.md, section 11).
+ * ym_apple.h: the C interface of the Swift bridges of ym-apple: Apple Auto's (docs/19-apple-auto.md,
+ * section 11; the ym_apple_auto_* functions, AppleAuto.swift) and the Subject and People masks'
+ * (docs/23-nodes.md, sections 3.10 and 4.5; the ym_apple_mask_* functions, VisionMasks.swift).
  *
- * Implemented in AppleAuto.swift with @_cdecl and declared again, with the same types, in Rust
- * (crates/ym-apple/src/bridge.rs, the struct in src/abi.rs). A test reads this file and the Rust
- * declarations to keep the names in step. The Swift side takes `out` as a `void *` and writes the
+ * Implemented in Swift with @_cdecl and declared again, with the same types, in Rust
+ * (crates/ym-apple/src/bridge.rs and src/vision_bridge.rs, the struct in src/abi.rs, the codes in
+ * src/vision_abi.rs). A test reads this file and the Rust declarations to keep the names in step.
+ * The two bridges are built separately (build.rs): the Vision one on every Mac whose SDK has the
+ * macOS 14 requests, both architectures, the Apple Auto one on Apple silicon with the macOS 27 SDK. The Swift side takes `out` as a `void *` and writes the
  * fields at the offsets of the struct below (0, 4, ... 44, the scene at 48 and the plan at 176).
  *
  * Strings are UTF-8 and always NUL-terminated; a string longer than its buffer is cut at a
@@ -100,6 +104,46 @@ int32_t ym_apple_auto_os(char *buf, size_t len);
 int32_t ym_apple_auto_ask(const uint8_t *rgb, uint32_t width, uint32_t height,
                           const char *instructions, uint32_t timeout_ms, YmAppleAnswer *out,
                           char *message, size_t message_len);
+
+/*
+ * ---- Subject and People masks (docs/23 sections 3.10 and 4.5, docs/algorithms/06 section 5.3) ----
+ *
+ * Apple's Vision framework, on this Mac: VNGenerateForegroundInstanceMaskRequest (Subject) and
+ * VNGeneratePersonInstanceMaskRequest (People), both macOS 14 and later, behind
+ * #available(macOS 14.0, *). Nothing is sent anywhere. The same picture on the same Mac gives the
+ * same mask; another macOS version may answer differently. No Swift error crosses this interface.
+ */
+
+/* The kind argument of both functions. */
+#define YM_APPLE_MASK_SUBJECT 0
+#define YM_APPLE_MASK_PEOPLE 1
+
+/* The side of the picture the probe runs on, in pixels. */
+#define YM_APPLE_MASK_PROBE_PX 64
+
+/*
+ * Whether this Mac can run a request: it is made on a YM_APPLE_MASK_PROBE_PX square picture, and
+ * finding nothing in it counts as running. 0 supported, 1 macos_too_old, 2 not_supported (the
+ * request failed, a virtual Mac for example; also an unknown kind). May take a moment the first
+ * time (the model loads); the caller asks once per run and keeps the answer.
+ */
+int32_t ym_apple_mask_probe(int32_t kind);
+
+/*
+ * Runs a request on a picture of `width` x `height` pixels of 8-bit sRGB, 3 bytes per pixel, rows
+ * top to bottom, no padding (the Input's picture at 1024 px on the long edge), and writes the union
+ * of all its instances (`allInstances`, generateScaledMaskForImage(forInstances:from:)) into `out`:
+ * `width` x `height` floats in [0, 1], rows top to bottom. `out_len` is the number of floats `out`
+ * holds (at least width x height). Blocks the calling thread for the request; it reads `rgb` and
+ * writes `out` and `message` only before it returns, and may be called from any thread.
+ *
+ * 0 the mask is in `out`; 1 nothing found (no instance: `out` is all 0); 2 macos_too_old;
+ * 3 not_supported (the request could not run); 4 bad input (a NULL buffer, an empty picture, an
+ * unknown kind, `out` too small); 5 failed (the request ran and its mask could not be read). For a
+ * failure `message` (`message_len` bytes, NUL-terminated, may be NULL) gets Apple's text; else "".
+ */
+int32_t ym_apple_mask_make(int32_t kind, const uint8_t *rgb, uint32_t width, uint32_t height,
+                           float *out, size_t out_len, char *message, size_t message_len);
 
 #ifdef __cplusplus
 }

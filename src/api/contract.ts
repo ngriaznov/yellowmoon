@@ -61,6 +61,7 @@ export type FromCore = AllTrue<{
   viewportInfo: Assignable<B.ViewportInfo, T.ViewportInfo>;
   viewportBusy: Assignable<B.ViewportBusy, T.ViewportBusy>;
   objectState: Assignable<B.ObjectState, T.ObjectState>;
+  visionState: Assignable<B.VisionState, T.VisionState>;
   maskFindResult: Assignable<B.MaskFindResult, T.MaskFindResult>;
   appError: Assignable<B.AppError, T.AppError>;
   menuAction: Assignable<B.MenuAction, T.MenuAction>;

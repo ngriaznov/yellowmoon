@@ -4,12 +4,16 @@ import type { MaskKind, MaskMode, MasksPatch, MaskStyle, ResolvedSettings } from
 import { Button, Card, Field, KeyHint, ResetLink, RowNote, Segmented } from "../../components";
 import type { SegmentedOption } from "../../components";
 import { useAppState, useStore } from "../../state/context";
-import { editRow, MASKS_FULL, MAX_MASKS, movedMask, newMask, selectionAfterRemove, withMask, withoutMask } from "../../state/maskRows";
+import { editRow, isUnsupported, MASKS_FULL, MAX_MASKS, movedMask, newMask, selectionAfterRemove, withMask, withoutMask } from "../../state/maskRows";
+import type { VisionRows } from "../../state/maskRows";
 import { nodeOf, patchOf } from "../../state/settingsGraph";
 import type { AppStore } from "../../state/store";
 import { AddMaskMenu } from "./AddMaskMenu";
 import { CARD_KINDS, MaskCard } from "./MaskCards";
 import { InvertGlyph, MaskRows } from "./MaskRows";
+
+/** The kinds Apple's Vision makes (`docs/23` §3.10): the Add mask menu lists them only where the core says this computer can make them. */
+const VISION_KINDS: readonly MaskKind[] = ["subject", "people"];
 
 /** What the Masks card says under its rows (`docs/23` §7.6), word for word. */
 export const MASKS_ADD_UP = "Masks add up. Subtract cuts a mask out. Colour and brightness ranges keep only their part of the rest.";
@@ -82,6 +86,16 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
   const preparing = useAppState((s) => s.objectPreparing.includes(rs.photo_id));
   const objectFinding = useAppState((s) => s.objectFinding === rs.photo_id);
   const objectBusy = useMemo(() => ({ preparing, finding: objectFinding }), [preparing, objectFinding]);
+  // Subject and People (`docs/23` §3.10, §7.6): a row of a kind this computer cannot make (the kinds `mask_kinds` leaves out) says so and selects nothing;
+  // one whose mask found nothing says "Nothing found". The kinds are not known at first: no row says it cannot until they are.
+  const nothing = useAppState((s) => s.visionNothing[rs.photo_id]);
+  const vision = useMemo<VisionRows>(
+    () => ({
+      unsupported: kinds === null ? [] : VISION_KINDS.filter((k) => !kinds.includes(k)),
+      nothing: nothing ?? [],
+    }),
+    [kinds, nothing],
+  );
   const selected = stored !== null && stored < rows.length ? stored : null;
   const row = selected === null ? undefined : rows[selected];
   useEffect(() => store.ensureMaskKinds(), [store]);
@@ -154,11 +168,11 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
             </>
           }
         >
-          <MaskRows rows={rows} selected={selected} onSelect={select} onEdit={edit} onRemove={remove} onMove={move} finding={finding} object={objectBusy} />
+          <MaskRows rows={rows} selected={selected} onSelect={select} onEdit={edit} onRemove={remove} onMove={move} finding={finding} object={objectBusy} vision={vision} />
           <RowNote>{MASKS_ADD_UP}</RowNote>
         </Card>
       </div>
-      {row && selected !== null && CARD_KINDS.has(row.kind) ? (
+      {row && selected !== null && CARD_KINDS.has(row.kind) && !isUnsupported(row, vision) ? (
         <MaskCard
           key={`${selected}-${row.kind}`}
           store={store}

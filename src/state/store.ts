@@ -61,6 +61,7 @@ import type {
   NodeItem,
   NodeThumbnailsReady,
   ObjectState,
+  VisionState,
   OpenSummary,
   Orientation,
   PasteReport,
@@ -302,6 +303,11 @@ export interface AppState {
   objectPreparing: readonly PhotoId[];
   /** A `mask_find` is under way for this photo: its Object rows say "Finding…". */
   objectFinding: PhotoId | null;
+  /**
+   * The kinds whose newest Subject or People mask found nothing, by photo (`vision_state`, `docs/23` §7.6): their rows say "Nothing found". The core
+   * sends the list each time its worker ends; a photo it has not sent one for has none.
+   */
+  visionNothing: Readonly<Record<number, readonly MaskKind[]>>;
   /** The pill at the top of the photo, "Object found · 0.4 s", for three seconds after a find. */
   objectPill: { seq: number; text: string } | null;
   /** Undo and redo are available for the current photo. */
@@ -396,6 +402,7 @@ export function initialState(): AppState {
     objectTool: false,
     objectPreparing: [],
     objectFinding: null,
+    visionNothing: {},
     objectPill: null,
     canUndo: false,
     canRedo: false,
@@ -827,6 +834,7 @@ export class AppStore {
       api.on("export_busy", (e) => this.set({ exportBusy: e.busy })),
       api.on("viewport_busy", (e) => this.onViewportBusy(e)),
       api.on("object_state", (e) => this.onObjectState(e)),
+      api.on("vision_state", (e) => this.onVisionState(e)),
     ];
     void this.load();
     return () => this.disconnect();
@@ -1098,6 +1106,14 @@ export class AppStore {
     if (was === e.preparing) return;
     this.set({ objectPreparing: e.preparing ? [...this.state.objectPreparing, e.photo_id] : this.state.objectPreparing.filter((id) => id !== e.photo_id) });
     if (!e.preparing) this.wantNodeThumbnails(e.photo_id);
+  }
+
+  /** `vision_state`: the Subject and People worker ended its work for a photo. The rows whose request found nothing say so; the core draws the photo again and the nodes' thumbnails follow. */
+  private onVisionState(e: VisionState): void {
+    const was = this.state.visionNothing[e.photo_id] ?? [];
+    const same = was.length === e.nothing_found.length && was.every((k, i) => k === e.nothing_found[i]);
+    if (!same) this.set({ visionNothing: { ...this.state.visionNothing, [e.photo_id]: e.nothing_found } });
+    this.wantNodeThumbnails(e.photo_id);
   }
 
   private onFrame(frame: ViewportFrame): void {

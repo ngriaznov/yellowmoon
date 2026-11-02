@@ -132,7 +132,7 @@ import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
 import { copiedPatch, pastedOnto, refusalOfPatch, validateGraph } from "./fixtures/graph";
-import { hasBackgroundRow, hasObjectRow, maskViewSvg } from "./fixtures/maskView";
+import { hasBackgroundRow, hasObjectRow, maskViewSvg, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
 import { diffSettings } from "./state/history";
 import { cardStates, linkInto } from "./state/graphOps";
 import {
@@ -182,6 +182,8 @@ export const FINDING_MS = 400;
 export const ENCODER_MS = 900;
 /** How long one `mask_find` takes the mock (divided by `speed`): long enough for "Finding…" to show. */
 export const FIND_MS = 120;
+/** How long the mock's Vision takes to make a photo's Subject and People masks, in the background (divided by `speed`): long enough for "Finding…" to show. */
+export const VISION_MS = 500;
 /** What the decoder's time reads in the mock's "Object found" pill: 0.4 s. */
 export const FOUND_MS = 412;
 
@@ -487,9 +489,9 @@ export interface MockOptions {
    */
   cpu?: boolean;
   /**
-   * The kinds of mask the mock says this machine can make (`?mockMasks=`, `docs/23` §9, answered by `mask_kinds`). The default is the kinds
-   * that are built (Background, Linear, Radial, Brush, Colour range and Brightness range), `all` is every kind, `noai` leaves out Object, Subject
-   * and People, `nomac` leaves out Subject and People, and a comma list names the kinds.
+   * The kinds of mask the mock says this machine can make (`?mockMasks=`, `docs/23` §9, answered by `mask_kinds`). The default is every kind
+   * (`all`, also `built`), `noai` leaves out Object, Subject and People, `nomac` leaves out Subject and People (a Mac that cannot make them: the
+   * menu hides them and a row of the kind says "Subject masks need a Mac that supports them"), and a comma list names the kinds.
    */
   maskKinds?: readonly MaskKind[];
   /**
@@ -934,8 +936,8 @@ function withoutRetired(stored: Preferences): Preferences {
 
 /** Every kind of mask, in the order of the Add mask menu. */
 export const ALL_MASK_KINDS: readonly MaskKind[] = ["object", "subject", "people", "background", "linear", "radial", "brush", "color_range", "brightness_range"];
-/** The kinds the core can make today (`mask_kinds`): Object (where the SAM weights are), Background, the shapes, Brush and the ranges that are built. Subject and People come with N-19. */
-export const BUILT_MASK_KINDS: readonly MaskKind[] = ["object", "background", "linear", "radial", "brush", "color_range", "brightness_range"];
+/** The kinds the core can make: Object (where the SAM weights are), Subject and People (where this Mac supports them), Background, the shapes, Brush and the ranges: every kind. */
+export const BUILT_MASK_KINDS: readonly MaskKind[] = ALL_MASK_KINDS;
 
 /** The kinds a `?mockMasks=` value names: `all`, `noai`, `nomac`, `built`, or a comma list of kinds; null for anything else. */
 export function parseMockMasks(value: string | null): readonly MaskKind[] | null {
@@ -1540,6 +1542,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   let cpuFrameTimer: ReturnType<typeof setTimeout> | null = null;
   /** The photos whose blur map the mock has "made" (`viewport_busy.finding` says so once for each photo). */
   const blurMaps = new Set<PhotoId>();
+  /** The Subject and People masks the mock's Vision has made for each photo (`vision_state` says so once for each kind and photo), and the photos it is making them for. */
+  const visionReady = new Map<PhotoId, Set<string>>();
+  const visionTimers = new Map<PhotoId, ReturnType<typeof setTimeout>>();
   /** The photos whose Object features the mock has "made" (`object_state` says "preparing" for a moment, once for each photo). */
   const objectReady = new Set<PhotoId>();
   /** The encoder of the photos that are getting ready: when it ends, and what waits for it (`mask_find`). */
@@ -1655,7 +1660,14 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const [o, ex, ey] = [at(0, 0), at(1, 0), at(0, 1)];
     const [w, h] = [rec.summary.width_px, rec.summary.height_px];
     const frame = { width: w, height: h, matrix: [(ex[0] - o[0]) / w, (ex[1] - o[1]) / w, (ey[0] - o[0]) / h, (ey[1] - o[1]) / h, o[0], o[1]] as [number, number, number, number, number, number] };
-    return maskViewSvg(view.style, node.masks, { x: fit.x * width, y: fit.y * height, width: fit.width * width, height: fit.height * height }, frame);
+    // Vision's masks are in the picture once the background worker has made them, for the kinds this machine can make (the rows select nothing before).
+    const scene = visionFoundIn(rec.scene.name);
+    const ready = visionReady.get(rec.summary.id);
+    const found = {
+      subject: scene.subject && options.maskKinds.includes("subject") && (ready?.has("subject") ?? false),
+      people: scene.people && options.maskKinds.includes("people") && (ready?.has("people") ?? false),
+    };
+    return maskViewSvg(view.style, node.masks, { x: fit.x * width, y: fit.y * height, width: fit.width * width, height: fit.height * height }, frame, found);
   }
 
   /** The picture of the cell the fallback viewport would send: the developed scene letterboxed on paper, as many pixels as the cell has. */
@@ -1693,6 +1705,33 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     objectEncoders.set(id, entry);
   }
 
+  /**
+   * The core makes the Subject and People masks of the photo being looked at in the background as soon as such a row exists (`docs/23` §4.5): the viewport
+   * is busy and `finding` for `VISION_MS / speed` (a viewer never waits: the rows select nothing meanwhile), then `vision_state` says which kinds found
+   * nothing and the photo is drawn again with the masks. Once for each kind and photo; nothing where `mask_kinds` leaves the kind out (a Mac that cannot).
+   */
+  function prepareVision(rec: PhotoRecord): void {
+    const id = rec.summary.id;
+    const wanted = visionRowKinds(rec.settings).filter((k) => options.maskKinds.includes(k));
+    const ready = visionReady.get(id) ?? new Set<string>();
+    const missing = wanted.filter((k) => !ready.has(k));
+    if (missing.length === 0 || visionTimers.has(id)) return;
+    emitSoon("viewport_busy", { busy: true, cpu: options.cpu, finding: true });
+    visionTimers.set(
+      id,
+      setTimeout(() => {
+        visionTimers.delete(id);
+        const made = visionReady.get(id) ?? new Set<string>();
+        for (const kind of missing) made.add(kind);
+        visionReady.set(id, made);
+        emit("viewport_busy", { busy: false, cpu: options.cpu, finding: false });
+        const found = visionFoundIn(rec.scene.name);
+        emit("vision_state", { photo_id: id, nothing_found: visionRowKinds(rec.settings).filter((k) => made.has(k) && !found[k]) });
+        sendFrame();
+      }, VISION_MS / options.speed),
+    );
+  }
+
   /** Resolves when the photo's encoder is done (at once when it is not running). */
   function encoderDone(id: PhotoId): Promise<void> {
     const entry = objectEncoders.get(id);
@@ -1709,6 +1748,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const rec = photos[current];
     if (!rec || rec.phase < 3 || rec.skipReason) return;
     prepareObject(rec);
+    prepareVision(rec);
     const id = rec.summary.id;
     const finding = !blurMaps.has(id) && hasBackgroundRow(rec.settings);
     if (finding) blurMaps.add(id);
@@ -1722,7 +1762,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const ms = Math.max(finding ? FINDING_MS : 0, cpu ? CPU_FRAME_MS : 0);
     cpuFrameTimer = setTimeout(() => {
       cpuFrameTimer = null;
-      emit("viewport_busy", { busy: false, cpu, finding: false });
+      // The core's Subject and People worker goes on after the round that asked for the masks: the viewport stays finding until it ends.
+      const masks = visionTimers.size > 0;
+      emit("viewport_busy", { busy: masks, cpu, finding: masks });
     }, ms / options.speed);
   }
 
@@ -2509,6 +2551,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     nodeThumbTimers.clear();
     nodeThumbs.clear();
     blurMaps.clear();
+    visionReady.clear();
+    for (const timer of visionTimers.values()) clearTimeout(timer);
+    visionTimers.clear();
     objectReady.clear();
     for (const entry of objectEncoders.values()) clearTimeout(entry.timer);
     objectEncoders.clear();

@@ -1413,7 +1413,8 @@ fn the_kinds_of_mask_this_machine_makes_are_the_cores_and_cross_by_the_same_word
     let h = Harness::new();
     let kinds = h.api.mask_kinds().expect("kinds");
     // Object is first where the SAM weights are (`data/models/sam2`, `tools/fetch/sam2.sh`; CI's rust job fetches none), then the kinds that
-    // need nothing: Background, the shapes, Brush and the ranges. Subject and People come with N-19.
+    // need nothing: Background, the shapes, Brush and the ranges. Subject and People (N-19) follow the Vision probe: a harness has no
+    // provider, which is a computer that cannot make them, so they are not offered.
     let object = ym_core::pipeline::ObjectModel::probe(
         &ym_core::data_dir::find_data_dir().expect("the data folder"),
     )
@@ -1445,6 +1446,7 @@ fn the_kinds_of_mask_this_machine_makes_are_the_cores_and_cross_by_the_same_word
         })
         .collect();
     assert_eq!(serde_json::to_value(&kinds).expect("json"), json!(words));
+    assert!(!kinds.contains(&MaskKind::Subject) && !kinds.contains(&MaskKind::People));
     // Every kind of the core is a kind of the wire, by the same word.
     for core in ym_core::settings::MaskKind::ALL {
         let wire: MaskKind = convert(&core).expect("a kind of the wire");
@@ -4934,6 +4936,9 @@ fn row_patch(kind: &str) -> SettingsPatch {
         "object" => {
             json!({ "kind": "object", "mode": "add", "invert": false, "enabled": true, "opacity": 1, "points": [], "box": null, "feather": 0, "grow": 0, "refine": 0.5 })
         }
+        "subject" | "people" => {
+            json!({ "kind": kind, "mode": "add", "invert": false, "enabled": true, "opacity": 1, "feather": 0, "grow": 0, "refine": 0.5 })
+        }
         _ => {
             json!({ "kind": "radial", "mode": "add", "invert": false, "enabled": true, "opacity": 1, "center": [0.5, 0.5], "radii": [0.25, 0.18], "angle_deg": 0, "feather": 0.3 })
         }
@@ -5059,5 +5064,147 @@ fn mask_find_answers_in_the_shapes_of_the_wire_and_object_state_comes_as_events(
             x1: Num(0.6),
             y1: Num(0.7)
         }
+    );
+}
+
+// ---- Subject and People (N-19) ----------------------------------------------------------------------
+
+/// A computer that supports Subject and People (the fake Vision) offers them after the kinds that need a model, in the order of the
+/// Add mask menu, and by the same words on the wire; one that supports only People offers only People.
+#[test]
+fn subject_and_people_are_offered_where_the_probe_says_yes_and_by_their_words() {
+    use crate::wire::MaskKind;
+    use ym_core::settings::MaskUnavailable;
+    use ym_core::vision::{FakeVision, VisionStatus, VisionSupport};
+    let kinds_of = |h: &Harness| -> Vec<MaskKind> {
+        h.api
+            .mask_kinds()
+            .expect("kinds")
+            .into_iter()
+            .filter(|k| *k != MaskKind::Object)
+            .collect()
+    };
+    let h = Harness::with_vision(Arc::new(FakeVision::new()));
+    let kinds = kinds_of(&h);
+    assert_eq!(
+        kinds,
+        [
+            MaskKind::Subject,
+            MaskKind::People,
+            MaskKind::Background,
+            MaskKind::Linear,
+            MaskKind::Radial,
+            MaskKind::Brush,
+            MaskKind::ColorRange,
+            MaskKind::BrightnessRange
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(&kinds[..2]).expect("json"),
+        json!(["subject", "people"])
+    );
+    let h = Harness::with_vision(Arc::new(FakeVision::new().with_support(VisionSupport {
+        subject: VisionStatus::Unsupported(MaskUnavailable::NotSupported),
+        people: VisionStatus::Supported,
+    })));
+    assert_eq!(kinds_of(&h)[0], MaskKind::People);
+    assert!(!kinds_of(&h).contains(&MaskKind::Subject));
+    let h = Harness::with_vision(Arc::new(ym_core::vision::NoVision));
+    assert!(
+        !kinds_of(&h).contains(&MaskKind::Subject) && !kinds_of(&h).contains(&MaskKind::People)
+    );
+}
+
+/// The whole path through the shell: a Subject row on the photo being looked at starts the core's worker; the viewport is busy and
+/// finding while it works (`viewport_busy.finding`, which survives the end of the round that asked), and when it ends `vision_state`
+/// says which kinds found nothing and the photo is drawn again.
+#[test]
+fn a_subject_row_is_found_in_the_background_viewport_busy_says_finding_and_vision_state_comes_as_an_event()
+ {
+    use crate::events::AppEvent;
+    use crate::wire::MaskKind;
+    use ym_core::vision::{FakeAnswer, FakeVision, VisionKind};
+    let h = Harness::with_vision(Arc::new(
+        FakeVision::new().answering(VisionKind::People, FakeAnswer::NothingFound),
+    ));
+    h.open(1);
+    let id = h.develop().photos[0].id;
+    h.rect(300.0, 200.0);
+    h.api.set_current(id).expect("current");
+    h.frame_of_size(300, 200);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let both: SettingsPatch = serde_json::from_value(json!({ "nodes": { "1": { "masks": { "items": [
+        { "kind": "subject", "mode": "add", "invert": false, "enabled": true, "opacity": 1, "feather": 0, "grow": 0, "refine": 0.5 },
+        { "kind": "people", "mode": "add", "invert": false, "enabled": true, "opacity": 1, "feather": 0, "grow": 0, "refine": 0.5 },
+    ] } } } }))
+    .expect("a patch");
+    h.api.update_settings(id, &both).expect("the rows");
+    let states = || -> Vec<(PhotoId, Vec<MaskKind>)> {
+        h.events
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                AppEvent::VisionState(s) => Some((s.photo_id, s.nothing_found)),
+                _ => None,
+            })
+            .collect()
+    };
+    wait_until("the worker to end", || !states().is_empty());
+    assert_eq!(states(), [(id, vec![MaskKind::People])]);
+    // The viewport said it was finding while the worker ran, and not busy after it.
+    let busy = crate::testing::busy_events(&h.events);
+    assert!(
+        busy.iter().any(|b| b.busy && b.finding),
+        "no busy-and-finding event in {busy:?}"
+    );
+    wait_until("the viewport to be idle", || {
+        crate::testing::busy_events(&h.events)
+            .last()
+            .is_some_and(|b| !b.busy && !b.finding)
+    });
+    // A drawn frame follows the end of the worker (the masks are there).
+    let before = h.api.viewport().frames_presented();
+    h.api.update_settings(id, &both).expect("again");
+    assert!(h.api.viewport().wait_idle(WAIT));
+    assert!(h.api.viewport().frames_presented() >= before);
+}
+
+/// A computer that cannot make Subject (no provider here) keeps the row, draws the photo, starts no worker (so `viewport_busy` never
+/// says finding), and refuses to export it with the sentence of `docs/23` section 3.10 under the `mask` scope.
+#[test]
+fn a_subject_row_on_a_computer_that_cannot_make_it_selects_nothing_and_starts_no_worker() {
+    let h = Harness::new();
+    h.open(1);
+    let id = h.develop().photos[0].id;
+    h.rect(300.0, 200.0);
+    h.api.set_current(id).expect("current");
+    h.frame_of_size(300, 200);
+    h.api
+        .update_settings(id, &row_patch("subject"))
+        .expect("a Subject row is kept");
+    assert!(h.api.viewport().wait_idle(WAIT));
+    assert!(
+        crate::testing::busy_events(&h.events)
+            .iter()
+            .all(|b| !b.finding),
+        "{:?}",
+        crate::testing::busy_events(&h.events)
+    );
+    assert!(
+        h.events
+            .events()
+            .iter()
+            .all(|e| !matches!(e, crate::events::AppEvent::VisionState(_)))
+    );
+    let core = h.api.core();
+    let core_id = ym_core::session::PhotoId(id.0);
+    let sentence = core
+        .renderer
+        .unmakeable_mask(&core.session.settings(core_id).expect("settings").settings);
+    assert_eq!(
+        sentence.as_deref(),
+        Some(
+            "Node 1 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask."
+        )
     );
 }

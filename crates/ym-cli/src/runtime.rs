@@ -19,6 +19,7 @@ use ym_core::export_queue::{ExportEvent, ExportSink};
 use ym_core::preferences::PreferencesStore;
 use ym_core::scheduler::MemoryBudget;
 use ym_core::session::SessionError;
+use ym_core::vision::VisionMasks;
 use ym_gpu::device::GpuInfo;
 
 use crate::exit::{self, Failure};
@@ -267,6 +268,9 @@ impl Runtime {
         options
             .apple_auto_instructions
             .clone_from(&settings.auto_instructions);
+        // Subject and People masks (`docs/23` sections 3.10 and 4.5): this computer's Vision framework, or what
+        // `YELLOWMOON_TEST_VISION` says. The probe runs when something asks (a Subject or People row, `ym doctor`).
+        options.render.vision = Some(VisionMasks::new(ym_apple::system_vision()));
         let core = Core::open(options).map_err(|e| core_failure(&e))?;
         let choice = settings.auto.unwrap_or_default();
         Ok(Self::over(core, events, choice))

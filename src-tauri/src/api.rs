@@ -41,7 +41,7 @@ use crate::wire::{
     ObjectState, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample,
     Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
     SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
-    WatchStatus, convert,
+    VisionState, WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -78,6 +78,10 @@ pub struct AppConfig {
     /// `YELLOWMOON_TEST_AUTO_PROVIDERS` swaps them for fakes). Empty in the tests unless they give
     /// some, which is the same as every provider unavailable.
     pub advisors: ProviderAdvisors,
+    /// What makes the Subject and People masks (`docs/23` sections 3.10 and 4.5): in the app `ym_apple`'s system Vision
+    /// (this Mac's Vision framework, or what `YELLOWMOON_TEST_VISION` says); `None` in the tests unless they give one,
+    /// which is a computer that cannot make the masks.
+    pub vision: Option<Arc<dyn ym_core::vision::VisionProvider>>,
 }
 
 /// What the app starts when it launches: **no probe**. The programs' advisors are built with
@@ -122,6 +126,7 @@ impl AppConfig {
             decode_threads: None,
             watch: WatchConfig::default(),
             advisors: system_advisors(),
+            vision: Some(ym_apple::system_vision()),
         })
     }
 }
@@ -272,6 +277,7 @@ impl AppApi {
         options.home = config.home.clone();
         options.thumbnails = config.thumbnails;
         options.advisors = config.advisors.clone();
+        options.render.vision = config.vision.clone().map(ym_core::vision::VisionMasks::new);
         if let Some(threads) = config.decode_threads {
             options.decode_threads = threads;
         }
@@ -311,6 +317,40 @@ impl AppApi {
                         shared.estimates_changed(id);
                     }
                 }));
+        }
+        {
+            // The worker that makes the Subject and People masks of the photo being looked at (`docs/23` section 4.5): while
+            // it works the viewport is busy and finding (the rows say "Finding…", `viewport_busy.finding`); when it ends the
+            // photo is drawn again with the masks, and the page learns which kinds found nothing ("Nothing found").
+            let emitter = Arc::clone(&emitter);
+            let shared = Arc::clone(&shared);
+            core.renderer
+                .set_vision_listener(Arc::new(move |id, phase| match phase {
+                    ym_core::pipeline::VisionPhase::Started => shared.masks_finding(true),
+                    ym_core::pipeline::VisionPhase::Finished { nothing_found } => {
+                        shared.masks_finding(false);
+                        match convert::<_, Vec<MaskKind>>(&nothing_found) {
+                            Ok(nothing_found) => emitter.emit(AppEvent::VisionState(VisionState {
+                                photo_id: PhotoId(id.0),
+                                nothing_found,
+                            })),
+                            Err(e) => tracing::error!(error = %e, "vision_state did not convert"),
+                        }
+                        shared.estimates_changed(id);
+                    }
+                }));
+        }
+        if let Some(masks) = core.renderer.vision_masks() {
+            // Ask the computer once, off the thread that opens the app: the first Add mask menu then finds the answer
+            // there (`mask_kinds` waits for the same probe otherwise). It runs each Vision request on a 64 x 64 picture.
+            let spawned = std::thread::Builder::new()
+                .name("yellowmoon-vision-probe".to_owned())
+                .spawn(move || {
+                    let _ = masks.support();
+                });
+            if let Err(e) = spawned {
+                tracing::warn!(error = %e, "the Vision probe could not start early");
+            }
         }
         viewport.attach(&core)?;
         let thumbs = Thumbnails::new(Arc::clone(&emitter), Arc::clone(&frames));
@@ -558,8 +598,9 @@ impl AppApi {
         let current = self.core.session.current();
         if let Some(id) = current {
             self.core.renderer.navigate(id);
-            // A photo with an Object row is made ready for the person's clicks (`docs/23` section 4.4).
-            self.core.prepare_object(id);
+            // A photo with an Object row is made ready for the person's clicks (`docs/23` section 4.4), and one with a
+            // Subject or People row gets its masks made in the background (section 4.5).
+            self.core.prepare_masks(id);
         }
         self.viewport.set_photo(current);
     }

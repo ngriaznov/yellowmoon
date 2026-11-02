@@ -1240,6 +1240,16 @@ export interface ObjectState {
 }
 
 /**
+ * `vision_state` (addition): the core's worker for the Subject and People masks of a photo has ended its work (`docs/23` §4.5). `nothing_found` lists the
+ * kinds whose newest mask for the photo found nothing: their rows say "Nothing found" (§7.6). The rows say "Finding…" while the worker runs
+ * (`viewport_busy.finding`); when it ends the photo is drawn again with the masks. Sent each time the worker ends, with the list as it is then.
+ */
+export interface VisionState {
+  photo_id: PhotoId;
+  nothing_found: MaskKind[];
+}
+
+/**
  * Where in a node `sample_chroma` reads the colour (`docs/23` §9): `"warp_input"` (left out, or `null`) is the input of the node's colour warp,
  * after the node's own trim and grade (Pick colour of the Colour warp); `"node_input"` is the picture the node reads, before its trim and
  * grade, which is what a Colour range selects on (Pick colour of a Colour range).
@@ -1337,8 +1347,9 @@ export interface ViewportBusy {
   /** The raw stages of the photo run on the CPU. */
   cpu: boolean;
   /**
-   * The round makes the photo's first blur map for a Background mask (`docs/23` §7.6): the Background rows say "Finding…" until `busy` goes
-   * false. False for every other round, and once the photo has its map.
+   * The core makes the photo's first blur map for a Background mask in the round, or its Subject and People masks in the background (`docs/23`
+   * §7.6): the Background, Subject and People rows say "Finding…" until `busy` goes false. While the Subject and People worker runs, `busy` and
+   * `finding` stay true after the round that asked for the masks has ended. False otherwise, and once the photo has its map and its masks.
    */
   finding: boolean;
 }
@@ -1664,6 +1675,8 @@ export interface ApiEvents {
   viewport_busy: ViewportBusy;
   /** SAM's encoder started or stopped working for a photo (`docs/23` §7.6: the Object rows say "Getting ready…"). */
   object_state: ObjectState;
+  /** The Subject and People worker ended its work for a photo, and which kinds found nothing (`docs/23` §7.6: those rows say "Nothing found"). */
+  vision_state: VisionState;
 }
 
 /** Names of the events the core emits. */

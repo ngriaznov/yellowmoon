@@ -5,7 +5,8 @@
  * ellipse that fades out over its feather, a Linear is a gradient across the photo, a Brush is its strokes (a round-capped line of the stroke's
  * size, softened by its hardness and the row's Feather; an erase stroke is black over the paint before it, and a row's Invert swaps the two),
  * a Background is the flat scene's blur map cut by the row's Level and Softness (the sky is out of focus, the far hill is sharp, the near ground is
- * half way), an Object is the far hill (the scene's "mountain") with a round hole at every negative point and cut to the row's box, and every other kind selects nothing. That is enough
+ * half way), an Object is the far hill (the scene's "mountain") with a round hole at every negative point and cut to the row's box, a Subject is the far hill
+ * (Vision's "main thing") and a People is a figure standing on the near ground in the scenes that have one (the others find nothing), and every other kind selects nothing. That is enough
  * for the interface tests and the reference screenshots, not for pictures. Rows add (a row painted over the others in white) or
  * subtract (in black), the row's Invert and the node's Invert swap the two, and a node with no row shows 1: the whole photo.
  */
@@ -106,6 +107,34 @@ export const MOCK_BLUR = { sky: 0.95, hill: 0.05, near: 0.55 } as const;
 export const hasObjectRow = (settings: DevelopSettings): boolean =>
   settings.nodes.items.some((node) => node.kind === "corrector" && node.masks.items.some((row) => row.kind === "object" && row.enabled));
 
+/**
+ * The Subject and People rows with the eye on in the photo's graph, as the kinds the mock's Vision "works for" (`vision_state`, `viewport_busy.finding`), Subject
+ * first and each once; none for a graph with no such row.
+ */
+export const visionRowKinds = (settings: DevelopSettings): Array<"subject" | "people"> => {
+  const kinds = new Set<string>();
+  for (const node of settings.nodes.items) {
+    if (node.kind !== "corrector") continue;
+    for (const row of node.masks.items) if (row.enabled && (row.kind === "subject" || row.kind === "people")) kinds.add(row.kind);
+  }
+  return (["subject", "people"] as const).filter((k) => kinds.has(k));
+};
+
+/** What the mock's Vision finds in a photo of the flat scenes (`docs/23` §4.5): a subject in every one (the far hill), people only in some. */
+export interface VisionFound {
+  subject: boolean;
+  people: boolean;
+}
+
+/** The flat scenes that have a person standing on the near ground; Vision finds nothing for People in the others ("Nothing found"). */
+export const SCENES_WITH_PEOPLE: ReadonlySet<string> = new Set(["DSC04202", "DSC04204", "DSC04205", "DSC04207", "DSC04208", "DSC04212"]);
+
+/** What the mock's Vision finds in the scene with this name. */
+export const visionFoundIn = (sceneName: string): VisionFound => ({ subject: true, people: SCENES_WITH_PEOPLE.has(sceneName) });
+
+/** The person of the flat scenes that have one, in fractions of the picture: a head, and a body that stands on the near ground (`docs/23` §4.5). */
+export const PERSON = { x: 0.3, headY: 0.58, headRadius: 0.035, bodyY: 0.76, bodyRadiusX: 0.055, bodyRadiusY: 0.16 } as const;
+
 /** Whether the photo's graph has a Background row with the eye on: the mock then "makes" the photo's blur map on its first frame. */
 export const hasBackgroundRow = (settings: DevelopSettings): boolean =>
   settings.nodes.items.some((node) => node.kind === "corrector" && node.masks.items.some((row) => row.kind === "background" && row.enabled));
@@ -202,14 +231,57 @@ function objectShape(row: Extract<MaskItem, { kind: "object" }>, index: number, 
   return `<defs>${blurs.join("")}${mask}</defs><rect data-object-row="" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="${ink}" fill-opacity="${opacity}" mask="url(#${id})"/>`;
 }
 
+/**
+ * A Subject or People row on the flat scene: Vision's union of instances. Subject is the far hill (the scene's main thing, as the mock's Object finds it,
+ * the near ground in front of it); People is the figure of the scenes that have one. A request that found nothing, or that this computer cannot make
+ * (`found` false), selects nothing and paints no ink. The plane paints the row's ink where it is white, at the row's opacity, softened by the row's
+ * Feather like a Brush's. Grow and Refine edges are not drawn. A row's Invert draws the plane the other way round.
+ */
+function visionShape(row: Extract<MaskItem, { kind: "subject" | "people" }>, index: number, ink: string, box: MaskRect, found: VisionFound): string {
+  if (!found[row.kind]) return "";
+  const long = Math.max(box.width, box.height);
+  const opacity = Math.max(0, Math.min(1, row.opacity));
+  const id = `mvv${index}`;
+  const region = `filterUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}"`;
+  const at = (x: number, y: number): [string, string] => [round(box.x + x * box.width), round(box.y + y * box.height)];
+  let instances: string;
+  if (row.kind === "subject") {
+    const [hx, hy] = at(HILL.cx, HILL.cy);
+    const [nx, ny] = at(0, 0.74);
+    instances =
+      `<ellipse cx="${hx}" cy="${hy}" rx="${round(HILL.rx * box.width)}" ry="${round(HILL.ry * box.height)}" fill="#fff"/>` +
+      `<rect x="${nx}" y="${ny}" width="${round(box.width)}" height="${round(0.26 * box.height)}" fill="#000"/>`;
+  } else {
+    const [px, headY] = at(PERSON.x, PERSON.headY);
+    const [, bodyY] = at(PERSON.x, PERSON.bodyY);
+    instances =
+      `<circle cx="${px}" cy="${headY}" r="${round(PERSON.headRadius * long)}" fill="#fff"/>` +
+      `<ellipse cx="${px}" cy="${bodyY}" rx="${round(PERSON.bodyRadiusX * long)}" ry="${round(PERSON.bodyRadiusY * box.height)}" fill="#fff"/>`;
+  }
+  let plane = `<rect x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="#000"/>${instances}`;
+  const blurs: string[] = [];
+  const sigma = row.feather * 0.02 * long;
+  if (sigma >= 0.2) {
+    blurs.push(`<filter id="${id}f" ${region}><feGaussianBlur stdDeviation="${round(sigma)}"/></filter>`);
+    plane = `<g filter="url(#${id}f)">${plane}</g>`;
+  }
+  if (row.invert) {
+    blurs.push(`<filter id="${id}i" ${region}><feColorMatrix type="matrix" values="-1 0 0 0 1  0 -1 0 0 1  0 0 -1 0 1  0 0 0 1 0"/></filter>`);
+    plane = `<g filter="url(#${id}i)">${plane}</g>`;
+  }
+  const mask = `<mask id="${id}" maskUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}">${plane}</mask>`;
+  return `<defs>${blurs.join("")}${mask}</defs><rect data-vision-row="${row.kind}" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="${ink}" fill-opacity="${opacity}" mask="url(#${id})"/>`;
+}
+
 /** One row's gradient shape painted with `ink` (a luminance, "#fff" or "#000") at `m` and nothing outside; empty for a kind that selects nothing. */
-function rowShape(row: MaskItem, index: number, ink: string, box: MaskRect): string {
+function rowShape(row: MaskItem, index: number, ink: string, box: MaskRect, found: VisionFound): string {
   const long = Math.max(box.width, box.height);
   const id = `mv${index}`;
   const opacity = Math.max(0, Math.min(1, row.opacity));
   if (row.kind === "brush") return brushShape(row, index, ink, box);
   if (row.kind === "background") return backgroundShape(row, index, ink, box);
   if (row.kind === "object") return objectShape(row, index, ink, box);
+  if (row.kind === "subject" || row.kind === "people") return visionShape(row, index, ink, box, found);
   if (row.kind === "radial") {
     const [cx, cy] = row.center;
     const [rx, ry] = row.radii;
@@ -244,7 +316,7 @@ function rowShape(row: MaskItem, index: number, ink: string, box: MaskRect): str
  * The luminance mask of a node's rows over `box`: white where `m` is 1, black where it is 0. Rows that are off count as absent; a node
  * with no row at all is 1 everywhere, and its Invert makes it 0.
  */
-function maskContent(masks: MaskSettings, box: MaskRect): string {
+function maskContent(masks: MaskSettings, box: MaskRect, found: VisionFound): string {
   const rows = masks.items.filter((row) => row.enabled);
   const flip = masks.invert;
   const paper = (ink: string): string => `<rect x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="${ink}"/>`;
@@ -253,7 +325,7 @@ function maskContent(masks: MaskSettings, box: MaskRect): string {
   const first = rows[0];
   const base = first?.mode === "subtract" ? "#fff" : "#000";
   const shapes = rows
-    .map((row, i) => rowShape(row, i, row.mode === "subtract" ? "#000" : "#fff", box))
+    .map((row, i) => rowShape(row, i, row.mode === "subtract" ? "#000" : "#fff", box, found))
     .join("");
   const content = paper(base) + shapes;
   // The node's Invert is the same picture with the two inks exchanged.
@@ -264,11 +336,11 @@ function maskContent(masks: MaskSettings, box: MaskRect): string {
  * The SVG that draws a mask view over the picture at `box` (in the frame's pixels): `Overlay` tints the accent where the mask is 1,
  * `Mask only` paints the mask as grey over black. An empty string for no view.
  */
-export function maskViewSvg(style: MaskStyle, masks: MaskSettings, box: MaskRect, photo?: MaskPhoto): string {
+export function maskViewSvg(style: MaskStyle, masks: MaskSettings, box: MaskRect, photo?: MaskPhoto, found: VisionFound = { subject: true, people: false }): string {
   // The shapes are in the photo frame: drawn on a rectangle of the photo's own size and carried to the picture by its map (the turn and the crop).
   const content = photo
-    ? `<g transform="matrix(${photo.matrix.map(round).join(" ")})">${maskContent(masks, { x: 0, y: 0, width: photo.width, height: photo.height })}</g>`
-    : maskContent(masks, box);
+    ? `<g transform="matrix(${photo.matrix.map(round).join(" ")})">${maskContent(masks, { x: 0, y: 0, width: photo.width, height: photo.height }, found)}</g>`
+    : maskContent(masks, box, found);
   const mask = `<mask id="mvmask" maskUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}">${content}</mask>`;
   const invert = `<filter id="mvinvert"><feColorMatrix type="matrix" values="-1 0 0 0 1  0 -1 0 0 1  0 0 -1 0 1  0 0 0 1 0"/></filter>`;
   const rect = (fill: string, extra: string): string =>

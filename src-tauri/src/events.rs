@@ -39,7 +39,7 @@ use tauri_specta::Event;
 use crate::wire::{
     AppError, AutoStatusChanged, DownloadFound, ErrorEvent, ExportBusy, ExportProgress,
     LooksChanged, LooksImportProgress, NodeThumbnailsReady, ObjectState, PhotoId, PhotoProgress,
-    RenderStats, SettingsChanged, ThumbnailReady, ViewportBusy, ViewportFrame,
+    RenderStats, SettingsChanged, ThumbnailReady, ViewportBusy, ViewportFrame, VisionState,
 };
 
 /// The least time between two `render_stats` events, between two `viewport_busy` events, and between
@@ -79,6 +79,8 @@ pub enum AppEvent {
     ViewportFrame(ViewportFrame),
     /// `object_state` (addition): SAM's encoder started or stopped working for a photo.
     ObjectState(ObjectState),
+    /// `vision_state` (addition): the Subject and People worker ended its work for a photo, and which kinds found nothing.
+    VisionState(VisionState),
 }
 
 impl AppEvent {
@@ -101,6 +103,7 @@ impl AppEvent {
             Self::ViewportBusy(_) => "viewport_busy",
             Self::ViewportFrame(_) => "viewport_frame",
             Self::ObjectState(_) => "object_state",
+            Self::VisionState(_) => "vision_state",
         }
     }
 }
@@ -151,6 +154,7 @@ fn send<R: Runtime>(app: &tauri::AppHandle<R>, event: AppEvent) {
         AppEvent::ViewportBusy(e) => e.emit(app),
         AppEvent::ViewportFrame(e) => e.emit(app),
         AppEvent::ObjectState(e) => e.emit(app),
+        AppEvent::VisionState(e) => e.emit(app),
     };
     if let Err(e) = sent {
         tracing::debug!(event = name, error = %e, "could not send an event");

@@ -252,6 +252,7 @@ export const events = {
 	updateState: makeEvent<UpdateState>("update_state"),
 	viewportBusy: makeEvent<ViewportBusy>("viewport_busy"),
 	viewportFrame: makeEvent<ViewportFrame>("viewport_frame"),
+	visionState: makeEvent<VisionState>("vision_state"),
 };
 
 /* Types */
@@ -2927,6 +2928,19 @@ export type ViewportRect = {
 	height: number,
 	/**  Device pixels per CSS pixel. */
 	scale: number,
+};
+
+/**
+ *  `vision_state { photo_id, nothing_found }` (addition): the core's worker for the Subject and People masks of a photo has ended
+ *  its work, and `nothing_found` lists the kinds whose newest mask for the photo found nothing (`docs/23` section 7.6: their rows
+ *  say "Nothing found"). Sent each time the worker ends, with the list as it is then; the rows say "Finding…" while it works
+ *  (`viewport_busy.finding`), and the photo is drawn again with the masks.
+ */
+export type VisionState = {
+	/**  The photo. */
+	photo_id: PhotoId,
+	/**  `subject` and/or `people`: the requests that found no instance. */
+	nothing_found: MaskKind[],
 };
 
 /**  `looks_watch_downloads(enabled)`: whether the watcher is running, and why not when it was asked to. */

@@ -1,5 +1,5 @@
 /**
- * What the mock says for the Mask tab (`docs/23` §9): `mask_kinds` from `?mockMasks=` (the kinds that are built by default), `viewport_map_points`
+ * What the mock says for the Mask tab (`docs/23` §9): `mask_kinds` from `?mockMasks=` (every kind by default), `viewport_map_points`
  * between the photo frame and the cell as the core gives them (without the straightening and the zoom, which the mock's flat picture has not), and
  * the copy rule for the rows.
  */
@@ -27,10 +27,10 @@ async function open(settings: SettingsPatch = {}): Promise<MockApi> {
 }
 
 describe("mask_kinds (the Add mask menu's list)", () => {
-  it("is the seven kinds that are built (Object first, N-18), unless the page URL says otherwise", async () => {
+  it("is every kind (Object, Subject and People first, N-18 and N-19), unless the page URL says otherwise", async () => {
     const a = createMockApi({ speed: Number.POSITIVE_INFINITY });
     api = a;
-    expect(await a.maskKinds()).toEqual(["object", "background", "linear", "radial", "brush", "color_range", "brightness_range"]);
+    expect(await a.maskKinds()).toEqual(["object", "subject", "people", "background", "linear", "radial", "brush", "color_range", "brightness_range"]);
     expect(await a.maskKinds()).toEqual([...BUILT_MASK_KINDS]);
   });
 
@@ -184,5 +184,86 @@ describe("the blur map of a Background row (docs/23 §7.6: \"Finding…\")", () 
     await tick(20);
     expect(found.filter((e) => e.busy)).toEqual([{ busy: true, cpu: false, finding: true }]);
     expect(found.at(-1)).toEqual({ busy: false, cpu: false, finding: false });
+  });
+});
+
+describe("Subject and People (docs/23 §4.5 and §7.6, N-19)", () => {
+  const ROWS: SettingsPatch = { nodes: { "1": { masks: { items: [newMask("subject"), newMask("people")] } } } };
+  const events = (a: MockApi): { busy: Array<{ busy: boolean; cpu: boolean; finding: boolean }>; states: Array<{ photo_id: number; nothing_found: string[] }> } => {
+    const seen = { busy: [] as Array<{ busy: boolean; cpu: boolean; finding: boolean }>, states: [] as Array<{ photo_id: number; nothing_found: string[] }> };
+    a.on("viewport_busy", (e) => seen.busy.push(e));
+    a.on("vision_state", (e) => seen.states.push(e));
+    return seen;
+  };
+  const tick = (ms = 20): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+  /** The newest picture the mock's fallback viewport sent, decoded. */
+  const pictures = (a: MockApi): (() => string) => {
+    let url = "";
+    a.on("viewport_frame", (f) => (url = f.url));
+    return () => decodeURIComponent(url.replace(/^data:image\/svg\+xml;charset=utf-8,/, ""));
+  };
+
+  it("makes the masks in the background when the rows appear: finding while it works, then vision_state and not again", async () => {
+    const a = await open();
+    const seen = events(a);
+    const id = (await a.sessionState()).photos[3]!.id;
+    await a.updateSettings(id, ROWS);
+    await tick();
+    // DSC04204 has a figure on its near ground, so both requests find something.
+    expect(seen.busy).toEqual([
+      { busy: true, cpu: false, finding: true },
+      { busy: false, cpu: false, finding: false },
+    ]);
+    expect(seen.states).toEqual([{ photo_id: id, nothing_found: [] }]);
+    // The photo has its masks: another change of the rows says nothing more.
+    await a.updateSettings(id, { nodes: { "1": { masks: { edit: { "0": { feather: 0.3 } } } } } });
+    await tick();
+    expect(seen.busy).toHaveLength(2);
+    expect(seen.states).toHaveLength(1);
+  });
+
+  it("finds nothing for People in a scene with no person, and says so", async () => {
+    const a = createMockApi({ speed: Number.POSITIVE_INFINITY, initialSettings: { DSC04201: ROWS } });
+    api = a;
+    const seen = events(a);
+    await a.openPaths(["/photos"]);
+    a.flush();
+    const first = (await a.sessionState()).photos[0]!;
+    await a.setCurrent(first.id);
+    await a.viewportSetRect({ x: 0, y: 0, width: 600, height: 400, scale: 1 });
+    await tick();
+    expect(seen.states).toEqual([{ photo_id: first.id, nothing_found: ["people"] }]);
+  });
+
+  it("makes nothing on a computer that cannot (mask_kinds leaves the kinds out)", async () => {
+    const a = createMockApi({ speed: Number.POSITIVE_INFINITY, maskKinds: ["object", "background", "linear"], initialSettings: { DSC04204: ROWS } });
+    api = a;
+    const seen = events(a);
+    await a.openPaths(["/photos"]);
+    a.flush();
+    await a.setCurrent((await a.sessionState()).photos[3]!.id);
+    await a.viewportSetRect({ x: 0, y: 0, width: 600, height: 400, scale: 1 });
+    await tick();
+    expect(seen.busy.filter((e) => e.finding)).toEqual([]);
+    expect(seen.states).toEqual([]);
+  });
+
+  it("draws the far hill for a Subject and a figure for People in the Mask only picture once the masks are made, and nothing before", async () => {
+    const a = createMockApi({ speed: 1, viewport: "fallback", initialSettings: { DSC04204: ROWS } });
+    api = a;
+    const picture = pictures(a);
+    await a.openPaths(["/photos"]);
+    a.flush();
+    await a.setCurrent((await a.sessionState()).photos[3]!.id);
+    await a.viewportSetRect({ x: 0, y: 0, width: 600, height: 400, scale: 1 });
+    await a.viewportSetMode({ kind: "fit" }, { node: 1, style: "mask_only" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // A viewer never waits: the rows select nothing until the masks are there.
+    expect(picture()).toContain('data-mask-view="mask_only"');
+    expect(picture()).not.toContain("data-vision-row");
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const drawn = picture();
+    expect(drawn).toContain('data-vision-row="subject"');
+    expect(drawn).toContain('data-vision-row="people"');
   });
 });

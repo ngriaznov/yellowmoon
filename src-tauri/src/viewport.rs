@@ -50,7 +50,10 @@
 //! starts) and `finding` that the round makes the photo's first blur map for a Background mask
 //! (`Renderer::finding_masks`, asked the same way; the mask rows say "Finding…"), and `busy: false` when
 //! it is dropped. Only a change is sent, and the shell's throttle
-//! merges what a stream of rounds sends. The photo cell shows "Rendering on the CPU" from it.
+//! merges what a stream of rounds sends. The photo cell shows "Rendering on the CPU" from it. While the core's
+//! background worker makes Subject or People masks ([`Shared::masks_finding`]) the viewport is also busy and `finding`
+//! whatever the rounds say: the round that asked for the masks ends at once, and the rows keep saying "Finding…" until
+//! the masks are there.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, VecDeque};
@@ -911,10 +914,42 @@ pub struct Shared {
     core: OnceLock<Weak<Core>>,
     shutdown: AtomicBool,
     /// What the webview was last told with `viewport_busy` (not busy, not on the CPU, before anything
-    /// was sent). Held while a change is sent, so that the worker and a clear on another thread tell
-    /// the webview in the order they made the changes.
-    busy_told: Mutex<ViewportBusy>,
+    /// was sent), and what it is made from. Held while a change is sent, so that the worker and a clear on another
+    /// thread tell the webview in the order they made the changes.
+    busy_told: Mutex<BusyState>,
 }
+
+/// What `viewport_busy` is made from: the round the worker is in, and the masks the core makes in the background.
+#[derive(Debug, Clone, Copy)]
+struct BusyState {
+    /// What the worker's rounds say ([`BusyGuard`]); a clear ends it.
+    round: ViewportBusy,
+    /// How many background workers of the core are making Subject or People masks (`Renderer::set_vision_listener`):
+    /// while there is one the viewport is busy and `finding` (the rows say "Finding…") whatever the rounds say, because
+    /// the round that asked for the masks ends at once, with those rows selecting nothing, and the masks come later.
+    masks: usize,
+    /// What the webview was last told.
+    told: ViewportBusy,
+}
+
+impl BusyState {
+    /// What the webview should be told now.
+    fn effective(&self) -> ViewportBusy {
+        let mut busy = self.round;
+        if self.masks > 0 {
+            busy.busy = true;
+            busy.finding = true;
+        }
+        busy
+    }
+}
+
+/// Not busy, not on the CPU, not finding: what `viewport_busy` is before anything is sent.
+const IDLE: ViewportBusy = ViewportBusy {
+    busy: false,
+    cpu: false,
+    finding: false,
+};
 
 /// Holds `viewport_busy` true while a round renders, and sends it false when the round lets go of it,
 /// whichever way the round ends (a cancel, an error, the tile pass, a panic that unwinds).
@@ -947,24 +982,44 @@ impl Drop for BusyGuard<'_> {
 }
 
 impl Shared {
-    /// Sends `viewport_busy` when it says something the webview was not told last.
-    fn tell_busy(&self, busy: ViewportBusy) {
-        let mut told = lock(&self.busy_told);
-        if *told == busy {
+    /// Sends `viewport_busy` when it says something the webview was not told last. The state is held, so that the
+    /// event is the same whichever thread changed it.
+    fn flush_busy(&self, state: &mut BusyState) {
+        let busy = state.effective();
+        if state.told == busy {
             return;
         }
-        *told = busy;
+        state.told = busy;
         self.emitter.emit(AppEvent::ViewportBusy(busy));
     }
 
-    /// The viewport is not busy (the cell shows no photo): `viewport_busy` false, if it was true.
+    /// A round's own state (`busy: true` as it starts, `false` as it ends): sent when it says something the webview
+    /// was not told last.
+    fn tell_busy(&self, busy: ViewportBusy) {
+        let mut state = lock(&self.busy_told);
+        state.round = busy;
+        self.flush_busy(&mut state);
+    }
+
+    /// The viewport is not busy (the cell shows no photo): `viewport_busy` false, if it was true, unless the core is
+    /// still making masks for the rows to say "Finding…".
     fn tell_idle(&self) {
-        let mut told = lock(&self.busy_told);
-        if !told.busy {
-            return;
-        }
-        told.busy = false;
-        self.emitter.emit(AppEvent::ViewportBusy(*told));
+        let mut state = lock(&self.busy_told);
+        state.round.busy = false;
+        self.flush_busy(&mut state);
+    }
+
+    /// The core's background worker for Subject and People masks started (`on`) or ended its work for a photo
+    /// (`docs/23` section 7.6): `viewport_busy` is busy and `finding` while any is making masks, so the rows say
+    /// "Finding…" until the masks are there.
+    pub fn masks_finding(&self, on: bool) {
+        let mut state = lock(&self.busy_told);
+        state.masks = if on {
+            state.masks + 1
+        } else {
+            state.masks.saturating_sub(1)
+        };
+        self.flush_busy(&mut state);
     }
 
     /// A new frame is wanted: an input, a settings patch, a look, a cell that moved or kept its
@@ -1390,10 +1445,10 @@ impl Viewport {
                 sink,
                 core: OnceLock::new(),
                 shutdown: AtomicBool::new(false),
-                busy_told: Mutex::new(ViewportBusy {
-                    busy: false,
-                    cpu: false,
-                    finding: false,
+                busy_told: Mutex::new(BusyState {
+                    round: IDLE,
+                    masks: 0,
+                    told: IDLE,
                 }),
             }),
             worker: Mutex::new(None),
@@ -2151,6 +2206,57 @@ mod tests {
         };
         drop(BusyGuard::new(&shared, false, true));
         assert_eq!(busy_events(&events)[6..], [finding, busy(false, false)]);
+    }
+
+    /// While the core makes Subject or People masks in the background the viewport is busy and finding, whatever the rounds say: the
+    /// round that asked for them ends at once, and "Finding…" stays until the worker ends (`docs/23` section 7.6, N-19).
+    #[test]
+    fn the_background_masks_keep_the_viewport_finding_after_the_round_that_asked_for_them() {
+        let (vp, events) = controller();
+        let shared = vp.shared();
+        let finding = ViewportBusy {
+            busy: true,
+            cpu: false,
+            finding: true,
+        };
+        // The worker starts while nothing is drawn: busy and finding.
+        shared.masks_finding(true);
+        assert_eq!(busy_events(&events), [finding]);
+        // A round comes and goes (it selects nothing for those rows): the viewport stays finding.
+        drop(BusyGuard::new(&shared, false, false));
+        assert_eq!(busy_events(&events), [finding]);
+        // A round on the CPU adds its own word ("cpu") and its end takes nothing away while the worker works: one event.
+        drop(BusyGuard::new(&shared, true, false));
+        assert_eq!(
+            busy_events(&events)[1..],
+            [ViewportBusy {
+                busy: true,
+                cpu: true,
+                finding: true
+            }]
+        );
+        // A clear (the cell shows no photo) cannot end it either.
+        shared.clear_sink();
+        // The worker ends: not busy, not finding.
+        shared.masks_finding(false);
+        let last = *busy_events(&events).last().expect("an event");
+        assert!(!last.busy && !last.finding, "{last:?}");
+        // Two workers (two photos in a hurry) keep it until both have ended; an extra end does no harm.
+        shared.masks_finding(true);
+        shared.masks_finding(true);
+        shared.masks_finding(false);
+        assert!(
+            busy_events(&events)
+                .last()
+                .is_some_and(|b| b.busy && b.finding)
+        );
+        shared.masks_finding(false);
+        shared.masks_finding(false);
+        assert!(
+            busy_events(&events)
+                .last()
+                .is_some_and(|b| !b.busy && !b.finding)
+        );
     }
 
     #[test]

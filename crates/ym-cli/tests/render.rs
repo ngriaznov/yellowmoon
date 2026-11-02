@@ -679,12 +679,14 @@ fn a_photo_that_needs_a_mask_this_computer_cannot_make_fails_with_the_mask_error
     let sb = Sandbox::new();
     sb.arw("a_plain.ARW");
     sb.arw("b_subject.ARW");
+    sb.arw("c_people.ARW");
     sb.arw("d_background.ARW");
     sb.arw("e_off.ARW");
     let file = sb.root().join("per-file.json");
     let doc = |rows: &str| serde_json::from_str::<Value>(&masked_file(rows)).expect("a document");
     let doc_text = serde_json::json!({
         "b_subject.ARW": doc(r#"{ "kind": "subject" }"#),
+        "c_people.ARW": doc(r#"{ "kind": "people" }"#),
         "d_background.ARW": doc(r#"{ "kind": "background" }"#),
         // The eye is off: the row is absent, the photo renders.
         "e_off.ARW": doc(r#"{ "kind": "subject", "enabled": false }"#),
@@ -698,22 +700,25 @@ fn a_photo_that_needs_a_mask_this_computer_cannot_make_fails_with_the_mask_error
         .assert()
         .code(1);
     let objects = json_lines(&out.get_output().stdout);
-    assert_eq!(objects.len(), 4);
+    assert_eq!(objects.len(), 5);
     let find = |name: &str| {
         objects
             .iter()
             .find(|o| o["input"].as_str().is_some_and(|i| i.ends_with(name)))
             .unwrap_or_else(|| panic!("no record for {name}"))
     };
-    let mac = cfg!(target_os = "macos");
     // The Object row's own sentence, which depends on the weights, is `an_object_row_without_the_model_is_the_mask_error_and_with_it_the_photo_renders`.
-    {
-        let name = "b_subject.ARW";
-        let sentence = if mac {
-            "Node 2 has a Subject mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon."
-        } else {
-            "Node 2 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask."
-        };
+    // Subject and People: the sentences of `docs/23` section 3.10 on every computer (the sandbox's `ym` says Vision is not supported).
+    for (name, sentence) in [
+        (
+            "b_subject.ARW",
+            "Node 2 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask.",
+        ),
+        (
+            "c_people.ARW",
+            "Node 2 has a People mask, and this computer cannot make one. Use a Mac that supports People masks, or remove the mask.",
+        ),
+    ] {
         let o = find(name);
         assert_eq!(o["status"], "error", "{name}");
         assert_eq!(o["output"], Value::Null, "{name}");
@@ -742,6 +747,77 @@ fn a_photo_that_needs_a_mask_this_computer_cannot_make_fails_with_the_mask_error
             .join("d_background_signature.jpg")
             .exists()
     );
+}
+
+/// The same settings file on a computer that supports Subject and People (the fake Vision: `YELLOWMOON_TEST_VISION=fake`): both
+/// photos render, the rows act (the picture is not the one of the node without them), and the report says what the settings were.
+/// The same file twice gives the same bytes (`docs/23` section 5.10).
+#[test]
+fn subject_and_people_rows_render_where_this_computer_supports_them_and_act() {
+    let sb = Sandbox::new();
+    sb.arw("a_subject.ARW");
+    sb.arw("b_people.ARW");
+    sb.arw("c_none.ARW");
+    let doc = |rows: &str| serde_json::from_str::<Value>(&masked_file(rows)).expect("a document");
+    let file = sb.root().join("per-file.json");
+    let doc_text = serde_json::json!({
+        "a_subject.ARW": doc(r#"{ "kind": "subject", "feather": 0.2 }"#),
+        "b_people.ARW": doc(r#"{ "kind": "people" }"#),
+        "c_none.ARW": doc(""),
+    });
+    std::fs::write(&file, doc_text.to_string()).expect("write");
+    let run = |out: &str| {
+        let out = sb
+            .ym_fake_vision()
+            .args([
+                "render",
+                "--cpu",
+                "--json",
+                "--format",
+                "tiff",
+                "--bits",
+                "16",
+                "--settings",
+            ])
+            .arg(&file)
+            .args(["--out", out])
+            .arg(sb.photos())
+            .assert()
+            .success();
+        json_lines(&out.get_output().stdout)
+    };
+    let first = run("out-1");
+    assert_eq!(first.len(), 3);
+    for o in &first {
+        assert_eq!(o["status"], "ok", "{o}");
+    }
+    let path = |dir: &str, name: &str| sb.root().join(dir).join(format!("{name}_signature.tif"));
+    let bytes = |p: std::path::PathBuf| {
+        std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+    };
+    // The rows act: the mask is a part of the picture, the trim of 0.7 stop reaches that part only, so the same photo with an empty
+    // node is another file.
+    let none = bytes(path("out-1", "c_none"));
+    assert_ne!(
+        bytes(path("out-1", "a_subject")),
+        none,
+        "Subject changed no pixel"
+    );
+    assert_ne!(
+        bytes(path("out-1", "b_people")),
+        none,
+        "People changed no pixel"
+    );
+    // The same file again: the same bytes.
+    let second = run("out-2");
+    assert_eq!(second.len(), 3);
+    for name in ["a_subject", "b_people", "c_none"] {
+        assert_eq!(
+            bytes(path("out-1", name)),
+            bytes(path("out-2", name)),
+            "{name} is not the same file twice"
+        );
+    }
 }
 
 /// A copy of Yellowmoon with no Object model (`data/models/sam2` is not there, or does not load): an Object row stops that photo with

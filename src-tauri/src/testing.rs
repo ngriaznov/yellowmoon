@@ -88,10 +88,30 @@ impl Harness {
         Self::with_files(watch, advisors, None)
     }
 
+    /// An app whose Subject and People masks come from `provider` (`docs/23` section 4.5: a `FakeVision`, or a computer
+    /// that supports nothing); the other harnesses have none, which is a computer that cannot make them.
+    pub(crate) fn with_vision(provider: Arc<dyn ym_core::vision::VisionProvider>) -> Self {
+        Self::build(
+            WatchConfig::default(),
+            ProviderAdvisors::default(),
+            None,
+            Some(provider),
+        )
+    }
+
     fn with_files(
         watch: WatchConfig,
         advisors: ProviderAdvisors,
         preferences: Option<&str>,
+    ) -> Self {
+        Self::build(watch, advisors, preferences, None)
+    }
+
+    fn build(
+        watch: WatchConfig,
+        advisors: ProviderAdvisors,
+        preferences: Option<&str>,
+        vision: Option<Arc<dyn ym_core::vision::VisionProvider>>,
     ) -> Self {
         let photos = tempfile::tempdir().expect("photos");
         let app_root = tempfile::tempdir().expect("app root");
@@ -117,6 +137,7 @@ impl Harness {
             decode_threads: Some(2),
             watch,
             advisors,
+            vision,
         };
         // Only the folders of the test: `CliLink::new` also names the real `/usr/local/bin` and
         // `/opt/homebrew/bin` of a Mac, where a test would look at (and replace) the link of the

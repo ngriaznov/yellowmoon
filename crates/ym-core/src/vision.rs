@@ -437,7 +437,9 @@ impl VisionProvider for FakeVision {
         };
         match answer {
             FakeAnswer::NothingFound => return Ok(VisionMask::NothingFound),
-            FakeAnswer::Fail => return Err(VisionError::Failed("The fake Vision failed.".to_owned())),
+            FakeAnswer::Fail => {
+                return Err(VisionError::Failed("The fake Vision failed.".to_owned()));
+            }
             FakeAnswer::Mask => {}
         }
         let (w, h) = (picture.width, picture.height);

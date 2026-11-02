@@ -5,6 +5,11 @@
 //! look library into it (so a test never touches the real app folder) and `YELLOWMOON_DATA` at the
 //! repository's `data/`.
 //!
+//! Subject and People (`docs/23` section 4.5): [`Sandbox::ym`] also sets `YELLOWMOON_TEST_VISION=none`, so a computer
+//! that supports the Vision requests answers as one that does not, and a test that expects the sentences of section
+//! 3.10 gives them everywhere; [`Sandbox::ym_fake_vision`] gives the deterministic fake provider and
+//! [`Sandbox::ym_system_vision`] this computer's own Vision.
+//!
 //! Auto providers (`docs/19`, `docs/22`): [`Sandbox::ym`] sets `YELLOWMOON_TEST_APPLE_AUTO=none`, so Apple
 //! Auto is not available, for the reason a build without the bridge gives on this platform
 //! (`not_a_mac` on Linux), even on a Mac with Apple Intelligence, and `YELLOWMOON_TEST_AUTO_PROVIDERS=none`,
@@ -138,7 +143,24 @@ impl Sandbox {
             .env_remove("XDG_DATA_HOME")
             .env(NO_APPLE_AUTO.0, NO_APPLE_AUTO.1)
             .env(NO_AUTO_PROVIDERS.0, NO_AUTO_PROVIDERS.1)
+            .env(NO_VISION.0, NO_VISION.1)
             .current_dir(self.root());
+        cmd
+    }
+
+    /// [`Sandbox::ym`] with the fake Vision (`YELLOWMOON_TEST_VISION=fake`): a computer that supports Subject and People
+    /// and makes up a soft mask from the picture, on every platform.
+    pub fn ym_fake_vision(&self) -> Command {
+        let mut cmd = self.ym();
+        cmd.env(FAKE_VISION.0, FAKE_VISION.1);
+        cmd
+    }
+
+    /// [`Sandbox::ym`] with this computer's own Vision framework (`YELLOWMOON_TEST_VISION=system`, which is anything but
+    /// `fake` and `none`): what a Mac answers; on any other computer, that it is not a Mac.
+    pub fn ym_system_vision(&self) -> Command {
+        let mut cmd = self.ym();
+        cmd.env(SYSTEM_VISION.0, SYSTEM_VISION.1);
         cmd
     }
 
@@ -275,6 +297,16 @@ impl Sandbox {
         cmd
     }
 }
+
+/// The environment variable and value that make Subject and People not supported for `ym`, as on a computer that
+/// cannot make them, whatever this one can do (`ym_apple::vision::TEST_VISION_NONE`).
+pub const NO_VISION: (&str, &str) = ("YELLOWMOON_TEST_VISION", "none");
+
+/// The environment variable and value that give `ym` the fake Vision (`ym_apple::vision::TEST_VISION_FAKE`).
+pub const FAKE_VISION: (&str, &str) = ("YELLOWMOON_TEST_VISION", "fake");
+
+/// The environment variable and value that give `ym` this computer's own Vision: any value but `fake` and `none`.
+pub const SYSTEM_VISION: (&str, &str) = ("YELLOWMOON_TEST_VISION", "system");
 
 /// The environment variable and value that give `ym` the test advisor of Apple Auto.
 pub const FAKE_APPLE_AUTO: (&str, &str) = ("YELLOWMOON_TEST_APPLE_AUTO", "fake");

@@ -208,7 +208,11 @@ fn disc_photo_at(cx_frac: f64) -> Developed {
     let scene = Scene::new(w, h, light(PROFILE, 5500.0), Layout::Uniform, 0.08).noise(2e-4, 1e-6);
     let mut mosaic = scene.mosaic();
     let code = (scene.black + 0.6 * (scene.white_level - scene.black)) as u16;
-    let (cx, cy, r) = (cx_frac * f64::from(w), 0.5 * f64::from(h), 0.2 * f64::from(h));
+    let (cx, cy, r) = (
+        cx_frac * f64::from(w),
+        0.5 * f64::from(h),
+        0.2 * f64::from(h),
+    );
     for y in 0..h {
         for x in 0..w {
             if (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy) <= r {
@@ -259,17 +263,33 @@ fn mask_kinds_follow_the_probe_in_the_order_of_the_menu() {
         mask_unavailable_with(no_model),
         [(Object, MaskUnavailable::WeightsMissing)]
     );
-    let one = |subject, people| {
-        MaskSupport::new(true, VisionSupport { subject, people })
-    };
+    let one = |subject, people| MaskSupport::new(true, VisionSupport { subject, people });
     let no = VisionStatus::Unsupported(MaskUnavailable::NotSupported);
     assert_eq!(
         mask_kinds_with(one(VisionStatus::Supported, no)),
-        [Object, Subject, Background, Linear, Radial, Brush, ColorRange, BrightnessRange]
+        [
+            Object,
+            Subject,
+            Background,
+            Linear,
+            Radial,
+            Brush,
+            ColorRange,
+            BrightnessRange
+        ]
     );
     assert_eq!(
         mask_kinds_with(one(no, VisionStatus::Supported)),
-        [Object, People, Background, Linear, Radial, Brush, ColorRange, BrightnessRange]
+        [
+            Object,
+            People,
+            Background,
+            Linear,
+            Radial,
+            Brush,
+            ColorRange,
+            BrightnessRange
+        ]
     );
     for why in [
         MaskUnavailable::NotAMac,
@@ -279,7 +299,15 @@ fn mask_kinds_follow_the_probe_in_the_order_of_the_menu() {
         let support = MaskSupport::new(true, VisionSupport::neither(why));
         assert_eq!(
             mask_kinds_with(support),
-            [Object, Background, Linear, Radial, Brush, ColorRange, BrightnessRange],
+            [
+                Object,
+                Background,
+                Linear,
+                Radial,
+                Brush,
+                ColorRange,
+                BrightnessRange
+            ],
             "{why:?}"
         );
         assert_eq!(
@@ -301,7 +329,14 @@ fn mask_kinds_follow_the_probe_in_the_order_of_the_menu() {
     let bare = renderer_with(None, 1024);
     assert_eq!(
         bare.mask_kinds(),
-        [Background, Linear, Radial, Brush, ColorRange, BrightnessRange]
+        [
+            Background,
+            Linear,
+            Radial,
+            Brush,
+            ColorRange,
+            BrightnessRange
+        ]
     );
     let none = renderer(Arc::new(NoVision));
     assert_eq!(none.mask_kinds(), bare.mask_kinds());
@@ -312,7 +347,11 @@ fn mask_kinds_follow_the_probe_in_the_order_of_the_menu() {
 fn the_probe_runs_once_per_run_however_often_it_is_asked() {
     let provider = fake();
     let r = renderer(provider.clone() as Arc<dyn VisionProvider>);
-    assert_eq!(provider.probes(), 0, "nothing is probed until something asks");
+    assert_eq!(
+        provider.probes(),
+        0,
+        "nothing is probed until something asks"
+    );
     for _ in 0..4 {
         let _ = r.mask_kinds();
         let _ = r.vision_support();
@@ -326,7 +365,11 @@ fn the_probe_runs_once_per_run_however_often_it_is_asked() {
     let masks = VisionMasks::new(provider.clone() as Arc<dyn VisionProvider>);
     let _ = masks.support();
     let _ = masks.support();
-    assert_eq!(provider.probes(), 2, "one more for the new wrapper, one for each");
+    assert_eq!(
+        provider.probes(),
+        2,
+        "one more for the new wrapper, one for each"
+    );
 }
 
 #[test]
@@ -342,7 +385,10 @@ fn a_request_the_probe_refused_is_never_asked_for() {
     let kinds: Vec<VisionKind> = provider.pictures().iter().map(|(k, _)| *k).collect();
     assert_eq!(kinds, [VisionKind::Subject]);
     // An export of the photo is refused for the People row alone.
-    assert_eq!(r.unmakeable_mask(&src.settings).as_deref(), Some(PEOPLE_SENTENCE));
+    assert_eq!(
+        r.unmakeable_mask(&src.settings).as_deref(),
+        Some(PEOPLE_SENTENCE)
+    );
     let subject_only = with_rows(&d.source(), vec![subject()]);
     assert_eq!(r.unmakeable_mask(&subject_only.settings), None);
 }
@@ -356,7 +402,10 @@ fn a_row_this_computer_cannot_make_is_the_mask_error_with_the_sentence_of_the_sp
     let people_row = with_rows(&d.source(), vec![people()]);
     for (what, provider) in [
         ("no provider", None),
-        ("not a Mac", Some(Arc::new(NoVision) as Arc<dyn VisionProvider>)),
+        (
+            "not a Mac",
+            Some(Arc::new(NoVision) as Arc<dyn VisionProvider>),
+        ),
         (
             "macOS too old",
             Some(Arc::new(
@@ -391,9 +440,18 @@ fn a_row_this_computer_cannot_make_is_the_mask_error_with_the_sentence_of_the_sp
         "Node 5 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask."
     );
     // A row with the eye off, and a computer that can, are no problem.
-    let off = with_rows(&d.source(), vec![row("subject", json!({ "enabled": false }))]);
-    assert_eq!(renderer_with(None, 1024).unmakeable_mask(&off.settings), None);
-    assert_eq!(renderer(fake()).unmakeable_mask(&subject_row.settings), None);
+    let off = with_rows(
+        &d.source(),
+        vec![row("subject", json!({ "enabled": false }))],
+    );
+    assert_eq!(
+        renderer_with(None, 1024).unmakeable_mask(&off.settings),
+        None
+    );
+    assert_eq!(
+        renderer(fake()).unmakeable_mask(&subject_row.settings),
+        None
+    );
     // The row's own words in the Mask tab.
     assert_eq!(
         ym_core::settings::unsupported_row_sentence(MaskKind::Subject).as_deref(),
@@ -455,7 +513,10 @@ fn a_viewer_never_waits_the_row_selects_nothing_until_the_mask_is_made() {
         t.elapsed()
     );
     assert_eq!(first.rgba, plain.rgba, "the row selected nothing");
-    assert!(r.vision_working(src.id), "the worker was asked for the mask");
+    assert!(
+        r.vision_working(src.id),
+        "the worker was asked for the mask"
+    );
     assert!(
         r.finding_masks(src.id, &src.settings),
         "the app says Finding… (viewport_busy.finding)"
@@ -483,7 +544,12 @@ fn a_viewer_never_waits_the_row_selects_nothing_until_the_mask_is_made() {
         *heard.lock().unwrap(),
         [
             (src.id, VisionPhase::Started),
-            (src.id, VisionPhase::Finished { nothing_found: vec![] })
+            (
+                src.id,
+                VisionPhase::Finished {
+                    nothing_found: vec![]
+                }
+            )
         ]
     );
     assert_eq!(r.vision_makes(src.id), 1);
@@ -504,7 +570,12 @@ fn the_mask_is_kept_in_memory_by_the_picture_and_the_request_and_grading_never_m
     let _ = frame(&r, &src, &mask_view(2));
     // Grading a node, changing the look, the row's own sliders and another row's mode move nothing of the mask.
     let mut graded = src.settings.clone();
-    graded.nodes.corrector_mut(2).expect("node 2").trim.exposure_ev = -2.0;
+    graded
+        .nodes
+        .corrector_mut(2)
+        .expect("node 2")
+        .trim
+        .exposure_ev = -2.0;
     graded.output_mut().look_intensity = 40.0;
     if let Some(row) = graded
         .nodes
@@ -520,7 +591,10 @@ fn the_mask_is_kept_in_memory_by_the_picture_and_the_request_and_grading_never_m
     }
     let graded = src.with_settings(graded);
     r.vision_prepare(&graded);
-    assert!(!r.vision_working(src.id), "nothing to make: the key is the picture's");
+    assert!(
+        !r.vision_working(src.id),
+        "nothing to make: the key is the picture's"
+    );
     let _ = frame(&r, &graded, &mask_view(2));
     assert_eq!(provider.masks_made(), 1, "the mask was made once");
     // The Input's exposure moves the picture: the mask is made again, from the new picture.
@@ -563,7 +637,12 @@ fn the_picture_vision_reads_is_the_inputs_picture_the_one_the_object_mask_reads(
     assert_eq!(w.max(h), 1024, "1024 px on the long edge");
     // No node's grade and no look reach it.
     let mut graded = src.settings.clone();
-    graded.nodes.corrector_mut(2).expect("node 2").trim.exposure_ev = 3.0;
+    graded
+        .nodes
+        .corrector_mut(2)
+        .expect("node 2")
+        .trim
+        .exposure_ev = 3.0;
     graded.output_mut().output_sharpening = 80.0;
     let (_, _, again) = r
         .object_picture_of(&src.with_settings(graded), &CancelToken::new())
@@ -595,7 +674,11 @@ fn subject_and_people_are_separate_requests_with_separate_planes() {
     // The rows act on their own.
     let only_people = with_rows(&d.source(), vec![people()]);
     let a = coverage(&frame(&r, &only_people, &mask_view(2)));
-    let b = coverage(&frame(&r, &with_rows(&d.source(), vec![subject()]), &mask_view(2)));
+    let b = coverage(&frame(
+        &r,
+        &with_rows(&d.source(), vec![subject()]),
+        &mask_view(2),
+    ));
     assert!(a > 0.0 && b > 0.0 && (a - b).abs() > 0.005, "{a} {b}");
 }
 
@@ -603,7 +686,8 @@ fn subject_and_people_are_separate_requests_with_separate_planes() {
 
 #[test]
 fn nothing_found_gives_an_empty_mask_and_is_reported_not_retried() {
-    let provider = Probe::new(FakeVision::new().answering(VisionKind::People, FakeAnswer::NothingFound));
+    let provider =
+        Probe::new(FakeVision::new().answering(VisionKind::People, FakeAnswer::NothingFound));
     let r = renderer(provider.clone());
     let heard = Arc::new(Mutex::new(Vec::<VisionPhase>::new()));
     {
@@ -638,7 +722,13 @@ fn nothing_found_gives_an_empty_mask_and_is_reported_not_retried() {
     let both = with_rows(&d.source(), vec![subject(), people()]);
     make_ready(&r, &both);
     assert_eq!(r.vision_nothing_found(src.id), [MaskKind::People]);
-    assert!(coverage(&frame(&r, &with_rows(&d.source(), vec![subject()]), &mask_view(2))) > 0.0);
+    assert!(
+        coverage(&frame(
+            &r,
+            &with_rows(&d.source(), vec![subject()]),
+            &mask_view(2)
+        )) > 0.0
+    );
 }
 
 #[test]
@@ -650,7 +740,11 @@ fn a_request_that_fails_selects_nothing_in_a_view_is_not_retried_and_fails_an_ex
     let src = with_rows(&d.source(), vec![subject()]);
     make_ready(&r, &src);
     assert_eq!(frame(&r, &src, &picture_view()).rgba, plain.rgba);
-    assert_eq!(r.vision_nothing_found(src.id), [], "a failure is not 'nothing found'");
+    assert_eq!(
+        r.vision_nothing_found(src.id),
+        [],
+        "a failure is not 'nothing found'"
+    );
     // A redraw does not ask again (it would make a loop with the page's redraw).
     r.vision_prepare(&src);
     assert!(!r.vision_working(src.id));
@@ -683,13 +777,20 @@ fn an_export_makes_its_own_mask_and_reuses_the_viewers_only_for_the_same_picture
     // No viewer has made it: the export makes it, once for the export however many tiles it has.
     let first = export_image(&r, &src);
     assert_eq!(provider.masks_made(), 1);
-    assert!(first.rgb != export_image(&r, &d.source()).rgb, "the row acts");
+    assert!(
+        first.rgb != export_image(&r, &d.source()).rgb,
+        "the row acts"
+    );
     assert!(!r.vision_working(src.id), "an export starts no worker");
     // The viewer's mask, of the same picture, serves the next export.
     make_ready(&r, &src);
     let n = provider.masks_made();
     let second = export_image(&r, &src);
-    assert_eq!(provider.masks_made(), n, "the viewer's mask served the export");
+    assert_eq!(
+        provider.masks_made(),
+        n,
+        "the viewer's mask served the export"
+    );
     assert_eq!(second.rgb, first.rgb, "and gave the same bytes");
 }
 
@@ -706,12 +807,18 @@ fn an_export_is_the_same_bytes_in_two_renderers_and_in_tiles() {
     let src = with_rows(&d.source(), rows);
     let whole = export_image(&renderer_with(Some(fake()), 4096), &src);
     let again = export_image(&renderer_with(Some(fake()), 4096), &src);
-    assert!(again.rgb == whole.rgb, "a second renderer gives other bytes");
+    assert!(
+        again.rgb == whole.rgb,
+        "a second renderer gives other bytes"
+    );
     // Tiles equal the whole frame bit for bit, the halos of Grow, Feather and Refine edges included.
     for tile in [64, 100, 192] {
         let tiled = export_image(&renderer_with(Some(fake()), tile), &src);
         assert_eq!((tiled.width, tiled.height), (whole.width, whole.height));
-        assert!(tiled.rgb == whole.rgb, "tiles of {tile} px differ from the whole frame");
+        assert!(
+            tiled.rgb == whole.rgb,
+            "tiles of {tile} px differ from the whole frame"
+        );
     }
     // The rows act.
     let none = export_image(&renderer_with(Some(fake()), 4096), &d.source());
@@ -823,7 +930,13 @@ fn the_core_asks_for_the_masks_when_the_row_appears_and_a_paste_works_them_out_a
         ca < 0.5 && cb > 0.5 && cb - ca > 0.03,
         "centroids {ca} and {cb}: the paste used the new photo's pixels"
     );
-    assert_eq!(provider.pictures()[1].1.rgb, core.renderer.object_picture_of(&src_b, &CancelToken::new()).expect("picture").2);
+    assert_eq!(
+        provider.pictures()[1].1.rgb,
+        core.renderer
+            .object_picture_of(&src_b, &CancelToken::new())
+            .expect("picture")
+            .2
+    );
 }
 
 // ---- the device ------------------------------------------------------------------------------------------

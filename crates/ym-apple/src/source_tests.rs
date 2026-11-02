@@ -668,3 +668,271 @@ fn every_foundation_models_use_is_behind_macos_27() {
         );
     }
 }
+
+// ---- The Vision bridge (docs/23 sections 3.10 and 4.5) ---------------------------------------------------
+
+fn vision_swift() -> String {
+    read("swift/VisionMasks.swift")
+}
+
+fn vision_bridge_rs() -> String {
+    read("src/vision_bridge.rs")
+}
+
+fn nodes_spec() -> String {
+    read("../../docs/23-nodes.md")
+}
+
+/// The `static let name: Int32 = N` lines of the Swift enum that starts with `header`, as `(name, N)`.
+fn swift_codes(source: &str, header: &str) -> Vec<(String, i32)> {
+    block(source, header)
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("static let ")?;
+            let (name, value) = rest.split_once(": Int32 = ")?;
+            Some((name.to_owned(), value.trim().parse().ok()?))
+        })
+        .collect()
+}
+
+#[test]
+fn the_vision_header_the_swift_and_the_rust_name_the_same_two_functions() {
+    let header = squeeze(&header());
+    let swift = vision_swift();
+    let rust = squeeze(&vision_bridge_rs());
+    let functions = ["ym_apple_mask_probe", "ym_apple_mask_make"];
+    for name in functions {
+        assert!(
+            header.contains(&format!("int32_t {name}(")),
+            "ym_apple.h lacks {name}"
+        );
+        assert!(
+            swift.contains(&format!("@_cdecl(\"{name}\")")),
+            "VisionMasks.swift lacks @_cdecl(\"{name}\")"
+        );
+        assert!(
+            rust.contains(&format!("fn {name}(")),
+            "vision_bridge.rs lacks {name}"
+        );
+    }
+    // No more than those two, on any of the three sides.
+    assert_eq!(header.matches("int32_t ym_apple_mask_").count(), 2);
+    assert_eq!(swift.matches("@_cdecl(").count(), 2);
+    assert_eq!(rust.matches("fn ym_apple_mask_").count(), 2);
+    // The signatures, in C, in Swift and in Rust.
+    assert!(header.contains("int32_t ym_apple_mask_probe(int32_t kind);"));
+    assert!(
+        header.contains(
+            "int32_t ym_apple_mask_make(int32_t kind, const uint8_t *rgb, uint32_t width, uint32_t height, float *out, size_t out_len, char *message, size_t message_len);"
+        ),
+        "the C signature of ym_apple_mask_make"
+    );
+    assert!(rust.contains("safe fn ym_apple_mask_probe(kind: i32) -> i32;"));
+    assert!(
+        rust.contains(
+            "fn ym_apple_mask_make( kind: i32, rgb: *const u8, width: u32, height: u32, out: *mut f32, out_len: usize, message: *mut c_char, message_len: usize, ) -> i32;"
+        ),
+        "the Rust declaration of ym_apple_mask_make"
+    );
+    let swift = squeeze(&swift);
+    assert!(swift.contains("public func ymAppleMaskProbe(_ kind: Int32) -> Int32 {"));
+    assert!(
+        swift.contains(
+            "_ kind: Int32, _ rgb: UnsafePointer<UInt8>?, _ width: UInt32, _ height: UInt32, _ out: UnsafeMutablePointer<Float>?, _ outLength: Int, _ message: UnsafeMutablePointer<CChar>?, _ messageLength: Int ) -> Int32 {"
+        ),
+        "the Swift signature of ymAppleMaskMake"
+    );
+    // The header's kinds are the Rust codes and the probe's size is the one `docs/23` names.
+    assert!(header.contains(&format!(
+        "#define YM_APPLE_MASK_SUBJECT {}",
+        crate::vision_abi::kind_code(ym_core::vision::VisionKind::Subject)
+    )));
+    assert!(header.contains(&format!(
+        "#define YM_APPLE_MASK_PEOPLE {}",
+        crate::vision_abi::kind_code(ym_core::vision::VisionKind::People)
+    )));
+    assert!(header.contains(&format!(
+        "#define YM_APPLE_MASK_PROBE_PX {}",
+        crate::vision_abi::PROBE_PX
+    )));
+    assert!(vision_swift().contains(&format!(
+        "private let probeSize = {}",
+        crate::vision_abi::PROBE_PX
+    )));
+}
+
+#[test]
+fn the_vision_codes_agree_everywhere() {
+    use crate::vision_abi::*;
+    let swift = vision_swift();
+    let kinds = swift_codes(&swift, "private enum MaskKindCode {");
+    assert_eq!(
+        kinds,
+        [
+            (
+                "subject".to_owned(),
+                kind_code(ym_core::vision::VisionKind::Subject)
+            ),
+            (
+                "people".to_owned(),
+                kind_code(ym_core::vision::VisionKind::People)
+            ),
+        ]
+    );
+    assert_eq!(
+        swift_codes(&swift, "private enum ProbeCode {"),
+        [
+            ("supported".to_owned(), PROBE_SUPPORTED),
+            ("macosTooOld".to_owned(), PROBE_MACOS_TOO_OLD),
+            ("notSupported".to_owned(), PROBE_NOT_SUPPORTED),
+        ]
+    );
+    assert_eq!(
+        swift_codes(&swift, "private enum MakeCode {"),
+        [
+            ("made".to_owned(), MAKE_MADE),
+            ("nothingFound".to_owned(), MAKE_NOTHING_FOUND),
+            ("macosTooOld".to_owned(), MAKE_MACOS_TOO_OLD),
+            ("notSupported".to_owned(), MAKE_NOT_SUPPORTED),
+            ("badInput".to_owned(), MAKE_BAD_INPUT),
+            ("failed".to_owned(), MAKE_FAILED),
+        ]
+    );
+    // The header lists the same codes in words (comment asterisks aside).
+    let header = squeeze(&header()).replace(" * ", " ");
+    assert!(header.contains("0 supported, 1 macos_too_old, 2 not_supported"));
+    assert!(header.contains("0 the mask is in `out`; 1 nothing found"));
+    assert!(
+        header
+            .contains("2 macos_too_old; 3 not_supported (the request could not run); 4 bad input")
+    );
+    assert!(header.contains("5 failed (the request ran and its mask could not be read)"));
+}
+
+#[test]
+fn the_vision_swift_makes_the_union_of_the_instances_behind_macos_14_and_reaches_no_network() {
+    let swift = vision_swift();
+    // The requests of docs/23 section 4.5, and the union of all instances at the picture's size (docs/algorithms/06 5.3).
+    for needed in [
+        "VNGenerateForegroundInstanceMaskRequest()",
+        "VNGeneratePersonInstanceMaskRequest()",
+        "VNImageRequestHandler(cgImage: image",
+        "observation.allInstances",
+        "generateScaledMaskForImage(",
+        "forInstances: observation.allInstances, from: handler",
+        "CGColorSpace.sRGB",
+        "kCVPixelFormatType_OneComponent32Float",
+    ] {
+        assert!(swift.contains(needed), "VisionMasks.swift lacks `{needed}`");
+    }
+    // Both entry points check the system first, and the helper that uses the requests is marked.
+    for entry in ["ymAppleMaskProbe", "ymAppleMaskMake"] {
+        let body = block(&swift, &format!("public func {entry}("));
+        assert!(
+            body.contains("guard #available(macOS 14.0, *) else"),
+            "{entry} does not check for macOS 14"
+        );
+    }
+    let request = block(&swift, "private func runRequest(");
+    assert!(
+        swift.contains("@available(macOS 14.0, *)\nprivate func runRequest("),
+        "runRequest is not marked for macOS 14"
+    );
+    assert!(request.contains("VNGenerate"));
+    // A request on a 64 x 64 picture is the probe; nothing found counts as running.
+    let probe = block(&swift, "public func ymAppleMaskProbe(");
+    assert!(probe.contains("probePicture()"));
+    assert!(probe.contains("code == MakeCode.made || code == MakeCode.nothingFound"));
+    // Vision is on this Mac and sends nothing anywhere (hard rule 7); no Swift error crosses the interface.
+    for forbidden in [
+        "URLSession",
+        "URLRequest",
+        "NWConnection",
+        "import Network",
+        "CFNetwork",
+        "FoundationModels",
+        "Process(",
+        "fatalError",
+        "try!",
+        "@_cdecl(\"ym_apple_auto",
+    ] {
+        assert!(
+            !swift.contains(forbidden),
+            "VisionMasks.swift must not contain `{forbidden}`"
+        );
+    }
+    assert!(
+        !swift.contains("throws") || !swift.contains("@_cdecl") || {
+            // `throws` may appear only in comments, never in a C entry point's signature.
+            let make = block(&swift, "public func ymAppleMaskMake(");
+            !make.contains(" throws")
+        }
+    );
+}
+
+#[test]
+fn the_two_bridges_are_separate_and_the_vision_gate_is_its_own() {
+    let auto = swift();
+    let vision = vision_swift();
+    assert!(
+        !auto.contains("import Vision"),
+        "Apple Auto's bridge uses Vision"
+    );
+    assert!(!vision.contains("import FoundationModels"));
+    let build = read("build.rs");
+    // Two gates: the macOS 14 SDK for Vision (both architectures), the macOS 27 SDK on Apple silicon for Apple Auto.
+    assert!(build.contains("const VISION_MIN_SDK_MAJOR: u32 = 14;"));
+    assert!(build.contains("const MIN_SDK_MAJOR: u32 = 27;"));
+    assert!(build.contains("\"aarch64\" => Some(\"arm64\")"));
+    assert!(build.contains("\"x86_64\" => Some(\"x86_64\")"));
+    assert!(build.contains("let auto = mac && arch == \"aarch64\" && build_auto_if_possible();"));
+    assert!(build.contains("swift_arch(&arch).is_some() && build_vision_if_possible(&arch)"));
+    assert!(build.contains("cargo::rustc-cfg=ym_apple_vision"));
+    assert!(build.contains("cargo::metadata=vision="));
+    // Vision is a normal link; only FoundationModels is weak.
+    for framework in ["Vision", "CoreVideo", "CoreGraphics", "Foundation"] {
+        assert!(
+            build.contains(framework),
+            "build.rs does not link {framework}"
+        );
+    }
+    assert_eq!(
+        build.matches("-weak_framework,").count(),
+        build.matches("-weak_framework,FoundationModels").count(),
+        "only FoundationModels is linked weakly"
+    );
+    // The switches.
+    assert!(build.contains("YM_APPLE_VISION"));
+    assert!(build.contains("YM_APPLE_BRIDGE"));
+    // The binaries that depend on this crate add the run path for either bridge.
+    for path in ["../ym-cli/build.rs", "../../src-tauri/build.rs"] {
+        let script = read(path);
+        assert!(
+            script.contains("DEP_YM_APPLE_AUTO_VISION"),
+            "{path} does not read the Vision bridge's metadata"
+        );
+        assert!(
+            script.contains("DEP_YM_APPLE_AUTO_BRIDGE"),
+            "{path} does not read Apple Auto's metadata"
+        );
+    }
+}
+
+#[test]
+fn the_spec_names_the_vision_bridge_the_way_the_code_has_it() {
+    let spec = squeeze(&nodes_spec());
+    for needed in [
+        "`@_cdecl(\"ym_apple_mask_*\")`",
+        "VNGenerateForegroundInstanceMaskRequest",
+        "VNGeneratePersonInstanceMaskRequest",
+        "the probe makes each request on a 64 × 64 picture",
+        "built for both architectures of the universal binary",
+        "Foundation Models bridge keeps its own gate",
+    ] {
+        assert!(spec.contains(needed), "docs/23 lacks `{needed}`");
+    }
+    // The sentence of section 3.10 is the one the core builds.
+    assert!(spec.contains(
+        "Node 2 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask."
+    ));
+}

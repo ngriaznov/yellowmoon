@@ -26,8 +26,11 @@ use ym_core::pipeline::NeuralStatus;
 use ym_core::pipeline::ObjectModel;
 use ym_core::preferences::PreferencesStore;
 use ym_core::scheduler::MemoryBudget;
-use ym_core::settings::{MaskKind, MaskUnavailable, mask_kinds_with, mask_unavailable_with};
+use ym_core::settings::{
+    MaskKind, MaskSupport, MaskUnavailable, mask_kinds_with, mask_unavailable_with,
+};
 use ym_core::version::{PIPELINE_VERSION, app_version};
+use ym_core::vision::VisionMasks;
 use ym_gpu::device::GpuInfo;
 use ym_profiles::registry::ProfileStore;
 
@@ -79,8 +82,9 @@ struct Report {
     neural: NeuralStatus,
     auto: AutoReport,
     weights: Vec<ModelFile>,
-    /// Whether the SAM weights are there and load (checked against their checksum): Object is a kind this machine can make.
-    object_model: bool,
+    /// What this machine can make (`mask_kinds()`): whether the SAM weights are there and load (checked against their
+    /// checksum), and what this Mac's Vision framework said when each request was tried on a 64 x 64 picture.
+    masks: MaskSupport,
     illuminant_models: Vec<ModelFile>,
     profiles: Vec<(String, String, String)>,
     looks_built_in: usize,
@@ -229,7 +233,12 @@ fn build() -> Result<Report, Failure> {
         neural: NeuralStatus::probe(Some(&data_folder)),
         auto: auto_report(&prefs.get()),
         weights,
-        object_model: object_model_loads(&data_folder),
+        masks: MaskSupport::new(
+            object_model_loads(&data_folder),
+            // The probe, once: Vision answers for Subject and People, or the reason it cannot (not a Mac, macOS too old,
+            // a Mac that cannot run the requests).
+            VisionMasks::new(ym_apple::system_vision()).support(),
+        ),
         illuminant_models,
         profiles,
         looks_built_in: looks
@@ -521,13 +530,13 @@ fn model_values(files: &[ModelFile]) -> Value {
 
 /// The kinds of mask this machine can make and why it cannot make the others (`docs/10` *doctor*, `docs/23`
 /// section 9): `mask_kinds()` as the app's Add mask menu reads it, and the reasons by their wire names.
-fn masks_value(object_model: bool) -> Value {
-    let unavailable: serde_json::Map<String, Value> = mask_unavailable_with(object_model)
+fn masks_value(masks: MaskSupport) -> Value {
+    let unavailable: serde_json::Map<String, Value> = mask_unavailable_with(masks)
         .into_iter()
         .map(|(kind, why)| (kind.name().to_owned(), Value::String(why.wire().to_owned())))
         .collect();
     json!({
-        "kinds": mask_kinds_with(object_model).into_iter().map(|k| k.name()).collect::<Vec<_>>(),
+        "kinds": mask_kinds_with(masks).into_iter().map(|k| k.name()).collect::<Vec<_>>(),
         "unavailable": unavailable,
     })
 }
@@ -542,16 +551,17 @@ fn joined(names: &[&str]) -> String {
 }
 
 /// The `Masks` row: the kinds this machine can make in the order of the Add mask menu, and, for the others, the
-/// reason, kinds that share one named together: `Object, Background, Linear, Radial, Brush, Colour range, Brightness
-/// range · not available: Subject and People (this is not a Mac that supports them)`; without the SAM weights
-/// `Background, … · not available: Object (the SAM weights are missing), Subject and People (…)`.
-fn masks_text(object_model: bool) -> String {
-    let kinds: Vec<&str> = mask_kinds_with(object_model)
+/// reason, kinds that share one named together: `Object, Subject, People, Background, Linear, Radial, Brush, Colour
+/// range, Brightness range` on a Mac that supports them all; on Linux `Object, Background, Linear, … · not available:
+/// Subject and People (this is not a Mac that supports them)`; without the SAM weights `Subject, People, Background, … ·
+/// not available: Object (the SAM weights are missing)`.
+fn masks_text(masks: MaskSupport) -> String {
+    let kinds: Vec<&str> = mask_kinds_with(masks)
         .into_iter()
         .map(MaskKind::label)
         .collect();
     let mut text = kinds.join(", ");
-    let unavailable = mask_unavailable_with(object_model);
+    let unavailable = mask_unavailable_with(masks);
     if unavailable.is_empty() {
         return text;
     }
@@ -604,7 +614,7 @@ fn to_json(r: &Report) -> Value {
         "apple_auto": apple_auto_value(&r.auto.status),
         "auto": auto_value(&r.auto),
         "model_weights": model_values(&r.weights),
-        "masks": masks_value(r.object_model),
+        "masks": masks_value(r.masks),
         "illuminant_models": model_values(&r.illuminant_models),
         "profiles": r.profiles.iter().map(|(id, version, name)| json!({ "id": id, "version": version, "name": name })).collect::<Vec<_>>(),
         "looks": {
@@ -748,7 +758,7 @@ fn to_text(r: &Report) -> String {
             );
         }
     }
-    row("Masks", masks_text(r.object_model));
+    row("Masks", masks_text(r.masks));
     for (i, m) in r.illuminant_models.iter().enumerate() {
         row(
             if i == 0 { "Illuminant models" } else { "" },

@@ -121,7 +121,13 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
   }, [native]);
   // The browser build's fixture carries the mask view too (the core draws it in the app: `docs/23` §5.8).
   const maskShown = useAppState((s) => (drawsFixture ? s.maskShown : null));
-  const picture = useMemo(() => (photo && drawsFixture ? previewUrl(photo, rs, before, maskShown) : undefined), [photo, rs, before, drawsFixture, maskShown]);
+  // Subject and People: the kinds this computer makes, and whether the core is making them now (`docs/23` §4.5).
+  const maskKinds = useAppState((s) => s.maskKinds);
+  const finding = useAppState((s) => s.viewportBusy.busy && s.viewportBusy.finding);
+  const picture = useMemo(
+    () => (photo && drawsFixture ? previewUrl(photo, rs, before, maskShown, { kinds: maskKinds, finding }) : undefined),
+    [photo, rs, before, drawsFixture, maskShown, maskKinds, finding],
+  );
 
   // The cell's size, for the handles: a new size is a new place for every point they draw.
   const [cellSize, setCellSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });

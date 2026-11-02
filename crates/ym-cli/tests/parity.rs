@@ -55,6 +55,34 @@ enum Auto {
     ClaudeFake,
 }
 
+/// How Subject and People are made on both sides of a parity leg (`docs/23` section 4.5).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Vision {
+    /// The deterministic fake, on every platform: `FakeVision` for the app, `YELLOWMOON_TEST_VISION=fake` for the binary.
+    Fake,
+    /// This computer's own Vision framework on both sides (a Mac; `ym_apple::system_vision()` for the app,
+    /// `YELLOWMOON_TEST_VISION=system` for the binary).
+    System,
+}
+
+impl Vision {
+    /// The environment of the binary.
+    fn env(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Fake => common::FAKE_VISION,
+            Self::System => common::SYSTEM_VISION,
+        }
+    }
+
+    /// The provider of the app's core.
+    fn provider(self) -> Arc<dyn ym_core::vision::VisionProvider> {
+        match self {
+            Self::Fake => Arc::new(ym_core::vision::FakeVision::new()),
+            Self::System => Arc::new(ym_apple::AppleVision),
+        }
+    }
+}
+
 /// The app's side: a core over its own app folder with one photo open.
 struct App {
     core: Core,
@@ -117,6 +145,18 @@ impl App {
         Self::open_full_in(&data_dir(), files, method, slot, auto)
     }
 
+    /// The app of a leg with Subject and People made by `vision` (the GPU leg's device, when it has one, attached).
+    fn open_with_vision(files: &[&Path], slot: Option<GpuSlot>, vision: Vision) -> Self {
+        Self::open_complete(
+            &data_dir(),
+            files,
+            DEFAULT_METHOD,
+            slot,
+            Auto::None,
+            Some(vision),
+        )
+    }
+
     fn open_full_in(
         data: &Path,
         files: &[&Path],
@@ -124,11 +164,23 @@ impl App {
         slot: Option<GpuSlot>,
         auto: Auto,
     ) -> Self {
+        Self::open_complete(data, files, method, slot, auto, None)
+    }
+
+    fn open_complete(
+        data: &Path,
+        files: &[&Path],
+        method: Method,
+        slot: Option<GpuSlot>,
+        auto: Auto,
+        vision: Option<Vision>,
+    ) -> Self {
         let home = tempfile::tempdir().expect("tempdir");
         let mut options = CoreOptions::new(data.to_path_buf(), home.path().to_path_buf());
         // What the CLI does: no thumbnail renders competing with the export.
         options.thumbnails = false;
         options.render.demosaic = method;
+        options.render.vision = vision.map(|v| ym_core::vision::VisionMasks::new(v.provider()));
         match auto {
             Auto::None => {}
             Auto::AppleFake => {
@@ -904,15 +956,43 @@ fn graph_leg_with(
     device: bool,
     check: impl FnOnce(&App),
 ) {
+    graph_leg_full(what, doc, correctors, device, None, true, check);
+}
+
+/// [`graph_leg_with`] with Subject and People made by `vision` on both sides (`None`: neither side can make them), and
+/// `acts` saying whether the masks must change a pixel: a leg that asks this computer's own Vision about a synthetic gradient
+/// may be told "nothing found", which is the same file as no row.
+fn graph_leg_full(
+    what: &str,
+    doc: serde_json::Value,
+    correctors: usize,
+    device: bool,
+    vision: Option<Vision>,
+    acts: bool,
+    check: impl FnOnce(&App),
+) {
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");
     let app = if device {
-        let Some(app) = App::open_on_device(&[&arw]) else {
+        let slot = open_gpu(GpuPolicy::On, MemoryBudget::detect());
+        if slot.gpu().is_none() {
+            assert!(
+                !gpu_required_by_env(),
+                "YM_REQUIRE_GPU is set but no device opened: {:?}",
+                slot.missing_device_reason()
+            );
+            eprintln!("\n* GPU LEG SKIPPED in parity: no adapter\n");
             return;
-        };
-        app
+        }
+        match vision {
+            Some(v) => App::open_with_vision(&[&arw], Some(slot), v),
+            None => App::open_on(&[&arw], DEFAULT_METHOD, Some(slot)),
+        }
     } else {
-        App::open(&[&arw])
+        match vision {
+            Some(v) => App::open_with_vision(&[&arw], None, v),
+            None => App::open(&[&arw]),
+        }
     };
     let (settings, clamped) =
         DevelopSettings::from_value(doc.clone(), &app.core.looks.effective_default())
@@ -924,11 +1004,14 @@ fn graph_leg_with(
             .expect("settings without masks");
     let file = sb.root().join("nodes.json");
     std::fs::write(&file, doc.to_string()).expect("write");
-    let env: &[(&str, &str)] = if device {
-        &[("YELLOWMOON_GPU", "on")]
-    } else {
-        &[]
-    };
+    let mut env_pairs: Vec<(&str, &str)> = Vec::new();
+    if device {
+        env_pairs.push(("YELLOWMOON_GPU", "on"));
+    }
+    if let Some(v) = vision {
+        env_pairs.push(v.env());
+    }
+    let env: &[(&str, &str)] = &env_pairs;
     let default_graph = app.export(
         ExportOptions {
             format: FormatKind::Tiff,
@@ -997,10 +1080,21 @@ fn graph_leg_with(
             );
             // And the masks did something: not the graph without them.
             if let Some(without) = &without {
-                assert!(
-                    bytes(&from_app[0]) != bytes(&without[0]),
-                    "the masks changed no pixel"
-                );
+                if acts {
+                    assert!(
+                        bytes(&from_app[0]) != bytes(&without[0]),
+                        "the masks changed no pixel"
+                    );
+                } else {
+                    eprintln!(
+                        "[vision] {what}: the masks {} a pixel",
+                        if bytes(&from_app[0]) == bytes(&without[0]) {
+                            "changed no"
+                        } else {
+                            "changed"
+                        }
+                    );
+                }
             }
         }
     }
@@ -1067,9 +1161,14 @@ fn sam_weights() -> bool {
 
 /// Node 2 with this Object row (an exposure trim of a stop, so the mask shows in the picture), the graph of `docs/10`.
 fn object_doc(row: serde_json::Value) -> serde_json::Value {
+    node_2_doc(vec![row])
+}
+
+/// Node 2 with these mask rows (an exposure trim of a stop, so the masks show in the picture).
+fn node_2_doc(rows: Vec<serde_json::Value>) -> serde_json::Value {
     serde_json::json!({ "nodes": { "items": [
         { "id": 2, "kind": "corrector", "pos": [1, 0], "trim": { "exposure_ev": 1.0 },
-          "masks": { "invert": false, "items": [row] } }
+          "masks": { "invert": false, "items": rows } }
     ], "links": [
         { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
         { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
@@ -1143,6 +1242,74 @@ fn an_object_mask_is_the_same_files_through_the_app_path_and_the_binary_on_the_d
 }
 
 /// The device leg of the masks.
+/// A Subject row with Grow, Feather and Refine edges, and a People row taken away from it: the rows of the Vision legs.
+fn vision_rows() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({ "kind": "subject", "mode": "add", "grow": 0.1, "feather": 0.2, "refine": 0.5 }),
+        serde_json::json!({ "kind": "people", "mode": "subtract", "feather": 0.1, "refine": 0.3 }),
+    ]
+}
+
+/// Subject and People masks (N-19) with the deterministic fake on both sides (`FakeVision` for the app, `YELLOWMOON_TEST_VISION=fake`
+/// for the binary): the same files in JPEG, 16-bit TIFF and DNG, the rows change pixels, and the app, which makes its own masks at export
+/// time as `ym` does, agrees with it. The CPU leg; runs on every platform.
+#[test]
+fn subject_and_people_masks_are_the_same_files_through_the_app_path_and_the_binary() {
+    graph_leg_full(
+        "subject and people",
+        node_2_doc(vision_rows()),
+        2,
+        false,
+        Some(Vision::Fake),
+        true,
+        |_| {},
+    );
+}
+
+/// The device leg of the Subject and People masks.
+#[test]
+fn subject_and_people_masks_are_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
+    graph_leg_full(
+        "subject and people",
+        node_2_doc(vision_rows()),
+        2,
+        true,
+        Some(Vision::Fake),
+        true,
+        |_| {},
+    );
+}
+
+/// This Mac's own Vision framework on both sides: the app and `ym` ask Vision for the same picture and write the same files. Where
+/// Vision does not run the requests (a virtual Mac, a computer that is not a Mac) the test says so plainly and passes; set
+/// `YM_REQUIRE_VISION=1` to make that a failure. Vision may find nothing in the synthetic gradient, which is the same file as no row
+/// (the legs print which); `ym-apple`'s own tests check what Vision makes.
+#[test]
+fn subject_and_people_masks_are_the_same_files_through_the_app_path_and_the_binary_with_this_computers_vision()
+ {
+    let support = ym_apple::vision::probe();
+    println!("[vision] this computer: {support:?}");
+    if !(support.subject.is_supported() && support.people.is_supported()) {
+        assert!(
+            std::env::var_os("YM_REQUIRE_VISION").is_none(),
+            "YM_REQUIRE_VISION is set and this computer does not support Subject and People: {support:?}"
+        );
+        println!(
+            "\n* VISION LEG SKIPPED in parity: this computer does not support the Vision requests ({support:?})\n"
+        );
+        return;
+    }
+    graph_leg_full(
+        "subject and people, this computer's Vision",
+        node_2_doc(vision_rows()),
+        2,
+        false,
+        Some(Vision::System),
+        false,
+        |_| {},
+    );
+}
+
 #[test]
 fn masked_nodes_are_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
     graph_leg("masked nodes", masked_nodes(), 6, true);

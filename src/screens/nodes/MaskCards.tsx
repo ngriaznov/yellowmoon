@@ -9,12 +9,14 @@ import { BrushCard } from "./BrushCard";
 import { ObjectCard } from "./ObjectCard";
 import { FeatherSlider, OpacitySlider, RasterSliders } from "./MaskSliders";
 
-/** The kinds that have a card in the Mask tab so far: Object, Background, the shapes, Brush and the ranges. Subject and People come with N-19. */
-export const CARD_KINDS: ReadonlySet<MaskItem["kind"]> = new Set(["object", "background", "linear", "radial", "brush", "color_range", "brightness_range"]);
+/** The kinds that have a card in the Mask tab: Object, Subject, People, Background, the shapes, Brush and the ranges. */
+export const CARD_KINDS: ReadonlySet<MaskItem["kind"]> = new Set(["object", "subject", "people", "background", "linear", "radial", "brush", "color_range", "brightness_range"]);
 
 /** The title of a kind's card: the kind in capitals (the card's own style does the capitals; this is the word). */
 const TITLE: Readonly<Partial<Record<MaskItem["kind"], string>>> = {
   object: "Object",
+  subject: "Subject",
+  people: "People",
   background: "Background",
   linear: "Linear",
   radial: "Radial",
@@ -62,6 +64,16 @@ export function MaskCard({ store, rs, node, index, row, pickingRange, onPickRang
   const action = <ResetLink size="card" onClick={reset} />;
 
   switch (row.kind) {
+    case "subject":
+    case "people": {
+      // Vision's mask has nothing of its own to set: the raster sliders every raster card has (`docs/23` §7.6).
+      const was = fresh as typeof row;
+      return (
+        <Card title={TITLE[row.kind] ?? row.kind} action={action}>
+          <RasterSliders row={row} defaults={was} send={send} />
+        </Card>
+      );
+    }
     case "background": {
       // Level and Softness cut the photo's blur map (`docs/algorithms/06` §5.4); the raster sliders after them are the ones every raster card has.
       const was = fresh as typeof row;

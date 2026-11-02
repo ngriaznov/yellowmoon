@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MaskItem } from "../api/types";
-import { FINDING, isFinding, maskRowLabel, maskRowName, maskSubtitle, widthSlider } from "./maskRows";
+import { FINDING, foundNothing, isFinding, isUnsupported, maskRowLabel, maskRowName, maskSubtitle, NOTHING_FOUND, UNSUPPORTED_ROW, widthSlider } from "./maskRows";
+import type { VisionRows } from "./maskRows";
 
 const base = { mode: "add", invert: false, enabled: true, opacity: 1 } as const;
 const edge = { feather: 0, grow: 0, refine: 0.5 } as const;
@@ -69,5 +70,53 @@ describe("a Background row while the photo's blur map is made (docs/23 §7.6)", 
     expect(maskRowLabel(background, true)).toBe("Background mask, Finding…");
     expect(maskRowLabel({ ...background, enabled: false }, true)).toBe("Background mask, Level 50");
     expect(maskSubtitle(background)).toBe("Level 50");
+  });
+});
+
+describe("a Subject or People row (docs/23 §3.10 and §7.6, N-19)", () => {
+  const subject: MaskItem = { ...base, ...edge, kind: "subject" };
+  const people: MaskItem = { ...base, ...edge, kind: "people" };
+  const nothing = (...kinds: Array<"subject" | "people">): VisionRows => ({ unsupported: [], nothing: kinds });
+  const cannot = (...kinds: Array<"subject" | "people">): VisionRows => ({ unsupported: kinds, nothing: [] });
+
+  it("is 'Finding…' while the core finds, like a Background row, for rows that are on", () => {
+    expect(isFinding(subject, true)).toBe(true);
+    expect(isFinding(people, true)).toBe(true);
+    expect(isFinding(subject, false)).toBe(false);
+    expect(isFinding({ ...people, enabled: false }, true)).toBe(false);
+    expect(maskRowLabel(subject, true)).toBe("Subject mask, Finding…");
+    expect(maskRowLabel(people, true)).toBe("People mask, Finding…");
+  });
+
+  it("says 'Nothing found' for the kinds the core named, for rows that are on, and 'Foreground' and 'People' otherwise", () => {
+    expect(NOTHING_FOUND).toBe("Nothing found");
+    expect(maskSubtitle(subject, nothing())).toBe("Foreground");
+    expect(maskSubtitle(people, nothing())).toBe("People");
+    expect(maskSubtitle(subject, nothing("subject"))).toBe("Nothing found");
+    expect(maskSubtitle(people, nothing("subject"))).toBe("People");
+    expect(maskSubtitle(people, nothing("people"))).toBe("Nothing found");
+    expect(foundNothing(subject, nothing("subject"))).toBe(true);
+    expect(foundNothing({ ...subject, enabled: false }, nothing("subject"))).toBe(false);
+    expect(maskRowLabel(subject, false, undefined, nothing("subject"))).toBe("Subject mask, Nothing found");
+    // "Finding…" comes first while the masks are made again.
+    expect(maskRowLabel(subject, true, undefined, nothing("subject"))).toBe("Subject mask, Finding…");
+    // No other kind says it.
+    expect(foundNothing({ ...base, ...edge, kind: "background", level: 0.5, softness: 0.5 }, nothing("subject", "people"))).toBe(false);
+  });
+
+  it("says the sentences of the spec, word for word, on a computer that cannot make them", () => {
+    expect(UNSUPPORTED_ROW).toEqual({ subject: "Subject masks need a Mac that supports them", people: "People masks need a Mac that supports them" });
+    expect(isUnsupported(subject, cannot("subject"))).toBe(true);
+    expect(isUnsupported(people, cannot("subject"))).toBe(false);
+    expect(isUnsupported(subject, undefined)).toBe(false);
+    expect(isUnsupported(subject, { unsupported: [], nothing: [] })).toBe(false);
+    expect(maskSubtitle(subject, cannot("subject", "people"))).toBe("Subject masks need a Mac that supports them");
+    expect(maskSubtitle(people, cannot("subject", "people"))).toBe("People masks need a Mac that supports them");
+    // The sentence comes before "Finding…" and "Nothing found": nothing is being made, nothing was looked for.
+    expect(maskRowLabel(subject, true, undefined, cannot("subject"))).toBe("Subject mask, Subject masks need a Mac that supports them");
+    expect(maskSubtitle(subject, { unsupported: ["subject"], nothing: ["subject"] })).toBe("Subject masks need a Mac that supports them");
+    // The other kinds do not care.
+    const linear: MaskItem = { ...base, kind: "linear", center: [0.5, 0.5], angle_deg: 0, feather: 0.2 };
+    expect(isUnsupported(linear, cannot("subject", "people"))).toBe(false);
   });
 });
