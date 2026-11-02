@@ -871,27 +871,44 @@ const backgroundDrawn = async (page: Page): Promise<string> => {
 };
 
 test.describe("the Background mask", () => {
-  test("adding a Background row selects it and shows the BACKGROUND card; the first frame says 'Finding…' with a spinner and then the row's own subtitle", async ({ page }) => {
+  test("adding a Background row selects it and shows the BACKGROUND card; while the core finds the photo's map the row says 'Finding…' with a spinner", async ({ page }) => {
     await warmth(page);
     await addMask(page, "Background");
     await expect(maskCard(page, "Background")).toBeVisible();
     await expect(page.getByText("MASK · BACKGROUND")).toBeVisible();
-    // The mock takes 400 ms to make the photo's map, once: the row says so while it does.
+    await expect(rowButton(page, "Background mask, Level 50")).toHaveAttribute("aria-pressed", "true");
+    // The core says it is making the photo's first blur map (`viewport_busy.finding`; the mock does for 400 ms at the speed of a real
+    // run, and at once under `mockSpeed=Infinity`, so the test holds the event itself): the subtitle is a spinner and the words.
+    await page.evaluate(() => window.__yellowmoon!.mockApi.emitEvent("viewport_busy", { busy: true, cpu: false, finding: true }));
     await expect(page.locator(".ym-mask-row__sub[data-finding]")).toBeVisible();
     await expect(page.locator(".ym-mask-row__sub[data-finding] svg")).toBeVisible();
     await expect(rowButton(page, "Background mask, Finding…")).toBeVisible();
-    await expect(rowButton(page, "Background mask, Level 50")).toBeVisible();
+    await page.evaluate(() => window.__yellowmoon!.mockApi.emitEvent("viewport_busy", { busy: false, cpu: false, finding: false }));
     await expect(page.locator(".ym-mask-row__sub[data-finding]")).toHaveCount(0);
+    await expect(rowButton(page, "Background mask, Level 50")).toBeVisible();
     // The card: Level and Softness, then the four raster sliders, at their defaults.
     const sliders = maskCard(page, "Background").getByRole("slider");
     await expect(sliders).toHaveCount(6);
-    expect(await sliders.evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))).toEqual(["Level", "Softness", "Refine edges", "Feather", "Grow", "Opacity"]);
-    expect(await backgroundRows(page)).toHaveLength(1);
+    for (const name of ["Level", "Softness", "Refine edges", "Feather", "Grow", "Opacity"]) await expect(maskCard(page, "Background").getByRole("slider", { name })).toBeVisible();
     expect(await backgroundRows(page)).toMatchObject([{ level: 0.5, softness: 0.5, feather: 0, grow: 0, refine: 0.5, opacity: 1, mode: "add" }]);
-    // Switching to another photo's map is a new finding; the same photo says it once.
     await setValue(page, "Level", "60");
     await expect.poll(async () => (await backgroundRows(page))[0]?.level).toBeCloseTo(0.6, 3);
-    await expect(page.locator(".ym-mask-row__sub[data-finding]")).toHaveCount(0);
+    await expect(rowButton(page, "Background mask, Level 60")).toBeVisible();
+  });
+
+  test("the mock finds a photo's map on its first frame, at the speed of a real run: 'Finding…' for 400 ms, once", async ({ page }) => {
+    await warmth(page, { mockSpeed: 1 });
+    const seen: Array<{ busy: boolean; finding: boolean }> = [];
+    await page.evaluate(() => {
+      (window as unknown as { __busy: unknown[] }).__busy = [];
+      window.__yellowmoon!.mockApi.on("viewport_busy", (e) => (window as unknown as { __busy: unknown[] }).__busy.push({ busy: e.busy, finding: e.finding }));
+    });
+    await addMask(page, "Background");
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __busy: unknown[] }).__busy.length), { timeout: 5000 }).toBeGreaterThanOrEqual(2);
+    seen.push(...(await page.evaluate(() => (window as unknown as { __busy: Array<{ busy: boolean; finding: boolean }> }).__busy)));
+    expect(seen.at(0)).toEqual({ busy: true, finding: true });
+    expect(seen.at(-1)).toEqual({ busy: false, finding: false });
+    await expect(rowButton(page, "Background mask, Level 50")).toBeVisible();
   });
 
   test("Level and Softness change the Mask only picture, undo takes the change back, and the raster sliders write their fields", async ({ page }) => {
@@ -930,7 +947,7 @@ test.describe("the Background mask", () => {
     await setValue(page, "Opacity", "70");
     await expect.poll(async () => (await backgroundRows(page))[0]?.opacity).toBeCloseTo(0.7, 3);
     // Reset puts the row back as a new Background in the same mode.
-    await maskCard(page, "Background").getByRole("button", { name: "Reset" }).click();
+    await maskCard(page, "Background").getByRole("button", { name: "Reset", exact: true }).click();
     await expect.poll(async () => (await backgroundRows(page))[0]).toMatchObject({ level: 0.5, softness: 0.5, feather: 0, grow: 0, refine: 0.5, opacity: 1 });
     await expect(rowButton(page, "Background mask, Level 50")).toBeVisible();
   });

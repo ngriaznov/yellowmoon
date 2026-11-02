@@ -112,7 +112,10 @@ fn the_ends_of_softness_and_the_minimum_ramp() {
     // (a ramp, not a step).
     assert_eq!(narrow[474], 0);
     assert_eq!(narrow[526], 65535);
-    let between = narrow[475..=525].iter().filter(|c| **c > 0 && **c < 65535).count();
+    let between = narrow[475..=525]
+        .iter()
+        .filter(|c| **c > 0 && **c < 65535)
+        .count();
     assert!(between >= 48, "{between} cells on the ramp");
     // Softness 1: the ramp is the whole range of P about the edge (P = 0 to 1 at Level 0.5).
     let wide = background_s0(&p, 0.5, 1.0);
@@ -141,7 +144,11 @@ fn an_evenly_sharp_photo_gives_an_empty_mask() {
     assert!(background_s0(&faint, 0.5, 0.5).iter().all(|c| *c == 0));
     // And a map that is out of focus everywhere is the whole photo.
     let blurred = vec![1.0f32; 64];
-    assert!(background_s0(&blurred, 0.5, 0.5).iter().all(|c| *c == 65535));
+    assert!(
+        background_s0(&blurred, 0.5, 0.5)
+            .iter()
+            .all(|c| *c == 65535)
+    );
 }
 
 #[test]

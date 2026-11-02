@@ -848,15 +848,15 @@ test.describe("the node panel", () => {
         await expect(page.locator("[data-brush-layer]")).toBeVisible();
       },
     },
-    // A Background row just added, on Warmth (node 4): the head's 3, the tab row's 2, the Masks card's 3, the row's 4, then the BACKGROUND card: its Reset is a stop only
-    // while a field differs from its default (none does), six sliders of two stops each (Level, Softness, Refine edges, Feather, Grow, Opacity), the View card's chosen
-    // segment and the foot's two buttons. Nothing is drawn on the photo.
+    // A Background row just added, on Warmth (node 4): the head's 3, the tab row's 2, the Masks card's 3, the row's 4, then the BACKGROUND card: its Reset, six sliders of two
+    // stops each (Level, Softness, Refine edges, Feather, Grow, Opacity; none differs from its default, so none has a Reset stop of its own), the View card's chosen segment
+    // and the foot's two buttons: 28. Nothing is drawn on the photo.
     {
       state: "a Background's Mask tab with its card",
       simple: "Light",
       node: 4,
       tab: "Mask",
-      stops: 27,
+      stops: 28,
       before: async (page) => {
         await page.getByRole("button", { name: "Add mask" }).click();
         await page.getByRole("menuitem", { name: /^Background/ }).click();

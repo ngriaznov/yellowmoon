@@ -552,13 +552,7 @@ fn masks_text() -> String {
     }
     let parts: Vec<String> = groups
         .iter()
-        .map(|(why, names)| {
-            format!(
-                "{} ({})",
-                joined(names),
-                why.doctor_text(names.len() > 1)
-            )
-        })
+        .map(|(why, names)| format!("{} ({})", joined(names), why.doctor_text(names.len() > 1)))
         .collect();
     text.push_str(" · not available: ");
     text.push_str(&parts.join(", "));

@@ -546,6 +546,9 @@ pub struct PhotoGraph {
     resident_tick: AtomicU64,
     /// Held while the raw words are uploaded, so that two requests for one photo upload once.
     upload_gate: Mutex<()>,
+    /// Held while a viewer makes the photo's blur map, so that a frame and the thumbnails of a photo that ask for it
+    /// together run the network once (`background::BlurEntry`).
+    blur_gate: Mutex<()>,
     /// Exports that are rendering the photo: while there is one, the raw words stay on the device
     /// whatever else the renderer uploads (an export asks for them at every tile).
     pins: AtomicU32,
@@ -572,6 +575,7 @@ impl PhotoGraph {
             lens_gpu_failed: AtomicBool::new(false),
             resident_tick: AtomicU64::new(0),
             upload_gate: Mutex::new(()),
+            blur_gate: Mutex::new(()),
             pins: AtomicU32::new(0),
         }
     }

@@ -759,7 +759,8 @@ fn a_photo_that_needs_a_mask_this_computer_cannot_make_fails_with_the_mask_error
 fn a_background_row_renders_from_a_settings_file() {
     let sb = Sandbox::new();
     let arw = sb.arw_bokeh("lights.ARW", 640, 480, 4);
-    let row = r#"{ "kind": "background", "mode": "add", "level": 1, "softness": 0.4, "feather": 0.1 }"#;
+    let row =
+        r#"{ "kind": "background", "mode": "add", "level": 1, "softness": 0.4, "feather": 0.1 }"#;
     let with = sb.root().join("background.json");
     std::fs::write(&with, masked_file(row)).expect("write");
     let without = sb.root().join("none.json");

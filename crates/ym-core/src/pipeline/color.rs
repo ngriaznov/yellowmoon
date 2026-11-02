@@ -835,7 +835,7 @@ pub struct GradeRequest<'a> {
     /// Where looks come from.
     pub looks: &'a dyn LookProvider,
     /// The photo's blur map, for the plan's Background rows (`docs/23` section 4.6): made once per photo by the
-    /// renderer ([`Job::background_map`](crate::pipeline::Job)) and `None` for a plan with no Background row (or
+    /// renderer (`Renderer::blur_map` is the same map) and `None` for a plan with no Background row (or
     /// a caller that has no photo to read, whose Background rows select nothing).
     pub background: Option<&'a Arc<BlurMap>>,
 }

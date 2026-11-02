@@ -150,15 +150,10 @@ fn brush_and_background_are_kinds_this_computer_can_make_and_the_others_of_the_r
 
 #[test]
 fn a_raster_row_of_a_kind_that_cannot_be_made_is_a_mask_error_never_an_empty_mask() {
-    for (row, sentence) in [
-        (
-            json!({ "kind": "object", "points": [[0.5, 0.5, true]] }),
-            "Node 2 has an Object mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon.",
-        ),
-    ] {
-        let s = graph(vec![node_2(vec![row])]);
-        assert_eq!(unmakeable_mask(&s).as_deref(), Some(sentence));
-    }
+    let row = json!({ "kind": "object", "points": [[0.5, 0.5, true]] });
+    let sentence = "Node 2 has an Object mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon.";
+    let s = graph(vec![node_2(vec![row])]);
+    assert_eq!(unmakeable_mask(&s).as_deref(), Some(sentence));
     if !cfg!(target_os = "macos") {
         let s = graph(vec![node_2(vec![json!({ "kind": "subject" })])]);
         assert_eq!(

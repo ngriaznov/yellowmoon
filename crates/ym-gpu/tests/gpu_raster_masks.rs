@@ -1668,8 +1668,10 @@ fn a_background_plane_on_the_device_is_the_cpu_plane_within_the_stated_bound() {
     let buffer = (480usize, 320usize);
     let img = scene(buffer.0, buffer.1, 0x5EED);
     let (grid, frame) = export_grid(buffer, 0.2); // 2400 x 1600 output
+    // A window across the edge of the map's sharp subject (the ellipse of `blur_map`, whose right edge is at 0.67 of the width), so
+    // that the plane runs from the subject (0) to the background.
     let window = Area {
-        x: 1000,
+        x: 1500,
         y: 700,
         w: 150,
         h: 110,
@@ -1682,7 +1684,7 @@ fn a_background_plane_on_the_device_is_the_cpu_plane_within_the_stated_bound() {
         for (name, level, softness, grow, feather, refine) in [
             ("the default", 0.5, 0.5, 0.0, 0.0, 0.5),
             ("resample only, a high level", 0.8, 0.3, 0.0, 0.0, 0.0),
-            ("a low level, a narrow ramp", 0.2, 0.0, 0.0, 0.0, 0.0),
+            ("the narrowest ramp", 0.7, 0.0, 0.0, 0.0, 0.0),
             ("grown and feathered", 0.5, 0.5, 0.4, 0.4, 0.0),
             ("eroded, refined, subsampled", 0.6, 0.8, -0.3, 0.0, 1.0),
             ("all", 0.5, 0.5, 0.3, 0.3, 0.6),
@@ -1714,7 +1716,10 @@ fn background_tiles_equal_the_whole_frame_bit_for_bit_halos_included() {
     let img = scene(buffer.0, buffer.1, 0x71E5);
     let (grid, frame) = export_grid(buffer, 0.5); // 720 x 480
     for (name, rows) in [
-        ("grow, feather", vec![background_row(0.5, 0.5, 0.5, 0.4, 0.0)]),
+        (
+            "grow, feather",
+            vec![background_row(0.5, 0.5, 0.5, 0.4, 0.0)],
+        ),
         ("refine", vec![background_row(0.6, 0.4, 0.0, 0.0, 0.7)]),
         (
             "all, a Background and a Brush",

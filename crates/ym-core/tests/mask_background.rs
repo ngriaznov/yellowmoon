@@ -21,8 +21,9 @@ use serde_json::{Value, json};
 use ym_color::display::OutputTarget;
 use ym_core::app::gpu::GpuStages;
 use ym_core::pipeline::{
-    ComputeDevice, FrameOptions, FullImage, FullRequest, FullTarget, MaskStyle, MaskView, NeutralOnly, PhotoSource,
-    RenderOptions, RenderedFrame, Renderer, ViewportRect, ViewportState, unmakeable_mask,
+    ComputeDevice, FrameOptions, FullImage, FullRequest, FullTarget, MaskStyle, MaskView,
+    NeutralOnly, PhotoSource, RenderOptions, RenderedFrame, Renderer, ViewportRect, ViewportState,
+    unmakeable_mask,
 };
 use ym_core::session::{OpenOptions, Session, SessionEnv};
 use ym_core::settings::{
@@ -164,7 +165,15 @@ fn lights(w: u32, h: u32, exif: u16, region: (f64, f64), cols: usize, rows: usiz
 
 /// [`lights`] whose discs are `level` of the sensor's range (0.45 is the other tests'; a dimmer scene has edges the raw
 /// stages cut into tiles without a difference in the last bit).
-fn lights_of(w: u32, h: u32, exif: u16, region: (f64, f64), cols: usize, rows: usize, level: f64) -> Developed {
+fn lights_of(
+    w: u32,
+    h: u32,
+    exif: u16,
+    region: (f64, f64),
+    cols: usize,
+    rows: usize,
+    level: f64,
+) -> Developed {
     let scene = Scene::new(w, h, light(PROFILE, 5500.0), Layout::Uniform, 0.02).noise(2e-4, 1e-6);
     let mut mosaic = scene.mosaic();
     let code = (scene.black + level * (scene.white_level - scene.black)) as u16;
@@ -212,7 +221,9 @@ fn background_is_a_kind_this_computer_can_make_first_in_the_menu() {
     // A Background row is no `mask` error, a row of a kind that is not built still is.
     let s = graph(vec![background(json!({}))]);
     assert_eq!(unmakeable_mask(&s), None);
-    let s = graph(vec![json!({ "kind": "object", "points": [[0.5, 0.5, true]] })]);
+    let s = graph(vec![
+        json!({ "kind": "object", "points": [[0.5, 0.5, true]] }),
+    ]);
     assert!(unmakeable_mask(&s).is_some());
 }
 
@@ -282,10 +293,17 @@ fn the_learned_map_makes_the_background_of_real_photos_with_bokeh_and_nothing_of
         ("27308_DSC08793.ARW", 0.3),
     ] {
         if let Some(c) = real_coverage(&r, name) {
-            assert!(c >= at_least, "{name}: the mask covers {c:.3}, wanted {at_least}");
+            assert!(
+                c >= at_least,
+                "{name}: the mask covers {c:.3}, wanted {at_least}"
+            );
         }
     }
-    for name in ["18469_DSC02868.ARW", "26551_DSC05356.ARW", "31909_DSC09550.ARW"] {
+    for name in [
+        "18469_DSC02868.ARW",
+        "26551_DSC05356.ARW",
+        "31909_DSC09550.ARW",
+    ] {
         if let Some(c) = real_coverage(&r, name) {
             assert!(c <= 0.02, "{name}: a sharp photo's mask covers {c:.3}");
         }
@@ -301,9 +319,16 @@ fn an_evenly_sharp_photo_gives_an_empty_mask_with_the_model_and_without_it() {
     for learned in [true, false] {
         let r = renderer(learned);
         let map = r.blur_map(&src, &CancelToken::new()).expect("a map");
-        assert_eq!((map.width, map.height), (240, 160), "a cell is 2 x 2 pixels of the lens plane");
+        assert_eq!(
+            (map.width, map.height),
+            (240, 160),
+            "a cell is 2 x 2 pixels of the lens plane"
+        );
         let top = map.p.iter().copied().fold(0.0f32, f32::max);
-        assert!(top < 0.05, "learned {learned}: the sharpest photo has P up to {top}");
+        assert!(
+            top < 0.05,
+            "learned {learned}: the sharpest photo has P up to {top}"
+        );
         for level in [0.5, 0.7] {
             let masked = with(&src, graph(vec![background(json!({ "level": level }))]));
             let f = frame(&r, &masked, &mask_view(2));
@@ -318,12 +343,20 @@ fn an_evenly_sharp_photo_gives_an_empty_mask_with_the_model_and_without_it() {
         // And the node changes nothing: the photo is the photo (the same graph with a node that has no trim).
         let none = with(&src, graph_with_trim(0.0, vec![]));
         let render = |s: &PhotoSource| {
-            r.viewport_frame(s, &ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0)), &FrameOptions::default(), &CancelToken::new())
-                .expect("frame")
-                .rgba
+            r.viewport_frame(
+                s,
+                &ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0)),
+                &FrameOptions::default(),
+                &CancelToken::new(),
+            )
+            .expect("frame")
+            .rgba
         };
         let masked = with(&src, graph(vec![background(json!({}))]));
-        assert!(render(&masked) == render(&none), "learned {learned}: the empty mask changed a pixel");
+        assert!(
+            render(&masked) == render(&none),
+            "learned {learned}: the empty mask changed a pixel"
+        );
     }
 }
 
@@ -337,14 +370,23 @@ fn the_classical_detector_makes_the_map_when_the_model_cannot_run() {
     let map = r.blur_map(&src, &CancelToken::new()).expect("a map");
     let n = map.p.len() as f64;
     let strong = map.p.iter().filter(|p| **p > 0.9).count() as f64 / n;
-    eprintln!("[background] the classical map of the lights: {}x{} cells, {strong:.3} at P > 0.9", map.width, map.height);
-    assert!(strong > 0.02, "the lights are out of focus for the detector: {strong}");
+    eprintln!(
+        "[background] the classical map of the lights: {}x{} cells, {strong:.3} at P > 0.9",
+        map.width, map.height
+    );
+    assert!(
+        strong > 0.02,
+        "the lights are out of focus for the detector: {strong}"
+    );
     assert!(map.p.iter().all(|p| (0.0..=1.0).contains(p)));
     let masked = with(&src, graph(vec![background(json!({}))]));
     let c = coverage(&frame(&r, &masked, &mask_view(2)));
     assert!(c > 0.03 && c < 0.6, "the mask covers {c:.3} of the photo");
     // The mask is where the map is: the cells that are out of focus (P over one half) are lit, the others are not.
-    let lit = mask_values(&frame(&r, &masked, &mask_view(2))).iter().filter(|m| **m > 0.5).count() as f64;
+    let lit = mask_values(&frame(&r, &masked, &mask_view(2)))
+        .iter()
+        .filter(|m| **m > 0.5)
+        .count() as f64;
     let photo = mask_values(&frame(&r, &masked, &mask_view(2))).len() as f64;
     let cells = map.p.iter().filter(|p| **p > 0.5).count() as f64 / n;
     assert!(
@@ -359,7 +401,12 @@ fn the_exif_orientation_turns_the_map_to_the_photo_as_the_camera_oriented_it() {
     // Lights in the left 40 % of the sensor image. Where that lands in the photo as the camera oriented it depends on
     // the orientation: 1 left, 3 right, 6 (a quarter turn clockwise) top, 8 bottom. The map has the photo's proportions.
     let r = renderer(false);
-    for (exif, w, h, side) in [(1u16, 300usize, 200usize, "left"), (3, 300, 200, "right"), (6, 200, 300, "top"), (8, 200, 300, "bottom")] {
+    for (exif, w, h, side) in [
+        (1u16, 300usize, 200usize, "left"),
+        (3, 300, 200, "right"),
+        (6, 200, 300, "top"),
+        (8, 200, 300, "bottom"),
+    ] {
         let d = lights(1200, 800, exif, (0.02, 0.4), 3, 4);
         let map = r.blur_map(&d.source(), &CancelToken::new()).expect("a map");
         assert_eq!((map.width, map.height), (w, h), "orientation {exif}");
@@ -376,8 +423,13 @@ fn the_exif_orientation_turns_the_map_to_the_photo_as_the_camera_oriented_it() {
             "top" => (mass(&|_, y| y < h / 2), mass(&|_, y| y >= h / 2)),
             _ => (mass(&|_, y| y >= h / 2), mass(&|_, y| y < h / 2)),
         };
-        eprintln!("[background] orientation {exif}: P mass {a:.0} on the {side}, {b:.0} on the other side");
-        assert!(a > 5.0 * b.max(1.0), "orientation {exif}: the blur should be at the {side} ({a} against {b})");
+        eprintln!(
+            "[background] orientation {exif}: P mass {a:.0} on the {side}, {b:.0} on the other side"
+        );
+        assert!(
+            a > 5.0 * b.max(1.0),
+            "orientation {exif}: the blur should be at the {side} ({a} against {b})"
+        );
     }
 }
 
@@ -396,20 +448,35 @@ fn the_map_is_made_once_per_photo_and_shared_with_the_lens_in_both_orders() {
     let row = graph(vec![background(json!({ "level": 0.8 }))]);
     let lensed = |src: &PhotoSource, l: LensSettings| edit(src, |s| s.input_mut().lens = l);
     let view = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
-    let render = |r: &Renderer, s: &PhotoSource| r.viewport_frame(s, &view, &FrameOptions::default(), &CancelToken::new()).expect("frame");
+    let render = |r: &Renderer, s: &PhotoSource| {
+        r.viewport_frame(s, &view, &FrameOptions::default(), &CancelToken::new())
+            .expect("frame")
+    };
 
-    // The lens first.
+    // The lens first: a frame with Anamorphic and no Background row runs the network for the lens and keeps the map.
     let r = renderer(true);
+    let lens_only = lensed(&base, vintage(50.0, 0.0));
+    let f = render(&r, &lens_only);
+    assert_eq!(f.report.runs.lens_planes, 1, "{:?}", f.report.runs);
+    assert_eq!(f.report.runs.blur_maps, 1, "the lens ran the network");
+    // The Background row then reads the lens's map: no second run.
     let with_lens = lensed(&with(&base, row.clone()), vintage(50.0, 0.0));
     let f = render(&r, &with_lens);
-    assert_eq!(f.report.runs.lens_planes, 1, "{:?}", f.report.runs);
-    assert_eq!(maps_made(&r, &base), 1, "the lens and the Background row ran the network once between them");
+    assert_eq!(f.report.runs.blur_maps, 0, "{:?}", f.report.runs);
+    assert_eq!(
+        maps_made(&r, &base),
+        1,
+        "the lens and the Background row ran the network once between them"
+    );
     let map = r.blur_map(&base, &CancelToken::new()).expect("map");
     // The lens sliders do not move it: no new map, the very same cells.
     for l in [vintage(80.0, 0.0), vintage(30.0, 60.0), vintage(0.0, 40.0)] {
         let f = render(&r, &lensed(&with(&base, row.clone()), l));
         assert_eq!(f.report.runs.blur_maps, 0, "{l:?}");
-        assert!(Arc::ptr_eq(&r.blur_map(&base, &CancelToken::new()).expect("map"), &map), "{l:?}");
+        assert!(
+            Arc::ptr_eq(&r.blur_map(&base, &CancelToken::new()).expect("map"), &map),
+            "{l:?}"
+        );
     }
     assert_eq!(maps_made(&r, &base), 1);
 
@@ -420,7 +487,10 @@ fn the_map_is_made_once_per_photo_and_shared_with_the_lens_in_both_orders() {
     assert_eq!(f.report.runs.lens_planes, 0);
     let f = render(&r, &lensed(&with(&base, row), vintage(50.0, 0.0)));
     assert_eq!(f.report.runs.lens_planes, 1, "{:?}", f.report.runs);
-    assert_eq!(f.report.runs.blur_maps, 0, "the lens read the map the Background row made");
+    assert_eq!(
+        f.report.runs.blur_maps, 0,
+        "the lens read the map the Background row made"
+    );
     assert_eq!(maps_made(&r, &base), 1);
 }
 
@@ -436,7 +506,10 @@ fn level_and_softness_cut_the_cached_map_and_feather_grow_and_refine_edges_do_no
     assert_eq!(first.report.runs.grade_plans, 1);
     // Nothing changed: the frame is served as it is.
     let again = frame(&r, &masked(json!({})), &st);
-    assert_eq!((again.report.runs.blur_maps, again.report.runs.grade_plans), (0, 0));
+    assert_eq!(
+        (again.report.runs.blur_maps, again.report.runs.grade_plans),
+        (0, 0)
+    );
     assert!(again.rgba == first.rgba);
     // Each of the five fields makes a new plan from the same map: the network never runs again, the picture moves.
     for (what, extra) in [
@@ -500,7 +573,9 @@ fn tiles_of_an_export_equal_the_whole_frame_with_the_halos_of_grow_feather_and_r
     let d = lights_of(640, 480, 1, (0.0, 1.0), 5, 4, 0.15);
     let src = d.source();
     let rows = vec![
-        background(json!({ "level": 0.7, "softness": 0.6, "grow": 0.4, "feather": 0.3, "refine": 0.6 })),
+        background(
+            json!({ "level": 0.7, "softness": 0.6, "grow": 0.4, "feather": 0.3, "refine": 0.6 }),
+        ),
         json!({ "kind": "background", "mode": "subtract", "level": 0.9, "feather": 0.1 }),
     ];
     let s = with(&src, graph(rows));
@@ -508,7 +583,10 @@ fn tiles_of_an_export_equal_the_whole_frame_with_the_halos_of_grow_feather_and_r
     for tile in [64, 100, 192] {
         let tiled = export_image(&renderer_with(false, tile), &s);
         assert_eq!((tiled.width, tiled.height), (whole.width, whole.height));
-        assert!(tiled.rgb == whole.rgb, "tiles of {tile} px differ from the whole frame");
+        assert!(
+            tiled.rgb == whole.rgb,
+            "tiles of {tile} px differ from the whole frame"
+        );
     }
     // The rows act: the same node without them is another picture.
     let plain = export_image(&renderer_with(false, 4096), &with(&src, graph(vec![])));
@@ -519,7 +597,12 @@ fn tiles_of_an_export_equal_the_whole_frame_with_the_halos_of_grow_feather_and_r
 fn the_same_photo_gives_the_same_map_and_the_same_bytes_in_two_renderers() {
     let d = lights(640, 480, 1, (0.0, 1.0), 5, 4);
     let src = d.source();
-    let s = with(&src, graph(vec![background(json!({ "level": 0.7, "feather": 0.2, "refine": 0.5 }))]));
+    let s = with(
+        &src,
+        graph(vec![background(
+            json!({ "level": 0.7, "feather": 0.2, "refine": 0.5 }),
+        )]),
+    );
     let (a, b) = (renderer(false), renderer(false));
     let (ma, mb) = (
         a.blur_map(&src, &CancelToken::new()).expect("map"),
@@ -527,8 +610,14 @@ fn the_same_photo_gives_the_same_map_and_the_same_bytes_in_two_renderers() {
     );
     assert_eq!((ma.width, ma.height), (mb.width, mb.height));
     assert!(ma.p == mb.p, "the cells are the same bits");
-    assert!(export_image(&a, &s).rgb == export_image(&b, &s).rgb, "the exports differ");
-    assert!(frame(&a, &s, &mask_view(2)).rgba == frame(&b, &s, &mask_view(2)).rgba, "the mask frames differ");
+    assert!(
+        export_image(&a, &s).rgb == export_image(&b, &s).rgb,
+        "the exports differ"
+    );
+    assert!(
+        frame(&a, &s, &mask_view(2)).rgba == frame(&b, &s, &mask_view(2)).rgba,
+        "the mask frames differ"
+    );
     // The learned model too.
     let (a, b) = (renderer(true), renderer(true));
     assert!(
@@ -543,7 +632,10 @@ fn a_turned_photo_is_the_upright_photo_turned_by_hand_with_a_background_row_on_i
     let d = lights(640, 480, 1, (0.0, 0.5), 3, 4);
     let src = d.source();
     let r = renderer(false);
-    let upright = with(&src, graph(vec![background(json!({ "level": 0.8, "feather": 0.2 }))]));
+    let upright = with(
+        &src,
+        graph(vec![background(json!({ "level": 0.8, "feather": 0.2 }))]),
+    );
     let mut turned = upright.settings.clone();
     turned.input_mut().orientation = Orientation::Deg90;
     let a = export_image(&r, &upright);
@@ -613,11 +705,17 @@ fn the_device_makes_the_same_frames_and_masks_as_the_cpu_with_a_background_row()
     let picture = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
     for (what, extra) in [
         ("the default", json!({})),
-        ("a high level, a narrow ramp", json!({ "level": 0.8, "softness": 0.1 })),
+        (
+            "a high level, a narrow ramp",
+            json!({ "level": 0.8, "softness": 0.1 }),
+        ),
         ("grown", json!({ "grow": 0.5 })),
         ("feathered", json!({ "feather": 0.4 })),
         ("refined", json!({ "refine": 0.8 })),
-        ("all of them", json!({ "level": 0.7, "softness": 0.4, "grow": 0.3, "feather": 0.3, "refine": 0.7 })),
+        (
+            "all of them",
+            json!({ "level": 0.7, "softness": 0.4, "grow": 0.3, "feather": 0.3, "refine": 0.7 }),
+        ),
     ] {
         let s = with(&src, graph(vec![background(extra)]));
         for (name, st) in [("picture", &picture), ("mask only", &mask_view(2))] {
@@ -627,7 +725,10 @@ fn the_device_makes_the_same_frames_and_masks_as_the_cpu_with_a_background_row()
             if name == "mask only" {
                 // The test has a mask to compare: lit where the lights are out of focus, dark between them.
                 let m = mask_values(&reference);
-                assert!(m.iter().any(|v| *v > 0.5) && m.iter().any(|v| *v < 0.5), "{what}: the mask is flat");
+                assert!(
+                    m.iter().any(|v| *v > 0.5) && m.iter().any(|v| *v < 0.5),
+                    "{what}: the mask is flat"
+                );
             }
             let (mut worst, mut sum) = (0u8, 0u64);
             for (x, y) in device.rgba.iter().zip(&reference.rgba) {
@@ -636,8 +737,13 @@ fn the_device_makes_the_same_frames_and_masks_as_the_cpu_with_a_background_row()
                 sum += u64::from(d);
             }
             let mean = sum as f64 / device.rgba.len() as f64;
-            eprintln!("[background] {what}, {name}: the device differs from the CPU by {worst} codes, mean {mean:.4}");
-            assert!(worst <= 3 && mean < 0.3, "{what}, {name}: {worst} codes, mean {mean}");
+            eprintln!(
+                "[background] {what}, {name}: the device differs from the CPU by {worst} codes, mean {mean:.4}"
+            );
+            assert!(
+                worst <= 3 && mean < 0.3,
+                "{what}, {name}: {worst} codes, mean {mean}"
+            );
         }
     }
 }

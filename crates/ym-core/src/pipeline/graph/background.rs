@@ -68,10 +68,18 @@ pub(crate) fn orient_cells(
     exif_orientation: u16,
 ) -> (usize, usize, Vec<f32>) {
     if width == 0 || height == 0 || p.len() != width * height {
-        return (width.max(1), height.max(1), vec![0.0; width.max(1) * height.max(1)]);
+        return (
+            width.max(1),
+            height.max(1),
+            vec![0.0; width.max(1) * height.max(1)],
+        );
     }
     let swap = (5..=8).contains(&exif_orientation);
-    let (w, h) = if swap { (height, width) } else { (width, height) };
+    let (w, h) = if swap {
+        (height, width)
+    } else {
+        (width, height)
+    };
     let mut out = vec![0.0f32; w * h];
     for y in 0..h {
         for x in 0..w {
@@ -121,12 +129,21 @@ impl Job<'_> {
         if let Some(known) = self.blur_known(&raw) {
             return Ok(known.network.then(|| Arc::clone(&known.input)));
         }
+        // One viewer request makes the map; a second that asked together waits and reads it.
+        let graph = Arc::clone(&self.g);
+        let _gate = (!self.restartable).then(|| lock(&graph.blur_gate));
+        if let Some(known) = self.blur_known(&raw) {
+            return Ok(known.network.then(|| Arc::clone(&known.input)));
+        }
         let t = Instant::now();
         let Some(input) = blur_map_input(model, image).map(Arc::new) else {
             return Ok(None);
         };
         self.runs.blur_maps += 1;
-        tracing::debug!(ms = t.elapsed().as_secs_f64() * 1000.0, "the blur map (the lens)");
+        tracing::debug!(
+            ms = t.elapsed().as_secs_f64() * 1000.0,
+            "the blur map (the lens)"
+        );
         let entry = self.blur_made(raw, Arc::clone(&input), true);
         self.blur_keep(entry);
         Ok(Some(input))
@@ -141,6 +158,12 @@ impl Job<'_> {
     /// detector refuses the plane.
     pub(crate) fn blur_entry(&mut self) -> Result<Arc<BlurEntry>, RenderError> {
         let raw = self.params()?.key();
+        if let Some(known) = self.blur_known(&raw) {
+            return Ok(known);
+        }
+        // One viewer request makes the map; a second that asked together (a frame and the node thumbnails) waits and reads it.
+        let graph = Arc::clone(&self.g);
+        let _gate = (!self.restartable).then(|| lock(&graph.blur_gate));
         if let Some(known) = self.blur_known(&raw) {
             return Ok(known);
         }
@@ -205,7 +228,12 @@ impl Job<'_> {
     }
 
     /// The entry for a map `input` of the lens plane: `P` turned to the photo frame, with a key of its own.
-    fn blur_made(&self, raw: RawParamsKey, input: Arc<BlurMapInput>, network: bool) -> Arc<BlurEntry> {
+    fn blur_made(
+        &self,
+        raw: RawParamsKey,
+        input: Arc<BlurMapInput>,
+        network: bool,
+    ) -> Arc<BlurEntry> {
         let (width, height, mut p) = orient_cells(
             input.width,
             input.height,
