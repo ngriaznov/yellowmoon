@@ -925,15 +925,14 @@ mod tests {
         );
         // The kinds of mask this machine makes, and points mapped between the photo and the cell: with no photo
         // shown nothing has a place; the side is `photo` or `cell`.
-        assert_eq!(
-            call(&window, "mask_kinds", json!({})),
-            Ok(json!([
-                "linear",
-                "radial",
-                "color_range",
-                "brightness_range"
-            ]))
-        );
+        // The list is the core's own (`ym_core::settings::mask_kinds`, by the kinds' wire names), so a kind that a
+        // later task makes does not leave this expectation stale.
+        let kinds: Vec<&str> = ym_core::settings::mask_kinds()
+            .into_iter()
+            .map(|k| k.name())
+            .collect();
+        assert!(!kinds.is_empty());
+        assert_eq!(call(&window, "mask_kinds", json!({})), Ok(json!(kinds)));
         assert_eq!(
             call(
                 &window,
