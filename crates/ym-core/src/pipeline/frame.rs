@@ -2894,7 +2894,7 @@ impl Renderer {
     /// [`Renderer::sample_chroma`] for the colour at the input of a node's colour warp (`docs/01`,
     /// the `at` argument): after the node's trim and grade, or the Input's output for `Input`;
     /// `None` is Main. The node's own pins act on these colours, so Pick colour on a corrector
-    /// reads them. See [`signal_source`](super::thumbs::signal_source).
+    /// reads them. See `signal_source` (`pipeline::thumbs`).
     ///
     /// # Errors
     ///

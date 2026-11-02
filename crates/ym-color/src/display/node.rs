@@ -4,7 +4,7 @@
 //!
 //! [`NodeParams`] is what the settings give a node; [`NodeSet`] is what a chain needs beyond Main's
 //! fields of [`ChainParams`](super::ChainParams): the compiled [`Plan`], Main's trim, bypass and masks and
-//! the other correctors. [`PreparedNode`] is a node ready to run on a pixel, with its mask rows
+//! the other correctors. `PreparedNode` is a node ready to run on a pixel, with its mask rows
 //! ([`crate::mask`]) prepared: the chain blends by the node's mask `m` after the four steps.
 
 use std::collections::BTreeMap;

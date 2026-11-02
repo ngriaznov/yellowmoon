@@ -828,7 +828,7 @@ impl Default for ColorBalance {
     }
 }
 
-/// The three wheels' points in effect ([`ResolvedValues::color_balance`]).
+/// The three wheels' points in effect ([`GradeValues::color_balance`]).
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct ColorBalancePoints {
     /// The shadows wheel.

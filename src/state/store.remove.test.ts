@@ -163,7 +163,7 @@ describe("removing photos", () => {
     expect(state.notice).toBe("Removed 12 photos. The files are still on disk.");
     expect(state.noticeAction).toBe("undo-removal");
     expect(store.hasRemovalToUndo()).toBe(true);
-    expect(viewportReset).toHaveBeenCalledWith({ kind: "fit" });
+    expect(viewportReset).toHaveBeenCalledWith({ kind: "fit" }, null);
     // The core's session is empty too (it was not closed, so Undo still has the photos).
     expect((await api.sessionState()).photos).toEqual([]);
   });

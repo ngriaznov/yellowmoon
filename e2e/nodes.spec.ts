@@ -375,11 +375,12 @@ test.describe("the toolbar and the photo switcher", () => {
     expect([...places].sort((a, b) => a - b)).toEqual(places);
     await expect(bar.getByRole("button", { name: "Previous photo" })).toBeVisible();
     await expect(bar.getByRole("button", { name: "Next photo" })).toBeVisible();
-    // Main is selected: it can be bypassed but not deleted ("Bypass it instead"); the mask view comes later (N-11).
+    // Main is selected: it can be bypassed but not deleted ("Bypass it instead"), and it has a mask to show (N-11).
     await expect(bar.getByRole("button", { name: "Bypass" })).not.toHaveAttribute("aria-disabled", "true");
     await expect(bar.getByRole("button", { name: "Delete" })).toHaveAttribute("aria-disabled", "true");
     await expect(bar.getByRole("button", { name: "Delete" })).toHaveAccessibleDescription("Main can't be deleted. Bypass it instead.");
-    await expect(bar.getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-disabled", "true");
+    await expect(bar.getByRole("button", { name: "Show mask" })).not.toHaveAttribute("aria-disabled", "true");
+    await expect(bar.getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-pressed", "false");
     await expect(bar.getByRole("button", { name: "Show mask" })).toHaveAccessibleDescription("Show mask (M)");
     await expect(page.locator(".ym-graph__canvas")).toHaveAttribute("data-selected-node", "1");
   });

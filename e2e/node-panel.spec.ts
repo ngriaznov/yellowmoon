@@ -191,7 +191,7 @@ test.describe("the tabs", () => {
     await expect(panel(page).getByRole("button", { name: "Pick white" })).toHaveCount(0);
     await expect(panel(page).getByRole("button", { name: "Pick colour" })).toBeVisible();
     await panel(page).getByRole("tab", { name: "Mask" }).click();
-    expect(await titles()).toEqual(["Masks"]);
+    expect(await titles()).toEqual(["Masks", "View"]);
     await expect(panel(page).getByRole("list", { name: "Masks of this node" }).getByRole("listitem")).toHaveCount(1);
     await expect(panel(page).getByRole("button", { name: "Add mask" })).toHaveAttribute("aria-disabled", "true");
   });

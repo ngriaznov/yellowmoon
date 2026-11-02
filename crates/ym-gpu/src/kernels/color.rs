@@ -47,15 +47,15 @@
 //! A source image with a **fourth plane** is the sampler's output: that plane marks the pixels
 //! outside the photo (the letterbox). Such pixels are not computed: a stage output has 0 there and
 //! carries the mask into its own fourth plane, an RGBA8 output has the background colour. A source with
-//! **six planes** is the sampler's output with the photo-frame position planes ([`encode_sample_at`]
-//! (crate::kernels::sampler::encode_sample_at)): the fifth and sixth hold each pixel's position in the
+//! **six planes** is the sampler's output with the photo-frame position planes
+//! ([`encode_sample_at`](crate::kernels::sampler::encode_sample_at)): the fifth and sixth hold each pixel's position in the
 //! photo, which the mask shapes of the nodes are placed in, and the chain needs the render's
 //! [`PhotoFrame`] ([`PreparedChain::with_photo_frame`]); the destination of a stage has the first four.
 //!
 //! # The plan loop and the node records
 //!
 //! The nodes of `ColorChain`'s plan (`docs/23-nodes.md` section 5.4) run in the kernel: each step is a
-//! **record** of the storage buffer at binding 6 ([`NodeRecU`], 1200 bytes), in plan order. A record holds
+//! **record** of the storage buffer at binding 6 (`NodeRecU`, 1200 bytes), in plan order. A record holds
 //! the step's flags (bypassed or at its identity, and which of the trims, C9, C9b and C11 run), where the
 //! step reads its picture and key and writes its own (a register, a key slot or a plane of the pass
 //! buffers), the trims' gain, the grade's parameters, the colour warp's pins (what
@@ -86,8 +86,8 @@
 //! # Masks (N-10, `docs/23` section 5.4)
 //!
 //! The binding that holds the records is raw `vec4` rows (the kernel reads a record's fields with `nu` and
-//! `nf` at the offsets `R_*`, written from [`NodeRecU`]), so that the **mask rows** can follow the records in
-//! the same buffer: [`MaskOpU`], 64 bytes a row, every row of every node in plan order, a record naming its
+//! `nf` at the offsets `R_*`, written from `NodeRecU`), so that the **mask rows** can follow the records in
+//! the same buffer: `MaskOpU`, 64 bytes a row, every row of every node in plan order, a record naming its
 //! first row and their number (`wire.z`, `wire.w`). A row is the kind, the flags (subtract, invert), the
 //! opacity and the eight numbers [`ym_color::mask::MaskOp`] derives in `f64`; the kernel's loop over a node's
 //! rows is [`ym_color::mask::PreparedMasks::mask`] line by line, with no cap on the number of rows. A node

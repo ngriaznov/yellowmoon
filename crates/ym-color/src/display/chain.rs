@@ -570,7 +570,7 @@ impl ColorChain {
     // ---- single pixels -------------------------------------------------------------------------
 
     /// Whether any mask row of the plan's nodes reads the pixel's place in the photo (a Linear or a
-    /// Radial): a render then needs the photo-frame position of every pixel ([`Frame::with_photo`]).
+    /// Radial): a render then needs the photo-frame position of every pixel ([`Frame::with_photo`](super::Frame::with_photo)).
     #[must_use]
     pub fn uses_photo_position(&self) -> bool {
         self.steps.iter().any(|(_, n)| n.masks().needs_position())

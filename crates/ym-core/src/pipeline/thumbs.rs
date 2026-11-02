@@ -24,7 +24,7 @@
 //! * **`at`** (`docs/01`, `docs/23` sections 7.5 and 9): the histogram, the scatter and Pick colour read the
 //!   signal at a node. Left out it is Main's (as before); `input` is the Input's output; a corrector
 //!   is read by the graph rewrite of the node thumbnails ([`settings_ending_at`], with no look and
-//!   the node's own later stages taken out), so no kernel is involved ([`signal_source`]).
+//!   the node's own later stages taken out), so no kernel is involved (`signal_source`).
 //! * **Scheduled calls**: `spawn_*` put a request on the render queue at the priority `docs/01`
 //!   gives it and return a handle.
 //! * **Apple Auto's picture** (`docs/19` section 3): the photo at its default settings through the
@@ -594,7 +594,7 @@ impl Renderer {
 
     /// The histogram of the signal at a node (`docs/01`, the `at` argument): the input of its
     /// curve (after its trim, grade and colour warp), or the Input's output for `Input`; `None` is
-    /// Main, which [`Renderer::histogram`] reads. See [`signal_source`].
+    /// Main, which [`Renderer::histogram`] reads. See `signal_source`.
     ///
     /// # Errors
     ///
@@ -678,7 +678,7 @@ impl Renderer {
 
     /// The scatter of the colours at the input of a node's colour warp (`docs/01`, the `at`
     /// argument): after its trim and its grade, or the Input's output for `Input`; `None` is Main,
-    /// which [`Renderer::chroma_scatter`] reads. See [`signal_source`].
+    /// which [`Renderer::chroma_scatter`] reads. See `signal_source`.
     ///
     /// # Errors
     ///
