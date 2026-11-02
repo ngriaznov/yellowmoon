@@ -21,12 +21,17 @@
 //!   colours at the input of the warp (the C9 output), projected onto its chroma plane
 //!   (`ym_color::warp::chroma_of`), from the same small view as the histogram, at most
 //!   [`CHROMA_SCATTER_MAX_POINTS`] of them.
+//! * **`at`** (`docs/01`, `docs/23` sections 7.5 and 9): the histogram, the scatter and Pick colour read the
+//!   signal at a node. Left out it is Main's (as before); `input` is the Input's output; a corrector
+//!   is read by the graph rewrite of the node thumbnails ([`settings_ending_at`], with no look and
+//!   the node's own later stages taken out), so no kernel is involved ([`signal_source`]).
 //! * **Scheduled calls**: `spawn_*` put a request on the render queue at the priority `docs/01`
 //!   gives it and return a handle.
 //! * **Apple Auto's picture** (`docs/19` section 3): the photo at its default settings through the
 //!   Signature look at 100 % and the cine rendering, at 768 px on the long edge, 8-bit sRGB, on the CPU reference
 //!   path ([`AdvisorPictures`], the session's [`PictureRenderer`] hook).
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,7 +39,8 @@ use std::time::Duration;
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use ym_color::display::{ColorChain, OutputTarget};
+use ym_color::display::{ColorChain, OutputTarget, StageTrace};
+use ym_color::logc::LogC4;
 use ym_color::warp::chroma_of;
 use ym_export::DetailStat;
 use ym_gpu::queue::{CancelToken, JobError, JobHandle, Priority};
@@ -53,7 +59,7 @@ use super::graph::{Job, RenderOptions, Renderer};
 use super::viewport::ViewportState;
 use crate::apple_auto::{AdvisorPicture, PICTURE_LONG_EDGE_PX};
 use crate::session::{PhotoId, PictureInput, PictureRenderer, ThumbnailInput, ThumbnailRenderer};
-use crate::settings::{DevelopSettings, NodeId, NodeLink, NodeRef};
+use crate::settings::{ColorWarp, Curves, DevelopSettings, NodeId, NodeLink, NodeRef};
 use ym_color::look::LookTransform;
 use ym_color::plan::Stop;
 
@@ -199,6 +205,94 @@ pub fn settings_ending_at(settings: &DevelopSettings, node: u32) -> DevelopSetti
         s.nodes.links.push(link);
     }
     s
+}
+
+/// Where in a node a panel reads its signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tap {
+    /// The input of the node's curve: after its trim, its grade and its colour warp (the histogram,
+    /// `docs/02` C11: "the histogram in the Curve tab is of LogC4 values").
+    CurveInput,
+    /// The input of the node's colour warp: after its trim and its grade (the scatter behind the
+    /// pins and Pick colour, whose pins take hold of these colours).
+    WarpInput,
+}
+
+/// The stage of a [`StageTrace`] that holds a signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Read {
+    /// The Input's output (C8).
+    InputOutput,
+    /// Main's C9, after its trim and its grade.
+    MainWarpInput,
+    /// Main's C9b, after its colour warp.
+    MainCurveInput,
+    /// The last value of the chain (C10): the graph was rewritten so that this is the node's own
+    /// stage.
+    Last,
+}
+
+impl Read {
+    /// The LogC4 value this stage holds in a trace.
+    pub(crate) fn of(self, trace: &StageTrace) -> LogC4 {
+        match self {
+            Self::InputOutput => trace.c8_logc4,
+            Self::MainWarpInput => trace.c9_logc4,
+            Self::MainCurveInput => trace.c9b_logc4,
+            Self::Last => trace.c10_logc4,
+        }
+    }
+}
+
+/// The photo to read, and the stage of its trace, for the signal at `at` (`None` is Main, node 1:
+/// what the panels read before nodes).
+///
+/// * Main reads its own C9 or C9b, as always.
+/// * The Input reads its output (C8).
+/// * Another corrector `k` is read through a **graph rewrite**: the photo with the Output reading
+///   node `k` ([`settings_ending_at`]; the nodes after it are dead branches), the look taken out
+///   (Neutral, so that C10 is the last node's own value), and the node's later stages made identity
+///   (its curve; for the warp's input also its warp), so that the chain's last value is the signal
+///   at that stage of the node. Nothing in the kernels or the chain changes, and the raw group and
+///   its caches are the photo's own.
+///
+/// # Errors
+///
+/// [`RenderError::Color`] for a node the photo does not have and for the Output, which has no
+/// signal to read.
+pub(crate) fn signal_source(
+    src: &PhotoSource,
+    at: Option<NodeId>,
+    tap: Tap,
+) -> Result<(Cow<'_, PhotoSource>, Read), RenderError> {
+    let main = match tap {
+        Tap::CurveInput => Read::MainCurveInput,
+        Tap::WarpInput => Read::MainWarpInput,
+    };
+    match at {
+        None => Ok((Cow::Borrowed(src), main)),
+        Some(NodeId::Input) => Ok((Cow::Borrowed(src), Read::InputOutput)),
+        Some(NodeId::Output) => Err(RenderError::Color(
+            "The output has no picture to read here.".to_owned(),
+        )),
+        Some(NodeId::Corrector(1)) => Ok((Cow::Borrowed(src), main)),
+        Some(NodeId::Corrector(k)) => {
+            if src.settings.nodes.corrector(k).is_none() {
+                return Err(RenderError::Color(format!(
+                    "This photo has no node {k}."
+                )));
+            }
+            let mut settings = settings_ending_at(&src.settings, k);
+            settings.output_mut().look = LookId::neutral();
+            if let Some(node) = settings.nodes.corrector_mut(k) {
+                node.grade.curve = Curves::default();
+                if tap == Tap::WarpInput {
+                    node.grade.color_warp = ColorWarp::default();
+                }
+            }
+            Ok((Cow::Owned(src.with_settings(settings)), Read::Last))
+        }
+    }
 }
 
 impl Renderer {
@@ -440,15 +534,19 @@ impl Renderer {
     }
 
     /// The small view of the whole photo that the histogram and the chroma scatter read, and the
-    /// grade chain of the photo as it is rendered now: `read` gets the sampled camera RGB (with the
-    /// letterbox mask) and the chain.
+    /// grade chain of the photo as it is rendered now (of the graph that [`signal_source`] makes
+    /// for `at`): `read` gets the sampled camera RGB (with the letterbox mask), the chain and the
+    /// stage that holds the signal.
     fn panel_view<T>(
         &self,
         src: &PhotoSource,
+        at: Option<NodeId>,
+        tap: Tap,
         cancel: &CancelToken,
-        read: impl FnOnce(&Sampled, &ColorChain) -> T,
+        read: impl FnOnce(&Sampled, &ColorChain, Read) -> T,
     ) -> Result<T, RenderError> {
-        let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::Thumbnail);
+        let (src, stage) = signal_source(src, at, tap)?;
+        let mut job = Job::new(self, &src, cancel)?.with_gpu_priority(Priority::Thumbnail);
         let image = job.final_size()?;
         let (tw, th) = thumbnail_size(image, HISTOGRAM_LONG_EDGE_PX);
         let spec = ViewSpec {
@@ -474,7 +572,7 @@ impl Renderer {
         // The sample comes from the device group when the sampler is there; the reading stays on
         // the CPU (a few thousand pixels through the f64 trace: `docs/17-gpu.md` section 11).
         let view = sample_view_routed(&mut job, &spec)?;
-        let out = read(&view.sampled, &grade.chain);
+        let out = read(&view.sampled, &grade.chain, stage);
         job.finish(
             view.scale,
             super::graph::ComputeDevice::Cpu,
@@ -493,7 +591,24 @@ impl Renderer {
         src: &PhotoSource,
         cancel: &CancelToken,
     ) -> Result<HistogramData, RenderError> {
-        let counts = self.panel_view(src, cancel, |sampled, chain| {
+        self.histogram_at(src, None, cancel)
+    }
+
+    /// The histogram of the signal at a node (`docs/01`, the `at` argument): the input of its
+    /// curve (after its trim, grade and colour warp), or the Input's output for `Input`; `None` is
+    /// Main, which [`Renderer::histogram`] reads. See [`signal_source`].
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data, a node the photo does not have, the Output, or a
+    /// cancelled job.
+    pub fn histogram_at(
+        &self,
+        src: &PhotoSource,
+        at: Option<NodeId>,
+        cancel: &CancelToken,
+    ) -> Result<HistogramData, RenderError> {
+        let counts = self.panel_view(src, at, Tap::CurveInput, cancel, |sampled, chain, stage| {
             let img = &sampled.img;
             let n = img.width * img.height;
             let outside = sampled.outside.as_deref();
@@ -508,7 +623,7 @@ impl Renderer {
                         let p = img.pixel(i % img.width, i / img.width);
                         let t = chain.trace([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
                         for (c, acc_c) in acc.iter_mut().enumerate() {
-                            let v = t.c9b_logc4.0[c].clamp(0.0, 1.0);
+                            let v = stage.of(&t).0[c].clamp(0.0, 1.0);
                             let bin =
                                 ((v * HISTOGRAM_BINS as f64) as usize).min(HISTOGRAM_BINS - 1);
                             acc_c[bin] += 1;
@@ -558,14 +673,31 @@ impl Renderer {
         src: &PhotoSource,
         cancel: &CancelToken,
     ) -> Result<ChromaScatter, RenderError> {
-        let points = self.panel_view(src, cancel, |sampled, chain| {
+        self.chroma_scatter_at(src, None, cancel)
+    }
+
+    /// The scatter of the colours at the input of a node's colour warp (`docs/01`, the `at`
+    /// argument): after its trim and its grade, or the Input's output for `Input`; `None` is Main,
+    /// which [`Renderer::chroma_scatter`] reads. See [`signal_source`].
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data, a node the photo does not have, the Output, or a
+    /// cancelled job.
+    pub fn chroma_scatter_at(
+        &self,
+        src: &PhotoSource,
+        at: Option<NodeId>,
+        cancel: &CancelToken,
+    ) -> Result<ChromaScatter, RenderError> {
+        let points = self.panel_view(src, at, Tap::WarpInput, cancel, |sampled, chain, stage| {
             let img = &sampled.img;
             every_nth_inside(sampled, CHROMA_SCATTER_MAX_POINTS)
                 .par_iter()
                 .flat_map_iter(|&i| {
                     let p = img.pixel(i % img.width, i / img.width);
                     let t = chain.trace([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
-                    chroma_of(t.c9_logc4).map(scatter_coordinate)
+                    chroma_of(stage.of(&t)).map(scatter_coordinate)
                 })
                 .collect::<Vec<f64>>()
         })?;
@@ -694,12 +826,22 @@ impl Renderer {
         &self,
         src: PhotoSource,
     ) -> JobHandle<Result<HistogramData, RenderError>> {
+        self.spawn_histogram_at(src, None)
+    }
+
+    /// [`Renderer::spawn_histogram`] for the signal at a node ([`Renderer::histogram_at`]).
+    #[must_use]
+    pub fn spawn_histogram_at(
+        &self,
+        src: PhotoSource,
+        at: Option<NodeId>,
+    ) -> JobHandle<Result<HistogramData, RenderError>> {
         let r = self.clone();
         let id = src.id;
         self.scheduler().submit_superseded(
             Priority::Thumbnail,
             id,
-            move |token| r.histogram(&src, token),
+            move |token| r.histogram_at(&src, at, token),
             || Err(RenderError::Cancelled),
         )
     }
@@ -712,12 +854,22 @@ impl Renderer {
         &self,
         src: PhotoSource,
     ) -> JobHandle<Result<ChromaScatter, RenderError>> {
+        self.spawn_chroma_scatter_at(src, None)
+    }
+
+    /// [`Renderer::spawn_chroma_scatter`] for the colours at a node ([`Renderer::chroma_scatter_at`]).
+    #[must_use]
+    pub fn spawn_chroma_scatter_at(
+        &self,
+        src: PhotoSource,
+        at: Option<NodeId>,
+    ) -> JobHandle<Result<ChromaScatter, RenderError>> {
         let r = self.clone();
         let id = src.id;
         self.scheduler().submit_superseded(
             Priority::Thumbnail,
             id,
-            move |token| r.chroma_scatter(&src, token),
+            move |token| r.chroma_scatter_at(&src, at, token),
             || Err(RenderError::Cancelled),
         )
     }

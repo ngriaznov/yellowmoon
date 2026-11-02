@@ -6,8 +6,8 @@
  * `data-tab="light"` picks the Light colour up without a prop.
  */
 
-/** Tab ids. American spelling in identifiers; the label reads "Colour". */
-export type TabId = "look" | "lens" | "light" | "color" | "detail" | "curve" | "raw";
+/** Tab ids. American spelling in identifiers; the label reads "Colour". `mask` is the corrector's Mask tab of the node view (`docs/23` §7.6). */
+export type TabId = "look" | "lens" | "light" | "color" | "detail" | "curve" | "raw" | "mask";
 
 /** One tab: its id, the caps label and the blurb under the title (`design/mockups/photos.html`). */
 export interface TabInfo {
@@ -16,7 +16,7 @@ export interface TabInfo {
   blurb: string;
 }
 
-/** The tabs in bar order. ⌘1 selects the first, ⌘7 the last. */
+/** The tabs of the simple view in bar order. ⌘1 selects the first, ⌘7 the last. */
 export const TABS: readonly TabInfo[] = [
   { id: "look", label: "Look", blurb: "Every photo is developed automatically. Pick a look and how strongly to apply it." },
   {
@@ -35,13 +35,47 @@ export const TABS: readonly TabInfo[] = [
   { id: "raw", label: "RAW", blurb: "How the sensor data is decoded before any colour is applied." },
 ];
 
-/** Tab ids in bar order. */
+/** The Mask tab of a corrector in the node view: the mask accent (`--mask`). It has no place in the simple view's bar. */
+export const MASK_TAB: TabInfo = { id: "mask", label: "Mask", blurb: "Where in the photo this node acts." };
+
+/** Tab ids of the simple view in bar order. */
 export const TAB_IDS: readonly TabId[] = TABS.map((tab) => tab.id);
+
+/** The three kinds of node a panel can be on (`NodeItem.kind`). */
+export type PanelKind = "input" | "corrector" | "output";
+
+/**
+ * The tabs of each kind of node in the node view, in bar order (`docs/23` §7.5): the Input RAW · Lens · Light · Colour · Detail, a corrector
+ * (Main included) Light · Colour · Curve · Mask, the Output Look · Detail. ⌘1 selects the first, up to ⌘5 on the Input.
+ */
+export const NODE_TABS: Readonly<Record<PanelKind, readonly TabId[]>> = {
+  input: ["raw", "lens", "light", "color", "detail"],
+  corrector: ["light", "color", "curve", "mask"],
+  output: ["look", "detail"],
+};
+
+/** The tab each kind of node opens on the first time (and when a remembered tab is not its own). */
+export const FIRST_NODE_TAB: Readonly<Record<PanelKind, TabId>> = { input: "raw", corrector: "light", output: "look" };
+
+/**
+ * The node and the tab the node view opens on when it is entered from a tab of the simple view (`docs/23` §7.5 *Tab memory*, decision 21):
+ * Look → Output › Look, Lens → Input › Lens, Light → Main › Light, Colour → Main › Colour, Detail → Input › Detail, Curve → Main › Curve,
+ * RAW → Input › RAW.
+ */
+export const NODE_FOR_SIMPLE_TAB: Readonly<Record<Exclude<TabId, "mask">, { kind: PanelKind; tab: TabId }>> = {
+  look: { kind: "output", tab: "look" },
+  lens: { kind: "input", tab: "lens" },
+  light: { kind: "corrector", tab: "light" },
+  color: { kind: "corrector", tab: "color" },
+  detail: { kind: "input", tab: "detail" },
+  curve: { kind: "corrector", tab: "curve" },
+  raw: { kind: "input", tab: "raw" },
+};
 
 /** The tab info for an id. */
 export function tabInfo(id: TabId): TabInfo {
-  const info = TABS.find((tab) => tab.id === id);
-  // TABS holds every TabId, so this cannot be undefined.
+  const info = id === "mask" ? MASK_TAB : TABS.find((tab) => tab.id === id);
+  // TABS and the Mask tab hold every TabId, so this cannot be undefined.
   return info as TabInfo;
 }
 

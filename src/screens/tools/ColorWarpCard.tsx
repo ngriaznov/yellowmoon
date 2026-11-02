@@ -4,7 +4,7 @@ import { Button, Card, formats, MINUS, ResetLink, RowNote, Slider, WarpPlane, WA
 import type { WarpTool } from "../../components";
 import type { ColorWarpPin } from "../../api/types";
 import { useAppState } from "../../state/context";
-import { mainGradeOf, mainGradePatch } from "../../state/settingsGraph";
+import { gradeOf, MAIN_ID, patchOf } from "../../state/settingsGraph";
 import type { TabProps } from "./shared";
 
 /** What the card says while no pin is selected. */
@@ -21,6 +21,8 @@ export const formatPivot = (value: number): string => {
 export const formatWarpExposure = (value: number): string => `${formats.ev(value)} EV`;
 
 export interface ColorWarpCardProps extends TabProps {
+  /** The corrector whose warp this is: Main (the default, the simple view) or the selected node of the node view. */
+  node?: number;
   /** Pick colour is on: a click on the photo adds a pin (the crosshair layer of Pick white, `Photos`). */
   pickingColor?: boolean;
   /** Turns Pick colour on or off. Without it the toggle does nothing. */
@@ -33,17 +35,19 @@ export interface ColorWarpCardProps extends TabProps {
  * setting, `color_warp`: every change sends the whole list through `store.update`, a drag one patch per frame and a final one, so a
  * drag is one undo step. The selected pin is the store's `warpPin`, which is window state and not a setting.
  */
-export function ColorWarpCard({ store, photo, rs, pickingColor = false, onPickColor }: ColorWarpCardProps) {
-  const pins = mainGradeOf(rs.settings).color_warp.pins;
+export function ColorWarpCard({ store, photo, rs, node = MAIN_ID, pickingColor = false, onPickColor }: ColorWarpCardProps) {
+  const pins = gradeOf(rs.settings, node).color_warp.pins;
   const stored = useAppState((s) => s.warpPin);
   const selected = stored !== null && stored < pins.length ? stored : null;
   const scatter = useAppState((s) => s.chromaScatter);
   const [tool, setTool] = useState<WarpTool>("move");
 
   // The photo's colours behind the plane follow the frames the viewport draws, at most five times a second (`store.watchChromaScatter`).
-  useEffect(() => store.watchChromaScatter(), [store, photo.id]);
+  // They are the colours at the input of this node's warp (`at`, `docs/01`); Main's are asked for without a node, as before nodes.
+  const at = node === MAIN_ID ? undefined : node;
+  useEffect(() => store.watchChromaScatter({ at }), [store, photo.id, at]);
 
-  const send = (next: ColorWarpPin[], final: boolean): void => void store.update(mainGradePatch({ color_warp: { pins: next } }), final, rs.photo_id);
+  const send = (next: ColorWarpPin[], final: boolean): void => void store.update(patchOf(node, { grade: { color_warp: { pins: next } } }), final, rs.photo_id);
   const pin = selected === null ? undefined : pins[selected];
   /** Changes a field of the selected pin. */
   const setPin = (patch: Partial<ColorWarpPin>, final: boolean): void => {
@@ -63,7 +67,7 @@ export function ColorWarpCard({ store, photo, rs, pickingColor = false, onPickCo
   };
   const reset = (): void => {
     store.selectWarpPin(null);
-    void store.update(mainGradePatch({ color_warp: { pins: [] } }));
+    void store.update(patchOf(node, { grade: { color_warp: { pins: [] } } }));
   };
 
   return (

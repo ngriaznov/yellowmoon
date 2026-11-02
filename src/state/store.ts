@@ -99,16 +99,16 @@ import {
   foldPatches,
   INPUT_ID,
   inputOf,
+  gradeOf,
   isEmptyPatch,
-  mainGradeOf,
   MAIN_ID,
   mainOf,
-  mainGradePatch,
   nodeIdOfKey,
   nodeOf,
   OUTPUT_ID,
   outputOf,
   outputPatch,
+  patchOf,
 } from "./settingsGraph";
 import type { CorrectorItem, InputItem, OutputItem } from "./settingsGraph";
 import { ViewportInputQueue } from "./viewportInputQueue";
@@ -382,8 +382,9 @@ function directFields(stored: object, resolved: object, patch: object, direct: R
  * bypass, trim and masks; the Output's look, intensity and sharpening. Contrast, saturation, highlights, shadows, black and the shadows
  * and highlights wheels of Main are Auto or a value (`docs/19` section 5) and need no resolving either: Auto is the photo's Auto value,
  * which the mirror already has (`estimates`). What waits for the core's reply: the Input's exposure, white balance, sharpening and noise
- * reduction (their Auto resolves in the core), the grade and masks of every other corrector, and a patch that adds or removes a node or
- * gives links. Another corrector's place, name, bypass and trim are direct, as Main's are (the node view's cards).
+ * reduction (their Auto resolves in the core), the masks of every other corrector, and a patch that adds or removes a node or gives
+ * links. Another corrector's place, name, bypass, trim and grade are direct, as Main's are (the node view's cards and panel): it has no
+ * Auto, so nothing in its grade waits for the core.
  */
 export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): ResolvedSettings {
   let settings = rs.settings;
@@ -411,15 +412,34 @@ export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): Resolve
       values = { ...values, main: (next?.resolved ?? resolved) as ResolvedCorrector };
       if (next) auto = { ...auto, main: next.auto };
     } else if (typeof id === "number" && nodeOf(settings, id)?.kind === "corrector") {
-      // Another corrector (the node view's cards): the fields that need no resolving, so that a card dropped where it was moved, a name
-      // typed and a bypass pressed show at once. Its grade and masks, and a node added or removed, wait for the core's reply.
+      // Another corrector (the node view's cards and panel): the fields that need no resolving, so that a card dropped where it was
+      // moved, a name typed, a bypass pressed and a slider of its panel show at once. Its grade is plain numbers, with no Auto to
+      // resolve (`docs/23` §3.2: Auto in a corrector other than Main is a manual 0), so it is direct too. Its masks, and a node added
+      // or removed, wait for the core's reply.
       const have = values.nodes.find((n) => n.id === id);
       const { stored, resolved } = directFields(nodeOf(settings, id) as CorrectorItem, have ?? {}, node, DIRECT_MAIN);
-      change(id, () => stored as CorrectorItem);
-      if (have) values = { ...values, nodes: values.nodes.map((n) => (n.id === id ? (resolved as ResolvedCorrector) : n)) };
+      const next = node.grade && have ? directGrade(stored as CorrectorItem, resolved as ResolvedCorrector, withoutAuto(node.grade), NO_ESTIMATES, NO_FLAGS) : null;
+      change(id, () => (next?.stored ?? stored) as CorrectorItem);
+      if (have) values = { ...values, nodes: values.nodes.map((n) => (n.id === id ? ((next?.resolved ?? resolved) as ResolvedCorrector) : n)) };
     }
   }
   return settings === rs.settings && values === rs.values && auto === rs.auto ? rs : { ...rs, settings, values, auto };
+}
+
+/** What Auto resolves to in a corrector other than Main: nothing, a manual 0 (`docs/23` §3.2). */
+const NO_ESTIMATES: MainEstimates = { contrast: 0, saturation: 0, highlights: 0, shadows: 0, black: 0, balance_shadows: [0, 0], balance_highlights: [0, 0] };
+const NO_FLAGS: MainAutoFlags = { contrast: false, highlights: false, shadows: false, black: false, balance_shadows: false, balance_highlights: false, saturation: false };
+
+/** A grade patch for a corrector other than Main, as the core reads it: every Auto is a manual 0 (and an Auto wheel a manual point at the centre). */
+function withoutAuto(patch: GradePatch): GradePatch {
+  const out: Record<string, unknown> = { ...patch };
+  for (const key of PERCENT_KEYS) if ((out[key] as PercentSetting | undefined)?.kind === "auto") out[key] = { kind: "manual", value: 0 };
+  const balance = patch.color_balance;
+  if (balance) {
+    const wheel = (w: BalanceSetting | undefined): BalanceSetting | undefined => (w?.kind === "auto" ? { kind: "manual", point: [0, 0] } : w);
+    out.color_balance = { ...balance, ...(balance.shadows ? { shadows: wheel(balance.shadows) } : {}), ...(balance.highlights ? { highlights: wheel(balance.highlights) } : {}) };
+  }
+  return out as GradePatch;
 }
 
 /** Main's grade patch applied to its stored and resolved grade, with the Auto flags that follow. */
@@ -574,6 +594,8 @@ export class AppStore {
   });
   private histogramBusy = false;
   private histogramAgain = false;
+  /** The node the histogram on show is of (`at`, `docs/01`): undefined is Main's, as the simple view reads it. */
+  private histogramAt: NodeId | undefined = undefined;
   /** Who has the histogram on show (the Light and Curve tabs): while there is one, `render_stats` keeps it fresh. */
   private histogramWatchers = 0;
   /** Of those, who also show the middle readout (the Light tab). */
@@ -583,6 +605,8 @@ export class AppStore {
   private readoutAgain = false;
   private scatterBusy = false;
   private scatterAgain = false;
+  /** The node whose warp the scatter on show is at the input of (`at`): undefined is Main's. */
+  private scatterAt: NodeId | undefined = undefined;
   /** Who shows the colour warp's plane (the Colour tab): while there is one, `render_stats` keeps its scatter fresh. */
   private scatterWatchers = 0;
   private scatterTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1974,9 +1998,10 @@ export class AppStore {
    * Pick colour (Colour › Colour warp, `docs/11`): asks the core for the chroma under a click on the photo cell (CSS pixels from its
    * corner, as Pick white) at the warp's input, and adds a moving pin there with its target on its source, selected, so the next drag
    * on the plane moves it. One undo step. A click on the paper around the photo adds nothing, and nor does one at sixteen pins (the
-   * selection goes, so the card says why).
+   * selection goes, so the card says why). In the node view `node` is the corrector whose Colour tab is shown: the chroma is read at the
+   * input of its warp (`sample_chroma`'s `at`) and the pin goes into its pins.
    */
-  async pickColor(x: number, y: number): Promise<void> {
+  async pickColor(x: number, y: number, node: number = MAIN_ID): Promise<void> {
     const id = this.currentId();
     if (id === null) return;
     // Wheel and drag input still on its way lands first: the click names a spot of the picture as that input left it.
@@ -1985,21 +2010,21 @@ export class AppStore {
     await this.whenIdle(id);
     let sample: ChromaSample | null;
     try {
-      sample = await this.api.sampleChroma(x, y);
+      sample = node === MAIN_ID ? await this.api.sampleChroma(x, y) : await this.api.sampleChroma(x, y, node);
     } catch (error) {
       this.fail(error);
       return;
     }
     const rs = this.state.settings[id];
     if (!sample || !rs || this.currentId() !== id) return;
-    const pins = mainGradeOf(rs.settings).color_warp.pins;
+    const pins = gradeOf(rs.settings, node).color_warp.pins;
     if (pins.length >= WARP_MAX_PINS) {
       this.selectWarpPin(null);
       return;
     }
     const next = [...pins, movingPin(clampToDisc([sample.a, sample.b], WARP_COORD_LIMIT))];
     this.selectWarpPin(next.length - 1);
-    await this.update(mainGradePatch({ color_warp: { pins: next } }), true);
+    await this.update(patchOf(node, { grade: { color_warp: { pins: next } } }), true);
   }
 
   /** Selects a pin of the colour warp (an index into the current photo's pins), or none. */
@@ -2529,8 +2554,12 @@ export class AppStore {
         this.histogramAgain = false;
         const asked = this.currentId();
         if (asked === null) break;
-        const data = await this.api.histogram(asked);
-        if (this.currentId() === asked) this.set({ histogram: data });
+        // The simple view names no node (Main's); the node view names the selected one (`docs/01`).
+        const at = this.histogramAt;
+        const data = await (at === undefined ? this.api.histogram(asked) : this.api.histogram(asked, at));
+        // An answer for a node the panel has left is not shown; the request for the new one is already waiting.
+        if (this.histogramAt !== at) this.histogramAgain = true;
+        else if (this.currentId() === asked) this.set({ histogram: data });
       } while (this.histogramAgain);
     } catch {
       // The plot stays as it was; the next render asks again.
@@ -2543,11 +2572,14 @@ export class AppStore {
    * The histogram (and, with `readout`, the display values at the middle of the cell) is on show: the Light and Curve tabs call this
    * while they are mounted and call the function it returns when they go. It asks once at once, then after the frames the viewport
    * reports (`render_stats`), at most every {@link HISTOGRAM_THROTTLE_MS}: every request is a job in the one queue of the core that
-   * also draws the viewport, so asking per frame made each frame wait for the plot. Nothing is asked for while nobody watches.
+   * also draws the viewport, so asking per frame made each frame wait for the plot. Nothing is asked for while nobody watches. `at` is
+   * the node whose signal it is (`docs/01`: a corrector's curve input, or `"input"`); left out, Main's. A tab that changes node calls
+   * the function this returns and watches again, which asks at once for the new node.
    */
-  watchHistogram(options: { readout?: boolean } = {}): () => void {
+  watchHistogram(options: { readout?: boolean; at?: NodeId } = {}): () => void {
     const readout = options.readout === true;
     this.histogramWatchers += 1;
+    this.histogramAt = options.at;
     if (readout) this.readoutWatchers += 1;
     void this.requestHistogram();
     if (readout) void this.refreshMiddleReadout();
@@ -2613,8 +2645,10 @@ export class AppStore {
         this.scatterAgain = false;
         const asked = this.currentId();
         if (asked === null) break;
-        const data = await this.api.chromaScatter(asked);
-        if (this.currentId() === asked) this.set({ chromaScatter: data });
+        const at = this.scatterAt;
+        const data = await (at === undefined ? this.api.chromaScatter(asked) : this.api.chromaScatter(asked, at));
+        if (this.scatterAt !== at) this.scatterAgain = true;
+        else if (this.currentId() === asked) this.set({ chromaScatter: data });
       } while (this.scatterAgain);
     } catch {
       // The dots stay as they were; the next render asks again.
@@ -2626,10 +2660,12 @@ export class AppStore {
   /**
    * The colour warp's plane is on show (the Colour tab calls this while it is mounted and calls the function it returns when it goes):
    * the photo's colours are asked for at once, then after the frames the viewport reports, at most every {@link HISTOGRAM_THROTTLE_MS},
-   * as the histogram is (`watchHistogram`). Nothing is asked for while nobody watches.
+   * as the histogram is (`watchHistogram`). Nothing is asked for while nobody watches. `at` is the node whose warp it is (`docs/01`);
+   * left out, Main's.
    */
-  watchChromaScatter(): () => void {
+  watchChromaScatter(options: { at?: NodeId } = {}): () => void {
     this.scatterWatchers += 1;
+    this.scatterAt = options.at;
     void this.requestChromaScatter();
     let watching = true;
     return () => {

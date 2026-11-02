@@ -1600,6 +1600,52 @@ fn the_pixel_readout_finds_the_photo_and_not_the_paper() {
     assert!(h.api.sample_pixel(f64::NAN, 3.0).is_err());
 }
 
+/// A node's id as the wire has it.
+fn wire_node(id: ym_core::settings::NodeId) -> Option<crate::wire::NodeId> {
+    Some(crate::wire::NodeId(id))
+}
+
+#[test]
+fn the_panel_signals_take_a_node_across_the_bridge() {
+    use ym_core::settings::NodeId as Core;
+    let h = Harness::new();
+    h.open(3);
+    h.develop();
+    let id = h.first();
+    h.rect(300.0, 300.0);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let main = h.api.histogram(id).expect("histogram");
+    let dots = h.api.chroma_scatter(id).expect("scatter");
+    // Left out, or Main, is what it was before nodes.
+    assert_eq!(h.api.histogram_at(id, None).expect("histogram"), main);
+    assert_eq!(h.api.histogram_at(id, wire_node(Core::MAIN)).expect("histogram"), main);
+    assert_eq!(h.api.chroma_scatter_at(id, None).expect("scatter"), dots);
+    // A node the photo does not have, and the Output, are refused in words.
+    let missing = h.api.histogram_at(id, wire_node(Core::Corrector(2))).expect_err("no node 2");
+    assert_eq!(missing.message, "This photo has no node 2.");
+    let output = h.api.chroma_scatter_at(id, wire_node(Core::Output)).expect_err("the output");
+    assert_eq!(output.message, "The output has no picture to read here.");
+    assert!(h.api.sample_chroma_at(150.0, 150.0, wire_node(Core::Corrector(2))).is_err());
+    // Nodes 2 and 3 (an exposure trim in each): their curves' inputs are not Main's, and Main's
+    // own reading does not change with what follows it.
+    h.api.update_settings(id, &three_node_patch()).expect("update");
+    assert_eq!(h.api.histogram_at(id, None).expect("histogram"), main);
+    let two = h.api.histogram_at(id, wire_node(Core::Corrector(2))).expect("histogram");
+    let three = h.api.histogram_at(id, wire_node(Core::Corrector(3))).expect("histogram");
+    assert_ne!(two, main);
+    assert_ne!(three, two);
+    assert!(h.api.histogram_at(id, wire_node(Core::Input)).is_ok());
+    assert_eq!(h.api.chroma_scatter_at(id, wire_node(Core::Corrector(3))).expect("scatter").points.len() % 2, 0);
+    // Pick colour at a node answers a point of the photo, and the paper has none.
+    let inside = h
+        .api
+        .sample_chroma_at(150.0, 150.0, wire_node(Core::Corrector(3)))
+        .expect("chroma")
+        .expect("a point of the photo");
+    assert!(inside.a.0.is_finite() && inside.b.0.is_finite());
+    assert_eq!(h.api.sample_chroma_at(150.0, 5.0, wire_node(Core::Corrector(3))).expect("paper"), None);
+}
+
 #[test]
 fn pick_colour_and_the_chroma_scatter_cross_the_bridge() {
     let h = Harness::new();

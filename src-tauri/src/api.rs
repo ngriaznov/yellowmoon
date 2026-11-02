@@ -37,7 +37,7 @@ use crate::wire::{
     AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, CliLinkResult,
     CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate, ExportJob, ExportJobId,
     HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress, LooksImportResult,
-    OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample, Preferences,
+    NodeId, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample, Preferences,
     PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
     SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
     WatchStatus, convert,
@@ -698,12 +698,25 @@ impl AppApi {
     ///
     /// [`AppError`] for an unknown or unfinished photo.
     pub fn histogram(&self, id: PhotoId) -> Result<HistogramData, AppError> {
+        self.histogram_at(id, None)
+    }
+
+    /// `histogram(photo_id, at)`: the histogram of the signal at a node (`docs/01`): the input of
+    /// its curve, or the Input's output for `"input"`; left out (`None`) it is Main's, as
+    /// [`AppApi::histogram`] reads it. A node the photo does not have and the Output are refused
+    /// in words.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] for an unknown or unfinished photo, a node that cannot be read and a
+    /// cancelled render.
+    pub fn histogram_at(&self, id: PhotoId, at: Option<NodeId>) -> Result<HistogramData, AppError> {
         let id = core_id(id);
         let src = PhotoSource::from_session(&self.core.session, id).map_err(session_error)?;
         let histogram = self
             .core
             .renderer
-            .spawn_histogram(src)
+            .spawn_histogram_at(src, at.map(|n| n.0))
             .wait()
             .map_err(job_error)?
             .map_err(AppError::from)?;
@@ -720,6 +733,21 @@ impl AppApi {
     ///
     /// [`AppError`] for an unknown or failed photo and a cancelled render.
     pub fn chroma_scatter(&self, id: PhotoId) -> Result<ChromaScatter, AppError> {
+        self.chroma_scatter_at(id, None)
+    }
+
+    /// `chroma_scatter(photo_id, at)`: the colours at the input of a node's colour warp
+    /// (`docs/01`); left out (`None`) it is Main's, as [`AppApi::chroma_scatter`] reads it.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] for an unknown or failed photo, a node that cannot be read and a cancelled
+    /// render.
+    pub fn chroma_scatter_at(
+        &self,
+        id: PhotoId,
+        at: Option<NodeId>,
+    ) -> Result<ChromaScatter, AppError> {
         let id = core_id(id);
         let src = match PhotoSource::from_session(&self.core.session, id) {
             Ok(src) => src,
@@ -729,7 +757,7 @@ impl AppApi {
         let scatter = self
             .core
             .renderer
-            .spawn_chroma_scatter(src)
+            .spawn_chroma_scatter_at(src, at.map(|n| n.0))
             .wait()
             .map_err(job_error)?
             .map_err(AppError::from)?;
@@ -857,13 +885,28 @@ impl AppApi {
     ///
     /// [`AppError`] for a photo that cannot be read or rendered.
     pub fn sample_chroma(&self, x: f64, y: f64) -> Result<Option<ChromaSample>, AppError> {
+        self.sample_chroma_at(x, y, None)
+    }
+
+    /// `sample_chroma(x, y, at)`: the chroma under a point at the input of a node's colour warp
+    /// (`docs/01`); left out (`None`) it is Main's, as [`AppApi::sample_chroma`] reads it.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] for a photo that cannot be read or rendered, and a node that cannot be read.
+    pub fn sample_chroma_at(
+        &self,
+        x: f64,
+        y: f64,
+        at: Option<NodeId>,
+    ) -> Result<Option<ChromaSample>, AppError> {
         let (photo, state) = self.viewport.snapshot_synced();
         let Some(photo) = photo else { return Ok(None) };
         let src = PhotoSource::from_session(&self.core.session, photo).map_err(session_error)?;
         let sample = self
             .core
             .renderer
-            .sample_chroma(&src, &state, (x, y), &CancelToken::new())
+            .sample_chroma_at(&src, at.map(|n| n.0), &state, (x, y), &CancelToken::new())
             .map_err(AppError::from)?;
         sample.map(|s| convert(&s)).transpose()
     }

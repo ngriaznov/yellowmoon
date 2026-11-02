@@ -120,7 +120,7 @@ import { expandNameTemplate, FILE_EXTENSION, sanitizeStem, slugify } from "./exp
 import { version as APP_VERSION } from "../package.json";
 import { fixtureUrl } from "./fixtures";
 import { clampPins } from "./components/warpMath";
-import { adjustScene, developScene, nodeScene, previewSvg } from "./fixtures/grade";
+import { adjustScene, developScene, nodeScene, previewSvg, signalScene } from "./fixtures/grade";
 import type { Adjustment } from "./fixtures/grade";
 import { hexChroma, sceneScatter } from "./fixtures/warp";
 import { sceneHistogram } from "./fixtures/histogram";
@@ -1898,6 +1898,18 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   }
 
   /**
+   * The corrector a panel signal is read at (`at`, `docs/01`): null for Main (left out, or 1) and for the Input, which the callers read
+   * as they always did; a corrector other than Main answers its id. A node the photo does not have and the Output are refused in the
+   * core's words.
+   */
+  function signalNode(rec: PhotoRecord, at: NodeId | undefined): number | null {
+    if (at === undefined || at === "input" || at === MAIN_ID) return null;
+    if (at === "output") fail("render", "The output has no picture to read here.");
+    if (nodeOf(rec.settings, at)?.kind !== "corrector") fail("render", `This photo has no node ${at}.`);
+    return at;
+  }
+
+  /**
    * The thumbnails of every node of a photo: the flat scene graded through the nodes up to it and then the Output's look (the core
    * stops the plan at the node and runs the Output). Sends `node_thumbnails_ready` with the nodes whose picture changed since the page
    * was told, and nothing when none did.
@@ -2574,21 +2586,26 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       run("setMenuState", () => {
         menuState = { ...state };
       }),
-    histogram: (photoId) =>
+    histogram: (photoId, at) =>
       run("histogram", (): HistogramData => {
         const rec = photo(photoId);
+        const node = signalNode(rec, at);
+        if (node !== null) return sceneHistogram(signalScene(rec.scene, adjustmentOf(rec, false), pictureChain(rec.settings, node), "curve"));
         const { values } = resolveSettings(photoId, rec.settings, estimates());
         // Exposure moves the plot along the tonal scale. Before does not: the core's histogram is always that of the
-        // finished picture (docs/02).
+        // finished picture (docs/02). At the Input it is the Input's picture, which Main's grade does not touch.
         const shift = (values.input.exposure_ev - MOCK_ESTIMATES.input.exposure_ev) * 0.06;
-        return sceneHistogram(developed(rec), shift);
+        return sceneHistogram(at === "input" ? adjustScene(rec.scene, { ...adjustmentOf(rec, false) }) : developed(rec), shift);
       }),
 
-    chromaScatter: (photoId) =>
+    chromaScatter: (photoId, at) =>
       run("chromaScatter", (): ChromaScatter => {
         const rec = photo(photoId);
-        // The photo's colours at the warp's input, seeded by the photo so the dots are the same on every run.
-        return { points: sceneScatter(warpInput(rec), 7919 * photoId + 17) };
+        const node = signalNode(rec, at);
+        // The photo's colours at the warp's input, seeded by the photo so the dots are the same on every run. At another corrector they
+        // are the colours after the nodes before it and its own trims and grade (`docs/01`).
+        const scene = node === null ? warpInput(rec) : signalScene(rec.scene, adjustmentOf(rec, false), pictureChain(rec.settings, node), "warp");
+        return { points: sceneScatter(scene, 7919 * photoId + 17) };
       }),
 
     suggestCrop: (photoId, aspect, orientation) =>
@@ -2656,14 +2673,15 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         return { r, g, b };
       }),
 
-    sampleChroma: (x, y) =>
+    sampleChroma: (x, y, at) =>
       run("sampleChroma", (): ChromaSample | null => {
         const rec = photos[current];
         if (!rec) fail("viewport", "Open a photo first.");
+        const node = signalNode(rec, at);
         // On the paper around a letterboxed picture there is no colour to pick.
         const point = photoPointAt(rec, x, y);
         if (!point) return null;
-        const scene = warpInput(rec);
+        const scene = node === null ? warpInput(rec) : signalScene(rec.scene, adjustmentOf(rec, false), pictureChain(rec.settings, node), "warp");
         const [a, b] = hexChroma(scene[layerAt(scene, clamp(point[0], 0, 1), clamp(point[1], 0, 1))]);
         return { a, b };
       }),

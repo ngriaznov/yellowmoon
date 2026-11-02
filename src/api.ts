@@ -41,6 +41,7 @@ import type {
   LookInput,
   LooksImportResult,
   MenuState,
+  NodeId,
   OpenKind,
   Orientation,
   PasteReport,
@@ -127,14 +128,17 @@ export interface Api {
   setMenuState(state: MenuState): Promise<void>;
   /**
    * `histogram`: the RGB histogram of the photo as it is rendered now (Light tab, Curve plot).
-   * Addition to `docs/01`; ask again after every `render_stats` event.
+   * Addition to `docs/01`; ask again after every `render_stats` event. `at` (`docs/01`, `docs/23` §9) is the node whose signal it
+   * is: `"input"` (the Input's output) or a corrector (the input of its curve); left out it is Main's, which is what the simple view
+   * reads and never names.
    */
-  histogram(photoId: PhotoId): Promise<HistogramData>;
+  histogram(photoId: PhotoId, at?: NodeId): Promise<HistogramData>;
   /**
    * `chroma_scatter` (addition, the colour warp of 2026-10-17): the photo's colours on the colour warp's plane, at the warp's input, at
    * most 2048 points, for the faint scatter behind Colour › Colour warp. Ask again after `render_stats`, as for the histogram.
+   * `at` is the node whose warp the colours are at the input of (left out: Main's), as for `histogram`.
    */
-  chromaScatter(photoId: PhotoId): Promise<ChromaScatter>;
+  chromaScatter(photoId: PhotoId, at?: NodeId): Promise<ChromaScatter>;
   /**
    * `suggest_crop` (Auto crop, 2026-10-22): the straighten angle and up to three frames for the photo at an aspect and orientation,
    * best first (`docs/20-auto-crop.md` §3). The first call for a photo renders and analyses its picture; later ones are quick.
@@ -161,9 +165,10 @@ export interface Api {
   samplePixel(x: number, y: number): Promise<PixelSample>;
   /**
    * `sample_chroma` (addition, the colour warp's Pick colour): the chroma of the pixel under a point of the photo cell (CSS pixels from
-   * its corner, as Pick white) at the warp's input. `null` on the paper around a letterboxed photo.
+   * its corner, as Pick white) at the warp's input. `null` on the paper around a letterboxed photo. `at` is the node whose warp it is
+   * the input of (left out: Main's), as for `histogram`.
    */
-  sampleChroma(x: number, y: number): Promise<ChromaSample | null>;
+  sampleChroma(x: number, y: number, at?: NodeId): Promise<ChromaSample | null>;
 
   // --- Lens ----------------------------------------------------------------
 
@@ -338,8 +343,8 @@ export const tauriApi: Api = {
   copySettings: (photoId) => narrowed(commands.copySettings(photoId)),
   pasteSettings: (photoIds, patch) => narrowed(commands.pasteSettings(photoIds, patch)),
   setMenuState: (state) => unit(commands.setMenuState(state)),
-  histogram: (photoId) => commands.histogram(photoId),
-  chromaScatter: (photoId) => commands.chromaScatter(photoId),
+  histogram: (photoId, at) => commands.histogram(photoId, at ?? null),
+  chromaScatter: (photoId, at) => commands.chromaScatter(photoId, at ?? null),
   suggestCrop: (photoId, aspect, orientation) => commands.suggestCrop(photoId, aspect, orientation),
 
   viewportInfo: () => commands.viewportInfo(),
@@ -348,7 +353,7 @@ export const tauriApi: Api = {
   viewportSetMode: (mode) => unit(commands.viewportSetMode(mode)),
   setBefore: (before) => unit(commands.setBefore(before)),
   samplePixel: (x, y) => commands.samplePixel(x, y),
-  sampleChroma: (x, y) => commands.sampleChroma(x, y),
+  sampleChroma: (x, y, at) => commands.sampleChroma(x, y, at ?? null),
 
   lensList: () => commands.lensList(),
   looksList: () => commands.looksList(),

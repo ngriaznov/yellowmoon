@@ -18,8 +18,8 @@ use crate::system;
 use crate::wire::{
     self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, CliLinkResult,
     CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate, ExportJob, ExportJobId,
-    HistogramData, LensInfo, Look, LookId, LookInput, LooksImportResult, MenuState, Num, OpenKind,
-    Orientation, PasteReport, PhotoId, PixelSample, Preferences, PreferencesPatch,
+    HistogramData, LensInfo, Look, LookId, LookInput, LooksImportResult, MenuState, NodeId, Num,
+    OpenKind, Orientation, PasteReport, PhotoId, PixelSample, Preferences, PreferencesPatch,
     ResolvedSettings, SessionChange, SessionState, SettingsPatch, SourceRecognition,
     ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, WatchStatus,
 };
@@ -257,24 +257,28 @@ pub fn set_menu_state(app: AppHandle, state: MenuState) -> Result<(), AppError> 
     crate::menu::apply_state(&app, &state).map_err(AppError::internal)
 }
 
-/// `histogram(photo_id)`: the RGB histogram of the photo as it is rendered now.
+/// `histogram(photo_id, at)`: the RGB histogram of the signal at a node (`docs/01`): the input of
+/// its curve, or `"input"`, the Input's output; `null` is Main's, the photo as it is rendered now.
 #[tauri::command]
 #[specta::specta]
 pub async fn histogram(
     state: State<'_, AppState>,
     photo_id: PhotoId,
+    at: Option<NodeId>,
 ) -> Result<HistogramData, AppError> {
-    run(&state, move |api| api.histogram(photo_id)).await
+    run(&state, move |api| api.histogram_at(photo_id, at)).await
 }
 
-/// `chroma_scatter(photo_id)`: the photo's colours at the colour warp's input, for its plane.
+/// `chroma_scatter(photo_id, at)`: the photo's colours at the input of a node's colour warp, for
+/// its plane; `null` is Main's.
 #[tauri::command]
 #[specta::specta]
 pub async fn chroma_scatter(
     state: State<'_, AppState>,
     photo_id: PhotoId,
+    at: Option<NodeId>,
 ) -> Result<ChromaScatter, AppError> {
-    run(&state, move |api| api.chroma_scatter(photo_id)).await
+    run(&state, move |api| api.chroma_scatter_at(photo_id, at)).await
 }
 
 /// `suggest_crop(photo_id, aspect, orientation)`: Auto crop's proposal (`docs/20-auto-crop.md` §3).
@@ -357,16 +361,17 @@ pub async fn sample_pixel(
     run(&state, move |api| api.sample_pixel(x.0, y.0)).await
 }
 
-/// `sample_chroma(x, y)`: the chroma at the colour warp's input under a point of the photo cell
-/// (Pick colour); `null` on the paper around the photo.
+/// `sample_chroma(x, y, at)`: the chroma at the input of a node's colour warp under a point of the
+/// photo cell (Pick colour; `null` for `at` is Main's); `null` on the paper around the photo.
 #[tauri::command]
 #[specta::specta]
 pub async fn sample_chroma(
     state: State<'_, AppState>,
     x: Num,
     y: Num,
+    at: Option<NodeId>,
 ) -> Result<Option<ChromaSample>, AppError> {
-    run(&state, move |api| api.sample_chroma(x.0, y.0)).await
+    run(&state, move |api| api.sample_chroma_at(x.0, y.0, at)).await
 }
 
 // --- Lens -------------------------------------------------------------------------------------

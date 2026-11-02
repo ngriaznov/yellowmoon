@@ -191,6 +191,20 @@ export function nodeScene(scene: Scene, input: Adjustment, chain: readonly NodeL
   return developScene(out, look, null);
 }
 
+/**
+ * The scene as a panel reads it at a node (`docs/01`, the `at` argument): the photo adjusted at the Input, through the correctors on
+ * the path to the node in order, the last one only as far as the panel looks into it: `curve` is the input of its curve (the node's
+ * trims, grade and pins), `warp` the input of its colour warp (without its pins). The mock's histogram, scatter and Pick colour.
+ */
+export function signalScene(scene: Scene, input: Adjustment, chain: readonly NodeLook[], stage: "curve" | "warp"): Scene {
+  let out = adjustScene(scene, { ...input, warp: undefined });
+  chain.forEach((node, i) => {
+    const last = i === chain.length - 1;
+    out = adjustForNode(out, last && stage === "warp" ? { ...node, grade: { ...node.grade, color_warp: { pins: [] } } } : node);
+  });
+  return out;
+}
+
 /** A crop for `previewSvg`: a rectangle of the oriented frame in [0, 1]², and a straighten angle. */
 export interface PreviewCrop {
   x: number;

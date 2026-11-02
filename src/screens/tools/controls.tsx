@@ -1,6 +1,6 @@
 import { formats, Slider } from "../../components";
 import type { ResolvedSettings } from "../../api/types";
-import { inputOf, inputPatch, mainGradePatch } from "../../state/settingsGraph";
+import { inputOf, inputPatch, MAIN_ID, mainGradePatch, patchOf, resolvedCorrector } from "../../state/settingsGraph";
 import type { AppStore } from "../../state/store";
 import { AUTO, manualOrAuto } from "./shared";
 
@@ -82,13 +82,35 @@ export function KelvinSlider({ store, rs, label = "Kelvin" }: ControlProps & { l
 /** The settings that are Auto or a value from −100 to 100 (`PercentSetting`, `docs/19` section 5). */
 export type PercentField = "contrast" | "saturation" | "highlights" | "shadows" | "black";
 
+/** What these controls act on: the node view's tabs edit the selected corrector, the simple view's Main. */
+interface NodeControlProps extends ControlProps {
+  /** The corrector (Main is 1, the default). On any other corrector the values are plain numbers: no Auto, the detent and Reset at 0 (`docs/23` §7.5). */
+  node?: number;
+}
+
 /**
- * Contrast, Saturation, Highlights, Shadows or Black: −100 to 100, Auto or a value (`docs/19` section 10). They behave like the
+ * Contrast, Saturation, Highlights, Shadows or Black: −100 to 100, Auto or a value (`docs/19` section 10). On **Main** they behave like the
  * Exposure slider: the detent and Reset are at the photo's Auto value (0, or Apple Auto's answer, `AutoEstimates.contrast`, …), a
  * value equal to it is sent as Auto (`manualOrAuto`) and any other value as Manual, and Reset sends Auto, not a manual copy of the
- * Auto value.
+ * Auto value. On any **other corrector** Auto belongs to Main (`docs/23` §3.2): the value is a plain number, the detent and Reset are at 0
+ * and a manual value is always what is sent.
  */
-export function PercentSlider({ store, rs, field, label }: ControlProps & { field: PercentField; label: string }) {
+export function PercentSlider({ store, rs, field, label, node = MAIN_ID }: NodeControlProps & { field: PercentField; label: string }) {
+  if (node !== MAIN_ID) {
+    const send = (value: number, final: boolean): void =>
+      void store.update(patchOf(node, { grade: { [field]: { kind: "manual", value } } }), final, rs.photo_id);
+    return (
+      <Slider
+        label={label}
+        value={resolvedCorrector(rs.values, node)?.grade[field] ?? 0}
+        min={-100}
+        max={100}
+        defaultValue={0}
+        format={formats.signed}
+        onChange={send}
+      />
+    );
+  }
   const auto = rs.estimates.main[field];
   return (
     <Slider
@@ -105,11 +127,11 @@ export function PercentSlider({ store, rs, field, label }: ControlProps & { fiel
 }
 
 /** Contrast (Light › Exposure and Look › Tone): Auto or −100…100, the detent at the Auto value. */
-export function ContrastSlider({ store, rs }: ControlProps) {
-  return <PercentSlider store={store} rs={rs} field="contrast" label="Contrast" />;
+export function ContrastSlider({ store, rs, node }: NodeControlProps) {
+  return <PercentSlider store={store} rs={rs} field="contrast" label="Contrast" node={node} />;
 }
 
 /** Saturation (Colour › Colour balance and Look › Tone): Auto or −100…100, the detent at the Auto value. It keeps the luminance (`docs/02` C9). */
-export function SaturationSlider({ store, rs }: ControlProps) {
-  return <PercentSlider store={store} rs={rs} field="saturation" label="Saturation" />;
+export function SaturationSlider({ store, rs, node }: NodeControlProps) {
+  return <PercentSlider store={store} rs={rs} field="saturation" label="Saturation" node={node} />;
 }

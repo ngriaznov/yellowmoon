@@ -94,7 +94,9 @@ use super::graph::{
     Backing, ComputeDevice, Job, PartSource, Pixels, RenderReport, Renderer, ResidentPart,
     TileImage,
 };
+use super::thumbs::{Tap, signal_source};
 use super::viewport::ViewportState;
+use crate::settings::NodeId;
 use super::{FrameZoom, RenderError};
 
 /// A finished 8-bit frame: RGBA, Display P3 for the viewport, sRGB for thumbnails.
@@ -2744,10 +2746,31 @@ impl Renderer {
         css: (f64, f64),
         cancel: &CancelToken,
     ) -> Result<Option<ChromaSample>, RenderError> {
-        let Some((rgb, grade, at)) = self.point_reading(src, state, css, false, cancel)? else {
+        self.sample_chroma_at(src, None, state, css, cancel)
+    }
+
+    /// [`Renderer::sample_chroma`] for the colour at the input of a node's colour warp (`docs/01`,
+    /// the `at` argument): after the node's trim and grade, or the Input's output for `Input`;
+    /// `None` is Main. The node's own pins act on these colours, so Pick colour on a corrector
+    /// reads them. See [`signal_source`](super::thumbs::signal_source).
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data, a node the photo does not have, the Output, or a
+    /// cancelled job.
+    pub fn sample_chroma_at(
+        &self,
+        src: &PhotoSource,
+        node: Option<NodeId>,
+        state: &ViewportState,
+        css: (f64, f64),
+        cancel: &CancelToken,
+    ) -> Result<Option<ChromaSample>, RenderError> {
+        let (src, stage) = signal_source(src, node, Tap::WarpInput)?;
+        let Some((rgb, grade, at)) = self.point_reading(&src, state, css, false, cancel)? else {
             return Ok(None);
         };
-        let [a, b] = chroma_of(grade.chain.trace_at(rgb, at).c9_logc4);
+        let [a, b] = chroma_of(stage.of(&grade.chain.trace_at(rgb, at)));
         Ok(Some(ChromaSample { a, b }))
     }
 

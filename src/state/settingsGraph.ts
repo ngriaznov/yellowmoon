@@ -23,6 +23,8 @@ import type {
   NodeLink,
   NodePatch,
   NodePos,
+  ResolvedCorrector,
+  ResolvedValues,
   SettingsPatch,
 } from "../api/types";
 
@@ -102,6 +104,20 @@ export function correctorsOf(settings: DevelopSettings): CorrectorItem[] {
 /** Main's grade: the shorthand for `mainOf(settings).grade`. */
 export function mainGradeOf(settings: DevelopSettings): NodeGrade {
   return mainOf(settings).grade;
+}
+
+/**
+ * The grade of a corrector, Main's or another's: the node view's tabs edit the selected node (`docs/23` §7.5). A node the document does
+ * not have (an undo took it away between a render and this read) reads as Main's, as the screen falls back to Main for it.
+ */
+export function gradeOf(settings: DevelopSettings, id: number): NodeGrade {
+  const node = nodeOf(settings, id);
+  return node?.kind === "corrector" ? node.grade : mainOf(settings).grade;
+}
+
+/** A corrector with its numbers resolved, Main's (`values.main`) or another's (`values.nodes`); undefined for a node the core has not answered for. */
+export function resolvedCorrector(values: ResolvedValues, id: number): ResolvedCorrector | undefined {
+  return id === MAIN_ID ? values.main : values.nodes.find((node) => node.id === id);
 }
 
 // ---------------------------------------------------------------------------

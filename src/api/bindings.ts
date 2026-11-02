@@ -64,10 +64,16 @@ export const commands = {
 	pasteSettings: (photoIds: PhotoId[], patch: SettingsPatch) => __TAURI_INVOKE<PasteReport>("paste_settings", { photoIds, patch }),
 	/**  `set_menu_state(state)`: switches the Edit menu's settings items on or off. */
 	setMenuState: (state: MenuState) => __TAURI_INVOKE<null>("set_menu_state", { state }),
-	/**  `histogram(photo_id)`: the RGB histogram of the photo as it is rendered now. */
-	histogram: (photoId: PhotoId) => __TAURI_INVOKE<HistogramData>("histogram", { photoId }),
-	/**  `chroma_scatter(photo_id)`: the photo's colours at the colour warp's input, for its plane. */
-	chromaScatter: (photoId: PhotoId) => __TAURI_INVOKE<ChromaScatter>("chroma_scatter", { photoId }),
+	/**
+	 *  `histogram(photo_id, at)`: the RGB histogram of the signal at a node (`docs/01`): the input of
+	 *  its curve, or `"input"`, the Input's output; `null` is Main's, the photo as it is rendered now.
+	 */
+	histogram: (photoId: PhotoId, at: "input" | "output" | number | null) => __TAURI_INVOKE<HistogramData>("histogram", { photoId, at }),
+	/**
+	 *  `chroma_scatter(photo_id, at)`: the photo's colours at the input of a node's colour warp, for
+	 *  its plane; `null` is Main's.
+	 */
+	chromaScatter: (photoId: PhotoId, at: "input" | "output" | number | null) => __TAURI_INVOKE<ChromaScatter>("chroma_scatter", { photoId, at }),
 	/**  `suggest_crop(photo_id, aspect, orientation)`: Auto crop's proposal (`docs/20-auto-crop.md` §3). */
 	suggestCrop: (photoId: PhotoId, aspect: CropAspect, orientation: 0 | 90 | 180 | 270) => __TAURI_INVOKE<CropSuggestion>("suggest_crop", { photoId, aspect, orientation }),
 	/**  `viewport_info()` (addition): which backend draws the photo, `native` or `fallback`. */
@@ -83,15 +89,15 @@ export const commands = {
 	/**  `sample_pixel(x, y)`: display values under a point of the photo cell. */
 	samplePixel: (x: number, y: number) => __TAURI_INVOKE<PixelSample>("sample_pixel", { x, y }),
 	/**
-	 *  `sample_chroma(x, y)`: the chroma at the colour warp's input under a point of the photo cell
-	 *  (Pick colour); `null` on the paper around the photo.
+	 *  `sample_chroma(x, y, at)`: the chroma at the input of a node's colour warp under a point of the
+	 *  photo cell (Pick colour; `null` for `at` is Main's); `null` on the paper around the photo.
 	 */
-	sampleChroma: (x: number, y: number) => __TAURI_INVOKE<{
+	sampleChroma: (x: number, y: number, at: "input" | "output" | number | null) => __TAURI_INVOKE<{
 	/**  Along `e1`, red against cyan. */
 	a: number,
 	/**  Along `e2`, green against blue. */
 	b: number,
-} | null>("sample_chroma", { x, y }),
+} | null>("sample_chroma", { x, y, at }),
 	/**
 	 *  `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
 	 *  starting amounts. Empty when the lens data could not be loaded.
