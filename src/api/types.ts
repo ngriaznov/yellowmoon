@@ -1218,6 +1218,28 @@ export type MaskKind = MaskItem["kind"];
 export type MapFrom = "photo" | "cell";
 
 /**
+ * What the person did on the photo to find an object: `mask_find`'s `prompt` (`docs/23` §9), in the photo frame. A click is `point` (`positive`
+ * for a part of the object, not for a part to take away); a drag with the Box tool is `box`.
+ */
+export type MaskFindPrompt = { kind: "point"; x: number; y: number; positive: boolean } | { kind: "box"; x0: number; y0: number; x1: number; y1: number };
+
+/**
+ * The answer of `mask_find` (`docs/23` §9). `found` carries what the Object row's `points` and `box` become (the click or box added to what the
+ * row had) and the time the decoder took; the page sends it as one `masks.edit` row patch. `nothing` is no object there: the page adds no point and
+ * changes nothing, and the error bar says "Nothing found there. Click another part of the object, or draw a box."
+ */
+export type MaskFindResult = { kind: "found"; points: Array<[number, number, boolean]>; box: [number, number, number, number] | null; took_ms: number } | { kind: "nothing" };
+
+/**
+ * `object_state` (addition): SAM's encoder is working for a photo (`preparing`), or has stopped. The Object rows of that photo say "Getting ready…" while
+ * it is (`docs/23` §7.6); when it stops with the features made the photo is drawn again.
+ */
+export interface ObjectState {
+  photo_id: PhotoId;
+  preparing: boolean;
+}
+
+/**
  * Where in a node `sample_chroma` reads the colour (`docs/23` §9): `"warp_input"` (left out, or `null`) is the input of the node's colour warp,
  * after the node's own trim and grade (Pick colour of the Colour warp); `"node_input"` is the picture the node reads, before its trim and
  * grade, which is what a Colour range selects on (Pick colour of a Colour range).
@@ -1526,6 +1548,7 @@ export type ErrorScope =
   | "looks"
   | "preferences"
   | "viewport"
+  | "mask"
   | "app";
 
 /**
@@ -1639,6 +1662,8 @@ export interface ApiEvents {
   export_busy: ExportBusy;
   /** The viewport is working on a frame (and whether on the CPU), or has stopped. */
   viewport_busy: ViewportBusy;
+  /** SAM's encoder started or stopped working for a photo (`docs/23` §7.6: the Object rows say "Getting ready…"). */
+  object_state: ObjectState;
 }
 
 /** Names of the events the core emits. */

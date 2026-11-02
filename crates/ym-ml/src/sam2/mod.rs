@@ -94,7 +94,7 @@ pub const STABILITY_THRESHOLD: f32 = 0.98;
 /// The stability is the IoU of the mask at logit > `delta` and at logit > `-delta`.
 pub const STABILITY_DELTA: f32 = 0.05;
 /// The most points a prompt may hold.
-pub const MAX_POINTS: usize = 64;
+pub const MAX_POINTS: usize = 256;
 /// The longest side of a picture [`Picture::new`] takes, in pixels.
 pub const MAX_PICTURE_PX: usize = 16_384;
 
@@ -806,6 +806,22 @@ impl Sam2 {
         self.encode_timed(picture).map(|(f, _)| f)
     }
 
+    /// [`Sam2::encode`] that stops when `cancel` says so: it is asked before each of the trunk's 16 blocks (about a fifth of
+    /// a second apart on four cores), and the encoder then returns [`MlError::Cancelled`] having kept nothing. The features of a
+    /// run that finishes are those of [`Sam2::encode`], bit for bit: the hook only reads.
+    ///
+    /// # Errors
+    ///
+    /// [`MlError::Cancelled`] when `cancel` returned `true`; otherwise as [`Sam2::encode`].
+    pub fn encode_cancellable(
+        &self,
+        picture: &Picture<'_>,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Features> {
+        let input = preprocess(picture);
+        self.encode_input_with(&input, cancel).map(|(f, _)| f)
+    }
+
     /// [`Sam2::encode`] with the time of each stage.
     ///
     /// # Errors
@@ -830,13 +846,21 @@ impl Sam2 {
     }
 
     fn encode_input_timed(&self, input: &[f32]) -> Result<(Features, EncodeTimings)> {
+        self.encode_input_with(input, &|| false)
+    }
+
+    fn encode_input_with(
+        &self,
+        input: &[f32],
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<(Features, EncodeTimings)> {
         if input.iter().any(|v| !v.is_finite()) {
             return Err(MlError::Input(
                 "the input tensor holds a value that is not finite".into(),
             ));
         }
         let t0 = std::time::Instant::now();
-        let stages = self.trunk.forward(input)?;
+        let stages = self.trunk.forward(input, cancel)?;
         let t1 = std::time::Instant::now();
         let maps = self.neck.forward(&stages);
         let t2 = std::time::Instant::now();

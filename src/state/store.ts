@@ -49,6 +49,7 @@ import type {
   MainAutoFlags,
   MainEstimates,
   MapFrom,
+  MaskFindPrompt,
   MaskKind,
   MasksPatch,
   MaskStyle,
@@ -59,6 +60,7 @@ import type {
   NodeId,
   NodeItem,
   NodeThumbnailsReady,
+  ObjectState,
   OpenSummary,
   Orientation,
   PasteReport,
@@ -92,6 +94,8 @@ import { clampToDisc, movingPin, WARP_COORD_LIMIT, WARP_MAX_PINS } from "../comp
 import { BRUSH_FULL, brushPointCount, DEFAULT_BRUSH, MAX_BRUSH_POINTS } from "./brushStrokes";
 import type { BrushSettings } from "./brushStrokes";
 import { COLOR_RANGE_REACH } from "./maskRows";
+import { DEFAULT_OBJECT_MODE, foundText, FOUND_PILL_MS, NOTHING_FOUND } from "./objectMask";
+import type { ObjectMode } from "./objectMask";
 import { isTauri } from "../env";
 import { defaultExportOptions, defaultScope, sameOptions } from "../export/options";
 import { applyProgress, startRun } from "../export/run";
@@ -287,6 +291,19 @@ export interface AppState {
   brushTool: boolean;
   /** The kinds of mask this machine can make, once asked (`mask_kinds`, `ensureMaskKinds`): what the Add mask menu lists. */
   maskKinds: readonly MaskKind[] | null;
+  /** The Object card's tool (`docs/23` §7.6): what a plain click on the photo does. A window setting; it is no patch and no undo step. */
+  objectMode: ObjectMode;
+  /**
+   * The Object tool is on for the selected row (`docs/23` §7.6): a click on the photo finds an object, a drag with the Box tool draws a box. Adding an Object
+   * row, a click on one and a click on a tool turn it on; Esc, another row, another node and another photo turn it off.
+   */
+  objectTool: boolean;
+  /** The photos whose SAM encoder is working (`object_state`): their Object rows say "Getting ready…". */
+  objectPreparing: readonly PhotoId[];
+  /** A `mask_find` is under way for this photo: its Object rows say "Finding…". */
+  objectFinding: PhotoId | null;
+  /** The pill at the top of the photo, "Object found · 0.4 s", for three seconds after a find. */
+  objectPill: { seq: number; text: string } | null;
   /** Undo and redo are available for the current photo. */
   canUndo: boolean;
   canRedo: boolean;
@@ -375,6 +392,11 @@ export function initialState(): AppState {
     brush: DEFAULT_BRUSH,
     brushTool: false,
     maskKinds: null,
+    objectMode: DEFAULT_OBJECT_MODE,
+    objectTool: false,
+    objectPreparing: [],
+    objectFinding: null,
+    objectPill: null,
     canUndo: false,
     canRedo: false,
     preferences: null,
@@ -804,6 +826,7 @@ export class AppStore {
       api.on("settings_changed", (e) => void this.onSettingsChanged(e.photo_id)),
       api.on("export_busy", (e) => this.set({ exportBusy: e.busy })),
       api.on("viewport_busy", (e) => this.onViewportBusy(e)),
+      api.on("object_state", (e) => this.onObjectState(e)),
     ];
     void this.load();
     return () => this.disconnect();
@@ -1069,6 +1092,14 @@ export class AppStore {
     this.set({ viewportBusy: { busy: e.busy, cpu: e.cpu, finding: e.finding } });
   }
 
+  /** `object_state`: SAM's encoder started or stopped working for a photo. When it stops the core draws the photo again, and the nodes' thumbnails follow. */
+  private onObjectState(e: ObjectState): void {
+    const was = this.state.objectPreparing.includes(e.photo_id);
+    if (was === e.preparing) return;
+    this.set({ objectPreparing: e.preparing ? [...this.state.objectPreparing, e.photo_id] : this.state.objectPreparing.filter((id) => id !== e.photo_id) });
+    if (!e.preparing) this.wantNodeThumbnails(e.photo_id);
+  }
+
   private onFrame(frame: ViewportFrame): void {
     // Frames can arrive out of order (the shell numbers a frame before it encodes it, and the news that the picture is gone is sent from
     // another thread): an older one never replaces a newer one, and never brings back a picture that was taken away.
@@ -1283,6 +1314,8 @@ export class AppStore {
       warpPin: null,
       maskRow: null,
       brushTool: false,
+      objectTool: false,
+      objectPill: null,
       zoom: { kind: "fit" },
       before: false,
       stats,
@@ -1518,6 +1551,8 @@ export class AppStore {
       warpPin: null,
       maskRow: null,
       brushTool: false,
+      objectTool: false,
+      objectPill: null,
       zoom: { kind: "fit" },
       before: false,
       stats: this.state.stats && { ...this.state.stats, zoom_percent: null, fit_percent: null },
@@ -2191,7 +2226,71 @@ export class AppStore {
    * was selected, and so does selecting a row again: the caller that wants the tool turns it on afterwards ({@link Store.setBrushTool}).
    */
   selectMaskRow(index: number | null): void {
-    if (index !== this.state.maskRow || this.state.brushTool) this.set({ maskRow: index, brushTool: false });
+    if (index !== this.state.maskRow || this.state.brushTool || this.state.objectTool) this.set({ maskRow: index, brushTool: false, objectTool: false });
+  }
+
+  /** Turns the Object tool of the selected row on or off (`docs/23` §7.6). */
+  setObjectTool(on: boolean): void {
+    if (on !== this.state.objectTool) this.set({ objectTool: on });
+  }
+
+  /** Chooses what a plain click does on the Object card: Add point, Remove point or Box. Nothing is sent. */
+  setObjectMode(mode: ObjectMode): void {
+    if (mode !== this.state.objectMode) this.set({ objectMode: mode });
+  }
+
+  /** One find at a time: a click while another is being answered waits, and reads the row as that one left it. */
+  private finds: Promise<unknown> = Promise.resolve();
+  private pillSeq = 0;
+  private pillTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Finds an object (`mask_find`, `docs/23` §4.4 and §9): asks the core for the Object row `row` of `node` with the person's click or box added. A **found**
+   * answer carries what the row's `points` and `box` become and is sent as **one** `masks.edit` row patch (one undo step), and the pill "Object found ·
+   * 0.4 s" shows for three seconds. **Nothing found** adds no point and changes nothing: the error bar says "Nothing found there. Click another part of the
+   * object, or draw a box." A refusal of the core (no Object model, 256 points) goes to the error bar with its own sentence. The row says "Finding…" while
+   * the core works. Resolves with whether a mask was found.
+   */
+  findObject(node: number, row: number, prompt: MaskFindPrompt, photoId: PhotoId | null = this.currentId()): Promise<boolean> {
+    if (photoId === null) return Promise.resolve(false);
+    const id = photoId;
+    const run = async (): Promise<boolean> => {
+      const rs = this.state.settings[id];
+      const item = rs ? nodeOf(rs.settings, node) : undefined;
+      const target = item?.kind === "corrector" ? item.masks.items[row] : undefined;
+      if (target?.kind !== "object") return false;
+      this.set({ objectFinding: id });
+      try {
+        const found = await this.api.maskFind(id, node, row, prompt);
+        if (found.kind === "nothing") {
+          this.set({ error: { scope: "mask", message: NOTHING_FOUND } });
+          return false;
+        }
+        await this.update(patchOf(node, { masks: { edit: { [String(row)]: { points: found.points, box: found.box } } } }), true, id);
+        this.showPill(foundText(found.took_ms));
+        return true;
+      } catch (error) {
+        this.fail(error);
+        return false;
+      } finally {
+        if (this.state.objectFinding === id) this.set({ objectFinding: null });
+      }
+    };
+    const next = this.finds.then(run, run);
+    this.finds = next;
+    return next;
+  }
+
+  /** Shows the pill "Object found · 0.4 s" for {@link FOUND_PILL_MS}; a newer one replaces it. */
+  private showPill(text: string): void {
+    if (this.pillTimer !== null) clearTimeout(this.pillTimer);
+    this.pillSeq += 1;
+    const seq = this.pillSeq;
+    this.set({ objectPill: { seq, text } });
+    this.pillTimer = setTimeout(() => {
+      this.pillTimer = null;
+      if (this.state.objectPill?.seq === seq) this.set({ objectPill: null });
+    }, FOUND_PILL_MS);
   }
 
   /** Turns the Brush tool of the selected row on or off (`docs/23` §7.6). */

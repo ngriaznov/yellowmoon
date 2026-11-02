@@ -19,10 +19,10 @@ use crate::wire::{
     self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
     CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate,
     ExportJob, ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput, LooksImportResult,
-    MapFrom, MaskKind, MaskView, MenuState, NodeId, Num, OpenKind, Orientation, PasteReport,
-    PhotoId, PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionChange,
-    SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput,
-    ViewportMode, ViewportRect, WatchStatus,
+    MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView, MenuState, NodeId, Num, OpenKind,
+    Orientation, PasteReport, PhotoId, PixelSample, Preferences, PreferencesPatch,
+    ResolvedSettings, SessionChange, SessionState, SettingsPatch, SourceRecognition,
+    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, WatchStatus,
 };
 
 /// The managed state: the command handlers, or why the application could not start.
@@ -405,6 +405,25 @@ pub async fn mask_kinds(state: State<'_, AppState>) -> Result<Vec<MaskKind>, App
     run(&state, |api| api.mask_kinds()).await
 }
 
+/// `mask_find(photo_id, node, mask, prompt)` (`docs/23` section 9): runs SAM for the Object row `mask` of `node` with the
+/// person's click or box added, and answers what the row's `points` and `box` become, or that nothing was found. It changes no
+/// settings: the page sends a found answer as one row patch (one undo step). It waits for the encoder if it is still
+/// running.
+#[tauri::command]
+#[specta::specta]
+pub async fn mask_find(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+    node: u32,
+    mask: u32,
+    prompt: MaskFindPrompt,
+) -> Result<MaskFindResult, AppError> {
+    run(&state, move |api| {
+        api.mask_find(photo_id, node, mask, prompt)
+    })
+    .await
+}
+
 // --- Lens -------------------------------------------------------------------------------------
 
 /// `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
@@ -755,6 +774,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             sample_chroma,
             viewport_map_points,
             mask_kinds,
+            mask_find,
             lens_list,
             looks_list,
             look_thumbnail,
@@ -801,6 +821,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             wire::ExportBusy,
             wire::ViewportBusy,
             wire::ViewportFrame,
+            wire::ObjectState,
         ])
         .typ::<ErrorScope>()
 }
@@ -837,6 +858,7 @@ mod tests {
                 viewport_set_rect,
                 viewport_map_points,
                 mask_kinds,
+                mask_find,
                 export_busy,
                 node_thumbnails,
                 looks_recognise,

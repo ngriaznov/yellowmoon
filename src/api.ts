@@ -42,6 +42,8 @@ import type {
   LookInput,
   LooksImportResult,
   MapFrom,
+  MaskFindPrompt,
+  MaskFindResult,
   MaskKind,
   MaskView,
   MenuState,
@@ -188,6 +190,13 @@ export interface Api {
    * `mask_kinds` (`docs/23` §9): the kinds of mask this machine can make now, in the order of the Add mask menu. The menu lists exactly these.
    */
   maskKinds(): Promise<MaskKind[]>;
+  /**
+   * `mask_find` (`docs/23` §9): runs SAM for the Object row `mask` of `node` (an index into its `masks.items`) with the person's click or box added.
+   * Answers **found**, with what the row's `points` and `box` become and the decoder's `took_ms`, or **nothing found**. It changes no settings: the page
+   * sends a found answer as one row patch (one undo step). It waits for the encoder if it is still running. A model that is missing, a mask that is not
+   * an Object row and a row with 256 points reject with the scope `mask`.
+   */
+  maskFind(photoId: PhotoId, node: number, mask: number, prompt: MaskFindPrompt): Promise<MaskFindResult>;
 
   // --- Lens ----------------------------------------------------------------
 
@@ -375,6 +384,7 @@ export const tauriApi: Api = {
   sampleChroma: (x, y, at, tap) => commands.sampleChroma(x, y, at ?? null, tap ?? null),
   viewportMapPoints: (points, from) => commands.viewportMapPoints(points, from),
   maskKinds: () => commands.maskKinds(),
+  maskFind: (photoId, node, mask, prompt) => commands.maskFind(photoId, node, mask, prompt),
 
   lensList: () => commands.lensList(),
   looksList: () => commands.looksList(),

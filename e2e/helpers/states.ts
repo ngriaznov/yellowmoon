@@ -164,6 +164,9 @@ export const ROWS_07B = [
 /** A Brush row with no stroke yet (N-14): the state draws its stroke by hand. */
 export const BRUSH_ROW = { kind: "brush", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0, strokes: [] } as const;
 
+/** An Object row with two clicks on the mock's mountain (N-18), with the eye on. */
+export const OBJECT_ROW = { kind: "object", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, points: [[0.42, 0.7, true], [0.6, 0.72, true]], box: null } as const;
+
 /** A Background row at its defaults (N-15), with the eye on. */
 export const BACKGROUND_ROW = { kind: "background", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, level: 0.5, softness: 0.5 } as const;
 
@@ -719,6 +722,24 @@ export const STATES: readonly PageState[] = [
       await expect(p.getByRole("button", { name: "Brush mask, 1 stroke" })).toBeVisible();
       await expect(p.locator("[data-brush-layer] polyline")).toHaveCount(0);
       await expect(p.locator("[data-brush-cursor]")).toBeVisible();
+      await p.waitForTimeout(300);
+    },
+  ],
+  // An Object row (docs/23 section 7.6, N-18; mockup 07): its OBJECT card (Add point · Remove point · Box with its line, then Refine edges at 50, Feather, Grow, Opacity),
+  // two clicks on the mountain drawn as circles with a plus, the pill "Object found · 0.4 s" from a third click, the mask view on in Overlay, and the chip "MASK · OBJECT".
+  [
+    "64-nodes-object-card",
+    async (p) => {
+      await maskTabOfGradedPhoto(p, 2, [OBJECT_ROW]);
+      await p.getByRole("button", { name: /^Object mask/ }).click();
+      await expect(p.getByRole("region", { name: "Object" })).toBeVisible();
+      await p.getByRole("radio", { name: "Overlay" }).click();
+      await expect(p.locator("[data-object-layer]")).toHaveAttribute("data-tool", "add");
+      await expect(p.locator("[data-object-point]")).toHaveCount(2);
+      const cell = (await p.locator("[data-viewport]").boundingBox())!;
+      await p.mouse.click(cell.x + cell.width * 0.5, cell.y + cell.height * 0.68);
+      await expect(p.getByText("Object found · 0.4 s")).toBeVisible();
+      await expect(p.locator("[data-object-point]")).toHaveCount(3);
       await p.waitForTimeout(300);
     },
   ],

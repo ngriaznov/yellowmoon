@@ -82,6 +82,7 @@ const calls: Row[] = [
   ["viewportMapPoints", () => tauriApi.viewportMapPoints([[0.5, 0.25]], "photo"), "viewport_map_points", { points: [[0.5, 0.25]], from: "photo" }],
   ["viewportMapPoints (from the cell)", () => tauriApi.viewportMapPoints([[10, 20], [30, 40]], "cell"), "viewport_map_points", { points: [[10, 20], [30, 40]], from: "cell" }],
   ["maskKinds", () => tauriApi.maskKinds(), "mask_kinds", undefined],
+  ["maskFind", () => tauriApi.maskFind(1, 2, 0, { kind: "point", x: 0.4, y: 0.5, positive: true }), "mask_find", { photoId: 1, node: 2, mask: 0, prompt: { kind: "point", x: 0.4, y: 0.5, positive: true } }],
   ["lensList", () => tauriApi.lensList(), "lens_list", undefined],
   ["looksList", () => tauriApi.looksList(), "looks_list", undefined],
   ["lookThumbnail", () => tauriApi.lookThumbnail(3, "builtin:signature"), "look_thumbnail", { photoId: 3, lookId: "builtin:signature" }],

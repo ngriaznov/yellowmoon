@@ -60,6 +60,8 @@ export type FromCore = AllTrue<{
   appInfo: Assignable<B.AppInfo, T.AppInfo>;
   viewportInfo: Assignable<B.ViewportInfo, T.ViewportInfo>;
   viewportBusy: Assignable<B.ViewportBusy, T.ViewportBusy>;
+  objectState: Assignable<B.ObjectState, T.ObjectState>;
+  maskFindResult: Assignable<B.MaskFindResult, T.MaskFindResult>;
   appError: Assignable<B.AppError, T.AppError>;
   menuAction: Assignable<B.MenuAction, T.MenuAction>;
   openSummary: Assignable<B.OpenSummary, T.OpenSummary>;
@@ -97,6 +99,7 @@ export type Both = AllTrue<{
   viewportMode: Same<T.ViewportMode, B.ViewportMode>;
   maskStyle: Same<T.MaskStyle, B.MaskStyle>;
   maskKind: Same<T.MaskKind, B.MaskKind>;
+  maskFindPrompt: Same<T.MaskFindPrompt, B.MaskFindPrompt>;
   mapFrom: Same<T.MapFrom, B.MapFrom>;
   chromaTap: Same<T.ChromaTap, B.ChromaTap>;
   maskView: Same<T.MaskView, B.MaskView>;

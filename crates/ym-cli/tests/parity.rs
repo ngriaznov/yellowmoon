@@ -892,6 +892,18 @@ fn three_correctors_leg(device: bool) {
 /// A graph of nodes exported through the app and through the binary: the same bytes in every format, a
 /// picture that is not the default graph's, and with masks a picture that is not the graph without them.
 fn graph_leg(what: &str, doc: serde_json::Value, correctors: usize, device: bool) {
+    graph_leg_with(what, doc, correctors, device, |_| {});
+}
+
+/// [`graph_leg`] that also hands the app, once it holds the graph, to `check` (a test that has to ask the core something about the
+/// photo before the files are compared).
+fn graph_leg_with(
+    what: &str,
+    doc: serde_json::Value,
+    correctors: usize,
+    device: bool,
+    check: impl FnOnce(&App),
+) {
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");
     let app = if device {
@@ -945,6 +957,7 @@ fn graph_leg(what: &str, doc: serde_json::Value, correctors: usize, device: bool
         .session
         .replace_settings(app.photo, settings)
         .expect("replace");
+    check(&app);
     for (name, options, flags) in [
         ("jpeg", ExportOptions::default(), vec!["--format", "jpeg"]),
         (
@@ -1036,6 +1049,97 @@ fn three_correctors_are_the_same_files_through_the_app_path_and_the_binary() {
 #[test]
 fn masked_nodes_are_the_same_files_through_the_app_path_and_the_binary() {
     graph_leg("masked nodes", masked_nodes(), 6, false);
+}
+
+/// Whether this machine has SAM's weights (`data/models/sam2`, `tools/fetch/sam2.sh`): the Object tests need them and say so and pass without
+/// them, unless `YM_REQUIRE_SAM2` makes that a failure (CI's other jobs fetch none).
+fn sam_weights() -> bool {
+    let there = ym_core::pipeline::ObjectModel::probe(&data_dir()).is_some_and(|m| m.sam().is_ok());
+    if !there {
+        assert!(
+            std::env::var_os("YM_REQUIRE_SAM2").is_none(),
+            "YM_REQUIRE_SAM2 is set and data/models/sam2 is missing"
+        );
+        eprintln!("\n* OBJECT TESTS SKIPPED in parity: no SAM weights (tools/fetch/sam2.sh)\n");
+    }
+    there
+}
+
+/// Node 2 with this Object row (an exposure trim of a stop, so the mask shows in the picture), the graph of `docs/10`.
+fn object_doc(row: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "nodes": { "items": [
+        { "id": 2, "kind": "corrector", "pos": [1, 0], "trim": { "exposure_ev": 1.0 },
+          "masks": { "invert": false, "items": [row] } }
+    ], "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+    ] } })
+}
+
+/// The Object row of the parity tests: a click on the photo, a click taking a part away, Grow, Feather and Refine edges, and the box that
+/// holds them. On the synthetic gradient the model finds an object at these places (the test asks the core before it compares anything:
+/// a row that found nothing would be the same file as no row).
+fn object_row() -> serde_json::Value {
+    serde_json::json!({
+        "kind": "object", "mode": "add", "grow": 0.1, "feather": 0.2, "refine": 0.5,
+        "points": [[0.5, 0.5, true], [0.85, 0.85, false]], "box": [0.1, 0.1, 0.9, 0.9]
+    })
+}
+
+/// The app's click is the same row `ym` reads: asks the core of the app (`mask_find`) for the row's own prompt and says what it found.
+fn object_is_found(app: &App) {
+    use ym_core::pipeline::{MaskFound, ObjectPrompt};
+    let found = app
+        .core
+        .mask_find(
+            app.photo,
+            2,
+            0,
+            ObjectPrompt::Point {
+                x: 0.5,
+                y: 0.5,
+                positive: true,
+            },
+            &ym_gpu::queue::CancelToken::new(),
+        )
+        .expect("mask_find");
+    assert!(
+        matches!(found, MaskFound::Found { .. }),
+        "the model finds an object at the middle of the synthetic photo: {found:?}"
+    );
+}
+
+/// Object masks (N-18): an Object row with points, a negative point, a box, Grow, Feather and Refine edges is the same files through the app
+/// path (which has found the object with a click, `mask_find`, and holds the encoder's features of the viewer) and through the binary (which
+/// makes its own picture and features at export time from the stored points): the CPU leg.
+#[test]
+fn an_object_mask_is_the_same_files_through_the_app_path_and_the_binary() {
+    if !sam_weights() {
+        return;
+    }
+    graph_leg_with(
+        "an object mask",
+        object_doc(object_row()),
+        2,
+        false,
+        object_is_found,
+    );
+}
+
+/// The device leg of the Object mask.
+#[test]
+fn an_object_mask_is_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
+    if !sam_weights() {
+        return;
+    }
+    graph_leg_with(
+        "an object mask",
+        object_doc(object_row()),
+        2,
+        true,
+        object_is_found,
+    );
 }
 
 /// The device leg of the masks.

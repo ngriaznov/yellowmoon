@@ -299,8 +299,8 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let blocks = json_blocks(&doc[start..end]);
     assert_eq!(
         blocks.len(),
-        3,
-        "the complete small file, the per-file example and the Brush row"
+        4,
+        "the complete small file, the per-file example, the Brush row and the Object row"
     );
 
     // The complete small file: read over the default graph, checked, and written back unchanged.
@@ -367,6 +367,42 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
         ym_core::pipeline::unmakeable_mask(&settings),
         None,
         "this version makes a Brush mask"
+    );
+    // The Object row: its points and its box are what the core reads and `ym` makes the mask from; a copy of Yellowmoon without the
+    // model refuses it with the sentence `docs/10` quotes (`ym` and the app write the same bytes, which `parity.rs` shows).
+    let row: Value = serde_json::from_str(&blocks[3]).expect("the Object example is JSON");
+    let doc = serde_json::json!({ "nodes": { "items": [
+        { "id": 2, "kind": "corrector", "masks": { "items": [row] } }
+    ], "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+    ] } });
+    let (settings, clamped) =
+        DevelopSettings::from_value(doc, &LookId::neutral()).expect("the Object example reads");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    let item = &settings.nodes.corrector(2).expect("node 2").masks.items[0];
+    let ym_core::settings::MaskShape::Object(object) = &item.shape else {
+        panic!("the example is an Object row");
+    };
+    assert_eq!(object.points, [(0.52, 0.41, true), (0.6, 0.55, false)]);
+    assert_eq!(object.box_, Some([0.4, 0.3, 0.7, 0.6]));
+    assert_eq!(
+        ym_core::pipeline::unmakeable_mask_with(&settings, true),
+        None,
+        "this version makes an Object mask where the model is"
+    );
+    assert_eq!(
+        ym_core::pipeline::unmakeable_mask(&settings).as_deref(),
+        Some(ym_core::settings::NO_OBJECT_MODEL_SENTENCE),
+        "and says so where it is not"
+    );
+    assert!(
+        read("docs/10-cli.md").contains(&format!(
+            "\"{}\"",
+            ym_core::settings::NO_OBJECT_MODEL_SENTENCE
+        )),
+        "docs/10 quotes the sentence"
     );
     // And `ym` takes both files as `--settings` does: they are read, and checked, before any photo is
     // opened; the photo named here is not there, so the run ends for want of a photo (exit 5), never as a

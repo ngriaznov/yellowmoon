@@ -37,10 +37,11 @@ use crate::wire::{
     AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
     CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate,
     ExportJob, ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress,
-    LooksImportResult, MapFrom, MaskKind, MaskView, NodeId, Num, OpenSummary, Orientation,
-    PasteReport, PhotoId, PhotoProgress, PixelSample, Preferences, PreferencesPatch,
-    ResolvedSettings, SessionChange, SessionState, SettingsPatch, SourceRecognition,
-    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, WatchStatus, convert,
+    LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView, NodeId, Num,
+    ObjectState, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample,
+    Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
+    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
+    WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -294,6 +295,23 @@ impl AppApi {
             let emitter = Arc::clone(&emitter);
             core.on_auto_changed(move || emitter.emit(AppEvent::AutoStatusChanged));
         }
+        {
+            // SAM's encoder started or stopped working for a photo: the rows say "Getting ready…" while it does, and a photo
+            // that has its features now is drawn again (an Object row selects nothing until then).
+            let emitter = Arc::clone(&emitter);
+            let shared = Arc::clone(&shared);
+            core.renderer
+                .set_object_listener(Arc::new(move |id, phase| {
+                    let preparing = phase == ym_core::pipeline::ObjectPhase::Preparing;
+                    emitter.emit(AppEvent::ObjectState(ObjectState {
+                        photo_id: PhotoId(id.0),
+                        preparing,
+                    }));
+                    if !preparing {
+                        shared.estimates_changed(id);
+                    }
+                }));
+        }
         viewport.attach(&core)?;
         let thumbs = Thumbnails::new(Arc::clone(&emitter), Arc::clone(&frames));
         thumbs.attach(&core).map_err(AppError::internal)?;
@@ -540,6 +558,8 @@ impl AppApi {
         let current = self.core.session.current();
         if let Some(id) = current {
             self.core.renderer.navigate(id);
+            // A photo with an Object row is made ready for the person's clicks (`docs/23` section 4.4).
+            self.core.prepare_object(id);
         }
         self.viewport.set_photo(current);
     }
@@ -573,9 +593,9 @@ impl AppApi {
         patch: &SettingsPatch,
     ) -> Result<ResolvedSettings, AppError> {
         let core_patch: ym_core::settings::SettingsPatch = convert(patch)?;
+        // The core also asks for SAM's features in the background when the photo has an Object row (`docs/23` section 4.4).
         let resolved = self
             .core
-            .session
             .update_settings(core_id(id), &core_patch)
             .map_err(session_error)?;
         self.settings_changed(core_id(id), touches_thumbnail(patch));
@@ -944,7 +964,62 @@ impl AppApi {
     ///
     /// [`AppError`] only if the shapes disagree (a bug).
     pub fn mask_kinds(&self) -> Result<Vec<MaskKind>, AppError> {
-        convert(&ym_core::settings::mask_kinds())
+        convert(&self.core.mask_kinds())
+    }
+
+    /// `mask_find(photo_id, node, mask, prompt)` (`docs/23` section 9): what the Object row `mask` of `node` becomes with the
+    /// person's click or box, or that nothing was found there. Nothing is changed: the page sends a found answer as one row
+    /// patch. It waits for the encoder when it is still running (`Core::mask_find`), so it runs off the command thread.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with the scope `mask` for an Object model that is missing, a mask that is not an Object row and a row
+    /// that has all its points; with the scope of the photo's errors for a photo that cannot be read.
+    pub fn mask_find(
+        &self,
+        photo: PhotoId,
+        node: u32,
+        mask: u32,
+        prompt: MaskFindPrompt,
+    ) -> Result<MaskFindResult, AppError> {
+        let prompt = match prompt {
+            MaskFindPrompt::Point { x, y, positive } => ym_core::pipeline::ObjectPrompt::Point {
+                x: x.0,
+                y: y.0,
+                positive,
+            },
+            MaskFindPrompt::Box { x0, y0, x1, y1 } => ym_core::pipeline::ObjectPrompt::Box {
+                x0: x0.0,
+                y0: y0.0,
+                x1: x1.0,
+                y1: y1.0,
+            },
+        };
+        let found = self
+            .core
+            .mask_find(
+                core_id(photo),
+                node,
+                mask as usize,
+                prompt,
+                &CancelToken::new(),
+            )
+            .map_err(AppError::from)?;
+        Ok(match found {
+            ym_core::pipeline::MaskFound::Found {
+                points,
+                box_,
+                took_ms,
+            } => MaskFindResult::Found {
+                points: points
+                    .into_iter()
+                    .map(|(x, y, positive)| (Num(x), Num(y), positive))
+                    .collect(),
+                box_: box_.map(|b| b.map(Num)),
+                took_ms: Num(took_ms),
+            },
+            ym_core::pipeline::MaskFound::NothingFound(_) => MaskFindResult::Nothing,
+        })
     }
 
     // --- Lens ---------------------------------------------------------------------------------

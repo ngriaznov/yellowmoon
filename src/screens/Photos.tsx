@@ -485,6 +485,16 @@ export function Photos() {
         : null,
     [brushAsked, nodesOn, cropping, panel, onKind, onNode, rowIndex, selectedMask],
   );
+  // The Object row on the photo (`docs/23` §7.6): its points and box are drawn for the selected Object row with the eye on, in the node view, and the tool
+  // (on after adding an Object row, a click on one or on a tool; Esc ends it) takes the clicks. Crop, Export, Before and a pick hide it, as they hide the handles.
+  const objectAsked = useAppState((s) => s.objectTool);
+  const object = useMemo(
+    () =>
+      nodesOn && !cropping && panel !== "export" && onKind === "corrector" && typeof onNode === "number" && rowIndex !== null && selectedMask?.kind === "object" && selectedMask.enabled
+        ? { node: onNode, index: rowIndex, row: selectedMask }
+        : null,
+    [nodesOn, cropping, panel, onKind, onNode, rowIndex, selectedMask],
+  );
   // The look chip says "MASK · LINEAR" while the selected node has a selected mask row (`docs/23` §7.1).
   const maskChip = nodesOn && !cropping && panel !== "export" && selectedMask ? `MASK · ${(MASK_KIND_NAME[selectedMask.kind] ?? selectedMask.kind).toUpperCase()}` : undefined;
   const onRect = useCallback((rect: { x: number; y: number; width: number; height: number; scale: number }): void => {
@@ -615,6 +625,7 @@ export function Photos() {
         case "escape":
           if (picking) setPicking(null);
           else if (brush && !before) store.setBrushTool(false);
+          else if (object && objectAsked && !before) store.setObjectTool(false);
           else if (crop.session) crop.session.cancel();
           else if (panel === "export") store.closeExport();
           else if (view === "nodes" && graph.escape()) return true;
@@ -790,6 +801,8 @@ export function Photos() {
           onRect={onRect}
           maskHandles={maskHandles}
           brush={brush}
+          object={object}
+          objectTool={objectAsked}
           maskChip={maskChip}
         />
       </div>

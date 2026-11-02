@@ -87,7 +87,9 @@ pub use masks::{
     BackgroundMask, BrightnessRangeMask, BrushMask, BrushStroke, ColorRangeMask, FindMask,
     LinearMask, MASK_KINDS, MAX_BRUSH_POINTS, MAX_MASKS_PER_NODE, MAX_OBJECT_POINTS, MaskItem,
     MaskKind, MaskMode, MaskRowPatch, MaskSettings, MaskShape, MaskUnavailable, MasksPatch,
-    ObjectMask, RadialMask, mask_kinds, mask_unavailable, unmakeable_mask_sentence,
+    NO_OBJECT_MODEL_SENTENCE, ObjectMask, RadialMask, mask_kinds, mask_kinds_with,
+    mask_unavailable, mask_unavailable_with, unmakeable_mask_sentence,
+    unmakeable_mask_sentence_with,
 };
 pub use patch::{COPY_LEAVES_OUT, GradePatch, NodePatch, PatchReport, SettingsPatch, TrimPatch};
 

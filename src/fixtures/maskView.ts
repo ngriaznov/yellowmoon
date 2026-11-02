@@ -5,7 +5,7 @@
  * ellipse that fades out over its feather, a Linear is a gradient across the photo, a Brush is its strokes (a round-capped line of the stroke's
  * size, softened by its hardness and the row's Feather; an erase stroke is black over the paint before it, and a row's Invert swaps the two),
  * a Background is the flat scene's blur map cut by the row's Level and Softness (the sky is out of focus, the far hill is sharp, the near ground is
- * half way), and every other kind selects nothing. That is enough
+ * half way), an Object is the far hill (the scene's "mountain") with a round hole at every negative point and cut to the row's box, and every other kind selects nothing. That is enough
  * for the interface tests and the reference screenshots, not for pictures. Rows add (a row painted over the others in white) or
  * subtract (in black), the row's Invert and the node's Invert swap the two, and a node with no row shows 1: the whole photo.
  */
@@ -102,6 +102,10 @@ export function backgroundValue(p: number, level: number, softness: number): num
 /** The mock's blur map: `P` of the flat scene's three areas (`docs/23` §4.6 — the core's is the photo's own). The sky is out of focus, the far hill is sharp. */
 export const MOCK_BLUR = { sky: 0.95, hill: 0.05, near: 0.55 } as const;
 
+/** Whether the photo's graph has an Object row with the eye on: the mock then "makes ready" the photo's features (`object_state`). */
+export const hasObjectRow = (settings: DevelopSettings): boolean =>
+  settings.nodes.items.some((node) => node.kind === "corrector" && node.masks.items.some((row) => row.kind === "object" && row.enabled));
+
 /** Whether the photo's graph has a Background row with the eye on: the mock then "makes" the photo's blur map on its first frame. */
 export const hasBackgroundRow = (settings: DevelopSettings): boolean =>
   settings.nodes.items.some((node) => node.kind === "corrector" && node.masks.items.some((row) => row.kind === "background" && row.enabled));
@@ -145,6 +149,55 @@ function backgroundShape(row: Extract<MaskItem, { kind: "background" }>, index: 
   return `<defs>${blurs.join("")}${mask}</defs><rect data-background-row="" data-level="${round(row.level)}" data-softness="${round(row.softness)}" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="${ink}" fill-opacity="${opacity}" mask="url(#${id})"/>`;
 }
 
+/** The far hill of the flat scene as the mock draws its masks: the half ellipse of `scenes.ts`, in fractions of the picture's box. */
+export const HILL = { cx: 0.5, cy: 0.82, rx: 0.6, ry: 0.42 } as const;
+
+/** The radius of the hole a negative point takes out of an Object row on the flat scene, as a fraction of the long edge. */
+export const OBJECT_HOLE = 0.06;
+
+/**
+ * An Object row on the flat scene: the far hill (the scene's "mountain", the one thing the mock's `mask_find` finds) painted white into a plane of its own
+ * (black elsewhere), a black hole at every negative point, the whole cut to the row's box when it has one. A row with no point and no box selects nothing.
+ * The plane paints the row's ink where it is white, at the row's opacity, softened by the row's Feather like a Brush's. Grow and Refine edges are not drawn.
+ * A row's Invert draws the plane the other way round.
+ */
+function objectShape(row: Extract<MaskItem, { kind: "object" }>, index: number, ink: string, box: MaskRect): string {
+  if (row.points.length === 0 && !row.box) return "";
+  const long = Math.max(box.width, box.height);
+  const opacity = Math.max(0, Math.min(1, row.opacity));
+  const id = `mvo${index}`;
+  const region = `filterUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}"`;
+  const at = (x: number, y: number): [string, string] => [round(box.x + x * box.width), round(box.y + y * box.height)];
+  const [hx, hy] = at(HILL.cx, HILL.cy);
+  const hill = `<ellipse cx="${hx}" cy="${hy}" rx="${round(HILL.rx * box.width)}" ry="${round(HILL.ry * box.height)}" fill="#fff"/>`;
+  const holes = row.points
+    .filter(([, , positive]) => !positive)
+    .map(([x, y]) => {
+      const [cx, cy] = at(x, y);
+      return `<circle cx="${cx}" cy="${cy}" r="${round(OBJECT_HOLE * long)}" fill="#000"/>`;
+    })
+    .join("");
+  let plane = `<rect x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="#000"/>${hill}${holes}`;
+  const blurs: string[] = [];
+  const sigma = row.feather * 0.02 * long;
+  if (sigma >= 0.2) {
+    blurs.push(`<filter id="${id}f" ${region}><feGaussianBlur stdDeviation="${round(sigma)}"/></filter>`);
+    plane = `<g filter="url(#${id}f)">${plane}</g>`;
+  }
+  if (row.box) {
+    const [x0, y0, x1, y1] = row.box;
+    const [bx, by] = at(x0, y0);
+    const cut = `<rect x="${bx}" y="${by}" width="${round((x1 - x0) * box.width)}" height="${round((y1 - y0) * box.height)}" fill="#fff"/>`;
+    plane = `<defs><mask id="${id}b" maskUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}">${cut}</mask></defs><g mask="url(#${id}b)">${plane}</g>`;
+  }
+  if (row.invert) {
+    blurs.push(`<filter id="${id}i" ${region}><feColorMatrix type="matrix" values="-1 0 0 0 1  0 -1 0 0 1  0 0 -1 0 1  0 0 0 1 0"/></filter>`);
+    plane = `<g filter="url(#${id}i)">${plane}</g>`;
+  }
+  const mask = `<mask id="${id}" maskUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}">${plane}</mask>`;
+  return `<defs>${blurs.join("")}${mask}</defs><rect data-object-row="" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="${ink}" fill-opacity="${opacity}" mask="url(#${id})"/>`;
+}
+
 /** One row's gradient shape painted with `ink` (a luminance, "#fff" or "#000") at `m` and nothing outside; empty for a kind that selects nothing. */
 function rowShape(row: MaskItem, index: number, ink: string, box: MaskRect): string {
   const long = Math.max(box.width, box.height);
@@ -152,6 +205,7 @@ function rowShape(row: MaskItem, index: number, ink: string, box: MaskRect): str
   const opacity = Math.max(0, Math.min(1, row.opacity));
   if (row.kind === "brush") return brushShape(row, index, ink, box);
   if (row.kind === "background") return backgroundShape(row, index, ink, box);
+  if (row.kind === "object") return objectShape(row, index, ink, box);
   if (row.kind === "radial") {
     const [cx, cy] = row.center;
     const [rx, ry] = row.radii;

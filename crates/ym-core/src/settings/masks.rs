@@ -127,21 +127,35 @@ impl MaskKind {
     }
 }
 
-/// The kinds of mask this machine can make now, in the order of the Add mask menu (`docs/23` section 9,
-/// `mask_kinds`): what the menu lists, and what a photo may use without being refused. The shapes, Brush and the
-/// ranges that are built always are here, and so is Background (N-15: the blur map is made on the CPU from the
-/// photo itself, with the learned model or without it); **the later tasks add their kind** when it can be made:
-/// Object (N-18, where the SAM weights are present) and Subject and People (N-19, where the Vision probe said yes).
+/// The kinds of mask a machine can make with nothing but Yellowmoon's code, in the order of the Add mask menu: what
+/// [`mask_kinds_with`] gives for a machine that has no Object model. The shapes, Brush and the ranges that are built
+/// always are here, and so is Background (N-15: the blur map is made on the CPU from the photo itself, with the
+/// learned model or without it). **Object is not**: it needs the SAM weights (N-18), so what this machine can make
+/// is [`mask_kinds_with`] `(true)` where they load (`Core::mask_kinds`, `Renderer::mask_kinds`), and Subject and
+/// People need the Vision probe (N-19).
 #[must_use]
 pub fn mask_kinds() -> Vec<MaskKind> {
-    vec![
+    mask_kinds_with(false)
+}
+
+/// The kinds of mask this machine can make now (`docs/23` section 9, `mask_kinds`), in the order of the Add mask
+/// menu: what the menu lists, and what a photo may use without being refused. `object_model` says whether the SAM
+/// weights are there and load (`ObjectModel::available`): then Object is the first of the list.
+#[must_use]
+pub fn mask_kinds_with(object_model: bool) -> Vec<MaskKind> {
+    let mut kinds = Vec::with_capacity(7);
+    if object_model {
+        kinds.push(MaskKind::Object);
+    }
+    kinds.extend([
         MaskKind::Background,
         MaskKind::Linear,
         MaskKind::Radial,
         MaskKind::Brush,
         MaskKind::ColorRange,
         MaskKind::BrightnessRange,
-    ]
+    ]);
+    kinds
 }
 
 /// Why this machine cannot make a kind of mask, by its wire name in `ym doctor --json`
@@ -156,8 +170,7 @@ pub enum MaskUnavailable {
     /// This Mac's macOS is older than the Vision requests need (Subject and People).
     MacosTooOld,
     /// This version of Yellowmoon has no way to make the kind on this computer: its runtime is not built yet
-    /// (Object until N-18, Subject and People on a Mac until N-19), or the Mac cannot
-    /// run the Vision requests.
+    /// (Subject and People on a Mac until N-19), or the Mac cannot run the Vision requests.
     NotSupported,
 }
 
@@ -207,17 +220,26 @@ impl MaskKind {
     }
 }
 
-/// The kinds of mask this machine cannot make, each with its reason, in the order of the Add mask menu: the
-/// complement of [`mask_kinds`] in [`MaskKind::ALL`]. `ym doctor` prints it and a photo that needs one of them
-/// fails with `error.kind` `mask` ([`unmakeable_mask_sentence`]).
+/// The kinds of mask a machine with no Object model cannot make, each with its reason: [`mask_unavailable_with`]
+/// `(false)`.
 #[must_use]
 pub fn mask_unavailable() -> Vec<(MaskKind, MaskUnavailable)> {
-    let made = mask_kinds();
+    mask_unavailable_with(false)
+}
+
+/// The kinds of mask this machine cannot make, each with its reason, in the order of the Add mask menu: the
+/// complement of [`mask_kinds_with`] in [`MaskKind::ALL`]. `ym doctor` prints it and a photo that needs one of them
+/// fails with `error.kind` `mask` ([`unmakeable_mask_sentence_with`]). Object without its model is
+/// `weights_missing`.
+#[must_use]
+pub fn mask_unavailable_with(object_model: bool) -> Vec<(MaskKind, MaskUnavailable)> {
+    let made = mask_kinds_with(object_model);
     MaskKind::ALL
         .into_iter()
         .filter(|k| !made.contains(k))
         .map(|k| {
             let why = match k {
+                MaskKind::Object => MaskUnavailable::WeightsMissing,
                 MaskKind::Subject | MaskKind::People if !cfg!(target_os = "macos") => {
                     MaskUnavailable::NotAMac
                 }
@@ -228,13 +250,31 @@ pub fn mask_unavailable() -> Vec<(MaskKind, MaskUnavailable)> {
         .collect()
 }
 
-/// The plain sentence for a node whose mask of this kind this computer cannot make (`error.kind` `mask`,
-/// `docs/23` section 3.10 and `docs/10`): what went wrong and what to do next. `None` for a kind it can make.
+/// The sentence for an Object row on a copy of Yellowmoon that has no Object model (`docs/23` section 9, the `mask`
+/// error): what went wrong and what to do.
+pub const NO_OBJECT_MODEL_SENTENCE: &str =
+    "This copy of Yellowmoon has no Object model. Reinstall the app.";
+
+/// [`unmakeable_mask_sentence_with`] for a machine with no Object model.
 #[must_use]
 pub fn unmakeable_mask_sentence(node: u32, kind: MaskKind) -> Option<String> {
-    let (_, why) = mask_unavailable().into_iter().find(|(k, _)| *k == kind)?;
+    unmakeable_mask_sentence_with(false, node, kind)
+}
+
+/// The plain sentence for a node whose mask of this kind this computer cannot make (`error.kind` `mask`,
+/// `docs/23` section 3.10 and `docs/10`): what went wrong and what to do next. `None` for a kind it can make.
+/// An Object row without the model is [`NO_OBJECT_MODEL_SENTENCE`], whatever the node.
+#[must_use]
+pub fn unmakeable_mask_sentence_with(
+    object_model: bool,
+    node: u32,
+    kind: MaskKind,
+) -> Option<String> {
+    let (_, why) = mask_unavailable_with(object_model)
+        .into_iter()
+        .find(|(k, _)| *k == kind)?;
     let (article, name) = match kind {
-        MaskKind::Object => ("an", "Object"),
+        MaskKind::Object => return Some(NO_OBJECT_MODEL_SENTENCE.to_owned()),
         MaskKind::Subject => ("a", "Subject"),
         MaskKind::People => ("a", "People"),
         MaskKind::Background => ("a", "Background"),
@@ -246,7 +286,7 @@ pub fn unmakeable_mask_sentence(node: u32, kind: MaskKind) -> Option<String> {
             "Node {node} has {article} {name} mask, and this computer cannot make one. Use a Mac that supports {name} masks, or remove the mask."
         ),
         MaskUnavailable::WeightsMissing => format!(
-            "Node {node} has {article} {name} mask, and the SAM weights are missing. Reinstall Yellowmoon, or remove the mask."
+            "Node {node} has {article} {name} mask, and the model weights are missing. Reinstall Yellowmoon, or remove the mask."
         ),
         MaskUnavailable::NotSupported => format!(
             "Node {node} has {article} {name} mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon."

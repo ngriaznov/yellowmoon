@@ -14,6 +14,9 @@ import type { CropSession } from "./crop/useCropSession";
 import { BrushLayer } from "./nodes/BrushLayer";
 import type { BrushTarget } from "./nodes/BrushLayer";
 import { MaskHandles } from "./nodes/MaskHandles";
+import { ObjectLayer } from "./nodes/ObjectLayer";
+import type { ObjectTarget } from "./nodes/ObjectLayer";
+import { ObjectPill } from "./nodes/ObjectPill";
 import type { MaskHandlesTarget } from "./nodes/MaskHandles";
 import { PickLayer } from "./PickLayer";
 import type { PickMode } from "./PickLayer";
@@ -41,6 +44,13 @@ export interface PhotoViewProps {
   maskHandles?: MaskHandlesTarget | null;
   /** The Brush tool for the selected Brush row (`docs/23` §7.6): a layer over the cell with the cursor circle, where a drag paints. Hidden, like the handles, while Crop or a pick shows and in the Before view. */
   brush?: BrushTarget | null;
+  /**
+   * The selected Object row (`docs/23` §7.6): its points and box are drawn over the cell, and with `objectTool` a click finds an object and a drag with the
+   * Box tool draws a box. Hidden, like the handles, while Crop or a pick shows and in the Before view.
+   */
+  object?: ObjectTarget | null;
+  /** The Object tool is on (`store.objectTool`): the layer takes the press. */
+  objectTool?: boolean;
   /** The chip that stands in for the look's while the selected node has a selected mask row ("MASK · LINEAR", `docs/23` §7.1). */
   maskChip?: string;
 }
@@ -68,7 +78,7 @@ function notReadyNote(photo: PhotoSummary): { title: string; text: string } | nu
  *
  * The screen draws it again only when what it shows changes (`memo`): a `render_stats` tick or a zoom step elsewhere does not.
  */
-export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false, maskHandles = null, brush = null, maskChip }: PhotoViewProps) {
+export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false, maskHandles = null, brush = null, object = null, objectTool = false, maskChip }: PhotoViewProps) {
   const backend = useAppState((s) => s.viewportBackend);
   const sentFrame = useAppState((s) => s.viewportFrame);
   // Only the pick layer needs to know whether the picture is letterboxed; the zoom changes on every wheel step and is not read otherwise.
@@ -214,6 +224,7 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
       notice={
         <>
           {picking === "white" ? <PickWhiteHint /> : null}
+          <ObjectPill />
           <RenderingNote />
         </>
       }
@@ -238,6 +249,8 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
         <PickLayer mode={picking} displayAspect={displayAspect} letterboxed={letterboxed} onPick={onPicked} />
       ) : brush && photo && rs && !before && cellSize.width > 0 ? (
         <BrushLayer store={store} photo={photo} rs={rs} cell={cellSize} {...brush} />
+      ) : object && photo && rs && !before && cellSize.width > 0 ? (
+        <ObjectLayer store={store} photo={photo} rs={rs} cell={cellSize} tool={objectTool} {...object} />
       ) : maskHandles && photo && rs && !before && cellSize.width > 0 ? (
         <MaskHandles store={store} photo={photo} rs={rs} cell={cellSize} {...maskHandles} />
       ) : null}

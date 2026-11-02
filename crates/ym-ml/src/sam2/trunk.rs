@@ -480,7 +480,7 @@ impl Trunk {
     }
 
     /// Runs the trunk on the `[1024][1024][3]` input and returns the four stage maps.
-    pub(crate) fn forward(&self, input: &[f32]) -> Result<Stages> {
+    pub(crate) fn forward(&self, input: &[f32], cancel: &dyn Fn() -> bool) -> Result<Stages> {
         if input.len() != IMAGE_PX * IMAGE_PX * 3 {
             return Err(MlError::Shape(format!(
                 "the encoder input holds {} values, {} expected (1024 x 1024 x 3)",
@@ -531,6 +531,10 @@ impl Trunk {
             });
         let mut maps: Vec<Grid> = Vec::with_capacity(4);
         for (i, block) in self.blocks.iter().enumerate() {
+            // A block takes about a fifth of a second: the caller's stop is noticed between them.
+            if cancel() {
+                return Err(MlError::Cancelled);
+            }
             x = block.forward(&x);
             if STAGE_ENDS.contains(&i) {
                 maps.push(x.clone());

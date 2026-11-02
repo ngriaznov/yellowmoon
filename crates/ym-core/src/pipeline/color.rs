@@ -45,6 +45,7 @@ use ym_color::mask_raster::{
     Stroke, strokes_key,
 };
 use ym_color::plan::{self, PictureSource, Plan, PlanGraph, PlanNode, Stop};
+
 use ym_color::tone::ToneParams;
 use ym_color::warp::{Warp, WarpParams};
 use ym_looks::library::{Library, LookId};
@@ -54,12 +55,13 @@ use ym_profiles::registry::SensorGeometry;
 use ym_raw::decode::RawImage;
 
 use super::RenderError;
+use super::object::ObjectPlanes;
 use super::raw::{CaptureMethod, DEFAULT_CAPTURE_METHOD};
 use crate::auto::{AutoEstimates, as_shot_gains, as_shot_rggb};
 use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
 use crate::settings::{
     AutoOr, ColorWarp, CurvePoint, Curves, DevelopSettings, LensSettings, MaskMode, MaskSettings,
-    MaskShape, NodeGrade, NodeGraph, NodeId, NodeTrim, Port,
+    MaskShape, NodeGrade, NodeGraph, NodeId, NodeTrim, ObjectMask, Port,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -523,18 +525,34 @@ fn trim_of(t: &NodeTrim) -> Trim {
 /// ([`unmakeable_mask`]).
 pub const NO_PLANE: usize = usize::MAX;
 
-/// Whether this machine can make the `S0` of a row of this shape: Brush (drawn from its strokes) and Background (cut
-/// from the photo's blur map). Object, Subject and People are not made yet (N-17 to N-19).
+/// Whether a row of this shape is made into a raster plane by this code: Brush (drawn from its strokes), Background (cut
+/// from the photo's blur map) and Object (SAM's decoder on its points and box, N-18). Subject and People are not made
+/// yet (N-19). Whether the machine *can* make it is [`unmakeable_mask_with`].
 fn makes_raster(shape: &MaskShape) -> bool {
-    matches!(shape, MaskShape::Brush(_) | MaskShape::Background(_))
+    matches!(
+        shape,
+        MaskShape::Brush(_) | MaskShape::Background(_) | MaskShape::Object(_)
+    )
 }
 
 /// The raster row a mask row stands for, when this machine can make its `S0`: a Brush row's strokes with its
 /// Grow, Feather and Refine edges, or a Background row's blur map with its Level, Softness and the same three
 /// (`background` is the photo's map, which only the renderer can make: without it a Background row has no
-/// plane and selects nothing). Object, Subject and People are not made yet (N-17 to N-19).
-fn raster_row_of(shape: &MaskShape, background: Option<&Arc<BlurMap>>) -> Option<RasterRow> {
+/// plane and selects nothing), or an Object row's plane from SAM's decoder (`objects`, made by the renderer from the
+/// photo's features: a row with no point and no box, or whose features are not there, has no plane and selects nothing).
+/// Subject and People are not made yet (N-19).
+fn raster_row_of(
+    shape: &MaskShape,
+    background: Option<&Arc<BlurMap>>,
+    objects: Option<&Arc<ObjectPlanes>>,
+) -> Option<RasterRow> {
     match shape {
+        MaskShape::Object(o) => objects.and_then(|p| p.plane_for(o)).map(|plane| RasterRow {
+            source: RasterSource::Plane(Arc::clone(plane)),
+            grow: o.grow,
+            feather: o.feather,
+            refine: o.refine,
+        }),
         MaskShape::Background(b) => background.map(|map| RasterRow {
             source: RasterSource::Background(Arc::new(BackgroundSource {
                 map: Arc::clone(map),
@@ -569,6 +587,7 @@ fn mask_rows(
     m: &MaskSettings,
     rasters: &mut RasterSet,
     background: Option<&Arc<BlurMap>>,
+    objects: Option<&Arc<ObjectPlanes>>,
 ) -> NodeMasks {
     let rows = m
         .items
@@ -601,7 +620,7 @@ fn mask_rows(
                 | MaskShape::Subject(_)
                 | MaskShape::People(_)
                 | MaskShape::Background(_)
-                | MaskShape::Brush(_) => match raster_row_of(&row.shape, background) {
+                | MaskShape::Brush(_) => match raster_row_of(&row.shape, background, objects) {
                     Some(r) if rasters.rows.len() < MAX_RASTER_PLANES => {
                         rasters.rows.push(r);
                         MaskKind::Raster {
@@ -629,7 +648,7 @@ fn mask_rows(
 /// it needs the photo's blur map), and the chain's builder numbers them across the nodes of a plan.
 #[must_use]
 pub fn node_masks(m: &MaskSettings) -> NodeMasks {
-    mask_rows(m, &mut RasterSet::default(), None)
+    mask_rows(m, &mut RasterSet::default(), None, None)
 }
 
 /// Whether the photo's plan that ends at `stop` has a Background row with the eye on: the render then needs the
@@ -682,13 +701,22 @@ pub fn uses_photo_position_to(s: &DevelopSettings, stop: Stop) -> bool {
     })
 }
 
-/// The sentence for the first mask of the photo that this computer cannot make (`docs/23` section 3.10): a raster
-/// row of a kind that is not in [`mask_kinds`](crate::settings::mask_kinds) (Object, Subject, People, Background
-/// until they are built) in a node the Output needs, with the eye on; or more raster masks than a render holds
-/// ([`MAX_RASTER_PLANES`]). `None` when the photo can be rendered with all its masks. A dead node's rows and a
-/// row with the eye off do not count: they are not in the picture.
+/// The sentence for the first mask of the photo that a machine with no Object model cannot make: [`unmakeable_mask_with`]
+/// `(s, false)`. A renderer asks with its own model ([`Renderer::unmakeable_mask`](super::Renderer)).
 #[must_use]
 pub fn unmakeable_mask(s: &DevelopSettings) -> Option<String> {
+    unmakeable_mask_with(s, false)
+}
+
+/// The sentence for the first mask of the photo that this computer cannot make (`docs/23` section 3.10): a raster
+/// row of a kind that is not in [`mask_kinds_with`](crate::settings::mask_kinds_with) (`object_model`: whether the SAM
+/// weights are there; Subject and People until they are built) in a node the Output needs, with the eye on; or more raster
+/// masks than a render holds ([`MAX_RASTER_PLANES`]). `None` when the photo can be rendered with all its masks. A dead
+/// node's rows and a row with the eye off do not count: they are not in the picture. An Object row with no point and no box
+/// counts: it selects nothing, but a copy of Yellowmoon without the model says so rather than export the photo as if the
+/// row were fine.
+#[must_use]
+pub fn unmakeable_mask_with(s: &DevelopSettings, object_model: bool) -> Option<String> {
     let plan = node_plan(&s.nodes, Stop::Output).ok()?;
     let mut planes = 0usize;
     for id in plan.node_ids() {
@@ -696,7 +724,8 @@ pub fn unmakeable_mask(s: &DevelopSettings) -> Option<String> {
             continue;
         };
         for row in c.masks.items.iter().filter(|r| r.enabled) {
-            if let Some(sentence) = crate::settings::unmakeable_mask_sentence(
+            if let Some(sentence) = crate::settings::unmakeable_mask_sentence_with(
+                object_model,
                 id,
                 crate::settings::MaskKind::of(&row.shape),
             ) {
@@ -709,6 +738,39 @@ pub fn unmakeable_mask(s: &DevelopSettings) -> Option<String> {
         format!(
             "This photo has more than {MAX_RASTER_PLANES} masks that are drawn or found. Remove some of them."
         )
+    })
+}
+
+/// The Object rows with the eye on of the nodes of the plan that ends at `stop` (the Output, or a node's mask for the mask
+/// view), in the plan's order and the list's.
+#[must_use]
+pub fn object_rows(s: &DevelopSettings, stop: Stop) -> Vec<&ObjectMask> {
+    let Ok(plan) = node_plan(&s.nodes, stop) else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    for id in plan.node_ids() {
+        if let Some(c) = s.nodes.corrector(id) {
+            rows.extend(c.masks.items.iter().filter(|r| r.enabled).filter_map(
+                |r| match &r.shape {
+                    MaskShape::Object(o) => Some(o),
+                    _ => None,
+                },
+            ));
+        }
+    }
+    rows
+}
+
+/// Whether the photo has an Object row with the eye on anywhere in its graph, in a node the Output needs or not: the core
+/// starts SAM's encoder in the background for the photo being looked at (`docs/23` section 4.4).
+#[must_use]
+pub fn has_object_row(s: &DevelopSettings) -> bool {
+    s.nodes.correctors().any(|(_, c)| {
+        c.masks
+            .items
+            .iter()
+            .any(|r| r.enabled && matches!(r.shape, MaskShape::Object(_)))
     })
 }
 
@@ -777,13 +839,14 @@ fn node_set(
     s: &DevelopSettings,
     stop: Stop,
     background: Option<&Arc<BlurMap>>,
+    objects: Option<&Arc<ObjectPlanes>>,
 ) -> Result<(NodeSet, RasterSet), RenderError> {
     let plan = node_plan(&s.nodes, stop)?;
     let mut rasters = RasterSet::default();
     let mut masks = std::collections::BTreeMap::new();
     for id in plan.node_ids() {
         if let Some(c) = s.nodes.corrector(id) {
-            masks.insert(id, mask_rows(&c.masks, &mut rasters, background));
+            masks.insert(id, mask_rows(&c.masks, &mut rasters, background, objects));
         }
     }
     let mut others = std::collections::BTreeMap::new();
@@ -838,6 +901,10 @@ pub struct GradeRequest<'a> {
     /// renderer (`Renderer::blur_map` is the same map) and `None` for a plan with no Background row (or
     /// a caller that has no photo to read, whose Background rows select nothing).
     pub background: Option<&'a Arc<BlurMap>>,
+    /// The planes of the plan's Object rows (`docs/23` section 4.4), made by the renderer from the photo's features
+    /// ([`Job::objects_for`](super::graph)): `None` for a plan with no Object row that asks for a mask, or a caller that
+    /// has no photo to read, whose Object rows select nothing.
+    pub objects: Option<&'a Arc<ObjectPlanes>>,
 }
 
 /// A prepared C7 to C13 chain and what to tell the user about it.
@@ -874,7 +941,12 @@ fn pieces(src: &PhotoSource, req: &GradeRequest<'_>) -> Pieces {
 /// bypass and mask rows and the parameters of every other corrector the plan runs, mask rows included
 /// (the enabled rows as the chain gets them, so a row switched off leaves the key as a row never added).
 /// A dead node is not in it, so a dead branch leaves the key as it was.
-fn nodes_key(s: &DevelopSettings, stop: Stop, background: Option<&Arc<BlurMap>>) -> String {
+fn nodes_key(
+    s: &DevelopSettings,
+    stop: Stop,
+    background: Option<&Arc<BlurMap>>,
+    objects: Option<&Arc<ObjectPlanes>>,
+) -> String {
     let plan = match node_plan(&s.nodes, stop) {
         Ok(plan) => plan,
         Err(e) => return format!("no-plan:{e}"),
@@ -938,6 +1010,18 @@ fn nodes_key(s: &DevelopSettings, stop: Stop, background: Option<&Arc<BlurMap>>)
                         b.refine
                     );
                 }
+                // The plane is named by its own key (the features, the points and the box); a row whose features are not
+                // there selects nothing and says so.
+                MaskShape::Object(o) => {
+                    let _ = write!(
+                        k,
+                        "object:{}:{}:{}:{};",
+                        super::graph::plane_text(objects, o),
+                        o.grow,
+                        o.feather,
+                        o.refine
+                    );
+                }
                 _ => {}
             }
         }
@@ -964,7 +1048,7 @@ fn key_of(
         // leave the key, and the frame, as without them.
         Warp::new(&warp_params(s)),
         s.main_grade().curve,
-        nodes_key(s, stop, req.background),
+        nodes_key(s, stop, req.background, req.objects),
         req.target,
         req.dither,
         s.output().look_intensity,
@@ -1031,7 +1115,7 @@ pub fn grade_plan_to(
     params.grade = grade_params(s, &src.estimates);
     params.warp = warp_params(s);
     params.curves = curve_set(s)?;
-    let (nodes, rasters) = node_set(s, stop, req.background)?;
+    let (nodes, rasters) = node_set(s, stop, req.background, req.objects)?;
     params.nodes = nodes;
     params.rasters = rasters;
     params.output = req.target;

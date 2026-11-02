@@ -269,6 +269,102 @@ fn a_brush_with_grow_feather_and_refine_edges_is_byte_identical_through_the_app_
     }
 }
 
+/// An Object row (N-18, `docs/10`) on a photo of six export tiles, on the device: SAM's plane is made on the CPU from the photo's picture
+/// (the CPU reference path, whatever the device), taken to each tile through the raster planes with their halos, and the app (which found
+/// the object with a click) and the binary (which makes the features itself at export time from the stored points) write the same
+/// bytes in a JPEG and a 16-bit TIFF, which are not the files of the same graph without the row.
+#[test]
+fn an_object_mask_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    use ym_core::pipeline::{MaskFound, ObjectModel, ObjectPrompt};
+    let _serial = serial();
+    if !ObjectModel::probe(&data_dir()).is_some_and(|m| m.sam().is_ok()) {
+        assert!(
+            std::env::var_os("YM_REQUIRE_SAM2").is_none(),
+            "YM_REQUIRE_SAM2 is set and data/models/sam2 is missing"
+        );
+        eprintln!("\n* OBJECT TESTS SKIPPED in parity_gpu: no SAM weights (tools/fetch/sam2.sh)\n");
+        return;
+    }
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("object.ARW", 2100, 1100, 9);
+    let Some(app) = App::open(&[&arw]) else {
+        return;
+    };
+    let doc = |object: bool| {
+        let mut rows = vec![serde_json::json!({
+            "kind": "radial", "mode": "add", "center": [0.7, 0.45], "radii": [0.2, 0.12],
+            "angle_deg": 15, "feather": 0.4
+        })];
+        if object {
+            rows.push(serde_json::json!({
+                "kind": "object", "mode": "add", "grow": 0.1, "feather": 0.25, "refine": 0.6,
+                "points": [[0.5, 0.5, true], [0.9, 0.9, false]], "box": [0.1, 0.1, 0.9, 0.9]
+            }));
+        }
+        serde_json::json!({ "nodes": { "items": [
+            { "id": 2, "kind": "corrector", "pos": [1, 0], "trim": { "exposure_ev": 0.8 },
+              "masks": { "invert": false, "items": rows } }
+        ], "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+        ] } })
+    };
+    let settings_of = |doc: serde_json::Value| {
+        DevelopSettings::from_value(doc, &app.core.looks.effective_default())
+            .expect("settings")
+            .0
+    };
+    let file = sb.root().join("object.json");
+    std::fs::write(&file, doc(true).to_string()).expect("write");
+    let tiff = || ExportOptions {
+        format: FormatKind::Tiff,
+        bit_depth: BitDepth::Sixteen,
+        ..ExportOptions::default()
+    };
+    app.core
+        .session
+        .replace_settings(app.photo, settings_of(doc(false)))
+        .expect("replace");
+    let without = app.export(tiff(), &sb.root().join("app-without"));
+    app.core
+        .session
+        .replace_settings(app.photo, settings_of(doc(true)))
+        .expect("replace");
+    // The click the person would have made: the model finds an object there on this photo (a row that found nothing would change no pixel).
+    let found = app
+        .core
+        .mask_find(
+            app.photo,
+            2,
+            1,
+            ObjectPrompt::Point {
+                x: 0.5,
+                y: 0.5,
+                positive: true,
+            },
+            &ym_gpu::queue::CancelToken::new(),
+        )
+        .expect("mask_find");
+    assert!(matches!(found, MaskFound::Found { .. }), "{found:?}");
+    for (name, options, flags) in [
+        ("jpeg", ExportOptions::default(), vec!["--format", "jpeg"]),
+        ("tiff16", tiff(), vec!["--format", "tiff", "--bits", "16"]),
+    ] {
+        let from_app = app.export(options, &sb.root().join(format!("app-{name}")));
+        let mut args = flags;
+        args.extend(["--settings", file.to_str().expect("utf-8")]);
+        let from_cli = cli_export(&sb, &[&arw], &args, &sb.root().join(format!("cli-{name}")));
+        assert_same_files(&from_app, &from_cli, &format!("an object, {name}"));
+        if name == "tiff16" {
+            assert!(
+                bytes(&from_app[0]) != bytes(&without[0]),
+                "the object row changed no pixel"
+            );
+        }
+    }
+}
+
 /// Not a gate, and slow (minutes on lavapipe): the time of a 24 MP export (6000 x 4000) through the binary with no
 /// mask, and with two Brush rows (Grow, Feather and Refine edges at 40 %, and Feather and Refine edges at 100 %).
 /// Run it with `--ignored --nocapture`; the numbers are in `docs/23` section 15.

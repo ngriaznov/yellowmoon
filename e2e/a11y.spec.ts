@@ -792,6 +792,28 @@ test.describe("the node panel", () => {
     expect(snapshot).not.toMatch(/brush-layer|Brush layer/i);
   });
 
+  test("the Object card is named, its row says 'Getting ready…' while the encoder runs, and the points on the photo are a surface, not controls", async ({ page }) => {
+    await graded(page, "Light");
+    await page.locator('[data-node-card="4"]').click();
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    await page.getByRole("button", { name: "Add mask" }).click();
+    await page.getByRole("menuitem", { name: /^Object/ }).click();
+    await expect(page.getByRole("region", { name: "Object" })).toBeVisible();
+    const snapshot = await expectNamed(page, "an Object's card");
+    expect(snapshot).toMatch(/- region "Object"/);
+    expect(snapshot).toContain('- radiogroup "Object tool"');
+    expect(snapshot).toMatch(/- radio "Add point" \[checked\]/);
+    expect(snapshot).toMatch(/- radio "Remove point"/);
+    expect(snapshot).toMatch(/- radio "Box"/);
+    for (const name of ["Refine edges", "Feather", "Grow", "Opacity"]) expect(snapshot, name).toMatch(new RegExp(`- slider "${name}"`));
+    // The encoder is getting the photo ready (the mock: 900 ms), and the row's name says so; then its own words.
+    expect(snapshot).toMatch(/- button "Object mask, (Getting ready…|Click the object on this photo)" \[pressed\]/);
+    await expect(page.getByRole("button", { name: "Object mask, Click the object on this photo" })).toBeVisible();
+    // The layer over the photo is not in the accessibility tree, and neither are the points drawn in it.
+    await expect(page.locator("[data-object-layer]")).toHaveAttribute("aria-hidden", "true");
+    expect(snapshot).not.toMatch(/object-layer|Object layer|object-point/i);
+  });
+
   test("the Background card is named, its subtitle reads 'Finding…' while the map is made, and nothing on the photo is a control", async ({ page }) => {
     await graded(page, "Light");
     await page.locator('[data-node-card="4"]').click();
@@ -846,6 +868,23 @@ test.describe("the node panel", () => {
         await page.getByRole("menuitem", { name: /^Brush/ }).click();
         await expect(page.getByRole("region", { name: "Brush" })).toBeVisible();
         await expect(page.locator("[data-brush-layer]")).toBeVisible();
+      },
+    },
+    // An Object row just added, on Warmth (node 4): the head's 3, the tab row's 2, the Masks card's 3, the row's 4, then the OBJECT card: its Reset, the chosen segment of
+    // Add point · Remove point · Box, four sliders of two stops each (Refine edges, Feather, Grow, Opacity; none differs from its default), the View card's chosen segment
+    // and the foot's two buttons: 25. The surface over the photo adds none.
+    {
+      state: "an Object's Mask tab with its card",
+      simple: "Light",
+      node: 4,
+      tab: "Mask",
+      stops: 25,
+      before: async (page) => {
+        await page.getByRole("button", { name: "Add mask" }).click();
+        await page.getByRole("menuitem", { name: /^Object/ }).click();
+        await expect(page.getByRole("region", { name: "Object" })).toBeVisible();
+        await expect(page.locator("[data-object-layer]")).toBeVisible();
+        await expect(page.getByRole("button", { name: "Object mask, Click the object on this photo" })).toBeVisible();
       },
     },
     // A Background row just added, on Warmth (node 4): the head's 3, the tab row's 2, the Masks card's 3, the row's 4, then the BACKGROUND card: its Reset, six sliders of two

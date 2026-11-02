@@ -104,48 +104,49 @@ where
 }
 
 /// Mean over a `(2r + 1)` square window clipped to the image (each output is the mean of the
-/// samples that exist), computed separably with `f64` running sums. `src` and `out` are `w * h`;
-/// `tmp` is scratch of the same size.
+/// samples that exist), computed separably with `f64` sums. `src` and `out` are `w * h`; `tmp` is
+/// scratch of the same size.
+///
+/// Every window is summed on its own, in order from its first sample (`docs/17-gpu.md` D4: no running
+/// sum). A running sum that adds a sample at one end and takes one off at the other keeps the rounding
+/// of every sum it passed through, and when the plane spans many powers of two (the squares of a light
+/// on a dark ground) that residue depends on where the sum began: a tile, whose rows and columns begin
+/// elsewhere, then differs from the whole frame in the last bits. A pixel's mean here depends on its
+/// own window and the window's clipping at the image's edge, so it is the same bits in any crop that
+/// holds the window.
 pub fn box_mean(src: &[f32], w: usize, h: usize, r: usize, out: &mut [f32], tmp: &mut [f32]) {
     debug_assert!(src.len() == w * h && out.len() == w * h && tmp.len() == w * h);
-    // Horizontal pass: src -> tmp.
+    if w == 0 || h == 0 {
+        return;
+    }
+    // Horizontal pass: src -> tmp. One tap of the window at a time over the row, so that the loop runs
+    // along contiguous samples; the taps of a pixel come in ascending order (the window, left to right).
+    let mut sums = vec![0.0f64; w];
     for y in 0..h {
         let row = &src[y * w..(y + 1) * w];
+        sums.fill(0.0);
+        for d in 0..=2 * r {
+            // Tap `x + d - r` of pixel `x`, where it exists.
+            let first = r.saturating_sub(d);
+            let last = w.min((w + r).saturating_sub(d));
+            for x in first..last {
+                sums[x] += f64::from(row[x + d - r]);
+            }
+        }
         let trow = &mut tmp[y * w..(y + 1) * w];
-        let mut sum = 0.0f64;
-        let mut lo = 0usize;
-        let mut hi = 0usize; // window is [lo, hi)
-        for (x, t) in trow.iter_mut().enumerate() {
-            let new_hi = (x + r + 1).min(w);
-            while hi < new_hi {
-                sum += f64::from(row[hi]);
-                hi += 1;
-            }
-            let new_lo = x.saturating_sub(r);
-            while lo < new_lo {
-                sum -= f64::from(row[lo]);
-                lo += 1;
-            }
-            *t = (sum / (hi - lo) as f64) as f32;
+        for (x, (t, &s)) in trow.iter_mut().zip(&sums).enumerate() {
+            let count = (x + r + 1).min(w) - x.saturating_sub(r);
+            *t = (s / count as f64) as f32;
         }
     }
-    // Vertical pass: tmp -> out, one running sum per column.
-    let mut sums = vec![0.0f64; w];
-    let (mut lo, mut hi) = (0usize, 0usize);
+    // Vertical pass: tmp -> out, the rows of the window added to one sum per column, top to bottom.
     for y in 0..h {
-        let new_hi = (y + r + 1).min(h);
-        while hi < new_hi {
-            for (s, &v) in sums.iter_mut().zip(&tmp[hi * w..(hi + 1) * w]) {
+        let (lo, hi) = (y.saturating_sub(r), (y + r + 1).min(h));
+        sums.fill(0.0);
+        for ty in lo..hi {
+            for (s, &v) in sums.iter_mut().zip(&tmp[ty * w..(ty + 1) * w]) {
                 *s += f64::from(v);
             }
-            hi += 1;
-        }
-        let new_lo = y.saturating_sub(r);
-        while lo < new_lo {
-            for (s, &v) in sums.iter_mut().zip(&tmp[lo * w..(lo + 1) * w]) {
-                *s -= f64::from(v);
-            }
-            lo += 1;
         }
         let inv = 1.0 / (hi - lo) as f64;
         for (o, &s) in out[y * w..(y + 1) * w].iter_mut().zip(&sums) {
@@ -222,6 +223,72 @@ mod tests {
                         (f64::from(out[y * w + x]) - s / n).abs() < 1e-6,
                         "r={r} ({x},{y})"
                     );
+                }
+            }
+        }
+    }
+
+    /// A plane that spans many powers of two, as the squares of a bright light on a dark ground do: a window
+    /// sum of it is not exact in `f64`, so a running sum keeps a rounding residue that depends on where the
+    /// sum began.
+    fn wide_plane(w: usize, h: usize) -> Vec<f32> {
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move || {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            (z ^ (z >> 31)) as f64 / u64::MAX as f64
+        };
+        (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                if (x / 5 + y / 5) % 4 == 1 {
+                    (1.0 + next()) as f32 // a light
+                } else {
+                    (1e-9 * (1.0 + 1000.0 * next())) as f32 // the dark ground
+                }
+            })
+            .collect()
+    }
+
+    /// `docs/17-gpu.md` D4 for the CPU reference: the mean at a pixel is the sum of its own window, so a crop of
+    /// the plane gives the whole plane's bits wherever the crop holds the window (`r` pixels of context), and
+    /// the crop's own edge is the window's only where it is the plane's.
+    #[test]
+    fn box_mean_of_a_crop_is_the_whole_planes_bit_for_bit() {
+        let (w, h) = (97, 83);
+        let src = wide_plane(w, h);
+        for r in [1usize, 2, 5, 8] {
+            let mut whole = vec![0.0f32; w * h];
+            let mut tmp = vec![0.0f32; w * h];
+            box_mean(&src, w, h, r, &mut whole, &mut tmp);
+            for (x0, y0, cw, ch) in [
+                (13, 9, 40, 37),
+                (30, 0, 67, 83),
+                (0, 41, 97, 42),
+                (50, 50, 47, 33),
+            ] {
+                let crop: Vec<f32> = (y0..y0 + ch)
+                    .flat_map(|y| src[y * w + x0..y * w + x0 + cw].iter().copied())
+                    .collect();
+                let mut out = vec![0.0f32; cw * ch];
+                let mut tmp = vec![0.0f32; cw * ch];
+                box_mean(&crop, cw, ch, r, &mut out, &mut tmp);
+                for y in 0..ch {
+                    for x in 0..cw {
+                        let inside = (x >= r || x0 == 0)
+                            && (x + r < cw || x0 + cw == w)
+                            && (y >= r || y0 == 0)
+                            && (y + r < ch || y0 + ch == h);
+                        if inside {
+                            assert_eq!(
+                                out[y * cw + x].to_bits(),
+                                whole[(y0 + y) * w + x0 + x].to_bits(),
+                                "r={r} crop ({x0},{y0}) pixel ({x},{y})"
+                            );
+                        }
+                    }
                 }
             }
         }

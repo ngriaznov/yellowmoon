@@ -1730,6 +1730,74 @@ span.ym-filmstrip__thumb {
   margin: 0 0 8px;
 }
 
+/* The Object row on the photo (ObjectLayer, docs/23 section 7.6): its points as circles with a plus or a minus and its box, in the mask accent. With the
+   tool on the layer takes the press (a click finds an object, a drag with Box draws a box); with it off the layer takes nothing and the photo is the
+   person's again. It is a surface to click on, not a control: nothing in it is a Tab stop. */
+.ym-object-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ym-object-layer[data-tool] {
+  pointer-events: auto;
+  touch-action: none;
+  cursor: crosshair;
+}
+.ym-object-layer[data-tool="remove"] {
+  cursor: crosshair;
+}
+.ym-object-layer__svg {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ym-object-point circle {
+  fill: rgb(255 255 255 / 0.92);
+  stroke: var(--mask);
+  stroke-width: 2px;
+  filter: drop-shadow(0 0 1.5px rgb(0 0 0 / 0.6));
+}
+.ym-object-point path {
+  fill: none;
+  stroke: #1a1a1f;
+  stroke-width: 2px;
+  stroke-linecap: round;
+}
+.ym-object-point[data-object-point="remove"] circle {
+  fill: #1a1a1f;
+  stroke: #fff;
+}
+.ym-object-point[data-object-point="remove"] path {
+  stroke: #fff;
+}
+.ym-object-box polygon {
+  fill: none;
+  stroke-linejoin: round;
+}
+.ym-object-box__under {
+  stroke: rgb(0 0 0 / 0.55);
+  stroke-width: 4px;
+}
+.ym-object-box__ink {
+  stroke: var(--mask);
+  stroke-width: 2px;
+  stroke-dasharray: 7 5;
+}
+.ym-object-box__band {
+  fill: rgb(255 111 210 / 0.12);
+  stroke: var(--mask);
+  stroke-width: 2px;
+  stroke-dasharray: 7 5;
+}
+.ym-object-tool {
+  margin: 0 0 8px;
+}
+.ym-photo-cell__found svg {
+  color: var(--mask);
+}
+
 /* ---- Export panel ---------------------------------------------------------------------------------------------------------------- */
 .ym-queue {
   margin: 0;

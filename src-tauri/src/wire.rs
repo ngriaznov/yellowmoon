@@ -58,6 +58,9 @@ pub enum ErrorScope {
     Preferences,
     /// The viewport.
     Viewport,
+    /// A mask this computer cannot make or cannot find (`docs/23` section 9): the Object model is missing, the Object
+    /// mask is not there, a row has all its points.
+    Mask,
     /// Anything else.
     App,
 }
@@ -74,6 +77,7 @@ impl ErrorScope {
             "looks" => Self::Looks,
             "preferences" => Self::Preferences,
             "viewport" => Self::Viewport,
+            "mask" => Self::Mask,
             _ => Self::App,
         }
     }
@@ -2787,6 +2791,63 @@ pub enum MaskKind {
     ColorRange,
     /// A low, a high and a softness on the tones.
     BrightnessRange,
+}
+
+/// What the person did on the photo to find an object: `mask_find`'s `prompt` (`docs/23` section 9), in the photo frame.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MaskFindPrompt {
+    /// A click: on the object (`positive`), or on a part to take away.
+    Point {
+        /// Fraction of the photo's width.
+        x: Num,
+        /// Fraction of the photo's height.
+        y: Num,
+        /// On the object, or off it.
+        positive: bool,
+    },
+    /// A box dragged around the object.
+    Box {
+        /// Left, as a fraction of the width.
+        x0: Num,
+        /// Top, as a fraction of the height.
+        y0: Num,
+        /// Right.
+        x1: Num,
+        /// Bottom.
+        y1: Num,
+    },
+}
+
+/// The answer of `mask_find` (`docs/23` section 9). Only a found answer is to change settings: the page sends it as one row
+/// patch, one undo step.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MaskFindResult {
+    /// A mask: what the row's `points` and `box` become, and the time the decoder took.
+    Found {
+        /// The row's clicks `[x, y, positive]` with the new one at the end (for a click).
+        points: Vec<(Num, Num, bool)>,
+        /// The row's box `[x0, y0, x1, y1]`, or null.
+        #[serde(rename = "box")]
+        box_: Option<[Num; 4]>,
+        /// Milliseconds the decoder took.
+        took_ms: Num,
+    },
+    /// No object there: the page adds no point and changes nothing, and says so in the error bar.
+    Nothing,
+}
+
+/// `object_state { photo_id, preparing }` (addition): SAM's encoder is working for a photo, or has stopped. The rows of an Object
+/// mask say "Getting ready…" while `preparing` is true (`docs/23` section 7.6). Sent when it changes; when it turns false
+/// with features made, the photo is drawn again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "object_state")]
+pub struct ObjectState {
+    /// The photo.
+    pub photo_id: PhotoId,
+    /// The encoder is working for it, or will be in a moment.
+    pub preparing: bool,
 }
 
 /// Which side of `viewport_map_points` the points are given in (`docs/23` section 9).

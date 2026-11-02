@@ -214,15 +214,24 @@ fn doctor_lists_the_masks_this_computer_can_make_and_why_not_the_others() {
         .trim_start_matches("Masks")
         .trim()
         .to_owned();
-    let (made, not_made) = if cfg!(target_os = "macos") {
+    // Object is there where the SAM weights are (`data/models/sam2`, fetched by `tools/fetch/sam2.sh`; CI's other jobs have none): the doctor
+    // reads them and checks them against `SHA256SUMS`, and so does this.
+    let object =
+        ym_core::pipeline::ObjectModel::probe(&data_dir()).is_some_and(|m| m.sam().is_ok());
+    let rest = if cfg!(target_os = "macos") {
+        "Subject and People (this version of Yellowmoon can't make them yet)"
+    } else {
+        "Subject and People (this is not a Mac that supports them)"
+    };
+    let (made, not_made) = if object {
         (
-            "Background, Linear, Radial, Brush, Colour range, Brightness range",
-            "Object, Subject and People (this version of Yellowmoon can't make them yet)",
+            "Object, Background, Linear, Radial, Brush, Colour range, Brightness range",
+            rest.to_owned(),
         )
     } else {
         (
             "Background, Linear, Radial, Brush, Colour range, Brightness range",
-            "Object (this version of Yellowmoon can't make it yet), Subject and People (this is not a Mac that supports them)",
+            format!("Object (the SAM weights are missing), {rest}"),
         )
     };
     assert_eq!(line, format!("{made} · not available: {not_made}"));
@@ -232,30 +241,29 @@ fn doctor_lists_the_masks_this_computer_can_make_and_why_not_the_others() {
 
     let out = sb.ym().args(["doctor", "--json"]).assert().success();
     let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
-    assert_eq!(
-        v["masks"]["kinds"],
-        serde_json::json!([
-            "background",
-            "linear",
-            "radial",
-            "brush",
-            "color_range",
-            "brightness_range"
-        ])
-    );
+    let mut kinds = vec![];
+    if object {
+        kinds.push("object");
+    }
+    kinds.extend([
+        "background",
+        "linear",
+        "radial",
+        "brush",
+        "color_range",
+        "brightness_range",
+    ]);
+    assert_eq!(v["masks"]["kinds"], serde_json::json!(kinds));
     let reason = if cfg!(target_os = "macos") {
         "not_supported"
     } else {
         "not_a_mac"
     };
-    assert_eq!(
-        v["masks"]["unavailable"],
-        serde_json::json!({
-            "object": "not_supported",
-            "subject": reason,
-            "people": reason,
-        })
-    );
+    let mut unavailable = serde_json::json!({ "subject": reason, "people": reason });
+    if !object {
+        unavailable["object"] = serde_json::json!("weights_missing");
+    }
+    assert_eq!(v["masks"]["unavailable"], unavailable);
 }
 
 #[test]
@@ -270,7 +278,13 @@ fn doctor_json_shape_snapshot_on_a_machine_with_no_adapter() {
         .args(["doctor", "--json"])
         .assert()
         .success();
-    let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
+    let mut v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
+    // Where the SAM weights are, Object is in `kinds` and not in `unavailable`; the shape is the one of a machine without them.
+    if let Some(unavailable) = v["masks"]["unavailable"].as_object_mut() {
+        unavailable
+            .entry("object")
+            .or_insert_with(|| serde_json::json!("weights_missing"));
+    }
     insta::assert_json_snapshot!("doctor_json_shape_no_adapter", shape(&v));
 }
 

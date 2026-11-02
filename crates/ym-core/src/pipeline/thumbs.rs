@@ -58,6 +58,7 @@ use super::frame::{
 };
 use super::geometry::Affine;
 use super::graph::{Job, RenderOptions, Renderer};
+use super::object::{OBJECT_PICTURE_PX, object_source};
 use super::viewport::ViewportState;
 use crate::apple_auto::{AdvisorPicture, PICTURE_LONG_EDGE_PX};
 use crate::session::{PhotoId, PictureInput, PictureRenderer, ThumbnailInput, ThumbnailRenderer};
@@ -514,9 +515,40 @@ impl Renderer {
         src: &PhotoSource,
         cancel: &CancelToken,
     ) -> Result<AdvisorPicture, RenderError> {
+        self.whole_picture(src, PICTURE_LONG_EDGE_PX, cancel)
+    }
+
+    /// SAM's picture of a photo (`docs/algorithms/06` section 5.7, [`object_source`]): the Input's picture, whole, in the photo
+    /// frame, at [`OBJECT_PICTURE_PX`] on the long edge, Neutral look, no output sharpening, sRGB, 8 bits. Made on the CPU
+    /// reference path by a renderer of its own that has no device, so that the features, the masks and the exports made from
+    /// them are the same bytes on every machine. Its caches are dropped when the picture is done: the photo's graph in this
+    /// renderer's own memory is no use to anything else.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    pub(crate) fn object_picture(
+        &self,
+        src: &PhotoSource,
+        cancel: &CancelToken,
+    ) -> Result<AdvisorPicture, RenderError> {
+        let reference = self.object_reference()?;
+        let picture = reference.whole_picture(&object_source(src), OBJECT_PICTURE_PX, cancel);
+        reference.forget(src.id);
+        picture
+    }
+
+    /// `src` as it is, whole, at `long_edge` px on the long edge at most, in sRGB, 8 bits (see
+    /// [`Renderer::advisor_picture`]).
+    fn whole_picture(
+        &self,
+        src: &PhotoSource,
+        long_edge: usize,
+        cancel: &CancelToken,
+    ) -> Result<AdvisorPicture, RenderError> {
         let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::Thumbnail);
         let image = job.final_size()?;
-        let (width, height) = thumbnail_size(image, PICTURE_LONG_EDGE_PX);
+        let (width, height) = thumbnail_size(image, long_edge);
         let spec = ViewSpec {
             out_w: width,
             out_h: height,
@@ -526,7 +558,7 @@ impl Renderer {
                 0.0,
                 0.0,
             ),
-            k: thumbnail_scale(image, PICTURE_LONG_EDGE_PX),
+            k: thumbnail_scale(image, long_edge),
             target: OutputTarget::Srgb,
             before: false,
             coarse_only: false,
@@ -757,6 +789,8 @@ impl Renderer {
             // The device jobs of the viewport and tile renders of the photo left are cancelled
             // too, queued ones at once (they hold the photo's mosaic).
             self.cancel_gpu_navigation(old);
+            // The encoder of the Object masks stops working for the photo left, if it started on its own.
+            self.object_leave(old);
         }
         self.scheduler().navigate(photo)
     }

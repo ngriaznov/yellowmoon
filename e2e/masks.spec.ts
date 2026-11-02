@@ -1000,3 +1000,110 @@ test.describe("the Background mask", () => {
     await expect(menu.getByText("Find", { exact: true })).toBeVisible();
   });
 });
+
+// ---- The Object tool (docs/23 §4.4 and §7.6, task N-18) --------------------------------------------------------------------------------------
+
+const objectLayer = (page: Page) => page.locator("[data-object-layer]");
+const objectRows = async (page: Page) =>
+  (await rowsOf(page, 4)).filter((r) => r.kind === "object") as Array<Row & { points: Array<[number, number, boolean]>; box: [number, number, number, number] | null }>;
+/** A click on the photo at a share of the cell, with ⌥ when asked. */
+async function clickPhoto(page: Page, at: [number, number], alt = false): Promise<void> {
+  const cell = await cellBox(page);
+  if (alt) await page.keyboard.down("Alt");
+  await page.mouse.click(cell.x + cell.width * at[0], cell.y + cell.height * at[1]);
+  if (alt) await page.keyboard.up("Alt");
+}
+
+test.describe("the Object tool", () => {
+  test("adding an Object row shows the OBJECT card; a click on the mountain finds it: one patch, the point and the pill, and the Mask only view draws it", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Object");
+    await expect(rowButton(page, /^Object mask, (Getting ready…|Click the object on this photo)/)).toHaveAttribute("aria-pressed", "true");
+    await expect(maskCard(page, "Object")).toBeVisible();
+    await expect(page.getByText("MASK · OBJECT")).toBeVisible();
+    await expect(objectLayer(page)).toBeVisible();
+    await expect(maskCard(page, "Object").getByText("Click the photo to add to the object. ⌥-click to take a part away.")).toBeVisible();
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await expect.poll(async () => await picture(page)).toContain("data-mask-view");
+    // Nothing is selected yet.
+    expect(await picture(page)).not.toContain("data-object-row");
+    const calls = await recordCalls(page, "updateSettings");
+    await clickPhoto(page, [0.5, 0.7]);
+    await expect(page.getByText("Object found · 0.4 s")).toBeVisible();
+    await expect.poll(async () => (await objectRows(page))[0]?.points).toEqual([[0.5, 0.7, true]]);
+    expect(await calls()).toHaveLength(1);
+    await expect(page.locator("[data-object-point]")).toHaveCount(1);
+    await expect(rowButton(page, "Object mask, 1 point")).toBeVisible();
+    await expect.poll(async () => await picture(page)).toContain("data-object-row");
+    // The pill goes after three seconds.
+    await expect(page.getByText("Object found · 0.4 s")).toHaveCount(0, { timeout: 5000 });
+  });
+
+  test("a click that finds nothing leaves the row and the settings as they were and says so in the error bar", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Object");
+    await expect(objectLayer(page)).toBeVisible();
+    const calls = await recordCalls(page, "updateSettings");
+    await clickPhoto(page, [0.2, 0.1]);
+    await expect(page.getByRole("alert")).toContainText("Nothing found there. Click another part of the object, or draw a box.");
+    expect(await calls()).toHaveLength(0);
+    expect((await objectRows(page))[0]!.points).toEqual([]);
+    await expect(page.locator("[data-object-point]")).toHaveCount(0);
+  });
+
+  test("⌥-click takes a part away (a point with a minus), a drag with Box draws a box, and each is one undo step", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Object");
+    await expect(objectLayer(page)).toBeVisible();
+    await clickPhoto(page, [0.45, 0.7]);
+    await expect.poll(async () => (await objectRows(page))[0]?.points.length).toBe(1);
+    await clickPhoto(page, [0.6, 0.75], true);
+    await expect.poll(async () => (await objectRows(page))[0]?.points.map((p) => p[2])).toEqual([true, false]);
+    await expect(page.locator('[data-object-point="remove"]')).toHaveCount(1);
+    await maskCard(page, "Object").getByRole("radio", { name: "Box" }).click();
+    await expect(maskCard(page, "Object").getByText("Drag a box around the object.")).toBeVisible();
+    const cell = await cellBox(page);
+    await page.mouse.move(cell.x + cell.width * 0.25, cell.y + cell.height * 0.45);
+    await page.mouse.down();
+    await page.mouse.move(cell.x + cell.width * 0.5, cell.y + cell.height * 0.7, { steps: 6 });
+    await expect(page.locator("[data-object-band]")).toHaveCount(1);
+    await page.mouse.move(cell.x + cell.width * 0.75, cell.y + cell.height * 0.9, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(async () => (await objectRows(page))[0]?.box).not.toBeNull();
+    const box = (await objectRows(page))[0]!.box!;
+    expect(box[0]).toBeCloseTo(0.25, 1);
+    expect(box[3]).toBeCloseTo(0.9, 1);
+    await expect(rowButton(page, "Object mask, Box and 2 points")).toBeVisible();
+    await expect(page.locator("[data-object-box]")).toHaveCount(1);
+    // One undo step each, newest first.
+    await blur(page);
+    await page.keyboard.press("Meta+z");
+    await expect.poll(async () => (await objectRows(page))[0]?.box).toBeNull();
+    await page.keyboard.press("Meta+z");
+    await expect.poll(async () => (await objectRows(page))[0]?.points.length).toBe(1);
+  });
+
+  test("Esc ends the tool and leaves the points; the card brings it back, and the row of a pasted Object reads 'Click the object on this photo'", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Object");
+    await clickPhoto(page, [0.5, 0.7]);
+    await expect(page.locator("[data-object-point]")).toHaveCount(1);
+    await blur(page);
+    await page.keyboard.press("Escape");
+    await expect(objectLayer(page)).not.toHaveAttribute("data-tool", /.*/);
+    await expect(page.locator("[data-object-point]")).toHaveCount(1);
+    await maskCard(page, "Object").getByRole("radio", { name: "Add point" }).click();
+    await expect(objectLayer(page)).toHaveAttribute("data-tool", "add");
+  });
+
+  test("?mockMaskFind=none finds nothing anywhere, and ?mockMasks=noai leaves Object out of the Add mask menu", async ({ page }) => {
+    await warmth(page, { mockMaskFind: "none" });
+    await addMask(page, "Object");
+    await clickPhoto(page, [0.5, 0.7]);
+    await expect(page.getByRole("alert")).toContainText("Nothing found there.");
+    await warmth(page, { mockMasks: "noai" });
+    await page.getByRole("button", { name: "Add mask" }).click();
+    await expect(page.getByRole("menuitem", { name: /^Object/ })).toHaveCount(0);
+    await expect(page.getByRole("menuitem", { name: /^Background/ })).toBeVisible();
+  });
+});

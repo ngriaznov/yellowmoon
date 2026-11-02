@@ -75,6 +75,9 @@ use ym_color::plan::Stop as PlanStop;
 mod background;
 mod lens;
 mod lens_device;
+mod object;
+
+pub(crate) use object::plane_text;
 
 /// The note of a render whose demosaic method is not the adaptive ratio (the test-only switch of
 /// `RenderOptions::demosaic`): the device runs that one only.
@@ -135,6 +138,11 @@ pub struct RenderOptions {
     /// without a core) the classical detector's edge measure does, and the pictures differ only where the two
     /// disagree about the map.
     pub bokeh_model: Option<Arc<BokehNet>>,
+    /// SAM 2.1 small (`data/models/sam2`, `docs/23` section 4.4), found by [`crate::app::Core::open`] (it reads nothing until
+    /// an Object mask needs it). With it Object is a kind this machine can make and an Object row gets its mask; without it
+    /// (`None`: the weights are missing, or the renderer was made without a core) an Object row selects nothing in a view
+    /// and fails an export with the `mask` error.
+    pub object_model: Option<Arc<crate::pipeline::object::ObjectModel>>,
     /// The shipped data folder (`data/`), for what a render reads from it at run time: the camera's
     /// spectral curves (`cameras/…`), which the lens projects its colours on (`docs/21` section 6,
     /// "Colour"). [`crate::app::Core::open`] fills it from its data root. `None` (a renderer made
@@ -258,6 +266,7 @@ impl Default for RenderOptions {
             neural: NeuralStatus::unavailable(),
             lens: None,
             bokeh_model: None,
+            object_model: None,
             data_root: None,
             gpu: None,
             gpu_stages: GpuStages::ALL,
@@ -549,6 +558,8 @@ pub struct PhotoGraph {
     /// Held while a viewer makes the photo's blur map, so that a frame and the thumbnails of a photo that ask for it
     /// together run the network once (`background::BlurEntry`).
     blur_gate: Mutex<()>,
+    /// The photo's Object features, the planes made from them and the encoder's state (`object::ObjectSlot`).
+    object: object::ObjectSlot,
     /// Exports that are rendering the photo: while there is one, the raw words stay on the device
     /// whatever else the renderer uploads (an export asks for them at every tile).
     pins: AtomicU32,
@@ -576,6 +587,7 @@ impl PhotoGraph {
             resident_tick: AtomicU64::new(0),
             upload_gate: Mutex::new(()),
             blur_gate: Mutex::new(()),
+            object: object::ObjectSlot::default(),
             pins: AtomicU32::new(0),
         }
     }
@@ -623,6 +635,7 @@ impl PhotoGraph {
             + st.display.as_ref().map_or(0, ByteLru::used)
             + st.lens_planes.as_ref().map_or(0, |e| e.planes.bytes())
             + st.blur.as_ref().map_or(0, |e| e.bytes())
+            + self.object.bytes()
             + st.lens_groups.as_ref().map_or(0, ByteLru::used)
             + st.lens_tiles.as_ref().map_or(0, ByteLru::used)
             + st.lens_field_groups.as_ref().map_or(0, ByteLru::used)
@@ -853,7 +866,15 @@ struct Inner {
     /// The cameras' spectral curves projected on the lens data (`CameraResponse`), by the profile's
     /// curves file; a camera whose curves cannot be read keeps the reason. Read once per camera.
     lens_cameras: Mutex<HashMap<String, Result<CameraResponse, String>>>,
+    /// Who hears when the Object encoder starts or stops working for a photo (`Renderer::set_object_listener`).
+    object_listener: Mutex<Option<ObjectListener>>,
+    /// The renderer that makes SAM's pictures: no graphics device, so the pictures are the CPU reference path's
+    /// (`Renderer::object_reference`).
+    object_reference: std::sync::OnceLock<Result<Renderer, RenderError>>,
 }
+
+/// Who hears when the Object encoder starts or stops working for a photo ([`Renderer::set_object_listener`]).
+pub(crate) type ObjectListener = Arc<dyn Fn(PhotoId, super::object::ObjectPhase) + Send + Sync>;
 
 /// Whether the device runs the raw stages that a stage of [`GpuStages`] lets it run, for one photo:
 /// the checks [`Job::raw_device`] makes and [`Renderer::raw_on_cpu`] reports, in one place so that
@@ -953,6 +974,8 @@ impl Renderer {
                 prefetch_gate: Mutex::new(()),
                 tail_gpu_disabled: AtomicBool::new(false),
                 lens_cameras: Mutex::new(HashMap::new()),
+                object_listener: Mutex::new(None),
+                object_reference: std::sync::OnceLock::new(),
             }),
         })
     }
@@ -1657,6 +1680,8 @@ pub(crate) struct Job<'a> {
     /// The mask view of a viewport frame ([`Job::with_mask_view`]) and the grade plan that ends at the node's
     /// mask, once the frame has asked for it ([`Job::mask_grade`]).
     mask: Option<(MaskView, Option<Arc<GradePlan>>)>,
+    /// What this request found out about the photo's Object rows (`object::JobObjects`).
+    object: object::JobObjects,
 }
 
 impl Drop for Job<'_> {
@@ -1732,6 +1757,7 @@ impl<'a> Job<'a> {
             blur_job: None,
             lens_job_device: None,
             mask: None,
+            object: object::JobObjects::default(),
         }
     }
 
@@ -3060,11 +3086,13 @@ impl<'a> Job<'a> {
     ) -> Result<GradeKey, RenderError> {
         let color = self.color()?;
         let background = self.background_for(PlanStop::Output)?;
+        let objects = self.objects_for(PlanStop::Output)?;
         let req = GradeRequest {
             target,
             dither,
             looks: self.r.inner.looks.as_ref(),
             background: background.as_ref(),
+            objects: objects.as_ref(),
         };
         Ok(super::color::grade_key(self.src, &color, &req))
     }
@@ -3087,11 +3115,13 @@ impl<'a> Job<'a> {
     ) -> Result<Arc<GradePlan>, RenderError> {
         let color = self.color()?;
         let background = self.background_for(stop)?;
+        let objects = self.objects_for(stop)?;
         let req = GradeRequest {
             target,
             dither,
             looks: self.r.inner.looks.as_ref(),
             background: background.as_ref(),
+            objects: objects.as_ref(),
         };
         // Build the plan's key without building the chain: the key is part of the plan, so the
         // cheap way to know whether a cached plan matches is to build the key text first.

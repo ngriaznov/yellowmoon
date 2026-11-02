@@ -84,6 +84,7 @@ mod tests {
             "settings_changed",
             "export_busy",
             "viewport_busy",
+            "object_state",
         ] {
             assert!(
                 bindings.contains(&format!("\"{event}\"")),

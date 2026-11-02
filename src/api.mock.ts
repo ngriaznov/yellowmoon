@@ -83,6 +83,7 @@ import type {
   LooksImportResult,
   MainEstimates,
   MapFrom,
+  MaskFindResult,
   MaskKind,
   MaskView,
   MenuState,
@@ -131,7 +132,7 @@ import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
 import { copiedPatch, pastedOnto, refusalOfPatch, validateGraph } from "./fixtures/graph";
-import { hasBackgroundRow, maskViewSvg } from "./fixtures/maskView";
+import { hasBackgroundRow, hasObjectRow, maskViewSvg } from "./fixtures/maskView";
 import { diffSettings } from "./state/history";
 import { cardStates, linkInto } from "./state/graphOps";
 import {
@@ -177,6 +178,12 @@ const DECODE_SHARE = 0.4;
 const CPU_FRAME_MS = 600;
 /** How long the mock takes to make a photo's blur map for a Background row the first time (divided by `speed`): long enough for "Finding…" to show. */
 export const FINDING_MS = 400;
+/** How long the mock's encoder takes to get a photo with an Object row ready (divided by `speed`): long enough for "Getting ready…" to show. */
+export const ENCODER_MS = 900;
+/** How long one `mask_find` takes the mock (divided by `speed`): long enough for "Finding…" to show. */
+export const FIND_MS = 120;
+/** What the decoder's time reads in the mock's "Object found" pill: 0.4 s. */
+export const FOUND_MS = 412;
 
 // The mock has no zoom of its own to report: the screen estimates it (`fit_percent: null`).
 const RENDER_STATS: RenderStats = { ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null };
@@ -485,6 +492,11 @@ export interface MockOptions {
    * and People, `nomac` leaves out Subject and People, and a comma list names the kinds.
    */
   maskKinds?: readonly MaskKind[];
+  /**
+   * What `mask_find` answers (`?mockMaskFind=`, `docs/23` §9): `scene` (the default) finds the flat scene's mountain, the far hill, when the click or the
+   * box is on it and answers nothing found anywhere else; `none` always answers nothing found.
+   */
+  maskFind?: "scene" | "none";
 }
 
 /** What the viewport commands have recorded, for tests. */
@@ -922,8 +934,8 @@ function withoutRetired(stored: Preferences): Preferences {
 
 /** Every kind of mask, in the order of the Add mask menu. */
 export const ALL_MASK_KINDS: readonly MaskKind[] = ["object", "subject", "people", "background", "linear", "radial", "brush", "color_range", "brightness_range"];
-/** The kinds the core can make today (`mask_kinds`): Background, the shapes, Brush and the ranges that are built. The later tasks add theirs. */
-export const BUILT_MASK_KINDS: readonly MaskKind[] = ["background", "linear", "radial", "brush", "color_range", "brightness_range"];
+/** The kinds the core can make today (`mask_kinds`): Object (where the SAM weights are), Background, the shapes, Brush and the ranges that are built. Subject and People come with N-19. */
+export const BUILT_MASK_KINDS: readonly MaskKind[] = ["object", "background", "linear", "radial", "brush", "color_range", "brightness_range"];
 
 /** The kinds a `?mockMasks=` value names: `all`, `noai`, `nomac`, `built`, or a comma list of kinds; null for anything else. */
 export function parseMockMasks(value: string | null): readonly MaskKind[] | null {
@@ -975,6 +987,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   viewport: null,
   cpu: false,
   maskKinds: BUILT_MASK_KINDS,
+  maskFind: "scene",
 };
 
 /** Fills in defaults, ignoring `undefined` values and a speed that isn't a positive number. */
@@ -1073,6 +1086,8 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (os === "macos" || os === "windows" || os === "linux") out.os = os;
   const masks = parseMockMasks(params.get("mockMasks"));
   if (masks) out.maskKinds = masks;
+  const maskFind = params.get("mockMaskFind");
+  if (maskFind === "none" || maskFind === "scene") out.maskFind = maskFind;
   return out;
 }
 
@@ -1525,6 +1540,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   let cpuFrameTimer: ReturnType<typeof setTimeout> | null = null;
   /** The photos whose blur map the mock has "made" (`viewport_busy.finding` says so once for each photo). */
   const blurMaps = new Set<PhotoId>();
+  /** The photos whose Object features the mock has "made" (`object_state` says "preparing" for a moment, once for each photo). */
+  const objectReady = new Set<PhotoId>();
+  /** The encoder of the photos that are getting ready: when it ends, and what waits for it (`mask_find`). */
+  const objectEncoders = new Map<PhotoId, { timer: ReturnType<typeof setTimeout>; waiting: Array<() => void> }>();
 
   // --- Events ---------------------------------------------------------------
 
@@ -1655,6 +1674,32 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   }
 
   /**
+   * The core starts SAM's encoder in the background as soon as an Object row exists on the photo being looked at (`docs/23` §4.4): `object_state` says
+   * `preparing` now and not any more `ENCODER_MS / speed` later, once for each photo (a click that comes meanwhile waits for it).
+   */
+  function prepareObject(rec: PhotoRecord): void {
+    const id = rec.summary.id;
+    if (!options.maskKinds.includes("object") || !hasObjectRow(rec.settings) || objectReady.has(id) || objectEncoders.has(id)) return;
+    emitSoon("object_state", { photo_id: id, preparing: true });
+    const entry = {
+      waiting: [] as Array<() => void>,
+      timer: setTimeout(() => {
+        objectEncoders.delete(id);
+        objectReady.add(id);
+        emit("object_state", { photo_id: id, preparing: false });
+        for (const wake of entry.waiting.splice(0)) wake();
+      }, ENCODER_MS / options.speed),
+    };
+    objectEncoders.set(id, entry);
+  }
+
+  /** Resolves when the photo's encoder is done (at once when it is not running). */
+  function encoderDone(id: PhotoId): Promise<void> {
+    const entry = objectEncoders.get(id);
+    return entry ? new Promise((resolve) => entry.waiting.push(resolve)) : Promise.resolve();
+  }
+
+  /**
    * With `cpu`, a frame of the photo on screen is "rendered" on the CPU, as the core says around a round of its viewport: `viewport_busy`
    * true now (unless a frame is still under way, which this one follows) and false `CPU_FRAME_MS / speed` later. The first frame of a photo
    * with a Background row (eye on) is the one that makes its blur map: `finding` is true for `FINDING_MS / speed`, once for each photo, with or
@@ -1663,6 +1708,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   function renderOnCpu(): void {
     const rec = photos[current];
     if (!rec || rec.phase < 3 || rec.skipReason) return;
+    prepareObject(rec);
     const id = rec.summary.id;
     const finding = !blurMaps.has(id) && hasBackgroundRow(rec.settings);
     if (finding) blurMaps.add(id);
@@ -2463,6 +2509,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     nodeThumbTimers.clear();
     nodeThumbs.clear();
     blurMaps.clear();
+    objectReady.clear();
+    for (const entry of objectEncoders.values()) clearTimeout(entry.timer);
+    objectEncoders.clear();
     for (const run of exportRuns.values()) stopExport(run);
     exportRuns.clear();
     for (const run of importRuns) {
@@ -2818,6 +2867,31 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         });
       }),
     maskKinds: () => run("maskKinds", (): MaskKind[] => [...options.maskKinds]),
+    maskFind: (photoId, node, mask, prompt) =>
+      runAsync("maskFind", async (): Promise<MaskFindResult> => {
+        if (!options.maskKinds.includes("object")) fail("mask", "This copy of Yellowmoon has no Object model. Reinstall the app.");
+        const rec = photo(photoId);
+        const item = nodeOf(rec.settings, node);
+        const row = item?.kind === "corrector" ? item.masks.items[mask] : undefined;
+        if (row?.kind !== "object") fail("mask", "That mask is not an Object mask. Select an Object mask and try again.");
+        if (prompt.kind === "point" && row.points.length >= 256) fail("mask", "An Object mask can have up to 256 points.");
+        // The click waits for the encoder if it is still running, then takes a moment of its own.
+        await encoderDone(photoId);
+        objectReady.add(photoId);
+        await new Promise((resolve) => setTimeout(resolve, FIND_MS / options.speed));
+        const round = (v: number): number => Math.round(clamp(v, 0, 1) * 10000) / 10000;
+        // The scene's mountain is the far hill; a negative point only takes a part away from what the row has.
+        const onHill = (x: number, y: number): boolean => layerAt(rec.scene, clamp(x, 0, 1), clamp(y, 0, 1)) === "far";
+        if (options.maskFind === "none") return { kind: "nothing" };
+        if (prompt.kind === "point") {
+          const found = prompt.positive ? onHill(prompt.x, prompt.y) : row.points.length > 0 || row.box !== null;
+          if (!found) return { kind: "nothing" };
+          return { kind: "found", points: [...row.points, [round(prompt.x), round(prompt.y), prompt.positive]], box: row.box, took_ms: FOUND_MS };
+        }
+        const box: [number, number, number, number] = [round(Math.min(prompt.x0, prompt.x1)), round(Math.min(prompt.y0, prompt.y1)), round(Math.max(prompt.x0, prompt.x1)), round(Math.max(prompt.y0, prompt.y1))];
+        if (!onHill((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)) return { kind: "nothing" };
+        return { kind: "found", points: row.points.map((p) => [...p]), box, took_ms: FOUND_MS };
+      }),
 
     lensList: () => run("lensList", () => (options.lensesMissing ? [] : MOCK_LENSES.map((lens) => ({ ...lens })))),
     looksList: () => run("looksList", () => looks),

@@ -23,9 +23,10 @@ use ym_core::auto_provider::{
 use ym_core::data_dir::find_data_dir;
 use ym_core::looks::{LookGroupInfo, LookService};
 use ym_core::pipeline::NeuralStatus;
+use ym_core::pipeline::ObjectModel;
 use ym_core::preferences::PreferencesStore;
 use ym_core::scheduler::MemoryBudget;
-use ym_core::settings::{MaskKind, MaskUnavailable, mask_kinds, mask_unavailable};
+use ym_core::settings::{MaskKind, MaskUnavailable, mask_kinds_with, mask_unavailable_with};
 use ym_core::version::{PIPELINE_VERSION, app_version};
 use ym_gpu::device::GpuInfo;
 use ym_profiles::registry::ProfileStore;
@@ -78,6 +79,8 @@ struct Report {
     neural: NeuralStatus,
     auto: AutoReport,
     weights: Vec<ModelFile>,
+    /// Whether the SAM weights are there and load (checked against their checksum): Object is a kind this machine can make.
+    object_model: bool,
     illuminant_models: Vec<ModelFile>,
     profiles: Vec<(String, String, String)>,
     looks_built_in: usize,
@@ -184,6 +187,12 @@ fn collect_models(root: &Path, dir: &Path, skip: &[&str], out: &mut Vec<ModelFil
     }
 }
 
+/// Whether the Object model's weights are in the data folder and load: the file is read and checked against its line of
+/// `SHA256SUMS`, so a truncated or changed file is `weights_missing` here as it is for an export.
+fn object_model_loads(data_folder: &Path) -> bool {
+    ObjectModel::probe(data_folder).is_some_and(|m| m.sam().is_ok())
+}
+
 fn build() -> Result<Report, Failure> {
     let data_folder = find_data_dir().map_err(|e| Failure::usage(e.to_string()))?;
     let app_root = ym_looks::library::default_root().map_err(|e| Failure::usage(e.to_string()))?;
@@ -220,6 +229,7 @@ fn build() -> Result<Report, Failure> {
         neural: NeuralStatus::probe(Some(&data_folder)),
         auto: auto_report(&prefs.get()),
         weights,
+        object_model: object_model_loads(&data_folder),
         illuminant_models,
         profiles,
         looks_built_in: looks
@@ -511,13 +521,13 @@ fn model_values(files: &[ModelFile]) -> Value {
 
 /// The kinds of mask this machine can make and why it cannot make the others (`docs/10` *doctor*, `docs/23`
 /// section 9): `mask_kinds()` as the app's Add mask menu reads it, and the reasons by their wire names.
-fn masks_value() -> Value {
-    let unavailable: serde_json::Map<String, Value> = mask_unavailable()
+fn masks_value(object_model: bool) -> Value {
+    let unavailable: serde_json::Map<String, Value> = mask_unavailable_with(object_model)
         .into_iter()
         .map(|(kind, why)| (kind.name().to_owned(), Value::String(why.wire().to_owned())))
         .collect();
     json!({
-        "kinds": mask_kinds().into_iter().map(|k| k.name()).collect::<Vec<_>>(),
+        "kinds": mask_kinds_with(object_model).into_iter().map(|k| k.name()).collect::<Vec<_>>(),
         "unavailable": unavailable,
     })
 }
@@ -532,13 +542,16 @@ fn joined(names: &[&str]) -> String {
 }
 
 /// The `Masks` row: the kinds this machine can make in the order of the Add mask menu, and, for the others, the
-/// reason, kinds that share one named together: `Background, Linear, Radial, Brush, Colour range, Brightness range
-/// · not available: Object (this version of Yellowmoon can't make it yet), Subject and People (this is not a Mac
-/// that supports them)`.
-fn masks_text() -> String {
-    let kinds: Vec<&str> = mask_kinds().into_iter().map(MaskKind::label).collect();
+/// reason, kinds that share one named together: `Object, Background, Linear, Radial, Brush, Colour range, Brightness
+/// range · not available: Subject and People (this is not a Mac that supports them)`; without the SAM weights
+/// `Background, … · not available: Object (the SAM weights are missing), Subject and People (…)`.
+fn masks_text(object_model: bool) -> String {
+    let kinds: Vec<&str> = mask_kinds_with(object_model)
+        .into_iter()
+        .map(MaskKind::label)
+        .collect();
     let mut text = kinds.join(", ");
-    let unavailable = mask_unavailable();
+    let unavailable = mask_unavailable_with(object_model);
     if unavailable.is_empty() {
         return text;
     }
@@ -591,7 +604,7 @@ fn to_json(r: &Report) -> Value {
         "apple_auto": apple_auto_value(&r.auto.status),
         "auto": auto_value(&r.auto),
         "model_weights": model_values(&r.weights),
-        "masks": masks_value(),
+        "masks": masks_value(r.object_model),
         "illuminant_models": model_values(&r.illuminant_models),
         "profiles": r.profiles.iter().map(|(id, version, name)| json!({ "id": id, "version": version, "name": name })).collect::<Vec<_>>(),
         "looks": {
@@ -735,7 +748,7 @@ fn to_text(r: &Report) -> String {
             );
         }
     }
-    row("Masks", masks_text());
+    row("Masks", masks_text(r.object_model));
     for (i, m) in r.illuminant_models.iter().enumerate() {
         row(
             if i == 0 { "Illuminant models" } else { "" },

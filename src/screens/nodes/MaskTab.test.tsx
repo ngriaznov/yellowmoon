@@ -120,8 +120,8 @@ describe("the Masks card", () => {
     await h!.user.click(rowButton("Object mask, 2 points"));
     expect(rowOf("Object mask, 2 points")).toHaveAttribute("data-selected");
     expect(rowOf("Radial mask, Feather 45")).not.toHaveAttribute("data-selected");
-    // An Object row (from a file or a paste, until Object has its tool) shows its row in the list and no card.
-    expect(cardTitles()).toEqual(["Masks", "View"]);
+    // An Object row has its OBJECT card (N-18).
+    expect(cardTitles()).toEqual(["Masks", "Object", "View"]);
   });
 
   it("selects the row that a control or the keyboard moves into", async () => {
@@ -258,10 +258,11 @@ describe("removing and moving a row", () => {
 });
 
 describe("the Add mask menu", () => {
-  it("lists exactly the kinds mask_kinds gives (the shapes and ranges that are built), in the groups of the spec, with their lines", async () => {
+  it("lists exactly the kinds mask_kinds gives (Object, the shapes and the ranges that are built), in the groups of the spec, with their lines", async () => {
     await setup();
     const menu = await openAddMenu();
     expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
+      "ObjectClick the photo, or draw a box",
       "BackgroundWhat is out of focus, from blur",
       "LinearA gradient across the photo",
       "RadialAn oval, soft at the edge",
@@ -271,7 +272,7 @@ describe("the Add mask menu", () => {
     ]);
     expect(within(menu).getByText("Shapes")).toBeInTheDocument();
     expect(within(menu).getByText("Keys")).toBeInTheDocument();
-    // Background is the one kind of the Find group that is made without a download or a Mac (N-15), so the group is there with it alone.
+    // Subject and People wait for N-19 (a Mac); Object (N-18) and Background (N-15) are made by the core, so the Find group has those two.
     // Brush is made (N-13) and has its card and its drawing tool (N-14: `BrushTool.test.tsx`).
     expect(within(menu).getByText("Find")).toBeInTheDocument();
     expect(within(menu).queryByRole("menuitem", { name: /Brush/ })).not.toBeNull();
@@ -449,10 +450,11 @@ describe("the selected mask's card: sliders write one field each with the scales
     expect(patches(spy).at(-1)).toEqual(edit(2, 0, { invert: false, enabled: true, opacity: 1, center: [0.5, 0.5], angle_deg: 0, feather: 0.2 }));
   });
 
-  it("an Object row shows its row and no card, until it has its own", async () => {
+  it("an Object row has its OBJECT card: the tool, the line under it and the four raster sliders (`ObjectTool.test.tsx` has the rest)", async () => {
     await setup();
     await h!.user.click(rowButton("Object mask, 2 points"));
-    expect(cardTitles()).toEqual(["Masks", "View"]);
+    expect(cardTitles()).toEqual(["Masks", "Object", "View"]);
+    expect(within(card("Object")).getAllByRole("radio").map((r) => r.textContent)).toEqual(["Add point", "Remove point", "Box"]);
   });
 });
 

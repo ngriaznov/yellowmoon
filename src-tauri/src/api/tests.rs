@@ -1412,27 +1412,39 @@ fn the_kinds_of_mask_this_machine_makes_are_the_cores_and_cross_by_the_same_word
     use crate::wire::MaskKind;
     let h = Harness::new();
     let kinds = h.api.mask_kinds().expect("kinds");
-    assert_eq!(
-        kinds,
-        [
-            MaskKind::Linear,
-            MaskKind::Radial,
-            MaskKind::Brush,
-            MaskKind::ColorRange,
-            MaskKind::BrightnessRange
-        ],
-        "the shapes, Brush and the ranges that are built; the later tasks add theirs"
-    );
-    assert_eq!(
-        serde_json::to_value(&kinds).expect("json"),
-        json!([
-            "linear",
-            "radial",
-            "brush",
-            "color_range",
-            "brightness_range"
-        ])
-    );
+    // Object is first where the SAM weights are (`data/models/sam2`, `tools/fetch/sam2.sh`; CI's rust job fetches none), then the kinds that
+    // need nothing: Background, the shapes, Brush and the ranges. Subject and People come with N-19.
+    let object = ym_core::pipeline::ObjectModel::probe(
+        &ym_core::data_dir::find_data_dir().expect("the data folder"),
+    )
+    .is_some();
+    let mut want = Vec::new();
+    if object {
+        want.push(MaskKind::Object);
+    }
+    want.extend([
+        MaskKind::Background,
+        MaskKind::Linear,
+        MaskKind::Radial,
+        MaskKind::Brush,
+        MaskKind::ColorRange,
+        MaskKind::BrightnessRange,
+    ]);
+    assert_eq!(kinds, want);
+    let words: Vec<&str> = want
+        .iter()
+        .map(|k| match k {
+            MaskKind::Object => "object",
+            MaskKind::Background => "background",
+            MaskKind::Linear => "linear",
+            MaskKind::Radial => "radial",
+            MaskKind::Brush => "brush",
+            MaskKind::ColorRange => "color_range",
+            MaskKind::BrightnessRange => "brightness_range",
+            _ => unreachable!("not offered"),
+        })
+        .collect();
+    assert_eq!(serde_json::to_value(&kinds).expect("json"), json!(words));
     // Every kind of the core is a kind of the wire, by the same word.
     for core in ym_core::settings::MaskKind::ALL {
         let wire: MaskKind = convert(&core).expect("a kind of the wire");
@@ -4903,4 +4915,140 @@ fn removing_a_frame_with_apple_auto_makes_the_burst_steps_again_tells_the_webvie
     for id in &stays {
         assert_eq!(told(*id, before), 1, "{id:?}");
     }
+}
+
+// ---- Object masks (docs/23 sections 4.4 and 9, task N-18) ------------------------------------------------------------------------------------
+
+/// The Object model of the repository's data folder, when it has the weights (`tools/fetch/sam2.sh`); CI's rust job fetches none and these tests then
+/// check what does not need the model.
+fn object_weights() -> bool {
+    ym_core::pipeline::ObjectModel::probe(
+        &ym_core::data_dir::find_data_dir().expect("the data folder"),
+    )
+    .is_some_and(|m| m.sam().is_ok())
+}
+
+fn row_patch(row: serde_json::Value) -> SettingsPatch {
+    serde_json::from_value(json!({ "nodes": { "1": { "masks": { "items": [row] } } } }))
+        .expect("a patch")
+}
+
+#[test]
+fn mask_find_refuses_what_is_not_an_object_row_with_the_scope_mask_and_a_plain_sentence() {
+    use crate::wire::{ErrorScope, MaskFindPrompt};
+    let h = Harness::new();
+    h.open(1);
+    let id = h.develop().photos[0].id;
+    h.api
+        .update_settings(id, &row_patch(json!({ "kind": "radial" })))
+        .expect("a Radial row");
+    let click = MaskFindPrompt::Point {
+        x: Num(0.5),
+        y: Num(0.5),
+        positive: true,
+    };
+    let err = h
+        .api
+        .mask_find(id, 1, 0, click)
+        .expect_err("a Radial is not an Object row");
+    assert_eq!(err.scope, ErrorScope::Mask);
+    // Where the weights are the model says what is wrong with the request; where they are not, that there is no model.
+    assert_eq!(
+        err.message,
+        if object_weights() {
+            "That mask is not an Object mask. Select an Object mask and try again."
+        } else {
+            "This copy of Yellowmoon has no Object model. Reinstall the app."
+        }
+    );
+    // A row that is not there is the same refusal.
+    let err = h.api.mask_find(id, 1, 7, click).expect_err("no such row");
+    assert_eq!(err.scope, ErrorScope::Mask);
+}
+
+/// The whole path through the shell: an Object row on the photo being looked at starts the encoder (`object_state` says so, and says when it has
+/// stopped), a click is answered with the row's new points in the shapes of the wire, and nothing changes in the settings.
+#[test]
+fn mask_find_answers_in_the_shapes_of_the_wire_and_object_state_comes_as_events() {
+    use crate::events::AppEvent;
+    use crate::wire::{MaskFindPrompt, MaskFindResult};
+    if !object_weights() {
+        assert!(
+            std::env::var_os("YM_REQUIRE_SAM2").is_none(),
+            "YM_REQUIRE_SAM2 is set and data/models/sam2 is missing"
+        );
+        eprintln!("\n* OBJECT SHELL TEST SKIPPED: no SAM weights (tools/fetch/sam2.sh)\n");
+        return;
+    }
+    let h = Harness::new();
+    h.open(1);
+    let id = h.develop().photos[0].id;
+    h.api.set_current(id).expect("current");
+    h.api
+        .update_settings(id, &row_patch(json!({ "kind": "object" })))
+        .expect("an Object row");
+    // The core asked for the features: the page is told that the encoder is working, and that it has stopped.
+    let seen = |preparing: bool| {
+        h.events
+            .events()
+            .iter()
+            .any(|e| matches!(e, AppEvent::ObjectState(s) if s.photo_id == id && s.preparing == preparing))
+    };
+    wait_until("the encoder to start", || seen(true));
+    let before = h.api.get_settings(id).expect("settings");
+    let found = h
+        .api
+        .mask_find(
+            id,
+            1,
+            0,
+            MaskFindPrompt::Point {
+                x: Num(0.5),
+                y: Num(0.5),
+                positive: true,
+            },
+        )
+        .expect("an answer");
+    let MaskFindResult::Found {
+        points,
+        box_,
+        took_ms,
+    } = found
+    else {
+        panic!("the model finds an object in the middle of the gradient: {found:?}");
+    };
+    assert_eq!(points, vec![(Num(0.5), Num(0.5), true)]);
+    assert!(box_.is_none() && took_ms.0 > 0.0);
+    wait_until("the encoder to stop", || seen(false));
+    assert_eq!(
+        h.api.get_settings(id).expect("settings"),
+        before,
+        "a find changes no settings"
+    );
+    // The wire's words.
+    assert_eq!(
+        serde_json::to_value(&MaskFindResult::Found {
+            points,
+            box_: None,
+            took_ms
+        })
+        .expect("json"),
+        json!({ "kind": "found", "points": [[0.5, 0.5, true]], "box": null, "took_ms": took_ms.0 })
+    );
+    assert_eq!(
+        serde_json::to_value(&MaskFindResult::Nothing).expect("json"),
+        json!({ "kind": "nothing" })
+    );
+    assert_eq!(
+        serde_json::from_value::<MaskFindPrompt>(
+            json!({ "kind": "box", "x0": 0.1, "y0": 0.2, "x1": 0.6, "y1": 0.7 })
+        )
+        .expect("a box"),
+        MaskFindPrompt::Box {
+            x0: Num(0.1),
+            y0: Num(0.2),
+            x1: Num(0.6),
+            y1: Num(0.7)
+        }
+    );
 }

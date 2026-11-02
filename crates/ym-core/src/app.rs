@@ -101,6 +101,8 @@ impl CoreError {
             Self::Looks(_) => "looks",
             Self::Preferences(_) => "preferences",
             Self::Export(_) => "export",
+            // A mask this computer cannot make or cannot find (`docs/23` section 9).
+            Self::Render(RenderError::Mask(_)) => "mask",
             Self::Render(_) => "render",
         }
     }
@@ -278,6 +280,10 @@ impl Core {
         }
         if render.bokeh_model.is_none() {
             render.bokeh_model = env.bokeh_model.as_ref().ok().cloned();
+        }
+        // SAM 2.1 small for the Object mask: found here (its weights load when a mask first needs them).
+        if render.object_model.is_none() {
+            render.object_model = crate::pipeline::ObjectModel::probe(&options.data_root);
         }
         // The lens reads the cameras' spectral curves from the same folder.
         if render.data_root.is_none() {
@@ -613,6 +619,75 @@ impl Core {
         Ok(())
     }
 
+    /// `update_settings`: applies a patch to a photo's settings ([`Session::update_settings`]) and, when the photo is the
+    /// one being looked at and has an Object row, asks for SAM's features in the background
+    /// ([`Core::prepare_object`], `docs/23` section 4.4: "as soon as an Object row exists on the photo").
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError`] as [`Session::update_settings`].
+    pub fn update_settings(
+        &self,
+        id: PhotoId,
+        patch: &SettingsPatch,
+    ) -> Result<crate::settings::ResolvedSettings, SessionError> {
+        let resolved = self.session.update_settings(id, patch)?;
+        self.prepare_object(id);
+        Ok(resolved)
+    }
+
+    /// Asks for the Object features of the photo in the background when it is the photo being looked at and has an Object
+    /// row with the eye on ([`Renderer::object_prepare`]). Returns at once; nothing happens for a photo that is not
+    /// current, one without an Object row, and a copy of Yellowmoon with no Object model.
+    pub fn prepare_object(&self, id: PhotoId) {
+        if self.session.current() != Some(id) || !self.renderer.object_available() {
+            return;
+        }
+        let Ok(view) = self.session.view(id) else {
+            return;
+        };
+        if !crate::pipeline::has_object_row(&view.settings) {
+            return;
+        }
+        if let Ok(src) = crate::pipeline::PhotoSource::from_session(&self.session, id) {
+            self.renderer.object_prepare(&src);
+        }
+    }
+
+    /// `mask_kinds`: the kinds of mask this machine can make now (`docs/23` section 9): Object when the SAM weights are
+    /// there.
+    #[must_use]
+    pub fn mask_kinds(&self) -> Vec<crate::settings::MaskKind> {
+        self.renderer.mask_kinds()
+    }
+
+    /// The kinds of mask this machine cannot make, each with its reason (`ym doctor`).
+    #[must_use]
+    pub fn mask_unavailable(
+        &self,
+    ) -> Vec<(crate::settings::MaskKind, crate::settings::MaskUnavailable)> {
+        crate::settings::mask_unavailable_with(self.renderer.object_available())
+    }
+
+    /// `mask_find(photo_id, node, mask, prompt)` (`docs/23` section 9): what the row would become with the click or the box,
+    /// or that nothing was found there. It changes no settings. See [`Renderer::mask_find`].
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Session`] for a photo that is unknown or not developed yet; [`CoreError::Render`] with the `mask` scope
+    /// for a model that is missing, a mask that is not an Object row and a row with 256 points already.
+    pub fn mask_find(
+        &self,
+        id: PhotoId,
+        node: u32,
+        mask: usize,
+        prompt: crate::pipeline::ObjectPrompt,
+        cancel: &ym_gpu::queue::CancelToken,
+    ) -> Result<crate::pipeline::MaskFound, CoreError> {
+        let src = crate::pipeline::PhotoSource::from_session(&self.session, id)?;
+        Ok(self.renderer.mask_find(&src, node, mask, prompt, cancel)?)
+    }
+
     /// `apply_look`: copies a look and its intensity to This photo, the Picked photos or All.
     ///
     /// # Errors
@@ -652,7 +727,14 @@ impl Core {
         if let Some(look) = patch.look() {
             self.looks.check_usable(look)?;
         }
-        Ok(self.session.paste_settings(ids, patch)?)
+        let report = self.session.paste_settings(ids, patch)?;
+        // A pasted graph may bring an Object row (empty): the encoder starts for the photo being looked at.
+        if let Some(current) = self.session.current()
+            && report.pasted.iter().any(|p| p.id == current)
+        {
+            self.prepare_object(current);
+        }
+        Ok(report)
     }
 
     // --- Export -----------------------------------------------------------------------------

@@ -49,12 +49,14 @@ pub mod color;
 pub mod frame;
 pub mod geometry;
 pub mod graph;
+pub mod object;
 pub mod raw;
 pub mod thumbs;
 pub mod viewport;
 
 pub use color::{
-    LookProblem, LookProvider, NeutralOnly, PhotoSource, ResolvedLook, unmakeable_mask,
+    LookProblem, LookProvider, NeutralOnly, PhotoSource, ResolvedLook, has_object_row,
+    unmakeable_mask, unmakeable_mask_with,
 };
 pub use frame::{
     ChromaSample, ChromaTap, DeviceFrame, FitFrame, FrameOptions, FrameOutput, FullImage,
@@ -63,6 +65,10 @@ pub use frame::{
 pub use graph::{
     ComputeDevice, PhotoGraph, RawPrefetch, RenderOptions, RenderReport, Renderer, StageCounters,
     StageRuns, StageTimings,
+};
+pub use object::{
+    MaskFound, NOTHING_FOUND_SENTENCE, NothingFound, ObjectModel, ObjectPhase, ObjectPlanes,
+    ObjectPrompt,
 };
 pub use thumbs::{
     AdvisorPictures, ChromaScatter, HistogramData, NODE_THUMBNAIL_PX, NodeThumbnail,

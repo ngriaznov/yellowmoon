@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
 import type { MaskKind, MaskMode, MasksPatch, MaskStyle, ResolvedSettings } from "../../api/types";
 import { Button, Card, Field, KeyHint, ResetLink, RowNote, Segmented } from "../../components";
@@ -65,7 +65,7 @@ export interface MaskTabProps {
 /**
  * A corrector's Mask tab (`docs/23` §7.6): the **Masks card** (its header "MASKS", **Add mask ▾**, **Invert**, which is the node's whole
  * combined mask, and **Reset**, which removes every row and un-inverts; then the rows and the line "Masks add up…"), the **selected mask's
- * card** (a Background, a Linear, a Radial, a Brush, a Colour range or a Brightness range: the other kinds have theirs with their tasks, and a raster row that a
+ * card** (an Object, a Background, a Linear, a Radial, a Brush, a Colour range or a Brightness range: Subject and People have theirs with their task, and a raster row that a
  * file or a paste brought shows its row and no card), and the View card. Adding a Brush row, and choosing one, starts the Brush tool. Every change is one node patch: adding, removing and moving a row
  * is `masks.items`, a row's mode, Invert and eye and every slider is a `masks.edit` row patch, the node's Invert is `masks.invert`; each
  * is one undo step (a slider's drag is one).
@@ -78,6 +78,10 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
   const stored = useAppState((s) => s.maskRow);
   const kinds = useAppState((s) => s.maskKinds);
   const finding = useAppState((s) => s.viewportBusy.busy && s.viewportBusy.finding);
+  // SAM's encoder is getting the photo ready, or a click is being answered (`docs/23` §7.6): the Object rows say so.
+  const preparing = useAppState((s) => s.objectPreparing.includes(rs.photo_id));
+  const objectFinding = useAppState((s) => s.objectFinding === rs.photo_id);
+  const objectBusy = useMemo(() => ({ preparing, finding: objectFinding }), [preparing, objectFinding]);
   const selected = stored !== null && stored < rows.length ? stored : null;
   const row = selected === null ? undefined : rows[selected];
   useEffect(() => store.ensureMaskKinds(), [store]);
@@ -90,14 +94,17 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
     if (!patch) return;
     store.selectMaskRow(rows.length);
     send(patch);
-    // A Colour range's tool is Pick colour: the next click on the photo is its colour. A Brush's is the brush: the next drag on the photo paints.
+    // A Colour range's tool is Pick colour: the next click on the photo is its colour. A Brush's is the brush: the next drag on the photo paints. An
+    // Object's is the click: the next click on the photo finds the object.
     onPickRange(kind === "color_range");
     store.setBrushTool(kind === "brush");
+    store.setObjectTool(kind === "object");
   };
-  /** Choosing a row selects it, and a Brush row starts its tool (Esc ended the last one, and this is the way back). */
+  /** Choosing a row selects it, and a Brush or an Object row starts its tool (Esc ended the last one, and this is the way back). */
   const select = (index: number): void => {
     store.selectMaskRow(index);
     if (rows[index]?.kind === "brush") store.setBrushTool(true);
+    if (rows[index]?.kind === "object") store.setObjectTool(true);
   };
   const remove = (index: number): void => {
     send(withoutMask(rows, index));
@@ -147,7 +154,7 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
             </>
           }
         >
-          <MaskRows rows={rows} selected={selected} onSelect={select} onEdit={edit} onRemove={remove} onMove={move} finding={finding} />
+          <MaskRows rows={rows} selected={selected} onSelect={select} onEdit={edit} onRemove={remove} onMove={move} finding={finding} object={objectBusy} />
           <RowNote>{MASKS_ADD_UP}</RowNote>
         </Card>
       </div>

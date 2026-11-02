@@ -131,6 +131,13 @@ export const commands = {
 	 */
 	maskKinds: () => __TAURI_INVOKE<MaskKind[]>("mask_kinds"),
 	/**
+	 *  `mask_find(photo_id, node, mask, prompt)` (`docs/23` section 9): runs SAM for the Object row `mask` of `node` with the
+	 *  person's click or box added, and answers what the row's `points` and `box` become, or that nothing was found. It changes no
+	 *  settings: the page sends a found answer as one row patch (one undo step). It waits for the encoder if it is still
+	 *  running.
+	 */
+	maskFind: (photoId: PhotoId, node: number, mask: number, prompt: MaskFindPrompt) => __TAURI_INVOKE<MaskFindResult>("mask_find", { photoId, node, mask, prompt }),
+	/**
 	 *  `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
 	 *  starting amounts. Empty when the lens data could not be loaded.
 	 */
@@ -237,6 +244,7 @@ export const events = {
 	looksImportProgress: makeEvent<LooksImportProgress>("looks_import_progress"),
 	menuAction: makeEvent<MenuActionEvent>("menu_action"),
 	nodeThumbnailsReady: makeEvent<NodeThumbnailsReady>("node_thumbnails_ready"),
+	objectState: makeEvent<ObjectState>("object_state"),
 	photoProgress: makeEvent<PhotoProgress>("photo_progress"),
 	renderStats: makeEvent<RenderStats>("render_stats"),
 	settingsChanged: makeEvent<SettingsChanged>("settings_changed"),
@@ -945,6 +953,11 @@ export type ErrorScope =
 "preferences" | 
 /**  The viewport. */
 "viewport" | 
+/**
+ *  A mask this computer cannot make or cannot find (`docs/23` section 9): the Object model is missing, the Object
+ *  mask is not there, a row has all its points.
+ */
+"mask" | 
 /**  Anything else. */
 "app";
 
@@ -1453,6 +1466,43 @@ export type MapFrom =
  *  paper.
  */
 "cell";
+
+/**  What the person did on the photo to find an object: `mask_find`'s `prompt` (`docs/23` section 9), in the photo frame. */
+export type MaskFindPrompt = 
+/**  A click: on the object (`positive`), or on a part to take away. */
+{ kind: "point"; 
+/**  Fraction of the photo's width. */
+x: number; 
+/**  Fraction of the photo's height. */
+y: number; 
+/**  On the object, or off it. */
+positive: boolean } | 
+/**  A box dragged around the object. */
+{ kind: "box"; 
+/**  Left, as a fraction of the width. */
+x0: number; 
+/**  Top, as a fraction of the height. */
+y0: number; 
+/**  Right. */
+x1: number; 
+/**  Bottom. */
+y1: number };
+
+/**
+ *  The answer of `mask_find` (`docs/23` section 9). Only a found answer is to change settings: the page sends it as one row
+ *  patch, one undo step.
+ */
+export type MaskFindResult = 
+/**  A mask: what the row's `points` and `box` become, and the time the decoder took. */
+{ kind: "found"; 
+/**  The row's clicks `[x, y, positive]` with the new one at the end (for a click). */
+points: ([number, number, boolean])[]; 
+/**  The row's box `[x0, y0, x1, y1]`, or null. */
+box: [number, number, number, number] | null; 
+/**  Milliseconds the decoder took. */
+took_ms: number } | 
+/**  No object there: the page adds no point and changes nothing, and says so in the error bar. */
+{ kind: "nothing" };
 
 /**
  *  One row of a node's masks: `kind` and the fields every row has (`mode`, `invert`, `enabled`,
@@ -2054,6 +2104,18 @@ export type NormRect = {
 	width: number,
 	/**  Height. */
 	height: number,
+};
+
+/**
+ *  `object_state { photo_id, preparing }` (addition): SAM's encoder is working for a photo, or has stopped. The rows of an Object
+ *  mask say "Getting ready…" while `preparing` is true (`docs/23` section 7.6). Sent when it changes; when it turns false
+ *  with features made, the photo is drawn again.
+ */
+export type ObjectState = {
+	/**  The photo. */
+	photo_id: PhotoId,
+	/**  The encoder is working for it, or will be in a moment. */
+	preparing: boolean,
 };
 
 /**  What `open_dialog` offers. */

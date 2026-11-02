@@ -259,6 +259,24 @@ test.describe("Photos", () => {
     await compareScreen(page, "photos-nodes-mask-background");
   });
 
+  test("The node view: Mountain's Object row with two clicks on the mountain, its OBJECT card, the pill and the points on the photo (photos-nodes-mask-object.png)", async ({ page }) => {
+    // Screen 07 of design/nodes: the Masks card with the Object row selected ("Object", "2 points") above the Radial that is Subtract and inverted, the OBJECT card under it
+    // (Add point · Remove point · Box with its line, then Refine edges at 50 %, Feather, Grow, Opacity), the View card with Overlay, the mountain tinted in the mask accent
+    // (the mock finds the flat scene's far hill; the core draws the real mask), two points drawn as circles with a plus (the second is the click that has just found
+    // it, so the pill "Object found · 0.4 s" is at the top of the photo for its three seconds), and the chip "MASK · OBJECT".
+    const object = { kind: "object", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, points: [[0.32, 0.7, true]], box: null };
+    await maskTab(page, 2, [object, ROWS_07B[1]!]);
+    await page.getByRole("button", { name: "Object mask, 1 point" }).click();
+    await expect(page.getByRole("region", { name: "Object" })).toBeVisible();
+    await page.getByRole("radio", { name: "Overlay", exact: true }).click();
+    await expect(page.locator("[data-object-layer]")).toHaveAttribute("data-tool", "add");
+    const cell = (await page.locator("[data-viewport]").boundingBox())!;
+    await page.mouse.click(cell.x + cell.width * 0.6, cell.y + cell.height * 0.72);
+    await expect(page.getByRole("button", { name: "Object mask, 2 points" })).toBeVisible();
+    await expect(page.getByText("Object found · 0.4 s")).toBeVisible();
+    await compareScreen(page, "photos-nodes-mask-object", { pointer: { x: cell.x + cell.width * 0.72, y: cell.y + cell.height * 0.2 } });
+  });
+
   /**
    * The graded graph (Main with the mockup's grade, then Mountain, Sky and Warmth) on the Mask tab of node `select`, with `rows` in Mountain's masks when given
    * (screen 07b's two rows) and `kinds` as the mock's `?mockMasks=` (every kind, for the menu of screen 08).
@@ -284,7 +302,7 @@ test.describe("Photos", () => {
   test("The node view: Mountain's Mask tab with two rows, one Subtract and one inverted, the Object row selected (photos-nodes-mask-rows.png)", async ({ page }) => {
     // docs/23 section 7.6, screens 07 and 07b of design/nodes: the Masks card with Add mask, Invert and Reset, the Object row (two points, Add) with the
     // 2 px ring of the selected row, and the Radial row (Feather 45) that is Subtract and inverted, its Invert pressed in the mask accent; the line under them,
-    // and the View card. The chip says "MASK · OBJECT". An Object row has no card of its own yet (N-18).
+    // and the View card. The chip says "MASK · OBJECT", and the OBJECT card (N-18) is under the Masks card with the row's two points drawn on the photo.
     await maskTab(page, 2, ROWS_07B);
     await page.getByRole("button", { name: "Object mask, 2 points" }).click();
     await expect(page.getByRole("button", { name: "Object mask, 2 points" })).toHaveAttribute("aria-pressed", "true");

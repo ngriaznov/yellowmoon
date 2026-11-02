@@ -7,6 +7,7 @@
 import type { MaskItem, MaskKind, MaskMode, MaskPatch, MasksPatch } from "../api/types";
 import { widthSlider } from "../screens/tools/maskScales";
 import { MASK_KIND_NAME } from "./graphOps";
+import { GETTING_READY } from "./objectMask";
 
 export { widthSlider };
 
@@ -18,6 +19,22 @@ export const FINDING = "Finding…";
  * blur map (`viewport_busy.finding`). The row's subtitle is then {@link FINDING}, with a spinner.
  */
 export const isFinding = (row: MaskItem, finding: boolean): boolean => finding && row.kind === "background" && row.enabled;
+
+/** What the core is doing for the Object rows of the photo on screen: SAM's encoder is getting the photo ready, or a click is being answered (`docs/23` §7.6). */
+export interface ObjectBusy {
+  preparing: boolean;
+  finding: boolean;
+}
+
+/**
+ * What an Object row's subtitle says instead of its own while the core works for it (`docs/23` §7.6): "Finding…" while a click or a box is being answered,
+ * "Getting ready…" while the encoder runs; only for a row with the eye on. Null for every other row, and when the core is idle.
+ */
+export function objectBusyText(row: MaskItem, busy: ObjectBusy | undefined): string | null {
+  if (row.kind !== "object" || !row.enabled || !busy) return null;
+  if (busy.finding) return FINDING;
+  return busy.preparing ? GETTING_READY : null;
+}
 
 /** The row's name in bold: "Object", "Radial", "Colour range". */
 export const maskRowName = (row: MaskItem): string => MASK_KIND_NAME[row.kind] ?? row.kind;
@@ -129,4 +146,5 @@ export function maskSubtitle(row: MaskItem): string {
  * The row's accessible name: the kind, "mask" and the subtitle ("Object mask, 2 points", "Radial mask, Feather 45"); with `finding`, a Background row
  * reads "Background mask, Finding…".
  */
-export const maskRowLabel = (row: MaskItem, finding = false): string => `${maskRowName(row)} mask, ${isFinding(row, finding) ? FINDING : maskSubtitle(row)}`;
+export const maskRowLabel = (row: MaskItem, finding = false, object?: ObjectBusy): string =>
+  `${maskRowName(row)} mask, ${isFinding(row, finding) ? FINDING : (objectBusyText(row, object) ?? maskSubtitle(row))}`;

@@ -1150,7 +1150,7 @@ fn export_photo_unguarded(
     // computer cannot make is never written without it (`error.kind` `mask`, `docs/23` section 3.10).
     let looks = ctx.renderer.looks();
     let fingerprint = look_fingerprint(ctx, photo)?;
-    if let Some(sentence) = crate::pipeline::unmakeable_mask(&photo.source.settings) {
+    if let Some(sentence) = ctx.renderer.unmakeable_mask(&photo.source.settings) {
         return Err(ExportError::Render(RenderError::Mask(sentence)));
     }
     let is_dng = options.format == FormatKind::Dng;

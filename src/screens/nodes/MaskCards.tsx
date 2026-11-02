@@ -6,13 +6,15 @@ import { patchOf } from "../../state/settingsGraph";
 import type { AppStore } from "../../state/store";
 import { angleSlider, radiusField, radiusSlider, unitField, unitSlider, widthField, widthSlider } from "../tools/maskScales";
 import { BrushCard } from "./BrushCard";
+import { ObjectCard } from "./ObjectCard";
 import { FeatherSlider, OpacitySlider, RasterSliders } from "./MaskSliders";
 
-/** The kinds that have a card in the Mask tab so far: Background, the shapes, Brush and the ranges. The others come with Object (N-18) and Subject and People (N-19). */
-export const CARD_KINDS: ReadonlySet<MaskItem["kind"]> = new Set(["background", "linear", "radial", "brush", "color_range", "brightness_range"]);
+/** The kinds that have a card in the Mask tab so far: Object, Background, the shapes, Brush and the ranges. Subject and People come with N-19. */
+export const CARD_KINDS: ReadonlySet<MaskItem["kind"]> = new Set(["object", "background", "linear", "radial", "brush", "color_range", "brightness_range"]);
 
 /** The title of a kind's card: the kind in capitals (the card's own style does the capitals; this is the word). */
 const TITLE: Readonly<Partial<Record<MaskItem["kind"], string>>> = {
+  object: "Object",
   background: "Background",
   linear: "Linear",
   radial: "Radial",
@@ -35,7 +37,7 @@ export interface MaskCardProps {
 }
 
 /**
- * The selected mask's card (`docs/23` §7.6) for a Background, a Linear, a Radial, a Brush, a Colour range or a Brightness range: its title is the kind in capitals, its
+ * The selected mask's card (`docs/23` §7.6) for an Object, a Background, a Linear, a Radial, a Brush, a Colour range or a Brightness range: its title is the kind in capitals, its
  * **Reset** puts the row back as a new row of the kind in the same mode, and its sliders are the standard slider with the scales of
  * `docs/algorithms/06` §4.5 (`maskScales.ts`). Every slider writes one field of the row, as a `masks.edit` row patch (`docs/23` §3.7): a drag is
  * a patch per frame that folds into one, and one undo step.
@@ -135,6 +137,8 @@ export function MaskCard({ store, rs, node, index, row, pickingRange, onPickRang
     }
     case "brush":
       return <BrushCard store={store} rs={rs} node={node} index={index} row={row} />;
+    case "object":
+      return <ObjectCard store={store} rs={rs} node={node} index={index} row={row} />;
     case "color_range": {
       const was = fresh as typeof row;
       return (

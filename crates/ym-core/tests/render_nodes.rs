@@ -540,6 +540,7 @@ fn the_grade_key_sees_the_mask_rows() {
         dither: false,
         looks: &NeutralOnly,
         background: None,
+        objects: None,
     };
     let node = |rows: Vec<Value>, enabled: bool| {
         let mut rows = rows;
@@ -623,6 +624,7 @@ fn the_grade_key_sees_the_plan_every_node_and_the_look_and_ignores_a_dead_branch
         dither: false,
         looks: r.looks().as_ref(),
         background: None,
+        objects: None,
     };
     let key_of = |s: DevelopSettings| grade_key(&with(&src, s), &color, &req);
     let base = key_of(three_nodes());
