@@ -32,14 +32,18 @@ export const NO_COUNTERPART: ReadonlyArray<readonly [string, string]> = [
   [".ym-title-block", "title block (a tinted band of the pane)"], [".ym-field", "label + control row (glasscn has no Field)"],
   [".ym-photo-cell__camera", "camera line over the photo (text)"],
   [".ym-divider", "graph divider (a focusable window splitter; glasscn's Separator is a static hairline)"],
-  [".ym-graph__canvas", "graph canvas (empty until N-08; then @xyflow/react's)"], [".ym-viewer", "photo row (paper beside the cell in the node view)"],
+  [".ym-graph__canvas", "graph canvas (@xyflow/react's: the pane, the viewport, the links)"], [".ym-viewer", "photo row (paper beside the cell in the node view)"],
+  // The graph's nodes (N-08): a card and a marker are picture-like buttons drawn on the canvas (a thumbnail, a number chip, ports); glasscn has
+  // no node. The things inside that have a counterpart are glasscn's: the rename box (Input), the tooltips, the zoom buttons (Button), the menus.
+  ["[data-node-card]", "node card or marker (a picture button on the graph canvas)"], [".ym-gnode__num", "number chip of a card (a small label)"],
+  [".ym-port", "port of a node (a triangle or a square on the canvas)"], [".react-flow__edge", "link between two ports (an SVG path)"],
   [".ym-filmstrip__nodes", "nodes glyph on a filmstrip thumbnail"],
   [".ym-wizard__tile-picture img, .ym-look-tile__picture img", "look picture"],
 ];
 
 /** The `data-slot` values of glasscn's components (`src/components/glass/`) that a control can be or sit in. */
 export const GLASS_SLOT =
-  /^(tabs-list|segmented-control|button|toggle|tabs-trigger|segmented-control-item|slider-thumb|slider|switch|radio-group|radio-group-item|select-trigger|select-item|input|search-field-input|search-field-clear|dropdown-menu-[a-z-]+|dialog-close|dialog-content|item|card|badge|progress|separator|kbd|collapsible-trigger|toggle-group-item|tooltip-trigger|popover-trigger|textarea|tabs|spinner)$/;
+  /^(tabs-list|segmented-control|button|toggle|tabs-trigger|segmented-control-item|slider-thumb|slider|switch|radio-group|radio-group-item|select-trigger|select-item|input|search-field-input|search-field-clear|dropdown-menu-[a-z-]+|context-menu-[a-z-]+|dialog-close|dialog-content|item|card|badge|progress|separator|kbd|collapsible-trigger|toggle-group-item|tooltip-trigger|popover-trigger|textarea|tabs|spinner)$/;
 
 /** What the audit found on one page. */
 export interface PageAudit {

@@ -9,7 +9,8 @@ import { configureMock, dropFiles, failNext, lookTilesLoaded, openApp, openPhoto
 // open, and the consent dialog), the one of Auto crop (`docs/20`: the Crop panel with Auto on and its note) and the three of the Lens tab
 // (`docs/21`: no lens, a lens chosen at its start amounts, and the lens data missing), and the one of Pick white with the CPU note under its hint
 // (`docs/23` section 8; state 17 is Pick white alone), the node view with its empty canvas (N-07: the toolbar, the divider, the photo switcher;
-// N-08 to N-12 add 43 to 48) and the simple view of a photo that has four nodes, with the notice (state 49). A state is a function that leaves a
+// N-08 to N-12 add 43 to 48: N-08 has 43, the graph with its Add node menu open, and two of its own, 51 and 52, the graph with a bypassed,
+// a dead and a masked card and a key link, and a selected link) and the simple view of a photo that has four nodes, with the notice (state 49). A state is a function that leaves a
 // page in it; the numbers in the names are only an order.
 
 const MOCKUP = { mockCurrent: 3, mockPicked: "2,3,4" } as const;
@@ -70,6 +71,38 @@ export const FOUR_NODES = {
   ],
 } as const;
 
+/**
+ * The graph of screens 06 and 07 of `design/nodes` (the node view's cards): Main, then Mountain (an Object mask minus a Radial one, a trim of
+ * +0.35 EV), Sky (a Linear mask, a cooler trim) and Warmth (a warmer trim), in a line. It is a node patch like `FOUR_NODES` with the masks and
+ * trims that give the cards their glyphs; the mock does not render masks, so only the cards and the panel tell them apart.
+ */
+export const GRADED_NODES = {
+  nodes: {
+    "2": {
+      kind: "corrector",
+      name: "Mountain",
+      pos: [1, 0],
+      trim: { exposure_ev: 0.35, temperature: 0, tint: 0 },
+      masks: {
+        invert: false,
+        items: [
+          { kind: "object", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, points: [[0.41, 0.33, true], [0.52, 0.31, true]], box: null },
+          { kind: "radial", mode: "subtract", invert: false, enabled: true, opacity: 1, center: [0.55, 0.32], radii: [0.06, 0.03], angle_deg: 0, feather: 0.45 },
+        ],
+      },
+    },
+    "3": {
+      kind: "corrector",
+      name: "Sky",
+      pos: [2, 0],
+      trim: { exposure_ev: 0, temperature: -18, tint: 4 },
+      masks: { invert: false, items: [{ kind: "linear", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.5, 0.2], angle_deg: 4, feather: 0.25 }] },
+    },
+    "4": { kind: "corrector", name: "Warmth", pos: [3, 0], trim: { exposure_ev: 0, temperature: 30, tint: 0 } },
+  },
+  links: FOUR_NODES.links,
+} as const;
+
 /** The Photos screen on the mockup's state (DSC04204 current, three picked), with the mockup's settings on the current photo. */
 async function photos(page: Page, options: Options = MOCKUP, settings: boolean | Record<string, unknown> = true): Promise<void> {
   await openApp(page, options);
@@ -81,6 +114,20 @@ async function photos(page: Page, options: Options = MOCKUP, settings: boolean |
   await openPhotos(page);
   await showUpdateReady(page);
   await page.waitForTimeout(300);
+}
+
+/** The node view of the graph of `GRADED_NODES`, opened with the Nodes button, with `select` (a node's number or "input", "output") on. */
+async function nodeViewOfGradedPhoto(page: Page, select = 2): Promise<void> {
+  await openApp(page, MOCKUP);
+  await configureMock(page, {
+    initialSettings: { DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE }, ...GRADED_NODES.nodes }, links: GRADED_NODES.links } } as never,
+  });
+  await openPhotos(page);
+  await showUpdateReady(page);
+  await page.getByRole("button", { name: "Nodes", exact: true }).click();
+  await expect(page.locator('[data-node-card="4"]')).toBeVisible();
+  await page.locator(`[data-node-card="${select}"]`).click();
+  await page.waitForTimeout(400);
 }
 
 /** The Photos screen as `photos` leaves it, on a photo whose graph has four nodes: Main (with the mockup's grade) and three more. */
@@ -440,8 +487,9 @@ export const STATES: readonly PageState[] = [
       await p.waitForTimeout(400);
     },
   ],
-  // The node view (docs/23 section 7.1, N-07), opened with the Nodes button: the photo on top, the divider, the graph under it with its toolbar and
-  // an empty canvas (the cards come with N-08), the photo switcher in place of the filmstrip, the panel as before.
+  // The node view (docs/23 section 7.1, N-07 and N-08; screen 05 of design/nodes), opened with the Nodes button: the photo on top, the divider, the
+  // graph under it with its toolbar, Main between the Input and the Output with its ports and the line under its link, the zoom control, the
+  // photo switcher in place of the filmstrip, the panel as before.
   [
     "42-nodes-default",
     async (p) => {
@@ -449,6 +497,56 @@ export const STATES: readonly PageState[] = [
       await p.getByRole("button", { name: "Nodes", exact: true }).click();
       await expect(p.getByRole("separator", { name: "Resize the graph" })).toBeVisible();
       await expect(p.getByRole("group", { name: "Photos" })).toContainText("4 of 12");
+      await expect(p.locator('[data-node-card="1"]')).toBeVisible();
+      await p.waitForTimeout(300);
+    },
+  ],
+  // The Add node menu over the graph (screen 06): Mountain selected in the graded graph, the menu opened upward from the button.
+  [
+    "43-nodes-add-node",
+    async (p) => {
+      await nodeViewOfGradedPhoto(p, 2);
+      await p.getByRole("button", { name: "Add node" }).click();
+      await expect(p.getByRole("menu", { name: "Add node" })).toBeVisible();
+      await p.waitForTimeout(400);
+    },
+  ],
+  // The graph with every state a card has (N-08): a masked card with both mask glyphs, a bypassed one, one that is not connected to the output
+  // (dimmed), a key link in the mask accent and the Input selected.
+  [
+    "51-nodes-graph-states",
+    async (p) => {
+      await nodeViewOfGradedPhoto(p, 3);
+      await p.keyboard.press("b");
+      await expect(p.locator('[data-node-card="3"]')).toHaveAccessibleName(/bypassed/);
+      // Sky's key feeds Warmth's key input; Sky's picture comes from Main, which leaves Mountain with nothing after it (dead).
+      const from = await p.locator('.ym-port__hit[data-port-node="3"][data-port-name="key"][data-port-side="out"]').boundingBox();
+      const to = await p.locator('.ym-port__hit[data-port-node="4"][data-port-name="key"][data-port-side="in"]').boundingBox();
+      await p.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
+      await p.mouse.down();
+      await p.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, { steps: 10 });
+      await p.mouse.up();
+      await expect(p.locator('.react-flow__edge[data-id="3.key>4.key"]')).toHaveCount(1);
+      const main = await p.locator('.ym-port__hit[data-port-node="1"][data-port-name="picture"][data-port-side="out"]').boundingBox();
+      const sky = await p.locator('.ym-port__hit[data-port-node="3"][data-port-name="picture"][data-port-side="in"]').boundingBox();
+      await p.mouse.move(main!.x + main!.width / 2, main!.y + main!.height / 2);
+      await p.mouse.down();
+      await p.mouse.move(sky!.x + sky!.width / 2, sky!.y + sky!.height / 2, { steps: 10 });
+      await p.mouse.up();
+      await expect(p.locator('[data-node-card="2"]')).toHaveAccessibleName(/not connected/);
+      await p.waitForTimeout(300);
+    },
+  ],
+  // A selected link (N-08): thick and yellow, with the Delete link menu from a right click on it.
+  [
+    "52-nodes-link-selected",
+    async (p) => {
+      await nodeViewOfGradedPhoto(p, 2);
+      const a = await p.locator('.ym-port__hit[data-port-node="2"][data-port-name="picture"][data-port-side="out"]').boundingBox();
+      const b = await p.locator('.ym-port__hit[data-port-node="3"][data-port-name="picture"][data-port-side="in"]').boundingBox();
+      const at = { x: (a!.x + a!.width / 2 + b!.x + b!.width / 2) / 2, y: a!.y + a!.height / 2 };
+      await p.mouse.click(at.x, at.y, { button: "right" });
+      await expect(p.getByRole("menuitem", { name: "Delete link" })).toBeVisible();
       await p.waitForTimeout(300);
     },
   ],

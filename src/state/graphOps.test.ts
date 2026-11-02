@@ -158,6 +158,16 @@ describe("the plan's numbers and live nodes", () => {
     expect(early.get(2)).toBe(2);
   });
 
+  it("number Main 1 even when another node that reads the Input is further left", () => {
+    // Node 2 and Main are both ready from the start; Main is first whatever the places say.
+    const both = graph({ 1: { pos: [0, 0] }, 2: { pos: [-5, 0] } }, [pic("input", 1), pic("input", 2), pic(1, "output")]);
+    expect(cardNumbers(both).get(1)).toBe(1);
+    expect(cardNumbers(both).get(2)).toBe(2);
+    // Without Main in the way, the place decides: the one further left is first.
+    const three = graph({ 1: {}, 2: { pos: [-5, 0] }, 3: { pos: [-9, 0] } }, [pic("input", 1), pic("input", 2), pic("input", 3), pic(1, "output")]);
+    expect([1, 3, 2].map((id) => cardNumbers(three).get(id))).toEqual([1, 2, 3]);
+  });
+
   it("number a node after the ones its key needs, even when it is further left", () => {
     // 3's key comes from 5, which reads Main: 5 runs before 3.
     const keyed = graph({ 1: {}, 2: { pos: [1, 0] }, 3: { pos: [2, 0] }, 5: { pos: [9, 1] } }, [pic("input", 1), pic(1, 2), pic(2, 3), pic(3, "output"), pic(1, 5), key(5, 3)]);
@@ -219,6 +229,16 @@ describe("Add after the selected node", () => {
       [3, 0],
       [4, 0],
     ]);
+  });
+
+  it("uses a gap that a delete left instead of moving the nodes after it", () => {
+    // Main, Mountain, _, Warmth: Sky's place is free.
+    const before = run(line(), remove(line(), 3)).after;
+    expect(posOf(before, 4)).toEqual([3, 0]);
+    const { after } = run(before, insertAfter(before, 2));
+    expect(posOf(after, 5)).toEqual([2, 0]);
+    expect(posOf(after, 4)).toEqual([3, 0]);
+    expect(Object.keys(sent(insertAfter(before, 2)).nodes ?? {})).toEqual(["5"]);
   });
 
   it("is one node patch: the new node whole, the moved places, the links", () => {
@@ -523,6 +543,18 @@ describe("Reorder", () => {
     // The other way: 2 after 4 would put 4's key source downstream.
     const keyed = graph({ 1: {}, 2: {}, 3: {}, 4: {} }, [pic("input", 1), pic(1, 2), pic(2, 3), pic(3, 4), pic(4, "output"), key(3, 2)]);
     expect(hasCircle(keyed, keyed.nodes.links)).toBe(true);
+  });
+
+  it("never spreads the graph: a node moved back and forth keeps the same places", () => {
+    let at = line();
+    const widest = (s: DevelopSettings): number => Math.max(...[1, 2, 3, 4].map((id) => posOf(s, id)[0]));
+    for (let i = 0; i < 6; i++) {
+      at = run(at, moveLater(at, 2)).after;
+      at = run(at, moveEarlier(at, 2)).after;
+    }
+    expect(arrows(at)).toEqual(arrows(line()));
+    // The first round leaves one gap; the rest reuse it.
+    expect(widest(at)).toBeLessThanOrEqual(4);
   });
 
   it("with Move earlier and Move later swaps a node with its neighbour", () => {

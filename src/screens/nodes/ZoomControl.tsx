@@ -26,9 +26,9 @@ export function ZoomControl() {
   const percent = Math.round(zoom * 100);
   return (
     <div className="ym-zoom nodrag nopan" role="group" aria-label="Zoom">
-      <Button variant="secondary" size="sm" aria-label="Zoom out" disabled={zoom <= MIN_ZOOM + 1e-6} icon={<MinusIcon aria-hidden="true" />} onClick={() => void flow.zoomTo(steppedZoom(flow.getZoom(), -1), { duration: 120 })} />
+      <Button variant="secondary" size="sm" aria-label="Zoom out" disabled={zoom <= MIN_ZOOM + 1e-6} icon={<MinusIcon aria-hidden="true" />} onClick={() => void flow.zoomTo(steppedZoom(flow.getZoom(), -1))} />
       <span className="ym-zoom__value">{percent}%</span>
-      <Button variant="secondary" size="sm" aria-label="Zoom in" disabled={zoom >= MAX_ZOOM - 1e-6} icon={<PlusIcon aria-hidden="true" />} onClick={() => void flow.zoomTo(steppedZoom(flow.getZoom(), 1), { duration: 120 })} />
+      <Button variant="secondary" size="sm" aria-label="Zoom in" disabled={zoom >= MAX_ZOOM - 1e-6} icon={<PlusIcon aria-hidden="true" />} onClick={() => void flow.zoomTo(steppedZoom(flow.getZoom(), 1))} />
       <Button variant="secondary" size="sm" aria-label="Fit the graph" onClick={() => void flow.fitView(FIT_OPTIONS)}>
         Fit
       </Button>

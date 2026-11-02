@@ -972,7 +972,8 @@ span.ym-filmstrip__thumb {
   box-shadow:
     0 8px 18px rgb(0 0 0 / 0.38),
     inset 0 0 0 0.5px rgb(255 255 255 / 0.04);
-  cursor: pointer;
+  /* A button is an arrow, as everywhere in the app (docs/11 desktop feel): the hand is for links. */
+  cursor: default;
 }
 .ym-gnode__box:focus-visible {
   outline: var(--glass-ring-width, 3px) solid var(--focus);
@@ -1073,7 +1074,7 @@ span.ym-filmstrip__thumb {
   background: oklch(0.22 0 0);
   box-shadow: 0 5px 12px rgb(0 0 0 / 0.35);
   color: var(--glass-label-secondary);
-  cursor: pointer;
+  cursor: default;
 }
 .ym-marker__dot svg {
   width: 13px;

@@ -65,11 +65,13 @@ function SlashGlyph() {
 }
 
 /** A glyph of the footer with the tooltip that names it. */
-function Tip({ text, className, children }: { text: string; className?: string; children: React.ReactNode }) {
+function Tip({ text, glyph, className, children }: { text: string; glyph: "ai" | "mask" | "bypass"; className?: string; children: React.ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={className}>{children}</span>
+        <span className={className} data-glyph={glyph}>
+          {children}
+        </span>
       </TooltipTrigger>
       <TooltipContent>{text}</TooltipContent>
     </Tooltip>
@@ -184,17 +186,17 @@ export function NodeCard({ data }: NodeProps) {
               <span className="ym-gnode__num">{chipText(state?.number ?? 0)}</span>
               <span className="ym-gnode__tools">
                 {glyphs.ai ? (
-                  <Tip text="AI mask" className="ym-gnode__mask">
+                  <Tip text="AI mask" glyph="ai" className="ym-gnode__mask">
                     <SparkleGlyph />
                   </Tip>
                 ) : null}
                 {glyphs.plain ? (
-                  <Tip text="Mask" className="ym-gnode__mask">
+                  <Tip text="Mask" glyph="mask" className="ym-gnode__mask">
                     <HalfDiscGlyph />
                   </Tip>
                 ) : null}
                 {node.bypass ? (
-                  <Tip text="Bypassed">
+                  <Tip text="Bypassed" glyph="bypass">
                     <SlashGlyph />
                   </Tip>
                 ) : null}

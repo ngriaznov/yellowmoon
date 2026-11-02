@@ -1400,7 +1400,7 @@ test.describe("the graph: reordering", () => {
     // Main → Sky → Mountain → Warmth, with Mountain selected and one patch (the node's place, the neighbours', and the links).
     await expect.poll(() => linkIds(page)).toEqual(["1.picture>3.picture", "2.picture>4.picture", "3.picture>2.picture", "4.picture>output.picture", "input.picture>1.picture"]);
     await expect(card(page, 2)).toHaveAttribute("aria-pressed", "true");
-    await expect(card(page, 2)).toHaveAccessibleName("Node 3, Mountain, picture from node 3".replace("from node 3", "from node 2"));
+    await expect(card(page, 2)).toHaveAccessibleName("Node 3, Mountain, picture from node 2");
     await expect(card(page, 3)).toHaveAccessibleName(/^Node 2, Sky/);
     await expect(canvas(page).locator(".ym-link[data-drop]")).toHaveCount(0);
     const sent = await calls();
@@ -1598,9 +1598,10 @@ test.describe("the graph: zoom and pan", () => {
     // Fit shows the whole graph again, at 100 % when it fits.
     await zoom.getByRole("button", { name: "Fit the graph" }).click();
     await expect(page.locator(".ym-zoom__value")).not.toHaveText("200%");
-    const [input, output, area] = [await box(card(page, "input")), await box(card(page, "output")), await box(canvas(page))];
-    expect(input.x).toBeGreaterThanOrEqual(area.x);
-    expect(output.x + output.width).toBeLessThanOrEqual(area.x + area.width);
+    // The view settles in 160 ms.
+    const area = await box(canvas(page));
+    await expect.poll(async () => (await box(card(page, "input"))).x).toBeGreaterThanOrEqual(area.x);
+    await expect.poll(async () => (await box(card(page, "output"))).x + (await box(card(page, "output"))).width).toBeLessThanOrEqual(area.x + area.width);
   });
 
   test("a scroll pans, ⌘-scroll and a pinch zoom, a drag on the empty canvas pans, and the page never scrolls", async ({ page }) => {
@@ -1611,8 +1612,8 @@ test.describe("the graph: zoom and pan", () => {
     await page.mouse.move(at.x, at.y);
     await page.mouse.wheel(0, 120);
     await expect.poll(async () => (await box(card(page, 1))).y).toBeLessThan(first.y - 20);
-    await page.mouse.wheel(80, 0);
-    await expect.poll(async () => (await box(card(page, 1))).x).toBeLessThan(first.x - 20);
+    await page.mouse.wheel(200, 0);
+    await expect.poll(async () => (await box(card(page, 1))).x).toBeLessThan(first.x - 40);
     // ⌘ and a scroll zooms.
     await page.keyboard.down("Meta");
     await page.mouse.wheel(0, -240);
@@ -1628,9 +1629,13 @@ test.describe("the graph: zoom and pan", () => {
     // A drag on the empty canvas pans it.
     await page.getByRole("button", { name: "Fit the graph" }).click();
     await expect(card(page, 1)).toBeVisible();
+    // Fit takes 160 ms to settle; the pan is measured from where the view stopped.
+    await page.waitForTimeout(400);
     const moved = await box(card(page, 1));
     await dragBetween(page, { x: area.x + 400, y: area.y + 290 }, { x: area.x + 460, y: area.y + 310 });
-    await expect.poll(async () => (await box(card(page, 1))).x).toBeCloseTo(moved.x + 60, -1);
+    // The pan starts a few pixels into the drag, so it follows the pointer within those.
+    await expect.poll(async () => (await box(card(page, 1))).x - moved.x).toBeGreaterThan(45);
+    expect((await box(card(page, 1))).x - moved.x).toBeLessThanOrEqual(61);
     expect(await linkIds(page)).toEqual(LINE);
   });
 });

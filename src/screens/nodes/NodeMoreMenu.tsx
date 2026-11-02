@@ -52,7 +52,8 @@ export function NodeMoreMenu({ settings, node, onRename, onMoveEarlier, onMoveLa
       ? `${link.to.port === "key" ? "Key" : "Picture"} from ${name(link.from.node)}`
       : `${link.from.port === "key" ? "Key" : "Picture"} to ${name(link.to.node)}`;
 
-  // Rename puts a text box on the card: the menu must not take the focus back to its button when it closes.
+  // Rename puts a text box on the card. It opens once the menu has closed and is gone (the menu keeps the focus until then, and takes it
+  // back to its button when it closes: not this time, the text box has it).
   const renaming = useRef(false);
 
   const submenu = (label: string, entries: ReactNode[]): ReactNode => (
@@ -76,13 +77,13 @@ export function NodeMoreMenu({ settings, node, onRename, onMoveEarlier, onMoveLa
           if (!renaming.current) return;
           renaming.current = false;
           event.preventDefault();
+          onRename();
         }}
       >
         {corrector ? (
           <DropdownMenuItem
             onSelect={() => {
               renaming.current = true;
-              onRename();
             }}
           >
             Rename

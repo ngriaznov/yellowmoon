@@ -265,14 +265,33 @@ function linkToPutInto(links: readonly NodeLink[], node: NodeId): NodeLink | und
 
 const clampPos = (pos: NodePos): NodePos => [Math.min(POS_LIMIT, Math.max(-POS_LIMIT, pos[0])), Math.min(POS_LIMIT, Math.max(-POS_LIMIT, pos[1]))];
 
-/** `pos` patches that move every node in `ids` one unit to the right. Only correctors have a place the page moves. */
-function shifted(settings: DevelopSettings, ids: ReadonlySet<NodeId>, skip: NodeId): Record<string, { pos: NodePos }> {
+/** `pos` patches that move every node in `ids` `delta` units to the right. Only correctors have a place the page moves. */
+function shifted(settings: DevelopSettings, ids: ReadonlySet<NodeId>, skip: NodeId, delta: number): Record<string, { pos: NodePos }> {
   const out: Record<string, { pos: NodePos }> = {};
+  if (delta <= 0) return out;
   for (const item of settings.nodes.items) {
     if (item.kind !== "corrector" || item.id === skip || !ids.has(item.id)) continue;
-    out[String(item.id)] = { pos: clampPos([item.pos[0] + 1, item.pos[1]]) };
+    out[String(item.id)] = { pos: clampPos([item.pos[0] + delta, item.pos[1]]) };
   }
   return out;
+}
+
+/**
+ * Where a node goes when it is put after `after`, into the link `into`: one unit to the right of `after` (on its row), and the nodes
+ * downstream of it, the one it goes before included, far enough right to leave it its unit (one unit when they were next to it; none when
+ * a gap that a delete or an earlier move left is there to be used, so moving a node back and forth never spreads the graph). After the
+ * Input, which has no place of its own, it takes the place of the node it goes before, and that node and what follows move one unit right.
+ */
+function slotFor(settings: DevelopSettings, after: NodeId, into: NodeLink | undefined): { pos: NodePos; delta: number } | null {
+  const base = nodeOf(settings, after);
+  if (!base) return null;
+  const before = into ? nodeOf(settings, into.to.node) : undefined;
+  if (base.kind === "input") {
+    return before && before.kind === "corrector" ? { pos: clampPos([before.pos[0], before.pos[1]]), delta: 1 } : { pos: clampPos([0, 0]), delta: 0 };
+  }
+  const pos = clampPos([base.pos[0] + 1, base.pos[1]]);
+  const delta = before && before.kind === "corrector" ? Math.max(0, pos[0] + 1 - before.pos[0]) : 0;
+  return { pos, delta };
 }
 
 /**
@@ -295,8 +314,8 @@ export function addNode(id: number, pos: NodePos, name = DEFAULT_NAME): Record<s
  * **Add after the selected node** (`docs/23` section 7.2): the new node goes into the selected node's outgoing picture link. With S
  * selected and a link S → T the result is S → N → T; with several such links N goes into the one that leads to the Output, else the first;
  * with none N is linked after S alone. With the Input selected N goes after Main (Main stays first); with the Output selected, into the
- * Output's incoming link. N's `pos` is the node's plus one unit to the right, the nodes downstream of N move one unit right, and N is
- * selected. Refused at 64 nodes.
+ * Output's incoming link. N's `pos` is the node's plus one unit to the right, the nodes downstream of N move one unit right (as far as
+ * it takes to leave N its unit: none where a gap is), and N is selected. Refused at 64 nodes.
  */
 export function insertAfter(settings: DevelopSettings, selected: NodeId, options: { usedMax?: number; name?: string } = {}): GraphOutcome {
   if (correctorsOf(settings).length >= MAX_CORRECTORS) return refuse(GRAPH_OP_TEXT.tooMany);
@@ -309,12 +328,11 @@ export function insertAfter(settings: DevelopSettings, selected: NodeId, options
   } else {
     into = linkToPutInto(links, after);
   }
-  const base = nodeOf(settings, after);
-  if (!base) return refuse(GRAPH_OP_TEXT.gone);
+  const slot = slotFor(settings, after, into);
+  if (!slot) return refuse(GRAPH_OP_TEXT.gone);
   const id = nextNodeId(settings, options.usedMax);
   const next = putAfter(links, id, after, into);
-  const pos: NodePos = clampPos([base.pos[0] + 1, base.pos[1]]);
-  const nodes = { ...addNode(id, pos, options.name), ...shifted(settings, downstreamOf(next, id), id) };
+  const nodes = { ...addNode(id, slot.pos, options.name), ...shifted(settings, downstreamOf(next, id), id, slot.delta) };
   return done({ nodes, links: next }, id);
 }
 
@@ -397,13 +415,10 @@ function immovable(settings: DevelopSettings, id: NodeId): string | null {
 function placed(settings: DevelopSettings, links: readonly NodeLink[], id: number, after: NodeId, into: NodeLink | undefined): GraphOutcome {
   const next = putAfter(links, id, after, into);
   if (hasCircle(settings, next)) return refuse(GRAPH_OP_TEXT.circle);
-  const base = nodeOf(settings, after);
-  if (!base) return refuse(GRAPH_OP_TEXT.gone);
-  // After the Input there is no place of its own (it sits where the cards begin): the node takes the place of the one it goes before.
-  const before = into ? nodeOf(settings, into.to.node) : undefined;
-  const pos: NodePos = clampPos(base.kind === "input" && before ? [before.pos[0], before.pos[1]] : [base.pos[0] + 1, base.pos[1]]);
-  const nodes: Record<string, NodePatch> = { [String(id)]: { pos } };
-  Object.assign(nodes, shifted(settings, downstreamOf(next, id), id));
+  const slot = slotFor(settings, after, into);
+  if (!slot) return refuse(GRAPH_OP_TEXT.gone);
+  const nodes: Record<string, NodePatch> = { [String(id)]: { pos: slot.pos } };
+  Object.assign(nodes, shifted(settings, downstreamOf(next, id), id, slot.delta));
   return done({ nodes, links: next }, id);
 }
 

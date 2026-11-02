@@ -1178,3 +1178,57 @@ describe("the settings as a graph of nodes", () => {
     expect(store.getState().canUndo).toBe(false);
   });
 });
+
+describe("the node view's editing through the store (docs/23 §7.2)", () => {
+  /** Node 2 after Main, through the store, as the graph's Add node does it. */
+  async function withNodeTwo(): Promise<{ store: AppStore }> {
+    const { store } = await opened();
+    const link = (from: number | "input", to: number | "output") => ({ from: { node: from, port: "picture" as const }, to: { node: to, port: "picture" as const } });
+    await store.update({ nodes: { "2": { kind: "corrector", name: "Mountain", pos: [1, 0] } }, links: [link("input", 1), link(1, 2), link(2, "output")] });
+    return { store };
+  }
+
+  it("shows another corrector's place, name and bypass at once, before the core has answered", async () => {
+    const { store } = await withNodeTwo();
+    const pending = store.update({ nodes: { "2": { pos: [2.5, 1], name: "Hills", bypass: true } } });
+    const node = settingsOf(store).settings.nodes.items.find((n) => n.id === 2);
+    expect(node).toMatchObject({ pos: [2.5, 1], name: "Hills", bypass: true });
+    expect(settingsOf(store).values.nodes.find((n) => n.id === 2)).toMatchObject({ pos: [2.5, 1], name: "Hills", bypass: true });
+    await pending;
+    expect(settingsOf(store).settings.nodes.items.find((n) => n.id === 2)).toMatchObject({ pos: [2.5, 1], name: "Hills", bypass: true });
+  });
+
+  it("makes one undo step of each graph operation, and undoes it with every node and link as it was", async () => {
+    const { store } = await withNodeTwo();
+    const before = settingsOf(store).settings;
+    const link = (from: number | "input", to: number | "output") => ({ from: { node: from, port: "picture" as const }, to: { node: to, port: "picture" as const } });
+    // An insert: a new node into the link Main → Mountain, the places after it, and the links, in one patch.
+    await store.update({
+      nodes: { "3": { kind: "corrector", name: "Corrector", pos: [1, 0] }, "2": { pos: [2, 0] } },
+      links: [link("input", 1), link(1, 3), link(3, 2), link(2, "output")],
+    });
+    expect(settingsOf(store).settings.nodes.items.map((n) => n.id)).toEqual(["input", 1, 2, 3, "output"]);
+    await store.undo();
+    expect(settingsOf(store).settings).toEqual(before);
+    await store.redo();
+    expect(settingsOf(store).settings.nodes.items.map((n) => n.id)).toEqual(["input", 1, 2, 3, "output"]);
+    expect(settingsOf(store).settings.nodes.links).toHaveLength(4);
+    // One step back takes the whole insert, not a part of it.
+    await store.undo();
+    expect(settingsOf(store).settings).toEqual(before);
+    // A delete that reconnects, then undo: the node and both links come back.
+    await store.update({ remove: [2], links: [link("input", 1), link(1, "output")] });
+    expect(settingsOf(store).settings.nodes.items.find((n) => n.id === 2)).toBeUndefined();
+    await store.undo();
+    expect(settingsOf(store).settings).toEqual(before);
+  });
+
+  it("refuses a graph the core would refuse, shows it in the error bar, and changes nothing", async () => {
+    const { store } = await withNodeTwo();
+    const before = settingsOf(store).settings;
+    // Main's picture from a node other than the Input.
+    await store.update({ links: [{ from: { node: 2, port: "picture" }, to: { node: 1, port: "picture" } }, { from: { node: 1, port: "picture" }, to: { node: "output", port: "picture" } }] });
+    expect(store.getState().error?.message).toBe("Node 1, Main, must take its picture from the input.");
+    expect(settingsOf(store).settings).toEqual(before);
+  });
+});

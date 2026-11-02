@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { configureMock, openApp, openPhotos, setValue } from "./helpers/app";
-import { FOUR_NODES } from "./helpers/states";
+import { FOUR_NODES, GRADED_NODES } from "./helpers/states";
 
 // Accessibility basics (docs/11, a preview of M4-04) in a real browser: every control has a role and a name, every screen has one
 // main landmark, the keyboard alone gets through the main flow, and every stop of the Tab order shows the 3 px focus ring.
@@ -58,8 +58,8 @@ async function toWizard(page: Page): Promise<void> {
 }
 
 test.describe("the node view", () => {
-  // docs/23 §7.8: the divider, the toolbar's toggles, the switcher and the menu items have names (the cards, the ports and the node panel's tabs
-  // come with N-08 to N-12, and `a11y.spec.ts` walks them then).
+  // docs/23 §7.8: the divider, the toolbar's toggles, the switcher and the menu items have names; since N-08 the cards, the markers, the zoom
+  // control and the More menu have too (the node panel's tabs come with N-09 to N-12, and this file walks them then).
   test("every control is named, there is one main and one banner, the divider is a separator with a name and a value, the Add node menu's items are named and the later ones disabled", async ({ page }) => {
     await openApp(page, MOCKUP);
     await openPhotos(page);
@@ -72,7 +72,17 @@ test.describe("the node view", () => {
     expect(snapshot).toMatch(/- region "Node editor"/);
     expect(snapshot).toMatch(/- group "Graph tools"/);
     expect(snapshot).toMatch(/- group "Photos"/);
-    for (const name of ["Add node", "Bypass", "Delete", "Previous photo", "Next photo", "Show mask", "Expand"]) expect(snapshot, name).toMatch(new RegExp(`- button "${name}"`));
+    for (const name of ["Add node", "Bypass", "Delete", "More", "Previous photo", "Next photo", "Show mask", "Expand"]) expect(snapshot, name).toMatch(new RegExp(`- button "${name}"`));
+    // The graph: Main between the Input and the Output, each one button with its name and whether it is the selected one; the zoom control.
+    expect(snapshot).toMatch(/- button "Input"/);
+    expect(snapshot).toMatch(/- button "Node 1, Main" \[pressed\]/);
+    expect(snapshot).toMatch(/- button "Output"/);
+    expect(snapshot).toMatch(/- application "Graph":/);
+    expect(snapshot).toMatch(/- group "Zoom":/);
+    for (const name of ["Zoom out", "Zoom in", "Fit the graph"]) expect(snapshot, name).toMatch(new RegExp(`- button "${name}"`));
+    // The ports and the links are drawn for the pointer: a screen reader lists none of them.
+    expect(snapshot).not.toMatch(/Edge from/);
+    expect(snapshot).not.toMatch(/^\s*- img$/m);
     // Toggles say whether they are pressed; the Nodes button too.
     expect(snapshot).toMatch(/- button "Nodes" \[pressed\]/);
     expect(snapshot).toMatch(/- button "Expand"\n/);
@@ -87,6 +97,89 @@ test.describe("the node view", () => {
     for (const name of ["Parallel", "Layer", "Splitter and combiner", "Outside"]) {
       await expect(page.getByRole("menuitem", { name: new RegExp(`^${name}`) })).toHaveAttribute("aria-disabled", "true");
     }
+  });
+
+  test("the graph with nodes: every card is named with its number, name, masks and what feeds it; the More menu and its lists are named; a link's menu too", async ({ page }) => {
+    await openApp(page, MOCKUP);
+    await configureMock(page, { initialSettings: { DSC04204: { nodes: GRADED_NODES.nodes, links: GRADED_NODES.links } } as never });
+    await openPhotos(page);
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    await expect(page.locator('[data-node-card="4"]')).toBeVisible();
+    let snapshot = await expectNamed(page, "the graph with nodes");
+    expect(snapshot).toContain('- button "Node 1, Main" [pressed]');
+    expect(snapshot).toContain('- button "Node 2, Mountain, masked by Object and Radial, picture from node 1"');
+    expect(snapshot).toContain('- button "Node 3, Sky, masked by Linear, picture from node 2"');
+    expect(snapshot).toContain('- button "Node 4, Warmth, picture from node 3"');
+    // A bypassed card and a card that is not connected say so; selection moves the pressed state.
+    await page.locator('[data-node-card="3"]').click();
+    await page.keyboard.press("b");
+    snapshot = await expectNamed(page, "a bypassed card");
+    expect(snapshot).toContain('- button "Node 3, Sky, masked by Linear, bypassed, picture from node 2" [pressed]');
+    expect(snapshot).toMatch(/- button "Bypass" \[pressed\]/);
+    // More: the items and the three lists.
+    await page.getByRole("button", { name: "More" }).click();
+    snapshot = await expectNamed(page, "the More menu");
+    for (const name of ["Rename", "Move earlier", "Move later", "Link picture to", "Link key to", "Remove link", "Delete node"]) expect(snapshot, name).toContain(`- menuitem "${name}"`);
+    for (const name of ["Link picture to", "Link key to", "Remove link"]) {
+      await page.getByRole("menuitem", { name }).click();
+      snapshot = await expectNamed(page, `the ${name} list`);
+      await page.keyboard.press("ArrowLeft");
+    }
+    await page.keyboard.press("Escape");
+    // The Delete link menu of a link.
+    const a = (await page.locator('.ym-port__hit[data-port-node="1"][data-port-name="picture"][data-port-side="out"]').boundingBox())!;
+    const b = (await page.locator('.ym-port__hit[data-port-node="2"][data-port-name="picture"][data-port-side="in"]').boundingBox())!;
+    await page.mouse.click((a.x + a.width / 2 + b.x + b.width / 2) / 2, a.y + a.height / 2, { button: "right" });
+    snapshot = await expectNamed(page, "a link's menu");
+    expect(snapshot).toContain('- menuitem "Delete link"');
+    await page.keyboard.press("Escape");
+    // An error says why in a named alert: a refused link.
+    const out = (await page.locator('.ym-port__hit[data-port-node="2"][data-port-name="picture"][data-port-side="out"]').boundingBox())!;
+    const main = (await page.locator('.ym-port__hit[data-port-node="1"][data-port-name="picture"][data-port-side="in"]').boundingBox())!;
+    await page.mouse.move(out.x + out.width / 2, out.y + out.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(main.x + main.width / 2, main.y + main.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await expect(page.getByRole("alert")).toHaveText(/Main always takes its picture from the input\./);
+    await expectNamed(page, "a refusal");
+  });
+
+  test("the graph is one Tab stop: the selected card, then the zoom control; the arrows move between the nodes, Return selects", async ({ page }) => {
+    await openApp(page, MOCKUP);
+    await configureMock(page, { initialSettings: { DSC04204: { nodes: GRADED_NODES.nodes, links: GRADED_NODES.links } } as never });
+    await openPhotos(page);
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    await expect(page.locator('[data-node-card="4"]')).toBeVisible();
+    // Tab through the canvas: the stops that are in it, from the toolbar's last button until the focus leaves.
+    await page.getByRole("button", { name: "Expand", exact: true }).focus();
+    const inside: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      await page.keyboard.press("Tab");
+      const here = await page.evaluate(() => {
+        const el = document.activeElement as HTMLElement | null;
+        return el?.closest(".ym-graph__canvas") ? (el.getAttribute("aria-label") ?? el.textContent ?? "").trim() : null;
+      });
+      if (here === null) break;
+      inside.push(here);
+    }
+    // One card (the selected one, Main), and the three buttons of the zoom control.
+    expect(inside).toEqual(["Node 1, Main", "Zoom out", "Zoom in", "Fit the graph"]);
+    // Shift+Tab comes back to the card, and the arrows go from node to node with the selection.
+    for (let i = 0; i < 4; i++) await page.keyboard.press("Shift+Tab");
+    await expect(page.locator('[data-node-card="1"]')).toBeFocused();
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator('[data-node-card="2"]')).toBeFocused();
+    await expect(page.locator('[data-node-card="2"]')).toHaveAttribute("aria-pressed", "true");
+    // Tab now lands on the node the arrows chose.
+    await page.getByRole("button", { name: "Expand", exact: true }).focus();
+    await page.keyboard.press("Tab");
+    await expect(page.locator('[data-node-card="2"]')).toBeFocused();
+    // Return and Space select the focused card (a card's own button), and only that one is pressed.
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Enter");
+    await expect(page.locator('[data-node-card="4"]')).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator('[data-node-card][aria-pressed="true"]')).toHaveCount(1);
   });
 
   test("a photo that has nodes: the notice is a named status with a link, the thumbnail's name says it has nodes", async ({ page }) => {
@@ -510,15 +603,17 @@ test.describe("focus ring", () => {
     await page.getByRole("button", { name: "Nodes", exact: true }).click();
     await expect(page.getByRole("separator", { name: "Resize the graph" })).toBeVisible();
     await page.getByRole("button", { name: "Nodes", exact: true }).focus();
-    const seen = await walk(page, 16);
+    const seen = await walk(page, 22);
     expect(seen.filter((s) => !s.ring)).toEqual([]);
     const labels = seen.map((s) => s.label);
     // The divider comes after the header and before the toolbar; the arrows of the switcher are stops with names.
     expect(labels.indexOf("Resize the graph")).toBeGreaterThan(-1);
     expect(labels.indexOf("Resize the graph")).toBeLessThan(labels.indexOf("Add node"));
-    for (const name of ["Add node", "Previous photo", "Next photo", "Expand"]) expect(labels, name).toContain(name);
+    for (const name of ["Add node", "More", "Previous photo", "Next photo", "Expand"]) expect(labels, name).toContain(name);
     // The disabled ones stay in the order (aria-disabled, not disabled) and say so.
     for (const name of ["Bypass", "Delete", "Show mask"]) expect(labels, name).toContain(name);
+    // The graph is one stop (the selected card, Main) and the zoom control three, between the toolbar and the panel, each with the ring.
+    expect(labels.slice(labels.indexOf("Expand") + 1, labels.indexOf("Expand") + 5)).toEqual(["Node 1, Main", "Zoom out", "Zoom in", "Fit the graph"]);
   });
 
   test("every stop of the Lens tab has the ring: the list is one stop, then Reset and the three sliders with their boxes", async ({ page }) => {

@@ -1,5 +1,5 @@
 import "@xyflow/react/dist/base.css";
-import { ReactFlow, ReactFlowProvider, ViewportPortal, useReactFlow, useStore } from "@xyflow/react";
+import { ReactFlow, ReactFlowProvider, ViewportPortal, useReactFlow } from "@xyflow/react";
 import type { Edge, Node, NodeChange } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
@@ -62,31 +62,30 @@ export interface NodeGraphProps {
   onRefuse: (reason: string) => void;
 }
 
-/** Moves the viewport as little as it takes to bring a node's box into view, with a margin; a node already in view moves nothing. */
-function useRevealed(layout: GraphLayout, selected: NodeId): void {
+/**
+ * Moves the viewport as little as it takes to bring a node's box into view, with a margin, when the selection changes (a keyboard move, a
+ * node added or deleted, an undo); a node already in view moves nothing. The visible area is the canvas as the page measures it.
+ */
+function useRevealed(layout: GraphLayout, selected: NodeId, root: React.RefObject<HTMLElement | null>): void {
   const flow = useReactFlow();
-  const size = useRef({ width: 0, height: 0 });
-  size.current = useStore((s) => ({ width: s.width, height: s.height }), (a, b) => a.width === b.width && a.height === b.height);
-  const first = useRef(true);
+  // The node the view last showed: the first one is shown by the fit, and a repeated effect (Strict Mode) finds it unchanged.
+  const shown = useRef(selected);
   useEffect(() => {
-    if (first.current) {
-      first.current = false;
-      return;
-    }
+    if (shown.current === selected) return;
+    shown.current = selected;
     const box = layout.boxes.get(selected);
-    const { width, height } = size.current;
-    if (!box || width === 0) return;
+    const area = root.current?.getBoundingClientRect();
+    if (!box || !area || area.width === 0) return;
     const { x, y, zoom } = flow.getViewport();
     const margin = 28;
     const left = box.x * zoom + x;
     const top = box.y * zoom + y;
     const right = left + box.w * zoom;
     const bottom = top + box.h * zoom;
-    const dx = left < margin ? margin - left : right > width - margin ? width - margin - right : 0;
-    const dy = top < margin ? margin - top : bottom > height - margin ? height - margin - bottom : 0;
+    const dx = left < margin ? margin - left : right > area.width - margin ? area.width - margin - right : 0;
+    const dy = top < margin ? margin - top : bottom > area.height - margin ? area.height - margin - bottom : 0;
     if (dx !== 0 || dy !== 0) void flow.setViewport({ x: x + dx, y: y + dy, zoom }, { duration: 160 });
     // Only a change of the selection moves the view; the layout is read as it is then.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 }
 
@@ -105,7 +104,12 @@ function Canvas(props: NodeGraphProps) {
     () => (draft ? new Map(inputStates(settings, draft.from, draft.lifted ?? undefined).map((s) => [portKey(s.to), s])) : NO_LIT),
     [settings, draft],
   );
-  useRevealed(layout, selected);
+  useRevealed(layout, selected, rootRef);
+  // The links are drawn for the pointer (`docs/23` §7.8): the SVG that holds them is not an image for a screen reader to list (xyflow gives
+  // the container no way to say so, and a keyboard user has the More menu).
+  useEffect(() => {
+    rootRef.current?.querySelector(".react-flow__edges")?.setAttribute("aria-hidden", "true");
+  }, []);
 
   const nodes = useMemo<Node[]>(
     () =>
@@ -267,6 +271,7 @@ function Canvas(props: NodeGraphProps) {
     <GraphUiContext.Provider value={ui}>
       <div ref={rootRef} className="ym-flow" data-linking={draft ? draft.from.port : undefined}>
         <ReactFlow
+          aria-label="Graph"
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}

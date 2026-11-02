@@ -4,7 +4,7 @@ import type { MockOptions } from "../src/api.mock";
 import type { GradePatch } from "../src/api/types";
 import { configureMock, lookTilesLoaded, openApp, openPhotos, showUpdateReady } from "./helpers/app";
 import { compareScreen } from "./helpers/compare";
-import { FOUR_NODES, WARP_PINS } from "./helpers/states";
+import { FOUR_NODES, GRADED_NODES, WARP_PINS } from "./helpers/states";
 
 /** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
 const manual = (value: number) => ({ kind: "manual", value }) as const;
@@ -121,6 +121,30 @@ test.describe("Photos", () => {
     await expect(page.getByText("This photo has 4 nodes.", { exact: false })).toBeVisible();
     await expect(page.locator(".ym-filmstrip__nodes")).toHaveCount(1);
     await compareScreen(page, "photos-has-nodes");
+  });
+
+  test("The node view: Main between the Input and the Output, Main selected (photos-nodes.png)", async ({ page }) => {
+    // docs/23 section 7.2, screen 05 of design/nodes: the default graph. Until N-05 gives every node its own picture, the card shows the photo's
+    // own thumbnail (the filmstrip's), so this reference is retaken with N-05.
+    await photos(page);
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    await expect(page.locator('[data-node-card="1"]')).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator(".ym-gnode__thumb img")).toHaveCount(1);
+    await expect(page.getByText("Add a node to change only part of the photo.")).toBeVisible();
+    await compareScreen(page, "photos-nodes");
+  });
+
+  test("The node view: the graded graph with the Add node menu open (photos-nodes-add-node.png)", async ({ page }) => {
+    // Screen 06: Main, Mountain (selected, with an Object and a Radial mask), Sky (a Linear mask) and Warmth, and the menu opened upward from
+    // the button. The cards show the photo's own thumbnail until N-05 (see the test above).
+    await photos(page, { DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE }, ...GRADED_NODES.nodes }, links: GRADED_NODES.links } } as never);
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    await page.locator('[data-node-card="2"]').click();
+    await expect(page.locator('[data-node-card="2"]')).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("button", { name: "Add node" }).click();
+    await expect(page.getByRole("menu", { name: "Add node" })).toBeVisible();
+    await dialogsSettled(page);
+    await compareScreen(page, "photos-nodes-add-node");
   });
 
   test("Colour (photos-color.png)", async ({ page }) => {
