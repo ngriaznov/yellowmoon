@@ -1405,6 +1405,17 @@ span.ym-filmstrip__thumb {
   height: 15px;
 }
 
+/* The View card of the Mask tab (`ViewCard`, docs/23 section 7.6): the key chip at the right of the title, and the two-segment control filling
+   the field's column. */
+.ym-card__keys {
+  display: inline-flex;
+  align-items: center;
+  color: var(--glass-label-tertiary);
+}
+.ym-view-style {
+  min-width: 0;
+}
+
 /* The Mask tab until N-12: the node's mask rows, read only. */
 .ym-mask-rows {
   display: flex;

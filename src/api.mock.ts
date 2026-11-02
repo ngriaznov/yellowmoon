@@ -82,6 +82,7 @@ import type {
   LookLibrary,
   LooksImportResult,
   MainEstimates,
+  MaskView,
   MenuState,
   OpenKind,
   NodeGrade,
@@ -128,6 +129,7 @@ import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
 import { copiedPatch, pastedOnto, refusalOfPatch, validateGraph } from "./fixtures/graph";
+import { maskViewSvg } from "./fixtures/maskView";
 import { diffSettings } from "./state/history";
 import { cardStates, linkInto } from "./state/graphOps";
 import {
@@ -479,6 +481,8 @@ export interface MockViewportState {
   rect: ViewportRect | null;
   mode: ViewportMode;
   before: boolean;
+  /** The mask view the page asked for with `viewport_set_mode`: a corrector's mask over the photo or alone, or none. */
+  maskView: MaskView | null;
   inputs: ViewportInput[];
 }
 
@@ -1470,7 +1474,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   let menuState: MenuState | null = null;
   const system: MockSystemLog = { opened: [], revealed: [], trashed: [], restarts: 0 };
   let cliLink: string | null = null;
-  const viewport: MockViewportState = { rect: null, mode: { kind: "fit" }, before: false, inputs: [] };
+  const viewport: MockViewportState = { rect: null, mode: { kind: "fit" }, before: false, maskView: null, inputs: [] };
   /** The fallback viewport's frame counter, and whether it has a picture on show. */
   let frameSeq = 0;
   let frameShown = false;
@@ -1538,6 +1542,22 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     }
   }
 
+  /**
+   * The mask view over the picture, as the core would draw it (`docs/23` §5.8): for the corrector the page named, if the photo has it, and
+   * never in the Before view. The picture's rectangle is the one the frame fits the photo into.
+   */
+  function maskLayer(rec: PhotoRecord, width: number, height: number): string {
+    const view = viewport.maskView;
+    if (!view || viewport.before) return "";
+    const node = nodeOf(rec.settings, view.node);
+    if (!node || node.kind !== "corrector") return "";
+    const { orientation, crop } = inputOf(rec.settings);
+    const crossed = crop ? crop.rect.width / crop.rect.height : 1;
+    const aspect = imageAspectOf(rec.summary.width_px, rec.summary.height_px, orientation) * crossed;
+    const fit = fitInCell(width / height, aspect);
+    return maskViewSvg(view.style, node.masks, { x: fit.x * width, y: fit.y * height, width: fit.width * width, height: fit.height * height });
+  }
+
   /** The picture of the cell the fallback viewport would send: the developed scene letterboxed on paper, as many pixels as the cell has. */
   function frameImage(rec: PhotoRecord): { url: string; width: number; height: number } {
     const rect = cellRect();
@@ -1549,7 +1569,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       angle_deg: values.input.crop?.angle_deg ?? 0,
       crop: values.input.crop?.rect ?? null,
     }).replace(/^<svg ([^>]*?) width="[^"]*" height="[^"]*"/, '<svg $1 width="100%" height="100%"');
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="#FFFFFF"/>${picture}</svg>`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="#FFFFFF"/>${picture}${maskLayer(rec, width, height)}</svg>`;
     return { url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, width, height };
   }
 
@@ -2015,6 +2035,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   function showCurrent(): void {
     viewport.mode = { kind: "fit" };
     viewport.before = false;
+    viewport.maskView = null;
     emitSoon("render_stats", RENDER_STATS);
     sendFrame();
   }
@@ -2392,6 +2413,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     viewport.rect = null;
     viewport.mode = { kind: "fit" };
     viewport.before = false;
+    viewport.maskView = null;
     viewport.inputs = [];
     frameSeq = 0;
     frameShown = false;
@@ -2474,6 +2496,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         developProgress = 0;
         viewport.mode = { kind: "fit" };
         viewport.before = false;
+    viewport.maskView = null;
         sendFrame();
       }),
     setCurrent: (photoId) =>
@@ -2483,6 +2506,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         current = index;
         viewport.mode = { kind: "fit" };
         viewport.before = false;
+    viewport.maskView = null;
         emitSoon("render_stats", RENDER_STATS);
         sendFrame();
       }),
@@ -2651,9 +2675,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
           }
         }
       }),
-    viewportSetMode: (mode) =>
+    viewportSetMode: (mode, maskView) =>
       run("viewportSetMode", () => {
         viewport.mode = mode;
+        viewport.maskView = maskView ?? null;
         sendFrame();
       }),
     setBefore: (before) =>

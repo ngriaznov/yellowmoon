@@ -59,8 +59,8 @@ use std::time::{Duration, Instant};
 
 use ym_core::app::Core;
 use ym_core::pipeline::{
-    FrameOptions, FrameOutput, PhotoSource, RenderError, RenderedFrame, ViewportInput as CoreInput,
-    ViewportMode as CoreMode, ViewportRect as CoreRect, ViewportState,
+    FrameOptions, FrameOutput, MaskView as CoreMaskView, PhotoSource, RenderError, RenderedFrame,
+    ViewportInput as CoreInput, ViewportMode as CoreMode, ViewportRect as CoreRect, ViewportState,
 };
 use ym_core::session::{PhotoId as CorePhotoId, SessionError};
 use ym_gpu::queue::{CancelToken, JobError};
@@ -68,8 +68,8 @@ use ym_gpu::queue::{CancelToken, JobError};
 use crate::events::{AppEvent, Emitter};
 use crate::perf;
 use crate::wire::{
-    AppError, ErrorScope, PhotoId, ViewportBackendKind, ViewportBusy, ViewportFrame, ViewportInput,
-    ViewportMode, ViewportRect, convert,
+    AppError, ErrorScope, MaskView, PhotoId, ViewportBackendKind, ViewportBusy, ViewportFrame,
+    ViewportInput, ViewportMode, ViewportRect, convert,
 };
 
 /// The URI scheme the fallback viewport serves frames on.
@@ -836,6 +836,8 @@ enum Op {
     Input(CoreInput),
     Mode(CoreMode),
     Before(bool),
+    /// The mask view of the node view: a corrector's mask over the photo or alone, or none.
+    MaskView(Option<CoreMaskView>),
 }
 
 /// What the render in flight is, which decides whether a request stops it.
@@ -1071,6 +1073,7 @@ impl Shared {
                     st.vp.centre = [0.5, 0.5];
                 }
                 Op::Before(b) => st.vp.before = b,
+                Op::MaskView(v) => st.vp.mask_view = v,
                 Op::Input(_) => {}
             }
         }
@@ -1230,6 +1233,7 @@ impl Shared {
                         st.vp.input(&i, image);
                     }
                     Op::Before(b) => st.vp.before = b,
+                    Op::MaskView(v) => st.vp.mask_view = v,
                 }
             }
             st.applying = false;
@@ -1436,6 +1440,8 @@ impl Viewport {
         st.vp.mode = CoreMode::Fit;
         st.vp.centre = [0.5, 0.5];
         st.vp.before = false;
+        // A mask view names a node of the photo that was on screen.
+        st.vp.mask_view = None;
         st.last_error = None;
         // What the webview did to the photo that was on screen is not done to this one; the cell
         // (the window's own) stays.
@@ -1502,11 +1508,18 @@ impl Viewport {
         Ok(())
     }
 
-    /// `viewport_set_mode`.
-    pub fn set_mode(&self, mode: &ViewportMode) -> Result<(), AppError> {
+    /// `viewport_set_mode(mode, mask_view)`: the zoom mode (the page sends the one it mirrors, which the
+    /// core takes about the middle of the cell, so a pan is kept) and the mask view.
+    pub fn set_mode(
+        &self,
+        mode: &ViewportMode,
+        mask_view: Option<&MaskView>,
+    ) -> Result<(), AppError> {
         let core_mode: CoreMode = convert(mode)?;
+        let core_mask: Option<CoreMaskView> = mask_view.map(convert).transpose()?;
         let mut st = lock(&self.shared.state);
         st.ops.push(Op::Mode(core_mode));
+        st.ops.push(Op::MaskView(core_mask));
         self.shared.request(&mut st);
         Ok(())
     }
@@ -2279,7 +2292,7 @@ mod tests {
             ("a settings patch", Box::new(|| vp.invalidate())),
             (
                 "a mode",
-                Box::new(|| vp.set_mode(&ViewportMode::Fit).expect("mode")),
+                Box::new(|| vp.set_mode(&ViewportMode::Fit, None).expect("mode")),
             ),
             ("Before", Box::new(|| vp.set_before(true))),
             // The cell moved and kept its size.

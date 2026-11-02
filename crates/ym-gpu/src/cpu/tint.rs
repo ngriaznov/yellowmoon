@@ -50,9 +50,10 @@ pub fn overlay_planar(image: &mut RgbImage, m: &[f32], accent: Vec3) {
 
 #[cfg(test)]
 mod tests {
-    use ym_color::mask::OVERLAY_WEIGHT;
-
     use super::*;
+
+    /// The spec's weight (`docs/23` section 5.8), written out again here.
+    const OVERLAY_WEIGHT: f64 = 0.55;
 
     #[test]
     fn the_overlay_is_the_formula() {

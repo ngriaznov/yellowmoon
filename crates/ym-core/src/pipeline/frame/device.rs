@@ -58,7 +58,8 @@ use std::time::Duration;
 use rayon::prelude::*;
 use ym_color::display::ColorChain;
 use ym_color::encode::OutputSpace;
-use ym_color::mask::PhotoFrame;
+use ym_color::mask::{OVERLAY_WEIGHT, PhotoFrame};
+use ym_color::plan::Stop as PlanStop;
 use ym_gpu::cpu::magnify::MagnifyMap;
 use ym_gpu::cpu::output_sharpen::OutputSharpen;
 use ym_gpu::cpu::sampler::{Sampled, SamplerGrid};
@@ -66,12 +67,13 @@ use ym_gpu::cpu::tiling::Rect;
 use ym_gpu::cpu::{Placement, RgbImage};
 use ym_gpu::device::{Gpu, GpuContext, GpuError};
 use ym_gpu::image::{GpuImage, IMAGE_USAGE};
-use ym_gpu::kernels::color::{PreparedChain, Stop, release_tables};
+use ym_gpu::kernels::color::{NodeStop, PreparedChain, Stop, release_tables};
 use ym_gpu::kernels::copy::{Piece, encode_gather};
 use ym_gpu::kernels::encode::{C13, Encoding, encode_c13};
 use ym_gpu::kernels::magnify::{MagnifyTarget, encode_magnify};
 use ym_gpu::kernels::output_sharpen::{FusedC13, PreparedSharpen};
 use ym_gpu::kernels::sampler::encode_sample_at;
+use ym_gpu::kernels::tint::encode_tint;
 use ym_gpu::pool::PooledBuffer;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::stream::{PassList, ReadId, upload_bytes};
@@ -142,7 +144,9 @@ impl ViewRoute {
         // The sampled picture of a chain whose mask shapes read the pixels' places in the photo has six planes
         // (24 bytes a pixel) where the frames the cut is made for have four (16): such a chain gets two thirds
         // of the band size, so that every binding still fits (`docs/17-gpu.md` section 4).
-        let band_bytes = if super::super::color::uses_photo_position(&job.src.settings) {
+        let band_bytes = if super::super::color::uses_photo_position(&job.src.settings)
+            || job.mask_uses_photo_position()
+        {
             job.options().view_band_bytes / 3 * 2
         } else {
             job.options().view_band_bytes
@@ -399,6 +403,12 @@ pub(super) struct TailWork {
     /// then the 100 % picture under the view (not the view grown by the halo); the tail sharpens it
     /// and magnifies it to the view with C13 fused ([`record_magnified_tail`]).
     pub magnify: Option<Arc<MagnifyMap>>,
+    /// The view has no output sharpening: the stage is left out (the mask view's overlay takes the sharpened
+    /// road with nothing to sharpen).
+    pub identity: bool,
+    /// The mask view's overlay: the accent in the output's linear primaries. The tail then tints the sharpened
+    /// frame with the mask image between the stage and C13 ([`record_overlay_tail`]).
+    pub overlay: Option<[f32; 3]>,
 }
 
 /// A display-linear frame (C12) of a view on the device, before output sharpening: four planes (the
@@ -550,7 +560,12 @@ fn prepared_for(
     chain: &ColorChain,
     input: &DeviceInput,
 ) -> Result<PreparedChain, GpuError> {
-    let prepared = PreparedChain::new(ctx, chain)?;
+    let mut prepared = PreparedChain::new(ctx, chain)?;
+    // A chain compiled to a node's mask (the mask view) ends the nodes at that node and writes `m` as grey code
+    // values, as the CPU chain does (`ColorChain::shows_mask`).
+    if let PlanStop::Mask(node) = chain.params().nodes.plan.stop {
+        prepared = prepared.with_node_stop(NodeStop::Mask(node))?;
+    }
     Ok(match input.photo_frame() {
         Some(frame) => prepared.with_photo_frame(frame),
         None => prepared,
@@ -566,12 +581,16 @@ fn record_tail(
     ctx: &GpuContext,
     passes: &mut PassList<'_>,
     display: &GpuImage,
+    mask: Option<&GpuImage>,
     bounds: Option<Bounds>,
     tail: &TailWork,
     read: bool,
 ) -> Result<(Arc<PooledBuffer>, Option<ReadId>), GpuError> {
     if let Some(map) = &tail.magnify {
-        return record_magnified_tail(ctx, passes, display, bounds, tail, map, read);
+        return record_magnified_tail(ctx, passes, display, mask, bounds, tail, map, read);
+    }
+    if let (Some(mask), Some(accent)) = (mask, tail.overlay) {
+        return record_overlay_tail(ctx, passes, display, mask, accent, bounds, tail, read);
     }
     let (w, h) = tail.view;
     let halo = tail.halo;
@@ -623,6 +642,78 @@ fn record_tail(
     Ok((dst, read))
 }
 
+/// Records the tail of a view with the mask view's overlay (`docs/23` section 5.8): output sharpening over a
+/// copy of the display (the photo's bounding box in the view, or nothing when the view has no sharpening), the
+/// tint of the view's pixels with the mask image, then C13 of the view into the RGBA8 buffer, the letterbox
+/// painted. The same pixels as [`record_tail`]'s fused pass with the tint between the stage and C13: the fused
+/// pass is the chained pair bit for bit, and this is the pair with the tint in between.
+#[allow(clippy::too_many_arguments)] // the tail's own inputs and the overlay's
+fn record_overlay_tail(
+    ctx: &GpuContext,
+    passes: &mut PassList<'_>,
+    display: &GpuImage,
+    mask: &GpuImage,
+    accent: [f32; 3],
+    bounds: Option<Bounds>,
+    tail: &TailWork,
+    read: bool,
+) -> Result<(Arc<PooledBuffer>, Option<ReadId>), GpuError> {
+    let (w, h) = tail.view;
+    let halo = tail.halo;
+    let view_rect = Rect::new(halo, halo, w, h);
+    let bytes = (w * h * 4) as u64;
+    let dst = passes.keep(ctx.pool().acquire("view rgba8", bytes, IMAGE_USAGE)?);
+    let sharp = GpuImage::alloc(
+        ctx,
+        "view overlay source",
+        display.width,
+        display.height,
+        display.planes,
+        display.place,
+    )?;
+    passes
+        .encoder()
+        .copy_buffer_to_buffer(&display.buf, 0, &sharp.buf, 0, display.byte_len());
+    let window = bounds.map(|(x0, y0, x1, y1)| Rect::new(x0, y0, x1 - x0, y1 - y0));
+    let core = window
+        .map(|b| b.intersect(&view_rect))
+        .filter(|c| !c.is_empty());
+    if !tail.identity
+        && let (Some(window), Some(core)) = (window, core)
+    {
+        let sharpen = PreparedSharpen::new(ctx, &tail.sharpen, tail.scale)?;
+        sharpen.encode(passes, display, window, core, &sharp, (core.x, core.y))?;
+    }
+    encode_tint(
+        passes,
+        &sharp,
+        view_rect,
+        mask,
+        accent,
+        OVERLAY_WEIGHT as f32,
+    )?;
+    encode_c13(
+        passes,
+        &sharp,
+        view_rect,
+        Encoding::Rgba8 {
+            background: tail.background,
+        },
+        C13 {
+            space: tail.space,
+            dither: tail.dither,
+            origin: tail.origin,
+        },
+        &dst,
+        0,
+        0,
+    )?;
+    // The copy must outlive the submission.
+    let _ = passes.keep(sharp.buf);
+    let read = read.then(|| passes.read(&dst, 0, bytes)).transpose()?;
+    Ok((dst, read))
+}
+
 /// Records the tail of a view magnified above 100 % (`docs/17-gpu.md` section 16): the display is
 /// the 100 % picture under the view; output sharpening runs over the photo's bounding box in it at
 /// `s = 1` into a copy of it (the pixels outside the box stay as they are, as on the CPU), and the
@@ -634,6 +725,7 @@ fn record_magnified_tail(
     ctx: &GpuContext,
     passes: &mut PassList<'_>,
     display: &GpuImage,
+    mask: Option<&GpuImage>,
     bounds: Option<Bounds>,
     tail: &TailWork,
     map: &MagnifyMap,
@@ -659,6 +751,17 @@ fn record_magnified_tail(
         let window = Rect::new(x0, y0, x1 - x0, y1 - y0);
         let sharpen = PreparedSharpen::new(ctx, &tail.sharpen, tail.scale)?;
         sharpen.encode(passes, display, window, window, &sharp, (x0, y0))?;
+    }
+    // The mask view's overlay tints the sharpened 100 % picture before it is magnified.
+    if let (Some(mask), Some(accent)) = (mask, tail.overlay) {
+        encode_tint(
+            passes,
+            &sharp,
+            Rect::whole(sharp.width, sharp.height),
+            mask,
+            accent,
+            OVERLAY_WEIGHT as f32,
+        )?;
     }
     encode_magnify(
         passes,
@@ -742,6 +845,9 @@ pub(super) struct DisplayJob {
     pub bounds: Option<Bounds>,
     /// The colour chain.
     pub chain: Arc<ColorChain>,
+    /// The mask view's overlay: the chain compiled to the node's mask, run over the same sampled picture. Its
+    /// `m` is tinted onto the sharpened frame in the tail.
+    pub mask: Option<Arc<ColorChain>>,
     /// Output sharpening and C13 in the same job; `None` reads the display-linear frame back.
     pub tail: Option<TailWork>,
     /// Keep the display-linear frame resident (a tail job can sharpen it again).
@@ -791,6 +897,31 @@ pub(super) fn display_job(
         &display,
         (0, 0),
     )?;
+    // The mask chain over the same pixels: `m` as grey code values in the planes of an image of its own.
+    let mask = job
+        .mask
+        .as_ref()
+        .map(|chain| -> Result<GpuImage, GpuError> {
+            let prepared = prepared_for(ctx, chain, &job.input)?;
+            let image = GpuImage::alloc(
+                ctx,
+                "view mask",
+                w,
+                h,
+                sampled.planes.min(4),
+                Placement::whole(w, h),
+            )?;
+            prepared.encode_stage(
+                &mut passes,
+                &sampled,
+                Rect::whole(w, h),
+                Stop::C13,
+                &image,
+                (0, 0),
+            )?;
+            Ok(image)
+        })
+        .transpose()?;
     let tail_read = job
         .tail
         .as_ref()
@@ -799,6 +930,7 @@ pub(super) fn display_job(
                 ctx,
                 &mut passes,
                 &display,
+                mask.as_ref(),
                 job.bounds,
                 tail,
                 !keeps(job.output),
@@ -855,6 +987,7 @@ pub(super) fn tail_job(
         ctx,
         &mut passes,
         &job.display.image,
+        None,
         job.display.bounds,
         &job.tail,
         !keeps(job.output),

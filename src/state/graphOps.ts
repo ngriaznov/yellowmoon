@@ -56,6 +56,8 @@ export const GRAPH_OP_TEXT = {
   tooMany: "A photo can have up to 64 nodes.",
   /** Bypass on the Input or the Output. */
   noBypass: "The input and the output can't be bypassed.",
+  /** Show mask on the Input or the Output (the toolbar's tooltip). */
+  noMask: "The input and the output have no mask.",
   /** Delete on the Input or the Output. */
   markerDelete: "The input and the output can't be deleted.",
   /** The core's sentence for a patch that removes the Input, the Output or Main. */

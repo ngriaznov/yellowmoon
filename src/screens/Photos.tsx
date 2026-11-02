@@ -264,6 +264,17 @@ export function Photos() {
   // The node view's layout is on while the view is and the window is not full screen (the photo alone is the whole window then).
   const nodesOn = view === "nodes" && !fullScreen.on;
   const nodeLayout = useNodeLayout(nodesOn);
+  // Show mask (`docs/23` §5.8): the core draws the mask of the corrector the node view has selected. It is on only while the node view is (not
+  // in the simple view or full screen), not while Crop or Export shows, and only on a corrector: the Input and the Output have no mask. The
+  // view's on and style are the store's and come back with the node; the core is told when any of them changes, and for a new photo.
+  const maskOn = useAppState((s) => s.maskView.on);
+  const maskNode = nodesOn && !cropping && panel !== "export" && graphSettings !== null && onKind === "corrector" && typeof onNode === "number" ? onNode : null;
+  const photoOnScreen = photo?.id ?? null;
+  useEffect(() => {
+    store.setMaskNode(maskNode);
+  }, [store, maskNode, photoOnScreen]);
+  // Leaving the screen ends it.
+  useEffect(() => () => store.setMaskNode(null), [store]);
   // The photos whose graph has more than the simple view shows (a glyph on their thumbnails): a Map that is the same while the answer is.
   const hiddenNodes = useAppState((s) => hiddenByPhoto(s.settings));
   const graph = useNodeGraph({ store, settings: graphSettings, photoId: photo?.id ?? null, selected: onNode, select: setSelectedNode });
@@ -498,6 +509,11 @@ export function Photos() {
           else if (shortcut.action === "bypass-node") graph.toggleBypass();
           else if (shortcut.action === "move-node-earlier") graph.moveEarlier();
           else graph.moveLater();
+          return true;
+        // Show or hide the mask of the selected corrector (`docs/23` §7.7): not on the Input or the Output, and not while the graph is read only.
+        case "mask-view":
+          if (view !== "nodes" || cropping || panel === "export" || maskNode === null) return false;
+          store.toggleMaskView();
           return true;
         case "pick-all":
           void store.pickAll();
@@ -753,6 +769,8 @@ export function Photos() {
             expanded={nodeLayout.expanded}
             onToggleExpanded={nodeLayout.toggleExpanded}
             dimmed={cropping || exporting}
+            maskOn={maskOn}
+            onToggleMask={() => store.toggleMaskView()}
           />
         </>
       ) : null}

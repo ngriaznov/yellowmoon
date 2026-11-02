@@ -2744,6 +2744,26 @@ pub enum ViewportMode {
     },
 }
 
+/// How the mask view shows a node's mask (`docs/23` section 5.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskStyle {
+    /// The mask tinted in the mask accent over the photo as it is.
+    Overlay,
+    /// The mask as grey: the code value after C13 is `m`.
+    MaskOnly,
+}
+
+/// The mask view of the viewport (`viewport_set_mode`'s second argument): a corrector's mask shown in the
+/// frame, over the photo or alone. `None` on the wire is no mask view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct MaskView {
+    /// The corrector whose mask is shown.
+    pub node: u32,
+    /// Overlay or Mask only.
+    pub style: MaskStyle,
+}
+
 /// Display values under the pointer, 0 to 255 per channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct PixelSample {

@@ -99,7 +99,9 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
       });
     };
   }, [native]);
-  const picture = useMemo(() => (photo && drawsFixture ? previewUrl(photo, rs, before) : undefined), [photo, rs, before, drawsFixture]);
+  // The browser build's fixture carries the mask view too (the core draws it in the app: `docs/23` §5.8).
+  const maskShown = useAppState((s) => (drawsFixture ? s.maskShown : null));
+  const picture = useMemo(() => (photo && drawsFixture ? previewUrl(photo, rs, before, maskShown) : undefined), [photo, rs, before, drawsFixture, maskShown]);
 
   const handleRect = useCallback(
     (next: ViewportRect) => {

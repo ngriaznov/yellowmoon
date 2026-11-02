@@ -58,13 +58,13 @@ use super::color::{
     color_plan, grade_key_to, grade_plan_to,
 };
 use super::geometry::Geometry;
-use super::viewport::MaskView;
 use super::raw::{
     CaptureMethod, DEVICE_RANGE, FRONT_RANGE, FrameData, FullChain, GpuRoute, RawParams,
     RawParamsKey, RawPlan, SigmaPlane, diffraction_params, has_vignetting_profile,
     noise_model_is_usable, reduced_bayer, reduced_params, reduced_rgb, sigma_plane,
     usable_noise_model,
 };
+use super::viewport::{MaskStyle, MaskView};
 use super::{FrameZoom, NeuralStatus, RenderError, RenderPath, RenderStats};
 use crate::app::gpu::GpuStages;
 use crate::scheduler::{ByteLru, JobScheduler, MemoryBudget, MemoryLedger};
@@ -1727,6 +1727,38 @@ impl<'a> Job<'a> {
         self.mask.as_ref().and_then(|(_, g)| g.clone())
     }
 
+    /// The grade plan of the mask view's overlay: the plan that ends at the node's mask, when the view is an
+    /// Overlay (a Mask only view makes it the frame's own plan instead).
+    pub fn overlay_grade(&self) -> Option<Arc<GradePlan>> {
+        match self.mask {
+            Some((v, Some(ref g))) if v.style == MaskStyle::Overlay => Some(Arc::clone(g)),
+            _ => None,
+        }
+    }
+
+    /// What the mask view adds to the key of a finished frame: the node, the style and the key of the plan that
+    /// ends at the node's mask.
+    pub fn mask_key(&self) -> Option<String> {
+        let (v, g) = self.mask.as_ref()?;
+        Some(format!(
+            "mask:{}:{:?}:{}",
+            v.node,
+            v.style,
+            g.as_ref()
+                .map(|g| format!("{:?}", g.key))
+                .unwrap_or_default()
+        ))
+    }
+
+    /// Whether the mask view's plan has a shape that reads the pixels' places in the photo, so that the sampled
+    /// picture has to carry them.
+    pub fn mask_uses_photo_position(&self) -> bool {
+        self.mask
+            .as_ref()
+            .and_then(|(_, g)| g.as_ref())
+            .is_some_and(|g| g.chain.uses_photo_position())
+    }
+
     /// Makes the grade plan of the mask view, if the request has one. Cached with the photo's other grade
     /// plans.
     ///
@@ -1737,6 +1769,12 @@ impl<'a> Job<'a> {
         let Some((view, _)) = self.mask else {
             return Ok(());
         };
+        // The page names the node it has selected; one the photo no longer has (it was deleted a moment ago, an
+        // undo took it away) leaves the frame as the photo, not an error.
+        if self.src.settings.nodes.corrector(view.node).is_none() {
+            self.mask = None;
+            return Ok(());
+        }
         let plan = self.grade_to(target, true, PlanStop::Mask(view.node))?;
         self.mask = Some((view, Some(plan)));
         Ok(())

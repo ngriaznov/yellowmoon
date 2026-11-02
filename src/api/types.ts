@@ -1186,6 +1186,19 @@ export type ViewportInput =
 /** Fit to the cell, or a fixed zoom (50, 100, 200 %). */
 export type ViewportMode = { kind: "fit" } | { kind: "percent"; value: number };
 
+/** How the mask view shows a node's mask: tinted over the photo as it is, or alone as grey (`docs/23` §5.8). */
+export type MaskStyle = "overlay" | "mask_only";
+
+/**
+ * The mask view of the viewport (`viewport_set_mode`'s second argument): the mask of a corrector shown in the frame by the core, over
+ * the photo or alone. `null` on the wire is the photo.
+ */
+export interface MaskView {
+  /** The corrector whose mask is shown. */
+  node: number;
+  style: MaskStyle;
+}
+
 /**
  * `chroma_scatter(photo_id)`: the photo's colours on the colour warp's plane, at the warp's input (after C9, before the pins), for the
  * faint scatter behind the plane. A flat list `[a0, b0, a1, b1, …]` of at most 2048 points.

@@ -590,6 +590,19 @@ export const STATES: readonly PageState[] = [
       await expect(p.getByRole("slider", { name: "Intensity" })).toBeVisible();
     },
   ],
+  // Show mask (docs/23 section 5.8 and 7.6, N-11): Mountain's Mask tab with the Masks card and the View card under it, the view on (the toolbar's
+  // Show mask pressed, the Overlay segment chosen). Mountain has an Object and a Radial row; the mock draws the Radial over the photo.
+  [
+    "57-nodes-mask-view",
+    async (p) => {
+      await nodeViewOfGradedPhoto(p, 2);
+      await tab(p, "Mask");
+      await p.getByRole("radio", { name: "Overlay" }).click();
+      await expect(p.getByRole("group", { name: "Graph tools" }).getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-pressed", "true");
+      await expect(p.getByRole("region", { name: "View" })).toBeVisible();
+      await p.waitForTimeout(300);
+    },
+  ],
   // The simple view of a photo that has four nodes (docs/23 section 6, N-07; screen 04 of design/nodes): the notice under the tab row, with
   // Open nodes at the end of its text, and the nodes glyph on the photo's thumbnail. The Light tab, as the mockup has it.
   [

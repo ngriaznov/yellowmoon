@@ -801,8 +801,22 @@ describe("viewport", () => {
       rect,
       mode: { kind: "percent", value: 200 },
       before: true,
+      maskView: null,
       inputs: [{ kind: "pan", dx: 4, dy: -2 }],
     });
+  });
+
+  it("records the mask view of viewport_set_mode, takes it away with null or a new photo, and draws it only in the fallback frame", async () => {
+    await api.viewportSetMode({ kind: "fit" }, { node: 1, style: "overlay" });
+    expect(api.viewport.maskView).toEqual({ node: 1, style: "overlay" });
+    await api.viewportSetMode({ kind: "fit" }, null);
+    expect(api.viewport.maskView).toBeNull();
+    await api.viewportSetMode({ kind: "fit" }, { node: 1, style: "mask_only" });
+    await api.setCurrent(2);
+    expect(api.viewport.maskView).toBeNull();
+    await api.viewportSetMode({ kind: "fit" }, { node: 1, style: "mask_only" });
+    await api.viewportSetMode({ kind: "fit" });
+    expect(api.viewport.maskView).toBeNull();
   });
 
   it("toggles between fit and 100 % on double click", async () => {
@@ -951,6 +965,36 @@ describe("viewport", () => {
       await api.viewportSetRect({ x: 0, y: 75, width: 1010, height: 670, scale: 2 });
       await Promise.resolve();
       expect(frames).toHaveLength(6);
+    });
+
+    it("draws the mask view over the picture: the accent tinted over the scene, or the mask as grey, and nothing in the Before view or for a node the photo does not have", async () => {
+      const api = createMockApi({ speed: Number.POSITIVE_INFINITY, viewport: "fallback" });
+      const frames: string[] = [];
+      api.on("viewport_frame", (f) => frames.push(decodeURIComponent(f.url.replace(/^data:image\/svg\+xml;charset=utf-8,/, ""))));
+      await api.openPaths(ARW);
+      await api.viewportSetRect({ x: 0, y: 75, width: 1000, height: 666, scale: 2 });
+      api.flush();
+      await Promise.resolve();
+      const patch = { nodes: { "1": { masks: { items: [{ kind: "radial", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.5, 0.5], radii: [0.3, 0.2], angle_deg: 0, feather: 0.4 }] } } } } as SettingsPatch;
+      await api.updateSettings(1, patch);
+      await api.viewportSetMode({ kind: "fit" }, { node: 1, style: "overlay" });
+      await Promise.resolve();
+      expect(frames.at(-1)).toContain('data-mask-view="overlay"');
+      expect(frames.at(-1)).toContain("radialGradient");
+      expect(frames.at(-1)).toContain("#ff6fd2");
+      await api.viewportSetMode({ kind: "fit" }, { node: 1, style: "mask_only" });
+      await Promise.resolve();
+      expect(frames.at(-1)).toContain('data-mask-view="mask_only"');
+      await api.setBefore(true);
+      await Promise.resolve();
+      expect(frames.at(-1)).not.toContain("data-mask-view");
+      await api.setBefore(false);
+      await api.viewportSetMode({ kind: "fit" }, { node: 9, style: "overlay" });
+      await Promise.resolve();
+      expect(frames.at(-1)).not.toContain("data-mask-view");
+      await api.viewportSetMode({ kind: "fit" }, null);
+      await Promise.resolve();
+      expect(frames.at(-1)).not.toContain("data-mask-view");
     });
 
     it("sends no picture for a photo that can't be developed, and takes the previous one away", async () => {

@@ -386,6 +386,25 @@ describe("the shortcut table of docs/11", () => {
       expect(act(cmd("b"), { nodeView: true })).toBeNull();
     });
 
+    it("M shows or hides the selected node's mask: one press, in the node view only, and not typed into a menu, a list or a text box", () => {
+      expect(act(key("m"), { nodeView: true })).toBe("mask-view");
+      expect(act(key("M", { shiftKey: true }), { nodeView: true })).toBe("mask-view");
+      expect(act(key("m"), { nodeView: false })).toBeNull();
+      expect(act(key("m"))).toBeNull();
+      expect(act(key("m", { repeat: true }), { nodeView: true })).toBeNull();
+      expect(act(key("m"), { nodeView: true, mode: "crop" })).toBeNull();
+      const field = document.createElement("input");
+      field.type = "text";
+      expect(act(key("m", {}, field), { nodeView: true })).toBeNull();
+      const menu = document.createElement("div");
+      menu.setAttribute("role", "menu");
+      const item = document.createElement("div");
+      menu.append(item);
+      expect(act(key("m", {}, item), { nodeView: true })).toBeNull();
+      // ⌘M is Minimise.
+      expect(act(cmd("m"), { nodeView: true })).toBeNull();
+    });
+
     it("⌥← and ⌥→ move the focused node earlier or later, with a card of the graph focused", () => {
       expect(act(key("ArrowLeft", { altKey: true }, card()), { nodeView: true })).toBe("move-node-earlier");
       expect(act(key("ArrowRight", { altKey: true }, card()), { nodeView: true })).toBe("move-node-later");

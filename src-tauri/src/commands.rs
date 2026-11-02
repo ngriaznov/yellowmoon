@@ -18,10 +18,11 @@ use crate::system;
 use crate::wire::{
     self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, CliLinkResult,
     CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate, ExportJob, ExportJobId,
-    HistogramData, LensInfo, Look, LookId, LookInput, LooksImportResult, MenuState, NodeId, Num,
-    OpenKind, Orientation, PasteReport, PhotoId, PixelSample, Preferences, PreferencesPatch,
-    ResolvedSettings, SessionChange, SessionState, SettingsPatch, SourceRecognition,
-    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, WatchStatus,
+    HistogramData, LensInfo, Look, LookId, LookInput, LooksImportResult, MaskView, MenuState,
+    NodeId, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample, Preferences,
+    PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
+    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
+    WatchStatus,
 };
 
 /// The managed state: the command handlers, or why the application could not start.
@@ -329,14 +330,19 @@ pub async fn viewport_input(
     run(&state, move |api| api.viewport_input(&event)).await
 }
 
-/// `viewport_set_mode(mode)`: Fit, or a fixed zoom.
+/// `viewport_set_mode(mode, mask_view)`: Fit, or a fixed zoom, and the mask view of the node view: a
+/// corrector's mask shown over the photo or alone, `None` for the photo (`docs/23` section 5.8).
 #[tauri::command]
 #[specta::specta]
 pub async fn viewport_set_mode(
     state: State<'_, AppState>,
     mode: ViewportMode,
+    mask_view: Option<MaskView>,
 ) -> Result<(), AppError> {
-    run(&state, move |api| api.viewport_set_mode(&mode)).await
+    run(&state, move |api| {
+        api.viewport_set_mode(&mode, mask_view.as_ref())
+    })
+    .await
 }
 
 /// `set_before(before)`: the photo before the look and the display transform.

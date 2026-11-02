@@ -223,6 +223,8 @@ export interface PreviewOptions {
   crop?: PreviewCrop | null;
   /** Sun size as a fraction of the frame width. */
   sunFraction?: number;
+  /** Drawn over the picture, in its own pixels, last: the mask view of the mock (`fixtures/maskView.ts`), given the picture's rectangle. */
+  over?: (box: { x: number; y: number; width: number; height: number }) => string;
 }
 
 /**
@@ -230,7 +232,7 @@ export interface PreviewOptions {
  * orientation, straightened, and cropped. The `<img>` letterboxes it on paper.
  */
 export function previewSvg(scene: Scene, options: PreviewOptions = {}): string {
-  const { orientation = 0, angle_deg = 0, crop = null, sunFraction = SUN_FRACTION_PHOTO } = options;
+  const { orientation = 0, angle_deg = 0, crop = null, sunFraction = SUN_FRACTION_PHOTO, over } = options;
   const turned = orientation % 180 !== 0;
   const cw = turned ? SVG_HEIGHT : SVG_WIDTH;
   const ch = turned ? SVG_WIDTH : SVG_HEIGHT;
@@ -254,6 +256,7 @@ export function previewSvg(scene: Scene, options: PreviewOptions = {}): string {
     `<g transform="${straighten}"><g transform="${place}">`,
     ...sceneBody(scene, sunFraction),
     `</g></g>`,
+    over ? over({ x: vx, y: vy, width: vw, height: vh }) : "",
     `</svg>`,
   ].join("");
 }

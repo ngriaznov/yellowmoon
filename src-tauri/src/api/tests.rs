@@ -1290,13 +1290,121 @@ fn the_fallback_viewport_sends_frames_for_the_cell_and_follows_the_input() {
     h.frame_after(n);
     assert!(h.api.viewport().wait_idle(WAIT));
     let n = h.api.viewport().frames_presented();
-    h.api.viewport_set_mode(&ViewportMode::Fit).expect("fit");
+    h.api
+        .viewport_set_mode(&ViewportMode::Fit, None)
+        .expect("fit");
     h.frame_after(n);
     assert!(h.api.viewport().wait_idle(WAIT));
     assert!(matches!(
         h.api.viewport().snapshot_synced().1.mode,
         ym_core::pipeline::ViewportMode::Fit
     ));
+}
+
+#[test]
+fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
+    use crate::wire::{MaskStyle, MaskView};
+    use ym_core::pipeline::{MaskStyle as CoreStyle, MaskView as CoreView};
+    let h = Harness::new();
+    h.open(1);
+    h.develop();
+    h.rect(100.0, 100.0);
+    h.frame_of_size(100, 100);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    assert_eq!(h.api.viewport().snapshot_synced().1.mask_view, None);
+
+    // A zoom and a pan the page did not touch stay as they were when only the mask view changes.
+    h.api
+        .viewport_input(&ViewportInput::ToggleZoom {
+            x: Num(50.0),
+            y: Num(50.0),
+        })
+        .expect("toggle");
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let zoomed = h.api.viewport().snapshot_synced().1;
+
+    let n = h.api.viewport().frames_presented();
+    h.api
+        .viewport_set_mode(
+            &ViewportMode::Percent { value: Num(100.0) },
+            Some(&MaskView {
+                node: 1,
+                style: MaskStyle::Overlay,
+            }),
+        )
+        .expect("mask view");
+    h.frame_after(n);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let on = h.api.viewport().snapshot_synced().1;
+    assert_eq!(
+        on.mask_view,
+        Some(CoreView {
+            node: 1,
+            style: CoreStyle::Overlay
+        })
+    );
+    assert_eq!(on.mode, zoomed.mode);
+    assert_eq!(on.centre, zoomed.centre);
+
+    // Another style, another node.
+    let n = h.api.viewport().frames_presented();
+    h.api
+        .viewport_set_mode(
+            &ViewportMode::Percent { value: Num(100.0) },
+            Some(&MaskView {
+                node: 2,
+                style: MaskStyle::MaskOnly,
+            }),
+        )
+        .expect("mask view");
+    h.frame_after(n);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    assert_eq!(
+        h.api.viewport().snapshot_synced().1.mask_view,
+        Some(CoreView {
+            node: 2,
+            style: CoreStyle::MaskOnly
+        })
+    );
+
+    // None is no mask view.
+    let n = h.api.viewport().frames_presented();
+    h.api
+        .viewport_set_mode(&ViewportMode::Percent { value: Num(100.0) }, None)
+        .expect("no mask view");
+    h.frame_after(n);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    assert_eq!(h.api.viewport().snapshot_synced().1.mask_view, None);
+}
+
+#[test]
+fn a_mask_view_belongs_to_its_photo() {
+    use crate::wire::{MaskStyle, MaskView};
+    let h = Harness::new();
+    h.open(2);
+    let done = h.develop();
+    let ids: Vec<PhotoId> = done.photos.iter().map(|p| p.id).collect();
+    h.rect(100.0, 100.0);
+    h.frame_of_size(100, 100);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    h.api
+        .viewport_set_mode(
+            &ViewportMode::Fit,
+            Some(&MaskView {
+                node: 1,
+                style: MaskStyle::MaskOnly,
+            }),
+        )
+        .expect("mask view");
+    assert!(h.api.viewport().wait_idle(WAIT));
+    assert!(h.api.viewport().snapshot_synced().1.mask_view.is_some());
+    h.api.set_current(ids[1]).expect("next photo");
+    assert!(h.api.viewport().wait_idle(WAIT));
+    assert_eq!(
+        h.api.viewport().snapshot_synced().1.mask_view,
+        None,
+        "the next photo has no mask view until the page asks for one"
+    );
 }
 
 #[test]
@@ -1402,9 +1510,12 @@ fn choosing_photos_while_everything_else_changes_never_stalls_the_viewport() {
                             api.update_settings(photo, &patch).expect("update");
                         }
                         4 => api
-                            .viewport_set_mode(&ViewportMode::Percent {
-                                value: Num(if i % 2 == 0 { 100.0 } else { 50.0 }),
-                            })
+                            .viewport_set_mode(
+                                &ViewportMode::Percent {
+                                    value: Num(if i % 2 == 0 { 100.0 } else { 50.0 }),
+                                },
+                                None,
+                            )
                             .expect("mode"),
                         5 => api
                             .viewport_set_rect(&ViewportRect {
@@ -1519,7 +1630,7 @@ fn the_render_stats_of_a_frame_carry_its_zoom_and_the_fit_zoom() {
 
     let n = h.api.viewport().frames_presented();
     h.api
-        .viewport_set_mode(&ViewportMode::Percent { value: Num(100.0) })
+        .viewport_set_mode(&ViewportMode::Percent { value: Num(100.0) }, None)
         .expect("100 %");
     h.frame_after(n);
     assert!(h.api.viewport().wait_idle(WAIT));
@@ -1567,7 +1678,7 @@ fn a_round_on_a_renderer_without_a_device_says_it_is_busy_on_the_cpu_and_then_th
     // and not busy once it is over.
     let n = h.api.viewport().frames_presented();
     h.api
-        .viewport_set_mode(&ViewportMode::Percent { value: Num(100.0) })
+        .viewport_set_mode(&ViewportMode::Percent { value: Num(100.0) }, None)
         .expect("100 %");
     h.frame_after(n);
     assert!(h.api.viewport().wait_idle(WAIT));
@@ -3766,7 +3877,7 @@ fn real_files_open_draw_and_answer_the_readouts() {
         let seen = last_seq(&h);
         let t = std::time::Instant::now();
         h.api
-            .viewport_set_mode(&ViewportMode::Percent { value: Num(100.0) })
+            .viewport_set_mode(&ViewportMode::Percent { value: Num(100.0) }, None)
             .expect("100 %");
         let sharp = h
             .events
@@ -3781,7 +3892,9 @@ fn real_files_open_draw_and_answer_the_readouts() {
             t.elapsed(),
             sharp.seq - seen
         );
-        h.api.viewport_set_mode(&ViewportMode::Fit).expect("fit");
+        h.api
+            .viewport_set_mode(&ViewportMode::Fit, None)
+            .expect("fit");
         assert!(h.api.viewport().wait_idle(WAIT));
     }
 }

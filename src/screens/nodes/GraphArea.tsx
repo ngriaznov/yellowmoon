@@ -25,6 +25,10 @@ export interface GraphAreaProps extends PhotoSwitcherProps {
   onToggleExpanded: () => void;
   /** The Crop panel or the Export panel is showing: the graph is dimmed and read only (`docs/23` §7.1). */
   dimmed: boolean;
+  /** Show mask is on (`docs/23` §5.8): the toolbar's toggle is pressed while a corrector is selected. */
+  maskOn?: boolean;
+  /** The toolbar's Show mask: the same as M. */
+  onToggleMask?: () => void;
 }
 
 /** Why the toolbar's Delete is off for a node, or null when it is on. */
@@ -38,14 +42,16 @@ function deleteReason(id: NodeId, link: boolean): string | null {
  * The graph area of the node view (`docs/23` §7.1 to §7.3): a 44 px toolbar and the canvas under it, in the strip's glass. The toolbar has
  * Add node ▾, Bypass and Delete at the left (More is the third icon of the node's head, `NodeHead`); at the right the photo switcher, Show mask and Expand. The canvas is the graph itself
  * (`NodeGraph`: the cards, the markers, the ports and the links on @xyflow/react). Bypass and Delete act on the selected node (Delete on
- * the selected link first), with the sentence that says why when they are off; Show mask comes with the mask view (N-11). While Crop or
+ * the selected link first), with the sentence that says why when they are off; Show mask turns the core's mask view on and off (N-11; off on the Input and the Output). While Crop or
  * Export shows, the whole area is `inert` and dimmed.
  */
-export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, expanded, onToggleExpanded, dimmed, ...switcher }: GraphAreaProps) {
+export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, expanded, onToggleExpanded, dimmed, maskOn = false, onToggleMask, ...switcher }: GraphAreaProps) {
   const node = settings ? nodeOf(settings, selected) : undefined;
   const count = settings ? correctorsOf(settings).length : 0;
   const bypassOff = node?.kind !== "corrector";
   const deleteOff = deleteReason(selected, graph.selectedLink !== null);
+  // The Input and the Output have no mask: the view's on or off is kept and applies again on a corrector.
+  const maskOff = node?.kind !== "corrector";
   return (
     <section aria-label="Node editor" className="ym-graph" data-dimmed={dimmed || undefined} inert={dimmed || undefined}>
       <div role="group" aria-label="Graph tools" className="ym-graph__bar">
@@ -64,7 +70,13 @@ export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, ex
         </Button>
         <span className="ym-graph__spacer" />
         <PhotoSwitcher {...switcher} />
-        <Button variant="header" pressed={false} disabled title="Show mask (M)">
+        <Button
+          variant="header"
+          pressed={maskOn && !maskOff}
+          disabled={maskOff}
+          title={maskOff ? GRAPH_OP_TEXT.noMask : "Show mask (M)"}
+          onClick={onToggleMask}
+        >
           Show mask
         </Button>
         <Button variant="header" pressed={expanded} icon={<Maximize2Icon aria-hidden="true" />} onClick={onToggleExpanded}>

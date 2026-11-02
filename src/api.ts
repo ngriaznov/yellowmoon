@@ -40,6 +40,7 @@ import type {
   Look,
   LookInput,
   LooksImportResult,
+  MaskView,
   MenuState,
   NodeId,
   OpenKind,
@@ -157,8 +158,11 @@ export interface Api {
   viewportSetRect(rect: ViewportRect): Promise<void>;
   /** `viewport_input`: pointer input over the photo. */
   viewportInput(event: ViewportInput): Promise<void>;
-  /** `viewport_set_mode`: fit, or a fixed zoom. */
-  viewportSetMode(mode: ViewportMode): Promise<void>;
+  /**
+   * `viewport_set_mode`: fit, or a fixed zoom (the one the page mirrors), and the mask view of the node view: a corrector's mask drawn by
+   * the core over the photo or alone, `null` (or left out) for the photo (`docs/23` §5.9).
+   */
+  viewportSetMode(mode: ViewportMode, maskView?: MaskView | null): Promise<void>;
   /** `set_before`: show the photo before the look and display transform. */
   setBefore(before: boolean): Promise<void>;
   /** `sample_pixel`: display values under a point, for the readout and Pick white. */
@@ -350,7 +354,7 @@ export const tauriApi: Api = {
   viewportInfo: () => commands.viewportInfo(),
   viewportSetRect: (rect) => unit(commands.viewportSetRect(rect)),
   viewportInput: (event) => unit(commands.viewportInput(event)),
-  viewportSetMode: (mode) => unit(commands.viewportSetMode(mode)),
+  viewportSetMode: (mode, maskView) => unit(commands.viewportSetMode(mode, maskView ?? null)),
   setBefore: (before) => unit(commands.setBefore(before)),
   samplePixel: (x, y) => commands.samplePixel(x, y),
   sampleChroma: (x, y, at) => commands.sampleChroma(x, y, at ?? null),

@@ -164,6 +164,36 @@ test.describe("Photos", () => {
     await compareScreen(page, "photos-nodes-add-node");
   });
 
+  /** Main with the mockup's grade and a Radial at the middle of the photo, the graded graph after it; the Mask tab of Main, the view on in `style`. */
+  async function maskView(page: Page, style: "Overlay" | "Mask only"): Promise<void> {
+    const radial = { kind: "radial", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.5, 0.52], radii: [0.26, 0.17], angle_deg: 0, feather: 0.45 };
+    await photos(page, {
+      DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE, masks: { invert: false, items: [radial] } }, ...GRADED_NODES.nodes }, links: GRADED_NODES.links },
+    } as never);
+    await page.getByRole("tab", { name: "Light", exact: true }).click();
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    await page.locator('[data-node-card="1"]').click();
+    await expect(page.locator('[data-node-card="1"]')).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    await page.getByRole("radio", { name: style, exact: true }).click();
+    await expect(page.getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator(".ym-photo-cell__image")).toHaveAttribute("src", /data-mask-view/);
+    await cardPicturesMade(page, 4);
+  }
+
+  test("The node view: the Mask tab with the View card, the mask tinted over the photo, Show mask on (photos-nodes-mask-overlay.png)", async ({ page }) => {
+    // docs/23 section 5.8 and 7.6, screens 07 and 09 of design/nodes: Main's Radial in the mask accent over the photo, the toolbar's Show mask yellow,
+    // the View card at the bottom of the Mask tab with Overlay chosen. The core draws the tint (`ym-core` `mask_view.rs`); the mock draws it on its flat scene.
+    await maskView(page, "Overlay");
+    await compareScreen(page, "photos-nodes-mask-overlay");
+  });
+
+  test("The node view: the same, Mask only: the mask as grey (photos-nodes-mask-only.png)", async ({ page }) => {
+    // Mask only: white where m is 1, black where it is 0, the paper around the picture as it is.
+    await maskView(page, "Mask only");
+    await compareScreen(page, "photos-nodes-mask-only");
+  });
+
   test("The node view: the Input selected, its Colour tab with the White balance card (photos-nodes-input-colour.png)", async ({ page }) => {
     // docs/23 section 7.5 and 8, screen 10 of design/nodes: the graded graph, the Input's head (a lock, "Turns the camera's data into the scene.")
     // and the tab that holds the White balance card and Pick white.

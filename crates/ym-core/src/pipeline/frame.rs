@@ -71,11 +71,12 @@ use std::sync::{Arc, Weak};
 use rayon::prelude::*;
 use ym_color::consts::Vec3;
 use ym_color::display::{ColorChain, Frame, Layout, OutputTarget, View};
-use ym_color::mask::{PhotoFrame, PhotoMap, PhotoSpot, PixelAt};
+use ym_color::mask::{PhotoFrame, PhotoMap, PhotoSpot, PixelAt, accent_display_linear};
 use ym_color::warp::chroma_of;
 use ym_gpu::cpu::magnify::{MagnifyMap, magnify_with};
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
 use ym_gpu::cpu::sampler::{GridPositions, SamplerGrid, photo_positions};
+use ym_gpu::cpu::tint::overlay_interleaved;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError};
 use ym_gpu::kernels::copy::Piece;
@@ -95,7 +96,7 @@ use super::graph::{
     TileImage,
 };
 use super::thumbs::{Tap, signal_source};
-use super::viewport::ViewportState;
+use super::viewport::{MaskStyle, ViewportState};
 use super::{FrameZoom, RenderError};
 use crate::settings::NodeId;
 
@@ -727,6 +728,37 @@ fn display_linear_cpu(
     Ok((rgb, sampled.outside.clone()))
 }
 
+/// The mask view's `m` for every pixel of `sampled` on the CPU reference path: the chain compiled to the
+/// node's mask (`ColorChain::shows_mask`) run over the sampled camera RGB, one `f32` a pixel, planar order.
+fn mask_plane_cpu(
+    job: &mut Job<'_>,
+    sampled: &Sampled,
+    mask_grade: &GradePlan,
+    photo: Option<&SamplerGrid>,
+) -> Result<Vec<f32>, RenderError> {
+    job.check()?;
+    let (w, h) = (sampled.img.width, sampled.img.height);
+    let positions = photo_positions_of(&mask_grade.chain, photo, (0, 0));
+    let frame = with_photo(
+        Frame::planar(w, h, &sampled.img.data).map_err(|e| RenderError::Color(e.to_string()))?,
+        &positions,
+    );
+    // The chain makes `[m, m, m]` for every pixel: the first plane is the mask.
+    let mut planes = vec![0.0f32; 3 * w * h];
+    mask_grade
+        .chain
+        .render_encoded_f32(
+            View::Final,
+            &frame,
+            Layout::Planar,
+            &mut planes,
+            job.options().threads,
+        )
+        .map_err(|e| RenderError::Color(e.to_string()))?;
+    planes.truncate(w * h);
+    Ok(planes)
+}
+
 // ---------------------------------------------------------------------------------------------
 // Output sharpening
 // ---------------------------------------------------------------------------------------------
@@ -741,9 +773,23 @@ pub(crate) struct ViewSharpening {
     pub scale: f32,
     /// The receptive field at that scale, in pixels of the view.
     pub halo: usize,
+    /// No stage at all: the road of a sharpened view with nothing to sharpen, which the mask view's overlay
+    /// takes when the photo has no output sharpening (the overlay is made on the display-linear frame, after
+    /// the stage's place and before C13). The frame is the view itself, with no border and no magnification.
+    pub identity: bool,
 }
 
 impl ViewSharpening {
+    /// The stage that does nothing ([`ViewSharpening::identity`]).
+    pub(crate) fn none() -> Self {
+        Self {
+            stage: OutputSharpen::screen().with_amount_pct(0.0),
+            scale: 1.0,
+            halo: 0,
+            identity: true,
+        }
+    }
+
     /// The stage for a view that maps device pixels to the final image with `view_to_final`
     /// (`fw x fh` pixels at full resolution), `None` when it creates no stage: the amount is 0 (or
     /// below 0.1 %), or the view is the Before view.
@@ -782,6 +828,7 @@ impl ViewSharpening {
             stage,
             scale,
             halo: plan.halo_px(),
+            identity: false,
         }))
     }
 
@@ -802,6 +849,15 @@ impl ViewSharpening {
         (w, h): (usize, usize),
         (fw, fh): (usize, usize),
     ) -> Option<FrameGeometry> {
+        if self.identity {
+            // The view as it is: the plain road's pixels.
+            return Some(FrameGeometry {
+                view_to_final: *view_to_final,
+                width: w,
+                height: h,
+                origin: None,
+            });
+        }
         let step = view_to_final.m[0][0];
         if step.is_finite() && step < 1.0 - 1e-9 {
             let (ax, ay) = view_to_final.apply(0.0, 0.0);
@@ -1066,11 +1122,15 @@ fn encode_view(
 /// The output-sharpening stage and C13 over a display-linear frame of the grown view: sharpens
 /// the photo's pixels, cuts the border off and encodes the view to RGBA8 with the letterbox
 /// painted.
+///
+/// With `mask` (the mask view's overlay: one `m` for every pixel of `display`) the sharpened pixels are tinted
+/// with the mask accent between the stage and C13 (`docs/23` section 5.8).
 fn sharpen_and_encode(
     job: &mut Job<'_>,
     display: &HostDisplay<'_>,
     sharpening: &ViewSharpening,
     grade: &GradePlan,
+    mask: Option<&[f32]>,
     (w, h): (usize, usize),
     (background, origin): ([u8; 3], (usize, usize)),
 ) -> Result<Vec<u8>, RenderError> {
@@ -1092,7 +1152,12 @@ fn sharpen_and_encode(
         });
     let cancel = job.cancel;
     let check = move || cancel.check().map_err(|_| RenderError::Cancelled);
-    if let Some(s) = sharpen_photo(&check, display, sharpening)? {
+    let sharpened = if sharpening.identity {
+        None
+    } else {
+        sharpen_photo(&check, display, sharpening)?
+    };
+    if let Some(s) = sharpened {
         // Put the sharpened pixels back where they fall inside the view.
         let (vx0, vx1) = (s.x0.max(halo), (s.x0 + s.w).min(halo + w));
         if vx0 < vx1 {
@@ -1109,6 +1174,14 @@ fn sharpen_and_encode(
                     row[dst..dst + len].copy_from_slice(&s.rgb[src..src + len]);
                 });
         }
+    }
+    if let Some(m) = mask {
+        // The mask over the view's own rows (the display frame is the view grown by the border).
+        let mut own = vec![0.0f32; w * h];
+        own.par_chunks_mut(w.max(1))
+            .enumerate()
+            .for_each(|(y, row)| row.copy_from_slice(&m[(y + halo) * ew + halo..][..w]));
+        overlay_interleaved(&mut view, &own, accent_display_linear(grade.chain.space()));
     }
     let letterbox = display.outside.map(|outside| {
         let mut mask = vec![0u8; w * h];
@@ -1137,12 +1210,17 @@ fn sharpen_and_encode(
 /// magnification is the CPU reference of the device's (`ym_gpu::cpu::magnify`, the taps made per
 /// pixel from this view's map); the device runs it from the same taps ([`magnify_map`],
 /// `frame::device`'s magnified tail).
+///
+/// With `mask` (the mask view's overlay: one `m` for every pixel of `display`, the 100 % picture) the sharpened
+/// 100 % picture is tinted with the mask accent before it is magnified.
+#[allow(clippy::too_many_arguments)] // the natural argument list; a struct would only move them
 fn magnify_and_encode(
     job: &mut Job<'_>,
     display: &HostDisplay<'_>,
     origin: (usize, usize),
     sharpening: &ViewSharpening,
     grade: &GradePlan,
+    mask: Option<&[f32]>,
     spec: &ViewSpec,
     (fw, fh): (usize, usize),
 ) -> Result<Vec<u8>, RenderError> {
@@ -1160,6 +1238,9 @@ fn magnify_and_encode(
             let dst = ((s.y0 + y) * nw + s.x0) * 3;
             native[dst..dst + 3 * s.w].copy_from_slice(&s.rgb[y * s.w * 3..(y + 1) * s.w * 3]);
         }
+    }
+    if let Some(m) = mask {
+        overlay_interleaved(&mut native, m, accent_display_linear(grade.chain.space()));
     }
     let mut planes = RgbImage::new(nw, nh);
     {
@@ -1381,6 +1462,8 @@ impl StageWindow {
 /// RGBA8 frame when the tail ran in the same job, and where things ran.
 struct Built {
     display: Option<DisplayFrame>,
+    /// The mask view's `m` for every pixel of a host display (the overlay, on the CPU).
+    mask: Option<Vec<f32>>,
     rgba: Option<Rgba8>,
     scale: usize,
     sharp: bool,
@@ -1397,6 +1480,8 @@ struct TailPlan<'a> {
     keep: bool,
     /// The window the stage works on.
     window: StageWindow,
+    /// The mask view's overlay: the chain compiled to the node's mask, run beside the colour pass.
+    mask: Option<&'a GradePlan>,
 }
 
 /// The display-linear frame of `read` (the view grown by the stage's receptive field): the sampler
@@ -1414,13 +1499,16 @@ fn build_display(
     let (scale, sharp) = (prepared.scale, prepared.sharp);
     let started = std::time::Instant::now();
     if let Some(r) = route.filter(|r| r.stages.color) {
-        let (input, own) = prepared.device_input(job, r, grade.chain.uses_photo_position())?;
+        let positions = grade.chain.uses_photo_position()
+            || plan.mask.is_some_and(|g| g.chain.uses_photo_position());
+        let (input, own) = prepared.device_input(job, r, positions)?;
         let bounds = plan.window.or(own);
         if input.fits(r) {
             let data = DisplayJob {
                 input,
                 bounds,
                 chain: Arc::clone(&grade.chain),
+                mask: plan.mask.map(|g| Arc::clone(&g.chain)),
                 tail: plan.work.cloned(),
                 keep: plan.keep && plan.work.is_some(),
                 gpu: r.gpu_ref(),
@@ -1454,6 +1542,7 @@ fn build_display(
             };
             return Ok(Some(Built {
                 display,
+                mask: None,
                 rgba: out.rgba,
                 scale,
                 sharp,
@@ -1464,6 +1553,10 @@ fn build_display(
     let sampled = sample_routed(job, prepared, route)?;
     let started = std::time::Instant::now();
     let (rgb, outside) = display_linear_cpu(job, &sampled, grade, prepared.photo_grid().as_ref())?;
+    let mask = plan
+        .mask
+        .map(|g| mask_plane_cpu(job, &sampled, g, prepared.photo_grid().as_ref()))
+        .transpose()?;
     job.runs.color_passes += 1;
     job.timings.pass_ms += millis(started);
     Ok(Some(Built {
@@ -1475,6 +1568,7 @@ fn build_display(
             sharp,
             device: ComputeDevice::Cpu,
         }),
+        mask,
         rgba: None,
         scale,
         sharp,
@@ -1518,6 +1612,7 @@ fn build_display_in_bands(
             input,
             bounds: None,
             chain: Arc::clone(&grade.chain),
+            mask: None,
             tail: None,
             keep: false,
             gpu: route.gpu_ref(),
@@ -1559,6 +1654,7 @@ fn build_display_in_bands(
             sharp,
             device: ComputeDevice::Gpu,
         }),
+        mask: None,
         rgba: None,
         scale,
         sharp,
@@ -1573,6 +1669,7 @@ fn tail_work(
     sharpening: &ViewSharpening,
     spec: &ViewSpec,
     magnify: Option<Arc<MagnifyMap>>,
+    overlay: bool,
 ) -> TailWork {
     TailWork {
         sharpen: sharpening.stage.clone(),
@@ -1584,6 +1681,8 @@ fn tail_work(
         background: spec.background,
         origin: spec.dither_origin,
         magnify,
+        identity: sharpening.identity,
+        overlay: overlay.then(|| accent_display_linear(grade.chain.space()).map(|c| c as f32)),
     }
 }
 
@@ -1643,8 +1742,11 @@ fn sharpened_pass(
         view_to_final: geometry.view_to_final,
         ..spec.clone()
     };
-    let key = spec
-        .cache
+    // The mask view's overlay: the chain that ends at the node's mask runs beside the colour pass, and the
+    // tint is made on the sharpened frame. Its display-linear frame is not kept (it is a diagnostic view; a
+    // move of any slider changes the mask or the photo under it anyway).
+    let mask_grade = job.overlay_grade();
+    let key = (spec.cache && mask_grade.is_none())
         .then(|| display_key(job, &read, grade, sharpening, window))
         .transpose()?;
     // The tail runs on the device when the route has it: over the view grown by the halo, or, for a
@@ -1656,7 +1758,12 @@ fn sharpened_pass(
         .and_then(|r| device_magnify(r, spec, &geometry, image));
     let tail = route
         .filter(|r| r.stages.tail && (geometry.origin.is_none() || magnify.is_some()))
-        .map(|_| tail_work(grade, sharpening, spec, magnify));
+        .map(|_| tail_work(grade, sharpening, spec, magnify, mask_grade.is_some()));
+    // The overlay is made whole on the device or whole on the CPU: a device that cannot run the tail for this
+    // view (a magnified view it cannot take) leaves the frame to the CPU.
+    if mask_grade.is_some() && route.is_some() && tail.is_none() {
+        return Ok(Flow::Cpu);
+    }
     let tail_gpu = tail.as_ref().and(route).map(ViewRoute::gpu_ref);
     let cached = key
         .as_ref()
@@ -1667,6 +1774,7 @@ fn sharpened_pass(
         .filter(|d| d.usable(tail_gpu.as_ref()));
     let (scale, sharp, device);
     let mut rgba: Option<Rgba8> = None;
+    let mut mask_plane: Option<Vec<f32>> = None;
     let display: Option<Arc<DisplayFrame>>;
     match cached {
         Some(d) => {
@@ -1690,6 +1798,7 @@ fn sharpened_pass(
                         work: tail.as_ref(),
                         keep: key.is_some(),
                         window,
+                        mask: mask_grade.as_deref(),
                     };
                     build_display(job, route, &prepared, &read, grade, &plan)?
                 }
@@ -1699,6 +1808,7 @@ fn sharpened_pass(
             };
             (scale, sharp, device) = (built.scale, built.sharp, built.device);
             rgba = built.rgba;
+            mask_plane = built.mask;
             display = built.display.map(|d| {
                 let d = Arc::new(d);
                 if let Some(k) = key {
@@ -1733,18 +1843,20 @@ fn sharpened_pass(
                 let Some(host) = display.host() else {
                     return Ok(Flow::Cpu);
                 };
+                let mask = mask_plane.as_deref();
                 Rgba8::Host(match geometry.origin {
                     None => sharpen_and_encode(
                         job,
                         &host,
                         sharpening,
                         grade,
+                        mask,
                         (spec.out_w, spec.out_h),
                         (spec.background, spec.dither_origin),
                     )?,
-                    Some(origin) => {
-                        magnify_and_encode(job, &host, origin, sharpening, grade, spec, image)?
-                    }
+                    Some(origin) => magnify_and_encode(
+                        job, &host, origin, sharpening, grade, mask, spec, image,
+                    )?,
                 })
             }
         },
@@ -2324,8 +2436,29 @@ pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedF
         job.src.before_view, spec.before,
         "a Before view is rendered from the source made for it, and only that"
     );
-    let grade = job.grade(spec.target, true)?;
-    let sharpening = view_sharpening(&mut job, spec)?;
+    // The mask view (`docs/23` section 5.8; only a viewport frame has one): Mask only is the chain compiled to
+    // the node's mask, unsharpened, as the frame's own plan; Overlay is the photo as it is, with that chain run
+    // beside it for the tint, which goes on the sharpened frame (an unsharpened photo takes the sharpened road
+    // with a stage that does nothing, so that the tint has the same place on every view).
+    job.prepare_mask_view(spec.target)?;
+    let mask_only = job
+        .mask_view()
+        .is_some_and(|v| v.style == MaskStyle::MaskOnly);
+    let grade = match job.mask_grade().filter(|_| mask_only) {
+        Some(mask) => mask,
+        None => job.grade(spec.target, true)?,
+    };
+    let overlay = job.overlay_grade().is_some();
+    let sharpening = if mask_only {
+        None
+    } else {
+        let stage = view_sharpening(&mut job, spec)?;
+        if overlay {
+            Some(stage.unwrap_or_else(ViewSharpening::none))
+        } else {
+            stage
+        }
+    };
     let cache_key = spec
         .cache
         .then(|| frame_key(&mut job, spec, &grade, sharpening.as_ref()))
@@ -2345,9 +2478,12 @@ pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedF
         frame.report = job.finish(scale, device, spec.target);
         return Ok(frame);
     }
+    // The overlay is made whole on the device (sampler or upload, colour pass, the mask chain, the stage, the
+    // tint and C13 in one job) or whole on the CPU; a device whose stages do not cover that leaves it to the CPU.
     let route = job
         .view_gpu()?
-        .map(|gpu| ViewRoute::new(&job, gpu, spec.gpu_priority));
+        .map(|gpu| ViewRoute::new(&job, gpu, spec.gpu_priority))
+        .filter(|r| !overlay || (r.stages.color && r.stages.tail));
     let gpu = route.as_ref().map(ViewRoute::gpu_ref);
     let done = render_pass(&mut job, spec, &grade, sharpening.as_ref(), route)?;
     let (rgba, on_device) = match (done.rgba, gpu) {
@@ -2429,6 +2565,10 @@ fn frame_key(
     // request is served the kind it asked for.
     if spec.output == FrameOutput::Device {
         key.push_str("|device");
+    }
+    // The mask view shows another picture of the same photo.
+    if let Some(mask) = job.mask_key() {
+        key.push_str(&format!("|{mask}"));
     }
     // The lens moves every pixel the frame holds: a move of one of its sliders is a new frame.
     if let Some(lens) = job.lens_key()? {
@@ -2512,7 +2652,9 @@ impl Renderer {
         } else {
             src
         };
-        let mut job = Job::new(self, src, cancel)?;
+        // The mask view is a view of the node view: never part of the Before view.
+        let mask_view = state.mask_view.filter(|_| !state.before);
+        let mut job = Job::new(self, src, cancel)?.with_mask_view(mask_view);
         let image = job.final_size()?;
         let (dw, dh) = state.device_size();
         let zoom = state.zoom(image);

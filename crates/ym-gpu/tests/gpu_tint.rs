@@ -13,7 +13,7 @@ mod common;
 
 use common::{Rng, TestGpu, gpus};
 use ym_color::encode::OutputSpace;
-use ym_color::mask::{OVERLAY_WEIGHT, accent_display_linear};
+use ym_color::mask::accent_display_linear;
 use ym_gpu::cpu::RgbImage;
 use ym_gpu::cpu::tiling::Rect;
 use ym_gpu::cpu::tint::overlay_planar;
@@ -22,6 +22,9 @@ use ym_gpu::image::GpuImage;
 use ym_gpu::kernels::tint::{encode_tint, tint_host};
 use ym_gpu::queue::{JobSpec, Priority};
 use ym_gpu::stream::PassList;
+
+/// The spec's weight (`docs/23` section 5.8), written out again here.
+const OVERLAY_WEIGHT: f64 = 0.55;
 
 /// The largest difference, absolute, between the device's `f32` arithmetic and the CPU's `f64`
 /// on pictures up to 8 (an `f32` ulp there is 1e-6).
@@ -157,14 +160,17 @@ fn a_window_tints_its_pixels_and_leaves_the_rest_and_the_letterbox_plane() {
                     let got = out[c * n + i];
                     let was = img.data[c * n + i];
                     if inside {
-                        let want = f64::from(was)
-                            + OVERLAY_WEIGHT * (accent()[c] - f64::from(was));
+                        let want = f64::from(was) + OVERLAY_WEIGHT * (accent()[c] - f64::from(was));
                         assert!((f64::from(got) - want).abs() <= GATE, "({x}, {y}) {c}");
                     } else {
                         assert_eq!(got, was, "({x}, {y}) {c} outside the window");
                     }
                 }
-                assert_eq!(out[3 * n + i], data[3 * n + i], "letterbox plane at ({x}, {y})");
+                assert_eq!(
+                    out[3 * n + i],
+                    data[3 * n + i],
+                    "letterbox plane at ({x}, {y})"
+                );
             }
         }
     }

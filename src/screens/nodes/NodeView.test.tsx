@@ -242,13 +242,13 @@ describe("layout A", () => {
     const labels = within(bar).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent?.trim());
     // More is the third icon of the node's head since N-09, not a button of the toolbar.
     expect(labels).toEqual(["Add node", "Bypass", "Delete", "Previous photo", "Next photo", "Show mask", "Expand"]);
-    // With Main selected: Bypass is on (and not pressed), Delete says why it is off, Show mask waits for the mask view (N-11).
+    // With Main selected: Bypass is on (and not pressed), Delete says why it is off, Show mask is on (a corrector has a mask) and not pressed.
     expect(within(bar).getByRole("button", { name: "Bypass" })).not.toHaveAttribute("aria-disabled");
     expect(within(bar).getByRole("button", { name: "Bypass" })).toHaveAttribute("aria-pressed", "false");
     expect(within(bar).getByRole("button", { name: "Bypass" })).toHaveAccessibleDescription("Bypass this node (B)");
     expect(within(bar).getByRole("button", { name: "Delete" })).toHaveAttribute("aria-disabled", "true");
     expect(within(bar).getByRole("button", { name: "Delete" })).toHaveAccessibleDescription("Main can't be deleted. Bypass it instead.");
-    expect(within(bar).getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-disabled", "true");
+    expect(within(bar).getByRole("button", { name: "Show mask" })).not.toHaveAttribute("aria-disabled");
     expect(within(bar).getByRole("button", { name: "Show mask" })).toHaveAccessibleDescription("Show mask (M)");
     expect(within(bar).getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-pressed", "false");
     expect(within(bar).getByRole("button", { name: "Expand" })).toHaveAttribute("aria-pressed", "false");
@@ -457,5 +457,91 @@ describe("the glyph on the filmstrip", () => {
       await h!.store.update(mainPatch({ trim: { exposure_ev: 0 } }));
     });
     await waitFor(() => expect(screenEl().querySelector(".ym-filmstrip__nodes")).toBeNull());
+  });
+});
+
+
+describe("Show mask (N-11)", () => {
+  const showMask = (): HTMLElement => within(within(graph()).getByRole("group", { name: "Graph tools" })).getByRole("button", { name: "Show mask" });
+  /** A click on a card of the graph. */
+  const selectCard = async (name: RegExp): Promise<void> => {
+    const card = within(graph()).getByRole("button", { name });
+    fireEvent.click(card);
+    await waitFor(() => expect(card).toHaveAttribute("aria-pressed", "true"));
+  };
+
+  /** The node view opens on the Output (the Look tab stands behind it); Main is the corrector these tests start on. */
+  const openOnMain = async (): Promise<void> => {
+    await openNodeView();
+    await selectCard(/^Node 1, Main/);
+  };
+
+  it("is a toggle: a click turns the view on for the selected corrector, with the Overlay style, and another turns it off", async () => {
+    await setup(FOUR);
+    await openOnMain();
+    expect(h!.api.viewport.maskView).toBeNull();
+    await h!.user.click(showMask());
+    await waitFor(() => expect(showMask()).toHaveAttribute("aria-pressed", "true"));
+    expect(h!.api.viewport.maskView).toEqual({ node: 1, style: "overlay" });
+    await h!.user.click(showMask());
+    await waitFor(() => expect(showMask()).toHaveAttribute("aria-pressed", "false"));
+    expect(h!.api.viewport.maskView).toBeNull();
+  });
+
+  it("follows the selected corrector, and is off, with its sentence, on the Input and the Output; the choice comes back with a corrector", async () => {
+    await setup(FOUR);
+    await openOnMain();
+    await h!.user.click(showMask());
+    await selectCard(/^Node 3, Sky/);
+    await waitFor(() => expect(h!.api.viewport.maskView).toEqual({ node: 3, style: "overlay" }));
+    await selectCard(/^Input/);
+    await waitFor(() => expect(h!.api.viewport.maskView).toBeNull());
+    expect(showMask()).toHaveAttribute("aria-disabled", "true");
+    expect(showMask()).toHaveAccessibleDescription("The input and the output have no mask.");
+    expect(showMask()).toHaveAttribute("aria-pressed", "false");
+    // A click on it does nothing.
+    await h!.user.click(showMask());
+    expect(h!.store.getState().maskView.on).toBe(true);
+    await selectCard(/^Output/);
+    expect(showMask()).toHaveAttribute("aria-disabled", "true");
+    await selectCard(/^Node 1, Main/);
+    await waitFor(() => expect(h!.api.viewport.maskView).toEqual({ node: 1, style: "overlay" }));
+    expect(showMask()).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("is M in the node view, with the last style; M does nothing on the Input", async () => {
+    await setup();
+    await openOnMain();
+    h!.store.setMaskView({ style: "mask_only", on: false });
+    await h!.user.keyboard("m");
+    await waitFor(() => expect(h!.api.viewport.maskView).toEqual({ node: 1, style: "mask_only" }));
+    await h!.user.keyboard("m");
+    await waitFor(() => expect(h!.api.viewport.maskView).toBeNull());
+    await selectCard(/^Input/);
+    await h!.user.keyboard("m");
+    expect(h!.store.getState().maskView.on).toBe(false);
+  });
+
+  it("ends when the node view is left, Crop or Export opens, and comes back as it was", async () => {
+    await setup();
+    await openOnMain();
+    h!.store.setMaskView({ style: "mask_only" });
+    await waitFor(() => expect(h!.api.viewport.maskView).toEqual({ node: 1, style: "mask_only" }));
+    // The simple view has no mask view.
+    await h!.user.click(nodesButton());
+    await waitFor(() => expect(inNodeView()).toBe(false));
+    await waitFor(() => expect(h!.api.viewport.maskView).toBeNull());
+    await openOnMain();
+    await waitFor(() => expect(h!.api.viewport.maskView).toEqual({ node: 1, style: "mask_only" }));
+    // Crop.
+    await h!.user.click(within(header()).getByRole("button", { name: "Crop" }));
+    await waitFor(() => expect(h!.api.viewport.maskView).toBeNull());
+    await h!.user.click(within(header()).getByRole("button", { name: "Crop" }));
+    await waitFor(() => expect(h!.api.viewport.maskView).toEqual({ node: 1, style: "mask_only" }));
+    // Export.
+    act(() => h!.store.openExport());
+    await waitFor(() => expect(h!.api.viewport.maskView).toBeNull());
+    act(() => h!.store.closeExport());
+    await waitFor(() => expect(h!.api.viewport.maskView).toEqual({ node: 1, style: "mask_only" }));
   });
 });

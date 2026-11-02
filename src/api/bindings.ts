@@ -82,8 +82,16 @@ export const commands = {
 	viewportSetRect: (rect: ViewportRect) => __TAURI_INVOKE<null>("viewport_set_rect", { rect }),
 	/**  `viewport_input(event)`: pointer input over the photo. */
 	viewportInput: (event: ViewportInput) => __TAURI_INVOKE<null>("viewport_input", { event }),
-	/**  `viewport_set_mode(mode)`: Fit, or a fixed zoom. */
-	viewportSetMode: (mode: ViewportMode) => __TAURI_INVOKE<null>("viewport_set_mode", { mode }),
+	/**
+	 *  `viewport_set_mode(mode, mask_view)`: Fit, or a fixed zoom, and the mask view of the node view: a
+	 *  corrector's mask shown over the photo or alone, `None` for the photo (`docs/23` section 5.8).
+	 */
+	viewportSetMode: (mode: ViewportMode, maskView: {
+	/**  The corrector whose mask is shown. */
+	node: number,
+	/**  Overlay or Mask only. */
+	style: MaskStyle,
+} | null) => __TAURI_INVOKE<null>("viewport_set_mode", { mode, maskView }),
 	/**  `set_before(before)`: the photo before the look and the display transform. */
 	setBefore: (before: boolean) => __TAURI_INVOKE<null>("set_before", { before }),
 	/**  `sample_pixel(x, y)`: display values under a point of the photo cell. */
@@ -1621,6 +1629,24 @@ export type MaskSettings = {
 	invert: boolean,
 	/**  The rows, in the order they are drawn and combined, at most 64. */
 	items: MaskItem[],
+};
+
+/**  How the mask view shows a node's mask (`docs/23` section 5.8). */
+export type MaskStyle = 
+/**  The mask tinted in the mask accent over the photo as it is. */
+"overlay" | 
+/**  The mask as grey: the code value after C13 is `m`. */
+"mask_only";
+
+/**
+ *  The mask view of the viewport (`viewport_set_mode`'s second argument): a corrector's mask shown in the
+ *  frame, over the photo or alone. `None` on the wire is no mask view.
+ */
+export type MaskView = {
+	/**  The corrector whose mask is shown. */
+	node: number,
+	/**  Overlay or Mask only. */
+	style: MaskStyle,
 };
 
 /**

@@ -39,6 +39,7 @@ export type ShortcutAction =
   | "nodes"
   | "delete-node"
   | "bypass-node"
+  | "mask-view"
   | "move-node-earlier"
   | "move-node-later"
   | "full-screen"
@@ -75,7 +76,7 @@ export interface ShortcutContext {
   tab?: TabId;
   /** A modal-like mode is on (crop, pick white, pick colour): the number keys that pick looks are ignored. */
   mode?: "crop" | "pick-white" | "pick-color" | null;
-  /** The node view is on: Delete and Backspace never mean "remove the photo on screen", and B and ⌥← ⌥→ are the graph's. */
+  /** The node view is on: Delete and Backspace never mean "remove the photo on screen", and B, M and ⌥← ⌥→ are the graph's. */
   nodeView?: boolean;
 }
 
@@ -215,6 +216,11 @@ export function shortcutFor(event: KeyLike, context: ShortcutContext = {}): Shor
       // Bypass the selected node (`docs/23` §7.7): one press, one change, and not a letter typed into a menu or a list.
       if (!context.nodeView || event.repeat || context.mode === "crop" || inMenuOrDialog(event.target)) return null;
       return { action: "bypass-node" };
+    case "m":
+      // Show or hide the selected node's mask (`docs/23` §7.7): one press, one change, in the node view only, and not a letter typed into a menu
+      // or a list. (⌘M is Minimise, so it is the bare key; the table's own modifier rule keeps it out of this one.)
+      if (!context.nodeView || event.repeat || context.mode === "crop" || inMenuOrDialog(event.target)) return null;
+      return { action: "mask-view" };
     case "p":
       return { action: "toggle-pick" };
     case "\\":

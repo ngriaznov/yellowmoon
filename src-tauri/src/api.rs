@@ -37,7 +37,7 @@ use crate::wire::{
     AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, CliLinkResult,
     CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate, ExportJob, ExportJobId,
     HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress, LooksImportResult,
-    NodeId, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample,
+    MaskView, NodeId, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample,
     Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
     SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
     WatchStatus, convert,
@@ -824,13 +824,17 @@ impl AppApi {
         Ok(())
     }
 
-    /// `viewport_set_mode`.
+    /// `viewport_set_mode(mode, mask_view)`.
     ///
     /// # Errors
     ///
     /// [`AppError`] only if the shapes disagree (a bug).
-    pub fn viewport_set_mode(&self, mode: &ViewportMode) -> Result<(), AppError> {
-        self.viewport.set_mode(mode)
+    pub fn viewport_set_mode(
+        &self,
+        mode: &ViewportMode,
+        mask_view: Option<&MaskView>,
+    ) -> Result<(), AppError> {
+        self.viewport.set_mode(mode, mask_view)
     }
 
     /// `set_before`.

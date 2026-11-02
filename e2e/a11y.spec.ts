@@ -712,6 +712,8 @@ test.describe("the node panel", () => {
     ["a corrector's Light tab", "Light", 2, "Light", 25],
     ["a corrector's Colour tab", "Colour", 2, "Colour", 21],
     ["the Output's Look tab", "Look", "output", "Look", 23],
+    // The head's buttons, the tab row, Add mask (off, still a stop), the View card's chosen segment, and the foot's two buttons.
+    ["a corrector's Mask tab with the View card", "Light", 2, "Mask", 9],
   ] as const) {
     test(`${state}: every stop of the panel's Tab order has the ring, and the stops are counted`, async ({ page }) => {
       await graded(page, simple);

@@ -95,6 +95,8 @@ export type Both = AllTrue<{
   viewportRect: Same<T.ViewportRect, B.ViewportRect>;
   viewportInput: Same<T.ViewportInput, B.ViewportInput>;
   viewportMode: Same<T.ViewportMode, B.ViewportMode>;
+  maskStyle: Same<T.MaskStyle, B.MaskStyle>;
+  maskView: Same<T.MaskView, B.MaskView>;
   viewportFrame: Same<T.ViewportFrame, B.ViewportFrame>;
   viewportBackendKind: Same<T.ViewportBackendKind, B.ViewportBackendKind>;
   errorScope: Same<T.ErrorScope, B.ErrorScope>;

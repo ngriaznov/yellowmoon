@@ -47,6 +47,8 @@ import type {
   LookLibrary,
   MainAutoFlags,
   MainEstimates,
+  MaskStyle,
+  MaskView,
   MenuAction,
   MenuState,
   NodeGrade,
@@ -147,6 +149,11 @@ export const NO_ARW_NOTICE = "No ARW files in what you dropped.";
 /** Said when files are added to a session and every one of them is open already. */
 export const ALREADY_OPEN_NOTICE = "These photos are already open.";
 
+/** Whether two mask views are the same one (a node and a style, or none). */
+function sameMaskView(a: MaskView | null, b: MaskView | null): boolean {
+  return a === b || (a !== null && b !== null && a.node === b.node && a.style === b.style);
+}
+
 /** What Photos says after files were added to the session: "Added 3 photos. 2 were already open." */
 export function openedNotice(opened: OpenSummary): string {
   if (opened.added === 0 && opened.already_open === 0) return NO_ARW_NOTICE;
@@ -187,6 +194,12 @@ export interface CopiedSettings {
 }
 
 /** Everything the screens draw. Replaced, never changed in place. */
+/** Show mask: on or off, and how it looks when it is on. The style starts as Overlay. */
+export interface MaskViewState {
+  on: boolean;
+  style: MaskStyle;
+}
+
 export interface AppState {
   screen: Screen;
   /** Where "Back" goes from a full-window detour such as the import wizard. */
@@ -215,6 +228,14 @@ export interface AppState {
   /** Showing the photo before the look and display transform. */
   before: boolean;
   zoom: ViewportMode;
+  /**
+   * Show mask (`docs/23` §5.8): whether the node view shows the selected corrector's mask, and in which style. Neither is saved or
+   * per photo; it stays across nodes and photos for the running app. The core draws it; it is sent whenever it, the style or the
+   * selected node changes ({@link Store.setMaskNode}).
+   */
+  maskView: MaskViewState;
+  /** The mask view the core was last told to draw: what {@link AppState.maskView} comes to for the node on show (the browser build's fixture draws it). */
+  maskShown: MaskView | null;
   /** "Apply to" on the Look card. */
   applyScope: ApplyScope;
   /**
@@ -311,6 +332,8 @@ export function initialState(): AppState {
     stats: null,
     before: false,
     zoom: { kind: "fit" },
+    maskView: { on: false, style: "overlay" },
+    maskShown: null,
     applyScope: "this",
     collapsedLookLibraries: [],
     dropNotice: null,
@@ -579,6 +602,10 @@ export class AppStore {
   /** Holds the look tiles' requests to {@link LOOK_THUMBNAIL_CONCURRENCY} at a time; what waits is dropped when its photo or settings change. */
   private readonly thumbLimiter = new RequestLimiter<{ photoId: PhotoId; key: string }>(LOOK_THUMBNAIL_CONCURRENCY);
   private rect: ViewportRect | null = null;
+  /** The corrector the node view has selected and shows (`setMaskNode`); null in the simple view, while Crop or Export shows and on the Input and the Output. */
+  private maskNode: number | null = null;
+  /** The mask view the core was last told about, with the photo it was told on (a new photo starts without one in the core). */
+  private maskSent: { photo: PhotoId | null; view: MaskView | null } | null = { photo: null, view: null };
   /**
    * Wheel, pinch and drag input for the photo, collected and sent once per animation frame (`queueViewportInput`). The zoom mirror
    * follows once per frame too, when a zoom is closed.
@@ -1153,6 +1180,7 @@ export class AppStore {
       looks: this.state.looks,
       lenses: this.state.lenses,
       applyScope: this.state.applyScope,
+      maskView: this.state.maskView,
       collapsedLookLibraries: this.state.collapsedLookLibraries,
       stats: null,
       // What belongs to the app rather than the session stays: the preferences, the export in flight, the dialogs.
@@ -1173,8 +1201,9 @@ export class AppStore {
       copied: this.state.copied && { ...this.state.copied, sourceId: null },
     };
     this.notify();
-    // A fresh session starts at Fit with the camera view off.
-    void this.api.viewportSetMode({ kind: "fit" }).catch(() => {});
+    // A fresh session starts at Fit with the camera view off and no mask view (the page asks again for the one the node view has).
+    this.maskSent = { photo: null, view: null };
+    void this.api.viewportSetMode({ kind: "fit" }, null).catch(() => {});
     void this.api.setBefore(false).catch(() => {});
   }
 
@@ -1218,6 +1247,9 @@ export class AppStore {
     }
     try {
       await this.api.setCurrent(id);
+      // The core has dropped the last photo's mask view with the photo; whatever raced it is not known, so tell it again.
+      this.maskSent = { photo: id, view: null };
+      this.syncMaskView();
     } catch (error) {
       this.fail(error);
     }
@@ -1847,6 +1879,52 @@ export class AppStore {
 
   toggleBefore(): Promise<void> {
     return this.setBefore(!this.state.before);
+  }
+
+  /**
+   * Show mask (`docs/23` §5.8): turns the view on or off, or chooses its style (a style chosen turns it on when `on` is not given). The core
+   * draws the mask, so this tells it ({@link Store.syncMaskView}); the choice outlives nodes and photos.
+   */
+  setMaskView(change: Partial<MaskViewState>): void {
+    const next = { ...this.state.maskView, ...change };
+    if (change.style !== undefined && change.on === undefined) next.on = true;
+    if (next.on === this.state.maskView.on && next.style === this.state.maskView.style) return;
+    this.set({ maskView: next });
+    this.syncMaskView();
+  }
+
+  /** M and the toolbar toggle: the view on or off, with the style it last had. */
+  toggleMaskView(): void {
+    this.setMaskView({ on: !this.state.maskView.on });
+  }
+
+  /**
+   * The corrector the node view shows the mask of: the selected node when it is a corrector and the node view is up (not in the simple view,
+   * not while Crop or Export shows, not on the Input or the Output), else null. The view's on and style are kept meanwhile, and apply
+   * again when there is a node. The core is told whenever this, the view or the style changes, and again for a new photo.
+   */
+  setMaskNode(node: number | null): void {
+    this.maskNode = node;
+    this.syncMaskView();
+  }
+
+  /**
+   * Sends the mask view the core should have now, when it is not the one the core has. The core starts a photo without one, so a photo
+   * that is not the one it was last told about counts as having none; after a failed command what it has is not known.
+   */
+  private syncMaskView(): void {
+    const { on, style } = this.state.maskView;
+    const photo = this.currentId();
+    const wanted: MaskView | null = on && this.maskNode !== null && photo !== null ? { node: this.maskNode, style } : null;
+    if (!sameMaskView(this.state.maskShown, wanted)) this.set({ maskShown: wanted });
+    const sent = this.maskSent;
+    const has = sent === null ? undefined : sent.photo === photo ? sent.view : null;
+    if (has !== undefined && sameMaskView(has, wanted)) return;
+    this.maskSent = { photo, view: wanted };
+    void this.api.viewportSetMode(this.state.zoom, wanted).catch((error: unknown) => {
+      this.maskSent = null;
+      this.fail(error);
+    });
   }
 
   async setZoom(mode: ViewportMode): Promise<void> {

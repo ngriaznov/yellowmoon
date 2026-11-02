@@ -512,7 +512,7 @@ describe("the Mask tab until N-12", () => {
     await setup();
     await select(/^Node 3, Sky/);
     await openNodeTab("Mask");
-    expect(cardTitles()).toEqual(["Masks"]);
+    expect(cardTitles()).toEqual(["Masks", "View"]);
     const rows = within(within(tools()).getByRole("list", { name: "Masks of this node" })).getAllByRole("listitem");
     expect(rows.map((r) => r.getAttribute("aria-label"))).toEqual(["Object mask, 2 points", "Radial mask, Feather 45"]);
     expect(rows[0]).toHaveTextContent("Off");
@@ -533,6 +533,47 @@ describe("the Mask tab until N-12", () => {
     expect(within(tools()).queryByRole("list", { name: "Masks of this node" })).toBeNull();
     expect(within(tools()).getByText(/^Masks add up\./)).toBeInTheDocument();
     expect(within(tools()).getByRole("button", { name: "Add mask" })).toHaveAttribute("aria-disabled", "true");
+  });
+});
+
+describe("the View card (N-11)", () => {
+  const viewCard = (): HTMLElement => within(tools()).getByRole("region", { name: "View" });
+  const styles = (): HTMLElement => within(viewCard()).getByRole("radiogroup", { name: "Show mask" });
+
+  it("is the last card of the Mask tab: 'View', the key chip M, and one row, Show mask, with Overlay and Mask only (no Off)", async () => {
+    await setup();
+    await select(/^Node 3, Sky/);
+    await openNodeTab("Mask");
+    expect(cardTitles()).toEqual(["Masks", "View"]);
+    expect(within(viewCard()).getByText("M")).toBeInTheDocument();
+    expect(within(viewCard()).getByText("Show mask")).toBeInTheDocument();
+    const radios = within(styles()).getAllByRole("radio");
+    expect(radios.map((r) => r.textContent)).toEqual(["Overlay", "Mask only"]);
+    expect(radios[0]).toHaveAttribute("aria-checked", "true");
+    expect(radios[1]).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("sets the style and turns the view on: a segment, the one already chosen too", async () => {
+    await setup();
+    await select(/^Node 3, Sky/);
+    await openNodeTab("Mask");
+    expect(h!.store.getState().maskView).toEqual({ on: false, style: "overlay" });
+    // The chosen segment: the view was off, so it is on now, with the same style.
+    await h!.user.click(within(styles()).getByRole("radio", { name: "Overlay" }));
+    await waitFor(() => expect(h!.store.getState().maskView).toEqual({ on: true, style: "overlay" }));
+    expect(h!.api.viewport.maskView).toEqual({ node: 3, style: "overlay" });
+    await h!.user.click(within(styles()).getByRole("radio", { name: "Mask only" }));
+    await waitFor(() => expect(h!.store.getState().maskView).toEqual({ on: true, style: "mask_only" }));
+    expect(h!.api.viewport.maskView).toEqual({ node: 3, style: "mask_only" });
+    // The toolbar's toggle turns it off and keeps the style; the card still shows it.
+    await h!.user.click(screen.getByRole("button", { name: "Show mask" }));
+    await waitFor(() => expect(h!.store.getState().maskView).toEqual({ on: false, style: "mask_only" }));
+    expect(within(styles()).getByRole("radio", { name: "Mask only" })).toHaveAttribute("aria-checked", "true");
+    expect(h!.api.viewport.maskView).toBeNull();
+    // An arrow key moves the selection and turns the view on, as a click does.
+    within(styles()).getByRole("radio", { name: "Mask only" }).focus();
+    await h!.user.keyboard("{ArrowLeft}");
+    await waitFor(() => expect(h!.store.getState().maskView).toEqual({ on: true, style: "overlay" }));
   });
 });
 
