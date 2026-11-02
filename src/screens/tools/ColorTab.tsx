@@ -1,5 +1,6 @@
 import { memo } from "react";
-import { AutoToggle, Card, formats, ResetLink, Segmented, Slider, Tag, Wheel, WheelGroup } from "../../components";
+import { PipetteIcon } from "lucide-react";
+import { AutoToggle, Button, Card, formats, KeyHint, ResetLink, Segmented, Slider, Tag, Wheel, WheelGroup } from "../../components";
 import type { ColorBalance, ColorBalancePoint, LightSource } from "../../api/types";
 import { inputOf, inputPatch, mainGradeOf, mainGradePatch } from "../../state/settingsGraph";
 import { ColorWarpCard } from "./ColorWarpCard";
@@ -26,14 +27,22 @@ const WHEELS = [
 /** The Colour balance card's Reset: the shadows and highlights wheels back to Auto, the midtones wheel to the centre. */
 const RESET_BALANCE: ColorBalance = { shadows: AUTO, midtones: [0, 0], highlights: AUTO };
 
-/** The Colour tab's props: those of every tab, and Pick colour's state, which the Photos screen keeps (it owns the crosshair layer). */
-export type ColorTabProps = ColorWarpCardProps;
+/**
+ * The Colour tab's props: those of every tab, and the state of Pick white and Pick colour, which the Photos screen keeps (it owns the
+ * crosshair layer, and ends either mode when the Colour tab is left).
+ */
+export interface ColorTabProps extends ColorWarpCardProps {
+  /** Pick white is on: the row's toggle is pressed and a click on the photo sets the white (`Photos`). */
+  pickingWhite?: boolean;
+  /** Turns Pick white on or off. Without it the toggle does nothing. */
+  onPickWhite?: (on: boolean) => void;
+}
 
 /**
- * Colour: White balance (light presets, Kelvin, Tint), Colour balance (three wheels and Saturation) and Colour warp (the chroma plane
- * with its pins and Pick colour). A picked white shows here with the EDITED tag.
+ * Colour: White balance (light presets, Pick white, Kelvin, Tint), Colour balance (three wheels and Saturation) and Colour warp (the
+ * chroma plane with its pins and Pick colour). A picked white shows here with the EDITED tag.
  */
-export const ColorTab = memo(function ColorTab({ store, photo, rs, pickingColor, onPickColor }: ColorTabProps) {
+export const ColorTab = memo(function ColorTab({ store, photo, rs, pickingWhite = false, onPickWhite, pickingColor, onPickColor }: ColorTabProps) {
   const { settings, estimates } = rs;
   const { input: values, main } = rs.values;
   const { picked, isAuto: whiteIsAuto } = whiteBalanceState(rs);
@@ -58,6 +67,23 @@ export const ColorTab = memo(function ColorTab({ store, photo, rs, pickingColor,
             onChange={(light_source) => void store.update(inputPatch({ light_source }), true)}
             options={LIGHT_OPTIONS.map(({ value, label, ariaLabel }) => ({ value, label, ariaLabel }))}
           />
+        </div>
+        {/* Pick white (`docs/11` §Pick white): a row of its own, the toggle and, at the right, its key. The chip is for the eye; the key is in
+            the toggle's description. */}
+        <div className="ym-pick-row">
+          <Button
+            variant="header"
+            size="sm"
+            pressed={pickingWhite}
+            icon={<PipetteIcon className="size-3.5" aria-hidden="true" />}
+            title="Click something neutral on the photo (W)"
+            onClick={() => onPickWhite?.(!pickingWhite)}
+          >
+            Pick white
+          </Button>
+          <span className="ym-pick-row__keys" aria-hidden="true">
+            or press <KeyHint>W</KeyHint>
+          </span>
         </div>
         <KelvinSlider store={store} rs={rs} />
         <Slider

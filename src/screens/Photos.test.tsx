@@ -32,8 +32,10 @@ describe("the header", () => {
     expect(screen.getByText("2026-10-04 · 12 photos")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Before" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: "Crop" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Pick white" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Fit/ })).toHaveAttribute("aria-haspopup", "menu");
+    // Pick white is not here: it is a row of the Colour tab's White balance card (`docs/11` §Pick white).
+    expect(within(screen.getByRole("navigation", { name: "Actions" })).queryByRole("button", { name: "Pick white" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pick white" })).toBeNull();
   });
 
   it("shows the render status from render_stats", async () => {

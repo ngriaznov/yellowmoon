@@ -88,8 +88,19 @@ test.describe("names and landmarks", () => {
     snapshot = await expectNamed(page, "Crop");
     expect(count(snapshot, "main")).toBe(1);
     await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "Pick white" }).click();
-    await expectNamed(page, "Pick white");
+    // Pick white is a row of the Colour tab's White balance card: the toggle, its description, the pill and the layer all have names.
+    await page.getByRole("tab", { name: "Colour" }).click();
+    const white = page.getByRole("button", { name: "Pick white" });
+    await expect(white).toHaveAccessibleDescription("Click something neutral on the photo (W)");
+    await white.click();
+    await expect(white).toHaveAttribute("aria-pressed", "true");
+    snapshot = await expectNamed(page, "Pick white");
+    // The pill is a polite status, the layer an application that says how to use it from the keyboard, and the key chip is hidden.
+    const pill = page.getByRole("status").filter({ hasText: "Click something neutral: grey or white. Esc cancels." });
+    await expect(pill).toHaveAttribute("aria-live", "polite");
+    await expect(page.getByRole("application", { name: "Pick white. Click something neutral, or move the crosshair with the arrow keys and press Return." })).toBeVisible();
+    await expect(page.locator(".ym-pick-row__keys")).toHaveAttribute("aria-hidden", "true");
+    expect(snapshot).not.toContain("or press");
     await page.keyboard.press("Escape");
     await page.getByRole("button", { name: /^Fit/ }).click();
     await expect(page.getByRole("menu")).toBeVisible();

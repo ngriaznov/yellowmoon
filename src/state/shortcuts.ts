@@ -5,8 +5,9 @@
  * has focus, and so are ⇧⌘C, ⇧⌘V and ⌥⇧⌘V (copy and paste settings; plain ⌘C and ⌘V never reach this
  * table: they stay the system's Copy and Paste). The arrows are left to the control that has focus when
  * it uses them (a slider, the filmstrip, the tabs). Delete and Backspace remove the photo on screen from the filmstrip, except where a
- * control uses them itself (a text box, a slider with its knob, a menu, a dialog) or a mode (crop, pick white) is on. F (full screen)
- * is not a key held down, and not a letter typed into a menu or a list (their type-ahead), or pressed while cropping. A toggles Auto crop
+ * control uses them itself (a text box, a slider with its knob, a menu, a dialog) or a mode (crop, pick white) is on. W (Pick white: it
+ * opens the Colour tab and starts picking, and a second W ends it) and F (full screen) are not keys held down, and not letters typed
+ * into a menu or a list (their type-ahead); F is not pressed while cropping. A toggles Auto crop
  * while the Crop panel is open, and is nothing otherwise (⌘A picks all).
  */
 import type { TabId } from "../components/tabs";
@@ -195,6 +196,9 @@ export function shortcutFor(event: KeyLike, context: ShortcutContext = {}): Shor
     case "c":
       return { action: "crop" };
     case "w":
+      // Pick white: opens the Colour tab and starts picking, and a second W ends it. One press, one change, as F (a key held down would
+      // switch it on and off), and not a letter typed into a menu or a list (their type-ahead).
+      if (event.repeat || inMenuOrDialog(event.target)) return null;
       return { action: "pick-white" };
     case "a":
       // Auto crop (`docs/20-auto-crop.md` §1): only in the Crop panel, one press one change, as F.

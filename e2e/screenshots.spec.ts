@@ -116,6 +116,17 @@ test.describe("Photos", () => {
     await compareScreen(page, "photos-color");
   });
 
+  test("Colour while picking white: the card's toggle pressed, the hint pill on the photo, the crosshair (photos-pick-white.png)", async ({ page }) => {
+    // docs/23 section 8, screen 03 of design/nodes: Pick white is a row of the White balance card; while it is on, the toggle is yellow, the
+    // hint is a glass pill at the top centre of the photo and the crosshair (white, with a dark outline) is under the pointer, which rests
+    // where the mockup's crosshair is.
+    await photos(page);
+    await tab(page, "Colour");
+    await page.getByRole("button", { name: "Pick white" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Click something neutral: grey or white. Esc cancels." })).toBeVisible();
+    await compareScreen(page, "photos-pick-white", { pointer: { x: 784, y: 227 } });
+  });
+
   test("Colour warp: two moving pins and a lock, the card in view, its first pin selected (photos-color-warp.png)", async ({ page }) => {
     // The owner's request of 2026-10-17 (docs/11 §Colour warp): the sky's blue moved toward teal, the sun's warm white toward orange, a
     // lock in the magentas. The photo shows the move (the mock warps its flat colours, src/fixtures/warp.ts).

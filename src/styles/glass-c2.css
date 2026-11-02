@@ -161,8 +161,9 @@ html:has(.ym-screen[data-screen="photos"]) #root {
     display: none;
   }
 }
-/* The Pick white hint is a whole sentence on one line (219 px). Beside the glass buttons it does not fit below about 1357 px: at 1347 it ran
-   9 px into the Export cell. There it floats over the top right of the photo area instead, just under the header. */
+/* The header's hint is a whole sentence on one line (Pick colour's now; Pick white's is a pill on the photo, and the number is from that
+   longer one, 219 px). Beside the glass buttons it does not fit below about 1357 px: at 1347 it ran 9 px into the Export cell. There it
+   floats over the top right of the photo area instead, just under the header. */
 @media (max-width: 1359px) {
   .ym-status[data-hint="true"] {
     @apply glass-liquid;

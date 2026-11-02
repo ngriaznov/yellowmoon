@@ -107,6 +107,11 @@
 }
 .ym-wheel[data-disabled="true"] { opacity: 0.5; }
 
+/* ---- Colour › White balance: the Pick white row ------------------------------------------------------------------------------
+   The toggle at the left, "or press" and the key chip at the right, between the light presets and the Kelvin slider. */
+.ym-pick-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.ym-pick-row__keys { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; }
+
 /* ---- WarpPlane (Colour › Colour warp) ---------------------------------------------------------
    A square as wide as its column: the hue field and the photo's colours on two canvases, the rings, the axes and the pins on an SVG
    above them. The pins' sizes are set by WarpPlane.tsx (a 10 px ring, a 10 px dot); here only how they are painted. */

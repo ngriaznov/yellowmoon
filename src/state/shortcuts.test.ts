@@ -112,6 +112,36 @@ describe("the shortcut table of docs/11", () => {
     expect(act(key("w"))).toBe("pick-white");
   });
 
+  it("W is Pick white on any tab and in any mode (a second W ends it), and ⌘W stays Close session", () => {
+    expect(act(key("W", { shiftKey: true }))).toBe("pick-white");
+    for (const tab of ["look", "lens", "light", "color", "detail", "curve", "raw"] as const) expect(act(key("w"), { tab }), tab).toBe("pick-white");
+    expect(act(key("w"), { mode: "pick-white" })).toBe("pick-white");
+    expect(act(key("w"), { mode: "pick-color" })).toBe("pick-white");
+    expect(act(key("w"), { mode: "crop" })).toBe("pick-white");
+    expect(act(cmd("w"))).toBe("close-session");
+    expect(act(key("w", { ctrlKey: true }))).toBeNull();
+    expect(act(key("w", { altKey: true }))).toBeNull();
+  });
+
+  it("W is one press, one change, and not a letter typed into a menu, a list or a dialog", () => {
+    expect(act({ ...key("w"), repeat: false })).toBe("pick-white");
+    expect(act({ ...key("w"), repeat: true })).toBeNull();
+    for (const role of ["menu", "listbox", "dialog"]) {
+      const box = document.createElement("div");
+      box.setAttribute("role", role);
+      const item = document.createElement("div");
+      item.setAttribute("role", role === "menu" ? "menuitem" : "option");
+      box.append(item);
+      expect(act(key("w", {}, item)), role).toBeNull();
+    }
+    // A button with focus (the toggle itself) or a slider does not use W.
+    expect(act(key("w", {}, document.createElement("button")))).toBe("pick-white");
+    const slider = document.createElement("input");
+    slider.type = "range";
+    expect(act(key("w", {}, slider))).toBe("pick-white");
+    expect(act({ ...key("w"), defaultPrevented: true })).toBeNull();
+  });
+
   it("types normally in a text box", () => {
     const input = document.createElement("input");
     input.type = "search";

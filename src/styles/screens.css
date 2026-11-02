@@ -113,7 +113,7 @@
   cursor: crosshair;
   outline-offset: -3px;
 }
-.ym-pick-layer__mark { position: absolute; width: 28px; height: 28px; margin: -14px 0 0 -14px; pointer-events: none; }
+.ym-pick-layer__mark { position: absolute; width: 48px; height: 48px; margin: -24px 0 0 -24px; pointer-events: none; }
 /* --crop-handle is the handle's size. A handle on a frame edge that sits on the edge of the cell is drawn just inside it (CropOverlay), and
    that offset is this size, so a skin that changes the size changes the offset with it. */
 .ym-crop { --crop-handle: 10px; position: absolute; inset: 0; overflow: hidden; }
@@ -245,12 +245,12 @@
 }
 
 /* In the narrowest windows the header has no room for the status text beside "Add photos" (the labels already wrap to their longest
-   word at 1180 px): it goes below 1274 px, where it would run over the Export cell. The Pick white hint is not it and stays. */
+   word at 1180 px): it goes below 1274 px, where it would run over the Export cell. The header's hint (Pick colour's) is not it and stays. */
 @media (max-width: 1273px) {
   .ym-screen[data-screen="photos"][data-panel="tools"] .ym-status:not([data-hint="true"]) { display: none; }
 }
 
-/* The Pick white hint is a whole sentence on one line (219 px) and does not fit beside the buttons below about 1357 px (1347 px before the
+/* The header's hint is a whole sentence on one line (Pick colour's now; the number is Pick white's old one, 219 px) and does not fit beside the buttons below about 1357 px (1347 px before the
    glass buttons): at 1180 px it ran 150 px into the Export cell. There it floats over the top right of the photo area instead, just under
    the header (the same breakpoint as in glass-c2.css). */
 @media (max-width: 1359px) {

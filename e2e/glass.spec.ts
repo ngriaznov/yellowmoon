@@ -260,9 +260,9 @@ test.describe("the other controls", () => {
 });
 
 test.describe("the header", () => {
-  test("Before, Pick white and Crop are toggles: aria-pressed is false, true, false as they are pressed", async ({ page }) => {
+  test("Before and Crop are toggles: aria-pressed is false, true, false as they are pressed", async ({ page }) => {
     await photos(page);
-    for (const name of ["Before", "Pick white", "Crop"]) {
+    for (const name of ["Before", "Crop"]) {
       const toggle = page.getByRole("button", { name, exact: true });
       await expect(toggle, `${name} before`).toHaveAttribute("aria-pressed", "false");
       await toggle.click();
@@ -274,7 +274,7 @@ test.describe("the header", () => {
 
   test("the toggles are glasscn Toggles, the actions glass buttons, and the status and the Actions landmark are there", async ({ page }) => {
     await photos(page);
-    await expect(page.locator('.ym-header [data-slot="toggle"]')).toHaveCount(3);
+    await expect(page.locator('.ym-header [data-slot="toggle"]')).toHaveCount(2);
     await expect(page.getByRole("navigation", { name: "Actions" })).toBeVisible();
     await expect(page.locator(".ym-status").first()).toContainText("·");
     const slots = await page.locator(".ym-header [data-slot]").evaluateAll((els) => [...new Set(els.map((e) => e.getAttribute("data-slot")))].sort());

@@ -39,10 +39,10 @@ const dropOnWindow = (...names: string[]): void => {
 };
 
 describe("Add photos", () => {
-  it("is a header button after Pick white and before the zoom menu, and says its key", async () => {
+  it("is a header button after Crop and before the zoom menu, and says its key", async () => {
     await setup();
     const labels = within(header()).getAllByRole("button").map((b) => b.textContent);
-    expect(labels.slice(0, 5)).toEqual(["Before", "Crop", "Pick white", "Add photos", expect.stringMatching(/^Fit/)]);
+    expect(labels.slice(0, 4)).toEqual(["Before", "Crop", "Add photos", expect.stringMatching(/^Fit/)]);
     expect(within(header()).getByRole("button", { name: "Add photos" })).toHaveAccessibleDescription("Add photos (⌘O)");
   });
 

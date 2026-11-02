@@ -113,8 +113,11 @@ describe("in full screen", () => {
     await h!.user.keyboard("f");
     await h!.user.keyboard("w");
     expectLayout();
-    expect(await screen.findByText("Click something neutral: grey or white.")).toBeInTheDocument();
+    expect(await screen.findByText("Click something neutral: grey or white. Esc cancels.")).toBeInTheDocument();
     expect(within(photo()).getByRole("application")).toBeInTheDocument();
+    // It opened the Colour tab, whose panel is back with the pressed toggle.
+    expect(screen.getByRole("tab", { name: "Colour" })).toHaveAttribute("aria-selected", "true");
+    expect(within(screen.getByRole("region", { name: "White balance" })).getByRole("button", { name: "Pick white" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("⌘E leaves full screen and opens Export; closing Export does not go back to full screen", async () => {

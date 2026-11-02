@@ -7,7 +7,8 @@ import { configureMock, dropFiles, failNext, lookTilesLoaded, openApp, openPhoto
 // Apple Auto (`docs/19`: the Automatic card with Apple's answer, Preferences with its row, and the instructions for Apple's model edited,
 // with Reset to default), the two of the Auto providers (`docs/22` section 12.9: Preferences with every provider listed and the dropdown
 // open, and the consent dialog), the one of Auto crop (`docs/20`: the Crop panel with Auto on and its note) and the three of the Lens tab
-// (`docs/21`: no lens, a lens chosen at its start amounts, and the lens data missing). A state is a function that leaves a page in it;
+// (`docs/21`: no lens, a lens chosen at its start amounts, and the lens data missing), and the one of Pick white with the CPU note under its hint
+// (`docs/23` section 8; state 17 is Pick white alone). A state is a function that leaves a page in it;
 // the numbers in the names are only an order.
 
 const MOCKUP = { mockCurrent: 3, mockPicked: "2,3,4" } as const;
@@ -200,9 +201,13 @@ export const STATES: readonly PageState[] = [
   ],
   [
     "17-mode-pick-white",
+    // Pick white is a row of the Colour tab's White balance card (docs/23 section 8): the toggle pressed, the hint as a pill on the photo
+    // and the crosshair under the pointer. The header has nothing of it.
     async (p) => {
       await photos(p);
+      await tab(p, "Colour");
       await p.getByRole("button", { name: "Pick white", exact: true }).click();
+      await expect(p.getByText("Click something neutral: grey or white. Esc cancels.")).toBeVisible();
       await p.mouse.move(420, 300);
       await p.waitForTimeout(300);
     },
@@ -402,6 +407,19 @@ export const STATES: readonly PageState[] = [
       await p.getByRole("option", { name: "Claude Code" }).click();
       await expect(p.getByRole("dialog", { name: "Send photos to Claude Code?" })).toBeVisible();
       await p.waitForTimeout(400);
+    },
+  ],
+  // Pick white in the Colour tab (docs/23 section 8, N-06), started with W from the Look tab, with "Rendering on the CPU" under its hint:
+  // the two glass pills of the photo cell, one above the other. (State 17 is the same screen without the CPU note.)
+  [
+    "50-colour-picking-white",
+    async (p) => {
+      await photos(p);
+      await p.keyboard.press("w");
+      await expect(p.getByText("Click something neutral: grey or white. Esc cancels.")).toBeVisible();
+      await p.evaluate(() => window.__yellowmoon!.mockApi.emitEvent("viewport_busy", { busy: true, cpu: true }));
+      await expect(p.getByText("Rendering on the CPU")).toBeVisible();
+      await p.waitForTimeout(300);
     },
   ],
 ];

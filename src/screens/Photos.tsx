@@ -164,7 +164,7 @@ function ExportCellContainer({ store }: { store: AppStore }) {
 
 /**
  * The Photos screen (`design/mockups/photos.html`, `docs/11-ui.md` §Photos): the header with
- * Before, Crop, Pick white, Add photos and the zoom menu, the photo, the filmstrip and the tool panel with its
+ * Before, Crop, Add photos and the zoom menu, the photo, the filmstrip and the tool panel with its
  * seven tabs. The Crop panel and the Export panel replace the tool panel. F shows the photo alone, filling the window
  * (`docs/11` §Full screen).
  */
@@ -188,8 +188,8 @@ export function Photos() {
   const preferences = useAppState((s) => (s.panel === "export" ? s.preferences : null));
   const overlay = useAppState((s) => s.overlay);
   const [tab, setTab] = useState<TabId>("look");
-  // Pick white (the header) or Pick colour (Colour › Colour warp): one crosshair layer over the photo, so the two are exclusive.
-  // `picked` is what was asked for; `picking` (below, once the crop and the tab are known) is what is on.
+  // Pick white (Colour › White balance, or W) or Pick colour (Colour › Colour warp): one crosshair layer over the photo, so the two are
+  // exclusive. `picked` is what was asked for; `picking` (below, once the crop and the tab are known) is what is on.
   const [picked, setPicking] = useState<PickMode | null>(null);
   // Files dropped anywhere on the window are added to the session, as on Start (`docs/11` §Photos); a dialog takes the drop away.
   const { dragging } = useWindowDrop({ onDrop: (paths) => void store.openPaths(paths), enabled: overlay === null });
@@ -209,20 +209,20 @@ export function Photos() {
 
   const photos = session?.photos ?? [];
   const cropping = crop.active;
-  // Pick colour belongs to the Colour tab (`docs/11` §Colour warp): it is on only while that tab is the one shown, in the tool panel (the
-  // Export and Crop panels replace it). It is read from the tab, not switched off at each way of leaving, so a click on a tab, ⌘1 to ⌘7,
-  // the Look tab's links and the panels all end it in the same render that hides the tab: the layer is gone at once and takes no click.
-  // Pick white is not tied to a tab. Leaving the screen (Start, the wizard) unmounts this one, and with it the mode.
+  // Pick white and Pick colour belong to the Colour tab (`docs/11` §Pick white, §Colour warp): a mode is on only while that tab is the one
+  // shown, in the tool panel (the Export and Crop panels replace it). It is read from the tab, not switched off at each way of leaving, so a
+  // click on a tab, ⌘1 to ⌘7, the Look tab's links and the panels all end it in the same render that hides the tab: the layer is gone at
+  // once and takes no click. Leaving the screen (Start, the wizard) unmounts this one, and with it the mode.
   const colourShown = panel === "tools" && tab === "color" && !cropping;
-  const picking: PickMode | null = picked === "color" && !colourShown ? null : picked;
-  // What was asked for is forgotten with it, so coming back to Colour finds Pick colour off. A photo that changes, by whatever road (the
+  const picking: PickMode | null = colourShown ? picked : null;
+  // What was asked for is forgotten with it, so coming back to Colour finds the mode off. A photo that changes, by whatever road (the
   // filmstrip, the arrows, Delete, an undo of a removal), ends it too, if it is not ended already.
   useEffect(() => {
-    if (picked === "color" && !colourShown) setPicking(null);
+    if (picked !== null && !colourShown) setPicking(null);
   }, [picked, colourShown]);
   const photoId = photo?.id ?? null;
   useEffect(() => {
-    setPicking((mode) => (mode === "color" ? null : mode));
+    setPicking(null);
   }, [photoId]);
   // Full screen (F): the photo alone. The Export panel and Crop need the panel, so neither shares the window with it.
   const fullScreen = useFullScreen(!cropping && panel !== "export");
@@ -261,7 +261,7 @@ export function Photos() {
   );
   const togglePickOf = useCallback((id: number | string) => void store.togglePick(Number(id)), [store]);
   /**
-   * Remove from filmstrip (the thumbnail's menu, Delete): a crop or a Pick white in progress ends first, as when another photo is chosen,
+   * Remove from filmstrip (the thumbnail's menu, Delete): a crop or a pick in progress ends first, as when another photo is chosen,
    * so nothing is left of a mode on a photo that is gone.
    */
   const removePhoto = useCallback(
@@ -302,9 +302,20 @@ export function Photos() {
     store.setPanel("tools");
     crop.start();
   };
-  const togglePicking = (): void => {
+  // Pick white, from the White balance card's toggle. It turns Pick colour off, and ends itself after one click.
+  const setPickingWhite = useCallback((on: boolean): void => {
+    setPicking((mode) => (on ? "white" : mode === "white" ? null : mode));
+  }, []);
+  // W: opens the Colour tab and starts Pick white; W again ends it. Leaving the Export panel for the tab is what ⌘4 does.
+  const togglePickWhite = (): void => {
     if (!rs || !photo || !isReady(photo) || cropping) return;
-    setPicking((mode) => (mode === "white" ? null : "white"));
+    if (picking === "white") {
+      setPicking(null);
+      return;
+    }
+    store.setPanel("tools");
+    setTab("color");
+    setPicking("white");
   };
   // Pick colour, from the Colour warp card's toggle. It turns Pick white off, and stays on for several clicks until Esc or the toggle.
   const setPickingColor = useCallback((on: boolean): void => {
@@ -312,7 +323,6 @@ export function Photos() {
   }, []);
   const onPicked = useCallback(
     (point: { x: number; y: number }): void => {
-      setTab("color");
       if (picking === "color") {
         void store.pickColor(point.x, point.y);
         return;
@@ -395,7 +405,7 @@ export function Photos() {
         case "zoom-out":
           zoomBy(-1);
           return true;
-        // Crop and Pick white need the panel and the header (the hint, the result on the Colour tab): full screen ends first.
+        // Crop and Pick white need the panel (the Colour tab with the result) and the header: full screen ends first.
         case "crop":
           fullScreen.leave();
           if (!cropping) startCrop();
@@ -406,7 +416,7 @@ export function Photos() {
           return true;
         case "pick-white":
           fullScreen.leave();
-          togglePicking();
+          togglePickWhite();
           return true;
         case "full-screen":
           // Not from the Export panel or Crop, which are the panel.
@@ -459,7 +469,15 @@ export function Photos() {
             ) : tab === "light" ? (
               <LightTab store={store} photo={photo} rs={rs} />
             ) : tab === "color" ? (
-              <ColorTab store={store} photo={photo} rs={rs} pickingColor={picking === "color"} onPickColor={setPickingColor} />
+              <ColorTab
+                store={store}
+                photo={photo}
+                rs={rs}
+                pickingWhite={picking === "white"}
+                onPickWhite={setPickingWhite}
+                pickingColor={picking === "color"}
+                onPickColor={setPickingColor}
+              />
             ) : tab === "detail" ? (
               <DetailTab store={store} photo={photo} rs={rs} />
             ) : tab === "curve" ? (
@@ -521,14 +539,12 @@ export function Photos() {
             <Button variant="header" pressed={cropping} disabled={!rs} onClick={() => (cropping ? crop.session?.cancel() : startCrop())} title="Crop (C)">
               Crop
             </Button>
-            <Button variant="header" pressed={picking === "white"} disabled={!rs || cropping} onClick={togglePicking} title="Pick white (W)">
-              Pick white
-            </Button>
             <AddPhotosButton store={store} />
             <ZoomMenu store={store} photo={photo} rs={rs} cell={cell} />
-            {picking ? (
+            {picking === "color" ? (
+              // Pick white's hint is a pill on the photo (`PickWhiteHint`); Pick colour's stays in the header.
               <span className="ym-status" data-hint="true" role="status">
-                {picking === "color" ? "Click a colour in the photo." : "Click something neutral: grey or white."}
+                Click a colour in the photo.
               </span>
             ) : COUNT_IN_HEADER ? (
               <span className="ym-status-group">

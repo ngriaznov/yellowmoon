@@ -80,7 +80,7 @@ test.describe("Add photos", () => {
     await photos(page);
     const nav = header(page);
     // At 1440 nothing wraps: every button is one line (32 px, glasscn's small control) and the status text is there, inside its cell.
-    for (const name of ["Before", "Crop", "Pick white", "Add photos"]) {
+    for (const name of ["Before", "Crop", "Add photos"]) {
       expect((await nav.getByRole("button", { name }).boundingBox())!.height).toBe(32);
     }
     const status = page.getByText("Neural · 42 ms · Display P3");
@@ -95,16 +95,34 @@ test.describe("Add photos", () => {
     await expect(nav.getByRole("button", { name: "Add photos" })).toBeVisible();
   });
 
-  test("the Pick white hint never runs into the Export cell, at any width from 1180 up", async ({ page }) => {
+  test("Pick colour's hint never runs into the Export cell, and Pick white's pill stays on the photo, at any width from 1180 up", async ({ page }) => {
     await photos(page);
-    await header(page).getByRole("button", { name: "Pick white" }).click();
-    const hint = page.getByText("Click something neutral: grey or white.");
+    await page.getByRole("tab", { name: "Colour" }).click();
+    await page.getByRole("button", { name: "Pick colour" }).click();
+    const hint = page.getByText("Click a colour in the photo.");
     await expect(hint).toBeVisible();
     for (const width of [1180, 1273, 1300, 1359, 1360, 1440]) {
       await page.setViewportSize({ width, height: 760 });
       const cell = (await page.locator(".ym-header__right").boundingBox())!;
       const box = (await hint.boundingBox())!;
       expect(box.x + box.width, `the hint's right edge at ${width}`).toBeLessThanOrEqual(cell.x);
+      const scrolls = await page.locator(".ym-header__nav").evaluate((el) => el.scrollWidth - el.clientWidth);
+      expect(scrolls, `the header's overflow at ${width}`).toBeLessThanOrEqual(0);
+    }
+    // Pick white has no header text at all: its hint is a pill inside the photo, whatever the width, and the header does not change.
+    await page.getByRole("button", { name: "Pick white" }).click();
+    await expect(hint).toHaveCount(0);
+    const pill = page.getByText("Click something neutral: grey or white. Esc cancels.");
+    await expect(pill).toBeVisible();
+    for (const width of [1180, 1300, 1440]) {
+      await page.setViewportSize({ width, height: 760 });
+      const photo = (await page.locator("[data-viewport]").boundingBox())!;
+      const box = (await pill.boundingBox())!;
+      expect(box.x, `the pill's left edge at ${width}`).toBeGreaterThanOrEqual(photo.x);
+      expect(box.x + box.width, `the pill's right edge at ${width}`).toBeLessThanOrEqual(photo.x + photo.width);
+      expect(box.y, `the pill's top at ${width}`).toBeGreaterThanOrEqual(photo.y);
+      // At the middle of the photo.
+      expect(box.x + box.width / 2, `the pill's centre at ${width}`).toBeCloseTo(photo.x + photo.width / 2, 0);
       const scrolls = await page.locator(".ym-header__nav").evaluate((el) => el.scrollWidth - el.clientWidth);
       expect(scrolls, `the header's overflow at ${width}`).toBeLessThanOrEqual(0);
     }

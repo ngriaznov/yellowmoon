@@ -247,7 +247,9 @@ describe("Pick colour", () => {
     await h.user.click(screen.getByRole("button", { name: "Pick white" }));
     expect(await within(photo()).findByRole("application", { name: /^Pick white\./ })).toBeInTheDocument();
     expect(card().getByRole("button", { name: "Pick colour" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByText("Click something neutral: grey or white.")).toBeInTheDocument();
+    expect(screen.getByText("Click something neutral: grey or white. Esc cancels.")).toBeInTheDocument();
+    // The header's hint of Pick colour went with it.
+    expect(screen.queryByText("Click a colour in the photo.")).toBeNull();
   });
 
   it("ends as soon as another tab is shown, by a click or by ⌘1 to ⌘7: the layer goes at once, a click on the photo adds no pin, and Colour comes back with it off", async () => {
@@ -305,17 +307,15 @@ describe("Pick colour", () => {
     expect(toggle()).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("leaves Pick white as it was: it outlives a tab, and another photo still ends it", async () => {
+  it("takes over from Pick white too: turning it on turns Pick white's toggle off, and the pill goes", async () => {
     await setup();
     await h.user.click(screen.getByRole("button", { name: "Pick white" }));
     expect(await within(photo()).findByRole("application", { name: /^Pick white\./ })).toBeInTheDocument();
-    await h.user.keyboard("{Meta>}1{/Meta}");
-    expect(within(photo()).getByRole("application", { name: /^Pick white\./ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Pick white" })).toHaveAttribute("aria-pressed", "true");
-    // As before, a click on another photo in the filmstrip ends it.
-    await h.user.click(within(screen.getByRole("navigation", { name: "Photos" })).getByRole("button", { name: /^Show DSC04206/ }));
-    await waitFor(() => expect(within(photo()).queryByRole("application")).toBeNull());
+    await startPicking();
     expect(screen.getByRole("button", { name: "Pick white" })).toHaveAttribute("aria-pressed", "false");
+    expect(within(photo()).queryByRole("application", { name: /^Pick white\./ })).toBeNull();
+    expect(within(photo()).queryByRole("status")).toBeNull();
+    expect(screen.getByText("Click a colour in the photo.")).toBeInTheDocument();
   });
 
   it("is off again after the Start screen: leaving the photo view ends it", async () => {

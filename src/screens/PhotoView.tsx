@@ -13,6 +13,7 @@ import { CropOverlay } from "./crop/CropOverlay";
 import type { CropSession } from "./crop/useCropSession";
 import { PickLayer } from "./PickLayer";
 import type { PickMode } from "./PickLayer";
+import { PickWhiteHint } from "./PickWhiteHint";
 import { previewUrl } from "./preview";
 import { RenderingNote } from "./RenderingNote";
 
@@ -48,8 +49,8 @@ function notReadyNote(photo: PhotoSummary): { title: string; text: string } | nu
 
 /**
  * The photo cell of the Photos screen: the 3:2 viewport with its overlays (look chip, camera
- * line, Before label, ⌥ pixel readout, "Rendering on the CPU" while the core renders the photo on the CPU) and, while they are on, the crosshair of Pick white or Pick colour or the
- * crop frame. Who draws the photo depends on the viewport backend (`viewport_info`): the native
+ * line, Before label, ⌥ pixel readout, "Rendering on the CPU" while the core renders the photo on the CPU) and, while they are on, the crosshair of Pick white or Pick colour (with
+ * Pick white's hint pill) or the crop frame. Who draws the photo depends on the viewport backend (`viewport_info`): the native
  * layer behind a transparent cell (`native`), the shell's pictures of the cell shown as images
  * (`fallback`, from `viewport_frame`), or, with no backend (a browser build on the mock), the
  * mock's own picture. Double click toggles Fit and 100 %, the wheel pans and (with ⌘) zooms, a pinch zooms, and a drag pans: the
@@ -193,7 +194,12 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
       cameraLine={photo && !note ? cameraLine(photo, { body: !compactCaption }) : undefined}
       before={before && !note}
       pixelReadout={readout}
-      notice={<RenderingNote />}
+      notice={
+        <>
+          {picking === "white" ? <PickWhiteHint /> : null}
+          <RenderingNote />
+        </>
+      }
       onRect={handleRect}
       onPixelProbe={onProbe}
       onDoubleClick={(event: ReactMouseEvent<HTMLElement>) => {

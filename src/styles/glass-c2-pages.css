@@ -1,5 +1,5 @@
 /* Variant C2: the pages that still wore the old look, brought to the same dark glass.
-   Start, the Import ARRI looks wizard, the modes on the photo (Before, the pixel readout, Crop, Pick white), the error bar, and the
+   Start, the Import ARRI looks wizard, the modes on the photo (Before, the pixel readout, Crop, Pick white and its hint), the error bar, and the
    rest of the dialogs and tabs. The layout of every page is the one it has today (the same cells, edge to edge, in the same places);
    what changed is what they are made of: glass surfaces with a thin light rim for each rule, glasscn's own components for every control
    and every row, the yellow accent and the tab colours. The wheels, the curve plot, the histogram, the look tiles, the filmstrip
@@ -587,7 +587,8 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 .ym-photo-cell__before,
 .ym-photo-cell__chip,
 .ym-photo-cell__readout,
-.ym-photo-cell__busy {
+.ym-photo-cell__busy,
+.ym-photo-cell__hint {
   position: absolute;
   height: 26px;
   padding: 0 12px;
@@ -604,7 +605,8 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 .ym-photo-cell__before,
 .ym-photo-cell__chip,
 .ym-photo-cell__readout,
-.ym-photo-cell__busy {
+.ym-photo-cell__busy,
+.ym-photo-cell__hint {
   border: 1px solid rgb(255 255 255 / 0.2);
   background: rgb(14 14 18 / 0.74);
   color: #fff;
@@ -626,6 +628,24 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   gap: 8px;
   letter-spacing: normal;
   pointer-events: none;
+}
+/* The hint of Pick white (docs/11 *Pick white*): the same pill with an eyedropper, under the pointer's way as well. When the CPU note shows
+   too, it moves down one pill's height (the hint is its sibling, drawn first). */
+.ym-photo-cell__hint {
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  gap: 7px;
+  letter-spacing: normal;
+  pointer-events: none;
+}
+.ym-photo-cell__hint svg {
+  width: 13px;
+  height: 13px;
+  color: #fff;
+}
+.ym-photo-cell__hint ~ .ym-photo-cell__busy {
+  top: 46px;
 }
 .ym-photo-cell__camera {
   right: 16px;
@@ -864,6 +884,15 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 [data-slot="toggle"][data-state="on"]:hover {
   background: var(--primary);
   filter: brightness(1.07);
+}
+/* The Pick white toggle in the White balance card is yellow when pressed, like the header's toggles, though the Colour tab's accent is
+   green; "or press W" is quiet text beside it. */
+.ym-pick-row [data-slot="toggle"][data-state="on"] {
+  --primary: var(--tab-look);
+  --primary-foreground: var(--tab-look-ink);
+}
+.ym-pick-row__keys {
+  color: var(--glass-label-tertiary);
 }
 /* The Default tag on a look tile sits on a picture: a dark chip, as the number is. */
 .ym-look-tile__default {

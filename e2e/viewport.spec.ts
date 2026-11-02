@@ -203,6 +203,7 @@ for (const backend of ["native", "fallback"] as const) {
   test.describe(`the pointer over the photo (${backend})`, () => {
     test("Pick white sends the click to the core as a point of the cell and shows what the core set", async ({ page }) => {
       await photos(page, { mockViewport: backend });
+      await page.getByRole("tab", { name: "Colour" }).click();
       await page.getByRole("button", { name: "Pick white" }).click();
       const layer = page.getByRole("application");
       const box = (await layer.boundingBox())!;

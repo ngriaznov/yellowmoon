@@ -28,7 +28,7 @@ export interface PickLayerProps {
 const KEY_STEP = 0.01;
 
 /**
- * Pick white and Pick colour (`docs/11-ui.md` §Pick white, §Colour warp): a crosshair over the photo. A click reports the point under
+ * Pick white and Pick colour (`docs/11-ui.md` §Pick white, §Colour warp): a crosshair over the photo, drawn white with a dark outline. A click reports the point under
  * it; the screen samples it (Pick white then ends, Pick colour stays on for the next click). From the keyboard the layer takes focus,
  * the arrow keys move the crosshair (Shift: ten times as far) and Return or Space picks. Esc, handled by the screen, ends the mode.
  * Only the picture counts; the paper around a letterboxed photo does not.
@@ -111,10 +111,18 @@ export function PickLayer({ mode = "white", displayAspect, letterboxed = true, o
       onKeyDown={onKeyDown}
     >
       {at ? (
-        <svg className="ym-pick-layer__mark" style={{ left: `${at.x * 100}%`, top: `${at.y * 100}%` }} viewBox="0 0 28 28" aria-hidden="true">
-          <g fill="none" strokeLinecap="square">
-            <path d="M14 2v8M14 18v8M2 14h8M18 14h8" stroke="#fff" strokeWidth="5" />
-            <path d="M14 2v8M14 18v8M2 14h8M18 14h8" stroke="#000" strokeWidth="2" />
+        <svg className="ym-pick-layer__mark" style={{ left: `${at.x * 100}%`, top: `${at.y * 100}%` }} viewBox="0 0 48 48" aria-hidden="true">
+          {/* White, with a dark outline under it, so that it reads on light and dark parts of a photo. The circle is open: the spot under
+              it stays in view, and the middle of the circle is the point that is picked. */}
+          <g fill="none" strokeLinecap="round">
+            <g stroke="rgb(0 0 0 / 0.6)" strokeWidth="4" data-part="outline">
+              <circle cx="24" cy="24" r="10" />
+              <path d="M24 2v12M24 34v12M2 24h12M34 24h12" />
+            </g>
+            <g stroke="#fff" strokeWidth="1.6" data-part="line">
+              <circle cx="24" cy="24" r="10" />
+              <path d="M24 2v12M24 34v12M2 24h12M34 24h12" />
+            </g>
           </g>
         </svg>
       ) : null}

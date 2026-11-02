@@ -317,24 +317,40 @@ describe("the Crop panel", () => {
 });
 
 describe("Pick white", () => {
-  it("shows the hint in the header, a crosshair layer over the photo, and presses the button", async () => {
+  /** The toggle in the White balance card: Pick white is a row of the Colour tab (`docs/11` §Pick white), not a header button. */
+  const toggle = (): HTMLElement => within(screen.getByRole("region", { name: "White balance" })).getByRole("button", { name: "Pick white" });
+  const hint = "Click something neutral: grey or white. Esc cancels.";
+
+  it("shows the hint as a pill on the photo, a crosshair layer over it, and presses the card's toggle", async () => {
     await setup();
-    await h!.user.click(screen.getByRole("button", { name: "Pick white" }));
-    expect(screen.getByText("Click something neutral: grey or white.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Pick white" })).toHaveAttribute("aria-pressed", "true");
+    await h!.user.click(screen.getByRole("tab", { name: "Colour" }));
+    await h!.user.click(toggle());
+    expect(toggle()).toHaveAttribute("aria-pressed", "true");
+    const pill = within(photo()).getByRole("status");
+    expect(pill).toHaveTextContent(hint);
+    expect(pill).toHaveAttribute("aria-live", "polite");
+    // The header says nothing of it: its status text stays.
+    expect(screen.getByText("Neural · 42 ms · Display P3")).toBeInTheDocument();
+    expect(screen.queryByText(/Click something neutral/, { selector: ".ym-status" })).toBeNull();
     const layer = within(photo()).getByRole("application");
     expect(layer).toHaveFocus();
-    expect(screen.queryByText("Neural · 42 ms · Display P3")).toBeNull();
+    // The pill is out of the picture's `role="img"` and takes no pointer events, as the CPU note does.
+    expect(pill.closest('[role="img"]')).toBeNull();
   });
 
-  it("W starts it and Esc cancels it without changing anything", async () => {
+  it("W starts it from any tab, on the Colour tab, and Esc cancels it without changing anything", async () => {
     const spy = await setup();
+    expect(screen.getByRole("tab", { name: "Look" })).toHaveAttribute("aria-selected", "true");
     await h!.user.keyboard("w");
-    expect(await screen.findByText("Click something neutral: grey or white.")).toBeInTheDocument();
+    expect(await screen.findByText(hint)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Colour" })).toHaveAttribute("aria-selected", "true");
+    expect(toggle()).toHaveAttribute("aria-pressed", "true");
     spy.mockClear();
     await h!.user.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByText("Click something neutral: grey or white.")).toBeNull());
+    await waitFor(() => expect(screen.queryByText(hint)).toBeNull());
     expect(within(photo()).queryByRole("application")).toBeNull();
+    expect(toggle()).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("tab", { name: "Colour" })).toHaveAttribute("aria-selected", "true");
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -428,12 +444,17 @@ describe("Pick white", () => {
     expect(h!.store.getState().canUndo).toBe(false);
   });
 
-  it("can't start while the photo is being cropped, and the button is off", async () => {
+  it("can't start while the photo is being cropped: the Crop panel has no White balance card, and W does nothing", async () => {
     await setup();
     await startCrop();
-    expect(screen.getByRole("button", { name: "Pick white" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.queryByRole("button", { name: "Pick white" })).toBeNull();
     await h!.user.keyboard("w");
-    expect(screen.queryByText("Click something neutral: grey or white.")).toBeNull();
+    expect(screen.queryByText("Click something neutral: grey or white. Esc cancels.")).toBeNull();
+    expect(within(photo()).queryByRole("application")).toBeNull();
+    // Done with the crop, the tool panel is back on the Look tab, and Pick white is off.
+    await h!.user.keyboard("{Escape}");
+    await screen.findByRole("complementary", { name: "Tools" });
+    expect(within(photo()).queryByRole("application")).toBeNull();
   });
 
   it("undo takes a pick back", async () => {

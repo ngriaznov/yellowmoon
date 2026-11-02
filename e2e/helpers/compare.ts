@@ -40,9 +40,13 @@ export const reference = (name: string): Buffer => readFileSync(resolve(REFERENC
  * of pixels that differ by more than 24 on a channel, the measure of the M3-01 report, is printed and kept in
  * `node_modules/.cache/yellowmoon-e2e/screenshot-diffs/<state>.json`. Returns that share, 0–1.
  */
-export async function compareScreen(page: Page, name: string, options: { maxDiffPixelRatio?: number } = {}): Promise<number> {
+export async function compareScreen(
+  page: Page,
+  name: string,
+  options: { maxDiffPixelRatio?: number; /** Where the pointer rests for the picture, in CSS pixels of the page. Default (1000, 400). */ pointer?: { x: number; y: number } } = {},
+): Promise<number> {
   await settle(page);
-  await page.mouse.move(1000, 400);
+  await page.mouse.move(options.pointer?.x ?? 1000, options.pointer?.y ?? 400);
   await page.waitForTimeout(100);
   const png = await page.screenshot({ animations: "disabled" });
   mkdirSync(ACTUAL_DIR, { recursive: true });

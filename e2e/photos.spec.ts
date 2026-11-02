@@ -320,12 +320,14 @@ test.describe("controls with the real mouse", () => {
     await expect(valueBox(page, "Highlights")).toHaveValue("0.80");
   });
 
-  test("Crop, Pick white and Before sit in the header with the shortcuts in their tooltips", async ({ page }) => {
+  test("Crop and Before sit in the header with the shortcuts in their tooltips; Pick white is in the Colour tab with its key", async ({ page }) => {
     await photos(page);
     // A title is a glass tooltip and the button's description.
     await expect(page.getByRole("button", { name: "Before" })).toHaveAccessibleDescription(/\\/);
     await expect(page.getByRole("button", { name: "Crop" })).toHaveAccessibleDescription("Crop (C)");
-    await expect(page.getByRole("button", { name: "Pick white" })).toHaveAccessibleDescription("Pick white (W)");
+    await expect(page.getByRole("banner").getByRole("button", { name: "Pick white" })).toHaveCount(0);
+    await page.getByRole("tab", { name: "Colour" }).click();
+    await expect(page.getByRole("button", { name: "Pick white" })).toHaveAccessibleDescription("Click something neutral on the photo (W)");
     await page.getByRole("button", { name: "Crop" }).hover();
     await expect(page.getByRole("tooltip").first()).toHaveText("Crop (C)");
   });
@@ -477,10 +479,10 @@ test.describe("crop and pick white by mouse", () => {
     expect(decodeURIComponent((await page.locator(".ym-photo-cell__image").getAttribute("src"))!)).toMatch(/viewBox="0 0 1500 1000"/);
   });
 
-  test("Pick white: crosshair cursor, header hint, a click sets the white balance, Esc cancels", async ({ page }) => {
+  test("Pick white: crosshair cursor, the pill on the photo, a click sets the white balance, Esc cancels", async ({ page }) => {
     await photos(page);
     await page.keyboard.press("w");
-    await expect(page.getByText("Click something neutral: grey or white.")).toBeVisible();
+    await expect(page.getByText("Click something neutral: grey or white. Esc cancels.")).toBeVisible();
     const layer = page.getByRole("application");
     await expect(layer).toHaveCSS("cursor", "crosshair");
     await page.keyboard.press("Escape");
