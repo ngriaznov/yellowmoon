@@ -7,15 +7,20 @@
 //! setting, clone [`ColorChain::params`], edit it and build a new chain (the LUTs are shared, not
 //! copied).
 //!
-//! # Look placement
+//! # Nodes and the look
 //!
-//! * A **log-to-log look** (LogC4 or LogC3 EI 800 input) runs at C10, between the grade and the
-//!   curve: `C9 -> look -> blend by intensity -> C11`. Neutral, an identity CDL without a LUT, and
-//!   an intensity of 0 skip the stage and are exactly the identity.
-//! * A look that **includes display rendering** (LogC3 to Rec.709) replaces C12. The curve runs
-//!   first, then both our C12 and the look's LUT are evaluated from the same C11 output and blended
-//!   in display-linear by the intensity. At 0 % the result is our C12 exactly; at 100 % it is the
-//!   look exactly (after the primaries matrix to the output).
+//! The chain runs the nodes of its plan ([`ChainParams::nodes`], `crate::plan`) between C8 and the look:
+//! each corrector does its trims, C9, C9b and C11 (`display::node`), the default graph being Main alone.
+//! The look belongs to the Output and acts after the last node (pipeline 0.9.0; until 0.8.2 the curve
+//! followed the look).
+//!
+//! * A **log-to-log look** (LogC4 or LogC3 EI 800 input) runs at C10, after the nodes:
+//!   `nodes -> look -> blend by intensity`. Neutral, an identity CDL without a LUT, and an intensity
+//!   of 0 skip the stage and are exactly the identity.
+//! * A look that **includes display rendering** (LogC3 to Rec.709) replaces C12. The nodes ran first,
+//!   including every curve; then both our C12 and the look's LUT are evaluated from the same output
+//!   and blended in display-linear by the intensity. At 0 % the result is our C12 exactly; at 100 % it
+//!   is the look exactly (after the primaries matrix to the output).
 //!
 //! # The Before view
 //!
@@ -37,19 +42,21 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::dng_inverse::DngDisplayInverse;
+use super::node::{MainStages, NodeSet, PreparedNode};
 use super::transform::PreparedDisplay;
 use super::{DisplayError, OutputTarget};
 use crate::camera_default::CameraDefault;
 use crate::consts::Vec3;
 use crate::consts::linalg::{self, Mat3};
-use crate::curve::{BakedCurves, CurveSet};
+use crate::curve::CurveSet;
 use crate::encode::{OutputSpace, dither_8bit, quantize};
 use crate::gamut::{LinearAwg4, LinearRec709};
-use crate::grade::{Grade, GradeParams, grade_luma};
+use crate::grade::GradeParams;
 use crate::logc::LogC4;
 use crate::look::{LookTransform, blend_display_linear, intensity_fraction};
+use crate::plan::{KeyRef, PLAN_KEYS, PLAN_REGISTERS, PictureRef, PlanResult, Step};
 use crate::tone::{PreparedTone, ToneParams};
-use crate::warp::{Warp, WarpParams};
+use crate::warp::WarpParams;
 
 /// Largest magnitude a camera sample may have; NaN counts as 0 (see the module docs of [`super`]).
 const INPUT_LIMIT: f64 = 1e30;
@@ -122,14 +129,18 @@ pub struct ChainParams {
     /// Stage C7: the highlight range and the low-light toe, with the clip level and noise floor.
     /// [`ToneParams::IDENTITY`] turns the stage off.
     pub tone: ToneParams,
-    /// Stage C9: the primary grade. All zero is the identity.
+    /// Stage C9 of Main, the corrector every photo has: the primary grade. All zero is the identity.
     pub grade: GradeParams,
-    /// Stage C9b: the colour warp's pins. No pins is the identity.
+    /// Stage C9b of Main: the colour warp's pins. No pins is the identity.
     pub warp: WarpParams,
-    /// Stage C10: the look and its intensity. `None` is Neutral.
+    /// Stage C10, in the Output after the last node: the look and its intensity. `None` is Neutral.
     pub look: Option<LookSetting>,
-    /// Stage C11: the four curves (baked into 1024-entry tables by [`ColorChain::new`]).
+    /// Stage C11 of Main: the four curves (baked into 1024-entry tables by [`ColorChain::new`]).
     pub curves: CurveSet,
+    /// The nodes: the compiled plan, Main's trim and bypass and the other correctors. The default is
+    /// the plan of the default graph, Main alone with no trim (`grade`, `warp` and `curves` above are
+    /// then everything the nodes do).
+    pub nodes: NodeSet,
     /// Stage C13: which output the display-linear values are encoded for.
     pub output: OutputTarget,
     /// Whether 8-bit outputs are dithered (`docs/02`, C13). 10 and 16-bit outputs never are.
@@ -155,6 +166,7 @@ impl ChainParams {
             warp: WarpParams::default(),
             look: None,
             curves: CurveSet::default(),
+            nodes: NodeSet::default(),
             output: OutputTarget::Viewport,
             dither: true,
             before: BeforePoint::CameraDefault,
@@ -165,8 +177,12 @@ impl ChainParams {
 
 /// The value of every stage for one pixel, for tests and for debugging GPU parity stage by stage.
 ///
-/// With a look that includes display rendering, `c10` equals `c9` (the look has not run yet) and the
-/// look is inside `c12`, which is then the blend of our C12 with the look's LUT output.
+/// C9, C9b and C11 are those of **Main** (its trim included in C9): the values the node loop has after
+/// each of Main's steps, equal to the value before when the step is skipped. C10 is the look, which
+/// acts on the output of the last node, so `c10_logc4` is the last LogC4 value of the chain (the
+/// input of C12 and the DNG stop) and equals `c11_logc4` for the default graph with no look. With a
+/// look that includes display rendering, `c10` equals the output of the nodes (the look has not run
+/// yet) and the look is inside `c12`, which is then the blend of our C12 with the look's LUT output.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StageTrace {
     /// The fused matrix applied: linear AWG4 (C1 to C6).
@@ -175,13 +191,14 @@ pub struct StageTrace {
     pub c7_linear_awg4: Vec3,
     /// LogC4 encode (C8).
     pub c8_logc4: LogC4,
-    /// After the primary grade (C9).
+    /// After Main's primary grade (C9).
     pub c9_logc4: LogC4,
-    /// After the colour warp (C9b).
+    /// After Main's colour warp (C9b).
     pub c9b_logc4: LogC4,
-    /// After the look (C10), log-to-log looks only.
+    /// After the look (C10), log-to-log looks only: the output of the last node otherwise. The DNG
+    /// stop point.
     pub c10_logc4: LogC4,
-    /// After the curve (C11): the DNG stop point.
+    /// After Main's curve (C11), before the look.
     pub c11_logc4: LogC4,
     /// After the display transform (C12): display-linear in the output's primaries.
     pub c12_display_linear: Vec3,
@@ -205,16 +222,16 @@ enum LookStage {
     },
 }
 
-/// Values of C1 to C11 for one pixel.
+/// Values of C1 to C10 for one pixel.
 #[derive(Clone, Copy)]
-struct UpToC11 {
+struct Staged {
     c6: Vec3,
     c7: Vec3,
     c8: LogC4,
-    c9: LogC4,
-    c9b: LogC4,
+    /// Main's values after C9, C9b and C11.
+    main: MainStages,
+    /// After the look: the last LogC4 value.
     c10: LogC4,
-    c11: LogC4,
 }
 
 /// The prepared, immutable chain for one photo (stages C7 to C13 behind the fused matrix).
@@ -228,10 +245,11 @@ pub struct ColorChain {
     params: ChainParams,
     matrix: Mat3,
     tone: PreparedTone,
-    grade: Grade,
-    warp: Warp,
+    /// The plan's steps in order, each with its node ready to run.
+    steps: Vec<(Step, PreparedNode)>,
+    /// How many buffers a pixel's plan uses (zero for a plan of one pass).
+    buffers: usize,
     look: LookStage,
-    curves: BakedCurves,
     display: PreparedDisplay,
     output: OutputTarget,
     space: OutputSpace,
@@ -266,11 +284,14 @@ fn unit(x: f64) -> f64 {
 impl ColorChain {
     /// Prepares the chain.
     ///
-    /// Bakes the four curves into their 1024-entry tables, sets up the cine rendering for the output and classifies the look.
+    /// Prepares the nodes of the plan (bakes their curves, leaves out the steps at their identity), sets
+    /// up the cine rendering for the output and classifies the look.
     ///
     /// # Errors
     ///
-    /// [`DisplayError::NonFiniteMatrix`] when the fused matrix has a NaN or infinite entry.
+    /// [`DisplayError::NonFiniteMatrix`] when the fused matrix has a NaN or infinite entry;
+    /// [`DisplayError::MissingNode`] when the plan runs a corrector that `params.nodes` has no
+    /// parameters for.
     pub fn new(params: &ChainParams) -> Result<Self, DisplayError> {
         if params.matrix.iter().flatten().any(|v| !v.is_finite()) {
             return Err(DisplayError::NonFiniteMatrix);
@@ -292,14 +313,37 @@ impl ColorChain {
         // C12 is not our cine rendering for a look that includes its own display rendering at any
         // intensity above 0 (at 0 the chain is our C12 exactly).
         let own_rendering = matches!(&look, LookStage::Baked { intensity_pct, .. } if intensity_fraction(*intensity_pct) > 0.0);
+        let plan = &params.nodes.plan;
+        let steps = plan
+            .steps()
+            .map(|step| {
+                let node = if step.node == crate::plan::MAIN_NODE {
+                    let main = &params.nodes.main;
+                    PreparedNode::new(
+                        main.bypass,
+                        &main.trim,
+                        &params.grade,
+                        &params.warp,
+                        &params.curves,
+                    )
+                } else {
+                    let n = params
+                        .nodes
+                        .others
+                        .get(&step.node)
+                        .ok_or(DisplayError::MissingNode(step.node))?;
+                    PreparedNode::new(n.bypass, &n.trim, &n.grade, &n.warp, &n.curves)
+                };
+                Ok((*step, node))
+            })
+            .collect::<Result<Vec<_>, DisplayError>>()?;
         Ok(Self {
             params: params.clone(),
             matrix: params.matrix,
             tone: params.tone.prepare(),
-            grade: Grade::new(&params.grade),
-            warp: Warp::new(&params.warp),
+            steps,
+            buffers: plan.buffers.len(),
             look,
-            curves: params.curves.bake(),
             display: PreparedDisplay::new(params.output),
             output: params.output,
             space: params.output.space(),
@@ -344,6 +388,15 @@ impl ColorChain {
     #[must_use]
     pub fn camera_default(&self) -> &CameraDefault {
         &self.camera_default
+    }
+
+    /// Whether the nodes of this chain are all a device kernel that runs Main alone can run: the plan is
+    /// Main alone reading the Input, with no trim, not bypassed ([`NodeSet::is_main_only`]). The
+    /// colour kernel refuses any other chain until it learns the plan loop (`docs/23` section 5.4), and
+    /// the render falls back to the CPU reference for it.
+    #[must_use]
+    pub fn nodes_run_on_device(&self) -> bool {
+        self.params.nodes.is_main_only()
     }
 
     /// Whether the look includes its own display rendering (LogC3 to Rec.709), which replaces C12.
@@ -407,24 +460,82 @@ impl ColorChain {
         blend_display_linear(self.display.display_linear(v), theirs, *intensity_pct)
     }
 
-    fn up_to_c11(&self, camera_rgb: Vec3) -> UpToC11 {
+    /// The nodes of the plan on one pixel: `c8` is the Input's picture and `c7` the linear values it
+    /// was encoded from (the luma of C9 is taken from them for a node that reads the Input). Main's
+    /// values after each of its steps go into `main`.
+    ///
+    /// Masks are not rendered until N-10: every node's mask `m` is 1, so a node's output is its
+    /// value after C11 (`docs/23` section 15).
+    fn run_nodes(&self, c8: LogC4, c7: Vec3, mut main: Option<&mut MainStages>) -> LogC4 {
+        let mut registers = [[0.0f64; 3]; PLAN_REGISTERS];
+        let mut slots = [0.0f64; PLAN_KEYS];
+        let mut buffers = vec![[0.0f64; 3]; self.buffers];
+        for (step, node) in &self.steps {
+            let (v_in, linear) = match step.picture {
+                PictureRef::Input => (c8, Some(c7)),
+                PictureRef::Register(r) => (LogC4(registers[usize::from(r)]), None),
+                PictureRef::Buffer(b) => (LogC4(buffers[usize::from(b)]), None),
+            };
+            let stages = if step.node == crate::plan::MAIN_NODE {
+                main.as_deref_mut()
+            } else {
+                None
+            };
+            let out = node.apply(v_in, linear, stages).0;
+            // The node's mask: 1 everywhere until N-10.
+            let m = 1.0;
+            if let Some(o) = step.picture_out {
+                if let Some(r) = o.register {
+                    registers[usize::from(r)] = out;
+                }
+                if let Some(b) = o.buffer {
+                    buffers[usize::from(b)] = out;
+                }
+            }
+            if let Some(o) = step.key_out {
+                if let Some(s) = o.slot {
+                    slots[usize::from(s)] = m;
+                }
+                if let Some(b) = o.buffer {
+                    buffers[usize::from(b)] = [m; 3];
+                }
+            }
+        }
+        match self.params.nodes.plan.result {
+            PlanResult::Picture(PictureRef::Input) => c8,
+            PlanResult::Picture(PictureRef::Register(r)) => LogC4(registers[usize::from(r)]),
+            PlanResult::Picture(PictureRef::Buffer(b)) => LogC4(buffers[usize::from(b)]),
+            PlanResult::Mask(KeyRef::Slot(s)) => LogC4([slots[usize::from(s)]; 3]),
+            PlanResult::Mask(KeyRef::Buffer(b)) => LogC4(buffers[usize::from(b)]),
+        }
+    }
+
+    fn stages(&self, camera_rgb: Vec3) -> Staged {
         let c6 = self.c1_to_c6(camera_rgb);
         let c7 = self.tone.apply_rgb(c6);
-        let linear = LinearAwg4(c7);
-        let c8 = linear.to_logc4();
-        let c9 = self.grade.apply(c8, grade_luma(linear));
-        let c9b = self.warp.apply(c9);
-        let c10 = self.c10(c9b);
-        let c11 = self.curves.apply(c10);
-        UpToC11 {
+        let c8 = LinearAwg4(c7).to_logc4();
+        let mut main = MainStages {
+            c9: c8,
+            c9b: c8,
+            c11: c8,
+        };
+        let nodes = self.run_nodes(c8, c7, Some(&mut main));
+        let c10 = self.c10(nodes);
+        Staged {
             c6,
             c7,
             c8,
-            c9,
-            c9b,
+            main,
             c10,
-            c11,
         }
+    }
+
+    /// The last LogC4 value of the chain, behind the look: what C12 reads and the DNG holds.
+    fn last_logc4(&self, camera_rgb: Vec3) -> LogC4 {
+        let c6 = self.c1_to_c6(camera_rgb);
+        let c7 = self.tone.apply_rgb(c6);
+        let c8 = LinearAwg4(c7).to_logc4();
+        self.c10(self.run_nodes(c8, c7, None))
     }
 
     // ---- single pixels -------------------------------------------------------------------------
@@ -432,16 +543,16 @@ impl ColorChain {
     /// Every stage's value for one camera pixel.
     #[must_use]
     pub fn trace(&self, camera_rgb: Vec3) -> StageTrace {
-        let s = self.up_to_c11(camera_rgb);
-        let c12 = self.c12(s.c11);
+        let s = self.stages(camera_rgb);
+        let c12 = self.c12(s.c10);
         StageTrace {
             c6_linear_awg4: s.c6,
             c7_linear_awg4: s.c7,
             c8_logc4: s.c8,
-            c9_logc4: s.c9,
-            c9b_logc4: s.c9b,
+            c9_logc4: s.main.c9,
+            c9b_logc4: s.main.c9b,
             c10_logc4: s.c10,
-            c11_logc4: s.c11,
+            c11_logc4: s.main.c11,
             c12_display_linear: c12,
             c13_encoded: self.encode(c12),
         }
@@ -467,20 +578,20 @@ impl ColorChain {
     /// [`ColorChain::encode_u8`] (`docs/09`, Pixel pipeline per format).
     #[must_use]
     pub fn apply_to_display_linear(&self, camera_rgb: Vec3) -> Vec3 {
-        self.c12(self.up_to_c11(camera_rgb).c11)
+        self.c12(self.last_logc4(camera_rgb))
     }
 
-    /// C1 to C11: camera RGB to LogC4 with grade, look and curve applied (the DNG stop point before
-    /// the decode). With a look that includes display rendering the look has not run at this
-    /// point (the curve is the last LogC4 stage).
+    /// C1 to C10: camera RGB to LogC4 with the nodes (trims, grade, warp, curves) and then the look
+    /// applied (the DNG stop point before the decode). With a look that includes display rendering the
+    /// look has not run at this point (the curve of the last node is the last LogC4 stage).
     #[must_use]
     pub fn apply_logc4_pixel(&self, camera_rgb: Vec3) -> LogC4 {
-        self.up_to_c11(camera_rgb).c11
+        self.last_logc4(camera_rgb)
     }
 
-    /// The DNG path (`docs/09`, Pixel pipeline per format): C1 to C11, then LogC4 decoded back to
-    /// linear AWG4 when C12 is our cine rendering. Negative values are not clipped here (the writer clips
-    /// and counts them).
+    /// The DNG path (`docs/09`, Pixel pipeline per format): the nodes and then the look, with LogC4
+    /// decoded back to linear AWG4 when C12 is our cine rendering. Negative values are not clipped
+    /// here (the writer clips and counts them).
     ///
     /// When C12 is not our cine rendering ([`ColorChain::dng_inverts_display`]) the result is instead the
     /// scene-linear AWG4 triple that the cine rendering turns into this chain's display-linear picture
@@ -490,11 +601,11 @@ impl ColorChain {
     /// output the display value is first converted to Rec.709 primaries.
     #[must_use]
     pub fn apply_dng_pixel(&self, camera_rgb: Vec3) -> Vec3 {
-        let c11 = self.up_to_c11(camera_rgb).c11;
+        let last = self.last_logc4(camera_rgb);
         match &self.dng_inverse {
             // C12 is our cine rendering: the pixels are the scene values it takes in.
-            None => c11.to_linear().0,
-            Some(inverse) => inverse.scene_awg4(self.c12(c11)),
+            None => last.to_linear().0,
+            Some(inverse) => inverse.scene_awg4(self.c12(last)),
         }
     }
 
@@ -514,8 +625,8 @@ impl ColorChain {
                     .display_linear_rec709(camera_rgb.map(sanitize));
                 self.encode(self.space.from_linear_rec709(LinearRec709(rec709)))
             }
-            BeforePoint::CameraLog => self.up_to_c11(camera_rgb).c8.0.map(unit),
-            BeforePoint::AfterGrade => self.up_to_c11(camera_rgb).c9.0.map(unit),
+            BeforePoint::CameraLog => self.stages(camera_rgb).c8.0.map(unit),
+            BeforePoint::AfterGrade => self.stages(camera_rgb).main.c9.0.map(unit),
         }
     }
 

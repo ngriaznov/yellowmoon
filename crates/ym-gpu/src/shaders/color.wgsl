@@ -1,15 +1,19 @@
 // The per-pixel colour chain C1 to C13 (docs/02-colour-pipeline.md) in one compute pass, mirroring
 // ym_color::display::ColorChain stage by stage:
 //
-//   camera RGB --M--> C6 linear AWG4 --C7--> --C8--> LogC4 --C9--> --C9b warp--> --C10 look-->
-//   --C11 curves--> --C12 cine rendering--> display linear --C13--> code values
+//   camera RGB --M--> C6 linear AWG4 --C7--> --C8--> LogC4 --C9--> --C9b warp--> --C11 curves-->
+//   --C10 look--> --C12 cine rendering--> display linear --C13--> code values
+//
+// The curve is in front of the look since pipeline 0.9.0 (docs/02 C10, C11). This kernel runs one node, Main
+// (C9, C9b, C11), and then the look; a plan of several nodes, a trim or a bypassed Main is the CPU reference's
+// until the plan loop (docs/23 section 5.4, N-04).
 //
 // C7 is the highlight range (docs/02 C7: a gain on the luma's stops over grey above a knee, up to the
 // ALEXA clip; `c7_range`, its numbers in `CU.tone` and `CU.fl.z`, its expansion weighted by the achromatic gate of the
 // pixel's purity, `achromatic_gate`, edges in `CU.gate.xy`) and then the low-light toe. C12 is the cine
-// rendering (docs/02, `cine_display_linear` in cine.wgsl): C11 decoded to linear AWG4 goes straight into it, with
-// nothing in front, and the matrix from XYZ to the output's own primaries is in `CU.cine_m*`. The DNG stop (6) is C11
-// decoded.
+// rendering (docs/02, `cine_display_linear` in cine.wgsl): the last LogC4 value (the curve, then the look) decoded
+// to linear AWG4 goes straight into it, with nothing in front, and the matrix from XYZ to the output's own primaries
+// is in `CU.cine_m*`. The DNG stop (6) is that value decoded.
 //
 // `mode.x` selects the stop (so each stage can be checked against `ColorChain::trace`), `mode.y` the
 // output format. One thread handles two horizontally adjacent pixels. All maths is f32; image
@@ -674,10 +678,12 @@ fn before_camera_default(cam: vec3<f32>) -> vec3<f32> {
 
 // ---- the chain -------------------------------------------------------------------------------------------
 
-// The value at the requested stop (mode.x): 0 C6, 1 C7, 2 C8, 3 C9, 10 C9b, 4 C10, 5 C11, 6 DNG (C11
-// decoded to linear AWG4), 7 C12, 8 C13 (unquantised), 9 the Before view (the camera default encoded for
-// the output, or the LogC4 signal at C8 or C9 as code values: the reading point "after the grade" is
-// C9, before the warp, as ColorChain::apply_before_pixel).
+// The value at the requested stop (mode.x): 0 C6, 1 C7, 2 C8, 3 C9, 10 C9b, 5 C11 (the curve), 4 C10 (the look,
+// after the curve), 6 DNG (C10 decoded to linear AWG4), 7 C12, 8 C13 (unquantised), 9 the Before view (the
+// camera default encoded for the output, or the LogC4 signal at C8 or C9 as code values: the reading point
+// "after the grade" is C9, before the warp, as ColorChain::apply_before_pixel). The stage numbers are names
+// and did not change when the curve moved in front of the look; they are the trace's fields
+// (`StageTrace::c10_logc4`, `c11_logc4`).
 fn run_pixel(cam_in: vec3<f32>) -> vec3<f32> {
     let stop = CU.mode.x;
     let cam = vec3<f32>(sanitize(cam_in.x), sanitize(cam_in.y), sanitize(cam_in.z));
@@ -712,20 +718,20 @@ fn run_pixel(cam_in: vec3<f32>) -> vec3<f32> {
     if (stop == 10u) {
         return c9b;
     }
-    let c10 = c10_look(c9b);
-    if (stop == 4u) {
-        return c10;
-    }
-    let c11 = c11_curves(c10);
+    let c11 = c11_curves(c9b);
     if (stop == 5u) {
         return c11;
     }
-    if (stop == 6u) {
-        // The DNG's pixels: C11 decoded to linear AWG4 (the inverse of a display rendering that is not ours is
-        // the CPU's alone, ColorChain::apply_dng_pixel).
-        return logc4_decode3(c11);
+    let c10 = c10_look(c11);
+    if (stop == 4u) {
+        return c10;
     }
-    let c12 = c12_display(c11);
+    if (stop == 6u) {
+        // The DNG's pixels: the last LogC4 value (the curve, then the look) decoded to linear AWG4 (the inverse of
+        // a display rendering that is not ours is the CPU's alone, ColorChain::apply_dng_pixel).
+        return logc4_decode3(c10);
+    }
+    let c12 = c12_display(c10);
     if (stop == 7u) {
         return c12;
     }

@@ -107,11 +107,11 @@ pub enum Stop {
     C9,
     /// After the colour warp (`StageTrace::c9b_logc4`), in LogC4.
     C9b,
-    /// After the look (log-to-log looks).
+    /// After the look (log-to-log looks), which acts after the curve: the DNG stop point, in LogC4.
     C10,
-    /// After the curves: the DNG stop point, in LogC4.
+    /// After the curves, in front of the look (`StageTrace::c11_logc4`).
     C11,
-    /// C11 decoded back to linear AWG4 (what the DNG writer takes when C12 is our cine rendering).
+    /// C10 decoded back to linear AWG4 (what the DNG writer takes when C12 is our cine rendering).
     DngLinearAwg4,
     /// Display-linear RGB in the output's primaries (C12).
     C12,
@@ -678,12 +678,20 @@ impl ChainTables {
     ///
     /// # Errors
     ///
-    /// Allocation errors from the pool ([`GpuError::OutOfBudget`], [`GpuError::BufferTooLarge`]).
+    /// Allocation errors from the pool ([`GpuError::OutOfBudget`], [`GpuError::BufferTooLarge`]);
+    /// [`GpuError::InvalidInput`] for a chain with nodes the kernel does not run yet (anything but
+    /// Main alone, with no trim and not bypassed: the plan loop is `docs/23` section 5.4, N-04).
     pub fn prepare(
         &mut self,
         ctx: &GpuContext,
         chain: &ColorChain,
     ) -> Result<PreparedChain, GpuError> {
+        if !chain.nodes_run_on_device() {
+            return Err(GpuError::InvalidInput(
+                "the colour kernel runs Main alone until the plan loop; this chain has other nodes, a trim or a bypassed Main"
+                    .to_owned(),
+            ));
+        }
         let params = chain.params();
         let space = chain.space();
         let look_kind = classify_look(params);

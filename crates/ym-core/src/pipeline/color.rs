@@ -15,7 +15,10 @@
 //!   into the three AWG4 channels, and the floor is the mean of those three sigmas (`docs/02` C7:
 //!   "the noise model's read noise mapped to linear AWG4 at this exposure");
 //! * `contrast` to `color_balance` become `GradeParams`, the pins of `color_warp` a `WarpParams`
-//!   (stage C9b), the four curves a `CurveSet`;
+//!   (stage C9b), the four curves a `CurveSet`: Main's from its grade, every other live corrector's from
+//!   its own (`NodeSet`), with its trim; the graph's links are compiled into a `Plan` (`ym_color::plan`,
+//!   [`node_plan`]) that says which nodes run and in what order. Masks are not rendered until N-10
+//!   (`docs/23` section 15);
 //! * the look comes from a [`LookProvider`] (the looks library in the app, [`NeutralOnly`] in tests);
 //!   the display transform is always Yellowmoon's own, the cine rendering (C12), with nothing in front of it.
 //!
@@ -29,9 +32,13 @@ use ym_color::camera_default::CameraDefault;
 use ym_color::chain::FusedChain;
 use ym_color::consts::Vec3;
 use ym_color::curve::{Curve, CurveSet};
-use ym_color::display::{BeforePoint, ChainParams, ColorChain, LookSetting, OutputTarget};
+use ym_color::display::{
+    BeforePoint, ChainParams, ColorChain, LookSetting, MainNode, NodeParams, NodeSet, OutputTarget,
+    Trim,
+};
 use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
+use ym_color::plan::{self, PictureSource, Plan, PlanGraph, PlanNode, Stop};
 use ym_color::tone::ToneParams;
 use ym_color::warp::{Warp, WarpParams};
 use ym_looks::library::{Library, LookId};
@@ -44,7 +51,10 @@ use super::RenderError;
 use super::raw::{CaptureMethod, DEFAULT_CAPTURE_METHOD};
 use crate::auto::{AutoEstimates, as_shot_gains, as_shot_rggb};
 use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
-use crate::settings::{AutoOr, CurvePoint, DevelopSettings, LensSettings};
+use crate::settings::{
+    AutoOr, ColorWarp, CurvePoint, Curves, DevelopSettings, LensSettings, NodeGrade, NodeGraph,
+    NodeId, NodeTrim, Port,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Looks
@@ -428,35 +438,43 @@ pub fn color_plan(src: &PhotoSource) -> Result<ColorPlan, RenderError> {
 // The grade plan: C9 to C13
 // ---------------------------------------------------------------------------------------------
 
-/// The grade controls of the settings as `ym_color`'s parameters. An Auto contrast, highlights,
-/// shadows, black, saturation or shadows or highlights wheel resolves against the photo's estimates
-/// (0 or `[0, 0]`, or Apple Auto's value, `docs/19` section 5).
-#[must_use]
-pub fn grade_params(s: &DevelopSettings, estimates: &AutoEstimates) -> GradeParams {
+/// A grade's controls as `ym_color`'s parameters. In Main an Auto contrast, highlights, shadows,
+/// black, saturation or shadows or highlights wheel resolves against the photo's `estimates` (0 or
+/// `[0, 0]`, or Apple Auto's value, `docs/19` section 5); with no estimates, as for every other
+/// corrector, Auto would read as 0 (a corrector other than Main has none: `docs/23` section 3.2).
+fn grade_params_of(g: &NodeGrade, estimates: Option<&AutoEstimates>) -> GradeParams {
     let b = |p: [f64; 2]| ColorBalance { a: p[0], b: p[1] };
+    let num = |f: fn(&AutoEstimates) -> f64| estimates.map_or(0.0, f);
+    let point = |f: fn(&AutoEstimates) -> [f64; 2]| estimates.map_or([0.0, 0.0], f);
     GradeParams {
-        contrast: s.main_grade().contrast.resolve(estimates.contrast),
-        brightness: s.main_grade().brightness,
-        shadows: s.main_grade().shadows.resolve(estimates.shadows),
-        highlights: s.main_grade().highlights.resolve(estimates.highlights),
-        black: s.main_grade().black.resolve(estimates.black),
-        white: s.main_grade().white,
-        balance_shadows: b(s
-            .main_grade()
+        contrast: g.contrast.resolve(num(|e| e.contrast)),
+        brightness: g.brightness,
+        shadows: g.shadows.resolve(num(|e| e.shadows)),
+        highlights: g.highlights.resolve(num(|e| e.highlights)),
+        black: g.black.resolve(num(|e| e.black)),
+        white: g.white,
+        balance_shadows: b(g
             .color_balance
             .shadows
-            .resolve(estimates.balance_shadows)),
-        balance_midtones: b(s.main_grade().color_balance.midtones),
-        balance_highlights: b(s
-            .main_grade()
+            .resolve(point(|e| e.balance_shadows))),
+        balance_midtones: b(g.color_balance.midtones),
+        balance_highlights: b(g
             .color_balance
             .highlights
-            .resolve(estimates.balance_highlights)),
-        saturation: s.main_grade().saturation.resolve(estimates.saturation),
+            .resolve(point(|e| e.balance_highlights))),
+        saturation: g.saturation.resolve(num(|e| e.saturation)),
     }
 }
 
-/// The colour warp's pins as `ym_color`'s parameters (stage C9b). No pins is the identity.
+/// Main's grade controls as `ym_color`'s parameters. An Auto contrast, highlights, shadows, black,
+/// saturation or shadows or highlights wheel resolves against the photo's estimates (0 or `[0, 0]`, or
+/// Apple Auto's value, `docs/19` section 5).
+#[must_use]
+pub fn grade_params(s: &DevelopSettings, estimates: &AutoEstimates) -> GradeParams {
+    grade_params_of(s.main_grade(), Some(estimates))
+}
+
+/// Main's colour warp's pins as `ym_color`'s parameters (stage C9b). No pins is the identity.
 #[must_use]
 pub fn warp_params(s: &DevelopSettings) -> WarpParams {
     s.main_grade().color_warp.to_color()
@@ -467,18 +485,121 @@ fn curve_of(points: &[CurvePoint]) -> Result<Curve, RenderError> {
     Curve::new(&pts).map_err(|e| RenderError::Color(format!("The curve can't be used: {e}.")))
 }
 
-/// The four curves of the settings.
+fn curves_of(c: &Curves) -> Result<CurveSet, RenderError> {
+    Ok(CurveSet {
+        luma: curve_of(&c.luma)?,
+        r: curve_of(&c.red)?,
+        g: curve_of(&c.green)?,
+        b: curve_of(&c.blue)?,
+    })
+}
+
+/// Main's four curves.
 ///
 /// # Errors
 ///
 /// [`RenderError::Color`] for a curve `ym_color` refuses (settings validation normally stops
 /// these earlier).
 pub fn curve_set(s: &DevelopSettings) -> Result<CurveSet, RenderError> {
-    Ok(CurveSet {
-        luma: curve_of(&s.main_grade().curve.luma)?,
-        r: curve_of(&s.main_grade().curve.red)?,
-        g: curve_of(&s.main_grade().curve.green)?,
-        b: curve_of(&s.main_grade().curve.blue)?,
+    curves_of(&s.main_grade().curve)
+}
+
+fn trim_of(t: &NodeTrim) -> Trim {
+    Trim {
+        exposure_ev: t.exposure_ev,
+        temperature: t.temperature,
+        tint: t.tint,
+    }
+}
+
+/// The graph as the plan compiler reads it: every corrector with its place, its picture source
+/// (the link into its picture input) and its key source, and the picture the Output reads. An input
+/// with no link is `None` (the compiler reads the Input's picture there).
+#[must_use]
+pub fn plan_graph(g: &NodeGraph) -> PlanGraph {
+    let source_of = |to: NodeId, port: Port| -> Option<NodeId> {
+        g.links
+            .iter()
+            .find(|l| l.to.node == to && l.to.port == port)
+            .map(|l| l.from.node)
+    };
+    let nodes = g
+        .correctors()
+        .map(|(id, c)| PlanNode {
+            id,
+            pos: c.pos,
+            picture: source_of(NodeId::Corrector(id), Port::Picture).map(|n| match n {
+                NodeId::Corrector(m) => PictureSource::Node(m),
+                NodeId::Input | NodeId::Output => PictureSource::Input,
+            }),
+            key: match source_of(NodeId::Corrector(id), Port::Key) {
+                Some(NodeId::Corrector(m)) => Some(m),
+                _ => None,
+            },
+        })
+        .collect();
+    let output = match source_of(NodeId::Output, Port::Picture) {
+        Some(NodeId::Corrector(m)) => PictureSource::Node(m),
+        _ => PictureSource::Input,
+    };
+    PlanGraph { nodes, output }
+}
+
+/// The plan of a photo's graph, ending at `stop`.
+///
+/// # Errors
+///
+/// [`RenderError::Color`] when the graph cannot be compiled (a validated graph can, unless `stop`
+/// names a node it does not have).
+pub fn node_plan(g: &NodeGraph, stop: Stop) -> Result<Plan, RenderError> {
+    plan::compile(&plan_graph(g), stop).map_err(|e| RenderError::Color(e.to_string()))
+}
+
+/// Whether the device can render this photo's nodes: its plan (to the Output) is Main alone, with
+/// no trim, not bypassed. Until the device learns the plan loop (`docs/23` section 5.4, N-04) any
+/// other graph is rendered by the CPU reference, with [`NODES_ON_CPU_NOTE`].
+#[must_use]
+pub fn nodes_run_on_device(s: &DevelopSettings) -> bool {
+    let main = s.main();
+    node_plan(&s.nodes, Stop::Output).is_ok_and(|p| p.is_main_only())
+        && !main.bypass
+        && trim_of(&main.trim).is_identity()
+}
+
+/// The note of a render whose nodes the device does not run yet: the CPU rendered them.
+pub const NODES_ON_CPU_NOTE: &str =
+    "Nodes after Main render on the CPU until the device runs them.";
+
+/// The nodes of a photo for the chain: the plan to the Output, Main's trim and bypass, and every other
+/// corrector the plan runs, with its own grade (no Auto), warp, curves and trim.
+fn node_set(s: &DevelopSettings) -> Result<NodeSet, RenderError> {
+    let plan = node_plan(&s.nodes, Stop::Output)?;
+    let mut others = std::collections::BTreeMap::new();
+    for id in plan.node_ids() {
+        if id == plan::MAIN_NODE {
+            continue;
+        }
+        let Some(c) = s.nodes.corrector(id) else {
+            continue;
+        };
+        others.insert(
+            id,
+            NodeParams {
+                bypass: c.bypass,
+                trim: trim_of(&c.trim),
+                grade: grade_params_of(&c.grade, None),
+                warp: ColorWarp::to_color(&c.grade.color_warp),
+                curves: curves_of(&c.grade.curve)?,
+            },
+        );
+    }
+    Ok(NodeSet {
+        plan,
+        main: MainNode {
+            bypass: s.main().bypass,
+            trim: trim_of(&s.main().trim),
+        },
+        others,
     })
 }
 
@@ -522,12 +643,50 @@ fn pieces(src: &PhotoSource, req: &GradeRequest<'_>) -> Pieces {
     Pieces { look, warnings }
 }
 
+/// The text of everything the nodes put into the chain beyond Main's grade, warp and curves: the plan
+/// the compiler made (which nodes run, in what order, in which registers), Main's trim and bypass
+/// and the parameters of every other corrector the plan runs. A dead node is not in it, so a dead
+/// branch leaves the key as it was.
+fn nodes_key(s: &DevelopSettings) -> String {
+    let plan = match node_plan(&s.nodes, Stop::Output) {
+        Ok(plan) => plan,
+        Err(e) => return format!("no-plan:{e}"),
+    };
+    let mut k = String::with_capacity(256);
+    let _ = write!(
+        k,
+        "{:?}|{:?}|{:?}|{:?}|{:?}|",
+        plan.passes,
+        plan.buffers,
+        plan.result,
+        s.main().bypass,
+        trim_of(&s.main().trim),
+    );
+    for id in plan.node_ids() {
+        if id == plan::MAIN_NODE {
+            continue;
+        }
+        if let Some(c) = s.nodes.corrector(id) {
+            let _ = write!(
+                k,
+                "{id}:{}:{:?}:{:?}:{:?}:{:?};",
+                c.bypass,
+                trim_of(&c.trim),
+                grade_params_of(&c.grade, None),
+                Warp::new(&c.grade.color_warp.to_color()),
+                c.grade.curve,
+            );
+        }
+    }
+    k
+}
+
 fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Pieces) -> GradeKey {
     let s = &src.settings;
     let mut key = String::with_capacity(768);
     let _ = write!(
         key,
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|",
         color.key,
         grade_params(s, &src.estimates),
         // The warp as the chain prepares it: pins that change nothing (locked pins with no pin that
@@ -535,6 +694,7 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
         // leave the key, and the frame, as without them.
         Warp::new(&warp_params(s)),
         s.main_grade().curve,
+        nodes_key(s),
         req.target,
         req.dither,
         s.output().look_intensity,
@@ -574,6 +734,7 @@ pub fn grade_plan(
     params.grade = grade_params(s, &src.estimates);
     params.warp = warp_params(s);
     params.curves = curve_set(s)?;
+    params.nodes = node_set(s)?;
     params.output = req.target;
     params.dither = req.dither;
     params.before = BeforePoint::CameraDefault;

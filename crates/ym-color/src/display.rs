@@ -10,9 +10,8 @@
 //! | C1 to C6 (fused 3x3, supplied by the caller) | [`crate::chain`] (the matrix is taken as `[[f64; 3]; 3]`) |
 //! | C7 highlight range and low-light toe | [`crate::tone`] |
 //! | C8 LogC4 encode | [`crate::logc`] |
-//! | C9 primary grade | [`crate::grade`] |
-//! | C10 look (CDL, LUT, intensity) | [`crate::look`] |
-//! | C11 curve | [`crate::curve`] |
+//! | The nodes: trims, C9 primary grade, C9b colour warp, C11 curve, in the plan's order | [`node`], [`trim`], [`crate::plan`], [`crate::grade`], [`crate::warp`], [`crate::curve`] |
+//! | C10 look (CDL, LUT, intensity), in the Output | [`crate::look`] |
 //! | C12 display transform | [`cine::CineRendering`], the cine rendering |
 //! | C13 display encode and dither | [`crate::encode`] |
 //!
@@ -28,14 +27,18 @@
 //! # Order of the stages
 //!
 //! ```text
-//! camera RGB --M--> linear AWG4 --C7--> --C8--> LogC4 --C9--> --C10 look--> --C11 curve--> --C12--> --C13--> code values
+//! camera RGB --M--> linear AWG4 --C7--> --C8--> LogC4 --{ trims, C9, C9b, C11 }* --C10 look--> --C12--> --C13--> code values
 //!                   (M is C1..C6)       L = luma of the linear values entering C8 (docs/02, C9)
 //! ```
 //!
-//! A look that **includes display rendering** (LogC3 to Rec.709) replaces C12 and changes the order
-//! (`docs/02`, C10): `C9 -> C11 -> { our C12, look LUT } -> blend in display-linear`. The curve runs
-//! before the look, both branches start from the same C11 output, and the blend uses the look
-//! intensity. [`StageTrace`] shows where each value lands for both orders.
+//! The braces are one corrector node; the chain runs the nodes of its [`crate::plan::Plan`] in order
+//! (Main alone for the default graph), and then the look, once. The curve moved in front of the look
+//! with the nodes (pipeline 0.9.0; until 0.8.2 the order was C9, C9b, C10, C11).
+//!
+//! A look that **includes display rendering** (LogC3 to Rec.709) replaces C12 (`docs/02`, C10):
+//! `nodes -> { our C12, look LUT } -> blend in display-linear`. Both branches start from the same output
+//! of the nodes, and the blend uses the look intensity. [`StageTrace`] shows where each value lands for
+//! both kinds of look.
 //!
 //! # Conventions
 //!
@@ -55,11 +58,15 @@ mod chain;
 pub mod cine;
 mod dng_inverse;
 mod frame;
+pub mod node;
 mod transform;
+pub mod trim;
 
 pub use chain::{BeforePoint, ChainParams, ColorChain, LookSetting, StageTrace, View};
 pub use dng_inverse::DNG_SCENE_LIMIT;
 pub use frame::{Frame, Layout};
+pub use node::{MainNode, NodeParams, NodeSet};
+pub use trim::Trim;
 
 use crate::encode::OutputSpace;
 
@@ -89,6 +96,9 @@ pub enum DisplayError {
         /// Image height in pixels.
         height: usize,
     },
+    /// The plan runs a corrector the chain has no parameters for.
+    #[error("the plan runs node {0}, which the chain has no parameters for")]
+    MissingNode(u32),
 }
 
 /// One of the four display outputs of the table in `docs/02` section C12.

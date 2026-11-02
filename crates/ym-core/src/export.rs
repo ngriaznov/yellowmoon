@@ -82,6 +82,7 @@ use ym_raw::metadata::RawMetadata;
 
 use crate::auto::meta_image_size;
 use crate::camera::PhotoCamera;
+use crate::pipeline::color::nodes_run_on_device;
 use crate::pipeline::frame::TailRequest;
 use crate::pipeline::{
     ComputeDevice, FullImage, FullRequest, FullTarget, PhotoSource, RenderError, RenderReport,
@@ -1366,7 +1367,9 @@ fn export_photo_unguarded(
         if let Some(why) = ctx.renderer.export_tail_refused() {
             return Err(ExportError::Render(RenderError::Gpu(why)));
         }
-        if ctx.renderer.export_tail_enabled() {
+        // A photo whose nodes the device does not run yet is made by the CPU reference, with a note
+        // (`pipeline::color::NODES_ON_CPU_NOTE`; the render adds it).
+        if ctx.renderer.export_tail_enabled() && nodes_run_on_device(&photo.source.settings) {
             let began = Instant::now();
             let request = TailRequest {
                 target: output_target(options.color_space),

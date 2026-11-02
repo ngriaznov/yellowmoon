@@ -765,6 +765,168 @@ fn a_settings_file_is_the_same_settings_as_the_apps() {
     assert_same_files(&from_app, &from_cli, "settings file");
 }
 
+/// A hand-written graph of three correctors beside Main, in the form of `docs/10`: a trim in the
+/// first, a curve and a saturation in the second, a bypassed node and a grade in the third, and a dead
+/// branch (node 7 reads Main and goes nowhere).
+fn three_correctors() -> serde_json::Value {
+    let picture = |from: serde_json::Value, to: serde_json::Value| {
+        serde_json::json!({
+            "from": { "node": from, "port": "picture" },
+            "to": { "node": to, "port": "picture" }
+        })
+    };
+    serde_json::json!({ "nodes": {
+        "items": [
+            { "id": "input", "exposure": { "kind": "manual", "ev": -0.25 } },
+            { "id": 1, "grade": { "contrast": { "kind": "manual", "value": 10 } } },
+            { "id": 2, "kind": "corrector", "pos": [1, 0], "name": "Warm",
+              "trim": { "exposure_ev": 0.4, "temperature": 25, "tint": -8 } },
+            { "id": 3, "kind": "corrector", "pos": [2, 0], "name": "Curve",
+              "grade": { "curve": { "luma": [[0, 0], [0.25, 0.18], [0.6, 0.66], [1, 1]] },
+                         "saturation": { "kind": "manual", "value": -15 } } },
+            { "id": 4, "kind": "corrector", "pos": [3, 0], "bypass": true,
+              "trim": { "exposure_ev": 3 } },
+            { "id": 5, "kind": "corrector", "pos": [4, 0], "trim": { "exposure_ev": -0.2 },
+              "grade": { "highlights": { "kind": "manual", "value": -20 } } },
+            { "id": 7, "kind": "corrector", "pos": [1, 1], "trim": { "exposure_ev": -2 } }
+        ],
+        "links": [
+            picture("input".into(), 1.into()),
+            picture(1.into(), 2.into()),
+            picture(2.into(), 3.into()),
+            picture(3.into(), 4.into()),
+            picture(4.into(), 5.into()),
+            picture(5.into(), "output".into()),
+            picture(1.into(), 7.into())
+        ]
+    } })
+}
+
+/// What `three_correctors` is exported as through the app, then through the binary with the same
+/// document as a `--settings` file: the same bytes, a picture that is not the default graph's, and
+/// (with a device) the note that the nodes were rendered on the CPU. `device` runs the binary with
+/// `YELLOWMOON_GPU=on` and gives the app's core the device.
+fn three_correctors_leg(device: bool) {
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    let app = if device {
+        let Some(app) = App::open_on_device(&[&arw]) else {
+            return;
+        };
+        app
+    } else {
+        App::open(&[&arw])
+    };
+    let doc = three_correctors();
+    let (settings, clamped) =
+        DevelopSettings::from_value(doc.clone(), &app.core.looks.effective_default())
+            .expect("settings");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    assert_eq!(settings.nodes.corrector_count(), 6);
+    let file = sb.root().join("nodes.json");
+    std::fs::write(&file, doc.to_string()).expect("write");
+    let env: &[(&str, &str)] = if device {
+        &[("YELLOWMOON_GPU", "on")]
+    } else {
+        &[]
+    };
+    let default_graph = app.export(
+        ExportOptions {
+            format: FormatKind::Tiff,
+            bit_depth: BitDepth::Sixteen,
+            ..ExportOptions::default()
+        },
+        &sb.root().join("app-default"),
+    );
+    app.core
+        .session
+        .replace_settings(app.photo, settings)
+        .expect("replace");
+    for (name, options, flags) in [
+        ("jpeg", ExportOptions::default(), vec!["--format", "jpeg"]),
+        (
+            "tiff16",
+            ExportOptions {
+                format: FormatKind::Tiff,
+                bit_depth: BitDepth::Sixteen,
+                ..ExportOptions::default()
+            },
+            vec!["--format", "tiff", "--bits", "16"],
+        ),
+        (
+            "dng",
+            ExportOptions {
+                format: FormatKind::Dng,
+                ..ExportOptions::default()
+            },
+            vec!["--format", "dng"],
+        ),
+    ] {
+        let from_app = app.export(options, &sb.root().join(format!("app-{name}")));
+        let mut args = flags;
+        args.extend(["--settings", file.to_str().expect("utf-8")]);
+        let from_cli = cli_export_env(
+            &sb,
+            &[&arw],
+            &args,
+            &sb.root().join(format!("cli-{name}")),
+            env,
+        );
+        assert_same_files(&from_app, &from_cli, &format!("three correctors, {name}"));
+        if name == "tiff16" {
+            // The nodes did something: not the default graph's picture.
+            assert!(
+                bytes(&from_app[0]) != bytes(&default_graph[0]),
+                "the nodes changed no pixel"
+            );
+        }
+    }
+    if device {
+        // The binary says that the nodes were rendered on the CPU, once.
+        let out = sb
+            .ym()
+            .envs(env.iter().copied())
+            .args([
+                "render",
+                "--json",
+                "--format",
+                "jpeg",
+                "--auto-provider",
+                "yellowmoon",
+            ])
+            .arg(&arw)
+            .args(["--settings", file.to_str().expect("utf-8")])
+            .arg("--out")
+            .arg(sb.root().join("cli-json"))
+            .assert()
+            .success();
+        let line = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+        let v: serde_json::Value = serde_json::from_str(line.trim_end()).expect("JSON");
+        let notes: Vec<&str> = v["notes"]
+            .as_array()
+            .expect("notes")
+            .iter()
+            .filter_map(|n| n.as_str())
+            .collect();
+        assert!(
+            notes.contains(&"Nodes after Main render on the CPU until the device runs them."),
+            "{notes:?}"
+        );
+    }
+}
+
+#[test]
+fn three_correctors_are_the_same_files_through_the_app_path_and_the_binary() {
+    three_correctors_leg(false);
+}
+
+/// The device leg: both sides have a device, and both render the nodes on the CPU reference (a note
+/// says so) behind the device's raw chain, so the files are the same.
+#[test]
+fn three_correctors_are_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
+    three_correctors_leg(true);
+}
+
 #[test]
 fn a_colour_warp_is_the_same_picture_through_the_app_and_the_binary() {
     let sb = Sandbox::new();

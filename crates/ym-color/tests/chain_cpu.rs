@@ -225,9 +225,10 @@ fn trace_equals_an_independent_composition_of_the_stage_modules() {
         let c8 = lin.to_logc4();
         let c9 = grade.apply(c8, grade_luma(lin));
         let c9b = warp.apply(c9);
-        let c10 = blend_logc4(c9b, look.eval_logc4(c9b).unwrap(), 80.0);
-        let c11 = baked.apply(c10);
-        let c12 = cine.forward(LinearAwg4(logc4_decode_rgb(c11.0)));
+        // The curve is in front of the look (pipeline 0.9.0; until 0.8.2 the look came first).
+        let c11 = baked.apply(c9b);
+        let c10 = blend_logc4(c11, look.eval_logc4(c11).unwrap(), 80.0);
+        let c12 = cine.forward(LinearAwg4(logc4_decode_rgb(c10.0)));
         let c13 = OutputSpace::DisplayP3.encode_clamped(c12);
         assert_close(t.c6_linear_awg4, c6, 1e-14, "c6");
         assert_close(t.c7_linear_awg4, c7, 1e-14, "c7");
@@ -240,12 +241,12 @@ fn trace_equals_an_independent_composition_of_the_stage_modules() {
         assert_close(t.c13_encoded, c13, 1e-14, "c13");
         assert_eq!(c.apply_pixel(px), t.c13_encoded);
         assert_eq!(c.apply_to_display_linear(px), t.c12_display_linear);
-        assert_eq!(c.apply_logc4_pixel(px), t.c11_logc4);
+        assert_eq!(c.apply_logc4_pixel(px), t.c10_logc4);
     }
 }
 
-/// Which of the trace's stages are bit-identical between two chains, as nine flags (C6 to C13, with
-/// C9b after C9).
+/// Which of the trace's stages are bit-identical between two chains, as nine flags in the order the
+/// stages run: C6, C7, C8, C9, C9b, C11, C10, C12, C13.
 fn same_stages(a: &ColorChain, b: &ColorChain, px: Vec3) -> [bool; 9] {
     let (x, y) = (a.trace(px), b.trace(px));
     [
@@ -254,14 +255,14 @@ fn same_stages(a: &ColorChain, b: &ColorChain, px: Vec3) -> [bool; 9] {
         x.c8_logc4 == y.c8_logc4,
         x.c9_logc4 == y.c9_logc4,
         x.c9b_logc4 == y.c9b_logc4,
-        x.c10_logc4 == y.c10_logc4,
         x.c11_logc4 == y.c11_logc4,
+        x.c10_logc4 == y.c10_logc4,
         x.c12_display_linear == y.c12_display_linear,
         x.c13_encoded == y.c13_encoded,
     ]
 }
 
-/// `first_changed` is the index (C6 = 0 ... C13 = 8) of the first stage whose value must differ;
+/// `first_changed` is the index (C6 = 0 ... C13 = 8, in the order of [`same_stages`]) of the first stage whose value must differ;
 /// everything before it must be bit-identical, everything from it on must differ.
 fn check_toggle(name: &str, change: impl FnOnce(&mut ChainParams), first_changed: usize) {
     let base = rich_params();
@@ -286,7 +287,8 @@ fn check_toggle(name: &str, change: impl FnOnce(&mut ChainParams), first_changed
 
 #[test]
 fn each_stage_changed_alone_moves_only_itself_and_what_follows() {
-    // Index: C6 = 0, C7 = 1, C8 = 2, C9 = 3, C9b = 4, C10 = 5, C11 = 6, C12 = 7, C13 = 8.
+    // Index, in the order the stages run: C6 = 0, C7 = 1, C8 = 2, C9 = 3, C9b = 4, C11 = 5, C10 = 6,
+    // C12 = 7, C13 = 8 (the curve is in front of the look since pipeline 0.9.0).
     check_toggle("matrix (C1-C6)", |p| p.matrix[0][0] *= 1.1, 0);
     check_toggle(
         "tone (C7)",
@@ -298,19 +300,19 @@ fn each_stage_changed_alone_moves_only_itself_and_what_follows() {
     check_toggle(
         "look (C10)",
         |p| p.look = Some(LookSetting::new(other_logc4_look(), 80.0)),
-        5,
+        6,
     );
     check_toggle(
         "look intensity (C10)",
         |p| p.look = Some(LookSetting::new(logc4_look(), 30.0)),
-        5,
+        6,
     );
     check_toggle(
         "curve (C11)",
         |p| {
             p.curves.luma = Curve::new(&[(0.0, 0.0), (0.5, 0.45), (1.0, 1.0)]).unwrap();
         },
-        6,
+        5,
     );
     check_toggle(
         "output primaries (C12)",
@@ -358,8 +360,8 @@ fn the_curve_runs_before_a_look_that_includes_display_rendering() {
     for px in pixels() {
         let t = c.trace(px);
         let r = reference.trace(px);
-        // The look has not run at C10; C11 is the curve of C9.
-        assert_eq!(t.c10_logc4, t.c9_logc4);
+        // The look has not run at C10: it is the output of the nodes, the curve of C9b.
+        assert_eq!(t.c10_logc4, t.c11_logc4);
         assert_eq!(t.c11_logc4, r.c11_logc4);
         let rec709 = look.eval_display_rec709(t.c11_logc4).unwrap();
         let want = OutputSpace::DisplayP3.from_linear_rec709(rec709);
@@ -431,8 +433,8 @@ fn zero_grade_and_identity_curves_are_exact_pass_throughs() {
     for px in pixels() {
         let t = c.trace(px);
         assert_eq!(t.c8_logc4, t.c9_logc4);
-        assert_eq!(t.c9_logc4, t.c10_logc4);
-        assert_eq!(t.c10_logc4, t.c11_logc4);
+        assert_eq!(t.c9_logc4, t.c11_logc4);
+        assert_eq!(t.c11_logc4, t.c10_logc4);
     }
 }
 
@@ -781,10 +783,10 @@ fn dng_stop_point_applies_grade_look_and_curve_then_decodes_to_linear_awg4() {
     for px in pixels() {
         let t = c.trace(px);
         let dng = c.apply_dng_pixel(px);
-        // Decoded C11 output, nothing after it.
-        assert_close(dng, t.c11_logc4.to_linear().0, 1e-15, "dng");
-        // Re-encoding gives C11 back.
-        assert_close(logc4_encode_rgb(dng), t.c11_logc4.0, 1e-9, "re-encode");
+        // Decoded C10 output (the last LogC4 stage: the curve, then the look), nothing after it.
+        assert_close(dng, t.c10_logc4.to_linear().0, 1e-15, "dng");
+        // Re-encoding gives C10 back.
+        assert_close(logc4_encode_rgb(dng), t.c10_logc4.0, 1e-9, "re-encode");
     }
     // Look and curve really are in it: without them the values differ.
     let plain = chain(&ChainParams::new(fused_matrix(), tone()));
@@ -1326,12 +1328,12 @@ fn c12_alone_matches_the_trace_and_params_rebuild_a_chain_for_another_output() {
     for px in pixels() {
         let t = c.trace(px);
         assert_eq!(
-            c.display_linear_from_logc4(t.c11_logc4),
+            c.display_linear_from_logc4(t.c10_logc4),
             t.c12_display_linear
         );
         // Only C12 onwards differ between the viewport chain and its sRGB rebuild.
         let u = srgb.trace(px);
-        assert_eq!(t.c11_logc4, u.c11_logc4);
+        assert_eq!(t.c10_logc4, u.c10_logc4);
     }
     // The look is shared by the rebuild, not copied.
     let (a, b) = (

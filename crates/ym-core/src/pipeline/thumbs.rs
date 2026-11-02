@@ -8,8 +8,9 @@
 //!   100 %, for the tiles of the Look tab. Only the grade group differs between looks, so the raw
 //!   group and the colour plan are shared by every tile.
 //! * **Histogram** (`histogram`, an addition to `docs/01`): 64 bins of the LogC4 signal at the
-//!   input of the curve (C10), per channel, scaled so that the tallest bin is 1 (`docs/02` C11:
-//!   "The histogram in the Curve tab is of LogC4 values").
+//!   input of Main's curve (C9b, the warp's output: the curve is in front of the look since pipeline
+//!   0.9.0), per channel, scaled so that the tallest bin is 1 (`docs/02` C11: "The histogram in the
+//!   Curve tab is of LogC4 values").
 //! * **Chroma scatter** (`chroma_scatter`, for the plane of the colour warp, `docs/11`): the photo's
 //!   colours at the input of the warp (the C9 output), projected onto its chroma plane
 //!   (`ym_color::warp::chroma_of`), from the same small view as the histogram, at most
@@ -349,7 +350,7 @@ impl Renderer {
                         let p = img.pixel(i % img.width, i / img.width);
                         let t = chain.trace([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
                         for (c, acc_c) in acc.iter_mut().enumerate() {
-                            let v = t.c10_logc4.0[c].clamp(0.0, 1.0);
+                            let v = t.c9b_logc4.0[c].clamp(0.0, 1.0);
                             let bin =
                                 ((v * HISTOGRAM_BINS as f64) as usize).min(HISTOGRAM_BINS - 1);
                             acc_c[bin] += 1;

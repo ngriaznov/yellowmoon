@@ -159,7 +159,7 @@ A Yellowmoon DNG opens in other raw editors looking like our render, and keeps r
 
 ### Pixels
 
-- LinearRaw (PhotometricInterpretation 34892), 3 samples, 16-bit unsigned, scene-linear **AWG4** after C1–C11: demosaiced, denoised, lens-corrected, look and curve applied in LogC4 and decoded back to linear (`ColorChain::apply_dng_pixel`). The highlight range of C7 is in them like every stage before C8 (`docs/02-colour-pipeline.md` C7), so the DNG's pixels are exactly the scene values the app feeds the cine rendering, and `BaselineExposure` and the fitted profile give the app's picture, highlights included. Their brightest values reach the ALEXA clip of the range, scene-linear 35.9 (`HIGHLIGHT_CAP_STOPS`).
+- LinearRaw (PhotometricInterpretation 34892), 3 samples, 16-bit unsigned, scene-linear **AWG4** after C1–C11: demosaiced, denoised, lens-corrected, the nodes (their curves included) and then the look applied in LogC4 and decoded back to linear (`ColorChain::apply_dng_pixel`). The highlight range of C7 is in them like every stage before C8 (`docs/02-colour-pipeline.md` C7), so the DNG's pixels are exactly the scene values the app feeds the cine rendering, and `BaselineExposure` and the fitted profile give the app's picture, highlights included. Their brightest values reach the ALEXA clip of the range, scene-linear 35.9 (`HIGHLIGHT_CAP_STOPS`).
 - Scale: `stored = round(65535 · clamp(x / x_white, 0, 1))` with `x_white = max(p99.99 of the photo's max(R,G,B), 16)`. The floor, 16, is `2^-fit_offset_ev` of the fitted profile (`BaselineExposure::white_floor`); the reason is in As built (M3-12 `tools/dngfit`, DNG gates). `BaselineExposure` compensates: `log2(x_white) + fit_offset_ev` (`fit_offset_ev` −4, so it is `log2(x_white / 16)`). It is 0 for every photo whose 99.99th percentile is below 16, and positive for the rest. There is no display placement in it (pipeline 0.8.0; before it the value carried +0.85 for the placement of the ACES 2 path).
 - Negative values (out-of-gamut) are clipped to 0; the clipped-pixel fraction is reported (`DngReport`).
 - Shadow precision: with the floor at 16 a stored code is the scene value over 16 times 65535, a step of 2.4e-4 in scene light (mid grey 0.18 is code 737; scene 0.011, four stops below it, is code 46), so 16-bit linear holds about 9.5 stops below grey before codes drop under 1. That suits denoised data: the step in the cine rendering's output is about a fifth of an 8-bit code at worst (0.20 at scene 0.045, 0.18 at 0.019, 0.07 at mid grey, computed on greys with the reference `training/cine/cine_ref.py`). A shadows push of +3 EV in another editor would show it.
@@ -188,10 +188,9 @@ A Yellowmoon DNG opens in other raw editors looking like our render, and keeps r
 | R9 distortion, auto crop | pixels |
 | C1 to C6: white balance (Kelvin, tint, light presets, Pick white), sensor map, exposure (Auto, manual, burst median) | pixels (`AsShotNeutral` 1, 1, 1: nothing of the white balance is left to undo in the other app) |
 | C7 highlight range and low-light toe, C8 LogC4 | pixels (the highlight range is a scene-linear gain like the rest of C7) |
-| C9 grade (contrast, brightness, zones, colour balance, saturation, the Tone card) | pixels |
-| C10 look (CDL and LUT) and its intensity, log-to-log | pixels |
+| The nodes, in the plan's order: trims, C9 grade (contrast, brightness, zones, colour balance, saturation, the Tone card), C9b colour warp and C11 curves of each | pixels |
+| C10 look (CDL and LUT) and its intensity, log-to-log; it acts after the nodes and their curves (pipeline 0.9.0) | pixels |
 | C10 look with its own display rendering (LogC3 to Rec.709) | **pixels, approximate**: the scene values the cine rendering turns into the look's picture (below) |
-| C11 curves | pixels |
 | C12 the cine rendering | profile (tone curve and look table fitted to it) |
 | C13 display encode and dither, colour space, size, ICC | not in a DNG (16-bit linear pixels; the preview is an sRGB JPEG, `PreviewColorSpace` 2) |
 | Output sharpening | never |
@@ -202,7 +201,7 @@ A Yellowmoon DNG opens in other raw editors looking like our render, and keeps r
 
 **How a look with its own display rendering goes in.** A DNG holds scene-linear AWG4 that Adobe's renderer turns into a picture with the profile fitted to the cine rendering, so the pixels are chosen as the scene values the cine rendering turns into the picture the chain makes. `ColorChain::apply_dng_pixel`:
 
-1. runs C1 to C11;
+1. runs C1 to C11: the nodes (trims, C9, C9b and C11 of each, in the plan's order);
 2. takes the chain's display-linear picture (C12 with the look's LUT blended in at the intensity) and brings it to Rec.709 primaries, the rendering the profile emulates;
 3. holds each channel to `[1e-6, 1]` and inverts the cine rendering on Rec.709 (`CineRendering::inverse`, `docs/02-colour-pipeline.md` C12 *Inverse*: the display side in closed form, a first-use table and a damped chord iteration for the core, the scene side in closed form). The rendering is not onto: it darkens saturated colours, so a bright, strongly coloured display colour has no scene colour at all (about 5 % of random 8-bit colours; none of the pixels of the test photos' own renders). Such a colour is **replaced by the nearest one the rendering makes**: the same luminance and hue with less chroma (`chroma_fraction` says how much was kept);
 4. dims the display colour when its scene value would be above the top of the profile's range (below);
