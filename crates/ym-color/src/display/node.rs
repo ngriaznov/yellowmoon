@@ -137,7 +137,7 @@ impl PreparedNode {
         key: Option<f64>,
         v_in: LogC4,
         linear: Option<Vec3>,
-        at: PixelAt,
+        at: PixelAt<'_>,
     ) -> f64 {
         let l_in = if self.masks.needs_luma() {
             PreparedMasks::luma_of(v_in, linear)

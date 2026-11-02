@@ -22,8 +22,10 @@
 //!   no position (`None`) gives every shape `s = 0`;
 //! * the **Colour range** reads the chroma `(e1 . v, e2 . v)` of `v_in` (C9's axes), the **Brightness
 //!   range** the luma code `L_in = encode(Y(decode(v_in)))`;
-//! * a **raster** kind (Object, Subject, People, Background, Brush) selects nothing yet: `s = 0` until
-//!   their tasks (N-13 to N-19) give it a plane.
+//! * a **raster** kind (Object, Subject, People, Background, Brush) reads a plane the render made for it
+//!   before the colour pass ([`crate::mask_raster`]): the pixel's [`RasterSpot`] gives the value of plane
+//!   `plane` there (a u16 code over 65535), and a pixel that has no plane (a call that has no frame of
+//!   planes, as the histogram's) gets `s = 0`.
 //!
 //! # Combination
 //!
@@ -108,17 +110,75 @@ impl PhotoFrame {
     }
 }
 
+/// The raster planes of a render (`docs/algorithms/06` section 5): one u16 plane for every raster row of the
+/// chain, made over the render's window before the colour pass. The device reads the same planes as bytes
+/// (binding 7), so the CPU and the device chains read the same codes.
+pub trait RasterPlanes: Sync {
+    /// The value in [0, 1] of plane `plane` at pixel `(x, y)` of the window (the u16 code over 65535). A plane
+    /// the render does not have is 0.
+    fn value(&self, plane: usize, x: usize, y: usize) -> f64;
+}
+
+/// Where a pixel is in the render's raster planes.
+#[derive(Clone, Copy)]
+pub struct RasterSpot<'a> {
+    /// The planes.
+    pub planes: &'a dyn RasterPlanes,
+    /// The pixel's column in the window the planes cover.
+    pub x: usize,
+    /// The pixel's row.
+    pub y: usize,
+}
+
+impl std::fmt::Debug for RasterSpot<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RasterSpot")
+            .field("x", &self.x)
+            .field("y", &self.y)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for RasterSpot<'_> {
+    /// Two spots are equal when they name the same pixel of the same planes.
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self.planes, other.planes) && self.x == other.x && self.y == other.y
+    }
+}
+
 /// Where a pixel is in the photo frame, and the frame it is in.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PhotoSpot {
+pub struct PhotoSpot<'a> {
     /// `(x, y)` in [0, 1] over the oriented photo.
     pub pos: [f64; 2],
     /// The render's frame.
     pub frame: PhotoFrame,
+    /// The pixel's place in the raster planes, when the render made them. A raster row reads its plane
+    /// there; without it the row selects nothing.
+    pub raster: Option<RasterSpot<'a>>,
+}
+
+impl<'a> PhotoSpot<'a> {
+    /// A spot with no raster planes.
+    #[must_use]
+    pub fn new(pos: [f64; 2], frame: PhotoFrame) -> Self {
+        Self {
+            pos,
+            frame,
+            raster: None,
+        }
+    }
+
+    /// The same spot with the pixel's place in the raster planes.
+    #[must_use]
+    pub fn with_raster(mut self, planes: &'a dyn RasterPlanes, x: usize, y: usize) -> Self {
+        self.raster = Some(RasterSpot { planes, x, y });
+        self
+    }
 }
 
 /// The place of a pixel in the photo frame, when the caller knows it. `None`: the shapes select nothing.
-pub type PixelAt = Option<PhotoSpot>;
+pub type PixelAt<'a> = Option<PhotoSpot<'a>>;
 
 /// The photo-frame position of the pixels of a frame of pixels (`Frame` of `display`): the geometry that
 /// maps output pixels to the photo implements it (`ym-gpu`'s sampler grid).
@@ -173,9 +233,13 @@ pub enum MaskKind {
         /// Softness, 0 to 1.
         softness: f64,
     },
-    /// Object, Subject, People, Background and Brush: made from a raster plane, which is not built yet.
-    /// Selects nothing (`s = 0`).
-    Raster,
+    /// Object, Subject, People, Background and Brush: made from a raster plane the render makes before
+    /// the colour pass ([`crate::mask_raster`]). `plane` is the row's place among the chain's raster rows
+    /// ([`crate::mask_raster::RasterSet::rows`]).
+    Raster {
+        /// The plane's index.
+        plane: usize,
+    },
 }
 
 /// A mask row as the chain runs it (the rows with the eye off are not here: they are absent).
@@ -228,7 +292,8 @@ impl NodeMasks {
             needs_luma: ops.iter().any(|o| o.kind == OpKind::Brightness),
             needs_position: ops
                 .iter()
-                .any(|o| matches!(o.kind, OpKind::Linear | OpKind::Radial)),
+                .any(|o| matches!(o.kind, OpKind::Linear | OpKind::Radial | OpKind::Raster)),
+            needs_rasters: ops.iter().any(|o| o.kind == OpKind::Raster),
             ops,
             invert: self.invert,
         }
@@ -250,7 +315,7 @@ pub enum OpKind {
     Color,
     /// Brightness range.
     Brightness,
-    /// A raster kind: selects nothing yet.
+    /// A raster kind: reads the plane `params[0]` of the render's raster planes.
     Raster,
 }
 
@@ -277,7 +342,7 @@ impl OpKind {
 /// | Radial | `cx, cy, sin(angle), cos(angle), rx, ry, feather` |
 /// | Colour range | `a0, b0, width, q` with `q = max(softness width, RANGE_RAMP_MIN)` |
 /// | Brightness range | `low - q, high, q` with `q = max(0.25 softness, RANGE_RAMP_MIN)` |
-/// | Raster | none |
+/// | Raster | `plane` (the raster plane's index) |
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MaskOp {
     /// The kind.
@@ -381,7 +446,10 @@ impl MaskOp {
                 params[..3].copy_from_slice(&[low - q, high, q]);
                 OpKind::Brightness
             }
-            MaskKind::Raster => OpKind::Raster,
+            MaskKind::Raster { plane } => {
+                params[0] = plane as f64;
+                OpKind::Raster
+            }
         };
         Self {
             kind,
@@ -401,7 +469,7 @@ impl MaskOp {
     /// The row's own `s` in [0, 1] at a pixel: `v_in` is the node's input, `l_in` its luma code, `spot`
     /// the pixel's place in the photo frame.
     #[must_use]
-    pub fn select(&self, v_in: LogC4, l_in: f64, spot: PixelAt) -> f64 {
+    pub fn select(&self, v_in: LogC4, l_in: f64, spot: PixelAt<'_>) -> f64 {
         let p = &self.params;
         match self.kind {
             OpKind::Linear => {
@@ -442,20 +510,26 @@ impl MaskOp {
                 // S((L - (low - q)) / q) * (1 - S((L - high) / q)), params = (low - q, high, q).
                 smooth_step((l_in - p[0]) / p[2]) * (1.0 - smooth_step((l_in - p[1]) / p[2]))
             }
-            OpKind::Raster => 0.0,
+            OpKind::Raster => {
+                // The plane the render made for this row, at this pixel; without planes the row selects nothing.
+                let Some(r) = spot.and_then(|s| s.raster) else {
+                    return 0.0;
+                };
+                r.planes.value(p[0] as usize, r.x, r.y)
+            }
         }
     }
 
     /// The row's `a`: its `s`, inverted if the row is, times its opacity.
     #[must_use]
-    pub fn amount(&self, v_in: LogC4, l_in: f64, spot: PixelAt) -> f64 {
+    pub fn amount(&self, v_in: LogC4, l_in: f64, spot: PixelAt<'_>) -> f64 {
         let s = self.select(v_in, l_in, spot);
         self.opacity * if self.invert { 1.0 - s } else { s }
     }
 }
 
 /// `((px - cx) W, (py - cy) H) / L`: the pixel's offset from a centre, in units of the long edge.
-fn frame_xy(cx: f64, cy: f64, spot: &PhotoSpot) -> (f64, f64) {
+fn frame_xy(cx: f64, cy: f64, spot: &PhotoSpot<'_>) -> (f64, f64) {
     (
         (spot.pos[0] - cx) * spot.frame.aspect[0],
         (spot.pos[1] - cy) * spot.frame.aspect[1],
@@ -532,6 +606,7 @@ pub struct PreparedMasks {
     invert: bool,
     needs_luma: bool,
     needs_position: bool,
+    needs_rasters: bool,
 }
 
 impl PreparedMasks {
@@ -553,10 +628,17 @@ impl PreparedMasks {
         self.needs_luma
     }
 
-    /// Whether a row reads the pixel's place in the photo (a Linear or a Radial).
+    /// Whether a row reads the pixel's place in the photo (a Linear or a Radial), or needs it to make its plane
+    /// (a raster row: the resample reads the position of every pixel).
     #[must_use]
     pub fn needs_position(&self) -> bool {
         self.needs_position
+    }
+
+    /// Whether a row reads a raster plane.
+    #[must_use]
+    pub fn needs_rasters(&self) -> bool {
+        self.needs_rasters
     }
 
     /// Whether the node blends by a mask: it has rows, or its Invert is on, or a key is linked to it
@@ -570,7 +652,7 @@ impl PreparedMasks {
     /// node's input, `l_in` its luma code (read only by a Brightness range: pass any number when
     /// [`PreparedMasks::needs_luma`] is false) and `spot` the pixel's place in the photo frame.
     #[must_use]
-    pub fn mask(&self, key: Option<f64>, v_in: LogC4, l_in: f64, spot: PixelAt) -> f64 {
+    pub fn mask(&self, key: Option<f64>, v_in: LogC4, l_in: f64, spot: PixelAt<'_>) -> f64 {
         let mut regions = key;
         let mut ranges: Option<f64> = None;
         for op in &self.ops {

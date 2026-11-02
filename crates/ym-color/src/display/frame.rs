@@ -24,7 +24,7 @@ use std::thread;
 use super::DisplayError;
 use super::chain::{ColorChain, View};
 use crate::consts::Vec3;
-use crate::mask::{PhotoFrame, PhotoMap, PhotoSpot, PixelAt};
+use crate::mask::{PhotoFrame, PhotoMap, PhotoSpot, PixelAt, RasterPlanes};
 
 /// Rows per band are chosen so that each thread gets about this many bands (load balancing).
 const BANDS_PER_THREAD: usize = 8;
@@ -51,6 +51,7 @@ pub struct Frame<'a> {
     layout: Layout,
     data: &'a [f32],
     photo: Option<(&'a dyn PhotoMap, PhotoFrame)>,
+    rasters: Option<&'a dyn RasterPlanes>,
 }
 
 impl fmt::Debug for Frame<'_> {
@@ -60,6 +61,7 @@ impl fmt::Debug for Frame<'_> {
             .field("height", &self.height)
             .field("layout", &self.layout)
             .field("photo", &self.photo.map(|(_, frame)| frame))
+            .field("rasters", &self.rasters.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -105,6 +107,7 @@ impl<'a> Frame<'a> {
             layout,
             data,
             photo: None,
+            rasters: None,
         })
     }
 
@@ -117,11 +120,23 @@ impl<'a> Frame<'a> {
         self
     }
 
+    /// The same frame with the raster planes of its window: plane `i` at pixel `(x, y)` of this frame is the
+    /// value the raster row `i` of the chain selects there. A raster row of a frame without planes selects
+    /// nothing. The planes cover this frame's window exactly.
+    #[must_use]
+    pub fn with_rasters(mut self, planes: &'a dyn RasterPlanes) -> Self {
+        self.rasters = Some(planes);
+        self
+    }
+
     /// The place of pixel `(x, y)` in the photo frame, when the frame knows it.
-    fn spot(&self, x: usize, y: usize) -> PixelAt {
-        self.photo.map(|(map, frame)| PhotoSpot {
-            pos: map.position(x, y),
-            frame,
+    fn spot(&self, x: usize, y: usize) -> PixelAt<'a> {
+        self.photo.map(|(map, frame)| {
+            let spot = PhotoSpot::new(map.position(x, y), frame);
+            match self.rasters {
+                Some(planes) => spot.with_raster(planes, x, y),
+                None => spot,
+            }
         })
     }
 

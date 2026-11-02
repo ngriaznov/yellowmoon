@@ -53,7 +53,9 @@ pub mod raw;
 pub mod thumbs;
 pub mod viewport;
 
-pub use color::{LookProblem, LookProvider, NeutralOnly, PhotoSource, ResolvedLook};
+pub use color::{
+    LookProblem, LookProvider, NeutralOnly, PhotoSource, ResolvedLook, unmakeable_mask,
+};
 pub use frame::{
     ChromaSample, ChromaTap, DeviceFrame, FitFrame, FrameOptions, FrameOutput, FullImage,
     FullRequest, FullTarget, PixelSample, PixelWindow, RenderedFrame, ViewportFrame,
@@ -85,6 +87,10 @@ pub enum RenderError {
     /// A look cannot be used.
     #[error("{0}")]
     Look(String),
+    /// A mask of the photo is of a kind this computer cannot make (`docs/23` section 3.10): the photo is not
+    /// rendered without it.
+    #[error("{0}")]
+    Mask(String),
     /// The render would not fit in the memory budget.
     #[error(
         "There is not enough memory to render this photo at full size. Close other apps or export a smaller size."

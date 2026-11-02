@@ -180,6 +180,7 @@ impl ExportError {
             Self::Cancelled => "cancelled",
             Self::Look(_) => "look",
             Self::Render(RenderError::Gpu(_)) => "gpu",
+            Self::Render(RenderError::Mask(_)) => "mask",
             Self::Render(_) => "render",
             Self::Write(_) => "write",
             Self::Session(SessionError::Skipped(_)) => "unsupported",
@@ -1145,9 +1146,13 @@ fn export_photo_unguarded(
         progress: Some(&monotone),
     };
 
-    // 1. The look must be usable: an export does not fall back.
+    // 1. The look must be usable: an export does not fall back. Nor does a mask: a photo with a mask this
+    // computer cannot make is never written without it (`error.kind` `mask`, `docs/23` section 3.10).
     let looks = ctx.renderer.looks();
     let fingerprint = look_fingerprint(ctx, photo)?;
+    if let Some(sentence) = crate::pipeline::unmakeable_mask(&photo.source.settings) {
+        return Err(ExportError::Render(RenderError::Mask(sentence)));
+    }
     let is_dng = options.format == FormatKind::Dng;
     let look_sha256 = looks.look_sha256(photo.look());
     // Checked again once the pixels are rendered (which takes seconds to minutes).

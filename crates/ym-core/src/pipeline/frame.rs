@@ -72,6 +72,7 @@ use rayon::prelude::*;
 use ym_color::consts::Vec3;
 use ym_color::display::{ColorChain, Frame, Layout, OutputTarget, View};
 use ym_color::mask::{PhotoFrame, PhotoMap, PhotoSpot, PixelAt, accent_display_linear};
+use ym_color::mask_raster::{Area, CpuPlanes, PlaneJob};
 use ym_color::warp::chroma_of;
 use ym_gpu::cpu::magnify::{MagnifyMap, magnify_with};
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
@@ -676,6 +677,89 @@ fn with_photo<'a>(frame: Frame<'a>, positions: &'a Option<PhotoPositions<'a>>) -
     }
 }
 
+/// `frame` with the raster planes of its window, when the chain has raster rows.
+fn with_rasters<'a>(frame: Frame<'a>, planes: &'a Option<CpuPlanes>) -> Frame<'a> {
+    match planes {
+        Some(p) => frame.with_rasters(p),
+        None => frame,
+    }
+}
+
+/// The raster planes (`docs/algorithms/06` section 5) of a window of a view or an export on the CPU reference
+/// path, or `None` for a chain with no raster row or a view with nothing of the photo in it.
+///
+/// `sampled` is the camera RGB of `grown`, an area of the grid `grid` (absolute pixels of the output; `off` is its
+/// first pixel), `frame` the whole output image the window sums are clipped to, and `window` the part of `grown`
+/// the planes are returned for (the tile; a view is its own window, frame and grown area). The guide is the
+/// Input's luma of every pixel of `grown` ([`ColorChain::guide_pixel`]), found only when a row refines its edges.
+fn cpu_rasters(
+    chain: &ColorChain,
+    sampled: &Sampled,
+    grid: Option<&SamplerGrid>,
+    areas: (Area, Area, Area),
+) -> Option<CpuPlanes> {
+    let (frame, grown, window) = areas;
+    let grid = grid.filter(|_| chain.uses_rasters())?;
+    let photo = grid.photo_frame();
+    let u_px = 1.0 / photo.pixel;
+    let (w, h) = (sampled.img.width, sampled.img.height);
+    let guide: Option<Vec<f64>> = chain.rasters().needs_guide(u_px).then(|| {
+        let plane = w * h;
+        (0..plane)
+            .into_par_iter()
+            .map(|i| {
+                let d = &sampled.img.data;
+                chain.guide_pixel([
+                    f64::from(d[i]),
+                    f64::from(d[plane + i]),
+                    f64::from(d[2 * plane + i]),
+                ])
+            })
+            .collect()
+    });
+    let map = GridPositions::new(grid, (grown.x as usize, grown.y as usize));
+    let outside = sampled.outside.as_deref();
+    let position = |x: usize, y: usize| {
+        if outside.is_some_and(|o| o[y * w + x] != 0) {
+            None
+        } else {
+            Some(map.position(x, y))
+        }
+    };
+    Some(chain.rasters().planes(&PlaneJob {
+        photo,
+        grown,
+        frame,
+        window,
+        position: &position,
+        guide: guide.as_deref(),
+    }))
+}
+
+/// The `w x h` pixels at `(x, y)` of a sampled picture, with their part of the mask of the pixels outside the photo.
+fn crop_sampled(s: &Sampled, x: usize, y: usize, w: usize, h: usize) -> Sampled {
+    let outside = s.outside.as_ref().map(|o| {
+        let width = s.img.width;
+        (0..h)
+            .flat_map(|j| o[(y + j) * width + x..(y + j) * width + x + w].iter().copied())
+            .collect::<Vec<u8>>()
+    });
+    Sampled {
+        img: s.img.extract(Rect::new(x, y, w, h)),
+        outside,
+    }
+}
+
+/// [`cpu_rasters`] for a whole view: the view is its own window and frame.
+fn cpu_view_rasters(
+    chain: &ColorChain,
+    sampled: &Sampled,
+    grid: Option<&SamplerGrid>,
+) -> Option<CpuPlanes> {
+    let whole = Area::whole(sampled.img.width, sampled.img.height);
+    cpu_rasters(chain, sampled, grid, (whole, whole, whole))
+}
+
 /// The colour chain C1 to C13 over `sampled` on the CPU reference path: RGBA8 with the letterbox
 /// painted (a frame that is not sharpened: amount 0, or the Before view).
 fn color_pass_cpu(
@@ -690,9 +774,14 @@ fn color_pass_cpu(
     let (w, h) = (sampled.img.width, sampled.img.height);
     let n = w * h;
     let positions = photo_positions_of(&grade.chain, photo, (0, 0));
-    let frame = with_photo(
-        Frame::planar(w, h, &sampled.img.data).map_err(|e| RenderError::Color(e.to_string()))?,
-        &positions,
+    let rasters = cpu_view_rasters(&grade.chain, sampled, photo);
+    let frame = with_rasters(
+        with_photo(
+            Frame::planar(w, h, &sampled.img.data)
+                .map_err(|e| RenderError::Color(e.to_string()))?,
+            &positions,
+        ),
+        &rasters,
     );
     let mut rgb = vec![0u8; 3 * n];
     let view = if before { View::Before } else { View::Final };
@@ -724,9 +813,14 @@ fn display_linear_cpu(
     job.check()?;
     let (w, h) = (sampled.img.width, sampled.img.height);
     let positions = photo_positions_of(&grade.chain, photo, (0, 0));
-    let frame = with_photo(
-        Frame::planar(w, h, &sampled.img.data).map_err(|e| RenderError::Color(e.to_string()))?,
-        &positions,
+    let rasters = cpu_view_rasters(&grade.chain, sampled, photo);
+    let frame = with_rasters(
+        with_photo(
+            Frame::planar(w, h, &sampled.img.data)
+                .map_err(|e| RenderError::Color(e.to_string()))?,
+            &positions,
+        ),
+        &rasters,
     );
     let mut rgb = vec![0.0f32; 3 * w * h];
     grade
@@ -756,9 +850,14 @@ fn mask_plane_cpu(
     job.check()?;
     let (w, h) = (sampled.img.width, sampled.img.height);
     let positions = photo_positions_of(&mask_grade.chain, photo, (0, 0));
-    let frame = with_photo(
-        Frame::planar(w, h, &sampled.img.data).map_err(|e| RenderError::Color(e.to_string()))?,
-        &positions,
+    let rasters = cpu_view_rasters(&mask_grade.chain, sampled, photo);
+    let frame = with_rasters(
+        with_photo(
+            Frame::planar(w, h, &sampled.img.data)
+                .map_err(|e| RenderError::Color(e.to_string()))?,
+            &positions,
+        ),
+        &rasters,
     );
     // The chain makes `[m, m, m]` for every pixel: the first plane is the mask.
     let mut planes = vec![0.0f32; 3 * w * h];
@@ -2280,12 +2379,12 @@ pub(crate) struct SampledView {
 
 impl SampledView {
     /// The place in the photo frame of pixel (0, 0) of the view, for the readout of a one-pixel view.
-    pub(crate) fn spot(&self) -> PixelAt {
+    pub(crate) fn spot(&self) -> PixelAt<'static> {
         let grid = self.grid.as_ref()?;
-        Some(PhotoSpot {
-            pos: GridPositions::new(grid, (0, 0)).position(0, 0),
-            frame: grid.photo_frame(),
-        })
+        Some(PhotoSpot::new(
+            GridPositions::new(grid, (0, 0)).position(0, 0),
+            grid.photo_frame(),
+        ))
     }
 }
 
@@ -2770,7 +2869,7 @@ impl Renderer {
         css: (f64, f64),
         before: bool,
         cancel: &CancelToken,
-    ) -> Result<Option<(Vec3, Arc<GradePlan>, PixelAt)>, RenderError> {
+    ) -> Result<Option<(Vec3, Arc<GradePlan>, PixelAt<'static>)>, RenderError> {
         let mut job = Job::new(self, src, cancel)?;
         let image = job.final_size()?;
         let Some((fx, fy)) = state.final_point_at(image, css) else {
@@ -3205,6 +3304,17 @@ impl Renderer {
         };
         let grade = job.grade(target_out, false)?;
         let grid = geom.grid((plan.out_w, plan.out_h), (fw, fh));
+        // The raster masks of the nodes are made over each tile grown by their receptive field (`docs/algorithms/06`
+        // section 5.2) and cut: a tile is sampled, guided and coloured over `grown` and its pixels are the window.
+        let frame_area = Area::whole(fw, fh);
+        let raster_halo = if grade.chain.uses_rasters() {
+            grade
+                .chain
+                .rasters()
+                .halo(1.0 / grid.sampler_grid().photo_frame().pixel)
+        } else {
+            0
+        };
         let mut rgb = vec![0.0f32; fw * fh * 3];
         let threads = job.options().threads;
         let strict = job.options().gpu_strict;
@@ -3230,7 +3340,18 @@ impl Renderer {
                     job.check()?;
                     gate()?;
                     let tw = tile.min(fw - ox);
-                    if let Some((x0, y0, x1, y1)) = grid.source_bounds(ox, oy, tw, th, 3) {
+                    let tile_area = Area {
+                        x: ox as i64,
+                        y: oy as i64,
+                        w: tw,
+                        h: th,
+                    };
+                    let grown = tile_area.grown(raster_halo, &frame_area);
+                    let (gx, gy) = (grown.x as usize, grown.y as usize);
+                    if grid.source_bounds(ox, oy, tw, th, 3).is_some()
+                        && let Some((x0, y0, x1, y1)) =
+                            grid.source_bounds(gx, gy, grown.w, grown.h, 3)
+                    {
                         let rect = Rect::new(x0, y0, x1 - x0, y1 - y0);
                         // With the colour stage on the device the raw chain's tile may stay there
                         // (`Job::region_resident`); with the CPU colouring it the host's is wanted.
@@ -3299,17 +3420,39 @@ impl Renderer {
                                         .to_owned(),
                                 ));
                             };
-                            let sampled =
-                                sample_to_camera(&region, (x0, y0), &grid, (ox, oy), tw, th);
+                            let sampled_grown = sample_to_camera(
+                                &region,
+                                (x0, y0),
+                                &grid,
+                                (gx, gy),
+                                grown.w,
+                                grown.h,
+                            );
+                            let sampler_grid = grid.sampler_grid();
+                            // The raster planes of the tile, from the picture over the grown area.
+                            let rasters = cpu_rasters(
+                                &grade.chain,
+                                &sampled_grown,
+                                Some(&sampler_grid),
+                                (frame_area, grown, tile_area),
+                            );
+                            // The tile's own pixels of the sampled picture.
+                            let sampled = if grown == tile_area {
+                                sampled_grown
+                            } else {
+                                crop_sampled(&sampled_grown, ox - gx, oy - gy, tw, th)
+                            };
                             // The mask shapes of the nodes are placed in the photo frame: this tile's
                             // pixels are the grid's from (ox, oy).
-                            let sampler_grid = grid.sampler_grid();
                             let positions =
                                 photo_positions_of(&grade.chain, Some(&sampler_grid), (ox, oy));
-                            let frame = with_photo(
-                                Frame::planar(tw, th, &sampled.img.data)
-                                    .map_err(|e| RenderError::Color(e.to_string()))?,
-                                &positions,
+                            let frame = with_rasters(
+                                with_photo(
+                                    Frame::planar(tw, th, &sampled.img.data)
+                                        .map_err(|e| RenderError::Color(e.to_string()))?,
+                                    &positions,
+                                ),
+                                &rasters,
                             );
                             let mut out = vec![0.0f32; 3 * tw * th];
                             match request.target {

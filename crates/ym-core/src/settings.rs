@@ -86,8 +86,8 @@ pub use graph::{
 pub use masks::{
     BackgroundMask, BrightnessRangeMask, BrushMask, BrushStroke, ColorRangeMask, FindMask,
     LinearMask, MASK_KINDS, MAX_BRUSH_POINTS, MAX_MASKS_PER_NODE, MAX_OBJECT_POINTS, MaskItem,
-    MaskKind, MaskMode, MaskRowPatch, MaskSettings, MaskShape, MasksPatch, ObjectMask, RadialMask,
-    mask_kinds,
+    MaskKind, MaskMode, MaskRowPatch, MaskSettings, MaskShape, MaskUnavailable, MasksPatch,
+    ObjectMask, RadialMask, mask_kinds, mask_unavailable, unmakeable_mask_sentence,
 };
 pub use patch::{COPY_LEAVES_OUT, GradePatch, NodePatch, PatchReport, SettingsPatch, TrimPatch};
 

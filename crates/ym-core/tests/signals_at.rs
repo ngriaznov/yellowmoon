@@ -344,6 +344,91 @@ fn pick_colour_at_a_node_reads_the_chroma_at_the_input_of_its_warp() {
     );
 }
 
+// ---- The node's own signal, whatever its mask does (N-13) -------------------------------------------
+
+/// A Radial row that covers part of the photo with a soft edge: `m` is neither 0 nor 1 over most
+/// of it.
+fn radial_row() -> Value {
+    json!({
+        "kind": "radial", "center": [0.4, 0.5], "radii": [0.2, 0.15], "angle_deg": 20.0,
+        "feather": 0.5
+    })
+}
+
+/// `Input -> 1 -> 2 -> Output`, node 2 with these fields and a mask, and (with `key`) node 3 with a
+/// Linear row feeding node 2's key input.
+fn masked_line(trim: &Value, grade: &Value, invert: bool, key: bool) -> DevelopSettings {
+    let mut items = vec![
+        flat_main(),
+        json!({
+            "id": 2, "kind": "corrector", "pos": [1.0, 0.0], "trim": trim, "grade": grade,
+            "masks": { "invert": invert, "items": [radial_row()] }
+        }),
+    ];
+    let mut links = vec![
+        picture(json!("input"), json!(1)),
+        picture(json!(1), json!(2)),
+        picture(json!(2), json!("output")),
+    ];
+    if key {
+        items.push(json!({
+            "id": 3, "kind": "corrector", "pos": [1.0, 1.0],
+            "masks": { "items": [{ "kind": "linear", "center": [0.6, 0.5], "angle_deg": 70.0, "feather": 0.4 }] }
+        }));
+        links.push(json!({
+            "from": { "node": 3, "port": "key" }, "to": { "node": 2, "port": "key" }
+        }));
+    }
+    settings(items, links)
+}
+
+#[test]
+fn a_masked_nodes_histogram_and_scatter_are_its_own_signal_not_the_blend() {
+    let d = photo();
+    let src = d.source();
+    let r = renderer();
+    let (trim, grade) = busy();
+    let plain = at(&src, line(&trim, &grade));
+    let histogram_plain = histogram(&r, &plain, NODE_2);
+    let scatter_plain = scatter(&r, &plain, NODE_2);
+    assert!(!scatter_plain.points.is_empty());
+    for (what, s) in [
+        ("a Radial row", masked_line(&trim, &grade, false, false)),
+        ("a Radial row and the node's Invert", masked_line(&trim, &grade, true, false)),
+        ("a Radial row and a key input", masked_line(&trim, &grade, false, true)),
+    ] {
+        let s = at(&src, s);
+        assert_eq!(
+            histogram(&r, &s, NODE_2),
+            histogram_plain,
+            "{what}: the histogram is of the node's own C9b"
+        );
+        assert_eq!(
+            scatter(&r, &s, NODE_2),
+            scatter_plain,
+            "{what}: the scatter is of the node's own C9"
+        );
+    }
+}
+
+#[test]
+fn a_masked_nodes_pick_colour_at_its_warp_is_its_own_signal() {
+    let d = photo();
+    let src = d.source();
+    let r = renderer();
+    let (trim, grade) = busy();
+    for point in POINTS {
+        let want = tapped(&r, &src, line(&trim, &grade), NODE_2, ChromaTap::WarpInput, point);
+        for (what, s) in [
+            ("a Radial row", masked_line(&trim, &grade, false, false)),
+            ("a Radial row and a key input", masked_line(&trim, &grade, false, true)),
+        ] {
+            let got = tapped(&r, &src, s, NODE_2, ChromaTap::WarpInput, point);
+            assert_eq!(got, want, "{what} at {point:?}");
+        }
+    }
+}
+
 // ---- Pick colour at the node's input (`ChromaTap::NodeInput`, for a Colour range) -----------------
 
 /// The chroma under `point` of a 300 x 300 cell, read at `tap` of `node`.

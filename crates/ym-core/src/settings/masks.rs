@@ -128,18 +128,125 @@ impl MaskKind {
 }
 
 /// The kinds of mask this machine can make now, in the order of the Add mask menu (`docs/23` section 9,
-/// `mask_kinds`): what the menu lists, and what a photo may use without being refused. The shapes and the
-/// ranges that are built always are here; **the later tasks add their kind** when it can be made: Brush
-/// (N-14), Background (N-15), Object (N-18, where the SAM weights are present) and Subject and People
-/// (N-19, where the Vision probe said yes).
+/// `mask_kinds`): what the menu lists, and what a photo may use without being refused. The shapes, Brush and the
+/// ranges that are built always are here; **the later tasks add their kind** when it can be made: Background
+/// (N-15), Object (N-18, where the SAM weights are present) and Subject and People (N-19, where the Vision
+/// probe said yes).
 #[must_use]
 pub fn mask_kinds() -> Vec<MaskKind> {
     vec![
         MaskKind::Linear,
         MaskKind::Radial,
+        MaskKind::Brush,
         MaskKind::ColorRange,
         MaskKind::BrightnessRange,
     ]
+}
+
+/// Why this machine cannot make a kind of mask, by its wire name in `ym doctor --json`
+/// (`masks.unavailable`, `docs/10`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskUnavailable {
+    /// The SAM weights are missing or damaged (Object).
+    WeightsMissing,
+    /// This is not a Mac (Subject and People).
+    NotAMac,
+    /// This Mac's macOS is older than the Vision requests need (Subject and People).
+    MacosTooOld,
+    /// This version of Yellowmoon has no way to make the kind on this computer: its runtime is not built yet
+    /// (Object until N-18, Background until N-15, Subject and People on a Mac until N-19), or the Mac cannot
+    /// run the Vision requests.
+    NotSupported,
+}
+
+impl MaskUnavailable {
+    /// The reason's wire name: `weights_missing`, `not_a_mac`, `macos_too_old` or `not_supported`.
+    #[must_use]
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::WeightsMissing => "weights_missing",
+            Self::NotAMac => "not_a_mac",
+            Self::MacosTooOld => "macos_too_old",
+            Self::NotSupported => "not_supported",
+        }
+    }
+
+    /// The reason in the parentheses of `ym doctor`'s Masks line, for a group of kinds (they are plural there).
+    #[must_use]
+    pub fn doctor_text(self) -> &'static str {
+        match self {
+            Self::WeightsMissing => "the SAM weights are missing",
+            Self::NotAMac => "this is not a Mac that supports them",
+            Self::MacosTooOld => "this Mac's macOS is too old for them",
+            Self::NotSupported => "this version of Yellowmoon can't make them yet",
+        }
+    }
+}
+
+impl MaskKind {
+    /// The kind's name in the interface and in `ym doctor` ("Colour range").
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            MaskKind::Object => "Object",
+            MaskKind::Subject => "Subject",
+            MaskKind::People => "People",
+            MaskKind::Background => "Background",
+            MaskKind::Linear => "Linear",
+            MaskKind::Radial => "Radial",
+            MaskKind::Brush => "Brush",
+            MaskKind::ColorRange => "Colour range",
+            MaskKind::BrightnessRange => "Brightness range",
+        }
+    }
+}
+
+/// The kinds of mask this machine cannot make, each with its reason, in the order of the Add mask menu: the
+/// complement of [`mask_kinds`] in [`MaskKind::ALL`]. `ym doctor` prints it and a photo that needs one of them
+/// fails with `error.kind` `mask` ([`unmakeable_mask_sentence`]).
+#[must_use]
+pub fn mask_unavailable() -> Vec<(MaskKind, MaskUnavailable)> {
+    let made = mask_kinds();
+    MaskKind::ALL
+        .into_iter()
+        .filter(|k| !made.contains(k))
+        .map(|k| {
+            let why = match k {
+                MaskKind::Subject | MaskKind::People if !cfg!(target_os = "macos") => {
+                    MaskUnavailable::NotAMac
+                }
+                _ => MaskUnavailable::NotSupported,
+            };
+            (k, why)
+        })
+        .collect()
+}
+
+/// The plain sentence for a node whose mask of this kind this computer cannot make (`error.kind` `mask`,
+/// `docs/23` section 3.10 and `docs/10`): what went wrong and what to do next. `None` for a kind it can make.
+#[must_use]
+pub fn unmakeable_mask_sentence(node: u32, kind: MaskKind) -> Option<String> {
+    let (_, why) = mask_unavailable().into_iter().find(|(k, _)| *k == kind)?;
+    let (article, name) = match kind {
+        MaskKind::Object => ("an", "Object"),
+        MaskKind::Subject => ("a", "Subject"),
+        MaskKind::People => ("a", "People"),
+        MaskKind::Background => ("a", "Background"),
+        // The other kinds can always be made.
+        _ => return None,
+    };
+    Some(match why {
+        MaskUnavailable::NotAMac | MaskUnavailable::MacosTooOld => format!(
+            "Node {node} has {article} {name} mask, and this computer cannot make one. Use a Mac that supports {name} masks, or remove the mask."
+        ),
+        MaskUnavailable::WeightsMissing => format!(
+            "Node {node} has {article} {name} mask, and the SAM weights are missing. Reinstall Yellowmoon, or remove the mask."
+        ),
+        MaskUnavailable::NotSupported => format!(
+            "Node {node} has {article} {name} mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon."
+        ),
+    })
 }
 
 /// An Object mask: SAM 2.1 from clicks or a box (`docs/23` section 4.4). With no point and no box it

@@ -413,10 +413,7 @@ fn reference(
     for i in 0..n {
         let p = sampled.img.pixel(i % w, i / w);
         cam.push([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
-        at.push(Some(PhotoSpot {
-            pos: map.position(i % w, i / w),
-            frame,
-        }));
+        at.push(Some(PhotoSpot::new(map.position(i % w, i / w), frame)));
     }
     let outside = (0..n)
         .map(|i| sampled.outside.as_ref().is_some_and(|o| o[i] != 0))
@@ -690,11 +687,11 @@ fn inverted_subtracted_and_combined_rows_match_the_cpu() {
         ("no rows", NodeMasks::default()),
         (
             "a raster kind (selects nothing)",
-            masks(vec![MaskRow::new(MaskKind::Raster)]),
+            masks(vec![MaskRow::new(MaskKind::Raster { plane: 0 })]),
         ),
         (
             "an inverted raster kind",
-            masks(vec![invert(MaskRow::new(MaskKind::Raster))]),
+            masks(vec![invert(MaskRow::new(MaskKind::Raster { plane: 0 }))]),
         ),
         (
             "nine rows of every kind",
@@ -705,7 +702,7 @@ fn inverted_subtracted_and_combined_rows_match_the_cpu() {
                 subtract(opacity(bri(), 0.3)),
                 opacity(radial([0.7, 0.3], [0.15, 0.1], -20.0, 0.6), 0.9),
                 invert(opacity(linear([0.3, 0.6], -50.0, 0.2), 0.5)),
-                MaskRow::new(MaskKind::Raster),
+                MaskRow::new(MaskKind::Raster { plane: 0 }),
                 colour([0.03, 0.02], 0.08, 0.4),
                 brightness(0.1, 0.5, 0.6),
             ]),
@@ -1318,10 +1315,7 @@ fn cpu_mask_plane(rows: &[MaskRow], buffer: (usize, usize), k: f64) -> (Vec<f64>
     let mut out = Vec::with_capacity(w * h);
     for y in 0..h {
         for x in 0..w {
-            let spot = Some(PhotoSpot {
-                pos: map.position(x, y),
-                frame,
-            });
+            let spot = Some(PhotoSpot::new(map.position(x, y), frame));
             out.push(prepared.mask(None, grey, 0.3, spot));
         }
     }
@@ -1571,10 +1565,7 @@ fn a_radial_stays_on_its_photo_feature_through_every_geometry() {
                     continue;
                 }
                 let b = f64::from(sampled.img.pixel(x, y)[0]) - 0.02;
-                let spot = Some(PhotoSpot {
-                    pos: map.position(x, y),
-                    frame,
-                });
+                let spot = Some(PhotoSpot::new(map.position(x, y), frame));
                 let m = prepared.mask(None, grey, 0.3, spot);
                 for (acc, wgt) in [(&mut dot, b), (&mut mk, m)] {
                     acc[0] += wgt;

@@ -26,8 +26,8 @@ use ym_color::warp::chroma_of;
 
 // ---- helpers ------------------------------------------------------------------------------------
 
-fn spot(x: f64, y: f64, frame: PhotoFrame) -> PixelAt {
-    Some(PhotoSpot { pos: [x, y], frame })
+fn spot(x: f64, y: f64, frame: PhotoFrame) -> PixelAt<'static> {
+    Some(PhotoSpot::new([x, y], frame))
 }
 
 /// A photo of `w x h` pixels rendered with output pixels of `pixel` photo pixels.
@@ -483,7 +483,7 @@ fn invert_then_opacity_per_row() {
 #[test]
 fn raster_kinds_select_nothing_until_their_tasks() {
     let f = frame(1000.0, 1000.0, 1.0);
-    let raster = MaskRow::new(MaskKind::Raster);
+    let raster = MaskRow::new(MaskKind::Raster { plane: 0 });
     // s = 0: an added row adds nothing, so a node whose only mask is empty changes nothing.
     assert_eq!(m_at(vec![raster], 0.5, 0.5, f), 0.0);
     // The row's Invert applies to s = 0, as for an Object row with no point (`docs/23` section 4.2).
@@ -1304,7 +1304,11 @@ fn only_nodes_with_a_shape_ask_for_positions() {
     assert!(!with(vec![]).uses_photo_position());
     assert!(!with(vec![colour([0.0, 0.0], 0.05, 0.5)]).uses_photo_position());
     assert!(!with(vec![brightness(0.2, 0.9, 0.5)]).uses_photo_position());
-    assert!(!with(vec![MaskRow::new(MaskKind::Raster)]).uses_photo_position());
+    // A raster row needs the places of the pixels to make its plane, and reads the plane.
+    let raster = with(vec![MaskRow::new(MaskKind::Raster { plane: 0 })]);
+    assert!(raster.uses_photo_position());
+    assert!(raster.uses_rasters());
+    assert!(!with(vec![linear([0.5, 0.5], 0.0, 0.2)]).uses_rasters());
     assert!(with(vec![linear([0.5, 0.5], 0.0, 0.2)]).uses_photo_position());
     assert!(with(vec![radial([0.5, 0.5], [0.2, 0.2], 0.0, 0.2)]).uses_photo_position());
 }

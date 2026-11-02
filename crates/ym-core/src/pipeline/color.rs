@@ -40,6 +40,9 @@ use ym_color::display::{
 use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
 use ym_color::mask::{MaskKind, MaskRow, NodeMasks};
+use ym_color::mask_raster::{
+    BrushStrokes, MAX_RASTER_PLANES, RasterRow, RasterSet, RasterSource, Stroke,
+};
 use ym_color::plan::{self, PictureSource, Plan, PlanGraph, PlanNode, Stop};
 use ym_color::tone::ToneParams;
 use ym_color::warp::{Warp, WarpParams};
@@ -514,11 +517,36 @@ fn trim_of(t: &NodeTrim) -> Trim {
     }
 }
 
-/// A node's mask rows as `ym_color`'s: the enabled rows in order (a row with the eye off is absent), each
-/// with its kind, mode, Invert and Opacity, and the node's Invert. The raster kinds (Object, Subject, People,
-/// Background, Brush) are rows that select nothing until N-13 to N-19 give them a plane.
-#[must_use]
-pub fn node_masks(m: &MaskSettings) -> NodeMasks {
+/// The plane index of a raster row that has no plane: a kind this machine cannot make (`docs/23` section 3.10).
+/// The row is in the fold and selects nothing, in a view; an export of the photo is refused
+/// ([`unmakeable_mask`](crate::settings::unmakeable_mask)).
+pub const NO_PLANE: usize = usize::MAX;
+
+/// The raster row a mask row stands for, when this machine can make its `S0`: a Brush row's strokes with its
+/// Grow, Feather and Refine edges. Object, Subject, People and Background are not made yet (N-15, N-17 to N-19).
+fn raster_row_of(shape: &MaskShape) -> Option<RasterRow> {
+    match shape {
+        MaskShape::Brush(b) => Some(RasterRow {
+            source: RasterSource::Brush(Arc::new(BrushStrokes::new(
+                b.strokes
+                    .iter()
+                    .map(|s| Stroke {
+                        size: s.size,
+                        hardness: s.hardness,
+                        erase: s.erase,
+                        points: s.points.clone(),
+                    })
+                    .collect(),
+            ))),
+            grow: b.grow,
+            feather: b.feather,
+            refine: b.refine,
+        }),
+        _ => None,
+    }
+}
+
+fn mask_rows(m: &MaskSettings, rasters: &mut RasterSet) -> NodeMasks {
     let rows = m
         .items
         .iter()
@@ -550,7 +578,15 @@ pub fn node_masks(m: &MaskSettings) -> NodeMasks {
                 | MaskShape::Subject(_)
                 | MaskShape::People(_)
                 | MaskShape::Background(_)
-                | MaskShape::Brush(_) => MaskKind::Raster,
+                | MaskShape::Brush(_) => match raster_row_of(&row.shape) {
+                    Some(r) if rasters.rows.len() < MAX_RASTER_PLANES => {
+                        rasters.rows.push(r);
+                        MaskKind::Raster {
+                            plane: rasters.rows.len() - 1,
+                        }
+                    }
+                    _ => MaskKind::Raster { plane: NO_PLANE },
+                },
             },
             subtract: row.mode == MaskMode::Subtract,
             invert: row.invert,
@@ -561,6 +597,16 @@ pub fn node_masks(m: &MaskSettings) -> NodeMasks {
         rows,
         invert: m.invert,
     }
+}
+
+/// A node's mask rows as `ym_color`'s: the enabled rows in order (a row with the eye off is absent), each
+/// with its kind, mode, Invert and Opacity, and the node's Invert. A raster row (Brush now; Object, Subject,
+/// People and Background when they are built) is a [`MaskKind::Raster`] whose plane is its place among the
+/// raster rows of a chain; this function numbers them from 0 for itself alone, and [`node_set`] numbers them
+/// across the nodes of a plan.
+#[must_use]
+pub fn node_masks(m: &MaskSettings) -> NodeMasks {
+    mask_rows(m, &mut RasterSet::default())
 }
 
 /// Whether the photo's plan has a node with a mask row that reads the pixel's place in the photo (a Linear
@@ -581,6 +627,35 @@ pub fn uses_photo_position_to(s: &DevelopSettings, stop: Stop) -> bool {
         s.nodes
             .corrector(id)
             .is_some_and(|c| node_masks(&c.masks).prepare().needs_position())
+    })
+}
+
+/// The sentence for the first mask of the photo that this computer cannot make (`docs/23` section 3.10): a raster
+/// row of a kind that is not in [`mask_kinds`](crate::settings::mask_kinds) (Object, Subject, People, Background
+/// until they are built) in a node the Output needs, with the eye on; or more raster masks than a render holds
+/// ([`MAX_RASTER_PLANES`]). `None` when the photo can be rendered with all its masks. A dead node's rows and a
+/// row with the eye off do not count: they are not in the picture.
+#[must_use]
+pub fn unmakeable_mask(s: &DevelopSettings) -> Option<String> {
+    let plan = node_plan(&s.nodes, Stop::Output).ok()?;
+    let mut planes = 0usize;
+    for id in plan.node_ids() {
+        let Some(c) = s.nodes.corrector(id) else {
+            continue;
+        };
+        for row in c.masks.items.iter().filter(|r| r.enabled) {
+            if let Some(sentence) =
+                crate::settings::unmakeable_mask_sentence(id, crate::settings::MaskKind::of(&row.shape))
+            {
+                return Some(sentence);
+            }
+            planes += usize::from(raster_row_of(&row.shape).is_some());
+        }
+    }
+    (planes > MAX_RASTER_PLANES).then(|| {
+        format!(
+            "This photo has more than {MAX_RASTER_PLANES} masks that are drawn or found. Remove some of them."
+        )
     })
 }
 
@@ -629,9 +704,17 @@ pub fn node_plan(g: &NodeGraph, stop: Stop) -> Result<Plan, RenderError> {
 
 /// The nodes of a photo for the chain: the plan to `stop` (the Output, or a node's mask for the mask view),
 /// Main's trim and bypass, and every other corrector the plan runs, with its own grade (no Auto), warp, curves
-/// and trim.
-fn node_set(s: &DevelopSettings, stop: Stop) -> Result<NodeSet, RenderError> {
+/// and trim; and the raster rows of their masks, numbered across the nodes in the plan's order (a node's rows
+/// in list order), which the chain's [`MaskKind::Raster`] rows index.
+fn node_set(s: &DevelopSettings, stop: Stop) -> Result<(NodeSet, RasterSet), RenderError> {
     let plan = node_plan(&s.nodes, stop)?;
+    let mut rasters = RasterSet::default();
+    let mut masks = std::collections::BTreeMap::new();
+    for id in plan.node_ids() {
+        if let Some(c) = s.nodes.corrector(id) {
+            masks.insert(id, mask_rows(&c.masks, &mut rasters));
+        }
+    }
     let mut others = std::collections::BTreeMap::new();
     for id in plan.node_ids() {
         if id == plan::MAIN_NODE {
@@ -648,19 +731,27 @@ fn node_set(s: &DevelopSettings, stop: Stop) -> Result<NodeSet, RenderError> {
                 grade: grade_params_of(&c.grade, None),
                 warp: ColorWarp::to_color(&c.grade.color_warp),
                 curves: curves_of(&c.grade.curve)?,
-                masks: node_masks(&c.masks),
+                masks: masks.remove(&id).unwrap_or_default(),
             },
         );
     }
-    Ok(NodeSet {
-        plan,
-        main: MainNode {
-            bypass: s.main().bypass,
-            trim: trim_of(&s.main().trim),
-            masks: node_masks(&s.main().masks),
+    // Main's rows: numbered with the rest when Main is in the plan, else (a plan that does not run it) its
+    // own masks are not evaluated and need no planes.
+    let main_masks = masks
+        .remove(&plan::MAIN_NODE)
+        .unwrap_or_else(|| node_masks(&s.main().masks));
+    Ok((
+        NodeSet {
+            plan,
+            main: MainNode {
+                bypass: s.main().bypass,
+                trim: trim_of(&s.main().trim),
+                masks: main_masks,
+            },
+            others,
         },
-        others,
-    })
+        rasters,
+    ))
 }
 
 /// What the grade group is made for.
@@ -739,6 +830,20 @@ fn nodes_key(s: &DevelopSettings, stop: Stop) -> String {
                 Warp::new(&c.grade.color_warp.to_color()),
                 c.grade.curve,
                 node_masks(&c.masks),
+            );
+        }
+    }
+    // The raster rows by what makes their planes (a hash of the strokes, never the strokes) and their sizes:
+    // the numbers above only say that a node has a raster row.
+    if let Ok((_, rasters)) = node_set(s, stop) {
+        for r in &rasters.rows {
+            let _ = write!(
+                k,
+                "raster:{:x}:{}:{}:{};",
+                r.source.key(),
+                r.grow,
+                r.feather,
+                r.refine
             );
         }
     }
@@ -831,7 +936,9 @@ pub fn grade_plan_to(
     params.grade = grade_params(s, &src.estimates);
     params.warp = warp_params(s);
     params.curves = curve_set(s)?;
-    params.nodes = node_set(s, stop)?;
+    let (nodes, rasters) = node_set(s, stop)?;
+    params.nodes = nodes;
+    params.rasters = rasters;
     params.output = req.target;
     params.dither = req.dither;
     params.before = BeforePoint::CameraDefault;

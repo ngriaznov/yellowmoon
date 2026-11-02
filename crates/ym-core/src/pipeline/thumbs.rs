@@ -24,7 +24,8 @@
 //! * **`at`** (`docs/01`, `docs/23` sections 7.5 and 9): the histogram, the scatter and Pick colour read the
 //!   signal at a node. Left out it is Main's (as before); `input` is the Input's output; a corrector
 //!   is read by the graph rewrite of the node thumbnails ([`settings_ending_at`], with no look and
-//!   the node's own later stages taken out), so no kernel is involved (`signal_source`). Pick colour
+//!   the node's own later stages, masks and key input taken out), so no kernel is involved
+//!   (`signal_source`). Pick colour
 //!   has a second place to read, the node's own input (`ChromaTap::NodeInput`, for a Colour range).
 //! * **Scheduled calls**: `spawn_*` put a request on the render queue at the priority `docs/01`
 //!   gives it and return a handle.
@@ -61,7 +62,8 @@ use super::viewport::ViewportState;
 use crate::apple_auto::{AdvisorPicture, PICTURE_LONG_EDGE_PX};
 use crate::session::{PhotoId, PictureInput, PictureRenderer, ThumbnailInput, ThumbnailRenderer};
 use crate::settings::{
-    ColorWarp, Curves, DevelopSettings, NodeGrade, NodeId, NodeLink, NodeRef, NodeTrim,
+    ColorWarp, Curves, DevelopSettings, MaskSettings, NodeGrade, NodeId, NodeLink, NodeRef,
+    NodeTrim,
 };
 use ym_color::look::LookTransform;
 use ym_color::plan::Stop;
@@ -263,6 +265,11 @@ impl Read {
 ///   (its curve; for the warp's input also its warp; for the node's input also its trim and its
 ///   grade), so that the chain's last value is the signal at that stage of the node. Nothing in the
 ///   kernels or the chain changes, and the raw group and its caches are the photo's own.
+/// * For the curve's and the warp's input the node's **masks and key input are taken out** too (its
+///   mask rows, its Invert and the link into its key input): the node's blend would otherwise leave
+///   `in + m (node(in) - in)` as the last value, and the panels read the node's own signal, which
+///   its mask does not change. The node's input is read with every step at its identity, which the
+///   chain skips whole, so its masks take no part there.
 /// * [`Tap::NodeInput`] reads the picture a node takes in: the Input's output (C8) for Main and the
 ///   Input, and for another corrector the rewrite with the node itself at its identity.
 ///
@@ -293,12 +300,22 @@ pub(crate) fn signal_source(
             }
             let mut settings = settings_ending_at(&src.settings, k);
             settings.output_mut().look = LookId::neutral();
+            if matches!(tap, Tap::CurveInput | Tap::WarpInput) {
+                // The node's own signal is not blended by its mask (the blend is the last thing
+                // a node does): no mask rows, no Invert, nothing linked into its key input.
+                let key_input = NodeRef::key(NodeId::Corrector(k));
+                settings.nodes.links.retain(|l| l.to != key_input);
+            }
             if let Some(node) = settings.nodes.corrector_mut(k) {
                 match tap {
-                    Tap::CurveInput => node.grade.curve = Curves::default(),
+                    Tap::CurveInput => {
+                        node.grade.curve = Curves::default();
+                        node.masks = MaskSettings::default();
+                    }
                     Tap::WarpInput => {
                         node.grade.curve = Curves::default();
                         node.grade.color_warp = ColorWarp::default();
+                        node.masks = MaskSettings::default();
                     }
                     // Every step of the node at its identity: it passes its picture through
                     // (`PreparedNode::skips`), so the chain's last value is what it reads.
