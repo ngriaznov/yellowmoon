@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   angleSlider,
+  BRUSH_SIZE_RANGE,
   COLOR_WIDTH_RANGE,
+  growField,
+  growSlider,
   opacityField,
   opacitySlider,
   RADII_RANGE,
   radiusField,
   radiusSlider,
+  refineField,
+  refineSlider,
+  sizeField,
+  sizeSlider,
   unitField,
   unitSlider,
   widthField,
@@ -72,5 +79,42 @@ describe("the scales of a mask's sliders (docs/algorithms/06 §4.5)", () => {
     expect(wrapDegrees(540)).toBe(180);
     expect(wrapDegrees(30)).toBe(30);
     expect(wrapDegrees(-180)).toBe(-180);
+  });
+
+  it("Refine edges is percent, 0 to 100 % for 0 to 1; Grow is −100 to 100 for −1 to 1", () => {
+    expect(refineSlider(0.5)).toBe(50);
+    expect(refineSlider(0)).toBe(0);
+    expect(refineField(50)).toBeCloseTo(0.5, 12);
+    expect(refineField(140)).toBe(1);
+    expect(growSlider(-1)).toBe(-100);
+    expect(growSlider(0)).toBe(0);
+    expect(growSlider(0.37)).toBe(37);
+    expect(growSlider(-2)).toBe(-100);
+    expect(growField(-100)).toBe(-1);
+    expect(growField(25)).toBeCloseTo(0.25, 12);
+    expect(growField(400)).toBe(1);
+    for (const x of [-100, -37, -1, 0, 1, 64, 100]) expect(growSlider(growField(x))).toBe(x);
+  });
+
+  it("a Brush's Size is 0.001 + 0.249 (x / 100)² of the long edge and reaches both ends of the stored range", () => {
+    expect(sizeField(0)).toBe(BRUSH_SIZE_RANGE[0]);
+    expect(sizeField(100)).toBe(BRUSH_SIZE_RANGE[1]);
+    expect(sizeField(50)).toBe(0.06325);
+    // A small brush is within reach: a third of the slider is still under 0.03, and the first step from the smallest is a fraction of a pixel on a 6000 px photo.
+    expect(sizeField(1) - sizeField(0)).toBeLessThan(0.0001);
+    expect(sizeField(34)).toBeLessThan(0.03);
+    for (const x of [0, 1, 2, 10, 17, 34, 35, 64, 99, 100]) expect(sizeSlider(sizeField(x))).toBe(x);
+    // The default size, 0.03, is slider 34.
+    expect(sizeSlider(0.03)).toBe(34);
+    for (let x = 0; x <= 100; x++) {
+      expect(sizeField(x)).toBeGreaterThanOrEqual(BRUSH_SIZE_RANGE[0]);
+      expect(sizeField(x)).toBeLessThanOrEqual(BRUSH_SIZE_RANGE[1] + 1e-12);
+      if (x > 0) expect(sizeField(x)).toBeGreaterThan(sizeField(x - 1));
+    }
+    // Held to the stored range, whatever is asked.
+    expect(sizeSlider(0)).toBe(0);
+    expect(sizeSlider(9)).toBe(100);
+    expect(sizeField(-5)).toBe(BRUSH_SIZE_RANGE[0]);
+    expect(sizeField(900)).toBe(BRUSH_SIZE_RANGE[1]);
   });
 });

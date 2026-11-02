@@ -79,3 +79,61 @@ describe("maskViewSvg", () => {
     expect(turned).toContain('<g transform="matrix(0 1 -1 0 700 50)">');
   });
 });
+
+describe("a Brush row on the flat scene (task N-14)", () => {
+  const stroke = (more: Record<string, unknown> = {}) => ({ size: 0.05, hardness: 1, erase: false, points: [[0.2, 0.3], [0.8, 0.3]], ...more });
+  const brush = (strokes: unknown[], more: Record<string, unknown> = {}): MaskItem =>
+    row({ kind: "brush", strokes, feather: 0, grow: 0, refine: 0, ...more });
+  const svg = (items: MaskItem[], invert = false): string => maskViewSvg("mask_only", masks(items, invert), BOX);
+
+  it("draws a stroke as a round-capped line as wide as the brush, along its points", () => {
+    const out = svg([brush([stroke()])]);
+    // The long edge is 600: a size of 0.05 is 30 px; the points are fractions of the picture's rectangle.
+    expect(out).toContain('points="220,170 580,170"');
+    expect(out).toContain('stroke="#fff" stroke-width="30" stroke-linecap="round"');
+    expect(out).toContain("data-brush-row");
+    // The row's plane is its own mask, black where nothing is painted.
+    expect(out).toMatch(/<mask id="mvb0"[^>]*><rect [^>]*fill="#000"\/><polyline/);
+  });
+
+  it("draws a click as a dot: the same place twice", () => {
+    expect(svg([brush([stroke({ points: [[0.5, 0.5]] })])])).toContain('points="400,250 400,250"');
+  });
+
+  it("draws an erase stroke in black over the paint before it, in the order the strokes were drawn", () => {
+    const out = svg([brush([stroke(), stroke({ erase: true, points: [[0.5, 0.3]] })])]);
+    const paint = out.indexOf('stroke="#fff" stroke-width="30"');
+    const erase = out.indexOf('stroke="#000" stroke-width="30"');
+    expect(paint).toBeGreaterThan(-1);
+    expect(erase).toBeGreaterThan(paint);
+  });
+
+  it("softens a stroke by its hardness (none at 1) and the plane by the row's Feather", () => {
+    expect(svg([brush([stroke({ hardness: 1 })])])).not.toContain("feGaussianBlur");
+    const soft = svg([brush([stroke({ hardness: 0 })])]);
+    // A ramp of the whole radius: 15 px, a third of it as the blur.
+    expect(soft).toContain('<feGaussianBlur stdDeviation="4.95"/>');
+    expect(soft).toContain('filter="url(#mvb0s0)"');
+    // The region is given in the scene's units, so a horizontal line (no height) is still drawn.
+    expect(soft).toContain('filterUnits="userSpaceOnUse" x="100" y="50" width="600" height="400"');
+    const feathered = svg([brush([stroke()], { feather: 0.5 })]);
+    // σ = feather · 0.02 of the long edge = 6 px.
+    expect(feathered).toContain('<feGaussianBlur stdDeviation="6"/>');
+    expect(feathered).toContain('<g filter="url(#mvb0f)">');
+  });
+
+  it("paints the row's ink at its opacity: white for Add, black for Subtract, and the plane the other way round when the row is inverted", () => {
+    expect(svg([brush([stroke()], { opacity: 0.4 })])).toMatch(/<rect data-brush-row [^>]*fill="#fff" fill-opacity="0.4" mask="url\(#mvb0\)"\/>/);
+    expect(svg([brush([stroke()], { mode: "subtract" })])).toMatch(/<rect data-brush-row [^>]*fill="#000"/);
+    const inverted = svg([brush([stroke()], { invert: true })]);
+    expect(inverted).toMatch(/<mask id="mvb0"[^>]*><rect [^>]*fill="#fff"\/><polyline [^>]*stroke="#000"/);
+  });
+
+  it("selects nothing with no strokes, and adds to another row's mask without erasing it", () => {
+    expect(svg([brush([])])).not.toContain("<polyline");
+    const out = svg([radial(), brush([stroke({ erase: true })])]);
+    // The erase is inside the Brush row's own plane: the Radial's gradient is painted before it and is not touched.
+    expect(out.indexOf("radialGradient")).toBeLessThan(out.indexOf('<mask id="mvb1"'));
+    expect(out).toContain('<mask id="mvb1"');
+  });
+});

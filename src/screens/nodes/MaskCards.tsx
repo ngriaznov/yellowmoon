@@ -4,25 +4,18 @@ import { Button, Card, formats, ResetLink, Slider } from "../../components";
 import { newMask, resetRowPatch } from "../../state/maskRows";
 import { patchOf } from "../../state/settingsGraph";
 import type { AppStore } from "../../state/store";
-import {
-  angleSlider,
-  opacityField,
-  opacitySlider,
-  radiusField,
-  radiusSlider,
-  unitField,
-  unitSlider,
-  widthField,
-  widthSlider,
-} from "../tools/maskScales";
+import { angleSlider, radiusField, radiusSlider, unitField, unitSlider, widthField, widthSlider } from "../tools/maskScales";
+import { BrushCard } from "./BrushCard";
+import { FeatherSlider, OpacitySlider } from "./MaskSliders";
 
-/** The kinds that have a card in the Mask tab so far: the shapes and the ranges. The others come with Brush (N-14), Background (N-15), Object (N-18) and Subject and People (N-19). */
-export const CARD_KINDS: ReadonlySet<MaskItem["kind"]> = new Set(["linear", "radial", "color_range", "brightness_range"]);
+/** The kinds that have a card in the Mask tab so far: the shapes, Brush and the ranges. The others come with Background (N-15), Object (N-18) and Subject and People (N-19). */
+export const CARD_KINDS: ReadonlySet<MaskItem["kind"]> = new Set(["linear", "radial", "brush", "color_range", "brightness_range"]);
 
 /** The title of a kind's card: the kind in capitals (the card's own style does the capitals; this is the word). */
 const TITLE: Readonly<Partial<Record<MaskItem["kind"], string>>> = {
   linear: "Linear",
   radial: "Radial",
+  brush: "Brush",
   color_range: "Colour range",
   brightness_range: "Brightness range",
 };
@@ -41,7 +34,7 @@ export interface MaskCardProps {
 }
 
 /**
- * The selected mask's card (`docs/23` §7.6) for a Linear, a Radial, a Colour range or a Brightness range: its title is the kind in capitals, its
+ * The selected mask's card (`docs/23` §7.6) for a Linear, a Radial, a Brush, a Colour range or a Brightness range: its title is the kind in capitals, its
  * **Reset** puts the row back as a new row of the kind in the same mode, and its sliders are the standard slider with the scales of
  * `docs/algorithms/06` §4.5 (`maskScales.ts`). Every slider writes one field of the row, as a `masks.edit` row patch (`docs/23` §3.7): a drag is
  * a patch per frame that folds into one, and one undo step.
@@ -50,28 +43,8 @@ export function MaskCard({ store, rs, node, index, row, pickingRange, onPickRang
   const send = (edit: MaskPatch, final: boolean): void => void store.update(patchOf(node, { masks: { edit: { [String(index)]: edit } } }), final, rs.photo_id);
   const fresh = newMask(row.kind, row.mode);
   const reset = (): void => void store.update(patchOf(node, { masks: { edit: { [String(index)]: resetRowPatch(row) } } }), true, rs.photo_id);
-  const opacity = (
-    <Slider
-      label="Opacity"
-      value={opacitySlider(row.opacity)}
-      min={0}
-      max={100}
-      defaultValue={100}
-      format={formats.percent}
-      onChange={(v, final) => send({ opacity: opacityField(v) }, final)}
-    />
-  );
-  const feather = (value: number, defaultValue: number) => (
-    <Slider
-      label="Feather"
-      value={unitSlider(value)}
-      min={0}
-      max={100}
-      defaultValue={unitSlider(defaultValue)}
-      format={formats.integer}
-      onChange={(v, final) => send({ feather: unitField(v) }, final)}
-    />
-  );
+  const opacity = <OpacitySlider value={row.opacity} send={send} />;
+  const feather = (value: number, defaultValue: number) => <FeatherSlider value={value} defaultValue={defaultValue} send={send} />;
   const softness = (value: number) => (
     <Slider
       label="Softness"
@@ -140,6 +113,8 @@ export function MaskCard({ store, rs, node, index, row, pickingRange, onPickRang
         </Card>
       );
     }
+    case "brush":
+      return <BrushCard store={store} rs={rs} node={node} index={index} row={row} />;
     case "color_range": {
       const was = fresh as typeof row;
       return (

@@ -11,6 +11,8 @@ import type { AppStore } from "../state/store";
 import { imageAspectOf, isFullRect } from "./crop/cropMath";
 import { CropOverlay } from "./crop/CropOverlay";
 import type { CropSession } from "./crop/useCropSession";
+import { BrushLayer } from "./nodes/BrushLayer";
+import type { BrushTarget } from "./nodes/BrushLayer";
 import { MaskHandles } from "./nodes/MaskHandles";
 import type { MaskHandlesTarget } from "./nodes/MaskHandles";
 import { PickLayer } from "./PickLayer";
@@ -37,6 +39,8 @@ export interface PhotoViewProps {
   compactCaption?: boolean;
   /** The handles of the selected mask row (`docs/23` §7.6 *On the photo*): drawn over the cell, except while Crop or a pick shows. */
   maskHandles?: MaskHandlesTarget | null;
+  /** The Brush tool for the selected Brush row (`docs/23` §7.6): a layer over the cell with the cursor circle, where a drag paints. Hidden, like the handles, while Crop or a pick shows and in the Before view. */
+  brush?: BrushTarget | null;
   /** The chip that stands in for the look's while the selected node has a selected mask row ("MASK · LINEAR", `docs/23` §7.1). */
   maskChip?: string;
 }
@@ -64,7 +68,7 @@ function notReadyNote(photo: PhotoSummary): { title: string; text: string } | nu
  *
  * The screen draws it again only when what it shows changes (`memo`): a `render_stats` tick or a zoom step elsewhere does not.
  */
-export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false, maskHandles = null, maskChip }: PhotoViewProps) {
+export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false, maskHandles = null, brush = null, maskChip }: PhotoViewProps) {
   const backend = useAppState((s) => s.viewportBackend);
   const sentFrame = useAppState((s) => s.viewportFrame);
   // Only the pick layer needs to know whether the picture is letterboxed; the zoom changes on every wheel step and is not read otherwise.
@@ -157,8 +161,8 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
   const panning = useRef<{ x: number; y: number } | null>(null);
   const onPointerDown = usePointerDrag({
     start: (event) => {
-      // A handle of a mask is dragged, not the photo (`MaskHandles` takes the press).
-      if ((event.target as HTMLElement).closest?.("[data-mask-handles]")) return false;
+      // A handle of a mask is dragged, not the photo (`MaskHandles` takes the press), and a stroke of the Brush tool is drawn, not panned.
+      if ((event.target as HTMLElement).closest?.("[data-mask-handles], [data-brush-layer]")) return false;
       if (store.showsWholePhoto() || crop || picking) return false;
       panning.current = { x: event.clientX, y: event.clientY };
       return true;
@@ -232,6 +236,8 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
         <CropOverlay session={crop} />
       ) : picking ? (
         <PickLayer mode={picking} displayAspect={displayAspect} letterboxed={letterboxed} onPick={onPicked} />
+      ) : brush && photo && rs && !before && cellSize.width > 0 ? (
+        <BrushLayer store={store} photo={photo} rs={rs} cell={cellSize} {...brush} />
       ) : maskHandles && photo && rs && !before && cellSize.width > 0 ? (
         <MaskHandles store={store} photo={photo} rs={rs} cell={cellSize} {...maskHandles} />
       ) : null}

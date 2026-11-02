@@ -2,7 +2,9 @@
  * The mask view on the mock's flat scene (`docs/23` §5.8): the SVG that stands in for the core's frame when a corrector's mask is shown.
  *
  * The core draws the real thing (a tint after output sharpening, or the grey code values `m`); the mock draws shapes: a Radial is an
- * ellipse that fades out over its feather, a Linear is a gradient across the photo, and every other kind selects nothing. That is enough
+ * ellipse that fades out over its feather, a Linear is a gradient across the photo, a Brush is its strokes (a round-capped line of the stroke's
+ * size, softened by its hardness and the row's Feather; an erase stroke is black over the paint before it, and a row's Invert swaps the two),
+ * and every other kind selects nothing. That is enough
  * for the interface tests and the reference screenshots, not for pictures. Rows add (a row painted over the others in white) or
  * subtract (in black), the row's Invert and the node's Invert swap the two, and a node with no row shows 1: the whole photo.
  */
@@ -34,11 +36,55 @@ export interface MaskRect {
 
 const round = (n: number): string => String(Math.round(n * 100) / 100);
 
+/**
+ * A Brush row on the flat scene: the strokes drawn in order into a plane of their own (black where nothing is painted, white where it is, an
+ * erase stroke black again), which then paints the row's ink where it is white, at the row's opacity. A stroke is a polyline with round caps
+ * as wide as the brush; its softness is a blur of a third of the ramp the core gives it (`docs/algorithms/06` §5.5: the ramp is `(1 − hardness)`
+ * of the radius), and the row's Feather a blur of `feather · 0.02` of the long edge, the core's σ. Grow and Refine edges are not drawn. A row's
+ * Invert draws the plane the other way round. The filters have their region given in the scene's units: a horizontal line has no height, and a
+ * filter region of the default kind would be empty.
+ */
+function brushShape(row: Extract<MaskItem, { kind: "brush" }>, index: number, ink: string, box: MaskRect): string {
+  const long = Math.max(box.width, box.height);
+  const opacity = Math.max(0, Math.min(1, row.opacity));
+  const id = `mvb${index}`;
+  const region = `filterUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}"`;
+  const paint = row.invert ? "#000" : "#fff";
+  const clear = row.invert ? "#fff" : "#000";
+  const blurs: string[] = [];
+  const lines = row.strokes
+    .map((stroke, k) => {
+      const places = stroke.points.map(([x, y]) => `${round(box.x + x * box.width)},${round(box.y + y * box.height)}`);
+      const first = places[0];
+      if (first === undefined) return "";
+      // One point is a dot: the same place twice, which a round cap draws.
+      const points = places.length === 1 ? `${first} ${first}` : places.join(" ");
+      const width = Math.max(1, stroke.size * long);
+      const sigma = (1 - stroke.hardness) * (width / 2) * 0.33;
+      let filter = "";
+      if (sigma >= 0.2) {
+        blurs.push(`<filter id="${id}s${k}" ${region}><feGaussianBlur stdDeviation="${round(sigma)}"/></filter>`);
+        filter = ` filter="url(#${id}s${k})"`;
+      }
+      return `<polyline points="${points}" fill="none" stroke="${stroke.erase ? clear : paint}" stroke-width="${round(width)}" stroke-linecap="round" stroke-linejoin="round"${filter}/>`;
+    })
+    .join("");
+  const feather = row.feather * 0.02 * long;
+  let plane = `<rect x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="${clear}"/>${lines}`;
+  if (feather >= 0.2) {
+    blurs.push(`<filter id="${id}f" ${region}><feGaussianBlur stdDeviation="${round(feather)}"/></filter>`);
+    plane = `<g filter="url(#${id}f)">${plane}</g>`;
+  }
+  const mask = `<mask id="${id}" maskUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}">${plane}</mask>`;
+  return `<defs>${blurs.join("")}${mask}</defs><rect data-brush-row="" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="${ink}" fill-opacity="${opacity}" mask="url(#${id})"/>`;
+}
+
 /** One row's gradient shape painted with `ink` (a luminance, "#fff" or "#000") at `m` and nothing outside; empty for a kind that selects nothing. */
 function rowShape(row: MaskItem, index: number, ink: string, box: MaskRect): string {
   const long = Math.max(box.width, box.height);
   const id = `mv${index}`;
   const opacity = Math.max(0, Math.min(1, row.opacity));
+  if (row.kind === "brush") return brushShape(row, index, ink, box);
   if (row.kind === "radial") {
     const [cx, cy] = row.center;
     const [rx, ry] = row.radii;

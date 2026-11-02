@@ -474,6 +474,17 @@ export function Photos() {
         : null,
     [nodesOn, cropping, panel, onKind, onNode, rowIndex, selectedMask],
   );
+  // The Brush tool (`docs/23` §7.6): on for the selected Brush row while the store says so (adding a Brush row, a click on it or on Paint or Erase starts it;
+  // another row, another node or photo and Esc end it), in the node view with the row on. Crop, Export, Before and a pick hide it (PhotoView draws the pick
+  // layer, the crop frame or the brush, never two).
+  const brushAsked = useAppState((s) => s.brushTool);
+  const brush = useMemo(
+    () =>
+      brushAsked && nodesOn && !cropping && panel !== "export" && onKind === "corrector" && typeof onNode === "number" && rowIndex !== null && selectedMask?.kind === "brush" && selectedMask.enabled
+        ? { node: onNode, index: rowIndex }
+        : null,
+    [brushAsked, nodesOn, cropping, panel, onKind, onNode, rowIndex, selectedMask],
+  );
   // The look chip says "MASK · LINEAR" while the selected node has a selected mask row (`docs/23` §7.1).
   const maskChip = nodesOn && !cropping && panel !== "export" && selectedMask ? `MASK · ${(MASK_KIND_NAME[selectedMask.kind] ?? selectedMask.kind).toUpperCase()}` : undefined;
   const onRect = useCallback((rect: { x: number; y: number; width: number; height: number; scale: number }): void => {
@@ -603,6 +614,7 @@ export function Photos() {
           return true;
         case "escape":
           if (picking) setPicking(null);
+          else if (brush && !before) store.setBrushTool(false);
           else if (crop.session) crop.session.cancel();
           else if (panel === "export") store.closeExport();
           else if (view === "nodes" && graph.escape()) return true;
@@ -777,6 +789,7 @@ export function Photos() {
           crop={crop.session}
           onRect={onRect}
           maskHandles={maskHandles}
+          brush={brush}
           maskChip={maskChip}
         />
       </div>

@@ -1652,6 +1652,74 @@ span.ym-filmstrip__thumb {
   height: 14px;
 }
 
+/* The Brush tool on the photo (BrushLayer, docs/23 section 7.6): a layer over the cell that takes the press, the cursor circle at the brush's size and
+   the stroke being drawn, in the mask accent. It is a surface to draw on, not a control: nothing in it is a Tab stop. */
+.ym-brush-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  touch-action: none;
+  cursor: none;
+}
+.ym-brush-layer[data-paper] {
+  cursor: default;
+}
+.ym-brush-layer__svg {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ym-brush-stroke {
+  fill: none;
+  stroke: var(--mask);
+  stroke-opacity: 0.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.ym-brush-stroke[data-erase] {
+  stroke: #000;
+  stroke-opacity: 0.55;
+}
+.ym-brush-cursor {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid var(--mask);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px rgb(0 0 0 / 0.55), inset 0 0 0 1.5px rgb(0 0 0 / 0.35);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.ym-brush-cursor[data-erase] {
+  border-style: dashed;
+  border-color: #fff;
+}
+/* Where the brush starts to soften: a ring inside the circle, as wide as the hardness. */
+.ym-brush-cursor__core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  box-sizing: border-box;
+  border: 1px solid rgb(255 255 255 / 0.7);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.4);
+  transform: translate(-50%, -50%);
+}
+.ym-brush-cursor__dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.6);
+  transform: translate(-50%, -50%);
+}
+.ym-brush-tool {
+  margin: 0 0 8px;
+}
+
 /* ---- Export panel ---------------------------------------------------------------------------------------------------------------- */
 .ym-queue {
   margin: 0;

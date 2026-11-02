@@ -65,8 +65,8 @@ export interface MaskTabProps {
 /**
  * A corrector's Mask tab (`docs/23` §7.6): the **Masks card** (its header "MASKS", **Add mask ▾**, **Invert**, which is the node's whole
  * combined mask, and **Reset**, which removes every row and un-inverts; then the rows and the line "Masks add up…"), the **selected mask's
- * card** (a Linear, a Radial, a Colour range or a Brightness range: the other kinds have theirs with their tasks, and a raster row that a
- * file or a paste brought shows its row and no card), and the View card. Every change is one node patch: adding, removing and moving a row
+ * card** (a Linear, a Radial, a Brush, a Colour range or a Brightness range: the other kinds have theirs with their tasks, and a raster row that a
+ * file or a paste brought shows its row and no card), and the View card. Adding a Brush row, and choosing one, starts the Brush tool. Every change is one node patch: adding, removing and moving a row
  * is `masks.items`, a row's mode, Invert and eye and every slider is a `masks.edit` row patch, the node's Invert is `masks.invert`; each
  * is one undo step (a slider's drag is one).
  */
@@ -89,8 +89,14 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
     if (!patch) return;
     store.selectMaskRow(rows.length);
     send(patch);
-    // A Colour range's tool is Pick colour: the next click on the photo is its colour.
+    // A Colour range's tool is Pick colour: the next click on the photo is its colour. A Brush's is the brush: the next drag on the photo paints.
     onPickRange(kind === "color_range");
+    store.setBrushTool(kind === "brush");
+  };
+  /** Choosing a row selects it, and a Brush row starts its tool (Esc ended the last one, and this is the way back). */
+  const select = (index: number): void => {
+    store.selectMaskRow(index);
+    if (rows[index]?.kind === "brush") store.setBrushTool(true);
   };
   const remove = (index: number): void => {
     send(withoutMask(rows, index));
@@ -140,7 +146,7 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
             </>
           }
         >
-          <MaskRows rows={rows} selected={selected} onSelect={(i) => store.selectMaskRow(i)} onEdit={edit} onRemove={remove} onMove={move} />
+          <MaskRows rows={rows} selected={selected} onSelect={select} onEdit={edit} onRemove={remove} onMove={move} />
           <RowNote>{MASKS_ADD_UP}</RowNote>
         </Card>
       </div>
