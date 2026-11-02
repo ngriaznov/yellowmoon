@@ -21,6 +21,7 @@ use ym_core::app::{Core, CoreOptions};
 use ym_core::export_queue::ExportJob;
 use ym_core::scheduler::MemoryBudget;
 use ym_core::session::{ApplyScope, OpenOptions};
+use ym_core::settings::DevelopSettings;
 use ym_core::settings::{LensKind, LensPatch, SettingsPatch};
 use ym_core::settings::{NodeId, NodePatch};
 use ym_export::{BitDepth, ExportOptions, FormatKind};
@@ -191,6 +192,144 @@ fn a_jpeg_of_several_tiles_is_byte_identical_through_the_app_path_and_the_binary
     assert_same_files(&from_app, &from_cli, "jpeg on the device");
     assert_eq!(names_in(&sb.root().join("app")).len(), 1);
     assert_eq!(names_in(&sb.root().join("cli")).len(), 1);
+}
+
+/// A Brush row with Grow, Feather and Refine edges beside a Radial (N-13, `docs/10`), on a photo of six export tiles:
+/// each tile is coloured over itself grown by the raster planes' halo, and the app and the binary write the same
+/// bytes in a JPEG and a 16-bit TIFF, which are not the files of the same graph without the brush.
+#[test]
+fn a_brush_with_grow_feather_and_refine_edges_is_byte_identical_through_the_app_path_and_the_binary_on_the_device()
+ {
+    let _serial = serial();
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("brush.ARW", 2100, 1100, 9);
+    let Some(app) = App::open(&[&arw]) else {
+        return;
+    };
+    let doc = |brush: bool| {
+        let mut rows = vec![serde_json::json!({
+            "kind": "radial", "mode": "add", "center": [0.7, 0.45], "radii": [0.2, 0.12],
+            "angle_deg": 15, "feather": 0.4
+        })];
+        if brush {
+            rows.push(serde_json::json!({
+                "kind": "brush", "mode": "add", "grow": 0.3, "feather": 0.35, "refine": 0.7,
+                "strokes": [
+                    { "size": 0.12, "hardness": 0.3, "erase": false,
+                      "points": [[0.1, 0.3], [0.35, 0.6], [0.6, 0.35], [0.9, 0.65]] },
+                    { "size": 0.04, "hardness": 1, "erase": true, "points": [[0.35, 0.6]] }
+                ]
+            }));
+        }
+        serde_json::json!({ "nodes": { "items": [
+            { "id": 2, "kind": "corrector", "pos": [1, 0], "trim": { "exposure_ev": 0.8 },
+              "masks": { "invert": false, "items": rows } }
+        ], "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+        ] } })
+    };
+    let settings_of = |doc: serde_json::Value| {
+        DevelopSettings::from_value(doc, &app.core.looks.effective_default())
+            .expect("settings")
+            .0
+    };
+    let file = sb.root().join("brush.json");
+    std::fs::write(&file, doc(true).to_string()).expect("write");
+    let tiff = || ExportOptions {
+        format: FormatKind::Tiff,
+        bit_depth: BitDepth::Sixteen,
+        ..ExportOptions::default()
+    };
+    app.core
+        .session
+        .replace_settings(app.photo, settings_of(doc(false)))
+        .expect("replace");
+    let without = app.export(tiff(), &sb.root().join("app-without"));
+    app.core
+        .session
+        .replace_settings(app.photo, settings_of(doc(true)))
+        .expect("replace");
+    for (name, options, flags) in [
+        ("jpeg", ExportOptions::default(), vec!["--format", "jpeg"]),
+        ("tiff16", tiff(), vec!["--format", "tiff", "--bits", "16"]),
+    ] {
+        let from_app = app.export(options, &sb.root().join(format!("app-{name}")));
+        let mut args = flags;
+        args.extend(["--settings", file.to_str().expect("utf-8")]);
+        let from_cli = cli_export(&sb, &[&arw], &args, &sb.root().join(format!("cli-{name}")));
+        assert_same_files(&from_app, &from_cli, &format!("a brush, {name}"));
+        if name == "tiff16" {
+            assert!(
+                bytes(&from_app[0]) != bytes(&without[0]),
+                "the brush changed no pixel"
+            );
+        }
+    }
+}
+
+/// Not a gate, and slow (minutes on lavapipe): the time of a 24 MP export (6000 x 4000) through the binary with no
+/// mask, and with two Brush rows (Grow, Feather and Refine edges at 40 %, and Feather and Refine edges at 100 %).
+/// Run it with `--ignored --nocapture`; the numbers are in `docs/23` section 15.
+#[test]
+#[ignore = "a 24 MP export on lavapipe takes minutes; run by hand for the timings"]
+fn a_24_mp_export_with_two_raster_rows_is_timed_on_the_device() {
+    use std::time::Instant;
+    let _serial = serial();
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("big.ARW", 6000, 4000, 9);
+    let row = |grow: f64, feather: f64, refine: f64, y: f64| {
+        serde_json::json!({
+            "kind": "brush", "mode": "add", "grow": grow, "feather": feather, "refine": refine,
+            "strokes": [ { "size": 0.2, "hardness": 0.5, "erase": false,
+                           "points": [[0.15, y], [0.5, y + 0.15], [0.85, y]] } ]
+        })
+    };
+    let doc = |rows: Vec<serde_json::Value>| {
+        serde_json::json!({ "nodes": { "items": [
+            { "id": 2, "kind": "corrector", "pos": [1, 0], "trim": { "exposure_ev": 0.8 },
+              "masks": { "invert": false, "items": rows } }
+        ], "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+        ] } })
+    };
+    for (what, rows) in [
+        ("no mask rows", vec![]),
+        (
+            "two Brush rows",
+            vec![row(0.4, 0.4, 0.4, 0.3), row(0.0, 1.0, 1.0, 0.6)],
+        ),
+    ] {
+        let file = sb.root().join("timing.json");
+        std::fs::write(&file, doc(rows).to_string()).expect("write");
+        let dir = sb.root().join(what.replace(' ', "-"));
+        let t = Instant::now();
+        let out = sb
+            .ym()
+            .env("YELLOWMOON_GPU", "on")
+            .args([
+                "render",
+                "--apple-auto",
+                "off",
+                "--format",
+                "jpeg",
+                "--settings",
+            ])
+            .arg(&file)
+            .arg(&arw)
+            .arg("--out")
+            .arg(&dir)
+            .assert()
+            .success();
+        let _ = out;
+        eprintln!(
+            "TIMING 24 MP export on the device, {what}: {:.1} s",
+            t.elapsed().as_secs_f64()
+        );
+    }
 }
 
 #[test]

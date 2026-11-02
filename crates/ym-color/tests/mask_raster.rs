@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use ym_color::consts::Vec3;
+use ym_color::display::{ChainParams, NodeSet};
 use ym_color::display::{ColorChain, Frame, Layout, View};
-use ym_color::display::{ChainParams, NodeParams, NodeSet};
 use ym_color::mask::{MaskKind, MaskRow, NodeMasks, PhotoFrame, PhotoMap, RasterPlanes};
 use ym_color::mask_raster::{
     Area, BrushStrokes, CpuPlanes, Guided, PlaneJob, RasterRow, RasterSet, RasterSource,
@@ -82,7 +82,10 @@ fn the_sizes_are_photo_relative_and_round_to_whole_pixels() {
     // A radius of at most 16 is not subsampled; 17 is.
     let at = |u: f64| RasterSteps::of(0.0, 0.0, 1.0, u).guided;
     assert_eq!(at(2000.0).map(|g| (g.radius, g.step)), Some((16, 1)));
-    assert_eq!(at(2125.0).map(|g| (g.radius, g.step, g.samples)), Some((17, 2, 9)));
+    assert_eq!(
+        at(2125.0).map(|g| (g.radius, g.step, g.samples)),
+        Some((17, 2, 9))
+    );
     // Every step under its threshold is skipped; a number that is not a number is 0.
     let none = RasterSteps::of(0.0, 0.0, 0.0, 6000.0);
     assert_eq!((none.grow, none.feather, none.guided), (0, None, None));
@@ -99,7 +102,10 @@ fn the_halo_is_the_sum_of_the_radii() {
     let s = RasterSteps::of(0.5, 0.5, 0.5, 1500.0);
     let boxes = s.feather.expect("feather");
     let g = s.guided.expect("guided");
-    assert_eq!(s.halo(), s.grow.unsigned_abs() as usize + boxes.iter().sum::<usize>() + 2 * g.radius);
+    assert_eq!(
+        s.halo(),
+        s.grow.unsigned_abs() as usize + boxes.iter().sum::<usize>() + 2 * g.radius
+    );
     let big = RasterSteps::of(0.0, 0.0, 1.0, 6000.0);
     assert_eq!(big.halo(), (2 * 16 + 3) * 3);
     let set = RasterSet {
@@ -179,7 +185,11 @@ fn grow_is_a_square_maximum_and_an_erosion_a_square_minimum() {
     for y in 0..h {
         for x in 0..w {
             let inside = (x as i64 - 4).abs() <= 2 && (y as i64 - 3).abs() <= 2;
-            assert_eq!(grown[y * w + x], if inside { 1.0 } else { 0.0 }, "({x}, {y})");
+            assert_eq!(
+                grown[y * w + x],
+                if inside { 1.0 } else { 0.0 },
+                "({x}, {y})"
+            );
         }
     }
     // Eroding a 5 x 5 square by 1 leaves its 3 x 3 core; by 2, one pixel.
@@ -224,7 +234,10 @@ fn the_feather_boxes_have_a_gaussians_variance() {
             .sum();
         let want = sigma * sigma;
         let err = (var - want).abs() / want;
-        assert!(err < 0.35 / sigma.max(1.0).powf(0.5) + 0.12, "sigma {sigma}: {var} against {want}");
+        assert!(
+            err < 0.35 / sigma.max(1.0).powf(0.5) + 0.12,
+            "sigma {sigma}: {var} against {want}"
+        );
         if sigma >= 5.0 {
             assert!(err < 0.08, "sigma {sigma}: {var} against {want}");
         }
@@ -347,7 +360,9 @@ fn a_step_edge_with_a_matching_guide_stays_a_step() {
     let g = Area::whole(w, h);
     let step = |x: usize| if x < 48 { 0.2 } else { 0.8 };
     let guide: Vec<f64> = (0..w * h).map(|i| step(i % w)).collect();
-    let p: Vec<f64> = (0..w * h).map(|i| if i % w < 48 { 0.0 } else { 1.0 }).collect();
+    let p: Vec<f64> = (0..w * h)
+        .map(|i| if i % w < 48 { 0.0 } else { 1.0 })
+        .collect();
     let f = Guided {
         radius: 8,
         step: 1,
@@ -368,8 +383,12 @@ fn a_soft_mask_is_pulled_to_the_edge_of_the_guide() {
     // A blurred mask over a guide with a sharp edge comes back sharper at the guide's edge.
     let (w, h) = (96, 24);
     let g = Area::whole(w, h);
-    let guide: Vec<f64> = (0..w * h).map(|i| if i % w < 50 { 0.1 } else { 0.9 }).collect();
-    let hard: Vec<f64> = (0..w * h).map(|i| if i % w < 40 { 0.0 } else { 1.0 }).collect();
+    let guide: Vec<f64> = (0..w * h)
+        .map(|i| if i % w < 50 { 0.1 } else { 0.9 })
+        .collect();
+    let hard: Vec<f64> = (0..w * h)
+        .map(|i| if i % w < 40 { 0.0 } else { 1.0 })
+        .collect();
     let soft = feather(&hard, &g, &g, [5, 5, 5]);
     let f = Guided {
         radius: 12,
@@ -381,9 +400,19 @@ fn a_soft_mask_is_pulled_to_the_edge_of_the_guide() {
     // Just left of the guide's edge the mask is lower than the blurred one was, and the step across the edge
     // is steeper than the blurred mask's.
     let at = |v: &[f64], x: usize| v[12 * w + x];
-    assert!(at(&q, 46) < at(&soft, 46) - 0.05, "{} {}", at(&q, 46), at(&soft, 46));
+    assert!(
+        at(&q, 46) < at(&soft, 46) - 0.05,
+        "{} {}",
+        at(&q, 46),
+        at(&soft, 46)
+    );
     let jump = |v: &[f64]| at(v, 51) - at(v, 48);
-    assert!(jump(&q) > jump(&soft) + 0.1, "{} against {}", jump(&q), jump(&soft));
+    assert!(
+        jump(&q) > jump(&soft) + 0.1,
+        "{} against {}",
+        jump(&q),
+        jump(&soft)
+    );
     assert!(at(&q, 56) > 0.9);
 }
 
@@ -440,7 +469,12 @@ fn direct_fast_guided(p: &[f64], gd: &[f64], w: usize, h: usize, f: &Guided) -> 
         }
     }
     let (abar, bbar): (Vec<f64>, Vec<f64>) = (0..cw * ch)
-        .map(|i| (mean(&|k| a[k], i % cw, i / cw), mean(&|k| b[k], i % cw, i / cw)))
+        .map(|i| {
+            (
+                mean(&|k| a[k], i % cw, i / cw),
+                mean(&|k| b[k], i % cw, i / cw),
+            )
+        })
         .unzip();
     let mut q = vec![0.0; w * h];
     for y in 0..h {
@@ -493,9 +527,16 @@ fn above_sixteen_pixels_the_guided_filter_is_the_subsampled_form() {
         assert!(worst < 1e-10, "radius {radius}: {worst}");
         // And it is close to the full guided filter of the same radius (the speed-up costs little).
         let full = direct_guided(&p, &guide, w, h, radius, 1e-4);
-        let mean_diff =
-            got.iter().zip(&full).map(|(a, b)| (a - b).abs()).sum::<f64>() / (w * h) as f64;
-        assert!(mean_diff < 0.03, "radius {radius}: the subsampled form differs by {mean_diff}");
+        let mean_diff = got
+            .iter()
+            .zip(&full)
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f64>()
+            / (w * h) as f64;
+        assert!(
+            mean_diff < 0.03,
+            "radius {radius}: the subsampled form differs by {mean_diff}"
+        );
     }
 }
 
@@ -519,7 +560,10 @@ fn textured_row(grow: f64, feather: f64, refine: f64) -> RasterRow {
 fn guide_of(w: usize, h: usize) -> Vec<f64> {
     let mut rnd = noise(5);
     (0..w * h)
-        .map(|i| 0.5 + 0.35 * (((i % w) as f64) / 7.0).sin() * (((i / w) as f64) / 11.0).cos() + 0.05 * rnd())
+        .map(|i| {
+            0.5 + 0.35 * (((i % w) as f64) / 7.0).sin() * (((i / w) as f64) / 11.0).cos()
+                + 0.05 * rnd()
+        })
         .collect()
 }
 
@@ -559,7 +603,12 @@ fn a_tile_over_its_halo_equals_the_whole_frame_bit_for_bit() {
     let photo = PhotoFrame::new(w as f64, h as f64, w as f64 / u_px);
     let pos = identity_position(w, h);
     let guide = guide_of(w, h);
-    for (grow_amount, feather_amount, refine_amount) in [(0.4, 0.0, 0.0), (0.0, 0.3, 0.0), (0.3, 0.3, 0.5), (0.0, 0.0, 1.0)] {
+    for (grow_amount, feather_amount, refine_amount) in [
+        (0.4, 0.0, 0.0),
+        (0.0, 0.3, 0.0),
+        (0.3, 0.3, 0.5),
+        (0.0, 0.0, 1.0),
+    ] {
         let r = textured_row(grow_amount, feather_amount, refine_amount);
         let steps = RasterSteps::of(grow_amount, feather_amount, refine_amount, u_px);
         let halo = steps.halo();
@@ -573,7 +622,26 @@ fn a_tile_over_its_halo_equals_the_whole_frame_bit_for_bit() {
             position: &pos,
             guide: Some(&guide),
         });
-        for tile in [Area { x: 33, y: 20, w: 40, h: 37 }, Area { x: 0, y: 0, w: 61, h: 50 }, Area { x: 100, y: 70, w: 50, h: 40 }] {
+        for tile in [
+            Area {
+                x: 33,
+                y: 20,
+                w: 40,
+                h: 37,
+            },
+            Area {
+                x: 0,
+                y: 0,
+                w: 61,
+                h: 50,
+            },
+            Area {
+                x: 100,
+                y: 70,
+                w: 50,
+                h: 40,
+            },
+        ] {
             let grown = tile.grown(halo, &frame);
             // The tile's own view of the position and guide planes: pixel (x, y) of the grown area.
             let pos_g = |x: usize, y: usize| pos((grown.x as usize) + x, (grown.y as usize) + y);
@@ -593,7 +661,81 @@ fn a_tile_over_its_halo_equals_the_whole_frame_bit_for_bit() {
                 for x in 0..tile.w {
                     let a = cut[y * tile.w + x];
                     let b = whole[(tile.y as usize + y) * w + tile.x as usize + x];
-                    assert_eq!(a, b, "grow {grow_amount} feather {feather_amount} refine {refine_amount}: tile {tile:?} pixel ({x}, {y})");
+                    assert_eq!(
+                        a, b,
+                        "grow {grow_amount} feather {feather_amount} refine {refine_amount}: tile {tile:?} pixel ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn tiles_equal_the_whole_frame_for_every_subsampling_step() {
+    // Refine edges 100 at output sizes that make the step 2, 3, 4 and 5 (radius 17 to 72): the halo of the
+    // subsampled form is exactly enough, for tiles at the frame's corners and in its middle.
+    let (w, h) = (330usize, 240usize);
+    let pos = identity_position(w, h);
+    let guide = guide_of(w, h);
+    let frame = Area::whole(w, h);
+    for u_px in [2400.0, 4200.0, 6000.0, 9000.0] {
+        let steps = RasterSteps::of(0.0, 0.0, 1.0, u_px);
+        let gf = steps.guided.expect("refine");
+        assert!(gf.step >= 2, "u_px {u_px}: step {}", gf.step);
+        let halo = steps.halo();
+        let photo = PhotoFrame::new(w as f64, h as f64, w as f64 / u_px);
+        let r = textured_row(0.0, 0.0, 1.0);
+        let whole = r.plane(&PlaneJob {
+            photo,
+            grown: frame,
+            frame,
+            window: frame,
+            position: &pos,
+            guide: Some(&guide),
+        });
+        for tile in [
+            Area {
+                x: 0,
+                y: 0,
+                w: 61,
+                h: 53,
+            },
+            Area {
+                x: 127,
+                y: 77,
+                w: 48,
+                h: 51,
+            },
+            Area {
+                x: 280,
+                y: 200,
+                w: 50,
+                h: 40,
+            },
+        ] {
+            let grown = tile.grown(halo, &frame);
+            let pos_g = |x: usize, y: usize| pos(grown.x as usize + x, grown.y as usize + y);
+            let guide_g: Vec<f64> = (0..grown.h)
+                .flat_map(|y| (0..grown.w).map(move |x| (x, y)))
+                .map(|(x, y)| guide[(grown.y as usize + y) * w + grown.x as usize + x])
+                .collect();
+            let cut = r.plane(&PlaneJob {
+                photo,
+                grown,
+                frame,
+                window: tile,
+                position: &pos_g,
+                guide: Some(&guide_g),
+            });
+            for y in 0..tile.h {
+                for x in 0..tile.w {
+                    assert_eq!(
+                        cut[y * tile.w + x],
+                        whole[(tile.y as usize + y) * w + tile.x as usize + x],
+                        "u_px {u_px} (step {}), tile {tile:?}, pixel ({x}, {y})",
+                        gf.step
+                    );
                 }
             }
         }
@@ -618,7 +760,12 @@ fn a_halo_that_is_one_pixel_short_changes_the_tile() {
         position: &pos,
         guide: None,
     });
-    let tile = Area { x: 40, y: 30, w: 30, h: 30 };
+    let tile = Area {
+        x: 40,
+        y: 30,
+        w: 30,
+        h: 30,
+    };
     let grown = tile.grown(halo - 1, &frame);
     let pos_g = |x: usize, y: usize| pos(grown.x as usize + x, grown.y as usize + y);
     let cut = r.plane(&PlaneJob {
@@ -630,7 +777,8 @@ fn a_halo_that_is_one_pixel_short_changes_the_tile() {
         guide: None,
     });
     let differs = (0..tile.h).any(|y| {
-        (0..tile.w).any(|x| cut[y * tile.w + x] != whole[(tile.y as usize + y) * w + tile.x as usize + x])
+        (0..tile.w)
+            .any(|x| cut[y * tile.w + x] != whole[(tile.y as usize + y) * w + tile.x as usize + x])
     });
     assert!(differs, "one pixel short must show");
 }
@@ -640,7 +788,8 @@ fn a_pixel_outside_the_photo_is_zero_before_the_steps() {
     let (w, h) = (40usize, 40usize);
     let photo = PhotoFrame::new(w as f64, h as f64, 1.0);
     let r = row(plane_of(8, 8, |_, _| 1.0), 0.0, 0.0, 0.0);
-    let pos = |x: usize, y: usize| (x >= 10).then(|| [(x as f64 + 0.5) / 40.0, (y as f64 + 0.5) / 40.0]);
+    let pos =
+        |x: usize, y: usize| (x >= 10).then(|| [(x as f64 + 0.5) / 40.0, (y as f64 + 0.5) / 40.0]);
     let frame = Area::whole(w, h);
     let plane = r.plane(&PlaneJob {
         photo,
@@ -658,7 +807,10 @@ fn a_pixel_outside_the_photo_is_zero_before_the_steps() {
 struct Positions(usize, usize);
 impl PhotoMap for Positions {
     fn position(&self, x: usize, y: usize) -> [f64; 2] {
-        [(x as f64 + 0.5) / self.0 as f64, (y as f64 + 0.5) / self.1 as f64]
+        [
+            (x as f64 + 0.5) / self.0 as f64,
+            (y as f64 + 0.5) / self.1 as f64,
+        ]
     }
 }
 
@@ -673,10 +825,7 @@ fn chain_with_raster(rows: Vec<MaskRow>, set: RasterSet) -> ColorChain {
         output: PictureSource::Node(1),
     };
     let plan = compile(&graph, Stop::Output).expect("a plan");
-    let mut p = ChainParams::new(
-        ym_color::consts::linalg::IDENTITY,
-        ToneParams::IDENTITY,
-    );
+    let mut p = ChainParams::new(ym_color::consts::linalg::IDENTITY, ToneParams::IDENTITY);
     p.nodes = NodeSet {
         plan,
         main: ym_color::display::MainNode {
@@ -702,7 +851,9 @@ fn a_raster_row_reads_its_plane_through_the_frame() {
     let chain = chain_with_raster(vec![MaskRow::new(MaskKind::Raster { plane: 0 })], set);
     assert!(chain.uses_rasters() && chain.uses_photo_position());
     assert_eq!(chain.rasters().rows.len(), 1);
-    let cam: Vec<f32> = (0..3 * w * h).map(|i| 0.05 + (i % 29) as f32 * 0.01).collect();
+    let cam: Vec<f32> = (0..3 * w * h)
+        .map(|i| 0.05 + (i % 29) as f32 * 0.01)
+        .collect();
     let map = Positions(w, h);
     let photo = PhotoFrame::new(w as f64, h as f64, 1.0);
     let render = |planes: Option<&CpuPlanes>| {
@@ -738,7 +889,11 @@ fn a_raster_row_reads_its_plane_through_the_frame() {
     let half = CpuPlanes {
         width: w,
         height: h,
-        planes: vec![(0..w * h).map(|i| if i % w < w / 2 { 65535 } else { 0 }).collect()],
+        planes: vec![
+            (0..w * h)
+                .map(|i| if i % w < w / 2 { 65535 } else { 0 })
+                .collect(),
+        ],
     };
     let part = render(Some(&half));
     for y in 0..h {
@@ -767,7 +922,12 @@ fn the_guide_is_the_inputs_luma_with_no_node_in_it() {
         p.grade.saturation = 60.0;
         ColorChain::new(&p).expect("a chain")
     };
-    for cam in [[0.2, 0.3, 0.1], [0.8, 0.1, 0.4], [0.0, 0.0, 0.0], [5.0, 4.0, 3.0]] {
+    for cam in [
+        [0.2, 0.3, 0.1],
+        [0.8, 0.1, 0.4],
+        [0.0, 0.0, 0.0],
+        [5.0, 4.0, 3.0],
+    ] {
         let a = plain.guide_pixel(cam);
         assert!((0.0..=1.0).contains(&a));
         assert_eq!(a, graded.guide_pixel(cam), "{cam:?}");
@@ -791,7 +951,10 @@ fn stroke(size: f64, hardness: f64, erase: bool, points: &[[f64; 2]]) -> Stroke 
 }
 
 fn dab(plane: &SourcePlane, x: f64, y: f64) -> f64 {
-    plane.at((x * plane.width as f64) as i64, (y * plane.height as f64) as i64)
+    plane.at(
+        (x * plane.width as f64) as i64,
+        (y * plane.height as f64) as i64,
+    )
 }
 
 #[test]
@@ -805,10 +968,20 @@ fn a_single_point_is_one_stamp_with_the_hardness_ramp() {
         let radius = 102.4;
         let ramp = ((1.0 - hardness) * radius).max(1.0);
         let inner = radius - ramp;
-        for d in [0.0, inner * 0.5, inner, inner + 0.25 * ramp, inner + 0.5 * ramp, inner + 0.75 * ramp, radius - 0.5, radius + 2.0] {
+        for d in [
+            0.0,
+            inner * 0.5,
+            inner,
+            inner + 0.25 * ramp,
+            inner + 0.5 * ramp,
+            inner + 0.75 * ramp,
+            radius - 0.5,
+            radius + 2.0,
+        ] {
             // The pixel whose centre is d to the right of the stamp's centre.
             let x = (cx + d - 0.5).round() as i64;
-            let centre_d = (x as f64 + 0.5 - cx).hypot(0.5 - 0.0 + (1024.0_f64 - 0.5 - cy).abs() * 0.0);
+            let centre_d =
+                (x as f64 + 0.5 - cx).hypot(0.5 - 0.0 + (1024.0_f64 - 0.5 - cy).abs() * 0.0);
             let _ = centre_d;
             let y = 1024i64;
             let dist = (x as f64 + 0.5 - cx).hypot(y as f64 + 0.5 - cy);
@@ -821,7 +994,10 @@ fn a_single_point_is_one_stamp_with_the_hardness_ramp() {
                 1.0 - t * t * (3.0 - 2.0 * t)
             };
             let got = p.at(x, y);
-            assert!((got - want).abs() < 2e-5, "hardness {hardness} d {d}: {got} against {want}");
+            assert!(
+                (got - want).abs() < 2e-5,
+                "hardness {hardness} d {d}: {got} against {want}"
+            );
         }
         // Nothing outside the brush.
         assert_eq!(p.at(1024 + 110, 1024), 0.0);
@@ -847,8 +1023,14 @@ fn paint_then_erase_removes_what_was_painted_and_the_order_matters() {
     let paint = stroke(0.05, 1.0, false, &[[0.5, 0.5]]);
     let erase = stroke(0.02, 1.0, true, &[[0.5, 0.5]]);
     let painted = draw_brush(&BrushStrokes::new(vec![paint.clone()]), [1.0, 1.0]);
-    let then_erase = draw_brush(&BrushStrokes::new(vec![paint.clone(), erase.clone()]), [1.0, 1.0]);
-    let erase_then = draw_brush(&BrushStrokes::new(vec![erase.clone(), paint.clone()]), [1.0, 1.0]);
+    let then_erase = draw_brush(
+        &BrushStrokes::new(vec![paint.clone(), erase.clone()]),
+        [1.0, 1.0],
+    );
+    let erase_then = draw_brush(
+        &BrushStrokes::new(vec![erase.clone(), paint.clone()]),
+        [1.0, 1.0],
+    );
     assert!(dab(&painted, 0.5, 0.5) > 0.99);
     // Painted, then a smaller eraser at the centre: a hole.
     assert!(dab(&then_erase, 0.5, 0.5) < 0.01);
@@ -862,7 +1044,10 @@ fn paint_then_erase_removes_what_was_painted_and_the_order_matters() {
 #[test]
 fn strokes_overlap_by_the_screen_rule() {
     // Two soft stamps on one spot: 1 - (1 - a)(1 - a), never more than 1.
-    let one = draw_brush(&BrushStrokes::new(vec![stroke(0.2, 0.0, false, &[[0.5, 0.5]])]), [1.0, 1.0]);
+    let one = draw_brush(
+        &BrushStrokes::new(vec![stroke(0.2, 0.0, false, &[[0.5, 0.5]])]),
+        [1.0, 1.0],
+    );
     let two = draw_brush(
         &BrushStrokes::new(vec![
             stroke(0.2, 0.0, false, &[[0.5, 0.5]]),
@@ -873,7 +1058,10 @@ fn strokes_overlap_by_the_screen_rule() {
     for x in [1100i64, 1150, 1200, 1250] {
         let a = one.at(x, 1024);
         let both = two.at(x, 1024);
-        assert!((both - (1.0 - (1.0 - a) * (1.0 - a))).abs() < 3e-5, "{x}: {both}");
+        assert!(
+            (both - (1.0 - (1.0 - a) * (1.0 - a))).abs() < 3e-5,
+            "{x}: {both}"
+        );
         assert!(both <= 1.0);
     }
 }
@@ -895,7 +1083,15 @@ fn the_path_is_stamped_every_fifteen_hundredths_of_the_diameter() {
     assert!(p.at(1024 + 512 + 8, 1024) > 0.3);
     assert!(p.at(1024 + 512 + 25, 1024) < 0.05);
     // A path through a corner is the same as the two legs drawn one after the other as strokes.
-    let bent = draw_brush(&BrushStrokes::new(vec![stroke(0.02, 1.0, false, &[[0.3, 0.3], [0.6, 0.3], [0.6, 0.6]])]), [1.0, 1.0]);
+    let bent = draw_brush(
+        &BrushStrokes::new(vec![stroke(
+            0.02,
+            1.0,
+            false,
+            &[[0.3, 0.3], [0.6, 0.3], [0.6, 0.6]],
+        )]),
+        [1.0, 1.0],
+    );
     assert!(bent.at((0.45 * 2048.0) as i64, (0.3 * 2048.0) as i64) > 0.99);
     assert!(bent.at((0.6 * 2048.0) as i64, (0.45 * 2048.0) as i64) > 0.99);
     assert!(bent.at((0.45 * 2048.0) as i64, (0.45 * 2048.0) as i64) < 0.01);
@@ -936,12 +1132,23 @@ fn the_same_strokes_make_the_same_bytes_and_come_from_the_cache() {
     };
     let (a, b) = (mk(), mk());
     assert_eq!(a.key, b.key);
-    assert_eq!(draw_brush(&a, [1.0, 0.75]).data, draw_brush(&b, [1.0, 0.75]).data);
-    let c = BrushStrokes::new(vec![stroke(0.04, 0.3, false, &[[0.1, 0.2], [0.4, 0.5], [0.8, 0.31]])]);
+    assert_eq!(
+        draw_brush(&a, [1.0, 0.75]).data,
+        draw_brush(&b, [1.0, 0.75]).data
+    );
+    let c = BrushStrokes::new(vec![stroke(
+        0.04,
+        0.3,
+        false,
+        &[[0.1, 0.2], [0.4, 0.5], [0.8, 0.31]],
+    )]);
     assert_ne!(a.key, c.key);
     let first = brush_plane(&a, [1.0, 0.75]);
     let second = brush_plane(&b, [1.0, 0.75]);
-    assert!(Arc::ptr_eq(&first, &second), "the second call is the cache's");
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "the second call is the cache's"
+    );
     let other = brush_plane(&a, [1.0, 0.5]);
     assert!(!Arc::ptr_eq(&first, &other));
     assert!(ym_color::mask_raster::brush_cache_len() <= 8);
@@ -952,7 +1159,12 @@ fn a_row_of_strokes_goes_through_the_steps_like_any_source() {
     // A Brush row's plane with Feather: a soft edge where the dab had a hard one.
     let (w, h) = (200usize, 200usize);
     let photo = PhotoFrame::new(w as f64, h as f64, 1.0); // u_px 200 -> sigma = f * 4
-    let b = Arc::new(BrushStrokes::new(vec![stroke(0.3, 1.0, false, &[[0.5, 0.5]])]));
+    let b = Arc::new(BrushStrokes::new(vec![stroke(
+        0.3,
+        1.0,
+        false,
+        &[[0.5, 0.5]],
+    )]));
     let make = |feather: f64| RasterRow {
         source: RasterSource::Brush(Arc::clone(&b)),
         grow: 0.0,
@@ -973,7 +1185,17 @@ fn a_row_of_strokes_goes_through_the_steps_like_any_source() {
     };
     let hard = plane(&make(0.0));
     let soft = plane(&make(1.0));
-    let ramp = |v: &[u16]| v[100 * w..101 * w].iter().filter(|&&c| c > 1000 && c < 64500).count();
-    assert!(ramp(&soft) > ramp(&hard) + 4, "{} {}", ramp(&soft), ramp(&hard));
-    assert_eq!(codes(&hard).iter().filter(|&&v| v > 0.99).count() > 1000, true);
+    let ramp = |v: &[u16]| {
+        v[100 * w..101 * w]
+            .iter()
+            .filter(|&&c| c > 1000 && c < 64500)
+            .count()
+    };
+    assert!(
+        ramp(&soft) > ramp(&hard) + 4,
+        "{} {}",
+        ramp(&soft),
+        ramp(&hard)
+    );
+    assert!(codes(&hard).iter().filter(|&&v| v > 0.99).count() > 1000);
 }

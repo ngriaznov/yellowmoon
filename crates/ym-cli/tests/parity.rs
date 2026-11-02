@@ -802,10 +802,11 @@ fn three_correctors() -> serde_json::Value {
     } })
 }
 
-/// A hand-written graph of masked nodes, in the form of `docs/10` (N-10): node 2 has a Linear and a Radial
+/// A hand-written graph of masked nodes, in the form of `docs/10` (N-10, N-13): node 2 has a Linear and a Radial
 /// subtracted from it, node 3 a Colour range and a Brightness range (with the node's Invert off), node 4 reads
 /// Main and goes nowhere with its picture but has a Radial, and its key output feeds node 5's key input (node 5
-/// has a Linear subtracted of its own), and node 6 has a row of a kind that selects nothing yet.
+/// has a Linear subtracted of its own), and node 6 has a Brush row with Grow, Feather and Refine edges (a raster
+/// mask, drawn into a plane and put through the raster pass).
 fn masked_nodes() -> serde_json::Value {
     let picture = |from: serde_json::Value, to: serde_json::Value| {
         serde_json::json!({
@@ -839,7 +840,14 @@ fn masked_nodes() -> serde_json::Value {
                   { "kind": "linear", "mode": "subtract", "center": [0.5, 0.7], "angle_deg": -15, "feather": 0.25 }
               ] } },
             { "id": 6, "kind": "corrector", "pos": [4, 0], "trim": { "exposure_ev": -0.3 },
-              "masks": { "invert": false, "items": [ { "kind": "object", "mode": "add" } ] } }
+              "masks": { "invert": false, "items": [
+                  { "kind": "brush", "mode": "add", "feather": 0.25, "grow": 0.3, "refine": 0.5,
+                    "strokes": [
+                        { "size": 0.14, "hardness": 0.4, "erase": false,
+                          "points": [[0.25, 0.4], [0.5, 0.55], [0.75, 0.45]] },
+                        { "size": 0.05, "hardness": 1, "erase": true, "points": [[0.5, 0.55]] }
+                    ] }
+              ] } }
         ],
         "links": [
             picture("input".into(), 1.into()),
@@ -1019,8 +1027,9 @@ fn three_correctors_are_the_same_files_through_the_app_path_and_the_binary() {
     three_correctors_leg(false);
 }
 
-/// Masks (N-10): a Linear and a Radial, a Colour range and a Brightness range, a node that only makes a mask
-/// whose key feeds another, and a row that selects nothing yet: the app and the binary write the same bytes.
+/// Masks (N-10, N-13): a Linear and a Radial, a Colour range and a Brightness range, a node that only makes a mask
+/// whose key feeds another, and a Brush row with Grow, Feather and Refine edges: the app and the binary write the
+/// same bytes.
 #[test]
 fn masked_nodes_are_the_same_files_through_the_app_path_and_the_binary() {
     graph_leg("masked nodes", masked_nodes(), 6, false);

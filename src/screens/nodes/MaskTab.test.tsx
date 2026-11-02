@@ -264,14 +264,15 @@ describe("the Add mask menu", () => {
     expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
       "LinearA gradient across the photo",
       "RadialAn oval, soft at the edge",
+      "BrushPaint where the node acts",
       "Colour rangePick colours to select",
       "Brightness rangeSelect light or dark tones",
     ]);
     expect(within(menu).getByText("Shapes")).toBeInTheDocument();
     expect(within(menu).getByText("Keys")).toBeInTheDocument();
-    // The Find group has no item, so it is not there; Brush is not made yet.
+    // The Find group has no item, so it is not there. Brush is made (N-13) and has no card until its drawing tool (N-14).
     expect(within(menu).queryByText("Find")).toBeNull();
-    expect(within(menu).queryByRole("menuitem", { name: /Brush/ })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: /Brush/ })).not.toBeNull();
   });
 
   it("lists every kind where the machine can make them, and hides what it cannot", async () => {

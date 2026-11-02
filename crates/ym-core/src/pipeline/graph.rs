@@ -1759,6 +1759,14 @@ impl<'a> Job<'a> {
             .is_some_and(|g| g.chain.uses_photo_position())
     }
 
+    /// Whether the mask view's plan has a raster row, so that the mask chain makes planes too.
+    pub fn mask_uses_rasters(&self) -> bool {
+        self.mask
+            .as_ref()
+            .and_then(|(_, g)| g.as_ref())
+            .is_some_and(|g| g.chain.uses_rasters())
+    }
+
     /// Makes the grade plan of the mask view, if the request has one. Cached with the photo's other grade
     /// plans.
     ///

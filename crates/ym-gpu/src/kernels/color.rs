@@ -113,11 +113,12 @@ use ym_color::grade::{
 };
 use ym_color::look::{LookInput, intensity_fraction};
 use ym_color::lut::Lut;
-use ym_color::mask::{MaskOp, PhotoFrame};
+use ym_color::mask::{MaskOp, OpKind, PhotoFrame};
 use ym_color::plan::{BufferKind, KeyRef, MAIN_NODE, PictureRef, PlanResult};
 use ym_color::tone::ToneParams;
 use ym_color::warp::{WARP_MAX_PINS, Warp};
 
+use super::mask_raster::RasterPlanes;
 use super::shader::{KernelId, table};
 use super::util::{OutKind, PixelData, STORAGE_IN, STORAGE_OUT, even, image_bytes, sample_bytes};
 use super::util::{storage_buffer, unpack};
@@ -156,6 +157,9 @@ pub enum Stop {
     /// The Before view at the chain's `BeforePoint`: the camera default rendering encoded for the output
     /// ([`BeforePoint::CameraDefault`]), or the LogC4 signal at C8 or C9 clamped to [0, 1].
     Before,
+    /// The guide of Refine edges: the Input's luma code (`encode(Y(lin))` of the linear values C7 made, held to
+    /// [0, 1]) in all three planes, with no node in it (`ColorChain::guide_pixel`).
+    Guide,
 }
 
 impl Stop {
@@ -173,6 +177,7 @@ impl Stop {
             Stop::C12 => 7,
             Stop::C13 => 8,
             Stop::Before => 9,
+            Stop::Guide => 13,
         }
     }
 }
@@ -303,7 +308,7 @@ pub(crate) const REF_KEY: u32 = 4;
 /// (`docs/23` section 3.5).
 const MAX_STEPS: usize = 64;
 
-/// The per-frame uniform block of `color.wgsl` (`ChainU`), 592 bytes: window and mode, the chain's
+/// The per-frame uniform block of `color.wgsl` (`ChainU`), 608 bytes: window and mode, the chain's
 /// parameters (the fused matrix, C7, the look), the cine rendering's matrix from XYZ to the output's
 /// primaries (`cine_m0` to `cine_m2`), the Before view's camera default (`cam0` to `cam2`: the 3x3
 /// rows, `camt`: the tone curve's `n`, `s`, `k` and white level) and the pass (`plan`, `stopn`: module
@@ -350,6 +355,9 @@ struct ChainU {
     /// The photo frame ([`PhotoFrame`]): the photo's width and height over its long edge, and the narrowest
     /// edge ramp ([`PhotoFrame::ramp`]) in units of the long edge.
     photo: [f32; 4],
+    /// The raster planes (binding 7): x: words in a plane, y: the first row of this dispatch in the window, z: a
+    /// plane's row stride in elements, w: the number of planes (0: none are bound).
+    rst: [u32; 4],
 }
 
 /// One step of the plan with its node, as the storage buffer at binding 6 holds it (`NodeRec` in
@@ -413,7 +421,12 @@ impl MaskOpU {
                 op.kind.code(),
                 if op.subtract { MASK_SUBTRACT } else { 0 }
                     | if op.invert { MASK_INVERT } else { 0 },
-                NODE_NONE,
+                // A raster row names its plane; one with no plane (a kind this machine cannot make) is NODE_NONE.
+                if op.kind == OpKind::Raster && op.params[0] < f64::from(u32::MAX) {
+                    op.params[0] as u32
+                } else {
+                    NODE_NONE
+                },
                 (op.opacity as f32).to_bits(),
             ],
             p0: [p[0], p[1], p[2], p[3]],
@@ -983,6 +996,7 @@ impl ChainTables {
         }
 
         let stand_in = self.stand_in(ctx)?;
+        let no_rasters = self.empty(ctx)?;
         u.mrow[0] = plan.rows_at;
         Ok(PreparedChain {
             base: u,
@@ -990,6 +1004,7 @@ impl ChainTables {
             curves: plan.curves,
             look_luts,
             stand_in,
+            no_rasters,
             records: plan.records,
             passes: plan.passes,
             steps: plan.steps,
@@ -997,6 +1012,7 @@ impl ChainTables {
             planes: plan.planes,
             node_stop: None,
             photo: None,
+            rasters: None,
             buffer_limit: DESIGN_BINDING_BYTES,
             output: params.output,
             look: look_kind,
@@ -1284,6 +1300,9 @@ pub struct PreparedChain {
     look_luts: Arc<PooledBuffer>,
     /// Bound as the pass buffers of a plan with none.
     stand_in: Arc<PooledBuffer>,
+    /// Bound read-only as the raster planes of a chain that was given none (a different buffer from `stand_in`,
+    /// which a dispatch writes: one buffer cannot be both in one dispatch).
+    no_rasters: Arc<PooledBuffer>,
     /// The plan's steps with their nodes, in plan order, then the mask rows: the storage buffer at binding 6.
     records: Arc<Vec<u8>>,
     /// The passes, as spans of the records (one pass at least).
@@ -1298,6 +1317,9 @@ pub struct PreparedChain {
     node_stop: Option<(NodeStop, StepAt)>,
     /// The render's photo frame, for the mask shapes ([`PreparedChain::with_photo_frame`]).
     photo: Option<PhotoFrame>,
+    /// The raster planes of the window the chain colours ([`PreparedChain::with_rasters`]); a chain without them
+    /// binds a stand-in and its raster rows select nothing.
+    rasters: Option<RasterPlanes>,
     /// The most bytes the pass buffers of one dispatch may have ([`DESIGN_BINDING_BYTES`]).
     buffer_limit: u64,
     output: OutputTarget,
@@ -1441,6 +1463,17 @@ impl PreparedChain {
         chain
     }
 
+    /// The same chain with the raster planes of the window it colours (`encode_raster_planes`): a raster row of a
+    /// node reads its plane at the pixel (`docs/23` section 5.5). The window the chain is given afterwards must
+    /// be the planes' window (same width and height); a chain with raster rows and no planes selects nothing
+    /// for them.
+    #[must_use]
+    pub fn with_rasters(&self, planes: RasterPlanes) -> Self {
+        let mut chain = self.clone();
+        chain.rasters = Some(planes);
+        chain
+    }
+
     /// The passes of the plan (one dispatch each; one for the default graph).
     pub fn pass_count(&self) -> usize {
         self.passes.len()
@@ -1479,6 +1512,14 @@ impl PreparedChain {
         let (src_stride, src_plane, offset, origin) =
             (src.stride, src.plane, src.offset, out.origin);
         let mut u = self.base;
+        if let Some(r) = &self.rasters {
+            u.rst = [
+                r.plane_words() as u32,
+                r.row0 as u32,
+                r.stride as u32,
+                r.planes as u32,
+            ];
+        }
         u.dims = [
             out_w as u32,
             out_h as u32,
@@ -1551,7 +1592,7 @@ impl PreparedChain {
             .find(|s| s.node == MAIN_NODE)
             .map_or(0, |s| s.pass);
         match code {
-            0..=2 => 0..=0,
+            0..=2 | 13 => 0..=0,
             3 | 5 | 10 => main_pass..=main_pass,
             9 => match self.before {
                 BeforePoint::AfterGrade => main_pass..=main_pass,
@@ -1573,7 +1614,7 @@ impl PreparedChain {
         out: &'a PooledBuffer,
         records: &'a PooledBuffer,
         pass_buffers: &'a PooledBuffer,
-    ) -> [(u32, wgpu::BindingResource<'a>); 8] {
+    ) -> [(u32, wgpu::BindingResource<'a>); 9] {
         [
             (0, ub.binding()),
             (1, self.tables.binding()),
@@ -1582,7 +1623,14 @@ impl PreparedChain {
             (4, src.binding()),
             (5, out.binding()),
             (6, records.binding()),
-            // Binding 7 is the raster masks of N-13 (`docs/23` section 5.4).
+            // The raster masks' u16 planes of the window (`docs/23` section 5.5), or a stand-in that is never read.
+            (
+                7,
+                self.rasters
+                    .as_ref()
+                    .map_or(&*self.no_rasters, |r| &*r.buf)
+                    .binding(),
+            ),
             (8, pass_buffers.binding()),
         ]
     }
@@ -1605,6 +1653,16 @@ impl PreparedChain {
         let ctx = passes.context();
         let (_, kind) = self.uniform_for(output, &src_window, &out_window, dst, mask)?;
         let records = passes.keep(storage_buffer(ctx, "node records", &self.records[..])?);
+        if let Some(r) = &self.rasters {
+            // The planes must outlive the submission; the window they cover is the one coloured.
+            passes.hold(Arc::clone(&r.buf));
+            if (r.width, r.height) != (out_window.width, out_window.height) {
+                return Err(GpuError::InvalidInput(format!(
+                    "the raster planes cover {} x {} pixels, the colour window is {} x {}",
+                    r.width, r.height, out_window.width, out_window.height
+                )));
+            }
+        }
         // Rows per band: the whole window, unless the pass buffers would not fit one binding.
         let plane_bytes_per_row = 4 * u64::from(self.planes) * out_window.width.max(1) as u64;
         let band_rows = if self.planes == 0 {
@@ -1631,7 +1689,9 @@ impl PreparedChain {
             out_band.origin.1 += r0;
             let mut dst_band = dst;
             dst_band.at.1 += r0;
-            let (base, _) = self.uniform_for(output, &src_band, &out_band, dst_band, mask)?;
+            let (mut base, _) = self.uniform_for(output, &src_band, &out_band, dst_band, mask)?;
+            // A band of the window reads the raster planes from its own first row.
+            base.rst[1] += r0 as u32;
             let (gx, gy) = pair_groups(out_band.width, rows);
             if gx as usize > limit || gy as usize > limit {
                 return Err(GpuError::InvalidInput(format!(
@@ -2071,21 +2131,22 @@ mod tests {
     use crate::kernels::shader_source;
 
     #[test]
-    fn the_per_frame_block_is_592_bytes_and_a_node_record_1200() {
+    fn the_per_frame_block_is_608_bytes_and_a_node_record_1200() {
         // The per-frame `ChainU` (`docs/17-gpu.md` section 11) was meant to be about 1 KB: the one uniform
         // block (K3 allows one) holds the frame's parameters. It was 992 bytes with the ACES 2 scalars; the
         // Before view's camera default added 64, and the colour warp (C9b) 1040 plus the grade's six rows
         // (1664 bytes in all, 2026-11-01). The nodes' parameters then moved into the storage buffer of node
         // records (N-04, `docs/23` section 5.4), so a plan of 16 nodes does not make the uniform grow: the
         // block lost the grade, the zones, the balance and the warp (1136 bytes) and gained the pass (32). The
-        // masks (N-10) added the place of the mask rows and the photo frame (32 more); the rows themselves are
-        // in the storage buffer after the records, 64 bytes each.
+        // masks (N-10) added the place of the mask rows and the photo frame (32 more), the raster masks (N-13) the
+        // place of their planes (16 more); the rows themselves are in the storage buffer after the records,
+        // 64 bytes each.
         // A record is the step's flags and wiring (3 rows), the gain (1), the grade (6), the warp's counts
         // (1) and its 16 moving (3 rows each) and 16 locked pins (1 row each): 75 rows of 16 bytes. Both are
         // far below the 64 KiB uniform binding the device asks for
         // (`max_uniform_buffer_binding_size` of `wgpu::Limits::default()`) and the 16 KiB of wgpu's
         // downlevel limits.
-        assert_eq!(size_of::<ChainU>(), 592);
+        assert_eq!(size_of::<ChainU>(), 608);
         assert_eq!(size_of::<ChainU>() % 16, 0);
         assert_eq!(size_of::<NodeRecU>(), 1200);
         assert_eq!(size_of::<NodeRecU>() % 16, 0);
@@ -2341,7 +2402,7 @@ mod tests {
                 .validate(&module)
                 .unwrap_or_else(|e| panic!("{mode:?}: {e:?}"));
             let (members, span) = wgsl_struct(&module, "CU");
-            let fields: [(&str, usize); 32] = [
+            let fields: [(&str, usize); 33] = [
                 ("dims", offset_of!(ChainU, dims)),
                 ("src", offset_of!(ChainU, src)),
                 ("origin", offset_of!(ChainU, origin)),
@@ -2374,6 +2435,7 @@ mod tests {
                 ("stopn", offset_of!(ChainU, stopn)),
                 ("mrow", offset_of!(ChainU, mrow)),
                 ("photo", offset_of!(ChainU, photo)),
+                ("rst", offset_of!(ChainU, rst)),
             ];
             assert_eq!(members.len(), fields.len());
             for ((name, offset, _), (want, at)) in members.iter().zip(fields) {
@@ -2449,8 +2511,8 @@ mod tests {
 
     #[test]
     fn the_kernel_binds_the_buffers_the_host_binds() {
-        // One uniform and seven storage buffers (K3 allows eight): bindings 0 to 6 and 8, the table of
-        // `entries`; 7 is the raster masks of N-13.
+        // One uniform and eight storage buffers (K3 allows eight): bindings 0 to 8, the table of `entries`;
+        // 7 is the raster masks' planes of N-13.
         let source = shader_source(StorageMode::F32, KernelId::Color);
         let module = naga::front::wgsl::parse_str(&source).expect("color.wgsl");
         let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
@@ -2468,8 +2530,8 @@ mod tests {
                 storage += usize::from(matches!(var.space, naga::AddressSpace::Storage { .. }));
             }
         }
-        assert_eq!(bindings, [0, 1, 2, 3, 4, 5, 6, 8].into());
-        assert_eq!(storage, 7, "seven storage buffers and one uniform");
+        assert_eq!(bindings, [0, 1, 2, 3, 4, 5, 6, 7, 8].into());
+        assert_eq!(storage, 8, "eight storage buffers and one uniform");
     }
 
     #[test]

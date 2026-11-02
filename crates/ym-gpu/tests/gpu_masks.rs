@@ -392,7 +392,7 @@ fn gpu_stage(
 /// pixel's place in the photo frame.
 struct Reference {
     cam: Vec<[f64; 3]>,
-    at: Vec<PixelAt>,
+    at: Vec<PixelAt<'static>>,
     /// The pixels outside the photo (the letterbox): the device does not colour them.
     outside: Vec<bool>,
     n: usize,

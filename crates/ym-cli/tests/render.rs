@@ -657,6 +657,143 @@ fn a_settings_object_keyed_by_file_name_gives_each_photo_its_own() {
     );
 }
 
+/// A settings file with one corrector, node 2, with these mask rows.
+fn masked_file(rows: &str) -> String {
+    format!(
+        r#"{{ "nodes": {{ "items": [ {{ "id": 2, "kind": "corrector", "pos": [1, 0], "trim": {{ "exposure_ev": 0.7 }},
+            "masks": {{ "invert": false, "items": [ {rows} ] }} }} ],
+            "links": [
+              {{ "from": {{ "node": "input", "port": "picture" }}, "to": {{ "node": 1, "port": "picture" }} }},
+              {{ "from": {{ "node": 1, "port": "picture" }}, "to": {{ "node": 2, "port": "picture" }} }},
+              {{ "from": {{ "node": 2, "port": "picture" }}, "to": {{ "node": "output", "port": "picture" }} }}
+            ] }} }}"#
+    )
+}
+
+/// A raster mask this computer cannot make (`docs/10` *Settings*, `docs/23` section 3.10) stops that photo with
+/// `error.kind` `mask`, a sentence that names the node and the kind, and exit 1; the other photos go on and the
+/// photo is never written without its mask.
+#[test]
+fn a_photo_that_needs_a_mask_this_computer_cannot_make_fails_with_the_mask_error_and_the_rest_go_on()
+ {
+    let sb = Sandbox::new();
+    sb.arw("a_plain.ARW");
+    sb.arw("b_subject.ARW");
+    sb.arw("c_object.ARW");
+    sb.arw("d_background.ARW");
+    sb.arw("e_off.ARW");
+    let file = sb.root().join("per-file.json");
+    let doc = |rows: &str| serde_json::from_str::<Value>(&masked_file(rows)).expect("a document");
+    let doc_text = serde_json::json!({
+        "b_subject.ARW": doc(r#"{ "kind": "subject" }"#),
+        "c_object.ARW": doc(r#"{ "kind": "object", "points": [[0.5, 0.5, true]] }"#),
+        "d_background.ARW": doc(r#"{ "kind": "background" }"#),
+        // The eye is off: the row is absent, the photo renders.
+        "e_off.ARW": doc(r#"{ "kind": "subject", "enabled": false }"#),
+    });
+    std::fs::write(&file, doc_text.to_string()).expect("write");
+    let out = sb
+        .ym()
+        .args(["render", "--json", "--settings"])
+        .arg(&file)
+        .arg(sb.photos())
+        .assert()
+        .code(1);
+    let objects = json_lines(&out.get_output().stdout);
+    assert_eq!(objects.len(), 5);
+    let find = |name: &str| {
+        objects
+            .iter()
+            .find(|o| o["input"].as_str().is_some_and(|i| i.ends_with(name)))
+            .unwrap_or_else(|| panic!("no record for {name}"))
+    };
+    let mac = cfg!(target_os = "macos");
+    for (name, sentence) in [
+        (
+            "b_subject.ARW",
+            if mac {
+                "Node 2 has a Subject mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon."
+            } else {
+                "Node 2 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask."
+            },
+        ),
+        (
+            "c_object.ARW",
+            "Node 2 has an Object mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon.",
+        ),
+        (
+            "d_background.ARW",
+            "Node 2 has a Background mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon.",
+        ),
+    ] {
+        let o = find(name);
+        assert_eq!(o["status"], "error", "{name}");
+        assert_eq!(o["output"], Value::Null, "{name}");
+        assert_eq!(o["error"]["kind"], "mask", "{name}");
+        assert_eq!(o["error"]["message"], sentence, "{name}");
+        // The record still says what the photo was.
+        assert!(
+            o["camera"].is_object() && o["settings"].is_object(),
+            "{name}"
+        );
+        assert!(
+            !sb.default_export()
+                .join(format!("{}_signature.jpg", name.trim_end_matches(".ARW")))
+                .exists(),
+            "{name} was written without its mask"
+        );
+    }
+    assert_eq!(find("a_plain.ARW")["status"], "ok");
+    assert_eq!(find("e_off.ARW")["status"], "ok");
+    assert!(sb.default_export().join("a_plain_signature.jpg").exists());
+    assert!(sb.default_export().join("e_off_signature.jpg").exists());
+}
+
+/// A Brush row renders from `--settings` (`docs/10`): the photo is written, and it is not the photo without the
+/// brush.
+#[test]
+fn a_brush_row_renders_from_a_settings_file() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let brush = r#"{ "kind": "brush", "mode": "add", "feather": 0.2, "grow": 0.2, "refine": 0.4,
+        "strokes": [ { "size": 0.2, "hardness": 0.5, "erase": false, "points": [[0.3, 0.4], [0.6, 0.55]] } ] }"#;
+    let with = sb.root().join("brush.json");
+    std::fs::write(&with, masked_file(brush)).expect("write");
+    let without = sb.root().join("none.json");
+    std::fs::write(&without, masked_file("")).expect("write");
+    let render = |settings: &std::path::Path, dir: &str| {
+        let out_dir = sb.root().join(dir);
+        let out = sb
+            .ym()
+            .args([
+                "render",
+                "--cpu",
+                "--json",
+                "--format",
+                "tiff",
+                "--settings",
+            ])
+            .arg(settings)
+            .arg("--out")
+            .arg(&out_dir)
+            .arg(&arw)
+            .assert()
+            .success();
+        let o = json_lines(&out.get_output().stdout).remove(0);
+        assert_eq!(o["status"], "ok");
+        let path = o["output"].as_str().expect("output").to_owned();
+        (o, std::fs::read(path).expect("the file"))
+    };
+    let (o, a) = render(&with, "with");
+    let (_, b) = render(&without, "without");
+    assert_ne!(a, b, "the brush changed no pixel");
+    // The settings the record prints hold the strokes.
+    let rows = &common::node(&o, 2)["masks"]["items"];
+    assert_eq!(rows[0]["kind"], "brush");
+    assert_eq!(rows[0]["strokes"][0]["points"][1][0], 0.6);
+    assert_eq!(rows[0]["refine"], 0.4);
+}
+
 #[test]
 fn settings_can_come_from_stdin_and_values_out_of_range_are_limited_with_a_warning() {
     let sb = Sandbox::new();

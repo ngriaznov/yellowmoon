@@ -135,6 +135,7 @@ fn doctor_says_what_it_includes_and_lists_the_parts() {
         "GPU",
         "Render path",
         "Model weights",
+        "Masks",
         "Camera profiles",
         "sony-ilce-7rm4 1.2.0",
         "Looks",
@@ -188,6 +189,64 @@ fn doctor_json_has_the_same_parts() {
     assert_eq!(v["profiles"].as_array().expect("profiles").len(), 11);
     assert_eq!(v["looks"]["built_in"], 2);
     assert_eq!(v["looks"]["imported"], 0);
+}
+
+/// The `Masks` row and the `masks` object of `ym doctor` (`docs/10` *doctor*): the kinds `mask_kinds()` gives the app,
+/// in the order of the Add mask menu, and the reason for each that this computer cannot make.
+#[test]
+fn doctor_lists_the_masks_this_computer_can_make_and_why_not_the_others() {
+    let sb = Sandbox::new();
+    let out = sb.ym().arg("doctor").assert().success();
+    let text = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("Masks"))
+        .unwrap_or_else(|| panic!("no Masks row in:\n{text}"))
+        .trim_start_matches("Masks")
+        .trim()
+        .to_owned();
+    let (made, not_made) = if cfg!(target_os = "macos") {
+        (
+            "Linear, Radial, Brush, Colour range, Brightness range",
+            "Object, Subject, People and Background (this version of Yellowmoon can't make them yet)",
+        )
+    } else {
+        (
+            "Linear, Radial, Brush, Colour range, Brightness range",
+            "Object and Background (this version of Yellowmoon can't make them yet), Subject and People (this is not a Mac that supports them)",
+        )
+    };
+    assert_eq!(line, format!("{made} · not available: {not_made}"));
+    // The row follows the model weights and comes before the illuminant models.
+    let at = |label: &str| text.find(label).unwrap_or_else(|| panic!("no {label}"));
+    assert!(at("Model weights") < at("Masks") && at("Masks") < at("Illuminant models"));
+
+    let out = sb.ym().args(["doctor", "--json"]).assert().success();
+    let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
+    assert_eq!(
+        v["masks"]["kinds"],
+        serde_json::json!([
+            "linear",
+            "radial",
+            "brush",
+            "color_range",
+            "brightness_range"
+        ])
+    );
+    let reason = if cfg!(target_os = "macos") {
+        "not_supported"
+    } else {
+        "not_a_mac"
+    };
+    assert_eq!(
+        v["masks"]["unavailable"],
+        serde_json::json!({
+            "object": "not_supported",
+            "subject": reason,
+            "people": reason,
+            "background": "not_supported",
+        })
+    );
 }
 
 #[test]

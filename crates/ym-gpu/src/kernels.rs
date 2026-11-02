@@ -62,6 +62,7 @@ pub mod lens_light;
 pub mod lens_reshape;
 pub mod log_guided;
 pub mod magnify;
+pub mod mask_raster;
 pub mod mosaic_ca;
 pub mod output_sharpen;
 pub mod prep;

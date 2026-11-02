@@ -94,6 +94,17 @@ expression: shape(&v)
     "missing": "number"
   },
   "looks_folder": "string",
+  "masks": {
+    "kinds": [
+      "string"
+    ],
+    "unavailable": {
+      "background": "string",
+      "object": "string",
+      "people": "string",
+      "subject": "string"
+    }
+  },
   "memory_budget": {
     "cpu_bytes": "number",
     "gpu_bytes": "number",

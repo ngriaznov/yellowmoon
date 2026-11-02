@@ -107,6 +107,9 @@ pub enum KernelId {
     /// The mask view's overlay: the accent tinted over a display-linear picture where a node's mask is 1,
     /// in place, between output sharpening and C13.
     Tint,
+    /// The raster masks' pass: the resample of a row's plane to the output grid, Grow, Feather, the guided
+    /// filter of Refine edges and the u16 planes the colour pass reads (one entry point, an op in the uniform).
+    MaskRaster,
     /// R1 normalise, R3 vignetting and R4 gains of a rectangle, from the resident raw words.
     Prep,
     /// The R1 clip bits of a rectangle (one bit per photosite) from the words and the steps.
@@ -238,7 +241,7 @@ impl KernelId {
     /// no render uses. [`KernelSet::kernels`] and `warm_up` compile in this order, so that what the
     /// first frame of the first photo waits for is compiled before what only a zoomed view or an
     /// export needs.
-    pub const ALL: [KernelId; 93] = [
+    pub const ALL: [KernelId; 94] = [
         // The fit view of a mosaic photo.
         KernelId::Prep,
         KernelId::PrepMask,
@@ -288,6 +291,7 @@ impl KernelId {
         KernelId::Encode,
         KernelId::Magnify,
         KernelId::Tint,
+        KernelId::MaskRaster,
         // The full-resolution raw chain (the 100 % view and the exports).
         KernelId::AdaptiveRatioPrepare,
         KernelId::AdaptiveRatioGreen,
@@ -380,6 +384,7 @@ impl KernelId {
             KernelId::Encode => "encode",
             KernelId::Magnify => "magnify",
             KernelId::Tint => "tint",
+            KernelId::MaskRaster => "mask_raster",
             KernelId::Prep => "prep",
             KernelId::PrepMask => "prep_mask",
             KernelId::HighlightsSuper => "highlights_super",
@@ -476,6 +481,7 @@ impl KernelId {
             | KernelId::Encode
             | KernelId::Magnify
             | KernelId::Tint
+            | KernelId::MaskRaster
             | KernelId::LensFieldPyramid
             | KernelId::LensFieldGather
             | KernelId::LensFieldFinish
@@ -590,6 +596,7 @@ impl KernelId {
             KernelId::Resize => super::resize::body(),
             KernelId::Copy => super::copy::body(),
             KernelId::Tint => super::tint::body(),
+            KernelId::MaskRaster => include_str!("../shaders/mask_raster.wgsl").to_string(),
             KernelId::Probe => placeholder_body(self),
         }
     }
@@ -783,6 +790,7 @@ fn constants() -> String {
         ("MK_RADIAL", OpKind::Radial),
         ("MK_COLOR", OpKind::Color),
         ("MK_BRIGHTNESS", OpKind::Brightness),
+        ("MK_RASTER", OpKind::Raster),
     ] {
         let _ = writeln!(s, "const {n}: u32 = {}u;", k.code());
     }

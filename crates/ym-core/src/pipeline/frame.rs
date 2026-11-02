@@ -81,6 +81,7 @@ use ym_gpu::cpu::tint::overlay_interleaved;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError};
 use ym_gpu::kernels::copy::Piece;
+use ym_gpu::kernels::mask_raster::{largest_tile_for, tile_halo};
 use ym_gpu::pool::PooledBuffer;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::tail::{TailRoute, colour_device_tile_to_host, colour_tile_to_host};
@@ -741,7 +742,11 @@ fn crop_sampled(s: &Sampled, x: usize, y: usize, w: usize, h: usize) -> Sampled 
     let outside = s.outside.as_ref().map(|o| {
         let width = s.img.width;
         (0..h)
-            .flat_map(|j| o[(y + j) * width + x..(y + j) * width + x + w].iter().copied())
+            .flat_map(|j| {
+                o[(y + j) * width + x..(y + j) * width + x + w]
+                    .iter()
+                    .copied()
+            })
             .collect::<Vec<u8>>()
     });
     Sampled {
@@ -2105,6 +2110,11 @@ fn banded(
     let Some(rows) = band_split(job, spec, sharpening, route)? else {
         return whole(job, spec, grade, sharpening, Some(route), StageWindow::Own);
     };
+    // The raster masks of the nodes are made over a window with their receptive field around it; the rows of a cut
+    // view would each need a halo of their own, so a view the device cannot hold in one piece is made on the CPU.
+    if grade.chain.uses_rasters() || job.mask_uses_rasters() {
+        return Ok(Flow::Cpu);
+    }
     // The stage works on the bounding box of the photo in the view's frame: every band is given
     // the box of the view in one piece, cut to its rows (a band's own box is narrower where the
     // photo's edge is slanted, and the stage would mirror there instead of seeing the black of the
@@ -3307,14 +3317,10 @@ impl Renderer {
         // The raster masks of the nodes are made over each tile grown by their receptive field (`docs/algorithms/06`
         // section 5.2) and cut: a tile is sampled, guided and coloured over `grown` and its pixels are the window.
         let frame_area = Area::whole(fw, fh);
-        let raster_halo = if grade.chain.uses_rasters() {
-            grade
-                .chain
-                .rasters()
-                .halo(1.0 / grid.sampler_grid().photo_frame().pixel)
-        } else {
-            0
-        };
+        let raster_halo = tile_halo(&grade.chain, &grid.sampler_grid());
+        // Tiles equal the whole frame, so a tile may be any size: one whose grown window would pass the design
+        // binding is made smaller (`docs/17-gpu.md` section 4).
+        let tile = largest_tile_for(raster_halo, tile);
         let mut rgb = vec![0.0f32; fw * fh * 3];
         let threads = job.options().threads;
         let strict = job.options().gpu_strict;
@@ -3381,6 +3387,7 @@ impl Renderer {
                                     image,
                                     (x0, y0),
                                     grid_s,
+                                    (fw, fh),
                                     (ox, oy),
                                     tw,
                                     th,
@@ -3392,6 +3399,7 @@ impl Renderer {
                                     export_tail::shared(image),
                                     (x0, y0),
                                     grid_s,
+                                    (fw, fh),
                                     (ox, oy),
                                     tw,
                                     th,

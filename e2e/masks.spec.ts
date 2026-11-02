@@ -278,7 +278,7 @@ test.describe("adding a mask", () => {
     await warmth(page);
     await page.getByRole("button", { name: "Add mask" }).click();
     const menu = page.getByRole("menu", { name: "Add mask" });
-    await expect(menu.getByRole("menuitem")).toHaveText([/^Linear/, /^Radial/, /^Colour range/, /^Brightness range/]);
+    await expect(menu.getByRole("menuitem")).toHaveText([/^Linear/, /^Radial/, /^Brush/, /^Colour range/, /^Brightness range/]);
     await expect(menu.getByText("A gradient across the photo")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);

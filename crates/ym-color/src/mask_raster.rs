@@ -10,7 +10,7 @@
 //! ([`PhotoFrame::pixel`] is `1 / u_px`), [`RasterSteps`] turns them into whole pixels, and
 //! [`RasterRow::plane`] runs the steps over a window of the grid:
 //!
-//! 1. **resample** `S0` at each pixel's place in the photo ([`resample`]; bilinear, or the mean of `n x n`
+//! 1. **resample** `S0` at each pixel's place in the photo ([`resample_at`]; bilinear, or the mean of `n x n`
 //!    bilinear samples when the grid is coarser than `S0` by more than [`SHRINK_BOX_FROM`]);
 //! 2. **grow**: a separable maximum (or minimum) over a square of half-side `r_g`;
 //! 3. **feather**: three cascaded box means whose widths give the variance of a Gaussian of `sigma_f` pixels;
@@ -492,10 +492,19 @@ enum Fold {
 
 /// The window of half-side `r` around column `x` of a row of `g` (absolute), cut to the frame and to the plane:
 /// the first and last indices into the row, or `None` when the pixel is outside the frame.
-fn span(x: usize, g_start: i64, g_len: usize, f_start: i64, f_end: i64, r: usize) -> Option<(usize, usize)> {
+fn span(
+    x: usize,
+    g_start: i64,
+    g_len: usize,
+    f_start: i64,
+    f_end: i64,
+    r: usize,
+) -> Option<(usize, usize)> {
     let abs = g_start + x as i64;
     let lo = (abs - r as i64).max(f_start).max(g_start);
-    let hi = (abs + r as i64).min(f_end - 1).min(g_start + g_len as i64 - 1);
+    let hi = (abs + r as i64)
+        .min(f_end - 1)
+        .min(g_start + g_len as i64 - 1);
     (lo <= hi).then(|| ((lo - g_start) as usize, (hi - g_start) as usize))
 }
 
@@ -615,7 +624,10 @@ fn ceil_div(a: i64, b: i64) -> i64 {
 pub fn guided(p: &[f64], guide: &[f64], g: &Area, frame: &Area, f: &Guided) -> Vec<f64> {
     if f.step == 1 {
         let (a, b) = guided_coefficients(p, guide, g, frame, f.samples, f.eps);
-        let (abar, bbar) = (box_mean(&a, g, frame, f.samples), box_mean(&b, g, frame, f.samples));
+        let (abar, bbar) = (
+            box_mean(&a, g, frame, f.samples),
+            box_mean(&b, g, frame, f.samples),
+        );
         return abar
             .iter()
             .zip(&bbar)
@@ -640,9 +652,19 @@ pub fn guided(p: &[f64], guide: &[f64], g: &Area, frame: &Area, f: &Guided) -> V
     let block = |src: &[f64]| {
         let mut out = vec![0.0; cg.w * cg.h];
         par_rows(&mut out, cg.w, |j, row| {
-            let ys = cell_pixels(cg.y + j as i64, f.step, g.y.max(frame.y), g.y1().min(frame.y1()));
+            let ys = cell_pixels(
+                cg.y + j as i64,
+                f.step,
+                g.y.max(frame.y),
+                g.y1().min(frame.y1()),
+            );
             for (i, d) in row.iter_mut().enumerate() {
-                let xs = cell_pixels(cg.x + i as i64, f.step, g.x.max(frame.x), g.x1().min(frame.x1()));
+                let xs = cell_pixels(
+                    cg.x + i as i64,
+                    f.step,
+                    g.x.max(frame.x),
+                    g.x1().min(frame.x1()),
+                );
                 let mut sum = 0.0;
                 let mut n = 0usize;
                 for y in ys.clone() {
@@ -658,7 +680,10 @@ pub fn guided(p: &[f64], guide: &[f64], g: &Area, frame: &Area, f: &Guided) -> V
     };
     let (gc, pc) = (block(guide), block(p));
     let (a, b) = guided_coefficients(&pc, &gc, &cg, &cf, f.samples, f.eps);
-    let (abar, bbar) = (box_mean(&a, &cg, &cf, f.samples), box_mean(&b, &cg, &cf, f.samples));
+    let (abar, bbar) = (
+        box_mean(&a, &cg, &cf, f.samples),
+        box_mean(&b, &cg, &cf, f.samples),
+    );
     let mut out = vec![0.0; g.w * g.h];
     par_rows(&mut out, g.w, |y, row| {
         let ay = g.y + y as i64;
@@ -670,7 +695,8 @@ pub fn guided(p: &[f64], guide: &[f64], g: &Area, frame: &Area, f: &Guided) -> V
             let ax = g.x + x as i64;
             let ux = (ax as f64 + 0.5) / f.step as f64 - 0.5;
             let (i0f, tx) = (ux.floor(), ux - ux.floor());
-            let at_x = |i: i64| (i.clamp(cf.x, cf.x1() - 1).clamp(cg.x, cg.x1() - 1) - cg.x) as usize;
+            let at_x =
+                |i: i64| (i.clamp(cf.x, cf.x1() - 1).clamp(cg.x, cg.x1() - 1) - cg.x) as usize;
             let (c0, c1) = (at_x(i0f as i64), at_x(i0f as i64 + 1));
             let lerp = |plane: &[f64]| {
                 let top = plane[r0 * cg.w + c0] * (1.0 - tx) + plane[r0 * cg.w + c1] * tx;
@@ -745,8 +771,8 @@ impl RasterRow {
     ///
     /// # Panics
     ///
-    /// When `job.window` is not inside `job.grown`, or the row refines its edges and the job has no guide: both
-    /// are mistakes of the caller.
+    /// When `job.window` is not inside `job.grown`: a mistake of the caller. A row that refines its edges in a job
+    /// that has no guide skips that step.
     #[must_use]
     pub fn plane(&self, job: &PlaneJob<'_>) -> Vec<u16> {
         assert!(
@@ -772,8 +798,9 @@ impl RasterRow {
         if let Some(boxes) = steps.feather {
             plane = feather(&plane, &g, &job.frame, boxes);
         }
-        if let Some(gf) = &steps.guided {
-            let guide = job.guide.expect("a row that refines its edges needs the guide");
+        // A row that refines its edges needs the guide (`RasterSet::needs_guide` says so, and the caller makes it for
+        // exactly those renders); a job without one skips the step.
+        if let (Some(gf), Some(guide)) = (&steps.guided, job.guide) {
             plane = guided(&plane, guide, &g, &job.frame, gf);
         }
         // The window, quantised.
@@ -843,7 +870,7 @@ pub struct Stroke {
 }
 
 /// The strokes of a Brush row, in the order they were drawn, with the key that names them.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct BrushStrokes {
     /// What identifies the strokes (a hash of their content): the cache key.
     pub key: u64,
@@ -859,30 +886,61 @@ pub const BRUSH_MIN_SPACING_PX: f64 = 0.5;
 /// the plane stops being drawn when the budget is spent, the same way on every machine.
 pub const BRUSH_WORK_LIMIT: u64 = 4_000_000_000;
 
+impl std::fmt::Debug for BrushStrokes {
+    /// The key and the counts, never the points (a file may hold a hundred thousand).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrushStrokes")
+            .field("key", &self.key)
+            .field("strokes", &self.strokes.len())
+            .field(
+                "points",
+                &self.strokes.iter().map(|s| s.points.len()).sum::<usize>(),
+            )
+            .finish()
+    }
+}
+
+/// The key the strokes `(size, hardness, erase, points)` hash to (FNV-1a over the bit patterns: stable, cheap, and
+/// only a cache key). [`BrushStrokes::new`] uses it, and a caller that only needs the key (the render graph's cache
+/// key) can ask for it without building the strokes.
+pub fn strokes_key<'a>(strokes: impl IntoIterator<Item = (f64, f64, bool, &'a [[f64; 2]])>) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bits: u64| {
+        for byte in bits.to_le_bytes() {
+            h ^= u64::from(byte);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    let mut count = 0u64;
+    let mut body: Vec<(f64, f64, bool, &[[f64; 2]])> = Vec::new();
+    for s in strokes {
+        count += 1;
+        body.push(s);
+    }
+    feed(count);
+    for (size, hardness, erase, points) in body {
+        feed(size.to_bits());
+        feed(hardness.to_bits());
+        feed(u64::from(erase));
+        feed(points.len() as u64);
+        for p in points {
+            feed(p[0].to_bits());
+            feed(p[1].to_bits());
+        }
+    }
+    h
+}
+
 impl BrushStrokes {
-    /// The strokes and the key their content hashes to.
+    /// The strokes and the key their content hashes to ([`strokes_key`]).
     #[must_use]
     pub fn new(strokes: Vec<Stroke>) -> Self {
-        // FNV-1a over the bit patterns: stable, cheap, and only a cache key.
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        let mut feed = |bits: u64| {
-            for byte in bits.to_le_bytes() {
-                h ^= u64::from(byte);
-                h = h.wrapping_mul(0x0000_0100_0000_01b3);
-            }
-        };
-        feed(strokes.len() as u64);
-        for s in &strokes {
-            feed(s.size.to_bits());
-            feed(s.hardness.to_bits());
-            feed(u64::from(s.erase));
-            feed(s.points.len() as u64);
-            for p in &s.points {
-                feed(p[0].to_bits());
-                feed(p[1].to_bits());
-            }
-        }
-        Self { key: h, strokes }
+        let key = strokes_key(
+            strokes
+                .iter()
+                .map(|s| (s.size, s.hardness, s.erase, s.points.as_slice())),
+        );
+        Self { key, strokes }
     }
 }
 
@@ -921,7 +979,9 @@ pub fn draw_brush(brush: &BrushStrokes, aspect: [f64; 2]) -> SourcePlane {
     'strokes: for stroke in &brush.strokes {
         let d_px = unit(stroke.size) * long as f64;
         let radius = (0.5 * d_px).max(0.5);
-        let ramp = ((1.0 - unit(stroke.hardness)) * radius).max(1.0).min(radius);
+        let ramp = ((1.0 - unit(stroke.hardness)) * radius)
+            .max(1.0)
+            .min(radius);
         let inner = radius - ramp;
         let spacing = (BRUSH_SPACING * d_px).max(BRUSH_MIN_SPACING_PX);
         let pts: Vec<[f64; 2]> = stroke
@@ -944,7 +1004,10 @@ pub fn draw_brush(brush: &BrushStrokes, aspect: [f64; 2]) -> SourcePlane {
                         let mut at = spacing - carried;
                         while at <= len {
                             let t = at / len;
-                            stamps.push([last[0] + (p[0] - last[0]) * t, last[1] + (p[1] - last[1]) * t]);
+                            stamps.push([
+                                last[0] + (p[0] - last[0]) * t,
+                                last[1] + (p[1] - last[1]) * t,
+                            ]);
                             at += spacing;
                         }
                         carried = len - (at - spacing);

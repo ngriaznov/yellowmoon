@@ -27,10 +27,10 @@ async function open(settings: SettingsPatch = {}): Promise<MockApi> {
 }
 
 describe("mask_kinds (the Add mask menu's list)", () => {
-  it("is the four kinds that are built, unless the page URL says otherwise", async () => {
+  it("is the five kinds that are built, unless the page URL says otherwise", async () => {
     const a = createMockApi({ speed: Number.POSITIVE_INFINITY });
     api = a;
-    expect(await a.maskKinds()).toEqual(["linear", "radial", "color_range", "brightness_range"]);
+    expect(await a.maskKinds()).toEqual(["linear", "radial", "brush", "color_range", "brightness_range"]);
     expect(await a.maskKinds()).toEqual([...BUILT_MASK_KINDS]);
   });
 

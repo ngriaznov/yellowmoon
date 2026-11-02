@@ -478,7 +478,7 @@ export interface MockOptions {
   cpu?: boolean;
   /**
    * The kinds of mask the mock says this machine can make (`?mockMasks=`, `docs/23` §9, answered by `mask_kinds`). The default is the kinds
-   * that are built (Linear, Radial, Colour range and Brightness range), so the interface never adds a row that has no card yet; `all` is every
+   * that are built (Linear, Radial, Brush, Colour range and Brightness range; Brush has no card until its drawing tool, N-14), `all` is every
    * kind, `noai` leaves out Object, Subject, People and Background, `nomac` leaves out Subject and People, and a comma list names the kinds.
    */
   maskKinds?: readonly MaskKind[];
@@ -919,8 +919,8 @@ function withoutRetired(stored: Preferences): Preferences {
 
 /** Every kind of mask, in the order of the Add mask menu. */
 export const ALL_MASK_KINDS: readonly MaskKind[] = ["object", "subject", "people", "background", "linear", "radial", "brush", "color_range", "brightness_range"];
-/** The kinds the core can make today (`mask_kinds`): the shapes and ranges that are built. The later tasks add theirs. */
-export const BUILT_MASK_KINDS: readonly MaskKind[] = ["linear", "radial", "color_range", "brightness_range"];
+/** The kinds the core can make today (`mask_kinds`): the shapes, Brush and the ranges that are built. The later tasks add theirs. */
+export const BUILT_MASK_KINDS: readonly MaskKind[] = ["linear", "radial", "brush", "color_range", "brightness_range"];
 
 /** The kinds a `?mockMasks=` value names: `all`, `noai`, `nomac`, `built`, or a comma list of kinds; null for anything else. */
 export function parseMockMasks(value: string | null): readonly MaskKind[] | null {

@@ -299,8 +299,8 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let blocks = json_blocks(&doc[start..end]);
     assert_eq!(
         blocks.len(),
-        2,
-        "the complete small file and the per-file example"
+        3,
+        "the complete small file, the per-file example and the Brush row"
     );
 
     // The complete small file: read over the default graph, checked, and written back unchanged.
@@ -343,6 +343,31 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
         DevelopSettings::from_value(doc.clone(), &LookId::neutral())
             .unwrap_or_else(|e| panic!("{name}: {e}"));
     }
+
+    // The Brush row: a row of a corrector's masks that the core reads and can make, with its strokes.
+    let row: Value = serde_json::from_str(&blocks[2]).expect("the Brush example is JSON");
+    let doc = serde_json::json!({ "nodes": { "items": [
+        { "id": 2, "kind": "corrector", "masks": { "items": [row] } }
+    ], "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+    ] } });
+    let (settings, clamped) =
+        DevelopSettings::from_value(doc, &LookId::neutral()).expect("the Brush example reads");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    let item = &settings.nodes.corrector(2).expect("node 2").masks.items[0];
+    let ym_core::settings::MaskShape::Brush(brush) = &item.shape else {
+        panic!("the example is a Brush row");
+    };
+    assert_eq!(brush.strokes.len(), 2);
+    assert!(brush.strokes[1].erase && brush.strokes[0].points.len() == 3);
+    assert_eq!((brush.grow, brush.feather, brush.refine), (0.2, 0.3, 0.5));
+    assert_eq!(
+        ym_core::pipeline::unmakeable_mask(&settings),
+        None,
+        "this version makes a Brush mask"
+    );
     // And `ym` takes both files as `--settings` does: they are read, and checked, before any photo is
     // opened; the photo named here is not there, so the run ends for want of a photo (exit 5), never as a
     // settings error (exit 2).

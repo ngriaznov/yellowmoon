@@ -394,8 +394,14 @@ fn a_masked_nodes_histogram_and_scatter_are_its_own_signal_not_the_blend() {
     assert!(!scatter_plain.points.is_empty());
     for (what, s) in [
         ("a Radial row", masked_line(&trim, &grade, false, false)),
-        ("a Radial row and the node's Invert", masked_line(&trim, &grade, true, false)),
-        ("a Radial row and a key input", masked_line(&trim, &grade, false, true)),
+        (
+            "a Radial row and the node's Invert",
+            masked_line(&trim, &grade, true, false),
+        ),
+        (
+            "a Radial row and a key input",
+            masked_line(&trim, &grade, false, true),
+        ),
     ] {
         let s = at(&src, s);
         assert_eq!(
@@ -418,10 +424,20 @@ fn a_masked_nodes_pick_colour_at_its_warp_is_its_own_signal() {
     let r = renderer();
     let (trim, grade) = busy();
     for point in POINTS {
-        let want = tapped(&r, &src, line(&trim, &grade), NODE_2, ChromaTap::WarpInput, point);
+        let want = tapped(
+            &r,
+            &src,
+            line(&trim, &grade),
+            NODE_2,
+            ChromaTap::WarpInput,
+            point,
+        );
         for (what, s) in [
             ("a Radial row", masked_line(&trim, &grade, false, false)),
-            ("a Radial row and a key input", masked_line(&trim, &grade, false, true)),
+            (
+                "a Radial row and a key input",
+                masked_line(&trim, &grade, false, true),
+            ),
         ] {
             let got = tapped(&r, &src, s, NODE_2, ChromaTap::WarpInput, point);
             assert_eq!(got, want, "{what} at {point:?}");

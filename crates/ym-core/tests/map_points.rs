@@ -464,16 +464,17 @@ fn a_dragged_point_comes_back_to_the_photo_where_the_pixel_is() {
 // ---- mask_kinds -----------------------------------------------------------------------------------------
 
 #[test]
-fn this_machine_makes_the_shapes_and_the_ranges_that_are_built() {
+fn this_machine_makes_the_shapes_brush_and_the_ranges_that_are_built() {
     assert_eq!(
         mask_kinds(),
         [
             MaskKind::Linear,
             MaskKind::Radial,
+            MaskKind::Brush,
             MaskKind::ColorRange,
             MaskKind::BrightnessRange
         ],
-        "the later tasks add Brush, Background, Object, Subject and People"
+        "the later tasks add Background, Object, Subject and People"
     );
 }
 

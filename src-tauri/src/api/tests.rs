@@ -1417,14 +1417,21 @@ fn the_kinds_of_mask_this_machine_makes_are_the_cores_and_cross_by_the_same_word
         [
             MaskKind::Linear,
             MaskKind::Radial,
+            MaskKind::Brush,
             MaskKind::ColorRange,
             MaskKind::BrightnessRange
         ],
-        "the shapes and the ranges that are built; the later tasks add theirs"
+        "the shapes, Brush and the ranges that are built; the later tasks add theirs"
     );
     assert_eq!(
         serde_json::to_value(&kinds).expect("json"),
-        json!(["linear", "radial", "color_range", "brightness_range"])
+        json!([
+            "linear",
+            "radial",
+            "brush",
+            "color_range",
+            "brightness_range"
+        ])
     );
     // Every kind of the core is a kind of the wire, by the same word.
     for core in ym_core::settings::MaskKind::ALL {

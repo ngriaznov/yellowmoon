@@ -41,7 +41,7 @@ use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
 use ym_color::mask::{MaskKind, MaskRow, NodeMasks};
 use ym_color::mask_raster::{
-    BrushStrokes, MAX_RASTER_PLANES, RasterRow, RasterSet, RasterSource, Stroke,
+    BrushStrokes, MAX_RASTER_PLANES, RasterRow, RasterSet, RasterSource, Stroke, strokes_key,
 };
 use ym_color::plan::{self, PictureSource, Plan, PlanGraph, PlanNode, Stop};
 use ym_color::tone::ToneParams;
@@ -519,7 +519,7 @@ fn trim_of(t: &NodeTrim) -> Trim {
 
 /// The plane index of a raster row that has no plane: a kind this machine cannot make (`docs/23` section 3.10).
 /// The row is in the fold and selects nothing, in a view; an export of the photo is refused
-/// ([`unmakeable_mask`](crate::settings::unmakeable_mask)).
+/// ([`unmakeable_mask`]).
 pub const NO_PLANE: usize = usize::MAX;
 
 /// The raster row a mask row stands for, when this machine can make its `S0`: a Brush row's strokes with its
@@ -602,7 +602,7 @@ fn mask_rows(m: &MaskSettings, rasters: &mut RasterSet) -> NodeMasks {
 /// A node's mask rows as `ym_color`'s: the enabled rows in order (a row with the eye off is absent), each
 /// with its kind, mode, Invert and Opacity, and the node's Invert. A raster row (Brush now; Object, Subject,
 /// People and Background when they are built) is a [`MaskKind::Raster`] whose plane is its place among the
-/// raster rows of a chain; this function numbers them from 0 for itself alone, and [`node_set`] numbers them
+/// raster rows of a chain; this function numbers them from 0 for itself alone, and the chain's builder numbers them
 /// across the nodes of a plan.
 #[must_use]
 pub fn node_masks(m: &MaskSettings) -> NodeMasks {
@@ -644,9 +644,10 @@ pub fn unmakeable_mask(s: &DevelopSettings) -> Option<String> {
             continue;
         };
         for row in c.masks.items.iter().filter(|r| r.enabled) {
-            if let Some(sentence) =
-                crate::settings::unmakeable_mask_sentence(id, crate::settings::MaskKind::of(&row.shape))
-            {
+            if let Some(sentence) = crate::settings::unmakeable_mask_sentence(
+                id,
+                crate::settings::MaskKind::of(&row.shape),
+            ) {
                 return Some(sentence);
             }
             planes += usize::from(raster_row_of(&row.shape).is_some());
@@ -656,6 +657,20 @@ pub fn unmakeable_mask(s: &DevelopSettings) -> Option<String> {
         format!(
             "This photo has more than {MAX_RASTER_PLANES} masks that are drawn or found. Remove some of them."
         )
+    })
+}
+
+/// Whether the photo's plan has a node with a raster row: the render then makes the raster planes over its window
+/// before the colour pass, and a view too big for one device window is made on the CPU.
+#[must_use]
+pub fn uses_rasters(s: &DevelopSettings) -> bool {
+    let Ok(plan) = node_plan(&s.nodes, Stop::Output) else {
+        return false;
+    };
+    plan.node_ids().into_iter().any(|id| {
+        s.nodes
+            .corrector(id)
+            .is_some_and(|c| node_masks(&c.masks).prepare().needs_rasters())
     })
 }
 
@@ -835,16 +850,23 @@ fn nodes_key(s: &DevelopSettings, stop: Stop) -> String {
     }
     // The raster rows by what makes their planes (a hash of the strokes, never the strokes) and their sizes:
     // the numbers above only say that a node has a raster row.
-    if let Ok((_, rasters)) = node_set(s, stop) {
-        for r in &rasters.rows {
-            let _ = write!(
-                k,
-                "raster:{:x}:{}:{}:{};",
-                r.source.key(),
-                r.grow,
-                r.feather,
-                r.refine
-            );
+    for id in plan.node_ids() {
+        let Some(c) = s.nodes.corrector(id) else {
+            continue;
+        };
+        for row in c.masks.items.iter().filter(|r| r.enabled) {
+            if let MaskShape::Brush(b) = &row.shape {
+                let key = strokes_key(
+                    b.strokes
+                        .iter()
+                        .map(|s| (s.size, s.hardness, s.erase, s.points.as_slice())),
+                );
+                let _ = write!(
+                    k,
+                    "raster:{key:x}:{}:{}:{};",
+                    b.grow, b.feather, b.refine
+                );
+            }
         }
     }
     k

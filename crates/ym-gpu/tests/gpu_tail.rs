@@ -826,6 +826,7 @@ fn one_tile_read_back_is_the_cpu_colour_pass() {
                 Arc::clone(&sc.camera),
                 (0, 0),
                 sc.grid,
+                (300, 260),
                 off,
                 w,
                 h,

@@ -25,6 +25,7 @@ use ym_core::looks::{LookGroupInfo, LookService};
 use ym_core::pipeline::NeuralStatus;
 use ym_core::preferences::PreferencesStore;
 use ym_core::scheduler::MemoryBudget;
+use ym_core::settings::{MaskKind, MaskUnavailable, mask_kinds, mask_unavailable};
 use ym_core::version::{PIPELINE_VERSION, app_version};
 use ym_gpu::device::GpuInfo;
 use ym_profiles::registry::ProfileStore;
@@ -508,6 +509,56 @@ fn model_values(files: &[ModelFile]) -> Value {
     )
 }
 
+/// The kinds of mask this machine can make and why it cannot make the others (`docs/10` *doctor*, `docs/23`
+/// section 9): `mask_kinds()` as the app's Add mask menu reads it, and the reasons by their wire names.
+fn masks_value() -> Value {
+    let unavailable: serde_json::Map<String, Value> = mask_unavailable()
+        .into_iter()
+        .map(|(kind, why)| (kind.name().to_owned(), Value::String(why.wire().to_owned())))
+        .collect();
+    json!({
+        "kinds": mask_kinds().into_iter().map(|k| k.name()).collect::<Vec<_>>(),
+        "unavailable": unavailable,
+    })
+}
+
+/// Names joined as a sentence does: "A", "A and B", "A, B and C".
+fn joined(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
+/// The `Masks` row: the kinds this machine can make in the order of the Add mask menu, and, for the others, the
+/// reason, kinds that share one named together: `Linear, Radial, Brush, Colour range, Brightness range · not
+/// available: Object and Background (this version of Yellowmoon can't make them yet), Subject and People (this is
+/// not a Mac that supports them)`.
+fn masks_text() -> String {
+    let kinds: Vec<&str> = mask_kinds().into_iter().map(MaskKind::label).collect();
+    let mut text = kinds.join(", ");
+    let unavailable = mask_unavailable();
+    if unavailable.is_empty() {
+        return text;
+    }
+    // Groups of kinds by reason, in the order each reason first appears.
+    let mut groups: Vec<(MaskUnavailable, Vec<&str>)> = Vec::new();
+    for (kind, why) in unavailable {
+        match groups.iter_mut().find(|(w, _)| *w == why) {
+            Some((_, names)) => names.push(kind.label()),
+            None => groups.push((why, vec![kind.label()])),
+        }
+    }
+    let parts: Vec<String> = groups
+        .iter()
+        .map(|(why, names)| format!("{} ({})", joined(names), why.doctor_text()))
+        .collect();
+    text.push_str(" · not available: ");
+    text.push_str(&parts.join(", "));
+    text
+}
+
 fn to_json(r: &Report) -> Value {
     json!({
         "includes": INCLUDES,
@@ -540,6 +591,7 @@ fn to_json(r: &Report) -> Value {
         "apple_auto": apple_auto_value(&r.auto.status),
         "auto": auto_value(&r.auto),
         "model_weights": model_values(&r.weights),
+        "masks": masks_value(),
         "illuminant_models": model_values(&r.illuminant_models),
         "profiles": r.profiles.iter().map(|(id, version, name)| json!({ "id": id, "version": version, "name": name })).collect::<Vec<_>>(),
         "looks": {
@@ -683,6 +735,7 @@ fn to_text(r: &Report) -> String {
             );
         }
     }
+    row("Masks", masks_text());
     for (i, m) in r.illuminant_models.iter().enumerate() {
         row(
             if i == 0 { "Illuminant models" } else { "" },

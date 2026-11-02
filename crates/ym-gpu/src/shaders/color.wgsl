@@ -82,6 +82,7 @@ struct ChainU {
     stopn: vec4<u32>,    // x: the record at which stops 11 and 12 end (NODE_NONE: none), y, z, w: 0
     mrow: vec4<u32>,     // x: the first mask row in `nodes`, in vec4 rows (after the records), y, z, w: 0
     photo: vec4<f32>,    // the photo frame: x, y: the photo's width and height over its long edge, z: the narrowest edge ramp (MIN_RAMP_PIXELS output pixels) in units of the long edge, w: 0
+    rst: vec4<u32>,      // the raster planes (binding 7): x: words in a plane, y: the first row of this dispatch in the window, z: a plane's row stride (elements), w: the planes (0: none)
 };
 
 // One step of the plan with the node it runs (docs/23 section 5.4): the flags and the wiring of the step, then the node's
@@ -110,7 +111,7 @@ struct ChainU {
 @group(0) @binding(4) var<storage, read> img: array<ST_ELEM>;
 @group(0) @binding(5) var<storage, read_write> out: array<u32>;
 @group(0) @binding(6) var<storage, read> nodes: array<vec4<u32>>;   // the plan's steps with their nodes, in plan order, then the mask rows
-// Binding 7 is the raster masks of N-13 (docs/23 section 5.4).
+@group(0) @binding(7) var<storage, read> rasters: array<u32>;      // the raster masks' u16 planes of the window, two pixels to a word (docs/23 section 5.5)
 @group(0) @binding(8) var<storage, read_write> pbuf: array<f32>;   // the f32 planes that cross from one pass to the next (a picture is three planes, a key one)
 
 //@ACCESSORS img ro
@@ -773,7 +774,7 @@ fn smooth01(t: f32) -> f32 {
 
 // One row's own s in [0, 1] at a pixel (ym_color::mask::MaskOp::select). `p0` and `p1` are the row's parameters, `v_in` the
 // node's input, `l_in` its luma code, `pos` the pixel's place in the photo frame (the shapes select nothing without one).
-fn mask_select(kind: u32, p0: vec4<f32>, p1: vec4<f32>, v_in: vec3<f32>, l_in: f32, pos: vec2<f32>) -> f32 {
+fn mask_select(kind: u32, plane: u32, rpix: u32, p0: vec4<f32>, p1: vec4<f32>, v_in: vec3<f32>, l_in: f32, pos: vec2<f32>) -> f32 {
     if (kind == MK_LINEAR) {
         if (CU.sp.w == 0u) {
             return 0.0;
@@ -812,7 +813,15 @@ fn mask_select(kind: u32, p0: vec4<f32>, p1: vec4<f32>, v_in: vec3<f32>, l_in: f
     if (kind == MK_BRIGHTNESS) {
         return smooth01((l_in - p0.x) / p0.z) * (1.0 - smooth01((l_in - p0.y) / p0.z));
     }
-    // A raster kind (docs/23 N-13 to N-19): selects nothing yet.
+    if (kind == MK_RASTER) {
+        // The plane the render made for this row (a u16 code over 65535 at the pixel); a row with no plane, and a chain
+        // rendered with no planes, select nothing.
+        if (plane >= CU.rst.w) {
+            return 0.0;
+        }
+        let word = rasters[plane * CU.rst.x + (rpix >> 1u)];
+        return f32((word >> ((rpix & 1u) * 16u)) & 0xffffu) / 65535.0;
+    }
     return 0.0;
 }
 
@@ -820,7 +829,7 @@ fn mask_select(kind: u32, p0: vec4<f32>, p1: vec4<f32>, v_in: vec3<f32>, l_in: f
 // region row. Each row's a = opacity (invert ? 1 - s : s); the regions and the ranges fold apart, in list order, an add as
 // 1 - (1 - acc)(1 - a) and a subtract as acc (1 - a), the first row of a group taken exactly (a added, 1 - a subtracted);
 // m = R K with a group that has no row 1, and the node's Invert gives 1 - m.
-fn node_mask(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, pos: vec2<f32>, key_in: f32, has_key: bool) -> f32 {
+fn node_mask(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, pos: vec2<f32>, rpix: u32, key_in: f32, has_key: bool) -> f32 {
     let bits = nu(ni, R_CTL).x;
     let rows = nu(ni, R_WIRE);
     var l_in = 0.0;
@@ -838,7 +847,7 @@ fn node_mask(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, pos: vec
     for (var i = 0u; i < rows.z; i++) {
         let b = CU.mrow.x + (rows.w + i) * MASK_ROW_VEC4;
         let head = nodes[b];
-        let s = mask_select(head.x, bitcast<vec4<f32>>(nodes[b + 1u]), bitcast<vec4<f32>>(nodes[b + 2u]), v_in, l_in, pos);
+        let s = mask_select(head.x, head.z, rpix, bitcast<vec4<f32>>(nodes[b + 1u]), bitcast<vec4<f32>>(nodes[b + 2u]), v_in, l_in, pos);
         var a = s;
         if ((head.y & MF_INVERT) != 0u) {
             a = 1.0 - s;
@@ -890,7 +899,7 @@ fn plane_pic(plane: u32, n: u32, pix: u32) -> vec3<f32> {
 // The steps of this pass in registers and key slots, then the plan's result (the value the Output reads). `c7` and `c8` are
 // the Input's picture, `pix` the pixel's place in the window (the planes of `pbuf` are window-sized), `pos` its place in the
 // photo frame (for the mask shapes).
-fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>) -> NodesOut {
+fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) -> NodesOut {
     let stop = CU.mode.x;
     // Main's own stages for the trace's stops: C9 (3, and the Before view's "after grade" point), C9b (10), C11 (5).
     var main_stage = 0u;
@@ -950,7 +959,7 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>) -> NodesOut
         let key_written = outs.z != NODE_NONE || outs.w != NODE_NONE || (CU.mode.x == 12u && ni == CU.stopn.x);
         var m = 1.0;
         if (blends && (!skipped || key_written)) {
-            m = node_mask(ni, v_in, c7, from_input, pos, key_in, has_key);
+            m = node_mask(ni, v_in, c7, from_input, pos, rpix, key_in, has_key);
         }
         var out_v = nv;
         if (blends && !skipped) {
@@ -1007,7 +1016,7 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>) -> NodesOut
 
 // ---- the chain -------------------------------------------------------------------------------------------
 
-// The value at the requested stop (mode.x): 0 C6, 1 C7, 2 C8, 3 C9, 10 C9b, 5 C11 (the curve), 4 C10 (the look,
+// The value at the requested stop (mode.x): 0 C6, 1 C7, 2 C8, 13 the guide of Refine edges (the Input's luma code, three times), 3 C9, 10 C9b, 5 C11 (the curve), 4 C10 (the look,
 // after the curve), 6 DNG (C10 decoded to linear AWG4), 7 C12, 8 C13 (unquantised), 9 the Before view (the
 // camera default encoded for the output, or the LogC4 signal at C8 or C9 as code values: the reading point
 // "after the grade" is C9, before the warp, as ColorChain::apply_before_pixel), 11 the Output after the node
@@ -1015,7 +1024,7 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>) -> NodesOut
 // else the plan runs. The stage numbers are names and did not change when the curve moved in front of the look; they
 // are the trace's fields (`StageTrace::c10_logc4`, `c11_logc4`). `pix` is the pixel's place in the window, `pos` its place in
 // the photo frame.
-fn run_pixel(cam_in: vec3<f32>, pix: u32, pos: vec2<f32>) -> vec3<f32> {
+fn run_pixel(cam_in: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) -> vec3<f32> {
     let stop = CU.mode.x;
     let cam = vec3<f32>(sanitize(cam_in.x), sanitize(cam_in.y), sanitize(cam_in.z));
     if (stop == 9u && CU.lk.w == 2u) {
@@ -1029,6 +1038,12 @@ fn run_pixel(cam_in: vec3<f32>, pix: u32, pos: vec2<f32>) -> vec3<f32> {
     if (stop == 1u) {
         return c7;
     }
+    if (stop == 13u) {
+        // The guide of Refine edges: the Input's luma code (what a Brightness range of a node that reads the Input sees,
+        // no node's grade in it), held to [0, 1], in all three planes (ym_color::ColorChain::guide_pixel).
+        let g = unit(logc4_encode(dot(Y_AWG4, c7)));
+        return vec3<f32>(g, g, g);
+    }
     let c8 = logc4_encode3(c7);
     if (stop == 2u) {
         return c8;
@@ -1037,7 +1052,7 @@ fn run_pixel(cam_in: vec3<f32>, pix: u32, pos: vec2<f32>) -> vec3<f32> {
         return vec3<f32>(unit(c8.x), unit(c8.y), unit(c8.z));
     }
     // The nodes: the plan's steps of this pass.
-    let nodes_out = run_nodes(c7, c8, pix, pos);
+    let nodes_out = run_nodes(c7, c8, pix, pos, rpix);
     if (stop == 9u) {
         return vec3<f32>(unit(nodes_out.v.x), unit(nodes_out.v.y), unit(nodes_out.v.z));
     }
@@ -1086,6 +1101,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var a = vec3<f32>(0.0);
     var b = vec3<f32>(0.0);
     let pix = y * CU.dims.x + x;
+    // The pixel's place in the raster planes (the window's, two to a word): the dispatch may be a band of rows of it.
+    let rpix = (CU.rst.y + y) * CU.rst.z + x;
     // The pixels' places in the photo frame, from the sampler's fifth and sixth planes (the shapes of the nodes read them).
     var pos_a = vec2<f32>(0.0);
     var pos_b = vec2<f32>(0.0);
@@ -1096,10 +1113,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
     if (!gone_a) {
-        a = run_pixel(vec3<f32>(img_ld(s), img_ld(spl + s), img_ld(2u * spl + s)), pix, pos_a);
+        a = run_pixel(vec3<f32>(img_ld(s), img_ld(spl + s), img_ld(2u * spl + s)), pix, pos_a, rpix);
     }
     if (two && !gone_b) {
-        b = run_pixel(vec3<f32>(img_ld(s + 1u), img_ld(spl + s + 1u), img_ld(2u * spl + s + 1u)), pix + 1u, pos_b);
+        b = run_pixel(vec3<f32>(img_ld(s + 1u), img_ld(spl + s + 1u), img_ld(2u * spl + s + 1u)), pix + 1u, pos_b, rpix + 1u);
     }
     if ((CU.plan.z & 1u) == 0u) {
         // A pass that is not the last one has written its buffers; the picture is the last pass's.

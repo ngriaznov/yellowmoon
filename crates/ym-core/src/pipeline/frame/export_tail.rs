@@ -42,6 +42,7 @@ use ym_gpu::cpu::RgbImage;
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
 use ym_gpu::cpu::tiling::Rect;
 use ym_gpu::device::{Gpu, GpuError};
+use ym_gpu::kernels::mask_raster::{largest_tile_for, tile_halo};
 use ym_gpu::queue::{CancelToken, JobError, JobHandle, JobSpec, Priority};
 use ym_gpu::tail::{Band, BandData, BandFormat, ExportTail, TailRoute, TailSharpen, TailSpec};
 
@@ -513,6 +514,11 @@ impl Renderer {
             .map_err(|_| RenderError::Memory)?;
         let grade = job.grade(request.target, false)?;
         let grid = baked.grid((plan.out_w, plan.out_h), (fw, fh));
+        // The raster masks of the nodes are made over each tile grown by their receptive field; tiles equal the
+        // whole frame, so a tile whose grown window would pass the design binding is made smaller.
+        let raster_halo = tile_halo(&grade.chain, &grid.sampler_grid());
+        let tile = largest_tile_for(raster_halo, tile);
+        let frame_area = ym_color::mask_raster::Area::whole(fw, fh);
         let sharpen = (request.output_sharpening_pct > 0.0).then(|| TailSharpen {
             params: OutputSharpen::screen().with_amount_pct(request.output_sharpening_pct),
             scale: scale_for_edges(out.0.max(out.1), fw.max(fh)),
@@ -551,7 +557,19 @@ impl Renderer {
                 job.check()?;
                 gate()?;
                 let tw = tile.min(fw - ox);
-                if let Some((x0, y0, x1, y1)) = grid.source_bounds(ox, oy, tw, th, 3) {
+                // The tile's source is that of the tile grown by the raster halo; a tile that reads nothing of
+                // the photo is black whatever its halo reads.
+                let tile_area = ym_color::mask_raster::Area {
+                    x: ox as i64,
+                    y: oy as i64,
+                    w: tw,
+                    h: th,
+                };
+                let grown = tile_area.grown(raster_halo, &frame_area);
+                if grid.source_bounds(ox, oy, tw, th, 3).is_some()
+                    && let Some((x0, y0, x1, y1)) =
+                        grid.source_bounds(grown.x as usize, grown.y as usize, grown.w, grown.h, 3)
+                {
                     let rect = Rect::new(x0, y0, x1 - x0, y1 - y0);
                     let region = match job.lens_region_resident(rect) {
                         Ok(region) => region,
