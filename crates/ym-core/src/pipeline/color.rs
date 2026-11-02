@@ -16,9 +16,10 @@
 //!   "the noise model's read noise mapped to linear AWG4 at this exposure");
 //! * `contrast` to `color_balance` become `GradeParams`, the pins of `color_warp` a `WarpParams`
 //!   (stage C9b), the four curves a `CurveSet`: Main's from its grade, every other live corrector's from
-//!   its own (`NodeSet`), with its trim; the graph's links are compiled into a `Plan` (`ym_color::plan`,
-//!   [`node_plan`]) that says which nodes run and in what order. Masks are not rendered until N-10
-//!   (`docs/23` section 15);
+//!   its own (`NodeSet`), with its trim and its mask rows ([`node_masks`]: the shapes and ranges, the raster
+//!   kinds as rows that select nothing until their tasks); the graph's links are compiled into a `Plan`
+//!   (`ym_color::plan`, [`node_plan`]) that says which nodes run and in what order, and which node's key
+//!   output feeds which key input (`docs/23` section 15);
 //! * the look comes from a [`LookProvider`] (the looks library in the app, [`NeutralOnly`] in tests);
 //!   the display transform is always Yellowmoon's own, the cine rendering (C12), with nothing in front of it.
 //!
@@ -38,6 +39,7 @@ use ym_color::display::{
 };
 use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
+use ym_color::mask::{MaskKind, MaskRow, NodeMasks};
 use ym_color::plan::{self, PictureSource, Plan, PlanGraph, PlanNode, Stop};
 use ym_color::tone::ToneParams;
 use ym_color::warp::{Warp, WarpParams};
@@ -52,8 +54,8 @@ use super::raw::{CaptureMethod, DEFAULT_CAPTURE_METHOD};
 use crate::auto::{AutoEstimates, as_shot_gains, as_shot_rggb};
 use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
 use crate::settings::{
-    AutoOr, ColorWarp, CurvePoint, Curves, DevelopSettings, LensSettings, NodeGrade, NodeGraph,
-    NodeId, NodeTrim, Port,
+    AutoOr, ColorWarp, CurvePoint, Curves, DevelopSettings, LensSettings, MaskMode, MaskSettings,
+    MaskShape, NodeGrade, NodeGraph, NodeId, NodeTrim, Port,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -512,6 +514,69 @@ fn trim_of(t: &NodeTrim) -> Trim {
     }
 }
 
+/// A node's mask rows as `ym_color`'s: the enabled rows in order (a row with the eye off is absent), each
+/// with its kind, mode, Invert and Opacity, and the node's Invert. The raster kinds (Object, Subject, People,
+/// Background, Brush) are rows that select nothing until N-13 to N-19 give them a plane.
+#[must_use]
+pub fn node_masks(m: &MaskSettings) -> NodeMasks {
+    let rows = m
+        .items
+        .iter()
+        .filter(|row| row.enabled)
+        .map(|row| MaskRow {
+            kind: match &row.shape {
+                MaskShape::Linear(l) => MaskKind::Linear {
+                    center: l.center,
+                    angle_deg: l.angle_deg,
+                    feather: l.feather,
+                },
+                MaskShape::Radial(r) => MaskKind::Radial {
+                    center: r.center,
+                    radii: r.radii,
+                    angle_deg: r.angle_deg,
+                    feather: r.feather,
+                },
+                MaskShape::ColorRange(c) => MaskKind::ColorRange {
+                    center: c.center,
+                    width: c.width,
+                    softness: c.softness,
+                },
+                MaskShape::BrightnessRange(b) => MaskKind::BrightnessRange {
+                    low: b.low,
+                    high: b.high,
+                    softness: b.softness,
+                },
+                MaskShape::Object(_)
+                | MaskShape::Subject(_)
+                | MaskShape::People(_)
+                | MaskShape::Background(_)
+                | MaskShape::Brush(_) => MaskKind::Raster,
+            },
+            subtract: row.mode == MaskMode::Subtract,
+            invert: row.invert,
+            opacity: row.opacity,
+        })
+        .collect();
+    NodeMasks {
+        rows,
+        invert: m.invert,
+    }
+}
+
+/// Whether the photo's plan has a node with a mask row that reads the pixel's place in the photo (a Linear
+/// or a Radial): the render then needs the position of every pixel (`ColorChain::uses_photo_position`).
+#[must_use]
+pub fn uses_photo_position(s: &DevelopSettings) -> bool {
+    let Ok(plan) = node_plan(&s.nodes, Stop::Output) else {
+        return false;
+    };
+    plan.node_ids().into_iter().any(|id| {
+        s.nodes
+            .corrector(id)
+            .is_some_and(|c| node_masks(&c.masks).prepare().needs_position())
+    })
+}
+
 /// The graph as the plan compiler reads it: every corrector with its place, its picture source
 /// (the link into its picture input) and its key source, and the picture the Output reads. An input
 /// with no link is `None` (the compiler reads the Input's picture there).
@@ -575,6 +640,7 @@ fn node_set(s: &DevelopSettings) -> Result<NodeSet, RenderError> {
                 grade: grade_params_of(&c.grade, None),
                 warp: ColorWarp::to_color(&c.grade.color_warp),
                 curves: curves_of(&c.grade.curve)?,
+                masks: node_masks(&c.masks),
             },
         );
     }
@@ -583,6 +649,7 @@ fn node_set(s: &DevelopSettings) -> Result<NodeSet, RenderError> {
         main: MainNode {
             bypass: s.main().bypass,
             trim: trim_of(&s.main().trim),
+            masks: node_masks(&s.main().masks),
         },
         others,
     })
@@ -629,9 +696,10 @@ fn pieces(src: &PhotoSource, req: &GradeRequest<'_>) -> Pieces {
 }
 
 /// The text of everything the nodes put into the chain beyond Main's grade, warp and curves: the plan
-/// the compiler made (which nodes run, in what order, in which registers), Main's trim and bypass
-/// and the parameters of every other corrector the plan runs. A dead node is not in it, so a dead
-/// branch leaves the key as it was.
+/// the compiler made (which nodes run, in what order, in which registers and key slots), Main's trim,
+/// bypass and mask rows and the parameters of every other corrector the plan runs, mask rows included
+/// (the enabled rows as the chain gets them, so a row switched off leaves the key as a row never added).
+/// A dead node is not in it, so a dead branch leaves the key as it was.
 fn nodes_key(s: &DevelopSettings) -> String {
     let plan = match node_plan(&s.nodes, Stop::Output) {
         Ok(plan) => plan,
@@ -640,12 +708,13 @@ fn nodes_key(s: &DevelopSettings) -> String {
     let mut k = String::with_capacity(256);
     let _ = write!(
         k,
-        "{:?}|{:?}|{:?}|{:?}|{:?}|",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|",
         plan.passes,
         plan.buffers,
         plan.result,
         s.main().bypass,
         trim_of(&s.main().trim),
+        node_masks(&s.main().masks),
     );
     for id in plan.node_ids() {
         if id == plan::MAIN_NODE {
@@ -654,12 +723,13 @@ fn nodes_key(s: &DevelopSettings) -> String {
         if let Some(c) = s.nodes.corrector(id) {
             let _ = write!(
                 k,
-                "{id}:{}:{:?}:{:?}:{:?}:{:?};",
+                "{id}:{}:{:?}:{:?}:{:?}:{:?}:{:?};",
                 c.bypass,
                 trim_of(&c.trim),
                 grade_params_of(&c.grade, None),
                 Warp::new(&c.grade.color_warp.to_color()),
                 c.grade.curve,
+                node_masks(&c.masks),
             );
         }
     }

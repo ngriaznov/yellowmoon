@@ -21,10 +21,13 @@ use ym_color::warp::{
 };
 
 use super::color::{
-    NODE_CURVES, NODE_GRADE, NODE_MAIN, NODE_NONE, NODE_SKIP, NODE_TRIM, NODE_WARP, REF_INDEX,
-    REF_KEY, REF_PICTURE, REF_REGISTER, REF_SHIFT, REF_SLOT, WARP_LOCK_ROWS, WARP_MOVE_ROWS,
+    MASK_INVERT, MASK_ROW_VEC4, MASK_SUBTRACT, NODE_BLEND, NODE_CURVES, NODE_GRADE, NODE_INVERT,
+    NODE_LUMA, NODE_MAIN, NODE_NONE, NODE_SKIP, NODE_TRIM, NODE_WARP, R_WARP_LK, REC_ROWS,
+    REF_INDEX, REF_KEY, REF_PICTURE, REF_REGISTER, REF_SHIFT, REF_SLOT, WARP_LOCK_ROWS,
+    WARP_MOVE_ROWS, record_rows,
 };
 use crate::device::StorageMode;
+use ym_color::mask::OpKind;
 
 /// The kernels of the crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -746,6 +749,9 @@ fn constants() -> String {
         ("N_WARP", NODE_WARP),
         ("N_CURVES", NODE_CURVES),
         ("N_MAIN", NODE_MAIN),
+        ("N_BLEND", NODE_BLEND),
+        ("N_INVERT", NODE_INVERT),
+        ("N_LUMA", NODE_LUMA),
         ("REF_SHIFT", REF_SHIFT),
         ("REF_INDEX", REF_INDEX),
         ("REF_REGISTER", REF_REGISTER),
@@ -754,6 +760,24 @@ fn constants() -> String {
         ("REF_KEY", REF_KEY),
     ] {
         let _ = writeln!(s, "const {n}: u32 = {v}u;");
+    }
+    // The node records are raw `vec4` rows (`kernels::color`, `NodeRecU`): where each field is, and the mask rows that follow
+    // the records (`MaskOpU`: the kinds of `ym_color::mask::OpKind`, the flags of a row).
+    let _ = writeln!(s, "const REC_ROWS: u32 = {REC_ROWS}u;");
+    for (n, v) in record_rows() {
+        let _ = writeln!(s, "const {n}: u32 = {v}u;");
+    }
+    let _ = writeln!(s, "const R_WARP_LK: u32 = {R_WARP_LK}u;");
+    let _ = writeln!(s, "const MASK_ROW_VEC4: u32 = {MASK_ROW_VEC4}u;");
+    let _ = writeln!(s, "const MF_SUBTRACT: u32 = {MASK_SUBTRACT}u;");
+    let _ = writeln!(s, "const MF_INVERT: u32 = {MASK_INVERT}u;");
+    for (n, k) in [
+        ("MK_LINEAR", OpKind::Linear),
+        ("MK_RADIAL", OpKind::Radial),
+        ("MK_COLOR", OpKind::Color),
+        ("MK_BRIGHTNESS", OpKind::Brightness),
+    ] {
+        let _ = writeln!(s, "const {n}: u32 = {}u;", k.code());
     }
     // The luma of C7's highlight range (`ym_color::tone::luma`).
     let _ = writeln!(

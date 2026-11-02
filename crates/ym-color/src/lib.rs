@@ -28,6 +28,7 @@ pub mod illum;
 pub mod logc;
 pub mod look;
 pub mod lut;
+pub mod mask;
 pub mod plan;
 pub mod sensor_map;
 pub mod spectral;

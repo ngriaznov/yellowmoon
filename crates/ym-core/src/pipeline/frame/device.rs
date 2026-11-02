@@ -58,6 +58,7 @@ use std::time::Duration;
 use rayon::prelude::*;
 use ym_color::display::ColorChain;
 use ym_color::encode::OutputSpace;
+use ym_color::mask::PhotoFrame;
 use ym_gpu::cpu::magnify::MagnifyMap;
 use ym_gpu::cpu::output_sharpen::OutputSharpen;
 use ym_gpu::cpu::sampler::{Sampled, SamplerGrid};
@@ -70,7 +71,7 @@ use ym_gpu::kernels::copy::{Piece, encode_gather};
 use ym_gpu::kernels::encode::{C13, Encoding, encode_c13};
 use ym_gpu::kernels::magnify::{MagnifyTarget, encode_magnify};
 use ym_gpu::kernels::output_sharpen::{FusedC13, PreparedSharpen};
-use ym_gpu::kernels::sampler::encode_sample;
+use ym_gpu::kernels::sampler::encode_sample_at;
 use ym_gpu::pool::PooledBuffer;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::stream::{PassList, ReadId, upload_bytes};
@@ -138,11 +139,19 @@ pub(super) struct ViewRoute {
 impl ViewRoute {
     /// The route of `job` for `gpu`, at the queue priority `priority`.
     pub(super) fn new(job: &Job<'_>, gpu: ViewGpu, priority: Priority) -> Self {
+        // The sampled picture of a chain whose mask shapes read the pixels' places in the photo has six planes
+        // (24 bytes a pixel) where the frames the cut is made for have four (16): such a chain gets two thirds
+        // of the band size, so that every binding still fits (`docs/17-gpu.md` section 4).
+        let band_bytes = if super::super::color::uses_photo_position(&job.src.settings) {
+            job.options().view_band_bytes / 3 * 2
+        } else {
+            job.options().view_band_bytes
+        };
         Self {
             stages: ViewStages::of(gpu.stages),
             spec: JobSpec::new(priority).owned_by(u64::from(job.src.id.0)),
             token: job.cancel.clone(),
-            band_bytes: job.options().view_band_bytes,
+            band_bytes,
             source_bytes: job.options().view_band_bytes,
             frame_bytes: {
                 let limits = &gpu.gpu.info().limits;
@@ -212,7 +221,8 @@ impl ViewRoute {
 // ---------------------------------------------------------------------------------------------
 
 /// Sampled pixels ready to upload: three planes, or four when some pixel is outside the photo (the
-/// fourth is 1.0 there). Built on the render thread.
+/// fourth is 1.0 there), or six when the mask shapes of the nodes need the pixels' places in the photo (the
+/// fifth and sixth planes). Built on the render thread.
 pub(super) enum Upload {
     /// Camera RGB with no pixel outside the photo: the three planes of the sampled image as they are.
     Rgb(Arc<Sampled>),
@@ -225,16 +235,46 @@ pub(super) enum Upload {
         /// `4 * width * height` samples, planar.
         data: Vec<f32>,
     },
+    /// Six planes: the sampled image, its letterbox mask and the photo-frame position of every pixel.
+    Positioned {
+        /// Width in pixels.
+        width: usize,
+        /// Height in pixels.
+        height: usize,
+        /// `6 * width * height` samples, planar.
+        data: Vec<f32>,
+        /// The render's photo frame.
+        frame: PhotoFrame,
+    },
 }
 
+/// The photo-frame positions of a host-sampled picture: two planes (x, then y) and the render's frame.
+pub(super) type Positions = (Vec<f32>, PhotoFrame);
+
 impl Upload {
-    /// The upload of a host-sampled picture.
-    pub(super) fn of(sampled: &Arc<Sampled>) -> Self {
+    /// The upload of a host-sampled picture, with the pixels' places in the photo when the mask shapes of the
+    /// nodes need them.
+    pub(super) fn of(sampled: &Arc<Sampled>, positions: Option<Positions>) -> Self {
+        let (width, height) = (sampled.img.width, sampled.img.height);
+        let n = width * height;
+        if let Some((planes, frame)) = positions {
+            let mut data = Vec::with_capacity(6 * n);
+            data.extend_from_slice(&sampled.img.data);
+            match &sampled.outside {
+                Some(mask) => data.extend(mask.iter().map(|&o| if o != 0 { 1.0f32 } else { 0.0 })),
+                None => data.resize(4 * n, 0.0),
+            }
+            data.extend_from_slice(&planes);
+            return Self::Positioned {
+                width,
+                height,
+                data,
+                frame,
+            };
+        }
         let Some(mask) = &sampled.outside else {
             return Self::Rgb(Arc::clone(sampled));
         };
-        let (width, height) = (sampled.img.width, sampled.img.height);
-        let n = width * height;
         let mut data = Vec::with_capacity(4 * n);
         data.extend_from_slice(&sampled.img.data);
         data.extend(mask.iter().map(|&o| if o != 0 { 1.0f32 } else { 0.0 }));
@@ -288,12 +328,29 @@ pub(super) enum DeviceInput {
         width: usize,
         /// Height of the sampled picture.
         height: usize,
+        /// Whether the sampler also writes the pixels' places in the photo (six planes): the mask shapes of the
+        /// nodes read them.
+        positions: bool,
     },
     /// Pixels the CPU sampled.
     Sampled(Upload),
 }
 
 impl DeviceInput {
+    /// The photo frame of the render, when the input carries the pixels' places in the photo (six planes): the
+    /// colour pass needs it with them.
+    pub(super) fn photo_frame(&self) -> Option<PhotoFrame> {
+        match self {
+            Self::Camera {
+                grid,
+                positions: true,
+                ..
+            } => Some(grid.photo_frame()),
+            Self::Sampled(Upload::Positioned { frame, .. }) => Some(*frame),
+            _ => None,
+        }
+    }
+
     /// Whether the buffers of a job over this input fit one storage binding: the frame (four
     /// planes of f32, which the colour pass, the sharpening and C13 read and write) and the uploaded
     /// camera RGB within the route's band size.
@@ -311,7 +368,9 @@ impl DeviceInput {
                 12 * even(sw) * sh as u64 <= route.source_bytes && frame(*width, *height)
             }
             Self::Sampled(Upload::Rgb(s)) => frame(s.img.width, s.img.height),
-            Self::Sampled(Upload::Masked { width, height, .. }) => frame(*width, *height),
+            Self::Sampled(
+                Upload::Masked { width, height, .. } | Upload::Positioned { width, height, .. },
+            ) => frame(*width, *height),
         }
     }
 }
@@ -404,7 +463,8 @@ fn finish_rgba(
 // Recording
 // ---------------------------------------------------------------------------------------------
 
-/// Uploads or samples the input: the picture the colour pass reads, three planes or four.
+/// Uploads or samples the input: the picture the colour pass reads, three planes, four, or six with the
+/// pixels' places in the photo.
 fn input_image(
     ctx: &GpuContext,
     passes: &mut PassList<'_>,
@@ -417,6 +477,7 @@ fn input_image(
             grid,
             width,
             height,
+            positions,
         } => {
             let src = match source {
                 CameraSource::Host(image) => {
@@ -426,7 +487,16 @@ fn input_image(
                     encode_gather(passes, pieces, *window)?
                 }
             };
-            let sampled = encode_sample(passes, &src, *origin, grid, (0, 0), *width, *height)?;
+            let sampled = encode_sample_at(
+                passes,
+                &src,
+                *origin,
+                grid,
+                (0, 0),
+                *width,
+                *height,
+                *positions,
+            )?;
             // The source must outlive the submission: a buffer made here (the upload, a gathered
             // copy) is kept by the pass list; a cached one is held by the input.
             if let Ok(owned) = Arc::try_unwrap(src) {
@@ -456,7 +526,35 @@ fn input_image(
             data,
             Placement::whole(*width, *height),
         ),
+        DeviceInput::Sampled(Upload::Positioned {
+            width,
+            height,
+            data,
+            ..
+        }) => GpuImage::upload(
+            ctx,
+            "view sampled",
+            *width,
+            *height,
+            6,
+            data,
+            Placement::whole(*width, *height),
+        ),
     }
+}
+
+/// The colour chain prepared on the device, with the render's photo frame when the input has the pixels' places in the
+/// photo (the mask shapes of the nodes read them).
+fn prepared_for(
+    ctx: &GpuContext,
+    chain: &ColorChain,
+    input: &DeviceInput,
+) -> Result<PreparedChain, GpuError> {
+    let prepared = PreparedChain::new(ctx, chain)?;
+    Ok(match input.photo_frame() {
+        Some(frame) => prepared.with_photo_frame(frame),
+        None => prepared,
+    })
 }
 
 /// Records the tail over a resident display: C13 of the whole view first when the photo does not fill
@@ -612,7 +710,7 @@ pub(super) fn plain_job(
     token.check()?;
     let mut passes = PassList::new(ctx, "view plain");
     let sampled = input_image(ctx, &mut passes, &job.input)?;
-    let prepared = PreparedChain::new(ctx, &job.chain)?;
+    let prepared = prepared_for(ctx, &job.chain, &job.input)?;
     let (w, h) = (sampled.width, sampled.height);
     let bytes = (w * h * 4) as u64;
     let dst = passes.keep(ctx.pool().acquire("view rgba8", bytes, IMAGE_USAGE)?);
@@ -674,14 +772,15 @@ pub(super) fn display_job(
     token.check()?;
     let mut passes = PassList::new(ctx, "view display");
     let sampled = input_image(ctx, &mut passes, &job.input)?;
-    let prepared = PreparedChain::new(ctx, &job.chain)?;
+    let prepared = prepared_for(ctx, &job.chain, &job.input)?;
     let (w, h) = (sampled.width, sampled.height);
+    // The frame has the pixels and the letterbox mask: the position planes of the sampled picture stay behind.
     let display = GpuImage::alloc(
         ctx,
         "view display",
         w,
         h,
-        sampled.planes,
+        sampled.planes.min(4),
         Placement::whole(w, h),
     )?;
     prepared.encode_stage(

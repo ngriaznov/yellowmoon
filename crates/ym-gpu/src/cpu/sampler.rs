@@ -32,6 +32,20 @@
 //!
 //! The arithmetic is `f64` for positions and `f32` for samples, as in `ym-core`.
 //!
+//! # The photo frame (`docs/23-nodes.md` section 3.6)
+//!
+//! The mask shapes of the nodes are placed in the **photo frame**: the photo as the camera oriented it, after
+//! the lens corrections, before the lens's bend, the crop, the straightening and the user's turn. The
+//! position of an output pixel in it is the oriented fraction the chain above passes through between the
+//! turn and the camera's orientation: [`SamplerGrid::photo_at`] (the same chain as
+//! [`SamplerGrid::source_at`] up to [`canvas_to_oriented`], clamped to the photo). The pixel's position is
+//! that of its centre; a pixel the box kernel averages gets the mean of the positions of the sub-samples
+//! that fell inside the photo ([`SamplerGrid::photo_position`]). [`GridPositions`] gives them to the
+//! colour chain's CPU frames ([`ym_color::mask::PhotoMap`]) and the device kernel writes the same two
+//! planes ([`photo_positions`] is the CPU twin that fills them for a pixel buffer the host sampled).
+//! [`SamplerGrid::photo_frame`] is the render's [`PhotoFrame`]: the photo's aspect and the size of one
+//! output pixel in units of its long edge.
+//!
 //! # For the device kernel
 //!
 //! [`SamplerGrid::affine_to_buffer`] collapses the position chain, without the warp, into one `f64`
@@ -45,6 +59,7 @@
 //! dihedral map and the canvas centre).
 
 use rayon::prelude::*;
+use ym_color::mask::{PhotoFrame, PhotoMap};
 
 use super::RgbImage;
 use super::resample::sample_catmull_rom;
@@ -510,6 +525,88 @@ impl SamplerGrid {
         ))
     }
 
+    /// The position in the photo frame of a continuous output position, or `None` outside the canvas
+    /// (the inside test of [`SamplerGrid::source_at`]): the oriented fractions `(x, y)` of the photo, held
+    /// to [0, 1] as the buffer position is. The camera's orientation does not enter: the photo frame is
+    /// the oriented photo.
+    #[inline]
+    #[must_use]
+    pub fn photo_at(&self, ox: f64, oy: f64) -> Option<[f64; 2]> {
+        let (px, py) = self.canvas_position(ox, oy)?;
+        let (px, py) = match &self.warp {
+            Some(w) => w.canvas_to_photo(self.canvas, px, py),
+            None => (px, py),
+        };
+        let o = canvas_to_oriented(self.quarter_turns, [px / self.canvas.0, py / self.canvas.1]);
+        Some([o[0].clamp(0.0, 1.0), o[1].clamp(0.0, 1.0)])
+    }
+
+    /// The position in the photo frame of output pixel `(x, y)`: that of its centre, or for a pixel the box
+    /// kernel averages (`taps` sub-samples a side, [`Kernel::taps`]) the mean of the positions of the
+    /// sub-samples inside the photo. A pixel with no sub-sample inside is outside the photo and has no
+    /// pixel to colour: it gets the clamped position of its centre as if the canvas went on.
+    #[must_use]
+    pub fn photo_position(&self, x: usize, y: usize, taps: usize) -> [f64; 2] {
+        let (x, y) = (x as f64, y as f64);
+        if taps > 1 {
+            let n = taps as f64;
+            let mut sum = [0.0, 0.0];
+            let mut count = 0u32;
+            for j in 0..taps {
+                for i in 0..taps {
+                    let at = self.photo_at(x + (i as f64 + 0.5) / n, y + (j as f64 + 0.5) / n);
+                    if let Some(p) = at {
+                        sum[0] += p[0];
+                        sum[1] += p[1];
+                        count += 1;
+                    }
+                }
+            }
+            if count > 0 {
+                let c = f64::from(count);
+                return [sum[0] / c, sum[1] / c];
+            }
+        }
+        self.photo_at(x + 0.5, y + 0.5).unwrap_or([0.0, 0.0])
+    }
+
+    /// The camera's orientation undone on fractions: `oriented = m * sensor + t` (row-major `m`, a signed
+    /// permutation, so every entry is 0 or +-1 and exact). The device kernel turns the buffer position it
+    /// samples into the photo-frame position with it.
+    #[must_use]
+    pub fn sensor_to_oriented_map(&self) -> ([[f64; 2]; 2], [f64; 2]) {
+        let e = self.exif_orientation;
+        let s0 = oriented_to_sensor(e, [0.0, 0.0]);
+        let sx = oriented_to_sensor(e, [1.0, 0.0]);
+        let sy = oriented_to_sensor(e, [0.0, 1.0]);
+        // sensor = a * oriented + s0, a signed permutation: its inverse is its transpose.
+        let m = [
+            [sx[0] - s0[0], sx[1] - s0[1]],
+            [sy[0] - s0[0], sy[1] - s0[1]],
+        ];
+        let t = [
+            -(m[0][0] * s0[0] + m[0][1] * s0[1]),
+            -(m[1][0] * s0[0] + m[1][1] * s0[1]),
+        ];
+        (m, t)
+    }
+
+    /// The render's [`PhotoFrame`]: the oriented photo's aspect (the canvas, its sides swapped by the user's
+    /// quarter turns) and one output pixel in units of its long edge (a step of the output along either axis
+    /// is `step_lengths` buffer pixels, the canvas having the buffer's pixel size). The lens's zoom is not
+    /// part of the render's scale here: it moves the pixel by a few percent at most.
+    #[must_use]
+    pub fn photo_frame(&self) -> PhotoFrame {
+        let (cw, ch) = self.canvas;
+        let (w, h) = if self.quarter_turns % 2 == 1 {
+            (ch, cw)
+        } else {
+            (cw, ch)
+        };
+        let (sx, sy) = self.step_lengths();
+        PhotoFrame::new(w, h, 0.5 * (sx + sy))
+    }
+
     /// How far one step along the output's x axis and one along its y axis move in the buffer, in
     /// buffer pixels. The canvas has the buffer's pixel size (it only swaps the sides), so these are
     /// the lengths of the columns of the output-to-canvas map, the same everywhere.
@@ -849,6 +946,54 @@ impl SamplerGrid {
         }
         b
     }
+}
+
+/// The photo-frame positions of the pixels of a window of a grid, for the CPU colour chain: pixel `(x, y)` of
+/// the window is output pixel `(off.0 + x, off.1 + y)` of the grid.
+#[derive(Debug, Clone, Copy)]
+pub struct GridPositions<'a> {
+    grid: &'a SamplerGrid,
+    off: (usize, usize),
+    taps: usize,
+}
+
+impl<'a> GridPositions<'a> {
+    /// The positions of the window of `grid` that starts at `off`.
+    #[must_use]
+    pub fn new(grid: &'a SamplerGrid, off: (usize, usize)) -> Self {
+        Self {
+            grid,
+            off,
+            taps: grid.kernel().taps(),
+        }
+    }
+}
+
+impl PhotoMap for GridPositions<'_> {
+    fn position(&self, x: usize, y: usize) -> [f64; 2] {
+        self.grid
+            .photo_position(self.off.0 + x, self.off.1 + y, self.taps)
+    }
+}
+
+/// The photo-frame positions of the `w x h` pixels at offset `off` of `grid` as two dense planes (x, then
+/// y), narrowed to `f32`: the planes the device sampler writes, for a picture the host sampled and uploads.
+#[must_use]
+pub fn photo_positions(grid: &SamplerGrid, off: (usize, usize), w: usize, h: usize) -> Vec<f32> {
+    let map = GridPositions::new(grid, off);
+    let mut out = vec![0.0f32; 2 * w * h];
+    let (xs, ys) = out.split_at_mut(w * h);
+    xs.par_chunks_mut(w.max(1))
+        .zip(ys.par_chunks_mut(w.max(1)))
+        .enumerate()
+        .for_each(|(y, (xr, yr))| {
+            for x in 0..w {
+                let p = map.position(x, y);
+                xr[x] = p[0] as f32;
+                yr[x] = p[1] as f32;
+            }
+        });
+    out
 }
 
 /// Camera RGB sampled through a grid, with a mask of the pixels that fell outside the photo.

@@ -802,11 +802,85 @@ fn three_correctors() -> serde_json::Value {
     } })
 }
 
+/// A hand-written graph of masked nodes, in the form of `docs/10` (N-10): node 2 has a Linear and a Radial
+/// subtracted from it, node 3 a Colour range and a Brightness range (with the node's Invert off), node 4 reads
+/// Main and goes nowhere with its picture but has a Radial, and its key output feeds node 5's key input (node 5
+/// has a Linear subtracted of its own), and node 6 has a row of a kind that selects nothing yet.
+fn masked_nodes() -> serde_json::Value {
+    let picture = |from: serde_json::Value, to: serde_json::Value| {
+        serde_json::json!({
+            "from": { "node": from, "port": "picture" },
+            "to": { "node": to, "port": "picture" }
+        })
+    };
+    serde_json::json!({ "nodes": {
+        "items": [
+            { "id": 2, "kind": "corrector", "pos": [1, 0], "trim": { "exposure_ev": 0.6 },
+              "masks": { "invert": false, "items": [
+                  { "kind": "linear", "mode": "add", "center": [0.5, 0.45], "angle_deg": 20, "feather": 0.3 },
+                  { "kind": "radial", "mode": "subtract", "center": [0.6, 0.5], "radii": [0.15, 0.1],
+                    "angle_deg": -30, "feather": 0.4, "opacity": 0.8 }
+              ] } },
+            { "id": 3, "kind": "corrector", "pos": [2, 0],
+              "grade": { "saturation": { "kind": "manual", "value": -40 },
+                         "contrast": { "kind": "manual", "value": 25 } },
+              "masks": { "invert": false, "items": [
+                  { "kind": "color_range", "mode": "add", "center": [0, 0], "width": 0.12, "softness": 0.6 },
+                  { "kind": "brightness_range", "mode": "add", "low": 0.15, "high": 0.8, "softness": 0.4 }
+              ] } },
+            { "id": 4, "kind": "corrector", "pos": [1, 1], "trim": { "exposure_ev": 1 },
+              "masks": { "invert": false, "items": [
+                  { "kind": "radial", "mode": "add", "center": [0.4, 0.5], "radii": [0.3, 0.2],
+                    "angle_deg": 10, "feather": 0.5 }
+              ] } },
+            { "id": 5, "kind": "corrector", "pos": [3, 0], "trim": { "temperature": 40 },
+              "grade": { "saturation": { "kind": "manual", "value": 35 } },
+              "masks": { "invert": false, "items": [
+                  { "kind": "linear", "mode": "subtract", "center": [0.5, 0.7], "angle_deg": -15, "feather": 0.25 }
+              ] } },
+            { "id": 6, "kind": "corrector", "pos": [4, 0], "trim": { "exposure_ev": -0.3 },
+              "masks": { "invert": false, "items": [ { "kind": "object", "mode": "add" } ] } }
+        ],
+        "links": [
+            picture("input".into(), 1.into()),
+            picture(1.into(), 2.into()),
+            picture(2.into(), 3.into()),
+            picture(3.into(), 5.into()),
+            picture(5.into(), 6.into()),
+            picture(6.into(), "output".into()),
+            picture(1.into(), 4.into()),
+            { "from": { "node": 4, "port": "key" }, "to": { "node": 5, "port": "key" } }
+        ]
+    } })
+}
+
+/// The same document without its masks and its key links: what the masks are compared with.
+fn without_masks(doc: &serde_json::Value) -> serde_json::Value {
+    let mut doc = doc.clone();
+    if let Some(items) = doc["nodes"]["items"].as_array_mut() {
+        for item in items {
+            if let Some(o) = item.as_object_mut() {
+                o.remove("masks");
+            }
+        }
+    }
+    if let Some(links) = doc["nodes"]["links"].as_array_mut() {
+        links.retain(|l| l["from"]["port"] != "key");
+    }
+    doc
+}
+
 /// What `three_correctors` is exported as through the app, then through the binary with the same
 /// document as a `--settings` file: the same bytes, a picture that is not the default graph's, and
 /// (with a device) a report that says nothing about nodes: the device runs them (N-04). `device` runs
 /// the binary with `YELLOWMOON_GPU=on` and gives the app's core the device.
 fn three_correctors_leg(device: bool) {
+    graph_leg("three correctors", three_correctors(), 6, device);
+}
+
+/// A graph of nodes exported through the app and through the binary: the same bytes in every format, a
+/// picture that is not the default graph's, and with masks a picture that is not the graph without them.
+fn graph_leg(what: &str, doc: serde_json::Value, correctors: usize, device: bool) {
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");
     let app = if device {
@@ -817,12 +891,14 @@ fn three_correctors_leg(device: bool) {
     } else {
         App::open(&[&arw])
     };
-    let doc = three_correctors();
     let (settings, clamped) =
         DevelopSettings::from_value(doc.clone(), &app.core.looks.effective_default())
             .expect("settings");
     assert!(clamped.is_empty(), "{clamped:?}");
-    assert_eq!(settings.nodes.corrector_count(), 6);
+    assert_eq!(settings.nodes.corrector_count(), correctors);
+    let (unmasked, _) =
+        DevelopSettings::from_value(without_masks(&doc), &app.core.looks.effective_default())
+            .expect("settings without masks");
     let file = sb.root().join("nodes.json");
     std::fs::write(&file, doc.to_string()).expect("write");
     let env: &[(&str, &str)] = if device {
@@ -838,6 +914,22 @@ fn three_correctors_leg(device: bool) {
         },
         &sb.root().join("app-default"),
     );
+    let without = if doc.to_string().contains("\"masks\"") {
+        app.core
+            .session
+            .replace_settings(app.photo, unmasked)
+            .expect("replace");
+        Some(app.export(
+            ExportOptions {
+                format: FormatKind::Tiff,
+                bit_depth: BitDepth::Sixteen,
+                ..ExportOptions::default()
+            },
+            &sb.root().join("app-unmasked"),
+        ))
+    } else {
+        None
+    };
     app.core
         .session
         .replace_settings(app.photo, settings)
@@ -872,13 +964,20 @@ fn three_correctors_leg(device: bool) {
             &sb.root().join(format!("cli-{name}")),
             env,
         );
-        assert_same_files(&from_app, &from_cli, &format!("three correctors, {name}"));
+        assert_same_files(&from_app, &from_cli, &format!("{what}, {name}"));
         if name == "tiff16" {
             // The nodes did something: not the default graph's picture.
             assert!(
                 bytes(&from_app[0]) != bytes(&default_graph[0]),
                 "the nodes changed no pixel"
             );
+            // And the masks did something: not the graph without them.
+            if let Some(without) = &without {
+                assert!(
+                    bytes(&from_app[0]) != bytes(&without[0]),
+                    "the masks changed no pixel"
+                );
+            }
         }
     }
     if device {
@@ -918,6 +1017,19 @@ fn three_correctors_leg(device: bool) {
 #[test]
 fn three_correctors_are_the_same_files_through_the_app_path_and_the_binary() {
     three_correctors_leg(false);
+}
+
+/// Masks (N-10): a Linear and a Radial, a Colour range and a Brightness range, a node that only makes a mask
+/// whose key feeds another, and a row that selects nothing yet: the app and the binary write the same bytes.
+#[test]
+fn masked_nodes_are_the_same_files_through_the_app_path_and_the_binary() {
+    graph_leg("masked nodes", masked_nodes(), 6, false);
+}
+
+/// The device leg of the masks.
+#[test]
+fn masked_nodes_are_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
+    graph_leg("masked nodes", masked_nodes(), 6, true);
 }
 
 /// The device leg: both sides have a device and both render the nodes on it, so the files are the same.

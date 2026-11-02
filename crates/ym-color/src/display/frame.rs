@@ -24,6 +24,7 @@ use std::thread;
 use super::DisplayError;
 use super::chain::{ColorChain, View};
 use crate::consts::Vec3;
+use crate::mask::{PhotoFrame, PhotoMap, PhotoSpot, PixelAt};
 
 /// Rows per band are chosen so that each thread gets about this many bands (load balancing).
 const BANDS_PER_THREAD: usize = 8;
@@ -49,6 +50,7 @@ pub struct Frame<'a> {
     height: usize,
     layout: Layout,
     data: &'a [f32],
+    photo: Option<(&'a dyn PhotoMap, PhotoFrame)>,
 }
 
 impl fmt::Debug for Frame<'_> {
@@ -57,6 +59,7 @@ impl fmt::Debug for Frame<'_> {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("layout", &self.layout)
+            .field("photo", &self.photo.map(|(_, frame)| frame))
             .finish_non_exhaustive()
     }
 }
@@ -101,6 +104,24 @@ impl<'a> Frame<'a> {
             height,
             layout,
             data,
+            photo: None,
+        })
+    }
+
+    /// The same frame with the photo-frame position of every pixel known: `map` gives the position of
+    /// pixel `(x, y)` of this frame and `frame` is the render's [`PhotoFrame`]. The mask shapes of the
+    /// nodes read it; without it they select nothing.
+    #[must_use]
+    pub fn with_photo(mut self, map: &'a dyn PhotoMap, frame: PhotoFrame) -> Self {
+        self.photo = Some((map, frame));
+        self
+    }
+
+    /// The place of pixel `(x, y)` in the photo frame, when the frame knows it.
+    fn spot(&self, x: usize, y: usize) -> PixelAt {
+        self.photo.map(|(map, frame)| PhotoSpot {
+            pos: map.position(x, y),
+            frame,
         })
     }
 
@@ -317,8 +338,8 @@ impl ColorChain {
         out: &mut [f32],
         threads: usize,
     ) -> Result<(), DisplayError> {
-        map_pixels(src, out, out_layout, threads, |rgb, _, _| {
-            to_f32(self.apply_view_pixel(view, rgb))
+        map_pixels(src, out, out_layout, threads, |rgb, x, y| {
+            to_f32(self.apply_view_pixel_at(view, rgb, src.spot(x, y)))
         })
     }
 
@@ -335,8 +356,8 @@ impl ColorChain {
         out: &mut [f32],
         threads: usize,
     ) -> Result<(), DisplayError> {
-        map_pixels(src, out, out_layout, threads, |rgb, _, _| {
-            to_f32(self.apply_to_display_linear(rgb))
+        map_pixels(src, out, out_layout, threads, |rgb, x, y| {
+            to_f32(self.apply_to_display_linear_at(rgb, src.spot(x, y)))
         })
     }
 
@@ -354,8 +375,8 @@ impl ColorChain {
         out: &mut [f32],
         threads: usize,
     ) -> Result<(), DisplayError> {
-        map_pixels(src, out, out_layout, threads, |rgb, _, _| {
-            to_f32(self.apply_dng_pixel(rgb))
+        map_pixels(src, out, out_layout, threads, |rgb, x, y| {
+            to_f32(self.apply_dng_pixel_at(rgb, src.spot(x, y)))
         })
     }
 
@@ -379,7 +400,7 @@ impl ColorChain {
     ) -> Result<(), DisplayError> {
         map_pixels(src, out, Layout::Interleaved, threads, |rgb, x, y| {
             self.quantize_u8(
-                self.apply_view_pixel(view, rgb),
+                self.apply_view_pixel_at(view, rgb, src.spot(x, y)),
                 origin.0.wrapping_add(x),
                 origin.1.wrapping_add(y),
             )
@@ -399,8 +420,8 @@ impl ColorChain {
         out: &mut [u16],
         threads: usize,
     ) -> Result<(), DisplayError> {
-        map_pixels(src, out, Layout::Interleaved, threads, |rgb, _, _| {
-            self.quantize_u16(self.apply_view_pixel(view, rgb), bits)
+        map_pixels(src, out, Layout::Interleaved, threads, |rgb, x, y| {
+            self.quantize_u16(self.apply_view_pixel_at(view, rgb, src.spot(x, y)), bits)
         })
     }
 

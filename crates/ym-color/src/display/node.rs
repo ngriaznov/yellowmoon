@@ -3,8 +3,9 @@
 //! out.
 //!
 //! [`NodeParams`] is what the settings give a node; [`NodeSet`] is what a chain needs beyond Main's
-//! fields of [`ChainParams`](super::ChainParams): the compiled [`Plan`], Main's trim and bypass and the
-//! other correctors. [`PreparedNode`] is a node ready to run on a pixel.
+//! fields of [`ChainParams`](super::ChainParams): the compiled [`Plan`], Main's trim, bypass and masks and
+//! the other correctors. [`PreparedNode`] is a node ready to run on a pixel, with its mask rows
+//! ([`crate::mask`]) prepared: the chain blends by the node's mask `m` after the four steps.
 
 use std::collections::BTreeMap;
 
@@ -14,6 +15,7 @@ use crate::curve::{BakedCurves, CurveSet};
 use crate::gamut::LinearAwg4;
 use crate::grade::{Grade, GradeParams, grade_luma};
 use crate::logc::LogC4;
+use crate::mask::{NodeMasks, PixelAt, PreparedMasks};
 use crate::plan::Plan;
 use crate::warp::{Warp, WarpParams};
 
@@ -30,15 +32,19 @@ pub struct NodeParams {
     pub warp: WarpParams,
     /// C11: the four curves. The identity by default.
     pub curves: CurveSet,
+    /// The mask rows (the enabled ones) and the node's Invert. None: `m = 1`.
+    pub masks: NodeMasks,
 }
 
 /// What Main has beyond the grade, warp and curves that [`ChainParams`](super::ChainParams) holds.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct MainNode {
     /// Main passes its picture through.
     pub bypass: bool,
     /// Main's trims.
     pub trim: Trim,
+    /// Main's mask rows and Invert.
+    pub masks: NodeMasks,
 }
 
 /// The nodes of a chain: the plan and the parameters of the nodes it runs.
@@ -75,7 +81,8 @@ pub(super) struct MainStages {
     pub c11: LogC4,
 }
 
-/// A node ready to run: the gain, and the grade, warp and curves that are not the identity.
+/// A node ready to run: the gain, and the grade, warp and curves that are not the identity, and the mask
+/// rows.
 #[derive(Debug, Clone)]
 pub(super) struct PreparedNode {
     /// Nothing to do: bypassed, or every step at its identity.
@@ -84,6 +91,7 @@ pub(super) struct PreparedNode {
     grade: Option<Grade>,
     warp: Option<Warp>,
     curves: Option<BakedCurves>,
+    masks: PreparedMasks,
 }
 
 impl PreparedNode {
@@ -93,6 +101,7 @@ impl PreparedNode {
         grade: &GradeParams,
         warp: &WarpParams,
         curves: &CurveSet,
+        masks: &NodeMasks,
     ) -> Self {
         let gain = trim.gain();
         let grade = (!grade.is_identity()).then(|| Grade::new(grade));
@@ -106,7 +115,36 @@ impl PreparedNode {
             grade,
             warp,
             curves,
+            masks: masks.prepare(),
         }
+    }
+
+    /// Whether the node's picture is its input as it is: bypassed, or every step at its identity.
+    pub(super) fn skips(&self) -> bool {
+        self.skip
+    }
+
+    /// The node's prepared mask rows.
+    pub(super) fn masks(&self) -> &PreparedMasks {
+        &self.masks
+    }
+
+    /// The node's mask `m` at a pixel (`docs/algorithms/06` section 3): `key` is the linked key's value,
+    /// `v_in` the picture the node reads and `linear` that picture as linear AWG4 when it is known
+    /// exactly (the Input's). The mask reads the node's input, never what the node made of it.
+    pub(super) fn mask(
+        &self,
+        key: Option<f64>,
+        v_in: LogC4,
+        linear: Option<Vec3>,
+        at: PixelAt,
+    ) -> f64 {
+        let l_in = if self.masks.needs_luma() {
+            PreparedMasks::luma_of(v_in, linear)
+        } else {
+            0.0
+        };
+        self.masks.mask(key, v_in, l_in, at)
     }
 
     /// The node on one pixel: `v_in` is the picture it reads and `linear` that picture as linear

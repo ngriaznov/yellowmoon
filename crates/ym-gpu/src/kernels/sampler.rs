@@ -56,8 +56,9 @@ use crate::image::GpuImage;
 use crate::pool::PooledBuffer;
 use crate::stream::{PassList, upload_bytes};
 
-/// The uniform block of `sampler.wgsl` (`SamplerU`): 208 bytes. The last ten members are the lens's
-/// bend and are zero without one.
+/// The uniform block of `sampler.wgsl` (`SamplerU`): 256 bytes. Members 4 to 13 are the lens's bend and are
+/// zero without one; the last three place the pixel in the photo frame and are zero unless the photo-frame
+/// planes are asked for.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Default)]
 struct SamplerU {
@@ -85,9 +86,35 @@ struct SamplerU {
     cf: [f32; 4],
     /// The buffer's corners relative to the source window: `x0, y0, x1, y1`.
     lim: [i32; 4],
+    /// The source window's origin in the buffer (`x, y`).
+    po: [i32; 4],
+    /// The camera's orientation undone on fractions, row-major.
+    pm: [f32; 4],
+    /// Its offset (`x, y`) and `1 / buffer width`, `1 / buffer height`.
+    pt: [f32; 4],
 }
 
 impl SamplerU {
+    /// The photo-frame positions' part of the block for `grid`, whose source window starts at `origin`: the
+    /// kernel writes planes 4 and 5.
+    fn set_positions(&mut self, grid: &SamplerGrid, origin: (usize, usize)) {
+        let (m, t) = grid.sensor_to_oriented_map();
+        self.mode[3] = 1;
+        self.po = [origin.0 as i32, origin.1 as i32, 0, 0];
+        self.pm = [
+            m[0][0] as f32,
+            m[0][1] as f32,
+            m[1][0] as f32,
+            m[1][1] as f32,
+        ];
+        self.pt = [
+            t[0] as f32,
+            t[1] as f32,
+            (1.0 / grid.buffer.0) as f32,
+            (1.0 / grid.buffer.1) as f32,
+        ];
+    }
+
     /// The bend's part of the block for `grid`, whose source window starts at `origin`.
     fn set_warp(&mut self, grid: &SamplerGrid, origin: (usize, usize)) {
         let Some(w) = &grid.warp else {
@@ -226,6 +253,27 @@ pub fn encode_sample(
     w: usize,
     h: usize,
 ) -> Result<GpuImage, GpuError> {
+    encode_sample_at(passes, src, src_origin, grid, off, w, h, false)
+}
+
+/// [`encode_sample`], and with `positions` a six-plane result: the fifth and sixth planes hold each pixel's
+/// position in the photo frame (the oriented fractions the mask shapes of the nodes are placed in;
+/// [`SamplerGrid::photo_position`] is the CPU twin), for the colour pass to read.
+///
+/// # Errors
+///
+/// As [`encode_sample`].
+#[allow(clippy::too_many_arguments)] // the natural argument list; a struct would only move them
+pub fn encode_sample_at(
+    passes: &mut PassList<'_>,
+    src: &GpuImage,
+    src_origin: (usize, usize),
+    grid: &SamplerGrid,
+    off: (usize, usize),
+    w: usize,
+    h: usize,
+    positions: bool,
+) -> Result<GpuImage, GpuError> {
     let ctx = passes.context();
     if w == 0 || h == 0 {
         return Err(GpuError::InvalidInput(format!(
@@ -258,7 +306,14 @@ pub fn encode_sample(
     let cols_buf = table("sampler columns", bytemuck::cast_slice(&cols))?;
     let rows_buf = table("sampler rows", bytemuck::cast_slice(&rows))?;
     let inside_buf = table("sampler inside", bytemuck::cast_slice(&inside))?;
-    let out = GpuImage::alloc(ctx, "sampled", w, h, 4, Placement::whole(w, h))?;
+    let out = GpuImage::alloc(
+        ctx,
+        "sampled",
+        w,
+        h,
+        if positions { 6 } else { 4 },
+        Placement::whole(w, h),
+    )?;
     let mut u = SamplerU {
         dims: [
             w as u32,
@@ -276,6 +331,9 @@ pub fn encode_sample(
         ..SamplerU::default()
     };
     u.set_warp(grid, src_origin);
+    if positions {
+        u.set_positions(grid, src_origin);
+    }
     let ub = passes.uniform("sampler uniform", &u)?;
     passes.dispatch(
         KernelId::Sampler,
@@ -356,7 +414,7 @@ mod tests {
         let naga::TypeInner::Struct { members, span } = &module.types[var.ty].inner else {
             panic!("su is not a struct");
         };
-        let fields: [(&str, usize); 13] = [
+        let fields: [(&str, usize); 16] = [
             ("dims", offset_of!(SamplerU, dims)),
             ("src", offset_of!(SamplerU, src)),
             ("mode", offset_of!(SamplerU, mode)),
@@ -370,6 +428,9 @@ mod tests {
             ("ci", offset_of!(SamplerU, ci)),
             ("cf", offset_of!(SamplerU, cf)),
             ("lim", offset_of!(SamplerU, lim)),
+            ("po", offset_of!(SamplerU, po)),
+            ("pm", offset_of!(SamplerU, pm)),
+            ("pt", offset_of!(SamplerU, pt)),
         ];
         assert_eq!(members.len(), fields.len());
         for (member, (name, offset)) in members.iter().zip(fields) {

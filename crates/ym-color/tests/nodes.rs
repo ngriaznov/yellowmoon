@@ -3,7 +3,7 @@
 //! (pipeline 0.9.0), a node's steps run in their order, nodes run in the plan's order, and a bypassed
 //! node, a dead branch and a node at its identity change no bit.
 //!
-//! Masks are not rendered until N-10: every node's mask is 1 here.
+//! These nodes have no mask rows, so every node's mask is 1 here; `masks.rs` is N-10's.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -576,9 +576,9 @@ fn a_dead_branch_changes_nothing() {
 }
 
 #[test]
-fn a_node_that_only_makes_a_mask_is_in_the_plan_and_changes_no_pixel_yet() {
-    // Masks are not rendered until N-10: node 5 (strong parameters, its picture unused) feeds node 3's
-    // key input; the picture is the same as without the link and without node 5.
+fn a_node_that_only_makes_a_mask_is_in_the_plan_and_a_mask_of_one_changes_no_pixel() {
+    // Node 5 (strong parameters, its picture unused, no mask rows: its mask is 1) feeds node 3's key input;
+    // the picture is the same as without the link and without node 5. (`masks.rs` has the keys that act.)
     let b = base();
     let clean = nodes_chain(&b, vec![spec(3, 2.0, 1, trim_node(1.0))], 3, Stop::Output);
     let mut keyed = spec(3, 2.0, 1, trim_node(1.0));
@@ -616,7 +616,7 @@ fn a_plan_that_stops_at_a_node_gives_the_picture_after_it() {
             main_only.apply_logc4_pixel(px)
         );
     }
-    // The mask view reads 1 (every mask is 1 until N-10) as a grey LogC4 triple.
+    // The mask view reads a node's mask as a grey LogC4 triple; these nodes have no mask rows, so it is 1.
     let mask = nodes_chain(&b, nodes(), 4, Stop::Mask(3));
     assert!(matches!(
         mask.params().nodes.plan.result,

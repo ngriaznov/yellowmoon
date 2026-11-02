@@ -7,7 +7,7 @@
 //! curves; bypassed nodes and nodes at their identity (which run no code: the bits of the graph
 //! without them); a dead branch; a graph that needs nine pictures at once, which the plan splits into
 //! two passes with f32 buffers between them; the stops inside the nodes; tiles, determinism and
-//! poison. Masks are not rendered until N-10 (every node's `m` is 1).
+//! poison. These graphs have no masks (every node's `m` is 1); `gpu_masks.rs` is N-10's.
 
 mod common;
 
@@ -22,6 +22,7 @@ use ym_color::display::{
     ChainParams, ColorChain, LookSetting, MainNode, NodeParams, NodeSet, OutputTarget, Trim,
 };
 use ym_color::grade::{ColorBalance, GradeParams};
+use ym_color::mask::NodeMasks;
 use ym_color::plan::{
     self, MAIN_NODE, PLAN_REGISTERS, PictureSource, Plan, PlanGraph, PlanNode, compile,
 };
@@ -207,6 +208,7 @@ fn random_pins(rng: &mut Rng, scale: f64) -> WarpParams {
 
 fn random_node(rng: &mut Rng, scale: f64) -> NodeParams {
     NodeParams {
+        masks: NodeMasks::default(),
         bypass: false,
         trim: random_trim(rng, scale),
         grade: random_grade(rng, scale),
@@ -305,6 +307,7 @@ fn chain_params(
         main: MainNode {
             bypass: main.bypass,
             trim: main.trim,
+            masks: main.masks,
         },
         others: nodes
             .iter()
@@ -827,7 +830,7 @@ fn a_stop_after_a_node_is_the_cpu_plan_that_ends_there_and_a_mask_stop_is_grey_o
                         );
                     }
                 }
-                // The mask of a node is 1 until N-10: grey one, exactly, in every output.
+                // A node with no mask rows, no Invert and no key has `m` = 1: grey one, exactly, in every output.
                 let mask = render_with(
                     dev,
                     &full,

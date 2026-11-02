@@ -5,11 +5,17 @@
 //
 // The nodes are the steps of the plan (ym_color::plan, docs/23 section 5.4): each corrector runs its trims, C9 (the
 // primary grade), C9b (the colour warp) and C11 (the curves), a step that is at its identity or bypassed running no code,
-// then the mask blend (m = 1 until N-10). The pictures live in eight registers and the keys in sixteen slots (private
-// arrays, `run_nodes`); a plan that needs more is several passes of this kernel with f32 buffers between them (`pbuf`).
-// Every node's parameters, Main's too, are a record of the storage buffer `nodes` (`NodeRec`); the uniform block holds
-// the frame (window, mode, matrix, C7, look, display) and the pass. The curve is in front of the look since pipeline
-// 0.9.0 (docs/02 C10, C11).
+// then the mask blend out = in + m (node(in) - in) (N-10: `node_mask`; a node with no mask rows, no Invert and no key
+// keeps its own bits). The pictures live in eight registers and the keys in sixteen slots (private arrays,
+// `run_nodes`); a plan that needs more is several passes of this kernel with f32 buffers between them (`pbuf`).
+// Every node's parameters, Main's too, are a record of the storage buffer `nodes` (the layout of `NodeRecU` in
+// kernels/color.rs, read a vec4 at a time by `nu` and `nf` at the rows R_*), followed by the mask rows (`MaskOpU`,
+// MASK_ROW_VEC4 vec4 each, from `CU.mrow.x`); the uniform block holds the frame (window, mode, matrix, C7, look, display),
+// the photo frame (`CU.photo`) and the pass. The curve is in front of the look since pipeline 0.9.0 (docs/02 C10, C11).
+//
+// The mask shapes are placed in the photo frame (docs/23 section 3.6): a source with six planes (`CU.sp.w`) carries each
+// pixel's position in the photo, written by the sampler (planes 4 and 5, oriented fractions in [0, 1]); `CU.photo` is the
+// photo's aspect and the size of one output pixel in units of its long edge. Without positions the shapes select nothing.
 //
 // C7 is the highlight range (docs/02 C7: a gain on the luma's stops over grey above a knee, up to the
 // ALEXA clip; `c7_range`, its numbers in `CU.tone` and `CU.fl.z`, its expansion weighted by the achromatic gate of the
@@ -51,7 +57,7 @@ struct ChainU {
     flags: vec4<u32>,    // z: look kind (0 none, 1 log-to-log, 2 display-baked); x, y, w: 0
     lk: vec4<u32>,       // x: look input (0 LogC4, 1 LogC3), y: look has CDL, w: before point (0 camera log, 1 after grade, 2 camera default)
     dp: vec4<u32>,       // x, y, z: 0; w: apply the Rec.709-to-output matrix (look_m*: display-baked look and the Before view)
-    sp: vec4<u32>,       // x: output transfer (0 sRGB, 1 BT.1886), y: the source has a mask plane, z: letterbox colour (RGBA8)
+    sp: vec4<u32>,       // x: output transfer (0 sRGB, 1 BT.1886), y: the source has a mask plane, z: letterbox colour (RGBA8), w: the source has the photo-frame position planes (4 and 5)
     m0: vec4<f32>,       // fused C1-C6 matrix rows
     m1: vec4<f32>,
     m2: vec4<f32>,
@@ -74,26 +80,28 @@ struct ChainU {
     gate: vec4<f32>,     // the achromatic gate (docs/02 C7): x, y the highlight range's purity edge `from` and 1 / (to - from); z, w: 0
     plan: vec4<u32>,     // x: this pass's first record in `nodes`, y: its steps, z: bit 0: the plan's last pass (it writes `out`), w: the plan's result (a reference, see REF_*)
     stopn: vec4<u32>,    // x: the record at which stops 11 and 12 end (NODE_NONE: none), y, z, w: 0
+    mrow: vec4<u32>,     // x: the first mask row in `nodes`, in vec4 rows (after the records), y, z, w: 0
+    photo: vec4<f32>,    // the photo frame: x, y: the photo's width and height over its long edge, z: one output pixel in units of the long edge, w: 0
 };
 
 // One step of the plan with the node it runs (docs/23 section 5.4): the flags and the wiring of the step, then the node's
 // parameters. Main's are a record like every other node's. A control at its identity has its bit clear in `ctl`, so the
 // kernel runs no code for it (the integers are decided on the host, in f64: nothing here rests on a rounding, K8).
-struct NodeRec {
-    ctl: vec4<u32>,      // x: N_* bits, y: grade bits (1 contrast, 2 saturation), z: curve bits (1 luma, 2 r, 4 g, 8 b), w: the first of the node's four curve tables (in `curves`, 1024 entries each)
-    wire: vec4<u32>,     // x: the picture it reads (REF_*), y: the key it reads (NODE_NONE: none), z: its mask rows (0 until N-10: no blend), w: 0
-    outs: vec4<u32>,     // x: the register its picture goes to, y: the plane of `pbuf` it goes to, z: the key slot its mask goes to, w: the plane of `pbuf` (each NODE_NONE: not written)
-    gain: vec4<f32>,     // the trims' gain in linear AWG4 (xyz)
-    grade0: vec4<f32>,   // x: contrast slope k at grey, y: brightness, z: saturation factor (< 1 blend, > 1 boost F); w: 0
-    zone_amt: vec4<f32>, // shadows, highlights, black, white (each / 100)
-    zone_ctr: vec4<f32>, // their centres (LogC4 codes)
-    bal0: vec4<f32>,     // (a, b) shadows, (a, b) midtones
-    bal1: vec4<f32>,     // (a, b) highlights
-    bal_ctr: vec4<f32>,  // zone centres
-    warp_n: vec4<u32>,   // C9b: x moving pins (0: the stage is skipped), y locked pins, z flow steps
-    warp_mv: array<vec4<f32>, WARP_MOVE_ROWS>,  // three rows a moving pin (c9b_warp)
-    warp_lk: array<vec4<f32>, WARP_LOCK_ROWS>,  // one row a locked pin (c9b_warp)
-};
+// A record is REC_ROWS vec4 rows, the layout of `NodeRecU` (kernels/color.rs; the offsets R_* are written from the Rust
+// struct):
+//   R_CTL   (u32) x: N_* bits, y: grade bits (1 contrast, 2 saturation), z: curve bits (1 luma, 2 r, 4 g, 8 b), w: the first of the node's four curve tables (in `curves`, 1024 entries each)
+//   R_WIRE  (u32) x: the picture it reads (REF_*), y: the key it reads (NODE_NONE: none), z: its mask rows, w: the first of them
+//   R_OUTS  (u32) x: the register its picture goes to, y: the plane of `pbuf` it goes to, z: the key slot its mask goes to, w: the plane of `pbuf` (each NODE_NONE: not written)
+//   R_GAIN  (f32) the trims' gain in linear AWG4 (xyz)
+//   R_GRADE0 x: contrast slope k at grey, y: brightness, z: saturation factor (< 1 blend, > 1 boost F); w: 0
+//   R_ZONE_AMT shadows, highlights, black, white (each / 100);  R_ZONE_CTR their centres (LogC4 codes)
+//   R_BAL0 (a, b) shadows, (a, b) midtones;  R_BAL1 (a, b) highlights;  R_BAL_CTR zone centres
+//   R_WARP_N (u32) C9b: x moving pins (0: the stage is skipped), y locked pins, z flow steps
+//   R_WARP_MV WARP_MOVE_ROWS rows, three a moving pin (c9b_warp);  R_WARP_LK WARP_LOCK_ROWS rows, one a locked pin (c9b_warp)
+// A mask row is MASK_ROW_VEC4 rows (the layout of `MaskOpU`): (u32) x: MK_* kind, y: MF_* flags, z: the raster plane
+// (NODE_NONE: none), w: the opacity as f32 bits; then the kind's parameters as f32 (`ym_color::mask::MaskOp::params`):
+// Linear cx, cy, sin, cos | feather; Radial cx, cy, sin, cos | rx, ry, feather; Colour range a0, b0, width, q;
+// Brightness range low - q, high, q.
 
 @group(0) @binding(0) var<uniform> CU: ChainU;
 @group(0) @binding(1) var<storage, read> tables: array<f32>;       // dither thresholds
@@ -101,11 +109,20 @@ struct NodeRec {
 @group(0) @binding(3) var<storage, read> look_luts: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read> img: array<ST_ELEM>;
 @group(0) @binding(5) var<storage, read_write> out: array<u32>;
-@group(0) @binding(6) var<storage, read> nodes: array<NodeRec>;    // the plan's steps with their nodes, in plan order
+@group(0) @binding(6) var<storage, read> nodes: array<vec4<u32>>;   // the plan's steps with their nodes, in plan order, then the mask rows
 // Binding 7 is the raster masks of N-13 (docs/23 section 5.4).
 @group(0) @binding(8) var<storage, read_write> pbuf: array<f32>;   // the f32 planes that cross from one pass to the next (a picture is three planes, a key one)
 
 //@ACCESSORS img ro
+
+// One row of the node records, as u32 or as f32 (the buffer is raw so that the mask rows can follow the records).
+fn nu(ni: u32, row: u32) -> vec4<u32> {
+    return nodes[ni * REC_ROWS + row];
+}
+
+fn nf(ni: u32, row: u32) -> vec4<f32> {
+    return bitcast<vec4<f32>>(nodes[ni * REC_ROWS + row]);
+}
 
 // ---- The achromatic gate (docs/02 C7) ----------------------------------------------------------------
 
@@ -299,39 +316,39 @@ fn c9_saturation(v: vec3<f32>, f: f32) -> vec3<f32> {
 
 fn c9_grade(v: vec3<f32>, l: f32, ni: u32) -> vec3<f32> {
     var o = v;
-    if ((nodes[ni].ctl.y & 1u) != 0u) {
+    if ((nu(ni, R_CTL).y & 1u) != 0u) {
         // Contrast: one offset for all three channels, the luma's change on the curve, then part of the
         // colour the curve on each channel would add.
-        o = c9_contrast(o, l, nodes[ni].grade0.x);
+        o = c9_contrast(o, l, nf(ni, R_GRADE0).x);
     }
-    var shift = nodes[ni].grade0.y * STOP * bump(l, GRAY, BRIGHTNESS_SIGMA);
-    if (nodes[ni].zone_amt.x != 0.0) {
-        shift += nodes[ni].zone_amt.x * ZONE_CONTROL_SIGMA * bump(l, nodes[ni].zone_ctr.x, ZONE_CONTROL_SIGMA);
+    var shift = nf(ni, R_GRADE0).y * STOP * bump(l, GRAY, BRIGHTNESS_SIGMA);
+    if (nf(ni, R_ZONE_AMT).x != 0.0) {
+        shift += nf(ni, R_ZONE_AMT).x * ZONE_CONTROL_SIGMA * bump(l, nf(ni, R_ZONE_CTR).x, ZONE_CONTROL_SIGMA);
     }
-    if (nodes[ni].zone_amt.y != 0.0) {
-        shift += nodes[ni].zone_amt.y * ZONE_CONTROL_SIGMA * bump(l, nodes[ni].zone_ctr.y, ZONE_CONTROL_SIGMA);
+    if (nf(ni, R_ZONE_AMT).y != 0.0) {
+        shift += nf(ni, R_ZONE_AMT).y * ZONE_CONTROL_SIGMA * bump(l, nf(ni, R_ZONE_CTR).y, ZONE_CONTROL_SIGMA);
     }
-    if (nodes[ni].zone_amt.z != 0.0) {
-        shift += nodes[ni].zone_amt.z * ZONE_CONTROL_SIGMA * bump(l, nodes[ni].zone_ctr.z, ZONE_CONTROL_SIGMA);
+    if (nf(ni, R_ZONE_AMT).z != 0.0) {
+        shift += nf(ni, R_ZONE_AMT).z * ZONE_CONTROL_SIGMA * bump(l, nf(ni, R_ZONE_CTR).z, ZONE_CONTROL_SIGMA);
     }
-    if (nodes[ni].zone_amt.w != 0.0) {
-        shift += nodes[ni].zone_amt.w * ZONE_CONTROL_SIGMA * bump(l, nodes[ni].zone_ctr.w, ZONE_CONTROL_SIGMA);
+    if (nf(ni, R_ZONE_AMT).w != 0.0) {
+        shift += nf(ni, R_ZONE_AMT).w * ZONE_CONTROL_SIGMA * bump(l, nf(ni, R_ZONE_CTR).w, ZONE_CONTROL_SIGMA);
     }
     o = o + vec3<f32>(shift);
-    if (nodes[ni].bal0.x != 0.0 || nodes[ni].bal0.y != 0.0) {
-        let w = BALANCE_STRENGTH * bump(l, nodes[ni].bal_ctr.x, ZONE_SIGMA);
-        o = o + w * (nodes[ni].bal0.x * E1 + nodes[ni].bal0.y * E2);
+    if (nf(ni, R_BAL0).x != 0.0 || nf(ni, R_BAL0).y != 0.0) {
+        let w = BALANCE_STRENGTH * bump(l, nf(ni, R_BAL_CTR).x, ZONE_SIGMA);
+        o = o + w * (nf(ni, R_BAL0).x * E1 + nf(ni, R_BAL0).y * E2);
     }
-    if (nodes[ni].bal0.z != 0.0 || nodes[ni].bal0.w != 0.0) {
-        let w = BALANCE_STRENGTH * bump(l, nodes[ni].bal_ctr.y, ZONE_SIGMA);
-        o = o + w * (nodes[ni].bal0.z * E1 + nodes[ni].bal0.w * E2);
+    if (nf(ni, R_BAL0).z != 0.0 || nf(ni, R_BAL0).w != 0.0) {
+        let w = BALANCE_STRENGTH * bump(l, nf(ni, R_BAL_CTR).y, ZONE_SIGMA);
+        o = o + w * (nf(ni, R_BAL0).z * E1 + nf(ni, R_BAL0).w * E2);
     }
-    if (nodes[ni].bal1.x != 0.0 || nodes[ni].bal1.y != 0.0) {
-        let w = BALANCE_STRENGTH * bump(l, nodes[ni].bal_ctr.z, ZONE_SIGMA);
-        o = o + w * (nodes[ni].bal1.x * E1 + nodes[ni].bal1.y * E2);
+    if (nf(ni, R_BAL1).x != 0.0 || nf(ni, R_BAL1).y != 0.0) {
+        let w = BALANCE_STRENGTH * bump(l, nf(ni, R_BAL_CTR).z, ZONE_SIGMA);
+        o = o + w * (nf(ni, R_BAL1).x * E1 + nf(ni, R_BAL1).y * E2);
     }
-    if ((nodes[ni].ctl.y & 2u) != 0u) {
-        o = c9_saturation(o, nodes[ni].grade0.z);
+    if ((nu(ni, R_CTL).y & 2u) != 0u) {
+        o = c9_saturation(o, nf(ni, R_GRADE0).z);
     }
     return o;
 }
@@ -381,7 +398,7 @@ fn warp_tonal_weight(b: vec4<f32>, l: f32) -> f32 {
 }
 
 fn c9b_warp(v: vec3<f32>, ni: u32) -> vec3<f32> {
-    let moves = min(nodes[ni].warp_n.x, WARP_MAX_PINS);
+    let moves = min(nu(ni, R_WARP_N).x, WARP_MAX_PINS);
     if (moves == 0u) {
         return v;
     }
@@ -392,9 +409,9 @@ fn c9b_warp(v: vec3<f32>, ni: u32) -> vec3<f32> {
     }
     let guard = smoothstep(0.0, WARP_NEUTRAL_GUARD, sqrt(r2));
     var hold = 1.0;
-    let locks = min(nodes[ni].warp_n.y, WARP_LOCK_ROWS);
+    let locks = min(nu(ni, R_WARP_N).y, WARP_LOCK_ROWS);
     for (var j = 0u; j < locks; j++) {
-        let lk = nodes[ni].warp_lk[j];
+        let lk = nf(ni, R_WARP_LK + j);
         let d = c - lk.xy;
         hold = hold * (1.0 - warp_gauss(dot(d, d), lk.z));
     }
@@ -408,9 +425,9 @@ fn c9b_warp(v: vec3<f32>, ni: u32) -> vec3<f32> {
     var exposure = 0.0;
     var saturation = 0.0;
     for (var i = 0u; i < moves; i++) {
-        let a = nodes[ni].warp_mv[3u * i];
-        let b = nodes[ni].warp_mv[3u * i + 1u];
-        let x = nodes[ni].warp_mv[3u * i + 2u];
+        let a = nf(ni, R_WARP_MV + 3u * i);
+        let b = nf(ni, R_WARP_MV + 3u * i + 1u);
+        let x = nf(ni, R_WARP_MV + 3u * i + 2u);
         let d = c - a.xy;
         let phi = warp_gauss(dot(d, d), b.x);
         reach = reach + phi;
@@ -423,7 +440,7 @@ fn c9b_warp(v: vec3<f32>, ni: u32) -> vec3<f32> {
     // every pin's saturation in [-1, 1]).
     let k = max(gamma / max(reach, 1.0) * saturation, -1.0);
     // The flow, the move gathered in `dd`.
-    let steps = clamp(nodes[ni].warp_n.z, 1u, WARP_MAX_STEPS);
+    let steps = clamp(nu(ni, R_WARP_N).z, 1u, WARP_MAX_STEPS);
     let n = f32(steps);
     let h = gamma / n;
     var dd = vec2<f32>(0.0);
@@ -433,8 +450,8 @@ fn c9b_warp(v: vec3<f32>, ni: u32) -> vec3<f32> {
         var sum = 0.0;
         var shift = vec2<f32>(0.0);
         for (var i = 0u; i < moves; i++) {
-            let a = nodes[ni].warp_mv[3u * i];
-            let b = nodes[ni].warp_mv[3u * i + 1u];
+            let a = nf(ni, R_WARP_MV + 3u * i);
+            let b = nf(ni, R_WARP_MV + 3u * i + 1u);
             let w = warp_tonal_weight(b, l);
             let d = p - (a.xy + (tau * (gamma * w)) * a.zw);
             let phi = warp_gauss(dot(d, d), b.x);
@@ -618,8 +635,8 @@ fn curve_eval(t: u32, x: f32) -> f32 {
 // The four curves of the node record `ni`: its tables are `ctl.w` to `ctl.w + 3` (luma, R, G, B).
 fn c11_curves(v: vec3<f32>, ni: u32) -> vec3<f32> {
     var o = v;
-    let bits = nodes[ni].ctl.z;
-    let t0 = nodes[ni].ctl.w;
+    let bits = nu(ni, R_CTL).z;
+    let t0 = nu(ni, R_CTL).w;
     if ((bits & 1u) != 0u) {
         let l = logc4_encode(dot(Y_AWG4, logc4_decode3(v)));
         let shift = curve_eval(t0, l) - l;
@@ -707,7 +724,7 @@ fn before_camera_default(cam: vec3<f32>) -> vec3<f32> {
 // decodes it. `stage` is 1, 2 or 3 to return Main's value after C9, C9b or C11 (the trace's stops), 0 otherwise.
 // The bits are decided on the host in f64, so no rounding here decides whether a step runs.
 fn node_apply(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, stage: u32) -> vec3<f32> {
-    let bits = nodes[ni].ctl.x;
+    let bits = nu(ni, R_CTL).x;
     if ((bits & N_SKIP) != 0u) {
         return v_in;
     }
@@ -718,7 +735,7 @@ fn node_apply(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, stage: 
         if (!from_input) {
             lin = logc4_decode3(v_in);
         }
-        lin = lin * nodes[ni].gain.xyz;
+        lin = lin * nf(ni, R_GAIN).xyz;
         v = logc4_encode3(lin);
     }
     // 2. C9, with L the LogC4 code of the luminance of the linear values entering it.
@@ -746,6 +763,118 @@ fn node_apply(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, stage: 
     return v;
 }
 
+// ---- masks (docs/23 section 4, docs/algorithms/06 sections 3 and 4) ----------------------------------------------------
+
+// S(t) = t^2 (3 - 2t) for t held to [0, 1].
+fn smooth01(t: f32) -> f32 {
+    let c = clamp(t, 0.0, 1.0);
+    return c * c * (3.0 - 2.0 * c);
+}
+
+// One row's own s in [0, 1] at a pixel (ym_color::mask::MaskOp::select). `p0` and `p1` are the row's parameters, `v_in` the
+// node's input, `l_in` its luma code, `pos` the pixel's place in the photo frame (the shapes select nothing without one).
+fn mask_select(kind: u32, p0: vec4<f32>, p1: vec4<f32>, v_in: vec3<f32>, l_in: f32, pos: vec2<f32>) -> f32 {
+    if (kind == MK_LINEAR) {
+        if (CU.sp.w == 0u) {
+            return 0.0;
+        }
+        // The signed distance from the centre line along n = (-sin, cos) in units of the long edge, and the half-width of the
+        // transition, at least one output pixel.
+        let x = (pos.x - p0.x) * CU.photo.x;
+        let y = (pos.y - p0.y) * CU.photo.y;
+        let s = -p0.z * x + p0.w * y;
+        let h = max(0.5 * p1.x, CU.photo.z);
+        return 1.0 - smooth01((s + h) / (2.0 * h));
+    }
+    if (kind == MK_RADIAL) {
+        if (CU.sp.w == 0u) {
+            return 0.0;
+        }
+        // The pixel rotated by -angle in units of the radii, and the ramp q in units of d: the feather, and at least one
+        // output pixel on the narrower side.
+        let x = (pos.x - p0.x) * CU.photo.x;
+        let y = (pos.y - p0.y) * CU.photo.y;
+        let u = (p0.w * x + p0.z * y) / p1.x;
+        let w = (-p0.z * x + p0.w * y) / p1.y;
+        let d = sqrt(u * u + w * w);
+        let q = max(p1.z, CU.photo.z / min(p1.x, p1.y));
+        return 1.0 - smooth01((d - (1.0 - q)) / q);
+    }
+    if (kind == MK_COLOR) {
+        let a = dot(E1, v_in) - p0.x;
+        let b = dot(E2, v_in) - p0.y;
+        let d = sqrt(a * a + b * b);
+        return 1.0 - smooth01((d - p0.z) / p0.w);
+    }
+    if (kind == MK_BRIGHTNESS) {
+        return smooth01((l_in - p0.x) / p0.z) * (1.0 - smooth01((l_in - p0.y) / p0.z));
+    }
+    // A raster kind (docs/23 N-13 to N-19): selects nothing yet.
+    return 0.0;
+}
+
+// The node's mask m (ym_color::mask::PreparedMasks::mask). `key_in` is the linked key's value when `has_key`: an implicit first
+// region row. Each row's a = opacity (invert ? 1 - s : s); the regions and the ranges fold apart, in list order, an add as
+// 1 - (1 - acc)(1 - a) and a subtract as acc (1 - a), the first row of a group taken exactly (a added, 1 - a subtracted);
+// m = R K with a group that has no row 1, and the node's Invert gives 1 - m.
+fn node_mask(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, pos: vec2<f32>, key_in: f32, has_key: bool) -> f32 {
+    let bits = nu(ni, R_CTL).x;
+    let rows = nu(ni, R_WIRE);
+    var l_in = 0.0;
+    if ((bits & N_LUMA) != 0u) {
+        var lin = c7;
+        if (!from_input) {
+            lin = logc4_decode3(v_in);
+        }
+        l_in = logc4_encode(dot(Y_AWG4, lin));
+    }
+    var regions = key_in;
+    var has_regions = has_key;
+    var ranges = 0.0;
+    var has_ranges = false;
+    for (var i = 0u; i < rows.z; i++) {
+        let b = CU.mrow.x + (rows.w + i) * MASK_ROW_VEC4;
+        let head = nodes[b];
+        let s = mask_select(head.x, bitcast<vec4<f32>>(nodes[b + 1u]), bitcast<vec4<f32>>(nodes[b + 2u]), v_in, l_in, pos);
+        var a = s;
+        if ((head.y & MF_INVERT) != 0u) {
+            a = 1.0 - s;
+        }
+        a = bitcast<f32>(head.w) * a;
+        let subtract = (head.y & MF_SUBTRACT) != 0u;
+        if (head.x == MK_COLOR || head.x == MK_BRIGHTNESS) {
+            if (!has_ranges) {
+                ranges = select(a, 1.0 - a, subtract);
+                has_ranges = true;
+            } else if (subtract) {
+                ranges = ranges * (1.0 - a);
+            } else {
+                ranges = 1.0 - (1.0 - ranges) * (1.0 - a);
+            }
+        } else {
+            if (!has_regions) {
+                regions = select(a, 1.0 - a, subtract);
+                has_regions = true;
+            } else if (subtract) {
+                regions = regions * (1.0 - a);
+            } else {
+                regions = 1.0 - (1.0 - regions) * (1.0 - a);
+            }
+        }
+    }
+    var m = 1.0;
+    if (has_regions) {
+        m = regions;
+    }
+    if (has_ranges) {
+        m = m * ranges;
+    }
+    if ((bits & N_INVERT) != 0u) {
+        m = 1.0 - m;
+    }
+    return m;
+}
+
 struct NodesOut {
     v: vec3<f32>,
     done: bool,    // the value is the pixel's final value (a stop inside the nodes, or a pass that is not the last)
@@ -756,8 +885,9 @@ fn plane_pic(plane: u32, n: u32, pix: u32) -> vec3<f32> {
 }
 
 // The steps of this pass in registers and key slots, then the plan's result (the value the Output reads). `c7` and `c8` are
-// the Input's picture, `pix` the pixel's place in the window (the planes of `pbuf` are window-sized).
-fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32) -> NodesOut {
+// the Input's picture, `pix` the pixel's place in the window (the planes of `pbuf` are window-sized), `pos` its place in the
+// photo frame (for the mask shapes).
+fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>) -> NodesOut {
     let stop = CU.mode.x;
     // Main's own stages for the trace's stops: C9 (3, and the Before view's "after grade" point), C9b (10), C11 (5).
     var main_stage = 0u;
@@ -775,8 +905,8 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32) -> NodesOut {
     let count = CU.plan.y;
     for (var k = 0u; k < count; k++) {
         let ni = first + k;
-        let wire = nodes[ni].wire;
-        let outs = nodes[ni].outs;
+        let wire = nu(ni, R_WIRE);
+        let outs = nu(ni, R_OUTS);
         var v_in = c8;
         var from_input = true;
         let kind = wire.x >> REF_SHIFT;
@@ -789,19 +919,43 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32) -> NodesOut {
             from_input = false;
         }
         var stage = 0u;
-        if ((nodes[ni].ctl.x & N_MAIN) != 0u) {
+        if ((nu(ni, R_CTL).x & N_MAIN) != 0u) {
             stage = main_stage;
         }
         let nv = node_apply(ni, v_in, c7, from_input, stage);
         if (stage != 0u) {
             return NodesOut(nv, true);
         }
-        // The mask blend (docs/23 section 1.3): out = v_in + m (nv - v_in). m is 1 until N-10 computes it, and a node
-        // without mask rows (`wire.z` = 0, an integer) takes no blend, so its output is the node's own bits.
-        let m = 1.0;
+        // The mask blend (docs/23 section 1.3): out = v_in + m (nv - v_in). A node with no mask rows, no Invert and no key
+        // (`N_BLEND` clear, an integer decided on the host) has m = 1 and takes no blend, so its output is the node's own
+        // bits; one that has takes m exactly 1 as nv and exactly 0 as v_in, and the blend between. m is also the node's key
+        // output, which a bypassed or skipped node still has (its picture is its input), and the mask view's grey.
+        let ctl = nu(ni, R_CTL).x;
+        let blends = (ctl & N_BLEND) != 0u;
+        let skipped = (ctl & N_SKIP) != 0u;
+        var key_in = 0.0;
+        var has_key = false;
+        if (wire.y != NODE_NONE) {
+            has_key = true;
+            let ki = wire.y & REF_INDEX;
+            if ((wire.y >> REF_SHIFT) == REF_SLOT) {
+                key_in = slots[ki];
+            } else {
+                key_in = pbuf[ki * n + pix];
+            }
+        }
+        let key_written = outs.z != NODE_NONE || (CU.mode.x == 12u && ni == CU.stopn.x);
+        var m = 1.0;
+        if (blends && (!skipped || key_written)) {
+            m = node_mask(ni, v_in, c7, from_input, pos, key_in, has_key);
+        }
         var out_v = nv;
-        if (wire.z != 0u) {
-            out_v = v_in + m * (nv - v_in);
+        if (blends && !skipped) {
+            if (m == 0.0) {
+                out_v = v_in;
+            } else if (m != 1.0) {
+                out_v = v_in + m * (nv - v_in);
+            }
         }
         if (outs.x != NODE_NONE) {
             regs[outs.x] = out_v;
@@ -856,8 +1010,9 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32) -> NodesOut {
 // "after the grade" is C9, before the warp, as ColorChain::apply_before_pixel), 11 the Output after the node
 // `CU.stopn.x`, 12 that node's mask as grey code values. Stops 3, 10 and 5 are Main's stages (StageTrace's), whatever
 // else the plan runs. The stage numbers are names and did not change when the curve moved in front of the look; they
-// are the trace's fields (`StageTrace::c10_logc4`, `c11_logc4`). `pix` is the pixel's place in the window.
-fn run_pixel(cam_in: vec3<f32>, pix: u32) -> vec3<f32> {
+// are the trace's fields (`StageTrace::c10_logc4`, `c11_logc4`). `pix` is the pixel's place in the window, `pos` its place in
+// the photo frame.
+fn run_pixel(cam_in: vec3<f32>, pix: u32, pos: vec2<f32>) -> vec3<f32> {
     let stop = CU.mode.x;
     let cam = vec3<f32>(sanitize(cam_in.x), sanitize(cam_in.y), sanitize(cam_in.z));
     if (stop == 9u && CU.lk.w == 2u) {
@@ -879,7 +1034,7 @@ fn run_pixel(cam_in: vec3<f32>, pix: u32) -> vec3<f32> {
         return vec3<f32>(unit(c8.x), unit(c8.y), unit(c8.z));
     }
     // The nodes: the plan's steps of this pass.
-    let nodes_out = run_nodes(c7, c8, pix);
+    let nodes_out = run_nodes(c7, c8, pix, pos);
     if (stop == 9u) {
         return vec3<f32>(unit(nodes_out.v.x), unit(nodes_out.v.y), unit(nodes_out.v.z));
     }
@@ -928,11 +1083,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var a = vec3<f32>(0.0);
     var b = vec3<f32>(0.0);
     let pix = y * CU.dims.x + x;
+    // The pixels' places in the photo frame, from the sampler's fifth and sixth planes (the shapes of the nodes read them).
+    var pos_a = vec2<f32>(0.0);
+    var pos_b = vec2<f32>(0.0);
+    if (CU.sp.w != 0u) {
+        pos_a = vec2<f32>(img_ld(4u * spl + s), img_ld(5u * spl + s));
+        if (two) {
+            pos_b = vec2<f32>(img_ld(4u * spl + s + 1u), img_ld(5u * spl + s + 1u));
+        }
+    }
     if (!gone_a) {
-        a = run_pixel(vec3<f32>(img_ld(s), img_ld(spl + s), img_ld(2u * spl + s)), pix);
+        a = run_pixel(vec3<f32>(img_ld(s), img_ld(spl + s), img_ld(2u * spl + s)), pix, pos_a);
     }
     if (two && !gone_b) {
-        b = run_pixel(vec3<f32>(img_ld(s + 1u), img_ld(spl + s + 1u), img_ld(2u * spl + s + 1u)), pix + 1u);
+        b = run_pixel(vec3<f32>(img_ld(s + 1u), img_ld(spl + s + 1u), img_ld(2u * spl + s + 1u)), pix + 1u, pos_b);
     }
     if ((CU.plan.z & 1u) == 0u) {
         // A pass that is not the last one has written its buffers; the picture is the last pass's.

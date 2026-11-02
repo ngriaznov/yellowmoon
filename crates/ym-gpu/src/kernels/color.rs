@@ -46,7 +46,11 @@
 //!
 //! A source image with a **fourth plane** is the sampler's output: that plane marks the pixels
 //! outside the photo (the letterbox). Such pixels are not computed: a stage output has 0 there and
-//! carries the mask into its own fourth plane, an RGBA8 output has the background colour.
+//! carries the mask into its own fourth plane, an RGBA8 output has the background colour. A source with
+//! **six planes** is the sampler's output with the photo-frame position planes ([`encode_sample_at`]
+//! (crate::kernels::sampler::encode_sample_at)): the fifth and sixth hold each pixel's position in the
+//! photo, which the mask shapes of the nodes are placed in, and the chain needs the render's
+//! [`PhotoFrame`] ([`PreparedChain::with_photo_frame`]); the destination of a stage has the first four.
 //!
 //! # The plan loop and the node records
 //!
@@ -78,9 +82,21 @@
 //! **Stops.** [`PreparedChain::with_node_stop`] ends the plan after a node (the Output then runs on that
 //! node's picture: a thumbnail) or at a node's mask `m` (grey code values: the mask view); kernel stops 11
 //! and 12, the node's record in `stopn`.
+//!
+//! # Masks (N-10, `docs/23` section 5.4)
+//!
+//! The binding that holds the records is raw `vec4` rows (the kernel reads a record's fields with `nu` and
+//! `nf` at the offsets `R_*`, written from [`NodeRecU`]), so that the **mask rows** can follow the records in
+//! the same buffer: [`MaskOpU`], 64 bytes a row, every row of every node in plan order, a record naming its
+//! first row and their number (`wire.z`, `wire.w`). A row is the kind, the flags (subtract, invert), the
+//! opacity and the eight numbers [`ym_color::mask::MaskOp`] derives in `f64`; the kernel's loop over a node's
+//! rows is [`ym_color::mask::PreparedMasks::mask`] line by line, with no cap on the number of rows. A node
+//! blends (`N_BLEND`) when it has rows, an Invert or a key input: a node with none keeps its own bits, as
+//! before.
 
 use std::any::Any;
 use std::cell::RefCell;
+use std::mem::{offset_of, size_of};
 use std::sync::{Arc, Weak};
 
 use bytemuck::{Pod, Zeroable};
@@ -97,6 +113,7 @@ use ym_color::grade::{
 };
 use ym_color::look::{LookInput, intensity_fraction};
 use ym_color::lut::Lut;
+use ym_color::mask::{MaskOp, PhotoFrame};
 use ym_color::plan::{BufferKind, KeyRef, MAIN_NODE, PictureRef, PlanResult};
 use ym_color::tone::ToneParams;
 use ym_color::warp::{WARP_MAX_PINS, Warp};
@@ -228,6 +245,43 @@ pub(crate) const NODE_WARP: u32 = 8;
 pub(crate) const NODE_CURVES: u32 = 16;
 /// The node is Main (`N_MAIN`): the trace's stops C9, C9b and C11 are its values.
 pub(crate) const NODE_MAIN: u32 = 32;
+/// The node blends by its mask (`N_BLEND`): it has mask rows, an Invert or a key input. Without it `m` is 1
+/// and the node's output is its own bits.
+pub(crate) const NODE_BLEND: u32 = 64;
+/// The node's Invert (`N_INVERT`): `m = 1 - m`.
+pub(crate) const NODE_INVERT: u32 = 128;
+/// A mask row reads the luma of the node's input (`N_LUMA`, a Brightness range).
+pub(crate) const NODE_LUMA: u32 = 256;
+/// The mask row is subtracted (`MF_SUBTRACT`, in `MaskOpU::head.y`).
+pub(crate) const MASK_SUBTRACT: u32 = 1;
+/// The mask row is inverted (`MF_INVERT`).
+pub(crate) const MASK_INVERT: u32 = 2;
+/// `vec4` rows of a node record (`REC_ROWS`).
+pub(crate) const REC_ROWS: u32 = (size_of::<NodeRecU>() / 16) as u32;
+/// `vec4` rows of a mask row (`MASK_ROW_VEC4`).
+pub(crate) const MASK_ROW_VEC4: u32 = (size_of::<MaskOpU>() / 16) as u32;
+
+/// The row (`vec4`) of each field of a node record: `R_*` in `color.wgsl`, written from [`NodeRecU`].
+pub(crate) fn record_rows() -> [(&'static str, u32); 12] {
+    let row = |bytes: usize| (bytes / 16) as u32;
+    [
+        ("R_CTL", row(offset_of!(NodeRecU, ctl))),
+        ("R_WIRE", row(offset_of!(NodeRecU, wire))),
+        ("R_OUTS", row(offset_of!(NodeRecU, outs))),
+        ("R_GAIN", row(offset_of!(NodeRecU, gain))),
+        ("R_GRADE0", row(offset_of!(NodeRecU, grade0))),
+        ("R_ZONE_AMT", row(offset_of!(NodeRecU, zone_amt))),
+        ("R_ZONE_CTR", row(offset_of!(NodeRecU, zone_ctr))),
+        ("R_BAL0", row(offset_of!(NodeRecU, bal0))),
+        ("R_BAL1", row(offset_of!(NodeRecU, bal1))),
+        ("R_BAL_CTR", row(offset_of!(NodeRecU, bal_ctr))),
+        ("R_WARP_N", row(offset_of!(NodeRecU, warp_n))),
+        ("R_WARP_MV", row(offset_of!(NodeRecU, warp_mv))),
+    ]
+}
+
+/// The row of the locked pins of a record (`R_WARP_LK`).
+pub(crate) const R_WARP_LK: u32 = (offset_of!(NodeRecU, warp_lk) / 16) as u32;
 /// "Not written" in a record's outputs and "no key" in its inputs (`NODE_NONE`).
 pub(crate) const NODE_NONE: u32 = u32::MAX;
 /// A reference to a value is `kind << REF_SHIFT | index` (`REF_*` in `color.wgsl`).
@@ -249,12 +303,12 @@ pub(crate) const REF_KEY: u32 = 4;
 /// (`docs/23` section 3.5).
 const MAX_STEPS: usize = 64;
 
-/// The per-frame uniform block of `color.wgsl` (`ChainU`), 560 bytes: window and mode, the chain's
+/// The per-frame uniform block of `color.wgsl` (`ChainU`), 592 bytes: window and mode, the chain's
 /// parameters (the fused matrix, C7, the look), the cine rendering's matrix from XYZ to the output's
 /// primaries (`cine_m0` to `cine_m2`), the Before view's camera default (`cam0` to `cam2`: the 3x3
 /// rows, `camt`: the tone curve's `n`, `s`, `k` and white level) and the pass (`plan`, `stopn`: module
-/// notes). The nodes' parameters are not in it ([`NodeRecU`]). Field for field the WGSL struct (a test
-/// pins the offsets).
+/// notes), the mask rows' place (`mrow`) and the photo frame (`photo`). The nodes' parameters are not in it
+/// ([`NodeRecU`]). Field for field the WGSL struct (a test pins the offsets).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ChainU {
@@ -291,6 +345,11 @@ struct ChainU {
     plan: [u32; 4],
     /// x: the record at which kernel stops 11 and 12 end ([`NODE_NONE`]: none).
     stopn: [u32; 4],
+    /// x: the first mask row in the records' buffer, in `vec4` rows (after the records).
+    mrow: [u32; 4],
+    /// The photo frame ([`PhotoFrame`]): the photo's width and height over its long edge, and one output
+    /// pixel in units of the long edge.
+    photo: [f32; 4],
 }
 
 /// One step of the plan with its node, as the storage buffer at binding 6 holds it (`NodeRec` in
@@ -302,7 +361,7 @@ struct NodeRecU {
     /// 2 r, 4 g, 8 b), w: the first of the node's four curve tables.
     ctl: [u32; 4],
     /// x: the picture the step reads, y: the key it reads ([`NODE_NONE`]: none), z: the number of its
-    /// mask rows (0 until N-10: the kernel takes no mask blend), w: 0.
+    /// mask rows, w: the index of the first of them among all the mask rows.
     wire: [u32; 4],
     /// x: the register the step writes its picture to, y: the first plane of `pbuf` it writes it to, z:
     /// the key slot it writes its mask to, w: the plane of `pbuf` it writes it to ([`NODE_NONE`]: not
@@ -326,6 +385,41 @@ impl Default for NodeRecU {
     /// All zero (`Default` is not derived: the warp's arrays are longer than 32).
     fn default() -> Self {
         Self::zeroed()
+    }
+}
+
+/// One mask row as the storage buffer after the records holds it (`docs/algorithms/06` section 3,
+/// [`ym_color::mask::MaskOp`] narrowed to `f32`), 64 bytes: four `vec4` rows.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Default, Debug, PartialEq)]
+pub(crate) struct MaskOpU {
+    /// x: the kind (`MK_*`, [`ym_color::mask::OpKind::code`]), y: the `MASK_*` flags, z: the raster plane
+    /// ([`NODE_NONE`]: none; for N-13), w: the opacity as `f32` bits.
+    head: [u32; 4],
+    /// The first four numbers of [`MaskOp::params`].
+    p0: [f32; 4],
+    /// The last four.
+    p1: [f32; 4],
+    /// Reserved (the raster kinds of N-13 to N-19).
+    spare: [f32; 4],
+}
+
+impl MaskOpU {
+    /// The row for a prepared mask op.
+    fn of(op: &MaskOp) -> Self {
+        let p = op.params.map(|v| v as f32);
+        Self {
+            head: [
+                op.kind.code(),
+                if op.subtract { MASK_SUBTRACT } else { 0 }
+                    | if op.invert { MASK_INVERT } else { 0 },
+                NODE_NONE,
+                (op.opacity as f32).to_bits(),
+            ],
+            p0: [p[0], p[1], p[2], p[3]],
+            p1: [p[4], p[5], p[6], p[7]],
+            spare: [0.0; 4],
+        }
     }
 }
 
@@ -889,6 +983,7 @@ impl ChainTables {
         }
 
         let stand_in = self.stand_in(ctx)?;
+        u.mrow[0] = plan.rows_at;
         Ok(PreparedChain {
             base: u,
             tables,
@@ -901,6 +996,7 @@ impl ChainTables {
             result: plan.result,
             planes: plan.planes,
             node_stop: None,
+            photo: None,
             buffer_limit: DESIGN_BINDING_BYTES,
             output: params.output,
             look: look_kind,
@@ -928,7 +1024,10 @@ struct StepAt {
 /// The plan of a `ColorChain` in the form the kernel reads it: the records, the passes, the result and
 /// the curve tables.
 struct NodePlan {
-    records: Arc<Vec<NodeRecU>>,
+    /// The records and then the mask rows, as bytes.
+    records: Arc<Vec<u8>>,
+    /// Where the mask rows start in `records`, in `vec4` rows.
+    rows_at: u32,
     passes: Arc<Vec<PassSpan>>,
     steps: Arc<Vec<StepAt>>,
     result: u32,
@@ -990,6 +1089,7 @@ impl NodePlan {
         let (curves, curve_bits) = tables.curves(ctx, &sets)?;
         let mut next_set = 0usize;
         let mut records = Vec::with_capacity(nodes.len());
+        let mut mask_rows: Vec<MaskOpU> = Vec::new();
         for (step, n) in &nodes {
             let mut r = NodeRecU::default();
             let mut bits = 0u32;
@@ -1023,12 +1123,26 @@ impl NodePlan {
                     next_set += 1;
                 }
             }
+            // The mask rows (`ym_color::mask`): the same rows, derived once, as the CPU reads. A node blends when
+            // it has rows, an Invert or a key input.
+            let masks = n.masks.prepare();
+            if masks.blends(step.key.is_some()) {
+                bits |= NODE_BLEND;
+            }
+            if masks.invert() {
+                bits |= NODE_INVERT;
+            }
+            if masks.needs_luma() {
+                bits |= NODE_LUMA;
+            }
+            let first_row = mask_rows.len() as u32;
+            mask_rows.extend(masks.ops().iter().map(MaskOpU::of));
             r.ctl[0] = bits;
             r.wire = [
                 picture_ref(step.picture),
                 step.key.map_or(NODE_NONE, key_ref),
-                0,
-                0,
+                masks.ops().len() as u32,
+                first_row,
             ];
             let (picture_out, key_out) = (step.picture_out, step.key_out);
             r.outs = [
@@ -1072,8 +1186,16 @@ impl NodePlan {
         if records.is_empty() {
             records.push(NodeRecU::default());
         }
+        // The records, then the mask rows, as one buffer of `vec4` rows.
+        let rows_at = records.len() as u32 * REC_ROWS;
+        let mut bytes = Vec::with_capacity(
+            records.len() * size_of::<NodeRecU>() + mask_rows.len() * size_of::<MaskOpU>(),
+        );
+        bytes.extend_from_slice(bytemuck::cast_slice(&records));
+        bytes.extend_from_slice(bytemuck::cast_slice(&mask_rows));
         Ok(Self {
-            records: Arc::new(records),
+            records: Arc::new(bytes),
+            rows_at,
             passes: Arc::new(passes),
             steps: Arc::new(steps),
             result,
@@ -1162,8 +1284,8 @@ pub struct PreparedChain {
     look_luts: Arc<PooledBuffer>,
     /// Bound as the pass buffers of a plan with none.
     stand_in: Arc<PooledBuffer>,
-    /// The plan's steps with their nodes, in plan order: the storage buffer at binding 6.
-    records: Arc<Vec<NodeRecU>>,
+    /// The plan's steps with their nodes, in plan order, then the mask rows: the storage buffer at binding 6.
+    records: Arc<Vec<u8>>,
     /// The passes, as spans of the records (one pass at least).
     passes: Arc<Vec<PassSpan>>,
     /// Where each step's node is.
@@ -1174,6 +1296,8 @@ pub struct PreparedChain {
     planes: u32,
     /// Where kernel stops 11 and 12 end, when the chain was given one.
     node_stop: Option<(NodeStop, StepAt)>,
+    /// The render's photo frame, for the mask shapes ([`PreparedChain::with_photo_frame`]).
+    photo: Option<PhotoFrame>,
     /// The most bytes the pass buffers of one dispatch may have ([`DESIGN_BINDING_BYTES`]).
     buffer_limit: u64,
     output: OutputTarget,
@@ -1187,8 +1311,8 @@ pub struct PreparedChain {
 pub enum NodeStop {
     /// The nodes end after this node and the Output runs on its picture (a node's thumbnail).
     Picture(u32),
-    /// The picture is this node's mask `m` as grey code values, after the Output (the mask view; `m`
-    /// is 1 until N-10).
+    /// The picture is this node's mask `m` as grey code values, after the Output (the mask view; the node's
+    /// real `m` since N-10, 1 for a node with no mask rows, no Invert and no key).
     Mask(u32),
 }
 
@@ -1226,10 +1350,12 @@ struct DstLayout {
     at: (usize, usize),
 }
 
-/// What a dispatch needs beyond the window: the letterbox colour and whether the source has a mask.
+/// What a dispatch needs beyond the window: the letterbox colour, whether the source has a mask plane and
+/// whether it has the photo-frame position planes.
 #[derive(Clone, Copy, Debug, Default)]
 struct MaskPaint {
     has_mask: bool,
+    has_positions: bool,
     background: u32,
 }
 
@@ -1301,6 +1427,19 @@ impl PreparedChain {
         Ok(chain)
     }
 
+    /// The same chain for a render with this photo frame (the photo's aspect, and the size of one output pixel
+    /// in units of its long edge: [`ym_color::mask::PhotoFrame`], from the sampler's grid). The mask shapes of
+    /// the nodes need it, with a source that has the position planes ([`encode_sample_at`]); a chain with no
+    /// shape ignores it.
+    ///
+    /// [`encode_sample_at`]: crate::kernels::sampler::encode_sample_at
+    #[must_use]
+    pub fn with_photo_frame(&self, frame: PhotoFrame) -> Self {
+        let mut chain = self.clone();
+        chain.photo = Some(frame);
+        chain
+    }
+
     /// The passes of the plan (one dispatch each; one for the default graph).
     pub fn pass_count(&self) -> usize {
         self.passes.len()
@@ -1359,6 +1498,21 @@ impl PreparedChain {
         ];
         u.sp[1] = u32::from(mask.has_mask);
         u.sp[2] = mask.background;
+        u.sp[3] = u32::from(mask.has_positions);
+        if mask.has_positions {
+            let Some(frame) = self.photo else {
+                return Err(GpuError::InvalidInput(
+                    "a source with position planes needs the photo frame (PreparedChain::with_photo_frame)"
+                        .to_owned(),
+                ));
+            };
+            u.photo = [
+                frame.aspect[0] as f32,
+                frame.aspect[1] as f32,
+                frame.pixel as f32,
+                0.0,
+            ];
+        }
         let (stop, kind, bits, dither) = match output {
             ColorOutput::Stage(s) => (s, OutKind::F32Planar, 0, false),
             ColorOutput::Rgba8 { dither } => (Stop::C13, OutKind::Rgba8, 8, dither),
@@ -1449,11 +1603,7 @@ impl PreparedChain {
     ) -> Result<OutKind, GpuError> {
         let ctx = passes.context();
         let (_, kind) = self.uniform_for(output, &src_window, &out_window, dst, mask)?;
-        let records = passes.keep(storage_buffer(
-            ctx,
-            "node records",
-            bytemuck::cast_slice(&self.records[..]),
-        )?);
+        let records = passes.keep(storage_buffer(ctx, "node records", &self.records[..])?);
         // Rows per band: the whole window, unless the pass buffers would not fit one binding.
         let plane_bytes_per_row = 4 * u64::from(self.planes) * out_window.width.max(1) as u64;
         let band_rows = if self.planes == 0 {
@@ -1659,18 +1809,20 @@ impl PreparedChain {
 
     // ---- device in, device out ----------------------------------------------------------------
 
-    /// Records the colour pass over the `window` of `src` (camera RGB, three planes, or four with the
-    /// sampler's letterbox mask) up to `stop`, writing three f32 planes into `dst` (a fourth one,
-    /// holding the mask, when `src` has four), the window's pixel (0, 0) at `dst_at`. Nothing is read
-    /// back and nothing is uploaded but the uniform block.
+    /// Records the colour pass over the `window` of `src` (camera RGB, three planes, four with the
+    /// sampler's letterbox mask, or six with the photo-frame position planes besides) up to `stop`, writing
+    /// three f32 planes into `dst` (a fourth one, holding the mask, when `src` has four or six), the
+    /// window's pixel (0, 0) at `dst_at`. Nothing is read back and nothing is uploaded but the uniform
+    /// block and the node records.
     ///
     /// This is the C1 to C12 stage of the view and of the export: the result stays on the device.
     ///
     /// # Errors
     ///
     /// [`GpuError::InvalidInput`] when the device does not store f32 images (a legacy f16 mode), when
-    /// the window is empty or outside `src`, when `src` is not a three- or four-plane image or `dst`
-    /// does not have the same number of planes, or when the window does not fit `dst` at `dst_at`.
+    /// the window is empty or outside `src`, when `src` is not a three-, four- or six-plane image or `dst`
+    /// does not have the planes of `src` up to four, when `src` has the position planes and the chain has no
+    /// photo frame, or when the window does not fit `dst` at `dst_at`.
     pub fn encode_stage(
         &self,
         passes: &mut PassList<'_>,
@@ -1680,9 +1832,9 @@ impl PreparedChain {
         dst: &GpuImage,
         dst_at: (usize, usize),
     ) -> Result<(), GpuError> {
-        if dst.planes != src.planes {
+        if dst.planes != src.planes.min(4) {
             return Err(GpuError::InvalidInput(format!(
-                "the destination has {} planes, the source {} (the mask plane follows the pixels)",
+                "the destination has {} planes, the source {} (the mask plane follows the pixels, the position planes do not)",
                 dst.planes, src.planes
             )));
         }
@@ -1705,7 +1857,8 @@ impl PreparedChain {
             layout,
             &dst.buf,
             MaskPaint {
-                has_mask: src.planes == 4,
+                has_mask: src.planes >= 4,
+                has_positions: src.planes == 6,
                 background: 0,
             },
             (0, 0),
@@ -1762,7 +1915,8 @@ impl PreparedChain {
             layout,
             dst,
             MaskPaint {
-                has_mask: src.planes == 4,
+                has_mask: src.planes >= 4,
+                has_positions: src.planes == 6,
                 background: u32::from(background[0])
                     | (u32::from(background[1]) << 8)
                     | (u32::from(background[2]) << 16)
@@ -1791,9 +1945,9 @@ impl PreparedChain {
                 ctx.storage_mode().name()
             )));
         }
-        if !matches!(src.planes, 3 | 4) {
+        if !matches!(src.planes, 3 | 4 | 6) {
             return Err(GpuError::InvalidInput(format!(
-                "the colour pass reads a three- or four-plane image, not {} planes",
+                "the colour pass reads a three-, four- or six-plane image, not {} planes",
                 src.planes
             )));
         }
@@ -1916,19 +2070,21 @@ mod tests {
     use crate::kernels::shader_source;
 
     #[test]
-    fn the_per_frame_block_is_560_bytes_and_a_node_record_1200() {
+    fn the_per_frame_block_is_592_bytes_and_a_node_record_1200() {
         // The per-frame `ChainU` (`docs/17-gpu.md` section 11) was meant to be about 1 KB: the one uniform
         // block (K3 allows one) holds the frame's parameters. It was 992 bytes with the ACES 2 scalars; the
         // Before view's camera default added 64, and the colour warp (C9b) 1040 plus the grade's six rows
         // (1664 bytes in all, 2026-11-01). The nodes' parameters then moved into the storage buffer of node
         // records (N-04, `docs/23` section 5.4), so a plan of 16 nodes does not make the uniform grow: the
-        // block lost the grade, the zones, the balance and the warp (1136 bytes) and gained the pass (32).
+        // block lost the grade, the zones, the balance and the warp (1136 bytes) and gained the pass (32). The
+        // masks (N-10) added the place of the mask rows and the photo frame (32 more); the rows themselves are
+        // in the storage buffer after the records, 64 bytes each.
         // A record is the step's flags and wiring (3 rows), the gain (1), the grade (6), the warp's counts
         // (1) and its 16 moving (3 rows each) and 16 locked pins (1 row each): 75 rows of 16 bytes. Both are
         // far below the 64 KiB uniform binding the device asks for
         // (`max_uniform_buffer_binding_size` of `wgpu::Limits::default()`) and the 16 KiB of wgpu's
         // downlevel limits.
-        assert_eq!(size_of::<ChainU>(), 560);
+        assert_eq!(size_of::<ChainU>(), 592);
         assert_eq!(size_of::<ChainU>() % 16, 0);
         assert_eq!(size_of::<NodeRecU>(), 1200);
         assert_eq!(size_of::<NodeRecU>() % 16, 0);
@@ -1940,6 +2096,11 @@ mod tests {
         assert_eq!(WARP_LOCK_ROWS, 16);
         // A plan of the most steps (a graph has 64 correctors) is 75 KiB of records.
         assert_eq!(MAX_STEPS * size_of::<NodeRecU>(), 76_800);
+        // A mask row is four rows of 16 bytes, and 64 rows a node (the settings' limit) at 64 nodes are 256 KiB.
+        assert_eq!(size_of::<MaskOpU>(), 64);
+        assert_eq!(MASK_ROW_VEC4, 4);
+        assert_eq!(REC_ROWS, 75);
+        assert_eq!(MAX_STEPS * 64 * size_of::<MaskOpU>(), 262_144);
     }
 
     #[test]
@@ -2179,7 +2340,7 @@ mod tests {
                 .validate(&module)
                 .unwrap_or_else(|e| panic!("{mode:?}: {e:?}"));
             let (members, span) = wgsl_struct(&module, "CU");
-            let fields: [(&str, usize); 30] = [
+            let fields: [(&str, usize); 32] = [
                 ("dims", offset_of!(ChainU, dims)),
                 ("src", offset_of!(ChainU, src)),
                 ("origin", offset_of!(ChainU, origin)),
@@ -2210,6 +2371,8 @@ mod tests {
                 ("gate", offset_of!(ChainU, gate)),
                 ("plan", offset_of!(ChainU, plan)),
                 ("stopn", offset_of!(ChainU, stopn)),
+                ("mrow", offset_of!(ChainU, mrow)),
+                ("photo", offset_of!(ChainU, photo)),
             ];
             assert_eq!(members.len(), fields.len());
             for ((name, offset, _), (want, at)) in members.iter().zip(fields) {
@@ -2218,67 +2381,68 @@ mod tests {
             }
             assert_eq!(span as usize, size_of::<ChainU>(), "size of the block");
 
-            // The node record: the storage buffer's element, field for field the Rust struct.
-            let (members, span) = wgsl_struct(&module, "nodes");
-            let fields: [(&str, usize); 12] = [
-                ("ctl", offset_of!(NodeRecU, ctl)),
-                ("wire", offset_of!(NodeRecU, wire)),
-                ("outs", offset_of!(NodeRecU, outs)),
-                ("gain", offset_of!(NodeRecU, gain)),
-                ("grade0", offset_of!(NodeRecU, grade0)),
-                ("zone_amt", offset_of!(NodeRecU, zone_amt)),
-                ("zone_ctr", offset_of!(NodeRecU, zone_ctr)),
-                ("bal0", offset_of!(NodeRecU, bal0)),
-                ("bal1", offset_of!(NodeRecU, bal1)),
-                ("bal_ctr", offset_of!(NodeRecU, bal_ctr)),
-                ("warp_n", offset_of!(NodeRecU, warp_n)),
-                ("warp_mv", offset_of!(NodeRecU, warp_mv)),
-            ];
-            assert_eq!(members.len(), fields.len() + 1);
-            for ((name, offset, _), (want, at)) in members.iter().zip(fields) {
-                assert_eq!(name, want);
-                assert_eq!(*offset as usize, at, "offset of {want}");
-            }
-            assert_eq!(members[12].0, "warp_lk");
-            assert_eq!(members[12].1 as usize, offset_of!(NodeRecU, warp_lk));
-            assert_eq!(span as usize, size_of::<NodeRecU>(), "size of the record");
-            // The warp's arrays: as many `vec4<f32>` rows as the Rust arrays, 16 bytes apart.
-            for (name, rows) in [("warp_mv", WARP_MOVE_ROWS), ("warp_lk", WARP_LOCK_ROWS)] {
-                let (_, _, ty) = members
-                    .iter()
-                    .find(|(n, ..)| n == name)
-                    .expect("warp member");
-                let naga::TypeInner::Array { base, size, stride } = &module.types[*ty].inner else {
-                    panic!("{name} is not an array");
-                };
-                assert_eq!(*stride, 16, "{name}: stride");
-                assert!(
-                    matches!(size, naga::ArraySize::Constant(n) if n.get() as usize == rows),
-                    "{name}: {size:?} rows, the host packs {rows}"
-                );
-                assert!(
-                    matches!(
-                        module.types[*base].inner,
-                        naga::TypeInner::Vector {
-                            size: naga::VectorSize::Quad,
-                            scalar: naga::Scalar::F32
-                        }
-                    ),
-                    "{name}: rows of vec4<f32>"
-                );
-            }
-            // The records are an array of that struct with the record's size as its stride.
+            // The records and the mask rows after them are raw `vec4` rows of one storage buffer: the kernel reads a
+            // record's field at the row `R_*` the constants block writes from the Rust struct's offsets, and a mask
+            // row's four rows from `CU.mrow.x`.
             let var = module
                 .global_variables
                 .iter()
                 .map(|(_, v)| v)
                 .find(|v| v.name.as_deref() == Some("nodes"))
                 .expect("nodes");
-            let naga::TypeInner::Array { stride, size, .. } = &module.types[var.ty].inner else {
+            let naga::TypeInner::Array { base, stride, size } = &module.types[var.ty].inner else {
                 panic!("nodes is not an array");
             };
-            assert_eq!(*stride as usize, size_of::<NodeRecU>());
+            assert_eq!(*stride, 16);
             assert!(matches!(size, naga::ArraySize::Dynamic));
+            assert!(
+                matches!(
+                    module.types[*base].inner,
+                    naga::TypeInner::Vector {
+                        size: naga::VectorSize::Quad,
+                        scalar: naga::Scalar::U32
+                    }
+                ),
+                "rows of vec4<u32>"
+            );
+            let constant = |name: &str| -> u32 {
+                let tag = format!("const {name}: u32 = ");
+                let at = source
+                    .find(&tag)
+                    .unwrap_or_else(|| panic!("{name} in the source"));
+                source[at + tag.len()..]
+                    .split('u')
+                    .next()
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or_else(|| panic!("{name} is a u32 literal"))
+            };
+            assert_eq!(constant("REC_ROWS") as usize, size_of::<NodeRecU>() / 16);
+            assert_eq!(
+                constant("MASK_ROW_VEC4") as usize,
+                size_of::<MaskOpU>() / 16
+            );
+            for (name, row) in record_rows() {
+                assert_eq!(constant(name), row, "{name}");
+            }
+            assert_eq!(
+                constant("R_WARP_LK") as usize * 16,
+                offset_of!(NodeRecU, warp_lk)
+            );
+            // The warp's arrays are as long as the Rust arrays: the record ends after the last locked pin.
+            assert_eq!(
+                constant("R_WARP_MV") + constant("WARP_MOVE_ROWS"),
+                constant("R_WARP_LK")
+            );
+            assert_eq!(
+                constant("R_WARP_LK") + constant("WARP_LOCK_ROWS"),
+                constant("REC_ROWS")
+            );
+            // The mask row: the head (kind, flags, plane, opacity), then the numbers.
+            assert_eq!(offset_of!(MaskOpU, head), 0);
+            assert_eq!(offset_of!(MaskOpU, p0), 16);
+            assert_eq!(offset_of!(MaskOpU, p1), 32);
+            assert_eq!(constant("MK_LINEAR"), 0);
+            assert_eq!(constant("MK_BRIGHTNESS"), 3);
         }
     }
 

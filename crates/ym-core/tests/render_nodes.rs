@@ -4,7 +4,9 @@
 //! the thread count and the tile size, a graph with nodes beyond Main renders on the device like any other
 //! (N-04: no fallback, no note) and the grade cache key sees the plan, every node and the look.
 //!
-//! Masks are not rendered until N-10: a document with mask rows renders as if they were off.
+//! Masks (N-10): a node's mask rows act where they select and nowhere else, they are placed in the photo (they
+//! follow it through a turn, a crop and the lens), a key link carries a node's mask to another node, and the
+//! device agrees with the CPU for them.
 mod common;
 
 use std::io::Write as _;
@@ -347,42 +349,162 @@ fn a_bypassed_node_a_default_node_and_a_dead_branch_change_no_bit() {
     }
 }
 
+/// The mean of a block of the picture: `(x0, y0, w, h)` as fractions of the picture.
+fn block(img: &FullImage, x0: f64, y0: f64, w: f64, h: f64) -> [f64; 3] {
+    let (iw, ih) = (img.width as f64, img.height as f64);
+    let (bx, by) = ((x0 * iw) as usize, (y0 * ih) as usize);
+    let (bw, bh) = ((w * iw) as usize, (h * ih) as usize);
+    let mut sum = [0.0f64; 3];
+    for y in by..by + bh {
+        for x in bx..bx + bw {
+            for (c, s) in sum.iter_mut().enumerate() {
+                *s += f64::from(img.rgb[(y * img.width + x) * 3 + c]);
+            }
+        }
+    }
+    let n = (bw * bh) as f64;
+    sum.map(|v| v / n)
+}
+
+fn radial_row(center: [f64; 2], radii: [f64; 2], feather: f64) -> Value {
+    json!({ "kind": "radial", "mode": "add", "center": center, "radii": radii, "feather": feather })
+}
+
+fn masked(id: u32, body: Value, rows: Vec<Value>) -> Value {
+    let mut node = corrector(id, f64::from(id), body);
+    node["masks"] = json!({ "invert": false, "items": rows });
+    node
+}
+
 #[test]
-fn masks_are_not_rendered_until_n_10() {
-    // A mask row on a node renders as if it were off: m is 1 everywhere.
+fn a_mask_acts_where_it_selects_and_nowhere_else() {
     let d = photo(Layout::Patchwork, 0.5);
     let src = d.source();
     let r = renderer();
-    let without = with(
+    let unmasked = with(
         &src,
         graph(vec![corrector(2, 1.0, trim(1.0))], line(&[1, 2])),
     );
-    let masked = with(
+    let main_only = with(
+        &src,
+        graph(vec![corrector(2, 1.0, json!({}))], line(&[1, 2])),
+    );
+    let radial = with(
         &src,
         graph(
-            vec![corrector(
+            vec![masked(
                 2,
-                1.0,
-                json!({ "trim": { "exposure_ev": 1.0 }, "masks": { "invert": false, "items": [
-                    { "kind": "radial", "mode": "add", "center": [0.5, 0.5], "radii": [0.1, 0.1], "feather": 0.2 }
-                ] } }),
+                trim(1.0),
+                vec![radial_row([0.5, 0.5], [0.12, 0.12], 0.3)],
             )],
             line(&[1, 2]),
         ),
     );
-    assert_eq!(display(&r, &masked).rgb, display(&r, &without).rgb);
+    let (all, none, some) = (
+        display(&r, &unmasked),
+        display(&r, &main_only),
+        display(&r, &radial),
+    );
+    // At the middle of the photo the mask is 1: the node's own picture, bit for bit. Far from it the mask is 0:
+    // the node's input, bit for bit. In between a blend.
+    let c = (0.47, 0.47, 0.06, 0.06);
+    assert_eq!(
+        block(&some, c.0, c.1, c.2, c.3),
+        block(&all, c.0, c.1, c.2, c.3)
+    );
+    let far = (0.02, 0.02, 0.2, 0.2);
+    assert_eq!(
+        block(&some, far.0, far.1, far.2, far.3),
+        block(&none, far.0, far.1, far.2, far.3)
+    );
+    assert_ne!(some.rgb, all.rgb);
+    assert_ne!(some.rgb, none.rgb);
+    // The same picture twice is the same bytes.
+    assert_eq!(display(&r, &radial).rgb, some.rgb);
+    // A row with the eye off is absent: the node's own picture, as without it.
+    let mut off = radial.settings.clone();
+    if let Some(node) = off.nodes.corrector_mut(2) {
+        node.masks.items[0].enabled = false;
+    }
+    assert_eq!(display(&r, &with(&src, off)).rgb, all.rgb);
+    // The node's Invert swaps the two places.
+    let mut inverted = radial.settings.clone();
+    if let Some(node) = inverted.nodes.corrector_mut(2) {
+        node.masks.invert = true;
+    }
+    let inv = display(&r, &with(&src, inverted));
+    assert_eq!(
+        block(&inv, far.0, far.1, far.2, far.3),
+        block(&all, far.0, far.1, far.2, far.3)
+    );
+    assert_eq!(
+        block(&inv, c.0, c.1, c.2, c.3),
+        block(&none, c.0, c.1, c.2, c.3)
+    );
+    // Not vacuous: the node moves the picture.
+    assert_ne!(
+        block(&all, c.0, c.1, c.2, c.3),
+        block(&none, c.0, c.1, c.2, c.3)
+    );
 }
 
 #[test]
-fn a_node_that_only_makes_a_mask_is_live_and_changes_no_pixel_yet() {
+fn a_mask_stays_on_the_photo_when_the_photo_is_turned() {
+    // The shapes are placed in the photo (docs/23 section 3.6): turn the photo by a quarter and the picture is the
+    // turned one, the mask on the same feature.
     let d = photo(Layout::Patchwork, 0.5);
     let src = d.source();
     let r = renderer();
-    let plain = with(
+    let rows = vec![
+        radial_row([0.3, 0.4], [0.15, 0.1], 0.3),
+        json!({ "kind": "linear", "mode": "subtract", "center": [0.55, 0.5], "angle_deg": 35.0, "feather": 0.2 }),
+    ];
+    let upright = with(
         &src,
-        graph(vec![corrector(3, 2.0, trim(1.0))], line(&[1, 3])),
+        graph(vec![masked(2, trim(1.0), rows.clone())], line(&[1, 2])),
     );
-    // Node 5 reads Main, goes nowhere with its picture, and its key feeds node 3's key input.
+    let mut turned = upright.settings.clone();
+    turned.input_mut().orientation = ym_core::settings::Orientation::Deg90;
+    let a = display(&r, &upright);
+    let b = display(&r, &with(&src, turned));
+    assert_eq!((b.width, b.height), (a.height, a.width));
+    // A clockwise quarter turn: turned(x, y) = upright(y, H - 1 - x).
+    let (w, h) = (a.width, a.height);
+    let mut worst = 0.0f32;
+    for y in 0..b.height {
+        for x in 0..b.width {
+            for c in 0..3 {
+                let t = b.rgb[(y * b.width + x) * 3 + c];
+                let u = a.rgb[((h - 1 - x) * w + y) * 3 + c];
+                worst = worst.max((t - u).abs());
+            }
+        }
+    }
+    eprintln!("a turned photo against the upright one turned by hand: {worst:e}");
+    assert!(worst < 1e-5, "{worst}");
+    // And the mask does something (the unmasked node is a different picture).
+    let plain = display(
+        &r,
+        &with(
+            &src,
+            graph(vec![corrector(2, 1.0, trim(1.0))], line(&[1, 2])),
+        ),
+    );
+    assert_ne!(plain.rgb, a.rgb);
+}
+
+#[test]
+fn a_node_that_only_makes_a_mask_is_live_and_its_mask_acts() {
+    let d = photo(Layout::Patchwork, 0.5);
+    let src = d.source();
+    let r = renderer();
+    let row = || vec![radial_row([0.5, 0.5], [0.2, 0.15], 0.4)];
+    // Node 3 with the Radial itself.
+    let own = with(
+        &src,
+        graph(vec![masked(3, trim(1.0), row())], line(&[1, 3])),
+    );
+    // Node 5 reads Main, goes nowhere with its picture, has the Radial, and its key feeds node 3's key input.
     let mut links = line(&[1, 3]);
     links.push(picture(json!(1), json!(5)));
     links.push(key(5, 3));
@@ -391,14 +513,51 @@ fn a_node_that_only_makes_a_mask_is_live_and_changes_no_pixel_yet() {
         graph(
             vec![
                 corrector(3, 2.0, trim(1.0)),
-                corrector(5, 1.0, json!({ "trim": { "exposure_ev": 2.0 } })),
+                masked(5, json!({ "trim": { "exposure_ev": 2.0 } }), row()),
             ],
             links,
         ),
     );
     let plan = node_plan(&keyed.settings.nodes, ym_color::plan::Stop::Output).unwrap();
     assert_eq!(plan.node_ids(), vec![1, 5, 3]);
-    assert_eq!(display(&r, &keyed).rgb, display(&r, &plain).rgb);
+    // m of node 3 is node 5's, exactly: the same picture, bit for bit.
+    assert_eq!(display(&r, &keyed).rgb, display(&r, &own).rgb);
+    // And the picture is not the unmasked node's.
+    let plain = with(
+        &src,
+        graph(vec![corrector(3, 2.0, trim(1.0))], line(&[1, 3])),
+    );
+    assert_ne!(display(&r, &keyed).rgb, display(&r, &plain).rgb);
+}
+
+#[test]
+fn the_grade_key_sees_the_mask_rows() {
+    let d = photo(Layout::Patchwork, 0.5);
+    let src = d.source();
+    let color = color_plan(&src).unwrap();
+    let req = GradeRequest {
+        target: OutputTarget::Srgb,
+        dither: false,
+        looks: &NeutralOnly,
+    };
+    let node = |rows: Vec<Value>, enabled: bool| {
+        let mut rows = rows;
+        for r in &mut rows {
+            r["enabled"] = json!(enabled);
+        }
+        with(&src, graph(vec![masked(2, trim(1.0), rows)], line(&[1, 2])))
+    };
+    let key_of = |p: &PhotoSource| grade_key(p, &color, &req);
+    let row = |feather: f64| radial_row([0.5, 0.5], [0.2, 0.2], feather);
+    let base = key_of(&node(vec![row(0.3)], true));
+    assert_eq!(base, key_of(&node(vec![row(0.3)], true)));
+    assert_ne!(base, key_of(&node(vec![row(0.31)], true)));
+    assert_ne!(base, key_of(&node(vec![], true)));
+    // A row with the eye off is absent: the key of a node without it.
+    assert_eq!(
+        key_of(&node(vec![row(0.3)], false)),
+        key_of(&node(vec![], true))
+    );
 }
 
 #[test]
@@ -697,4 +856,87 @@ fn the_device_runs_every_graph_and_the_report_says_nothing_about_it() {
         eprintln!("{what}: the full render differs from the CPU's by {worst:e}");
         assert!(worst < 2e-3, "{what}: {worst}");
     }
+}
+
+#[test]
+fn the_device_runs_masks_and_agrees_with_the_cpu() {
+    let Some(gpu) = gpu() else { return };
+    let d = photo(Layout::Patchwork, 0.5);
+    let src = d.source();
+    let on_gpu = Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            gpu: Some(gpu),
+            gpu_stages: GpuStages::ALL,
+            ..RenderOptions::default()
+        },
+    )
+    .unwrap();
+    let cpu = renderer();
+    let st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+    let frame_of = |r: &Renderer, s: &PhotoSource| {
+        r.viewport_frame(s, &st, &FrameOptions::default(), &CancelToken::new())
+            .unwrap()
+    };
+    // Node 5 makes a mask only (a Radial and a Colour range), node 3 is keyed by it and has a Linear of its own
+    // subtracted, node 2 has a Brightness range.
+    let mut links = line(&[1, 2, 3]);
+    links.push(picture(json!(1), json!(5)));
+    links.push(key(5, 3));
+    let rows5 = vec![
+        radial_row([0.5, 0.5], [0.3, 0.2], 0.4),
+        json!({ "kind": "color_range", "mode": "add", "center": [0.0, 0.0], "width": 0.2, "softness": 0.5 }),
+    ];
+    let rows3 = vec![
+        json!({ "kind": "linear", "mode": "subtract", "center": [0.6, 0.5], "angle_deg": 20.0, "feather": 0.2 }),
+    ];
+    let rows2 = vec![
+        json!({ "kind": "brightness_range", "mode": "add", "low": 0.2, "high": 0.8, "softness": 0.4 }),
+    ];
+    let graph_of = |with_masks: bool| {
+        let (r2, r3, r5) = if with_masks {
+            (rows2.clone(), rows3.clone(), rows5.clone())
+        } else {
+            (vec![], vec![], vec![])
+        };
+        let mut l = links.clone();
+        if !with_masks {
+            l.retain(|x| x["from"]["port"] != json!("key"));
+        }
+        graph(
+            vec![
+                masked(2, trim(0.5), r2),
+                masked(3, s_curve(), r3),
+                masked(5, trim(1.0), r5),
+            ],
+            l,
+        )
+    };
+    let photo_masked = with(&src, graph_of(true));
+    let photo_plain = with(&src, graph_of(false));
+    let device = frame_of(&on_gpu, &photo_masked);
+    assert_eq!(device.report.device, ComputeDevice::Gpu);
+    let reference = frame_of(&cpu, &photo_masked);
+    let (mut worst, mut sum) = (0u8, 0u64);
+    for (x, y) in device.rgba.iter().zip(&reference.rgba) {
+        let dd = x.abs_diff(*y);
+        worst = worst.max(dd);
+        sum += u64::from(dd);
+    }
+    let mean = sum as f64 / device.rgba.len() as f64;
+    eprintln!("masks: the device differs from the CPU by {worst} codes, mean {mean:.4}");
+    assert!(worst <= 2 && mean < 0.25, "{worst} codes, mean {mean}");
+    // The masks act on both.
+    assert_ne!(device.rgba, frame_of(&on_gpu, &photo_plain).rgba);
+    assert_ne!(reference.rgba, frame_of(&cpu, &photo_plain).rgba);
+    // The full-resolution render, the way an export makes it.
+    let full_device = display(&on_gpu, &photo_masked);
+    let full_cpu = display(&cpu, &photo_masked);
+    let worst = full_device
+        .rgb
+        .iter()
+        .zip(&full_cpu.rgb)
+        .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+    eprintln!("masks: the full render differs from the CPU's by {worst:e}");
+    assert!(worst < 2e-3, "{worst}");
 }

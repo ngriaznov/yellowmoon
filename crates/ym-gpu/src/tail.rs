@@ -61,7 +61,7 @@ use crate::kernels::color::{PreparedChain, Stop, release_tables};
 use crate::kernels::encode::{C13, Encoding, band_bytes, encode_c13, row_words};
 use crate::kernels::output_sharpen::PreparedSharpen;
 use crate::kernels::resize::{PreparedTaps, Taps, encode_resize_h, encode_resize_v};
-use crate::kernels::sampler::encode_sample;
+use crate::kernels::sampler::encode_sample_at;
 use crate::kernels::util::STORAGE_OUT;
 use crate::queue::{CancelToken, JobSpec};
 use crate::stream::PassList;
@@ -408,8 +408,22 @@ fn tile_job(ctx: &GpuContext, token: &CancelToken, d: &TileData) -> Result<(), G
         }
         TileSource::Device(image) => image,
     };
-    let sampled = encode_sample(&mut passes, src, d.origin, &d.grid, d.off, d.w, d.h)?;
-    let prepared = PreparedChain::new(ctx, &d.chain)?;
+    // The mask shapes of the nodes read the pixels' places in the photo: the sampler writes them.
+    let positions = d.chain.uses_photo_position();
+    let sampled = encode_sample_at(
+        &mut passes,
+        src,
+        d.origin,
+        &d.grid,
+        d.off,
+        d.w,
+        d.h,
+        positions,
+    )?;
+    let mut prepared = PreparedChain::new(ctx, &d.chain)?;
+    if positions {
+        prepared = prepared.with_photo_frame(d.grid.photo_frame());
+    }
     for t in &d.targets {
         prepared.encode_stage(
             &mut passes,
@@ -1008,8 +1022,22 @@ fn host_tile_job(
         }
         TileSource::Device(image) => image,
     };
-    let sampled = encode_sample(&mut passes, src, d.origin, &d.grid, d.off, d.w, d.h)?;
-    let prepared = PreparedChain::new(ctx, &d.chain)?;
+    // The mask shapes of the nodes read the pixels' places in the photo: the sampler writes them.
+    let positions = d.chain.uses_photo_position();
+    let sampled = encode_sample_at(
+        &mut passes,
+        src,
+        d.origin,
+        &d.grid,
+        d.off,
+        d.w,
+        d.h,
+        positions,
+    )?;
+    let mut prepared = PreparedChain::new(ctx, &d.chain)?;
+    if positions {
+        prepared = prepared.with_photo_frame(d.grid.photo_frame());
+    }
     let out = GpuImage::alloc(
         ctx,
         "tail host tile",

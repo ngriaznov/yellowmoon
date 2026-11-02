@@ -39,6 +39,14 @@
 // guard on a determinant of exactly 0, the CPU's, which the data checks keep far from the map's range
 // (the determinant is at least 0.5 over the photo and a margin).
 //
+// The photo frame (docs/23 section 3.6). With `su.mode.w` set the kernel writes two more planes, the pixel's
+// position in the photo as the camera oriented it, in [0, 1] (the oriented fractions the mask shapes of the nodes are
+// placed in), which the colour pass reads. It is the position the pixel samples (the buffer position, after the bend,
+// as an integer and a fraction apart), as a fraction of the buffer with the camera's orientation undone (`photo_pos`):
+// the CPU twin is `SamplerGrid::photo_position`. A pixel the box kernel averages gets the mean of the positions of
+// the sub-samples that fell inside the photo. The planes depend on the absolute column and row through the same
+// tables, so a tile and the whole frame write the same bits (D5).
+//
 // The arithmetic of the samples follows the CPU port operation by operation: the Catmull-Rom
 // weights, `acc += wy_k (wx_0 r_0 + wx_1 r_1 + wx_2 r_2 + wx_3 r_3)` row by row, the bilinear blend
 // and the division of the box by the number of sub-samples that fell inside.
@@ -46,7 +54,7 @@
 struct SamplerU {
     dims: vec4<u32>,    // x: window width, y: window height, z: output stride (even), w: output plane length
     src: vec4<u32>,     // x: source width, y: source height, z: source stride, w: source plane length
-    mode: vec4<u32>,    // x: kernel (0 copy, 1 Catmull-Rom, 2 box), y: sub-samples per axis (1 unless box), z: 1 with a warp
+    mode: vec4<u32>,    // x: kernel (0 copy, 1 Catmull-Rom, 2 box), y: sub-samples per axis (1 unless box), z: 1 with a warp, w: 1 to write the photo-frame position planes (4 and 5)
     wk: vec4<u32>,      // x: Newton steps, y: 1 when the anamorphic axis is the canvas's y
     wx: vec4<f32>,      // a1 .. a4: the terms of x' for x^2, y^2, x^4, x^2 y^2 (a5, for y^4, is wc.x)
     wy: vec4<f32>,      // b1 .. b4: the same for y' (b5 is wc.y)
@@ -57,6 +65,9 @@ struct SamplerU {
     ci: vec4<i32>,      // x, y: integer part of the canvas centre's buffer position, relative to the source window
     cf: vec4<f32>,      // x, y: its fraction
     lim: vec4<i32>,     // x0, y0, x1, y1: the buffer, relative to the source window (the clamp)
+    po: vec4<i32>,      // x, y: the source window's origin in the buffer
+    pm: vec4<f32>,      // the camera's orientation undone on fractions, row-major: oriented = pm * sensor + pt
+    pt: vec4<f32>,      // x, y: its offset; z, w: 1 / buffer width, 1 / buffer height
 };
 
 struct PosEntry {
@@ -230,6 +241,19 @@ fn warp_pos(pi: vec2<i32>, pf: vec2<f32>) -> Pos {
     return Pos(qi, qf);
 }
 
+// The position in the photo frame of the buffer position (pi + pf) relative to the source window.
+fn photo_pos(pi: vec2<i32>, pf: vec2<f32>) -> vec2<f32> {
+    let b = vec2<f32>(
+        (f32(su.po.x + pi.x) + pf.x) * su.pt.z,
+        (f32(su.po.y + pi.y) + pf.y) * su.pt.w,
+    );
+    let o = vec2<f32>(
+        su.pm.x * b.x + su.pm.y * b.y + su.pt.x,
+        su.pm.z * b.x + su.pm.w * b.y + su.pt.y,
+    );
+    return clamp(o, vec2<f32>(0.0), vec2<f32>(1.0));
+}
+
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = gid.x;
@@ -241,6 +265,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let taps = su.mode.y;
     var rgb = vec3<f32>(0.0);
     var gone = true;
+    var ppos = vec2<f32>(0.0);
     if (kernel < 2u) {
         let iv = inside[y];
         if (i32(x) >= iv.x && i32(x) <= iv.y) {
@@ -254,6 +279,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 pi = moved.i;
                 pf = moved.f;
             }
+            if (su.mode.w != 0u) {
+                ppos = photo_pos(pi, pf);
+            }
             if (kernel == 0u) {
                 let ix = clamp(pi.x + i32(floor(pf.x)), 0, i32(su.src.x) - 1);
                 let iy = clamp(pi.y + i32(floor(pf.y)), 0, i32(su.src.y) - 1);
@@ -264,6 +292,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     } else {
         var acc = vec3<f32>(0.0);
+        var pacc = vec2<f32>(0.0);
         var count = 0u;
         for (var j = 0u; j < taps; j = j + 1u) {
             for (var i = 0u; i < taps; i = i + 1u) {
@@ -279,12 +308,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                         pf = moved.f;
                     }
                     acc = acc + vec3<f32>(sample_bil(0u, pi, pf), sample_bil(1u, pi, pf), sample_bil(2u, pi, pf));
+                    if (su.mode.w != 0u) {
+                        pacc = pacc + photo_pos(pi, pf);
+                    }
                     count = count + 1u;
                 }
             }
         }
         if (count > 0u) {
             rgb = acc / f32(count);
+            ppos = pacc / f32(count);
             gone = false;
         }
     }
@@ -294,4 +327,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     out[pl + o] = rgb.y;
     out[2u * pl + o] = rgb.z;
     out[3u * pl + o] = select(0.0, 1.0, gone);
+    if (su.mode.w != 0u) {
+        out[4u * pl + o] = ppos.x;
+        out[5u * pl + o] = ppos.y;
+    }
 }

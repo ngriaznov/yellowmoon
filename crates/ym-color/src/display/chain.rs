@@ -54,6 +54,7 @@ use crate::gamut::{LinearAwg4, LinearRec709};
 use crate::grade::GradeParams;
 use crate::logc::LogC4;
 use crate::look::{LookTransform, blend_display_linear, intensity_fraction};
+use crate::mask::PixelAt;
 use crate::plan::{KeyRef, PLAN_KEYS, PLAN_REGISTERS, PictureRef, PlanResult, Step};
 use crate::tone::{PreparedTone, ToneParams};
 use crate::warp::WarpParams;
@@ -167,6 +168,7 @@ impl ChainParams {
                 grade: self.grade,
                 warp: self.warp.clone(),
                 curves: self.curves.clone(),
+                masks: self.nodes.main.masks.clone(),
             })
         } else {
             self.nodes.others.get(&id).cloned()
@@ -339,7 +341,8 @@ impl ColorChain {
                 let n = params
                     .node_params(step.node)
                     .ok_or(DisplayError::MissingNode(step.node))?;
-                let node = PreparedNode::new(n.bypass, &n.trim, &n.grade, &n.warp, &n.curves);
+                let node =
+                    PreparedNode::new(n.bypass, &n.trim, &n.grade, &n.warp, &n.curves, &n.masks);
                 Ok((*step, node))
             })
             .collect::<Result<Vec<_>, DisplayError>>()?;
@@ -459,11 +462,20 @@ impl ColorChain {
 
     /// The nodes of the plan on one pixel: `c8` is the Input's picture and `c7` the linear values it
     /// was encoded from (the luma of C9 is taken from them for a node that reads the Input). Main's
-    /// values after each of its steps go into `main`.
+    /// values after each of its steps go into `main`. `at` is the pixel's place in the photo frame, for
+    /// the mask shapes.
     ///
-    /// Masks are not rendered until N-10: every node's mask `m` is 1, so a node's output is its
-    /// value after C11 (`docs/23` section 15).
-    fn run_nodes(&self, c8: LogC4, c7: Vec3, mut main: Option<&mut MainStages>) -> LogC4 {
+    /// Each step is the node's four steps (`PreparedNode::apply`) and then the mask blend
+    /// `out = in + m (node(in) - in)` (`docs/algorithms/06` section 1.1): `m` is 1 for a node with no
+    /// mask rows, no Invert and no key, which then keeps its own bits; the blend branches on `m` being
+    /// exactly 1 or exactly 0. A node's key output is its `m` whether or not the node is bypassed.
+    fn run_nodes(
+        &self,
+        c8: LogC4,
+        c7: Vec3,
+        at: PixelAt,
+        mut main: Option<&mut MainStages>,
+    ) -> LogC4 {
         let mut registers = [[0.0f64; 3]; PLAN_REGISTERS];
         let mut slots = [0.0f64; PLAN_KEYS];
         let mut buffers = vec![[0.0f64; 3]; self.buffers];
@@ -473,14 +485,34 @@ impl ColorChain {
                 PictureRef::Register(r) => (LogC4(registers[usize::from(r)]), None),
                 PictureRef::Buffer(b) => (LogC4(buffers[usize::from(b)]), None),
             };
+            let key = step.key.map(|k| match k {
+                KeyRef::Slot(s) => slots[usize::from(s)],
+                KeyRef::Buffer(b) => buffers[usize::from(b)][0],
+            });
             let stages = if step.node == crate::plan::MAIN_NODE {
                 main.as_deref_mut()
             } else {
                 None
             };
-            let out = node.apply(v_in, linear, stages).0;
-            // The node's mask: 1 everywhere until N-10.
-            let m = 1.0;
+            let made = node.apply(v_in, linear, stages).0;
+            // The mask: needed for the blend, and for the key output (also of a node that is skipped).
+            let blends = node.masks().blends(key.is_some());
+            let m = if (blends && !node.skips()) || step.key_out.is_some() {
+                node.mask(key, v_in, linear, at)
+            } else {
+                1.0
+            };
+            let out = if !blends || node.skips() || m == 1.0 {
+                made
+            } else if m == 0.0 {
+                v_in.0
+            } else {
+                [
+                    v_in.0[0] + m * (made[0] - v_in.0[0]),
+                    v_in.0[1] + m * (made[1] - v_in.0[1]),
+                    v_in.0[2] + m * (made[2] - v_in.0[2]),
+                ]
+            };
             if let Some(o) = step.picture_out {
                 if let Some(r) = o.register {
                     registers[usize::from(r)] = out;
@@ -507,7 +539,7 @@ impl ColorChain {
         }
     }
 
-    fn stages(&self, camera_rgb: Vec3) -> Staged {
+    fn stages(&self, camera_rgb: Vec3, at: PixelAt) -> Staged {
         let c6 = self.c1_to_c6(camera_rgb);
         let c7 = self.tone.apply_rgb(c6);
         let c8 = LinearAwg4(c7).to_logc4();
@@ -516,7 +548,7 @@ impl ColorChain {
             c9b: c8,
             c11: c8,
         };
-        let nodes = self.run_nodes(c8, c7, Some(&mut main));
+        let nodes = self.run_nodes(c8, c7, at, Some(&mut main));
         let c10 = self.c10(nodes);
         Staged {
             c6,
@@ -528,19 +560,33 @@ impl ColorChain {
     }
 
     /// The last LogC4 value of the chain, behind the look: what C12 reads and the DNG holds.
-    fn last_logc4(&self, camera_rgb: Vec3) -> LogC4 {
+    fn last_logc4(&self, camera_rgb: Vec3, at: PixelAt) -> LogC4 {
         let c6 = self.c1_to_c6(camera_rgb);
         let c7 = self.tone.apply_rgb(c6);
         let c8 = LinearAwg4(c7).to_logc4();
-        self.c10(self.run_nodes(c8, c7, None))
+        self.c10(self.run_nodes(c8, c7, at, None))
     }
 
     // ---- single pixels -------------------------------------------------------------------------
 
-    /// Every stage's value for one camera pixel.
+    /// Whether any mask row of the plan's nodes reads the pixel's place in the photo (a Linear or a
+    /// Radial): a render then needs the photo-frame position of every pixel ([`Frame::with_photo`]).
+    #[must_use]
+    pub fn uses_photo_position(&self) -> bool {
+        self.steps.iter().any(|(_, n)| n.masks().needs_position())
+    }
+
+    /// Every stage's value for one camera pixel whose place in the photo frame is not known: the mask
+    /// shapes select nothing there ([`ColorChain::trace_at`]).
     #[must_use]
     pub fn trace(&self, camera_rgb: Vec3) -> StageTrace {
-        let s = self.stages(camera_rgb);
+        self.trace_at(camera_rgb, None)
+    }
+
+    /// Every stage's value for one camera pixel at `at` in the photo frame.
+    #[must_use]
+    pub fn trace_at(&self, camera_rgb: Vec3, at: PixelAt) -> StageTrace {
+        let s = self.stages(camera_rgb, at);
         let c12 = self.c12(s.c10);
         StageTrace {
             c6_linear_awg4: s.c6,
@@ -558,7 +604,13 @@ impl ColorChain {
     /// The whole chain: camera RGB to display code values in `[0, 1]` (not quantised, not dithered).
     #[must_use]
     pub fn apply_pixel(&self, camera_rgb: Vec3) -> Vec3 {
-        self.encode(self.apply_to_display_linear(camera_rgb))
+        self.apply_pixel_at(camera_rgb, None)
+    }
+
+    /// [`ColorChain::apply_pixel`] for a pixel at `at` in the photo frame.
+    #[must_use]
+    pub fn apply_pixel_at(&self, camera_rgb: Vec3, at: PixelAt) -> Vec3 {
+        self.encode(self.apply_to_display_linear_at(camera_rgb, at))
     }
 
     /// C12 alone: a LogC4 pixel (the C11 output) to display-linear RGB in the output's primaries,
@@ -575,7 +627,13 @@ impl ColorChain {
     /// [`ColorChain::encode_u8`] (`docs/09`, Pixel pipeline per format).
     #[must_use]
     pub fn apply_to_display_linear(&self, camera_rgb: Vec3) -> Vec3 {
-        self.c12(self.last_logc4(camera_rgb))
+        self.apply_to_display_linear_at(camera_rgb, None)
+    }
+
+    /// [`ColorChain::apply_to_display_linear`] for a pixel at `at` in the photo frame.
+    #[must_use]
+    pub fn apply_to_display_linear_at(&self, camera_rgb: Vec3, at: PixelAt) -> Vec3 {
+        self.c12(self.last_logc4(camera_rgb, at))
     }
 
     /// C1 to C10: camera RGB to LogC4 with the nodes (trims, grade, warp, curves) and then the look
@@ -583,7 +641,13 @@ impl ColorChain {
     /// look has not run at this point (the curve of the last node is the last LogC4 stage).
     #[must_use]
     pub fn apply_logc4_pixel(&self, camera_rgb: Vec3) -> LogC4 {
-        self.last_logc4(camera_rgb)
+        self.apply_logc4_pixel_at(camera_rgb, None)
+    }
+
+    /// [`ColorChain::apply_logc4_pixel`] for a pixel at `at` in the photo frame.
+    #[must_use]
+    pub fn apply_logc4_pixel_at(&self, camera_rgb: Vec3, at: PixelAt) -> LogC4 {
+        self.last_logc4(camera_rgb, at)
     }
 
     /// The DNG path (`docs/09`, Pixel pipeline per format): the nodes and then the look, with LogC4
@@ -598,7 +662,13 @@ impl ColorChain {
     /// output the display value is first converted to Rec.709 primaries.
     #[must_use]
     pub fn apply_dng_pixel(&self, camera_rgb: Vec3) -> Vec3 {
-        let last = self.last_logc4(camera_rgb);
+        self.apply_dng_pixel_at(camera_rgb, None)
+    }
+
+    /// [`ColorChain::apply_dng_pixel`] for a pixel at `at` in the photo frame.
+    #[must_use]
+    pub fn apply_dng_pixel_at(&self, camera_rgb: Vec3, at: PixelAt) -> Vec3 {
+        let last = self.last_logc4(camera_rgb, at);
         match &self.dng_inverse {
             // C12 is our cine rendering: the pixels are the scene values it takes in.
             None => last.to_linear().0,
@@ -615,6 +685,13 @@ impl ColorChain {
     /// channel clamped to `[0, 1]` and used directly as a display code value (see the module docs).
     #[must_use]
     pub fn apply_before_pixel(&self, camera_rgb: Vec3) -> Vec3 {
+        self.apply_before_pixel_at(camera_rgb, None)
+    }
+
+    /// [`ColorChain::apply_before_pixel`] for a pixel at `at` in the photo frame (only the two LogC4
+    /// reading points run nodes, and only the nodes' masks read the place).
+    #[must_use]
+    pub fn apply_before_pixel_at(&self, camera_rgb: Vec3, at: PixelAt) -> Vec3 {
         match self.before {
             BeforePoint::CameraDefault => {
                 let rec709 = self
@@ -622,8 +699,8 @@ impl ColorChain {
                     .display_linear_rec709(camera_rgb.map(sanitize));
                 self.encode(self.space.from_linear_rec709(LinearRec709(rec709)))
             }
-            BeforePoint::CameraLog => self.stages(camera_rgb).c8.0.map(unit),
-            BeforePoint::AfterGrade => self.stages(camera_rgb).main.c9.0.map(unit),
+            BeforePoint::CameraLog => self.stages(camera_rgb, at).c8.0.map(unit),
+            BeforePoint::AfterGrade => self.stages(camera_rgb, at).main.c9.0.map(unit),
         }
     }
 
@@ -631,9 +708,15 @@ impl ColorChain {
     /// [`View::Final`], [`ColorChain::apply_before_pixel`] for [`View::Before`].
     #[must_use]
     pub fn apply_view_pixel(&self, view: View, camera_rgb: Vec3) -> Vec3 {
+        self.apply_view_pixel_at(view, camera_rgb, None)
+    }
+
+    /// [`ColorChain::apply_view_pixel`] for a pixel at `at` in the photo frame.
+    #[must_use]
+    pub fn apply_view_pixel_at(&self, view: View, camera_rgb: Vec3, at: PixelAt) -> Vec3 {
         match view {
-            View::Final => self.apply_pixel(camera_rgb),
-            View::Before => self.apply_before_pixel(camera_rgb),
+            View::Final => self.apply_pixel_at(camera_rgb, at),
+            View::Before => self.apply_before_pixel_at(camera_rgb, at),
         }
     }
 

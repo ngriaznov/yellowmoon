@@ -71,9 +71,11 @@ use std::sync::{Arc, Weak};
 use rayon::prelude::*;
 use ym_color::consts::Vec3;
 use ym_color::display::{ColorChain, Frame, Layout, OutputTarget, View};
+use ym_color::mask::{PhotoFrame, PhotoMap, PhotoSpot, PixelAt};
 use ym_color::warp::chroma_of;
 use ym_gpu::cpu::magnify::{MagnifyMap, magnify_with};
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
+use ym_gpu::cpu::sampler::{GridPositions, SamplerGrid, photo_positions};
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError};
 use ym_gpu::kernels::copy::Piece;
@@ -492,11 +494,23 @@ impl PreparedView {
         Some((if want.is_empty() { whole } else { want }, whole))
     }
 
+    /// The geometry of the view as plain data, when it has pixels: what places a pixel of the view in the photo
+    /// frame ([`SamplerGrid::photo_position`]) for the mask shapes of the nodes.
+    fn photo_grid(&self) -> Option<SamplerGrid> {
+        match &self.source {
+            ViewSource::Image { grid, .. } => Some(grid.sampler_grid()),
+            ViewSource::Empty => None,
+        }
+    }
+
     /// What a device job starts from for this view, and the bounding box of the pixels inside the
     /// photo in the sampled picture. With the sampler on the device the window of the pixels is the
     /// job's input: uploaded as camera RGB when it is on the host, gathered in place when it is on
     /// the device `route` runs on; otherwise (no sampler on the device, or the pixels are on another
     /// device) the CPU samples and the sampled pixels are uploaded.
+    ///
+    /// With `positions` the pixels' places in the photo come with them (six planes): the sampler writes them,
+    /// or the host computes them for the picture it sampled.
     ///
     /// # Errors
     ///
@@ -505,6 +519,7 @@ impl PreparedView {
         &self,
         job: &mut Job<'_>,
         route: &ViewRoute,
+        positions: bool,
     ) -> Result<(DeviceInput, Option<Bounds>), RenderError> {
         let (w, h) = (self.width, self.height);
         if route.stages.sampler
@@ -557,6 +572,7 @@ impl PreparedView {
                         grid: Box::new(grid.sampler_grid()),
                         width: w,
                         height: h,
+                        positions,
                     },
                     self.inside_bounds(),
                 ));
@@ -564,7 +580,12 @@ impl PreparedView {
         }
         let sampled = self.sample_host(job)?;
         let bounds = inside_bounds(sampled.outside.as_deref(), w, h);
-        Ok((DeviceInput::Sampled(Upload::of(&sampled)), bounds))
+        let planes = positions.then(|| match self.photo_grid() {
+            Some(g) => (photo_positions(&g, (0, 0), w, h), g.photo_frame()),
+            // Nothing of the photo is in view: every pixel is outside and none is computed.
+            None => (vec![0.0; 2 * w * h], PhotoFrame::new(1.0, 1.0, 1.0)),
+        });
+        Ok((DeviceInput::Sampled(Upload::of(&sampled, planes)), bounds))
     }
 
     /// The bounding box `(x0, y0, x1, y1)` (exclusive ends) of the pixels of the view that are inside
@@ -607,20 +628,52 @@ fn paint_letterbox(rgba: &mut [u8], outside: Option<&[u8]>, background: [u8; 3])
         });
 }
 
+/// The positions in the photo of the pixels of a window of `grid` for a chain whose mask shapes read them, and
+/// the render's photo frame: what [`Frame::with_photo`] takes. `None` for a chain with no shape or a view with
+/// nothing of the photo in it.
+struct PhotoPositions<'a> {
+    map: GridPositions<'a>,
+    frame: PhotoFrame,
+}
+
+fn photo_positions_of<'a>(
+    chain: &ColorChain,
+    grid: Option<&'a SamplerGrid>,
+    off: (usize, usize),
+) -> Option<PhotoPositions<'a>> {
+    let grid = grid.filter(|_| chain.uses_photo_position())?;
+    Some(PhotoPositions {
+        map: GridPositions::new(grid, off),
+        frame: grid.photo_frame(),
+    })
+}
+
+/// `frame` with the positions in the photo of its pixels, when there are any.
+fn with_photo<'a>(frame: Frame<'a>, positions: &'a Option<PhotoPositions<'a>>) -> Frame<'a> {
+    match positions {
+        Some(p) => frame.with_photo(&p.map, p.frame),
+        None => frame,
+    }
+}
+
 /// The colour chain C1 to C13 over `sampled` on the CPU reference path: RGBA8 with the letterbox
 /// painted (a frame that is not sharpened: amount 0, or the Before view).
 fn color_pass_cpu(
     job: &mut Job<'_>,
     sampled: &Sampled,
     grade: &GradePlan,
+    photo: Option<&SamplerGrid>,
     before: bool,
     background: [u8; 3],
 ) -> Result<Vec<u8>, RenderError> {
     job.check()?;
     let (w, h) = (sampled.img.width, sampled.img.height);
     let n = w * h;
-    let frame =
-        Frame::planar(w, h, &sampled.img.data).map_err(|e| RenderError::Color(e.to_string()))?;
+    let positions = photo_positions_of(&grade.chain, photo, (0, 0));
+    let frame = with_photo(
+        Frame::planar(w, h, &sampled.img.data).map_err(|e| RenderError::Color(e.to_string()))?,
+        &positions,
+    );
     let mut rgb = vec![0u8; 3 * n];
     let view = if before { View::Before } else { View::Final };
     grade
@@ -646,11 +699,15 @@ fn display_linear_cpu(
     job: &mut Job<'_>,
     sampled: &Sampled,
     grade: &GradePlan,
+    photo: Option<&SamplerGrid>,
 ) -> Result<(Vec<f32>, Option<Vec<u8>>), RenderError> {
     job.check()?;
     let (w, h) = (sampled.img.width, sampled.img.height);
-    let frame =
-        Frame::planar(w, h, &sampled.img.data).map_err(|e| RenderError::Color(e.to_string()))?;
+    let positions = photo_positions_of(&grade.chain, photo, (0, 0));
+    let frame = with_photo(
+        Frame::planar(w, h, &sampled.img.data).map_err(|e| RenderError::Color(e.to_string()))?,
+        &positions,
+    );
     let mut rgb = vec![0.0f32; 3 * w * h];
     grade
         .chain
@@ -1221,7 +1278,7 @@ fn sample_routed(
     if let Some(r) = route.filter(|r| r.stages.sampler)
         && matches!(prepared.source, ViewSource::Image { .. })
     {
-        let (input, _) = prepared.device_input(job, r)?;
+        let (input, _) = prepared.device_input(job, r, false)?;
         if input.fits(r) {
             let t = std::time::Instant::now();
             if let Some((w, h, planar)) = attempt(job, r.run(input, device::sample_job))? {
@@ -1247,7 +1304,7 @@ fn plain_pass(
     let (scale, sharp) = (prepared.scale, prepared.sharp);
     let started = std::time::Instant::now();
     if let Some(r) = route.filter(|r| r.stages.color) {
-        let (input, _) = prepared.device_input(job, r)?;
+        let (input, _) = prepared.device_input(job, r, grade.chain.uses_photo_position())?;
         // A frame that does not fit one binding is made on the CPU, quietly (a view cut into bands
         // never gets here: `banded`).
         if input.fits(r) {
@@ -1275,7 +1332,14 @@ fn plain_pass(
     }
     let sampled = sample_routed(job, &prepared, route)?;
     let started = std::time::Instant::now();
-    let rgba = color_pass_cpu(job, &sampled, grade, spec.before, spec.background)?;
+    let rgba = color_pass_cpu(
+        job,
+        &sampled,
+        grade,
+        prepared.photo_grid().as_ref(),
+        spec.before,
+        spec.background,
+    )?;
     job.runs.color_passes += 1;
     job.timings.pass_ms += millis(started);
     Ok(Flow::Done(Done {
@@ -1348,7 +1412,7 @@ fn build_display(
     let (scale, sharp) = (prepared.scale, prepared.sharp);
     let started = std::time::Instant::now();
     if let Some(r) = route.filter(|r| r.stages.color) {
-        let (input, own) = prepared.device_input(job, r)?;
+        let (input, own) = prepared.device_input(job, r, grade.chain.uses_photo_position())?;
         let bounds = plan.window.or(own);
         if input.fits(r) {
             let data = DisplayJob {
@@ -1397,7 +1461,7 @@ fn build_display(
     }
     let sampled = sample_routed(job, prepared, route)?;
     let started = std::time::Instant::now();
-    let (rgb, outside) = display_linear_cpu(job, &sampled, grade)?;
+    let (rgb, outside) = display_linear_cpu(job, &sampled, grade, prepared.photo_grid().as_ref())?;
     job.runs.color_passes += 1;
     job.timings.pass_ms += millis(started);
     Ok(Some(Built {
@@ -1437,7 +1501,7 @@ fn build_display_in_bands(
     for band in device::bands_of(read, rows) {
         job.check()?;
         let prepared = prepare_view(job, &band)?;
-        let (input, _) = prepared.device_input(job, route)?;
+        let (input, _) = prepared.device_input(job, route, grade.chain.uses_photo_position())?;
         if !input.fits(route) {
             // The cut is made so that every band fits (`band_split`): a band that does not is the
             // frame's buffers not fitting, answered as such.
@@ -2079,6 +2143,19 @@ pub(crate) struct ViewSpec {
 pub(crate) struct SampledView {
     pub sampled: Arc<Sampled>,
     pub scale: usize,
+    /// The view's geometry as plain data, when it has pixels: where its pixels are in the photo frame.
+    pub grid: Option<SamplerGrid>,
+}
+
+impl SampledView {
+    /// The place in the photo frame of pixel (0, 0) of the view, for the readout of a one-pixel view.
+    pub(crate) fn spot(&self) -> PixelAt {
+        let grid = self.grid.as_ref()?;
+        Some(PhotoSpot {
+            pos: GridPositions::new(grid, (0, 0)).position(0, 0),
+            frame: grid.photo_frame(),
+        })
+    }
 }
 
 /// Steps 1 and 2 of the module documentation: the raw group's pixels (the reduced image, or the
@@ -2197,6 +2274,7 @@ pub(crate) fn sample_view_routed(
     Ok(SampledView {
         sampled,
         scale: prepared.scale,
+        grid: prepared.photo_grid(),
     })
 }
 
@@ -2232,6 +2310,7 @@ pub(crate) fn sample_view_in_place(
     Ok(SampledView {
         sampled,
         scale: prepared.scale,
+        grid: prepared.photo_grid(),
     })
 }
 
@@ -2520,8 +2599,9 @@ impl Renderer {
     }
 
     /// The camera RGB under a point of the cell (the raw group's output, before C1, sampled at the
-    /// scale the viewport uses) and the grade plan of the photo: what [`Renderer::sample_pixel`] and
-    /// [`Renderer::sample_chroma`] read. `None` outside the photo (the letterbox).
+    /// scale the viewport uses), the grade plan of the photo and the point's place in the photo frame (for the
+    /// mask shapes of the nodes): what [`Renderer::sample_pixel`] and [`Renderer::sample_chroma`] read. `None`
+    /// outside the photo (the letterbox).
     fn point_reading(
         &self,
         src: &PhotoSource,
@@ -2529,7 +2609,7 @@ impl Renderer {
         css: (f64, f64),
         before: bool,
         cancel: &CancelToken,
-    ) -> Result<Option<(Vec3, Arc<GradePlan>)>, RenderError> {
+    ) -> Result<Option<(Vec3, Arc<GradePlan>, PixelAt)>, RenderError> {
         let mut job = Job::new(self, src, cancel)?;
         let image = job.final_size()?;
         let Some((fx, fy)) = state.final_point_at(image, css) else {
@@ -2557,8 +2637,9 @@ impl Renderer {
             return Ok(None);
         }
         let rgb = pixel_rgb(&view.sampled.img);
+        let at = view.spot();
         job.finish(view.scale, ComputeDevice::Cpu, OutputTarget::Viewport);
-        Ok(Some((rgb, grade)))
+        Ok(Some((rgb, grade, at)))
     }
 
     /// Display values (0 to 255) under a point of the cell, as the viewport shows them (the Before
@@ -2583,7 +2664,8 @@ impl Renderer {
         } else {
             src
         };
-        let Some((rgb, grade)) = self.point_reading(src, state, css, state.before, cancel)? else {
+        let Some((rgb, grade, at)) = self.point_reading(src, state, css, state.before, cancel)?
+        else {
             return Ok(None);
         };
         let kind = if state.before {
@@ -2591,7 +2673,7 @@ impl Renderer {
         } else {
             View::Final
         };
-        let v = grade.chain.apply_view_pixel(kind, rgb);
+        let v = grade.chain.apply_view_pixel_at(kind, rgb, at);
         let q = |c: f64| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
         Ok(Some(PixelSample {
             r: q(v[0]),
@@ -2616,7 +2698,7 @@ impl Renderer {
     ) -> Result<Option<Vec3>, RenderError> {
         Ok(self
             .point_reading(src, state, css, false, cancel)?
-            .map(|(rgb, _)| rgb))
+            .map(|(rgb, ..)| rgb))
     }
 
     /// The camera RGB (the raw group's output, before C1) over `rect` of the auto-cropped image at
@@ -2662,10 +2744,10 @@ impl Renderer {
         css: (f64, f64),
         cancel: &CancelToken,
     ) -> Result<Option<ChromaSample>, RenderError> {
-        let Some((rgb, grade)) = self.point_reading(src, state, css, false, cancel)? else {
+        let Some((rgb, grade, at)) = self.point_reading(src, state, css, false, cancel)? else {
             return Ok(None);
         };
-        let [a, b] = chroma_of(grade.chain.trace(rgb).c9_logc4);
+        let [a, b] = chroma_of(grade.chain.trace_at(rgb, at).c9_logc4);
         Ok(Some(ChromaSample { a, b }))
     }
 
@@ -2975,8 +3057,16 @@ impl Renderer {
                             };
                             let sampled =
                                 sample_to_camera(&region, (x0, y0), &grid, (ox, oy), tw, th);
-                            let frame = Frame::planar(tw, th, &sampled.img.data)
-                                .map_err(|e| RenderError::Color(e.to_string()))?;
+                            // The mask shapes of the nodes are placed in the photo frame: this tile's
+                            // pixels are the grid's from (ox, oy).
+                            let sampler_grid = grid.sampler_grid();
+                            let positions =
+                                photo_positions_of(&grade.chain, Some(&sampler_grid), (ox, oy));
+                            let frame = with_photo(
+                                Frame::planar(tw, th, &sampled.img.data)
+                                    .map_err(|e| RenderError::Color(e.to_string()))?,
+                                &positions,
+                            );
                             let mut out = vec![0.0f32; 3 * tw * th];
                             match request.target {
                                 FullTarget::DisplayLinear(_) | FullTarget::DngPreview => grade

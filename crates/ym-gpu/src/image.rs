@@ -41,7 +41,7 @@ pub struct GpuImage {
     pub height: usize,
     /// Samples per row of one plane: `width` rounded up to an even number.
     pub stride: usize,
-    /// Number of planes: 1, 3 or 4.
+    /// Number of planes: 1, 3, 4 or 6 (the sampler's output with the photo-frame position planes).
     pub planes: usize,
     /// Where pixel (0, 0) sits in the frame the image was cut from, and how big that frame is
     /// (kernels that need absolute coordinates read this, as the CPU stages do).
@@ -59,7 +59,7 @@ impl GpuImage {
     ///
     /// # Errors
     ///
-    /// [`GpuError::InvalidInput`] for an empty image, a plane count other than 1, 3 or 4, or an
+    /// [`GpuError::InvalidInput`] for an empty image, a plane count other than 1, 3, 4 or 6, or an
     /// image whose sample count does not fit a `u32` index (K4 of `docs/17-gpu.md`);
     /// [`GpuError::BufferTooLarge`] when it does not fit one storage binding;
     /// [`GpuError::OutOfBudget`] when the budget cannot hold it.
@@ -76,9 +76,9 @@ impl GpuImage {
                 "{label}: an image of {width} x {height} pixels is empty"
             )));
         }
-        if !matches!(planes, 1 | 3 | 4) {
+        if !matches!(planes, 1 | 3 | 4 | 6) {
             return Err(GpuError::InvalidInput(format!(
-                "{label}: {planes} planes (an image has 1, 3 or 4)"
+                "{label}: {planes} planes (an image has 1, 3, 4 or 6)"
             )));
         }
         let stride = even(width);

@@ -55,6 +55,7 @@ fn trimmed(m: Mat3, tone: ToneParams, trim: Trim) -> ColorChain {
     p.nodes.main = MainNode {
         bypass: false,
         trim,
+        ..MainNode::default()
     };
     ColorChain::new(&p).unwrap()
 }
