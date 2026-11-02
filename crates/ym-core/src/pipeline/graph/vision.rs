@@ -62,6 +62,9 @@ pub(crate) enum VisionResult {
     Failed,
 }
 
+/// What one request made of a picture: the request, and its result or the error it failed with.
+type MadeMask = (VisionKind, Result<VisionResult, VisionError>);
+
 /// A result with what it is for.
 #[derive(Debug)]
 pub(crate) struct VisionEntry {
@@ -452,7 +455,7 @@ impl Renderer {
         kinds: &[VisionKind],
         hash: u64,
         cancel: &CancelToken,
-    ) -> Result<Vec<(VisionKind, Result<VisionResult, VisionError>)>, RenderError> {
+    ) -> Result<Vec<MadeMask>, RenderError> {
         let started = Instant::now();
         let picture: AdvisorPicture = self.object_picture(src, cancel)?;
         let picture_ms = started.elapsed().as_secs_f64() * 1000.0;

@@ -167,6 +167,9 @@ export const BRUSH_ROW = { kind: "brush", mode: "add", invert: false, enabled: t
 /** An Object row with two clicks on the mock's mountain (N-18), with the eye on. */
 export const OBJECT_ROW = { kind: "object", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, points: [[0.42, 0.7, true], [0.6, 0.72, true]], box: null } as const;
 
+/** A Subject row at its defaults (N-19), with the eye on. */
+export const SUBJECT_ROW = { kind: "subject", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5 } as const;
+
 /** A Background row at its defaults (N-15), with the eye on. */
 export const BACKGROUND_ROW = { kind: "background", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, level: 0.5, softness: 0.5 } as const;
 
@@ -755,6 +758,21 @@ export const STATES: readonly PageState[] = [
       await p.getByRole("radio", { name: "Overlay" }).click();
       await expect(p.getByRole("button", { name: "Background mask, Level 50" })).toBeVisible();
       await expect(p.locator(".ym-photo-cell__image")).toHaveAttribute("src", /data-background-row/);
+      await p.waitForTimeout(300);
+    },
+  ],
+  // A Subject row (docs/23 section 7.6, N-19): its SUBJECT card (Refine edges at 50, Feather, Grow, Opacity: the raster sliders and nothing else), the row at "Foreground"
+  // (the core made the mask in the background, "Finding…" for 500 ms on the mock, before the state is taken), the mask view on in Overlay (the mock draws the far hill),
+  // and the chip "MASK · SUBJECT".
+  [
+    "65-nodes-subject-card",
+    async (p) => {
+      await maskTabOfGradedPhoto(p, 2, [SUBJECT_ROW]);
+      await p.getByRole("button", { name: /^Subject mask/ }).click();
+      await expect(p.getByRole("region", { name: "Subject", exact: true })).toBeVisible();
+      await p.getByRole("radio", { name: "Overlay" }).click();
+      await expect(p.getByRole("button", { name: "Subject mask, Foreground" })).toBeVisible();
+      await expect(p.locator(".ym-photo-cell__image")).toHaveAttribute("src", /data-vision-row/);
       await p.waitForTimeout(300);
     },
   ],

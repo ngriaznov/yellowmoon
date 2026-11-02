@@ -903,6 +903,22 @@ test.describe("the node panel", () => {
         await expect(page.getByRole("button", { name: "Background mask, Level 50" })).toBeVisible();
       },
     },
+    // A Subject row just added, on Warmth (node 4): the head's 3, the tab row's 2, the Masks card's 3, the row's 4, then the SUBJECT card: its Reset, four sliders of two stops
+    // each (Refine edges, Feather, Grow, Opacity; none differs from its default, so none has a Reset stop of its own), the View card's chosen segment and the foot's two
+    // buttons: 3 + 2 + 3 + 4 + 9 + 3 = 24. Nothing is drawn on the photo, and no tool: Vision's mask has nothing of its own to set.
+    {
+      state: "a Subject's Mask tab with its card",
+      simple: "Light",
+      node: 4,
+      tab: "Mask",
+      stops: 24,
+      before: async (page) => {
+        await page.getByRole("button", { name: "Add mask" }).click();
+        await page.getByRole("menuitem", { name: /^Subject/ }).click();
+        await expect(page.getByRole("region", { name: "Subject", exact: true })).toBeVisible();
+        await expect(page.getByRole("button", { name: /^Subject mask, (Finding…|Foreground)/ })).toBeVisible();
+      },
+    },
   ];
   for (const { state, simple, node, tab, stops, before } of STOPS) {
     test(`${state}: every stop of the panel's Tab order has the ring, and the stops are counted`, async ({ page }) => {

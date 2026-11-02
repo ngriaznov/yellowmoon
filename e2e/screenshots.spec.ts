@@ -284,6 +284,24 @@ test.describe("Photos", () => {
     await compareScreen(page, "photos-nodes-mask-object", { pointer: { x: cell.x + cell.width * 0.72, y: cell.y + cell.height * 0.2 } });
   });
 
+  test("The node view: Mountain's Subject row, its SUBJECT card and the far hill in the Overlay (photos-nodes-mask-subject.png)", async ({ page }) => {
+    // docs/23 section 7.6 (there is no mockup for Subject): the Masks card with the Subject row selected ("Subject", "Foreground") above the People row, which
+    // found a person on this photo, the SUBJECT card under it (Refine edges at 50 %, Feather, Grow, Opacity: the raster sliders and nothing else), the View card with
+    // Overlay, and the photo with the far hill (the mock's "main thing") tinted in the mask accent, and the chip "MASK · SUBJECT". The core made the masks in the
+    // background ("Finding…" for 500 ms on the mock) before the picture is taken.
+    const subject = { kind: "subject", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0.1, grow: 0, refine: 0.5 };
+    const people = { kind: "people", mode: "subtract", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5 };
+    await maskTab(page, 2, [subject, people]);
+    await page.getByRole("button", { name: "Subject mask, Foreground" }).click();
+    await expect(page.getByRole("region", { name: "Subject", exact: true })).toBeVisible();
+    await page.getByRole("radio", { name: "Overlay", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator(".ym-photo-cell__image")).toHaveAttribute("src", /data-vision-row/);
+    await expect(page.getByText("MASK · SUBJECT")).toBeVisible();
+    await cardPicturesMade(page, 4);
+    await compareScreen(page, "photos-nodes-mask-subject");
+  });
+
   /**
    * The graded graph (Main with the mockup's grade, then Mountain, Sky and Warmth) on the Mask tab of node `select`, with `rows` in Mountain's masks when given
    * (screen 07b's two rows) and `kinds` as the mock's `?mockMasks=` (every kind, for the menu of screen 08).

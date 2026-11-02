@@ -1136,12 +1136,13 @@ test.describe("Subject and People", () => {
     await setValue(page, "Feather", "30");
     await expect.poll(async () => (await visionRows(page))[0]?.feather).toBe(0.3);
     // Undo: the Feather, then the row; the picture follows.
-    await page.keyboard.press("ControlOrMeta+z");
+    await blur(page);
+    await page.keyboard.press("Meta+z");
     await expect.poll(async () => (await visionRows(page))[0]?.feather).toBe(0);
-    await page.keyboard.press("ControlOrMeta+z");
+    await page.keyboard.press("Meta+z");
     await expect.poll(async () => (await visionRows(page)).length).toBe(0);
     await expect.poll(async () => await picture(page)).not.toContain("data-vision-row");
-    await page.keyboard.press("ControlOrMeta+Shift+z");
+    await page.keyboard.press("Meta+Shift+z");
     await expect(rowButton(page, /^Subject mask/)).toBeVisible();
   });
 
@@ -1179,7 +1180,8 @@ test.describe("Subject and People", () => {
     await page.getByRole("tab", { name: "Mask", exact: true }).click();
     await expect(rowButton(page, /^Subject mask/)).toBeVisible();
     expect(await visionRows(page)).toEqual([findRow("subject", { feather: 0.2 })]);
-    await page.keyboard.press("ControlOrMeta+z");
+    await blur(page);
+    await page.keyboard.press("Meta+z");
     await expect(card(page, 4)).toHaveCount(0);
   });
 

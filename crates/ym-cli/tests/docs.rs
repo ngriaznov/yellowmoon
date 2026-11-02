@@ -1,6 +1,7 @@
 //! `docs/10-cli.md` and `ym render --help` are tested against each other and against the code
 //! (`docs/23` section 11): the table of *Where the flags land*, the closing paragraph of the help, the
-//! example files of *Settings* and the sentence for the form of Yellowmoon 0.1.
+//! example files of *Settings*, the sentence for the form of Yellowmoon 0.1 and the sentences of the `mask` error for
+//! Subject and People.
 
 mod common;
 
@@ -420,6 +421,54 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
             .arg(sb.root().join("not-there.ARW"))
             .assert()
             .code(predicate::ne(2));
+    }
+}
+
+#[test]
+fn the_mask_error_sentences_for_subject_and_people_are_the_same_in_docs_10_docs_23_and_the_code() {
+    // `docs/23` section 3.10 gives the sentence for node 2 and a Subject row; `docs/10` quotes it; the core builds it for
+    // every node and both kinds, and `ym` prints it (`render.rs` runs the binary).
+    let subject = "Node 2 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask.";
+    assert!(
+        read("docs/10-cli.md").contains(subject),
+        "docs/10 quotes the sentence"
+    );
+    assert!(
+        read("docs/23-nodes.md").contains(subject),
+        "docs/23 section 3.10 quotes the sentence"
+    );
+    assert_eq!(
+        ym_core::settings::unmakeable_mask_sentence(2, ym_core::settings::MaskKind::Subject)
+            .as_deref(),
+        Some(subject)
+    );
+    assert_eq!(
+        ym_core::settings::unmakeable_mask_sentence(7, ym_core::settings::MaskKind::People)
+            .as_deref(),
+        Some(
+            "Node 7 has a People mask, and this computer cannot make one. Use a Mac that supports People masks, or remove the mask."
+        )
+    );
+    // The row's own words in the app (`docs/23` section 7.6), by the core's function and by the page's.
+    for (kind, text) in [
+        (
+            ym_core::settings::MaskKind::Subject,
+            "Subject masks need a Mac that supports them",
+        ),
+        (
+            ym_core::settings::MaskKind::People,
+            "People masks need a Mac that supports them",
+        ),
+    ] {
+        assert_eq!(
+            ym_core::settings::unsupported_row_sentence(kind).as_deref(),
+            Some(text)
+        );
+        assert!(read("docs/23-nodes.md").contains(text), "docs/23: {text}");
+        assert!(
+            read("src/state/maskRows.ts").contains(text),
+            "the page says: {text}"
+        );
     }
 }
 

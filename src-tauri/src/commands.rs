@@ -954,13 +954,15 @@ mod tests {
             &ym_core::data_dir::find_data_dir().expect("the data folder"),
         )
         .is_some();
-        // Subject and People follow this computer's Vision (or `YELLOWMOON_TEST_VISION`), which the app was given.
-        let vision = ym_core::vision::VisionMasks::new(ym_apple::system_vision()).support();
+        // Subject and People follow the Vision probe; the harness's app has no provider, which is a computer that cannot make them.
         let kinds: Vec<&str> =
-            ym_core::settings::mask_kinds_with(ym_core::settings::MaskSupport::new(object, vision))
-                .into_iter()
-                .map(|k| k.name())
-                .collect();
+            ym_core::settings::mask_kinds_with(ym_core::settings::MaskSupport::new(
+                object,
+                ym_core::vision::VisionSupport::none_here(),
+            ))
+            .into_iter()
+            .map(|k| k.name())
+            .collect();
         assert!(!kinds.is_empty());
         assert_eq!(call(&window, "mask_kinds", json!({})), Ok(json!(kinds)));
         assert_eq!(

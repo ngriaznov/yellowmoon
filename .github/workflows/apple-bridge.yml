@@ -136,6 +136,11 @@ jobs:
           echo "rlib: $rlib"
           # nm exits non-zero on the rlib's metadata member, which is not an object file.
           { nm "$rlib" 2>/dev/null || true; } | grep -E ' T _ym_apple_auto_ask$'
+          # The Vision bridge (Subject and People masks, docs/23 section 4.5) is a separate library with its own gate (macOS 14 SDK or later): it is
+          # built here too, with the macOS 27 SDK, and its two functions are in the probe.
+          nm target/release/examples/probe | grep -E ' _ym_apple_mask_(probe|make)$' | tee nm-vision.txt
+          test "$(wc -l < nm-vision.txt)" -eq 2
+          { nm "$rlib" 2>/dev/null || true; } | grep -E ' T _ym_apple_mask_make$'
       - name: FoundationModels is a weak load, nothing needs an rpath (otool)
         run: |
           otool -L target/release/examples/probe
@@ -175,6 +180,14 @@ jobs:
             echo "ym links FoundationModels strongly: it would not start before macOS 26"
             exit 1
           fi
+          # ym carries the Vision bridge too (its doctor asks Vision, and a Subject or People row makes the mask), linked normally.
+          nm target/release/ym | grep -E ' _ym_apple_mask_(probe|make)$' | tee nm-ym-vision.txt
+          test "$(wc -l < nm-ym-vision.txt)" -eq 2
+          if grep -A2 'cmd LC_LOAD_WEAK_DYLIB' ym-loads.txt | grep -q 'Vision.framework'; then
+            echo "Vision is a weak load; it is on every macOS the app runs on"
+            exit 1
+          fi
+          grep -q 'Vision.framework' ym-loads.txt
       - name: ym doctor (Apple Intelligence's row; a virtual Mac is expected to report it unavailable)
         env:
           YELLOWMOON_DATA: ${{ github.workspace }}/data
@@ -234,6 +247,11 @@ jobs:
           otool -L probe
           ./probe | tee probe.txt
           grep -q 'MacosTooOld' probe.txt
+          # Vision is linked normally and its request runs on every macOS the app supports: the probe, built with the macOS 27 SDK, prints
+          # what this Mac answers for Subject and People (a virtual Mac may say not supported; the lines must be there).
+          grep -q '^Vision bridge built: yes' probe.txt
+          grep -q '^Vision Subject: ' probe.txt
+          grep -q '^Vision People: ' probe.txt
       - name: ym built with the macOS 27 SDK starts here and says why Apple Auto is not available
         working-directory: older
         env:
