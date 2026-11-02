@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { TabBar } from "./TabBar";
-import { tabPanelProps, TAB_IDS } from "./tabs";
+import { FIRST_NODE_TAB, MASK_TAB, NODE_FOR_SIMPLE_TAB, NODE_TABS, tabInfo, tabPanelProps, TAB_IDS } from "./tabs";
 import type { TabId } from "./tabs";
 import { tabForShortcut, useTabShortcuts } from "./useTabShortcuts";
 
@@ -146,5 +146,65 @@ describe("⌘1–⌘7", () => {
     unmount();
     fireEvent.keyDown(window, { key: "2", code: "Digit2", metaKey: true });
     expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe("the tabs of the node view (docs/23 §7.5)", () => {
+  it("are RAW · Lens · Light · Colour · Detail on the Input, Light · Colour · Curve · Mask on a corrector and Look · Detail on the Output", () => {
+    expect(NODE_TABS.input).toEqual(["raw", "lens", "light", "color", "detail"]);
+    expect(NODE_TABS.corrector).toEqual(["light", "color", "curve", "mask"]);
+    expect(NODE_TABS.output).toEqual(["look", "detail"]);
+    expect(Object.values(FIRST_NODE_TAB)).toEqual(["raw", "light", "look"]);
+    expect(tabInfo("mask")).toBe(MASK_TAB);
+    // The simple view's seven stay seven: Mask is the node view's.
+    expect(TAB_IDS).toHaveLength(7);
+    expect(TAB_IDS).not.toContain("mask");
+  });
+
+  it("have a tab bar of their own, with the same ids and the labels of the tabs", async () => {
+    const onChange = vi.fn();
+    render(<TabBar value="mask" onChange={onChange} tabs={NODE_TABS.corrector} />);
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Light", "Colour", "Curve", "Mask"]);
+    expect(screen.getByRole("tab", { name: "Mask" })).toHaveAttribute("aria-selected", "true");
+    expect(document.getElementById("ym-tab-mask")).toHaveAttribute("aria-controls", "ym-tabpanel-mask");
+    await userEvent.click(screen.getByRole("tab", { name: "Curve" }));
+    expect(onChange).toHaveBeenCalledWith("curve");
+  });
+
+  it("are chosen by ⌘1 to ⌘5 in the order of the node's row, and the digits past the last tab choose nothing", () => {
+    const press = (digit: number, tabs: readonly TabId[]) => tabForShortcut({ metaKey: true, shiftKey: false, altKey: false, ctrlKey: false, code: `Digit${digit}`, key: String(digit) }, tabs);
+    expect([1, 2, 3, 4, 5].map((d) => press(d, NODE_TABS.input))).toEqual(["raw", "lens", "light", "color", "detail"]);
+    expect([1, 2, 3, 4, 5, 6, 7].map((d) => press(d, NODE_TABS.corrector))).toEqual(["light", "color", "curve", "mask", null, null, null]);
+    expect([1, 2, 3].map((d) => press(d, NODE_TABS.output))).toEqual(["look", "detail", null]);
+    expect(press(7, TAB_IDS)).toBe("raw");
+  });
+
+  it("make the shortcut hook follow the node's row, and let the keys it has no tab for through", () => {
+    const onSelect = vi.fn();
+    const { rerender } = renderHook(({ tabs }) => useTabShortcuts(onSelect, true, tabs), { initialProps: { tabs: NODE_TABS.output as readonly TabId[] } });
+    const key = (digit: number): boolean => !fireEvent.keyDown(window, { key: String(digit), code: `Digit${digit}`, metaKey: true, cancelable: true });
+    expect(key(2)).toBe(true);
+    expect(onSelect).toHaveBeenLastCalledWith("detail");
+    onSelect.mockClear();
+    expect(key(3)).toBe(false);
+    expect(onSelect).not.toHaveBeenCalled();
+    rerender({ tabs: NODE_TABS.corrector });
+    expect(key(3)).toBe(true);
+    expect(onSelect).toHaveBeenLastCalledWith("curve");
+  });
+
+  it("map each tab of the simple view onto a node and a tab", () => {
+    expect(NODE_FOR_SIMPLE_TAB).toEqual({
+      look: { kind: "output", tab: "look" },
+      lens: { kind: "input", tab: "lens" },
+      light: { kind: "corrector", tab: "light" },
+      color: { kind: "corrector", tab: "color" },
+      detail: { kind: "input", tab: "detail" },
+      curve: { kind: "corrector", tab: "curve" },
+      raw: { kind: "input", tab: "raw" },
+    });
+    // Every target is a tab its node has.
+    for (const { kind, tab } of Object.values(NODE_FOR_SIMPLE_TAB)) expect(NODE_TABS[kind]).toContain(tab);
   });
 });

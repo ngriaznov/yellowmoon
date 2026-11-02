@@ -325,7 +325,7 @@ fn closing_the_session_cancels_its_queued_renders_and_forgets_what_they_cached()
             let (id, look) = (*id, look.clone());
             [
                 std::thread::spawn(move || a.look_thumbnail(id, &look).map(|png| png.len())),
-                std::thread::spawn(move || b.histogram(id).map(|_| 0)),
+                std::thread::spawn(move || b.histogram(id, None).map(|_| 0)),
             ]
         })
         .collect();
@@ -1181,7 +1181,7 @@ fn rerun_histogram_and_look_thumbnails() {
         "Re-run sets exposure back to Auto"
     );
 
-    let histogram = h.api.histogram(id).expect("histogram");
+    let histogram = h.api.histogram(id, None).expect("histogram");
     for channel in [&histogram.red, &histogram.green, &histogram.blue] {
         assert_eq!(channel.len(), 64);
     }
@@ -1418,7 +1418,7 @@ fn choosing_photos_while_everything_else_changes_never_stalls_the_viewport() {
                         _ => {
                             // The readout and the pick race with all of it; either answer is fine.
                             let _ = api.sample_pixel(40.0, 30.0);
-                            let _ = api.histogram(photo);
+                            let _ = api.histogram(photo, None);
                         }
                     }
                 }
@@ -1614,36 +1614,72 @@ fn the_panel_signals_take_a_node_across_the_bridge() {
     let id = h.first();
     h.rect(300.0, 300.0);
     assert!(h.api.viewport().wait_idle(WAIT));
-    let main = h.api.histogram(id).expect("histogram");
-    let dots = h.api.chroma_scatter(id).expect("scatter");
+    let main = h.api.histogram(id, None).expect("histogram");
+    let dots = h.api.chroma_scatter(id, None).expect("scatter");
     // Left out, or Main, is what it was before nodes.
-    assert_eq!(h.api.histogram_at(id, None).expect("histogram"), main);
-    assert_eq!(h.api.histogram_at(id, wire_node(Core::MAIN)).expect("histogram"), main);
-    assert_eq!(h.api.chroma_scatter_at(id, None).expect("scatter"), dots);
+    assert_eq!(h.api.histogram(id, None).expect("histogram"), main);
+    assert_eq!(
+        h.api
+            .histogram(id, wire_node(Core::MAIN))
+            .expect("histogram"),
+        main
+    );
+    assert_eq!(h.api.chroma_scatter(id, None).expect("scatter"), dots);
     // A node the photo does not have, and the Output, are refused in words.
-    let missing = h.api.histogram_at(id, wire_node(Core::Corrector(2))).expect_err("no node 2");
+    let missing = h
+        .api
+        .histogram(id, wire_node(Core::Corrector(2)))
+        .expect_err("no node 2");
     assert_eq!(missing.message, "This photo has no node 2.");
-    let output = h.api.chroma_scatter_at(id, wire_node(Core::Output)).expect_err("the output");
+    let output = h
+        .api
+        .chroma_scatter(id, wire_node(Core::Output))
+        .expect_err("the output");
     assert_eq!(output.message, "The output has no picture to read here.");
-    assert!(h.api.sample_chroma_at(150.0, 150.0, wire_node(Core::Corrector(2))).is_err());
+    assert!(
+        h.api
+            .sample_chroma(150.0, 150.0, wire_node(Core::Corrector(2)))
+            .is_err()
+    );
     // Nodes 2 and 3 (an exposure trim in each): their curves' inputs are not Main's, and Main's
     // own reading does not change with what follows it.
-    h.api.update_settings(id, &three_node_patch()).expect("update");
-    assert_eq!(h.api.histogram_at(id, None).expect("histogram"), main);
-    let two = h.api.histogram_at(id, wire_node(Core::Corrector(2))).expect("histogram");
-    let three = h.api.histogram_at(id, wire_node(Core::Corrector(3))).expect("histogram");
+    h.api
+        .update_settings(id, &three_node_patch())
+        .expect("update");
+    assert_eq!(h.api.histogram(id, None).expect("histogram"), main);
+    let two = h
+        .api
+        .histogram(id, wire_node(Core::Corrector(2)))
+        .expect("histogram");
+    let three = h
+        .api
+        .histogram(id, wire_node(Core::Corrector(3)))
+        .expect("histogram");
     assert_ne!(two, main);
     assert_ne!(three, two);
-    assert!(h.api.histogram_at(id, wire_node(Core::Input)).is_ok());
-    assert_eq!(h.api.chroma_scatter_at(id, wire_node(Core::Corrector(3))).expect("scatter").points.len() % 2, 0);
+    assert!(h.api.histogram(id, wire_node(Core::Input)).is_ok());
+    assert_eq!(
+        h.api
+            .chroma_scatter(id, wire_node(Core::Corrector(3)))
+            .expect("scatter")
+            .points
+            .len()
+            % 2,
+        0
+    );
     // Pick colour at a node answers a point of the photo, and the paper has none.
     let inside = h
         .api
-        .sample_chroma_at(150.0, 150.0, wire_node(Core::Corrector(3)))
+        .sample_chroma(150.0, 150.0, wire_node(Core::Corrector(3)))
         .expect("chroma")
         .expect("a point of the photo");
     assert!(inside.a.0.is_finite() && inside.b.0.is_finite());
-    assert_eq!(h.api.sample_chroma_at(150.0, 5.0, wire_node(Core::Corrector(3))).expect("paper"), None);
+    assert_eq!(
+        h.api
+            .sample_chroma(150.0, 5.0, wire_node(Core::Corrector(3)))
+            .expect("paper"),
+        None
+    );
 }
 
 #[test]
@@ -1654,23 +1690,23 @@ fn pick_colour_and_the_chroma_scatter_cross_the_bridge() {
     let last = opened.photos.last().expect("photos").id;
     let early = h
         .api
-        .chroma_scatter(last)
+        .chroma_scatter(last, None)
         .expect("no error while developing");
     assert!(early.points.len().is_multiple_of(2));
     h.develop();
     let id = h.first();
-    let scatter = h.api.chroma_scatter(id).expect("scatter");
+    let scatter = h.api.chroma_scatter(id, None).expect("scatter");
     assert!(!scatter.points.is_empty() && scatter.points.len() <= 2 * 2048);
     assert_eq!(scatter.points.len() % 2, 0);
-    assert_eq!(h.api.chroma_scatter(id).expect("scatter"), scatter);
-    assert!(h.api.chroma_scatter(PhotoId(9999)).is_err());
+    assert_eq!(h.api.chroma_scatter(id, None).expect("scatter"), scatter);
+    assert!(h.api.chroma_scatter(PhotoId(9999), None).is_err());
     // Pick colour: the photo's chroma under the pointer, `null` on the paper and for a point that
     // is not a number.
     h.rect(300.0, 300.0);
     assert!(h.api.viewport().wait_idle(WAIT));
     let inside = h
         .api
-        .sample_chroma(150.0, 150.0)
+        .sample_chroma(150.0, 150.0, None)
         .expect("chroma")
         .expect("a point of the photo");
     assert!(inside.a.0.is_finite() && inside.b.0.is_finite());
@@ -1678,9 +1714,11 @@ fn pick_colour_and_the_chroma_scatter_cross_the_bridge() {
         serde_json::to_value(inside).expect("json"),
         json!({ "a": inside.a.0, "b": inside.b.0 })
     );
-    assert_eq!(h.api.sample_chroma(150.0, 5.0).expect("paper"), None);
+    assert_eq!(h.api.sample_chroma(150.0, 5.0, None).expect("paper"), None);
     assert_eq!(
-        h.api.sample_chroma(f64::NAN, 3.0).expect("not a number"),
+        h.api
+            .sample_chroma(f64::NAN, 3.0, None)
+            .expect("not a number"),
         None
     );
     // A pin on that colour moves the picture there but not what Pick colour reads (the warp's
@@ -1698,7 +1736,7 @@ fn pick_colour_and_the_chroma_scatter_cross_the_bridge() {
         resolved.settings.main_grade().color_warp
     );
     assert_eq!(
-        h.api.sample_chroma(150.0, 150.0).expect("chroma"),
+        h.api.sample_chroma(150.0, 150.0, None).expect("chroma"),
         Some(inside)
     );
     // The settings travel with Copy settings and come back in `get_settings`.
@@ -3717,7 +3755,7 @@ fn real_files_open_draw_and_answer_the_readouts() {
         let centre = h.api.sample_pixel(360.0, 240.0).expect("a pixel");
         assert!(u16::from(centre.r) + u16::from(centre.g) + u16::from(centre.b) > 0);
         h.api
-            .histogram(photo.id)
+            .histogram(photo.id, None)
             .unwrap_or_else(|e| panic!("{}: {e}", photo.file_name));
         h.api
             .look_thumbnail(photo.id, &LookId("builtin:neutral".to_owned()))
@@ -4298,7 +4336,7 @@ fn core_types_convert_without_loss() {
     assert_same(
         "histogram",
         &histogram,
-        &h.api.histogram(id).expect("histogram"),
+        &h.api.histogram(id, None).expect("histogram"),
     );
     let scatter = core
         .renderer
@@ -4307,7 +4345,7 @@ fn core_types_convert_without_loss() {
     assert_same(
         "chroma_scatter",
         &scatter,
-        &h.api.chroma_scatter(id).expect("scatter"),
+        &h.api.chroma_scatter(id, None).expect("scatter"),
     );
     let sample = ym_core::pipeline::ChromaSample {
         a: 0.125,

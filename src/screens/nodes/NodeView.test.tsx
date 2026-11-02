@@ -144,7 +144,9 @@ describe("the Nodes button", () => {
     await h!.user.click(nodesButton());
     await waitFor(() => expect(screen.queryByText("Click something neutral: grey or white. Esc cancels.")).toBeNull());
     expect(inNodeView()).toBe(true);
-    expect(screen.getByRole("button", { name: "Pick white" })).toHaveAttribute("aria-pressed", "false");
+    // The node view opens on Main › Colour (the simple view stood on Colour), whose Pick colour is off; Pick white is the Input's.
+    expect(screen.queryByRole("button", { name: "Pick white" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Pick colour" })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("is off while cropping, and N does nothing there; the Export panel has no Nodes button, and N does nothing there either", async () => {
@@ -233,11 +235,13 @@ describe("layout A", () => {
 
   it("has the toolbar of docs/23 §7.3 over the graph, and the photo switcher in it", async () => {
     await setup();
+    // The node view opens on the node of the tab the simple view stands on: Light is Main's.
+    await openTab(h!, "Light");
     await openNodeView();
     const bar = within(graph()).getByRole("group", { name: "Graph tools" });
     const labels = within(bar).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent?.trim());
-    // More is the node's menu (N-08); the node's head, with the panel (N-09), takes it over.
-    expect(labels).toEqual(["Add node", "Bypass", "Delete", "More", "Previous photo", "Next photo", "Show mask", "Expand"]);
+    // More is the third icon of the node's head since N-09, not a button of the toolbar.
+    expect(labels).toEqual(["Add node", "Bypass", "Delete", "Previous photo", "Next photo", "Show mask", "Expand"]);
     // With Main selected: Bypass is on (and not pressed), Delete says why it is off, Show mask waits for the mask view (N-11).
     expect(within(bar).getByRole("button", { name: "Bypass" })).not.toHaveAttribute("aria-disabled");
     expect(within(bar).getByRole("button", { name: "Bypass" })).toHaveAttribute("aria-pressed", "false");

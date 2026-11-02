@@ -63,6 +63,8 @@ test.describe("the node view", () => {
   test("every control is named, there is one main and one banner, the divider is a separator with a name and a value, the Add node menu's items are named and the later ones disabled", async ({ page }) => {
     await openApp(page, MOCKUP);
     await openPhotos(page);
+    // The node view opens on the node of the simple view's tab (docs/23 §7.5): Light is Main's.
+    await page.getByRole("tab", { name: "Light", exact: true }).click();
     await page.getByRole("button", { name: "Nodes", exact: true }).click();
     await expect(page.getByRole("separator", { name: "Resize the graph" })).toBeVisible();
     let snapshot = await expectNamed(page, "the node view");
@@ -72,7 +74,12 @@ test.describe("the node view", () => {
     expect(snapshot).toMatch(/- region "Node editor"/);
     expect(snapshot).toMatch(/- group "Graph tools"/);
     expect(snapshot).toMatch(/- group "Photos"/);
-    for (const name of ["Add node", "Bypass", "Delete", "More", "Previous photo", "Next photo", "Show mask", "Expand"]) expect(snapshot, name).toMatch(new RegExp(`- button "${name}"`));
+    for (const name of ["Add node", "Bypass", "Delete", "Previous photo", "Next photo", "Show mask", "Expand"]) expect(snapshot, name).toMatch(new RegExp(`- button "${name}"`));
+    // The node's head (N-09): a named group with Bypass, Reset and More, the tabs of a corrector, and the panel's own cards.
+    expect(snapshot).toMatch(/- group "Node":/);
+    for (const name of ["Bypass this node", "Reset this node", "More"]) expect(snapshot, name).toMatch(new RegExp(`- button "${name}"`));
+    expect(snapshot).toMatch(/- heading "Main" \[level=2\]/);
+    for (const name of ["Light", "Colour", "Curve", "Mask"]) expect(snapshot, name).toMatch(new RegExp(`- tab "${name}"`));
     // The graph: Main between the Input and the Output, each one button with its name and whether it is the selected one; the zoom control.
     expect(snapshot).toMatch(/- button "Input"/);
     expect(snapshot).toMatch(/- button "Node 1, Main" \[pressed\]/);
@@ -103,6 +110,7 @@ test.describe("the node view", () => {
     await openApp(page, MOCKUP);
     await configureMock(page, { initialSettings: { DSC04204: { nodes: GRADED_NODES.nodes, links: GRADED_NODES.links } } as never });
     await openPhotos(page);
+    await page.getByRole("tab", { name: "Light", exact: true }).click();
     await page.getByRole("button", { name: "Nodes", exact: true }).click();
     await expect(page.locator('[data-node-card="4"]')).toBeVisible();
     let snapshot = await expectNamed(page, "the graph with nodes");
@@ -148,6 +156,7 @@ test.describe("the node view", () => {
     await openApp(page, MOCKUP);
     await configureMock(page, { initialSettings: { DSC04204: { nodes: GRADED_NODES.nodes, links: GRADED_NODES.links } } as never });
     await openPhotos(page);
+    await page.getByRole("tab", { name: "Light", exact: true }).click();
     await page.getByRole("button", { name: "Nodes", exact: true }).click();
     await expect(page.locator('[data-node-card="4"]')).toBeVisible();
     // Tab through the canvas: the stops that are in it, from the toolbar's last button until the focus leaves.
@@ -597,23 +606,26 @@ test.describe("focus ring", () => {
     expect(seen.length).toBe(30);
   });
 
-  test("every stop of the node view's Tab order has the ring: the header, the divider, the toolbar's buttons, then the panel", async ({ page }) => {
+  test("every stop of the node view's Tab order has the ring: the header, the divider, the toolbar's buttons, the graph, then the panel's head", async ({ page }) => {
     await openApp(page, MOCKUP);
     await openPhotos(page);
+    await page.getByRole("tab", { name: "Light", exact: true }).click();
     await page.getByRole("button", { name: "Nodes", exact: true }).click();
     await expect(page.getByRole("separator", { name: "Resize the graph" })).toBeVisible();
     await page.getByRole("button", { name: "Nodes", exact: true }).focus();
-    const seen = await walk(page, 22);
+    const seen = await walk(page, 26);
     expect(seen.filter((s) => !s.ring)).toEqual([]);
     const labels = seen.map((s) => s.label);
     // The divider comes after the header and before the toolbar; the arrows of the switcher are stops with names.
     expect(labels.indexOf("Resize the graph")).toBeGreaterThan(-1);
     expect(labels.indexOf("Resize the graph")).toBeLessThan(labels.indexOf("Add node"));
-    for (const name of ["Add node", "More", "Previous photo", "Next photo", "Expand"]) expect(labels, name).toContain(name);
+    for (const name of ["Add node", "Previous photo", "Next photo", "Expand"]) expect(labels, name).toContain(name);
     // The disabled ones stay in the order (aria-disabled, not disabled) and say so.
     for (const name of ["Bypass", "Delete", "Show mask"]) expect(labels, name).toContain(name);
     // The graph is one stop (the selected card, Main) and the zoom control three, between the toolbar and the panel, each with the ring.
     expect(labels.slice(labels.indexOf("Expand") + 1, labels.indexOf("Expand") + 5)).toEqual(["Node 1, Main", "Zoom out", "Zoom in", "Fit the graph"]);
+    // The panel follows with the node's head: Bypass, Reset and More, then the tab row (one stop, on the selected tab).
+    expect(labels.slice(labels.indexOf("Fit the graph") + 1, labels.indexOf("Fit the graph") + 5)).toEqual(["Bypass this node", "Reset this node", "More", "Light"]);
   });
 
   test("every stop of the Lens tab has the ring: the list is one stop, then Reset and the three sliders with their boxes", async ({ page }) => {
@@ -643,4 +655,92 @@ test.describe("focus ring", () => {
     // glasscn's tabs draw the ring inset (the tab row is a pane of its own, there is no room outside it).
     await expect(raw).toHaveCSS("outline-offset", "-3px");
   });
+});
+
+test.describe("the node panel", () => {
+  // docs/23 §7.8 and N-09: the panel of the selected node has a head with named buttons, the tabs of its kind and cards whose controls are named,
+  // on every tab of every kind of node. The Tab order of each state of the panel is counted: each stop has the ring.
+  const graded = async (page: Page, simple: string): Promise<void> => {
+    await openApp(page, MOCKUP);
+    await configureMock(page, { initialSettings: { DSC04204: { nodes: GRADED_NODES.nodes, links: GRADED_NODES.links } } as never });
+    await openPhotos(page);
+    await page.getByRole("tab", { name: simple, exact: true }).click();
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    await expect(page.locator('[data-node-card="4"]')).toBeVisible();
+  };
+  test("every control on every tab of every kind of node has a name, and the head says which node it is", async ({ page }) => {
+    await graded(page, "Light");
+    const tabs: Array<[string | number, string[]]> = [
+      ["input", ["RAW", "Lens", "Light", "Colour", "Detail"]],
+      [2, ["Light", "Colour", "Curve", "Mask"]],
+      ["output", ["Look", "Detail"]],
+    ];
+    for (const [node, names] of tabs) {
+      await page.locator(`[data-node-card="${node}"]`).click();
+      await expect(page.locator(`[data-node-card="${node}"]`)).toHaveAttribute("aria-pressed", "true");
+      for (const name of names) {
+        await page.getByRole("tab", { name, exact: true }).click();
+        await expect(page.getByRole("tab", { name, exact: true })).toHaveAttribute("aria-selected", "true");
+        await page.waitForTimeout(150);
+        const snapshot = await expectNamed(page, `${node} › ${name}`);
+        expect(snapshot, `${node} › ${name}`).toMatch(/- group "Node":/);
+        expect(snapshot, `${node} › ${name}`).toMatch(/- tabpanel/);
+      }
+    }
+    // The head names the node: a heading, and the buttons that act on it.
+    await page.locator('[data-node-card="3"]').click();
+    const snapshot = await expectNamed(page, "Sky");
+    expect(snapshot).toMatch(/- heading "Sky" \[level=2\]/);
+    expect(snapshot).toMatch(/- group "Node actions":/);
+  });
+
+  test("the Mask tab's rows are named like the cards: kind, 'mask' and what they say", async ({ page }) => {
+    await graded(page, "Light");
+    await page.locator('[data-node-card="2"]').click();
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    const snapshot = await expectNamed(page, "the Mask tab");
+    expect(snapshot).toContain('- listitem "Object mask, 2 points"');
+    expect(snapshot).toContain('- listitem "Radial mask, Feather 45"');
+    expect(snapshot).toMatch(/- button "Add mask"/);
+    await expect(page.getByRole("button", { name: "Add mask" })).toHaveAttribute("aria-disabled", "true");
+  });
+
+  // The stops of each state, counted: the head's buttons, the tab row (two: glasscn's tab list, a container that draws no ring and hands the
+  // arrows to the tabs, then the selected tab), the cards' controls (a slider is two: its thumb and its value box), and the foot's two buttons.
+  for (const [state, simple, node, tab, stops] of [
+    ["the Input's Colour tab", "Colour", "input", "Colour", 14],
+    ["a corrector's Light tab", "Light", 2, "Light", 25],
+    ["a corrector's Colour tab", "Colour", 2, "Colour", 21],
+    ["the Output's Look tab", "Look", "output", "Look", 23],
+  ] as const) {
+    test(`${state}: every stop of the panel's Tab order has the ring, and the stops are counted`, async ({ page }) => {
+      await graded(page, simple);
+      await page.locator(`[data-node-card="${node}"]`).click();
+      await page.getByRole("tab", { name: tab, exact: true }).click();
+      await expect(page.getByRole("tab", { name: tab, exact: true })).toHaveAttribute("aria-selected", "true");
+      await page.waitForTimeout(300);
+      // Walk the panel from the graph's last stop until the focus leaves it, and count what it stopped on.
+      await page.getByRole("button", { name: "Fit the graph" }).focus();
+      const seen: Array<{ label: string; ring: boolean }> = [];
+      for (let i = 0; i < 60; i++) {
+        await page.keyboard.press("Tab");
+        const here = await page.evaluate(async () => {
+          await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+          const el = document.activeElement as HTMLElement | null;
+          if (!el || !el.closest('aside[aria-label="Tools"]')) return null;
+          const style = getComputedStyle(el);
+          const parent = el.parentElement ? getComputedStyle(el.parentElement) : style;
+          const ring = (st: CSSStyleDeclaration): boolean => st.outlineStyle !== "none" && parseFloat(st.outlineWidth) >= 3;
+          return { label: (el.getAttribute("aria-label") ?? el.textContent ?? el.tagName).trim().slice(0, 40), ring: ring(style) || (el instanceof HTMLInputElement && ring(parent)) };
+        });
+        if (here === null) break;
+        seen.push(here);
+      }
+      // Every stop has the ring but the tab list, which is the container of the tabs and draws none (as in the simple view).
+      expect(seen.filter((s) => !s.ring).map((s) => s.label)).toEqual(["Tool tabs"]);
+      expect(seen.map((s) => s.label)[0]).toMatch(/^(Bypass this node|Reset (input|output))$/);
+      expect(seen.map((s) => s.label).slice(-2)).toEqual(["Copy settings", "Paste"]);
+      expect(seen, `the Tab stops of ${state}`).toHaveLength(stops);
+    });
+  }
 });

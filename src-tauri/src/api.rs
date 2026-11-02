@@ -37,8 +37,8 @@ use crate::wire::{
     AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, CliLinkResult,
     CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate, ExportJob, ExportJobId,
     HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress, LooksImportResult,
-    NodeId, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample, Preferences,
-    PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
+    NodeId, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample,
+    Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
     SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
     WatchStatus, convert,
 };
@@ -690,27 +690,17 @@ impl AppApi {
         convert(&report)
     }
 
-    /// `histogram`: the photo as it is rendered now. It is asked for after every frame, so it runs
-    /// as a thumbnail-priority job: a viewport frame that is wanted meanwhile goes first, as it
-    /// does for the Look tab's tiles.
-    ///
-    /// # Errors
-    ///
-    /// [`AppError`] for an unknown or unfinished photo.
-    pub fn histogram(&self, id: PhotoId) -> Result<HistogramData, AppError> {
-        self.histogram_at(id, None)
-    }
-
-    /// `histogram(photo_id, at)`: the histogram of the signal at a node (`docs/01`): the input of
-    /// its curve, or the Input's output for `"input"`; left out (`None`) it is Main's, as
-    /// [`AppApi::histogram`] reads it. A node the photo does not have and the Output are refused
-    /// in words.
+    /// `histogram(photo_id, at)`: the signal at a node as it is rendered now (`docs/01`): the input of
+    /// its curve, or the Input's output for `"input"`; left out (`None`) it is Main's, the photo as
+    /// it is rendered now. A node the photo does not have and the Output are refused in words. It is
+    /// asked for after every frame, so it runs as a thumbnail-priority job: a viewport frame that is
+    /// wanted meanwhile goes first, as it does for the Look tab's tiles.
     ///
     /// # Errors
     ///
     /// [`AppError`] for an unknown or unfinished photo, a node that cannot be read and a
     /// cancelled render.
-    pub fn histogram_at(&self, id: PhotoId, at: Option<NodeId>) -> Result<HistogramData, AppError> {
+    pub fn histogram(&self, id: PhotoId, at: Option<NodeId>) -> Result<HistogramData, AppError> {
         let id = core_id(id);
         let src = PhotoSource::from_session(&self.core.session, id).map_err(session_error)?;
         let histogram = self
@@ -723,27 +713,18 @@ impl AppApi {
         convert(&histogram)
     }
 
-    /// `chroma_scatter`: the photo's colours at the colour warp's input, for the plane of the Colour
-    /// warp card (`Renderer::chroma_scatter`: the histogram's view, at most 2048 points). Like the
-    /// histogram it is a thumbnail-priority job that a move to another photo cancels. A photo that
-    /// is still being developed has no points yet (an empty list, not an error: the plane is drawn
-    /// without them and asks again after the next `render_stats`).
-    ///
-    /// # Errors
-    ///
-    /// [`AppError`] for an unknown or failed photo and a cancelled render.
-    pub fn chroma_scatter(&self, id: PhotoId) -> Result<ChromaScatter, AppError> {
-        self.chroma_scatter_at(id, None)
-    }
-
-    /// `chroma_scatter(photo_id, at)`: the colours at the input of a node's colour warp
-    /// (`docs/01`); left out (`None`) it is Main's, as [`AppApi::chroma_scatter`] reads it.
+    /// `chroma_scatter(photo_id, at)`: the photo's colours at the input of a node's colour warp, for the
+    /// plane of the Colour warp card (`Renderer::chroma_scatter_at`: the histogram's view, at most 2048
+    /// points); left out (`None`) it is Main's. Like the histogram it is a thumbnail-priority job that
+    /// a move to another photo cancels. A photo that is still being developed has no points yet (an
+    /// empty list, not an error: the plane is drawn without them and asks again after the next
+    /// `render_stats`).
     ///
     /// # Errors
     ///
     /// [`AppError`] for an unknown or failed photo, a node that cannot be read and a cancelled
     /// render.
-    pub fn chroma_scatter_at(
+    pub fn chroma_scatter(
         &self,
         id: PhotoId,
         at: Option<NodeId>,
@@ -875,26 +856,17 @@ impl AppApi {
         convert(&sample.ok_or_else(outside)?)
     }
 
-    /// `sample_chroma`: the chroma at the colour warp's input under a point of the cell, in CSS
-    /// pixels from its corner as `sample_pixel` and Pick white take it (`Renderer::sample_chroma`:
-    /// the pixel the readout reads, through the chain to C9, in the final picture also while the
-    /// Before view is shown). `None` (JSON `null`) on the paper around the photo, for a point that is
-    /// not a number and when no photo is shown.
-    ///
-    /// # Errors
-    ///
-    /// [`AppError`] for a photo that cannot be read or rendered.
-    pub fn sample_chroma(&self, x: f64, y: f64) -> Result<Option<ChromaSample>, AppError> {
-        self.sample_chroma_at(x, y, None)
-    }
-
-    /// `sample_chroma(x, y, at)`: the chroma under a point at the input of a node's colour warp
-    /// (`docs/01`); left out (`None`) it is Main's, as [`AppApi::sample_chroma`] reads it.
+    /// `sample_chroma(x, y, at)`: the chroma at the input of a node's colour warp under a point of the
+    /// cell, in CSS pixels from its corner as `sample_pixel` and Pick white take it
+    /// (`Renderer::sample_chroma_at`: the pixel the readout reads, through the chain to C9, in the
+    /// final picture also while the Before view is shown); left out (`None`) it is Main's. `None`
+    /// (JSON `null`) on the paper around the photo, for a point that is not a number and when no
+    /// photo is shown.
     ///
     /// # Errors
     ///
     /// [`AppError`] for a photo that cannot be read or rendered, and a node that cannot be read.
-    pub fn sample_chroma_at(
+    pub fn sample_chroma(
         &self,
         x: f64,
         y: f64,

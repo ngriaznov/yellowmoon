@@ -13,6 +13,7 @@ export const HAS_COUNTERPART: ReadonlyArray<readonly [string, string]> = [
   [".ym-wizard__waiting", "Item"], [".ym-wizard__problem", "Item"], [".ym-wizard__received > li", "Item"], [".ym-error-bar", "Item"],
   [".ym-wizard__package", "Item"], [".ym-info-row", "Item"], [".ym-switch-row", "Item"], [".ym-auto-row", "Item"],
   [".ym-drop-zone__notice", "Item"], [".ym-develop__notice", "Item"], [".ym-about-dialog__adobe", "Item"], [".ym-nodes-notice", "Item"],
+  [".ym-mask-row:not([data-slot=item])", "Item"],
   [".ym-drop-zone", "Card"], [".ym-wizard__tile", "Card"],
   [".ym-photo-cell__before", "Badge"], [".ym-photo-cell__chip", "Badge"], [".ym-photo-cell__readout", "Badge"], [".ym-menu-later", "Badge"],
   // The graph's divider is a focusable window splitter, which glasscn's static Separator is not: it is listed below.
@@ -38,6 +39,8 @@ export const NO_COUNTERPART: ReadonlyArray<readonly [string, string]> = [
   ["[data-node-card]", "node card or marker (a picture button on the graph canvas)"], [".ym-gnode__num", "number chip of a card (a small label)"],
   [".ym-port", "port of a node (a triangle or a square on the canvas)"], [".react-flow__edge", "link between two ports (an SVG path)"],
   [".ym-filmstrip__nodes", "nodes glyph on a filmstrip thumbnail"],
+  // The node's head (N-09): its chip is a small label (the number, or a lock) and its name and line are text; the three buttons are glasscn's.
+  [".ym-nodehead__chip", "number chip or lock of the node's head (a small label)"],
   [".ym-wizard__tile-picture img, .ym-look-tile__picture img", "look picture"],
 ];
 

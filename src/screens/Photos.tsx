@@ -3,15 +3,15 @@ import type { CSSProperties } from "react";
 import { Aurora } from "@/components/glass/aurora";
 import { ChevronDownIcon } from "lucide-react";
 import type { ColorSpace, NodeId, PhotoSummary, RenderStats, ResolvedSettings, ViewportMode } from "../api/types";
-import { Button, Filmstrip, filmstripCaption, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts, useWindowDrop } from "../components";
+import { Button, FIRST_NODE_TAB, Filmstrip, filmstripCaption, NODE_FOR_SIMPLE_TAB, NODE_TABS, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts, useWindowDrop } from "../components";
 import { exportModel } from "../export/model";
 import { cellLabel, summarise } from "../export/run";
-import type { FilmstripPhoto, TabId } from "../components";
+import type { FilmstripPhoto, PanelKind, TabId } from "../components";
 import { perfCount } from "../perf";
 import { useAppState, useCurrentPhoto, useCurrentSettings, useStore } from "../state/context";
 import { lookLabeller, looksInDisplayOrder } from "../state/looks";
 import { folderSubline, isReady, photoName } from "../state/photo";
-import { hiddenByPhoto, hiddenFromSimpleView, MAIN_ID, nodeOf } from "../state/settingsGraph";
+import { hiddenByPhoto, hiddenFromSimpleView, INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../state/settingsGraph";
 import type { AppStore } from "../state/store";
 import { useShortcuts } from "../state/useShortcuts";
 import { fitZoomExact, fitZoomOf, showsWhole, ZOOMS, zoomKey, zoomStep } from "../state/zoom";
@@ -22,6 +22,7 @@ import { ExportCell, Header } from "./Header";
 import { Menu } from "./Menu";
 import { Divider } from "./nodes/Divider";
 import { GraphArea } from "./nodes/GraphArea";
+import { NodePanel } from "./nodes/NodePanel";
 import { nodesGlyphText, NodesNotice } from "./nodes/NodesNotice";
 import { useNodeGraph } from "./nodes/useNodeGraph";
 import { useNodeLayout } from "./nodes/useNodeLayout";
@@ -200,9 +201,12 @@ export function Photos() {
   // The simple view (today's Photos) or the node view (`docs/23`), and the node the graph is on. Both are the window's: nothing is kept.
   const [view, setView] = useState<"simple" | "nodes">("simple");
   const [selectedNode, setSelectedNode] = useState<NodeId>(MAIN_ID);
+  // The tab each kind of node shows in the node view; nodes of one kind share it (`docs/23` §7.5 *Tab memory*).
+  const [nodeTabs, setNodeTabs] = useState<Record<PanelKind, TabId>>(FIRST_NODE_TAB);
   // Pick white (Colour › White balance, or W) or Pick colour (Colour › Colour warp): one crosshair layer over the photo, so the two are
-  // exclusive. `picked` is what was asked for; `picking` (below, once the crop and the tab are known) is what is on.
-  const [picked, setPicking] = useState<PickMode | null>(null);
+  // exclusive. `asked` is what was asked for, and on which node (a node change ends a pick: `docs/23` §8); `picking` (below, once the crop,
+  // the tab and the node are known) is what is on.
+  const [asked, setAsked] = useState<{ mode: PickMode; node: NodeId } | null>(null);
   // Files dropped anywhere on the window are added to the session, as on Start (`docs/11` §Photos); a dialog takes the drop away.
   const { dragging } = useWindowDrop({ onDrop: (paths) => void store.openPaths(paths), enabled: overlay === null });
   const [cell, setCell] = useState<{ width: number; height: number; scale: number } | null>(null);
@@ -221,23 +225,40 @@ export function Photos() {
 
   const photos = session?.photos ?? [];
   const cropping = crop.active;
-  // Pick white and Pick colour belong to the Colour tab (`docs/11` §Pick white, §Colour warp): a mode is on only while that tab is the one
-  // shown, in the tool panel (the Export and Crop panels replace it). It is read from the tab, not switched off at each way of leaving, so a
-  // click on a tab, ⌘1 to ⌘7, the Look tab's links and the panels all end it in the same render that hides the tab: the layer is gone at
-  // once and takes no click. Leaving the screen (Start, the wizard) unmounts this one, and with it the mode.
-  const colourShown = panel === "tools" && tab === "color" && !cropping;
-  const picking: PickMode | null = colourShown ? picked : null;
+  // The node the graph and the panel are on: the one that was chosen while the photo has it (an undo may take it away), else Main.
+  const graphSettings = rs?.settings ?? null;
+  const selectedItem = graphSettings ? nodeOf(graphSettings, selectedNode) : undefined;
+  const onNode = selectedItem ? selectedNode : MAIN_ID;
+  const onKind: PanelKind = selectedItem?.kind ?? "corrector";
+  const nodeTab = nodeTabs[onKind];
+  const nodeTabList = NODE_TABS[onKind];
+  const onNodeNow = useLatest(onNode);
+  // Pick white and Pick colour belong to the Colour tab (`docs/11` §Pick white, §Colour warp; in the node view the Input's Colour tab has
+  // Pick white and a corrector's has Pick colour): a mode is on only while that tab is the one shown, in the tool panel (the Export and Crop
+  // panels replace it), and only on the node it was asked on. It is read from the tab and the node, not switched off at each way of
+  // leaving, so a click on a tab, ⌘1 to ⌘7, the Look tab's links, a click on another card and the panels all end it in the same render that
+  // hides the tab: the layer is gone at once and takes no click. Leaving the screen (Start, the wizard) unmounts this one, and with it the mode.
+  const colourShown = panel === "tools" && (view === "nodes" ? nodeTab : tab) === "color" && !cropping;
+  const picking: PickMode | null = colourShown && asked !== null && asked.node === onNode ? asked.mode : null;
+  /** Starts a pick on the selected node, or ends it (null). */
+  const setPicking = useCallback((mode: PickMode | null, node?: NodeId): void => {
+    setAsked(mode === null ? null : { mode, node: node ?? onNodeNow.current });
+  }, [onNodeNow]);
   // What was asked for is forgotten with it, so coming back to Colour finds the mode off. A photo that changes, by whatever road (the
   // filmstrip, the arrows, Delete, an undo of a removal), ends it too, if it is not ended already.
   useEffect(() => {
-    if (picked !== null && !colourShown) setPicking(null);
-  }, [picked, colourShown]);
+    if (asked !== null && picking === null) setAsked(null);
+  }, [asked, picking]);
   const photoId = photo?.id ?? null;
   useEffect(() => {
     setPicking(null);
     // A node of the last photo may not be on this one.
     setSelectedNode(MAIN_ID);
-  }, [photoId]);
+  }, [photoId, setPicking]);
+  // The selected pin of the colour warp is an index into one node's pins: another node starts with none.
+  useEffect(() => {
+    store.selectWarpPin(null);
+  }, [store, onNode]);
   // Full screen (F): the photo alone. The Export panel and Crop need the panel, so neither shares the window with it.
   const fullScreen = useFullScreen(!cropping && panel !== "export");
   // The node view's layout is on while the view is and the window is not full screen (the photo alone is the whole window then).
@@ -245,9 +266,6 @@ export function Photos() {
   const nodeLayout = useNodeLayout(nodesOn);
   // The photos whose graph has more than the simple view shows (a glyph on their thumbnails): a Map that is the same while the answer is.
   const hiddenNodes = useAppState((s) => hiddenByPhoto(s.settings));
-  // The node the graph and the panel are on: the one that was chosen while the photo has it (an undo may take it away), else Main.
-  const graphSettings = rs?.settings ?? null;
-  const onNode = graphSettings && nodeOf(graphSettings, selectedNode) ? selectedNode : MAIN_ID;
   const graph = useNodeGraph({ store, settings: graphSettings, photoId: photo?.id ?? null, selected: onNode, select: setSelectedNode });
   // A card shows the picture after its node (`docs/23` §5.7), which the store asks the core for while the node view is on (when a change
   // has landed, never during a drag). Until a node's first picture arrives its card shows the photo's thumbnail, the filmstrip's.
@@ -321,15 +339,27 @@ export function Photos() {
     void store.step(direction);
   };
 
-  /** The Nodes button and N: the other view. Picking ends, as it does on any change of what the cell is for (`docs/11` §Pick white). */
+  /**
+   * The Nodes button and N: the other view. Picking ends, as it does on any change of what the cell is for (`docs/11` §Pick white). Entering
+   * the node view selects the node and the tab that match the tab the simple view stands on: Look → Output › Look, Lens → Input › Lens,
+   * Light → Main › Light, Colour → Main › Colour, Detail → Input › Detail, Curve → Main › Curve, RAW → Input › RAW (`docs/23` §7.5, §14
+   * decision 21).
+   */
   const toggleNodes = (): void => {
     setPicking(null);
+    if (view === "simple") {
+      const target = NODE_FOR_SIMPLE_TAB[tab === "mask" ? "light" : tab];
+      setSelectedNode(target.kind === "input" ? INPUT_ID : target.kind === "output" ? OUTPUT_ID : MAIN_ID);
+      setNodeTabs((was) => ({ ...was, [target.kind]: target.tab }));
+    }
     setView((was) => (was === "nodes" ? "simple" : "nodes"));
   };
-  /** "Open nodes" of the simple view's notice: the node view, with Main selected. */
+  /** "Open nodes" of the simple view's notice: the node view, with Main selected (on the simple tab's tab when Main has it). */
   const openNodes = (): void => {
     setPicking(null);
     setSelectedNode(MAIN_ID);
+    const target = NODE_FOR_SIMPLE_TAB[tab === "mask" ? "light" : tab];
+    if (target.kind === "corrector") setNodeTabs((was) => ({ ...was, corrector: target.tab }));
     setView("nodes");
   };
 
@@ -338,7 +368,21 @@ export function Photos() {
     store.setPanel("tools");
     setTab(next);
   };
-  useTabShortcuts(showTab, !cropping && overlay === null);
+  /** A tab of the selected node (a click, or ⌘1 to ⌘5): the node's kind remembers it. */
+  const showNodeTab = (next: TabId): void => {
+    store.setPanel("tools");
+    setNodeTabs((was) => ({ ...was, [onKind]: next }));
+  };
+  // ⌘1 to ⌘7 are the simple view's tabs; in the node view ⌘1 to ⌘5 are the selected node's own (a corrector's four, the Output's two).
+  useTabShortcuts(
+    (next) => {
+      fullScreen.leave();
+      if (view === "nodes") showNodeTab(next);
+      else showTab(next);
+    },
+    !cropping && overlay === null,
+    view === "nodes" ? nodeTabList : undefined,
+  );
 
   // The zoom and the Fit zoom are read when the key is pressed, not at each render: this screen does not follow them.
   const zoomBy = (delta: number): void => void store.setZoom(zoomStep(store.getState().zoom, delta, store.fitPercentExact()));
@@ -352,9 +396,10 @@ export function Photos() {
   };
   // Pick white, from the White balance card's toggle. It turns Pick colour off, and ends itself after one click.
   const setPickingWhite = useCallback((on: boolean): void => {
-    setPicking((mode) => (on ? "white" : mode === "white" ? null : mode));
-  }, []);
-  // W: opens the Colour tab and starts Pick white; W again ends it. Leaving the Export panel for the tab is what ⌘4 does.
+    setAsked((was) => (on ? { mode: "white", node: onNodeNow.current } : was?.mode === "white" ? null : was));
+  }, [onNodeNow]);
+  // W: opens the Colour tab and starts Pick white; W again ends it. Leaving the Export panel for the tab is what ⌘4 does. In the node view
+  // the Input is where the photo's white is set: W selects it first and opens its Colour tab (`docs/23` §8).
   const togglePickWhite = (): void => {
     if (!rs || !photo || !isReady(photo) || cropping) return;
     if (picking === "white") {
@@ -362,23 +407,31 @@ export function Photos() {
       return;
     }
     store.setPanel("tools");
-    setTab("color");
-    setPicking("white");
+    if (view === "nodes") {
+      setSelectedNode(INPUT_ID);
+      setNodeTabs((was) => ({ ...was, input: "color" }));
+      setPicking("white", INPUT_ID);
+    } else {
+      setTab("color");
+      setPicking("white");
+    }
   };
   // Pick colour, from the Colour warp card's toggle. It turns Pick white off, and stays on for several clicks until Esc or the toggle.
   const setPickingColor = useCallback((on: boolean): void => {
-    setPicking((mode) => (on ? "color" : mode === "color" ? null : mode));
-  }, []);
+    setAsked((was) => (on ? { mode: "color", node: onNodeNow.current } : was?.mode === "color" ? null : was));
+  }, [onNodeNow]);
+  // A click with Pick colour on reads the chroma at the input of the selected node's warp and puts the pin in that node (`docs/23` §7.5).
+  const pickedNode = view === "nodes" && typeof onNode === "number" ? onNode : MAIN_ID;
   const onPicked = useCallback(
     (point: { x: number; y: number }): void => {
       if (picking === "color") {
-        void store.pickColor(point.x, point.y);
+        void store.pickColor(point.x, point.y, pickedNode);
         return;
       }
       setPicking(null);
       void store.pickWhite(point.x, point.y);
     },
-    [store, picking],
+    [store, picking, pickedNode, setPicking],
   );
   const onRect = useCallback((rect: { x: number; y: number; width: number; height: number; scale: number }): void => {
     setCell((was) => (was && was.width === rect.width && was.height === rect.height && was.scale === rect.scale ? was : { width: rect.width, height: rect.height, scale: rect.scale }));
@@ -516,7 +569,8 @@ export function Photos() {
       }
     },
     {
-      tab: panel === "tools" ? tab : undefined,
+      // The number keys pick looks on the Look tab, which in the node view is the Output's.
+      tab: panel === "tools" ? (view === "nodes" ? nodeTab : tab) : undefined,
       mode: cropping ? "crop" : picking === "white" ? "pick-white" : picking === "color" ? "pick-color" : null,
       nodeView: view === "nodes",
     },
@@ -526,11 +580,31 @@ export function Photos() {
   // What the simple view cannot show of this photo (`docs/23` §6); the node view's panel is the node's, so it has no notice.
   const hidden = view === "simple" && photo && rs && isReady(photo) ? hiddenFromSimpleView(rs.settings) : null;
 
+  const copyPaste = <CopyPasteButtons store={store} canCopy={rs !== null && photo !== null && isReady(photo)} />;
   let panelNode;
   if (crop.session) {
     panelNode = <CropPanel session={crop.session} />;
   } else if (panel === "export") {
     panelNode = <ExportPanel store={store} />;
+  } else if (view === "nodes") {
+    // The node view's panel edits the selected node: its head, its kind's tabs and its cards (`docs/23` §7.5).
+    panelNode = (
+      <NodePanel
+        store={store}
+        photo={photo}
+        rs={rs}
+        node={onNode}
+        tab={nodeTab}
+        onTab={showNodeTab}
+        graph={graph}
+        pickingWhite={picking === "white"}
+        onPickWhite={setPickingWhite}
+        pickingColor={picking === "color"}
+        onPickColor={setPickingColor}
+        foot={copyPaste}
+        hidden={fullScreen.on}
+      />
+    );
   } else {
     panelNode = (
       <aside aria-label="Tools" className="ym-tools" hidden={fullScreen.on || undefined}>
@@ -569,7 +643,7 @@ export function Photos() {
           ) : null}
         </div>
         <div className="ym-tools__foot" role="group" aria-label="Copy and paste settings">
-          <CopyPasteButtons store={store} canCopy={rs !== null && photo !== null && isReady(photo)} />
+          {copyPaste}
         </div>
       </aside>
     );

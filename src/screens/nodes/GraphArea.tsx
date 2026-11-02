@@ -5,7 +5,6 @@ import { GRAPH_OP_TEXT, MAX_CORRECTORS } from "../../state/graphOps";
 import { correctorsOf, INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../../state/settingsGraph";
 import { AddNodeMenu } from "./AddNodeMenu";
 import { NodeGraph } from "./NodeGraph";
-import { NodeMoreMenu } from "./NodeMoreMenu";
 import { PhotoSwitcher } from "./PhotoSwitcher";
 import type { PhotoSwitcherProps } from "./PhotoSwitcher";
 import type { NodeGraphActions } from "./useNodeGraph";
@@ -37,7 +36,7 @@ function deleteReason(id: NodeId, link: boolean): string | null {
 
 /**
  * The graph area of the node view (`docs/23` §7.1 to §7.3): a 44 px toolbar and the canvas under it, in the strip's glass. The toolbar has
- * Add node ▾, Bypass, Delete and More at the left; at the right the photo switcher, Show mask and Expand. The canvas is the graph itself
+ * Add node ▾, Bypass and Delete at the left (More is the third icon of the node's head, `NodeHead`); at the right the photo switcher, Show mask and Expand. The canvas is the graph itself
  * (`NodeGraph`: the cards, the markers, the ports and the links on @xyflow/react). Bypass and Delete act on the selected node (Delete on
  * the selected link first), with the sentence that says why when they are off; Show mask comes with the mask view (N-11). While Crop or
  * Export shows, the whole area is `inert` and dimmed.
@@ -63,18 +62,6 @@ export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, ex
         <Button variant="header" disabled={deleteOff !== null} title={deleteOff ?? (graph.selectedLink ? "Delete the link" : "Delete this node")} onClick={graph.deleteSelection}>
           Delete
         </Button>
-        {settings ? (
-          <NodeMoreMenu
-            settings={settings}
-            node={selected}
-            onRename={() => graph.startRename(selected)}
-            onMoveEarlier={graph.moveEarlier}
-            onMoveLater={graph.moveLater}
-            onLink={graph.connect}
-            onRemoveLink={graph.disconnect}
-            onDelete={() => graph.deleteNode(selected)}
-          />
-        ) : null}
         <span className="ym-graph__spacer" />
         <PhotoSwitcher {...switcher} />
         <Button variant="header" pressed={false} disabled title="Show mask (M)">
@@ -91,7 +78,7 @@ export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, ex
             photoKey={photoKey}
             selected={selected}
             selectedLink={graph.selectedLink}
-            renaming={graph.renaming}
+            renaming={graph.renamingIn === "card" ? graph.renaming : null}
             thumbnailOf={thumbnailOf}
             onSelect={graph.selectNode}
             onSelectLink={graph.selectLink}

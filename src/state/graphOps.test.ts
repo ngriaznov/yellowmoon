@@ -18,6 +18,7 @@ import {
   disconnect,
   GRAPH_OP_TEXT,
   hasCircle,
+  headLine,
   hasPatch,
   inputStates,
   insertAfter,
@@ -34,11 +35,13 @@ import {
   rename,
   reorderAvailability,
   reorderInto,
+  resetNode,
   sortedLinks,
   toggleBypass,
 } from "./graphOps";
 import type { GraphOutcome } from "./graphOps";
-import { applyPatch, defaultSettings, diffGraph, isEmptyPatch, nodeOf } from "./settingsGraph";
+import { applyPatch, defaultGrade, defaultSettings, diffGraph, inputOf, isEmptyPatch, mainOf, neutralGrade, nodeOf, outputOf } from "./settingsGraph";
+import type { CorrectorItem } from "./settingsGraph";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -822,5 +825,102 @@ describe("Names for the cards", () => {
     expect(joinWords(["Object"])).toBe("Object");
     expect(joinWords(["Object", "Radial"])).toBe("Object and Radial");
     expect(joinWords(["Object", "Radial", "Colour range"])).toBe("Object, Radial and Colour range");
+  });
+});
+
+describe("The quiet line of a node's head (docs/23 §7.5)", () => {
+  it("says what the Input and the Output are, in the mockups' words", () => {
+    const g = line();
+    expect(headLine(g, "input")).toBe("Turns the camera's data into the scene.");
+    expect(headLine(g, "output")).toBe("Cine rendering, look and export");
+  });
+
+  it("says 'whole photo' for a corrector with no mask, the kind of one mask, and the number of several", () => {
+    const g = graph(
+      { 1: {}, 2: { masks: ["linear"] }, 3: { masks: ["object", "radial"] }, 4: { masks: ["color_range"] }, 5: { masks: ["brightness_range"] } },
+      [pic("input", 1), pic(1, 2), pic(2, 3), pic(3, 4), pic(4, 5), pic(5, "output")],
+    );
+    expect(headLine(g, 1)).toBe("Corrector · whole photo");
+    expect(headLine(g, 2)).toBe("Corrector · Linear");
+    expect(headLine(g, 3)).toBe("Corrector · 2 masks");
+    expect(headLine(g, 4)).toBe("Corrector · Colour range");
+    expect(headLine(g, 5)).toBe("Corrector · Brightness range");
+  });
+
+  it("says 'bypassed' and 'not connected' before the masks", () => {
+    const g = graph({ 1: {}, 2: { bypass: true, masks: ["linear"] }, 3: { masks: ["linear"] } }, [pic("input", 1), pic(1, 2), pic(2, "output"), pic(1, 3)]);
+    expect(headLine(g, 2)).toBe("Corrector · bypassed");
+    expect(headLine(g, 3)).toBe("Corrector · not connected");
+    expect(headLine(g, 99)).toBe("");
+  });
+});
+
+describe("Reset node (the head's Reset, docs/23 §3.7 and §7.5)", () => {
+  /** A graph whose nodes 1 and 2 are far from their defaults, with a mask, a name, a bypass and a key link on node 2. */
+  const worn = (): DevelopSettings =>
+    applyPatch(graph({ 1: {}, 2: { name: "Mountain", bypass: true, masks: ["linear"] }, 3: { name: "Sky" } }, [pic("input", 1), pic(1, 2), pic(2, 3), pic(3, "output"), key(2, 3)]), {
+      nodes: {
+        "1": { trim: { exposure_ev: 0.5, temperature: 20, tint: -5 }, grade: { contrast: { kind: "manual", value: 30 }, brightness: 10 } },
+        "2": { trim: { exposure_ev: -1, temperature: -30, tint: 12 }, grade: { contrast: { kind: "manual", value: 25 }, saturation: { kind: "manual", value: -20 }, white: 40 } },
+        input: { exposure: { kind: "manual", ev: 1 }, light_source: "shade", white_pick: [0.3, 0.4], orientation: 90, crop: null },
+        output: { look: "builtin:signature", look_intensity: 40, output_sharpening: 150 },
+      },
+    });
+
+  it("puts a corrector's trim and grade at their defaults and leaves its masks, name, bypass and links alone, as one patch of that node", () => {
+    const before = worn();
+    const patch = sent(resetNode(before, 2));
+    expect(Object.keys(patch.nodes ?? {})).toEqual(["2"]);
+    expect(Object.keys(patch.nodes?.["2"] ?? {}).sort()).toEqual(["grade", "trim"]);
+    expect(patch.links).toBeUndefined();
+    const { after, undone } = run(before, resetNode(before, 2));
+    const node = nodeOf(after, 2) as CorrectorItem;
+    expect(node.trim).toEqual({ exposure_ev: 0, temperature: 0, tint: 0 });
+    expect(node.grade).toEqual(neutralGrade());
+    expect(node.masks).toEqual((nodeOf(before, 2) as CorrectorItem).masks);
+    expect([node.name, node.bypass, node.pos]).toEqual(["Mountain", true, (nodeOf(before, 2) as CorrectorItem).pos]);
+    expect(after.nodes.links).toEqual(before.nodes.links);
+    // The other nodes are as they were, and the undo of the step gives the node back.
+    expect(mainOf(after)).toEqual(mainOf(before));
+    expect(undone).toEqual(before);
+  });
+
+  it("gives Main its Auto back, where there is Auto, and a manual 0 to every other corrector", () => {
+    const before = worn();
+    const main = nodeOf(run(before, resetNode(before, 1)).after, 1) as CorrectorItem;
+    expect(main.grade).toEqual(defaultGrade());
+    expect(main.grade.contrast).toEqual({ kind: "auto" });
+    expect(main.trim).toEqual({ exposure_ev: 0, temperature: 0, tint: 0 });
+    expect((nodeOf(run(before, resetNode(before, 2)).after, 2) as CorrectorItem).grade.contrast).toEqual({ kind: "manual", value: 0 });
+  });
+
+  it("puts every field of the Input at its default, Auto where there is Auto, and leaves the rest of the graph alone", () => {
+    const before = worn();
+    const { after, undone } = run(before, resetNode(before, "input"));
+    const input = inputOf(after);
+    expect(input.exposure).toEqual({ kind: "auto" });
+    expect(input.light_source).toBe("auto");
+    expect(input.white_pick).toBeNull();
+    expect(input.orientation).toBe(0);
+    expect(input.rolloff).toEqual({ highlights: 0.6, low_light: 0.5 });
+    expect(input.pos).toEqual(inputOf(before).pos);
+    expect(outputOf(after)).toEqual(outputOf(before));
+    expect(mainOf(after)).toEqual(mainOf(before));
+    expect(undone).toEqual(before);
+  });
+
+  it("puts the Output's look (the user's default one), its intensity and its sharpening at their defaults", () => {
+    const before = worn();
+    const output = outputOf(run(before, resetNode(before, "output", { look: "builtin:signature" })).after);
+    expect([output.look, output.look_intensity, output.output_sharpening]).toEqual(["builtin:signature", 100, 100]);
+    // Without a default look the page knows of, Neutral.
+    expect(outputOf(run(before, resetNode(before, "output")).after).look).toBe("builtin:neutral");
+  });
+
+  it("sends nothing for a node that is already at its defaults, and refuses a node that is not there", () => {
+    const fresh = line();
+    for (const id of [1, 2, 3, 4, "input"] as NodeId[]) expect(hasPatch(resetNode(fresh, id)), `${id}`).toBe(false);
+    expect(hasPatch(resetNode(defaultSettings("builtin:signature"), "output", { look: "builtin:signature" }))).toBe(false);
+    expect(reasonOf(resetNode(fresh, 9))).toBe(GRAPH_OP_TEXT.gone);
   });
 });

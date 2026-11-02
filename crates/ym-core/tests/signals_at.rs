@@ -12,7 +12,8 @@ mod common;
 use common::*;
 use serde_json::{Value, json};
 use ym_core::pipeline::{
-    ChromaSample, ChromaScatter, HistogramData, PhotoSource, RenderError, Renderer, ViewportRect, ViewportState,
+    ChromaSample, ChromaScatter, HistogramData, PhotoSource, RenderError, Renderer, ViewportRect,
+    ViewportState,
 };
 use ym_core::settings::{DevelopSettings, NodeId};
 use ym_gpu::queue::CancelToken;
@@ -151,9 +152,7 @@ fn without_at_and_at_main_the_signal_is_mains_whatever_follows() {
         let plain = r.histogram(&s, &CancelToken::new()).expect("histogram");
         assert_eq!(histogram(&r, &s, None), plain);
         assert_eq!(histogram(&r, &s, Some(NodeId::MAIN)), plain);
-        let dots = r
-            .chroma_scatter(&s, &CancelToken::new())
-            .expect("scatter");
+        let dots = r.chroma_scatter(&s, &CancelToken::new()).expect("scatter");
         assert_eq!(scatter(&r, &s, None), dots);
         assert_eq!(scatter(&r, &s, Some(NodeId::MAIN)), dots);
         // Main is flat, node 2 is not: what is read at node 2 is another signal.
@@ -172,7 +171,10 @@ fn the_histogram_at_a_node_is_the_signal_at_the_input_of_its_curve() {
     let mut straight = grade.clone();
     straight["curve"] = json!({});
     let uncurved = histogram(&r, &at(&src, main_with(&trim, &straight)), None);
-    assert_eq!(reference, uncurved, "Main's own reading stops before its curve");
+    assert_eq!(
+        reference, uncurved,
+        "Main's own reading stops before its curve"
+    );
     for (what, s) in [
         ("a line", line(&trim, &grade)),
         ("a dead branch", dead_branch(&trim, &grade)),
@@ -202,7 +204,10 @@ fn a_neutral_node_reads_the_graph_that_ends_before_it() {
     );
     let with_node = at(&src, line(&json!({}), &json!({})));
     // The picture that enters node 2 is Main's; node 2 changes nothing, so its curve input is that.
-    assert_eq!(histogram(&r, &with_node, NODE_2), histogram(&r, &before, None));
+    assert_eq!(
+        histogram(&r, &with_node, NODE_2),
+        histogram(&r, &before, None)
+    );
     assert_eq!(scatter(&r, &with_node, NODE_2), scatter(&r, &before, None));
 }
 
@@ -242,7 +247,10 @@ fn at_the_input_the_signal_is_the_inputs_output() {
     let plain = histogram(&r, &at(&src, line(&json!({}), &json!({}))), input);
     // Whatever the correctors do, the Input's output is the same...
     assert_eq!(histogram(&r, &at(&src, line(&trim, &grade)), input), plain);
-    assert_eq!(scatter(&r, &at(&src, line(&trim, &grade)), input), scatter(&r, &at(&src, line(&json!({}), &json!({}))), input));
+    assert_eq!(
+        scatter(&r, &at(&src, line(&trim, &grade)), input),
+        scatter(&r, &at(&src, line(&json!({}), &json!({}))), input)
+    );
     // ...and it is not Main's reading once Main grades.
     let graded = at(&src, main_with(&trim, &grade));
     assert_ne!(histogram(&r, &graded, input), histogram(&r, &graded, None));
@@ -261,11 +269,17 @@ fn a_node_the_photo_does_not_have_and_the_output_are_refused_in_words() {
     let missing = r
         .histogram_at(&src, Some(NodeId::Corrector(9)), &CancelToken::new())
         .expect_err("no node 9");
-    assert!(matches!(&missing, RenderError::Color(m) if m == "This photo has no node 9."), "{missing}");
+    assert!(
+        matches!(&missing, RenderError::Color(m) if m == "This photo has no node 9."),
+        "{missing}"
+    );
     let output = r
         .chroma_scatter_at(&src, Some(NodeId::Output), &CancelToken::new())
         .expect_err("the output");
-    assert!(matches!(&output, RenderError::Color(m) if m == "The output has no picture to read here."), "{output}");
+    assert!(
+        matches!(&output, RenderError::Color(m) if m == "The output has no picture to read here."),
+        "{output}"
+    );
 }
 
 #[test]
@@ -298,8 +312,13 @@ fn pick_colour_at_a_node_reads_the_chroma_at_the_input_of_its_warp() {
         let mains = chroma(line(&trim, &grade), None, point).expect("inside");
         assert_eq!(
             Some(mains),
-            r.sample_chroma(&at(&src, line(&trim, &grade)), &cell, point, &CancelToken::new())
-                .expect("a sample")
+            r.sample_chroma(
+                &at(&src, line(&trim, &grade)),
+                &cell,
+                point,
+                &CancelToken::new()
+            )
+            .expect("a sample")
         );
         assert_ne!(mains, reference, "{point:?}: Main is flat, node 2 is not");
     }

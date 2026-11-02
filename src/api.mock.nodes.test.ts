@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockApi } from "./api.mock";
 import type { MockApi } from "./api.mock";
-import type { AppError, MaskItem, NodeLink, NodeThumbnailsReady, SettingsPatch } from "./api/types";
+import type { AppError, ColorWarpPin, MaskItem, NodeLink, NodeThumbnailsReady, SettingsPatch } from "./api/types";
 import { applyPatch, correctorsOf, defaultSettings, inputOf, mainGradeOf, mainOf, nodeOf, outputOf } from "./state/settingsGraph";
 
 const ARW = ["~/Pictures/Lisbon/DSC04201.ARW", "~/Pictures/Lisbon/DSC04202.ARW", "~/Pictures/Lisbon/DSC04203.ARW"];
@@ -305,3 +305,56 @@ describe("node thumbnails (docs/23 §5.7)", () => {
     expect(nodes(seen[1])).toEqual([3]);
   });
 });
+
+describe("the signal at a node (`at` of histogram, chroma_scatter and sample_chroma, `docs/01`)", () => {
+  const trimmed: SettingsPatch = {
+    nodes: { "2": { kind: "corrector", name: "Warmth", trim: { exposure_ev: 1.2, temperature: 60 }, pos: [1, 0] } },
+    links: [picture("input", 1), picture(1, 2), picture(2, "output")],
+  };
+
+  it("leaves out Main: left out, 1 and the Input read what they read before nodes, whatever follows Main", async () => {
+    const histogram = await api.histogram(1);
+    const scatter = (await api.chromaScatter(1)).points;
+    await api.updateSettings(1, trimmed);
+    expect(await api.histogram(1)).toEqual(histogram);
+    expect(await api.histogram(1, 1)).toEqual(histogram);
+    expect((await api.chromaScatter(1, 1)).points).toEqual(scatter);
+    expect((await api.chromaScatter(1)).points).toEqual(scatter);
+  });
+
+  it("reads another corrector after the nodes before it and its own trim", async () => {
+    const main = await api.histogram(1);
+    const points = (await api.chromaScatter(1)).points;
+    await api.updateSettings(1, trimmed);
+    expect(await api.histogram(1, 2)).not.toEqual(main);
+    expect((await api.chromaScatter(1, 2)).points).not.toEqual(points);
+    // A node at its defaults reads what enters it: the photo as Main leaves it.
+    await api.updateSettings(1, patchOfNode(2, { trim: { exposure_ev: 0, temperature: 0 } }));
+    expect(await api.histogram(1, 2)).toEqual(await api.histogram(1, 1));
+    // The Input's output is the same whatever the correctors do.
+    const input = await api.histogram(1, "input");
+    await api.updateSettings(1, patchOfNode(2, { trim: { exposure_ev: 2 } }));
+    expect(await api.histogram(1, "input")).toEqual(input);
+  });
+
+  it("reads Pick colour at the node's warp: its pins do not move what its own warp reads", async () => {
+    await api.updateSettings(1, trimmed);
+    await api.viewportSetRect({ x: 0, y: 0, width: 1500, height: 1000, scale: 1 });
+    await api.setCurrent(1);
+    const main = await api.sampleChroma(20, 20);
+    const at = await api.sampleChroma(20, 20, 2);
+    expect(at).not.toEqual(main);
+    const pin: ColorWarpPin = { source: [0.05, 0], target: [0.1, 0.05], locked: false, range: 0.1, shadows: 1, highlights: 1, pivot_ev: 0, exposure_ev: 0, saturation: 0 };
+    await api.updateSettings(1, patchOfNode(2, { grade: { color_warp: { pins: [pin] } } }));
+    expect(await api.sampleChroma(20, 20, 2)).toEqual(at);
+    expect(await api.sampleChroma(20, 20, "input")).toEqual(await api.sampleChroma(20, 20, "input"));
+  });
+
+  it("refuses a node the photo does not have and the Output, in words", async () => {
+    expect(await rejection(api.histogram(1, 7))).toMatchObject({ scope: "render", message: "This photo has no node 7." });
+    expect(await rejection(api.chromaScatter(1, "output"))).toMatchObject({ scope: "render", message: "The output has no picture to read here." });
+  });
+});
+
+const patchOfNode = (id: number, node: NodePatchInput): SettingsPatch => ({ nodes: { [String(id)]: node } });
+type NodePatchInput = NonNullable<SettingsPatch["nodes"]>[string];

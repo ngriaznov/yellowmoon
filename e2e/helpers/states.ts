@@ -83,6 +83,8 @@ export const GRADED_NODES = {
       name: "Mountain",
       pos: [1, 0],
       trim: { exposure_ev: 0.35, temperature: 0, tint: 0 },
+      // Screen 06's Light tab: Exposure trim +0.35 and Highlights −12 on Mountain.
+      grade: { highlights: { kind: "manual", value: -12 } },
       masks: {
         invert: false,
         items: [
@@ -117,7 +119,7 @@ async function photos(page: Page, options: Options = MOCKUP, settings: boolean |
 }
 
 /** The node view of the graph of `GRADED_NODES`, opened with the Nodes button, with `select` (a node's number or "input", "output") on. */
-async function nodeViewOfGradedPhoto(page: Page, select = 2): Promise<void> {
+async function nodeViewOfGradedPhoto(page: Page, select: number | "input" | "output" = 2): Promise<void> {
   await openApp(page, MOCKUP);
   await configureMock(page, {
     initialSettings: { DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE }, ...GRADED_NODES.nodes }, links: GRADED_NODES.links } } as never,
@@ -127,6 +129,7 @@ async function nodeViewOfGradedPhoto(page: Page, select = 2): Promise<void> {
   await page.getByRole("button", { name: "Nodes", exact: true }).click();
   await expect(page.locator('[data-node-card="4"]')).toBeVisible();
   await page.locator(`[data-node-card="${select}"]`).click();
+  await expect(page.locator(`[data-node-card="${select}"]`)).toHaveAttribute("aria-pressed", "true");
   await page.waitForTimeout(400);
 }
 
@@ -494,6 +497,8 @@ export const STATES: readonly PageState[] = [
     "42-nodes-default",
     async (p) => {
       await photos(p);
+      // The node view opens on the node and the tab of the simple view's tab: Light is Main's (N-09, `docs/23` §7.5).
+      await tab(p, "Light");
       await p.getByRole("button", { name: "Nodes", exact: true }).click();
       await expect(p.getByRole("separator", { name: "Resize the graph" })).toBeVisible();
       await expect(p.getByRole("group", { name: "Photos" })).toContainText("4 of 12");
@@ -548,6 +553,41 @@ export const STATES: readonly PageState[] = [
       await p.mouse.click(at.x, at.y, { button: "right" });
       await expect(p.getByRole("menuitem", { name: "Delete link" })).toBeVisible();
       await p.waitForTimeout(300);
+    },
+  ],
+  // The node's panel (docs/23 section 7.5, N-09): the Input's Colour tab with the White balance card (screen 10 of design/nodes), a corrector's
+  // Light tab with the trim card (screen 06) and its Colour tab with Temperature and tint and the Colour warp (screen 09), and the Output's
+  // Look tab (screen 11). The graph is the graded one of the mockups, with the node on the graph selected.
+  [
+    "53-nodes-input-colour",
+    async (p) => {
+      await nodeViewOfGradedPhoto(p, "input");
+      await tab(p, "Colour");
+      await expect(p.getByRole("button", { name: "Pick white" })).toBeVisible();
+    },
+  ],
+  [
+    "54-nodes-corrector-light",
+    async (p) => {
+      await nodeViewOfGradedPhoto(p, 2);
+      await expect(p.getByRole("slider", { name: "Exposure trim" })).toBeVisible();
+      await expect(p.locator(".ym-histogram path").first()).toHaveAttribute("d", /L/);
+    },
+  ],
+  [
+    "55-nodes-corrector-colour",
+    async (p) => {
+      await nodeViewOfGradedPhoto(p, 3);
+      await tab(p, "Colour");
+      await expect(p.getByRole("slider", { name: "Temperature" })).toBeVisible();
+      await expect(p.locator('.ym-warp-plane:not([data-scatter-points="0"])')).toBeVisible();
+    },
+  ],
+  [
+    "56-nodes-output-look",
+    async (p) => {
+      await nodeViewOfGradedPhoto(p, "output");
+      await expect(p.getByRole("slider", { name: "Intensity" })).toBeVisible();
     },
   ],
   // The simple view of a photo that has four nodes (docs/23 section 6, N-07; screen 04 of design/nodes): the notice under the tab row, with

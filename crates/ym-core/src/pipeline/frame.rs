@@ -96,8 +96,8 @@ use super::graph::{
 };
 use super::thumbs::{Tap, signal_source};
 use super::viewport::ViewportState;
-use crate::settings::NodeId;
 use super::{FrameZoom, RenderError};
+use crate::settings::NodeId;
 
 /// A finished 8-bit frame: RGBA, Display P3 for the viewport, sRGB for thumbnails.
 #[derive(Debug, Clone, PartialEq)]

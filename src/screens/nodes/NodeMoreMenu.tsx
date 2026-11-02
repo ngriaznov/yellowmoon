@@ -27,6 +27,10 @@ export interface NodeMoreMenuProps {
   onLink: (from: NodeRef, to: NodeRef) => void;
   onRemoveLink: (link: NodeLink) => void;
   onDelete: () => void;
+  /** Where the menu opens from its button: over the photo (`top`, the graph's toolbar) or down the panel (`bottom`, the node's head). */
+  side?: "top" | "bottom";
+  /** A class for the button, for the head's round icon. */
+  buttonClassName?: string;
 }
 
 /**
@@ -34,11 +38,12 @@ export interface NodeMoreMenuProps {
  * moved and removed without a pointer. Rename, Move earlier, Move later, Link picture to ▸, Link key to ▸, Remove link ▸ and Delete node;
  * Delete node is off for Main, which has no Move items either, and the Input has Link picture to only. The inputs a link can go to are the
  * ones the same rules light up while a link is dragged (`linkTargets`); a link that cannot be removed says so in the error bar when it
- * is chosen, as the drag does. It opens upward over the photo, like Add node.
+ * is chosen, as the drag does. It opens upward over the photo, like Add node, when it is the toolbar's, and down the panel from the head.
  *
- * Until the node's head comes with the panel (N-09) it is a button of the graph's toolbar; the head will hold the same menu.
+ * It is the third icon of the node's head (N-09; until then a button of the graph's toolbar), and opens down the panel, to the left of
+ * its button, from there.
  */
-export function NodeMoreMenu({ settings, node, onRename, onMoveEarlier, onMoveLater, onLink, onRemoveLink, onDelete }: NodeMoreMenuProps) {
+export function NodeMoreMenu({ settings, node, onRename, onMoveEarlier, onMoveLater, onLink, onRemoveLink, onDelete, side = "top", buttonClassName }: NodeMoreMenuProps) {
   const item = nodeOf(settings, node);
   const states = cardStates(settings);
   const corrector = item?.kind === "corrector";
@@ -66,11 +71,11 @@ export function NodeMoreMenu({ settings, node, onRename, onMoveEarlier, onMoveLa
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="header" aria-label="More" title="More" icon={<EllipsisIcon aria-hidden="true" />} />
+        <Button variant="header" aria-label="More" title="More" className={buttonClassName} icon={<EllipsisIcon aria-hidden="true" />} />
       </DropdownMenuTrigger>
       <DropdownMenuContent
-        side="top"
-        align="start"
+        side={side}
+        align={side === "top" ? "start" : "end"}
         aria-label="More"
         className="ym-more-menu"
         onCloseAutoFocus={(event) => {

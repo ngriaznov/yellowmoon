@@ -363,12 +363,14 @@ test.describe("Expand", () => {
 });
 
 test.describe("the toolbar and the photo switcher", () => {
-  test("Add node, Bypass, Delete and More at the left; the switcher, Show mask and Expand at the right; Main selected", async ({ page }) => {
+  test("Add node, Bypass and Delete at the left; the switcher, Show mask and Expand at the right; Main selected (More is in the node's head)", async ({ page }) => {
     await photos(page);
+    await page.getByRole("tab", { name: "Light", exact: true }).click();
     await nodesButton(page).click();
     const bar = page.getByRole("group", { name: "Graph tools" });
-    await expect(bar.getByRole("button")).toHaveText(["Add node", "Bypass", "Delete", "", "", "", "Show mask", "Expand"]);
-    await expect(bar.getByRole("button", { name: "More" })).toBeVisible();
+    await expect(bar.getByRole("button")).toHaveText(["Add node", "Bypass", "Delete", "", "", "Show mask", "Expand"]);
+    await expect(bar.getByRole("button", { name: "More" })).toHaveCount(0);
+    await expect(page.getByRole("complementary", { name: "Tools" }).getByRole("button", { name: "More" })).toBeVisible();
     const places = await bar.getByRole("button").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().left)));
     expect([...places].sort((a, b) => a - b)).toEqual(places);
     await expect(bar.getByRole("button", { name: "Previous photo" })).toBeVisible();
@@ -631,6 +633,8 @@ async function dragBetween(page: Page, from: Pt, to: Pt, steps = 14): Promise<vo
 /** The node view of the photo with four nodes: Main, Mountain (2), Sky (3), Warmth (4) in a line. */
 async function fourNodes(page: Page): Promise<void> {
   await photosWithNodes(page);
+  // The node view opens on the node and the tab of the simple view's tab (N-09): Light is Main's, as these tests start.
+  await page.getByRole("tab", { name: "Light", exact: true }).click();
   await nodesButton(page).click();
   await expect(card(page, 4)).toBeVisible();
   await settle(page);
@@ -639,6 +643,7 @@ async function fourNodes(page: Page): Promise<void> {
 /** The node view of a photo with Main alone. */
 async function mainAlone(page: Page): Promise<void> {
   await photos(page);
+  await page.getByRole("tab", { name: "Light", exact: true }).click();
   await nodesButton(page).click();
   await expect(card(page, 1)).toBeVisible();
   await settle(page);
@@ -965,8 +970,8 @@ test.describe("the graph: adding, deleting, bypassing, renaming and moving", () 
     await expect(del).toHaveAttribute("aria-disabled", "true");
     // The session still has its twelve photos.
     await expect(page.getByRole("group", { name: "Photos" })).toContainText("4 of 12");
-    await page.getByRole("button", { name: "More" }).click();
-    await expect(page.getByRole("menuitem", { name: "Delete node" })).toHaveCount(0);
+    // The Output has no More (its head has Reset only), so there is no Delete node to offer.
+    await expect(page.getByRole("button", { name: "More" })).toHaveCount(0);
   });
 
   test("Bypass (the toolbar, B) toggles the selected node, Main too, and is refused for the Input and the Output", async ({ page }) => {
@@ -1057,8 +1062,10 @@ test.describe("the graph: adding, deleting, bypassing, renaming and moving", () 
     await card(page, 3).click();
     await page.getByRole("button", { name: "More" }).click();
     await page.getByRole("menuitem", { name: "Rename" }).click();
-    const field = canvas(page).getByRole("textbox", { name: "Node name" });
+    // More is in the node's head, and so is the text box that Rename opens (a double click on a card's name opens one on the card).
+    const field = page.getByRole("complementary", { name: "Tools" }).getByRole("textbox", { name: "Node name" });
     await expect(field).toBeFocused();
+    await expect(canvas(page).getByRole("textbox")).toHaveCount(0);
     await field.fill("Blue");
     await field.press("Enter");
     await expect(card(page, 3)).toHaveAccessibleName(/^Node 3, Blue/);
@@ -1554,12 +1561,10 @@ test.describe("the graph: the More menu's keyboard path", () => {
     await expect(errorBar(page)).toHaveText(/Main always takes its picture from the input\./);
     expect(await linkIds(page)).toEqual(LINE);
     await page.getByRole("button", { name: "Dismiss" }).click();
+    // The Output's head has Reset only (docs/23 §7.5): its link is replaced from the other node's Link picture to ▸, and taking it away is
+    // refused by the drag and the Delete key.
     await card(page, "output").click();
-    await page.getByRole("button", { name: "More" }).click();
-    await page.getByRole("menuitem", { name: "Remove link" }).click();
-    await page.getByRole("menuitem", { name: "Picture from Node 4, Warmth" }).click();
-    await expect(errorBar(page)).toHaveText(/The output needs a picture\. Link another node to it instead\./);
-    await page.getByRole("button", { name: "Dismiss" }).click();
+    await expect(page.getByRole("button", { name: "More" })).toHaveCount(0);
     await card(page, "input").click();
     await page.getByRole("button", { name: "More" }).click();
     const names = await page.getByRole("menuitem").allTextContents();
@@ -1650,6 +1655,7 @@ async function gradedNodes(page: Page): Promise<void> {
   await openApp(page, MOCKUP);
   await configureMock(page, { initialSettings: { DSC04204: { nodes: GRADED_NODES.nodes, links: GRADED_NODES.links } } as never });
   await openPhotos(page);
+  await page.getByRole("tab", { name: "Light", exact: true }).click();
   await nodesButton(page).click();
   await expect(card(page, 4)).toBeVisible();
   await picturesMade(page);
@@ -1735,8 +1741,8 @@ test.describe("the cards' pictures", () => {
     await gradedNodes(page);
     const calls = await recordCalls(page, "nodeThumbnails");
     const before = await pictureSrcs(page);
-    await page.getByRole("tab", { name: "Light" }).click();
-    const slider = page.getByRole("slider", { name: "Exposure" }).locator("xpath=ancestor::*[@data-slot='slider'][1]");
+    await expect(page.getByRole("tab", { name: "Light", selected: true })).toBeVisible();
+    const slider = page.getByRole("slider", { name: "Exposure trim" }).locator("xpath=ancestor::*[@data-slot='slider'][1]");
     const track = (await slider.boundingBox())!;
     const y = track.y + track.height / 2;
     await page.mouse.move(track.x + track.width * 0.5, y);

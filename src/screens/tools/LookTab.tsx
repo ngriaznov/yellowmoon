@@ -320,19 +320,19 @@ export interface LookTabProps extends TabProps {
 }
 
 /**
- * Look: the Automatic card (what was worked out for this photo, and where to change it), the
- * Look card (strength, "Apply to", search and the grid of looks with lazy thumbnails), the Tone
- * card (Temperature, Contrast, Saturation). The lens has a tab of its own (`LensTab`).
+ * The Look card (`docs/11` §Look tab): Intensity, "Apply to", the search field and the grid of looks with lazy thumbnails, in sections
+ * by library. One look per photo, and it is the Output's (`docs/23` §2): the simple view's Look tab and the node view's Output › Look tab
+ * both draw it. The thumbnails show the photo as it is developed now, so they follow every change except the look itself.
  */
-export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
-  perfCount("LookTab");
+export function LookCard({ store, photo, rs }: TabProps) {
+  perfCount("LookCard");
   const looks = useAppState((s) => s.looks);
   const nPicked = useAppState((s) => s.session?.picked.length ?? 0);
   const nAll = useAppState((s) => s.session?.photos.length ?? 0);
   const scope = useAppState((s) => s.applyScope);
   const [query, setQuery] = useState("");
-  const { settings, auto } = rs;
-  const { input, main, output } = rs.values;
+  const { settings } = rs;
+  const { output } = rs.values;
   const outputNode = outputOf(settings);
 
   const collapsed = useAppState((s) => s.collapsedLookLibraries);
@@ -379,6 +379,106 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
     { value: "picked", label: `Picked · ${nPicked}` },
     { value: "all", label: `All · ${nAll}` },
   ];
+
+  return (
+    <Card
+      title="Look"
+      action={
+        <span className="ym-card__actions">
+          {current && defaultLook && current.id !== defaultLook.id ? (
+            <LinkButton size="sm" onClick={() => void store.makeDefault(current.id)}>
+              Make default
+            </LinkButton>
+          ) : null}
+          <ResetLink
+            size="card"
+            onClick={() => (defaultLook ? void store.chooseLook(defaultLook.id, 100, photo.id) : void store.setLookIntensity(100, true, photo.id))}
+          />
+        </span>
+      }
+    >
+      <Slider
+        label="Intensity"
+        value={output.look_intensity}
+        min={0}
+        max={100}
+        defaultValue={100}
+        format={formats.percent}
+        onChange={(v, final) => void store.setLookIntensity(v, final, photo.id)}
+      />
+      <Field label="Apply to">
+        <Segmented label="Apply look to" value={scope} onChange={(next) => store.setApplyScope(next)} options={scopeOptions} />
+      </Field>
+      <div className="ym-look-block">
+        <SearchField className="ym-look-search" value={query} onChange={setQuery} label="Search looks" />
+        {sections.map(({ library, all, shown }) => {
+          if (library.id === "arri_logc4" && arriCount === 0) {
+            // Nothing of ARRI's is imported: say so, and offer the wizard.
+            return q ? null : (
+              <div className="ym-look-group" key="arri-none">
+                <div className="ym-look-group__header">
+                  <span>ARRI looks</span>
+                  <span className="ym-look-group__count">0</span>
+                </div>
+                <p className="ym-look-cta">The free ARRI Look Library is not imported yet.</p>
+                <LinkButton className="ym-look-import" onClick={() => store.go("import-looks")}>
+                  Import ARRI looks →
+                </LinkButton>
+              </div>
+            );
+          }
+          if (shown.length === 0) return null;
+          return (
+            <LookSection
+              key={library.id}
+              library={library}
+              total={all.length}
+              shown={shown.length}
+              searching={q !== ""}
+              collapsed={collapsed.includes(library.id)}
+              holdsCurrent={all.some((l) => l.id === outputNode.look)}
+              onToggle={() => store.toggleLookLibrary(library.id)}
+            >
+              {shown.map((look) => (
+                <LazyLookTile
+                  key={look.id}
+                  look={look}
+                  index={keyOf.get(look.id) ?? 0}
+                  selected={look.id === outputNode.look}
+                  photoId={photo.id}
+                  thumbKey={thumbKey}
+                  onSelect={selectLook}
+                  watch={watch}
+                />
+              ))}
+            </LookSection>
+          );
+        })}
+        {!anyShown && q ? <p className="ym-look-empty">No looks match “{query.trim()}”.</p> : null}
+        <div className="ym-look-links">
+          {arriCount > 0 ? (
+            <LinkButton className="ym-look-import" onClick={() => store.go("import-looks")}>
+              Import ARRI looks →
+            </LinkButton>
+          ) : null}
+          <LinkButton className="ym-look-import" onClick={() => void store.startCubeImport()}>
+            Import .cube…
+          </LinkButton>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * Look: the Automatic card (what was worked out for this photo, and where to change it), the
+ * Look card (strength, "Apply to", search and the grid of looks with lazy thumbnails), the Tone
+ * card (Temperature, Contrast, Saturation). The lens has a tab of its own (`LensTab`).
+ */
+export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
+  perfCount("LookTab");
+  const { settings, auto } = rs;
+  const { input, main } = rs.values;
 
   const noiseValue = `Luminance ${Math.round(input.noise_reduction.luminance)}`;
   // A provider on for the session: the photo is waiting for its answer, has it, or failed (`docs/19` section 10). Its rows are the
@@ -463,94 +563,8 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
         {appleLine !== null ? <RowNote>{appleLine}</RowNote> : null}
         {applePlan !== null ? <RowNote>{`\u201c${applePlan}\u201d`}</RowNote> : null}
       </Card>
-      <Card
-        title="Look"
-        action={
-          <span className="ym-card__actions">
-            {current && defaultLook && current.id !== defaultLook.id ? (
-              <LinkButton size="sm" onClick={() => void store.makeDefault(current.id)}>
-                Make default
-              </LinkButton>
-            ) : null}
-            <ResetLink
-              size="card"
-              onClick={() => (defaultLook ? void store.chooseLook(defaultLook.id, 100, photo.id) : void store.setLookIntensity(100, true, photo.id))}
-            />
-          </span>
-        }
-      >
-        <Slider
-          label="Intensity"
-          value={output.look_intensity}
-          min={0}
-          max={100}
-          defaultValue={100}
-          format={formats.percent}
-          onChange={(v, final) => void store.setLookIntensity(v, final, photo.id)}
-        />
-        <Field label="Apply to">
-          <Segmented label="Apply look to" value={scope} onChange={(next) => store.setApplyScope(next)} options={scopeOptions} />
-        </Field>
-        <div className="ym-look-block">
-          <SearchField className="ym-look-search" value={query} onChange={setQuery} label="Search looks" />
-          {sections.map(({ library, all, shown }) => {
-            if (library.id === "arri_logc4" && arriCount === 0) {
-              // Nothing of ARRI's is imported: say so, and offer the wizard.
-              return q ? null : (
-                <div className="ym-look-group" key="arri-none">
-                  <div className="ym-look-group__header">
-                    <span>ARRI looks</span>
-                    <span className="ym-look-group__count">0</span>
-                  </div>
-                  <p className="ym-look-cta">The free ARRI Look Library is not imported yet.</p>
-                  <LinkButton className="ym-look-import" onClick={() => store.go("import-looks")}>
-                    Import ARRI looks →
-                  </LinkButton>
-                </div>
-              );
-            }
-            if (shown.length === 0) return null;
-            return (
-              <LookSection
-                key={library.id}
-                library={library}
-                total={all.length}
-                shown={shown.length}
-                searching={q !== ""}
-                collapsed={collapsed.includes(library.id)}
-                holdsCurrent={all.some((l) => l.id === outputNode.look)}
-                onToggle={() => store.toggleLookLibrary(library.id)}
-              >
-                {shown.map((look) => (
-                  <LazyLookTile
-                    key={look.id}
-                    look={look}
-                    index={keyOf.get(look.id) ?? 0}
-                    selected={look.id === outputNode.look}
-                    photoId={photo.id}
-                    thumbKey={thumbKey}
-                    onSelect={selectLook}
-                    watch={watch}
-                  />
-                ))}
-              </LookSection>
-            );
-          })}
-          {!anyShown && q ? <p className="ym-look-empty">No looks match “{query.trim()}”.</p> : null}
-          <div className="ym-look-links">
-            {arriCount > 0 ? (
-              <LinkButton className="ym-look-import" onClick={() => store.go("import-looks")}>
-                Import ARRI looks →
-              </LinkButton>
-            ) : null}
-            <LinkButton className="ym-look-import" onClick={() => void store.startCubeImport()}>
-              Import .cube…
-            </LinkButton>
-          </div>
-        </div>
-      </Card>
+      <LookCard store={store} photo={photo} rs={rs} />
       <ToneCard store={store} rs={rs} />
     </>
   );
 });
-

@@ -12,6 +12,7 @@ import {
   remove,
   rename,
   reorderInto,
+  resetNode,
   sameLink,
   toggleBypass,
 } from "../../state/graphOps";
@@ -23,8 +24,10 @@ import type { AppStore } from "../../state/store";
 export interface NodeGraphActions {
   /** The selected link (the link's Delete comes before the node's). */
   selectedLink: NodeLink | null;
-  /** The card whose name is being typed. */
+  /** The node whose name is being typed. */
   renaming: NodeId | null;
+  /** Where its text box is: on the card, or in the panel's head (`docs/23` §7.2: double-click the name on the card or in the head, or More › Rename). */
+  renamingIn: "card" | "head";
   selectNode: (id: NodeId) => void;
   selectLink: (link: NodeLink | null) => void;
   /** Add node › Corrector: after the selected node. */
@@ -33,7 +36,9 @@ export interface NodeGraphActions {
   deleteSelection: () => void;
   deleteNode: (id?: NodeId) => void;
   toggleBypass: () => void;
-  startRename: (id?: NodeId) => void;
+  /** The head's Reset: the selected node's values at their defaults, its masks, name, bypass and links kept (`docs/23` §7.5). One undo step. */
+  resetNode: () => void;
+  startRename: (id?: NodeId, where?: "card" | "head") => void;
   finishRename: (id: NodeId, name: string | null) => void;
   moveCard: (id: NodeId, pos: NodePos) => void;
   reorderInto: (id: NodeId, link: NodeLink) => void;
@@ -67,6 +72,7 @@ export interface UseNodeGraphOptions {
 export function useNodeGraph({ store, settings, photoId, selected, select }: UseNodeGraphOptions): NodeGraphActions {
   const [selectedLink, setSelectedLink] = useState<NodeLink | null>(null);
   const [renaming, setRenaming] = useState<NodeId | null>(null);
+  const [renamingIn, setRenamingIn] = useState<"card" | "head">("card");
   // The largest id the page has seen for each photo: a node that is deleted does not give its id to the next one (`docs/23` §3.2).
   const used = useRef(new Map<PhotoId, number>());
   const latest = useRef({ settings, photoId, selected, selectedLink });
@@ -127,6 +133,7 @@ export function useNodeGraph({ store, settings, photoId, selected, select }: Use
   return {
     selectedLink,
     renaming,
+    renamingIn,
     selectNode,
     selectLink: setSelectedLink,
     addCorrector: () => act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),
@@ -141,11 +148,13 @@ export function useNodeGraph({ store, settings, photoId, selected, select }: Use
     },
     deleteNode: (id) => act((s, here) => remove(s, id ?? here)),
     toggleBypass: () => act((s, here) => toggleBypass(s, here)),
-    startRename: (id) => {
+    resetNode: () => act((s, here) => resetNode(s, here, { look: store.getState().looks?.find((look) => look.is_default)?.id })),
+    startRename: (id, where = "card") => {
       const target = id ?? latest.current.selected;
       const node = latest.current.settings ? nodeOf(latest.current.settings, target) : undefined;
       if (node?.kind === "corrector") {
         select(target);
+        setRenamingIn(where);
         setRenaming(target);
       }
     },

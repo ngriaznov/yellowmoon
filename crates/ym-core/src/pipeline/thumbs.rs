@@ -278,9 +278,7 @@ pub(crate) fn signal_source(
         Some(NodeId::Corrector(1)) => Ok((Cow::Borrowed(src), main)),
         Some(NodeId::Corrector(k)) => {
             if src.settings.nodes.corrector(k).is_none() {
-                return Err(RenderError::Color(format!(
-                    "This photo has no node {k}."
-                )));
+                return Err(RenderError::Color(format!("This photo has no node {k}.")));
             }
             let mut settings = settings_ending_at(&src.settings, k);
             settings.output_mut().look = LookId::neutral();
@@ -608,41 +606,43 @@ impl Renderer {
         at: Option<NodeId>,
         cancel: &CancelToken,
     ) -> Result<HistogramData, RenderError> {
-        let counts = self.panel_view(src, at, Tap::CurveInput, cancel, |sampled, chain, stage| {
-            let img = &sampled.img;
-            let n = img.width * img.height;
-            let outside = sampled.outside.as_deref();
-            (0..n)
-                .into_par_iter()
-                .fold(
-                    || [[0u64; HISTOGRAM_BINS]; 3],
-                    |mut acc, i| {
-                        if outside.is_some_and(|o| o[i] != 0) {
-                            return acc;
-                        }
-                        let p = img.pixel(i % img.width, i / img.width);
-                        let t = chain.trace([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
-                        for (c, acc_c) in acc.iter_mut().enumerate() {
-                            let v = stage.of(&t).0[c].clamp(0.0, 1.0);
-                            let bin =
-                                ((v * HISTOGRAM_BINS as f64) as usize).min(HISTOGRAM_BINS - 1);
-                            acc_c[bin] += 1;
-                        }
-                        acc
-                    },
-                )
-                .reduce(
-                    || [[0u64; HISTOGRAM_BINS]; 3],
-                    |mut a, b| {
-                        for c in 0..3 {
-                            for i in 0..HISTOGRAM_BINS {
-                                a[c][i] += b[c][i];
+        let counts =
+            self.panel_view(src, at, Tap::CurveInput, cancel, |sampled, chain, stage| {
+                let img = &sampled.img;
+                let n = img.width * img.height;
+                let outside = sampled.outside.as_deref();
+                (0..n)
+                    .into_par_iter()
+                    .fold(
+                        || [[0u64; HISTOGRAM_BINS]; 3],
+                        |mut acc, i| {
+                            if outside.is_some_and(|o| o[i] != 0) {
+                                return acc;
                             }
-                        }
-                        a
-                    },
-                )
-        })?;
+                            let p = img.pixel(i % img.width, i / img.width);
+                            let t =
+                                chain.trace([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
+                            for (c, acc_c) in acc.iter_mut().enumerate() {
+                                let v = stage.of(&t).0[c].clamp(0.0, 1.0);
+                                let bin =
+                                    ((v * HISTOGRAM_BINS as f64) as usize).min(HISTOGRAM_BINS - 1);
+                                acc_c[bin] += 1;
+                            }
+                            acc
+                        },
+                    )
+                    .reduce(
+                        || [[0u64; HISTOGRAM_BINS]; 3],
+                        |mut a, b| {
+                            for c in 0..3 {
+                                for i in 0..HISTOGRAM_BINS {
+                                    a[c][i] += b[c][i];
+                                }
+                            }
+                            a
+                        },
+                    )
+            })?;
         let peak = counts.iter().flatten().copied().max().unwrap_or(0).max(1) as f64;
         let norm = |c: usize| -> Vec<f64> {
             counts[c]
@@ -690,17 +690,18 @@ impl Renderer {
         at: Option<NodeId>,
         cancel: &CancelToken,
     ) -> Result<ChromaScatter, RenderError> {
-        let points = self.panel_view(src, at, Tap::WarpInput, cancel, |sampled, chain, stage| {
-            let img = &sampled.img;
-            every_nth_inside(sampled, CHROMA_SCATTER_MAX_POINTS)
-                .par_iter()
-                .flat_map_iter(|&i| {
-                    let p = img.pixel(i % img.width, i / img.width);
-                    let t = chain.trace([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
-                    chroma_of(stage.of(&t)).map(scatter_coordinate)
-                })
-                .collect::<Vec<f64>>()
-        })?;
+        let points =
+            self.panel_view(src, at, Tap::WarpInput, cancel, |sampled, chain, stage| {
+                let img = &sampled.img;
+                every_nth_inside(sampled, CHROMA_SCATTER_MAX_POINTS)
+                    .par_iter()
+                    .flat_map_iter(|&i| {
+                        let p = img.pixel(i % img.width, i / img.width);
+                        let t = chain.trace([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
+                        chroma_of(stage.of(&t)).map(scatter_coordinate)
+                    })
+                    .collect::<Vec<f64>>()
+            })?;
         Ok(ChromaScatter { points })
     }
 

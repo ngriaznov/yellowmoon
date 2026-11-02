@@ -1312,6 +1312,143 @@ span.ym-filmstrip__thumb {
   vertical-align: baseline;
 }
 
+/* ---- The node's head and the Mask tab (docs/23 §7.5, §7.6) ----------------------------------------------------------------------- */
+/* One line of 52 px at the top of the node view's panel: the number chip (a lock for the Input and the Output), the name at 20 px bold, the
+   quiet line, and round icon buttons at the right. There is no 40 px title block in the node view. */
+.ym-nodehead {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 7px;
+  height: 52px;
+  box-sizing: border-box;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-nodehead__chip {
+  display: inline-grid;
+  flex-shrink: 0;
+  place-items: center;
+  min-width: 28px;
+  height: 22px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 7px;
+  background: color-mix(in oklch, var(--ink) 16%, transparent);
+  box-shadow: inset 0 0 0 1px var(--rim);
+  color: var(--glass-label);
+  font-size: 11px;
+  font-weight: var(--fw-heavy);
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.ym-nodehead__chip svg {
+  width: 13px;
+  height: 13px;
+  color: var(--glass-label-secondary);
+}
+.ym-nodehead__text {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.ym-nodehead__name {
+  flex-shrink: 0;
+  max-width: 58%;
+  margin: 0;
+  overflow: hidden;
+  font-size: 20px;
+  font-weight: var(--fw-heavy);
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-nodehead__name:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.ym-nodehead__line {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--glass-label-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-nodehead__rename {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: var(--fw-heavy);
+}
+.ym-nodehead__actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 3px;
+}
+.ym-nodehead button.ym-nodehead__btn {
+  width: 28px;
+  min-width: 0;
+  height: 28px;
+  padding: 0;
+  border-radius: 999px;
+}
+.ym-nodehead .ym-nodehead__btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* The Mask tab until N-12: the node's mask rows, read only. */
+.ym-mask-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+.ym-mask-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 6px 12px;
+  border: 1px solid var(--rim);
+  border-radius: 12px;
+  background: color-mix(in oklch, var(--ink) 6%, transparent);
+}
+.ym-mask-row[data-off] {
+  opacity: 0.55;
+}
+.ym-mask-row__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.ym-mask-row__name {
+  font-size: 13.5px;
+  font-weight: var(--fw-heavy);
+}
+.ym-mask-row__sub {
+  color: var(--glass-label-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.ym-mask-row__mode {
+  color: var(--glass-label-secondary);
+  font-size: 12px;
+  font-weight: var(--fw-bold);
+}
+
 /* ---- Export panel ---------------------------------------------------------------------------------------------------------------- */
 .ym-queue {
   margin: 0;

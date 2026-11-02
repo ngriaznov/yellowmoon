@@ -5,8 +5,8 @@ import { useAppState } from "../../state/context";
 import { shutterLabel } from "../../state/photo";
 import { foldPatches, inputPatch, MAIN_ID, mainGradePatch, patchOf, resolvedCorrector } from "../../state/settingsGraph";
 import type { AppStore } from "../../state/store";
-import { ContrastSlider, PercentSlider } from "./controls";
-import { AUTO, manualOrAuto } from "./shared";
+import { ContrastSlider, ExposureSlider, PercentSlider } from "./controls";
+import { AUTO } from "./shared";
 import type { TabProps } from "./shared";
 
 /** Drawn until the first histogram arrives, so the panel doesn't jump. */
@@ -76,14 +76,11 @@ export function HdrCard({ store, rs, node = MAIN_ID }: Pick<TabProps, "store" | 
  * puts them back to Auto.
  */
 export const LightTab = memo(function LightTab({ store, photo, rs }: TabProps) {
-  const { estimates, auto } = rs;
-  const input = rs.values.input;
+  const { auto } = rs;
   const grade = rs.values.main.grade;
 
   // A drag names the photo it began on (`store.update`), so moving to another photo before its frame or its release cannot send it there.
   const send = (patch: SettingsPatch) => (final: boolean) => void store.update(patch, final, rs.photo_id);
-  const exposure = (ev: number, final: boolean): void =>
-    void store.update(inputPatch({ exposure: manualOrAuto({ ev }, { ev: estimates.input.exposure_ev }) }), final, rs.photo_id);
 
   return (
     <>
@@ -100,17 +97,7 @@ export const LightTab = memo(function LightTab({ store, photo, rs }: TabProps) {
           />
         }
       >
-        <Slider
-          label="Exposure"
-          value={input.exposure_ev}
-          min={-4}
-          max={4}
-          step={0.01}
-          defaultValue={estimates.input.exposure_ev}
-          format={formats.ev}
-          onChange={exposure}
-          onReset={() => void store.update(inputPatch({ exposure: AUTO }))}
-        />
+        <ExposureSlider store={store} rs={rs} />
         <ContrastSlider store={store} rs={rs} />
         <Slider
           label="Brightness"

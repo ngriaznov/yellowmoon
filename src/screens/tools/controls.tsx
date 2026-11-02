@@ -79,6 +79,27 @@ export function KelvinSlider({ store, rs, label = "Kelvin" }: ControlProps & { l
   );
 }
 
+/**
+ * The Input's Exposure slider (Light › Exposure; the Input's Light tab in the node view): −4 to +4 EV, Auto or a value, the detent at the
+ * photo's own exposure. A value equal to it is sent as Auto, and Reset sends Auto, not a manual copy of it.
+ */
+export function ExposureSlider({ store, rs }: ControlProps) {
+  const { estimates } = rs;
+  return (
+    <Slider
+      label="Exposure"
+      value={rs.values.input.exposure_ev}
+      min={-4}
+      max={4}
+      step={0.01}
+      defaultValue={estimates.input.exposure_ev}
+      format={formats.ev}
+      onChange={(ev, final) => void store.update(inputPatch({ exposure: manualOrAuto({ ev }, { ev: estimates.input.exposure_ev }) }), final, rs.photo_id)}
+      onReset={() => void store.update(inputPatch({ exposure: AUTO }))}
+    />
+  );
+}
+
 /** The settings that are Auto or a value from −100 to 100 (`PercentSetting`, `docs/19` section 5). */
 export type PercentField = "contrast" | "saturation" | "highlights" | "shadows" | "black";
 

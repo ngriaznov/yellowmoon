@@ -8,8 +8,23 @@
  * plan's order of section 5.2 computed here as the core computes it), so the canvas, the menus and the keys cannot disagree about a rule.
  * The core validates whatever is sent (`crates/ym-core/src/settings/graph.rs`); these functions never send a graph it would refuse.
  */
-import type { DevelopSettings, NodeId, NodeLink, NodePatch, NodePos, NodeRef, Port, SettingsPatch } from "../api/types";
-import { correctorsOf, INPUT_ID, isEmptyPatch, MAIN_ID, newCorrector, nodeAsPatch, nodeOf, OUTPUT_ID } from "./settingsGraph";
+import type { DevelopSettings, LookId, NodeId, NodeLink, NodePatch, NodePos, NodeRef, Port, SettingsPatch } from "../api/types";
+import {
+  applyPatch,
+  correctorsOf,
+  defaultGrade,
+  defaultInput,
+  INPUT_ID,
+  isEmptyPatch,
+  MAIN_ID,
+  neutralGrade,
+  NEUTRAL_LOOK,
+  newCorrector,
+  nodeAsPatch,
+  nodeOf,
+  OUTPUT_ID,
+  same,
+} from "./settingsGraph";
 import type { CorrectorItem } from "./settingsGraph";
 
 /** Most corrector nodes a photo can have, Main included (`docs/23` section 3.5). */
@@ -363,6 +378,29 @@ export function toggleBypass(settings: DevelopSettings, id: NodeId): GraphOutcom
   return done({ nodes: { [String(id)]: { bypass: !node.bypass } } });
 }
 
+/**
+ * **Reset node** (`docs/23` §3.7 and §7.5, the head's Reset): puts the node's values at their defaults and nothing else, as one patch. A
+ * corrector's trim and grade go back (Main's to Auto where there is Auto, the others' to a manual 0); **its masks, its name, its bypass and
+ * its links stay** (the Masks card has its own Reset). The Input goes back to every default it has (Auto where there is Auto), and the
+ * Output's look (`look`, the user's default look, Neutral where the page does not know it), its intensity and its output sharpening.
+ * A node that is already at its defaults answers an empty patch.
+ */
+export function resetNode(settings: DevelopSettings, id: NodeId, defaults: { look?: LookId } = {}): GraphOutcome {
+  const node = nodeOf(settings, id);
+  if (!node) return refuse(GRAPH_OP_TEXT.gone);
+  let patch: NodePatch;
+  if (node.kind === "input") {
+    const { kind: _kind, id: _id, pos: _pos, ...fields } = defaultInput();
+    patch = fields;
+  } else if (node.kind === "output") {
+    patch = { look: defaults.look ?? NEUTRAL_LOOK, look_intensity: 100, output_sharpening: 100 };
+  } else {
+    patch = { trim: { exposure_ev: 0, temperature: 0, tint: 0 }, grade: node.id === MAIN_ID ? defaultGrade() : neutralGrade() };
+  }
+  const settingsPatch: SettingsPatch = { nodes: { [String(id)]: patch } };
+  return same(applyPatch(settings, settingsPatch), settings) ? nothing : done(settingsPatch);
+}
+
 /** A name as a node keeps it: trimmed and cut at 32 characters. */
 export const cleanName = (name: string): string => Array.from(name.trim()).slice(0, MAX_NAME_LENGTH).join("");
 
@@ -606,6 +644,25 @@ export function maskKindNames(node: CorrectorItem): string[] {
     if (row.enabled && !names.includes(name)) names.push(name);
   }
   return names;
+}
+
+/**
+ * The quiet line of a node's head (`docs/23` §7.5). The Input and the Output say what they do; a corrector says what it acts on, after
+ * "Corrector ·": "whole photo" with no mask rows, the kind of the row when it has one ("Linear"), "2 masks" from two rows, and "bypassed" or
+ * "not connected" before either (a bypassed node does nothing, a dead one is not in the picture).
+ */
+export function headLine(settings: DevelopSettings, id: NodeId, states: ReadonlyMap<number, CardState> = cardStates(settings)): string {
+  const node = nodeOf(settings, id);
+  if (!node) return "";
+  if (node.kind === "input") return "Turns the camera's data into the scene.";
+  if (node.kind === "output") return "Cine rendering, look and export";
+  if (node.bypass) return "Corrector · bypassed";
+  if (states.get(node.id as number)?.live === false) return "Corrector · not connected";
+  const rows = node.masks.items;
+  if (rows.length === 0) return "Corrector · whole photo";
+  const only = rows[0];
+  if (rows.length === 1 && only) return `Corrector · ${MASK_KIND_NAME[only.kind] ?? only.kind}`;
+  return `Corrector · ${rows.length} masks`;
 }
 
 /**

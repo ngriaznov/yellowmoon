@@ -133,10 +133,14 @@ test.describe("Photos", () => {
   });
 
   test("The node view: Main between the Input and the Output, Main selected (photos-nodes.png)", async ({ page }) => {
-    // docs/23 section 7.2, screen 05 of design/nodes: the default graph. The card shows the picture after Main (N-05), not the photo's thumbnail.
+    // docs/23 section 7.2 and 7.5, screen 05 of design/nodes: the default graph, with Main's head and its Light tab (the node view opens on the node
+    // and the tab of the simple view's tab). The card shows the picture after Main (N-05), not the photo's thumbnail.
     await photos(page);
+    await tab(page, "Light");
     await page.getByRole("button", { name: "Nodes", exact: true }).click();
     await expect(page.locator('[data-node-card="1"]')).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("slider", { name: "Exposure trim" })).toBeVisible();
+    await expect(page.locator(".ym-histogram path").first()).toHaveAttribute("d", /L/);
     await expect(page.locator(".ym-gnode__thumb img")).toHaveCount(1);
     await cardPicturesMade(page, 1);
     await expect(page.getByText("Add a node to change only part of the photo.")).toBeVisible();
@@ -150,11 +154,40 @@ test.describe("Photos", () => {
     await page.getByRole("button", { name: "Nodes", exact: true }).click();
     await page.locator('[data-node-card="2"]').click();
     await expect(page.locator('[data-node-card="2"]')).toHaveAttribute("aria-pressed", "true");
+    // The panel is Mountain's: its head and its Light tab, with the Exposure trim of +0.35 and Highlights of −12.
+    await expect(page.getByRole("slider", { name: "Exposure trim" })).toBeVisible();
+    await expect(page.locator(".ym-histogram path").first()).toHaveAttribute("d", /L/);
     await cardPicturesMade(page, 4);
     await page.getByRole("button", { name: "Add node" }).click();
     await expect(page.getByRole("menu", { name: "Add node" })).toBeVisible();
     await dialogsSettled(page);
     await compareScreen(page, "photos-nodes-add-node");
+  });
+
+  test("The node view: the Input selected, its Colour tab with the White balance card (photos-nodes-input-colour.png)", async ({ page }) => {
+    // docs/23 section 7.5 and 8, screen 10 of design/nodes: the graded graph, the Input's head (a lock, "Turns the camera's data into the scene.")
+    // and the tab that holds the White balance card and Pick white.
+    await photos(page, { DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE }, ...GRADED_NODES.nodes }, links: GRADED_NODES.links } } as never);
+    await tab(page, "Colour");
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    // The simple view stood on Colour, which is Main's tab: the Input is chosen on the graph, and its Colour tab is the one to show.
+    await page.locator('[data-node-card="input"]').click();
+    await expect(page.locator('[data-node-card="input"]')).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("tab", { name: "Colour", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Pick white" })).toBeVisible();
+    await cardPicturesMade(page, 4);
+    await compareScreen(page, "photos-nodes-input-colour");
+  });
+
+  test("The node view: the Output selected, its Look tab with the Look card (photos-nodes-output-look.png)", async ({ page }) => {
+    // docs/23 section 7.5, screen 11 of design/nodes: the Output's head and today's Look card. The simple view stood on Look, which is the Output's tab.
+    await photos(page, { DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE }, ...GRADED_NODES.nodes }, links: GRADED_NODES.links } } as never);
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    await expect(page.locator('[data-node-card="output"]')).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("slider", { name: "Intensity" })).toBeVisible();
+    await lookTilesLoaded(page);
+    await cardPicturesMade(page, 4);
+    await compareScreen(page, "photos-nodes-output-look");
   });
 
   test("Colour (photos-color.png)", async ({ page }) => {

@@ -266,7 +266,7 @@ pub async fn histogram(
     photo_id: PhotoId,
     at: Option<NodeId>,
 ) -> Result<HistogramData, AppError> {
-    run(&state, move |api| api.histogram_at(photo_id, at)).await
+    run(&state, move |api| api.histogram(photo_id, at)).await
 }
 
 /// `chroma_scatter(photo_id, at)`: the photo's colours at the input of a node's colour warp, for
@@ -278,7 +278,7 @@ pub async fn chroma_scatter(
     photo_id: PhotoId,
     at: Option<NodeId>,
 ) -> Result<ChromaScatter, AppError> {
-    run(&state, move |api| api.chroma_scatter_at(photo_id, at)).await
+    run(&state, move |api| api.chroma_scatter(photo_id, at)).await
 }
 
 /// `suggest_crop(photo_id, aspect, orientation)`: Auto crop's proposal (`docs/20-auto-crop.md` §3).
@@ -371,7 +371,7 @@ pub async fn sample_chroma(
     y: Num,
     at: Option<NodeId>,
 ) -> Result<Option<ChromaSample>, AppError> {
-    run(&state, move |api| api.sample_chroma_at(x.0, y.0, at)).await
+    run(&state, move |api| api.sample_chroma(x.0, y.0, at)).await
 }
 
 // --- Lens -------------------------------------------------------------------------------------
