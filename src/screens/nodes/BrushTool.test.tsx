@@ -11,7 +11,7 @@ import { DEFAULT_BRUSH } from "../../state/brushStrokes";
 import { newMask } from "../../state/maskRows";
 import { nodeOf, patchOf } from "../../state/settingsGraph";
 import type { CorrectorItem } from "../../state/settingsGraph";
-import { openPhotos, openTab, renderApp, sliderOf, tools, valueOf } from "../../test/harness";
+import { openPhotos, openTab, renderApp, tools, valueOf } from "../../test/harness";
 import type { Harness, UpdateSpy } from "../../test/harness";
 import { mockRect } from "../../test/raf";
 
@@ -279,7 +279,9 @@ describe("a stroke on the photo", () => {
     await undo();
     await waitFor(() => expect(brushRow(3, 0).strokes).toHaveLength(0));
     expect(rowButton("Brush mask, Paint on the photo")).toBeInTheDocument();
-    expect(h!.store.getState().canUndo).toBe(false);
+    // The row itself (adding it was a step of its own) is still there; the stroke was the last step.
+    expect(rows(3)).toHaveLength(1);
+    expect(h!.store.getState().canUndo).toBe(true);
     await h!.user.keyboard("{Meta>}{Shift>}z{/Shift}{/Meta}");
     await waitFor(() => expect(brushRow(3, 0).strokes).toHaveLength(1));
   });
@@ -361,18 +363,38 @@ describe("a stroke on the photo", () => {
     expect(brushRow(3, 0).strokes).toHaveLength(0);
   });
 
-  it("is not a pan: the press does not reach the photo, and a double click paints and does not zoom", async () => {
+  it("is not a pan: with the photo zoomed in, a drag paints and does not move it (and moves it once Esc has ended the tool); a double click does not zoom", async () => {
     await setup();
     await addBrush();
     await waitFor(() => expect(layer()).not.toBeNull());
-    const input = vi.spyOn(h!.api, "viewportInput");
-    const cell = document.querySelector<HTMLElement>("[data-viewport]")!;
-    const reachedCell = vi.fn();
-    cell.addEventListener("pointerdown", reachedCell);
+    await h!.store.setZoom({ kind: "percent", value: 200 });
+    const pan = vi.spyOn(h!.store, "queueViewportInput");
+    const zoomed = vi.spyOn(h!.api, "viewportInput");
     drag([[100, 100], [200, 160]]);
     fireEvent.doubleClick(layer()!, { clientX: 300, clientY: 200 });
     await waitFor(() => expect(brushRow(3, 0).strokes).toHaveLength(1));
-    expect(input).not.toHaveBeenCalled();
+    expect(pan).not.toHaveBeenCalled();
+    expect(zoomed).not.toHaveBeenCalled();
+    // The same drag on the bare photo is a pan, so the test above is not vacuous.
+    await h!.user.keyboard("{Escape}");
+    await waitFor(() => expect(layer()).toBeNull());
+    const cell = document.querySelector<HTMLElement>("[data-viewport]")!;
+    fireEvent.pointerDown(cell, { clientX: 100, clientY: 100, button: 0, buttons: 1, pointerId: 1 });
+    fireEvent.pointerMove(window, { clientX: 140, clientY: 120, pointerId: 1 });
+    fireEvent.pointerUp(window, { clientX: 140, clientY: 120, pointerId: 1 });
+    expect(pan).toHaveBeenCalled();
+  });
+
+  it("the wheel and the zoom keys work as usual while the tool is on", async () => {
+    await setup();
+    await addBrush();
+    await waitFor(() => expect(layer()).not.toBeNull());
+    const queue = vi.spyOn(h!.store, "queueViewportInput");
+    fireEvent.wheel(layer()!, { deltaY: -120, ctrlKey: true, clientX: 300, clientY: 200 });
+    expect(queue).toHaveBeenCalledWith(expect.objectContaining({ kind: "zoom" }));
+    await h!.user.keyboard("z");
+    await waitFor(() => expect(h!.store.getState().zoom).toEqual({ kind: "percent", value: 100 }));
+    expect(layer()).not.toBeNull();
   });
 
   it("only the primary button paints", async () => {
@@ -467,6 +489,14 @@ describe("the tool starts and ends", () => {
     await waitFor(() => expect(layer()).toBeNull());
     await h!.user.click(screen.getByRole("button", { name: "Before" }));
     await waitFor(() => expect(layer()).not.toBeNull());
+    // A pick (the Colour tab's Pick colour) takes the photo for itself, and Esc ends the pick first, not the tool.
+    await h!.user.click(within(tools()).getByRole("tab", { name: "Colour" }));
+    await h!.user.click(within(tools()).getByRole("button", { name: "Pick colour" }));
+    await waitFor(() => expect(screen.getByRole("application", { name: /^Pick colour/ })).toBeInTheDocument());
+    expect(layer()).toBeNull();
+    await h!.user.keyboard("{Escape}");
+    await waitFor(() => expect(layer()).not.toBeNull());
+    expect(h!.store.getState().brushTool).toBe(true);
   });
 
   it("the Add mask menu's other kinds do not start it, and a Linear added after a Brush ends it", async () => {
