@@ -861,11 +861,7 @@ fn nodes_key(s: &DevelopSettings, stop: Stop) -> String {
                         .iter()
                         .map(|s| (s.size, s.hardness, s.erase, s.points.as_slice())),
                 );
-                let _ = write!(
-                    k,
-                    "raster:{key:x}:{}:{}:{};",
-                    b.grow, b.feather, b.refine
-                );
+                let _ = write!(k, "raster:{key:x}:{}:{}:{};", b.grow, b.feather, b.refine);
             }
         }
     }

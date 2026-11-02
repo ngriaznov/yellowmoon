@@ -520,6 +520,171 @@ fn a_window_at_the_frame_edge_is_cut_to_the_frame_like_the_cpu_does() {
 }
 
 #[test]
+fn the_empty_corners_of_a_straightened_photo_are_zero_before_the_steps_and_agree_with_the_cpu() {
+    // A photo straightened by 12 degrees and shrunk has empty corners (pixels outside the photo, flagged by the
+    // sampler): the resample gives them 0, the guide is 0 there, and the steps run over them as the CPU's do.
+    let buffer = (240usize, 160usize);
+    let img = scene(buffer.0, buffer.1, 0xC0F5);
+    let grid = grid_of(buffer, 1, 0, 12.0, 0.8, (0.0, 0.0));
+    let frame = Area::whole(
+        (grid.canvas.0 / 0.8) as usize,
+        (grid.canvas.1 / 0.8) as usize,
+    );
+    let chain = chain_with(RasterSet {
+        rows: vec![RasterRow {
+            source: RasterSource::Brush(Arc::new(BrushStrokes::new(vec![brush(
+                &[[0.5, 0.5], [0.02, 0.02]],
+                0.9,
+                1.0,
+                false,
+            )]))),
+            grow: 0.2,
+            feather: 0.3,
+            refine: 0.7,
+        }],
+    });
+    let halo = chain.rasters().halo(1.0 / grid.photo_frame().pixel);
+    for dev in gpus() {
+        if dev.mode.is_f16() {
+            continue;
+        }
+        let got = device_planes(dev, &chain, &img, &grid, frame, frame, halo);
+        let want = cpu_planes(&chain, &img, &grid, frame, frame, halo);
+        let (worst, _) = plane_diff(&got[0], &want.planes[0]);
+        assert!(worst < PLANE_GATE, "{worst}");
+        // The corners really are outside, and the brush covers them in the photo's frame (a stroke to the corner),
+        // so the zero there is the letterbox's and not the brush's: the resample is zero at the very corner pixel.
+        let sampled = sample_to_camera(&img, (0, 0), &grid, (0, 0), frame.w, frame.h);
+        let outside = sampled.outside.as_ref().expect("empty corners");
+        assert!(outside.iter().any(|&o| o != 0));
+        assert!(outside[0] != 0 && want.planes[0][0] < 1500 && got[0][0] < 1500);
+    }
+}
+
+#[test]
+fn a_tile_coloured_in_two_row_windows_reads_the_planes_of_its_own_rows() {
+    // The export tail colours a tile in the pieces that two slabs share: the planes are seen through the rows of
+    // each (`RasterPlanes::rows`), and the pieces together are the tile coloured whole.
+    let buffer = (240usize, 160usize);
+    let img = scene(buffer.0, buffer.1, 0x2B0C);
+    let (grid, frame) = export_grid(buffer, 0.5);
+    let window = Area {
+        x: 150,
+        y: 90,
+        w: 91,
+        h: 75,
+    };
+    let chain = chain_with(RasterSet {
+        rows: vec![row(0.3, 0.3, 0.5)],
+    });
+    let halo = chain.rasters().halo(1.0 / grid.photo_frame().pixel);
+    let dev = &gpus()[0];
+    if dev.mode.is_f16() {
+        return;
+    }
+    let (c, im, g) = (chain.clone(), img.clone(), grid);
+    let (whole, split) = dev
+        .gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+            let src = GpuImage::upload_rgb(ctx, "src", &im)?;
+            let mut passes = PassList::new(ctx, "rows");
+            let grown = window.grown(halo, &frame);
+            let sampled = encode_sample_at(
+                &mut passes,
+                &src,
+                (0, 0),
+                &g,
+                (grown.x as usize, grown.y as usize),
+                grown.w,
+                grown.h,
+                true,
+            )?;
+            let prepared = PreparedChain::new(ctx, &c)?.with_photo_frame(g.photo_frame());
+            let planes = encode_raster_planes(
+                &mut passes,
+                &prepared,
+                &c,
+                &sampled,
+                &RasterJob {
+                    frame,
+                    grown,
+                    window,
+                    photo: g.photo_frame(),
+                },
+            )?;
+            let at = ((window.x - grown.x) as usize, (window.y - grown.y) as usize);
+            let alloc = |label: &str, h: usize| {
+                GpuImage::alloc(
+                    ctx,
+                    label,
+                    window.w,
+                    h,
+                    4,
+                    ym_gpu::cpu::Placement::whole(window.w, h),
+                )
+            };
+            let whole = alloc("whole", window.h)?;
+            prepared.with_rasters(planes.clone()).encode_stage(
+                &mut passes,
+                &sampled,
+                Rect::new(at.0, at.1, window.w, window.h),
+                Stop::C13,
+                &whole,
+                (0, 0),
+            )?;
+            let (top_rows, bottom_rows) = (31usize, window.h - 31);
+            let (top, bottom) = (alloc("top", top_rows)?, alloc("bottom", bottom_rows)?);
+            prepared
+                .with_rasters(planes.rows(0, top_rows))
+                .encode_stage(
+                    &mut passes,
+                    &sampled,
+                    Rect::new(at.0, at.1, window.w, top_rows),
+                    Stop::C13,
+                    &top,
+                    (0, 0),
+                )?;
+            prepared
+                .with_rasters(planes.rows(top_rows, bottom_rows))
+                .encode_stage(
+                    &mut passes,
+                    &sampled,
+                    Rect::new(at.0, at.1 + top_rows, window.w, bottom_rows),
+                    Stop::C13,
+                    &bottom,
+                    (0, 0),
+                )?;
+            let reads = (
+                whole.encode_read(&mut passes)?,
+                top.encode_read(&mut passes)?,
+                bottom.encode_read(&mut passes)?,
+            );
+            let _src = passes.keep(src.buf);
+            let done = passes.submit()?.finish()?;
+            Ok((
+                whole.take(&done, reads.0)?,
+                (top.take(&done, reads.1)?, bottom.take(&done, reads.2)?),
+            ))
+        })
+        .expect("render");
+    let (w, h) = (window.w, window.h);
+    let (top_rows, bottom_rows) = (31usize, h - 31);
+    for c in 0..3 {
+        for y in 0..h {
+            for x in 0..w {
+                let a = whole[c * w * h + y * w + x];
+                let b = if y < top_rows {
+                    split.0[c * w * top_rows + y * w + x]
+                } else {
+                    split.1[c * w * bottom_rows + (y - top_rows) * w + x]
+                };
+                assert_eq!(a.to_bits(), b.to_bits(), "plane {c} pixel ({x}, {y})");
+            }
+        }
+    }
+}
+
+#[test]
 fn several_rows_make_several_planes() {
     let buffer = (240usize, 160usize);
     let img = scene(buffer.0, buffer.1, 0x6A55);
