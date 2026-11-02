@@ -16,6 +16,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # By hand on a feature branch that has no pull request yet (the nodes branch runs it before each checkpoint DMG).
+  workflow_dispatch:
   schedule:
     - cron: "17 3 * * *"   # nightly: full oracle corpus, private golden tier, fuzzing; also a fresh advisory check (the 500-photo latency is weekly: weekly.yml)
 
