@@ -278,7 +278,7 @@ test.describe("adding a mask", () => {
     await warmth(page);
     await page.getByRole("button", { name: "Add mask" }).click();
     const menu = page.getByRole("menu", { name: "Add mask" });
-    await expect(menu.getByRole("menuitem")).toHaveText([/^Background/, /^Linear/, /^Radial/, /^Brush/, /^Colour range/, /^Brightness range/]);
+    await expect(menu.getByRole("menuitem")).toHaveText([/^Object/, /^Background/, /^Linear/, /^Radial/, /^Brush/, /^Colour range/, /^Brightness range/]);
     await expect(menu.getByText("A gradient across the photo")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);
@@ -991,11 +991,11 @@ test.describe("the Background mask", () => {
     expect((await backgroundRows(page))[0]).toEqual(copied);
   });
 
-  test("the Add mask menu lists Background first, in the Find group, with its line", async ({ page }) => {
+  test("the Add mask menu lists Background in the Find group, after Object, with its line", async ({ page }) => {
     await warmth(page);
     await page.getByRole("button", { name: "Add mask" }).click();
     const menu = page.getByRole("menu", { name: "Add mask" });
-    await expect(menu.getByRole("menuitem").first()).toHaveText(/^Background/);
+    await expect(menu.getByRole("menuitem").nth(1)).toHaveText(/^Background/);
     await expect(menu.getByText("What is out of focus, from blur")).toBeVisible();
     await expect(menu.getByText("Find", { exact: true })).toBeVisible();
   });
@@ -1083,7 +1083,7 @@ test.describe("the Object tool", () => {
     await expect.poll(async () => (await objectRows(page))[0]?.points.length).toBe(1);
   });
 
-  test("Esc ends the tool and leaves the points; the card brings it back, and the row of a pasted Object reads 'Click the object on this photo'", async ({ page }) => {
+  test("Esc ends the tool and leaves the points drawn, and the card brings it back", async ({ page }) => {
     await warmth(page);
     await addMask(page, "Object");
     await clickPhoto(page, [0.5, 0.7]);

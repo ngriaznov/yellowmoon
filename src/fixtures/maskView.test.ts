@@ -50,6 +50,28 @@ describe("maskViewSvg", () => {
     expect(brightness).not.toContain("Gradient");
   });
 
+  it("draws an Object as the flat scene's mountain, with a hole at each negative point, cut to the box, and nothing for a row with no point and no box", () => {
+    const object = (more: Record<string, unknown>) => maskViewSvg("mask_only", masks([row({ kind: "object", points: [], box: null, feather: 0, grow: 0, refine: 0.5, ...more })]), BOX);
+    // A row that has asked for nothing selects nothing.
+    expect(object({})).not.toContain("data-object-row");
+    const hill = object({ points: [[0.5, 0.7, true]] });
+    expect(hill).toContain("data-object-row");
+    // The far hill is the half ellipse of the scene: centre 0.82 down, a radius 0.6 of the width across and 0.42 of the height up (box 600 × 400 at 100, 50).
+    expect(hill).toContain('<ellipse cx="400" cy="378"');
+    expect(hill).toContain('rx="360" ry="168"');
+    // The near band is in front of it.
+    expect(hill).toContain('<rect x="100" y="346" width="600" height="104" fill="#000"/>');
+    expect(hill).not.toContain('r="24"');
+    // A negative point takes a round hole out of it (0.06 of the long edge); a positive one adds nothing to the picture.
+    const holed = object({ points: [[0.5, 0.7, true], [0.3, 0.6, false]] });
+    expect(holed).toContain('<circle cx="280" cy="290" r="36" fill="#000"/>');
+    // A box cuts the row to its rectangle.
+    expect(object({ box: [0.25, 0.5, 0.75, 0.9] })).toContain("mvo0b");
+    // Invert and Opacity are the row's as for every raster row.
+    expect(object({ points: [[0.5, 0.7, true]], invert: true })).toContain("mvo0i");
+    expect(object({ points: [[0.5, 0.7, true]], opacity: 0.4 })).toContain('fill-opacity="0.4"');
+  });
+
   it("draws a Linear as the core's Linear: at an angle of 0 the line is horizontal and the gradient runs down, at 90° the line is vertical", () => {
     const gradient = (angle: number): number[] => {
       const svg = maskViewSvg("mask_only", masks([row({ kind: "linear", center: [0.5, 0.5], angle_deg: angle, feather: 0.2 })]), BOX);

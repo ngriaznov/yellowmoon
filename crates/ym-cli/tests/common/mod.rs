@@ -246,6 +246,28 @@ impl Sandbox {
         data
     }
 
+    /// The shipped data folder in `<root>/data-no-sam` without SAM's weights (`models/sam2`): the same files, linked and not copied. For the
+    /// tests of what a copy of Yellowmoon with no Object model says and does (`docs/10`, `docs/23` section 9).
+    #[cfg(unix)]
+    pub fn data_without_the_sam_weights(&self) -> PathBuf {
+        use std::os::unix::fs::symlink;
+        let data = self.root().join("data-no-sam");
+        std::fs::create_dir_all(data.join("models")).expect("data folder");
+        for entry in std::fs::read_dir(data_dir()).expect("the data folder") {
+            let entry = entry.expect("entry");
+            if entry.file_name() != "models" {
+                symlink(entry.path(), data.join(entry.file_name())).expect("link");
+            }
+        }
+        for entry in std::fs::read_dir(data_dir().join("models")).expect("the models") {
+            let entry = entry.expect("entry");
+            if entry.file_name() != "sam2" {
+                symlink(entry.path(), data.join("models").join(entry.file_name())).expect("link");
+            }
+        }
+        data
+    }
+
     /// [`Sandbox::ym`] reading the data folder `data` ([`Sandbox::data_with_lenses`]).
     pub fn ym_data(&self, data: &Path) -> Command {
         let mut cmd = self.ym();

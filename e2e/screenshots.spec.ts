@@ -260,18 +260,25 @@ test.describe("Photos", () => {
   });
 
   test("The node view: Mountain's Object row with two clicks on the mountain, its OBJECT card, the pill and the points on the photo (photos-nodes-mask-object.png)", async ({ page }) => {
-    // Screen 07 of design/nodes: the Masks card with the Object row selected ("Object", "2 points") above the Radial that is Subtract and inverted, the OBJECT card under it
+    // Screen 07 of design/nodes: the Masks card with the Object row selected ("Object", "2 points") above the Radial that is Subtract (a hole in the object), the OBJECT card under it
     // (Add point · Remove point · Box with its line, then Refine edges at 50 %, Feather, Grow, Opacity), the View card with Overlay, the mountain tinted in the mask accent
     // (the mock finds the flat scene's far hill; the core draws the real mask), two points drawn as circles with a plus (the second is the click that has just found
     // it, so the pill "Object found · 0.4 s" is at the top of the photo for its three seconds), and the chip "MASK · OBJECT".
-    const object = { kind: "object", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, points: [[0.32, 0.7, true]], box: null };
-    await maskTab(page, 2, [object, ROWS_07B[1]!]);
+    const object = { kind: "object", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, points: [[0.33, 0.62, true]], box: null };
+    // The Radial of the mockup that is Subtract, not inverted here, on the hill: a round hole in what the Object found.
+    const hole = { ...ROWS_07B[1], invert: false, center: [0.5, 0.56], radii: [0.07, 0.04] };
+    await maskTab(page, 2, [object, hole]);
     await page.getByRole("button", { name: "Object mask, 1 point" }).click();
     await expect(page.getByRole("region", { name: "Object" })).toBeVisible();
     await page.getByRole("radio", { name: "Overlay", exact: true }).click();
     await expect(page.locator("[data-object-layer]")).toHaveAttribute("data-tool", "add");
     const cell = (await page.locator("[data-viewport]").boundingBox())!;
-    await page.mouse.click(cell.x + cell.width * 0.6, cell.y + cell.height * 0.72);
+    // The pill is on for three seconds; a picture taken on a slow machine would miss it. The page's three-second timer is made a minute for this state.
+    await page.evaluate(() => {
+      const real = window.setTimeout.bind(window);
+      window.setTimeout = ((handler: TimerHandler, ms?: number, ...args: unknown[]) => real(handler, ms === 3000 ? 60_000 : ms, ...args)) as typeof window.setTimeout;
+    });
+    await page.mouse.click(cell.x + cell.width * 0.64, cell.y + cell.height * 0.64);
     await expect(page.getByRole("button", { name: "Object mask, 2 points" })).toBeVisible();
     await expect(page.getByText("Object found · 0.4 s")).toBeVisible();
     await compareScreen(page, "photos-nodes-mask-object", { pointer: { x: cell.x + cell.width * 0.72, y: cell.y + cell.height * 0.2 } });

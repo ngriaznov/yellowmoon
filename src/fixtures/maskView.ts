@@ -169,7 +169,11 @@ function objectShape(row: Extract<MaskItem, { kind: "object" }>, index: number, 
   const region = `filterUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}"`;
   const at = (x: number, y: number): [string, string] => [round(box.x + x * box.width), round(box.y + y * box.height)];
   const [hx, hy] = at(HILL.cx, HILL.cy);
-  const hill = `<ellipse cx="${hx}" cy="${hy}" rx="${round(HILL.rx * box.width)}" ry="${round(HILL.ry * box.height)}" fill="#fff"/>`;
+  // The near band (the bottom 26 % of the frame) is in front of the hill: black over it, as the scene draws it.
+  const [nx, ny] = at(0, 0.74);
+  const hill =
+    `<ellipse cx="${hx}" cy="${hy}" rx="${round(HILL.rx * box.width)}" ry="${round(HILL.ry * box.height)}" fill="#fff"/>` +
+    `<rect x="${nx}" y="${ny}" width="${round(box.width)}" height="${round(0.26 * box.height)}" fill="#000"/>`;
   const holes = row.points
     .filter(([, , positive]) => !positive)
     .map(([x, y]) => {

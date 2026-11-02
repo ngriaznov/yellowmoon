@@ -465,16 +465,23 @@ fn a_dragged_point_comes_back_to_the_photo_where_the_pixel_is() {
 
 #[test]
 fn this_machine_makes_the_shapes_brush_and_the_ranges_that_are_built() {
+    // What needs no model (`mask_kinds()`: Background since N-15); Object is first where the SAM weights are (`mask_kinds_with(true)`, N-18) and
+    // Subject and People come with N-19.
     assert_eq!(
         mask_kinds(),
         [
+            MaskKind::Background,
             MaskKind::Linear,
             MaskKind::Radial,
             MaskKind::Brush,
             MaskKind::ColorRange,
             MaskKind::BrightnessRange
         ],
-        "the later tasks add Background, Object, Subject and People"
+        "the later tasks add Object (with its model), Subject and People"
+    );
+    assert_eq!(
+        ym_core::settings::mask_kinds_with(true)[0],
+        MaskKind::Object
     );
 }
 

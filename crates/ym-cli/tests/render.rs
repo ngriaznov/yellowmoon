@@ -679,14 +679,12 @@ fn a_photo_that_needs_a_mask_this_computer_cannot_make_fails_with_the_mask_error
     let sb = Sandbox::new();
     sb.arw("a_plain.ARW");
     sb.arw("b_subject.ARW");
-    sb.arw("c_object.ARW");
     sb.arw("d_background.ARW");
     sb.arw("e_off.ARW");
     let file = sb.root().join("per-file.json");
     let doc = |rows: &str| serde_json::from_str::<Value>(&masked_file(rows)).expect("a document");
     let doc_text = serde_json::json!({
         "b_subject.ARW": doc(r#"{ "kind": "subject" }"#),
-        "c_object.ARW": doc(r#"{ "kind": "object", "points": [[0.5, 0.5, true]] }"#),
         "d_background.ARW": doc(r#"{ "kind": "background" }"#),
         // The eye is off: the row is absent, the photo renders.
         "e_off.ARW": doc(r#"{ "kind": "subject", "enabled": false }"#),
@@ -700,7 +698,7 @@ fn a_photo_that_needs_a_mask_this_computer_cannot_make_fails_with_the_mask_error
         .assert()
         .code(1);
     let objects = json_lines(&out.get_output().stdout);
-    assert_eq!(objects.len(), 5);
+    assert_eq!(objects.len(), 4);
     let find = |name: &str| {
         objects
             .iter()
@@ -708,20 +706,14 @@ fn a_photo_that_needs_a_mask_this_computer_cannot_make_fails_with_the_mask_error
             .unwrap_or_else(|| panic!("no record for {name}"))
     };
     let mac = cfg!(target_os = "macos");
-    for (name, sentence) in [
-        (
-            "b_subject.ARW",
-            if mac {
-                "Node 2 has a Subject mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon."
-            } else {
-                "Node 2 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask."
-            },
-        ),
-        (
-            "c_object.ARW",
-            "Node 2 has an Object mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon.",
-        ),
-    ] {
+    // The Object row's own sentence, which depends on the weights, is `an_object_row_without_the_model_is_the_mask_error_and_with_it_the_photo_renders`.
+    {
+        let name = "b_subject.ARW";
+        let sentence = if mac {
+            "Node 2 has a Subject mask, and this version of Yellowmoon cannot make one yet. Remove the mask, or update Yellowmoon."
+        } else {
+            "Node 2 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask."
+        };
         let o = find(name);
         assert_eq!(o["status"], "error", "{name}");
         assert_eq!(o["output"], Value::Null, "{name}");
@@ -750,6 +742,102 @@ fn a_photo_that_needs_a_mask_this_computer_cannot_make_fails_with_the_mask_error
             .join("d_background_signature.jpg")
             .exists()
     );
+}
+
+/// A copy of Yellowmoon with no Object model (`data/models/sam2` is not there, or does not load): an Object row stops that photo with
+/// `error.kind` `mask` and "This copy of Yellowmoon has no Object model. Reinstall the app.", exit 1, nothing written; `ym doctor` says
+/// `weights_missing`; and a photo with the eye of the row off, or no Object row, goes on (`docs/10`, `docs/23` section 9, N-18). With the
+/// weights (the shipped data folder, where `tools/fetch/sam2.sh` has fetched them) the same file renders.
+#[cfg(unix)]
+#[test]
+fn an_object_row_without_the_model_is_the_mask_error_and_with_it_the_photo_renders() {
+    let sb = Sandbox::new();
+    sb.arw("a_object.ARW");
+    sb.arw("b_off.ARW");
+    let doc = |rows: &str| serde_json::from_str::<Value>(&masked_file(rows)).expect("a document");
+    let file = sb.root().join("per-file.json");
+    let doc_text = serde_json::json!({
+        "a_object.ARW": doc(r#"{ "kind": "object", "points": [[0.5, 0.5, true]] }"#),
+        "b_off.ARW": doc(r#"{ "kind": "object", "enabled": false }"#),
+    });
+    std::fs::write(&file, doc_text.to_string()).expect("write");
+    let without = sb.data_without_the_sam_weights();
+    let out = sb
+        .ym_data(&without)
+        .args(["render", "--cpu", "--json", "--settings"])
+        .arg(&file)
+        .arg(sb.photos())
+        .assert()
+        .code(1);
+    let objects = json_lines(&out.get_output().stdout);
+    assert_eq!(objects.len(), 2);
+    let find = |name: &str| {
+        objects
+            .iter()
+            .find(|o| o["input"].as_str().is_some_and(|i| i.ends_with(name)))
+            .unwrap_or_else(|| panic!("no record for {name}"))
+    };
+    let o = find("a_object.ARW");
+    assert_eq!(o["status"], "error");
+    assert_eq!(o["output"], Value::Null);
+    assert_eq!(o["error"]["kind"], "mask");
+    assert_eq!(
+        o["error"]["message"],
+        "This copy of Yellowmoon has no Object model. Reinstall the app."
+    );
+    assert!(o["camera"].is_object() && o["settings"].is_object());
+    assert!(!sb.default_export().join("a_object_signature.jpg").exists());
+    assert_eq!(find("b_off.ARW")["status"], "ok");
+    // The doctor says so, and Object is not on offer.
+    let out = sb
+        .ym_data(&without)
+        .args(["doctor", "--json"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
+    assert_eq!(v["masks"]["unavailable"]["object"], "weights_missing");
+    assert!(
+        !v["masks"]["kinds"]
+            .as_array()
+            .expect("kinds")
+            .iter()
+            .any(|k| k == "object")
+    );
+    let text = sb.ym_data(&without).arg("doctor").assert().success();
+    let text = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
+    assert!(
+        text.contains("Object (the SAM weights are missing)"),
+        "the Masks row names the reason:\n{text}"
+    );
+    // With the weights the same file renders, and the record's settings hold the row.
+    if ym_core::pipeline::ObjectModel::probe(&common::data_dir()).is_some_and(|m| m.sam().is_ok()) {
+        let out = sb
+            .ym()
+            .args(["render", "--cpu", "--json", "--settings"])
+            .arg(&file)
+            .arg(sb.photos())
+            .assert()
+            .success();
+        let objects = json_lines(&out.get_output().stdout);
+        let o = objects
+            .iter()
+            .find(|o| {
+                o["input"]
+                    .as_str()
+                    .is_some_and(|i| i.ends_with("a_object.ARW"))
+            })
+            .expect("a record");
+        assert_eq!(o["status"], "ok");
+        assert!(sb.default_export().join("a_object_signature.jpg").exists());
+    } else {
+        assert!(
+            std::env::var_os("YM_REQUIRE_SAM2").is_none(),
+            "YM_REQUIRE_SAM2 is set and data/models/sam2 is missing"
+        );
+        eprintln!(
+            "\n* the half of this test that renders with the weights was SKIPPED: no SAM weights\n"
+        );
+    }
 }
 
 /// A Background row renders from `--settings` (`docs/10`, N-15): the blur map is made from the photo itself, the
