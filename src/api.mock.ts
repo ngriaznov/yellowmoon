@@ -13,7 +13,9 @@
  *    light preset that resolves to a fixed kelvin, and a picked white that resolves to a kelvin
  *    and tint from the colour under the point;
  *  - look thumbnails, histograms and re-sent photo thumbnails drawn with the mockup's flat-shape
- *    grading (`fixtures/grade.ts`).
+ *    grading (`fixtures/grade.ts`);
+ *  - node thumbnails (`node_thumbnails`, then `node_thumbnails_ready` with the pictures that changed): the flat scene graded
+ *    through the nodes up to each card and the Output's look (`nodeScene`), as far as the flat grade can show.
  *
  * What it does not do: render anything real. Settings change stored values; the pictures it
  * returns only show the effect the way the mockups fake it. It has no viewport of its own: the
@@ -83,7 +85,9 @@ import type {
   MenuState,
   OpenKind,
   NodeGrade,
+  NodeId,
   NodeItem,
+  NodeThumbnail,
   Orientation,
   PackageId,
   PasteReport,
@@ -116,7 +120,7 @@ import { expandNameTemplate, FILE_EXTENSION, sanitizeStem, slugify } from "./exp
 import { version as APP_VERSION } from "../package.json";
 import { fixtureUrl } from "./fixtures";
 import { clampPins } from "./components/warpMath";
-import { adjustScene, developScene, previewSvg } from "./fixtures/grade";
+import { adjustScene, developScene, nodeScene, previewSvg } from "./fixtures/grade";
 import type { Adjustment } from "./fixtures/grade";
 import { hexChroma, sceneScatter } from "./fixtures/warp";
 import { sceneHistogram } from "./fixtures/histogram";
@@ -125,6 +129,7 @@ import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
 import { copiedPatch, pastedOnto, refusalOfPatch, validateGraph } from "./fixtures/graph";
 import { diffSettings } from "./state/history";
+import { cardStates, linkInto } from "./state/graphOps";
 import {
   applyPatch,
   correctorsOf,
@@ -136,6 +141,7 @@ import {
   MAIN_ID,
   mainGradePatch,
   mainOf,
+  nodeOf,
   OUTPUT_ID,
   outputOf,
   outputPatch,
@@ -310,6 +316,10 @@ export const LIGHT_PRESETS: Readonly<Record<Exclude<LightSource, "auto">, { kelv
 
 /** Milliseconds before a photo's thumbnail is re-sent after its look or light changed. */
 const THUMB_DEBOUNCE_MS = 120;
+/** How long the mock takes to make the thumbnails of a photo's nodes after they are asked for (the core makes them behind the answer). */
+const NODE_THUMB_MS = 60;
+/** A node thumbnail is this wide and this tall, in pixels (the core's are about 160 px on the long edge). */
+const NODE_THUMB_SIZE: readonly [number, number] = [160, 107];
 
 const BUILT_IN_LOOKS: ReadonlyArray<Pick<Look, "id" | "name">> = [
   { id: NEUTRAL, name: "Neutral" },
@@ -1438,6 +1448,13 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   const thumbTimers = new Map<PhotoId, ReturnType<typeof setTimeout>>();
   /** The address of each photo's newest thumbnail (the shell keeps these for `thumbnails()`). */
   const thumbnailUrls = new Map<PhotoId, string>();
+  /**
+   * The node thumbnails the mock has told the page about, per photo and node: the address, and the key of everything the picture was
+   * made from (the Input's adjustments, the path of nodes to it and the look), so that a node whose key did not change is not sent
+   * again (`node_thumbnails_ready` has only the thumbnails that changed).
+   */
+  const nodeThumbs = new Map<PhotoId, Map<number, { key: string; url: string }>>();
+  const nodeThumbTimers = new Map<PhotoId, ReturnType<typeof setTimeout>>();
   const exportRuns = new Map<ExportJobId, ExportRun>();
   let nextJobId = 1;
 
@@ -1865,6 +1882,60 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     emit("thumbnail_ready", { id, url });
   }
 
+  /** The correctors on the picture path from the Input to a node, in order (a node with no picture link reads the Input). */
+  function pictureChain(settings: DevelopSettings, node: number): CorrectorItem[] {
+    const chain: CorrectorItem[] = [];
+    const seen = new Set<number>();
+    let at: NodeId | undefined = node;
+    while (typeof at === "number" && !seen.has(at)) {
+      seen.add(at);
+      const item = nodeOf(settings, at);
+      if (!item || item.kind !== "corrector") break;
+      chain.unshift(item);
+      at = linkInto(settings.nodes.links, { node: at, port: "picture" })?.from.node;
+    }
+    return chain;
+  }
+
+  /**
+   * The thumbnails of every node of a photo: the flat scene graded through the nodes up to it and then the Output's look (the core
+   * stops the plan at the node and runs the Output). Sends `node_thumbnails_ready` with the nodes whose picture changed since the page
+   * was told, and nothing when none did.
+   */
+  function makeNodeThumbnails(rec: PhotoRecord): void {
+    if (!photos.includes(rec) || rec.phase < 3 || rec.skipReason) return;
+    const id = rec.summary.id;
+    const { settings } = rec;
+    const input = adjustmentOf(rec, false);
+    const output = outputOf(settings);
+    const look = { slug: lookSlug(output.look), intensity: output.look_intensity };
+    const told = nodeThumbs.get(id) ?? new Map<number, { key: string; url: string }>();
+    const changed: NodeThumbnail[] = [];
+    const nodes = cardStates(settings);
+    for (const node of nodes.keys()) {
+      const chain = pictureChain(settings, node);
+      const key = JSON.stringify([input, look, chain.map((n) => [n.bypass, n.trim, n.grade])]);
+      if (told.get(node)?.key === key) continue;
+      const url = bytesToUrl(Array.from(scenePng(nodeScene(rec.scene, input, chain, look), ...NODE_THUMB_SIZE)));
+      told.set(node, { key, url });
+      changed.push({ node, url });
+    }
+    // A node that was taken out has no picture any more.
+    for (const node of [...told.keys()]) if (!nodes.has(node)) told.delete(node);
+    nodeThumbs.set(id, told);
+    if (changed.length > 0) emit("node_thumbnails_ready", { photo_id: id, thumbnails: changed });
+  }
+
+  /** Forgets what the page was told about the node thumbnails of these photos (they left the filmstrip, or the session closed). */
+  function forgetNodeThumbnails(ids: Iterable<PhotoId>): void {
+    for (const id of ids) {
+      const timer = nodeThumbTimers.get(id);
+      if (timer !== undefined) clearTimeout(timer);
+      nodeThumbTimers.delete(id);
+      nodeThumbs.delete(id);
+    }
+  }
+
   /** Re-sends a photo's thumbnail shortly after its look or light changed, once for a burst of changes. */
   function scheduleThumbnail(rec: PhotoRecord): void {
     if (rec.phase < 3 || rec.skipReason) return;
@@ -1952,6 +2023,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       thumbTimers.delete(id);
       thumbnailUrls.delete(id);
     }
+    forgetNodeThumbnails(left);
     current = Math.max(0, photos.findIndex((rec) => rec.summary.id === successor));
     if (photos.length === 0) {
       stopDevelopment();
@@ -2264,6 +2336,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     cpuFrameTimer = null;
     for (const timer of thumbTimers.values()) clearTimeout(timer);
     thumbTimers.clear();
+    for (const timer of nodeThumbTimers.values()) clearTimeout(timer);
+    nodeThumbTimers.clear();
+    nodeThumbs.clear();
     for (const run of exportRuns.values()) stopExport(run);
     exportRuns.clear();
     for (const run of importRuns) {
@@ -2379,6 +2454,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         for (const timer of thumbTimers.values()) clearTimeout(timer);
         thumbTimers.clear();
         thumbnailUrls.clear();
+        forgetNodeThumbnails([...nodeThumbs.keys(), ...nodeThumbTimers.keys()]);
         photos = [];
         current = 0;
         highestId = 0;
@@ -2602,6 +2678,19 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         if (look.missing) fail("looks", "File missing or changed. Import again.");
         // The shell answers with an address (`ym-frame://…/look-<photo>-<n>.png`); here a `blob:` URL stands for it, new for every request.
         return bytesToUrl(Array.from(scenePng(developed(rec, lookId, 100))));
+      }),
+    nodeThumbnails: (photoId) =>
+      run("nodeThumbnails", (): void => {
+        // Answers at once; the pictures follow as an event, behind whatever the person is doing (a request while one waits is that one).
+        const rec = photos.find((p) => p.summary.id === photoId);
+        if (!rec || nodeThumbTimers.has(photoId)) return;
+        nodeThumbTimers.set(
+          photoId,
+          setTimeout(() => {
+            nodeThumbTimers.delete(photoId);
+            makeNodeThumbnails(rec);
+          }, NODE_THUMB_MS / options.speed),
+        );
       }),
     looksImport: (path, input) =>
       runAsync("looksImport", async (): Promise<LooksImportResult> => {

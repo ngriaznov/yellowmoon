@@ -8,7 +8,7 @@
  * Nothing here is colour science. It exists so that screenshots of the app can be compared with
  * the mockups' screenshots, and so that a change in a control is visible in a browser.
  */
-import type { ColorWarpPin } from "../api/types";
+import type { ColorWarpPin, NodeGrade, NodeTrim, PercentSetting } from "../api/types";
 import { sceneBody, SVG_HEIGHT, SVG_WIDTH, SUN_FRACTION_PHOTO } from "./scenes";
 import type { Scene } from "./scenes";
 import { warpScene } from "./warp";
@@ -140,6 +140,55 @@ export function developScene(scene: Scene, look: DevelopLook, adjustment: Adjust
   const adjusted = adjustment ? adjustScene(scene, adjustment) : scene;
   const grade = LOOK_GRADES[look.slug] ?? LOOK_GRADES.neutral;
   return gradeScene(adjusted, grade as LookGrade, Math.max(0, Math.min(100, look.intensity)) / 100);
+}
+
+/** What a corrector does to a picture (`docs/23` §1.3): its bypass, its trims and its grade. */
+export interface NodeLook {
+  bypass: boolean;
+  trim: NodeTrim;
+  grade: NodeGrade;
+}
+
+const manualValue = (setting: PercentSetting): number => (setting.kind === "manual" ? setting.value : 0);
+
+/** One corrector's change to a scene, as far as the flat shapes show it: the trims and Brightness as light and warmth, Saturation and Contrast on the colours, the colour warp's pins. A node at its identity, or bypassed, returns the scene. */
+export function adjustForNode(scene: Scene, node: NodeLook): Scene {
+  if (node.bypass) return scene;
+  const { trim, grade } = node;
+  // The trims and Brightness are the Input's adjustments again: a stop of exposure, a step of warmth, a step of tint, then the pins.
+  let out = adjustScene(scene, {
+    ev: trim.exposure_ev + grade.brightness / 50,
+    autoEv: 0,
+    kelvin: 6500 + 40 * trim.temperature,
+    autoKelvin: 6500,
+    tint: trim.tint,
+    autoTint: 0,
+    warp: grade.color_warp.pins,
+  });
+  const saturation = manualValue(grade.saturation);
+  if (saturation !== 0) {
+    const next: Scene = { ...out };
+    for (const key of KEYS) next[key] = mix(out[key], gray(out[key]), (-saturation / 100) * 0.7);
+    out = next;
+  }
+  const contrast = manualValue(grade.contrast);
+  if (contrast !== 0) {
+    const next: Scene = { ...out };
+    for (const key of KEYS) next[key] = toHex(hx(out[key]).map((x) => 128 + (x - 128) * (1 + (contrast / 100) * 0.6)));
+    out = next;
+  }
+  return out;
+}
+
+/**
+ * The scene after a node: the photo adjusted at the Input (`input`, without the colour warp, which is Main's), through the
+ * correctors on the path from the Input to the node in order, then through the Output's look. A node thumbnail of the mock
+ * (`docs/23` §5.7); with Main alone it is `developScene`'s picture.
+ */
+export function nodeScene(scene: Scene, input: Adjustment, chain: readonly NodeLook[], look: DevelopLook): Scene {
+  let out = adjustScene(scene, { ...input, warp: undefined });
+  for (const node of chain) out = adjustForNode(out, node);
+  return developScene(out, look, null);
 }
 
 /** A crop for `previewSvg`: a rectangle of the oriented frame in [0, 1]², and a straighten angle. */

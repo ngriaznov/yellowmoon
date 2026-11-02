@@ -472,6 +472,14 @@ impl Worst {
         }
     }
 
+    /// One line of the numbers, for the log (`docs/23` section 15 quotes them).
+    fn report(&self, what: &str) {
+        eprintln!(
+            "{what}: worst |GPU - CPU| C10 {:.2e}, C13 {:.2e}, m {:.2e}",
+            self.c10, self.c13, self.mask
+        );
+    }
+
     fn assert_within_the_gates(&self, what: &str) {
         assert!(
             self.c10 <= LOGC4_GATE,
@@ -705,15 +713,22 @@ fn inverted_subtracted_and_combined_rows_match_the_cpu() {
     ];
     let (_, grid, w, h) = grids(buffer).swap_remove(2);
     for dev in f32_devices() {
+        let mut all = Worst::default();
         for (what, m) in &cases {
             for scenario in [
                 Scenario::after_main(effect_with(m.clone())),
                 Scenario::on_input(effect_with(m.clone())),
             ] {
-                parity(dev, &scenario, 2, None, &img, &grid, (0, 0), (w, h))
-                    .assert_within_the_gates(what);
+                let worst = parity(dev, &scenario, 2, None, &img, &grid, (0, 0), (w, h));
+                worst.assert_within_the_gates(what);
+                all = all.max(worst);
             }
         }
+        all.report(&format!(
+            "{:?} {} combinations of rows",
+            dev.mode,
+            cases.len()
+        ));
     }
 }
 
@@ -735,6 +750,7 @@ fn main_may_have_masks_too_and_a_bypassed_main_still_makes_its_key() {
         s.params.insert(MAIN_NODE, masked_main.clone());
         let w1 = parity(dev, &s, 1, logc4_look(), &img, &grid, (0, 0), (w, h));
         w1.assert_within_the_gates("Main with masks");
+        w1.report(&format!("{:?} Main with masks", dev.mode));
         assert!(w1.partial > 20, "Main's mask is all 0 or all 1");
         parity(dev, &s, 2, None, &img, &grid, (0, 0), (w, h))
             .assert_within_the_gates("Main with masks, node 2's mask");
@@ -786,8 +802,9 @@ fn a_node_with_many_rows_has_no_cap() {
     let (_, grid, w, h) = grids(buffer).swap_remove(1);
     for dev in f32_devices() {
         let scenario = Scenario::after_main(effect_with(masks(rows.clone())));
-        parity(dev, &scenario, 2, None, &img, &grid, (0, 0), (w, h))
-            .assert_within_the_gates("64 rows");
+        let worst = parity(dev, &scenario, 2, None, &img, &grid, (0, 0), (w, h));
+        worst.assert_within_the_gates("64 rows");
+        worst.report(&format!("{:?} one node of 64 rows", dev.mode));
     }
 }
 
@@ -910,14 +927,18 @@ fn keys_cross_the_split_between_passes_on_the_device() {
                 (i > 0).then(|| 20 + i - 1),
             )
         });
+        // Some of the nodes are bypassed: their pictures are their inputs, their keys are still their masks.
         params.insert(
             20 + i,
-            effect_with(masks(vec![radial(
-                [0.15 + 0.08 * f64::from(i), 0.5],
-                [0.25, 0.2],
-                10.0 * f64::from(i),
-                0.5,
-            )])),
+            NodeParams {
+                bypass: i % 2 == 1 && i < fan - 1,
+                ..effect_with(masks(vec![radial(
+                    [0.15 + 0.08 * f64::from(i), 0.5],
+                    [0.25, 0.2],
+                    10.0 * f64::from(i),
+                    0.5,
+                )]))
+            },
         );
     }
     let scenario = Scenario {
@@ -928,7 +949,7 @@ fn keys_cross_the_split_between_passes_on_the_device() {
     let chain = scenario.chain(PlanStop::Output, None);
     assert!(chain.params().nodes.plan.passes.len() >= 2, "two passes");
     for dev in f32_devices() {
-        parity(
+        let worst = parity(
             dev,
             &scenario,
             20 + fan - 1,
@@ -937,11 +958,104 @@ fn keys_cross_the_split_between_passes_on_the_device() {
             &grid,
             (0, 0),
             (w, h),
-        )
-        .assert_within_the_gates("keys across passes");
+        );
+        worst.assert_within_the_gates("keys across passes");
+        worst.report(&format!("{:?} nine chained keys over two passes", dev.mode));
         // And a stop in the middle of the second pass.
         parity(dev, &scenario, 24, None, &img, &grid, (0, 0), (w, h))
             .assert_within_the_gates("the mask of a node in the second pass");
+    }
+}
+
+#[test]
+fn seventeen_keys_alive_at_once_cross_the_split_in_buffers() {
+    // Seventeen nodes read Main and make masks only (every other one bypassed: their pictures are their inputs,
+    // their keys are still their masks); a chain of seventeen takes one key each. Sixteen key slots fit a pass, so
+    // the seventeenth key crosses to the second pass in a plane of the pass buffers.
+    let buffer = (61usize, 45usize);
+    let img = scene(buffer.0, buffer.1, 0x17C);
+    let (_, grid, w, h) = grids(buffer).swap_remove(2);
+    let n = 17u32;
+    let mut nodes = vec![node(MAIN_NODE, PictureSource::Input, None)];
+    let mut params = BTreeMap::new();
+    for i in 0..n {
+        nodes.push(PlanNode {
+            pos: [1.0, f64::from(i)],
+            ..node(2 + i, PictureSource::Node(MAIN_NODE), None)
+        });
+        let t = f64::from(i);
+        let row = match i % 3 {
+            0 => radial([0.1 + 0.05 * t, 0.5], [0.3, 0.2], 7.0 * t, 0.5),
+            1 => linear([0.5, 0.2 + 0.04 * t], 11.0 * t, 0.3),
+            _ => colour([0.01 * (t % 5.0) - 0.02, 0.0], 0.08, 0.5),
+        };
+        params.insert(
+            2 + i,
+            NodeParams {
+                bypass: i % 2 == 0,
+                ..effect_with(masks(vec![row]))
+            },
+        );
+    }
+    for i in 0..n {
+        let prev = if i == 0 {
+            PictureSource::Node(MAIN_NODE)
+        } else {
+            PictureSource::Node(100 + i - 1)
+        };
+        nodes.push(PlanNode {
+            pos: [2.0, f64::from(i)],
+            ..node(100 + i, prev, Some(2 + i))
+        });
+        params.insert(
+            100 + i,
+            NodeParams {
+                trim: Trim {
+                    exposure_ev: 0.06,
+                    ..Trim::default()
+                },
+                ..NodeParams::default()
+            },
+        );
+    }
+    let last = 100 + n - 1;
+    let scenario = Scenario {
+        nodes,
+        params,
+        output: last,
+    };
+    let plan = scenario
+        .chain(PlanStop::Output, None)
+        .params()
+        .nodes
+        .plan
+        .clone();
+    assert!(plan.passes.len() >= 2, "{} passes", plan.passes.len());
+    assert!(
+        plan.buffers.contains(&plan::BufferKind::Key),
+        "a key crosses the split"
+    );
+    for dev in f32_devices() {
+        let worst = parity(dev, &scenario, last, None, &img, &grid, (0, 0), (w, h));
+        worst.assert_within_the_gates("seventeen keys");
+        worst.report(&format!(
+            "{:?} seventeen keys, one in a plane of the pass buffers",
+            dev.mode
+        ));
+        // The mask of a node whose key crossed.
+        parity(dev, &scenario, 2 + n - 1, None, &img, &grid, (0, 0), (w, h))
+            .assert_within_the_gates("the seventeenth mask node");
+        parity(
+            dev,
+            &scenario,
+            100 + n - 2,
+            None,
+            &img,
+            &grid,
+            (0, 0),
+            (w, h),
+        )
+        .assert_within_the_gates("the second last of the chain");
     }
 }
 
@@ -1413,8 +1527,8 @@ fn a_radial_stays_on_its_photo_feature_through_every_geometry() {
             grid = grid.with_warp(Some(bend(1.0, (grid.canvas.0, grid.canvas.1))));
         }
         let (w, h) = (
-            ((grid.canvas.0 / scale) as usize).clamp(8, 200),
-            ((grid.canvas.1 / scale) as usize).clamp(8, 150),
+            ((grid.canvas.0 / scale) as usize).clamp(8, 300),
+            ((grid.canvas.1 / scale) as usize).clamp(8, 300),
         );
         let sampled = sample_to_camera(&img, (0, 0), &grid, (0, 0), w, h);
         let map = GridPositions::new(&grid, (0, 0));

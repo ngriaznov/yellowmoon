@@ -249,9 +249,15 @@ export function Photos() {
   const graphSettings = rs?.settings ?? null;
   const onNode = graphSettings && nodeOf(graphSettings, selectedNode) ? selectedNode : MAIN_ID;
   const graph = useNodeGraph({ store, settings: graphSettings, photoId: photo?.id ?? null, selected: onNode, select: setSelectedNode });
-  // Until N-05 gives every node its own picture, a card shows the photo's thumbnail, the filmstrip's.
+  // A card shows the picture after its node (`docs/23` §5.7), which the store asks the core for while the node view is on (when a change
+  // has landed, never during a drag). Until a node's first picture arrives its card shows the photo's thumbnail, the filmstrip's.
+  useEffect(() => (nodesOn ? store.watchNodeThumbnails() : undefined), [store, nodesOn]);
+  const nodePictures = useAppState((s) => (photo ? s.nodeThumbnails[photo.id] : undefined));
   const photoThumbnail = photo ? thumbnails[photo.id] : undefined;
-  const thumbnailOf = useCallback((): string | undefined => photoThumbnail, [photoThumbnail]);
+  const thumbnailOf = useCallback(
+    (id: NodeId): string | undefined => (typeof id === "number" ? nodePictures?.[id] : undefined) ?? photoThumbnail,
+    [nodePictures, photoThumbnail],
+  );
 
   // In the Export panel the filmstrip dims the photos that won't be exported.
   const included = useMemo(

@@ -944,7 +944,7 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>) -> NodesOut
                 key_in = pbuf[ki * n + pix];
             }
         }
-        let key_written = outs.z != NODE_NONE || (CU.mode.x == 12u && ni == CU.stopn.x);
+        let key_written = outs.z != NODE_NONE || outs.w != NODE_NONE || (CU.mode.x == 12u && ni == CU.stopn.x);
         var m = 1.0;
         if (blends && (!skipped || key_written)) {
             m = node_mask(ni, v_in, c7, from_input, pos, key_in, has_key);

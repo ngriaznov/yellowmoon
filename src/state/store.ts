@@ -52,6 +52,7 @@ import type {
   NodeGrade,
   NodeId,
   NodeItem,
+  NodeThumbnailsReady,
   OpenSummary,
   Orientation,
   PasteReport,
@@ -94,6 +95,7 @@ import { isReady, mergeSession, photoName, releaseUrl, removedNotice, restoredNo
 import { RequestLimiter } from "./requestLimiter";
 import {
   applyPatch,
+  correctorsOf,
   foldPatches,
   INPUT_ID,
   inputOf,
@@ -193,6 +195,12 @@ export interface AppState {
   session: SessionState | null;
   /** Thumbnail URLs by photo id, from `thumbnail_ready`. */
   thumbnails: Readonly<Record<PhotoId, string>>;
+  /**
+   * The pictures of the node view's cards (`docs/23` §5.7), per photo and corrector: the address of the photo after that node and the
+   * Output, from `node_thumbnails_ready`. A node has none until its first arrives (its card shows the photo's thumbnail meanwhile).
+   * Kept for the running app only, like the thumbnails.
+   */
+  nodeThumbnails: Readonly<Record<PhotoId, Readonly<Record<number, string>>>>;
   /** Resolved settings by photo id, for the photos that were shown. */
   settings: Readonly<Record<PhotoId, ResolvedSettings>>;
   /** The look library; null until it has been asked for. */
@@ -296,6 +304,7 @@ export function initialState(): AppState {
     returnTo: "start",
     session: null,
     thumbnails: {},
+    nodeThumbnails: {},
     settings: {},
     looks: null,
     lenses: null,
@@ -577,6 +586,10 @@ export class AppStore {
   /** Who shows the colour warp's plane (the Colour tab): while there is one, `render_stats` keeps its scatter fresh. */
   private scatterWatchers = 0;
   private scatterTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Who has the node view on show (`watchNodeThumbnails`): while there is one, the store asks for the node thumbnails of the current photo. */
+  private nodeThumbWatchers = 0;
+  /** Photos whose node thumbnails are about to be asked for (one microtask collects the calls of a burst). */
+  private readonly nodeThumbAsked = new Set<PhotoId>();
   /** Export events that arrived before `export_start` answered, by job. */
   private readonly earlyExport: ExportProgress[] = [];
   private starting = false;
@@ -674,6 +687,7 @@ export class AppStore {
     this.stops = [
       api.on("photo_progress", (e) => this.onProgress(e)),
       api.on("thumbnail_ready", (e) => this.onThumbnail(e)),
+      api.on("node_thumbnails_ready", (e) => this.onNodeThumbnails(e)),
       api.on("render_stats", (stats) => {
         this.later((s) => ({ ...s, stats }));
         this.scheduleHistogram();
@@ -841,6 +855,94 @@ export class AppStore {
       if (old) releaseUrl(old);
       return { ...s, thumbnails: { ...s.thumbnails, [e.id]: e.url } };
     });
+  }
+
+  /** The pictures of some of a photo's nodes (only the ones that changed): kept per photo and node, the old address of a node let go. */
+  private onNodeThumbnails(e: NodeThumbnailsReady): void {
+    this.later((s) => {
+      // A photo that is not in the session (it was removed while its pictures were made) has no node view; its pictures are let go.
+      if (!s.session?.photos.some((p) => p.id === e.photo_id)) {
+        for (const t of e.thumbnails) releaseUrl(t.url);
+        return s;
+      }
+      const had = s.nodeThumbnails[e.photo_id] ?? {};
+      const next: Record<number, string> = { ...had };
+      let changed = false;
+      for (const t of e.thumbnails) {
+        const old = next[t.node];
+        if (old === t.url) continue;
+        // The shell's addresses are not ours to free; the mock's `blob:` ones are.
+        if (old) releaseUrl(old);
+        next[t.node] = t.url;
+        changed = true;
+      }
+      return changed ? { ...s, nodeThumbnails: { ...s.nodeThumbnails, [e.photo_id]: next } } : s;
+    });
+  }
+
+  /**
+   * The node view is on show (the Photos screen calls this while the graph is up and calls the function it returns when it goes). While
+   * somebody watches, the store asks the core for the current photo's node thumbnails (`node_thumbnails`): at once, when the photo on
+   * screen changes, and whenever a change to its settings has landed (a released drag, a key, a typed value, a node added or removed,
+   * an undo, a paste, the core's own news), never during a drag. Nothing is asked for while nobody watches.
+   */
+  watchNodeThumbnails(): () => void {
+    this.nodeThumbWatchers += 1;
+    this.wantNodeThumbnails(this.currentId());
+    let watching = true;
+    return () => {
+      if (!watching) return;
+      watching = false;
+      this.nodeThumbWatchers -= 1;
+    };
+  }
+
+  /**
+   * A photo's settings changed or the photo was just shown: asks for its node thumbnails if the node view is on, the photo is the one
+   * on screen, no drag is on and no patch is on its way (the reply of the last one comes here again). A burst of calls is one
+   * request. The pictures of nodes the photo no longer has are let go first.
+   */
+  private wantNodeThumbnails(id: PhotoId | null): void {
+    if (id === null || this.nodeThumbWatchers === 0 || this.nodeThumbAsked.has(id)) return;
+    this.nodeThumbAsked.add(id);
+    queueMicrotask(() => {
+      this.nodeThumbAsked.delete(id);
+      if (this.nodeThumbWatchers === 0 || id !== this.currentId()) return;
+      if (this.gestures.has(id) || this.isSending(id)) return;
+      const rs = this.state.settings[id];
+      if (!rs) return;
+      this.forgetGoneNodeThumbnails(id, rs.settings);
+      void this.api.nodeThumbnails(id).catch(() => {
+        // The cards keep the pictures they have; the next change asks again.
+      });
+    });
+  }
+
+  /** Lets go of the pictures of the nodes a photo no longer has (a node that is added again later gets its own). */
+  private forgetGoneNodeThumbnails(id: PhotoId, settings: DevelopSettings): void {
+    const kept = this.state.nodeThumbnails[id];
+    if (!kept) return;
+    const present = new Set(correctorsOf(settings).map((n) => n.id as number));
+    const gone = Object.keys(kept)
+      .map(Number)
+      .filter((node) => !present.has(node));
+    if (gone.length === 0) return;
+    const next: Record<number, string> = { ...kept };
+    for (const node of gone) {
+      releaseUrl(next[node] as string);
+      delete next[node];
+    }
+    this.set({ nodeThumbnails: { ...this.state.nodeThumbnails, [id]: next } });
+  }
+
+  /** Lets go of the node thumbnails of these photos (the shell's addresses are not ours to free; the mock's `blob:` ones are). */
+  private releaseNodeThumbnails(ids: Iterable<PhotoId>): Record<PhotoId, Readonly<Record<number, string>>> {
+    const next = { ...this.state.nodeThumbnails };
+    for (const id of ids) {
+      for (const url of Object.values(next[id] ?? {})) releaseUrl(url);
+      delete next[id];
+    }
+    return next;
   }
 
   /**
@@ -1012,6 +1114,8 @@ export class AppStore {
    */
   private endSessionView(): void {
     for (const url of Object.values(this.state.thumbnails)) releaseUrl(url);
+    for (const urls of Object.values(this.state.nodeThumbnails)) for (const url of Object.values(urls)) releaseUrl(url);
+    this.nodeThumbAsked.clear();
     this.releaseLookThumbs();
     this.pendingStatus.clear();
     this.histories.clear();
@@ -1084,7 +1188,10 @@ export class AppStore {
       stats,
     });
     this.syncHistoryFlags();
-    if (isReady(session.photos[index] as PhotoSummary)) void this.ensureSettings(id);
+    if (isReady(session.photos[index] as PhotoSummary)) {
+      void this.ensureSettings(id);
+      this.wantNodeThumbnails(id);
+    }
     try {
       await this.api.setCurrent(id);
     } catch (error) {
@@ -1209,6 +1316,7 @@ export class AppStore {
     }
     const settings = { ...this.state.settings };
     for (const id of gone) delete settings[id];
+    const nodeThumbnails = this.releaseNodeThumbnails(gone);
     this.removal = { histories, depth: this.undoDepth() };
 
     // The photo on screen stays unless it left; then it is the shell's choice, the next photo or the previous one.
@@ -1222,10 +1330,13 @@ export class AppStore {
       this.set(notice);
       return;
     }
-    this.set({ session: next, thumbnails, settings, ...notice, ...(stays ? {} : this.currentChanged()) });
+    this.set({ session: next, thumbnails, nodeThumbnails, settings, ...notice, ...(stays ? {} : this.currentChanged()) });
     this.syncHistoryFlags();
     const shown = next.photos[next.current_index ?? 0];
-    if (!stays && shown && isReady(shown)) void this.ensureSettings(shown.id);
+    if (!stays && shown && isReady(shown)) {
+      void this.ensureSettings(shown.id);
+      this.wantNodeThumbnails(shown.id);
+    }
   }
 
   /** Delete or Backspace: removes the photo on screen. */
@@ -1922,7 +2033,10 @@ export class AppStore {
       try {
         const rs = await this.api.getSettings(id);
         if (epoch !== this.bulkEpoch) continue;
-        if (!this.state.settings[id]) this.set({ settings: { ...this.state.settings, [id]: rs } });
+        if (!this.state.settings[id]) {
+          this.set({ settings: { ...this.state.settings, [id]: rs } });
+          this.wantNodeThumbnails(id);
+        }
         return;
       } catch (error) {
         this.fail(error);
@@ -1991,6 +2105,8 @@ export class AppStore {
   private setSettings(id: PhotoId, rs: ResolvedSettings): void {
     this.wrote(id);
     this.set({ settings: { ...this.state.settings, [id]: rs } });
+    // The node thumbnails follow every change that has landed: this asks, and the ask waits while a drag or a patch is still out.
+    this.wantNodeThumbnails(id);
   }
 
   /**

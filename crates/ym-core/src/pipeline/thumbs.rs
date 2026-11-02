@@ -7,6 +7,12 @@
 //! * **Look tiles** (`look_thumbnail`, an addition to `docs/01`): the same render with one look at
 //!   100 %, for the tiles of the Look tab. Only the grade group differs between looks, so the raw
 //!   group and the colour plan are shared by every tile.
+//! * **Node thumbnails** (`node_thumbnails`, `docs/23` section 5.7): one picture of about
+//!   [`NODE_THUMBNAIL_PX`] for every corrector of the photo, dead ones included, each the plan
+//!   stopped after that node and then run through the Output, so that it looks like the photo the
+//!   person knows. They are kept in memory in the photo's graph, by node and by a key that names
+//!   everything up to the node, so a change late in the graph makes no new picture for the nodes
+//!   before it.
 //! * **Histogram** (`histogram`, an addition to `docs/01`): 64 bins of the LogC4 signal at the
 //!   input of Main's curve (C9b, the warp's output: the curve is in front of the look since pipeline
 //!   0.9.0), per channel, scaled so that the tallest bin is 1 (`docs/02` C11: "The histogram in the
@@ -21,7 +27,9 @@
 //!   Signature look at 100 % and the cine rendering, at 768 px on the long edge, 8-bit sRGB, on the CPU reference
 //!   path ([`AdvisorPictures`], the session's [`PictureRenderer`] hook).
 
+use std::fmt::Write as _;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rayon::prelude::*;
@@ -34,7 +42,7 @@ use ym_looks::library::LookId;
 
 use super::RenderError;
 use super::color::{
-    LookProblem, LookProvider, PhotoSource, ResolvedLook, raw_fingerprint, with_look,
+    LookProblem, LookProvider, PhotoSource, ResolvedLook, node_plan, raw_fingerprint, with_look,
 };
 use super::frame::{
     FrameOptions, FrameOutput, FullImage, FullRequest, RenderedFrame, Sampled, ViewSpec,
@@ -45,8 +53,9 @@ use super::graph::{Job, RenderOptions, Renderer};
 use super::viewport::ViewportState;
 use crate::apple_auto::{AdvisorPicture, PICTURE_LONG_EDGE_PX};
 use crate::session::{PhotoId, PictureInput, PictureRenderer, ThumbnailInput, ThumbnailRenderer};
-use crate::settings::DevelopSettings;
+use crate::settings::{DevelopSettings, NodeId, NodeLink, NodeRef};
 use ym_color::look::LookTransform;
+use ym_color::plan::Stop;
 
 /// Bins of the histogram.
 pub const HISTOGRAM_BINS: usize = 64;
@@ -144,10 +153,66 @@ fn thumbnail_scale(out: (usize, usize), max_px: usize) -> usize {
     1
 }
 
+/// The long edge of a node's thumbnail, in pixels (`docs/23` section 5.7).
+pub const NODE_THUMBNAIL_PX: usize = 160;
+
+/// Counts up with every node thumbnail made in this run of the program, so that a picture has a
+/// version nobody else has (an unchanged picture keeps its version when it is served again).
+static NODE_THUMBNAIL_VERSION: AtomicU64 = AtomicU64::new(1);
+
+/// One node's thumbnail ([`Renderer::node_thumbnails`]).
+#[derive(Debug, Clone)]
+pub struct NodeThumbnail {
+    /// The corrector.
+    pub node: u32,
+    /// Names this picture: it changes when the picture is made again and stays while it is served
+    /// from memory, so a caller that remembers what it showed knows whether the picture is new.
+    pub version: u64,
+    /// The PNG: sRGB, 8 bits, [`NODE_THUMBNAIL_PX`] on the long edge at most.
+    pub png: Arc<Vec<u8>>,
+    /// Whether this call made the picture (false: it was kept from an earlier call).
+    pub fresh: bool,
+}
+
+/// What a photo's graph keeps of a node's thumbnail.
+#[derive(Debug, Clone)]
+pub(crate) struct NodeThumbnailEntry {
+    /// What the picture was made from (see [`Renderer::node_thumbnails`]).
+    pub(crate) key: String,
+    pub(crate) version: u64,
+    pub(crate) png: Arc<Vec<u8>>,
+}
+
+/// The settings of the graph that ends at `node`: the Output reads the node's picture, in place of
+/// the one it read (the nodes after `node` become dead branches, and a dead `node` is live).
+///
+/// This is the plan stopped after the node's picture, then the Output: the plan of the result is
+/// the plan compiled with [`Stop::Picture`] for `node` (a test compares the two), and the Output's
+/// own settings (the look, the cine rendering, the sharpening) stay.
+#[must_use]
+pub fn settings_ending_at(settings: &DevelopSettings, node: u32) -> DevelopSettings {
+    let mut s = settings.clone();
+    let into_output = NodeRef::picture(NodeId::Output);
+    let link = NodeLink::picture(NodeId::Corrector(node), NodeId::Output);
+    if !s.nodes.links.contains(&link) {
+        s.nodes.links.retain(|l| l.to != into_output);
+        s.nodes.links.push(link);
+    }
+    s
+}
+
 impl Renderer {
     fn thumbnail_spec(&self, job: &mut Job<'_>) -> Result<(ViewSpec, (usize, usize)), RenderError> {
+        self.thumbnail_spec_at(job, self.options().thumbnail_px)
+    }
+
+    /// The view of a thumbnail whose long edge is at most `max_px`.
+    fn thumbnail_spec_at(
+        &self,
+        job: &mut Job<'_>,
+        max_px: usize,
+    ) -> Result<(ViewSpec, (usize, usize)), RenderError> {
         let image = job.final_size()?;
-        let max_px = self.options().thumbnail_px;
         let (tw, th) = thumbnail_size(image, max_px);
         // The reduction follows the size of what is shown (a crop to a tenth of the photo needs a
         // finer image than the whole photo does).
@@ -211,6 +276,99 @@ impl Renderer {
         let (tw, th, rgb) = self.thumbnail_rgb(src, cancel)?;
         self.note_thumbnail_detail(src.id, DetailStat::measure_rgb8(tw as u32, th as u32, &rgb));
         encode_png_rgb8(tw, th, &rgb)
+    }
+
+    /// A thumbnail for every corrector of the photo (`docs/23` section 5.7), in the order of the
+    /// cards (the plan's order over all nodes, dead ones included): each is the photo with the plan
+    /// stopped after that node's picture and then run through the Output
+    /// ([`settings_ending_at`]), at most [`NODE_THUMBNAIL_PX`] on its long edge, in sRGB, as a PNG.
+    ///
+    /// The pictures are kept in the photo's graph under a key that holds the raw group, the
+    /// geometry, the view, the Input's and the Output's settings and the plan up to the node
+    /// (`GradeKey`: the nodes the plan runs to it, not the ones after it). A call finds every
+    /// picture whose key is unchanged in memory and renders the others, on the device when the
+    /// renderer has one and on the CPU otherwise ([`NodeThumbnail::fresh`] says which). Nothing
+    /// goes to disk. The thumbnail does not touch the photo's detail statistic.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job. The pictures made before the error are
+    /// kept.
+    pub fn node_thumbnails(
+        &self,
+        src: &PhotoSource,
+        cancel: &CancelToken,
+    ) -> Result<Vec<NodeThumbnail>, RenderError> {
+        let ids: Vec<u32> = node_plan(&src.settings.nodes, Stop::Output)?
+            .cards
+            .iter()
+            .map(|card| card.id)
+            .collect();
+        // The view, and the part of every key that does not depend on the node: the raw group,
+        // the geometry, the lens, the size and the output sharpening.
+        let (spec, shared) = {
+            let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::Thumbnail);
+            let (spec, _) = self.thumbnail_spec_at(&mut job, NODE_THUMBNAIL_PX)?;
+            let params = job.params()?;
+            let mut shared = format!(
+                "{:?}|{:?}|{:?}|{}x{}|{:?}|os{:?}",
+                params.key(),
+                job.geometry()?,
+                spec.view_to_final,
+                spec.out_w,
+                spec.out_h,
+                spec.k,
+                src.settings.output().output_sharpening,
+            );
+            if let Some(lens) = job.lens_key()? {
+                let _ = write!(shared, "|{lens}");
+            }
+            (spec, shared)
+        };
+        let graph = self.graph(src.id);
+        graph.retain_node_thumbnails(&ids);
+        let mut out = Vec::with_capacity(ids.len());
+        for node in ids {
+            if cancel.is_cancelled() {
+                return Err(RenderError::Cancelled);
+            }
+            let stopped = src.with_settings(settings_ending_at(&src.settings, node));
+            let mut job = Job::new(self, &stopped, cancel)?.with_gpu_priority(Priority::Thumbnail);
+            let key = format!("{shared}|{:?}", job.grade_key(spec.target, true)?);
+            if let Some(kept) = graph.cached_node_thumbnail(node, &key) {
+                out.push(NodeThumbnail {
+                    node,
+                    version: kept.version,
+                    png: kept.png,
+                    fresh: false,
+                });
+                continue;
+            }
+            let frame = render_view(job, &spec)?;
+            let mut rgb = vec![0u8; 3 * spec.out_w * spec.out_h];
+            rgb.par_chunks_mut(3)
+                .zip(frame.rgba.par_chunks(4))
+                .for_each(|(d, s)| {
+                    d.copy_from_slice(&s[..3]);
+                });
+            let png = Arc::new(encode_png_rgb8(spec.out_w, spec.out_h, &rgb)?);
+            let version = NODE_THUMBNAIL_VERSION.fetch_add(1, Ordering::Relaxed);
+            graph.store_node_thumbnail(
+                node,
+                NodeThumbnailEntry {
+                    key,
+                    version,
+                    png: Arc::clone(&png),
+                },
+            );
+            out.push(NodeThumbnail {
+                node,
+                version,
+                png,
+                fresh: true,
+            });
+        }
+        Ok(out)
     }
 
     /// Apple Auto's picture of a photo (`docs/19` section 3): `src` as it is (its settings, look and
@@ -486,6 +644,24 @@ impl Renderer {
             .submit(Priority::Thumbnail, Some(id), move |token| {
                 r.thumbnail_png(&src, token)
             })
+    }
+
+    /// Queues the node thumbnails of a photo ([`Renderer::node_thumbnails`]) at
+    /// [`Priority::Thumbnail`]. Like a look tile it is a request of a panel for the photo on screen,
+    /// and moving to another photo cancels it (see [`Renderer::spawn_look_thumbnail`]).
+    #[must_use]
+    pub fn spawn_node_thumbnails(
+        &self,
+        src: PhotoSource,
+    ) -> JobHandle<Result<Vec<NodeThumbnail>, RenderError>> {
+        let r = self.clone();
+        let id = src.id;
+        self.scheduler().submit_superseded(
+            Priority::Thumbnail,
+            id,
+            move |token| r.node_thumbnails(&src, token),
+            || Err(RenderError::Cancelled),
+        )
     }
 
     /// Queues a look tile at [`Priority::Thumbnail`]. A tile is a request of the Look tab for the

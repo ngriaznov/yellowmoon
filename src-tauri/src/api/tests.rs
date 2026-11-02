@@ -969,6 +969,201 @@ fn copy_and_paste_settings_move_a_photos_settings_onto_others() {
     assert!(h.api.copy_settings(PhotoId(9999)).is_err());
 }
 
+/// A patch that makes the graph Input, 1, 2, 3, Output with an exposure trim in nodes 2 and 3 (+0.5 and +0.8 stops).
+fn three_node_patch() -> SettingsPatch {
+    let link = |from: serde_json::Value, to: serde_json::Value| json!({ "from": { "node": from, "port": "picture" }, "to": { "node": to, "port": "picture" } });
+    serde_json::from_value(json!({
+        "nodes": {
+            "2": { "kind": "corrector", "pos": [1.0, 0.0], "trim": { "exposure_ev": 0.5 } },
+            "3": { "kind": "corrector", "pos": [2.0, 0.0], "trim": { "exposure_ev": 0.8 } },
+        },
+        "links": [
+            link(json!("input"), json!(1)),
+            link(json!(1), json!(2)),
+            link(json!(2), json!(3)),
+            link(json!(3), json!("output")),
+        ],
+    }))
+    .expect("patch")
+}
+
+/// The `node_thumbnails_ready` events so far.
+fn node_thumbnail_events(h: &Harness) -> Vec<NodeThumbnailsReady> {
+    h.events
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            AppEvent::NodeThumbnailsReady(t) => Some(t),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The nodes an event names, in order.
+fn nodes_of(event: &NodeThumbnailsReady) -> Vec<u32> {
+    event.thumbnails.iter().map(|t| t.node).collect()
+}
+
+fn url_of(event: &NodeThumbnailsReady, node: u32) -> String {
+    event
+        .thumbnails
+        .iter()
+        .find(|t| t.node == node)
+        .unwrap_or_else(|| panic!("node {node} is not in the event"))
+        .url
+        .clone()
+}
+
+#[test]
+fn node_thumbnails_are_asked_for_at_once_and_arrive_as_addresses_of_the_nodes_that_changed() {
+    let h = Harness::new();
+    h.open(1);
+    h.develop();
+    let id = h.first();
+    h.api
+        .update_settings(id, &three_node_patch())
+        .expect("a graph of three nodes");
+    let idle = || {
+        assert!(
+            h.api.node_thumbnailer().wait_idle(WAIT),
+            "the node thumbnails were not made"
+        );
+    };
+
+    // The command has no answer to wait for; the pictures come as an event, every node of the photo.
+    h.api.node_thumbnails(id);
+    idle();
+    let first = node_thumbnail_events(&h);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].photo_id, id);
+    assert_eq!(nodes_of(&first[0]), vec![1, 2, 3]);
+    // Addresses, never bytes; PNGs of about 160 px on the scheme, a different one for each node.
+    for t in &first[0].thumbnails {
+        assert!(
+            t.url.contains(&format!("/node-{}-{}-", id.0, t.node)),
+            "{}",
+            t.url
+        );
+        assert!(t.url.len() < 100, "{}", t.url);
+        let (w, hh) = png_size(&served(&h, &t.url));
+        assert!(w.max(hh) <= 160 && w.max(hh) > 0, "{w} x {hh}");
+    }
+    let urls: std::collections::BTreeSet<_> =
+        first[0].thumbnails.iter().map(|t| t.url.clone()).collect();
+    assert_eq!(urls.len(), 3);
+    assert_ne!(
+        served(&h, &url_of(&first[0], 1)),
+        served(&h, &url_of(&first[0], 3)),
+        "node 3 is not node 1's picture"
+    );
+
+    // Asking again with nothing changed announces nothing: the webview has the addresses.
+    h.api.node_thumbnails(id);
+    h.api.node_thumbnails(id);
+    idle();
+    assert_eq!(node_thumbnail_events(&h).len(), 1);
+
+    // A change to node 3: only node 3 is in the event, at a new address. The nodes before it keep
+    // theirs, and the picture the webview may still be loading stays served.
+    let change: SettingsPatch =
+        serde_json::from_value(json!({ "nodes": { "3": { "trim": { "exposure_ev": 1.5 } } } }))
+            .expect("patch");
+    h.api.update_settings(id, &change).expect("update");
+    h.api.node_thumbnails(id);
+    idle();
+    let events = node_thumbnail_events(&h);
+    assert_eq!(events.len(), 2);
+    assert_eq!(nodes_of(&events[1]), vec![3]);
+    assert_ne!(url_of(&events[1], 3), url_of(&events[0], 3));
+    assert_ne!(
+        served(&h, &url_of(&events[1], 3)),
+        served(&h, &url_of(&events[0], 3))
+    );
+    for node in [1, 2, 3] {
+        assert_eq!(
+            h.frames.respond(path_of_url(&url_of(&events[0], node))).0,
+            200
+        );
+    }
+
+    // A change at the Input reaches every node.
+    let exposure: SettingsPatch = serde_json::from_value(
+        json!({ "nodes": { "input": { "exposure": { "kind": "manual", "ev": 0.6 } } } }),
+    )
+    .expect("patch");
+    h.api.update_settings(id, &exposure).expect("update");
+    h.api.node_thumbnails(id);
+    idle();
+    let events = node_thumbnail_events(&h);
+    assert_eq!(events.len(), 3);
+    assert_eq!(nodes_of(&events[2]), vec![1, 2, 3]);
+
+    // A node that is taken out has no picture any more, and the others are announced only if they changed.
+    let remove: SettingsPatch = serde_json::from_value(json!({
+        "remove": [2],
+        "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+            { "from": { "node": 3, "port": "picture" }, "to": { "node": "output", "port": "picture" } },
+        ],
+    }))
+    .expect("patch");
+    h.api.update_settings(id, &remove).expect("update");
+    h.api.node_thumbnails(id);
+    idle();
+    let events = node_thumbnail_events(&h);
+    assert_eq!(events.len(), 4);
+    assert_eq!(nodes_of(&events[3]), vec![3], "node 3 now reads Main");
+
+    // A photo that is not in the session has none, and says nothing.
+    h.api.node_thumbnails(PhotoId(9999));
+    idle();
+    assert_eq!(node_thumbnail_events(&h).len(), 4);
+
+    // The photo leaves the filmstrip: its addresses stop answering, and asking for it again (after Undo)
+    // announces every node anew.
+    let last = events[3].thumbnails[0].url.clone();
+    h.api.remove_photos(&[id]).expect("remove");
+    assert_eq!(h.frames.respond(path_of_url(&last)).0, 404);
+    assert_eq!(h.frames.respond(path_of_url(&url_of(&events[2], 1))).0, 404);
+    h.api.restore_photos().expect("restore");
+    h.api.node_thumbnails(id);
+    idle();
+    let events = node_thumbnail_events(&h);
+    assert_eq!(events.len(), 5);
+    assert_eq!(nodes_of(&events[4]), vec![1, 3]);
+    assert_eq!(h.frames.respond(path_of_url(&url_of(&events[4], 1))).0, 200);
+
+    // Closing the session drops them.
+    let kept = url_of(&events[4], 3);
+    h.api.close_session();
+    assert_eq!(h.frames.respond(path_of_url(&kept)).0, 404);
+}
+
+#[test]
+fn node_thumbnails_of_a_photo_that_is_not_developed_yet_make_nothing_and_the_event_is_small() {
+    let h = Harness::new();
+    h.open(1);
+    let id = h.first();
+    // Asked before the photo is ready: skipped, no error, no event.
+    h.api.node_thumbnails(id);
+    h.develop();
+    assert!(h.api.node_thumbnailer().wait_idle(WAIT));
+    h.api.node_thumbnails(id);
+    assert!(h.api.node_thumbnailer().wait_idle(WAIT));
+    let events = node_thumbnail_events(&h);
+    assert_eq!(
+        events.len(),
+        1,
+        "the first request, if it came late, or the second"
+    );
+    // The default graph has Main alone: one card, one picture.
+    assert_eq!(nodes_of(&events[0]), vec![1]);
+    let json = serde_json::to_string(&events[0]).expect("json");
+    assert!(json.len() < 200, "{json}");
+    assert!(json.contains("\"photo_id\""), "{json}");
+}
+
 #[test]
 fn rerun_histogram_and_look_thumbnails() {
     let h = Harness::new();

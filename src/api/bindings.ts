@@ -106,6 +106,12 @@ export const commands = {
 	 *  Windows), like `thumbnail_ready`'s.
 	 */
 	lookThumbnail: (photoId: PhotoId, lookId: LookId) => __TAURI_INVOKE<string>("look_thumbnail", { photoId, lookId }),
+	/**
+	 *  `node_thumbnails(photo_id)` (`docs/23` sections 5.7 and 9): asks for the thumbnails of every node of
+	 *  the photo. Answers `null` at once; the pictures that changed arrive as a `node_thumbnails_ready`
+	 *  event, each the address of a PNG on the `ym-frame` scheme.
+	 */
+	nodeThumbnails: (photoId: PhotoId) => __TAURI_INVOKE<null>("node_thumbnails", { photoId }),
 	/**  `looks_import(path, input)`: a zip, a folder or a `.cube` file. */
 	looksImport: (path: string, input: 
 /**  LogC4 in ARRI Wide Gamut 4. */
@@ -192,6 +198,7 @@ export const events = {
 	looksChanged: makeEvent<LooksChanged>("looks_changed"),
 	looksImportProgress: makeEvent<LooksImportProgress>("looks_import_progress"),
 	menuAction: makeEvent<MenuActionEvent>("menu_action"),
+	nodeThumbnailsReady: makeEvent<NodeThumbnailsReady>("node_thumbnails_ready"),
 	photoProgress: makeEvent<PhotoProgress>("photo_progress"),
 	renderStats: makeEvent<RenderStats>("render_stats"),
 	settingsChanged: makeEvent<SettingsChanged>("settings_changed"),
@@ -1837,6 +1844,33 @@ export type NodeRef = {
 	node: "input" | "output" | number,
 	/**  The port. */
 	port: Port,
+};
+
+/**  One node's thumbnail in `node_thumbnails_ready`: the corrector and the address of its picture. */
+export type NodeThumbnail = {
+	/**  The corrector (a card of the node view; the Input and the Output have none). */
+	node: number,
+	/**
+	 *  Where the PNG is (the `ym-frame://` scheme, `http://ym-frame.localhost/` on Windows). Take
+	 *  it as it comes: the path holds an id of this launch of the app.
+	 */
+	url: string,
+};
+
+/**
+ *  `node_thumbnails_ready { photo_id, thumbnails }` (`docs/23` sections 5.7 and 9): the answer to
+ *  `node_thumbnails(photo_id)`. Only the thumbnails that changed: each is a PNG of about 160 px on
+ *  its long edge, the photo after that node and then through the Output, at the address `url` on the
+ *  `ym-frame` scheme (`ym-frame://localhost/<launch>/node-<photo>-<node>-<version>.png`; the address
+ *  of a picture, never its bytes). A node whose picture did not change is not in the list: keep the
+ *  address you have. A new picture is a new address, and an address names the same picture for as
+ *  long as the app runs.
+ */
+export type NodeThumbnailsReady = {
+	/**  The photo. */
+	photo_id: PhotoId,
+	/**  The thumbnails that changed. */
+	thumbnails: NodeThumbnail[],
 };
 
 /**  A corrector's trims: an exposure trim in stops and a temperature and tint trim. */

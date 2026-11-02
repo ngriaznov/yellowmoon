@@ -402,6 +402,22 @@ pub async fn look_thumbnail(
     run(&state, move |api| api.look_thumbnail(photo_id, &look_id)).await
 }
 
+/// `node_thumbnails(photo_id)` (`docs/23` sections 5.7 and 9): asks for the thumbnails of every node of
+/// the photo. Answers `null` at once; the pictures that changed arrive as a `node_thumbnails_ready`
+/// event, each the address of a PNG on the `ym-frame` scheme.
+#[tauri::command]
+#[specta::specta]
+pub async fn node_thumbnails(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+) -> Result<(), AppError> {
+    run(&state, move |api| {
+        api.node_thumbnails(photo_id);
+        Ok(())
+    })
+    .await
+}
+
 /// `looks_import(path, input)`: a zip, a folder or a `.cube` file.
 #[tauri::command]
 #[specta::specta]
@@ -704,6 +720,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             lens_list,
             looks_list,
             look_thumbnail,
+            node_thumbnails,
             looks_import,
             looks_recognise,
             looks_watch_downloads,
@@ -732,6 +749,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         .events(collect_events![
             wire::PhotoProgress,
             wire::ThumbnailReady,
+            wire::NodeThumbnailsReady,
             wire::RenderStats,
             wire::ExportProgress,
             wire::LooksChanged,
@@ -780,6 +798,7 @@ mod tests {
                 viewport_info,
                 viewport_set_rect,
                 export_busy,
+                node_thumbnails,
                 looks_recognise,
                 preferences_get,
                 auto_status,
@@ -890,6 +909,16 @@ mod tests {
         let settings =
             call(&window, "get_settings", json!({ "photoId": id })).expect("get_settings");
         assert_eq!(settings["photo_id"], json!(id));
+        // The node thumbnails are asked for with `photoId` and answered with `null` at once; the pictures
+        // come as the `node_thumbnails_ready` event.
+        assert_eq!(
+            call(&window, "node_thumbnails", json!({ "photoId": id })),
+            Ok(json!(null))
+        );
+        assert!(
+            call(&window, "node_thumbnails", json!({})).is_err(),
+            "a request without a photo is refused before the handler runs"
+        );
         // The settings are the graph: the Input first, Main, the Output last.
         let input = |r: &serde_json::Value| r["settings"]["nodes"]["items"][0].clone();
         let main = |r: &serde_json::Value| r["settings"]["nodes"]["items"][1].clone();

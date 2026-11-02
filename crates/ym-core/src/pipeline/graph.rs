@@ -30,7 +30,7 @@
 //! keys hold the numbers the group reads, so a burst median that moves only the exposure recomputes
 //! the colour group and leaves the raw group alone.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
@@ -483,6 +483,9 @@ struct GraphState {
     color: Option<Arc<ColorPlan>>,
     grade: Option<ByteLru<GradeKey, Arc<GradePlan>>>,
     frames: Option<ByteLru<String, Arc<super::frame::RenderedFrame>>>,
+    /// The node thumbnails of the photo, by node (`docs/23` section 5.7): each with the key of the
+    /// picture it holds, which names everything the picture depends on up to that node.
+    node_thumbnails: BTreeMap<u32, super::thumbs::NodeThumbnailEntry>,
     /// Display-linear frames of views, before output sharpening (`frame::DisplayFrame`).
     display: Option<ByteLru<String, Arc<super::frame::DisplayFrame>>>,
     stats: Option<RenderStats>,
@@ -600,6 +603,10 @@ impl PhotoGraph {
                 .sum::<usize>()
             + st.tiles.as_ref().map_or(0, ByteLru::used)
             + st.frames.as_ref().map_or(0, ByteLru::used)
+            + st.node_thumbnails
+                .values()
+                .map(|t| t.png.len() + t.key.len())
+                .sum::<usize>()
             + st.display.as_ref().map_or(0, ByteLru::used)
             + st.lens_planes.as_ref().map_or(0, |e| e.planes.bytes())
             + st.lens_groups.as_ref().map_or(0, ByteLru::used)
@@ -647,6 +654,31 @@ impl PhotoGraph {
             .frames
             .get_or_insert_with(|| ByteLru::new(budget))
             .insert(key, frame, bytes);
+    }
+
+    /// The thumbnail kept for a node, when it was made for this key.
+    pub(crate) fn cached_node_thumbnail(
+        &self,
+        node: u32,
+        key: &str,
+    ) -> Option<super::thumbs::NodeThumbnailEntry> {
+        lock(&self.state)
+            .node_thumbnails
+            .get(&node)
+            .filter(|t| t.key == key)
+            .cloned()
+    }
+
+    /// Keeps a node's thumbnail, in place of the one it had.
+    pub(crate) fn store_node_thumbnail(&self, node: u32, entry: super::thumbs::NodeThumbnailEntry) {
+        lock(&self.state).node_thumbnails.insert(node, entry);
+    }
+
+    /// Forgets the thumbnails of the nodes that are not in `nodes` (they were deleted).
+    pub(crate) fn retain_node_thumbnails(&self, nodes: &[u32]) {
+        lock(&self.state)
+            .node_thumbnails
+            .retain(|node, _| nodes.contains(node));
     }
 
     /// A display-linear frame (a view before output sharpening) with this key, if one is cached.
@@ -2901,6 +2933,25 @@ impl<'a> Job<'a> {
         self.timings.plans_ms += t.elapsed().as_secs_f64() * 1000.0;
         lock(&self.g.state).color = Some(Arc::clone(&plan));
         Ok(plan)
+    }
+
+    /// The key [`Job::grade`] gives the plan of an output, without building the chain.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Job::color`].
+    pub fn grade_key(
+        &mut self,
+        target: OutputTarget,
+        dither: bool,
+    ) -> Result<GradeKey, RenderError> {
+        let color = self.color()?;
+        let req = GradeRequest {
+            target,
+            dither,
+            looks: self.r.inner.looks.as_ref(),
+        };
+        Ok(super::color::grade_key(self.src, &color, &req))
     }
 
     /// The grade plan (C9 to C13) for an output.

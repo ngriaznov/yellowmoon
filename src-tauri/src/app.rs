@@ -181,8 +181,9 @@ fn serve_frame(
 }
 
 /// The answer for `path`, `/<launch>/frame-<n>.png` (a frame of the fallback viewport),
-/// `/<launch>/thumb-<photo>-<version>.png` (a thumbnail of the filmstrip) or
-/// `/<launch>/look-<photo>-<version>.png` (a tile of the Look tab).
+/// `/<launch>/thumb-<photo>-<version>.png` (a thumbnail of the filmstrip),
+/// `/<launch>/look-<photo>-<version>.png` (a tile of the Look tab) or
+/// `/<launch>/node-<photo>-<node>-<version>.png` (a card of the node view).
 ///
 /// Thumbnails and tiles that exist are cached for good: their address holds the launch id and a
 /// version that is never used twice, so what an address names never changes, and the webview need

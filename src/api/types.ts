@@ -1236,6 +1236,28 @@ export interface ViewportFrame {
   url: string;
 }
 
+/** One node's picture in `node_thumbnails_ready`: the corrector and the address of its thumbnail. */
+export interface NodeThumbnail {
+  /** The corrector (a card of the node view). */
+  node: number;
+  /**
+   * Where the PNG is (`ym-frame://localhost/<launch>/node-<photo>-<node>-<version>.png`, `http://ym-frame.localhost/…` on Windows):
+   * the picture after the node and then through the Output, about 160 px on its long edge. A new picture has a new address, and an
+   * address names the same picture for as long as the app runs. The mock makes `blob:` ones.
+   */
+  url: string;
+}
+
+/**
+ * `node_thumbnails_ready { photo_id, thumbnails }` (`docs/23` §5.7, §9): the answer to `node_thumbnails(photo_id)`, and only the
+ * thumbnails that changed: a node that is not in the list keeps the address it has. The picture does not cross the bridge, as for
+ * `thumbnail_ready`.
+ */
+export interface NodeThumbnailsReady {
+  photo_id: PhotoId;
+  thumbnails: NodeThumbnail[];
+}
+
 /**
  * `settings_changed` (addition): the core changed a photo's settings by itself: after a `viewport_input` Pick white
  * click, and once for each photo a `paste_settings` changed. Ask `get_settings` again (the webview skips the photos it is
@@ -1559,6 +1581,8 @@ export interface MenuActionEvent {
 export interface ApiEvents {
   photo_progress: PhotoProgress;
   thumbnail_ready: ThumbnailReady;
+  /** The thumbnails of a photo's nodes that changed (answers `node_thumbnails`; `docs/23` §5.7). */
+  node_thumbnails_ready: NodeThumbnailsReady;
   render_stats: RenderStats;
   export_progress: ExportProgress;
   looks_changed: null;

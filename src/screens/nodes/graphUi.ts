@@ -37,7 +37,7 @@ export interface GraphUi {
   lit: ReadonlyMap<string, InputState>;
   /** The input port under the pointer while a link is dragged. */
   hover: string | null;
-  /** The picture of a node, until N-05 the photo's own for every node. */
+  /** The picture of a node (`docs/23` §5.7): the one the core made for it, else the photo's own thumbnail until that arrives; none without either. */
   thumbnailOf: (id: NodeId) => string | undefined;
   onSelect: (id: NodeId) => void;
   /** An arrow key on a card: the node next to it in that direction, selected and focused. */

@@ -30,6 +30,7 @@ use ym_looks::library::LookId as CoreLookId;
 
 use crate::cli_link::{CliLink, Elevate};
 use crate::events::{AppEvent, Emitter};
+use crate::node_thumbs::NodeThumbnailer;
 use crate::thumbs::Thumbnails;
 use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
@@ -130,6 +131,8 @@ pub struct AppApi {
     emitter: Arc<dyn Emitter>,
     viewport: Viewport,
     thumbs: Thumbnails,
+    /// The node thumbnails of the node view (`node_thumbnails`).
+    node_thumbs: NodeThumbnailer,
     downloads: Downloads,
     watch: WatchConfig,
     cli: Option<CliLink>,
@@ -294,11 +297,14 @@ impl AppApi {
         viewport.attach(&core)?;
         let thumbs = Thumbnails::new(Arc::clone(&emitter), Arc::clone(&frames));
         thumbs.attach(&core).map_err(AppError::internal)?;
+        let node_thumbs = NodeThumbnailer::new(Arc::clone(&emitter), Arc::clone(&frames));
+        node_thumbs.attach(&core).map_err(AppError::internal)?;
         Ok(Arc::new(Self {
             core,
             emitter,
             viewport,
             thumbs,
+            node_thumbs,
             downloads: Downloads::default(),
             watch: config.watch,
             cli,
@@ -325,6 +331,12 @@ impl AppApi {
     #[cfg(test)]
     pub(crate) fn thumbnails(&self) -> &Thumbnails {
         &self.thumbs
+    }
+
+    /// The maker of node thumbnails, for the tests.
+    #[cfg(test)]
+    pub(crate) fn node_thumbnailer(&self) -> &NodeThumbnailer {
+        &self.node_thumbs
     }
 
     /// Stops what runs in the background (quitting): exports and renders are cancelled, partial
@@ -406,6 +418,7 @@ impl AppApi {
     pub fn close_session(&self) {
         self.core.close_session();
         self.thumbs.clear();
+        self.node_thumbs.clear();
         self.frames.clear_thumbnails();
         self.viewport.set_photo(None);
     }
@@ -423,6 +436,14 @@ impl AppApi {
                 url,
             })
             .collect()
+    }
+
+    /// `node_thumbnails` (`docs/23` sections 5.7 and 9): asks for the thumbnails of every node of a
+    /// photo. It answers at once; the pictures that changed since the webview was told come as a
+    /// `node_thumbnails_ready` event, and are served on the `ym-frame` scheme. A photo that cannot be
+    /// drawn (not developed yet, skipped, gone) gets none.
+    pub fn node_thumbnails(&self, photo: PhotoId) {
+        self.node_thumbs.request(core_id(photo));
     }
 
     /// `set_current`.
@@ -465,6 +486,7 @@ impl AppApi {
         let outcome = self.core.remove_photos(&core_ids);
         if !outcome.removed.is_empty() {
             self.thumbs.forget(&outcome.removed);
+            self.node_thumbs.forget(&outcome.removed);
             let gone: Vec<u32> = outcome.removed.iter().map(|id| id.0).collect();
             self.frames.set_aside_photos(&gone);
             self.sync_current();

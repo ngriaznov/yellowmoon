@@ -15,7 +15,9 @@
 //!   `ym-frame://localhost/<launch>/frame-<seq>.png`; the `viewport_frame` event says when a new one
 //!   is there. The same store and scheme serve the filmstrip's thumbnails
 //!   (`ym-frame://localhost/<launch>/thumb-<photo>-<version>.png`) and the Look tab's tiles
-//!   (`ym-frame://localhost/<launch>/look-<photo>-<version>.png`), whichever sink draws the photo.
+//!   (`ym-frame://localhost/<launch>/look-<photo>-<version>.png`) and the node thumbnails of the node
+//!   view (`ym-frame://localhost/<launch>/node-<photo>-<node>-<version>.png`), whichever sink draws
+//!   the photo.
 //!   `<launch>` is made from the start time of the app, so an address from an earlier launch is
 //!   never one of this launch's (see [`FrameStore`]). This breaks the rule "full images never cross
 //!   the bridge" (`docs/01`), and is meant for development builds on other systems and as the
@@ -135,6 +137,7 @@ pub struct FrameStore {
     frames: Mutex<VecDeque<(u32, Arc<Vec<u8>>)>>,
     thumbnails: Mutex<Thumbnails>,
     look_tiles: Mutex<LookTiles>,
+    node_thumbnails: Mutex<NodeThumbnails>,
 }
 
 impl Default for FrameStore {
@@ -285,6 +288,89 @@ impl LookTiles {
     }
 }
 
+/// The node thumbnails the store holds (`docs/23` section 5.7): a photo after one node and the Output,
+/// about 160 px, per photo and node.
+#[derive(Debug)]
+struct NodeThumbnails {
+    /// Per photo and node, the newest versions (see [`THUMBNAIL_VERSIONS_KEPT`]), oldest first. A
+    /// version is the core's: it names the picture, so an address is the same picture for good.
+    by_node: BTreeMap<(u32, u32), Vec<(u64, Png)>>,
+    /// The bytes of the PNGs in `by_node`.
+    bytes: usize,
+    /// The most bytes kept (see [`NODE_THUMBNAIL_BUDGET_BYTES`]).
+    budget: usize,
+    /// Counts up whenever a photo's thumbnails are put or served.
+    clock: u64,
+    /// When each photo's thumbnails were last put or served, by `clock`.
+    last_used: BTreeMap<u32, u64>,
+}
+
+impl Default for NodeThumbnails {
+    fn default() -> Self {
+        Self::with_budget(NODE_THUMBNAIL_BUDGET_BYTES)
+    }
+}
+
+impl NodeThumbnails {
+    fn with_budget(budget: usize) -> Self {
+        Self {
+            by_node: BTreeMap::new(),
+            bytes: 0,
+            budget,
+            clock: 0,
+            last_used: BTreeMap::new(),
+        }
+    }
+
+    fn touch(&mut self, photo: u32) {
+        self.clock += 1;
+        self.last_used.insert(photo, self.clock);
+    }
+
+    /// Forgets the thumbnails of the photos used least recently until the budget holds. The photo
+    /// that was just given a thumbnail stays, even if its own pass the budget.
+    fn enforce_budget(&mut self, newest: u32) {
+        while self.bytes > self.budget {
+            let Some(victim) = self
+                .last_used
+                .iter()
+                .filter(|(photo, _)| **photo != newest)
+                .min_by_key(|(_, used)| **used)
+                .map(|(photo, _)| *photo)
+            else {
+                break;
+            };
+            self.forget_photo(victim);
+        }
+    }
+
+    fn forget_photo(&mut self, photo: u32) {
+        let keys: Vec<(u32, u32)> = self
+            .by_node
+            .range((photo, 0)..=(photo, u32::MAX))
+            .map(|(key, _)| *key)
+            .collect();
+        for key in keys {
+            if let Some(versions) = self.by_node.remove(&key) {
+                self.bytes -= versions.iter().map(|(_, png)| png.len()).sum::<usize>();
+            }
+        }
+        self.last_used.remove(&photo);
+    }
+
+    fn clear(&mut self) {
+        self.by_node.clear();
+        self.last_used.clear();
+        self.bytes = 0;
+    }
+}
+
+/// How many bytes of node thumbnails the store keeps: about 4,000 pictures of 16 KB (a 160 px PNG),
+/// which is every node of a 450-photo session at three nodes each with a changed version of each on
+/// show. Past it the photos used least recently lose theirs; the page asks again when it shows one
+/// of them (`node_thumbnails`), and the core still holds the pictures.
+pub const NODE_THUMBNAIL_BUDGET_BYTES: usize = 64 << 20;
+
 /// How many bytes of look tiles the store keeps: about 4,500 tiles of 57 KB (a 240 px PNG), which is
 /// every tile of a 450-photo session with ten looks on show. Past it the photos used least recently
 /// lose their tiles. (With ARRI looks imported and the whole grid scrolled, each photo asks for a
@@ -319,6 +405,17 @@ impl FrameStore {
         }
     }
 
+    /// An empty store that keeps at most `bytes` of node thumbnails (the tests' way to reach the
+    /// limit with a few bytes; the application uses [`NODE_THUMBNAIL_BUDGET_BYTES`]).
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_node_thumbnail_budget(bytes: usize) -> Self {
+        Self {
+            node_thumbnails: Mutex::new(NodeThumbnails::with_budget(bytes)),
+            ..Self::default()
+        }
+    }
+
     /// An empty store with this launch id (the tests' way to make two launches).
     #[must_use]
     pub fn with_launch_id(launch: String) -> Self {
@@ -327,6 +424,7 @@ impl FrameStore {
             frames: Mutex::new(VecDeque::new()),
             thumbnails: Mutex::new(Thumbnails::default()),
             look_tiles: Mutex::new(LookTiles::default()),
+            node_thumbnails: Mutex::new(NodeThumbnails::default()),
         }
     }
 
@@ -353,6 +451,47 @@ impl FrameStore {
     #[must_use]
     pub fn look_tile_url(&self, photo: u32, version: u32) -> String {
         scheme_url(&self.launch, &format!("look-{photo}-{version}.png"))
+    }
+
+    /// The address of version `version` of a photo's node thumbnail in the webview.
+    #[must_use]
+    pub fn node_thumbnail_url(&self, photo: u32, node: u32, version: u64) -> String {
+        scheme_url(&self.launch, &format!("node-{photo}-{node}-{version}.png"))
+    }
+
+    /// Keeps the thumbnail of one node of a photo (a PNG of about 160 px, made by the core under the
+    /// version `version`) and returns the address it is served at. The address names the version, so
+    /// the same picture put again has the same address, and a new picture has a new one. Only the
+    /// newest few versions of each (photo, node) are kept, the photos used least recently lose all
+    /// theirs when the thumbnails together pass [`NODE_THUMBNAIL_BUDGET_BYTES`], and none survive
+    /// [`FrameStore::clear_thumbnails`] or the photo's removal ([`FrameStore::set_aside_photos`]).
+    pub fn put_node_thumbnail(&self, photo: u32, node: u32, version: u64, png: Png) -> String {
+        let mut thumbs = lock(&self.node_thumbnails);
+        let versions = thumbs.by_node.entry((photo, node)).or_default();
+        let mut added = 0;
+        let mut dropped = 0;
+        if !versions.iter().any(|(v, _)| *v == version) {
+            added = png.len();
+            versions.push((version, png));
+            versions.sort_by_key(|(v, _)| *v);
+            while versions.len() > THUMBNAIL_VERSIONS_KEPT {
+                dropped += versions.remove(0).1.len();
+            }
+        }
+        thumbs.bytes = thumbs.bytes + added - dropped;
+        thumbs.touch(photo);
+        thumbs.enforce_budget(photo);
+        self.node_thumbnail_url(photo, node, version)
+    }
+
+    /// Whether the thumbnail of a node at this version is kept, and so served: the webview was told
+    /// its address and can load it.
+    #[must_use]
+    pub fn has_node_thumbnail(&self, photo: u32, node: u32, version: u64) -> bool {
+        lock(&self.node_thumbnails)
+            .by_node
+            .get(&(photo, node))
+            .is_some_and(|versions| versions.iter().any(|(v, _)| *v == version))
     }
 
     /// Keeps the PNG of frame `seq`.
@@ -445,6 +584,7 @@ impl FrameStore {
             thumbs.set_aside.clear();
         }
         lock(&self.look_tiles).clear();
+        lock(&self.node_thumbnails).clear();
     }
 
     /// Photos were taken out of the filmstrip (Remove from filmstrip): their look tiles are forgotten, and their
@@ -455,11 +595,13 @@ impl FrameStore {
         let mut thumbs = lock(&self.thumbnails);
         thumbs.set_aside.clear();
         let mut tiles = lock(&self.look_tiles);
+        let mut nodes = lock(&self.node_thumbnails);
         for photo in photos {
             if let Some(versions) = thumbs.by_photo.remove(photo) {
                 thumbs.set_aside.insert(*photo, versions);
             }
             tiles.forget_photo(*photo);
+            nodes.forget_photo(*photo);
         }
     }
 
@@ -495,6 +637,20 @@ impl FrameStore {
         Some(png)
     }
 
+    /// The node thumbnail at `photo`, `node` and `version`, if it is still kept. Serving one counts as
+    /// using its photo.
+    fn node_thumbnail(&self, photo: u32, node: u32, version: u64) -> Option<Png> {
+        let mut thumbs = lock(&self.node_thumbnails);
+        let png = thumbs
+            .by_node
+            .get(&(photo, node))?
+            .iter()
+            .find(|(v, _)| *v == version)
+            .map(|(_, png)| Arc::clone(png))?;
+        thumbs.touch(photo);
+        Some(png)
+    }
+
     /// The thumbnail at `photo` and `version`, if it is still kept.
     fn thumbnail(&self, photo: u32, version: u32) -> Option<Arc<Vec<u8>>> {
         lock(&self.thumbnails)
@@ -506,9 +662,10 @@ impl FrameStore {
     }
 
     /// What the scheme answers for the path of a request,
-    /// `/<launch>/frame-<seq>.png`, `/<launch>/thumb-<photo>-<version>.png` or
-    /// `/<launch>/look-<photo>-<version>.png`: the file, or a 404. Only a thumbnail or a tile that
-    /// is there is [`Cache::Forever`]; frames and every 404 are [`Cache::Never`].
+    /// `/<launch>/frame-<seq>.png`, `/<launch>/thumb-<photo>-<version>.png`,
+    /// `/<launch>/look-<photo>-<version>.png` or `/<launch>/node-<photo>-<node>-<version>.png`: the
+    /// file, or a 404. Only a thumbnail or a tile that is there is [`Cache::Forever`]; frames and
+    /// every 404 are [`Cache::Never`].
     #[must_use]
     pub fn serve(&self, path: &str) -> Served {
         match self.find(path) {
@@ -550,6 +707,15 @@ impl FrameStore {
         } else if let Some(rest) = name.strip_prefix("look-") {
             let (photo, version) = rest.split_once('-')?;
             let png = self.look_tile(photo.parse().ok()?, version.parse().ok()?)?;
+            Some((png, Cache::Forever))
+        } else if let Some(rest) = name.strip_prefix("node-") {
+            let mut parts = rest.splitn(3, '-');
+            let (photo, node, version) = (parts.next()?, parts.next()?, parts.next()?);
+            let png = self.node_thumbnail(
+                photo.parse().ok()?,
+                node.parse().ok()?,
+                version.parse().ok()?,
+            )?;
             Some((png, Cache::Forever))
         } else {
             None
@@ -1553,6 +1719,113 @@ mod tests {
         let fresh = store.put_look_tile(3, "user:warm", vec![6]);
         assert_ne!(fresh, warm);
         assert_eq!(status(&fresh), 200);
+    }
+
+    #[test]
+    fn node_thumbnails_are_kept_per_photo_node_and_version_and_served_by_address() {
+        let store = FrameStore::new();
+        let path = |url: &str| path_of_url(url).to_owned();
+        let status = |url: &str| store.respond(&path(url)).0;
+        let at = |file: &str| format!("/{}/{file}", store.launch_id());
+        let one = store.put_node_thumbnail(3, 1, 10, Arc::new(vec![1]));
+        let two = store.put_node_thumbnail(3, 2, 11, Arc::new(vec![2]));
+        let other_photo = store.put_node_thumbnail(4, 1, 12, Arc::new(vec![3]));
+        assert!(one.contains("node-3-1-10.png"), "{one}");
+        assert_eq!(one, store.node_thumbnail_url(3, 1, 10));
+        for (url, byte) in [(&one, 1u8), (&two, 2), (&other_photo, 3)] {
+            let (code, mime, body) = store.respond(&path(url));
+            assert_eq!((code, mime), (200, "image/png"), "{url}");
+            assert_eq!(&*body, &[byte]);
+        }
+        // The same version put again is the same address and the same picture, not a second copy.
+        assert_eq!(store.put_node_thumbnail(3, 1, 10, Arc::new(vec![1])), one);
+        assert!(store.has_node_thumbnail(3, 1, 10));
+        assert!(!store.has_node_thumbnail(3, 1, 11));
+        assert!(!store.has_node_thumbnail(3, 5, 10));
+        // The newest two versions of one node stay; the other nodes are not touched.
+        let second = store.put_node_thumbnail(3, 1, 20, Arc::new(vec![4]));
+        assert_eq!(status(&one), 200);
+        let third = store.put_node_thumbnail(3, 1, 30, Arc::new(vec![5]));
+        assert_eq!(status(&one), 404, "the oldest of three is dropped");
+        assert!(!store.has_node_thumbnail(3, 1, 10));
+        assert_eq!((status(&second), status(&third)), (200, 200));
+        assert_eq!((status(&two), status(&other_photo)), (200, 200));
+        // A node thumbnail is not a thumbnail, a tile or a frame, and the numbers must all match.
+        for bad in [
+            "node-3-1.png",
+            "node-3.png",
+            "node-x-1-10.png",
+            "node-3-x-10.png",
+            "node-3-1-x.png",
+            "node-4-2-11.png",
+            "node-3-2-12.png",
+            "node---.png",
+            "thumb-3-2-11.png",
+        ] {
+            assert_eq!(store.respond(&at(bad)).0, 404, "{bad}");
+        }
+        // A photo that leaves loses its thumbnails (they are not set aside for Undo: the page asks again); another launch's
+        // address is a 404.
+        store.set_aside_photos(&[3]);
+        assert_eq!((status(&two), status(&third)), (404, 404));
+        assert_eq!(status(&other_photo), 200);
+        assert!(!store.has_node_thumbnail(3, 2, 11));
+        assert_eq!(
+            FrameStore::with_launch_id("old".to_owned())
+                .respond(&path(&other_photo))
+                .0,
+            404
+        );
+        // Undo brings back only the filmstrip's thumbnails: the page asks for these again.
+        store.set_aside_photos(&[4]);
+        assert_eq!(status(&other_photo), 404);
+        assert!(store.bring_back_photos(&[3, 4]).is_empty());
+        let again = store.put_node_thumbnail(5, 1, 40, Arc::new(vec![6]));
+        store.clear_thumbnails();
+        assert_eq!(status(&again), 404);
+    }
+
+    #[test]
+    fn node_thumbnails_are_bounded_by_bytes_and_the_photos_least_recently_used_go_first() {
+        let store = FrameStore::with_node_thumbnail_budget(600);
+        let path = |url: &str| path_of_url(url).to_owned();
+        let status = |url: &str| store.respond(&path(url)).0;
+        let mut urls = Vec::new();
+        for photo in 1..=4u32 {
+            urls.push(store.put_node_thumbnail(photo, 1, u64::from(photo), Arc::new(vec![1; 100])));
+            urls.push(store.put_node_thumbnail(
+                photo,
+                2,
+                u64::from(photo) + 10,
+                Arc::new(vec![2; 25]),
+            ));
+        }
+        for photo in [2usize, 3, 4, 1] {
+            for url in &urls[2 * (photo - 1)..2 * photo] {
+                assert_eq!(status(url), 200, "photo {photo}");
+            }
+        }
+        // Photo 5 takes the store to 650 bytes: photo 2 goes, whole.
+        let five = store.put_node_thumbnail(5, 1, 50, Arc::new(vec![5; 150]));
+        assert_eq!((status(&urls[2]), status(&urls[3])), (404, 404));
+        for kept in [0, 1, 4, 5, 6, 7] {
+            assert_eq!(status(&urls[kept]), 200, "{kept}");
+        }
+        assert_eq!(status(&five), 200);
+        // A version that was replaced stops counting: 3 x 300 put for one node, 600 held.
+        let store = FrameStore::with_node_thumbnail_budget(700);
+        let first = store.put_node_thumbnail(1, 1, 1, Arc::new(vec![1; 300]));
+        store.put_node_thumbnail(1, 1, 2, Arc::new(vec![1; 300]));
+        let third = store.put_node_thumbnail(1, 1, 3, Arc::new(vec![1; 300]));
+        assert_eq!(store.respond(path_of_url(&first)).0, 404);
+        let other = store.put_node_thumbnail(2, 1, 4, Arc::new(vec![2; 50]));
+        assert_eq!(
+            (
+                store.respond(path_of_url(&third)).0,
+                store.respond(path_of_url(&other)).0
+            ),
+            (200, 200)
+        );
     }
 
     #[test]

@@ -38,8 +38,8 @@ use tauri_specta::Event;
 
 use crate::wire::{
     AppError, AutoStatusChanged, DownloadFound, ErrorEvent, ExportBusy, ExportProgress,
-    LooksChanged, LooksImportProgress, PhotoId, PhotoProgress, RenderStats, SettingsChanged,
-    ThumbnailReady, ViewportBusy, ViewportFrame,
+    LooksChanged, LooksImportProgress, NodeThumbnailsReady, PhotoId, PhotoProgress, RenderStats,
+    SettingsChanged, ThumbnailReady, ViewportBusy, ViewportFrame,
 };
 
 /// The least time between two `render_stats` events, between two `viewport_busy` events, and between
@@ -53,6 +53,8 @@ pub enum AppEvent {
     PhotoProgress(PhotoProgress),
     /// `thumbnail_ready`.
     ThumbnailReady(ThumbnailReady),
+    /// `node_thumbnails_ready` (`docs/23` section 9): the thumbnails of a photo's nodes that changed.
+    NodeThumbnailsReady(NodeThumbnailsReady),
     /// `render_stats`.
     RenderStats(RenderStats),
     /// `export_progress`.
@@ -84,6 +86,7 @@ impl AppEvent {
         match self {
             Self::PhotoProgress(_) => "photo_progress",
             Self::ThumbnailReady(_) => "thumbnail_ready",
+            Self::NodeThumbnailsReady(_) => "node_thumbnails_ready",
             Self::RenderStats(_) => "render_stats",
             Self::ExportProgress(_) => "export_progress",
             Self::LooksChanged => "looks_changed",
@@ -132,6 +135,7 @@ fn send<R: Runtime>(app: &tauri::AppHandle<R>, event: AppEvent) {
     let sent = match event {
         AppEvent::PhotoProgress(e) => e.emit(app),
         AppEvent::ThumbnailReady(e) => e.emit(app),
+        AppEvent::NodeThumbnailsReady(e) => e.emit(app),
         AppEvent::RenderStats(e) => e.emit(app),
         AppEvent::ExportProgress(e) => e.emit(app),
         AppEvent::LooksChanged => LooksChanged.emit(app),

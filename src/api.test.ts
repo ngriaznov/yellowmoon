@@ -82,6 +82,7 @@ const calls: Row[] = [
   ["exportBusy", () => tauriApi.exportBusy(), "export_busy", undefined],
   ["restartApp", () => tauriApi.restartApp(), "restart_app", undefined, true],
   ["thumbnails", () => tauriApi.thumbnails(), "thumbnails", undefined],
+  ["nodeThumbnails", () => tauriApi.nodeThumbnails(4), "node_thumbnails", { photoId: 4 }, true],
   ["preferencesGet", () => tauriApi.preferencesGet(), "preferences_get", undefined],
   ["preferencesSet", () => tauriApi.preferencesSet({ remove_location_from_exports: true }), "preferences_set", { patch: { remove_location_from_exports: true } }],
   ["installCliLink", () => tauriApi.installCliLink(), "install_cli_link", undefined],

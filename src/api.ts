@@ -187,6 +187,13 @@ export interface Api {
    */
   lookThumbnail(photoId: PhotoId, lookId: LookId): Promise<string>;
   /**
+   * `node_thumbnails` (`docs/23` §5.7, §9): asks for the thumbnails of every node of the photo, dead ones included: each is the photo
+   * after that node and then through the Output, about 160 px on the long edge. Resolves at once; the pictures that changed since the
+   * page was told arrive as a `node_thumbnails_ready` event (an address each, on the `ym-frame` scheme). Ask after a change has landed,
+   * never during a drag: the core keeps the pictures by the plan up to each node, so only the nodes a change reaches are made again.
+   */
+  nodeThumbnails(photoId: PhotoId): Promise<void>;
+  /**
    * `looks_import`: import a zip, a folder or a `.cube` file. `input` answers the generic question for
    * `.cube` files that match no ARRI package (`docs/08` §Any other .cube); leave it out for a recognised
    * package. Progress arrives as `looks_import_progress` events. Same importer as `ym looks import`.
@@ -346,6 +353,7 @@ export const tauriApi: Api = {
   lensList: () => commands.lensList(),
   looksList: () => commands.looksList(),
   lookThumbnail: (photoId, lookId) => commands.lookThumbnail(photoId, lookId),
+  nodeThumbnails: (photoId) => unit(commands.nodeThumbnails(photoId)),
   looksImport: (path, input) => commands.looksImport(path, input ?? null),
   looksRecognise: (path) => commands.looksRecognise(path),
   looksWatchDownloads: (enabled) => commands.looksWatchDownloads(enabled),

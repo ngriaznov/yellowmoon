@@ -70,6 +70,7 @@ mod tests {
         for event in [
             "photo_progress",
             "thumbnail_ready",
+            "node_thumbnails_ready",
             "render_stats",
             "export_progress",
             "looks_changed",

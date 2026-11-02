@@ -3147,6 +3147,32 @@ pub struct ThumbnailReady {
     pub url: String,
 }
 
+/// One node's thumbnail in `node_thumbnails_ready`: the corrector and the address of its picture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct NodeThumbnail {
+    /// The corrector (a card of the node view; the Input and the Output have none).
+    pub node: u32,
+    /// Where the PNG is (the `ym-frame://` scheme, `http://ym-frame.localhost/` on Windows). Take
+    /// it as it comes: the path holds an id of this launch of the app.
+    pub url: String,
+}
+
+/// `node_thumbnails_ready { photo_id, thumbnails }` (`docs/23` sections 5.7 and 9): the answer to
+/// `node_thumbnails(photo_id)`. Only the thumbnails that changed: each is a PNG of about 160 px on
+/// its long edge, the photo after that node and then through the Output, at the address `url` on the
+/// `ym-frame` scheme (`ym-frame://localhost/<launch>/node-<photo>-<node>-<version>.png`; the address
+/// of a picture, never its bytes). A node whose picture did not change is not in the list: keep the
+/// address you have. A new picture is a new address, and an address names the same picture for as
+/// long as the app runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "node_thumbnails_ready")]
+pub struct NodeThumbnailsReady {
+    /// The photo.
+    pub photo_id: PhotoId,
+    /// The thumbnails that changed.
+    pub thumbnails: Vec<NodeThumbnail>,
+}
+
 /// `render_stats { ms, path, space, zoom_percent, fit_percent, lens }`: the header's status text, the
 /// zoom the last viewport frame was drawn at and what the lens did with the photo's bokeh.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type, Event)]

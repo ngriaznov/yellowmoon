@@ -19,6 +19,7 @@ mod logging;
 mod menu;
 #[cfg(target_os = "macos")]
 mod native;
+mod node_thumbs;
 mod perf;
 #[cfg(target_os = "macos")]
 mod present;

@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockApi } from "./api.mock";
 import type { MockApi } from "./api.mock";
-import type { AppError, MaskItem, NodeLink, SettingsPatch } from "./api/types";
+import type { AppError, MaskItem, NodeLink, NodeThumbnailsReady, SettingsPatch } from "./api/types";
 import { applyPatch, correctorsOf, defaultSettings, inputOf, mainGradeOf, mainOf, nodeOf, outputOf } from "./state/settingsGraph";
 
 const ARW = ["~/Pictures/Lisbon/DSC04201.ARW", "~/Pictures/Lisbon/DSC04202.ARW", "~/Pictures/Lisbon/DSC04203.ARW"];
@@ -199,5 +199,109 @@ describe("applyPatch agrees with the mock", () => {
     expect(rs.settings.nodes.items.map((n) => n.id)).toEqual(mirrored.nodes.items.map((n) => n.id));
     expect(rs.settings.nodes.links).toEqual(mirrored.nodes.links);
     expect(nodeOf(rs.settings, 2)).toEqual(nodeOf(mirrored, 2));
+  });
+});
+
+describe("node thumbnails (docs/23 §5.7)", () => {
+  /** Main, then 2 and 3 in a line: three cards. */
+  const three: SettingsPatch = {
+    nodes: {
+      "2": { kind: "corrector", name: "Warmth", pos: [1, 0], trim: { temperature: 40 } },
+      "3": { kind: "corrector", name: "Lift", pos: [2, 0], trim: { exposure_ev: 0.5 } },
+    },
+    links: [picture("input", 1), picture(1, 2), picture(2, 3), picture(3, "output")],
+  };
+  const listen = (): NodeThumbnailsReady[] => {
+    const seen: NodeThumbnailsReady[] = [];
+    api.on("node_thumbnails_ready", (e) => seen.push(e));
+    return seen;
+  };
+  const nodes = (e: NodeThumbnailsReady | undefined): number[] => (e?.thumbnails ?? []).map((t) => t.node);
+  const url = (e: NodeThumbnailsReady | undefined, node: number): string => e?.thumbnails.find((t) => t.node === node)?.url ?? "";
+  const ask = async (photo = 1): Promise<void> => {
+    await api.nodeThumbnails(photo);
+    await vi.advanceTimersByTimeAsync(60);
+  };
+
+  it("answers at once and sends a picture for every node a moment later, dead ones included", async () => {
+    await api.updateSettings(1, { ...three, links: [picture("input", 1), picture(1, 2), picture(1, 3), picture(2, "output")] });
+    const seen = listen();
+    await expect(api.nodeThumbnails(1)).resolves.toBeUndefined();
+    expect(seen).toEqual([]);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.photo_id).toBe(1);
+    // Node 3 reads Main and nothing reads it: dead, and it has its picture.
+    expect(nodes(seen[0])).toEqual([1, 2, 3]);
+    expect(new Set(seen[0]?.thumbnails.map((t) => t.url)).size).toBe(3);
+  });
+
+  it("sends only the thumbnails that changed: a change to node 3 leaves nodes 1 and 2 alone", async () => {
+    await api.updateSettings(1, three);
+    const seen = listen();
+    await ask();
+    await ask();
+    expect(seen).toHaveLength(1);
+    await api.updateSettings(1, { nodes: { "3": { trim: { exposure_ev: -1 } } } });
+    await ask();
+    expect(seen).toHaveLength(2);
+    expect(nodes(seen[1])).toEqual([3]);
+    expect(url(seen[1], 3)).not.toBe(url(seen[0], 3));
+    // A change at the Input or the Output reaches every node.
+    await api.updateSettings(1, { nodes: { output: { look: "builtin:signature" } } });
+    await ask();
+    expect(nodes(seen[2])).toEqual([1, 2, 3]);
+    await api.updateSettings(1, { nodes: { input: { exposure: { kind: "manual", ev: 1 } } } });
+    await ask();
+    expect(nodes(seen[3])).toEqual([1, 2, 3]);
+    // Nothing that is not in a picture makes one: a name.
+    await api.updateSettings(1, { nodes: { "2": { name: "Cooler" } } });
+    await ask();
+    expect(seen).toHaveLength(4);
+  });
+
+  it("grades each node through the nodes up to it: node 1 is the photo, node 3 is not", async () => {
+    await api.updateSettings(1, three);
+    const seen = listen();
+    await ask();
+    const [first, second, third] = [1, 2, 3].map((n) => url(seen[0], n));
+    expect(new Set([first, second, third]).size).toBe(3);
+    // Bypassing node 3 makes its picture again (and no other).
+    await api.updateSettings(1, { nodes: { "3": { bypass: true } } });
+    await ask();
+    expect(nodes(seen[1])).toEqual([3]);
+    // Node 2's trim reaches node 3 but not node 1.
+    await api.updateSettings(1, { nodes: { "3": { bypass: false }, "2": { trim: { temperature: -40 } } } });
+    await ask();
+    expect(nodes(seen[2])).toEqual([2, 3]);
+  });
+
+  it("says nothing for a node view that was not asked, a photo that is not open and a photo that was removed", async () => {
+    await api.updateSettings(1, three);
+    const seen = listen();
+    await api.nodeThumbnails(99);
+    await ask(1);
+    expect(seen).toHaveLength(1);
+    await api.removePhotos([1]);
+    await api.nodeThumbnails(1);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(seen).toHaveLength(1);
+    // Undo: asked again, every node is announced anew.
+    await api.restorePhotos();
+    await ask();
+    expect(seen).toHaveLength(2);
+    expect(nodes(seen[1])).toEqual([1, 2, 3]);
+  });
+
+  it("forgets a node that was taken out, and sends it again when a node comes back", async () => {
+    await api.updateSettings(1, three);
+    const seen = listen();
+    await ask();
+    await api.updateSettings(1, { remove: [3], links: [picture("input", 1), picture(1, 2), picture(2, "output")] });
+    await ask();
+    expect(seen).toHaveLength(1);
+    await api.updateSettings(1, three);
+    await ask();
+    expect(nodes(seen[1])).toEqual([3]);
   });
 });

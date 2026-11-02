@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 import { configureMock, openApp, openPhotos, recordCalls, settle } from "./helpers/app";
-import { FOUR_NODES } from "./helpers/states";
+import { FOUR_NODES, GRADED_NODES } from "./helpers/states";
 
 // The node view's shell on the mock API (docs/23 sections 6 and 7.1, docs/11 §Node view; task N-07): the Nodes button and N, layout A with its
 // divider and Expand, the viewport that follows, the photo switcher, and the notice of the simple view with Open nodes. The canvas is empty
@@ -671,7 +671,7 @@ test.describe("the graph: markers, cards, ports and links", () => {
     // Four cards a unit apart: 214 px from one to the next, 64 px between them.
     const [a, b] = [await box(card(page, 1)), await box(card(page, 2))];
     expect(b.x - a.x).toBeCloseTo(214, 0);
-    // Every card shows a thumbnail (the photo's own until N-05).
+    // Every card shows a picture: the photo's thumbnail until its own arrives (`node thumbnails`, below).
     await expect(canvas(page).locator(".ym-gnode__thumb img")).toHaveCount(4);
   });
 
@@ -1637,5 +1637,117 @@ test.describe("the graph: zoom and pan", () => {
     await expect.poll(async () => (await box(card(page, 1))).x - moved.x).toBeGreaterThan(45);
     expect((await box(card(page, 1))).x - moved.x).toBeLessThanOrEqual(61);
     expect(await linkIds(page)).toEqual(LINE);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// The cards' pictures (docs/23 section 5.7, task N-05): the picture after each node and the Output, asked for from the core while the node
+// view is on, when a change has landed and never during a drag. The mock grades its flat scene through the nodes up to each card.
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+/** The node view of the photo with Main, Mountain (+0.35 EV), Sky (cooler) and Warmth (warmer) in a line, with the cards' pictures made. */
+async function gradedNodes(page: Page): Promise<void> {
+  await openApp(page, MOCKUP);
+  await configureMock(page, { initialSettings: { DSC04204: { nodes: GRADED_NODES.nodes, links: GRADED_NODES.links } } as never });
+  await openPhotos(page);
+  await nodesButton(page).click();
+  await expect(card(page, 4)).toBeVisible();
+  await picturesMade(page);
+  await settle(page);
+}
+
+/** The `src` of each card's picture. */
+const pictureSrcs = (page: Page): Promise<string[]> =>
+  Promise.all([1, 2, 3, 4].map((id) => card(page, id).locator("img").getAttribute("src").then((src) => src ?? "")));
+
+/** Waits until the four cards have four different pictures (before that every card shows the photo's thumbnail). */
+async function picturesMade(page: Page): Promise<void> {
+  await expect.poll(async () => new Set(await pictureSrcs(page)).size).toBe(4);
+}
+
+/** The average colour of each card's picture, as 0 to 255 red, green and blue. */
+async function pictureColours(page: Page): Promise<number[][]> {
+  return page.evaluate(async () => {
+    const out: number[][] = [];
+    for (const id of [1, 2, 3, 4]) {
+      const img = document.querySelector<HTMLImageElement>(`[data-node-card="${id}"] img`)!;
+      await img.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const context = canvas.getContext("2d")!;
+      context.drawImage(img, 0, 0);
+      const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      const sum = [0, 0, 0];
+      for (let i = 0; i < data.length; i += 4) for (let c = 0; c < 3; c++) sum[c]! += data[i + c]!;
+      out.push(sum.map((v) => v / (data.length / 4)));
+    }
+    return out;
+  });
+}
+
+const luma = (rgb: number[]): number => 0.2126 * rgb[0]! + 0.7152 * rgb[1]! + 0.0722 * rgb[2]!;
+
+test.describe("the cards' pictures", () => {
+  test("each card shows the picture after its node, 160 px wide, and the first is not the photo's thumbnail", async ({ page }) => {
+    await gradedNodes(page);
+    const srcs = await pictureSrcs(page);
+    expect(new Set(srcs).size).toBe(4);
+    for (const id of [1, 2, 3, 4]) {
+      const size = await card(page, id).locator("img").evaluate((img: HTMLImageElement) => [img.naturalWidth, img.naturalHeight]);
+      expect(size, `card ${id}`).toEqual([160, 107]);
+    }
+    // The photo's own thumbnail is not on any card.
+    const photoThumb = await page.evaluate(async () => (await window.__yellowmoon!.mockApi.thumbnails()).find((t) => t.id === 4)?.url);
+    expect(photoThumb).toBeTruthy();
+    expect(srcs).not.toContain(photoThumb);
+    // Mountain (+0.35 EV) is brighter than Main; Warmth is warmer than Sky, which is cooler than Mountain.
+    const colours = await pictureColours(page);
+    expect(luma(colours[1]!)).toBeGreaterThan(luma(colours[0]!));
+    const warmth = (rgb: number[]): number => rgb[0]! - rgb[2]!;
+    expect(warmth(colours[2]!)).toBeLessThan(warmth(colours[1]!));
+    expect(warmth(colours[3]!)).toBeGreaterThan(warmth(colours[2]!));
+  });
+
+  test("change after a node's grade changes: bypassing Sky gives new pictures to Sky and Warmth, and the cards before it keep theirs", async ({ page }) => {
+    await gradedNodes(page);
+    const before = await pictureSrcs(page);
+    const colours = await pictureColours(page);
+    await card(page, 3).click();
+    await page.keyboard.press("b");
+    await expect(card(page, 3)).toHaveAccessibleName(/^Node 3, Sky,.* bypassed/);
+    await expect.poll(async () => (await pictureSrcs(page))[2]).not.toBe(before[2]);
+    const after = await pictureSrcs(page);
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
+    expect(after[3]).not.toBe(before[3]);
+    // A bypassed Sky shows Mountain's colours, and Warmth warms them instead of Sky's cooler ones.
+    const now = await pictureColours(page);
+    for (let c = 0; c < 3; c++) expect(now[2]![c]!).toBeCloseTo(colours[1]![c]!, 0);
+    expect(now[3]![0]! - now[3]![2]!).toBeGreaterThan(colours[3]![0]! - colours[3]![2]!);
+    // And back: the cards are as they were.
+    await page.keyboard.press("b");
+    await expect(card(page, 3)).not.toHaveAccessibleName(/bypassed/);
+    await expect.poll(async () => (await pictureColours(page))[2]![2]!).toBeCloseTo(colours[2]![2]!, 0);
+  });
+
+  test("a change to Main's light gives every card a new picture; a slider drag asks for nothing and its release asks once", async ({ page }) => {
+    await gradedNodes(page);
+    const calls = await recordCalls(page, "nodeThumbnails");
+    const before = await pictureSrcs(page);
+    await page.getByRole("tab", { name: "Light" }).click();
+    const slider = page.getByRole("slider", { name: "Exposure" }).locator("xpath=ancestor::*[@data-slot='slider'][1]");
+    const track = (await slider.boundingBox())!;
+    const y = track.y + track.height / 2;
+    await page.mouse.move(track.x + track.width * 0.5, y);
+    await page.mouse.down();
+    await page.mouse.move(track.x + track.width * 0.8, y, { steps: 8 });
+    await page.waitForTimeout(150);
+    // The thumb is down: frames of the drag have gone to the core, and the cards have not been asked for.
+    expect(await calls()).toHaveLength(0);
+    expect(await pictureSrcs(page)).toEqual(before);
+    await page.mouse.up();
+    await expect.poll(async () => (await calls()).length).toBe(1);
+    await expect.poll(async () => (await pictureSrcs(page)).filter((src, i) => src !== before[i]).length).toBe(4);
   });
 });

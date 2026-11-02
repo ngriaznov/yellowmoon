@@ -63,6 +63,7 @@ export type FromCore = AllTrue<{
   appError: Assignable<B.AppError, T.AppError>;
   menuAction: Assignable<B.MenuAction, T.MenuAction>;
   openSummary: Assignable<B.OpenSummary, T.OpenSummary>;
+  nodeThumbnailsReady: Assignable<B.NodeThumbnailsReady, T.NodeThumbnailsReady>;
 }>;
 
 /** Arguments: what the screens send has to fit the type the core takes. */

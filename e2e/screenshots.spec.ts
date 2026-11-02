@@ -52,6 +52,15 @@ async function dialogsSettled(page: Page): Promise<void> {
   await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== "running"));
 }
 
+/** Waits until each of the `count` cards shows its own picture (the core's, after its node), not the photo's thumbnail it shows meanwhile. */
+async function cardPicturesMade(page: Page, count: number): Promise<void> {
+  await page.waitForFunction(async (n) => {
+    const photo = (await window.__yellowmoon!.mockApi.thumbnails()).find((t) => t.id === 4)?.url;
+    const srcs = [...document.querySelectorAll<HTMLImageElement>(".ym-gnode__thumb img")].map((img) => img.src);
+    return srcs.length === n && srcs.every((src) => src !== photo);
+  }, count);
+}
+
 test.describe("Start", () => {
   test("idle (start-idle.png)", async ({ page }) => {
     await openApp(page, { mockLooks: 0 });
@@ -124,23 +133,24 @@ test.describe("Photos", () => {
   });
 
   test("The node view: Main between the Input and the Output, Main selected (photos-nodes.png)", async ({ page }) => {
-    // docs/23 section 7.2, screen 05 of design/nodes: the default graph. Until N-05 gives every node its own picture, the card shows the photo's
-    // own thumbnail (the filmstrip's), so this reference is retaken with N-05.
+    // docs/23 section 7.2, screen 05 of design/nodes: the default graph. The card shows the picture after Main (N-05), not the photo's thumbnail.
     await photos(page);
     await page.getByRole("button", { name: "Nodes", exact: true }).click();
     await expect(page.locator('[data-node-card="1"]')).toHaveAttribute("aria-pressed", "true");
     await expect(page.locator(".ym-gnode__thumb img")).toHaveCount(1);
+    await cardPicturesMade(page, 1);
     await expect(page.getByText("Add a node to change only part of the photo.")).toBeVisible();
     await compareScreen(page, "photos-nodes");
   });
 
   test("The node view: the graded graph with the Add node menu open (photos-nodes-add-node.png)", async ({ page }) => {
     // Screen 06: Main, Mountain (selected, with an Object and a Radial mask), Sky (a Linear mask) and Warmth, and the menu opened upward from
-    // the button. The cards show the photo's own thumbnail until N-05 (see the test above).
+    // the button. Each card shows the picture after its node (N-05).
     await photos(page, { DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE }, ...GRADED_NODES.nodes }, links: GRADED_NODES.links } } as never);
     await page.getByRole("button", { name: "Nodes", exact: true }).click();
     await page.locator('[data-node-card="2"]').click();
     await expect(page.locator('[data-node-card="2"]')).toHaveAttribute("aria-pressed", "true");
+    await cardPicturesMade(page, 4);
     await page.getByRole("button", { name: "Add node" }).click();
     await expect(page.getByRole("menu", { name: "Add node" })).toBeVisible();
     await dialogsSettled(page);
