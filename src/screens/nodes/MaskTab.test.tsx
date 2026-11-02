@@ -270,7 +270,7 @@ describe("the Add mask menu", () => {
     ]);
     expect(within(menu).getByText("Shapes")).toBeInTheDocument();
     expect(within(menu).getByText("Keys")).toBeInTheDocument();
-    // The Find group has no item, so it is not there. Brush is made (N-13) and has no card until its drawing tool (N-14).
+    // The Find group has no item, so it is not there. Brush is made (N-13) and has its card and its drawing tool (N-14: `BrushTool.test.tsx`).
     expect(within(menu).queryByText("Find")).toBeNull();
     expect(within(menu).queryByRole("menuitem", { name: /Brush/ })).not.toBeNull();
   });

@@ -43,6 +43,9 @@ export const NO_COUNTERPART: ReadonlyArray<readonly [string, string]> = [
   [".ym-nodehead__chip", "number chip or lock of the node's head (a small label)"],
   // The handles of a Linear or a Radial on the photo (N-12): a focusable handle drawn over the cell, like the crop frame's; glasscn has none.
   [".ym-mask-handles", "mask handles on the photo (the layer, its lines and its handles)"], [".ym-mask-handle", "mask handle (a focusable dot on the photo)"],
+  // The Brush tool on the photo (N-14): a surface to draw on over the cell, not a control (no role, no Tab stop), with the cursor circle and the stroke being
+  // drawn inside it. glasscn has no drawing surface.
+  [".ym-brush-layer", "brush layer on the photo (the surface a stroke is drawn on)"], [".ym-brush-cursor", "brush cursor circle (the brush's size on the photo)"],
   [".ym-wizard__tile-picture img, .ym-look-tile__picture img", "look picture"],
 ];
 

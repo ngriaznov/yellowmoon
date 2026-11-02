@@ -9,7 +9,7 @@ import { configureMock, dropFiles, failNext, lookTilesLoaded, openApp, openPhoto
 // open, and the consent dialog), the one of Auto crop (`docs/20`: the Crop panel with Auto on and its note) and the three of the Lens tab
 // (`docs/21`: no lens, a lens chosen at its start amounts, and the lens data missing), and the one of Pick white with the CPU note under its hint
 // (`docs/23` section 8; state 17 is Pick white alone), the node view with its empty canvas (N-07: the toolbar, the divider, the photo switcher;
-// N-08 to N-12 add 43 to 48 (N-12 adds 58 to 61, the Mask tab): N-08 has 43, the graph with its Add node menu open, and two of its own, 51 and 52, the graph with a bypassed,
+// N-08 to N-12 add 43 to 48 (N-12 adds 58 to 61, the Mask tab; N-14 adds 62, a Brush's card with a stroke drawn): N-08 has 43, the graph with its Add node menu open, and two of its own, 51 and 52, the graph with a bypassed,
 // a dead and a masked card and a key link, and a selected link) and the simple view of a photo that has four nodes, with the notice (state 49). A state is a function that leaves a
 // page in it; the numbers in the names are only an order.
 
@@ -160,6 +160,9 @@ export const ROWS_07B = [
   { kind: "object", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, points: [[0.41, 0.33, true], [0.52, 0.31, true]], box: null },
   { kind: "radial", mode: "subtract", invert: true, enabled: true, opacity: 1, center: [0.55, 0.32], radii: [0.06, 0.03], angle_deg: 0, feather: 0.45 },
 ] as const;
+
+/** A Brush row with no stroke yet (N-14): the state draws its stroke by hand. */
+export const BRUSH_ROW = { kind: "brush", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0, strokes: [] } as const;
 
 /** A Colour range on Warmth (node 4), whose Mask tab it is. */
 export const WARMTH_RANGE = { kind: "color_range", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.06, 0.04], width: 0.05, softness: 0.5 } as const;
@@ -693,6 +696,27 @@ export const STATES: readonly PageState[] = [
       await expect(p.getByRole("button", { name: "Pick colour" })).toHaveAttribute("aria-pressed", "true");
       await expect(p.getByRole("application", { name: /^Pick colour for the Colour range mask/ })).toBeVisible();
       await p.waitForTimeout(400);
+    },
+  ],
+  // A Brush row (docs/23 section 7.6, N-14): its BRUSH card (Paint · Erase, Size, Hardness, then Refine edges, Feather, Grow, Opacity) with a stroke drawn by hand
+  // on the photo, the cursor circle at the brush's size, the mask view on (the mock draws the stroke), and the chip "MASK · BRUSH".
+  [
+    "62-nodes-brush-card",
+    async (p) => {
+      await maskTabOfGradedPhoto(p, 2, [BRUSH_ROW]);
+      await p.getByRole("button", { name: /^Brush mask/ }).click();
+      await expect(p.getByRole("region", { name: "Brush" })).toBeVisible();
+      await p.getByRole("radio", { name: "Overlay" }).click();
+      const cell = (await p.locator("[data-viewport]").boundingBox())!;
+      await p.mouse.move(cell.x + cell.width * 0.2, cell.y + cell.height * 0.7);
+      await p.mouse.down();
+      await p.mouse.move(cell.x + cell.width * 0.5, cell.y + cell.height * 0.55, { steps: 8 });
+      await p.mouse.move(cell.x + cell.width * 0.8, cell.y + cell.height * 0.7, { steps: 8 });
+      await p.mouse.up();
+      await expect(p.getByRole("button", { name: "Brush mask, 1 stroke" })).toBeVisible();
+      await expect(p.locator("[data-brush-layer] polyline")).toHaveCount(0);
+      await expect(p.locator("[data-brush-cursor]")).toBeVisible();
+      await p.waitForTimeout(300);
     },
   ],
   // The simple view of a photo that has four nodes (docs/23 section 6, N-07; screen 04 of design/nodes): the notice under the tab row, with

@@ -194,6 +194,47 @@ test.describe("Photos", () => {
     await compareScreen(page, "photos-nodes-mask-only");
   });
 
+  test("The node view: Main's Brush row with two strokes, one painted and one erased, its BRUSH card and the cursor circle on the photo (photos-nodes-mask-brush.png)", async ({ page }) => {
+    // docs/23 section 7.6 (there is no mockup for Brush): the Masks card with the Brush row selected ("Brush", "2 strokes"), the BRUSH card under it (Paint · Erase, Size,
+    // Hardness, then Refine edges at 0, Feather, Grow, Opacity), the View card with Overlay, the stroke painted over the sky and the hill in the mask accent with the
+    // erase stroke cutting across it (the mock draws the strokes on its flat scene; the core draws the real mask), the cursor circle at the brush's size where the pointer
+    // rests, and the chip "MASK · BRUSH".
+    const brush = {
+      kind: "brush",
+      mode: "add",
+      invert: false,
+      enabled: true,
+      opacity: 1,
+      feather: 0,
+      grow: 0,
+      refine: 0,
+      strokes: [
+        { size: 0.09, hardness: 0.35, erase: false, points: [[0.16, 0.66], [0.3, 0.5], [0.5, 0.4], [0.7, 0.45], [0.86, 0.6]] },
+        { size: 0.05, hardness: 0.8, erase: true, points: [[0.5, 0.26], [0.52, 0.5], [0.5, 0.78]] },
+      ],
+    };
+    await photos(page, {
+      DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE, masks: { invert: false, items: [brush] } }, ...GRADED_NODES.nodes }, links: GRADED_NODES.links },
+    } as never);
+    await page.getByRole("tab", { name: "Light", exact: true }).click();
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    await page.locator('[data-node-card="1"]').click();
+    await expect(page.locator('[data-node-card="1"]')).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    await page.getByRole("button", { name: "Brush mask, 2 strokes" }).click();
+    await expect(page.getByRole("region", { name: "Brush" })).toBeVisible();
+    await page.getByRole("radio", { name: "Overlay", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator(".ym-photo-cell__image")).toHaveAttribute("src", /data-brush-row/);
+    await expect(page.locator("[data-brush-layer]")).toBeVisible();
+    await cardPicturesMade(page, 4);
+    // The pointer rests near the end of the painted stroke, inside the photo, so that the circle shows.
+    const cell = (await page.locator("[data-viewport]").boundingBox())!;
+    await page.mouse.move(cell.x + cell.width * 0.5, cell.y + cell.height * 0.4);
+    await expect(page.locator("[data-brush-cursor]")).toBeVisible();
+    await compareScreen(page, "photos-nodes-mask-brush", { pointer: { x: cell.x + cell.width * 0.5, y: cell.y + cell.height * 0.4 } });
+  });
+
   /**
    * The graded graph (Main with the mockup's grade, then Mountain, Sky and Warmth) on the Mask tab of node `select`, with `rows` in Mountain's masks when given
    * (screen 07b's two rows) and `kinds` as the mock's `?mockMasks=` (every kind, for the menu of screen 08).

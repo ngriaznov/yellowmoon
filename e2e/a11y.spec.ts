@@ -774,6 +774,24 @@ test.describe("the node panel", () => {
     expect(await page.evaluate(() => document.activeElement?.closest("[data-mask-handles]") !== null)).toBe(false);
   });
 
+  test("the Brush card is named, and the drawing surface is a surface, not a control: no name, no role, no Tab stop", async ({ page }) => {
+    await graded(page, "Light");
+    await page.locator('[data-node-card="4"]').click();
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    await page.getByRole("button", { name: "Add mask" }).click();
+    await page.getByRole("menuitem", { name: /^Brush/ }).click();
+    const snapshot = await expectNamed(page, "a Brush's card");
+    expect(snapshot).toMatch(/- region "Brush"/);
+    expect(snapshot).toContain('- radiogroup "Paint or erase"');
+    expect(snapshot).toMatch(/- radio "Paint" \[checked\]/);
+    expect(snapshot).toMatch(/- radio "Erase"/);
+    for (const name of ["Size", "Hardness", "Refine edges", "Feather", "Grow", "Opacity"]) expect(snapshot, name).toMatch(new RegExp(`- slider "${name}"`));
+    expect(snapshot).toContain('- button "Brush mask, Paint on the photo" [pressed]');
+    // The layer over the photo is not in the accessibility tree at all.
+    await expect(page.locator("[data-brush-layer]")).toHaveAttribute("aria-hidden", "true");
+    expect(snapshot).not.toMatch(/brush-layer|Brush layer/i);
+  });
+
   // The stops of each state, counted: the head's buttons, the tab row (two: glasscn's tab list, a container that draws no ring and hands the
   // arrows to the tabs, then the selected tab), the cards' controls (a slider is two: its thumb and its value box), and the foot's two buttons.
   type Stops = { state: string; simple: string; node: number | "input" | "output"; tab: string; stops: number; before?: (page: Page) => Promise<void> };
@@ -794,6 +812,22 @@ test.describe("the node panel", () => {
       tab: "Mask",
       stops: 24,
       before: (page) => page.getByRole("button", { name: /^Linear mask/ }).click(),
+    },
+    // A Brush row just added, on Warmth (node 4): the head's 3, the tab row's 2, the Masks card's 3, the row's 4, then the BRUSH card: its Reset, the chosen segment of
+    // Paint · Erase, six sliders of two stops each (none of them differs from its default, so none has a Reset stop), the View card's chosen segment and the foot's two
+    // buttons. The drawing surface adds none.
+    {
+      state: "a Brush's Mask tab with its card",
+      simple: "Light",
+      node: 4,
+      tab: "Mask",
+      stops: 29,
+      before: async (page) => {
+        await page.getByRole("button", { name: "Add mask" }).click();
+        await page.getByRole("menuitem", { name: /^Brush/ }).click();
+        await expect(page.getByRole("region", { name: "Brush" })).toBeVisible();
+        await expect(page.locator("[data-brush-layer]")).toBeVisible();
+      },
     },
   ];
   for (const { state, simple, node, tab, stops, before } of STOPS) {
