@@ -123,8 +123,8 @@ describe("a Brush row on the flat scene (task N-14)", () => {
   });
 
   it("paints the row's ink at its opacity: white for Add, black for Subtract, and the plane the other way round when the row is inverted", () => {
-    expect(svg([brush([stroke()], { opacity: 0.4 })])).toMatch(/<rect data-brush-row [^>]*fill="#fff" fill-opacity="0.4" mask="url\(#mvb0\)"\/>/);
-    expect(svg([brush([stroke()], { mode: "subtract" })])).toMatch(/<rect data-brush-row [^>]*fill="#000"/);
+    expect(svg([brush([stroke()], { opacity: 0.4 })])).toMatch(/<rect data-brush-row="" [^>]*fill="#fff" fill-opacity="0.4" mask="url\(#mvb0\)"\/>/);
+    expect(svg([brush([stroke()], { mode: "subtract" })])).toMatch(/<rect data-brush-row="" [^>]*fill="#000"/);
     const inverted = svg([brush([stroke()], { invert: true })]);
     expect(inverted).toMatch(/<mask id="mvb0"[^>]*><rect [^>]*fill="#fff"\/><polyline [^>]*stroke="#000"/);
   });
