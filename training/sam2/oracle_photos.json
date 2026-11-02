@@ -1,0 +1,447 @@
+{
+  "schema_version": 1,
+  "description": "The 20 public photos of the SAM 2 oracle (training/sam2/oracle.py, N-16; the gate of N-17, docs/13). All are files on Wikimedia Commons whose page carries a CC0 or public-domain tag, read from Commons' API on 2026-11-02 (the licence is the uploader's declaration on the page `page`; check it there before using a photo for anything else). The oracle downloads them, checks each against `sha256` and never commits them; `commons_sha1` is Commons' own hash of the same file. A `sha256` of TBD-after-first-run means the author's environment could not reach upload.wikimedia.org when the list was written (HTTP 429): the oracle then checks Commons' SHA-1 instead, prints the SHA-256 it found and keeps it in manifest.json of the fixtures, and the value is copied here after the first run. If a file on Commons is replaced its hash changes and the oracle refuses it: pick another photo, never loosen the check. Prompts are fractions (x to the right, y down, 0 to 1) of the photo as shown (EXIF orientation applied): `point` is one positive click, `positive_negative` a positive and a negative click, `box` is x0, y0, x1, y1. `prompts_reviewed` is true when they were chosen by looking at the photo (positive click on the main object, negative click on something else, box around the object); false means a generic prompt (the centre; a corner; a box around the middle) that nobody has looked at yet: `report.json` of the fixtures gives each mask's area, so a prompt that finds nothing is seen and replaced.",
+  "picture_long_edge_px": 1024,
+  "photos": [
+    {
+      "id": "dog",
+      "title": "Dog in Chacachacare.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/2/2b/Dog_in_Chacachacare.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Dog_in_Chacachacare.jpg",
+      "license": "CC0-1.0",
+      "author": "Wilfredor",
+      "width": 3607,
+      "height": 2234,
+      "bytes": 4012645,
+      "commons_sha1": "aadb249b8d08f0318f1755141f14c888d9a444c7",
+      "sha256": "621b6208a0ae6c21890550957b933571fdb057458372c355c064d4485374ccec",
+      "prompts_reviewed": true,
+      "prompts": {
+        "point": [0.58, 0.52],
+        "positive_negative": {
+          "positive": [0.58, 0.52],
+          "negative": [0.2, 0.42]
+        },
+        "box": [0.46, 0.25, 0.96, 0.7]
+      }
+    },
+    {
+      "id": "cat",
+      "title": "Domestic shorthair cat portrait in grass.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/3/3c/Domestic_shorthair_cat_portrait_in_grass.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Domestic_shorthair_cat_portrait_in_grass.jpg",
+      "license": "CC0-1.0",
+      "author": "Photo by Marko Milivojevic on Pixnio",
+      "width": 5184,
+      "height": 3456,
+      "bytes": 582212,
+      "commons_sha1": "bd378b89df747ca99b6287c024073caf43ca817a",
+      "sha256": "e6810b836cad4fc4bc2e9a875f7e7ebef932df12204cc655df2950e9dce46c14",
+      "prompts_reviewed": true,
+      "prompts": {
+        "point": [0.52, 0.45],
+        "positive_negative": {
+          "positive": [0.52, 0.45],
+          "negative": [0.9, 0.8]
+        },
+        "box": [0.33, 0.02, 0.89, 0.93]
+      }
+    },
+    {
+      "id": "horse",
+      "title": "White horse with large brown spots.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/7/77/White_horse_with_large_brown_spots.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:White_horse_with_large_brown_spots.jpg",
+      "license": "CC0-1.0",
+      "author": "Kurt Kaiser",
+      "width": 2084,
+      "height": 1556,
+      "bytes": 732308,
+      "commons_sha1": "89dff085cb888dae26328e15b7be74cf26a08868",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.08, 0.08]
+        },
+        "box": [0.2, 0.2, 0.8, 0.8]
+      }
+    },
+    {
+      "id": "bird",
+      "title": "Yellow Chest bird Costa Rica.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/4/4d/Yellow_Chest_bird_Costa_Rica.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Yellow_Chest_bird_Costa_Rica.jpg",
+      "license": "CC0-1.0",
+      "author": "Dylan Molina A",
+      "width": 4000,
+      "height": 3000,
+      "bytes": 1694316,
+      "commons_sha1": "a3841bd267defdb2c558793373ca90bd92cec716",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.92, 0.08]
+        },
+        "box": [0.15, 0.15, 0.85, 0.85]
+      }
+    },
+    {
+      "id": "cow",
+      "title": "Cow in Field image.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/3/38/Cow_in_Field_image.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Cow_in_Field_image.jpg",
+      "license": "CC0-1.0",
+      "author": "Kanimozhi Vennila",
+      "width": 3060,
+      "height": 4080,
+      "bytes": 2236563,
+      "commons_sha1": "f45ac607d70a56a0a6f8518678637714a754750e",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.08, 0.92]
+        },
+        "box": [0.3, 0.3, 0.7, 0.7]
+      }
+    },
+    {
+      "id": "car",
+      "title": "Moscow, lime-green boxy car, Sept 2025 01.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/f/ff/Moscow%2C_lime-green_boxy_car%2C_Sept_2025_01.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Moscow,_lime-green_boxy_car,_Sept_2025_01.jpg",
+      "license": "CC0-1.0",
+      "author": "Retired electrician",
+      "width": 2400,
+      "height": 1600,
+      "bytes": 1650511,
+      "commons_sha1": "7e0061ede27d83486dd24e868e82054089cbc8a3",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.92, 0.92]
+        },
+        "box": [0.25, 0.25, 0.75, 0.75]
+      }
+    },
+    {
+      "id": "bus",
+      "title": "Hino EURO II Bus 145 (Assisted bus) (2).jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/b/bc/Hino_EURO_II_Bus_145_%28Assisted_bus%29_%282%29.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Hino_EURO_II_Bus_145_(Assisted_bus)_(2).jpg",
+      "license": "CC0-1.0",
+      "author": "Patiparn.Nice2002bkk",
+      "width": 2936,
+      "height": 2204,
+      "bytes": 1439628,
+      "commons_sha1": "23dbe4df6b50364f39f4a2a5daad3f64dc621694",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.08, 0.08]
+        },
+        "box": [0.2, 0.2, 0.8, 0.8]
+      }
+    },
+    {
+      "id": "bicycle",
+      "title": "Fixed bollard bicycle stand.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/3/31/Fixed_bollard_bicycle_stand.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Fixed_bollard_bicycle_stand.jpg",
+      "license": "CC0-1.0",
+      "author": "Jeroen Hoek",
+      "width": 2500,
+      "height": 1796,
+      "bytes": 2313066,
+      "commons_sha1": "a2289aaf45346aa56a50bb72fa52991948e759c7",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.92, 0.08]
+        },
+        "box": [0.15, 0.15, 0.85, 0.85]
+      }
+    },
+    {
+      "id": "motorcycle",
+      "title": "Brembo motorcycle brake.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/a/a5/Brembo_motorcycle_brake.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Brembo_motorcycle_brake.jpg",
+      "license": "CC0-1.0",
+      "author": "Hu Nhu",
+      "width": 4032,
+      "height": 3024,
+      "bytes": 1852160,
+      "commons_sha1": "6353d2540ccf72daffb96685ff2da25678caecae",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.08, 0.92]
+        },
+        "box": [0.3, 0.3, 0.7, 0.7]
+      }
+    },
+    {
+      "id": "boat",
+      "title": "Moscow, rescue boat, May 2025 04.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/0/01/Moscow%2C_rescue_boat%2C_May_2025_04.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Moscow,_rescue_boat,_May_2025_04.jpg",
+      "license": "CC0-1.0",
+      "author": "Retired electrician",
+      "width": 3363,
+      "height": 2242,
+      "bytes": 2681200,
+      "commons_sha1": "692c5a72186f5735790e70c6d5977af7455520bf",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.92, 0.92]
+        },
+        "box": [0.25, 0.25, 0.75, 0.75]
+      }
+    },
+    {
+      "id": "train",
+      "title": "A train on the Isle of Wight.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/d/d5/A_train_on_the_Isle_of_Wight.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:A_train_on_the_Isle_of_Wight.jpg",
+      "license": "CC0-1.0",
+      "author": "Robert-brook",
+      "width": 2304,
+      "height": 1536,
+      "bytes": 928892,
+      "commons_sha1": "46172d9c5941a3b8957561b4984ae165e832acbe",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.08, 0.08]
+        },
+        "box": [0.2, 0.2, 0.8, 0.8]
+      }
+    },
+    {
+      "id": "lotus",
+      "title": "Lotus flower (978659).jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/f/f5/Lotus_flower_%28978659%29.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Lotus_flower_(978659).jpg",
+      "license": "CC0-1.0",
+      "author": "Hong Zhang (jennyzhh2008)",
+      "width": 3267,
+      "height": 2178,
+      "bytes": 530534,
+      "commons_sha1": "8014224a82e3b8f776d6ab90da138bd76f8b554a",
+      "sha256": "9544c185fc50135b9036f9ed2ba0fe66d560d0829d1077338f287f5321aaeab8",
+      "prompts_reviewed": true,
+      "prompts": {
+        "point": [0.45, 0.5],
+        "positive_negative": {
+          "positive": [0.45, 0.5],
+          "negative": [0.9, 0.3]
+        },
+        "box": [0.17, 0.22, 0.81, 0.8]
+      }
+    },
+    {
+      "id": "hyacinth",
+      "title": "Hyacinthus Spring flower in early bloom.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/7/7c/Hyacinthus_Spring_flower_in_early_bloom.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Hyacinthus_Spring_flower_in_early_bloom.jpg",
+      "license": "CC0-1.0",
+      "author": "Terry.grignon",
+      "width": 1184,
+      "height": 2560,
+      "bytes": 1228097,
+      "commons_sha1": "69cdb9d9e55770f0816311d9900bfe1854daa876",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.92, 0.08]
+        },
+        "box": [0.15, 0.15, 0.85, 0.85]
+      }
+    },
+    {
+      "id": "fruit-stall",
+      "title": "Bangkok fruit stall.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/f/f0/Bangkok_fruit_stall.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Bangkok_fruit_stall.jpg",
+      "license": "Public domain",
+      "author": "Michael",
+      "width": 4032,
+      "height": 2268,
+      "bytes": 3656222,
+      "commons_sha1": "ae5c9c12ae8a015bad65bfaa4b23013680b6bfe4",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.08, 0.92]
+        },
+        "box": [0.3, 0.3, 0.7, 0.7]
+      }
+    },
+    {
+      "id": "puriri",
+      "title": "Pūriri fruit 20250702 130635.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/4/40/P%C5%ABriri_fruit_20250702_130635.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:P%C5%ABriri_fruit_20250702_130635.jpg",
+      "license": "CC0-1.0",
+      "author": "Prosperosity",
+      "width": 3000,
+      "height": 4000,
+      "bytes": 3185449,
+      "commons_sha1": "420b6da79561702056ed95be240e05f03a64fc99",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.92, 0.92]
+        },
+        "box": [0.25, 0.25, 0.75, 0.75]
+      }
+    },
+    {
+      "id": "bread-loaf",
+      "title": "Loaf Of Bread.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/2/2c/Loaf_Of_Bread.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Loaf_Of_Bread.jpg",
+      "license": "CC0-1.0",
+      "author": "congerdesign",
+      "width": 1920,
+      "height": 1320,
+      "bytes": 473213,
+      "commons_sha1": "935ecc4970450bb4400d513827998902d1a83464",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.08, 0.08]
+        },
+        "box": [0.2, 0.2, 0.8, 0.8]
+      }
+    },
+    {
+      "id": "bridge",
+      "title": "Construction of bridge.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/1/1b/Construction_of_bridge.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Construction_of_bridge.jpg",
+      "license": "CC0-1.0",
+      "author": "Saral Shots",
+      "width": 4160,
+      "height": 3120,
+      "bytes": 3401682,
+      "commons_sha1": "5d678ed35dd4ae40f7d5f3c840658406269a8614",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.92, 0.08]
+        },
+        "box": [0.15, 0.15, 0.85, 0.85]
+      }
+    },
+    {
+      "id": "chair",
+      "title": "Pakri chair, Estonia, 1874.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/3/37/Pakri_chair%2C_Estonia%2C_1874.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Pakri_chair,_Estonia,_1874.jpg",
+      "license": "CC0-1.0",
+      "author": "Sillerkiil",
+      "width": 1863,
+      "height": 3528,
+      "bytes": 1858770,
+      "commons_sha1": "cbf73e9c0d571b38a6087eb96c42c39873c989c0",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.08, 0.92]
+        },
+        "box": [0.3, 0.3, 0.7, 0.7]
+      }
+    },
+    {
+      "id": "shoe-rack",
+      "title": "Shoe Rack.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/4/43/Shoe_Rack.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Shoe_Rack.jpg",
+      "license": "CC0-1.0",
+      "author": "Kullatan Kin",
+      "width": 2881,
+      "height": 1758,
+      "bytes": 2797607,
+      "commons_sha1": "a4ccf44d13cff08c3296586d6ef10b9ec334ee45",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.92, 0.92]
+        },
+        "box": [0.25, 0.25, 0.75, 0.75]
+      }
+    },
+    {
+      "id": "building",
+      "title": "Building in Paulista Avenue 09.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/3/30/Building_in_Paulista_Avenue_09.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Building_in_Paulista_Avenue_09.jpg",
+      "license": "CC0-1.0",
+      "author": "Wilfredor",
+      "width": 2958,
+      "height": 2482,
+      "bytes": 4830848,
+      "commons_sha1": "18d82f08837056e7b41898717fbc1006b137264f",
+      "sha256": "TBD-after-first-run",
+      "prompts_reviewed": false,
+      "prompts": {
+        "point": [0.5, 0.5],
+        "positive_negative": {
+          "positive": [0.5, 0.5],
+          "negative": [0.08, 0.08]
+        },
+        "box": [0.2, 0.2, 0.8, 0.8]
+      }
+    }
+  ]
+}

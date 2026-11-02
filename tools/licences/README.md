@@ -7,7 +7,7 @@ them (BSD, MIT, ISC, Apache-2.0 and the OFL all make that a condition). This fol
 |---|---|
 | `generate.py` | Writes `THIRD-PARTY.md` at the repository root and verifies it. Rust: `cargo about generate --format json` for the two programs that ship (`src-tauri` and `crates/ym-cli`), macOS targets, normal dependencies only. npm: `license-checker --production`, plus Tailwind CSS (a build tool whose output is in the app's stylesheet: `BUILD_TOOL_OUTPUT`). Fonts: the Figtree OFL text. Our own crates are not listed (`LICENSE` covers them). |
 | `about.toml` | The cargo-about configuration: the accepted licences (the allow list of `deny.toml`; a unit test keeps the two equal), the two macOS targets, no build or dev dependencies. |
-| `check_bundle.py` | Fails when `src-tauri/tauri.conf.json` does not put `NOTICE`, `LICENSE` and `THIRD-PARTY.md` into `bundle.resources`, or when `NOTICE` lacks the BSD 3-Clause conditions of the ported Menon demosaic or the MIT notice of glasscn. |
+| `check_bundle.py` | Fails when `src-tauri/tauri.conf.json` does not put `NOTICE`, `LICENSE` and `THIRD-PARTY.md` into `bundle.resources`, or when `NOTICE` lacks the BSD 3-Clause conditions of the ported Menon demosaic, the MIT notice of glasscn or Meta's Apache-2.0 notice for the SAM 2.1 weights. It also checks that `data/models` is a bundle resource and that `data/models/sam2/` has its model card, a `.gitignore` for the weights and a `SHA256SUMS` line; with `--require-weights` (`release.yml`, `build.yml`, after `tools/fetch/sam2.sh`) the weights file must be there and match that line. |
 | `texts/` | Licence texts of npm packages that ship no LICENSE file (`HAND_ADDED_TEXTS` in `generate.py`): today `react-remove-scroll-bar`, a dependency of Radix. Each is the LICENSE file of the package's repository. |
 | `THIRD-PARTY.stub.md` | What a development build gets in place of the real file, so that tauri-build finds the resource. `generate.py --verify` never accepts it. |
 | `test_licences.py` | Unit tests (stdlib only): `python3 -I -m unittest discover -s tools/licences`. |
@@ -19,6 +19,7 @@ cargo install cargo-about --version 0.9.2 --locked
 npm ci
 python3 tools/licences/generate.py          # THIRD-PARTY.md, about 0.5 MB; exits 1 on a package without a licence text
 python3 tools/licences/check_bundle.py      # the bundle and NOTICE
+python3 tools/licences/check_bundle.py --require-weights   # and the SAM 2.1 weights, after tools/fetch/sam2.sh
 ```
 
 `THIRD-PARTY.md` is generated, git-ignored and never edited by hand. The output depends only on `Cargo.lock`,

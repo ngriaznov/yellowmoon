@@ -117,7 +117,7 @@ The plan was approved on 2026-11-01 and is milestone N (`docs/15`), specified in
 | Masks | Add up as in Resolve; Subtract cuts; ranges keep only their part; Invert per mask and per node |
 | Overlapping soft edges | Screen: 1 − (1 − a)(1 − b) |
 | AI masks | SAM 2 for Object (code and weights Apache-2.0, checked); SAM 3 is out (custom licence, `docs/14`) |
-| SAM 2 | Size: SAM 2.1 **small**; weights **bundled** in the app (about 95 MB more; the build fetches them from our own release) |
+| SAM 2 | Size: SAM 2.1 **small**; weights **bundled** in the app (about 77 MB more, the image path only, as N-16 measured; the build fetches them from our own release) |
 | SAM finds nothing | Nothing changes; the error bar says so |
 | Subject and People | Apple Vision, macOS only, and only where this Mac supports them: hidden elsewhere, a plain error in `ym` |
 | Copying masks | Linear, Radial and Brush copy as they are; Subject, People and Background are worked out again; Object clicks are not copied |

@@ -1,0 +1,161 @@
+# Model weights that are too big for git (N-16, docs/07, docs/12): converts Meta's SAM 2.1 small checkpoint to a f16
+# safetensors file, writes the oracle fixtures for the runtime's gate (N-17), and publishes both as assets of the GitHub
+# release `models-sam2.1-small-1`.
+#
+# How to run it: push a branch named models/<anything>, for example
+#     git push origin nodes:models/sam2.1-small-1
+# or start it by hand (Actions > models > Run workflow, on a branch). The run's summary prints the two lines of the
+# SHA256SUMS asset. Copy them into data/models/sam2/SHA256SUMS (the weights) and tools/fetch/sam2.sha256 (the fixtures);
+# from then on tools/fetch/sam2.sh downloads and checks the weights for the builds (release.yml, build.yml).
+#
+# The release is a PRERELEASE and is created with --latest=false. The in-app updater reads
+# releases/latest/download/latest.json (docs/12), so this release must never become "latest"; a release that is a
+# prerelease cannot be, and the flag says it twice. It is never overwritten: when the release exists, the run compares
+# its SHA256SUMS asset with the hashes it just made and passes when they are equal (nothing is uploaded) or fails when
+# they differ. The weights are byte-identical on every run; the fixtures are floats that another CPU model can round
+# differently, so a second run on another machine can fail on the fixtures' hash. A new set of assets gets a new tag
+# (RELEASE_TAG, the asset names and tools/fetch/sam2.sh change together).
+#
+# Python runs here for converting and for test data only (AGENTS.md rule 6); the app and `ym` never run it.
+name: models
+
+on:
+  push:
+    branches: ["models/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: models-sam2
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: models-sam2.1-small-1
+  WEIGHTS: sam2.1_hiera_small.f16.safetensors
+  FIXTURES: sam2-oracle-fixtures-1.tar.zst
+  # github.com/facebookresearch/sam2 (Apache-2.0), main on 2026-11-02; there are no tags. The same value is in
+  # training/sam2/export.py and training/sam2/requirements.txt.
+  SAM2_COMMIT: 2b90b9f5ceec907a1c18123530e92e794ad901a4
+  TORCH: "2.5.1+cpu"
+  TORCHVISION: "0.20.1+cpu"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  sam2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash   # with pipefail, so that a failing tar in "tar | zstd" fails the step
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            training/sam2/requirements.txt
+            .github/workflows/models.yml
+
+      - name: Install the pinned packages (CPU torch, then Meta's package from its pinned commit)
+        run: |
+          python -m pip install --upgrade pip==24.3.1
+          python -m pip install -r training/sam2/requirements.txt
+          # The CPU build of torch (a plain `pip install torch` pulls the CUDA build); the `+cpu` versions exist on this index only.
+          python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu "torch==${TORCH}" "torchvision==${TORCHVISION}"
+          # Meta's package as its README installs it (`pip install -e .`), from a checkout at the pinned commit outside the
+          # workspace. CUDA is off (no GPU here) and the build looks for the torch that is installed.
+          git clone --quiet https://github.com/facebookresearch/sam2.git "$RUNNER_TEMP/sam2-src"
+          git -C "$RUNNER_TEMP/sam2-src" checkout --quiet "${SAM2_COMMIT}"
+          test "$(git -C "$RUNNER_TEMP/sam2-src" rev-parse HEAD)" = "${SAM2_COMMIT}"
+          SAM2_BUILD_CUDA=0 SAM2_BUILD_ALLOW_ERRORS=0 python -m pip install --no-build-isolation --no-deps -e "$RUNNER_TEMP/sam2-src"
+          python -m pip freeze | tee "$RUNNER_TEMP/pip-freeze.txt"
+
+      - name: Checkpoint hash (the cache key)
+        id: pin
+        run: echo "sha=$(sed -n 's/^CKPT_SHA256 = "\(.*\)"$/\1/p' training/sam2/export.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the checkpoint (184 MB) and the photos
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/sam2/cache
+            build/sam2/photos
+          key: sam2-inputs-${{ steps.pin.outputs.sha }}-${{ hashFiles('training/sam2/oracle_photos.json') }}
+          restore-keys: |
+            sam2-inputs-${{ steps.pin.outputs.sha }}-
+
+      - name: Convert the weights (export.py)
+        run: python -m training.sam2.export --out build/sam2
+
+      - name: Oracle fixtures (oracle.py), Meta's code on 20 public photos
+        run: |
+          python -m training.sam2.oracle \
+            --weights "build/sam2/${WEIGHTS}" \
+            --checkpoint build/sam2/cache/sam2.1_hiera_small.pt \
+            --photos build/sam2/photos \
+            --out build/sam2/fixtures
+
+      - name: Pack the fixtures and write SHA256SUMS
+        run: |
+          command -v zstd >/dev/null || sudo apt-get install -y zstd
+          mkdir -p dist
+          # A fixed order, owner and time, so that the archive's bytes depend on the fixtures only.
+          tar --sort=name --mtime='UTC 2026-11-02' --owner=0 --group=0 --numeric-owner --format=gnu \
+            -C build/sam2/fixtures -cf - . | zstd -19 -T0 -q -o "dist/${FIXTURES}"
+          cp "build/sam2/${WEIGHTS}" "dist/${WEIGHTS}"
+          (cd dist && sha256sum "${WEIGHTS}" "${FIXTURES}" > SHA256SUMS && cat SHA256SUMS && ls -l)
+          {
+            echo "### SAM 2.1 small assets"
+            echo
+            echo "Copy these two lines (the weights into \`data/models/sam2/SHA256SUMS\`, the fixtures into \`tools/fetch/sam2.sha256\`):"
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the release (a prerelease, never latest, never overwritten)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            mkdir -p "$RUNNER_TEMP/existing"
+            gh release download "$RELEASE_TAG" --pattern SHA256SUMS --dir "$RUNNER_TEMP/existing" --clobber
+            if diff -u "$RUNNER_TEMP/existing/SHA256SUMS" dist/SHA256SUMS; then
+              echo "Release $RELEASE_TAG exists with the same hashes; nothing to upload." | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error title=Release exists::$RELEASE_TAG is already published with different hashes (above). Assets are never overwritten: if the new ones are meant, use a new tag."
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --prerelease --latest=false \
+              --title "SAM 2.1 small weights and oracle fixtures (1)" \
+              --notes "Model assets for the build and the tests, not an app release. \`${WEIGHTS}\` is Meta's SAM 2.1 small checkpoint (Apache-2.0, https://github.com/facebookresearch/sam2) converted to f16 safetensors, the image path only; see \`data/models/sam2/MODEL_CARD.md\`. \`${FIXTURES}\` holds the oracle fixtures for the runtime's tests. Made by the \`models\` workflow from commit ${GITHUB_SHA}. Fetched by \`tools/fetch/sam2.sh\`; the app never downloads anything." \
+              "dist/${WEIGHTS}" "dist/${FIXTURES}" "dist/SHA256SUMS"
+          fi
+          # The in-app updater reads the latest release; this one must not be it.
+          gh release view "$RELEASE_TAG" --json isPrerelease,tagName --jq '"\(.tagName) prerelease=\(.isPrerelease)"'
+          test "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" = true
+          latest="$(gh release list --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // ""')"
+          if [ "$latest" = "$RELEASE_TAG" ]; then
+            echo "::error title=Latest release::$RELEASE_TAG is the latest release; the updater would read it."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sam2-reports
+          path: |
+            build/sam2/export_report.json
+            build/sam2/fixtures/report.json
+            build/sam2/fixtures/manifest.json
+            dist/SHA256SUMS
+          if-no-files-found: ignore
+          retention-days: 30

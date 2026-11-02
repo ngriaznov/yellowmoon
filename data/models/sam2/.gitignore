@@ -1,0 +1,4 @@
+# The SAM 2.1 small weights (about 77 MB) are too big for git. tools/fetch/sam2.sh downloads them from the release
+# `models-sam2.1-small-1` and checks them against SHA256SUMS; the build bundles them (docs/12). Never commit them.
+*.safetensors
+*.part

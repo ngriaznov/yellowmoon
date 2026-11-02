@@ -59,6 +59,18 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # The SAM 2.1 small weights (about 77 MB) are a release asset of ours (models-sam2.1-small-1, made by models.yml), too big
+      # for git. They are fetched into data/models/sam2/, which tauri.conf.json bundles, and checked against the SHA-256 in
+      # data/models/sam2/SHA256SUMS (tools/fetch/sam2.sh; docs/12). The app itself downloads nothing. A cached copy is checked too.
+      - name: Cache the SAM 2.1 small weights
+        uses: actions/cache@v4
+        with:
+          path: data/models/sam2/sam2.1_hiera_small.f16.safetensors
+          key: sam2-weights-${{ hashFiles('data/models/sam2/SHA256SUMS') }}
+
+      - name: Fetch the SAM 2.1 small weights
+        run: tools/fetch/sam2.sh
+
       # The bundle carries the licence texts of every dependency next to NOTICE (as release.yml does).
       - name: cargo-about
         uses: taiki-e/install-action@v2
@@ -68,7 +80,7 @@ jobs:
       - name: Licence texts of the dependencies (THIRD-PARTY.md, bundled next to NOTICE)
         run: |
           python3 tools/licences/generate.py
-          python3 tools/licences/check_bundle.py
+          python3 tools/licences/check_bundle.py --require-weights
 
       - name: Build the command-line tool (the app's sidecar `ym`)
         run: |
@@ -99,6 +111,9 @@ jobs:
           ls -la "target/$TRIPLE/release/bundle/dmg/"
           codesign --verify --deep --strict --verbose=2 "$APP"
           lipo -info "$APP/Contents/MacOS/Yellowmoon"
+          # The SAM 2.1 small weights are in the bundle (docs/12), and are the file that SHA256SUMS pins.
+          test -s "$APP/Contents/Resources/data/models/sam2/sam2.1_hiera_small.f16.safetensors"
+          (cd "$APP/Contents/Resources/data/models/sam2" && shasum -a 256 -c SHA256SUMS)
           "$APP/Contents/MacOS/ym" --version
           "$APP/Contents/MacOS/ym" doctor || echo "::warning title=ym doctor::exited with $? (informational)"
           {

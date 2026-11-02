@@ -7,6 +7,7 @@ run is the CI job ``licences`` (``python3 tools/licences/generate.py``).
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -42,6 +43,7 @@ BSD_NOTICE = (
     "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\"\n"
     "Copyright (c) 2026 Tim Mikeladze\n"
     "The above copyright notice and this permission notice shall be included in all\n"
+    "Copyright (c) Meta Platforms, Inc. and affiliates. https://github.com/facebookresearch/sam2\n"
 )
 OFL = "Copyright 2022 The Figtree Project Authors\n\nSIL OPEN FONT LICENSE Version 1.1 - 26 February 2007\n"
 
@@ -244,13 +246,43 @@ class Config(unittest.TestCase):
         self.assertEqual(sorted(about["targets"]), ["aarch64-apple-darwin", "x86_64-apple-darwin"])
 
 
+SAM2_WEIGHTS = "sam2.1_hiera_small.f16.safetensors"
+
+
 class Bundle(unittest.TestCase):
-    def tree(self, root: Path, *, resources: dict | None = None, notice: str | None = None, ofl: bool = True) -> None:
+    def tree(
+        self,
+        root: Path,
+        *,
+        resources: dict | None = None,
+        notice: str | None = None,
+        ofl: bool = True,
+        sums: str | None = None,
+        weights: bytes | None = None,
+        card: str | None = "Apache-2.0, https://github.com/facebookresearch/sam2\n",
+        ignore: str | None = "*.safetensors\n",
+    ) -> None:
         (root / "src-tauri").mkdir(parents=True, exist_ok=True)
-        resources = {"../NOTICE": "NOTICE", "../LICENSE": "LICENSE", "../THIRD-PARTY.md": "THIRD-PARTY.md"} if resources is None else resources
+        resources = (
+            {"../NOTICE": "NOTICE", "../LICENSE": "LICENSE", "../THIRD-PARTY.md": "THIRD-PARTY.md", "../data/models": "data/models"}
+            if resources is None
+            else resources
+        )
         (root / "src-tauri" / "tauri.conf.json").write_text(json.dumps({"bundle": {"resources": resources}}))
         (root / "NOTICE").write_text(notice if notice is not None else BSD_NOTICE)
         (root / "LICENSE").write_text("Apache License")
+        folder = root / "data" / "models" / "sam2"
+        folder.mkdir(parents=True, exist_ok=True)
+        if card is not None:
+            (folder / "MODEL_CARD.md").write_text(card)
+        if ignore is not None:
+            (folder / ".gitignore").write_text(ignore)
+        if sums is None:
+            sums = f"TBD-after-first-run  {SAM2_WEIGHTS}\n"
+        if sums:
+            (folder / "SHA256SUMS").write_text(sums)
+        if weights is not None:
+            (folder / SAM2_WEIGHTS).write_bytes(weights)
 
     def test_a_complete_tree_passes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -259,7 +291,7 @@ class Bundle(unittest.TestCase):
 
     def test_third_party_must_be_in_the_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.tree(Path(tmp), resources={"../NOTICE": "NOTICE", "../LICENSE": "LICENSE"})
+            self.tree(Path(tmp), resources={"../NOTICE": "NOTICE", "../LICENSE": "LICENSE", "../data/models": "data/models"})
             problems = check_bundle.problems(Path(tmp))
         self.assertTrue(any("THIRD-PARTY.md" in p for p in problems), problems)
 
@@ -274,6 +306,80 @@ class Bundle(unittest.TestCase):
             self.tree(Path(tmp), notice=BSD_NOTICE.replace("Tim Mikeladze", "Someone"))
             problems = check_bundle.problems(Path(tmp))
         self.assertTrue(any("Tim Mikeladze" in p for p in problems), problems)
+
+    def test_meta_s_notice_and_the_link_must_be_in_the_notice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tree(Path(tmp), notice=BSD_NOTICE.replace("Meta Platforms, Inc. and affiliates", "Someone"))
+            problems = check_bundle.problems(Path(tmp))
+            self.assertTrue(any("Meta Platforms" in p for p in problems), problems)
+            self.tree(Path(tmp), notice=BSD_NOTICE.replace("github.com/facebookresearch/sam2", "example.org"))
+            problems = check_bundle.problems(Path(tmp))
+            self.assertTrue(any("facebookresearch" in p for p in problems), problems)
+
+    def test_the_models_folder_must_be_a_bundle_resource(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tree(Path(tmp), resources={"../NOTICE": "NOTICE", "../LICENSE": "LICENSE", "../THIRD-PARTY.md": "THIRD-PARTY.md"})
+            problems = check_bundle.problems(Path(tmp))
+        self.assertTrue(any("data/models" in p and "SAM 2.1" in p for p in problems), problems)
+
+    def test_the_model_card_the_ignore_file_and_the_sums_line_must_be_there(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tree(Path(tmp), card=None, ignore=None, sums="")
+            problems = check_bundle.problems(Path(tmp))
+        self.assertTrue(any("MODEL_CARD.md" in p for p in problems), problems)
+        self.assertTrue(any(".gitignore" in p for p in problems), problems)
+        self.assertTrue(any("SHA256SUMS has no line" in p for p in problems), problems)
+
+    def test_the_model_card_must_name_the_licence_and_the_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tree(Path(tmp), card="A model.\n")
+            problems = check_bundle.problems(Path(tmp))
+        self.assertTrue(any("Apache-2.0" in p for p in problems), problems)
+        self.assertTrue(any("facebookresearch" in p for p in problems), problems)
+
+    def test_the_weights_must_not_be_committable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tree(Path(tmp), ignore="*.part\n")
+            problems = check_bundle.problems(Path(tmp))
+        self.assertTrue(any("safetensors" in p for p in problems), problems)
+
+    def test_a_placeholder_pin_is_a_warning_without_the_flag_and_an_error_with_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tree(Path(tmp))
+            self.assertEqual(check_bundle.problems(Path(tmp)), [])
+            self.assertTrue(any("TBD-after-first-run" in w for w in check_bundle.warnings(Path(tmp))))
+            problems = check_bundle.problems(Path(tmp), require_weights=True)
+        self.assertTrue(any("not a SHA-256" in p for p in problems), problems)
+
+    def test_the_fetched_weights_must_be_there_and_match_their_pin(self):
+        data = b"weights"
+        pin = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tree(root, sums=f"{pin}  {SAM2_WEIGHTS}\n")
+            self.assertEqual(check_bundle.warnings(root), [])
+            missing = check_bundle.problems(root, require_weights=True)
+            self.assertTrue(any("is missing" in p and "tools/fetch/sam2.sh" in p for p in missing), missing)
+            self.tree(root, sums=f"{pin}  {SAM2_WEIGHTS}\n", weights=b"damaged")
+            wrong = check_bundle.problems(root, require_weights=True)
+            self.assertTrue(any("does not have the SHA-256" in p for p in wrong), wrong)
+            self.tree(root, sums=f"{pin}  {SAM2_WEIGHTS}\n", weights=data)
+            self.assertEqual(check_bundle.problems(root, require_weights=True), [])
+            self.assertEqual(check_bundle.problems(root), [])
+
+    def test_the_command_line_takes_the_flag_and_a_folder(self):
+        data = b"weights"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tree(root, sums=f"{hashlib.sha256(data).hexdigest()}  {SAM2_WEIGHTS}\n", weights=data)
+            self.assertEqual(check_bundle.main([str(root)]), 0)
+            self.assertEqual(check_bundle.main(["--require-weights", str(root)]), 0)
+            (root / "data" / "models" / "sam2" / SAM2_WEIGHTS).unlink()
+            self.assertEqual(check_bundle.main(["--require-weights", str(root)]), 1)
+            self.assertEqual(check_bundle.main(["--nope", str(root)]), 2)
+
+    def test_the_repository_itself_passes_without_the_weights(self):
+        self.assertEqual(check_bundle.problems(REPO), [])
 
 
 if __name__ == "__main__":

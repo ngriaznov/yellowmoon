@@ -12,6 +12,8 @@ testdata/
 # Local-evaluation files of unclear licence (tools/fetch/real-eval.sh): never committed. testdata/ already covers them; the
 # separate line keeps them ignored even if part of testdata/ is ever un-ignored.
 testdata/real/
+# Where training/sam2 (export.py, oracle.py) writes when it is run by hand; CI uses the same folders
+/build/sam2/
 # The crop pilot's results (training/crop/README.md): they come back on a temporary branch, never into main.
 training/crop/runs/
 

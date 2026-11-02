@@ -191,3 +191,17 @@ UNDISCLOSED.
     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
+
+10. SAM 2.1 small weights (data/models/sam2/)
+    Object masks are found by SAM 2.1 (the "small" size, sam2.1_hiera_small)
+    from Segment Anything Model 2:
+    Copyright (c) Meta Platforms, Inc. and affiliates.
+    Licensed under the Apache License, Version 2.0, the text of which is in
+    LICENSE (https://www.apache.org/licenses/LICENSE-2.0). Source:
+    https://github.com/facebookresearch/sam2; paper: N. Ravi et al., "SAM 2:
+    Segment Anything in Images and Videos", arXiv:2408.00714.
+    The weights in this product are Meta's checkpoint, converted to f16
+    safetensors and cut down to the image path (the video parts are left out).
+    They are not trained or fine-tuned further; the program that runs them is
+    ours (crates/ym-ml). Meta's training data are not part of this product.
+    The model card is data/models/sam2/MODEL_CARD.md.
