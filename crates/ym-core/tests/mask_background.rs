@@ -11,6 +11,7 @@
 //! them), the same photos `docs/21` section 7 judged the model on.
 mod common;
 
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -18,14 +19,16 @@ use std::time::Duration;
 use common::*;
 use serde_json::{Value, json};
 use ym_color::display::OutputTarget;
+use ym_core::app::gpu::GpuStages;
 use ym_core::pipeline::{
-    FrameOptions, FullImage, FullRequest, FullTarget, MaskStyle, MaskView, NeutralOnly, PhotoSource,
+    ComputeDevice, FrameOptions, FullImage, FullRequest, FullTarget, MaskStyle, MaskView, NeutralOnly, PhotoSource,
     RenderOptions, RenderedFrame, Renderer, ViewportRect, ViewportState, unmakeable_mask,
 };
 use ym_core::session::{OpenOptions, Session, SessionEnv};
 use ym_core::settings::{
     DevelopSettings, LensKind, LensSettings, MaskKind, Orientation, mask_kinds, mask_unavailable,
 };
+use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::CancelToken;
 use ym_lens::LensLibrary;
 use ym_ml::bokeh_net::BokehNet;
@@ -487,27 +490,22 @@ fn export_image(r: &Renderer, src: &PhotoSource) -> FullImage {
     .expect("render")
 }
 
-/// Tiles of an export equal the whole frame bit for bit with the halos of Grow and Feather (the planes of the
-/// raster pass are the ones of `crates/ym-color/tests/mask_raster.rs`; a Background plane is one more source for them).
-/// With Refine edges the guide is the Input's own picture over the tile and its halo, and the raw stages of this
-/// scene (hard-edged discs on a dark ground) are not tile-independent to the last bit at the edge of a disc in the halo
-/// (a Brush row with Refine edges differs the same way: 1e-7 of a linear value, at 70 pixels): so the third check
-/// bounds the difference instead.
+/// Tiles of an export equal the whole frame bit for bit with the halos of Grow, Feather and Refine edges (the planes of the
+/// raster pass are the ones of `crates/ym-color/tests/mask_raster.rs`; a Background plane is one more source for them). The
+/// discs are dim (0.15 of the range): the raw stages of a bright hard-edged disc (0.45) are not tile-independent to the last
+/// bit at a disc's edge, with no mask at all (tiles of 100, 128 and 256 px; 8 pixels of 1e-8), and a Refine edges guide reads
+/// them through its halo.
 #[test]
-fn tiles_of_an_export_equal_the_whole_frame_with_the_halo_of_grow_and_feather() {
-    let d = lights(640, 480, 1, (0.0, 1.0), 5, 4);
+fn tiles_of_an_export_equal_the_whole_frame_with_the_halos_of_grow_feather_and_refine_edges() {
+    let d = lights_of(640, 480, 1, (0.0, 1.0), 5, 4, 0.15);
     let src = d.source();
-    let rows = |refine: f64| {
-        vec![
-            background(json!({ "level": 0.7, "softness": 0.6, "grow": 0.4, "feather": 0.3, "refine": refine })),
-            json!({ "kind": "background", "mode": "subtract", "level": 0.9, "feather": 0.1, "refine": 0.0 }),
-        ]
-    };
-    let s = with(&src, graph(rows(0.0)));
+    let rows = vec![
+        background(json!({ "level": 0.7, "softness": 0.6, "grow": 0.4, "feather": 0.3, "refine": 0.6 })),
+        json!({ "kind": "background", "mode": "subtract", "level": 0.9, "feather": 0.1 }),
+    ];
+    let s = with(&src, graph(rows));
     let whole = export_image(&renderer_with(false, 4096), &s);
-    // (Tiles of 100, 128 and 256 px differ from the whole frame by 8 pixels at a disc's edge of this scene with no mask at
-    // all, which is not this task's: the sizes below do not.)
-    for tile in [64, 160, 192] {
+    for tile in [64, 100, 192] {
         let tiled = export_image(&renderer_with(false, tile), &s);
         assert_eq!((tiled.width, tiled.height), (whole.width, whole.height));
         assert!(tiled.rgb == whole.rgb, "tiles of {tile} px differ from the whole frame");
@@ -515,15 +513,6 @@ fn tiles_of_an_export_equal_the_whole_frame_with_the_halo_of_grow_and_feather() 
     // The rows act: the same node without them is another picture.
     let plain = export_image(&renderer_with(false, 4096), &with(&src, graph(vec![])));
     assert!(plain.rgb != whole.rgb);
-    // With Refine edges: within 1e-6 of a linear value.
-    let s = with(&src, graph(rows(0.6)));
-    let whole = export_image(&renderer_with(false, 4096), &s);
-    for tile in [64, 192] {
-        let tiled = export_image(&renderer_with(false, tile), &s);
-        let worst = tiled.rgb.iter().zip(&whole.rgb).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-        eprintln!("[background] tiles of {tile} px with Refine edges against the whole frame: largest difference {worst:e}");
-        assert!(worst < 1e-6, "tiles of {tile} px: {worst}");
-    }
 }
 
 #[test]
@@ -578,20 +567,77 @@ fn a_turned_photo_is_the_upright_photo_turned_by_hand_with_a_background_row_on_i
     assert!(a.rgb != none.rgb);
 }
 
+// ---- the device ----------------------------------------------------------------------------------------
+
+fn gpu() -> Option<Arc<Gpu>> {
+    match Gpu::start(GpuConfig {
+        poison: true,
+        ..GpuConfig::default()
+    }) {
+        Ok(g) => Some(Arc::new(g)),
+        Err(e) => {
+            assert!(
+                !gpu_required_by_env(),
+                "YM_REQUIRE_GPU is set but no GPU adapter could be opened: {e}"
+            );
+            let _ = writeln!(
+                std::io::stderr(),
+                "\n* GPU TESTS SKIPPED in mask_background: {e}\n* (set WGPU_BACKEND=vulkan and install mesa-vulkan-drivers)\n"
+            );
+            None
+        }
+    }
+}
+
+/// The picture of a viewport frame and the mask of a Mask only frame on the device and on the CPU. The raw stages stay on
+/// the CPU on both, so that the blur map (the classical detector decides on exact values) is the same bits: what is compared
+/// is the raster pass, the colour pass and the encode on the device against the CPU reference, with a Background plane in them.
 #[test]
-fn debug_tiles() {
-    for level in [0.15, 0.08] {
-        let d = lights_of(640, 480, 1, (0.0, 1.0), 5, 4, level);
-        let src = d.source();
-        let big = renderer_with(false, 4096);
-        let map = big.blur_map(&src, &CancelToken::new()).expect("map");
-        eprintln!("level {level}: {} cells over 0.9", map.p.iter().filter(|p| **p > 0.9).count());
-        let s = with(&src, graph(vec![]));
-        let a = export_image(&big, &s);
-        for tile in [64usize, 100, 128, 192, 256] {
-            let b = export_image(&renderer_with(false, tile), &s);
-            let n = a.rgb.iter().zip(&b.rgb).filter(|(x, y)| x != y).count();
-            eprintln!("  tile {tile}: {n} samples differ");
+fn the_device_makes_the_same_frames_and_masks_as_the_cpu_with_a_background_row() {
+    let Some(gpu) = gpu() else { return };
+    let d = lights_of(640, 480, 1, (0.0, 1.0), 5, 4, 0.15);
+    let src = d.source();
+    let on_gpu = Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            gpu: Some(gpu),
+            gpu_stages: GpuStages::ALL
+                .difference(GpuStages::RAW_CHAIN)
+                .difference(GpuStages::RAW_FRONT),
+            background: PAPER,
+            ..RenderOptions::default()
+        },
+    )
+    .expect("render thread");
+    let cpu = renderer(false);
+    let picture = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+    for (what, extra) in [
+        ("the default", json!({})),
+        ("a high level, a narrow ramp", json!({ "level": 0.8, "softness": 0.1 })),
+        ("grown", json!({ "grow": 0.5 })),
+        ("feathered", json!({ "feather": 0.4 })),
+        ("refined", json!({ "refine": 0.8 })),
+        ("all of them", json!({ "level": 0.7, "softness": 0.4, "grow": 0.3, "feather": 0.3, "refine": 0.7 })),
+    ] {
+        let s = with(&src, graph(vec![background(extra)]));
+        for (name, st) in [("picture", &picture), ("mask only", &mask_view(2))] {
+            let device = frame(&on_gpu, &s, st);
+            assert_eq!(device.report.device, ComputeDevice::Gpu, "{what}, {name}");
+            let reference = frame(&cpu, &s, st);
+            if name == "mask only" {
+                // The test has a mask to compare: lit where the lights are out of focus, dark between them.
+                let m = mask_values(&reference);
+                assert!(m.iter().any(|v| *v > 0.5) && m.iter().any(|v| *v < 0.5), "{what}: the mask is flat");
+            }
+            let (mut worst, mut sum) = (0u8, 0u64);
+            for (x, y) in device.rgba.iter().zip(&reference.rgba) {
+                let d = x.abs_diff(*y);
+                worst = worst.max(d);
+                sum += u64::from(d);
+            }
+            let mean = sum as f64 / device.rgba.len() as f64;
+            eprintln!("[background] {what}, {name}: the device differs from the CPU by {worst} codes, mean {mean:.4}");
+            assert!(worst <= 3 && mean < 0.3, "{what}, {name}: {worst} codes, mean {mean}");
         }
     }
 }

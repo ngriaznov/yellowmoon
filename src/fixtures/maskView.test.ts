@@ -1,7 +1,8 @@
 /** The mask view on the mock's flat scene (`maskView.ts`): the shapes the page tests and the reference screenshots rely on. */
 import { describe, expect, it } from "vitest";
 import type { MaskItem, MaskSettings } from "../api/types";
-import { MASK_ACCENT, maskViewSvg, OVERLAY_WEIGHT } from "./maskView";
+import { backgroundValue, BLUR_RAMP_MIN, hasBackgroundRow, MASK_ACCENT, maskViewSvg, MOCK_BLUR, OVERLAY_WEIGHT } from "./maskView";
+import type { DevelopSettings } from "../api/types";
 
 const BOX = { x: 100, y: 50, width: 600, height: 400 };
 const row = (more: Record<string, unknown>): MaskItem => ({ mode: "add", invert: false, enabled: true, opacity: 1, ...more }) as MaskItem;
@@ -135,5 +136,55 @@ describe("a Brush row on the flat scene (task N-14)", () => {
     // The erase is inside the Brush row's own plane: the Radial's gradient is painted before it and is not touched.
     expect(out.indexOf("radialGradient")).toBeLessThan(out.indexOf('<mask id="mvb1"'));
     expect(out).toContain('<mask id="mvb1"');
+  });
+});
+
+describe("a Background row on the flat scene (docs/algorithms/06 §5.4)", () => {
+  const background = (more: Record<string, unknown> = {}): MaskItem => row({ kind: "background", level: 0.5, softness: 0.5, feather: 0, grow: 0, refine: 0.5, ...more });
+  const out = (rows: MaskItem[]) => maskViewSvg("mask_only", masks(rows), BOX);
+  const greys = (svg: string): number[] => [...svg.matchAll(/fill="rgb\((\d+),\d+,\d+\)"/g)].map((m) => Number(m[1]));
+
+  it("cuts the blur map with S((P − (1 − level) + w / 2) / w): the ends, the middle and the minimum ramp", () => {
+    expect(BLUR_RAMP_MIN).toBe(0.05);
+    expect(backgroundValue(0.5, 0.5, 0.5)).toBeCloseTo(0.5, 12);
+    expect(backgroundValue(0.25, 0.5, 0.5)).toBe(0);
+    expect(backgroundValue(0.75, 0.5, 0.5)).toBe(1);
+    expect(backgroundValue(0, 1, 0.5)).toBeCloseTo(0.5, 12);
+    expect(backgroundValue(0.474, 0.5, 0)).toBe(0);
+    expect(backgroundValue(0.526, 0.5, 0)).toBe(1);
+    expect(backgroundValue(Number.NaN, 0.5, 0.5)).toBe(0);
+  });
+
+  it("paints the sky lit, the far hill dark and the near ground in between at the default Level and Softness", () => {
+    const [sky, hill, near] = greys(out([background()]));
+    expect([sky, hill]).toEqual([255, 0]);
+    expect(near).toBeGreaterThan(100);
+    expect(near).toBeLessThan(255);
+    expect(MOCK_BLUR.sky).toBeGreaterThan(MOCK_BLUR.near);
+    expect(MOCK_BLUR.near).toBeGreaterThan(MOCK_BLUR.hill);
+  });
+
+  it("follows Level and Softness, and nothing else of the map moves", () => {
+    const base = greys(out([background()]));
+    const low = greys(out([background({ level: 0.2 })]));
+    const high = greys(out([background({ level: 0.9 })]));
+    expect(low[2]).toBeLessThan(base[2]!);
+    expect(high[2]).toBeGreaterThan(base[2]!);
+    expect(greys(out([background({ softness: 0.9 })]))).not.toEqual(base);
+    expect(greys(out([background({ feather: 0.5, grow: 0.5, refine: 1 })]))).toEqual(base);
+  });
+
+  it("is blurred by Feather, inverted with the row, and painted at the row's opacity in the row's ink", () => {
+    expect(out([background({ feather: 0.5 })])).toContain("feGaussianBlur");
+    expect(out([background({ invert: true })])).toContain("feColorMatrix");
+    expect(out([background({ opacity: 0.4 })])).toMatch(/<rect data-background-row="" data-level="0.5" data-softness="0.5" [^>]*fill="#fff" fill-opacity="0.4" mask="url\(#mvg0\)"\/>/);
+    expect(out([background({ mode: "subtract" })])).toMatch(/data-background-row="" [^>]*fill="#000"/);
+  });
+
+  it("is found on a photo whose graph has one with the eye on", () => {
+    const graph = (items: MaskItem[]) => ({ nodes: { items: [{ id: 2, kind: "corrector", masks: { invert: false, items } }], links: [] } }) as unknown as DevelopSettings;
+    expect(hasBackgroundRow(graph([background()]))).toBe(true);
+    expect(hasBackgroundRow(graph([background({ enabled: false })]))).toBe(false);
+    expect(hasBackgroundRow(graph([radial()]))).toBe(false);
   });
 });

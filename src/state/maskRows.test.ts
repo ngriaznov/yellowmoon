@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MaskItem } from "../api/types";
-import { maskRowLabel, maskRowName, maskSubtitle, widthSlider } from "./maskRows";
+import { FINDING, isFinding, maskRowLabel, maskRowName, maskSubtitle, widthSlider } from "./maskRows";
 
 const base = { mode: "add", invert: false, enabled: true, opacity: 1 } as const;
 const edge = { feather: 0, grow: 0, refine: 0.5 } as const;
@@ -41,5 +41,33 @@ describe("a mask row's words (docs/23 §7.6)", () => {
     expect(widthSlider(0.3)).toBe(100);
     expect(widthSlider(0.005 + 0.295 * 0.16)).toBe(40);
     expect(maskSubtitle({ ...base, kind: "color_range", center: [0, 0], width: 0.005 + 0.295 * 0.16, softness: 0.5 })).toBe("Width 40");
+  });
+});
+
+describe("a Background row while the photo's blur map is made (docs/23 §7.6)", () => {
+  const background: MaskItem = { ...base, ...edge, kind: "background", level: 0.5, softness: 0.5 };
+
+  it("is 'Finding…' for a Background row that is on, while the core finds, and only then", () => {
+    expect(FINDING).toBe("Finding…");
+    expect(isFinding(background, true)).toBe(true);
+    expect(isFinding(background, false)).toBe(false);
+    // The eye off: the row is absent, nothing is made for it.
+    expect(isFinding({ ...background, enabled: false }, true)).toBe(false);
+    // Every other kind has its raster at once (Brush) or none to wait for.
+    for (const row of [
+      { ...base, ...edge, kind: "brush", strokes: [] },
+      { ...base, kind: "linear", center: [0.5, 0.5], angle_deg: 0, feather: 0.2 },
+      { ...base, ...edge, kind: "object", points: [], box: null },
+    ] as MaskItem[]) {
+      expect(isFinding(row, true)).toBe(false);
+    }
+  });
+
+  it("changes the accessible name with it, and not the subtitle's own words", () => {
+    expect(maskRowLabel(background)).toBe("Background mask, Level 50");
+    expect(maskRowLabel(background, false)).toBe("Background mask, Level 50");
+    expect(maskRowLabel(background, true)).toBe("Background mask, Finding…");
+    expect(maskRowLabel({ ...background, enabled: false }, true)).toBe("Background mask, Level 50");
+    expect(maskSubtitle(background)).toBe("Level 50");
   });
 });

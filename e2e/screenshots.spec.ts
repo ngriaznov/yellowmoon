@@ -235,6 +235,30 @@ test.describe("Photos", () => {
     await compareScreen(page, "photos-nodes-mask-brush", { pointer: { x: cell.x + cell.width * 0.5, y: cell.y + cell.height * 0.4 } });
   });
 
+  test("The node view: Main's Background row, its BACKGROUND card and the out-of-focus sky in the Overlay (photos-nodes-mask-background.png)", async ({ page }) => {
+    // docs/23 section 7.6 (there is no mockup for Background): the Masks card with the Background row selected ("Background", "Level 50"), the BACKGROUND card under it
+    // (Level, Softness, then Refine edges at 50 %, Feather, Grow, Opacity), the View card with Overlay, and the photo with the sky tinted in the mask accent (the mock's blur map
+    // has the sky out of focus, the far hill sharp and the near ground half way; the core cuts the photo's own), and the chip "MASK · BACKGROUND". The first frame
+    // has found the photo's map ("Finding…" for 400 ms on the mock) before the picture is taken.
+    const background = { kind: "background", mode: "add", invert: false, enabled: true, opacity: 1, feather: 0.1, grow: 0, refine: 0.5, level: 0.5, softness: 0.5 };
+    await photos(page, {
+      DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE, masks: { invert: false, items: [background] } }, ...GRADED_NODES.nodes }, links: GRADED_NODES.links },
+    } as never);
+    await page.getByRole("tab", { name: "Light", exact: true }).click();
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    await page.locator('[data-node-card="1"]').click();
+    await expect(page.locator('[data-node-card="1"]')).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    await page.getByRole("button", { name: /^Background mask/ }).click();
+    await expect(page.getByRole("region", { name: "Background" })).toBeVisible();
+    await page.getByRole("radio", { name: "Overlay", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Background mask, Level 50" })).toBeVisible();
+    await expect(page.locator(".ym-photo-cell__image")).toHaveAttribute("src", /data-background-row/);
+    await cardPicturesMade(page, 4);
+    await compareScreen(page, "photos-nodes-mask-background");
+  });
+
   /**
    * The graded graph (Main with the mockup's grade, then Mountain, Sky and Warmth) on the Mask tab of node `select`, with `rows` in Mountain's masks when given
    * (screen 07b's two rows) and `kinds` as the mock's `?mockMasks=` (every kind, for the menu of screen 08).
