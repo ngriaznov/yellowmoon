@@ -14,7 +14,8 @@
 //! viewport state and frames, thumbnails, look tiles, histogram, Pick white sampling, full-size
 //! renders), [`scheduler`] (priorities, cancellation, the memory budget), [`preferences`]
 //! (`preferences.json`), [`looks`] (the look library with the default look, the display rendering
-//! and `looks_changed`), [`export`] (the one export function the app and the CLI share),
+//! and `looks_changed`), [`vision`] (Subject and People masks from the computer's Vision framework, `docs/23`
+//! section 4.5), [`export`] (the one export function the app and the CLI share),
 //! [`export_queue`] (jobs, snapshots, progress, cancel, the updater's busy flag), [`cli_preview`]
 //! (the `ym render …` command of a job) and [`app`] (all of them wired together, one method per IPC
 //! command).
@@ -42,3 +43,4 @@ pub mod scheduler;
 pub mod session;
 pub mod settings;
 pub mod version;
+pub mod vision;

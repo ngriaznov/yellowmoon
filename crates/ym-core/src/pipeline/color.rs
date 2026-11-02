@@ -61,8 +61,9 @@ use crate::auto::{AutoEstimates, as_shot_gains, as_shot_rggb};
 use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
 use crate::settings::{
     AutoOr, ColorWarp, CurvePoint, Curves, DevelopSettings, LensSettings, MaskMode, MaskSettings,
-    MaskShape, NodeGrade, NodeGraph, NodeId, NodeTrim, ObjectMask, Port,
+    MaskShape, MaskSupport, NodeGrade, NodeGraph, NodeId, NodeTrim, ObjectMask, Port,
 };
+use crate::vision::VisionKind;
 
 // ---------------------------------------------------------------------------------------------
 // Looks
@@ -526,12 +527,16 @@ fn trim_of(t: &NodeTrim) -> Trim {
 pub const NO_PLANE: usize = usize::MAX;
 
 /// Whether a row of this shape is made into a raster plane by this code: Brush (drawn from its strokes), Background (cut
-/// from the photo's blur map) and Object (SAM's decoder on its points and box, N-18). Subject and People are not made
-/// yet (N-19). Whether the machine *can* make it is [`unmakeable_mask_with`].
+/// from the photo's blur map), Object (SAM's decoder on its points and box, N-18) and Subject and People (the union of
+/// Vision's instances on the Input's picture, N-19). Whether the machine *can* make it is [`unmakeable_mask_with`].
 fn makes_raster(shape: &MaskShape) -> bool {
     matches!(
         shape,
-        MaskShape::Brush(_) | MaskShape::Background(_) | MaskShape::Object(_)
+        MaskShape::Brush(_)
+            | MaskShape::Background(_)
+            | MaskShape::Object(_)
+            | MaskShape::Subject(_)
+            | MaskShape::People(_)
     )
 }
 
@@ -539,8 +544,9 @@ fn makes_raster(shape: &MaskShape) -> bool {
 /// Grow, Feather and Refine edges, or a Background row's blur map with its Level, Softness and the same three
 /// (`background` is the photo's map, which only the renderer can make: without it a Background row has no
 /// plane and selects nothing), or an Object row's plane from SAM's decoder (`objects`, made by the renderer from the
-/// photo's features: a row with no point and no box, or whose features are not there, has no plane and selects nothing).
-/// Subject and People are not made yet (N-19).
+/// photo's features: a row with no point and no box, or whose features are not there, has no plane and selects nothing),
+/// or a Subject or People row's plane from Vision (`objects`, the same planes: a row on a computer that cannot make it,
+/// whose mask is not made yet, or that found nothing, has no plane and selects nothing).
 fn raster_row_of(
     shape: &MaskShape,
     background: Option<&Arc<BlurMap>>,
@@ -553,6 +559,17 @@ fn raster_row_of(
             feather: o.feather,
             refine: o.refine,
         }),
+        MaskShape::Subject(f) | MaskShape::People(f) => {
+            let kind = VisionKind::of(crate::settings::MaskKind::of(shape))?;
+            objects
+                .and_then(|p| p.vision_plane(kind))
+                .map(|plane| RasterRow {
+                    source: RasterSource::Plane(Arc::clone(plane)),
+                    grow: f.grow,
+                    feather: f.feather,
+                    refine: f.refine,
+                })
+        }
         MaskShape::Background(b) => background.map(|map| RasterRow {
             source: RasterSource::Background(Arc::new(BackgroundSource {
                 map: Arc::clone(map),
@@ -701,22 +718,23 @@ pub fn uses_photo_position_to(s: &DevelopSettings, stop: Stop) -> bool {
     })
 }
 
-/// The sentence for the first mask of the photo that a machine with no Object model cannot make: [`unmakeable_mask_with`]
-/// `(s, false)`. A renderer asks with its own model ([`Renderer::unmakeable_mask`](super::Renderer)).
+/// The sentence for the first mask of the photo that a machine with nothing beyond Yellowmoon's own code cannot make:
+/// [`unmakeable_mask_with`] of [`MaskSupport::bare`]. A renderer asks with its own support
+/// ([`Renderer::unmakeable_mask`](super::Renderer)).
 #[must_use]
 pub fn unmakeable_mask(s: &DevelopSettings) -> Option<String> {
-    unmakeable_mask_with(s, false)
+    unmakeable_mask_with(s, MaskSupport::bare())
 }
 
 /// The sentence for the first mask of the photo that this computer cannot make (`docs/23` section 3.10): a raster
-/// row of a kind that is not in [`mask_kinds_with`](crate::settings::mask_kinds_with) (`object_model`: whether the SAM
-/// weights are there; Subject and People until they are built) in a node the Output needs, with the eye on; or more raster
+/// row of a kind that is not in [`mask_kinds_with`](crate::settings::mask_kinds_with) (`support`: whether the SAM weights
+/// are there, and what the Vision probe said for Subject and People) in a node the Output needs, with the eye on; or more raster
 /// masks than a render holds ([`MAX_RASTER_PLANES`]). `None` when the photo can be rendered with all its masks. A dead
 /// node's rows and a row with the eye off do not count: they are not in the picture. An Object row with no point and no box
 /// counts: it selects nothing, but a copy of Yellowmoon without the model says so rather than export the photo as if the
 /// row were fine.
 #[must_use]
-pub fn unmakeable_mask_with(s: &DevelopSettings, object_model: bool) -> Option<String> {
+pub fn unmakeable_mask_with(s: &DevelopSettings, support: MaskSupport) -> Option<String> {
     let plan = node_plan(&s.nodes, Stop::Output).ok()?;
     let mut planes = 0usize;
     for id in plan.node_ids() {
@@ -725,7 +743,7 @@ pub fn unmakeable_mask_with(s: &DevelopSettings, object_model: bool) -> Option<S
         };
         for row in c.masks.items.iter().filter(|r| r.enabled) {
             if let Some(sentence) = crate::settings::unmakeable_mask_sentence_with(
-                object_model,
+                support,
                 id,
                 crate::settings::MaskKind::of(&row.shape),
             ) {
@@ -772,6 +790,51 @@ pub fn has_object_row(s: &DevelopSettings) -> bool {
             .iter()
             .any(|r| r.enabled && matches!(r.shape, MaskShape::Object(_)))
     })
+}
+
+/// The Vision requests that the Subject and People rows with the eye on need, in the nodes of the plan that ends at
+/// `stop` (the Output, or a node's mask for the mask view), Subject first.
+#[must_use]
+pub fn vision_kinds_to(s: &DevelopSettings, stop: Stop) -> Vec<VisionKind> {
+    let Ok(plan) = node_plan(&s.nodes, stop) else {
+        return Vec::new();
+    };
+    let mut kinds = Vec::new();
+    for id in plan.node_ids() {
+        if let Some(c) = s.nodes.corrector(id) {
+            kinds.extend(
+                c.masks
+                    .items
+                    .iter()
+                    .filter(|r| r.enabled)
+                    .filter_map(|r| VisionKind::of(crate::settings::MaskKind::of(&r.shape))),
+            );
+        }
+    }
+    kinds.sort_unstable();
+    kinds.dedup();
+    kinds
+}
+
+/// The Vision requests that the Subject and People rows with the eye on need anywhere in the photo's graph, in a node
+/// the Output needs or not: the core starts them in the background for the photo being looked at (`docs/23`
+/// section 4.5), and the app says "Finding…" while they run.
+#[must_use]
+pub fn vision_kinds(s: &DevelopSettings) -> Vec<VisionKind> {
+    let mut kinds: Vec<VisionKind> = s
+        .nodes
+        .correctors()
+        .flat_map(|(_, c)| {
+            c.masks
+                .items
+                .iter()
+                .filter(|r| r.enabled)
+                .filter_map(|r| VisionKind::of(crate::settings::MaskKind::of(&r.shape)))
+        })
+        .collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    kinds
 }
 
 /// Whether the photo's plan has a node with a raster row: the render then makes the raster planes over its window
@@ -1021,6 +1084,23 @@ fn nodes_key(
                         o.feather,
                         o.refine
                     );
+                }
+                // Likewise Vision's plane, named by its own key (the picture and the request); a row whose mask is not
+                // made yet, found nothing or cannot be made says "none".
+                MaskShape::Subject(f) | MaskShape::People(f) => {
+                    if let Some(kind) = VisionKind::of(crate::settings::MaskKind::of(&row.shape)) {
+                        let _ = write!(
+                            k,
+                            "vision:{}:{}:{}:{}:{};",
+                            kind.label(),
+                            objects
+                                .and_then(|p| p.vision_plane(kind))
+                                .map_or_else(|| "none".to_owned(), |p| format!("{:x}", p.key)),
+                            f.grow,
+                            f.feather,
+                            f.refine
+                        );
+                    }
                 }
                 _ => {}
             }

@@ -176,7 +176,7 @@ pub(crate) struct JobObjects {
 }
 
 /// FNV-1a of a string.
-fn fnv(text: &str) -> u64 {
+pub(super) fn fnv(text: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in text.bytes() {
         h ^= u64::from(byte);
@@ -224,17 +224,18 @@ impl Renderer {
         self.object_model().is_some()
     }
 
-    /// The kinds of mask this machine can make now (`docs/23` section 9, `mask_kinds`): Object when the model is there.
+    /// The kinds of mask this machine can make now (`docs/23` section 9, `mask_kinds`): Object when the model is there,
+    /// Subject and People where the Vision probe said yes.
     #[must_use]
     pub fn mask_kinds(&self) -> Vec<MaskKind> {
-        mask_kinds_with(self.object_available())
+        mask_kinds_with(self.mask_support())
     }
 
     /// The sentence for the first mask of the settings that this computer cannot make
     /// ([`unmakeable_mask_with`]), `None` when the photo can be rendered with all its masks.
     #[must_use]
     pub fn unmakeable_mask(&self, s: &DevelopSettings) -> Option<String> {
-        unmakeable_mask_with(s, self.object_available())
+        unmakeable_mask_with(s, self.mask_support())
     }
 
     /// Who hears when the encoder starts or stops working for a photo ([`ObjectPhase`]). Replaces the one set before.
@@ -281,6 +282,7 @@ impl Renderer {
                 let mut options = (*self.options()).clone();
                 options.gpu = None;
                 options.object_model = None;
+                options.vision = None;
                 Renderer::new(Arc::new(crate::pipeline::NeutralOnly), options)
             })
             .as_ref()
@@ -670,8 +672,9 @@ fn decode_plane(
 // ---------------------------------------------------------------------------------------------
 
 impl Job<'_> {
-    /// The planes of the Object rows of the plan that ends at `stop`: for each enabled row that has a point or a box, `S0` of the
-    /// decoder on its prompt. `None` when the plan has no such row, when this machine has no model, and (for a viewer) when
+    /// The planes of the rows of the plan that ends at `stop` that read the Input's picture: for each enabled Object row that has a
+    /// point or a box, `S0` of the decoder on its prompt (below), and for the Subject and People rows the union of Vision's
+    /// instances (`vision::Job::vision_planes_for`). `None` when the plan has no such row, when this machine has no model, and (for a viewer) when
     /// the photo has no features yet: the encoder is started in the background and the rows select nothing until the
     /// listener tells the page to draw again.
     ///
@@ -679,6 +682,23 @@ impl Job<'_> {
     ///
     /// The errors of the picture and the model for an export, which makes the features itself; [`RenderError::Cancelled`].
     pub(crate) fn objects_for(
+        &mut self,
+        stop: PlanStop,
+    ) -> Result<Option<Arc<ObjectPlanes>>, RenderError> {
+        let objects = self.object_planes_for(stop)?;
+        let vision = self.vision_planes_for(stop)?;
+        if vision.is_empty() {
+            return Ok(objects);
+        }
+        let mut merged = objects.map(|o| (*o).clone()).unwrap_or_default();
+        for (kind, plane) in vision {
+            merged.insert_vision(kind, plane);
+        }
+        Ok(Some(Arc::new(merged)))
+    }
+
+    /// The planes of the Object rows alone (see [`Job::objects_for`]).
+    fn object_planes_for(
         &mut self,
         stop: PlanStop,
     ) -> Result<Option<Arc<ObjectPlanes>>, RenderError> {

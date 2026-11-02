@@ -76,6 +76,7 @@ mod background;
 mod lens;
 mod lens_device;
 mod object;
+mod vision;
 
 pub(crate) use object::plane_text;
 
@@ -143,6 +144,12 @@ pub struct RenderOptions {
     /// (`None`: the weights are missing, or the renderer was made without a core) an Object row selects nothing in a view
     /// and fails an export with the `mask` error.
     pub object_model: Option<Arc<crate::pipeline::object::ObjectModel>>,
+    /// The computer's Vision framework for the Subject and People masks (`docs/23` section 4.5) and what its probe said
+    /// (`ym-apple`'s `system_vision()`, handed over by the app and `ym`). With it Subject and People are kinds this
+    /// computer can make where the probe says yes; without it (`None`: a caller that has none, as the tests, the golden
+    /// tool and Linux builds) they are not, and a Subject or People row selects nothing in a view and fails an export
+    /// with the `mask` error.
+    pub vision: Option<Arc<crate::vision::VisionMasks>>,
     /// The shipped data folder (`data/`), for what a render reads from it at run time: the camera's
     /// spectral curves (`cameras/…`), which the lens projects its colours on (`docs/21` section 6,
     /// "Colour"). [`crate::app::Core::open`] fills it from its data root. `None` (a renderer made
@@ -267,6 +274,7 @@ impl Default for RenderOptions {
             lens: None,
             bokeh_model: None,
             object_model: None,
+            vision: None,
             data_root: None,
             gpu: None,
             gpu_stages: GpuStages::ALL,
@@ -560,6 +568,8 @@ pub struct PhotoGraph {
     blur_gate: Mutex<()>,
     /// The photo's Object features, the planes made from them and the encoder's state (`object::ObjectSlot`).
     object: object::ObjectSlot,
+    /// The photo's Subject and People masks and the worker's state (`vision::VisionSlot`).
+    vision: vision::VisionSlot,
     /// Exports that are rendering the photo: while there is one, the raw words stay on the device
     /// whatever else the renderer uploads (an export asks for them at every tile).
     pins: AtomicU32,
@@ -588,6 +598,7 @@ impl PhotoGraph {
             upload_gate: Mutex::new(()),
             blur_gate: Mutex::new(()),
             object: object::ObjectSlot::default(),
+            vision: vision::VisionSlot::default(),
             pins: AtomicU32::new(0),
         }
     }
@@ -636,6 +647,7 @@ impl PhotoGraph {
             + st.lens_planes.as_ref().map_or(0, |e| e.planes.bytes())
             + st.blur.as_ref().map_or(0, |e| e.bytes())
             + self.object.bytes()
+            + self.vision.bytes()
             + st.lens_groups.as_ref().map_or(0, ByteLru::used)
             + st.lens_tiles.as_ref().map_or(0, ByteLru::used)
             + st.lens_field_groups.as_ref().map_or(0, ByteLru::used)
@@ -871,6 +883,9 @@ struct Inner {
     /// The renderer that makes SAM's pictures: no graphics device, so the pictures are the CPU reference path's
     /// (`Renderer::object_reference`).
     object_reference: std::sync::OnceLock<Result<Renderer, RenderError>>,
+    /// Who hears when the Subject and People worker starts or ends its work for a photo
+    /// (`Renderer::set_vision_listener`).
+    vision_listener: Mutex<Option<vision::VisionListener>>,
 }
 
 /// Who hears when the Object encoder starts or stops working for a photo ([`Renderer::set_object_listener`]).
@@ -976,6 +991,7 @@ impl Renderer {
                 lens_cameras: Mutex::new(HashMap::new()),
                 object_listener: Mutex::new(None),
                 object_reference: std::sync::OnceLock::new(),
+                vision_listener: Mutex::new(None),
             }),
         })
     }
@@ -1097,16 +1113,18 @@ impl Renderer {
         !on_device || !device_runs_demosaic(&opts) || !device_runs_denoise(&opts)
     }
 
-    /// Whether the photo still has its first blur map to make for a Background row of these settings
-    /// (`docs/23` section 7.6): a row with the eye on and no map in the photo's graph yet. The app says
-    /// "Finding…" under the row while a round that starts now makes it. Asking makes no graph and changes
-    /// nothing.
+    /// Whether the core is making a raster mask of these settings for the first time (`docs/23` section 7.6): the
+    /// photo's first blur map for a Background row with the eye on (made by the round that starts now), or the Subject
+    /// and People masks that the background worker is making for a row with the eye on (`viewport_busy.finding`).
+    /// The app says "Finding…" under the rows meanwhile. Asking makes no graph and changes nothing.
     #[must_use]
     pub fn finding_masks(&self, id: PhotoId, settings: &crate::settings::DevelopSettings) -> bool {
-        has_background_row(settings)
+        (has_background_row(settings)
             && self
                 .existing_graph(id)
-                .is_none_or(|g| lock(&g.state).blur.is_none())
+                .is_none_or(|g| lock(&g.state).blur.is_none()))
+            || (!crate::pipeline::color::vision_kinds(settings).is_empty()
+                && self.vision_working(id))
     }
 
     /// The graph of a photo, made on first use. The least recently used graphs beyond
@@ -1682,6 +1700,8 @@ pub(crate) struct Job<'a> {
     mask: Option<(MaskView, Option<Arc<GradePlan>>)>,
     /// What this request found out about the photo's Object rows (`object::JobObjects`).
     object: object::JobObjects,
+    /// What this request found out about the photo's Subject and People rows (`vision::JobVision`).
+    vision: vision::JobVision,
 }
 
 impl Drop for Job<'_> {
@@ -1758,6 +1778,7 @@ impl<'a> Job<'a> {
             lens_job_device: None,
             mask: None,
             object: object::JobObjects::default(),
+            vision: vision::JobVision::default(),
         }
     }
 

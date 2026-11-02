@@ -791,6 +791,8 @@ impl Renderer {
             self.cancel_gpu_navigation(old);
             // The encoder of the Object masks stops working for the photo left, if it started on its own.
             self.object_leave(old);
+            // So does the worker of the Subject and People masks.
+            self.vision_leave(old);
         }
         self.scheduler().navigate(photo)
     }

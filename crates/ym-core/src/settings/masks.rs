@@ -8,6 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
 use super::{SettingsError, clamp_to};
+use crate::vision::VisionSupport;
 
 /// The most mask rows one node may hold.
 pub const MAX_MASKS_PER_NODE: usize = 64;
@@ -127,35 +128,78 @@ impl MaskKind {
     }
 }
 
+/// What a machine can make now (`docs/23` section 9, `mask_kinds`): whether the SAM weights are there and load
+/// (Object), and what the Vision probe said (Subject and People, `docs/23` section 3.10). The lists, the reasons and the
+/// sentences below are all functions of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaskSupport {
+    /// The SAM weights are there and have not been found damaged (`ObjectModel::available`).
+    pub object: bool,
+    /// What each Vision request said when it was tried (`VisionMasks::support`).
+    pub vision: VisionSupport,
+}
+
+impl MaskSupport {
+    /// A machine with these parts.
+    #[must_use]
+    pub const fn new(object: bool, vision: VisionSupport) -> Self {
+        Self { object, vision }
+    }
+
+    /// A machine that has nothing beyond Yellowmoon's own code: no Object model, and no Vision code (`not_a_mac` off
+    /// macOS, `not_supported` on a Mac). What [`mask_kinds`] and [`mask_unavailable`] describe.
+    #[must_use]
+    pub const fn bare() -> Self {
+        Self::new(false, VisionSupport::none_here())
+    }
+
+    /// This machine with the SAM weights said to be there or not.
+    #[must_use]
+    pub const fn with_object(mut self, object: bool) -> Self {
+        self.object = object;
+        self
+    }
+
+    /// This machine with this Vision answer.
+    #[must_use]
+    pub const fn with_vision(mut self, vision: VisionSupport) -> Self {
+        self.vision = vision;
+        self
+    }
+
+    /// Whether it can make a kind of mask.
+    #[must_use]
+    pub fn can_make(self, kind: MaskKind) -> bool {
+        match kind {
+            MaskKind::Object => self.object,
+            MaskKind::Subject => self.vision.subject.is_supported(),
+            MaskKind::People => self.vision.people.is_supported(),
+            _ => true,
+        }
+    }
+}
+
 /// The kinds of mask a machine can make with nothing but Yellowmoon's code, in the order of the Add mask menu: what
-/// [`mask_kinds_with`] gives for a machine that has no Object model. The shapes, Brush and the ranges that are built
-/// always are here, and so is Background (N-15: the blur map is made on the CPU from the photo itself, with the
-/// learned model or without it). **Object is not**: it needs the SAM weights (N-18), so what this machine can make
-/// is [`mask_kinds_with`] `(true)` where they load (`Core::mask_kinds`, `Renderer::mask_kinds`), and Subject and
-/// People need the Vision probe (N-19).
+/// [`mask_kinds_with`] gives for [`MaskSupport::bare`]. The shapes, Brush and the ranges that are built always are
+/// here, and so is Background (N-15: the blur map is made on the CPU from the photo itself, with the learned model or
+/// without it). **Object is not**: it needs the SAM weights (N-18). **Subject and People are not**: they need the
+/// Vision probe (N-19). What this machine can make is [`mask_kinds_with`] of its [`MaskSupport`]
+/// (`Core::mask_kinds`, `Renderer::mask_kinds`).
 #[must_use]
 pub fn mask_kinds() -> Vec<MaskKind> {
-    mask_kinds_with(false)
+    mask_kinds_with(MaskSupport::bare())
 }
 
 /// The kinds of mask this machine can make now (`docs/23` section 9, `mask_kinds`), in the order of the Add mask
-/// menu: what the menu lists, and what a photo may use without being refused. `object_model` says whether the SAM
-/// weights are there and load (`ObjectModel::available`): then Object is the first of the list.
+/// menu: what the menu lists, and what a photo may use without being refused. Object is the first where the SAM
+/// weights are there, then Subject and People where the Vision probe said yes, then Background and the shapes and
+/// ranges.
 #[must_use]
-pub fn mask_kinds_with(object_model: bool) -> Vec<MaskKind> {
-    let mut kinds = Vec::with_capacity(7);
-    if object_model {
-        kinds.push(MaskKind::Object);
-    }
-    kinds.extend([
-        MaskKind::Background,
-        MaskKind::Linear,
-        MaskKind::Radial,
-        MaskKind::Brush,
-        MaskKind::ColorRange,
-        MaskKind::BrightnessRange,
-    ]);
-    kinds
+pub fn mask_kinds_with(support: MaskSupport) -> Vec<MaskKind> {
+    MaskKind::ALL
+        .into_iter()
+        .filter(|&k| support.can_make(k))
+        .collect()
 }
 
 /// Why this machine cannot make a kind of mask, by its wire name in `ym doctor --json`
@@ -169,8 +213,8 @@ pub enum MaskUnavailable {
     NotAMac,
     /// This Mac's macOS is older than the Vision requests need (Subject and People).
     MacosTooOld,
-    /// This version of Yellowmoon has no way to make the kind on this computer: its runtime is not built yet
-    /// (Subject and People on a Mac until N-19), or the Mac cannot run the Vision requests.
+    /// This computer cannot make the kind: a Mac whose Vision request failed its probe (a virtual Mac), or a build of
+    /// Yellowmoon that has no Vision code (an older SDK, or the code switched off).
     NotSupported,
 }
 
@@ -196,8 +240,8 @@ impl MaskUnavailable {
             (Self::NotAMac, false) => "this is not a Mac that supports it",
             (Self::MacosTooOld, true) => "this Mac's macOS is too old for them",
             (Self::MacosTooOld, false) => "this Mac's macOS is too old for it",
-            (Self::NotSupported, true) => "this version of Yellowmoon can't make them yet",
-            (Self::NotSupported, false) => "this version of Yellowmoon can't make it yet",
+            (Self::NotSupported, true) => "this computer can't make them",
+            (Self::NotSupported, false) => "this computer can't make it",
         }
     }
 }
@@ -220,29 +264,35 @@ impl MaskKind {
     }
 }
 
-/// The kinds of mask a machine with no Object model cannot make, each with its reason: [`mask_unavailable_with`]
-/// `(false)`.
+/// The kinds of mask a machine with [`MaskSupport::bare`] cannot make, each with its reason:
+/// [`mask_unavailable_with`] of it.
 #[must_use]
 pub fn mask_unavailable() -> Vec<(MaskKind, MaskUnavailable)> {
-    mask_unavailable_with(false)
+    mask_unavailable_with(MaskSupport::bare())
 }
 
 /// The kinds of mask this machine cannot make, each with its reason, in the order of the Add mask menu: the
 /// complement of [`mask_kinds_with`] in [`MaskKind::ALL`]. `ym doctor` prints it and a photo that needs one of them
-/// fails with `error.kind` `mask` ([`unmakeable_mask_sentence_with`]). Object without its model is
-/// `weights_missing`.
+/// fails with `error.kind` `mask` ([`unmakeable_mask_sentence_with`]). Object without its model is `weights_missing`;
+/// Subject and People are what the Vision probe said (`not_a_mac`, `macos_too_old` or `not_supported`).
 #[must_use]
-pub fn mask_unavailable_with(object_model: bool) -> Vec<(MaskKind, MaskUnavailable)> {
-    let made = mask_kinds_with(object_model);
+pub fn mask_unavailable_with(support: MaskSupport) -> Vec<(MaskKind, MaskUnavailable)> {
     MaskKind::ALL
         .into_iter()
-        .filter(|k| !made.contains(k))
+        .filter(|&k| !support.can_make(k))
         .map(|k| {
             let why = match k {
                 MaskKind::Object => MaskUnavailable::WeightsMissing,
-                MaskKind::Subject | MaskKind::People if !cfg!(target_os = "macos") => {
-                    MaskUnavailable::NotAMac
-                }
+                MaskKind::Subject => support
+                    .vision
+                    .subject
+                    .reason()
+                    .unwrap_or(MaskUnavailable::NotSupported),
+                MaskKind::People => support
+                    .vision
+                    .people
+                    .reason()
+                    .unwrap_or(MaskUnavailable::NotSupported),
                 _ => MaskUnavailable::NotSupported,
             };
             (k, why)
@@ -255,22 +305,38 @@ pub fn mask_unavailable_with(object_model: bool) -> Vec<(MaskKind, MaskUnavailab
 pub const NO_OBJECT_MODEL_SENTENCE: &str =
     "This copy of Yellowmoon has no Object model. Reinstall the app.";
 
-/// [`unmakeable_mask_sentence_with`] for a machine with no Object model.
+/// The sentence a Subject or People row shows in the Mask tab on a computer that cannot make it (`docs/23` section
+/// 3.10 and 7.6): "Subject masks need a Mac that supports them". `None` for the other kinds.
+#[must_use]
+pub fn unsupported_row_sentence(kind: MaskKind) -> Option<String> {
+    match kind {
+        MaskKind::Subject | MaskKind::People => Some(format!(
+            "{} masks need a Mac that supports them",
+            kind.label()
+        )),
+        _ => None,
+    }
+}
+
+/// [`unmakeable_mask_sentence_with`] for [`MaskSupport::bare`].
 #[must_use]
 pub fn unmakeable_mask_sentence(node: u32, kind: MaskKind) -> Option<String> {
-    unmakeable_mask_sentence_with(false, node, kind)
+    unmakeable_mask_sentence_with(MaskSupport::bare(), node, kind)
 }
 
 /// The plain sentence for a node whose mask of this kind this computer cannot make (`error.kind` `mask`,
 /// `docs/23` section 3.10 and `docs/10`): what went wrong and what to do next. `None` for a kind it can make.
-/// An Object row without the model is [`NO_OBJECT_MODEL_SENTENCE`], whatever the node.
+/// An Object row without the model is [`NO_OBJECT_MODEL_SENTENCE`], whatever the node. A Subject or People row on a
+/// computer that cannot make it is the sentence of section 3.10 whatever the reason (an older macOS, a Mac that cannot
+/// run the requests, a computer that is not a Mac): "Node 2 has a Subject mask, and this computer cannot make one. Use
+/// a Mac that supports Subject masks, or remove the mask."
 #[must_use]
 pub fn unmakeable_mask_sentence_with(
-    object_model: bool,
+    support: MaskSupport,
     node: u32,
     kind: MaskKind,
 ) -> Option<String> {
-    let (_, why) = mask_unavailable_with(object_model)
+    let (_, why) = mask_unavailable_with(support)
         .into_iter()
         .find(|(k, _)| *k == kind)?;
     let (article, name) = match kind {
@@ -281,6 +347,12 @@ pub fn unmakeable_mask_sentence_with(
         // The other kinds can always be made.
         _ => return None,
     };
+    // Subject and People: the sentence of section 3.10, whatever the reason.
+    if matches!(kind, MaskKind::Subject | MaskKind::People) {
+        return Some(format!(
+            "Node {node} has {article} {name} mask, and this computer cannot make one. Use a Mac that supports {name} masks, or remove the mask."
+        ));
+    }
     Some(match why {
         MaskUnavailable::NotAMac | MaskUnavailable::MacosTooOld => format!(
             "Node {node} has {article} {name} mask, and this computer cannot make one. Use a Mac that supports {name} masks, or remove the mask."

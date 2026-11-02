@@ -19,6 +19,7 @@ use super::color::PhotoSource;
 use crate::settings::{
     DevelopSettings, MAX_OBJECT_POINTS, NO_OBJECT_MODEL_SENTENCE, NodeGrade, ObjectMask,
 };
+use crate::vision::VisionKind;
 use ym_looks::library::LookId;
 
 /// Coordinates the core stores for an Object row are rounded to this many decimals (a tenth of a pixel of SAM's input),
@@ -215,11 +216,13 @@ pub enum MaskFound {
     NothingFound(NothingFound),
 }
 
-/// The planes a render uses for the Object rows of a plan, by the row's prompt ([`prompt_key`]): the `S0` of every
-/// enabled row that has a point or a box and whose features exist. A row without a plane selects nothing.
+/// The planes a render uses for the rows that read the Input's picture: for the Object rows of a plan, by the row's
+/// prompt ([`prompt_key`]), the `S0` of every enabled row that has a point or a box and whose features exist; and for the
+/// Subject and People rows, by the request, the union of Vision's instances (N-19). A row without a plane selects nothing.
 #[derive(Debug, Clone, Default)]
 pub struct ObjectPlanes {
     planes: HashMap<u64, Arc<SourcePlane>>,
+    vision: [Option<Arc<SourcePlane>>; 2],
 }
 
 impl ObjectPlanes {
@@ -228,10 +231,22 @@ impl ObjectPlanes {
         self.planes.insert(prompt, plane);
     }
 
+    /// Adds the plane of the rows of a Vision request.
+    pub(crate) fn insert_vision(&mut self, kind: VisionKind, plane: Arc<SourcePlane>) {
+        self.vision[vision_index(kind)] = Some(plane);
+    }
+
+    /// The plane of the Subject or People rows: `None` when the computer cannot make it, it is not made yet or Vision
+    /// found nothing.
+    #[must_use]
+    pub fn vision_plane(&self, kind: VisionKind) -> Option<&Arc<SourcePlane>> {
+        self.vision[vision_index(kind)].as_ref()
+    }
+
     /// Whether no row has a plane.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.planes.is_empty()
+        self.planes.is_empty() && self.vision.iter().all(Option::is_none)
     }
 
     /// The plane of an Object row, by what the row asks (its points and box). `None` for a row with none or whose
@@ -239,6 +254,14 @@ impl ObjectPlanes {
     #[must_use]
     pub fn plane_for(&self, o: &ObjectMask) -> Option<&Arc<SourcePlane>> {
         self.planes.get(&prompt_key(&o.points, o.box_))
+    }
+}
+
+/// Where a request's plane sits in [`ObjectPlanes`].
+fn vision_index(kind: VisionKind) -> usize {
+    match kind {
+        VisionKind::Subject => 0,
+        VisionKind::People => 1,
     }
 }
 

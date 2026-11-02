@@ -388,7 +388,10 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     assert_eq!(object.points, [(0.52, 0.41, true), (0.6, 0.55, false)]);
     assert_eq!(object.box_, Some([0.4, 0.3, 0.7, 0.6]));
     assert_eq!(
-        ym_core::pipeline::unmakeable_mask_with(&settings, true),
+        ym_core::pipeline::unmakeable_mask_with(
+            &settings,
+            ym_core::settings::MaskSupport::bare().with_object(true)
+        ),
         None,
         "this version makes an Object mask where the model is"
     );

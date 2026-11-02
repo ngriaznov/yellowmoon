@@ -17,7 +17,8 @@ use ym_core::app::{Core, CoreOptions};
 use ym_core::pipeline::{FullRequest, FullTarget};
 use ym_core::session::PhotoId;
 use ym_core::settings::{
-    MaskKind, NO_OBJECT_MODEL_SENTENCE, SettingsPatch, mask_kinds_with, mask_unavailable_with,
+    MaskKind, MaskSupport, NO_OBJECT_MODEL_SENTENCE, SettingsPatch, mask_kinds_with,
+    mask_unavailable_with,
 };
 use ym_ml::sam2::{Decoding, Picture, Prompt};
 
@@ -187,17 +188,19 @@ fn wait_until(what: &str, secs: u64, mut done: impl FnMut() -> bool) {
 fn object_is_a_kind_where_the_model_is_and_a_mask_error_where_it_is_not() {
     let Some(model) = model() else { return };
     // The lists: Object first where the weights are, `weights_missing` where they are not.
-    let with = mask_kinds_with(true);
+    let has_model = MaskSupport::bare().with_object(true);
+    let no_model = MaskSupport::bare();
+    let with = mask_kinds_with(has_model);
     assert_eq!(with[0], MaskKind::Object);
     assert!(
-        mask_unavailable_with(true)
+        mask_unavailable_with(has_model)
             .iter()
             .all(|(k, _)| *k != MaskKind::Object)
     );
-    let without = mask_unavailable_with(false);
+    let without = mask_unavailable_with(no_model);
     assert_eq!(without[0].0, MaskKind::Object);
     assert_eq!(without[0].1.wire(), "weights_missing");
-    assert!(!mask_kinds_with(false).contains(&MaskKind::Object));
+    assert!(!mask_kinds_with(no_model).contains(&MaskKind::Object));
     // The renderer says the same, and refuses the row without the model with the sentence of `docs/23` section 9.
     let has = renderer(model);
     let lacks = renderer_with(None, 1024);

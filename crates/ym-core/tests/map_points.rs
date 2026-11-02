@@ -465,8 +465,8 @@ fn a_dragged_point_comes_back_to_the_photo_where_the_pixel_is() {
 
 #[test]
 fn this_machine_makes_the_shapes_brush_and_the_ranges_that_are_built() {
-    // What needs no model (`mask_kinds()`: Background since N-15); Object is first where the SAM weights are (`mask_kinds_with(true)`, N-18) and
-    // Subject and People come with N-19.
+    // What needs no model (`mask_kinds()`: Background since N-15); Object is first where the SAM weights are (`mask_kinds_with`, N-18) and
+    // Subject and People come after it where the Vision probe says yes (N-19).
     assert_eq!(
         mask_kinds(),
         [
@@ -477,10 +477,11 @@ fn this_machine_makes_the_shapes_brush_and_the_ranges_that_are_built() {
             MaskKind::ColorRange,
             MaskKind::BrightnessRange
         ],
-        "the later tasks add Object (with its model), Subject and People"
+        "Object needs its model, Subject and People the Vision probe"
     );
     assert_eq!(
-        ym_core::settings::mask_kinds_with(true)[0],
+        ym_core::settings::mask_kinds_with(ym_core::settings::MaskSupport::bare().with_object(true))
+            [0],
         MaskKind::Object
     );
 }

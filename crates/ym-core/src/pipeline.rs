@@ -53,6 +53,7 @@ pub mod object;
 pub mod raw;
 pub mod thumbs;
 pub mod viewport;
+pub mod vision;
 
 pub use color::{
     LookProblem, LookProvider, NeutralOnly, PhotoSource, ResolvedLook, has_object_row,
@@ -77,6 +78,7 @@ pub use thumbs::{
 pub use viewport::{
     MapFrom, MaskStyle, MaskView, ViewportInput, ViewportMode, ViewportRect, ViewportState,
 };
+pub use vision::VisionPhase;
 
 /// Why a render failed. The text is for the person using the app: what went wrong and what to do.
 #[derive(Debug, Clone, thiserror::Error)]

@@ -620,8 +620,8 @@ impl Core {
     }
 
     /// `update_settings`: applies a patch to a photo's settings ([`Session::update_settings`]) and, when the photo is the
-    /// one being looked at and has an Object row, asks for SAM's features in the background
-    /// ([`Core::prepare_object`], `docs/23` section 4.4: "as soon as an Object row exists on the photo").
+    /// one being looked at and has an Object, Subject or People row, asks for what those rows read in the background
+    /// ([`Core::prepare_masks`], `docs/23` sections 4.4 and 4.5: "as soon as the row exists on the photo").
     ///
     /// # Errors
     ///
@@ -632,8 +632,35 @@ impl Core {
         patch: &SettingsPatch,
     ) -> Result<crate::settings::ResolvedSettings, SessionError> {
         let resolved = self.session.update_settings(id, patch)?;
-        self.prepare_object(id);
+        self.prepare_masks(id);
         Ok(resolved)
+    }
+
+    /// Asks for what the photo's raster rows read, in the background, when it is the photo being looked at: SAM's features
+    /// for an Object row ([`Core::prepare_object`]) and Vision's masks for a Subject or People row
+    /// ([`Core::prepare_vision`]). Returns at once.
+    pub fn prepare_masks(&self, id: PhotoId) {
+        self.prepare_object(id);
+        self.prepare_vision(id);
+    }
+
+    /// Asks for the Subject and People masks of the photo in the background when it is the photo being looked at and has a
+    /// Subject or People row with the eye on ([`Renderer::vision_prepare`]; `docs/23` section 4.5). Returns at once; the
+    /// probe, the picture and Vision run on the worker. Nothing happens for a photo that is not current, one without such
+    /// a row, and a core given no Vision provider.
+    pub fn prepare_vision(&self, id: PhotoId) {
+        if self.session.current() != Some(id) || self.renderer.vision_masks().is_none() {
+            return;
+        }
+        let Ok(view) = self.session.view(id) else {
+            return;
+        };
+        if crate::pipeline::color::vision_kinds(&view.settings).is_empty() {
+            return;
+        }
+        if let Ok(src) = crate::pipeline::PhotoSource::from_session(&self.session, id) {
+            self.renderer.vision_prepare(&src);
+        }
     }
 
     /// Asks for the Object features of the photo in the background when it is the photo being looked at and has an Object
@@ -655,7 +682,7 @@ impl Core {
     }
 
     /// `mask_kinds`: the kinds of mask this machine can make now (`docs/23` section 9): Object when the SAM weights are
-    /// there.
+    /// there, Subject and People where the Vision probe said yes (the first call runs the probe).
     #[must_use]
     pub fn mask_kinds(&self) -> Vec<crate::settings::MaskKind> {
         self.renderer.mask_kinds()
@@ -666,7 +693,7 @@ impl Core {
     pub fn mask_unavailable(
         &self,
     ) -> Vec<(crate::settings::MaskKind, crate::settings::MaskUnavailable)> {
-        crate::settings::mask_unavailable_with(self.renderer.object_available())
+        crate::settings::mask_unavailable_with(self.renderer.mask_support())
     }
 
     /// `mask_find(photo_id, node, mask, prompt)` (`docs/23` section 9): what the row would become with the click or the box,
@@ -728,11 +755,12 @@ impl Core {
             self.looks.check_usable(look)?;
         }
         let report = self.session.paste_settings(ids, patch)?;
-        // A pasted graph may bring an Object row (empty): the encoder starts for the photo being looked at.
+        // A pasted graph may bring an Object row (empty) or Subject and People rows, which are worked out again on the
+        // new photo: the encoder and the worker start for the photo being looked at.
         if let Some(current) = self.session.current()
             && report.pasted.iter().any(|p| p.id == current)
         {
-            self.prepare_object(current);
+            self.prepare_masks(current);
         }
         Ok(report)
     }

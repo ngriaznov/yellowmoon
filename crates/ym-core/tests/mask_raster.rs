@@ -114,7 +114,7 @@ fn block(img: &FullImage, x0: f64, y0: f64, w: f64, h: f64) -> [f64; 3] {
 // ---- the kinds -----------------------------------------------------------------------------------
 
 #[test]
-fn brush_and_background_are_kinds_this_computer_can_make_and_the_others_of_the_raster_family_are_not_yet()
+fn brush_and_background_are_kinds_this_computer_can_make_and_the_others_of_the_raster_family_need_a_model_or_a_mac()
  {
     let kinds = mask_kinds();
     assert_eq!(
@@ -156,22 +156,21 @@ fn a_raster_row_of_a_kind_that_cannot_be_made_is_a_mask_error_never_an_empty_mas
     let sentence = "This copy of Yellowmoon has no Object model. Reinstall the app.";
     let s = graph(vec![node_2(vec![row])]);
     assert_eq!(unmakeable_mask(&s).as_deref(), Some(sentence));
-    if !cfg!(target_os = "macos") {
-        let s = graph(vec![node_2(vec![json!({ "kind": "subject" })])]);
-        assert_eq!(
-            unmakeable_mask(&s).as_deref(),
-            Some(
-                "Node 2 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask."
-            )
-        );
-        let s = graph(vec![node_2(vec![json!({ "kind": "people" })])]);
-        assert_eq!(
-            unmakeable_mask(&s).as_deref(),
-            Some(
-                "Node 2 has a People mask, and this computer cannot make one. Use a Mac that supports People masks, or remove the mask."
-            )
-        );
-    }
+    // Subject and People: the sentence of `docs/23` section 3.10 on a computer with no Vision (any platform).
+    let s = graph(vec![node_2(vec![json!({ "kind": "subject" })])]);
+    assert_eq!(
+        unmakeable_mask(&s).as_deref(),
+        Some(
+            "Node 2 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask."
+        )
+    );
+    let s = graph(vec![node_2(vec![json!({ "kind": "people" })])]);
+    assert_eq!(
+        unmakeable_mask(&s).as_deref(),
+        Some(
+            "Node 2 has a People mask, and this computer cannot make one. Use a Mac that supports People masks, or remove the mask."
+        )
+    );
     // A row with the eye off, a dead node's row and a kind that can be made are no problem.
     let off = json!({ "kind": "object", "enabled": false });
     assert_eq!(unmakeable_mask(&graph(vec![node_2(vec![off])])), None);
