@@ -9,7 +9,8 @@
 # is the place that is meant to run them, the job sets the matching YM_REQUIRE_* variable, which turns the skip into a failure:
 # YM_REQUIRE_GPU (gpu-lavapipe, ml-backends), YM_REQUIRE_EXTERNAL_TOOLS (dng), YM_REQUIRE_ORACLE (oracle, dng),
 # YM_REQUIRE_FIXTURES (spectral-fixtures), YM_REQUIRE_SYNTHETIC (synthetic-set), YM_REQUIRE_ORT (ml-backends),
-# YM_REQUIRE_PARITY_BIN and YM_REQUIRE_FORCE_DEMOSAIC (parity). The macOS `rust` job sets none of them.
+# YM_REQUIRE_PARITY_BIN and YM_REQUIRE_FORCE_DEMOSAIC (parity), YM_REQUIRE_SAM2 (sam2, gpu-lavapipe, parity: SAM 2.1's weights are
+# fetched there and every Object test runs in one of them). The macOS `rust` job sets none of them.
 name: CI
 
 on:
@@ -154,11 +155,20 @@ jobs:
     timeout-minutes: 100   # the lens kernels' suites, measured 2026-10-26: about 55 minutes before the export parity step (60 cancelled it)
     env:
       YM_REQUIRE_GPU: "1"
+      YM_REQUIRE_SAM2: "1"   # the Object tests of the last steps need SAM 2.1's weights, fetched below
       WGPU_BACKEND: vulkan
       # Release test builds have no debug fallback to the workspace data/ folder (ym-core data_dir.rs).
       YELLOWMOON_DATA: ${{ github.workspace }}/data
     steps:
       - uses: actions/checkout@v4
+      # SAM 2.1 small's weights (about 77 MB, our own release asset, tools/fetch/sam2.sh): the same download as the sam2 job's, without
+      # its fixtures, and cached on its own key (the sam2 job's entry holds the 490 MB of fixtures too).
+      - name: SAM 2.1 weights (cached by their pin)
+        uses: actions/cache@v4
+        with:
+          path: data/models/sam2/sam2.1_hiera_small.f16.safetensors
+          key: sam2-weights-${{ hashFiles('data/models/sam2/SHA256SUMS') }}
+      - run: tools/fetch/sam2.sh
       - name: Mesa lavapipe (software Vulkan)
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools
       - name: Show the adapter
@@ -181,6 +191,12 @@ jobs:
         env:
           YELLOWMOON_GPU: "on"
         run: cargo test -p ym-cli --release --test parity_gpu
+      # N-18, the Object tests that need a device (the CPU ones run in the macOS `sam2` job; parity_gpu's Object test ran in the step
+      # above). SAM's encoder takes seconds in release and minutes in the dev profile, so `--release` is not optional here.
+      - name: Object masks on the device against the CPU, and the app against ym on the device
+        run: |
+          cargo test -p ym-core --release --features fault-injection --test mask_object -- the_device_makes_the_same_frames_and_masks_as_the_cpu_with_an_object_row
+          cargo test -p ym-cli --release --test parity -- an_object_mask_is_the_same_files_through_the_app_path_and_the_binary_on_the_device
 
   # M0-05: decoder oracle. LibRaw (rawpy), rawler (tools/oracle) and libjpeg compare ym-raw's pixels,
   # levels and white balance. Test-only: none of them is ever linked into a shipped crate. Until the
@@ -671,6 +687,19 @@ jobs:
           YM_BIN="$RUNNER_TEMP/ym-force-demosaic" cargo test -p yellowmoon-app --test app_cli_parity -- --nocapture with_menon_forced 2>&1 | tee "$RUNNER_TEMP/forced-demosaic.txt"
           # A name filter that matches no test ends green with "0 passed"; the one test has to have run (bash -eo pipefail).
           grep -q 'test result: ok\. 1 passed' "$RUNNER_TEMP/forced-demosaic.txt"
+      # N-18: the shell's Object tests (src-tauri/src/api/tests.rs: the kinds of mask, mask_find and the encoder's events) need SAM 2.1's
+      # weights. No job builds the app's tests in release, and a release build of the app (webview, thin LTO) is too much for three tests;
+      # the dev profile is enough, because Cargo.toml builds ym-ml, where the encoder's arithmetic is, at opt-level 3.
+      - name: SAM 2.1 weights (cached by their pin)
+        uses: actions/cache@v4
+        with:
+          path: data/models/sam2/sam2.1_hiera_small.f16.safetensors
+          key: sam2-weights-${{ hashFiles('data/models/sam2/SHA256SUMS') }}
+      - run: tools/fetch/sam2.sh
+      - name: The shell's Object tests (weights required)
+        env:
+          YM_REQUIRE_SAM2: "1"
+        run: cargo test -p yellowmoon-app -- the_kinds_of_mask_this_machine_makes mask_find
       - name: Rustdoc (warnings are errors)
         env:
           RUSTDOCFLAGS: -D warnings
@@ -724,12 +753,18 @@ jobs:
   # release (the gates take about 90 s a photo in the dev profile, where the rust job skips them and says so). The weights and the
   # fixtures are our own release assets (models-sam2.1-small-1), fetched by SHA-256 and cached; YM_REQUIRE_SAM2 makes a missing
   # file a failure. The timing example prints the encoder's and the decoder's times on this runner (print only).
+  # N-18, the Object masks, run here too, on the CPU and in release: ym-core's mask_object (its device test skips: the runner opens no
+  # Metal adapter; gpu-lavapipe runs it) and, of ym-cli, the Object legs of parity, the render test that renders with the weights, and
+  # the doctor tests, whose Masks row and weights list differ with the weights there. The device legs run in gpu-lavapipe and the
+  # shell's tests in parity.
   sam2:
     if: github.event_name != 'schedule'
     runs-on: macos-latest
     timeout-minutes: 45
     env:
       YM_REQUIRE_SAM2: "1"
+      # Release test builds have no debug fallback to the workspace data/ folder (ym-core data_dir.rs).
+      YELLOWMOON_DATA: ${{ github.workspace }}/data
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain from rust-toolchain.toml
@@ -747,6 +782,10 @@ jobs:
       - run: cargo test -p ym-ml --release --test sam2 -- --nocapture
       - name: Encoder and decoder times on this runner (print only)
         run: cargo run -p ym-ml --release --example sam2_time -- --reps 2
+      - name: Object masks through the render graph (ym-core, the CPU)
+        run: cargo test -p ym-core --release --test mask_object -- --nocapture
+      - name: Object masks in ym and in the app's path (ym-cli, the CPU), and the doctor with the weights
+        run: cargo test -p ym-cli --release --test parity --test render --test cli -- object doctor
   # Fuzzing (docs/13): every cargo-fuzz target runs for 10 minutes each night (property: no panic, no unbounded allocation, a
   # typed error for any input). One job per target, so a crash names its target and the others still run. The targets are
   # crates/ym-raw/fuzz (the ARW container and the decoders, docs/04) and crates/ym-color/fuzz (the `.cube` parser and the look
