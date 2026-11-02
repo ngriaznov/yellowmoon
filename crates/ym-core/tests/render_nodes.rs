@@ -1,8 +1,8 @@
 //! The nodes on the CPU reference through the render graph (`docs/23-nodes.md` sections 1.3, 5.1 to 5.3
 //! and 5.10): a graph of correctors renders as its plan says, a node at its identity, a bypassed node and
 //! a dead branch change no bit, an exposure trim is a stop of exposure, the nodes are deterministic whatever
-//! the thread count and the tile size, a graph with nodes beyond Main renders on the CPU when a device is
-//! attached (with a note) and the grade cache key sees the plan, every node and the look.
+//! the thread count and the tile size, a graph with nodes beyond Main renders on the device like any other
+//! (N-04: no fallback, no note) and the grade cache key sees the plan, every node and the look.
 //!
 //! Masks are not rendered until N-10: a document with mask rows renders as if they were off.
 mod common;
@@ -14,10 +14,7 @@ use common::*;
 use serde_json::{Value, json};
 use ym_color::display::OutputTarget;
 use ym_core::app::gpu::GpuStages;
-use ym_core::pipeline::color::{
-    GradeRequest, NODES_ON_CPU_NOTE, color_plan, grade_key, grade_plan, node_plan,
-    nodes_run_on_device,
-};
+use ym_core::pipeline::color::{GradeRequest, color_plan, grade_key, grade_plan, node_plan};
 use ym_core::pipeline::{
     ComputeDevice, FrameOptions, FullImage, FullRequest, FullTarget, NeutralOnly, PhotoSource,
     RenderOptions, Renderer, ViewportRect, ViewportState,
@@ -567,7 +564,6 @@ fn the_grade_key_sees_the_plan_every_node_and_the_look_and_ignores_a_dead_branch
     let plan = grade_plan(&with(&src, three_nodes()), &color, &req).unwrap();
     assert_eq!(plan.key, base);
     assert_eq!(plan.chain.params().nodes.plan.node_ids(), vec![1, 2, 3, 4]);
-    assert!(!plan.chain.nodes_run_on_device());
 }
 
 // ---- the device -----------------------------------------------------------------------------------
@@ -593,23 +589,15 @@ fn gpu() -> Option<Arc<Gpu>> {
 }
 
 #[test]
-fn the_device_runs_main_alone_and_the_cpu_runs_the_rest_with_a_note() {
+fn the_device_runs_every_graph_and_the_report_says_nothing_about_it() {
     let Some(gpu) = gpu() else { return };
     let d = photo(Layout::Patchwork, 0.5);
     let src = d.source();
     let on_gpu = Renderer::new(
         Arc::new(NeutralOnly),
         RenderOptions {
-            gpu: Some(Arc::clone(&gpu)),
-            ..RenderOptions::default()
-        },
-    )
-    .unwrap();
-    let no_colour = Renderer::new(
-        Arc::new(NeutralOnly),
-        RenderOptions {
             gpu: Some(gpu),
-            gpu_stages: GpuStages::ALL.difference(GpuStages::COLOR.union(GpuStages::EXPORT_TAIL)),
+            gpu_stages: GpuStages::ALL,
             ..RenderOptions::default()
         },
     )
@@ -620,52 +608,49 @@ fn the_device_runs_main_alone_and_the_cpu_runs_the_rest_with_a_note() {
         r.viewport_frame(s, &st, &FrameOptions::default(), &CancelToken::new())
             .unwrap()
     };
+    let says_nodes = |notes: &[String]| notes.iter().any(|n| n.to_lowercase().contains("node"));
 
-    // The default graph: Main alone runs on the device, with no note.
-    assert!(nodes_run_on_device(&src.settings));
+    // The default graph, as before.
     let main_only = frame_of(&on_gpu, &src);
     assert_eq!(main_only.report.device, ComputeDevice::Gpu);
-    assert!(
-        !main_only
-            .report
-            .notes
-            .iter()
-            .any(|n| n == NODES_ON_CPU_NOTE)
-    );
+    assert!(!says_nodes(&main_only.report.notes));
 
-    // Graphs the device does not run yet: nodes after Main, a trim in Main, a bypassed Main.
+    // Nodes after Main, a trim in Main, a bypassed Main, a dead branch: the colour pass is on the device
+    // for all of them, in the viewport and in the full-resolution render.
     let mut trimmed_main = src.settings.clone();
     trimmed_main.main_mut().trim.exposure_ev = 0.5;
     let mut bypassed_main = src.settings.clone();
     bypassed_main.main_mut().bypass = true;
+    let dead = graph(
+        vec![
+            corrector(2, 1.0, trim(0.5)),
+            corrector(3, 2.0, s_curve()),
+            corrector(4, 3.0, warm()),
+        ],
+        // Node 4 reads Main and nothing reads it.
+        {
+            let mut links = line(&[1, 2, 3]);
+            links.push(picture(json!(1), json!(4)));
+            links
+        },
+    );
     for (what, s) in [
         ("three nodes", three_nodes()),
         ("a trim in Main", trimmed_main),
         ("Main bypassed", bypassed_main),
+        ("a dead branch", dead),
     ] {
-        assert!(!nodes_run_on_device(&s), "{what}");
         let photo = with(&src, s);
         let device = frame_of(&on_gpu, &photo);
-        assert_eq!(device.report.device, ComputeDevice::Cpu, "{what}");
+        assert_eq!(device.report.device, ComputeDevice::Gpu, "{what}");
         assert!(
-            device.report.notes.iter().any(|n| n == NODES_ON_CPU_NOTE),
+            !says_nodes(&device.report.notes),
             "{what}: {:?}",
             device.report.notes
         );
-        // The colour pass left the device and nothing else did: the bytes of a renderer whose
-        // colour stages are switched off, and the CPU renderer's within what the raw chain of the
-        // device differs by (render_gpu.rs: two codes, almost always zero). The CPU renderer says
-        // nothing about nodes.
-        let colour_off = frame_of(&no_colour, &photo);
-        assert_eq!(device.rgba, colour_off.rgba, "{what}: the frame");
+        // The device's frame is the CPU renderer's within what the device's raw chain and colour pass
+        // differ by (render_gpu.rs: two codes, almost always zero), and it is not the default graph's.
         let reference = frame_of(&cpu, &photo);
-        assert!(
-            !reference
-                .report
-                .notes
-                .iter()
-                .any(|n| n == NODES_ON_CPU_NOTE)
-        );
         let (mut worst, mut sum) = (0u8, 0u64);
         for (x, y) in device.rgba.iter().zip(&reference.rgba) {
             let d = x.abs_diff(*y);
@@ -673,23 +658,43 @@ fn the_device_runs_main_alone_and_the_cpu_runs_the_rest_with_a_note() {
             sum += u64::from(d);
         }
         let mean = sum as f64 / device.rgba.len() as f64;
-        eprintln!(
-            "{what}: the CPU colour pass behind the device's raw chain differs from the CPU by {worst} codes, mean {mean:.4}"
-        );
+        eprintln!("{what}: the device differs from the CPU by {worst} codes, mean {mean:.4}");
         assert!(
             worst <= 2 && mean < 0.25,
             "{what}: {worst} codes, mean {mean}"
         );
+        if what == "Main bypassed" {
+            // Main's grade is the default one, so bypassing it changes nothing.
+            assert_eq!(device.rgba, main_only.rgba, "{what}");
+        } else if what != "a dead branch" {
+            assert_ne!(device.rgba, main_only.rgba, "{what}: the nodes act");
+        } else {
+            assert_eq!(
+                device.rgba,
+                frame_of(
+                    &on_gpu,
+                    &with(
+                        &src,
+                        graph(
+                            vec![corrector(2, 1.0, trim(0.5)), corrector(3, 2.0, s_curve()),],
+                            line(&[1, 2, 3])
+                        )
+                    )
+                )
+                .rgba,
+                "a dead branch changes no bit on the device"
+            );
+        }
         // The full-resolution renders follow the same rule.
         let full_device = display(&on_gpu, &photo);
-        assert!(
-            full_device
-                .report
-                .notes
-                .iter()
-                .any(|n| n == NODES_ON_CPU_NOTE),
-            "{what}"
-        );
-        assert_eq!(full_device.report.device, ComputeDevice::Cpu, "{what}");
+        assert!(!says_nodes(&full_device.report.notes), "{what}");
+        let full_cpu = display(&cpu, &photo);
+        let worst = full_device
+            .rgb
+            .iter()
+            .zip(&full_cpu.rgb)
+            .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        eprintln!("{what}: the full render differs from the CPU's by {worst:e}");
+        assert!(worst < 2e-3, "{what}: {worst}");
     }
 }

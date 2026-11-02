@@ -201,7 +201,7 @@ A Yellowmoon DNG opens in other raw editors looking like our render, and keeps r
 
 **How a look with its own display rendering goes in.** A DNG holds scene-linear AWG4 that Adobe's renderer turns into a picture with the profile fitted to the cine rendering, so the pixels are chosen as the scene values the cine rendering turns into the picture the chain makes. `ColorChain::apply_dng_pixel`:
 
-1. runs C1 to C11: the nodes (trims, C9, C9b and C11 of each, in the plan's order);
+1. runs C1 to C11: the nodes (trims, C9, C9b and C11 of each, in the plan's order; on the device the colour kernel runs the same plan loop at its DNG stop, `docs/17` section 11a, so a graph with nodes bakes into the DNG there as on the CPU and the two legs agree as they do for the default graph);
 2. takes the chain's display-linear picture (C12 with the look's LUT blended in at the intensity) and brings it to Rec.709 primaries, the rendering the profile emulates;
 3. holds each channel to `[1e-6, 1]` and inverts the cine rendering on Rec.709 (`CineRendering::inverse`, `docs/02-colour-pipeline.md` C12 *Inverse*: the display side in closed form, a first-use table and a damped chord iteration for the core, the scene side in closed form). The rendering is not onto: it darkens saturated colours, so a bright, strongly coloured display colour has no scene colour at all (about 5 % of random 8-bit colours; none of the pixels of the test photos' own renders). Such a colour is **replaced by the nearest one the rendering makes**: the same luminance and hue with less chroma (`chroma_fraction` says how much was kept);
 4. dims the display colour when its scene value would be above the top of the profile's range (below);

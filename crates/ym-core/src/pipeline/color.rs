@@ -555,21 +555,6 @@ pub fn node_plan(g: &NodeGraph, stop: Stop) -> Result<Plan, RenderError> {
     plan::compile(&plan_graph(g), stop).map_err(|e| RenderError::Color(e.to_string()))
 }
 
-/// Whether the device can render this photo's nodes: its plan (to the Output) is Main alone, with
-/// no trim, not bypassed. Until the device learns the plan loop (`docs/23` section 5.4, N-04) any
-/// other graph is rendered by the CPU reference, with [`NODES_ON_CPU_NOTE`].
-#[must_use]
-pub fn nodes_run_on_device(s: &DevelopSettings) -> bool {
-    let main = s.main();
-    node_plan(&s.nodes, Stop::Output).is_ok_and(|p| p.is_main_only())
-        && !main.bypass
-        && trim_of(&main.trim).is_identity()
-}
-
-/// The note of a render whose nodes the device does not run yet: the CPU rendered them.
-pub const NODES_ON_CPU_NOTE: &str =
-    "Nodes after Main render on the CPU until the device runs them.";
-
 /// The nodes of a photo for the chain: the plan to the Output, Main's trim and bypass, and every other
 /// corrector the plan runs, with its own grade (no Auto), warp, curves and trim.
 fn node_set(s: &DevelopSettings) -> Result<NodeSet, RenderError> {

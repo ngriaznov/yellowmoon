@@ -1,13 +1,14 @@
 //! The whole per-pixel colour chain C1 to C13 as one compute pass (`docs/02-colour-pipeline.md`).
 //!
 //! [`PreparedChain::new`] turns an immutable `ym_color::display::ColorChain` into the GPU form: the
-//! per-frame uniform block (fused matrix, C7 (the highlight range and the toe), C9, C9b, C10 and C12
-//! parameters (the cine rendering's matrix from XYZ to the output) and the flags, under 2 KB),
-//! and three **persistent tables** that [`ChainTables`] keeps on the device and refills only when their
-//! content changes:
+//! per-frame uniform block (fused matrix, C7 (the highlight range and the toe), C10 and C12 parameters
+//! (the cine rendering's matrix from XYZ to the output), the flags and the pass, 560 bytes), the **node
+//! records** (the plan's steps with their nodes, below) and three **persistent tables** that
+//! [`ChainTables`] keeps on the device and refills only when their content changes:
 //!
 //! * the 64 x 64 dither thresholds, once per device;
-//! * the four 1024-entry curve tables (16 KB), once per distinct set of curves;
+//! * the curve tables, four 1024-entry tables (16 KB) for every node that has a curve, once per distinct list of
+//!   curve sets;
 //! * the look cube (f32, never rounded to f16, never hardware-filtered), in an LRU keyed by the content
 //!   of the LUT (a 65-point cube is 4.4 MB, a 129-point one 34 MB).
 //!
@@ -47,19 +48,36 @@
 //! outside the photo (the letterbox). Such pixels are not computed: a stage output has 0 there and
 //! carries the mask into its own fourth plane, an RGBA8 output has the background colour.
 //!
-//! # The colour warp (C9b)
+//! # The plan loop and the node records
 //!
-//! The pins of `ChainParams::warp` travel in the uniform block, not in a table:
-//! [`ChainTables::prepare`] packs what `ym_color::warp::Warp::new` prepares (the CPU's own clamping,
-//! pivot code, number of flow steps, and the rule that still pins, and locks without a moving pin,
-//! are left out) into `warp_n` (the moving and locked counts and the flow's steps), `warp_mv` (three
-//! `vec4` rows a moving pin; the third holds the exposure and the saturation, with two lanes to
-//! spare, so the saturation did not grow the block) and `warp_lk` (one row a lock), 1040 bytes for
-//! the 16 pins of `WARP_MAX_PINS`. A pin moves on every frame of a drag, so a
-//! persistent table would be refilled as often as the uniform is written; the uniform needs no
-//! further storage binding (K3), no cache key and no upload of its own. No moving pin gives
-//! `warp_n.x = 0` and the kernel skips the stage, so a chain without a warp renders the bits it
-//! rendered before the stage existed.
+//! The nodes of `ColorChain`'s plan (`docs/23-nodes.md` section 5.4) run in the kernel: each step is a
+//! **record** of the storage buffer at binding 6 ([`NodeRecU`], 1200 bytes), in plan order. A record holds
+//! the step's flags (bypassed or at its identity, and which of the trims, C9, C9b and C11 run), where the
+//! step reads its picture and key and writes its own (a register, a key slot or a plane of the pass
+//! buffers), the trims' gain, the grade's parameters, the colour warp's pins (what
+//! `ym_color::warp::Warp::new` prepares: the CPU's own clamping, pivot code, number of flow steps, and the
+//! rule that still pins, and locks without a moving pin, are left out; three `vec4` rows a moving pin and
+//! one a lock, 1040 bytes for the 16 pins of `WARP_MAX_PINS`) and the first of the node's four curve
+//! tables. **Main is a record like the others**: the default graph is a plan of one step, and the uniform
+//! block holds none of the node fields. The flags are integers decided on the host in f64 (`is_identity`
+//! of the CPU), so no comparison of a computed float decides whether a step runs (`docs/17` K8), and a
+//! chain whose controls are all at their defaults runs the code of a chain that never had a grade.
+//!
+//! The records are written beside the uniform block for every dispatch (like it, they change on every
+//! frame of a drag: a pin moves, a slider moves), so preparing a chain after a grade edit uploads
+//! nothing. **The curves** are the exception: they are a persistent table with one set of four tables per
+//! node that has a curve (identity sets are not stored), found by the list of the sets.
+//!
+//! **Passes.** A plan of more than one pass ([`ym_color::plan::Plan::passes`]: more than eight pictures or
+//! sixteen keys alive at once) is one dispatch per pass. The values that cross from one pass to the next
+//! are f32 planes of a scratch buffer (binding 8, `pbuf`: a picture is three planes of the window, a key
+//! one), written by the pass that makes them and read by the later ones; the last pass writes the output.
+//! A window whose planes would pass the design binding ([`crate::tiles::DESIGN_BINDING_BYTES`]) is cut
+//! into bands of rows, which is exact because the chain is pointwise. A plan of one pass binds a stand-in.
+//!
+//! **Stops.** [`PreparedChain::with_node_stop`] ends the plan after a node (the Output then runs on that
+//! node's picture: a thumbnail) or at a node's mask `m` (grey code values: the mask view); kernel stops 11
+//! and 12, the node's record in `stopn`.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -79,8 +97,9 @@ use ym_color::grade::{
 };
 use ym_color::look::{LookInput, intensity_fraction};
 use ym_color::lut::Lut;
+use ym_color::plan::{BufferKind, KeyRef, MAIN_NODE, PictureRef, PlanResult};
 use ym_color::tone::ToneParams;
-use ym_color::warp::{WARP_MAX_PINS, Warp, WarpParams};
+use ym_color::warp::{WARP_MAX_PINS, Warp};
 
 use super::shader::{KernelId, table};
 use super::util::{OutKind, PixelData, STORAGE_IN, STORAGE_OUT, even, image_bytes, sample_bytes};
@@ -92,7 +111,7 @@ use crate::image::GpuImage;
 use crate::pool::PooledBuffer;
 use crate::queue::CancelToken;
 use crate::stream::{Counters, PassList, Pending, ReadId, upload_bytes};
-use crate::tiles::{Tile, TilePlan};
+use crate::tiles::{DESIGN_BINDING_BYTES, Tile, TilePlan};
 
 /// The stage whose value is written (the stop of the chain).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -187,21 +206,55 @@ struct LutDescU {
     smax: [f32; 4],
 }
 
-/// Rows (`vec4<f32>`) of one moving pin of the colour warp in [`ChainU`]: [s.x, s.y, delta.x,
+/// Rows (`vec4<f32>`) of one moving pin of the colour warp in [`NodeRecU`]: [s.x, s.y, delta.x,
 /// delta.y], [1 / (2 rho^2), shadows, highlights, pivot code], [exposure in stops, saturation, 0, 0].
 pub(crate) const WARP_ROWS_PER_MOVE: usize = 3;
-/// Rows of the moving pins in [`ChainU`] (`WARP_MOVE_ROWS` in `color.wgsl`): room for every pin.
+/// Rows of the moving pins in [`NodeRecU`] (`WARP_MOVE_ROWS` in `color.wgsl`): room for every pin.
 pub(crate) const WARP_MOVE_ROWS: usize = WARP_ROWS_PER_MOVE * WARP_MAX_PINS;
-/// Rows of the locked pins in [`ChainU`] (`WARP_LOCK_ROWS` in `color.wgsl`), one a lock: [l.x, l.y,
+/// Rows of the locked pins in [`NodeRecU`] (`WARP_LOCK_ROWS` in `color.wgsl`), one a lock: [l.x, l.y,
 /// 1 / (2 rho^2), 0]. At most `WARP_MAX_PINS - 1` are used (locks count only beside a moving pin);
 /// the sixteenth row keeps the arithmetic of the sizes plain.
 pub(crate) const WARP_LOCK_ROWS: usize = WARP_MAX_PINS;
 
-/// The per-frame uniform block of `color.wgsl` (`ChainU`), 1664 bytes: window and mode, the chain's
-/// parameters, the cine rendering's matrix from XYZ to the output's primaries (`cine_m0` to `cine_m2`), the
-/// Before view's camera default (`cam0` to `cam2`: the 3x3 rows, `camt`: the tone curve's `n`, `s`, `k` and white
-/// level) and the colour warp's pins (`warp_n`: the moving and locked counts and the flow's steps, `warp_mv`,
-/// `warp_lk`: module notes). Field for field the WGSL struct (a test pins the offsets).
+/// The step is not run: the node is bypassed, or every one of its steps is at its identity (`N_SKIP`).
+pub(crate) const NODE_SKIP: u32 = 1;
+/// The node's trims run (`N_TRIM`); the gain is in the record.
+pub(crate) const NODE_TRIM: u32 = 2;
+/// C9 runs (`N_GRADE`).
+pub(crate) const NODE_GRADE: u32 = 4;
+/// C9b runs (`N_WARP`).
+pub(crate) const NODE_WARP: u32 = 8;
+/// C11 runs (`N_CURVES`).
+pub(crate) const NODE_CURVES: u32 = 16;
+/// The node is Main (`N_MAIN`): the trace's stops C9, C9b and C11 are its values.
+pub(crate) const NODE_MAIN: u32 = 32;
+/// "Not written" in a record's outputs and "no key" in its inputs (`NODE_NONE`).
+pub(crate) const NODE_NONE: u32 = u32::MAX;
+/// A reference to a value is `kind << REF_SHIFT | index` (`REF_*` in `color.wgsl`).
+pub(crate) const REF_SHIFT: u32 = 28;
+/// The mask of the index of a reference.
+pub(crate) const REF_INDEX: u32 = (1 << REF_SHIFT) - 1;
+/// A reference to the Input's picture (index 0).
+pub(crate) const REF_INPUT: u32 = 0;
+/// A picture register of the pass.
+pub(crate) const REF_REGISTER: u32 = 1;
+/// A picture in the planes of `pbuf` (the index is its first plane).
+pub(crate) const REF_PICTURE: u32 = 2;
+/// A key slot of the pass.
+pub(crate) const REF_SLOT: u32 = 3;
+/// A key in a plane of `pbuf`.
+pub(crate) const REF_KEY: u32 = 4;
+
+/// The most steps a plan can have: one for each corrector, and a graph has 64 at most
+/// (`docs/23` section 3.5).
+const MAX_STEPS: usize = 64;
+
+/// The per-frame uniform block of `color.wgsl` (`ChainU`), 560 bytes: window and mode, the chain's
+/// parameters (the fused matrix, C7, the look), the cine rendering's matrix from XYZ to the output's
+/// primaries (`cine_m0` to `cine_m2`), the Before view's camera default (`cam0` to `cam2`: the 3x3
+/// rows, `camt`: the tone curve's `n`, `s`, `k` and white level) and the pass (`plan`, `stopn`: module
+/// notes). The nodes' parameters are not in it ([`NodeRecU`]). Field for field the WGSL struct (a test
+/// pins the offsets).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ChainU {
@@ -217,12 +270,6 @@ struct ChainU {
     m1: [f32; 4],
     m2: [f32; 4],
     tone: [f32; 4],
-    grade0: [f32; 4],
-    zone_amt: [f32; 4],
-    zone_ctr: [f32; 4],
-    bal0: [f32; 4],
-    bal1: [f32; 4],
-    bal_ctr: [f32; 4],
     fl: [f32; 4],
     cdl_slope: [f32; 4],
     cdl_offset: [f32; 4],
@@ -239,13 +286,51 @@ struct ChainU {
     cam2: [f32; 4],
     camt: [f32; 4],
     gate: [f32; 4],
+    /// x: the pass's first record, y: its steps, z: bit 0 set for the plan's last pass, w: the plan's
+    /// result (a reference).
+    plan: [u32; 4],
+    /// x: the record at which kernel stops 11 and 12 end ([`NODE_NONE`]: none).
+    stopn: [u32; 4],
+}
+
+/// One step of the plan with its node, as the storage buffer at binding 6 holds it (`NodeRec` in
+/// `color.wgsl`, 1200 bytes; a test pins the offsets). The module notes describe the fields.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct NodeRecU {
+    /// x: the `NODE_*` bits, y: the grade's bits (1 contrast, 2 saturation), z: the curve bits (1 luma,
+    /// 2 r, 4 g, 8 b), w: the first of the node's four curve tables.
+    ctl: [u32; 4],
+    /// x: the picture the step reads, y: the key it reads ([`NODE_NONE`]: none), z: the number of its
+    /// mask rows (0 until N-10: the kernel takes no mask blend), w: 0.
+    wire: [u32; 4],
+    /// x: the register the step writes its picture to, y: the first plane of `pbuf` it writes it to, z:
+    /// the key slot it writes its mask to, w: the plane of `pbuf` it writes it to ([`NODE_NONE`]: not
+    /// written).
+    outs: [u32; 4],
+    /// The trims' gain in linear AWG4.
+    gain: [f32; 4],
+    grade0: [f32; 4],
+    zone_amt: [f32; 4],
+    zone_ctr: [f32; 4],
+    bal0: [f32; 4],
+    bal1: [f32; 4],
+    bal_ctr: [f32; 4],
+    /// C9b: x the moving pins (0: the stage is skipped), y the locked pins, z the flow's steps.
     warp_n: [u32; 4],
     warp_mv: [[f32; 4]; WARP_MOVE_ROWS],
     warp_lk: [[f32; 4]; WARP_LOCK_ROWS],
 }
 
-impl Default for ChainU {
+impl Default for NodeRecU {
     /// All zero (`Default` is not derived: the warp's arrays are longer than 32).
+    fn default() -> Self {
+        Self::zeroed()
+    }
+}
+
+impl Default for ChainU {
+    /// All zero.
     fn default() -> Self {
         Self::zeroed()
     }
@@ -339,31 +424,31 @@ fn tone_uniform(u: &mut ChainU, tone: &ToneParams) {
 /// The grade parameters as the kernel wants them (the same preparation as `Grade::new`): the
 /// contrast curve's slope at grey `k` in `grade0.x`, the brightness in `grade0.y` and the saturation
 /// factor in `grade0.z` (below 1 the blend toward grey, above 1 the boost `F`; `saturation_factor`).
-/// A control at 0 clears its flag bit, and the kernel skips it. `grade0.w` is not used.
-fn grade_uniform(u: &mut ChainU, g: &GradeParams) {
+/// A control at 0 clears its bit in `ctl.y`, and the kernel skips it. `grade0.w` is not used.
+fn grade_record(r: &mut NodeRecU, g: &GradeParams) {
     let slope = contrast_slope(g.contrast);
     let saturation = saturation_factor(g.saturation);
     if slope != 1.0 {
-        u.flags[0] |= 1;
+        r.ctl[1] |= 1;
     }
     if saturation != 1.0 {
-        u.flags[0] |= 2;
+        r.ctl[1] |= 2;
     }
-    u.grade0 = [
+    r.grade0 = [
         slope as f32,
         (clamp_control(g.brightness) / 100.0) as f32,
         saturation as f32,
         0.0,
     ];
     let amounts = [g.shadows, g.highlights, g.black, g.white].map(|x| clamp_control(x) / 100.0);
-    u.zone_amt = [
+    r.zone_amt = [
         amounts[0] as f32,
         amounts[1] as f32,
         amounts[2] as f32,
         amounts[3] as f32,
     ];
     let centers = ZONE_CENTER_STOPS.map(logc4_at_stops);
-    u.zone_ctr = [
+    r.zone_ctr = [
         centers[0] as f32,
         centers[1] as f32,
         centers[2] as f32,
@@ -374,20 +459,20 @@ fn grade_uniform(u: &mut ChainU, g: &GradeParams) {
         g.balance_midtones.clamped(),
         g.balance_highlights.clamped(),
     ];
-    u.bal0 = [b[0].a as f32, b[0].b as f32, b[1].a as f32, b[1].b as f32];
-    u.bal1 = [b[2].a as f32, b[2].b as f32, 0.0, 0.0];
+    r.bal0 = [b[0].a as f32, b[0].b as f32, b[1].a as f32, b[1].b as f32];
+    r.bal1 = [b[2].a as f32, b[2].b as f32, 0.0, 0.0];
     let bc = BALANCE_CENTER_STOPS.map(logc4_at_stops);
-    u.bal_ctr = [bc[0] as f32, bc[1] as f32, bc[2] as f32, 0.0];
+    r.bal_ctr = [bc[0] as f32, bc[1] as f32, bc[2] as f32, 0.0];
 }
 
 /// The colour warp's pins as the kernel wants them: what `Warp::new` prepares, packed into the rows of
-/// the uniform block (module notes). Nothing is computed here but the casts to f32.
-fn warp_uniform(u: &mut ChainU, params: &WarpParams) {
-    let warp = Warp::new(params);
+/// the record (module notes). Nothing is computed here but the casts to f32. A warp that moves
+/// nothing writes nothing (all zero).
+fn warp_record(r: &mut NodeRecU, warp: &Warp) {
     let (moves, locks) = (warp.moves(), warp.locks());
     // `Warp::new` keeps at most `WARP_MAX_PINS` pins in all, so both fit; the zips and the `min`s keep
     // the rows and the counts inside the arrays even if that ever changed.
-    for (rows, m) in u
+    for (rows, m) in r
         .warp_mv
         .chunks_exact_mut(WARP_ROWS_PER_MOVE)
         .zip(moves.iter())
@@ -406,7 +491,7 @@ fn warp_uniform(u: &mut ChainU, params: &WarpParams) {
         ];
         rows[2] = [m.exposure_ev as f32, m.saturation as f32, 0.0, 0.0];
     }
-    for (row, l) in u.warp_lk.iter_mut().zip(locks.iter()) {
+    for (row, l) in r.warp_lk.iter_mut().zip(locks.iter()) {
         *row = [
             l.at[0] as f32,
             l.at[1] as f32,
@@ -414,7 +499,7 @@ fn warp_uniform(u: &mut ChainU, params: &WarpParams) {
             0.0,
         ];
     }
-    u.warp_n = [
+    r.warp_n = [
         moves.len().min(WARP_MAX_PINS) as u32,
         locks.len().min(WARP_LOCK_ROWS) as u32,
         warp.steps(),
@@ -501,9 +586,12 @@ fn hash_lut(lut: &Lut) -> u128 {
 }
 
 struct CurveEntry {
-    set: CurveSet,
-    /// Bit `i` set when table `i` (luma, R, G, B) is not the identity.
-    flags: u32,
+    /// The curve sets of the nodes that have a curve, in plan order (a node with identity curves has none).
+    sets: Vec<CurveSet>,
+    /// For each set, bit `i` set when its table `i` (luma, R, G, B) is not the identity.
+    flags: Vec<u32>,
+    /// Four tables of [`TABLE_SIZE`] entries for each set, in order (a stand-in of four floats when there are
+    /// none: nothing reads it).
     buf: Arc<PooledBuffer>,
 }
 
@@ -525,6 +613,8 @@ struct LutEntry {
 pub struct ChainTables {
     dither: Option<Arc<PooledBuffer>>,
     empty: Option<Arc<PooledBuffer>>,
+    /// Bound as the pass buffers of a plan of one pass (never read or written).
+    stand_in: Option<Arc<PooledBuffer>>,
     curves: Vec<CurveEntry>,
     luts: Vec<LutEntry>,
 }
@@ -582,29 +672,52 @@ impl ChainTables {
         Ok(buf)
     }
 
-    /// The curve tables of `set` and the bits of the tables that are not the identity.
+    /// The stand-in bound as the pass buffers where a plan has one pass.
+    fn stand_in(&mut self, ctx: &GpuContext) -> Result<Arc<PooledBuffer>, GpuError> {
+        if let Some(b) = &self.stand_in {
+            return Ok(Arc::clone(b));
+        }
+        let buf = Arc::new(storage_buffer(
+            ctx,
+            "plan stand-in",
+            bytemuck::cast_slice(&[0.0f32; 4]),
+        )?);
+        self.stand_in = Some(Arc::clone(&buf));
+        Ok(buf)
+    }
+
+    /// The curve tables of `sets` (the sets of the nodes that have a curve, in plan order: four tables
+    /// each) and, for each set, the bits of its tables that are not the identity.
     fn curves(
         &mut self,
         ctx: &GpuContext,
-        set: &CurveSet,
-    ) -> Result<(Arc<PooledBuffer>, u32), GpuError> {
-        if let Some(i) = self.curves.iter().position(|e| e.set == *set) {
+        sets: &[CurveSet],
+    ) -> Result<(Arc<PooledBuffer>, Vec<u32>), GpuError> {
+        if let Some(i) = self.curves.iter().position(|e| e.sets == sets) {
             let e = self.curves.remove(i);
-            let out = (Arc::clone(&e.buf), e.flags);
+            let out = (Arc::clone(&e.buf), e.flags.clone());
             self.curves.push(e);
             return Ok(out);
         }
-        let baked = set.bake();
-        let mut data = vec![0.0f32; 4 * TABLE_SIZE];
-        let mut flags = 0u32;
-        for (i, t) in [&baked.luma, &baked.r, &baked.g, &baked.b]
-            .iter()
-            .enumerate()
-        {
-            data[i * TABLE_SIZE..(i + 1) * TABLE_SIZE].copy_from_slice(&t.to_f32());
-            if !t.is_identity() {
-                flags |= 1 << i;
+        let mut data = vec![0.0f32; 4 * TABLE_SIZE * sets.len().max(1)];
+        let mut flags = Vec::with_capacity(sets.len());
+        for (k, set) in sets.iter().enumerate() {
+            let baked = set.bake();
+            let mut bits = 0u32;
+            for (i, t) in [&baked.luma, &baked.r, &baked.g, &baked.b]
+                .iter()
+                .enumerate()
+            {
+                let at = (4 * k + i) * TABLE_SIZE;
+                data[at..at + TABLE_SIZE].copy_from_slice(&t.to_f32());
+                if !t.is_identity() {
+                    bits |= 1 << i;
+                }
             }
+            flags.push(bits);
+        }
+        if sets.is_empty() {
+            data.truncate(4);
         }
         let buf = Arc::new(storage_buffer(
             ctx,
@@ -612,8 +725,8 @@ impl ChainTables {
             bytemuck::cast_slice(&data),
         )?);
         self.curves.push(CurveEntry {
-            set: set.clone(),
-            flags,
+            sets: sets.to_vec(),
+            flags: flags.clone(),
             buf: Arc::clone(&buf),
         });
         while self.curves.len() > CURVE_CACHE_LEN {
@@ -673,25 +786,19 @@ impl ChainTables {
         out
     }
 
-    /// Prepares `chain` against these tables: builds the per-frame block and finds (or uploads) the
-    /// tables it needs.
+    /// Prepares `chain` against these tables: builds the per-frame block and the node records and finds
+    /// (or uploads) the tables it needs.
     ///
     /// # Errors
     ///
     /// Allocation errors from the pool ([`GpuError::OutOfBudget`], [`GpuError::BufferTooLarge`]);
-    /// [`GpuError::InvalidInput`] for a chain with nodes the kernel does not run yet (anything but
-    /// Main alone, with no trim and not bypassed: the plan loop is `docs/23` section 5.4, N-04).
+    /// [`GpuError::InvalidInput`] for a plan the kernel cannot hold (more than 64 steps, or a step whose
+    /// node the chain has no parameters for).
     pub fn prepare(
         &mut self,
         ctx: &GpuContext,
         chain: &ColorChain,
     ) -> Result<PreparedChain, GpuError> {
-        if !chain.nodes_run_on_device() {
-            return Err(GpuError::InvalidInput(
-                "the colour kernel runs Main alone until the plan loop; this chain has other nodes, a trim or a bypassed Main"
-                    .to_owned(),
-            ));
-        }
         let params = chain.params();
         let space = chain.space();
         let look_kind = classify_look(params);
@@ -703,10 +810,7 @@ impl ChainTables {
             ..ChainU::default()
         };
         tone_uniform(&mut u, &params.tone);
-        // C9.
-        grade_uniform(&mut u, &params.grade);
-        // C9b.
-        warp_uniform(&mut u, &params.warp);
+        u.stopn = [NODE_NONE; 4];
 
         // C10 and the display-baked look.
         u.flags[2] = match look_kind {
@@ -745,9 +849,8 @@ impl ChainTables {
             }
         }
 
-        // C11.
-        let (curves, curve_flags) = self.curves(ctx, &params.curves)?;
-        u.flags[1] = curve_flags;
+        // The nodes (the trims, C9, C9b and C11 of every step of the plan) and their curve tables.
+        let plan = NodePlan::new(self, ctx, chain)?;
 
         // C12: the cine rendering needs the matrix from XYZ to the output's own primaries and nothing else
         // (its constants are written into the shader).
@@ -785,15 +888,197 @@ impl ChainTables {
             u.dp[3] = 1;
         }
 
+        let stand_in = self.stand_in(ctx)?;
         Ok(PreparedChain {
             base: u,
             tables,
-            curves,
+            curves: plan.curves,
             look_luts,
+            stand_in,
+            records: plan.records,
+            passes: plan.passes,
+            steps: plan.steps,
+            result: plan.result,
+            planes: plan.planes,
+            node_stop: None,
+            buffer_limit: DESIGN_BINDING_BYTES,
             output: params.output,
             look: look_kind,
             before: chain.before_point(),
             dither: chain.dither(),
+        })
+    }
+}
+
+/// A pass of the plan in the node records: its first record and its number of steps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PassSpan {
+    first: u32,
+    count: u32,
+}
+
+/// Where a node is in the plan: its id, its record and its pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StepAt {
+    node: u32,
+    record: u32,
+    pass: usize,
+}
+
+/// The plan of a `ColorChain` in the form the kernel reads it: the records, the passes, the result and
+/// the curve tables.
+struct NodePlan {
+    records: Arc<Vec<NodeRecU>>,
+    passes: Arc<Vec<PassSpan>>,
+    steps: Arc<Vec<StepAt>>,
+    result: u32,
+    /// The planes of `pbuf` a pixel needs: the sum over the plan's buffers (three for a picture, one for a key).
+    planes: u32,
+    curves: Arc<PooledBuffer>,
+}
+
+impl NodePlan {
+    fn new(
+        tables: &mut ChainTables,
+        ctx: &GpuContext,
+        chain: &ColorChain,
+    ) -> Result<Self, GpuError> {
+        let params = chain.params();
+        let plan = &params.nodes.plan;
+        if plan.step_count() > MAX_STEPS {
+            return Err(GpuError::InvalidInput(format!(
+                "the plan has {} steps, the colour kernel runs {MAX_STEPS} at most",
+                plan.step_count()
+            )));
+        }
+        // The planes of the buffers that cross from one pass to the next.
+        let mut plane_of = Vec::with_capacity(plan.buffers.len());
+        let mut planes = 0u32;
+        for kind in &plan.buffers {
+            plane_of.push(planes);
+            planes += match kind {
+                BufferKind::Picture => 3,
+                BufferKind::Key => 1,
+            };
+        }
+        let picture_ref = |r: PictureRef| match r {
+            PictureRef::Input => REF_INPUT << REF_SHIFT,
+            PictureRef::Register(i) => (REF_REGISTER << REF_SHIFT) | u32::from(i),
+            PictureRef::Buffer(b) => (REF_PICTURE << REF_SHIFT) | plane_of[usize::from(b)],
+        };
+        let key_ref = |r: KeyRef| match r {
+            KeyRef::Slot(i) => (REF_SLOT << REF_SHIFT) | u32::from(i),
+            KeyRef::Buffer(b) => (REF_KEY << REF_SHIFT) | plane_of[usize::from(b)],
+        };
+        // The parameters of every step's node.
+        let mut nodes = Vec::with_capacity(plan.step_count());
+        for step in plan.steps() {
+            let n = params.node_params(step.node).ok_or_else(|| {
+                GpuError::InvalidInput(format!(
+                    "the plan runs node {}, which the chain has no parameters for",
+                    step.node
+                ))
+            })?;
+            nodes.push((*step, n));
+        }
+        // The curve tables: four for each node that runs a curve, in plan order.
+        let sets: Vec<CurveSet> = nodes
+            .iter()
+            .filter(|(_, n)| !n.bypass && !n.curves.is_identity())
+            .map(|(_, n)| n.curves.clone())
+            .collect();
+        let (curves, curve_bits) = tables.curves(ctx, &sets)?;
+        let mut next_set = 0usize;
+        let mut records = Vec::with_capacity(nodes.len());
+        for (step, n) in &nodes {
+            let mut r = NodeRecU::default();
+            let mut bits = 0u32;
+            if step.node == MAIN_NODE {
+                bits |= NODE_MAIN;
+            }
+            // The same four tests as the CPU's `PreparedNode::new`, in f64, once.
+            let gain = n.trim.gain();
+            let warp = Warp::new(&n.warp);
+            let grade = !n.grade.is_identity();
+            let curve = !n.curves.is_identity();
+            if n.bypass || (gain.is_none() && !grade && warp.is_identity() && !curve) {
+                bits |= NODE_SKIP;
+            } else {
+                if let Some(g) = gain {
+                    bits |= NODE_TRIM;
+                    r.gain = f4(g, 0.0);
+                }
+                if grade {
+                    bits |= NODE_GRADE;
+                    grade_record(&mut r, &n.grade);
+                }
+                if !warp.is_identity() {
+                    bits |= NODE_WARP;
+                    warp_record(&mut r, &warp);
+                }
+                if curve {
+                    bits |= NODE_CURVES;
+                    r.ctl[2] = curve_bits[next_set];
+                    r.ctl[3] = 4 * next_set as u32;
+                    next_set += 1;
+                }
+            }
+            r.ctl[0] = bits;
+            r.wire = [
+                picture_ref(step.picture),
+                step.key.map_or(NODE_NONE, key_ref),
+                0,
+                0,
+            ];
+            let (picture_out, key_out) = (step.picture_out, step.key_out);
+            r.outs = [
+                picture_out
+                    .and_then(|o| o.register)
+                    .map_or(NODE_NONE, u32::from),
+                picture_out
+                    .and_then(|o| o.buffer)
+                    .map_or(NODE_NONE, |b| plane_of[usize::from(b)]),
+                key_out.and_then(|o| o.slot).map_or(NODE_NONE, u32::from),
+                key_out
+                    .and_then(|o| o.buffer)
+                    .map_or(NODE_NONE, |b| plane_of[usize::from(b)]),
+            ];
+            records.push(r);
+        }
+        let mut first = 0u32;
+        let mut passes = Vec::with_capacity(plan.passes.len());
+        let mut steps = Vec::with_capacity(records.len());
+        for (p, pass) in plan.passes.iter().enumerate() {
+            let count = pass.steps.len() as u32;
+            passes.push(PassSpan { first, count });
+            for (k, step) in pass.steps.iter().enumerate() {
+                steps.push(StepAt {
+                    node: step.node,
+                    record: first + k as u32,
+                    pass: p,
+                });
+            }
+            first += count;
+        }
+        if passes.is_empty() {
+            // The Output reads the Input itself: one pass of no steps.
+            passes.push(PassSpan { first: 0, count: 0 });
+        }
+        let result = match plan.result {
+            PlanResult::Picture(r) => picture_ref(r),
+            PlanResult::Mask(r) => key_ref(r),
+        };
+        // A plan with no step still binds one record (the buffer is never empty).
+        if records.is_empty() {
+            records.push(NodeRecU::default());
+        }
+        Ok(Self {
+            records: Arc::new(records),
+            passes: Arc::new(passes),
+            steps: Arc::new(steps),
+            result,
+            planes,
+            curves,
         })
     }
 }
@@ -875,10 +1160,52 @@ pub struct PreparedChain {
     tables: Arc<PooledBuffer>,
     curves: Arc<PooledBuffer>,
     look_luts: Arc<PooledBuffer>,
+    /// Bound as the pass buffers of a plan with none.
+    stand_in: Arc<PooledBuffer>,
+    /// The plan's steps with their nodes, in plan order: the storage buffer at binding 6.
+    records: Arc<Vec<NodeRecU>>,
+    /// The passes, as spans of the records (one pass at least).
+    passes: Arc<Vec<PassSpan>>,
+    /// Where each step's node is.
+    steps: Arc<Vec<StepAt>>,
+    /// The plan's result, as a reference.
+    result: u32,
+    /// The planes of the pass buffers a pixel needs.
+    planes: u32,
+    /// Where kernel stops 11 and 12 end, when the chain was given one.
+    node_stop: Option<(NodeStop, StepAt)>,
+    /// The most bytes the pass buffers of one dispatch may have ([`DESIGN_BINDING_BYTES`]).
+    buffer_limit: u64,
     output: OutputTarget,
     look: LookKind,
     before: BeforePoint,
     dither: bool,
+}
+
+/// A stop inside the plan's nodes (`docs/23` section 5.4): [`PreparedChain::with_node_stop`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NodeStop {
+    /// The nodes end after this node and the Output runs on its picture (a node's thumbnail).
+    Picture(u32),
+    /// The picture is this node's mask `m` as grey code values, after the Output (the mask view; `m`
+    /// is 1 until N-10).
+    Mask(u32),
+}
+
+impl NodeStop {
+    fn node(self) -> u32 {
+        match self {
+            NodeStop::Picture(n) | NodeStop::Mask(n) => n,
+        }
+    }
+
+    /// The kernel's stop code.
+    fn code(self) -> u32 {
+        match self {
+            NodeStop::Picture(_) => 11,
+            NodeStop::Mask(_) => 12,
+        }
+    }
 }
 
 impl std::fmt::Debug for PreparedChain {
@@ -952,8 +1279,54 @@ impl PreparedChain {
         self.before
     }
 
+    /// Ends the plan's nodes at `stop` for the outputs that run the Output (the encoded picture,
+    /// [`ColorOutput::Rgba8`], [`ColorOutput::U16`] and the stage C13): the Output then runs on the
+    /// picture after the node ([`NodeStop::Picture`]; a node's thumbnail), or the picture is the node's
+    /// mask `m` as grey code values ([`NodeStop::Mask`]; the mask view). The other stops are the
+    /// chain's reading points and are not changed.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`] when the node is not a step of the plan (a dead node has no picture in
+    /// this plan: compile the plan to end at it).
+    pub fn with_node_stop(&self, stop: NodeStop) -> Result<Self, GpuError> {
+        let Some(at) = self.steps.iter().find(|s| s.node == stop.node()) else {
+            return Err(GpuError::InvalidInput(format!(
+                "node {} is not a step of the plan",
+                stop.node()
+            )));
+        };
+        let mut chain = self.clone();
+        chain.node_stop = Some((stop, *at));
+        Ok(chain)
+    }
+
+    /// The passes of the plan (one dispatch each; one for the default graph).
+    pub fn pass_count(&self) -> usize {
+        self.passes.len()
+    }
+
+    /// The f32 planes of the window a pixel's values that cross from one pass to the next take (a
+    /// picture is three, a key one); 0 for a plan of one pass.
+    pub fn pass_buffer_planes(&self) -> u32 {
+        self.planes
+    }
+
+    /// The same chain with another limit on the bytes of the pass buffers of one dispatch (a plan of
+    /// several passes keeps the values that cross from one to the next in f32 planes of the window; a
+    /// window that needs more is cut into bands of rows, which gives the same bits). The default is the
+    /// design binding ([`DESIGN_BINDING_BYTES`]); a smaller limit is for tests and for a device whose
+    /// bindings are smaller than the design's.
+    #[must_use]
+    pub fn with_pass_buffer_limit(&self, bytes: u64) -> Self {
+        let mut chain = self.clone();
+        chain.buffer_limit = bytes.max(4);
+        chain
+    }
+
     /// The uniform block of one dispatch over `out.width x out.height` pixels, and the kind of
-    /// output it makes.
+    /// output it makes. The pass lanes (`plan`) are those of a single pass over all the records; a
+    /// plan with several passes sets them for each ([`PreparedChain::record`]).
     fn uniform_for(
         &self,
         output: ColorOutput,
@@ -999,8 +1372,42 @@ impl PreparedChain {
                 (Stop::C13, OutKind::U16Planar, bits, false)
             }
         };
-        u.mode = [stop.code(), kind.code(), bits, u32::from(dither)];
+        let mut code = stop.code();
+        if stop == Stop::C13
+            && let Some((node_stop, at)) = self.node_stop
+        {
+            code = node_stop.code();
+            u.stopn[0] = at.record;
+        }
+        u.mode = [code, kind.code(), bits, u32::from(dither)];
         Ok((u, kind))
+    }
+
+    /// The passes a dispatch with the kernel stop `code` runs, in order, and the index of the last one,
+    /// which writes the output. Stops before the nodes (C6 to C8 and the Before view's two reading points
+    /// and its camera default) need no pass but the first; Main's stages (C9, C9b, C11 and the Before
+    /// view's "after grade") need the pass Main is in (Main reads the Input, so nothing before it); a
+    /// stop inside the nodes (11, 12) needs the passes up to the node's; every other stop runs the plan.
+    fn passes_for(&self, code: u32) -> std::ops::RangeInclusive<usize> {
+        let last = self.passes.len() - 1;
+        let main_pass = self
+            .steps
+            .iter()
+            .find(|s| s.node == MAIN_NODE)
+            .map_or(0, |s| s.pass);
+        match code {
+            0..=2 => 0..=0,
+            3 | 5 | 10 => main_pass..=main_pass,
+            9 => match self.before {
+                BeforePoint::AfterGrade => main_pass..=main_pass,
+                BeforePoint::CameraLog | BeforePoint::CameraDefault => 0..=0,
+            },
+            11 | 12 => match self.node_stop {
+                Some((_, at)) => 0..=at.pass,
+                None => 0..=last,
+            },
+            _ => 0..=last,
+        }
     }
 
     /// The bindings of one dispatch (the layout of `color.wgsl`).
@@ -1009,7 +1416,9 @@ impl PreparedChain {
         ub: &'a PooledBuffer,
         src: &'a PooledBuffer,
         out: &'a PooledBuffer,
-    ) -> [(u32, wgpu::BindingResource<'a>); 6] {
+        records: &'a PooledBuffer,
+        pass_buffers: &'a PooledBuffer,
+    ) -> [(u32, wgpu::BindingResource<'a>); 8] {
         [
             (0, ub.binding()),
             (1, self.tables.binding()),
@@ -1017,10 +1426,91 @@ impl PreparedChain {
             (3, self.look_luts.binding()),
             (4, src.binding()),
             (5, out.binding()),
+            (6, records.binding()),
+            // Binding 7 is the raster masks of N-13 (`docs/23` section 5.4).
+            (8, pass_buffers.binding()),
         ]
     }
 
-    /// Encodes one dispatch of the kernel over an `out_w x out_h` window of `src` (planar image
+    /// Records the passes of the plan over the window: the node records once, then one dispatch for each
+    /// pass (the last writes `out`), cut into bands of rows when the planes that cross from one pass to
+    /// the next would pass the design binding. Returns the kind of output.
+    #[allow(clippy::too_many_arguments)] // the natural argument list; a struct would only move them
+    fn record(
+        &self,
+        passes: &mut PassList<'_>,
+        src: &PooledBuffer,
+        src_window: SrcWindow,
+        out_window: OutWindow,
+        output: ColorOutput,
+        dst: DstLayout,
+        mask: MaskPaint,
+        out: &PooledBuffer,
+    ) -> Result<OutKind, GpuError> {
+        let ctx = passes.context();
+        let (_, kind) = self.uniform_for(output, &src_window, &out_window, dst, mask)?;
+        let records = passes.keep(storage_buffer(
+            ctx,
+            "node records",
+            bytemuck::cast_slice(&self.records[..]),
+        )?);
+        // Rows per band: the whole window, unless the pass buffers would not fit one binding.
+        let plane_bytes_per_row = 4 * u64::from(self.planes) * out_window.width.max(1) as u64;
+        let band_rows = if self.planes == 0 {
+            out_window.height.max(1)
+        } else {
+            ((self.buffer_limit / plane_bytes_per_row) as usize).clamp(1, out_window.height.max(1))
+        };
+        let scratch = if self.planes == 0 {
+            Arc::clone(&self.stand_in)
+        } else {
+            passes.scratch(
+                "plan buffers",
+                plane_bytes_per_row * band_rows.min(out_window.height) as u64,
+            )?
+        };
+        let limit = ctx.info().limits.max_compute_workgroups_per_dimension as usize;
+        let mut r0 = 0;
+        loop {
+            let rows = band_rows.min(out_window.height - r0);
+            let mut src_band = src_window;
+            src_band.offset.1 += r0;
+            let mut out_band = out_window;
+            out_band.height = rows;
+            out_band.origin.1 += r0;
+            let mut dst_band = dst;
+            dst_band.at.1 += r0;
+            let (base, _) = self.uniform_for(output, &src_band, &out_band, dst_band, mask)?;
+            let (gx, gy) = pair_groups(out_band.width, rows);
+            if gx as usize > limit || gy as usize > limit {
+                return Err(GpuError::InvalidInput(format!(
+                    "a {} x {rows} window needs more workgroups than the device allows ({limit})",
+                    out_band.width
+                )));
+            }
+            let span = self.passes_for(base.mode[0]);
+            let last = *span.end();
+            for p in span {
+                let mut u = base;
+                let pass = self.passes[p];
+                u.plan = [pass.first, pass.count, u32::from(p == last), self.result];
+                let ub = passes.uniform("chain uniform", &u)?;
+                passes.dispatch(
+                    KernelId::Color,
+                    "color chain",
+                    &self.entries(&ub, src, out, &records, &scratch),
+                    (gx, gy, 1),
+                )?;
+            }
+            r0 += rows;
+            if r0 >= out_window.height {
+                break;
+            }
+        }
+        Ok(kind)
+    }
+
+    /// Encodes the dispatches of the kernel over an `out_w x out_h` window of `src` (planar image
     /// samples, `src_stride` per row, `src_plane` per plane) starting at `offset`. Returns the
     /// pending readback; the caller keeps `src` alive until it has finished.
     pub(crate) fn dispatch(
@@ -1038,18 +1528,21 @@ impl PreparedChain {
             plane: out_stride * out_h,
             at: (0, 0),
         };
-        let (u, kind) =
-            self.uniform_for(output, src_window, out_window, dst, MaskPaint::default())?;
-        let out_bytes = kind.device_bytes(out_stride, out_h);
         let mut passes = PassList::new(ctx, "color chain");
-        let ub = passes.uniform("chain uniform", &u)?;
+        let kind = self
+            .uniform_for(output, src_window, out_window, dst, MaskPaint::default())?
+            .1;
+        let out_bytes = kind.device_bytes(out_stride, out_h);
         let out = passes.keep(ctx.pool().acquire("chain out", out_bytes, STORAGE_OUT)?);
-        let (gx, gy) = pair_groups(out_w, out_h);
-        passes.dispatch(
-            KernelId::Color,
-            "color chain",
-            &self.entries(&ub, src, &out),
-            (gx, gy, 1),
+        self.record(
+            &mut passes,
+            src,
+            *src_window,
+            *out_window,
+            output,
+            dst,
+            MaskPaint::default(),
+            &out,
         )?;
         let read = passes.read(&out, 0, out_bytes)?;
         let pending = passes.submit()?;
@@ -1310,36 +1803,25 @@ impl PreparedChain {
                 src.width, src.height
             )));
         }
-        let limit = ctx.info().limits.max_compute_workgroups_per_dimension as usize;
-        let (gx, gy) = pair_groups(window.w, window.h);
-        if gx as usize > limit || gy as usize > limit {
-            return Err(GpuError::InvalidInput(format!(
-                "a {} x {} window needs more workgroups than the device allows ({limit})",
-                window.w, window.h
-            )));
-        }
-        let (u, _) = self.uniform_for(
-            output,
-            &SrcWindow {
+        self.record(
+            passes,
+            &src.buf,
+            SrcWindow {
                 stride: src.stride,
                 plane: src.plane_len(),
                 offset: (window.x, window.y),
             },
-            &OutWindow {
+            OutWindow {
                 width: window.w,
                 height: window.h,
                 origin,
             },
+            output,
             dst,
             mask,
+            out,
         )?;
-        let ub = passes.uniform("chain uniform", &u)?;
-        passes.dispatch(
-            KernelId::Color,
-            "color chain",
-            &self.entries(&ub, &src.buf, out),
-            (gx, gy, 1),
-        )
+        Ok(())
     }
 }
 
@@ -1434,24 +1916,30 @@ mod tests {
     use crate::kernels::shader_source;
 
     #[test]
-    fn the_per_frame_block_is_about_2_kb() {
+    fn the_per_frame_block_is_560_bytes_and_a_node_record_1200() {
         // The per-frame `ChainU` (`docs/17-gpu.md` section 11) was meant to be about 1 KB: the one uniform
-        // block (K3 allows one) holds the whole chain's parameters. It was 992 bytes with the ACES 2
-        // scalars; the Before view's camera default added 64 (the 3x3 rows and the curve constants), and
-        // the colour warp (C9b) 1040: the counts (16), three rows for each of 16 moving pins (768) and one
-        // row for each of 16 locks (256). The cine rendering needs three rows (XYZ to the output) in place
-        // of the ACES 2 scalars, the red steps' rows and the display LUT's descriptor, which went. Still
+        // block (K3 allows one) holds the frame's parameters. It was 992 bytes with the ACES 2 scalars; the
+        // Before view's camera default added 64, and the colour warp (C9b) 1040 plus the grade's six rows
+        // (1664 bytes in all, 2026-11-01). The nodes' parameters then moved into the storage buffer of node
+        // records (N-04, `docs/23` section 5.4), so a plan of 16 nodes does not make the uniform grow: the
+        // block lost the grade, the zones, the balance and the warp (1136 bytes) and gained the pass (32).
+        // A record is the step's flags and wiring (3 rows), the gain (1), the grade (6), the warp's counts
+        // (1) and its 16 moving (3 rows each) and 16 locked pins (1 row each): 75 rows of 16 bytes. Both are
         // far below the 64 KiB uniform binding the device asks for
         // (`max_uniform_buffer_binding_size` of `wgpu::Limits::default()`) and the 16 KiB of wgpu's
         // downlevel limits.
-        assert_eq!(size_of::<ChainU>(), 1664);
+        assert_eq!(size_of::<ChainU>(), 560);
         assert_eq!(size_of::<ChainU>() % 16, 0);
+        assert_eq!(size_of::<NodeRecU>(), 1200);
+        assert_eq!(size_of::<NodeRecU>() % 16, 0);
         assert_eq!(
-            size_of::<ChainU>() - offset_of!(ChainU, warp_n),
+            size_of::<NodeRecU>() - offset_of!(NodeRecU, warp_n),
             16 + 16 * (WARP_MOVE_ROWS + WARP_LOCK_ROWS)
         );
         assert_eq!(WARP_MOVE_ROWS, 48);
         assert_eq!(WARP_LOCK_ROWS, 16);
+        // A plan of the most steps (a graph has 64 correctors) is 75 KiB of records.
+        assert_eq!(MAX_STEPS * size_of::<NodeRecU>(), 76_800);
     }
 
     #[test]
@@ -1478,8 +1966,8 @@ mod tests {
         ];
         let params = WarpParams { pins };
         let warp = Warp::new(&params);
-        let mut u = ChainU::default();
-        warp_uniform(&mut u, &params);
+        let mut u = NodeRecU::default();
+        warp_record(&mut u, &warp);
         // ceil(1.25 (0.0922 / (0.05 sqrt(e)) + 0.3 / (0.01 sqrt(e)))) = ceil(24.14) = 25 steps.
         assert_eq!(warp.steps(), 25);
         assert_eq!(u.warp_n, [2, 1, 25, 0]);
@@ -1524,8 +2012,8 @@ mod tests {
                 },
             ],
         };
-        let mut u = ChainU::default();
-        warp_uniform(&mut u, &params);
+        let mut u = NodeRecU::default();
+        warp_record(&mut u, &Warp::new(&params));
         assert_eq!(u.warp_n, [1, 0, 1, 0]);
         assert_eq!(u.warp_mv[0], [0.1, 0.0, 0.0, 0.0]);
         assert_eq!(u.warp_mv[2], [0.0, -0.6f32, 0.0, 0.0]);
@@ -1538,11 +2026,11 @@ mod tests {
                 WarpPin::locked_at([0.0, 0.1]),
             ],
         ] {
-            let mut u = ChainU::default();
-            warp_uniform(&mut u, &WarpParams { pins });
+            let mut u = NodeRecU::default();
+            warp_record(&mut u, &Warp::new(&WarpParams { pins }));
             assert_eq!(
                 bytemuck::bytes_of(&u),
-                bytemuck::bytes_of(&ChainU::default())
+                bytemuck::bytes_of(&NodeRecU::default())
             );
         }
         // The maximum: 16 moving pins fill every row of `warp_mv`.
@@ -1558,8 +2046,8 @@ mod tests {
                 }
             })
             .collect();
-        let mut u = ChainU::default();
-        warp_uniform(&mut u, &WarpParams { pins });
+        let mut u = NodeRecU::default();
+        warp_record(&mut u, &Warp::new(&WarpParams { pins }));
         // Sixteen moves of 0.02 |cos a| at range 0.04: ceil(3.98) = 4 steps.
         assert_eq!(u.warp_n, [16, 0, 4, 0]);
         assert!(
@@ -1644,8 +2132,36 @@ mod tests {
         }
     }
 
+    /// The members of the WGSL struct `name` (the type of the global variable `var_name`, or of its
+    /// array's elements) as (name, offset) pairs, and its size.
+    fn wgsl_struct(
+        module: &naga::Module,
+        var_name: &str,
+    ) -> (Vec<(String, u32, naga::Handle<naga::Type>)>, u32) {
+        let var = module
+            .global_variables
+            .iter()
+            .map(|(_, v)| v)
+            .find(|v| v.name.as_deref() == Some(var_name))
+            .unwrap_or_else(|| panic!("the variable {var_name}"));
+        let mut ty = var.ty;
+        if let naga::TypeInner::Array { base, .. } = &module.types[ty].inner {
+            ty = *base;
+        }
+        let naga::TypeInner::Struct { members, span } = &module.types[ty].inner else {
+            panic!("{var_name} is not a struct");
+        };
+        (
+            members
+                .iter()
+                .map(|m| (m.name.clone().unwrap_or_default(), m.offset, m.ty))
+                .collect(),
+            *span,
+        )
+    }
+
     #[test]
-    fn the_uniform_block_has_the_layout_of_the_wgsl_struct() {
+    fn the_uniform_block_and_the_node_record_have_the_layout_of_the_wgsl_structs() {
         for mode in [
             StorageMode::F32,
             StorageMode::F16Native,
@@ -1662,16 +2178,8 @@ mod tests {
             Validator::new(ValidationFlags::all(), caps)
                 .validate(&module)
                 .unwrap_or_else(|e| panic!("{mode:?}: {e:?}"));
-            let var = module
-                .global_variables
-                .iter()
-                .map(|(_, v)| v)
-                .find(|v| v.name.as_deref() == Some("CU"))
-                .expect("the uniform CU");
-            let naga::TypeInner::Struct { members, span } = &module.types[var.ty].inner else {
-                panic!("CU is not a struct");
-            };
-            let fields: [(&str, usize); 37] = [
+            let (members, span) = wgsl_struct(&module, "CU");
+            let fields: [(&str, usize); 30] = [
                 ("dims", offset_of!(ChainU, dims)),
                 ("src", offset_of!(ChainU, src)),
                 ("origin", offset_of!(ChainU, origin)),
@@ -1684,12 +2192,6 @@ mod tests {
                 ("m1", offset_of!(ChainU, m1)),
                 ("m2", offset_of!(ChainU, m2)),
                 ("tone", offset_of!(ChainU, tone)),
-                ("grade0", offset_of!(ChainU, grade0)),
-                ("zone_amt", offset_of!(ChainU, zone_amt)),
-                ("zone_ctr", offset_of!(ChainU, zone_ctr)),
-                ("bal0", offset_of!(ChainU, bal0)),
-                ("bal1", offset_of!(ChainU, bal1)),
-                ("bal_ctr", offset_of!(ChainU, bal_ctr)),
                 ("fl", offset_of!(ChainU, fl)),
                 ("cdl_slope", offset_of!(ChainU, cdl_slope)),
                 ("cdl_offset", offset_of!(ChainU, cdl_offset)),
@@ -1706,24 +2208,47 @@ mod tests {
                 ("cam2", offset_of!(ChainU, cam2)),
                 ("camt", offset_of!(ChainU, camt)),
                 ("gate", offset_of!(ChainU, gate)),
-                ("warp_n", offset_of!(ChainU, warp_n)),
-                ("warp_mv", offset_of!(ChainU, warp_mv)),
-                ("warp_lk", offset_of!(ChainU, warp_lk)),
+                ("plan", offset_of!(ChainU, plan)),
+                ("stopn", offset_of!(ChainU, stopn)),
             ];
             assert_eq!(members.len(), fields.len());
-            for (member, (name, offset)) in members.iter().zip(fields) {
-                assert_eq!(member.name.as_deref(), Some(name));
-                assert_eq!(member.offset as usize, offset, "offset of {name}");
+            for ((name, offset, _), (want, at)) in members.iter().zip(fields) {
+                assert_eq!(name, want);
+                assert_eq!(*offset as usize, at, "offset of {want}");
             }
-            assert_eq!(*span as usize, size_of::<ChainU>(), "size of the block");
+            assert_eq!(span as usize, size_of::<ChainU>(), "size of the block");
+
+            // The node record: the storage buffer's element, field for field the Rust struct.
+            let (members, span) = wgsl_struct(&module, "nodes");
+            let fields: [(&str, usize); 12] = [
+                ("ctl", offset_of!(NodeRecU, ctl)),
+                ("wire", offset_of!(NodeRecU, wire)),
+                ("outs", offset_of!(NodeRecU, outs)),
+                ("gain", offset_of!(NodeRecU, gain)),
+                ("grade0", offset_of!(NodeRecU, grade0)),
+                ("zone_amt", offset_of!(NodeRecU, zone_amt)),
+                ("zone_ctr", offset_of!(NodeRecU, zone_ctr)),
+                ("bal0", offset_of!(NodeRecU, bal0)),
+                ("bal1", offset_of!(NodeRecU, bal1)),
+                ("bal_ctr", offset_of!(NodeRecU, bal_ctr)),
+                ("warp_n", offset_of!(NodeRecU, warp_n)),
+                ("warp_mv", offset_of!(NodeRecU, warp_mv)),
+            ];
+            assert_eq!(members.len(), fields.len() + 1);
+            for ((name, offset, _), (want, at)) in members.iter().zip(fields) {
+                assert_eq!(name, want);
+                assert_eq!(*offset as usize, at, "offset of {want}");
+            }
+            assert_eq!(members[12].0, "warp_lk");
+            assert_eq!(members[12].1 as usize, offset_of!(NodeRecU, warp_lk));
+            assert_eq!(span as usize, size_of::<NodeRecU>(), "size of the record");
             // The warp's arrays: as many `vec4<f32>` rows as the Rust arrays, 16 bytes apart.
             for (name, rows) in [("warp_mv", WARP_MOVE_ROWS), ("warp_lk", WARP_LOCK_ROWS)] {
-                let member = members
+                let (_, _, ty) = members
                     .iter()
-                    .find(|m| m.name.as_deref() == Some(name))
+                    .find(|(n, ..)| n == name)
                     .expect("warp member");
-                let naga::TypeInner::Array { base, size, stride } = &module.types[member.ty].inner
-                else {
+                let naga::TypeInner::Array { base, size, stride } = &module.types[*ty].inner else {
                     panic!("{name} is not an array");
                 };
                 assert_eq!(*stride, 16, "{name}: stride");
@@ -1742,12 +2267,25 @@ mod tests {
                     "{name}: rows of vec4<f32>"
                 );
             }
+            // The records are an array of that struct with the record's size as its stride.
+            let var = module
+                .global_variables
+                .iter()
+                .map(|(_, v)| v)
+                .find(|v| v.name.as_deref() == Some("nodes"))
+                .expect("nodes");
+            let naga::TypeInner::Array { stride, size, .. } = &module.types[var.ty].inner else {
+                panic!("nodes is not an array");
+            };
+            assert_eq!(*stride as usize, size_of::<NodeRecU>());
+            assert!(matches!(size, naga::ArraySize::Dynamic));
         }
     }
 
     #[test]
     fn the_kernel_binds_the_buffers_the_host_binds() {
-        // Bindings 0 to 5, one uniform and five storage buffers: the table of `entries`.
+        // One uniform and seven storage buffers (K3 allows eight): bindings 0 to 6 and 8, the table of
+        // `entries`; 7 is the raster masks of N-13.
         let source = shader_source(StorageMode::F32, KernelId::Color);
         let module = naga::front::wgsl::parse_str(&source).expect("color.wgsl");
         let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
@@ -1755,15 +2293,18 @@ mod tests {
             .expect("valid");
         let used = info.get_entry_point(0);
         let mut bindings = std::collections::BTreeSet::new();
+        let mut storage = 0;
         for (handle, var) in module.global_variables.iter() {
             if let Some(b) = &var.binding
                 && !used[handle].is_empty()
             {
                 assert_eq!(b.group, 0);
                 bindings.insert(b.binding);
+                storage += usize::from(matches!(var.space, naga::AddressSpace::Storage { .. }));
             }
         }
-        assert_eq!(bindings, (0..6).collect());
+        assert_eq!(bindings, [0, 1, 2, 3, 4, 5, 6, 8].into());
+        assert_eq!(storage, 7, "seven storage buffers and one uniform");
     }
 
     #[test]

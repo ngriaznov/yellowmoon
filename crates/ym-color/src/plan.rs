@@ -301,7 +301,7 @@ impl Plan {
     }
 
     /// Whether the plan is Main alone, reading the Input, in one pass: the plan of the default
-    /// graph, and the only one the device runs until it learns the plan loop.
+    /// graph.
     #[must_use]
     pub fn is_main_only(&self) -> bool {
         self.stop == Stop::Output

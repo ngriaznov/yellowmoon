@@ -42,7 +42,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::dng_inverse::DngDisplayInverse;
-use super::node::{MainStages, NodeSet, PreparedNode};
+use super::node::{MainStages, NodeParams, NodeSet, PreparedNode};
 use super::transform::PreparedDisplay;
 use super::{DisplayError, OutputTarget};
 use crate::camera_default::CameraDefault;
@@ -154,6 +154,25 @@ pub struct ChainParams {
 }
 
 impl ChainParams {
+    /// The parameters of the corrector `id` as the plan runs it: Main's are the chain's own `grade`,
+    /// `warp` and `curves` with the trim and bypass of [`NodeSet::main`], every other corrector's are in
+    /// [`NodeSet::others`]. `None` for a corrector the chain has no parameters for. The CPU chain and the
+    /// device kernel read their nodes through this, so they cannot disagree about which fields are Main's.
+    #[must_use]
+    pub fn node_params(&self, id: u32) -> Option<NodeParams> {
+        if id == crate::plan::MAIN_NODE {
+            Some(NodeParams {
+                bypass: self.nodes.main.bypass,
+                trim: self.nodes.main.trim,
+                grade: self.grade,
+                warp: self.warp.clone(),
+                curves: self.curves.clone(),
+            })
+        } else {
+            self.nodes.others.get(&id).cloned()
+        }
+    }
+
     /// Defaults for everything after C7: zero grade, Neutral look, identity curves, the cine rendering,
     /// the viewport output, dither on, the Before view showing the camera default (with the neutral
     /// placeholder for the body: set [`ChainParams::camera_default`]).
@@ -317,23 +336,10 @@ impl ColorChain {
         let steps = plan
             .steps()
             .map(|step| {
-                let node = if step.node == crate::plan::MAIN_NODE {
-                    let main = &params.nodes.main;
-                    PreparedNode::new(
-                        main.bypass,
-                        &main.trim,
-                        &params.grade,
-                        &params.warp,
-                        &params.curves,
-                    )
-                } else {
-                    let n = params
-                        .nodes
-                        .others
-                        .get(&step.node)
-                        .ok_or(DisplayError::MissingNode(step.node))?;
-                    PreparedNode::new(n.bypass, &n.trim, &n.grade, &n.warp, &n.curves)
-                };
+                let n = params
+                    .node_params(step.node)
+                    .ok_or(DisplayError::MissingNode(step.node))?;
+                let node = PreparedNode::new(n.bypass, &n.trim, &n.grade, &n.warp, &n.curves);
                 Ok((*step, node))
             })
             .collect::<Result<Vec<_>, DisplayError>>()?;
@@ -388,15 +394,6 @@ impl ColorChain {
     #[must_use]
     pub fn camera_default(&self) -> &CameraDefault {
         &self.camera_default
-    }
-
-    /// Whether the nodes of this chain are all a device kernel that runs Main alone can run: the plan is
-    /// Main alone reading the Input, with no trim, not bypassed ([`NodeSet::is_main_only`]). The
-    /// colour kernel refuses any other chain until it learns the plan loop (`docs/23` section 5.4), and
-    /// the render falls back to the CPU reference for it.
-    #[must_use]
-    pub fn nodes_run_on_device(&self) -> bool {
-        self.params.nodes.is_main_only()
     }
 
     /// Whether the look includes its own display rendering (LogC3 to Rec.709), which replaces C12.

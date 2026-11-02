@@ -804,8 +804,8 @@ fn three_correctors() -> serde_json::Value {
 
 /// What `three_correctors` is exported as through the app, then through the binary with the same
 /// document as a `--settings` file: the same bytes, a picture that is not the default graph's, and
-/// (with a device) the note that the nodes were rendered on the CPU. `device` runs the binary with
-/// `YELLOWMOON_GPU=on` and gives the app's core the device.
+/// (with a device) a report that says nothing about nodes: the device runs them (N-04). `device` runs
+/// the binary with `YELLOWMOON_GPU=on` and gives the app's core the device.
 fn three_correctors_leg(device: bool) {
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");
@@ -882,7 +882,7 @@ fn three_correctors_leg(device: bool) {
         }
     }
     if device {
-        // The binary says that the nodes were rendered on the CPU, once.
+        // The binary's report says nothing about the nodes: the device rendered them.
         let out = sb
             .ym()
             .envs(env.iter().copied())
@@ -909,7 +909,7 @@ fn three_correctors_leg(device: bool) {
             .filter_map(|n| n.as_str())
             .collect();
         assert!(
-            notes.contains(&"Nodes after Main render on the CPU until the device runs them."),
+            !notes.iter().any(|n| n.to_lowercase().contains("node")),
             "{notes:?}"
         );
     }
@@ -920,8 +920,7 @@ fn three_correctors_are_the_same_files_through_the_app_path_and_the_binary() {
     three_correctors_leg(false);
 }
 
-/// The device leg: both sides have a device, and both render the nodes on the CPU reference (a note
-/// says so) behind the device's raw chain, so the files are the same.
+/// The device leg: both sides have a device and both render the nodes on it, so the files are the same.
 #[test]
 fn three_correctors_are_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
     three_correctors_leg(true);

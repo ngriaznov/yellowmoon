@@ -14,12 +14,16 @@ use ym_color::grade::{
     CONTRAST_NEUTRAL_CHROMA, CONTRAST_TOP, E1, E2, SATURATION_CODE_LIMIT, ZONE_CONTROL_SIGMA,
     ZONE_SIGMA,
 };
+use ym_color::plan::{PLAN_KEYS, PLAN_REGISTERS};
 use ym_color::tone::HIGHLIGHT_GREY;
 use ym_color::warp::{
     WARP_EXP_LIMIT, WARP_MAX_PINS, WARP_MAX_STEPS, WARP_NEUTRAL_GUARD, WARP_TONE_HALF_WIDTH,
 };
 
-use super::color::{WARP_LOCK_ROWS, WARP_MOVE_ROWS};
+use super::color::{
+    NODE_CURVES, NODE_GRADE, NODE_MAIN, NODE_NONE, NODE_SKIP, NODE_TRIM, NODE_WARP, REF_INDEX,
+    REF_KEY, REF_PICTURE, REF_REGISTER, REF_SHIFT, REF_SLOT, WARP_LOCK_ROWS, WARP_MOVE_ROWS,
+};
 use crate::device::StorageMode;
 
 /// The kernels of the crate.
@@ -727,6 +731,27 @@ fn constants() -> String {
         ("WARP_MOVE_ROWS", WARP_MOVE_ROWS),
         ("WARP_LOCK_ROWS", WARP_LOCK_ROWS),
         ("WARP_MAX_STEPS", WARP_MAX_STEPS as usize),
+    ] {
+        let _ = writeln!(s, "const {n}: u32 = {v}u;");
+    }
+    // The plan loop (`kernels::color`, `docs/23` section 5.4): the registers and key slots a pass has, the bits of a
+    // node record, the references to a value (kind in the top four bits, index below) and "not written".
+    for (n, v) in [
+        ("PLAN_REGISTERS", PLAN_REGISTERS as u32),
+        ("PLAN_KEYS", PLAN_KEYS as u32),
+        ("NODE_NONE", NODE_NONE),
+        ("N_SKIP", NODE_SKIP),
+        ("N_TRIM", NODE_TRIM),
+        ("N_GRADE", NODE_GRADE),
+        ("N_WARP", NODE_WARP),
+        ("N_CURVES", NODE_CURVES),
+        ("N_MAIN", NODE_MAIN),
+        ("REF_SHIFT", REF_SHIFT),
+        ("REF_INDEX", REF_INDEX),
+        ("REF_REGISTER", REF_REGISTER),
+        ("REF_PICTURE", REF_PICTURE),
+        ("REF_SLOT", REF_SLOT),
+        ("REF_KEY", REF_KEY),
     ] {
         let _ = writeln!(s, "const {n}: u32 = {v}u;");
     }

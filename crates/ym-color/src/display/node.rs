@@ -67,15 +67,6 @@ impl Default for NodeSet {
     }
 }
 
-impl NodeSet {
-    /// Whether this is Main alone with no trim and not bypassed: all the colour kernel runs until it
-    /// learns the plan loop.
-    #[must_use]
-    pub fn is_main_only(&self) -> bool {
-        self.plan.is_main_only() && !self.main.bypass && self.main.trim.is_identity()
-    }
-}
-
 /// Main's values after each of its steps, for [`StageTrace`](super::StageTrace).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct MainStages {

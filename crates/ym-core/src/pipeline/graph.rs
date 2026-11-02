@@ -1642,7 +1642,6 @@ impl<'a> Job<'a> {
         let g = r.graph(src.id);
         g.adopt(src.fingerprint);
         g.pins.fetch_add(1, Ordering::SeqCst);
-        let (opts, notes) = Self::options_for_nodes(r.options(), src);
         Self {
             r,
             g,
@@ -1650,12 +1649,12 @@ impl<'a> Job<'a> {
             cancel,
             runs: StageRuns::default(),
             timings: StageTimings::default(),
-            notes,
+            notes: Vec::new(),
             started: Instant::now(),
             params: None,
             frame: None,
             transient_full: None,
-            opts,
+            opts: r.options(),
             gpu_priority: Priority::Export,
             restartable: true,
             restart: None,
@@ -1669,32 +1668,6 @@ impl<'a> Job<'a> {
             lens_job_planes: None,
             lens_job_device: None,
         }
-    }
-
-    /// The options this request runs with for a photo whose graph has nodes the device cannot run
-    /// yet (anything but Main alone with no trim, not bypassed: `docs/23` section 5.4, N-04). The
-    /// colour pass and the export tail leave the device's stages, so the CPU reference colours the
-    /// photo whichever way the picture is asked for, and the report says so
-    /// ([`NODES_ON_CPU_NOTE`](super::color::NODES_ON_CPU_NOTE)). The raw stages keep their route, as
-    /// with the colour pass switched off. A request with no device, or whose device has neither
-    /// stage on, is left alone.
-    fn options_for_nodes(
-        opts: Arc<RenderOptions>,
-        src: &PhotoSource,
-    ) -> (Arc<RenderOptions>, Vec<String>) {
-        let colour = GpuStages::COLOR.union(GpuStages::EXPORT_TAIL);
-        if opts.gpu.is_none()
-            || !opts.gpu_stages.intersects(colour)
-            || super::color::nodes_run_on_device(&src.settings)
-        {
-            return (opts, Vec::new());
-        }
-        let mut o = (*opts).clone();
-        o.gpu_stages = o.gpu_stages.difference(colour);
-        (
-            Arc::new(o),
-            vec![super::color::NODES_ON_CPU_NOTE.to_owned()],
-        )
     }
 
     /// The raw group of this request runs without R8 capture sharpening (neither Richardson-Lucy nor
