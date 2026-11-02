@@ -270,6 +270,10 @@ fn a_curve_with_a_look_runs_the_curve_first() {
                 moved += 1;
             }
         }
+        println!(
+            "curve and look at {intensity} %: {moved} of {} pixels differ from 0.8.2 by more than 1e-3, the largest by {largest:.4} LogC4",
+            pixels().len()
+        );
         assert!(
             moved > 40,
             "only {moved} of {} pixels differ from the old order at {intensity} %",
