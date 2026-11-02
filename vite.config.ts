@@ -32,6 +32,9 @@ export default defineConfig({
         "**/training/**",
         "**/research/**",
         "**/data/**",
+        // Playwright's HTML report (npm run e2e writes playwright-report/index.html when it ends): Vite ignores test-results/ by default, and
+        // an .html file it does not know sends the open pages a "page reload" in the dev server's log.
+        "**/playwright-report/**",
       ],
     },
   },

@@ -28,6 +28,39 @@ export async function openApp(page: Page, options: Record<string, string | numbe
 /** The hooks the app publishes in a browser (`src/testHooks.ts`): the very mock and updater it runs on. */
 type Hooks = NonNullable<Window["__yellowmoon"]>;
 
+/**
+ * Imports a look package through the mock and waits until the import has finished and the page has settled on the result.
+ *
+ * Not `await mockApi.looksImport(...)` inside one `page.evaluate`: Chromium's DevTools holds the promise that `page.evaluate` awaits
+ * only weakly, and a look import ends with the store refreshing its looks, a long run of microtasks that allocate. If a garbage
+ * collection comes after the evaluated promise is settled and before DevTools has read it, DevTools answers "Promise was collected" and
+ * Playwright reports it as "Execution context was destroyed, most likely because of a navigation" (a page that has not navigated at
+ * all), about 1 run in 50 on a busy machine. Here the evaluate returns at once, and the wait is a poll on a flag.
+ */
+export async function importLooks(page: Page, path: string): Promise<void> {
+  await page.evaluate((zip) => {
+    const job: LooksImportJob = (window as unknown as { __looksImport: LooksImportJob }).__looksImport = { done: false };
+    void window.__yellowmoon!.mockApi.looksImport(zip).then(
+      () => {
+        job.done = true;
+      },
+      (error: unknown) => {
+        job.error = JSON.stringify(error);
+        job.done = true;
+      },
+    );
+  }, path);
+  await page.waitForFunction(() => (window as unknown as { __looksImport: LooksImportJob }).__looksImport.done);
+  const error = await page.evaluate(() => (window as unknown as { __looksImport: LooksImportJob }).__looksImport.error);
+  if (error !== undefined) throw new Error(`Importing ${path} failed: ${error}`);
+}
+
+/** What `importLooks` leaves on the page. */
+interface LooksImportJob {
+  done: boolean;
+  error?: string;
+}
+
 /** Changes the mock's options in the page, before a session is open. */
 export async function configureMock(page: Page, options: MockOptions): Promise<void> {
   await page.evaluate((opts) => (window as unknown as { __yellowmoon: Hooks }).__yellowmoon.mockApi.configure(opts), options);

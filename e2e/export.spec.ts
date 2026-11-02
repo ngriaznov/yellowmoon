@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { openApp, openPhotos, recordCalls, settle, showUpdateReady, watchErrors } from "./helpers/app";
+import { importLooks, openApp, openPhotos, recordCalls, settle, showUpdateReady, watchErrors } from "./helpers/app";
 import { compareScreen } from "./helpers/compare";
 
 // The Export panel (M3-11) in a real browser against the mocked API: every format, the options, the queue, the finished
@@ -110,11 +110,8 @@ test.describe("each format", () => {
   test("DNG stays available for a look with its own display rendering and says it is close to the picture", async ({ page }) => {
     await exportPanel(page);
     // Import the LogC3 to Rec.709 package through the app's own mock, and pick one of its looks.
-    await page.evaluate(async () => {
-      const { mockApi } = window.__yellowmoon!;
-      await mockApi.looksImport("~/Downloads/ARRI_LookLibrary_LogC3_to_Rec709.zip");
-      await mockApi.applyLook("this", "arri:3000:film-warm-logc3-rec709", 100);
-    });
+    await importLooks(page, "~/Downloads/ARRI_LookLibrary_LogC3_to_Rec709.zip");
+    await page.evaluate(() => window.__yellowmoon!.mockApi.applyLook("this", "arri:3000:film-warm-logc3-rec709", 100));
     // The panel asks again when the photos or options change.
     await page.getByRole("radiogroup", { name: "Photos" }).getByRole("radio", { name: "This photo" }).click();
     await format(page, "DNG");

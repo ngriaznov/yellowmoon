@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { mockQuery, openApp, openPhotos, watchErrors } from "./helpers/app";
+import { importLooks, mockQuery, openApp, openPhotos, watchErrors } from "./helpers/app";
 
 // Preferences (⌘,), About and the menu bar's items (M3-13) in a real browser against the mocked API. docs/11 §Preferences is
 // not mocked, so there is no screenshot to compare with; the layout rules are asserted instead.
@@ -124,8 +124,9 @@ test.describe("Preferences", () => {
   test("the imported looks persist as well, and a display choice kept by an earlier version is ignored without a word", async ({ page }) => {
     await page.goto(mockQuery({ mockPersist: 1, mockLooks: 0 }));
     await expect(page.locator("[data-screen]")).toBeVisible();
-    await page.evaluate(async () => {
-      await window.__yellowmoon!.mockApi.looksImport("~/Downloads/ARRI_LookLibrary_LogC4.zip");
+    // Not `await mockApi.looksImport(...)` inside the evaluate below: see `importLooks`.
+    await importLooks(page, "~/Downloads/ARRI_LookLibrary_LogC4.zip");
+    await page.evaluate(() => {
       // What an earlier version left in the page's storage: the choice of ARRI's display LUT, and the display package it imported.
       const key = "yellowmoon.mock.state";
       const stored = JSON.parse(localStorage.getItem(key) ?? "{}");
