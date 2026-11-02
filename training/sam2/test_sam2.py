@@ -23,6 +23,10 @@ try:
     import numpy as np
 except ImportError:  # pragma: no cover
     np = None
+try:
+    import PIL  # noqa: F401 (only to know whether Pillow is importable)
+except ImportError:  # pragma: no cover
+    PIL = None
 
 LISTING = json.loads(oracle.PHOTOS_JSON.read_text(encoding="utf-8"))
 ALLOWED_LICENCES = {"CC0-1.0", "Public domain"}
@@ -108,6 +112,108 @@ class Writers(unittest.TestCase):
         self.assertEqual(box["points"].shape, (0, 2))
 
 
+def tiff_with_zero_denominator(orientation: int) -> bytes:
+    """The EXIF block of a JPEG as raw bytes: Orientation and an XResolution of 1/0 (a zero denominator, as some cameras and editors write)."""
+    entries = [
+        struct.pack("<HHII", 0x0112, 3, 1, orientation),  # Orientation, SHORT
+        struct.pack("<HHII", 0x011A, 5, 1, 8 + 2 + 2 * 12 + 4),  # XResolution, RATIONAL, its data right after the IFD
+    ]
+    ifd = struct.pack("<H", len(entries)) + b"".join(entries) + struct.pack("<I", 0)
+    return b"Exif\x00\x00" + b"II*\x00" + struct.pack("<I", 8) + ifd + struct.pack("<II", 1, 0)
+
+
+@unittest.skipIf(np is None or PIL is None, "numpy and Pillow are needed")
+class Orientation(unittest.TestCase):
+    """`load_picture` applies the EXIF orientation by itself: `ImageOps.exif_transpose` writes the whole EXIF block again and
+    stops with ZeroDivisionError on a rational tag whose denominator is 0 (the `hyacinth` photo)."""
+
+    SIZE = (30, 20)
+
+    def base_image(self):
+        from PIL import Image
+
+        rng = np.random.default_rng(7)
+        pixels = rng.integers(0, 256, size=(self.SIZE[1], self.SIZE[0], 3), dtype=np.uint8)
+        return Image.fromarray(pixels, "RGB")
+
+    def write(self, directory: Path, name: str, **save_arguments) -> Path:
+        path = directory / name
+        self.base_image().save(path, "JPEG", quality=95, **save_arguments)
+        return path
+
+    def with_orientation(self, directory: Path, orientation: int | None) -> Path:
+        from PIL import Image
+
+        exif = Image.Exif()
+        if orientation is not None:
+            exif[0x0112] = orientation
+        return self.write(directory, f"o{orientation}.jpg", exif=exif)
+
+    def old_picture(self, path: Path):
+        """What `load_picture` made before: `ImageOps.exif_transpose`, then the same RGB conversion and Lanczos resize."""
+        from PIL import Image, ImageOps
+
+        with Image.open(path) as opened:
+            image = ImageOps.exif_transpose(opened).convert("RGB")
+        scale = oracle.PICTURE_LONG_EDGE / max(image.size)
+        size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+        return np.asarray(image.resize(size, Image.Resampling.LANCZOS), dtype=np.uint8)
+
+    def test_every_orientation_gives_the_pixels_of_exif_transpose(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for orientation in range(1, 9):
+                with self.subTest(orientation=orientation):
+                    path = self.with_orientation(Path(tmp), orientation)
+                    got = oracle.load_picture(path)
+                    np.testing.assert_array_equal(got, self.old_picture(path))
+                    swapped = orientation >= 5
+                    self.assertEqual(got.shape[:2], (1024, 683) if swapped else (683, 1024))
+
+    def test_the_eight_orientations_differ_from_each_other_so_the_comparison_means_something(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pictures = [oracle.load_picture(self.with_orientation(Path(tmp), orientation)) for orientation in range(1, 9)]
+        for i in range(8):
+            for j in range(i + 1, 8):
+                if pictures[i].shape == pictures[j].shape:
+                    self.assertFalse(np.array_equal(pictures[i], pictures[j]), (i + 1, j + 1))
+
+    def test_no_orientation_tag_or_a_value_outside_1_to_8_leaves_the_picture_as_it_is(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            upright = oracle.load_picture(self.with_orientation(Path(tmp), 1))
+            for orientation in (None, 0, 9, 65535):
+                with self.subTest(orientation=orientation):
+                    path = self.with_orientation(Path(tmp), orientation)
+                    np.testing.assert_array_equal(oracle.load_picture(path), upright)
+                    np.testing.assert_array_equal(oracle.load_picture(path), self.old_picture(path))
+            plain = self.write(Path(tmp), "plain.jpg")  # no EXIF block at all
+            np.testing.assert_array_equal(oracle.load_picture(plain), upright)
+
+    def test_a_zero_denominator_in_the_exif_does_not_stop_the_load_and_the_orientation_still_applies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            broken = self.write(directory, "broken.jpg", exif=tiff_with_zero_denominator(6))
+            got = oracle.load_picture(broken)
+            self.assertEqual(got.shape[:2], (1024, 683), "rotated: the 30 x 20 photo became 20 x 30")
+            well_formed = self.with_orientation(directory, 6)  # the same pixels, a clean EXIF block
+            np.testing.assert_array_equal(got, oracle.load_picture(well_formed))
+            np.testing.assert_array_equal(got, self.old_picture(well_formed))
+
+
+    def test_the_exif_is_never_written_again_whatever_the_version_of_pillow(self):
+        """The zero denominator only stops older Pillow versions; this fails on any version that re-serialises the EXIF."""
+        from PIL import Image
+
+        def refuse(*_arguments, **_keywords):
+            raise AssertionError("the EXIF block must not be serialised again")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.with_orientation(Path(tmp), 6)
+            expected = self.old_picture(path)
+            with mock.patch.object(Image.Exif, "tobytes", refuse):
+                got = oracle.load_picture(path)
+        np.testing.assert_array_equal(got, expected)
+
+
 class Downloader(unittest.TestCase):
     def photo(self, directory: Path, data: bytes, sha256: str | None = None) -> dict:
         source = directory / "source.jpg"
@@ -167,6 +273,14 @@ class PhotoList(unittest.TestCase):
                 self.assertTrue(photo["title"].endswith((".jpg", ".jpeg")))
                 self.assertRegex(photo["commons_sha1"], r"^[0-9a-f]{40}$")
                 self.assertRegex(photo["sha256"], r"^([0-9a-f]{64}|TBD-after-first-run)$")
+
+    def test_pinned_hashes_are_64_lowercase_hex_characters_and_no_two_photos_share_one(self):
+        pinned = [(photo["id"], photo["sha256"]) for photo in LISTING["photos"] if photo["sha256"] != oracle.PLACEHOLDER]
+        self.assertTrue(pinned, "at least the first photos are pinned")
+        for photo_id, digest in pinned:
+            with self.subTest(photo=photo_id):
+                self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        self.assertEqual(len({digest for _, digest in pinned}), len(pinned), "a hash pasted twice")
 
     def test_the_prompts_lie_inside_the_picture_and_the_box_is_not_empty(self):
         for photo in LISTING["photos"]:

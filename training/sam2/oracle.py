@@ -146,13 +146,40 @@ def fetch_photo(photo: dict, directory: Path) -> Path:
     return path
 
 
+#: EXIF orientation tag.
+EXIF_ORIENTATION_TAG = 0x0112
+
+
+def upright(image):
+    """The image turned the way its EXIF orientation says (1 to 8; anything else, or no tag, leaves it as it is).
+
+    This is `ImageOps.exif_transpose` without its last step: that function writes the whole EXIF block again, and stops with
+    ZeroDivisionError on a photo that has a rational tag with a zero denominator (the `hyacinth` photo, Pillow 11.0.0).
+    Only the orientation tag is read here and the EXIF is never written, so a flaw in any other tag cannot matter.
+    """
+    from PIL import Image
+
+    value = image.getexif().get(EXIF_ORIENTATION_TAG, 1)
+    orientation = value if isinstance(value, int) and 1 <= value <= 8 else 1
+    method = {
+        2: Image.Transpose.FLIP_LEFT_RIGHT,
+        3: Image.Transpose.ROTATE_180,
+        4: Image.Transpose.FLIP_TOP_BOTTOM,
+        5: Image.Transpose.TRANSPOSE,
+        6: Image.Transpose.ROTATE_270,
+        7: Image.Transpose.TRANSVERSE,
+        8: Image.Transpose.ROTATE_90,
+    }.get(orientation)
+    return image.copy() if method is None else image.transpose(method)
+
+
 def load_picture(path: Path):
     """The 8-bit picture of a photo: uint8 [H, W, 3], long edge 1024."""
     import numpy as np
-    from PIL import Image, ImageOps
+    from PIL import Image
 
     with Image.open(path) as opened:
-        image = ImageOps.exif_transpose(opened).convert("RGB")
+        image = upright(opened).convert("RGB")
     width, height = image.size
     scale = PICTURE_LONG_EDGE / max(width, height)
     size = (max(1, round(width * scale)), max(1, round(height * scale)))

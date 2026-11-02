@@ -58,7 +58,7 @@
       "height": 1556,
       "bytes": 732308,
       "commons_sha1": "89dff085cb888dae26328e15b7be74cf26a08868",
-      "sha256": "TBD-after-first-run",
+      "sha256": "2a8ef36cfa65f5025f2f961aa5d99c39f248b8c197f0f71c4aa14f6085e87cf8",
       "prompts_reviewed": false,
       "prompts": {
         "point": [0.5, 0.5],
@@ -80,7 +80,7 @@
       "height": 3000,
       "bytes": 1694316,
       "commons_sha1": "a3841bd267defdb2c558793373ca90bd92cec716",
-      "sha256": "TBD-after-first-run",
+      "sha256": "69d1c1a64d49116e7bf036685d5261368df930ef8e26f872cb585930a4036bd4",
       "prompts_reviewed": false,
       "prompts": {
         "point": [0.5, 0.5],
@@ -102,7 +102,7 @@
       "height": 4080,
       "bytes": 2236563,
       "commons_sha1": "f45ac607d70a56a0a6f8518678637714a754750e",
-      "sha256": "TBD-after-first-run",
+      "sha256": "c43af9967360bc9f964e927c4f6ac53e15c98e3c626aa56fbde1d0adce497fab",
       "prompts_reviewed": false,
       "prompts": {
         "point": [0.5, 0.5],
@@ -124,7 +124,7 @@
       "height": 1600,
       "bytes": 1650511,
       "commons_sha1": "7e0061ede27d83486dd24e868e82054089cbc8a3",
-      "sha256": "TBD-after-first-run",
+      "sha256": "2d6eebc7b781da626656fc67d21ef3f668945f4d6415b525c59c0c9d054a1b80",
       "prompts_reviewed": false,
       "prompts": {
         "point": [0.5, 0.5],
@@ -146,7 +146,7 @@
       "height": 2204,
       "bytes": 1439628,
       "commons_sha1": "23dbe4df6b50364f39f4a2a5daad3f64dc621694",
-      "sha256": "TBD-after-first-run",
+      "sha256": "6ef54be2fa47cdb70ed0300749c30aab9e34e516ab05318963888d33f67f10d6",
       "prompts_reviewed": false,
       "prompts": {
         "point": [0.5, 0.5],
@@ -168,7 +168,7 @@
       "height": 1796,
       "bytes": 2313066,
       "commons_sha1": "a2289aaf45346aa56a50bb72fa52991948e759c7",
-      "sha256": "TBD-after-first-run",
+      "sha256": "1f379206f97e6e5f3eb8547dfb8fe876f2128f00e15af344e35457f808af3b3c",
       "prompts_reviewed": false,
       "prompts": {
         "point": [0.5, 0.5],
@@ -190,7 +190,7 @@
       "height": 3024,
       "bytes": 1852160,
       "commons_sha1": "6353d2540ccf72daffb96685ff2da25678caecae",
-      "sha256": "TBD-after-first-run",
+      "sha256": "e193d5d0003adebc3ce50a4be565cfe4b0014227ca211a06afeb2b57c7d30fc8",
       "prompts_reviewed": false,
       "prompts": {
         "point": [0.5, 0.5],
@@ -212,7 +212,7 @@
       "height": 2242,
       "bytes": 2681200,
       "commons_sha1": "692c5a72186f5735790e70c6d5977af7455520bf",
-      "sha256": "TBD-after-first-run",
+      "sha256": "0374d023fdd7ac085939bb98e4f76098fa3ef92748da7519d5cf562c9fe33f04",
       "prompts_reviewed": false,
       "prompts": {
         "point": [0.5, 0.5],
@@ -234,7 +234,7 @@
       "height": 1536,
       "bytes": 928892,
       "commons_sha1": "46172d9c5941a3b8957561b4984ae165e832acbe",
-      "sha256": "TBD-after-first-run",
+      "sha256": "a42214fe161cf49eb5152dbd37dc1e9f05f55c8df6ce1f7f89ba3b68104d6a52",
       "prompts_reviewed": false,
       "prompts": {
         "point": [0.5, 0.5],
@@ -278,7 +278,7 @@
       "height": 2560,
       "bytes": 1228097,
       "commons_sha1": "69cdb9d9e55770f0816311d9900bfe1854daa876",
-      "sha256": "TBD-after-first-run",
+      "sha256": "0ad94f5f5d3dd5165e8f399e8d105031b6c9d7e02864206b772885a692034241",
       "prompts_reviewed": false,
       "prompts": {
         "point": [0.5, 0.5],
